@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -82,7 +81,7 @@ func TestOpenRouterClient_ListModels(t *testing.T) {
 
 			client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
 
-			got, err := client.ListModels(context.Background())
+			got, err := client.ListModels(t.Context())
 			if tt.wantErr {
 				require.Error(t, err)
 				return
@@ -141,7 +140,7 @@ func TestOpenRouterClient_SendEvents(t *testing.T) {
 			client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
 
 			got, err := client.SendEvents(
-				context.Background(),
+				t.Context(),
 				"test/model",
 				"You are a test bot.",
 				nil,
@@ -186,7 +185,7 @@ func TestOpenRouterClient_SendEventsWithHistory(t *testing.T) {
 	}
 
 	_, err := client.SendEvents(
-		context.Background(),
+		t.Context(),
 		"test/model",
 		"System prompt",
 		history,
@@ -254,7 +253,7 @@ func TestOpenRouterClient_GenerateNick(t *testing.T) {
 
 	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
 
-	got, err := client.GenerateNick(context.Background(), "anthropic/claude-3-haiku")
+	got, err := client.GenerateNick(t.Context(), "anthropic/claude-3-haiku")
 	require.NoError(t, err)
 	require.Equal(t, domain.Nick("claud3"), got)
 }

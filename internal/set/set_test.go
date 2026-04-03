@@ -1,8 +1,10 @@
 package set
 
-import "testing"
+import (
+	"testing"
 
-import "github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/require"
+)
 
 func TestSet_AddKeepsUniqueness(t *testing.T) {
 	set := New("alice", "bob")

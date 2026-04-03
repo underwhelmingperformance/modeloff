@@ -3,8 +3,9 @@ package main
 
 import (
 	"context"
+	cryptorand "crypto/rand"
 	"fmt"
-	"math/rand"
+	"math/big"
 	"os"
 	"time"
 
@@ -121,7 +122,12 @@ func perturbDuration(interval time.Duration) time.Duration {
 		return interval
 	}
 
-	offset := time.Duration(rand.Int63n(int64(delta*2)+1)) - delta
+	n, err := cryptorand.Int(cryptorand.Reader, big.NewInt(int64(delta*2)+1))
+	if err != nil {
+		return interval
+	}
+
+	offset := time.Duration(n.Int64()) - delta
 
 	return interval + offset
 }

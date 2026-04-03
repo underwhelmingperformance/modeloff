@@ -581,10 +581,10 @@ func (s ChatScreen) inviteModel(modelID domain.ModelID, persona string) tea.Cmd 
 		}
 
 		return commandResultMsg{
-			channels: channels,
-			active:   s.active,
-			title:    s.title,
-			messages: messages,
+			channels:     channels,
+			active:       s.active,
+			title:        s.title,
+			messages:     messages,
 			systemEvents: []string{event},
 		}
 	}

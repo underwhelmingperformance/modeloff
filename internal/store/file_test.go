@@ -1,7 +1,6 @@
 package store
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -23,13 +22,13 @@ func newTestStore(t *testing.T) *FileStore {
 func TestFileStore_ListChannelsEmpty(t *testing.T) {
 	s := newTestStore(t)
 
-	got, err := s.ListChannels(context.Background())
+	got, err := s.ListChannels(t.Context())
 	require.NoError(t, err)
 	require.Empty(t, got)
 }
 
 func TestFileStore_SaveAndGetChannel(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s := newTestStore(t)
 
 	ch := domain.Channel{
@@ -50,12 +49,12 @@ func TestFileStore_SaveAndGetChannel(t *testing.T) {
 func TestFileStore_GetChannelNotFound(t *testing.T) {
 	s := newTestStore(t)
 
-	_, err := s.GetChannel(context.Background(), "#nonexistent")
+	_, err := s.GetChannel(t.Context(), "#nonexistent")
 	require.Error(t, err)
 }
 
 func TestFileStore_ListChannels(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s := newTestStore(t)
 
 	channels := []domain.Channel{
@@ -73,7 +72,7 @@ func TestFileStore_ListChannels(t *testing.T) {
 }
 
 func TestFileStore_ListChannels_includes_dms(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s := newTestStore(t)
 
 	channels := []domain.Channel{
@@ -91,7 +90,7 @@ func TestFileStore_ListChannels_includes_dms(t *testing.T) {
 }
 
 func TestFileStore_DeleteChannel(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s := newTestStore(t)
 
 	ch := domain.Channel{Name: "#deleteme", Kind: domain.KindChannel, Created: testTime}
@@ -103,7 +102,7 @@ func TestFileStore_DeleteChannel(t *testing.T) {
 }
 
 func TestFileStore_SaveChannelOverwrites(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s := newTestStore(t)
 
 	ch := domain.Channel{Name: "#evolving", Kind: domain.KindChannel, Created: testTime}
@@ -123,13 +122,13 @@ func TestFileStore_SaveChannelOverwrites(t *testing.T) {
 func TestFileStore_ListMessagesEmpty(t *testing.T) {
 	s := newTestStore(t)
 
-	got, err := s.ListMessages(context.Background(), "#empty")
+	got, err := s.ListMessages(t.Context(), "#empty")
 	require.NoError(t, err)
 	require.Empty(t, got)
 }
 
 func TestFileStore_SaveAndListMessages(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s := newTestStore(t)
 
 	msgs := []domain.Message{
@@ -147,7 +146,7 @@ func TestFileStore_SaveAndListMessages(t *testing.T) {
 }
 
 func TestFileStore_MessagesIsolatedByChannel(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s := newTestStore(t)
 
 	require.NoError(t, s.SaveMessage(ctx, domain.Message{ID: "a", Channel: "#chan-a", From: "alice", Body: "a msg", SentAt: testTime}))
@@ -171,13 +170,13 @@ func TestFileStore_MessagesIsolatedByChannel(t *testing.T) {
 func TestFileStore_ListInstancesEmpty(t *testing.T) {
 	s := newTestStore(t)
 
-	got, err := s.ListInstances(context.Background())
+	got, err := s.ListInstances(t.Context())
 	require.NoError(t, err)
 	require.Empty(t, got)
 }
 
 func TestFileStore_SaveAndGetInstance(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s := newTestStore(t)
 
 	inst := domain.ModelInstance{
@@ -197,12 +196,12 @@ func TestFileStore_SaveAndGetInstance(t *testing.T) {
 func TestFileStore_GetInstanceNotFound(t *testing.T) {
 	s := newTestStore(t)
 
-	_, err := s.GetInstance(context.Background(), "ghost")
+	_, err := s.GetInstance(t.Context(), "ghost")
 	require.Error(t, err)
 }
 
 func TestFileStore_DeleteInstance(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s := newTestStore(t)
 
 	inst := domain.ModelInstance{Nick: "temp", ModelID: "test/model"}
@@ -214,7 +213,7 @@ func TestFileStore_DeleteInstance(t *testing.T) {
 }
 
 func TestFileStore_ListInstances(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s := newTestStore(t)
 
 	instances := []domain.ModelInstance{
@@ -236,13 +235,13 @@ func TestFileStore_ListInstances(t *testing.T) {
 func TestFileStore_GetLastChannelEmpty(t *testing.T) {
 	s := newTestStore(t)
 
-	got, err := s.GetLastChannel(context.Background())
+	got, err := s.GetLastChannel(t.Context())
 	require.NoError(t, err)
 	require.Empty(t, got)
 }
 
 func TestFileStore_SetAndGetLastChannel(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s := newTestStore(t)
 
 	require.NoError(t, s.SetLastChannel(ctx, "#general"))
@@ -253,7 +252,7 @@ func TestFileStore_SetAndGetLastChannel(t *testing.T) {
 }
 
 func TestFileStore_SetLastChannelOverwrites(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s := newTestStore(t)
 
 	require.NoError(t, s.SetLastChannel(ctx, "#first"))

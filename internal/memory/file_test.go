@@ -1,7 +1,6 @@
 package memory
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -12,13 +11,13 @@ import (
 func TestFileStore_ReadEmpty(t *testing.T) {
 	store := NewFileStore(t.TempDir())
 
-	got, err := store.Read(context.Background(), "alice")
+	got, err := store.Read(t.Context(), "alice")
 	require.NoError(t, err)
 	require.Empty(t, got)
 }
 
 func TestFileStore_WriteAndRead(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store := NewFileStore(t.TempDir())
 	nick := domain.Nick("bob")
 
@@ -37,7 +36,7 @@ func TestFileStore_WriteAndRead(t *testing.T) {
 }
 
 func TestFileStore_WriteOverwritesExistingKey(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store := NewFileStore(t.TempDir())
 	nick := domain.Nick("charlie")
 
@@ -50,7 +49,7 @@ func TestFileStore_WriteOverwritesExistingKey(t *testing.T) {
 }
 
 func TestFileStore_Delete(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store := NewFileStore(t.TempDir())
 	nick := domain.Nick("dave")
 
@@ -78,14 +77,14 @@ func TestFileStore_Delete(t *testing.T) {
 }
 
 func TestFileStore_DeleteNonexistent(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store := NewFileStore(t.TempDir())
 
 	require.NoError(t, store.Delete(ctx, "eve", "nonexistent"))
 }
 
 func TestFileStore_IsolationBetweenNicks(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store := NewFileStore(t.TempDir())
 
 	require.NoError(t, store.Write(ctx, "nick-a", Entry{Key: "k", Content: "from-a"}))
