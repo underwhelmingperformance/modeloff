@@ -539,6 +539,98 @@ func TestSession_SetTitleNonexistentChannel(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestSession_OpenDM_creates_dm_channel(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := context.Background()
+
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:    "botty",
+		ModelID: "test/model",
+	})
+
+	ch, created, err := sess.OpenDM(ctx, "botty")
+	require.NoError(t, err)
+	require.True(t, created)
+	require.Equal(t, domain.Channel{
+		Name:    "botty",
+		Kind:    domain.KindDM,
+		Members: []domain.Nick{"testuser", "botty"},
+		Created: fixedTime,
+	}, ch)
+
+	got, err := s.GetChannel(ctx, "botty")
+	require.NoError(t, err)
+	require.Equal(t, ch, got)
+
+	inst, err := s.GetInstance(ctx, "botty")
+	require.NoError(t, err)
+	require.Equal(t, []domain.ChannelName{"botty"}, inst.Channels)
+}
+
+func TestSession_OpenDM_reuses_existing_dm_channel(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := context.Background()
+
+	existing := domain.Channel{
+		Name:    "botty",
+		Kind:    domain.KindDM,
+		Members: []domain.Nick{"testuser", "botty"},
+		Created: fixedTime.Add(-time.Hour),
+	}
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: []domain.ChannelName{"botty"},
+	})
+	require.NoError(t, s.SaveChannel(ctx, existing))
+
+	ch, created, err := sess.OpenDM(ctx, "botty")
+	require.NoError(t, err)
+	require.False(t, created)
+	require.Equal(t, existing, ch)
+}
+
+func TestSession_OpenDM_unknown_instance(t *testing.T) {
+	sess, _ := newTestSession(t)
+
+	_, _, err := sess.OpenDM(context.Background(), "ghost")
+	require.Error(t, err)
+}
+
+func TestSession_SendMessage_to_dm_only_targets_that_instance(t *testing.T) {
+	fake := &fakeAPIClient{}
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := context.Background()
+
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:    "botty",
+		ModelID: "test/model-a",
+	})
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:     "otherbot",
+		ModelID:  "test/model-b",
+		Channels: []domain.ChannelName{"#general"},
+	})
+
+	_, _, err := sess.OpenDM(ctx, "botty")
+	require.NoError(t, err)
+
+	_, err = sess.SendMessage(ctx, "botty", "hello in dm")
+	require.NoError(t, err)
+
+	require.Len(t, fake.sendEventsCalls, 1)
+	require.Equal(t, domain.ModelID("test/model-a"), fake.sendEventsCalls[0].modelID)
+	require.Equal(t, []protocol.IRCMessage{
+		{
+			Kind:   protocol.KindPrivMsg,
+			From:   "testuser",
+			Target: "botty",
+			Body:   "hello in dm",
+			At:     fixedTime,
+		},
+	}, fake.sendEventsCalls[0].events)
+}
+
 func TestSession_SetAPIKey(t *testing.T) {
 	cfgStore := &fakeConfigStore{
 		cfg: config.Config{

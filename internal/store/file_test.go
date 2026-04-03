@@ -71,6 +71,24 @@ func TestFileStore_ListChannels(t *testing.T) {
 	require.Equal(t, channels, got)
 }
 
+func TestFileStore_ListChannels_includes_dms(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	channels := []domain.Channel{
+		{Name: "#alpha", Kind: domain.KindChannel, Created: testTime},
+		{Name: "botty", Kind: domain.KindDM, Created: testTime.Add(time.Hour)},
+	}
+
+	for _, ch := range channels {
+		require.NoError(t, s.SaveChannel(ctx, ch))
+	}
+
+	got, err := s.ListChannels(ctx)
+	require.NoError(t, err)
+	require.Equal(t, channels, got)
+}
+
 func TestFileStore_DeleteChannel(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)

@@ -266,6 +266,48 @@ func (s *Session) Messages(ctx context.Context, ch domain.ChannelName) ([]domain
 	return s.store.ListMessages(ctx, ch)
 }
 
+// OpenDM opens or creates a direct-message conversation with a known
+// model instance and makes it the active conversation.
+func (s *Session) OpenDM(ctx context.Context, nick domain.Nick) (domain.Channel, bool, error) {
+	inst, err := s.store.GetInstance(ctx, nick)
+	if err != nil {
+		return domain.Channel{}, false, fmt.Errorf("get instance: %w", err)
+	}
+
+	name := domain.ChannelName(nick)
+
+	ch, err := s.store.GetChannel(ctx, name)
+	created := false
+	if err != nil {
+		ch = domain.Channel{
+			Name:    name,
+			Kind:    domain.KindDM,
+			Members: []domain.Nick{s.userNick, nick},
+			Created: s.now(),
+		}
+
+		if err := s.store.SaveChannel(ctx, ch); err != nil {
+			return domain.Channel{}, false, fmt.Errorf("save dm channel: %w", err)
+		}
+
+		created = true
+	}
+
+	if !containsChannel(inst.Channels, name) {
+		inst.Channels = append(inst.Channels, name)
+
+		if err := s.store.SaveInstance(ctx, inst); err != nil {
+			return domain.Channel{}, false, fmt.Errorf("save instance: %w", err)
+		}
+	}
+
+	if err := s.store.SetLastChannel(ctx, name); err != nil {
+		return domain.Channel{}, false, fmt.Errorf("set last channel: %w", err)
+	}
+
+	return ch, created, nil
+}
+
 // SetAPIKey persists a new API key through the config store.
 func (s *Session) SetAPIKey(_ context.Context, apiKey string) (config.Config, error) {
 	if s.config == nil {
@@ -397,4 +439,14 @@ func buildSystemPrompt(ch domain.Channel, inst domain.ModelInstance) string {
 	}
 
 	return fmt.Sprintf("%s The channel title is %q.", prompt, ch.Title)
+}
+
+func containsChannel(channels []domain.ChannelName, want domain.ChannelName) bool {
+	for _, ch := range channels {
+		if ch == want {
+			return true
+		}
+	}
+
+	return false
 }

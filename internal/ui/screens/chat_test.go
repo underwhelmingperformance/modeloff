@@ -523,6 +523,72 @@ func TestChatScreen_config_invalid_duration(t *testing.T) {
 	require.Contains(t, v, "invalid duration")
 }
 
+func TestChatScreen_msg_command_opens_dm(t *testing.T) {
+	sess := newTestSession(t)
+	seedChannel(t, sess, "#general")
+	_, err := sess.Invite(context.Background(), "#general", "anthropic/claude-3-haiku")
+	require.NoError(t, err)
+
+	cs := screens.NewChatScreen(sess)
+
+	msg := cs.Init()()
+	var m ui.Model
+	m, _ = cs.Update(msg)
+
+	m, cmd := m.Update(components.CommandSubmitMsg{Name: "msg", Args: "fakenick"})
+	require.NotNil(t, cmd)
+
+	msg = cmd()
+	m, _ = m.Update(msg)
+
+	v := m.View(80, 24)
+	require.Contains(t, v, "Opened direct message with fakenick")
+	require.Contains(t, v, "fakenick")
+}
+
+func TestChatScreen_msg_command_opens_dm_and_sends_message(t *testing.T) {
+	sess := newTestSession(t)
+	seedChannel(t, sess, "#general")
+	_, err := sess.Invite(context.Background(), "#general", "anthropic/claude-3-haiku")
+	require.NoError(t, err)
+
+	cs := screens.NewChatScreen(sess)
+
+	msg := cs.Init()()
+	var m ui.Model
+	m, _ = cs.Update(msg)
+
+	m, cmd := m.Update(components.CommandSubmitMsg{Name: "msg", Args: "fakenick hello there"})
+	require.NotNil(t, cmd)
+
+	msg = cmd()
+	m, _ = m.Update(msg)
+
+	v := m.View(80, 24)
+	require.Contains(t, v, "hello there")
+	require.Contains(t, v, "fakenick")
+}
+
+func TestChatScreen_msg_command_unknown_nick(t *testing.T) {
+	sess := newTestSession(t)
+	seedChannel(t, sess, "#general")
+
+	cs := screens.NewChatScreen(sess)
+
+	msg := cs.Init()()
+	var m ui.Model
+	m, _ = cs.Update(msg)
+
+	m, cmd := m.Update(components.CommandSubmitMsg{Name: "msg", Args: "nobody hello"})
+	require.NotNil(t, cmd)
+
+	msg = cmd()
+	m, _ = m.Update(msg)
+
+	v := m.View(80, 24)
+	require.Contains(t, v, "no such nick: nobody")
+}
+
 func TestChatScreen_invalid_command(t *testing.T) {
 	sess := newTestSession(t)
 	seedChannel(t, sess, "#general")

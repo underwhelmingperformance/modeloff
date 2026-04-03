@@ -301,11 +301,7 @@ func (s ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
 		return s.configure(cmd)
 
 	case command.MsgCommand:
-		return func() tea.Msg {
-			return systemEventMsg{lines: []string{
-				fmt.Sprintf("/%s is not yet implemented", msg.Name),
-			}}
-		}
+		return s.directMessage(domain.Nick(cmd.Nick), cmd.Body)
 
 	default:
 		return nil
@@ -360,6 +356,43 @@ func (s ChatScreen) configure(cmd command.ConfigCommand) tea.Cmd {
 				fmt.Sprintf("unknown config key: %s", cmd.Key),
 				usage,
 			}}
+		}
+	}
+}
+
+func (s ChatScreen) directMessage(nick domain.Nick, body string) tea.Cmd {
+	return func() tea.Msg {
+		ctx := context.Background()
+
+		ch, created, err := s.sess.OpenDM(ctx, nick)
+		if err != nil {
+			return systemEventMsg{lines: []string{
+				fmt.Sprintf("no such nick: %s", nick),
+			}}
+		}
+
+		if strings.TrimSpace(body) != "" {
+			if _, err := s.sess.SendMessage(ctx, ch.Name, body); err != nil {
+				return systemEventMsg{lines: []string{err.Error()}}
+			}
+		}
+
+		channels, _ := s.sess.ListChannels(ctx)
+		messages, _ := s.sess.Messages(ctx, ch.Name)
+
+		var systemEvents []string
+		if created {
+			systemEvents = []string{
+				fmt.Sprintf("Opened direct message with %s", nick),
+			}
+		}
+
+		return commandResultMsg{
+			channels:     channels,
+			active:       ch.Name,
+			title:        "",
+			messages:     messages,
+			systemEvents: systemEvents,
 		}
 	}
 }
