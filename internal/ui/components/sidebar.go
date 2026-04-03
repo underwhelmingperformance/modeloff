@@ -17,10 +17,12 @@ type ChannelSelectedMsg struct {
 	Channel domain.ChannelName
 }
 
-// ChannelsUpdatedMsg tells the sidebar to refresh its channel list.
+// ChannelsUpdatedMsg tells the sidebar to refresh its channel list,
+// active channel, and unread counts.
 type ChannelsUpdatedMsg struct {
 	Channels []domain.Channel
 	Active   domain.ChannelName
+	Unread   map[domain.ChannelName]int
 }
 
 // Sidebar displays the list of open channels and lets the user
@@ -36,21 +38,13 @@ type Sidebar struct {
 // active channel. The unread map holds per-channel unread counts; nil
 // is safe and treated as all-zero.
 func NewSidebar(channels []domain.Channel, active domain.ChannelName, unread map[domain.ChannelName]int) Sidebar {
-	cursor := 0
-
-	for i, ch := range channels {
-		if ch.Name == active {
-			cursor = i
-			break
-		}
-	}
-
-	return Sidebar{
+	s := Sidebar{
 		channels: channels,
-		cursor:   cursor,
 		active:   active,
 		unread:   unread,
 	}
+
+	return s.syncCursor()
 }
 
 // Init implements ui.Model.
@@ -70,7 +64,8 @@ func (s Sidebar) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	case ChannelsUpdatedMsg:
 		s.channels = msg.Channels
 		s.active = msg.Active
-		s = s.clampCursor()
+		s.unread = msg.Unread
+		s = s.syncCursor()
 	}
 
 	return s, nil
@@ -117,6 +112,17 @@ func (s Sidebar) selectCurrent() tea.Cmd {
 	return func() tea.Msg {
 		return ChannelSelectedMsg{Channel: ch}
 	}
+}
+
+func (s Sidebar) syncCursor() Sidebar {
+	for i, ch := range s.channels {
+		if ch.Name == s.active {
+			s.cursor = i
+			return s
+		}
+	}
+
+	return s.clampCursor()
 }
 
 func (s Sidebar) clampCursor() Sidebar {

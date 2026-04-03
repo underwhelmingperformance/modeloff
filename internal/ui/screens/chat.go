@@ -195,17 +195,15 @@ func (s *ChatScreen) handleLoaded(msg chatLoadedMsg) (ui.Model, tea.Cmd) {
 	s.title = msg.title
 	s.channelCount = len(msg.channels)
 
-	sidebar := components.NewSidebar(msg.channels, msg.active, msg.unread)
+	s.updateSidebar(msg.channels, msg.active, msg.unread)
 	s.chatView.SetChannel(msg.active, msg.title, components.MessagesToLines(msg.messages))
-	s.nickList = components.NewNickList(msg.members)
+	s.updateNickList(msg.members)
 
 	if s.channelCount == 0 {
 		s.chatView.SetPlaceholder(welcomeText(s.sess.UserNick()))
 	} else {
 		s.chatView.SetPlaceholder("")
 	}
-
-	s.rebuildLayout(sidebar)
 
 	return s, nil
 }
@@ -215,11 +213,10 @@ func (s *ChatScreen) handleChannelSwitched(msg channelSwitchedMsg) (ui.Model, te
 	s.title = msg.title
 	s.channelCount = len(msg.channels)
 
-	sidebar := components.NewSidebar(msg.channels, msg.channel, msg.unread)
+	s.updateSidebar(msg.channels, msg.channel, msg.unread)
 	s.chatView.SetPlaceholder("")
 	s.chatView.SetChannel(msg.channel, msg.title, components.MessagesToLines(msg.messages))
-	s.nickList = components.NewNickList(msg.members)
-	s.rebuildLayout(sidebar)
+	s.updateNickList(msg.members)
 
 	return s, nil
 }
@@ -239,11 +236,10 @@ func (s *ChatScreen) handleCommandResult(msg commandResultMsg) (ui.Model, tea.Cm
 	lines := components.MessagesToLines(msg.messages)
 	lines = append(lines, msg.events...)
 
-	sidebar := components.NewSidebar(msg.channels, msg.active, msg.unread)
+	s.updateSidebar(msg.channels, msg.active, msg.unread)
 	s.chatView.SetPlaceholder("")
 	s.chatView.SetChannel(msg.active, msg.title, lines)
-	s.nickList = components.NewNickList(msg.members)
-	s.rebuildLayout(sidebar)
+	s.updateNickList(msg.members)
 	s.forwardToLayout(components.PendingResponseMsg{Pending: false})
 
 	return s, nil
@@ -263,11 +259,17 @@ func (s *ChatScreen) handleSystemEvent(msg systemEventMsg) (ui.Model, tea.Cmd) {
 	return s, nil
 }
 
-func (s *ChatScreen) rebuildLayout(sidebar components.Sidebar) {
-	layout := components.NewMainLayout(sidebar, s.chatView)
-	layout.SetNickList(s.nickList)
-	layout.NickListVisible = s.layout.NickListVisible
-	s.layout = layout
+func (s *ChatScreen) updateSidebar(channels []domain.Channel, active domain.ChannelName, unread map[domain.ChannelName]int) {
+	s.forwardToLayout(components.ChannelsUpdatedMsg{
+		Channels: channels,
+		Active:   active,
+		Unread:   unread,
+	})
+}
+
+func (s *ChatScreen) updateNickList(members []domain.Nick) {
+	s.nickList = components.NewNickList(members)
+	s.layout.SetNickList(s.nickList)
 }
 
 func (s *ChatScreen) forwardToLayout(msg tea.Msg) {

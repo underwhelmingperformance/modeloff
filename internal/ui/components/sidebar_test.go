@@ -189,12 +189,16 @@ func TestSidebar_channels_updated_msg(t *testing.T) {
 	m, _ = updateSidebar(t, m, components.ChannelsUpdatedMsg{
 		Channels: newChannels,
 		Active:   "#beta",
+		Unread:   map[domain.ChannelName]int{"#alpha": 5},
 	})
 
-	v := m.View(20, 10)
+	v := m.View(30, 10)
 	require.Contains(t, v, "#alpha")
 	require.Contains(t, v, "#beta")
 	require.NotContains(t, v, "#general")
+
+	// Unread count from the message is applied.
+	require.Contains(t, v, "#alpha *")
 }
 
 func TestSidebar_unread_indicator(t *testing.T) {
@@ -248,6 +252,61 @@ func TestSidebar_dm_cursor_uses_dm_style(t *testing.T) {
 
 	v := m.View(30, 10)
 	require.Contains(t, v, "@botty")
+}
+
+func TestSidebar_cursor_follows_active_on_update(t *testing.T) {
+	s := components.NewSidebar(testChannels, "#general", nil)
+	var m ui.Model = s
+
+	// Move cursor to #dev (index 2).
+	m, _ = updateSidebar(t, m, ctrlKey("ctrl+d"))
+	m, _ = updateSidebar(t, m, ctrlKey("ctrl+d"))
+
+	// Receive an update that changes the active channel to #random.
+	m, _ = updateSidebar(t, m, components.ChannelsUpdatedMsg{
+		Channels: testChannels,
+		Active:   "#random",
+	})
+
+	// Cursor should have moved to #random. Pressing ctrl+o should
+	// select it.
+	_, cmd := updateSidebar(t, m, ctrlKey("ctrl+o"))
+
+	require.NotNil(t, cmd)
+
+	msg := cmd()
+	selected, ok := msg.(components.ChannelSelectedMsg)
+	require.True(t, ok, "expected ChannelSelectedMsg, got %T", msg)
+	require.Equal(t, domain.ChannelName("#random"), selected.Channel)
+}
+
+func TestSidebar_cursor_clamps_when_active_not_in_list(t *testing.T) {
+	s := components.NewSidebar(testChannels, "#general", nil)
+	var m ui.Model = s
+
+	// Move cursor to #dev (index 2).
+	m, _ = updateSidebar(t, m, ctrlKey("ctrl+d"))
+	m, _ = updateSidebar(t, m, ctrlKey("ctrl+d"))
+
+	// Update with a list that doesn't contain the active channel.
+	newChannels := []domain.Channel{
+		{Name: "#alpha", Kind: domain.KindChannel},
+	}
+
+	m, _ = updateSidebar(t, m, components.ChannelsUpdatedMsg{
+		Channels: newChannels,
+		Active:   "#gone",
+	})
+
+	// Cursor should clamp to the only available index (0).
+	_, cmd := updateSidebar(t, m, ctrlKey("ctrl+o"))
+
+	require.NotNil(t, cmd)
+
+	msg := cmd()
+	selected, ok := msg.(components.ChannelSelectedMsg)
+	require.True(t, ok, "expected ChannelSelectedMsg, got %T", msg)
+	require.Equal(t, domain.ChannelName("#alpha"), selected.Channel)
 }
 
 func TestSidebar_ignores_other_messages(t *testing.T) {
