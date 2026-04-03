@@ -103,14 +103,14 @@ func (s ConnectionScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	if s.cur >= len(s.steps) {
 		s.done = true
 
-		if s.cfg.HasAPIKey {
-			if s.cfg.Next != nil {
-				next := s.cfg.Next
-				return s, func() tea.Msg {
-					return ui.ScreenMsg{Screen: next}
-				}
+		if s.cfg.Next != nil {
+			next := s.cfg.Next
+			return s, func() tea.Msg {
+				return ui.ScreenMsg{Screen: next}
 			}
+		}
 
+		if s.cfg.HasAPIKey {
 			return s, func() tea.Msg { return ConnectionDoneMsg{} }
 		}
 

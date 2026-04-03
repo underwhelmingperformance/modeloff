@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -296,7 +297,10 @@ func (s ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
 	case command.KickCommand:
 		return s.kickModel(domain.Nick(cmd.Nick))
 
-	case command.MsgCommand, command.ConfigCommand:
+	case command.ConfigCommand:
+		return s.configure(cmd)
+
+	case command.MsgCommand:
 		return func() tea.Msg {
 			return systemEventMsg{lines: []string{
 				fmt.Sprintf("/%s is not yet implemented", msg.Name),
@@ -305,6 +309,58 @@ func (s ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
 
 	default:
 		return nil
+	}
+}
+
+func (s ChatScreen) configure(cmd command.ConfigCommand) tea.Cmd {
+	return func() tea.Msg {
+		const usage = "usage: /config api-key <value> | /config poke-interval <duration>"
+
+		ctx := context.Background()
+
+		switch cmd.Key {
+		case "":
+			return systemEventMsg{lines: []string{usage}}
+
+		case "api-key":
+			if strings.TrimSpace(cmd.Value) == "" {
+				return systemEventMsg{lines: []string{"usage: /config api-key <value>"}}
+			}
+
+			if _, err := s.sess.SetAPIKey(ctx, strings.TrimSpace(cmd.Value)); err != nil {
+				return systemEventMsg{lines: []string{err.Error()}}
+			}
+
+			return systemEventMsg{lines: []string{
+				"OpenRouter API key saved. Restart modeloff to use it.",
+			}}
+
+		case "poke-interval":
+			if strings.TrimSpace(cmd.Value) == "" {
+				return systemEventMsg{lines: []string{"usage: /config poke-interval <duration>"}}
+			}
+
+			interval, err := time.ParseDuration(strings.TrimSpace(cmd.Value))
+			if err != nil {
+				return systemEventMsg{lines: []string{
+					fmt.Sprintf("invalid duration %q: %v", cmd.Value, err),
+				}}
+			}
+
+			if _, err := s.sess.SetPokeInterval(ctx, interval); err != nil {
+				return systemEventMsg{lines: []string{err.Error()}}
+			}
+
+			return systemEventMsg{lines: []string{
+				fmt.Sprintf("Poke interval set to %s.", interval),
+			}}
+
+		default:
+			return systemEventMsg{lines: []string{
+				fmt.Sprintf("unknown config key: %s", cmd.Key),
+				usage,
+			}}
+		}
 	}
 }
 

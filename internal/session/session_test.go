@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/api"
+	"github.com/laney/modeloff/internal/config"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/protocol"
 	storemod "github.com/laney/modeloff/internal/store"
@@ -538,6 +539,42 @@ func TestSession_SetTitleNonexistentChannel(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestSession_SetAPIKey(t *testing.T) {
+	cfgStore := &fakeConfigStore{
+		cfg: config.Config{
+			UserNick:     "testuser",
+			PokeInterval: 5 * time.Minute,
+		},
+	}
+	s := storemod.NewFileStore(t.TempDir())
+	sess := New(s, nil, &fakeAPIClient{}, cfgStore, "testuser")
+
+	cfg, err := sess.SetAPIKey(context.Background(), "test-key")
+	require.NoError(t, err)
+	require.Equal(t, "test-key", cfg.APIKey)
+	require.Equal(t, "test-key", cfgStore.saved.APIKey)
+	require.Equal(t, 1, cfgStore.saveCalls)
+}
+
+func TestSession_SetPokeInterval(t *testing.T) {
+	cfgStore := &fakeConfigStore{
+		cfg: config.Config{
+			APIKey:       "test-key",
+			UserNick:     "testuser",
+			PokeInterval: 5 * time.Minute,
+		},
+	}
+	s := storemod.NewFileStore(t.TempDir())
+	sess := New(s, nil, &fakeAPIClient{}, cfgStore, "testuser")
+
+	cfg, err := sess.SetPokeInterval(context.Background(), 10*time.Minute)
+	require.NoError(t, err)
+	require.Equal(t, 10*time.Minute, cfg.PokeInterval)
+	require.Equal(t, 10*time.Minute, cfgStore.saved.PokeInterval)
+	require.Equal(t, "test-key", cfgStore.saved.APIKey)
+	require.Equal(t, 1, cfgStore.saveCalls)
+}
+
 // --- Fake API client ---
 
 type fakeAPIClient struct {
@@ -552,6 +589,14 @@ type sendEventsCall struct {
 	system  string
 	history []protocol.IRCMessage
 	events  []protocol.IRCMessage
+}
+
+type fakeConfigStore struct {
+	cfg       config.Config
+	loadErr   error
+	saveErr   error
+	saveCalls int
+	saved     config.Config
 }
 
 func (f *fakeAPIClient) ListModels(ctx context.Context) ([]api.ModelInfo, error) {
@@ -589,6 +634,26 @@ func (f *fakeAPIClient) GenerateNick(ctx context.Context, modelID domain.ModelID
 	}
 
 	return "fakenick", nil
+}
+
+func (f *fakeConfigStore) Load() (config.Config, error) {
+	if f.loadErr != nil {
+		return config.Config{}, f.loadErr
+	}
+
+	return f.cfg, nil
+}
+
+func (f *fakeConfigStore) Save(cfg config.Config) error {
+	if f.saveErr != nil {
+		return f.saveErr
+	}
+
+	f.saveCalls++
+	f.saved = cfg
+	f.cfg = cfg
+
+	return nil
 }
 
 func seedChannelWithMembers(t *testing.T, s *storemod.FileStore, name domain.ChannelName, members ...domain.Nick) {

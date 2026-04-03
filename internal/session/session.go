@@ -266,6 +266,47 @@ func (s *Session) Messages(ctx context.Context, ch domain.ChannelName) ([]domain
 	return s.store.ListMessages(ctx, ch)
 }
 
+// SetAPIKey persists a new API key through the config store.
+func (s *Session) SetAPIKey(_ context.Context, apiKey string) (config.Config, error) {
+	if s.config == nil {
+		return config.Config{}, fmt.Errorf("config store not configured")
+	}
+
+	cfg, err := s.config.Load()
+	if err != nil {
+		return config.Config{}, fmt.Errorf("load config: %w", err)
+	}
+
+	cfg.APIKey = apiKey
+
+	if err := s.config.Save(cfg); err != nil {
+		return config.Config{}, fmt.Errorf("save config: %w", err)
+	}
+
+	return cfg, nil
+}
+
+// SetPokeInterval persists a new poke interval through the config
+// store.
+func (s *Session) SetPokeInterval(_ context.Context, interval time.Duration) (config.Config, error) {
+	if s.config == nil {
+		return config.Config{}, fmt.Errorf("config store not configured")
+	}
+
+	cfg, err := s.config.Load()
+	if err != nil {
+		return config.Config{}, fmt.Errorf("load config: %w", err)
+	}
+
+	cfg.PokeInterval = interval
+
+	if err := s.config.Save(cfg); err != nil {
+		return config.Config{}, fmt.Errorf("save config: %w", err)
+	}
+
+	return cfg, nil
+}
+
 func (s *Session) broadcastMessage(
 	ctx context.Context,
 	msg domain.Message,

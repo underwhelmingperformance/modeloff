@@ -75,7 +75,10 @@ type WhoisCommand struct {
 func (WhoisCommand) commandMarker() {}
 
 // ConfigCommand represents `/config`.
-type ConfigCommand struct{}
+type ConfigCommand struct {
+	Key   string
+	Value string
+}
 
 func (ConfigCommand) commandMarker() {}
 
@@ -113,7 +116,7 @@ func Parse(input string) (Command, error) {
 	case "/whois":
 		return parseWhois(args)
 	case "/config":
-		return ConfigCommand{}, nil
+		return parseConfig(args), nil
 	default:
 		return nil, fmt.Errorf("unknown command: %s", name)
 	}
@@ -183,4 +186,20 @@ func parseWhois(args []string) (Command, error) {
 	}
 
 	return WhoisCommand{Nick: args[0]}, nil
+}
+
+func parseConfig(args []string) Command {
+	if len(args) == 0 {
+		return ConfigCommand{}
+	}
+
+	cmd := ConfigCommand{
+		Key: args[0],
+	}
+
+	if len(args) > 1 {
+		cmd.Value = strings.Join(args[1:], " ")
+	}
+
+	return cmd
 }

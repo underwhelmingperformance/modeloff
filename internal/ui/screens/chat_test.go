@@ -3,10 +3,12 @@ package screens_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/api"
+	"github.com/laney/modeloff/internal/config"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/session"
@@ -37,7 +39,16 @@ func newTestSession(t *testing.T) *session.Session {
 	t.Helper()
 
 	s := storemod.NewFileStore(t.TempDir())
-	sess := session.New(s, nil, &fakeAPI{}, nil, "testuser")
+	sess := session.New(s, nil, &fakeAPI{}, newFakeConfigStore(), "testuser")
+
+	return sess
+}
+
+func newTestSessionWithConfigStore(t *testing.T, cfgStore config.Store) *session.Session {
+	t.Helper()
+
+	s := storemod.NewFileStore(t.TempDir())
+	sess := session.New(s, nil, &fakeAPI{}, cfgStore, "testuser")
 
 	return sess
 }
@@ -408,7 +419,7 @@ func TestChatScreen_kick_command(t *testing.T) {
 	require.Contains(t, v, "fakenick has been kicked from #general")
 }
 
-func TestChatScreen_unimplemented_command(t *testing.T) {
+func TestChatScreen_config_usage(t *testing.T) {
 	sess := newTestSession(t)
 	seedChannel(t, sess, "#general")
 
@@ -425,7 +436,91 @@ func TestChatScreen_unimplemented_command(t *testing.T) {
 	m, _ = m.Update(msg)
 
 	v := m.View(80, 24)
-	require.Contains(t, v, "/config is not yet implemented")
+	require.Contains(t, v, "usage: /config api-key <value> | /config poke-interval <duration>")
+}
+
+func TestChatScreen_config_set_api_key(t *testing.T) {
+	cfgStore := newFakeConfigStore()
+	sess := newTestSessionWithConfigStore(t, cfgStore)
+	seedChannel(t, sess, "#general")
+
+	cs := screens.NewChatScreen(sess)
+
+	msg := cs.Init()()
+	var m ui.Model
+	m, _ = cs.Update(msg)
+
+	m, cmd := m.Update(components.CommandSubmitMsg{Name: "config", Args: "api-key test-key"})
+	require.NotNil(t, cmd)
+
+	msg = cmd()
+	m, _ = m.Update(msg)
+
+	v := m.View(80, 24)
+	require.Contains(t, v, "OpenRouter API key saved. Restart modeloff to use it.")
+	require.Equal(t, "test-key", cfgStore.cfg.APIKey)
+}
+
+func TestChatScreen_config_set_poke_interval(t *testing.T) {
+	cfgStore := newFakeConfigStore()
+	sess := newTestSessionWithConfigStore(t, cfgStore)
+	seedChannel(t, sess, "#general")
+
+	cs := screens.NewChatScreen(sess)
+
+	msg := cs.Init()()
+	var m ui.Model
+	m, _ = cs.Update(msg)
+
+	m, cmd := m.Update(components.CommandSubmitMsg{Name: "config", Args: "poke-interval 10m"})
+	require.NotNil(t, cmd)
+
+	msg = cmd()
+	m, _ = m.Update(msg)
+
+	v := m.View(80, 24)
+	require.Contains(t, v, "Poke interval set to 10m0s.")
+	require.Equal(t, 10*time.Minute, cfgStore.cfg.PokeInterval)
+}
+
+func TestChatScreen_config_invalid_subcommand(t *testing.T) {
+	sess := newTestSession(t)
+	seedChannel(t, sess, "#general")
+
+	cs := screens.NewChatScreen(sess)
+
+	msg := cs.Init()()
+	var m ui.Model
+	m, _ = cs.Update(msg)
+
+	m, cmd := m.Update(components.CommandSubmitMsg{Name: "config", Args: "nonsense"})
+	require.NotNil(t, cmd)
+
+	msg = cmd()
+	m, _ = m.Update(msg)
+
+	v := m.View(80, 24)
+	require.Contains(t, v, "unknown config key: nonsense")
+}
+
+func TestChatScreen_config_invalid_duration(t *testing.T) {
+	sess := newTestSession(t)
+	seedChannel(t, sess, "#general")
+
+	cs := screens.NewChatScreen(sess)
+
+	msg := cs.Init()()
+	var m ui.Model
+	m, _ = cs.Update(msg)
+
+	m, cmd := m.Update(components.CommandSubmitMsg{Name: "config", Args: "poke-interval nope"})
+	require.NotNil(t, cmd)
+
+	msg = cmd()
+	m, _ = m.Update(msg)
+
+	v := m.View(80, 24)
+	require.Contains(t, v, "invalid duration")
 }
 
 func TestChatScreen_invalid_command(t *testing.T) {
@@ -488,4 +583,26 @@ func TestChatScreen_View_responsive(t *testing.T) {
 		v := m.View(sz.w, sz.h)
 		require.NotEmpty(t, v, "View(%d, %d) should not be empty", sz.w, sz.h)
 	}
+}
+
+type fakeConfigStore struct {
+	cfg config.Config
+}
+
+func newFakeConfigStore() *fakeConfigStore {
+	return &fakeConfigStore{
+		cfg: config.Config{
+			UserNick:     "testuser",
+			PokeInterval: 5 * time.Minute,
+		},
+	}
+}
+
+func (f *fakeConfigStore) Load() (config.Config, error) {
+	return f.cfg, nil
+}
+
+func (f *fakeConfigStore) Save(cfg config.Config) error {
+	f.cfg = cfg
+	return nil
 }

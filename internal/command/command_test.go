@@ -132,6 +132,16 @@ func TestParse(t *testing.T) {
 			input: "/config",
 			want:  ConfigCommand{},
 		},
+		{
+			name:  "config api key",
+			input: "/config api-key test-key",
+			want:  ConfigCommand{Key: "api-key", Value: "test-key"},
+		},
+		{
+			name:  "config poke interval",
+			input: "/config poke-interval 10m",
+			want:  ConfigCommand{Key: "poke-interval", Value: "10m"},
+		},
 
 		// Edge cases
 		{

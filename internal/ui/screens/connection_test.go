@@ -124,6 +124,31 @@ func TestConnectionScreen_with_next_screen(t *testing.T) {
 	require.True(t, ok, "expected PlaceholderScreen, got %T", screenMsg.Screen)
 }
 
+func TestConnectionScreen_no_api_key_with_next_screen(t *testing.T) {
+	next := screens.NewPlaceholderScreen("bob")
+
+	s := screens.NewConnectionScreen(screens.ConnectionConfig{
+		HasAPIKey: false,
+		Nick:      "bob",
+		Next:      next,
+	})
+
+	var m ui.Model = s
+	var cmd tea.Cmd
+
+	for range 3 {
+		m, cmd = tick(t, m)
+		require.NotNil(t, cmd)
+	}
+
+	msg := cmd()
+	screenMsg, ok := msg.(ui.ScreenMsg)
+	require.True(t, ok, "expected ui.ScreenMsg, got %T", msg)
+
+	_, ok = screenMsg.Screen.(screens.PlaceholderScreen)
+	require.True(t, ok, "expected PlaceholderScreen, got %T", screenMsg.Screen)
+}
+
 func TestConnectionScreen_ignores_other_messages(t *testing.T) {
 	s := screens.NewConnectionScreen(screens.ConnectionConfig{
 		HasAPIKey: true,
