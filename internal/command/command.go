@@ -75,6 +75,11 @@ type WhoisCommand struct {
 
 func (WhoisCommand) commandMarker() {}
 
+// HelpCommand represents `/help`.
+type HelpCommand struct{}
+
+func (HelpCommand) commandMarker() {}
+
 // ConfigCommand represents `/config`.
 type ConfigCommand struct {
 	Key   string
@@ -118,6 +123,8 @@ func Parse(input string) (Command, error) {
 		return parseWhois(args)
 	case "/config":
 		return parseConfig(args), nil
+	case "/help":
+		return HelpCommand{}, nil
 	default:
 		return nil, fmt.Errorf("unknown command: %s", name)
 	}

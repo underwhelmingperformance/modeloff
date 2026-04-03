@@ -134,6 +134,13 @@ func TestParse(t *testing.T) {
 			wantErr: true,
 		},
 
+		// /help
+		{
+			name:  "help",
+			input: "/help",
+			want:  HelpCommand{},
+		},
+
 		// /config
 		{
 			name:  "config",

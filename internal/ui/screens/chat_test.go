@@ -471,6 +471,30 @@ func TestChatScreen_msg_command_unknown_nick(t *testing.T) {
 	require.Contains(t, v, "no such nick: nobody")
 }
 
+func TestChatScreen_help_command(t *testing.T) {
+	sess := newTestSession(t)
+	seedChannel(t, sess, "#general")
+
+	m := initChatScreen(t, sess)
+
+	m, cmd := m.Update(components.CommandSubmitMsg{Name: "help", Args: ""})
+	require.NotNil(t, cmd)
+
+	m, _ = m.Update(cmd())
+
+	v := m.View(80, 24)
+	require.Contains(t, v, "/join")
+	require.Contains(t, v, "/leave")
+	require.Contains(t, v, "/invite")
+	require.Contains(t, v, "/kick")
+	require.Contains(t, v, "/msg")
+	require.Contains(t, v, "/nick")
+	require.Contains(t, v, "/title")
+	require.Contains(t, v, "/whois")
+	require.Contains(t, v, "/config")
+	require.Contains(t, v, "/help")
+}
+
 func TestChatScreen_View_responsive(t *testing.T) {
 	sess := newTestSession(t)
 	seedChannel(t, sess, "#general")

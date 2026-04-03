@@ -62,6 +62,9 @@ func (s ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
 	case command.MsgCommand:
 		return s.directMessage(domain.Nick(cmd.Nick), cmd.Body)
 
+	case command.HelpCommand:
+		return s.showHelp()
+
 	default:
 		return func() tea.Msg {
 			return systemEventMsg{lines: []string{
@@ -371,6 +374,25 @@ func (s ChatScreen) kickModel(nick domain.Nick) tea.Cmd {
 				fmt.Sprintf("%s has been kicked from %s", evt.Nick, evt.Channel),
 			},
 		}
+	}
+}
+
+func (s ChatScreen) showHelp() tea.Cmd {
+	return func() tea.Msg {
+		return systemEventMsg{lines: []string{
+			"/join <channel>                   Join or create a channel",
+			"/leave                            Leave the current channel",
+			"/list                             List all channels",
+			"/invite <model> [--persona text]  Invite a model to the channel",
+			"/kick <nick>                      Remove a model from the channel",
+			"/msg <nick> [message]             Open a direct message",
+			"/nick <name>                      Change your nickname",
+			"/title [text]                     Set or clear the channel title",
+			"/whois <nick>                     Show info about a model",
+			"/config api-key <key>             Set the OpenRouter API key",
+			"/config poke-interval <duration>  Set the poke interval",
+			"/help                             Show this help",
+		}}
 	}
 }
 
