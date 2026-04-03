@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/components"
@@ -56,10 +57,9 @@ func TestMainLayout_View_responsive(t *testing.T) {
 			layout := components.NewMainLayout(sidebar, content)
 			got := layout.View(tt.width, tt.height)
 
-			if !strings.Contains(got, tt.wantSub) {
-				t.Errorf("View(%d, %d) = %q, want substring %q",
-					tt.width, tt.height, got, tt.wantSub)
-			}
+			require.True(t, strings.Contains(got, tt.wantSub),
+				"View(%d, %d) = %q, want substring %q",
+				tt.width, tt.height, got, tt.wantSub)
 		})
 	}
 }
@@ -72,10 +72,7 @@ func TestMainLayout_View_fills_width(t *testing.T) {
 	got := layout.View(100, 24)
 
 	renderedWidth := lipgloss.Width(got)
-
-	if renderedWidth > 100 {
-		t.Errorf("rendered width %d exceeds available width 100", renderedWidth)
-	}
+	require.LessOrEqual(t, renderedWidth, 100)
 }
 
 // initModel is a stubModel that returns a command from Init.
@@ -96,7 +93,5 @@ func TestMainLayout_Init_batches_children(t *testing.T) {
 	layout := components.NewMainLayout(sidebar, content)
 	cmd := layout.Init()
 
-	if cmd == nil {
-		t.Error("Init() returned nil, expected batched command")
-	}
+	require.NotNil(t, cmd)
 }

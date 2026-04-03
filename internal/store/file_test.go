@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/laney/modeloff/internal/domain"
 )
 
@@ -21,13 +23,8 @@ func TestFileStore_ListRoomsEmpty(t *testing.T) {
 	s := newTestStore(t)
 
 	got, err := s.ListRooms(context.Background())
-	if err != nil {
-		t.Fatalf("ListRooms() error: %v", err)
-	}
-
-	if len(got) != 0 {
-		t.Errorf("ListRooms() returned %d rooms, want 0", len(got))
-	}
+	require.NoError(t, err)
+	require.Empty(t, got)
 }
 
 func TestFileStore_SaveAndGetRoom(t *testing.T) {
@@ -42,25 +39,18 @@ func TestFileStore_SaveAndGetRoom(t *testing.T) {
 		Created: testTime,
 	}
 
-	if err := s.SaveRoom(ctx, room); err != nil {
-		t.Fatalf("SaveRoom() error: %v", err)
-	}
+	require.NoError(t, s.SaveRoom(ctx, room))
 
 	got, err := s.GetRoom(ctx, "¢general")
-	if err != nil {
-		t.Fatalf("GetRoom() error: %v", err)
-	}
-
-	assertRoom(t, got, room)
+	require.NoError(t, err)
+	require.Equal(t, room, got)
 }
 
 func TestFileStore_GetRoomNotFound(t *testing.T) {
 	s := newTestStore(t)
 
 	_, err := s.GetRoom(context.Background(), "¢nonexistent")
-	if err == nil {
-		t.Fatal("GetRoom() expected error for missing room, got nil")
-	}
+	require.Error(t, err)
 }
 
 func TestFileStore_ListRooms(t *testing.T) {
@@ -73,19 +63,12 @@ func TestFileStore_ListRooms(t *testing.T) {
 	}
 
 	for _, r := range rooms {
-		if err := s.SaveRoom(ctx, r); err != nil {
-			t.Fatalf("SaveRoom(%q) error: %v", r.Name, err)
-		}
+		require.NoError(t, s.SaveRoom(ctx, r))
 	}
 
 	got, err := s.ListRooms(ctx)
-	if err != nil {
-		t.Fatalf("ListRooms() error: %v", err)
-	}
-
-	if len(got) != 2 {
-		t.Fatalf("ListRooms() returned %d rooms, want 2", len(got))
-	}
+	require.NoError(t, err)
+	require.Len(t, got, 2)
 }
 
 func TestFileStore_DeleteRoom(t *testing.T) {
@@ -93,18 +76,11 @@ func TestFileStore_DeleteRoom(t *testing.T) {
 	s := newTestStore(t)
 
 	room := domain.Room{Name: "¢deleteme", Kind: domain.RoomChannel, Created: testTime}
-	if err := s.SaveRoom(ctx, room); err != nil {
-		t.Fatalf("SaveRoom() error: %v", err)
-	}
-
-	if err := s.DeleteRoom(ctx, "¢deleteme"); err != nil {
-		t.Fatalf("DeleteRoom() error: %v", err)
-	}
+	require.NoError(t, s.SaveRoom(ctx, room))
+	require.NoError(t, s.DeleteRoom(ctx, "¢deleteme"))
 
 	_, err := s.GetRoom(ctx, "¢deleteme")
-	if err == nil {
-		t.Fatal("GetRoom() expected error after delete, got nil")
-	}
+	require.Error(t, err)
 }
 
 func TestFileStore_SaveRoomOverwrites(t *testing.T) {
@@ -112,22 +88,15 @@ func TestFileStore_SaveRoomOverwrites(t *testing.T) {
 	s := newTestStore(t)
 
 	room := domain.Room{Name: "¢evolving", Kind: domain.RoomChannel, Created: testTime}
-	if err := s.SaveRoom(ctx, room); err != nil {
-		t.Fatalf("SaveRoom() error: %v", err)
-	}
+	require.NoError(t, s.SaveRoom(ctx, room))
 
 	room.Title = "Updated title"
 	room.Members = []domain.Nick{"charlie"}
-	if err := s.SaveRoom(ctx, room); err != nil {
-		t.Fatalf("SaveRoom() error: %v", err)
-	}
+	require.NoError(t, s.SaveRoom(ctx, room))
 
 	got, err := s.GetRoom(ctx, "¢evolving")
-	if err != nil {
-		t.Fatalf("GetRoom() error: %v", err)
-	}
-
-	assertRoom(t, got, room)
+	require.NoError(t, err)
+	require.Equal(t, room, got)
 }
 
 // --- Messages ---
@@ -136,13 +105,8 @@ func TestFileStore_ListMessagesEmpty(t *testing.T) {
 	s := newTestStore(t)
 
 	got, err := s.ListMessages(context.Background(), "¢empty")
-	if err != nil {
-		t.Fatalf("ListMessages() error: %v", err)
-	}
-
-	if len(got) != 0 {
-		t.Errorf("ListMessages() returned %d messages, want 0", len(got))
-	}
+	require.NoError(t, err)
+	require.Empty(t, got)
 }
 
 func TestFileStore_SaveAndListMessages(t *testing.T) {
@@ -155,24 +119,15 @@ func TestFileStore_SaveAndListMessages(t *testing.T) {
 	}
 
 	for _, m := range msgs {
-		if err := s.SaveMessage(ctx, m); err != nil {
-			t.Fatalf("SaveMessage(%q) error: %v", m.ID, err)
-		}
+		require.NoError(t, s.SaveMessage(ctx, m))
 	}
 
 	got, err := s.ListMessages(ctx, "¢general")
-	if err != nil {
-		t.Fatalf("ListMessages() error: %v", err)
-	}
-
-	if len(got) != 2 {
-		t.Fatalf("ListMessages() returned %d messages, want 2", len(got))
-	}
+	require.NoError(t, err)
+	require.Len(t, got, 2)
 
 	for i, want := range msgs {
-		if got[i] != want {
-			t.Errorf("message[%d] = %+v, want %+v", i, got[i], want)
-		}
+		require.Equal(t, want, got[i])
 	}
 }
 
@@ -180,31 +135,18 @@ func TestFileStore_MessagesIsolatedByRoom(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 
-	if err := s.SaveMessage(ctx, domain.Message{ID: "a", Room: "¢room-a", From: "alice", Body: "a msg", SentAt: testTime}); err != nil {
-		t.Fatalf("SaveMessage() error: %v", err)
-	}
-
-	if err := s.SaveMessage(ctx, domain.Message{ID: "b", Room: "¢room-b", From: "bob", Body: "b msg", SentAt: testTime}); err != nil {
-		t.Fatalf("SaveMessage() error: %v", err)
-	}
+	require.NoError(t, s.SaveMessage(ctx, domain.Message{ID: "a", Room: "¢room-a", From: "alice", Body: "a msg", SentAt: testTime}))
+	require.NoError(t, s.SaveMessage(ctx, domain.Message{ID: "b", Room: "¢room-b", From: "bob", Body: "b msg", SentAt: testTime}))
 
 	gotA, err := s.ListMessages(ctx, "¢room-a")
-	if err != nil {
-		t.Fatalf("ListMessages(room-a) error: %v", err)
-	}
-
-	if len(gotA) != 1 || gotA[0].ID != "a" {
-		t.Errorf("room-a messages = %+v, want [msg a]", gotA)
-	}
+	require.NoError(t, err)
+	require.Len(t, gotA, 1)
+	require.Equal(t, "a", gotA[0].ID)
 
 	gotB, err := s.ListMessages(ctx, "¢room-b")
-	if err != nil {
-		t.Fatalf("ListMessages(room-b) error: %v", err)
-	}
-
-	if len(gotB) != 1 || gotB[0].ID != "b" {
-		t.Errorf("room-b messages = %+v, want [msg b]", gotB)
-	}
+	require.NoError(t, err)
+	require.Len(t, gotB, 1)
+	require.Equal(t, "b", gotB[0].ID)
 }
 
 // --- Model instances ---
@@ -213,13 +155,8 @@ func TestFileStore_ListInstancesEmpty(t *testing.T) {
 	s := newTestStore(t)
 
 	got, err := s.ListInstances(context.Background())
-	if err != nil {
-		t.Fatalf("ListInstances() error: %v", err)
-	}
-
-	if len(got) != 0 {
-		t.Errorf("ListInstances() returned %d instances, want 0", len(got))
-	}
+	require.NoError(t, err)
+	require.Empty(t, got)
 }
 
 func TestFileStore_SaveAndGetInstance(t *testing.T) {
@@ -233,25 +170,18 @@ func TestFileStore_SaveAndGetInstance(t *testing.T) {
 		Rooms:   []domain.RoomName{"¢general", "¢dev"},
 	}
 
-	if err := s.SaveInstance(ctx, inst); err != nil {
-		t.Fatalf("SaveInstance() error: %v", err)
-	}
+	require.NoError(t, s.SaveInstance(ctx, inst))
 
 	got, err := s.GetInstance(ctx, "claude")
-	if err != nil {
-		t.Fatalf("GetInstance() error: %v", err)
-	}
-
-	assertInstance(t, got, inst)
+	require.NoError(t, err)
+	require.Equal(t, inst, got)
 }
 
 func TestFileStore_GetInstanceNotFound(t *testing.T) {
 	s := newTestStore(t)
 
 	_, err := s.GetInstance(context.Background(), "ghost")
-	if err == nil {
-		t.Fatal("GetInstance() expected error for missing instance, got nil")
-	}
+	require.Error(t, err)
 }
 
 func TestFileStore_DeleteInstance(t *testing.T) {
@@ -259,18 +189,11 @@ func TestFileStore_DeleteInstance(t *testing.T) {
 	s := newTestStore(t)
 
 	inst := domain.ModelInstance{Nick: "temp", ModelID: "test/model"}
-	if err := s.SaveInstance(ctx, inst); err != nil {
-		t.Fatalf("SaveInstance() error: %v", err)
-	}
-
-	if err := s.DeleteInstance(ctx, "temp"); err != nil {
-		t.Fatalf("DeleteInstance() error: %v", err)
-	}
+	require.NoError(t, s.SaveInstance(ctx, inst))
+	require.NoError(t, s.DeleteInstance(ctx, "temp"))
 
 	_, err := s.GetInstance(ctx, "temp")
-	if err == nil {
-		t.Fatal("GetInstance() expected error after delete, got nil")
-	}
+	require.Error(t, err)
 }
 
 func TestFileStore_ListInstances(t *testing.T) {
@@ -283,19 +206,12 @@ func TestFileStore_ListInstances(t *testing.T) {
 	}
 
 	for _, inst := range instances {
-		if err := s.SaveInstance(ctx, inst); err != nil {
-			t.Fatalf("SaveInstance(%q) error: %v", inst.Nick, err)
-		}
+		require.NoError(t, s.SaveInstance(ctx, inst))
 	}
 
 	got, err := s.ListInstances(ctx)
-	if err != nil {
-		t.Fatalf("ListInstances() error: %v", err)
-	}
-
-	if len(got) != 2 {
-		t.Fatalf("ListInstances() returned %d instances, want 2", len(got))
-	}
+	require.NoError(t, err)
+	require.Len(t, got, 2)
 }
 
 // --- Last room state ---
@@ -304,111 +220,29 @@ func TestFileStore_GetLastRoomEmpty(t *testing.T) {
 	s := newTestStore(t)
 
 	got, err := s.GetLastRoom(context.Background())
-	if err != nil {
-		t.Fatalf("GetLastRoom() error: %v", err)
-	}
-
-	if got != "" {
-		t.Errorf("GetLastRoom() = %q, want empty", got)
-	}
+	require.NoError(t, err)
+	require.Empty(t, got)
 }
 
 func TestFileStore_SetAndGetLastRoom(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 
-	if err := s.SetLastRoom(ctx, "¢general"); err != nil {
-		t.Fatalf("SetLastRoom() error: %v", err)
-	}
+	require.NoError(t, s.SetLastRoom(ctx, "¢general"))
 
 	got, err := s.GetLastRoom(ctx)
-	if err != nil {
-		t.Fatalf("GetLastRoom() error: %v", err)
-	}
-
-	if got != "¢general" {
-		t.Errorf("GetLastRoom() = %q, want %q", got, "¢general")
-	}
+	require.NoError(t, err)
+	require.Equal(t, domain.RoomName("¢general"), got)
 }
 
 func TestFileStore_SetLastRoomOverwrites(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 
-	if err := s.SetLastRoom(ctx, "¢first"); err != nil {
-		t.Fatalf("SetLastRoom() error: %v", err)
-	}
-
-	if err := s.SetLastRoom(ctx, "¢second"); err != nil {
-		t.Fatalf("SetLastRoom() error: %v", err)
-	}
+	require.NoError(t, s.SetLastRoom(ctx, "¢first"))
+	require.NoError(t, s.SetLastRoom(ctx, "¢second"))
 
 	got, err := s.GetLastRoom(ctx)
-	if err != nil {
-		t.Fatalf("GetLastRoom() error: %v", err)
-	}
-
-	if got != "¢second" {
-		t.Errorf("GetLastRoom() = %q, want %q", got, "¢second")
-	}
-}
-
-// --- Helpers ---
-
-func assertRoom(t *testing.T, got, want domain.Room) {
-	t.Helper()
-
-	if got.Name != want.Name {
-		t.Errorf("Name = %q, want %q", got.Name, want.Name)
-	}
-
-	if got.Kind != want.Kind {
-		t.Errorf("Kind = %d, want %d", got.Kind, want.Kind)
-	}
-
-	if got.Title != want.Title {
-		t.Errorf("Title = %q, want %q", got.Title, want.Title)
-	}
-
-	if !got.Created.Equal(want.Created) {
-		t.Errorf("Created = %v, want %v", got.Created, want.Created)
-	}
-
-	if len(got.Members) != len(want.Members) {
-		t.Errorf("Members length = %d, want %d", len(got.Members), len(want.Members))
-		return
-	}
-
-	for i, m := range want.Members {
-		if got.Members[i] != m {
-			t.Errorf("Members[%d] = %q, want %q", i, got.Members[i], m)
-		}
-	}
-}
-
-func assertInstance(t *testing.T, got, want domain.ModelInstance) {
-	t.Helper()
-
-	if got.Nick != want.Nick {
-		t.Errorf("Nick = %q, want %q", got.Nick, want.Nick)
-	}
-
-	if got.ModelID != want.ModelID {
-		t.Errorf("ModelID = %q, want %q", got.ModelID, want.ModelID)
-	}
-
-	if got.Persona != want.Persona {
-		t.Errorf("Persona = %q, want %q", got.Persona, want.Persona)
-	}
-
-	if len(got.Rooms) != len(want.Rooms) {
-		t.Errorf("Rooms length = %d, want %d", len(got.Rooms), len(want.Rooms))
-		return
-	}
-
-	for i, r := range want.Rooms {
-		if got.Rooms[i] != r {
-			t.Errorf("Rooms[%d] = %q, want %q", i, got.Rooms[i], r)
-		}
-	}
+	require.NoError(t, err)
+	require.Equal(t, domain.RoomName("¢second"), got)
 }

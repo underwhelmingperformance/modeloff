@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestFileStore_LoadDefaults(t *testing.T) {
@@ -13,18 +15,14 @@ func TestFileStore_LoadDefaults(t *testing.T) {
 	store := NewFileStore(t.TempDir())
 
 	got, err := store.Load()
-	if err != nil {
-		t.Fatalf("Load() error: %v", err)
-	}
+	require.NoError(t, err)
 
 	want := Config{
 		UserNick:     "testuser",
 		PokeInterval: 5 * time.Minute,
 	}
 
-	if got != want {
-		t.Errorf("Load() = %+v, want %+v", got, want)
-	}
+	require.Equal(t, want, got)
 }
 
 func TestFileStore_LoadDefaultsNoUserEnv(t *testing.T) {
@@ -33,13 +31,8 @@ func TestFileStore_LoadDefaultsNoUserEnv(t *testing.T) {
 	store := NewFileStore(t.TempDir())
 
 	got, err := store.Load()
-	if err != nil {
-		t.Fatalf("Load() error: %v", err)
-	}
-
-	if got.UserNick != "user" {
-		t.Errorf("UserNick = %q, want %q", got.UserNick, "user")
-	}
+	require.NoError(t, err)
+	require.Equal(t, "user", got.UserNick)
 }
 
 func TestFileStore_SaveAndLoad(t *testing.T) {
@@ -55,18 +48,11 @@ func TestFileStore_SaveAndLoad(t *testing.T) {
 		LastRoom:     "¢general",
 	}
 
-	if err := store.Save(saved); err != nil {
-		t.Fatalf("Save() error: %v", err)
-	}
+	require.NoError(t, store.Save(saved))
 
 	got, err := store.Load()
-	if err != nil {
-		t.Fatalf("Load() error: %v", err)
-	}
-
-	if got != saved {
-		t.Errorf("Load() = %+v, want %+v", got, saved)
-	}
+	require.NoError(t, err)
+	require.Equal(t, saved, got)
 }
 
 func TestFileStore_SaveCreatesDirectory(t *testing.T) {
@@ -74,19 +60,11 @@ func TestFileStore_SaveCreatesDirectory(t *testing.T) {
 	store := NewFileStore(dir)
 
 	cfg := Config{UserNick: "test", PokeInterval: time.Minute}
-
-	if err := store.Save(cfg); err != nil {
-		t.Fatalf("Save() error: %v", err)
-	}
+	require.NoError(t, store.Save(cfg))
 
 	info, err := os.Stat(filepath.Join(dir, "config.json"))
-	if err != nil {
-		t.Fatalf("config file not created: %v", err)
-	}
-
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Errorf("file permissions = %o, want 600", perm)
-	}
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
 }
 
 func TestFileStore_LoadMergesWithDefaults(t *testing.T) {
@@ -95,18 +73,13 @@ func TestFileStore_LoadMergesWithDefaults(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
 
-	// Write a partial config that only sets the API key.
 	data := []byte(`{"api_key": "sk-partial"}`)
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatalf("WriteFile() error: %v", err)
-	}
+	require.NoError(t, os.WriteFile(path, data, 0o600))
 
 	store := NewFileStore(dir)
 
 	got, err := store.Load()
-	if err != nil {
-		t.Fatalf("Load() error: %v", err)
-	}
+	require.NoError(t, err)
 
 	want := Config{
 		APIKey:       "sk-partial",
@@ -114,23 +87,17 @@ func TestFileStore_LoadMergesWithDefaults(t *testing.T) {
 		PokeInterval: 5 * time.Minute,
 	}
 
-	if got != want {
-		t.Errorf("Load() = %+v, want %+v", got, want)
-	}
+	require.Equal(t, want, got)
 }
 
 func TestFileStore_LoadInvalidJSON(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
 
-	if err := os.WriteFile(path, []byte(`{not json`), 0o600); err != nil {
-		t.Fatalf("WriteFile() error: %v", err)
-	}
+	require.NoError(t, os.WriteFile(path, []byte(`{not json`), 0o600))
 
 	store := NewFileStore(dir)
 
 	_, err := store.Load()
-	if err == nil {
-		t.Fatal("Load() expected error for invalid JSON, got nil")
-	}
+	require.Error(t, err)
 }

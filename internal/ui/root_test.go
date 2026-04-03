@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/ui"
 )
@@ -28,9 +29,7 @@ func update(t *testing.T, root ui.Root, msg tea.Msg) ui.Root {
 
 	m, _ := root.Update(msg)
 	r, ok := m.(ui.Root)
-	if !ok {
-		t.Fatalf("Update returned %T, want ui.Root", m)
-	}
+	require.True(t, ok, "Update returned %T, want ui.Root", m)
 
 	return r
 }
@@ -40,21 +39,13 @@ func TestRoot_View_delegates_to_screen(t *testing.T) {
 	root := ui.NewRoot(screen)
 	root = update(t, root, tea.WindowSizeMsg{Width: 80, Height: 24})
 
-	got := root.View()
-	want := "test:80x24"
-
-	if got != want {
-		t.Errorf("View() = %q, want %q", got, want)
-	}
+	require.Equal(t, "test:80x24", root.View())
 }
 
 func TestRoot_View_nil_screen(t *testing.T) {
 	root := ui.NewRoot(nil)
 
-	got := root.View()
-	if got != "" {
-		t.Errorf("View() with nil screen = %q, want empty", got)
-	}
+	require.Empty(t, root.View())
 }
 
 func TestRoot_ScreenMsg_switches_screen(t *testing.T) {
@@ -65,24 +56,16 @@ func TestRoot_ScreenMsg_switches_screen(t *testing.T) {
 	root = update(t, root, tea.WindowSizeMsg{Width: 40, Height: 10})
 	root = update(t, root, ui.ScreenMsg{Screen: second})
 
-	got := root.View()
-	want := "second:40x10"
-
-	if got != want {
-		t.Errorf("View() after ScreenMsg = %q, want %q", got, want)
-	}
+	require.Equal(t, "second:40x10", root.View())
 }
 
 func TestRoot_ctrl_c_quits(t *testing.T) {
 	root := ui.NewRoot(nil)
 	_, cmd := root.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 
-	if cmd == nil {
-		t.Fatal("expected quit command, got nil")
-	}
+	require.NotNil(t, cmd)
 
 	msg := cmd()
-	if _, ok := msg.(tea.QuitMsg); !ok {
-		t.Errorf("expected tea.QuitMsg, got %T", msg)
-	}
+	_, ok := msg.(tea.QuitMsg)
+	require.True(t, ok, "expected tea.QuitMsg, got %T", msg)
 }
