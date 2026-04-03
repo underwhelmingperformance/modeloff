@@ -149,15 +149,15 @@ func (s *Session) attachInstanceToChannel(
 	ch domain.ChannelName,
 	inst domain.ModelInstance,
 ) (domain.ModelInvitedEvent, error) {
+	channel, err := s.store.GetChannel(ctx, ch)
+	if err != nil {
+		return domain.ModelInvitedEvent{}, fmt.Errorf("get channel: %w", err)
+	}
+
 	inst.Channels.Add(ch)
 
 	if err := s.store.SaveInstance(ctx, inst); err != nil {
 		return domain.ModelInvitedEvent{}, fmt.Errorf("save instance: %w", err)
-	}
-
-	channel, err := s.store.GetChannel(ctx, ch)
-	if err != nil {
-		return domain.ModelInvitedEvent{}, fmt.Errorf("get channel: %w", err)
 	}
 
 	channel.Members.Add(inst.Nick)

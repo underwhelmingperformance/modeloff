@@ -530,6 +530,26 @@ func TestSession_InviteNonexistentChannel(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestSession_Invite_existing_instance_to_nonexistent_channel_does_not_corrupt(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: set.NewOrdered[domain.ChannelName]("#general"),
+	})
+
+	_, err := sess.Invite(ctx, "#ghost", "botty", "")
+	require.Error(t, err)
+
+	// Instance should not have the phantom channel in its set.
+	inst, err := s.GetInstance(ctx, "botty")
+	require.NoError(t, err)
+	require.Equal(t, set.NewOrdered[domain.ChannelName]("#general"), inst.Channels)
+}
+
 func TestSession_InviteGenerateNickError(t *testing.T) {
 	fake := &fakeAPIClient{
 		generateNickFn: func(_ context.Context, _ domain.ModelID) (domain.Nick, error) {
