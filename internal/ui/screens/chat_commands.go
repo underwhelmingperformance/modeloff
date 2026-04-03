@@ -12,6 +12,10 @@ import (
 	"github.com/laney/modeloff/internal/ui/components"
 )
 
+func noChannelMsg() tea.Msg {
+	return systemEventMsg{kind: components.EventWarning, lines: []string{"join a channel first"}}
+}
+
 func (s *ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
 	raw := "/" + msg.Name
 	if msg.Args != "" {
@@ -30,12 +34,20 @@ func (s *ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
 		return s.joinChannel(cmd.Channel)
 
 	case command.LeaveCommand:
+		if s.active == "" {
+			return noChannelMsg
+		}
+
 		return s.leaveChannel()
 
 	case command.NickCommand:
 		return s.changeNick(domain.Nick(cmd.Nick))
 
 	case command.TitleCommand:
+		if s.active == "" {
+			return noChannelMsg
+		}
+
 		return s.setTitle(cmd.Title)
 
 	case command.WhoisCommand:
@@ -45,6 +57,10 @@ func (s *ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
 		return s.listChannels()
 
 	case command.InviteCommand:
+		if s.active == "" {
+			return noChannelMsg
+		}
+
 		if cmd.Model == "" {
 			return func() tea.Msg {
 				return systemEventMsg{kind: components.EventWarning, lines: []string{"usage: /invite <model-id> [--persona <text>]"}}
@@ -54,6 +70,10 @@ func (s *ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
 		return s.inviteModel(domain.ModelID(cmd.Model), cmd.Persona)
 
 	case command.KickCommand:
+		if s.active == "" {
+			return noChannelMsg
+		}
+
 		return s.kickModel(domain.Nick(cmd.Nick))
 
 	case command.ConfigCommand:

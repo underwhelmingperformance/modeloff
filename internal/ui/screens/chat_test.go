@@ -168,6 +168,63 @@ func TestChatScreen_WelcomeState_responsive(t *testing.T) {
 	require.NotContains(t, narrow, "Welcome to modeloff")
 }
 
+func TestChatScreen_message_on_welcome_screen_is_ignored(t *testing.T) {
+	sess := newTestSession(t)
+
+	m := initChatScreen(t, sess)
+
+	// Type a non-command message on the welcome screen.
+	for _, r := range "hello" {
+		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+
+	// Enter → tea.Cmd → MessageSubmitMsg → "join a channel first" warning.
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	require.NotNil(t, cmd)
+
+	m, cmd = m.Update(cmd())
+
+	if cmd != nil {
+		m, _ = m.Update(cmd())
+	}
+
+	v := m.View(80, 24)
+
+	// Should not show the message as a chat line — no active channel.
+	require.NotContains(t, v, "<testuser> hello")
+
+	// Should show the "join a channel first" warning.
+	require.Contains(t, v, "join a channel first")
+}
+
+func TestChatScreen_unknown_command_on_welcome_screen(t *testing.T) {
+	sess := newTestSession(t)
+
+	m := initChatScreen(t, sess)
+
+	// Type /foo and press enter on the welcome screen.
+	for _, r := range "/foo" {
+		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	require.NotNil(t, cmd)
+
+	// Apply the CommandSubmitMsg.
+	m, cmd = m.Update(cmd())
+
+	// Apply the systemEventMsg if there is one.
+	if cmd != nil {
+		m, _ = m.Update(cmd())
+	}
+
+	v := m.View(80, 24)
+
+	// Should show the error, not a phantom message.
+	require.Contains(t, v, "unknown command: /foo")
+	require.NotContains(t, v, "<testuser> as")
+}
+
 func TestChatScreen_quit_command(t *testing.T) {
 	sess := newTestSession(t)
 	seedChannel(t, sess, "#general")

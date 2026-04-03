@@ -185,6 +185,47 @@ func TestApp_config_commands_with_teatest(t *testing.T) {
 	require.Contains(t, view, "invalid duration")
 }
 
+func TestApp_unknown_command_on_welcome_screen_with_teatest(t *testing.T) {
+	sess, _ := newIntegrationSession(t, &integrationAPI{})
+
+	tm := newTestApp(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
+	waitForOutput(t, tm, "Welcome to modeloff")
+
+	submitText(tm, "/foo")
+	waitForOutput(t, tm, "unknown command: /foo")
+
+	view := finalView(t, tm)
+	require.Contains(t, view, "unknown command: /foo")
+	require.NotContains(t, view, "<testuser>")
+}
+
+func TestApp_message_on_welcome_screen_rejected_with_teatest(t *testing.T) {
+	sess, _ := newIntegrationSession(t, &integrationAPI{})
+
+	tm := newTestApp(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
+	waitForOutput(t, tm, "Welcome to modeloff")
+
+	submitText(tm, "hello world")
+	waitForOutput(t, tm, "join a channel first")
+
+	view := finalView(t, tm)
+	require.Contains(t, view, "join a channel first")
+	require.NotContains(t, view, "<testuser>")
+}
+
+func TestApp_channel_command_on_welcome_screen_rejected_with_teatest(t *testing.T) {
+	sess, _ := newIntegrationSession(t, &integrationAPI{})
+
+	tm := newTestApp(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
+	waitForOutput(t, tm, "Welcome to modeloff")
+
+	submitText(tm, "/leave")
+	waitForOutput(t, tm, "join a channel first")
+
+	view := finalView(t, tm)
+	require.Contains(t, view, "join a channel first")
+}
+
 func TestApp_unknown_target_commands_with_teatest(t *testing.T) {
 	sess, _ := newIntegrationSession(t, &integrationAPI{})
 	seedChannel(t, sess, "#general")

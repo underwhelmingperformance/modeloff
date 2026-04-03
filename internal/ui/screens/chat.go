@@ -154,6 +154,12 @@ func (s *ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		return s, s.switchChannel(msg.Channel)
 
 	case components.MessageSubmitMsg:
+		if s.active == "" {
+			return s, func() tea.Msg {
+				return systemEventMsg{kind: components.EventWarning, lines: []string{"join a channel first"}}
+			}
+		}
+
 		s.forwardToLayout(components.PendingResponseMsg{Pending: true})
 
 		return s, s.sendMessage(msg.Text)
@@ -225,11 +231,14 @@ func (s *ChatScreen) handleCommandResult(msg commandResultMsg) (ui.Model, tea.Cm
 }
 
 func (s *ChatScreen) handleSystemEvent(msg systemEventMsg) (ui.Model, tea.Cmd) {
-	messages, _ := s.sess.Messages(s.ctx, s.active)
+	var lines []components.ChatLine
 
-	lines := components.MessagesToLines(messages)
+	if s.active != "" {
+		messages, _ := s.sess.Messages(s.ctx, s.active)
+		lines = components.MessagesToLines(messages)
+	}
+
 	lines = appendSystemEvents(lines, msg.kind, msg.lines)
-
 	s.chatView.SetLines(lines)
 
 	return s, nil
