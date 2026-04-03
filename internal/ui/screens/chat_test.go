@@ -180,7 +180,133 @@ func TestChatScreen_leave_command(t *testing.T) {
 	require.NotEmpty(t, v)
 }
 
-func TestChatScreen_unknown_command_is_noop(t *testing.T) {
+func TestChatScreen_nick_command(t *testing.T) {
+	sess := newTestSession(t)
+	seedRoom(t, sess, "¢general")
+
+	cs := screens.NewChatScreen(sess)
+
+	msg := cs.Init()()
+	var m ui.Model
+	m, _ = cs.Update(msg)
+
+	m, cmd := m.Update(components.CommandSubmitMsg{Name: "nick", Args: "newnick"})
+	require.NotNil(t, cmd)
+
+	msg = cmd()
+	m, _ = m.Update(msg)
+
+	v := m.View(80, 24)
+	require.Contains(t, v, "testuser is now known as newnick")
+}
+
+func TestChatScreen_title_command(t *testing.T) {
+	sess := newTestSession(t)
+	seedRoom(t, sess, "¢general")
+
+	cs := screens.NewChatScreen(sess)
+
+	msg := cs.Init()()
+	var m ui.Model
+	m, _ = cs.Update(msg)
+
+	m, cmd := m.Update(components.CommandSubmitMsg{Name: "title", Args: "cool topic"})
+	require.NotNil(t, cmd)
+
+	msg = cmd()
+	m, _ = m.Update(msg)
+
+	v := m.View(80, 24)
+	require.Contains(t, v, "topic for ¢general set to: cool topic")
+}
+
+func TestChatScreen_title_clear(t *testing.T) {
+	sess := newTestSession(t)
+	seedRoom(t, sess, "¢general")
+
+	cs := screens.NewChatScreen(sess)
+
+	msg := cs.Init()()
+	var m ui.Model
+	m, _ = cs.Update(msg)
+
+	m, cmd := m.Update(components.CommandSubmitMsg{Name: "title", Args: ""})
+	require.NotNil(t, cmd)
+
+	msg = cmd()
+	m, _ = m.Update(msg)
+
+	v := m.View(80, 24)
+	require.Contains(t, v, "topic for ¢general cleared")
+}
+
+func TestChatScreen_whois_command(t *testing.T) {
+	sess := newTestSession(t)
+	seedRoom(t, sess, "¢general")
+
+	// Invite a model so there's an instance to whois.
+	_, err := sess.Invite(context.Background(), "¢general", "anthropic/claude-3-haiku")
+	require.NoError(t, err)
+
+	cs := screens.NewChatScreen(sess)
+
+	msg := cs.Init()()
+	var m ui.Model
+	m, _ = cs.Update(msg)
+
+	m, cmd := m.Update(components.CommandSubmitMsg{Name: "whois", Args: "fakenick"})
+	require.NotNil(t, cmd)
+
+	msg = cmd()
+	m, _ = m.Update(msg)
+
+	v := m.View(80, 24)
+	require.Contains(t, v, "fakenick is anthropic/claude-3-haiku")
+}
+
+func TestChatScreen_whois_unknown_nick(t *testing.T) {
+	sess := newTestSession(t)
+	seedRoom(t, sess, "¢general")
+
+	cs := screens.NewChatScreen(sess)
+
+	msg := cs.Init()()
+	var m ui.Model
+	m, _ = cs.Update(msg)
+
+	m, cmd := m.Update(components.CommandSubmitMsg{Name: "whois", Args: "nobody"})
+	require.NotNil(t, cmd)
+
+	msg = cmd()
+	m, _ = m.Update(msg)
+
+	v := m.View(80, 24)
+	require.Contains(t, v, "no such nick: nobody")
+}
+
+func TestChatScreen_list_command(t *testing.T) {
+	sess := newTestSession(t)
+	seedRoom(t, sess, "¢general")
+	seedRoom(t, sess, "¢random")
+
+	cs := screens.NewChatScreen(sess)
+
+	msg := cs.Init()()
+	var m ui.Model
+	m, _ = cs.Update(msg)
+
+	m, cmd := m.Update(components.CommandSubmitMsg{Name: "list", Args: ""})
+	require.NotNil(t, cmd)
+
+	msg = cmd()
+	m, _ = m.Update(msg)
+
+	v := m.View(80, 24)
+	require.Contains(t, v, "¢general")
+	require.Contains(t, v, "¢random")
+}
+
+func TestChatScreen_list_empty(t *testing.T) {
 	sess := newTestSession(t)
 
 	cs := screens.NewChatScreen(sess)
@@ -189,8 +315,75 @@ func TestChatScreen_unknown_command_is_noop(t *testing.T) {
 	var m ui.Model
 	m, _ = cs.Update(msg)
 
-	_, cmd := m.Update(components.CommandSubmitMsg{Name: "unknown", Args: ""})
-	require.Nil(t, cmd)
+	_, cmd := m.Update(components.CommandSubmitMsg{Name: "list", Args: ""})
+	require.NotNil(t, cmd)
+
+	msg = cmd()
+	m, _ = m.Update(msg)
+
+	v := m.View(80, 24)
+	require.Contains(t, v, "no rooms")
+}
+
+func TestChatScreen_unimplemented_command(t *testing.T) {
+	sess := newTestSession(t)
+	seedRoom(t, sess, "¢general")
+
+	cs := screens.NewChatScreen(sess)
+
+	msg := cs.Init()()
+	var m ui.Model
+	m, _ = cs.Update(msg)
+
+	m, cmd := m.Update(components.CommandSubmitMsg{Name: "config", Args: ""})
+	require.NotNil(t, cmd)
+
+	msg = cmd()
+	m, _ = m.Update(msg)
+
+	v := m.View(80, 24)
+	require.Contains(t, v, "/config is not yet implemented")
+}
+
+func TestChatScreen_invalid_command(t *testing.T) {
+	sess := newTestSession(t)
+	seedRoom(t, sess, "¢general")
+
+	cs := screens.NewChatScreen(sess)
+
+	msg := cs.Init()()
+	var m ui.Model
+	m, _ = cs.Update(msg)
+
+	// /nick without args is a parse error.
+	m, cmd := m.Update(components.CommandSubmitMsg{Name: "nick", Args: ""})
+	require.NotNil(t, cmd)
+
+	msg = cmd()
+	m, _ = m.Update(msg)
+
+	v := m.View(80, 24)
+	require.Contains(t, v, "/nick requires a new nickname")
+}
+
+func TestChatScreen_unknown_command_shows_error(t *testing.T) {
+	sess := newTestSession(t)
+	seedRoom(t, sess, "¢general")
+
+	cs := screens.NewChatScreen(sess)
+
+	msg := cs.Init()()
+	var m ui.Model
+	m, _ = cs.Update(msg)
+
+	m, cmd := m.Update(components.CommandSubmitMsg{Name: "unknown", Args: ""})
+	require.NotNil(t, cmd)
+
+	msg = cmd()
+	m, _ = m.Update(msg)
+
+	v := m.View(80, 24)
+	require.Contains(t, v, "unknown command: /unknown")
 }
 
 func TestChatScreen_View_responsive(t *testing.T) {
