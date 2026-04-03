@@ -395,6 +395,34 @@ func TestChatScreen_invite_no_args(t *testing.T) {
 	require.Contains(t, v, "usage: /invite <model-id>")
 }
 
+func TestChatScreen_invite_existing_instance(t *testing.T) {
+	sess := newTestSession(t)
+	seedChannel(t, sess, "#general")
+	seedChannel(t, sess, "#random")
+
+	_, err := sess.Invite(context.Background(), "#general", "anthropic/claude-3-haiku")
+	require.NoError(t, err)
+
+	cs := screens.NewChatScreen(sess)
+
+	msg := cs.Init()()
+	var m ui.Model
+	m, _ = cs.Update(msg)
+
+	m, cmd := m.Update(components.CommandSubmitMsg{Name: "join", Args: "#random"})
+	require.NotNil(t, cmd)
+	msg = cmd()
+	m, _ = m.Update(msg)
+
+	m, cmd = m.Update(components.CommandSubmitMsg{Name: "invite", Args: "fakenick"})
+	require.NotNil(t, cmd)
+	msg = cmd()
+	m, _ = m.Update(msg)
+
+	v := m.View(80, 24)
+	require.Contains(t, v, "fakenick (anthropic/claude-3-haiku) has joined #random")
+}
+
 func TestChatScreen_kick_command(t *testing.T) {
 	sess := newTestSession(t)
 	seedChannel(t, sess, "#general")

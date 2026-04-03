@@ -113,6 +113,10 @@ func (s *Session) Invite(
 	ch domain.ChannelName,
 	modelID domain.ModelID,
 ) (domain.ModelInvitedEvent, error) {
+	if inst, err := s.store.GetInstance(ctx, domain.Nick(modelID)); err == nil {
+		return s.attachInstanceToChannel(ctx, ch, inst)
+	}
+
 	nick, err := s.api.GenerateNick(ctx, modelID)
 	if err != nil {
 		return domain.ModelInvitedEvent{}, fmt.Errorf("generate nick: %w", err)
@@ -124,6 +128,18 @@ func (s *Session) Invite(
 		Channels: []domain.ChannelName{ch},
 	}
 
+	return s.attachInstanceToChannel(ctx, ch, inst)
+}
+
+func (s *Session) attachInstanceToChannel(
+	ctx context.Context,
+	ch domain.ChannelName,
+	inst domain.ModelInstance,
+) (domain.ModelInvitedEvent, error) {
+	if !containsChannel(inst.Channels, ch) {
+		inst.Channels = append(inst.Channels, ch)
+	}
+
 	if err := s.store.SaveInstance(ctx, inst); err != nil {
 		return domain.ModelInvitedEvent{}, fmt.Errorf("save instance: %w", err)
 	}
@@ -133,7 +149,9 @@ func (s *Session) Invite(
 		return domain.ModelInvitedEvent{}, fmt.Errorf("get channel: %w", err)
 	}
 
-	channel.Members = append(channel.Members, nick)
+	if !containsNick(channel.Members, inst.Nick) {
+		channel.Members = append(channel.Members, inst.Nick)
+	}
 
 	if err := s.store.SaveChannel(ctx, channel); err != nil {
 		return domain.ModelInvitedEvent{}, fmt.Errorf("save channel: %w", err)
@@ -372,10 +390,15 @@ func (s *Session) broadcastMessage(
 	events := []protocol.IRCMessage{protocol.FromMessage(msg)}
 
 	for _, inst := range instances {
+		memories, err := s.memoriesForInstance(ctx, inst.Nick)
+		if err != nil {
+			return fmt.Errorf("read memories for %s: %w", inst.Nick, err)
+		}
+
 		response, err := s.api.SendEvents(
 			ctx,
 			inst.ModelID,
-			buildSystemPrompt(channel, inst),
+			buildSystemPrompt(channel, inst, memories),
 			history,
 			events,
 		)
@@ -427,23 +450,54 @@ func (s *Session) instancesForChannel(ctx context.Context, ch domain.ChannelName
 	return filtered, nil
 }
 
-func buildSystemPrompt(ch domain.Channel, inst domain.ModelInstance) string {
+func (s *Session) memoriesForInstance(ctx context.Context, nick domain.Nick) ([]memory.Entry, error) {
+	if s.memory == nil {
+		return nil, nil
+	}
+
+	return s.memory.Read(ctx, nick)
+}
+
+func buildSystemPrompt(ch domain.Channel, inst domain.ModelInstance, memories []memory.Entry) string {
 	prompt := fmt.Sprintf(
 		"You are %s, a participant in an IRC-style chat on %s. Reply only when you have something useful to add.",
 		inst.Nick,
 		ch.Name,
 	)
 
-	if ch.Title == "" {
+	if ch.Title != "" {
+		prompt = fmt.Sprintf("%s The channel title is %q.", prompt, ch.Title)
+	}
+
+	if inst.Persona != "" {
+		prompt = fmt.Sprintf("%s Your persona is %q.", prompt, inst.Persona)
+	}
+
+	if len(memories) == 0 {
 		return prompt
 	}
 
-	return fmt.Sprintf("%s The channel title is %q.", prompt, ch.Title)
+	prompt += " Your remembered context is:"
+	for _, entry := range memories {
+		prompt = fmt.Sprintf("%s [%s=%s]", prompt, entry.Key, entry.Content)
+	}
+
+	return prompt
 }
 
 func containsChannel(channels []domain.ChannelName, want domain.ChannelName) bool {
 	for _, ch := range channels {
 		if ch == want {
+			return true
+		}
+	}
+
+	return false
+}
+
+func containsNick(nicks []domain.Nick, want domain.Nick) bool {
+	for _, nick := range nicks {
+		if nick == want {
 			return true
 		}
 	}

@@ -11,6 +11,7 @@ import (
 	"github.com/laney/modeloff/internal/api"
 	"github.com/laney/modeloff/internal/config"
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/memory"
 	"github.com/laney/modeloff/internal/protocol"
 	storemod "github.com/laney/modeloff/internal/store"
 )
@@ -499,6 +500,64 @@ func TestSession_InviteGenerateNickError(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestSession_Invite_reuses_existing_instance(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := context.Background()
+
+	seedChannelWithMembers(t, s, "#general", "testuser")
+	seedChannelWithMembers(t, s, "#random", "testuser")
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Persona:  "Helpful assistant",
+		Channels: []domain.ChannelName{"#general"},
+	})
+
+	evt, err := sess.Invite(ctx, "#random", "botty")
+	require.NoError(t, err)
+	require.Equal(t, domain.ModelInvitedEvent{
+		Channel: "#random",
+		Instance: domain.ModelInstance{
+			Nick:     "botty",
+			ModelID:  "test/model",
+			Persona:  "Helpful assistant",
+			Channels: []domain.ChannelName{"#general", "#random"},
+		},
+		At: fixedTime,
+	}, evt)
+
+	inst, err := s.GetInstance(ctx, "botty")
+	require.NoError(t, err)
+	require.Equal(t, []domain.ChannelName{"#general", "#random"}, inst.Channels)
+
+	channel, err := s.GetChannel(ctx, "#random")
+	require.NoError(t, err)
+	require.Equal(t, []domain.Nick{"testuser", "botty"}, channel.Members)
+}
+
+func TestSession_Invite_existing_instance_is_idempotent(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := context.Background()
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: []domain.ChannelName{"#general"},
+	})
+
+	_, err := sess.Invite(ctx, "#general", "botty")
+	require.NoError(t, err)
+
+	inst, err := s.GetInstance(ctx, "botty")
+	require.NoError(t, err)
+	require.Equal(t, []domain.ChannelName{"#general"}, inst.Channels)
+
+	channel, err := s.GetChannel(ctx, "#general")
+	require.NoError(t, err)
+	require.Equal(t, []domain.Nick{"testuser", "botty"}, channel.Members)
+}
+
 func TestSession_KickNonexistentChannel(t *testing.T) {
 	sess, _ := newTestSession(t)
 
@@ -537,6 +596,34 @@ func TestSession_SetTitleNonexistentChannel(t *testing.T) {
 
 	_, err := sess.SetTitle(context.Background(), "#ghost", "title")
 	require.Error(t, err)
+}
+
+func TestSession_SendMessage_includes_memory_in_prompt(t *testing.T) {
+	memStore := memory.NewFileStore(t.TempDir())
+	require.NoError(t, memStore.Write(context.Background(), "botty", memory.Entry{
+		Key:     "mood",
+		Content: "curious",
+	}))
+
+	fake := &fakeAPIClient{}
+	s := storemod.NewFileStore(t.TempDir())
+	sess := New(s, memStore, fake, nil, "testuser")
+	sess.now = func() time.Time { return fixedTime }
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Persona:  "Helpful assistant",
+		Channels: []domain.ChannelName{"#general"},
+	})
+
+	_, err := sess.SendMessage(context.Background(), "#general", "hello world")
+	require.NoError(t, err)
+
+	require.Len(t, fake.sendEventsCalls, 1)
+	require.Contains(t, fake.sendEventsCalls[0].system, `Your persona is "Helpful assistant".`)
+	require.Contains(t, fake.sendEventsCalls[0].system, "[mood=curious]")
 }
 
 func TestSession_OpenDM_creates_dm_channel(t *testing.T) {
