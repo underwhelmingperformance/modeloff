@@ -103,7 +103,7 @@ func TestMainLayout_View_has_status_bar(t *testing.T) {
 
 	got := layout.View(80, 24)
 
-	require.Contains(t, got, "nav")
+	require.Contains(t, got, "channels")
 	require.Contains(t, got, "quit")
 	require.Contains(t, got, "scroll")
 }
@@ -126,7 +126,7 @@ func TestMainLayout_View_status_bar_abbreviates_narrow(t *testing.T) {
 	got := layout.View(45, 24)
 
 	// Should still contain shortcuts even when narrow.
-	require.Contains(t, got, "nav")
+	require.Contains(t, got, "switch")
 	require.Contains(t, got, "quit")
 }
 

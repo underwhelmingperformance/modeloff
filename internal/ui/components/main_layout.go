@@ -94,10 +94,10 @@ func statusBar(width int) string {
 	}
 
 	full := []shortcut{
-		{"^D/U", "nav"},
-		{"^O", "select"},
+		{"^D/U", "↑↓ channels"},
+		{"^O", "switch"},
 		{"PgUp/Dn", "scroll"},
-		{"/", "commands"},
+		{"/help", "commands"},
 		{"^C", "quit"},
 	}
 
@@ -110,7 +110,7 @@ func statusBar(width int) string {
 
 	// Abbreviate if too wide.
 	if lipgloss.Width(text) > width {
-		short := []string{"^D/U nav", "^O sel", "PgUp/Dn", "/ cmds", "^C quit"}
+		short := []string{"^D/U ↑↓", "^O switch", "PgUp/Dn", "/help", "^C quit"}
 		text = strings.Join(short, " ")
 	}
 
