@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/theme"
@@ -113,7 +114,7 @@ func (s ConnectionScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 }
 
 // View implements ui.Model.
-func (s ConnectionScreen) View(_, _ int) string {
+func (s ConnectionScreen) View(width, height int) string {
 	var b strings.Builder
 
 	for i := 0; i < s.cur && i < len(s.steps); i++ {
@@ -127,7 +128,9 @@ func (s ConnectionScreen) View(_, _ int) string {
 		b.WriteByte('\n')
 	}
 
-	return b.String()
+	return lipgloss.Place(width, height,
+		lipgloss.Center, lipgloss.Center,
+		b.String())
 }
 
 func renderStep(step connectionStep) string {
