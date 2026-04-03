@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -113,9 +114,15 @@ func TestSession_Invite(t *testing.T) {
 
 	evt, err := sess.Invite(ctx, "¢dev", "anthropic/claude-3-haiku")
 	require.NoError(t, err)
-	require.Equal(t, domain.RoomName("¢dev"), evt.Room)
-	require.Equal(t, domain.ModelID("anthropic/claude-3-haiku"), evt.Instance.ModelID)
-	require.Equal(t, domain.Nick("fakenick"), evt.Instance.Nick)
+	require.Equal(t, domain.ModelInvitedEvent{
+		Room: "¢dev",
+		Instance: domain.ModelInstance{
+			Nick:    "fakenick",
+			ModelID: "anthropic/claude-3-haiku",
+			Rooms:   []domain.RoomName{"¢dev"},
+		},
+		At: fixedTime,
+	}, evt)
 
 	// Instance should be persisted.
 	inst, err := s.GetInstance(ctx, "fakenick")
@@ -160,9 +167,15 @@ func TestSession_SendMessage(t *testing.T) {
 
 	evt, err := sess.SendMessage(ctx, "¢general", "hello world")
 	require.NoError(t, err)
-	require.Equal(t, domain.Nick("testuser"), evt.Message.From)
-	require.Equal(t, domain.RoomName("¢general"), evt.Message.Room)
-	require.Equal(t, "hello world", evt.Message.Body)
+	require.Equal(t, domain.MessageEvent{
+		Message: domain.Message{
+			ID:     fmt.Sprintf("%d", fixedTime.UnixNano()),
+			Room:   "¢general",
+			From:   "testuser",
+			Body:   "hello world",
+			SentAt: fixedTime,
+		},
+	}, evt)
 
 	// Message should be persisted.
 	msgs, err := s.ListMessages(ctx, "¢general")
