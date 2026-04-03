@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -223,7 +224,14 @@ func TestSession_SendMessage(t *testing.T) {
 }
 
 func TestSession_SendMessage_broadcasts_to_channel_instances(t *testing.T) {
-	fake := &fakeAPIClient{}
+	fake := &fakeAPIClient{
+		sendEventsFn: func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			return protocol.ModelResponse{
+				Kind: protocol.ResponseReply,
+				Body: "got it",
+			}, nil
+		},
+	}
 	sess, s := newTestSessionWithAPI(t, fake)
 	ctx := t.Context()
 
@@ -237,25 +245,40 @@ func TestSession_SendMessage_broadcasts_to_channel_instances(t *testing.T) {
 	evt, err := sess.SendMessage(ctx, "#general", "hello world")
 	require.NoError(t, err)
 
-	require.Len(t, fake.sendEventsCalls, 1)
-	require.Equal(t, sendEventsCall{
-		modelID: "test/model",
-		system:  "You are botty, a participant in an IRC-style chat on #general. Reply only when you have something useful to add.",
-		events: []protocol.IRCMessage{
-			protocol.FromMessage(evt.Message),
+	msgs, err := s.ListMessages(ctx, "#general")
+	require.NoError(t, err)
+	require.Equal(t, []domain.Message{
+		evt.Message,
+		{
+			ID:      fmt.Sprintf("%d~botty", fixedTime.UnixNano()),
+			Channel: "#general",
+			From:    "botty",
+			Body:    "got it",
+			SentAt:  fixedTime,
 		},
-	}, fake.sendEventsCalls[0])
+	}, msgs)
 }
 
 func TestSession_SendMessage_does_not_broadcast_when_no_model_instances(t *testing.T) {
-	fake := &fakeAPIClient{}
+	fake := &fakeAPIClient{
+		sendEventsFn: func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			return protocol.ModelResponse{
+				Kind: protocol.ResponseReply,
+				Body: "should not appear",
+			}, nil
+		},
+	}
 	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := t.Context()
 
 	seedChannelWithMembers(t, s, "#general", "testuser")
 
-	_, err := sess.SendMessage(t.Context(), "#general", "hello world")
+	evt, err := sess.SendMessage(ctx, "#general", "hello world")
 	require.NoError(t, err)
-	require.Empty(t, fake.sendEventsCalls)
+
+	msgs, err := s.ListMessages(ctx, "#general")
+	require.NoError(t, err)
+	require.Equal(t, []domain.Message{evt.Message}, msgs)
 }
 
 func TestSession_SendMessage_pass_response_does_not_store_model_message(t *testing.T) {
@@ -322,8 +345,16 @@ func TestSession_SendMessage_reply_response_stores_model_message(t *testing.T) {
 }
 
 func TestSession_SendMessage_broadcasts_only_to_members_of_that_channel(t *testing.T) {
-	fake := &fakeAPIClient{}
+	fake := &fakeAPIClient{
+		sendEventsFn: func(_ context.Context, modelID domain.ModelID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			return protocol.ModelResponse{
+				Kind: protocol.ResponseReply,
+				Body: fmt.Sprintf("reply from %s", modelID),
+			}, nil
+		},
+	}
 	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := t.Context()
 
 	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
 	seedChannelWithMembers(t, s, "#random", "testuser", "otherbot")
@@ -338,11 +369,25 @@ func TestSession_SendMessage_broadcasts_only_to_members_of_that_channel(t *testi
 		Channels: set.NewOrdered[domain.ChannelName]("#random"),
 	})
 
-	_, err := sess.SendMessage(t.Context(), "#general", "hello world")
+	evt, err := sess.SendMessage(ctx, "#general", "hello world")
 	require.NoError(t, err)
 
-	require.Len(t, fake.sendEventsCalls, 1)
-	require.Equal(t, domain.ModelID("test/model-a"), fake.sendEventsCalls[0].modelID)
+	generalMsgs, err := s.ListMessages(ctx, "#general")
+	require.NoError(t, err)
+	require.Equal(t, []domain.Message{
+		evt.Message,
+		{
+			ID:      fmt.Sprintf("%d~botty", fixedTime.UnixNano()),
+			Channel: "#general",
+			From:    "botty",
+			Body:    "reply from test/model-a",
+			SentAt:  fixedTime,
+		},
+	}, generalMsgs)
+
+	randomMsgs, err := s.ListMessages(ctx, "#random")
+	require.NoError(t, err)
+	require.Empty(t, randomMsgs)
 }
 
 func TestSession_SendMessage_reply_is_not_rebroadcast_in_same_send(t *testing.T) {
@@ -366,8 +411,6 @@ func TestSession_SendMessage_reply_is_not_rebroadcast_in_same_send(t *testing.T)
 
 	evt, err := sess.SendMessage(ctx, "#general", "hello world")
 	require.NoError(t, err)
-
-	require.Len(t, fake.sendEventsCalls, 1)
 
 	msgs, err := s.ListMessages(ctx, "#general")
 	require.NoError(t, err)
@@ -410,12 +453,11 @@ func TestSession_SendMessage_multiple_instances_each_reply_once(t *testing.T) {
 	evt, err := sess.SendMessage(ctx, "#general", "hello world")
 	require.NoError(t, err)
 
-	require.Len(t, fake.sendEventsCalls, 2)
-
 	msgs, err := s.ListMessages(ctx, "#general")
 	require.NoError(t, err)
-	require.Equal(t, []domain.Message{
-		evt.Message,
+
+	require.Equal(t, evt.Message, msgs[0])
+	require.ElementsMatch(t, []domain.Message{
 		{
 			ID:      fmt.Sprintf("%d~bot-a", fixedTime.UnixNano()),
 			Channel: "#general",
@@ -430,7 +472,7 @@ func TestSession_SendMessage_multiple_instances_each_reply_once(t *testing.T) {
 			Body:    "reply from test/model-b",
 			SentAt:  fixedTime,
 		},
-	}, msgs)
+	}, msgs[1:])
 }
 
 func TestSession_SendMessage_ignores_empty_reply_body(t *testing.T) {
@@ -492,8 +534,6 @@ func TestSession_SendMessage_api_error_continues_to_next_instance(t *testing.T) 
 	require.Error(t, err, "should surface the API error")
 	require.ErrorContains(t, err, "network timeout")
 
-	require.Len(t, fake.sendEventsCalls, 2, "both instances should be dispatched to")
-
 	msgs, err := s.ListMessages(ctx, "#general")
 	require.NoError(t, err)
 	require.Equal(t, []domain.Message{
@@ -543,8 +583,15 @@ func TestSession_Poke_api_error_continues_to_next_channel(t *testing.T) {
 
 	msgs, err := s.ListMessages(ctx, "#random")
 	require.NoError(t, err)
-	require.Len(t, msgs, 1, "bot-b reply should still be saved")
-	require.Equal(t, "still here", msgs[0].Body)
+	require.Equal(t, []domain.Message{
+		{
+			ID:      fmt.Sprintf("%d~bot-b", fixedTime.UnixNano()),
+			Channel: "#random",
+			From:    "bot-b",
+			Body:    "still here",
+			SentAt:  fixedTime,
+		},
+	}, msgs)
 }
 
 func TestSession_SetTitle(t *testing.T) {
@@ -804,7 +851,14 @@ func TestSession_Invite_same_model_id_reuses_instance(t *testing.T) {
 
 	instances, err := s.ListInstances(ctx)
 	require.NoError(t, err)
-	require.Len(t, instances, 1, "should not create a duplicate instance")
+	require.Equal(t, []domain.ModelInstance{
+		{
+			Nick:     "fakenick",
+			ModelID:  "test/model",
+			Persona:  "Helpful assistant",
+			Channels: set.NewOrdered[domain.ChannelName]("#general", "#random"),
+		},
+	}, instances)
 }
 
 func TestSession_KickNonexistentChannel(t *testing.T) {
@@ -854,7 +908,19 @@ func TestSession_SendMessage_includes_memory_in_prompt(t *testing.T) {
 		Content: "curious",
 	}))
 
-	fake := &fakeAPIClient{}
+	fake := &fakeAPIClient{
+		sendEventsFn: func(_ context.Context, _ domain.ModelID, system string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			if strings.Contains(system, `Your persona is "Helpful assistant".`) &&
+				strings.Contains(system, "[mood=curious]") {
+				return protocol.ModelResponse{
+					Kind: protocol.ResponseReply,
+					Body: "memory and persona received",
+				}, nil
+			}
+
+			return protocol.ModelResponse{Kind: protocol.ResponseSilence}, nil
+		},
+	}
 	s := storemod.NewFileStore(t.TempDir())
 	sess := New(s, memStore, fake, nil, "testuser")
 	sess.now = func() time.Time { return fixedTime }
@@ -867,12 +933,21 @@ func TestSession_SendMessage_includes_memory_in_prompt(t *testing.T) {
 		Channels: set.NewOrdered[domain.ChannelName]("#general"),
 	})
 
-	_, err := sess.SendMessage(t.Context(), "#general", "hello world")
+	evt, err := sess.SendMessage(t.Context(), "#general", "hello world")
 	require.NoError(t, err)
 
-	require.Len(t, fake.sendEventsCalls, 1)
-	require.Contains(t, fake.sendEventsCalls[0].system, `Your persona is "Helpful assistant".`)
-	require.Contains(t, fake.sendEventsCalls[0].system, "[mood=curious]")
+	msgs, err := s.ListMessages(t.Context(), "#general")
+	require.NoError(t, err)
+	require.Equal(t, []domain.Message{
+		evt.Message,
+		{
+			ID:      fmt.Sprintf("%d~botty", fixedTime.UnixNano()),
+			Channel: "#general",
+			From:    "botty",
+			Body:    "memory and persona received",
+			SentAt:  fixedTime,
+		},
+	}, msgs)
 }
 
 func TestSession_Poke_sends_poke_event(t *testing.T) {
@@ -889,15 +964,20 @@ func TestSession_Poke_sends_poke_event(t *testing.T) {
 	err := sess.Poke(t.Context())
 	require.NoError(t, err)
 
-	require.Len(t, fake.sendEventsCalls, 1)
-	require.Equal(t, []protocol.IRCMessage{
+	require.Equal(t, []sendEventsCall{
 		{
-			Kind:   protocol.KindPoke,
-			From:   "modeloff",
-			Target: "#general",
-			At:     fixedTime,
+			modelID: "test/model",
+			system:  "You are botty, a participant in an IRC-style chat on #general. Reply only when you have something useful to add.",
+			events: []protocol.IRCMessage{
+				{
+					Kind:   protocol.KindPoke,
+					From:   "modeloff",
+					Target: "#general",
+					At:     fixedTime,
+				},
+			},
 		},
-	}, fake.sendEventsCalls[0].events)
+	}, fake.sendEventsCalls)
 }
 
 func TestSession_Poke_persists_replies(t *testing.T) {
@@ -1015,20 +1095,18 @@ func TestSession_SendMessage_to_dm_only_targets_that_instance(t *testing.T) {
 	_, _, err := sess.OpenDM(ctx, "botty")
 	require.NoError(t, err)
 
-	_, err = sess.SendMessage(ctx, "botty", "hello in dm")
+	evt, err := sess.SendMessage(ctx, "botty", "hello in dm")
 	require.NoError(t, err)
 
-	require.Len(t, fake.sendEventsCalls, 1)
-	require.Equal(t, domain.ModelID("test/model-a"), fake.sendEventsCalls[0].modelID)
-	require.Equal(t, []protocol.IRCMessage{
+	require.Equal(t, []sendEventsCall{
 		{
-			Kind:   protocol.KindPrivMsg,
-			From:   "testuser",
-			Target: "botty",
-			Body:   "hello in dm",
-			At:     fixedTime,
+			modelID: "test/model-a",
+			system:  "You are botty, a participant in an IRC-style chat on botty. Reply only when you have something useful to add.",
+			events: []protocol.IRCMessage{
+				protocol.FromMessage(evt.Message),
+			},
 		},
-	}, fake.sendEventsCalls[0].events)
+	}, fake.sendEventsCalls)
 }
 
 func TestSession_SetAPIKey(t *testing.T) {
