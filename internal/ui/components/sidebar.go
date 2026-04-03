@@ -1,6 +1,7 @@
 package components
 
 import (
+	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -164,10 +165,11 @@ func (s Sidebar) View(width, height int) string {
 			name = "@" + name
 		}
 
-		hasUnread := s.unread[ch.Name] > 0
+		count := s.unread[ch.Name]
+		hasUnread := count > 0
 
 		if hasUnread {
-			name += " *"
+			name += fmt.Sprintf(" (%d)", count)
 		}
 
 		line := truncate(name, width)

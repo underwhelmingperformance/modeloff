@@ -198,30 +198,41 @@ func TestSidebar_channels_updated_msg(t *testing.T) {
 	require.NotContains(t, v, "#general")
 
 	// Unread count from the message is applied.
-	require.Contains(t, v, "#alpha *")
+	require.Contains(t, v, "#alpha (5)")
 }
 
 func TestSidebar_unread_indicator(t *testing.T) {
-	unread := map[domain.ChannelName]int{
-		"#random": 3,
+	tests := []struct {
+		name     string
+		count    int
+		wantText string
+	}{
+		{"single unread", 1, "#random (1)"},
+		{"several unread", 5, "#random (5)"},
+		{"many unread", 99, "#random (99)"},
 	}
 
-	s := components.NewSidebar(testChannels, "#general", unread)
-	v := s.View(30, 10)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			unread := map[domain.ChannelName]int{
+				"#random": tt.count,
+			}
 
-	// Channel with unread messages shows a marker.
-	require.Contains(t, v, "#random *")
+			s := components.NewSidebar(testChannels, "#general", unread)
+			v := s.View(30, 10)
 
-	// Channel without unread messages does not.
-	require.NotContains(t, v, "#general *")
-	require.NotContains(t, v, "#dev *")
+			require.Contains(t, v, tt.wantText)
+			require.NotContains(t, v, "#general (")
+			require.NotContains(t, v, "#dev (")
+		})
+	}
 }
 
 func TestSidebar_no_unread_indicator_when_nil(t *testing.T) {
 	s := components.NewSidebar(testChannels, "#general", nil)
 	v := s.View(30, 10)
 
-	require.NotContains(t, v, "*")
+	require.NotContains(t, v, "(")
 }
 
 func TestSidebar_dm_shows_at_prefix(t *testing.T) {
