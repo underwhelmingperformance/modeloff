@@ -951,8 +951,16 @@ func TestSession_SendMessage_includes_memory_in_prompt(t *testing.T) {
 }
 
 func TestSession_Poke_sends_poke_event(t *testing.T) {
-	fake := &fakeAPIClient{}
+	fake := &fakeAPIClient{
+		sendEventsFn: func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			return protocol.ModelResponse{
+				Kind: protocol.ResponseReply,
+				Body: "poke received",
+			}, nil
+		},
+	}
 	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := t.Context()
 
 	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
 	seedInstance(t, s, domain.ModelInstance{
@@ -961,23 +969,20 @@ func TestSession_Poke_sends_poke_event(t *testing.T) {
 		Channels: set.NewOrdered[domain.ChannelName]("#general"),
 	})
 
-	err := sess.Poke(t.Context())
+	err := sess.Poke(ctx)
 	require.NoError(t, err)
 
-	require.Equal(t, []sendEventsCall{
+	msgs, err := s.ListMessages(ctx, "#general")
+	require.NoError(t, err)
+	require.Equal(t, []domain.Message{
 		{
-			modelID: "test/model",
-			system:  "You are botty, a participant in an IRC-style chat on #general. Reply only when you have something useful to add.",
-			events: []protocol.IRCMessage{
-				{
-					Kind:   protocol.KindPoke,
-					From:   "modeloff",
-					Target: "#general",
-					At:     fixedTime,
-				},
-			},
+			ID:      fmt.Sprintf("%d~botty", fixedTime.UnixNano()),
+			Channel: "#general",
+			From:    "botty",
+			Body:    "poke received",
+			SentAt:  fixedTime,
 		},
-	}, fake.sendEventsCalls)
+	}, msgs)
 }
 
 func TestSession_Poke_persists_replies(t *testing.T) {
@@ -1078,7 +1083,14 @@ func TestSession_OpenDM_unknown_instance(t *testing.T) {
 }
 
 func TestSession_SendMessage_to_dm_only_targets_that_instance(t *testing.T) {
-	fake := &fakeAPIClient{}
+	fake := &fakeAPIClient{
+		sendEventsFn: func(_ context.Context, _ domain.ModelID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			return protocol.ModelResponse{
+				Kind: protocol.ResponseReply,
+				Body: "dm reply",
+			}, nil
+		},
+	}
 	sess, s := newTestSessionWithAPI(t, fake)
 	ctx := t.Context()
 
@@ -1098,15 +1110,18 @@ func TestSession_SendMessage_to_dm_only_targets_that_instance(t *testing.T) {
 	evt, err := sess.SendMessage(ctx, "botty", "hello in dm")
 	require.NoError(t, err)
 
-	require.Equal(t, []sendEventsCall{
+	msgs, err := s.ListMessages(ctx, "botty")
+	require.NoError(t, err)
+	require.Equal(t, []domain.Message{
+		evt.Message,
 		{
-			modelID: "test/model-a",
-			system:  "You are botty, a participant in an IRC-style chat on botty. Reply only when you have something useful to add.",
-			events: []protocol.IRCMessage{
-				protocol.FromMessage(evt.Message),
-			},
+			ID:      fmt.Sprintf("%d~botty", fixedTime.UnixNano()),
+			Channel: "botty",
+			From:    "botty",
+			Body:    "dm reply",
+			SentAt:  fixedTime,
 		},
-	}, fake.sendEventsCalls)
+	}, msgs)
 }
 
 func TestSession_SetAPIKey(t *testing.T) {
@@ -1148,17 +1163,9 @@ func TestSession_SetPokeInterval(t *testing.T) {
 // --- Fake API client ---
 
 type fakeAPIClient struct {
-	listModelsFn    func(context.Context) ([]api.ModelInfo, error)
-	sendEventsFn    func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error)
-	generateNickFn  func(context.Context, domain.ModelID) (domain.Nick, error)
-	sendEventsCalls []sendEventsCall
-}
-
-type sendEventsCall struct {
-	modelID domain.ModelID
-	system  string
-	history []protocol.IRCMessage
-	events  []protocol.IRCMessage
+	listModelsFn   func(context.Context) ([]api.ModelInfo, error)
+	sendEventsFn   func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error)
+	generateNickFn func(context.Context, domain.ModelID) (domain.Nick, error)
 }
 
 type fakeConfigStore struct {
@@ -1184,13 +1191,6 @@ func (f *fakeAPIClient) SendEvents(
 	history []protocol.IRCMessage,
 	events []protocol.IRCMessage,
 ) (protocol.ModelResponse, error) {
-	f.sendEventsCalls = append(f.sendEventsCalls, sendEventsCall{
-		modelID: modelID,
-		system:  system,
-		history: append([]protocol.IRCMessage(nil), history...),
-		events:  append([]protocol.IRCMessage(nil), events...),
-	})
-
 	if f.sendEventsFn != nil {
 		return f.sendEventsFn(ctx, modelID, system, history, events)
 	}

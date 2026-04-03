@@ -485,6 +485,7 @@ func TestChatScreen_help_command(t *testing.T) {
 	v := m.View(80, 24)
 	require.Contains(t, v, "/join")
 	require.Contains(t, v, "/leave")
+	require.Contains(t, v, "/list")
 	require.Contains(t, v, "/invite")
 	require.Contains(t, v, "/kick")
 	require.Contains(t, v, "/msg")
