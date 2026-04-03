@@ -364,14 +364,23 @@ func TestSession_SendMessage_reply_is_not_rebroadcast_in_same_send(t *testing.T)
 		Channels: set.NewOrdered[domain.ChannelName]("#general"),
 	})
 
-	_, err := sess.SendMessage(ctx, "#general", "hello world")
+	evt, err := sess.SendMessage(ctx, "#general", "hello world")
 	require.NoError(t, err)
 
 	require.Len(t, fake.sendEventsCalls, 1)
 
 	msgs, err := s.ListMessages(ctx, "#general")
 	require.NoError(t, err)
-	require.Len(t, msgs, 2)
+	require.Equal(t, []domain.Message{
+		evt.Message,
+		{
+			ID:      fmt.Sprintf("%d~botty", fixedTime.UnixNano()),
+			Channel: "#general",
+			From:    "botty",
+			Body:    "reply once",
+			SentAt:  fixedTime,
+		},
+	}, msgs)
 }
 
 func TestSession_SendMessage_multiple_instances_each_reply_once(t *testing.T) {
@@ -398,15 +407,30 @@ func TestSession_SendMessage_multiple_instances_each_reply_once(t *testing.T) {
 		Channels: set.NewOrdered[domain.ChannelName]("#general"),
 	})
 
-	_, err := sess.SendMessage(ctx, "#general", "hello world")
+	evt, err := sess.SendMessage(ctx, "#general", "hello world")
 	require.NoError(t, err)
 
 	require.Len(t, fake.sendEventsCalls, 2)
 
 	msgs, err := s.ListMessages(ctx, "#general")
 	require.NoError(t, err)
-	require.Len(t, msgs, 3)
-	require.Equal(t, []domain.Nick{"testuser", "bot-a", "bot-b"}, []domain.Nick{msgs[0].From, msgs[1].From, msgs[2].From})
+	require.Equal(t, []domain.Message{
+		evt.Message,
+		{
+			ID:      fmt.Sprintf("%d~bot-a", fixedTime.UnixNano()),
+			Channel: "#general",
+			From:    "bot-a",
+			Body:    "reply from test/model-a",
+			SentAt:  fixedTime,
+		},
+		{
+			ID:      fmt.Sprintf("%d~bot-b", fixedTime.UnixNano()),
+			Channel: "#general",
+			From:    "bot-b",
+			Body:    "reply from test/model-b",
+			SentAt:  fixedTime,
+		},
+	}, msgs)
 }
 
 func TestSession_SendMessage_ignores_empty_reply_body(t *testing.T) {
