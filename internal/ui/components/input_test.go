@@ -1,6 +1,7 @@
 package components_test
 
 import (
+	"fmt"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -254,6 +255,33 @@ func TestInputBar_history_up_with_no_history(t *testing.T) {
 	// Up with no history should do nothing.
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 	require.Equal(t, "", m.(components.InputBar).Value())
+}
+
+func TestInputBar_history_ring_buffer_overflow(t *testing.T) {
+	b := components.NewInputBar()
+	var m ui.Model = b
+
+	// Submit 51 messages (one more than historySize of 50).
+	for i := 0; i <= 50; i++ {
+		m = typeText(t, m, fmt.Sprintf("msg %d", i))
+		m, _ = enter(t, m)
+	}
+
+	// Up once = most recent (msg 50).
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	require.Equal(t, "msg 50", m.(components.InputBar).Value())
+
+	// Navigate all the way up: 49 more presses to reach the oldest.
+	for range 49 {
+		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	}
+
+	// Oldest should be msg 1, not msg 0 (evicted by overflow).
+	require.Equal(t, "msg 1", m.(components.InputBar).Value())
+
+	// One more up should stay at the oldest.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	require.Equal(t, "msg 1", m.(components.InputBar).Value())
 }
 
 func TestInputBar_ignores_non_key_messages(t *testing.T) {
