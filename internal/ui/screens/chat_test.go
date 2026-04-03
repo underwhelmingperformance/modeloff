@@ -94,8 +94,12 @@ func TestChatScreen_Init_empty(t *testing.T) {
 	m, _ := cs.Update(msg)
 
 	v := m.View(80, 24)
-	require.Contains(t, v, "No channels")
-	require.Contains(t, v, "No messages")
+	require.Contains(t, v, "Welcome to modeloff")
+	require.Contains(t, v, "Connected as")
+	require.Contains(t, v, "testuser")
+	require.Contains(t, v, "/join #general")
+	require.Contains(t, v, "/config api-key <value>")
+	require.Contains(t, v, "ctrl+d, ctrl+u, ctrl+o")
 }
 
 func TestChatScreen_channel_selection(t *testing.T) {
@@ -375,7 +379,8 @@ func TestChatScreen_list_empty(t *testing.T) {
 	m, _ = m.Update(msg)
 
 	v := m.View(80, 24)
-	require.Contains(t, v, "no channels")
+	require.Contains(t, v, "Welcome to modeloff")
+	require.Contains(t, v, "/join #general")
 }
 
 func TestChatScreen_invite_command(t *testing.T) {
@@ -722,6 +727,28 @@ func TestChatScreen_View_responsive(t *testing.T) {
 	for _, sz := range sizes {
 		v := m.View(sz.w, sz.h)
 		require.NotEmpty(t, v, "View(%d, %d) should not be empty", sz.w, sz.h)
+	}
+}
+
+func TestChatScreen_WelcomeState_responsive(t *testing.T) {
+	sess := newTestSession(t)
+
+	cs := screens.NewChatScreen(sess)
+
+	msg := cs.Init()()
+	m, _ := cs.Update(msg)
+
+	sizes := []struct{ w, h int }{
+		{80, 24},
+		{40, 10},
+		{28, 12},
+	}
+
+	for _, sz := range sizes {
+		v := m.View(sz.w, sz.h)
+		require.NotEmpty(t, v, "View(%d, %d) should not be empty", sz.w, sz.h)
+		require.Contains(t, v, "Welcome to modeloff")
+		require.Contains(t, v, "/join #general")
 	}
 }
 

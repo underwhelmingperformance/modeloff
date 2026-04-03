@@ -66,8 +66,9 @@ type ChatScreen struct {
 	sess   *session.Session
 	layout components.MainLayout
 
-	active domain.ChannelName
-	title  string
+	active       domain.ChannelName
+	title        string
+	channelCount int
 }
 
 // NewChatScreen creates a chat screen backed by the given session.
@@ -157,6 +158,7 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 func (s ChatScreen) handleLoaded(msg chatLoadedMsg) (ui.Model, tea.Cmd) {
 	s.active = msg.active
 	s.title = msg.title
+	s.channelCount = len(msg.channels)
 
 	sidebar := components.NewSidebar(msg.channels, msg.active)
 	chatView := components.NewChatView(msg.active, s.sess.UserNick(), msg.title, msg.messages)
@@ -168,6 +170,7 @@ func (s ChatScreen) handleLoaded(msg chatLoadedMsg) (ui.Model, tea.Cmd) {
 func (s ChatScreen) handleChannelSwitched(msg channelSwitchedMsg) (ui.Model, tea.Cmd) {
 	s.active = msg.channel
 	s.title = msg.title
+	s.channelCount = len(msg.channels)
 
 	sidebar := components.NewSidebar(msg.channels, msg.channel)
 	chatView := components.NewChatView(msg.channel, s.sess.UserNick(), msg.title, msg.messages)
@@ -186,6 +189,7 @@ func (s ChatScreen) handleMessageSent(msg messageSentMsg) (ui.Model, tea.Cmd) {
 func (s ChatScreen) handleCommandResult(msg commandResultMsg) (ui.Model, tea.Cmd) {
 	s.active = msg.active
 	s.title = msg.title
+	s.channelCount = len(msg.channels)
 
 	messages := msg.messages
 	messages = appendSystemEvents(messages, s.active, msg.systemEvents)
@@ -646,5 +650,9 @@ func (s ChatScreen) listChannels() tea.Cmd {
 
 // View implements ui.Model.
 func (s ChatScreen) View(width, height int) string {
+	if s.channelCount == 0 {
+		return NewWelcomeScreen(s.sess.UserNick()).View(width, height)
+	}
+
 	return s.layout.View(width, height)
 }
