@@ -79,6 +79,7 @@ func NickStyle(nick string) lipgloss.Style {
 // Channel styles.
 var (
 	ChannelName     = lipgloss.NewStyle().Foreground(colourCyan).Bold(true)
+	DMName          = lipgloss.NewStyle().Foreground(colourMagenta).Bold(true)
 	ChannelTitle    = lipgloss.NewStyle().Foreground(colourYellow).Italic(true)
 	ActiveChannel   = lipgloss.NewStyle().Foreground(colourWhite).Bold(true)
 	InactiveChannel = lipgloss.NewStyle().Foreground(colourBrightBlack)

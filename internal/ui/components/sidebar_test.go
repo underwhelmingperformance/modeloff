@@ -220,6 +220,36 @@ func TestSidebar_no_unread_indicator_when_nil(t *testing.T) {
 	require.NotContains(t, v, "*")
 }
 
+func TestSidebar_dm_shows_at_prefix(t *testing.T) {
+	channels := []domain.Channel{
+		{Name: "#general", Kind: domain.KindChannel},
+		{Name: "botty", Kind: domain.KindDM},
+	}
+
+	s := components.NewSidebar(channels, "#general", nil)
+	v := s.View(30, 10)
+
+	require.Contains(t, v, "#general")
+	require.Contains(t, v, "@botty")
+	require.NotContains(t, v, "@#general")
+}
+
+func TestSidebar_dm_cursor_uses_dm_style(t *testing.T) {
+	channels := []domain.Channel{
+		{Name: "#general", Kind: domain.KindChannel},
+		{Name: "botty", Kind: domain.KindDM},
+	}
+
+	s := components.NewSidebar(channels, "#general", nil)
+	var m ui.Model = s
+
+	// Move cursor to the DM entry.
+	m, _ = updateSidebar(t, m, ctrlKey("ctrl+d"))
+
+	v := m.View(30, 10)
+	require.Contains(t, v, "@botty")
+}
+
 func TestSidebar_ignores_other_messages(t *testing.T) {
 	s := components.NewSidebar(testChannels, "#general", nil)
 	var m ui.Model = s

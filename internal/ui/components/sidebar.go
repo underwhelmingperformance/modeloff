@@ -152,6 +152,12 @@ func (s Sidebar) View(width, height int) string {
 		}
 
 		name := string(ch.Name)
+		isDM := ch.Kind == domain.KindDM
+
+		if isDM {
+			name = "@" + name
+		}
+
 		hasUnread := s.unread[ch.Name] > 0
 
 		if hasUnread {
@@ -160,11 +166,16 @@ func (s Sidebar) View(width, height int) string {
 
 		line := truncate(name, width)
 
+		cursorStyle := theme.ChannelName
+		if isDM {
+			cursorStyle = theme.DMName
+		}
+
 		switch {
 		case i == s.cursor && ch.Name == s.active:
 			line = theme.ActiveChannel.Render("▸ " + line)
 		case i == s.cursor:
-			line = theme.ChannelName.Render("▸ " + line)
+			line = cursorStyle.Render("▸ " + line)
 		case ch.Name == s.active:
 			line = theme.ActiveChannel.Render("  " + line)
 		case hasUnread:
