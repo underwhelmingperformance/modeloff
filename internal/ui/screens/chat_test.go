@@ -230,6 +230,29 @@ func TestChatScreen_nick_command(t *testing.T) {
 	require.Contains(t, v, "testuser is now known as newnick")
 }
 
+func TestChatScreen_nick_command_reports_persist_error(t *testing.T) {
+	cfgStore := newFakeConfigStore()
+	cfgStore.saveErr = context.DeadlineExceeded
+	sess := newTestSessionWithConfigStore(t, cfgStore)
+	seedChannel(t, sess, "#general")
+
+	cs := screens.NewChatScreen(sess)
+
+	msg := cs.Init()()
+	var m ui.Model
+	m, _ = cs.Update(msg)
+
+	m, cmd := m.Update(components.CommandSubmitMsg{Name: "nick", Args: "newnick"})
+	require.NotNil(t, cmd)
+
+	msg = cmd()
+	m, _ = m.Update(msg)
+
+	v := m.View(80, 24)
+	require.Contains(t, v, "save config")
+	require.Contains(t, v, "context deadline exceeded")
+}
+
 func TestChatScreen_title_command(t *testing.T) {
 	sess := newTestSession(t)
 	seedChannel(t, sess, "#general")
@@ -703,7 +726,8 @@ func TestChatScreen_View_responsive(t *testing.T) {
 }
 
 type fakeConfigStore struct {
-	cfg config.Config
+	cfg     config.Config
+	saveErr error
 }
 
 func newFakeConfigStore() *fakeConfigStore {
@@ -720,6 +744,10 @@ func (f *fakeConfigStore) Load() (config.Config, error) {
 }
 
 func (f *fakeConfigStore) Save(cfg config.Config) error {
+	if f.saveErr != nil {
+		return f.saveErr
+	}
+
 	f.cfg = cfg
 	return nil
 }

@@ -261,8 +261,27 @@ func (s *Session) SetTitle(
 	}, nil
 }
 
-// ChangeNick changes the user's nickname.
-func (s *Session) ChangeNick(newNick domain.Nick) domain.NickChangeEvent {
+// ChangeNick changes the user's nickname and persists it through the
+// config store.
+func (s *Session) ChangeNick(
+	_ context.Context,
+	newNick domain.Nick,
+) (domain.NickChangeEvent, error) {
+	if s.config == nil {
+		return domain.NickChangeEvent{}, fmt.Errorf("config store not configured")
+	}
+
+	cfg, err := s.config.Load()
+	if err != nil {
+		return domain.NickChangeEvent{}, fmt.Errorf("load config: %w", err)
+	}
+
+	cfg.UserNick = string(newNick)
+
+	if err := s.config.Save(cfg); err != nil {
+		return domain.NickChangeEvent{}, fmt.Errorf("save config: %w", err)
+	}
+
 	evt := domain.NickChangeEvent{
 		OldNick: s.userNick,
 		NewNick: newNick,
@@ -271,7 +290,7 @@ func (s *Session) ChangeNick(newNick domain.Nick) domain.NickChangeEvent {
 
 	s.userNick = newNick
 
-	return evt
+	return evt, nil
 }
 
 // Whois returns metadata about a model instance.

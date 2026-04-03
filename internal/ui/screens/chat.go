@@ -487,7 +487,10 @@ func (s ChatScreen) changeNick(nick domain.Nick) tea.Cmd {
 	return func() tea.Msg {
 		ctx := context.Background()
 
-		evt := s.sess.ChangeNick(nick)
+		evt, err := s.sess.ChangeNick(ctx, nick)
+		if err != nil {
+			return systemEventMsg{lines: []string{err.Error()}}
+		}
 
 		channels, _ := s.sess.ListChannels(ctx)
 		messages, _ := s.sess.Messages(ctx, s.active)

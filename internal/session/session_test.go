@@ -436,9 +436,18 @@ func TestSession_SetTitle(t *testing.T) {
 }
 
 func TestSession_ChangeNick(t *testing.T) {
-	sess, _ := newTestSession(t)
+	cfgStore := &fakeConfigStore{
+		cfg: config.Config{
+			UserNick:     "testuser",
+			PokeInterval: 5 * time.Minute,
+		},
+	}
+	s := storemod.NewFileStore(t.TempDir())
+	sess := New(s, nil, &fakeAPIClient{}, cfgStore, "testuser")
+	sess.now = func() time.Time { return fixedTime }
 
-	evt := sess.ChangeNick("newname")
+	evt, err := sess.ChangeNick(t.Context(), "newname")
+	require.NoError(t, err)
 	require.Equal(t, domain.NickChangeEvent{
 		OldNick: "testuser",
 		NewNick: "newname",
@@ -446,6 +455,25 @@ func TestSession_ChangeNick(t *testing.T) {
 	}, evt)
 
 	require.Equal(t, domain.Nick("newname"), sess.UserNick())
+	require.Equal(t, "newname", cfgStore.saved.UserNick)
+	require.Equal(t, 1, cfgStore.saveCalls)
+}
+
+func TestSession_ChangeNick_save_failure_does_not_update_runtime(t *testing.T) {
+	cfgStore := &fakeConfigStore{
+		cfg: config.Config{
+			UserNick:     "testuser",
+			PokeInterval: 5 * time.Minute,
+		},
+		saveErr: fmt.Errorf("disk full"),
+	}
+	s := storemod.NewFileStore(t.TempDir())
+	sess := New(s, nil, &fakeAPIClient{}, cfgStore, "testuser")
+	sess.now = func() time.Time { return fixedTime }
+
+	_, err := sess.ChangeNick(t.Context(), "newname")
+	require.Error(t, err)
+	require.Equal(t, domain.Nick("testuser"), sess.UserNick())
 }
 
 func TestSession_Whois(t *testing.T) {
