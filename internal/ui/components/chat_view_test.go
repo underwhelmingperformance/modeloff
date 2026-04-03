@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/domain"
@@ -345,24 +346,152 @@ func TestChatView_pending_indicator_reduces_message_area(t *testing.T) {
 	require.Contains(t, v, "responding")
 }
 
-func TestRenderSystemEvent(t *testing.T) {
+func renderSingleLine(line components.ChatLine) string {
+	cv := components.NewChatView("#test", "testuser", "", []components.ChatLine{line})
+	v := cv.View(200, 24)
+
+	return ansi.Strip(v)
+}
+
+func TestRenderLine_IRC_events(t *testing.T) {
 	tests := []struct {
-		name     string
-		kind     components.EventKind
-		wantIcon string
+		name string
+		line components.ChatLine
+		want string
 	}{
-		{"info", components.EventInfo, "***"},
-		{"success", components.EventSuccess, "✓"},
-		{"warning", components.EventWarning, "⚠"},
-		{"error", components.EventError, "✗"},
+		{
+			"join",
+			components.Join{JoinEvent: domain.JoinEvent{Channel: "#general", Nick: "alice"}},
+			"*** alice has joined #general",
+		},
+		{
+			"join_created",
+			components.Join{JoinEvent: domain.JoinEvent{Channel: "#general", Nick: "alice", Created: true}},
+			"*** Created channel #general",
+		},
+		{
+			"part",
+			components.Part{PartEvent: domain.PartEvent{Channel: "#general", Nick: "alice"}},
+			"*** alice has left #general",
+		},
+		{
+			"nick_change",
+			components.NickChange{NickChangeEvent: domain.NickChangeEvent{OldNick: "alice", NewNick: "bob"}},
+			"*** alice is now known as bob",
+		},
+		{
+			"topic_set",
+			components.TopicChange{TopicChangeEvent: domain.TopicChangeEvent{Channel: "#general", Title: "cool topic"}},
+			"*** topic for #general set to: cool topic",
+		},
+		{
+			"topic_cleared",
+			components.TopicChange{TopicChangeEvent: domain.TopicChangeEvent{Channel: "#general", Title: ""}},
+			"*** topic for #general cleared",
+		},
+		{
+			"model_invited",
+			components.ModelInvited{ModelInvitedEvent: domain.ModelInvitedEvent{
+				Channel:  "#general",
+				Instance: domain.ModelInstance{Nick: "botty", ModelID: "anthropic/haiku"},
+			}},
+			"*** botty (anthropic/haiku) has joined #general",
+		},
+		{
+			"model_invited_with_persona",
+			components.ModelInvited{ModelInvitedEvent: domain.ModelInvitedEvent{
+				Channel:  "#general",
+				Instance: domain.ModelInstance{Nick: "botty", ModelID: "anthropic/haiku", Persona: "helpful"},
+			}},
+			`*** botty (anthropic/haiku) has joined #general with persona "helpful"`,
+		},
+		{
+			"model_kicked",
+			components.ModelKicked{ModelKickedEvent: domain.ModelKickedEvent{Channel: "#general", Nick: "botty"}},
+			"*** botty has been kicked from #general",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := components.RenderSystemEvent("alice has joined", tt.kind)
+			got := renderSingleLine(tt.line)
 
-			require.Contains(t, got, tt.wantIcon)
-			require.Contains(t, got, "alice has joined")
+			require.Contains(t, got, tt.want)
+		})
+	}
+}
+
+func TestRenderLine_application_feedback(t *testing.T) {
+	tests := []struct {
+		name string
+		line components.ChatLine
+		want string
+	}{
+		{
+			"help",
+			components.Help{},
+			"*** /join <channel>",
+		},
+		{
+			"channel_list",
+			components.ChannelList{Channels: []domain.Channel{
+				{Name: "#general"},
+				{Name: "#random", Title: "cool"},
+			}},
+			"*** #general",
+		},
+		{
+			"channel_list_empty",
+			components.ChannelList{},
+			"*** no channels",
+		},
+		{
+			"api_key_saved",
+			components.APIKeySaved{},
+			"✓ OpenRouter API key saved",
+		},
+		{
+			"poke_interval_set",
+			components.PokeIntervalSet{Interval: 10 * time.Minute},
+			"✓ Poke interval set to 10m0s.",
+		},
+		{
+			"dm_opened",
+			components.DMOpened{Nick: "botty"},
+			"✓ Opened direct message with botty",
+		},
+		{
+			"usage_hint_config",
+			components.UsageHint{Command: "config"},
+			"⚠ usage: /config api-key",
+		},
+		{
+			"usage_hint_invite",
+			components.UsageHint{Command: "invite"},
+			"⚠ usage: /invite",
+		},
+		{
+			"no_channel",
+			components.NoChannel{},
+			"⚠ join a channel first",
+		},
+		{
+			"command_error",
+			components.CommandError{Err: domain.UnknownCommandError{Name: "foo"}},
+			"✗ unknown command: /foo",
+		},
+		{
+			"unknown_nick_error",
+			components.CommandError{Err: domain.UnknownNickError{Nick: "ghost"}},
+			"✗ no such nick: ghost",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := renderSingleLine(tt.line)
+
+			require.Contains(t, got, tt.want)
 		})
 	}
 }

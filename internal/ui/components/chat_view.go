@@ -3,6 +3,7 @@ package components
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -27,14 +28,85 @@ type MessageLine struct {
 
 func (MessageLine) chatLine() {}
 
-// SystemEventLine is a styled system event displayed inline in the
-// chat view.
-type SystemEventLine struct {
-	Text string
-	Kind EventKind
-}
+// IRC lifecycle events — rendered with "*** " prefix.
 
-func (SystemEventLine) chatLine() {}
+// Join represents a user joining a channel.
+type Join struct{ domain.JoinEvent }
+
+func (Join) chatLine() {}
+
+// Part represents a user leaving a channel.
+type Part struct{ domain.PartEvent }
+
+func (Part) chatLine() {}
+
+// NickChange represents a nick change.
+type NickChange struct{ domain.NickChangeEvent }
+
+func (NickChange) chatLine() {}
+
+// TopicChange represents a channel topic change.
+type TopicChange struct{ domain.TopicChangeEvent }
+
+func (TopicChange) chatLine() {}
+
+// ModelInvited represents a model being invited to a channel.
+type ModelInvited struct{ domain.ModelInvitedEvent }
+
+func (ModelInvited) chatLine() {}
+
+// ModelKicked represents a model being kicked from a channel.
+type ModelKicked struct{ domain.ModelKickedEvent }
+
+func (ModelKicked) chatLine() {}
+
+// Application feedback — typed by origin.
+
+// Help is the output of the /help command.
+type Help struct{}
+
+func (Help) chatLine() {}
+
+// Whois is the output of the /whois command.
+type Whois struct{ domain.ModelInstance }
+
+func (Whois) chatLine() {}
+
+// ChannelList is the output of the /list command.
+type ChannelList struct{ Channels []domain.Channel }
+
+func (ChannelList) chatLine() {}
+
+// APIKeySaved confirms the API key was persisted.
+type APIKeySaved struct{}
+
+func (APIKeySaved) chatLine() {}
+
+// PokeIntervalSet confirms the poke interval was changed.
+type PokeIntervalSet struct{ Interval time.Duration }
+
+func (PokeIntervalSet) chatLine() {}
+
+// DMOpened confirms a direct message was opened.
+type DMOpened struct{ Nick domain.Nick }
+
+func (DMOpened) chatLine() {}
+
+// UsageHint is a warning about incorrect command usage.
+type UsageHint struct{ Command string }
+
+func (UsageHint) chatLine() {}
+
+// NoChannel is a warning shown when a command requires an active
+// channel but none is selected.
+type NoChannel struct{}
+
+func (NoChannel) chatLine() {}
+
+// CommandError wraps any error from command execution.
+type CommandError struct{ Err error }
+
+func (CommandError) chatLine() {}
 
 // MessagesToLines converts a slice of domain messages into chat lines.
 func MessagesToLines(msgs []domain.Message) []ChatLine {
@@ -291,9 +363,6 @@ func (c *ChatView) renderLine(line ChatLine, width int) string {
 	wrap := lipgloss.NewStyle().Width(width)
 
 	switch l := line.(type) {
-	case SystemEventLine:
-		return wrap.Render(RenderSystemEvent(l.Text, l.Kind))
-
 	case MessageLine:
 		ts := theme.Dim.Render(l.Message.SentAt.Format("[15:04:05]"))
 		nick := theme.NickStyle(string(l.Message.From)).
@@ -301,39 +370,162 @@ func (c *ChatView) renderLine(line ChatLine, width int) string {
 
 		return wrap.Render(fmt.Sprintf("%s %s %s", ts, nick, l.Message.Body))
 
+	// IRC lifecycle events — "*** " prefix, SystemEvent style.
+
+	case Join:
+		text := fmt.Sprintf("%s has joined %s", l.Nick, l.Channel)
+		if l.Created {
+			text = fmt.Sprintf("Created channel %s", l.Channel)
+		}
+
+		return wrap.Render(theme.SystemEvent.Render("*** " + text))
+
+	case Part:
+		return wrap.Render(theme.SystemEvent.Render(
+			fmt.Sprintf("*** %s has left %s", l.Nick, l.Channel)))
+
+	case NickChange:
+		return wrap.Render(theme.SystemEvent.Render(
+			fmt.Sprintf("*** %s is now known as %s", l.OldNick, l.NewNick)))
+
+	case TopicChange:
+		text := fmt.Sprintf("topic for %s set to: %s", l.Channel, l.Title)
+		if l.Title == "" {
+			text = fmt.Sprintf("topic for %s cleared", l.Channel)
+		}
+
+		return wrap.Render(theme.SystemEvent.Render("*** " + text))
+
+	case ModelInvited:
+		text := fmt.Sprintf("%s (%s) has joined %s",
+			l.Instance.Nick, l.Instance.ModelID, l.Channel)
+		if l.Instance.Persona != "" {
+			text = fmt.Sprintf("%s with persona %q", text, l.Instance.Persona)
+		}
+
+		return wrap.Render(theme.SystemEvent.Render("*** " + text))
+
+	case ModelKicked:
+		return wrap.Render(theme.SystemEvent.Render(
+			fmt.Sprintf("*** %s has been kicked from %s", l.Nick, l.Channel)))
+
+	// Application feedback.
+
+	case Help:
+		return wrap.Render(c.renderHelp())
+
+	case Whois:
+		return wrap.Render(c.renderWhois(l))
+
+	case ChannelList:
+		return wrap.Render(c.renderChannelList(l))
+
+	case APIKeySaved:
+		return wrap.Render(theme.Success.Render(
+			"✓ OpenRouter API key saved. Restart modeloff to use it."))
+
+	case PokeIntervalSet:
+		return wrap.Render(theme.Success.Render(
+			fmt.Sprintf("✓ Poke interval set to %s.", l.Interval)))
+
+	case DMOpened:
+		return wrap.Render(theme.Success.Render(
+			fmt.Sprintf("✓ Opened direct message with %s", l.Nick)))
+
+	case UsageHint:
+		return wrap.Render(theme.Warning.Render("⚠ " + usageText(l.Command)))
+
+	case NoChannel:
+		return wrap.Render(theme.Warning.Render("⚠ join a channel first"))
+
+	case CommandError:
+		return wrap.Render(theme.Error.Render("✗ " + l.Err.Error()))
+
 	default:
 		return ""
 	}
 }
 
-// EventKind classifies the severity of a system event for styling.
-type EventKind int
+func (c *ChatView) renderHelp() string {
+	lines := []string{
+		"/join <channel>                   Join or create a channel",
+		"/leave                            Leave the current channel",
+		"/list                             List all channels",
+		"/invite <model> [--persona text]  Invite a model to the channel",
+		"/kick <nick>                      Remove a model from the channel",
+		"/msg <nick> [message]             Open a direct message",
+		"/nick <name>                      Change your nickname",
+		"/title [text]                     Set or clear the channel title",
+		"/whois <nick>                     Show info about a model",
+		"/config api-key <key>             Set the OpenRouter API key",
+		"/config poke-interval <duration>  Set the poke interval",
+		"/help                             Show this help",
+		"/quit                             Exit modeloff",
+	}
 
-const (
-	// EventInfo is for informational messages (list output, whois).
-	EventInfo EventKind = iota
+	var parts []string
+	for _, line := range lines {
+		parts = append(parts, theme.SystemEvent.Render("*** "+line))
+	}
 
-	// EventSuccess is for successful actions (join, nick change).
-	EventSuccess
+	return strings.Join(parts, "\n")
+}
 
-	// EventWarning is for validation warnings (usage hints).
-	EventWarning
+func (c *ChatView) renderWhois(w Whois) string {
+	lines := []string{
+		fmt.Sprintf("%s is %s", w.Nick, w.ModelID),
+	}
 
-	// EventError is for errors (failed commands, unknown nicks).
-	EventError
-)
+	if w.Persona != "" {
+		lines = append(lines, fmt.Sprintf("  persona: %s", w.Persona))
+	}
 
-// RenderSystemEvent formats a system event with an icon and style
-// appropriate to its kind.
-func RenderSystemEvent(text string, kind EventKind) string {
-	switch kind {
-	case EventError:
-		return theme.Error.Render("✗ " + text)
-	case EventWarning:
-		return theme.Warning.Render("⚠ " + text)
-	case EventSuccess:
-		return theme.Success.Render("✓ " + text)
+	if len(w.Channels) > 0 {
+		var chStrs []string
+		for ch := range w.Channels.Sorted() {
+			chStrs = append(chStrs, string(ch))
+		}
+
+		lines = append(lines, fmt.Sprintf("  channels: %s", strings.Join(chStrs, ", ")))
+	}
+
+	var parts []string
+	for _, line := range lines {
+		parts = append(parts, theme.SystemEvent.Render("*** "+line))
+	}
+
+	return strings.Join(parts, "\n")
+}
+
+func (c *ChatView) renderChannelList(cl ChannelList) string {
+	if len(cl.Channels) == 0 {
+		return theme.SystemEvent.Render("*** no channels")
+	}
+
+	var parts []string
+	for _, ch := range cl.Channels {
+		line := string(ch.Name)
+		if ch.Title != "" {
+			line += " — " + ch.Title
+		}
+
+		parts = append(parts, theme.SystemEvent.Render("*** "+line))
+	}
+
+	return strings.Join(parts, "\n")
+}
+
+func usageText(command string) string {
+	switch command {
+	case "config":
+		return "usage: /config api-key <value> | /config poke-interval <duration>"
+	case "config api-key":
+		return "usage: /config api-key <value>"
+	case "config poke-interval":
+		return "usage: /config poke-interval <duration>"
+	case "invite":
+		return "usage: /invite <model-id> [--persona <text>]"
 	default:
-		return theme.SystemEvent.Render("*** " + text)
+		return "usage: /" + command
 	}
 }

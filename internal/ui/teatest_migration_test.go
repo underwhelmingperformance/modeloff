@@ -35,7 +35,7 @@ func TestChatScreen_join_flow_with_teatest(t *testing.T) {
 	waitForOutput(t, tm, "Created channel #general")
 
 	submitText(tm, "/join #general")
-	waitForOutput(t, tm, "Switched to #general")
+	waitForOutput(t, tm, "testuser has joined #general")
 
 	view := finalView(t, tm)
 	require.Contains(t, view, "#general")

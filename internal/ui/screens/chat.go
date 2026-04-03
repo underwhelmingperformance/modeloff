@@ -45,21 +45,19 @@ type messageSentMsg struct {
 // commandResultMsg carries the result of a slash command that
 // modified session state.
 type commandResultMsg struct {
-	channels     []domain.Channel
-	active       domain.ChannelName
-	title        string
-	messages     []domain.Message
-	unread       map[domain.ChannelName]int
-	members      []domain.Nick
-	eventKind    components.EventKind
-	systemEvents []string
+	channels []domain.Channel
+	active   domain.ChannelName
+	title    string
+	messages []domain.Message
+	unread   map[domain.ChannelName]int
+	members  []domain.Nick
+	events   []components.ChatLine
 }
 
-// systemEventMsg carries system event text to display in the chat
-// view without changing channel/sidebar state.
+// systemEventMsg carries typed events to display in the chat view
+// without changing channel/sidebar state.
 type systemEventMsg struct {
-	kind  components.EventKind
-	lines []string
+	events []components.ChatLine
 }
 
 // PokeTickMsg triggers a background poke cycle for model instances.
@@ -168,7 +166,7 @@ func (s *ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	case components.MessageSubmitMsg:
 		if s.active == "" {
 			return s, func() tea.Msg {
-				return systemEventMsg{kind: components.EventWarning, lines: []string{"join a channel first"}}
+				return systemEventMsg{events: []components.ChatLine{components.NoChannel{}}}
 			}
 		}
 
@@ -239,7 +237,7 @@ func (s *ChatScreen) handleCommandResult(msg commandResultMsg) (ui.Model, tea.Cm
 	s.channelCount = len(msg.channels)
 
 	lines := components.MessagesToLines(msg.messages)
-	lines = appendSystemEvents(lines, msg.eventKind, msg.systemEvents)
+	lines = append(lines, msg.events...)
 
 	sidebar := components.NewSidebar(msg.channels, msg.active, msg.unread)
 	s.chatView.SetPlaceholder("")
@@ -259,7 +257,7 @@ func (s *ChatScreen) handleSystemEvent(msg systemEventMsg) (ui.Model, tea.Cmd) {
 		lines = components.MessagesToLines(messages)
 	}
 
-	lines = appendSystemEvents(lines, msg.kind, msg.lines)
+	lines = append(lines, msg.events...)
 	s.chatView.SetLines(lines)
 
 	return s, nil
@@ -292,14 +290,6 @@ func (s *ChatScreen) unreadCounts(ctx context.Context, channels []domain.Channel
 	}
 
 	return counts
-}
-
-func appendSystemEvents(lines []components.ChatLine, kind components.EventKind, events []string) []components.ChatLine {
-	for _, text := range events {
-		lines = append(lines, components.SystemEventLine{Text: text, Kind: kind})
-	}
-
-	return lines
 }
 
 func sortedMembers(members set.Ordered[domain.Nick]) []domain.Nick {
