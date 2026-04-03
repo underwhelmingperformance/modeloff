@@ -68,7 +68,7 @@ func TestFileStore_ListRooms(t *testing.T) {
 
 	got, err := s.ListRooms(ctx)
 	require.NoError(t, err)
-	require.Len(t, got, 2)
+	require.Equal(t, rooms, got)
 }
 
 func TestFileStore_DeleteRoom(t *testing.T) {
@@ -124,11 +124,7 @@ func TestFileStore_SaveAndListMessages(t *testing.T) {
 
 	got, err := s.ListMessages(ctx, "¢general")
 	require.NoError(t, err)
-	require.Len(t, got, 2)
-
-	for i, want := range msgs {
-		require.Equal(t, want, got[i])
-	}
+	require.Equal(t, msgs, got)
 }
 
 func TestFileStore_MessagesIsolatedByRoom(t *testing.T) {
@@ -140,13 +136,15 @@ func TestFileStore_MessagesIsolatedByRoom(t *testing.T) {
 
 	gotA, err := s.ListMessages(ctx, "¢room-a")
 	require.NoError(t, err)
-	require.Len(t, gotA, 1)
-	require.Equal(t, "a", gotA[0].ID)
+	require.Equal(t, []domain.Message{
+		{ID: "a", Room: "¢room-a", From: "alice", Body: "a msg", SentAt: testTime},
+	}, gotA)
 
 	gotB, err := s.ListMessages(ctx, "¢room-b")
 	require.NoError(t, err)
-	require.Len(t, gotB, 1)
-	require.Equal(t, "b", gotB[0].ID)
+	require.Equal(t, []domain.Message{
+		{ID: "b", Room: "¢room-b", From: "bob", Body: "b msg", SentAt: testTime},
+	}, gotB)
 }
 
 // --- Model instances ---
@@ -211,7 +209,7 @@ func TestFileStore_ListInstances(t *testing.T) {
 
 	got, err := s.ListInstances(ctx)
 	require.NoError(t, err)
-	require.Len(t, got, 2)
+	require.Equal(t, instances, got)
 }
 
 // --- Last room state ---

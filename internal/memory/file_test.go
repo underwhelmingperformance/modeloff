@@ -46,8 +46,7 @@ func TestFileStore_WriteOverwritesExistingKey(t *testing.T) {
 
 	got, err := store.Read(ctx, nick)
 	require.NoError(t, err)
-	require.Len(t, got, 1)
-	require.Equal(t, Entry{Key: "mood", Content: "excited"}, got[0])
+	require.Equal(t, []Entry{{Key: "mood", Content: "excited"}}, got)
 }
 
 func TestFileStore_Delete(t *testing.T) {
@@ -94,11 +93,9 @@ func TestFileStore_IsolationBetweenNicks(t *testing.T) {
 
 	gotA, err := store.Read(ctx, "nick-a")
 	require.NoError(t, err)
-	require.Len(t, gotA, 1)
-	require.Equal(t, "from-a", gotA[0].Content)
+	require.Equal(t, []Entry{{Key: "k", Content: "from-a"}}, gotA)
 
 	gotB, err := store.Read(ctx, "nick-b")
 	require.NoError(t, err)
-	require.Len(t, gotB, 1)
-	require.Equal(t, "from-b", gotB[0].Content)
+	require.Equal(t, []Entry{{Key: "k", Content: "from-b"}}, gotB)
 }
