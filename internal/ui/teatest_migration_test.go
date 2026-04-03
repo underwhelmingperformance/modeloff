@@ -13,7 +13,7 @@ import (
 )
 
 func TestRoot_quits_on_ctrl_c_with_teatest(t *testing.T) {
-	tm := newTestApp(t, uipkg.NewRoot(screens.NewPlaceholderScreen("alice")))
+	tm := newTestApp(t, uipkg.NewRoot(screens.NewWelcomeScreen("alice")))
 
 	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlC})
 
@@ -100,14 +100,14 @@ func TestConnectionScreen_progression_with_teatest(t *testing.T) {
 		HasAPIKey:    true,
 		ChannelCount: 1,
 		Nick:         "alice",
-		Next:         screens.NewPlaceholderScreen("alice"),
+		Next:         screens.NewWelcomeScreen("alice"),
 	}))
 	tm := newTestApp(t, root)
 
 	advanceConnection(tm, 4)
-	waitForOutput(t, tm, "connected as", "Use /join to enter a channel")
+	waitForOutput(t, tm, "Connected as", "Welcome to modeloff")
 
 	view := finalView(t, tm)
-	require.Contains(t, view, "connected as")
-	require.Contains(t, view, "Use /join to enter a channel")
+	require.Contains(t, view, "Connected as")
+	require.Contains(t, view, "Welcome to modeloff")
 }
