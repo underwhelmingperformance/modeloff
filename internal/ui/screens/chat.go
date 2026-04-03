@@ -21,7 +21,7 @@ type chatLoadedMsg struct {
 	title    string
 	messages []domain.Message
 	unread   map[domain.ChannelName]int
-	members  []domain.Nick
+	members  []domain.Member
 }
 
 // channelSwitchedMsg is sent after a channel switch completes,
@@ -32,7 +32,7 @@ type channelSwitchedMsg struct {
 	channels []domain.Channel
 	messages []domain.Message
 	unread   map[domain.ChannelName]int
-	members  []domain.Nick
+	members  []domain.Member
 }
 
 // messageSentMsg is sent after a message is saved, carrying the
@@ -50,7 +50,7 @@ type commandResultMsg struct {
 	title    string
 	messages []domain.Message
 	unread   map[domain.ChannelName]int
-	members  []domain.Nick
+	members  []domain.Member
 	events   []components.ChatLine
 }
 
@@ -112,14 +112,14 @@ func (s *ChatScreen) Init() tea.Cmd {
 
 		var messages []domain.Message
 		var title string
-		var members []domain.Nick
+		var members []domain.Member
 
 		if active != "" {
 			messages, _ = s.sess.Messages(ctx, active)
 
 			if ch, err := s.sess.GetChannel(ctx, active); err == nil {
 				title = ch.Title
-				members = sortedMembers(ch.Members)
+				members = s.sortedMembers(ch.Members)
 			}
 		}
 
@@ -264,7 +264,7 @@ func (s *ChatScreen) updateSidebar(channels []domain.Channel, active domain.Chan
 	})
 }
 
-func (s *ChatScreen) updateNickList(members []domain.Nick) {
+func (s *ChatScreen) updateNickList(members []domain.Member) {
 	s.forwardToLayout(components.NickListUpdatedMsg{Members: members})
 }
 
@@ -290,17 +290,26 @@ func (s *ChatScreen) unreadCounts(ctx context.Context, channels []domain.Channel
 	return counts
 }
 
-func sortedMembers(members set.Ordered[domain.Nick]) []domain.Nick {
+func (s *ChatScreen) sortedMembers(members set.Ordered[domain.Nick]) []domain.Member {
 	if members == nil {
 		return nil
 	}
 
-	var nicks []domain.Nick
+	userNick := s.sess.UserNick()
+
+	var result []domain.Member
+
 	for nick := range members.Sorted() {
-		nicks = append(nicks, nick)
+		mode := domain.ModeVoice
+
+		if nick == userNick {
+			mode = domain.ModeOp
+		}
+
+		result = append(result, domain.Member{Nick: nick, Mode: mode})
 	}
 
-	return nicks
+	return result
 }
 
 func (s *ChatScreen) switchChannel(ch domain.ChannelName) tea.Cmd {
@@ -313,11 +322,11 @@ func (s *ChatScreen) switchChannel(ch domain.ChannelName) tea.Cmd {
 		messages, _ := s.sess.Messages(ctx, ch)
 
 		var title string
-		var members []domain.Nick
+		var members []domain.Member
 
 		if channel, err := s.sess.GetChannel(ctx, ch); err == nil {
 			title = channel.Title
-			members = sortedMembers(channel.Members)
+			members = s.sortedMembers(channel.Members)
 		}
 
 		return channelSwitchedMsg{

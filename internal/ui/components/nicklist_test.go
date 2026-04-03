@@ -2,17 +2,27 @@ package components_test
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/ui/components"
 )
 
+func member(nick string, mode domain.NickMode) domain.Member {
+	return domain.Member{Nick: domain.Nick(nick), Mode: mode}
+}
+
 func TestNickList_View_shows_sorted_members(t *testing.T) {
-	nl := components.NewNickList([]domain.Nick{"charlie", "alice", "bob"})
+	nl := components.NewNickList([]domain.Member{
+		member("charlie", domain.ModeVoice),
+		member("alice", domain.ModeOp),
+		member("bob", domain.ModeNone),
+	})
 
 	v := nl.View(20, 10)
 
@@ -34,7 +44,10 @@ func TestNickList_Update_handles_NickListUpdatedMsg(t *testing.T) {
 	nl := components.NewNickList(nil)
 
 	updated, _ := nl.Update(components.NickListUpdatedMsg{
-		Members: []domain.Nick{"dave", "eve"},
+		Members: []domain.Member{
+			member("dave", domain.ModeNone),
+			member("eve", domain.ModeVoice),
+		},
 	})
 
 	v := updated.View(20, 10)
@@ -44,7 +57,7 @@ func TestNickList_Update_handles_NickListUpdatedMsg(t *testing.T) {
 }
 
 func TestNickList_Update_clears_on_empty(t *testing.T) {
-	nl := components.NewNickList([]domain.Nick{"alice"})
+	nl := components.NewNickList([]domain.Member{member("alice", domain.ModeNone)})
 
 	v := nl.View(20, 10)
 	require.Contains(t, v, "alice")
@@ -56,30 +69,27 @@ func TestNickList_Update_clears_on_empty(t *testing.T) {
 }
 
 func TestNickList_View_overflow_fits_height(t *testing.T) {
-	// Create more members than can fit in the given height.
-	members := make([]domain.Nick, 20)
+	members := make([]domain.Member, 20)
 	for i := range members {
-		members[i] = domain.Nick(fmt.Sprintf("user%02d", i))
+		members[i] = member(fmt.Sprintf("user%02d", i), domain.ModeNone)
 	}
 
 	nl := components.NewNickList(members)
 
-	// Height 5: 1 line for the header, 4 lines for members.
-	// The viewport should constrain the output to fit.
 	v := nl.View(20, 5)
 
 	require.Equal(t, 5, lipgloss.Height(v),
 		"rendered height must match the available height")
 
-	// First member (sorted: user00) should be visible.
 	require.Contains(t, v, "user00")
-
-	// Last member (user19) should not be visible — it's below the fold.
 	require.NotContains(t, v, "user19")
 }
 
 func TestNickList_View_responsive(t *testing.T) {
-	nl := components.NewNickList([]domain.Nick{"alice", "bob"})
+	nl := components.NewNickList([]domain.Member{
+		member("alice", domain.ModeOp),
+		member("bob", domain.ModeVoice),
+	})
 
 	sizes := []struct{ w, h int }{
 		{20, 10},
@@ -93,4 +103,43 @@ func TestNickList_View_responsive(t *testing.T) {
 		require.LessOrEqual(t, lipgloss.Width(v), sz.w+1,
 			"View(%d, %d) should fit width", sz.w, sz.h)
 	}
+}
+
+func TestNickList_View_shows_mode_prefixes(t *testing.T) {
+	nl := components.NewNickList([]domain.Member{
+		member("alice", domain.ModeOp),
+		member("botty", domain.ModeVoice),
+		member("charlie", domain.ModeNone),
+	})
+
+	v := nl.View(20, 10)
+	stripped := ansi.Strip(v)
+
+	require.Contains(t, stripped, "@alice")
+	require.Contains(t, stripped, "+botty")
+	require.NotContains(t, stripped, "@botty")
+	require.NotContains(t, stripped, "+charlie")
+	require.NotContains(t, stripped, "@charlie")
+}
+
+func TestNickList_View_sorts_by_mode_then_name(t *testing.T) {
+	nl := components.NewNickList([]domain.Member{
+		member("zara", domain.ModeVoice),
+		member("bob", domain.ModeNone),
+		member("alice", domain.ModeOp),
+		member("dave", domain.ModeVoice),
+	})
+
+	v := nl.View(30, 10)
+	stripped := ansi.Strip(v)
+
+	// Op first, then voice (sorted), then regular.
+	aliceIdx := strings.Index(stripped, "@alice")
+	daveIdx := strings.Index(stripped, "+dave")
+	zaraIdx := strings.Index(stripped, "+zara")
+	bobIdx := strings.Index(stripped, "bob")
+
+	require.Greater(t, daveIdx, aliceIdx, "@alice (op) should come before +dave (voice)")
+	require.Greater(t, zaraIdx, daveIdx, "+dave should come before +zara (alphabetical)")
+	require.Greater(t, bobIdx, zaraIdx, "+zara (voice) should come before bob (none)")
 }

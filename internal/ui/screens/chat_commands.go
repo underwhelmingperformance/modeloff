@@ -11,7 +11,7 @@ import (
 	"github.com/laney/modeloff/internal/ui/components"
 )
 
-func (s *ChatScreen) channelMembers(ch domain.ChannelName) []domain.Nick {
+func (s *ChatScreen) channelMembers(ch domain.ChannelName) []domain.Member {
 	if ch == "" {
 		return nil
 	}
@@ -21,7 +21,7 @@ func (s *ChatScreen) channelMembers(ch domain.ChannelName) []domain.Nick {
 		return nil
 	}
 
-	return sortedMembers(channel.Members)
+	return s.sortedMembers(channel.Members)
 }
 
 func noChannelMsg() tea.Msg {

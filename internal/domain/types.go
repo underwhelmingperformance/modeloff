@@ -61,6 +61,42 @@ type ModelInstance struct {
 	Channels set.Ordered[ChannelName]
 }
 
+// NickMode represents a user's privilege level in a channel, following
+// IRC conventions.
+type NickMode int
+
+const (
+	// ModeNone indicates no special privileges.
+	ModeNone NickMode = iota
+
+	// ModeVoice indicates the user has voice (+), shown as "+nick".
+	ModeVoice
+
+	// ModeOp indicates the user is a channel operator (@), shown as
+	// "@nick".
+	ModeOp
+)
+
+// Prefix returns the IRC-style prefix for the mode: "@" for op, "+"
+// for voice, or "" for none.
+func (m NickMode) Prefix() string {
+	switch m {
+	case ModeOp:
+		return "@"
+	case ModeVoice:
+		return "+"
+	default:
+		return ""
+	}
+}
+
+// Member pairs a nick with its channel mode for display in the nick
+// list.
+type Member struct {
+	Nick Nick
+	Mode NickMode
+}
+
 // User represents the local user of the application.
 type User struct {
 	Nick Nick
