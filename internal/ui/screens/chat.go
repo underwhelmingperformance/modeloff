@@ -19,6 +19,7 @@ import (
 type chatLoadedMsg struct {
 	rooms    []domain.Room
 	active   domain.RoomName
+	title    string
 	messages []domain.Message
 }
 
@@ -26,6 +27,7 @@ type chatLoadedMsg struct {
 // new room's messages.
 type roomSwitchedMsg struct {
 	room     domain.RoomName
+	title    string
 	rooms    []domain.Room
 	messages []domain.Message
 }
@@ -42,6 +44,7 @@ type messageSentMsg struct {
 type commandResultMsg struct {
 	rooms        []domain.Room
 	active       domain.RoomName
+	title        string
 	messages     []domain.Message
 	systemEvents []string
 }
@@ -60,12 +63,13 @@ type ChatScreen struct {
 	layout components.MainLayout
 
 	active domain.RoomName
+	title  string
 }
 
 // NewChatScreen creates a chat screen backed by the given session.
 func NewChatScreen(sess *session.Session) ChatScreen {
 	sidebar := components.NewSidebar(nil, "")
-	chatView := components.NewChatView("", sess.UserNick(), nil)
+	chatView := components.NewChatView("", sess.UserNick(), "", nil)
 	layout := components.NewMainLayout(sidebar, chatView)
 
 	return ChatScreen{
@@ -90,13 +94,20 @@ func (s ChatScreen) Init() tea.Cmd {
 		}
 
 		var messages []domain.Message
+		var title string
+
 		if active != "" {
 			messages, _ = s.sess.Messages(ctx, active)
+
+			if room, err := s.sess.GetRoom(ctx, active); err == nil {
+				title = room.Title
+			}
 		}
 
 		return chatLoadedMsg{
 			rooms:    rooms,
 			active:   active,
+			title:    title,
 			messages: messages,
 		}
 	}
@@ -138,9 +149,10 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 func (s ChatScreen) handleLoaded(msg chatLoadedMsg) (ui.Model, tea.Cmd) {
 	s.active = msg.active
+	s.title = msg.title
 
 	sidebar := components.NewSidebar(msg.rooms, msg.active)
-	chatView := components.NewChatView(msg.active, s.sess.UserNick(), msg.messages)
+	chatView := components.NewChatView(msg.active, s.sess.UserNick(), msg.title, msg.messages)
 	s.layout = components.NewMainLayout(sidebar, chatView)
 
 	return s, nil
@@ -148,16 +160,17 @@ func (s ChatScreen) handleLoaded(msg chatLoadedMsg) (ui.Model, tea.Cmd) {
 
 func (s ChatScreen) handleRoomSwitched(msg roomSwitchedMsg) (ui.Model, tea.Cmd) {
 	s.active = msg.room
+	s.title = msg.title
 
 	sidebar := components.NewSidebar(msg.rooms, msg.room)
-	chatView := components.NewChatView(msg.room, s.sess.UserNick(), msg.messages)
+	chatView := components.NewChatView(msg.room, s.sess.UserNick(), msg.title, msg.messages)
 	s.layout = components.NewMainLayout(sidebar, chatView)
 
 	return s, nil
 }
 
 func (s ChatScreen) handleMessageSent(msg messageSentMsg) (ui.Model, tea.Cmd) {
-	chatView := components.NewChatView(msg.room, s.sess.UserNick(), msg.messages)
+	chatView := components.NewChatView(msg.room, s.sess.UserNick(), s.title, msg.messages)
 	s.layout = components.NewMainLayout(s.layout.Sidebar, chatView)
 
 	return s, nil
@@ -165,12 +178,13 @@ func (s ChatScreen) handleMessageSent(msg messageSentMsg) (ui.Model, tea.Cmd) {
 
 func (s ChatScreen) handleCommandResult(msg commandResultMsg) (ui.Model, tea.Cmd) {
 	s.active = msg.active
+	s.title = msg.title
 
 	messages := msg.messages
 	messages = appendSystemEvents(messages, s.active, msg.systemEvents)
 
 	sidebar := components.NewSidebar(msg.rooms, msg.active)
-	chatView := components.NewChatView(msg.active, s.sess.UserNick(), messages)
+	chatView := components.NewChatView(msg.active, s.sess.UserNick(), msg.title, messages)
 	s.layout = components.NewMainLayout(sidebar, chatView)
 
 	return s, nil
@@ -182,7 +196,7 @@ func (s ChatScreen) handleSystemEvent(msg systemEventMsg) (ui.Model, tea.Cmd) {
 	messages, _ := s.sess.Messages(ctx, s.active)
 	messages = appendSystemEvents(messages, s.active, msg.lines)
 
-	chatView := components.NewChatView(s.active, s.sess.UserNick(), messages)
+	chatView := components.NewChatView(s.active, s.sess.UserNick(), s.title, messages)
 	s.layout = components.NewMainLayout(s.layout.Sidebar, chatView)
 
 	return s, nil
@@ -210,8 +224,14 @@ func (s ChatScreen) switchRoom(room domain.RoomName) tea.Cmd {
 		rooms, _ := s.sess.ListRooms(ctx)
 		messages, _ := s.sess.Messages(ctx, room)
 
+		var title string
+		if r, err := s.sess.GetRoom(ctx, room); err == nil {
+			title = r.Title
+		}
+
 		return roomSwitchedMsg{
 			room:     room,
+			title:    title,
 			rooms:    rooms,
 			messages: messages,
 		}
@@ -302,6 +322,11 @@ func (s ChatScreen) joinRoom(name string) tea.Cmd {
 		active := domain.RoomName(name)
 		messages, _ := s.sess.Messages(ctx, active)
 
+		var title string
+		if r, err := s.sess.GetRoom(ctx, active); err == nil {
+			title = r.Title
+		}
+
 		event := fmt.Sprintf("Switched to %s", active)
 		if evt.Created {
 			event = fmt.Sprintf("Created room %s", active)
@@ -310,6 +335,7 @@ func (s ChatScreen) joinRoom(name string) tea.Cmd {
 		return commandResultMsg{
 			rooms:        rooms,
 			active:       active,
+			title:        title,
 			messages:     messages,
 			systemEvents: []string{event},
 		}
@@ -325,16 +351,19 @@ func (s ChatScreen) leaveRoom() tea.Cmd {
 		rooms, _ := s.sess.ListRooms(ctx)
 
 		var active domain.RoomName
+		var title string
 		var messages []domain.Message
 
 		if len(rooms) > 0 {
 			active = rooms[0].Name
+			title = rooms[0].Title
 			messages, _ = s.sess.Messages(ctx, active)
 		}
 
 		return commandResultMsg{
 			rooms:    rooms,
 			active:   active,
+			title:    title,
 			messages: messages,
 		}
 	}
@@ -352,6 +381,7 @@ func (s ChatScreen) changeNick(nick domain.Nick) tea.Cmd {
 		return commandResultMsg{
 			rooms:    rooms,
 			active:   s.active,
+			title:    s.title,
 			messages: messages,
 			systemEvents: []string{
 				fmt.Sprintf("%s is now known as %s", evt.OldNick, evt.NewNick),
@@ -380,6 +410,7 @@ func (s ChatScreen) setTitle(title string) tea.Cmd {
 		return commandResultMsg{
 			rooms:        rooms,
 			active:       s.active,
+			title:        title,
 			messages:     messages,
 			systemEvents: []string{event},
 		}
@@ -433,6 +464,7 @@ func (s ChatScreen) inviteModel(modelID domain.ModelID) tea.Cmd {
 		return commandResultMsg{
 			rooms:    rooms,
 			active:   s.active,
+			title:    s.title,
 			messages: messages,
 			systemEvents: []string{
 				fmt.Sprintf("%s (%s) has joined %s", evt.Instance.Nick, evt.Instance.ModelID, evt.Room),
@@ -456,6 +488,7 @@ func (s ChatScreen) kickModel(nick domain.Nick) tea.Cmd {
 		return commandResultMsg{
 			rooms:    rooms,
 			active:   s.active,
+			title:    s.title,
 			messages: messages,
 			systemEvents: []string{
 				fmt.Sprintf("%s has been kicked from %s", evt.Nick, evt.Room),

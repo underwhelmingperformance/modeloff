@@ -241,6 +241,11 @@ func (s *Session) Whois(ctx context.Context, nick domain.Nick) (domain.ModelInst
 	return s.store.GetInstance(ctx, nick)
 }
 
+// GetRoom retrieves a room by name.
+func (s *Session) GetRoom(ctx context.Context, name domain.RoomName) (domain.Room, error) {
+	return s.store.GetRoom(ctx, name)
+}
+
 // LastRoom returns the room that was last active.
 func (s *Session) LastRoom(ctx context.Context) (domain.RoomName, error) {
 	return s.store.GetLastRoom(ctx)

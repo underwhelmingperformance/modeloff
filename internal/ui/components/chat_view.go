@@ -22,6 +22,7 @@ type MessagesUpdatedMsg struct {
 // the bottom.
 type ChatView struct {
 	room     domain.RoomName
+	title    string
 	userNick domain.Nick
 	messages []domain.Message
 	input    InputBar
@@ -29,9 +30,10 @@ type ChatView struct {
 }
 
 // NewChatView creates a chat view for the given room.
-func NewChatView(room domain.RoomName, userNick domain.Nick, messages []domain.Message) ChatView {
+func NewChatView(room domain.RoomName, userNick domain.Nick, title string, messages []domain.Message) ChatView {
 	return ChatView{
 		room:     room,
+		title:    title,
 		userNick: userNick,
 		messages: messages,
 		input:    NewInputBar(),
@@ -81,14 +83,38 @@ func (c ChatView) View(width, height int) string {
 	inputView := c.input.View(width, 1)
 	inputHeight := lipgloss.Height(inputView)
 
-	listHeight := height - inputHeight
+	var topicView string
+	topicHeight := 0
+
+	if c.title != "" {
+		topicView = c.renderTopic(width)
+		topicHeight = lipgloss.Height(topicView)
+	}
+
+	listHeight := height - inputHeight - topicHeight
 	if listHeight < 0 {
 		listHeight = 0
 	}
 
 	messageView := c.renderMessages(width, listHeight)
 
+	if topicView != "" {
+		return lipgloss.JoinVertical(lipgloss.Left, topicView, messageView, inputView)
+	}
+
 	return lipgloss.JoinVertical(lipgloss.Left, messageView, inputView)
+}
+
+func (c ChatView) renderTopic(width int) string {
+	text := theme.RoomTitle.Render(c.title)
+
+	style := lipgloss.NewStyle().
+		Width(width).
+		BorderStyle(lipgloss.NormalBorder()).
+		BorderBottom(true).
+		BorderForeground(lipgloss.ANSIColor(8))
+
+	return style.Render(text)
 }
 
 func (c ChatView) renderMessages(width, height int) string {
