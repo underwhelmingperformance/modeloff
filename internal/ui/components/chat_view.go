@@ -62,15 +62,16 @@ type PendingResponseMsg struct {
 // ChatView displays messages for a single channel with an input bar
 // at the bottom.
 type ChatView struct {
-	channel  domain.ChannelName
-	title    string
-	userNick domain.Nick
-	lines    []ChatLine
-	input    InputBar
-	viewport viewport.Model
-	pending  bool
-	spinner  spinner.Model
-	width    int
+	channel     domain.ChannelName
+	title       string
+	userNick    domain.Nick
+	lines       []ChatLine
+	input       InputBar
+	viewport    viewport.Model
+	pending     bool
+	spinner     spinner.Model
+	width       int
+	placeholder string
 }
 
 // NewChatView creates a chat view for the given channel.
@@ -101,6 +102,12 @@ func (c *ChatView) SetLines(lines []ChatLine) {
 // SetTitle updates the channel title in place.
 func (c *ChatView) SetTitle(title string) {
 	c.title = title
+}
+
+// SetPlaceholder sets text to show when there are no messages,
+// replacing the default "No messages yet".
+func (c *ChatView) SetPlaceholder(text string) {
+	c.placeholder = text
 }
 
 // SetChannel updates the channel identity, title, and lines for a
@@ -160,6 +167,15 @@ func (c *ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	c.input = updated.(InputBar)
 
 	return c, tea.Batch(vpCmd, inputCmd)
+}
+
+// InputView renders just the nick label and input bar at the given
+// width. This is used by the chat screen to show the input bar on
+// the welcome screen.
+func (c *ChatView) InputView(width int) string {
+	nickLabel := theme.UserNick.Render(string(c.userNick)) + " "
+
+	return nickLabel + c.input.View(width-lipgloss.Width(nickLabel), 1)
 }
 
 // View implements ui.Model.

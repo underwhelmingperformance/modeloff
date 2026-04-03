@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/api"
@@ -94,6 +95,10 @@ func TestChatScreen_Init_empty(t *testing.T) {
 	require.Contains(t, v, "/join #general")
 	require.Contains(t, v, "/config api-key <value>")
 	require.Contains(t, v, "ctrl+d, ctrl+u, ctrl+o")
+
+	// The welcome screen includes an input bar so the user can type
+	// commands immediately.
+	require.Contains(t, v, ">")
 }
 
 func TestChatScreen_View_responsive(t *testing.T) {
@@ -112,6 +117,32 @@ func TestChatScreen_View_responsive(t *testing.T) {
 		v := m.View(sz.w, sz.h)
 		require.NotEmpty(t, v, "View(%d, %d) should not be empty", sz.w, sz.h)
 	}
+}
+
+func TestChatScreen_WelcomeState_accepts_commands(t *testing.T) {
+	sess := newTestSession(t)
+
+	m := initChatScreen(t, sess)
+
+	// Simulate typing /join #general and pressing enter.
+	for _, r := range "/join #general" {
+		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+
+	// Enter produces a tea.Cmd that yields CommandSubmitMsg.
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	require.NotNil(t, cmd)
+
+	// Apply the CommandSubmitMsg.
+	m, cmd = m.Update(cmd())
+	require.NotNil(t, cmd)
+
+	// Apply the commandResultMsg from the join operation.
+	m, _ = m.Update(cmd())
+
+	v := m.View(80, 24)
+	require.Contains(t, v, "#general")
+	require.NotContains(t, v, "Welcome to modeloff")
 }
 
 func TestChatScreen_WelcomeState_responsive(t *testing.T) {

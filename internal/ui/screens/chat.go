@@ -4,6 +4,7 @@ import (
 	"context"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/session"
@@ -298,7 +299,17 @@ func (s *ChatScreen) sendMessage(text string) tea.Cmd {
 // View implements ui.Model.
 func (s *ChatScreen) View(width, height int) string {
 	if s.channelCount == 0 {
-		return NewWelcomeScreen(s.sess.UserNick()).View(width, height)
+		inputView := s.chatView.InputView(width)
+		inputHeight := lipgloss.Height(inputView)
+
+		welcomeHeight := height - inputHeight
+		if welcomeHeight < 0 {
+			welcomeHeight = 0
+		}
+
+		welcome := NewWelcomeScreen(s.sess.UserNick()).View(width, welcomeHeight)
+
+		return lipgloss.JoinVertical(lipgloss.Left, welcome, inputView)
 	}
 
 	return s.layout.View(width, height)
