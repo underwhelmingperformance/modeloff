@@ -222,7 +222,8 @@ func (f *integrationAPI) GenerateNick(ctx context.Context, modelID domain.ModelI
 }
 
 type integrationConfigStore struct {
-	cfg config.Config
+	cfg     config.Config
+	saveErr error
 }
 
 func (s *integrationConfigStore) Load() (config.Config, error) {
@@ -230,6 +231,10 @@ func (s *integrationConfigStore) Load() (config.Config, error) {
 }
 
 func (s *integrationConfigStore) Save(cfg config.Config) error {
+	if s.saveErr != nil {
+		return s.saveErr
+	}
+
 	s.cfg = cfg
 	return nil
 }
@@ -237,9 +242,24 @@ func (s *integrationConfigStore) Save(cfg config.Config) error {
 func newIntegrationSession(t *testing.T, apiClient api.Client) (*session.Session, *storemod.FileStore) {
 	t.Helper()
 
+	return newIntegrationSessionWithConfigStore(t, apiClient, &integrationConfigStore{
+		cfg: config.Config{
+			UserNick:     "testuser",
+			PokeInterval: 5 * time.Minute,
+		},
+	})
+}
+
+func newIntegrationSessionWithConfigStore(
+	t *testing.T,
+	apiClient api.Client,
+	cfgStore *integrationConfigStore,
+) (*session.Session, *storemod.FileStore) {
+	t.Helper()
+
 	store := storemod.NewFileStore(t.TempDir())
 	memStore := memory.NewFileStore(t.TempDir())
-	sess := session.New(store, memStore, apiClient, &integrationConfigStore{}, "testuser")
+	sess := session.New(store, memStore, apiClient, cfgStore, "testuser")
 
 	return sess, store
 }

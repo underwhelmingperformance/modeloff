@@ -88,8 +88,8 @@ func TestChatView_messages_updated(t *testing.T) {
 	}
 
 	m, _ = m.Update(components.MessagesUpdatedMsg{
-		Channel:  "#general",
-		Lines: components.MessagesToLines(newMsgs),
+		Channel: "#general",
+		Lines:   components.MessagesToLines(newMsgs),
 	})
 
 	v := m.View(80, 24)

@@ -258,10 +258,10 @@ func (s ChatScreen) changeNick(nick domain.Nick) tea.Cmd {
 		messages, _ := s.sess.Messages(ctx, s.active)
 
 		return commandResultMsg{
-			channels: channels,
-			active:   s.active,
-			title:    s.title,
-			messages: messages,
+			channels:  channels,
+			active:    s.active,
+			title:     s.title,
+			messages:  messages,
 			eventKind: components.EventSuccess,
 			systemEvents: []string{
 				fmt.Sprintf("%s is now known as %s", evt.OldNick, evt.NewNick),
