@@ -12,7 +12,7 @@ import (
 	"github.com/laney/modeloff/internal/ui/components"
 )
 
-func (s ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
+func (s *ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
 	raw := "/" + msg.Name
 	if msg.Args != "" {
 		raw += " " + msg.Args
@@ -74,7 +74,7 @@ func (s ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
 	}
 }
 
-func (s ChatScreen) configure(cmd command.ConfigCommand) tea.Cmd {
+func (s *ChatScreen) configure(cmd command.ConfigCommand) tea.Cmd {
 	return func() tea.Msg {
 		const usage = "usage: /config api-key <value> | /config poke-interval <duration>"
 
@@ -126,7 +126,7 @@ func (s ChatScreen) configure(cmd command.ConfigCommand) tea.Cmd {
 	}
 }
 
-func (s ChatScreen) directMessage(nick domain.Nick, body string) tea.Cmd {
+func (s *ChatScreen) directMessage(nick domain.Nick, body string) tea.Cmd {
 	return func() tea.Msg {
 		ctx := s.ctx
 
@@ -164,7 +164,7 @@ func (s ChatScreen) directMessage(nick domain.Nick, body string) tea.Cmd {
 	}
 }
 
-func (s ChatScreen) handlePoke() tea.Cmd {
+func (s *ChatScreen) handlePoke() tea.Cmd {
 	return func() tea.Msg {
 		ctx := s.ctx
 
@@ -184,7 +184,7 @@ func (s ChatScreen) handlePoke() tea.Cmd {
 	}
 }
 
-func (s ChatScreen) joinChannel(name string) tea.Cmd {
+func (s *ChatScreen) joinChannel(name string) tea.Cmd {
 	return func() tea.Msg {
 		ctx := s.ctx
 
@@ -218,7 +218,7 @@ func (s ChatScreen) joinChannel(name string) tea.Cmd {
 	}
 }
 
-func (s ChatScreen) leaveChannel() tea.Cmd {
+func (s *ChatScreen) leaveChannel() tea.Cmd {
 	return func() tea.Msg {
 		ctx := s.ctx
 
@@ -245,7 +245,7 @@ func (s ChatScreen) leaveChannel() tea.Cmd {
 	}
 }
 
-func (s ChatScreen) changeNick(nick domain.Nick) tea.Cmd {
+func (s *ChatScreen) changeNick(nick domain.Nick) tea.Cmd {
 	return func() tea.Msg {
 		ctx := s.ctx
 
@@ -270,7 +270,7 @@ func (s ChatScreen) changeNick(nick domain.Nick) tea.Cmd {
 	}
 }
 
-func (s ChatScreen) setTitle(title string) tea.Cmd {
+func (s *ChatScreen) setTitle(title string) tea.Cmd {
 	return func() tea.Msg {
 		ctx := s.ctx
 
@@ -298,7 +298,7 @@ func (s ChatScreen) setTitle(title string) tea.Cmd {
 	}
 }
 
-func (s ChatScreen) whois(nick domain.Nick) tea.Cmd {
+func (s *ChatScreen) whois(nick domain.Nick) tea.Cmd {
 	return func() tea.Msg {
 		ctx := s.ctx
 
@@ -330,7 +330,7 @@ func (s ChatScreen) whois(nick domain.Nick) tea.Cmd {
 	}
 }
 
-func (s ChatScreen) inviteModel(modelID domain.ModelID, persona string) tea.Cmd {
+func (s *ChatScreen) inviteModel(modelID domain.ModelID, persona string) tea.Cmd {
 	return func() tea.Msg {
 		ctx := s.ctx
 
@@ -358,7 +358,7 @@ func (s ChatScreen) inviteModel(modelID domain.ModelID, persona string) tea.Cmd 
 	}
 }
 
-func (s ChatScreen) kickModel(nick domain.Nick) tea.Cmd {
+func (s *ChatScreen) kickModel(nick domain.Nick) tea.Cmd {
 	return func() tea.Msg {
 		ctx := s.ctx
 
@@ -383,7 +383,7 @@ func (s ChatScreen) kickModel(nick domain.Nick) tea.Cmd {
 	}
 }
 
-func (s ChatScreen) showHelp() tea.Cmd {
+func (s *ChatScreen) showHelp() tea.Cmd {
 	return func() tea.Msg {
 		return systemEventMsg{kind: components.EventInfo, lines: []string{
 			"/join <channel>                   Join or create a channel",
@@ -402,7 +402,7 @@ func (s ChatScreen) showHelp() tea.Cmd {
 	}
 }
 
-func (s ChatScreen) listChannels() tea.Cmd {
+func (s *ChatScreen) listChannels() tea.Cmd {
 	return func() tea.Msg {
 		ctx := s.ctx
 

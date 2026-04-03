@@ -59,11 +59,13 @@ type PokeTickMsg struct{}
 
 // ChatScreen is the main screen that composes Sidebar, ChatView, and
 // MainLayout. It holds a reference to the session for backend
-// operations.
+// operations. The ChatView is held as a pointer so that viewport
+// and input state survive across message/channel updates.
 type ChatScreen struct {
-	ctx    context.Context
-	sess   *session.Session
-	layout components.MainLayout
+	ctx      context.Context
+	sess     *session.Session
+	layout   components.MainLayout
+	chatView *components.ChatView
 
 	active       domain.ChannelName
 	title        string
@@ -73,20 +75,21 @@ type ChatScreen struct {
 // NewChatScreen creates a chat screen backed by the given session.
 // The provided context is used for all backend operations, allowing
 // them to be cancelled on shutdown.
-func NewChatScreen(ctx context.Context, sess *session.Session) ChatScreen {
+func NewChatScreen(ctx context.Context, sess *session.Session) *ChatScreen {
 	sidebar := components.NewSidebar(nil, "")
 	chatView := components.NewChatView("", sess.UserNick(), "", nil)
 	layout := components.NewMainLayout(sidebar, chatView)
 
-	return ChatScreen{
-		ctx:    ctx,
-		sess:   sess,
-		layout: layout,
+	return &ChatScreen{
+		ctx:      ctx,
+		sess:     sess,
+		layout:   layout,
+		chatView: chatView,
 	}
 }
 
 // Init implements ui.Model.
-func (s ChatScreen) Init() tea.Cmd {
+func (s *ChatScreen) Init() tea.Cmd {
 	return func() tea.Msg {
 		ctx := s.ctx
 
@@ -121,7 +124,7 @@ func (s ChatScreen) Init() tea.Cmd {
 }
 
 // Update implements ui.Model.
-func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
+func (s *ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case chatLoadedMsg:
 		return s.handleLoaded(msg)
@@ -139,7 +142,7 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		return s.handleSystemEvent(msg)
 
 	case PokeTickMsg:
-		s = s.forwardToLayout(components.PendingResponseMsg{Pending: true})
+		s.forwardToLayout(components.PendingResponseMsg{Pending: true})
 
 		return s, s.handlePoke()
 
@@ -147,7 +150,7 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		return s, s.switchChannel(msg.Channel)
 
 	case components.MessageSubmitMsg:
-		s = s.forwardToLayout(components.PendingResponseMsg{Pending: true})
+		s.forwardToLayout(components.PendingResponseMsg{Pending: true})
 
 		return s, s.sendMessage(msg.Text)
 
@@ -161,38 +164,38 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	return s, cmd
 }
 
-func (s ChatScreen) handleLoaded(msg chatLoadedMsg) (ui.Model, tea.Cmd) {
+func (s *ChatScreen) handleLoaded(msg chatLoadedMsg) (ui.Model, tea.Cmd) {
 	s.active = msg.active
 	s.title = msg.title
 	s.channelCount = len(msg.channels)
 
 	sidebar := components.NewSidebar(msg.channels, msg.active)
-	chatView := components.NewChatView(msg.active, s.sess.UserNick(), msg.title, components.MessagesToLines(msg.messages))
-	s.layout = components.NewMainLayout(sidebar, chatView)
+	s.chatView.SetChannel(msg.active, msg.title, components.MessagesToLines(msg.messages))
+	s.layout = components.NewMainLayout(sidebar, s.chatView)
 
 	return s, nil
 }
 
-func (s ChatScreen) handleChannelSwitched(msg channelSwitchedMsg) (ui.Model, tea.Cmd) {
+func (s *ChatScreen) handleChannelSwitched(msg channelSwitchedMsg) (ui.Model, tea.Cmd) {
 	s.active = msg.channel
 	s.title = msg.title
 	s.channelCount = len(msg.channels)
 
 	sidebar := components.NewSidebar(msg.channels, msg.channel)
-	chatView := components.NewChatView(msg.channel, s.sess.UserNick(), msg.title, components.MessagesToLines(msg.messages))
-	s.layout = components.NewMainLayout(sidebar, chatView)
+	s.chatView.SetChannel(msg.channel, msg.title, components.MessagesToLines(msg.messages))
+	s.layout = components.NewMainLayout(sidebar, s.chatView)
 
 	return s, nil
 }
 
-func (s ChatScreen) handleMessageSent(msg messageSentMsg) (ui.Model, tea.Cmd) {
-	chatView := components.NewChatView(msg.channel, s.sess.UserNick(), s.title, components.MessagesToLines(msg.messages))
-	s.layout = components.NewMainLayout(s.layout.Sidebar, chatView)
+func (s *ChatScreen) handleMessageSent(msg messageSentMsg) (ui.Model, tea.Cmd) {
+	s.chatView.SetLines(components.MessagesToLines(msg.messages))
+	s.forwardToLayout(components.PendingResponseMsg{Pending: false})
 
 	return s, nil
 }
 
-func (s ChatScreen) handleCommandResult(msg commandResultMsg) (ui.Model, tea.Cmd) {
+func (s *ChatScreen) handleCommandResult(msg commandResultMsg) (ui.Model, tea.Cmd) {
 	s.active = msg.active
 	s.title = msg.title
 	s.channelCount = len(msg.channels)
@@ -201,29 +204,27 @@ func (s ChatScreen) handleCommandResult(msg commandResultMsg) (ui.Model, tea.Cmd
 	lines = appendSystemEvents(lines, msg.eventKind, msg.systemEvents)
 
 	sidebar := components.NewSidebar(msg.channels, msg.active)
-	chatView := components.NewChatView(msg.active, s.sess.UserNick(), msg.title, lines)
-	s.layout = components.NewMainLayout(sidebar, chatView)
+	s.chatView.SetChannel(msg.active, msg.title, lines)
+	s.layout = components.NewMainLayout(sidebar, s.chatView)
+	s.forwardToLayout(components.PendingResponseMsg{Pending: false})
 
 	return s, nil
 }
 
-func (s ChatScreen) handleSystemEvent(msg systemEventMsg) (ui.Model, tea.Cmd) {
+func (s *ChatScreen) handleSystemEvent(msg systemEventMsg) (ui.Model, tea.Cmd) {
 	messages, _ := s.sess.Messages(s.ctx, s.active)
 
 	lines := components.MessagesToLines(messages)
 	lines = appendSystemEvents(lines, msg.kind, msg.lines)
 
-	chatView := components.NewChatView(s.active, s.sess.UserNick(), s.title, lines)
-	s.layout = components.NewMainLayout(s.layout.Sidebar, chatView)
+	s.chatView.SetLines(lines)
 
 	return s, nil
 }
 
-func (s ChatScreen) forwardToLayout(msg tea.Msg) ChatScreen {
+func (s *ChatScreen) forwardToLayout(msg tea.Msg) {
 	updated, _ := s.layout.Update(msg)
 	s.layout = updated.(components.MainLayout)
-
-	return s
 }
 
 func appendSystemEvents(lines []components.ChatLine, kind components.EventKind, events []string) []components.ChatLine {
@@ -234,7 +235,7 @@ func appendSystemEvents(lines []components.ChatLine, kind components.EventKind, 
 	return lines
 }
 
-func (s ChatScreen) switchChannel(ch domain.ChannelName) tea.Cmd {
+func (s *ChatScreen) switchChannel(ch domain.ChannelName) tea.Cmd {
 	return func() tea.Msg {
 		ctx := s.ctx
 
@@ -257,7 +258,7 @@ func (s ChatScreen) switchChannel(ch domain.ChannelName) tea.Cmd {
 	}
 }
 
-func (s ChatScreen) sendMessage(text string) tea.Cmd {
+func (s *ChatScreen) sendMessage(text string) tea.Cmd {
 	return func() tea.Msg {
 		ctx := s.ctx
 
@@ -273,7 +274,7 @@ func (s ChatScreen) sendMessage(text string) tea.Cmd {
 }
 
 // View implements ui.Model.
-func (s ChatScreen) View(width, height int) string {
+func (s *ChatScreen) View(width, height int) string {
 	if s.channelCount == 0 {
 		return NewWelcomeScreen(s.sess.UserNick()).View(width, height)
 	}

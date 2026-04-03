@@ -154,6 +154,9 @@ func TestChatView_scroll(t *testing.T) {
 	cv := components.NewChatView("#general", "testuser", "", components.MessagesToLines(msgs))
 	var m ui.Model = cv
 
+	// Render once so the viewport learns its dimensions.
+	m.View(80, 24)
+
 	// Scroll up.
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
 

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -66,19 +67,24 @@ type ChatView struct {
 	userNick domain.Nick
 	lines    []ChatLine
 	input    InputBar
-	scroll   int
+	viewport viewport.Model
 	pending  bool
 	spinner  spinner.Model
+	width    int
 }
 
 // NewChatView creates a chat view for the given channel.
-func NewChatView(ch domain.ChannelName, userNick domain.Nick, title string, lines []ChatLine) ChatView {
-	return ChatView{
+func NewChatView(ch domain.ChannelName, userNick domain.Nick, title string, lines []ChatLine) *ChatView {
+	vp := viewport.New(0, 0)
+	vp.MouseWheelEnabled = true
+
+	return &ChatView{
 		channel:  ch,
 		title:    title,
 		userNick: userNick,
 		lines:    lines,
 		input:    NewInputBar(),
+		viewport: vp,
 		spinner: spinner.New(
 			spinner.WithSpinner(spinner.Dot),
 			spinner.WithStyle(theme.Dim),
@@ -86,13 +92,33 @@ func NewChatView(ch domain.ChannelName, userNick domain.Nick, title string, line
 	}
 }
 
+// SetLines replaces the displayed lines, preserving viewport and
+// input state.
+func (c *ChatView) SetLines(lines []ChatLine) {
+	c.lines = lines
+}
+
+// SetTitle updates the channel title in place.
+func (c *ChatView) SetTitle(title string) {
+	c.title = title
+}
+
+// SetChannel updates the channel identity, title, and lines for a
+// channel switch. The viewport is reset to the bottom.
+func (c *ChatView) SetChannel(ch domain.ChannelName, title string, lines []ChatLine) {
+	c.channel = ch
+	c.title = title
+	c.lines = lines
+	c.viewport.GotoBottom()
+}
+
 // Init implements ui.Model.
-func (c ChatView) Init() tea.Cmd {
+func (c *ChatView) Init() tea.Cmd {
 	return c.input.Init()
 }
 
 // Update implements ui.Model.
-func (c ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
+func (c *ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case PendingResponseMsg:
 		c.pending = msg.Pending
@@ -119,32 +145,25 @@ func (c ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		}
 
 		c.lines = msg.Lines
-		c.scroll = 0
+		c.viewport.GotoBottom()
 
 		return c, nil
-
-	case tea.KeyMsg:
-		if msg.Type == tea.KeyPgUp {
-			c.scroll++
-			return c, nil
-		}
-
-		if msg.Type == tea.KeyPgDown {
-			if c.scroll > 0 {
-				c.scroll--
-			}
-			return c, nil
-		}
 	}
 
-	updated, cmd := c.input.Update(msg)
+	// Forward to viewport for scroll handling (PgUp/PgDown, mouse
+	// wheel). The viewport consumes scroll keys so they don't reach
+	// the input bar.
+	var vpCmd tea.Cmd
+	c.viewport, vpCmd = c.viewport.Update(msg)
+
+	updated, inputCmd := c.input.Update(msg)
 	c.input = updated.(InputBar)
 
-	return c, cmd
+	return c, tea.Batch(vpCmd, inputCmd)
 }
 
 // View implements ui.Model.
-func (c ChatView) View(width, height int) string {
+func (c *ChatView) View(width, height int) string {
 	nickLabel := theme.UserNick.Render(string(c.userNick)) + " "
 	inputView := nickLabel + c.input.View(width-lipgloss.Width(nickLabel), 1)
 	inputHeight := lipgloss.Height(inputView)
@@ -165,16 +184,37 @@ func (c ChatView) View(width, height int) string {
 		pendingHeight = lipgloss.Height(pendingView)
 	}
 
-	listHeight := height - inputHeight - topicHeight - pendingHeight
-	if listHeight < 0 {
-		listHeight = 0
+	// First pass: render messages at maximum available height to
+	// determine scroll state.
+	maxListHeight := height - inputHeight - topicHeight - pendingHeight
+	if maxListHeight < 0 {
+		maxListHeight = 0
 	}
 
-	messageView := c.renderMessages(width, listHeight)
+	messageView, scrolled, scrollPct := c.renderMessages(width, maxListHeight)
 
-	parts := make([]string, 0, 4)
+	// If scrolled, add indicator and re-render with one less line.
+	var scrollView string
+
+	if scrolled {
+		indicator := theme.Dim.Render(fmt.Sprintf("(%d%%)", int(scrollPct*100)))
+		scrollView = lipgloss.PlaceHorizontal(width, lipgloss.Right, indicator)
+
+		listHeight := maxListHeight - 1
+		if listHeight < 0 {
+			listHeight = 0
+		}
+
+		messageView, _, _ = c.renderMessages(width, listHeight)
+	}
+
+	parts := make([]string, 0, 6)
 	if topicView != "" {
 		parts = append(parts, topicView)
+	}
+
+	if scrollView != "" {
+		parts = append(parts, scrollView)
 	}
 
 	parts = append(parts, messageView)
@@ -188,7 +228,7 @@ func (c ChatView) View(width, height int) string {
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }
 
-func (c ChatView) renderTopic(width int) string {
+func (c *ChatView) renderTopic(width int) string {
 	text := theme.ChannelTitle.Render(c.title)
 
 	style := lipgloss.NewStyle().
@@ -200,11 +240,11 @@ func (c ChatView) renderTopic(width int) string {
 	return style.Render(text)
 }
 
-func (c ChatView) renderMessages(width, height int) string {
+func (c *ChatView) renderMessages(width, height int) (view string, scrolled bool, scrollPct float64) {
 	if len(c.lines) == 0 {
 		return lipgloss.Place(width, height,
 			lipgloss.Center, lipgloss.Center,
-			theme.Dim.Render("No messages yet"))
+			theme.Dim.Render("No messages yet")), false, 0
 	}
 
 	rendered := make([]string, 0, len(c.lines))
@@ -213,67 +253,22 @@ func (c ChatView) renderMessages(width, height int) string {
 		rendered = append(rendered, c.renderLine(line, width))
 	}
 
-	indicator := formatScrollIndicator(c.scroll, len(rendered), height)
+	content := strings.Join(rendered, "\n")
 
-	// Reserve a line for the scroll indicator when active.
-	msgHeight := height
-	if indicator != "" {
-		msgHeight--
+	c.viewport.Width = width
+	c.viewport.Height = height
+
+	wasAtBottom := c.viewport.AtBottom() || c.viewport.TotalLineCount() == 0
+	c.viewport.SetContent(content)
+
+	if wasAtBottom {
+		c.viewport.GotoBottom()
 	}
 
-	// Apply scroll offset from the bottom.
-	end := len(rendered) - c.scroll
-	if end < 0 {
-		end = 0
-	}
-
-	start := end - msgHeight
-	if start < 0 {
-		start = 0
-	}
-
-	visible := rendered[start:end]
-
-	content := strings.Join(visible, "\n")
-
-	// Pad to fill the available message height so the input bar stays
-	// at the bottom.
-	contentHeight := lipgloss.Height(content)
-	if contentHeight < msgHeight {
-		padding := strings.Repeat("\n", msgHeight-contentHeight-1)
-		content = padding + content
-	}
-
-	if indicator != "" {
-		styled := lipgloss.PlaceHorizontal(width, lipgloss.Right, theme.Dim.Render(indicator))
-		content = styled + "\n" + content
-	}
-
-	return content
+	return c.viewport.View(), !c.viewport.AtBottom(), c.viewport.ScrollPercent()
 }
 
-// formatScrollIndicator returns a scroll position string when the
-// view is scrolled away from the bottom, or empty when at the bottom.
-func formatScrollIndicator(scroll, totalLines, viewportHeight int) string {
-	if scroll == 0 {
-		return ""
-	}
-
-	maxScroll := totalLines - viewportHeight
-	if maxScroll <= 0 {
-		return ""
-	}
-
-	// Position as percentage from top: 100% = at bottom, 0% = at top.
-	pct := 100 - (scroll*100)/maxScroll
-	if pct < 0 {
-		pct = 0
-	}
-
-	return fmt.Sprintf("(%d%%)", pct)
-}
-
-func (c ChatView) renderLine(line ChatLine, width int) string {
+func (c *ChatView) renderLine(line ChatLine, width int) string {
 	wrap := lipgloss.NewStyle().Width(width)
 
 	switch l := line.(type) {
