@@ -11,18 +11,18 @@ There is no server component. This uses the OpenRouter API.
 1. Start the application. A cool IRC-style connection sequence appears.
    1. If there's no OpenRouter API key configured, the user is prompted to use
       `/config` to set it up. The app won't work until this is done.
-2. Any chats from last time are loaded and shown in the side bar. The window
-   that was open last time is opened again.
-   1. If there are no chats, a welcome message is shown.
-3. The user can `/join` a chat room (`#`-prefix like IRC), or use shortcuts like
-   ctrl-d,ctrl-u,ctrl-o to navigate in the sidebar (or the mouse).
-   1. If the room doesn't exist, it is created.
-   2. The user can have multiple rooms open at once.
-4. The user can `/leave` a chat room.
-   1. Leaving a room doesn't delete it.
-5. The user can `/list` all chat rooms.
-6. The user can `/invite` models to add them to the chat, and `/kick` them to
-   remove them.
+2. Any channels from last time are loaded and shown in the sidebar. The
+   channel that was open last time is opened again.
+   1. If there are no channels, a welcome message is shown.
+3. The user can `/join` a channel (`#`-prefix like IRC), or use shortcuts
+   like ctrl-d,ctrl-u,ctrl-o to navigate in the sidebar (or the mouse).
+   1. If the channel doesn't exist, it is created.
+   2. The user can have multiple channels open at once.
+4. The user can `/leave` a channel.
+   1. Leaving a channel doesn't delete it.
+5. The user can `/list` all channels.
+6. The user can `/invite` models to add them to the channel, and `/kick`
+   them to remove them.
    1. The user can specify a model by name or ID, and the app will look it up
       using the OpenRouter API. If no name or ID is given, the user is prompted
       to select from a list of models or existing instances.
@@ -30,7 +30,7 @@ There is no server component. This uses the OpenRouter API.
       remembers previous conversations.
 7. The user can `/msg` to DM a model, which is shown similarly to a channel
    except no `#` prefix.
-8. From then on, it's a chat room. All events are broadcast to all models.
+8. From then on, it's a channel. All events are broadcast to all models.
    They can reply or not. Measures should be taken to prevent infinite
    conversations which would become costly very quickly.
 9. A channel can have a `/title`, which is shown in the UI. This is optional but
@@ -41,7 +41,7 @@ There is no server component. This uses the OpenRouter API.
 12. On a random (perturbed a bit) configurable (via `/config`) schedule, the
     model instances are poked to see if they want to say anything, so that
     channels don't go dead.
-13. Models can be given a persona when they're instansiated.
+13. Models can be given a persona when they're instantiated.
 14. The user can rename themselves via `/nick`. By default we use their username
     on the system.
 
