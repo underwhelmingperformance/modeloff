@@ -3,7 +3,11 @@
 // respected.
 package theme
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"fmt"
+
+	"github.com/charmbracelet/lipgloss"
+)
 
 // ANSI colour indices used throughout the application.
 const (
@@ -70,6 +74,15 @@ const (
 	// render. Below this, screens show a fallback message.
 	MinTerminalWidth = 40
 )
+
+// NarrowTerminalView returns a centred fallback message prompting the
+// user to widen their terminal. Use this as an early return in View
+// methods when width < MinTerminalWidth.
+func NarrowTerminalView(width, height int) string {
+	return lipgloss.Place(width, height,
+		lipgloss.Center, lipgloss.Center,
+		Warning.Render(fmt.Sprintf("Resize terminal to %d+ columns", MinTerminalWidth)))
+}
 
 // Sidebar styles.
 var (

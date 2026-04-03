@@ -1,8 +1,6 @@
 package components
 
 import (
-	"fmt"
-
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/laney/modeloff/internal/ui"
@@ -60,9 +58,7 @@ func (m MainLayout) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 // View implements ui.Model.
 func (m MainLayout) View(width, height int) string {
 	if width < theme.MinTerminalWidth {
-		return lipgloss.Place(width, height,
-			lipgloss.Center, lipgloss.Center,
-			theme.Warning.Render(fmt.Sprintf("Resize terminal to %d+ columns", theme.MinTerminalWidth)))
+		return theme.NarrowTerminalView(width, height)
 	}
 
 	sw := sidebarWidth(width)

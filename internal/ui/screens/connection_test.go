@@ -105,6 +105,27 @@ func TestConnectionScreen_Init_returns_tick_cmd(t *testing.T) {
 	require.NotNil(t, s.Init())
 }
 
+func TestConnectionScreen_View_narrow_terminal(t *testing.T) {
+	s := screens.NewConnectionScreen(screens.ConnectionConfig{
+		HasAPIKey: true,
+		Nick:      "user",
+	})
+
+	t.Run("below threshold shows resize message", func(t *testing.T) {
+		got := s.View(39, 24)
+
+		require.Contains(t, got, "Resize terminal to 40+ columns")
+		require.NotContains(t, got, "Connecting")
+	})
+
+	t.Run("at threshold renders normally", func(t *testing.T) {
+		got := s.View(40, 24)
+
+		require.NotContains(t, got, "Resize terminal")
+		require.Contains(t, got, "Connecting to modeloff")
+	})
+}
+
 func TestConnectionScreen_ignores_other_messages(t *testing.T) {
 	s := screens.NewConnectionScreen(screens.ConnectionConfig{
 		HasAPIKey: true,
