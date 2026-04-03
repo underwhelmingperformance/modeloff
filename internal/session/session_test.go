@@ -460,6 +460,93 @@ func TestSession_SendMessage_ignores_empty_reply_body(t *testing.T) {
 	require.Equal(t, []domain.Message{evt.Message}, msgs)
 }
 
+func TestSession_SendMessage_api_error_continues_to_next_instance(t *testing.T) {
+	fake := &fakeAPIClient{
+		sendEventsFn: func(_ context.Context, modelID domain.ModelID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			if modelID == "test/model-a" {
+				return protocol.ModelResponse{}, fmt.Errorf("network timeout")
+			}
+
+			return protocol.ModelResponse{
+				Kind: protocol.ResponseReply,
+				Body: "reply from bot-b",
+			}, nil
+		},
+	}
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "bot-a", "bot-b")
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:     "bot-a",
+		ModelID:  "test/model-a",
+		Channels: set.NewOrdered[domain.ChannelName]("#general"),
+	})
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:     "bot-b",
+		ModelID:  "test/model-b",
+		Channels: set.NewOrdered[domain.ChannelName]("#general"),
+	})
+
+	evt, err := sess.SendMessage(ctx, "#general", "hello world")
+	require.Error(t, err, "should surface the API error")
+	require.ErrorContains(t, err, "network timeout")
+
+	require.Len(t, fake.sendEventsCalls, 2, "both instances should be dispatched to")
+
+	msgs, err := s.ListMessages(ctx, "#general")
+	require.NoError(t, err)
+	require.Equal(t, []domain.Message{
+		evt.Message,
+		{
+			ID:      fmt.Sprintf("%d~bot-b", fixedTime.UnixNano()),
+			Channel: "#general",
+			From:    "bot-b",
+			Body:    "reply from bot-b",
+			SentAt:  fixedTime,
+		},
+	}, msgs)
+}
+
+func TestSession_Poke_api_error_continues_to_next_channel(t *testing.T) {
+	fake := &fakeAPIClient{
+		sendEventsFn: func(_ context.Context, modelID domain.ModelID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			if modelID == "test/model-a" {
+				return protocol.ModelResponse{}, fmt.Errorf("rate limited")
+			}
+
+			return protocol.ModelResponse{
+				Kind: protocol.ResponseReply,
+				Body: "still here",
+			}, nil
+		},
+	}
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "bot-a")
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:     "bot-a",
+		ModelID:  "test/model-a",
+		Channels: set.NewOrdered[domain.ChannelName]("#general"),
+	})
+	seedChannelWithMembers(t, s, "#random", "testuser", "bot-b")
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:     "bot-b",
+		ModelID:  "test/model-b",
+		Channels: set.NewOrdered[domain.ChannelName]("#random"),
+	})
+
+	err := sess.Poke(ctx)
+	require.Error(t, err, "should surface the API error")
+	require.ErrorContains(t, err, "rate limited")
+
+	msgs, err := s.ListMessages(ctx, "#random")
+	require.NoError(t, err)
+	require.Len(t, msgs, 1, "bot-b reply should still be saved")
+	require.Equal(t, "still here", msgs[0].Body)
+}
+
 func TestSession_SetTitle(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
@@ -689,6 +776,35 @@ func TestSession_Invite_existing_instance_preserves_persona(t *testing.T) {
 	inst, err := s.GetInstance(ctx, "botty")
 	require.NoError(t, err)
 	require.Equal(t, "Existing persona", inst.Persona)
+}
+
+func TestSession_Invite_same_model_id_reuses_instance(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#general", "testuser")
+	seedChannelWithMembers(t, s, "#random", "testuser")
+
+	evt1, err := sess.Invite(ctx, "#general", "test/model", "Helpful assistant")
+	require.NoError(t, err)
+	require.Equal(t, domain.Nick("fakenick"), evt1.Instance.Nick)
+
+	evt2, err := sess.Invite(ctx, "#random", "test/model", "")
+	require.NoError(t, err)
+	require.Equal(t, domain.ModelInvitedEvent{
+		Channel: "#random",
+		Instance: domain.ModelInstance{
+			Nick:     "fakenick",
+			ModelID:  "test/model",
+			Persona:  "Helpful assistant",
+			Channels: set.NewOrdered[domain.ChannelName]("#general", "#random"),
+		},
+		At: fixedTime,
+	}, evt2)
+
+	instances, err := s.ListInstances(ctx)
+	require.NoError(t, err)
+	require.Len(t, instances, 1, "should not create a duplicate instance")
 }
 
 func TestSession_KickNonexistentChannel(t *testing.T) {

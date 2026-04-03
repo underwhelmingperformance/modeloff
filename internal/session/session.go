@@ -6,6 +6,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -129,6 +130,14 @@ func (s *Session) Invite(
 		return s.attachInstanceToChannel(ctx, ch, inst)
 	}
 
+	if inst, err := s.findInstanceByModelID(ctx, modelID); err == nil {
+		if inst.Persona == "" && strings.TrimSpace(persona) != "" {
+			inst.Persona = strings.TrimSpace(persona)
+		}
+
+		return s.attachInstanceToChannel(ctx, ch, inst)
+	}
+
 	nick, err := s.api.GenerateNick(ctx, modelID)
 	if err != nil {
 		return domain.ModelInvitedEvent{}, fmt.Errorf("generate nick: %w", err)
@@ -142,6 +151,21 @@ func (s *Session) Invite(
 	}
 
 	return s.attachInstanceToChannel(ctx, ch, inst)
+}
+
+func (s *Session) findInstanceByModelID(ctx context.Context, modelID domain.ModelID) (domain.ModelInstance, error) {
+	instances, err := s.store.ListInstances(ctx)
+	if err != nil {
+		return domain.ModelInstance{}, err
+	}
+
+	for _, inst := range instances {
+		if inst.ModelID == modelID {
+			return inst, nil
+		}
+	}
+
+	return domain.ModelInstance{}, fmt.Errorf("no instance with model ID %s", modelID)
 }
 
 func (s *Session) attachInstanceToChannel(
@@ -230,16 +254,14 @@ func (s *Session) SendMessage(
 		return domain.MessageEvent{}, fmt.Errorf("save message: %w", err)
 	}
 
-	if err := s.dispatchToInstances(
+	err = s.dispatchToInstances(
 		ctx,
 		msg.Channel,
 		historyMessages,
 		[]protocol.IRCMessage{protocol.FromMessage(msg)},
-	); err != nil {
-		return domain.MessageEvent{}, err
-	}
+	)
 
-	return domain.MessageEvent{Message: msg}, nil
+	return domain.MessageEvent{Message: msg}, err
 }
 
 // SetTitle sets the title of a channel.
@@ -367,10 +389,13 @@ func (s *Session) Poke(ctx context.Context) error {
 		return fmt.Errorf("list channels: %w", err)
 	}
 
+	var errs []error
+
 	for _, ch := range channels {
 		historyMessages, err := s.store.ListMessages(ctx, ch.Name)
 		if err != nil {
-			return fmt.Errorf("list history for %s: %w", ch.Name, err)
+			errs = append(errs, fmt.Errorf("list history for %s: %w", ch.Name, err))
+			continue
 		}
 
 		events := []protocol.IRCMessage{
@@ -383,11 +408,11 @@ func (s *Session) Poke(ctx context.Context) error {
 		}
 
 		if err := s.dispatchToInstances(ctx, ch.Name, historyMessages, events); err != nil {
-			return err
+			errs = append(errs, err)
 		}
 	}
 
-	return nil
+	return errors.Join(errs...)
 }
 
 // SetAPIKey persists a new API key through the config store.
@@ -452,10 +477,13 @@ func (s *Session) dispatchToInstances(
 		history = append(history, protocol.FromMessage(historyMessage))
 	}
 
+	var errs []error
+
 	for _, inst := range instances {
 		memories, err := s.memoriesForInstance(ctx, inst.Nick)
 		if err != nil {
-			return fmt.Errorf("read memories for %s: %w", inst.Nick, err)
+			errs = append(errs, fmt.Errorf("read memories for %s: %w", inst.Nick, err))
+			continue
 		}
 
 		response, err := s.api.SendEvents(
@@ -466,7 +494,8 @@ func (s *Session) dispatchToInstances(
 			events,
 		)
 		if err != nil {
-			return fmt.Errorf("send events to %s: %w", inst.Nick, err)
+			errs = append(errs, fmt.Errorf("send events to %s: %w", inst.Nick, err))
+			continue
 		}
 
 		if response.Kind != protocol.ResponseReply {
@@ -487,11 +516,11 @@ func (s *Session) dispatchToInstances(
 		}
 
 		if err := s.store.SaveMessage(ctx, reply); err != nil {
-			return fmt.Errorf("save model reply: %w", err)
+			errs = append(errs, fmt.Errorf("save model reply: %w", err))
 		}
 	}
 
-	return nil
+	return errors.Join(errs...)
 }
 
 func (s *Session) instancesForChannel(ctx context.Context, channel domain.Channel) ([]domain.ModelInstance, error) {
