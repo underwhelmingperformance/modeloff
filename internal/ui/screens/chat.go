@@ -43,12 +43,14 @@ type commandResultMsg struct {
 	active       domain.ChannelName
 	title        string
 	messages     []domain.Message
+	eventKind    components.EventKind
 	systemEvents []string
 }
 
 // systemEventMsg carries system event text to display in the chat
 // view without changing channel/sidebar state.
 type systemEventMsg struct {
+	kind  components.EventKind
 	lines []string
 }
 
@@ -165,7 +167,7 @@ func (s ChatScreen) handleLoaded(msg chatLoadedMsg) (ui.Model, tea.Cmd) {
 	s.channelCount = len(msg.channels)
 
 	sidebar := components.NewSidebar(msg.channels, msg.active)
-	chatView := components.NewChatView(msg.active, s.sess.UserNick(), msg.title, msg.messages)
+	chatView := components.NewChatView(msg.active, s.sess.UserNick(), msg.title, components.MessagesToLines(msg.messages))
 	s.layout = components.NewMainLayout(sidebar, chatView)
 
 	return s, nil
@@ -177,14 +179,14 @@ func (s ChatScreen) handleChannelSwitched(msg channelSwitchedMsg) (ui.Model, tea
 	s.channelCount = len(msg.channels)
 
 	sidebar := components.NewSidebar(msg.channels, msg.channel)
-	chatView := components.NewChatView(msg.channel, s.sess.UserNick(), msg.title, msg.messages)
+	chatView := components.NewChatView(msg.channel, s.sess.UserNick(), msg.title, components.MessagesToLines(msg.messages))
 	s.layout = components.NewMainLayout(sidebar, chatView)
 
 	return s, nil
 }
 
 func (s ChatScreen) handleMessageSent(msg messageSentMsg) (ui.Model, tea.Cmd) {
-	chatView := components.NewChatView(msg.channel, s.sess.UserNick(), s.title, msg.messages)
+	chatView := components.NewChatView(msg.channel, s.sess.UserNick(), s.title, components.MessagesToLines(msg.messages))
 	s.layout = components.NewMainLayout(s.layout.Sidebar, chatView)
 
 	return s, nil
@@ -195,11 +197,11 @@ func (s ChatScreen) handleCommandResult(msg commandResultMsg) (ui.Model, tea.Cmd
 	s.title = msg.title
 	s.channelCount = len(msg.channels)
 
-	messages := msg.messages
-	messages = appendSystemEvents(messages, s.active, msg.systemEvents)
+	lines := components.MessagesToLines(msg.messages)
+	lines = appendSystemEvents(lines, msg.eventKind, msg.systemEvents)
 
 	sidebar := components.NewSidebar(msg.channels, msg.active)
-	chatView := components.NewChatView(msg.active, s.sess.UserNick(), msg.title, messages)
+	chatView := components.NewChatView(msg.active, s.sess.UserNick(), msg.title, lines)
 	s.layout = components.NewMainLayout(sidebar, chatView)
 
 	return s, nil
@@ -207,9 +209,11 @@ func (s ChatScreen) handleCommandResult(msg commandResultMsg) (ui.Model, tea.Cmd
 
 func (s ChatScreen) handleSystemEvent(msg systemEventMsg) (ui.Model, tea.Cmd) {
 	messages, _ := s.sess.Messages(s.ctx, s.active)
-	messages = appendSystemEvents(messages, s.active, msg.lines)
 
-	chatView := components.NewChatView(s.active, s.sess.UserNick(), s.title, messages)
+	lines := components.MessagesToLines(messages)
+	lines = appendSystemEvents(lines, msg.kind, msg.lines)
+
+	chatView := components.NewChatView(s.active, s.sess.UserNick(), s.title, lines)
 	s.layout = components.NewMainLayout(s.layout.Sidebar, chatView)
 
 	return s, nil
@@ -222,16 +226,12 @@ func (s ChatScreen) forwardToLayout(msg tea.Msg) ChatScreen {
 	return s
 }
 
-func appendSystemEvents(messages []domain.Message, ch domain.ChannelName, events []string) []domain.Message {
-	for _, line := range events {
-		messages = append(messages, domain.Message{
-			Channel: ch,
-			From:    "***",
-			Body:    line,
-		})
+func appendSystemEvents(lines []components.ChatLine, kind components.EventKind, events []string) []components.ChatLine {
+	for _, text := range events {
+		lines = append(lines, components.SystemEventLine{Text: text, Kind: kind})
 	}
 
-	return messages
+	return lines
 }
 
 func (s ChatScreen) switchChannel(ch domain.ChannelName) tea.Cmd {

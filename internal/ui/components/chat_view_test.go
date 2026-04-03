@@ -15,11 +15,11 @@ import (
 	"github.com/laney/modeloff/internal/ui/theme"
 )
 
-var testMessages = []domain.Message{
+var testMessages = components.MessagesToLines([]domain.Message{
 	{ID: "1", Channel: "#general", From: "alice", Body: "hello", SentAt: time.Date(2025, 1, 1, 10, 0, 0, 0, time.UTC)},
 	{ID: "2", Channel: "#general", From: "bob", Body: "hi there", SentAt: time.Date(2025, 1, 1, 10, 1, 0, 0, time.UTC)},
 	{ID: "3", Channel: "#general", From: "alice", Body: "how are you?", SentAt: time.Date(2025, 1, 1, 10, 2, 0, 0, time.UTC)},
-}
+})
 
 func TestChatView_View_shows_messages(t *testing.T) {
 	cv := components.NewChatView("#general", "testuser", "", testMessages)
@@ -89,7 +89,7 @@ func TestChatView_messages_updated(t *testing.T) {
 
 	m, _ = m.Update(components.MessagesUpdatedMsg{
 		Channel:  "#general",
-		Messages: newMsgs,
+		Lines: components.MessagesToLines(newMsgs),
 	})
 
 	v := m.View(80, 24)
@@ -102,8 +102,8 @@ func TestChatView_messages_updated_wrong_channel(t *testing.T) {
 	var m ui.Model = cv
 
 	m, _ = m.Update(components.MessagesUpdatedMsg{
-		Channel:  "#other",
-		Messages: nil,
+		Channel: "#other",
+		Lines:   nil,
 	})
 
 	// Should still show the original messages.
@@ -123,7 +123,7 @@ func TestChatView_scroll(t *testing.T) {
 		}
 	}
 
-	cv := components.NewChatView("#general", "testuser", "", msgs)
+	cv := components.NewChatView("#general", "testuser", "", components.MessagesToLines(msgs))
 	var m ui.Model = cv
 
 	// Scroll up.
@@ -159,7 +159,7 @@ func TestChatView_user_nick_styled_differently(t *testing.T) {
 		{ID: "2", Channel: "#general", From: "bot", Body: "from model"},
 	}
 
-	cv := components.NewChatView("#general", "alice", "", msgs)
+	cv := components.NewChatView("#general", "alice", "", components.MessagesToLines(msgs))
 	v := cv.View(80, 24)
 
 	// Both nicks should appear in the output.
@@ -226,8 +226,10 @@ func TestChatView_topic_bar_reduces_message_area(t *testing.T) {
 		}
 	}
 
-	withTitle := components.NewChatView("#general", "testuser", "A topic", msgs)
-	without := components.NewChatView("#general", "testuser", "", msgs)
+	lines := components.MessagesToLines(msgs)
+
+	withTitle := components.NewChatView("#general", "testuser", "A topic", lines)
+	without := components.NewChatView("#general", "testuser", "", lines)
 
 	vWith := withTitle.View(80, 24)
 	vWithout := without.View(80, 24)
@@ -271,7 +273,7 @@ func TestChatView_pending_indicator_reduces_message_area(t *testing.T) {
 		}
 	}
 
-	cv := components.NewChatView("#general", "testuser", "", msgs)
+	cv := components.NewChatView("#general", "testuser", "", components.MessagesToLines(msgs))
 	var m ui.Model = cv
 
 	m, _ = m.Update(components.PendingResponseMsg{Pending: true})
@@ -285,8 +287,23 @@ func TestChatView_pending_indicator_reduces_message_area(t *testing.T) {
 }
 
 func TestRenderSystemEvent(t *testing.T) {
-	got := components.RenderSystemEvent("alice has joined")
+	tests := []struct {
+		name     string
+		kind     components.EventKind
+		wantIcon string
+	}{
+		{"info", components.EventInfo, "***"},
+		{"success", components.EventSuccess, "✓"},
+		{"warning", components.EventWarning, "⚠"},
+		{"error", components.EventError, "✗"},
+	}
 
-	require.Contains(t, got, "***")
-	require.Contains(t, got, "alice has joined")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := components.RenderSystemEvent("alice has joined", tt.kind)
+
+			require.Contains(t, got, tt.wantIcon)
+			require.Contains(t, got, "alice has joined")
+		})
+	}
 }

@@ -21,7 +21,7 @@ func (s ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
 	parsed, err := command.Parse(raw)
 	if err != nil {
 		return func() tea.Msg {
-			return systemEventMsg{lines: []string{err.Error()}}
+			return systemEventMsg{kind: components.EventError, lines: []string{err.Error()}}
 		}
 	}
 
@@ -47,7 +47,7 @@ func (s ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
 	case command.InviteCommand:
 		if cmd.Model == "" {
 			return func() tea.Msg {
-				return systemEventMsg{lines: []string{"usage: /invite <model-id> [--persona <text>]"}}
+				return systemEventMsg{kind: components.EventWarning, lines: []string{"usage: /invite <model-id> [--persona <text>]"}}
 			}
 		}
 
@@ -67,7 +67,7 @@ func (s ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
 
 	default:
 		return func() tea.Msg {
-			return systemEventMsg{lines: []string{
+			return systemEventMsg{kind: components.EventError, lines: []string{
 				fmt.Sprintf("unknown command: /%s", msg.Name),
 			}}
 		}
@@ -82,43 +82,43 @@ func (s ChatScreen) configure(cmd command.ConfigCommand) tea.Cmd {
 
 		switch cmd.Key {
 		case "":
-			return systemEventMsg{lines: []string{usage}}
+			return systemEventMsg{kind: components.EventWarning, lines: []string{usage}}
 
 		case "api-key":
 			if strings.TrimSpace(cmd.Value) == "" {
-				return systemEventMsg{lines: []string{"usage: /config api-key <value>"}}
+				return systemEventMsg{kind: components.EventWarning, lines: []string{"usage: /config api-key <value>"}}
 			}
 
 			if _, err := s.sess.SetAPIKey(ctx, strings.TrimSpace(cmd.Value)); err != nil {
-				return systemEventMsg{lines: []string{err.Error()}}
+				return systemEventMsg{kind: components.EventError, lines: []string{err.Error()}}
 			}
 
-			return systemEventMsg{lines: []string{
+			return systemEventMsg{kind: components.EventSuccess, lines: []string{
 				"OpenRouter API key saved. Restart modeloff to use it.",
 			}}
 
 		case "poke-interval":
 			if strings.TrimSpace(cmd.Value) == "" {
-				return systemEventMsg{lines: []string{"usage: /config poke-interval <duration>"}}
+				return systemEventMsg{kind: components.EventWarning, lines: []string{"usage: /config poke-interval <duration>"}}
 			}
 
 			interval, err := time.ParseDuration(strings.TrimSpace(cmd.Value))
 			if err != nil {
-				return systemEventMsg{lines: []string{
+				return systemEventMsg{kind: components.EventError, lines: []string{
 					fmt.Sprintf("invalid duration %q: %v", cmd.Value, err),
 				}}
 			}
 
 			if _, err := s.sess.SetPokeInterval(ctx, interval); err != nil {
-				return systemEventMsg{lines: []string{err.Error()}}
+				return systemEventMsg{kind: components.EventError, lines: []string{err.Error()}}
 			}
 
-			return systemEventMsg{lines: []string{
+			return systemEventMsg{kind: components.EventSuccess, lines: []string{
 				fmt.Sprintf("Poke interval set to %s.", interval),
 			}}
 
 		default:
-			return systemEventMsg{lines: []string{
+			return systemEventMsg{kind: components.EventError, lines: []string{
 				fmt.Sprintf("unknown config key: %s", cmd.Key),
 				usage,
 			}}
@@ -132,14 +132,14 @@ func (s ChatScreen) directMessage(nick domain.Nick, body string) tea.Cmd {
 
 		ch, created, err := s.sess.OpenDM(ctx, nick)
 		if err != nil {
-			return systemEventMsg{lines: []string{
+			return systemEventMsg{kind: components.EventError, lines: []string{
 				fmt.Sprintf("no such nick: %s", nick),
 			}}
 		}
 
 		if strings.TrimSpace(body) != "" {
 			if _, err := s.sess.SendMessage(ctx, ch.Name, body); err != nil {
-				return systemEventMsg{lines: []string{err.Error()}}
+				return systemEventMsg{kind: components.EventError, lines: []string{err.Error()}}
 			}
 		}
 
@@ -158,6 +158,7 @@ func (s ChatScreen) directMessage(nick domain.Nick, body string) tea.Cmd {
 			active:       ch.Name,
 			title:        "",
 			messages:     messages,
+			eventKind:    components.EventSuccess,
 			systemEvents: systemEvents,
 		}
 	}
@@ -168,7 +169,7 @@ func (s ChatScreen) handlePoke() tea.Cmd {
 		ctx := s.ctx
 
 		if err := s.sess.Poke(ctx); err != nil {
-			return systemEventMsg{lines: []string{err.Error()}}
+			return systemEventMsg{kind: components.EventError, lines: []string{err.Error()}}
 		}
 
 		channels, _ := s.sess.ListChannels(ctx)
@@ -189,7 +190,7 @@ func (s ChatScreen) joinChannel(name string) tea.Cmd {
 
 		evt, err := s.sess.Join(ctx, name)
 		if err != nil {
-			return systemEventMsg{lines: []string{err.Error()}}
+			return systemEventMsg{kind: components.EventError, lines: []string{err.Error()}}
 		}
 
 		channels, _ := s.sess.ListChannels(ctx)
@@ -211,6 +212,7 @@ func (s ChatScreen) joinChannel(name string) tea.Cmd {
 			active:       active,
 			title:        title,
 			messages:     messages,
+			eventKind:    components.EventSuccess,
 			systemEvents: []string{event},
 		}
 	}
@@ -249,7 +251,7 @@ func (s ChatScreen) changeNick(nick domain.Nick) tea.Cmd {
 
 		evt, err := s.sess.ChangeNick(ctx, nick)
 		if err != nil {
-			return systemEventMsg{lines: []string{err.Error()}}
+			return systemEventMsg{kind: components.EventError, lines: []string{err.Error()}}
 		}
 
 		channels, _ := s.sess.ListChannels(ctx)
@@ -260,6 +262,7 @@ func (s ChatScreen) changeNick(nick domain.Nick) tea.Cmd {
 			active:   s.active,
 			title:    s.title,
 			messages: messages,
+			eventKind: components.EventSuccess,
 			systemEvents: []string{
 				fmt.Sprintf("%s is now known as %s", evt.OldNick, evt.NewNick),
 			},
@@ -273,7 +276,7 @@ func (s ChatScreen) setTitle(title string) tea.Cmd {
 
 		_, err := s.sess.SetTitle(ctx, s.active, title)
 		if err != nil {
-			return systemEventMsg{lines: []string{err.Error()}}
+			return systemEventMsg{kind: components.EventError, lines: []string{err.Error()}}
 		}
 
 		channels, _ := s.sess.ListChannels(ctx)
@@ -289,6 +292,7 @@ func (s ChatScreen) setTitle(title string) tea.Cmd {
 			active:       s.active,
 			title:        title,
 			messages:     messages,
+			eventKind:    components.EventSuccess,
 			systemEvents: []string{event},
 		}
 	}
@@ -300,7 +304,7 @@ func (s ChatScreen) whois(nick domain.Nick) tea.Cmd {
 
 		inst, err := s.sess.Whois(ctx, nick)
 		if err != nil {
-			return systemEventMsg{lines: []string{
+			return systemEventMsg{kind: components.EventError, lines: []string{
 				fmt.Sprintf("no such nick: %s", nick),
 			}}
 		}
@@ -322,7 +326,7 @@ func (s ChatScreen) whois(nick domain.Nick) tea.Cmd {
 			lines = append(lines, fmt.Sprintf("  channels: %s", strings.Join(chStrs, ", ")))
 		}
 
-		return systemEventMsg{lines: lines}
+		return systemEventMsg{kind: components.EventInfo, lines: lines}
 	}
 }
 
@@ -332,7 +336,7 @@ func (s ChatScreen) inviteModel(modelID domain.ModelID, persona string) tea.Cmd 
 
 		evt, err := s.sess.Invite(ctx, s.active, modelID, persona)
 		if err != nil {
-			return systemEventMsg{lines: []string{err.Error()}}
+			return systemEventMsg{kind: components.EventError, lines: []string{err.Error()}}
 		}
 
 		channels, _ := s.sess.ListChannels(ctx)
@@ -348,6 +352,7 @@ func (s ChatScreen) inviteModel(modelID domain.ModelID, persona string) tea.Cmd 
 			active:       s.active,
 			title:        s.title,
 			messages:     messages,
+			eventKind:    components.EventSuccess,
 			systemEvents: []string{event},
 		}
 	}
@@ -359,17 +364,18 @@ func (s ChatScreen) kickModel(nick domain.Nick) tea.Cmd {
 
 		evt, err := s.sess.Kick(ctx, s.active, nick)
 		if err != nil {
-			return systemEventMsg{lines: []string{err.Error()}}
+			return systemEventMsg{kind: components.EventError, lines: []string{err.Error()}}
 		}
 
 		channels, _ := s.sess.ListChannels(ctx)
 		messages, _ := s.sess.Messages(ctx, s.active)
 
 		return commandResultMsg{
-			channels: channels,
-			active:   s.active,
-			title:    s.title,
-			messages: messages,
+			channels:  channels,
+			active:    s.active,
+			title:     s.title,
+			messages:  messages,
+			eventKind: components.EventSuccess,
 			systemEvents: []string{
 				fmt.Sprintf("%s has been kicked from %s", evt.Nick, evt.Channel),
 			},
@@ -379,7 +385,7 @@ func (s ChatScreen) kickModel(nick domain.Nick) tea.Cmd {
 
 func (s ChatScreen) showHelp() tea.Cmd {
 	return func() tea.Msg {
-		return systemEventMsg{lines: []string{
+		return systemEventMsg{kind: components.EventInfo, lines: []string{
 			"/join <channel>                   Join or create a channel",
 			"/leave                            Leave the current channel",
 			"/list                             List all channels",
@@ -402,11 +408,11 @@ func (s ChatScreen) listChannels() tea.Cmd {
 
 		channels, err := s.sess.ListChannels(ctx)
 		if err != nil {
-			return systemEventMsg{lines: []string{err.Error()}}
+			return systemEventMsg{kind: components.EventError, lines: []string{err.Error()}}
 		}
 
 		if len(channels) == 0 {
-			return systemEventMsg{lines: []string{"no channels"}}
+			return systemEventMsg{kind: components.EventInfo, lines: []string{"no channels"}}
 		}
 
 		lines := make([]string, len(channels))
@@ -419,6 +425,6 @@ func (s ChatScreen) listChannels() tea.Cmd {
 			lines[i] = line
 		}
 
-		return systemEventMsg{lines: lines}
+		return systemEventMsg{kind: components.EventInfo, lines: lines}
 	}
 }
