@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -18,6 +19,12 @@ type MessagesUpdatedMsg struct {
 	Messages []domain.Message
 }
 
+// PendingResponseMsg sets or clears the "awaiting response" indicator
+// in the chat view.
+type PendingResponseMsg struct {
+	Pending bool
+}
+
 // ChatView displays messages for a single channel with an input bar
 // at the bottom.
 type ChatView struct {
@@ -27,6 +34,8 @@ type ChatView struct {
 	messages []domain.Message
 	input    InputBar
 	scroll   int
+	pending  bool
+	spinner  spinner.Model
 }
 
 // NewChatView creates a chat view for the given channel.
@@ -37,6 +46,10 @@ func NewChatView(ch domain.ChannelName, userNick domain.Nick, title string, mess
 		userNick: userNick,
 		messages: messages,
 		input:    NewInputBar(),
+		spinner: spinner.New(
+			spinner.WithSpinner(spinner.Dot),
+			spinner.WithStyle(theme.Dim),
+		),
 	}
 }
 
@@ -48,6 +61,25 @@ func (c ChatView) Init() tea.Cmd {
 // Update implements ui.Model.
 func (c ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case PendingResponseMsg:
+		c.pending = msg.Pending
+
+		if c.pending {
+			return c, c.spinner.Tick
+		}
+
+		return c, nil
+
+	case spinner.TickMsg:
+		if !c.pending {
+			return c, nil
+		}
+
+		var cmd tea.Cmd
+		c.spinner, cmd = c.spinner.Update(msg)
+
+		return c, cmd
+
 	case MessagesUpdatedMsg:
 		if msg.Channel != c.channel {
 			return c, nil
@@ -92,18 +124,35 @@ func (c ChatView) View(width, height int) string {
 		topicHeight = lipgloss.Height(topicView)
 	}
 
-	listHeight := height - inputHeight - topicHeight
+	var pendingView string
+	pendingHeight := 0
+
+	if c.pending {
+		pendingView = c.spinner.View() + " responding…"
+		pendingHeight = lipgloss.Height(pendingView)
+	}
+
+	listHeight := height - inputHeight - topicHeight - pendingHeight
 	if listHeight < 0 {
 		listHeight = 0
 	}
 
 	messageView := c.renderMessages(width, listHeight)
 
+	parts := make([]string, 0, 4)
 	if topicView != "" {
-		return lipgloss.JoinVertical(lipgloss.Left, topicView, messageView, inputView)
+		parts = append(parts, topicView)
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Left, messageView, inputView)
+	parts = append(parts, messageView)
+
+	if pendingView != "" {
+		parts = append(parts, pendingView)
+	}
+
+	parts = append(parts, inputView)
+
+	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }
 
 func (c ChatView) renderTopic(width int) string {

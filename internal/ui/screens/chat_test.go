@@ -112,15 +112,17 @@ func TestChatScreen_send_message(t *testing.T) {
 
 	m := initChatScreen(t, sess)
 
-	// Send a message.
+	// Send a message — the pending indicator should appear.
 	m, cmd := m.Update(components.MessageSubmitMsg{Text: "hello world"})
 	require.NotNil(t, cmd)
+	require.Contains(t, m.View(80, 24), "responding")
 
-	// Execute the send command.
+	// Execute the send command — pending clears, message appears.
 	m, _ = m.Update(cmd())
 
 	v := m.View(80, 24)
 	require.Contains(t, v, "hello world")
+	require.NotContains(t, v, "responding")
 }
 
 func TestChatScreen_nick_command(t *testing.T) {

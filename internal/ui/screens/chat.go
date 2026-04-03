@@ -137,12 +137,16 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		return s.handleSystemEvent(msg)
 
 	case PokeTickMsg:
+		s = s.forwardToLayout(components.PendingResponseMsg{Pending: true})
+
 		return s, s.handlePoke()
 
 	case components.ChannelSelectedMsg:
 		return s, s.switchChannel(msg.Channel)
 
 	case components.MessageSubmitMsg:
+		s = s.forwardToLayout(components.PendingResponseMsg{Pending: true})
+
 		return s, s.sendMessage(msg.Text)
 
 	case components.CommandSubmitMsg:
@@ -209,6 +213,13 @@ func (s ChatScreen) handleSystemEvent(msg systemEventMsg) (ui.Model, tea.Cmd) {
 	s.layout = components.NewMainLayout(s.layout.Sidebar, chatView)
 
 	return s, nil
+}
+
+func (s ChatScreen) forwardToLayout(msg tea.Msg) ChatScreen {
+	updated, _ := s.layout.Update(msg)
+	s.layout = updated.(components.MainLayout)
+
+	return s
 }
 
 func appendSystemEvents(messages []domain.Message, ch domain.ChannelName, events []string) []domain.Message {

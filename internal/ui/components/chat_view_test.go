@@ -239,6 +239,51 @@ func TestChatView_topic_bar_reduces_message_area(t *testing.T) {
 	require.Equal(t, withoutLines, withLines)
 }
 
+func TestChatView_pending_indicator(t *testing.T) {
+	cv := components.NewChatView("#general", "testuser", "", testMessages)
+	var m ui.Model = cv
+
+	// Initially no pending indicator.
+	v := m.View(80, 24)
+	require.NotContains(t, v, "responding")
+
+	// Set pending.
+	m, _ = m.Update(components.PendingResponseMsg{Pending: true})
+
+	v = m.View(80, 24)
+	require.Contains(t, v, "responding")
+
+	// Clear pending.
+	m, _ = m.Update(components.PendingResponseMsg{Pending: false})
+
+	v = m.View(80, 24)
+	require.NotContains(t, v, "responding")
+}
+
+func TestChatView_pending_indicator_reduces_message_area(t *testing.T) {
+	msgs := make([]domain.Message, 30)
+	for i := range msgs {
+		msgs[i] = domain.Message{
+			ID:      fmt.Sprintf("%d", i),
+			Channel: "#general",
+			From:    "user",
+			Body:    fmt.Sprintf("msg %d", i),
+		}
+	}
+
+	cv := components.NewChatView("#general", "testuser", "", msgs)
+	var m ui.Model = cv
+
+	m, _ = m.Update(components.PendingResponseMsg{Pending: true})
+
+	v := m.View(80, 24)
+	withLines := lipgloss.Height(v)
+
+	// Total height should stay the same.
+	require.Equal(t, 24, withLines)
+	require.Contains(t, v, "responding")
+}
+
 func TestRenderSystemEvent(t *testing.T) {
 	got := components.RenderSystemEvent("alice has joined")
 
