@@ -8,14 +8,17 @@ type Root struct {
 	height int
 }
 
+// NewRoot creates the top-level Root model.
 func NewRoot() Root {
 	return Root{}
 }
 
+// Init implements tea.Model.
 func (r Root) Init() tea.Cmd {
 	return nil
 }
 
+// Update implements tea.Model.
 func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -31,6 +34,7 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return r, nil
 }
 
+// View implements tea.Model.
 func (r Root) View() string {
 	return "modeloff — starting up..."
 }

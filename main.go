@@ -1,3 +1,4 @@
+// Package main is the entry point for the modeloff TUI application.
 package main
 
 import (

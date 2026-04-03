@@ -1,3 +1,6 @@
+// Package ui contains the Bubble Tea models that make up the modeloff
+// TUI. The top-level Root model acts as a router, delegating to screen
+// models that each implement the responsive Model interface.
 package ui
 
 import tea "github.com/charmbracelet/bubbletea"

@@ -10,15 +10,33 @@ import "time"
 // received from a model.
 type MessageKind string
 
+// MessageKind values mirror the IRC command set, mapping each user or
+// system action to a named event that models can interpret.
 const (
+	// KindPrivMsg is a regular chat message sent to a room or nick.
 	KindPrivMsg MessageKind = "PRIVMSG"
-	KindJoin    MessageKind = "JOIN"
-	KindPart    MessageKind = "PART"
-	KindNick    MessageKind = "NICK"
-	KindTopic   MessageKind = "TOPIC"
-	KindInvite  MessageKind = "INVITE"
-	KindKick    MessageKind = "KICK"
-	KindPoke    MessageKind = "POKE"
+
+	// KindJoin indicates a user or model has entered a room.
+	KindJoin MessageKind = "JOIN"
+
+	// KindPart indicates a user or model has left a room.
+	KindPart MessageKind = "PART"
+
+	// KindNick indicates a nickname change.
+	KindNick MessageKind = "NICK"
+
+	// KindTopic indicates a room's title has been changed.
+	KindTopic MessageKind = "TOPIC"
+
+	// KindInvite indicates a model has been invited to a room.
+	KindInvite MessageKind = "INVITE"
+
+	// KindKick indicates a model has been removed from a room.
+	KindKick MessageKind = "KICK"
+
+	// KindPoke is a periodic nudge sent to models to prompt
+	// unsolicited conversation.
+	KindPoke MessageKind = "POKE"
 )
 
 // IRCMessage is the structured representation of an event sent to a
@@ -35,8 +53,15 @@ type IRCMessage struct {
 // ResponseKind indicates whether the model chose to reply.
 type ResponseKind string
 
+// ResponseKind values represent the two possible outcomes when a model
+// processes events: it either replies with content or explicitly
+// chooses to remain silent.
 const (
-	ResponseReply   ResponseKind = "reply"
+	// ResponseReply means the model has produced a message to send.
+	ResponseReply ResponseKind = "reply"
+
+	// ResponseSilence means the model chose not to respond. The
+	// Reason field on ModelResponse may explain why.
 	ResponseSilence ResponseKind = "silence"
 )
 

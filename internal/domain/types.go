@@ -15,8 +15,15 @@ type ModelID string
 // RoomKind distinguishes channels from direct messages.
 type RoomKind int
 
+// RoomKind values distinguish between multi-user channels and
+// one-to-one direct message conversations.
 const (
+	// RoomChannel is a named channel that multiple users and models
+	// can join (prefixed with ¢ in the UI).
 	RoomChannel RoomKind = iota
+
+	// RoomDM is a private conversation between the user and a
+	// single model instance.
 	RoomDM
 )
 
