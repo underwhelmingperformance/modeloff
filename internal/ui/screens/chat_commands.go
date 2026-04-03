@@ -65,6 +65,9 @@ func (s *ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
 	case command.HelpCommand:
 		return s.showHelp()
 
+	case command.QuitCommand:
+		return tea.Quit
+
 	default:
 		return func() tea.Msg {
 			return systemEventMsg{kind: components.EventError, lines: []string{
@@ -406,6 +409,7 @@ func (s *ChatScreen) showHelp() tea.Cmd {
 			"/config api-key <key>             Set the OpenRouter API key",
 			"/config poke-interval <duration>  Set the poke interval",
 			"/help                             Show this help",
+			"/quit                             Exit modeloff",
 		}}
 	}
 }

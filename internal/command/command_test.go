@@ -141,6 +141,13 @@ func TestParse(t *testing.T) {
 			want:  HelpCommand{},
 		},
 
+		// /quit
+		{
+			name:  "quit",
+			input: "/quit",
+			want:  QuitCommand{},
+		},
+
 		// /config
 		{
 			name:  "config",

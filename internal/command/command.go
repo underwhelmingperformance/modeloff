@@ -80,6 +80,11 @@ type HelpCommand struct{}
 
 func (HelpCommand) commandMarker() {}
 
+// QuitCommand represents `/quit`.
+type QuitCommand struct{}
+
+func (QuitCommand) commandMarker() {}
+
 // ConfigCommand represents `/config`.
 type ConfigCommand struct {
 	Key   string
@@ -125,6 +130,8 @@ func Parse(input string) (Command, error) {
 		return parseConfig(args), nil
 	case "/help":
 		return HelpCommand{}, nil
+	case "/quit":
+		return QuitCommand{}, nil
 	default:
 		return nil, fmt.Errorf("unknown command: %s", name)
 	}
