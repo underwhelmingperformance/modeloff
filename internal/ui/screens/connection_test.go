@@ -10,6 +10,12 @@ import (
 	"github.com/laney/modeloff/internal/ui/screens"
 )
 
+type stubScreen struct{}
+
+func (s *stubScreen) Init() tea.Cmd                      { return nil }
+func (s *stubScreen) Update(tea.Msg) (ui.Model, tea.Cmd) { return s, nil }
+func (s *stubScreen) View(int, int) string               { return "stub" }
+
 func tick(t *testing.T, m ui.Model) (ui.Model, tea.Cmd) {
 	t.Helper()
 
@@ -21,10 +27,12 @@ func view(m ui.Model) string {
 }
 
 func TestConnectionScreen_with_api_key(t *testing.T) {
+	next := &stubScreen{}
 	s := screens.NewConnectionScreen(screens.ConnectionConfig{
 		HasAPIKey:    true,
 		ChannelCount: 3,
 		Nick:         "alice",
+		Next:         next,
 	})
 
 	// Initial view: first step is shown as pending.
@@ -54,13 +62,14 @@ func TestConnectionScreen_with_api_key(t *testing.T) {
 	require.Contains(t, v, "Welcome, alice")
 	require.NotNil(t, cmd)
 
-	// Tick 4: "Welcome" completes — final cmd should be ConnectionDoneMsg.
+	// Tick 4: "Welcome" completes — transitions to the next screen.
 	_, cmd = tick(t, m)
 	require.NotNil(t, cmd)
 
 	msg := cmd()
-	_, ok := msg.(screens.ConnectionDoneMsg)
-	require.True(t, ok, "expected ConnectionDoneMsg, got %T", msg)
+	screenMsg, ok := msg.(ui.ScreenMsg)
+	require.True(t, ok, "expected ScreenMsg, got %T", msg)
+	require.Equal(t, next, screenMsg.Screen)
 }
 
 func TestConnectionScreen_no_api_key(t *testing.T) {

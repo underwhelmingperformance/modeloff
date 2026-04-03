@@ -32,11 +32,6 @@ const (
 // ConnectionTickMsg advances the connection sequence by one step.
 type ConnectionTickMsg struct{}
 
-// ConnectionDoneMsg is sent when the connection sequence finishes
-// successfully and no Next screen was configured. When Next is set,
-// a ui.ScreenMsg is emitted instead.
-type ConnectionDoneMsg struct{}
-
 // ConnectionConfig holds the inputs the connection screen needs to
 // determine what to show.
 type ConnectionConfig struct {
@@ -103,18 +98,14 @@ func (s ConnectionScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	if s.cur >= len(s.steps) {
 		s.done = true
 
-		if s.cfg.Next != nil {
-			next := s.cfg.Next
-			return s, func() tea.Msg {
-				return ui.ScreenMsg{Screen: next}
-			}
+		if s.cfg.Next == nil {
+			return s, nil
 		}
 
-		if s.cfg.HasAPIKey {
-			return s, func() tea.Msg { return ConnectionDoneMsg{} }
+		next := s.cfg.Next
+		return s, func() tea.Msg {
+			return ui.ScreenMsg{Screen: next}
 		}
-
-		return s, nil
 	}
 
 	return s, tea.Tick(stepDelay, func(time.Time) tea.Msg {
