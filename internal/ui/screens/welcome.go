@@ -49,13 +49,13 @@ func (s WelcomeScreen) View(width, height int) string {
 		"",
 		"Start by creating a channel and configuring OpenRouter.",
 		"",
-		theme.ChannelName.Render("/join #general"),
+		theme.Bold.Render("/join #general"),
 		theme.Dim.Render("Create your first channel."),
 		"",
-		theme.ChannelName.Render("/config api-key <value>"),
+		theme.Bold.Render("/config api-key <value>"),
 		theme.Dim.Render("Set the API key needed to invite models."),
 		"",
-		theme.ChannelName.Render("ctrl+d, ctrl+u, ctrl+o"),
+		theme.Bold.Render("ctrl+d, ctrl+u, ctrl+o"),
 		theme.Dim.Render("Move around the sidebar once you have channels."),
 	}
 
