@@ -12,7 +12,7 @@ import (
 
 func main() {
 	p := tea.NewProgram(
-		ui.NewRoot(),
+		ui.NewRoot(nil),
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),
 	)
