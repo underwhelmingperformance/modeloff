@@ -1,10 +1,27 @@
 package ui
 
-import tea "github.com/charmbracelet/bubbletea"
+import (
+	"github.com/charmbracelet/bubbles/key"
+	tea "github.com/charmbracelet/bubbletea"
+)
 
 // ScreenMsg tells Root to switch to a different screen.
 type ScreenMsg struct {
 	Screen Model
+}
+
+// AppKeyMap defines application-level keybindings handled by Root.
+type AppKeyMap struct {
+	Quit key.Binding
+}
+
+// DefaultAppKeyMap is the default set of application-level
+// keybindings.
+var DefaultAppKeyMap = AppKeyMap{
+	Quit: key.NewBinding(
+		key.WithKeys("ctrl+c"),
+		key.WithHelp("^C", "quit"),
+	),
 }
 
 // Root is the top-level model that acts as a router between screens.
@@ -14,13 +31,14 @@ type Root struct {
 	width  int
 	height int
 	screen Model
+	keyMap AppKeyMap
 }
 
 // NewRoot creates the top-level Root model with the given initial
 // screen. If screen is nil, Root renders an empty view until a
 // ScreenMsg arrives.
 func NewRoot(screen Model) Root {
-	return Root{screen: screen}
+	return Root{screen: screen, keyMap: DefaultAppKeyMap}
 }
 
 // Init implements tea.Model.
@@ -40,7 +58,7 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		r.height = msg.Height
 
 	case tea.KeyMsg:
-		if msg.String() == "ctrl+c" {
+		if key.Matches(msg, r.keyMap.Quit) {
 			return r, tea.Quit
 		}
 

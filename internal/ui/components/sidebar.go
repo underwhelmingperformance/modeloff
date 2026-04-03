@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -33,6 +34,7 @@ type Sidebar struct {
 	cursor   int
 	active   domain.ChannelName
 	unread   map[domain.ChannelName]int
+	keyMap   SidebarKeyMap
 }
 
 // NewSidebar creates a sidebar with the given initial channels and
@@ -43,6 +45,7 @@ func NewSidebar(channels []domain.Channel, active domain.ChannelName, unread map
 		channels: channels,
 		active:   active,
 		unread:   unread,
+		keyMap:   DefaultSidebarKeyMap,
 	}
 
 	return s.syncCursor()
@@ -73,16 +76,16 @@ func (s Sidebar) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 }
 
 func (s Sidebar) handleKey(msg tea.KeyMsg) (ui.Model, tea.Cmd) {
-	switch msg.String() {
-	case "ctrl+d":
+	switch {
+	case key.Matches(msg, s.keyMap.Down):
 		s.cursor++
 		s = s.clampCursor()
 
-	case "ctrl+u":
+	case key.Matches(msg, s.keyMap.Up):
 		s.cursor--
 		s = s.clampCursor()
 
-	case "ctrl+o":
+	case key.Matches(msg, s.keyMap.Select):
 		if len(s.channels) == 0 {
 			return s, nil
 		}

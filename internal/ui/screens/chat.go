@@ -3,14 +3,14 @@ package screens
 import (
 	"context"
 
+	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/session"
+	"github.com/laney/modeloff/internal/set"
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/components"
-
-	"github.com/laney/modeloff/internal/set"
 )
 
 // chatLoadedMsg carries the initial data needed to render the chat
@@ -72,6 +72,7 @@ type ChatScreen struct {
 	sess     *session.Session
 	layout   components.MainLayout
 	chatView *components.ChatView
+	keyMap   components.ChatScreenKeyMap
 
 	active       domain.ChannelName
 	title        string
@@ -92,6 +93,7 @@ func NewChatScreen(ctx context.Context, sess *session.Session) *ChatScreen {
 		sess:     sess,
 		layout:   layout,
 		chatView: chatView,
+		keyMap:   components.DefaultChatScreenKeyMap,
 	}
 }
 
@@ -175,7 +177,7 @@ func (s *ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		return s, s.handleCommand(msg)
 
 	case tea.KeyMsg:
-		if msg.String() == "ctrl+n" {
+		if key.Matches(msg, s.keyMap.ToggleNickList) {
 			s.forwardToLayout(components.NickListToggleMsg{})
 			return s, nil
 		}

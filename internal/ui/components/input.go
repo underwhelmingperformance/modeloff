@@ -31,7 +31,8 @@ const historySize = 50
 // InputBar wraps bubbles/textinput with command detection and input
 // history recall via Up/Down arrows.
 type InputBar struct {
-	input textinput.Model
+	input  textinput.Model
+	keyMap InputBarKeyMap
 
 	history   []string
 	histPos   int // -1 = editing new input, 0..len(history)-1 = browsing
@@ -52,6 +53,7 @@ func NewInputBar() InputBar {
 
 	return InputBar{
 		input:   ti,
+		keyMap:  DefaultInputBarKeyMap,
 		histPos: -1,
 	}
 }
@@ -71,14 +73,14 @@ func (b InputBar) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		return b, cmd
 	}
 
-	switch km.Type {
-	case tea.KeyEnter:
+	switch {
+	case key.Matches(km, b.keyMap.Submit):
 		return b.submit()
 
-	case tea.KeyUp:
+	case key.Matches(km, b.keyMap.HistoryUp):
 		return b.historyUp(), nil
 
-	case tea.KeyDown:
+	case key.Matches(km, b.keyMap.HistoryDn):
 		return b.historyDown(), nil
 	}
 
