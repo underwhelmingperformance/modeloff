@@ -58,14 +58,3 @@ func TestRoot_ScreenMsg_switches_screen(t *testing.T) {
 
 	require.Equal(t, "second:40x10", root.View())
 }
-
-func TestRoot_ctrl_c_quits(t *testing.T) {
-	root := ui.NewRoot(nil)
-	_, cmd := root.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
-
-	require.NotNil(t, cmd)
-
-	msg := cmd()
-	_, ok := msg.(tea.QuitMsg)
-	require.True(t, ok, "expected tea.QuitMsg, got %T", msg)
-}

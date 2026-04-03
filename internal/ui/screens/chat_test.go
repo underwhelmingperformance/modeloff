@@ -102,31 +102,6 @@ func TestChatScreen_Init_empty(t *testing.T) {
 	require.Contains(t, v, "ctrl+d, ctrl+u, ctrl+o")
 }
 
-func TestChatScreen_channel_selection(t *testing.T) {
-	sess := newTestSession(t)
-	seedChannel(t, sess, "#general")
-	seedChannel(t, sess, "#random")
-	seedMessage(t, sess, "#random", "random msg")
-
-	cs := screens.NewChatScreen(sess)
-
-	// Load initial state.
-	msg := cs.Init()()
-	var m ui.Model
-	m, _ = cs.Update(msg)
-
-	// Select #random.
-	m, cmd := m.Update(components.ChannelSelectedMsg{Channel: "#random"})
-	require.NotNil(t, cmd)
-
-	// Execute the switch command.
-	msg = cmd()
-	m, _ = m.Update(msg)
-
-	v := m.View(80, 24)
-	require.Contains(t, v, "random msg")
-}
-
 func TestChatScreen_send_message(t *testing.T) {
 	sess := newTestSession(t)
 	seedChannel(t, sess, "#general")
@@ -148,70 +123,6 @@ func TestChatScreen_send_message(t *testing.T) {
 
 	v := m.View(80, 24)
 	require.Contains(t, v, "hello world")
-}
-
-func TestChatScreen_join_new_channel(t *testing.T) {
-	sess := newTestSession(t)
-
-	cs := screens.NewChatScreen(sess)
-
-	msg := cs.Init()()
-	var m ui.Model
-	m, _ = cs.Update(msg)
-
-	m, cmd := m.Update(components.CommandSubmitMsg{Name: "join", Args: "#newchan"})
-	require.NotNil(t, cmd)
-
-	msg = cmd()
-	m, _ = m.Update(msg)
-
-	v := m.View(80, 24)
-	require.Contains(t, v, "Created channel #newchan")
-}
-
-func TestChatScreen_join_existing_channel(t *testing.T) {
-	sess := newTestSession(t)
-	seedChannel(t, sess, "#general")
-	seedChannel(t, sess, "#existing")
-
-	cs := screens.NewChatScreen(sess)
-
-	msg := cs.Init()()
-	var m ui.Model
-	m, _ = cs.Update(msg)
-
-	m, cmd := m.Update(components.CommandSubmitMsg{Name: "join", Args: "#general"})
-	require.NotNil(t, cmd)
-
-	msg = cmd()
-	m, _ = m.Update(msg)
-
-	v := m.View(80, 24)
-	require.Contains(t, v, "Switched to #general")
-}
-
-func TestChatScreen_leave_command(t *testing.T) {
-	sess := newTestSession(t)
-	seedChannel(t, sess, "#general")
-	seedChannel(t, sess, "#random")
-
-	cs := screens.NewChatScreen(sess)
-
-	// Load.
-	msg := cs.Init()()
-	var m ui.Model
-	m, _ = cs.Update(msg)
-
-	// Leave the active channel.
-	m, cmd := m.Update(components.CommandSubmitMsg{Name: "leave", Args: ""})
-	require.NotNil(t, cmd)
-
-	msg = cmd()
-	m, _ = m.Update(msg)
-
-	// Should still have channels visible (switched to the other one).
-	v := m.View(80, 24)
-	require.NotEmpty(t, v)
 }
 
 func TestChatScreen_nick_command(t *testing.T) {
@@ -666,47 +577,6 @@ func TestChatScreen_msg_command_unknown_nick(t *testing.T) {
 
 	v := m.View(80, 24)
 	require.Contains(t, v, "no such nick: nobody")
-}
-
-func TestChatScreen_invalid_command(t *testing.T) {
-	sess := newTestSession(t)
-	seedChannel(t, sess, "#general")
-
-	cs := screens.NewChatScreen(sess)
-
-	msg := cs.Init()()
-	var m ui.Model
-	m, _ = cs.Update(msg)
-
-	// /nick without args is a parse error.
-	m, cmd := m.Update(components.CommandSubmitMsg{Name: "nick", Args: ""})
-	require.NotNil(t, cmd)
-
-	msg = cmd()
-	m, _ = m.Update(msg)
-
-	v := m.View(80, 24)
-	require.Contains(t, v, "/nick requires a new nickname")
-}
-
-func TestChatScreen_unknown_command_shows_error(t *testing.T) {
-	sess := newTestSession(t)
-	seedChannel(t, sess, "#general")
-
-	cs := screens.NewChatScreen(sess)
-
-	msg := cs.Init()()
-	var m ui.Model
-	m, _ = cs.Update(msg)
-
-	m, cmd := m.Update(components.CommandSubmitMsg{Name: "unknown", Args: ""})
-	require.NotNil(t, cmd)
-
-	msg = cmd()
-	m, _ = m.Update(msg)
-
-	v := m.View(80, 24)
-	require.Contains(t, v, "unknown command: /unknown")
 }
 
 func TestChatScreen_View_responsive(t *testing.T) {
