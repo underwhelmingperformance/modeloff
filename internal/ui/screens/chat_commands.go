@@ -12,6 +12,19 @@ import (
 	"github.com/laney/modeloff/internal/ui/components"
 )
 
+func (s *ChatScreen) channelMembers(ch domain.ChannelName) []domain.Nick {
+	if ch == "" {
+		return nil
+	}
+
+	channel, err := s.sess.GetChannel(s.ctx, ch)
+	if err != nil {
+		return nil
+	}
+
+	return sortedMembers(channel.Members)
+}
+
 func noChannelMsg() tea.Msg {
 	return systemEventMsg{kind: components.EventWarning, lines: []string{"join a channel first"}}
 }
@@ -182,6 +195,7 @@ func (s *ChatScreen) directMessage(nick domain.Nick, body string) tea.Cmd {
 			title:        "",
 			messages:     messages,
 			unread:       s.unreadCounts(ctx, channels),
+			members:      s.channelMembers(ch.Name),
 			eventKind:    components.EventSuccess,
 			systemEvents: systemEvents,
 		}
@@ -205,6 +219,7 @@ func (s *ChatScreen) handlePoke() tea.Cmd {
 			title:    s.title,
 			messages: messages,
 			unread:   s.unreadCounts(ctx, channels),
+			members:  s.channelMembers(s.active),
 		}
 	}
 }
@@ -238,6 +253,7 @@ func (s *ChatScreen) joinChannel(name string) tea.Cmd {
 			title:        title,
 			messages:     messages,
 			unread:       s.unreadCounts(ctx, channels),
+			members:      s.channelMembers(active),
 			eventKind:    components.EventSuccess,
 			systemEvents: []string{event},
 		}
@@ -268,6 +284,7 @@ func (s *ChatScreen) leaveChannel() tea.Cmd {
 			title:    title,
 			messages: messages,
 			unread:   s.unreadCounts(ctx, channels),
+			members:  s.channelMembers(active),
 		}
 	}
 }
@@ -290,6 +307,7 @@ func (s *ChatScreen) changeNick(nick domain.Nick) tea.Cmd {
 			title:     s.title,
 			messages:  messages,
 			unread:    s.unreadCounts(ctx, channels),
+			members:   s.channelMembers(s.active),
 			eventKind: components.EventSuccess,
 			systemEvents: []string{
 				fmt.Sprintf("%s is now known as %s", evt.OldNick, evt.NewNick),
@@ -321,6 +339,7 @@ func (s *ChatScreen) setTitle(title string) tea.Cmd {
 			title:        title,
 			messages:     messages,
 			unread:       s.unreadCounts(ctx, channels),
+			members:      s.channelMembers(s.active),
 			eventKind:    components.EventSuccess,
 			systemEvents: []string{event},
 		}
@@ -382,6 +401,7 @@ func (s *ChatScreen) inviteModel(modelID domain.ModelID, persona string) tea.Cmd
 			title:        s.title,
 			messages:     messages,
 			unread:       s.unreadCounts(ctx, channels),
+			members:      s.channelMembers(s.active),
 			eventKind:    components.EventSuccess,
 			systemEvents: []string{event},
 		}
@@ -406,6 +426,7 @@ func (s *ChatScreen) kickModel(nick domain.Nick) tea.Cmd {
 			title:     s.title,
 			messages:  messages,
 			unread:    s.unreadCounts(ctx, channels),
+			members:   s.channelMembers(s.active),
 			eventKind: components.EventSuccess,
 			systemEvents: []string{
 				fmt.Sprintf("%s has been kicked from %s", evt.Nick, evt.Channel),

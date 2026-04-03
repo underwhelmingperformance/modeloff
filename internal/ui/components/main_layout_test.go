@@ -130,6 +130,99 @@ func TestMainLayout_View_status_bar_abbreviates_narrow(t *testing.T) {
 	require.Contains(t, got, "quit")
 }
 
+func TestMainLayout_View_three_pane_at_wide_width(t *testing.T) {
+	sidebar := stubModel{label: "sidebar"}
+	content := stubModel{label: "content"}
+	nicklist := stubModel{label: "nicks"}
+
+	layout := components.NewMainLayout(sidebar, content)
+	layout.SetNickList(nicklist)
+
+	got := layout.View(120, 24)
+
+	require.Contains(t, got, "sidebar:")
+	require.Contains(t, got, "content:")
+	require.Contains(t, got, "nicks:")
+}
+
+func TestMainLayout_View_hides_nicklist_at_narrow_width(t *testing.T) {
+	sidebar := stubModel{label: "sidebar"}
+	content := stubModel{label: "content"}
+	nicklist := stubModel{label: "nicks"}
+
+	layout := components.NewMainLayout(sidebar, content)
+	layout.SetNickList(nicklist)
+
+	got := layout.View(80, 24)
+
+	require.Contains(t, got, "sidebar:")
+	require.Contains(t, got, "content:")
+	require.NotContains(t, got, "nicks:")
+}
+
+func TestMainLayout_View_nicklist_toggle(t *testing.T) {
+	sidebar := stubModel{label: "sidebar"}
+	content := stubModel{label: "content"}
+	nicklist := stubModel{label: "nicks"}
+
+	layout := components.NewMainLayout(sidebar, content)
+	layout.SetNickList(nicklist)
+
+	// Initially visible at wide width.
+	got := layout.View(120, 24)
+	require.Contains(t, got, "nicks:")
+
+	// Toggle off.
+	updated, _ := layout.Update(components.NickListToggleMsg{})
+	layout = updated.(components.MainLayout)
+
+	got = layout.View(120, 24)
+	require.NotContains(t, got, "nicks:")
+
+	// Toggle back on.
+	updated, _ = layout.Update(components.NickListToggleMsg{})
+	layout = updated.(components.MainLayout)
+
+	got = layout.View(120, 24)
+	require.Contains(t, got, "nicks:")
+}
+
+func TestMainLayout_View_no_nicklist_without_set(t *testing.T) {
+	sidebar := stubModel{label: "sidebar"}
+	content := stubModel{label: "content"}
+
+	layout := components.NewMainLayout(sidebar, content)
+
+	got := layout.View(120, 24)
+
+	require.Contains(t, got, "sidebar:")
+	require.Contains(t, got, "content:")
+}
+
+func TestMainLayout_View_three_pane_fills_width(t *testing.T) {
+	sidebar := stubModel{label: "sidebar"}
+	content := stubModel{label: "content"}
+	nicklist := stubModel{label: "nicks"}
+
+	layout := components.NewMainLayout(sidebar, content)
+	layout.SetNickList(nicklist)
+
+	got := layout.View(120, 24)
+
+	renderedWidth := lipgloss.Width(got)
+	require.LessOrEqual(t, renderedWidth, 120,
+		"three-pane rendered width must not exceed total width")
+}
+
+func TestMainLayout_View_status_bar_shows_nicks_shortcut(t *testing.T) {
+	sidebar := stubModel{label: "sidebar"}
+	content := stubModel{label: "content"}
+	layout := components.NewMainLayout(sidebar, content)
+
+	got := layout.View(120, 24)
+	require.Contains(t, got, "nicks")
+}
+
 // initModel is a stubModel that returns a command from Init.
 type initModel struct {
 	stubModel

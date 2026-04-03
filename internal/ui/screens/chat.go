@@ -9,6 +9,8 @@ import (
 	"github.com/laney/modeloff/internal/session"
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/components"
+
+	"github.com/laney/modeloff/internal/set"
 )
 
 // chatLoadedMsg carries the initial data needed to render the chat
@@ -19,6 +21,7 @@ type chatLoadedMsg struct {
 	title    string
 	messages []domain.Message
 	unread   map[domain.ChannelName]int
+	members  []domain.Nick
 }
 
 // channelSwitchedMsg is sent after a channel switch completes,
@@ -29,6 +32,7 @@ type channelSwitchedMsg struct {
 	channels []domain.Channel
 	messages []domain.Message
 	unread   map[domain.ChannelName]int
+	members  []domain.Nick
 }
 
 // messageSentMsg is sent after a message is saved, carrying the
@@ -46,6 +50,7 @@ type commandResultMsg struct {
 	title        string
 	messages     []domain.Message
 	unread       map[domain.ChannelName]int
+	members      []domain.Nick
 	eventKind    components.EventKind
 	systemEvents []string
 }
@@ -69,6 +74,7 @@ type ChatScreen struct {
 	sess     *session.Session
 	layout   components.MainLayout
 	chatView *components.ChatView
+	nickList components.NickList
 
 	active       domain.ChannelName
 	title        string
@@ -81,13 +87,16 @@ type ChatScreen struct {
 func NewChatScreen(ctx context.Context, sess *session.Session) *ChatScreen {
 	sidebar := components.NewSidebar(nil, "", nil)
 	chatView := components.NewChatView("", sess.UserNick(), "", nil)
+	nickList := components.NewNickList(nil)
 	layout := components.NewMainLayout(sidebar, chatView)
+	layout.SetNickList(nickList)
 
 	return &ChatScreen{
 		ctx:      ctx,
 		sess:     sess,
 		layout:   layout,
 		chatView: chatView,
+		nickList: nickList,
 	}
 }
 
@@ -108,12 +117,14 @@ func (s *ChatScreen) Init() tea.Cmd {
 
 		var messages []domain.Message
 		var title string
+		var members []domain.Nick
 
 		if active != "" {
 			messages, _ = s.sess.Messages(ctx, active)
 
 			if ch, err := s.sess.GetChannel(ctx, active); err == nil {
 				title = ch.Title
+				members = sortedMembers(ch.Members)
 			}
 		}
 
@@ -123,6 +134,7 @@ func (s *ChatScreen) Init() tea.Cmd {
 			title:    title,
 			messages: messages,
 			unread:   s.unreadCounts(ctx, channels),
+			members:  members,
 		}
 	}
 }
@@ -166,6 +178,12 @@ func (s *ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 	case components.CommandSubmitMsg:
 		return s, s.handleCommand(msg)
+
+	case tea.KeyMsg:
+		if msg.String() == "ctrl+n" {
+			s.forwardToLayout(components.NickListToggleMsg{})
+			return s, nil
+		}
 	}
 
 	updated, cmd := s.layout.Update(msg)
@@ -181,6 +199,7 @@ func (s *ChatScreen) handleLoaded(msg chatLoadedMsg) (ui.Model, tea.Cmd) {
 
 	sidebar := components.NewSidebar(msg.channels, msg.active, msg.unread)
 	s.chatView.SetChannel(msg.active, msg.title, components.MessagesToLines(msg.messages))
+	s.nickList = components.NewNickList(msg.members)
 
 	if s.channelCount == 0 {
 		s.chatView.SetPlaceholder(welcomeText(s.sess.UserNick()))
@@ -188,7 +207,7 @@ func (s *ChatScreen) handleLoaded(msg chatLoadedMsg) (ui.Model, tea.Cmd) {
 		s.chatView.SetPlaceholder("")
 	}
 
-	s.layout = components.NewMainLayout(sidebar, s.chatView)
+	s.rebuildLayout(sidebar)
 
 	return s, nil
 }
@@ -201,7 +220,8 @@ func (s *ChatScreen) handleChannelSwitched(msg channelSwitchedMsg) (ui.Model, te
 	sidebar := components.NewSidebar(msg.channels, msg.channel, msg.unread)
 	s.chatView.SetPlaceholder("")
 	s.chatView.SetChannel(msg.channel, msg.title, components.MessagesToLines(msg.messages))
-	s.layout = components.NewMainLayout(sidebar, s.chatView)
+	s.nickList = components.NewNickList(msg.members)
+	s.rebuildLayout(sidebar)
 
 	return s, nil
 }
@@ -224,7 +244,8 @@ func (s *ChatScreen) handleCommandResult(msg commandResultMsg) (ui.Model, tea.Cm
 	sidebar := components.NewSidebar(msg.channels, msg.active, msg.unread)
 	s.chatView.SetPlaceholder("")
 	s.chatView.SetChannel(msg.active, msg.title, lines)
-	s.layout = components.NewMainLayout(sidebar, s.chatView)
+	s.nickList = components.NewNickList(msg.members)
+	s.rebuildLayout(sidebar)
 	s.forwardToLayout(components.PendingResponseMsg{Pending: false})
 
 	return s, nil
@@ -242,6 +263,13 @@ func (s *ChatScreen) handleSystemEvent(msg systemEventMsg) (ui.Model, tea.Cmd) {
 	s.chatView.SetLines(lines)
 
 	return s, nil
+}
+
+func (s *ChatScreen) rebuildLayout(sidebar components.Sidebar) {
+	layout := components.NewMainLayout(sidebar, s.chatView)
+	layout.SetNickList(s.nickList)
+	layout.NickListVisible = s.layout.NickListVisible
+	s.layout = layout
 }
 
 func (s *ChatScreen) forwardToLayout(msg tea.Msg) {
@@ -274,6 +302,19 @@ func appendSystemEvents(lines []components.ChatLine, kind components.EventKind, 
 	return lines
 }
 
+func sortedMembers(members set.Ordered[domain.Nick]) []domain.Nick {
+	if members == nil {
+		return nil
+	}
+
+	var nicks []domain.Nick
+	for nick := range members.Sorted() {
+		nicks = append(nicks, nick)
+	}
+
+	return nicks
+}
+
 func (s *ChatScreen) switchChannel(ch domain.ChannelName) tea.Cmd {
 	return func() tea.Msg {
 		ctx := s.ctx
@@ -284,8 +325,11 @@ func (s *ChatScreen) switchChannel(ch domain.ChannelName) tea.Cmd {
 		messages, _ := s.sess.Messages(ctx, ch)
 
 		var title string
+		var members []domain.Nick
+
 		if channel, err := s.sess.GetChannel(ctx, ch); err == nil {
 			title = channel.Title
+			members = sortedMembers(channel.Members)
 		}
 
 		return channelSwitchedMsg{
@@ -294,6 +338,7 @@ func (s *ChatScreen) switchChannel(ch domain.ChannelName) tea.Cmd {
 			channels: channels,
 			messages: messages,
 			unread:   s.unreadCounts(ctx, channels),
+			members:  members,
 		}
 	}
 }

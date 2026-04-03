@@ -114,7 +114,12 @@ func NarrowTerminalView(width, height int) string {
 // Sidebar styles.
 var (
 	SidebarBorder = lipgloss.NewStyle().
-		BorderStyle(lipgloss.NormalBorder()).
-		BorderRight(true).
-		BorderForeground(colourBrightBlack)
+			BorderStyle(lipgloss.NormalBorder()).
+			BorderRight(true).
+			BorderForeground(colourBrightBlack)
+
+	NickListBorder = lipgloss.NewStyle().
+			BorderStyle(lipgloss.NormalBorder()).
+			BorderLeft(true).
+			BorderForeground(colourBrightBlack)
 )

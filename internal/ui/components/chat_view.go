@@ -70,7 +70,6 @@ type ChatView struct {
 	viewport    viewport.Model
 	pending     bool
 	spinner     spinner.Model
-	width       int
 	placeholder string
 }
 

@@ -22,29 +22,69 @@ const minSidebarWidth = 16
 // maxSidebarWidth is the widest the sidebar can be, in columns.
 const maxSidebarWidth = 30
 
+// nickListFraction is the fraction of the total width given to the
+// nick list panel.
+const nickListFraction = 0.15
+
+// minNickListWidth is the narrowest the nick list can be, in columns.
+const minNickListWidth = 14
+
+// maxNickListWidth is the widest the nick list can be, in columns.
+const maxNickListWidth = 24
+
+// minWidthForNickList is the minimum terminal width at which the nick
+// list is shown. Below this width, the nick list is hidden regardless
+// of the toggle state.
+const minWidthForNickList = 100
+
+// NickListToggleMsg is sent when the user toggles the nick list
+// panel visibility.
+type NickListToggleMsg struct{}
+
 // MainLayout splits the screen horizontally into a sidebar on the
-// left and a content area on the right.
+// left, a content area in the middle, and an optional nick list on
+// the right.
 type MainLayout struct {
-	Sidebar ui.Model
-	Content ui.Model
+	Sidebar  ui.Model
+	Content  ui.Model
+	NickList ui.Model
+
+	NickListVisible bool
 }
 
 // NewMainLayout creates a MainLayout with the given sidebar and
-// content child models.
+// content child models. The nick list is nil by default.
 func NewMainLayout(sidebar, content ui.Model) MainLayout {
 	return MainLayout{
-		Sidebar: sidebar,
-		Content: content,
+		Sidebar:         sidebar,
+		Content:         content,
+		NickListVisible: true,
 	}
+}
+
+// SetNickList sets the nick list panel for the layout.
+func (m *MainLayout) SetNickList(nl ui.Model) {
+	m.NickList = nl
 }
 
 // Init implements ui.Model.
 func (m MainLayout) Init() tea.Cmd {
-	return tea.Batch(m.Sidebar.Init(), m.Content.Init())
+	cmds := []tea.Cmd{m.Sidebar.Init(), m.Content.Init()}
+
+	if m.NickList != nil {
+		cmds = append(cmds, m.NickList.Init())
+	}
+
+	return tea.Batch(cmds...)
 }
 
 // Update implements ui.Model.
 func (m MainLayout) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
+	if _, ok := msg.(NickListToggleMsg); ok {
+		m.NickListVisible = !m.NickListVisible
+		return m, nil
+	}
+
 	var cmds []tea.Cmd
 
 	sidebar, cmd := m.Sidebar.Update(msg)
@@ -54,6 +94,12 @@ func (m MainLayout) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	content, cmd := m.Content.Update(msg)
 	m.Content = content
 	cmds = append(cmds, cmd)
+
+	if m.NickList != nil {
+		nl, cmd := m.NickList.Update(msg)
+		m.NickList = nl
+		cmds = append(cmds, cmd)
+	}
 
 	return m, tea.Batch(cmds...)
 }
@@ -69,18 +115,38 @@ func (m MainLayout) View(width, height int) string {
 	contentHeight := height - barHeight
 
 	sw := sidebarWidth(width)
-	cw := width - sw
 
 	borderStyle := theme.SidebarBorder.
 		Height(contentHeight)
-
 	frameW, _ := borderStyle.GetFrameSize()
 	innerSW := sw - frameW
 
 	left := borderStyle.Render(m.Sidebar.View(innerSW, contentHeight))
+
+	showNickList := m.NickList != nil && m.NickListVisible && width >= minWidthForNickList
+	nlw := 0
+
+	if showNickList {
+		nlw = nickListWidth(width)
+	}
+
+	cw := width - sw - nlw
+
 	right := m.Content.View(cw, contentHeight)
 
-	main := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+	var main string
+
+	if showNickList {
+		nlBorderStyle := theme.NickListBorder.Height(contentHeight)
+		nlFrameW, _ := nlBorderStyle.GetFrameSize()
+		innerNLW := nlw - nlFrameW
+
+		nlView := nlBorderStyle.Render(m.NickList.View(innerNLW, contentHeight))
+
+		main = lipgloss.JoinHorizontal(lipgloss.Top, left, right, nlView)
+	} else {
+		main = lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+	}
 
 	return lipgloss.JoinVertical(lipgloss.Left, main, bar)
 }
@@ -96,6 +162,7 @@ func statusBar(width int) string {
 	full := []shortcut{
 		{"^D/U", "↑↓ channels"},
 		{"^O", "switch"},
+		{"^N", "nicks"},
 		{"PgUp/Dn", "scroll"},
 		{"/help", "commands"},
 		{"^C", "quit"},
@@ -110,7 +177,7 @@ func statusBar(width int) string {
 
 	// Abbreviate if too wide.
 	if lipgloss.Width(text) > width {
-		short := []string{"^D/U ↑↓", "^O switch", "PgUp/Dn", "/help", "^C quit"}
+		short := []string{"^D/U ↑↓", "^O switch", "^N nicks", "PgUp/Dn", "/help", "^C quit"}
 		text = strings.Join(short, " ")
 	}
 
@@ -133,4 +200,18 @@ func sidebarWidth(totalWidth int) int {
 	}
 
 	return sw
+}
+
+func nickListWidth(totalWidth int) int {
+	nw := int(float64(totalWidth) * nickListFraction)
+
+	if nw < minNickListWidth {
+		nw = minNickListWidth
+	}
+
+	if nw > maxNickListWidth {
+		nw = maxNickListWidth
+	}
+
+	return nw
 }
