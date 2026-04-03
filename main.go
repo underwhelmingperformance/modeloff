@@ -54,16 +54,14 @@ func main() {
 		roomCount = len(rooms)
 	}
 
-	placeholder := screens.NewPlaceholderScreen(cfg.UserNick)
+	chatScreen := screens.NewChatScreen(sess)
 
 	connScreen := screens.NewConnectionScreen(screens.ConnectionConfig{
 		HasAPIKey: cfg.APIKey != "",
 		RoomCount: roomCount,
 		Nick:      cfg.UserNick,
-		Next:      placeholder,
+		Next:      chatScreen,
 	})
-
-	_ = sess // Session will be used by future screens.
 
 	p := tea.NewProgram(
 		ui.NewRoot(connScreen),
