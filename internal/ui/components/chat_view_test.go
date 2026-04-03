@@ -141,6 +141,40 @@ func TestChatView_scroll(t *testing.T) {
 	require.Contains(t, v, "message 29")
 }
 
+func TestChatView_scroll_indicator(t *testing.T) {
+	msgs := make([]domain.Message, 30)
+	for i := range msgs {
+		msgs[i] = domain.Message{
+			ID:      fmt.Sprintf("%d", i),
+			Channel: "#general",
+			From:    "user",
+			Body:    fmt.Sprintf("message %d", i),
+		}
+	}
+
+	cv := components.NewChatView("#general", "testuser", "", components.MessagesToLines(msgs))
+	var m ui.Model = cv
+
+	// At the bottom — no indicator.
+	v := m.View(80, 24)
+	require.NotContains(t, v, "%)")
+
+	// Scroll up — indicator appears.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+
+	v = m.View(80, 24)
+	require.Contains(t, v, "%)")
+
+	// Total height stays the same.
+	require.Equal(t, 24, lipgloss.Height(v))
+
+	// Scroll back to bottom — indicator disappears.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+
+	v = m.View(80, 24)
+	require.NotContains(t, v, "%)")
+}
+
 func TestChatView_scroll_does_not_go_negative(t *testing.T) {
 	cv := components.NewChatView("#general", "testuser", "", testMessages)
 	var m ui.Model = cv

@@ -207,36 +207,70 @@ func (c ChatView) renderMessages(width, height int) string {
 			theme.Dim.Render("No messages yet"))
 	}
 
-	lines := make([]string, 0, len(c.lines))
+	rendered := make([]string, 0, len(c.lines))
 
 	for _, line := range c.lines {
-		lines = append(lines, c.renderLine(line))
+		rendered = append(rendered, c.renderLine(line))
+	}
+
+	indicator := formatScrollIndicator(c.scroll, len(rendered), height)
+
+	// Reserve a line for the scroll indicator when active.
+	msgHeight := height
+	if indicator != "" {
+		msgHeight--
 	}
 
 	// Apply scroll offset from the bottom.
-	end := len(lines) - c.scroll
+	end := len(rendered) - c.scroll
 	if end < 0 {
 		end = 0
 	}
 
-	start := end - height
+	start := end - msgHeight
 	if start < 0 {
 		start = 0
 	}
 
-	visible := lines[start:end]
+	visible := rendered[start:end]
 
 	content := strings.Join(visible, "\n")
 
-	// Pad to fill the available height so the input bar stays at the
-	// bottom.
-	rendered := lipgloss.Height(content)
-	if rendered < height {
-		padding := strings.Repeat("\n", height-rendered-1)
+	// Pad to fill the available message height so the input bar stays
+	// at the bottom.
+	contentHeight := lipgloss.Height(content)
+	if contentHeight < msgHeight {
+		padding := strings.Repeat("\n", msgHeight-contentHeight-1)
 		content = padding + content
 	}
 
+	if indicator != "" {
+		styled := lipgloss.PlaceHorizontal(width, lipgloss.Right, theme.Dim.Render(indicator))
+		content = styled + "\n" + content
+	}
+
 	return content
+}
+
+// formatScrollIndicator returns a scroll position string when the
+// view is scrolled away from the bottom, or empty when at the bottom.
+func formatScrollIndicator(scroll, totalLines, viewportHeight int) string {
+	if scroll == 0 {
+		return ""
+	}
+
+	maxScroll := totalLines - viewportHeight
+	if maxScroll <= 0 {
+		return ""
+	}
+
+	// Position as percentage from top: 100% = at bottom, 0% = at top.
+	pct := 100 - (scroll*100)/maxScroll
+	if pct < 0 {
+		pct = 0
+	}
+
+	return fmt.Sprintf("(%d%%)", pct)
 }
 
 func (c ChatView) renderLine(line ChatLine) string {
