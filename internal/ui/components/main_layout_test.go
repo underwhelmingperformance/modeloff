@@ -69,15 +69,15 @@ func TestMainLayout_View_narrow_terminal(t *testing.T) {
 	layout := components.NewMainLayout(sidebar, content)
 
 	t.Run("below threshold shows resize message", func(t *testing.T) {
-		got := layout.View(39, 24)
+		got := layout.View(79, 24)
 
-		require.Contains(t, got, "Resize terminal to 40+ columns")
+		require.Contains(t, got, "Resize terminal to 80+ columns")
 		require.NotContains(t, got, "sidebar:")
 		require.NotContains(t, got, "content:")
 	})
 
 	t.Run("at threshold renders normally", func(t *testing.T) {
-		got := layout.View(40, 24)
+		got := layout.View(80, 24)
 
 		require.NotContains(t, got, "Resize terminal")
 		require.Contains(t, got, "sidebar:")
@@ -118,14 +118,14 @@ func TestMainLayout_View_status_bar_preserves_height(t *testing.T) {
 	require.Equal(t, 24, lipgloss.Height(got))
 }
 
-func TestMainLayout_View_status_bar_abbreviates_narrow(t *testing.T) {
+func TestMainLayout_View_status_bar_at_minimum_width(t *testing.T) {
 	sidebar := stubModel{label: "sidebar"}
 	content := stubModel{label: "content"}
 	layout := components.NewMainLayout(sidebar, content)
 
-	got := layout.View(45, 24)
+	got := layout.View(80, 24)
 
-	// Should still contain shortcuts even when narrow.
+	require.Contains(t, got, "channels")
 	require.Contains(t, got, "switch")
 	require.Contains(t, got, "quit")
 }

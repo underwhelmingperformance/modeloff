@@ -112,14 +112,14 @@ func TestConnectionScreen_View_narrow_terminal(t *testing.T) {
 	})
 
 	t.Run("below threshold shows resize message", func(t *testing.T) {
-		got := s.View(39, 24)
+		got := s.View(79, 24)
 
-		require.Contains(t, got, "Resize terminal to 40+ columns")
+		require.Contains(t, got, "Resize terminal to 80+ columns")
 		require.NotContains(t, got, "Connecting")
 	})
 
 	t.Run("at threshold renders normally", func(t *testing.T) {
-		got := s.View(40, 24)
+		got := s.View(80, 24)
 
 		require.NotContains(t, got, "Resize terminal")
 		require.Contains(t, got, "Connecting to modeloff")

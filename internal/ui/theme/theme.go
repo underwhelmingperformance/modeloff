@@ -100,7 +100,7 @@ var (
 const (
 	// MinTerminalWidth is the narrowest terminal width the app can
 	// render. Below this, screens show a fallback message.
-	MinTerminalWidth = 40
+	MinTerminalWidth = 80
 )
 
 // NarrowTerminalView returns a centred fallback message prompting the
