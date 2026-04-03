@@ -7,12 +7,14 @@ package session
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/laney/modeloff/internal/api"
 	"github.com/laney/modeloff/internal/config"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/memory"
+	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/store"
 )
 
@@ -182,6 +184,11 @@ func (s *Session) SendMessage(
 	ch domain.ChannelName,
 	body string,
 ) (domain.MessageEvent, error) {
+	historyMessages, err := s.store.ListMessages(ctx, ch)
+	if err != nil {
+		return domain.MessageEvent{}, fmt.Errorf("list history: %w", err)
+	}
+
 	msg := domain.Message{
 		ID:      fmt.Sprintf("%d", s.now().UnixNano()),
 		Channel: ch,
@@ -192,6 +199,10 @@ func (s *Session) SendMessage(
 
 	if err := s.store.SaveMessage(ctx, msg); err != nil {
 		return domain.MessageEvent{}, fmt.Errorf("save message: %w", err)
+	}
+
+	if err := s.broadcastMessage(ctx, msg, historyMessages); err != nil {
+		return domain.MessageEvent{}, err
 	}
 
 	return domain.MessageEvent{Message: msg}, nil
@@ -253,4 +264,96 @@ func (s *Session) LastChannel(ctx context.Context) (domain.ChannelName, error) {
 // Messages returns all messages for a channel.
 func (s *Session) Messages(ctx context.Context, ch domain.ChannelName) ([]domain.Message, error) {
 	return s.store.ListMessages(ctx, ch)
+}
+
+func (s *Session) broadcastMessage(
+	ctx context.Context,
+	msg domain.Message,
+	historyMessages []domain.Message,
+) error {
+	channel, err := s.store.GetChannel(ctx, msg.Channel)
+	if err != nil {
+		return fmt.Errorf("get channel: %w", err)
+	}
+
+	instances, err := s.instancesForChannel(ctx, msg.Channel)
+	if err != nil {
+		return fmt.Errorf("list instances for channel: %w", err)
+	}
+
+	history := make([]protocol.IRCMessage, 0, len(historyMessages))
+	for _, historyMessage := range historyMessages {
+		history = append(history, protocol.FromMessage(historyMessage))
+	}
+
+	events := []protocol.IRCMessage{protocol.FromMessage(msg)}
+
+	for _, inst := range instances {
+		response, err := s.api.SendEvents(
+			ctx,
+			inst.ModelID,
+			buildSystemPrompt(channel, inst),
+			history,
+			events,
+		)
+		if err != nil {
+			return fmt.Errorf("send events to %s: %w", inst.Nick, err)
+		}
+
+		if response.Kind != protocol.ResponseReply {
+			continue
+		}
+
+		body := strings.TrimSpace(response.Body)
+		if body == "" {
+			continue
+		}
+
+		reply := domain.Message{
+			ID:      fmt.Sprintf("%d~%s", s.now().UnixNano(), inst.Nick),
+			Channel: msg.Channel,
+			From:    inst.Nick,
+			Body:    body,
+			SentAt:  s.now(),
+		}
+
+		if err := s.store.SaveMessage(ctx, reply); err != nil {
+			return fmt.Errorf("save model reply: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func (s *Session) instancesForChannel(ctx context.Context, ch domain.ChannelName) ([]domain.ModelInstance, error) {
+	instances, err := s.store.ListInstances(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	filtered := make([]domain.ModelInstance, 0, len(instances))
+	for _, inst := range instances {
+		for _, instanceChannel := range inst.Channels {
+			if instanceChannel == ch {
+				filtered = append(filtered, inst)
+				break
+			}
+		}
+	}
+
+	return filtered, nil
+}
+
+func buildSystemPrompt(ch domain.Channel, inst domain.ModelInstance) string {
+	prompt := fmt.Sprintf(
+		"You are %s, a participant in an IRC-style chat on %s. Reply only when you have something useful to add.",
+		inst.Nick,
+		ch.Name,
+	)
+
+	if ch.Title == "" {
+		return prompt
+	}
+
+	return fmt.Sprintf("%s The channel title is %q.", prompt, ch.Title)
 }

@@ -176,6 +176,8 @@ func TestSession_SendMessage(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := context.Background()
 
+	seedChannelWithMembers(t, s, "#general", "testuser")
+
 	evt, err := sess.SendMessage(ctx, "#general", "hello world")
 	require.NoError(t, err)
 	require.Equal(t, domain.MessageEvent{
@@ -189,6 +191,220 @@ func TestSession_SendMessage(t *testing.T) {
 	}, evt)
 
 	// Message should be persisted.
+	msgs, err := s.ListMessages(ctx, "#general")
+	require.NoError(t, err)
+	require.Equal(t, []domain.Message{evt.Message}, msgs)
+}
+
+func TestSession_SendMessage_broadcasts_to_channel_instances(t *testing.T) {
+	fake := &fakeAPIClient{}
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := context.Background()
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: []domain.ChannelName{"#general"},
+	})
+
+	evt, err := sess.SendMessage(ctx, "#general", "hello world")
+	require.NoError(t, err)
+
+	require.Len(t, fake.sendEventsCalls, 1)
+	require.Equal(t, sendEventsCall{
+		modelID: "test/model",
+		system:  "You are botty, a participant in an IRC-style chat on #general. Reply only when you have something useful to add.",
+		events: []protocol.IRCMessage{
+			protocol.FromMessage(evt.Message),
+		},
+	}, fake.sendEventsCalls[0])
+}
+
+func TestSession_SendMessage_does_not_broadcast_when_no_model_instances(t *testing.T) {
+	fake := &fakeAPIClient{}
+	sess, s := newTestSessionWithAPI(t, fake)
+
+	seedChannelWithMembers(t, s, "#general", "testuser")
+
+	_, err := sess.SendMessage(context.Background(), "#general", "hello world")
+	require.NoError(t, err)
+	require.Empty(t, fake.sendEventsCalls)
+}
+
+func TestSession_SendMessage_pass_response_does_not_store_model_message(t *testing.T) {
+	fake := &fakeAPIClient{
+		sendEventsFn: func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			return protocol.ModelResponse{
+				Kind:   protocol.ResponseSilence,
+				Reason: "nothing to add",
+			}, nil
+		},
+	}
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := context.Background()
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: []domain.ChannelName{"#general"},
+	})
+
+	evt, err := sess.SendMessage(ctx, "#general", "hello world")
+	require.NoError(t, err)
+
+	msgs, err := s.ListMessages(ctx, "#general")
+	require.NoError(t, err)
+	require.Equal(t, []domain.Message{evt.Message}, msgs)
+}
+
+func TestSession_SendMessage_reply_response_stores_model_message(t *testing.T) {
+	fake := &fakeAPIClient{
+		sendEventsFn: func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			return protocol.ModelResponse{
+				Kind: protocol.ResponseReply,
+				Body: "hello back",
+			}, nil
+		},
+	}
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := context.Background()
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: []domain.ChannelName{"#general"},
+	})
+
+	evt, err := sess.SendMessage(ctx, "#general", "hello world")
+	require.NoError(t, err)
+
+	msgs, err := s.ListMessages(ctx, "#general")
+	require.NoError(t, err)
+	require.Equal(t, []domain.Message{
+		evt.Message,
+		{
+			ID:      fmt.Sprintf("%d~botty", fixedTime.UnixNano()),
+			Channel: "#general",
+			From:    "botty",
+			Body:    "hello back",
+			SentAt:  fixedTime,
+		},
+	}, msgs)
+}
+
+func TestSession_SendMessage_broadcasts_only_to_members_of_that_channel(t *testing.T) {
+	fake := &fakeAPIClient{}
+	sess, s := newTestSessionWithAPI(t, fake)
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+	seedChannelWithMembers(t, s, "#random", "testuser", "otherbot")
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:     "botty",
+		ModelID:  "test/model-a",
+		Channels: []domain.ChannelName{"#general"},
+	})
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:     "otherbot",
+		ModelID:  "test/model-b",
+		Channels: []domain.ChannelName{"#random"},
+	})
+
+	_, err := sess.SendMessage(context.Background(), "#general", "hello world")
+	require.NoError(t, err)
+
+	require.Len(t, fake.sendEventsCalls, 1)
+	require.Equal(t, domain.ModelID("test/model-a"), fake.sendEventsCalls[0].modelID)
+}
+
+func TestSession_SendMessage_reply_is_not_rebroadcast_in_same_send(t *testing.T) {
+	fake := &fakeAPIClient{
+		sendEventsFn: func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			return protocol.ModelResponse{
+				Kind: protocol.ResponseReply,
+				Body: "reply once",
+			}, nil
+		},
+	}
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := context.Background()
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: []domain.ChannelName{"#general"},
+	})
+
+	_, err := sess.SendMessage(ctx, "#general", "hello world")
+	require.NoError(t, err)
+
+	require.Len(t, fake.sendEventsCalls, 1)
+
+	msgs, err := s.ListMessages(ctx, "#general")
+	require.NoError(t, err)
+	require.Len(t, msgs, 2)
+}
+
+func TestSession_SendMessage_multiple_instances_each_reply_once(t *testing.T) {
+	fake := &fakeAPIClient{
+		sendEventsFn: func(_ context.Context, modelID domain.ModelID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			return protocol.ModelResponse{
+				Kind: protocol.ResponseReply,
+				Body: fmt.Sprintf("reply from %s", modelID),
+			}, nil
+		},
+	}
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := context.Background()
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "bot-a", "bot-b")
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:     "bot-a",
+		ModelID:  "test/model-a",
+		Channels: []domain.ChannelName{"#general"},
+	})
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:     "bot-b",
+		ModelID:  "test/model-b",
+		Channels: []domain.ChannelName{"#general"},
+	})
+
+	_, err := sess.SendMessage(ctx, "#general", "hello world")
+	require.NoError(t, err)
+
+	require.Len(t, fake.sendEventsCalls, 2)
+
+	msgs, err := s.ListMessages(ctx, "#general")
+	require.NoError(t, err)
+	require.Len(t, msgs, 3)
+	require.Equal(t, []domain.Nick{"testuser", "bot-a", "bot-b"}, []domain.Nick{msgs[0].From, msgs[1].From, msgs[2].From})
+}
+
+func TestSession_SendMessage_ignores_empty_reply_body(t *testing.T) {
+	fake := &fakeAPIClient{
+		sendEventsFn: func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			return protocol.ModelResponse{
+				Kind: protocol.ResponseReply,
+				Body: "   ",
+			}, nil
+		},
+	}
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := context.Background()
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: []domain.ChannelName{"#general"},
+	})
+
+	evt, err := sess.SendMessage(ctx, "#general", "hello world")
+	require.NoError(t, err)
+
 	msgs, err := s.ListMessages(ctx, "#general")
 	require.NoError(t, err)
 	require.Equal(t, []domain.Message{evt.Message}, msgs)
@@ -328,6 +544,14 @@ type fakeAPIClient struct {
 	listModelsFn   func(context.Context) ([]api.ModelInfo, error)
 	sendEventsFn   func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error)
 	generateNickFn func(context.Context, domain.ModelID) (domain.Nick, error)
+	sendEventsCalls []sendEventsCall
+}
+
+type sendEventsCall struct {
+	modelID domain.ModelID
+	system  string
+	history []protocol.IRCMessage
+	events  []protocol.IRCMessage
 }
 
 func (f *fakeAPIClient) ListModels(ctx context.Context) ([]api.ModelInfo, error) {
@@ -345,6 +569,13 @@ func (f *fakeAPIClient) SendEvents(
 	history []protocol.IRCMessage,
 	events []protocol.IRCMessage,
 ) (protocol.ModelResponse, error) {
+	f.sendEventsCalls = append(f.sendEventsCalls, sendEventsCall{
+		modelID: modelID,
+		system:  system,
+		history: append([]protocol.IRCMessage(nil), history...),
+		events:  append([]protocol.IRCMessage(nil), events...),
+	})
+
 	if f.sendEventsFn != nil {
 		return f.sendEventsFn(ctx, modelID, system, history, events)
 	}
@@ -358,4 +589,21 @@ func (f *fakeAPIClient) GenerateNick(ctx context.Context, modelID domain.ModelID
 	}
 
 	return "fakenick", nil
+}
+
+func seedChannelWithMembers(t *testing.T, s *storemod.FileStore, name domain.ChannelName, members ...domain.Nick) {
+	t.Helper()
+
+	require.NoError(t, s.SaveChannel(context.Background(), domain.Channel{
+		Name:    name,
+		Kind:    domain.KindChannel,
+		Members: members,
+		Created: fixedTime,
+	}))
+}
+
+func seedInstance(t *testing.T, s *storemod.FileStore, inst domain.ModelInstance) {
+	t.Helper()
+
+	require.NoError(t, s.SaveInstance(context.Background(), inst))
 }

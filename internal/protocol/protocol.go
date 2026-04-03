@@ -4,7 +4,11 @@
 // include a reply or an explicit "no reply" signal.
 package protocol
 
-import "time"
+import (
+	"time"
+
+	"github.com/laney/modeloff/internal/domain"
+)
 
 // MessageKind identifies the type of IRC-like message sent to or
 // received from a model.
@@ -71,4 +75,61 @@ type ModelResponse struct {
 	Kind   ResponseKind `json:"kind"`
 	Body   string       `json:"body,omitempty"`
 	Reason string       `json:"reason,omitempty"`
+}
+
+// FromMessage converts a stored domain message into an IRC-style
+// protocol message for model consumption.
+func FromMessage(msg domain.Message) IRCMessage {
+	return IRCMessage{
+		Kind:   KindPrivMsg,
+		From:   string(msg.From),
+		Target: string(msg.Channel),
+		Body:   msg.Body,
+		At:     msg.SentAt,
+	}
+}
+
+// FromJoinEvent converts a join event into an IRC-style protocol
+// message.
+func FromJoinEvent(evt domain.JoinEvent) IRCMessage {
+	return IRCMessage{
+		Kind:   KindJoin,
+		From:   string(evt.Nick),
+		Target: string(evt.Channel),
+		At:     evt.At,
+	}
+}
+
+// FromPartEvent converts a part event into an IRC-style protocol
+// message.
+func FromPartEvent(evt domain.PartEvent) IRCMessage {
+	return IRCMessage{
+		Kind:   KindPart,
+		From:   string(evt.Nick),
+		Target: string(evt.Channel),
+		At:     evt.At,
+	}
+}
+
+// FromTopicChangeEvent converts a topic change event into an IRC-style
+// protocol message.
+func FromTopicChangeEvent(evt domain.TopicChangeEvent) IRCMessage {
+	return IRCMessage{
+		Kind:   KindTopic,
+		From:   string(evt.By),
+		Target: string(evt.Channel),
+		Body:   evt.Title,
+		At:     evt.At,
+	}
+}
+
+// FromNickChangeEvent converts a nick change event into an IRC-style
+// protocol message.
+func FromNickChangeEvent(evt domain.NickChangeEvent) IRCMessage {
+	return IRCMessage{
+		Kind:   KindNick,
+		From:   string(evt.OldNick),
+		Target: string(evt.NewNick),
+		At:     evt.At,
+	}
 }
