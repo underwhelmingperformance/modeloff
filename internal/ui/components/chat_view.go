@@ -80,7 +80,8 @@ func (c ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 // View implements ui.Model.
 func (c ChatView) View(width, height int) string {
-	inputView := c.input.View(width, 1)
+	nickLabel := theme.UserNick.Render(string(c.userNick))
+	inputView := nickLabel + " " + c.input.View(width-lipgloss.Width(nickLabel)-1, 1)
 	inputHeight := lipgloss.Height(inputView)
 
 	var topicView string

@@ -176,6 +176,27 @@ func TestChatView_user_nick_styled_differently(t *testing.T) {
 	require.Contains(t, v, modelStyled)
 }
 
+func TestChatView_shows_nick_in_input_area(t *testing.T) {
+	cv := components.NewChatView("#general", "alice", "", testMessages)
+	v := cv.View(80, 24)
+
+	require.Contains(t, v, "alice")
+	require.Contains(t, v, ">")
+}
+
+func TestChatView_nick_updates_after_change(t *testing.T) {
+	cv1 := components.NewChatView("#general", "oldnick", "", testMessages)
+	cv2 := components.NewChatView("#general", "newnick", "", testMessages)
+
+	v1 := cv1.View(80, 24)
+	v2 := cv2.View(80, 24)
+
+	require.Contains(t, v1, "oldnick")
+	require.NotContains(t, v1, "newnick")
+	require.Contains(t, v2, "newnick")
+	require.NotContains(t, v2, "oldnick")
+}
+
 func TestChatView_topic_bar_shown(t *testing.T) {
 	cv := components.NewChatView("#general", "testuser", "Welcome to general", testMessages)
 	v := cv.View(80, 24)
