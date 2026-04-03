@@ -17,7 +17,6 @@ import (
 	"github.com/laney/modeloff/internal/memory"
 	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/session"
-	"github.com/laney/modeloff/internal/set"
 	storemod "github.com/laney/modeloff/internal/store"
 	uipkg "github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/screens"
@@ -140,18 +139,11 @@ func TestApp_periodic_poke_generates_message(t *testing.T) {
 			return protocol.ModelResponse{Kind: protocol.ResponseSilence}, nil
 		},
 	}
-	sess, store := newIntegrationSession(t, apiClient)
+	sess, _ := newIntegrationSession(t, apiClient)
 	seedChannel(t, sess, "#general")
-	seedInstance(t, store, domain.ModelInstance{
-		Nick:     "botty",
-		ModelID:  "test/model",
-		Channels: set.NewOrdered[domain.ChannelName]("#general"),
-	})
 
-	channel, err := store.GetChannel(t.Context(), "#general")
+	_, err := sess.Invite(t.Context(), "#general", "test/model", "")
 	require.NoError(t, err)
-	channel.Members.Add("botty")
-	require.NoError(t, store.SaveChannel(t.Context(), channel))
 
 	tm := newTestApp(t, uipkg.NewRoot(screens.NewChatScreen(sess)))
 	waitForOutput(t, tm, "#general")
@@ -176,17 +168,9 @@ func TestApp_reuse_existing_instance(t *testing.T) {
 
 	seedChannel(t, sess, "#general")
 	seedChannel(t, sess, "#random")
-	seedInstance(t, store, domain.ModelInstance{
-		Nick:     "botty",
-		ModelID:  "test/model",
-		Persona:  "Helpful assistant",
-		Channels: set.NewOrdered[domain.ChannelName]("#general"),
-	})
 
-	general, err := store.GetChannel(t.Context(), "#general")
+	_, err := sess.Invite(t.Context(), "#general", "test/model", "Helpful assistant")
 	require.NoError(t, err)
-	general.Members.Add("botty")
-	require.NoError(t, store.SaveChannel(t.Context(), general))
 
 	tm := newTestApp(t, uipkg.NewRoot(screens.NewChatScreen(sess)))
 	waitForOutput(t, tm, "#random")
