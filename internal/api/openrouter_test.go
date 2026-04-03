@@ -77,7 +77,7 @@ func TestOpenRouterClient_ListModels(t *testing.T) {
 				w.WriteHeader(tt.statusCode)
 				_, _ = w.Write([]byte(tt.response))
 			}))
-			defer srv.Close()
+			t.Cleanup(srv.Close)
 
 			client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
 
@@ -135,7 +135,6 @@ func TestOpenRouterClient_SendEvents(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			srv := newChatServer(t, tt.toolCall)
-			defer srv.Close()
 
 			client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
 
@@ -173,7 +172,7 @@ func TestOpenRouterClient_SendEventsWithHistory(t *testing.T) {
 			args: `{"reason": "just checking"}`,
 		}))
 	}))
-	defer srv.Close()
+	t.Cleanup(srv.Close)
 
 	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
 
@@ -249,7 +248,7 @@ func TestOpenRouterClient_GenerateNick(t *testing.T) {
 			},
 		})
 	}))
-	defer srv.Close()
+	t.Cleanup(srv.Close)
 
 	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
 
@@ -293,11 +292,14 @@ func chatResponse(tc toolCallFixture) map[string]any {
 func newChatServer(t *testing.T, tc toolCallFixture) *httptest.Server {
 	t.Helper()
 
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, http.MethodPost, r.Method)
 		require.Equal(t, "Bearer test-key", r.Header.Get("Authorization"))
 
 		w.Header().Set("Content-Type", "application/json")
 		require.NoError(t, json.NewEncoder(w).Encode(chatResponse(tc)))
 	}))
+	t.Cleanup(srv.Close)
+
+	return srv
 }
