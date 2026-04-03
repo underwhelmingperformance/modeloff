@@ -5,6 +5,8 @@ package ui
 
 import tea "github.com/charmbracelet/bubbletea"
 
+import "github.com/laney/modeloff/internal/command"
+
 // Model is the interface that all UI components in modeloff implement.
 // It mirrors the standard Bubble Tea model interface but adds width
 // and height parameters to View so that components always render
@@ -21,4 +23,9 @@ type Model interface {
 	// View returns the string representation of the model, rendered
 	// to fit within the given width and height.
 	View(width, height int) string
+}
+
+// CommandScoper is implemented by models that contribute slash commands.
+type CommandScoper interface {
+	CommandScope() command.Scope
 }

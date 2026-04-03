@@ -87,6 +87,30 @@ func (m MainLayout) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 	var cmds []tea.Cmd
 
+	if size, ok := msg.(tea.WindowSizeMsg); ok {
+		sw := sidebarWidth(size.Width)
+		cw := size.Width - sw
+
+		borderStyle := theme.SidebarBorder.Height(size.Height)
+		frameW, _ := borderStyle.GetFrameSize()
+		innerSW := sw - frameW
+		if innerSW < 0 {
+			innerSW = 0
+		}
+
+		sidebar, cmd := m.Sidebar.Update(ui.BoundsMsg{
+			Rect: ui.Rect{X: 0, Y: 0, Width: innerSW, Height: size.Height},
+		})
+		m.Sidebar = sidebar
+		cmds = append(cmds, cmd)
+
+		content, cmd := m.Content.Update(ui.BoundsMsg{
+			Rect: ui.Rect{X: sw, Y: 0, Width: cw, Height: size.Height},
+		})
+		m.Content = content
+		cmds = append(cmds, cmd)
+	}
+
 	sidebar, cmd := m.Sidebar.Update(msg)
 	m.Sidebar = sidebar
 	cmds = append(cmds, cmd)

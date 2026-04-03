@@ -57,8 +57,7 @@ func TestInputBar_submit_command(t *testing.T) {
 	msg := cmd()
 	sub, ok := msg.(components.CommandSubmitMsg)
 	require.True(t, ok, "expected CommandSubmitMsg, got %T", msg)
-	require.Equal(t, "join", sub.Name)
-	require.Equal(t, "#general", sub.Args)
+	require.Equal(t, "/join #general", sub.Raw)
 }
 
 func TestInputBar_submit_command_no_args(t *testing.T) {
@@ -72,8 +71,18 @@ func TestInputBar_submit_command_no_args(t *testing.T) {
 
 	msg := cmd()
 	sub := msg.(components.CommandSubmitMsg)
-	require.Equal(t, "list", sub.Name)
-	require.Equal(t, "", sub.Args)
+	require.Equal(t, "/list", sub.Raw)
+}
+
+func TestInputBar_space_key_inserts_space(t *testing.T) {
+	b := components.NewInputBar()
+	var m ui.Model = b
+
+	m = typeText(t, m, "hello")
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{' '}})
+	m = typeText(t, m, "world")
+
+	require.Equal(t, "hello world", m.(components.InputBar).Value())
 }
 
 func TestInputBar_empty_submit_does_nothing(t *testing.T) {

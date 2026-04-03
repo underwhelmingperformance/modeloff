@@ -49,6 +49,9 @@ func main() {
 		cfgStore,
 		domain.Nick(cfg.UserNick),
 	)
+	sess.SetAPIFactory(func(apiKey string) (api.Client, error) {
+		return api.NewOpenRouterClient(apiKey, "", nil), nil
+	})
 
 	appCtx, cancelApp := context.WithCancel(context.Background())
 	defer cancelApp()

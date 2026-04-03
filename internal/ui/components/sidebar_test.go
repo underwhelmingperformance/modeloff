@@ -137,6 +137,7 @@ func TestSidebar_cursor_clamps_at_bottom(t *testing.T) {
 func TestSidebar_mouse_click_selects_channel(t *testing.T) {
 	s := components.NewSidebar(testChannels, "#general", nil)
 	var m ui.Model = s
+	m, _ = updateSidebar(t, m, ui.BoundsMsg{Rect: ui.Rect{X: 0, Y: 0, Width: 20, Height: 10}})
 
 	// Click on the second channel (Y=1).
 	_, cmd := updateSidebar(t, m, tea.MouseMsg{
@@ -157,6 +158,7 @@ func TestSidebar_mouse_click_selects_channel(t *testing.T) {
 func TestSidebar_mouse_click_out_of_range(t *testing.T) {
 	s := components.NewSidebar(testChannels, "#general", nil)
 	var m ui.Model = s
+	m, _ = updateSidebar(t, m, ui.BoundsMsg{Rect: ui.Rect{X: 0, Y: 0, Width: 20, Height: 10}})
 
 	// Click below the channel list.
 	_, cmd := updateSidebar(t, m, tea.MouseMsg{

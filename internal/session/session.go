@@ -29,6 +29,8 @@ type Session struct {
 	config config.Store
 
 	userNick domain.Nick
+	apiKey   string
+	factory  func(string) (api.Client, error)
 	now      func() time.Time
 }
 
@@ -40,7 +42,7 @@ func New(
 	c config.Store,
 	userNick domain.Nick,
 ) *Session {
-	return &Session{
+	sess := &Session{
 		store:    s,
 		memory:   m,
 		api:      a,
@@ -48,6 +50,25 @@ func New(
 		userNick: userNick,
 		now:      time.Now,
 	}
+
+	if c != nil {
+		cfg, err := c.Load()
+		if err == nil {
+			sess.apiKey = strings.TrimSpace(cfg.APIKey)
+		}
+	}
+
+	return sess
+}
+
+// SetAPIFactory configures how runtime API clients are created.
+func (s *Session) SetAPIFactory(factory func(string) (api.Client, error)) {
+	s.factory = factory
+}
+
+// HasAPIKey reports whether the session has an active API key.
+func (s *Session) HasAPIKey() bool {
+	return strings.TrimSpace(s.apiKey) != ""
 }
 
 // UserNick returns the current user nickname.
@@ -116,6 +137,11 @@ func (s *Session) Leave(ctx context.Context, ch domain.ChannelName) (domain.Part
 // ListChannels returns all persisted channels.
 func (s *Session) ListChannels(ctx context.Context) ([]domain.Channel, error) {
 	return s.store.ListChannels(ctx)
+}
+
+// ListInstances returns all persisted model instances.
+func (s *Session) ListInstances(ctx context.Context) ([]domain.ModelInstance, error) {
+	return s.store.ListInstances(ctx)
 }
 
 // Invite adds a model instance to a channel. If the model has no nick
@@ -389,6 +415,15 @@ func (s *Session) UnreadCount(ctx context.Context, ch domain.ChannelName) (int, 
 	return len(msgs), nil
 }
 
+// ListModels fetches live model metadata using the current API client.
+func (s *Session) ListModels(ctx context.Context) ([]api.ModelInfo, error) {
+	if !s.HasAPIKey() || s.api == nil {
+		return nil, fmt.Errorf("api key not configured")
+	}
+
+	return s.api.ListModels(ctx)
+}
+
 // OpenDM opens or creates a direct-message conversation with a known
 // model instance and makes it the active conversation.
 func (s *Session) OpenDM(ctx context.Context, nick domain.Nick) (domain.Channel, bool, error) {
@@ -474,11 +509,30 @@ func (s *Session) SetAPIKey(_ context.Context, apiKey string) (config.Config, er
 		return config.Config{}, fmt.Errorf("load config: %w", err)
 	}
 
+	apiKey = strings.TrimSpace(apiKey)
+
+	var nextClient api.Client
+	if apiKey != "" {
+		if s.factory != nil {
+			client, err := s.factory(apiKey)
+			if err != nil {
+				return config.Config{}, fmt.Errorf("build api client: %w", err)
+			}
+
+			nextClient = client
+		} else {
+			nextClient = s.api
+		}
+	}
+
 	cfg.APIKey = apiKey
 
 	if err := s.config.Save(cfg); err != nil {
 		return config.Config{}, fmt.Errorf("save config: %w", err)
 	}
+
+	s.api = nextClient
+	s.apiKey = apiKey
 
 	return cfg, nil
 }

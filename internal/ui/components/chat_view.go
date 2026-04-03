@@ -10,10 +10,13 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/theme"
 )
+
+const maxPopoverSuggestions = 6
 
 // ChatLine is a single line in the chat view. It is either a user or
 // model message, or a system event.
@@ -137,6 +140,12 @@ type PendingResponseMsg struct {
 	Pending bool
 }
 
+// CommandStateMsg updates the command scope and completion context.
+type CommandStateMsg struct {
+	Scope   command.Scope
+	Context command.CompletionContext
+}
+
 // ChatView displays messages for a single channel with an input bar
 // at the bottom.
 type ChatView struct {
@@ -150,12 +159,16 @@ type ChatView struct {
 	pending     bool
 	spinner     spinner.Model
 	placeholder string
+	seenCount   int
 
-	// seenCount tracks how many lines the user has seen (the line
-	// count when the viewport was last at the bottom). When new lines
-	// arrive while scrolled up, a NewMessagesDivider is inserted at
-	// this position.
-	seenCount int
+	bounds ui.Rect
+
+	commandScope   command.Scope
+	commandContext command.CompletionContext
+	completion     command.Completion
+	selected       int
+	popoverOffset  int
+	popoverClosed  bool
 }
 
 // NewChatView creates a chat view for the given channel.
@@ -236,6 +249,15 @@ func (c *ChatView) SetChannel(ch domain.ChannelName, title string, lines []ChatL
 	c.viewport.GotoBottom()
 }
 
+// WithCommandState applies the current command scope and runtime context.
+func (c *ChatView) WithCommandState(scope command.Scope, ctx command.CompletionContext) *ChatView {
+	c.commandScope = scope
+	c.commandContext = ctx
+	c.refreshCompletion()
+
+	return c
+}
+
 // Init implements ui.Model.
 func (c *ChatView) Init() tea.Cmd {
 	return c.input.Init()
@@ -244,6 +266,16 @@ func (c *ChatView) Init() tea.Cmd {
 // Update implements ui.Model.
 func (c *ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case ui.BoundsMsg:
+		c.bounds = msg.Rect
+		return c, nil
+
+	case CommandStateMsg:
+		c.commandScope = msg.Scope
+		c.commandContext = msg.Context
+		c.refreshCompletion()
+		return c, nil
+
 	case PendingResponseMsg:
 		c.pending = msg.Pending
 
@@ -273,6 +305,16 @@ func (c *ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		c.viewport.GotoBottom()
 
 		return c, nil
+
+	case tea.KeyMsg:
+		if handled, cmd := c.handleKey(msg); handled {
+			return c, cmd
+		}
+
+	case tea.MouseMsg:
+		if handled, cmd := c.handleMouse(msg); handled {
+			return c, cmd
+		}
 	}
 
 	// Forward explicit viewport navigation keys first so plain arrows
@@ -282,8 +324,118 @@ func (c *ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 	updated, inputCmd := c.input.Update(msg)
 	c.input = updated.(InputBar)
+	c.popoverClosed = false
+	c.refreshCompletion()
 
 	return c, tea.Batch(vpCmd, inputCmd)
+}
+
+func (c *ChatView) handleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
+	if c.completion.Visible && !c.completion.SuppressList && len(c.completion.Suggestions) > 0 {
+		switch msg.Type {
+		case tea.KeyTab:
+			c.acceptSuggestion(c.selected)
+			return true, nil
+		case tea.KeyShiftTab, tea.KeyUp:
+			c.moveSelection(-1)
+			return true, nil
+		case tea.KeyDown:
+			c.moveSelection(1)
+			return true, nil
+		case tea.KeyEsc:
+			c.popoverClosed = true
+			c.refreshCompletion()
+			return true, nil
+		}
+	}
+
+	if msg.Type == tea.KeyEsc && c.completion.Visible {
+		c.popoverClosed = true
+		c.refreshCompletion()
+		return true, nil
+	}
+
+	return false, nil
+}
+
+func (c *ChatView) handleMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
+	if c.bounds.Width == 0 || c.bounds.Height == 0 {
+		return false, nil
+	}
+
+	popoverRect, headerRect, suggestionRects, inputRect, messageRect := c.layoutRects()
+
+	if popoverRect.Contains(msg.X, msg.Y) {
+		switch msg.Action {
+		case tea.MouseActionMotion:
+			for i, rect := range suggestionRects {
+				if rect.Contains(msg.X, msg.Y) {
+					c.selected = c.popoverOffset + i
+					return true, nil
+				}
+			}
+
+			if headerRect.Contains(msg.X, msg.Y) {
+				return true, nil
+			}
+
+		case tea.MouseActionPress:
+			switch msg.Button {
+			case tea.MouseButtonWheelUp:
+				c.moveSelection(-1)
+				return true, nil
+			case tea.MouseButtonWheelDown:
+				c.moveSelection(1)
+				return true, nil
+			case tea.MouseButtonLeft:
+				for i, rect := range suggestionRects {
+					if rect.Contains(msg.X, msg.Y) {
+						c.acceptSuggestion(c.popoverOffset + i)
+						return true, nil
+					}
+				}
+
+				return true, nil
+			}
+		}
+
+		return true, nil
+	}
+
+	if c.completion.Visible && msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+		c.popoverClosed = true
+		c.refreshCompletion()
+	}
+
+	if inputRect.Contains(msg.X, msg.Y) {
+		switch msg.Action {
+		case tea.MouseActionPress:
+			if msg.Button == tea.MouseButtonLeft {
+				localX, _ := inputRect.Local(msg.X, msg.Y)
+				c.input = c.input.SetCursorFromCell(localX - c.composerPrefixWidth())
+				c.popoverClosed = false
+				c.refreshCompletion()
+				return true, nil
+			}
+		case tea.MouseActionMotion:
+			return true, nil
+		}
+	}
+
+	if messageRect.Contains(msg.X, msg.Y) && msg.Action == tea.MouseActionPress {
+		c.syncViewport(messageRect.Width, messageRect.Height)
+
+		switch msg.Button {
+		case tea.MouseButtonWheelUp:
+			c.viewport.LineUp(c.viewport.MouseWheelDelta)
+			return true, nil
+		case tea.MouseButtonWheelDown:
+			c.viewport.LineDown(c.viewport.MouseWheelDelta)
+			return true, nil
+		}
+	}
+
+	return false, nil
 }
 
 // View implements ui.Model.
@@ -292,9 +444,11 @@ func (c *ChatView) View(width, height int) string {
 	inputView := nickLabel + c.input.View(width-lipgloss.Width(nickLabel), 1)
 	inputHeight := lipgloss.Height(inputView)
 
+	popoverView := c.renderPopover(width)
+	popoverHeight := lipgloss.Height(popoverView)
+
 	var topicView string
 	topicHeight := 0
-
 	if c.title != "" {
 		topicView = c.renderTopic(width)
 		topicHeight = lipgloss.Height(topicView)
@@ -302,24 +456,19 @@ func (c *ChatView) View(width, height int) string {
 
 	var pendingView string
 	pendingHeight := 0
-
 	if c.pending {
 		pendingView = c.spinner.View() + theme.Info.Render(" responding…")
 		pendingHeight = lipgloss.Height(pendingView)
 	}
 
-	// First pass: render messages at maximum available height to
-	// determine scroll state.
-	maxListHeight := height - inputHeight - topicHeight - pendingHeight
+	maxListHeight := height - inputHeight - topicHeight - pendingHeight - popoverHeight
 	if maxListHeight < 0 {
 		maxListHeight = 0
 	}
 
 	messageView, scrolled, scrollPct := c.renderMessages(width, maxListHeight)
 
-	// If scrolled, add indicator and re-render with one less line.
 	var scrollView string
-
 	if scrolled {
 		indicator := theme.Dim.Render(fmt.Sprintf("(%d%%)", int(scrollPct*100)))
 		scrollView = lipgloss.PlaceHorizontal(width, lipgloss.Right, indicator)
@@ -347,9 +496,107 @@ func (c *ChatView) View(width, height int) string {
 		parts = append(parts, pendingView)
 	}
 
+	if popoverView != "" {
+		parts = append(parts, popoverView)
+	}
+
 	parts = append(parts, inputView)
 
-	return lipgloss.JoinVertical(lipgloss.Left, parts...)
+	view := lipgloss.JoinVertical(lipgloss.Left, parts...)
+	if lipgloss.Height(view) >= height {
+		return view
+	}
+
+	return lipgloss.Place(width, height, lipgloss.Left, lipgloss.Bottom, view)
+}
+
+func (c *ChatView) layoutRects() (ui.Rect, ui.Rect, []ui.Rect, ui.Rect, ui.Rect) {
+	width := c.bounds.Width
+	if width <= 0 {
+		return ui.Rect{}, ui.Rect{}, nil, ui.Rect{}, ui.Rect{}
+	}
+
+	inputRect := ui.Rect{
+		X:      c.bounds.X,
+		Y:      c.bounds.Y + c.bounds.Height - 1,
+		Width:  width,
+		Height: 1,
+	}
+
+	popoverHeight := c.popoverHeight()
+	popoverRect := ui.Rect{
+		X:      c.bounds.X,
+		Y:      inputRect.Y - popoverHeight,
+		Width:  width,
+		Height: popoverHeight,
+	}
+
+	headerHeight := 0
+	if popoverHeight > 0 {
+		headerHeight = 1
+	}
+
+	headerRect := ui.Rect{
+		X:      popoverRect.X,
+		Y:      popoverRect.Y,
+		Width:  popoverRect.Width,
+		Height: headerHeight,
+	}
+
+	visible := c.visibleSuggestions()
+	suggestionRects := make([]ui.Rect, 0, len(visible))
+	for i := range visible {
+		suggestionRects = append(suggestionRects, ui.Rect{
+			X:      popoverRect.X,
+			Y:      popoverRect.Y + headerHeight + i,
+			Width:  popoverRect.Width,
+			Height: 1,
+		})
+	}
+
+	topicHeight := 0
+	if c.title != "" {
+		topicHeight = lipgloss.Height(c.renderTopic(width))
+	}
+
+	pendingHeight := 0
+	if c.pending {
+		pendingHeight = 1
+	}
+
+	messageRect := ui.Rect{
+		X:      c.bounds.X,
+		Y:      c.bounds.Y + topicHeight,
+		Width:  width,
+		Height: c.bounds.Height - topicHeight - pendingHeight - popoverHeight - 1,
+	}
+	if messageRect.Height < 0 {
+		messageRect.Height = 0
+	}
+
+	return popoverRect, headerRect, suggestionRects, inputRect, messageRect
+}
+
+func (c *ChatView) popoverHeight() int {
+	if !c.completion.Visible {
+		return 0
+	}
+
+	height := 1
+	if c.completion.SuppressList {
+		return height
+	}
+
+	count := len(c.visibleSuggestions())
+	if count == 0 {
+		return height
+	}
+
+	return height + count
+}
+
+func (c *ChatView) composerPrefixWidth() int {
+	return lipgloss.Width(theme.UserNick.Render(string(c.userNick))) + 1 + promptWidth()
 }
 
 func (c *ChatView) renderTopic(width int) string {
@@ -376,7 +623,6 @@ func (c *ChatView) renderMessages(width, height int) (view string, scrolled bool
 	}
 
 	rendered := make([]string, 0, len(c.lines))
-
 	for _, line := range c.lines {
 		rendered = append(rendered, c.renderLine(line, width))
 	}
@@ -396,6 +642,58 @@ func (c *ChatView) renderMessages(width, height int) (view string, scrolled bool
 	}
 
 	return c.viewport.View(), !c.viewport.AtBottom(), c.viewport.ScrollPercent()
+}
+
+func (c *ChatView) syncViewport(width, height int) {
+	if width < 0 {
+		width = 0
+	}
+
+	if height < 0 {
+		height = 0
+	}
+
+	rendered := make([]string, 0, len(c.lines))
+	for _, line := range c.lines {
+		rendered = append(rendered, c.renderLine(line, width))
+	}
+
+	c.viewport.Width = width
+	c.viewport.Height = height
+	c.viewport.SetContent(strings.Join(rendered, "\n"))
+}
+
+func (c *ChatView) renderPopover(width int) string {
+	if !c.completion.Visible {
+		return ""
+	}
+
+	header := c.completion.Usage
+	if c.completion.Help != "" {
+		header = fmt.Sprintf("%s  %s", header, theme.Dim.Render(c.completion.Help))
+	}
+
+	lines := []string{theme.Info.Width(width).Render(truncateLine(header, width))}
+	if c.completion.SuppressList {
+		return lipgloss.JoinVertical(lipgloss.Left, lines...)
+	}
+
+	for i, suggestion := range c.visibleSuggestions() {
+		index := c.popoverOffset + i
+		line := suggestion.Label
+		if suggestion.Detail != "" {
+			line = fmt.Sprintf("%s  %s", line, theme.Dim.Render(suggestion.Detail))
+		}
+
+		style := lipgloss.NewStyle().Width(width)
+		if index == c.selected {
+			style = style.Background(lipgloss.ANSIColor(8)).Foreground(lipgloss.ANSIColor(7))
+		}
+
+		lines = append(lines, style.Render(truncateLine(line, width)))
+	}
+
+	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }
 
 func (c *ChatView) renderLine(line ChatLine, width int) string {
@@ -461,7 +759,7 @@ func (c *ChatView) renderLine(line ChatLine, width int) string {
 
 	case APIKeySaved:
 		return wrap.Render(theme.Success.Render(
-			"✓ OpenRouter API key saved. Restart modeloff to use it."))
+			"✓ OpenRouter API key saved and activated."))
 
 	case PokeIntervalSet:
 		return wrap.Render(theme.Success.Render(
@@ -488,21 +786,139 @@ func (c *ChatView) renderLine(line ChatLine, width int) string {
 	}
 }
 
+func (c *ChatView) refreshCompletion() {
+	raw := c.input.Value()
+	if c.popoverClosed && !strings.HasPrefix(raw, "/") {
+		c.popoverClosed = false
+	}
+
+	if c.popoverClosed {
+		c.completion = command.Completion{}
+		return
+	}
+
+	c.completion = command.Complete(c.commandScope, raw, c.input.Cursor(), c.commandContext)
+	if !c.completion.Visible {
+		c.selected = 0
+		c.popoverOffset = 0
+		return
+	}
+
+	if len(c.completion.Suggestions) == 0 {
+		c.selected = 0
+		c.popoverOffset = 0
+		return
+	}
+
+	if c.selected >= len(c.completion.Suggestions) {
+		c.selected = len(c.completion.Suggestions) - 1
+	}
+	if c.selected < 0 {
+		c.selected = 0
+	}
+
+	c.ensureSelectionVisible()
+}
+
+func (c *ChatView) moveSelection(delta int) {
+	if len(c.completion.Suggestions) == 0 {
+		return
+	}
+
+	c.selected += delta
+	if c.selected < 0 {
+		c.selected = len(c.completion.Suggestions) - 1
+	}
+	if c.selected >= len(c.completion.Suggestions) {
+		c.selected = 0
+	}
+
+	c.ensureSelectionVisible()
+}
+
+func (c *ChatView) ensureSelectionVisible() {
+	if c.selected < c.popoverOffset {
+		c.popoverOffset = c.selected
+	}
+
+	if c.selected >= c.popoverOffset+maxPopoverSuggestions {
+		c.popoverOffset = c.selected - maxPopoverSuggestions + 1
+	}
+
+	if c.popoverOffset < 0 {
+		c.popoverOffset = 0
+	}
+}
+
+func (c *ChatView) acceptSuggestion(index int) {
+	if index < 0 || index >= len(c.completion.Suggestions) {
+		return
+	}
+
+	suggestion := c.completion.Suggestions[index]
+	replacement := suggestion.Value
+	if c.completion.AppendSpace {
+		replacement += " "
+	}
+
+	c.input = c.input.ReplaceRange(c.completion.ReplaceStart, c.completion.ReplaceEnd, replacement)
+	c.popoverClosed = false
+	c.refreshCompletion()
+}
+
+func (c *ChatView) visibleSuggestions() []command.Suggestion {
+	if len(c.completion.Suggestions) == 0 {
+		return nil
+	}
+
+	start := c.popoverOffset
+	if start >= len(c.completion.Suggestions) {
+		start = 0
+	}
+
+	end := start + maxPopoverSuggestions
+	if end > len(c.completion.Suggestions) {
+		end = len(c.completion.Suggestions)
+	}
+
+	return c.completion.Suggestions[start:end]
+}
+
+func truncateLine(text string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+
+	if lipgloss.Width(text) <= width {
+		return text
+	}
+
+	runes := []rune(text)
+	for len(runes) > 0 && lipgloss.Width(string(runes)+"…") > width {
+		runes = runes[:len(runes)-1]
+	}
+
+	return string(runes) + "…"
+}
+
 func (c *ChatView) renderHelp() string {
-	lines := []string{
-		"/join <channel>                   Join or create a channel",
-		"/leave                            Leave the current channel",
-		"/list                             List all channels",
-		"/invite <model> [--persona text]  Invite a model to the channel",
-		"/kick <nick>                      Remove a model from the channel",
-		"/msg <nick> [message]             Open a direct message",
-		"/nick <name>                      Change your nickname",
-		"/title [text]                     Set or clear the channel title",
-		"/whois <nick>                     Show info about a model",
-		"/config api-key <key>             Set the OpenRouter API key",
-		"/config poke-interval <duration>  Set the poke interval",
-		"/help                             Show this help",
-		"/quit                             Exit modeloff",
+	lines := make([]string, 0, len(c.commandScope.Commands))
+	for _, spec := range c.commandScope.Commands {
+		usage := spec.Usage
+		if usage == "" {
+			usage = "/" + spec.Name
+		}
+
+		line := usage
+		if spec.Help != "" {
+			line = fmt.Sprintf("%-32s %s", usage, spec.Help)
+		}
+
+		lines = append(lines, strings.TrimRight(line, " "))
+	}
+
+	if len(lines) == 0 {
+		lines = []string{"/help                            Show available commands."}
 	}
 
 	var parts []string

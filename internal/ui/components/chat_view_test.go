@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/require"
 
+	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/components"
@@ -104,8 +105,7 @@ func TestChatView_command_from_input(t *testing.T) {
 	msg := cmd()
 	sub, ok := msg.(components.CommandSubmitMsg)
 	require.True(t, ok, "expected CommandSubmitMsg, got %T", msg)
-	require.Equal(t, "join", sub.Name)
-	require.Equal(t, "#random", sub.Args)
+	require.Equal(t, "/join #random", sub.Raw)
 }
 
 func TestChatView_messages_updated(t *testing.T) {
@@ -412,7 +412,12 @@ func TestChatView_pending_indicator_reduces_message_area(t *testing.T) {
 }
 
 func renderSingleLine(line components.ChatLine) string {
-	cv := components.NewChatView("#test", "testuser", "", []components.ChatLine{line})
+	cv := components.NewChatView("#test", "testuser", "", []components.ChatLine{line}).WithCommandState(command.Scope{
+		Commands: []command.Spec{
+			{Name: "join", Help: "Join or create a channel", Usage: "/join <channel>"},
+			{Name: "help", Help: "Show available commands.", Usage: "/help"},
+		},
+	}, command.CompletionContext{})
 	v := cv.View(200, 24)
 
 	return ansi.Strip(v)
@@ -588,6 +593,64 @@ func TestNewMessagesDivider_fills_width(t *testing.T) {
 	}
 }
 
+func TestChatView_command_popover_renders_and_completes(t *testing.T) {
+	cv := components.NewChatView("#general", "testuser", "", nil).WithCommandState(command.Scope{
+		Commands: []command.Spec{
+			{
+				Name:  "join",
+				Help:  "Join a channel",
+				Usage: "/join <channel>",
+				Args: []command.ArgSpec{
+					{Name: "channel", Source: command.ChannelsSource()},
+				},
+			},
+		},
+	}, command.CompletionContext{
+		Channels: []domain.Channel{
+			{Name: "#general", Kind: domain.KindChannel},
+			{Name: "#random", Kind: domain.KindChannel},
+		},
+	})
+	var m ui.Model = cv
+
+	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 20, Y: 0, Width: 60, Height: 24}})
+	m = typeText(t, m, "/jo")
+
+	v := m.View(60, 24)
+	require.Contains(t, v, "/join <channel>")
+	require.Contains(t, v, "/join")
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = typeText(t, m, "#random")
+	_, cmd := enter(t, m)
+
+	require.NotNil(t, cmd)
+	sub := cmd().(components.CommandSubmitMsg)
+	require.Equal(t, "/join #random", sub.Raw)
+}
+
+func TestChatView_mouse_click_positions_input_cursor(t *testing.T) {
+	cv := components.NewChatView("#general", "testuser", "", nil)
+	var m ui.Model = cv
+
+	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 20, Y: 0, Width: 60, Height: 24}})
+	m = typeText(t, m, "hello")
+	m, _ = m.Update(tea.MouseMsg{
+		X:      32,
+		Y:      23,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	})
+	m = typeText(t, m, "X")
+
+	msg := m.(*components.ChatView)
+	m, cmd := msg.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	require.NotNil(t, cmd)
+
+	sub := cmd().(components.MessageSubmitMsg)
+	require.Equal(t, "hXello", sub.Text)
+}
+
 func TestChatView_divider_inserted_when_scrolled_up(t *testing.T) {
 	// Create enough messages to fill the viewport.
 	msgs := make([]domain.Message, 30)
@@ -678,4 +741,63 @@ func TestChatView_no_divider_when_at_bottom(t *testing.T) {
 
 	require.NotContains(t, stripped, "new messages",
 		"no divider should appear when viewport is at bottom")
+}
+
+func TestChatView_mouse_wheel_scrolls_messages(t *testing.T) {
+	msgs := make([]domain.Message, 30)
+	for i := range msgs {
+		msgs[i] = domain.Message{
+			ID:      fmt.Sprintf("%d", i),
+			Channel: "#general",
+			From:    "user",
+			Body:    fmt.Sprintf("message %d", i),
+		}
+	}
+
+	cv := components.NewChatView("#general", "testuser", "", components.MessagesToLines(msgs))
+	var m ui.Model = cv
+	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 20, Y: 0, Width: 60, Height: 24}})
+
+	m, _ = m.Update(tea.MouseMsg{
+		X:      25,
+		Y:      10,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonWheelUp,
+	})
+
+	v := m.View(60, 24)
+	require.NotContains(t, v, "message 29")
+}
+
+func TestChatView_mouse_click_accepts_popover_suggestion(t *testing.T) {
+	cv := components.NewChatView("#general", "testuser", "", nil).WithCommandState(command.Scope{
+		Commands: []command.Spec{
+			{
+				Name:  "join",
+				Help:  "Join a channel",
+				Usage: "/join <channel>",
+				Args: []command.ArgSpec{
+					{Name: "channel", Source: command.ChannelsSource()},
+				},
+			},
+		},
+	}, command.CompletionContext{
+		Channels: []domain.Channel{{Name: "#general", Kind: domain.KindChannel}},
+	})
+	var m ui.Model = cv
+
+	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 20, Y: 0, Width: 60, Height: 24}})
+	m = typeText(t, m, "/jo")
+	m, _ = m.Update(tea.MouseMsg{
+		X:      24,
+		Y:      22,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	})
+	m = typeText(t, m, "#general")
+	_, cmd := enter(t, m)
+
+	require.NotNil(t, cmd)
+	sub := cmd().(components.CommandSubmitMsg)
+	require.Equal(t, "/join #general", sub.Raw)
 }

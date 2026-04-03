@@ -1197,13 +1197,43 @@ func TestSession_SetAPIKey(t *testing.T) {
 		},
 	}
 	s := storemod.NewFileStore(t.TempDir())
-	sess := New(s, nil, &fakeAPIClient{}, cfgStore, "testuser")
+	initial := &fakeAPIClient{}
+	replacement := &fakeAPIClient{}
+	sess := New(s, nil, initial, cfgStore, "testuser")
+	sess.SetAPIFactory(func(apiKey string) (api.Client, error) {
+		require.Equal(t, "test-key", apiKey)
+		return replacement, nil
+	})
 
 	cfg, err := sess.SetAPIKey(t.Context(), "test-key")
 	require.NoError(t, err)
 	require.Equal(t, "test-key", cfg.APIKey)
 	require.Equal(t, "test-key", cfgStore.saved.APIKey)
 	require.Equal(t, 1, cfgStore.saveCalls)
+	require.Equal(t, "test-key", sess.apiKey)
+	require.Same(t, replacement, sess.api)
+}
+
+func TestSession_SetAPIKey_factory_failure_keeps_existing_client(t *testing.T) {
+	cfgStore := &fakeConfigStore{
+		cfg: config.Config{
+			UserNick:     "testuser",
+			PokeInterval: 5 * time.Minute,
+		},
+	}
+	s := storemod.NewFileStore(t.TempDir())
+	initial := &fakeAPIClient{}
+	sess := New(s, nil, initial, cfgStore, "testuser")
+	sess.SetAPIFactory(func(string) (api.Client, error) {
+		return nil, fmt.Errorf("boom")
+	})
+
+	_, err := sess.SetAPIKey(context.Background(), "test-key")
+	require.Error(t, err)
+	require.Equal(t, 0, cfgStore.saveCalls)
+	require.Empty(t, cfgStore.saved.APIKey)
+	require.Same(t, initial, sess.api)
+	require.Empty(t, sess.apiKey)
 }
 
 func TestSession_SetPokeInterval(t *testing.T) {

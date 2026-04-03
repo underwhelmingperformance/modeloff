@@ -118,10 +118,10 @@ func TestApp_title_list_and_help_commands_with_teatest(t *testing.T) {
 	waitForOutput(t, tm, "topic for #random cleared")
 
 	submitText(tm, "/help")
-	waitForOutput(t, tm, "/join <channel>", "/config api-key <key>", "/help")
+	waitForOutput(t, tm, "/join", "/config", "/help")
 
 	view := finalView(t, tm)
-	require.Contains(t, view, "/join <channel>")
+	require.Contains(t, view, "/join")
 	require.Contains(t, view, "/help")
 }
 
@@ -168,10 +168,10 @@ func TestApp_config_commands_with_teatest(t *testing.T) {
 	waitForOutput(t, tm, "#general")
 
 	submitText(tm, "/config")
-	waitForOutput(t, tm, "usage: /config api-key")
+	waitForOutput(t, tm, "usage: /config api-key", "poke-interval")
 
 	submitText(tm, "/config api-key test-key")
-	waitForOutput(t, tm, "OpenRouter API key saved. Restart modeloff to use it.")
+	waitForOutput(t, tm, "OpenRouter API key saved and activated.")
 
 	submitText(tm, "/config poke-interval 10m")
 	waitForOutput(t, tm, "Poke interval set to 10m0s.")

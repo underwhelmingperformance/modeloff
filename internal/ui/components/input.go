@@ -6,6 +6,7 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/theme"
@@ -20,8 +21,7 @@ type MessageSubmitMsg struct {
 // CommandSubmitMsg is emitted when the user presses Enter with a
 // message starting with "/".
 type CommandSubmitMsg struct {
-	Name string
-	Args string
+	Raw string
 }
 
 // historySize is the maximum number of entries kept in the input
@@ -102,10 +102,8 @@ func (b InputBar) submit() (ui.Model, tea.Cmd) {
 	b.histDraft = ""
 
 	if strings.HasPrefix(text, "/") {
-		name, args := parseCommand(text)
-
 		return b, func() tea.Msg {
-			return CommandSubmitMsg{Name: name, Args: args}
+			return CommandSubmitMsg{Raw: text}
 		}
 	}
 
@@ -167,17 +165,79 @@ func (b InputBar) historyDown() InputBar {
 	return b
 }
 
-func parseCommand(text string) (string, string) {
-	text = text[1:]
-
-	name, args, _ := strings.Cut(text, " ")
-
-	return name, strings.TrimSpace(args)
-}
-
 // Value returns the current text in the input buffer.
 func (b InputBar) Value() string {
 	return b.input.Value()
+}
+
+// Cursor returns the cursor position in runes.
+func (b InputBar) Cursor() int {
+	return b.input.Position()
+}
+
+// ReplaceRange replaces the given rune range with the provided text.
+func (b InputBar) ReplaceRange(start, end int, replacement string) InputBar {
+	value := []rune(b.input.Value())
+	start = clampInputIndex(start, len(value))
+	end = clampInputIndex(end, len(value))
+	if end < start {
+		end = start
+	}
+
+	runes := []rune(replacement)
+	next := make([]rune, 0, start+len(runes)+len(value)-end)
+	next = append(next, value[:start]...)
+	next = append(next, runes...)
+	next = append(next, value[end:]...)
+
+	b.input.SetValue(string(next))
+	b.input.SetCursor(start + len(runes))
+
+	return b
+}
+
+// SetCursorFromCell moves the cursor to the nearest cell within the input area.
+func (b InputBar) SetCursorFromCell(x int) InputBar {
+	if x <= 0 {
+		b.input.SetCursor(0)
+		return b
+	}
+
+	value := []rune(b.input.Value())
+	width := 0
+	for i := 0; i < len(value); i++ {
+		nextWidth := width + lipgloss.Width(string(value[i]))
+		if x <= nextWidth {
+			if x-width <= nextWidth-x {
+				b.input.SetCursor(i)
+				return b
+			}
+
+			b.input.SetCursor(i + 1)
+			return b
+		}
+
+		width = nextWidth
+	}
+
+	b.input.SetCursor(len(value))
+	return b
+}
+
+func clampInputIndex(index, length int) int {
+	if index < 0 {
+		return 0
+	}
+
+	if index > length {
+		return length
+	}
+
+	return index
+}
+
+func promptWidth() int {
+	return lipgloss.Width(theme.Prompt.Render("> "))
 }
 
 // View implements ui.Model.

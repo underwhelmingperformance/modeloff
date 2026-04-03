@@ -35,82 +35,12 @@ func errorEvent(err error) systemEventMsg {
 }
 
 func (s *ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
-	raw := "/" + msg.Name
-	if msg.Args != "" {
-		raw += " " + msg.Args
-	}
-
-	parsed, err := command.Parse(raw)
+	cmd, err := command.Execute(s.CommandScope(), msg.Raw)
 	if err != nil {
 		return func() tea.Msg { return errorEvent(err) }
 	}
 
-	switch cmd := parsed.(type) {
-	case command.JoinCommand:
-		return s.joinChannel(cmd.Channel)
-
-	case command.LeaveCommand:
-		if s.active == "" {
-			return noChannelMsg
-		}
-
-		return s.leaveChannel()
-
-	case command.NickCommand:
-		return s.changeNick(domain.Nick(cmd.Nick))
-
-	case command.TitleCommand:
-		if s.active == "" {
-			return noChannelMsg
-		}
-
-		return s.setTitle(cmd.Title)
-
-	case command.WhoisCommand:
-		return s.whois(domain.Nick(cmd.Nick))
-
-	case command.ListCommand:
-		return s.listChannels()
-
-	case command.InviteCommand:
-		if s.active == "" {
-			return noChannelMsg
-		}
-
-		if cmd.Model == "" {
-			return func() tea.Msg {
-				return systemEventMsg{events: []components.ChatLine{
-					components.UsageHint{Command: "invite"},
-				}}
-			}
-		}
-
-		return s.inviteModel(domain.ModelID(cmd.Model), cmd.Persona)
-
-	case command.KickCommand:
-		if s.active == "" {
-			return noChannelMsg
-		}
-
-		return s.kickModel(domain.Nick(cmd.Nick))
-
-	case command.ConfigCommand:
-		return s.configure(cmd)
-
-	case command.MsgCommand:
-		return s.directMessage(domain.Nick(cmd.Nick), cmd.Body)
-
-	case command.HelpCommand:
-		return s.showHelp()
-
-	case command.QuitCommand:
-		return tea.Quit
-
-	default:
-		return func() tea.Msg {
-			return errorEvent(domain.UnknownCommandError{Name: msg.Name})
-		}
-	}
+	return cmd
 }
 
 func (s *ChatScreen) configure(cmd command.ConfigCommand) tea.Cmd {
@@ -134,9 +64,7 @@ func (s *ChatScreen) configure(cmd command.ConfigCommand) tea.Cmd {
 				return errorEvent(err)
 			}
 
-			return systemEventMsg{events: []components.ChatLine{
-				components.APIKeySaved{},
-			}}
+			return apiKeyActivatedMsg{}
 
 		case "poke-interval":
 			if strings.TrimSpace(cmd.Value) == "" {
@@ -183,6 +111,7 @@ func (s *ChatScreen) directMessage(nick domain.Nick, body string) tea.Cmd {
 		}
 
 		channels, _ := s.sess.ListChannels(ctx)
+		instances, _ := s.sess.ListInstances(ctx)
 		messages, _ := s.sess.Messages(ctx, ch.Name)
 
 		var events []components.ChatLine
@@ -191,13 +120,14 @@ func (s *ChatScreen) directMessage(nick domain.Nick, body string) tea.Cmd {
 		}
 
 		return commandResultMsg{
-			channels: channels,
-			active:   ch.Name,
-			title:    "",
-			messages: messages,
-			unread:   s.unreadCounts(ctx, channels),
-			members:  s.channelMembers(ch.Name),
-			events:   events,
+			channels:  channels,
+			instances: instances,
+			active:    ch.Name,
+			title:     "",
+			messages:  messages,
+			unread:    s.unreadCounts(ctx, channels),
+			members:   s.channelMembers(ch.Name),
+			events:    events,
 		}
 	}
 }
@@ -211,15 +141,17 @@ func (s *ChatScreen) handlePoke() tea.Cmd {
 		}
 
 		channels, _ := s.sess.ListChannels(ctx)
+		instances, _ := s.sess.ListInstances(ctx)
 		messages, _ := s.sess.Messages(ctx, s.active)
 
 		return commandResultMsg{
-			channels: channels,
-			active:   s.active,
-			title:    s.title,
-			messages: messages,
-			unread:   s.unreadCounts(ctx, channels),
-			members:  s.channelMembers(s.active),
+			channels:  channels,
+			instances: instances,
+			active:    s.active,
+			title:     s.title,
+			messages:  messages,
+			unread:    s.unreadCounts(ctx, channels),
+			members:   s.channelMembers(s.active),
 		}
 	}
 }
@@ -234,6 +166,7 @@ func (s *ChatScreen) joinChannel(name string) tea.Cmd {
 		}
 
 		channels, _ := s.sess.ListChannels(ctx)
+		instances, _ := s.sess.ListInstances(ctx)
 		active := domain.ChannelName(name)
 		messages, _ := s.sess.Messages(ctx, active)
 
@@ -243,13 +176,14 @@ func (s *ChatScreen) joinChannel(name string) tea.Cmd {
 		}
 
 		return commandResultMsg{
-			channels: channels,
-			active:   active,
-			title:    title,
-			messages: messages,
-			unread:   s.unreadCounts(ctx, channels),
-			members:  s.channelMembers(active),
-			events:   []components.ChatLine{components.Join{JoinEvent: evt}},
+			channels:  channels,
+			instances: instances,
+			active:    active,
+			title:     title,
+			messages:  messages,
+			unread:    s.unreadCounts(ctx, channels),
+			members:   s.channelMembers(active),
+			events:    []components.ChatLine{components.Join{JoinEvent: evt}},
 		}
 	}
 }
@@ -261,6 +195,7 @@ func (s *ChatScreen) leaveChannel() tea.Cmd {
 		evt, _ := s.sess.Leave(ctx, s.active)
 
 		channels, _ := s.sess.ListChannels(ctx)
+		instances, _ := s.sess.ListInstances(ctx)
 
 		var active domain.ChannelName
 		var title string
@@ -273,13 +208,14 @@ func (s *ChatScreen) leaveChannel() tea.Cmd {
 		}
 
 		return commandResultMsg{
-			channels: channels,
-			active:   active,
-			title:    title,
-			messages: messages,
-			unread:   s.unreadCounts(ctx, channels),
-			members:  s.channelMembers(active),
-			events:   []components.ChatLine{components.Part{PartEvent: evt}},
+			channels:  channels,
+			instances: instances,
+			active:    active,
+			title:     title,
+			messages:  messages,
+			unread:    s.unreadCounts(ctx, channels),
+			members:   s.channelMembers(active),
+			events:    []components.ChatLine{components.Part{PartEvent: evt}},
 		}
 	}
 }
@@ -294,16 +230,18 @@ func (s *ChatScreen) changeNick(nick domain.Nick) tea.Cmd {
 		}
 
 		channels, _ := s.sess.ListChannels(ctx)
+		instances, _ := s.sess.ListInstances(ctx)
 		messages, _ := s.sess.Messages(ctx, s.active)
 
 		return commandResultMsg{
-			channels: channels,
-			active:   s.active,
-			title:    s.title,
-			messages: messages,
-			unread:   s.unreadCounts(ctx, channels),
-			members:  s.channelMembers(s.active),
-			events:   []components.ChatLine{components.NickChange{NickChangeEvent: evt}},
+			channels:  channels,
+			instances: instances,
+			active:    s.active,
+			title:     s.title,
+			messages:  messages,
+			unread:    s.unreadCounts(ctx, channels),
+			members:   s.channelMembers(s.active),
+			events:    []components.ChatLine{components.NickChange{NickChangeEvent: evt}},
 		}
 	}
 }
@@ -318,16 +256,18 @@ func (s *ChatScreen) setTitle(title string) tea.Cmd {
 		}
 
 		channels, _ := s.sess.ListChannels(ctx)
+		instances, _ := s.sess.ListInstances(ctx)
 		messages, _ := s.sess.Messages(ctx, s.active)
 
 		return commandResultMsg{
-			channels: channels,
-			active:   s.active,
-			title:    title,
-			messages: messages,
-			unread:   s.unreadCounts(ctx, channels),
-			members:  s.channelMembers(s.active),
-			events:   []components.ChatLine{components.TopicChange{TopicChangeEvent: evt}},
+			channels:  channels,
+			instances: instances,
+			active:    s.active,
+			title:     title,
+			messages:  messages,
+			unread:    s.unreadCounts(ctx, channels),
+			members:   s.channelMembers(s.active),
+			events:    []components.ChatLine{components.TopicChange{TopicChangeEvent: evt}},
 		}
 	}
 }
@@ -357,16 +297,18 @@ func (s *ChatScreen) inviteModel(modelID domain.ModelID, persona string) tea.Cmd
 		}
 
 		channels, _ := s.sess.ListChannels(ctx)
+		instances, _ := s.sess.ListInstances(ctx)
 		messages, _ := s.sess.Messages(ctx, s.active)
 
 		return commandResultMsg{
-			channels: channels,
-			active:   s.active,
-			title:    s.title,
-			messages: messages,
-			unread:   s.unreadCounts(ctx, channels),
-			members:  s.channelMembers(s.active),
-			events:   []components.ChatLine{components.ModelInvited{ModelInvitedEvent: evt}},
+			channels:  channels,
+			instances: instances,
+			active:    s.active,
+			title:     s.title,
+			messages:  messages,
+			unread:    s.unreadCounts(ctx, channels),
+			members:   s.channelMembers(s.active),
+			events:    []components.ChatLine{components.ModelInvited{ModelInvitedEvent: evt}},
 		}
 	}
 }
@@ -381,16 +323,18 @@ func (s *ChatScreen) kickModel(nick domain.Nick) tea.Cmd {
 		}
 
 		channels, _ := s.sess.ListChannels(ctx)
+		instances, _ := s.sess.ListInstances(ctx)
 		messages, _ := s.sess.Messages(ctx, s.active)
 
 		return commandResultMsg{
-			channels: channels,
-			active:   s.active,
-			title:    s.title,
-			messages: messages,
-			unread:   s.unreadCounts(ctx, channels),
-			members:  s.channelMembers(s.active),
-			events:   []components.ChatLine{components.ModelKicked{ModelKickedEvent: evt}},
+			channels:  channels,
+			instances: instances,
+			active:    s.active,
+			title:     s.title,
+			messages:  messages,
+			unread:    s.unreadCounts(ctx, channels),
+			members:   s.channelMembers(s.active),
+			events:    []components.ChatLine{components.ModelKicked{ModelKickedEvent: evt}},
 		}
 	}
 }

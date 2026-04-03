@@ -35,6 +35,7 @@ type Sidebar struct {
 	active   domain.ChannelName
 	unread   map[domain.ChannelName]int
 	keyMap   SidebarKeyMap
+	bounds   ui.Rect
 }
 
 // NewSidebar creates a sidebar with the given initial channels and
@@ -59,6 +60,9 @@ func (s Sidebar) Init() tea.Cmd {
 // Update implements ui.Model.
 func (s Sidebar) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case ui.BoundsMsg:
+		s.bounds = msg.Rect
+
 	case tea.KeyMsg:
 		return s.handleKey(msg)
 
@@ -101,11 +105,16 @@ func (s Sidebar) handleMouse(msg tea.MouseMsg) (ui.Model, tea.Cmd) {
 		return s, nil
 	}
 
-	if msg.Y < 0 || msg.Y >= len(s.channels) {
+	if !s.bounds.Contains(msg.X, msg.Y) {
 		return s, nil
 	}
 
-	s.cursor = msg.Y
+	_, localY := s.bounds.Local(msg.X, msg.Y)
+	if localY < 0 || localY >= len(s.channels) {
+		return s, nil
+	}
+
+	s.cursor = localY
 
 	return s, s.selectCurrent()
 }
@@ -206,7 +215,6 @@ func (s Sidebar) View(width, height int) string {
 }
 
 func truncate(s string, maxWidth int) string {
-	// Account for the "▸ " or "  " prefix (2 chars + space).
 	available := maxWidth - 3
 	if available <= 0 {
 		return ""
@@ -216,7 +224,6 @@ func truncate(s string, maxWidth int) string {
 		return s
 	}
 
-	// Truncate rune by rune until it fits.
 	runes := []rune(s)
 	for len(runes) > 0 && lipgloss.Width(string(runes)) > available-1 {
 		runes = runes[:len(runes)-1]
