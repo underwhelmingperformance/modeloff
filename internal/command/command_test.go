@@ -56,6 +56,14 @@ func TestParse(t *testing.T) {
 			want:  InviteCommand{Model: "anthropic/claude-3-haiku"},
 		},
 		{
+			name:  "invite with persona",
+			input: "/invite anthropic/claude-3-haiku --persona Helpful assistant",
+			want: InviteCommand{
+				Model:   "anthropic/claude-3-haiku",
+				Persona: "Helpful assistant",
+			},
+		},
+		{
 			name:  "invite without args opens picker",
 			input: "/invite",
 			want:  InviteCommand{},

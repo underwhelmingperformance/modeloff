@@ -275,7 +275,7 @@ func TestChatScreen_whois_command(t *testing.T) {
 	seedChannel(t, sess, "#general")
 
 	// Invite a model so there's an instance to whois.
-	_, err := sess.Invite(context.Background(), "#general", "anthropic/claude-3-haiku")
+	_, err := sess.Invite(context.Background(), "#general", "anthropic/claude-3-haiku", "")
 	require.NoError(t, err)
 
 	cs := screens.NewChatScreen(sess)
@@ -375,6 +375,29 @@ func TestChatScreen_invite_command(t *testing.T) {
 	require.Contains(t, v, "fakenick (anthropic/claude-3-haiku) has joined #general")
 }
 
+func TestChatScreen_invite_with_persona(t *testing.T) {
+	sess := newTestSession(t)
+	seedChannel(t, sess, "#general")
+
+	cs := screens.NewChatScreen(sess)
+
+	msg := cs.Init()()
+	var m ui.Model
+	m, _ = cs.Update(msg)
+
+	m, cmd := m.Update(components.CommandSubmitMsg{
+		Name: "invite",
+		Args: "anthropic/claude-3-haiku --persona Helpful assistant",
+	})
+	require.NotNil(t, cmd)
+
+	msg = cmd()
+	m, _ = m.Update(msg)
+
+	v := m.View(80, 24)
+	require.Contains(t, v, `fakenick (anthropic/claude-3-haiku) has joined #general with persona "Helpful assistant"`)
+}
+
 func TestChatScreen_invite_no_args(t *testing.T) {
 	sess := newTestSession(t)
 	seedChannel(t, sess, "#general")
@@ -392,7 +415,7 @@ func TestChatScreen_invite_no_args(t *testing.T) {
 	m, _ = m.Update(msg)
 
 	v := m.View(80, 24)
-	require.Contains(t, v, "usage: /invite <model-id>")
+	require.Contains(t, v, "usage: /invite <model-id> [--persona <text>]")
 }
 
 func TestChatScreen_invite_existing_instance(t *testing.T) {
@@ -400,7 +423,7 @@ func TestChatScreen_invite_existing_instance(t *testing.T) {
 	seedChannel(t, sess, "#general")
 	seedChannel(t, sess, "#random")
 
-	_, err := sess.Invite(context.Background(), "#general", "anthropic/claude-3-haiku")
+	_, err := sess.Invite(context.Background(), "#general", "anthropic/claude-3-haiku", "")
 	require.NoError(t, err)
 
 	cs := screens.NewChatScreen(sess)
@@ -428,7 +451,7 @@ func TestChatScreen_kick_command(t *testing.T) {
 	seedChannel(t, sess, "#general")
 
 	// Invite a model so there's someone to kick.
-	_, err := sess.Invite(context.Background(), "#general", "anthropic/claude-3-haiku")
+	_, err := sess.Invite(context.Background(), "#general", "anthropic/claude-3-haiku", "")
 	require.NoError(t, err)
 
 	cs := screens.NewChatScreen(sess)
@@ -554,7 +577,7 @@ func TestChatScreen_config_invalid_duration(t *testing.T) {
 func TestChatScreen_msg_command_opens_dm(t *testing.T) {
 	sess := newTestSession(t)
 	seedChannel(t, sess, "#general")
-	_, err := sess.Invite(context.Background(), "#general", "anthropic/claude-3-haiku")
+	_, err := sess.Invite(context.Background(), "#general", "anthropic/claude-3-haiku", "")
 	require.NoError(t, err)
 
 	cs := screens.NewChatScreen(sess)
@@ -577,7 +600,7 @@ func TestChatScreen_msg_command_opens_dm(t *testing.T) {
 func TestChatScreen_msg_command_opens_dm_and_sends_message(t *testing.T) {
 	sess := newTestSession(t)
 	seedChannel(t, sess, "#general")
-	_, err := sess.Invite(context.Background(), "#general", "anthropic/claude-3-haiku")
+	_, err := sess.Invite(context.Background(), "#general", "anthropic/claude-3-haiku", "")
 	require.NoError(t, err)
 
 	cs := screens.NewChatScreen(sess)

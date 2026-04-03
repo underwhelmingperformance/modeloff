@@ -113,8 +113,13 @@ func (s *Session) Invite(
 	ctx context.Context,
 	ch domain.ChannelName,
 	modelID domain.ModelID,
+	persona string,
 ) (domain.ModelInvitedEvent, error) {
 	if inst, err := s.store.GetInstance(ctx, domain.Nick(modelID)); err == nil {
+		if inst.Persona == "" && strings.TrimSpace(persona) != "" {
+			inst.Persona = strings.TrimSpace(persona)
+		}
+
 		return s.attachInstanceToChannel(ctx, ch, inst)
 	}
 
@@ -126,6 +131,7 @@ func (s *Session) Invite(
 	inst := domain.ModelInstance{
 		Nick:     nick,
 		ModelID:  modelID,
+		Persona:  strings.TrimSpace(persona),
 		Channels: set.NewOrdered(ch),
 	}
 

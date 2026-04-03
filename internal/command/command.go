@@ -30,10 +30,11 @@ type ListCommand struct{}
 
 func (ListCommand) commandMarker() {}
 
-// InviteCommand represents `/invite [model]`. Model may be empty,
-// indicating the user should be prompted to pick one.
+// InviteCommand represents `/invite [model] [--persona text]`. Model
+// may be empty, indicating the user should be prompted to pick one.
 type InviteCommand struct {
-	Model string
+	Model   string
+	Persona string
 }
 
 func (InviteCommand) commandMarker() {}
@@ -140,7 +141,21 @@ func parseInvite(args []string) Command {
 		return InviteCommand{}
 	}
 
-	return InviteCommand{Model: args[0]}
+	cmd := InviteCommand{Model: args[0]}
+
+	for i := 1; i < len(args); i++ {
+		if args[i] != "--persona" {
+			continue
+		}
+
+		if i+1 < len(args) {
+			cmd.Persona = strings.Join(args[i+1:], " ")
+		}
+
+		break
+	}
+
+	return cmd
 }
 
 func parseKick(args []string) (Command, error) {

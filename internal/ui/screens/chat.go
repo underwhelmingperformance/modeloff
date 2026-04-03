@@ -294,11 +294,11 @@ func (s ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
 	case command.InviteCommand:
 		if cmd.Model == "" {
 			return func() tea.Msg {
-				return systemEventMsg{lines: []string{"usage: /invite <model-id>"}}
+				return systemEventMsg{lines: []string{"usage: /invite <model-id> [--persona <text>]"}}
 			}
 		}
 
-		return s.inviteModel(domain.ModelID(cmd.Model))
+		return s.inviteModel(domain.ModelID(cmd.Model), cmd.Persona)
 
 	case command.KickCommand:
 		return s.kickModel(domain.Nick(cmd.Nick))
@@ -563,11 +563,11 @@ func (s ChatScreen) whois(nick domain.Nick) tea.Cmd {
 	}
 }
 
-func (s ChatScreen) inviteModel(modelID domain.ModelID) tea.Cmd {
+func (s ChatScreen) inviteModel(modelID domain.ModelID, persona string) tea.Cmd {
 	return func() tea.Msg {
 		ctx := context.Background()
 
-		evt, err := s.sess.Invite(ctx, s.active, modelID)
+		evt, err := s.sess.Invite(ctx, s.active, modelID, persona)
 		if err != nil {
 			return systemEventMsg{lines: []string{err.Error()}}
 		}
@@ -575,14 +575,17 @@ func (s ChatScreen) inviteModel(modelID domain.ModelID) tea.Cmd {
 		channels, _ := s.sess.ListChannels(ctx)
 		messages, _ := s.sess.Messages(ctx, s.active)
 
+		event := fmt.Sprintf("%s (%s) has joined %s", evt.Instance.Nick, evt.Instance.ModelID, evt.Channel)
+		if evt.Instance.Persona != "" {
+			event = fmt.Sprintf("%s with persona %q", event, evt.Instance.Persona)
+		}
+
 		return commandResultMsg{
 			channels: channels,
 			active:   s.active,
 			title:    s.title,
 			messages: messages,
-			systemEvents: []string{
-				fmt.Sprintf("%s (%s) has joined %s", evt.Instance.Nick, evt.Instance.ModelID, evt.Channel),
-			},
+			systemEvents: []string{event},
 		}
 	}
 }

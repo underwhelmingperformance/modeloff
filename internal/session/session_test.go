@@ -126,7 +126,7 @@ func TestSession_Invite(t *testing.T) {
 	}
 	require.NoError(t, s.SaveChannel(ctx, ch))
 
-	evt, err := sess.Invite(ctx, "#dev", "anthropic/claude-3-haiku")
+	evt, err := sess.Invite(ctx, "#dev", "anthropic/claude-3-haiku", "")
 	require.NoError(t, err)
 	require.Equal(t, domain.ModelInvitedEvent{
 		Channel: "#dev",
@@ -475,7 +475,7 @@ func TestSession_WhoisNotFound(t *testing.T) {
 func TestSession_InviteNonexistentChannel(t *testing.T) {
 	sess, _ := newTestSession(t)
 
-	_, err := sess.Invite(context.Background(), "#ghost", "anthropic/claude-3-haiku")
+	_, err := sess.Invite(context.Background(), "#ghost", "anthropic/claude-3-haiku", "")
 	require.Error(t, err)
 }
 
@@ -497,8 +497,23 @@ func TestSession_InviteGenerateNickError(t *testing.T) {
 	}
 	require.NoError(t, s.SaveChannel(ctx, ch))
 
-	_, err := sess.Invite(ctx, "#dev", "anthropic/claude-3-haiku")
+	_, err := sess.Invite(ctx, "#dev", "anthropic/claude-3-haiku", "")
 	require.Error(t, err)
+}
+
+func TestSession_Invite_persists_persona(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := context.Background()
+
+	seedChannelWithMembers(t, s, "#general", "testuser")
+
+	evt, err := sess.Invite(ctx, "#general", "anthropic/claude-3-haiku", "Helpful assistant")
+	require.NoError(t, err)
+	require.Equal(t, "Helpful assistant", evt.Instance.Persona)
+
+	inst, err := s.GetInstance(ctx, "fakenick")
+	require.NoError(t, err)
+	require.Equal(t, "Helpful assistant", inst.Persona)
 }
 
 func TestSession_Invite_reuses_existing_instance(t *testing.T) {
@@ -514,7 +529,7 @@ func TestSession_Invite_reuses_existing_instance(t *testing.T) {
 		Channels: set.NewOrdered[domain.ChannelName]("#general"),
 	})
 
-	evt, err := sess.Invite(ctx, "#random", "botty")
+	evt, err := sess.Invite(ctx, "#random", "botty", "")
 	require.NoError(t, err)
 	require.Equal(t, domain.ModelInvitedEvent{
 		Channel: "#random",
@@ -547,7 +562,7 @@ func TestSession_Invite_existing_instance_is_idempotent(t *testing.T) {
 		Channels: set.NewOrdered[domain.ChannelName]("#general"),
 	})
 
-	_, err := sess.Invite(ctx, "#general", "botty")
+	_, err := sess.Invite(ctx, "#general", "botty", "")
 	require.NoError(t, err)
 
 	inst, err := s.GetInstance(ctx, "botty")
@@ -557,6 +572,28 @@ func TestSession_Invite_existing_instance_is_idempotent(t *testing.T) {
 	channel, err := s.GetChannel(ctx, "#general")
 	require.NoError(t, err)
 	require.Equal(t, set.NewOrdered[domain.Nick]("testuser", "botty"), channel.Members)
+}
+
+func TestSession_Invite_existing_instance_preserves_persona(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := context.Background()
+
+	seedChannelWithMembers(t, s, "#general", "testuser")
+	seedChannelWithMembers(t, s, "#random", "testuser")
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Persona:  "Existing persona",
+		Channels: set.NewOrdered[domain.ChannelName]("#general"),
+	})
+
+	evt, err := sess.Invite(ctx, "#random", "botty", "New persona")
+	require.NoError(t, err)
+	require.Equal(t, "Existing persona", evt.Instance.Persona)
+
+	inst, err := s.GetInstance(ctx, "botty")
+	require.NoError(t, err)
+	require.Equal(t, "Existing persona", inst.Persona)
 }
 
 func TestSession_KickNonexistentChannel(t *testing.T) {
