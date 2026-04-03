@@ -65,7 +65,7 @@ type ChatScreen struct {
 // NewChatScreen creates a chat screen backed by the given session.
 func NewChatScreen(sess *session.Session) ChatScreen {
 	sidebar := components.NewSidebar(nil, "")
-	chatView := components.NewChatView("", nil)
+	chatView := components.NewChatView("", sess.UserNick(), nil)
 	layout := components.NewMainLayout(sidebar, chatView)
 
 	return ChatScreen{
@@ -140,7 +140,7 @@ func (s ChatScreen) handleLoaded(msg chatLoadedMsg) (ui.Model, tea.Cmd) {
 	s.active = msg.active
 
 	sidebar := components.NewSidebar(msg.rooms, msg.active)
-	chatView := components.NewChatView(msg.active, msg.messages)
+	chatView := components.NewChatView(msg.active, s.sess.UserNick(), msg.messages)
 	s.layout = components.NewMainLayout(sidebar, chatView)
 
 	return s, nil
@@ -150,14 +150,14 @@ func (s ChatScreen) handleRoomSwitched(msg roomSwitchedMsg) (ui.Model, tea.Cmd) 
 	s.active = msg.room
 
 	sidebar := components.NewSidebar(msg.rooms, msg.room)
-	chatView := components.NewChatView(msg.room, msg.messages)
+	chatView := components.NewChatView(msg.room, s.sess.UserNick(), msg.messages)
 	s.layout = components.NewMainLayout(sidebar, chatView)
 
 	return s, nil
 }
 
 func (s ChatScreen) handleMessageSent(msg messageSentMsg) (ui.Model, tea.Cmd) {
-	chatView := components.NewChatView(msg.room, msg.messages)
+	chatView := components.NewChatView(msg.room, s.sess.UserNick(), msg.messages)
 	s.layout = components.NewMainLayout(s.layout.Sidebar, chatView)
 
 	return s, nil
@@ -170,7 +170,7 @@ func (s ChatScreen) handleCommandResult(msg commandResultMsg) (ui.Model, tea.Cmd
 	messages = appendSystemEvents(messages, s.active, msg.systemEvents)
 
 	sidebar := components.NewSidebar(msg.rooms, msg.active)
-	chatView := components.NewChatView(msg.active, messages)
+	chatView := components.NewChatView(msg.active, s.sess.UserNick(), messages)
 	s.layout = components.NewMainLayout(sidebar, chatView)
 
 	return s, nil
@@ -182,7 +182,7 @@ func (s ChatScreen) handleSystemEvent(msg systemEventMsg) (ui.Model, tea.Cmd) {
 	messages, _ := s.sess.Messages(ctx, s.active)
 	messages = appendSystemEvents(messages, s.active, msg.lines)
 
-	chatView := components.NewChatView(s.active, messages)
+	chatView := components.NewChatView(s.active, s.sess.UserNick(), messages)
 	s.layout = components.NewMainLayout(s.layout.Sidebar, chatView)
 
 	return s, nil
@@ -265,8 +265,19 @@ func (s ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
 	case command.ListCommand:
 		return s.listRooms()
 
-	case command.InviteCommand, command.KickCommand,
-		command.MsgCommand, command.ConfigCommand:
+	case command.InviteCommand:
+		if cmd.Model == "" {
+			return func() tea.Msg {
+				return systemEventMsg{lines: []string{"usage: /invite <model-id>"}}
+			}
+		}
+
+		return s.inviteModel(domain.ModelID(cmd.Model))
+
+	case command.KickCommand:
+		return s.kickModel(domain.Nick(cmd.Nick))
+
+	case command.MsgCommand, command.ConfigCommand:
 		return func() tea.Msg {
 			return systemEventMsg{lines: []string{
 				fmt.Sprintf("/%s is not yet implemented", msg.Name),
@@ -395,6 +406,52 @@ func (s ChatScreen) whois(nick domain.Nick) tea.Cmd {
 		}
 
 		return systemEventMsg{lines: lines}
+	}
+}
+
+func (s ChatScreen) inviteModel(modelID domain.ModelID) tea.Cmd {
+	return func() tea.Msg {
+		ctx := context.Background()
+
+		evt, err := s.sess.Invite(ctx, s.active, modelID)
+		if err != nil {
+			return systemEventMsg{lines: []string{err.Error()}}
+		}
+
+		rooms, _ := s.sess.ListRooms(ctx)
+		messages, _ := s.sess.Messages(ctx, s.active)
+
+		return commandResultMsg{
+			rooms:    rooms,
+			active:   s.active,
+			messages: messages,
+			systemEvents: []string{
+				fmt.Sprintf("%s (%s) has joined %s", evt.Instance.Nick, evt.Instance.ModelID, evt.Room),
+			},
+		}
+	}
+}
+
+func (s ChatScreen) kickModel(nick domain.Nick) tea.Cmd {
+	return func() tea.Msg {
+		ctx := context.Background()
+
+		evt, err := s.sess.Kick(ctx, s.active, nick)
+		if err != nil {
+			return systemEventMsg{lines: []string{err.Error()}}
+		}
+
+		rooms, _ := s.sess.ListRooms(ctx)
+		messages, _ := s.sess.Messages(ctx, s.active)
+
+		return commandResultMsg{
+			rooms:    rooms,
+			active:   s.active,
+			messages: messages,
+			systemEvents: []string{
+				fmt.Sprintf("%s has been kicked from %s", evt.Nick, evt.Room),
+			},
+		}
 	}
 }
 

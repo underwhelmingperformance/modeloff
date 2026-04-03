@@ -11,6 +11,7 @@ import (
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/components"
+	"github.com/laney/modeloff/internal/ui/theme"
 )
 
 var testMessages = []domain.Message{
@@ -20,7 +21,7 @@ var testMessages = []domain.Message{
 }
 
 func TestChatView_View_shows_messages(t *testing.T) {
-	cv := components.NewChatView("¢general", testMessages)
+	cv := components.NewChatView("¢general", "testuser", testMessages)
 	v := cv.View(80, 24)
 
 	require.Contains(t, v, "hello")
@@ -31,21 +32,21 @@ func TestChatView_View_shows_messages(t *testing.T) {
 }
 
 func TestChatView_View_empty_messages(t *testing.T) {
-	cv := components.NewChatView("¢general", nil)
+	cv := components.NewChatView("¢general", "testuser", nil)
 	v := cv.View(80, 24)
 
 	require.Contains(t, v, "No messages yet")
 }
 
 func TestChatView_View_has_input_prompt(t *testing.T) {
-	cv := components.NewChatView("¢general", testMessages)
+	cv := components.NewChatView("¢general", "testuser", testMessages)
 	v := cv.View(80, 24)
 
 	require.Contains(t, v, ">")
 }
 
 func TestChatView_typing_goes_to_input(t *testing.T) {
-	cv := components.NewChatView("¢general", nil)
+	cv := components.NewChatView("¢general", "testuser", nil)
 	var m ui.Model = cv
 
 	m = typeText(t, m, "test message")
@@ -62,7 +63,7 @@ func TestChatView_typing_goes_to_input(t *testing.T) {
 }
 
 func TestChatView_command_from_input(t *testing.T) {
-	cv := components.NewChatView("¢general", nil)
+	cv := components.NewChatView("¢general", "testuser", nil)
 	var m ui.Model = cv
 
 	m = typeText(t, m, "/join ¢random")
@@ -78,7 +79,7 @@ func TestChatView_command_from_input(t *testing.T) {
 }
 
 func TestChatView_messages_updated(t *testing.T) {
-	cv := components.NewChatView("¢general", nil)
+	cv := components.NewChatView("¢general", "testuser", nil)
 	var m ui.Model = cv
 
 	newMsgs := []domain.Message{
@@ -96,7 +97,7 @@ func TestChatView_messages_updated(t *testing.T) {
 }
 
 func TestChatView_messages_updated_wrong_room(t *testing.T) {
-	cv := components.NewChatView("¢general", testMessages)
+	cv := components.NewChatView("¢general", "testuser", testMessages)
 	var m ui.Model = cv
 
 	m, _ = m.Update(components.MessagesUpdatedMsg{
@@ -121,7 +122,7 @@ func TestChatView_scroll(t *testing.T) {
 		}
 	}
 
-	cv := components.NewChatView("¢general", msgs)
+	cv := components.NewChatView("¢general", "testuser", msgs)
 	var m ui.Model = cv
 
 	// Scroll up.
@@ -140,7 +141,7 @@ func TestChatView_scroll(t *testing.T) {
 }
 
 func TestChatView_scroll_does_not_go_negative(t *testing.T) {
-	cv := components.NewChatView("¢general", testMessages)
+	cv := components.NewChatView("¢general", "testuser", testMessages)
 	var m ui.Model = cv
 
 	// Try to scroll down past zero.
@@ -149,6 +150,29 @@ func TestChatView_scroll_does_not_go_negative(t *testing.T) {
 
 	v := m.View(80, 24)
 	require.Contains(t, v, "how are you?")
+}
+
+func TestChatView_user_nick_styled_differently(t *testing.T) {
+	msgs := []domain.Message{
+		{ID: "1", Room: "¢general", From: "alice", Body: "from user"},
+		{ID: "2", Room: "¢general", From: "bot", Body: "from model"},
+	}
+
+	cv := components.NewChatView("¢general", "alice", msgs)
+	v := cv.View(80, 24)
+
+	// Both nicks should appear in the output.
+	require.Contains(t, v, "alice")
+	require.Contains(t, v, "bot")
+
+	// The user nick "alice" and the model nick "bot" are styled with
+	// different theme colours (green vs magenta). Render both with their
+	// respective styles and check they appear in the view.
+	userStyled := theme.UserNick.Render("<alice>")
+	modelStyled := theme.ModelNick.Render("<bot>")
+
+	require.Contains(t, v, userStyled)
+	require.Contains(t, v, modelStyled)
 }
 
 func TestRenderSystemEvent(t *testing.T) {

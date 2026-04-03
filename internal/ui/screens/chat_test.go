@@ -325,6 +325,70 @@ func TestChatScreen_list_empty(t *testing.T) {
 	require.Contains(t, v, "no rooms")
 }
 
+func TestChatScreen_invite_command(t *testing.T) {
+	sess := newTestSession(t)
+	seedRoom(t, sess, "¢general")
+
+	cs := screens.NewChatScreen(sess)
+
+	msg := cs.Init()()
+	var m ui.Model
+	m, _ = cs.Update(msg)
+
+	m, cmd := m.Update(components.CommandSubmitMsg{Name: "invite", Args: "anthropic/claude-3-haiku"})
+	require.NotNil(t, cmd)
+
+	msg = cmd()
+	m, _ = m.Update(msg)
+
+	v := m.View(80, 24)
+	require.Contains(t, v, "fakenick (anthropic/claude-3-haiku) has joined ¢general")
+}
+
+func TestChatScreen_invite_no_args(t *testing.T) {
+	sess := newTestSession(t)
+	seedRoom(t, sess, "¢general")
+
+	cs := screens.NewChatScreen(sess)
+
+	msg := cs.Init()()
+	var m ui.Model
+	m, _ = cs.Update(msg)
+
+	m, cmd := m.Update(components.CommandSubmitMsg{Name: "invite", Args: ""})
+	require.NotNil(t, cmd)
+
+	msg = cmd()
+	m, _ = m.Update(msg)
+
+	v := m.View(80, 24)
+	require.Contains(t, v, "usage: /invite <model-id>")
+}
+
+func TestChatScreen_kick_command(t *testing.T) {
+	sess := newTestSession(t)
+	seedRoom(t, sess, "¢general")
+
+	// Invite a model so there's someone to kick.
+	_, err := sess.Invite(context.Background(), "¢general", "anthropic/claude-3-haiku")
+	require.NoError(t, err)
+
+	cs := screens.NewChatScreen(sess)
+
+	msg := cs.Init()()
+	var m ui.Model
+	m, _ = cs.Update(msg)
+
+	m, cmd := m.Update(components.CommandSubmitMsg{Name: "kick", Args: "fakenick"})
+	require.NotNil(t, cmd)
+
+	msg = cmd()
+	m, _ = m.Update(msg)
+
+	v := m.View(80, 24)
+	require.Contains(t, v, "fakenick has been kicked from ¢general")
+}
+
 func TestChatScreen_unimplemented_command(t *testing.T) {
 	sess := newTestSession(t)
 	seedRoom(t, sess, "¢general")

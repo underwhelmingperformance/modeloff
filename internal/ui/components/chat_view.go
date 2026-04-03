@@ -22,15 +22,17 @@ type MessagesUpdatedMsg struct {
 // the bottom.
 type ChatView struct {
 	room     domain.RoomName
+	userNick domain.Nick
 	messages []domain.Message
 	input    InputBar
 	scroll   int
 }
 
 // NewChatView creates a chat view for the given room.
-func NewChatView(room domain.RoomName, messages []domain.Message) ChatView {
+func NewChatView(room domain.RoomName, userNick domain.Nick, messages []domain.Message) ChatView {
 	return ChatView{
 		room:     room,
+		userNick: userNick,
 		messages: messages,
 		input:    NewInputBar(),
 	}
@@ -99,7 +101,7 @@ func (c ChatView) renderMessages(width, height int) string {
 	lines := make([]string, 0, len(c.messages))
 
 	for _, msg := range c.messages {
-		lines = append(lines, renderMessage(msg))
+		lines = append(lines, c.renderMessage(msg))
 	}
 
 	// Apply scroll offset from the bottom.
@@ -128,14 +130,15 @@ func (c ChatView) renderMessages(width, height int) string {
 	return content
 }
 
-func renderMessage(msg domain.Message) string {
-	nick := renderNick(msg.From)
+func (c ChatView) renderMessage(msg domain.Message) string {
+	style := theme.ModelNick
+	if msg.From == c.userNick {
+		style = theme.UserNick
+	}
+
+	nick := style.Render(fmt.Sprintf("<%s>", string(msg.From)))
 
 	return fmt.Sprintf("%s %s", nick, msg.Body)
-}
-
-func renderNick(nick domain.Nick) string {
-	return theme.ModelNick.Render(fmt.Sprintf("<%s>", string(nick)))
 }
 
 // RenderSystemEvent formats a system event (join, part, topic change)
