@@ -1,6 +1,9 @@
 package components
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/laney/modeloff/internal/ui"
@@ -61,19 +64,57 @@ func (m MainLayout) View(width, height int) string {
 		return theme.NarrowTerminalView(width, height)
 	}
 
+	bar := statusBar(width)
+	barHeight := lipgloss.Height(bar)
+	contentHeight := height - barHeight
+
 	sw := sidebarWidth(width)
 	cw := width - sw
 
 	borderStyle := theme.SidebarBorder.
-		Height(height)
+		Height(contentHeight)
 
 	frameW, _ := borderStyle.GetFrameSize()
 	innerSW := sw - frameW
 
-	left := borderStyle.Render(m.Sidebar.View(innerSW, height))
-	right := m.Content.View(cw, height)
+	left := borderStyle.Render(m.Sidebar.View(innerSW, contentHeight))
+	right := m.Content.View(cw, contentHeight)
 
-	return lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+	main := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+
+	return lipgloss.JoinVertical(lipgloss.Left, main, bar)
+}
+
+// statusBar renders a single-line bar showing keyboard shortcuts.
+// At narrow widths it abbreviates to fit.
+func statusBar(width int) string {
+	type shortcut struct {
+		key  string
+		desc string
+	}
+
+	full := []shortcut{
+		{"^D/U", "nav"},
+		{"^O", "select"},
+		{"PgUp/Dn", "scroll"},
+		{"/", "commands"},
+		{"^C", "quit"},
+	}
+
+	parts := make([]string, len(full))
+	for i, s := range full {
+		parts[i] = fmt.Sprintf("%s %s", s.key, s.desc)
+	}
+
+	text := strings.Join(parts, "  ")
+
+	// Abbreviate if too wide.
+	if lipgloss.Width(text) > width {
+		short := []string{"^D/U nav", "^O sel", "PgUp/Dn", "/ cmds", "^C quit"}
+		text = strings.Join(short, " ")
+	}
+
+	return theme.Dim.Render(text)
 }
 
 func sidebarWidth(totalWidth int) int {

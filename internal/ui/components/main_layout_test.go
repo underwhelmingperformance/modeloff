@@ -96,6 +96,40 @@ func TestMainLayout_View_fills_width(t *testing.T) {
 	require.LessOrEqual(t, renderedWidth, 100)
 }
 
+func TestMainLayout_View_has_status_bar(t *testing.T) {
+	sidebar := stubModel{label: "sidebar"}
+	content := stubModel{label: "content"}
+	layout := components.NewMainLayout(sidebar, content)
+
+	got := layout.View(80, 24)
+
+	require.Contains(t, got, "nav")
+	require.Contains(t, got, "quit")
+	require.Contains(t, got, "scroll")
+}
+
+func TestMainLayout_View_status_bar_preserves_height(t *testing.T) {
+	sidebar := stubModel{label: "sidebar"}
+	content := stubModel{label: "content"}
+	layout := components.NewMainLayout(sidebar, content)
+
+	got := layout.View(80, 24)
+
+	require.Equal(t, 24, lipgloss.Height(got))
+}
+
+func TestMainLayout_View_status_bar_abbreviates_narrow(t *testing.T) {
+	sidebar := stubModel{label: "sidebar"}
+	content := stubModel{label: "content"}
+	layout := components.NewMainLayout(sidebar, content)
+
+	got := layout.View(45, 24)
+
+	// Should still contain shortcuts even when narrow.
+	require.Contains(t, got, "nav")
+	require.Contains(t, got, "quit")
+}
+
 // initModel is a stubModel that returns a command from Init.
 type initModel struct {
 	stubModel
