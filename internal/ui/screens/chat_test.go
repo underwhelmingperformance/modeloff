@@ -96,8 +96,9 @@ func TestChatScreen_Init_empty(t *testing.T) {
 	require.Contains(t, v, "/config api-key <value>")
 	require.Contains(t, v, "ctrl+d, ctrl+u, ctrl+o")
 
-	// The welcome screen includes an input bar so the user can type
-	// commands immediately.
+	// The layout renders normally: sidebar, input bar, and status bar
+	// are all present.
+	require.Contains(t, v, "No channels")
 	require.Contains(t, v, ">")
 }
 
@@ -165,6 +166,31 @@ func TestChatScreen_WelcomeState_responsive(t *testing.T) {
 	narrow := m.View(28, 12)
 	require.Contains(t, narrow, "Resize terminal to 40+ columns")
 	require.NotContains(t, narrow, "Welcome to modeloff")
+}
+
+func TestChatScreen_quit_command(t *testing.T) {
+	sess := newTestSession(t)
+	seedChannel(t, sess, "#general")
+
+	m := initChatScreen(t, sess)
+
+	// Type /quit and press enter.
+	for _, r := range "/quit" {
+		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+
+	// Enter produces a tea.Cmd that yields CommandSubmitMsg.
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	require.NotNil(t, cmd)
+
+	// Apply the CommandSubmitMsg — should return tea.Quit.
+	_, cmd = m.Update(cmd())
+	require.NotNil(t, cmd)
+
+	// tea.Quit returns a tea.QuitMsg when executed.
+	msg := cmd()
+	_, ok := msg.(tea.QuitMsg)
+	require.True(t, ok, "expected tea.QuitMsg, got %T", msg)
 }
 
 type fakeConfigStore struct {

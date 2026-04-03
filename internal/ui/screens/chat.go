@@ -4,7 +4,6 @@ import (
 	"context"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/session"
@@ -176,6 +175,13 @@ func (s *ChatScreen) handleLoaded(msg chatLoadedMsg) (ui.Model, tea.Cmd) {
 
 	sidebar := components.NewSidebar(msg.channels, msg.active, msg.unread)
 	s.chatView.SetChannel(msg.active, msg.title, components.MessagesToLines(msg.messages))
+
+	if s.channelCount == 0 {
+		s.chatView.SetPlaceholder(welcomeText(s.sess.UserNick()))
+	} else {
+		s.chatView.SetPlaceholder("")
+	}
+
 	s.layout = components.NewMainLayout(sidebar, s.chatView)
 
 	return s, nil
@@ -187,6 +193,7 @@ func (s *ChatScreen) handleChannelSwitched(msg channelSwitchedMsg) (ui.Model, te
 	s.channelCount = len(msg.channels)
 
 	sidebar := components.NewSidebar(msg.channels, msg.channel, msg.unread)
+	s.chatView.SetPlaceholder("")
 	s.chatView.SetChannel(msg.channel, msg.title, components.MessagesToLines(msg.messages))
 	s.layout = components.NewMainLayout(sidebar, s.chatView)
 
@@ -209,6 +216,7 @@ func (s *ChatScreen) handleCommandResult(msg commandResultMsg) (ui.Model, tea.Cm
 	lines = appendSystemEvents(lines, msg.eventKind, msg.systemEvents)
 
 	sidebar := components.NewSidebar(msg.channels, msg.active, msg.unread)
+	s.chatView.SetPlaceholder("")
 	s.chatView.SetChannel(msg.active, msg.title, lines)
 	s.layout = components.NewMainLayout(sidebar, s.chatView)
 	s.forwardToLayout(components.PendingResponseMsg{Pending: false})
@@ -298,19 +306,5 @@ func (s *ChatScreen) sendMessage(text string) tea.Cmd {
 
 // View implements ui.Model.
 func (s *ChatScreen) View(width, height int) string {
-	if s.channelCount == 0 {
-		inputView := s.chatView.InputView(width)
-		inputHeight := lipgloss.Height(inputView)
-
-		welcomeHeight := height - inputHeight
-		if welcomeHeight < 0 {
-			welcomeHeight = 0
-		}
-
-		welcome := NewWelcomeScreen(s.sess.UserNick()).View(width, welcomeHeight)
-
-		return lipgloss.JoinVertical(lipgloss.Left, welcome, inputView)
-	}
-
 	return s.layout.View(width, height)
 }

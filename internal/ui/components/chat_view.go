@@ -169,15 +169,6 @@ func (c *ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	return c, tea.Batch(vpCmd, inputCmd)
 }
 
-// InputView renders just the nick label and input bar at the given
-// width. This is used by the chat screen to show the input bar on
-// the welcome screen.
-func (c *ChatView) InputView(width int) string {
-	nickLabel := theme.UserNick.Render(string(c.userNick)) + " "
-
-	return nickLabel + c.input.View(width-lipgloss.Width(nickLabel), 1)
-}
-
 // View implements ui.Model.
 func (c *ChatView) View(width, height int) string {
 	nickLabel := theme.UserNick.Render(string(c.userNick)) + " "
@@ -258,9 +249,13 @@ func (c *ChatView) renderTopic(width int) string {
 
 func (c *ChatView) renderMessages(width, height int) (view string, scrolled bool, scrollPct float64) {
 	if len(c.lines) == 0 {
+		text := theme.Dim.Render("No messages yet")
+		if c.placeholder != "" {
+			text = c.placeholder
+		}
+
 		return lipgloss.Place(width, height,
-			lipgloss.Center, lipgloss.Center,
-			theme.Dim.Render("No messages yet")), false, 0
+			lipgloss.Center, lipgloss.Center, text), false, 0
 	}
 
 	rendered := make([]string, 0, len(c.lines))
