@@ -3,8 +3,8 @@ package components
 import (
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/theme"
@@ -23,87 +23,74 @@ type CommandSubmitMsg struct {
 	Args string
 }
 
-// InputBar is a single-line text input with prompt styling and
-// command detection.
+// historySize is the maximum number of entries kept in the input
+// history ring buffer.
+const historySize = 50
+
+// InputBar wraps bubbles/textinput with command detection and input
+// history recall via Up/Down arrows.
 type InputBar struct {
-	buffer []rune
-	cursor int
+	input textinput.Model
+
+	history   []string
+	histPos   int // -1 = editing new input, 0..len(history)-1 = browsing
+	histDraft string
 }
 
 // NewInputBar creates an empty input bar.
 func NewInputBar() InputBar {
-	return InputBar{}
+	ti := textinput.New()
+	ti.Prompt = theme.Prompt.Render("> ")
+	ti.Focus()
+
+	return InputBar{
+		input:   ti,
+		histPos: -1,
+	}
 }
 
 // Init implements ui.Model.
 func (b InputBar) Init() tea.Cmd {
-	return nil
+	return textinput.Blink
 }
 
 // Update implements ui.Model.
 func (b InputBar) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	km, ok := msg.(tea.KeyMsg)
 	if !ok {
-		return b, nil
+		var cmd tea.Cmd
+		b.input, cmd = b.input.Update(msg)
+
+		return b, cmd
 	}
 
 	switch km.Type {
 	case tea.KeyEnter:
 		return b.submit()
 
-	case tea.KeyBackspace:
-		if b.cursor > 0 {
-			b.buffer = append(b.buffer[:b.cursor-1], b.buffer[b.cursor:]...)
-			b.cursor--
-		}
+	case tea.KeyUp:
+		return b.historyUp(), nil
 
-	case tea.KeyDelete:
-		if b.cursor < len(b.buffer) {
-			b.buffer = append(b.buffer[:b.cursor], b.buffer[b.cursor+1:]...)
-		}
-
-	case tea.KeyLeft:
-		if b.cursor > 0 {
-			b.cursor--
-		}
-
-	case tea.KeyRight:
-		if b.cursor < len(b.buffer) {
-			b.cursor++
-		}
-
-	case tea.KeyHome, tea.KeyCtrlA:
-		b.cursor = 0
-
-	case tea.KeyEnd, tea.KeyCtrlE:
-		b.cursor = len(b.buffer)
-
-	case tea.KeyCtrlU:
-		b.buffer = b.buffer[b.cursor:]
-		b.cursor = 0
-
-	case tea.KeyCtrlK:
-		b.buffer = b.buffer[:b.cursor]
-
-	case tea.KeyRunes:
-		runes := km.Runes
-		tail := make([]rune, len(b.buffer[b.cursor:]))
-		copy(tail, b.buffer[b.cursor:])
-		b.buffer = append(b.buffer[:b.cursor], append(runes, tail...)...)
-		b.cursor += len(runes)
+	case tea.KeyDown:
+		return b.historyDown(), nil
 	}
 
-	return b, nil
+	var cmd tea.Cmd
+	b.input, cmd = b.input.Update(msg)
+
+	return b, cmd
 }
 
 func (b InputBar) submit() (ui.Model, tea.Cmd) {
-	text := strings.TrimSpace(string(b.buffer))
+	text := strings.TrimSpace(b.input.Value())
 	if text == "" {
 		return b, nil
 	}
 
-	b.buffer = nil
-	b.cursor = 0
+	b = b.pushHistory(text)
+	b.input.Reset()
+	b.histPos = -1
+	b.histDraft = ""
 
 	if strings.HasPrefix(text, "/") {
 		name, args := parseCommand(text)
@@ -118,6 +105,59 @@ func (b InputBar) submit() (ui.Model, tea.Cmd) {
 	}
 }
 
+func (b InputBar) pushHistory(text string) InputBar {
+	if len(b.history) > 0 && b.history[len(b.history)-1] == text {
+		return b
+	}
+
+	b.history = append(b.history, text)
+
+	if len(b.history) > historySize {
+		b.history = b.history[len(b.history)-historySize:]
+	}
+
+	return b
+}
+
+func (b InputBar) historyUp() InputBar {
+	if len(b.history) == 0 {
+		return b
+	}
+
+	if b.histPos == -1 {
+		b.histDraft = b.input.Value()
+		b.histPos = len(b.history) - 1
+	} else if b.histPos > 0 {
+		b.histPos--
+	} else {
+		return b
+	}
+
+	b.input.SetValue(b.history[b.histPos])
+	b.input.CursorEnd()
+
+	return b
+}
+
+func (b InputBar) historyDown() InputBar {
+	if b.histPos == -1 {
+		return b
+	}
+
+	if b.histPos < len(b.history)-1 {
+		b.histPos++
+		b.input.SetValue(b.history[b.histPos])
+	} else {
+		b.histPos = -1
+		b.input.SetValue(b.histDraft)
+		b.histDraft = ""
+	}
+
+	b.input.CursorEnd()
+
+	return b
+}
+
 func parseCommand(text string) (string, string) {
 	text = text[1:]
 
@@ -128,28 +168,12 @@ func parseCommand(text string) (string, string) {
 
 // Value returns the current text in the input buffer.
 func (b InputBar) Value() string {
-	return string(b.buffer)
+	return b.input.Value()
 }
 
 // View implements ui.Model.
 func (b InputBar) View(width, _ int) string {
-	prompt := theme.Prompt.Render("> ")
-	promptWidth := lipgloss.Width(prompt)
+	b.input.Width = width
 
-	available := width - promptWidth
-	if available <= 0 {
-		return prompt
-	}
-
-	content := string(b.buffer)
-	if b.cursor < len(b.buffer) {
-		before := string(b.buffer[:b.cursor])
-		cursorChar := string(b.buffer[b.cursor])
-		after := string(b.buffer[b.cursor+1:])
-		content = before + "\x1b[7m" + cursorChar + "\x1b[0m" + after
-	} else {
-		content += "\x1b[7m \x1b[0m"
-	}
-
-	return prompt + content
+	return b.input.View()
 }

@@ -182,6 +182,80 @@ func TestInputBar_View_contains_prompt(t *testing.T) {
 	require.Contains(t, v, ">")
 }
 
+func TestInputBar_history_up_down(t *testing.T) {
+	b := components.NewInputBar()
+	var m ui.Model = b
+
+	// Submit three messages.
+	m = typeText(t, m, "first")
+	m, _ = enter(t, m)
+	m = typeText(t, m, "second")
+	m, _ = enter(t, m)
+	m = typeText(t, m, "third")
+	m, _ = enter(t, m)
+
+	// Up once = most recent.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	require.Equal(t, "third", m.(components.InputBar).Value())
+
+	// Up again = previous.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	require.Equal(t, "second", m.(components.InputBar).Value())
+
+	// Down = back to most recent.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	require.Equal(t, "third", m.(components.InputBar).Value())
+
+	// Down again = back to empty draft.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	require.Equal(t, "", m.(components.InputBar).Value())
+}
+
+func TestInputBar_history_preserves_draft(t *testing.T) {
+	b := components.NewInputBar()
+	var m ui.Model = b
+
+	m = typeText(t, m, "old message")
+	m, _ = enter(t, m)
+
+	// Start typing a new message.
+	m = typeText(t, m, "draft")
+
+	// Up enters history, saving the draft.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	require.Equal(t, "old message", m.(components.InputBar).Value())
+
+	// Down restores the draft.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	require.Equal(t, "draft", m.(components.InputBar).Value())
+}
+
+func TestInputBar_history_no_duplicate_consecutive(t *testing.T) {
+	b := components.NewInputBar()
+	var m ui.Model = b
+
+	m = typeText(t, m, "same")
+	m, _ = enter(t, m)
+	m = typeText(t, m, "same")
+	m, _ = enter(t, m)
+
+	// Up once = "same", up again should stay (only one entry).
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	require.Equal(t, "same", m.(components.InputBar).Value())
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	require.Equal(t, "same", m.(components.InputBar).Value())
+}
+
+func TestInputBar_history_up_with_no_history(t *testing.T) {
+	b := components.NewInputBar()
+	var m ui.Model = b
+
+	// Up with no history should do nothing.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	require.Equal(t, "", m.(components.InputBar).Value())
+}
+
 func TestInputBar_ignores_non_key_messages(t *testing.T) {
 	b := components.NewInputBar()
 	var m ui.Model = b

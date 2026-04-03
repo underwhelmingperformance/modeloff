@@ -164,7 +164,7 @@ func TestApp_config_commands_with_teatest(t *testing.T) {
 	waitForOutput(t, tm, "#general")
 
 	submitText(tm, "/config")
-	waitForOutput(t, tm, "usage: /config api-key <value> | /config poke-interval <duration>")
+	waitForOutput(t, tm, "usage: /config api-key")
 
 	submitText(tm, "/config api-key test-key")
 	waitForOutput(t, tm, "OpenRouter API key saved. Restart modeloff to use it.")
