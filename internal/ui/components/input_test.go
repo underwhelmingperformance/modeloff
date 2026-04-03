@@ -284,6 +284,80 @@ func TestInputBar_history_ring_buffer_overflow(t *testing.T) {
 	require.Equal(t, "msg 1", m.(components.InputBar).Value())
 }
 
+func TestInputBar_ctrl_a_moves_to_start(t *testing.T) {
+	b := components.NewInputBar()
+	var m ui.Model = b
+
+	m = typeText(t, m, "hello")
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlA})
+	m = typeText(t, m, "X")
+
+	require.Equal(t, "Xhello", m.(components.InputBar).Value())
+}
+
+func TestInputBar_ctrl_e_moves_to_end(t *testing.T) {
+	b := components.NewInputBar()
+	var m ui.Model = b
+
+	m = typeText(t, m, "hello")
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlA})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
+	m = typeText(t, m, "X")
+
+	require.Equal(t, "helloX", m.(components.InputBar).Value())
+}
+
+func TestInputBar_ctrl_w_deletes_word_backward(t *testing.T) {
+	b := components.NewInputBar()
+	var m ui.Model = b
+
+	m = typeText(t, m, "hello world")
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlW})
+
+	require.Equal(t, "hello ", m.(components.InputBar).Value())
+}
+
+func TestInputBar_editing_shortcuts_work_after_history_recall(t *testing.T) {
+	b := components.NewInputBar()
+	var m ui.Model = b
+
+	m = typeText(t, m, "first message")
+	m, _ = enter(t, m)
+
+	// Recall from history.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	require.Equal(t, "first message", m.(components.InputBar).Value())
+
+	// Ctrl+A to start, type prefix.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlA})
+	m = typeText(t, m, "re: ")
+
+	require.Equal(t, "re: first message", m.(components.InputBar).Value())
+
+	// Ctrl+W to delete last word.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlW})
+
+	require.Equal(t, "re: first ", m.(components.InputBar).Value())
+}
+
+func TestInputBar_ctrl_u_then_history_up(t *testing.T) {
+	b := components.NewInputBar()
+	var m ui.Model = b
+
+	m = typeText(t, m, "old")
+	m, _ = enter(t, m)
+
+	// Type something, then Ctrl+U to clear it.
+	m = typeText(t, m, "discard this")
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlU})
+	require.Equal(t, "", m.(components.InputBar).Value())
+
+	// History up should still work.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	require.Equal(t, "old", m.(components.InputBar).Value())
+}
+
 func TestInputBar_ignores_non_key_messages(t *testing.T) {
 	b := components.NewInputBar()
 	var m ui.Model = b
