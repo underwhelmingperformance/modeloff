@@ -14,7 +14,7 @@ There is no server component. This uses the OpenRouter API.
 2. Any chats from last time are loaded and shown in the side bar. The window
    that was open last time is opened again.
    1. If there are no chats, a welcome message is shown.
-3. The user can `/join` a chat room (`¢`-prefix like IRC), or use shortcuts like
+3. The user can `/join` a chat room (`#`-prefix like IRC), or use shortcuts like
    ctrl-d,ctrl-u,ctrl-o to navigate in the sidebar (or the mouse).
    1. If the room doesn't exist, it is created.
    2. The user can have multiple rooms open at once.
