@@ -15,6 +15,7 @@ import (
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/memory"
 	"github.com/laney/modeloff/internal/protocol"
+	"github.com/laney/modeloff/internal/set"
 	"github.com/laney/modeloff/internal/store"
 )
 
@@ -66,7 +67,7 @@ func (s *Session) Join(ctx context.Context, channelName string) (domain.JoinEven
 		ch := domain.Channel{
 			Name:    name,
 			Kind:    domain.KindChannel,
-			Members: []domain.Nick{s.userNick},
+			Members: set.NewOrdered(s.userNick),
 			Created: s.now(),
 		}
 
@@ -125,7 +126,7 @@ func (s *Session) Invite(
 	inst := domain.ModelInstance{
 		Nick:     nick,
 		ModelID:  modelID,
-		Channels: []domain.ChannelName{ch},
+		Channels: set.NewOrdered(ch),
 	}
 
 	return s.attachInstanceToChannel(ctx, ch, inst)
@@ -136,9 +137,7 @@ func (s *Session) attachInstanceToChannel(
 	ch domain.ChannelName,
 	inst domain.ModelInstance,
 ) (domain.ModelInvitedEvent, error) {
-	if !containsChannel(inst.Channels, ch) {
-		inst.Channels = append(inst.Channels, ch)
-	}
+	inst.Channels.Add(ch)
 
 	if err := s.store.SaveInstance(ctx, inst); err != nil {
 		return domain.ModelInvitedEvent{}, fmt.Errorf("save instance: %w", err)
@@ -149,9 +148,7 @@ func (s *Session) attachInstanceToChannel(
 		return domain.ModelInvitedEvent{}, fmt.Errorf("get channel: %w", err)
 	}
 
-	if !containsNick(channel.Members, inst.Nick) {
-		channel.Members = append(channel.Members, inst.Nick)
-	}
+	channel.Members.Add(inst.Nick)
 
 	if err := s.store.SaveChannel(ctx, channel); err != nil {
 		return domain.ModelInvitedEvent{}, fmt.Errorf("save channel: %w", err)
@@ -175,17 +172,19 @@ func (s *Session) Kick(
 		return domain.ModelKickedEvent{}, fmt.Errorf("get channel: %w", err)
 	}
 
-	filtered := make([]domain.Nick, 0, len(channel.Members))
-	for _, m := range channel.Members {
-		if m != nick {
-			filtered = append(filtered, m)
-		}
-	}
-
-	channel.Members = filtered
+	channel.Members.Remove(nick)
 
 	if err := s.store.SaveChannel(ctx, channel); err != nil {
 		return domain.ModelKickedEvent{}, fmt.Errorf("save channel: %w", err)
+	}
+
+	inst, err := s.store.GetInstance(ctx, nick)
+	if err == nil {
+		inst.Channels.Remove(ch)
+
+		if err := s.store.SaveInstance(ctx, inst); err != nil {
+			return domain.ModelKickedEvent{}, fmt.Errorf("save instance: %w", err)
+		}
 	}
 
 	return domain.ModelKickedEvent{
@@ -305,7 +304,7 @@ func (s *Session) OpenDM(ctx context.Context, nick domain.Nick) (domain.Channel,
 		ch = domain.Channel{
 			Name:    name,
 			Kind:    domain.KindDM,
-			Members: []domain.Nick{s.userNick, nick},
+			Members: set.NewOrdered(s.userNick, nick),
 			Created: s.now(),
 		}
 
@@ -316,9 +315,7 @@ func (s *Session) OpenDM(ctx context.Context, nick domain.Nick) (domain.Channel,
 		created = true
 	}
 
-	if !containsChannel(inst.Channels, name) {
-		inst.Channels = append(inst.Channels, name)
-
+	if inst.Channels.Add(name) {
 		if err := s.store.SaveInstance(ctx, inst); err != nil {
 			return domain.Channel{}, false, fmt.Errorf("save instance: %w", err)
 		}
@@ -414,7 +411,7 @@ func (s *Session) dispatchToInstances(
 		return fmt.Errorf("get channel: %w", err)
 	}
 
-	instances, err := s.instancesForChannel(ctx, channelName)
+	instances, err := s.instancesForChannel(ctx, channel)
 	if err != nil {
 		return fmt.Errorf("list instances for channel: %w", err)
 	}
@@ -466,20 +463,25 @@ func (s *Session) dispatchToInstances(
 	return nil
 }
 
-func (s *Session) instancesForChannel(ctx context.Context, ch domain.ChannelName) ([]domain.ModelInstance, error) {
+func (s *Session) instancesForChannel(ctx context.Context, channel domain.Channel) ([]domain.ModelInstance, error) {
 	instances, err := s.store.ListInstances(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	filtered := make([]domain.ModelInstance, 0, len(instances))
+	indexed := make(map[domain.Nick]domain.ModelInstance, len(instances))
 	for _, inst := range instances {
-		for _, instanceChannel := range inst.Channels {
-			if instanceChannel == ch {
-				filtered = append(filtered, inst)
-				break
-			}
+		indexed[inst.Nick] = inst
+	}
+
+	filtered := make([]domain.ModelInstance, 0, len(channel.Members))
+	for nick := range channel.Members.Except(set.NewOrdered(s.userNick)) {
+		inst, ok := indexed[nick]
+		if !ok {
+			continue
 		}
+
+		filtered = append(filtered, inst)
 	}
 
 	return filtered, nil
@@ -518,24 +520,4 @@ func buildSystemPrompt(ch domain.Channel, inst domain.ModelInstance, memories []
 	}
 
 	return prompt
-}
-
-func containsChannel(channels []domain.ChannelName, want domain.ChannelName) bool {
-	for _, ch := range channels {
-		if ch == want {
-			return true
-		}
-	}
-
-	return false
-}
-
-func containsNick(nicks []domain.Nick, want domain.Nick) bool {
-	for _, nick := range nicks {
-		if nick == want {
-			return true
-		}
-	}
-
-	return false
 }

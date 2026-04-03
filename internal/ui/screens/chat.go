@@ -551,9 +551,9 @@ func (s ChatScreen) whois(nick domain.Nick) tea.Cmd {
 		}
 
 		if len(inst.Channels) > 0 {
-			chStrs := make([]string, len(inst.Channels))
-			for i, ch := range inst.Channels {
-				chStrs[i] = string(ch)
+			var chStrs []string
+			for ch := range inst.Channels.Sorted() {
+				chStrs = append(chStrs, string(ch))
 			}
 
 			lines = append(lines, fmt.Sprintf("  channels: %s", strings.Join(chStrs, ", ")))

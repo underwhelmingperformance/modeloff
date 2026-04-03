@@ -1,7 +1,11 @@
 // Package domain defines the core types for the modeloff application.
 package domain
 
-import "time"
+import (
+	"time"
+
+	"github.com/laney/modeloff/internal/set"
+)
 
 // Nick represents a user or model nickname in the system.
 type Nick string
@@ -35,7 +39,7 @@ type Channel struct {
 	Name    ChannelName
 	Kind    ChannelKind
 	Title   string
-	Members []Nick
+	Members set.Ordered[Nick]
 	Created time.Time
 }
 
@@ -54,7 +58,7 @@ type ModelInstance struct {
 	Nick     Nick
 	ModelID  ModelID
 	Persona  string
-	Channels []ChannelName
+	Channels set.Ordered[ChannelName]
 }
 
 // User represents the local user of the application.

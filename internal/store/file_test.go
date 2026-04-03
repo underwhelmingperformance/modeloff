@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/set"
 )
 
 var testTime = time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC)
@@ -35,7 +36,7 @@ func TestFileStore_SaveAndGetChannel(t *testing.T) {
 		Name:    "#general",
 		Kind:    domain.KindChannel,
 		Title:   "General chat",
-		Members: []domain.Nick{"alice", "bob"},
+		Members: set.NewOrdered[domain.Nick]("alice", "bob"),
 		Created: testTime,
 	}
 
@@ -109,7 +110,7 @@ func TestFileStore_SaveChannelOverwrites(t *testing.T) {
 	require.NoError(t, s.SaveChannel(ctx, ch))
 
 	ch.Title = "Updated title"
-	ch.Members = []domain.Nick{"charlie"}
+	ch.Members = set.NewOrdered[domain.Nick]("charlie")
 	require.NoError(t, s.SaveChannel(ctx, ch))
 
 	got, err := s.GetChannel(ctx, "#evolving")
@@ -183,7 +184,7 @@ func TestFileStore_SaveAndGetInstance(t *testing.T) {
 		Nick:     "claude",
 		ModelID:  "anthropic/claude-3-haiku",
 		Persona:  "Helpful assistant",
-		Channels: []domain.ChannelName{"#general", "#dev"},
+		Channels: set.NewOrdered[domain.ChannelName]("#general", "#dev"),
 	}
 
 	require.NoError(t, s.SaveInstance(ctx, inst))
