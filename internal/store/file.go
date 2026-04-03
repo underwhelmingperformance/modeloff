@@ -35,45 +35,45 @@ func NewDefaultFileStore() (*FileStore, error) {
 	return NewFileStore(filepath.Join(home, ".local", "share", "modeloff")), nil
 }
 
-// --- Rooms ---
+// --- Channels ---
 
-func (s *FileStore) roomsDir() string {
-	return filepath.Join(s.dir, "rooms")
+func (s *FileStore) channelsDir() string {
+	return filepath.Join(s.dir, "channels")
 }
 
-func (s *FileStore) roomPath(name domain.RoomName) string {
-	return filepath.Join(s.roomsDir(), sanitise(string(name))+".json")
+func (s *FileStore) channelPath(name domain.ChannelName) string {
+	return filepath.Join(s.channelsDir(), sanitise(string(name))+".json")
 }
 
-// ListRooms returns all persisted rooms.
-func (s *FileStore) ListRooms(_ context.Context) ([]domain.Room, error) {
-	return loadAll[domain.Room](s.roomsDir())
+// ListChannels returns all persisted channels.
+func (s *FileStore) ListChannels(_ context.Context) ([]domain.Channel, error) {
+	return loadAll[domain.Channel](s.channelsDir())
 }
 
-// GetRoom retrieves a room by name.
-func (s *FileStore) GetRoom(_ context.Context, name domain.RoomName) (domain.Room, error) {
-	var room domain.Room
+// GetChannel retrieves a channel by name.
+func (s *FileStore) GetChannel(_ context.Context, name domain.ChannelName) (domain.Channel, error) {
+	var ch domain.Channel
 
-	data, err := os.ReadFile(s.roomPath(name))
+	data, err := os.ReadFile(s.channelPath(name))
 	if err != nil {
-		return room, fmt.Errorf("room %q: %w", name, err)
+		return ch, fmt.Errorf("channel %q: %w", name, err)
 	}
 
-	if err := json.Unmarshal(data, &room); err != nil {
-		return room, err
+	if err := json.Unmarshal(data, &ch); err != nil {
+		return ch, err
 	}
 
-	return room, nil
+	return ch, nil
 }
 
-// SaveRoom persists a room, creating or overwriting as needed.
-func (s *FileStore) SaveRoom(_ context.Context, room domain.Room) error {
-	return saveJSON(s.roomPath(room.Name), room)
+// SaveChannel persists a channel, creating or overwriting as needed.
+func (s *FileStore) SaveChannel(_ context.Context, ch domain.Channel) error {
+	return saveJSON(s.channelPath(ch.Name), ch)
 }
 
-// DeleteRoom removes a room from the store.
-func (s *FileStore) DeleteRoom(_ context.Context, name domain.RoomName) error {
-	err := os.Remove(s.roomPath(name))
+// DeleteChannel removes a channel from the store.
+func (s *FileStore) DeleteChannel(_ context.Context, name domain.ChannelName) error {
+	err := os.Remove(s.channelPath(name))
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
@@ -83,17 +83,17 @@ func (s *FileStore) DeleteRoom(_ context.Context, name domain.RoomName) error {
 
 // --- Messages ---
 
-func (s *FileStore) messagesDir(room domain.RoomName) string {
-	return filepath.Join(s.dir, "messages", sanitise(string(room)))
+func (s *FileStore) messagesDir(ch domain.ChannelName) string {
+	return filepath.Join(s.dir, "messages", sanitise(string(ch)))
 }
 
 func (s *FileStore) messagePath(msg domain.Message) string {
-	return filepath.Join(s.messagesDir(msg.Room), msg.ID+".json")
+	return filepath.Join(s.messagesDir(msg.Channel), msg.ID+".json")
 }
 
-// ListMessages returns all messages for a room, in file-order.
-func (s *FileStore) ListMessages(_ context.Context, room domain.RoomName) ([]domain.Message, error) {
-	return loadAll[domain.Message](s.messagesDir(room))
+// ListMessages returns all messages for a channel, in file-order.
+func (s *FileStore) ListMessages(_ context.Context, ch domain.ChannelName) ([]domain.Message, error) {
+	return loadAll[domain.Message](s.messagesDir(ch))
 }
 
 // SaveMessage persists a single message.
@@ -150,7 +150,7 @@ func (s *FileStore) DeleteInstance(_ context.Context, nick domain.Nick) error {
 // --- State ---
 
 type appState struct {
-	LastRoom domain.RoomName `json:"last_room"`
+	LastChannel domain.ChannelName `json:"last_channel"`
 }
 
 func (s *FileStore) statePath() string {
@@ -174,26 +174,27 @@ func (s *FileStore) loadState() (appState, error) {
 	return st, nil
 }
 
-// GetLastRoom returns the name of the room that was open when the
-// application last closed. Returns an empty RoomName if none was set.
-func (s *FileStore) GetLastRoom(_ context.Context) (domain.RoomName, error) {
+// GetLastChannel returns the name of the channel that was open when
+// the application last closed. Returns an empty ChannelName if none
+// was set.
+func (s *FileStore) GetLastChannel(_ context.Context) (domain.ChannelName, error) {
 	st, err := s.loadState()
 	if err != nil {
 		return "", err
 	}
 
-	return st.LastRoom, nil
+	return st.LastChannel, nil
 }
 
-// SetLastRoom records which room is currently active so it can be
-// restored on next launch.
-func (s *FileStore) SetLastRoom(_ context.Context, name domain.RoomName) error {
+// SetLastChannel records which channel is currently active so it can
+// be restored on next launch.
+func (s *FileStore) SetLastChannel(_ context.Context, name domain.ChannelName) error {
 	st, err := s.loadState()
 	if err != nil {
 		return err
 	}
 
-	st.LastRoom = name
+	st.LastChannel = name
 
 	return saveJSON(s.statePath(), st)
 }

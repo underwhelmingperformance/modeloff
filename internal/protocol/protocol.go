@@ -13,25 +13,25 @@ type MessageKind string
 // MessageKind values mirror the IRC command set, mapping each user or
 // system action to a named event that models can interpret.
 const (
-	// KindPrivMsg is a regular chat message sent to a room or nick.
+	// KindPrivMsg is a regular chat message sent to a channel or nick.
 	KindPrivMsg MessageKind = "PRIVMSG"
 
-	// KindJoin indicates a user or model has entered a room.
+	// KindJoin indicates a user or model has entered a channel.
 	KindJoin MessageKind = "JOIN"
 
-	// KindPart indicates a user or model has left a room.
+	// KindPart indicates a user or model has left a channel.
 	KindPart MessageKind = "PART"
 
 	// KindNick indicates a nickname change.
 	KindNick MessageKind = "NICK"
 
-	// KindTopic indicates a room's title has been changed.
+	// KindTopic indicates a channel's title has been changed.
 	KindTopic MessageKind = "TOPIC"
 
-	// KindInvite indicates a model has been invited to a room.
+	// KindInvite indicates a model has been invited to a channel.
 	KindInvite MessageKind = "INVITE"
 
-	// KindKick indicates a model has been removed from a room.
+	// KindKick indicates a model has been removed from a channel.
 	KindKick MessageKind = "KICK"
 
 	// KindPoke is a periodic nudge sent to models to prompt
@@ -41,7 +41,7 @@ const (
 
 // IRCMessage is the structured representation of an event sent to a
 // model. It mirrors IRC message structure: a sender, a kind, a
-// target (room or nick), and a body.
+// target (channel or nick), and a body.
 type IRCMessage struct {
 	Kind   MessageKind `json:"kind"`
 	From   string      `json:"from"`

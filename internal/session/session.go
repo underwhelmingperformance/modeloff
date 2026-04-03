@@ -1,5 +1,5 @@
 // Package session provides the backend coordinator that ties together
-// stores, the API client, and the protocol layer. It manages rooms,
+// stores, the API client, and the protocol layer. It manages channels,
 // model instances, and handles commands by updating state and emitting
 // domain events.
 package session
@@ -51,64 +51,64 @@ func (s *Session) UserNick() domain.Nick {
 	return s.userNick
 }
 
-// Join creates or opens a room and returns a JoinEvent.
-func (s *Session) Join(ctx context.Context, roomName string) (domain.JoinEvent, error) {
-	name := domain.RoomName(roomName)
+// Join creates or opens a channel and returns a JoinEvent.
+func (s *Session) Join(ctx context.Context, channelName string) (domain.JoinEvent, error) {
+	name := domain.ChannelName(channelName)
 
 	var created bool
 
-	_, err := s.store.GetRoom(ctx, name)
+	_, err := s.store.GetChannel(ctx, name)
 	if err != nil {
 		created = true
 
-		room := domain.Room{
+		ch := domain.Channel{
 			Name:    name,
-			Kind:    domain.RoomChannel,
+			Kind:    domain.KindChannel,
 			Members: []domain.Nick{s.userNick},
 			Created: s.now(),
 		}
 
-		if err := s.store.SaveRoom(ctx, room); err != nil {
-			return domain.JoinEvent{}, fmt.Errorf("save room: %w", err)
+		if err := s.store.SaveChannel(ctx, ch); err != nil {
+			return domain.JoinEvent{}, fmt.Errorf("save channel: %w", err)
 		}
 	}
 
-	if err := s.store.SetLastRoom(ctx, name); err != nil {
-		return domain.JoinEvent{}, fmt.Errorf("set last room: %w", err)
+	if err := s.store.SetLastChannel(ctx, name); err != nil {
+		return domain.JoinEvent{}, fmt.Errorf("set last channel: %w", err)
 	}
 
 	return domain.JoinEvent{
-		Room:    name,
+		Channel: name,
 		Nick:    s.userNick,
 		Created: created,
 		At:      s.now(),
 	}, nil
 }
 
-// Leave records the user leaving a room and returns a PartEvent.
-func (s *Session) Leave(ctx context.Context, roomName domain.RoomName) (domain.PartEvent, error) {
-	_, err := s.store.GetRoom(ctx, roomName)
+// Leave records the user leaving a channel and returns a PartEvent.
+func (s *Session) Leave(ctx context.Context, ch domain.ChannelName) (domain.PartEvent, error) {
+	_, err := s.store.GetChannel(ctx, ch)
 	if err != nil {
-		return domain.PartEvent{}, fmt.Errorf("room not found: %w", err)
+		return domain.PartEvent{}, fmt.Errorf("channel not found: %w", err)
 	}
 
 	return domain.PartEvent{
-		Room: roomName,
-		Nick: s.userNick,
-		At:   s.now(),
+		Channel: ch,
+		Nick:    s.userNick,
+		At:      s.now(),
 	}, nil
 }
 
-// ListRooms returns all persisted rooms.
-func (s *Session) ListRooms(ctx context.Context) ([]domain.Room, error) {
-	return s.store.ListRooms(ctx)
+// ListChannels returns all persisted channels.
+func (s *Session) ListChannels(ctx context.Context) ([]domain.Channel, error) {
+	return s.store.ListChannels(ctx)
 }
 
-// Invite adds a model instance to a room. If the model has no nick
+// Invite adds a model instance to a channel. If the model has no nick
 // yet, one is generated via the API.
 func (s *Session) Invite(
 	ctx context.Context,
-	roomName domain.RoomName,
+	ch domain.ChannelName,
 	modelID domain.ModelID,
 ) (domain.ModelInvitedEvent, error) {
 	nick, err := s.api.GenerateNick(ctx, modelID)
@@ -117,78 +117,77 @@ func (s *Session) Invite(
 	}
 
 	inst := domain.ModelInstance{
-		Nick:    nick,
-		ModelID: modelID,
-		Rooms:   []domain.RoomName{roomName},
+		Nick:     nick,
+		ModelID:  modelID,
+		Channels: []domain.ChannelName{ch},
 	}
 
 	if err := s.store.SaveInstance(ctx, inst); err != nil {
 		return domain.ModelInvitedEvent{}, fmt.Errorf("save instance: %w", err)
 	}
 
-	// Add model to room members.
-	room, err := s.store.GetRoom(ctx, roomName)
+	channel, err := s.store.GetChannel(ctx, ch)
 	if err != nil {
-		return domain.ModelInvitedEvent{}, fmt.Errorf("get room: %w", err)
+		return domain.ModelInvitedEvent{}, fmt.Errorf("get channel: %w", err)
 	}
 
-	room.Members = append(room.Members, nick)
+	channel.Members = append(channel.Members, nick)
 
-	if err := s.store.SaveRoom(ctx, room); err != nil {
-		return domain.ModelInvitedEvent{}, fmt.Errorf("save room: %w", err)
+	if err := s.store.SaveChannel(ctx, channel); err != nil {
+		return domain.ModelInvitedEvent{}, fmt.Errorf("save channel: %w", err)
 	}
 
 	return domain.ModelInvitedEvent{
-		Room:     roomName,
+		Channel:  ch,
 		Instance: inst,
 		At:       s.now(),
 	}, nil
 }
 
-// Kick removes a model instance from a room.
+// Kick removes a model instance from a channel.
 func (s *Session) Kick(
 	ctx context.Context,
-	roomName domain.RoomName,
+	ch domain.ChannelName,
 	nick domain.Nick,
 ) (domain.ModelKickedEvent, error) {
-	room, err := s.store.GetRoom(ctx, roomName)
+	channel, err := s.store.GetChannel(ctx, ch)
 	if err != nil {
-		return domain.ModelKickedEvent{}, fmt.Errorf("get room: %w", err)
+		return domain.ModelKickedEvent{}, fmt.Errorf("get channel: %w", err)
 	}
 
-	filtered := make([]domain.Nick, 0, len(room.Members))
-	for _, m := range room.Members {
+	filtered := make([]domain.Nick, 0, len(channel.Members))
+	for _, m := range channel.Members {
 		if m != nick {
 			filtered = append(filtered, m)
 		}
 	}
 
-	room.Members = filtered
+	channel.Members = filtered
 
-	if err := s.store.SaveRoom(ctx, room); err != nil {
-		return domain.ModelKickedEvent{}, fmt.Errorf("save room: %w", err)
+	if err := s.store.SaveChannel(ctx, channel); err != nil {
+		return domain.ModelKickedEvent{}, fmt.Errorf("save channel: %w", err)
 	}
 
 	return domain.ModelKickedEvent{
-		Room: roomName,
-		Nick: nick,
-		At:   s.now(),
+		Channel: ch,
+		Nick:    nick,
+		At:      s.now(),
 	}, nil
 }
 
-// SendMessage saves a message to a room and returns the message
+// SendMessage saves a message to a channel and returns the message
 // event.
 func (s *Session) SendMessage(
 	ctx context.Context,
-	roomName domain.RoomName,
+	ch domain.ChannelName,
 	body string,
 ) (domain.MessageEvent, error) {
 	msg := domain.Message{
-		ID:     fmt.Sprintf("%d", s.now().UnixNano()),
-		Room:   roomName,
-		From:   s.userNick,
-		Body:   body,
-		SentAt: s.now(),
+		ID:      fmt.Sprintf("%d", s.now().UnixNano()),
+		Channel: ch,
+		From:    s.userNick,
+		Body:    body,
+		SentAt:  s.now(),
 	}
 
 	if err := s.store.SaveMessage(ctx, msg); err != nil {
@@ -198,28 +197,28 @@ func (s *Session) SendMessage(
 	return domain.MessageEvent{Message: msg}, nil
 }
 
-// SetTitle sets the title of a room.
+// SetTitle sets the title of a channel.
 func (s *Session) SetTitle(
 	ctx context.Context,
-	roomName domain.RoomName,
+	ch domain.ChannelName,
 	title string,
 ) (domain.TopicChangeEvent, error) {
-	room, err := s.store.GetRoom(ctx, roomName)
+	channel, err := s.store.GetChannel(ctx, ch)
 	if err != nil {
-		return domain.TopicChangeEvent{}, fmt.Errorf("get room: %w", err)
+		return domain.TopicChangeEvent{}, fmt.Errorf("get channel: %w", err)
 	}
 
-	room.Title = title
+	channel.Title = title
 
-	if err := s.store.SaveRoom(ctx, room); err != nil {
-		return domain.TopicChangeEvent{}, fmt.Errorf("save room: %w", err)
+	if err := s.store.SaveChannel(ctx, channel); err != nil {
+		return domain.TopicChangeEvent{}, fmt.Errorf("save channel: %w", err)
 	}
 
 	return domain.TopicChangeEvent{
-		Room:  roomName,
-		Title: title,
-		By:    s.userNick,
-		At:    s.now(),
+		Channel: ch,
+		Title:   title,
+		By:      s.userNick,
+		At:      s.now(),
 	}, nil
 }
 
@@ -241,17 +240,17 @@ func (s *Session) Whois(ctx context.Context, nick domain.Nick) (domain.ModelInst
 	return s.store.GetInstance(ctx, nick)
 }
 
-// GetRoom retrieves a room by name.
-func (s *Session) GetRoom(ctx context.Context, name domain.RoomName) (domain.Room, error) {
-	return s.store.GetRoom(ctx, name)
+// GetChannel retrieves a channel by name.
+func (s *Session) GetChannel(ctx context.Context, name domain.ChannelName) (domain.Channel, error) {
+	return s.store.GetChannel(ctx, name)
 }
 
-// LastRoom returns the room that was last active.
-func (s *Session) LastRoom(ctx context.Context) (domain.RoomName, error) {
-	return s.store.GetLastRoom(ctx)
+// LastChannel returns the channel that was last active.
+func (s *Session) LastChannel(ctx context.Context) (domain.ChannelName, error) {
+	return s.store.GetLastChannel(ctx)
 }
 
-// Messages returns all messages for a room.
-func (s *Session) Messages(ctx context.Context, room domain.RoomName) ([]domain.Message, error) {
-	return s.store.ListMessages(ctx, room)
+// Messages returns all messages for a channel.
+func (s *Session) Messages(ctx context.Context, ch domain.ChannelName) ([]domain.Message, error) {
+	return s.store.ListMessages(ctx, ch)
 }

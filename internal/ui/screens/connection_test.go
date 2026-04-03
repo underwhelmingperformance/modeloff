@@ -22,9 +22,9 @@ func view(m ui.Model) string {
 
 func TestConnectionScreen_with_api_key(t *testing.T) {
 	s := screens.NewConnectionScreen(screens.ConnectionConfig{
-		HasAPIKey: true,
-		RoomCount: 3,
-		Nick:      "alice",
+		HasAPIKey:    true,
+		ChannelCount: 3,
+		Nick:         "alice",
 	})
 
 	// Initial view: first step is shown as pending.
@@ -44,10 +44,10 @@ func TestConnectionScreen_with_api_key(t *testing.T) {
 	m, cmd = tick(t, m)
 
 	v = view(m)
-	require.Contains(t, v, "Loading rooms (3 found)")
+	require.Contains(t, v, "Loading channels (3 found)")
 	require.NotNil(t, cmd)
 
-	// Tick 3: "Loading rooms" completes.
+	// Tick 3: "Loading channels" completes.
 	m, cmd = tick(t, m)
 
 	v = view(m)
@@ -100,10 +100,10 @@ func TestConnectionScreen_with_next_screen(t *testing.T) {
 	next := screens.NewPlaceholderScreen("alice")
 
 	s := screens.NewConnectionScreen(screens.ConnectionConfig{
-		HasAPIKey: true,
-		RoomCount: 1,
-		Nick:      "alice",
-		Next:      next,
+		HasAPIKey:    true,
+		ChannelCount: 1,
+		Nick:         "alice",
+		Next:         next,
 	})
 
 	// Run through all ticks.

@@ -17,40 +17,40 @@ import (
 // chatLoadedMsg carries the initial data needed to render the chat
 // screen after loading from the session.
 type chatLoadedMsg struct {
-	rooms    []domain.Room
-	active   domain.RoomName
+	channels []domain.Channel
+	active   domain.ChannelName
 	title    string
 	messages []domain.Message
 }
 
-// roomSwitchedMsg is sent after a room switch completes, carrying the
-// new room's messages.
-type roomSwitchedMsg struct {
-	room     domain.RoomName
+// channelSwitchedMsg is sent after a channel switch completes,
+// carrying the new channel's messages.
+type channelSwitchedMsg struct {
+	channel  domain.ChannelName
 	title    string
-	rooms    []domain.Room
+	channels []domain.Channel
 	messages []domain.Message
 }
 
 // messageSentMsg is sent after a message is saved, carrying the
 // updated message list.
 type messageSentMsg struct {
-	room     domain.RoomName
+	channel  domain.ChannelName
 	messages []domain.Message
 }
 
 // commandResultMsg carries the result of a slash command that
 // modified session state.
 type commandResultMsg struct {
-	rooms        []domain.Room
-	active       domain.RoomName
+	channels     []domain.Channel
+	active       domain.ChannelName
 	title        string
 	messages     []domain.Message
 	systemEvents []string
 }
 
 // systemEventMsg carries system event text to display in the chat
-// view without changing room/sidebar state.
+// view without changing channel/sidebar state.
 type systemEventMsg struct {
 	lines []string
 }
@@ -62,7 +62,7 @@ type ChatScreen struct {
 	sess   *session.Session
 	layout components.MainLayout
 
-	active domain.RoomName
+	active domain.ChannelName
 	title  string
 }
 
@@ -83,12 +83,12 @@ func (s ChatScreen) Init() tea.Cmd {
 	return func() tea.Msg {
 		ctx := context.Background()
 
-		rooms, err := s.sess.ListRooms(ctx)
+		channels, err := s.sess.ListChannels(ctx)
 		if err != nil {
-			rooms = nil
+			channels = nil
 		}
 
-		active, err := s.sess.LastRoom(ctx)
+		active, err := s.sess.LastChannel(ctx)
 		if err != nil {
 			active = ""
 		}
@@ -99,13 +99,13 @@ func (s ChatScreen) Init() tea.Cmd {
 		if active != "" {
 			messages, _ = s.sess.Messages(ctx, active)
 
-			if room, err := s.sess.GetRoom(ctx, active); err == nil {
-				title = room.Title
+			if ch, err := s.sess.GetChannel(ctx, active); err == nil {
+				title = ch.Title
 			}
 		}
 
 		return chatLoadedMsg{
-			rooms:    rooms,
+			channels: channels,
 			active:   active,
 			title:    title,
 			messages: messages,
@@ -119,8 +119,8 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	case chatLoadedMsg:
 		return s.handleLoaded(msg)
 
-	case roomSwitchedMsg:
-		return s.handleRoomSwitched(msg)
+	case channelSwitchedMsg:
+		return s.handleChannelSwitched(msg)
 
 	case messageSentMsg:
 		return s.handleMessageSent(msg)
@@ -131,8 +131,8 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	case systemEventMsg:
 		return s.handleSystemEvent(msg)
 
-	case components.RoomSelectedMsg:
-		return s, s.switchRoom(msg.Room)
+	case components.ChannelSelectedMsg:
+		return s, s.switchChannel(msg.Channel)
 
 	case components.MessageSubmitMsg:
 		return s, s.sendMessage(msg.Text)
@@ -151,26 +151,26 @@ func (s ChatScreen) handleLoaded(msg chatLoadedMsg) (ui.Model, tea.Cmd) {
 	s.active = msg.active
 	s.title = msg.title
 
-	sidebar := components.NewSidebar(msg.rooms, msg.active)
+	sidebar := components.NewSidebar(msg.channels, msg.active)
 	chatView := components.NewChatView(msg.active, s.sess.UserNick(), msg.title, msg.messages)
 	s.layout = components.NewMainLayout(sidebar, chatView)
 
 	return s, nil
 }
 
-func (s ChatScreen) handleRoomSwitched(msg roomSwitchedMsg) (ui.Model, tea.Cmd) {
-	s.active = msg.room
+func (s ChatScreen) handleChannelSwitched(msg channelSwitchedMsg) (ui.Model, tea.Cmd) {
+	s.active = msg.channel
 	s.title = msg.title
 
-	sidebar := components.NewSidebar(msg.rooms, msg.room)
-	chatView := components.NewChatView(msg.room, s.sess.UserNick(), msg.title, msg.messages)
+	sidebar := components.NewSidebar(msg.channels, msg.channel)
+	chatView := components.NewChatView(msg.channel, s.sess.UserNick(), msg.title, msg.messages)
 	s.layout = components.NewMainLayout(sidebar, chatView)
 
 	return s, nil
 }
 
 func (s ChatScreen) handleMessageSent(msg messageSentMsg) (ui.Model, tea.Cmd) {
-	chatView := components.NewChatView(msg.room, s.sess.UserNick(), s.title, msg.messages)
+	chatView := components.NewChatView(msg.channel, s.sess.UserNick(), s.title, msg.messages)
 	s.layout = components.NewMainLayout(s.layout.Sidebar, chatView)
 
 	return s, nil
@@ -183,7 +183,7 @@ func (s ChatScreen) handleCommandResult(msg commandResultMsg) (ui.Model, tea.Cmd
 	messages := msg.messages
 	messages = appendSystemEvents(messages, s.active, msg.systemEvents)
 
-	sidebar := components.NewSidebar(msg.rooms, msg.active)
+	sidebar := components.NewSidebar(msg.channels, msg.active)
 	chatView := components.NewChatView(msg.active, s.sess.UserNick(), msg.title, messages)
 	s.layout = components.NewMainLayout(sidebar, chatView)
 
@@ -202,37 +202,36 @@ func (s ChatScreen) handleSystemEvent(msg systemEventMsg) (ui.Model, tea.Cmd) {
 	return s, nil
 }
 
-func appendSystemEvents(messages []domain.Message, room domain.RoomName, events []string) []domain.Message {
+func appendSystemEvents(messages []domain.Message, ch domain.ChannelName, events []string) []domain.Message {
 	for _, line := range events {
 		messages = append(messages, domain.Message{
-			Room: room,
-			From: "***",
-			Body: line,
+			Channel: ch,
+			From:    "***",
+			Body:    line,
 		})
 	}
 
 	return messages
 }
 
-func (s ChatScreen) switchRoom(room domain.RoomName) tea.Cmd {
+func (s ChatScreen) switchChannel(ch domain.ChannelName) tea.Cmd {
 	return func() tea.Msg {
 		ctx := context.Background()
 
-		// Join is idempotent and persists the last active room.
-		_, _ = s.sess.Join(ctx, string(room))
+		_, _ = s.sess.Join(ctx, string(ch))
 
-		rooms, _ := s.sess.ListRooms(ctx)
-		messages, _ := s.sess.Messages(ctx, room)
+		channels, _ := s.sess.ListChannels(ctx)
+		messages, _ := s.sess.Messages(ctx, ch)
 
 		var title string
-		if r, err := s.sess.GetRoom(ctx, room); err == nil {
-			title = r.Title
+		if channel, err := s.sess.GetChannel(ctx, ch); err == nil {
+			title = channel.Title
 		}
 
-		return roomSwitchedMsg{
-			room:     room,
+		return channelSwitchedMsg{
+			channel:  ch,
 			title:    title,
-			rooms:    rooms,
+			channels: channels,
 			messages: messages,
 		}
 	}
@@ -247,7 +246,7 @@ func (s ChatScreen) sendMessage(text string) tea.Cmd {
 		messages, _ := s.sess.Messages(ctx, s.active)
 
 		return messageSentMsg{
-			room:     s.active,
+			channel:  s.active,
 			messages: messages,
 		}
 	}
@@ -268,10 +267,10 @@ func (s ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
 
 	switch cmd := parsed.(type) {
 	case command.JoinCommand:
-		return s.joinRoom(cmd.Room)
+		return s.joinChannel(cmd.Channel)
 
 	case command.LeaveCommand:
-		return s.leaveRoom()
+		return s.leaveChannel()
 
 	case command.NickCommand:
 		return s.changeNick(domain.Nick(cmd.Nick))
@@ -283,7 +282,7 @@ func (s ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
 		return s.whois(domain.Nick(cmd.Nick))
 
 	case command.ListCommand:
-		return s.listRooms()
+		return s.listChannels()
 
 	case command.InviteCommand:
 		if cmd.Model == "" {
@@ -309,7 +308,7 @@ func (s ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
 	}
 }
 
-func (s ChatScreen) joinRoom(name string) tea.Cmd {
+func (s ChatScreen) joinChannel(name string) tea.Cmd {
 	return func() tea.Msg {
 		ctx := context.Background()
 
@@ -318,22 +317,22 @@ func (s ChatScreen) joinRoom(name string) tea.Cmd {
 			return systemEventMsg{lines: []string{err.Error()}}
 		}
 
-		rooms, _ := s.sess.ListRooms(ctx)
-		active := domain.RoomName(name)
+		channels, _ := s.sess.ListChannels(ctx)
+		active := domain.ChannelName(name)
 		messages, _ := s.sess.Messages(ctx, active)
 
 		var title string
-		if r, err := s.sess.GetRoom(ctx, active); err == nil {
-			title = r.Title
+		if ch, err := s.sess.GetChannel(ctx, active); err == nil {
+			title = ch.Title
 		}
 
 		event := fmt.Sprintf("Switched to %s", active)
 		if evt.Created {
-			event = fmt.Sprintf("Created room %s", active)
+			event = fmt.Sprintf("Created channel %s", active)
 		}
 
 		return commandResultMsg{
-			rooms:        rooms,
+			channels:     channels,
 			active:       active,
 			title:        title,
 			messages:     messages,
@@ -342,26 +341,26 @@ func (s ChatScreen) joinRoom(name string) tea.Cmd {
 	}
 }
 
-func (s ChatScreen) leaveRoom() tea.Cmd {
+func (s ChatScreen) leaveChannel() tea.Cmd {
 	return func() tea.Msg {
 		ctx := context.Background()
 
 		_, _ = s.sess.Leave(ctx, s.active)
 
-		rooms, _ := s.sess.ListRooms(ctx)
+		channels, _ := s.sess.ListChannels(ctx)
 
-		var active domain.RoomName
+		var active domain.ChannelName
 		var title string
 		var messages []domain.Message
 
-		if len(rooms) > 0 {
-			active = rooms[0].Name
-			title = rooms[0].Title
+		if len(channels) > 0 {
+			active = channels[0].Name
+			title = channels[0].Title
 			messages, _ = s.sess.Messages(ctx, active)
 		}
 
 		return commandResultMsg{
-			rooms:    rooms,
+			channels: channels,
 			active:   active,
 			title:    title,
 			messages: messages,
@@ -375,11 +374,11 @@ func (s ChatScreen) changeNick(nick domain.Nick) tea.Cmd {
 
 		evt := s.sess.ChangeNick(nick)
 
-		rooms, _ := s.sess.ListRooms(ctx)
+		channels, _ := s.sess.ListChannels(ctx)
 		messages, _ := s.sess.Messages(ctx, s.active)
 
 		return commandResultMsg{
-			rooms:    rooms,
+			channels: channels,
 			active:   s.active,
 			title:    s.title,
 			messages: messages,
@@ -399,7 +398,7 @@ func (s ChatScreen) setTitle(title string) tea.Cmd {
 			return systemEventMsg{lines: []string{err.Error()}}
 		}
 
-		rooms, _ := s.sess.ListRooms(ctx)
+		channels, _ := s.sess.ListChannels(ctx)
 		messages, _ := s.sess.Messages(ctx, s.active)
 
 		event := fmt.Sprintf("topic for %s set to: %s", s.active, title)
@@ -408,7 +407,7 @@ func (s ChatScreen) setTitle(title string) tea.Cmd {
 		}
 
 		return commandResultMsg{
-			rooms:        rooms,
+			channels:     channels,
 			active:       s.active,
 			title:        title,
 			messages:     messages,
@@ -436,13 +435,13 @@ func (s ChatScreen) whois(nick domain.Nick) tea.Cmd {
 			lines = append(lines, fmt.Sprintf("  persona: %s", inst.Persona))
 		}
 
-		if len(inst.Rooms) > 0 {
-			roomStrs := make([]string, len(inst.Rooms))
-			for i, r := range inst.Rooms {
-				roomStrs[i] = string(r)
+		if len(inst.Channels) > 0 {
+			chStrs := make([]string, len(inst.Channels))
+			for i, ch := range inst.Channels {
+				chStrs[i] = string(ch)
 			}
 
-			lines = append(lines, fmt.Sprintf("  rooms: %s", strings.Join(roomStrs, ", ")))
+			lines = append(lines, fmt.Sprintf("  channels: %s", strings.Join(chStrs, ", ")))
 		}
 
 		return systemEventMsg{lines: lines}
@@ -458,16 +457,16 @@ func (s ChatScreen) inviteModel(modelID domain.ModelID) tea.Cmd {
 			return systemEventMsg{lines: []string{err.Error()}}
 		}
 
-		rooms, _ := s.sess.ListRooms(ctx)
+		channels, _ := s.sess.ListChannels(ctx)
 		messages, _ := s.sess.Messages(ctx, s.active)
 
 		return commandResultMsg{
-			rooms:    rooms,
+			channels: channels,
 			active:   s.active,
 			title:    s.title,
 			messages: messages,
 			systemEvents: []string{
-				fmt.Sprintf("%s (%s) has joined %s", evt.Instance.Nick, evt.Instance.ModelID, evt.Room),
+				fmt.Sprintf("%s (%s) has joined %s", evt.Instance.Nick, evt.Instance.ModelID, evt.Channel),
 			},
 		}
 	}
@@ -482,39 +481,39 @@ func (s ChatScreen) kickModel(nick domain.Nick) tea.Cmd {
 			return systemEventMsg{lines: []string{err.Error()}}
 		}
 
-		rooms, _ := s.sess.ListRooms(ctx)
+		channels, _ := s.sess.ListChannels(ctx)
 		messages, _ := s.sess.Messages(ctx, s.active)
 
 		return commandResultMsg{
-			rooms:    rooms,
+			channels: channels,
 			active:   s.active,
 			title:    s.title,
 			messages: messages,
 			systemEvents: []string{
-				fmt.Sprintf("%s has been kicked from %s", evt.Nick, evt.Room),
+				fmt.Sprintf("%s has been kicked from %s", evt.Nick, evt.Channel),
 			},
 		}
 	}
 }
 
-func (s ChatScreen) listRooms() tea.Cmd {
+func (s ChatScreen) listChannels() tea.Cmd {
 	return func() tea.Msg {
 		ctx := context.Background()
 
-		rooms, err := s.sess.ListRooms(ctx)
+		channels, err := s.sess.ListChannels(ctx)
 		if err != nil {
 			return systemEventMsg{lines: []string{err.Error()}}
 		}
 
-		if len(rooms) == 0 {
-			return systemEventMsg{lines: []string{"no rooms"}}
+		if len(channels) == 0 {
+			return systemEventMsg{lines: []string{"no channels"}}
 		}
 
-		lines := make([]string, len(rooms))
-		for i, r := range rooms {
-			line := string(r.Name)
-			if r.Title != "" {
-				line += " — " + r.Title
+		lines := make([]string, len(channels))
+		for i, ch := range channels {
+			line := string(ch.Name)
+			if ch.Title != "" {
+				line += " — " + ch.Title
 			}
 
 			lines[i] = line

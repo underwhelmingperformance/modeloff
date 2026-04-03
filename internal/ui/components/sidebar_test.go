@@ -12,10 +12,10 @@ import (
 	"github.com/laney/modeloff/internal/ui/components"
 )
 
-var testRooms = []domain.Room{
-	{Name: "#general", Kind: domain.RoomChannel, Created: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)},
-	{Name: "#random", Kind: domain.RoomChannel, Created: time.Date(2025, 1, 2, 0, 0, 0, 0, time.UTC)},
-	{Name: "#dev", Kind: domain.RoomChannel, Created: time.Date(2025, 1, 3, 0, 0, 0, 0, time.UTC)},
+var testChannels = []domain.Channel{
+	{Name: "#general", Kind: domain.KindChannel, Created: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)},
+	{Name: "#random", Kind: domain.KindChannel, Created: time.Date(2025, 1, 2, 0, 0, 0, 0, time.UTC)},
+	{Name: "#dev", Kind: domain.KindChannel, Created: time.Date(2025, 1, 3, 0, 0, 0, 0, time.UTC)},
 }
 
 func key(k string) tea.KeyMsg {
@@ -41,8 +41,8 @@ func updateSidebar(t *testing.T, m ui.Model, msg tea.Msg) (ui.Model, tea.Cmd) {
 	return m.Update(msg)
 }
 
-func TestSidebar_View_shows_rooms(t *testing.T) {
-	s := components.NewSidebar(testRooms, "#general")
+func TestSidebar_View_shows_channels(t *testing.T) {
+	s := components.NewSidebar(testChannels, "#general")
 	v := s.View(20, 10)
 
 	require.Contains(t, v, "#general")
@@ -54,22 +54,19 @@ func TestSidebar_View_empty(t *testing.T) {
 	s := components.NewSidebar(nil, "")
 	v := s.View(20, 10)
 
-	require.Contains(t, v, "No rooms")
+	require.Contains(t, v, "No channels")
 }
 
-func TestSidebar_View_active_room_highlighted(t *testing.T) {
-	s := components.NewSidebar(testRooms, "#random")
+func TestSidebar_View_active_channel_highlighted(t *testing.T) {
+	s := components.NewSidebar(testChannels, "#random")
 	v := s.View(30, 10)
 
-	// The active room should use the ActiveRoom style (bold + white).
-	// We can't easily check ANSI codes, but we can verify the cursor
-	// indicator is on the active room.
 	require.Contains(t, v, "▸")
 	require.Contains(t, v, "#random")
 }
 
 func TestSidebar_keyboard_navigation(t *testing.T) {
-	s := components.NewSidebar(testRooms, "#general")
+	s := components.NewSidebar(testChannels, "#general")
 	var m ui.Model = s
 
 	// Move down.
@@ -82,13 +79,13 @@ func TestSidebar_keyboard_navigation(t *testing.T) {
 	require.NotNil(t, cmd)
 
 	msg := cmd()
-	selected, ok := msg.(components.RoomSelectedMsg)
-	require.True(t, ok, "expected RoomSelectedMsg, got %T", msg)
-	require.Equal(t, domain.RoomName("#dev"), selected.Room)
+	selected, ok := msg.(components.ChannelSelectedMsg)
+	require.True(t, ok, "expected ChannelSelectedMsg, got %T", msg)
+	require.Equal(t, domain.ChannelName("#dev"), selected.Channel)
 }
 
 func TestSidebar_keyboard_up(t *testing.T) {
-	s := components.NewSidebar(testRooms, "#dev")
+	s := components.NewSidebar(testChannels, "#dev")
 	var m ui.Model = s
 
 	// Cursor starts at #dev (index 2). Move up twice.
@@ -101,13 +98,13 @@ func TestSidebar_keyboard_up(t *testing.T) {
 	require.NotNil(t, cmd)
 
 	msg := cmd()
-	selected, ok := msg.(components.RoomSelectedMsg)
-	require.True(t, ok, "expected RoomSelectedMsg, got %T", msg)
-	require.Equal(t, domain.RoomName("#general"), selected.Room)
+	selected, ok := msg.(components.ChannelSelectedMsg)
+	require.True(t, ok, "expected ChannelSelectedMsg, got %T", msg)
+	require.Equal(t, domain.ChannelName("#general"), selected.Channel)
 }
 
 func TestSidebar_cursor_clamps_at_boundaries(t *testing.T) {
-	s := components.NewSidebar(testRooms, "#general")
+	s := components.NewSidebar(testChannels, "#general")
 	var m ui.Model = s
 
 	// Move up past the top — should stay at 0.
@@ -116,13 +113,13 @@ func TestSidebar_cursor_clamps_at_boundaries(t *testing.T) {
 
 	_, cmd := updateSidebar(t, m, ctrlKey("ctrl+o"))
 	msg := cmd()
-	selected, ok := msg.(components.RoomSelectedMsg)
-	require.True(t, ok, "expected RoomSelectedMsg, got %T", msg)
-	require.Equal(t, domain.RoomName("#general"), selected.Room)
+	selected, ok := msg.(components.ChannelSelectedMsg)
+	require.True(t, ok, "expected ChannelSelectedMsg, got %T", msg)
+	require.Equal(t, domain.ChannelName("#general"), selected.Channel)
 }
 
 func TestSidebar_cursor_clamps_at_bottom(t *testing.T) {
-	s := components.NewSidebar(testRooms, "#general")
+	s := components.NewSidebar(testChannels, "#general")
 	var m ui.Model = s
 
 	// Move down past the bottom.
@@ -132,16 +129,16 @@ func TestSidebar_cursor_clamps_at_bottom(t *testing.T) {
 
 	_, cmd := updateSidebar(t, m, ctrlKey("ctrl+o"))
 	msg := cmd()
-	selected, ok := msg.(components.RoomSelectedMsg)
-	require.True(t, ok, "expected RoomSelectedMsg, got %T", msg)
-	require.Equal(t, domain.RoomName("#dev"), selected.Room)
+	selected, ok := msg.(components.ChannelSelectedMsg)
+	require.True(t, ok, "expected ChannelSelectedMsg, got %T", msg)
+	require.Equal(t, domain.ChannelName("#dev"), selected.Channel)
 }
 
-func TestSidebar_mouse_click_selects_room(t *testing.T) {
-	s := components.NewSidebar(testRooms, "#general")
+func TestSidebar_mouse_click_selects_channel(t *testing.T) {
+	s := components.NewSidebar(testChannels, "#general")
 	var m ui.Model = s
 
-	// Click on the second room (Y=1).
+	// Click on the second channel (Y=1).
 	_, cmd := updateSidebar(t, m, tea.MouseMsg{
 		X:      5,
 		Y:      1,
@@ -152,16 +149,16 @@ func TestSidebar_mouse_click_selects_room(t *testing.T) {
 	require.NotNil(t, cmd)
 
 	msg := cmd()
-	selected, ok := msg.(components.RoomSelectedMsg)
-	require.True(t, ok, "expected RoomSelectedMsg, got %T", msg)
-	require.Equal(t, domain.RoomName("#random"), selected.Room)
+	selected, ok := msg.(components.ChannelSelectedMsg)
+	require.True(t, ok, "expected ChannelSelectedMsg, got %T", msg)
+	require.Equal(t, domain.ChannelName("#random"), selected.Channel)
 }
 
 func TestSidebar_mouse_click_out_of_range(t *testing.T) {
-	s := components.NewSidebar(testRooms, "#general")
+	s := components.NewSidebar(testChannels, "#general")
 	var m ui.Model = s
 
-	// Click below the room list.
+	// Click below the channel list.
 	_, cmd := updateSidebar(t, m, tea.MouseMsg{
 		X:      5,
 		Y:      10,
@@ -172,7 +169,7 @@ func TestSidebar_mouse_click_out_of_range(t *testing.T) {
 	require.Nil(t, cmd)
 }
 
-func TestSidebar_ctrl_o_with_no_rooms(t *testing.T) {
+func TestSidebar_ctrl_o_with_no_channels(t *testing.T) {
 	s := components.NewSidebar(nil, "")
 	var m ui.Model = s
 
@@ -180,18 +177,18 @@ func TestSidebar_ctrl_o_with_no_rooms(t *testing.T) {
 	require.Nil(t, cmd)
 }
 
-func TestSidebar_rooms_updated_msg(t *testing.T) {
-	s := components.NewSidebar(testRooms, "#general")
+func TestSidebar_channels_updated_msg(t *testing.T) {
+	s := components.NewSidebar(testChannels, "#general")
 	var m ui.Model = s
 
-	newRooms := []domain.Room{
-		{Name: "#alpha", Kind: domain.RoomChannel},
-		{Name: "#beta", Kind: domain.RoomChannel},
+	newChannels := []domain.Channel{
+		{Name: "#alpha", Kind: domain.KindChannel},
+		{Name: "#beta", Kind: domain.KindChannel},
 	}
 
-	m, _ = updateSidebar(t, m, components.RoomsUpdatedMsg{
-		Rooms:  newRooms,
-		Active: "#beta",
+	m, _ = updateSidebar(t, m, components.ChannelsUpdatedMsg{
+		Channels: newChannels,
+		Active:   "#beta",
 	})
 
 	v := m.View(20, 10)
@@ -201,7 +198,7 @@ func TestSidebar_rooms_updated_msg(t *testing.T) {
 }
 
 func TestSidebar_ignores_other_messages(t *testing.T) {
-	s := components.NewSidebar(testRooms, "#general")
+	s := components.NewSidebar(testChannels, "#general")
 	var m ui.Model = s
 
 	m, cmd := updateSidebar(t, m, key("x"))

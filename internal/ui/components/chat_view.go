@@ -14,14 +14,14 @@ import (
 
 // MessagesUpdatedMsg tells the chat view to refresh its message list.
 type MessagesUpdatedMsg struct {
-	Room     domain.RoomName
+	Channel  domain.ChannelName
 	Messages []domain.Message
 }
 
-// ChatView displays messages for a single room with an input bar at
-// the bottom.
+// ChatView displays messages for a single channel with an input bar
+// at the bottom.
 type ChatView struct {
-	room     domain.RoomName
+	channel  domain.ChannelName
 	title    string
 	userNick domain.Nick
 	messages []domain.Message
@@ -29,10 +29,10 @@ type ChatView struct {
 	scroll   int
 }
 
-// NewChatView creates a chat view for the given room.
-func NewChatView(room domain.RoomName, userNick domain.Nick, title string, messages []domain.Message) ChatView {
+// NewChatView creates a chat view for the given channel.
+func NewChatView(ch domain.ChannelName, userNick domain.Nick, title string, messages []domain.Message) ChatView {
 	return ChatView{
-		room:     room,
+		channel:  ch,
 		title:    title,
 		userNick: userNick,
 		messages: messages,
@@ -49,7 +49,7 @@ func (c ChatView) Init() tea.Cmd {
 func (c ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case MessagesUpdatedMsg:
-		if msg.Room != c.room {
+		if msg.Channel != c.channel {
 			return c, nil
 		}
 
@@ -106,7 +106,7 @@ func (c ChatView) View(width, height int) string {
 }
 
 func (c ChatView) renderTopic(width int) string {
-	text := theme.RoomTitle.Render(c.title)
+	text := theme.ChannelTitle.Render(c.title)
 
 	style := lipgloss.NewStyle().
 		Width(width).

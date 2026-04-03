@@ -47,20 +47,20 @@ func main() {
 		domain.Nick(cfg.UserNick),
 	)
 
-	roomCount := 0
+	channelCount := 0
 
-	rooms, err := dataStore.ListRooms(context.Background())
+	channels, err := dataStore.ListChannels(context.Background())
 	if err == nil {
-		roomCount = len(rooms)
+		channelCount = len(channels)
 	}
 
 	chatScreen := screens.NewChatScreen(sess)
 
 	connScreen := screens.NewConnectionScreen(screens.ConnectionConfig{
-		HasAPIKey: cfg.APIKey != "",
-		RoomCount: roomCount,
-		Nick:      cfg.UserNick,
-		Next:      chatScreen,
+		HasAPIKey:    cfg.APIKey != "",
+		ChannelCount: channelCount,
+		Nick:         cfg.UserNick,
+		Next:         chatScreen,
 	})
 
 	p := tea.NewProgram(

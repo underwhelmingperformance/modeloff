@@ -42,23 +42,23 @@ func newTestSession(t *testing.T) *session.Session {
 	return sess
 }
 
-func seedRoom(t *testing.T, sess *session.Session, name string) {
+func seedChannel(t *testing.T, sess *session.Session, name string) {
 	t.Helper()
 
 	_, err := sess.Join(context.Background(), name)
 	require.NoError(t, err)
 }
 
-func seedMessage(t *testing.T, sess *session.Session, room, body string) {
+func seedMessage(t *testing.T, sess *session.Session, channel, body string) {
 	t.Helper()
 
-	_, err := sess.SendMessage(context.Background(), domain.RoomName(room), body)
+	_, err := sess.SendMessage(context.Background(), domain.ChannelName(channel), body)
 	require.NoError(t, err)
 }
 
-func TestChatScreen_Init_loads_rooms(t *testing.T) {
+func TestChatScreen_Init_loads_channels(t *testing.T) {
 	sess := newTestSession(t)
-	seedRoom(t, sess, "#general")
+	seedChannel(t, sess, "#general")
 	seedMessage(t, sess, "#general", "hello")
 
 	cs := screens.NewChatScreen(sess)
@@ -83,14 +83,14 @@ func TestChatScreen_Init_empty(t *testing.T) {
 	m, _ := cs.Update(msg)
 
 	v := m.View(80, 24)
-	require.Contains(t, v, "No rooms")
+	require.Contains(t, v, "No channels")
 	require.Contains(t, v, "No messages")
 }
 
-func TestChatScreen_room_selection(t *testing.T) {
+func TestChatScreen_channel_selection(t *testing.T) {
 	sess := newTestSession(t)
-	seedRoom(t, sess, "#general")
-	seedRoom(t, sess, "#random")
+	seedChannel(t, sess, "#general")
+	seedChannel(t, sess, "#random")
 	seedMessage(t, sess, "#random", "random msg")
 
 	cs := screens.NewChatScreen(sess)
@@ -101,7 +101,7 @@ func TestChatScreen_room_selection(t *testing.T) {
 	m, _ = cs.Update(msg)
 
 	// Select #random.
-	m, cmd := m.Update(components.RoomSelectedMsg{Room: "#random"})
+	m, cmd := m.Update(components.ChannelSelectedMsg{Channel: "#random"})
 	require.NotNil(t, cmd)
 
 	// Execute the switch command.
@@ -114,7 +114,7 @@ func TestChatScreen_room_selection(t *testing.T) {
 
 func TestChatScreen_send_message(t *testing.T) {
 	sess := newTestSession(t)
-	seedRoom(t, sess, "#general")
+	seedChannel(t, sess, "#general")
 
 	cs := screens.NewChatScreen(sess)
 
@@ -135,7 +135,7 @@ func TestChatScreen_send_message(t *testing.T) {
 	require.Contains(t, v, "hello world")
 }
 
-func TestChatScreen_join_new_room(t *testing.T) {
+func TestChatScreen_join_new_channel(t *testing.T) {
 	sess := newTestSession(t)
 
 	cs := screens.NewChatScreen(sess)
@@ -144,20 +144,20 @@ func TestChatScreen_join_new_room(t *testing.T) {
 	var m ui.Model
 	m, _ = cs.Update(msg)
 
-	m, cmd := m.Update(components.CommandSubmitMsg{Name: "join", Args: "#newroom"})
+	m, cmd := m.Update(components.CommandSubmitMsg{Name: "join", Args: "#newchan"})
 	require.NotNil(t, cmd)
 
 	msg = cmd()
 	m, _ = m.Update(msg)
 
 	v := m.View(80, 24)
-	require.Contains(t, v, "Created room #newroom")
+	require.Contains(t, v, "Created channel #newchan")
 }
 
-func TestChatScreen_join_existing_room(t *testing.T) {
+func TestChatScreen_join_existing_channel(t *testing.T) {
 	sess := newTestSession(t)
-	seedRoom(t, sess, "#general")
-	seedRoom(t, sess, "#existing")
+	seedChannel(t, sess, "#general")
+	seedChannel(t, sess, "#existing")
 
 	cs := screens.NewChatScreen(sess)
 
@@ -177,8 +177,8 @@ func TestChatScreen_join_existing_room(t *testing.T) {
 
 func TestChatScreen_leave_command(t *testing.T) {
 	sess := newTestSession(t)
-	seedRoom(t, sess, "#general")
-	seedRoom(t, sess, "#random")
+	seedChannel(t, sess, "#general")
+	seedChannel(t, sess, "#random")
 
 	cs := screens.NewChatScreen(sess)
 
@@ -187,21 +187,21 @@ func TestChatScreen_leave_command(t *testing.T) {
 	var m ui.Model
 	m, _ = cs.Update(msg)
 
-	// Leave the active room.
+	// Leave the active channel.
 	m, cmd := m.Update(components.CommandSubmitMsg{Name: "leave", Args: ""})
 	require.NotNil(t, cmd)
 
 	msg = cmd()
 	m, _ = m.Update(msg)
 
-	// Should still have rooms visible (switched to the other one).
+	// Should still have channels visible (switched to the other one).
 	v := m.View(80, 24)
 	require.NotEmpty(t, v)
 }
 
 func TestChatScreen_nick_command(t *testing.T) {
 	sess := newTestSession(t)
-	seedRoom(t, sess, "#general")
+	seedChannel(t, sess, "#general")
 
 	cs := screens.NewChatScreen(sess)
 
@@ -221,7 +221,7 @@ func TestChatScreen_nick_command(t *testing.T) {
 
 func TestChatScreen_title_command(t *testing.T) {
 	sess := newTestSession(t)
-	seedRoom(t, sess, "#general")
+	seedChannel(t, sess, "#general")
 
 	cs := screens.NewChatScreen(sess)
 
@@ -241,7 +241,7 @@ func TestChatScreen_title_command(t *testing.T) {
 
 func TestChatScreen_title_clear(t *testing.T) {
 	sess := newTestSession(t)
-	seedRoom(t, sess, "#general")
+	seedChannel(t, sess, "#general")
 
 	cs := screens.NewChatScreen(sess)
 
@@ -261,7 +261,7 @@ func TestChatScreen_title_clear(t *testing.T) {
 
 func TestChatScreen_whois_command(t *testing.T) {
 	sess := newTestSession(t)
-	seedRoom(t, sess, "#general")
+	seedChannel(t, sess, "#general")
 
 	// Invite a model so there's an instance to whois.
 	_, err := sess.Invite(context.Background(), "#general", "anthropic/claude-3-haiku")
@@ -285,7 +285,7 @@ func TestChatScreen_whois_command(t *testing.T) {
 
 func TestChatScreen_whois_unknown_nick(t *testing.T) {
 	sess := newTestSession(t)
-	seedRoom(t, sess, "#general")
+	seedChannel(t, sess, "#general")
 
 	cs := screens.NewChatScreen(sess)
 
@@ -305,8 +305,8 @@ func TestChatScreen_whois_unknown_nick(t *testing.T) {
 
 func TestChatScreen_list_command(t *testing.T) {
 	sess := newTestSession(t)
-	seedRoom(t, sess, "#general")
-	seedRoom(t, sess, "#random")
+	seedChannel(t, sess, "#general")
+	seedChannel(t, sess, "#random")
 
 	cs := screens.NewChatScreen(sess)
 
@@ -341,12 +341,12 @@ func TestChatScreen_list_empty(t *testing.T) {
 	m, _ = m.Update(msg)
 
 	v := m.View(80, 24)
-	require.Contains(t, v, "no rooms")
+	require.Contains(t, v, "no channels")
 }
 
 func TestChatScreen_invite_command(t *testing.T) {
 	sess := newTestSession(t)
-	seedRoom(t, sess, "#general")
+	seedChannel(t, sess, "#general")
 
 	cs := screens.NewChatScreen(sess)
 
@@ -366,7 +366,7 @@ func TestChatScreen_invite_command(t *testing.T) {
 
 func TestChatScreen_invite_no_args(t *testing.T) {
 	sess := newTestSession(t)
-	seedRoom(t, sess, "#general")
+	seedChannel(t, sess, "#general")
 
 	cs := screens.NewChatScreen(sess)
 
@@ -386,7 +386,7 @@ func TestChatScreen_invite_no_args(t *testing.T) {
 
 func TestChatScreen_kick_command(t *testing.T) {
 	sess := newTestSession(t)
-	seedRoom(t, sess, "#general")
+	seedChannel(t, sess, "#general")
 
 	// Invite a model so there's someone to kick.
 	_, err := sess.Invite(context.Background(), "#general", "anthropic/claude-3-haiku")
@@ -410,7 +410,7 @@ func TestChatScreen_kick_command(t *testing.T) {
 
 func TestChatScreen_unimplemented_command(t *testing.T) {
 	sess := newTestSession(t)
-	seedRoom(t, sess, "#general")
+	seedChannel(t, sess, "#general")
 
 	cs := screens.NewChatScreen(sess)
 
@@ -430,7 +430,7 @@ func TestChatScreen_unimplemented_command(t *testing.T) {
 
 func TestChatScreen_invalid_command(t *testing.T) {
 	sess := newTestSession(t)
-	seedRoom(t, sess, "#general")
+	seedChannel(t, sess, "#general")
 
 	cs := screens.NewChatScreen(sess)
 
@@ -451,7 +451,7 @@ func TestChatScreen_invalid_command(t *testing.T) {
 
 func TestChatScreen_unknown_command_shows_error(t *testing.T) {
 	sess := newTestSession(t)
-	seedRoom(t, sess, "#general")
+	seedChannel(t, sess, "#general")
 
 	cs := screens.NewChatScreen(sess)
 
@@ -471,7 +471,7 @@ func TestChatScreen_unknown_command_shows_error(t *testing.T) {
 
 func TestChatScreen_View_responsive(t *testing.T) {
 	sess := newTestSession(t)
-	seedRoom(t, sess, "#general")
+	seedChannel(t, sess, "#general")
 
 	cs := screens.NewChatScreen(sess)
 

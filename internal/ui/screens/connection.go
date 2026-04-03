@@ -40,10 +40,10 @@ type ConnectionDoneMsg struct{}
 // ConnectionConfig holds the inputs the connection screen needs to
 // determine what to show.
 type ConnectionConfig struct {
-	HasAPIKey bool
-	RoomCount int
-	Nick      string
-	Next      ui.Model
+	HasAPIKey    bool
+	ChannelCount int
+	Nick         string
+	Next         ui.Model
 }
 
 // ConnectionScreen shows an IRC-style startup animation.
@@ -69,7 +69,7 @@ func NewConnectionScreen(cfg ConnectionConfig) ConnectionScreen {
 		})
 	} else {
 		steps = append(steps,
-			connectionStep{label: fmt.Sprintf("Loading rooms (%d found)", cfg.RoomCount)},
+			connectionStep{label: fmt.Sprintf("Loading channels (%d found)", cfg.ChannelCount)},
 			connectionStep{label: fmt.Sprintf("Welcome, %s", cfg.Nick)},
 		)
 	}

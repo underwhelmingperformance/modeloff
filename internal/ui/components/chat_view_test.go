@@ -16,9 +16,9 @@ import (
 )
 
 var testMessages = []domain.Message{
-	{ID: "1", Room: "#general", From: "alice", Body: "hello", SentAt: time.Date(2025, 1, 1, 10, 0, 0, 0, time.UTC)},
-	{ID: "2", Room: "#general", From: "bob", Body: "hi there", SentAt: time.Date(2025, 1, 1, 10, 1, 0, 0, time.UTC)},
-	{ID: "3", Room: "#general", From: "alice", Body: "how are you?", SentAt: time.Date(2025, 1, 1, 10, 2, 0, 0, time.UTC)},
+	{ID: "1", Channel: "#general", From: "alice", Body: "hello", SentAt: time.Date(2025, 1, 1, 10, 0, 0, 0, time.UTC)},
+	{ID: "2", Channel: "#general", From: "bob", Body: "hi there", SentAt: time.Date(2025, 1, 1, 10, 1, 0, 0, time.UTC)},
+	{ID: "3", Channel: "#general", From: "alice", Body: "how are you?", SentAt: time.Date(2025, 1, 1, 10, 2, 0, 0, time.UTC)},
 }
 
 func TestChatView_View_shows_messages(t *testing.T) {
@@ -84,11 +84,11 @@ func TestChatView_messages_updated(t *testing.T) {
 	var m ui.Model = cv
 
 	newMsgs := []domain.Message{
-		{ID: "10", Room: "#general", From: "charlie", Body: "new message"},
+		{ID: "10", Channel: "#general", From: "charlie", Body: "new message"},
 	}
 
 	m, _ = m.Update(components.MessagesUpdatedMsg{
-		Room:     "#general",
+		Channel:  "#general",
 		Messages: newMsgs,
 	})
 
@@ -97,12 +97,12 @@ func TestChatView_messages_updated(t *testing.T) {
 	require.Contains(t, v, "charlie")
 }
 
-func TestChatView_messages_updated_wrong_room(t *testing.T) {
+func TestChatView_messages_updated_wrong_channel(t *testing.T) {
 	cv := components.NewChatView("#general", "testuser", "", testMessages)
 	var m ui.Model = cv
 
 	m, _ = m.Update(components.MessagesUpdatedMsg{
-		Room:     "#other",
+		Channel:  "#other",
 		Messages: nil,
 	})
 
@@ -116,10 +116,10 @@ func TestChatView_scroll(t *testing.T) {
 	msgs := make([]domain.Message, 30)
 	for i := range msgs {
 		msgs[i] = domain.Message{
-			ID:   fmt.Sprintf("%d", i),
-			Room: "#general",
-			From: "user",
-			Body: fmt.Sprintf("message %d", i),
+			ID:      fmt.Sprintf("%d", i),
+			Channel: "#general",
+			From:    "user",
+			Body:    fmt.Sprintf("message %d", i),
 		}
 	}
 
@@ -155,8 +155,8 @@ func TestChatView_scroll_does_not_go_negative(t *testing.T) {
 
 func TestChatView_user_nick_styled_differently(t *testing.T) {
 	msgs := []domain.Message{
-		{ID: "1", Room: "#general", From: "alice", Body: "from user"},
-		{ID: "2", Room: "#general", From: "bot", Body: "from model"},
+		{ID: "1", Channel: "#general", From: "alice", Body: "from user"},
+		{ID: "2", Channel: "#general", From: "bot", Body: "from model"},
 	}
 
 	cv := components.NewChatView("#general", "alice", "", msgs)
@@ -198,10 +198,10 @@ func TestChatView_topic_bar_reduces_message_area(t *testing.T) {
 	msgs := make([]domain.Message, 30)
 	for i := range msgs {
 		msgs[i] = domain.Message{
-			ID:   fmt.Sprintf("%d", i),
-			Room: "#general",
-			From: "user",
-			Body: fmt.Sprintf("msg %d", i),
+			ID:      fmt.Sprintf("%d", i),
+			Channel: "#general",
+			From:    "user",
+			Body:    fmt.Sprintf("msg %d", i),
 		}
 	}
 

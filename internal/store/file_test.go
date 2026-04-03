@@ -17,86 +17,86 @@ func newTestStore(t *testing.T) *FileStore {
 	return NewFileStore(t.TempDir())
 }
 
-// --- Rooms ---
+// --- Channels ---
 
-func TestFileStore_ListRoomsEmpty(t *testing.T) {
+func TestFileStore_ListChannelsEmpty(t *testing.T) {
 	s := newTestStore(t)
 
-	got, err := s.ListRooms(context.Background())
+	got, err := s.ListChannels(context.Background())
 	require.NoError(t, err)
 	require.Empty(t, got)
 }
 
-func TestFileStore_SaveAndGetRoom(t *testing.T) {
+func TestFileStore_SaveAndGetChannel(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 
-	room := domain.Room{
+	ch := domain.Channel{
 		Name:    "#general",
-		Kind:    domain.RoomChannel,
+		Kind:    domain.KindChannel,
 		Title:   "General chat",
 		Members: []domain.Nick{"alice", "bob"},
 		Created: testTime,
 	}
 
-	require.NoError(t, s.SaveRoom(ctx, room))
+	require.NoError(t, s.SaveChannel(ctx, ch))
 
-	got, err := s.GetRoom(ctx, "#general")
+	got, err := s.GetChannel(ctx, "#general")
 	require.NoError(t, err)
-	require.Equal(t, room, got)
+	require.Equal(t, ch, got)
 }
 
-func TestFileStore_GetRoomNotFound(t *testing.T) {
+func TestFileStore_GetChannelNotFound(t *testing.T) {
 	s := newTestStore(t)
 
-	_, err := s.GetRoom(context.Background(), "#nonexistent")
+	_, err := s.GetChannel(context.Background(), "#nonexistent")
 	require.Error(t, err)
 }
 
-func TestFileStore_ListRooms(t *testing.T) {
+func TestFileStore_ListChannels(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 
-	rooms := []domain.Room{
-		{Name: "#alpha", Kind: domain.RoomChannel, Created: testTime},
-		{Name: "#beta", Kind: domain.RoomChannel, Created: testTime.Add(time.Hour)},
+	channels := []domain.Channel{
+		{Name: "#alpha", Kind: domain.KindChannel, Created: testTime},
+		{Name: "#beta", Kind: domain.KindChannel, Created: testTime.Add(time.Hour)},
 	}
 
-	for _, r := range rooms {
-		require.NoError(t, s.SaveRoom(ctx, r))
+	for _, ch := range channels {
+		require.NoError(t, s.SaveChannel(ctx, ch))
 	}
 
-	got, err := s.ListRooms(ctx)
+	got, err := s.ListChannels(ctx)
 	require.NoError(t, err)
-	require.Equal(t, rooms, got)
+	require.Equal(t, channels, got)
 }
 
-func TestFileStore_DeleteRoom(t *testing.T) {
+func TestFileStore_DeleteChannel(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 
-	room := domain.Room{Name: "#deleteme", Kind: domain.RoomChannel, Created: testTime}
-	require.NoError(t, s.SaveRoom(ctx, room))
-	require.NoError(t, s.DeleteRoom(ctx, "#deleteme"))
+	ch := domain.Channel{Name: "#deleteme", Kind: domain.KindChannel, Created: testTime}
+	require.NoError(t, s.SaveChannel(ctx, ch))
+	require.NoError(t, s.DeleteChannel(ctx, "#deleteme"))
 
-	_, err := s.GetRoom(ctx, "#deleteme")
+	_, err := s.GetChannel(ctx, "#deleteme")
 	require.Error(t, err)
 }
 
-func TestFileStore_SaveRoomOverwrites(t *testing.T) {
+func TestFileStore_SaveChannelOverwrites(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 
-	room := domain.Room{Name: "#evolving", Kind: domain.RoomChannel, Created: testTime}
-	require.NoError(t, s.SaveRoom(ctx, room))
+	ch := domain.Channel{Name: "#evolving", Kind: domain.KindChannel, Created: testTime}
+	require.NoError(t, s.SaveChannel(ctx, ch))
 
-	room.Title = "Updated title"
-	room.Members = []domain.Nick{"charlie"}
-	require.NoError(t, s.SaveRoom(ctx, room))
+	ch.Title = "Updated title"
+	ch.Members = []domain.Nick{"charlie"}
+	require.NoError(t, s.SaveChannel(ctx, ch))
 
-	got, err := s.GetRoom(ctx, "#evolving")
+	got, err := s.GetChannel(ctx, "#evolving")
 	require.NoError(t, err)
-	require.Equal(t, room, got)
+	require.Equal(t, ch, got)
 }
 
 // --- Messages ---
@@ -114,8 +114,8 @@ func TestFileStore_SaveAndListMessages(t *testing.T) {
 	s := newTestStore(t)
 
 	msgs := []domain.Message{
-		{ID: "msg-1", Room: "#general", From: "alice", Body: "hello", SentAt: testTime},
-		{ID: "msg-2", Room: "#general", From: "bob", Body: "hi", SentAt: testTime.Add(time.Second)},
+		{ID: "msg-1", Channel: "#general", From: "alice", Body: "hello", SentAt: testTime},
+		{ID: "msg-2", Channel: "#general", From: "bob", Body: "hi", SentAt: testTime.Add(time.Second)},
 	}
 
 	for _, m := range msgs {
@@ -127,23 +127,23 @@ func TestFileStore_SaveAndListMessages(t *testing.T) {
 	require.Equal(t, msgs, got)
 }
 
-func TestFileStore_MessagesIsolatedByRoom(t *testing.T) {
+func TestFileStore_MessagesIsolatedByChannel(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 
-	require.NoError(t, s.SaveMessage(ctx, domain.Message{ID: "a", Room: "#room-a", From: "alice", Body: "a msg", SentAt: testTime}))
-	require.NoError(t, s.SaveMessage(ctx, domain.Message{ID: "b", Room: "#room-b", From: "bob", Body: "b msg", SentAt: testTime}))
+	require.NoError(t, s.SaveMessage(ctx, domain.Message{ID: "a", Channel: "#chan-a", From: "alice", Body: "a msg", SentAt: testTime}))
+	require.NoError(t, s.SaveMessage(ctx, domain.Message{ID: "b", Channel: "#chan-b", From: "bob", Body: "b msg", SentAt: testTime}))
 
-	gotA, err := s.ListMessages(ctx, "#room-a")
+	gotA, err := s.ListMessages(ctx, "#chan-a")
 	require.NoError(t, err)
 	require.Equal(t, []domain.Message{
-		{ID: "a", Room: "#room-a", From: "alice", Body: "a msg", SentAt: testTime},
+		{ID: "a", Channel: "#chan-a", From: "alice", Body: "a msg", SentAt: testTime},
 	}, gotA)
 
-	gotB, err := s.ListMessages(ctx, "#room-b")
+	gotB, err := s.ListMessages(ctx, "#chan-b")
 	require.NoError(t, err)
 	require.Equal(t, []domain.Message{
-		{ID: "b", Room: "#room-b", From: "bob", Body: "b msg", SentAt: testTime},
+		{ID: "b", Channel: "#chan-b", From: "bob", Body: "b msg", SentAt: testTime},
 	}, gotB)
 }
 
@@ -162,10 +162,10 @@ func TestFileStore_SaveAndGetInstance(t *testing.T) {
 	s := newTestStore(t)
 
 	inst := domain.ModelInstance{
-		Nick:    "claude",
-		ModelID: "anthropic/claude-3-haiku",
-		Persona: "Helpful assistant",
-		Rooms:   []domain.RoomName{"#general", "#dev"},
+		Nick:     "claude",
+		ModelID:  "anthropic/claude-3-haiku",
+		Persona:  "Helpful assistant",
+		Channels: []domain.ChannelName{"#general", "#dev"},
 	}
 
 	require.NoError(t, s.SaveInstance(ctx, inst))
@@ -212,35 +212,35 @@ func TestFileStore_ListInstances(t *testing.T) {
 	require.Equal(t, instances, got)
 }
 
-// --- Last room state ---
+// --- Last channel state ---
 
-func TestFileStore_GetLastRoomEmpty(t *testing.T) {
+func TestFileStore_GetLastChannelEmpty(t *testing.T) {
 	s := newTestStore(t)
 
-	got, err := s.GetLastRoom(context.Background())
+	got, err := s.GetLastChannel(context.Background())
 	require.NoError(t, err)
 	require.Empty(t, got)
 }
 
-func TestFileStore_SetAndGetLastRoom(t *testing.T) {
+func TestFileStore_SetAndGetLastChannel(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 
-	require.NoError(t, s.SetLastRoom(ctx, "#general"))
+	require.NoError(t, s.SetLastChannel(ctx, "#general"))
 
-	got, err := s.GetLastRoom(ctx)
+	got, err := s.GetLastChannel(ctx)
 	require.NoError(t, err)
-	require.Equal(t, domain.RoomName("#general"), got)
+	require.Equal(t, domain.ChannelName("#general"), got)
 }
 
-func TestFileStore_SetLastRoomOverwrites(t *testing.T) {
+func TestFileStore_SetLastChannelOverwrites(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 
-	require.NoError(t, s.SetLastRoom(ctx, "#first"))
-	require.NoError(t, s.SetLastRoom(ctx, "#second"))
+	require.NoError(t, s.SetLastChannel(ctx, "#first"))
+	require.NoError(t, s.SetLastChannel(ctx, "#second"))
 
-	got, err := s.GetLastRoom(ctx)
+	got, err := s.GetLastChannel(ctx)
 	require.NoError(t, err)
-	require.Equal(t, domain.RoomName("#second"), got)
+	require.Equal(t, domain.ChannelName("#second"), got)
 }

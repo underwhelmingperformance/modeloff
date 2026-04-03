@@ -9,7 +9,7 @@ type Config struct {
 	APIKey       string        `json:"api_key"`
 	UserNick     string        `json:"user_nick"`
 	PokeInterval time.Duration `json:"poke_interval"`
-	LastRoom     string        `json:"last_room"`
+	LastChannel  string        `json:"last_channel"`
 }
 
 // Store defines the interface for loading and saving configuration.

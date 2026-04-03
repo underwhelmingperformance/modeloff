@@ -13,9 +13,9 @@ type Command interface {
 	commandMarker()
 }
 
-// JoinCommand represents `/join <room>`.
+// JoinCommand represents `/join <channel>`.
 type JoinCommand struct {
-	Room string
+	Channel string
 }
 
 func (JoinCommand) commandMarker() {}
@@ -121,15 +121,15 @@ func Parse(input string) (Command, error) {
 
 func parseJoin(args []string) (Command, error) {
 	if len(args) == 0 {
-		return nil, fmt.Errorf("/join requires a room name")
+		return nil, fmt.Errorf("/join requires a channel name")
 	}
 
-	room := args[0]
-	if !strings.HasPrefix(room, domain.RoomPrefix) {
-		room = domain.RoomPrefix + room
+	channel := args[0]
+	if !strings.HasPrefix(channel, domain.ChannelPrefix) {
+		channel = domain.ChannelPrefix + channel
 	}
 
-	return JoinCommand{Room: room}, nil
+	return JoinCommand{Channel: channel}, nil
 }
 
 func parseInvite(args []string) Command {

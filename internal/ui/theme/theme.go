@@ -46,12 +46,12 @@ var (
 	ModelNick = lipgloss.NewStyle().Foreground(colourMagenta).Bold(true)
 )
 
-// Room styles.
+// Channel styles.
 var (
-	RoomName     = lipgloss.NewStyle().Foreground(colourCyan).Bold(true)
-	RoomTitle    = lipgloss.NewStyle().Foreground(colourYellow).Italic(true)
-	ActiveRoom   = lipgloss.NewStyle().Foreground(colourWhite).Bold(true)
-	InactiveRoom = lipgloss.NewStyle().Foreground(colourBrightBlack)
+	ChannelName     = lipgloss.NewStyle().Foreground(colourCyan).Bold(true)
+	ChannelTitle    = lipgloss.NewStyle().Foreground(colourYellow).Italic(true)
+	ActiveChannel   = lipgloss.NewStyle().Foreground(colourWhite).Bold(true)
+	InactiveChannel = lipgloss.NewStyle().Foreground(colourBrightBlack)
 )
 
 // System message styles — for join/part/topic events.

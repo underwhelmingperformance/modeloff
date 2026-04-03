@@ -39,68 +39,68 @@ func TestSession_Join(t *testing.T) {
 	evt, err := sess.Join(ctx, "#general")
 	require.NoError(t, err)
 	require.Equal(t, domain.JoinEvent{
-		Room:    "#general",
+		Channel: "#general",
 		Nick:    "testuser",
 		Created: true,
 		At:      fixedTime,
 	}, evt)
 
-	// Room should be persisted.
-	room, err := s.GetRoom(ctx, "#general")
+	// Channel should be persisted.
+	ch, err := s.GetChannel(ctx, "#general")
 	require.NoError(t, err)
-	require.Equal(t, domain.Room{
+	require.Equal(t, domain.Channel{
 		Name:    "#general",
-		Kind:    domain.RoomChannel,
+		Kind:    domain.KindChannel,
 		Members: []domain.Nick{"testuser"},
 		Created: fixedTime,
-	}, room)
+	}, ch)
 
-	// Last room should be set.
-	last, err := s.GetLastRoom(ctx)
+	// Last channel should be set.
+	last, err := s.GetLastChannel(ctx)
 	require.NoError(t, err)
-	require.Equal(t, domain.RoomName("#general"), last)
+	require.Equal(t, domain.ChannelName("#general"), last)
 }
 
-func TestSession_JoinExistingRoom(t *testing.T) {
+func TestSession_JoinExistingChannel(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := context.Background()
 
-	existing := domain.Room{
+	existing := domain.Channel{
 		Name:    "#existing",
-		Kind:    domain.RoomChannel,
+		Kind:    domain.KindChannel,
 		Title:   "Already here",
 		Members: []domain.Nick{"testuser"},
 		Created: fixedTime.Add(-time.Hour),
 	}
-	require.NoError(t, s.SaveRoom(ctx, existing))
+	require.NoError(t, s.SaveChannel(ctx, existing))
 
 	evt, err := sess.Join(ctx, "#existing")
 	require.NoError(t, err)
 	require.Equal(t, domain.JoinEvent{
-		Room: "#existing",
-		Nick: "testuser",
-		At:   fixedTime,
+		Channel: "#existing",
+		Nick:    "testuser",
+		At:      fixedTime,
 	}, evt)
 
-	// Room should not be overwritten.
-	room, err := s.GetRoom(ctx, "#existing")
+	// Channel should not be overwritten.
+	ch, err := s.GetChannel(ctx, "#existing")
 	require.NoError(t, err)
-	require.Equal(t, "Already here", room.Title)
+	require.Equal(t, "Already here", ch.Title)
 }
 
 func TestSession_Leave(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := context.Background()
 
-	room := domain.Room{Name: "#leaving", Kind: domain.RoomChannel, Created: fixedTime}
-	require.NoError(t, s.SaveRoom(ctx, room))
+	ch := domain.Channel{Name: "#leaving", Kind: domain.KindChannel, Created: fixedTime}
+	require.NoError(t, s.SaveChannel(ctx, ch))
 
 	evt, err := sess.Leave(ctx, "#leaving")
 	require.NoError(t, err)
 	require.Equal(t, domain.PartEvent{
-		Room: "#leaving",
-		Nick: "testuser",
-		At:   fixedTime,
+		Channel: "#leaving",
+		Nick:    "testuser",
+		At:      fixedTime,
 	}, evt)
 }
 
@@ -115,22 +115,22 @@ func TestSession_Invite(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := context.Background()
 
-	room := domain.Room{
+	ch := domain.Channel{
 		Name:    "#dev",
-		Kind:    domain.RoomChannel,
+		Kind:    domain.KindChannel,
 		Members: []domain.Nick{"testuser"},
 		Created: fixedTime,
 	}
-	require.NoError(t, s.SaveRoom(ctx, room))
+	require.NoError(t, s.SaveChannel(ctx, ch))
 
 	evt, err := sess.Invite(ctx, "#dev", "anthropic/claude-3-haiku")
 	require.NoError(t, err)
 	require.Equal(t, domain.ModelInvitedEvent{
-		Room: "#dev",
+		Channel: "#dev",
 		Instance: domain.ModelInstance{
-			Nick:    "fakenick",
-			ModelID: "anthropic/claude-3-haiku",
-			Rooms:   []domain.RoomName{"#dev"},
+			Nick:     "fakenick",
+			ModelID:  "anthropic/claude-3-haiku",
+			Channels: []domain.ChannelName{"#dev"},
 		},
 		At: fixedTime,
 	}, evt)
@@ -140,8 +140,8 @@ func TestSession_Invite(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, domain.ModelID("anthropic/claude-3-haiku"), inst.ModelID)
 
-	// Room should have new member.
-	updated, err := s.GetRoom(ctx, "#dev")
+	// Channel should have new member.
+	updated, err := s.GetChannel(ctx, "#dev")
 	require.NoError(t, err)
 	require.Equal(t, []domain.Nick{"testuser", "fakenick"}, updated.Members)
 }
@@ -150,24 +150,24 @@ func TestSession_Kick(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := context.Background()
 
-	room := domain.Room{
+	ch := domain.Channel{
 		Name:    "#dev",
-		Kind:    domain.RoomChannel,
+		Kind:    domain.KindChannel,
 		Members: []domain.Nick{"testuser", "botty"},
 		Created: fixedTime,
 	}
-	require.NoError(t, s.SaveRoom(ctx, room))
+	require.NoError(t, s.SaveChannel(ctx, ch))
 
 	evt, err := sess.Kick(ctx, "#dev", "botty")
 	require.NoError(t, err)
 	require.Equal(t, domain.ModelKickedEvent{
-		Room: "#dev",
-		Nick: "botty",
-		At:   fixedTime,
+		Channel: "#dev",
+		Nick:    "botty",
+		At:      fixedTime,
 	}, evt)
 
-	// Room should no longer have the kicked member.
-	updated, err := s.GetRoom(ctx, "#dev")
+	// Channel should no longer have the kicked member.
+	updated, err := s.GetChannel(ctx, "#dev")
 	require.NoError(t, err)
 	require.Equal(t, []domain.Nick{"testuser"}, updated.Members)
 }
@@ -180,11 +180,11 @@ func TestSession_SendMessage(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, domain.MessageEvent{
 		Message: domain.Message{
-			ID:     fmt.Sprintf("%d", fixedTime.UnixNano()),
-			Room:   "#general",
-			From:   "testuser",
-			Body:   "hello world",
-			SentAt: fixedTime,
+			ID:      fmt.Sprintf("%d", fixedTime.UnixNano()),
+			Channel: "#general",
+			From:    "testuser",
+			Body:    "hello world",
+			SentAt:  fixedTime,
 		},
 	}, evt)
 
@@ -198,20 +198,20 @@ func TestSession_SetTitle(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := context.Background()
 
-	room := domain.Room{Name: "#dev", Kind: domain.RoomChannel, Created: fixedTime}
-	require.NoError(t, s.SaveRoom(ctx, room))
+	ch := domain.Channel{Name: "#dev", Kind: domain.KindChannel, Created: fixedTime}
+	require.NoError(t, s.SaveChannel(ctx, ch))
 
 	evt, err := sess.SetTitle(ctx, "#dev", "Development Chat")
 	require.NoError(t, err)
 	require.Equal(t, domain.TopicChangeEvent{
-		Room:  "#dev",
-		Title: "Development Chat",
-		By:    "testuser",
-		At:    fixedTime,
+		Channel: "#dev",
+		Title:   "Development Chat",
+		By:      "testuser",
+		At:      fixedTime,
 	}, evt)
 
-	// Room title should be updated.
-	updated, err := s.GetRoom(ctx, "#dev")
+	// Channel title should be updated.
+	updated, err := s.GetChannel(ctx, "#dev")
 	require.NoError(t, err)
 	require.Equal(t, "Development Chat", updated.Title)
 }
@@ -234,10 +234,10 @@ func TestSession_Whois(t *testing.T) {
 	ctx := context.Background()
 
 	inst := domain.ModelInstance{
-		Nick:    "botty",
-		ModelID: "test/model",
-		Persona: "A test bot",
-		Rooms:   []domain.RoomName{"#dev"},
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Persona:  "A test bot",
+		Channels: []domain.ChannelName{"#dev"},
 	}
 	require.NoError(t, s.SaveInstance(ctx, inst))
 
@@ -253,7 +253,7 @@ func TestSession_WhoisNotFound(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestSession_InviteNonexistentRoom(t *testing.T) {
+func TestSession_InviteNonexistentChannel(t *testing.T) {
 	sess, _ := newTestSession(t)
 
 	_, err := sess.Invite(context.Background(), "#ghost", "anthropic/claude-3-haiku")
@@ -270,19 +270,19 @@ func TestSession_InviteGenerateNickError(t *testing.T) {
 	sess, s := newTestSessionWithAPI(t, fake)
 	ctx := context.Background()
 
-	room := domain.Room{
+	ch := domain.Channel{
 		Name:    "#dev",
-		Kind:    domain.RoomChannel,
+		Kind:    domain.KindChannel,
 		Members: []domain.Nick{"testuser"},
 		Created: fixedTime,
 	}
-	require.NoError(t, s.SaveRoom(ctx, room))
+	require.NoError(t, s.SaveChannel(ctx, ch))
 
 	_, err := sess.Invite(ctx, "#dev", "anthropic/claude-3-haiku")
 	require.Error(t, err)
 }
 
-func TestSession_KickNonexistentRoom(t *testing.T) {
+func TestSession_KickNonexistentChannel(t *testing.T) {
 	sess, _ := newTestSession(t)
 
 	_, err := sess.Kick(context.Background(), "#ghost", "botty")
@@ -293,29 +293,29 @@ func TestSession_KickNonMember(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := context.Background()
 
-	room := domain.Room{
+	ch := domain.Channel{
 		Name:    "#dev",
-		Kind:    domain.RoomChannel,
+		Kind:    domain.KindChannel,
 		Members: []domain.Nick{"testuser"},
 		Created: fixedTime,
 	}
-	require.NoError(t, s.SaveRoom(ctx, room))
+	require.NoError(t, s.SaveChannel(ctx, ch))
 
 	evt, err := sess.Kick(ctx, "#dev", "nobody")
 	require.NoError(t, err)
 	require.Equal(t, domain.ModelKickedEvent{
-		Room: "#dev",
-		Nick: "nobody",
-		At:   fixedTime,
+		Channel: "#dev",
+		Nick:    "nobody",
+		At:      fixedTime,
 	}, evt)
 
 	// Members should be unchanged.
-	updated, err := s.GetRoom(ctx, "#dev")
+	updated, err := s.GetChannel(ctx, "#dev")
 	require.NoError(t, err)
 	require.Equal(t, []domain.Nick{"testuser"}, updated.Members)
 }
 
-func TestSession_SetTitleNonexistentRoom(t *testing.T) {
+func TestSession_SetTitleNonexistentChannel(t *testing.T) {
 	sess, _ := newTestSession(t)
 
 	_, err := sess.SetTitle(context.Background(), "#ghost", "title")

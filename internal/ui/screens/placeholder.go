@@ -32,7 +32,7 @@ func (s PlaceholderScreen) Update(_ tea.Msg) (ui.Model, tea.Cmd) {
 // View implements ui.Model.
 func (s PlaceholderScreen) View(width, height int) string {
 	text := theme.Info.Render("modeloff") + " — connected as " + theme.UserNick.Render(s.nick) +
-		"\n\n" + theme.Dim.Render("Use /join to enter a room. Main chat screen coming soon.")
+		"\n\n" + theme.Dim.Render("Use /join to enter a channel. Main chat screen coming soon.")
 
 	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, text)
 }

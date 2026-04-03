@@ -11,42 +11,42 @@ import (
 	"github.com/laney/modeloff/internal/ui/theme"
 )
 
-// RoomSelectedMsg is emitted when the user selects a room in the
-// sidebar, either by pressing ctrl-o or clicking on it.
-type RoomSelectedMsg struct {
-	Room domain.RoomName
+// ChannelSelectedMsg is emitted when the user selects a channel in
+// the sidebar, either by pressing ctrl-o or clicking on it.
+type ChannelSelectedMsg struct {
+	Channel domain.ChannelName
 }
 
-// RoomsUpdatedMsg tells the sidebar to refresh its room list.
-type RoomsUpdatedMsg struct {
-	Rooms  []domain.Room
-	Active domain.RoomName
+// ChannelsUpdatedMsg tells the sidebar to refresh its channel list.
+type ChannelsUpdatedMsg struct {
+	Channels []domain.Channel
+	Active   domain.ChannelName
 }
 
-// Sidebar displays the list of open rooms and lets the user navigate
-// between them.
+// Sidebar displays the list of open channels and lets the user
+// navigate between them.
 type Sidebar struct {
-	rooms  []domain.Room
-	cursor int
-	active domain.RoomName
+	channels []domain.Channel
+	cursor   int
+	active   domain.ChannelName
 }
 
-// NewSidebar creates a sidebar with the given initial rooms and
-// active room.
-func NewSidebar(rooms []domain.Room, active domain.RoomName) Sidebar {
+// NewSidebar creates a sidebar with the given initial channels and
+// active channel.
+func NewSidebar(channels []domain.Channel, active domain.ChannelName) Sidebar {
 	cursor := 0
 
-	for i, r := range rooms {
-		if r.Name == active {
+	for i, ch := range channels {
+		if ch.Name == active {
 			cursor = i
 			break
 		}
 	}
 
 	return Sidebar{
-		rooms:  rooms,
-		cursor: cursor,
-		active: active,
+		channels: channels,
+		cursor:   cursor,
+		active:   active,
 	}
 }
 
@@ -64,8 +64,8 @@ func (s Sidebar) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	case tea.MouseMsg:
 		return s.handleMouse(msg)
 
-	case RoomsUpdatedMsg:
-		s.rooms = msg.Rooms
+	case ChannelsUpdatedMsg:
+		s.channels = msg.Channels
 		s.active = msg.Active
 		s = s.clampCursor()
 	}
@@ -84,7 +84,7 @@ func (s Sidebar) handleKey(msg tea.KeyMsg) (ui.Model, tea.Cmd) {
 		s = s.clampCursor()
 
 	case "ctrl+o":
-		if len(s.rooms) == 0 {
+		if len(s.channels) == 0 {
 			return s, nil
 		}
 
@@ -99,7 +99,7 @@ func (s Sidebar) handleMouse(msg tea.MouseMsg) (ui.Model, tea.Cmd) {
 		return s, nil
 	}
 
-	if msg.Y < 0 || msg.Y >= len(s.rooms) {
+	if msg.Y < 0 || msg.Y >= len(s.channels) {
 		return s, nil
 	}
 
@@ -109,15 +109,15 @@ func (s Sidebar) handleMouse(msg tea.MouseMsg) (ui.Model, tea.Cmd) {
 }
 
 func (s Sidebar) selectCurrent() tea.Cmd {
-	room := s.rooms[s.cursor].Name
+	ch := s.channels[s.cursor].Name
 
 	return func() tea.Msg {
-		return RoomSelectedMsg{Room: room}
+		return ChannelSelectedMsg{Channel: ch}
 	}
 }
 
 func (s Sidebar) clampCursor() Sidebar {
-	if len(s.rooms) == 0 {
+	if len(s.channels) == 0 {
 		s.cursor = 0
 		return s
 	}
@@ -126,8 +126,8 @@ func (s Sidebar) clampCursor() Sidebar {
 		s.cursor = 0
 	}
 
-	if s.cursor >= len(s.rooms) {
-		s.cursor = len(s.rooms) - 1
+	if s.cursor >= len(s.channels) {
+		s.cursor = len(s.channels) - 1
 	}
 
 	return s
@@ -135,36 +135,36 @@ func (s Sidebar) clampCursor() Sidebar {
 
 // View implements ui.Model.
 func (s Sidebar) View(width, height int) string {
-	if len(s.rooms) == 0 {
+	if len(s.channels) == 0 {
 		return lipgloss.Place(width, height,
 			lipgloss.Center, lipgloss.Center,
-			theme.Dim.Render("No rooms"))
+			theme.Dim.Render("No channels"))
 	}
 
 	var b strings.Builder
 
-	for i, room := range s.rooms {
+	for i, ch := range s.channels {
 		if i >= height {
 			break
 		}
 
-		name := string(room.Name)
+		name := string(ch.Name)
 		line := truncate(name, width)
 
 		switch {
-		case i == s.cursor && room.Name == s.active:
-			line = theme.ActiveRoom.Render("▸ " + line)
+		case i == s.cursor && ch.Name == s.active:
+			line = theme.ActiveChannel.Render("▸ " + line)
 		case i == s.cursor:
-			line = theme.RoomName.Render("▸ " + line)
-		case room.Name == s.active:
-			line = theme.ActiveRoom.Render("  " + line)
+			line = theme.ChannelName.Render("▸ " + line)
+		case ch.Name == s.active:
+			line = theme.ActiveChannel.Render("  " + line)
 		default:
-			line = theme.InactiveRoom.Render("  " + line)
+			line = theme.InactiveChannel.Render("  " + line)
 		}
 
 		b.WriteString(line)
 
-		if i < len(s.rooms)-1 {
+		if i < len(s.channels)-1 {
 			b.WriteByte('\n')
 		}
 	}
