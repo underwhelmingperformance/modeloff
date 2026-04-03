@@ -210,7 +210,7 @@ func (c ChatView) renderMessages(width, height int) string {
 	rendered := make([]string, 0, len(c.lines))
 
 	for _, line := range c.lines {
-		rendered = append(rendered, c.renderLine(line))
+		rendered = append(rendered, c.renderLine(line, width))
 	}
 
 	indicator := formatScrollIndicator(c.scroll, len(rendered), height)
@@ -273,20 +273,19 @@ func formatScrollIndicator(scroll, totalLines, viewportHeight int) string {
 	return fmt.Sprintf("(%d%%)", pct)
 }
 
-func (c ChatView) renderLine(line ChatLine) string {
+func (c ChatView) renderLine(line ChatLine, width int) string {
+	wrap := lipgloss.NewStyle().Width(width)
+
 	switch l := line.(type) {
 	case SystemEventLine:
-		return RenderSystemEvent(l.Text, l.Kind)
+		return wrap.Render(RenderSystemEvent(l.Text, l.Kind))
 
 	case MessageLine:
-		style := theme.ModelNick
-		if l.Message.From == c.userNick {
-			style = theme.UserNick
-		}
+		ts := theme.Dim.Render(l.Message.SentAt.Format("[15:04:05]"))
+		nick := theme.NickStyle(string(l.Message.From)).
+			Render(fmt.Sprintf("<%s>", string(l.Message.From)))
 
-		nick := style.Render(fmt.Sprintf("<%s>", string(l.Message.From)))
-
-		return fmt.Sprintf("%s %s", nick, l.Message.Body)
+		return wrap.Render(fmt.Sprintf("%s %s %s", ts, nick, l.Message.Body))
 
 	default:
 		return ""

@@ -46,9 +46,35 @@ var (
 
 // Nick styles — used to colour nicknames in chat.
 var (
-	UserNick  = lipgloss.NewStyle().Foreground(colourGreen).Bold(true)
-	ModelNick = lipgloss.NewStyle().Foreground(colourMagenta).Bold(true)
+	// UserNick is used for the user's nick in the input prompt area.
+	UserNick = lipgloss.NewStyle().Foreground(colourGreen).Bold(true)
 )
+
+// nickColours are the ANSI colours used for nick hashing. Black,
+// white, and bright-black are excluded as they blend with common
+// terminal backgrounds.
+var nickColours = [...]lipgloss.ANSIColor{
+	colourRed,
+	colourGreen,
+	colourYellow,
+	colourBlue,
+	colourMagenta,
+	colourCyan,
+}
+
+// NickStyle returns a bold style with a colour determined by hashing
+// the nick string. The same nick always produces the same colour.
+func NickStyle(nick string) lipgloss.Style {
+	var h uint32
+
+	for _, r := range nick {
+		h = h*31 + uint32(r)
+	}
+
+	return lipgloss.NewStyle().
+		Foreground(nickColours[h%uint32(len(nickColours))]).
+		Bold(true)
+}
 
 // Channel styles.
 var (

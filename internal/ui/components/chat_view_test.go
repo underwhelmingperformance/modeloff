@@ -2,6 +2,7 @@ package components_test
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,6 +31,33 @@ func TestChatView_View_shows_messages(t *testing.T) {
 	require.Contains(t, v, "how are you?")
 	require.Contains(t, v, "alice")
 	require.Contains(t, v, "bob")
+}
+
+func TestChatView_View_shows_timestamps(t *testing.T) {
+	cv := components.NewChatView("#general", "testuser", "", testMessages)
+	v := cv.View(80, 24)
+
+	require.Contains(t, v, "[10:00:00]")
+	require.Contains(t, v, "[10:01:00]")
+	require.Contains(t, v, "[10:02:00]")
+}
+
+func TestChatView_View_wraps_long_messages(t *testing.T) {
+	longBody := strings.Repeat("word ", 30)
+	lines := components.MessagesToLines([]domain.Message{
+		{ID: "1", Channel: "#general", From: "alice", Body: longBody, SentAt: time.Date(2025, 1, 1, 10, 0, 0, 0, time.UTC)},
+	})
+
+	cv := components.NewChatView("#general", "testuser", "", lines)
+	v := cv.View(40, 24)
+
+	// The message should wrap, producing more rendered lines than one.
+	require.Greater(t, lipgloss.Height(v), 3,
+		"long message should wrap to multiple lines at narrow width")
+
+	// All the content should still be present.
+	require.Contains(t, v, "word")
+	require.Contains(t, v, "alice")
 }
 
 func TestChatView_View_empty_messages(t *testing.T) {
@@ -187,7 +215,7 @@ func TestChatView_scroll_does_not_go_negative(t *testing.T) {
 	require.Contains(t, v, "how are you?")
 }
 
-func TestChatView_user_nick_styled_differently(t *testing.T) {
+func TestChatView_nicks_use_hashed_colours(t *testing.T) {
 	msgs := []domain.Message{
 		{ID: "1", Channel: "#general", From: "alice", Body: "from user"},
 		{ID: "2", Channel: "#general", From: "bot", Body: "from model"},
@@ -196,18 +224,12 @@ func TestChatView_user_nick_styled_differently(t *testing.T) {
 	cv := components.NewChatView("#general", "alice", "", components.MessagesToLines(msgs))
 	v := cv.View(80, 24)
 
-	// Both nicks should appear in the output.
-	require.Contains(t, v, "alice")
-	require.Contains(t, v, "bot")
+	// Each nick is rendered with a colour derived from its name.
+	aliceStyled := theme.NickStyle("alice").Render("<alice>")
+	botStyled := theme.NickStyle("bot").Render("<bot>")
 
-	// The user nick "alice" and the model nick "bot" are styled with
-	// different theme colours (green vs magenta). Render both with their
-	// respective styles and check they appear in the view.
-	userStyled := theme.UserNick.Render("<alice>")
-	modelStyled := theme.ModelNick.Render("<bot>")
-
-	require.Contains(t, v, userStyled)
-	require.Contains(t, v, modelStyled)
+	require.Contains(t, v, aliceStyled)
+	require.Contains(t, v, botStyled)
 }
 
 func TestChatView_shows_nick_in_input_area(t *testing.T) {
