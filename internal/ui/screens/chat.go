@@ -72,7 +72,6 @@ type ChatScreen struct {
 	sess     *session.Session
 	layout   components.MainLayout
 	chatView *components.ChatView
-	nickList components.NickList
 
 	active       domain.ChannelName
 	title        string
@@ -85,16 +84,14 @@ type ChatScreen struct {
 func NewChatScreen(ctx context.Context, sess *session.Session) *ChatScreen {
 	sidebar := components.NewSidebar(nil, "", nil)
 	chatView := components.NewChatView("", sess.UserNick(), "", nil)
-	nickList := components.NewNickList(nil)
 	layout := components.NewMainLayout(sidebar, chatView)
-	layout.SetNickList(nickList)
+	layout.SetNickList(components.NewNickList(nil))
 
 	return &ChatScreen{
 		ctx:      ctx,
 		sess:     sess,
 		layout:   layout,
 		chatView: chatView,
-		nickList: nickList,
 	}
 }
 
@@ -268,8 +265,7 @@ func (s *ChatScreen) updateSidebar(channels []domain.Channel, active domain.Chan
 }
 
 func (s *ChatScreen) updateNickList(members []domain.Nick) {
-	s.nickList = components.NewNickList(members)
-	s.layout.SetNickList(s.nickList)
+	s.forwardToLayout(components.NickListUpdatedMsg{Members: members})
 }
 
 func (s *ChatScreen) forwardToLayout(msg tea.Msg) {
