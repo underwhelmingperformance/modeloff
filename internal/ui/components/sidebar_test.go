@@ -152,7 +152,8 @@ func TestSidebar_mouse_click_selects_room(t *testing.T) {
 	require.NotNil(t, cmd)
 
 	msg := cmd()
-	selected := msg.(components.RoomSelectedMsg)
+	selected, ok := msg.(components.RoomSelectedMsg)
+	require.True(t, ok, "expected RoomSelectedMsg, got %T", msg)
 	require.Equal(t, domain.RoomName("¢random"), selected.Room)
 }
 

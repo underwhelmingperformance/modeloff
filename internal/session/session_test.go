@@ -40,8 +40,12 @@ func TestSession_Join(t *testing.T) {
 	// Room should be persisted.
 	room, err := s.GetRoom(ctx, "¢general")
 	require.NoError(t, err)
-	require.Equal(t, domain.RoomName("¢general"), room.Name)
-	require.Equal(t, domain.RoomChannel, room.Kind)
+	require.Equal(t, domain.Room{
+		Name:    "¢general",
+		Kind:    domain.RoomChannel,
+		Members: []domain.Nick{"testuser"},
+		Created: fixedTime,
+	}, room)
 
 	// Last room should be set.
 	last, err := s.GetLastRoom(ctx)
