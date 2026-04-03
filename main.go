@@ -4,7 +4,9 @@ package main
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"os"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -69,6 +71,11 @@ func main() {
 		tea.WithMouseCellMotion(),
 	)
 
+	pokeCtx, cancelPokes := context.WithCancel(context.Background())
+	defer cancelPokes()
+
+	go runPokeLoop(pokeCtx, p, cfgStore)
+
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -87,4 +94,46 @@ func loadConfig() (config.Config, *config.FileStore, error) {
 	}
 
 	return cfg, cfgStore, nil
+}
+
+func runPokeLoop(ctx context.Context, p *tea.Program, cfgStore config.Store) {
+	for {
+		cfg, err := cfgStore.Load()
+		if err != nil || cfg.APIKey == "" || cfg.PokeInterval <= 0 {
+			if !sleepOrDone(ctx, time.Minute) {
+				return
+			}
+
+			continue
+		}
+
+		if !sleepOrDone(ctx, perturbDuration(cfg.PokeInterval)) {
+			return
+		}
+
+		p.Send(screens.PokeTickMsg{})
+	}
+}
+
+func perturbDuration(interval time.Duration) time.Duration {
+	delta := interval / 10
+	if delta <= 0 {
+		return interval
+	}
+
+	offset := time.Duration(rand.Int63n(int64(delta*2)+1)) - delta
+
+	return interval + offset
+}
+
+func sleepOrDone(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }

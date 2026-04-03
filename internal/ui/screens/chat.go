@@ -56,6 +56,9 @@ type systemEventMsg struct {
 	lines []string
 }
 
+// PokeTickMsg triggers a background poke cycle for model instances.
+type PokeTickMsg struct{}
+
 // ChatScreen is the main screen that composes Sidebar, ChatView, and
 // MainLayout. It holds a reference to the session for backend
 // operations.
@@ -131,6 +134,9 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 	case systemEventMsg:
 		return s.handleSystemEvent(msg)
+
+	case PokeTickMsg:
+		return s, s.handlePoke()
 
 	case components.ChannelSelectedMsg:
 		return s, s.switchChannel(msg.Channel)
@@ -393,6 +399,26 @@ func (s ChatScreen) directMessage(nick domain.Nick, body string) tea.Cmd {
 			title:        "",
 			messages:     messages,
 			systemEvents: systemEvents,
+		}
+	}
+}
+
+func (s ChatScreen) handlePoke() tea.Cmd {
+	return func() tea.Msg {
+		ctx := context.Background()
+
+		if err := s.sess.Poke(ctx); err != nil {
+			return systemEventMsg{lines: []string{err.Error()}}
+		}
+
+		channels, _ := s.sess.ListChannels(ctx)
+		messages, _ := s.sess.Messages(ctx, s.active)
+
+		return commandResultMsg{
+			channels: channels,
+			active:   s.active,
+			title:    s.title,
+			messages: messages,
 		}
 	}
 }

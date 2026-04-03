@@ -219,7 +219,12 @@ func (s *Session) SendMessage(
 		return domain.MessageEvent{}, fmt.Errorf("save message: %w", err)
 	}
 
-	if err := s.broadcastMessage(ctx, msg, historyMessages); err != nil {
+	if err := s.dispatchToInstances(
+		ctx,
+		msg.Channel,
+		historyMessages,
+		[]protocol.IRCMessage{protocol.FromMessage(msg)},
+	); err != nil {
 		return domain.MessageEvent{}, err
 	}
 
@@ -326,6 +331,37 @@ func (s *Session) OpenDM(ctx context.Context, nick domain.Nick) (domain.Channel,
 	return ch, created, nil
 }
 
+// Poke sends a periodic prompt to model instances in every channel and
+// persists any replies they choose to make.
+func (s *Session) Poke(ctx context.Context) error {
+	channels, err := s.store.ListChannels(ctx)
+	if err != nil {
+		return fmt.Errorf("list channels: %w", err)
+	}
+
+	for _, ch := range channels {
+		historyMessages, err := s.store.ListMessages(ctx, ch.Name)
+		if err != nil {
+			return fmt.Errorf("list history for %s: %w", ch.Name, err)
+		}
+
+		events := []protocol.IRCMessage{
+			{
+				Kind:   protocol.KindPoke,
+				From:   "modeloff",
+				Target: string(ch.Name),
+				At:     s.now(),
+			},
+		}
+
+		if err := s.dispatchToInstances(ctx, ch.Name, historyMessages, events); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // SetAPIKey persists a new API key through the config store.
 func (s *Session) SetAPIKey(_ context.Context, apiKey string) (config.Config, error) {
 	if s.config == nil {
@@ -367,17 +403,18 @@ func (s *Session) SetPokeInterval(_ context.Context, interval time.Duration) (co
 	return cfg, nil
 }
 
-func (s *Session) broadcastMessage(
+func (s *Session) dispatchToInstances(
 	ctx context.Context,
-	msg domain.Message,
+	channelName domain.ChannelName,
 	historyMessages []domain.Message,
+	events []protocol.IRCMessage,
 ) error {
-	channel, err := s.store.GetChannel(ctx, msg.Channel)
+	channel, err := s.store.GetChannel(ctx, channelName)
 	if err != nil {
 		return fmt.Errorf("get channel: %w", err)
 	}
 
-	instances, err := s.instancesForChannel(ctx, msg.Channel)
+	instances, err := s.instancesForChannel(ctx, channelName)
 	if err != nil {
 		return fmt.Errorf("list instances for channel: %w", err)
 	}
@@ -386,8 +423,6 @@ func (s *Session) broadcastMessage(
 	for _, historyMessage := range historyMessages {
 		history = append(history, protocol.FromMessage(historyMessage))
 	}
-
-	events := []protocol.IRCMessage{protocol.FromMessage(msg)}
 
 	for _, inst := range instances {
 		memories, err := s.memoriesForInstance(ctx, inst.Nick)
@@ -417,7 +452,7 @@ func (s *Session) broadcastMessage(
 
 		reply := domain.Message{
 			ID:      fmt.Sprintf("%d~%s", s.now().UnixNano(), inst.Nick),
-			Channel: msg.Channel,
+			Channel: channelName,
 			From:    inst.Nick,
 			Body:    body,
 			SentAt:  s.now(),

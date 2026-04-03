@@ -626,6 +626,66 @@ func TestSession_SendMessage_includes_memory_in_prompt(t *testing.T) {
 	require.Contains(t, fake.sendEventsCalls[0].system, "[mood=curious]")
 }
 
+func TestSession_Poke_sends_poke_event(t *testing.T) {
+	fake := &fakeAPIClient{}
+	sess, s := newTestSessionWithAPI(t, fake)
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: []domain.ChannelName{"#general"},
+	})
+
+	err := sess.Poke(context.Background())
+	require.NoError(t, err)
+
+	require.Len(t, fake.sendEventsCalls, 1)
+	require.Equal(t, []protocol.IRCMessage{
+		{
+			Kind:   protocol.KindPoke,
+			From:   "modeloff",
+			Target: "#general",
+			At:     fixedTime,
+		},
+	}, fake.sendEventsCalls[0].events)
+}
+
+func TestSession_Poke_persists_replies(t *testing.T) {
+	fake := &fakeAPIClient{
+		sendEventsFn: func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			return protocol.ModelResponse{
+				Kind: protocol.ResponseReply,
+				Body: "still here",
+			}, nil
+		},
+	}
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := context.Background()
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: []domain.ChannelName{"#general"},
+	})
+
+	err := sess.Poke(ctx)
+	require.NoError(t, err)
+
+	msgs, err := s.ListMessages(ctx, "#general")
+	require.NoError(t, err)
+	require.Equal(t, []domain.Message{
+		{
+			ID:      fmt.Sprintf("%d~botty", fixedTime.UnixNano()),
+			Channel: "#general",
+			From:    "botty",
+			Body:    "still here",
+			SentAt:  fixedTime,
+		},
+	}, msgs)
+}
+
 func TestSession_OpenDM_creates_dm_channel(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := context.Background()
