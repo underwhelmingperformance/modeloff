@@ -2,7 +2,6 @@ package components_test
 
 import (
 	"fmt"
-	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -57,11 +56,33 @@ func TestMainLayout_View_responsive(t *testing.T) {
 			layout := components.NewMainLayout(sidebar, content)
 			got := layout.View(tt.width, tt.height)
 
-			require.True(t, strings.Contains(got, tt.wantSub),
-				"View(%d, %d) = %q, want substring %q",
-				tt.width, tt.height, got, tt.wantSub)
+			require.Contains(t, got, tt.wantSub,
+				"View(%d, %d) should contain %q",
+				tt.width, tt.height, tt.wantSub)
 		})
 	}
+}
+
+func TestMainLayout_View_narrow_terminal(t *testing.T) {
+	sidebar := stubModel{label: "sidebar"}
+	content := stubModel{label: "content"}
+	layout := components.NewMainLayout(sidebar, content)
+
+	t.Run("below threshold shows resize message", func(t *testing.T) {
+		got := layout.View(39, 24)
+
+		require.Contains(t, got, "Resize terminal to 40+ columns")
+		require.NotContains(t, got, "sidebar:")
+		require.NotContains(t, got, "content:")
+	})
+
+	t.Run("at threshold renders normally", func(t *testing.T) {
+		got := layout.View(40, 24)
+
+		require.NotContains(t, got, "Resize terminal")
+		require.Contains(t, got, "sidebar:")
+		require.Contains(t, got, "content:")
+	})
 }
 
 func TestMainLayout_View_fills_width(t *testing.T) {

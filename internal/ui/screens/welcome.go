@@ -1,6 +1,7 @@
 package screens
 
 import (
+	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -34,10 +35,13 @@ func (s WelcomeScreen) Update(_ tea.Msg) (ui.Model, tea.Cmd) {
 
 // View implements ui.Model.
 func (s WelcomeScreen) View(width, height int) string {
-	contentWidth := width - 4
-	if contentWidth < 20 {
-		contentWidth = width
+	if width < theme.MinTerminalWidth {
+		return lipgloss.Place(width, height,
+			lipgloss.Center, lipgloss.Center,
+			theme.Warning.Render(fmt.Sprintf("Resize terminal to %d+ columns", theme.MinTerminalWidth)))
 	}
+
+	contentWidth := width - 4
 
 	lines := []string{
 		theme.Info.Render("Welcome to modeloff"),

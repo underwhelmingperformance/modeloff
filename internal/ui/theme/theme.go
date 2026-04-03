@@ -64,6 +64,13 @@ var (
 	Prompt = lipgloss.NewStyle().Foreground(colourGreen).Bold(true)
 )
 
+// Layout constants.
+const (
+	// MinTerminalWidth is the narrowest terminal width the app can
+	// render. Below this, screens show a fallback message.
+	MinTerminalWidth = 40
+)
+
 // Sidebar styles.
 var (
 	SidebarBorder = lipgloss.NewStyle().

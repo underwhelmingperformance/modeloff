@@ -611,7 +611,6 @@ func TestChatScreen_WelcomeState_responsive(t *testing.T) {
 	sizes := []struct{ w, h int }{
 		{80, 24},
 		{40, 10},
-		{28, 12},
 	}
 
 	for _, sz := range sizes {
@@ -620,6 +619,10 @@ func TestChatScreen_WelcomeState_responsive(t *testing.T) {
 		require.Contains(t, v, "Welcome to modeloff")
 		require.Contains(t, v, "/join #general")
 	}
+
+	narrow := m.View(28, 12)
+	require.Contains(t, narrow, "Resize terminal to 40+ columns")
+	require.NotContains(t, narrow, "Welcome to modeloff")
 }
 
 type fakeConfigStore struct {

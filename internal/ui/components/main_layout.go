@@ -1,6 +1,8 @@
 package components
 
 import (
+	"fmt"
+
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/laney/modeloff/internal/ui"
@@ -9,14 +11,14 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// SidebarWidth is the fraction of the total width given to the
+// sidebarFraction is the fraction of the total width given to the
 // sidebar. The remainder goes to the content area.
 const sidebarFraction = 0.2
 
-// MinSidebarWidth is the narrowest the sidebar can be, in columns.
+// minSidebarWidth is the narrowest the sidebar can be, in columns.
 const minSidebarWidth = 16
 
-// MaxSidebarWidth is the widest the sidebar can be, in columns.
+// maxSidebarWidth is the widest the sidebar can be, in columns.
 const maxSidebarWidth = 30
 
 // MainLayout splits the screen horizontally into a sidebar on the
@@ -57,6 +59,12 @@ func (m MainLayout) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 // View implements ui.Model.
 func (m MainLayout) View(width, height int) string {
+	if width < theme.MinTerminalWidth {
+		return lipgloss.Place(width, height,
+			lipgloss.Center, lipgloss.Center,
+			theme.Warning.Render(fmt.Sprintf("Resize terminal to %d+ columns", theme.MinTerminalWidth)))
+	}
+
 	sw := sidebarWidth(width)
 	cw := width - sw
 

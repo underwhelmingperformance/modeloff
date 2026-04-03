@@ -115,6 +115,12 @@ func (s ConnectionScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 // View implements ui.Model.
 func (s ConnectionScreen) View(width, height int) string {
+	if width < theme.MinTerminalWidth {
+		return lipgloss.Place(width, height,
+			lipgloss.Center, lipgloss.Center,
+			theme.Warning.Render(fmt.Sprintf("Resize terminal to %d+ columns", theme.MinTerminalWidth)))
+	}
+
 	var b strings.Builder
 
 	for i := 0; i < s.cur && i < len(s.steps); i++ {
