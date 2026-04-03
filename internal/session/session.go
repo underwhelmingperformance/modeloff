@@ -90,9 +90,15 @@ func (s *Session) Join(ctx context.Context, channelName string) (domain.JoinEven
 
 // Leave records the user leaving a channel and returns a PartEvent.
 func (s *Session) Leave(ctx context.Context, ch domain.ChannelName) (domain.PartEvent, error) {
-	_, err := s.store.GetChannel(ctx, ch)
+	channel, err := s.store.GetChannel(ctx, ch)
 	if err != nil {
 		return domain.PartEvent{}, fmt.Errorf("channel not found: %w", err)
+	}
+
+	channel.Members.Remove(s.userNick)
+
+	if err := s.store.SaveChannel(ctx, channel); err != nil {
+		return domain.PartEvent{}, fmt.Errorf("save channel: %w", err)
 	}
 
 	return domain.PartEvent{

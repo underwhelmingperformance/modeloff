@@ -95,7 +95,12 @@ func TestSession_Leave(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	ch := domain.Channel{Name: "#leaving", Kind: domain.KindChannel, Created: fixedTime}
+	ch := domain.Channel{
+		Name:    "#leaving",
+		Kind:    domain.KindChannel,
+		Members: set.NewOrdered[domain.Nick]("testuser", "botty"),
+		Created: fixedTime,
+	}
 	require.NoError(t, s.SaveChannel(ctx, ch))
 
 	evt, err := sess.Leave(ctx, "#leaving")
@@ -105,6 +110,15 @@ func TestSession_Leave(t *testing.T) {
 		Nick:    "testuser",
 		At:      fixedTime,
 	}, evt)
+
+	updated, err := s.GetChannel(ctx, "#leaving")
+	require.NoError(t, err)
+	require.Equal(t, domain.Channel{
+		Name:    "#leaving",
+		Kind:    domain.KindChannel,
+		Members: set.NewOrdered[domain.Nick]("botty"),
+		Created: fixedTime,
+	}, updated)
 }
 
 func TestSession_LeaveNonexistent(t *testing.T) {
@@ -160,6 +174,11 @@ func TestSession_Kick(t *testing.T) {
 		Created: fixedTime,
 	}
 	require.NoError(t, s.SaveChannel(ctx, ch))
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: set.NewOrdered[domain.ChannelName]("#dev", "#random"),
+	})
 
 	evt, err := sess.Kick(ctx, "#dev", "botty")
 	require.NoError(t, err)
@@ -173,6 +192,10 @@ func TestSession_Kick(t *testing.T) {
 	updated, err := s.GetChannel(ctx, "#dev")
 	require.NoError(t, err)
 	require.Equal(t, set.NewOrdered[domain.Nick]("testuser"), updated.Members)
+
+	inst, err := s.GetInstance(ctx, "botty")
+	require.NoError(t, err)
+	require.Equal(t, set.NewOrdered[domain.ChannelName]("#random"), inst.Channels)
 }
 
 func TestSession_SendMessage(t *testing.T) {
@@ -801,6 +824,10 @@ func TestSession_OpenDM_reuses_existing_dm_channel(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, created)
 	require.Equal(t, existing, ch)
+
+	inst, err := s.GetInstance(ctx, "botty")
+	require.NoError(t, err)
+	require.Equal(t, set.NewOrdered[domain.ChannelName]("botty"), inst.Channels)
 }
 
 func TestSession_OpenDM_unknown_instance(t *testing.T) {
