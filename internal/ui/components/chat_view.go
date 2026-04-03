@@ -94,9 +94,16 @@ func NewChatView(ch domain.ChannelName, userNick domain.Nick, title string, line
 }
 
 // SetLines replaces the displayed lines, preserving viewport and
-// input state.
+// input state. When lines transition from empty to non-empty, the
+// viewport content is reset so stale placeholder rendering does not
+// leak through.
 func (c *ChatView) SetLines(lines []ChatLine) {
+	wasEmpty := len(c.lines) == 0
 	c.lines = lines
+
+	if wasEmpty && len(lines) > 0 {
+		c.viewport.SetContent("")
+	}
 }
 
 // SetTitle updates the channel title in place.
@@ -111,11 +118,13 @@ func (c *ChatView) SetPlaceholder(text string) {
 }
 
 // SetChannel updates the channel identity, title, and lines for a
-// channel switch. The viewport is reset to the bottom.
+// channel switch. The viewport content is cleared so stale
+// placeholder rendering does not leak through.
 func (c *ChatView) SetChannel(ch domain.ChannelName, title string, lines []ChatLine) {
 	c.channel = ch
 	c.title = title
 	c.lines = lines
+	c.viewport.SetContent("")
 	c.viewport.GotoBottom()
 }
 
