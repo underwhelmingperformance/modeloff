@@ -19,8 +19,14 @@ var fixedTime = time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
 func newTestSession(t *testing.T) (*Session, *storemod.FileStore) {
 	t.Helper()
 
+	return newTestSessionWithAPI(t, &fakeAPIClient{})
+}
+
+func newTestSessionWithAPI(t *testing.T, apiClient api.Client) (*Session, *storemod.FileStore) {
+	t.Helper()
+
 	s := storemod.NewFileStore(t.TempDir())
-	sess := New(s, nil, &fakeAPIClient{}, nil, "testuser")
+	sess := New(s, nil, apiClient, nil, "testuser")
 	sess.now = func() time.Time { return fixedTime }
 
 	return sess, s
@@ -242,24 +248,109 @@ func TestSession_WhoisNotFound(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestSession_InviteNonexistentRoom(t *testing.T) {
+	sess, _ := newTestSession(t)
+
+	_, err := sess.Invite(context.Background(), "¢ghost", "anthropic/claude-3-haiku")
+	require.Error(t, err)
+}
+
+func TestSession_InviteGenerateNickError(t *testing.T) {
+	fake := &fakeAPIClient{
+		generateNickFn: func(_ context.Context, _ domain.ModelID) (domain.Nick, error) {
+			return "", fmt.Errorf("API unavailable")
+		},
+	}
+
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := context.Background()
+
+	room := domain.Room{
+		Name:    "¢dev",
+		Kind:    domain.RoomChannel,
+		Members: []domain.Nick{"testuser"},
+		Created: fixedTime,
+	}
+	require.NoError(t, s.SaveRoom(ctx, room))
+
+	_, err := sess.Invite(ctx, "¢dev", "anthropic/claude-3-haiku")
+	require.Error(t, err)
+}
+
+func TestSession_KickNonexistentRoom(t *testing.T) {
+	sess, _ := newTestSession(t)
+
+	_, err := sess.Kick(context.Background(), "¢ghost", "botty")
+	require.Error(t, err)
+}
+
+func TestSession_KickNonMember(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := context.Background()
+
+	room := domain.Room{
+		Name:    "¢dev",
+		Kind:    domain.RoomChannel,
+		Members: []domain.Nick{"testuser"},
+		Created: fixedTime,
+	}
+	require.NoError(t, s.SaveRoom(ctx, room))
+
+	evt, err := sess.Kick(ctx, "¢dev", "nobody")
+	require.NoError(t, err)
+	require.Equal(t, domain.ModelKickedEvent{
+		Room: "¢dev",
+		Nick: "nobody",
+		At:   fixedTime,
+	}, evt)
+
+	// Members should be unchanged.
+	updated, err := s.GetRoom(ctx, "¢dev")
+	require.NoError(t, err)
+	require.Equal(t, []domain.Nick{"testuser"}, updated.Members)
+}
+
+func TestSession_SetTitleNonexistentRoom(t *testing.T) {
+	sess, _ := newTestSession(t)
+
+	_, err := sess.SetTitle(context.Background(), "¢ghost", "title")
+	require.Error(t, err)
+}
+
 // --- Fake API client ---
 
-type fakeAPIClient struct{}
+type fakeAPIClient struct {
+	listModelsFn   func(context.Context) ([]api.ModelInfo, error)
+	sendEventsFn   func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error)
+	generateNickFn func(context.Context, domain.ModelID) (domain.Nick, error)
+}
 
-func (f *fakeAPIClient) ListModels(_ context.Context) ([]api.ModelInfo, error) {
+func (f *fakeAPIClient) ListModels(ctx context.Context) ([]api.ModelInfo, error) {
+	if f.listModelsFn != nil {
+		return f.listModelsFn(ctx)
+	}
+
 	return nil, nil
 }
 
 func (f *fakeAPIClient) SendEvents(
-	_ context.Context,
-	_ domain.ModelID,
-	_ string,
-	_ []protocol.IRCMessage,
-	_ []protocol.IRCMessage,
+	ctx context.Context,
+	modelID domain.ModelID,
+	system string,
+	history []protocol.IRCMessage,
+	events []protocol.IRCMessage,
 ) (protocol.ModelResponse, error) {
+	if f.sendEventsFn != nil {
+		return f.sendEventsFn(ctx, modelID, system, history, events)
+	}
+
 	return protocol.ModelResponse{Kind: protocol.ResponseSilence, Reason: "fake"}, nil
 }
 
-func (f *fakeAPIClient) GenerateNick(_ context.Context, _ domain.ModelID) (domain.Nick, error) {
+func (f *fakeAPIClient) GenerateNick(ctx context.Context, modelID domain.ModelID) (domain.Nick, error) {
+	if f.generateNickFn != nil {
+		return f.generateNickFn(ctx, modelID)
+	}
+
 	return "fakenick", nil
 }
