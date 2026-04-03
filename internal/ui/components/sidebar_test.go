@@ -42,7 +42,7 @@ func updateSidebar(t *testing.T, m ui.Model, msg tea.Msg) (ui.Model, tea.Cmd) {
 }
 
 func TestSidebar_View_shows_channels(t *testing.T) {
-	s := components.NewSidebar(testChannels, "#general")
+	s := components.NewSidebar(testChannels, "#general", nil)
 	v := s.View(20, 10)
 
 	require.Contains(t, v, "#general")
@@ -51,14 +51,14 @@ func TestSidebar_View_shows_channels(t *testing.T) {
 }
 
 func TestSidebar_View_empty(t *testing.T) {
-	s := components.NewSidebar(nil, "")
+	s := components.NewSidebar(nil, "", nil)
 	v := s.View(20, 10)
 
 	require.Contains(t, v, "No channels")
 }
 
 func TestSidebar_View_active_channel_highlighted(t *testing.T) {
-	s := components.NewSidebar(testChannels, "#random")
+	s := components.NewSidebar(testChannels, "#random", nil)
 	v := s.View(30, 10)
 
 	require.Contains(t, v, "▸")
@@ -66,7 +66,7 @@ func TestSidebar_View_active_channel_highlighted(t *testing.T) {
 }
 
 func TestSidebar_keyboard_navigation(t *testing.T) {
-	s := components.NewSidebar(testChannels, "#general")
+	s := components.NewSidebar(testChannels, "#general", nil)
 	var m ui.Model = s
 
 	// Move down.
@@ -85,7 +85,7 @@ func TestSidebar_keyboard_navigation(t *testing.T) {
 }
 
 func TestSidebar_keyboard_up(t *testing.T) {
-	s := components.NewSidebar(testChannels, "#dev")
+	s := components.NewSidebar(testChannels, "#dev", nil)
 	var m ui.Model = s
 
 	// Cursor starts at #dev (index 2). Move up twice.
@@ -104,7 +104,7 @@ func TestSidebar_keyboard_up(t *testing.T) {
 }
 
 func TestSidebar_cursor_clamps_at_boundaries(t *testing.T) {
-	s := components.NewSidebar(testChannels, "#general")
+	s := components.NewSidebar(testChannels, "#general", nil)
 	var m ui.Model = s
 
 	// Move up past the top — should stay at 0.
@@ -119,7 +119,7 @@ func TestSidebar_cursor_clamps_at_boundaries(t *testing.T) {
 }
 
 func TestSidebar_cursor_clamps_at_bottom(t *testing.T) {
-	s := components.NewSidebar(testChannels, "#general")
+	s := components.NewSidebar(testChannels, "#general", nil)
 	var m ui.Model = s
 
 	// Move down past the bottom.
@@ -135,7 +135,7 @@ func TestSidebar_cursor_clamps_at_bottom(t *testing.T) {
 }
 
 func TestSidebar_mouse_click_selects_channel(t *testing.T) {
-	s := components.NewSidebar(testChannels, "#general")
+	s := components.NewSidebar(testChannels, "#general", nil)
 	var m ui.Model = s
 
 	// Click on the second channel (Y=1).
@@ -155,7 +155,7 @@ func TestSidebar_mouse_click_selects_channel(t *testing.T) {
 }
 
 func TestSidebar_mouse_click_out_of_range(t *testing.T) {
-	s := components.NewSidebar(testChannels, "#general")
+	s := components.NewSidebar(testChannels, "#general", nil)
 	var m ui.Model = s
 
 	// Click below the channel list.
@@ -170,7 +170,7 @@ func TestSidebar_mouse_click_out_of_range(t *testing.T) {
 }
 
 func TestSidebar_ctrl_o_with_no_channels(t *testing.T) {
-	s := components.NewSidebar(nil, "")
+	s := components.NewSidebar(nil, "", nil)
 	var m ui.Model = s
 
 	_, cmd := updateSidebar(t, m, ctrlKey("ctrl+o"))
@@ -178,7 +178,7 @@ func TestSidebar_ctrl_o_with_no_channels(t *testing.T) {
 }
 
 func TestSidebar_channels_updated_msg(t *testing.T) {
-	s := components.NewSidebar(testChannels, "#general")
+	s := components.NewSidebar(testChannels, "#general", nil)
 	var m ui.Model = s
 
 	newChannels := []domain.Channel{
@@ -197,8 +197,31 @@ func TestSidebar_channels_updated_msg(t *testing.T) {
 	require.NotContains(t, v, "#general")
 }
 
+func TestSidebar_unread_indicator(t *testing.T) {
+	unread := map[domain.ChannelName]int{
+		"#random": 3,
+	}
+
+	s := components.NewSidebar(testChannels, "#general", unread)
+	v := s.View(30, 10)
+
+	// Channel with unread messages shows a marker.
+	require.Contains(t, v, "#random *")
+
+	// Channel without unread messages does not.
+	require.NotContains(t, v, "#general *")
+	require.NotContains(t, v, "#dev *")
+}
+
+func TestSidebar_no_unread_indicator_when_nil(t *testing.T) {
+	s := components.NewSidebar(testChannels, "#general", nil)
+	v := s.View(30, 10)
+
+	require.NotContains(t, v, "*")
+}
+
 func TestSidebar_ignores_other_messages(t *testing.T) {
-	s := components.NewSidebar(testChannels, "#general")
+	s := components.NewSidebar(testChannels, "#general", nil)
 	var m ui.Model = s
 
 	m, cmd := updateSidebar(t, m, key("x"))

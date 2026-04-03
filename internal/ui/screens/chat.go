@@ -18,6 +18,7 @@ type chatLoadedMsg struct {
 	active   domain.ChannelName
 	title    string
 	messages []domain.Message
+	unread   map[domain.ChannelName]int
 }
 
 // channelSwitchedMsg is sent after a channel switch completes,
@@ -27,6 +28,7 @@ type channelSwitchedMsg struct {
 	title    string
 	channels []domain.Channel
 	messages []domain.Message
+	unread   map[domain.ChannelName]int
 }
 
 // messageSentMsg is sent after a message is saved, carrying the
@@ -43,6 +45,7 @@ type commandResultMsg struct {
 	active       domain.ChannelName
 	title        string
 	messages     []domain.Message
+	unread       map[domain.ChannelName]int
 	eventKind    components.EventKind
 	systemEvents []string
 }
@@ -76,7 +79,7 @@ type ChatScreen struct {
 // The provided context is used for all backend operations, allowing
 // them to be cancelled on shutdown.
 func NewChatScreen(ctx context.Context, sess *session.Session) *ChatScreen {
-	sidebar := components.NewSidebar(nil, "")
+	sidebar := components.NewSidebar(nil, "", nil)
 	chatView := components.NewChatView("", sess.UserNick(), "", nil)
 	layout := components.NewMainLayout(sidebar, chatView)
 
@@ -119,6 +122,7 @@ func (s *ChatScreen) Init() tea.Cmd {
 			active:   active,
 			title:    title,
 			messages: messages,
+			unread:   s.unreadCounts(ctx, channels),
 		}
 	}
 }
@@ -169,7 +173,7 @@ func (s *ChatScreen) handleLoaded(msg chatLoadedMsg) (ui.Model, tea.Cmd) {
 	s.title = msg.title
 	s.channelCount = len(msg.channels)
 
-	sidebar := components.NewSidebar(msg.channels, msg.active)
+	sidebar := components.NewSidebar(msg.channels, msg.active, msg.unread)
 	s.chatView.SetChannel(msg.active, msg.title, components.MessagesToLines(msg.messages))
 	s.layout = components.NewMainLayout(sidebar, s.chatView)
 
@@ -181,7 +185,7 @@ func (s *ChatScreen) handleChannelSwitched(msg channelSwitchedMsg) (ui.Model, te
 	s.title = msg.title
 	s.channelCount = len(msg.channels)
 
-	sidebar := components.NewSidebar(msg.channels, msg.channel)
+	sidebar := components.NewSidebar(msg.channels, msg.channel, msg.unread)
 	s.chatView.SetChannel(msg.channel, msg.title, components.MessagesToLines(msg.messages))
 	s.layout = components.NewMainLayout(sidebar, s.chatView)
 
@@ -203,7 +207,7 @@ func (s *ChatScreen) handleCommandResult(msg commandResultMsg) (ui.Model, tea.Cm
 	lines := components.MessagesToLines(msg.messages)
 	lines = appendSystemEvents(lines, msg.eventKind, msg.systemEvents)
 
-	sidebar := components.NewSidebar(msg.channels, msg.active)
+	sidebar := components.NewSidebar(msg.channels, msg.active, msg.unread)
 	s.chatView.SetChannel(msg.active, msg.title, lines)
 	s.layout = components.NewMainLayout(sidebar, s.chatView)
 	s.forwardToLayout(components.PendingResponseMsg{Pending: false})
@@ -225,6 +229,23 @@ func (s *ChatScreen) handleSystemEvent(msg systemEventMsg) (ui.Model, tea.Cmd) {
 func (s *ChatScreen) forwardToLayout(msg tea.Msg) {
 	updated, _ := s.layout.Update(msg)
 	s.layout = updated.(components.MainLayout)
+}
+
+func (s *ChatScreen) unreadCounts(ctx context.Context, channels []domain.Channel) map[domain.ChannelName]int {
+	counts := make(map[domain.ChannelName]int, len(channels))
+
+	for _, ch := range channels {
+		n, err := s.sess.UnreadCount(ctx, ch.Name)
+		if err != nil {
+			continue
+		}
+
+		if n > 0 {
+			counts[ch.Name] = n
+		}
+	}
+
+	return counts
 }
 
 func appendSystemEvents(lines []components.ChatLine, kind components.EventKind, events []string) []components.ChatLine {
@@ -254,6 +275,7 @@ func (s *ChatScreen) switchChannel(ch domain.ChannelName) tea.Cmd {
 			title:    title,
 			channels: channels,
 			messages: messages,
+			unread:   s.unreadCounts(ctx, channels),
 		}
 	}
 }

@@ -29,11 +29,13 @@ type Sidebar struct {
 	channels []domain.Channel
 	cursor   int
 	active   domain.ChannelName
+	unread   map[domain.ChannelName]int
 }
 
 // NewSidebar creates a sidebar with the given initial channels and
-// active channel.
-func NewSidebar(channels []domain.Channel, active domain.ChannelName) Sidebar {
+// active channel. The unread map holds per-channel unread counts; nil
+// is safe and treated as all-zero.
+func NewSidebar(channels []domain.Channel, active domain.ChannelName, unread map[domain.ChannelName]int) Sidebar {
 	cursor := 0
 
 	for i, ch := range channels {
@@ -47,6 +49,7 @@ func NewSidebar(channels []domain.Channel, active domain.ChannelName) Sidebar {
 		channels: channels,
 		cursor:   cursor,
 		active:   active,
+		unread:   unread,
 	}
 }
 
@@ -149,6 +152,12 @@ func (s Sidebar) View(width, height int) string {
 		}
 
 		name := string(ch.Name)
+		hasUnread := s.unread[ch.Name] > 0
+
+		if hasUnread {
+			name += " *"
+		}
+
 		line := truncate(name, width)
 
 		switch {
@@ -158,6 +167,8 @@ func (s Sidebar) View(width, height int) string {
 			line = theme.ChannelName.Render("▸ " + line)
 		case ch.Name == s.active:
 			line = theme.ActiveChannel.Render("  " + line)
+		case hasUnread:
+			line = theme.UnreadChannel.Render("  " + line)
 		default:
 			line = theme.InactiveChannel.Render("  " + line)
 		}

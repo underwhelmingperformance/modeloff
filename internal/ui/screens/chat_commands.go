@@ -158,6 +158,7 @@ func (s *ChatScreen) directMessage(nick domain.Nick, body string) tea.Cmd {
 			active:       ch.Name,
 			title:        "",
 			messages:     messages,
+			unread:       s.unreadCounts(ctx, channels),
 			eventKind:    components.EventSuccess,
 			systemEvents: systemEvents,
 		}
@@ -180,6 +181,7 @@ func (s *ChatScreen) handlePoke() tea.Cmd {
 			active:   s.active,
 			title:    s.title,
 			messages: messages,
+			unread:   s.unreadCounts(ctx, channels),
 		}
 	}
 }
@@ -212,6 +214,7 @@ func (s *ChatScreen) joinChannel(name string) tea.Cmd {
 			active:       active,
 			title:        title,
 			messages:     messages,
+			unread:       s.unreadCounts(ctx, channels),
 			eventKind:    components.EventSuccess,
 			systemEvents: []string{event},
 		}
@@ -241,6 +244,7 @@ func (s *ChatScreen) leaveChannel() tea.Cmd {
 			active:   active,
 			title:    title,
 			messages: messages,
+			unread:   s.unreadCounts(ctx, channels),
 		}
 	}
 }
@@ -262,6 +266,7 @@ func (s *ChatScreen) changeNick(nick domain.Nick) tea.Cmd {
 			active:    s.active,
 			title:     s.title,
 			messages:  messages,
+			unread:    s.unreadCounts(ctx, channels),
 			eventKind: components.EventSuccess,
 			systemEvents: []string{
 				fmt.Sprintf("%s is now known as %s", evt.OldNick, evt.NewNick),
@@ -292,6 +297,7 @@ func (s *ChatScreen) setTitle(title string) tea.Cmd {
 			active:       s.active,
 			title:        title,
 			messages:     messages,
+			unread:       s.unreadCounts(ctx, channels),
 			eventKind:    components.EventSuccess,
 			systemEvents: []string{event},
 		}
@@ -352,6 +358,7 @@ func (s *ChatScreen) inviteModel(modelID domain.ModelID, persona string) tea.Cmd
 			active:       s.active,
 			title:        s.title,
 			messages:     messages,
+			unread:       s.unreadCounts(ctx, channels),
 			eventKind:    components.EventSuccess,
 			systemEvents: []string{event},
 		}
@@ -375,6 +382,7 @@ func (s *ChatScreen) kickModel(nick domain.Nick) tea.Cmd {
 			active:    s.active,
 			title:     s.title,
 			messages:  messages,
+			unread:    s.unreadCounts(ctx, channels),
 			eventKind: components.EventSuccess,
 			systemEvents: []string{
 				fmt.Sprintf("%s has been kicked from %s", evt.Nick, evt.Channel),

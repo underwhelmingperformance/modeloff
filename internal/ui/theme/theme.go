@@ -82,6 +82,7 @@ var (
 	ChannelTitle    = lipgloss.NewStyle().Foreground(colourYellow).Italic(true)
 	ActiveChannel   = lipgloss.NewStyle().Foreground(colourWhite).Bold(true)
 	InactiveChannel = lipgloss.NewStyle().Foreground(colourBrightBlack)
+	UnreadChannel   = lipgloss.NewStyle().Foreground(colourWhite).Bold(true)
 )
 
 // System message styles — for join/part/topic events.
