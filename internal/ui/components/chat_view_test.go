@@ -485,6 +485,11 @@ func TestRenderLine_application_feedback(t *testing.T) {
 			components.CommandError{Err: domain.UnknownNickError{Nick: "ghost"}},
 			"✗ no such nick: ghost",
 		},
+		{
+			"new_messages_divider",
+			components.NewMessagesDivider{},
+			"new messages",
+		},
 	}
 
 	for _, tt := range tests {
@@ -494,4 +499,118 @@ func TestRenderLine_application_feedback(t *testing.T) {
 			require.Contains(t, got, tt.want)
 		})
 	}
+}
+
+func TestNewMessagesDivider_fills_width(t *testing.T) {
+	cv := components.NewChatView("#test", "testuser", "", []components.ChatLine{
+		components.NewMessagesDivider{},
+	})
+
+	v := cv.View(80, 24)
+	stripped := ansi.Strip(v)
+
+	require.Contains(t, stripped, "new messages")
+	require.Contains(t, stripped, "──")
+
+	// The divider dashes should span most of the width.
+	for _, line := range strings.Split(stripped, "\n") {
+		if strings.Contains(line, "new messages") {
+			require.Contains(t, line, "─")
+			require.GreaterOrEqual(t, len([]rune(line)), 40,
+				"divider should span a significant portion of the width")
+			break
+		}
+	}
+}
+
+func TestChatView_divider_inserted_when_scrolled_up(t *testing.T) {
+	// Create enough messages to fill the viewport.
+	msgs := make([]domain.Message, 30)
+	for i := range msgs {
+		msgs[i] = domain.Message{
+			ID:      fmt.Sprintf("%d", i),
+			Channel: "#general",
+			From:    "user",
+			Body:    fmt.Sprintf("message %d", i),
+		}
+	}
+
+	cv := components.NewChatView("#general", "testuser", "",
+		components.MessagesToLines(msgs))
+	var m ui.Model = cv
+
+	// Render to initialise viewport dimensions.
+	m.View(80, 24)
+
+	// Scroll up so we're no longer at the bottom.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+
+	// Verify we're scrolled up.
+	v := m.View(80, 24)
+	require.NotContains(t, v, "message 29")
+
+	// Add new messages via SetLines.
+	newMsgs := make([]domain.Message, 33)
+	copy(newMsgs, msgs)
+
+	for i := 30; i < 33; i++ {
+		newMsgs[i] = domain.Message{
+			ID:      fmt.Sprintf("%d", i),
+			Channel: "#general",
+			From:    "other",
+			Body:    fmt.Sprintf("new message %d", i),
+		}
+	}
+
+	cv.SetLines(components.MessagesToLines(newMsgs))
+
+	// Scroll to bottom to see the divider.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+
+	v = m.View(80, 24)
+	stripped := ansi.Strip(v)
+
+	require.Contains(t, stripped, "new messages",
+		"divider should be visible after scrolling down")
+}
+
+func TestChatView_no_divider_when_at_bottom(t *testing.T) {
+	msgs := make([]domain.Message, 5)
+	for i := range msgs {
+		msgs[i] = domain.Message{
+			ID:      fmt.Sprintf("%d", i),
+			Channel: "#general",
+			From:    "user",
+			Body:    fmt.Sprintf("message %d", i),
+		}
+	}
+
+	cv := components.NewChatView("#general", "testuser", "",
+		components.MessagesToLines(msgs))
+
+	// Render — viewport is at bottom.
+	cv.View(80, 24)
+
+	// Add more messages while at bottom.
+	newMsgs := make([]domain.Message, 8)
+	copy(newMsgs, msgs)
+
+	for i := 5; i < 8; i++ {
+		newMsgs[i] = domain.Message{
+			ID:      fmt.Sprintf("%d", i),
+			Channel: "#general",
+			From:    "other",
+			Body:    fmt.Sprintf("new message %d", i),
+		}
+	}
+
+	cv.SetLines(components.MessagesToLines(newMsgs))
+
+	v := cv.View(80, 24)
+	stripped := ansi.Strip(v)
+
+	require.NotContains(t, stripped, "new messages",
+		"no divider should appear when viewport is at bottom")
 }

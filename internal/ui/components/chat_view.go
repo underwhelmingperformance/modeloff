@@ -108,6 +108,12 @@ type CommandError struct{ Err error }
 
 func (CommandError) chatLine() {}
 
+// NewMessagesDivider is a separator inserted into the chat view when
+// new messages arrive while the viewport is scrolled up.
+type NewMessagesDivider struct{}
+
+func (NewMessagesDivider) chatLine() {}
+
 // MessagesToLines converts a slice of domain messages into chat lines.
 func MessagesToLines(msgs []domain.Message) []ChatLine {
 	lines := make([]ChatLine, len(msgs))
@@ -143,6 +149,12 @@ type ChatView struct {
 	pending     bool
 	spinner     spinner.Model
 	placeholder string
+
+	// seenCount tracks how many lines the user has seen (the line
+	// count when the viewport was last at the bottom). When new lines
+	// arrive while scrolled up, a NewMessagesDivider is inserted at
+	// this position.
+	seenCount int
 }
 
 // NewChatView creates a chat view for the given channel.
@@ -151,12 +163,13 @@ func NewChatView(ch domain.ChannelName, userNick domain.Nick, title string, line
 	vp.MouseWheelEnabled = true
 
 	return &ChatView{
-		channel:  ch,
-		title:    title,
-		userNick: userNick,
-		lines:    lines,
-		input:    NewInputBar(),
-		viewport: vp,
+		channel:   ch,
+		title:     title,
+		userNick:  userNick,
+		lines:     lines,
+		seenCount: len(lines),
+		input:     NewInputBar(),
+		viewport:  vp,
 		spinner: spinner.New(
 			spinner.WithSpinner(spinner.Dot),
 			spinner.WithStyle(theme.Dim),
@@ -167,10 +180,23 @@ func NewChatView(ch domain.ChannelName, userNick domain.Nick, title string, line
 // SetLines replaces the displayed lines, preserving viewport and
 // input state. When lines transition from empty to non-empty, the
 // viewport content is reset so stale placeholder rendering does not
-// leak through.
+// leak through. If the viewport is scrolled up and new lines have
+// been added, a NewMessagesDivider is inserted at the boundary.
 func (c *ChatView) SetLines(lines []ChatLine) {
 	wasEmpty := len(c.lines) == 0
+
+	scrolledUp := !c.viewport.AtBottom() && c.viewport.TotalLineCount() > 0
+	newContent := len(lines) > c.seenCount
+
+	if scrolledUp && newContent && c.seenCount > 0 {
+		lines = c.insertDivider(lines)
+	}
+
 	c.lines = lines
+
+	if !scrolledUp {
+		c.seenCount = c.countWithoutDivider(lines)
+	}
 
 	if wasEmpty && len(lines) > 0 {
 		c.viewport.SetContent("")
@@ -195,6 +221,7 @@ func (c *ChatView) SetChannel(ch domain.ChannelName, title string, lines []ChatL
 	c.channel = ch
 	c.title = title
 	c.lines = lines
+	c.seenCount = len(lines)
 	c.viewport.SetContent("")
 	c.viewport.GotoBottom()
 }
@@ -232,6 +259,7 @@ func (c *ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		}
 
 		c.lines = msg.Lines
+		c.seenCount = len(msg.Lines)
 		c.viewport.GotoBottom()
 
 		return c, nil
@@ -354,6 +382,8 @@ func (c *ChatView) renderMessages(width, height int) (view string, scrolled bool
 
 	if wasAtBottom {
 		c.viewport.GotoBottom()
+		c.clearDivider()
+		c.seenCount = c.countWithoutDivider(c.lines)
 	}
 
 	return c.viewport.View(), !c.viewport.AtBottom(), c.viewport.ScrollPercent()
@@ -441,6 +471,9 @@ func (c *ChatView) renderLine(line ChatLine, width int) string {
 	case CommandError:
 		return wrap.Render(theme.Error.Render("✗ " + l.Err.Error()))
 
+	case NewMessagesDivider:
+		return c.renderNewMessagesDivider(width)
+
 	default:
 		return ""
 	}
@@ -513,6 +546,69 @@ func (c *ChatView) renderChannelList(cl ChannelList) string {
 	}
 
 	return strings.Join(parts, "\n")
+}
+
+func (c *ChatView) renderNewMessagesDivider(width int) string {
+	label := theme.Warning.Render(" new messages ")
+	labelWidth := lipgloss.Width(label)
+
+	leftWidth := (width - labelWidth) / 2
+	rightWidth := width - leftWidth - labelWidth
+
+	left := strings.Repeat("─", max(0, leftWidth))
+	right := strings.Repeat("─", max(0, rightWidth))
+
+	return theme.Dim.Render(left) + label + theme.Dim.Render(right)
+}
+
+// insertDivider returns a copy of lines with a NewMessagesDivider
+// inserted at the seenCount position.
+func (c *ChatView) insertDivider(lines []ChatLine) []ChatLine {
+	// Remove any existing divider first.
+	cleaned := c.stripDivider(lines)
+
+	pos := c.seenCount
+	if pos > len(cleaned) {
+		pos = len(cleaned)
+	}
+
+	result := make([]ChatLine, 0, len(cleaned)+1)
+	result = append(result, cleaned[:pos]...)
+	result = append(result, NewMessagesDivider{})
+	result = append(result, cleaned[pos:]...)
+
+	return result
+}
+
+// stripDivider returns lines with any NewMessagesDivider removed.
+func (c *ChatView) stripDivider(lines []ChatLine) []ChatLine {
+	result := make([]ChatLine, 0, len(lines))
+
+	for _, l := range lines {
+		if _, ok := l.(NewMessagesDivider); !ok {
+			result = append(result, l)
+		}
+	}
+
+	return result
+}
+
+// clearDivider removes any NewMessagesDivider from the current lines.
+func (c *ChatView) clearDivider() {
+	c.lines = c.stripDivider(c.lines)
+}
+
+// countWithoutDivider returns the number of non-divider lines.
+func (c *ChatView) countWithoutDivider(lines []ChatLine) int {
+	n := 0
+
+	for _, l := range lines {
+		if _, ok := l.(NewMessagesDivider); !ok {
+			n++
+		}
+	}
+
+	return n
 }
 
 func usageText(command string) string {
