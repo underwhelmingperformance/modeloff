@@ -134,18 +134,17 @@ func TestInputBar_home_end(t *testing.T) {
 	require.Equal(t, "XhelloY", m.(components.InputBar).Value())
 }
 
-func TestInputBar_ctrl_u_kills_to_start(t *testing.T) {
+func TestInputBar_ctrl_u_does_not_kill_to_start(t *testing.T) {
 	b := components.NewInputBar()
 	var m ui.Model = b
 
 	m = typeText(t, m, "abcde")
 
-	// Move left twice, then ctrl-u kills everything before cursor.
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyLeft})
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	// Ctrl+U is reserved for sidebar navigation and should not
+	// modify the input buffer.
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlU})
 
-	require.Equal(t, "de", m.(components.InputBar).Value())
+	require.Equal(t, "abcde", m.(components.InputBar).Value())
 }
 
 func TestInputBar_ctrl_k_kills_to_end(t *testing.T) {
@@ -341,21 +340,18 @@ func TestInputBar_editing_shortcuts_work_after_history_recall(t *testing.T) {
 	require.Equal(t, "re: first ", m.(components.InputBar).Value())
 }
 
-func TestInputBar_ctrl_u_then_history_up(t *testing.T) {
+func TestInputBar_ctrl_d_does_not_delete_forward(t *testing.T) {
 	b := components.NewInputBar()
 	var m ui.Model = b
 
-	m = typeText(t, m, "old")
-	m, _ = enter(t, m)
+	m = typeText(t, m, "abcde")
 
-	// Type something, then Ctrl+U to clear it.
-	m = typeText(t, m, "discard this")
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlU})
-	require.Equal(t, "", m.(components.InputBar).Value())
+	// Move to start, then Ctrl+D — reserved for sidebar navigation
+	// and should not delete the character under the cursor.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyHome})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
 
-	// History up should still work.
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
-	require.Equal(t, "old", m.(components.InputBar).Value())
+	require.Equal(t, "abcde", m.(components.InputBar).Value())
 }
 
 func TestInputBar_ignores_non_key_messages(t *testing.T) {

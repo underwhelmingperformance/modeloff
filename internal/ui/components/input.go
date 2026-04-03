@@ -3,6 +3,7 @@ package components
 import (
 	"strings"
 
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -42,6 +43,12 @@ func NewInputBar() InputBar {
 	ti := textinput.New()
 	ti.Prompt = theme.Prompt.Render("> ")
 	ti.Focus()
+
+	// Ctrl+D and Ctrl+U are reserved for sidebar navigation (channel
+	// up/down). Remove them from the textinput bindings so they don't
+	// conflict. Delete key still works for forward-delete.
+	ti.KeyMap.DeleteCharacterForward = key.NewBinding(key.WithKeys("delete"))
+	ti.KeyMap.DeleteBeforeCursor = key.NewBinding(key.WithDisabled())
 
 	return InputBar{
 		input:   ti,
