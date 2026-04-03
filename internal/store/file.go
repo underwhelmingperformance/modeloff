@@ -150,7 +150,8 @@ func (s *FileStore) DeleteInstance(_ context.Context, nick domain.Nick) error {
 // --- State ---
 
 type appState struct {
-	LastChannel domain.ChannelName `json:"last_channel"`
+	LastChannel domain.ChannelName            `json:"last_channel"`
+	LastRead    map[domain.ChannelName]string `json:"last_read,omitempty"`
 }
 
 func (s *FileStore) statePath() string {
@@ -195,6 +196,36 @@ func (s *FileStore) SetLastChannel(_ context.Context, name domain.ChannelName) e
 	}
 
 	st.LastChannel = name
+
+	return saveJSON(s.statePath(), st)
+}
+
+// --- Last-read tracking ---
+
+// GetLastRead returns the ID of the last message the user read in a
+// channel. Returns an empty string if nothing has been read yet.
+func (s *FileStore) GetLastRead(_ context.Context, ch domain.ChannelName) (string, error) {
+	st, err := s.loadState()
+	if err != nil {
+		return "", err
+	}
+
+	return st.LastRead[ch], nil
+}
+
+// SetLastRead records the ID of the last message the user saw in a
+// channel, so the UI can show unread indicators.
+func (s *FileStore) SetLastRead(_ context.Context, ch domain.ChannelName, messageID string) error {
+	st, err := s.loadState()
+	if err != nil {
+		return err
+	}
+
+	if st.LastRead == nil {
+		st.LastRead = make(map[domain.ChannelName]string)
+	}
+
+	st.LastRead[ch] = messageID
 
 	return saveJSON(s.statePath(), st)
 }

@@ -34,4 +34,9 @@ type Store interface {
 
 	GetLastChannel(ctx context.Context) (domain.ChannelName, error)
 	SetLastChannel(ctx context.Context, name domain.ChannelName) error
+
+	// Last-read tracking
+
+	GetLastRead(ctx context.Context, ch domain.ChannelName) (string, error)
+	SetLastRead(ctx context.Context, ch domain.ChannelName, messageID string) error
 }

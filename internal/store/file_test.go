@@ -262,3 +262,50 @@ func TestFileStore_SetLastChannelOverwrites(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, domain.ChannelName("#second"), got)
 }
+
+func TestFileStore_GetLastReadEmpty(t *testing.T) {
+	s := newTestStore(t)
+
+	got, err := s.GetLastRead(t.Context(), "#general")
+	require.NoError(t, err)
+	require.Empty(t, got)
+}
+
+func TestFileStore_SetAndGetLastRead(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	require.NoError(t, s.SetLastRead(ctx, "#general", "msg-42"))
+
+	got, err := s.GetLastRead(ctx, "#general")
+	require.NoError(t, err)
+	require.Equal(t, "msg-42", got)
+}
+
+func TestFileStore_SetLastRead_independent_per_channel(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	require.NoError(t, s.SetLastRead(ctx, "#general", "msg-1"))
+	require.NoError(t, s.SetLastRead(ctx, "#random", "msg-2"))
+
+	g, err := s.GetLastRead(ctx, "#general")
+	require.NoError(t, err)
+	require.Equal(t, "msg-1", g)
+
+	r, err := s.GetLastRead(ctx, "#random")
+	require.NoError(t, err)
+	require.Equal(t, "msg-2", r)
+}
+
+func TestFileStore_SetLastRead_overwrites(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	require.NoError(t, s.SetLastRead(ctx, "#general", "msg-1"))
+	require.NoError(t, s.SetLastRead(ctx, "#general", "msg-5"))
+
+	got, err := s.GetLastRead(ctx, "#general")
+	require.NoError(t, err)
+	require.Equal(t, "msg-5", got)
+}

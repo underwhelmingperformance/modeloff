@@ -81,6 +81,10 @@ func (s *Session) Join(ctx context.Context, channelName string) (domain.JoinEven
 		return domain.JoinEvent{}, fmt.Errorf("set last channel: %w", err)
 	}
 
+	if err := s.MarkRead(ctx, name); err != nil {
+		return domain.JoinEvent{}, fmt.Errorf("mark read: %w", err)
+	}
+
 	return domain.JoinEvent{
 		Channel: name,
 		Nick:    s.userNick,
@@ -339,6 +343,50 @@ func (s *Session) LastChannel(ctx context.Context) (domain.ChannelName, error) {
 // Messages returns all messages for a channel.
 func (s *Session) Messages(ctx context.Context, ch domain.ChannelName) ([]domain.Message, error) {
 	return s.store.ListMessages(ctx, ch)
+}
+
+// MarkRead records that the user has seen all current messages in a
+// channel by storing the ID of the last message.
+func (s *Session) MarkRead(ctx context.Context, ch domain.ChannelName) error {
+	msgs, err := s.store.ListMessages(ctx, ch)
+	if err != nil {
+		return fmt.Errorf("list messages: %w", err)
+	}
+
+	if len(msgs) == 0 {
+		return nil
+	}
+
+	last := msgs[len(msgs)-1]
+
+	return s.store.SetLastRead(ctx, ch, last.ID)
+}
+
+// UnreadCount returns the number of messages in a channel that arrived
+// after the last-read position. If nothing has been read yet, all
+// messages are considered unread.
+func (s *Session) UnreadCount(ctx context.Context, ch domain.ChannelName) (int, error) {
+	msgs, err := s.store.ListMessages(ctx, ch)
+	if err != nil {
+		return 0, fmt.Errorf("list messages: %w", err)
+	}
+
+	lastRead, err := s.store.GetLastRead(ctx, ch)
+	if err != nil {
+		return 0, fmt.Errorf("get last read: %w", err)
+	}
+
+	if lastRead == "" {
+		return len(msgs), nil
+	}
+
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].ID == lastRead {
+			return len(msgs) - 1 - i, nil
+		}
+	}
+
+	return len(msgs), nil
 }
 
 // OpenDM opens or creates a direct-message conversation with a known

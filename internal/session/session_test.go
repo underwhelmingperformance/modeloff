@@ -1124,6 +1124,71 @@ func TestSession_SendMessage_to_dm_only_targets_that_instance(t *testing.T) {
 	}, msgs)
 }
 
+func TestSession_MarkRead_and_UnreadCount(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#general", "testuser")
+
+	require.NoError(t, s.SaveMessage(ctx, domain.Message{
+		ID: "msg-1", Channel: "#general", From: "testuser", Body: "first", SentAt: fixedTime,
+	}))
+	require.NoError(t, s.SaveMessage(ctx, domain.Message{
+		ID: "msg-2", Channel: "#general", From: "testuser", Body: "second", SentAt: fixedTime,
+	}))
+
+	count, err := sess.UnreadCount(ctx, "#general")
+	require.NoError(t, err)
+	require.Equal(t, 2, count)
+
+	require.NoError(t, sess.MarkRead(ctx, "#general"))
+
+	count, err = sess.UnreadCount(ctx, "#general")
+	require.NoError(t, err)
+	require.Equal(t, 0, count)
+}
+
+func TestSession_UnreadCount_after_new_messages(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#general", "testuser")
+
+	require.NoError(t, s.SaveMessage(ctx, domain.Message{
+		ID: "msg-1", Channel: "#general", From: "testuser", Body: "first", SentAt: fixedTime,
+	}))
+
+	require.NoError(t, sess.MarkRead(ctx, "#general"))
+
+	require.NoError(t, s.SaveMessage(ctx, domain.Message{
+		ID: "msg-2", Channel: "#general", From: "testuser", Body: "second", SentAt: fixedTime,
+	}))
+	require.NoError(t, s.SaveMessage(ctx, domain.Message{
+		ID: "msg-3", Channel: "#general", From: "testuser", Body: "third", SentAt: fixedTime,
+	}))
+
+	count, err := sess.UnreadCount(ctx, "#general")
+	require.NoError(t, err)
+	require.Equal(t, 2, count)
+}
+
+func TestSession_Join_marks_channel_as_read(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#general", "testuser")
+	require.NoError(t, s.SaveMessage(ctx, domain.Message{
+		ID: "msg-1", Channel: "#general", From: "testuser", Body: "old", SentAt: fixedTime,
+	}))
+
+	_, err := sess.Join(ctx, "#general")
+	require.NoError(t, err)
+
+	count, err := sess.UnreadCount(ctx, "#general")
+	require.NoError(t, err)
+	require.Equal(t, 0, count)
+}
+
 func TestSession_SetAPIKey(t *testing.T) {
 	cfgStore := &fakeConfigStore{
 		cfg: config.Config{
