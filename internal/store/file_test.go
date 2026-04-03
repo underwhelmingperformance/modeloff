@@ -32,7 +32,7 @@ func TestFileStore_SaveAndGetRoom(t *testing.T) {
 	s := newTestStore(t)
 
 	room := domain.Room{
-		Name:    "¢general",
+		Name:    "#general",
 		Kind:    domain.RoomChannel,
 		Title:   "General chat",
 		Members: []domain.Nick{"alice", "bob"},
@@ -41,7 +41,7 @@ func TestFileStore_SaveAndGetRoom(t *testing.T) {
 
 	require.NoError(t, s.SaveRoom(ctx, room))
 
-	got, err := s.GetRoom(ctx, "¢general")
+	got, err := s.GetRoom(ctx, "#general")
 	require.NoError(t, err)
 	require.Equal(t, room, got)
 }
@@ -49,7 +49,7 @@ func TestFileStore_SaveAndGetRoom(t *testing.T) {
 func TestFileStore_GetRoomNotFound(t *testing.T) {
 	s := newTestStore(t)
 
-	_, err := s.GetRoom(context.Background(), "¢nonexistent")
+	_, err := s.GetRoom(context.Background(), "#nonexistent")
 	require.Error(t, err)
 }
 
@@ -58,8 +58,8 @@ func TestFileStore_ListRooms(t *testing.T) {
 	s := newTestStore(t)
 
 	rooms := []domain.Room{
-		{Name: "¢alpha", Kind: domain.RoomChannel, Created: testTime},
-		{Name: "¢beta", Kind: domain.RoomChannel, Created: testTime.Add(time.Hour)},
+		{Name: "#alpha", Kind: domain.RoomChannel, Created: testTime},
+		{Name: "#beta", Kind: domain.RoomChannel, Created: testTime.Add(time.Hour)},
 	}
 
 	for _, r := range rooms {
@@ -75,11 +75,11 @@ func TestFileStore_DeleteRoom(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 
-	room := domain.Room{Name: "¢deleteme", Kind: domain.RoomChannel, Created: testTime}
+	room := domain.Room{Name: "#deleteme", Kind: domain.RoomChannel, Created: testTime}
 	require.NoError(t, s.SaveRoom(ctx, room))
-	require.NoError(t, s.DeleteRoom(ctx, "¢deleteme"))
+	require.NoError(t, s.DeleteRoom(ctx, "#deleteme"))
 
-	_, err := s.GetRoom(ctx, "¢deleteme")
+	_, err := s.GetRoom(ctx, "#deleteme")
 	require.Error(t, err)
 }
 
@@ -87,14 +87,14 @@ func TestFileStore_SaveRoomOverwrites(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 
-	room := domain.Room{Name: "¢evolving", Kind: domain.RoomChannel, Created: testTime}
+	room := domain.Room{Name: "#evolving", Kind: domain.RoomChannel, Created: testTime}
 	require.NoError(t, s.SaveRoom(ctx, room))
 
 	room.Title = "Updated title"
 	room.Members = []domain.Nick{"charlie"}
 	require.NoError(t, s.SaveRoom(ctx, room))
 
-	got, err := s.GetRoom(ctx, "¢evolving")
+	got, err := s.GetRoom(ctx, "#evolving")
 	require.NoError(t, err)
 	require.Equal(t, room, got)
 }
@@ -104,7 +104,7 @@ func TestFileStore_SaveRoomOverwrites(t *testing.T) {
 func TestFileStore_ListMessagesEmpty(t *testing.T) {
 	s := newTestStore(t)
 
-	got, err := s.ListMessages(context.Background(), "¢empty")
+	got, err := s.ListMessages(context.Background(), "#empty")
 	require.NoError(t, err)
 	require.Empty(t, got)
 }
@@ -114,15 +114,15 @@ func TestFileStore_SaveAndListMessages(t *testing.T) {
 	s := newTestStore(t)
 
 	msgs := []domain.Message{
-		{ID: "msg-1", Room: "¢general", From: "alice", Body: "hello", SentAt: testTime},
-		{ID: "msg-2", Room: "¢general", From: "bob", Body: "hi", SentAt: testTime.Add(time.Second)},
+		{ID: "msg-1", Room: "#general", From: "alice", Body: "hello", SentAt: testTime},
+		{ID: "msg-2", Room: "#general", From: "bob", Body: "hi", SentAt: testTime.Add(time.Second)},
 	}
 
 	for _, m := range msgs {
 		require.NoError(t, s.SaveMessage(ctx, m))
 	}
 
-	got, err := s.ListMessages(ctx, "¢general")
+	got, err := s.ListMessages(ctx, "#general")
 	require.NoError(t, err)
 	require.Equal(t, msgs, got)
 }
@@ -131,19 +131,19 @@ func TestFileStore_MessagesIsolatedByRoom(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 
-	require.NoError(t, s.SaveMessage(ctx, domain.Message{ID: "a", Room: "¢room-a", From: "alice", Body: "a msg", SentAt: testTime}))
-	require.NoError(t, s.SaveMessage(ctx, domain.Message{ID: "b", Room: "¢room-b", From: "bob", Body: "b msg", SentAt: testTime}))
+	require.NoError(t, s.SaveMessage(ctx, domain.Message{ID: "a", Room: "#room-a", From: "alice", Body: "a msg", SentAt: testTime}))
+	require.NoError(t, s.SaveMessage(ctx, domain.Message{ID: "b", Room: "#room-b", From: "bob", Body: "b msg", SentAt: testTime}))
 
-	gotA, err := s.ListMessages(ctx, "¢room-a")
+	gotA, err := s.ListMessages(ctx, "#room-a")
 	require.NoError(t, err)
 	require.Equal(t, []domain.Message{
-		{ID: "a", Room: "¢room-a", From: "alice", Body: "a msg", SentAt: testTime},
+		{ID: "a", Room: "#room-a", From: "alice", Body: "a msg", SentAt: testTime},
 	}, gotA)
 
-	gotB, err := s.ListMessages(ctx, "¢room-b")
+	gotB, err := s.ListMessages(ctx, "#room-b")
 	require.NoError(t, err)
 	require.Equal(t, []domain.Message{
-		{ID: "b", Room: "¢room-b", From: "bob", Body: "b msg", SentAt: testTime},
+		{ID: "b", Room: "#room-b", From: "bob", Body: "b msg", SentAt: testTime},
 	}, gotB)
 }
 
@@ -165,7 +165,7 @@ func TestFileStore_SaveAndGetInstance(t *testing.T) {
 		Nick:    "claude",
 		ModelID: "anthropic/claude-3-haiku",
 		Persona: "Helpful assistant",
-		Rooms:   []domain.RoomName{"¢general", "¢dev"},
+		Rooms:   []domain.RoomName{"#general", "#dev"},
 	}
 
 	require.NoError(t, s.SaveInstance(ctx, inst))
@@ -226,21 +226,21 @@ func TestFileStore_SetAndGetLastRoom(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 
-	require.NoError(t, s.SetLastRoom(ctx, "¢general"))
+	require.NoError(t, s.SetLastRoom(ctx, "#general"))
 
 	got, err := s.GetLastRoom(ctx)
 	require.NoError(t, err)
-	require.Equal(t, domain.RoomName("¢general"), got)
+	require.Equal(t, domain.RoomName("#general"), got)
 }
 
 func TestFileStore_SetLastRoomOverwrites(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 
-	require.NoError(t, s.SetLastRoom(ctx, "¢first"))
-	require.NoError(t, s.SetLastRoom(ctx, "¢second"))
+	require.NoError(t, s.SetLastRoom(ctx, "#first"))
+	require.NoError(t, s.SetLastRoom(ctx, "#second"))
 
 	got, err := s.GetLastRoom(ctx)
 	require.NoError(t, err)
-	require.Equal(t, domain.RoomName("¢second"), got)
+	require.Equal(t, domain.RoomName("#second"), got)
 }

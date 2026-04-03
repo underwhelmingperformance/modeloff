@@ -16,13 +16,13 @@ func TestParse(t *testing.T) {
 		// /join
 		{
 			name:  "join with room name",
-			input: "/join ¢general",
-			want:  JoinCommand{Room: "¢general"},
+			input: "/join #general",
+			want:  JoinCommand{Room: "#general"},
 		},
 		{
-			name:  "join without ¢ prefix adds it",
+			name:  "join without # prefix adds it",
 			input: "/join general",
-			want:  JoinCommand{Room: "¢general"},
+			want:  JoinCommand{Room: "#general"},
 		},
 		{
 			name:    "join without args",
@@ -151,8 +151,8 @@ func TestParse(t *testing.T) {
 		},
 		{
 			name:  "command with extra whitespace",
-			input: "/join   ¢general  ",
-			want:  JoinCommand{Room: "¢general"},
+			input: "/join   #general  ",
+			want:  JoinCommand{Room: "#general"},
 		},
 		{
 			name:    "slash only",

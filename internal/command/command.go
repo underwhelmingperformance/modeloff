@@ -4,6 +4,8 @@ package command
 import (
 	"fmt"
 	"strings"
+
+	"github.com/laney/modeloff/internal/domain"
 )
 
 // Command is the interface implemented by all parsed commands.
@@ -123,8 +125,8 @@ func parseJoin(args []string) (Command, error) {
 	}
 
 	room := args[0]
-	if !strings.HasPrefix(room, "¢") {
-		room = "¢" + room
+	if !strings.HasPrefix(room, domain.RoomPrefix) {
+		room = domain.RoomPrefix + room
 	}
 
 	return JoinCommand{Room: room}, nil

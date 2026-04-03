@@ -36,19 +36,19 @@ func TestSession_Join(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := context.Background()
 
-	evt, err := sess.Join(ctx, "¢general")
+	evt, err := sess.Join(ctx, "#general")
 	require.NoError(t, err)
 	require.Equal(t, domain.JoinEvent{
-		Room: "¢general",
+		Room: "#general",
 		Nick: "testuser",
 		At:   fixedTime,
 	}, evt)
 
 	// Room should be persisted.
-	room, err := s.GetRoom(ctx, "¢general")
+	room, err := s.GetRoom(ctx, "#general")
 	require.NoError(t, err)
 	require.Equal(t, domain.Room{
-		Name:    "¢general",
+		Name:    "#general",
 		Kind:    domain.RoomChannel,
 		Members: []domain.Nick{"testuser"},
 		Created: fixedTime,
@@ -57,7 +57,7 @@ func TestSession_Join(t *testing.T) {
 	// Last room should be set.
 	last, err := s.GetLastRoom(ctx)
 	require.NoError(t, err)
-	require.Equal(t, domain.RoomName("¢general"), last)
+	require.Equal(t, domain.RoomName("#general"), last)
 }
 
 func TestSession_JoinExistingRoom(t *testing.T) {
@@ -65,7 +65,7 @@ func TestSession_JoinExistingRoom(t *testing.T) {
 	ctx := context.Background()
 
 	existing := domain.Room{
-		Name:    "¢existing",
+		Name:    "#existing",
 		Kind:    domain.RoomChannel,
 		Title:   "Already here",
 		Members: []domain.Nick{"testuser"},
@@ -73,12 +73,12 @@ func TestSession_JoinExistingRoom(t *testing.T) {
 	}
 	require.NoError(t, s.SaveRoom(ctx, existing))
 
-	evt, err := sess.Join(ctx, "¢existing")
+	evt, err := sess.Join(ctx, "#existing")
 	require.NoError(t, err)
-	require.Equal(t, domain.RoomName("¢existing"), evt.Room)
+	require.Equal(t, domain.RoomName("#existing"), evt.Room)
 
 	// Room should not be overwritten.
-	room, err := s.GetRoom(ctx, "¢existing")
+	room, err := s.GetRoom(ctx, "#existing")
 	require.NoError(t, err)
 	require.Equal(t, "Already here", room.Title)
 }
@@ -87,13 +87,13 @@ func TestSession_Leave(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := context.Background()
 
-	room := domain.Room{Name: "¢leaving", Kind: domain.RoomChannel, Created: fixedTime}
+	room := domain.Room{Name: "#leaving", Kind: domain.RoomChannel, Created: fixedTime}
 	require.NoError(t, s.SaveRoom(ctx, room))
 
-	evt, err := sess.Leave(ctx, "¢leaving")
+	evt, err := sess.Leave(ctx, "#leaving")
 	require.NoError(t, err)
 	require.Equal(t, domain.PartEvent{
-		Room: "¢leaving",
+		Room: "#leaving",
 		Nick: "testuser",
 		At:   fixedTime,
 	}, evt)
@@ -102,7 +102,7 @@ func TestSession_Leave(t *testing.T) {
 func TestSession_LeaveNonexistent(t *testing.T) {
 	sess, _ := newTestSession(t)
 
-	_, err := sess.Leave(context.Background(), "¢ghost")
+	_, err := sess.Leave(context.Background(), "#ghost")
 	require.Error(t, err)
 }
 
@@ -111,21 +111,21 @@ func TestSession_Invite(t *testing.T) {
 	ctx := context.Background()
 
 	room := domain.Room{
-		Name:    "¢dev",
+		Name:    "#dev",
 		Kind:    domain.RoomChannel,
 		Members: []domain.Nick{"testuser"},
 		Created: fixedTime,
 	}
 	require.NoError(t, s.SaveRoom(ctx, room))
 
-	evt, err := sess.Invite(ctx, "¢dev", "anthropic/claude-3-haiku")
+	evt, err := sess.Invite(ctx, "#dev", "anthropic/claude-3-haiku")
 	require.NoError(t, err)
 	require.Equal(t, domain.ModelInvitedEvent{
-		Room: "¢dev",
+		Room: "#dev",
 		Instance: domain.ModelInstance{
 			Nick:    "fakenick",
 			ModelID: "anthropic/claude-3-haiku",
-			Rooms:   []domain.RoomName{"¢dev"},
+			Rooms:   []domain.RoomName{"#dev"},
 		},
 		At: fixedTime,
 	}, evt)
@@ -136,7 +136,7 @@ func TestSession_Invite(t *testing.T) {
 	require.Equal(t, domain.ModelID("anthropic/claude-3-haiku"), inst.ModelID)
 
 	// Room should have new member.
-	updated, err := s.GetRoom(ctx, "¢dev")
+	updated, err := s.GetRoom(ctx, "#dev")
 	require.NoError(t, err)
 	require.Equal(t, []domain.Nick{"testuser", "fakenick"}, updated.Members)
 }
@@ -146,23 +146,23 @@ func TestSession_Kick(t *testing.T) {
 	ctx := context.Background()
 
 	room := domain.Room{
-		Name:    "¢dev",
+		Name:    "#dev",
 		Kind:    domain.RoomChannel,
 		Members: []domain.Nick{"testuser", "botty"},
 		Created: fixedTime,
 	}
 	require.NoError(t, s.SaveRoom(ctx, room))
 
-	evt, err := sess.Kick(ctx, "¢dev", "botty")
+	evt, err := sess.Kick(ctx, "#dev", "botty")
 	require.NoError(t, err)
 	require.Equal(t, domain.ModelKickedEvent{
-		Room: "¢dev",
+		Room: "#dev",
 		Nick: "botty",
 		At:   fixedTime,
 	}, evt)
 
 	// Room should no longer have the kicked member.
-	updated, err := s.GetRoom(ctx, "¢dev")
+	updated, err := s.GetRoom(ctx, "#dev")
 	require.NoError(t, err)
 	require.Equal(t, []domain.Nick{"testuser"}, updated.Members)
 }
@@ -171,12 +171,12 @@ func TestSession_SendMessage(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := context.Background()
 
-	evt, err := sess.SendMessage(ctx, "¢general", "hello world")
+	evt, err := sess.SendMessage(ctx, "#general", "hello world")
 	require.NoError(t, err)
 	require.Equal(t, domain.MessageEvent{
 		Message: domain.Message{
 			ID:     fmt.Sprintf("%d", fixedTime.UnixNano()),
-			Room:   "¢general",
+			Room:   "#general",
 			From:   "testuser",
 			Body:   "hello world",
 			SentAt: fixedTime,
@@ -184,7 +184,7 @@ func TestSession_SendMessage(t *testing.T) {
 	}, evt)
 
 	// Message should be persisted.
-	msgs, err := s.ListMessages(ctx, "¢general")
+	msgs, err := s.ListMessages(ctx, "#general")
 	require.NoError(t, err)
 	require.Equal(t, []domain.Message{evt.Message}, msgs)
 }
@@ -193,20 +193,20 @@ func TestSession_SetTitle(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := context.Background()
 
-	room := domain.Room{Name: "¢dev", Kind: domain.RoomChannel, Created: fixedTime}
+	room := domain.Room{Name: "#dev", Kind: domain.RoomChannel, Created: fixedTime}
 	require.NoError(t, s.SaveRoom(ctx, room))
 
-	evt, err := sess.SetTitle(ctx, "¢dev", "Development Chat")
+	evt, err := sess.SetTitle(ctx, "#dev", "Development Chat")
 	require.NoError(t, err)
 	require.Equal(t, domain.TopicChangeEvent{
-		Room:  "¢dev",
+		Room:  "#dev",
 		Title: "Development Chat",
 		By:    "testuser",
 		At:    fixedTime,
 	}, evt)
 
 	// Room title should be updated.
-	updated, err := s.GetRoom(ctx, "¢dev")
+	updated, err := s.GetRoom(ctx, "#dev")
 	require.NoError(t, err)
 	require.Equal(t, "Development Chat", updated.Title)
 }
@@ -232,7 +232,7 @@ func TestSession_Whois(t *testing.T) {
 		Nick:    "botty",
 		ModelID: "test/model",
 		Persona: "A test bot",
-		Rooms:   []domain.RoomName{"¢dev"},
+		Rooms:   []domain.RoomName{"#dev"},
 	}
 	require.NoError(t, s.SaveInstance(ctx, inst))
 
@@ -251,7 +251,7 @@ func TestSession_WhoisNotFound(t *testing.T) {
 func TestSession_InviteNonexistentRoom(t *testing.T) {
 	sess, _ := newTestSession(t)
 
-	_, err := sess.Invite(context.Background(), "¢ghost", "anthropic/claude-3-haiku")
+	_, err := sess.Invite(context.Background(), "#ghost", "anthropic/claude-3-haiku")
 	require.Error(t, err)
 }
 
@@ -266,21 +266,21 @@ func TestSession_InviteGenerateNickError(t *testing.T) {
 	ctx := context.Background()
 
 	room := domain.Room{
-		Name:    "¢dev",
+		Name:    "#dev",
 		Kind:    domain.RoomChannel,
 		Members: []domain.Nick{"testuser"},
 		Created: fixedTime,
 	}
 	require.NoError(t, s.SaveRoom(ctx, room))
 
-	_, err := sess.Invite(ctx, "¢dev", "anthropic/claude-3-haiku")
+	_, err := sess.Invite(ctx, "#dev", "anthropic/claude-3-haiku")
 	require.Error(t, err)
 }
 
 func TestSession_KickNonexistentRoom(t *testing.T) {
 	sess, _ := newTestSession(t)
 
-	_, err := sess.Kick(context.Background(), "¢ghost", "botty")
+	_, err := sess.Kick(context.Background(), "#ghost", "botty")
 	require.Error(t, err)
 }
 
@@ -289,23 +289,23 @@ func TestSession_KickNonMember(t *testing.T) {
 	ctx := context.Background()
 
 	room := domain.Room{
-		Name:    "¢dev",
+		Name:    "#dev",
 		Kind:    domain.RoomChannel,
 		Members: []domain.Nick{"testuser"},
 		Created: fixedTime,
 	}
 	require.NoError(t, s.SaveRoom(ctx, room))
 
-	evt, err := sess.Kick(ctx, "¢dev", "nobody")
+	evt, err := sess.Kick(ctx, "#dev", "nobody")
 	require.NoError(t, err)
 	require.Equal(t, domain.ModelKickedEvent{
-		Room: "¢dev",
+		Room: "#dev",
 		Nick: "nobody",
 		At:   fixedTime,
 	}, evt)
 
 	// Members should be unchanged.
-	updated, err := s.GetRoom(ctx, "¢dev")
+	updated, err := s.GetRoom(ctx, "#dev")
 	require.NoError(t, err)
 	require.Equal(t, []domain.Nick{"testuser"}, updated.Members)
 }
@@ -313,7 +313,7 @@ func TestSession_KickNonMember(t *testing.T) {
 func TestSession_SetTitleNonexistentRoom(t *testing.T) {
 	sess, _ := newTestSession(t)
 
-	_, err := sess.SetTitle(context.Background(), "¢ghost", "title")
+	_, err := sess.SetTitle(context.Background(), "#ghost", "title")
 	require.Error(t, err)
 }
 

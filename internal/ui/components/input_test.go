@@ -48,7 +48,7 @@ func TestInputBar_submit_command(t *testing.T) {
 	b := components.NewInputBar()
 	var m ui.Model = b
 
-	m = typeText(t, m, "/join ¢general")
+	m = typeText(t, m, "/join #general")
 	_, cmd := enter(t, m)
 
 	require.NotNil(t, cmd)
@@ -57,7 +57,7 @@ func TestInputBar_submit_command(t *testing.T) {
 	sub, ok := msg.(components.CommandSubmitMsg)
 	require.True(t, ok, "expected CommandSubmitMsg, got %T", msg)
 	require.Equal(t, "join", sub.Name)
-	require.Equal(t, "¢general", sub.Args)
+	require.Equal(t, "#general", sub.Args)
 }
 
 func TestInputBar_submit_command_no_args(t *testing.T) {

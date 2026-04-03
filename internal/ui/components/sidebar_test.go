@@ -13,9 +13,9 @@ import (
 )
 
 var testRooms = []domain.Room{
-	{Name: "¢general", Kind: domain.RoomChannel, Created: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)},
-	{Name: "¢random", Kind: domain.RoomChannel, Created: time.Date(2025, 1, 2, 0, 0, 0, 0, time.UTC)},
-	{Name: "¢dev", Kind: domain.RoomChannel, Created: time.Date(2025, 1, 3, 0, 0, 0, 0, time.UTC)},
+	{Name: "#general", Kind: domain.RoomChannel, Created: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)},
+	{Name: "#random", Kind: domain.RoomChannel, Created: time.Date(2025, 1, 2, 0, 0, 0, 0, time.UTC)},
+	{Name: "#dev", Kind: domain.RoomChannel, Created: time.Date(2025, 1, 3, 0, 0, 0, 0, time.UTC)},
 }
 
 func key(k string) tea.KeyMsg {
@@ -42,12 +42,12 @@ func updateSidebar(t *testing.T, m ui.Model, msg tea.Msg) (ui.Model, tea.Cmd) {
 }
 
 func TestSidebar_View_shows_rooms(t *testing.T) {
-	s := components.NewSidebar(testRooms, "¢general")
+	s := components.NewSidebar(testRooms, "#general")
 	v := s.View(20, 10)
 
-	require.Contains(t, v, "¢general")
-	require.Contains(t, v, "¢random")
-	require.Contains(t, v, "¢dev")
+	require.Contains(t, v, "#general")
+	require.Contains(t, v, "#random")
+	require.Contains(t, v, "#dev")
 }
 
 func TestSidebar_View_empty(t *testing.T) {
@@ -58,25 +58,25 @@ func TestSidebar_View_empty(t *testing.T) {
 }
 
 func TestSidebar_View_active_room_highlighted(t *testing.T) {
-	s := components.NewSidebar(testRooms, "¢random")
+	s := components.NewSidebar(testRooms, "#random")
 	v := s.View(30, 10)
 
 	// The active room should use the ActiveRoom style (bold + white).
 	// We can't easily check ANSI codes, but we can verify the cursor
 	// indicator is on the active room.
 	require.Contains(t, v, "▸")
-	require.Contains(t, v, "¢random")
+	require.Contains(t, v, "#random")
 }
 
 func TestSidebar_keyboard_navigation(t *testing.T) {
-	s := components.NewSidebar(testRooms, "¢general")
+	s := components.NewSidebar(testRooms, "#general")
 	var m ui.Model = s
 
 	// Move down.
 	m, _ = updateSidebar(t, m, ctrlKey("ctrl+d"))
 	m, _ = updateSidebar(t, m, ctrlKey("ctrl+d"))
 
-	// Select with ctrl+o — should select ¢dev (index 2).
+	// Select with ctrl+o — should select #dev (index 2).
 	_, cmd := updateSidebar(t, m, ctrlKey("ctrl+o"))
 
 	require.NotNil(t, cmd)
@@ -84,18 +84,18 @@ func TestSidebar_keyboard_navigation(t *testing.T) {
 	msg := cmd()
 	selected, ok := msg.(components.RoomSelectedMsg)
 	require.True(t, ok, "expected RoomSelectedMsg, got %T", msg)
-	require.Equal(t, domain.RoomName("¢dev"), selected.Room)
+	require.Equal(t, domain.RoomName("#dev"), selected.Room)
 }
 
 func TestSidebar_keyboard_up(t *testing.T) {
-	s := components.NewSidebar(testRooms, "¢dev")
+	s := components.NewSidebar(testRooms, "#dev")
 	var m ui.Model = s
 
-	// Cursor starts at ¢dev (index 2). Move up twice.
+	// Cursor starts at #dev (index 2). Move up twice.
 	m, _ = updateSidebar(t, m, ctrlKey("ctrl+u"))
 	m, _ = updateSidebar(t, m, ctrlKey("ctrl+u"))
 
-	// Select — should be ¢general (index 0).
+	// Select — should be #general (index 0).
 	_, cmd := updateSidebar(t, m, ctrlKey("ctrl+o"))
 
 	require.NotNil(t, cmd)
@@ -103,11 +103,11 @@ func TestSidebar_keyboard_up(t *testing.T) {
 	msg := cmd()
 	selected, ok := msg.(components.RoomSelectedMsg)
 	require.True(t, ok, "expected RoomSelectedMsg, got %T", msg)
-	require.Equal(t, domain.RoomName("¢general"), selected.Room)
+	require.Equal(t, domain.RoomName("#general"), selected.Room)
 }
 
 func TestSidebar_cursor_clamps_at_boundaries(t *testing.T) {
-	s := components.NewSidebar(testRooms, "¢general")
+	s := components.NewSidebar(testRooms, "#general")
 	var m ui.Model = s
 
 	// Move up past the top — should stay at 0.
@@ -118,11 +118,11 @@ func TestSidebar_cursor_clamps_at_boundaries(t *testing.T) {
 	msg := cmd()
 	selected, ok := msg.(components.RoomSelectedMsg)
 	require.True(t, ok, "expected RoomSelectedMsg, got %T", msg)
-	require.Equal(t, domain.RoomName("¢general"), selected.Room)
+	require.Equal(t, domain.RoomName("#general"), selected.Room)
 }
 
 func TestSidebar_cursor_clamps_at_bottom(t *testing.T) {
-	s := components.NewSidebar(testRooms, "¢general")
+	s := components.NewSidebar(testRooms, "#general")
 	var m ui.Model = s
 
 	// Move down past the bottom.
@@ -134,11 +134,11 @@ func TestSidebar_cursor_clamps_at_bottom(t *testing.T) {
 	msg := cmd()
 	selected, ok := msg.(components.RoomSelectedMsg)
 	require.True(t, ok, "expected RoomSelectedMsg, got %T", msg)
-	require.Equal(t, domain.RoomName("¢dev"), selected.Room)
+	require.Equal(t, domain.RoomName("#dev"), selected.Room)
 }
 
 func TestSidebar_mouse_click_selects_room(t *testing.T) {
-	s := components.NewSidebar(testRooms, "¢general")
+	s := components.NewSidebar(testRooms, "#general")
 	var m ui.Model = s
 
 	// Click on the second room (Y=1).
@@ -154,11 +154,11 @@ func TestSidebar_mouse_click_selects_room(t *testing.T) {
 	msg := cmd()
 	selected, ok := msg.(components.RoomSelectedMsg)
 	require.True(t, ok, "expected RoomSelectedMsg, got %T", msg)
-	require.Equal(t, domain.RoomName("¢random"), selected.Room)
+	require.Equal(t, domain.RoomName("#random"), selected.Room)
 }
 
 func TestSidebar_mouse_click_out_of_range(t *testing.T) {
-	s := components.NewSidebar(testRooms, "¢general")
+	s := components.NewSidebar(testRooms, "#general")
 	var m ui.Model = s
 
 	// Click below the room list.
@@ -181,32 +181,32 @@ func TestSidebar_ctrl_o_with_no_rooms(t *testing.T) {
 }
 
 func TestSidebar_rooms_updated_msg(t *testing.T) {
-	s := components.NewSidebar(testRooms, "¢general")
+	s := components.NewSidebar(testRooms, "#general")
 	var m ui.Model = s
 
 	newRooms := []domain.Room{
-		{Name: "¢alpha", Kind: domain.RoomChannel},
-		{Name: "¢beta", Kind: domain.RoomChannel},
+		{Name: "#alpha", Kind: domain.RoomChannel},
+		{Name: "#beta", Kind: domain.RoomChannel},
 	}
 
 	m, _ = updateSidebar(t, m, components.RoomsUpdatedMsg{
 		Rooms:  newRooms,
-		Active: "¢beta",
+		Active: "#beta",
 	})
 
 	v := m.View(20, 10)
-	require.Contains(t, v, "¢alpha")
-	require.Contains(t, v, "¢beta")
-	require.NotContains(t, v, "¢general")
+	require.Contains(t, v, "#alpha")
+	require.Contains(t, v, "#beta")
+	require.NotContains(t, v, "#general")
 }
 
 func TestSidebar_ignores_other_messages(t *testing.T) {
-	s := components.NewSidebar(testRooms, "¢general")
+	s := components.NewSidebar(testRooms, "#general")
 	var m ui.Model = s
 
 	m, cmd := updateSidebar(t, m, key("x"))
 	require.Nil(t, cmd)
 
 	v := m.View(20, 10)
-	require.Contains(t, v, "¢general")
+	require.Contains(t, v, "#general")
 }

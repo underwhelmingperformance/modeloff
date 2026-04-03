@@ -146,7 +146,7 @@ func TestOpenRouterClient_SendEvents(t *testing.T) {
 				"You are a test bot.",
 				nil,
 				[]protocol.IRCMessage{
-					{Kind: protocol.KindPrivMsg, From: "alice", Target: "¢test", Body: "hi"},
+					{Kind: protocol.KindPrivMsg, From: "alice", Target: "#test", Body: "hi"},
 				},
 			)
 
@@ -179,10 +179,10 @@ func TestOpenRouterClient_SendEventsWithHistory(t *testing.T) {
 	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
 
 	history := []protocol.IRCMessage{
-		{Kind: protocol.KindJoin, From: "bob", Target: "¢test"},
+		{Kind: protocol.KindJoin, From: "bob", Target: "#test"},
 	}
 	events := []protocol.IRCMessage{
-		{Kind: protocol.KindPrivMsg, From: "alice", Target: "¢test", Body: "hello"},
+		{Kind: protocol.KindPrivMsg, From: "alice", Target: "#test", Body: "hello"},
 	}
 
 	_, err := client.SendEvents(

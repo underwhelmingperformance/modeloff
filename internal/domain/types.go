@@ -6,7 +6,10 @@ import "time"
 // Nick represents a user or model nickname in the system.
 type Nick string
 
-// RoomName represents a chat room name (with ¢ prefix for channels).
+// RoomPrefix is the prefix used for channel room names.
+const RoomPrefix = "#"
+
+// RoomName represents a chat room name (with # prefix for channels).
 type RoomName string
 
 // ModelID represents an OpenRouter model identifier (e.g. "anthropic/claude-3-haiku").
@@ -19,7 +22,7 @@ type RoomKind int
 // one-to-one direct message conversations.
 const (
 	// RoomChannel is a named channel that multiple users and models
-	// can join (prefixed with ¢ in the UI).
+	// can join (prefixed with # in the UI).
 	RoomChannel RoomKind = iota
 
 	// RoomDM is a private conversation between the user and a

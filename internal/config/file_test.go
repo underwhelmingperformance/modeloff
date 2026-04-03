@@ -45,7 +45,7 @@ func TestFileStore_SaveAndLoad(t *testing.T) {
 		APIKey:       "sk-test-key",
 		UserNick:     "laney",
 		PokeInterval: 10 * time.Minute,
-		LastRoom:     "¢general",
+		LastRoom:     "#general",
 	}
 
 	require.NoError(t, store.Save(saved))

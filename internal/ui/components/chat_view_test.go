@@ -15,13 +15,13 @@ import (
 )
 
 var testMessages = []domain.Message{
-	{ID: "1", Room: "¢general", From: "alice", Body: "hello", SentAt: time.Date(2025, 1, 1, 10, 0, 0, 0, time.UTC)},
-	{ID: "2", Room: "¢general", From: "bob", Body: "hi there", SentAt: time.Date(2025, 1, 1, 10, 1, 0, 0, time.UTC)},
-	{ID: "3", Room: "¢general", From: "alice", Body: "how are you?", SentAt: time.Date(2025, 1, 1, 10, 2, 0, 0, time.UTC)},
+	{ID: "1", Room: "#general", From: "alice", Body: "hello", SentAt: time.Date(2025, 1, 1, 10, 0, 0, 0, time.UTC)},
+	{ID: "2", Room: "#general", From: "bob", Body: "hi there", SentAt: time.Date(2025, 1, 1, 10, 1, 0, 0, time.UTC)},
+	{ID: "3", Room: "#general", From: "alice", Body: "how are you?", SentAt: time.Date(2025, 1, 1, 10, 2, 0, 0, time.UTC)},
 }
 
 func TestChatView_View_shows_messages(t *testing.T) {
-	cv := components.NewChatView("¢general", "testuser", testMessages)
+	cv := components.NewChatView("#general", "testuser", testMessages)
 	v := cv.View(80, 24)
 
 	require.Contains(t, v, "hello")
@@ -32,21 +32,21 @@ func TestChatView_View_shows_messages(t *testing.T) {
 }
 
 func TestChatView_View_empty_messages(t *testing.T) {
-	cv := components.NewChatView("¢general", "testuser", nil)
+	cv := components.NewChatView("#general", "testuser", nil)
 	v := cv.View(80, 24)
 
 	require.Contains(t, v, "No messages yet")
 }
 
 func TestChatView_View_has_input_prompt(t *testing.T) {
-	cv := components.NewChatView("¢general", "testuser", testMessages)
+	cv := components.NewChatView("#general", "testuser", testMessages)
 	v := cv.View(80, 24)
 
 	require.Contains(t, v, ">")
 }
 
 func TestChatView_typing_goes_to_input(t *testing.T) {
-	cv := components.NewChatView("¢general", "testuser", nil)
+	cv := components.NewChatView("#general", "testuser", nil)
 	var m ui.Model = cv
 
 	m = typeText(t, m, "test message")
@@ -63,10 +63,10 @@ func TestChatView_typing_goes_to_input(t *testing.T) {
 }
 
 func TestChatView_command_from_input(t *testing.T) {
-	cv := components.NewChatView("¢general", "testuser", nil)
+	cv := components.NewChatView("#general", "testuser", nil)
 	var m ui.Model = cv
 
-	m = typeText(t, m, "/join ¢random")
+	m = typeText(t, m, "/join #random")
 	_, cmd := enter(t, m)
 
 	require.NotNil(t, cmd)
@@ -75,19 +75,19 @@ func TestChatView_command_from_input(t *testing.T) {
 	sub, ok := msg.(components.CommandSubmitMsg)
 	require.True(t, ok, "expected CommandSubmitMsg, got %T", msg)
 	require.Equal(t, "join", sub.Name)
-	require.Equal(t, "¢random", sub.Args)
+	require.Equal(t, "#random", sub.Args)
 }
 
 func TestChatView_messages_updated(t *testing.T) {
-	cv := components.NewChatView("¢general", "testuser", nil)
+	cv := components.NewChatView("#general", "testuser", nil)
 	var m ui.Model = cv
 
 	newMsgs := []domain.Message{
-		{ID: "10", Room: "¢general", From: "charlie", Body: "new message"},
+		{ID: "10", Room: "#general", From: "charlie", Body: "new message"},
 	}
 
 	m, _ = m.Update(components.MessagesUpdatedMsg{
-		Room:     "¢general",
+		Room:     "#general",
 		Messages: newMsgs,
 	})
 
@@ -97,11 +97,11 @@ func TestChatView_messages_updated(t *testing.T) {
 }
 
 func TestChatView_messages_updated_wrong_room(t *testing.T) {
-	cv := components.NewChatView("¢general", "testuser", testMessages)
+	cv := components.NewChatView("#general", "testuser", testMessages)
 	var m ui.Model = cv
 
 	m, _ = m.Update(components.MessagesUpdatedMsg{
-		Room:     "¢other",
+		Room:     "#other",
 		Messages: nil,
 	})
 
@@ -116,13 +116,13 @@ func TestChatView_scroll(t *testing.T) {
 	for i := range msgs {
 		msgs[i] = domain.Message{
 			ID:   fmt.Sprintf("%d", i),
-			Room: "¢general",
+			Room: "#general",
 			From: "user",
 			Body: fmt.Sprintf("message %d", i),
 		}
 	}
 
-	cv := components.NewChatView("¢general", "testuser", msgs)
+	cv := components.NewChatView("#general", "testuser", msgs)
 	var m ui.Model = cv
 
 	// Scroll up.
@@ -141,7 +141,7 @@ func TestChatView_scroll(t *testing.T) {
 }
 
 func TestChatView_scroll_does_not_go_negative(t *testing.T) {
-	cv := components.NewChatView("¢general", "testuser", testMessages)
+	cv := components.NewChatView("#general", "testuser", testMessages)
 	var m ui.Model = cv
 
 	// Try to scroll down past zero.
@@ -154,11 +154,11 @@ func TestChatView_scroll_does_not_go_negative(t *testing.T) {
 
 func TestChatView_user_nick_styled_differently(t *testing.T) {
 	msgs := []domain.Message{
-		{ID: "1", Room: "¢general", From: "alice", Body: "from user"},
-		{ID: "2", Room: "¢general", From: "bot", Body: "from model"},
+		{ID: "1", Room: "#general", From: "alice", Body: "from user"},
+		{ID: "2", Room: "#general", From: "bot", Body: "from model"},
 	}
 
-	cv := components.NewChatView("¢general", "alice", msgs)
+	cv := components.NewChatView("#general", "alice", msgs)
 	v := cv.View(80, 24)
 
 	// Both nicks should appear in the output.
