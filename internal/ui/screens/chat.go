@@ -293,16 +293,25 @@ func (s ChatScreen) joinRoom(name string) tea.Cmd {
 	return func() tea.Msg {
 		ctx := context.Background()
 
-		_, _ = s.sess.Join(ctx, name)
+		evt, err := s.sess.Join(ctx, name)
+		if err != nil {
+			return systemEventMsg{lines: []string{err.Error()}}
+		}
 
 		rooms, _ := s.sess.ListRooms(ctx)
 		active := domain.RoomName(name)
 		messages, _ := s.sess.Messages(ctx, active)
 
+		event := fmt.Sprintf("Switched to %s", active)
+		if evt.Created {
+			event = fmt.Sprintf("Created room %s", active)
+		}
+
 		return commandResultMsg{
-			rooms:    rooms,
-			active:   active,
-			messages: messages,
+			rooms:        rooms,
+			active:       active,
+			messages:     messages,
+			systemEvents: []string{event},
 		}
 	}
 }

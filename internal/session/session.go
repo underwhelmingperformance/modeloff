@@ -55,8 +55,12 @@ func (s *Session) UserNick() domain.Nick {
 func (s *Session) Join(ctx context.Context, roomName string) (domain.JoinEvent, error) {
 	name := domain.RoomName(roomName)
 
+	var created bool
+
 	_, err := s.store.GetRoom(ctx, name)
 	if err != nil {
+		created = true
+
 		room := domain.Room{
 			Name:    name,
 			Kind:    domain.RoomChannel,
@@ -74,9 +78,10 @@ func (s *Session) Join(ctx context.Context, roomName string) (domain.JoinEvent, 
 	}
 
 	return domain.JoinEvent{
-		Room: name,
-		Nick: s.userNick,
-		At:   s.now(),
+		Room:    name,
+		Nick:    s.userNick,
+		Created: created,
+		At:      s.now(),
 	}, nil
 }
 

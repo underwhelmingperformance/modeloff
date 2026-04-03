@@ -39,9 +39,10 @@ func TestSession_Join(t *testing.T) {
 	evt, err := sess.Join(ctx, "#general")
 	require.NoError(t, err)
 	require.Equal(t, domain.JoinEvent{
-		Room: "#general",
-		Nick: "testuser",
-		At:   fixedTime,
+		Room:    "#general",
+		Nick:    "testuser",
+		Created: true,
+		At:      fixedTime,
 	}, evt)
 
 	// Room should be persisted.
@@ -75,7 +76,11 @@ func TestSession_JoinExistingRoom(t *testing.T) {
 
 	evt, err := sess.Join(ctx, "#existing")
 	require.NoError(t, err)
-	require.Equal(t, domain.RoomName("#existing"), evt.Room)
+	require.Equal(t, domain.JoinEvent{
+		Room: "#existing",
+		Nick: "testuser",
+		At:   fixedTime,
+	}, evt)
 
 	// Room should not be overwritten.
 	room, err := s.GetRoom(ctx, "#existing")

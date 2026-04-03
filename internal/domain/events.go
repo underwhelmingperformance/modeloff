@@ -15,11 +15,13 @@ type MessageEvent struct {
 
 func (MessageEvent) eventMarker() {}
 
-// JoinEvent is emitted when a user or model joins a room.
+// JoinEvent is emitted when a user or model joins a room. Created is
+// true when the room was newly created by this join.
 type JoinEvent struct {
-	Room RoomName
-	Nick Nick
-	At   time.Time
+	Room    RoomName
+	Nick    Nick
+	Created bool
+	At      time.Time
 }
 
 func (JoinEvent) eventMarker() {}

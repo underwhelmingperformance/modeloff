@@ -135,17 +135,15 @@ func TestChatScreen_send_message(t *testing.T) {
 	require.Contains(t, v, "hello world")
 }
 
-func TestChatScreen_join_command(t *testing.T) {
+func TestChatScreen_join_new_room(t *testing.T) {
 	sess := newTestSession(t)
 
 	cs := screens.NewChatScreen(sess)
 
-	// Load initial state.
 	msg := cs.Init()()
 	var m ui.Model
 	m, _ = cs.Update(msg)
 
-	// Issue /join command.
 	m, cmd := m.Update(components.CommandSubmitMsg{Name: "join", Args: "#newroom"})
 	require.NotNil(t, cmd)
 
@@ -153,7 +151,28 @@ func TestChatScreen_join_command(t *testing.T) {
 	m, _ = m.Update(msg)
 
 	v := m.View(80, 24)
-	require.Contains(t, v, "#newroom")
+	require.Contains(t, v, "Created room #newroom")
+}
+
+func TestChatScreen_join_existing_room(t *testing.T) {
+	sess := newTestSession(t)
+	seedRoom(t, sess, "#general")
+	seedRoom(t, sess, "#existing")
+
+	cs := screens.NewChatScreen(sess)
+
+	msg := cs.Init()()
+	var m ui.Model
+	m, _ = cs.Update(msg)
+
+	m, cmd := m.Update(components.CommandSubmitMsg{Name: "join", Args: "#general"})
+	require.NotNil(t, cmd)
+
+	msg = cmd()
+	m, _ = m.Update(msg)
+
+	v := m.View(80, 24)
+	require.Contains(t, v, "Switched to #general")
 }
 
 func TestChatScreen_leave_command(t *testing.T) {
