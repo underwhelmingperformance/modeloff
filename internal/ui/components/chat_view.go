@@ -161,7 +161,7 @@ func (c ChatView) View(width, height int) string {
 	pendingHeight := 0
 
 	if c.pending {
-		pendingView = c.spinner.View() + " responding…"
+		pendingView = c.spinner.View() + theme.Info.Render(" responding…")
 		pendingHeight = lipgloss.Height(pendingView)
 	}
 
