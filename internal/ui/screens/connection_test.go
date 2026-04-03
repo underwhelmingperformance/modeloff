@@ -96,6 +96,34 @@ func TestConnectionScreen_Init_returns_tick_cmd(t *testing.T) {
 	require.NotNil(t, s.Init())
 }
 
+func TestConnectionScreen_with_next_screen(t *testing.T) {
+	next := screens.NewPlaceholderScreen("alice")
+
+	s := screens.NewConnectionScreen(screens.ConnectionConfig{
+		HasAPIKey: true,
+		RoomCount: 1,
+		Nick:      "alice",
+		Next:      next,
+	})
+
+	// Run through all ticks.
+	var m ui.Model = s
+	var cmd tea.Cmd
+
+	for range 4 {
+		m, cmd = tick(t, m)
+		require.NotNil(t, cmd)
+	}
+
+	// Final cmd should be a ScreenMsg with the placeholder screen.
+	msg := cmd()
+	screenMsg, ok := msg.(ui.ScreenMsg)
+	require.True(t, ok, "expected ui.ScreenMsg, got %T", msg)
+
+	_, ok = screenMsg.Screen.(screens.PlaceholderScreen)
+	require.True(t, ok, "expected PlaceholderScreen, got %T", screenMsg.Screen)
+}
+
 func TestConnectionScreen_ignores_other_messages(t *testing.T) {
 	s := screens.NewConnectionScreen(screens.ConnectionConfig{
 		HasAPIKey: true,

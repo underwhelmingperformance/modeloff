@@ -24,6 +24,17 @@ func NewFileStore(dir string) *FileStore {
 	return &FileStore{dir: dir}
 }
 
+// NewDefaultFileStore creates a FileStore using the system's default
+// data directory (~/.local/share/modeloff/memories or equivalent).
+func NewDefaultFileStore() (*FileStore, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+
+	return NewFileStore(filepath.Join(home, ".local", "share", "modeloff", "memories")), nil
+}
+
 func (s *FileStore) path(nick domain.Nick) string {
 	return filepath.Join(s.dir, string(nick)+".json")
 }

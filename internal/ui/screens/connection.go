@@ -33,7 +33,8 @@ const (
 type ConnectionTickMsg struct{}
 
 // ConnectionDoneMsg is sent when the connection sequence finishes
-// successfully. The receiver should switch to the main screen.
+// successfully and no Next screen was configured. When Next is set,
+// a ui.ScreenMsg is emitted instead.
 type ConnectionDoneMsg struct{}
 
 // ConnectionConfig holds the inputs the connection screen needs to
@@ -42,6 +43,7 @@ type ConnectionConfig struct {
 	HasAPIKey bool
 	RoomCount int
 	Nick      string
+	Next      ui.Model
 }
 
 // ConnectionScreen shows an IRC-style startup animation.
@@ -102,6 +104,13 @@ func (s ConnectionScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		s.done = true
 
 		if s.cfg.HasAPIKey {
+			if s.cfg.Next != nil {
+				next := s.cfg.Next
+				return s, func() tea.Msg {
+					return ui.ScreenMsg{Screen: next}
+				}
+			}
+
 			return s, func() tea.Msg { return ConnectionDoneMsg{} }
 		}
 
