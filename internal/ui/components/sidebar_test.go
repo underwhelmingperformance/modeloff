@@ -77,7 +77,7 @@ func TestSidebar_keyboard_navigation(t *testing.T) {
 	m, _ = updateSidebar(t, m, ctrlKey("ctrl+d"))
 
 	// Select with ctrl+o — should select ¢dev (index 2).
-	m, cmd := updateSidebar(t, m, ctrlKey("ctrl+o"))
+	_, cmd := updateSidebar(t, m, ctrlKey("ctrl+o"))
 
 	require.NotNil(t, cmd)
 
@@ -85,8 +85,6 @@ func TestSidebar_keyboard_navigation(t *testing.T) {
 	selected, ok := msg.(components.RoomSelectedMsg)
 	require.True(t, ok, "expected RoomSelectedMsg, got %T", msg)
 	require.Equal(t, domain.RoomName("¢dev"), selected.Room)
-
-	_ = m
 }
 
 func TestSidebar_keyboard_up(t *testing.T) {
@@ -103,7 +101,8 @@ func TestSidebar_keyboard_up(t *testing.T) {
 	require.NotNil(t, cmd)
 
 	msg := cmd()
-	selected := msg.(components.RoomSelectedMsg)
+	selected, ok := msg.(components.RoomSelectedMsg)
+	require.True(t, ok, "expected RoomSelectedMsg, got %T", msg)
 	require.Equal(t, domain.RoomName("¢general"), selected.Room)
 }
 
@@ -117,7 +116,8 @@ func TestSidebar_cursor_clamps_at_boundaries(t *testing.T) {
 
 	_, cmd := updateSidebar(t, m, ctrlKey("ctrl+o"))
 	msg := cmd()
-	selected := msg.(components.RoomSelectedMsg)
+	selected, ok := msg.(components.RoomSelectedMsg)
+	require.True(t, ok, "expected RoomSelectedMsg, got %T", msg)
 	require.Equal(t, domain.RoomName("¢general"), selected.Room)
 }
 
@@ -132,7 +132,8 @@ func TestSidebar_cursor_clamps_at_bottom(t *testing.T) {
 
 	_, cmd := updateSidebar(t, m, ctrlKey("ctrl+o"))
 	msg := cmd()
-	selected := msg.(components.RoomSelectedMsg)
+	selected, ok := msg.(components.RoomSelectedMsg)
+	require.True(t, ok, "expected RoomSelectedMsg, got %T", msg)
 	require.Equal(t, domain.RoomName("¢dev"), selected.Room)
 }
 
