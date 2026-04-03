@@ -53,6 +53,19 @@ func newTestSessionWithConfigStore(t *testing.T, cfgStore config.Store) *session
 	return sess
 }
 
+// initChatScreen constructs a ChatScreen from the given session,
+// runs Init, and applies the resulting message so the screen is fully
+// loaded and ready for interaction.
+func initChatScreen(t *testing.T, sess *session.Session) ui.Model {
+	t.Helper()
+
+	cs := screens.NewChatScreen(t.Context(), sess)
+	msg := cs.Init()()
+	m, _ := cs.Update(msg)
+
+	return m
+}
+
 func seedChannel(t *testing.T, sess *session.Session, name string) {
 	t.Helper()
 
@@ -72,13 +85,7 @@ func TestChatScreen_Init_loads_channels(t *testing.T) {
 	seedChannel(t, sess, "#general")
 	seedMessage(t, sess, "#general", "hello")
 
-	cs := screens.NewChatScreen(sess)
-	cmd := cs.Init()
-	require.NotNil(t, cmd)
-
-	// Execute the init command.
-	msg := cmd()
-	m, _ := cs.Update(msg)
+	m := initChatScreen(t, sess)
 
 	v := m.View(80, 24)
 	require.Contains(t, v, "#general")
@@ -88,10 +95,7 @@ func TestChatScreen_Init_loads_channels(t *testing.T) {
 func TestChatScreen_Init_empty(t *testing.T) {
 	sess := newTestSession(t)
 
-	cs := screens.NewChatScreen(sess)
-	cmd := cs.Init()
-	msg := cmd()
-	m, _ := cs.Update(msg)
+	m := initChatScreen(t, sess)
 
 	v := m.View(80, 24)
 	require.Contains(t, v, "Welcome to modeloff")
@@ -106,20 +110,14 @@ func TestChatScreen_send_message(t *testing.T) {
 	sess := newTestSession(t)
 	seedChannel(t, sess, "#general")
 
-	cs := screens.NewChatScreen(sess)
-
-	// Load initial state.
-	msg := cs.Init()()
-	var m ui.Model
-	m, _ = cs.Update(msg)
+	m := initChatScreen(t, sess)
 
 	// Send a message.
 	m, cmd := m.Update(components.MessageSubmitMsg{Text: "hello world"})
 	require.NotNil(t, cmd)
 
 	// Execute the send command.
-	msg = cmd()
-	m, _ = m.Update(msg)
+	m, _ = m.Update(cmd())
 
 	v := m.View(80, 24)
 	require.Contains(t, v, "hello world")
@@ -129,17 +127,12 @@ func TestChatScreen_nick_command(t *testing.T) {
 	sess := newTestSession(t)
 	seedChannel(t, sess, "#general")
 
-	cs := screens.NewChatScreen(sess)
-
-	msg := cs.Init()()
-	var m ui.Model
-	m, _ = cs.Update(msg)
+	m := initChatScreen(t, sess)
 
 	m, cmd := m.Update(components.CommandSubmitMsg{Name: "nick", Args: "newnick"})
 	require.NotNil(t, cmd)
 
-	msg = cmd()
-	m, _ = m.Update(msg)
+	m, _ = m.Update(cmd())
 
 	v := m.View(80, 24)
 	require.Contains(t, v, "testuser is now known as newnick")
@@ -151,17 +144,12 @@ func TestChatScreen_nick_command_reports_persist_error(t *testing.T) {
 	sess := newTestSessionWithConfigStore(t, cfgStore)
 	seedChannel(t, sess, "#general")
 
-	cs := screens.NewChatScreen(sess)
-
-	msg := cs.Init()()
-	var m ui.Model
-	m, _ = cs.Update(msg)
+	m := initChatScreen(t, sess)
 
 	m, cmd := m.Update(components.CommandSubmitMsg{Name: "nick", Args: "newnick"})
 	require.NotNil(t, cmd)
 
-	msg = cmd()
-	m, _ = m.Update(msg)
+	m, _ = m.Update(cmd())
 
 	v := m.View(80, 24)
 	require.Contains(t, v, "save config")
@@ -172,17 +160,12 @@ func TestChatScreen_title_command(t *testing.T) {
 	sess := newTestSession(t)
 	seedChannel(t, sess, "#general")
 
-	cs := screens.NewChatScreen(sess)
-
-	msg := cs.Init()()
-	var m ui.Model
-	m, _ = cs.Update(msg)
+	m := initChatScreen(t, sess)
 
 	m, cmd := m.Update(components.CommandSubmitMsg{Name: "title", Args: "cool topic"})
 	require.NotNil(t, cmd)
 
-	msg = cmd()
-	m, _ = m.Update(msg)
+	m, _ = m.Update(cmd())
 
 	v := m.View(80, 24)
 	require.Contains(t, v, "topic for #general set to: cool topic")
@@ -192,17 +175,12 @@ func TestChatScreen_title_clear(t *testing.T) {
 	sess := newTestSession(t)
 	seedChannel(t, sess, "#general")
 
-	cs := screens.NewChatScreen(sess)
-
-	msg := cs.Init()()
-	var m ui.Model
-	m, _ = cs.Update(msg)
+	m := initChatScreen(t, sess)
 
 	m, cmd := m.Update(components.CommandSubmitMsg{Name: "title", Args: ""})
 	require.NotNil(t, cmd)
 
-	msg = cmd()
-	m, _ = m.Update(msg)
+	m, _ = m.Update(cmd())
 
 	v := m.View(80, 24)
 	require.Contains(t, v, "topic for #general cleared")
@@ -216,17 +194,12 @@ func TestChatScreen_whois_command(t *testing.T) {
 	_, err := sess.Invite(t.Context(), "#general", "anthropic/claude-3-haiku", "")
 	require.NoError(t, err)
 
-	cs := screens.NewChatScreen(sess)
-
-	msg := cs.Init()()
-	var m ui.Model
-	m, _ = cs.Update(msg)
+	m := initChatScreen(t, sess)
 
 	m, cmd := m.Update(components.CommandSubmitMsg{Name: "whois", Args: "fakenick"})
 	require.NotNil(t, cmd)
 
-	msg = cmd()
-	m, _ = m.Update(msg)
+	m, _ = m.Update(cmd())
 
 	v := m.View(80, 24)
 	require.Contains(t, v, "fakenick is anthropic/claude-3-haiku")
@@ -236,17 +209,12 @@ func TestChatScreen_whois_unknown_nick(t *testing.T) {
 	sess := newTestSession(t)
 	seedChannel(t, sess, "#general")
 
-	cs := screens.NewChatScreen(sess)
-
-	msg := cs.Init()()
-	var m ui.Model
-	m, _ = cs.Update(msg)
+	m := initChatScreen(t, sess)
 
 	m, cmd := m.Update(components.CommandSubmitMsg{Name: "whois", Args: "nobody"})
 	require.NotNil(t, cmd)
 
-	msg = cmd()
-	m, _ = m.Update(msg)
+	m, _ = m.Update(cmd())
 
 	v := m.View(80, 24)
 	require.Contains(t, v, "no such nick: nobody")
@@ -257,17 +225,12 @@ func TestChatScreen_list_command(t *testing.T) {
 	seedChannel(t, sess, "#general")
 	seedChannel(t, sess, "#random")
 
-	cs := screens.NewChatScreen(sess)
-
-	msg := cs.Init()()
-	var m ui.Model
-	m, _ = cs.Update(msg)
+	m := initChatScreen(t, sess)
 
 	m, cmd := m.Update(components.CommandSubmitMsg{Name: "list", Args: ""})
 	require.NotNil(t, cmd)
 
-	msg = cmd()
-	m, _ = m.Update(msg)
+	m, _ = m.Update(cmd())
 
 	v := m.View(80, 24)
 	require.Contains(t, v, "#general")
@@ -277,17 +240,12 @@ func TestChatScreen_list_command(t *testing.T) {
 func TestChatScreen_list_empty(t *testing.T) {
 	sess := newTestSession(t)
 
-	cs := screens.NewChatScreen(sess)
-
-	msg := cs.Init()()
-	var m ui.Model
-	m, _ = cs.Update(msg)
+	m := initChatScreen(t, sess)
 
 	_, cmd := m.Update(components.CommandSubmitMsg{Name: "list", Args: ""})
 	require.NotNil(t, cmd)
 
-	msg = cmd()
-	m, _ = m.Update(msg)
+	m, _ = m.Update(cmd())
 
 	v := m.View(80, 24)
 	require.Contains(t, v, "Welcome to modeloff")
@@ -298,17 +256,12 @@ func TestChatScreen_invite_command(t *testing.T) {
 	sess := newTestSession(t)
 	seedChannel(t, sess, "#general")
 
-	cs := screens.NewChatScreen(sess)
-
-	msg := cs.Init()()
-	var m ui.Model
-	m, _ = cs.Update(msg)
+	m := initChatScreen(t, sess)
 
 	m, cmd := m.Update(components.CommandSubmitMsg{Name: "invite", Args: "anthropic/claude-3-haiku"})
 	require.NotNil(t, cmd)
 
-	msg = cmd()
-	m, _ = m.Update(msg)
+	m, _ = m.Update(cmd())
 
 	v := m.View(80, 24)
 	require.Contains(t, v, "fakenick (anthropic/claude-3-haiku) has joined #general")
@@ -318,11 +271,7 @@ func TestChatScreen_invite_with_persona(t *testing.T) {
 	sess := newTestSession(t)
 	seedChannel(t, sess, "#general")
 
-	cs := screens.NewChatScreen(sess)
-
-	msg := cs.Init()()
-	var m ui.Model
-	m, _ = cs.Update(msg)
+	m := initChatScreen(t, sess)
 
 	m, cmd := m.Update(components.CommandSubmitMsg{
 		Name: "invite",
@@ -330,8 +279,7 @@ func TestChatScreen_invite_with_persona(t *testing.T) {
 	})
 	require.NotNil(t, cmd)
 
-	msg = cmd()
-	m, _ = m.Update(msg)
+	m, _ = m.Update(cmd())
 
 	v := m.View(80, 24)
 	require.Contains(t, v, `fakenick (anthropic/claude-3-haiku) has joined #general with persona "Helpful assistant"`)
@@ -341,17 +289,12 @@ func TestChatScreen_invite_no_args(t *testing.T) {
 	sess := newTestSession(t)
 	seedChannel(t, sess, "#general")
 
-	cs := screens.NewChatScreen(sess)
-
-	msg := cs.Init()()
-	var m ui.Model
-	m, _ = cs.Update(msg)
+	m := initChatScreen(t, sess)
 
 	m, cmd := m.Update(components.CommandSubmitMsg{Name: "invite", Args: ""})
 	require.NotNil(t, cmd)
 
-	msg = cmd()
-	m, _ = m.Update(msg)
+	m, _ = m.Update(cmd())
 
 	v := m.View(80, 24)
 	require.Contains(t, v, "usage: /invite <model-id> [--persona <text>]")
@@ -365,21 +308,15 @@ func TestChatScreen_invite_existing_instance(t *testing.T) {
 	_, err := sess.Invite(t.Context(), "#general", "anthropic/claude-3-haiku", "")
 	require.NoError(t, err)
 
-	cs := screens.NewChatScreen(sess)
-
-	msg := cs.Init()()
-	var m ui.Model
-	m, _ = cs.Update(msg)
+	m := initChatScreen(t, sess)
 
 	m, cmd := m.Update(components.CommandSubmitMsg{Name: "join", Args: "#random"})
 	require.NotNil(t, cmd)
-	msg = cmd()
-	m, _ = m.Update(msg)
+	m, _ = m.Update(cmd())
 
 	m, cmd = m.Update(components.CommandSubmitMsg{Name: "invite", Args: "fakenick"})
 	require.NotNil(t, cmd)
-	msg = cmd()
-	m, _ = m.Update(msg)
+	m, _ = m.Update(cmd())
 
 	v := m.View(80, 24)
 	require.Contains(t, v, "fakenick (anthropic/claude-3-haiku) has joined #random")
@@ -393,17 +330,12 @@ func TestChatScreen_kick_command(t *testing.T) {
 	_, err := sess.Invite(t.Context(), "#general", "anthropic/claude-3-haiku", "")
 	require.NoError(t, err)
 
-	cs := screens.NewChatScreen(sess)
-
-	msg := cs.Init()()
-	var m ui.Model
-	m, _ = cs.Update(msg)
+	m := initChatScreen(t, sess)
 
 	m, cmd := m.Update(components.CommandSubmitMsg{Name: "kick", Args: "fakenick"})
 	require.NotNil(t, cmd)
 
-	msg = cmd()
-	m, _ = m.Update(msg)
+	m, _ = m.Update(cmd())
 
 	v := m.View(80, 24)
 	require.Contains(t, v, "fakenick has been kicked from #general")
@@ -413,17 +345,12 @@ func TestChatScreen_config_usage(t *testing.T) {
 	sess := newTestSession(t)
 	seedChannel(t, sess, "#general")
 
-	cs := screens.NewChatScreen(sess)
-
-	msg := cs.Init()()
-	var m ui.Model
-	m, _ = cs.Update(msg)
+	m := initChatScreen(t, sess)
 
 	m, cmd := m.Update(components.CommandSubmitMsg{Name: "config", Args: ""})
 	require.NotNil(t, cmd)
 
-	msg = cmd()
-	m, _ = m.Update(msg)
+	m, _ = m.Update(cmd())
 
 	v := m.View(80, 24)
 	require.Contains(t, v, "usage: /config api-key <value> | /config poke-interval <duration>")
@@ -434,17 +361,12 @@ func TestChatScreen_config_set_api_key(t *testing.T) {
 	sess := newTestSessionWithConfigStore(t, cfgStore)
 	seedChannel(t, sess, "#general")
 
-	cs := screens.NewChatScreen(sess)
-
-	msg := cs.Init()()
-	var m ui.Model
-	m, _ = cs.Update(msg)
+	m := initChatScreen(t, sess)
 
 	m, cmd := m.Update(components.CommandSubmitMsg{Name: "config", Args: "api-key test-key"})
 	require.NotNil(t, cmd)
 
-	msg = cmd()
-	m, _ = m.Update(msg)
+	m, _ = m.Update(cmd())
 
 	v := m.View(80, 24)
 	require.Contains(t, v, "OpenRouter API key saved. Restart modeloff to use it.")
@@ -456,17 +378,12 @@ func TestChatScreen_config_set_poke_interval(t *testing.T) {
 	sess := newTestSessionWithConfigStore(t, cfgStore)
 	seedChannel(t, sess, "#general")
 
-	cs := screens.NewChatScreen(sess)
-
-	msg := cs.Init()()
-	var m ui.Model
-	m, _ = cs.Update(msg)
+	m := initChatScreen(t, sess)
 
 	m, cmd := m.Update(components.CommandSubmitMsg{Name: "config", Args: "poke-interval 10m"})
 	require.NotNil(t, cmd)
 
-	msg = cmd()
-	m, _ = m.Update(msg)
+	m, _ = m.Update(cmd())
 
 	v := m.View(80, 24)
 	require.Contains(t, v, "Poke interval set to 10m0s.")
@@ -477,17 +394,12 @@ func TestChatScreen_config_invalid_subcommand(t *testing.T) {
 	sess := newTestSession(t)
 	seedChannel(t, sess, "#general")
 
-	cs := screens.NewChatScreen(sess)
-
-	msg := cs.Init()()
-	var m ui.Model
-	m, _ = cs.Update(msg)
+	m := initChatScreen(t, sess)
 
 	m, cmd := m.Update(components.CommandSubmitMsg{Name: "config", Args: "nonsense"})
 	require.NotNil(t, cmd)
 
-	msg = cmd()
-	m, _ = m.Update(msg)
+	m, _ = m.Update(cmd())
 
 	v := m.View(80, 24)
 	require.Contains(t, v, "unknown config key: nonsense")
@@ -497,17 +409,12 @@ func TestChatScreen_config_invalid_duration(t *testing.T) {
 	sess := newTestSession(t)
 	seedChannel(t, sess, "#general")
 
-	cs := screens.NewChatScreen(sess)
-
-	msg := cs.Init()()
-	var m ui.Model
-	m, _ = cs.Update(msg)
+	m := initChatScreen(t, sess)
 
 	m, cmd := m.Update(components.CommandSubmitMsg{Name: "config", Args: "poke-interval nope"})
 	require.NotNil(t, cmd)
 
-	msg = cmd()
-	m, _ = m.Update(msg)
+	m, _ = m.Update(cmd())
 
 	v := m.View(80, 24)
 	require.Contains(t, v, "invalid duration")
@@ -519,17 +426,12 @@ func TestChatScreen_msg_command_opens_dm(t *testing.T) {
 	_, err := sess.Invite(t.Context(), "#general", "anthropic/claude-3-haiku", "")
 	require.NoError(t, err)
 
-	cs := screens.NewChatScreen(sess)
-
-	msg := cs.Init()()
-	var m ui.Model
-	m, _ = cs.Update(msg)
+	m := initChatScreen(t, sess)
 
 	m, cmd := m.Update(components.CommandSubmitMsg{Name: "msg", Args: "fakenick"})
 	require.NotNil(t, cmd)
 
-	msg = cmd()
-	m, _ = m.Update(msg)
+	m, _ = m.Update(cmd())
 
 	v := m.View(80, 24)
 	require.Contains(t, v, "Opened direct message with fakenick")
@@ -542,17 +444,12 @@ func TestChatScreen_msg_command_opens_dm_and_sends_message(t *testing.T) {
 	_, err := sess.Invite(t.Context(), "#general", "anthropic/claude-3-haiku", "")
 	require.NoError(t, err)
 
-	cs := screens.NewChatScreen(sess)
-
-	msg := cs.Init()()
-	var m ui.Model
-	m, _ = cs.Update(msg)
+	m := initChatScreen(t, sess)
 
 	m, cmd := m.Update(components.CommandSubmitMsg{Name: "msg", Args: "fakenick hello there"})
 	require.NotNil(t, cmd)
 
-	msg = cmd()
-	m, _ = m.Update(msg)
+	m, _ = m.Update(cmd())
 
 	v := m.View(80, 24)
 	require.Contains(t, v, "hello there")
@@ -563,17 +460,12 @@ func TestChatScreen_msg_command_unknown_nick(t *testing.T) {
 	sess := newTestSession(t)
 	seedChannel(t, sess, "#general")
 
-	cs := screens.NewChatScreen(sess)
-
-	msg := cs.Init()()
-	var m ui.Model
-	m, _ = cs.Update(msg)
+	m := initChatScreen(t, sess)
 
 	m, cmd := m.Update(components.CommandSubmitMsg{Name: "msg", Args: "nobody hello"})
 	require.NotNil(t, cmd)
 
-	msg = cmd()
-	m, _ = m.Update(msg)
+	m, _ = m.Update(cmd())
 
 	v := m.View(80, 24)
 	require.Contains(t, v, "no such nick: nobody")
@@ -583,10 +475,7 @@ func TestChatScreen_View_responsive(t *testing.T) {
 	sess := newTestSession(t)
 	seedChannel(t, sess, "#general")
 
-	cs := screens.NewChatScreen(sess)
-
-	msg := cs.Init()()
-	m, _ := cs.Update(msg)
+	m := initChatScreen(t, sess)
 
 	sizes := []struct{ w, h int }{
 		{80, 24},
@@ -603,10 +492,7 @@ func TestChatScreen_View_responsive(t *testing.T) {
 func TestChatScreen_WelcomeState_responsive(t *testing.T) {
 	sess := newTestSession(t)
 
-	cs := screens.NewChatScreen(sess)
-
-	msg := cs.Init()()
-	m, _ := cs.Update(msg)
+	m := initChatScreen(t, sess)
 
 	sizes := []struct{ w, h int }{
 		{80, 24},

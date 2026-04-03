@@ -48,7 +48,7 @@ func TestApp_startup_with_saved_channels(t *testing.T) {
 		HasAPIKey:    true,
 		ChannelCount: 2,
 		Nick:         string(sess.UserNick()),
-		Next:         screens.NewChatScreen(sess),
+		Next:         screens.NewChatScreen(t.Context(), sess),
 	}))
 	tm := newTestApp(t, root)
 
@@ -86,7 +86,7 @@ func TestApp_invite_and_receive_reply(t *testing.T) {
 	sess, _ := newIntegrationSession(t, apiClient)
 	seedChannel(t, sess, "#general")
 
-	tm := newTestApp(t, uipkg.NewRoot(screens.NewChatScreen(sess)))
+	tm := newTestApp(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
 	waitForOutput(t, tm, "#general")
 
 	submitText(tm, "/invite test/model")
@@ -109,7 +109,7 @@ func TestApp_open_dm_and_send_message(t *testing.T) {
 		ModelID: "test/model",
 	})
 
-	tm := newTestApp(t, uipkg.NewRoot(screens.NewChatScreen(sess)))
+	tm := newTestApp(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
 	waitForOutput(t, tm, "#general")
 
 	submitText(tm, "/msg botty hello there")
@@ -145,7 +145,7 @@ func TestApp_periodic_poke_generates_message(t *testing.T) {
 	_, err := sess.Invite(t.Context(), "#general", "test/model", "")
 	require.NoError(t, err)
 
-	tm := newTestApp(t, uipkg.NewRoot(screens.NewChatScreen(sess)))
+	tm := newTestApp(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
 	waitForOutput(t, tm, "#general")
 
 	tm.Send(screens.PokeTickMsg{})
@@ -172,7 +172,7 @@ func TestApp_reuse_existing_instance(t *testing.T) {
 	_, err := sess.Invite(t.Context(), "#general", "test/model", "Helpful assistant")
 	require.NoError(t, err)
 
-	tm := newTestApp(t, uipkg.NewRoot(screens.NewChatScreen(sess)))
+	tm := newTestApp(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
 	waitForOutput(t, tm, "#random")
 
 	submitText(tm, "/invite botty")
@@ -248,9 +248,7 @@ func newTestApp(t *testing.T, root uipkg.Root) *teatest.TestModel {
 	t.Helper()
 
 	tm := teatest.NewTestModel(t, root, teatest.WithInitialTermSize(80, 24))
-	t.Cleanup(func() {
-		_ = tm.Quit()
-	})
+	t.Cleanup(func() { _ = tm.Quit() })
 
 	return tm
 }

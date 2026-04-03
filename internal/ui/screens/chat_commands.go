@@ -1,7 +1,6 @@
 package screens
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -76,7 +75,7 @@ func (s ChatScreen) configure(cmd command.ConfigCommand) tea.Cmd {
 	return func() tea.Msg {
 		const usage = "usage: /config api-key <value> | /config poke-interval <duration>"
 
-		ctx := context.Background()
+		ctx := s.ctx
 
 		switch cmd.Key {
 		case "":
@@ -126,7 +125,7 @@ func (s ChatScreen) configure(cmd command.ConfigCommand) tea.Cmd {
 
 func (s ChatScreen) directMessage(nick domain.Nick, body string) tea.Cmd {
 	return func() tea.Msg {
-		ctx := context.Background()
+		ctx := s.ctx
 
 		ch, created, err := s.sess.OpenDM(ctx, nick)
 		if err != nil {
@@ -163,7 +162,7 @@ func (s ChatScreen) directMessage(nick domain.Nick, body string) tea.Cmd {
 
 func (s ChatScreen) handlePoke() tea.Cmd {
 	return func() tea.Msg {
-		ctx := context.Background()
+		ctx := s.ctx
 
 		if err := s.sess.Poke(ctx); err != nil {
 			return systemEventMsg{lines: []string{err.Error()}}
@@ -183,7 +182,7 @@ func (s ChatScreen) handlePoke() tea.Cmd {
 
 func (s ChatScreen) joinChannel(name string) tea.Cmd {
 	return func() tea.Msg {
-		ctx := context.Background()
+		ctx := s.ctx
 
 		evt, err := s.sess.Join(ctx, name)
 		if err != nil {
@@ -216,7 +215,7 @@ func (s ChatScreen) joinChannel(name string) tea.Cmd {
 
 func (s ChatScreen) leaveChannel() tea.Cmd {
 	return func() tea.Msg {
-		ctx := context.Background()
+		ctx := s.ctx
 
 		_, _ = s.sess.Leave(ctx, s.active)
 
@@ -243,7 +242,7 @@ func (s ChatScreen) leaveChannel() tea.Cmd {
 
 func (s ChatScreen) changeNick(nick domain.Nick) tea.Cmd {
 	return func() tea.Msg {
-		ctx := context.Background()
+		ctx := s.ctx
 
 		evt, err := s.sess.ChangeNick(ctx, nick)
 		if err != nil {
@@ -267,7 +266,7 @@ func (s ChatScreen) changeNick(nick domain.Nick) tea.Cmd {
 
 func (s ChatScreen) setTitle(title string) tea.Cmd {
 	return func() tea.Msg {
-		ctx := context.Background()
+		ctx := s.ctx
 
 		_, err := s.sess.SetTitle(ctx, s.active, title)
 		if err != nil {
@@ -294,7 +293,7 @@ func (s ChatScreen) setTitle(title string) tea.Cmd {
 
 func (s ChatScreen) whois(nick domain.Nick) tea.Cmd {
 	return func() tea.Msg {
-		ctx := context.Background()
+		ctx := s.ctx
 
 		inst, err := s.sess.Whois(ctx, nick)
 		if err != nil {
@@ -326,7 +325,7 @@ func (s ChatScreen) whois(nick domain.Nick) tea.Cmd {
 
 func (s ChatScreen) inviteModel(modelID domain.ModelID, persona string) tea.Cmd {
 	return func() tea.Msg {
-		ctx := context.Background()
+		ctx := s.ctx
 
 		evt, err := s.sess.Invite(ctx, s.active, modelID, persona)
 		if err != nil {
@@ -353,7 +352,7 @@ func (s ChatScreen) inviteModel(modelID domain.ModelID, persona string) tea.Cmd 
 
 func (s ChatScreen) kickModel(nick domain.Nick) tea.Cmd {
 	return func() tea.Msg {
-		ctx := context.Background()
+		ctx := s.ctx
 
 		evt, err := s.sess.Kick(ctx, s.active, nick)
 		if err != nil {
@@ -377,7 +376,7 @@ func (s ChatScreen) kickModel(nick domain.Nick) tea.Cmd {
 
 func (s ChatScreen) listChannels() tea.Cmd {
 	return func() tea.Msg {
-		ctx := context.Background()
+		ctx := s.ctx
 
 		channels, err := s.sess.ListChannels(ctx)
 		if err != nil {

@@ -50,14 +50,17 @@ func main() {
 		domain.Nick(cfg.UserNick),
 	)
 
+	appCtx, cancelApp := context.WithCancel(context.Background())
+	defer cancelApp()
+
 	channelCount := 0
 
-	channels, err := dataStore.ListChannels(context.Background())
+	channels, err := dataStore.ListChannels(appCtx)
 	if err == nil {
 		channelCount = len(channels)
 	}
 
-	chatScreen := screens.NewChatScreen(sess)
+	chatScreen := screens.NewChatScreen(appCtx, sess)
 
 	connScreen := screens.NewConnectionScreen(screens.ConnectionConfig{
 		HasAPIKey:    cfg.APIKey != "",
@@ -72,10 +75,7 @@ func main() {
 		tea.WithMouseCellMotion(),
 	)
 
-	pokeCtx, cancelPokes := context.WithCancel(context.Background())
-	defer cancelPokes()
-
-	go runPokeLoop(pokeCtx, p, cfgStore)
+	go runPokeLoop(appCtx, p, cfgStore)
 
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)

@@ -24,7 +24,7 @@ func TestRoot_quits_on_ctrl_c_with_teatest(t *testing.T) {
 
 func TestChatScreen_join_flow_with_teatest(t *testing.T) {
 	sess, _ := newIntegrationSession(t, &integrationAPI{})
-	tm := newTestApp(t, uipkg.NewRoot(screens.NewChatScreen(sess)))
+	tm := newTestApp(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
 
 	waitForOutput(t, tm, "Welcome to modeloff")
 
@@ -45,7 +45,7 @@ func TestChatScreen_leave_flow_with_teatest(t *testing.T) {
 	seedChannel(t, sess, "#random")
 	seedMessage(t, sess, "#random", "random msg")
 
-	tm := newTestApp(t, uipkg.NewRoot(screens.NewChatScreen(sess)))
+	tm := newTestApp(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
 	waitForOutput(t, tm, "random msg")
 
 	submitText(tm, "/leave")
@@ -63,7 +63,7 @@ func TestChatScreen_sidebar_navigation_with_teatest(t *testing.T) {
 	seedMessage(t, sess, "#random", "random msg")
 	require.NoError(t, store.SetLastChannel(t.Context(), "#general"))
 
-	tm := newTestApp(t, uipkg.NewRoot(screens.NewChatScreen(sess)))
+	tm := newTestApp(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
 	waitForOutput(t, tm, "general msg")
 
 	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlD})
@@ -82,7 +82,7 @@ func TestChatScreen_command_errors_with_teatest(t *testing.T) {
 	sess, _ := newIntegrationSession(t, &integrationAPI{})
 	seedChannel(t, sess, "#general")
 
-	tm := newTestApp(t, uipkg.NewRoot(screens.NewChatScreen(sess)))
+	tm := newTestApp(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
 	waitForOutput(t, tm, "#general")
 
 	submitText(tm, "/nick")

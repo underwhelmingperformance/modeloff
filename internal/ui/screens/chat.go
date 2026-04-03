@@ -59,6 +59,7 @@ type PokeTickMsg struct{}
 // MainLayout. It holds a reference to the session for backend
 // operations.
 type ChatScreen struct {
+	ctx    context.Context
 	sess   *session.Session
 	layout components.MainLayout
 
@@ -68,12 +69,15 @@ type ChatScreen struct {
 }
 
 // NewChatScreen creates a chat screen backed by the given session.
-func NewChatScreen(sess *session.Session) ChatScreen {
+// The provided context is used for all backend operations, allowing
+// them to be cancelled on shutdown.
+func NewChatScreen(ctx context.Context, sess *session.Session) ChatScreen {
 	sidebar := components.NewSidebar(nil, "")
 	chatView := components.NewChatView("", sess.UserNick(), "", nil)
 	layout := components.NewMainLayout(sidebar, chatView)
 
 	return ChatScreen{
+		ctx:    ctx,
 		sess:   sess,
 		layout: layout,
 	}
@@ -82,7 +86,7 @@ func NewChatScreen(sess *session.Session) ChatScreen {
 // Init implements ui.Model.
 func (s ChatScreen) Init() tea.Cmd {
 	return func() tea.Msg {
-		ctx := context.Background()
+		ctx := s.ctx
 
 		channels, err := s.sess.ListChannels(ctx)
 		if err != nil {
@@ -198,9 +202,7 @@ func (s ChatScreen) handleCommandResult(msg commandResultMsg) (ui.Model, tea.Cmd
 }
 
 func (s ChatScreen) handleSystemEvent(msg systemEventMsg) (ui.Model, tea.Cmd) {
-	ctx := context.Background()
-
-	messages, _ := s.sess.Messages(ctx, s.active)
+	messages, _ := s.sess.Messages(s.ctx, s.active)
 	messages = appendSystemEvents(messages, s.active, msg.lines)
 
 	chatView := components.NewChatView(s.active, s.sess.UserNick(), s.title, messages)
@@ -223,7 +225,7 @@ func appendSystemEvents(messages []domain.Message, ch domain.ChannelName, events
 
 func (s ChatScreen) switchChannel(ch domain.ChannelName) tea.Cmd {
 	return func() tea.Msg {
-		ctx := context.Background()
+		ctx := s.ctx
 
 		_, _ = s.sess.Join(ctx, string(ch))
 
@@ -246,7 +248,7 @@ func (s ChatScreen) switchChannel(ch domain.ChannelName) tea.Cmd {
 
 func (s ChatScreen) sendMessage(text string) tea.Cmd {
 	return func() tea.Msg {
-		ctx := context.Background()
+		ctx := s.ctx
 
 		_, _ = s.sess.SendMessage(ctx, s.active, text)
 
