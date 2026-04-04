@@ -689,6 +689,50 @@ func TestChatView_command_popover_renders_and_completes(t *testing.T) {
 	require.Equal(t, "/join #random", sub.Raw)
 }
 
+func TestChatView_popover_arrow_keys_do_not_fall_through(t *testing.T) {
+	cv := components.NewChatView("#general", "testuser", "", nil)
+	cv.Update(components.CommandStateMsg{
+		Commands: command.Set{
+			Commands: []*command.Node{
+				{Name: "join", Help: "Join a channel"},
+				{Name: "leave", Help: "Leave current channel"},
+				{Name: "quit", Help: "Exit modeloff"},
+			},
+		},
+		Context: command.CompletionContext{},
+	})
+	var m ui.Model = cv
+
+	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 0, Y: 0, Width: 60, Height: 24}})
+
+	// Seed input history so Up would recall it if it fell through.
+	m = typeText(t, m, "previous input")
+	m, _ = enter(t, m)
+
+	m = typeText(t, m, "/")
+
+	// The popover is now visible with suggestions. Down should
+	// navigate the popover, not recall input history.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+
+	// Type Tab to accept whatever is selected, then complete and submit.
+	var cmd tea.Cmd
+	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+
+	require.NotNil(t, cmd, "Tab should produce a cmd")
+	m, _ = m.Update(cmd())
+
+	_, cmd = enter(t, m)
+
+	require.NotNil(t, cmd)
+	sub := cmd().(components.CommandSubmitMsg)
+
+	// If Down fell through to input history, the input would contain
+	// "previous input" instead of a command. The second suggestion
+	// (/leave) should be selected after one Down press.
+	require.Equal(t, "/leave", sub.Raw)
+}
+
 func TestChatView_popover_renders_usage_in_suggestions(t *testing.T) {
 	cv := components.NewChatView("#general", "testuser", "", nil)
 	cv.Update(components.CommandStateMsg{
