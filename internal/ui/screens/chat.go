@@ -86,7 +86,7 @@ type ChatScreen struct {
 	layout   components.MainLayout
 	chatView *components.ChatView
 	keyMap   components.ChatScreenKeyMap
-	scope    command.Scope
+	commands command.Set
 
 	channels     []domain.Channel
 	instances    []domain.ModelInstance
@@ -104,7 +104,7 @@ type ChatScreen struct {
 func NewChatScreen(ctx context.Context, sess *session.Session) *ChatScreen {
 	sidebar := components.NewSidebar(nil, "", nil)
 	chatView := components.NewChatView("", sess.UserNick(), "", nil)
-	chatView.WithCommandState(command.Scope{}, command.CompletionContext{})
+	chatView.WithCommandState(command.Set{}, command.CompletionContext{})
 	layout := components.NewMainLayout(sidebar, chatView)
 	layout.SetNickList(components.NewNickList(nil))
 
@@ -274,7 +274,7 @@ func (s *ChatScreen) handleChannelSwitched(msg channelSwitchedMsg) (ui.Model, te
 
 func (s *ChatScreen) handleMessageSent(msg messageSentMsg) (ui.Model, tea.Cmd) {
 	s.chatView.SetLines(components.MessagesToLines(msg.messages))
-	s.chatView.WithCommandState(s.CommandScope(), s.commandContext())
+	s.chatView.WithCommandState(s.Commands(), s.commandContext())
 	s.forwardToLayout(components.PendingResponseMsg{Pending: false})
 
 	return s, nil
@@ -294,7 +294,7 @@ func (s *ChatScreen) handleCommandResult(msg commandResultMsg) (ui.Model, tea.Cm
 	s.chatView.SetPlaceholder("")
 	s.chatView.SetChannel(msg.active, msg.topic, lines)
 	s.updateNickList(msg.members)
-	s.chatView.WithCommandState(s.CommandScope(), s.commandContext())
+	s.chatView.WithCommandState(s.Commands(), s.commandContext())
 	s.forwardToLayout(components.PendingResponseMsg{Pending: false})
 	s.applyLayoutBounds()
 
@@ -311,7 +311,7 @@ func (s *ChatScreen) handleSystemEvent(msg systemEventMsg) (ui.Model, tea.Cmd) {
 
 	lines = append(lines, msg.events...)
 	s.chatView.SetLines(lines)
-	s.chatView.WithCommandState(s.CommandScope(), s.commandContext())
+	s.chatView.WithCommandState(s.Commands(), s.commandContext())
 	s.forwardToLayout(components.PendingResponseMsg{Pending: false})
 
 	return s, nil
@@ -380,169 +380,146 @@ func (s *ChatScreen) sortedMembers(members set.Ordered[domain.Nick]) []domain.Me
 	return result
 }
 
-// CommandScope implements ui.CommandScoper.
-func (s *ChatScreen) CommandScope() command.Scope {
-	if len(s.scope.Commands) > 0 {
-		return s.scope
+// Commands implements ui.CommandSource.
+func (s *ChatScreen) Commands() command.Set {
+	if len(s.commands.Commands) > 0 {
+		return s.commands
 	}
 
-	s.scope = command.Scope{
-		Commands: []command.Spec{
-			command.Handle("join", "Switch to a channel or create it if needed.", "/join <channel>",
-				map[string]command.SuggestionSource{"channel": command.ChannelsSource()},
-				func(cmd command.JoinCommand) tea.Cmd {
-					return s.joinChannel(cmd.Channel)
-				},
-			),
-			command.Handle("leave", "Leave the current channel.", "/leave",
-				nil,
-				func(_ command.LeaveCommand) tea.Cmd {
-					if s.active == "" {
-						return noChannelCmd()
-					}
+	type grammar struct {
+		Join   command.JoinCommand   `cmd:"" help:"Switch to a channel or create it if needed."`
+		Leave  command.LeaveCommand  `cmd:"" help:"Leave the current channel."`
+		List   command.ListCommand   `cmd:"" help:"List all known channels."`
+		Invite command.InviteCommand `cmd:"" help:"Invite a model or reusable instance into the current channel."`
+		Kick   command.KickCommand   `cmd:"" help:"Remove a model instance from the current channel."`
+		Msg    command.MsgCommand    `cmd:"" help:"Open a direct message and optionally send text."`
+		Nick   command.NickCommand   `cmd:"" help:"Change your nickname."`
+		Topic  command.TopicCommand  `cmd:"" help:"Set or clear the current channel topic."`
+		Whois  command.WhoisCommand  `cmd:"" help:"Show details about a model instance."`
+		Config command.ConfigCommand `cmd:"" help:"Update runtime configuration."`
+		Help   command.HelpCommand   `cmd:"" help:"Show available commands."`
+		Quit   command.QuitCommand   `cmd:"" help:"Exit modeloff."`
+	}
 
-					return s.leaveChannel()
-				},
-			),
-			command.Handle("list", "List all known channels.", "/list",
-				nil,
-				func(_ command.ListCommand) tea.Cmd {
-					return s.listChannels()
-				},
-			),
-			{
-				Name:  "invite",
-				Help:  "Invite a model or reusable instance into the current channel.",
-				Usage: "/invite <model-or-nick> [--persona <text>]",
-				Args: []command.ArgSpec{
-					{
-						Name: "model-or-nick",
-						Help: "Choose a reusable instance or a live model ID.",
-						Source: command.ComposeSources(
-							command.ReusableInstancesSource(),
-							command.LiveModelsSource(),
-						),
-					},
-					{
-						Name:     "--persona",
-						Help:     "Optional persona flag.",
-						Optional: true,
-						Source: command.LiteralSource(command.Suggestion{
-							Value:  "--persona",
-							Label:  "--persona",
-							Detail: "Attach a persona to the invited model.",
-						}),
-					},
-					{
-						Name:     "persona",
-						Help:     "Persona text is free-form.",
-						Optional: true,
-						FreeForm: true,
-					},
-				},
-				Handler: func(inv command.Invocation) tea.Cmd {
-					if s.active == "" {
-						return noChannelCmd()
-					}
+	cmds := command.Build(&grammar{})
 
-					cmd := inv.Parsed.(command.InviteCommand)
-					if cmd.Model == "" {
-						return usageCmd("invite")
-					}
+	// Bind handlers.
 
-					return s.inviteModel(domain.ModelID(cmd.Model), cmd.Persona)
-				},
-			},
-			command.Handle("kick", "Remove a model instance from the current channel.", "/kick <nick>",
-				map[string]command.SuggestionSource{"nick": command.ActiveMembersSource()},
-				func(cmd command.KickCommand) tea.Cmd {
-					if s.active == "" {
-						return noChannelCmd()
-					}
+	command.Bind(cmds, "join", func(cmd command.JoinCommand) tea.Cmd {
+		return s.joinChannel(cmd.Channel.String())
+	})
 
-					return s.kickModel(domain.Nick(cmd.Nick))
-				},
-			),
-			command.Handle("msg", "Open a direct message and optionally send text.", "/msg <nick> [message]",
-				map[string]command.SuggestionSource{"nick": command.InstancesSource()},
-				func(cmd command.MsgCommand) tea.Cmd {
-					return s.directMessage(domain.Nick(cmd.Nick), strings.Join(cmd.Body, " "))
-				},
-			),
-			command.Handle("nick", "Change your nickname.", "/nick <new-nick>",
-				nil,
-				func(cmd command.NickCommand) tea.Cmd {
-					return s.changeNick(domain.Nick(cmd.Nick))
-				},
-			),
-			command.Handle("topic", "Set or clear the current channel topic.", "/topic [text]",
-				nil,
-				func(cmd command.TopicCommand) tea.Cmd {
-					if s.active == "" {
-						return noChannelCmd()
-					}
+	command.Bind(cmds, "leave", func(_ command.LeaveCommand) tea.Cmd {
+		if s.active == "" {
+			return noChannelCmd()
+		}
 
-					return s.setTopic(strings.Join(cmd.Topic, " "))
-				},
-			),
-			command.Handle("whois", "Show details about a model instance.", "/whois <nick>",
-				map[string]command.SuggestionSource{"nick": command.InstancesSource()},
-				func(cmd command.WhoisCommand) tea.Cmd {
-					return s.whois(domain.Nick(cmd.Nick))
-				},
-			),
-			{
-				Name:  "config",
-				Help:  "Update runtime configuration.",
-				Usage: "/config <api-key|nick-model|poke-interval> [value]",
-				Args: []command.ArgSpec{
-					{
-						Name: "key",
-						Help: "Choose a config key.",
-						Source: command.LiteralSource(
-							command.Suggestion{Value: "api-key", Label: "api-key", Detail: "Activate OpenRouter immediately."},
-							command.Suggestion{Value: "nick-model", Label: "nick-model", Detail: "Set the model used to generate nicknames."},
-							command.Suggestion{Value: "poke-interval", Label: "poke-interval", Detail: "Set the background poke cadence."},
-						),
-					},
-					{
-						Name:     "value",
-						Help:     "Values are free-form after the key.",
-						Optional: true,
-						Source: func(_ command.CompletionContext, state command.InvocationState) []command.Suggestion {
-							if len(state.Args) == 0 || state.Args[0] != "poke-interval" {
-								return nil
-							}
+		return s.leaveChannel()
+	})
 
-							return []command.Suggestion{
-								{Value: "5m", Label: "5m", Detail: "Fast poke cadence"},
-								{Value: "10m", Label: "10m", Detail: "Balanced poke cadence"},
-								{Value: "30m", Label: "30m", Detail: "Quiet channels"},
-								{Value: "1h", Label: "1h", Detail: "Very low activity"},
-							}
-						},
-					},
-				},
-				Handler: func(inv command.Invocation) tea.Cmd {
-					return s.configure(inv.Parsed.(command.ConfigCommand))
-				},
-			},
-			command.Handle("help", "Show available commands.", "/help",
-				nil,
-				func(_ command.HelpCommand) tea.Cmd {
-					return s.showHelp()
-				},
-			),
-			command.Handle("quit", "Exit modeloff.", "/quit",
-				nil,
-				func(_ command.QuitCommand) tea.Cmd {
-					return tea.Quit
-				},
+	command.Bind(cmds, "list", func(_ command.ListCommand) tea.Cmd {
+		return s.listChannels()
+	})
+
+	command.Bind(cmds, "invite", func(cmd command.InviteCommand) tea.Cmd {
+		if s.active == "" {
+			return noChannelCmd()
+		}
+
+		if cmd.Model == "" {
+			return usageCmd("invite")
+		}
+
+		return s.inviteModel(domain.ModelID(cmd.Model), strings.Join(cmd.Persona, " "))
+	})
+
+	command.Bind(cmds, "kick", func(cmd command.KickCommand) tea.Cmd {
+		if s.active == "" {
+			return noChannelCmd()
+		}
+
+		return s.kickModel(domain.Nick(cmd.Nick))
+	})
+
+	command.Bind(cmds, "msg", func(cmd command.MsgCommand) tea.Cmd {
+		return s.directMessage(domain.Nick(cmd.Nick), strings.Join(cmd.Body, " "))
+	})
+
+	command.Bind(cmds, "nick", func(cmd command.NickCommand) tea.Cmd {
+		return s.changeNick(domain.Nick(cmd.Nick))
+	})
+
+	command.Bind(cmds, "topic", func(cmd command.TopicCommand) tea.Cmd {
+		if s.active == "" {
+			return noChannelCmd()
+		}
+
+		return s.setTopic(strings.Join(cmd.Topic, " "))
+	})
+
+	command.Bind(cmds, "whois", func(cmd command.WhoisCommand) tea.Cmd {
+		return s.whois(domain.Nick(cmd.Nick))
+	})
+
+	command.Bind(cmds, "help", func(_ command.HelpCommand) tea.Cmd {
+		return s.showHelp()
+	})
+
+	command.Bind(cmds, "quit", func(_ command.QuitCommand) tea.Cmd {
+		return tea.Quit
+	})
+
+	// Bind suggestion sources.
+
+	cmds.Find("join").SetSource("channel", command.ChannelsSource())
+
+	invite := cmds.Find("invite")
+	invite.SetSource("model", command.ComposeSources(
+		command.ReusableInstancesSource(),
+		command.LiveModelsSource(),
+	))
+
+	cmds.Find("kick").SetSource("nick", command.ActiveMembersSource())
+	cmds.Find("msg").SetSource("nick", command.InstancesSource())
+	cmds.Find("whois").SetSource("nick", command.InstancesSource())
+
+	// Config has custom positionals with dynamic completion sources.
+	configNode := cmds.Find("config")
+	configNode.Positionals = []command.Positional{
+		{
+			Name: "key",
+			Help: "Choose a config key.",
+			Source: command.LiteralSource(
+				command.Suggestion{Value: "api-key", Label: "api-key", Detail: "Activate OpenRouter immediately."},
+				command.Suggestion{Value: "nick-model", Label: "nick-model", Detail: "Set the model used to generate nicknames."},
+				command.Suggestion{Value: "poke-interval", Label: "poke-interval", Detail: "Set the background poke cadence."},
 			),
 		},
-	}
+		{
+			Name:     "value",
+			Help:     "Values are free-form after the key.",
+			Optional: true,
+			Source: func(_ command.CompletionContext, state command.InvocationState) []command.Suggestion {
+				if len(state.Args) == 0 || state.Args[0] != "poke-interval" {
+					return nil
+				}
 
-	return s.scope
+				return []command.Suggestion{
+					{Value: "5m", Label: "5m", Detail: "Fast poke cadence"},
+					{Value: "10m", Label: "10m", Detail: "Balanced poke cadence"},
+					{Value: "30m", Label: "30m", Detail: "Quiet channels"},
+					{Value: "1h", Label: "1h", Detail: "Very low activity"},
+				}
+			},
+		},
+	}
+	command.Bind(cmds, "config", func(cmd command.ConfigCommand) tea.Cmd {
+		return s.configure(cmd)
+	})
+
+	s.commands = cmds
+
+	return s.commands
 }
 
 func usageCmd(commandName string) tea.Cmd {
@@ -581,7 +558,7 @@ func (s *ChatScreen) activeMembers() []domain.Nick {
 }
 
 func (s *ChatScreen) applyCommandState() {
-	s.chatView.WithCommandState(s.CommandScope(), s.commandContext())
+	s.chatView.WithCommandState(s.Commands(), s.commandContext())
 	s.applyLayoutBounds()
 }
 

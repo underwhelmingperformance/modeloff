@@ -18,11 +18,11 @@ import (
 	"github.com/laney/modeloff/internal/ui/components"
 )
 
-type scopeTestAPI struct{}
+type stubAPI struct{}
 
-func (scopeTestAPI) ListModels(context.Context) ([]api.ModelInfo, error) { return nil, nil }
+func (stubAPI) ListModels(context.Context) ([]api.ModelInfo, error) { return nil, nil }
 
-func (scopeTestAPI) SendEvents(
+func (stubAPI) SendEvents(
 	context.Context,
 	domain.ModelID,
 	string,
@@ -32,24 +32,24 @@ func (scopeTestAPI) SendEvents(
 	return protocol.ModelResponse{Kind: protocol.ResponseSilence}, nil
 }
 
-func (scopeTestAPI) GenerateNick(context.Context, domain.ModelID, domain.ModelID) (domain.Nick, error) {
-	return "scopebot", nil
+func (stubAPI) GenerateNick(context.Context, domain.ModelID, domain.ModelID) (domain.Nick, error) {
+	return "testbot", nil
 }
 
-func newScopeTestSession(t *testing.T) *session.Session {
+func newTestSession(t *testing.T) *session.Session {
 	t.Helper()
 
-	return session.New(storemod.NewFileStore(t.TempDir()), nil, scopeTestAPI{}, nil, "testuser")
+	return session.New(storemod.NewFileStore(t.TempDir()), nil, stubAPI{}, nil, "testuser")
 }
 
-func TestChatScreen_CommandScope_specs_are_complete(t *testing.T) {
-	screen := NewChatScreen(t.Context(), newScopeTestSession(t))
-	scope := screen.CommandScope()
+func TestChatScreen_Commands_specs_are_complete(t *testing.T) {
+	screen := NewChatScreen(t.Context(), newTestSession(t))
+	cmds := screen.Commands()
 
-	require.NotEmpty(t, scope.Commands)
+	require.NotEmpty(t, cmds.Commands)
 
-	seen := make(map[string]struct{}, len(scope.Commands))
-	for _, spec := range scope.Commands {
+	seen := make(map[string]struct{}, len(cmds.Commands))
+	for _, spec := range cmds.Commands {
 		require.NotEmpty(t, spec.Name)
 		require.NotEmpty(t, spec.Help)
 		require.NotEmpty(t, spec.Usage)
@@ -61,12 +61,12 @@ func TestChatScreen_CommandScope_specs_are_complete(t *testing.T) {
 	}
 }
 
-func TestChatScreen_CommandScope_exposes_chat_commands(t *testing.T) {
-	screen := NewChatScreen(t.Context(), newScopeTestSession(t))
+func TestChatScreen_Commands_exposes_chat_commands(t *testing.T) {
+	screen := NewChatScreen(t.Context(), newTestSession(t))
 
-	scope := screen.CommandScope()
-	names := make([]string, 0, len(scope.Commands))
-	for _, spec := range scope.Commands {
+	cmds := screen.Commands()
+	names := make([]string, 0, len(cmds.Commands))
+	for _, spec := range cmds.Commands {
 		names = append(names, spec.Name)
 	}
 
@@ -87,9 +87,9 @@ func TestChatScreen_CommandScope_exposes_chat_commands(t *testing.T) {
 }
 
 func TestChatScreen_HelpCommand_emits_typed_event(t *testing.T) {
-	screen := NewChatScreen(t.Context(), newScopeTestSession(t))
+	screen := NewChatScreen(t.Context(), newTestSession(t))
 
-	cmd, err := command.Execute(screen.CommandScope(), "/help")
+	cmd, err := command.Execute(screen.Commands(), "/help")
 	require.NoError(t, err)
 	require.NotNil(t, cmd)
 
@@ -102,9 +102,9 @@ func TestChatScreen_HelpCommand_emits_typed_event(t *testing.T) {
 }
 
 func TestChatScreen_QuitCommand_returns_quit(t *testing.T) {
-	screen := NewChatScreen(t.Context(), newScopeTestSession(t))
+	screen := NewChatScreen(t.Context(), newTestSession(t))
 
-	cmd, err := command.Execute(screen.CommandScope(), "/quit")
+	cmd, err := command.Execute(screen.Commands(), "/quit")
 	require.NoError(t, err)
 	require.NotNil(t, cmd)
 
@@ -114,7 +114,7 @@ func TestChatScreen_QuitCommand_returns_quit(t *testing.T) {
 }
 
 func TestChatScreen_KeyBindings_collect_active_bindings(t *testing.T) {
-	screen := NewChatScreen(t.Context(), newScopeTestSession(t))
+	screen := NewChatScreen(t.Context(), newTestSession(t))
 
 	loaded, _ := screen.Update(screen.Init()())
 	screen = loaded.(*ChatScreen)
@@ -127,7 +127,7 @@ func TestChatScreen_KeyBindings_collect_active_bindings(t *testing.T) {
 }
 
 func TestChatScreen_KeyBindings_switch_to_popover_bindings(t *testing.T) {
-	screen := NewChatScreen(t.Context(), newScopeTestSession(t))
+	screen := NewChatScreen(t.Context(), newTestSession(t))
 
 	loaded, _ := screen.Update(screen.Init()())
 	screen = loaded.(*ChatScreen)

@@ -89,7 +89,7 @@ func TestChatScreen_command_errors_with_teatest(t *testing.T) {
 	waitForOutput(t, tm, "#general")
 
 	submitText(tm, "/nick")
-	waitForOutput(t, tm, "/nick requires a new nickname")
+	waitForOutput(t, tm, "missing required argument <new-nick>")
 
 	submitText(tm, "/unknown")
 	waitForOutput(t, tm, "unknown command: /unknown")

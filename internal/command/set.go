@@ -27,12 +27,30 @@ type CompletionContext struct {
 	LiveModels    []ModelOption
 }
 
-// Invocation is the structured form of a raw slash command.
+// Invocation is the result of parsing a raw slash command. It
+// carries the selected node and the populated command struct. Parse
+// validates eagerly, so if you have an Invocation it is guaranteed
+// to be well-formed and runnable.
 type Invocation struct {
 	Raw    string
 	Name   string
 	Args   []string
-	Parsed Command
+	node   *Node
+	parsed any // concrete command struct, read by the handler closure
+}
+
+// Run executes the handler on the selected command node.
+func (inv *Invocation) Run() tea.Cmd {
+	if inv.node.Handler == nil {
+		return nil
+	}
+
+	return inv.node.Handler(inv)
+}
+
+// Parsed extracts the typed command struct from an Invocation.
+func Parsed[T any](inv *Invocation) T {
+	return inv.parsed.(T)
 }
 
 // Suggestion is a single completion option. Every suggestion carries
@@ -49,28 +67,140 @@ type Suggestion struct {
 // SuggestionSource returns suggestions for the current argument.
 type SuggestionSource func(CompletionContext, InvocationState) []Suggestion
 
-// ArgSpec describes a command argument in display order.
-type ArgSpec struct {
+// Positional describes a positional command argument.
+type Positional struct {
 	Name     string
 	Help     string
 	Optional bool
-	FreeForm bool
+	Variadic bool
 	Nargs    *int
 	Source   SuggestionSource
 }
 
-// Spec is a first-class command definition owned by a UI model.
-type Spec struct {
-	Name    string
-	Help    string
-	Usage   string
-	Args    []ArgSpec
-	Handler func(Invocation) tea.Cmd
+// Flag describes a named flag argument (e.g. --persona).
+type Flag struct {
+	Name     string
+	Help     string
+	Optional bool
+	Variadic bool
+	Source   SuggestionSource
 }
 
-// Scope is the command set currently in scope for a model.
-type Scope struct {
-	Commands []Spec
+// Node is a command in the command tree. Leaf nodes (no children)
+// are executable commands. Non-leaf nodes are command groups whose
+// children are subcommands.
+type Node struct {
+	Name        string
+	Help        string
+	Positionals []Positional
+	Flags       []Flag
+	Children    []*Node
+	Handler     func(*Invocation) tea.Cmd
+
+	// factory creates a zero-valued pointer to the command struct for
+	// parsing. Nil for group nodes that have no struct of their own.
+	factory func() any
+}
+
+// Usage returns a human-readable usage string for this node,
+// generated from its name, positionals, and flags. This mirrors
+// Kong's Node.Summary().
+func (n *Node) Usage() string {
+	var b strings.Builder
+
+	b.WriteString("/")
+	b.WriteString(n.Name)
+
+	for _, p := range n.Positionals {
+		b.WriteString(" ")
+
+		if p.Optional {
+			b.WriteString("[")
+			b.WriteString(p.Name)
+			b.WriteString("]")
+		} else {
+			b.WriteString("<")
+			b.WriteString(p.Name)
+			b.WriteString(">")
+		}
+	}
+
+	for _, f := range n.Flags {
+		b.WriteString(" [")
+		b.WriteString(f.Name)
+
+		if f.Variadic {
+			b.WriteString(" <")
+			// Strip the -- prefix for the placeholder.
+			b.WriteString(strings.TrimPrefix(f.Name, "--"))
+			b.WriteString(">")
+		}
+
+		b.WriteString("]")
+	}
+
+	if len(n.Children) > 0 && len(n.Positionals) == 0 {
+		b.WriteString(" <command>")
+	}
+
+	return b.String()
+}
+
+// Leaf returns true if this node has no children.
+func (n *Node) Leaf() bool {
+	return len(n.Children) == 0
+}
+
+// Find looks up a direct child node by name.
+func (n *Node) Find(name string) *Node {
+	for _, child := range n.Children {
+		if child.Name == name {
+			return child
+		}
+	}
+
+	return nil
+}
+
+// Set is the set of commands available in a given context. It acts
+// as the root of the command tree.
+type Set struct {
+	Commands []*Node
+}
+
+// Bind attaches a typed handler to the named command node. The
+// handler receives the parsed command struct directly.
+func Bind[T any](set Set, name string, handler func(T) tea.Cmd) {
+	node := set.Find(name)
+	if node == nil {
+		panic(fmt.Sprintf("command %q not found in set", name))
+	}
+
+	node.Handler = func(inv *Invocation) tea.Cmd {
+		return handler(inv.parsed.(T))
+	}
+}
+
+// SetSource attaches a suggestion source to the named positional
+// argument on this node.
+func (n *Node) SetSource(positionalName string, source SuggestionSource) {
+	for i := range n.Positionals {
+		if n.Positionals[i].Name == positionalName {
+			n.Positionals[i].Source = source
+			return
+		}
+	}
+}
+
+// Find looks up a top-level node by name.
+func (s Set) Find(name string) *Node {
+	for _, node := range s.Commands {
+		if node.Name == name {
+			return node
+		}
+	}
+
+	return nil
 }
 
 // InvocationState describes the current parse state for completion.
@@ -78,7 +208,7 @@ type InvocationState struct {
 	Raw          string
 	Name         string
 	Args         []string
-	Command      *Spec
+	Command      *Node
 	CurrentIndex int
 	CurrentToken string
 }
@@ -98,41 +228,42 @@ type token struct {
 	End   int
 }
 
-// Merge combines scopes from most-local to least-local precedence.
-func Merge(scopes ...Scope) Scope {
-	merged := Scope{}
+// Merge combines command sets from most-local to least-local precedence.
+func Merge(sets ...Set) Set {
+	merged := Set{}
 	seen := map[string]struct{}{}
 
-	for _, scope := range scopes {
-		for _, spec := range scope.Commands {
-			if _, ok := seen[spec.Name]; ok {
+	for _, set := range sets {
+		for _, node := range set.Commands {
+			if _, ok := seen[node.Name]; ok {
 				continue
 			}
 
-			seen[spec.Name] = struct{}{}
-			merged.Commands = append(merged.Commands, spec)
+			seen[node.Name] = struct{}{}
+			merged.Commands = append(merged.Commands, node)
 		}
 	}
 
 	return merged
 }
 
-// Execute resolves and executes a command handler from the given scope.
-func Execute(scope Scope, raw string) (tea.Cmd, error) {
-	invocation, spec, err := resolveInvocation(scope, raw)
+// Execute parses the raw input and runs the matched command's
+// handler. It is a convenience for Parse followed by Run.
+func Execute(set Set, raw string) (tea.Cmd, error) {
+	inv, err := set.Parse(raw)
 	if err != nil {
 		return nil, err
 	}
 
-	if spec.Handler == nil {
-		return nil, fmt.Errorf("command /%s has no handler", spec.Name)
+	if inv.node.Handler == nil {
+		return nil, fmt.Errorf("command /%s has no handler", inv.Name)
 	}
 
-	return spec.Handler(invocation), nil
+	return inv.Run(), nil
 }
 
 // Complete resolves the completion state for the current buffer.
-func Complete(scope Scope, raw string, cursor int, ctx CompletionContext) Completion {
+func Complete(set Set, raw string, cursor int, ctx CompletionContext) Completion {
 	raw = clampRaw(raw)
 	if !strings.HasPrefix(raw, "/") {
 		return Completion{}
@@ -151,7 +282,7 @@ func Complete(scope Scope, raw string, cursor int, ctx CompletionContext) Comple
 	if index == 0 {
 		return Completion{
 			Visible:      true,
-			Suggestions:  filterSuggestions(commandSuggestions(scope), prefix),
+			Suggestions:  filterSuggestions(commandSuggestions(set), prefix),
 			ReplaceStart: start,
 			ReplaceEnd:   end,
 			AppendSpace:  true,
@@ -163,8 +294,8 @@ func Complete(scope Scope, raw string, cursor int, ctx CompletionContext) Comple
 		name = tokens[0].Text
 	}
 
-	spec := exactSpec(scope, name)
-	if spec == nil {
+	node := set.Find(name)
+	if node == nil {
 		return Completion{
 			Visible:      true,
 			ReplaceStart: start,
@@ -181,7 +312,7 @@ func Complete(scope Scope, raw string, cursor int, ctx CompletionContext) Comple
 		Raw:          raw,
 		Name:         name,
 		Args:         args,
-		Command:      spec,
+		Command:      node,
 		CurrentIndex: index - 1,
 		CurrentToken: prefix,
 	}
@@ -190,23 +321,23 @@ func Complete(scope Scope, raw string, cursor int, ctx CompletionContext) Comple
 		Visible:      true,
 		ReplaceStart: start,
 		ReplaceEnd:   end,
-		AppendSpace:  hasContinuation(spec.Args, state.CurrentIndex),
+		AppendSpace:  hasContinuation(node, state.CurrentIndex),
 	}
 
-	arg := resolveArg(spec.Args, state.CurrentIndex)
-	if arg == nil {
+	pos := resolvePositional(node.Positionals, state.CurrentIndex)
+	if pos == nil {
 		return completion
 	}
 
-	if arg.FreeForm {
+	if pos.Variadic {
 		return completion
 	}
 
-	if arg.Source == nil {
+	if pos.Source == nil {
 		return completion
 	}
 
-	completion.Suggestions = filterSuggestions(arg.Source(ctx, state), prefix)
+	completion.Suggestions = filterSuggestions(pos.Source(ctx, state), prefix)
 	return completion
 }
 
@@ -226,56 +357,15 @@ func clampCursor(cursor, length int) int {
 	return cursor
 }
 
-func resolveInvocation(scope Scope, raw string) (Invocation, Spec, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" || raw[0] != '/' {
-		return Invocation{}, Spec{}, fmt.Errorf("not a command: %q", raw)
-	}
+func commandSuggestions(set Set) []Suggestion {
+	suggestions := make([]Suggestion, 0, len(set.Commands))
 
-	fields := strings.Fields(raw[1:])
-	if len(fields) == 0 {
-		return Invocation{}, Spec{}, fmt.Errorf("unknown command: /")
-	}
-
-	name := fields[0]
-	spec := exactSpec(scope, name)
-	if spec == nil {
-		return Invocation{}, Spec{}, fmt.Errorf("unknown command: /%s", name)
-	}
-
-	parsed, err := Parse(raw)
-	if err != nil {
-		return Invocation{}, Spec{}, err
-	}
-
-	return Invocation{
-		Raw:    raw,
-		Name:   name,
-		Args:   fields[1:],
-		Parsed: parsed,
-	}, *spec, nil
-}
-
-func exactSpec(scope Scope, name string) *Spec {
-	for _, spec := range scope.Commands {
-		if spec.Name == name {
-			specCopy := spec
-			return &specCopy
-		}
-	}
-
-	return nil
-}
-
-func commandSuggestions(scope Scope) []Suggestion {
-	suggestions := make([]Suggestion, 0, len(scope.Commands))
-
-	for _, spec := range scope.Commands {
+	for _, node := range set.Commands {
 		suggestions = append(suggestions, Suggestion{
-			Value:  spec.Name,
-			Label:  "/" + spec.Name,
-			Detail: spec.Help,
-			Usage:  spec.Usage,
+			Value:  node.Name,
+			Label:  "/" + node.Name,
+			Detail: node.Help,
+			Usage:  node.Usage(),
 		})
 	}
 
@@ -342,43 +432,43 @@ func currentToken(tokens []token, runes []rune, cursor int) (int, int, int) {
 	return len(tokens), cursor, cursor
 }
 
-func resolveArg(args []ArgSpec, index int) *ArgSpec {
+func resolvePositional(positionals []Positional, index int) *Positional {
 	if index < 0 {
 		return nil
 	}
 
-	if index < len(args) {
-		return &args[index]
+	if index < len(positionals) {
+		return &positionals[index]
 	}
 
-	if len(args) == 0 {
+	if len(positionals) == 0 {
 		return nil
 	}
 
-	last := args[len(args)-1]
-	if !last.FreeForm {
+	last := positionals[len(positionals)-1]
+	if !last.Variadic {
 		return nil
 	}
 
 	return &last
 }
 
-func hasContinuation(args []ArgSpec, index int) bool {
+func hasContinuation(node *Node, index int) bool {
 	if index < 0 {
-		return len(args) > 0
+		return len(node.Positionals) > 0 || len(node.Flags) > 0
 	}
 
-	for i := index + 1; i < len(args); i++ {
-		if args[i].FreeForm {
+	for i := index + 1; i < len(node.Positionals); i++ {
+		if node.Positionals[i].Variadic {
 			return true
 		}
 
-		if args[i].Source != nil || !args[i].Optional {
+		if node.Positionals[i].Source != nil || !node.Positionals[i].Optional {
 			return true
 		}
 	}
 
-	return false
+	return len(node.Flags) > 0
 }
 
 func filterSuggestions(all []Suggestion, prefix string) []Suggestion {

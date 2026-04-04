@@ -412,10 +412,10 @@ func TestChatView_pending_indicator_reduces_message_area(t *testing.T) {
 }
 
 func renderSingleLine(line components.ChatLine) string {
-	cv := components.NewChatView("#test", "testuser", "", []components.ChatLine{line}).WithCommandState(command.Scope{
-		Commands: []command.Spec{
-			{Name: "join", Help: "Join or create a channel", Usage: "/join <channel>"},
-			{Name: "help", Help: "Show available commands.", Usage: "/help"},
+	cv := components.NewChatView("#test", "testuser", "", []components.ChatLine{line}).WithCommandState(command.Set{
+		Commands: []*command.Node{
+			{Name: "join", Help: "Join or create a channel", Positionals: []command.Positional{{Name: "channel"}}},
+			{Name: "help", Help: "Show available commands."},
 		},
 	}, command.CompletionContext{})
 	v := cv.View(200, 24)
@@ -594,13 +594,12 @@ func TestNewMessagesDivider_fills_width(t *testing.T) {
 }
 
 func TestChatView_command_popover_renders_and_completes(t *testing.T) {
-	cv := components.NewChatView("#general", "testuser", "", nil).WithCommandState(command.Scope{
-		Commands: []command.Spec{
+	cv := components.NewChatView("#general", "testuser", "", nil).WithCommandState(command.Set{
+		Commands: []*command.Node{
 			{
-				Name:  "join",
-				Help:  "Join a channel",
-				Usage: "/join <channel>",
-				Args: []command.ArgSpec{
+				Name: "join",
+				Help: "Join a channel",
+				Positionals: []command.Positional{
 					{Name: "channel", Source: command.ChannelsSource()},
 				},
 			},
@@ -630,11 +629,11 @@ func TestChatView_command_popover_renders_and_completes(t *testing.T) {
 }
 
 func TestChatView_popover_renders_usage_in_suggestions(t *testing.T) {
-	cv := components.NewChatView("#general", "testuser", "", nil).WithCommandState(command.Scope{
-		Commands: []command.Spec{
-			{Name: "join", Help: "Join a channel", Usage: "/join <channel>"},
-			{Name: "leave", Help: "Leave current channel", Usage: "/leave"},
-			{Name: "quit", Help: "Exit modeloff", Usage: "/quit"},
+	cv := components.NewChatView("#general", "testuser", "", nil).WithCommandState(command.Set{
+		Commands: []*command.Node{
+			{Name: "join", Help: "Join a channel", Positionals: []command.Positional{{Name: "channel"}}},
+			{Name: "leave", Help: "Leave current channel"},
+			{Name: "quit", Help: "Exit modeloff"},
 		},
 	}, command.CompletionContext{})
 	var m ui.Model = cv
@@ -792,13 +791,12 @@ func TestChatView_mouse_wheel_scrolls_messages(t *testing.T) {
 }
 
 func TestChatView_mouse_click_accepts_popover_suggestion(t *testing.T) {
-	cv := components.NewChatView("#general", "testuser", "", nil).WithCommandState(command.Scope{
-		Commands: []command.Spec{
+	cv := components.NewChatView("#general", "testuser", "", nil).WithCommandState(command.Set{
+		Commands: []*command.Node{
 			{
-				Name:  "join",
-				Help:  "Join a channel",
-				Usage: "/join <channel>",
-				Args: []command.ArgSpec{
+				Name: "join",
+				Help: "Join a channel",
+				Positionals: []command.Positional{
 					{Name: "channel", Source: command.ChannelsSource()},
 				},
 			},

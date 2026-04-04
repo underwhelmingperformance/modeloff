@@ -14,7 +14,7 @@ import (
 const maxPopoverSuggestions = 6
 
 type commandPopover struct {
-	scope      command.Scope
+	commands   command.Set
 	context    command.CompletionContext
 	completion command.Completion
 	selected   int
@@ -27,8 +27,8 @@ type commandPopoverLayout struct {
 	SuggestionRects []ui.Rect
 }
 
-func (p *commandPopover) Apply(scope command.Scope, ctx command.CompletionContext, raw string, cursor int) {
-	p.scope = scope
+func (p *commandPopover) Apply(commands command.Set, ctx command.CompletionContext, raw string, cursor int) {
+	p.commands = commands
 	p.context = ctx
 	p.refresh(raw, cursor)
 }
@@ -184,7 +184,7 @@ func (p *commandPopover) refresh(raw string, cursor int) {
 		return
 	}
 
-	p.completion = command.Complete(p.scope, raw, cursor, p.context)
+	p.completion = command.Complete(p.commands, raw, cursor, p.context)
 	if !p.completion.Visible || len(p.completion.Suggestions) == 0 {
 		p.selected = 0
 		p.offset = 0

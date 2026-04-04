@@ -35,7 +35,7 @@ func errorEvent(err error) systemEventMsg {
 }
 
 func (s *ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
-	cmd, err := command.Execute(s.CommandScope(), msg.Raw)
+	cmd, err := command.Execute(s.Commands(), msg.Raw)
 	if err != nil {
 		return func() tea.Msg { return errorEvent(err) }
 	}

@@ -1,39 +1,27 @@
 package command
 
 import (
+	"fmt"
 	"reflect"
 	"strconv"
 	"strings"
 	"unicode"
-
-	tea "github.com/charmbracelet/bubbletea"
 )
 
-// argTag holds the metadata extracted from struct tags on a single
-// command field.
-type argTag struct {
-	Name       string
-	Help       string
-	Optional   bool
-	FreeForm   bool
-	Nargs      *int
-	FieldIndex int
-}
-
-// parseArgTags reads struct tags from a command value and returns the
-// argument metadata in field order. Fields without any recognised
-// tags are skipped.
-func parseArgTags(cmd Command) []argTag {
+// resolveFieldMetas inspects a command struct's tags and builds
+// fieldMeta entries. Fields with `arg` are positional; fields
+// without `arg` (but with other recognised tags) are flags.
+func resolveFieldMetas(cmd any) ([]fieldMeta, error) {
 	t := reflect.TypeOf(cmd)
 	if t.Kind() == reflect.Ptr {
 		t = t.Elem()
 	}
 
 	if t.Kind() != reflect.Struct {
-		return nil
+		return nil, nil
 	}
 
-	var tags []argTag
+	var metas []fieldMeta
 
 	for i := 0; i < t.NumField(); i++ {
 		f := t.Field(i)
@@ -42,83 +30,170 @@ func parseArgTags(cmd Command) []argTag {
 			continue
 		}
 
-		tag := argTag{FieldIndex: i}
+		m := fieldMeta{index: i}
 
-		if name, ok := f.Tag.Lookup("arg"); ok && name != "" {
-			tag.Name = name
+		if argName, ok := f.Tag.Lookup("arg"); ok {
+			m.isFlag = false
+			if argName != "" {
+				m.name = argName
+			} else {
+				m.name = toKebabCase(f.Name)
+			}
 		} else {
-			tag.Name = toKebabCase(f.Name)
+			m.isFlag = true
+			m.name = toKebabCase(f.Name)
+			m.flagName = "--" + m.name
 		}
 
-		tag.Help, _ = f.Tag.Lookup("help")
+		m.help, _ = f.Tag.Lookup("help")
 
 		if _, ok := f.Tag.Lookup("optional"); ok {
-			tag.Optional = true
+			m.optional = true
 		}
 
-		if f.Type == reflect.TypeOf([]string{}) {
-			tag.FreeForm = true
-		}
+		m.variadic = f.Type.Kind() == reflect.Slice
 
 		if nargsStr, ok := f.Tag.Lookup("nargs"); ok {
 			n, err := strconv.Atoi(nargsStr)
 			if err == nil {
-				tag.Nargs = &n
+				m.nargs = &n
 			}
 		}
 
-		tags = append(tags, tag)
+		dec := defaultRegistry.ForType(f.Type)
+		if dec == nil {
+			return nil, &NoDecoderError{Type: f.Type}
+		}
+
+		m.decoder = dec
+		metas = append(metas, m)
 	}
 
-	return tags
+	return metas, nil
 }
 
-// buildArgSpecs converts parsed tags into ArgSpec values, resolving
-// sources by arg name from the provided map.
-func buildArgSpecs(tags []argTag, sources map[string]SuggestionSource) []ArgSpec {
-	specs := make([]ArgSpec, len(tags))
+// buildPositionals converts positional fieldMetas into Positional
+// values for the completion system.
+func buildPositionals(fields []fieldMeta, sources map[string]SuggestionSource) []Positional {
+	var positionals []Positional
 
-	for i, tag := range tags {
-		specs[i] = ArgSpec{
-			Name:     tag.Name,
-			Help:     tag.Help,
-			Optional: tag.Optional,
-			FreeForm: tag.FreeForm,
-			Nargs:    tag.Nargs,
+	for _, f := range fields {
+		if f.isFlag {
+			continue
+		}
+
+		p := Positional{
+			Name:     f.name,
+			Help:     f.help,
+			Optional: f.optional,
+			Variadic: f.variadic,
+			Nargs:    f.nargs,
 		}
 
 		if sources != nil {
-			if src, ok := sources[tag.Name]; ok {
-				specs[i].Source = src
+			if src, ok := sources[f.name]; ok {
+				p.Source = src
 			}
 		}
+
+		positionals = append(positionals, p)
 	}
 
-	return specs
+	return positionals
 }
 
-// Handle builds a Spec from struct tags on T. The type parameter is
-// typically inferred from the handler function. Sources are resolved
-// by arg name from the provided map.
-func Handle[T Command](name, help, usage string, sources map[string]SuggestionSource, handler func(T) tea.Cmd) Spec {
-	var zero T
-	tags := parseArgTags(zero)
+// buildFlags converts flag fieldMetas into Flag values for the
+// completion system.
+func buildFlags(fields []fieldMeta, sources map[string]SuggestionSource) []Flag {
+	var flags []Flag
 
-	return Spec{
-		Name:  name,
-		Help:  help,
-		Usage: usage,
-		Args:  buildArgSpecs(tags, sources),
-		Handler: func(inv Invocation) tea.Cmd {
-			return handler(inv.Parsed.(T))
-		},
+	for _, f := range fields {
+		if !f.isFlag {
+			continue
+		}
+
+		fl := Flag{
+			Name:     f.flagName,
+			Help:     f.help,
+			Optional: f.optional,
+			Variadic: f.variadic,
+		}
+
+		if sources != nil {
+			if src, ok := sources[f.name]; ok {
+				fl.Source = src
+			}
+		}
+
+		flags = append(flags, fl)
 	}
+
+	return flags
+}
+
+// build reflects over a grammar struct and produces a slice of
+// Nodes, one per field tagged with `cmd:""`. The grammar must be a
+// pointer to a struct. Name derives from the field name
+// (kebab-cased) or from a `name:""` tag. Help comes from the
+// `help:""` tag.
+func build(grammar any) ([]*Node, error) {
+	v := reflect.ValueOf(grammar)
+	if v.Kind() != reflect.Ptr {
+		return nil, fmt.Errorf("grammar must be a pointer to a struct, got %T", grammar)
+	}
+
+	v = v.Elem()
+	if v.Kind() != reflect.Struct {
+		return nil, fmt.Errorf("grammar must be a pointer to a struct, got pointer to %s", v.Kind())
+	}
+
+	t := v.Type()
+	var nodes []*Node
+
+	for i := 0; i < t.NumField(); i++ {
+		ft := t.Field(i)
+
+		if !ft.IsExported() {
+			continue
+		}
+
+		if _, ok := ft.Tag.Lookup("cmd"); !ok {
+			continue
+		}
+
+		name := ft.Tag.Get("name")
+		if name == "" {
+			name = toKebabCase(ft.Name)
+		}
+
+		help := ft.Tag.Get("help")
+
+		fieldType := ft.Type
+		fields, err := resolveFieldMetas(reflect.New(fieldType).Elem().Interface())
+		if err != nil {
+			return nil, fmt.Errorf("field %s: %w", ft.Name, err)
+		}
+
+		node := &Node{
+			Name:        name,
+			Help:        help,
+			Positionals: buildPositionals(fields, nil),
+			Flags:       buildFlags(fields, nil),
+			factory: func() any {
+				return reflect.New(fieldType).Interface()
+			},
+		}
+
+		nodes = append(nodes, node)
+	}
+
+	return nodes, nil
 }
 
 // hasTag returns true if the struct field has at least one recognised
 // command tag.
 func hasTag(f reflect.StructField) bool {
-	for _, key := range []string{"arg", "help", "optional", "nargs", "freeform"} {
+	for _, key := range []string{"arg", "help", "optional", "nargs"} {
 		if _, ok := f.Tag.Lookup(key); ok {
 			return true
 		}

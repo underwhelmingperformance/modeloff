@@ -603,7 +603,7 @@ func TestChatScreen_invalid_command(t *testing.T) {
 	m, _ = m.Update(cmd())
 
 	v := m.View(80, 24)
-	require.Contains(t, v, "/nick requires a new nickname")
+	require.Contains(t, v, "missing required argument <new-nick>")
 }
 
 func TestChatScreen_unknown_command_shows_error(t *testing.T) {

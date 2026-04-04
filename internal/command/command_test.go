@@ -6,11 +6,32 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type testGrammar struct {
+	Join   JoinCommand   `cmd:"" help:"Join a channel."`
+	Leave  LeaveCommand  `cmd:"" help:"Leave."`
+	List   ListCommand   `cmd:"" help:"List channels."`
+	Invite InviteCommand `cmd:"" help:"Invite a model."`
+	Kick   KickCommand   `cmd:"" help:"Kick."`
+	Msg    MsgCommand    `cmd:"" help:"Message."`
+	Nick   NickCommand   `cmd:"" help:"Change nick."`
+	Topic  TopicCommand  `cmd:"" help:"Set topic."`
+	Whois  WhoisCommand  `cmd:"" help:"Whois."`
+	Config ConfigCommand `cmd:"" help:"Config."`
+	Help   HelpCommand   `cmd:"" help:"Help."`
+	Quit   QuitCommand   `cmd:"" help:"Quit."`
+}
+
+func allCommands() Set {
+	return Build(&testGrammar{})
+}
+
 func TestParse(t *testing.T) {
+	cmds := allCommands()
+
 	tests := []struct {
 		name    string
 		input   string
-		want    Command
+		want    any
 		wantErr bool
 	}{
 		// /join
@@ -37,9 +58,9 @@ func TestParse(t *testing.T) {
 			want:  LeaveCommand{},
 		},
 		{
-			name:  "leave ignores extra args",
-			input: "/leave extra stuff",
-			want:  LeaveCommand{},
+			name:    "leave rejects extra args",
+			input:   "/leave extra stuff",
+			wantErr: true,
 		},
 
 		// /list
@@ -60,7 +81,7 @@ func TestParse(t *testing.T) {
 			input: "/invite anthropic/claude-3-haiku --persona Helpful assistant",
 			want: InviteCommand{
 				Model:   "anthropic/claude-3-haiku",
-				Persona: "Helpful assistant",
+				Persona: []string{"Helpful", "assistant"},
 			},
 		},
 		{
@@ -195,7 +216,7 @@ func TestParse(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := Parse(tt.input)
+			inv, err := cmds.Parse(tt.input)
 
 			if tt.wantErr {
 				require.Error(t, err)
@@ -203,7 +224,7 @@ func TestParse(t *testing.T) {
 			}
 
 			require.NoError(t, err)
-			require.Equal(t, tt.want, got)
+			require.Equal(t, tt.want, inv.parsed)
 		})
 	}
 }

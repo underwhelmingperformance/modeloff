@@ -144,10 +144,10 @@ type PendingResponseMsg struct {
 	Pending bool
 }
 
-// CommandStateMsg updates the command scope and completion context.
+// CommandStateMsg updates the available commands and completion context.
 type CommandStateMsg struct {
-	Scope   command.Scope
-	Context command.CompletionContext
+	Commands command.Set
+	Context  command.CompletionContext
 }
 
 // ChatView displays messages for a single channel with an input bar
@@ -254,9 +254,9 @@ func (c *ChatView) SetChannel(ch domain.ChannelName, topic string, lines []ChatL
 	c.viewport.GotoBottom()
 }
 
-// WithCommandState applies the current command scope and runtime context.
-func (c *ChatView) WithCommandState(scope command.Scope, ctx command.CompletionContext) *ChatView {
-	c.popover.Apply(scope, ctx, c.input.Value(), c.input.Cursor())
+// WithCommandState applies the available commands and runtime context.
+func (c *ChatView) WithCommandState(commands command.Set, ctx command.CompletionContext) *ChatView {
+	c.popover.Apply(commands, ctx, c.input.Value(), c.input.Cursor())
 
 	return c
 }
@@ -332,7 +332,7 @@ func (c *ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		return c, nil
 
 	case CommandStateMsg:
-		c.popover.Apply(msg.Scope, msg.Context, c.input.Value(), c.input.Cursor())
+		c.popover.Apply(msg.Commands, msg.Context, c.input.Value(), c.input.Cursor())
 		return c, nil
 
 	case PendingResponseMsg:
@@ -766,16 +766,13 @@ func (c *ChatView) renderLine(line ChatLine, width int) string {
 }
 
 func (c *ChatView) renderHelp() string {
-	lines := make([]string, 0, len(c.popover.scope.Commands))
-	for _, spec := range c.popover.scope.Commands {
-		usage := spec.Usage
-		if usage == "" {
-			usage = "/" + spec.Name
-		}
+	lines := make([]string, 0, len(c.popover.commands.Commands))
+	for _, node := range c.popover.commands.Commands {
+		usage := node.Usage()
 
 		line := usage
-		if spec.Help != "" {
-			line = fmt.Sprintf("%-32s %s", usage, spec.Help)
+		if node.Help != "" {
+			line = fmt.Sprintf("%-32s %s", usage, node.Help)
 		}
 
 		lines = append(lines, strings.TrimRight(line, " "))
