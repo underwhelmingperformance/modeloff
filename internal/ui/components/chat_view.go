@@ -1,13 +1,9 @@
 package components
 
 import (
-	"fmt"
-	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -192,17 +188,12 @@ type CommandStateMsg struct {
 // ChatView displays messages for a single channel with an input bar
 // at the bottom.
 type ChatView struct {
-	channel     domain.ChannelName
-	topic       string
-	userNick    domain.Nick
-	lines       []ChatLine
-	input       InputBar
-	keyMap      ChatViewKeyMap
-	viewport    viewport.Model
-	pending     bool
-	spinner     spinner.Model
-	placeholder string
-	seenCount   int
+	channel  domain.ChannelName
+	topic    string
+	userNick domain.Nick
+	messages *MessageList
+	input    InputBar
+	keyMap   ChatViewKeyMap
 
 	bounds ui.Rect
 
@@ -217,76 +208,19 @@ type chatViewLayout struct {
 
 // NewChatView creates a chat view for the given channel.
 func NewChatView(ch domain.ChannelName, userNick domain.Nick, topic string, lines []ChatLine) *ChatView {
-	vp := viewport.New(0, 0)
-	vp.MouseWheelEnabled = true
-
 	keyMap := DefaultChatViewKeyMap
-	vp.KeyMap = viewport.KeyMap{
-		PageDown: keyMap.PageDown,
-		PageUp:   keyMap.PageUp,
-		Down:     keyMap.ScrollDown,
-		Up:       keyMap.ScrollUp,
-	}
+
+	ml := NewMessageList(ch, lines)
+	ml.SetKeyMap(keyMap)
 
 	return &ChatView{
-		channel:   ch,
-		topic:     topic,
-		userNick:  userNick,
-		lines:     lines,
-		seenCount: len(lines),
-		input:     NewInputBar(),
-		keyMap:    keyMap,
-		viewport:  vp,
-		spinner: spinner.New(
-			spinner.WithSpinner(spinner.Dot),
-			spinner.WithStyle(theme.Dim),
-		),
+		channel:  ch,
+		topic:    topic,
+		userNick: userNick,
+		messages: ml,
+		input:    NewInputBar(),
+		keyMap:   keyMap,
 	}
-}
-
-// setLines replaces the displayed lines, preserving viewport and
-// input state. When lines transition from empty to non-empty, the
-// viewport content is reset so stale placeholder rendering does not
-// leak through. If the viewport is scrolled up and new lines have
-// been added, a NewMessagesDivider is inserted at the boundary.
-func (c *ChatView) setLines(lines []ChatLine) {
-	wasEmpty := len(c.lines) == 0
-
-	scrolledUp := !c.viewport.AtBottom() && c.viewport.TotalLineCount() > 0
-	newContent := len(lines) > c.seenCount
-
-	if scrolledUp && newContent && c.seenCount > 0 {
-		lines = c.insertDivider(lines)
-	}
-
-	c.lines = lines
-
-	if !scrolledUp {
-		c.seenCount = c.countWithoutDivider(lines)
-	}
-
-	if wasEmpty && len(lines) > 0 {
-		c.viewport.SetContent("")
-	}
-}
-
-// setChannel updates the channel identity, title, and lines for a
-// channel switch. The viewport content is cleared so stale
-// placeholder rendering does not leak through.
-func (c *ChatView) setChannel(ch domain.ChannelName, topic string, lines []ChatLine) {
-	c.channel = ch
-	c.topic = topic
-	c.lines = lines
-	c.seenCount = len(lines)
-	c.viewport.SetContent("")
-	c.viewport.GotoBottom()
-}
-
-// appendLines adds new lines to the chat view incrementally.
-func (c *ChatView) appendLines(newLines []ChatLine) {
-	c.lines = append(c.lines, newLines...)
-	c.seenCount = len(c.lines)
-	c.viewport.GotoBottom()
 }
 
 // Init implements ui.Model.
@@ -302,14 +236,14 @@ func (c *ChatView) KeyBindings() []key.Binding {
 				key.WithKeys("pgup", "pgdown"),
 				key.WithHelp("PgUp/Dn", "scroll"),
 			),
-			len(c.lines) > 0,
+			len(c.messages.Lines()) > 0,
 		),
 		ui.WithBindingEnabled(
 			key.NewBinding(
 				key.WithKeys("ctrl+up", "ctrl+down"),
 				key.WithHelp("^↑/↓", "scroll"),
 			),
-			len(c.lines) > 0,
+			len(c.messages.Lines()) > 0,
 		),
 	}
 
@@ -360,58 +294,18 @@ func (c *ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		return c, nil
 
 	case SetChannelMsg:
-		c.setChannel(msg.Channel, msg.Topic, msg.Lines)
-		return c, nil
-
-	case SetLinesMsg:
-		c.setLines(msg.Lines)
-		return c, nil
-
-	case SetPlaceholderMsg:
-		c.placeholder = msg.Text
-		return c, nil
-
-	case CommandStateMsg:
-		c.popover.Apply(msg.Commands, msg.Context, c.input.Value(), c.input.Cursor())
-		return c, nil
-
-	case PendingResponseMsg:
-		c.pending = msg.Pending
-
-		if c.pending {
-			return c, c.spinner.Tick
-		}
-
-		return c, nil
-
-	case spinner.TickMsg:
-		if !c.pending {
-			return c, nil
-		}
-
-		var cmd tea.Cmd
-		c.spinner, cmd = c.spinner.Update(msg)
-
+		c.channel = msg.Channel
+		c.topic = msg.Topic
+		_, cmd := c.messages.Update(msg)
 		return c, cmd
 
-	case MessagesUpdatedMsg:
-		if msg.Channel != c.channel {
-			return c, nil
-		}
+	case SetLinesMsg, SetPlaceholderMsg, PendingResponseMsg, MessagesUpdatedMsg, AppendLinesMsg:
+		_, cmd := c.messages.Update(msg)
+		return c, cmd
 
-		c.lines = msg.Lines
-		c.seenCount = len(msg.Lines)
-		c.viewport.GotoBottom()
-
-		return c, nil
-
-	case AppendLinesMsg:
-		if msg.Channel != c.channel {
-			return c, nil
-		}
-
-		c.appendLines(msg.Lines)
-
+	case CommandStateMsg:
+		c.messages.SetCommands(msg.Commands)
+		c.popover.Apply(msg.Commands, msg.Context, c.input.Value(), c.input.Cursor())
 		return c, nil
 
 	case tea.KeyMsg:
@@ -425,17 +319,15 @@ func (c *ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		}
 	}
 
-	// Forward explicit viewport navigation keys first so plain arrows
-	// remain with the input bar.
-	var vpCmd tea.Cmd
-	c.viewport, vpCmd = c.viewport.Update(msg)
+	// Forward to message list for viewport navigation, then input bar.
+	_, mlCmd := c.messages.Update(msg)
 
 	updated, inputCmd := c.input.Update(msg)
 	c.input = updated.(InputBar)
 	c.popover.closed = false
 	c.popover.refresh(c.input.Value(), c.input.Cursor())
 
-	return c, tea.Batch(vpCmd, inputCmd)
+	return c, tea.Batch(mlCmd, inputCmd)
 }
 
 func (c *ChatView) handleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
@@ -523,14 +415,15 @@ func (c *ChatView) handleMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
 	}
 
 	if layout.MessageRect.Contains(msg.X, msg.Y) && msg.Action == tea.MouseActionPress {
-		c.syncViewport(layout.MessageRect.Width, layout.MessageRect.Height)
+		c.messages.SyncViewport(layout.MessageRect.Width, layout.MessageRect.Height)
+		vp := c.messages.Viewport()
 
 		switch msg.Button {
 		case tea.MouseButtonWheelUp:
-			c.viewport.ScrollUp(c.viewport.MouseWheelDelta)
+			vp.ScrollUp(vp.MouseWheelDelta)
 			return true, nil
 		case tea.MouseButtonWheelDown:
-			c.viewport.ScrollDown(c.viewport.MouseWheelDelta)
+			vp.ScrollDown(vp.MouseWheelDelta)
 			return true, nil
 		}
 	}
@@ -554,49 +447,19 @@ func (c *ChatView) View(width, height int) string {
 		topicHeight = lipgloss.Height(topicView)
 	}
 
-	var pendingView string
-	pendingHeight := 0
-	if c.pending {
-		pendingView = c.spinner.View() + theme.Info.Render(" responding…")
-		pendingHeight = lipgloss.Height(pendingView)
+	messageListHeight := height - inputHeight - topicHeight - popoverHeight
+	if messageListHeight < 0 {
+		messageListHeight = 0
 	}
 
-	maxListHeight := height - inputHeight - topicHeight - pendingHeight - popoverHeight
-	if maxListHeight < 0 {
-		maxListHeight = 0
-	}
+	messageView := c.messages.View(width, messageListHeight)
 
-	messageView, scrolled, scrollPct := c.renderMessages(width, maxListHeight)
-
-	var scrollView string
-	if scrolled {
-		indicator := theme.Dim.Render(fmt.Sprintf("(%d%%)", int(scrollPct*100)))
-		scrollView = lipgloss.PlaceHorizontal(width, lipgloss.Right, indicator)
-
-		listHeight := maxListHeight - 1
-		if listHeight < 0 {
-			listHeight = 0
-		}
-
-		// Re-render the message area with one fewer line once the
-		// scroll indicator has claimed vertical space.
-		messageView, _, _ = c.renderMessages(width, listHeight)
-	}
-
-	parts := make([]string, 0, 6)
+	parts := make([]string, 0, 4)
 	if topicView != "" {
 		parts = append(parts, topicView)
 	}
 
-	if scrollView != "" {
-		parts = append(parts, scrollView)
-	}
-
 	parts = append(parts, messageView)
-
-	if pendingView != "" {
-		parts = append(parts, pendingView)
-	}
 
 	if popoverView != "" {
 		parts = append(parts, popoverView)
@@ -633,7 +496,7 @@ func (c *ChatView) layoutRects() chatViewLayout {
 	}
 
 	pendingHeight := 0
-	if c.pending {
+	if c.messages.Pending() {
 		pendingHeight = 1
 	}
 
@@ -668,289 +531,6 @@ func (c *ChatView) renderTopic(width int) string {
 		BorderForeground(lipgloss.ANSIColor(8))
 
 	return style.Render(text)
-}
-
-func (c *ChatView) renderMessages(width, height int) (view string, scrolled bool, scrollPct float64) {
-	if len(c.lines) == 0 {
-		text := theme.Dim.Render("No messages yet")
-		if c.placeholder != "" {
-			text = c.placeholder
-		}
-
-		return lipgloss.Place(width, height,
-			lipgloss.Center, lipgloss.Center, text), false, 0
-	}
-
-	content := c.renderedContent(width)
-	c.viewport.Width = width
-	c.viewport.Height = height
-
-	wasAtBottom := c.viewport.AtBottom() || c.viewport.TotalLineCount() == 0
-	c.viewport.SetContent(content)
-
-	if wasAtBottom {
-		c.viewport.GotoBottom()
-		c.clearDivider()
-		c.seenCount = c.countWithoutDivider(c.lines)
-	}
-
-	return c.viewport.View(), !c.viewport.AtBottom(), c.viewport.ScrollPercent()
-}
-
-func (c *ChatView) syncViewport(width, height int) {
-	if width < 0 {
-		width = 0
-	}
-
-	if height < 0 {
-		height = 0
-	}
-
-	c.viewport.Width = width
-	c.viewport.Height = height
-	c.viewport.SetContent(c.renderedContent(width))
-}
-
-func (c *ChatView) renderedContent(width int) string {
-	rendered := make([]string, 0, len(c.lines))
-	for _, line := range c.lines {
-		rendered = append(rendered, c.renderLine(line, width))
-	}
-
-	return strings.Join(rendered, "\n")
-}
-
-func (c *ChatView) renderLine(line ChatLine, width int) string {
-	wrap := lipgloss.NewStyle().Width(width)
-
-	switch l := line.(type) {
-	case MessageLine:
-		ts := theme.Dim.Render(l.Message.SentAt.Format("[15:04:05]"))
-		nick := theme.NickStyle(string(l.Message.From)).
-			Render(fmt.Sprintf("<%s>", string(l.Message.From)))
-
-		return wrap.Render(fmt.Sprintf("%s %s %s", ts, nick, l.Message.Body))
-
-	// IRC lifecycle events — "*** " prefix, SystemEvent style.
-
-	case Join:
-		text := fmt.Sprintf("%s has joined %s", l.Nick, l.Channel)
-		if l.Created {
-			text = fmt.Sprintf("Created channel %s", l.Channel)
-		}
-
-		return wrap.Render(theme.SystemEvent.Render("*** " + text))
-
-	case Part:
-		return wrap.Render(theme.SystemEvent.Render(
-			fmt.Sprintf("*** %s has left %s", l.Nick, l.Channel)))
-
-	case NickChange:
-		return wrap.Render(theme.SystemEvent.Render(
-			fmt.Sprintf("*** %s is now known as %s", l.OldNick, l.NewNick)))
-
-	case TopicChange:
-		text := fmt.Sprintf("topic for %s set to: %s", l.Channel, l.Topic)
-		if l.Topic == "" {
-			text = fmt.Sprintf("topic for %s cleared", l.Channel)
-		}
-
-		return wrap.Render(theme.SystemEvent.Render("*** " + text))
-
-	case ModelInvited:
-		text := fmt.Sprintf("%s (%s) has joined %s",
-			l.Instance.Nick, l.Instance.ModelID, l.Channel)
-		if l.Instance.Persona != "" {
-			text = fmt.Sprintf("%s with persona %q", text, l.Instance.Persona)
-		}
-
-		return wrap.Render(theme.SystemEvent.Render("*** " + text))
-
-	case ModelKicked:
-		return wrap.Render(theme.SystemEvent.Render(
-			fmt.Sprintf("*** %s has been kicked from %s", l.Nick, l.Channel)))
-
-	// Application feedback.
-
-	case Help:
-		return wrap.Render(c.renderHelp())
-
-	case Whois:
-		return wrap.Render(c.renderWhois(l))
-
-	case ChannelList:
-		return wrap.Render(c.renderChannelList(l))
-
-	case APIKeySaved:
-		return wrap.Render(theme.Success.Render(
-			"✓ OpenRouter API key saved and activated."))
-
-	case PokeIntervalSet:
-		return wrap.Render(theme.Success.Render(
-			fmt.Sprintf("✓ Poke interval set to %s.", l.Interval)))
-
-	case NickModelSet:
-		return wrap.Render(theme.Success.Render(
-			fmt.Sprintf("✓ Nick generation model set to %s.", l.ModelID)))
-
-	case DMOpened:
-		return wrap.Render(theme.Success.Render(
-			fmt.Sprintf("✓ Opened direct message with %s", l.Nick)))
-
-	case UsageHint:
-		return wrap.Render(theme.Warning.Render("⚠ " + usageText(l.Command)))
-
-	case NoChannel:
-		return wrap.Render(theme.Warning.Render("⚠ join a channel first"))
-
-	case CommandError:
-		return wrap.Render(theme.Error.Render("✗ " + l.Err.Error()))
-
-	case ConfigChanged:
-		return wrap.Render(theme.Success.Render("✓ " + l.Operation))
-
-	case BackendError:
-		return wrap.Render(theme.Error.Render(
-			fmt.Sprintf("✗ %s: %s", l.Operation, l.Err)))
-
-	case NewMessagesDivider:
-		return c.renderNewMessagesDivider(width)
-
-	default:
-		return ""
-	}
-}
-
-func (c *ChatView) renderHelp() string {
-	lines := make([]string, 0, len(c.popover.commands.Commands))
-	for _, node := range c.popover.commands.Commands {
-		usage := node.Usage()
-
-		line := usage
-		if node.Help != "" {
-			line = fmt.Sprintf("%-32s %s", usage, node.Help)
-		}
-
-		lines = append(lines, strings.TrimRight(line, " "))
-	}
-
-	if len(lines) == 0 {
-		lines = []string{"/help                            Show available commands."}
-	}
-
-	var parts []string
-	for _, line := range lines {
-		parts = append(parts, theme.SystemEvent.Render("*** "+line))
-	}
-
-	return strings.Join(parts, "\n")
-}
-
-func (c *ChatView) renderWhois(w Whois) string {
-	lines := []string{
-		fmt.Sprintf("%s is %s", w.Nick, w.ModelID),
-	}
-
-	if w.Persona != "" {
-		lines = append(lines, fmt.Sprintf("  persona: %s", w.Persona))
-	}
-
-	if len(w.Channels) > 0 {
-		var chStrs []string
-		for ch := range w.Channels.Sorted() {
-			chStrs = append(chStrs, string(ch))
-		}
-
-		lines = append(lines, fmt.Sprintf("  channels: %s", strings.Join(chStrs, ", ")))
-	}
-
-	var parts []string
-	for _, line := range lines {
-		parts = append(parts, theme.SystemEvent.Render("*** "+line))
-	}
-
-	return strings.Join(parts, "\n")
-}
-
-func (c *ChatView) renderChannelList(cl ChannelList) string {
-	if len(cl.Channels) == 0 {
-		return theme.SystemEvent.Render("*** no channels")
-	}
-
-	var parts []string
-	for _, ch := range cl.Channels {
-		line := string(ch.Name)
-		if ch.Topic != "" {
-			line += " — " + ch.Topic
-		}
-
-		parts = append(parts, theme.SystemEvent.Render("*** "+line))
-	}
-
-	return strings.Join(parts, "\n")
-}
-
-func (c *ChatView) renderNewMessagesDivider(width int) string {
-	label := theme.Warning.Render(" new messages ")
-	labelWidth := lipgloss.Width(label)
-
-	leftWidth := (width - labelWidth) / 2
-	rightWidth := width - leftWidth - labelWidth
-
-	left := strings.Repeat("─", max(0, leftWidth))
-	right := strings.Repeat("─", max(0, rightWidth))
-
-	return theme.Dim.Render(left) + label + theme.Dim.Render(right)
-}
-
-// insertDivider returns a copy of lines with a NewMessagesDivider
-// inserted at the seenCount position.
-func (c *ChatView) insertDivider(lines []ChatLine) []ChatLine {
-	// Remove any existing divider first.
-	cleaned := c.stripDivider(lines)
-
-	pos := c.seenCount
-	if pos > len(cleaned) {
-		pos = len(cleaned)
-	}
-
-	result := make([]ChatLine, 0, len(cleaned)+1)
-	result = append(result, cleaned[:pos]...)
-	result = append(result, NewMessagesDivider{})
-	result = append(result, cleaned[pos:]...)
-
-	return result
-}
-
-// stripDivider returns lines with any NewMessagesDivider removed.
-func (c *ChatView) stripDivider(lines []ChatLine) []ChatLine {
-	result := make([]ChatLine, 0, len(lines))
-
-	for _, l := range lines {
-		if _, ok := l.(NewMessagesDivider); !ok {
-			result = append(result, l)
-		}
-	}
-
-	return result
-}
-
-// clearDivider removes any NewMessagesDivider from the current lines.
-func (c *ChatView) clearDivider() {
-	c.lines = c.stripDivider(c.lines)
-}
-
-// countWithoutDivider returns the number of non-divider lines.
-func (c *ChatView) countWithoutDivider(lines []ChatLine) int {
-	n := 0
-
-	for _, l := range lines {
-		if _, ok := l.(NewMessagesDivider); !ok {
-			n++
-		}
-	}
-
-	return n
 }
 
 func usageText(command string) string {
