@@ -73,3 +73,43 @@ type ModelKickedEvent struct {
 }
 
 func (ModelKickedEvent) eventMarker() {}
+
+// ModelReplyEvent is emitted when a model instance responds to events
+// in a channel.
+type ModelReplyEvent struct {
+	Channel  ChannelName
+	Message  Message
+	Instance Nick
+	At       time.Time
+}
+
+func (ModelReplyEvent) eventMarker() {}
+
+// DMOpenedEvent is emitted when a direct message conversation is
+// opened or created.
+type DMOpenedEvent struct {
+	Channel Channel
+	Nick    Nick
+	Created bool
+	At      time.Time
+}
+
+func (DMOpenedEvent) eventMarker() {}
+
+// ConfigChangedEvent is emitted when a runtime configuration value is
+// updated.
+type ConfigChangedEvent struct {
+	Operation string
+	At        time.Time
+}
+
+func (ConfigChangedEvent) eventMarker() {}
+
+// ErrorEvent wraps a backend error as a domain event.
+type ErrorEvent struct {
+	Operation string
+	Err       error
+	At        time.Time
+}
+
+func (ErrorEvent) eventMarker() {}
