@@ -448,12 +448,15 @@ func TestChatView_pending_indicator_reduces_message_area(t *testing.T) {
 }
 
 func renderSingleLine(line components.ChatLine) string {
-	cv := components.NewChatView("#test", "testuser", "", []components.ChatLine{line}).WithCommandState(command.Set{
-		Commands: []*command.Node{
-			{Name: "join", Help: "Join or create a channel", Positionals: []command.Positional{{Name: "channel"}}},
-			{Name: "help", Help: "Show available commands."},
+	cv := components.NewChatView("#test", "testuser", "", []components.ChatLine{line})
+	cv.Update(components.CommandStateMsg{
+		Commands: command.Set{
+			Commands: []*command.Node{
+				{Name: "join", Help: "Join or create a channel", Positionals: []command.Positional{{Name: "channel"}}},
+				{Name: "help", Help: "Show available commands."},
+			},
 		},
-	}, command.CompletionContext{})
+	})
 	v := cv.View(200, 24)
 
 	return ansi.Strip(v)
@@ -643,20 +646,24 @@ func TestNewMessagesDivider_fills_width(t *testing.T) {
 }
 
 func TestChatView_command_popover_renders_and_completes(t *testing.T) {
-	cv := components.NewChatView("#general", "testuser", "", nil).WithCommandState(command.Set{
-		Commands: []*command.Node{
-			{
-				Name: "join",
-				Help: "Join a channel",
-				Positionals: []command.Positional{
-					{Name: "channel", Source: command.ChannelsSource()},
+	cv := components.NewChatView("#general", "testuser", "", nil)
+	cv.Update(components.CommandStateMsg{
+		Commands: command.Set{
+			Commands: []*command.Node{
+				{
+					Name: "join",
+					Help: "Join a channel",
+					Positionals: []command.Positional{
+						{Name: "channel", Source: command.ChannelsSource()},
+					},
 				},
 			},
 		},
-	}, command.CompletionContext{
-		Channels: []domain.Channel{
-			{Name: "#general", Kind: domain.KindChannel},
-			{Name: "#random", Kind: domain.KindChannel},
+		Context: command.CompletionContext{
+			Channels: []domain.Channel{
+				{Name: "#general", Kind: domain.KindChannel},
+				{Name: "#random", Kind: domain.KindChannel},
+			},
 		},
 	})
 	var m ui.Model = cv
@@ -678,13 +685,17 @@ func TestChatView_command_popover_renders_and_completes(t *testing.T) {
 }
 
 func TestChatView_popover_renders_usage_in_suggestions(t *testing.T) {
-	cv := components.NewChatView("#general", "testuser", "", nil).WithCommandState(command.Set{
-		Commands: []*command.Node{
-			{Name: "join", Help: "Join a channel", Positionals: []command.Positional{{Name: "channel"}}},
-			{Name: "leave", Help: "Leave current channel"},
-			{Name: "quit", Help: "Exit modeloff"},
+	cv := components.NewChatView("#general", "testuser", "", nil)
+	cv.Update(components.CommandStateMsg{
+		Commands: command.Set{
+			Commands: []*command.Node{
+				{Name: "join", Help: "Join a channel", Positionals: []command.Positional{{Name: "channel"}}},
+				{Name: "leave", Help: "Leave current channel"},
+				{Name: "quit", Help: "Exit modeloff"},
+			},
 		},
-	}, command.CompletionContext{})
+		Context: command.CompletionContext{},
+	})
 	var m ui.Model = cv
 
 	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 0, Y: 0, Width: 60, Height: 24}})
@@ -760,7 +771,7 @@ func TestChatView_divider_inserted_when_scrolled_up(t *testing.T) {
 		}
 	}
 
-	cv.SetLines(components.MessagesToLines(newMsgs))
+	cv.Update(components.SetLinesMsg{Lines: components.MessagesToLines(newMsgs)})
 
 	// Scroll to bottom to see the divider.
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
@@ -804,7 +815,7 @@ func TestChatView_no_divider_when_at_bottom(t *testing.T) {
 		}
 	}
 
-	cv.SetLines(components.MessagesToLines(newMsgs))
+	cv.Update(components.SetLinesMsg{Lines: components.MessagesToLines(newMsgs)})
 
 	v := cv.View(80, 24)
 	stripped := ansi.Strip(v)
@@ -840,18 +851,22 @@ func TestChatView_mouse_wheel_scrolls_messages(t *testing.T) {
 }
 
 func TestChatView_mouse_click_accepts_popover_suggestion(t *testing.T) {
-	cv := components.NewChatView("#general", "testuser", "", nil).WithCommandState(command.Set{
-		Commands: []*command.Node{
-			{
-				Name: "join",
-				Help: "Join a channel",
-				Positionals: []command.Positional{
-					{Name: "channel", Source: command.ChannelsSource()},
+	cv := components.NewChatView("#general", "testuser", "", nil)
+	cv.Update(components.CommandStateMsg{
+		Commands: command.Set{
+			Commands: []*command.Node{
+				{
+					Name: "join",
+					Help: "Join a channel",
+					Positionals: []command.Positional{
+						{Name: "channel", Source: command.ChannelsSource()},
+					},
 				},
 			},
 		},
-	}, command.CompletionContext{
-		Channels: []domain.Channel{{Name: "#general", Kind: domain.KindChannel}},
+		Context: command.CompletionContext{
+			Channels: []domain.Channel{{Name: "#general", Kind: domain.KindChannel}},
+		},
 	})
 	var m ui.Model = cv
 

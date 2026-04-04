@@ -165,6 +165,24 @@ type PendingResponseMsg struct {
 	Pending bool
 }
 
+// SetChannelMsg updates the channel identity, topic, and lines for a
+// channel switch.
+type SetChannelMsg struct {
+	Channel domain.ChannelName
+	Topic   string
+	Lines   []ChatLine
+}
+
+// SetLinesMsg replaces the displayed lines, preserving divider logic.
+type SetLinesMsg struct {
+	Lines []ChatLine
+}
+
+// SetPlaceholderMsg sets text to show when there are no messages.
+type SetPlaceholderMsg struct {
+	Text string
+}
+
 // CommandStateMsg updates the available commands and completion context.
 type CommandStateMsg struct {
 	Commands command.Set
@@ -226,12 +244,12 @@ func NewChatView(ch domain.ChannelName, userNick domain.Nick, topic string, line
 	}
 }
 
-// SetLines replaces the displayed lines, preserving viewport and
+// setLines replaces the displayed lines, preserving viewport and
 // input state. When lines transition from empty to non-empty, the
 // viewport content is reset so stale placeholder rendering does not
 // leak through. If the viewport is scrolled up and new lines have
 // been added, a NewMessagesDivider is inserted at the boundary.
-func (c *ChatView) SetLines(lines []ChatLine) {
+func (c *ChatView) setLines(lines []ChatLine) {
 	wasEmpty := len(c.lines) == 0
 
 	scrolledUp := !c.viewport.AtBottom() && c.viewport.TotalLineCount() > 0
@@ -252,21 +270,10 @@ func (c *ChatView) SetLines(lines []ChatLine) {
 	}
 }
 
-// SetTopic updates the channel topic in place.
-func (c *ChatView) SetTopic(topic string) {
-	c.topic = topic
-}
-
-// SetPlaceholder sets text to show when there are no messages,
-// replacing the default "No messages yet".
-func (c *ChatView) SetPlaceholder(text string) {
-	c.placeholder = text
-}
-
-// SetChannel updates the channel identity, title, and lines for a
+// setChannel updates the channel identity, title, and lines for a
 // channel switch. The viewport content is cleared so stale
 // placeholder rendering does not leak through.
-func (c *ChatView) SetChannel(ch domain.ChannelName, topic string, lines []ChatLine) {
+func (c *ChatView) setChannel(ch domain.ChannelName, topic string, lines []ChatLine) {
 	c.channel = ch
 	c.topic = topic
 	c.lines = lines
@@ -280,13 +287,6 @@ func (c *ChatView) appendLines(newLines []ChatLine) {
 	c.lines = append(c.lines, newLines...)
 	c.seenCount = len(c.lines)
 	c.viewport.GotoBottom()
-}
-
-// WithCommandState applies the available commands and runtime context.
-func (c *ChatView) WithCommandState(commands command.Set, ctx command.CompletionContext) *ChatView {
-	c.popover.Apply(commands, ctx, c.input.Value(), c.input.Cursor())
-
-	return c
 }
 
 // Init implements ui.Model.
@@ -357,6 +357,18 @@ func (c *ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case ui.BoundsMsg:
 		c.bounds = msg.Rect
+		return c, nil
+
+	case SetChannelMsg:
+		c.setChannel(msg.Channel, msg.Topic, msg.Lines)
+		return c, nil
+
+	case SetLinesMsg:
+		c.setLines(msg.Lines)
+		return c, nil
+
+	case SetPlaceholderMsg:
+		c.placeholder = msg.Text
 		return c, nil
 
 	case CommandStateMsg:

@@ -11,10 +11,6 @@ import (
 	"github.com/laney/modeloff/internal/ui/components"
 )
 
-func noChannelMsg() tea.Msg {
-	return systemEventMsg{events: []components.ChatLine{components.NoChannel{}}}
-}
-
 func errorEvent(operation string, err error) domain.ErrorEvent {
 	return domain.ErrorEvent{Operation: operation, Err: err, At: time.Now()}
 }
@@ -34,16 +30,18 @@ func (s *ChatScreen) configure(cmd command.ConfigCommand) tea.Cmd {
 
 		switch cmd.Key {
 		case "":
-			return systemEventMsg{events: []components.ChatLine{
-				components.UsageHint{Command: "config"},
-			}}
+			return components.AppendLinesMsg{
+				Channel: s.active,
+				Lines:   []components.ChatLine{components.UsageHint{Command: "config"}},
+			}
 
 		case "api-key":
 			value := strings.TrimSpace(strings.Join(cmd.Value, " "))
 			if value == "" {
-				return systemEventMsg{events: []components.ChatLine{
-					components.UsageHint{Command: "config api-key"},
-				}}
+				return components.AppendLinesMsg{
+					Channel: s.active,
+					Lines:   []components.ChatLine{components.UsageHint{Command: "config api-key"}},
+				}
 			}
 
 			if _, err := s.sess.SetAPIKey(ctx, value); err != nil {
@@ -55,9 +53,10 @@ func (s *ChatScreen) configure(cmd command.ConfigCommand) tea.Cmd {
 		case "poke-interval":
 			value := strings.TrimSpace(strings.Join(cmd.Value, " "))
 			if value == "" {
-				return systemEventMsg{events: []components.ChatLine{
-					components.UsageHint{Command: "config poke-interval"},
-				}}
+				return components.AppendLinesMsg{
+					Channel: s.active,
+					Lines:   []components.ChatLine{components.UsageHint{Command: "config poke-interval"}},
+				}
 			}
 
 			interval, err := time.ParseDuration(value)
@@ -72,16 +71,18 @@ func (s *ChatScreen) configure(cmd command.ConfigCommand) tea.Cmd {
 				return errorEvent("config poke-interval", err)
 			}
 
-			return systemEventMsg{events: []components.ChatLine{
-				components.PokeIntervalSet{Interval: interval},
-			}}
+			return components.AppendLinesMsg{
+				Channel: s.active,
+				Lines:   []components.ChatLine{components.PokeIntervalSet{Interval: interval}},
+			}
 
 		case "nick-model":
 			value := strings.TrimSpace(strings.Join(cmd.Value, " "))
 			if value == "" {
-				return systemEventMsg{events: []components.ChatLine{
-					components.UsageHint{Command: "config nick-model"},
-				}}
+				return components.AppendLinesMsg{
+					Channel: s.active,
+					Lines:   []components.ChatLine{components.UsageHint{Command: "config nick-model"}},
+				}
 			}
 
 			modelID := domain.ModelID(value)
@@ -90,9 +91,10 @@ func (s *ChatScreen) configure(cmd command.ConfigCommand) tea.Cmd {
 				return errorEvent("config nick-model", err)
 			}
 
-			return systemEventMsg{events: []components.ChatLine{
-				components.NickModelSet{ModelID: modelID},
-			}}
+			return components.AppendLinesMsg{
+				Channel: s.active,
+				Lines:   []components.ChatLine{components.NickModelSet{ModelID: modelID}},
+			}
 
 		default:
 			return errorEvent("config", domain.UnknownConfigKeyError{Key: cmd.Key})
@@ -192,9 +194,10 @@ func (s *ChatScreen) whois(nick domain.Nick) tea.Cmd {
 			return errorEvent("whois", domain.UnknownNickError{Nick: nick})
 		}
 
-		return systemEventMsg{events: []components.ChatLine{
-			components.Whois{ModelInstance: inst},
-		}}
+		return components.AppendLinesMsg{
+			Channel: s.active,
+			Lines:   []components.ChatLine{components.Whois{ModelInstance: inst}},
+		}
 	}
 }
 
@@ -222,7 +225,10 @@ func (s *ChatScreen) kickModel(nick domain.Nick) tea.Cmd {
 
 func (s *ChatScreen) showHelp() tea.Cmd {
 	return func() tea.Msg {
-		return systemEventMsg{events: []components.ChatLine{components.Help{}}}
+		return components.AppendLinesMsg{
+			Channel: s.active,
+			Lines:   []components.ChatLine{components.Help{}},
+		}
 	}
 }
 
@@ -235,8 +241,9 @@ func (s *ChatScreen) listChannels() tea.Cmd {
 			return errorEvent("list", err)
 		}
 
-		return systemEventMsg{events: []components.ChatLine{
-			components.ChannelList{Channels: channels},
-		}}
+		return components.AppendLinesMsg{
+			Channel: s.active,
+			Lines:   []components.ChatLine{components.ChannelList{Channels: channels}},
+		}
 	}
 }

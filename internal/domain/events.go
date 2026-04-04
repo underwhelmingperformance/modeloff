@@ -113,3 +113,18 @@ type ErrorEvent struct {
 }
 
 func (ErrorEvent) eventMarker() {}
+
+// InitialLoadEvent carries the data needed to render the chat screen
+// after loading from the session at startup.
+type InitialLoadEvent struct {
+	Channels  []Channel
+	Instances []ModelInstance
+	Active    ChannelName
+	Topic     string
+	Messages  []Message
+	Unread    map[ChannelName]int
+	Members   []Member
+	At        time.Time
+}
+
+func (InitialLoadEvent) eventMarker() {}
