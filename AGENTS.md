@@ -18,8 +18,8 @@ There is no server component. This uses the OpenRouter API.
    like ctrl-d,ctrl-u,ctrl-o to navigate in the sidebar (or the mouse).
    1. If the channel doesn't exist, it is created.
    2. The user can have multiple channels open at once.
-4. The user can `/leave` a channel.
-   1. Leaving a channel doesn't delete it.
+4. The user can `/part` a channel.
+   1. Parting a channel doesn't delete it.
 5. The user can `/list` all channels.
 6. The user can `/invite` models to add them to the channel, and `/kick`
    them to remove them.
