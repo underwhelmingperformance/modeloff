@@ -56,6 +56,24 @@ func TestComplete_command_names(t *testing.T) {
 	require.Equal(t, "/join <channel>", completion.Usage)
 }
 
+func TestComplete_exact_command_clears_suggestions(t *testing.T) {
+	scope := Scope{
+		Commands: []Spec{
+			{Name: "join", Help: "Join channels", Usage: "/join <channel>"},
+			{Name: "list", Help: "List channels", Usage: "/list"},
+			{Name: "quit", Help: "Exit.", Usage: "/quit"},
+		},
+	}
+
+	completion := Complete(scope, "/quit", 5, CompletionContext{})
+
+	require.True(t, completion.Visible)
+	require.Equal(t, "/quit", completion.Usage)
+	require.Equal(t, "Exit.", completion.Help)
+	require.Empty(t, completion.Suggestions,
+		"exact command match must not return suggestions that duplicate the usage header")
+}
+
 func TestComplete_argument_sources_are_contextual(t *testing.T) {
 	scope := Scope{
 		Commands: []Spec{

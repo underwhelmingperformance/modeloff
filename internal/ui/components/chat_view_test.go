@@ -451,12 +451,12 @@ func TestRenderLine_IRC_events(t *testing.T) {
 		},
 		{
 			"topic_set",
-			components.TopicChange{TopicChangeEvent: domain.TopicChangeEvent{Channel: "#general", Title: "cool topic"}},
+			components.TopicChange{TopicChangeEvent: domain.TopicChangeEvent{Channel: "#general", Topic: "cool topic"}},
 			"*** topic for #general set to: cool topic",
 		},
 		{
 			"topic_cleared",
-			components.TopicChange{TopicChangeEvent: domain.TopicChangeEvent{Channel: "#general", Title: ""}},
+			components.TopicChange{TopicChangeEvent: domain.TopicChangeEvent{Channel: "#general", Topic: ""}},
 			"*** topic for #general cleared",
 		},
 		{
@@ -506,7 +506,7 @@ func TestRenderLine_application_feedback(t *testing.T) {
 			"channel_list",
 			components.ChannelList{Channels: []domain.Channel{
 				{Name: "#general"},
-				{Name: "#random", Title: "cool"},
+				{Name: "#random", Topic: "cool"},
 			}},
 			"*** #general",
 		},
@@ -801,3 +801,5 @@ func TestChatView_mouse_click_accepts_popover_suggestion(t *testing.T) {
 	sub := cmd().(components.CommandSubmitMsg)
 	require.Equal(t, "/join #general", sub.Raw)
 }
+
+

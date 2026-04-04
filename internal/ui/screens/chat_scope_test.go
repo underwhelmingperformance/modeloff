@@ -145,20 +145,6 @@ func TestChatScreen_KeyBindings_switch_to_popover_bindings(t *testing.T) {
 	}, bindingHelp(ui.ActiveKeyBindings(screen.KeyBindings())))
 }
 
-func TestChatScreen_popover_no_duplicate_suggestions(t *testing.T) {
-	screen := NewChatScreen(t.Context(), newScopeTestSession(t))
-	scope := screen.CommandScope()
-
-	for _, spec := range scope.Commands {
-		raw := "/" + spec.Name
-		completion := command.Complete(scope, raw, len([]rune(raw)), command.CompletionContext{})
-
-		require.True(t, completion.Visible, "popover must be visible for %s", raw)
-		require.True(t, completion.SuppressList,
-			"exact match for %s must suppress the suggestion list so usage and suggestions don't visually duplicate", raw)
-	}
-}
-
 func bindingHelp(bindings []key.Binding) []key.Help {
 	help := make([]key.Help, 0, len(bindings))
 

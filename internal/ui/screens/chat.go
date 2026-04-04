@@ -23,7 +23,7 @@ type chatLoadedMsg struct {
 	channels  []domain.Channel
 	instances []domain.ModelInstance
 	active    domain.ChannelName
-	title     string
+	topic     string
 	messages  []domain.Message
 	unread    map[domain.ChannelName]int
 	members   []domain.Member
@@ -33,7 +33,7 @@ type chatLoadedMsg struct {
 // carrying the new channel's messages.
 type channelSwitchedMsg struct {
 	channel  domain.ChannelName
-	title    string
+	topic    string
 	channels []domain.Channel
 	messages []domain.Message
 	unread   map[domain.ChannelName]int
@@ -53,7 +53,7 @@ type commandResultMsg struct {
 	channels  []domain.Channel
 	instances []domain.ModelInstance
 	active    domain.ChannelName
-	title     string
+	topic     string
 	messages  []domain.Message
 	unread    map[domain.ChannelName]int
 	members   []domain.Member
@@ -93,7 +93,7 @@ type ChatScreen struct {
 	width        int
 	height       int
 	active       domain.ChannelName
-	title        string
+	topic        string
 	channelCount int
 }
 
@@ -137,14 +137,14 @@ func (s *ChatScreen) Init() tea.Cmd {
 		}
 
 		var messages []domain.Message
-		var title string
+		var topic string
 		var members []domain.Member
 
 		if active != "" {
 			messages, _ = s.sess.Messages(ctx, active)
 
 			if ch, err := s.sess.GetChannel(ctx, active); err == nil {
-				title = ch.Title
+				topic = ch.Topic
 				members = s.sortedMembers(ch.Members)
 			}
 		}
@@ -153,7 +153,7 @@ func (s *ChatScreen) Init() tea.Cmd {
 			channels:  channels,
 			instances: instances,
 			active:    active,
-			title:     title,
+			topic:     topic,
 			messages:  messages,
 			unread:    s.unreadCounts(ctx, channels),
 			members:   members,
@@ -238,11 +238,11 @@ func (s *ChatScreen) handleLoaded(msg chatLoadedMsg) (ui.Model, tea.Cmd) {
 	s.channels = msg.channels
 	s.instances = msg.instances
 	s.active = msg.active
-	s.title = msg.title
+	s.topic = msg.topic
 	s.channelCount = len(msg.channels)
 
 	s.updateSidebar(msg.channels, msg.active, msg.unread)
-	s.chatView.SetChannel(msg.active, msg.title, components.MessagesToLines(msg.messages))
+	s.chatView.SetChannel(msg.active, msg.topic, components.MessagesToLines(msg.messages))
 	s.updateNickList(msg.members)
 
 	if s.channelCount == 0 {
@@ -259,12 +259,12 @@ func (s *ChatScreen) handleLoaded(msg chatLoadedMsg) (ui.Model, tea.Cmd) {
 func (s *ChatScreen) handleChannelSwitched(msg channelSwitchedMsg) (ui.Model, tea.Cmd) {
 	s.channels = msg.channels
 	s.active = msg.channel
-	s.title = msg.title
+	s.topic = msg.topic
 	s.channelCount = len(msg.channels)
 
 	s.updateSidebar(msg.channels, msg.channel, msg.unread)
 	s.chatView.SetPlaceholder("")
-	s.chatView.SetChannel(msg.channel, msg.title, components.MessagesToLines(msg.messages))
+	s.chatView.SetChannel(msg.channel, msg.topic, components.MessagesToLines(msg.messages))
 	s.updateNickList(msg.members)
 	s.applyCommandState()
 
@@ -283,7 +283,7 @@ func (s *ChatScreen) handleCommandResult(msg commandResultMsg) (ui.Model, tea.Cm
 	s.channels = msg.channels
 	s.instances = msg.instances
 	s.active = msg.active
-	s.title = msg.title
+	s.topic = msg.topic
 	s.channelCount = len(msg.channels)
 
 	lines := components.MessagesToLines(msg.messages)
@@ -291,7 +291,7 @@ func (s *ChatScreen) handleCommandResult(msg commandResultMsg) (ui.Model, tea.Cm
 
 	s.updateSidebar(msg.channels, msg.active, msg.unread)
 	s.chatView.SetPlaceholder("")
-	s.chatView.SetChannel(msg.active, msg.title, lines)
+	s.chatView.SetChannel(msg.active, msg.topic, lines)
 	s.updateNickList(msg.members)
 	s.chatView.WithCommandState(s.CommandScope(), s.commandContext())
 	s.forwardToLayout(components.PendingResponseMsg{Pending: false})
@@ -501,18 +501,18 @@ func (s *ChatScreen) CommandScope() command.Scope {
 				},
 			},
 			{
-				Name:  "title",
-				Help:  "Set or clear the current channel title.",
-				Usage: "/title [text]",
+				Name:  "topic",
+				Help:  "Set or clear the current channel topic.",
+				Usage: "/topic [text]",
 				Args: []command.ArgSpec{
-					{Name: "text", Help: "Title text is free-form.", Optional: true, FreeForm: true},
+					{Name: "text", Help: "Topic text is free-form.", Optional: true, FreeForm: true},
 				},
 				Handler: func(inv command.Invocation) tea.Cmd {
 					if s.active == "" {
 						return noChannelCmd()
 					}
 
-					return s.setTitle(inv.Parsed.(command.TitleCommand).Title)
+					return s.setTopic(inv.Parsed.(command.TopicCommand).Topic)
 				},
 			},
 			{
@@ -529,13 +529,14 @@ func (s *ChatScreen) CommandScope() command.Scope {
 			{
 				Name:  "config",
 				Help:  "Update runtime configuration.",
-				Usage: "/config <api-key|poke-interval> [value]",
+				Usage: "/config <api-key|nick-model|poke-interval> [value]",
 				Args: []command.ArgSpec{
 					{
 						Name: "key",
 						Help: "Choose a config key.",
 						Source: command.LiteralSource(
 							command.Suggestion{Value: "api-key", Label: "api-key", Detail: "Activate OpenRouter immediately."},
+							command.Suggestion{Value: "nick-model", Label: "nick-model", Detail: "Set the model used to generate nicknames."},
 							command.Suggestion{Value: "poke-interval", Label: "poke-interval", Detail: "Set the background poke cadence."},
 						),
 					},
@@ -678,17 +679,17 @@ func (s *ChatScreen) switchChannel(ch domain.ChannelName) tea.Cmd {
 		channels, _ := s.sess.ListChannels(ctx)
 		messages, _ := s.sess.Messages(ctx, ch)
 
-		var title string
+		var topic string
 		var members []domain.Member
 
 		if channel, err := s.sess.GetChannel(ctx, ch); err == nil {
-			title = channel.Title
+			topic = channel.Topic
 			members = s.sortedMembers(channel.Members)
 		}
 
 		return channelSwitchedMsg{
 			channel:  ch,
-			title:    title,
+			topic:    topic,
 			channels: channels,
 			messages: messages,
 			unread:   s.unreadCounts(ctx, channels),

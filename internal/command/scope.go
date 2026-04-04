@@ -159,7 +159,7 @@ func Complete(scope Scope, raw string, cursor int, ctx CompletionContext) Comple
 		if spec := exactSpec(scope, prefix); spec != nil {
 			completion.Usage = spec.Usage
 			completion.Help = spec.Help
-			completion.SuppressList = true
+			completion.Suggestions = nil
 			return completion
 		}
 

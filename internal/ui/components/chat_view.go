@@ -89,6 +89,11 @@ type PokeIntervalSet struct{ Interval time.Duration }
 
 func (PokeIntervalSet) chatLine() {}
 
+// NickModelSet confirms the nick generation model was changed.
+type NickModelSet struct{ ModelID domain.ModelID }
+
+func (NickModelSet) chatLine() {}
+
 // DMOpened confirms a direct message was opened.
 type DMOpened struct{ Nick domain.Nick }
 
@@ -149,7 +154,7 @@ type CommandStateMsg struct {
 // at the bottom.
 type ChatView struct {
 	channel     domain.ChannelName
-	title       string
+	topic       string
 	userNick    domain.Nick
 	lines       []ChatLine
 	input       InputBar
@@ -172,7 +177,7 @@ type chatViewLayout struct {
 }
 
 // NewChatView creates a chat view for the given channel.
-func NewChatView(ch domain.ChannelName, userNick domain.Nick, title string, lines []ChatLine) *ChatView {
+func NewChatView(ch domain.ChannelName, userNick domain.Nick, topic string, lines []ChatLine) *ChatView {
 	vp := viewport.New(0, 0)
 	vp.MouseWheelEnabled = true
 
@@ -186,7 +191,7 @@ func NewChatView(ch domain.ChannelName, userNick domain.Nick, title string, line
 
 	return &ChatView{
 		channel:   ch,
-		title:     title,
+		topic:     topic,
 		userNick:  userNick,
 		lines:     lines,
 		seenCount: len(lines),
@@ -226,9 +231,9 @@ func (c *ChatView) SetLines(lines []ChatLine) {
 	}
 }
 
-// SetTitle updates the channel title in place.
-func (c *ChatView) SetTitle(title string) {
-	c.title = title
+// SetTopic updates the channel topic in place.
+func (c *ChatView) SetTopic(topic string) {
+	c.topic = topic
 }
 
 // SetPlaceholder sets text to show when there are no messages,
@@ -240,9 +245,9 @@ func (c *ChatView) SetPlaceholder(text string) {
 // SetChannel updates the channel identity, title, and lines for a
 // channel switch. The viewport content is cleared so stale
 // placeholder rendering does not leak through.
-func (c *ChatView) SetChannel(ch domain.ChannelName, title string, lines []ChatLine) {
+func (c *ChatView) SetChannel(ch domain.ChannelName, topic string, lines []ChatLine) {
 	c.channel = ch
-	c.title = title
+	c.topic = topic
 	c.lines = lines
 	c.seenCount = len(lines)
 	c.viewport.SetContent("")
@@ -495,7 +500,7 @@ func (c *ChatView) View(width, height int) string {
 
 	var topicView string
 	topicHeight := 0
-	if c.title != "" {
+	if c.topic != "" {
 		topicView = c.renderTopic(width)
 		topicHeight = lipgloss.Height(topicView)
 	}
@@ -574,7 +579,7 @@ func (c *ChatView) layoutRects() chatViewLayout {
 	popoverLayout := c.popover.layout(c.bounds, inputRect)
 
 	topicHeight := 0
-	if c.title != "" {
+	if c.topic != "" {
 		topicHeight = lipgloss.Height(c.renderTopic(width))
 	}
 
@@ -605,7 +610,7 @@ func (c *ChatView) composerPrefixWidth() int {
 }
 
 func (c *ChatView) renderTopic(width int) string {
-	text := theme.ChannelTitle.Render(c.title)
+	text := theme.ChannelTitle.Render(c.topic)
 
 	style := lipgloss.NewStyle().
 		Width(width).
@@ -696,8 +701,8 @@ func (c *ChatView) renderLine(line ChatLine, width int) string {
 			fmt.Sprintf("*** %s is now known as %s", l.OldNick, l.NewNick)))
 
 	case TopicChange:
-		text := fmt.Sprintf("topic for %s set to: %s", l.Channel, l.Title)
-		if l.Title == "" {
+		text := fmt.Sprintf("topic for %s set to: %s", l.Channel, l.Topic)
+		if l.Topic == "" {
 			text = fmt.Sprintf("topic for %s cleared", l.Channel)
 		}
 
@@ -734,6 +739,10 @@ func (c *ChatView) renderLine(line ChatLine, width int) string {
 	case PokeIntervalSet:
 		return wrap.Render(theme.Success.Render(
 			fmt.Sprintf("✓ Poke interval set to %s.", l.Interval)))
+
+	case NickModelSet:
+		return wrap.Render(theme.Success.Render(
+			fmt.Sprintf("✓ Nick generation model set to %s.", l.ModelID)))
 
 	case DMOpened:
 		return wrap.Render(theme.Success.Render(
@@ -818,8 +827,8 @@ func (c *ChatView) renderChannelList(cl ChannelList) string {
 	var parts []string
 	for _, ch := range cl.Channels {
 		line := string(ch.Name)
-		if ch.Title != "" {
-			line += " — " + ch.Title
+		if ch.Topic != "" {
+			line += " — " + ch.Topic
 		}
 
 		parts = append(parts, theme.SystemEvent.Render("*** "+line))
@@ -894,9 +903,11 @@ func (c *ChatView) countWithoutDivider(lines []ChatLine) int {
 func usageText(command string) string {
 	switch command {
 	case "config":
-		return "usage: /config api-key <value> | /config poke-interval <duration>"
+		return "usage: /config api-key <value> | /config nick-model <model-id> | /config poke-interval <duration>"
 	case "config api-key":
 		return "usage: /config api-key <value>"
+	case "config nick-model":
+		return "usage: /config nick-model <model-id>"
 	case "config poke-interval":
 		return "usage: /config poke-interval <duration>"
 	case "invite":
