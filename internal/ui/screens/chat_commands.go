@@ -11,6 +11,166 @@ import (
 	"github.com/laney/modeloff/internal/ui/components"
 )
 
+// Commands implements ui.CommandSource.
+func (s *ChatScreen) Commands() command.Set {
+	if len(s.commands.Commands) > 0 {
+		return s.commands
+	}
+
+	type grammar struct {
+		Join   command.JoinCommand   `cmd:"" help:"Switch to a channel or create it if needed."`
+		Leave  command.LeaveCommand  `cmd:"" help:"Leave the current channel."`
+		List   command.ListCommand   `cmd:"" help:"List all known channels."`
+		Invite command.InviteCommand `cmd:"" help:"Invite a model or reusable instance into the current channel."`
+		Kick   command.KickCommand   `cmd:"" help:"Remove a model instance from the current channel."`
+		Msg    command.MsgCommand    `cmd:"" help:"Open a direct message and optionally send text."`
+		Nick   command.NickCommand   `cmd:"" help:"Change your nickname."`
+		Topic  command.TopicCommand  `cmd:"" help:"Set or clear the current channel topic."`
+		Whois  command.WhoisCommand  `cmd:"" help:"Show details about a model instance."`
+		Config command.ConfigCommand `cmd:"" help:"Update runtime configuration."`
+		Help   command.HelpCommand   `cmd:"" help:"Show available commands."`
+		Quit   command.QuitCommand   `cmd:"" help:"Exit modeloff."`
+	}
+
+	cmds := command.Build(&grammar{})
+
+	// Bind handlers.
+
+	command.Bind(cmds, "join", func(cmd command.JoinCommand) tea.Cmd {
+		return s.joinChannel(cmd.Channel.String())
+	})
+
+	command.Bind(cmds, "leave", func(_ command.LeaveCommand) tea.Cmd {
+		if s.active == "" {
+			return s.noChannelCmd()
+		}
+
+		return s.leaveChannel()
+	})
+
+	command.Bind(cmds, "list", func(_ command.ListCommand) tea.Cmd {
+		return s.listChannels()
+	})
+
+	command.Bind(cmds, "invite", func(cmd command.InviteCommand) tea.Cmd {
+		if s.active == "" {
+			return s.noChannelCmd()
+		}
+
+		if cmd.Model == "" {
+			return s.usageCmd("invite")
+		}
+
+		return s.inviteModel(domain.ModelID(cmd.Model), strings.Join(cmd.Persona, " "))
+	})
+
+	command.Bind(cmds, "kick", func(cmd command.KickCommand) tea.Cmd {
+		if s.active == "" {
+			return s.noChannelCmd()
+		}
+
+		return s.kickModel(domain.Nick(cmd.Nick))
+	})
+
+	command.Bind(cmds, "msg", func(cmd command.MsgCommand) tea.Cmd {
+		return s.directMessage(domain.Nick(cmd.Nick), strings.Join(cmd.Body, " "))
+	})
+
+	command.Bind(cmds, "nick", func(cmd command.NickCommand) tea.Cmd {
+		return s.changeNick(domain.Nick(cmd.Nick))
+	})
+
+	command.Bind(cmds, "topic", func(cmd command.TopicCommand) tea.Cmd {
+		if s.active == "" {
+			return s.noChannelCmd()
+		}
+
+		return s.setTopic(strings.Join(cmd.Topic, " "))
+	})
+
+	command.Bind(cmds, "whois", func(cmd command.WhoisCommand) tea.Cmd {
+		return s.whois(domain.Nick(cmd.Nick))
+	})
+
+	command.Bind(cmds, "help", func(_ command.HelpCommand) tea.Cmd {
+		return s.showHelp()
+	})
+
+	command.Bind(cmds, "quit", func(_ command.QuitCommand) tea.Cmd {
+		return tea.Quit
+	})
+
+	// Bind suggestion sources.
+
+	cmds.Find("join").SetSource("channel", command.ChannelsSource())
+
+	invite := cmds.Find("invite")
+	invite.SetSource("model", command.ComposeSources(
+		command.ReusableInstancesSource(),
+		command.LiveModelsSource(),
+	))
+
+	cmds.Find("kick").SetSource("nick", command.ActiveMembersSource())
+	cmds.Find("msg").SetSource("nick", command.InstancesSource())
+	cmds.Find("whois").SetSource("nick", command.InstancesSource())
+
+	// Config has custom positionals with dynamic completion sources.
+	configNode := cmds.Find("config")
+	configNode.Positionals = []command.Positional{
+		{
+			Name: "key",
+			Help: "Choose a config key.",
+			Source: command.LiteralSource(
+				command.Suggestion{Value: "api-key", Label: "api-key", Detail: "Activate OpenRouter immediately."},
+				command.Suggestion{Value: "nick-model", Label: "nick-model", Detail: "Set the model used to generate nicknames."},
+				command.Suggestion{Value: "poke-interval", Label: "poke-interval", Detail: "Set the background poke cadence."},
+			),
+		},
+		{
+			Name:     "value",
+			Help:     "Values are free-form after the key.",
+			Optional: true,
+			Source: func(_ command.CompletionContext, state command.InvocationState) []command.Suggestion {
+				if len(state.Args) == 0 || state.Args[0] != "poke-interval" {
+					return nil
+				}
+
+				return []command.Suggestion{
+					{Value: "5m", Label: "5m", Detail: "Fast poke cadence"},
+					{Value: "10m", Label: "10m", Detail: "Balanced poke cadence"},
+					{Value: "30m", Label: "30m", Detail: "Quiet channels"},
+					{Value: "1h", Label: "1h", Detail: "Very low activity"},
+				}
+			},
+		},
+	}
+	command.Bind(cmds, "config", func(cmd command.ConfigCommand) tea.Cmd {
+		return s.configure(cmd)
+	})
+
+	s.commands = cmds
+
+	return s.commands
+}
+
+func (s *ChatScreen) usageCmd(commandName string) tea.Cmd {
+	return func() tea.Msg {
+		return components.AppendLinesMsg{
+			Channel: s.active,
+			Lines:   []components.ChatLine{components.UsageHint{Command: commandName}},
+		}
+	}
+}
+
+func (s *ChatScreen) noChannelCmd() tea.Cmd {
+	return func() tea.Msg {
+		return components.AppendLinesMsg{
+			Channel: s.active,
+			Lines:   []components.ChatLine{components.NoChannel{}},
+		}
+	}
+}
+
 func errorEvent(operation string, err error) domain.ErrorEvent {
 	return domain.ErrorEvent{Operation: operation, Err: err, At: time.Now()}
 }

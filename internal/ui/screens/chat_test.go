@@ -124,27 +124,22 @@ func TestChatScreen_Init_loads_channels(t *testing.T) {
 
 	tm := newChatApp(t, sess)
 	waitForOutput(t, tm, "#general", "hello")
-
-	view := finalView(t, tm)
-	require.Contains(t, view, "#general")
-	require.Contains(t, view, "hello")
 }
 
 func TestChatScreen_Init_empty(t *testing.T) {
 	sess := newTestSession(t)
 
 	tm := newChatApp(t, sess)
-	waitForOutput(t, tm, "Welcome to modeloff")
-
-	view := finalView(t, tm)
-	require.Contains(t, view, "Welcome to modeloff")
-	require.Contains(t, view, "Connected as")
-	require.Contains(t, view, "testuser")
-	require.Contains(t, view, "/join #general")
-	require.Contains(t, view, "/config api-key <value>")
-	require.Contains(t, view, "ctrl+d, ctrl+u, ctrl+o")
-	require.Contains(t, view, "No channels")
-	require.Contains(t, view, ">")
+	waitForOutput(t, tm,
+		"Welcome to modeloff",
+		"Connected as",
+		"testuser",
+		"/join #general",
+		"/config api-key <value>",
+		"ctrl+d, ctrl+u, ctrl+o",
+		"No channels",
+		">",
+	)
 }
 
 func TestChatScreen_send_message(t *testing.T) {
@@ -156,9 +151,6 @@ func TestChatScreen_send_message(t *testing.T) {
 
 	submitText(tm, "hello world")
 	waitForOutput(t, tm, "hello world")
-
-	view := finalView(t, tm)
-	require.Contains(t, view, "hello world")
 }
 
 func TestChatScreen_join_new_channel(t *testing.T) {
@@ -169,9 +161,6 @@ func TestChatScreen_join_new_channel(t *testing.T) {
 
 	submitText(tm, "/join #newchan")
 	waitForOutput(t, tm, "Created channel #newchan")
-
-	view := finalView(t, tm)
-	require.Contains(t, view, "Created channel #newchan")
 }
 
 func TestChatScreen_join_existing_channel(t *testing.T) {
@@ -183,11 +172,7 @@ func TestChatScreen_join_existing_channel(t *testing.T) {
 	waitForOutput(t, tm, "#existing")
 
 	submitText(tm, "/join #general")
-	waitForOutput(t, tm, "testuser has joined #general")
-
-	view := finalView(t, tm)
-	require.Contains(t, view, "#general")
-	require.Contains(t, view, "testuser has joined #general")
+	waitForOutput(t, tm, "#general", "testuser has joined #general")
 }
 
 func TestChatScreen_leave_command(t *testing.T) {
@@ -213,9 +198,6 @@ func TestChatScreen_nick_command(t *testing.T) {
 
 	submitText(tm, "/nick newnick")
 	waitForOutput(t, tm, "testuser is now known as newnick")
-
-	view := finalView(t, tm)
-	require.Contains(t, view, "testuser is now known as newnick")
 }
 
 func TestChatScreen_nick_command_reports_persist_error(t *testing.T) {
@@ -229,10 +211,6 @@ func TestChatScreen_nick_command_reports_persist_error(t *testing.T) {
 
 	submitText(tm, "/nick newnick")
 	waitForOutput(t, tm, "save config", "context deadline exceeded")
-
-	view := finalView(t, tm)
-	require.Contains(t, view, "save config")
-	require.Contains(t, view, "context deadline exceeded")
 }
 
 func TestChatScreen_topic_command(t *testing.T) {
@@ -244,9 +222,6 @@ func TestChatScreen_topic_command(t *testing.T) {
 
 	submitText(tm, "/topic cool topic")
 	waitForOutput(t, tm, "topic for #general set to: cool topic")
-
-	view := finalView(t, tm)
-	require.Contains(t, view, "topic for #general set to: cool topic")
 }
 
 func TestChatScreen_topic_clear(t *testing.T) {
@@ -258,9 +233,6 @@ func TestChatScreen_topic_clear(t *testing.T) {
 
 	submitText(tm, "/topic")
 	waitForOutput(t, tm, "topic for #general cleared")
-
-	view := finalView(t, tm)
-	require.Contains(t, view, "topic for #general cleared")
 }
 
 func TestChatScreen_whois_command(t *testing.T) {
@@ -275,9 +247,6 @@ func TestChatScreen_whois_command(t *testing.T) {
 
 	submitText(tm, "/whois fakenick")
 	waitForOutput(t, tm, "fakenick is anthropic/claude-3-haiku")
-
-	view := finalView(t, tm)
-	require.Contains(t, view, "fakenick is anthropic/claude-3-haiku")
 }
 
 func TestChatScreen_whois_unknown_nick(t *testing.T) {
@@ -289,9 +258,6 @@ func TestChatScreen_whois_unknown_nick(t *testing.T) {
 
 	submitText(tm, "/whois nobody")
 	waitForOutput(t, tm, "no such nick: nobody")
-
-	view := finalView(t, tm)
-	require.Contains(t, view, "no such nick: nobody")
 }
 
 func TestChatScreen_list_command(t *testing.T) {
@@ -304,10 +270,6 @@ func TestChatScreen_list_command(t *testing.T) {
 
 	submitText(tm, "/list")
 	waitForOutput(t, tm, "#general", "#random")
-
-	view := finalView(t, tm)
-	require.Contains(t, view, "#general")
-	require.Contains(t, view, "#random")
 }
 
 func TestChatScreen_list_empty(t *testing.T) {
@@ -318,9 +280,6 @@ func TestChatScreen_list_empty(t *testing.T) {
 
 	submitText(tm, "/list")
 	waitForOutput(t, tm, "no channels")
-
-	view := finalView(t, tm)
-	require.Contains(t, view, "no channels")
 }
 
 func TestChatScreen_invite_command(t *testing.T) {
@@ -332,9 +291,6 @@ func TestChatScreen_invite_command(t *testing.T) {
 
 	submitText(tm, "/invite anthropic/claude-3-haiku")
 	waitForOutput(t, tm, "fakenick (anthropic/claude-3-haiku) has joined #general")
-
-	view := finalView(t, tm)
-	require.Contains(t, view, "fakenick (anthropic/claude-3-haiku) has joined #general")
 }
 
 func TestChatScreen_invite_with_persona(t *testing.T) {
@@ -346,10 +302,6 @@ func TestChatScreen_invite_with_persona(t *testing.T) {
 
 	submitText(tm, "/invite anthropic/claude-3-haiku --persona Helpful assistant")
 	waitForOutput(t, tm, "fakenick (anthropic/claude-3-haiku) has joined #general", `persona "Helpful assistant"`)
-
-	view := finalView(t, tm)
-	require.Contains(t, view, "fakenick (anthropic/claude-3-haiku) has joined #general")
-	require.Contains(t, view, `persona "Helpful assistant"`)
 }
 
 func TestChatScreen_invite_no_args(t *testing.T) {
@@ -361,9 +313,6 @@ func TestChatScreen_invite_no_args(t *testing.T) {
 
 	submitText(tm, "/invite")
 	waitForOutput(t, tm, "usage: /invite <model-id> [--persona <text>]")
-
-	view := finalView(t, tm)
-	require.Contains(t, view, "usage: /invite <model-id> [--persona <text>]")
 }
 
 func TestChatScreen_invite_existing_instance(t *testing.T) {
@@ -382,9 +331,6 @@ func TestChatScreen_invite_existing_instance(t *testing.T) {
 
 	submitText(tm, "/invite fakenick")
 	waitForOutput(t, tm, "fakenick (anthropic/claude-3-haiku) has joined #random")
-
-	view := finalView(t, tm)
-	require.Contains(t, view, "fakenick (anthropic/claude-3-haiku) has joined #random")
 }
 
 func TestChatScreen_kick_command(t *testing.T) {
@@ -399,9 +345,6 @@ func TestChatScreen_kick_command(t *testing.T) {
 
 	submitText(tm, "/kick fakenick")
 	waitForOutput(t, tm, "fakenick has been kicked from #general")
-
-	view := finalView(t, tm)
-	require.Contains(t, view, "fakenick has been kicked from #general")
 }
 
 func TestChatScreen_config_usage(t *testing.T) {
@@ -413,10 +356,6 @@ func TestChatScreen_config_usage(t *testing.T) {
 
 	submitText(tm, "/config")
 	waitForOutput(t, tm, "usage: /config api-key <value>", "poke-interval")
-
-	view := finalView(t, tm)
-	require.Contains(t, view, "usage: /config api-key <value>")
-	require.Contains(t, view, "poke-interval")
 }
 
 func TestChatScreen_config_set_api_key(t *testing.T) {
@@ -433,8 +372,6 @@ func TestChatScreen_config_set_api_key(t *testing.T) {
 	submitText(tm, "/config api-key test-key")
 	waitForOutput(t, tm, "OpenRouter API key saved and activated.")
 
-	view := finalView(t, tm)
-	require.Contains(t, view, "OpenRouter API key saved and activated.")
 	require.Equal(t, "test-key", cfgStore.cfg.APIKey)
 }
 
@@ -460,9 +397,6 @@ func TestChatScreen_config_set_api_key_updates_live_model_suggestions(t *testing
 
 	tm.Type("/invite anth")
 	waitForOutput(t, tm, "anthropic/claude-3-haiku")
-
-	view := finalView(t, tm)
-	require.Contains(t, view, "anthropic/claude-3-haiku")
 }
 
 func TestChatScreen_config_set_poke_interval(t *testing.T) {
@@ -476,8 +410,6 @@ func TestChatScreen_config_set_poke_interval(t *testing.T) {
 	submitText(tm, "/config poke-interval 10m")
 	waitForOutput(t, tm, "Poke interval set to 10m0s.")
 
-	view := finalView(t, tm)
-	require.Contains(t, view, "Poke interval set to 10m0s.")
 	require.Equal(t, 10*time.Minute, cfgStore.cfg.PokeInterval)
 }
 
@@ -490,9 +422,6 @@ func TestChatScreen_config_invalid_subcommand(t *testing.T) {
 
 	submitText(tm, "/config nonsense")
 	waitForOutput(t, tm, "unknown config key: nonsense")
-
-	view := finalView(t, tm)
-	require.Contains(t, view, "unknown config key: nonsense")
 }
 
 func TestChatScreen_config_invalid_duration(t *testing.T) {
@@ -504,9 +433,6 @@ func TestChatScreen_config_invalid_duration(t *testing.T) {
 
 	submitText(tm, "/config poke-interval nope")
 	waitForOutput(t, tm, "invalid duration")
-
-	view := finalView(t, tm)
-	require.Contains(t, view, "invalid duration")
 }
 
 func TestChatScreen_msg_command_opens_dm(t *testing.T) {
@@ -520,10 +446,6 @@ func TestChatScreen_msg_command_opens_dm(t *testing.T) {
 
 	submitText(tm, "/msg fakenick")
 	waitForOutput(t, tm, "Opened direct message with fakenick")
-
-	view := finalView(t, tm)
-	require.Contains(t, view, "Opened direct message with fakenick")
-	require.Contains(t, view, "fakenick")
 }
 
 func TestChatScreen_msg_command_opens_dm_and_sends_message(t *testing.T) {
@@ -537,10 +459,6 @@ func TestChatScreen_msg_command_opens_dm_and_sends_message(t *testing.T) {
 
 	submitText(tm, "/msg fakenick hello there")
 	waitForOutput(t, tm, "hello there", "fakenick")
-
-	view := finalView(t, tm)
-	require.Contains(t, view, "hello there")
-	require.Contains(t, view, "fakenick")
 }
 
 func TestChatScreen_msg_command_unknown_nick(t *testing.T) {
@@ -552,9 +470,6 @@ func TestChatScreen_msg_command_unknown_nick(t *testing.T) {
 
 	submitText(tm, "/msg nobody hello")
 	waitForOutput(t, tm, "no such nick: nobody")
-
-	view := finalView(t, tm)
-	require.Contains(t, view, "no such nick: nobody")
 }
 
 func TestChatScreen_help_command(t *testing.T) {
@@ -566,10 +481,6 @@ func TestChatScreen_help_command(t *testing.T) {
 
 	submitText(tm, "/help")
 	waitForOutput(t, tm, "/join", "/help")
-
-	view := finalView(t, tm)
-	require.Contains(t, view, "/join")
-	require.Contains(t, view, "/help")
 }
 
 func TestChatScreen_invalid_command(t *testing.T) {
@@ -581,9 +492,6 @@ func TestChatScreen_invalid_command(t *testing.T) {
 
 	submitText(tm, "/nick")
 	waitForOutput(t, tm, "missing required argument <new-nick>")
-
-	view := finalView(t, tm)
-	require.Contains(t, view, "missing required argument <new-nick>")
 }
 
 func TestChatScreen_unknown_command_shows_error(t *testing.T) {
@@ -595,9 +503,6 @@ func TestChatScreen_unknown_command_shows_error(t *testing.T) {
 
 	submitText(tm, "/unknown")
 	waitForOutput(t, tm, "unknown command: /unknown")
-
-	view := finalView(t, tm)
-	require.Contains(t, view, "unknown command: /unknown")
 }
 
 func TestChatScreen_View_responsive(t *testing.T) {
@@ -646,11 +551,7 @@ func TestChatScreen_WelcomeState_responsive(t *testing.T) {
 	sess := newTestSession(t)
 
 	tm := newChatApp(t, sess)
-	waitForOutput(t, tm, "Welcome to modeloff")
-
-	view := finalView(t, tm)
-	require.Contains(t, view, "Welcome to modeloff")
-	require.Contains(t, view, "/join #general")
+	waitForOutput(t, tm, "Welcome to modeloff", "/join #general")
 }
 
 type fakeConfigStore struct {
