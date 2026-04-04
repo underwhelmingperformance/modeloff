@@ -2,9 +2,13 @@ package ui_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/charmbracelet/x/exp/teatest"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/config"
@@ -199,6 +203,20 @@ func TestApp_unknown_command_on_welcome_screen_with_teatest(t *testing.T) {
 	require.NotContains(t, view, "<testuser>")
 }
 
+func TestApp_welcome_join_command_with_teatest(t *testing.T) {
+	sess, _ := newIntegrationSession(t, &integrationAPI{})
+
+	tm := newTestApp(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
+	waitForOutput(t, tm, "Welcome to modeloff")
+
+	submitText(tm, "/join #general")
+	waitForOutput(t, tm, "#general")
+
+	view := finalView(t, tm)
+	require.Contains(t, view, "#general")
+	require.NotContains(t, view, "Welcome to modeloff")
+}
+
 func TestApp_message_on_welcome_screen_rejected_with_teatest(t *testing.T) {
 	sess, _ := newIntegrationSession(t, &integrationAPI{})
 
@@ -226,6 +244,20 @@ func TestApp_channel_command_on_welcome_screen_rejected_with_teatest(t *testing.
 	require.Contains(t, view, "join a channel first")
 }
 
+func TestApp_quit_command_with_teatest(t *testing.T) {
+	sess, _ := newIntegrationSession(t, &integrationAPI{})
+	seedChannel(t, sess, "#general")
+
+	tm := newTestApp(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
+	waitForOutput(t, tm, "#general")
+
+	submitText(tm, "/quit")
+
+	model := tm.FinalModel(t, teatest.WithFinalTimeout(2*time.Second))
+	_, ok := model.(uipkg.Root)
+	require.True(t, ok, "expected Root, got %T", model)
+}
+
 func TestApp_unknown_target_commands_with_teatest(t *testing.T) {
 	sess, _ := newIntegrationSession(t, &integrationAPI{})
 	seedChannel(t, sess, "#general")
@@ -241,4 +273,91 @@ func TestApp_unknown_target_commands_with_teatest(t *testing.T) {
 
 	view := finalView(t, tm)
 	require.Contains(t, view, "no such nick: ghost")
+}
+
+func TestApp_unread_counts_clear_when_visiting_channel_with_teatest(t *testing.T) {
+	sess, _ := newIntegrationSession(t, &integrationAPI{})
+	seedChannel(t, sess, "#general")
+	seedChannel(t, sess, "#random")
+
+	_, err := sess.SendMessage(t.Context(), "#general", "general unread")
+	require.NoError(t, err)
+
+	tm := newTestApp(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
+	waitForOutput(t, tm, "#general (1)", "#random")
+
+	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlU})
+	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlO})
+	waitForOutput(t, tm, "general unread")
+
+	view := finalView(t, tm)
+	require.Contains(t, view, "general unread")
+	require.NotContains(t, view, "#general (1)")
+}
+
+func TestApp_input_history_and_sidebar_shortcuts_with_teatest(t *testing.T) {
+	sess, _ := newIntegrationSession(t, &integrationAPI{})
+	seedChannel(t, sess, "#general")
+	seedChannel(t, sess, "#random")
+
+	tm := newTestApp(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
+	waitForOutput(t, tm, "#random")
+
+	submitText(tm, "first history entry")
+	waitForOutput(t, tm, "first history entry")
+
+	submitText(tm, "second history entry")
+	waitForOutput(t, tm, "second history entry")
+
+	tm.Type("draft-only")
+	tm.Send(tea.KeyMsg{Type: tea.KeyUp})
+	tm.Send(tea.KeyMsg{Type: tea.KeyUp})
+	tm.Send(tea.KeyMsg{Type: tea.KeyDown})
+	tm.Send(tea.KeyMsg{Type: tea.KeyDown})
+	waitForOutput(t, tm, "draft-only")
+
+	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlU})
+	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlO})
+	waitForOutput(t, tm, "#general", "draft-only")
+
+	view := finalView(t, tm)
+	require.Contains(t, view, "#general")
+	require.Contains(t, view, "draft-only")
+}
+
+func TestApp_new_messages_divider_with_teatest(t *testing.T) {
+	sess, _ := newIntegrationSession(t, &integrationAPI{})
+	seedChannel(t, sess, "#general")
+
+	for i := range 30 {
+		_, err := sess.SendMessage(t.Context(), "#general", fmt.Sprintf("message %d", i))
+		require.NoError(t, err)
+	}
+
+	tm := newTestApp(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
+	waitForOutput(t, tm, "#general")
+
+	tm.Send(tea.KeyMsg{Type: tea.KeyPgUp})
+	waitForOutput(t, tm, "message 0")
+
+	submitText(tm, "fresh divider trigger 1")
+	submitText(tm, "fresh divider trigger 2")
+	submitText(tm, "fresh divider trigger 3")
+
+	require.Eventually(t, func() bool {
+		messages, err := sess.Messages(t.Context(), "#general")
+		if err != nil || len(messages) != 33 {
+			return false
+		}
+
+		return messages[len(messages)-1].Body == "fresh divider trigger 3"
+	}, 2*time.Second, 10*time.Millisecond)
+
+	for range 11 {
+		tm.Send(tea.KeyMsg{Type: tea.KeyDown})
+	}
+
+	view := ansi.Strip(finalView(t, tm))
+	require.Contains(t, view, "new messages")
+	require.Contains(t, view, "fresh divider trigger 1")
 }

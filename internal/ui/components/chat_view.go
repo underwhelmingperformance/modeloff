@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -161,6 +162,14 @@ type ChatView struct {
 func NewChatView(ch domain.ChannelName, userNick domain.Nick, title string, lines []ChatLine) *ChatView {
 	vp := viewport.New(0, 0)
 	vp.MouseWheelEnabled = true
+	vp.KeyMap = viewport.KeyMap{
+		PageDown: key.NewBinding(key.WithKeys("pgdown")),
+		PageUp:   key.NewBinding(key.WithKeys("pgup")),
+		Down:     key.NewBinding(key.WithKeys("down")),
+		Up:       key.NewBinding(key.WithKeys("up")),
+		Left:     key.NewBinding(key.WithKeys("left")),
+		Right:    key.NewBinding(key.WithKeys("right")),
+	}
 
 	return &ChatView{
 		channel:   ch,

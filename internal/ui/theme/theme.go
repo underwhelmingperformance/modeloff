@@ -67,8 +67,8 @@ var nickColours = [...]lipgloss.ANSIColor{
 func NickStyle(nick string) lipgloss.Style {
 	var h uint32
 
-	for _, r := range nick {
-		h = h*31 + uint32(r)
+	for _, b := range []byte(nick) {
+		h = h*31 + uint32(b)
 	}
 
 	return lipgloss.NewStyle().

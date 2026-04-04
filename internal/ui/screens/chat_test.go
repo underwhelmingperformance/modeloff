@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/api"
@@ -120,32 +119,6 @@ func TestChatScreen_View_responsive(t *testing.T) {
 	}
 }
 
-func TestChatScreen_WelcomeState_accepts_commands(t *testing.T) {
-	sess := newTestSession(t)
-
-	m := initChatScreen(t, sess)
-
-	// Simulate typing /join #general and pressing enter.
-	for _, r := range "/join #general" {
-		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
-	}
-
-	// Enter produces a tea.Cmd that yields CommandSubmitMsg.
-	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	require.NotNil(t, cmd)
-
-	// Apply the CommandSubmitMsg.
-	m, cmd = m.Update(cmd())
-	require.NotNil(t, cmd)
-
-	// Apply the commandResultMsg from the join operation.
-	m, _ = m.Update(cmd())
-
-	v := m.View(80, 24)
-	require.Contains(t, v, "#general")
-	require.NotContains(t, v, "Welcome to modeloff")
-}
-
 func TestChatScreen_WelcomeState_responsive(t *testing.T) {
 	sess := newTestSession(t)
 
@@ -166,88 +139,6 @@ func TestChatScreen_WelcomeState_responsive(t *testing.T) {
 	narrow := m.View(79, 12)
 	require.Contains(t, narrow, "Resize terminal to 80+ columns")
 	require.NotContains(t, narrow, "Welcome to modeloff")
-}
-
-func TestChatScreen_message_on_welcome_screen_is_ignored(t *testing.T) {
-	sess := newTestSession(t)
-
-	m := initChatScreen(t, sess)
-
-	// Type a non-command message on the welcome screen.
-	for _, r := range "hello" {
-		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
-	}
-
-	// Enter → tea.Cmd → MessageSubmitMsg → "join a channel first" warning.
-	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	require.NotNil(t, cmd)
-
-	m, cmd = m.Update(cmd())
-
-	if cmd != nil {
-		m, _ = m.Update(cmd())
-	}
-
-	v := m.View(80, 24)
-
-	// Should not show the message as a chat line — no active channel.
-	require.NotContains(t, v, "<testuser> hello")
-
-	// Should show the "join a channel first" warning.
-	require.Contains(t, v, "join a channel first")
-}
-
-func TestChatScreen_unknown_command_on_welcome_screen(t *testing.T) {
-	sess := newTestSession(t)
-
-	m := initChatScreen(t, sess)
-
-	// Type /foo and press enter on the welcome screen.
-	for _, r := range "/foo" {
-		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
-	}
-
-	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	require.NotNil(t, cmd)
-
-	// Apply the CommandSubmitMsg.
-	m, cmd = m.Update(cmd())
-
-	// Apply the systemEventMsg if there is one.
-	if cmd != nil {
-		m, _ = m.Update(cmd())
-	}
-
-	v := m.View(80, 24)
-
-	// Should show the error, not a phantom message.
-	require.Contains(t, v, "unknown command: /foo")
-	require.NotContains(t, v, "<testuser> as")
-}
-
-func TestChatScreen_quit_command(t *testing.T) {
-	sess := newTestSession(t)
-	seedChannel(t, sess, "#general")
-
-	m := initChatScreen(t, sess)
-
-	// Type /quit and press enter.
-	for _, r := range "/quit" {
-		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
-	}
-
-	// Enter produces a tea.Cmd that yields CommandSubmitMsg.
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	require.NotNil(t, cmd)
-
-	// Apply the CommandSubmitMsg — should return tea.Quit.
-	_, cmd = m.Update(cmd())
-	require.NotNil(t, cmd)
-
-	// tea.Quit returns a tea.QuitMsg when executed.
-	msg := cmd()
-	_, ok := msg.(tea.QuitMsg)
-	require.True(t, ok, "expected tea.QuitMsg, got %T", msg)
 }
 
 type fakeConfigStore struct {
