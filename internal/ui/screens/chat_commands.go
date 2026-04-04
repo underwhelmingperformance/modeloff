@@ -54,29 +54,31 @@ func (s *ChatScreen) configure(cmd command.ConfigCommand) tea.Cmd {
 			}}
 
 		case "api-key":
-			if strings.TrimSpace(cmd.Value) == "" {
+			value := strings.TrimSpace(strings.Join(cmd.Value, " "))
+			if value == "" {
 				return systemEventMsg{events: []components.ChatLine{
 					components.UsageHint{Command: "config api-key"},
 				}}
 			}
 
-			if _, err := s.sess.SetAPIKey(ctx, strings.TrimSpace(cmd.Value)); err != nil {
+			if _, err := s.sess.SetAPIKey(ctx, value); err != nil {
 				return errorEvent(err)
 			}
 
 			return apiKeyActivatedMsg{}
 
 		case "poke-interval":
-			if strings.TrimSpace(cmd.Value) == "" {
+			value := strings.TrimSpace(strings.Join(cmd.Value, " "))
+			if value == "" {
 				return systemEventMsg{events: []components.ChatLine{
 					components.UsageHint{Command: "config poke-interval"},
 				}}
 			}
 
-			interval, err := time.ParseDuration(strings.TrimSpace(cmd.Value))
+			interval, err := time.ParseDuration(value)
 			if err != nil {
 				return errorEvent(domain.InvalidDurationError{
-					Input: cmd.Value,
+					Input: value,
 					Err:   err,
 				})
 			}
@@ -90,13 +92,14 @@ func (s *ChatScreen) configure(cmd command.ConfigCommand) tea.Cmd {
 			}}
 
 		case "nick-model":
-			if strings.TrimSpace(cmd.Value) == "" {
+			value := strings.TrimSpace(strings.Join(cmd.Value, " "))
+			if value == "" {
 				return systemEventMsg{events: []components.ChatLine{
 					components.UsageHint{Command: "config nick-model"},
 				}}
 			}
 
-			modelID := domain.ModelID(strings.TrimSpace(cmd.Value))
+			modelID := domain.ModelID(value)
 
 			if _, err := s.sess.SetNickModel(ctx, modelID); err != nil {
 				return errorEvent(err)

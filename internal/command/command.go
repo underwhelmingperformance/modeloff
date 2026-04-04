@@ -15,7 +15,7 @@ type Command interface {
 
 // JoinCommand represents `/join <channel>`.
 type JoinCommand struct {
-	Channel string
+	Channel string `arg:"channel" help:"Channel to join or create"`
 }
 
 func (JoinCommand) commandMarker() {}
@@ -33,44 +33,44 @@ func (ListCommand) commandMarker() {}
 // InviteCommand represents `/invite [model] [--persona text]`. Model
 // may be empty, indicating the user should be prompted to pick one.
 type InviteCommand struct {
-	Model   string
-	Persona string
+	Model   string `optional:"" help:"Model to invite"`
+	Persona string `optional:"" help:"Optional persona"`
 }
 
 func (InviteCommand) commandMarker() {}
 
 // KickCommand represents `/kick <nick>`.
 type KickCommand struct {
-	Nick string
+	Nick string `help:"Nick to kick"`
 }
 
 func (KickCommand) commandMarker() {}
 
 // MsgCommand represents `/msg <nick> [message]`.
 type MsgCommand struct {
-	Nick string
-	Body string
+	Nick string   `help:"Nick to message"`
+	Body []string `nargs:"1" help:"Message text"`
 }
 
 func (MsgCommand) commandMarker() {}
 
 // NickCommand represents `/nick <new_nick>`.
 type NickCommand struct {
-	Nick string
+	Nick string `arg:"new-nick" help:"New nickname"`
 }
 
 func (NickCommand) commandMarker() {}
 
 // TopicCommand represents `/topic [text]`. An empty topic clears it.
 type TopicCommand struct {
-	Topic string
+	Topic []string `optional:"" help:"Topic text"`
 }
 
 func (TopicCommand) commandMarker() {}
 
 // WhoisCommand represents `/whois <nick>`.
 type WhoisCommand struct {
-	Nick string
+	Nick string `help:"Nick to look up"`
 }
 
 func (WhoisCommand) commandMarker() {}
@@ -87,8 +87,8 @@ func (QuitCommand) commandMarker() {}
 
 // ConfigCommand represents `/config`.
 type ConfigCommand struct {
-	Key   string
-	Value string
+	Key   string   `optional:"" help:"Configuration key"`
+	Value []string `optional:"" help:"Configuration value"`
 }
 
 func (ConfigCommand) commandMarker() {}
@@ -188,7 +188,7 @@ func parseMsg(args []string) (Command, error) {
 	cmd := MsgCommand{Nick: args[0]}
 
 	if len(args) > 1 {
-		cmd.Body = strings.Join(args[1:], " ")
+		cmd.Body = args[1:]
 	}
 
 	return cmd, nil
@@ -205,7 +205,11 @@ func parseNick(args []string) (Command, error) {
 func parseTopic(input string) Command {
 	rest := strings.TrimSpace(strings.TrimPrefix(input, "/topic"))
 
-	return TopicCommand{Topic: rest}
+	if rest == "" {
+		return TopicCommand{}
+	}
+
+	return TopicCommand{Topic: strings.Fields(rest)}
 }
 
 func parseWhois(args []string) (Command, error) {
@@ -226,7 +230,7 @@ func parseConfig(args []string) Command {
 	}
 
 	if len(args) > 1 {
-		cmd.Value = strings.Join(args[1:], " ")
+		cmd.Value = args[1:]
 	}
 
 	return cmd

@@ -55,6 +55,7 @@ type ArgSpec struct {
 	Help     string
 	Optional bool
 	FreeForm bool
+	Nargs    *int
 	Source   SuggestionSource
 }
 

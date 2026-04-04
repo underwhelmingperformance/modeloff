@@ -85,7 +85,7 @@ func TestParse(t *testing.T) {
 		{
 			name:  "msg with nick and message",
 			input: "/msg claud3 hello there",
-			want:  MsgCommand{Nick: "claud3", Body: "hello there"},
+			want:  MsgCommand{Nick: "claud3", Body: []string{"hello", "there"}},
 		},
 		{
 			name:  "msg with nick only",
@@ -114,7 +114,7 @@ func TestParse(t *testing.T) {
 		{
 			name:  "topic with text",
 			input: "/topic General Discussion",
-			want:  TopicCommand{Topic: "General Discussion"},
+			want:  TopicCommand{Topic: []string{"General", "Discussion"}},
 		},
 		{
 			name:  "topic without args clears",
@@ -157,12 +157,12 @@ func TestParse(t *testing.T) {
 		{
 			name:  "config api key",
 			input: "/config api-key test-key",
-			want:  ConfigCommand{Key: "api-key", Value: "test-key"},
+			want:  ConfigCommand{Key: "api-key", Value: []string{"test-key"}},
 		},
 		{
 			name:  "config poke interval",
 			input: "/config poke-interval 10m",
-			want:  ConfigCommand{Key: "poke-interval", Value: "10m"},
+			want:  ConfigCommand{Key: "poke-interval", Value: []string{"10m"}},
 		},
 
 		// Edge cases

@@ -3,6 +3,7 @@ package screens
 import (
 	"context"
 	"slices"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
@@ -387,37 +388,28 @@ func (s *ChatScreen) CommandScope() command.Scope {
 
 	s.scope = command.Scope{
 		Commands: []command.Spec{
-			{
-				Name:  "join",
-				Help:  "Switch to a channel or create it if needed.",
-				Usage: "/join <channel>",
-				Args: []command.ArgSpec{
-					{Name: "channel", Help: "Select an existing channel or type a new one.", Source: command.ChannelsSource()},
+			command.Handle("join", "Switch to a channel or create it if needed.", "/join <channel>",
+				map[string]command.SuggestionSource{"channel": command.ChannelsSource()},
+				func(cmd command.JoinCommand) tea.Cmd {
+					return s.joinChannel(cmd.Channel)
 				},
-				Handler: func(inv command.Invocation) tea.Cmd {
-					return s.joinChannel(inv.Parsed.(command.JoinCommand).Channel)
-				},
-			},
-			{
-				Name:  "leave",
-				Help:  "Leave the current channel.",
-				Usage: "/leave",
-				Handler: func(command.Invocation) tea.Cmd {
+			),
+			command.Handle("leave", "Leave the current channel.", "/leave",
+				nil,
+				func(_ command.LeaveCommand) tea.Cmd {
 					if s.active == "" {
 						return noChannelCmd()
 					}
 
 					return s.leaveChannel()
 				},
-			},
-			{
-				Name:  "list",
-				Help:  "List all known channels.",
-				Usage: "/list",
-				Handler: func(command.Invocation) tea.Cmd {
+			),
+			command.Handle("list", "List all known channels.", "/list",
+				nil,
+				func(_ command.ListCommand) tea.Cmd {
 					return s.listChannels()
 				},
-			},
+			),
 			{
 				Name:  "invite",
 				Help:  "Invite a model or reusable instance into the current channel.",
@@ -461,71 +453,44 @@ func (s *ChatScreen) CommandScope() command.Scope {
 					return s.inviteModel(domain.ModelID(cmd.Model), cmd.Persona)
 				},
 			},
-			{
-				Name:  "kick",
-				Help:  "Remove a model instance from the current channel.",
-				Usage: "/kick <nick>",
-				Args: []command.ArgSpec{
-					{Name: "nick", Help: "Choose a member of the current channel.", Source: command.ActiveMembersSource()},
-				},
-				Handler: func(inv command.Invocation) tea.Cmd {
+			command.Handle("kick", "Remove a model instance from the current channel.", "/kick <nick>",
+				map[string]command.SuggestionSource{"nick": command.ActiveMembersSource()},
+				func(cmd command.KickCommand) tea.Cmd {
 					if s.active == "" {
 						return noChannelCmd()
 					}
 
-					return s.kickModel(domain.Nick(inv.Parsed.(command.KickCommand).Nick))
+					return s.kickModel(domain.Nick(cmd.Nick))
 				},
-			},
-			{
-				Name:  "msg",
-				Help:  "Open a direct message and optionally send text.",
-				Usage: "/msg <nick> [message]",
-				Args: []command.ArgSpec{
-					{Name: "nick", Help: "Choose a known instance nick.", Source: command.InstancesSource()},
-					{Name: "message", Help: "Message text is free-form.", Optional: true, FreeForm: true},
+			),
+			command.Handle("msg", "Open a direct message and optionally send text.", "/msg <nick> [message]",
+				map[string]command.SuggestionSource{"nick": command.InstancesSource()},
+				func(cmd command.MsgCommand) tea.Cmd {
+					return s.directMessage(domain.Nick(cmd.Nick), strings.Join(cmd.Body, " "))
 				},
-				Handler: func(inv command.Invocation) tea.Cmd {
-					cmd := inv.Parsed.(command.MsgCommand)
-					return s.directMessage(domain.Nick(cmd.Nick), cmd.Body)
+			),
+			command.Handle("nick", "Change your nickname.", "/nick <new-nick>",
+				nil,
+				func(cmd command.NickCommand) tea.Cmd {
+					return s.changeNick(domain.Nick(cmd.Nick))
 				},
-			},
-			{
-				Name:  "nick",
-				Help:  "Change your nickname.",
-				Usage: "/nick <new-nick>",
-				Args: []command.ArgSpec{
-					{Name: "new-nick", Help: "Nicknames are free-form.", FreeForm: true},
-				},
-				Handler: func(inv command.Invocation) tea.Cmd {
-					return s.changeNick(domain.Nick(inv.Parsed.(command.NickCommand).Nick))
-				},
-			},
-			{
-				Name:  "topic",
-				Help:  "Set or clear the current channel topic.",
-				Usage: "/topic [text]",
-				Args: []command.ArgSpec{
-					{Name: "text", Help: "Topic text is free-form.", Optional: true, FreeForm: true},
-				},
-				Handler: func(inv command.Invocation) tea.Cmd {
+			),
+			command.Handle("topic", "Set or clear the current channel topic.", "/topic [text]",
+				nil,
+				func(cmd command.TopicCommand) tea.Cmd {
 					if s.active == "" {
 						return noChannelCmd()
 					}
 
-					return s.setTopic(inv.Parsed.(command.TopicCommand).Topic)
+					return s.setTopic(strings.Join(cmd.Topic, " "))
 				},
-			},
-			{
-				Name:  "whois",
-				Help:  "Show details about a model instance.",
-				Usage: "/whois <nick>",
-				Args: []command.ArgSpec{
-					{Name: "nick", Help: "Choose a known instance nick.", Source: command.InstancesSource()},
+			),
+			command.Handle("whois", "Show details about a model instance.", "/whois <nick>",
+				map[string]command.SuggestionSource{"nick": command.InstancesSource()},
+				func(cmd command.WhoisCommand) tea.Cmd {
+					return s.whois(domain.Nick(cmd.Nick))
 				},
-				Handler: func(inv command.Invocation) tea.Cmd {
-					return s.whois(domain.Nick(inv.Parsed.(command.WhoisCommand).Nick))
-				},
-			},
+			),
 			{
 				Name:  "config",
 				Help:  "Update runtime configuration.",
@@ -562,22 +527,18 @@ func (s *ChatScreen) CommandScope() command.Scope {
 					return s.configure(inv.Parsed.(command.ConfigCommand))
 				},
 			},
-			{
-				Name:  "help",
-				Help:  "Show available commands.",
-				Usage: "/help",
-				Handler: func(command.Invocation) tea.Cmd {
+			command.Handle("help", "Show available commands.", "/help",
+				nil,
+				func(_ command.HelpCommand) tea.Cmd {
 					return s.showHelp()
 				},
-			},
-			{
-				Name:  "quit",
-				Help:  "Exit modeloff.",
-				Usage: "/quit",
-				Handler: func(command.Invocation) tea.Cmd {
+			),
+			command.Handle("quit", "Exit modeloff.", "/quit",
+				nil,
+				func(_ command.QuitCommand) tea.Cmd {
 					return tea.Quit
 				},
-			},
+			),
 		},
 	}
 
