@@ -20,6 +20,7 @@ func TestFileStore_LoadDefaults(t *testing.T) {
 	want := Config{
 		UserNick:     "testuser",
 		PokeInterval: 5 * time.Minute,
+		NickModel:    DefaultNickModel,
 	}
 
 	require.Equal(t, want, got)
@@ -84,6 +85,7 @@ func TestFileStore_LoadMergesWithDefaults(t *testing.T) {
 		APIKey:       "sk-partial",
 		UserNick:     "testuser",
 		PokeInterval: 5 * time.Minute,
+		NickModel:    DefaultNickModel,
 	}
 
 	require.Equal(t, want, got)

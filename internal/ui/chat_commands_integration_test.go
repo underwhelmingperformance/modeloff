@@ -21,7 +21,7 @@ import (
 func TestApp_send_message_shows_pending_indicator(t *testing.T) {
 	release := make(chan struct{})
 	apiClient := &integrationAPI{
-		generateNickFn: func(context.Context, domain.ModelID) (domain.Nick, error) {
+		generateNickFn: func(context.Context, domain.ModelID, domain.ModelID) (domain.Nick, error) {
 			return "fakenick", nil
 		},
 		sendEventsFn: func(
@@ -108,13 +108,13 @@ func TestApp_title_list_and_help_commands_with_teatest(t *testing.T) {
 	tm := newTestApp(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
 	waitForOutput(t, tm, "#random")
 
-	submitText(tm, "/title cool topic")
+	submitText(tm, "/topic cool topic")
 	waitForOutput(t, tm, "topic for #random set to: cool topic")
 
 	submitText(tm, "/list")
 	waitForOutput(t, tm, "#general", "#random — cool topic")
 
-	submitText(tm, "/title")
+	submitText(tm, "/topic")
 	waitForOutput(t, tm, "topic for #random cleared")
 
 	submitText(tm, "/help")
@@ -127,7 +127,7 @@ func TestApp_title_list_and_help_commands_with_teatest(t *testing.T) {
 
 func TestApp_invite_whois_and_kick_commands_with_teatest(t *testing.T) {
 	apiClient := &integrationAPI{
-		generateNickFn: func(context.Context, domain.ModelID) (domain.Nick, error) {
+		generateNickFn: func(context.Context, domain.ModelID, domain.ModelID) (domain.Nick, error) {
 			return "fakenick", nil
 		},
 	}

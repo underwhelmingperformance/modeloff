@@ -46,6 +46,7 @@ func defaults() Config {
 	return Config{
 		UserNick:     nick,
 		PokeInterval: defaultPokeInterval,
+		NickModel:    DefaultNickModel,
 	}
 }
 

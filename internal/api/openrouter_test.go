@@ -252,7 +252,7 @@ func TestOpenRouterClient_GenerateNick(t *testing.T) {
 
 	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
 
-	got, err := client.GenerateNick(t.Context(), "anthropic/claude-3-haiku")
+	got, err := client.GenerateNick(t.Context(), "anthropic/claude-haiku-4.5", "anthropic/claude-3-haiku")
 	require.NoError(t, err)
 	require.Equal(t, domain.Nick("claud3"), got)
 }

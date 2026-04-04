@@ -72,7 +72,7 @@ func TestSession_JoinExistingChannel(t *testing.T) {
 	existing := domain.Channel{
 		Name:    "#existing",
 		Kind:    domain.KindChannel,
-		Title:   "Already here",
+		Topic:   "Already here",
 		Members: set.NewOrdered[domain.Nick]("testuser"),
 		Created: fixedTime.Add(-time.Hour),
 	}
@@ -89,7 +89,7 @@ func TestSession_JoinExistingChannel(t *testing.T) {
 	// Channel should not be overwritten.
 	ch, err := s.GetChannel(ctx, "#existing")
 	require.NoError(t, err)
-	require.Equal(t, "Already here", ch.Title)
+	require.Equal(t, "Already here", ch.Topic)
 }
 
 func TestSession_Leave(t *testing.T) {
@@ -594,26 +594,26 @@ func TestSession_Poke_api_error_continues_to_next_channel(t *testing.T) {
 	}, msgs)
 }
 
-func TestSession_SetTitle(t *testing.T) {
+func TestSession_SetTopic(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
 	ch := domain.Channel{Name: "#dev", Kind: domain.KindChannel, Created: fixedTime}
 	require.NoError(t, s.SaveChannel(ctx, ch))
 
-	evt, err := sess.SetTitle(ctx, "#dev", "Development Chat")
+	evt, err := sess.SetTopic(ctx, "#dev", "Development Chat")
 	require.NoError(t, err)
 	require.Equal(t, domain.TopicChangeEvent{
 		Channel: "#dev",
-		Title:   "Development Chat",
+		Topic:   "Development Chat",
 		By:      "testuser",
 		At:      fixedTime,
 	}, evt)
 
-	// Channel title should be updated.
+	// Channel topic should be updated.
 	updated, err := s.GetChannel(ctx, "#dev")
 	require.NoError(t, err)
-	require.Equal(t, "Development Chat", updated.Title)
+	require.Equal(t, "Development Chat", updated.Topic)
 }
 
 func TestSession_ChangeNick(t *testing.T) {
@@ -710,7 +710,7 @@ func TestSession_Invite_existing_instance_to_nonexistent_channel_does_not_corrup
 
 func TestSession_InviteGenerateNickError(t *testing.T) {
 	fake := &fakeAPIClient{
-		generateNickFn: func(_ context.Context, _ domain.ModelID) (domain.Nick, error) {
+		generateNickFn: func(_ context.Context, _, _ domain.ModelID) (domain.Nick, error) {
 			return "", fmt.Errorf("API unavailable")
 		},
 	}
@@ -894,10 +894,10 @@ func TestSession_KickNonMember(t *testing.T) {
 	require.Equal(t, set.NewOrdered[domain.Nick]("testuser"), updated.Members)
 }
 
-func TestSession_SetTitleNonexistentChannel(t *testing.T) {
+func TestSession_SetTopicNonexistentChannel(t *testing.T) {
 	sess, _ := newTestSession(t)
 
-	_, err := sess.SetTitle(t.Context(), "#ghost", "title")
+	_, err := sess.SetTopic(t.Context(), "#ghost", "topic")
 	require.Error(t, err)
 }
 
@@ -1260,7 +1260,7 @@ func TestSession_SetPokeInterval(t *testing.T) {
 type fakeAPIClient struct {
 	listModelsFn   func(context.Context) ([]api.ModelInfo, error)
 	sendEventsFn   func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error)
-	generateNickFn func(context.Context, domain.ModelID) (domain.Nick, error)
+	generateNickFn func(context.Context, domain.ModelID, domain.ModelID) (domain.Nick, error)
 }
 
 type fakeConfigStore struct {
@@ -1293,9 +1293,9 @@ func (f *fakeAPIClient) SendEvents(
 	return protocol.ModelResponse{Kind: protocol.ResponseSilence, Reason: "fake"}, nil
 }
 
-func (f *fakeAPIClient) GenerateNick(ctx context.Context, modelID domain.ModelID) (domain.Nick, error) {
+func (f *fakeAPIClient) GenerateNick(ctx context.Context, nickModel domain.ModelID, modelID domain.ModelID) (domain.Nick, error) {
 	if f.generateNickFn != nil {
-		return f.generateNickFn(ctx, modelID)
+		return f.generateNickFn(ctx, nickModel, modelID)
 	}
 
 	return "fakenick", nil

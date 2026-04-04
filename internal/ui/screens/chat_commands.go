@@ -89,6 +89,23 @@ func (s *ChatScreen) configure(cmd command.ConfigCommand) tea.Cmd {
 				components.PokeIntervalSet{Interval: interval},
 			}}
 
+		case "nick-model":
+			if strings.TrimSpace(cmd.Value) == "" {
+				return systemEventMsg{events: []components.ChatLine{
+					components.UsageHint{Command: "config nick-model"},
+				}}
+			}
+
+			modelID := domain.ModelID(strings.TrimSpace(cmd.Value))
+
+			if _, err := s.sess.SetNickModel(ctx, modelID); err != nil {
+				return errorEvent(err)
+			}
+
+			return systemEventMsg{events: []components.ChatLine{
+				components.NickModelSet{ModelID: modelID},
+			}}
+
 		default:
 			return errorEvent(domain.UnknownConfigKeyError{Key: cmd.Key})
 		}
@@ -123,7 +140,7 @@ func (s *ChatScreen) directMessage(nick domain.Nick, body string) tea.Cmd {
 			channels:  channels,
 			instances: instances,
 			active:    ch.Name,
-			title:     "",
+			topic:     "",
 			messages:  messages,
 			unread:    s.unreadCounts(ctx, channels),
 			members:   s.channelMembers(ch.Name),
@@ -148,7 +165,7 @@ func (s *ChatScreen) handlePoke() tea.Cmd {
 			channels:  channels,
 			instances: instances,
 			active:    s.active,
-			title:     s.title,
+			topic:     s.topic,
 			messages:  messages,
 			unread:    s.unreadCounts(ctx, channels),
 			members:   s.channelMembers(s.active),
@@ -170,16 +187,16 @@ func (s *ChatScreen) joinChannel(name string) tea.Cmd {
 		active := domain.ChannelName(name)
 		messages, _ := s.sess.Messages(ctx, active)
 
-		var title string
+		var topic string
 		if ch, err := s.sess.GetChannel(ctx, active); err == nil {
-			title = ch.Title
+			topic = ch.Topic
 		}
 
 		return commandResultMsg{
 			channels:  channels,
 			instances: instances,
 			active:    active,
-			title:     title,
+			topic:     topic,
 			messages:  messages,
 			unread:    s.unreadCounts(ctx, channels),
 			members:   s.channelMembers(active),
@@ -198,12 +215,12 @@ func (s *ChatScreen) leaveChannel() tea.Cmd {
 		instances, _ := s.sess.ListInstances(ctx)
 
 		var active domain.ChannelName
-		var title string
+		var topic string
 		var messages []domain.Message
 
 		if len(channels) > 0 {
 			active = channels[0].Name
-			title = channels[0].Title
+			topic = channels[0].Topic
 			messages, _ = s.sess.Messages(ctx, active)
 		}
 
@@ -211,7 +228,7 @@ func (s *ChatScreen) leaveChannel() tea.Cmd {
 			channels:  channels,
 			instances: instances,
 			active:    active,
-			title:     title,
+			topic:     topic,
 			messages:  messages,
 			unread:    s.unreadCounts(ctx, channels),
 			members:   s.channelMembers(active),
@@ -237,7 +254,7 @@ func (s *ChatScreen) changeNick(nick domain.Nick) tea.Cmd {
 			channels:  channels,
 			instances: instances,
 			active:    s.active,
-			title:     s.title,
+			topic:     s.topic,
 			messages:  messages,
 			unread:    s.unreadCounts(ctx, channels),
 			members:   s.channelMembers(s.active),
@@ -246,11 +263,11 @@ func (s *ChatScreen) changeNick(nick domain.Nick) tea.Cmd {
 	}
 }
 
-func (s *ChatScreen) setTitle(title string) tea.Cmd {
+func (s *ChatScreen) setTopic(topic string) tea.Cmd {
 	return func() tea.Msg {
 		ctx := s.ctx
 
-		evt, err := s.sess.SetTitle(ctx, s.active, title)
+		evt, err := s.sess.SetTopic(ctx, s.active, topic)
 		if err != nil {
 			return errorEvent(err)
 		}
@@ -263,7 +280,7 @@ func (s *ChatScreen) setTitle(title string) tea.Cmd {
 			channels:  channels,
 			instances: instances,
 			active:    s.active,
-			title:     title,
+			topic:     topic,
 			messages:  messages,
 			unread:    s.unreadCounts(ctx, channels),
 			members:   s.channelMembers(s.active),
@@ -304,7 +321,7 @@ func (s *ChatScreen) inviteModel(modelID domain.ModelID, persona string) tea.Cmd
 			channels:  channels,
 			instances: instances,
 			active:    s.active,
-			title:     s.title,
+			topic:     s.topic,
 			messages:  messages,
 			unread:    s.unreadCounts(ctx, channels),
 			members:   s.channelMembers(s.active),
@@ -330,7 +347,7 @@ func (s *ChatScreen) kickModel(nick domain.Nick) tea.Cmd {
 			channels:  channels,
 			instances: instances,
 			active:    s.active,
-			title:     s.title,
+			topic:     s.topic,
 			messages:  messages,
 			unread:    s.unreadCounts(ctx, channels),
 			members:   s.channelMembers(s.active),

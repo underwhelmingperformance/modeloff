@@ -15,10 +15,7 @@ import (
 	"github.com/openai/openai-go/shared"
 )
 
-const (
-	defaultBaseURL = "https://openrouter.ai/api/v1"
-	nickModel = "anthropic/claude-haiku-4.5"
-)
+const defaultBaseURL = "https://openrouter.ai/api/v1"
 
 // OpenRouterClient implements Client using openai-go for chat
 // completions and direct HTTP for OpenRouter-specific endpoints.
@@ -251,9 +248,10 @@ func (c *OpenRouterClient) ListModels(ctx context.Context) ([]ModelInfo, error) 
 	return models, nil
 }
 
-// GenerateNick asks a small model to generate an IRC-style nickname
-// for a given model ID.
-func (c *OpenRouterClient) GenerateNick(ctx context.Context, modelID domain.ModelID) (domain.Nick, error) {
+// GenerateNick asks a model to generate an IRC-style nickname for a
+// given model ID. The nickModel parameter selects which model
+// performs the generation.
+func (c *OpenRouterClient) GenerateNick(ctx context.Context, nickModel domain.ModelID, modelID domain.ModelID) (domain.Nick, error) {
 	prompt := fmt.Sprintf(
 		"Generate a short, fun IRC-style nickname (lowercase, no spaces, max 12 chars) for an AI model called %q. "+
 			"Reply with ONLY the nickname, nothing else.",
@@ -261,7 +259,7 @@ func (c *OpenRouterClient) GenerateNick(ctx context.Context, modelID domain.Mode
 	)
 
 	resp, err := c.oai.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
-		Model: openai.ChatModel(nickModel),
+		Model: openai.ChatModel(string(nickModel)),
 		Messages: []openai.ChatCompletionMessageParamUnion{
 			openai.UserMessage(prompt),
 		},

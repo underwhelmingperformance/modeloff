@@ -36,7 +36,8 @@ type Client interface {
 		events []protocol.IRCMessage,
 	) (protocol.ModelResponse, error)
 
-	// GenerateNick asks a small model to generate a nickname for a
-	// given model, returning the suggested nick.
-	GenerateNick(ctx context.Context, modelID domain.ModelID) (domain.Nick, error)
+	// GenerateNick asks a model to generate a nickname for the given
+	// model ID, returning the suggested nick. The nickModel parameter
+	// selects which model performs the generation.
+	GenerateNick(ctx context.Context, nickModel domain.ModelID, modelID domain.ModelID) (domain.Nick, error)
 }

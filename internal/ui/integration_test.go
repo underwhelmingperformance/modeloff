@@ -67,7 +67,7 @@ func TestApp_startup_with_saved_channels(t *testing.T) {
 
 func TestApp_invite_and_receive_reply(t *testing.T) {
 	apiClient := &integrationAPI{
-		generateNickFn: func(context.Context, domain.ModelID) (domain.Nick, error) {
+		generateNickFn: func(context.Context, domain.ModelID, domain.ModelID) (domain.Nick, error) {
 			return "botty", nil
 		},
 		sendEventsFn: func(
@@ -189,7 +189,7 @@ func TestApp_reuse_existing_instance(t *testing.T) {
 type integrationAPI struct {
 	mu             sync.Mutex
 	sendEventsFn   func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error)
-	generateNickFn func(context.Context, domain.ModelID) (domain.Nick, error)
+	generateNickFn func(context.Context, domain.ModelID, domain.ModelID) (domain.Nick, error)
 }
 
 func (f *integrationAPI) ListModels(context.Context) ([]api.ModelInfo, error) {
@@ -213,9 +213,9 @@ func (f *integrationAPI) SendEvents(
 	return protocol.ModelResponse{Kind: protocol.ResponseSilence}, nil
 }
 
-func (f *integrationAPI) GenerateNick(ctx context.Context, modelID domain.ModelID) (domain.Nick, error) {
+func (f *integrationAPI) GenerateNick(ctx context.Context, nickModel domain.ModelID, modelID domain.ModelID) (domain.Nick, error) {
 	if f.generateNickFn != nil {
-		return f.generateNickFn(ctx, modelID)
+		return f.generateNickFn(ctx, nickModel, modelID)
 	}
 
 	return "botty", nil

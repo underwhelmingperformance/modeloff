@@ -28,10 +28,11 @@ type Session struct {
 	api    api.Client
 	config config.Store
 
-	userNick domain.Nick
-	apiKey   string
-	factory  func(string) (api.Client, error)
-	now      func() time.Time
+	userNick  domain.Nick
+	apiKey    string
+	nickModel domain.ModelID
+	factory   func(string) (api.Client, error)
+	now       func() time.Time
 }
 
 // New creates a Session with the given dependencies.
@@ -55,7 +56,12 @@ func New(
 		cfg, err := c.Load()
 		if err == nil {
 			sess.apiKey = strings.TrimSpace(cfg.APIKey)
+			sess.nickModel = cfg.NickModel
 		}
+	}
+
+	if sess.nickModel == "" {
+		sess.nickModel = config.DefaultNickModel
 	}
 
 	return sess
@@ -168,7 +174,7 @@ func (s *Session) Invite(
 		return s.attachInstanceToChannel(ctx, ch, inst)
 	}
 
-	nick, err := s.api.GenerateNick(ctx, modelID)
+	nick, err := s.api.GenerateNick(ctx, s.nickModel, modelID)
 	if err != nil {
 		return domain.ModelInvitedEvent{}, fmt.Errorf("generate nick: %w", err)
 	}
@@ -294,18 +300,18 @@ func (s *Session) SendMessage(
 	return domain.MessageEvent{Message: msg}, err
 }
 
-// SetTitle sets the title of a channel.
-func (s *Session) SetTitle(
+// SetTopic sets the topic of a channel.
+func (s *Session) SetTopic(
 	ctx context.Context,
 	ch domain.ChannelName,
-	title string,
+	topic string,
 ) (domain.TopicChangeEvent, error) {
 	channel, err := s.store.GetChannel(ctx, ch)
 	if err != nil {
 		return domain.TopicChangeEvent{}, fmt.Errorf("get channel: %w", err)
 	}
 
-	channel.Title = title
+	channel.Topic = topic
 
 	if err := s.store.SaveChannel(ctx, channel); err != nil {
 		return domain.TopicChangeEvent{}, fmt.Errorf("save channel: %w", err)
@@ -313,7 +319,7 @@ func (s *Session) SetTitle(
 
 	return domain.TopicChangeEvent{
 		Channel: ch,
-		Title:   title,
+		Topic:   topic,
 		By:      s.userNick,
 		At:      s.now(),
 	}, nil
@@ -558,6 +564,29 @@ func (s *Session) SetPokeInterval(_ context.Context, interval time.Duration) (co
 	return cfg, nil
 }
 
+// SetNickModel persists a new nick generation model through the
+// config store.
+func (s *Session) SetNickModel(_ context.Context, modelID domain.ModelID) (config.Config, error) {
+	if s.config == nil {
+		return config.Config{}, fmt.Errorf("config store not configured")
+	}
+
+	cfg, err := s.config.Load()
+	if err != nil {
+		return config.Config{}, fmt.Errorf("load config: %w", err)
+	}
+
+	cfg.NickModel = modelID
+
+	if err := s.config.Save(cfg); err != nil {
+		return config.Config{}, fmt.Errorf("save config: %w", err)
+	}
+
+	s.nickModel = modelID
+
+	return cfg, nil
+}
+
 func (s *Session) dispatchToInstances(
 	ctx context.Context,
 	channelName domain.ChannelName,
@@ -664,8 +693,8 @@ func buildSystemPrompt(ch domain.Channel, inst domain.ModelInstance, memories []
 		ch.Name,
 	)
 
-	if ch.Title != "" {
-		prompt = fmt.Sprintf("%s The channel title is %q.", prompt, ch.Title)
+	if ch.Topic != "" {
+		prompt = fmt.Sprintf("%s The channel topic is %q.", prompt, ch.Topic)
 	}
 
 	if inst.Persona != "" {
