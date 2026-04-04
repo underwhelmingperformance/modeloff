@@ -210,7 +210,7 @@ func TestApp_welcome_join_command_with_teatest(t *testing.T) {
 	waitForOutput(t, tm, "Welcome to modeloff")
 
 	submitText(tm, "/join #general")
-	waitForOutput(t, tm, "#general")
+	waitForOutput(t, tm, "Created channel #general")
 
 	view := finalView(t, tm)
 	require.Contains(t, view, "#general")

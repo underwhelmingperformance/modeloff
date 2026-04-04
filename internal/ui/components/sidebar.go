@@ -155,6 +155,22 @@ func (s Sidebar) clampCursor() Sidebar {
 	return s
 }
 
+// KeyBindings implements ui.Keybinding.
+func (s Sidebar) KeyBindings() []key.Binding {
+	hasChannels := len(s.channels) > 0
+
+	return []key.Binding{
+		ui.WithBindingEnabled(
+			key.NewBinding(
+				key.WithKeys("ctrl+d", "ctrl+u"),
+				key.WithHelp("^D/U", "channels"),
+			),
+			hasChannels,
+		),
+		ui.WithBindingEnabled(s.keyMap.Select, hasChannels),
+	}
+}
+
 // View implements ui.Model.
 func (s Sidebar) View(width, height int) string {
 	if len(s.channels) == 0 {

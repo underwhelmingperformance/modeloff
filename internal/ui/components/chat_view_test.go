@@ -644,7 +644,7 @@ func TestChatView_mouse_click_positions_input_cursor(t *testing.T) {
 	m = typeText(t, m, "X")
 
 	msg := m.(*components.ChatView)
-	m, cmd := msg.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, cmd := msg.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	require.NotNil(t, cmd)
 
 	sub := cmd().(components.MessageSubmitMsg)

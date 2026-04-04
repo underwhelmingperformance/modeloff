@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"testing"
 
+	bkey "github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/stretchr/testify/require"
@@ -25,6 +26,15 @@ func (s stubModel) Update(tea.Msg) (ui.Model, tea.Cmd) {
 
 func (s stubModel) View(width, height int) string {
 	return fmt.Sprintf("%s:%dx%d", s.label, width, height)
+}
+
+type keybindingStubModel struct {
+	stubModel
+	bindings []bkey.Binding
+}
+
+func (s keybindingStubModel) KeyBindings() []bkey.Binding {
+	return s.bindings
 }
 
 func TestMainLayout_View_responsive(t *testing.T) {
@@ -96,19 +106,7 @@ func TestMainLayout_View_fills_width(t *testing.T) {
 	require.LessOrEqual(t, renderedWidth, 100)
 }
 
-func TestMainLayout_View_has_status_bar(t *testing.T) {
-	sidebar := stubModel{label: "sidebar"}
-	content := stubModel{label: "content"}
-	layout := components.NewMainLayout(sidebar, content)
-
-	got := layout.View(80, 24)
-
-	require.Contains(t, got, "switch")
-	require.Contains(t, got, "quit")
-	require.Contains(t, got, "PgUp/Dn")
-}
-
-func TestMainLayout_View_status_bar_preserves_height(t *testing.T) {
+func TestMainLayout_View_preserves_height(t *testing.T) {
 	sidebar := stubModel{label: "sidebar"}
 	content := stubModel{label: "content"}
 	layout := components.NewMainLayout(sidebar, content)
@@ -116,17 +114,6 @@ func TestMainLayout_View_status_bar_preserves_height(t *testing.T) {
 	got := layout.View(80, 24)
 
 	require.Equal(t, 24, lipgloss.Height(got))
-}
-
-func TestMainLayout_View_status_bar_at_minimum_width(t *testing.T) {
-	sidebar := stubModel{label: "sidebar"}
-	content := stubModel{label: "content"}
-	layout := components.NewMainLayout(sidebar, content)
-
-	got := layout.View(80, 24)
-
-	require.Contains(t, got, "switch")
-	require.Contains(t, got, "quit")
 }
 
 func TestMainLayout_View_three_pane_at_wide_width(t *testing.T) {
@@ -213,15 +200,6 @@ func TestMainLayout_View_three_pane_fills_width(t *testing.T) {
 		"three-pane rendered width must not exceed total width")
 }
 
-func TestMainLayout_View_status_bar_shows_nicks_shortcut(t *testing.T) {
-	sidebar := stubModel{label: "sidebar"}
-	content := stubModel{label: "content"}
-	layout := components.NewMainLayout(sidebar, content)
-
-	got := layout.View(120, 24)
-	require.Contains(t, got, "nicks")
-}
-
 // initModel is a stubModel that returns a command from Init.
 type initModel struct {
 	stubModel
@@ -241,4 +219,26 @@ func TestMainLayout_Init_batches_children(t *testing.T) {
 	cmd := layout.Init()
 
 	require.NotNil(t, cmd)
+}
+
+func TestMainLayout_KeyBindings_collects_from_children(t *testing.T) {
+	sidebar := keybindingStubModel{
+		stubModel: stubModel{label: "sidebar"},
+		bindings: []bkey.Binding{
+			bkey.NewBinding(bkey.WithKeys("ctrl+d"), bkey.WithHelp("^D", "channels")),
+		},
+	}
+	content := keybindingStubModel{
+		stubModel: stubModel{label: "content"},
+		bindings: []bkey.Binding{
+			bkey.NewBinding(bkey.WithKeys("pgup"), bkey.WithHelp("PgUp", "scroll")),
+		},
+	}
+
+	layout := components.NewMainLayout(sidebar, content)
+
+	require.Equal(t, []bkey.Binding{
+		bkey.NewBinding(bkey.WithKeys("ctrl+d"), bkey.WithHelp("^D", "channels")),
+		bkey.NewBinding(bkey.WithKeys("pgup"), bkey.WithHelp("PgUp", "scroll")),
+	}, layout.KeyBindings())
 }

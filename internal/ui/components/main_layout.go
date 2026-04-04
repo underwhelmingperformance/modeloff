@@ -1,9 +1,7 @@
 package components
 
 import (
-	"fmt"
-	"strings"
-
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/laney/modeloff/internal/ui"
@@ -91,6 +89,8 @@ func (m MainLayout) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		sw := sidebarWidth(size.Width)
 		cw := size.Width - sw
 
+		// Children receive BoundsMsg before WindowSizeMsg so they can
+		// update hit-testing and other absolute-layout state first.
 		borderStyle := theme.SidebarBorder.Height(size.Height)
 		frameW, _ := borderStyle.GetFrameSize()
 		innerSW := sw - frameW
@@ -134,18 +134,14 @@ func (m MainLayout) View(width, height int) string {
 		return theme.NarrowTerminalView(width, height)
 	}
 
-	bar := statusBar(width)
-	barHeight := lipgloss.Height(bar)
-	contentHeight := height - barHeight
-
 	sw := sidebarWidth(width)
 
 	borderStyle := theme.SidebarBorder.
-		Height(contentHeight)
+		Height(height)
 	frameW, _ := borderStyle.GetFrameSize()
 	innerSW := sw - frameW
 
-	left := borderStyle.Render(m.Sidebar.View(innerSW, contentHeight))
+	left := borderStyle.Render(m.Sidebar.View(innerSW, height))
 
 	showNickList := m.NickList != nil && m.NickListVisible && width >= minWidthForNickList
 	nlw := 0
@@ -156,56 +152,34 @@ func (m MainLayout) View(width, height int) string {
 
 	cw := width - sw - nlw
 
-	right := m.Content.View(cw, contentHeight)
+	right := m.Content.View(cw, height)
 
 	var main string
 
 	if showNickList {
-		nlBorderStyle := theme.NickListBorder.Height(contentHeight)
+		nlBorderStyle := theme.NickListBorder.Height(height)
 		nlFrameW, _ := nlBorderStyle.GetFrameSize()
 		innerNLW := nlw - nlFrameW
 
-		nlView := nlBorderStyle.Render(m.NickList.View(innerNLW, contentHeight))
+		nlView := nlBorderStyle.Render(m.NickList.View(innerNLW, height))
 
 		main = lipgloss.JoinHorizontal(lipgloss.Top, left, right, nlView)
 	} else {
 		main = lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Left, main, bar)
+	return main
 }
 
-// statusBar renders a single-line bar showing keyboard shortcuts.
-// At narrow widths it abbreviates to fit.
-func statusBar(width int) string {
-	type shortcut struct {
-		key  string
-		desc string
+// KeyBindings implements ui.Keybinding.
+func (m MainLayout) KeyBindings() []key.Binding {
+	bindings := ui.CollectKeyBindings(m.Sidebar, m.Content)
+
+	if m.NickList != nil && m.NickListVisible {
+		bindings = append(bindings, ui.CollectKeyBindings(m.NickList)...)
 	}
 
-	full := []shortcut{
-		{"^D/U", "↑↓ channels"},
-		{"^O", "switch"},
-		{"^N", "nicks"},
-		{"PgUp/Dn ^↑/↓", "scroll"},
-		{"/help", "commands"},
-		{"^C", "quit"},
-	}
-
-	parts := make([]string, len(full))
-	for i, s := range full {
-		parts[i] = fmt.Sprintf("%s %s", s.key, s.desc)
-	}
-
-	text := strings.Join(parts, "  ")
-
-	// Abbreviate if too wide.
-	if lipgloss.Width(text) > width {
-		short := []string{"^D/U ↑↓", "^O switch", "^N nicks", "PgUp/Dn ^↑/↓", "/help", "^C quit"}
-		text = strings.Join(short, " ")
-	}
-
-	return theme.Dim.Render(text)
+	return bindings
 }
 
 func sidebarWidth(totalWidth int) int {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/stretchr/testify/require"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/session"
 	storemod "github.com/laney/modeloff/internal/store"
+	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/components"
 )
 
@@ -109,4 +111,46 @@ func TestChatScreen_QuitCommand_returns_quit(t *testing.T) {
 	msg := cmd()
 	_, ok := msg.(tea.QuitMsg)
 	require.True(t, ok, "expected tea.QuitMsg, got %T", msg)
+}
+
+func TestChatScreen_KeyBindings_collect_active_bindings(t *testing.T) {
+	screen := NewChatScreen(t.Context(), newScopeTestSession(t))
+
+	loaded, _ := screen.Update(screen.Init()())
+	screen = loaded.(*ChatScreen)
+
+	require.Equal(t, []key.Help{
+		{Key: "↵", Desc: "send"},
+		{Key: "^N", Desc: "nicks"},
+		{Key: "^C", Desc: "quit"},
+	}, bindingHelp(ui.ActiveKeyBindings(screen.KeyBindings())))
+}
+
+func TestChatScreen_KeyBindings_switch_to_popover_bindings(t *testing.T) {
+	screen := NewChatScreen(t.Context(), newScopeTestSession(t))
+
+	loaded, _ := screen.Update(screen.Init()())
+	screen = loaded.(*ChatScreen)
+
+	updated, _ := screen.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	screen = updated.(*ChatScreen)
+
+	require.Equal(t, []key.Help{
+		{Key: "Tab", Desc: "accept"},
+		{Key: "↑↓", Desc: "navigate"},
+		{Key: "Esc", Desc: "dismiss"},
+		{Key: "↵", Desc: "send"},
+		{Key: "^N", Desc: "nicks"},
+		{Key: "^C", Desc: "quit"},
+	}, bindingHelp(ui.ActiveKeyBindings(screen.KeyBindings())))
+}
+
+func bindingHelp(bindings []key.Binding) []key.Help {
+	help := make([]key.Help, 0, len(bindings))
+
+	for _, binding := range bindings {
+		help = append(help, binding.Help())
+	}
+
+	return help
 }

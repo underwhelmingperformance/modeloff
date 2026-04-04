@@ -94,6 +94,8 @@ var (
 // Input area styles.
 var (
 	Prompt = lipgloss.NewStyle().Foreground(colourGreen).Bold(true)
+
+	PopoverSelection = lipgloss.NewStyle().Reverse(true).Bold(true)
 )
 
 // Layout constants.

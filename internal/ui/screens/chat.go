@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
@@ -13,6 +14,7 @@ import (
 	"github.com/laney/modeloff/internal/set"
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/components"
+	"github.com/laney/modeloff/internal/ui/theme"
 )
 
 // chatLoadedMsg carries the initial data needed to render the chat
@@ -83,6 +85,7 @@ type ChatScreen struct {
 	layout   components.MainLayout
 	chatView *components.ChatView
 	keyMap   components.ChatScreenKeyMap
+	scope    command.Scope
 
 	channels     []domain.Channel
 	instances    []domain.ModelInstance
@@ -162,10 +165,13 @@ func (s *ChatScreen) Init() tea.Cmd {
 
 // Update implements ui.Model.
 func (s *ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
+	forwardedMsg := msg
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		s.width = msg.Width
 		s.height = msg.Height
+		forwardedMsg = tea.WindowSizeMsg{Width: msg.Width, Height: s.layoutHeight()}
 
 	case chatLoadedMsg:
 		return s.handleLoaded(msg)
@@ -222,7 +228,7 @@ func (s *ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		}
 	}
 
-	updated, cmd := s.layout.Update(msg)
+	updated, cmd := s.layout.Update(forwardedMsg)
 	s.layout = updated.(components.MainLayout)
 
 	return s, cmd
@@ -375,7 +381,11 @@ func (s *ChatScreen) sortedMembers(members set.Ordered[domain.Nick]) []domain.Me
 
 // CommandScope implements ui.CommandScoper.
 func (s *ChatScreen) CommandScope() command.Scope {
-	return command.Scope{
+	if len(s.scope.Commands) > 0 {
+		return s.scope
+	}
+
+	s.scope = command.Scope{
 		Commands: []command.Spec{
 			{
 				Name:  "join",
@@ -385,12 +395,7 @@ func (s *ChatScreen) CommandScope() command.Scope {
 					{Name: "channel", Help: "Select an existing channel or type a new one.", Source: command.ChannelsSource()},
 				},
 				Handler: func(inv command.Invocation) tea.Cmd {
-					parsed, err := command.Parse(inv.Raw)
-					if err != nil {
-						return errorCmd(err)
-					}
-
-					return s.joinChannel(parsed.(command.JoinCommand).Channel)
+					return s.joinChannel(inv.Parsed.(command.JoinCommand).Channel)
 				},
 			},
 			{
@@ -448,12 +453,7 @@ func (s *ChatScreen) CommandScope() command.Scope {
 						return noChannelCmd()
 					}
 
-					parsed, err := command.Parse(inv.Raw)
-					if err != nil {
-						return errorCmd(err)
-					}
-
-					cmd := parsed.(command.InviteCommand)
+					cmd := inv.Parsed.(command.InviteCommand)
 					if cmd.Model == "" {
 						return usageCmd("invite")
 					}
@@ -473,12 +473,7 @@ func (s *ChatScreen) CommandScope() command.Scope {
 						return noChannelCmd()
 					}
 
-					parsed, err := command.Parse(inv.Raw)
-					if err != nil {
-						return errorCmd(err)
-					}
-
-					return s.kickModel(domain.Nick(parsed.(command.KickCommand).Nick))
+					return s.kickModel(domain.Nick(inv.Parsed.(command.KickCommand).Nick))
 				},
 			},
 			{
@@ -490,12 +485,7 @@ func (s *ChatScreen) CommandScope() command.Scope {
 					{Name: "message", Help: "Message text is free-form.", Optional: true, FreeForm: true},
 				},
 				Handler: func(inv command.Invocation) tea.Cmd {
-					parsed, err := command.Parse(inv.Raw)
-					if err != nil {
-						return errorCmd(err)
-					}
-
-					cmd := parsed.(command.MsgCommand)
+					cmd := inv.Parsed.(command.MsgCommand)
 					return s.directMessage(domain.Nick(cmd.Nick), cmd.Body)
 				},
 			},
@@ -507,12 +497,7 @@ func (s *ChatScreen) CommandScope() command.Scope {
 					{Name: "new-nick", Help: "Nicknames are free-form.", FreeForm: true},
 				},
 				Handler: func(inv command.Invocation) tea.Cmd {
-					parsed, err := command.Parse(inv.Raw)
-					if err != nil {
-						return errorCmd(err)
-					}
-
-					return s.changeNick(domain.Nick(parsed.(command.NickCommand).Nick))
+					return s.changeNick(domain.Nick(inv.Parsed.(command.NickCommand).Nick))
 				},
 			},
 			{
@@ -527,12 +512,7 @@ func (s *ChatScreen) CommandScope() command.Scope {
 						return noChannelCmd()
 					}
 
-					parsed, err := command.Parse(inv.Raw)
-					if err != nil {
-						return errorCmd(err)
-					}
-
-					return s.setTitle(parsed.(command.TitleCommand).Title)
+					return s.setTitle(inv.Parsed.(command.TitleCommand).Title)
 				},
 			},
 			{
@@ -543,12 +523,7 @@ func (s *ChatScreen) CommandScope() command.Scope {
 					{Name: "nick", Help: "Choose a known instance nick.", Source: command.InstancesSource()},
 				},
 				Handler: func(inv command.Invocation) tea.Cmd {
-					parsed, err := command.Parse(inv.Raw)
-					if err != nil {
-						return errorCmd(err)
-					}
-
-					return s.whois(domain.Nick(parsed.(command.WhoisCommand).Nick))
+					return s.whois(domain.Nick(inv.Parsed.(command.WhoisCommand).Nick))
 				},
 			},
 			{
@@ -583,12 +558,7 @@ func (s *ChatScreen) CommandScope() command.Scope {
 					},
 				},
 				Handler: func(inv command.Invocation) tea.Cmd {
-					parsed, err := command.Parse(inv.Raw)
-					if err != nil {
-						return errorCmd(err)
-					}
-
-					return s.configure(parsed.(command.ConfigCommand))
+					return s.configure(inv.Parsed.(command.ConfigCommand))
 				},
 			},
 			{
@@ -609,12 +579,8 @@ func (s *ChatScreen) CommandScope() command.Scope {
 			},
 		},
 	}
-}
 
-func errorCmd(err error) tea.Cmd {
-	return func() tea.Msg {
-		return systemEventMsg{events: []components.ChatLine{components.CommandError{Err: err}}}
-	}
+	return s.scope
 }
 
 func usageCmd(commandName string) tea.Cmd {
@@ -654,8 +620,6 @@ func (s *ChatScreen) activeMembers() []domain.Nick {
 
 func (s *ChatScreen) applyCommandState() {
 	s.chatView.WithCommandState(s.CommandScope(), s.commandContext())
-	s.layout = components.NewMainLayout(s.layout.Sidebar, s.chatView)
-	s.layout.SetNickList(s.layout.NickList)
 	s.applyLayoutBounds()
 }
 
@@ -688,8 +652,21 @@ func (s *ChatScreen) applyLayoutBounds() {
 		return
 	}
 
-	updated, _ := s.layout.Update(tea.WindowSizeMsg{Width: s.width, Height: s.height})
+	updated, _ := s.layout.Update(tea.WindowSizeMsg{Width: s.width, Height: s.layoutHeight()})
 	s.layout = updated.(components.MainLayout)
+}
+
+func (s *ChatScreen) layoutHeight() int {
+	if s.width < theme.MinTerminalWidth {
+		return s.height
+	}
+
+	height := s.height - lipgloss.Height(components.RenderStatusBar(s.width, s.KeyBindings()))
+	if height < 0 {
+		return 0
+	}
+
+	return height
 }
 
 func (s *ChatScreen) switchChannel(ch domain.ChannelName) tea.Cmd {
@@ -735,7 +712,30 @@ func (s *ChatScreen) sendMessage(text string) tea.Cmd {
 	}
 }
 
+// KeyBindings implements ui.Keybinding.
+func (s *ChatScreen) KeyBindings() []key.Binding {
+	bindings := ui.CollectKeyBindings(s.layout)
+	bindings = append(bindings, s.keyMap.ToggleNickList, ui.DefaultAppKeyMap.Quit)
+
+	return bindings
+}
+
 // View implements ui.Model.
 func (s *ChatScreen) View(width, height int) string {
-	return s.layout.View(width, height)
+	if width < theme.MinTerminalWidth {
+		return s.layout.View(width, height)
+	}
+
+	bar := components.RenderStatusBar(width, s.KeyBindings())
+	layoutHeight := height - lipgloss.Height(bar)
+	if layoutHeight < 0 {
+		layoutHeight = 0
+	}
+
+	view := s.layout.View(width, layoutHeight)
+	if bar == "" {
+		return view
+	}
+
+	return lipgloss.JoinVertical(lipgloss.Left, view, bar)
 }

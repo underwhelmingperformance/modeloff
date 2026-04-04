@@ -224,6 +224,13 @@ func (b InputBar) SetCursorFromCell(x int) InputBar {
 	return b
 }
 
+// KeyBindings implements ui.Keybinding.
+func (b InputBar) KeyBindings() []key.Binding {
+	return []key.Binding{
+		b.keyMap.Submit,
+	}
+}
+
 func clampInputIndex(index, length int) int {
 	if index < 0 {
 		return 0

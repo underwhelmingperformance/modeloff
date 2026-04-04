@@ -85,3 +85,15 @@ func (r Root) View() string {
 
 	return r.screen.View(r.width, r.height)
 }
+
+// KeyBindings implements Keybinding.
+func (r Root) KeyBindings() []key.Binding {
+	if r.screen == nil {
+		return []key.Binding{r.keyMap.Quit}
+	}
+
+	bindings := CollectKeyBindings(r.screen)
+	bindings = append(bindings, r.keyMap.Quit)
+
+	return bindings
+}

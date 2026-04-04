@@ -29,9 +29,10 @@ type CompletionContext struct {
 
 // Invocation is the structured form of a raw slash command.
 type Invocation struct {
-	Raw  string
-	Name string
-	Args []string
+	Raw    string
+	Name   string
+	Args   []string
+	Parsed Command
 }
 
 // Suggestion is a single completion option.
@@ -275,18 +276,24 @@ func resolveInvocation(scope Scope, raw string) (Invocation, Spec, error) {
 		return Invocation{}, Spec{}, fmt.Errorf("unknown command: /%s", name)
 	}
 
+	parsed, err := Parse(raw)
+	if err != nil {
+		return Invocation{}, Spec{}, err
+	}
+
 	return Invocation{
-		Raw:  raw,
-		Name: name,
-		Args: fields[1:],
+		Raw:    raw,
+		Name:   name,
+		Args:   fields[1:],
+		Parsed: parsed,
 	}, *spec, nil
 }
 
 func exactSpec(scope Scope, name string) *Spec {
 	for _, spec := range scope.Commands {
 		if spec.Name == name {
-			copy := spec
-			return &copy
+			specCopy := spec
+			return &specCopy
 		}
 	}
 
