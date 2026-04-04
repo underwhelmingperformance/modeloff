@@ -197,6 +197,39 @@ func (s *ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 		return s, s.loadLiveModels()
 
+	case domain.JoinEvent:
+		return s.handleJoinEvent(msg)
+
+	case domain.PartEvent:
+		return s.handlePartEvent(msg)
+
+	case domain.TopicChangeEvent:
+		return s.handleTopicChangeEvent(msg)
+
+	case domain.NickChangeEvent:
+		return s.handleNickChangeEvent(msg)
+
+	case domain.ModelInvitedEvent:
+		return s.handleModelInvitedEvent(msg)
+
+	case domain.ModelKickedEvent:
+		return s.handleModelKickedEvent(msg)
+
+	case domain.MessageEvent:
+		return s.handleMessageEvent(msg)
+
+	case domain.ModelReplyEvent:
+		return s.handleModelReplyEvent(msg)
+
+	case domain.DMOpenedEvent:
+		return s.handleDMOpenedEvent(msg)
+
+	case domain.ConfigChangedEvent:
+		return s.handleConfigChangedEvent(msg)
+
+	case domain.ErrorEvent:
+		return s.handleErrorEvent(msg)
+
 	case liveModelsLoadedMsg:
 		return s.handleLiveModelsLoaded(msg)
 
@@ -315,6 +348,393 @@ func (s *ChatScreen) handleSystemEvent(msg systemEventMsg) (ui.Model, tea.Cmd) {
 	s.forwardToLayout(components.PendingResponseMsg{Pending: false})
 
 	return s, nil
+}
+
+// Domain event handlers — targeted state updates that return tea.Cmd
+// values. These coexist with the legacy commandResultMsg handlers
+// during the transition.
+
+func (s *ChatScreen) handleJoinEvent(msg domain.JoinEvent) (ui.Model, tea.Cmd) {
+	s.active = msg.Channel
+
+	channels, _ := s.sess.ListChannels(s.ctx)
+	s.channels = channels
+	s.channelCount = len(channels)
+
+	messages, _ := s.sess.Messages(s.ctx, msg.Channel)
+
+	var topic string
+	var members []domain.Member
+
+	if ch, err := s.sess.GetChannel(s.ctx, msg.Channel); err == nil {
+		topic = ch.Topic
+		members = s.sortedMembers(ch.Members)
+	}
+
+	s.topic = topic
+
+	lines := components.MessagesToLines(messages)
+	lines = append(lines, components.Join{JoinEvent: msg})
+	unread := s.unreadCounts(s.ctx, channels)
+
+	s.chatView.SetPlaceholder("")
+	s.chatView.SetChannel(msg.Channel, topic, lines)
+
+	return s, tea.Batch(
+		func() tea.Msg {
+			return components.ChannelsUpdatedMsg{
+				Channels: channels,
+				Active:   msg.Channel,
+				Unread:   unread,
+			}
+		},
+		func() tea.Msg {
+			return components.NickListUpdatedMsg{Members: members}
+		},
+		func() tea.Msg {
+			return components.CommandStateMsg{
+				Commands: s.Commands(),
+				Context:  s.commandContext(),
+			}
+		},
+	)
+}
+
+func (s *ChatScreen) handlePartEvent(msg domain.PartEvent) (ui.Model, tea.Cmd) {
+	channels, _ := s.sess.ListChannels(s.ctx)
+	s.channels = channels
+	s.channelCount = len(channels)
+
+	leavingActive := s.active == msg.Channel
+
+	if leavingActive {
+		if len(channels) > 0 {
+			s.active = channels[0].Name
+			s.topic = channels[0].Topic
+		} else {
+			s.active = ""
+			s.topic = ""
+		}
+
+		var lines []components.ChatLine
+
+		if s.active != "" {
+			messages, _ := s.sess.Messages(s.ctx, s.active)
+			lines = components.MessagesToLines(messages)
+		}
+
+		s.chatView.SetChannel(s.active, s.topic, lines)
+	}
+
+	unread := s.unreadCounts(s.ctx, channels)
+
+	var members []domain.Member
+
+	if ch, err := s.sess.GetChannel(s.ctx, s.active); err == nil {
+		members = s.sortedMembers(ch.Members)
+	}
+
+	cmds := []tea.Cmd{
+		func() tea.Msg {
+			return components.ChannelsUpdatedMsg{
+				Channels: channels,
+				Active:   s.active,
+				Unread:   unread,
+			}
+		},
+		func() tea.Msg {
+			return components.NickListUpdatedMsg{Members: members}
+		},
+		func() tea.Msg {
+			return components.CommandStateMsg{
+				Commands: s.Commands(),
+				Context:  s.commandContext(),
+			}
+		},
+	}
+
+	if !leavingActive && s.active == msg.Channel {
+		messages, _ := s.sess.Messages(s.ctx, msg.Channel)
+		lines := components.MessagesToLines(messages)
+		lines = append(lines, components.Part{PartEvent: msg})
+
+		cmds = append(cmds, func() tea.Msg {
+			return components.MessagesUpdatedMsg{
+				Channel: msg.Channel,
+				Lines:   lines,
+			}
+		})
+	}
+
+	return s, tea.Batch(cmds...)
+}
+
+func (s *ChatScreen) handleTopicChangeEvent(msg domain.TopicChangeEvent) (ui.Model, tea.Cmd) {
+	if msg.Channel == s.active {
+		s.topic = msg.Topic
+	}
+
+	cmds := []tea.Cmd{
+		func() tea.Msg {
+			return components.CommandStateMsg{
+				Commands: s.Commands(),
+				Context:  s.commandContext(),
+			}
+		},
+	}
+
+	if s.active == msg.Channel {
+		messages, _ := s.sess.Messages(s.ctx, msg.Channel)
+		lines := components.MessagesToLines(messages)
+		lines = append(lines, components.TopicChange{TopicChangeEvent: msg})
+
+		cmds = append(cmds, func() tea.Msg {
+			return components.MessagesUpdatedMsg{
+				Channel: msg.Channel,
+				Lines:   lines,
+			}
+		})
+	}
+
+	return s, tea.Batch(cmds...)
+}
+
+func (s *ChatScreen) handleNickChangeEvent(msg domain.NickChangeEvent) (ui.Model, tea.Cmd) {
+	var members []domain.Member
+
+	if ch, err := s.sess.GetChannel(s.ctx, s.active); err == nil {
+		members = s.sortedMembers(ch.Members)
+	}
+
+	cmds := []tea.Cmd{
+		func() tea.Msg {
+			return components.NickListUpdatedMsg{Members: members}
+		},
+		func() tea.Msg {
+			return components.CommandStateMsg{
+				Commands: s.Commands(),
+				Context:  s.commandContext(),
+			}
+		},
+	}
+
+	if s.active != "" {
+		messages, _ := s.sess.Messages(s.ctx, s.active)
+		lines := components.MessagesToLines(messages)
+		lines = append(lines, components.NickChange{NickChangeEvent: msg})
+
+		cmds = append(cmds, func() tea.Msg {
+			return components.MessagesUpdatedMsg{
+				Channel: s.active,
+				Lines:   lines,
+			}
+		})
+	}
+
+	return s, tea.Batch(cmds...)
+}
+
+func (s *ChatScreen) handleModelInvitedEvent(msg domain.ModelInvitedEvent) (ui.Model, tea.Cmd) {
+	instances, _ := s.sess.ListInstances(s.ctx)
+	s.instances = instances
+
+	var members []domain.Member
+
+	if ch, err := s.sess.GetChannel(s.ctx, s.active); err == nil {
+		members = s.sortedMembers(ch.Members)
+	}
+
+	cmds := []tea.Cmd{
+		func() tea.Msg {
+			return components.NickListUpdatedMsg{Members: members}
+		},
+		func() tea.Msg {
+			return components.CommandStateMsg{
+				Commands: s.Commands(),
+				Context:  s.commandContext(),
+			}
+		},
+	}
+
+	if s.active == msg.Channel {
+		messages, _ := s.sess.Messages(s.ctx, msg.Channel)
+		lines := components.MessagesToLines(messages)
+		lines = append(lines, components.ModelInvited{ModelInvitedEvent: msg})
+
+		cmds = append(cmds, func() tea.Msg {
+			return components.MessagesUpdatedMsg{
+				Channel: msg.Channel,
+				Lines:   lines,
+			}
+		})
+	}
+
+	return s, tea.Batch(cmds...)
+}
+
+func (s *ChatScreen) handleModelKickedEvent(msg domain.ModelKickedEvent) (ui.Model, tea.Cmd) {
+	instances, _ := s.sess.ListInstances(s.ctx)
+	s.instances = instances
+
+	var members []domain.Member
+
+	if ch, err := s.sess.GetChannel(s.ctx, s.active); err == nil {
+		members = s.sortedMembers(ch.Members)
+	}
+
+	cmds := []tea.Cmd{
+		func() tea.Msg {
+			return components.NickListUpdatedMsg{Members: members}
+		},
+		func() tea.Msg {
+			return components.CommandStateMsg{
+				Commands: s.Commands(),
+				Context:  s.commandContext(),
+			}
+		},
+	}
+
+	if s.active == msg.Channel {
+		messages, _ := s.sess.Messages(s.ctx, msg.Channel)
+		lines := components.MessagesToLines(messages)
+		lines = append(lines, components.ModelKicked{ModelKickedEvent: msg})
+
+		cmds = append(cmds, func() tea.Msg {
+			return components.MessagesUpdatedMsg{
+				Channel: msg.Channel,
+				Lines:   lines,
+			}
+		})
+	}
+
+	return s, tea.Batch(cmds...)
+}
+
+func (s *ChatScreen) handleMessageEvent(msg domain.MessageEvent) (ui.Model, tea.Cmd) {
+	return s.handleNewMessage(msg.Message.Channel)
+}
+
+func (s *ChatScreen) handleModelReplyEvent(msg domain.ModelReplyEvent) (ui.Model, tea.Cmd) {
+	return s.handleNewMessage(msg.Message.Channel)
+}
+
+func (s *ChatScreen) handleNewMessage(channel domain.ChannelName) (ui.Model, tea.Cmd) {
+	cmds := []tea.Cmd{
+		func() tea.Msg {
+			return components.PendingResponseMsg{Pending: false}
+		},
+	}
+
+	if channel == s.active {
+		messages, _ := s.sess.Messages(s.ctx, channel)
+		lines := components.MessagesToLines(messages)
+
+		cmds = append(cmds, func() tea.Msg {
+			return components.MessagesUpdatedMsg{
+				Channel: channel,
+				Lines:   lines,
+			}
+		})
+	} else {
+		channels, _ := s.sess.ListChannels(s.ctx)
+		s.channels = channels
+		unread := s.unreadCounts(s.ctx, channels)
+
+		cmds = append(cmds, func() tea.Msg {
+			return components.ChannelsUpdatedMsg{
+				Channels: channels,
+				Active:   s.active,
+				Unread:   unread,
+			}
+		})
+	}
+
+	return s, tea.Batch(cmds...)
+}
+
+func (s *ChatScreen) handleDMOpenedEvent(msg domain.DMOpenedEvent) (ui.Model, tea.Cmd) {
+	s.active = msg.Channel.Name
+
+	channels, _ := s.sess.ListChannels(s.ctx)
+	s.channels = channels
+	s.channelCount = len(channels)
+
+	messages, _ := s.sess.Messages(s.ctx, msg.Channel.Name)
+	s.topic = msg.Channel.Topic
+
+	lines := components.MessagesToLines(messages)
+	lines = append(lines, components.DMOpened{Nick: msg.Nick})
+	unread := s.unreadCounts(s.ctx, channels)
+
+	var members []domain.Member
+
+	if ch, err := s.sess.GetChannel(s.ctx, msg.Channel.Name); err == nil {
+		members = s.sortedMembers(ch.Members)
+	}
+
+	s.chatView.SetPlaceholder("")
+	s.chatView.SetChannel(msg.Channel.Name, msg.Channel.Topic, lines)
+
+	return s, tea.Batch(
+		func() tea.Msg {
+			return components.ChannelsUpdatedMsg{
+				Channels: channels,
+				Active:   msg.Channel.Name,
+				Unread:   unread,
+			}
+		},
+		func() tea.Msg {
+			return components.NickListUpdatedMsg{Members: members}
+		},
+		func() tea.Msg {
+			return components.CommandStateMsg{
+				Commands: s.Commands(),
+				Context:  s.commandContext(),
+			}
+		},
+	)
+}
+
+func (s *ChatScreen) handleConfigChangedEvent(msg domain.ConfigChangedEvent) (ui.Model, tea.Cmd) {
+	if s.active == "" {
+		return s, nil
+	}
+
+	messages, _ := s.sess.Messages(s.ctx, s.active)
+	lines := components.MessagesToLines(messages)
+	lines = append(lines, components.ConfigChanged{Operation: msg.Operation})
+
+	return s, func() tea.Msg {
+		return components.MessagesUpdatedMsg{
+			Channel: s.active,
+			Lines:   lines,
+		}
+	}
+}
+
+func (s *ChatScreen) handleErrorEvent(msg domain.ErrorEvent) (ui.Model, tea.Cmd) {
+	if s.active == "" {
+		return s, nil
+	}
+
+	messages, _ := s.sess.Messages(s.ctx, s.active)
+	lines := components.MessagesToLines(messages)
+	lines = append(lines, components.BackendError{
+		Operation: msg.Operation,
+		Err:       msg.Err,
+	})
+
+	return s, tea.Batch(
+		func() tea.Msg {
+			return components.MessagesUpdatedMsg{
+				Channel: s.active,
+				Lines:   lines,
+			}
+		},
+		func() tea.Msg {
+			return components.PendingResponseMsg{Pending: false}
+		},
+	)
 }
 
 func (s *ChatScreen) handleLiveModelsLoaded(msg liveModelsLoadedMsg) (ui.Model, tea.Cmd) {

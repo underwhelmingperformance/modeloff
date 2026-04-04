@@ -115,6 +115,19 @@ type CommandError struct{ Err error }
 
 func (CommandError) chatLine() {}
 
+// ConfigChanged confirms a configuration change.
+type ConfigChanged struct{ Operation string }
+
+func (ConfigChanged) chatLine() {}
+
+// BackendError wraps a backend error for display in the chat view.
+type BackendError struct {
+	Operation string
+	Err       error
+}
+
+func (BackendError) chatLine() {}
+
 // NewMessagesDivider is a separator inserted into the chat view when
 // new messages arrive while the viewport is scrolled up.
 type NewMessagesDivider struct{}
@@ -756,6 +769,13 @@ func (c *ChatView) renderLine(line ChatLine, width int) string {
 
 	case CommandError:
 		return wrap.Render(theme.Error.Render("✗ " + l.Err.Error()))
+
+	case ConfigChanged:
+		return wrap.Render(theme.Success.Render("✓ " + l.Operation))
+
+	case BackendError:
+		return wrap.Render(theme.Error.Render(
+			fmt.Sprintf("✗ %s: %s", l.Operation, l.Err)))
 
 	case NewMessagesDivider:
 		return c.renderNewMessagesDivider(width)

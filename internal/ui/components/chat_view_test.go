@@ -556,6 +556,19 @@ func TestRenderLine_application_feedback(t *testing.T) {
 			"✗ no such nick: ghost",
 		},
 		{
+			"config_changed",
+			components.ConfigChanged{Operation: "API key saved"},
+			"✓ API key saved",
+		},
+		{
+			"backend_error",
+			components.BackendError{
+				Operation: "model invocation",
+				Err:       fmt.Errorf("connection refused"),
+			},
+			"✗ model invocation: connection refused",
+		},
+		{
 			"new_messages_divider",
 			components.NewMessagesDivider{},
 			"new messages",
