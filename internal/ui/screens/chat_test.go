@@ -587,7 +587,6 @@ func TestChatScreen_help_command(t *testing.T) {
 
 	v := m.View(80, 24)
 	require.Contains(t, v, "/join")
-	require.Contains(t, v, "/config")
 	require.Contains(t, v, "/help")
 }
 

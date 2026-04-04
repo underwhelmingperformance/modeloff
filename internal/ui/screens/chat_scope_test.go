@@ -40,6 +40,25 @@ func newScopeTestSession(t *testing.T) *session.Session {
 	return session.New(storemod.NewFileStore(t.TempDir()), nil, scopeTestAPI{}, nil, "testuser")
 }
 
+func TestChatScreen_CommandScope_specs_are_complete(t *testing.T) {
+	screen := NewChatScreen(t.Context(), newScopeTestSession(t))
+	scope := screen.CommandScope()
+
+	require.NotEmpty(t, scope.Commands)
+
+	seen := make(map[string]struct{}, len(scope.Commands))
+	for _, spec := range scope.Commands {
+		require.NotEmpty(t, spec.Name)
+		require.NotEmpty(t, spec.Help)
+		require.NotEmpty(t, spec.Usage)
+		require.NotNil(t, spec.Handler)
+
+		_, exists := seen[spec.Name]
+		require.Falsef(t, exists, "duplicate command %q", spec.Name)
+		seen[spec.Name] = struct{}{}
+	}
+}
+
 func TestChatScreen_CommandScope_exposes_chat_commands(t *testing.T) {
 	screen := NewChatScreen(t.Context(), newScopeTestSession(t))
 

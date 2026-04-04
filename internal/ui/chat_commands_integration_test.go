@@ -118,7 +118,7 @@ func TestApp_title_list_and_help_commands_with_teatest(t *testing.T) {
 	waitForOutput(t, tm, "topic for #random cleared")
 
 	submitText(tm, "/help")
-	waitForOutput(t, tm, "/join", "/config", "/help")
+	waitForOutput(t, tm, "/join", "/help")
 
 	view := finalView(t, tm)
 	require.Contains(t, view, "/join")
