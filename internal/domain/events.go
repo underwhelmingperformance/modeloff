@@ -44,10 +44,10 @@ type NickChangeEvent struct {
 
 func (NickChangeEvent) eventMarker() {}
 
-// TopicChangeEvent is emitted when a channel's title is changed.
+// TopicChangeEvent is emitted when a channel's topic is changed.
 type TopicChangeEvent struct {
 	Channel ChannelName
-	Title   string
+	Topic   string
 	By      Nick
 	At      time.Time
 }

@@ -159,6 +159,7 @@ func Complete(scope Scope, raw string, cursor int, ctx CompletionContext) Comple
 		if spec := exactSpec(scope, prefix); spec != nil {
 			completion.Usage = spec.Usage
 			completion.Help = spec.Help
+			completion.SuppressList = true
 			return completion
 		}
 
@@ -580,8 +581,8 @@ func ComposeSources(sources ...SuggestionSource) SuggestionSource {
 }
 
 func channelDetail(ch domain.Channel) string {
-	if ch.Title != "" {
-		return ch.Title
+	if ch.Topic != "" {
+		return ch.Topic
 	}
 
 	if ch.Kind == domain.KindDM {

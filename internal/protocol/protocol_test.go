@@ -67,7 +67,7 @@ func TestFromTopicChangeEvent(t *testing.T) {
 
 	got := FromTopicChangeEvent(domain.TopicChangeEvent{
 		Channel: "#general",
-		Title:   "Discussion",
+		Topic:   "Discussion",
 		By:      "alice",
 		At:      at,
 	})

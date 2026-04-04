@@ -110,16 +110,16 @@ func TestParse(t *testing.T) {
 			wantErr: true,
 		},
 
-		// /title
+		// /topic
 		{
-			name:  "title with text",
-			input: "/title General Discussion",
-			want:  TitleCommand{Title: "General Discussion"},
+			name:  "topic with text",
+			input: "/topic General Discussion",
+			want:  TopicCommand{Topic: "General Discussion"},
 		},
 		{
-			name:  "title without args clears",
-			input: "/title",
-			want:  TitleCommand{},
+			name:  "topic without args clears",
+			input: "/topic",
+			want:  TopicCommand{},
 		},
 
 		// /whois

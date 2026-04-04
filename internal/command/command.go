@@ -61,12 +61,12 @@ type NickCommand struct {
 
 func (NickCommand) commandMarker() {}
 
-// TitleCommand represents `/title [title]`. An empty title clears it.
-type TitleCommand struct {
-	Title string
+// TopicCommand represents `/topic [text]`. An empty topic clears it.
+type TopicCommand struct {
+	Topic string
 }
 
-func (TitleCommand) commandMarker() {}
+func (TopicCommand) commandMarker() {}
 
 // WhoisCommand represents `/whois <nick>`.
 type WhoisCommand struct {
@@ -122,8 +122,8 @@ func Parse(input string) (Command, error) {
 		return parseMsg(args)
 	case "/nick":
 		return parseNick(args)
-	case "/title":
-		return parseTitle(input), nil
+	case "/topic":
+		return parseTopic(input), nil
 	case "/whois":
 		return parseWhois(args)
 	case "/config":
@@ -202,11 +202,10 @@ func parseNick(args []string) (Command, error) {
 	return NickCommand{Nick: args[0]}, nil
 }
 
-func parseTitle(input string) Command {
-	// Strip the `/title` prefix and trim to get the full title text.
-	rest := strings.TrimSpace(strings.TrimPrefix(input, "/title"))
+func parseTopic(input string) Command {
+	rest := strings.TrimSpace(strings.TrimPrefix(input, "/topic"))
 
-	return TitleCommand{Title: rest}
+	return TopicCommand{Topic: rest}
 }
 
 func parseWhois(args []string) (Command, error) {

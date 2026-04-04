@@ -21,7 +21,7 @@ import (
 
 type fakeAPI struct {
 	listModelsFn   func(context.Context) ([]api.ModelInfo, error)
-	generateNickFn func(context.Context, domain.ModelID) (domain.Nick, error)
+	generateNickFn func(context.Context, domain.ModelID, domain.ModelID) (domain.Nick, error)
 }
 
 func (f *fakeAPI) ListModels(ctx context.Context) ([]api.ModelInfo, error) {
@@ -39,9 +39,9 @@ func (f *fakeAPI) SendEvents(
 	return protocol.ModelResponse{Kind: protocol.ResponseSilence}, nil
 }
 
-func (f *fakeAPI) GenerateNick(ctx context.Context, modelID domain.ModelID) (domain.Nick, error) {
+func (f *fakeAPI) GenerateNick(ctx context.Context, nickModel domain.ModelID, modelID domain.ModelID) (domain.Nick, error) {
 	if f.generateNickFn != nil {
-		return f.generateNickFn(ctx, modelID)
+		return f.generateNickFn(ctx, nickModel, modelID)
 	}
 
 	return "fakenick", nil
@@ -228,13 +228,13 @@ func TestChatScreen_nick_command_reports_persist_error(t *testing.T) {
 	require.Contains(t, v, "context deadline exceeded")
 }
 
-func TestChatScreen_title_command(t *testing.T) {
+func TestChatScreen_topic_command(t *testing.T) {
 	sess := newTestSession(t)
 	seedChannel(t, sess, "#general")
 
 	m := initChatScreen(t, sess)
 
-	m, cmd := m.Update(commandMsg("/title cool topic"))
+	m, cmd := m.Update(commandMsg("/topic cool topic"))
 	require.NotNil(t, cmd)
 
 	m, _ = m.Update(cmd())
@@ -243,13 +243,13 @@ func TestChatScreen_title_command(t *testing.T) {
 	require.Contains(t, v, "topic for #general set to: cool topic")
 }
 
-func TestChatScreen_title_clear(t *testing.T) {
+func TestChatScreen_topic_clear(t *testing.T) {
 	sess := newTestSession(t)
 	seedChannel(t, sess, "#general")
 
 	m := initChatScreen(t, sess)
 
-	m, cmd := m.Update(commandMsg("/title"))
+	m, cmd := m.Update(commandMsg("/topic"))
 	require.NotNil(t, cmd)
 
 	m, _ = m.Update(cmd())

@@ -34,7 +34,7 @@ func TestFileStore_SaveAndGetChannel(t *testing.T) {
 	ch := domain.Channel{
 		Name:    "#general",
 		Kind:    domain.KindChannel,
-		Title:   "General chat",
+		Topic:   "General chat",
 		Members: set.NewOrdered[domain.Nick]("alice", "bob"),
 		Created: testTime,
 	}
@@ -108,7 +108,7 @@ func TestFileStore_SaveChannelOverwrites(t *testing.T) {
 	ch := domain.Channel{Name: "#evolving", Kind: domain.KindChannel, Created: testTime}
 	require.NoError(t, s.SaveChannel(ctx, ch))
 
-	ch.Title = "Updated title"
+	ch.Topic = "Updated topic"
 	ch.Members = set.NewOrdered[domain.Nick]("charlie")
 	require.NoError(t, s.SaveChannel(ctx, ch))
 

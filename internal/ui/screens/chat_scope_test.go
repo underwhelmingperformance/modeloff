@@ -32,7 +32,7 @@ func (scopeTestAPI) SendEvents(
 	return protocol.ModelResponse{Kind: protocol.ResponseSilence}, nil
 }
 
-func (scopeTestAPI) GenerateNick(context.Context, domain.ModelID) (domain.Nick, error) {
+func (scopeTestAPI) GenerateNick(context.Context, domain.ModelID, domain.ModelID) (domain.Nick, error) {
 	return "scopebot", nil
 }
 
@@ -78,7 +78,7 @@ func TestChatScreen_CommandScope_exposes_chat_commands(t *testing.T) {
 		"kick",
 		"msg",
 		"nick",
-		"title",
+		"topic",
 		"whois",
 		"config",
 		"help",
@@ -143,6 +143,20 @@ func TestChatScreen_KeyBindings_switch_to_popover_bindings(t *testing.T) {
 		{Key: "^N", Desc: "nicks"},
 		{Key: "^C", Desc: "quit"},
 	}, bindingHelp(ui.ActiveKeyBindings(screen.KeyBindings())))
+}
+
+func TestChatScreen_popover_no_duplicate_suggestions(t *testing.T) {
+	screen := NewChatScreen(t.Context(), newScopeTestSession(t))
+	scope := screen.CommandScope()
+
+	for _, spec := range scope.Commands {
+		raw := "/" + spec.Name
+		completion := command.Complete(scope, raw, len([]rune(raw)), command.CompletionContext{})
+
+		require.True(t, completion.Visible, "popover must be visible for %s", raw)
+		require.True(t, completion.SuppressList,
+			"exact match for %s must suppress the suggestion list so usage and suggestions don't visually duplicate", raw)
+	}
 }
 
 func bindingHelp(bindings []key.Binding) []key.Help {

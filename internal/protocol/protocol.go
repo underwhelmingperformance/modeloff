@@ -29,7 +29,7 @@ const (
 	// KindNick indicates a nickname change.
 	KindNick MessageKind = "NICK"
 
-	// KindTopic indicates a channel's title has been changed.
+	// KindTopic indicates a channel's topic has been changed.
 	KindTopic MessageKind = "TOPIC"
 
 	// KindInvite indicates a model has been invited to a channel.
@@ -118,7 +118,7 @@ func FromTopicChangeEvent(evt domain.TopicChangeEvent) IRCMessage {
 		Kind:   KindTopic,
 		From:   string(evt.By),
 		Target: string(evt.Channel),
-		Body:   evt.Title,
+		Body:   evt.Topic,
 		At:     evt.At,
 	}
 }

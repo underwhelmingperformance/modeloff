@@ -38,7 +38,7 @@ const (
 type Channel struct {
 	Name    ChannelName
 	Kind    ChannelKind
-	Title   string
+	Topic   string
 	Members set.Ordered[Nick]
 	Created time.Time
 }
