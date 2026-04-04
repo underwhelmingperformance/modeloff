@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/protocol"
@@ -253,7 +254,9 @@ func (c *OpenRouterClient) ListModels(ctx context.Context) ([]ModelInfo, error) 
 // performs the generation.
 func (c *OpenRouterClient) GenerateNick(ctx context.Context, nickModel domain.ModelID, modelID domain.ModelID) (domain.Nick, error) {
 	prompt := fmt.Sprintf(
-		"Generate a short, fun IRC-style nickname (lowercase, no spaces, max 12 chars) for an AI model called %q. "+
+		"Generate a short, creative IRC-style nickname (lowercase, no spaces, max 12 chars) for an AI model called %q. "+
+			"The nickname should be fun and personality-driven, NOT derived from the model name or ID. "+
+			"Think of it like a human IRC handle — playful, memorable, and unique. "+
 			"Reply with ONLY the nickname, nothing else.",
 		string(modelID),
 	)
@@ -272,5 +275,37 @@ func (c *OpenRouterClient) GenerateNick(ctx context.Context, nickModel domain.Mo
 		return "", fmt.Errorf("generate nick: no choices in response")
 	}
 
-	return domain.Nick(resp.Choices[0].Message.Content), nil
+	nick := sanitizeNick(resp.Choices[0].Message.Content)
+	if nick == "" {
+		return "", fmt.Errorf("generate nick: model returned empty or unsalvageable response")
+	}
+
+	return domain.Nick(nick), nil
+}
+
+const maxNickLen = 12
+
+// sanitizeNick cleans a raw model response into a valid IRC-style
+// nickname: lowercase, alphanumeric plus underscores and hyphens,
+// max 12 characters.
+func sanitizeNick(raw string) string {
+	s := strings.TrimSpace(raw)
+	s = strings.Trim(s, `"'`+"`")
+	s = strings.ToLower(s)
+	s = strings.ReplaceAll(s, " ", "_")
+
+	var b strings.Builder
+
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			b.WriteRune(r)
+		}
+	}
+
+	result := b.String()
+	if len(result) > maxNickLen {
+		result = result[:maxNickLen]
+	}
+
+	return result
 }

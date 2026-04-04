@@ -230,31 +230,107 @@ func TestOpenRouterClient_SendEventsWithHistory(t *testing.T) {
 }
 
 func TestOpenRouterClient_GenerateNick(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, http.MethodPost, r.Method)
-		require.Equal(t, "Bearer test-key", r.Header.Get("Authorization"))
+	tests := []struct {
+		name     string
+		content  string
+		wantNick domain.Nick
+	}{
+		{
+			name:     "clean response",
+			content:  "claud3",
+			wantNick: "claud3",
+		},
+		{
+			name:     "response with surrounding whitespace",
+			content:  "  sparky\n",
+			wantNick: "sparky",
+		},
+		{
+			name:     "response with quotes",
+			content:  `"zenbot"`,
+			wantNick: "zenbot",
+		},
+		{
+			name:     "response with mixed case",
+			content:  "ZenBot",
+			wantNick: "zenbot",
+		},
+		{
+			name:     "response longer than 12 chars truncated",
+			content:  "superlongnicknamehere",
+			wantNick: "superlongnic",
+		},
+		{
+			name:     "response with spaces replaced by underscores",
+			content:  "zen bot",
+			wantNick: "zen_bot",
+		},
+		{
+			name:     "response with non-IRC characters stripped",
+			content:  "zen!@#bot",
+			wantNick: "zenbot",
+		},
+	}
 
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"choices": []map[string]any{
-				{
-					"message": map[string]any{
-						"role":    "assistant",
-						"content": "claud3",
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				require.Equal(t, http.MethodPost, r.Method)
+				require.Equal(t, "Bearer test-key", r.Header.Get("Authorization"))
+
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"choices": []map[string]any{
+						{
+							"message": map[string]any{
+								"role":    "assistant",
+								"content": tt.content,
+							},
+							"finish_reason": "stop",
+							"index":         0,
+						},
 					},
-					"finish_reason": "stop",
-					"index":         0,
-				},
-			},
+				})
+			}))
+			t.Cleanup(srv.Close)
+
+			client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
+
+			got, err := client.GenerateNick(t.Context(), "anthropic/claude-haiku-4.5", "anthropic/claude-3-haiku")
+			require.NoError(t, err)
+			require.Equal(t, tt.wantNick, got)
 		})
-	}))
-	t.Cleanup(srv.Close)
+	}
+}
 
-	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
+func TestSanitizeNick(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "clean", raw: "sparky", want: "sparky"},
+		{name: "trim whitespace", raw: "  sparky\n\t", want: "sparky"},
+		{name: "strip quotes", raw: `"sparky"`, want: "sparky"},
+		{name: "strip single quotes", raw: "'sparky'", want: "sparky"},
+		{name: "strip backticks", raw: "`sparky`", want: "sparky"},
+		{name: "lowercase", raw: "SPARKY", want: "sparky"},
+		{name: "spaces to underscores", raw: "zen bot", want: "zen_bot"},
+		{name: "strip unsafe chars", raw: "zen!@#$%^&*()bot", want: "zenbot"},
+		{name: "allow underscores", raw: "zen_bot", want: "zen_bot"},
+		{name: "allow hyphens", raw: "zen-bot", want: "zen-bot"},
+		{name: "allow digits", raw: "bot42", want: "bot42"},
+		{name: "truncate to 12", raw: "abcdefghijklmnop", want: "abcdefghijkl"},
+		{name: "empty after sanitize", raw: "!@#$%^", want: ""},
+		{name: "mixed problems", raw: `  "Zen Bot 3000!"  `, want: "zen_bot_3000"},
+	}
 
-	got, err := client.GenerateNick(t.Context(), "anthropic/claude-haiku-4.5", "anthropic/claude-3-haiku")
-	require.NoError(t, err)
-	require.Equal(t, domain.Nick("claud3"), got)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeNick(tt.raw)
+			require.Equal(t, tt.want, got)
+		})
+	}
 }
 
 // --- Test helpers ---
