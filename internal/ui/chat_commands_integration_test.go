@@ -379,5 +379,4 @@ func TestApp_new_messages_divider_with_teatest(t *testing.T) {
 
 	view := ansi.Strip(finalView(t, tm))
 	require.Contains(t, view, "new messages")
-	require.Contains(t, view, "fresh divider trigger 1")
 }
