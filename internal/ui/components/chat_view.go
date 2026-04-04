@@ -293,14 +293,14 @@ func (c *ChatView) KeyBindings() []key.Binding {
 					key.WithKeys("tab"),
 					key.WithHelp("Tab", "accept"),
 				),
-				!c.popover.completion.SuppressList && len(c.popover.completion.Suggestions) > 0,
+				c.popover.hasSuggestions(),
 			),
 			ui.WithBindingEnabled(
 				key.NewBinding(
 					key.WithKeys("up", "down", "shift+tab"),
 					key.WithHelp("↑↓", "navigate"),
 				),
-				!c.popover.completion.SuppressList && len(c.popover.completion.Suggestions) > 0,
+				c.popover.hasSuggestions(),
 			),
 			key.NewBinding(
 				key.WithKeys("esc"),
@@ -390,7 +390,7 @@ func (c *ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 }
 
 func (c *ChatView) handleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
-	if c.popover.completion.Visible && !c.popover.completion.SuppressList && len(c.popover.completion.Suggestions) > 0 {
+	if c.popover.completion.Visible && c.popover.hasSuggestions() {
 		switch msg.Type {
 		case tea.KeyTab:
 			c.input = c.popover.AcceptSuggestion(c.input, c.popover.selected)

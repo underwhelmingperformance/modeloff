@@ -617,8 +617,8 @@ func TestChatView_command_popover_renders_and_completes(t *testing.T) {
 	m = typeText(t, m, "/jo")
 
 	v := m.View(60, 24)
-	require.Contains(t, v, "/join <channel>")
 	require.Contains(t, v, "/join")
+	require.Contains(t, v, "Join a channel")
 
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
 	m = typeText(t, m, "#random")
@@ -627,6 +627,28 @@ func TestChatView_command_popover_renders_and_completes(t *testing.T) {
 	require.NotNil(t, cmd)
 	sub := cmd().(components.CommandSubmitMsg)
 	require.Equal(t, "/join #random", sub.Raw)
+}
+
+func TestChatView_popover_renders_usage_in_suggestions(t *testing.T) {
+	cv := components.NewChatView("#general", "testuser", "", nil).WithCommandState(command.Scope{
+		Commands: []command.Spec{
+			{Name: "join", Help: "Join a channel", Usage: "/join <channel>"},
+			{Name: "leave", Help: "Leave current channel", Usage: "/leave"},
+			{Name: "quit", Help: "Exit modeloff", Usage: "/quit"},
+		},
+	}, command.CompletionContext{})
+	var m ui.Model = cv
+
+	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 0, Y: 0, Width: 60, Height: 24}})
+	m = typeText(t, m, "/")
+
+	v := m.View(60, 24)
+	stripped := ansi.Strip(v)
+
+	require.Contains(t, stripped, "/join <channel>")
+	require.Contains(t, stripped, "Join a channel")
+	require.Contains(t, stripped, "/leave")
+	require.Contains(t, stripped, "/quit")
 }
 
 func TestChatView_mouse_click_positions_input_cursor(t *testing.T) {
@@ -801,5 +823,3 @@ func TestChatView_mouse_click_accepts_popover_suggestion(t *testing.T) {
 	sub := cmd().(components.CommandSubmitMsg)
 	require.Equal(t, "/join #general", sub.Raw)
 }
-
-

@@ -41,22 +41,7 @@ func TestExecute_uses_scoped_handler(t *testing.T) {
 	require.Equal(t, "/join #general", called)
 }
 
-func TestComplete_command_names(t *testing.T) {
-	scope := Scope{
-		Commands: []Spec{
-			{Name: "join", Help: "Join channels", Usage: "/join <channel>"},
-			{Name: "list", Help: "List channels", Usage: "/list"},
-		},
-	}
-
-	completion := Complete(scope, "/j", 2, CompletionContext{})
-
-	require.True(t, completion.Visible)
-	require.Equal(t, []Suggestion{{Value: "join", Label: "/join", Detail: "Join channels"}}, completion.Suggestions)
-	require.Equal(t, "/join <channel>", completion.Usage)
-}
-
-func TestComplete_exact_command_clears_suggestions(t *testing.T) {
+func TestComplete_command_suggestions_carry_usage(t *testing.T) {
 	scope := Scope{
 		Commands: []Spec{
 			{Name: "join", Help: "Join channels", Usage: "/join <channel>"},
@@ -65,13 +50,44 @@ func TestComplete_exact_command_clears_suggestions(t *testing.T) {
 		},
 	}
 
-	completion := Complete(scope, "/quit", 5, CompletionContext{})
+	tests := []struct {
+		name        string
+		raw         string
+		suggestions []Suggestion
+	}{
+		{
+			name: "partial match",
+			raw:  "/j",
+			suggestions: []Suggestion{
+				{Value: "join", Label: "/join", Detail: "Join channels", Usage: "/join <channel>"},
+			},
+		},
+		{
+			name: "exact match is still a suggestion",
+			raw:  "/quit",
+			suggestions: []Suggestion{
+				{Value: "quit", Label: "/quit", Detail: "Exit.", Usage: "/quit"},
+			},
+		},
+		{
+			name: "all commands",
+			raw:  "/",
+			suggestions: []Suggestion{
+				{Value: "join", Label: "/join", Detail: "Join channels", Usage: "/join <channel>"},
+				{Value: "list", Label: "/list", Detail: "List channels", Usage: "/list"},
+				{Value: "quit", Label: "/quit", Detail: "Exit.", Usage: "/quit"},
+			},
+		},
+	}
 
-	require.True(t, completion.Visible)
-	require.Equal(t, "/quit", completion.Usage)
-	require.Equal(t, "Exit.", completion.Help)
-	require.Empty(t, completion.Suggestions,
-		"exact command match must not return suggestions that duplicate the usage header")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			completion := Complete(scope, tt.raw, len([]rune(tt.raw)), CompletionContext{})
+
+			require.True(t, completion.Visible)
+			require.Equal(t, tt.suggestions, completion.Suggestions)
+		})
+	}
 }
 
 func TestComplete_argument_sources_are_contextual(t *testing.T) {
@@ -99,7 +115,7 @@ func TestComplete_argument_sources_are_contextual(t *testing.T) {
 	require.False(t, completion.AppendSpace)
 }
 
-func TestComplete_free_form_arguments_suppress_list(t *testing.T) {
+func TestComplete_free_form_arguments_have_no_suggestions(t *testing.T) {
 	scope := Scope{
 		Commands: []Spec{
 			{
@@ -121,8 +137,7 @@ func TestComplete_free_form_arguments_suppress_list(t *testing.T) {
 	completion := Complete(scope, "/msg botty hello", len([]rune("/msg botty hello")), ctx)
 
 	require.True(t, completion.Visible)
-	require.True(t, completion.SuppressList)
-	require.Equal(t, "Message body", completion.Help)
+	require.Empty(t, completion.Suggestions)
 }
 
 func TestComplete_composes_local_and_live_model_suggestions(t *testing.T) {

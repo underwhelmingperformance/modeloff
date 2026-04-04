@@ -35,11 +35,15 @@ type Invocation struct {
 	Parsed Command
 }
 
-// Suggestion is a single completion option.
+// Suggestion is a single completion option. Every suggestion carries
+// its own Usage text so the popover can display it when the
+// suggestion is selected, without promoting any entry to a special
+// header.
 type Suggestion struct {
 	Value  string
 	Label  string
 	Detail string
+	Usage  string
 }
 
 // SuggestionSource returns suggestions for the current argument.
@@ -81,13 +85,10 @@ type InvocationState struct {
 // Completion describes the UI state for the command popover.
 type Completion struct {
 	Visible      bool
-	Usage        string
-	Help         string
 	Suggestions  []Suggestion
 	ReplaceStart int
 	ReplaceEnd   int
 	AppendSpace  bool
-	SuppressList bool
 }
 
 type token struct {
@@ -147,35 +148,13 @@ func Complete(scope Scope, raw string, cursor int, ctx CompletionContext) Comple
 	}
 
 	if index == 0 {
-		suggestions := filterSuggestions(commandSuggestions(scope), prefix)
-		completion := Completion{
+		return Completion{
 			Visible:      true,
-			Suggestions:  suggestions,
+			Suggestions:  filterSuggestions(commandSuggestions(scope), prefix),
 			ReplaceStart: start,
 			ReplaceEnd:   end,
 			AppendSpace:  true,
 		}
-
-		if spec := exactSpec(scope, prefix); spec != nil {
-			completion.Usage = spec.Usage
-			completion.Help = spec.Help
-			completion.Suggestions = nil
-			return completion
-		}
-
-		if len(suggestions) > 0 {
-			if spec := exactSpec(scope, strings.TrimPrefix(suggestions[0].Value, "/")); spec != nil {
-				completion.Usage = spec.Usage
-				completion.Help = spec.Help
-			}
-		}
-
-		if completion.Usage == "" {
-			completion.Usage = "/<command>"
-			completion.Help = "Type a slash command."
-		}
-
-		return completion
 	}
 
 	name := ""
@@ -187,8 +166,6 @@ func Complete(scope Scope, raw string, cursor int, ctx CompletionContext) Comple
 	if spec == nil {
 		return Completion{
 			Visible:      true,
-			Usage:        "/<command>",
-			Help:         "Unknown command.",
 			ReplaceStart: start,
 			ReplaceEnd:   end,
 		}
@@ -210,8 +187,6 @@ func Complete(scope Scope, raw string, cursor int, ctx CompletionContext) Comple
 
 	completion := Completion{
 		Visible:      true,
-		Usage:        spec.Usage,
-		Help:         spec.Help,
 		ReplaceStart: start,
 		ReplaceEnd:   end,
 		AppendSpace:  hasContinuation(spec.Args, state.CurrentIndex),
@@ -219,24 +194,14 @@ func Complete(scope Scope, raw string, cursor int, ctx CompletionContext) Comple
 
 	arg := resolveArg(spec.Args, state.CurrentIndex)
 	if arg == nil {
-		completion.SuppressList = true
 		return completion
 	}
 
 	if arg.FreeForm {
-		completion.SuppressList = true
-		if arg.Help != "" {
-			completion.Help = arg.Help
-		}
 		return completion
 	}
 
-	if arg.Help != "" {
-		completion.Help = arg.Help
-	}
-
 	if arg.Source == nil {
-		completion.SuppressList = true
 		return completion
 	}
 
@@ -309,6 +274,7 @@ func commandSuggestions(scope Scope) []Suggestion {
 			Value:  spec.Name,
 			Label:  "/" + spec.Name,
 			Detail: spec.Help,
+			Usage:  spec.Usage,
 		})
 	}
 

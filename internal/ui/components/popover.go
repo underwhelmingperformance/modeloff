@@ -24,7 +24,6 @@ type commandPopover struct {
 
 type commandPopoverLayout struct {
 	Rect            ui.Rect
-	HeaderRect      ui.Rect
 	SuggestionRects []ui.Rect
 }
 
@@ -43,22 +42,16 @@ func (p *commandPopover) IsVisible() bool {
 	return p.completion.Visible
 }
 
+func (p *commandPopover) hasSuggestions() bool {
+	return len(p.completion.Suggestions) > 0
+}
+
 func (p *commandPopover) height() int {
 	if !p.completion.Visible {
 		return 0
 	}
 
-	height := 1
-	if p.completion.SuppressList {
-		return height
-	}
-
-	count := len(p.visibleSuggestions())
-	if count == 0 {
-		return height
-	}
-
-	return height + count
+	return len(p.visibleSuggestions())
 }
 
 func (p *commandPopover) layout(bounds, inputRect ui.Rect) commandPopoverLayout {
@@ -74,26 +67,15 @@ func (p *commandPopover) layout(bounds, inputRect ui.Rect) commandPopoverLayout 
 		Height: popoverHeight,
 	}
 
-	headerHeight := 0
-	if popoverHeight > 0 {
-		headerHeight = 1
-	}
-
 	layout := commandPopoverLayout{
-		Rect: popoverRect,
-		HeaderRect: ui.Rect{
-			X:      popoverRect.X,
-			Y:      popoverRect.Y,
-			Width:  popoverRect.Width,
-			Height: headerHeight,
-		},
+		Rect:            popoverRect,
 		SuggestionRects: make([]ui.Rect, 0, len(p.visibleSuggestions())),
 	}
 
 	for i := range p.visibleSuggestions() {
 		layout.SuggestionRects = append(layout.SuggestionRects, ui.Rect{
 			X:      popoverRect.X,
-			Y:      popoverRect.Y + headerHeight + i,
+			Y:      popoverRect.Y + i,
 			Width:  popoverRect.Width,
 			Height: 1,
 		})
@@ -107,19 +89,25 @@ func (p *commandPopover) Render(width int) string {
 		return ""
 	}
 
-	header := p.completion.Usage
-	if p.completion.Help != "" {
-		header = fmt.Sprintf("%s  %s", header, theme.Dim.Render(p.completion.Help))
+	visible := p.visibleSuggestions()
+	if len(visible) == 0 {
+		return ""
 	}
 
-	lines := []string{theme.Info.Width(width).Render(truncateLine(header, width))}
-	if p.completion.SuppressList {
-		return lipgloss.JoinVertical(lipgloss.Left, lines...)
-	}
+	lines := make([]string, 0, len(visible))
 
-	for i, suggestion := range p.visibleSuggestions() {
+	for i, suggestion := range visible {
 		index := p.offset + i
 		line := suggestion.Label
+		if suggestion.Usage != "" {
+			// Show the argument signature after the command name,
+			// e.g. "/join <channel>" where Usage is "/join <channel>".
+			args := strings.TrimPrefix(suggestion.Usage, suggestion.Label)
+			args = strings.TrimLeft(args, " ")
+			if args != "" {
+				line = fmt.Sprintf("%s %s", line, args)
+			}
+		}
 		if suggestion.Detail != "" {
 			line = fmt.Sprintf("%s  %s", line, theme.Dim.Render(suggestion.Detail))
 		}
@@ -159,7 +147,7 @@ func (p *commandPopover) HoverSuggestion(layout commandPopoverLayout, x, y int) 
 		}
 	}
 
-	return layout.HeaderRect.Contains(x, y)
+	return false
 }
 
 func (p *commandPopover) AcceptSuggestion(input InputBar, index int) InputBar {
