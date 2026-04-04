@@ -5,7 +5,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/components"
@@ -42,7 +41,6 @@ func (s *ChatScreen) handleInitialLoad(msg domain.InitialLoadEvent) (ui.Model, t
 	cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: msg.Members}))
 	cmds = append(cmds, msgCmd(components.CommandStateMsg{
 		Commands: s.Commands(),
-		Context:  s.commandContext(),
 	}))
 
 	return s, tea.Batch(cmds...)
@@ -127,7 +125,6 @@ func (s *ChatScreen) handleJoinEvent(msg domain.JoinEvent) (ui.Model, tea.Cmd) {
 	cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: members}))
 	cmds = append(cmds, msgCmd(components.CommandStateMsg{
 		Commands: s.Commands(),
-		Context:  s.commandContext(),
 	}))
 
 	return s, tea.Batch(cmds...)
@@ -181,7 +178,6 @@ func (s *ChatScreen) handlePartEvent(msg domain.PartEvent) (ui.Model, tea.Cmd) {
 	cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: members}))
 	cmds = append(cmds, msgCmd(components.CommandStateMsg{
 		Commands: s.Commands(),
-		Context:  s.commandContext(),
 	}))
 
 	if !leavingActive && s.active == msg.Channel {
@@ -204,7 +200,6 @@ func (s *ChatScreen) handleTopicChangeEvent(msg domain.TopicChangeEvent) (ui.Mod
 	var cmds []tea.Cmd
 	cmds = append(cmds, msgCmd(components.CommandStateMsg{
 		Commands: s.Commands(),
-		Context:  s.commandContext(),
 	}))
 
 	if s.active == msg.Channel {
@@ -230,7 +225,6 @@ func (s *ChatScreen) handleNickChangeEvent(msg domain.NickChangeEvent) (ui.Model
 	cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: members}))
 	cmds = append(cmds, msgCmd(components.CommandStateMsg{
 		Commands: s.Commands(),
-		Context:  s.commandContext(),
 	}))
 
 	if s.active != "" {
@@ -259,7 +253,6 @@ func (s *ChatScreen) handleModelInvitedEvent(msg domain.ModelInvitedEvent) (ui.M
 	cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: members}))
 	cmds = append(cmds, msgCmd(components.CommandStateMsg{
 		Commands: s.Commands(),
-		Context:  s.commandContext(),
 	}))
 
 	if s.active == msg.Channel {
@@ -288,7 +281,6 @@ func (s *ChatScreen) handleModelKickedEvent(msg domain.ModelKickedEvent) (ui.Mod
 	cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: members}))
 	cmds = append(cmds, msgCmd(components.CommandStateMsg{
 		Commands: s.Commands(),
-		Context:  s.commandContext(),
 	}))
 
 	if s.active == msg.Channel {
@@ -370,7 +362,6 @@ func (s *ChatScreen) handleDMOpenedEvent(msg domain.DMOpenedEvent) (ui.Model, te
 	cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: members}))
 	cmds = append(cmds, msgCmd(components.CommandStateMsg{
 		Commands: s.Commands(),
-		Context:  s.commandContext(),
 	}))
 
 	return s, tea.Batch(cmds...)
@@ -411,19 +402,7 @@ func (s *ChatScreen) handleLiveModelsLoaded(msg liveModelsLoadedMsg) (ui.Model, 
 
 	return s, msgCmd(components.CommandStateMsg{
 		Commands: s.Commands(),
-		Context:  s.commandContext(),
 	})
-}
-
-func (s *ChatScreen) commandContext() command.CompletionContext {
-	return command.CompletionContext{
-		Channels:      append([]domain.Channel(nil), s.channels...),
-		Instances:     append([]domain.ModelInstance(nil), s.instances...),
-		ActiveChannel: s.active,
-		ActiveMembers: s.activeMembers(),
-		UserNick:      s.sess.UserNick(),
-		LiveModels:    append([]command.ModelOption(nil), s.liveModels...),
-	}
 }
 
 func (s *ChatScreen) activeMembers() []domain.Nick {

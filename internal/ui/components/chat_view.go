@@ -179,10 +179,9 @@ type SetPlaceholderMsg struct {
 	Text string
 }
 
-// CommandStateMsg updates the available commands and completion context.
+// CommandStateMsg updates the available commands for completion.
 type CommandStateMsg struct {
 	Commands command.Set
-	Context  command.CompletionContext
 }
 
 // ChatView displays messages for a single channel with an input bar
@@ -307,7 +306,7 @@ func (c *ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 	case CommandStateMsg:
 		c.messages.Update(msg)
-		c.popover.Apply(msg.Commands, msg.Context, c.input.Value(), c.input.Cursor())
+		c.popover.Apply(msg.Commands, c.input.Value(), c.input.Cursor())
 		return c, nil
 
 	case PopoverAcceptMsg:

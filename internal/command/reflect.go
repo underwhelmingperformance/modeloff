@@ -174,11 +174,18 @@ func build(grammar any) ([]*Node, error) {
 			return nil, fmt.Errorf("field %s: %w", ft.Name, err)
 		}
 
+		var sources map[string]SuggestionSource
+
+		fieldVal := v.Field(i).Interface()
+		if c, ok := fieldVal.(Completer); ok {
+			sources = c.Sources()
+		}
+
 		node := &Node{
 			Name:        name,
 			Help:        help,
-			Positionals: buildPositionals(fields, nil),
-			Flags:       buildFlags(fields, nil),
+			Positionals: buildPositionals(fields, sources),
+			Flags:       buildFlags(fields, sources),
 			factory: func() any {
 				return reflect.New(fieldType).Interface()
 			},

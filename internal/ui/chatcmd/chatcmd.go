@@ -1,4 +1,7 @@
-package command
+// Package chatcmd defines the concrete slash-command types for the
+// chat screen. It consumes the generic command library and binds it
+// to the application's session layer and Bubble Tea runtime.
+package chatcmd
 
 import (
 	"context"
@@ -6,22 +9,23 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/session"
 )
 
-// RunContext carries the dependencies a command needs to execute.
-type RunContext struct {
+// Command is the typed command interface for the chat screen.
+type Command = command.Command[Context, tea.Cmd]
+
+// Parser is the typed parser for the chat screen.
+type Parser = command.Parser[Context, tea.Cmd]
+
+// Context carries the dependencies a command needs to execute.
+type Context struct {
 	Ctx     context.Context
 	Session *session.Session
 	Active  domain.ChannelName
 	Nick    domain.Nick
-}
-
-// Runner is implemented by command structs that can execute
-// themselves given a RunContext.
-type Runner interface {
-	Run(rc RunContext) tea.Cmd
 }
 
 // HelpResult signals that the help screen should be shown.
@@ -58,4 +62,16 @@ type PokeIntervalSetResult struct {
 // updated.
 type NickModelSetResult struct {
 	ModelID domain.ModelID
+}
+
+func errorEvent(operation string, err error) domain.ErrorEvent {
+	return domain.ErrorEvent{Operation: operation, Err: err, At: time.Now()}
+}
+
+func usageCmd(cmd string) tea.Cmd {
+	return func() tea.Msg { return UsageError{Command: cmd} }
+}
+
+func noChannelCmd() tea.Cmd {
+	return func() tea.Msg { return NoChannelError{} }
 }

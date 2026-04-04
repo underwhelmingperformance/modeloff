@@ -4,9 +4,6 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-
-	"github.com/laney/modeloff/internal/domain"
-	"github.com/laney/modeloff/internal/set"
 )
 
 func TestMerge(t *testing.T) {
@@ -111,7 +108,7 @@ func TestComplete_command_suggestions_carry_usage(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			completion := Complete(cmds, tt.raw, len([]rune(tt.raw)), CompletionContext{})
+			completion := Complete(cmds, tt.raw, len([]rune(tt.raw)))
 
 			require.True(t, completion.Visible)
 			require.Equal(t, tt.suggestions, completion.Suggestions)
@@ -120,54 +117,64 @@ func TestComplete_command_suggestions_carry_usage(t *testing.T) {
 }
 
 func TestComplete_argument_sources_are_contextual(t *testing.T) {
+	nickSource := func(_ InvocationState) []Suggestion {
+		return []Suggestion{
+			{Value: "botty", Label: "botty"},
+			{Value: "helper", Label: "helper"},
+		}
+	}
+
 	cmds := Set{
 		Commands: []*Node{
 			{
 				Name: "kick",
 				Help: "Kick a nick",
 				Positionals: []Positional{
-					{Name: "nick", Source: ActiveMembersSource()},
+					{Name: "nick", Source: nickSource},
 				},
 			},
 		},
 	}
 
-	ctx := CompletionContext{
-		UserNick:      "testuser",
-		ActiveMembers: []domain.Nick{"testuser", "botty", "helper"},
-	}
+	completion := Complete(cmds, "/kick h", 7)
 
-	completion := Complete(cmds, "/kick h", 7, ctx)
-
-	require.Equal(t, []Suggestion{{Value: "helper", Label: "helper", Detail: ""}}, completion.Suggestions)
+	require.Equal(t, []Suggestion{{Value: "helper", Label: "helper"}}, completion.Suggestions)
 	require.False(t, completion.AppendSpace)
 }
 
 func TestComplete_free_form_arguments_have_no_suggestions(t *testing.T) {
+	nickSource := func(_ InvocationState) []Suggestion {
+		return []Suggestion{{Value: "botty", Label: "botty"}}
+	}
+
 	cmds := Set{
 		Commands: []*Node{
 			{
 				Name: "msg",
 				Help: "Direct message",
 				Positionals: []Positional{
-					{Name: "nick", Source: InstancesSource()},
+					{Name: "nick", Source: nickSource},
 					{Name: "message", Variadic: true, Optional: true, Help: "Message body"},
 				},
 			},
 		},
 	}
 
-	ctx := CompletionContext{
-		Instances: []domain.ModelInstance{{Nick: "botty", ModelID: "test/model"}},
-	}
-
-	completion := Complete(cmds, "/msg botty hello", len([]rune("/msg botty hello")), ctx)
+	completion := Complete(cmds, "/msg botty hello", len([]rune("/msg botty hello")))
 
 	require.True(t, completion.Visible)
 	require.Empty(t, completion.Suggestions)
 }
 
-func TestComplete_composes_local_and_live_model_suggestions(t *testing.T) {
+func TestComplete_composes_sources(t *testing.T) {
+	localSource := func(_ InvocationState) []Suggestion {
+		return []Suggestion{{Value: "botty", Label: "botty", Detail: "test/model-a"}}
+	}
+
+	liveSource := func(_ InvocationState) []Suggestion {
+		return []Suggestion{{Value: "anthropic/claude-3-haiku", Label: "anthropic/claude-3-haiku", Detail: "Claude Haiku"}}
+	}
+
 	cmds := Set{
 		Commands: []*Node{
 			{
@@ -175,11 +182,8 @@ func TestComplete_composes_local_and_live_model_suggestions(t *testing.T) {
 				Help: "Invite a model",
 				Positionals: []Positional{
 					{
-						Name: "model",
-						Source: ComposeSources(
-							ReusableInstancesSource(),
-							LiveModelsSource(),
-						),
+						Name:   "model",
+						Source: ComposeSources(localSource, liveSource),
 					},
 				},
 				Flags: []Flag{
@@ -193,26 +197,7 @@ func TestComplete_composes_local_and_live_model_suggestions(t *testing.T) {
 		},
 	}
 
-	ctx := CompletionContext{
-		ActiveChannel: "#general",
-		Instances: []domain.ModelInstance{
-			{
-				Nick:     "botty",
-				ModelID:  "test/model-a",
-				Channels: set.NewOrdered[domain.ChannelName]("#random"),
-			},
-			{
-				Nick:     "busybot",
-				ModelID:  "test/model-b",
-				Channels: set.NewOrdered[domain.ChannelName]("#general"),
-			},
-		},
-		LiveModels: []ModelOption{
-			{ID: "anthropic/claude-3-haiku", Name: "Claude Haiku"},
-		},
-	}
-
-	completion := Complete(cmds, "/invite ", len([]rune("/invite ")), ctx)
+	completion := Complete(cmds, "/invite ", len([]rune("/invite ")))
 
 	require.Equal(t, []Suggestion{
 		{Value: "botty", Label: "botty", Detail: "test/model-a"},
@@ -285,44 +270,25 @@ func TestNode_Usage(t *testing.T) {
 	}
 }
 
-func TestSetSource_nonexistent_positional(t *testing.T) {
-	node := &Node{
-		Name:        "join",
-		Positionals: []Positional{{Name: "channel"}},
-	}
-
-	node.SetSource("nonexistent", ChannelsSource())
-
-	require.Nil(t, node.Positionals[0].Source)
-}
-
-func TestSetSource_attaches_source(t *testing.T) {
-	node := &Node{
-		Name:        "join",
-		Positionals: []Positional{{Name: "channel"}},
-	}
-
-	node.SetSource("channel", ChannelsSource())
-
-	require.NotNil(t, node.Positionals[0].Source)
-}
-
 func TestComplete_token_boundaries(t *testing.T) {
+	nickSource := func(_ InvocationState) []Suggestion {
+		return []Suggestion{
+			{Value: "alice", Label: "alice"},
+			{Value: "bob", Label: "bob"},
+		}
+	}
+
 	cmds := Set{
 		Commands: []*Node{
 			{
 				Name: "kick",
 				Help: "Kick a nick",
 				Positionals: []Positional{
-					{Name: "nick", Source: ActiveMembersSource()},
+					{Name: "nick", Source: nickSource},
 				},
 			},
 			{Name: "quit", Help: "Exit."},
 		},
-	}
-
-	ctx := CompletionContext{
-		ActiveMembers: []domain.Nick{"alice", "bob"},
 	}
 
 	tests := []struct {
@@ -378,7 +344,7 @@ func TestComplete_token_boundaries(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			completion := Complete(cmds, tt.raw, tt.cursor, ctx)
+			completion := Complete(cmds, tt.raw, tt.cursor)
 
 			if !tt.wantCmd && tt.wantArgLen == 0 {
 				require.False(t, completion.Visible)
@@ -399,7 +365,7 @@ func TestComplete_unknown_command_has_no_suggestions(t *testing.T) {
 		Commands: []*Node{{Name: "quit", Help: "Exit."}},
 	}
 
-	completion := Complete(cmds, "/unknown arg", len([]rune("/unknown arg")), CompletionContext{})
+	completion := Complete(cmds, "/unknown arg", len([]rune("/unknown arg")))
 
 	require.True(t, completion.Visible)
 	require.Empty(t, completion.Suggestions)
@@ -414,7 +380,7 @@ func TestComplete_contains_match(t *testing.T) {
 	}
 
 	raw := "/aiku"
-	completion := Complete(cmds, raw, len([]rune(raw)), CompletionContext{})
+	completion := Complete(cmds, raw, len([]rune(raw)))
 
 	require.True(t, completion.Visible)
 	require.Equal(t, []Suggestion{
@@ -439,24 +405,29 @@ func TestNode_Leaf(t *testing.T) {
 	require.False(t, (&Node{Name: "admin", Children: []*Node{{Name: "ban"}}}).Leaf())
 }
 
-func TestParse_no_factory(t *testing.T) {
+func TestParseValue_no_factory(t *testing.T) {
 	cmds := Set{
 		Commands: []*Node{{Name: "broken"}},
 	}
 
-	_, err := cmds.Parse("/broken")
+	_, err := cmds.ParseValue("/broken")
 
 	require.ErrorContains(t, err, "no factory")
 }
 
-func TestParse_after_merge(t *testing.T) {
+func TestParseValue_after_merge(t *testing.T) {
+	type mergeJoinCmd struct {
+		Channel string `arg:"channel" help:"Channel"`
+	}
+	type mergeQuitCmd struct{}
+
 	type childGrammar struct {
-		Join JoinCommand `cmd:"" help:"Child join."`
+		Join mergeJoinCmd `cmd:"" help:"Child join."`
 	}
 
 	type parentGrammar struct {
-		Join JoinCommand `cmd:"" help:"Parent join."`
-		Quit QuitCommand `cmd:"" help:"Quit."`
+		Join mergeJoinCmd `cmd:"" help:"Parent join."`
+		Quit mergeQuitCmd `cmd:"" help:"Quit."`
 	}
 
 	child := Build(&childGrammar{})
@@ -464,19 +435,19 @@ func TestParse_after_merge(t *testing.T) {
 	merged := Merge(child, parent)
 
 	t.Run("child command wins", func(t *testing.T) {
-		runner, err := merged.Parse("/join #test")
+		parsed, err := merged.ParseValue("/join test")
 		require.NoError(t, err)
-		require.Equal(t, JoinCommand{Channel: "#test"}, runner)
+		require.Equal(t, mergeJoinCmd{Channel: "test"}, parsed)
 	})
 
 	t.Run("parent command accessible", func(t *testing.T) {
-		runner, err := merged.Parse("/quit")
+		parsed, err := merged.ParseValue("/quit")
 		require.NoError(t, err)
-		require.Equal(t, QuitCommand{}, runner)
+		require.Equal(t, mergeQuitCmd{}, parsed)
 	})
 
 	t.Run("unknown command errors", func(t *testing.T) {
-		_, err := merged.Parse("/unknown")
+		_, err := merged.ParseValue("/unknown")
 		require.Error(t, err)
 	})
 }
@@ -486,7 +457,7 @@ func TestComplete_whitespace_after_slash(t *testing.T) {
 		Commands: []*Node{{Name: "quit", Help: "Exit."}},
 	}
 
-	completion := Complete(cmds, "/ ", len([]rune("/ ")), CompletionContext{})
+	completion := Complete(cmds, "/ ", len([]rune("/ ")))
 
 	require.True(t, completion.Visible)
 	require.Empty(t, completion.Suggestions)
@@ -501,7 +472,7 @@ func TestComplete_cursor_mid_command_name(t *testing.T) {
 	}
 
 	raw := "/quit"
-	completion := Complete(cmds, raw, 3, CompletionContext{})
+	completion := Complete(cmds, raw, 3)
 
 	require.True(t, completion.Visible)
 
@@ -524,7 +495,7 @@ func TestComplete_multiple_prefix_matches(t *testing.T) {
 	}
 
 	raw := "/qu"
-	completion := Complete(cmds, raw, len([]rune(raw)), CompletionContext{})
+	completion := Complete(cmds, raw, len([]rune(raw)))
 
 	require.True(t, completion.Visible)
 
@@ -551,7 +522,7 @@ func TestComplete_flag_name_after_positionals(t *testing.T) {
 	}
 
 	raw := "/kick botty "
-	completion := Complete(cmds, raw, len([]rune(raw)), CompletionContext{})
+	completion := Complete(cmds, raw, len([]rune(raw)))
 
 	require.True(t, completion.Visible)
 	require.Equal(t, []Suggestion{
@@ -577,7 +548,7 @@ func TestComplete_flag_name_prefix_filters(t *testing.T) {
 	}
 
 	raw := "/invite model-a --per"
-	completion := Complete(cmds, raw, len([]rune(raw)), CompletionContext{})
+	completion := Complete(cmds, raw, len([]rune(raw)))
 
 	require.True(t, completion.Visible)
 	require.Equal(t, []Suggestion{
@@ -613,7 +584,7 @@ func TestComplete_flag_value_uses_source(t *testing.T) {
 	}
 
 	raw := "/config api-key --format "
-	completion := Complete(cmds, raw, len([]rune(raw)), CompletionContext{})
+	completion := Complete(cmds, raw, len([]rune(raw)))
 
 	require.True(t, completion.Visible)
 	require.Equal(t, []Suggestion{
@@ -643,7 +614,7 @@ func TestComplete_flag_value_filters_by_prefix(t *testing.T) {
 	}
 
 	raw := "/config --format j"
-	completion := Complete(cmds, raw, len([]rune(raw)), CompletionContext{})
+	completion := Complete(cmds, raw, len([]rune(raw)))
 
 	require.True(t, completion.Visible)
 	require.Equal(t, []Suggestion{
@@ -671,7 +642,7 @@ func TestComplete_flags_interleaved_with_positionals(t *testing.T) {
 
 	// Flag before positional: after --persona value, should offer model suggestions.
 	raw := "/invite --persona friendly "
-	completion := Complete(cmds, raw, len([]rune(raw)), CompletionContext{})
+	completion := Complete(cmds, raw, len([]rune(raw)))
 
 	require.True(t, completion.Visible)
 	require.Equal(t, []Suggestion{
@@ -718,7 +689,7 @@ func TestComplete_subcommand_names(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			completion := Complete(cmds, tt.raw, len([]rune(tt.raw)), CompletionContext{})
+			completion := Complete(cmds, tt.raw, len([]rune(tt.raw)))
 
 			require.True(t, completion.Visible)
 
@@ -770,7 +741,7 @@ func TestComplete_flag_only_command(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			completion := Complete(cmds, tt.raw, len([]rune(tt.raw)), CompletionContext{})
+			completion := Complete(cmds, tt.raw, len([]rune(tt.raw)))
 
 			require.True(t, completion.Visible)
 
@@ -805,7 +776,7 @@ func TestComplete_optional_positional_with_source(t *testing.T) {
 	}
 
 	raw := "/invite "
-	completion := Complete(cmds, raw, len([]rune(raw)), CompletionContext{})
+	completion := Complete(cmds, raw, len([]rune(raw)))
 
 	require.True(t, completion.Visible)
 	require.Equal(t, []Suggestion{

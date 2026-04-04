@@ -654,15 +654,12 @@ func TestChatView_command_popover_renders_and_completes(t *testing.T) {
 					Name: "join",
 					Help: "Join a channel",
 					Positionals: []command.Positional{
-						{Name: "channel", Source: command.ChannelsSource()},
+						{Name: "channel", Source: command.LiteralSource(
+							command.Suggestion{Value: "#general", Label: "#general"},
+							command.Suggestion{Value: "#random", Label: "#random"},
+						)},
 					},
 				},
-			},
-		},
-		Context: command.CompletionContext{
-			Channels: []domain.Channel{
-				{Name: "#general", Kind: domain.KindChannel},
-				{Name: "#random", Kind: domain.KindChannel},
 			},
 		},
 	})
@@ -699,7 +696,6 @@ func TestChatView_popover_arrow_keys_do_not_fall_through(t *testing.T) {
 				{Name: "quit", Help: "Exit modeloff"},
 			},
 		},
-		Context: command.CompletionContext{},
 	})
 	var m ui.Model = cv
 
@@ -743,7 +739,6 @@ func TestChatView_popover_renders_usage_in_suggestions(t *testing.T) {
 				{Name: "quit", Help: "Exit modeloff"},
 			},
 		},
-		Context: command.CompletionContext{},
 	})
 	var m ui.Model = cv
 
@@ -908,13 +903,13 @@ func TestChatView_mouse_click_accepts_popover_suggestion(t *testing.T) {
 					Name: "join",
 					Help: "Join a channel",
 					Positionals: []command.Positional{
-						{Name: "channel", Source: command.ChannelsSource()},
+						{Name: "channel", Source: command.LiteralSource(
+							command.Suggestion{Value: "#general", Label: "#general"},
+							command.Suggestion{Value: "#random", Label: "#random"},
+						)},
 					},
 				},
 			},
-		},
-		Context: command.CompletionContext{
-			Channels: []domain.Channel{{Name: "#general", Kind: domain.KindChannel}},
 		},
 	})
 	var m ui.Model = cv

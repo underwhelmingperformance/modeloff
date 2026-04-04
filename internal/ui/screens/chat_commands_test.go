@@ -8,11 +8,11 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/api"
-	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/session"
 	storemod "github.com/laney/modeloff/internal/store"
+	"github.com/laney/modeloff/internal/ui/chatcmd"
 )
 
 type stubAPI struct{}
@@ -85,24 +85,20 @@ func TestChatScreen_Commands_exposes_chat_commands(t *testing.T) {
 func TestChatScreen_HelpCommand_emits_typed_event(t *testing.T) {
 	screen := NewChatScreen(t.Context(), newTestSession(t))
 
-	runner, err := screen.Commands().Parse("/help")
+	cmd, err := screen.parser.Parse("/help")
 	require.NoError(t, err)
-	require.NotNil(t, runner)
 
-	msg := runner.Run(screen.runContext())()
-	event, ok := msg.(command.HelpResult)
-	require.True(t, ok, "expected HelpResult, got %T", msg)
-	require.Equal(t, command.HelpResult{}, event)
+	msg := cmd.Run(screen.runContext())()
+	require.Equal(t, chatcmd.HelpResult{}, msg)
 }
 
 func TestChatScreen_QuitCommand_returns_quit(t *testing.T) {
 	screen := NewChatScreen(t.Context(), newTestSession(t))
 
-	runner, err := screen.Commands().Parse("/quit")
+	cmd, err := screen.parser.Parse("/quit")
 	require.NoError(t, err)
-	require.NotNil(t, runner)
 
-	msg := runner.Run(screen.runContext())()
+	msg := cmd.Run(screen.runContext())()
 	_, ok := msg.(tea.QuitMsg)
 	require.True(t, ok, "expected tea.QuitMsg, got %T", msg)
 }

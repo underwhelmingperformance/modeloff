@@ -123,19 +123,19 @@ func TestResolveFieldMetas(t *testing.T) {
 	}{
 		{
 			name: "positional with explicit name",
-			cmd:  JoinCommand{},
+			cmd:  testJoinCommand{},
 			want: []fieldMetaMeta{
-				{Name: "channel", Help: "Channel to join or create", Index: 0},
+				{Name: "channel", Help: "Channel to join", Index: 0},
 			},
 		},
 		{
 			name: "no fields",
-			cmd:  PartCommand{},
+			cmd:  testPartCommand{},
 			want: nil,
 		},
 		{
 			name: "positional and flag",
-			cmd:  InviteCommand{},
+			cmd:  testInviteCommand{},
 			want: []fieldMetaMeta{
 				{Name: "model", Help: "Model to invite", Optional: true, Index: 0},
 				{Name: "persona", Help: "Optional persona", Optional: true, Variadic: true, IsFlag: true, FlagName: "--persona", Index: 1},
@@ -143,7 +143,7 @@ func TestResolveFieldMetas(t *testing.T) {
 		},
 		{
 			name: "variadic positional with nargs",
-			cmd:  MsgCommand{},
+			cmd:  testMsgCommand{},
 			want: []fieldMetaMeta{
 				{Name: "nick", Help: "Nick to message", Index: 0},
 				{Name: "body", Help: "Message text", Optional: true, Variadic: true, Nargs: intPtr(1), Index: 1},
@@ -151,14 +151,14 @@ func TestResolveFieldMetas(t *testing.T) {
 		},
 		{
 			name: "arg tag overrides field name",
-			cmd:  NickCommand{},
+			cmd:  testNickCommand{},
 			want: []fieldMetaMeta{
 				{Name: "new-nick", Help: "New nickname", Index: 0},
 			},
 		},
 		{
 			name: "optional variadic without nargs",
-			cmd:  TopicCommand{},
+			cmd:  testTopicCommand{},
 			want: []fieldMetaMeta{
 				{Name: "topic", Help: "Topic text", Optional: true, Variadic: true, Index: 0},
 			},
@@ -185,8 +185,10 @@ func TestBuildPositionals(t *testing.T) {
 		{name: "channel", help: "Channel to join", index: 0},
 	}
 
+	stubSource := LiteralSource(Suggestion{Value: "a", Label: "a"})
+
 	sources := map[string]SuggestionSource{
-		"channel": ChannelsSource(),
+		"channel": stubSource,
 	}
 
 	positionals := buildPositionals(fields, sources)
@@ -203,7 +205,7 @@ func TestBuildPositionals_unknown_source_ignored(t *testing.T) {
 	}
 
 	sources := map[string]SuggestionSource{
-		"nonexistent": ChannelsSource(),
+		"nonexistent": LiteralSource(Suggestion{Value: "x", Label: "x"}),
 	}
 
 	positionals := buildPositionals(fields, sources)
@@ -371,6 +373,29 @@ func TestBuild_empty_grammar(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Nil(t, nodes)
+}
+
+type completerCommand struct {
+	Target string `arg:"" help:"Target"`
+}
+
+func (completerCommand) Sources() map[string]SuggestionSource {
+	return map[string]SuggestionSource{
+		"target": LiteralSource(Suggestion{Value: "a", Label: "a"}),
+	}
+}
+
+func TestBuild_picks_up_completer_sources(t *testing.T) {
+	grammar := &struct {
+		Do completerCommand `cmd:"" help:"Do something."`
+	}{}
+
+	nodes, err := build(grammar)
+	require.NoError(t, err)
+
+	require.Len(t, nodes, 1)
+	require.Len(t, nodes[0].Positionals, 1)
+	require.NotNil(t, nodes[0].Positionals[0].Source, "Source should be wired from Completer")
 }
 
 func TestBuild_panics_on_undecodable_field(t *testing.T) {

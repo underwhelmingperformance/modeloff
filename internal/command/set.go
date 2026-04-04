@@ -3,26 +3,7 @@ package command
 import (
 	"slices"
 	"strings"
-
-	"github.com/laney/modeloff/internal/domain"
 )
-
-// ModelOption describes a live model suggestion for completion.
-type ModelOption struct {
-	ID          domain.ModelID
-	Name        string
-	Description string
-}
-
-// CompletionContext provides runtime data for command completion.
-type CompletionContext struct {
-	Channels      []domain.Channel
-	Instances     []domain.ModelInstance
-	ActiveChannel domain.ChannelName
-	ActiveMembers []domain.Nick
-	UserNick      domain.Nick
-	LiveModels    []ModelOption
-}
 
 // Suggestion is a single completion option. Every suggestion carries
 // its own Usage text so the popover can display it when the
@@ -36,7 +17,8 @@ type Suggestion struct {
 }
 
 // SuggestionSource returns suggestions for the current argument.
-type SuggestionSource func(CompletionContext, InvocationState) []Suggestion
+// Sources are closures that capture whatever live data they need.
+type SuggestionSource func(InvocationState) []Suggestion
 
 // Positional describes a positional command argument.
 type Positional struct {
@@ -138,15 +120,11 @@ type Set struct {
 	Commands []*Node
 }
 
-// SetSource attaches a suggestion source to the named positional
-// argument on this node.
-func (n *Node) SetSource(positionalName string, source SuggestionSource) {
-	for i := range n.Positionals {
-		if n.Positionals[i].Name == positionalName {
-			n.Positionals[i].Source = source
-			return
-		}
-	}
+// Completer is implemented by command structs that provide their own
+// suggestion sources. The returned map keys are positional or flag
+// names.
+type Completer interface {
+	Sources() map[string]SuggestionSource
 }
 
 // Find looks up a top-level node by name.
@@ -205,7 +183,7 @@ func Merge(sets ...Set) Set {
 }
 
 // Complete resolves the completion state for the current buffer.
-func Complete(set Set, raw string, cursor int, ctx CompletionContext) Completion {
+func Complete(set Set, raw string, cursor int) Completion {
 	raw = clampRaw(raw)
 	if !strings.HasPrefix(raw, "/") {
 		return Completion{}
@@ -283,7 +261,7 @@ func Complete(set Set, raw string, cursor int, ctx CompletionContext) Completion
 		flag := cctx.expectingFlagValue
 
 		if flag.Source != nil {
-			completion.Suggestions = filterSuggestions(flag.Source(ctx, state), prefix)
+			completion.Suggestions = filterSuggestions(flag.Source(state), prefix)
 		}
 
 		return completion
@@ -297,8 +275,8 @@ func Complete(set Set, raw string, cursor int, ctx CompletionContext) Completion
 
 	// Positional completion.
 	pos := resolvePositional(node.Positionals, cctx.positionalIndex)
-	if pos != nil && !pos.Variadic && pos.Source != nil {
-		completion.Suggestions = filterSuggestions(pos.Source(ctx, state), prefix)
+	if pos != nil && pos.Source != nil {
+		completion.Suggestions = filterSuggestions(pos.Source(state), prefix)
 		completion.AppendSpace = hasContinuation(node, cctx.positionalIndex)
 		return completion
 	}
@@ -607,127 +585,23 @@ func dedupeSuggestions(all []Suggestion) []Suggestion {
 func LiteralSource(values ...Suggestion) SuggestionSource {
 	literals := append([]Suggestion(nil), values...)
 
-	return func(_ CompletionContext, _ InvocationState) []Suggestion {
+	return func(_ InvocationState) []Suggestion {
 		return slices.Clone(literals)
-	}
-}
-
-// ChannelsSource suggests known channels.
-func ChannelsSource() SuggestionSource {
-	return func(ctx CompletionContext, _ InvocationState) []Suggestion {
-		suggestions := make([]Suggestion, 0, len(ctx.Channels))
-		for _, ch := range ctx.Channels {
-			suggestions = append(suggestions, Suggestion{
-				Value:  string(ch.Name),
-				Label:  string(ch.Name),
-				Detail: channelDetail(ch),
-			})
-		}
-
-		return suggestions
-	}
-}
-
-// ActiveMembersSource suggests members of the active channel.
-func ActiveMembersSource() SuggestionSource {
-	return func(ctx CompletionContext, _ InvocationState) []Suggestion {
-		suggestions := make([]Suggestion, 0, len(ctx.ActiveMembers))
-		for _, nick := range ctx.ActiveMembers {
-			if nick == ctx.UserNick {
-				continue
-			}
-
-			suggestions = append(suggestions, Suggestion{
-				Value: string(nick),
-				Label: string(nick),
-			})
-		}
-
-		return suggestions
-	}
-}
-
-// InstancesSource suggests known instance nicks.
-func InstancesSource() SuggestionSource {
-	return func(ctx CompletionContext, _ InvocationState) []Suggestion {
-		suggestions := make([]Suggestion, 0, len(ctx.Instances))
-		for _, inst := range ctx.Instances {
-			suggestions = append(suggestions, Suggestion{
-				Value:  string(inst.Nick),
-				Label:  string(inst.Nick),
-				Detail: string(inst.ModelID),
-			})
-		}
-
-		return suggestions
-	}
-}
-
-// ReusableInstancesSource suggests instance nicks not already in the active channel.
-func ReusableInstancesSource() SuggestionSource {
-	return func(ctx CompletionContext, _ InvocationState) []Suggestion {
-		suggestions := make([]Suggestion, 0, len(ctx.Instances))
-		for _, inst := range ctx.Instances {
-			if inst.Channels.Has(ctx.ActiveChannel) {
-				continue
-			}
-
-			suggestions = append(suggestions, Suggestion{
-				Value:  string(inst.Nick),
-				Label:  string(inst.Nick),
-				Detail: string(inst.ModelID),
-			})
-		}
-
-		return suggestions
-	}
-}
-
-// LiveModelsSource suggests live model identifiers.
-func LiveModelsSource() SuggestionSource {
-	return func(ctx CompletionContext, _ InvocationState) []Suggestion {
-		suggestions := make([]Suggestion, 0, len(ctx.LiveModels))
-		for _, model := range ctx.LiveModels {
-			detail := model.Name
-			if detail == "" {
-				detail = model.Description
-			}
-
-			suggestions = append(suggestions, Suggestion{
-				Value:  string(model.ID),
-				Label:  string(model.ID),
-				Detail: detail,
-			})
-		}
-
-		return suggestions
 	}
 }
 
 // ComposeSources concatenates multiple sources in declaration order.
 func ComposeSources(sources ...SuggestionSource) SuggestionSource {
-	return func(ctx CompletionContext, state InvocationState) []Suggestion {
+	return func(state InvocationState) []Suggestion {
 		var suggestions []Suggestion
 		for _, source := range sources {
 			if source == nil {
 				continue
 			}
 
-			suggestions = append(suggestions, source(ctx, state)...)
+			suggestions = append(suggestions, source(state)...)
 		}
 
 		return suggestions
 	}
-}
-
-func channelDetail(ch domain.Channel) string {
-	if ch.Topic != "" {
-		return ch.Topic
-	}
-
-	if ch.Kind == domain.KindDM {
-		return "direct message"
-	}
-
-	return "channel"
 }

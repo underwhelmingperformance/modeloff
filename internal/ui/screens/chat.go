@@ -8,11 +8,11 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/session"
 	"github.com/laney/modeloff/internal/set"
 	"github.com/laney/modeloff/internal/ui"
+	"github.com/laney/modeloff/internal/ui/chatcmd"
 	"github.com/laney/modeloff/internal/ui/components"
 	"github.com/laney/modeloff/internal/ui/theme"
 )
@@ -24,7 +24,7 @@ type eventBatchMsg struct {
 }
 
 type liveModelsLoadedMsg struct {
-	models []command.ModelOption
+	models []chatcmd.ModelOption
 }
 
 // PokeTickMsg triggers a background poke cycle for model instances.
@@ -40,11 +40,11 @@ type ChatScreen struct {
 	layout   components.MainLayout
 	chatView *components.ChatView
 	keyMap   components.ChatScreenKeyMap
-	commands command.Set
+	parser   chatcmd.Parser
 
 	channels     []domain.Channel
 	instances    []domain.ModelInstance
-	liveModels   []command.ModelOption
+	liveModels   []chatcmd.ModelOption
 	width        int
 	height       int
 	active       domain.ChannelName
@@ -61,13 +61,24 @@ func NewChatScreen(ctx context.Context, sess *session.Session) *ChatScreen {
 	layout := components.NewMainLayout(sidebar, chatView)
 	layout.SetNickList(components.NewNickList(nil))
 
-	return &ChatScreen{
+	s := &ChatScreen{
 		ctx:      ctx,
 		sess:     sess,
 		layout:   layout,
 		chatView: chatView,
 		keyMap:   components.DefaultChatScreenKeyMap,
 	}
+
+	s.parser = chatcmd.BuildParser(chatcmd.Sources{
+		Channels:      func() []domain.Channel { return s.channels },
+		Instances:     func() []domain.ModelInstance { return s.instances },
+		ActiveChannel: func() domain.ChannelName { return s.active },
+		ActiveMembers: s.activeMembers,
+		UserNick:      sess.UserNick,
+		LiveModels:    func() []chatcmd.ModelOption { return s.liveModels },
+	})
+
+	return s
 }
 
 // Init implements ui.Model.
@@ -134,37 +145,37 @@ func (s *ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	case eventBatchMsg:
 		return s.handleEventBatch(msg)
 
-	case command.HelpResult:
+	case chatcmd.HelpResult:
 		return s, msgCmd(components.AppendLinesMsg{
 			Channel: s.active,
 			Lines:   []components.ChatLine{components.Help{}},
 		})
 
-	case command.WhoisResult:
+	case chatcmd.WhoisResult:
 		return s, msgCmd(components.AppendLinesMsg{
 			Channel: s.active,
 			Lines:   []components.ChatLine{components.Whois{ModelInstance: msg.Instance}},
 		})
 
-	case command.ListResult:
+	case chatcmd.ListResult:
 		return s, msgCmd(components.AppendLinesMsg{
 			Channel: s.active,
 			Lines:   []components.ChatLine{components.ChannelList{Channels: msg.Channels}},
 		})
 
-	case command.UsageError:
+	case chatcmd.UsageError:
 		return s, msgCmd(components.AppendLinesMsg{
 			Channel: s.active,
 			Lines:   []components.ChatLine{components.UsageHint{Command: msg.Command}},
 		})
 
-	case command.NoChannelError:
+	case chatcmd.NoChannelError:
 		return s, msgCmd(components.AppendLinesMsg{
 			Channel: s.active,
 			Lines:   []components.ChatLine{components.NoChannel{}},
 		})
 
-	case command.APIKeySetResult:
+	case chatcmd.APIKeySetResult:
 		cmd := msgCmd(components.AppendLinesMsg{
 			Channel: s.active,
 			Lines:   []components.ChatLine{components.APIKeySaved{}},
@@ -172,13 +183,13 @@ func (s *ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 		return s, tea.Batch(cmd, s.loadLiveModels())
 
-	case command.PokeIntervalSetResult:
+	case chatcmd.PokeIntervalSetResult:
 		return s, msgCmd(components.AppendLinesMsg{
 			Channel: s.active,
 			Lines:   []components.ChatLine{components.PokeIntervalSet{Interval: msg.Interval}},
 		})
 
-	case command.NickModelSetResult:
+	case chatcmd.NickModelSetResult:
 		return s, msgCmd(components.AppendLinesMsg{
 			Channel: s.active,
 			Lines:   []components.ChatLine{components.NickModelSet{ModelID: msg.ModelID}},
@@ -311,9 +322,9 @@ func (s *ChatScreen) loadLiveModels() tea.Cmd {
 			return liveModelsLoadedMsg{}
 		}
 
-		options := make([]command.ModelOption, 0, len(models))
+		options := make([]chatcmd.ModelOption, 0, len(models))
 		for _, model := range models {
-			options = append(options, command.ModelOption{
+			options = append(options, chatcmd.ModelOption{
 				ID:          model.ID,
 				Name:        model.Name,
 				Description: model.Description,

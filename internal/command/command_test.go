@@ -6,26 +6,67 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type testJoinCommand struct {
+	Channel string `arg:"channel" help:"Channel to join"`
+}
+
+type testPartCommand struct{}
+
+type testInviteCommand struct {
+	Model   string   `arg:"" optional:"" help:"Model to invite"`
+	Persona []string `optional:"" help:"Optional persona"`
+}
+
+type testKickCommand struct {
+	Nick string `arg:"" help:"Nick to kick"`
+}
+
+type testMsgCommand struct {
+	Nick string   `arg:"" help:"Nick to message"`
+	Body []string `arg:"" optional:"" nargs:"1" help:"Message text"`
+}
+
+type testNickCommand struct {
+	Nick string `arg:"new-nick" help:"New nickname"`
+}
+
+type testTopicCommand struct {
+	Topic []string `arg:"" optional:"" help:"Topic text"`
+}
+
+type testWhoisCommand struct {
+	Nick string `arg:"" help:"Nick to look up"`
+}
+
+type testHelpCommand struct{}
+type testQuitCommand struct{}
+type testListCommand struct{}
+
+type testConfigCommand struct {
+	Key   string   `arg:"" optional:"" help:"Configuration key"`
+	Value []string `arg:"" optional:"" help:"Configuration value"`
+}
+
 type testGrammar struct {
-	Join   JoinCommand   `cmd:"" help:"Join a channel."`
-	Part   PartCommand   `cmd:"" help:"Part."`
-	List   ListCommand   `cmd:"" help:"List channels."`
-	Invite InviteCommand `cmd:"" help:"Invite a model."`
-	Kick   KickCommand   `cmd:"" help:"Kick."`
-	Msg    MsgCommand    `cmd:"" help:"Message."`
-	Nick   NickCommand   `cmd:"" help:"Change nick."`
-	Topic  TopicCommand  `cmd:"" help:"Set topic."`
-	Whois  WhoisCommand  `cmd:"" help:"Whois."`
-	Config ConfigCommand `cmd:"" help:"Config."`
-	Help   HelpCommand   `cmd:"" help:"Help."`
-	Quit   QuitCommand   `cmd:"" help:"Quit."`
+	Join   testJoinCommand   `cmd:"" help:"Join a channel."`
+	Part   testPartCommand   `cmd:"" help:"Part."`
+	List   testListCommand   `cmd:"" help:"List channels."`
+	Invite testInviteCommand `cmd:"" help:"Invite a model."`
+	Kick   testKickCommand   `cmd:"" help:"Kick."`
+	Msg    testMsgCommand    `cmd:"" help:"Message."`
+	Nick   testNickCommand   `cmd:"" help:"Change nick."`
+	Topic  testTopicCommand  `cmd:"" help:"Set topic."`
+	Whois  testWhoisCommand  `cmd:"" help:"Whois."`
+	Config testConfigCommand `cmd:"" help:"Config."`
+	Help   testHelpCommand   `cmd:"" help:"Help."`
+	Quit   testQuitCommand   `cmd:"" help:"Quit."`
 }
 
 func allCommands() Set {
 	return Build(&testGrammar{})
 }
 
-func TestParse(t *testing.T) {
+func TestParseValue(t *testing.T) {
 	cmds := allCommands()
 
 	tests := []struct {
@@ -34,158 +75,124 @@ func TestParse(t *testing.T) {
 		want    any
 		wantErr bool
 	}{
-		// /join
 		{
-			name:  "join with channel name",
-			input: "/join #general",
-			want:  JoinCommand{Channel: "#general"},
-		},
-		{
-			name:  "join without # prefix adds it",
-			input: "/join general",
-			want:  JoinCommand{Channel: "#general"},
+			name:  "join with arg",
+			input: "/join test-channel",
+			want:  testJoinCommand{Channel: "test-channel"},
 		},
 		{
 			name:    "join without args",
 			input:   "/join",
 			wantErr: true,
 		},
-
-		// /part
 		{
 			name:  "part",
 			input: "/part",
-			want:  PartCommand{},
+			want:  testPartCommand{},
 		},
 		{
 			name:    "part rejects extra args",
 			input:   "/part extra stuff",
 			wantErr: true,
 		},
-
-		// /list
 		{
 			name:  "list",
 			input: "/list",
-			want:  ListCommand{},
+			want:  testListCommand{},
 		},
-
-		// /invite
 		{
 			name:  "invite with model",
 			input: "/invite anthropic/claude-3-haiku",
-			want:  InviteCommand{Model: "anthropic/claude-3-haiku"},
+			want:  testInviteCommand{Model: "anthropic/claude-3-haiku"},
 		},
 		{
 			name:  "invite with persona",
 			input: "/invite anthropic/claude-3-haiku --persona Helpful assistant",
-			want: InviteCommand{
+			want: testInviteCommand{
 				Model:   "anthropic/claude-3-haiku",
 				Persona: []string{"Helpful", "assistant"},
 			},
 		},
 		{
-			name:  "invite without args opens picker",
+			name:  "invite without args",
 			input: "/invite",
-			want:  InviteCommand{},
+			want:  testInviteCommand{},
 		},
-
-		// /kick
 		{
 			name:  "kick with nick",
 			input: "/kick claud3",
-			want:  KickCommand{Nick: "claud3"},
+			want:  testKickCommand{Nick: "claud3"},
 		},
 		{
 			name:    "kick without args",
 			input:   "/kick",
 			wantErr: true,
 		},
-
-		// /msg
 		{
 			name:  "msg with nick and message",
 			input: "/msg claud3 hello there",
-			want:  MsgCommand{Nick: "claud3", Body: []string{"hello", "there"}},
+			want:  testMsgCommand{Nick: "claud3", Body: []string{"hello", "there"}},
 		},
 		{
 			name:  "msg with nick only",
 			input: "/msg claud3",
-			want:  MsgCommand{Nick: "claud3"},
+			want:  testMsgCommand{Nick: "claud3"},
 		},
 		{
 			name:    "msg without args",
 			input:   "/msg",
 			wantErr: true,
 		},
-
-		// /nick
 		{
 			name:  "nick with new name",
 			input: "/nick alice",
-			want:  NickCommand{Nick: "alice"},
+			want:  testNickCommand{Nick: "alice"},
 		},
 		{
 			name:    "nick without args",
 			input:   "/nick",
 			wantErr: true,
 		},
-
-		// /topic
 		{
 			name:  "topic with text",
 			input: "/topic General Discussion",
-			want:  TopicCommand{Topic: []string{"General", "Discussion"}},
+			want:  testTopicCommand{Topic: []string{"General", "Discussion"}},
 		},
 		{
 			name:  "topic without args clears",
 			input: "/topic",
-			want:  TopicCommand{},
+			want:  testTopicCommand{},
 		},
-
-		// /whois
 		{
 			name:  "whois with nick",
 			input: "/whois claud3",
-			want:  WhoisCommand{Nick: "claud3"},
+			want:  testWhoisCommand{Nick: "claud3"},
 		},
 		{
 			name:    "whois without args",
 			input:   "/whois",
 			wantErr: true,
 		},
-
-		// /help
 		{
 			name:  "help",
 			input: "/help",
-			want:  HelpCommand{},
+			want:  testHelpCommand{},
 		},
-
-		// /quit
 		{
 			name:  "quit",
 			input: "/quit",
-			want:  QuitCommand{},
+			want:  testQuitCommand{},
 		},
-
-		// /config
 		{
 			name:  "config",
 			input: "/config",
-			want:  ConfigCommand{},
+			want:  testConfigCommand{},
 		},
 		{
 			name:  "config api key",
 			input: "/config api-key test-key",
-			want:  ConfigCommand{Key: "api-key", Value: []string{"test-key"}},
+			want:  testConfigCommand{Key: "api-key", Value: []string{"test-key"}},
 		},
-		{
-			name:  "config poke interval",
-			input: "/config poke-interval 10m",
-			want:  ConfigCommand{Key: "poke-interval", Value: []string{"10m"}},
-		},
-
 		// Edge cases
 		{
 			name:    "empty string",
@@ -204,8 +211,8 @@ func TestParse(t *testing.T) {
 		},
 		{
 			name:  "command with extra whitespace",
-			input: "/join   #general  ",
-			want:  JoinCommand{Channel: "#general"},
+			input: "/join   test-channel  ",
+			want:  testJoinCommand{Channel: "test-channel"},
 		},
 		{
 			name:    "slash only",
@@ -216,7 +223,7 @@ func TestParse(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			runner, err := cmds.Parse(tt.input)
+			parsed, err := cmds.ParseValue(tt.input)
 
 			if tt.wantErr {
 				require.Error(t, err)
@@ -224,26 +231,56 @@ func TestParse(t *testing.T) {
 			}
 
 			require.NoError(t, err)
-			require.Equal(t, tt.want, runner)
+			require.Equal(t, tt.want, parsed)
 		})
 	}
 }
 
-func TestChannelArg_Decode_and_String(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"general", "#general"},
-		{"#general", "#general"},
+type testContext struct {
+	Value string
+}
+
+type testResult string
+
+type runnableCommand struct {
+	Arg string `arg:"" help:"An argument"`
+}
+
+func (c runnableCommand) Run(ctx testContext) testResult {
+	return testResult(ctx.Value + ":" + c.Arg)
+}
+
+type runnableGrammar struct {
+	Do runnableCommand `cmd:"" help:"Do something."`
+}
+
+func TestParser_Parse_returns_typed_command(t *testing.T) {
+	parser := BuildParser[testContext, testResult](&runnableGrammar{})
+
+	cmd, err := parser.Parse("/do hello")
+	require.NoError(t, err)
+
+	result := cmd.Run(testContext{Value: "ctx"})
+	require.Equal(t, testResult("ctx:hello"), result)
+}
+
+func TestParser_Parse_rejects_non_command(t *testing.T) {
+	// testJoinCommand does not implement Command[testContext, testResult]
+	type nonRunnableGrammar struct {
+		Join testJoinCommand `cmd:"" help:"Join."`
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			var c ChannelArg
+	parser := BuildParser[testContext, testResult](&nonRunnableGrammar{})
 
-			require.NoError(t, c.Decode(tt.input))
-			require.Equal(t, tt.want, c.String())
-		})
-	}
+	_, err := parser.Parse("/join foo")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "does not implement")
+}
+
+func TestParser_Set_returns_underlying_set(t *testing.T) {
+	parser := BuildParser[testContext, testResult](&runnableGrammar{})
+
+	set := parser.Set()
+	require.Len(t, set.Commands, 1)
+	require.Equal(t, "do", set.Commands[0].Name)
 }

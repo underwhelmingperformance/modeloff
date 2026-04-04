@@ -28,7 +28,6 @@ type PopoverAcceptMsg struct {
 // state.
 type Popover struct {
 	commands   command.Set
-	context    command.CompletionContext
 	completion command.Completion
 	selected   int
 	offset     int
@@ -50,11 +49,10 @@ func NewPopover() *Popover {
 	return &Popover{}
 }
 
-// Apply updates the command set and completion context, then
-// recomputes suggestions for the current input state.
-func (p *Popover) Apply(commands command.Set, ctx command.CompletionContext, raw string, cursor int) {
+// Apply updates the command set, then recomputes suggestions for the
+// current input state.
+func (p *Popover) Apply(commands command.Set, raw string, cursor int) {
 	p.commands = commands
-	p.context = ctx
 	p.refresh(raw, cursor)
 }
 
@@ -338,7 +336,7 @@ func (p *Popover) refresh(raw string, cursor int) {
 		return
 	}
 
-	p.completion = command.Complete(p.commands, raw, cursor, p.context)
+	p.completion = command.Complete(p.commands, raw, cursor)
 	if !p.completion.Visible || len(p.completion.Suggestions) == 0 {
 		p.selected = 0
 		p.offset = 0
