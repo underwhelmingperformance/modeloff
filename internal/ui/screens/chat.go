@@ -22,7 +22,7 @@ import (
 // eventBatchMsg carries multiple domain events from a single command.
 // Update unpacks and dispatches each event sequentially.
 type eventBatchMsg struct {
-	events []domain.Event
+	events []any
 }
 
 type apiKeyActivatedMsg struct{}
@@ -901,7 +901,7 @@ func (s *ChatScreen) sendMessage(text string) tea.Cmd {
 			return domain.ErrorEvent{Operation: "send", Err: err, At: time.Now()}
 		}
 
-		events := make([]domain.Event, 0, 1+len(replies))
+		events := make([]any, 0, 1+len(replies))
 		events = append(events, evt)
 
 		for _, r := range replies {

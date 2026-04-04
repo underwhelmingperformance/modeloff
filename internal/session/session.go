@@ -472,14 +472,14 @@ func (s *Session) OpenDM(ctx context.Context, nick domain.Nick) (domain.Channel,
 
 // Poke sends a periodic prompt to model instances in every channel and
 // persists any replies they choose to make.
-func (s *Session) Poke(ctx context.Context) ([]domain.Event, error) {
+func (s *Session) Poke(ctx context.Context) ([]any, error) {
 	channels, err := s.store.ListChannels(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list channels: %w", err)
 	}
 
 	var errs []error
-	var allEvents []domain.Event
+	var allEvents []any
 
 	for _, ch := range channels {
 		historyMessages, err := s.store.ListMessages(ctx, ch.Name)
