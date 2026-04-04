@@ -379,25 +379,11 @@ func (s *ChatScreen) handleJoinEvent(msg domain.JoinEvent) (ui.Model, tea.Cmd) {
 
 	s.chatView.SetPlaceholder("")
 	s.chatView.SetChannel(msg.Channel, topic, lines)
+	s.updateSidebar(channels, msg.Channel, unread)
+	s.updateNickList(members)
+	s.applyCommandState()
 
-	return s, tea.Batch(
-		func() tea.Msg {
-			return components.ChannelsUpdatedMsg{
-				Channels: channels,
-				Active:   msg.Channel,
-				Unread:   unread,
-			}
-		},
-		func() tea.Msg {
-			return components.NickListUpdatedMsg{Members: members}
-		},
-		func() tea.Msg {
-			return components.CommandStateMsg{
-				Commands: s.Commands(),
-				Context:  s.commandContext(),
-			}
-		},
-	)
+	return s, nil
 }
 
 func (s *ChatScreen) handlePartEvent(msg domain.PartEvent) (ui.Model, tea.Cmd) {
@@ -434,39 +420,20 @@ func (s *ChatScreen) handlePartEvent(msg domain.PartEvent) (ui.Model, tea.Cmd) {
 		members = s.sortedMembers(ch.Members)
 	}
 
-	cmds := []tea.Cmd{
-		func() tea.Msg {
-			return components.ChannelsUpdatedMsg{
-				Channels: channels,
-				Active:   s.active,
-				Unread:   unread,
-			}
-		},
-		func() tea.Msg {
-			return components.NickListUpdatedMsg{Members: members}
-		},
-		func() tea.Msg {
-			return components.CommandStateMsg{
-				Commands: s.Commands(),
-				Context:  s.commandContext(),
-			}
-		},
-	}
+	s.updateSidebar(channels, s.active, unread)
+	s.updateNickList(members)
+	s.applyCommandState()
 
 	if !leavingActive && s.active == msg.Channel {
-		messages, _ := s.sess.Messages(s.ctx, msg.Channel)
-		lines := components.MessagesToLines(messages)
-		lines = append(lines, components.Part{PartEvent: msg})
-
-		cmds = append(cmds, func() tea.Msg {
-			return components.MessagesUpdatedMsg{
-				Channel: msg.Channel,
-				Lines:   lines,
-			}
+		s.forwardToLayout(components.AppendLinesMsg{
+			Channel: msg.Channel,
+			Lines: []components.ChatLine{
+				components.Part{PartEvent: msg},
+			},
 		})
 	}
 
-	return s, tea.Batch(cmds...)
+	return s, nil
 }
 
 func (s *ChatScreen) handleTopicChangeEvent(msg domain.TopicChangeEvent) (ui.Model, tea.Cmd) {
@@ -474,29 +441,18 @@ func (s *ChatScreen) handleTopicChangeEvent(msg domain.TopicChangeEvent) (ui.Mod
 		s.topic = msg.Topic
 	}
 
-	cmds := []tea.Cmd{
-		func() tea.Msg {
-			return components.CommandStateMsg{
-				Commands: s.Commands(),
-				Context:  s.commandContext(),
-			}
-		},
-	}
+	s.applyCommandState()
 
 	if s.active == msg.Channel {
-		messages, _ := s.sess.Messages(s.ctx, msg.Channel)
-		lines := components.MessagesToLines(messages)
-		lines = append(lines, components.TopicChange{TopicChangeEvent: msg})
-
-		cmds = append(cmds, func() tea.Msg {
-			return components.MessagesUpdatedMsg{
-				Channel: msg.Channel,
-				Lines:   lines,
-			}
+		s.forwardToLayout(components.AppendLinesMsg{
+			Channel: msg.Channel,
+			Lines: []components.ChatLine{
+				components.TopicChange{TopicChangeEvent: msg},
+			},
 		})
 	}
 
-	return s, tea.Batch(cmds...)
+	return s, nil
 }
 
 func (s *ChatScreen) handleNickChangeEvent(msg domain.NickChangeEvent) (ui.Model, tea.Cmd) {
@@ -506,32 +462,19 @@ func (s *ChatScreen) handleNickChangeEvent(msg domain.NickChangeEvent) (ui.Model
 		members = s.sortedMembers(ch.Members)
 	}
 
-	cmds := []tea.Cmd{
-		func() tea.Msg {
-			return components.NickListUpdatedMsg{Members: members}
-		},
-		func() tea.Msg {
-			return components.CommandStateMsg{
-				Commands: s.Commands(),
-				Context:  s.commandContext(),
-			}
-		},
-	}
+	s.updateNickList(members)
+	s.applyCommandState()
 
 	if s.active != "" {
-		messages, _ := s.sess.Messages(s.ctx, s.active)
-		lines := components.MessagesToLines(messages)
-		lines = append(lines, components.NickChange{NickChangeEvent: msg})
-
-		cmds = append(cmds, func() tea.Msg {
-			return components.MessagesUpdatedMsg{
-				Channel: s.active,
-				Lines:   lines,
-			}
+		s.forwardToLayout(components.AppendLinesMsg{
+			Channel: s.active,
+			Lines: []components.ChatLine{
+				components.NickChange{NickChangeEvent: msg},
+			},
 		})
 	}
 
-	return s, tea.Batch(cmds...)
+	return s, nil
 }
 
 func (s *ChatScreen) handleModelInvitedEvent(msg domain.ModelInvitedEvent) (ui.Model, tea.Cmd) {
@@ -544,32 +487,19 @@ func (s *ChatScreen) handleModelInvitedEvent(msg domain.ModelInvitedEvent) (ui.M
 		members = s.sortedMembers(ch.Members)
 	}
 
-	cmds := []tea.Cmd{
-		func() tea.Msg {
-			return components.NickListUpdatedMsg{Members: members}
-		},
-		func() tea.Msg {
-			return components.CommandStateMsg{
-				Commands: s.Commands(),
-				Context:  s.commandContext(),
-			}
-		},
-	}
+	s.updateNickList(members)
+	s.applyCommandState()
 
 	if s.active == msg.Channel {
-		messages, _ := s.sess.Messages(s.ctx, msg.Channel)
-		lines := components.MessagesToLines(messages)
-		lines = append(lines, components.ModelInvited{ModelInvitedEvent: msg})
-
-		cmds = append(cmds, func() tea.Msg {
-			return components.MessagesUpdatedMsg{
-				Channel: msg.Channel,
-				Lines:   lines,
-			}
+		s.forwardToLayout(components.AppendLinesMsg{
+			Channel: msg.Channel,
+			Lines: []components.ChatLine{
+				components.ModelInvited{ModelInvitedEvent: msg},
+			},
 		})
 	}
 
-	return s, tea.Batch(cmds...)
+	return s, nil
 }
 
 func (s *ChatScreen) handleModelKickedEvent(msg domain.ModelKickedEvent) (ui.Model, tea.Cmd) {
@@ -582,32 +512,19 @@ func (s *ChatScreen) handleModelKickedEvent(msg domain.ModelKickedEvent) (ui.Mod
 		members = s.sortedMembers(ch.Members)
 	}
 
-	cmds := []tea.Cmd{
-		func() tea.Msg {
-			return components.NickListUpdatedMsg{Members: members}
-		},
-		func() tea.Msg {
-			return components.CommandStateMsg{
-				Commands: s.Commands(),
-				Context:  s.commandContext(),
-			}
-		},
-	}
+	s.updateNickList(members)
+	s.applyCommandState()
 
 	if s.active == msg.Channel {
-		messages, _ := s.sess.Messages(s.ctx, msg.Channel)
-		lines := components.MessagesToLines(messages)
-		lines = append(lines, components.ModelKicked{ModelKickedEvent: msg})
-
-		cmds = append(cmds, func() tea.Msg {
-			return components.MessagesUpdatedMsg{
-				Channel: msg.Channel,
-				Lines:   lines,
-			}
+		s.forwardToLayout(components.AppendLinesMsg{
+			Channel: msg.Channel,
+			Lines: []components.ChatLine{
+				components.ModelKicked{ModelKickedEvent: msg},
+			},
 		})
 	}
 
-	return s, tea.Batch(cmds...)
+	return s, nil
 }
 
 func (s *ChatScreen) handleMessageEvent(msg domain.MessageEvent) (ui.Model, tea.Cmd) {
@@ -619,37 +536,25 @@ func (s *ChatScreen) handleModelReplyEvent(msg domain.ModelReplyEvent) (ui.Model
 }
 
 func (s *ChatScreen) handleNewMessage(channel domain.ChannelName) (ui.Model, tea.Cmd) {
-	cmds := []tea.Cmd{
-		func() tea.Msg {
-			return components.PendingResponseMsg{Pending: false}
-		},
-	}
+	s.forwardToLayout(components.PendingResponseMsg{Pending: false})
 
 	if channel == s.active {
 		messages, _ := s.sess.Messages(s.ctx, channel)
 		lines := components.MessagesToLines(messages)
 
-		cmds = append(cmds, func() tea.Msg {
-			return components.MessagesUpdatedMsg{
-				Channel: channel,
-				Lines:   lines,
-			}
+		s.forwardToLayout(components.MessagesUpdatedMsg{
+			Channel: channel,
+			Lines:   lines,
 		})
 	} else {
 		channels, _ := s.sess.ListChannels(s.ctx)
 		s.channels = channels
 		unread := s.unreadCounts(s.ctx, channels)
 
-		cmds = append(cmds, func() tea.Msg {
-			return components.ChannelsUpdatedMsg{
-				Channels: channels,
-				Active:   s.active,
-				Unread:   unread,
-			}
-		})
+		s.updateSidebar(channels, s.active, unread)
 	}
 
-	return s, tea.Batch(cmds...)
+	return s, nil
 }
 
 func (s *ChatScreen) handleDMOpenedEvent(msg domain.DMOpenedEvent) (ui.Model, tea.Cmd) {
@@ -674,25 +579,11 @@ func (s *ChatScreen) handleDMOpenedEvent(msg domain.DMOpenedEvent) (ui.Model, te
 
 	s.chatView.SetPlaceholder("")
 	s.chatView.SetChannel(msg.Channel.Name, msg.Channel.Topic, lines)
+	s.updateSidebar(channels, msg.Channel.Name, unread)
+	s.updateNickList(members)
+	s.applyCommandState()
 
-	return s, tea.Batch(
-		func() tea.Msg {
-			return components.ChannelsUpdatedMsg{
-				Channels: channels,
-				Active:   msg.Channel.Name,
-				Unread:   unread,
-			}
-		},
-		func() tea.Msg {
-			return components.NickListUpdatedMsg{Members: members}
-		},
-		func() tea.Msg {
-			return components.CommandStateMsg{
-				Commands: s.Commands(),
-				Context:  s.commandContext(),
-			}
-		},
-	)
+	return s, nil
 }
 
 func (s *ChatScreen) handleConfigChangedEvent(msg domain.ConfigChangedEvent) (ui.Model, tea.Cmd) {
@@ -700,16 +591,14 @@ func (s *ChatScreen) handleConfigChangedEvent(msg domain.ConfigChangedEvent) (ui
 		return s, nil
 	}
 
-	messages, _ := s.sess.Messages(s.ctx, s.active)
-	lines := components.MessagesToLines(messages)
-	lines = append(lines, components.ConfigChanged{Operation: msg.Operation})
+	s.forwardToLayout(components.AppendLinesMsg{
+		Channel: s.active,
+		Lines: []components.ChatLine{
+			components.ConfigChanged{Operation: msg.Operation},
+		},
+	})
 
-	return s, func() tea.Msg {
-		return components.MessagesUpdatedMsg{
-			Channel: s.active,
-			Lines:   lines,
-		}
-	}
+	return s, nil
 }
 
 func (s *ChatScreen) handleErrorEvent(msg domain.ErrorEvent) (ui.Model, tea.Cmd) {
@@ -717,24 +606,18 @@ func (s *ChatScreen) handleErrorEvent(msg domain.ErrorEvent) (ui.Model, tea.Cmd)
 		return s, nil
 	}
 
-	messages, _ := s.sess.Messages(s.ctx, s.active)
-	lines := components.MessagesToLines(messages)
-	lines = append(lines, components.BackendError{
-		Operation: msg.Operation,
-		Err:       msg.Err,
+	s.forwardToLayout(components.AppendLinesMsg{
+		Channel: s.active,
+		Lines: []components.ChatLine{
+			components.BackendError{
+				Operation: msg.Operation,
+				Err:       msg.Err,
+			},
+		},
 	})
+	s.forwardToLayout(components.PendingResponseMsg{Pending: false})
 
-	return s, tea.Batch(
-		func() tea.Msg {
-			return components.MessagesUpdatedMsg{
-				Channel: s.active,
-				Lines:   lines,
-			}
-		},
-		func() tea.Msg {
-			return components.PendingResponseMsg{Pending: false}
-		},
-	)
+	return s, nil
 }
 
 func (s *ChatScreen) handleLiveModelsLoaded(msg liveModelsLoadedMsg) (ui.Model, tea.Cmd) {

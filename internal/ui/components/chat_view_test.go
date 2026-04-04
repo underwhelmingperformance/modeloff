@@ -140,6 +140,42 @@ func TestChatView_messages_updated_wrong_channel(t *testing.T) {
 	require.Contains(t, v, "hello")
 }
 
+func TestChatView_append_lines(t *testing.T) {
+	cv := components.NewChatView("#general", "testuser", "", testMessages)
+	var m ui.Model = cv
+
+	newLines := []components.ChatLine{
+		components.MessageLine{
+			Message: domain.Message{ID: "10", Channel: "#general", From: "dave", Body: "appended message"},
+		},
+	}
+
+	m, _ = m.Update(components.AppendLinesMsg{
+		Channel: "#general",
+		Lines:   newLines,
+	})
+
+	v := m.View(80, 24)
+	require.Contains(t, v, "appended message")
+	require.Contains(t, v, "dave")
+	// Original messages should still be there.
+	require.Contains(t, v, "hello")
+}
+
+func TestChatView_append_lines_wrong_channel(t *testing.T) {
+	cv := components.NewChatView("#general", "testuser", "", testMessages)
+	var m ui.Model = cv
+
+	m, _ = m.Update(components.AppendLinesMsg{
+		Channel: "#other",
+		Lines:   nil,
+	})
+
+	// Should still show the original messages, unchanged.
+	v := m.View(80, 24)
+	require.Contains(t, v, "hello")
+}
+
 func TestChatView_scroll(t *testing.T) {
 	// Create many messages to fill the view.
 	msgs := make([]domain.Message, 30)

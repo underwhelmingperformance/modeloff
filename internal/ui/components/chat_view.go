@@ -151,6 +151,14 @@ type MessagesUpdatedMsg struct {
 	Lines   []ChatLine
 }
 
+// AppendLinesMsg appends lines to the chat view incrementally, without
+// replacing the entire message list. This is more efficient when adding
+// system events or individual messages.
+type AppendLinesMsg struct {
+	Channel domain.ChannelName
+	Lines   []ChatLine
+}
+
 // PendingResponseMsg sets or clears the "awaiting response" indicator
 // in the chat view.
 type PendingResponseMsg struct {
@@ -267,6 +275,13 @@ func (c *ChatView) SetChannel(ch domain.ChannelName, topic string, lines []ChatL
 	c.viewport.GotoBottom()
 }
 
+// appendLines adds new lines to the chat view incrementally.
+func (c *ChatView) appendLines(newLines []ChatLine) {
+	c.lines = append(c.lines, newLines...)
+	c.seenCount = len(c.lines)
+	c.viewport.GotoBottom()
+}
+
 // WithCommandState applies the available commands and runtime context.
 func (c *ChatView) WithCommandState(commands command.Set, ctx command.CompletionContext) *ChatView {
 	c.popover.Apply(commands, ctx, c.input.Value(), c.input.Cursor())
@@ -375,6 +390,15 @@ func (c *ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		c.lines = msg.Lines
 		c.seenCount = len(msg.Lines)
 		c.viewport.GotoBottom()
+
+		return c, nil
+
+	case AppendLinesMsg:
+		if msg.Channel != c.channel {
+			return c, nil
+		}
+
+		c.appendLines(msg.Lines)
 
 		return c, nil
 
