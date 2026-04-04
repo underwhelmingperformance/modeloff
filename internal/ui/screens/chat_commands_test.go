@@ -13,7 +13,6 @@ import (
 	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/session"
 	storemod "github.com/laney/modeloff/internal/store"
-	"github.com/laney/modeloff/internal/ui/components"
 )
 
 type stubAPI struct{}
@@ -50,8 +49,7 @@ func TestChatScreen_Commands_specs_are_complete(t *testing.T) {
 	for _, spec := range cmds.Commands {
 		require.NotEmpty(t, spec.Name)
 		require.NotEmpty(t, spec.Help)
-		require.NotEmpty(t, spec.Usage)
-		require.NotNil(t, spec.Handler)
+		require.NotEmpty(t, spec.Usage())
 
 		_, exists := seen[spec.Name]
 		require.Falsef(t, exists, "duplicate command %q", spec.Name)
@@ -87,26 +85,24 @@ func TestChatScreen_Commands_exposes_chat_commands(t *testing.T) {
 func TestChatScreen_HelpCommand_emits_typed_event(t *testing.T) {
 	screen := NewChatScreen(t.Context(), newTestSession(t))
 
-	cmd, err := command.Execute(screen.Commands(), "/help")
+	runner, err := screen.Commands().Parse("/help")
 	require.NoError(t, err)
-	require.NotNil(t, cmd)
+	require.NotNil(t, runner)
 
-	msg := cmd()
-	event, ok := msg.(components.AppendLinesMsg)
-	require.True(t, ok, "expected AppendLinesMsg, got %T", msg)
-	require.Equal(t, components.AppendLinesMsg{
-		Lines: []components.ChatLine{components.Help{}},
-	}, event)
+	msg := runner.Run(screen.runContext())()
+	event, ok := msg.(command.HelpResult)
+	require.True(t, ok, "expected HelpResult, got %T", msg)
+	require.Equal(t, command.HelpResult{}, event)
 }
 
 func TestChatScreen_QuitCommand_returns_quit(t *testing.T) {
 	screen := NewChatScreen(t.Context(), newTestSession(t))
 
-	cmd, err := command.Execute(screen.Commands(), "/quit")
+	runner, err := screen.Commands().Parse("/quit")
 	require.NoError(t, err)
-	require.NotNil(t, cmd)
+	require.NotNil(t, runner)
 
-	msg := cmd()
+	msg := runner.Run(screen.runContext())()
 	_, ok := msg.(tea.QuitMsg)
 	require.True(t, ok, "expected tea.QuitMsg, got %T", msg)
 }

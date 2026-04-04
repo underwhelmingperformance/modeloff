@@ -3,7 +3,6 @@ package command
 import (
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/domain"
@@ -69,29 +68,6 @@ func TestMerge(t *testing.T) {
 
 		require.Equal(t, "child", merged.Commands[0].Help)
 	})
-}
-
-func TestExecute_uses_handler(t *testing.T) {
-	type execGrammar struct {
-		Join JoinCommand `cmd:"" help:"Join."`
-	}
-
-	cmds := Build(&execGrammar{})
-	called := ""
-
-	Bind(cmds, "join", func(_ JoinCommand) tea.Cmd {
-		return func() tea.Msg {
-			called = "join called"
-			return nil
-		}
-	})
-
-	cmd, err := Execute(cmds, "/join #general")
-
-	require.NoError(t, err)
-	require.NotNil(t, cmd)
-	cmd()
-	require.Equal(t, "join called", called)
 }
 
 func TestComplete_command_suggestions_carry_usage(t *testing.T) {
@@ -309,55 +285,6 @@ func TestNode_Usage(t *testing.T) {
 	}
 }
 
-func TestInvocation_Run_nil_handler(t *testing.T) {
-	inv := &Invocation{
-		node: &Node{Name: "quit"},
-	}
-
-	cmd := inv.Run()
-
-	require.Nil(t, cmd)
-}
-
-func TestExecute_no_handler(t *testing.T) {
-	cmds := Set{
-		Commands: []*Node{
-			{
-				Name: "quit",
-				factory: func() any {
-					return &QuitCommand{}
-				},
-			},
-		},
-	}
-
-	_, err := Execute(cmds, "/quit")
-
-	require.ErrorContains(t, err, "no handler")
-}
-
-func TestBind_overwrites_existing_handler(t *testing.T) {
-	type grammar struct {
-		Join JoinCommand `cmd:"" help:"Join."`
-	}
-
-	cmds := Build(&grammar{})
-
-	Bind(cmds, "join", func(_ JoinCommand) tea.Cmd {
-		return func() tea.Msg { return "first" }
-	})
-
-	Bind(cmds, "join", func(_ JoinCommand) tea.Cmd {
-		return func() tea.Msg { return "second" }
-	})
-
-	inv, err := cmds.Parse("/join #test")
-	require.NoError(t, err)
-
-	msg := inv.Run()()
-	require.Equal(t, "second", msg)
-}
-
 func TestSetSource_nonexistent_positional(t *testing.T) {
 	node := &Node{
 		Name:        "join",
@@ -534,31 +461,18 @@ func TestParse_after_merge(t *testing.T) {
 
 	child := Build(&childGrammar{})
 	parent := Build(&parentGrammar{})
-
-	Bind(child, "join", func(_ JoinCommand) tea.Cmd {
-		return func() tea.Msg { return "child-join" }
-	})
-
-	Bind(parent, "quit", func(_ QuitCommand) tea.Cmd {
-		return func() tea.Msg { return "quit" }
-	})
-
 	merged := Merge(child, parent)
 
 	t.Run("child command wins", func(t *testing.T) {
-		inv, err := merged.Parse("/join #test")
+		runner, err := merged.Parse("/join #test")
 		require.NoError(t, err)
-
-		msg := inv.Run()()
-		require.Equal(t, "child-join", msg)
+		require.Equal(t, JoinCommand{Channel: "#test"}, runner)
 	})
 
 	t.Run("parent command accessible", func(t *testing.T) {
-		inv, err := merged.Parse("/quit")
+		runner, err := merged.Parse("/quit")
 		require.NoError(t, err)
-
-		msg := inv.Run()()
-		require.Equal(t, "quit", msg)
+		require.Equal(t, QuitCommand{}, runner)
 	})
 
 	t.Run("unknown command errors", func(t *testing.T) {

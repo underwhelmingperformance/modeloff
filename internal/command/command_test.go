@@ -216,7 +216,7 @@ func TestParse(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			inv, err := cmds.Parse(tt.input)
+			runner, err := cmds.Parse(tt.input)
 
 			if tt.wantErr {
 				require.Error(t, err)
@@ -224,7 +224,7 @@ func TestParse(t *testing.T) {
 			}
 
 			require.NoError(t, err)
-			require.Equal(t, tt.want, inv.parsed)
+			require.Equal(t, tt.want, runner)
 		})
 	}
 }

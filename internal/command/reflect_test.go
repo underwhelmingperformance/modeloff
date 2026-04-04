@@ -3,7 +3,6 @@ package command
 import (
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/stretchr/testify/require"
 )
 
@@ -349,64 +348,6 @@ func TestBuild_factory_creates_pointer(t *testing.T) {
 	cmd := nodes[0].factory()
 	_, ok := cmd.(*buildJoinCommand)
 	require.True(t, ok, "expected *buildJoinCommand, got %T", cmd)
-}
-
-func TestBind_attaches_typed_handler(t *testing.T) {
-	cmds := Build(&buildGrammar{})
-	var received buildJoinCommand
-
-	Bind(cmds, "join", func(cmd buildJoinCommand) tea.Cmd {
-		received = cmd
-		return nil
-	})
-
-	inv, err := cmds.Parse("/join test-channel")
-	require.NoError(t, err)
-	inv.Run()
-
-	require.Equal(t, buildJoinCommand{Channel: "test-channel"}, received)
-}
-
-func TestBind_panics_on_unknown_command(t *testing.T) {
-	cmds := Build(&buildGrammar{})
-
-	require.Panics(t, func() {
-		Bind(cmds, "nonexistent", func(_ buildJoinCommand) tea.Cmd { return nil })
-	})
-}
-
-func TestParsed_extracts_typed_value(t *testing.T) {
-	cmds := Build(&buildGrammar{})
-
-	inv, err := cmds.Parse("/join test-channel")
-	require.NoError(t, err)
-
-	cmd := Parsed[buildJoinCommand](inv)
-	require.Equal(t, buildJoinCommand{Channel: "test-channel"}, cmd)
-}
-
-func TestParsed_wrong_type_panics(t *testing.T) {
-	cmds := Build(&buildGrammar{})
-
-	inv, err := cmds.Parse("/join test-channel")
-	require.NoError(t, err)
-
-	require.Panics(t, func() {
-		Parsed[buildPartCommand](inv)
-	})
-}
-
-func TestBind_wrong_type_panics_on_run(t *testing.T) {
-	cmds := Build(&buildGrammar{})
-
-	Bind(cmds, "join", func(_ buildPartCommand) tea.Cmd { return nil })
-
-	inv, err := cmds.Parse("/join test-channel")
-	require.NoError(t, err)
-
-	require.Panics(t, func() {
-		inv.Run()
-	})
 }
 
 func TestBuild_unexported_fields_are_skipped(t *testing.T) {

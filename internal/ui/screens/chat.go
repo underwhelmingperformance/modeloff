@@ -23,8 +23,6 @@ type eventBatchMsg struct {
 	events []any
 }
 
-type apiKeyActivatedMsg struct{}
-
 type liveModelsLoadedMsg struct {
 	models []command.ModelOption
 }
@@ -136,13 +134,55 @@ func (s *ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	case eventBatchMsg:
 		return s.handleEventBatch(msg)
 
-	case apiKeyActivatedMsg:
+	case command.HelpResult:
+		return s, msgCmd(components.AppendLinesMsg{
+			Channel: s.active,
+			Lines:   []components.ChatLine{components.Help{}},
+		})
+
+	case command.WhoisResult:
+		return s, msgCmd(components.AppendLinesMsg{
+			Channel: s.active,
+			Lines:   []components.ChatLine{components.Whois{ModelInstance: msg.Instance}},
+		})
+
+	case command.ListResult:
+		return s, msgCmd(components.AppendLinesMsg{
+			Channel: s.active,
+			Lines:   []components.ChatLine{components.ChannelList{Channels: msg.Channels}},
+		})
+
+	case command.UsageError:
+		return s, msgCmd(components.AppendLinesMsg{
+			Channel: s.active,
+			Lines:   []components.ChatLine{components.UsageHint{Command: msg.Command}},
+		})
+
+	case command.NoChannelError:
+		return s, msgCmd(components.AppendLinesMsg{
+			Channel: s.active,
+			Lines:   []components.ChatLine{components.NoChannel{}},
+		})
+
+	case command.APIKeySetResult:
 		cmd := msgCmd(components.AppendLinesMsg{
 			Channel: s.active,
 			Lines:   []components.ChatLine{components.APIKeySaved{}},
 		})
 
 		return s, tea.Batch(cmd, s.loadLiveModels())
+
+	case command.PokeIntervalSetResult:
+		return s, msgCmd(components.AppendLinesMsg{
+			Channel: s.active,
+			Lines:   []components.ChatLine{components.PokeIntervalSet{Interval: msg.Interval}},
+		})
+
+	case command.NickModelSetResult:
+		return s, msgCmd(components.AppendLinesMsg{
+			Channel: s.active,
+			Lines:   []components.ChatLine{components.NickModelSet{ModelID: msg.ModelID}},
+		})
 
 	case domain.JoinEvent:
 		return s.handleJoinEvent(msg)
@@ -190,7 +230,10 @@ func (s *ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 	case components.MessageSubmitMsg:
 		if s.active == "" {
-			return s, s.noChannelCmd()
+			return s, msgCmd(components.AppendLinesMsg{
+				Channel: s.active,
+				Lines:   []components.ChatLine{components.NoChannel{}},
+			})
 		}
 
 		cmd := msgCmd(components.PendingResponseMsg{Pending: true})

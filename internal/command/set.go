@@ -1,11 +1,8 @@
 package command
 
 import (
-	"fmt"
 	"slices"
 	"strings"
-
-	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/laney/modeloff/internal/domain"
 )
@@ -25,32 +22,6 @@ type CompletionContext struct {
 	ActiveMembers []domain.Nick
 	UserNick      domain.Nick
 	LiveModels    []ModelOption
-}
-
-// Invocation is the result of parsing a raw slash command. It
-// carries the selected node and the populated command struct. Parse
-// validates eagerly, so if you have an Invocation it is guaranteed
-// to be well-formed and runnable.
-type Invocation struct {
-	Raw    string
-	Name   string
-	Args   []string
-	node   *Node
-	parsed any // concrete command struct, read by the handler closure
-}
-
-// Run executes the handler on the selected command node.
-func (inv *Invocation) Run() tea.Cmd {
-	if inv.node.Handler == nil {
-		return nil
-	}
-
-	return inv.node.Handler(inv)
-}
-
-// Parsed extracts the typed command struct from an Invocation.
-func Parsed[T any](inv *Invocation) T {
-	return inv.parsed.(T)
 }
 
 // Suggestion is a single completion option. Every suggestion carries
@@ -95,7 +66,6 @@ type Node struct {
 	Positionals []Positional
 	Flags       []Flag
 	Children    []*Node
-	Handler     func(*Invocation) tea.Cmd
 
 	// factory creates a zero-valued pointer to the command struct for
 	// parsing. Nil for group nodes that have no struct of their own.
@@ -168,19 +138,6 @@ type Set struct {
 	Commands []*Node
 }
 
-// Bind attaches a typed handler to the named command node. The
-// handler receives the parsed command struct directly.
-func Bind[T any](set Set, name string, handler func(T) tea.Cmd) {
-	node := set.Find(name)
-	if node == nil {
-		panic(fmt.Sprintf("command %q not found in set", name))
-	}
-
-	node.Handler = func(inv *Invocation) tea.Cmd {
-		return handler(inv.parsed.(T))
-	}
-}
-
 // SetSource attaches a suggestion source to the named positional
 // argument on this node.
 func (n *Node) SetSource(positionalName string, source SuggestionSource) {
@@ -245,21 +202,6 @@ func Merge(sets ...Set) Set {
 	}
 
 	return merged
-}
-
-// Execute parses the raw input and runs the matched command's
-// handler. It is a convenience for Parse followed by Run.
-func Execute(set Set, raw string) (tea.Cmd, error) {
-	inv, err := set.Parse(raw)
-	if err != nil {
-		return nil, err
-	}
-
-	if inv.node.Handler == nil {
-		return nil, fmt.Errorf("command /%s has no handler", inv.Name)
-	}
-
-	return inv.Run(), nil
 }
 
 // Complete resolves the completion state for the current buffer.
