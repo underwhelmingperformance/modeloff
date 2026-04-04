@@ -18,6 +18,34 @@ type ModelInfo struct {
 	ContextLen  int            `json:"context_length"`
 }
 
+// Usage contains token and cost metadata returned by OpenRouter.
+type Usage struct {
+	PromptTokens         int64
+	CompletionTokens     int64
+	TotalTokens          int64
+	ReasoningTokens      int64
+	CachedTokens         int64
+	CacheWriteTokens     int64
+	CostCredits          float64
+	UpstreamInferenceCost float64
+}
+
+// CompletionResult contains the model's typed response alongside
+// request metadata.
+type CompletionResult struct {
+	Response  protocol.ModelResponse
+	RequestID string
+	Usage     Usage
+}
+
+// NicknameResult contains the generated nickname alongside request
+// metadata.
+type NicknameResult struct {
+	Nick      domain.Nick
+	RequestID string
+	Usage     Usage
+}
+
 // Client defines the interface for all API interactions. Both the
 // chat completion (via openai-go) and OpenRouter-specific calls are
 // abstracted behind this interface to support testing with fakes.
@@ -34,10 +62,10 @@ type Client interface {
 		systemPrompt string,
 		history []protocol.IRCMessage,
 		events []protocol.IRCMessage,
-	) (protocol.ModelResponse, error)
+	) (CompletionResult, error)
 
 	// GenerateNick asks a model to generate a nickname for the given
 	// model ID, returning the suggested nick. The nickModel parameter
 	// selects which model performs the generation.
-	GenerateNick(ctx context.Context, nickModel domain.ModelID, modelID domain.ModelID) (domain.Nick, error)
+	GenerateNick(ctx context.Context, nickModel domain.ModelID, modelID domain.ModelID) (NicknameResult, error)
 }

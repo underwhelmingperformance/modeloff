@@ -176,26 +176,30 @@ func (f *FakeAPI) SendEvents(
 	system string,
 	history []protocol.IRCMessage,
 	events []protocol.IRCMessage,
-) (protocol.ModelResponse, error) {
+) (api.CompletionResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	if f.SendEventsFn != nil {
-		return f.SendEventsFn(ctx, modelID, system, history, events)
+		response, err := f.SendEventsFn(ctx, modelID, system, history, events)
+		return api.CompletionResult{Response: response}, err
 	}
 
-	return protocol.ModelResponse{Kind: protocol.ResponseSilence}, nil
+	return api.CompletionResult{
+		Response: protocol.ModelResponse{Kind: protocol.ResponseSilence},
+	}, nil
 }
 
-func (f *FakeAPI) GenerateNick(ctx context.Context, nickModel domain.ModelID, modelID domain.ModelID) (domain.Nick, error) {
+func (f *FakeAPI) GenerateNick(ctx context.Context, nickModel domain.ModelID, modelID domain.ModelID) (api.NicknameResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	if f.GenerateNickFn != nil {
-		return f.GenerateNickFn(ctx, nickModel, modelID)
+		nick, err := f.GenerateNickFn(ctx, nickModel, modelID)
+		return api.NicknameResult{Nick: nick}, err
 	}
 
-	return "fakenick", nil
+	return api.NicknameResult{Nick: "fakenick"}, nil
 }
 
 // SeedChannel creates a channel via the session.

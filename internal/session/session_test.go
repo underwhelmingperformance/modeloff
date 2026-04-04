@@ -1547,20 +1547,24 @@ func (f *fakeAPIClient) SendEvents(
 	system string,
 	history []protocol.IRCMessage,
 	events []protocol.IRCMessage,
-) (protocol.ModelResponse, error) {
+) (api.CompletionResult, error) {
 	if f.sendEventsFn != nil {
-		return f.sendEventsFn(ctx, modelID, system, history, events)
+		response, err := f.sendEventsFn(ctx, modelID, system, history, events)
+		return api.CompletionResult{Response: response}, err
 	}
 
-	return protocol.ModelResponse{Kind: protocol.ResponseSilence, Reason: "fake"}, nil
+	return api.CompletionResult{
+		Response: protocol.ModelResponse{Kind: protocol.ResponseSilence, Reason: "fake"},
+	}, nil
 }
 
-func (f *fakeAPIClient) GenerateNick(ctx context.Context, nickModel domain.ModelID, modelID domain.ModelID) (domain.Nick, error) {
+func (f *fakeAPIClient) GenerateNick(ctx context.Context, nickModel domain.ModelID, modelID domain.ModelID) (api.NicknameResult, error) {
 	if f.generateNickFn != nil {
-		return f.generateNickFn(ctx, nickModel, modelID)
+		nick, err := f.generateNickFn(ctx, nickModel, modelID)
+		return api.NicknameResult{Nick: nick}, err
 	}
 
-	return "fakenick", nil
+	return api.NicknameResult{Nick: "fakenick"}, nil
 }
 
 func (f *fakeConfigStore) Load() (config.Config, error) {

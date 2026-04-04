@@ -176,23 +176,27 @@ func (f *integrationAPI) SendEvents(
 	system string,
 	history []protocol.IRCMessage,
 	events []protocol.IRCMessage,
-) (protocol.ModelResponse, error) {
+) (api.CompletionResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	if f.sendEventsFn != nil {
-		return f.sendEventsFn(ctx, modelID, system, history, events)
+		response, err := f.sendEventsFn(ctx, modelID, system, history, events)
+		return api.CompletionResult{Response: response}, err
 	}
 
-	return protocol.ModelResponse{Kind: protocol.ResponseSilence}, nil
+	return api.CompletionResult{
+		Response: protocol.ModelResponse{Kind: protocol.ResponseSilence},
+	}, nil
 }
 
-func (f *integrationAPI) GenerateNick(ctx context.Context, nickModel domain.ModelID, modelID domain.ModelID) (domain.Nick, error) {
+func (f *integrationAPI) GenerateNick(ctx context.Context, nickModel domain.ModelID, modelID domain.ModelID) (api.NicknameResult, error) {
 	if f.generateNickFn != nil {
-		return f.generateNickFn(ctx, nickModel, modelID)
+		nick, err := f.generateNickFn(ctx, nickModel, modelID)
+		return api.NicknameResult{Nick: nick}, err
 	}
 
-	return "botty", nil
+	return api.NicknameResult{Nick: "botty"}, nil
 }
 
 type integrationConfigStore struct {

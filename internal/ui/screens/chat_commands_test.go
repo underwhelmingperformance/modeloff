@@ -25,12 +25,14 @@ func (stubAPI) SendEvents(
 	string,
 	[]protocol.IRCMessage,
 	[]protocol.IRCMessage,
-) (protocol.ModelResponse, error) {
-	return protocol.ModelResponse{Kind: protocol.ResponseSilence}, nil
+) (api.CompletionResult, error) {
+	return api.CompletionResult{
+		Response: protocol.ModelResponse{Kind: protocol.ResponseSilence},
+	}, nil
 }
 
-func (stubAPI) GenerateNick(context.Context, domain.ModelID, domain.ModelID) (domain.Nick, error) {
-	return "testbot", nil
+func (stubAPI) GenerateNick(context.Context, domain.ModelID, domain.ModelID) (api.NicknameResult, error) {
+	return api.NicknameResult{Nick: "testbot"}, nil
 }
 
 func newTestSession(t *testing.T) *session.Session {

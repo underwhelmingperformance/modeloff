@@ -39,6 +39,10 @@ const minWidthForNickList = 100
 // panel visibility.
 type NickListToggleMsg struct{}
 
+type nickListPreference interface {
+	WantsNickListHidden() bool
+}
+
 // MainLayout splits the screen horizontally into a sidebar on the
 // left, a content area in the middle, and an optional nick list on
 // the right.
@@ -87,7 +91,17 @@ func (m MainLayout) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 	if size, ok := msg.(tea.WindowSizeMsg); ok {
 		sw := sidebarWidth(size.Width)
-		cw := size.Width - sw
+		hideNickList := false
+		if preference, ok := m.Content.(nickListPreference); ok {
+			hideNickList = preference.WantsNickListHidden()
+		}
+
+		nlw := 0
+		if m.NickList != nil && m.NickListVisible && size.Width >= minWidthForNickList && !hideNickList {
+			nlw = nickListWidth(size.Width)
+		}
+
+		cw := size.Width - sw - nlw
 
 		// Children receive BoundsMsg before WindowSizeMsg so they can
 		// update hit-testing and other absolute-layout state first.
@@ -109,6 +123,21 @@ func (m MainLayout) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		})
 		m.Content = content
 		cmds = append(cmds, cmd)
+
+		if m.NickList != nil {
+			nlBorderStyle := theme.NickListBorder.Height(size.Height)
+			nlFrameW, _ := nlBorderStyle.GetFrameSize()
+			innerNLW := nlw - nlFrameW
+			if innerNLW < 0 {
+				innerNLW = 0
+			}
+
+			nl, cmd := m.NickList.Update(ui.BoundsMsg{
+				Rect: ui.Rect{X: sw + cw, Y: 0, Width: innerNLW, Height: size.Height},
+			})
+			m.NickList = nl
+			cmds = append(cmds, cmd)
+		}
 	}
 
 	sidebar, cmd := m.Sidebar.Update(msg)
@@ -143,7 +172,12 @@ func (m MainLayout) View(width, height int) string {
 
 	left := borderStyle.Render(m.Sidebar.View(innerSW, height))
 
-	showNickList := m.NickList != nil && m.NickListVisible && width >= minWidthForNickList
+	hideNickList := false
+	if preference, ok := m.Content.(nickListPreference); ok {
+		hideNickList = preference.WantsNickListHidden()
+	}
+
+	showNickList := m.NickList != nil && m.NickListVisible && width >= minWidthForNickList && !hideNickList
 	nlw := 0
 
 	if showNickList {
@@ -180,6 +214,17 @@ func (m MainLayout) KeyBindings() []key.Binding {
 	}
 
 	return bindings
+}
+
+// StatusItems implements ui.StatusProvider.
+func (m MainLayout) StatusItems() []ui.StatusItem {
+	items := ui.CollectStatusItems(m.Sidebar, m.Content)
+
+	if m.NickList != nil && m.NickListVisible {
+		items = append(items, ui.CollectStatusItems(m.NickList)...)
+	}
+
+	return items
 }
 
 func sidebarWidth(totalWidth int) int {

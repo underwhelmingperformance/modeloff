@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/observability"
 	"github.com/laney/modeloff/internal/session"
 	"github.com/laney/modeloff/internal/set"
 	"github.com/laney/modeloff/internal/ui"
@@ -33,6 +34,8 @@ type liveModelsLoadedMsg struct {
 	models []chatcmd.ModelOption
 }
 
+type logsUpdatedMsg struct{}
+
 // PokeTickMsg triggers a background poke cycle for model instances.
 type PokeTickMsg struct{}
 
@@ -54,6 +57,8 @@ type ChatScreen struct {
 	active       domain.ChannelName
 	topic        string
 	channelCount int
+	obs          *observability.Runtime
+	summary      components.MetricsSummaryModel
 }
 
 // NewChatScreen creates a chat screen backed by the given session.
@@ -71,6 +76,24 @@ func NewChatScreen(ctx context.Context, sess *session.Session) ChatScreen {
 		layout: layout,
 		keyMap: components.DefaultChatScreenKeyMap,
 	}
+}
+
+// WithObservability wires local observability into the chat screen.
+func (s ChatScreen) WithObservability(obs *observability.Runtime) ChatScreen {
+	s.obs = obs
+	s.summary = components.NewMetricsSummaryModel(s.ctx, obs)
+
+	chatView, ok := s.layout.Content.(components.ChatView)
+	if !ok {
+		return s
+	}
+
+	workspace := components.NewChatWorkspace(chatView).
+		WithMetrics(components.NewMetricsPane(s.ctx, obs)).
+		SetLogEntries(obs.LogBuffer().Entries())
+	s.layout.Content = workspace
+
+	return s
 }
 
 // Init implements ui.Model.
@@ -118,7 +141,13 @@ func (s ChatScreen) Init() tea.Cmd {
 		}
 	}
 
-	return tea.Batch(loadInitial, s.loadLiveModels(), s.listenForEvents())
+	cmds := []tea.Cmd{loadInitial, s.loadLiveModels(), s.listenForEvents()}
+
+	if s.obs != nil {
+		cmds = append(cmds, s.summary.Init(), s.waitForLogUpdateCmd())
+	}
+
+	return tea.Batch(cmds...)
 }
 
 // listenForEvents reads the next event from the session's background
@@ -140,6 +169,8 @@ func (s ChatScreen) listenForEvents() tea.Cmd {
 // Update implements ui.Model.
 func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	forwardedMsg := msg
+	summary, summaryCmd := s.summary.Update(msg)
+	s.summary = summary
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -228,6 +259,10 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	case liveModelsLoadedMsg:
 		return s.handleLiveModelsLoaded(msg)
 
+	case logsUpdatedMsg:
+		s = s.updateLogEntries()
+		return s, tea.Batch(summaryCmd, s.waitForLogUpdateCmd())
+
 	case deliverNextReplyMsg:
 		return s.deliverNextReply()
 
@@ -256,7 +291,7 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	updated, cmd := s.layout.Update(forwardedMsg)
 	s.layout = updated.(components.MainLayout)
 
-	return s, cmd
+	return s, tea.Batch(summaryCmd, cmd)
 }
 
 // msgCmd wraps a message as a tea.Cmd so it flows through the Bubble
@@ -344,7 +379,7 @@ func (s ChatScreen) layoutHeight() int {
 		return s.height
 	}
 
-	height := s.height - lipgloss.Height(components.RenderStatusBar(s.width, s.KeyBindings()))
+	height := s.height - lipgloss.Height(components.RenderStatusBar(s.width, s.KeyBindings(), s.StatusItems()))
 	if height < 0 {
 		return 0
 	}
@@ -382,13 +417,18 @@ func (s ChatScreen) KeyBindings() []key.Binding {
 	return bindings
 }
 
+// StatusItems implements ui.StatusProvider.
+func (s ChatScreen) StatusItems() []ui.StatusItem {
+	return ui.CollectStatusItems(s.layout, s.summary)
+}
+
 // View implements ui.Model.
 func (s ChatScreen) View(width, height int) string {
 	if width < theme.MinTerminalWidth {
 		return s.layout.View(width, height)
 	}
 
-	bar := components.RenderStatusBar(width, s.KeyBindings())
+	bar := components.RenderStatusBar(width, s.KeyBindings(), s.StatusItems())
 	layoutHeight := height - lipgloss.Height(bar)
 	if layoutHeight < 0 {
 		layoutHeight = 0
@@ -400,4 +440,36 @@ func (s ChatScreen) View(width, height int) string {
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Left, view, bar)
+}
+
+func (s ChatScreen) waitForLogUpdateCmd() tea.Cmd {
+	if s.obs == nil {
+		return nil
+	}
+
+	ch := s.obs.LogBuffer().Updates()
+
+	return func() tea.Msg {
+		_, ok := <-ch
+		if !ok {
+			return nil
+		}
+
+		return logsUpdatedMsg{}
+	}
+}
+
+func (s ChatScreen) updateLogEntries() ChatScreen {
+	if s.obs == nil {
+		return s
+	}
+
+	workspace, ok := s.layout.Content.(components.ChatWorkspace)
+	if !ok {
+		return s
+	}
+
+	s.layout.Content = workspace.SetLogEntries(s.obs.LogBuffer().Entries())
+
+	return s
 }

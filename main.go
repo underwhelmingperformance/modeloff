@@ -15,6 +15,7 @@ import (
 	"github.com/laney/modeloff/internal/config"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/memory"
+	"github.com/laney/modeloff/internal/observability"
 	"github.com/laney/modeloff/internal/session"
 	"github.com/laney/modeloff/internal/store"
 	"github.com/laney/modeloff/internal/ui"
@@ -40,6 +41,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	obs, err := observability.NewRuntime()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error initialising observability: %v\n", err)
+		os.Exit(1)
+	}
+	defer func() {
+		if shutdownErr := obs.Shutdown(context.Background()); shutdownErr != nil {
+			fmt.Fprintf(os.Stderr, "error shutting down observability: %v\n", shutdownErr)
+		}
+	}()
+
 	apiClient := api.NewOpenRouterClient(cfg.APIKey, "", nil)
 
 	sess := session.New(
@@ -63,7 +75,7 @@ func main() {
 		channelCount = len(channels)
 	}
 
-	chatScreen := screens.NewChatScreen(appCtx, sess)
+	chatScreen := screens.NewChatScreen(appCtx, sess).WithObservability(obs)
 
 	connScreen := screens.NewConnectionScreen(screens.ConnectionConfig{
 		HasAPIKey:    cfg.APIKey != "",

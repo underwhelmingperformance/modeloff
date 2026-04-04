@@ -8,13 +8,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/laney/modeloff/internal/api"
 	"github.com/laney/modeloff/internal/config"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/memory"
+	"github.com/laney/modeloff/internal/observability"
 	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/set"
 	"github.com/laney/modeloff/internal/store"
@@ -170,11 +177,16 @@ func (s *Session) Invite(
 	modelID domain.ModelID,
 	persona string,
 ) (domain.ModelInvitedEvent, error) {
+	logger := slog.Default().With("component", "session", "channel", ch, "model_id", modelID)
+	ctx, span := startSpan(ctx, "session.invite", attribute.String(observability.AttrOperation, "session.invite"))
+	defer span.End()
+
 	if inst, err := s.store.GetInstance(ctx, domain.Nick(modelID)); err == nil {
 		if inst.Persona == "" && strings.TrimSpace(persona) != "" {
 			inst.Persona = strings.TrimSpace(persona)
 		}
 
+		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 		return s.attachInstanceToChannel(ctx, ch, inst)
 	}
 
@@ -183,20 +195,48 @@ func (s *Session) Invite(
 			inst.Persona = strings.TrimSpace(persona)
 		}
 
+		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 		return s.attachInstanceToChannel(ctx, ch, inst)
 	}
 
-	nick, err := s.api.GenerateNick(ctx, s.nickModel, modelID)
+	generateCtx, generateSpan := startSpan(
+		ctx,
+		"session.generate_nick",
+		attribute.String(observability.AttrOperation, "session.generate_nick"),
+		attribute.String(observability.AttrModelID, string(modelID)),
+	)
+
+	nickResult, err := s.api.GenerateNick(generateCtx, s.nickModel, modelID)
 	if err != nil {
+		generateSpan.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+		generateSpan.SetStatus(codes.Error, err.Error())
+		generateSpan.End()
+		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+		span.SetStatus(codes.Error, err.Error())
+		logger.ErrorContext(ctx, "generate nick failed", "error", err)
 		return domain.ModelInvitedEvent{}, fmt.Errorf("generate nick: %w", err)
 	}
+	generateSpan.SetAttributes(
+		attribute.String(observability.AttrRequestID, nickResult.RequestID),
+		attribute.Int64(observability.AttrPromptTokens, nickResult.Usage.PromptTokens),
+		attribute.Int64(observability.AttrCompletionTokens, nickResult.Usage.CompletionTokens),
+		attribute.Int64(observability.AttrTotalTokens, nickResult.Usage.TotalTokens),
+		attribute.Int64(observability.AttrReasoningTokens, nickResult.Usage.ReasoningTokens),
+		attribute.Int64(observability.AttrCachedTokens, nickResult.Usage.CachedTokens),
+		attribute.Int64(observability.AttrCacheWriteTokens, nickResult.Usage.CacheWriteTokens),
+		attribute.Float64(observability.AttrCostCredits, nickResult.Usage.CostCredits),
+		attribute.String(observability.AttrResult, observability.ResultOK),
+	)
+	generateSpan.End()
 
 	inst := domain.ModelInstance{
-		Nick:     nick,
+		Nick:     nickResult.Nick,
 		ModelID:  modelID,
 		Persona:  strings.TrimSpace(persona),
 		Channels: set.NewOrdered(ch),
 	}
+
+	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 
 	return s.attachInstanceToChannel(ctx, ch, inst)
 }
@@ -294,6 +334,9 @@ func (s *Session) SendMessage(
 	ch domain.ChannelName,
 	body string,
 ) (domain.MessageEvent, error) {
+	ctx, span := startSpan(ctx, "session.send_message", attribute.String(observability.AttrOperation, "session.send_message"))
+	defer span.End()
+
 	msg := domain.Message{
 		ID:      fmt.Sprintf("%d", s.now().UnixNano()),
 		Channel: ch,
@@ -303,9 +346,12 @@ func (s *Session) SendMessage(
 	}
 
 	if err := s.store.SaveMessage(ctx, msg); err != nil {
+		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+		span.SetStatus(codes.Error, err.Error())
 		return domain.MessageEvent{}, fmt.Errorf("save message: %w", err)
 	}
 
+	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 	s.dispatchInBackground(ctx, ch, []protocol.IRCMessage{protocol.FromMessage(msg)})
 
 	return domain.MessageEvent{Message: msg}, nil
@@ -345,12 +391,26 @@ func (s *Session) DispatchToChannel(
 	ch domain.ChannelName,
 	newEvents []protocol.IRCMessage,
 ) ([]domain.ModelReplyEvent, error) {
+	ctx, span := startSpan(ctx, "session.dispatch_to_channel", attribute.String(observability.AttrOperation, "session.dispatch_to_channel"))
+	defer span.End()
+
 	historyMessages, err := s.store.ListMessages(ctx, ch)
 	if err != nil {
+		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("list history: %w", err)
 	}
 
-	return s.dispatchToInstances(ctx, ch, historyMessages, newEvents)
+	replies, err := s.dispatchToInstances(ctx, ch, historyMessages, newEvents)
+	if err != nil {
+		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+		span.SetStatus(codes.Error, err.Error())
+		return nil, err
+	}
+
+	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
+
+	return replies, nil
 }
 
 // SetTopic sets the topic of a channel.
@@ -478,11 +538,26 @@ func (s *Session) UnreadCount(ctx context.Context, ch domain.ChannelName) (int, 
 
 // ListModels fetches live model metadata using the current API client.
 func (s *Session) ListModels(ctx context.Context) ([]api.ModelInfo, error) {
+	ctx, span := startSpan(ctx, "session.list_models", attribute.String(observability.AttrOperation, "session.list_models"))
+	defer span.End()
+
 	if !s.HasAPIKey() || s.api == nil {
-		return nil, fmt.Errorf("api key not configured")
+		err := fmt.Errorf("api key not configured")
+		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+		span.SetStatus(codes.Error, err.Error())
+		return nil, err
 	}
 
-	return s.api.ListModels(ctx)
+	models, err := s.api.ListModels(ctx)
+	if err != nil {
+		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+		span.SetStatus(codes.Error, err.Error())
+		return nil, err
+	}
+
+	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
+
+	return models, nil
 }
 
 // Reset clears all channels, messages, model instances, and memories,
@@ -553,8 +628,14 @@ func (s *Session) OpenDM(ctx context.Context, nick domain.Nick) (domain.Channel,
 // dispatching asynchronously and emitting events on the Events
 // channel.
 func (s *Session) Poke(ctx context.Context) error {
+	logger := slog.Default().With("component", "session")
+	ctx, span := startSpan(ctx, "session.poke", attribute.String(observability.AttrOperation, "session.poke"))
+	defer span.End()
+
 	channels, err := s.store.ListChannels(ctx)
 	if err != nil {
+		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("list channels: %w", err)
 	}
 
@@ -569,6 +650,9 @@ func (s *Session) Poke(ctx context.Context) error {
 
 		s.dispatchInBackground(ctx, ch.Name, []protocol.IRCMessage{pokeEvent})
 	}
+
+	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
+	logger.DebugContext(ctx, "scheduled poke dispatch", "channels", len(channels))
 
 	return nil
 }
@@ -711,6 +795,14 @@ func (s *Session) dispatchToInstances(
 	var replies []domain.ModelReplyEvent
 
 	for _, inst := range instances {
+		instanceCtx, instanceSpan := startSpan(
+			ctx,
+			"session.dispatch_to_instance",
+			attribute.String(observability.AttrOperation, "session.dispatch_to_instance"),
+			attribute.String(observability.AttrModelID, string(inst.ModelID)),
+			attribute.String(observability.AttrChannelKind, channelKindName(channel.Kind)),
+		)
+
 		joinedAt := inst.JoinedAt[channelName]
 
 		history := make([]protocol.IRCMessage, 0, len(historyMessages))
@@ -725,18 +817,38 @@ func (s *Session) dispatchToInstances(
 		memories, err := s.memoriesForInstance(ctx, inst.Nick)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("read memories for %s: %w", inst.Nick, err))
+			instanceSpan.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+			instanceSpan.SetStatus(codes.Error, err.Error())
+			instanceSpan.End()
 			continue
 		}
 
 		prompt := buildSystemPrompt(channel, inst, memories)
 
-		response, err := s.sendWithRetry(ctx, inst, prompt, history, events)
+		result, err := s.sendWithRetry(instanceCtx, inst, prompt, history, events)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("send events to %s: %w", inst.Nick, err))
+			instanceSpan.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+			instanceSpan.SetStatus(codes.Error, err.Error())
+			instanceSpan.End()
 			continue
 		}
 
+		instanceSpan.SetAttributes(
+			attribute.String(observability.AttrRequestID, result.RequestID),
+			attribute.Int64(observability.AttrPromptTokens, result.Usage.PromptTokens),
+			attribute.Int64(observability.AttrCompletionTokens, result.Usage.CompletionTokens),
+			attribute.Int64(observability.AttrTotalTokens, result.Usage.TotalTokens),
+			attribute.Int64(observability.AttrReasoningTokens, result.Usage.ReasoningTokens),
+			attribute.Int64(observability.AttrCachedTokens, result.Usage.CachedTokens),
+			attribute.Int64(observability.AttrCacheWriteTokens, result.Usage.CacheWriteTokens),
+			attribute.Float64(observability.AttrCostCredits, result.Usage.CostCredits),
+			attribute.String(observability.AttrResult, responseResult(result.Response)),
+		)
+
+		response := result.Response
 		if response.Kind != protocol.ResponseReply || len(response.Messages) == 0 {
+			instanceSpan.End()
 			continue
 		}
 
@@ -757,6 +869,8 @@ func (s *Session) dispatchToInstances(
 
 			if err := s.store.SaveMessage(ctx, reply); err != nil {
 				errs = append(errs, fmt.Errorf("save model reply: %w", err))
+				instanceSpan.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+				instanceSpan.SetStatus(codes.Error, err.Error())
 				continue
 			}
 
@@ -769,6 +883,8 @@ func (s *Session) dispatchToInstances(
 				At:       s.now(),
 			})
 		}
+
+		instanceSpan.End()
 	}
 
 	return replies, errors.Join(errs...)
@@ -911,25 +1027,30 @@ func (s *Session) sendWithRetry(
 	prompt string,
 	history []protocol.IRCMessage,
 	events []protocol.IRCMessage,
-) (protocol.ModelResponse, error) {
+) (api.CompletionResult, error) {
 	for attempt := range maxNewlineRetries + 1 {
 		_ = attempt
 
-		response, err := s.api.SendEvents(ctx, inst.ModelID, prompt, history, events)
+		result, err := s.api.SendEvents(ctx, inst.ModelID, prompt, history, events)
 		if err != nil {
-			return protocol.ModelResponse{}, err
+			return api.CompletionResult{}, err
 		}
 
-		if response.Kind != protocol.ResponseReply || len(response.Messages) == 0 {
-			return response, nil
+		if result.Response.Kind != protocol.ResponseReply || len(result.Response.Messages) == 0 {
+			return result, nil
 		}
 
-		if !containsNewlines(response) {
-			return response, nil
+		if !containsNewlines(result.Response) {
+			return result, nil
 		}
 	}
 
-	return protocol.ModelResponse{Kind: protocol.ResponseSilence, Reason: "response contained newlines after retries"}, nil
+	return api.CompletionResult{
+		Response: protocol.ModelResponse{
+			Kind:   protocol.ResponseSilence,
+			Reason: "response contained newlines after retries",
+		},
+	}, nil
 }
 
 // containsNewlines reports whether any reply part body contains a
@@ -942,4 +1063,32 @@ func containsNewlines(resp protocol.ModelResponse) bool {
 	}
 
 	return false
+}
+
+func startSpan(ctx context.Context, name string, attrs ...attribute.KeyValue) (context.Context, trace.Span) {
+	tracer := otel.Tracer("github.com/laney/modeloff/internal/session")
+	ctx, span := tracer.Start(ctx, name)
+	span.SetAttributes(attrs...)
+
+	return ctx, span
+}
+
+func responseResult(response protocol.ModelResponse) string {
+	switch response.Kind {
+	case protocol.ResponseReply:
+		return observability.ResultReply
+	case protocol.ResponseSilence:
+		return observability.ResultPass
+	default:
+		return observability.ResultOK
+	}
+}
+
+func channelKindName(kind domain.ChannelKind) string {
+	switch kind {
+	case domain.KindDM:
+		return "dm"
+	default:
+		return "channel"
+	}
 }

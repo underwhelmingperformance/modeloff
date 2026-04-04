@@ -97,7 +97,7 @@ func TestOpenRouterClient_SendEvents(t *testing.T) {
 	tests := []struct {
 		name     string
 		toolCall toolCallFixture
-		want     protocol.ModelResponse
+		want     CompletionResult
 		wantErr  bool
 	}{
 		{
@@ -106,7 +106,21 @@ func TestOpenRouterClient_SendEvents(t *testing.T) {
 				name: "reply",
 				args: `{"messages": [{"type": "message", "body": "Hello there!"}]}`,
 			},
-			want: protocol.Reply("Hello there!"),
+			want: CompletionResult{
+				RequestID: "chatcmpl_test",
+				Usage: Usage{
+					PromptTokens:     10,
+					CompletionTokens: 5,
+					TotalTokens:      15,
+					CostCredits:      0.125,
+				},
+				Response: protocol.ModelResponse{
+					Kind: protocol.ResponseReply,
+					Messages: []protocol.ReplyPart{
+						{Kind: protocol.ReplyMessage, Body: "Hello there!"},
+					},
+				},
+			},
 		},
 		{
 			name: "model passes",
@@ -114,22 +128,17 @@ func TestOpenRouterClient_SendEvents(t *testing.T) {
 				name: "pass",
 				args: `{"reason": "Nothing to add"}`,
 			},
-			want: protocol.ModelResponse{
-				Kind:   protocol.ResponseSilence,
-				Reason: "Nothing to add",
-			},
-		},
-		{
-			name: "model replies with multiple messages including action",
-			toolCall: toolCallFixture{
-				name: "reply",
-				args: `{"messages": [{"type": "message", "body": "hey"}, {"type": "action", "body": "waves"}]}`,
-			},
-			want: protocol.ModelResponse{
-				Kind: protocol.ResponseReply,
-				Messages: []protocol.ReplyPart{
-					{Kind: protocol.ReplyMessage, Body: "hey"},
-					{Kind: protocol.ReplyAction, Body: "waves"},
+			want: CompletionResult{
+				RequestID: "chatcmpl_test",
+				Usage: Usage{
+					PromptTokens:     10,
+					CompletionTokens: 5,
+					TotalTokens:      15,
+					CostCredits:      0.125,
+				},
+				Response: protocol.ModelResponse{
+					Kind:   protocol.ResponseSilence,
+					Reason: "Nothing to add",
 				},
 			},
 		},
@@ -140,6 +149,29 @@ func TestOpenRouterClient_SendEvents(t *testing.T) {
 				args: `{}`,
 			},
 			wantErr: true,
+		},
+		{
+			name: "model replies with multiple messages including action",
+			toolCall: toolCallFixture{
+				name: "reply",
+				args: `{"messages": [{"type": "message", "body": "hey"}, {"type": "action", "body": "waves"}]}`,
+			},
+			want: CompletionResult{
+				RequestID: "chatcmpl_test",
+				Usage: Usage{
+					PromptTokens:     10,
+					CompletionTokens: 5,
+					TotalTokens:      15,
+					CostCredits:      0.125,
+				},
+				Response: protocol.ModelResponse{
+					Kind: protocol.ResponseReply,
+					Messages: []protocol.ReplyPart{
+						{Kind: protocol.ReplyMessage, Body: "hey"},
+						{Kind: protocol.ReplyAction, Body: "waves"},
+					},
+				},
+			},
 		},
 	}
 
@@ -246,41 +278,13 @@ func TestOpenRouterClient_GenerateNick(t *testing.T) {
 		content  string
 		wantNick domain.Nick
 	}{
-		{
-			name:     "clean response",
-			content:  "claud3",
-			wantNick: "claud3",
-		},
-		{
-			name:     "response with surrounding whitespace",
-			content:  "  sparky\n",
-			wantNick: "sparky",
-		},
-		{
-			name:     "response with quotes",
-			content:  `"zenbot"`,
-			wantNick: "zenbot",
-		},
-		{
-			name:     "response with mixed case",
-			content:  "ZenBot",
-			wantNick: "zenbot",
-		},
-		{
-			name:     "response longer than 12 chars truncated",
-			content:  "superlongnicknamehere",
-			wantNick: "superlongnic",
-		},
-		{
-			name:     "response with spaces replaced by underscores",
-			content:  "zen bot",
-			wantNick: "zen_bot",
-		},
-		{
-			name:     "response with non-IRC characters stripped",
-			content:  "zen!@#bot",
-			wantNick: "zenbot",
-		},
+		{name: "clean response", content: "claud3", wantNick: "claud3"},
+		{name: "response with surrounding whitespace", content: "  sparky\n", wantNick: "sparky"},
+		{name: "response with quotes", content: `"zenbot"`, wantNick: "zenbot"},
+		{name: "response with mixed case", content: "ZenBot", wantNick: "zenbot"},
+		{name: "response longer than 12 chars truncated", content: "superlongnicknamehere", wantNick: "superlongnic"},
+		{name: "response with spaces replaced by underscores", content: "zen bot", wantNick: "zen_bot"},
+		{name: "response with non-IRC characters stripped", content: "zen!@#bot", wantNick: "zenbot"},
 	}
 
 	for _, tt := range tests {
@@ -291,6 +295,7 @@ func TestOpenRouterClient_GenerateNick(t *testing.T) {
 
 				w.Header().Set("Content-Type", "application/json")
 				_ = json.NewEncoder(w).Encode(map[string]any{
+					"id": "chatcmpl_nick",
 					"choices": []map[string]any{
 						{
 							"message": map[string]any{
@@ -309,7 +314,7 @@ func TestOpenRouterClient_GenerateNick(t *testing.T) {
 
 			got, err := client.GenerateNick(t.Context(), "anthropic/claude-haiku-4.5", "anthropic/claude-3-haiku")
 			require.NoError(t, err)
-			require.Equal(t, tt.wantNick, got)
+			require.Equal(t, tt.wantNick, got.Nick)
 		})
 	}
 }
@@ -353,6 +358,13 @@ type toolCallFixture struct {
 
 func chatResponse(tc toolCallFixture) map[string]any {
 	return map[string]any{
+		"id": "chatcmpl_test",
+		"usage": map[string]any{
+			"prompt_tokens":     10,
+			"completion_tokens": 5,
+			"total_tokens":      15,
+			"cost":              0.125,
+		},
 		"choices": []map[string]any{
 			{
 				"message": map[string]any{

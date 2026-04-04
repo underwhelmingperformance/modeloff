@@ -94,3 +94,32 @@ var DefaultChatScreenKeyMap = ChatScreenKeyMap{
 		key.WithHelp("^N", "nicks"),
 	),
 }
+
+// WorkspaceKeyMap defines keybindings for the chat workspace and
+// observability panes.
+type WorkspaceKeyMap struct {
+	ToggleObservability key.Binding
+	ToggleFullscreen    key.Binding
+	NextPane            key.Binding
+	ExitFullscreen      key.Binding
+}
+
+// DefaultWorkspaceKeyMap is the default set of workspace bindings.
+var DefaultWorkspaceKeyMap = WorkspaceKeyMap{
+	ToggleObservability: key.NewBinding(
+		key.WithKeys("ctrl+l"),
+		key.WithHelp("^L", "logs"),
+	),
+	ToggleFullscreen: key.NewBinding(
+		key.WithKeys("ctrl+f"),
+		key.WithHelp("^F", "fullscreen"),
+	),
+	NextPane: key.NewBinding(
+		key.WithKeys("tab"),
+		key.WithHelp("Tab", "next pane"),
+	),
+	ExitFullscreen: key.NewBinding(
+		key.WithKeys("esc"),
+		key.WithHelp("Esc", "exit fullscreen"),
+	),
+}
