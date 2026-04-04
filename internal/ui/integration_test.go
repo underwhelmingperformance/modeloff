@@ -78,8 +78,8 @@ func TestApp_invite_and_receive_reply(t *testing.T) {
 			[]protocol.IRCMessage,
 		) (protocol.ModelResponse, error) {
 			return protocol.ModelResponse{
-				Kind: protocol.ResponseReply,
-				Body: "hello back",
+				Kind:     protocol.ResponseReply,
+				Messages: []protocol.ReplyPart{{Kind: protocol.ReplyMessage, Body: "hello back"}},
 			}, nil
 		},
 	}
@@ -131,8 +131,8 @@ func TestApp_periodic_poke_generates_message(t *testing.T) {
 		) (protocol.ModelResponse, error) {
 			if len(events) == 1 && events[0].Kind == protocol.KindPoke {
 				return protocol.ModelResponse{
-					Kind: protocol.ResponseReply,
-					Body: "still alive",
+					Kind:     protocol.ResponseReply,
+					Messages: []protocol.ReplyPart{{Kind: protocol.ReplyMessage, Body: "still alive"}},
 				}, nil
 			}
 

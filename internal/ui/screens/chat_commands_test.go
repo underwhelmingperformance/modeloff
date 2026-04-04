@@ -75,6 +75,7 @@ func TestChatScreen_Commands_exposes_chat_commands(t *testing.T) {
 		"msg",
 		"nick",
 		"topic",
+		"me",
 		"whois",
 		"config",
 		"help",

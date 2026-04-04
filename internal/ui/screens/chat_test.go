@@ -66,7 +66,7 @@ func newChatApp(t *testing.T, sess *session.Session) *teatest.TestModel {
 	t.Helper()
 
 	root := uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess))
-	tm := teatest.NewTestModel(t, root, teatest.WithInitialTermSize(80, 24))
+	tm := teatest.NewTestModel(t, root, teatest.WithInitialTermSize(256, 256))
 	t.Cleanup(func() { _ = tm.Quit() })
 
 	return tm

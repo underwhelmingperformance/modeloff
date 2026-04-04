@@ -64,7 +64,7 @@ func TestBuildParser_produces_all_commands(t *testing.T) {
 
 	require.Equal(t, []string{
 		"join", "part", "list", "invite", "kick",
-		"msg", "nick", "topic", "whois", "config",
+		"msg", "nick", "topic", "me", "whois", "config",
 		"help", "quit",
 	}, names)
 }

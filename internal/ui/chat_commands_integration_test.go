@@ -111,7 +111,10 @@ func TestApp_title_list_and_help_commands_with_teatest(t *testing.T) {
 	seedChannel(t, sess, "#general")
 	seedChannel(t, sess, "#random")
 
-	tm := newTestApp(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
+	root := uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess))
+	tm := teatest.NewTestModel(t, root, teatest.WithInitialTermSize(256, 256))
+	t.Cleanup(func() { _ = tm.Quit() })
+
 	waitForOutput(t, tm, "#random")
 
 	submitText(tm, "/topic cool topic")

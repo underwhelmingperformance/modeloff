@@ -219,6 +219,32 @@ func (c TopicCommand) Run(rc Context) tea.Cmd {
 	}
 }
 
+// MeCommand represents `/me <action>`.
+type MeCommand struct {
+	Action []string `arg:"" nargs:"1" help:"Action text"`
+}
+
+// Run implements Command.
+func (c MeCommand) Run(rc Context) tea.Cmd {
+	if rc.Active == "" {
+		return noChannelCmd()
+	}
+
+	body := strings.TrimSpace(strings.Join(c.Action, " "))
+	if body == "" {
+		return usageCmd("me")
+	}
+
+	return func() tea.Msg {
+		evt, err := rc.Session.SendAction(rc.Ctx, rc.Active, body)
+		if err != nil {
+			return errorEvent("me", err)
+		}
+
+		return evt
+	}
+}
+
 // WhoisCommand represents `/whois <nick>`.
 type WhoisCommand struct {
 	Nick       string `arg:"" help:"Nick to look up"`

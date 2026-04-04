@@ -58,17 +58,33 @@ func replyTool() openai.ChatCompletionToolParam {
 	return openai.ChatCompletionToolParam{
 		Function: shared.FunctionDefinitionParam{
 			Name:        "reply",
-			Description: param.NewOpt("Send a reply to the channel or user. Use this when you have something to say."),
+			Description: param.NewOpt("Send one or more messages to the channel. Each message is either a regular message or an action (/me). Keep each message short — one thought per line, like IRC."),
 			Strict:      param.NewOpt(true),
 			Parameters: shared.FunctionParameters{
 				"type": "object",
 				"properties": map[string]any{
-					"body": map[string]any{
-						"type":        "string",
-						"description": "The message text to send.",
+					"messages": map[string]any{
+						"type": "array",
+						"items": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"type": map[string]any{
+									"type":        "string",
+									"enum":        []string{"message", "action"},
+									"description": `"message" for a regular message, "action" for a /me action (e.g. * nick waves).`,
+								},
+								"body": map[string]any{
+									"type":        "string",
+									"description": "The message text. For actions, just the action text without /me.",
+								},
+							},
+							"required":             []string{"type", "body"},
+							"additionalProperties": false,
+						},
+						"description": "One or more messages to send. Use multiple items for separate thoughts.",
 					},
 				},
-				"required":             []string{"body"},
+				"required":             []string{"messages"},
 				"additionalProperties": false,
 			},
 		},
@@ -170,7 +186,7 @@ func parseResponse(resp *openai.ChatCompletion) (protocol.ModelResponse, error) 
 	switch call.Function.Name {
 	case "reply":
 		var args struct {
-			Body string `json:"body"`
+			Messages []protocol.ReplyPart `json:"messages"`
 		}
 
 		if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
@@ -178,8 +194,8 @@ func parseResponse(resp *openai.ChatCompletion) (protocol.ModelResponse, error) 
 		}
 
 		return protocol.ModelResponse{
-			Kind: protocol.ResponseReply,
-			Body: args.Body,
+			Kind:     protocol.ResponseReply,
+			Messages: args.Messages,
 		}, nil
 
 	case "pass":

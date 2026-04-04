@@ -236,10 +236,7 @@ func TestSession_SendMessage(t *testing.T) {
 func TestSession_DispatchToChannel_broadcasts_to_channel_instances(t *testing.T) {
 	fake := &fakeAPIClient{
 		sendEventsFn: func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
-			return protocol.ModelResponse{
-				Kind: protocol.ResponseReply,
-				Body: "got it",
-			}, nil
+			return protocol.Reply("got it"), nil
 		},
 	}
 	sess, s := newTestSessionWithAPI(t, fake)
@@ -263,7 +260,7 @@ func TestSession_DispatchToChannel_broadcasts_to_channel_instances(t *testing.T)
 	require.Equal(t, []domain.Message{
 		evt.Message,
 		{
-			ID:      fmt.Sprintf("%d~botty", fixedTime.UnixNano()),
+			ID:      fmt.Sprintf("%d~botty~0", fixedTime.UnixNano()),
 			Channel: "#general",
 			From:    "botty",
 			Body:    "got it",
@@ -275,10 +272,7 @@ func TestSession_DispatchToChannel_broadcasts_to_channel_instances(t *testing.T)
 func TestSession_DispatchToChannel_does_not_broadcast_when_no_model_instances(t *testing.T) {
 	fake := &fakeAPIClient{
 		sendEventsFn: func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
-			return protocol.ModelResponse{
-				Kind: protocol.ResponseReply,
-				Body: "should not appear",
-			}, nil
+			return protocol.Reply("should not appear"), nil
 		},
 	}
 	sess, s := newTestSessionWithAPI(t, fake)
@@ -330,10 +324,7 @@ func TestSession_DispatchToChannel_pass_response_does_not_store_model_message(t 
 func TestSession_DispatchToChannel_reply_response_stores_model_message(t *testing.T) {
 	fake := &fakeAPIClient{
 		sendEventsFn: func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
-			return protocol.ModelResponse{
-				Kind: protocol.ResponseReply,
-				Body: "hello back",
-			}, nil
+			return protocol.Reply("hello back"), nil
 		},
 	}
 	sess, s := newTestSessionWithAPI(t, fake)
@@ -357,7 +348,7 @@ func TestSession_DispatchToChannel_reply_response_stores_model_message(t *testin
 	require.Equal(t, []domain.Message{
 		evt.Message,
 		{
-			ID:      fmt.Sprintf("%d~botty", fixedTime.UnixNano()),
+			ID:      fmt.Sprintf("%d~botty~0", fixedTime.UnixNano()),
 			Channel: "#general",
 			From:    "botty",
 			Body:    "hello back",
@@ -369,10 +360,7 @@ func TestSession_DispatchToChannel_reply_response_stores_model_message(t *testin
 func TestSession_DispatchToChannel_broadcasts_only_to_members_of_that_channel(t *testing.T) {
 	fake := &fakeAPIClient{
 		sendEventsFn: func(_ context.Context, modelID domain.ModelID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (protocol.ModelResponse, error) {
-			return protocol.ModelResponse{
-				Kind: protocol.ResponseReply,
-				Body: fmt.Sprintf("reply from %s", modelID),
-			}, nil
+			return protocol.Reply(fmt.Sprintf("reply from %s", modelID)), nil
 		},
 	}
 	sess, s := newTestSessionWithAPI(t, fake)
@@ -402,7 +390,7 @@ func TestSession_DispatchToChannel_broadcasts_only_to_members_of_that_channel(t 
 	require.Equal(t, []domain.Message{
 		evt.Message,
 		{
-			ID:      fmt.Sprintf("%d~botty", fixedTime.UnixNano()),
+			ID:      fmt.Sprintf("%d~botty~0", fixedTime.UnixNano()),
 			Channel: "#general",
 			From:    "botty",
 			Body:    "reply from test/model-a",
@@ -418,10 +406,7 @@ func TestSession_DispatchToChannel_broadcasts_only_to_members_of_that_channel(t 
 func TestSession_DispatchToChannel_reply_is_not_rebroadcast_in_same_dispatch(t *testing.T) {
 	fake := &fakeAPIClient{
 		sendEventsFn: func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
-			return protocol.ModelResponse{
-				Kind: protocol.ResponseReply,
-				Body: "reply once",
-			}, nil
+			return protocol.Reply("reply once"), nil
 		},
 	}
 	sess, s := newTestSessionWithAPI(t, fake)
@@ -445,7 +430,7 @@ func TestSession_DispatchToChannel_reply_is_not_rebroadcast_in_same_dispatch(t *
 	require.Equal(t, []domain.Message{
 		evt.Message,
 		{
-			ID:      fmt.Sprintf("%d~botty", fixedTime.UnixNano()),
+			ID:      fmt.Sprintf("%d~botty~0", fixedTime.UnixNano()),
 			Channel: "#general",
 			From:    "botty",
 			Body:    "reply once",
@@ -457,10 +442,7 @@ func TestSession_DispatchToChannel_reply_is_not_rebroadcast_in_same_dispatch(t *
 func TestSession_DispatchToChannel_multiple_instances_each_reply_once(t *testing.T) {
 	fake := &fakeAPIClient{
 		sendEventsFn: func(_ context.Context, modelID domain.ModelID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (protocol.ModelResponse, error) {
-			return protocol.ModelResponse{
-				Kind: protocol.ResponseReply,
-				Body: fmt.Sprintf("reply from %s", modelID),
-			}, nil
+			return protocol.Reply(fmt.Sprintf("reply from %s", modelID)), nil
 		},
 	}
 	sess, s := newTestSessionWithAPI(t, fake)
@@ -490,14 +472,14 @@ func TestSession_DispatchToChannel_multiple_instances_each_reply_once(t *testing
 	require.Equal(t, evt.Message, msgs[0])
 	require.ElementsMatch(t, []domain.Message{
 		{
-			ID:      fmt.Sprintf("%d~bot-a", fixedTime.UnixNano()),
+			ID:      fmt.Sprintf("%d~bot-a~0", fixedTime.UnixNano()),
 			Channel: "#general",
 			From:    "bot-a",
 			Body:    "reply from test/model-a",
 			SentAt:  fixedTime,
 		},
 		{
-			ID:      fmt.Sprintf("%d~bot-b", fixedTime.UnixNano()),
+			ID:      fmt.Sprintf("%d~bot-b~0", fixedTime.UnixNano()),
 			Channel: "#general",
 			From:    "bot-b",
 			Body:    "reply from test/model-b",
@@ -509,10 +491,7 @@ func TestSession_DispatchToChannel_multiple_instances_each_reply_once(t *testing
 func TestSession_DispatchToChannel_ignores_empty_reply_body(t *testing.T) {
 	fake := &fakeAPIClient{
 		sendEventsFn: func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
-			return protocol.ModelResponse{
-				Kind: protocol.ResponseReply,
-				Body: "   ",
-			}, nil
+			return protocol.Reply("   "), nil
 		},
 	}
 	sess, s := newTestSessionWithAPI(t, fake)
@@ -543,10 +522,7 @@ func TestSession_DispatchToChannel_api_error_continues_to_next_instance(t *testi
 				return protocol.ModelResponse{}, fmt.Errorf("network timeout")
 			}
 
-			return protocol.ModelResponse{
-				Kind: protocol.ResponseReply,
-				Body: "reply from bot-b",
-			}, nil
+			return protocol.Reply("reply from bot-b"), nil
 		},
 	}
 	sess, s := newTestSessionWithAPI(t, fake)
@@ -576,7 +552,7 @@ func TestSession_DispatchToChannel_api_error_continues_to_next_instance(t *testi
 	require.Equal(t, []domain.Message{
 		evt.Message,
 		{
-			ID:      fmt.Sprintf("%d~bot-b", fixedTime.UnixNano()),
+			ID:      fmt.Sprintf("%d~bot-b~0", fixedTime.UnixNano()),
 			Channel: "#general",
 			From:    "bot-b",
 			Body:    "reply from bot-b",
@@ -592,10 +568,7 @@ func TestSession_Poke_api_error_continues_to_next_channel(t *testing.T) {
 				return protocol.ModelResponse{}, fmt.Errorf("rate limited")
 			}
 
-			return protocol.ModelResponse{
-				Kind: protocol.ResponseReply,
-				Body: "still here",
-			}, nil
+			return protocol.Reply("still here"), nil
 		},
 	}
 	sess, s := newTestSessionWithAPI(t, fake)
@@ -622,7 +595,7 @@ func TestSession_Poke_api_error_continues_to_next_channel(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []domain.Message{
 		{
-			ID:      fmt.Sprintf("%d~bot-b", fixedTime.UnixNano()),
+			ID:      fmt.Sprintf("%d~bot-b~0", fixedTime.UnixNano()),
 			Channel: "#random",
 			From:    "bot-b",
 			Body:    "still here",
@@ -968,10 +941,7 @@ func TestSession_DispatchToChannel_includes_memory_in_prompt(t *testing.T) {
 		sendEventsFn: func(_ context.Context, _ domain.ModelID, system string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (protocol.ModelResponse, error) {
 			if strings.Contains(system, "Your persona: Helpful assistant") &&
 				strings.Contains(system, "[mood=curious]") {
-				return protocol.ModelResponse{
-					Kind: protocol.ResponseReply,
-					Body: "memory and persona received",
-				}, nil
+				return protocol.Reply("memory and persona received"), nil
 			}
 
 			return protocol.ModelResponse{Kind: protocol.ResponseSilence}, nil
@@ -1000,7 +970,7 @@ func TestSession_DispatchToChannel_includes_memory_in_prompt(t *testing.T) {
 	require.Equal(t, []domain.Message{
 		evt.Message,
 		{
-			ID:      fmt.Sprintf("%d~botty", fixedTime.UnixNano()),
+			ID:      fmt.Sprintf("%d~botty~0", fixedTime.UnixNano()),
 			Channel: "#general",
 			From:    "botty",
 			Body:    "memory and persona received",
@@ -1065,10 +1035,7 @@ func TestBuildSystemPrompt_with_memories(t *testing.T) {
 func TestSession_Poke_sends_poke_event(t *testing.T) {
 	fake := &fakeAPIClient{
 		sendEventsFn: func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
-			return protocol.ModelResponse{
-				Kind: protocol.ResponseReply,
-				Body: "poke received",
-			}, nil
+			return protocol.Reply("poke received"), nil
 		},
 	}
 	sess, s := newTestSessionWithAPI(t, fake)
@@ -1088,7 +1055,7 @@ func TestSession_Poke_sends_poke_event(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []domain.Message{
 		{
-			ID:      fmt.Sprintf("%d~botty", fixedTime.UnixNano()),
+			ID:      fmt.Sprintf("%d~botty~0", fixedTime.UnixNano()),
 			Channel: "#general",
 			From:    "botty",
 			Body:    "poke received",
@@ -1100,10 +1067,7 @@ func TestSession_Poke_sends_poke_event(t *testing.T) {
 func TestSession_Poke_persists_replies(t *testing.T) {
 	fake := &fakeAPIClient{
 		sendEventsFn: func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
-			return protocol.ModelResponse{
-				Kind: protocol.ResponseReply,
-				Body: "still here",
-			}, nil
+			return protocol.Reply("still here"), nil
 		},
 	}
 	sess, s := newTestSessionWithAPI(t, fake)
@@ -1123,7 +1087,7 @@ func TestSession_Poke_persists_replies(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []domain.Message{
 		{
-			ID:      fmt.Sprintf("%d~botty", fixedTime.UnixNano()),
+			ID:      fmt.Sprintf("%d~botty~0", fixedTime.UnixNano()),
 			Channel: "#general",
 			From:    "botty",
 			Body:    "still here",
@@ -1197,10 +1161,7 @@ func TestSession_OpenDM_unknown_instance(t *testing.T) {
 func TestSession_DispatchToChannel_dm_only_targets_that_instance(t *testing.T) {
 	fake := &fakeAPIClient{
 		sendEventsFn: func(_ context.Context, _ domain.ModelID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (protocol.ModelResponse, error) {
-			return protocol.ModelResponse{
-				Kind: protocol.ResponseReply,
-				Body: "dm reply",
-			}, nil
+			return protocol.Reply("dm reply"), nil
 		},
 	}
 	sess, s := newTestSessionWithAPI(t, fake)
@@ -1230,7 +1191,7 @@ func TestSession_DispatchToChannel_dm_only_targets_that_instance(t *testing.T) {
 	require.Equal(t, []domain.Message{
 		evt.Message,
 		{
-			ID:      fmt.Sprintf("%d~botty", fixedTime.UnixNano()),
+			ID:      fmt.Sprintf("%d~botty~0", fixedTime.UnixNano()),
 			Channel: "botty",
 			From:    "botty",
 			Body:    "dm reply",
@@ -1447,10 +1408,7 @@ func TestSession_DispatchToChannel_forwards_replies_to_subsequent_models(t *test
 			eventsByModel[modelID] = append([]protocol.IRCMessage{}, events...)
 
 			if modelID == "test/alpha" {
-				return protocol.ModelResponse{
-					Kind: protocol.ResponseReply,
-					Body: "alpha says hi",
-				}, nil
+				return protocol.Reply("alpha says hi"), nil
 			}
 
 			return protocol.ModelResponse{Kind: protocol.ResponseSilence, Reason: "pass"}, nil

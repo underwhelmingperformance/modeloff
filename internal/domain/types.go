@@ -49,6 +49,7 @@ type Message struct {
 	Channel ChannelName
 	From    Nick
 	Body    string
+	Action  bool
 	SentAt  time.Time
 }
 

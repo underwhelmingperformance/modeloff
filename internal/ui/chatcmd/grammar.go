@@ -17,6 +17,7 @@ type Grammar struct {
 	Msg    MsgCommand    `cmd:"" help:"Open a direct message and optionally send text."`
 	Nick   NickCommand   `cmd:"" help:"Change your nickname."`
 	Topic  TopicCommand  `cmd:"" help:"Set or clear the current channel topic."`
+	Me     MeCommand     `cmd:"" help:"Send an action message (e.g. /me waves)."`
 	Whois  WhoisCommand  `cmd:"" help:"Show details about a model instance."`
 	Config ConfigCommand `cmd:"" help:"Update runtime configuration."`
 	Help   HelpCommand   `cmd:"" help:"Show available commands."`

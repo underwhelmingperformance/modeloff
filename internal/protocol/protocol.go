@@ -38,6 +38,9 @@ const (
 	// KindKick indicates a model has been removed from a channel.
 	KindKick MessageKind = "KICK"
 
+	// KindAction is a /me action message (e.g. "* nick does something").
+	KindAction MessageKind = "ACTION"
+
 	// KindPoke is a periodic nudge sent to models to prompt
 	// unsolicited conversation.
 	KindPoke MessageKind = "POKE"
@@ -69,19 +72,42 @@ const (
 	ResponseSilence ResponseKind = "silence"
 )
 
+// ReplyKind distinguishes regular messages from actions in a model
+// reply.
+type ReplyKind string
+
+const (
+	// ReplyMessage is a regular chat message.
+	ReplyMessage ReplyKind = "message"
+
+	// ReplyAction is a /me action (e.g. "* nick waves").
+	ReplyAction ReplyKind = "action"
+)
+
+// ReplyPart is a single typed message within a model's reply.
+type ReplyPart struct {
+	Kind ReplyKind `json:"type"`
+	Body string    `json:"body"`
+}
+
 // ModelResponse is the typed response from a model after receiving
 // events. The model must explicitly choose to reply or stay silent.
 type ModelResponse struct {
-	Kind   ResponseKind `json:"kind"`
-	Body   string       `json:"body,omitempty"`
-	Reason string       `json:"reason,omitempty"`
+	Kind     ResponseKind `json:"kind"`
+	Messages []ReplyPart  `json:"messages,omitempty"`
+	Reason   string       `json:"reason,omitempty"`
 }
 
 // FromMessage converts a stored domain message into an IRC-style
 // protocol message for model consumption.
 func FromMessage(msg domain.Message) IRCMessage {
+	kind := KindPrivMsg
+	if msg.Action {
+		kind = KindAction
+	}
+
 	return IRCMessage{
-		Kind:   KindPrivMsg,
+		Kind:   kind,
 		From:   string(msg.From),
 		Target: string(msg.Channel),
 		Body:   msg.Body,
@@ -131,5 +157,22 @@ func FromNickChangeEvent(evt domain.NickChangeEvent) IRCMessage {
 		From:   string(evt.OldNick),
 		Target: string(evt.NewNick),
 		At:     evt.At,
+	}
+}
+
+// Reply creates a ModelResponse containing a single regular message.
+func Reply(body string) ModelResponse {
+	return ModelResponse{
+		Kind:     ResponseReply,
+		Messages: []ReplyPart{{Kind: ReplyMessage, Body: body}},
+	}
+}
+
+// ActionReply creates a ModelResponse containing a single action
+// message.
+func ActionReply(body string) ModelResponse {
+	return ModelResponse{
+		Kind:     ResponseReply,
+		Messages: []ReplyPart{{Kind: ReplyAction, Body: body}},
 	}
 }

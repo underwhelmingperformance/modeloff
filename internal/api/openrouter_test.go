@@ -104,12 +104,9 @@ func TestOpenRouterClient_SendEvents(t *testing.T) {
 			name: "model replies",
 			toolCall: toolCallFixture{
 				name: "reply",
-				args: `{"body": "Hello there!"}`,
+				args: `{"messages": [{"type": "message", "body": "Hello there!"}]}`,
 			},
-			want: protocol.ModelResponse{
-				Kind: protocol.ResponseReply,
-				Body: "Hello there!",
-			},
+			want: protocol.Reply("Hello there!"),
 		},
 		{
 			name: "model passes",
@@ -120,6 +117,20 @@ func TestOpenRouterClient_SendEvents(t *testing.T) {
 			want: protocol.ModelResponse{
 				Kind:   protocol.ResponseSilence,
 				Reason: "Nothing to add",
+			},
+		},
+		{
+			name: "model replies with multiple messages including action",
+			toolCall: toolCallFixture{
+				name: "reply",
+				args: `{"messages": [{"type": "message", "body": "hey"}, {"type": "action", "body": "waves"}]}`,
+			},
+			want: protocol.ModelResponse{
+				Kind: protocol.ResponseReply,
+				Messages: []protocol.ReplyPart{
+					{Kind: protocol.ReplyMessage, Body: "hey"},
+					{Kind: protocol.ReplyAction, Body: "waves"},
+				},
 			},
 		},
 		{

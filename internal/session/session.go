@@ -296,6 +296,29 @@ func (s *Session) SendMessage(
 	return domain.MessageEvent{Message: msg}, nil
 }
 
+// SendAction saves an action message (/me) to a channel and returns
+// the message event.
+func (s *Session) SendAction(
+	ctx context.Context,
+	ch domain.ChannelName,
+	body string,
+) (domain.MessageEvent, error) {
+	msg := domain.Message{
+		ID:      fmt.Sprintf("%d", s.now().UnixNano()),
+		Channel: ch,
+		From:    s.userNick,
+		Body:    body,
+		Action:  true,
+		SentAt:  s.now(),
+	}
+
+	if err := s.store.SaveMessage(ctx, msg); err != nil {
+		return domain.MessageEvent{}, fmt.Errorf("save action: %w", err)
+	}
+
+	return domain.MessageEvent{Message: msg}, nil
+}
+
 // DispatchToChannel sends new events to all model instances in a channel
 // and collects their replies. The caller provides the new IRC-formatted
 // events to broadcast; history is loaded from the store.
@@ -667,32 +690,39 @@ func (s *Session) dispatchToInstances(
 			continue
 		}
 
-		body := strings.TrimSpace(response.Body)
-		if body == "" {
+		if len(response.Messages) == 0 {
 			continue
 		}
 
-		reply := domain.Message{
-			ID:      fmt.Sprintf("%d~%s", s.now().UnixNano(), inst.Nick),
-			Channel: channelName,
-			From:    inst.Nick,
-			Body:    body,
-			SentAt:  s.now(),
+		for i, part := range response.Messages {
+			body := strings.TrimSpace(part.Body)
+			if body == "" {
+				continue
+			}
+
+			reply := domain.Message{
+				ID:      fmt.Sprintf("%d~%s~%d", s.now().UnixNano(), inst.Nick, i),
+				Channel: channelName,
+				From:    inst.Nick,
+				Body:    body,
+				Action:  part.Kind == protocol.ReplyAction,
+				SentAt:  s.now(),
+			}
+
+			if err := s.store.SaveMessage(ctx, reply); err != nil {
+				errs = append(errs, fmt.Errorf("save model reply: %w", err))
+				continue
+			}
+
+			events = append(events, protocol.FromMessage(reply))
+
+			replies = append(replies, domain.ModelReplyEvent{
+				Channel:  channelName,
+				Message:  reply,
+				Instance: inst.Nick,
+				At:       s.now(),
+			})
 		}
-
-		if err := s.store.SaveMessage(ctx, reply); err != nil {
-			errs = append(errs, fmt.Errorf("save model reply: %w", err))
-			continue
-		}
-
-		events = append(events, protocol.FromMessage(reply))
-
-		replies = append(replies, domain.ModelReplyEvent{
-			Channel:  channelName,
-			Message:  reply,
-			Instance: inst.Nick,
-			At:       s.now(),
-		})
 	}
 
 	return replies, errors.Join(errs...)
