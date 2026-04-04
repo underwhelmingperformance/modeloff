@@ -17,7 +17,7 @@ import (
 
 const (
 	defaultBaseURL = "https://openrouter.ai/api/v1"
-	nickModel      = "anthropic/claude-haiku"
+	nickModel = "anthropic/claude-haiku-4.5"
 )
 
 // OpenRouterClient implements Client using openai-go for chat
