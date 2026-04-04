@@ -325,6 +325,26 @@ func TestApp_input_history_and_sidebar_shortcuts_with_teatest(t *testing.T) {
 	require.Contains(t, view, "draft-only")
 }
 
+func TestApp_ctrl_arrow_scroll_preserves_draft_with_teatest(t *testing.T) {
+	sess, _ := newIntegrationSession(t, &integrationAPI{})
+	seedChannel(t, sess, "#general")
+
+	for i := range 30 {
+		_, err := sess.SendMessage(t.Context(), "#general", fmt.Sprintf("message %d", i))
+		require.NoError(t, err)
+	}
+
+	tm := newTestApp(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
+	waitForOutput(t, tm, "#general")
+
+	tm.Type("draft-only")
+	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlUp})
+
+	view := finalView(t, tm)
+	require.Contains(t, view, "draft-only")
+	require.NotContains(t, view, "message 29")
+}
+
 func TestApp_new_messages_divider_with_teatest(t *testing.T) {
 	sess, _ := newIntegrationSession(t, &integrationAPI{})
 	seedChannel(t, sess, "#general")
@@ -354,7 +374,7 @@ func TestApp_new_messages_divider_with_teatest(t *testing.T) {
 	}, 2*time.Second, 10*time.Millisecond)
 
 	for range 11 {
-		tm.Send(tea.KeyMsg{Type: tea.KeyDown})
+		tm.Send(tea.KeyMsg{Type: tea.KeyCtrlDown})
 	}
 
 	view := ansi.Strip(finalView(t, tm))

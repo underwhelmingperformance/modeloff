@@ -103,9 +103,9 @@ func TestMainLayout_View_has_status_bar(t *testing.T) {
 
 	got := layout.View(80, 24)
 
-	require.Contains(t, got, "channels")
+	require.Contains(t, got, "switch")
 	require.Contains(t, got, "quit")
-	require.Contains(t, got, "scroll")
+	require.Contains(t, got, "PgUp/Dn")
 }
 
 func TestMainLayout_View_status_bar_preserves_height(t *testing.T) {
@@ -125,7 +125,6 @@ func TestMainLayout_View_status_bar_at_minimum_width(t *testing.T) {
 
 	got := layout.View(80, 24)
 
-	require.Contains(t, got, "channels")
 	require.Contains(t, got, "switch")
 	require.Contains(t, got, "quit")
 }

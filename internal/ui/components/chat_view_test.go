@@ -207,6 +207,33 @@ func TestChatView_scroll_indicator(t *testing.T) {
 	require.NotContains(t, v, "%)")
 }
 
+func TestChatView_ctrl_arrow_scroll(t *testing.T) {
+	msgs := make([]domain.Message, 30)
+	for i := range msgs {
+		msgs[i] = domain.Message{
+			ID:      fmt.Sprintf("%d", i),
+			Channel: "#general",
+			From:    "user",
+			Body:    fmt.Sprintf("message %d", i),
+		}
+	}
+
+	cv := components.NewChatView("#general", "testuser", "", components.MessagesToLines(msgs))
+	var m ui.Model = cv
+
+	m.View(80, 24)
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlUp})
+
+	v := m.View(80, 24)
+	require.NotContains(t, v, "message 29")
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlDown})
+
+	v = m.View(80, 24)
+	require.Contains(t, v, "message 29")
+}
+
 func TestChatView_scroll_does_not_go_negative(t *testing.T) {
 	cv := components.NewChatView("#general", "testuser", "", testMessages)
 	var m ui.Model = cv
@@ -217,6 +244,44 @@ func TestChatView_scroll_does_not_go_negative(t *testing.T) {
 
 	v := m.View(80, 24)
 	require.Contains(t, v, "how are you?")
+}
+
+func TestChatView_arrow_keys_stay_with_input(t *testing.T) {
+	msgs := make([]domain.Message, 30)
+	for i := range msgs {
+		msgs[i] = domain.Message{
+			ID:      fmt.Sprintf("%d", i),
+			Channel: "#general",
+			From:    "user",
+			Body:    fmt.Sprintf("message %d", i),
+		}
+	}
+
+	cv := components.NewChatView("#general", "testuser", "", components.MessagesToLines(msgs))
+	var m ui.Model = cv
+
+	m.View(80, 24)
+
+	m = typeText(t, m, "first")
+	m, _ = enter(t, m)
+	m = typeText(t, m, "second")
+	m, _ = enter(t, m)
+	m = typeText(t, m, "draft")
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+
+	v := m.View(80, 24)
+	require.Contains(t, v, "second")
+	require.Contains(t, v, "message 29")
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	m = typeText(t, m, "X")
+
+	v = m.View(80, 24)
+	require.Contains(t, v, "draXft")
+	require.Contains(t, v, "message 29")
 }
 
 func TestChatView_nicks_use_hashed_colours(t *testing.T) {

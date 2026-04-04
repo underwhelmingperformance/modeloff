@@ -163,7 +163,7 @@ func statusBar(width int) string {
 		{"^D/U", "↑↓ channels"},
 		{"^O", "switch"},
 		{"^N", "nicks"},
-		{"PgUp/Dn", "scroll"},
+		{"PgUp/Dn ^↑/↓", "scroll"},
 		{"/help", "commands"},
 		{"^C", "quit"},
 	}
@@ -177,7 +177,7 @@ func statusBar(width int) string {
 
 	// Abbreviate if too wide.
 	if lipgloss.Width(text) > width {
-		short := []string{"^D/U ↑↓", "^O switch", "^N nicks", "PgUp/Dn", "/help", "^C quit"}
+		short := []string{"^D/U ↑↓", "^O switch", "^N nicks", "PgUp/Dn ^↑/↓", "/help", "^C quit"}
 		text = strings.Join(short, " ")
 	}
 

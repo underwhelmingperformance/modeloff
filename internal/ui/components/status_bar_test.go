@@ -16,7 +16,7 @@ func TestStatusBar_abbreviates_at_narrow_width(t *testing.T) {
 	}{
 		{
 			name:      "wide enough for full bar",
-			width:     80,
+			width:     100,
 			wantFull:  true,
 			wantShort: false,
 		},
@@ -36,6 +36,7 @@ func TestStatusBar_abbreviates_at_narrow_width(t *testing.T) {
 				require.Contains(t, got, "channels")
 				require.Contains(t, got, "commands")
 				require.Contains(t, got, "scroll")
+				require.Contains(t, got, "^↑/↓")
 			}
 
 			if tt.wantShort {

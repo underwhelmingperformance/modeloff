@@ -5,7 +5,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -146,6 +145,7 @@ type ChatView struct {
 	userNick    domain.Nick
 	lines       []ChatLine
 	input       InputBar
+	keyMap      ChatViewKeyMap
 	viewport    viewport.Model
 	pending     bool
 	spinner     spinner.Model
@@ -162,13 +162,13 @@ type ChatView struct {
 func NewChatView(ch domain.ChannelName, userNick domain.Nick, title string, lines []ChatLine) *ChatView {
 	vp := viewport.New(0, 0)
 	vp.MouseWheelEnabled = true
+
+	keyMap := DefaultChatViewKeyMap
 	vp.KeyMap = viewport.KeyMap{
-		PageDown: key.NewBinding(key.WithKeys("pgdown")),
-		PageUp:   key.NewBinding(key.WithKeys("pgup")),
-		Down:     key.NewBinding(key.WithKeys("down")),
-		Up:       key.NewBinding(key.WithKeys("up")),
-		Left:     key.NewBinding(key.WithKeys("left")),
-		Right:    key.NewBinding(key.WithKeys("right")),
+		PageDown: keyMap.PageDown,
+		PageUp:   keyMap.PageUp,
+		Down:     keyMap.ScrollDown,
+		Up:       keyMap.ScrollUp,
 	}
 
 	return &ChatView{
@@ -178,6 +178,7 @@ func NewChatView(ch domain.ChannelName, userNick domain.Nick, title string, line
 		lines:     lines,
 		seenCount: len(lines),
 		input:     NewInputBar(),
+		keyMap:    keyMap,
 		viewport:  vp,
 		spinner: spinner.New(
 			spinner.WithSpinner(spinner.Dot),
@@ -274,9 +275,8 @@ func (c *ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		return c, nil
 	}
 
-	// Forward to viewport for scroll handling (PgUp/PgDown, mouse
-	// wheel). The viewport consumes scroll keys so they don't reach
-	// the input bar.
+	// Forward explicit viewport navigation keys first so plain arrows
+	// remain with the input bar.
 	var vpCmd tea.Cmd
 	c.viewport, vpCmd = c.viewport.Update(msg)
 

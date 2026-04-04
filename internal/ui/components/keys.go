@@ -50,6 +50,36 @@ var DefaultInputBarKeyMap = InputBarKeyMap{
 	),
 }
 
+// ChatViewKeyMap defines explicit scroll bindings for the chat
+// viewport. Plain arrow keys remain with the input bar.
+type ChatViewKeyMap struct {
+	PageUp     key.Binding
+	PageDown   key.Binding
+	ScrollUp   key.Binding
+	ScrollDown key.Binding
+}
+
+// DefaultChatViewKeyMap is the default set of chat viewport
+// keybindings.
+var DefaultChatViewKeyMap = ChatViewKeyMap{
+	PageUp: key.NewBinding(
+		key.WithKeys("pgup"),
+		key.WithHelp("PgUp", "page up"),
+	),
+	PageDown: key.NewBinding(
+		key.WithKeys("pgdown"),
+		key.WithHelp("PgDn", "page down"),
+	),
+	ScrollUp: key.NewBinding(
+		key.WithKeys("ctrl+up"),
+		key.WithHelp("^↑", "up"),
+	),
+	ScrollDown: key.NewBinding(
+		key.WithKeys("ctrl+down"),
+		key.WithHelp("^↓", "down"),
+	),
+}
+
 // ChatScreenKeyMap defines keybindings owned by the chat screen
 // rather than any child component.
 type ChatScreenKeyMap struct {
