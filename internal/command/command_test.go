@@ -8,7 +8,7 @@ import (
 
 type testGrammar struct {
 	Join   JoinCommand   `cmd:"" help:"Join a channel."`
-	Leave  LeaveCommand  `cmd:"" help:"Leave."`
+	Part   PartCommand   `cmd:"" help:"Part."`
 	List   ListCommand   `cmd:"" help:"List channels."`
 	Invite InviteCommand `cmd:"" help:"Invite a model."`
 	Kick   KickCommand   `cmd:"" help:"Kick."`
@@ -51,15 +51,15 @@ func TestParse(t *testing.T) {
 			wantErr: true,
 		},
 
-		// /leave
+		// /part
 		{
-			name:  "leave",
-			input: "/leave",
-			want:  LeaveCommand{},
+			name:  "part",
+			input: "/part",
+			want:  PartCommand{},
 		},
 		{
-			name:    "leave rejects extra args",
-			input:   "/leave extra stuff",
+			name:    "part rejects extra args",
+			input:   "/part extra stuff",
 			wantErr: true,
 		},
 

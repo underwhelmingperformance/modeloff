@@ -175,7 +175,7 @@ func TestChatScreen_join_existing_channel(t *testing.T) {
 	waitForOutput(t, tm, "#general", "testuser has joined #general")
 }
 
-func TestChatScreen_leave_command(t *testing.T) {
+func TestChatScreen_part_command(t *testing.T) {
 	sess := newTestSession(t)
 	seedChannel(t, sess, "#general")
 	seedChannel(t, sess, "#random")
@@ -183,7 +183,7 @@ func TestChatScreen_leave_command(t *testing.T) {
 	tm := newChatApp(t, sess)
 	waitForOutput(t, tm, "#random")
 
-	submitText(tm, "/leave")
+	submitText(tm, "/part")
 
 	view := finalView(t, tm)
 	require.NotEmpty(t, view)

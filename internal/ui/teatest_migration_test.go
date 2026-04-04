@@ -51,7 +51,7 @@ func TestChatScreen_leave_flow_with_teatest(t *testing.T) {
 	tm := newTestApp(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
 	waitForOutput(t, tm, "random msg")
 
-	submitText(tm, "/leave")
+	submitText(tm, "/part")
 	waitForOutput(t, tm, "general msg")
 
 	view := finalView(t, tm)

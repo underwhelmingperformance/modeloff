@@ -19,7 +19,7 @@ func (s *ChatScreen) Commands() command.Set {
 
 	type grammar struct {
 		Join   command.JoinCommand   `cmd:"" help:"Switch to a channel or create it if needed."`
-		Leave  command.LeaveCommand  `cmd:"" help:"Leave the current channel."`
+		Part   command.PartCommand   `cmd:"" help:"Part from the current channel."`
 		List   command.ListCommand   `cmd:"" help:"List all known channels."`
 		Invite command.InviteCommand `cmd:"" help:"Invite a model or reusable instance into the current channel."`
 		Kick   command.KickCommand   `cmd:"" help:"Remove a model instance from the current channel."`
@@ -40,12 +40,12 @@ func (s *ChatScreen) Commands() command.Set {
 		return s.joinChannel(cmd.Channel.String())
 	})
 
-	command.Bind(cmds, "leave", func(_ command.LeaveCommand) tea.Cmd {
+	command.Bind(cmds, "part", func(_ command.PartCommand) tea.Cmd {
 		if s.active == "" {
 			return s.noChannelCmd()
 		}
 
-		return s.leaveChannel()
+		return s.partChannel()
 	})
 
 	command.Bind(cmds, "list", func(_ command.ListCommand) tea.Cmd {
@@ -312,11 +312,11 @@ func (s *ChatScreen) joinChannel(name string) tea.Cmd {
 	}
 }
 
-func (s *ChatScreen) leaveChannel() tea.Cmd {
+func (s *ChatScreen) partChannel() tea.Cmd {
 	return func() tea.Msg {
 		evt, err := s.sess.Leave(s.ctx, s.active)
 		if err != nil {
-			return errorEvent("leave", err)
+			return errorEvent("part", err)
 		}
 
 		return evt

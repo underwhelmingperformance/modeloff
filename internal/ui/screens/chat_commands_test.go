@@ -70,7 +70,7 @@ func TestChatScreen_Commands_exposes_chat_commands(t *testing.T) {
 
 	require.Equal(t, []string{
 		"join",
-		"leave",
+		"part",
 		"list",
 		"invite",
 		"kick",

@@ -131,7 +131,7 @@ func TestResolveFieldMetas(t *testing.T) {
 		},
 		{
 			name: "no fields",
-			cmd:  LeaveCommand{},
+			cmd:  PartCommand{},
 			want: nil,
 		},
 		{
@@ -276,11 +276,11 @@ type buildJoinCommand struct {
 	Channel string `arg:"channel" help:"Channel to join"`
 }
 
-type buildLeaveCommand struct{}
+type buildPartCommand struct{}
 
 type buildGrammar struct {
-	Join  buildJoinCommand  `cmd:"" help:"Join a channel."`
-	Leave buildLeaveCommand `cmd:"" help:"Leave the channel."`
+	Join buildJoinCommand `cmd:"" help:"Join a channel."`
+	Part buildPartCommand `cmd:"" help:"Part from the channel."`
 }
 
 func TestBuild_produces_nodes_from_grammar(t *testing.T) {
@@ -297,8 +297,8 @@ func TestBuild_produces_nodes_from_grammar(t *testing.T) {
 	require.NotNil(t, nodes[0].factory)
 
 	require.Equal(t, nodeMeta{
-		Name: "leave",
-		Help: "Leave the channel.",
+		Name: "part",
+		Help: "Part from the channel.",
 	}, toNodeMeta(nodes[1]))
 	require.NotNil(t, nodes[1].factory)
 }
@@ -392,14 +392,14 @@ func TestParsed_wrong_type_panics(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Panics(t, func() {
-		Parsed[buildLeaveCommand](inv)
+		Parsed[buildPartCommand](inv)
 	})
 }
 
 func TestBind_wrong_type_panics_on_run(t *testing.T) {
 	cmds := Build(&buildGrammar{})
 
-	Bind(cmds, "join", func(_ buildLeaveCommand) tea.Cmd { return nil })
+	Bind(cmds, "join", func(_ buildPartCommand) tea.Cmd { return nil })
 
 	inv, err := cmds.Parse("/join test-channel")
 	require.NoError(t, err)

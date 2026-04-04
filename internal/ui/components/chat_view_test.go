@@ -695,7 +695,7 @@ func TestChatView_popover_arrow_keys_do_not_fall_through(t *testing.T) {
 		Commands: command.Set{
 			Commands: []*command.Node{
 				{Name: "join", Help: "Join a channel"},
-				{Name: "leave", Help: "Leave current channel"},
+				{Name: "part", Help: "Part from the current channel"},
 				{Name: "quit", Help: "Exit modeloff"},
 			},
 		},
@@ -729,8 +729,8 @@ func TestChatView_popover_arrow_keys_do_not_fall_through(t *testing.T) {
 
 	// If Down fell through to input history, the input would contain
 	// "previous input" instead of a command. The second suggestion
-	// (/leave) should be selected after one Down press.
-	require.Equal(t, "/leave", sub.Raw)
+	// (/part) should be selected after one Down press.
+	require.Equal(t, "/part", sub.Raw)
 }
 
 func TestChatView_popover_renders_usage_in_suggestions(t *testing.T) {
@@ -739,7 +739,7 @@ func TestChatView_popover_renders_usage_in_suggestions(t *testing.T) {
 		Commands: command.Set{
 			Commands: []*command.Node{
 				{Name: "join", Help: "Join a channel", Positionals: []command.Positional{{Name: "channel"}}},
-				{Name: "leave", Help: "Leave current channel"},
+				{Name: "part", Help: "Part from the current channel"},
 				{Name: "quit", Help: "Exit modeloff"},
 			},
 		},
@@ -755,7 +755,7 @@ func TestChatView_popover_renders_usage_in_suggestions(t *testing.T) {
 
 	require.Contains(t, stripped, "/join <channel>")
 	require.Contains(t, stripped, "Join a channel")
-	require.Contains(t, stripped, "/leave")
+	require.Contains(t, stripped, "/part")
 	require.Contains(t, stripped, "/quit")
 }
 

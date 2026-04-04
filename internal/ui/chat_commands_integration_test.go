@@ -237,7 +237,7 @@ func TestApp_channel_command_on_welcome_screen_rejected_with_teatest(t *testing.
 	tm := newTestApp(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
 	waitForOutput(t, tm, "Welcome to modeloff")
 
-	submitText(tm, "/leave")
+	submitText(tm, "/part")
 	waitForOutput(t, tm, "join a channel first")
 
 	view := finalView(t, tm)

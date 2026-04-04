@@ -31,8 +31,8 @@ type JoinCommand struct {
 	Channel ChannelArg `arg:"channel" help:"Channel to join or create"`
 }
 
-// LeaveCommand represents `/leave`.
-type LeaveCommand struct{}
+// PartCommand represents `/part`.
+type PartCommand struct{}
 
 // ListCommand represents `/list`.
 type ListCommand struct{}
