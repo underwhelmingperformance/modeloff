@@ -566,3 +566,336 @@ func TestParse_after_merge(t *testing.T) {
 		require.Error(t, err)
 	})
 }
+
+func TestComplete_whitespace_after_slash(t *testing.T) {
+	cmds := Set{
+		Commands: []*Node{{Name: "quit", Help: "Exit."}},
+	}
+
+	completion := Complete(cmds, "/ ", len([]rune("/ ")), CompletionContext{})
+
+	require.True(t, completion.Visible)
+	require.Empty(t, completion.Suggestions)
+}
+
+func TestComplete_cursor_mid_command_name(t *testing.T) {
+	cmds := Set{
+		Commands: []*Node{
+			{Name: "quit", Help: "Exit."},
+			{Name: "query", Help: "Query."},
+		},
+	}
+
+	raw := "/quit"
+	completion := Complete(cmds, raw, 3, CompletionContext{})
+
+	require.True(t, completion.Visible)
+
+	var names []string
+	for _, s := range completion.Suggestions {
+		names = append(names, s.Value)
+	}
+
+	// Cursor mid-token still filters with the full token text.
+	require.Equal(t, []string{"quit"}, names)
+}
+
+func TestComplete_multiple_prefix_matches(t *testing.T) {
+	cmds := Set{
+		Commands: []*Node{
+			{Name: "quit", Help: "Exit."},
+			{Name: "query", Help: "Query."},
+			{Name: "queue", Help: "Queue."},
+		},
+	}
+
+	raw := "/qu"
+	completion := Complete(cmds, raw, len([]rune(raw)), CompletionContext{})
+
+	require.True(t, completion.Visible)
+
+	var names []string
+	for _, s := range completion.Suggestions {
+		names = append(names, s.Value)
+	}
+
+	require.Equal(t, []string{"quit", "query", "queue"}, names)
+}
+
+func TestComplete_flag_name_after_positionals(t *testing.T) {
+	cmds := Set{
+		Commands: []*Node{
+			{
+				Name:        "kick",
+				Help:        "Kick a nick",
+				Positionals: []Positional{{Name: "nick"}},
+				Flags: []Flag{
+					{Name: "--reason", Optional: true, Help: "Kick reason"},
+				},
+			},
+		},
+	}
+
+	raw := "/kick botty "
+	completion := Complete(cmds, raw, len([]rune(raw)), CompletionContext{})
+
+	require.True(t, completion.Visible)
+	require.Equal(t, []Suggestion{
+		{Value: "--reason", Label: "--reason", Detail: "Kick reason"},
+	}, completion.Suggestions)
+}
+
+func TestComplete_flag_name_prefix_filters(t *testing.T) {
+	cmds := Set{
+		Commands: []*Node{
+			{
+				Name: "invite",
+				Help: "Invite a model",
+				Positionals: []Positional{
+					{Name: "model", Optional: true},
+				},
+				Flags: []Flag{
+					{Name: "--persona", Optional: true, Help: "Persona text"},
+					{Name: "--priority", Optional: true, Help: "Priority level"},
+				},
+			},
+		},
+	}
+
+	raw := "/invite model-a --per"
+	completion := Complete(cmds, raw, len([]rune(raw)), CompletionContext{})
+
+	require.True(t, completion.Visible)
+	require.Equal(t, []Suggestion{
+		{Value: "--persona", Label: "--persona", Detail: "Persona text"},
+	}, completion.Suggestions)
+}
+
+func TestComplete_flag_value_uses_source(t *testing.T) {
+	cmds := Set{
+		Commands: []*Node{
+			{
+				Name: "config",
+				Help: "Configure",
+				Positionals: []Positional{
+					{Name: "key", Source: LiteralSource(
+						Suggestion{Value: "api-key", Label: "api-key"},
+						Suggestion{Value: "theme", Label: "theme"},
+					)},
+				},
+				Flags: []Flag{
+					{
+						Name:     "--format",
+						Optional: true,
+						Help:     "Output format",
+						Source: LiteralSource(
+							Suggestion{Value: "json", Label: "json"},
+							Suggestion{Value: "yaml", Label: "yaml"},
+						),
+					},
+				},
+			},
+		},
+	}
+
+	raw := "/config api-key --format "
+	completion := Complete(cmds, raw, len([]rune(raw)), CompletionContext{})
+
+	require.True(t, completion.Visible)
+	require.Equal(t, []Suggestion{
+		{Value: "json", Label: "json"},
+		{Value: "yaml", Label: "yaml"},
+	}, completion.Suggestions)
+}
+
+func TestComplete_flag_value_filters_by_prefix(t *testing.T) {
+	cmds := Set{
+		Commands: []*Node{
+			{
+				Name: "config",
+				Help: "Configure",
+				Flags: []Flag{
+					{
+						Name:     "--format",
+						Optional: true,
+						Source: LiteralSource(
+							Suggestion{Value: "json", Label: "json"},
+							Suggestion{Value: "yaml", Label: "yaml"},
+						),
+					},
+				},
+			},
+		},
+	}
+
+	raw := "/config --format j"
+	completion := Complete(cmds, raw, len([]rune(raw)), CompletionContext{})
+
+	require.True(t, completion.Visible)
+	require.Equal(t, []Suggestion{
+		{Value: "json", Label: "json"},
+	}, completion.Suggestions)
+}
+
+func TestComplete_flags_interleaved_with_positionals(t *testing.T) {
+	cmds := Set{
+		Commands: []*Node{
+			{
+				Name: "invite",
+				Help: "Invite a model",
+				Positionals: []Positional{
+					{Name: "model", Optional: true, Source: LiteralSource(
+						Suggestion{Value: "claude", Label: "claude"},
+					)},
+				},
+				Flags: []Flag{
+					{Name: "--persona", Optional: true, Help: "Persona"},
+				},
+			},
+		},
+	}
+
+	// Flag before positional: after --persona value, should offer model suggestions.
+	raw := "/invite --persona friendly "
+	completion := Complete(cmds, raw, len([]rune(raw)), CompletionContext{})
+
+	require.True(t, completion.Visible)
+	require.Equal(t, []Suggestion{
+		{Value: "claude", Label: "claude"},
+	}, completion.Suggestions)
+}
+
+func TestComplete_subcommand_names(t *testing.T) {
+	cmds := Set{
+		Commands: []*Node{
+			{
+				Name: "admin",
+				Help: "Admin commands",
+				Children: []*Node{
+					{Name: "ban", Help: "Ban a user"},
+					{Name: "unban", Help: "Unban a user"},
+					{Name: "mute", Help: "Mute a user"},
+				},
+			},
+		},
+	}
+
+	tests := []struct {
+		name  string
+		raw   string
+		wants []string
+	}{
+		{
+			name:  "all subcommands",
+			raw:   "/admin ",
+			wants: []string{"ban", "unban", "mute"},
+		},
+		{
+			name:  "filtered by prefix",
+			raw:   "/admin mu",
+			wants: []string{"mute"},
+		},
+		{
+			name:  "no match",
+			raw:   "/admin x",
+			wants: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			completion := Complete(cmds, tt.raw, len([]rune(tt.raw)), CompletionContext{})
+
+			require.True(t, completion.Visible)
+
+			var names []string
+			for _, s := range completion.Suggestions {
+				names = append(names, s.Value)
+			}
+
+			require.Equal(t, tt.wants, names)
+		})
+	}
+}
+
+func TestComplete_flag_only_command(t *testing.T) {
+	cmds := Set{
+		Commands: []*Node{
+			{
+				Name: "config",
+				Help: "Configure",
+				Flags: []Flag{
+					{Name: "--api-key", Optional: true, Help: "API key"},
+					{Name: "--theme", Optional: true, Help: "Theme"},
+				},
+			},
+		},
+	}
+
+	tests := []struct {
+		name  string
+		raw   string
+		wants []string
+	}{
+		{
+			name:  "all flags offered",
+			raw:   "/config ",
+			wants: []string{"--api-key", "--theme"},
+		},
+		{
+			name:  "used flag excluded",
+			raw:   "/config --api-key secret ",
+			wants: []string{"--theme"},
+		},
+		{
+			name:  "all flags used",
+			raw:   "/config --api-key secret --theme dark ",
+			wants: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			completion := Complete(cmds, tt.raw, len([]rune(tt.raw)), CompletionContext{})
+
+			require.True(t, completion.Visible)
+
+			var names []string
+			for _, s := range completion.Suggestions {
+				names = append(names, s.Value)
+			}
+
+			require.Equal(t, tt.wants, names)
+		})
+	}
+}
+
+func TestComplete_optional_positional_with_source(t *testing.T) {
+	cmds := Set{
+		Commands: []*Node{
+			{
+				Name: "invite",
+				Help: "Invite a model",
+				Positionals: []Positional{
+					{
+						Name:     "model",
+						Optional: true,
+						Source: LiteralSource(
+							Suggestion{Value: "claude", Label: "claude"},
+							Suggestion{Value: "gemini", Label: "gemini"},
+						),
+					},
+				},
+			},
+		},
+	}
+
+	raw := "/invite "
+	completion := Complete(cmds, raw, len([]rune(raw)), CompletionContext{})
+
+	require.True(t, completion.Visible)
+	require.Equal(t, []Suggestion{
+		{Value: "claude", Label: "claude"},
+		{Value: "gemini", Label: "gemini"},
+	}, completion.Suggestions)
+}

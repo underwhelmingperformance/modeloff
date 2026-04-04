@@ -308,12 +308,18 @@ func Complete(set Set, raw string, cursor int, ctx CompletionContext) Completion
 		args = append(args, tok.Text)
 	}
 
+	// Classify preceding tokens (everything before the current token)
+	// into flags and positionals so we know the true positional index
+	// and whether we're completing a flag value.
+	preceding := argTokens(tokens, index)
+	cctx := classifyForCompletion(node, preceding)
+
 	state := InvocationState{
 		Raw:          raw,
 		Name:         name,
 		Args:         args,
 		Command:      node,
-		CurrentIndex: index - 1,
+		CurrentIndex: cctx.positionalIndex,
 		CurrentToken: prefix,
 	}
 
@@ -321,23 +327,53 @@ func Complete(set Set, raw string, cursor int, ctx CompletionContext) Completion
 		Visible:      true,
 		ReplaceStart: start,
 		ReplaceEnd:   end,
-		AppendSpace:  hasContinuation(node, state.CurrentIndex),
+		AppendSpace:  true,
 	}
 
-	pos := resolvePositional(node.Positionals, state.CurrentIndex)
-	if pos == nil {
+	// Subcommand completion.
+	if len(node.Children) > 0 {
+		completion.Suggestions = filterSuggestions(childSuggestions(node), prefix)
 		return completion
 	}
 
-	if pos.Variadic {
+	// Flag value completion: previous token was a flag name.
+	if cctx.expectingFlagValue != nil {
+		flag := cctx.expectingFlagValue
+
+		if flag.Source != nil {
+			completion.Suggestions = filterSuggestions(flag.Source(ctx, state), prefix)
+		}
+
 		return completion
 	}
 
-	if pos.Source == nil {
+	// Flag name completion: current token starts with "--".
+	if strings.HasPrefix(prefix, "--") {
+		completion.Suggestions = filterSuggestions(flagSuggestions(node, cctx.usedFlags), prefix)
 		return completion
 	}
 
-	completion.Suggestions = filterSuggestions(pos.Source(ctx, state), prefix)
+	// Positional completion.
+	pos := resolvePositional(node.Positionals, cctx.positionalIndex)
+	if pos != nil && !pos.Variadic && pos.Source != nil {
+		completion.Suggestions = filterSuggestions(pos.Source(ctx, state), prefix)
+		completion.AppendSpace = hasContinuation(node, cctx.positionalIndex)
+		return completion
+	}
+
+	if pos != nil {
+		completion.AppendSpace = hasContinuation(node, cctx.positionalIndex)
+		return completion
+	}
+
+	// Past all positionals: offer flag names.
+	flags := flagSuggestions(node, cctx.usedFlags)
+	if len(flags) > 0 {
+		completion.Suggestions = filterSuggestions(flags, prefix)
+		return completion
+	}
+
+	completion.AppendSpace = false
 	return completion
 }
 
@@ -366,6 +402,111 @@ func commandSuggestions(set Set) []Suggestion {
 			Label:  "/" + node.Name,
 			Detail: node.Help,
 			Usage:  node.Usage(),
+		})
+	}
+
+	return suggestions
+}
+
+// completionClassification holds the result of classifying the tokens
+// preceding the cursor into flags and positionals.
+type completionClassification struct {
+	positionalIndex    int
+	expectingFlagValue *Flag
+	usedFlags          map[string]bool
+}
+
+// argTokens returns the token texts between the command name (index 0)
+// and the current token at index.
+func argTokens(tokens []token, currentIndex int) []string {
+	// tokens[0] is the command name; arguments start at tokens[1].
+	end := currentIndex
+	if end > len(tokens) {
+		end = len(tokens)
+	}
+
+	if end <= 1 {
+		return nil
+	}
+
+	out := make([]string, 0, end-1)
+	for _, tok := range tokens[1:end] {
+		out = append(out, tok.Text)
+	}
+
+	return out
+}
+
+// classifyForCompletion walks the preceding argument tokens and
+// determines the current positional index, whether we're expecting a
+// flag value, and which flags have already been used.
+func classifyForCompletion(node *Node, preceding []string) completionClassification {
+	flagSet := map[string]*Flag{}
+	for i := range node.Flags {
+		flagSet[node.Flags[i].Name] = &node.Flags[i]
+	}
+
+	cc := completionClassification{
+		usedFlags: map[string]bool{},
+	}
+
+	for i := 0; i < len(preceding); i++ {
+		tok := preceding[i]
+
+		if f, ok := flagSet[tok]; ok {
+			cc.usedFlags[tok] = true
+
+			if f.Variadic {
+				// Variadic flag consumes remaining tokens.
+				cc.expectingFlagValue = nil
+				return cc
+			}
+
+			// Scalar flag: next token is its value.
+			if i+1 < len(preceding) {
+				i++
+			} else {
+				// Current token is the flag value.
+				cc.expectingFlagValue = f
+				return cc
+			}
+
+			continue
+		}
+
+		// Not a recognised flag: it's a positional.
+		cc.positionalIndex++
+	}
+
+	return cc
+}
+
+func flagSuggestions(node *Node, used map[string]bool) []Suggestion {
+	var suggestions []Suggestion
+
+	for _, f := range node.Flags {
+		if used[f.Name] {
+			continue
+		}
+
+		suggestions = append(suggestions, Suggestion{
+			Value:  f.Name,
+			Label:  f.Name,
+			Detail: f.Help,
+		})
+	}
+
+	return suggestions
+}
+
+func childSuggestions(node *Node) []Suggestion {
+	suggestions := make([]Suggestion, 0, len(node.Children))
+
+	for _, child := range node.Children {
+		suggestions = append(suggestions, Suggestion{
+			Value:  child.Name,
+			Label:  child.Name,
+			Detail: child.Help,
 		})
 	}
 

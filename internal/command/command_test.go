@@ -228,3 +228,22 @@ func TestParse(t *testing.T) {
 		})
 	}
 }
+
+func TestChannelArg_Decode_and_String(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"general", "#general"},
+		{"#general", "#general"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			var c ChannelArg
+
+			require.NoError(t, c.Decode(tt.input))
+			require.Equal(t, tt.want, c.String())
+		})
+	}
+}

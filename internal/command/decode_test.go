@@ -558,3 +558,23 @@ func TestRegistry_duration_bad(t *testing.T) {
 	require.Equal(t, "notaduration", de.Value)
 	require.Equal(t, "duration", de.Expected)
 }
+
+func TestRegistry_RegisterType_overwrites(t *testing.T) {
+	r := NewRegistry().RegisterDefaults()
+
+	original := r.ForType(reflect.TypeOf(""))
+	require.NotNil(t, original)
+
+	custom := DecoderFunc(func(raw string, target reflect.Value) error {
+		target.SetString("custom:" + raw)
+		return nil
+	})
+
+	r.RegisterType(reflect.TypeOf(""), custom)
+
+	target := reflect.New(reflect.TypeOf("")).Elem()
+	err := r.ForType(reflect.TypeOf("")).Decode("hello", target)
+
+	require.NoError(t, err)
+	require.Equal(t, "custom:hello", target.String())
+}
