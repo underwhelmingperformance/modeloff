@@ -130,10 +130,6 @@ func (p *Popover) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	p.handled = false
 
 	switch msg := msg.(type) {
-	case CommandStateMsg:
-		// Handled via Apply from ChatView which also passes input state.
-		return p, nil
-
 	case tea.KeyMsg:
 		if handled, cmd := p.handleKey(msg); handled {
 			p.handled = true
@@ -197,7 +193,7 @@ func (p *Popover) handleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 	if p.completion.Visible && p.HasSuggestions() {
 		switch msg.Type {
 		case tea.KeyTab:
-			return true, p.acceptCmd(p.selected)
+			return true, p.AcceptCmd(p.selected)
 		case tea.KeyShiftTab, tea.KeyUp:
 			p.MoveSelection(-1)
 			return true, nil
@@ -248,7 +244,7 @@ func (p *Popover) handleMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
 			return true, nil
 		case tea.MouseButtonLeft:
 			if index, ok := p.suggestionIndexAt(layout, msg.X, msg.Y); ok {
-				return true, p.acceptCmd(index)
+				return true, p.AcceptCmd(index)
 			}
 
 			return true, nil
@@ -263,7 +259,9 @@ func (p *Popover) SetBounds(bounds ui.Rect) {
 	p.bounds = bounds
 }
 
-func (p *Popover) acceptCmd(index int) tea.Cmd {
+// AcceptCmd returns a command that emits a PopoverAcceptMsg for the
+// suggestion at the given index.
+func (p *Popover) AcceptCmd(index int) tea.Cmd {
 	if index < 0 || index >= len(p.completion.Suggestions) {
 		return nil
 	}
