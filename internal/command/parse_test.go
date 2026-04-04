@@ -226,3 +226,63 @@ func TestParseInto_int_decode_error(t *testing.T) {
 	require.ErrorAs(t, err, &de)
 	require.Equal(t, "notanumber", de.Value)
 }
+
+func TestParseInto_flag_before_positional(t *testing.T) {
+	cmd := &flagCmd{}
+
+	err := ParseInto(cmd, []string{"--persona", "Be nice", "some-model"})
+
+	require.NoError(t, err)
+	require.Equal(t, "some-model", cmd.Model)
+	require.Equal(t, "Be nice", cmd.Persona)
+}
+
+func TestParseInto_variadic_flag_consumes_remaining(t *testing.T) {
+	type varFlagCmd struct {
+		Model string   `arg:"" optional:"" help:"Model"`
+		Tags  []string `optional:"" help:"Tags"`
+	}
+
+	cmd := &varFlagCmd{}
+
+	err := ParseInto(cmd, []string{"model-a", "--tags", "x", "y", "z"})
+
+	require.NoError(t, err)
+	require.Equal(t, "model-a", cmd.Model)
+	require.Equal(t, []string{"x", "y", "z"}, cmd.Tags)
+}
+
+func TestParseInto_empty_string_is_rejected_for_required_field(t *testing.T) {
+	cmd := &kickCmd{}
+
+	err := ParseInto(cmd, []string{""})
+
+	var me *MissingArgError
+	require.ErrorAs(t, err, &me)
+	require.Equal(t, "nick", me.Name)
+}
+
+func TestParseInto_extra_args_after_positionals(t *testing.T) {
+	cmd := &kickCmd{}
+
+	err := ParseInto(cmd, []string{"botty", "extra"})
+
+	var ee *ExtraArgsError
+	require.ErrorAs(t, err, &ee)
+	require.Equal(t, []string{"extra"}, ee.Args)
+}
+
+func TestParseInto_variadic_slice_flag(t *testing.T) {
+	type tagCmd struct {
+		Name string   `arg:"" help:"Name"`
+		Tags []string `optional:"" help:"Tags"`
+	}
+
+	cmd := &tagCmd{}
+
+	err := ParseInto(cmd, []string{"widget", "--tags", "red", "blue", "green"})
+
+	require.NoError(t, err)
+	require.Equal(t, "widget", cmd.Name)
+	require.Equal(t, []string{"red", "blue", "green"}, cmd.Tags)
+}

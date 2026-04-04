@@ -478,6 +478,23 @@ func TestComplete_unknown_command_has_no_suggestions(t *testing.T) {
 	require.Empty(t, completion.Suggestions)
 }
 
+func TestComplete_contains_match(t *testing.T) {
+	cmds := Set{
+		Commands: []*Node{
+			{Name: "claude-3-haiku", Help: "Haiku model"},
+			{Name: "quit", Help: "Exit."},
+		},
+	}
+
+	raw := "/aiku"
+	completion := Complete(cmds, raw, len([]rune(raw)), CompletionContext{})
+
+	require.True(t, completion.Visible)
+	require.Equal(t, []Suggestion{
+		{Value: "claude-3-haiku", Label: "/claude-3-haiku", Detail: "Haiku model", Usage: "/claude-3-haiku"},
+	}, completion.Suggestions)
+}
+
 func TestNode_Find(t *testing.T) {
 	child := &Node{Name: "ban"}
 	parent := &Node{
@@ -503,4 +520,49 @@ func TestParse_no_factory(t *testing.T) {
 	_, err := cmds.Parse("/broken")
 
 	require.ErrorContains(t, err, "no factory")
+}
+
+func TestParse_after_merge(t *testing.T) {
+	type childGrammar struct {
+		Join JoinCommand `cmd:"" help:"Child join."`
+	}
+
+	type parentGrammar struct {
+		Join JoinCommand `cmd:"" help:"Parent join."`
+		Quit QuitCommand `cmd:"" help:"Quit."`
+	}
+
+	child := Build(&childGrammar{})
+	parent := Build(&parentGrammar{})
+
+	Bind(child, "join", func(_ JoinCommand) tea.Cmd {
+		return func() tea.Msg { return "child-join" }
+	})
+
+	Bind(parent, "quit", func(_ QuitCommand) tea.Cmd {
+		return func() tea.Msg { return "quit" }
+	})
+
+	merged := Merge(child, parent)
+
+	t.Run("child command wins", func(t *testing.T) {
+		inv, err := merged.Parse("/join #test")
+		require.NoError(t, err)
+
+		msg := inv.Run()()
+		require.Equal(t, "child-join", msg)
+	})
+
+	t.Run("parent command accessible", func(t *testing.T) {
+		inv, err := merged.Parse("/quit")
+		require.NoError(t, err)
+
+		msg := inv.Run()()
+		require.Equal(t, "quit", msg)
+	})
+
+	t.Run("unknown command errors", func(t *testing.T) {
+		_, err := merged.Parse("/unknown")
+		require.Error(t, err)
+	})
 }
