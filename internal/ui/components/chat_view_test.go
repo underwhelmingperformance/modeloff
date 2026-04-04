@@ -519,6 +519,11 @@ func TestRenderLine_IRC_events(t *testing.T) {
 			components.ModelKicked{ModelKickedEvent: domain.ModelKickedEvent{Channel: "#general", Nick: "botty"}},
 			"*** botty has been kicked from #general",
 		},
+		{
+			"action_message",
+			components.MessageLine{Message: domain.Message{From: "alice", Body: "waves", Action: true, SentAt: time.Now()}},
+			"* alice waves",
+		},
 	}
 
 	for _, tt := range tests {

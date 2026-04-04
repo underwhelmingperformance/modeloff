@@ -2,6 +2,7 @@ package screens
 
 import (
 	"slices"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -418,19 +419,62 @@ func (s *ChatScreen) handleErrorEvent(msg domain.ErrorEvent) (ui.Model, tea.Cmd)
 }
 
 func (s *ChatScreen) handleDispatchDone(msg dispatchDoneMsg) (ui.Model, tea.Cmd) {
-	var cmds []tea.Cmd
-
-	cmds = append(cmds, msgCmd(components.NickListThinkingMsg{}))
-	cmds = append(cmds, msgCmd(components.PendingResponseMsg{Pending: false}))
-
-	for _, reply := range msg.replies {
-		_, cmd := s.handleModelReplyEvent(reply)
-		if cmd != nil {
-			cmds = append(cmds, cmd)
-		}
+	if len(msg.replies) == 0 {
+		return s, tea.Batch(
+			msgCmd(components.NickListThinkingMsg{}),
+			msgCmd(components.PendingResponseMsg{Pending: false}),
+		)
 	}
 
-	return s, tea.Batch(cmds...)
+	// Show the first reply immediately, queue the rest for paced delivery.
+	first := msg.replies[0]
+	s.replyQueue = append(s.replyQueue[:0], msg.replies[1:]...)
+
+	_, cmd := s.handleModelReplyEvent(first)
+
+	if len(s.replyQueue) > 0 {
+		cmd = tea.Batch(cmd, s.scheduleNextReply())
+	} else {
+		cmd = tea.Batch(cmd,
+			msgCmd(components.NickListThinkingMsg{}),
+			msgCmd(components.PendingResponseMsg{Pending: false}),
+		)
+	}
+
+	return s, cmd
+}
+
+const replyPaceInterval = 400 * time.Millisecond
+
+func (s *ChatScreen) scheduleNextReply() tea.Cmd {
+	return tea.Tick(replyPaceInterval, func(time.Time) tea.Msg {
+		return deliverNextReplyMsg{}
+	})
+}
+
+func (s *ChatScreen) deliverNextReply() (ui.Model, tea.Cmd) {
+	if len(s.replyQueue) == 0 {
+		return s, tea.Batch(
+			msgCmd(components.NickListThinkingMsg{}),
+			msgCmd(components.PendingResponseMsg{Pending: false}),
+		)
+	}
+
+	next := s.replyQueue[0]
+	s.replyQueue = s.replyQueue[1:]
+
+	_, cmd := s.handleModelReplyEvent(next)
+
+	if len(s.replyQueue) > 0 {
+		cmd = tea.Batch(cmd, s.scheduleNextReply())
+	} else {
+		cmd = tea.Batch(cmd,
+			msgCmd(components.NickListThinkingMsg{}),
+			msgCmd(components.PendingResponseMsg{Pending: false}),
+		)
+	}
+
+	return s, cmd
 }
 
 func (s *ChatScreen) handleLiveModelsLoaded(msg liveModelsLoadedMsg) (ui.Model, tea.Cmd) {

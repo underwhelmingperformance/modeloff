@@ -290,6 +290,13 @@ func (m *MessageList) renderLine(line ChatLine, width int) string {
 	switch l := line.(type) {
 	case MessageLine:
 		ts := theme.Dim.Render(l.Message.SentAt.Format("[15:04:05]"))
+
+		if l.Message.Action {
+			nick := theme.NickStyle(string(l.Message.From)).
+				Render(string(l.Message.From))
+			return wrap.Render(fmt.Sprintf("%s * %s %s", ts, nick, l.Message.Body))
+		}
+
 		nick := theme.NickStyle(string(l.Message.From)).
 			Render(fmt.Sprintf("<%s>", string(l.Message.From)))
 

@@ -38,6 +38,9 @@ type dispatchDoneMsg struct {
 	replies []domain.ModelReplyEvent
 }
 
+// deliverNextReplyMsg triggers delivery of the next queued reply.
+type deliverNextReplyMsg struct{}
+
 type liveModelsLoadedMsg struct {
 	models []chatcmd.ModelOption
 }
@@ -60,6 +63,7 @@ type ChatScreen struct {
 	channels     []domain.Channel
 	instances    []domain.ModelInstance
 	liveModels   []chatcmd.ModelOption
+	replyQueue   []domain.ModelReplyEvent
 	width        int
 	height       int
 	active       domain.ChannelName
@@ -256,6 +260,9 @@ func (s *ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 	case dispatchDoneMsg:
 		return s.handleDispatchDone(msg)
+
+	case deliverNextReplyMsg:
+		return s.deliverNextReply()
 
 	case PokeTickMsg:
 		thinking := s.modelNicksInChannel(s.active)
