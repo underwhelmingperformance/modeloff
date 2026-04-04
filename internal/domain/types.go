@@ -59,6 +59,7 @@ type ModelInstance struct {
 	ModelID  ModelID
 	Persona  string
 	Channels set.Ordered[ChannelName]
+	JoinedAt map[ChannelName]time.Time
 }
 
 // NickMode represents a user's privilege level in a channel, following

@@ -18,9 +18,16 @@ type NickListUpdatedMsg struct {
 	Members []domain.Member
 }
 
+// NickListThinkingMsg updates which nicks are currently responding.
+// A nil or empty map clears all thinking indicators.
+type NickListThinkingMsg struct {
+	Nicks map[domain.Nick]bool
+}
+
 // NickList displays the sorted members of the current channel.
 type NickList struct {
 	members  []domain.Member
+	thinking map[domain.Nick]bool
 	viewport viewport.Model
 }
 
@@ -72,6 +79,11 @@ func (n NickList) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	case NickListUpdatedMsg:
 		n.setMembers(msg.Members)
 		return n, nil
+
+	case NickListThinkingMsg:
+		n.thinking = msg.Nicks
+		return n, nil
+
 	default:
 		var cmd tea.Cmd
 		n.viewport, cmd = n.viewport.Update(msg)
@@ -101,6 +113,7 @@ func (n NickList) View(width, height int) string {
 	for i, member := range n.members {
 		prefix := member.Mode.Prefix()
 		nick := string(member.Nick)
+		thinking := n.thinking[member.Nick]
 
 		var line string
 
@@ -108,6 +121,10 @@ func (n NickList) View(width, height int) string {
 			line = theme.Dim.Render(prefix) + theme.NickStyle(nick).Render(nick)
 		} else {
 			line = " " + theme.NickStyle(nick).Render(nick)
+		}
+
+		if thinking {
+			line += theme.Dim.Render(" …")
 		}
 
 		line = lipgloss.NewStyle().Width(width).Render(line)

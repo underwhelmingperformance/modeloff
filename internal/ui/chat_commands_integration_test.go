@@ -1,6 +1,7 @@
 package ui_test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"testing"
@@ -46,14 +47,19 @@ func TestApp_send_message_shows_pending_indicator(t *testing.T) {
 	waitForOutput(t, tm, "#general")
 
 	submitText(tm, "hello world")
-	waitForOutput(t, tm, "responding")
 
+	// The user's message should appear immediately alongside the
+	// pending indicator, before the model has responded.
+	waitForOutput(t, tm, "hello world", "responding")
+
+	// Let the model respond. Wait for the pending indicator to clear.
 	close(release)
-	waitForOutput(t, tm, "hello world")
+	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
+		return !bytes.Contains(out, []byte("responding"))
+	}, teatest.WithDuration(2*time.Second), teatest.WithCheckInterval(10*time.Millisecond))
 
 	view := finalView(t, tm)
 	require.Contains(t, view, "hello world")
-	require.NotContains(t, view, "responding")
 }
 
 func TestApp_nick_command_with_teatest(t *testing.T) {
@@ -280,7 +286,7 @@ func TestApp_unread_counts_clear_when_visiting_channel_with_teatest(t *testing.T
 	seedChannel(t, sess, "#general")
 	seedChannel(t, sess, "#random")
 
-	_, _, err := sess.SendMessage(t.Context(), "#general", "general unread")
+	_, err := sess.SendMessage(t.Context(), "#general", "general unread")
 	require.NoError(t, err)
 
 	tm := newTestApp(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
@@ -330,7 +336,7 @@ func TestApp_ctrl_arrow_scroll_preserves_draft_with_teatest(t *testing.T) {
 	seedChannel(t, sess, "#general")
 
 	for i := range 30 {
-		_, _, err := sess.SendMessage(t.Context(), "#general", fmt.Sprintf("message %d", i))
+		_, err := sess.SendMessage(t.Context(), "#general", fmt.Sprintf("message %d", i))
 		require.NoError(t, err)
 	}
 
@@ -350,7 +356,7 @@ func TestApp_new_messages_divider_with_teatest(t *testing.T) {
 	seedChannel(t, sess, "#general")
 
 	for i := range 30 {
-		_, _, err := sess.SendMessage(t.Context(), "#general", fmt.Sprintf("message %d", i))
+		_, err := sess.SendMessage(t.Context(), "#general", fmt.Sprintf("message %d", i))
 		require.NoError(t, err)
 	}
 

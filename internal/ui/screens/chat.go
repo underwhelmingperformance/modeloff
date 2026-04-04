@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/session"
 	"github.com/laney/modeloff/internal/set"
 	"github.com/laney/modeloff/internal/ui"
@@ -21,6 +22,20 @@ import (
 // Update unpacks and dispatches each event sequentially.
 type eventBatchMsg struct {
 	events []any
+}
+
+// dispatchMsg is sent after a user message has been displayed to
+// trigger asynchronous model dispatch for the channel.
+type dispatchMsg struct {
+	channel domain.ChannelName
+	message domain.Message
+}
+
+// dispatchDoneMsg signals that model dispatch completed. It carries
+// any replies so the screen can clear thinking indicators and process
+// results in one step.
+type dispatchDoneMsg struct {
+	replies []domain.ModelReplyEvent
 }
 
 type liveModelsLoadedMsg struct {
@@ -231,10 +246,25 @@ func (s *ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	case liveModelsLoadedMsg:
 		return s.handleLiveModelsLoaded(msg)
 
-	case PokeTickMsg:
-		cmd := msgCmd(components.PendingResponseMsg{Pending: true})
+	case dispatchMsg:
+		thinking := s.modelNicksInChannel(msg.channel)
 
-		return s, tea.Batch(cmd, s.handlePoke())
+		return s, tea.Batch(
+			msgCmd(components.NickListThinkingMsg{Nicks: thinking}),
+			s.dispatchToModels(msg),
+		)
+
+	case dispatchDoneMsg:
+		return s.handleDispatchDone(msg)
+
+	case PokeTickMsg:
+		thinking := s.modelNicksInChannel(s.active)
+
+		return s, tea.Batch(
+			msgCmd(components.PendingResponseMsg{Pending: true}),
+			msgCmd(components.NickListThinkingMsg{Nicks: thinking}),
+			s.handlePoke(),
+		)
 
 	case components.ChannelSelectedMsg:
 		return s, s.switchChannel(msg.Channel)
@@ -361,19 +391,25 @@ func (s *ChatScreen) switchChannel(ch domain.ChannelName) tea.Cmd {
 
 func (s *ChatScreen) sendMessage(text string) tea.Cmd {
 	return func() tea.Msg {
-		evt, replies, err := s.sess.SendMessage(s.ctx, s.active, text)
+		evt, err := s.sess.SendMessage(s.ctx, s.active, text)
 		if err != nil {
 			return domain.ErrorEvent{Operation: "send", Err: err, At: time.Now()}
 		}
 
-		events := make([]any, 0, 1+len(replies))
-		events = append(events, evt)
+		return evt
+	}
+}
 
-		for _, r := range replies {
-			events = append(events, r)
+func (s *ChatScreen) dispatchToModels(msg dispatchMsg) tea.Cmd {
+	return func() tea.Msg {
+		newEvents := []protocol.IRCMessage{protocol.FromMessage(msg.message)}
+
+		replies, err := s.sess.DispatchToChannel(s.ctx, msg.channel, newEvents)
+		if err != nil {
+			return domain.ErrorEvent{Operation: "dispatch", Err: err, At: time.Now()}
 		}
 
-		return eventBatchMsg{events: events}
+		return dispatchDoneMsg{replies: replies}
 	}
 }
 

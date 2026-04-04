@@ -84,6 +84,8 @@ func (s *ChatScreen) handleEventBatch(msg eventBatchMsg) (ui.Model, tea.Cmd) {
 		}
 	}
 
+	cmds = append(cmds, msgCmd(components.NickListThinkingMsg{}))
+
 	return s, tea.Batch(cmds...)
 }
 
@@ -296,16 +298,33 @@ func (s *ChatScreen) handleModelKickedEvent(msg domain.ModelKickedEvent) (ui.Mod
 }
 
 func (s *ChatScreen) handleMessageEvent(msg domain.MessageEvent) (ui.Model, tea.Cmd) {
-	return s.handleNewMessage(msg.Message.Channel)
+	isLocal := msg.Message.From == s.sess.UserNick()
+
+	_, cmd := s.handleNewMessage(msg.Message.Channel, isLocal)
+
+	// If the message is from the local user, dispatch to model
+	// instances asynchronously so the message appears immediately.
+	// The pending indicator stays active until dispatch completes.
+	if isLocal {
+		cmd = tea.Batch(cmd, msgCmd(dispatchMsg{
+			channel: msg.Message.Channel,
+			message: msg.Message,
+		}))
+	}
+
+	return s, cmd
 }
 
 func (s *ChatScreen) handleModelReplyEvent(msg domain.ModelReplyEvent) (ui.Model, tea.Cmd) {
-	return s.handleNewMessage(msg.Message.Channel)
+	return s.handleNewMessage(msg.Message.Channel, false)
 }
 
-func (s *ChatScreen) handleNewMessage(channel domain.ChannelName) (ui.Model, tea.Cmd) {
+func (s *ChatScreen) handleNewMessage(channel domain.ChannelName, keepPending bool) (ui.Model, tea.Cmd) {
 	var cmds []tea.Cmd
-	cmds = append(cmds, msgCmd(components.PendingResponseMsg{Pending: false}))
+
+	if !keepPending {
+		cmds = append(cmds, msgCmd(components.PendingResponseMsg{Pending: false}))
+	}
 
 	if channel == s.active {
 		messages, _ := s.sess.Messages(s.ctx, channel)
@@ -393,6 +412,23 @@ func (s *ChatScreen) handleErrorEvent(msg domain.ErrorEvent) (ui.Model, tea.Cmd)
 		},
 	}))
 	cmds = append(cmds, msgCmd(components.PendingResponseMsg{Pending: false}))
+	cmds = append(cmds, msgCmd(components.NickListThinkingMsg{}))
+
+	return s, tea.Batch(cmds...)
+}
+
+func (s *ChatScreen) handleDispatchDone(msg dispatchDoneMsg) (ui.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+
+	cmds = append(cmds, msgCmd(components.NickListThinkingMsg{}))
+	cmds = append(cmds, msgCmd(components.PendingResponseMsg{Pending: false}))
+
+	for _, reply := range msg.replies {
+		_, cmd := s.handleModelReplyEvent(reply)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	}
 
 	return s, tea.Batch(cmds...)
 }
@@ -403,6 +439,27 @@ func (s *ChatScreen) handleLiveModelsLoaded(msg liveModelsLoadedMsg) (ui.Model, 
 	return s, msgCmd(components.CommandStateMsg{
 		Commands: s.Commands(),
 	})
+}
+
+func (s *ChatScreen) modelNicksInChannel(ch domain.ChannelName) map[domain.Nick]bool {
+	userNick := s.sess.UserNick()
+	nicks := make(map[domain.Nick]bool)
+
+	for _, channel := range s.channels {
+		if channel.Name != ch {
+			continue
+		}
+
+		for nick := range channel.Members.Sorted() {
+			if nick != userNick {
+				nicks[nick] = true
+			}
+		}
+
+		break
+	}
+
+	return nicks
 }
 
 func (s *ChatScreen) activeMembers() []domain.Nick {

@@ -216,6 +216,14 @@ func (s *Session) attachInstanceToChannel(
 
 	inst.Channels.Add(ch)
 
+	if inst.JoinedAt == nil {
+		inst.JoinedAt = make(map[domain.ChannelName]time.Time)
+	}
+
+	if _, ok := inst.JoinedAt[ch]; !ok {
+		inst.JoinedAt[ch] = s.now()
+	}
+
 	if err := s.store.SaveInstance(ctx, inst); err != nil {
 		return domain.ModelInvitedEvent{}, fmt.Errorf("save instance: %w", err)
 	}
@@ -272,12 +280,7 @@ func (s *Session) SendMessage(
 	ctx context.Context,
 	ch domain.ChannelName,
 	body string,
-) (domain.MessageEvent, []domain.ModelReplyEvent, error) {
-	historyMessages, err := s.store.ListMessages(ctx, ch)
-	if err != nil {
-		return domain.MessageEvent{}, nil, fmt.Errorf("list history: %w", err)
-	}
-
+) (domain.MessageEvent, error) {
 	msg := domain.Message{
 		ID:      fmt.Sprintf("%d", s.now().UnixNano()),
 		Channel: ch,
@@ -287,17 +290,26 @@ func (s *Session) SendMessage(
 	}
 
 	if err := s.store.SaveMessage(ctx, msg); err != nil {
-		return domain.MessageEvent{}, nil, fmt.Errorf("save message: %w", err)
+		return domain.MessageEvent{}, fmt.Errorf("save message: %w", err)
 	}
 
-	replies, err := s.dispatchToInstances(
-		ctx,
-		msg.Channel,
-		historyMessages,
-		[]protocol.IRCMessage{protocol.FromMessage(msg)},
-	)
+	return domain.MessageEvent{Message: msg}, nil
+}
 
-	return domain.MessageEvent{Message: msg}, replies, err
+// DispatchToChannel sends new events to all model instances in a channel
+// and collects their replies. The caller provides the new IRC-formatted
+// events to broadcast; history is loaded from the store.
+func (s *Session) DispatchToChannel(
+	ctx context.Context,
+	ch domain.ChannelName,
+	newEvents []protocol.IRCMessage,
+) ([]domain.ModelReplyEvent, error) {
+	historyMessages, err := s.store.ListMessages(ctx, ch)
+	if err != nil {
+		return nil, fmt.Errorf("list history: %w", err)
+	}
+
+	return s.dispatchToInstances(ctx, ch, historyMessages, newEvents)
 }
 
 // SetTopic sets the topic of a channel.
@@ -458,6 +470,14 @@ func (s *Session) OpenDM(ctx context.Context, nick domain.Nick) (domain.Channel,
 	}
 
 	if inst.Channels.Add(name) {
+		if inst.JoinedAt == nil {
+			inst.JoinedAt = make(map[domain.ChannelName]time.Time)
+		}
+
+		if _, ok := inst.JoinedAt[name]; !ok {
+			inst.JoinedAt[name] = s.now()
+		}
+
 		if err := s.store.SaveInstance(ctx, inst); err != nil {
 			return domain.Channel{}, false, fmt.Errorf("save instance: %w", err)
 		}
@@ -609,15 +629,21 @@ func (s *Session) dispatchToInstances(
 		return nil, fmt.Errorf("list instances for channel: %w", err)
 	}
 
-	history := make([]protocol.IRCMessage, 0, len(historyMessages))
-	for _, historyMessage := range historyMessages {
-		history = append(history, protocol.FromMessage(historyMessage))
-	}
-
 	var errs []error
 	var replies []domain.ModelReplyEvent
 
 	for _, inst := range instances {
+		joinedAt := inst.JoinedAt[channelName]
+
+		history := make([]protocol.IRCMessage, 0, len(historyMessages))
+		for _, msg := range historyMessages {
+			if !joinedAt.IsZero() && msg.SentAt.Before(joinedAt) {
+				continue
+			}
+
+			history = append(history, protocol.FromMessage(msg))
+		}
+
 		memories, err := s.memoriesForInstance(ctx, inst.Nick)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("read memories for %s: %w", inst.Nick, err))
@@ -658,6 +684,8 @@ func (s *Session) dispatchToInstances(
 			continue
 		}
 
+		events = append(events, protocol.FromMessage(reply))
+
 		replies = append(replies, domain.ModelReplyEvent{
 			Channel:  channelName,
 			Message:  reply,
@@ -681,7 +709,11 @@ func (s *Session) instancesForChannel(ctx context.Context, channel domain.Channe
 	}
 
 	filtered := make([]domain.ModelInstance, 0, len(channel.Members))
-	for nick := range channel.Members.Except(set.NewOrdered(s.userNick)) {
+	for nick := range channel.Members.Sorted() {
+		if nick == s.userNick {
+			continue
+		}
+
 		inst, ok := indexed[nick]
 		if !ok {
 			continue

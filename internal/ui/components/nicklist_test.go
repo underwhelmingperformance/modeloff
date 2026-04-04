@@ -122,6 +122,43 @@ func TestNickList_View_shows_mode_prefixes(t *testing.T) {
 	require.NotContains(t, stripped, "@charlie")
 }
 
+func TestNickList_View_shows_thinking_indicator(t *testing.T) {
+	nl := components.NewNickList([]domain.Member{
+		member("alice", domain.ModeOp),
+		member("botty", domain.ModeVoice),
+		member("claude", domain.ModeVoice),
+	})
+
+	updated, _ := nl.Update(components.NickListThinkingMsg{
+		Nicks: map[domain.Nick]bool{"botty": true, "claude": true},
+	})
+
+	v := updated.View(30, 10)
+	stripped := ansi.Strip(v)
+
+	require.Contains(t, stripped, "botty")
+	require.Contains(t, stripped, "claude")
+	require.Contains(t, stripped, "…")
+}
+
+func TestNickList_View_clears_thinking_indicator(t *testing.T) {
+	nl := components.NewNickList([]domain.Member{
+		member("alice", domain.ModeOp),
+		member("botty", domain.ModeVoice),
+	})
+
+	updated, _ := nl.Update(components.NickListThinkingMsg{
+		Nicks: map[domain.Nick]bool{"botty": true},
+	})
+	updated, _ = updated.Update(components.NickListThinkingMsg{})
+
+	v := updated.View(30, 10)
+	stripped := ansi.Strip(v)
+
+	require.Contains(t, stripped, "botty")
+	require.NotContains(t, stripped, "…")
+}
+
 func TestNickList_View_sorts_by_mode_then_name(t *testing.T) {
 	nl := components.NewNickList([]domain.Member{
 		member("zara", domain.ModeVoice),

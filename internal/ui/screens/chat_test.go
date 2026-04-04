@@ -82,7 +82,7 @@ func seedChannel(t *testing.T, sess *session.Session, name string) {
 func seedMessage(t *testing.T, sess *session.Session, channel, body string) {
 	t.Helper()
 
-	_, _, err := sess.SendMessage(t.Context(), domain.ChannelName(channel), body)
+	_, err := sess.SendMessage(t.Context(), domain.ChannelName(channel), body)
 	require.NoError(t, err)
 }
 

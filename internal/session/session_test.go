@@ -149,6 +149,9 @@ func TestSession_Invite(t *testing.T) {
 			Nick:     "fakenick",
 			ModelID:  "anthropic/claude-3-haiku",
 			Channels: set.NewOrdered[domain.ChannelName]("#dev"),
+			JoinedAt: map[domain.ChannelName]time.Time{
+				"#dev": fixedTime,
+			},
 		},
 		At: fixedTime,
 	}, evt)
@@ -156,7 +159,14 @@ func TestSession_Invite(t *testing.T) {
 	// Instance should be persisted.
 	inst, err := s.GetInstance(ctx, "fakenick")
 	require.NoError(t, err)
-	require.Equal(t, domain.ModelID("anthropic/claude-3-haiku"), inst.ModelID)
+	require.Equal(t, domain.ModelInstance{
+		Nick:     "fakenick",
+		ModelID:  "anthropic/claude-3-haiku",
+		Channels: set.NewOrdered[domain.ChannelName]("#dev"),
+		JoinedAt: map[domain.ChannelName]time.Time{
+			"#dev": fixedTime,
+		},
+	}, inst)
 
 	// Channel should have new member.
 	updated, err := s.GetChannel(ctx, "#dev")
@@ -205,7 +215,7 @@ func TestSession_SendMessage(t *testing.T) {
 
 	seedChannelWithMembers(t, s, "#general", "testuser")
 
-	evt, _, err := sess.SendMessage(ctx, "#general", "hello world")
+	evt, err := sess.SendMessage(ctx, "#general", "hello world")
 	require.NoError(t, err)
 	require.Equal(t, domain.MessageEvent{
 		Message: domain.Message{
@@ -223,7 +233,7 @@ func TestSession_SendMessage(t *testing.T) {
 	require.Equal(t, []domain.Message{evt.Message}, msgs)
 }
 
-func TestSession_SendMessage_broadcasts_to_channel_instances(t *testing.T) {
+func TestSession_DispatchToChannel_broadcasts_to_channel_instances(t *testing.T) {
 	fake := &fakeAPIClient{
 		sendEventsFn: func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
 			return protocol.ModelResponse{
@@ -242,7 +252,10 @@ func TestSession_SendMessage_broadcasts_to_channel_instances(t *testing.T) {
 		Channels: set.NewOrdered[domain.ChannelName]("#general"),
 	})
 
-	evt, _, err := sess.SendMessage(ctx, "#general", "hello world")
+	evt, err := sess.SendMessage(ctx, "#general", "hello world")
+	require.NoError(t, err)
+
+	_, err = sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{protocol.FromMessage(evt.Message)})
 	require.NoError(t, err)
 
 	msgs, err := s.ListMessages(ctx, "#general")
@@ -259,7 +272,7 @@ func TestSession_SendMessage_broadcasts_to_channel_instances(t *testing.T) {
 	}, msgs)
 }
 
-func TestSession_SendMessage_does_not_broadcast_when_no_model_instances(t *testing.T) {
+func TestSession_DispatchToChannel_does_not_broadcast_when_no_model_instances(t *testing.T) {
 	fake := &fakeAPIClient{
 		sendEventsFn: func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
 			return protocol.ModelResponse{
@@ -273,7 +286,10 @@ func TestSession_SendMessage_does_not_broadcast_when_no_model_instances(t *testi
 
 	seedChannelWithMembers(t, s, "#general", "testuser")
 
-	evt, _, err := sess.SendMessage(ctx, "#general", "hello world")
+	evt, err := sess.SendMessage(ctx, "#general", "hello world")
+	require.NoError(t, err)
+
+	_, err = sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{protocol.FromMessage(evt.Message)})
 	require.NoError(t, err)
 
 	msgs, err := s.ListMessages(ctx, "#general")
@@ -281,7 +297,7 @@ func TestSession_SendMessage_does_not_broadcast_when_no_model_instances(t *testi
 	require.Equal(t, []domain.Message{evt.Message}, msgs)
 }
 
-func TestSession_SendMessage_pass_response_does_not_store_model_message(t *testing.T) {
+func TestSession_DispatchToChannel_pass_response_does_not_store_model_message(t *testing.T) {
 	fake := &fakeAPIClient{
 		sendEventsFn: func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
 			return protocol.ModelResponse{
@@ -300,7 +316,10 @@ func TestSession_SendMessage_pass_response_does_not_store_model_message(t *testi
 		Channels: set.NewOrdered[domain.ChannelName]("#general"),
 	})
 
-	evt, _, err := sess.SendMessage(ctx, "#general", "hello world")
+	evt, err := sess.SendMessage(ctx, "#general", "hello world")
+	require.NoError(t, err)
+
+	_, err = sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{protocol.FromMessage(evt.Message)})
 	require.NoError(t, err)
 
 	msgs, err := s.ListMessages(ctx, "#general")
@@ -308,7 +327,7 @@ func TestSession_SendMessage_pass_response_does_not_store_model_message(t *testi
 	require.Equal(t, []domain.Message{evt.Message}, msgs)
 }
 
-func TestSession_SendMessage_reply_response_stores_model_message(t *testing.T) {
+func TestSession_DispatchToChannel_reply_response_stores_model_message(t *testing.T) {
 	fake := &fakeAPIClient{
 		sendEventsFn: func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
 			return protocol.ModelResponse{
@@ -327,7 +346,10 @@ func TestSession_SendMessage_reply_response_stores_model_message(t *testing.T) {
 		Channels: set.NewOrdered[domain.ChannelName]("#general"),
 	})
 
-	evt, _, err := sess.SendMessage(ctx, "#general", "hello world")
+	evt, err := sess.SendMessage(ctx, "#general", "hello world")
+	require.NoError(t, err)
+
+	_, err = sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{protocol.FromMessage(evt.Message)})
 	require.NoError(t, err)
 
 	msgs, err := s.ListMessages(ctx, "#general")
@@ -344,7 +366,7 @@ func TestSession_SendMessage_reply_response_stores_model_message(t *testing.T) {
 	}, msgs)
 }
 
-func TestSession_SendMessage_broadcasts_only_to_members_of_that_channel(t *testing.T) {
+func TestSession_DispatchToChannel_broadcasts_only_to_members_of_that_channel(t *testing.T) {
 	fake := &fakeAPIClient{
 		sendEventsFn: func(_ context.Context, modelID domain.ModelID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (protocol.ModelResponse, error) {
 			return protocol.ModelResponse{
@@ -369,7 +391,10 @@ func TestSession_SendMessage_broadcasts_only_to_members_of_that_channel(t *testi
 		Channels: set.NewOrdered[domain.ChannelName]("#random"),
 	})
 
-	evt, _, err := sess.SendMessage(ctx, "#general", "hello world")
+	evt, err := sess.SendMessage(ctx, "#general", "hello world")
+	require.NoError(t, err)
+
+	_, err = sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{protocol.FromMessage(evt.Message)})
 	require.NoError(t, err)
 
 	generalMsgs, err := s.ListMessages(ctx, "#general")
@@ -390,7 +415,7 @@ func TestSession_SendMessage_broadcasts_only_to_members_of_that_channel(t *testi
 	require.Empty(t, randomMsgs)
 }
 
-func TestSession_SendMessage_reply_is_not_rebroadcast_in_same_send(t *testing.T) {
+func TestSession_DispatchToChannel_reply_is_not_rebroadcast_in_same_dispatch(t *testing.T) {
 	fake := &fakeAPIClient{
 		sendEventsFn: func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
 			return protocol.ModelResponse{
@@ -409,7 +434,10 @@ func TestSession_SendMessage_reply_is_not_rebroadcast_in_same_send(t *testing.T)
 		Channels: set.NewOrdered[domain.ChannelName]("#general"),
 	})
 
-	evt, _, err := sess.SendMessage(ctx, "#general", "hello world")
+	evt, err := sess.SendMessage(ctx, "#general", "hello world")
+	require.NoError(t, err)
+
+	_, err = sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{protocol.FromMessage(evt.Message)})
 	require.NoError(t, err)
 
 	msgs, err := s.ListMessages(ctx, "#general")
@@ -426,7 +454,7 @@ func TestSession_SendMessage_reply_is_not_rebroadcast_in_same_send(t *testing.T)
 	}, msgs)
 }
 
-func TestSession_SendMessage_multiple_instances_each_reply_once(t *testing.T) {
+func TestSession_DispatchToChannel_multiple_instances_each_reply_once(t *testing.T) {
 	fake := &fakeAPIClient{
 		sendEventsFn: func(_ context.Context, modelID domain.ModelID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (protocol.ModelResponse, error) {
 			return protocol.ModelResponse{
@@ -450,7 +478,10 @@ func TestSession_SendMessage_multiple_instances_each_reply_once(t *testing.T) {
 		Channels: set.NewOrdered[domain.ChannelName]("#general"),
 	})
 
-	evt, _, err := sess.SendMessage(ctx, "#general", "hello world")
+	evt, err := sess.SendMessage(ctx, "#general", "hello world")
+	require.NoError(t, err)
+
+	_, err = sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{protocol.FromMessage(evt.Message)})
 	require.NoError(t, err)
 
 	msgs, err := s.ListMessages(ctx, "#general")
@@ -475,7 +506,7 @@ func TestSession_SendMessage_multiple_instances_each_reply_once(t *testing.T) {
 	}, msgs[1:])
 }
 
-func TestSession_SendMessage_ignores_empty_reply_body(t *testing.T) {
+func TestSession_DispatchToChannel_ignores_empty_reply_body(t *testing.T) {
 	fake := &fakeAPIClient{
 		sendEventsFn: func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
 			return protocol.ModelResponse{
@@ -494,7 +525,10 @@ func TestSession_SendMessage_ignores_empty_reply_body(t *testing.T) {
 		Channels: set.NewOrdered[domain.ChannelName]("#general"),
 	})
 
-	evt, _, err := sess.SendMessage(ctx, "#general", "hello world")
+	evt, err := sess.SendMessage(ctx, "#general", "hello world")
+	require.NoError(t, err)
+
+	_, err = sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{protocol.FromMessage(evt.Message)})
 	require.NoError(t, err)
 
 	msgs, err := s.ListMessages(ctx, "#general")
@@ -502,7 +536,7 @@ func TestSession_SendMessage_ignores_empty_reply_body(t *testing.T) {
 	require.Equal(t, []domain.Message{evt.Message}, msgs)
 }
 
-func TestSession_SendMessage_api_error_continues_to_next_instance(t *testing.T) {
+func TestSession_DispatchToChannel_api_error_continues_to_next_instance(t *testing.T) {
 	fake := &fakeAPIClient{
 		sendEventsFn: func(_ context.Context, modelID domain.ModelID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (protocol.ModelResponse, error) {
 			if modelID == "test/model-a" {
@@ -530,7 +564,10 @@ func TestSession_SendMessage_api_error_continues_to_next_instance(t *testing.T) 
 		Channels: set.NewOrdered[domain.ChannelName]("#general"),
 	})
 
-	evt, _, err := sess.SendMessage(ctx, "#general", "hello world")
+	evt, err := sess.SendMessage(ctx, "#general", "hello world")
+	require.NoError(t, err)
+
+	_, err = sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{protocol.FromMessage(evt.Message)})
 	require.Error(t, err, "should surface the API error")
 	require.ErrorContains(t, err, "network timeout")
 
@@ -767,13 +804,24 @@ func TestSession_Invite_reuses_existing_instance(t *testing.T) {
 			ModelID:  "test/model",
 			Persona:  "Helpful assistant",
 			Channels: set.NewOrdered[domain.ChannelName]("#general", "#random"),
+			JoinedAt: map[domain.ChannelName]time.Time{
+				"#random": fixedTime,
+			},
 		},
 		At: fixedTime,
 	}, evt)
 
 	inst, err := s.GetInstance(ctx, "botty")
 	require.NoError(t, err)
-	require.Equal(t, set.NewOrdered[domain.ChannelName]("#general", "#random"), inst.Channels)
+	require.Equal(t, domain.ModelInstance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Persona:  "Helpful assistant",
+		Channels: set.NewOrdered[domain.ChannelName]("#general", "#random"),
+		JoinedAt: map[domain.ChannelName]time.Time{
+			"#random": fixedTime,
+		},
+	}, inst)
 
 	channel, err := s.GetChannel(ctx, "#random")
 	require.NoError(t, err)
@@ -845,6 +893,10 @@ func TestSession_Invite_same_model_id_reuses_instance(t *testing.T) {
 			ModelID:  "test/model",
 			Persona:  "Helpful assistant",
 			Channels: set.NewOrdered[domain.ChannelName]("#general", "#random"),
+			JoinedAt: map[domain.ChannelName]time.Time{
+				"#general": fixedTime,
+				"#random":  fixedTime,
+			},
 		},
 		At: fixedTime,
 	}, evt2)
@@ -857,6 +909,10 @@ func TestSession_Invite_same_model_id_reuses_instance(t *testing.T) {
 			ModelID:  "test/model",
 			Persona:  "Helpful assistant",
 			Channels: set.NewOrdered[domain.ChannelName]("#general", "#random"),
+			JoinedAt: map[domain.ChannelName]time.Time{
+				"#general": fixedTime,
+				"#random":  fixedTime,
+			},
 		},
 	}, instances)
 }
@@ -901,7 +957,7 @@ func TestSession_SetTopicNonexistentChannel(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestSession_SendMessage_includes_memory_in_prompt(t *testing.T) {
+func TestSession_DispatchToChannel_includes_memory_in_prompt(t *testing.T) {
 	memStore := memory.NewFileStore(t.TempDir())
 	require.NoError(t, memStore.Write(t.Context(), "botty", memory.Entry{
 		Key:     "mood",
@@ -933,7 +989,10 @@ func TestSession_SendMessage_includes_memory_in_prompt(t *testing.T) {
 		Channels: set.NewOrdered[domain.ChannelName]("#general"),
 	})
 
-	evt, _, err := sess.SendMessage(t.Context(), "#general", "hello world")
+	evt, err := sess.SendMessage(t.Context(), "#general", "hello world")
+	require.NoError(t, err)
+
+	_, err = sess.DispatchToChannel(t.Context(), "#general", []protocol.IRCMessage{protocol.FromMessage(evt.Message)})
 	require.NoError(t, err)
 
 	msgs, err := s.ListMessages(t.Context(), "#general")
@@ -1082,7 +1141,7 @@ func TestSession_OpenDM_unknown_instance(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestSession_SendMessage_to_dm_only_targets_that_instance(t *testing.T) {
+func TestSession_DispatchToChannel_dm_only_targets_that_instance(t *testing.T) {
 	fake := &fakeAPIClient{
 		sendEventsFn: func(_ context.Context, _ domain.ModelID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (protocol.ModelResponse, error) {
 			return protocol.ModelResponse{
@@ -1107,7 +1166,10 @@ func TestSession_SendMessage_to_dm_only_targets_that_instance(t *testing.T) {
 	_, _, err := sess.OpenDM(ctx, "botty")
 	require.NoError(t, err)
 
-	evt, _, err := sess.SendMessage(ctx, "botty", "hello in dm")
+	evt, err := sess.SendMessage(ctx, "botty", "hello in dm")
+	require.NoError(t, err)
+
+	_, err = sess.DispatchToChannel(ctx, "botty", []protocol.IRCMessage{protocol.FromMessage(evt.Message)})
 	require.NoError(t, err)
 
 	msgs, err := s.ListMessages(ctx, "botty")
@@ -1253,6 +1315,136 @@ func TestSession_SetPokeInterval(t *testing.T) {
 	require.Equal(t, 10*time.Minute, cfgStore.saved.PokeInterval)
 	require.Equal(t, "test-key", cfgStore.saved.APIKey)
 	require.Equal(t, 1, cfgStore.saveCalls)
+}
+
+func TestSession_DispatchToChannel_filters_history_before_join(t *testing.T) {
+	beforeJoin := fixedTime.Add(-10 * time.Minute)
+	atJoin := fixedTime
+	afterJoin := fixedTime.Add(10 * time.Minute)
+
+	var receivedHistory []protocol.IRCMessage
+
+	fake := &fakeAPIClient{
+		sendEventsFn: func(_ context.Context, _ domain.ModelID, _ string, history []protocol.IRCMessage, _ []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			receivedHistory = history
+			return protocol.ModelResponse{Kind: protocol.ResponseSilence, Reason: "pass"}, nil
+		},
+	}
+
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+
+	// Save a message from before the model joined.
+	require.NoError(t, s.SaveMessage(ctx, domain.Message{
+		ID:      "before",
+		Channel: "#general",
+		From:    "testuser",
+		Body:    "old message",
+		SentAt:  beforeJoin,
+	}))
+
+	// Save a message from after the model joined.
+	require.NoError(t, s.SaveMessage(ctx, domain.Message{
+		ID:      "after",
+		Channel: "#general",
+		From:    "testuser",
+		Body:    "new message",
+		SentAt:  afterJoin,
+	}))
+
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: set.NewOrdered[domain.ChannelName]("#general"),
+		JoinedAt: map[domain.ChannelName]time.Time{
+			"#general": atJoin,
+		},
+	})
+
+	newEvent := protocol.IRCMessage{
+		Kind:   protocol.KindPrivMsg,
+		From:   "testuser",
+		Target: "#general",
+		Body:   "ping",
+	}
+	_, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{newEvent})
+	require.NoError(t, err)
+
+	// The model should only see the message from after it joined, not the
+	// one from before.
+	require.Equal(t, []protocol.IRCMessage{
+		{
+			Kind:   protocol.KindPrivMsg,
+			From:   "testuser",
+			Target: "#general",
+			Body:   "new message",
+			At:     afterJoin,
+		},
+	}, receivedHistory)
+}
+
+func TestSession_DispatchToChannel_forwards_replies_to_subsequent_models(t *testing.T) {
+	// Track the events each model receives.
+	eventsByModel := map[domain.ModelID][]protocol.IRCMessage{}
+
+	fake := &fakeAPIClient{
+		sendEventsFn: func(_ context.Context, modelID domain.ModelID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			eventsByModel[modelID] = append([]protocol.IRCMessage{}, events...)
+
+			if modelID == "test/alpha" {
+				return protocol.ModelResponse{
+					Kind: protocol.ResponseReply,
+					Body: "alpha says hi",
+				}, nil
+			}
+
+			return protocol.ModelResponse{Kind: protocol.ResponseSilence, Reason: "pass"}, nil
+		},
+	}
+
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "alpha", "beta")
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:     "alpha",
+		ModelID:  "test/alpha",
+		Channels: set.NewOrdered[domain.ChannelName]("#general"),
+		JoinedAt: map[domain.ChannelName]time.Time{"#general": fixedTime},
+	})
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:     "beta",
+		ModelID:  "test/beta",
+		Channels: set.NewOrdered[domain.ChannelName]("#general"),
+		JoinedAt: map[domain.ChannelName]time.Time{"#general": fixedTime},
+	})
+
+	userEvent := protocol.IRCMessage{
+		Kind:   protocol.KindPrivMsg,
+		From:   "testuser",
+		Target: "#general",
+		Body:   "hello everyone",
+	}
+
+	_, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{userEvent})
+	require.NoError(t, err)
+
+	// Alpha should see only the user's message.
+	require.Equal(t, []protocol.IRCMessage{userEvent}, eventsByModel["test/alpha"])
+
+	// Beta should see the user's message AND alpha's reply.
+	require.Equal(t, []protocol.IRCMessage{
+		userEvent,
+		{
+			Kind:   protocol.KindPrivMsg,
+			From:   "alpha",
+			Target: "#general",
+			Body:   "alpha says hi",
+			At:     fixedTime,
+		},
+	}, eventsByModel["test/beta"])
 }
 
 // --- Fake API client ---

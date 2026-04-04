@@ -167,7 +167,7 @@ func (c MsgCommand) Run(rc Context) tea.Cmd {
 
 		body := strings.TrimSpace(strings.Join(c.Body, " "))
 		if body != "" {
-			if _, _, err := rc.Session.SendMessage(rc.Ctx, ch.Name, body); err != nil {
+			if _, err := rc.Session.SendMessage(rc.Ctx, ch.Name, body); err != nil {
 				return errorEvent("msg", err)
 			}
 		}
