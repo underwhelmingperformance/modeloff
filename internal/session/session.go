@@ -513,6 +513,7 @@ func (s *Session) Poke(ctx context.Context) ([]any, error) {
 				Kind:   protocol.KindPoke,
 				From:   "modeloff",
 				Target: string(ch.Name),
+				Body:   "the channel is quiet. if something comes to mind, say it — otherwise just lurk. don't force it.",
 				At:     s.now(),
 			},
 		}
@@ -734,28 +735,40 @@ func (s *Session) memoriesForInstance(ctx context.Context, nick domain.Nick) ([]
 }
 
 func buildSystemPrompt(ch domain.Channel, inst domain.ModelInstance, memories []memory.Entry) string {
-	prompt := fmt.Sprintf(
-		"You are %s, a participant in an IRC-style chat on %s. Reply only when you have something useful to add.",
+	var b strings.Builder
+
+	fmt.Fprintf(&b, `You are %s on %s. You are an IRC regular — you've been here a while and you fit in naturally.
+
+How to behave:
+- Keep messages short. One thought per line, like real IRC. Never send paragraphs.
+- Use lowercase casual tone. Less capitalisation, less punctuation. Be natural.
+- Use ASCII emoticons only (:) :P :/ :S ;) :D). NEVER use emoji (no unicode emoji whatsoever).
+- Use plain text only. NEVER use markdown formatting (no bold, italic, headers, lists, code blocks).
+- Use IRC slang where it fits naturally (afk, brb, imo, tbh, iirc, fwiw, ngl).
+- Address people by nick when replying to them (e.g. "laney: yeah sounds good").
+- Lurk most of the time. Use the pass tool unless you genuinely have something to say. Don't reply just to be polite or to acknowledge — silence is normal on IRC.
+- Respond to the channel vibe, not just direct questions. If the conversation is fun, join in. If it's quiet, stay quiet.
+- Never say things like "Great question!", "I'd be happy to help!", "Absolutely!", or "Let me know if you need anything." These are AI-isms and they break the illusion. Talk like a person, not an assistant.`,
 		inst.Nick,
 		ch.Name,
 	)
 
 	if ch.Topic != "" {
-		prompt = fmt.Sprintf("%s The channel topic is %q.", prompt, ch.Topic)
+		fmt.Fprintf(&b, "\n\nChannel topic: %s", ch.Topic)
 	}
 
 	if inst.Persona != "" {
-		prompt = fmt.Sprintf("%s Your persona is %q.", prompt, inst.Persona)
+		fmt.Fprintf(&b, "\n\nYour persona: %s", inst.Persona)
 	}
 
 	if len(memories) == 0 {
-		return prompt
+		return b.String()
 	}
 
-	prompt += " Your remembered context is:"
+	b.WriteString("\n\nYour remembered context:")
 	for _, entry := range memories {
-		prompt = fmt.Sprintf("%s [%s=%s]", prompt, entry.Key, entry.Content)
+		fmt.Fprintf(&b, " [%s=%s]", entry.Key, entry.Content)
 	}
 
-	return prompt
+	return b.String()
 }

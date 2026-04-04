@@ -966,7 +966,7 @@ func TestSession_DispatchToChannel_includes_memory_in_prompt(t *testing.T) {
 
 	fake := &fakeAPIClient{
 		sendEventsFn: func(_ context.Context, _ domain.ModelID, system string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (protocol.ModelResponse, error) {
-			if strings.Contains(system, `Your persona is "Helpful assistant".`) &&
+			if strings.Contains(system, "Your persona: Helpful assistant") &&
 				strings.Contains(system, "[mood=curious]") {
 				return protocol.ModelResponse{
 					Kind: protocol.ResponseReply,
@@ -1007,6 +1007,59 @@ func TestSession_DispatchToChannel_includes_memory_in_prompt(t *testing.T) {
 			SentAt:  fixedTime,
 		},
 	}, msgs)
+}
+
+func TestBuildSystemPrompt(t *testing.T) {
+	ch := domain.Channel{
+		Name:    "#dev",
+		Kind:    domain.KindChannel,
+		Topic:   "go stuff",
+		Members: set.NewOrdered[domain.Nick]("testuser", "botty"),
+	}
+	inst := domain.ModelInstance{
+		Nick:    "botty",
+		ModelID: "test/model",
+		Persona: "grumpy sysadmin",
+	}
+
+	prompt := buildSystemPrompt(ch, inst, nil)
+
+	// Must identify the model and channel.
+	require.Contains(t, prompt, "botty")
+	require.Contains(t, prompt, "#dev")
+
+	// Must include topic and persona.
+	require.Contains(t, prompt, "go stuff")
+	require.Contains(t, prompt, "grumpy sysadmin")
+
+	// Must instruct IRC-authentic behaviour.
+	require.Contains(t, prompt, "short")
+	require.Contains(t, prompt, "ASCII")
+	require.Contains(t, prompt, "emoji")
+	require.Contains(t, prompt, "markdown")
+	require.Contains(t, prompt, "lowercase")
+	require.Contains(t, prompt, "Lurk")
+	require.Contains(t, prompt, "nick")
+}
+
+func TestBuildSystemPrompt_with_memories(t *testing.T) {
+	ch := domain.Channel{
+		Name: "#dev",
+		Kind: domain.KindChannel,
+	}
+	inst := domain.ModelInstance{
+		Nick:    "botty",
+		ModelID: "test/model",
+	}
+	memories := []memory.Entry{
+		{Key: "mood", Content: "curious"},
+		{Key: "goal", Content: "learn go"},
+	}
+
+	prompt := buildSystemPrompt(ch, inst, memories)
+
+	require.Contains(t, prompt, "[mood=curious]")
+	require.Contains(t, prompt, "[goal=learn go]")
 }
 
 func TestSession_Poke_sends_poke_event(t *testing.T) {
