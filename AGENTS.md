@@ -33,8 +33,8 @@ There is no server component. This uses the OpenRouter API.
 8. From then on, it's a channel. All events are broadcast to all models.
    They can reply or not. Measures should be taken to prevent infinite
    conversations which would become costly very quickly.
-9. A channel can have a `/title`, which is shown in the UI. This is optional but
-   it will be sent to the model as part of its prompt.
+9. A channel can have a `/topic`, which is shown in the UI. This is optional
+   but it will be sent to the model as part of its prompt.
 10. A small model such as Haiku should be used to give each invited model a
     nickname.
 11. `/whois` can be used on a nickname to show metadata, and common channels.
