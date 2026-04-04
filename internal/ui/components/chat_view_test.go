@@ -675,9 +675,14 @@ func TestChatView_command_popover_renders_and_completes(t *testing.T) {
 	require.Contains(t, v, "/join")
 	require.Contains(t, v, "Join a channel")
 
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	var cmd tea.Cmd
+	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+
+	require.NotNil(t, cmd, "Tab should produce a cmd")
+	m, _ = m.Update(cmd())
+
 	m = typeText(t, m, "#random")
-	_, cmd := enter(t, m)
+	_, cmd = enter(t, m)
 
 	require.NotNil(t, cmd)
 	sub := cmd().(components.CommandSubmitMsg)
@@ -872,14 +877,20 @@ func TestChatView_mouse_click_accepts_popover_suggestion(t *testing.T) {
 
 	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 20, Y: 0, Width: 60, Height: 24}})
 	m = typeText(t, m, "/jo")
-	m, _ = m.Update(tea.MouseMsg{
+
+	var cmd tea.Cmd
+	m, cmd = m.Update(tea.MouseMsg{
 		X:      24,
 		Y:      22,
 		Action: tea.MouseActionPress,
 		Button: tea.MouseButtonLeft,
 	})
+
+	require.NotNil(t, cmd, "mouse click should produce a cmd")
+	m, _ = m.Update(cmd())
+
 	m = typeText(t, m, "#general")
-	_, cmd := enter(t, m)
+	_, cmd = enter(t, m)
 
 	require.NotNil(t, cmd)
 	sub := cmd().(components.CommandSubmitMsg)

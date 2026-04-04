@@ -64,11 +64,6 @@ func (m *MessageList) Viewport() *viewport.Model {
 	return &m.viewport
 }
 
-// SetCommands updates the command set used by renderHelp.
-func (m *MessageList) SetCommands(cmds command.Set) {
-	m.commands = cmds
-}
-
 // SetKeyMap applies viewport key bindings from the ChatView key map.
 func (m *MessageList) SetKeyMap(km ChatViewKeyMap) {
 	m.viewport.KeyMap = viewport.KeyMap{
@@ -97,6 +92,10 @@ func (m *MessageList) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 	case SetPlaceholderMsg:
 		m.placeholder = msg.Text
+		return m, nil
+
+	case CommandStateMsg:
+		m.commands = msg.Commands
 		return m, nil
 
 	case PendingResponseMsg:

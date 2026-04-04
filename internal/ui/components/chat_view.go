@@ -197,13 +197,13 @@ type ChatView struct {
 
 	bounds ui.Rect
 
-	popover commandPopover
+	popover *Popover
 }
 
 type chatViewLayout struct {
 	InputRect     ui.Rect
 	MessageRect   ui.Rect
-	PopoverLayout commandPopoverLayout
+	PopoverLayout PopoverLayout
 }
 
 // NewChatView creates a chat view for the given channel.
@@ -220,6 +220,7 @@ func NewChatView(ch domain.ChannelName, userNick domain.Nick, topic string, line
 		messages: ml,
 		input:    NewInputBar(),
 		keyMap:   keyMap,
+		popover:  NewPopover(),
 	}
 }
 
@@ -255,14 +256,14 @@ func (c *ChatView) KeyBindings() []key.Binding {
 					key.WithKeys("tab"),
 					key.WithHelp("Tab", "accept"),
 				),
-				c.popover.hasSuggestions(),
+				c.popover.HasSuggestions(),
 			),
 			ui.WithBindingEnabled(
 				key.NewBinding(
 					key.WithKeys("up", "down", "shift+tab"),
 					key.WithHelp("↑↓", "navigate"),
 				),
-				c.popover.hasSuggestions(),
+				c.popover.HasSuggestions(),
 			),
 			key.NewBinding(
 				key.WithKeys("esc"),
@@ -291,6 +292,7 @@ func (c *ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case ui.BoundsMsg:
 		c.bounds = msg.Rect
+		c.popover.SetBounds(msg.Rect)
 		return c, nil
 
 	case SetChannelMsg:
@@ -304,13 +306,21 @@ func (c *ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		return c, cmd
 
 	case CommandStateMsg:
-		c.messages.SetCommands(msg.Commands)
+		c.messages.Update(msg)
 		c.popover.Apply(msg.Commands, msg.Context, c.input.Value(), c.input.Cursor())
 		return c, nil
 
+	case PopoverAcceptMsg:
+		c.input = c.input.ReplaceRange(msg.ReplaceStart, msg.ReplaceEnd, msg.Replacement)
+		c.popover.Refresh(c.input.Value(), c.input.Cursor())
+		return c, nil
+
 	case tea.KeyMsg:
-		if handled, cmd := c.handleKey(msg); handled {
-			return c, cmd
+		if c.popover.IsVisible() {
+			_, cmd := c.popover.Update(msg)
+			if c.popover.Handled() {
+				return c, cmd
+			}
 		}
 
 	case tea.MouseMsg:
@@ -324,38 +334,9 @@ func (c *ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 	updated, inputCmd := c.input.Update(msg)
 	c.input = updated.(InputBar)
-	c.popover.closed = false
-	c.popover.refresh(c.input.Value(), c.input.Cursor())
+	c.popover.Refresh(c.input.Value(), c.input.Cursor())
 
 	return c, tea.Batch(mlCmd, inputCmd)
-}
-
-func (c *ChatView) handleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
-	if c.popover.completion.Visible && c.popover.hasSuggestions() {
-		switch msg.Type {
-		case tea.KeyTab:
-			c.input = c.popover.AcceptSuggestion(c.input, c.popover.selected)
-			c.popover.closed = false
-			c.popover.refresh(c.input.Value(), c.input.Cursor())
-			return true, nil
-		case tea.KeyShiftTab, tea.KeyUp:
-			c.popover.MoveSelection(-1)
-			return true, nil
-		case tea.KeyDown:
-			c.popover.MoveSelection(1)
-			return true, nil
-		case tea.KeyEsc:
-			c.popover.Dismiss(c.input.Value())
-			return true, nil
-		}
-	}
-
-	if msg.Type == tea.KeyEsc && c.popover.completion.Visible {
-		c.popover.Dismiss(c.input.Value())
-		return true, nil
-	}
-
-	return false, nil
 }
 
 func (c *ChatView) handleMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
@@ -366,36 +347,11 @@ func (c *ChatView) handleMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
 	layout := c.layoutRects()
 
 	if layout.PopoverLayout.Rect.Contains(msg.X, msg.Y) {
-		switch msg.Action {
-		case tea.MouseActionMotion:
-			if c.popover.HoverSuggestion(layout.PopoverLayout, msg.X, msg.Y) {
-				return true, nil
-			}
-
-		case tea.MouseActionPress:
-			switch msg.Button {
-			case tea.MouseButtonWheelUp:
-				c.popover.MoveSelection(-1)
-				return true, nil
-			case tea.MouseButtonWheelDown:
-				c.popover.MoveSelection(1)
-				return true, nil
-			case tea.MouseButtonLeft:
-				if index, ok := c.popover.SuggestionIndexAt(layout.PopoverLayout, msg.X, msg.Y); ok {
-					c.input = c.popover.AcceptSuggestion(c.input, index)
-					c.popover.closed = false
-					c.popover.refresh(c.input.Value(), c.input.Cursor())
-					return true, nil
-				}
-
-				return true, nil
-			}
-		}
-
-		return true, nil
+		_, cmd := c.popover.Update(msg)
+		return true, cmd
 	}
 
-	if c.popover.completion.Visible && msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+	if c.popover.IsVisible() && msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 		c.popover.Dismiss(c.input.Value())
 	}
 
@@ -405,8 +361,7 @@ func (c *ChatView) handleMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
 			if msg.Button == tea.MouseButtonLeft {
 				localX, _ := layout.InputRect.Local(msg.X, msg.Y)
 				c.input = c.input.SetCursorFromCell(localX - c.composerPrefixWidth())
-				c.popover.closed = false
-				c.popover.refresh(c.input.Value(), c.input.Cursor())
+				c.popover.Refresh(c.input.Value(), c.input.Cursor())
 				return true, nil
 			}
 		case tea.MouseActionMotion:
@@ -488,7 +443,7 @@ func (c *ChatView) layoutRects() chatViewLayout {
 		Height: 1,
 	}
 
-	popoverLayout := c.popover.layout(c.bounds, inputRect)
+	popoverLayout := c.popover.Layout(c.bounds, inputRect)
 
 	topicHeight := 0
 	if c.topic != "" {
