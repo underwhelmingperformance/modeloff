@@ -205,7 +205,7 @@ func TestSession_SendMessage(t *testing.T) {
 
 	seedChannelWithMembers(t, s, "#general", "testuser")
 
-	evt, err := sess.SendMessage(ctx, "#general", "hello world")
+	evt, _, err := sess.SendMessage(ctx, "#general", "hello world")
 	require.NoError(t, err)
 	require.Equal(t, domain.MessageEvent{
 		Message: domain.Message{
@@ -242,7 +242,7 @@ func TestSession_SendMessage_broadcasts_to_channel_instances(t *testing.T) {
 		Channels: set.NewOrdered[domain.ChannelName]("#general"),
 	})
 
-	evt, err := sess.SendMessage(ctx, "#general", "hello world")
+	evt, _, err := sess.SendMessage(ctx, "#general", "hello world")
 	require.NoError(t, err)
 
 	msgs, err := s.ListMessages(ctx, "#general")
@@ -273,7 +273,7 @@ func TestSession_SendMessage_does_not_broadcast_when_no_model_instances(t *testi
 
 	seedChannelWithMembers(t, s, "#general", "testuser")
 
-	evt, err := sess.SendMessage(ctx, "#general", "hello world")
+	evt, _, err := sess.SendMessage(ctx, "#general", "hello world")
 	require.NoError(t, err)
 
 	msgs, err := s.ListMessages(ctx, "#general")
@@ -300,7 +300,7 @@ func TestSession_SendMessage_pass_response_does_not_store_model_message(t *testi
 		Channels: set.NewOrdered[domain.ChannelName]("#general"),
 	})
 
-	evt, err := sess.SendMessage(ctx, "#general", "hello world")
+	evt, _, err := sess.SendMessage(ctx, "#general", "hello world")
 	require.NoError(t, err)
 
 	msgs, err := s.ListMessages(ctx, "#general")
@@ -327,7 +327,7 @@ func TestSession_SendMessage_reply_response_stores_model_message(t *testing.T) {
 		Channels: set.NewOrdered[domain.ChannelName]("#general"),
 	})
 
-	evt, err := sess.SendMessage(ctx, "#general", "hello world")
+	evt, _, err := sess.SendMessage(ctx, "#general", "hello world")
 	require.NoError(t, err)
 
 	msgs, err := s.ListMessages(ctx, "#general")
@@ -369,7 +369,7 @@ func TestSession_SendMessage_broadcasts_only_to_members_of_that_channel(t *testi
 		Channels: set.NewOrdered[domain.ChannelName]("#random"),
 	})
 
-	evt, err := sess.SendMessage(ctx, "#general", "hello world")
+	evt, _, err := sess.SendMessage(ctx, "#general", "hello world")
 	require.NoError(t, err)
 
 	generalMsgs, err := s.ListMessages(ctx, "#general")
@@ -409,7 +409,7 @@ func TestSession_SendMessage_reply_is_not_rebroadcast_in_same_send(t *testing.T)
 		Channels: set.NewOrdered[domain.ChannelName]("#general"),
 	})
 
-	evt, err := sess.SendMessage(ctx, "#general", "hello world")
+	evt, _, err := sess.SendMessage(ctx, "#general", "hello world")
 	require.NoError(t, err)
 
 	msgs, err := s.ListMessages(ctx, "#general")
@@ -450,7 +450,7 @@ func TestSession_SendMessage_multiple_instances_each_reply_once(t *testing.T) {
 		Channels: set.NewOrdered[domain.ChannelName]("#general"),
 	})
 
-	evt, err := sess.SendMessage(ctx, "#general", "hello world")
+	evt, _, err := sess.SendMessage(ctx, "#general", "hello world")
 	require.NoError(t, err)
 
 	msgs, err := s.ListMessages(ctx, "#general")
@@ -494,7 +494,7 @@ func TestSession_SendMessage_ignores_empty_reply_body(t *testing.T) {
 		Channels: set.NewOrdered[domain.ChannelName]("#general"),
 	})
 
-	evt, err := sess.SendMessage(ctx, "#general", "hello world")
+	evt, _, err := sess.SendMessage(ctx, "#general", "hello world")
 	require.NoError(t, err)
 
 	msgs, err := s.ListMessages(ctx, "#general")
@@ -530,7 +530,7 @@ func TestSession_SendMessage_api_error_continues_to_next_instance(t *testing.T) 
 		Channels: set.NewOrdered[domain.ChannelName]("#general"),
 	})
 
-	evt, err := sess.SendMessage(ctx, "#general", "hello world")
+	evt, _, err := sess.SendMessage(ctx, "#general", "hello world")
 	require.Error(t, err, "should surface the API error")
 	require.ErrorContains(t, err, "network timeout")
 
@@ -577,7 +577,7 @@ func TestSession_Poke_api_error_continues_to_next_channel(t *testing.T) {
 		Channels: set.NewOrdered[domain.ChannelName]("#random"),
 	})
 
-	err := sess.Poke(ctx)
+	_, err := sess.Poke(ctx)
 	require.Error(t, err, "should surface the API error")
 	require.ErrorContains(t, err, "rate limited")
 
@@ -933,7 +933,7 @@ func TestSession_SendMessage_includes_memory_in_prompt(t *testing.T) {
 		Channels: set.NewOrdered[domain.ChannelName]("#general"),
 	})
 
-	evt, err := sess.SendMessage(t.Context(), "#general", "hello world")
+	evt, _, err := sess.SendMessage(t.Context(), "#general", "hello world")
 	require.NoError(t, err)
 
 	msgs, err := s.ListMessages(t.Context(), "#general")
@@ -969,7 +969,7 @@ func TestSession_Poke_sends_poke_event(t *testing.T) {
 		Channels: set.NewOrdered[domain.ChannelName]("#general"),
 	})
 
-	err := sess.Poke(ctx)
+	_, err := sess.Poke(ctx)
 	require.NoError(t, err)
 
 	msgs, err := s.ListMessages(ctx, "#general")
@@ -1004,7 +1004,7 @@ func TestSession_Poke_persists_replies(t *testing.T) {
 		Channels: set.NewOrdered[domain.ChannelName]("#general"),
 	})
 
-	err := sess.Poke(ctx)
+	_, err := sess.Poke(ctx)
 	require.NoError(t, err)
 
 	msgs, err := s.ListMessages(ctx, "#general")
@@ -1107,7 +1107,7 @@ func TestSession_SendMessage_to_dm_only_targets_that_instance(t *testing.T) {
 	_, _, err := sess.OpenDM(ctx, "botty")
 	require.NoError(t, err)
 
-	evt, err := sess.SendMessage(ctx, "botty", "hello in dm")
+	evt, _, err := sess.SendMessage(ctx, "botty", "hello in dm")
 	require.NoError(t, err)
 
 	msgs, err := s.ListMessages(ctx, "botty")

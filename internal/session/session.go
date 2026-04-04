@@ -272,10 +272,10 @@ func (s *Session) SendMessage(
 	ctx context.Context,
 	ch domain.ChannelName,
 	body string,
-) (domain.MessageEvent, error) {
+) (domain.MessageEvent, []domain.ModelReplyEvent, error) {
 	historyMessages, err := s.store.ListMessages(ctx, ch)
 	if err != nil {
-		return domain.MessageEvent{}, fmt.Errorf("list history: %w", err)
+		return domain.MessageEvent{}, nil, fmt.Errorf("list history: %w", err)
 	}
 
 	msg := domain.Message{
@@ -287,17 +287,17 @@ func (s *Session) SendMessage(
 	}
 
 	if err := s.store.SaveMessage(ctx, msg); err != nil {
-		return domain.MessageEvent{}, fmt.Errorf("save message: %w", err)
+		return domain.MessageEvent{}, nil, fmt.Errorf("save message: %w", err)
 	}
 
-	err = s.dispatchToInstances(
+	replies, err := s.dispatchToInstances(
 		ctx,
 		msg.Channel,
 		historyMessages,
 		[]protocol.IRCMessage{protocol.FromMessage(msg)},
 	)
 
-	return domain.MessageEvent{Message: msg}, err
+	return domain.MessageEvent{Message: msg}, replies, err
 }
 
 // SetTopic sets the topic of a channel.
@@ -472,13 +472,14 @@ func (s *Session) OpenDM(ctx context.Context, nick domain.Nick) (domain.Channel,
 
 // Poke sends a periodic prompt to model instances in every channel and
 // persists any replies they choose to make.
-func (s *Session) Poke(ctx context.Context) error {
+func (s *Session) Poke(ctx context.Context) ([]domain.Event, error) {
 	channels, err := s.store.ListChannels(ctx)
 	if err != nil {
-		return fmt.Errorf("list channels: %w", err)
+		return nil, fmt.Errorf("list channels: %w", err)
 	}
 
 	var errs []error
+	var allEvents []domain.Event
 
 	for _, ch := range channels {
 		historyMessages, err := s.store.ListMessages(ctx, ch.Name)
@@ -496,12 +497,17 @@ func (s *Session) Poke(ctx context.Context) error {
 			},
 		}
 
-		if err := s.dispatchToInstances(ctx, ch.Name, historyMessages, events); err != nil {
+		replies, err := s.dispatchToInstances(ctx, ch.Name, historyMessages, events)
+		if err != nil {
 			errs = append(errs, err)
+		}
+
+		for _, reply := range replies {
+			allEvents = append(allEvents, reply)
 		}
 	}
 
-	return errors.Join(errs...)
+	return allEvents, errors.Join(errs...)
 }
 
 // SetAPIKey persists a new API key through the config store.
@@ -592,15 +598,15 @@ func (s *Session) dispatchToInstances(
 	channelName domain.ChannelName,
 	historyMessages []domain.Message,
 	events []protocol.IRCMessage,
-) error {
+) ([]domain.ModelReplyEvent, error) {
 	channel, err := s.store.GetChannel(ctx, channelName)
 	if err != nil {
-		return fmt.Errorf("get channel: %w", err)
+		return nil, fmt.Errorf("get channel: %w", err)
 	}
 
 	instances, err := s.instancesForChannel(ctx, channel)
 	if err != nil {
-		return fmt.Errorf("list instances for channel: %w", err)
+		return nil, fmt.Errorf("list instances for channel: %w", err)
 	}
 
 	history := make([]protocol.IRCMessage, 0, len(historyMessages))
@@ -609,6 +615,7 @@ func (s *Session) dispatchToInstances(
 	}
 
 	var errs []error
+	var replies []domain.ModelReplyEvent
 
 	for _, inst := range instances {
 		memories, err := s.memoriesForInstance(ctx, inst.Nick)
@@ -648,10 +655,18 @@ func (s *Session) dispatchToInstances(
 
 		if err := s.store.SaveMessage(ctx, reply); err != nil {
 			errs = append(errs, fmt.Errorf("save model reply: %w", err))
+			continue
 		}
+
+		replies = append(replies, domain.ModelReplyEvent{
+			Channel:  channelName,
+			Message:  reply,
+			Instance: inst.Nick,
+			At:       s.now(),
+		})
 	}
 
-	return errors.Join(errs...)
+	return replies, errors.Join(errs...)
 }
 
 func (s *Session) instancesForChannel(ctx context.Context, channel domain.Channel) ([]domain.ModelInstance, error) {

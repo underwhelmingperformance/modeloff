@@ -280,7 +280,7 @@ func TestApp_unread_counts_clear_when_visiting_channel_with_teatest(t *testing.T
 	seedChannel(t, sess, "#general")
 	seedChannel(t, sess, "#random")
 
-	_, err := sess.SendMessage(t.Context(), "#general", "general unread")
+	_, _, err := sess.SendMessage(t.Context(), "#general", "general unread")
 	require.NoError(t, err)
 
 	tm := newTestApp(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
@@ -330,7 +330,7 @@ func TestApp_ctrl_arrow_scroll_preserves_draft_with_teatest(t *testing.T) {
 	seedChannel(t, sess, "#general")
 
 	for i := range 30 {
-		_, err := sess.SendMessage(t.Context(), "#general", fmt.Sprintf("message %d", i))
+		_, _, err := sess.SendMessage(t.Context(), "#general", fmt.Sprintf("message %d", i))
 		require.NoError(t, err)
 	}
 
@@ -350,7 +350,7 @@ func TestApp_new_messages_divider_with_teatest(t *testing.T) {
 	seedChannel(t, sess, "#general")
 
 	for i := range 30 {
-		_, err := sess.SendMessage(t.Context(), "#general", fmt.Sprintf("message %d", i))
+		_, _, err := sess.SendMessage(t.Context(), "#general", fmt.Sprintf("message %d", i))
 		require.NoError(t, err)
 	}
 

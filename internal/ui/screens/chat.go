@@ -4,6 +4,7 @@ import (
 	"context"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
@@ -30,41 +31,16 @@ type chatLoadedMsg struct {
 	members   []domain.Member
 }
 
-// channelSwitchedMsg is sent after a channel switch completes,
-// carrying the new channel's messages.
-type channelSwitchedMsg struct {
-	channel  domain.ChannelName
-	topic    string
-	channels []domain.Channel
-	messages []domain.Message
-	unread   map[domain.ChannelName]int
-	members  []domain.Member
-}
-
-// messageSentMsg is sent after a message is saved, carrying the
-// updated message list.
-type messageSentMsg struct {
-	channel  domain.ChannelName
-	messages []domain.Message
-}
-
-// commandResultMsg carries the result of a slash command that
-// modified session state.
-type commandResultMsg struct {
-	channels  []domain.Channel
-	instances []domain.ModelInstance
-	active    domain.ChannelName
-	topic     string
-	messages  []domain.Message
-	unread    map[domain.ChannelName]int
-	members   []domain.Member
-	events    []components.ChatLine
-}
-
 // systemEventMsg carries typed events to display in the chat view
 // without changing channel/sidebar state.
 type systemEventMsg struct {
 	events []components.ChatLine
+}
+
+// eventBatchMsg carries multiple domain events from a single command.
+// Update unpacks and dispatches each event sequentially.
+type eventBatchMsg struct {
+	events []domain.Event
 }
 
 type apiKeyActivatedMsg struct{}
@@ -177,17 +153,11 @@ func (s *ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	case chatLoadedMsg:
 		return s.handleLoaded(msg)
 
-	case channelSwitchedMsg:
-		return s.handleChannelSwitched(msg)
-
-	case messageSentMsg:
-		return s.handleMessageSent(msg)
-
-	case commandResultMsg:
-		return s.handleCommandResult(msg)
-
 	case systemEventMsg:
 		return s.handleSystemEvent(msg)
+
+	case eventBatchMsg:
+		return s.handleEventBatch(msg)
 
 	case apiKeyActivatedMsg:
 		model, _ := s.handleSystemEvent(systemEventMsg{
@@ -290,50 +260,6 @@ func (s *ChatScreen) handleLoaded(msg chatLoadedMsg) (ui.Model, tea.Cmd) {
 	return s, nil
 }
 
-func (s *ChatScreen) handleChannelSwitched(msg channelSwitchedMsg) (ui.Model, tea.Cmd) {
-	s.channels = msg.channels
-	s.active = msg.channel
-	s.topic = msg.topic
-	s.channelCount = len(msg.channels)
-
-	s.updateSidebar(msg.channels, msg.channel, msg.unread)
-	s.chatView.SetPlaceholder("")
-	s.chatView.SetChannel(msg.channel, msg.topic, components.MessagesToLines(msg.messages))
-	s.updateNickList(msg.members)
-	s.applyCommandState()
-
-	return s, nil
-}
-
-func (s *ChatScreen) handleMessageSent(msg messageSentMsg) (ui.Model, tea.Cmd) {
-	s.chatView.SetLines(components.MessagesToLines(msg.messages))
-	s.chatView.WithCommandState(s.Commands(), s.commandContext())
-	s.forwardToLayout(components.PendingResponseMsg{Pending: false})
-
-	return s, nil
-}
-
-func (s *ChatScreen) handleCommandResult(msg commandResultMsg) (ui.Model, tea.Cmd) {
-	s.channels = msg.channels
-	s.instances = msg.instances
-	s.active = msg.active
-	s.topic = msg.topic
-	s.channelCount = len(msg.channels)
-
-	lines := components.MessagesToLines(msg.messages)
-	lines = append(lines, msg.events...)
-
-	s.updateSidebar(msg.channels, msg.active, msg.unread)
-	s.chatView.SetPlaceholder("")
-	s.chatView.SetChannel(msg.active, msg.topic, lines)
-	s.updateNickList(msg.members)
-	s.chatView.WithCommandState(s.Commands(), s.commandContext())
-	s.forwardToLayout(components.PendingResponseMsg{Pending: false})
-	s.applyLayoutBounds()
-
-	return s, nil
-}
-
 func (s *ChatScreen) handleSystemEvent(msg systemEventMsg) (ui.Model, tea.Cmd) {
 	var lines []components.ChatLine
 
@@ -350,9 +276,44 @@ func (s *ChatScreen) handleSystemEvent(msg systemEventMsg) (ui.Model, tea.Cmd) {
 	return s, nil
 }
 
-// Domain event handlers — targeted state updates that return tea.Cmd
-// values. These coexist with the legacy commandResultMsg handlers
-// during the transition.
+func (s *ChatScreen) handleEventBatch(msg eventBatchMsg) (ui.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+
+	for _, evt := range msg.events {
+		var cmd tea.Cmd
+
+		switch e := evt.(type) {
+		case domain.JoinEvent:
+			_, cmd = s.handleJoinEvent(e)
+		case domain.PartEvent:
+			_, cmd = s.handlePartEvent(e)
+		case domain.TopicChangeEvent:
+			_, cmd = s.handleTopicChangeEvent(e)
+		case domain.NickChangeEvent:
+			_, cmd = s.handleNickChangeEvent(e)
+		case domain.ModelInvitedEvent:
+			_, cmd = s.handleModelInvitedEvent(e)
+		case domain.ModelKickedEvent:
+			_, cmd = s.handleModelKickedEvent(e)
+		case domain.MessageEvent:
+			_, cmd = s.handleMessageEvent(e)
+		case domain.ModelReplyEvent:
+			_, cmd = s.handleModelReplyEvent(e)
+		case domain.DMOpenedEvent:
+			_, cmd = s.handleDMOpenedEvent(e)
+		case domain.ConfigChangedEvent:
+			_, cmd = s.handleConfigChangedEvent(e)
+		case domain.ErrorEvent:
+			_, cmd = s.handleErrorEvent(e)
+		}
+
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	}
+
+	return s, tea.Batch(cmds...)
+}
 
 func (s *ChatScreen) handleJoinEvent(msg domain.JoinEvent) (ui.Model, tea.Cmd) {
 	s.active = msg.Channel
@@ -542,10 +503,7 @@ func (s *ChatScreen) handleNewMessage(channel domain.ChannelName) (ui.Model, tea
 		messages, _ := s.sess.Messages(s.ctx, channel)
 		lines := components.MessagesToLines(messages)
 
-		s.forwardToLayout(components.MessagesUpdatedMsg{
-			Channel: channel,
-			Lines:   lines,
-		})
+		s.chatView.SetLines(lines)
 	} else {
 		channels, _ := s.sess.ListChannels(s.ctx)
 		s.channels = channels
@@ -602,10 +560,6 @@ func (s *ChatScreen) handleConfigChangedEvent(msg domain.ConfigChangedEvent) (ui
 }
 
 func (s *ChatScreen) handleErrorEvent(msg domain.ErrorEvent) (ui.Model, tea.Cmd) {
-	if s.active == "" {
-		return s, nil
-	}
-
 	s.forwardToLayout(components.AppendLinesMsg{
 		Channel: s.active,
 		Lines: []components.ChatLine{
@@ -913,44 +867,30 @@ func (s *ChatScreen) layoutHeight() int {
 
 func (s *ChatScreen) switchChannel(ch domain.ChannelName) tea.Cmd {
 	return func() tea.Msg {
-		ctx := s.ctx
-
-		_, _ = s.sess.Join(ctx, string(ch))
-
-		channels, _ := s.sess.ListChannels(ctx)
-		messages, _ := s.sess.Messages(ctx, ch)
-
-		var topic string
-		var members []domain.Member
-
-		if channel, err := s.sess.GetChannel(ctx, ch); err == nil {
-			topic = channel.Topic
-			members = s.sortedMembers(channel.Members)
+		evt, err := s.sess.Join(s.ctx, string(ch))
+		if err != nil {
+			return domain.ErrorEvent{Operation: "switch", Err: err, At: time.Now()}
 		}
 
-		return channelSwitchedMsg{
-			channel:  ch,
-			topic:    topic,
-			channels: channels,
-			messages: messages,
-			unread:   s.unreadCounts(ctx, channels),
-			members:  members,
-		}
+		return evt
 	}
 }
 
 func (s *ChatScreen) sendMessage(text string) tea.Cmd {
 	return func() tea.Msg {
-		ctx := s.ctx
-
-		_, _ = s.sess.SendMessage(ctx, s.active, text)
-
-		messages, _ := s.sess.Messages(ctx, s.active)
-
-		return messageSentMsg{
-			channel:  s.active,
-			messages: messages,
+		evt, replies, err := s.sess.SendMessage(s.ctx, s.active, text)
+		if err != nil {
+			return domain.ErrorEvent{Operation: "send", Err: err, At: time.Now()}
 		}
+
+		events := make([]domain.Event, 0, 1+len(replies))
+		events = append(events, evt)
+
+		for _, r := range replies {
+			events = append(events, r)
+		}
+
+		return eventBatchMsg{events: events}
 	}
 }
 

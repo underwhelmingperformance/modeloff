@@ -11,33 +11,18 @@ import (
 	"github.com/laney/modeloff/internal/ui/components"
 )
 
-func (s *ChatScreen) channelMembers(ch domain.ChannelName) []domain.Member {
-	if ch == "" {
-		return nil
-	}
-
-	channel, err := s.sess.GetChannel(s.ctx, ch)
-	if err != nil {
-		return nil
-	}
-
-	return s.sortedMembers(channel.Members)
-}
-
 func noChannelMsg() tea.Msg {
 	return systemEventMsg{events: []components.ChatLine{components.NoChannel{}}}
 }
 
-func errorEvent(err error) systemEventMsg {
-	return systemEventMsg{events: []components.ChatLine{
-		components.CommandError{Err: err},
-	}}
+func errorEvent(operation string, err error) domain.ErrorEvent {
+	return domain.ErrorEvent{Operation: operation, Err: err, At: time.Now()}
 }
 
 func (s *ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
 	cmd, err := command.Execute(s.Commands(), msg.Raw)
 	if err != nil {
-		return func() tea.Msg { return errorEvent(err) }
+		return func() tea.Msg { return errorEvent("command", err) }
 	}
 
 	return cmd
@@ -62,7 +47,7 @@ func (s *ChatScreen) configure(cmd command.ConfigCommand) tea.Cmd {
 			}
 
 			if _, err := s.sess.SetAPIKey(ctx, value); err != nil {
-				return errorEvent(err)
+				return errorEvent("config api-key", err)
 			}
 
 			return apiKeyActivatedMsg{}
@@ -77,14 +62,14 @@ func (s *ChatScreen) configure(cmd command.ConfigCommand) tea.Cmd {
 
 			interval, err := time.ParseDuration(value)
 			if err != nil {
-				return errorEvent(domain.InvalidDurationError{
+				return errorEvent("config poke-interval", domain.InvalidDurationError{
 					Input: value,
 					Err:   err,
 				})
 			}
 
 			if _, err := s.sess.SetPokeInterval(ctx, interval); err != nil {
-				return errorEvent(err)
+				return errorEvent("config poke-interval", err)
 			}
 
 			return systemEventMsg{events: []components.ChatLine{
@@ -102,7 +87,7 @@ func (s *ChatScreen) configure(cmd command.ConfigCommand) tea.Cmd {
 			modelID := domain.ModelID(value)
 
 			if _, err := s.sess.SetNickModel(ctx, modelID); err != nil {
-				return errorEvent(err)
+				return errorEvent("config nick-model", err)
 			}
 
 			return systemEventMsg{events: []components.ChatLine{
@@ -110,7 +95,7 @@ func (s *ChatScreen) configure(cmd command.ConfigCommand) tea.Cmd {
 			}}
 
 		default:
-			return errorEvent(domain.UnknownConfigKeyError{Key: cmd.Key})
+			return errorEvent("config", domain.UnknownConfigKeyError{Key: cmd.Key})
 		}
 	}
 }
@@ -121,174 +106,80 @@ func (s *ChatScreen) directMessage(nick domain.Nick, body string) tea.Cmd {
 
 		ch, created, err := s.sess.OpenDM(ctx, nick)
 		if err != nil {
-			return errorEvent(domain.UnknownNickError{Nick: nick})
+			return errorEvent("msg", domain.UnknownNickError{Nick: nick})
 		}
 
 		if strings.TrimSpace(body) != "" {
-			if _, err := s.sess.SendMessage(ctx, ch.Name, body); err != nil {
-				return errorEvent(err)
+			if _, _, err := s.sess.SendMessage(ctx, ch.Name, body); err != nil {
+				return errorEvent("msg", err)
 			}
 		}
 
-		channels, _ := s.sess.ListChannels(ctx)
-		instances, _ := s.sess.ListInstances(ctx)
-		messages, _ := s.sess.Messages(ctx, ch.Name)
-
-		var events []components.ChatLine
-		if created {
-			events = []components.ChatLine{components.DMOpened{Nick: nick}}
-		}
-
-		return commandResultMsg{
-			channels:  channels,
-			instances: instances,
-			active:    ch.Name,
-			topic:     "",
-			messages:  messages,
-			unread:    s.unreadCounts(ctx, channels),
-			members:   s.channelMembers(ch.Name),
-			events:    events,
+		return domain.DMOpenedEvent{
+			Channel: ch,
+			Nick:    nick,
+			Created: created,
+			At:      time.Now(),
 		}
 	}
 }
 
 func (s *ChatScreen) handlePoke() tea.Cmd {
 	return func() tea.Msg {
-		ctx := s.ctx
-
-		if err := s.sess.Poke(ctx); err != nil {
-			return errorEvent(err)
+		events, err := s.sess.Poke(s.ctx)
+		if err != nil {
+			return errorEvent("poke", err)
 		}
 
-		channels, _ := s.sess.ListChannels(ctx)
-		instances, _ := s.sess.ListInstances(ctx)
-		messages, _ := s.sess.Messages(ctx, s.active)
-
-		return commandResultMsg{
-			channels:  channels,
-			instances: instances,
-			active:    s.active,
-			topic:     s.topic,
-			messages:  messages,
-			unread:    s.unreadCounts(ctx, channels),
-			members:   s.channelMembers(s.active),
+		if len(events) == 0 {
+			return components.PendingResponseMsg{Pending: false}
 		}
+
+		return eventBatchMsg{events: events}
 	}
 }
 
 func (s *ChatScreen) joinChannel(name string) tea.Cmd {
 	return func() tea.Msg {
-		ctx := s.ctx
-
-		evt, err := s.sess.Join(ctx, name)
+		evt, err := s.sess.Join(s.ctx, name)
 		if err != nil {
-			return errorEvent(err)
+			return errorEvent("join", err)
 		}
 
-		channels, _ := s.sess.ListChannels(ctx)
-		instances, _ := s.sess.ListInstances(ctx)
-		active := domain.ChannelName(name)
-		messages, _ := s.sess.Messages(ctx, active)
-
-		var topic string
-		if ch, err := s.sess.GetChannel(ctx, active); err == nil {
-			topic = ch.Topic
-		}
-
-		return commandResultMsg{
-			channels:  channels,
-			instances: instances,
-			active:    active,
-			topic:     topic,
-			messages:  messages,
-			unread:    s.unreadCounts(ctx, channels),
-			members:   s.channelMembers(active),
-			events:    []components.ChatLine{components.Join{JoinEvent: evt}},
-		}
+		return evt
 	}
 }
 
 func (s *ChatScreen) leaveChannel() tea.Cmd {
 	return func() tea.Msg {
-		ctx := s.ctx
-
-		evt, _ := s.sess.Leave(ctx, s.active)
-
-		channels, _ := s.sess.ListChannels(ctx)
-		instances, _ := s.sess.ListInstances(ctx)
-
-		var active domain.ChannelName
-		var topic string
-		var messages []domain.Message
-
-		if len(channels) > 0 {
-			active = channels[0].Name
-			topic = channels[0].Topic
-			messages, _ = s.sess.Messages(ctx, active)
+		evt, err := s.sess.Leave(s.ctx, s.active)
+		if err != nil {
+			return errorEvent("leave", err)
 		}
 
-		return commandResultMsg{
-			channels:  channels,
-			instances: instances,
-			active:    active,
-			topic:     topic,
-			messages:  messages,
-			unread:    s.unreadCounts(ctx, channels),
-			members:   s.channelMembers(active),
-			events:    []components.ChatLine{components.Part{PartEvent: evt}},
-		}
+		return evt
 	}
 }
 
 func (s *ChatScreen) changeNick(nick domain.Nick) tea.Cmd {
 	return func() tea.Msg {
-		ctx := s.ctx
-
-		evt, err := s.sess.ChangeNick(ctx, nick)
+		evt, err := s.sess.ChangeNick(s.ctx, nick)
 		if err != nil {
-			return errorEvent(err)
+			return errorEvent("nick", err)
 		}
 
-		channels, _ := s.sess.ListChannels(ctx)
-		instances, _ := s.sess.ListInstances(ctx)
-		messages, _ := s.sess.Messages(ctx, s.active)
-
-		return commandResultMsg{
-			channels:  channels,
-			instances: instances,
-			active:    s.active,
-			topic:     s.topic,
-			messages:  messages,
-			unread:    s.unreadCounts(ctx, channels),
-			members:   s.channelMembers(s.active),
-			events:    []components.ChatLine{components.NickChange{NickChangeEvent: evt}},
-		}
+		return evt
 	}
 }
 
 func (s *ChatScreen) setTopic(topic string) tea.Cmd {
 	return func() tea.Msg {
-		ctx := s.ctx
-
-		evt, err := s.sess.SetTopic(ctx, s.active, topic)
+		evt, err := s.sess.SetTopic(s.ctx, s.active, topic)
 		if err != nil {
-			return errorEvent(err)
+			return errorEvent("topic", err)
 		}
 
-		channels, _ := s.sess.ListChannels(ctx)
-		instances, _ := s.sess.ListInstances(ctx)
-		messages, _ := s.sess.Messages(ctx, s.active)
-
-		return commandResultMsg{
-			channels:  channels,
-			instances: instances,
-			active:    s.active,
-			topic:     topic,
-			messages:  messages,
-			unread:    s.unreadCounts(ctx, channels),
-			members:   s.channelMembers(s.active),
-			events:    []components.ChatLine{components.TopicChange{TopicChangeEvent: evt}},
-		}
+		return evt
 	}
 }
 
@@ -298,7 +189,7 @@ func (s *ChatScreen) whois(nick domain.Nick) tea.Cmd {
 
 		inst, err := s.sess.Whois(ctx, nick)
 		if err != nil {
-			return errorEvent(domain.UnknownNickError{Nick: nick})
+			return errorEvent("whois", domain.UnknownNickError{Nick: nick})
 		}
 
 		return systemEventMsg{events: []components.ChatLine{
@@ -309,53 +200,23 @@ func (s *ChatScreen) whois(nick domain.Nick) tea.Cmd {
 
 func (s *ChatScreen) inviteModel(modelID domain.ModelID, persona string) tea.Cmd {
 	return func() tea.Msg {
-		ctx := s.ctx
-
-		evt, err := s.sess.Invite(ctx, s.active, modelID, persona)
+		evt, err := s.sess.Invite(s.ctx, s.active, modelID, persona)
 		if err != nil {
-			return errorEvent(err)
+			return errorEvent("invite", err)
 		}
 
-		channels, _ := s.sess.ListChannels(ctx)
-		instances, _ := s.sess.ListInstances(ctx)
-		messages, _ := s.sess.Messages(ctx, s.active)
-
-		return commandResultMsg{
-			channels:  channels,
-			instances: instances,
-			active:    s.active,
-			topic:     s.topic,
-			messages:  messages,
-			unread:    s.unreadCounts(ctx, channels),
-			members:   s.channelMembers(s.active),
-			events:    []components.ChatLine{components.ModelInvited{ModelInvitedEvent: evt}},
-		}
+		return evt
 	}
 }
 
 func (s *ChatScreen) kickModel(nick domain.Nick) tea.Cmd {
 	return func() tea.Msg {
-		ctx := s.ctx
-
-		evt, err := s.sess.Kick(ctx, s.active, nick)
+		evt, err := s.sess.Kick(s.ctx, s.active, nick)
 		if err != nil {
-			return errorEvent(err)
+			return errorEvent("kick", err)
 		}
 
-		channels, _ := s.sess.ListChannels(ctx)
-		instances, _ := s.sess.ListInstances(ctx)
-		messages, _ := s.sess.Messages(ctx, s.active)
-
-		return commandResultMsg{
-			channels:  channels,
-			instances: instances,
-			active:    s.active,
-			topic:     s.topic,
-			messages:  messages,
-			unread:    s.unreadCounts(ctx, channels),
-			members:   s.channelMembers(s.active),
-			events:    []components.ChatLine{components.ModelKicked{ModelKickedEvent: evt}},
-		}
+		return evt
 	}
 }
 
@@ -371,7 +232,7 @@ func (s *ChatScreen) listChannels() tea.Cmd {
 
 		channels, err := s.sess.ListChannels(ctx)
 		if err != nil {
-			return errorEvent(err)
+			return errorEvent("list", err)
 		}
 
 		return systemEventMsg{events: []components.ChatLine{
