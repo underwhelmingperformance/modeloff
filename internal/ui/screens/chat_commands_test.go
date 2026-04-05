@@ -31,6 +31,16 @@ func (stubAPI) SendEvents(
 	}, nil
 }
 
+func (stubAPI) ContinueWithToolResults(
+	context.Context,
+	*api.Conversation,
+	[]api.ToolResult,
+) (api.CompletionResult, error) {
+	return api.CompletionResult{
+		Response: protocol.ModelResponse{Kind: protocol.ResponseSilence},
+	}, nil
+}
+
 func (stubAPI) GenerateNick(context.Context, domain.ModelID, domain.ModelID) (api.NicknameResult, error) {
 	return api.NicknameResult{Nick: "testbot"}, nil
 }

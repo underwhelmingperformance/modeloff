@@ -34,12 +34,58 @@ type Usage struct {
 	UpstreamInferenceCost float64
 }
 
+// ToolCallKind identifies whether a tool call is a terminal action
+// (reply/pass) or an intermediate memory operation.
+type ToolCallKind string
+
+const (
+	// ToolCallReply is a terminal reply tool call.
+	ToolCallReply ToolCallKind = "reply"
+
+	// ToolCallPass is a terminal pass tool call.
+	ToolCallPass ToolCallKind = "pass"
+
+	// ToolCallWriteMemory is an intermediate write_memory tool call.
+	ToolCallWriteMemory ToolCallKind = "write_memory"
+
+	// ToolCallDeleteMemory is an intermediate delete_memory tool call.
+	ToolCallDeleteMemory ToolCallKind = "delete_memory"
+)
+
+// PendingToolCall represents a tool call from the model that requires
+// execution before the conversation can continue.
+type PendingToolCall struct {
+	ID   string
+	Kind ToolCallKind
+	Key  string
+	Body string
+}
+
+// ToolResult carries the outcome of executing a pending tool call,
+// ready to be sent back to the model as a tool response message.
+type ToolResult struct {
+	ToolCallID string
+	Content    string
+}
+
+// Conversation is an opaque handle to the accumulated messages in a
+// multi-turn tool-calling exchange. It is returned inside
+// CompletionResult when the model calls intermediate tools.
+type Conversation struct {
+	modelID  domain.ModelID
+	messages []chatMessage
+}
+
 // CompletionResult contains the model's typed response alongside
-// request metadata.
+// request metadata. When the model calls memory tools, Response is
+// empty and PendingToolCalls contains the calls to execute. The
+// Conversation field carries the message state needed to continue.
 type CompletionResult struct {
-	Response  protocol.ModelResponse
-	RequestID string
-	Usage     Usage
+	Response         protocol.ModelResponse
+	PendingToolCalls []PendingToolCall
+	Conversation     *Conversation
+	RequestID        string
+	Usage            Usage
 }
 
 // NicknameResult contains the generated nickname alongside request
@@ -66,6 +112,16 @@ type Client interface {
 		systemPrompt string,
 		history []protocol.IRCMessage,
 		events []protocol.IRCMessage,
+	) (CompletionResult, error)
+
+	// ContinueWithToolResults sends tool execution results back to
+	// the model and returns the next response. The Conversation
+	// carries the accumulated message state; ToolResults are appended
+	// as tool-role messages before the next API call.
+	ContinueWithToolResults(
+		ctx context.Context,
+		conv *Conversation,
+		results []ToolResult,
 	) (CompletionResult, error)
 
 	// GenerateNick asks a model to generate a nickname for the given

@@ -1086,6 +1086,9 @@ func TestBuildSystemPrompt_with_memories(t *testing.T) {
 
 	require.Contains(t, prompt, "[mood=curious]")
 	require.Contains(t, prompt, "[goal=learn go]")
+	require.Contains(t, prompt, "write_memory")
+	require.Contains(t, prompt, "delete_memory")
+	require.NotContains(t, prompt, "no memories yet")
 }
 
 func TestSession_Poke_emits_dispatch_events(t *testing.T) {
@@ -1520,9 +1523,11 @@ func TestSession_DispatchToChannel_forwards_replies_to_subsequent_models(t *test
 // --- Fake API client ---
 
 type fakeAPIClient struct {
-	listModelsFn   func(context.Context) ([]api.ModelInfo, error)
-	sendEventsFn   func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error)
-	generateNickFn func(context.Context, domain.ModelID, domain.ModelID) (domain.Nick, error)
+	listModelsFn              func(context.Context) ([]api.ModelInfo, error)
+	sendEventsFn              func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error)
+	sendEventsFullFn          func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error)
+	continueWithToolResultsFn func(context.Context, *api.Conversation, []api.ToolResult) (api.CompletionResult, error)
+	generateNickFn            func(context.Context, domain.ModelID, domain.ModelID) (domain.Nick, error)
 }
 
 type fakeConfigStore struct {
@@ -1548,9 +1553,27 @@ func (f *fakeAPIClient) SendEvents(
 	history []protocol.IRCMessage,
 	events []protocol.IRCMessage,
 ) (api.CompletionResult, error) {
+	if f.sendEventsFullFn != nil {
+		return f.sendEventsFullFn(ctx, modelID, system, history, events)
+	}
+
 	if f.sendEventsFn != nil {
 		response, err := f.sendEventsFn(ctx, modelID, system, history, events)
 		return api.CompletionResult{Response: response}, err
+	}
+
+	return api.CompletionResult{
+		Response: protocol.ModelResponse{Kind: protocol.ResponseSilence, Reason: "fake"},
+	}, nil
+}
+
+func (f *fakeAPIClient) ContinueWithToolResults(
+	ctx context.Context,
+	conv *api.Conversation,
+	results []api.ToolResult,
+) (api.CompletionResult, error) {
+	if f.continueWithToolResultsFn != nil {
+		return f.continueWithToolResultsFn(ctx, conv, results)
 	}
 
 	return api.CompletionResult{
@@ -1565,6 +1588,27 @@ func (f *fakeAPIClient) GenerateNick(ctx context.Context, nickModel domain.Model
 	}
 
 	return api.NicknameResult{Nick: "fakenick"}, nil
+}
+
+type failingMemoryStore struct {
+	writeErr  error
+	deleteErr error
+}
+
+func (f *failingMemoryStore) Read(_ context.Context, _ domain.Nick) ([]memory.Entry, error) {
+	return nil, nil
+}
+
+func (f *failingMemoryStore) Write(_ context.Context, _ domain.Nick, _ memory.Entry) error {
+	return f.writeErr
+}
+
+func (f *failingMemoryStore) Delete(_ context.Context, _ domain.Nick, _ string) error {
+	return f.deleteErr
+}
+
+func (f *failingMemoryStore) Reset(_ context.Context) error {
+	return nil
 }
 
 func (f *fakeConfigStore) Load() (config.Config, error) {
@@ -1756,6 +1800,309 @@ func TestSession_DispatchToChannel_accepts_single_line_reply(t *testing.T) {
 			At: fixedTime,
 		},
 	}, replies)
+}
+
+func newTestSessionWithMemory(t *testing.T, apiClient api.Client) (*Session, *storemod.FileStore, *memory.FileStore) {
+	t.Helper()
+
+	s := storemod.NewFileStore(t.TempDir())
+	m := memory.NewFileStore(t.TempDir())
+	sess := New(s, m, apiClient, nil, "testuser")
+	sess.now = func() time.Time { return fixedTime }
+
+	return sess, s, m
+}
+
+func TestSession_DispatchToChannel_write_memory_then_reply(t *testing.T) {
+	var continueResults []api.ToolResult
+	fake := &fakeAPIClient{
+		sendEventsFullFn: func(_ context.Context, _ domain.ModelID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
+			return api.CompletionResult{
+				Conversation: &api.Conversation{},
+				PendingToolCalls: []api.PendingToolCall{
+					{ID: "call_1", Kind: api.ToolCallWriteMemory, Key: "mood", Body: "happy"},
+				},
+			}, nil
+		},
+		continueWithToolResultsFn: func(_ context.Context, _ *api.Conversation, results []api.ToolResult) (api.CompletionResult, error) {
+			continueResults = results
+			return api.CompletionResult{
+				Response: protocol.Reply("noted!"),
+			}, nil
+		},
+	}
+
+	sess, s, memStore := newTestSessionWithMemory(t, fake)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: set.NewOrdered[domain.ChannelName]("#general"),
+	})
+
+	_, ircMsg := seedUserMessage(t, s, "#general", "hello")
+
+	replies, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+	require.NoError(t, err)
+
+	require.Equal(t, []api.ToolResult{
+		{ToolCallID: "call_1", Content: "ok"},
+	}, continueResults)
+
+	require.Equal(t, []domain.ModelReplyEvent{
+		{
+			Channel:  "#general",
+			Instance: "botty",
+			Message: domain.Message{
+				ID:      fmt.Sprintf("%d~botty~0", fixedTime.UnixNano()),
+				Channel: "#general",
+				From:    "botty",
+				Body:    "noted!",
+				SentAt:  fixedTime,
+			},
+			At: fixedTime,
+		},
+	}, replies)
+
+	memories, err := memStore.Read(ctx, "botty")
+	require.NoError(t, err)
+	require.Equal(t, []memory.Entry{{Key: "mood", Content: "happy"}}, memories)
+}
+
+func TestSession_DispatchToChannel_delete_memory_then_pass(t *testing.T) {
+	var continueResults []api.ToolResult
+	fake := &fakeAPIClient{
+		sendEventsFullFn: func(_ context.Context, _ domain.ModelID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
+			return api.CompletionResult{
+				Conversation: &api.Conversation{},
+				PendingToolCalls: []api.PendingToolCall{
+					{ID: "call_1", Kind: api.ToolCallDeleteMemory, Key: "old_stuff"},
+				},
+			}, nil
+		},
+		continueWithToolResultsFn: func(_ context.Context, _ *api.Conversation, results []api.ToolResult) (api.CompletionResult, error) {
+			continueResults = results
+			return api.CompletionResult{
+				Response: protocol.ModelResponse{Kind: protocol.ResponseSilence, Reason: "nothing to say"},
+			}, nil
+		},
+	}
+
+	sess, s, memStore := newTestSessionWithMemory(t, fake)
+	ctx := t.Context()
+
+	require.NoError(t, memStore.Write(ctx, "botty", memory.Entry{Key: "old_stuff", Content: "remove me"}))
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: set.NewOrdered[domain.ChannelName]("#general"),
+	})
+
+	_, ircMsg := seedUserMessage(t, s, "#general", "hello")
+
+	replies, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+	require.NoError(t, err)
+	require.Empty(t, replies)
+
+	require.Equal(t, []api.ToolResult{
+		{ToolCallID: "call_1", Content: "ok"},
+	}, continueResults)
+
+	memories, err := memStore.Read(ctx, "botty")
+	require.NoError(t, err)
+	require.Empty(t, memories)
+}
+
+func TestSession_DispatchToChannel_memory_write_error_returns_error_to_model(t *testing.T) {
+	var continueResults []api.ToolResult
+	fake := &fakeAPIClient{
+		sendEventsFullFn: func(_ context.Context, _ domain.ModelID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
+			return api.CompletionResult{
+				Conversation: &api.Conversation{},
+				PendingToolCalls: []api.PendingToolCall{
+					{ID: "call_1", Kind: api.ToolCallWriteMemory, Key: "mood", Body: "happy"},
+				},
+			}, nil
+		},
+		continueWithToolResultsFn: func(_ context.Context, _ *api.Conversation, results []api.ToolResult) (api.CompletionResult, error) {
+			continueResults = results
+			return api.CompletionResult{
+				Response: protocol.Reply("ok anyway"),
+			}, nil
+		},
+	}
+
+	s := storemod.NewFileStore(t.TempDir())
+	memStore := &failingMemoryStore{writeErr: fmt.Errorf("disk full")}
+	sess := New(s, memStore, fake, nil, "testuser")
+	sess.now = func() time.Time { return fixedTime }
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: set.NewOrdered[domain.ChannelName]("#general"),
+	})
+
+	_, ircMsg := seedUserMessage(t, s, "#general", "hello")
+
+	replies, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+	require.NoError(t, err)
+
+	require.Equal(t, []api.ToolResult{
+		{ToolCallID: "call_1", Content: "disk full"},
+	}, continueResults)
+
+	require.Equal(t, []domain.ModelReplyEvent{
+		{
+			Channel:  "#general",
+			Instance: "botty",
+			Message: domain.Message{
+				ID:      fmt.Sprintf("%d~botty~0", fixedTime.UnixNano()),
+				Channel: "#general",
+				From:    "botty",
+				Body:    "ok anyway",
+				SentAt:  fixedTime,
+			},
+			At: fixedTime,
+		},
+	}, replies)
+}
+
+func TestSession_DispatchToChannel_multiple_memory_calls_in_one_response(t *testing.T) {
+	var continueResults []api.ToolResult
+	fake := &fakeAPIClient{
+		sendEventsFullFn: func(_ context.Context, _ domain.ModelID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
+			return api.CompletionResult{
+				Conversation: &api.Conversation{},
+				PendingToolCalls: []api.PendingToolCall{
+					{ID: "call_1", Kind: api.ToolCallWriteMemory, Key: "mood", Body: "happy"},
+					{ID: "call_2", Kind: api.ToolCallWriteMemory, Key: "topic", Body: "go programming"},
+				},
+			}, nil
+		},
+		continueWithToolResultsFn: func(_ context.Context, _ *api.Conversation, results []api.ToolResult) (api.CompletionResult, error) {
+			continueResults = results
+			return api.CompletionResult{
+				Response: protocol.Reply("stored both"),
+			}, nil
+		},
+	}
+
+	sess, s, memStore := newTestSessionWithMemory(t, fake)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: set.NewOrdered[domain.ChannelName]("#general"),
+	})
+
+	_, ircMsg := seedUserMessage(t, s, "#general", "hello")
+
+	replies, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+	require.NoError(t, err)
+
+	require.Equal(t, []api.ToolResult{
+		{ToolCallID: "call_1", Content: "ok"},
+		{ToolCallID: "call_2", Content: "ok"},
+	}, continueResults)
+
+	require.Equal(t, []domain.ModelReplyEvent{
+		{
+			Channel:  "#general",
+			Instance: "botty",
+			Message: domain.Message{
+				ID:      fmt.Sprintf("%d~botty~0", fixedTime.UnixNano()),
+				Channel: "#general",
+				From:    "botty",
+				Body:    "stored both",
+				SentAt:  fixedTime,
+			},
+			At: fixedTime,
+		},
+	}, replies)
+
+	memories, err := memStore.Read(ctx, "botty")
+	require.NoError(t, err)
+	require.Equal(t, []memory.Entry{
+		{Key: "mood", Content: "happy"},
+		{Key: "topic", Content: "go programming"},
+	}, memories)
+}
+
+func TestSession_DispatchToChannel_memory_loop_respects_max_turns(t *testing.T) {
+	// The model never calls reply/pass — just keeps writing memories
+	// forever. The loop should stop after maxToolLoopTurns continue
+	// calls and return no replies.
+	var writtenKeys []string
+	fake := &fakeAPIClient{
+		sendEventsFullFn: func(_ context.Context, _ domain.ModelID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
+			return api.CompletionResult{
+				Conversation: &api.Conversation{},
+				PendingToolCalls: []api.PendingToolCall{
+					{ID: "call_init", Kind: api.ToolCallWriteMemory, Key: "k0", Body: "v0"},
+				},
+			}, nil
+		},
+		continueWithToolResultsFn: func(_ context.Context, _ *api.Conversation, results []api.ToolResult) (api.CompletionResult, error) {
+			for _, r := range results {
+				writtenKeys = append(writtenKeys, r.ToolCallID)
+			}
+
+			// Return another memory write — the loop should eventually stop.
+			nextKey := fmt.Sprintf("k%d", len(writtenKeys))
+			return api.CompletionResult{
+				Conversation: &api.Conversation{},
+				PendingToolCalls: []api.PendingToolCall{
+					{ID: "call_" + nextKey, Kind: api.ToolCallWriteMemory, Key: nextKey, Body: "val"},
+				},
+			}, nil
+		},
+	}
+
+	sess, s, _ := newTestSessionWithMemory(t, fake)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: set.NewOrdered[domain.ChannelName]("#general"),
+	})
+
+	_, ircMsg := seedUserMessage(t, s, "#general", "hello")
+
+	replies, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+	require.NoError(t, err)
+	require.Empty(t, replies)
+
+	// 1 initial SendEvents + maxToolLoopTurns continues = maxToolLoopTurns
+	// tool result deliveries.
+	require.Equal(t, []string{
+		"call_init",
+		"call_k1",
+		"call_k2",
+		"call_k3",
+		"call_k4",
+	}, writtenKeys)
+}
+
+func TestBuildSystemPrompt_mentions_memory_tools(t *testing.T) {
+	ch := domain.Channel{Name: "#dev", Kind: domain.KindChannel}
+	inst := domain.ModelInstance{Nick: "botty", ModelID: "test/model"}
+
+	prompt := buildSystemPrompt(ch, inst, nil)
+
+	require.Contains(t, prompt, "write_memory")
+	require.Contains(t, prompt, "delete_memory")
+	require.Contains(t, prompt, "no memories yet")
 }
 
 func seedChannelWithMembers(t *testing.T, s *storemod.FileStore, name domain.ChannelName, members ...domain.Nick) {

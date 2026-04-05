@@ -190,6 +190,16 @@ func (f *integrationAPI) SendEvents(
 	}, nil
 }
 
+func (f *integrationAPI) ContinueWithToolResults(
+	context.Context,
+	*api.Conversation,
+	[]api.ToolResult,
+) (api.CompletionResult, error) {
+	return api.CompletionResult{
+		Response: protocol.ModelResponse{Kind: protocol.ResponseSilence},
+	}, nil
+}
+
 func (f *integrationAPI) GenerateNick(ctx context.Context, nickModel domain.ModelID, modelID domain.ModelID) (api.NicknameResult, error) {
 	if f.generateNickFn != nil {
 		nick, err := f.generateNickFn(ctx, nickModel, modelID)

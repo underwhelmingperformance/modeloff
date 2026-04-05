@@ -349,6 +349,121 @@ func TestSanitizeNick(t *testing.T) {
 	}
 }
 
+func TestOpenRouterClient_SendEvents_write_memory(t *testing.T) {
+	srv := newChatServer(t, toolCallFixture{
+		name: "write_memory",
+		args: `{"key": "mood", "content": "happy"}`,
+	})
+
+	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
+
+	got, err := client.SendEvents(
+		t.Context(),
+		"test/model",
+		"You are a test bot.",
+		nil,
+		[]protocol.IRCMessage{
+			{Kind: protocol.KindPrivMsg, From: "alice", Target: "#test", Body: "hi"},
+		},
+	)
+
+	require.NoError(t, err)
+	require.Equal(t, []PendingToolCall{
+		{ID: "call_123", Kind: ToolCallWriteMemory, Key: "mood", Body: "happy"},
+	}, got.PendingToolCalls)
+	require.NotNil(t, got.Conversation)
+}
+
+func TestOpenRouterClient_SendEvents_delete_memory(t *testing.T) {
+	srv := newChatServer(t, toolCallFixture{
+		name: "delete_memory",
+		args: `{"key": "old_stuff"}`,
+	})
+
+	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
+
+	got, err := client.SendEvents(
+		t.Context(),
+		"test/model",
+		"You are a test bot.",
+		nil,
+		[]protocol.IRCMessage{
+			{Kind: protocol.KindPrivMsg, From: "alice", Target: "#test", Body: "hi"},
+		},
+	)
+
+	require.NoError(t, err)
+	require.Equal(t, []PendingToolCall{
+		{ID: "call_123", Kind: ToolCallDeleteMemory, Key: "old_stuff"},
+	}, got.PendingToolCalls)
+	require.NotNil(t, got.Conversation)
+}
+
+func TestOpenRouterClient_ContinueWithToolResults(t *testing.T) {
+	firstCall := true
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body chatCompletionRequest
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+
+		w.Header().Set("Content-Type", "application/json")
+
+		if firstCall {
+			firstCall = false
+
+			require.NoError(t, json.NewEncoder(w).Encode(chatResponse(toolCallFixture{
+				name: "write_memory",
+				args: `{"key": "mood", "content": "happy"}`,
+			})))
+
+			return
+		}
+
+		// The continuation request should end with a tool result
+		// message confirming the write_memory execution.
+		lastMsg := body.Messages[len(body.Messages)-1]
+		require.Equal(t, chatMessage{
+			Role:       "tool",
+			Content:    "ok",
+			ToolCallID: "call_123",
+		}, lastMsg)
+
+		require.NoError(t, json.NewEncoder(w).Encode(chatResponse(toolCallFixture{
+			name: "reply",
+			args: `{"messages": [{"type": "message", "body": "stored it"}]}`,
+		})))
+	}))
+	t.Cleanup(srv.Close)
+
+	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
+
+	initial, err := client.SendEvents(
+		t.Context(),
+		"test/model",
+		"You are a test bot.",
+		nil,
+		[]protocol.IRCMessage{
+			{Kind: protocol.KindPrivMsg, From: "alice", Target: "#test", Body: "hi"},
+		},
+	)
+	require.NoError(t, err)
+	require.NotNil(t, initial.Conversation)
+	require.Equal(t, []PendingToolCall{
+		{ID: "call_123", Kind: ToolCallWriteMemory, Key: "mood", Body: "happy"},
+	}, initial.PendingToolCalls)
+
+	continued, err := client.ContinueWithToolResults(
+		t.Context(),
+		initial.Conversation,
+		[]ToolResult{{ToolCallID: "call_123", Content: "ok"}},
+	)
+	require.NoError(t, err)
+	require.Equal(t, protocol.ModelResponse{
+		Kind:     protocol.ResponseReply,
+		Messages: []protocol.ReplyPart{{Kind: protocol.ReplyMessage, Body: "stored it"}},
+	}, continued.Response)
+}
+
 // --- Test helpers ---
 
 type toolCallFixture struct {

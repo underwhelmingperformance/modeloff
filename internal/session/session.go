@@ -838,7 +838,12 @@ func (s *Session) dispatchToInstance(
 
 	prompt := buildSystemPrompt(channel, inst, memories)
 
-	result, err := s.sendWithRetry(ctx, inst, prompt, history, events)
+	var mem MemoryExecutor
+	if s.memory != nil {
+		mem = &instanceMemory{nick: inst.Nick, store: s.memory}
+	}
+
+	result, err := s.sendWithRetry(ctx, inst, prompt, history, events, mem)
 	if err != nil {
 		instanceSpan.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
 		instanceSpan.SetStatus(codes.Error, err.Error())
@@ -1001,7 +1006,10 @@ How to behave:
 		fmt.Fprintf(&b, "\n\nYour persona: %s", inst.Persona)
 	}
 
+	b.WriteString("\n\nYou have a personal memory system. Your current memories are shown below. You can use write_memory to store new memories and delete_memory to remove them.")
+
 	if len(memories) == 0 {
+		b.WriteString("\n\nYou have no memories yet.")
 		return b.String()
 	}
 
@@ -1013,22 +1021,49 @@ How to behave:
 	return b.String()
 }
 
-const maxNewlineRetries = 2
+// MemoryExecutor executes memory tool calls on behalf of a model
+// instance.
+type MemoryExecutor interface {
+	WriteMemory(ctx context.Context, key, content string) error
+	DeleteMemory(ctx context.Context, key string) error
+}
+
+// instanceMemory closes over a nick and memory.Store to implement
+// MemoryExecutor.
+type instanceMemory struct {
+	nick  domain.Nick
+	store memory.Store
+}
+
+func (m *instanceMemory) WriteMemory(ctx context.Context, key, content string) error {
+	return m.store.Write(ctx, m.nick, memory.Entry{Key: key, Content: content})
+}
+
+func (m *instanceMemory) DeleteMemory(ctx context.Context, key string) error {
+	return m.store.Delete(ctx, m.nick, key)
+}
+
+const (
+	maxNewlineRetries = 2
+	maxToolLoopTurns  = 5
+)
 
 // sendWithRetry sends events to a model and retries if the response
 // contains newlines in any message body. After maxNewlineRetries
-// retries, a silent pass is returned.
+// retries, a silent pass is returned. Each attempt may involve
+// multiple API turns if the model uses memory tools.
 func (s *Session) sendWithRetry(
 	ctx context.Context,
 	inst domain.ModelInstance,
 	prompt string,
 	history []protocol.IRCMessage,
 	events []protocol.IRCMessage,
+	mem MemoryExecutor,
 ) (api.CompletionResult, error) {
 	for attempt := range maxNewlineRetries + 1 {
 		_ = attempt
 
-		result, err := s.api.SendEvents(ctx, inst.ModelID, prompt, history, events)
+		result, err := s.sendWithMemoryLoop(ctx, inst, prompt, history, events, mem)
 		if err != nil {
 			return api.CompletionResult{}, err
 		}
@@ -1048,6 +1083,78 @@ func (s *Session) sendWithRetry(
 			Reason: "response contained newlines after retries",
 		},
 	}, nil
+}
+
+// sendWithMemoryLoop sends events to a model and handles memory tool
+// calls in a loop. If the model calls write_memory or delete_memory,
+// those are executed and the results sent back. The loop continues
+// until the model calls reply or pass, or maxToolLoopTurns is reached.
+func (s *Session) sendWithMemoryLoop(
+	ctx context.Context,
+	inst domain.ModelInstance,
+	prompt string,
+	history []protocol.IRCMessage,
+	events []protocol.IRCMessage,
+	mem MemoryExecutor,
+) (api.CompletionResult, error) {
+	result, err := s.api.SendEvents(ctx, inst.ModelID, prompt, history, events)
+	if err != nil {
+		return api.CompletionResult{}, err
+	}
+
+	for turn := range maxToolLoopTurns {
+		_ = turn
+
+		if len(result.PendingToolCalls) == 0 {
+			return result, nil
+		}
+
+		if mem == nil {
+			return result, nil
+		}
+
+		toolResults := s.executeMemoryTools(ctx, mem, result.PendingToolCalls)
+
+		result, err = s.api.ContinueWithToolResults(ctx, result.Conversation, toolResults)
+		if err != nil {
+			return api.CompletionResult{}, err
+		}
+	}
+
+	return result, nil
+}
+
+// executeMemoryTools runs the pending memory tool calls and returns
+// the results to feed back to the model.
+func (s *Session) executeMemoryTools(
+	ctx context.Context,
+	mem MemoryExecutor,
+	calls []api.PendingToolCall,
+) []api.ToolResult {
+	results := make([]api.ToolResult, 0, len(calls))
+
+	for _, call := range calls {
+		var err error
+
+		switch call.Kind {
+		case api.ToolCallWriteMemory:
+			err = mem.WriteMemory(ctx, call.Key, call.Body)
+		case api.ToolCallDeleteMemory:
+			err = mem.DeleteMemory(ctx, call.Key)
+		}
+
+		content := "ok"
+		if err != nil {
+			content = err.Error()
+		}
+
+		results = append(results, api.ToolResult{
+			ToolCallID: call.ID,
+			Content:    content,
+		})
+	}
+
+	return results
 }
 
 // containsNewlines reports whether any reply part body contains a

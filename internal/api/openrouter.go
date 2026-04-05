@@ -48,8 +48,21 @@ func NewOpenRouterClient(apiKey, baseURL string, httpClient *http.Client) *OpenR
 }
 
 type chatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string     `json:"role"`
+	Content    string     `json:"content,omitempty"`
+	ToolCalls  []toolCall `json:"tool_calls,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
+}
+
+type toolCall struct {
+	ID       string           `json:"id"`
+	Type     string           `json:"type"`
+	Function toolCallFunction `json:"function"`
+}
+
+type toolCallFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
 }
 
 type toolFunction struct {
@@ -75,13 +88,8 @@ type chatCompletionResponse struct {
 	ID      string `json:"id"`
 	Choices []struct {
 		Message struct {
-			Content   string `json:"content"`
-			ToolCalls []struct {
-				Function struct {
-					Name      string `json:"name"`
-					Arguments string `json:"arguments"`
-				} `json:"function"`
-			} `json:"tool_calls"`
+			Content   string     `json:"content"`
+			ToolCalls []toolCall `json:"tool_calls"`
 		} `json:"message"`
 	} `json:"choices"`
 	Usage usageResponse `json:"usage"`
@@ -143,6 +151,54 @@ func replyTool() toolDefinition {
 	}
 }
 
+func writeMemoryTool() toolDefinition {
+	return toolDefinition{
+		Type: "function",
+		Function: toolFunction{
+			Name:        "write_memory",
+			Description: "Store a memory. Use this to remember something for future conversations.",
+			Strict:      true,
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"key": map[string]any{
+						"type":        "string",
+						"description": "A short identifier for this memory (e.g. 'favourite_topic', 'user_name').",
+					},
+					"content": map[string]any{
+						"type":        "string",
+						"description": "The content to remember.",
+					},
+				},
+				"required":             []string{"key", "content"},
+				"additionalProperties": false,
+			},
+		},
+	}
+}
+
+func deleteMemoryTool() toolDefinition {
+	return toolDefinition{
+		Type: "function",
+		Function: toolFunction{
+			Name:        "delete_memory",
+			Description: "Remove a memory by key. Use this when a memory is no longer relevant.",
+			Strict:      true,
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"key": map[string]any{
+						"type":        "string",
+						"description": "The key of the memory to remove.",
+					},
+				},
+				"required":             []string{"key"},
+				"additionalProperties": false,
+			},
+		},
+	}
+}
+
 func passTool() toolDefinition {
 	return toolDefinition{
 		Type: "function",
@@ -165,6 +221,15 @@ func passTool() toolDefinition {
 	}
 }
 
+func allTools() []toolDefinition {
+	return []toolDefinition{
+		replyTool(),
+		passTool(),
+		writeMemoryTool(),
+		deleteMemoryTool(),
+	}
+}
+
 // SendEvents sends protocol events to a model and returns its typed
 // response. The model must call either the "reply" or "pass" tool.
 func (c *OpenRouterClient) SendEvents(
@@ -184,10 +249,13 @@ func (c *OpenRouterClient) SendEvents(
 	)
 	defer span.End()
 
+	msgs := buildMessages(systemPrompt, history, events)
+	tools := allTools()
+
 	resp, err := c.chatCompletion(ctx, chatCompletionRequest{
 		Model:      string(modelID),
-		Messages:   buildMessages(systemPrompt, history, events),
-		Tools:      []toolDefinition{replyTool(), passTool()},
+		Messages:   msgs,
+		Tools:      tools,
 		ToolChoice: "required",
 	})
 	if err != nil {
@@ -197,12 +265,19 @@ func (c *OpenRouterClient) SendEvents(
 		return CompletionResult{}, err
 	}
 
-	result, err := parseCompletionResponse(resp)
+	result, assistantMsg, err := parseCompletionResponse(resp)
 	if err != nil {
 		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
 		span.SetStatus(codes.Error, err.Error())
 		logger.ErrorContext(ctx, "openrouter response parse failed", "error", err)
 		return CompletionResult{}, err
+	}
+
+	if len(result.PendingToolCalls) > 0 {
+		result.Conversation = &Conversation{
+			modelID:  modelID,
+			messages: append(msgs, assistantMsg),
+		}
 	}
 
 	result.Usage.SetSpanAttributes(span, result.RequestID)
@@ -216,6 +291,81 @@ func (c *OpenRouterClient) SendEvents(
 		"prompt_tokens", result.Usage.PromptTokens,
 		"completion_tokens", result.Usage.CompletionTokens,
 		"cost_credits", result.Usage.CostCredits,
+	)
+
+	return result, nil
+}
+
+// ContinueWithToolResults appends tool result messages to the
+// conversation and sends the next request.
+func (c *OpenRouterClient) ContinueWithToolResults(
+	ctx context.Context,
+	conv *Conversation,
+	results []ToolResult,
+) (CompletionResult, error) {
+	logger := slog.Default().With("component", "api.openrouter", "model_id", conv.modelID)
+	tracer := otel.Tracer("github.com/laney/modeloff/internal/api")
+
+	ctx, span := tracer.Start(ctx, "api.openrouter.continue_with_tool_results")
+	span.SetAttributes(
+		attribute.String(observability.AttrOperation, "api.openrouter.continue_with_tool_results"),
+		attribute.String(observability.AttrModelID, string(conv.modelID)),
+	)
+	defer span.End()
+
+	msgs := conv.messages
+	for _, r := range results {
+		msgs = append(msgs, chatMessage{
+			Role:       "tool",
+			Content:    r.Content,
+			ToolCallID: r.ToolCallID,
+		})
+	}
+
+	tools := allTools()
+
+	resp, err := c.chatCompletion(ctx, chatCompletionRequest{
+		Model:      string(conv.modelID),
+		Messages:   msgs,
+		Tools:      tools,
+		ToolChoice: "required",
+	})
+	if err != nil {
+		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+		span.SetStatus(codes.Error, err.Error())
+		logger.ErrorContext(ctx, "openrouter continue failed", "error", err)
+		return CompletionResult{}, err
+	}
+
+	result, assistantMsg, err := parseCompletionResponse(resp)
+	if err != nil {
+		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+		span.SetStatus(codes.Error, err.Error())
+		logger.ErrorContext(ctx, "openrouter continue parse failed", "error", err)
+		return CompletionResult{}, err
+	}
+
+	if len(result.PendingToolCalls) > 0 {
+		// Append tool results and the new assistant message for the
+		// next iteration.
+		nextMsgs := make([]chatMessage, len(msgs), len(msgs)+1)
+		copy(nextMsgs, msgs)
+		nextMsgs = append(nextMsgs, assistantMsg)
+
+		result.Conversation = &Conversation{
+			modelID:  conv.modelID,
+			messages: nextMsgs,
+		}
+	}
+
+	result.Usage.SetSpanAttributes(span, result.RequestID)
+	span.SetAttributes(attribute.String(observability.AttrResult, ResponseResultKind(result.Response)))
+
+	logger.InfoContext(
+		ctx,
+		"openrouter continue completed",
+		"request_id", result.RequestID,
+		"result", ResponseResultKind(result.Response),
 	)
 
 	return result, nil
@@ -241,9 +391,18 @@ func buildMessages(
 	return msgs
 }
 
-func parseCompletionResponse(resp chatCompletionResponse) (CompletionResult, error) {
+// parseCompletionResponse extracts the model's tool calls from an API
+// response. It returns the CompletionResult plus the raw assistant
+// message (needed to build the next turn in multi-turn exchanges).
+//
+// The model may call memory tools (write_memory, delete_memory) and/or
+// terminal tools (reply, pass) in a single response. Memory tool calls
+// are returned as PendingToolCalls; the first terminal tool call
+// finalises the Response. If only memory tools are present, the caller
+// must continue the conversation.
+func parseCompletionResponse(resp chatCompletionResponse) (CompletionResult, chatMessage, error) {
 	if len(resp.Choices) == 0 {
-		return CompletionResult{}, fmt.Errorf("no choices in response")
+		return CompletionResult{}, chatMessage{}, fmt.Errorf("no choices in response")
 	}
 
 	msg := resp.Choices[0].Message
@@ -252,53 +411,95 @@ func parseCompletionResponse(resp chatCompletionResponse) (CompletionResult, err
 		Usage:     usageFromResponse(resp.Usage),
 	}
 
+	assistantMsg := chatMessage{
+		Role:      "assistant",
+		ToolCalls: msg.ToolCalls,
+	}
+	if msg.Content != "" {
+		assistantMsg.Content = msg.Content
+	}
+
 	if len(msg.ToolCalls) == 0 {
 		result.Response = protocol.ModelResponse{
 			Kind:   protocol.ResponseSilence,
 			Reason: "model did not call a tool",
 		}
 
-		return result, nil
+		return result, assistantMsg, nil
 	}
 
-	call := msg.ToolCalls[0]
+	for _, call := range msg.ToolCalls {
+		switch call.Function.Name {
+		case "reply":
+			var args struct {
+				Messages []protocol.ReplyPart `json:"messages"`
+			}
 
-	switch call.Function.Name {
-	case "reply":
-		var args struct {
-			Messages []protocol.ReplyPart `json:"messages"`
+			if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
+				return CompletionResult{}, chatMessage{}, fmt.Errorf("parse reply args: %w", err)
+			}
+
+			result.Response = protocol.ModelResponse{
+				Kind:     protocol.ResponseReply,
+				Messages: args.Messages,
+			}
+
+			return result, assistantMsg, nil
+
+		case "pass":
+			var args struct {
+				Reason string `json:"reason"`
+			}
+
+			if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
+				return CompletionResult{}, chatMessage{}, fmt.Errorf("parse pass args: %w", err)
+			}
+
+			result.Response = protocol.ModelResponse{
+				Kind:   protocol.ResponseSilence,
+				Reason: args.Reason,
+			}
+
+			return result, assistantMsg, nil
+
+		case "write_memory":
+			var args struct {
+				Key     string `json:"key"`
+				Content string `json:"content"`
+			}
+
+			if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
+				return CompletionResult{}, chatMessage{}, fmt.Errorf("parse write_memory args: %w", err)
+			}
+
+			result.PendingToolCalls = append(result.PendingToolCalls, PendingToolCall{
+				ID:   call.ID,
+				Kind: ToolCallWriteMemory,
+				Key:  args.Key,
+				Body: args.Content,
+			})
+
+		case "delete_memory":
+			var args struct {
+				Key string `json:"key"`
+			}
+
+			if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
+				return CompletionResult{}, chatMessage{}, fmt.Errorf("parse delete_memory args: %w", err)
+			}
+
+			result.PendingToolCalls = append(result.PendingToolCalls, PendingToolCall{
+				ID:   call.ID,
+				Kind: ToolCallDeleteMemory,
+				Key:  args.Key,
+			})
+
+		default:
+			return CompletionResult{}, chatMessage{}, fmt.Errorf("unknown tool call: %q", call.Function.Name)
 		}
-
-		if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
-			return CompletionResult{}, fmt.Errorf("parse reply args: %w", err)
-		}
-
-		result.Response = protocol.ModelResponse{
-			Kind:     protocol.ResponseReply,
-			Messages: args.Messages,
-		}
-
-		return result, nil
-
-	case "pass":
-		var args struct {
-			Reason string `json:"reason"`
-		}
-
-		if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
-			return CompletionResult{}, fmt.Errorf("parse pass args: %w", err)
-		}
-
-		result.Response = protocol.ModelResponse{
-			Kind:   protocol.ResponseSilence,
-			Reason: args.Reason,
-		}
-
-		return result, nil
-
-	default:
-		return CompletionResult{}, fmt.Errorf("unknown tool call: %q", call.Function.Name)
 	}
+
+	return result, assistantMsg, nil
 }
 
 type modelsResponse struct {

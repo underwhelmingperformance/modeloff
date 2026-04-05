@@ -190,6 +190,16 @@ func (f *FakeAPI) SendEvents(
 	}, nil
 }
 
+func (f *FakeAPI) ContinueWithToolResults(
+	_ context.Context,
+	_ *api.Conversation,
+	_ []api.ToolResult,
+) (api.CompletionResult, error) {
+	return api.CompletionResult{
+		Response: protocol.ModelResponse{Kind: protocol.ResponseSilence},
+	}, nil
+}
+
 func (f *FakeAPI) GenerateNick(ctx context.Context, nickModel domain.ModelID, modelID domain.ModelID) (api.NicknameResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
