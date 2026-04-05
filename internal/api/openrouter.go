@@ -372,10 +372,22 @@ func parseCompletionResponse(resp *openai.ChatCompletion, rawResp *http.Response
 		return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, fmt.Errorf("no choices in response")
 	}
 
-	msg := resp.Choices[0].Message
+	choice := resp.Choices[0]
+	msg := choice.Message
 	result := CompletionResult{
 		RequestID: requestIDFromChatCompletion(resp, rawResp),
 		Usage:     usageFromResponse(resp.Usage),
+	}
+
+	if msg.Refusal != "" {
+		return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, &ErrModelRefused{Reason: msg.Refusal}
+	}
+
+	switch choice.FinishReason {
+	case "content_filter":
+		return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, ErrContentFiltered
+	case "length":
+		return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, ErrResponseTruncated
 	}
 
 	assistantMsg := msg.ToParam()
@@ -440,6 +452,10 @@ func parseCompletionResponse(resp *openai.ChatCompletion, rawResp *http.Response
 		default:
 			return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, fmt.Errorf("unknown response kind: %q", structured.Response.Kind)
 		}
+	}
+
+	if result.Response.Kind == "" && len(result.PendingToolCalls) == 0 {
+		return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, fmt.Errorf("model returned no response and no tool calls")
 	}
 
 	return result, assistantMsg, nil
@@ -552,7 +568,27 @@ func (c *OpenRouterClient) GenerateNick(ctx context.Context, nickModel domain.Mo
 		return NicknameResult{}, err
 	}
 
-	nick := sanitizeNick(resp.Choices[0].Message.Content)
+	choice := resp.Choices[0]
+
+	if choice.Message.Refusal != "" {
+		err := &ErrModelRefused{Reason: choice.Message.Refusal}
+		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+		span.SetStatus(codes.Error, err.Error())
+		return NicknameResult{}, err
+	}
+
+	switch choice.FinishReason {
+	case "content_filter":
+		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+		span.SetStatus(codes.Error, ErrContentFiltered.Error())
+		return NicknameResult{}, ErrContentFiltered
+	case "length":
+		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+		span.SetStatus(codes.Error, ErrResponseTruncated.Error())
+		return NicknameResult{}, ErrResponseTruncated
+	}
+
+	nick := sanitizeNick(choice.Message.Content)
 	if nick == "" {
 		err := fmt.Errorf("generate nick: model returned empty or unsalvageable response")
 		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))

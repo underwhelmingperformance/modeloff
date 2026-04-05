@@ -1065,6 +1065,25 @@ func (s *Session) sendWithRetry(
 
 		result, err := s.sendWithMemoryLoop(ctx, inst, prompt, history, events, mem)
 		if err != nil {
+			var refused *api.ErrModelRefused
+			if errors.As(err, &refused) {
+				return api.CompletionResult{
+					Response: protocol.ModelResponse{
+						Kind:   protocol.ResponseSilence,
+						Reason: refused.Reason,
+					},
+				}, nil
+			}
+
+			if errors.Is(err, api.ErrContentFiltered) {
+				return api.CompletionResult{
+					Response: protocol.ModelResponse{
+						Kind:   protocol.ResponseSilence,
+						Reason: "content filtered",
+					},
+				}, nil
+			}
+
 			return api.CompletionResult{}, err
 		}
 

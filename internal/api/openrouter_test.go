@@ -448,6 +448,110 @@ func TestOpenRouterClient_SendEvents_delete_memory(t *testing.T) {
 	require.NotNil(t, got.Conversation)
 }
 
+func TestOpenRouterClient_SendEvents_contentFiltered(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": "chatcmpl_filtered",
+			"choices": []map[string]any{
+				{
+					"message":       map[string]any{"role": "assistant", "content": ""},
+					"finish_reason": "content_filter",
+					"index":         0,
+				},
+			},
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
+
+	_, err := client.SendEvents(
+		t.Context(), "test/model", "prompt", nil,
+		[]protocol.IRCMessage{{Kind: protocol.KindPrivMsg, From: "a", Target: "#t", Body: "x"}},
+	)
+	require.ErrorIs(t, err, ErrContentFiltered)
+}
+
+func TestOpenRouterClient_SendEvents_truncated(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": "chatcmpl_trunc",
+			"choices": []map[string]any{
+				{
+					"message":       map[string]any{"role": "assistant", "content": ""},
+					"finish_reason": "length",
+					"index":         0,
+				},
+			},
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
+
+	_, err := client.SendEvents(
+		t.Context(), "test/model", "prompt", nil,
+		[]protocol.IRCMessage{{Kind: protocol.KindPrivMsg, From: "a", Target: "#t", Body: "x"}},
+	)
+	require.ErrorIs(t, err, ErrResponseTruncated)
+}
+
+func TestOpenRouterClient_SendEvents_refusal(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": "chatcmpl_refuse",
+			"choices": []map[string]any{
+				{
+					"message":       map[string]any{"role": "assistant", "content": "", "refusal": "I cannot do that"},
+					"finish_reason": "stop",
+					"index":         0,
+				},
+			},
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
+
+	_, err := client.SendEvents(
+		t.Context(), "test/model", "prompt", nil,
+		[]protocol.IRCMessage{{Kind: protocol.KindPrivMsg, From: "a", Target: "#t", Body: "x"}},
+	)
+
+	var refused *ErrModelRefused
+	require.ErrorAs(t, err, &refused)
+	require.Equal(t, "I cannot do that", refused.Reason)
+}
+
+func TestOpenRouterClient_SendEvents_emptyResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": "chatcmpl_empty",
+			"choices": []map[string]any{
+				{
+					"message":       map[string]any{"role": "assistant", "content": ""},
+					"finish_reason": "stop",
+					"index":         0,
+				},
+			},
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
+
+	_, err := client.SendEvents(
+		t.Context(), "test/model", "prompt", nil,
+		[]protocol.IRCMessage{{Kind: protocol.KindPrivMsg, From: "a", Target: "#t", Body: "x"}},
+	)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "no response and no tool calls")
+}
+
 func TestOpenRouterClient_ContinueWithToolResults(t *testing.T) {
 	firstCall := true
 

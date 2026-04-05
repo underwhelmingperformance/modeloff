@@ -5,6 +5,8 @@ package api
 
 import (
 	"context"
+	"errors"
+	"fmt"
 
 	openai "github.com/openai/openai-go"
 	"go.opentelemetry.io/otel/attribute"
@@ -14,6 +16,21 @@ import (
 	"github.com/laney/modeloff/internal/observability"
 	"github.com/laney/modeloff/internal/protocol"
 )
+
+// ErrContentFiltered indicates the response was blocked by a content filter.
+var ErrContentFiltered = errors.New("response blocked by content filter")
+
+// ErrResponseTruncated indicates the response was truncated due to token limits.
+var ErrResponseTruncated = errors.New("response truncated: hit token limit")
+
+// ErrModelRefused indicates the model refused to respond.
+type ErrModelRefused struct {
+	Reason string
+}
+
+func (e *ErrModelRefused) Error() string {
+	return fmt.Sprintf("model refused: %s", e.Reason)
+}
 
 // ModelInfo holds metadata about an available model from OpenRouter.
 type ModelInfo struct {

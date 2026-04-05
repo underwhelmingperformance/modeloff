@@ -2141,6 +2141,77 @@ func seedUserMessage(t *testing.T, s *storemod.FileStore, ch domain.ChannelName,
 	return msg, protocol.FromMessage(msg)
 }
 
+func TestSession_DispatchToChannel_content_filtered_returns_silence(t *testing.T) {
+	fake := &fakeAPIClient{
+		sendEventsFullFn: func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
+			return api.CompletionResult{}, api.ErrContentFiltered
+		},
+	}
+
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: set.NewOrdered[domain.ChannelName]("#general"),
+	})
+
+	_, ircMsg := seedUserMessage(t, s, "#general", "hello")
+
+	replies, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+	require.NoError(t, err)
+	require.Empty(t, replies)
+}
+
+func TestSession_DispatchToChannel_model_refused_returns_silence(t *testing.T) {
+	fake := &fakeAPIClient{
+		sendEventsFullFn: func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
+			return api.CompletionResult{}, &api.ErrModelRefused{Reason: "I cannot help with that"}
+		},
+	}
+
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: set.NewOrdered[domain.ChannelName]("#general"),
+	})
+
+	_, ircMsg := seedUserMessage(t, s, "#general", "hello")
+
+	replies, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+	require.NoError(t, err)
+	require.Empty(t, replies)
+}
+
+func TestSession_DispatchToChannel_truncated_returns_error(t *testing.T) {
+	fake := &fakeAPIClient{
+		sendEventsFullFn: func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
+			return api.CompletionResult{}, api.ErrResponseTruncated
+		},
+	}
+
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: set.NewOrdered[domain.ChannelName]("#general"),
+	})
+
+	_, ircMsg := seedUserMessage(t, s, "#general", "hello")
+
+	_, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+	require.ErrorIs(t, err, api.ErrResponseTruncated)
+}
+
 // drainEvents reads from the session events channel until n
 // DispatchDoneEvent values have been received, and returns all
 // events in order.
