@@ -69,38 +69,73 @@ type openRouterUsageExtras struct {
 	} `json:"cost_details"`
 }
 
-func replyTool() openai.ChatCompletionToolParam {
-	return openai.ChatCompletionToolParam{
-		Function: shared.FunctionDefinitionParam{
-			Name:        "reply",
-			Description: param.NewOpt("Send one or more messages to the channel. Each message is either a regular message or an action (/me). Keep each message short, like IRC."),
-			Strict:      param.NewOpt(true),
-			Parameters: shared.FunctionParameters{
-				"type": "object",
-				"properties": map[string]any{
-					"messages": map[string]any{
-						"type": "array",
-						"items": map[string]any{
-							"type": "object",
-							"properties": map[string]any{
-								"type": map[string]any{
-									"type":        "string",
-									"enum":        []string{"message", "action"},
-									"description": `"message" for a regular message, "action" for a /me action.`,
-								},
-								"body": map[string]any{
-									"type":        "string",
-									"description": "The message text. For actions, just the action body without /me.",
-								},
+func modelResponseSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"response": map[string]any{
+				"anyOf": []any{
+					map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"kind": map[string]any{
+								"type":  "string",
+								"const": "reply",
 							},
-							"required":             []string{"type", "body"},
-							"additionalProperties": false,
+							"messages": map[string]any{
+								"type": "array",
+								"items": map[string]any{
+									"type": "object",
+									"properties": map[string]any{
+										"type": map[string]any{
+											"type":        "string",
+											"enum":        []string{"message", "action"},
+											"description": `"message" for a regular message, "action" for a /me action.`,
+										},
+										"body": map[string]any{
+											"type":        "string",
+											"description": "The message text. For actions, just the action body without /me.",
+										},
+									},
+									"required":             []string{"type", "body"},
+									"additionalProperties": false,
+								},
+								"description": "One or more messages to send.",
+							},
 						},
-						"description": "One or more messages to send.",
+						"required":             []string{"kind", "messages"},
+						"additionalProperties": false,
+					},
+					map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"kind": map[string]any{
+								"type":  "string",
+								"const": "pass",
+							},
+							"reason": map[string]any{
+								"type":        "string",
+								"description": "A brief reason for not replying.",
+							},
+						},
+						"required":             []string{"kind", "reason"},
+						"additionalProperties": false,
 					},
 				},
-				"required":             []string{"messages"},
-				"additionalProperties": false,
+			},
+		},
+		"required":             []string{"response"},
+		"additionalProperties": false,
+	}
+}
+
+func responseFormat() openai.ChatCompletionNewParamsResponseFormatUnion {
+	return openai.ChatCompletionNewParamsResponseFormatUnion{
+		OfJSONSchema: &shared.ResponseFormatJSONSchemaParam{
+			JSONSchema: shared.ResponseFormatJSONSchemaJSONSchemaParam{
+				Name:   "model_response",
+				Schema: modelResponseSchema(),
+				Strict: param.NewOpt(true),
 			},
 		},
 	}
@@ -152,44 +187,16 @@ func deleteMemoryTool() openai.ChatCompletionToolParam {
 	}
 }
 
-func passTool() openai.ChatCompletionToolParam {
-	return openai.ChatCompletionToolParam{
-		Function: shared.FunctionDefinitionParam{
-			Name:        "pass",
-			Description: param.NewOpt("Explicitly choose not to reply. Use this when you have nothing to add."),
-			Strict:      param.NewOpt(true),
-			Parameters: shared.FunctionParameters{
-				"type": "object",
-				"properties": map[string]any{
-					"reason": map[string]any{
-						"type":        "string",
-						"description": "Brief reason for not replying.",
-					},
-				},
-				"required":             []string{"reason"},
-				"additionalProperties": false,
-			},
-		},
-	}
-}
-
-func allTools() []openai.ChatCompletionToolParam {
+func memoryTools() []openai.ChatCompletionToolParam {
 	return []openai.ChatCompletionToolParam{
-		replyTool(),
-		passTool(),
 		writeMemoryTool(),
 		deleteMemoryTool(),
 	}
 }
 
-func toolChoice() openai.ChatCompletionToolChoiceOptionUnionParam {
-	return openai.ChatCompletionToolChoiceOptionUnionParam{
-		OfAuto: param.NewOpt(string(openai.ChatCompletionToolChoiceOptionAutoRequired)),
-	}
-}
-
 // SendEvents sends protocol events to a model and returns its typed
-// response. The model must call either the "reply" or "pass" tool.
+// response. The model replies via structured JSON output (reply or
+// pass) and may optionally call memory tools.
 func (c *OpenRouterClient) SendEvents(
 	ctx context.Context,
 	modelID domain.ModelID,
@@ -208,13 +215,12 @@ func (c *OpenRouterClient) SendEvents(
 	defer span.End()
 
 	msgs := buildMessages(systemPrompt, history, events)
-	tools := allTools()
 
 	resp, rawResp, err := c.chatCompletion(ctx, openai.ChatCompletionNewParams{ //nolint:bodyclose // SDK reads and closes the body.
-		Model:      shared.ChatModel(string(modelID)),
-		Messages:   msgs,
-		Tools:      tools,
-		ToolChoice: toolChoice(),
+		Model:          shared.ChatModel(string(modelID)),
+		Messages:       msgs,
+		Tools:          memoryTools(),
+		ResponseFormat: responseFormat(),
 	})
 	if err != nil {
 		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
@@ -276,13 +282,11 @@ func (c *OpenRouterClient) ContinueWithToolResults(
 		msgs = append(msgs, openai.ToolMessage(r.Content, r.ToolCallID))
 	}
 
-	tools := allTools()
-
 	resp, rawResp, err := c.chatCompletion(ctx, openai.ChatCompletionNewParams{ //nolint:bodyclose // SDK reads and closes the body.
-		Model:      shared.ChatModel(string(conv.modelID)),
-		Messages:   msgs,
-		Tools:      tools,
-		ToolChoice: toolChoice(),
+		Model:          shared.ChatModel(string(conv.modelID)),
+		Messages:       msgs,
+		Tools:          memoryTools(),
+		ResponseFormat: responseFormat(),
 	})
 	if err != nil {
 		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
@@ -345,15 +349,24 @@ func buildMessages(
 	return msgs
 }
 
-// parseCompletionResponse extracts the model's tool calls from an API
-// response. It returns the CompletionResult plus the raw assistant
-// message (needed to build the next turn in multi-turn exchanges).
+type structuredModelResponse struct {
+	Response struct {
+		Kind     string               `json:"kind"`
+		Messages []protocol.ReplyPart `json:"messages,omitempty"`
+		Reason   string               `json:"reason,omitempty"`
+	} `json:"response"`
+}
+
+// parseCompletionResponse extracts the model's structured response and
+// any memory tool calls from an API response. It returns the
+// CompletionResult plus the raw assistant message (needed to build
+// the next turn in multi-turn exchanges).
 //
-// The model may call memory tools (write_memory, delete_memory) and/or
-// terminal tools (reply, pass) in a single response. Memory tool calls
-// are returned as PendingToolCalls; the first terminal tool call
-// finalises the Response. If only memory tools are present, the caller
-// must continue the conversation.
+// The model's reply/pass decision arrives as structured JSON in the
+// message content. Memory tool calls (write_memory, delete_memory)
+// arrive as tool_calls and are returned as PendingToolCalls. When
+// pending calls are present, the caller must continue the
+// conversation.
 func parseCompletionResponse(resp *openai.ChatCompletion, rawResp *http.Response) (CompletionResult, openai.ChatCompletionMessageParamUnion, error) {
 	if resp == nil || len(resp.Choices) == 0 {
 		return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, fmt.Errorf("no choices in response")
@@ -367,49 +380,8 @@ func parseCompletionResponse(resp *openai.ChatCompletion, rawResp *http.Response
 
 	assistantMsg := msg.ToParam()
 
-	if len(msg.ToolCalls) == 0 {
-		result.Response = protocol.ModelResponse{
-			Kind:   protocol.ResponseSilence,
-			Reason: "model did not call a tool",
-		}
-
-		return result, assistantMsg, nil
-	}
-
 	for _, call := range msg.ToolCalls {
 		switch call.Function.Name {
-		case "reply":
-			var args struct {
-				Messages []protocol.ReplyPart `json:"messages"`
-			}
-
-			if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
-				return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, fmt.Errorf("parse reply args: %w", err)
-			}
-
-			result.Response = protocol.ModelResponse{
-				Kind:     protocol.ResponseReply,
-				Messages: args.Messages,
-			}
-
-			return result, assistantMsg, nil
-
-		case "pass":
-			var args struct {
-				Reason string `json:"reason"`
-			}
-
-			if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
-				return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, fmt.Errorf("parse pass args: %w", err)
-			}
-
-			result.Response = protocol.ModelResponse{
-				Kind:   protocol.ResponseSilence,
-				Reason: args.Reason,
-			}
-
-			return result, assistantMsg, nil
-
 		case "write_memory":
 			var args struct {
 				Key     string `json:"key"`
@@ -444,6 +416,29 @@ func parseCompletionResponse(resp *openai.ChatCompletion, rawResp *http.Response
 
 		default:
 			return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, fmt.Errorf("unknown tool call: %q", call.Function.Name)
+		}
+	}
+
+	if msg.Content != "" {
+		var structured structuredModelResponse
+
+		if err := json.Unmarshal([]byte(msg.Content), &structured); err != nil {
+			return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, fmt.Errorf("parse structured response: %w", err)
+		}
+
+		switch structured.Response.Kind {
+		case "reply":
+			result.Response = protocol.ModelResponse{
+				Kind:     protocol.ResponseReply,
+				Messages: structured.Response.Messages,
+			}
+		case "pass":
+			result.Response = protocol.ModelResponse{
+				Kind:   protocol.ResponseSilence,
+				Reason: structured.Response.Reason,
+			}
+		default:
+			return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, fmt.Errorf("unknown response kind: %q", structured.Response.Kind)
 		}
 	}
 

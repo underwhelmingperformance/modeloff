@@ -35,21 +35,14 @@ type Usage struct {
 	UpstreamInferenceCost float64
 }
 
-// ToolCallKind identifies whether a tool call is a terminal action
-// (reply/pass) or an intermediate memory operation.
+// ToolCallKind identifies the type of memory tool call.
 type ToolCallKind string
 
 const (
-	// ToolCallReply is a terminal reply tool call.
-	ToolCallReply ToolCallKind = "reply"
-
-	// ToolCallPass is a terminal pass tool call.
-	ToolCallPass ToolCallKind = "pass"
-
-	// ToolCallWriteMemory is an intermediate write_memory tool call.
+	// ToolCallWriteMemory is a write_memory tool call.
 	ToolCallWriteMemory ToolCallKind = "write_memory"
 
-	// ToolCallDeleteMemory is an intermediate delete_memory tool call.
+	// ToolCallDeleteMemory is a delete_memory tool call.
 	ToolCallDeleteMemory ToolCallKind = "delete_memory"
 )
 

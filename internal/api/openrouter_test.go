@@ -95,17 +95,14 @@ func TestOpenRouterClient_ListModels(t *testing.T) {
 
 func TestOpenRouterClient_SendEvents(t *testing.T) {
 	tests := []struct {
-		name     string
-		toolCall toolCallFixture
-		want     CompletionResult
-		wantErr  bool
+		name    string
+		content string
+		want    CompletionResult
+		wantErr bool
 	}{
 		{
-			name: "model replies",
-			toolCall: toolCallFixture{
-				name: "reply",
-				args: `{"messages": [{"type": "message", "body": "Hello there!"}]}`,
-			},
+			name:    "model replies",
+			content: `{"response":{"kind":"reply","messages":[{"type":"message","body":"Hello there!"}]}}`,
 			want: CompletionResult{
 				RequestID: "chatcmpl_test",
 				Usage: Usage{
@@ -123,11 +120,8 @@ func TestOpenRouterClient_SendEvents(t *testing.T) {
 			},
 		},
 		{
-			name: "model passes",
-			toolCall: toolCallFixture{
-				name: "pass",
-				args: `{"reason": "Nothing to add"}`,
-			},
+			name:    "model passes",
+			content: `{"response":{"kind":"pass","reason":"Nothing to add"}}`,
 			want: CompletionResult{
 				RequestID: "chatcmpl_test",
 				Usage: Usage{
@@ -143,19 +137,13 @@ func TestOpenRouterClient_SendEvents(t *testing.T) {
 			},
 		},
 		{
-			name: "unknown tool call",
-			toolCall: toolCallFixture{
-				name: "unknown",
-				args: `{}`,
-			},
+			name:    "unknown response kind",
+			content: `{"response":{"kind":"shout","text":"HELLO"}}`,
 			wantErr: true,
 		},
 		{
-			name: "model replies with multiple messages including action",
-			toolCall: toolCallFixture{
-				name: "reply",
-				args: `{"messages": [{"type": "message", "body": "hey"}, {"type": "action", "body": "waves"}]}`,
-			},
+			name:    "model replies with multiple messages including action",
+			content: `{"response":{"kind":"reply","messages":[{"type":"message","body":"hey"},{"type":"action","body":"waves"}]}}`,
 			want: CompletionResult{
 				RequestID: "chatcmpl_test",
 				Usage: Usage{
@@ -177,7 +165,7 @@ func TestOpenRouterClient_SendEvents(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			srv := newChatServer(t, tt.toolCall)
+			srv := newStructuredChatServer(t, tt.content)
 
 			client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
 
@@ -211,10 +199,7 @@ func TestOpenRouterClient_SendEventsWithHistory(t *testing.T) {
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&receivedBody))
 
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(chatResponse(toolCallFixture{
-			name: "pass",
-			args: `{"reason": "just checking"}`,
-		}))
+		_ = json.NewEncoder(w).Encode(structuredChatResponse(`{"response":{"kind":"pass","reason":"just checking"}}`))
 	}))
 	t.Cleanup(srv.Close)
 
@@ -302,19 +287,9 @@ func TestOpenRouterClient_SendEvents_preservesOpenRouterUsageMetadata(t *testing
 				{
 					"message": map[string]any{
 						"role":    "assistant",
-						"content": "",
-						"tool_calls": []map[string]any{
-							{
-								"id":   "call_usage",
-								"type": "function",
-								"function": map[string]any{
-									"name":      "pass",
-									"arguments": `{"reason":"done"}`,
-								},
-							},
-						},
+						"content": `{"response":{"kind":"pass","reason":"done"}}`,
 					},
-					"finish_reason": "tool_calls",
+					"finish_reason": "stop",
 					"index":         0,
 				},
 			},
@@ -424,7 +399,7 @@ func TestSanitizeNick(t *testing.T) {
 }
 
 func TestOpenRouterClient_SendEvents_write_memory(t *testing.T) {
-	srv := newChatServer(t, toolCallFixture{
+	srv := newToolCallServer(t, toolCallFixture{
 		name: "write_memory",
 		args: `{"key": "mood", "content": "happy"}`,
 	})
@@ -449,7 +424,7 @@ func TestOpenRouterClient_SendEvents_write_memory(t *testing.T) {
 }
 
 func TestOpenRouterClient_SendEvents_delete_memory(t *testing.T) {
-	srv := newChatServer(t, toolCallFixture{
+	srv := newToolCallServer(t, toolCallFixture{
 		name: "delete_memory",
 		args: `{"key": "old_stuff"}`,
 	})
@@ -485,7 +460,7 @@ func TestOpenRouterClient_ContinueWithToolResults(t *testing.T) {
 		if firstCall {
 			firstCall = false
 
-			require.NoError(t, json.NewEncoder(w).Encode(chatResponse(toolCallFixture{
+			require.NoError(t, json.NewEncoder(w).Encode(toolCallResponse(toolCallFixture{
 				name: "write_memory",
 				args: `{"key": "mood", "content": "happy"}`,
 			})))
@@ -505,10 +480,9 @@ func TestOpenRouterClient_ContinueWithToolResults(t *testing.T) {
 			"tool_call_id": "call_123",
 		}, lastMsg)
 
-		require.NoError(t, json.NewEncoder(w).Encode(chatResponse(toolCallFixture{
-			name: "reply",
-			args: `{"messages": [{"type": "message", "body": "stored it"}]}`,
-		})))
+		require.NoError(t, json.NewEncoder(w).Encode(structuredChatResponse(
+			`{"response":{"kind":"reply","messages":[{"type":"message","body":"stored it"}]}}`,
+		)))
 	}))
 	t.Cleanup(srv.Close)
 
@@ -548,7 +522,29 @@ type toolCallFixture struct {
 	args string
 }
 
-func chatResponse(tc toolCallFixture) map[string]any {
+func structuredChatResponse(content string) map[string]any {
+	return map[string]any{
+		"id": "chatcmpl_test",
+		"usage": map[string]any{
+			"prompt_tokens":     10,
+			"completion_tokens": 5,
+			"total_tokens":      15,
+			"cost":              0.125,
+		},
+		"choices": []map[string]any{
+			{
+				"message": map[string]any{
+					"role":    "assistant",
+					"content": content,
+				},
+				"finish_reason": "stop",
+				"index":         0,
+			},
+		},
+	}
+}
+
+func toolCallResponse(tc toolCallFixture) map[string]any {
 	return map[string]any{
 		"id": "chatcmpl_test",
 		"usage": map[string]any{
@@ -580,7 +576,7 @@ func chatResponse(tc toolCallFixture) map[string]any {
 	}
 }
 
-func newChatServer(t *testing.T, tc toolCallFixture) *httptest.Server {
+func newStructuredChatServer(t *testing.T, content string) *httptest.Server {
 	t.Helper()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -589,7 +585,23 @@ func newChatServer(t *testing.T, tc toolCallFixture) *httptest.Server {
 		require.Equal(t, "Bearer test-key", r.Header.Get("Authorization"))
 
 		w.Header().Set("Content-Type", "application/json")
-		require.NoError(t, json.NewEncoder(w).Encode(chatResponse(tc)))
+		require.NoError(t, json.NewEncoder(w).Encode(structuredChatResponse(content)))
+	}))
+	t.Cleanup(srv.Close)
+
+	return srv
+}
+
+func newToolCallServer(t *testing.T, tc toolCallFixture) *httptest.Server {
+	t.Helper()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodPost, r.Method)
+		require.Equal(t, "/chat/completions", r.URL.Path)
+		require.Equal(t, "Bearer test-key", r.Header.Get("Authorization"))
+
+		w.Header().Set("Content-Type", "application/json")
+		require.NoError(t, json.NewEncoder(w).Encode(toolCallResponse(tc)))
 	}))
 	t.Cleanup(srv.Close)
 
