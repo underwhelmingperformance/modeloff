@@ -209,6 +209,17 @@ func (c TopicCommand) Run(rc Context) tea.Cmd {
 		return noChannelCmd()
 	}
 
+	if len(c.Topic) == 0 {
+		return func() tea.Msg {
+			ch, err := rc.Session.GetChannel(rc.Ctx, rc.Active)
+			if err != nil {
+				return errorEvent("topic", err)
+			}
+
+			return TopicInfoResult{Channel: ch}
+		}
+	}
+
 	return func() tea.Msg {
 		evt, err := rc.Session.SetTopic(rc.Ctx, rc.Active, strings.Join(c.Topic, " "))
 		if err != nil {

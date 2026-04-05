@@ -36,6 +36,11 @@ type WhoisResult struct {
 	Instance domain.ModelInstance
 }
 
+// TopicInfoResult carries the current topic metadata for display.
+type TopicInfoResult struct {
+	Channel domain.Channel
+}
+
 // ListResult carries the channel list for a /list reply.
 type ListResult struct {
 	Channels []domain.Channel

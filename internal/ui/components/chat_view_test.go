@@ -521,14 +521,32 @@ func TestRenderLine_IRC_events(t *testing.T) {
 			"*** alice is now known as bob",
 		},
 		{
-			"topic_set",
+			"topic_set_with_author",
+			components.TopicChange{TopicChangeEvent: domain.TopicChangeEvent{Channel: "#general", Topic: "cool topic", By: "alice"}},
+			"*** topic for #general set by alice: cool topic",
+		},
+		{
+			"topic_set_no_author",
 			components.TopicChange{TopicChangeEvent: domain.TopicChangeEvent{Channel: "#general", Topic: "cool topic"}},
 			"*** topic for #general set to: cool topic",
 		},
 		{
 			"topic_cleared",
-			components.TopicChange{TopicChangeEvent: domain.TopicChangeEvent{Channel: "#general", Topic: ""}},
-			"*** topic for #general cleared",
+			components.TopicChange{TopicChangeEvent: domain.TopicChangeEvent{Channel: "#general", Topic: "", By: "alice"}},
+			"*** topic for #general cleared by alice",
+		},
+		{
+			"topic_info_with_metadata",
+			components.TopicInfo{Channel: domain.Channel{
+				Name: "#general", Topic: "cool topic",
+				TopicSetBy: "alice", TopicSetAt: time.Date(2026, 4, 4, 23, 30, 0, 0, time.UTC),
+			}},
+			"*** topic for #general: cool topic (set by alice on 2026-04-04 23:30)",
+		},
+		{
+			"topic_info_no_topic",
+			components.TopicInfo{Channel: domain.Channel{Name: "#general"}},
+			"*** No topic set for #general",
 		},
 		{
 			"model_invited",

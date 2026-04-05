@@ -221,10 +221,26 @@ func TestChatScreen_topic_command(t *testing.T) {
 	waitForOutput(t, tm, "#general")
 
 	submitText(tm, "/topic cool topic")
-	waitForOutput(t, tm, "topic for #general set to: cool topic")
+	waitForOutput(t, tm, "topic for #general set by testuser: cool topic")
 }
 
-func TestChatScreen_topic_clear(t *testing.T) {
+func TestChatScreen_topic_show_info(t *testing.T) {
+	sess := newTestSession(t)
+	seedChannel(t, sess, "#general")
+
+	tm := newChatApp(t, sess)
+	waitForOutput(t, tm, "#general")
+
+	// Set a topic first.
+	submitText(tm, "/topic cool topic")
+	waitForOutput(t, tm, "cool topic")
+
+	// /topic with no args shows info.
+	submitText(tm, "/topic")
+	waitForOutput(t, tm, "topic for #general: cool topic", "set by testuser")
+}
+
+func TestChatScreen_topic_show_info_no_topic(t *testing.T) {
 	sess := newTestSession(t)
 	seedChannel(t, sess, "#general")
 
@@ -232,7 +248,7 @@ func TestChatScreen_topic_clear(t *testing.T) {
 	waitForOutput(t, tm, "#general")
 
 	submitText(tm, "/topic")
-	waitForOutput(t, tm, "topic for #general cleared")
+	waitForOutput(t, tm, "No topic set for #general")
 }
 
 func TestChatScreen_whois_command(t *testing.T) {

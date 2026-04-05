@@ -171,6 +171,12 @@ func (s *ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 			Lines:   []components.ChatLine{components.Help{}},
 		})
 
+	case chatcmd.TopicInfoResult:
+		return s, msgCmd(components.AppendLinesMsg{
+			Channel: s.active,
+			Lines:   []components.ChatLine{components.TopicInfo{Channel: msg.Channel}},
+		})
+
 	case chatcmd.WhoisResult:
 		return s, msgCmd(components.AppendLinesMsg{
 			Channel: s.active,

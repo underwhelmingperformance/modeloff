@@ -58,6 +58,11 @@ type ModelKicked struct{ domain.ModelKickedEvent }
 
 func (ModelKicked) chatLine() {}
 
+// TopicInfo displays the current topic with metadata (who set it, when).
+type TopicInfo struct{ Channel domain.Channel }
+
+func (TopicInfo) chatLine() {}
+
 // Application feedback — typed by origin.
 
 // Help is the output of the /help command.

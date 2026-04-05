@@ -340,9 +340,28 @@ func (m *MessageList) renderLine(line ChatLine, width int) string {
 			fmt.Sprintf("*** %s is now known as %s", l.OldNick, l.NewNick)))
 
 	case TopicChange:
-		text := fmt.Sprintf("topic for %s set to: %s", l.Channel, l.Topic)
+		var text string
+
 		if l.Topic == "" {
-			text = fmt.Sprintf("topic for %s cleared", l.Channel)
+			text = fmt.Sprintf("topic for %s cleared by %s", l.Channel, l.By)
+		} else if l.By != "" {
+			text = fmt.Sprintf("topic for %s set by %s: %s", l.Channel, l.By, l.Topic)
+		} else {
+			text = fmt.Sprintf("topic for %s set to: %s", l.Channel, l.Topic)
+		}
+
+		return wrap.Render(theme.SystemEvent.Render("*** " + text))
+
+	case TopicInfo:
+		if l.Channel.Topic == "" {
+			return wrap.Render(theme.SystemEvent.Render(
+				fmt.Sprintf("*** No topic set for %s", l.Channel.Name)))
+		}
+
+		text := fmt.Sprintf("topic for %s: %s", l.Channel.Name, l.Channel.Topic)
+		if l.Channel.TopicSetBy != "" {
+			text += fmt.Sprintf(" (set by %s on %s)",
+				l.Channel.TopicSetBy, l.Channel.TopicSetAt.Format("2006-01-02 15:04"))
 		}
 
 		return wrap.Render(theme.SystemEvent.Render("*** " + text))

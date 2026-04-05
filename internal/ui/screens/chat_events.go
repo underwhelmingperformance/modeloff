@@ -39,6 +39,19 @@ func (s *ChatScreen) handleInitialLoad(msg domain.InitialLoadEvent) (ui.Model, t
 		Active:   msg.Active,
 		Unread:   msg.Unread,
 	}))
+	if msg.Active != "" && msg.Topic != "" {
+		for _, ch := range s.channels {
+			if ch.Name == msg.Active {
+				cmds = append(cmds, msgCmd(components.AppendLinesMsg{
+					Channel: msg.Active,
+					Lines:   []components.ChatLine{components.TopicInfo{Channel: ch}},
+				}))
+
+				break
+			}
+		}
+	}
+
 	cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: msg.Members}))
 	cmds = append(cmds, msgCmd(components.CommandStateMsg{
 		Commands: s.Commands(),

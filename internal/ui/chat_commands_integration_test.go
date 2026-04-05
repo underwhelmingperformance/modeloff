@@ -118,13 +118,13 @@ func TestApp_title_list_and_help_commands_with_teatest(t *testing.T) {
 	waitForOutput(t, tm, "#random")
 
 	submitText(tm, "/topic cool topic")
-	waitForOutput(t, tm, "topic for #random set to: cool topic")
+	waitForOutput(t, tm, "topic for #random set by testuser: cool topic")
 
 	submitText(tm, "/list")
 	waitForOutput(t, tm, "#general", "#random — cool topic")
 
 	submitText(tm, "/topic")
-	waitForOutput(t, tm, "topic for #random cleared")
+	waitForOutput(t, tm, "topic for #random: cool topic", "set by testuser")
 
 	submitText(tm, "/help")
 	waitForOutput(t, tm, "/join", "/help")
