@@ -42,10 +42,7 @@ func (s *ChatScreen) handleInitialLoad(msg domain.InitialLoadEvent) (ui.Model, t
 	if msg.Active != "" && msg.Topic != "" {
 		for _, ch := range s.channels {
 			if ch.Name == msg.Active {
-				cmds = append(cmds, msgCmd(components.AppendLinesMsg{
-					Channel: msg.Active,
-					Lines:   []components.ChatLine{components.TopicInfo{Channel: ch}},
-				}))
+				cmds = append(cmds, msgCmd(components.TopicInfo{Channel: ch}))
 
 				break
 			}
@@ -168,7 +165,7 @@ func (s *ChatScreen) handlePartEvent(msg domain.PartEvent) (ui.Model, tea.Cmd) {
 			s.topic = ""
 		}
 
-		var lines []components.ChatLine
+		var lines []tea.Msg
 
 		if s.active != "" {
 			messages, _ := s.sess.Messages(s.ctx, s.active)
@@ -201,12 +198,7 @@ func (s *ChatScreen) handlePartEvent(msg domain.PartEvent) (ui.Model, tea.Cmd) {
 	}))
 
 	if !leavingActive && s.active == msg.Channel {
-		cmds = append(cmds, msgCmd(components.AppendLinesMsg{
-			Channel: msg.Channel,
-			Lines: []components.ChatLine{
-				components.Part{PartEvent: msg},
-			},
-		}))
+		cmds = append(cmds, msgCmd(components.Part{PartEvent: msg}))
 	}
 
 	return s, tea.Batch(cmds...)
@@ -226,12 +218,7 @@ func (s *ChatScreen) handleTopicChangeEvent(msg domain.TopicChangeEvent) (ui.Mod
 		cmds = append(cmds, msgCmd(components.TopicUpdatedMsg{
 			Topic: msg.Topic,
 		}))
-		cmds = append(cmds, msgCmd(components.AppendLinesMsg{
-			Channel: msg.Channel,
-			Lines: []components.ChatLine{
-				components.TopicChange{TopicChangeEvent: msg},
-			},
-		}))
+		cmds = append(cmds, msgCmd(components.TopicChange{TopicChangeEvent: msg}))
 	}
 
 	return s, tea.Batch(cmds...)
@@ -255,12 +242,7 @@ func (s *ChatScreen) handleNickChangeEvent(msg domain.NickChangeEvent) (ui.Model
 	}))
 
 	if s.active != "" {
-		cmds = append(cmds, msgCmd(components.AppendLinesMsg{
-			Channel: s.active,
-			Lines: []components.ChatLine{
-				components.NickChange{NickChangeEvent: msg},
-			},
-		}))
+		cmds = append(cmds, msgCmd(components.NickChange{NickChangeEvent: msg}))
 	}
 
 	return s, tea.Batch(cmds...)
@@ -283,12 +265,7 @@ func (s *ChatScreen) handleModelInvitedEvent(msg domain.ModelInvitedEvent) (ui.M
 	}))
 
 	if s.active == msg.Channel {
-		cmds = append(cmds, msgCmd(components.AppendLinesMsg{
-			Channel: msg.Channel,
-			Lines: []components.ChatLine{
-				components.ModelInvited{ModelInvitedEvent: msg},
-			},
-		}))
+		cmds = append(cmds, msgCmd(components.ModelInvited{ModelInvitedEvent: msg}))
 	}
 
 	return s, tea.Batch(cmds...)
@@ -311,12 +288,7 @@ func (s *ChatScreen) handleModelKickedEvent(msg domain.ModelKickedEvent) (ui.Mod
 	}))
 
 	if s.active == msg.Channel {
-		cmds = append(cmds, msgCmd(components.AppendLinesMsg{
-			Channel: msg.Channel,
-			Lines: []components.ChatLine{
-				components.ModelKicked{ModelKickedEvent: msg},
-			},
-		}))
+		cmds = append(cmds, msgCmd(components.ModelKicked{ModelKickedEvent: msg}))
 	}
 
 	return s, tea.Batch(cmds...)
@@ -416,25 +388,15 @@ func (s *ChatScreen) handleConfigChangedEvent(msg domain.ConfigChangedEvent) (ui
 		return s, nil
 	}
 
-	return s, msgCmd(components.AppendLinesMsg{
-		Channel: s.active,
-		Lines: []components.ChatLine{
-			components.ConfigChanged{Operation: msg.Operation},
-		},
-	})
+	return s, msgCmd(components.ConfigChanged{Operation: msg.Operation})
 }
 
 func (s *ChatScreen) handleErrorEvent(msg domain.ErrorEvent) (ui.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
-	cmds = append(cmds, msgCmd(components.AppendLinesMsg{
-		Channel: s.active,
-		Lines: []components.ChatLine{
-			components.BackendError{
-				Operation: msg.Operation,
-				Err:       msg.Err,
-			},
-		},
+	cmds = append(cmds, msgCmd(components.BackendError{
+		Operation: msg.Operation,
+		Err:       msg.Err,
 	}))
 	cmds = append(cmds, msgCmd(components.PendingResponseMsg{Pending: false}))
 	cmds = append(cmds, msgCmd(components.NickListThinkingMsg{}))

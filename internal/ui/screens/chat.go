@@ -166,67 +166,38 @@ func (s *ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		return s.handleEventBatch(msg)
 
 	case chatcmd.HelpResult:
-		return s, msgCmd(components.AppendLinesMsg{
-			Channel: s.active,
-			Lines:   []components.ChatLine{components.Help{}},
-		})
+		return s, msgCmd(components.Help{})
 
 	case chatcmd.TopicInfoResult:
-		return s, msgCmd(components.AppendLinesMsg{
-			Channel: s.active,
-			Lines:   []components.ChatLine{components.TopicInfo{Channel: msg.Channel}},
-		})
+		return s, msgCmd(components.TopicInfo{Channel: msg.Channel})
 
 	case chatcmd.WhoisResult:
-		return s, msgCmd(components.AppendLinesMsg{
-			Channel: s.active,
-			Lines:   []components.ChatLine{components.Whois{ModelInstance: msg.Instance}},
-		})
+		return s, msgCmd(components.Whois{ModelInstance: msg.Instance})
 
 	case chatcmd.ListResult:
-		return s, msgCmd(components.AppendLinesMsg{
-			Channel: s.active,
-			Lines:   []components.ChatLine{components.ChannelList{Channels: msg.Channels}},
-		})
+		return s, msgCmd(components.ChannelList{Channels: msg.Channels})
 
 	case chatcmd.UsageError:
-		return s, msgCmd(components.AppendLinesMsg{
-			Channel: s.active,
-			Lines:   []components.ChatLine{components.UsageHint{Command: msg.Command}},
-		})
+		return s, msgCmd(components.UsageHint{Command: msg.Command})
 
 	case chatcmd.NoChannelError:
-		return s, msgCmd(components.AppendLinesMsg{
-			Channel: s.active,
-			Lines:   []components.ChatLine{components.NoChannel{}},
-		})
+		return s, msgCmd(components.NoChannel{})
 
 	case chatcmd.APIKeySetResult:
-		cmd := msgCmd(components.AppendLinesMsg{
-			Channel: s.active,
-			Lines:   []components.ChatLine{components.APIKeySaved{}},
-		})
-
-		return s, tea.Batch(cmd, s.loadLiveModels())
+		return s, tea.Batch(
+			msgCmd(components.APIKeySaved{}),
+			s.loadLiveModels(),
+		)
 
 	case chatcmd.PokeIntervalSetResult:
-		return s, msgCmd(components.AppendLinesMsg{
-			Channel: s.active,
-			Lines:   []components.ChatLine{components.PokeIntervalSet{Interval: msg.Interval}},
-		})
+		return s, msgCmd(components.PokeIntervalSet{Interval: msg.Interval})
 
 	case chatcmd.NickModelSetResult:
-		return s, msgCmd(components.AppendLinesMsg{
-			Channel: s.active,
-			Lines:   []components.ChatLine{components.NickModelSet{ModelID: msg.ModelID}},
-		})
+		return s, msgCmd(components.NickModelSet{ModelID: msg.ModelID})
 
 	case chatcmd.HighlightWordsSetResult:
 		return s, tea.Batch(
-			msgCmd(components.AppendLinesMsg{
-				Channel: s.active,
-				Lines:   []components.ChatLine{components.ConfigChanged{Operation: fmt.Sprintf("highlight words set to: %v", msg.Words)}},
-			}),
+			msgCmd(components.ConfigChanged{Operation: fmt.Sprintf("highlight words set to: %v", msg.Words)}),
 			msgCmd(components.HighlightWordsMsg{
 				Words:    msg.Words,
 				UserNick: s.sess.UserNick(),
@@ -297,10 +268,7 @@ func (s *ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 	case components.MessageSubmitMsg:
 		if s.active == "" {
-			return s, msgCmd(components.AppendLinesMsg{
-				Channel: s.active,
-				Lines:   []components.ChatLine{components.NoChannel{}},
-			})
+			return s, msgCmd(components.NoChannel{})
 		}
 
 		cmd := msgCmd(components.PendingResponseMsg{Pending: true})

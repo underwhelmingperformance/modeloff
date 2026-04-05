@@ -13,113 +13,69 @@ import (
 	"github.com/laney/modeloff/internal/ui/theme"
 )
 
-// ChatLine is a single line in the chat view. It is either a user or
-// model message, or a system event.
-type ChatLine interface {
-	chatLine()
-}
-
 // MessageLine wraps a domain.Message for display in the chat view.
 type MessageLine struct {
 	Message domain.Message
 }
-
-func (MessageLine) chatLine() {}
 
 // IRC lifecycle events — rendered with "*** " prefix.
 
 // Join represents a user joining a channel.
 type Join struct{ domain.JoinEvent }
 
-func (Join) chatLine() {}
-
 // Part represents a user leaving a channel.
 type Part struct{ domain.PartEvent }
-
-func (Part) chatLine() {}
 
 // NickChange represents a nick change.
 type NickChange struct{ domain.NickChangeEvent }
 
-func (NickChange) chatLine() {}
-
 // TopicChange represents a channel topic change.
 type TopicChange struct{ domain.TopicChangeEvent }
-
-func (TopicChange) chatLine() {}
 
 // ModelInvited represents a model being invited to a channel.
 type ModelInvited struct{ domain.ModelInvitedEvent }
 
-func (ModelInvited) chatLine() {}
-
 // ModelKicked represents a model being kicked from a channel.
 type ModelKicked struct{ domain.ModelKickedEvent }
 
-func (ModelKicked) chatLine() {}
-
 // TopicInfo displays the current topic with metadata (who set it, when).
 type TopicInfo struct{ Channel domain.Channel }
-
-func (TopicInfo) chatLine() {}
 
 // Application feedback — typed by origin.
 
 // Help is the output of the /help command.
 type Help struct{}
 
-func (Help) chatLine() {}
-
 // Whois is the output of the /whois command.
 type Whois struct{ domain.ModelInstance }
-
-func (Whois) chatLine() {}
 
 // ChannelList is the output of the /list command.
 type ChannelList struct{ Channels []domain.Channel }
 
-func (ChannelList) chatLine() {}
-
 // APIKeySaved confirms the API key was persisted.
 type APIKeySaved struct{}
-
-func (APIKeySaved) chatLine() {}
 
 // PokeIntervalSet confirms the poke interval was changed.
 type PokeIntervalSet struct{ Interval time.Duration }
 
-func (PokeIntervalSet) chatLine() {}
-
 // NickModelSet confirms the nick generation model was changed.
 type NickModelSet struct{ ModelID domain.ModelID }
-
-func (NickModelSet) chatLine() {}
 
 // DMOpened confirms a direct message was opened.
 type DMOpened struct{ Nick domain.Nick }
 
-func (DMOpened) chatLine() {}
-
 // UsageHint is a warning about incorrect command usage.
 type UsageHint struct{ Command string }
-
-func (UsageHint) chatLine() {}
 
 // NoChannel is a warning shown when a command requires an active
 // channel but none is selected.
 type NoChannel struct{}
 
-func (NoChannel) chatLine() {}
-
 // CommandError wraps any error from command execution.
 type CommandError struct{ Err error }
 
-func (CommandError) chatLine() {}
-
 // ConfigChanged confirms a configuration change.
 type ConfigChanged struct{ Operation string }
-
-func (ConfigChanged) chatLine() {}
 
 // BackendError wraps a backend error for display in the chat view.
 type BackendError struct {
@@ -127,17 +83,13 @@ type BackendError struct {
 	Err       error
 }
 
-func (BackendError) chatLine() {}
-
 // NewMessagesDivider is a separator inserted into the chat view when
 // new messages arrive while the viewport is scrolled up.
 type NewMessagesDivider struct{}
 
-func (NewMessagesDivider) chatLine() {}
-
-// MessagesToLines converts a slice of domain messages into chat lines.
-func MessagesToLines(msgs []domain.Message) []ChatLine {
-	lines := make([]ChatLine, len(msgs))
+// MessagesToLines converts a slice of domain messages into line values.
+func MessagesToLines(msgs []domain.Message) []tea.Msg {
+	lines := make([]tea.Msg, len(msgs))
 
 	for i, m := range msgs {
 		lines[i] = MessageLine{Message: m}
@@ -149,15 +101,7 @@ func MessagesToLines(msgs []domain.Message) []ChatLine {
 // MessagesUpdatedMsg tells the chat view to refresh its message list.
 type MessagesUpdatedMsg struct {
 	Channel domain.ChannelName
-	Lines   []ChatLine
-}
-
-// AppendLinesMsg appends lines to the chat view incrementally, without
-// replacing the entire message list. This is more efficient when adding
-// system events or individual messages.
-type AppendLinesMsg struct {
-	Channel domain.ChannelName
-	Lines   []ChatLine
+	Lines   []tea.Msg
 }
 
 // PendingResponseMsg sets or clears the "awaiting response" indicator
@@ -171,12 +115,12 @@ type PendingResponseMsg struct {
 type SetChannelMsg struct {
 	Channel domain.ChannelName
 	Topic   string
-	Lines   []ChatLine
+	Lines   []tea.Msg
 }
 
 // SetLinesMsg replaces the displayed lines, preserving divider logic.
 type SetLinesMsg struct {
-	Lines []ChatLine
+	Lines []tea.Msg
 }
 
 // SetPlaceholderMsg sets text to show when there are no messages.
@@ -217,7 +161,7 @@ type chatViewLayout struct {
 }
 
 // NewChatView creates a chat view for the given channel.
-func NewChatView(ch domain.ChannelName, userNick domain.Nick, topic string, lines []ChatLine) *ChatView {
+func NewChatView(ch domain.ChannelName, userNick domain.Nick, topic string, lines []tea.Msg) *ChatView {
 	keyMap := DefaultChatViewKeyMap
 
 	ml := NewMessageList(ch, lines)
@@ -325,7 +269,10 @@ func (c *ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 		return c, nil
 
-	case SetLinesMsg, SetPlaceholderMsg, PendingResponseMsg, MessagesUpdatedMsg, AppendLinesMsg, HighlightWordsMsg:
+	case SetLinesMsg, SetPlaceholderMsg, PendingResponseMsg, MessagesUpdatedMsg, HighlightWordsMsg,
+		MessageLine, Join, Part, NickChange, TopicChange, ModelInvited, ModelKicked, TopicInfo,
+		Help, Whois, ChannelList, APIKeySaved, PokeIntervalSet, NickModelSet, DMOpened,
+		UsageHint, NoChannel, CommandError, ConfigChanged, BackendError, NewMessagesDivider:
 		_, cmd := c.messages.Update(msg)
 		return c, cmd
 

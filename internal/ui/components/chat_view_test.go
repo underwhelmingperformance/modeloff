@@ -140,39 +140,18 @@ func TestChatView_messages_updated_wrong_channel(t *testing.T) {
 	require.Contains(t, v, "hello")
 }
 
-func TestChatView_append_lines(t *testing.T) {
+func TestChatView_append_line(t *testing.T) {
 	cv := components.NewChatView("#general", "testuser", "", testMessages)
 	var m ui.Model = cv
 
-	newLines := []components.ChatLine{
-		components.MessageLine{
-			Message: domain.Message{ID: "10", Channel: "#general", From: "dave", Body: "appended message"},
-		},
-	}
-
-	m, _ = m.Update(components.AppendLinesMsg{
-		Channel: "#general",
-		Lines:   newLines,
+	m, _ = m.Update(components.MessageLine{
+		Message: domain.Message{ID: "10", Channel: "#general", From: "dave", Body: "appended message"},
 	})
 
 	v := m.View(80, 24)
 	require.Contains(t, v, "appended message")
 	require.Contains(t, v, "dave")
 	// Original messages should still be there.
-	require.Contains(t, v, "hello")
-}
-
-func TestChatView_append_lines_wrong_channel(t *testing.T) {
-	cv := components.NewChatView("#general", "testuser", "", testMessages)
-	var m ui.Model = cv
-
-	m, _ = m.Update(components.AppendLinesMsg{
-		Channel: "#other",
-		Lines:   nil,
-	})
-
-	// Should still show the original messages, unchanged.
-	v := m.View(80, 24)
 	require.Contains(t, v, "hello")
 }
 
@@ -470,12 +449,12 @@ func TestChatView_pending_indicator_reduces_message_area(t *testing.T) {
 	require.Contains(t, v, "responding")
 }
 
-func renderSingleLine(line components.ChatLine) string {
+func renderSingleLine(line tea.Msg) string {
 	return renderSingleLineWithHighlight(line, nil, "testuser")
 }
 
-func renderSingleLineWithHighlight(line components.ChatLine, words []string, nick domain.Nick) string {
-	cv := components.NewChatView("#test", nick, "", []components.ChatLine{line})
+func renderSingleLineWithHighlight(line tea.Msg, words []string, nick domain.Nick) string {
+	cv := components.NewChatView("#test", nick, "", []tea.Msg{line})
 	cv.Update(components.CommandStateMsg{
 		Commands: command.Set{
 			Commands: []*command.Node{
@@ -497,7 +476,7 @@ func renderSingleLineWithHighlight(line components.ChatLine, words []string, nic
 func TestRenderLine_IRC_events(t *testing.T) {
 	tests := []struct {
 		name string
-		line components.ChatLine
+		line tea.Msg
 		want string
 	}{
 		{
@@ -588,7 +567,7 @@ func TestRenderLine_IRC_events(t *testing.T) {
 func TestRenderLine_application_feedback(t *testing.T) {
 	tests := []struct {
 		name string
-		line components.ChatLine
+		line tea.Msg
 		want string
 	}{
 		{
@@ -679,7 +658,7 @@ func TestRenderLine_application_feedback(t *testing.T) {
 }
 
 func TestNewMessagesDivider_fills_width(t *testing.T) {
-	cv := components.NewChatView("#test", "testuser", "", []components.ChatLine{
+	cv := components.NewChatView("#test", "testuser", "", []tea.Msg{
 		components.NewMessagesDivider{},
 	})
 

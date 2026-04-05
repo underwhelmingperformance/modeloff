@@ -27,7 +27,7 @@ type HighlightWordsMsg struct {
 // and an empty-state placeholder.
 type MessageList struct {
 	channel     domain.ChannelName
-	lines       []ChatLine
+	lines       []tea.Msg
 	viewport    viewport.Model
 	pending     bool
 	spinner     spinner.Model
@@ -42,7 +42,7 @@ type MessageList struct {
 }
 
 // NewMessageList creates a message list for the given channel.
-func NewMessageList(ch domain.ChannelName, lines []ChatLine) *MessageList {
+func NewMessageList(ch domain.ChannelName, lines []tea.Msg) *MessageList {
 	vp := viewport.New(0, 0)
 	vp.MouseWheelEnabled = true
 
@@ -59,7 +59,7 @@ func NewMessageList(ch domain.ChannelName, lines []ChatLine) *MessageList {
 }
 
 // Lines returns the current chat lines.
-func (m *MessageList) Lines() []ChatLine {
+func (m *MessageList) Lines() []tea.Msg {
 	return m.lines
 }
 
@@ -143,12 +143,10 @@ func (m *MessageList) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 		return m, nil
 
-	case AppendLinesMsg:
-		if msg.Channel != m.channel {
-			return m, nil
-		}
-
-		m.appendLines(msg.Lines)
+	case MessageLine, Join, Part, NickChange, TopicChange, ModelInvited, ModelKicked, TopicInfo,
+		Help, Whois, ChannelList, APIKeySaved, PokeIntervalSet, NickModelSet, DMOpened,
+		UsageHint, NoChannel, CommandError, ConfigChanged, BackendError, NewMessagesDivider:
+		m.appendLines([]tea.Msg{msg})
 
 		return m, nil
 	}
@@ -228,7 +226,7 @@ func (m *MessageList) SyncViewport(width, height int) {
 	m.viewport.SetContent(m.renderedContent(width))
 }
 
-func (m *MessageList) setLines(lines []ChatLine) {
+func (m *MessageList) setLines(lines []tea.Msg) {
 	wasEmpty := len(m.lines) == 0
 
 	scrolledUp := !m.viewport.AtBottom() && m.viewport.TotalLineCount() > 0
@@ -249,7 +247,7 @@ func (m *MessageList) setLines(lines []ChatLine) {
 	}
 }
 
-func (m *MessageList) setChannel(ch domain.ChannelName, lines []ChatLine) {
+func (m *MessageList) setChannel(ch domain.ChannelName, lines []tea.Msg) {
 	m.channel = ch
 	m.lines = lines
 	m.seenCount = len(lines)
@@ -257,7 +255,7 @@ func (m *MessageList) setChannel(ch domain.ChannelName, lines []ChatLine) {
 	m.viewport.GotoBottom()
 }
 
-func (m *MessageList) appendLines(newLines []ChatLine) {
+func (m *MessageList) appendLines(newLines []tea.Msg) {
 	m.lines = append(m.lines, newLines...)
 	m.seenCount = len(m.lines)
 	m.viewport.GotoBottom()
@@ -299,7 +297,7 @@ func (m *MessageList) renderedContent(width int) string {
 	return strings.Join(rendered, "\n")
 }
 
-func (m *MessageList) renderLine(line ChatLine, width int) string {
+func (m *MessageList) renderLine(line tea.Msg, width int) string {
 	wrap := lipgloss.NewStyle().Width(width)
 
 	switch l := line.(type) {
@@ -542,7 +540,7 @@ func (m *MessageList) renderNewMessagesDivider(width int) string {
 	return theme.Dim.Render(left) + label + theme.Dim.Render(right)
 }
 
-func (m *MessageList) insertDivider(lines []ChatLine) []ChatLine {
+func (m *MessageList) insertDivider(lines []tea.Msg) []tea.Msg {
 	cleaned := m.stripDivider(lines)
 
 	pos := m.seenCount
@@ -550,7 +548,7 @@ func (m *MessageList) insertDivider(lines []ChatLine) []ChatLine {
 		pos = len(cleaned)
 	}
 
-	result := make([]ChatLine, 0, len(cleaned)+1)
+	result := make([]tea.Msg, 0, len(cleaned)+1)
 	result = append(result, cleaned[:pos]...)
 	result = append(result, NewMessagesDivider{})
 	result = append(result, cleaned[pos:]...)
@@ -558,8 +556,8 @@ func (m *MessageList) insertDivider(lines []ChatLine) []ChatLine {
 	return result
 }
 
-func (m *MessageList) stripDivider(lines []ChatLine) []ChatLine {
-	result := make([]ChatLine, 0, len(lines))
+func (m *MessageList) stripDivider(lines []tea.Msg) []tea.Msg {
+	result := make([]tea.Msg, 0, len(lines))
 
 	for _, l := range lines {
 		if _, ok := l.(NewMessagesDivider); !ok {
@@ -574,7 +572,7 @@ func (m *MessageList) clearDivider() {
 	m.lines = m.stripDivider(m.lines)
 }
 
-func (m *MessageList) countWithoutDivider(lines []ChatLine) int {
+func (m *MessageList) countWithoutDivider(lines []tea.Msg) int {
 	n := 0
 
 	for _, l := range lines {
