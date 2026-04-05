@@ -86,6 +86,35 @@ type ErrorEvent struct {
 	At        time.Time
 }
 
+// SessionEvent is the interface for events emitted on the session's
+// background event channel.
+type SessionEvent interface {
+	sessionEvent()
+}
+
+// DispatchStartedEvent is emitted when the session begins dispatching
+// events to model instances in a channel.
+type DispatchStartedEvent struct {
+	Channel ChannelName
+	Nicks   []Nick
+}
+
+func (DispatchStartedEvent) sessionEvent() {}
+
+// DispatchDoneEvent is emitted when dispatch to all model instances
+// in a channel has completed.
+type DispatchDoneEvent struct {
+	Channel ChannelName
+}
+
+func (DispatchDoneEvent) sessionEvent() {}
+
+// Marker methods for existing event types that can appear on the
+// session event channel.
+
+func (ModelReplyEvent) sessionEvent() {}
+func (ErrorEvent) sessionEvent()      {}
+
 // InitialLoadEvent carries the data needed to render the chat screen
 // after loading from the session at startup.
 type InitialLoadEvent struct {

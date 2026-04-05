@@ -40,15 +40,10 @@ func (s *ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
 
 func (s *ChatScreen) handlePoke() tea.Cmd {
 	return func() tea.Msg {
-		events, err := s.sess.Poke(s.ctx)
-		if err != nil {
+		if err := s.sess.Poke(s.ctx); err != nil {
 			return errorEvent("poke", err)
 		}
 
-		if len(events) == 0 {
-			return components.PendingResponseMsg{Pending: false}
-		}
-
-		return eventBatchMsg{events: events}
+		return nil
 	}
 }

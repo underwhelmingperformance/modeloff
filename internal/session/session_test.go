@@ -231,6 +231,51 @@ func TestSession_SendMessage(t *testing.T) {
 	msgs, err := s.ListMessages(ctx, "#general")
 	require.NoError(t, err)
 	require.Equal(t, []domain.Message{evt.Message}, msgs)
+
+	// No instances, so dispatch completes immediately.
+	events := drainEvents(t, sess, 1)
+	require.Equal(t, []domain.SessionEvent{
+		domain.DispatchDoneEvent{Channel: "#general"},
+	}, events)
+}
+
+func TestSession_SendMessage_emits_dispatch_events(t *testing.T) {
+	fake := &fakeAPIClient{
+		sendEventsFn: func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			return protocol.Reply("got it"), nil
+		},
+	}
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: set.NewOrdered[domain.ChannelName]("#general"),
+	})
+
+	_, err := sess.SendMessage(ctx, "#general", "hello")
+	require.NoError(t, err)
+
+	events := drainEvents(t, sess, 1)
+
+	require.Equal(t, []domain.SessionEvent{
+		domain.DispatchStartedEvent{Channel: "#general", Nicks: []domain.Nick{"botty"}},
+		domain.ModelReplyEvent{
+			Channel:  "#general",
+			Instance: "botty",
+			Message: domain.Message{
+				ID:      fmt.Sprintf("%d~botty~0", fixedTime.UnixNano()),
+				Channel: "#general",
+				From:    "botty",
+				Body:    "got it",
+				SentAt:  fixedTime,
+			},
+			At: fixedTime,
+		},
+		domain.DispatchDoneEvent{Channel: "#general"},
+	}, events)
 }
 
 func TestSession_DispatchToChannel_broadcasts_to_channel_instances(t *testing.T) {
@@ -249,16 +294,15 @@ func TestSession_DispatchToChannel_broadcasts_to_channel_instances(t *testing.T)
 		Channels: set.NewOrdered[domain.ChannelName]("#general"),
 	})
 
-	evt, err := sess.SendMessage(ctx, "#general", "hello world")
-	require.NoError(t, err)
+	msg, ircMsg := seedUserMessage(t, s, "#general", "hello world")
 
-	_, err = sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{protocol.FromMessage(evt.Message)})
+	_, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 
 	msgs, err := s.ListMessages(ctx, "#general")
 	require.NoError(t, err)
 	require.Equal(t, []domain.Message{
-		evt.Message,
+		msg,
 		{
 			ID:      fmt.Sprintf("%d~botty~0", fixedTime.UnixNano()),
 			Channel: "#general",
@@ -280,15 +324,14 @@ func TestSession_DispatchToChannel_does_not_broadcast_when_no_model_instances(t 
 
 	seedChannelWithMembers(t, s, "#general", "testuser")
 
-	evt, err := sess.SendMessage(ctx, "#general", "hello world")
-	require.NoError(t, err)
+	msg, ircMsg := seedUserMessage(t, s, "#general", "hello world")
 
-	_, err = sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{protocol.FromMessage(evt.Message)})
+	_, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 
 	msgs, err := s.ListMessages(ctx, "#general")
 	require.NoError(t, err)
-	require.Equal(t, []domain.Message{evt.Message}, msgs)
+	require.Equal(t, []domain.Message{msg}, msgs)
 }
 
 func TestSession_DispatchToChannel_pass_response_does_not_store_model_message(t *testing.T) {
@@ -310,15 +353,14 @@ func TestSession_DispatchToChannel_pass_response_does_not_store_model_message(t 
 		Channels: set.NewOrdered[domain.ChannelName]("#general"),
 	})
 
-	evt, err := sess.SendMessage(ctx, "#general", "hello world")
-	require.NoError(t, err)
+	msg, ircMsg := seedUserMessage(t, s, "#general", "hello world")
 
-	_, err = sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{protocol.FromMessage(evt.Message)})
+	_, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 
 	msgs, err := s.ListMessages(ctx, "#general")
 	require.NoError(t, err)
-	require.Equal(t, []domain.Message{evt.Message}, msgs)
+	require.Equal(t, []domain.Message{msg}, msgs)
 }
 
 func TestSession_DispatchToChannel_reply_response_stores_model_message(t *testing.T) {
@@ -337,16 +379,15 @@ func TestSession_DispatchToChannel_reply_response_stores_model_message(t *testin
 		Channels: set.NewOrdered[domain.ChannelName]("#general"),
 	})
 
-	evt, err := sess.SendMessage(ctx, "#general", "hello world")
-	require.NoError(t, err)
+	msg, ircMsg := seedUserMessage(t, s, "#general", "hello world")
 
-	_, err = sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{protocol.FromMessage(evt.Message)})
+	_, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 
 	msgs, err := s.ListMessages(ctx, "#general")
 	require.NoError(t, err)
 	require.Equal(t, []domain.Message{
-		evt.Message,
+		msg,
 		{
 			ID:      fmt.Sprintf("%d~botty~0", fixedTime.UnixNano()),
 			Channel: "#general",
@@ -379,16 +420,15 @@ func TestSession_DispatchToChannel_broadcasts_only_to_members_of_that_channel(t 
 		Channels: set.NewOrdered[domain.ChannelName]("#random"),
 	})
 
-	evt, err := sess.SendMessage(ctx, "#general", "hello world")
-	require.NoError(t, err)
+	msg, ircMsg := seedUserMessage(t, s, "#general", "hello world")
 
-	_, err = sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{protocol.FromMessage(evt.Message)})
+	_, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 
 	generalMsgs, err := s.ListMessages(ctx, "#general")
 	require.NoError(t, err)
 	require.Equal(t, []domain.Message{
-		evt.Message,
+		msg,
 		{
 			ID:      fmt.Sprintf("%d~botty~0", fixedTime.UnixNano()),
 			Channel: "#general",
@@ -419,16 +459,15 @@ func TestSession_DispatchToChannel_reply_is_not_rebroadcast_in_same_dispatch(t *
 		Channels: set.NewOrdered[domain.ChannelName]("#general"),
 	})
 
-	evt, err := sess.SendMessage(ctx, "#general", "hello world")
-	require.NoError(t, err)
+	msg, ircMsg := seedUserMessage(t, s, "#general", "hello world")
 
-	_, err = sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{protocol.FromMessage(evt.Message)})
+	_, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 
 	msgs, err := s.ListMessages(ctx, "#general")
 	require.NoError(t, err)
 	require.Equal(t, []domain.Message{
-		evt.Message,
+		msg,
 		{
 			ID:      fmt.Sprintf("%d~botty~0", fixedTime.UnixNano()),
 			Channel: "#general",
@@ -460,16 +499,15 @@ func TestSession_DispatchToChannel_multiple_instances_each_reply_once(t *testing
 		Channels: set.NewOrdered[domain.ChannelName]("#general"),
 	})
 
-	evt, err := sess.SendMessage(ctx, "#general", "hello world")
-	require.NoError(t, err)
+	msg, ircMsg := seedUserMessage(t, s, "#general", "hello world")
 
-	_, err = sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{protocol.FromMessage(evt.Message)})
+	_, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 
 	msgs, err := s.ListMessages(ctx, "#general")
 	require.NoError(t, err)
 
-	require.Equal(t, evt.Message, msgs[0])
+	require.Equal(t, msg, msgs[0])
 	require.ElementsMatch(t, []domain.Message{
 		{
 			ID:      fmt.Sprintf("%d~bot-a~0", fixedTime.UnixNano()),
@@ -504,15 +542,14 @@ func TestSession_DispatchToChannel_ignores_empty_reply_body(t *testing.T) {
 		Channels: set.NewOrdered[domain.ChannelName]("#general"),
 	})
 
-	evt, err := sess.SendMessage(ctx, "#general", "hello world")
-	require.NoError(t, err)
+	msg, ircMsg := seedUserMessage(t, s, "#general", "hello world")
 
-	_, err = sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{protocol.FromMessage(evt.Message)})
+	_, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 
 	msgs, err := s.ListMessages(ctx, "#general")
 	require.NoError(t, err)
-	require.Equal(t, []domain.Message{evt.Message}, msgs)
+	require.Equal(t, []domain.Message{msg}, msgs)
 }
 
 func TestSession_DispatchToChannel_api_error_continues_to_next_instance(t *testing.T) {
@@ -540,17 +577,16 @@ func TestSession_DispatchToChannel_api_error_continues_to_next_instance(t *testi
 		Channels: set.NewOrdered[domain.ChannelName]("#general"),
 	})
 
-	evt, err := sess.SendMessage(ctx, "#general", "hello world")
-	require.NoError(t, err)
+	msg, ircMsg := seedUserMessage(t, s, "#general", "hello world")
 
-	_, err = sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{protocol.FromMessage(evt.Message)})
+	_, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
 	require.Error(t, err, "should surface the API error")
 	require.ErrorContains(t, err, "network timeout")
 
 	msgs, err := s.ListMessages(ctx, "#general")
 	require.NoError(t, err)
 	require.Equal(t, []domain.Message{
-		evt.Message,
+		msg,
 		{
 			ID:      fmt.Sprintf("%d~bot-b~0", fixedTime.UnixNano()),
 			Channel: "#general",
@@ -561,7 +597,7 @@ func TestSession_DispatchToChannel_api_error_continues_to_next_instance(t *testi
 	}, msgs)
 }
 
-func TestSession_Poke_api_error_continues_to_next_channel(t *testing.T) {
+func TestSession_Poke_api_error_emits_error_event(t *testing.T) {
 	fake := &fakeAPIClient{
 		sendEventsFn: func(_ context.Context, modelID domain.ModelID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (protocol.ModelResponse, error) {
 			if modelID == "test/model-a" {
@@ -587,9 +623,23 @@ func TestSession_Poke_api_error_continues_to_next_channel(t *testing.T) {
 		Channels: set.NewOrdered[domain.ChannelName]("#random"),
 	})
 
-	_, err := sess.Poke(ctx)
-	require.Error(t, err, "should surface the API error")
-	require.ErrorContains(t, err, "rate limited")
+	require.NoError(t, sess.Poke(ctx))
+	events := drainEvents(t, sess, 2)
+
+	var hasError bool
+	var hasReply bool
+
+	for _, evt := range events {
+		switch evt.(type) {
+		case domain.ErrorEvent:
+			hasError = true
+		case domain.ModelReplyEvent:
+			hasReply = true
+		}
+	}
+
+	require.True(t, hasError, "should emit an ErrorEvent for the failed channel")
+	require.True(t, hasReply, "should emit a ModelReplyEvent for the successful channel")
 
 	msgs, err := s.ListMessages(ctx, "#random")
 	require.NoError(t, err)
@@ -966,16 +1016,15 @@ func TestSession_DispatchToChannel_includes_memory_in_prompt(t *testing.T) {
 		Channels: set.NewOrdered[domain.ChannelName]("#general"),
 	})
 
-	evt, err := sess.SendMessage(t.Context(), "#general", "hello world")
-	require.NoError(t, err)
+	msg, ircMsg := seedUserMessage(t, s, "#general", "hello world")
 
-	_, err = sess.DispatchToChannel(t.Context(), "#general", []protocol.IRCMessage{protocol.FromMessage(evt.Message)})
+	_, err := sess.DispatchToChannel(t.Context(), "#general", []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 
 	msgs, err := s.ListMessages(t.Context(), "#general")
 	require.NoError(t, err)
 	require.Equal(t, []domain.Message{
-		evt.Message,
+		msg,
 		{
 			ID:      fmt.Sprintf("%d~botty~0", fixedTime.UnixNano()),
 			Channel: "#general",
@@ -1039,7 +1088,7 @@ func TestBuildSystemPrompt_with_memories(t *testing.T) {
 	require.Contains(t, prompt, "[goal=learn go]")
 }
 
-func TestSession_Poke_sends_poke_event(t *testing.T) {
+func TestSession_Poke_emits_dispatch_events(t *testing.T) {
 	fake := &fakeAPIClient{
 		sendEventsFn: func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
 			return protocol.Reply("poke received"), nil
@@ -1055,8 +1104,25 @@ func TestSession_Poke_sends_poke_event(t *testing.T) {
 		Channels: set.NewOrdered[domain.ChannelName]("#general"),
 	})
 
-	_, err := sess.Poke(ctx)
-	require.NoError(t, err)
+	require.NoError(t, sess.Poke(ctx))
+	events := drainEvents(t, sess, 1)
+
+	require.Equal(t, []domain.SessionEvent{
+		domain.DispatchStartedEvent{Channel: "#general", Nicks: []domain.Nick{"botty"}},
+		domain.ModelReplyEvent{
+			Channel:  "#general",
+			Instance: "botty",
+			Message: domain.Message{
+				ID:      fmt.Sprintf("%d~botty~0", fixedTime.UnixNano()),
+				Channel: "#general",
+				From:    "botty",
+				Body:    "poke received",
+				SentAt:  fixedTime,
+			},
+			At: fixedTime,
+		},
+		domain.DispatchDoneEvent{Channel: "#general"},
+	}, events)
 
 	msgs, err := s.ListMessages(ctx, "#general")
 	require.NoError(t, err)
@@ -1066,38 +1132,6 @@ func TestSession_Poke_sends_poke_event(t *testing.T) {
 			Channel: "#general",
 			From:    "botty",
 			Body:    "poke received",
-			SentAt:  fixedTime,
-		},
-	}, msgs)
-}
-
-func TestSession_Poke_persists_replies(t *testing.T) {
-	fake := &fakeAPIClient{
-		sendEventsFn: func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
-			return protocol.Reply("still here"), nil
-		},
-	}
-	sess, s := newTestSessionWithAPI(t, fake)
-	ctx := t.Context()
-
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
-	seedInstance(t, s, domain.ModelInstance{
-		Nick:     "botty",
-		ModelID:  "test/model",
-		Channels: set.NewOrdered[domain.ChannelName]("#general"),
-	})
-
-	_, err := sess.Poke(ctx)
-	require.NoError(t, err)
-
-	msgs, err := s.ListMessages(ctx, "#general")
-	require.NoError(t, err)
-	require.Equal(t, []domain.Message{
-		{
-			ID:      fmt.Sprintf("%d~botty~0", fixedTime.UnixNano()),
-			Channel: "#general",
-			From:    "botty",
-			Body:    "still here",
 			SentAt:  fixedTime,
 		},
 	}, msgs)
@@ -1187,16 +1221,15 @@ func TestSession_DispatchToChannel_dm_only_targets_that_instance(t *testing.T) {
 	_, _, err := sess.OpenDM(ctx, "botty")
 	require.NoError(t, err)
 
-	evt, err := sess.SendMessage(ctx, "botty", "hello in dm")
-	require.NoError(t, err)
+	msg, ircMsg := seedUserMessage(t, s, "botty", "hello in dm")
 
-	_, err = sess.DispatchToChannel(ctx, "botty", []protocol.IRCMessage{protocol.FromMessage(evt.Message)})
+	_, err = sess.DispatchToChannel(ctx, "botty", []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 
 	msgs, err := s.ListMessages(ctx, "botty")
 	require.NoError(t, err)
 	require.Equal(t, []domain.Message{
-		evt.Message,
+		msg,
 		{
 			ID:      fmt.Sprintf("%d~botty~0", fixedTime.UnixNano()),
 			Channel: "botty",
@@ -1631,10 +1664,9 @@ func TestSession_DispatchToChannel_retries_on_multiline_reply(t *testing.T) {
 		Channels: set.NewOrdered[domain.ChannelName]("#general"),
 	})
 
-	evt, err := sess.SendMessage(ctx, "#general", "hello")
-	require.NoError(t, err)
+	_, ircMsg := seedUserMessage(t, s, "#general", "hello")
 
-	replies, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{protocol.FromMessage(evt.Message)})
+	replies, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 
 	require.Equal(t, 2, calls)
@@ -1672,10 +1704,9 @@ func TestSession_DispatchToChannel_drops_reply_after_max_retries(t *testing.T) {
 		Channels: set.NewOrdered[domain.ChannelName]("#general"),
 	})
 
-	evt, err := sess.SendMessage(ctx, "#general", "hello")
-	require.NoError(t, err)
+	userMsg, ircMsg := seedUserMessage(t, s, "#general", "hello")
 
-	replies, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{protocol.FromMessage(evt.Message)})
+	replies, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 
 	require.Equal(t, 3, calls)
@@ -1683,7 +1714,7 @@ func TestSession_DispatchToChannel_drops_reply_after_max_retries(t *testing.T) {
 
 	msgs, err := s.ListMessages(ctx, "#general")
 	require.NoError(t, err)
-	require.Equal(t, []domain.Message{evt.Message}, msgs)
+	require.Equal(t, []domain.Message{userMsg}, msgs)
 }
 
 func TestSession_DispatchToChannel_accepts_single_line_reply(t *testing.T) {
@@ -1702,10 +1733,9 @@ func TestSession_DispatchToChannel_accepts_single_line_reply(t *testing.T) {
 		Channels: set.NewOrdered[domain.ChannelName]("#general"),
 	})
 
-	evt, err := sess.SendMessage(ctx, "#general", "hello")
-	require.NoError(t, err)
+	_, ircMsg := seedUserMessage(t, s, "#general", "hello")
 
-	replies, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{protocol.FromMessage(evt.Message)})
+	replies, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 
 	require.Equal(t, []domain.ModelReplyEvent{
@@ -1739,4 +1769,47 @@ func seedInstance(t *testing.T, s *storemod.FileStore, inst domain.ModelInstance
 	t.Helper()
 
 	require.NoError(t, s.SaveInstance(t.Context(), inst))
+}
+
+// seedUserMessage saves a user message directly to the store and
+// returns the message and its protocol representation. Unlike
+// sess.SendMessage, this does not trigger background dispatch.
+func seedUserMessage(t *testing.T, s *storemod.FileStore, ch domain.ChannelName, body string) (domain.Message, protocol.IRCMessage) {
+	t.Helper()
+
+	msg := domain.Message{
+		ID:      fmt.Sprintf("%d", fixedTime.UnixNano()),
+		Channel: ch,
+		From:    "testuser",
+		Body:    body,
+		SentAt:  fixedTime,
+	}
+
+	require.NoError(t, s.SaveMessage(t.Context(), msg))
+
+	return msg, protocol.FromMessage(msg)
+}
+
+// drainEvents reads from the session events channel until n
+// DispatchDoneEvent values have been received, and returns all
+// events in order.
+func drainEvents(t *testing.T, sess *Session, doneCount int) []domain.SessionEvent {
+	t.Helper()
+
+	var events []domain.SessionEvent
+	done := 0
+
+	for evt := range sess.Events() {
+		events = append(events, evt)
+		if _, ok := evt.(domain.DispatchDoneEvent); ok {
+			done++
+			if done >= doneCount {
+				return events
+			}
+		}
+	}
+
+	t.Fatal("events channel closed before receiving all DispatchDoneEvents")
+
+	return nil
 }

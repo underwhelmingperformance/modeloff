@@ -20,6 +20,8 @@ import (
 	"github.com/laney/modeloff/internal/store"
 )
 
+const eventBufSize = 64
+
 // Session is the backend coordinator. It bridges the UI layer and
 // the underlying stores and API client.
 type Session struct {
@@ -33,6 +35,7 @@ type Session struct {
 	nickModel domain.ModelID
 	factory   func(string) (api.Client, error)
 	now       func() time.Time
+	events    chan domain.SessionEvent
 }
 
 // New creates a Session with the given dependencies.
@@ -50,6 +53,7 @@ func New(
 		config:   c,
 		userNick: userNick,
 		now:      time.Now,
+		events:   make(chan domain.SessionEvent, eventBufSize),
 	}
 
 	if c != nil {
@@ -65,6 +69,14 @@ func New(
 	}
 
 	return sess
+}
+
+// Events returns the channel on which background dispatch events are
+// emitted. The caller should drain this channel to receive
+// DispatchStartedEvent, ModelReplyEvent, DispatchDoneEvent, and
+// ErrorEvent values.
+func (s *Session) Events() <-chan domain.SessionEvent {
+	return s.events
 }
 
 // SetAPIFactory configures how runtime API clients are created.
@@ -275,7 +287,8 @@ func (s *Session) Kick(
 }
 
 // SendMessage saves a message to a channel and returns the message
-// event.
+// event. It also spawns a background goroutine to dispatch the
+// message to model instances, emitting events on the Events channel.
 func (s *Session) SendMessage(
 	ctx context.Context,
 	ch domain.ChannelName,
@@ -293,11 +306,14 @@ func (s *Session) SendMessage(
 		return domain.MessageEvent{}, fmt.Errorf("save message: %w", err)
 	}
 
+	s.dispatchInBackground(ctx, ch, []protocol.IRCMessage{protocol.FromMessage(msg)})
+
 	return domain.MessageEvent{Message: msg}, nil
 }
 
 // SendAction saves an action message (/me) to a channel and returns
-// the message event.
+// the message event. It also spawns a background goroutine to
+// dispatch the action to model instances.
 func (s *Session) SendAction(
 	ctx context.Context,
 	ch domain.ChannelName,
@@ -315,6 +331,8 @@ func (s *Session) SendAction(
 	if err := s.store.SaveMessage(ctx, msg); err != nil {
 		return domain.MessageEvent{}, fmt.Errorf("save action: %w", err)
 	}
+
+	s.dispatchInBackground(ctx, ch, []protocol.IRCMessage{protocol.FromMessage(msg)})
 
 	return domain.MessageEvent{Message: msg}, nil
 }
@@ -531,45 +549,28 @@ func (s *Session) OpenDM(ctx context.Context, nick domain.Nick) (domain.Channel,
 	return ch, created, nil
 }
 
-// Poke sends a periodic prompt to model instances in every channel and
-// persists any replies they choose to make.
-func (s *Session) Poke(ctx context.Context) ([]any, error) {
+// Poke sends a periodic prompt to model instances in every channel,
+// dispatching asynchronously and emitting events on the Events
+// channel.
+func (s *Session) Poke(ctx context.Context) error {
 	channels, err := s.store.ListChannels(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("list channels: %w", err)
+		return fmt.Errorf("list channels: %w", err)
 	}
-
-	var errs []error
-	var allEvents []any
 
 	for _, ch := range channels {
-		historyMessages, err := s.store.ListMessages(ctx, ch.Name)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("list history for %s: %w", ch.Name, err))
-			continue
+		pokeEvent := protocol.IRCMessage{
+			Kind:   protocol.KindPoke,
+			From:   "modeloff",
+			Target: string(ch.Name),
+			Body:   "the channel is quiet. if something comes to mind, say it — otherwise just lurk. don't force it.",
+			At:     s.now(),
 		}
 
-		events := []protocol.IRCMessage{
-			{
-				Kind:   protocol.KindPoke,
-				From:   "modeloff",
-				Target: string(ch.Name),
-				Body:   "the channel is quiet. if something comes to mind, say it — otherwise just lurk. don't force it.",
-				At:     s.now(),
-			},
-		}
-
-		replies, err := s.dispatchToInstances(ctx, ch.Name, historyMessages, events)
-		if err != nil {
-			errs = append(errs, err)
-		}
-
-		for _, reply := range replies {
-			allEvents = append(allEvents, reply)
-		}
+		s.dispatchInBackground(ctx, ch.Name, []protocol.IRCMessage{pokeEvent})
 	}
 
-	return allEvents, errors.Join(errs...)
+	return nil
 }
 
 // SetAPIKey persists a new API key through the config store.
@@ -799,6 +800,60 @@ func (s *Session) instancesForChannel(ctx context.Context, channel domain.Channe
 	}
 
 	return filtered, nil
+}
+
+func (s *Session) emit(evt domain.SessionEvent) {
+	s.events <- evt
+}
+
+// dispatchInBackground runs dispatch for a channel in the background,
+// emitting events to the events channel.
+func (s *Session) dispatchInBackground(ctx context.Context, ch domain.ChannelName, triggerEvents []protocol.IRCMessage) {
+	go func() {
+		channel, err := s.store.GetChannel(ctx, ch)
+		if err != nil {
+			s.emit(domain.ErrorEvent{Operation: "dispatch", Err: err, At: s.now()})
+			s.emit(domain.DispatchDoneEvent{Channel: ch})
+			return
+		}
+
+		instances, err := s.instancesForChannel(ctx, channel)
+		if err != nil {
+			s.emit(domain.ErrorEvent{Operation: "dispatch", Err: err, At: s.now()})
+			s.emit(domain.DispatchDoneEvent{Channel: ch})
+			return
+		}
+
+		if len(instances) == 0 {
+			s.emit(domain.DispatchDoneEvent{Channel: ch})
+			return
+		}
+
+		nicks := make([]domain.Nick, len(instances))
+		for i, inst := range instances {
+			nicks[i] = inst.Nick
+		}
+
+		s.emit(domain.DispatchStartedEvent{Channel: ch, Nicks: nicks})
+
+		historyMessages, err := s.store.ListMessages(ctx, ch)
+		if err != nil {
+			s.emit(domain.ErrorEvent{Operation: "dispatch", Err: err, At: s.now()})
+			s.emit(domain.DispatchDoneEvent{Channel: ch})
+			return
+		}
+
+		replies, err := s.dispatchToInstances(ctx, ch, historyMessages, triggerEvents)
+		if err != nil {
+			s.emit(domain.ErrorEvent{Operation: "dispatch", Err: err, At: s.now()})
+		}
+
+		for _, reply := range replies {
+			s.emit(reply)
+		}
+
+		s.emit(domain.DispatchDoneEvent{Channel: ch})
+	}()
 }
 
 func (s *Session) memoriesForInstance(ctx context.Context, nick domain.Nick) ([]memory.Entry, error) {
