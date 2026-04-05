@@ -479,19 +479,4 @@ func (c *ChatView) renderTopic(width int) string {
 	return style.Render(text)
 }
 
-func usageText(command string) string {
-	switch command {
-	case "config":
-		return "usage: /config api-key <value> | /config nick-model <model-id> | /config poke-interval <duration>"
-	case "config api-key":
-		return "usage: /config api-key <value>"
-	case "config nick-model":
-		return "usage: /config nick-model <model-id>"
-	case "config poke-interval":
-		return "usage: /config poke-interval <duration>"
-	case "invite":
-		return "usage: /invite <model-id> [--persona <text>]"
-	default:
-		return "usage: /" + command
-	}
-}
+
