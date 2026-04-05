@@ -58,19 +58,12 @@ func NewOpenRouterClient(apiKey, baseURL string, httpClient *http.Client) *OpenR
 	}
 }
 
-type usageResponse struct {
-	PromptTokens        int64   `json:"prompt_tokens"`
-	CompletionTokens    int64   `json:"completion_tokens"`
-	TotalTokens         int64   `json:"total_tokens"`
+type openRouterUsageExtras struct {
 	Cost                float64 `json:"cost"`
 	PromptTokensDetails struct {
-		CachedTokens        int64 `json:"cached_tokens"`
 		CacheWriteTokens    int64 `json:"cache_write_tokens"`
 		CacheCreationTokens int64 `json:"cache_creation_tokens"`
 	} `json:"prompt_tokens_details"`
-	CompletionTokensDetails struct {
-		ReasoningTokens int64 `json:"reasoning_tokens"`
-	} `json:"completion_tokens_details"`
 	CostDetails struct {
 		UpstreamInferenceCost float64 `json:"upstream_inference_cost"`
 	} `json:"cost_details"`
@@ -645,7 +638,7 @@ func requestIDFromChatCompletion(resp *openai.ChatCompletion, rawResp *http.Resp
 }
 
 func usageFromResponse(response openai.CompletionUsage) Usage {
-	var extra usageResponse
+	var extra openRouterUsageExtras
 
 	rawJSON := response.RawJSON()
 	if rawJSON != "" {
