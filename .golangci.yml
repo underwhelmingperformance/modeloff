@@ -12,6 +12,12 @@ linters:
     - revive
     - staticcheck
     - unused
+  exclusions:
+    rules:
+      - path: internal/observability/constants\.go
+        linters:
+          - gosec
+        text: "G101:"
 
 formatters:
   enable:
@@ -19,6 +25,5 @@ formatters:
     - goimports
 
 issues:
-  exclude-use-default: false
   max-issues-per-linter: 0
   max-same-issues: 0
