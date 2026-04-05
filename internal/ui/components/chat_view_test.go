@@ -402,6 +402,29 @@ func TestChatView_topic_bar_reduces_message_area(t *testing.T) {
 	require.Equal(t, withoutLines, withLines)
 }
 
+func TestChatView_TopicUpdatedMsg_updates_topic_bar(t *testing.T) {
+	cv := components.NewChatView("#general", "testuser", "", testMessages)
+
+	// No topic initially.
+	v := cv.View(80, 24)
+	stripped := ansi.Strip(v)
+	require.NotContains(t, stripped, "new topic")
+
+	// Send TopicUpdatedMsg.
+	cv.Update(components.TopicUpdatedMsg{Topic: "new topic"})
+
+	v = cv.View(80, 24)
+	stripped = ansi.Strip(v)
+	require.Contains(t, stripped, "new topic")
+
+	// Clear topic.
+	cv.Update(components.TopicUpdatedMsg{Topic: ""})
+
+	v = cv.View(80, 24)
+	stripped = ansi.Strip(v)
+	require.NotContains(t, stripped, "new topic")
+}
+
 func TestChatView_pending_indicator(t *testing.T) {
 	cv := components.NewChatView("#general", "testuser", "", testMessages)
 	var m ui.Model = cv

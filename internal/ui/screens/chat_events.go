@@ -210,6 +210,9 @@ func (s *ChatScreen) handleTopicChangeEvent(msg domain.TopicChangeEvent) (ui.Mod
 	}))
 
 	if s.active == msg.Channel {
+		cmds = append(cmds, msgCmd(components.TopicUpdatedMsg{
+			Topic: msg.Topic,
+		}))
 		cmds = append(cmds, msgCmd(components.AppendLinesMsg{
 			Channel: msg.Channel,
 			Lines: []components.ChatLine{

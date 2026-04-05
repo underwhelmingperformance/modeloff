@@ -179,6 +179,12 @@ type SetPlaceholderMsg struct {
 	Text string
 }
 
+// TopicUpdatedMsg updates the topic displayed in the chat view
+// header without replacing the channel or message lines.
+type TopicUpdatedMsg struct {
+	Topic string
+}
+
 // CommandStateMsg updates the available commands for completion.
 type CommandStateMsg struct {
 	Commands command.Set
@@ -299,6 +305,10 @@ func (c *ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		c.topic = msg.Topic
 		_, cmd := c.messages.Update(msg)
 		return c, cmd
+
+	case TopicUpdatedMsg:
+		c.topic = msg.Topic
+		return c, nil
 
 	case NickListUpdatedMsg:
 		nicks := make([]domain.Nick, len(msg.Members))
