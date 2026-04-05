@@ -10,7 +10,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/laney/modeloff/internal/domain"
-	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/session"
 	"github.com/laney/modeloff/internal/set"
 	"github.com/laney/modeloff/internal/ui"
@@ -19,24 +18,12 @@ import (
 	"github.com/laney/modeloff/internal/ui/theme"
 )
 
-// eventBatchMsg carries multiple domain events from a single command.
-// Update unpacks and dispatches each event sequentially.
-type eventBatchMsg struct {
-	events []any
-}
-
-// dispatchMsg is sent after a user message has been displayed to
-// trigger asynchronous model dispatch for the channel.
-type dispatchMsg struct {
-	channel domain.ChannelName
-	message domain.Message
-}
-
-// dispatchDoneMsg signals that model dispatch completed. It carries
-// any replies so the screen can clear thinking indicators and process
-// results in one step.
-type dispatchDoneMsg struct {
-	replies []domain.ModelReplyEvent
+// sessionEventMsg wraps a domain.SessionEvent received from the
+// session's background event channel. Using a dedicated wrapper
+// prevents the events channel listener from being re-invoked when
+// the same underlying types are sent directly as tea.Msg.
+type sessionEventMsg struct {
+	event domain.SessionEvent
 }
 
 // deliverNextReplyMsg triggers delivery of the next queued reply.
@@ -146,7 +133,23 @@ func (s *ChatScreen) Init() tea.Cmd {
 		}
 	}
 
-	return tea.Batch(loadInitial, s.loadLiveModels())
+	return tea.Batch(loadInitial, s.loadLiveModels(), s.listenForEvents())
+}
+
+// listenForEvents reads the next event from the session's background
+// event channel and wraps it in a sessionEventMsg. After each event,
+// it should be re-invoked so the channel is continuously drained.
+func (s *ChatScreen) listenForEvents() tea.Cmd {
+	ch := s.sess.Events()
+
+	return func() tea.Msg {
+		evt, ok := <-ch
+		if !ok {
+			return nil
+		}
+
+		return sessionEventMsg{event: evt}
+	}
 }
 
 // Update implements ui.Model.
@@ -162,8 +165,8 @@ func (s *ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	case domain.InitialLoadEvent:
 		return s.handleInitialLoad(msg)
 
-	case eventBatchMsg:
-		return s.handleEventBatch(msg)
+	case sessionEventMsg:
+		return s.handleSessionEvent(msg)
 
 	case chatcmd.HelpResult:
 		return s, msgCmd(components.Help{})
@@ -240,28 +243,11 @@ func (s *ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	case liveModelsLoadedMsg:
 		return s.handleLiveModelsLoaded(msg)
 
-	case dispatchMsg:
-		thinking := s.modelNicksInChannel(msg.channel)
-
-		return s, tea.Batch(
-			msgCmd(components.NickListThinkingMsg{Nicks: thinking}),
-			s.dispatchToModels(msg),
-		)
-
-	case dispatchDoneMsg:
-		return s.handleDispatchDone(msg)
-
 	case deliverNextReplyMsg:
 		return s.deliverNextReply()
 
 	case PokeTickMsg:
-		thinking := s.modelNicksInChannel(s.active)
-
-		return s, tea.Batch(
-			msgCmd(components.PendingResponseMsg{Pending: true}),
-			msgCmd(components.NickListThinkingMsg{Nicks: thinking}),
-			s.handlePoke(),
-		)
+		return s, s.handlePoke()
 
 	case components.ChannelSelectedMsg:
 		return s, s.switchChannel(msg.Channel)
@@ -271,9 +257,7 @@ func (s *ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 			return s, msgCmd(components.NoChannel{})
 		}
 
-		cmd := msgCmd(components.PendingResponseMsg{Pending: true})
-
-		return s, tea.Batch(cmd, s.sendMessage(msg.Text))
+		return s, s.sendMessage(msg.Text)
 
 	case components.CommandSubmitMsg:
 		return s, s.handleCommand(msg)
@@ -391,19 +375,6 @@ func (s *ChatScreen) sendMessage(text string) tea.Cmd {
 		}
 
 		return evt
-	}
-}
-
-func (s *ChatScreen) dispatchToModels(msg dispatchMsg) tea.Cmd {
-	return func() tea.Msg {
-		newEvents := []protocol.IRCMessage{protocol.FromMessage(msg.message)}
-
-		replies, err := s.sess.DispatchToChannel(s.ctx, msg.channel, newEvents)
-		if err != nil {
-			return domain.ErrorEvent{Operation: "dispatch", Err: err, At: time.Now()}
-		}
-
-		return dispatchDoneMsg{replies: replies}
 	}
 }
 

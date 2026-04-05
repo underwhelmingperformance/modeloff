@@ -64,47 +64,21 @@ func (s *ChatScreen) handleInitialLoad(msg domain.InitialLoadEvent) (ui.Model, t
 	return s, tea.Batch(cmds...)
 }
 
-func (s *ChatScreen) handleEventBatch(msg eventBatchMsg) (ui.Model, tea.Cmd) {
-	var cmds []tea.Cmd
+func (s *ChatScreen) handleSessionEvent(msg sessionEventMsg) (ui.Model, tea.Cmd) {
+	var cmd tea.Cmd
 
-	for _, evt := range msg.events {
-		var cmd tea.Cmd
-
-		switch e := evt.(type) {
-		case domain.InitialLoadEvent:
-			_, cmd = s.handleInitialLoad(e)
-		case domain.JoinEvent:
-			_, cmd = s.handleJoinEvent(e)
-		case domain.PartEvent:
-			_, cmd = s.handlePartEvent(e)
-		case domain.TopicChangeEvent:
-			_, cmd = s.handleTopicChangeEvent(e)
-		case domain.NickChangeEvent:
-			_, cmd = s.handleNickChangeEvent(e)
-		case domain.ModelInvitedEvent:
-			_, cmd = s.handleModelInvitedEvent(e)
-		case domain.ModelKickedEvent:
-			_, cmd = s.handleModelKickedEvent(e)
-		case domain.MessageEvent:
-			_, cmd = s.handleMessageEvent(e)
-		case domain.ModelReplyEvent:
-			_, cmd = s.handleModelReplyEvent(e)
-		case domain.DMOpenedEvent:
-			_, cmd = s.handleDMOpenedEvent(e)
-		case domain.ConfigChangedEvent:
-			_, cmd = s.handleConfigChangedEvent(e)
-		case domain.ErrorEvent:
-			_, cmd = s.handleErrorEvent(e)
-		}
-
-		if cmd != nil {
-			cmds = append(cmds, cmd)
-		}
+	switch evt := msg.event.(type) {
+	case domain.DispatchStartedEvent:
+		_, cmd = s.handleDispatchStarted(evt)
+	case domain.ModelReplyEvent:
+		_, cmd = s.handleModelReplyEvent(evt)
+	case domain.DispatchDoneEvent:
+		_, cmd = s.handleDispatchDone(evt)
+	case domain.ErrorEvent:
+		_, cmd = s.handleErrorEvent(evt)
 	}
 
-	cmds = append(cmds, msgCmd(components.NickListThinkingMsg{}))
-
-	return s, tea.Batch(cmds...)
+	return s, tea.Batch(cmd, s.listenForEvents())
 }
 
 func (s *ChatScreen) handleJoinEvent(msg domain.JoinEvent) (ui.Model, tea.Cmd) {
@@ -298,52 +272,39 @@ func (s *ChatScreen) handleModelKickedEvent(msg domain.ModelKickedEvent) (ui.Mod
 }
 
 func (s *ChatScreen) handleMessageEvent(msg domain.MessageEvent) (ui.Model, tea.Cmd) {
-	isLocal := msg.Message.From == s.sess.UserNick()
-
-	_, cmd := s.handleNewMessage(msg.Message.Channel, isLocal)
-
-	// If the message is from the local user, dispatch to model
-	// instances asynchronously so the message appears immediately.
-	// The pending indicator stays active until dispatch completes.
-	if isLocal {
-		cmd = tea.Batch(cmd, msgCmd(dispatchMsg{
-			channel: msg.Message.Channel,
-			message: msg.Message,
-		}))
-	}
+	_, cmd := s.handleNewMessage(msg.Message.Channel)
 
 	return s, cmd
 }
 
 func (s *ChatScreen) handleModelReplyEvent(msg domain.ModelReplyEvent) (ui.Model, tea.Cmd) {
-	return s.handleNewMessage(msg.Message.Channel, false)
-}
+	s.replyQueue = append(s.replyQueue, msg)
 
-func (s *ChatScreen) handleNewMessage(channel domain.ChannelName, keepPending bool) (ui.Model, tea.Cmd) {
-	var cmds []tea.Cmd
-
-	if !keepPending {
-		cmds = append(cmds, msgCmd(components.PendingResponseMsg{Pending: false}))
+	// If this is the only queued reply, deliver it immediately.
+	if len(s.replyQueue) == 1 {
+		return s, s.deliverNextReplyCmd()
 	}
 
+	return s, nil
+}
+
+func (s *ChatScreen) handleNewMessage(channel domain.ChannelName) (ui.Model, tea.Cmd) {
 	if channel == s.active {
 		messages, _ := s.sess.Messages(s.ctx, channel)
 		lines := components.MessagesToLines(messages)
 
-		cmds = append(cmds, msgCmd(components.SetLinesMsg{Lines: lines}))
-	} else {
-		channels, _ := s.sess.ListChannels(s.ctx)
-		s.channels = channels
-		unread := s.unreadCounts(s.ctx, channels)
-
-		cmds = append(cmds, msgCmd(components.ChannelsUpdatedMsg{
-			Channels: channels,
-			Active:   s.active,
-			Unread:   unread,
-		}))
+		return s, msgCmd(components.SetLinesMsg{Lines: lines})
 	}
 
-	return s, tea.Batch(cmds...)
+	channels, _ := s.sess.ListChannels(s.ctx)
+	s.channels = channels
+	unread := s.unreadCounts(s.ctx, channels)
+
+	return s, msgCmd(components.ChannelsUpdatedMsg{
+		Channels: channels,
+		Active:   s.active,
+		Unread:   unread,
+	})
 }
 
 func (s *ChatScreen) handleDMOpenedEvent(msg domain.DMOpenedEvent) (ui.Model, tea.Cmd) {
@@ -407,30 +368,27 @@ func (s *ChatScreen) handleErrorEvent(msg domain.ErrorEvent) (ui.Model, tea.Cmd)
 	return s, tea.Batch(cmds...)
 }
 
-func (s *ChatScreen) handleDispatchDone(msg dispatchDoneMsg) (ui.Model, tea.Cmd) {
-	if len(msg.replies) == 0 {
-		return s, tea.Batch(
-			msgCmd(components.NickListThinkingMsg{}),
-			msgCmd(components.PendingResponseMsg{Pending: false}),
-		)
+func (s *ChatScreen) handleDispatchStarted(msg domain.DispatchStartedEvent) (ui.Model, tea.Cmd) {
+	thinking := make(map[domain.Nick]bool, len(msg.Nicks))
+	for _, nick := range msg.Nicks {
+		thinking[nick] = true
 	}
 
-	// Show the first reply immediately, queue the rest for paced delivery.
-	first := msg.replies[0]
-	s.replyQueue = append(s.replyQueue[:0], msg.replies[1:]...)
+	return s, tea.Batch(
+		msgCmd(components.PendingResponseMsg{Pending: true}),
+		msgCmd(components.NickListThinkingMsg{Nicks: thinking}),
+	)
+}
 
-	_, cmd := s.handleModelReplyEvent(first)
-
+func (s *ChatScreen) handleDispatchDone(_ domain.DispatchDoneEvent) (ui.Model, tea.Cmd) {
 	if len(s.replyQueue) > 0 {
-		cmd = tea.Batch(cmd, s.scheduleNextReply())
-	} else {
-		cmd = tea.Batch(cmd,
-			msgCmd(components.NickListThinkingMsg{}),
-			msgCmd(components.PendingResponseMsg{Pending: false}),
-		)
+		return s, nil
 	}
 
-	return s, cmd
+	return s, tea.Batch(
+		msgCmd(components.NickListThinkingMsg{}),
+		msgCmd(components.PendingResponseMsg{Pending: false}),
+	)
 }
 
 const replyPaceInterval = 400 * time.Millisecond
@@ -439,6 +397,12 @@ func (s *ChatScreen) scheduleNextReply() tea.Cmd {
 	return tea.Tick(replyPaceInterval, func(time.Time) tea.Msg {
 		return deliverNextReplyMsg{}
 	})
+}
+
+// deliverNextReplyCmd returns a tea.Cmd that delivers the next reply
+// from the queue immediately (without pacing delay).
+func (s *ChatScreen) deliverNextReplyCmd() tea.Cmd {
+	return func() tea.Msg { return deliverNextReplyMsg{} }
 }
 
 func (s *ChatScreen) deliverNextReply() (ui.Model, tea.Cmd) {
@@ -452,7 +416,7 @@ func (s *ChatScreen) deliverNextReply() (ui.Model, tea.Cmd) {
 	next := s.replyQueue[0]
 	s.replyQueue = s.replyQueue[1:]
 
-	_, cmd := s.handleModelReplyEvent(next)
+	_, cmd := s.showReply(next)
 
 	if len(s.replyQueue) > 0 {
 		cmd = tea.Batch(cmd, s.scheduleNextReply())
@@ -466,33 +430,17 @@ func (s *ChatScreen) deliverNextReply() (ui.Model, tea.Cmd) {
 	return s, cmd
 }
 
+// showReply displays a model reply by refreshing the message list.
+func (s *ChatScreen) showReply(msg domain.ModelReplyEvent) (ui.Model, tea.Cmd) {
+	return s.handleNewMessage(msg.Message.Channel)
+}
+
 func (s *ChatScreen) handleLiveModelsLoaded(msg liveModelsLoadedMsg) (ui.Model, tea.Cmd) {
 	s.liveModels = msg.models
 
 	return s, msgCmd(components.CommandStateMsg{
 		Commands: s.Commands(),
 	})
-}
-
-func (s *ChatScreen) modelNicksInChannel(ch domain.ChannelName) map[domain.Nick]bool {
-	userNick := s.sess.UserNick()
-	nicks := make(map[domain.Nick]bool)
-
-	for _, channel := range s.channels {
-		if channel.Name != ch {
-			continue
-		}
-
-		for nick := range channel.Members.Sorted() {
-			if nick != userNick {
-				nicks[nick] = true
-			}
-		}
-
-		break
-	}
-
-	return nicks
 }
 
 func (s *ChatScreen) activeMembers() []domain.Nick {
