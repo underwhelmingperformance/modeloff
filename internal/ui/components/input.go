@@ -1,6 +1,7 @@
 package components
 
 import (
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -8,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/theme"
 )
@@ -28,6 +30,17 @@ type CommandSubmitMsg struct {
 // history ring buffer.
 const historySize = 50
 
+// nickCompletion holds the transient state for Tab-cycling through
+// nick matches.
+type nickCompletion struct {
+	active  bool
+	prefix  string
+	start   int
+	end     int
+	matches []domain.Nick
+	index   int
+}
+
 // InputBar wraps bubbles/textinput with command detection and input
 // history recall via Up/Down arrows.
 type InputBar struct {
@@ -37,6 +50,9 @@ type InputBar struct {
 	history   []string
 	histPos   int // -1 = editing new input, 0..len(history)-1 = browsing
 	histDraft string
+
+	nicks    []domain.Nick
+	nickComp nickCompletion
 }
 
 // NewInputBar creates an empty input bar.
@@ -56,6 +72,13 @@ func NewInputBar() InputBar {
 		keyMap:  DefaultInputBarKeyMap,
 		histPos: -1,
 	}
+}
+
+// SetNicks updates the list of nicks available for Tab completion.
+func (b InputBar) SetNicks(nicks []domain.Nick) InputBar {
+	b.nicks = nicks
+
+	return b
 }
 
 // Init implements ui.Model.
@@ -82,7 +105,14 @@ func (b InputBar) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 	case key.Matches(km, b.keyMap.HistoryDn):
 		return b.historyDown(), nil
+
+	case km.Type == tea.KeyTab:
+		if !strings.HasPrefix(b.input.Value(), "/") {
+			return b.completeNick(), nil
+		}
 	}
+
+	b.nickComp.active = false
 
 	var cmd tea.Cmd
 	b.input, cmd = b.input.Update(msg)
@@ -161,6 +191,92 @@ func (b InputBar) historyDown() InputBar {
 	}
 
 	b.input.CursorEnd()
+
+	return b
+}
+
+func (b InputBar) completeNick() InputBar {
+	if len(b.nicks) == 0 {
+		return b
+	}
+
+	if b.nickComp.active {
+		b.nickComp.index = (b.nickComp.index + 1) % len(b.nickComp.matches)
+		return b.applyNickCompletion()
+	}
+
+	value := []rune(b.input.Value())
+	cursor := b.input.Position()
+
+	// Find the word boundary before the cursor.
+	start := cursor
+	for start > 0 && value[start-1] != ' ' {
+		start--
+	}
+
+	if start == cursor {
+		return b
+	}
+
+	prefix := strings.ToLower(string(value[start:cursor]))
+	matches := b.matchNicks(prefix)
+
+	if len(matches) == 0 {
+		return b
+	}
+
+	b.nickComp = nickCompletion{
+		active:  true,
+		prefix:  prefix,
+		start:   start,
+		end:     cursor,
+		matches: matches,
+		index:   0,
+	}
+
+	return b.applyNickCompletion()
+}
+
+func (b InputBar) matchNicks(prefix string) []domain.Nick {
+	var matches []domain.Nick
+
+	for _, nick := range b.nicks {
+		if strings.HasPrefix(strings.ToLower(string(nick)), prefix) {
+			matches = append(matches, nick)
+		}
+	}
+
+	sort.Slice(matches, func(i, j int) bool {
+		return matches[i] < matches[j]
+	})
+
+	return matches
+}
+
+func (b InputBar) applyNickCompletion() InputBar {
+	nick := b.nickComp.matches[b.nickComp.index]
+	value := []rune(b.input.Value())
+
+	// At the start of the line, append ": ". Mid-line, append " "
+	// unless the next character is already a space.
+	suffix := " "
+	if b.nickComp.start == 0 {
+		suffix = ": "
+	} else if b.nickComp.end < len(value) && value[b.nickComp.end] == ' ' {
+		suffix = ""
+	}
+
+	replacement := string(nick) + suffix
+
+	b.input.SetValue(
+		string(value[:b.nickComp.start]) +
+			replacement +
+			string(value[b.nickComp.end:]),
+	)
+
+	newEnd := b.nickComp.start + len([]rune(replacement))
+	b.input.SetCursor(newEnd)
+	b.nickComp.end = newEnd
 
 	return b
 }

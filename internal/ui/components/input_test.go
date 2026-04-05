@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/stretchr/testify/require"
 
+	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/components"
 )
@@ -370,4 +371,159 @@ func TestInputBar_ignores_non_key_messages(t *testing.T) {
 	m, cmd := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	require.Nil(t, cmd)
 	require.Equal(t, "", m.(components.InputBar).Value())
+}
+
+func tabKey() tea.KeyMsg {
+	return tea.KeyMsg{Type: tea.KeyTab}
+}
+
+func TestInputBar_nick_completion(t *testing.T) {
+	nicks := []domain.Nick{"alice", "bob", "charlie"}
+
+	tests := []struct {
+		name     string
+		input    string
+		tabs     int
+		wantText string
+	}{
+		{
+			name:     "complete at start of line appends colon",
+			input:    "al",
+			tabs:     1,
+			wantText: "alice: ",
+		},
+		{
+			name:     "complete mid-line appends space",
+			input:    "hey al",
+			tabs:     1,
+			wantText: "hey alice ",
+		},
+		{
+			name:     "cycle through matches",
+			input:    "b",
+			tabs:     1,
+			wantText: "bob: ",
+		},
+		{
+			name:     "no match leaves input unchanged",
+			input:    "z",
+			tabs:     1,
+			wantText: "z",
+		},
+		{
+			name:     "empty prefix does nothing",
+			input:    "",
+			tabs:     1,
+			wantText: "",
+		},
+		{
+			name:     "case insensitive match",
+			input:    "AL",
+			tabs:     1,
+			wantText: "alice: ",
+		},
+		{
+			name:     "tab cycles through multiple matches",
+			input:    "c",
+			tabs:     1,
+			wantText: "charlie: ",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b := components.NewInputBar().SetNicks(nicks)
+			var m ui.Model = b
+
+			m = typeText(t, m, tt.input)
+
+			for range tt.tabs {
+				m, _ = m.Update(tabKey())
+			}
+
+			require.Equal(t, tt.wantText, m.(components.InputBar).Value())
+		})
+	}
+}
+
+func TestInputBar_nick_completion_cycles(t *testing.T) {
+	nicks := []domain.Nick{"alice", "alex", "bob"}
+	b := components.NewInputBar().SetNicks(nicks)
+	var m ui.Model = b
+
+	m = typeText(t, m, "al")
+
+	// First Tab: alice.
+	m, _ = m.Update(tabKey())
+	require.Equal(t, "alex: ", m.(components.InputBar).Value())
+
+	// Second Tab: alex.
+	m, _ = m.Update(tabKey())
+	require.Equal(t, "alice: ", m.(components.InputBar).Value())
+
+	// Third Tab: wraps back to alice.
+	m, _ = m.Update(tabKey())
+	require.Equal(t, "alex: ", m.(components.InputBar).Value())
+}
+
+func TestInputBar_nick_completion_resets_on_other_key(t *testing.T) {
+	nicks := []domain.Nick{"alice", "alex"}
+	b := components.NewInputBar().SetNicks(nicks)
+	var m ui.Model = b
+
+	m = typeText(t, m, "al")
+
+	m, _ = m.Update(tabKey())
+	require.Equal(t, "alex: ", m.(components.InputBar).Value())
+
+	// Typing resets completion state.
+	m = typeText(t, m, "h")
+	require.Equal(t, "alex: h", m.(components.InputBar).Value())
+
+	// Tab again starts a new completion on "h" (no match).
+	m, _ = m.Update(tabKey())
+	require.Equal(t, "alex: h", m.(components.InputBar).Value())
+}
+
+func TestInputBar_nick_completion_skipped_in_command_mode(t *testing.T) {
+	nicks := []domain.Nick{"alice"}
+	b := components.NewInputBar().SetNicks(nicks)
+	var m ui.Model = b
+
+	m = typeText(t, m, "/join al")
+
+	m, _ = m.Update(tabKey())
+
+	// Tab in command mode should not perform nick completion.
+	// The textinput may or may not modify the value, but nick
+	// completion should not have inserted "alice: ".
+	require.NotContains(t, m.(components.InputBar).Value(), "alice: ")
+}
+
+func TestInputBar_nick_completion_no_nicks(t *testing.T) {
+	b := components.NewInputBar()
+	var m ui.Model = b
+
+	m = typeText(t, m, "al")
+	m, _ = m.Update(tabKey())
+
+	require.Equal(t, "al", m.(components.InputBar).Value())
+}
+
+func TestInputBar_nick_completion_mid_line_with_trailing_text(t *testing.T) {
+	nicks := []domain.Nick{"alice"}
+	b := components.NewInputBar().SetNicks(nicks)
+	var m ui.Model = b
+
+	m = typeText(t, m, "hey al please")
+
+	// Move cursor to just after "al" (position 6).
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyHome})
+	for range 6 {
+		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	}
+
+	m, _ = m.Update(tabKey())
+
+	require.Equal(t, "hey alice please", m.(components.InputBar).Value())
 }

@@ -300,6 +300,16 @@ func (c *ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		_, cmd := c.messages.Update(msg)
 		return c, cmd
 
+	case NickListUpdatedMsg:
+		nicks := make([]domain.Nick, len(msg.Members))
+		for i, m := range msg.Members {
+			nicks[i] = m.Nick
+		}
+
+		c.input = c.input.SetNicks(nicks)
+
+		return c, nil
+
 	case SetLinesMsg, SetPlaceholderMsg, PendingResponseMsg, MessagesUpdatedMsg, AppendLinesMsg:
 		_, cmd := c.messages.Update(msg)
 		return c, cmd
