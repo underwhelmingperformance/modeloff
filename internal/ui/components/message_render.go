@@ -120,7 +120,7 @@ func renderLine(line tea.Msg, width int, highlightWords []string, userNick domai
 			fmt.Sprintf("✓ Opened direct message with %s", l.Nick)))
 
 	case UsageHint:
-		return wrap.Render(theme.Warning.Render("⚠ " + usageText(l.Command)))
+		return wrap.Render(theme.Warning.Render("⚠ usage: " + l.Usage))
 
 	case NoChannel:
 		return wrap.Render(theme.Warning.Render("⚠ join a channel first"))
@@ -253,19 +253,3 @@ func renderNewMessagesDivider(width int) string {
 	return theme.Dim.Render(left) + label + theme.Dim.Render(right)
 }
 
-func usageText(command string) string {
-	switch command {
-	case "config":
-		return "usage: /config api-key <value> | /config nick-model <model-id> | /config poke-interval <duration>"
-	case "config api-key":
-		return "usage: /config api-key <value>"
-	case "config nick-model":
-		return "usage: /config nick-model <model-id>"
-	case "config poke-interval":
-		return "usage: /config poke-interval <duration>"
-	case "invite":
-		return "usage: /invite <model-id> [--persona <text>]"
-	default:
-		return "usage: /" + command
-	}
-}

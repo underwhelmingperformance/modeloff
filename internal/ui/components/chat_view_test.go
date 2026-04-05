@@ -605,12 +605,18 @@ func TestRenderLine_application_feedback(t *testing.T) {
 		},
 		{
 			"usage_hint_config",
-			components.UsageHint{Command: "config"},
+			components.UsageHint{
+				Command: "config",
+				Usage:   "/config api-key <value> | /config nick-model <model-id> | /config poke-interval <duration>",
+			},
 			"⚠ usage: /config api-key",
 		},
 		{
 			"usage_hint_invite",
-			components.UsageHint{Command: "invite"},
+			components.UsageHint{
+				Command: "invite",
+				Usage:   "/invite <model-id> [--persona <text>]",
+			},
 			"⚠ usage: /invite",
 		},
 		{

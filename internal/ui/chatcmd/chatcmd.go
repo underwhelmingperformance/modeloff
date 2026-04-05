@@ -46,9 +46,11 @@ type ListResult struct {
 	Channels []domain.Channel
 }
 
-// UsageError indicates a command was invoked incorrectly.
+// UsageError indicates a command was invoked incorrectly. Usage
+// carries the human-readable usage string (e.g. "/invite <model>").
 type UsageError struct {
 	Command string
+	Usage   string
 }
 
 // NoChannelError indicates a command requires an active channel but
@@ -79,8 +81,8 @@ func errorEvent(operation string, err error) domain.ErrorEvent {
 	return domain.ErrorEvent{Operation: operation, Err: err, At: time.Now()}
 }
 
-func usageCmd(cmd string) tea.Cmd {
-	return func() tea.Msg { return UsageError{Command: cmd} }
+func usageCmd(cmd, usage string) tea.Cmd {
+	return func() tea.Msg { return UsageError{Command: cmd, Usage: usage} }
 }
 
 func noChannelCmd() tea.Cmd {

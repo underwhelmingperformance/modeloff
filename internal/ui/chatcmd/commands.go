@@ -103,7 +103,7 @@ func (c InviteCommand) Run(rc Context) tea.Cmd {
 	}
 
 	if c.Model == "" {
-		return usageCmd("invite")
+		return usageCmd("invite", "/invite <model-id> [--persona <text>]")
 	}
 
 	return func() tea.Msg {
@@ -243,7 +243,7 @@ func (c MeCommand) Run(rc Context) tea.Cmd {
 
 	body := strings.TrimSpace(strings.Join(c.Action, " "))
 	if body == "" {
-		return usageCmd("me")
+		return usageCmd("me", "/me <action>")
 	}
 
 	return func() tea.Msg {
@@ -314,12 +314,15 @@ func (c ConfigCommand) Run(rc Context) tea.Cmd {
 	return func() tea.Msg {
 		switch c.Key {
 		case "":
-			return UsageError{Command: "config"}
+			return UsageError{
+				Command: "config",
+				Usage:   "/config api-key <value> | /config nick-model <model-id> | /config poke-interval <duration>",
+			}
 
 		case "api-key":
 			value := strings.TrimSpace(strings.Join(c.Value, " "))
 			if value == "" {
-				return UsageError{Command: "config api-key"}
+				return UsageError{Command: "config api-key", Usage: "/config api-key <value>"}
 			}
 
 			if _, err := rc.Session.SetAPIKey(rc.Ctx, value); err != nil {
@@ -331,7 +334,7 @@ func (c ConfigCommand) Run(rc Context) tea.Cmd {
 		case "poke-interval":
 			value := strings.TrimSpace(strings.Join(c.Value, " "))
 			if value == "" {
-				return UsageError{Command: "config poke-interval"}
+				return UsageError{Command: "config poke-interval", Usage: "/config poke-interval <duration>"}
 			}
 
 			interval, err := time.ParseDuration(value)
@@ -351,7 +354,7 @@ func (c ConfigCommand) Run(rc Context) tea.Cmd {
 		case "nick-model":
 			value := strings.TrimSpace(strings.Join(c.Value, " "))
 			if value == "" {
-				return UsageError{Command: "config nick-model"}
+				return UsageError{Command: "config nick-model", Usage: "/config nick-model <model-id>"}
 			}
 
 			modelID := domain.ModelID(value)
@@ -363,7 +366,7 @@ func (c ConfigCommand) Run(rc Context) tea.Cmd {
 
 		case "highlight":
 			if len(c.Value) == 0 {
-				return UsageError{Command: "config highlight"}
+				return UsageError{Command: "config highlight", Usage: "/config highlight <word> [<word>...]"}
 			}
 
 			if _, err := rc.Session.SetHighlightWords(rc.Ctx, c.Value); err != nil {

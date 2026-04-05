@@ -64,8 +64,12 @@ type NickModelSet struct{ ModelID domain.ModelID }
 // DMOpened confirms a direct message was opened.
 type DMOpened struct{ Nick domain.Nick }
 
-// UsageHint is a warning about incorrect command usage.
-type UsageHint struct{ Command string }
+// UsageHint is a warning about incorrect command usage. Usage carries
+// the human-readable usage string produced by the command definition.
+type UsageHint struct {
+	Command string
+	Usage   string
+}
 
 // NoChannel is a warning shown when a command requires an active
 // channel but none is selected.

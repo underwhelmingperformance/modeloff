@@ -181,7 +181,7 @@ func (s *ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		return s, msgCmd(components.ChannelList{Channels: msg.Channels})
 
 	case chatcmd.UsageError:
-		return s, msgCmd(components.UsageHint{Command: msg.Command})
+		return s, msgCmd(components.UsageHint{Command: msg.Command, Usage: msg.Usage})
 
 	case chatcmd.NoChannelError:
 		return s, msgCmd(components.NoChannel{})
