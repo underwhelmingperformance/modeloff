@@ -2,6 +2,7 @@ package observability
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"runtime/debug"
 
@@ -98,31 +99,25 @@ func (r *Runtime) SnapshotMetrics(ctx context.Context) (MetricsSnapshot, error) 
 
 // Shutdown flushes providers and stops the local sinks.
 func (r *Runtime) Shutdown(ctx context.Context) error {
-	var err error
+	var errs []error
 
 	if r.loggerProvider != nil {
-		if shutdownErr := r.loggerProvider.Shutdown(ctx); shutdownErr != nil && err == nil {
-			err = shutdownErr
-		}
+		errs = append(errs, r.loggerProvider.Shutdown(ctx))
 	}
 
 	if r.tracerProvider != nil {
-		if shutdownErr := r.tracerProvider.Shutdown(ctx); shutdownErr != nil && err == nil {
-			err = shutdownErr
-		}
+		errs = append(errs, r.tracerProvider.Shutdown(ctx))
 	}
 
 	if r.meterProvider != nil {
-		if shutdownErr := r.meterProvider.Shutdown(ctx); shutdownErr != nil && err == nil {
-			err = shutdownErr
-		}
+		errs = append(errs, r.meterProvider.Shutdown(ctx))
 	}
 
 	if r.logBuffer != nil {
 		r.logBuffer.Close()
 	}
 
-	return err
+	return errors.Join(errs...)
 }
 
 func durationView(name string) sdkmetric.View {
