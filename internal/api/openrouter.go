@@ -13,13 +13,15 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 
+	"github.com/invopop/jsonschema"
+	orderedmap "github.com/wk8/go-ordered-map/v2"
+
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/observability"
 	"github.com/laney/modeloff/internal/protocol"
-	openai "github.com/openai/openai-go"
-	"github.com/openai/openai-go/option"
-	"github.com/openai/openai-go/packages/param"
-	"github.com/openai/openai-go/shared"
+	openai "github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
+	"github.com/openai/openai-go/v3/shared"
 )
 
 const defaultBaseURL = "https://openrouter.ai/api/v1"
@@ -69,126 +71,128 @@ type openRouterUsageExtras struct {
 	} `json:"cost_details"`
 }
 
-func modelResponseSchema() map[string]any {
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"response": map[string]any{
-				"anyOf": []any{
-					map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"kind": map[string]any{
-								"type":  "string",
-								"const": "reply",
-							},
-							"messages": map[string]any{
-								"type": "array",
-								"items": map[string]any{
-									"type": "object",
-									"properties": map[string]any{
-										"type": map[string]any{
-											"type":        "string",
-											"enum":        []string{"message", "action"},
-											"description": `"message" for a regular message, "action" for a /me action.`,
-										},
-										"body": map[string]any{
-											"type":        "string",
-											"description": "The message text. For actions, just the action body without /me.",
-										},
-									},
-									"required":             []string{"type", "body"},
-									"additionalProperties": false,
-								},
-								"description": "One or more messages to send.",
-							},
-						},
-						"required":             []string{"kind", "messages"},
-						"additionalProperties": false,
-					},
-					map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"kind": map[string]any{
-								"type":  "string",
-								"const": "pass",
-							},
-							"reason": map[string]any{
-								"type":        "string",
-								"description": "A brief reason for not replying.",
-							},
-						},
-						"required":             []string{"kind", "reason"},
-						"additionalProperties": false,
-					},
-				},
+// generateSchema reflects a Go type into a JSON Schema map suitable
+// for the OpenAI API. It uses invopop/jsonschema with inlining enabled
+// so that all definitions are expanded in place.
+func generateSchema[T any]() map[string]any {
+	reflector := jsonschema.Reflector{
+		DoNotReference: true,
+	}
+
+	var v T
+	schema := reflector.Reflect(v)
+
+	data, _ := json.Marshal(schema)
+
+	var result map[string]any
+	_ = json.Unmarshal(data, &result)
+
+	return result
+}
+
+// modelResponseBody is the discriminated union for the model's
+// reply/pass decision. It implements jsonschema.customSchemaImpl to
+// produce the anyOf schema with const discriminators.
+type modelResponseBody struct{}
+
+func (modelResponseBody) JSONSchema() *jsonschema.Schema {
+	replyProps := jsonschema.NewProperties()
+	replyProps.Set("kind", &jsonschema.Schema{Type: "string", Const: "reply"})
+	replyProps.Set("messages", &jsonschema.Schema{
+		Type:        "array",
+		Description: "One or more messages to send.",
+		Items: &jsonschema.Schema{
+			Type:                 "object",
+			Required:             []string{"type", "body"},
+			AdditionalProperties: jsonschema.FalseSchema,
+			Properties: func() *orderedmap.OrderedMap[string, *jsonschema.Schema] {
+				p := jsonschema.NewProperties()
+				p.Set("type", &jsonschema.Schema{
+					Type:        "string",
+					Enum:        []any{"message", "action"},
+					Description: `"message" for a regular message, "action" for a /me action.`,
+				})
+				p.Set("body", &jsonschema.Schema{
+					Type:        "string",
+					Description: "The message text. For actions, just the action body without /me.",
+				})
+				return p
+			}(),
+		},
+	})
+
+	passProps := jsonschema.NewProperties()
+	passProps.Set("kind", &jsonschema.Schema{Type: "string", Const: "pass"})
+	passProps.Set("reason", &jsonschema.Schema{
+		Type:        "string",
+		Description: "A brief reason for not replying.",
+	})
+
+	return &jsonschema.Schema{
+		AnyOf: []*jsonschema.Schema{
+			{
+				Type:                 "object",
+				Properties:           replyProps,
+				Required:             []string{"kind", "messages"},
+				AdditionalProperties: jsonschema.FalseSchema,
+			},
+			{
+				Type:                 "object",
+				Properties:           passProps,
+				Required:             []string{"kind", "reason"},
+				AdditionalProperties: jsonschema.FalseSchema,
 			},
 		},
-		"required":             []string{"response"},
-		"additionalProperties": false,
 	}
 }
+
+type modelResponseWrapper struct {
+	Response modelResponseBody `json:"response"`
+}
+
+var modelResponseSchemaMap = generateSchema[modelResponseWrapper]()
 
 func responseFormat() openai.ChatCompletionNewParamsResponseFormatUnion {
 	return openai.ChatCompletionNewParamsResponseFormatUnion{
 		OfJSONSchema: &shared.ResponseFormatJSONSchemaParam{
 			JSONSchema: shared.ResponseFormatJSONSchemaJSONSchemaParam{
 				Name:   "model_response",
-				Schema: modelResponseSchema(),
-				Strict: param.NewOpt(true),
+				Schema: modelResponseSchemaMap,
+				Strict: openai.Bool(true),
 			},
 		},
 	}
 }
 
-func writeMemoryTool() openai.ChatCompletionToolParam {
-	return openai.ChatCompletionToolParam{
-		Function: shared.FunctionDefinitionParam{
-			Name:        "write_memory",
-			Description: param.NewOpt("Store a memory. Use this to remember something for future conversations."),
-			Strict:      param.NewOpt(true),
-			Parameters: shared.FunctionParameters{
-				"type": "object",
-				"properties": map[string]any{
-					"key": map[string]any{
-						"type":        "string",
-						"description": "A short identifier for this memory (e.g. 'favourite_topic', 'user_name').",
-					},
-					"content": map[string]any{
-						"type":        "string",
-						"description": "The content to remember.",
-					},
-				},
-				"required":             []string{"key", "content"},
-				"additionalProperties": false,
-			},
-		},
-	}
+type writeMemoryArgs struct {
+	Key     string `json:"key" jsonschema_description:"A short identifier for this memory (e.g. favourite_topic, user_name)."`
+	Content string `json:"content" jsonschema_description:"The content to remember."`
 }
 
-func deleteMemoryTool() openai.ChatCompletionToolParam {
-	return openai.ChatCompletionToolParam{
-		Function: shared.FunctionDefinitionParam{
-			Name:        "delete_memory",
-			Description: param.NewOpt("Remove a memory by key. Use this when a memory is no longer relevant."),
-			Strict:      param.NewOpt(true),
-			Parameters: shared.FunctionParameters{
-				"type": "object",
-				"properties": map[string]any{
-					"key": map[string]any{
-						"type":        "string",
-						"description": "The key of the memory to remove.",
-					},
-				},
-				"required":             []string{"key"},
-				"additionalProperties": false,
-			},
-		},
-	}
+type deleteMemoryArgs struct {
+	Key string `json:"key" jsonschema_description:"The key of the memory to remove."`
 }
 
-func memoryTools() []openai.ChatCompletionToolParam {
-	return []openai.ChatCompletionToolParam{
+func writeMemoryTool() openai.ChatCompletionToolUnionParam {
+	return openai.ChatCompletionFunctionTool(shared.FunctionDefinitionParam{
+		Name:        "write_memory",
+		Description: openai.String("Store a memory. Use this to remember something for future conversations."),
+		Strict:      openai.Bool(true),
+		Parameters:  generateSchema[writeMemoryArgs](),
+	})
+}
+
+func deleteMemoryTool() openai.ChatCompletionToolUnionParam {
+	return openai.ChatCompletionFunctionTool(shared.FunctionDefinitionParam{
+		Name:        "delete_memory",
+		Description: openai.String("Remove a memory by key. Use this when a memory is no longer relevant."),
+		Strict:      openai.Bool(true),
+		Parameters:  generateSchema[deleteMemoryArgs](),
+	})
+}
+
+func memoryTools() []openai.ChatCompletionToolUnionParam {
+	return []openai.ChatCompletionToolUnionParam{
 		writeMemoryTool(),
 		deleteMemoryTool(),
 	}
@@ -379,15 +383,8 @@ func parseCompletionResponse(resp *openai.ChatCompletion, rawResp *http.Response
 		Usage:     usageFromResponse(resp.Usage),
 	}
 
-	if msg.Refusal != "" {
-		return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, &ErrModelRefused{Reason: msg.Refusal}
-	}
-
-	switch choice.FinishReason {
-	case "content_filter":
-		return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, ErrContentFiltered
-	case "length":
-		return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, ErrResponseTruncated
+	if err := validateChoice(choice); err != nil {
+		return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, err
 	}
 
 	assistantMsg := msg.ToParam()
@@ -395,10 +392,7 @@ func parseCompletionResponse(resp *openai.ChatCompletion, rawResp *http.Response
 	for _, call := range msg.ToolCalls {
 		switch call.Function.Name {
 		case "write_memory":
-			var args struct {
-				Key     string `json:"key"`
-				Content string `json:"content"`
-			}
+			var args writeMemoryArgs
 
 			if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
 				return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, fmt.Errorf("parse write_memory args: %w", err)
@@ -412,9 +406,7 @@ func parseCompletionResponse(resp *openai.ChatCompletion, rawResp *http.Response
 			})
 
 		case "delete_memory":
-			var args struct {
-				Key string `json:"key"`
-			}
+			var args deleteMemoryArgs
 
 			if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
 				return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, fmt.Errorf("parse delete_memory args: %w", err)
@@ -570,22 +562,10 @@ func (c *OpenRouterClient) GenerateNick(ctx context.Context, nickModel domain.Mo
 
 	choice := resp.Choices[0]
 
-	if choice.Message.Refusal != "" {
-		err := &ErrModelRefused{Reason: choice.Message.Refusal}
+	if err := validateChoice(choice); err != nil {
 		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
 		span.SetStatus(codes.Error, err.Error())
 		return NicknameResult{}, err
-	}
-
-	switch choice.FinishReason {
-	case "content_filter":
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		span.SetStatus(codes.Error, ErrContentFiltered.Error())
-		return NicknameResult{}, ErrContentFiltered
-	case "length":
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		span.SetStatus(codes.Error, ErrResponseTruncated.Error())
-		return NicknameResult{}, ErrResponseTruncated
 	}
 
 	nick := sanitizeNick(choice.Message.Content)

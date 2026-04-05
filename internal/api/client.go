@@ -8,7 +8,7 @@ import (
 	"errors"
 	"fmt"
 
-	openai "github.com/openai/openai-go"
+	openai "github.com/openai/openai-go/v3"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
@@ -30,6 +30,24 @@ type ErrModelRefused struct {
 
 func (e *ErrModelRefused) Error() string {
 	return fmt.Sprintf("model refused: %s", e.Reason)
+}
+
+// validateChoice checks the first choice in a completion response for
+// refusal, content filtering, or truncation. It returns nil when the
+// choice looks healthy.
+func validateChoice(choice openai.ChatCompletionChoice) error {
+	if choice.Message.Refusal != "" {
+		return &ErrModelRefused{Reason: choice.Message.Refusal}
+	}
+
+	switch choice.FinishReason {
+	case "content_filter":
+		return ErrContentFiltered
+	case "length":
+		return ErrResponseTruncated
+	}
+
+	return nil
 }
 
 // ModelInfo holds metadata about an available model from OpenRouter.
