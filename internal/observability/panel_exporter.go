@@ -3,6 +3,7 @@ package observability
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel/log"
@@ -30,6 +31,8 @@ type PanelEntry struct {
 // PanelExporter feeds log records from the OTel log pipeline into the
 // local log buffer.
 type PanelExporter struct {
+	mu          sync.Mutex
+	closed      bool
 	ingest      chan<- PanelEntry
 	droppedLogs metric.Int64Counter
 }
@@ -44,6 +47,13 @@ func NewPanelExporter(ingest chan<- PanelEntry, counter metric.Int64Counter) *Pa
 
 // Export forwards records into the in-memory log buffer without blocking.
 func (e *PanelExporter) Export(ctx context.Context, records []sdklog.Record) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.closed {
+		return nil
+	}
+
 	for _, record := range records {
 		entry := panelEntryFromRecord(record)
 
@@ -59,8 +69,13 @@ func (e *PanelExporter) Export(ctx context.Context, records []sdklog.Record) err
 	return nil
 }
 
-// Shutdown performs no work for the in-memory exporter.
-func (*PanelExporter) Shutdown(context.Context) error {
+// Shutdown marks the exporter as closed so Export stops sending.
+func (e *PanelExporter) Shutdown(context.Context) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	e.closed = true
+
 	return nil
 }
 
@@ -110,7 +125,7 @@ func valueString(v log.Value) string {
 	case log.KindString:
 		return v.AsString()
 	case log.KindBytes:
-		return fmt.Sprint(v.AsBytes())
+		return string(v.AsBytes())
 	case log.KindSlice:
 		return fmt.Sprint(v.AsSlice())
 	case log.KindMap:

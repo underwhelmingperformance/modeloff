@@ -205,23 +205,14 @@ func (c *OpenRouterClient) SendEvents(
 		return CompletionResult{}, err
 	}
 
-	span.SetAttributes(
-		attribute.String(observability.AttrRequestID, result.RequestID),
-		attribute.Int64(observability.AttrPromptTokens, result.Usage.PromptTokens),
-		attribute.Int64(observability.AttrCompletionTokens, result.Usage.CompletionTokens),
-		attribute.Int64(observability.AttrTotalTokens, result.Usage.TotalTokens),
-		attribute.Int64(observability.AttrReasoningTokens, result.Usage.ReasoningTokens),
-		attribute.Int64(observability.AttrCachedTokens, result.Usage.CachedTokens),
-		attribute.Int64(observability.AttrCacheWriteTokens, result.Usage.CacheWriteTokens),
-		attribute.Float64(observability.AttrCostCredits, result.Usage.CostCredits),
-		attribute.String(observability.AttrResult, completionResultKind(result.Response)),
-	)
+	result.Usage.SetSpanAttributes(span, result.RequestID)
+	span.SetAttributes(attribute.String(observability.AttrResult, ResponseResultKind(result.Response)))
 
 	logger.InfoContext(
 		ctx,
 		"openrouter send events completed",
 		"request_id", result.RequestID,
-		"result", completionResultKind(result.Response),
+		"result", ResponseResultKind(result.Response),
 		"prompt_tokens", result.Usage.PromptTokens,
 		"completion_tokens", result.Usage.CompletionTokens,
 		"cost_credits", result.Usage.CostCredits,
@@ -431,17 +422,8 @@ func (c *OpenRouterClient) GenerateNick(ctx context.Context, nickModel domain.Mo
 		Usage:     usageFromResponse(resp.Usage),
 	}
 
-	span.SetAttributes(
-		attribute.String(observability.AttrRequestID, result.RequestID),
-		attribute.Int64(observability.AttrPromptTokens, result.Usage.PromptTokens),
-		attribute.Int64(observability.AttrCompletionTokens, result.Usage.CompletionTokens),
-		attribute.Int64(observability.AttrTotalTokens, result.Usage.TotalTokens),
-		attribute.Int64(observability.AttrReasoningTokens, result.Usage.ReasoningTokens),
-		attribute.Int64(observability.AttrCachedTokens, result.Usage.CachedTokens),
-		attribute.Int64(observability.AttrCacheWriteTokens, result.Usage.CacheWriteTokens),
-		attribute.Float64(observability.AttrCostCredits, result.Usage.CostCredits),
-		attribute.String(observability.AttrResult, observability.ResultOK),
-	)
+	result.Usage.SetSpanAttributes(span, result.RequestID)
+	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 
 	logger.InfoContext(ctx, "openrouter generate nick completed", "request_id", result.RequestID, "nick", nick)
 
@@ -520,16 +502,5 @@ func usageFromResponse(response usageResponse) Usage {
 		CacheWriteTokens:      cacheWriteTokens,
 		CostCredits:           response.Cost,
 		UpstreamInferenceCost: response.CostDetails.UpstreamInferenceCost,
-	}
-}
-
-func completionResultKind(response protocol.ModelResponse) string {
-	switch response.Kind {
-	case protocol.ResponseReply:
-		return observability.ResultReply
-	case protocol.ResponseSilence:
-		return observability.ResultPass
-	default:
-		return observability.ResultOK
 	}
 }

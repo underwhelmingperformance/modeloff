@@ -515,5 +515,3 @@ func (c ChatView) renderTopic(width int) string {
 
 	return style.Render(text)
 }
-
-

@@ -1,18 +1,18 @@
 package observability
 
 const (
-	AttrOperation       = "modeloff.operation"
-	AttrModelID         = "modeloff.model_id"
-	AttrResult          = "modeloff.result"
-	AttrChannelKind     = "modeloff.channel_kind"
-	AttrPromptTokens    = "modeloff.prompt_tokens"
+	AttrOperation        = "modeloff.operation"
+	AttrModelID          = "modeloff.model_id"
+	AttrResult           = "modeloff.result"
+	AttrChannelKind      = "modeloff.channel_kind"
+	AttrPromptTokens     = "modeloff.prompt_tokens"
 	AttrCompletionTokens = "modeloff.completion_tokens"
-	AttrTotalTokens     = "modeloff.total_tokens"
-	AttrReasoningTokens = "modeloff.reasoning_tokens"
-	AttrCachedTokens    = "modeloff.cached_tokens"
+	AttrTotalTokens      = "modeloff.total_tokens"
+	AttrReasoningTokens  = "modeloff.reasoning_tokens"
+	AttrCachedTokens     = "modeloff.cached_tokens"
 	AttrCacheWriteTokens = "modeloff.cache_write_tokens"
-	AttrCostCredits     = "modeloff.cost_credits"
-	AttrRequestID       = "modeloff.request_id"
+	AttrCostCredits      = "modeloff.cost_credits"
+	AttrRequestID        = "modeloff.request_id"
 )
 
 const (

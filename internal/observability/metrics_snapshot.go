@@ -1,8 +1,8 @@
 package observability
 
 import (
-	"context"
 	"cmp"
+	"context"
 	"slices"
 	"time"
 

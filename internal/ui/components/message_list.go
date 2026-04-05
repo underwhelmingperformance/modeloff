@@ -39,7 +39,6 @@ type MessageList struct {
 
 	highlightWords []string
 	userNick       domain.Nick
-
 }
 
 // NewMessageList creates a message list for the given channel.

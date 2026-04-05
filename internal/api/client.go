@@ -6,7 +6,11 @@ package api
 import (
 	"context"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/observability"
 	"github.com/laney/modeloff/internal/protocol"
 )
 
@@ -20,13 +24,13 @@ type ModelInfo struct {
 
 // Usage contains token and cost metadata returned by OpenRouter.
 type Usage struct {
-	PromptTokens         int64
-	CompletionTokens     int64
-	TotalTokens          int64
-	ReasoningTokens      int64
-	CachedTokens         int64
-	CacheWriteTokens     int64
-	CostCredits          float64
+	PromptTokens          int64
+	CompletionTokens      int64
+	TotalTokens           int64
+	ReasoningTokens       int64
+	CachedTokens          int64
+	CacheWriteTokens      int64
+	CostCredits           float64
 	UpstreamInferenceCost float64
 }
 
@@ -68,4 +72,30 @@ type Client interface {
 	// model ID, returning the suggested nick. The nickModel parameter
 	// selects which model performs the generation.
 	GenerateNick(ctx context.Context, nickModel domain.ModelID, modelID domain.ModelID) (NicknameResult, error)
+}
+
+// SetSpanAttributes records usage and request metadata on a span.
+func (u Usage) SetSpanAttributes(span trace.Span, requestID string) {
+	span.SetAttributes(
+		attribute.String(observability.AttrRequestID, requestID),
+		attribute.Int64(observability.AttrPromptTokens, u.PromptTokens),
+		attribute.Int64(observability.AttrCompletionTokens, u.CompletionTokens),
+		attribute.Int64(observability.AttrTotalTokens, u.TotalTokens),
+		attribute.Int64(observability.AttrReasoningTokens, u.ReasoningTokens),
+		attribute.Int64(observability.AttrCachedTokens, u.CachedTokens),
+		attribute.Int64(observability.AttrCacheWriteTokens, u.CacheWriteTokens),
+		attribute.Float64(observability.AttrCostCredits, u.CostCredits),
+	)
+}
+
+// ResponseResultKind maps a model response to an observability result string.
+func ResponseResultKind(response protocol.ModelResponse) string {
+	switch response.Kind {
+	case protocol.ResponseReply:
+		return observability.ResultReply
+	case protocol.ResponseSilence:
+		return observability.ResultPass
+	default:
+		return observability.ResultOK
+	}
 }

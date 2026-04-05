@@ -252,4 +252,3 @@ func renderNewMessagesDivider(width int) string {
 
 	return theme.Dim.Render(left) + label + theme.Dim.Render(right)
 }
-
