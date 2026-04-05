@@ -1,6 +1,3 @@
-// Event handlers update ChatScreen's internal state (channels, active,
-// topic, etc.) synchronously, then return tea.Cmd messages to notify
-// child components of the changes.
 package screens
 
 import (

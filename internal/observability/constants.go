@@ -1,5 +1,8 @@
+// Package observability defines shared attribute keys, metric names,
+// and result constants used across the modeloff telemetry layer.
 package observability
 
+// OpenTelemetry span attribute keys attached to API and session spans.
 const (
 	AttrOperation        = "modeloff.operation"
 	AttrModelID          = "modeloff.model_id"
@@ -15,6 +18,7 @@ const (
 	AttrRequestID        = "modeloff.request_id"
 )
 
+// OpenTelemetry metric instrument names for counters and histograms.
 const (
 	MetricOperationCalls      = "modeloff.operation.calls"
 	MetricLLMRequests         = "modeloff.llm.requests"
@@ -29,6 +33,8 @@ const (
 	MetricDroppedLogs         = "modeloff.logs.dropped"
 )
 
+// Values for the AttrResult span attribute, indicating how the
+// operation completed.
 const (
 	ResultOK    = "ok"
 	ResultReply = "reply"

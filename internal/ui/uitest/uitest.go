@@ -159,6 +159,7 @@ type FakeAPI struct {
 	GenerateNickFn func(context.Context, domain.ModelID, domain.ModelID) (domain.Nick, error)
 }
 
+// ListModels delegates to ListModelsFn or returns nil.
 func (f *FakeAPI) ListModels(ctx context.Context) ([]api.ModelInfo, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -170,6 +171,7 @@ func (f *FakeAPI) ListModels(ctx context.Context) ([]api.ModelInfo, error) {
 	return nil, nil
 }
 
+// SendEvents delegates to SendEventsFn or returns a silence response.
 func (f *FakeAPI) SendEvents(
 	ctx context.Context,
 	modelID domain.ModelID,
@@ -190,6 +192,7 @@ func (f *FakeAPI) SendEvents(
 	}, nil
 }
 
+// ContinueWithToolResults always returns a silence response.
 func (f *FakeAPI) ContinueWithToolResults(
 	_ context.Context,
 	_ *api.Conversation,
@@ -200,6 +203,7 @@ func (f *FakeAPI) ContinueWithToolResults(
 	}, nil
 }
 
+// GenerateNick delegates to GenerateNickFn or returns "fakenick".
 func (f *FakeAPI) GenerateNick(ctx context.Context, nickModel domain.ModelID, modelID domain.ModelID) (api.NicknameResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

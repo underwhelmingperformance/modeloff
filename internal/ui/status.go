@@ -4,7 +4,10 @@ package ui
 type StatusSide int
 
 const (
+	// StatusSideLeft renders the item flush-left in the status bar.
 	StatusSideLeft StatusSide = iota
+
+	// StatusSideRight renders the item flush-right in the status bar.
 	StatusSideRight
 )
 

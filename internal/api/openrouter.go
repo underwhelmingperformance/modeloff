@@ -210,7 +210,7 @@ func (c *OpenRouterClient) SendEvents(
 	msgs := buildMessages(systemPrompt, history, events)
 	tools := allTools()
 
-	resp, rawResp, err := c.chatCompletion(ctx, openai.ChatCompletionNewParams{
+	resp, rawResp, err := c.chatCompletion(ctx, openai.ChatCompletionNewParams{ //nolint:bodyclose // SDK reads and closes the body.
 		Model:      shared.ChatModel(string(modelID)),
 		Messages:   msgs,
 		Tools:      tools,
@@ -278,7 +278,7 @@ func (c *OpenRouterClient) ContinueWithToolResults(
 
 	tools := allTools()
 
-	resp, rawResp, err := c.chatCompletion(ctx, openai.ChatCompletionNewParams{
+	resp, rawResp, err := c.chatCompletion(ctx, openai.ChatCompletionNewParams{ //nolint:bodyclose // SDK reads and closes the body.
 		Model:      shared.ChatModel(string(conv.modelID)),
 		Messages:   msgs,
 		Tools:      tools,
@@ -537,7 +537,7 @@ func (c *OpenRouterClient) GenerateNick(ctx context.Context, nickModel domain.Mo
 		string(modelID),
 	)
 
-	resp, rawResp, err := c.chatCompletion(ctx, openai.ChatCompletionNewParams{
+	resp, rawResp, err := c.chatCompletion(ctx, openai.ChatCompletionNewParams{ //nolint:bodyclose // SDK reads and closes the body.
 		Model: shared.ChatModel(string(nickModel)),
 		Messages: []openai.ChatCompletionMessageParamUnion{
 			openai.UserMessage(prompt),
