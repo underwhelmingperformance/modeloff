@@ -278,17 +278,24 @@ func (c *ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 	case CommandStateMsg:
 		c.messages.Update(msg)
-		c.popover.Apply(msg.Commands, c.input.Value(), c.input.Cursor())
+		c.updatePopover(PopoverApplyMsg{
+			Commands: msg.Commands,
+			Raw:      c.input.Value(),
+			Cursor:   c.input.Cursor(),
+		})
 		return c, nil
 
 	case PopoverAcceptMsg:
 		c.input = c.input.ReplaceRange(msg.ReplaceStart, msg.ReplaceEnd, msg.Replacement)
-		c.popover.Refresh(c.input.Value(), c.input.Cursor())
+		c.updatePopover(PopoverRefreshMsg{
+			Raw:    c.input.Value(),
+			Cursor: c.input.Cursor(),
+		})
 		return c, nil
 
 	case tea.KeyMsg:
 		if c.popover.IsVisible() {
-			_, cmd := c.popover.Update(msg)
+			cmd := c.updatePopover(msg)
 			if c.popover.Handled() {
 				return c, cmd
 			}
@@ -305,7 +312,10 @@ func (c *ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 	updated, inputCmd := c.input.Update(msg)
 	c.input = updated.(InputBar)
-	c.popover.Refresh(c.input.Value(), c.input.Cursor())
+	c.updatePopover(PopoverRefreshMsg{
+		Raw:    c.input.Value(),
+		Cursor: c.input.Cursor(),
+	})
 
 	return c, tea.Batch(mlCmd, inputCmd)
 }
@@ -318,12 +328,12 @@ func (c *ChatView) handleMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
 	layout := c.layoutRects()
 
 	if layout.PopoverLayout.Rect.Contains(msg.X, msg.Y) {
-		_, cmd := c.popover.Update(msg)
+		cmd := c.updatePopover(msg)
 		return true, cmd
 	}
 
 	if c.popover.IsVisible() && msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
-		c.popover.Dismiss(c.input.Value())
+		c.updatePopover(PopoverDismissMsg{Raw: c.input.Value()})
 	}
 
 	if layout.InputRect.Contains(msg.X, msg.Y) {
@@ -332,7 +342,10 @@ func (c *ChatView) handleMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
 			if msg.Button == tea.MouseButtonLeft {
 				localX, _ := layout.InputRect.Local(msg.X, msg.Y)
 				c.input = c.input.SetCursorFromCell(localX - c.composerPrefixWidth())
-				c.popover.Refresh(c.input.Value(), c.input.Cursor())
+				c.updatePopover(PopoverRefreshMsg{
+					Raw:    c.input.Value(),
+					Cursor: c.input.Cursor(),
+				})
 				return true, nil
 			}
 		case tea.MouseActionMotion:
@@ -441,6 +454,13 @@ func (c *ChatView) layoutRects() chatViewLayout {
 		MessageRect:   messageRect,
 		PopoverLayout: popoverLayout,
 	}
+}
+
+func (c *ChatView) updatePopover(msg tea.Msg) tea.Cmd {
+	updated, cmd := c.popover.Update(msg)
+	c.popover = updated.(*Popover)
+
+	return cmd
 }
 
 func (c *ChatView) composerPrefixWidth() int {

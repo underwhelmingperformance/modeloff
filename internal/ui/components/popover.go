@@ -23,6 +23,24 @@ type PopoverAcceptMsg struct {
 	Replacement  string
 }
 
+// PopoverApplyMsg updates the command set and recomputes suggestions.
+type PopoverApplyMsg struct {
+	Commands command.Set
+	Raw      string
+	Cursor   int
+}
+
+// PopoverRefreshMsg recomputes suggestions for the current input.
+type PopoverRefreshMsg struct {
+	Raw    string
+	Cursor int
+}
+
+// PopoverDismissMsg hides the popover until the input changes.
+type PopoverDismissMsg struct {
+	Raw string
+}
+
 // Popover renders a command-completion popover above the input bar.
 // It owns completion suggestions, selection index, and visibility
 // state.
@@ -49,25 +67,6 @@ func NewPopover() *Popover {
 	return &Popover{}
 }
 
-// Apply updates the command set, then recomputes suggestions for the
-// current input state.
-func (p *Popover) Apply(commands command.Set, raw string, cursor int) {
-	p.commands = commands
-	p.refresh(raw, cursor)
-}
-
-// Refresh recomputes suggestions for the current input value and
-// cursor position. ChatView calls this after every input change.
-func (p *Popover) Refresh(raw string, cursor int) {
-	p.closed = false
-	p.refresh(raw, cursor)
-}
-
-// Dismiss hides the popover until the input changes to a non-command.
-func (p *Popover) Dismiss(raw string) {
-	p.closed = true
-	p.refresh(raw, 0)
-}
 
 // IsVisible returns whether the popover is currently showing.
 func (p *Popover) IsVisible() bool {
@@ -123,11 +122,26 @@ func (p *Popover) Handled() bool {
 }
 
 // Update implements ui.Model. It handles keyboard navigation
-// (Tab/Up/Down/Esc) and mouse interactions within the popover.
+// (Tab/Up/Down/Esc), mouse interactions, and popover state messages.
 func (p *Popover) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	p.handled = false
 
 	switch msg := msg.(type) {
+	case PopoverApplyMsg:
+		p.commands = msg.Commands
+		p.refresh(msg.Raw, msg.Cursor)
+		return p, nil
+
+	case PopoverRefreshMsg:
+		p.closed = false
+		p.refresh(msg.Raw, msg.Cursor)
+		return p, nil
+
+	case PopoverDismissMsg:
+		p.closed = true
+		p.refresh(msg.Raw, 0)
+		return p, nil
+
 	case tea.KeyMsg:
 		if handled, cmd := p.handleKey(msg); handled {
 			p.handled = true
