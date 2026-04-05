@@ -53,7 +53,7 @@ func New(t testing.TB, m tea.Model, opts ...teatest.TestOption) *App {
 // output returns a reader that tees every byte read from the
 // teatest output stream into the cumulative buffer.
 func (a *App) output() io.Reader {
-	return io.TeeReader(a.TestModel.Output(), &lockedWriter{mu: &a.mu, buf: &a.buf})
+	return io.TeeReader(a.Output(), &lockedWriter{mu: &a.mu, buf: &a.buf})
 }
 
 type lockedWriter struct {
