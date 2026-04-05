@@ -1,7 +1,6 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -17,13 +16,18 @@ import (
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/observability"
 	"github.com/laney/modeloff/internal/protocol"
+	openai "github.com/openai/openai-go"
+	"github.com/openai/openai-go/option"
+	"github.com/openai/openai-go/packages/param"
+	"github.com/openai/openai-go/shared"
 )
 
 const defaultBaseURL = "https://openrouter.ai/api/v1"
 
-// OpenRouterClient implements Client using direct HTTP so that
-// OpenRouter-specific usage metadata remains available to the app.
+// OpenRouterClient implements Client using openai-go for chat
+// completions and direct HTTP for OpenRouter-specific endpoints.
 type OpenRouterClient struct {
+	oai     openai.Client
 	baseURL string
 	apiKey  string
 	http    *http.Client
@@ -40,59 +44,18 @@ func NewOpenRouterClient(apiKey, baseURL string, httpClient *http.Client) *OpenR
 		httpClient = http.DefaultClient
 	}
 
+	oai := openai.NewClient(
+		option.WithAPIKey(apiKey),
+		option.WithBaseURL(baseURL),
+		option.WithHTTPClient(httpClient),
+	)
+
 	return &OpenRouterClient{
+		oai:     oai,
 		baseURL: baseURL,
 		apiKey:  apiKey,
 		http:    httpClient,
 	}
-}
-
-type chatMessage struct {
-	Role       string     `json:"role"`
-	Content    string     `json:"content,omitempty"`
-	ToolCalls  []toolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
-}
-
-type toolCall struct {
-	ID       string           `json:"id"`
-	Type     string           `json:"type"`
-	Function toolCallFunction `json:"function"`
-}
-
-type toolCallFunction struct {
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"`
-}
-
-type toolFunction struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	Strict      bool           `json:"strict"`
-	Parameters  map[string]any `json:"parameters"`
-}
-
-type toolDefinition struct {
-	Type     string       `json:"type"`
-	Function toolFunction `json:"function"`
-}
-
-type chatCompletionRequest struct {
-	Model      string           `json:"model"`
-	Messages   []chatMessage    `json:"messages"`
-	Tools      []toolDefinition `json:"tools,omitempty"`
-	ToolChoice any              `json:"tool_choice,omitempty"`
-}
-
-type chatCompletionResponse struct {
-	ID      string `json:"id"`
-	Choices []struct {
-		Message struct {
-			Content   string     `json:"content"`
-			ToolCalls []toolCall `json:"tool_calls"`
-		} `json:"message"`
-	} `json:"choices"`
-	Usage usageResponse `json:"usage"`
 }
 
 type usageResponse struct {
@@ -113,14 +76,13 @@ type usageResponse struct {
 	} `json:"cost_details"`
 }
 
-func replyTool() toolDefinition {
-	return toolDefinition{
-		Type: "function",
-		Function: toolFunction{
+func replyTool() openai.ChatCompletionToolParam {
+	return openai.ChatCompletionToolParam{
+		Function: shared.FunctionDefinitionParam{
 			Name:        "reply",
-			Description: "Send one or more messages to the channel. Each message is either a regular message or an action (/me). Keep each message short, like IRC.",
-			Strict:      true,
-			Parameters: map[string]any{
+			Description: param.NewOpt("Send one or more messages to the channel. Each message is either a regular message or an action (/me). Keep each message short, like IRC."),
+			Strict:      param.NewOpt(true),
+			Parameters: shared.FunctionParameters{
 				"type": "object",
 				"properties": map[string]any{
 					"messages": map[string]any{
@@ -151,14 +113,13 @@ func replyTool() toolDefinition {
 	}
 }
 
-func writeMemoryTool() toolDefinition {
-	return toolDefinition{
-		Type: "function",
-		Function: toolFunction{
+func writeMemoryTool() openai.ChatCompletionToolParam {
+	return openai.ChatCompletionToolParam{
+		Function: shared.FunctionDefinitionParam{
 			Name:        "write_memory",
-			Description: "Store a memory. Use this to remember something for future conversations.",
-			Strict:      true,
-			Parameters: map[string]any{
+			Description: param.NewOpt("Store a memory. Use this to remember something for future conversations."),
+			Strict:      param.NewOpt(true),
+			Parameters: shared.FunctionParameters{
 				"type": "object",
 				"properties": map[string]any{
 					"key": map[string]any{
@@ -177,14 +138,13 @@ func writeMemoryTool() toolDefinition {
 	}
 }
 
-func deleteMemoryTool() toolDefinition {
-	return toolDefinition{
-		Type: "function",
-		Function: toolFunction{
+func deleteMemoryTool() openai.ChatCompletionToolParam {
+	return openai.ChatCompletionToolParam{
+		Function: shared.FunctionDefinitionParam{
 			Name:        "delete_memory",
-			Description: "Remove a memory by key. Use this when a memory is no longer relevant.",
-			Strict:      true,
-			Parameters: map[string]any{
+			Description: param.NewOpt("Remove a memory by key. Use this when a memory is no longer relevant."),
+			Strict:      param.NewOpt(true),
+			Parameters: shared.FunctionParameters{
 				"type": "object",
 				"properties": map[string]any{
 					"key": map[string]any{
@@ -199,14 +159,13 @@ func deleteMemoryTool() toolDefinition {
 	}
 }
 
-func passTool() toolDefinition {
-	return toolDefinition{
-		Type: "function",
-		Function: toolFunction{
+func passTool() openai.ChatCompletionToolParam {
+	return openai.ChatCompletionToolParam{
+		Function: shared.FunctionDefinitionParam{
 			Name:        "pass",
-			Description: "Explicitly choose not to reply. Use this when you have nothing to add.",
-			Strict:      true,
-			Parameters: map[string]any{
+			Description: param.NewOpt("Explicitly choose not to reply. Use this when you have nothing to add."),
+			Strict:      param.NewOpt(true),
+			Parameters: shared.FunctionParameters{
 				"type": "object",
 				"properties": map[string]any{
 					"reason": map[string]any{
@@ -221,12 +180,18 @@ func passTool() toolDefinition {
 	}
 }
 
-func allTools() []toolDefinition {
-	return []toolDefinition{
+func allTools() []openai.ChatCompletionToolParam {
+	return []openai.ChatCompletionToolParam{
 		replyTool(),
 		passTool(),
 		writeMemoryTool(),
 		deleteMemoryTool(),
+	}
+}
+
+func toolChoice() openai.ChatCompletionToolChoiceOptionUnionParam {
+	return openai.ChatCompletionToolChoiceOptionUnionParam{
+		OfAuto: param.NewOpt(string(openai.ChatCompletionToolChoiceOptionAutoRequired)),
 	}
 }
 
@@ -252,11 +217,11 @@ func (c *OpenRouterClient) SendEvents(
 	msgs := buildMessages(systemPrompt, history, events)
 	tools := allTools()
 
-	resp, err := c.chatCompletion(ctx, chatCompletionRequest{
-		Model:      string(modelID),
+	resp, rawResp, err := c.chatCompletion(ctx, openai.ChatCompletionNewParams{
+		Model:      shared.ChatModel(string(modelID)),
 		Messages:   msgs,
 		Tools:      tools,
-		ToolChoice: "required",
+		ToolChoice: toolChoice(),
 	})
 	if err != nil {
 		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
@@ -265,7 +230,7 @@ func (c *OpenRouterClient) SendEvents(
 		return CompletionResult{}, err
 	}
 
-	result, assistantMsg, err := parseCompletionResponse(resp)
+	result, assistantMsg, err := parseCompletionResponse(resp, rawResp)
 	if err != nil {
 		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
 		span.SetStatus(codes.Error, err.Error())
@@ -315,20 +280,16 @@ func (c *OpenRouterClient) ContinueWithToolResults(
 
 	msgs := conv.messages
 	for _, r := range results {
-		msgs = append(msgs, chatMessage{
-			Role:       "tool",
-			Content:    r.Content,
-			ToolCallID: r.ToolCallID,
-		})
+		msgs = append(msgs, openai.ToolMessage(r.Content, r.ToolCallID))
 	}
 
 	tools := allTools()
 
-	resp, err := c.chatCompletion(ctx, chatCompletionRequest{
-		Model:      string(conv.modelID),
+	resp, rawResp, err := c.chatCompletion(ctx, openai.ChatCompletionNewParams{
+		Model:      shared.ChatModel(string(conv.modelID)),
 		Messages:   msgs,
 		Tools:      tools,
-		ToolChoice: "required",
+		ToolChoice: toolChoice(),
 	})
 	if err != nil {
 		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
@@ -337,7 +298,7 @@ func (c *OpenRouterClient) ContinueWithToolResults(
 		return CompletionResult{}, err
 	}
 
-	result, assistantMsg, err := parseCompletionResponse(resp)
+	result, assistantMsg, err := parseCompletionResponse(resp, rawResp)
 	if err != nil {
 		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
 		span.SetStatus(codes.Error, err.Error())
@@ -348,7 +309,7 @@ func (c *OpenRouterClient) ContinueWithToolResults(
 	if len(result.PendingToolCalls) > 0 {
 		// Append tool results and the new assistant message for the
 		// next iteration.
-		nextMsgs := make([]chatMessage, len(msgs), len(msgs)+1)
+		nextMsgs := make([]openai.ChatCompletionMessageParamUnion, len(msgs), len(msgs)+1)
 		copy(nextMsgs, msgs)
 		nextMsgs = append(nextMsgs, assistantMsg)
 
@@ -375,17 +336,17 @@ func buildMessages(
 	systemPrompt string,
 	history []protocol.IRCMessage,
 	events []protocol.IRCMessage,
-) []chatMessage {
-	msgs := []chatMessage{{Role: "system", Content: systemPrompt}}
+) []openai.ChatCompletionMessageParamUnion {
+	msgs := []openai.ChatCompletionMessageParamUnion{openai.SystemMessage(systemPrompt)}
 
 	for _, h := range history {
 		data, _ := json.Marshal(h)
-		msgs = append(msgs, chatMessage{Role: "user", Content: string(data)})
+		msgs = append(msgs, openai.UserMessage(string(data)))
 	}
 
 	for _, e := range events {
 		data, _ := json.Marshal(e)
-		msgs = append(msgs, chatMessage{Role: "user", Content: string(data)})
+		msgs = append(msgs, openai.UserMessage(string(data)))
 	}
 
 	return msgs
@@ -400,24 +361,18 @@ func buildMessages(
 // are returned as PendingToolCalls; the first terminal tool call
 // finalises the Response. If only memory tools are present, the caller
 // must continue the conversation.
-func parseCompletionResponse(resp chatCompletionResponse) (CompletionResult, chatMessage, error) {
-	if len(resp.Choices) == 0 {
-		return CompletionResult{}, chatMessage{}, fmt.Errorf("no choices in response")
+func parseCompletionResponse(resp *openai.ChatCompletion, rawResp *http.Response) (CompletionResult, openai.ChatCompletionMessageParamUnion, error) {
+	if resp == nil || len(resp.Choices) == 0 {
+		return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, fmt.Errorf("no choices in response")
 	}
 
 	msg := resp.Choices[0].Message
 	result := CompletionResult{
-		RequestID: resp.ID,
+		RequestID: requestIDFromChatCompletion(resp, rawResp),
 		Usage:     usageFromResponse(resp.Usage),
 	}
 
-	assistantMsg := chatMessage{
-		Role:      "assistant",
-		ToolCalls: msg.ToolCalls,
-	}
-	if msg.Content != "" {
-		assistantMsg.Content = msg.Content
-	}
+	assistantMsg := msg.ToParam()
 
 	if len(msg.ToolCalls) == 0 {
 		result.Response = protocol.ModelResponse{
@@ -436,7 +391,7 @@ func parseCompletionResponse(resp chatCompletionResponse) (CompletionResult, cha
 			}
 
 			if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
-				return CompletionResult{}, chatMessage{}, fmt.Errorf("parse reply args: %w", err)
+				return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, fmt.Errorf("parse reply args: %w", err)
 			}
 
 			result.Response = protocol.ModelResponse{
@@ -452,7 +407,7 @@ func parseCompletionResponse(resp chatCompletionResponse) (CompletionResult, cha
 			}
 
 			if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
-				return CompletionResult{}, chatMessage{}, fmt.Errorf("parse pass args: %w", err)
+				return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, fmt.Errorf("parse pass args: %w", err)
 			}
 
 			result.Response = protocol.ModelResponse{
@@ -469,7 +424,7 @@ func parseCompletionResponse(resp chatCompletionResponse) (CompletionResult, cha
 			}
 
 			if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
-				return CompletionResult{}, chatMessage{}, fmt.Errorf("parse write_memory args: %w", err)
+				return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, fmt.Errorf("parse write_memory args: %w", err)
 			}
 
 			result.PendingToolCalls = append(result.PendingToolCalls, PendingToolCall{
@@ -485,7 +440,7 @@ func parseCompletionResponse(resp chatCompletionResponse) (CompletionResult, cha
 			}
 
 			if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
-				return CompletionResult{}, chatMessage{}, fmt.Errorf("parse delete_memory args: %w", err)
+				return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, fmt.Errorf("parse delete_memory args: %w", err)
 			}
 
 			result.PendingToolCalls = append(result.PendingToolCalls, PendingToolCall{
@@ -495,7 +450,7 @@ func parseCompletionResponse(resp chatCompletionResponse) (CompletionResult, cha
 			})
 
 		default:
-			return CompletionResult{}, chatMessage{}, fmt.Errorf("unknown tool call: %q", call.Function.Name)
+			return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, fmt.Errorf("unknown tool call: %q", call.Function.Name)
 		}
 	}
 
@@ -589,10 +544,10 @@ func (c *OpenRouterClient) GenerateNick(ctx context.Context, nickModel domain.Mo
 		string(modelID),
 	)
 
-	resp, err := c.chatCompletion(ctx, chatCompletionRequest{
-		Model: string(nickModel),
-		Messages: []chatMessage{
-			{Role: "user", Content: prompt},
+	resp, rawResp, err := c.chatCompletion(ctx, openai.ChatCompletionNewParams{
+		Model: shared.ChatModel(string(nickModel)),
+		Messages: []openai.ChatCompletionMessageParamUnion{
+			openai.UserMessage(prompt),
 		},
 	})
 	if err != nil {
@@ -619,7 +574,7 @@ func (c *OpenRouterClient) GenerateNick(ctx context.Context, nickModel domain.Mo
 
 	result := NicknameResult{
 		Nick:      domain.Nick(nick),
-		RequestID: resp.ID,
+		RequestID: requestIDFromChatCompletion(resp, rawResp),
 		Usage:     usageFromResponse(resp.Usage),
 	}
 
@@ -655,43 +610,51 @@ func sanitizeNick(raw string) string {
 	return result
 }
 
-func (c *OpenRouterClient) chatCompletion(ctx context.Context, payload chatCompletionRequest) (chatCompletionResponse, error) {
-	body, err := json.Marshal(payload)
+func (c *OpenRouterClient) chatCompletion(
+	ctx context.Context,
+	payload openai.ChatCompletionNewParams,
+) (*openai.ChatCompletion, *http.Response, error) {
+	var rawResp *http.Response
+
+	completion, err := c.oai.Chat.Completions.New(
+		ctx,
+		payload,
+		option.WithResponseInto(&rawResp),
+	)
 	if err != nil {
-		return chatCompletionResponse{}, fmt.Errorf("marshal chat completion request: %w", err)
+		return nil, rawResp, fmt.Errorf("chat completion: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return chatCompletionResponse{}, err
-	}
-
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return chatCompletionResponse{}, fmt.Errorf("chat completion: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		responseBody, _ := io.ReadAll(resp.Body)
-		return chatCompletionResponse{}, fmt.Errorf("chat completion: status %d: %s", resp.StatusCode, responseBody)
-	}
-
-	var completion chatCompletionResponse
-	if err := json.NewDecoder(resp.Body).Decode(&completion); err != nil {
-		return chatCompletionResponse{}, fmt.Errorf("chat completion decode: %w", err)
-	}
-
-	return completion, nil
+	return completion, rawResp, nil
 }
 
-func usageFromResponse(response usageResponse) Usage {
-	cacheWriteTokens := response.PromptTokensDetails.CacheWriteTokens
+func requestIDFromChatCompletion(resp *openai.ChatCompletion, rawResp *http.Response) string {
+	if resp != nil && resp.ID != "" {
+		return resp.ID
+	}
+
+	if rawResp == nil {
+		return ""
+	}
+
+	if requestID := rawResp.Header.Get("x-request-id"); requestID != "" {
+		return requestID
+	}
+
+	return rawResp.Header.Get("request-id")
+}
+
+func usageFromResponse(response openai.CompletionUsage) Usage {
+	var extra usageResponse
+
+	rawJSON := response.RawJSON()
+	if rawJSON != "" {
+		_ = json.Unmarshal([]byte(rawJSON), &extra)
+	}
+
+	cacheWriteTokens := extra.PromptTokensDetails.CacheWriteTokens
 	if cacheWriteTokens == 0 {
-		cacheWriteTokens = response.PromptTokensDetails.CacheCreationTokens
+		cacheWriteTokens = extra.PromptTokensDetails.CacheCreationTokens
 	}
 
 	return Usage{
@@ -701,7 +664,7 @@ func usageFromResponse(response usageResponse) Usage {
 		ReasoningTokens:       response.CompletionTokensDetails.ReasoningTokens,
 		CachedTokens:          response.PromptTokensDetails.CachedTokens,
 		CacheWriteTokens:      cacheWriteTokens,
-		CostCredits:           response.Cost,
-		UpstreamInferenceCost: response.CostDetails.UpstreamInferenceCost,
+		CostCredits:           extra.Cost,
+		UpstreamInferenceCost: extra.CostDetails.UpstreamInferenceCost,
 	}
 }

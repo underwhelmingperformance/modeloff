@@ -6,6 +6,7 @@ package api
 import (
 	"context"
 
+	openai "github.com/openai/openai-go"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
@@ -73,7 +74,7 @@ type ToolResult struct {
 // CompletionResult when the model calls intermediate tools.
 type Conversation struct {
 	modelID  domain.ModelID
-	messages []chatMessage
+	messages []openai.ChatCompletionMessageParamUnion
 }
 
 // CompletionResult contains the model's typed response alongside

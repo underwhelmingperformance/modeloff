@@ -207,6 +207,7 @@ func TestOpenRouterClient_SendEventsWithHistory(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, http.MethodPost, r.Method)
+		require.Equal(t, "/chat/completions", r.URL.Path)
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&receivedBody))
 
 		w.Header().Set("Content-Type", "application/json")
@@ -270,6 +271,79 @@ func TestOpenRouterClient_SendEventsWithHistory(t *testing.T) {
 	require.NoError(t, err)
 
 	require.JSONEq(t, string(wantJSON), string(gotJSON))
+}
+
+func TestOpenRouterClient_SendEvents_preservesOpenRouterUsageMetadata(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodPost, r.Method)
+		require.Equal(t, "/chat/completions", r.URL.Path)
+		require.Equal(t, "Bearer test-key", r.Header.Get("Authorization"))
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": "chatcmpl_usage",
+			"usage": map[string]any{
+				"prompt_tokens":     11,
+				"completion_tokens": 7,
+				"total_tokens":      18,
+				"cost":              0.625,
+				"prompt_tokens_details": map[string]any{
+					"cached_tokens":      3,
+					"cache_write_tokens": 2,
+				},
+				"completion_tokens_details": map[string]any{
+					"reasoning_tokens": 4,
+				},
+				"cost_details": map[string]any{
+					"upstream_inference_cost": 0.5,
+				},
+			},
+			"choices": []map[string]any{
+				{
+					"message": map[string]any{
+						"role":    "assistant",
+						"content": "",
+						"tool_calls": []map[string]any{
+							{
+								"id":   "call_usage",
+								"type": "function",
+								"function": map[string]any{
+									"name":      "pass",
+									"arguments": `{"reason":"done"}`,
+								},
+							},
+						},
+					},
+					"finish_reason": "tool_calls",
+					"index":         0,
+				},
+			},
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
+
+	got, err := client.SendEvents(
+		t.Context(),
+		"test/model",
+		"You are a test bot.",
+		nil,
+		[]protocol.IRCMessage{
+			{Kind: protocol.KindPrivMsg, From: "alice", Target: "#test", Body: "hi"},
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, Usage{
+		PromptTokens:          11,
+		CompletionTokens:      7,
+		TotalTokens:           18,
+		ReasoningTokens:       4,
+		CachedTokens:          3,
+		CacheWriteTokens:      2,
+		CostCredits:           0.625,
+		UpstreamInferenceCost: 0.5,
+	}, got.Usage)
 }
 
 func TestOpenRouterClient_GenerateNick(t *testing.T) {
@@ -403,7 +477,7 @@ func TestOpenRouterClient_ContinueWithToolResults(t *testing.T) {
 	firstCall := true
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body chatCompletionRequest
+		var body map[string]any
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 
 		w.Header().Set("Content-Type", "application/json")
@@ -421,11 +495,14 @@ func TestOpenRouterClient_ContinueWithToolResults(t *testing.T) {
 
 		// The continuation request should end with a tool result
 		// message confirming the write_memory execution.
-		lastMsg := body.Messages[len(body.Messages)-1]
-		require.Equal(t, chatMessage{
-			Role:       "tool",
-			Content:    "ok",
-			ToolCallID: "call_123",
+		messages, ok := body["messages"].([]any)
+		require.True(t, ok, "expected messages in request body")
+		lastMsg, ok := messages[len(messages)-1].(map[string]any)
+		require.True(t, ok, "expected final message to be an object")
+		require.Equal(t, map[string]any{
+			"role":         "tool",
+			"content":      "ok",
+			"tool_call_id": "call_123",
 		}, lastMsg)
 
 		require.NoError(t, json.NewEncoder(w).Encode(chatResponse(toolCallFixture{
@@ -508,6 +585,7 @@ func newChatServer(t *testing.T, tc toolCallFixture) *httptest.Server {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, http.MethodPost, r.Method)
+		require.Equal(t, "/chat/completions", r.URL.Path)
 		require.Equal(t, "Bearer test-key", r.Header.Get("Authorization"))
 
 		w.Header().Set("Content-Type", "application/json")
