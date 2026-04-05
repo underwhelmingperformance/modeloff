@@ -40,6 +40,9 @@ var (
 	// Warning is used for warnings and notices.
 	Warning = lipgloss.NewStyle().Foreground(colourYellow)
 
+	// Highlight is used for messages containing highlight words.
+	Highlight = lipgloss.NewStyle().Foreground(colourYellow).Bold(true)
+
 	// Info is used for informational messages.
 	Info = lipgloss.NewStyle().Foreground(colourCyan)
 )

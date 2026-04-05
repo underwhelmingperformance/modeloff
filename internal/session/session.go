@@ -637,6 +637,41 @@ func (s *Session) SetNickModel(_ context.Context, modelID domain.ModelID) (confi
 	return cfg, nil
 }
 
+// HighlightWords returns the currently configured highlight words.
+func (s *Session) HighlightWords() []string {
+	if s.config == nil {
+		return config.DefaultHighlightWords
+	}
+
+	cfg, err := s.config.Load()
+	if err != nil {
+		return config.DefaultHighlightWords
+	}
+
+	return cfg.HighlightWords
+}
+
+// SetHighlightWords persists a new set of highlight words through
+// the config store.
+func (s *Session) SetHighlightWords(_ context.Context, words []string) (config.Config, error) {
+	if s.config == nil {
+		return config.Config{}, fmt.Errorf("config store not configured")
+	}
+
+	cfg, err := s.config.Load()
+	if err != nil {
+		return config.Config{}, fmt.Errorf("load config: %w", err)
+	}
+
+	cfg.HighlightWords = words
+
+	if err := s.config.Save(cfg); err != nil {
+		return config.Config{}, fmt.Errorf("save config: %w", err)
+	}
+
+	return cfg, nil
+}
+
 func (s *Session) dispatchToInstances(
 	ctx context.Context,
 	channelName domain.ChannelName,

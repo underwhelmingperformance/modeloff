@@ -448,7 +448,11 @@ func TestChatView_pending_indicator_reduces_message_area(t *testing.T) {
 }
 
 func renderSingleLine(line components.ChatLine) string {
-	cv := components.NewChatView("#test", "testuser", "", []components.ChatLine{line})
+	return renderSingleLineWithHighlight(line, nil, "testuser")
+}
+
+func renderSingleLineWithHighlight(line components.ChatLine, words []string, nick domain.Nick) string {
+	cv := components.NewChatView("#test", nick, "", []components.ChatLine{line})
 	cv.Update(components.CommandStateMsg{
 		Commands: command.Set{
 			Commands: []*command.Node{
@@ -457,6 +461,11 @@ func renderSingleLine(line components.ChatLine) string {
 			},
 		},
 	})
+
+	if len(words) > 0 {
+		cv.Update(components.HighlightWordsMsg{Words: words, UserNick: nick})
+	}
+
 	v := cv.View(200, 24)
 
 	return ansi.Strip(v)
@@ -939,4 +948,71 @@ func TestChatView_mouse_click_accepts_popover_suggestion(t *testing.T) {
 	require.NotNil(t, cmd)
 	sub := cmd().(components.CommandSubmitMsg)
 	require.Equal(t, "/join #general", sub.Raw)
+}
+
+func TestContainsHighlightWord(t *testing.T) {
+	tests := []struct {
+		name   string
+		words  []string
+		nick   domain.Nick
+		body   string
+		expect bool
+	}{
+		{
+			name:   "dollar_nick_matches_user_nick",
+			words:  []string{"$nick"},
+			nick:   "testuser",
+			body:   "hey testuser check this out",
+			expect: true,
+		},
+		{
+			name:   "literal_word_matches",
+			words:  []string{"check"},
+			nick:   "testuser",
+			body:   "hey testuser check this out",
+			expect: true,
+		},
+		{
+			name:   "case_insensitive",
+			words:  []string{"CHECK"},
+			nick:   "testuser",
+			body:   "hey testuser check this out",
+			expect: true,
+		},
+		{
+			name:   "no_match",
+			words:  []string{"foobar"},
+			nick:   "testuser",
+			body:   "hey testuser check this out",
+			expect: false,
+		},
+		{
+			name:   "no_highlight_words_configured",
+			words:  nil,
+			nick:   "testuser",
+			body:   "hey testuser check this out",
+			expect: false,
+		},
+		{
+			name:   "empty_nick_placeholder_ignored",
+			words:  []string{"$nick"},
+			nick:   "",
+			body:   "hey testuser check this out",
+			expect: false,
+		},
+		{
+			name:   "multiple_words_any_matches",
+			words:  []string{"nope", "check"},
+			nick:   "testuser",
+			body:   "hey testuser check this out",
+			expect: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := components.ContainsHighlightWord(tt.body, tt.words, tt.nick)
+			require.Equal(t, tt.expect, got)
+		})
+	}
 }

@@ -310,7 +310,7 @@ func (c *ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 		return c, nil
 
-	case SetLinesMsg, SetPlaceholderMsg, PendingResponseMsg, MessagesUpdatedMsg, AppendLinesMsg:
+	case SetLinesMsg, SetPlaceholderMsg, PendingResponseMsg, MessagesUpdatedMsg, AppendLinesMsg, HighlightWordsMsg:
 		_, cmd := c.messages.Update(msg)
 		return c, cmd
 

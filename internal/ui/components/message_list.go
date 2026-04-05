@@ -15,6 +15,13 @@ import (
 	"github.com/laney/modeloff/internal/ui/theme"
 )
 
+// HighlightWordsMsg updates the set of words that trigger visual
+// highlighting in message lines.
+type HighlightWordsMsg struct {
+	Words    []string
+	UserNick domain.Nick
+}
+
 // MessageList displays chat lines in a scrollable viewport with
 // support for a new-messages divider, a pending-response spinner,
 // and an empty-state placeholder.
@@ -29,6 +36,9 @@ type MessageList struct {
 
 	// commands is kept so that renderHelp can list them.
 	commands command.Set
+
+	highlightWords []string
+	userNick       domain.Nick
 }
 
 // NewMessageList creates a message list for the given channel.
@@ -92,6 +102,11 @@ func (m *MessageList) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 	case SetPlaceholderMsg:
 		m.placeholder = msg.Text
+		return m, nil
+
+	case HighlightWordsMsg:
+		m.highlightWords = msg.Words
+		m.userNick = msg.UserNick
 		return m, nil
 
 	case CommandStateMsg:
@@ -290,17 +305,23 @@ func (m *MessageList) renderLine(line ChatLine, width int) string {
 	switch l := line.(type) {
 	case MessageLine:
 		ts := theme.Dim.Render(l.Message.SentAt.Format("[15:04:05]"))
+		highlighted := m.containsHighlightWord(l.Message.Body)
+
+		body := l.Message.Body
+		if highlighted {
+			body = theme.Highlight.Render(body)
+		}
 
 		if l.Message.Action {
 			nick := theme.NickStyle(string(l.Message.From)).
 				Render(string(l.Message.From))
-			return wrap.Render(fmt.Sprintf("%s * %s %s", ts, nick, l.Message.Body))
+			return wrap.Render(fmt.Sprintf("%s * %s %s", ts, nick, body))
 		}
 
 		nick := theme.NickStyle(string(l.Message.From)).
 			Render(fmt.Sprintf("<%s>", string(l.Message.From)))
 
-		return wrap.Render(fmt.Sprintf("%s %s %s", ts, nick, l.Message.Body))
+		return wrap.Render(fmt.Sprintf("%s %s %s", ts, nick, body))
 
 	case Join:
 		text := fmt.Sprintf("%s has joined %s", l.Nick, l.Channel)
@@ -386,6 +407,38 @@ func (m *MessageList) renderLine(line ChatLine, width int) string {
 	default:
 		return ""
 	}
+}
+
+func (m *MessageList) containsHighlightWord(body string) bool {
+	return ContainsHighlightWord(body, m.highlightWords, m.userNick)
+}
+
+// ContainsHighlightWord reports whether body contains any of the
+// given highlight words. The placeholder "$nick" is expanded to the
+// provided userNick. Matching is case-insensitive.
+func ContainsHighlightWord(body string, words []string, userNick domain.Nick) bool {
+	if len(words) == 0 {
+		return false
+	}
+
+	lower := strings.ToLower(body)
+
+	for _, word := range words {
+		w := word
+		if w == "$nick" {
+			w = string(userNick)
+		}
+
+		if w == "" {
+			continue
+		}
+
+		if strings.Contains(lower, strings.ToLower(w)) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (m *MessageList) renderHelp() string {

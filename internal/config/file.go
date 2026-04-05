@@ -44,9 +44,10 @@ func defaults() Config {
 	}
 
 	return Config{
-		UserNick:     nick,
-		PokeInterval: defaultPokeInterval,
-		NickModel:    DefaultNickModel,
+		UserNick:       nick,
+		PokeInterval:   defaultPokeInterval,
+		NickModel:      DefaultNickModel,
+		HighlightWords: append([]string(nil), DefaultHighlightWords...),
 	}
 }
 

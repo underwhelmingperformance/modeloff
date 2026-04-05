@@ -1331,6 +1331,25 @@ func TestSession_SetPokeInterval(t *testing.T) {
 	require.Equal(t, 1, cfgStore.saveCalls)
 }
 
+func TestSession_SetHighlightWords(t *testing.T) {
+	cfgStore := &fakeConfigStore{
+		cfg: config.Config{
+			APIKey:         "test-key",
+			UserNick:       "testuser",
+			HighlightWords: []string{"$nick"},
+		},
+	}
+	s := storemod.NewFileStore(t.TempDir())
+	sess := New(s, nil, &fakeAPIClient{}, cfgStore, "testuser")
+
+	cfg, err := sess.SetHighlightWords(t.Context(), []string{"$nick", "important", "urgent"})
+	require.NoError(t, err)
+	require.Equal(t, []string{"$nick", "important", "urgent"}, cfg.HighlightWords)
+	require.Equal(t, []string{"$nick", "important", "urgent"}, cfgStore.saved.HighlightWords)
+	require.Equal(t, "test-key", cfgStore.saved.APIKey)
+	require.Equal(t, 1, cfgStore.saveCalls)
+}
+
 func TestSession_DispatchToChannel_filters_history_before_join(t *testing.T) {
 	beforeJoin := fixedTime.Add(-10 * time.Minute)
 	atJoin := fixedTime

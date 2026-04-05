@@ -18,9 +18,10 @@ func TestFileStore_LoadDefaults(t *testing.T) {
 	require.NoError(t, err)
 
 	want := Config{
-		UserNick:     "testuser",
-		PokeInterval: 5 * time.Minute,
-		NickModel:    DefaultNickModel,
+		UserNick:       "testuser",
+		PokeInterval:   5 * time.Minute,
+		NickModel:      DefaultNickModel,
+		HighlightWords: []string{"$nick"},
 	}
 
 	require.Equal(t, want, got)
@@ -82,10 +83,11 @@ func TestFileStore_LoadMergesWithDefaults(t *testing.T) {
 	require.NoError(t, err)
 
 	want := Config{
-		APIKey:       "sk-partial",
-		UserNick:     "testuser",
-		PokeInterval: 5 * time.Minute,
-		NickModel:    DefaultNickModel,
+		APIKey:         "sk-partial",
+		UserNick:       "testuser",
+		PokeInterval:   5 * time.Minute,
+		NickModel:      DefaultNickModel,
+		HighlightWords: []string{"$nick"},
 	}
 
 	require.Equal(t, want, got)
@@ -101,4 +103,24 @@ func TestFileStore_LoadInvalidJSON(t *testing.T) {
 
 	_, err := store.Load()
 	require.Error(t, err)
+}
+
+func TestFileStore_SaveAndLoadHighlightWords(t *testing.T) {
+	t.Setenv("USER", "testuser")
+
+	dir := t.TempDir()
+	store := NewFileStore(dir)
+
+	saved := Config{
+		UserNick:       "testuser",
+		PokeInterval:   5 * time.Minute,
+		NickModel:      DefaultNickModel,
+		HighlightWords: []string{"$nick", "important", "urgent"},
+	}
+
+	require.NoError(t, store.Save(saved))
+
+	got, err := store.Load()
+	require.NoError(t, err)
+	require.Equal(t, saved, got)
 }

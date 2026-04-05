@@ -43,6 +43,10 @@ func (s *ChatScreen) handleInitialLoad(msg domain.InitialLoadEvent) (ui.Model, t
 	cmds = append(cmds, msgCmd(components.CommandStateMsg{
 		Commands: s.Commands(),
 	}))
+	cmds = append(cmds, msgCmd(components.HighlightWordsMsg{
+		Words:    s.sess.HighlightWords(),
+		UserNick: s.sess.UserNick(),
+	}))
 
 	return s, tea.Batch(cmds...)
 }
@@ -228,6 +232,10 @@ func (s *ChatScreen) handleNickChangeEvent(msg domain.NickChangeEvent) (ui.Model
 	cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: members}))
 	cmds = append(cmds, msgCmd(components.CommandStateMsg{
 		Commands: s.Commands(),
+	}))
+	cmds = append(cmds, msgCmd(components.HighlightWordsMsg{
+		Words:    s.sess.HighlightWords(),
+		UserNick: s.sess.UserNick(),
 	}))
 
 	if s.active != "" {

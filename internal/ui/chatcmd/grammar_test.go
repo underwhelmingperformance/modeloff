@@ -127,7 +127,7 @@ func TestComplete_config_suggests_keys(t *testing.T) {
 	c := complete(t, "/config ")
 
 	require.True(t, c.Visible)
-	require.Equal(t, []string{"api-key", "nick-model", "poke-interval"}, suggestionValues(c))
+	require.Equal(t, []string{"api-key", "nick-model", "poke-interval", "highlight"}, suggestionValues(c))
 }
 
 func TestComplete_config_poke_interval_suggests_durations(t *testing.T) {

@@ -350,6 +350,17 @@ func (c ConfigCommand) Run(rc Context) tea.Cmd {
 
 			return NickModelSetResult{ModelID: modelID}
 
+		case "highlight":
+			if len(c.Value) == 0 {
+				return UsageError{Command: "config highlight"}
+			}
+
+			if _, err := rc.Session.SetHighlightWords(rc.Ctx, c.Value); err != nil {
+				return errorEvent("config highlight", err)
+			}
+
+			return HighlightWordsSetResult{Words: c.Value}
+
 		default:
 			return errorEvent("config", domain.UnknownConfigKeyError{Key: c.Key})
 		}

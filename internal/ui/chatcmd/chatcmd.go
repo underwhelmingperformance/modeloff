@@ -64,6 +64,12 @@ type NickModelSetResult struct {
 	ModelID domain.ModelID
 }
 
+// HighlightWordsSetResult signals that the highlight words were
+// updated.
+type HighlightWordsSetResult struct {
+	Words []string
+}
+
 func errorEvent(operation string, err error) domain.ErrorEvent {
 	return domain.ErrorEvent{Operation: operation, Err: err, At: time.Now()}
 }

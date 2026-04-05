@@ -2,6 +2,7 @@ package screens
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -213,6 +214,18 @@ func (s *ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 			Channel: s.active,
 			Lines:   []components.ChatLine{components.NickModelSet{ModelID: msg.ModelID}},
 		})
+
+	case chatcmd.HighlightWordsSetResult:
+		return s, tea.Batch(
+			msgCmd(components.AppendLinesMsg{
+				Channel: s.active,
+				Lines:   []components.ChatLine{components.ConfigChanged{Operation: fmt.Sprintf("highlight words set to: %v", msg.Words)}},
+			}),
+			msgCmd(components.HighlightWordsMsg{
+				Words:    msg.Words,
+				UserNick: s.sess.UserNick(),
+			}),
+		)
 
 	case domain.JoinEvent:
 		return s.handleJoinEvent(msg)

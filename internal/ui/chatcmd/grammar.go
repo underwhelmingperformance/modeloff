@@ -67,6 +67,7 @@ func BuildParser(src Sources) Parser {
 				command.Suggestion{Value: "api-key", Label: "api-key", Detail: "Activate OpenRouter immediately."},
 				command.Suggestion{Value: "nick-model", Label: "nick-model", Detail: "Set the model used to generate nicknames."},
 				command.Suggestion{Value: "poke-interval", Label: "poke-interval", Detail: "Set the background poke cadence."},
+				command.Suggestion{Value: "highlight", Label: "highlight", Detail: "Set words that trigger visual highlighting."},
 			),
 			valueSource: func(state command.InvocationState) []command.Suggestion {
 				if len(state.Args) == 0 || state.Args[0] != "poke-interval" {
