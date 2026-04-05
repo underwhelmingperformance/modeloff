@@ -810,22 +810,21 @@ func (s *Session) emit(evt domain.SessionEvent) {
 // emitting events to the events channel.
 func (s *Session) dispatchInBackground(ctx context.Context, ch domain.ChannelName, triggerEvents []protocol.IRCMessage) {
 	go func() {
+		defer s.emit(domain.DispatchDoneEvent{Channel: ch})
+
 		channel, err := s.store.GetChannel(ctx, ch)
 		if err != nil {
 			s.emit(domain.ErrorEvent{Operation: "dispatch", Err: err, At: s.now()})
-			s.emit(domain.DispatchDoneEvent{Channel: ch})
 			return
 		}
 
 		instances, err := s.instancesForChannel(ctx, channel)
 		if err != nil {
 			s.emit(domain.ErrorEvent{Operation: "dispatch", Err: err, At: s.now()})
-			s.emit(domain.DispatchDoneEvent{Channel: ch})
 			return
 		}
 
 		if len(instances) == 0 {
-			s.emit(domain.DispatchDoneEvent{Channel: ch})
 			return
 		}
 
@@ -839,7 +838,6 @@ func (s *Session) dispatchInBackground(ctx context.Context, ch domain.ChannelNam
 		historyMessages, err := s.store.ListMessages(ctx, ch)
 		if err != nil {
 			s.emit(domain.ErrorEvent{Operation: "dispatch", Err: err, At: s.now()})
-			s.emit(domain.DispatchDoneEvent{Channel: ch})
 			return
 		}
 
@@ -851,8 +849,6 @@ func (s *Session) dispatchInBackground(ctx context.Context, ch domain.ChannelNam
 		for _, reply := range replies {
 			s.emit(reply)
 		}
-
-		s.emit(domain.DispatchDoneEvent{Channel: ch})
 	}()
 }
 
