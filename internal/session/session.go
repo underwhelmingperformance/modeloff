@@ -347,6 +347,8 @@ func (s *Session) SetTopic(
 	}
 
 	channel.Topic = topic
+	channel.TopicSetBy = s.userNick
+	channel.TopicSetAt = s.now()
 
 	if err := s.store.SaveChannel(ctx, channel); err != nil {
 		return domain.TopicChangeEvent{}, fmt.Errorf("save channel: %w", err)

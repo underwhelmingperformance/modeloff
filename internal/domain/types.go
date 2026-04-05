@@ -36,11 +36,13 @@ const (
 
 // Channel represents a chat channel or direct message conversation.
 type Channel struct {
-	Name    ChannelName
-	Kind    ChannelKind
-	Topic   string
-	Members set.Ordered[Nick]
-	Created time.Time
+	Name       ChannelName
+	Kind       ChannelKind
+	Topic      string
+	TopicSetBy Nick
+	TopicSetAt time.Time
+	Members    set.Ordered[Nick]
+	Created    time.Time
 }
 
 // Message represents a single message in a channel.

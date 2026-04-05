@@ -117,6 +117,27 @@ func TestFileStore_SaveChannelOverwrites(t *testing.T) {
 	require.Equal(t, ch, got)
 }
 
+func TestFileStore_SaveAndGetChannelWithTopicMetadata(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	ch := domain.Channel{
+		Name:       "#dev",
+		Kind:       domain.KindChannel,
+		Topic:      "Go development",
+		TopicSetBy: "alice",
+		TopicSetAt: testTime,
+		Members:    set.NewOrdered[domain.Nick]("alice"),
+		Created:    testTime,
+	}
+
+	require.NoError(t, s.SaveChannel(ctx, ch))
+
+	got, err := s.GetChannel(ctx, "#dev")
+	require.NoError(t, err)
+	require.Equal(t, ch, got)
+}
+
 // --- Messages ---
 
 func TestFileStore_ListMessagesEmpty(t *testing.T) {

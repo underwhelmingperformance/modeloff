@@ -620,10 +620,17 @@ func TestSession_SetTopic(t *testing.T) {
 		At:      fixedTime,
 	}, evt)
 
-	// Channel topic should be updated.
+	// Channel topic and metadata should be updated.
 	updated, err := s.GetChannel(ctx, "#dev")
 	require.NoError(t, err)
-	require.Equal(t, "Development Chat", updated.Topic)
+	require.Equal(t, domain.Channel{
+		Name:       "#dev",
+		Kind:       domain.KindChannel,
+		Topic:      "Development Chat",
+		TopicSetBy: "testuser",
+		TopicSetAt: fixedTime,
+		Created:    fixedTime,
+	}, updated)
 }
 
 func TestSession_ChangeNick(t *testing.T) {
