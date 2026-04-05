@@ -11,12 +11,14 @@ import (
 	"github.com/laney/modeloff/internal/ui/components"
 )
 
-// Commands implements ui.CommandSource.
-func (s *ChatScreen) Commands() command.Set {
-	return s.parser.Set()
+// Commands builds a parser from current state and returns the
+// command set. Completion suggestions always reflect the latest
+// channels, instances, and active channel.
+func (s ChatScreen) Commands() command.Set {
+	return s.buildParser().Set()
 }
 
-func (s *ChatScreen) runContext() chatcmd.Context {
+func (s ChatScreen) runContext() chatcmd.Context {
 	return chatcmd.Context{
 		Ctx:     s.ctx,
 		Session: s.sess,
@@ -29,8 +31,8 @@ func errorEvent(operation string, err error) domain.ErrorEvent {
 	return domain.ErrorEvent{Operation: operation, Err: err, At: time.Now()}
 }
 
-func (s *ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
-	cmd, err := s.parser.Parse(msg.Raw)
+func (s ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
+	cmd, err := s.buildParser().Parse(msg.Raw)
 	if err != nil {
 		return func() tea.Msg { return errorEvent("command", err) }
 	}
@@ -38,7 +40,7 @@ func (s *ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
 	return cmd.Run(s.runContext())
 }
 
-func (s *ChatScreen) handlePoke() tea.Cmd {
+func (s ChatScreen) handlePoke() tea.Cmd {
 	return func() tea.Msg {
 		if err := s.sess.Poke(s.ctx); err != nil {
 			return errorEvent("poke", err)

@@ -29,10 +29,6 @@ func TestApp_startup_without_api_key(t *testing.T) {
 
 	advanceConnection(tm, 2)
 	tm.WaitFor("/config", "No API key configured")
-
-	view := tm.FinalView()
-	require.Contains(t, view, "/config")
-	require.Contains(t, view, "No API key configured")
 }
 
 func TestApp_startup_with_saved_channels(t *testing.T) {
@@ -51,16 +47,11 @@ func TestApp_startup_with_saved_channels(t *testing.T) {
 	tm := uitest.New(t, root)
 
 	advanceConnection(tm, 4)
-	tm.WaitFor("#random", "hello from last time")
+	tm.WaitFor("#general", "#random", "hello from last time")
 
 	last, err := store.GetLastChannel(t.Context())
 	require.NoError(t, err)
 	require.Equal(t, domain.ChannelName("#random"), last)
-
-	view := tm.FinalView()
-	require.Contains(t, view, "#general")
-	require.Contains(t, view, "#random")
-	require.Contains(t, view, "hello from last time")
 }
 
 func TestApp_invite_and_receive_reply(t *testing.T) {
@@ -91,11 +82,7 @@ func TestApp_invite_and_receive_reply(t *testing.T) {
 	tm.WaitFor("botty (test/model) has joined #general")
 
 	tm.Submit("hello world")
-	tm.WaitFor("hello back")
-
-	view := tm.FinalView()
-	require.Contains(t, view, "hello world")
-	require.Contains(t, view, "hello back")
+	tm.WaitFor("hello world", "hello back")
 }
 
 func TestApp_open_dm_and_send_message(t *testing.T) {
@@ -111,11 +98,7 @@ func TestApp_open_dm_and_send_message(t *testing.T) {
 	tm.WaitFor("#general")
 
 	tm.Submit("/msg botty hello there")
-	tm.WaitFor("Opened direct message with botty")
-
-	view := tm.FinalView()
-	require.Contains(t, view, "botty")
-	require.Contains(t, view, "hello there")
+	tm.WaitFor("Opened direct message with botty", "hello there")
 }
 
 func TestApp_periodic_poke_generates_message(t *testing.T) {
@@ -148,9 +131,6 @@ func TestApp_periodic_poke_generates_message(t *testing.T) {
 
 	tm.Send(screens.PokeTickMsg{})
 	tm.WaitFor("still alive")
-
-	view := tm.FinalView()
-	require.Contains(t, view, "still alive")
 }
 
 func TestApp_reuse_existing_instance(t *testing.T) {
@@ -178,10 +158,6 @@ func TestApp_reuse_existing_instance(t *testing.T) {
 
 	tm.Submit("/whois botty")
 	tm.WaitFor("persona: Helpful assistant", "channels: #general, #random")
-
-	view := tm.FinalView()
-	require.Contains(t, view, "persona: Helpful assistant")
-	require.Contains(t, view, "channels: #general, #random")
 }
 
 type integrationAPI struct {

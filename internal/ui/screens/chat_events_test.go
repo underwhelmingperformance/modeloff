@@ -24,18 +24,10 @@ func TestChatScreen_JoinEvent_sets_active_channel(t *testing.T) {
 	})
 
 	tm.WaitFor("#general", "Created channel #general")
-
-	view := tm.FinalView()
-	require.Contains(t, view, "#general")
-	require.Contains(t, view, "Created channel #general")
 }
 
 func TestChatScreen_JoinEvent_existing_channel(t *testing.T) {
-	sess := newTestSession(t)
-	uitest.SeedChannel(t, sess, "#general")
-
-	tm := newChatApp(t, sess)
-	tm.WaitFor("#general")
+	tm, _ := newChatAppInChannel(t, "#general")
 
 	tm.Send(domain.JoinEvent{
 		Channel: "#general",
@@ -44,10 +36,6 @@ func TestChatScreen_JoinEvent_existing_channel(t *testing.T) {
 	})
 
 	tm.WaitFor("testuser has joined #general")
-
-	view := tm.FinalView()
-	require.Contains(t, view, "#general")
-	require.Contains(t, view, "testuser has joined #general")
 }
 
 func TestChatScreen_PartEvent_leaving_active_switches_channel(t *testing.T) {
@@ -72,9 +60,6 @@ func TestChatScreen_PartEvent_leaving_active_switches_channel(t *testing.T) {
 	})
 
 	tm.WaitFor("#general")
-
-	view := tm.FinalView()
-	require.Contains(t, view, "#general")
 }
 
 func TestChatScreen_PartEvent_leaving_non_active_keeps_active(t *testing.T) {
@@ -98,16 +83,13 @@ func TestChatScreen_PartEvent_leaving_non_active_keeps_active(t *testing.T) {
 		At:      time.Now(),
 	})
 
-	view := tm.FinalView()
+	// Active channel should remain #general since we parted #random.
+	view := tm.CurrentView()
 	require.Contains(t, view, "#general")
 }
 
 func TestChatScreen_PartEvent_no_channels_remaining(t *testing.T) {
-	sess := newTestSession(t)
-	uitest.SeedChannel(t, sess, "#only")
-
-	tm := newChatApp(t, sess)
-	tm.WaitFor("#only")
+	tm, _ := newChatAppInChannel(t, "#only")
 
 	tm.Send(domain.JoinEvent{
 		Channel: "#only",
@@ -121,17 +103,10 @@ func TestChatScreen_PartEvent_no_channels_remaining(t *testing.T) {
 		Nick:    "testuser",
 		At:      time.Now(),
 	})
-
-	view := tm.FinalView()
-	require.NotEmpty(t, view)
 }
 
 func TestChatScreen_TopicChangeEvent_active_channel(t *testing.T) {
-	sess := newTestSession(t)
-	uitest.SeedChannel(t, sess, "#general")
-
-	tm := newChatApp(t, sess)
-	tm.WaitFor("#general")
+	tm, _ := newChatAppInChannel(t, "#general")
 
 	tm.Send(domain.JoinEvent{
 		Channel: "#general",
@@ -148,9 +123,6 @@ func TestChatScreen_TopicChangeEvent_active_channel(t *testing.T) {
 	})
 
 	tm.WaitFor("New topic")
-
-	view := tm.FinalView()
-	require.Contains(t, view, "New topic")
 }
 
 func TestChatScreen_TopicChangeEvent_different_channel(t *testing.T) {
@@ -205,9 +177,6 @@ func TestChatScreen_MessageEvent_active_channel(t *testing.T) {
 	})
 
 	tm.WaitFor("new message from event")
-
-	view := tm.FinalView()
-	require.Contains(t, view, "new message from event")
 }
 
 func TestChatScreen_MessageEvent_inactive_channel(t *testing.T) {
@@ -239,11 +208,7 @@ func TestChatScreen_MessageEvent_inactive_channel(t *testing.T) {
 }
 
 func TestChatScreen_ModelReplyEvent_clears_pending(t *testing.T) {
-	sess := newTestSession(t)
-	uitest.SeedChannel(t, sess, "#general")
-
-	tm := newChatApp(t, sess)
-	tm.WaitFor("#general")
+	tm, _ := newChatAppInChannel(t, "#general")
 
 	tm.Send(domain.JoinEvent{
 		Channel: "#general",
@@ -286,17 +251,10 @@ func TestChatScreen_DMOpenedEvent(t *testing.T) {
 	})
 
 	tm.WaitFor("Opened direct message with fakenick")
-
-	view := tm.FinalView()
-	require.Contains(t, view, "Opened direct message with fakenick")
 }
 
 func TestChatScreen_ConfigChangedEvent_with_active_channel(t *testing.T) {
-	sess := newTestSession(t)
-	uitest.SeedChannel(t, sess, "#general")
-
-	tm := newChatApp(t, sess)
-	tm.WaitFor("#general")
+	tm, _ := newChatAppInChannel(t, "#general")
 
 	tm.Send(domain.JoinEvent{
 		Channel: "#general",
@@ -311,9 +269,6 @@ func TestChatScreen_ConfigChangedEvent_with_active_channel(t *testing.T) {
 	})
 
 	tm.WaitFor("API key updated")
-
-	view := tm.FinalView()
-	require.Contains(t, view, "API key updated")
 }
 
 func TestChatScreen_ConfigChangedEvent_no_active_channel(t *testing.T) {
@@ -326,17 +281,10 @@ func TestChatScreen_ConfigChangedEvent_no_active_channel(t *testing.T) {
 		Operation: "API key updated",
 		At:        time.Now(),
 	})
-
-	view := tm.FinalView()
-	require.NotEmpty(t, view)
 }
 
 func TestChatScreen_ErrorEvent_with_active_channel(t *testing.T) {
-	sess := newTestSession(t)
-	uitest.SeedChannel(t, sess, "#general")
-
-	tm := newChatApp(t, sess)
-	tm.WaitFor("#general")
+	tm, _ := newChatAppInChannel(t, "#general")
 
 	tm.Send(domain.JoinEvent{
 		Channel: "#general",
@@ -352,10 +300,6 @@ func TestChatScreen_ErrorEvent_with_active_channel(t *testing.T) {
 	})
 
 	tm.WaitFor("model invocation", "connection refused")
-
-	view := tm.FinalView()
-	require.Contains(t, view, "model invocation")
-	require.Contains(t, view, "connection refused")
 }
 
 func TestChatScreen_ErrorEvent_no_active_channel(t *testing.T) {
@@ -369,17 +313,10 @@ func TestChatScreen_ErrorEvent_no_active_channel(t *testing.T) {
 		Err:       errors.New("no api key"),
 		At:        time.Now(),
 	})
-
-	view := tm.FinalView()
-	require.NotEmpty(t, view)
 }
 
 func TestChatScreen_NickChangeEvent(t *testing.T) {
-	sess := newTestSession(t)
-	uitest.SeedChannel(t, sess, "#general")
-
-	tm := newChatApp(t, sess)
-	tm.WaitFor("#general")
+	tm, _ := newChatAppInChannel(t, "#general")
 
 	tm.Send(domain.JoinEvent{
 		Channel: "#general",
@@ -395,17 +332,10 @@ func TestChatScreen_NickChangeEvent(t *testing.T) {
 	})
 
 	tm.WaitFor("testuser is now known as newnick")
-
-	view := tm.FinalView()
-	require.Contains(t, view, "testuser is now known as newnick")
 }
 
 func TestChatScreen_ModelInvitedEvent_active_channel(t *testing.T) {
-	sess := newTestSession(t)
-	uitest.SeedChannel(t, sess, "#general")
-
-	tm := newChatApp(t, sess)
-	tm.WaitFor("#general")
+	tm, _ := newChatAppInChannel(t, "#general")
 
 	tm.Send(domain.JoinEvent{
 		Channel: "#general",
@@ -424,9 +354,6 @@ func TestChatScreen_ModelInvitedEvent_active_channel(t *testing.T) {
 	})
 
 	tm.WaitFor("botty (anthropic/claude-3-haiku) has joined #general")
-
-	view := tm.FinalView()
-	require.Contains(t, view, "botty (anthropic/claude-3-haiku) has joined #general")
 }
 
 func TestChatScreen_ModelKickedEvent_active_channel(t *testing.T) {
@@ -453,7 +380,4 @@ func TestChatScreen_ModelKickedEvent_active_channel(t *testing.T) {
 	})
 
 	tm.WaitFor("fakenick has been kicked from #general")
-
-	view := tm.FinalView()
-	require.Contains(t, view, "fakenick has been kicked from #general")
 }

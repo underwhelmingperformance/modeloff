@@ -35,9 +35,6 @@ func TestChatScreen_join_flow_with_teatest(t *testing.T) {
 
 	tm.Submit("/join #general")
 	tm.WaitFor("testuser has joined #general")
-
-	view := tm.FinalView()
-	require.Contains(t, view, "#general")
 }
 
 func TestChatScreen_leave_flow_with_teatest(t *testing.T) {
@@ -52,9 +49,6 @@ func TestChatScreen_leave_flow_with_teatest(t *testing.T) {
 
 	tm.Submit("/part")
 	tm.WaitFor("general msg")
-
-	view := tm.FinalView()
-	require.Contains(t, view, "general msg")
 }
 
 func TestChatScreen_sidebar_navigation_with_teatest(t *testing.T) {
@@ -75,9 +69,6 @@ func TestChatScreen_sidebar_navigation_with_teatest(t *testing.T) {
 	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlU})
 	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlO})
 	tm.WaitFor("general msg")
-
-	view := tm.FinalView()
-	require.Contains(t, view, "general msg")
 }
 
 func TestChatScreen_command_errors_with_teatest(t *testing.T) {
@@ -92,9 +83,6 @@ func TestChatScreen_command_errors_with_teatest(t *testing.T) {
 
 	tm.Submit("/unknown")
 	tm.WaitFor("unknown command: /unknown")
-
-	view := tm.FinalView()
-	require.Contains(t, view, "unknown command: /unknown")
 }
 
 func TestConnectionScreen_progression_with_teatest(t *testing.T) {
@@ -109,7 +97,4 @@ func TestConnectionScreen_progression_with_teatest(t *testing.T) {
 
 	advanceConnection(tm, 4)
 	tm.WaitFor("Welcome to modeloff")
-
-	view := tm.FinalView()
-	require.Contains(t, view, "Welcome to modeloff")
 }

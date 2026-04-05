@@ -348,8 +348,7 @@ func TestBuild_factory_creates_pointer(t *testing.T) {
 	require.NoError(t, err)
 
 	cmd := nodes[0].factory()
-	_, ok := cmd.(*buildJoinCommand)
-	require.True(t, ok, "expected *buildJoinCommand, got %T", cmd)
+	require.IsType(t, &buildJoinCommand{}, cmd)
 }
 
 func TestBuild_unexported_fields_are_skipped(t *testing.T) {

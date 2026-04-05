@@ -6,6 +6,7 @@ package uitest
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"sync"
 	"testing"
@@ -15,7 +16,9 @@ import (
 	"github.com/charmbracelet/x/exp/teatest"
 	"github.com/stretchr/testify/require"
 
+	"github.com/laney/modeloff/internal/api"
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/session"
 )
 
@@ -143,6 +146,56 @@ func (a *App) CurrentView() string {
 	require.True(a.t, ok, "final model does not implement View() string")
 
 	return m.View()
+}
+
+// FakeAPI is a configurable test double for api.Client. Each method
+// delegates to the corresponding function field when set, falling back
+// to a sensible default otherwise. The mutex protects concurrent access
+// from model goroutines during teatest runs.
+type FakeAPI struct {
+	mu             sync.Mutex
+	ListModelsFn   func(context.Context) ([]api.ModelInfo, error)
+	SendEventsFn   func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error)
+	GenerateNickFn func(context.Context, domain.ModelID, domain.ModelID) (domain.Nick, error)
+}
+
+func (f *FakeAPI) ListModels(ctx context.Context) ([]api.ModelInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.ListModelsFn != nil {
+		return f.ListModelsFn(ctx)
+	}
+
+	return nil, nil
+}
+
+func (f *FakeAPI) SendEvents(
+	ctx context.Context,
+	modelID domain.ModelID,
+	system string,
+	history []protocol.IRCMessage,
+	events []protocol.IRCMessage,
+) (protocol.ModelResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.SendEventsFn != nil {
+		return f.SendEventsFn(ctx, modelID, system, history, events)
+	}
+
+	return protocol.ModelResponse{Kind: protocol.ResponseSilence}, nil
+}
+
+func (f *FakeAPI) GenerateNick(ctx context.Context, nickModel domain.ModelID, modelID domain.ModelID) (domain.Nick, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.GenerateNickFn != nil {
+		return f.GenerateNickFn(ctx, nickModel, modelID)
+	}
+
+	return "fakenick", nil
 }
 
 // SeedChannel creates a channel via the session.

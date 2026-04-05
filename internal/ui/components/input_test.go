@@ -38,9 +38,7 @@ func TestInputBar_type_and_submit_message(t *testing.T) {
 	require.NotNil(t, cmd)
 
 	msg := cmd()
-	sub, ok := msg.(components.MessageSubmitMsg)
-	require.True(t, ok, "expected MessageSubmitMsg, got %T", msg)
-	require.Equal(t, "hello world", sub.Text)
+	require.Equal(t, components.MessageSubmitMsg{Text: "hello world"}, msg)
 
 	// Buffer should be cleared after submit.
 	require.Equal(t, "", m.(components.InputBar).Value())
@@ -56,9 +54,7 @@ func TestInputBar_submit_command(t *testing.T) {
 	require.NotNil(t, cmd)
 
 	msg := cmd()
-	sub, ok := msg.(components.CommandSubmitMsg)
-	require.True(t, ok, "expected CommandSubmitMsg, got %T", msg)
-	require.Equal(t, "/join #general", sub.Raw)
+	require.Equal(t, components.CommandSubmitMsg{Raw: "/join #general"}, msg)
 }
 
 func TestInputBar_submit_command_no_args(t *testing.T) {

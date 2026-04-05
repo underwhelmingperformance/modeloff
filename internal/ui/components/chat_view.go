@@ -149,13 +149,13 @@ type ChatView struct {
 	channel  domain.ChannelName
 	topic    string
 	userNick domain.Nick
-	messages *MessageList
+	messages MessageList
 	input    InputBar
 	keyMap   ChatViewKeyMap
 
 	bounds ui.Rect
 
-	popover *Popover
+	popover Popover
 }
 
 type chatViewLayout struct {
@@ -165,13 +165,12 @@ type chatViewLayout struct {
 }
 
 // NewChatView creates a chat view for the given channel.
-func NewChatView(ch domain.ChannelName, userNick domain.Nick, topic string, lines []tea.Msg) *ChatView {
+func NewChatView(ch domain.ChannelName, userNick domain.Nick, topic string, lines []tea.Msg) ChatView {
 	keyMap := DefaultChatViewKeyMap
 
-	ml := NewMessageList(ch, lines)
-	ml.SetKeyMap(keyMap)
+	ml := NewMessageList(ch, lines).SetKeyMap(keyMap)
 
-	return &ChatView{
+	return ChatView{
 		channel:  ch,
 		topic:    topic,
 		userNick: userNick,
@@ -183,12 +182,12 @@ func NewChatView(ch domain.ChannelName, userNick domain.Nick, topic string, line
 }
 
 // Init implements ui.Model.
-func (c *ChatView) Init() tea.Cmd {
+func (c ChatView) Init() tea.Cmd {
 	return c.input.Init()
 }
 
 // KeyBindings implements ui.Keybinding.
-func (c *ChatView) KeyBindings() []key.Binding {
+func (c ChatView) KeyBindings() []key.Binding {
 	bindings := []key.Binding{
 		ui.WithBindingEnabled(
 			key.NewBinding(
@@ -246,21 +245,27 @@ func (c *ChatView) KeyBindings() []key.Binding {
 }
 
 // Update implements ui.Model.
-func (c *ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
+func (c ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case ui.BoundsMsg:
 		c.bounds = msg.Rect
-		c.popover.SetBounds(msg.Rect)
+		c, _ = c.updatePopover(msg)
+		c = c.syncMessageViewport()
 		return c, nil
 
 	case SetChannelMsg:
 		c.channel = msg.Channel
 		c.topic = msg.Topic
-		_, cmd := c.messages.Update(msg)
+
+		var cmd tea.Cmd
+		c, cmd = c.updateMessages(msg)
+		c = c.syncMessageViewport()
+
 		return c, cmd
 
 	case TopicUpdatedMsg:
 		c.topic = msg.Topic
+		c = c.syncMessageViewport()
 		return c, nil
 
 	case NickListUpdatedMsg:
@@ -277,67 +282,81 @@ func (c *ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		MessageLine, Join, Part, NickChange, TopicChange, ModelInvited, ModelKicked, TopicInfo,
 		Help, Whois, ChannelList, APIKeySaved, PokeIntervalSet, NickModelSet, DMOpened,
 		UsageHint, NoChannel, CommandError, ConfigChanged, BackendError, NewMessagesDivider:
-		_, cmd := c.messages.Update(msg)
+		var cmd tea.Cmd
+		c, cmd = c.updateMessages(msg)
+		c = c.syncMessageViewport()
+
 		return c, cmd
 
 	case CommandStateMsg:
-		c.messages.Update(msg)
-		c.updatePopover(PopoverApplyMsg{
+		c, _ = c.updateMessages(msg)
+		c, _ = c.updatePopover(PopoverApplyMsg{
 			Commands: msg.Commands,
 			Raw:      c.input.Value(),
 			Cursor:   c.input.Cursor(),
 		})
+		c = c.syncMessageViewport()
+
 		return c, nil
 
 	case PopoverAcceptMsg:
 		c.input = c.input.ReplaceRange(msg.ReplaceStart, msg.ReplaceEnd, msg.Replacement)
-		c.updatePopover(PopoverRefreshMsg{
+		c, _ = c.updatePopover(PopoverRefreshMsg{
 			Raw:    c.input.Value(),
 			Cursor: c.input.Cursor(),
 		})
+		c = c.syncMessageViewport()
+
 		return c, nil
 
 	case tea.KeyMsg:
 		if c.popover.IsVisible() {
-			cmd := c.updatePopover(msg)
+			var cmd tea.Cmd
+			c, cmd = c.updatePopover(msg)
+
 			if c.popover.Handled() {
+				c = c.syncMessageViewport()
 				return c, cmd
 			}
 		}
 
 	case tea.MouseMsg:
-		if handled, cmd := c.handleMouse(msg); handled {
-			return c, cmd
+		if updated, handled, cmd := c.handleMouse(msg); handled {
+			return updated, cmd
 		}
 	}
 
 	// Forward to message list for viewport navigation, then input bar.
-	_, mlCmd := c.messages.Update(msg)
+	var mlCmd tea.Cmd
+	c, mlCmd = c.updateMessages(msg)
 
 	updated, inputCmd := c.input.Update(msg)
 	c.input = updated.(InputBar)
-	c.updatePopover(PopoverRefreshMsg{
+	c, _ = c.updatePopover(PopoverRefreshMsg{
 		Raw:    c.input.Value(),
 		Cursor: c.input.Cursor(),
 	})
+	c = c.syncMessageViewport()
 
 	return c, tea.Batch(mlCmd, inputCmd)
 }
 
-func (c *ChatView) handleMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
+func (c ChatView) handleMouse(msg tea.MouseMsg) (ChatView, bool, tea.Cmd) {
 	if c.bounds.Width == 0 || c.bounds.Height == 0 {
-		return false, nil
+		return c, false, nil
 	}
 
 	layout := c.layoutRects()
 
 	if layout.PopoverLayout.Rect.Contains(msg.X, msg.Y) {
-		cmd := c.updatePopover(msg)
-		return true, cmd
+		var cmd tea.Cmd
+		c, cmd = c.updatePopover(msg)
+
+		return c, true, cmd
 	}
 
 	if c.popover.IsVisible() && msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
-		c.updatePopover(PopoverDismissMsg{Raw: c.input.Value()})
+		c, _ = c.updatePopover(PopoverDismissMsg{Raw: c.input.Value()})
 	}
 
 	if layout.InputRect.Contains(msg.X, msg.Y) {
@@ -346,42 +365,42 @@ func (c *ChatView) handleMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
 			if msg.Button == tea.MouseButtonLeft {
 				localX, _ := layout.InputRect.Local(msg.X, msg.Y)
 				c.input = c.input.SetCursorFromCell(localX - c.composerPrefixWidth())
-				c.updatePopover(PopoverRefreshMsg{
+				c, _ = c.updatePopover(PopoverRefreshMsg{
 					Raw:    c.input.Value(),
 					Cursor: c.input.Cursor(),
 				})
-				return true, nil
+
+				return c, true, nil
 			}
 		case tea.MouseActionMotion:
-			return true, nil
+			return c, true, nil
 		}
 	}
 
 	if layout.MessageRect.Contains(msg.X, msg.Y) && msg.Action == tea.MouseActionPress {
-		c.messages.SyncViewport(layout.MessageRect.Width, layout.MessageRect.Height)
-		vp := c.messages.Viewport()
-
 		switch msg.Button {
-		case tea.MouseButtonWheelUp:
-			vp.ScrollUp(vp.MouseWheelDelta)
-			return true, nil
-		case tea.MouseButtonWheelDown:
-			vp.ScrollDown(vp.MouseWheelDelta)
-			return true, nil
+		case tea.MouseButtonWheelUp, tea.MouseButtonWheelDown:
+			c, _ = c.updateMessages(msg)
+			c = c.syncMessageViewport()
+
+			return c, true, nil
 		}
 	}
 
-	return false, nil
+	return c, false, nil
 }
 
 // View implements ui.Model.
-func (c *ChatView) View(width, height int) string {
+func (c ChatView) View(width, height int) string {
 	nickLabel := theme.UserNick.Render(string(c.userNick)) + " "
 	inputView := nickLabel + c.input.View(width-lipgloss.Width(nickLabel), 1)
 	inputHeight := lipgloss.Height(inputView)
 
 	popoverView := c.popover.Render(width)
-	popoverHeight := lipgloss.Height(popoverView)
+	popoverHeight := 0
+	if popoverView != "" {
+		popoverHeight = lipgloss.Height(popoverView)
+	}
 
 	var topicView string
 	topicHeight := 0
@@ -418,7 +437,7 @@ func (c *ChatView) View(width, height int) string {
 	return lipgloss.Place(width, height, lipgloss.Left, lipgloss.Bottom, view)
 }
 
-func (c *ChatView) layoutRects() chatViewLayout {
+func (c ChatView) layoutRects() chatViewLayout {
 	width := c.bounds.Width
 	if width <= 0 {
 		return chatViewLayout{}
@@ -460,18 +479,32 @@ func (c *ChatView) layoutRects() chatViewLayout {
 	}
 }
 
-func (c *ChatView) updatePopover(msg tea.Msg) tea.Cmd {
-	updated, cmd := c.popover.Update(msg)
-	c.popover = updated.(*Popover)
+func (c ChatView) updateMessages(msg tea.Msg) (ChatView, tea.Cmd) {
+	updated, cmd := c.messages.Update(msg)
+	c.messages = updated.(MessageList)
 
-	return cmd
+	return c, cmd
 }
 
-func (c *ChatView) composerPrefixWidth() int {
+func (c ChatView) syncMessageViewport() ChatView {
+	layout := c.layoutRects()
+	c.messages = c.messages.SyncViewport(layout.MessageRect.Width, layout.MessageRect.Height)
+
+	return c
+}
+
+func (c ChatView) updatePopover(msg tea.Msg) (ChatView, tea.Cmd) {
+	updated, cmd := c.popover.Update(msg)
+	c.popover = updated.(Popover)
+
+	return c, cmd
+}
+
+func (c ChatView) composerPrefixWidth() int {
 	return lipgloss.Width(theme.UserNick.Render(string(c.userNick))) + 1 + promptWidth()
 }
 
-func (c *ChatView) renderTopic(width int) string {
+func (c ChatView) renderTopic(width int) string {
 	text := theme.ChannelTitle.Render(c.topic)
 
 	style := lipgloss.NewStyle().

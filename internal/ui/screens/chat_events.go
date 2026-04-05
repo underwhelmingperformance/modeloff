@@ -14,7 +14,7 @@ import (
 	"github.com/laney/modeloff/internal/ui/components"
 )
 
-func (s *ChatScreen) handleInitialLoad(msg domain.InitialLoadEvent) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleInitialLoad(msg domain.InitialLoadEvent) (ui.Model, tea.Cmd) {
 	s.channels = msg.Channels
 	s.instances = msg.Instances
 	s.active = msg.Active
@@ -64,24 +64,31 @@ func (s *ChatScreen) handleInitialLoad(msg domain.InitialLoadEvent) (ui.Model, t
 	return s, tea.Batch(cmds...)
 }
 
-func (s *ChatScreen) handleSessionEvent(msg sessionEventMsg) (ui.Model, tea.Cmd) {
-	var cmd tea.Cmd
+func (s ChatScreen) handleSessionEvent(msg sessionEventMsg) (ui.Model, tea.Cmd) {
+	var (
+		updated ui.Model
+		cmd     tea.Cmd
+	)
 
 	switch evt := msg.event.(type) {
 	case domain.DispatchStartedEvent:
-		_, cmd = s.handleDispatchStarted(evt)
+		updated, cmd = s.handleDispatchStarted(evt)
 	case domain.ModelReplyEvent:
-		_, cmd = s.handleModelReplyEvent(evt)
+		updated, cmd = s.handleModelReplyEvent(evt)
 	case domain.DispatchDoneEvent:
-		_, cmd = s.handleDispatchDone(evt)
+		updated, cmd = s.handleDispatchDone(evt)
 	case domain.ErrorEvent:
-		_, cmd = s.handleErrorEvent(evt)
+		updated, cmd = s.handleErrorEvent(evt)
+	}
+
+	if updated != nil {
+		s = updated.(ChatScreen)
 	}
 
 	return s, tea.Batch(cmd, s.listenForEvents())
 }
 
-func (s *ChatScreen) handleJoinEvent(msg domain.JoinEvent) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleJoinEvent(msg domain.JoinEvent) (ui.Model, tea.Cmd) {
 	s.active = msg.Channel
 
 	channels, _ := s.sess.ListChannels(s.ctx)
@@ -124,7 +131,7 @@ func (s *ChatScreen) handleJoinEvent(msg domain.JoinEvent) (ui.Model, tea.Cmd) {
 	return s, tea.Batch(cmds...)
 }
 
-func (s *ChatScreen) handlePartEvent(msg domain.PartEvent) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handlePartEvent(msg domain.PartEvent) (ui.Model, tea.Cmd) {
 	channels, _ := s.sess.ListChannels(s.ctx)
 	s.channels = channels
 	s.channelCount = len(channels)
@@ -181,7 +188,7 @@ func (s *ChatScreen) handlePartEvent(msg domain.PartEvent) (ui.Model, tea.Cmd) {
 	return s, tea.Batch(cmds...)
 }
 
-func (s *ChatScreen) handleTopicChangeEvent(msg domain.TopicChangeEvent) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleTopicChangeEvent(msg domain.TopicChangeEvent) (ui.Model, tea.Cmd) {
 	if msg.Channel == s.active {
 		s.topic = msg.Topic
 	}
@@ -201,7 +208,7 @@ func (s *ChatScreen) handleTopicChangeEvent(msg domain.TopicChangeEvent) (ui.Mod
 	return s, tea.Batch(cmds...)
 }
 
-func (s *ChatScreen) handleNickChangeEvent(msg domain.NickChangeEvent) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleNickChangeEvent(msg domain.NickChangeEvent) (ui.Model, tea.Cmd) {
 	var members []domain.Member
 
 	if ch, err := s.sess.GetChannel(s.ctx, s.active); err == nil {
@@ -225,7 +232,7 @@ func (s *ChatScreen) handleNickChangeEvent(msg domain.NickChangeEvent) (ui.Model
 	return s, tea.Batch(cmds...)
 }
 
-func (s *ChatScreen) handleModelInvitedEvent(msg domain.ModelInvitedEvent) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleModelInvitedEvent(msg domain.ModelInvitedEvent) (ui.Model, tea.Cmd) {
 	instances, _ := s.sess.ListInstances(s.ctx)
 	s.instances = instances
 
@@ -248,7 +255,7 @@ func (s *ChatScreen) handleModelInvitedEvent(msg domain.ModelInvitedEvent) (ui.M
 	return s, tea.Batch(cmds...)
 }
 
-func (s *ChatScreen) handleModelKickedEvent(msg domain.ModelKickedEvent) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleModelKickedEvent(msg domain.ModelKickedEvent) (ui.Model, tea.Cmd) {
 	instances, _ := s.sess.ListInstances(s.ctx)
 	s.instances = instances
 
@@ -271,13 +278,11 @@ func (s *ChatScreen) handleModelKickedEvent(msg domain.ModelKickedEvent) (ui.Mod
 	return s, tea.Batch(cmds...)
 }
 
-func (s *ChatScreen) handleMessageEvent(msg domain.MessageEvent) (ui.Model, tea.Cmd) {
-	_, cmd := s.handleNewMessage(msg.Message.Channel)
-
-	return s, cmd
+func (s ChatScreen) handleMessageEvent(msg domain.MessageEvent) (ui.Model, tea.Cmd) {
+	return s.handleNewMessage(msg.Message.Channel)
 }
 
-func (s *ChatScreen) handleModelReplyEvent(msg domain.ModelReplyEvent) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleModelReplyEvent(msg domain.ModelReplyEvent) (ui.Model, tea.Cmd) {
 	s.replyQueue = append(s.replyQueue, msg)
 
 	// If this is the only queued reply, deliver it immediately.
@@ -288,7 +293,7 @@ func (s *ChatScreen) handleModelReplyEvent(msg domain.ModelReplyEvent) (ui.Model
 	return s, nil
 }
 
-func (s *ChatScreen) handleNewMessage(channel domain.ChannelName) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleNewMessage(channel domain.ChannelName) (ui.Model, tea.Cmd) {
 	if channel == s.active {
 		messages, _ := s.sess.Messages(s.ctx, channel)
 		lines := components.MessagesToLines(messages)
@@ -307,7 +312,7 @@ func (s *ChatScreen) handleNewMessage(channel domain.ChannelName) (ui.Model, tea
 	})
 }
 
-func (s *ChatScreen) handleDMOpenedEvent(msg domain.DMOpenedEvent) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleDMOpenedEvent(msg domain.DMOpenedEvent) (ui.Model, tea.Cmd) {
 	s.active = msg.Channel.Name
 
 	channels, _ := s.sess.ListChannels(s.ctx)
@@ -347,7 +352,7 @@ func (s *ChatScreen) handleDMOpenedEvent(msg domain.DMOpenedEvent) (ui.Model, te
 	return s, tea.Batch(cmds...)
 }
 
-func (s *ChatScreen) handleConfigChangedEvent(msg domain.ConfigChangedEvent) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleConfigChangedEvent(msg domain.ConfigChangedEvent) (ui.Model, tea.Cmd) {
 	if s.active == "" {
 		return s, nil
 	}
@@ -355,7 +360,7 @@ func (s *ChatScreen) handleConfigChangedEvent(msg domain.ConfigChangedEvent) (ui
 	return s, msgCmd(components.ConfigChanged{Operation: msg.Operation})
 }
 
-func (s *ChatScreen) handleErrorEvent(msg domain.ErrorEvent) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleErrorEvent(msg domain.ErrorEvent) (ui.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	cmds = append(cmds, msgCmd(components.BackendError{
@@ -368,7 +373,7 @@ func (s *ChatScreen) handleErrorEvent(msg domain.ErrorEvent) (ui.Model, tea.Cmd)
 	return s, tea.Batch(cmds...)
 }
 
-func (s *ChatScreen) handleDispatchStarted(msg domain.DispatchStartedEvent) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleDispatchStarted(msg domain.DispatchStartedEvent) (ui.Model, tea.Cmd) {
 	thinking := make(map[domain.Nick]bool, len(msg.Nicks))
 	for _, nick := range msg.Nicks {
 		thinking[nick] = true
@@ -380,7 +385,7 @@ func (s *ChatScreen) handleDispatchStarted(msg domain.DispatchStartedEvent) (ui.
 	)
 }
 
-func (s *ChatScreen) handleDispatchDone(_ domain.DispatchDoneEvent) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleDispatchDone(_ domain.DispatchDoneEvent) (ui.Model, tea.Cmd) {
 	if len(s.replyQueue) > 0 {
 		return s, nil
 	}
@@ -393,7 +398,7 @@ func (s *ChatScreen) handleDispatchDone(_ domain.DispatchDoneEvent) (ui.Model, t
 
 const replyPaceInterval = 400 * time.Millisecond
 
-func (s *ChatScreen) scheduleNextReply() tea.Cmd {
+func (s ChatScreen) scheduleNextReply() tea.Cmd {
 	return tea.Tick(replyPaceInterval, func(time.Time) tea.Msg {
 		return deliverNextReplyMsg{}
 	})
@@ -401,11 +406,11 @@ func (s *ChatScreen) scheduleNextReply() tea.Cmd {
 
 // deliverNextReplyCmd returns a tea.Cmd that delivers the next reply
 // from the queue immediately (without pacing delay).
-func (s *ChatScreen) deliverNextReplyCmd() tea.Cmd {
+func (s ChatScreen) deliverNextReplyCmd() tea.Cmd {
 	return func() tea.Msg { return deliverNextReplyMsg{} }
 }
 
-func (s *ChatScreen) deliverNextReply() (ui.Model, tea.Cmd) {
+func (s ChatScreen) deliverNextReply() (ui.Model, tea.Cmd) {
 	if len(s.replyQueue) == 0 {
 		return s, tea.Batch(
 			msgCmd(components.NickListThinkingMsg{}),
@@ -416,7 +421,8 @@ func (s *ChatScreen) deliverNextReply() (ui.Model, tea.Cmd) {
 	next := s.replyQueue[0]
 	s.replyQueue = s.replyQueue[1:]
 
-	_, cmd := s.showReply(next)
+	updated, cmd := s.showReply(next)
+	s = updated.(ChatScreen)
 
 	if len(s.replyQueue) > 0 {
 		cmd = tea.Batch(cmd, s.scheduleNextReply())
@@ -431,11 +437,11 @@ func (s *ChatScreen) deliverNextReply() (ui.Model, tea.Cmd) {
 }
 
 // showReply displays a model reply by refreshing the message list.
-func (s *ChatScreen) showReply(msg domain.ModelReplyEvent) (ui.Model, tea.Cmd) {
+func (s ChatScreen) showReply(msg domain.ModelReplyEvent) (ui.Model, tea.Cmd) {
 	return s.handleNewMessage(msg.Message.Channel)
 }
 
-func (s *ChatScreen) handleLiveModelsLoaded(msg liveModelsLoadedMsg) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleLiveModelsLoaded(msg liveModelsLoadedMsg) (ui.Model, tea.Cmd) {
 	s.liveModels = msg.models
 
 	return s, msgCmd(components.CommandStateMsg{
@@ -443,7 +449,7 @@ func (s *ChatScreen) handleLiveModelsLoaded(msg liveModelsLoadedMsg) (ui.Model, 
 	})
 }
 
-func (s *ChatScreen) activeMembers() []domain.Nick {
+func (s ChatScreen) activeMembers() []domain.Nick {
 	for _, ch := range s.channels {
 		if ch.Name != s.active {
 			continue

@@ -79,9 +79,7 @@ func TestSidebar_keyboard_navigation(t *testing.T) {
 	require.NotNil(t, cmd)
 
 	msg := cmd()
-	selected, ok := msg.(components.ChannelSelectedMsg)
-	require.True(t, ok, "expected ChannelSelectedMsg, got %T", msg)
-	require.Equal(t, domain.ChannelName("#dev"), selected.Channel)
+	require.Equal(t, components.ChannelSelectedMsg{Channel: "#dev"}, msg)
 }
 
 func TestSidebar_keyboard_up(t *testing.T) {
@@ -98,9 +96,7 @@ func TestSidebar_keyboard_up(t *testing.T) {
 	require.NotNil(t, cmd)
 
 	msg := cmd()
-	selected, ok := msg.(components.ChannelSelectedMsg)
-	require.True(t, ok, "expected ChannelSelectedMsg, got %T", msg)
-	require.Equal(t, domain.ChannelName("#general"), selected.Channel)
+	require.Equal(t, components.ChannelSelectedMsg{Channel: "#general"}, msg)
 }
 
 func TestSidebar_cursor_clamps_at_boundaries(t *testing.T) {
@@ -113,9 +109,7 @@ func TestSidebar_cursor_clamps_at_boundaries(t *testing.T) {
 
 	_, cmd := updateSidebar(t, m, ctrlKey("ctrl+o"))
 	msg := cmd()
-	selected, ok := msg.(components.ChannelSelectedMsg)
-	require.True(t, ok, "expected ChannelSelectedMsg, got %T", msg)
-	require.Equal(t, domain.ChannelName("#general"), selected.Channel)
+	require.Equal(t, components.ChannelSelectedMsg{Channel: "#general"}, msg)
 }
 
 func TestSidebar_cursor_clamps_at_bottom(t *testing.T) {
@@ -129,9 +123,7 @@ func TestSidebar_cursor_clamps_at_bottom(t *testing.T) {
 
 	_, cmd := updateSidebar(t, m, ctrlKey("ctrl+o"))
 	msg := cmd()
-	selected, ok := msg.(components.ChannelSelectedMsg)
-	require.True(t, ok, "expected ChannelSelectedMsg, got %T", msg)
-	require.Equal(t, domain.ChannelName("#dev"), selected.Channel)
+	require.Equal(t, components.ChannelSelectedMsg{Channel: "#dev"}, msg)
 }
 
 func TestSidebar_mouse_click_selects_channel(t *testing.T) {
@@ -150,9 +142,7 @@ func TestSidebar_mouse_click_selects_channel(t *testing.T) {
 	require.NotNil(t, cmd)
 
 	msg := cmd()
-	selected, ok := msg.(components.ChannelSelectedMsg)
-	require.True(t, ok, "expected ChannelSelectedMsg, got %T", msg)
-	require.Equal(t, domain.ChannelName("#random"), selected.Channel)
+	require.Equal(t, components.ChannelSelectedMsg{Channel: "#random"}, msg)
 }
 
 func TestSidebar_mouse_click_out_of_range(t *testing.T) {
@@ -288,9 +278,7 @@ func TestSidebar_cursor_follows_active_on_update(t *testing.T) {
 	require.NotNil(t, cmd)
 
 	msg := cmd()
-	selected, ok := msg.(components.ChannelSelectedMsg)
-	require.True(t, ok, "expected ChannelSelectedMsg, got %T", msg)
-	require.Equal(t, domain.ChannelName("#random"), selected.Channel)
+	require.Equal(t, components.ChannelSelectedMsg{Channel: "#random"}, msg)
 }
 
 func TestSidebar_cursor_clamps_when_active_not_in_list(t *testing.T) {
@@ -317,9 +305,7 @@ func TestSidebar_cursor_clamps_when_active_not_in_list(t *testing.T) {
 	require.NotNil(t, cmd)
 
 	msg := cmd()
-	selected, ok := msg.(components.ChannelSelectedMsg)
-	require.True(t, ok, "expected ChannelSelectedMsg, got %T", msg)
-	require.Equal(t, domain.ChannelName("#alpha"), selected.Channel)
+	require.Equal(t, components.ChannelSelectedMsg{Channel: "#alpha"}, msg)
 }
 
 func TestSidebar_ignores_other_messages(t *testing.T) {

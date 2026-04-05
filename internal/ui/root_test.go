@@ -28,10 +28,9 @@ func update(t *testing.T, root ui.Root, msg tea.Msg) ui.Root {
 	t.Helper()
 
 	m, _ := root.Update(msg)
-	r, ok := m.(ui.Root)
-	require.True(t, ok, "Update returned %T, want ui.Root", m)
+	require.IsType(t, ui.Root{}, m)
 
-	return r
+	return m.(ui.Root)
 }
 
 func TestRoot_View_delegates_to_screen(t *testing.T) {

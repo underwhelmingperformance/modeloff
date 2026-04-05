@@ -86,9 +86,7 @@ func TestChatView_typing_goes_to_input(t *testing.T) {
 	require.NotNil(t, cmd)
 
 	msg := cmd()
-	sub, ok := msg.(components.MessageSubmitMsg)
-	require.True(t, ok, "expected MessageSubmitMsg, got %T", msg)
-	require.Equal(t, "test message", sub.Text)
+	require.Equal(t, components.MessageSubmitMsg{Text: "test message"}, msg)
 
 	_ = m
 }
@@ -103,9 +101,7 @@ func TestChatView_command_from_input(t *testing.T) {
 	require.NotNil(t, cmd)
 
 	msg := cmd()
-	sub, ok := msg.(components.CommandSubmitMsg)
-	require.True(t, ok, "expected CommandSubmitMsg, got %T", msg)
-	require.Equal(t, "/join #random", sub.Raw)
+	require.Equal(t, components.CommandSubmitMsg{Raw: "/join #random"}, msg)
 }
 
 func TestChatView_messages_updated(t *testing.T) {
@@ -170,8 +166,7 @@ func TestChatView_scroll(t *testing.T) {
 	cv := components.NewChatView("#general", "testuser", "", components.MessagesToLines(msgs))
 	var m ui.Model = cv
 
-	// Render once so the viewport learns its dimensions.
-	m.View(80, 24)
+	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{Width: 80, Height: 24}})
 
 	// Scroll up.
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
@@ -201,6 +196,7 @@ func TestChatView_scroll_indicator(t *testing.T) {
 
 	cv := components.NewChatView("#general", "testuser", "", components.MessagesToLines(msgs))
 	var m ui.Model = cv
+	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{Width: 80, Height: 24}})
 
 	// At the bottom — no indicator.
 	v := m.View(80, 24)
@@ -235,8 +231,7 @@ func TestChatView_ctrl_arrow_scroll(t *testing.T) {
 
 	cv := components.NewChatView("#general", "testuser", "", components.MessagesToLines(msgs))
 	var m ui.Model = cv
-
-	m.View(80, 24)
+	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{Width: 80, Height: 24}})
 
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlUp})
 
@@ -274,8 +269,7 @@ func TestChatView_arrow_keys_stay_with_input(t *testing.T) {
 
 	cv := components.NewChatView("#general", "testuser", "", components.MessagesToLines(msgs))
 	var m ui.Model = cv
-
-	m.View(80, 24)
+	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{Width: 80, Height: 24}})
 
 	m = typeText(t, m, "first")
 	m, _ = enter(t, m)
@@ -382,24 +376,24 @@ func TestChatView_topic_bar_reduces_message_area(t *testing.T) {
 }
 
 func TestChatView_TopicUpdatedMsg_updates_topic_bar(t *testing.T) {
-	cv := components.NewChatView("#general", "testuser", "", testMessages)
+	var m ui.Model = components.NewChatView("#general", "testuser", "", testMessages)
 
 	// No topic initially.
-	v := cv.View(80, 24)
+	v := m.View(80, 24)
 	stripped := ansi.Strip(v)
 	require.NotContains(t, stripped, "new topic")
 
 	// Send TopicUpdatedMsg.
-	cv.Update(components.TopicUpdatedMsg{Topic: "new topic"})
+	m, _ = m.Update(components.TopicUpdatedMsg{Topic: "new topic"})
 
-	v = cv.View(80, 24)
+	v = m.View(80, 24)
 	stripped = ansi.Strip(v)
 	require.Contains(t, stripped, "new topic")
 
 	// Clear topic.
-	cv.Update(components.TopicUpdatedMsg{Topic: ""})
+	m, _ = m.Update(components.TopicUpdatedMsg{Topic: ""})
 
-	v = cv.View(80, 24)
+	v = m.View(80, 24)
 	stripped = ansi.Strip(v)
 	require.NotContains(t, stripped, "new topic")
 }
@@ -454,8 +448,8 @@ func renderSingleLine(line tea.Msg) string {
 }
 
 func renderSingleLineWithHighlight(line tea.Msg, words []string, nick domain.Nick) string {
-	cv := components.NewChatView("#test", nick, "", []tea.Msg{line})
-	cv.Update(components.CommandStateMsg{
+	var m ui.Model = components.NewChatView("#test", nick, "", []tea.Msg{line})
+	m, _ = m.Update(components.CommandStateMsg{
 		Commands: command.Set{
 			Commands: []*command.Node{
 				{Name: "join", Help: "Join or create a channel", Positionals: []command.Positional{{Name: "channel"}}},
@@ -465,10 +459,10 @@ func renderSingleLineWithHighlight(line tea.Msg, words []string, nick domain.Nic
 	})
 
 	if len(words) > 0 {
-		cv.Update(components.HighlightWordsMsg{Words: words, UserNick: nick})
+		m, _ = m.Update(components.HighlightWordsMsg{Words: words, UserNick: nick})
 	}
 
-	v := cv.View(200, 24)
+	v := m.View(200, 24)
 
 	return ansi.Strip(v)
 }
@@ -686,8 +680,8 @@ func TestNewMessagesDivider_fills_width(t *testing.T) {
 }
 
 func TestChatView_command_popover_renders_and_completes(t *testing.T) {
-	cv := components.NewChatView("#general", "testuser", "", nil)
-	cv.Update(components.CommandStateMsg{
+	var m ui.Model = components.NewChatView("#general", "testuser", "", nil)
+	m, _ = m.Update(components.CommandStateMsg{
 		Commands: command.Set{
 			Commands: []*command.Node{
 				{
@@ -703,7 +697,6 @@ func TestChatView_command_popover_renders_and_completes(t *testing.T) {
 			},
 		},
 	})
-	var m ui.Model = cv
 
 	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 20, Y: 0, Width: 60, Height: 24}})
 	m = typeText(t, m, "/jo")
@@ -727,8 +720,8 @@ func TestChatView_command_popover_renders_and_completes(t *testing.T) {
 }
 
 func TestChatView_popover_arrow_keys_do_not_fall_through(t *testing.T) {
-	cv := components.NewChatView("#general", "testuser", "", nil)
-	cv.Update(components.CommandStateMsg{
+	var m ui.Model = components.NewChatView("#general", "testuser", "", nil)
+	m, _ = m.Update(components.CommandStateMsg{
 		Commands: command.Set{
 			Commands: []*command.Node{
 				{Name: "join", Help: "Join a channel"},
@@ -737,7 +730,6 @@ func TestChatView_popover_arrow_keys_do_not_fall_through(t *testing.T) {
 			},
 		},
 	})
-	var m ui.Model = cv
 
 	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 0, Y: 0, Width: 60, Height: 24}})
 
@@ -770,8 +762,8 @@ func TestChatView_popover_arrow_keys_do_not_fall_through(t *testing.T) {
 }
 
 func TestChatView_popover_renders_usage_in_suggestions(t *testing.T) {
-	cv := components.NewChatView("#general", "testuser", "", nil)
-	cv.Update(components.CommandStateMsg{
+	var m ui.Model = components.NewChatView("#general", "testuser", "", nil)
+	m, _ = m.Update(components.CommandStateMsg{
 		Commands: command.Set{
 			Commands: []*command.Node{
 				{Name: "join", Help: "Join a channel", Positionals: []command.Positional{{Name: "channel"}}},
@@ -780,7 +772,6 @@ func TestChatView_popover_renders_usage_in_suggestions(t *testing.T) {
 			},
 		},
 	})
-	var m ui.Model = cv
 
 	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 0, Y: 0, Width: 60, Height: 24}})
 	m = typeText(t, m, "/")
@@ -808,8 +799,8 @@ func TestChatView_mouse_click_positions_input_cursor(t *testing.T) {
 	})
 	m = typeText(t, m, "X")
 
-	msg := m.(*components.ChatView)
-	_, cmd := msg.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	var cmd tea.Cmd
+	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	require.NotNil(t, cmd)
 
 	sub := cmd().(components.MessageSubmitMsg)
@@ -828,12 +819,9 @@ func TestChatView_divider_inserted_when_scrolled_up(t *testing.T) {
 		}
 	}
 
-	cv := components.NewChatView("#general", "testuser", "",
+	var m ui.Model = components.NewChatView("#general", "testuser", "",
 		components.MessagesToLines(msgs))
-	var m ui.Model = cv
-
-	// Render to initialise viewport dimensions.
-	m.View(80, 24)
+	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{Width: 80, Height: 24}})
 
 	// Scroll up so we're no longer at the bottom.
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
@@ -855,7 +843,12 @@ func TestChatView_divider_inserted_when_scrolled_up(t *testing.T) {
 		}
 	}
 
-	cv.Update(components.SetLinesMsg{Lines: components.MessagesToLines(newMsgs)})
+	m, _ = m.Update(components.SetLinesMsg{Lines: components.MessagesToLines(newMsgs)})
+
+	// Check the view while still scrolled up — divider shouldn't be visible yet
+	// but new messages shouldn't auto-scroll us.
+	vScrolledUp := ansi.Strip(m.View(80, 24))
+	t.Logf("while scrolled up:\n%s", vScrolledUp)
 
 	// Scroll to bottom to see the divider.
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
@@ -880,11 +873,9 @@ func TestChatView_no_divider_when_at_bottom(t *testing.T) {
 		}
 	}
 
-	cv := components.NewChatView("#general", "testuser", "",
+	var m ui.Model = components.NewChatView("#general", "testuser", "",
 		components.MessagesToLines(msgs))
-
-	// Render — viewport is at bottom.
-	cv.View(80, 24)
+	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{Width: 80, Height: 24}})
 
 	// Add more messages while at bottom.
 	newMsgs := make([]domain.Message, 8)
@@ -899,9 +890,9 @@ func TestChatView_no_divider_when_at_bottom(t *testing.T) {
 		}
 	}
 
-	cv.Update(components.SetLinesMsg{Lines: components.MessagesToLines(newMsgs)})
+	m, _ = m.Update(components.SetLinesMsg{Lines: components.MessagesToLines(newMsgs)})
 
-	v := cv.View(80, 24)
+	v := m.View(80, 24)
 	stripped := ansi.Strip(v)
 
 	require.NotContains(t, stripped, "new messages",
@@ -935,8 +926,8 @@ func TestChatView_mouse_wheel_scrolls_messages(t *testing.T) {
 }
 
 func TestChatView_mouse_click_accepts_popover_suggestion(t *testing.T) {
-	cv := components.NewChatView("#general", "testuser", "", nil)
-	cv.Update(components.CommandStateMsg{
+	var m ui.Model = components.NewChatView("#general", "testuser", "", nil)
+	m, _ = m.Update(components.CommandStateMsg{
 		Commands: command.Set{
 			Commands: []*command.Node{
 				{
@@ -952,7 +943,6 @@ func TestChatView_mouse_click_accepts_popover_suggestion(t *testing.T) {
 			},
 		},
 	})
-	var m ui.Model = cv
 
 	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 20, Y: 0, Width: 60, Height: 24}})
 	m = typeText(t, m, "/jo")

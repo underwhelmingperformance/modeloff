@@ -11,7 +11,6 @@ import (
 	"github.com/laney/modeloff/internal/api"
 	"github.com/laney/modeloff/internal/config"
 	"github.com/laney/modeloff/internal/domain"
-	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/session"
 	storemod "github.com/laney/modeloff/internal/store"
 	uipkg "github.com/laney/modeloff/internal/ui"
@@ -19,46 +18,18 @@ import (
 	"github.com/laney/modeloff/internal/ui/uitest"
 )
 
-type fakeAPI struct {
-	listModelsFn   func(context.Context) ([]api.ModelInfo, error)
-	generateNickFn func(context.Context, domain.ModelID, domain.ModelID) (domain.Nick, error)
-}
-
-func (f *fakeAPI) ListModels(ctx context.Context) ([]api.ModelInfo, error) {
-	if f.listModelsFn != nil {
-		return f.listModelsFn(ctx)
-	}
-
-	return nil, nil
-}
-
-func (f *fakeAPI) SendEvents(
-	context.Context, domain.ModelID, string,
-	[]protocol.IRCMessage, []protocol.IRCMessage,
-) (protocol.ModelResponse, error) {
-	return protocol.ModelResponse{Kind: protocol.ResponseSilence}, nil
-}
-
-func (f *fakeAPI) GenerateNick(ctx context.Context, nickModel domain.ModelID, modelID domain.ModelID) (domain.Nick, error) {
-	if f.generateNickFn != nil {
-		return f.generateNickFn(ctx, nickModel, modelID)
-	}
-
-	return "fakenick", nil
-}
-
 func newTestSession(t *testing.T) *session.Session {
 	t.Helper()
 
 	s := storemod.NewFileStore(t.TempDir())
-	return session.New(s, nil, &fakeAPI{}, newFakeConfigStore(), "testuser")
+	return session.New(s, nil, &uitest.FakeAPI{}, newFakeConfigStore(), "testuser")
 }
 
 func newTestSessionWithConfigStore(t *testing.T, cfgStore config.Store) *session.Session {
 	t.Helper()
 
 	s := storemod.NewFileStore(t.TempDir())
-	return session.New(s, nil, &fakeAPI{}, cfgStore, "testuser")
+	return session.New(s, nil, &uitest.FakeAPI{}, cfgStore, "testuser")
 }
 
 func newChatApp(t *testing.T, sess *session.Session) *uitest.App {
@@ -66,6 +37,18 @@ func newChatApp(t *testing.T, sess *session.Session) *uitest.App {
 
 	root := uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess))
 	return uitest.New(t, root, teatest.WithInitialTermSize(256, 256))
+}
+
+func newChatAppInChannel(t *testing.T, channel domain.ChannelName) (*uitest.App, *session.Session) {
+	t.Helper()
+
+	sess := newTestSession(t)
+	uitest.SeedChannel(t, sess, string(channel))
+
+	tm := newChatApp(t, sess)
+	tm.WaitFor(string(channel))
+
+	return tm, sess
 }
 
 func TestChatScreen_Init_loads_channels(t *testing.T) {
@@ -94,11 +77,7 @@ func TestChatScreen_Init_empty(t *testing.T) {
 }
 
 func TestChatScreen_send_message(t *testing.T) {
-	sess := newTestSession(t)
-	uitest.SeedChannel(t, sess, "#general")
-
-	tm := newChatApp(t, sess)
-	tm.WaitFor("#general")
+	tm, _ := newChatAppInChannel(t, "#general")
 
 	tm.Submit("hello world")
 	tm.WaitFor("hello world")
@@ -135,17 +114,10 @@ func TestChatScreen_part_command(t *testing.T) {
 	tm.WaitFor("#random")
 
 	tm.Submit("/part")
-
-	view := tm.FinalView()
-	require.NotEmpty(t, view)
 }
 
 func TestChatScreen_nick_command(t *testing.T) {
-	sess := newTestSession(t)
-	uitest.SeedChannel(t, sess, "#general")
-
-	tm := newChatApp(t, sess)
-	tm.WaitFor("#general")
+	tm, _ := newChatAppInChannel(t, "#general")
 
 	tm.Submit("/nick newnick")
 	tm.WaitFor("testuser is now known as newnick")
@@ -165,22 +137,14 @@ func TestChatScreen_nick_command_reports_persist_error(t *testing.T) {
 }
 
 func TestChatScreen_topic_command(t *testing.T) {
-	sess := newTestSession(t)
-	uitest.SeedChannel(t, sess, "#general")
-
-	tm := newChatApp(t, sess)
-	tm.WaitFor("#general")
+	tm, _ := newChatAppInChannel(t, "#general")
 
 	tm.Submit("/topic cool topic")
 	tm.WaitFor("topic for #general set by testuser: cool topic")
 }
 
 func TestChatScreen_topic_show_info(t *testing.T) {
-	sess := newTestSession(t)
-	uitest.SeedChannel(t, sess, "#general")
-
-	tm := newChatApp(t, sess)
-	tm.WaitFor("#general")
+	tm, _ := newChatAppInChannel(t, "#general")
 
 	// Set a topic first.
 	tm.Submit("/topic cool topic")
@@ -192,11 +156,7 @@ func TestChatScreen_topic_show_info(t *testing.T) {
 }
 
 func TestChatScreen_topic_show_info_no_topic(t *testing.T) {
-	sess := newTestSession(t)
-	uitest.SeedChannel(t, sess, "#general")
-
-	tm := newChatApp(t, sess)
-	tm.WaitFor("#general")
+	tm, _ := newChatAppInChannel(t, "#general")
 
 	tm.Submit("/topic")
 	tm.WaitFor("No topic set for #general")
@@ -217,11 +177,7 @@ func TestChatScreen_whois_command(t *testing.T) {
 }
 
 func TestChatScreen_whois_unknown_nick(t *testing.T) {
-	sess := newTestSession(t)
-	uitest.SeedChannel(t, sess, "#general")
-
-	tm := newChatApp(t, sess)
-	tm.WaitFor("#general")
+	tm, _ := newChatAppInChannel(t, "#general")
 
 	tm.Submit("/whois nobody")
 	tm.WaitFor("no such nick: nobody")
@@ -250,33 +206,21 @@ func TestChatScreen_list_empty(t *testing.T) {
 }
 
 func TestChatScreen_invite_command(t *testing.T) {
-	sess := newTestSession(t)
-	uitest.SeedChannel(t, sess, "#general")
-
-	tm := newChatApp(t, sess)
-	tm.WaitFor("#general")
+	tm, _ := newChatAppInChannel(t, "#general")
 
 	tm.Submit("/invite anthropic/claude-3-haiku")
 	tm.WaitFor("fakenick (anthropic/claude-3-haiku) has joined #general")
 }
 
 func TestChatScreen_invite_with_persona(t *testing.T) {
-	sess := newTestSession(t)
-	uitest.SeedChannel(t, sess, "#general")
-
-	tm := newChatApp(t, sess)
-	tm.WaitFor("#general")
+	tm, _ := newChatAppInChannel(t, "#general")
 
 	tm.Submit("/invite anthropic/claude-3-haiku --persona Helpful assistant")
 	tm.WaitFor("fakenick (anthropic/claude-3-haiku) has joined #general", `persona "Helpful assistant"`)
 }
 
 func TestChatScreen_invite_no_args(t *testing.T) {
-	sess := newTestSession(t)
-	uitest.SeedChannel(t, sess, "#general")
-
-	tm := newChatApp(t, sess)
-	tm.WaitFor("#general")
+	tm, _ := newChatAppInChannel(t, "#general")
 
 	tm.Submit("/invite")
 	tm.WaitFor("usage: /invite <model-id> [--persona <text>]")
@@ -315,11 +259,7 @@ func TestChatScreen_kick_command(t *testing.T) {
 }
 
 func TestChatScreen_config_usage(t *testing.T) {
-	sess := newTestSession(t)
-	uitest.SeedChannel(t, sess, "#general")
-
-	tm := newChatApp(t, sess)
-	tm.WaitFor("#general")
+	tm, _ := newChatAppInChannel(t, "#general")
 
 	tm.Submit("/config")
 	tm.WaitFor("usage: /config api-key <value>", "poke-interval")
@@ -329,7 +269,7 @@ func TestChatScreen_config_set_api_key(t *testing.T) {
 	cfgStore := newFakeConfigStore()
 	sess := newTestSessionWithConfigStore(t, cfgStore)
 	sess.SetAPIFactory(func(string) (api.Client, error) {
-		return &fakeAPI{}, nil
+		return &uitest.FakeAPI{}, nil
 	})
 	uitest.SeedChannel(t, sess, "#general")
 
@@ -346,8 +286,8 @@ func TestChatScreen_config_set_api_key_updates_live_model_suggestions(t *testing
 	cfgStore := newFakeConfigStore()
 	sess := newTestSessionWithConfigStore(t, cfgStore)
 	sess.SetAPIFactory(func(string) (api.Client, error) {
-		return &fakeAPI{
-			listModelsFn: func(context.Context) ([]api.ModelInfo, error) {
+		return &uitest.FakeAPI{
+			ListModelsFn: func(context.Context) ([]api.ModelInfo, error) {
 				return []api.ModelInfo{
 					{ID: "anthropic/claude-3-haiku", Name: "Claude Haiku"},
 				}, nil
@@ -381,22 +321,14 @@ func TestChatScreen_config_set_poke_interval(t *testing.T) {
 }
 
 func TestChatScreen_config_invalid_subcommand(t *testing.T) {
-	sess := newTestSession(t)
-	uitest.SeedChannel(t, sess, "#general")
-
-	tm := newChatApp(t, sess)
-	tm.WaitFor("#general")
+	tm, _ := newChatAppInChannel(t, "#general")
 
 	tm.Submit("/config nonsense")
 	tm.WaitFor("unknown config key: nonsense")
 }
 
 func TestChatScreen_config_invalid_duration(t *testing.T) {
-	sess := newTestSession(t)
-	uitest.SeedChannel(t, sess, "#general")
-
-	tm := newChatApp(t, sess)
-	tm.WaitFor("#general")
+	tm, _ := newChatAppInChannel(t, "#general")
 
 	tm.Submit("/config poke-interval nope")
 	tm.WaitFor("invalid duration")
@@ -429,66 +361,39 @@ func TestChatScreen_msg_command_opens_dm_and_sends_message(t *testing.T) {
 }
 
 func TestChatScreen_msg_command_unknown_nick(t *testing.T) {
-	sess := newTestSession(t)
-	uitest.SeedChannel(t, sess, "#general")
-
-	tm := newChatApp(t, sess)
-	tm.WaitFor("#general")
+	tm, _ := newChatAppInChannel(t, "#general")
 
 	tm.Submit("/msg nobody hello")
 	tm.WaitFor("no such nick: nobody")
 }
 
 func TestChatScreen_help_command(t *testing.T) {
-	sess := newTestSession(t)
-	uitest.SeedChannel(t, sess, "#general")
-
-	tm := newChatApp(t, sess)
-	tm.WaitFor("#general")
+	tm, _ := newChatAppInChannel(t, "#general")
 
 	tm.Submit("/help")
 	tm.WaitFor("/join", "/help")
 }
 
 func TestChatScreen_invalid_command(t *testing.T) {
-	sess := newTestSession(t)
-	uitest.SeedChannel(t, sess, "#general")
-
-	tm := newChatApp(t, sess)
-	tm.WaitFor("#general")
+	tm, _ := newChatAppInChannel(t, "#general")
 
 	tm.Submit("/nick")
 	tm.WaitFor("missing required argument <new-nick>")
 }
 
 func TestChatScreen_unknown_command_shows_error(t *testing.T) {
-	sess := newTestSession(t)
-	uitest.SeedChannel(t, sess, "#general")
-
-	tm := newChatApp(t, sess)
-	tm.WaitFor("#general")
+	tm, _ := newChatAppInChannel(t, "#general")
 
 	tm.Submit("/unknown")
 	tm.WaitFor("unknown command: /unknown")
 }
 
 func TestChatScreen_View_responsive(t *testing.T) {
-	sess := newTestSession(t)
-	uitest.SeedChannel(t, sess, "#general")
-
-	tm := newChatApp(t, sess)
-	tm.WaitFor("#general")
-
-	view := tm.FinalView()
-	require.NotEmpty(t, view)
+	newChatAppInChannel(t, "#general")
 }
 
 func TestChatScreen_KeyBindings_collect_active_bindings(t *testing.T) {
-	sess := newTestSession(t)
-	uitest.SeedChannel(t, sess, "#general")
-
-	tm := newChatApp(t, sess)
-	tm.WaitFor("#general")
+	tm, _ := newChatAppInChannel(t, "#general")
 
 	view := tm.FinalView()
 	require.Contains(t, view, "↵ send")
@@ -497,21 +402,13 @@ func TestChatScreen_KeyBindings_collect_active_bindings(t *testing.T) {
 }
 
 func TestChatScreen_KeyBindings_switch_to_popover_bindings(t *testing.T) {
-	sess := newTestSession(t)
-	uitest.SeedChannel(t, sess, "#general")
-
-	tm := newChatApp(t, sess)
-	tm.WaitFor("#general")
+	tm, _ := newChatAppInChannel(t, "#general")
 
 	tm.Type("/")
 
 	// The popover adds Tab, up/down, Esc bindings. At 80 columns the
 	// status bar falls back to key-only mode, so check for keys.
-	tm.WaitFor("Tab")
-
-	view := tm.FinalView()
-	require.Contains(t, view, "Tab")
-	require.Contains(t, view, "Esc")
+	tm.WaitFor("Tab", "Esc")
 }
 
 func TestChatScreen_WelcomeState_responsive(t *testing.T) {

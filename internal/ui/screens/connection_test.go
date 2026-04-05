@@ -67,9 +67,7 @@ func TestConnectionScreen_with_api_key(t *testing.T) {
 	require.NotNil(t, cmd)
 
 	msg := cmd()
-	screenMsg, ok := msg.(ui.ScreenMsg)
-	require.True(t, ok, "expected ScreenMsg, got %T", msg)
-	require.Equal(t, next, screenMsg.Screen)
+	require.Equal(t, ui.ScreenMsg{Screen: next}, msg)
 }
 
 func TestConnectionScreen_no_api_key(t *testing.T) {

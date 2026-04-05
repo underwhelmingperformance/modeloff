@@ -12,26 +12,20 @@ import (
 
 func testSources() Sources {
 	return Sources{
-		Channels: func() []domain.Channel {
-			return []domain.Channel{
-				{Name: "#general", Topic: "Welcome"},
-				{Name: "#random"},
-			}
+		Channels: []domain.Channel{
+			{Name: "#general", Topic: "Welcome"},
+			{Name: "#random"},
 		},
-		Instances: func() []domain.ModelInstance {
-			return []domain.ModelInstance{
-				{Nick: "haiku", ModelID: "anthropic/haiku", Channels: set.NewOrdered[domain.ChannelName]("#general")},
-				{Nick: "sonnet", ModelID: "anthropic/sonnet"},
-			}
+		Instances: []domain.ModelInstance{
+			{Nick: "haiku", ModelID: "anthropic/haiku", Channels: set.NewOrdered[domain.ChannelName]("#general")},
+			{Nick: "sonnet", ModelID: "anthropic/sonnet"},
 		},
-		ActiveChannel: func() domain.ChannelName { return "#general" },
-		ActiveMembers: func() []domain.Nick { return []domain.Nick{"testuser", "haiku"} },
-		UserNick:      func() domain.Nick { return "testuser" },
-		LiveModels: func() []ModelOption {
-			return []ModelOption{
-				{ID: "anthropic/haiku", Name: "Haiku"},
-				{ID: "anthropic/sonnet", Name: "Sonnet"},
-			}
+		ActiveChannel: "#general",
+		ActiveMembers: []domain.Nick{"testuser", "haiku"},
+		UserNick:      "testuser",
+		LiveModels: []ModelOption{
+			{ID: "anthropic/haiku", Name: "Haiku"},
+			{ID: "anthropic/sonnet", Name: "Sonnet"},
 		},
 	}
 }
@@ -144,26 +138,14 @@ func TestComplete_config_api_key_no_value_suggestions(t *testing.T) {
 	require.Empty(t, c.Suggestions)
 }
 
-func TestComplete_sources_read_live_data(t *testing.T) {
-	var channels []domain.Channel
+func TestComplete_rebuild_reflects_new_data(t *testing.T) {
+	src := Sources{UserNick: "u"}
 
-	src := Sources{
-		Channels:      func() []domain.Channel { return channels },
-		Instances:     func() []domain.ModelInstance { return nil },
-		ActiveChannel: func() domain.ChannelName { return "" },
-		ActiveMembers: func() []domain.Nick { return nil },
-		UserNick:      func() domain.Nick { return "u" },
-		LiveModels:    func() []ModelOption { return nil },
-	}
-
-	parser := BuildParser(src)
-	set := parser.Set()
-
-	before := command.Complete(set, "/join ", 6)
+	before := command.Complete(BuildParser(src).Set(), "/join ", 6)
 	require.Empty(t, before.Suggestions)
 
-	channels = []domain.Channel{{Name: "#new"}}
+	src.Channels = []domain.Channel{{Name: "#new"}}
 
-	after := command.Complete(set, "/join ", 6)
+	after := command.Complete(BuildParser(src).Set(), "/join ", 6)
 	require.Equal(t, []string{"#new"}, suggestionValues(after))
 }

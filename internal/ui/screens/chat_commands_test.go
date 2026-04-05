@@ -86,7 +86,7 @@ func TestChatScreen_Commands_exposes_chat_commands(t *testing.T) {
 func TestChatScreen_HelpCommand_emits_typed_event(t *testing.T) {
 	screen := NewChatScreen(t.Context(), newTestSession(t))
 
-	cmd, err := screen.parser.Parse("/help")
+	cmd, err := screen.buildParser().Parse("/help")
 	require.NoError(t, err)
 
 	msg := cmd.Run(screen.runContext())()
@@ -96,10 +96,9 @@ func TestChatScreen_HelpCommand_emits_typed_event(t *testing.T) {
 func TestChatScreen_QuitCommand_returns_quit(t *testing.T) {
 	screen := NewChatScreen(t.Context(), newTestSession(t))
 
-	cmd, err := screen.parser.Parse("/quit")
+	cmd, err := screen.buildParser().Parse("/quit")
 	require.NoError(t, err)
 
 	msg := cmd.Run(screen.runContext())()
-	_, ok := msg.(tea.QuitMsg)
-	require.True(t, ok, "expected tea.QuitMsg, got %T", msg)
+	require.Equal(t, tea.QuitMsg{}, msg)
 }

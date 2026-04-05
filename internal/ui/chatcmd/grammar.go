@@ -24,22 +24,20 @@ type Grammar struct {
 	Quit   QuitCommand   `cmd:"" help:"Exit modeloff."`
 }
 
-// Sources carries the closures that provide live data for command
-// completion. Each field is an accessor that reads from the screen's
-// current state at call time.
+// Sources carries snapshot data for command completion. Each field
+// holds the current value at the time the parser is built.
 type Sources struct {
-	Channels      func() []domain.Channel
-	Instances     func() []domain.ModelInstance
-	ActiveChannel func() domain.ChannelName
-	ActiveMembers func() []domain.Nick
-	UserNick      func() domain.Nick
-	LiveModels    func() []ModelOption
+	Channels      []domain.Channel
+	Instances     []domain.ModelInstance
+	ActiveChannel domain.ChannelName
+	ActiveMembers []domain.Nick
+	UserNick      domain.Nick
+	LiveModels    []ModelOption
 }
 
-// BuildParser creates a typed Parser with suggestion sources wired
-// via the Completer interface on each command struct. The closures
-// are evaluated at completion time, so they always reflect current
-// state.
+// BuildParser creates a typed Parser from a snapshot of the current
+// application state. It should be rebuilt whenever the completion-
+// relevant state changes (channels, instances, active channel, etc.).
 func BuildParser(src Sources) Parser {
 	instancesSource := InstancesSource(src.Instances)
 

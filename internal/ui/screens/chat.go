@@ -38,15 +38,12 @@ type PokeTickMsg struct{}
 
 // ChatScreen is the main screen that composes Sidebar, ChatView, and
 // MainLayout. It holds a reference to the session for backend
-// operations. The ChatView is held as a pointer so that viewport
-// and input state survive across message and channel updates.
+// operations.
 type ChatScreen struct {
-	ctx      context.Context
-	sess     *session.Session
-	layout   components.MainLayout
-	chatView *components.ChatView
-	keyMap   components.ChatScreenKeyMap
-	parser   chatcmd.Parser
+	ctx    context.Context
+	sess   *session.Session
+	layout components.MainLayout
+	keyMap components.ChatScreenKeyMap
 
 	channels     []domain.Channel
 	instances    []domain.ModelInstance
@@ -62,34 +59,22 @@ type ChatScreen struct {
 // NewChatScreen creates a chat screen backed by the given session.
 // The provided context is used for all backend operations, allowing
 // them to be cancelled on shutdown.
-func NewChatScreen(ctx context.Context, sess *session.Session) *ChatScreen {
+func NewChatScreen(ctx context.Context, sess *session.Session) ChatScreen {
 	sidebar := components.NewSidebar(nil, "", nil)
 	chatView := components.NewChatView("", sess.UserNick(), "", nil)
 	layout := components.NewMainLayout(sidebar, chatView)
 	layout.SetNickList(components.NewNickList(nil))
 
-	s := &ChatScreen{
-		ctx:      ctx,
-		sess:     sess,
-		layout:   layout,
-		chatView: chatView,
-		keyMap:   components.DefaultChatScreenKeyMap,
+	return ChatScreen{
+		ctx:    ctx,
+		sess:   sess,
+		layout: layout,
+		keyMap: components.DefaultChatScreenKeyMap,
 	}
-
-	s.parser = chatcmd.BuildParser(chatcmd.Sources{
-		Channels:      func() []domain.Channel { return s.channels },
-		Instances:     func() []domain.ModelInstance { return s.instances },
-		ActiveChannel: func() domain.ChannelName { return s.active },
-		ActiveMembers: s.activeMembers,
-		UserNick:      sess.UserNick,
-		LiveModels:    func() []chatcmd.ModelOption { return s.liveModels },
-	})
-
-	return s
 }
 
 // Init implements ui.Model.
-func (s *ChatScreen) Init() tea.Cmd {
+func (s ChatScreen) Init() tea.Cmd {
 	loadInitial := func() tea.Msg {
 		ctx := s.ctx
 
@@ -139,7 +124,7 @@ func (s *ChatScreen) Init() tea.Cmd {
 // listenForEvents reads the next event from the session's background
 // event channel and wraps it in a sessionEventMsg. After each event,
 // it should be re-invoked so the channel is continuously drained.
-func (s *ChatScreen) listenForEvents() tea.Cmd {
+func (s ChatScreen) listenForEvents() tea.Cmd {
 	ch := s.sess.Events()
 
 	return func() tea.Msg {
@@ -153,7 +138,7 @@ func (s *ChatScreen) listenForEvents() tea.Cmd {
 }
 
 // Update implements ui.Model.
-func (s *ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
+func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	forwardedMsg := msg
 
 	switch msg := msg.(type) {
@@ -280,7 +265,18 @@ func msgCmd(msg tea.Msg) tea.Cmd {
 	return func() tea.Msg { return msg }
 }
 
-func (s *ChatScreen) unreadCounts(ctx context.Context, channels []domain.Channel) map[domain.ChannelName]int {
+func (s ChatScreen) buildParser() chatcmd.Parser {
+	return chatcmd.BuildParser(chatcmd.Sources{
+		Channels:      s.channels,
+		Instances:     s.instances,
+		ActiveChannel: s.active,
+		ActiveMembers: s.activeMembers(),
+		UserNick:      s.sess.UserNick(),
+		LiveModels:    s.liveModels,
+	})
+}
+
+func (s ChatScreen) unreadCounts(ctx context.Context, channels []domain.Channel) map[domain.ChannelName]int {
 	counts := make(map[domain.ChannelName]int, len(channels))
 
 	for _, ch := range channels {
@@ -297,7 +293,7 @@ func (s *ChatScreen) unreadCounts(ctx context.Context, channels []domain.Channel
 	return counts
 }
 
-func (s *ChatScreen) sortedMembers(members set.Ordered[domain.Nick]) []domain.Member {
+func (s ChatScreen) sortedMembers(members set.Ordered[domain.Nick]) []domain.Member {
 	if members == nil {
 		return nil
 	}
@@ -319,7 +315,7 @@ func (s *ChatScreen) sortedMembers(members set.Ordered[domain.Nick]) []domain.Me
 	return result
 }
 
-func (s *ChatScreen) loadLiveModels() tea.Cmd {
+func (s ChatScreen) loadLiveModels() tea.Cmd {
 	if !s.sess.HasAPIKey() {
 		return nil
 	}
@@ -343,7 +339,7 @@ func (s *ChatScreen) loadLiveModels() tea.Cmd {
 	}
 }
 
-func (s *ChatScreen) layoutHeight() int {
+func (s ChatScreen) layoutHeight() int {
 	if s.width < theme.MinTerminalWidth {
 		return s.height
 	}
@@ -356,7 +352,7 @@ func (s *ChatScreen) layoutHeight() int {
 	return height
 }
 
-func (s *ChatScreen) switchChannel(ch domain.ChannelName) tea.Cmd {
+func (s ChatScreen) switchChannel(ch domain.ChannelName) tea.Cmd {
 	return func() tea.Msg {
 		evt, err := s.sess.Join(s.ctx, string(ch))
 		if err != nil {
@@ -367,7 +363,7 @@ func (s *ChatScreen) switchChannel(ch domain.ChannelName) tea.Cmd {
 	}
 }
 
-func (s *ChatScreen) sendMessage(text string) tea.Cmd {
+func (s ChatScreen) sendMessage(text string) tea.Cmd {
 	return func() tea.Msg {
 		evt, err := s.sess.SendMessage(s.ctx, s.active, text)
 		if err != nil {
@@ -379,7 +375,7 @@ func (s *ChatScreen) sendMessage(text string) tea.Cmd {
 }
 
 // KeyBindings implements ui.Keybinding.
-func (s *ChatScreen) KeyBindings() []key.Binding {
+func (s ChatScreen) KeyBindings() []key.Binding {
 	bindings := ui.CollectKeyBindings(s.layout)
 	bindings = append(bindings, s.keyMap.ToggleNickList, ui.DefaultAppKeyMap.Quit)
 
@@ -387,7 +383,7 @@ func (s *ChatScreen) KeyBindings() []key.Binding {
 }
 
 // View implements ui.Model.
-func (s *ChatScreen) View(width, height int) string {
+func (s ChatScreen) View(width, height int) string {
 	if width < theme.MinTerminalWidth {
 		return s.layout.View(width, height)
 	}

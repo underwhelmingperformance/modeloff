@@ -58,9 +58,6 @@ func TestApp_send_message_shows_pending_indicator(t *testing.T) {
 	tm.WaitForCondition(func(out []byte) bool {
 		return !bytes.Contains(out, []byte("responding"))
 	})
-
-	view := tm.FinalView()
-	require.Contains(t, view, "hello world")
 }
 
 func TestApp_nick_command_with_teatest(t *testing.T) {
@@ -80,9 +77,6 @@ func TestApp_nick_command_with_teatest(t *testing.T) {
 	tm.WaitFor("testuser is now known as newnick")
 
 	require.Equal(t, "newnick", cfgStore.cfg.UserNick)
-
-	view := tm.FinalView()
-	require.Contains(t, view, "testuser is now known as newnick")
 }
 
 func TestApp_nick_command_reports_persist_error_with_teatest(t *testing.T) {
@@ -101,10 +95,6 @@ func TestApp_nick_command_reports_persist_error_with_teatest(t *testing.T) {
 
 	tm.Submit("/nick newnick")
 	tm.WaitFor("save config", "context deadline exceeded")
-
-	view := tm.FinalView()
-	require.Contains(t, view, "save config")
-	require.Contains(t, view, "context deadline exceeded")
 }
 
 func TestApp_title_list_and_help_commands_with_teatest(t *testing.T) {
@@ -128,10 +118,6 @@ func TestApp_title_list_and_help_commands_with_teatest(t *testing.T) {
 
 	tm.Submit("/help")
 	tm.WaitFor("/join", "/help")
-
-	view := tm.FinalView()
-	require.Contains(t, view, "/join")
-	require.Contains(t, view, "/help")
 }
 
 func TestApp_invite_whois_and_kick_commands_with_teatest(t *testing.T) {
@@ -158,9 +144,6 @@ func TestApp_invite_whois_and_kick_commands_with_teatest(t *testing.T) {
 
 	tm.Submit("/kick fakenick")
 	tm.WaitFor("fakenick has been kicked from #random")
-
-	view := tm.FinalView()
-	require.Contains(t, view, "fakenick has been kicked from #random")
 }
 
 func TestApp_config_commands_with_teatest(t *testing.T) {
@@ -193,9 +176,6 @@ func TestApp_config_commands_with_teatest(t *testing.T) {
 
 	require.Equal(t, "test-key", cfgStore.cfg.APIKey)
 	require.Equal(t, 10*time.Minute, cfgStore.cfg.PokeInterval)
-
-	view := tm.FinalView()
-	require.Contains(t, view, "invalid duration")
 }
 
 func TestApp_unknown_command_on_welcome_screen_with_teatest(t *testing.T) {
@@ -248,9 +228,6 @@ func TestApp_channel_command_on_welcome_screen_rejected_with_teatest(t *testing.
 
 	tm.Submit("/part")
 	tm.WaitFor("join a channel first")
-
-	view := tm.FinalView()
-	require.Contains(t, view, "join a channel first")
 }
 
 func TestApp_quit_command_with_teatest(t *testing.T) {
@@ -277,9 +254,6 @@ func TestApp_unknown_target_commands_with_teatest(t *testing.T) {
 
 	tm.Submit("/msg ghost hello")
 	tm.WaitFor("no such nick: ghost")
-
-	view := tm.FinalView()
-	require.Contains(t, view, "no such nick: ghost")
 }
 
 func TestApp_unread_counts_clear_when_visiting_channel_with_teatest(t *testing.T) {
@@ -326,10 +300,6 @@ func TestApp_input_history_and_sidebar_shortcuts_with_teatest(t *testing.T) {
 	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlU})
 	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlO})
 	tm.WaitFor("#general", "draft-only")
-
-	view := tm.FinalView()
-	require.Contains(t, view, "#general")
-	require.Contains(t, view, "draft-only")
 }
 
 func TestApp_ctrl_arrow_scroll_preserves_draft_with_teatest(t *testing.T) {

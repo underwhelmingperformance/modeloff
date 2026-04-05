@@ -63,24 +63,23 @@ type PopoverLayout struct {
 }
 
 // NewPopover creates an empty popover.
-func NewPopover() *Popover {
-	return &Popover{}
+func NewPopover() Popover {
+	return Popover{}
 }
 
-
 // IsVisible returns whether the popover is currently showing.
-func (p *Popover) IsVisible() bool {
+func (p Popover) IsVisible() bool {
 	return p.completion.Visible
 }
 
 // HasSuggestions returns whether there are any suggestions to show.
-func (p *Popover) HasSuggestions() bool {
+func (p Popover) HasSuggestions() bool {
 	return len(p.completion.Suggestions) > 0
 }
 
 // Layout computes absolute hit-test rectangles for the popover
 // given the parent bounds and input bar rectangle.
-func (p *Popover) Layout(bounds, inputRect ui.Rect) PopoverLayout {
+func (p Popover) Layout(bounds, inputRect ui.Rect) PopoverLayout {
 	popoverHeight := p.height()
 	if popoverHeight == 0 {
 		return PopoverLayout{}
@@ -111,47 +110,51 @@ func (p *Popover) Layout(bounds, inputRect ui.Rect) PopoverLayout {
 }
 
 // Init implements ui.Model.
-func (p *Popover) Init() tea.Cmd {
+func (p Popover) Init() tea.Cmd {
 	return nil
 }
 
 // Handled reports whether the most recent Update consumed its message.
 // ChatView checks this to avoid forwarding consumed keys to siblings.
-func (p *Popover) Handled() bool {
+func (p Popover) Handled() bool {
 	return p.handled
 }
 
 // Update implements ui.Model. It handles keyboard navigation
 // (Tab/Up/Down/Esc), mouse interactions, and popover state messages.
-func (p *Popover) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
+func (p Popover) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	p.handled = false
 
 	switch msg := msg.(type) {
+	case ui.BoundsMsg:
+		p.bounds = msg.Rect
+		return p, nil
+
 	case PopoverApplyMsg:
 		p.commands = msg.Commands
-		p.refresh(msg.Raw, msg.Cursor)
+		p = p.refresh(msg.Raw, msg.Cursor)
 		return p, nil
 
 	case PopoverRefreshMsg:
 		p.closed = false
-		p.refresh(msg.Raw, msg.Cursor)
+		p = p.refresh(msg.Raw, msg.Cursor)
 		return p, nil
 
 	case PopoverDismissMsg:
 		p.closed = true
-		p.refresh(msg.Raw, 0)
+		p = p.refresh(msg.Raw, 0)
 		return p, nil
 
 	case tea.KeyMsg:
-		if handled, cmd := p.handleKey(msg); handled {
-			p.handled = true
-			return p, cmd
+		if updated, handled, cmd := p.handleKey(msg); handled {
+			updated.handled = true
+			return updated, cmd
 		}
 
 	case tea.MouseMsg:
-		if handled, cmd := p.handleMouse(msg); handled {
-			p.handled = true
-			return p, cmd
+		if updated, handled, cmd := p.handleMouse(msg); handled {
+			updated.handled = true
+			return updated, cmd
 		}
 	}
 
@@ -159,12 +162,12 @@ func (p *Popover) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 }
 
 // View implements ui.Model.
-func (p *Popover) View(width, _ int) string {
+func (p Popover) View(width, _ int) string {
 	return p.Render(width)
 }
 
 // Render returns the rendered popover string for the given width.
-func (p *Popover) Render(width int) string {
+func (p Popover) Render(width int) string {
 	if !p.completion.Visible {
 		return ""
 	}
@@ -201,34 +204,32 @@ func (p *Popover) Render(width int) string {
 	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }
 
-func (p *Popover) handleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
+func (p Popover) handleKey(msg tea.KeyMsg) (Popover, bool, tea.Cmd) {
 	if p.completion.Visible && p.HasSuggestions() {
 		switch msg.Type {
 		case tea.KeyTab:
-			return true, p.AcceptCmd(p.selected)
+			return p, true, p.acceptCmd(p.selected)
 		case tea.KeyShiftTab, tea.KeyUp:
-			p.MoveSelection(-1)
-			return true, nil
+			return p.moveSelection(-1), true, nil
 		case tea.KeyDown:
-			p.MoveSelection(1)
-			return true, nil
+			return p.moveSelection(1), true, nil
 		case tea.KeyEsc:
 			p.completion = command.Completion{}
 			p.closed = true
-			return true, nil
+			return p, true, nil
 		}
 	}
 
 	if msg.Type == tea.KeyEsc && p.completion.Visible {
 		p.completion = command.Completion{}
 		p.closed = true
-		return true, nil
+		return p, true, nil
 	}
 
-	return false, nil
+	return p, false, nil
 }
 
-func (p *Popover) handleMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
+func (p Popover) handleMouse(msg tea.MouseMsg) (Popover, bool, tea.Cmd) {
 	layout := p.Layout(p.bounds, ui.Rect{
 		X:      p.bounds.X,
 		Y:      p.bounds.Y + p.bounds.Height - 1,
@@ -237,43 +238,32 @@ func (p *Popover) handleMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
 	})
 
 	if !layout.Rect.Contains(msg.X, msg.Y) {
-		return false, nil
+		return p, false, nil
 	}
 
 	switch msg.Action {
 	case tea.MouseActionMotion:
-		if p.hoverSuggestion(layout, msg.X, msg.Y) {
-			return true, nil
-		}
+		return p.hoverSuggestion(layout, msg.X, msg.Y), true, nil
 
 	case tea.MouseActionPress:
 		switch msg.Button {
 		case tea.MouseButtonWheelUp:
-			p.MoveSelection(-1)
-			return true, nil
+			return p.moveSelection(-1), true, nil
 		case tea.MouseButtonWheelDown:
-			p.MoveSelection(1)
-			return true, nil
+			return p.moveSelection(1), true, nil
 		case tea.MouseButtonLeft:
 			if index, ok := p.suggestionIndexAt(layout, msg.X, msg.Y); ok {
-				return true, p.AcceptCmd(index)
+				return p, true, p.acceptCmd(index)
 			}
 
-			return true, nil
+			return p, true, nil
 		}
 	}
 
-	return true, nil
+	return p, true, nil
 }
 
-// SetBounds updates the bounds used for mouse hit-testing.
-func (p *Popover) SetBounds(bounds ui.Rect) {
-	p.bounds = bounds
-}
-
-// AcceptCmd returns a command that emits a PopoverAcceptMsg for the
-// suggestion at the given index.
-func (p *Popover) AcceptCmd(index int) tea.Cmd {
+func (p Popover) acceptCmd(index int) tea.Cmd {
 	if index < 0 || index >= len(p.completion.Suggestions) {
 		return nil
 	}
@@ -293,11 +283,9 @@ func (p *Popover) AcceptCmd(index int) tea.Cmd {
 	}
 }
 
-// MoveSelection changes the selected suggestion by delta, wrapping
-// around at boundaries.
-func (p *Popover) MoveSelection(delta int) {
+func (p Popover) moveSelection(delta int) Popover {
 	if len(p.completion.Suggestions) == 0 {
-		return
+		return p
 	}
 
 	p.selected += delta
@@ -308,21 +296,21 @@ func (p *Popover) MoveSelection(delta int) {
 		p.selected = 0
 	}
 
-	p.ensureSelectionVisible()
+	return p.ensureSelectionVisible()
 }
 
-func (p *Popover) hoverSuggestion(layout PopoverLayout, x, y int) bool {
+func (p Popover) hoverSuggestion(layout PopoverLayout, x, y int) Popover {
 	for i, rect := range layout.SuggestionRects {
 		if rect.Contains(x, y) {
 			p.selected = p.offset + i
-			return true
+			return p
 		}
 	}
 
-	return false
+	return p
 }
 
-func (p *Popover) suggestionIndexAt(layout PopoverLayout, x, y int) (int, bool) {
+func (p Popover) suggestionIndexAt(layout PopoverLayout, x, y int) (int, bool) {
 	for i, rect := range layout.SuggestionRects {
 		if rect.Contains(x, y) {
 			return p.offset + i, true
@@ -332,7 +320,7 @@ func (p *Popover) suggestionIndexAt(layout PopoverLayout, x, y int) (int, bool) 
 	return 0, false
 }
 
-func (p *Popover) height() int {
+func (p Popover) height() int {
 	if !p.completion.Visible {
 		return 0
 	}
@@ -340,21 +328,21 @@ func (p *Popover) height() int {
 	return len(p.visibleSuggestions())
 }
 
-func (p *Popover) refresh(raw string, cursor int) {
+func (p Popover) refresh(raw string, cursor int) Popover {
 	if p.closed && !strings.HasPrefix(raw, "/") {
 		p.closed = false
 	}
 
 	if p.closed {
 		p.completion = command.Completion{}
-		return
+		return p
 	}
 
 	p.completion = command.Complete(p.commands, raw, cursor)
 	if !p.completion.Visible || len(p.completion.Suggestions) == 0 {
 		p.selected = 0
 		p.offset = 0
-		return
+		return p
 	}
 
 	if p.selected >= len(p.completion.Suggestions) {
@@ -364,10 +352,10 @@ func (p *Popover) refresh(raw string, cursor int) {
 		p.selected = 0
 	}
 
-	p.ensureSelectionVisible()
+	return p.ensureSelectionVisible()
 }
 
-func (p *Popover) visibleSuggestions() []command.Suggestion {
+func (p Popover) visibleSuggestions() []command.Suggestion {
 	if len(p.completion.Suggestions) == 0 {
 		return nil
 	}
@@ -385,7 +373,7 @@ func (p *Popover) visibleSuggestions() []command.Suggestion {
 	return p.completion.Suggestions[start:end]
 }
 
-func (p *Popover) ensureSelectionVisible() {
+func (p Popover) ensureSelectionVisible() Popover {
 	if p.selected < p.offset {
 		p.offset = p.selected
 	}
@@ -397,6 +385,8 @@ func (p *Popover) ensureSelectionVisible() {
 	if p.offset < 0 {
 		p.offset = 0
 	}
+
+	return p
 }
 
 func truncateLine(text string, width int) string {
