@@ -230,6 +230,30 @@ func (s *FileStore) SetLastRead(_ context.Context, ch domain.ChannelName, messag
 	return saveJSON(s.statePath(), st)
 }
 
+// --- Reset ---
+
+// Reset removes all channels, messages, instances, and state,
+// returning the store to an empty state.
+func (s *FileStore) Reset(_ context.Context) error {
+	dirs := []string{
+		s.channelsDir(),
+		filepath.Join(s.dir, "messages"),
+		s.instancesDir(),
+	}
+
+	for _, dir := range dirs {
+		if err := os.RemoveAll(dir); err != nil {
+			return fmt.Errorf("reset %s: %w", dir, err)
+		}
+	}
+
+	if err := os.Remove(s.statePath()); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("reset state: %w", err)
+	}
+
+	return nil
+}
+
 // --- Helpers ---
 
 // sanitise replaces characters that are unsafe in filenames.

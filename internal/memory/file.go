@@ -107,6 +107,15 @@ func (s *FileStore) Write(_ context.Context, nick domain.Nick, entry Entry) erro
 	return s.save(nick, entries)
 }
 
+// Reset removes all memories for all instances.
+func (s *FileStore) Reset(_ context.Context) error {
+	if err := os.RemoveAll(s.dir); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // Delete removes a specific memory entry by key.
 func (s *FileStore) Delete(_ context.Context, nick domain.Nick, key string) error {
 	entries, err := s.load(nick)

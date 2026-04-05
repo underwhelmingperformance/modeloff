@@ -26,4 +26,7 @@ type Store interface {
 
 	// Delete removes a specific memory entry.
 	Delete(ctx context.Context, nick domain.Nick, key string) error
+
+	// Reset removes all memories for all instances.
+	Reset(ctx context.Context) error
 }

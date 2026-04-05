@@ -330,3 +330,50 @@ func TestFileStore_SetLastRead_overwrites(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "msg-5", got)
 }
+
+// --- Reset ---
+
+func TestFileStore_Reset(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	require.NoError(t, s.SaveChannel(ctx, domain.Channel{
+		Name: "#general", Kind: domain.KindChannel, Created: testTime,
+	}))
+	require.NoError(t, s.SaveMessage(ctx, domain.Message{
+		ID: "msg-1", Channel: "#general", From: "alice", Body: "hello", SentAt: testTime,
+	}))
+	require.NoError(t, s.SaveInstance(ctx, domain.ModelInstance{
+		Nick: "botty", ModelID: "test/model",
+	}))
+	require.NoError(t, s.SetLastChannel(ctx, "#general"))
+	require.NoError(t, s.SetLastRead(ctx, "#general", "msg-1"))
+
+	require.NoError(t, s.Reset(ctx))
+
+	channels, err := s.ListChannels(ctx)
+	require.NoError(t, err)
+	require.Empty(t, channels)
+
+	msgs, err := s.ListMessages(ctx, "#general")
+	require.NoError(t, err)
+	require.Empty(t, msgs)
+
+	instances, err := s.ListInstances(ctx)
+	require.NoError(t, err)
+	require.Empty(t, instances)
+
+	lastCh, err := s.GetLastChannel(ctx)
+	require.NoError(t, err)
+	require.Empty(t, lastCh)
+
+	lastRead, err := s.GetLastRead(ctx, "#general")
+	require.NoError(t, err)
+	require.Empty(t, lastRead)
+}
+
+func TestFileStore_Reset_empty_store(t *testing.T) {
+	s := newTestStore(t)
+
+	require.NoError(t, s.Reset(t.Context()))
+}

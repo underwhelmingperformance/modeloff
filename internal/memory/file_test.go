@@ -98,3 +98,27 @@ func TestFileStore_IsolationBetweenNicks(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []Entry{{Key: "k", Content: "from-b"}}, gotB)
 }
+
+func TestFileStore_Reset(t *testing.T) {
+	ctx := t.Context()
+	store := NewFileStore(t.TempDir())
+
+	require.NoError(t, store.Write(ctx, "alice", Entry{Key: "k1", Content: "v1"}))
+	require.NoError(t, store.Write(ctx, "bob", Entry{Key: "k2", Content: "v2"}))
+
+	require.NoError(t, store.Reset(ctx))
+
+	gotA, err := store.Read(ctx, "alice")
+	require.NoError(t, err)
+	require.Empty(t, gotA)
+
+	gotB, err := store.Read(ctx, "bob")
+	require.NoError(t, err)
+	require.Empty(t, gotB)
+}
+
+func TestFileStore_Reset_empty(t *testing.T) {
+	store := NewFileStore(t.TempDir())
+
+	require.NoError(t, store.Reset(t.Context()))
+}

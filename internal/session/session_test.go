@@ -1550,6 +1550,56 @@ func (f *fakeConfigStore) Save(cfg config.Config) error {
 	return nil
 }
 
+func TestSession_Reset(t *testing.T) {
+	s := storemod.NewFileStore(t.TempDir())
+	memStore := memory.NewFileStore(t.TempDir())
+	sess := New(s, memStore, &fakeAPIClient{}, nil, "testuser")
+	sess.now = func() time.Time { return fixedTime }
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: set.NewOrdered[domain.ChannelName]("#general"),
+	})
+	require.NoError(t, s.SaveMessage(ctx, domain.Message{
+		ID: "msg-1", Channel: "#general", From: "testuser", Body: "hello", SentAt: fixedTime,
+	}))
+	require.NoError(t, memStore.Write(ctx, "botty", memory.Entry{Key: "mood", Content: "happy"}))
+
+	require.NoError(t, sess.Reset(ctx))
+
+	channels, err := s.ListChannels(ctx)
+	require.NoError(t, err)
+	require.Empty(t, channels)
+
+	instances, err := s.ListInstances(ctx)
+	require.NoError(t, err)
+	require.Empty(t, instances)
+
+	msgs, err := s.ListMessages(ctx, "#general")
+	require.NoError(t, err)
+	require.Empty(t, msgs)
+
+	memories, err := memStore.Read(ctx, "botty")
+	require.NoError(t, err)
+	require.Empty(t, memories)
+}
+
+func TestSession_Reset_nil_memory_store(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#general", "testuser")
+
+	require.NoError(t, sess.Reset(ctx))
+
+	channels, err := s.ListChannels(ctx)
+	require.NoError(t, err)
+	require.Empty(t, channels)
+}
+
 func seedChannelWithMembers(t *testing.T, s *storemod.FileStore, name domain.ChannelName, members ...domain.Nick) {
 	t.Helper()
 

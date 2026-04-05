@@ -39,4 +39,8 @@ type Store interface {
 
 	GetLastRead(ctx context.Context, ch domain.ChannelName) (string, error)
 	SetLastRead(ctx context.Context, ch domain.ChannelName, messageID string) error
+
+	// Reset
+
+	Reset(ctx context.Context) error
 }

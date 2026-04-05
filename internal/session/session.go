@@ -467,6 +467,22 @@ func (s *Session) ListModels(ctx context.Context) ([]api.ModelInfo, error) {
 	return s.api.ListModels(ctx)
 }
 
+// Reset clears all channels, messages, model instances, and memories,
+// returning the application to a fresh state. Config is preserved.
+func (s *Session) Reset(ctx context.Context) error {
+	if err := s.store.Reset(ctx); err != nil {
+		return fmt.Errorf("reset store: %w", err)
+	}
+
+	if s.memory != nil {
+		if err := s.memory.Reset(ctx); err != nil {
+			return fmt.Errorf("reset memories: %w", err)
+		}
+	}
+
+	return nil
+}
+
 // OpenDM opens or creates a direct-message conversation with a known
 // model instance and makes it the active conversation.
 func (s *Session) OpenDM(ctx context.Context, nick domain.Nick) (domain.Channel, bool, error) {
