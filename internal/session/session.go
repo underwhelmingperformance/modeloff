@@ -809,7 +809,7 @@ func (s *Session) dispatchToInstance(
 	historyMessages []domain.Message,
 	events []protocol.IRCMessage,
 ) ([]domain.ModelReplyEvent, error) {
-	_, instanceSpan := startSpan(
+	ctx, instanceSpan := startSpan(
 		ctx,
 		"session.dispatch_to_instance",
 		attribute.String(observability.AttrOperation, "session.dispatch_to_instance"),
