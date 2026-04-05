@@ -10,91 +10,90 @@ import (
 
 	uipkg "github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/screens"
+	"github.com/laney/modeloff/internal/ui/uitest"
 )
 
 func TestRoot_quits_on_ctrl_c_with_teatest(t *testing.T) {
 	sess, _ := newIntegrationSession(t, &integrationAPI{})
-	tm := newTestApp(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
+	tm := uitest.New(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
 
-	waitForOutput(t, tm, "Welcome to modeloff")
+	tm.WaitFor("Welcome to modeloff")
 
 	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlC})
 
-	model := tm.FinalModel(t, teatest.WithFinalTimeout(2*time.Second))
-	_, ok := model.(uipkg.Root)
-	require.True(t, ok, "expected Root, got %T", model)
+	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
 }
 
 func TestChatScreen_join_flow_with_teatest(t *testing.T) {
 	sess, _ := newIntegrationSession(t, &integrationAPI{})
-	tm := newTestApp(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
+	tm := uitest.New(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
 
-	waitForOutput(t, tm, "Welcome to modeloff")
+	tm.WaitFor("Welcome to modeloff")
 
-	submitText(tm, "/join #general")
-	waitForOutput(t, tm, "Created channel #general")
+	tm.Submit("/join #general")
+	tm.WaitFor("Created channel #general")
 
-	submitText(tm, "/join #general")
-	waitForOutput(t, tm, "testuser has joined #general")
+	tm.Submit("/join #general")
+	tm.WaitFor("testuser has joined #general")
 
-	view := finalView(t, tm)
+	view := tm.FinalView()
 	require.Contains(t, view, "#general")
 }
 
 func TestChatScreen_leave_flow_with_teatest(t *testing.T) {
 	sess, _ := newIntegrationSession(t, &integrationAPI{})
-	seedChannel(t, sess, "#general")
-	seedMessage(t, sess, "#general", "general msg")
-	seedChannel(t, sess, "#random")
-	seedMessage(t, sess, "#random", "random msg")
+	uitest.SeedChannel(t, sess, "#general")
+	uitest.SeedMessage(t, sess, "#general", "general msg")
+	uitest.SeedChannel(t, sess, "#random")
+	uitest.SeedMessage(t, sess, "#random", "random msg")
 
-	tm := newTestApp(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
-	waitForOutput(t, tm, "random msg")
+	tm := uitest.New(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
+	tm.WaitFor("random msg")
 
-	submitText(tm, "/part")
-	waitForOutput(t, tm, "general msg")
+	tm.Submit("/part")
+	tm.WaitFor("general msg")
 
-	view := finalView(t, tm)
+	view := tm.FinalView()
 	require.Contains(t, view, "general msg")
 }
 
 func TestChatScreen_sidebar_navigation_with_teatest(t *testing.T) {
 	sess, store := newIntegrationSession(t, &integrationAPI{})
-	seedChannel(t, sess, "#general")
-	seedMessage(t, sess, "#general", "general msg")
-	seedChannel(t, sess, "#random")
-	seedMessage(t, sess, "#random", "random msg")
+	uitest.SeedChannel(t, sess, "#general")
+	uitest.SeedMessage(t, sess, "#general", "general msg")
+	uitest.SeedChannel(t, sess, "#random")
+	uitest.SeedMessage(t, sess, "#random", "random msg")
 	require.NoError(t, store.SetLastChannel(t.Context(), "#general"))
 
-	tm := newTestApp(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
-	waitForOutput(t, tm, "general msg")
+	tm := uitest.New(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
+	tm.WaitFor("general msg")
 
 	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlD})
 	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlO})
-	waitForOutput(t, tm, "random msg")
+	tm.WaitFor("random msg")
 
 	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlU})
 	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlO})
-	waitForOutput(t, tm, "general msg")
+	tm.WaitFor("general msg")
 
-	view := finalView(t, tm)
+	view := tm.FinalView()
 	require.Contains(t, view, "general msg")
 }
 
 func TestChatScreen_command_errors_with_teatest(t *testing.T) {
 	sess, _ := newIntegrationSession(t, &integrationAPI{})
-	seedChannel(t, sess, "#general")
+	uitest.SeedChannel(t, sess, "#general")
 
-	tm := newTestApp(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
-	waitForOutput(t, tm, "#general")
+	tm := uitest.New(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
+	tm.WaitFor("#general")
 
-	submitText(tm, "/nick")
-	waitForOutput(t, tm, "missing required argument <new-nick>")
+	tm.Submit("/nick")
+	tm.WaitFor("missing required argument <new-nick>")
 
-	submitText(tm, "/unknown")
-	waitForOutput(t, tm, "unknown command: /unknown")
+	tm.Submit("/unknown")
+	tm.WaitFor("unknown command: /unknown")
 
-	view := finalView(t, tm)
+	view := tm.FinalView()
 	require.Contains(t, view, "unknown command: /unknown")
 }
 
@@ -106,11 +105,11 @@ func TestConnectionScreen_progression_with_teatest(t *testing.T) {
 		Nick:         string(sess.UserNick()),
 		Next:         screens.NewChatScreen(t.Context(), sess),
 	}))
-	tm := newTestApp(t, root)
+	tm := uitest.New(t, root)
 
 	advanceConnection(tm, 4)
-	waitForOutput(t, tm, "Welcome to modeloff")
+	tm.WaitFor("Welcome to modeloff")
 
-	view := finalView(t, tm)
+	view := tm.FinalView()
 	require.Contains(t, view, "Welcome to modeloff")
 }
