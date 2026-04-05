@@ -1600,6 +1600,130 @@ func TestSession_Reset_nil_memory_store(t *testing.T) {
 	require.Empty(t, channels)
 }
 
+func TestBuildSystemPrompt_instructs_single_line_messages(t *testing.T) {
+	ch := domain.Channel{Name: "#dev", Kind: domain.KindChannel}
+	inst := domain.ModelInstance{Nick: "botty", ModelID: "test/model"}
+
+	prompt := buildSystemPrompt(ch, inst, nil)
+
+	require.Contains(t, prompt, "newline")
+}
+
+func TestSession_DispatchToChannel_retries_on_multiline_reply(t *testing.T) {
+	calls := 0
+	fake := &fakeAPIClient{
+		sendEventsFn: func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			calls++
+			if calls == 1 {
+				return protocol.Reply("line one\nline two"), nil
+			}
+
+			return protocol.Reply("clean reply"), nil
+		},
+	}
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: set.NewOrdered[domain.ChannelName]("#general"),
+	})
+
+	evt, err := sess.SendMessage(ctx, "#general", "hello")
+	require.NoError(t, err)
+
+	replies, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{protocol.FromMessage(evt.Message)})
+	require.NoError(t, err)
+
+	require.Equal(t, 2, calls)
+	require.Equal(t, []domain.ModelReplyEvent{
+		{
+			Channel:  "#general",
+			Instance: "botty",
+			Message: domain.Message{
+				ID:      fmt.Sprintf("%d~botty~0", fixedTime.UnixNano()),
+				Channel: "#general",
+				From:    "botty",
+				Body:    "clean reply",
+				SentAt:  fixedTime,
+			},
+			At: fixedTime,
+		},
+	}, replies)
+}
+
+func TestSession_DispatchToChannel_drops_reply_after_max_retries(t *testing.T) {
+	calls := 0
+	fake := &fakeAPIClient{
+		sendEventsFn: func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			calls++
+			return protocol.Reply("always\nmultiline"), nil
+		},
+	}
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: set.NewOrdered[domain.ChannelName]("#general"),
+	})
+
+	evt, err := sess.SendMessage(ctx, "#general", "hello")
+	require.NoError(t, err)
+
+	replies, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{protocol.FromMessage(evt.Message)})
+	require.NoError(t, err)
+
+	require.Equal(t, 3, calls)
+	require.Empty(t, replies)
+
+	msgs, err := s.ListMessages(ctx, "#general")
+	require.NoError(t, err)
+	require.Equal(t, []domain.Message{evt.Message}, msgs)
+}
+
+func TestSession_DispatchToChannel_accepts_single_line_reply(t *testing.T) {
+	fake := &fakeAPIClient{
+		sendEventsFn: func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			return protocol.Reply("no newlines here"), nil
+		},
+	}
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: set.NewOrdered[domain.ChannelName]("#general"),
+	})
+
+	evt, err := sess.SendMessage(ctx, "#general", "hello")
+	require.NoError(t, err)
+
+	replies, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{protocol.FromMessage(evt.Message)})
+	require.NoError(t, err)
+
+	require.Equal(t, []domain.ModelReplyEvent{
+		{
+			Channel:  "#general",
+			Instance: "botty",
+			Message: domain.Message{
+				ID:      fmt.Sprintf("%d~botty~0", fixedTime.UnixNano()),
+				Channel: "#general",
+				From:    "botty",
+				Body:    "no newlines here",
+				SentAt:  fixedTime,
+			},
+			At: fixedTime,
+		},
+	}, replies)
+}
+
 func seedChannelWithMembers(t *testing.T, s *storemod.FileStore, name domain.ChannelName, members ...domain.Nick) {
 	t.Helper()
 

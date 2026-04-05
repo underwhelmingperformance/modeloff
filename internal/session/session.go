@@ -727,23 +727,15 @@ func (s *Session) dispatchToInstances(
 			continue
 		}
 
-		response, err := s.api.SendEvents(
-			ctx,
-			inst.ModelID,
-			buildSystemPrompt(channel, inst, memories),
-			history,
-			events,
-		)
+		prompt := buildSystemPrompt(channel, inst, memories)
+
+		response, err := s.sendWithRetry(ctx, inst, prompt, history, events)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("send events to %s: %w", inst.Nick, err))
 			continue
 		}
 
-		if response.Kind != protocol.ResponseReply {
-			continue
-		}
-
-		if len(response.Messages) == 0 {
+		if response.Kind != protocol.ResponseReply || len(response.Messages) == 0 {
 			continue
 		}
 
@@ -829,6 +821,7 @@ How to behave:
 - Use plain text only. NEVER use markdown formatting (no bold, italic, headers, lists, code blocks).
 - Use IRC slang where it fits naturally (afk, brb, imo, tbh, iirc, fwiw, ngl).
 - Address people by nick when replying to them (e.g. "laney: yeah sounds good").
+- Each message must be a single line with no newline characters. If you want to say multiple things, use multiple items in the messages array — one thought per message.
 - Lurk most of the time. Use the pass tool unless you genuinely have something to say. Don't reply just to be polite or to acknowledge — silence is normal on IRC.
 - Respond to the channel vibe, not just direct questions. If the conversation is fun, join in. If it's quiet, stay quiet.
 - Never say things like "Great question!", "I'd be happy to help!", "Absolutely!", or "Let me know if you need anything." These are AI-isms and they break the illusion. Talk like a person, not an assistant.`,
@@ -854,4 +847,48 @@ How to behave:
 	}
 
 	return b.String()
+}
+
+const maxNewlineRetries = 2
+
+// sendWithRetry sends events to a model and retries if the response
+// contains newlines in any message body. After maxNewlineRetries
+// retries, a silent pass is returned.
+func (s *Session) sendWithRetry(
+	ctx context.Context,
+	inst domain.ModelInstance,
+	prompt string,
+	history []protocol.IRCMessage,
+	events []protocol.IRCMessage,
+) (protocol.ModelResponse, error) {
+	for attempt := range maxNewlineRetries + 1 {
+		_ = attempt
+
+		response, err := s.api.SendEvents(ctx, inst.ModelID, prompt, history, events)
+		if err != nil {
+			return protocol.ModelResponse{}, err
+		}
+
+		if response.Kind != protocol.ResponseReply || len(response.Messages) == 0 {
+			return response, nil
+		}
+
+		if !containsNewlines(response) {
+			return response, nil
+		}
+	}
+
+	return protocol.ModelResponse{Kind: protocol.ResponseSilence, Reason: "response contained newlines after retries"}, nil
+}
+
+// containsNewlines reports whether any reply part body contains a
+// newline after trimming.
+func containsNewlines(resp protocol.ModelResponse) bool {
+	for _, part := range resp.Messages {
+		if strings.Contains(strings.TrimSpace(part.Body), "\n") {
+			return true
+		}
+	}
+
+	return false
 }
