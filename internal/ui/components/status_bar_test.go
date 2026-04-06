@@ -77,7 +77,7 @@ func TestStatusBar_renders_rhs_summary_when_space_allows(t *testing.T) {
 		ID:       "metrics",
 		Side:     ui.StatusSideRight,
 		Priority: 100,
-		Full:     "req 4  in 12  out 8  cost 0.2500",
+		Full:     "req 4  in 12  out 8  cache 5/2  cost 0.2500",
 	}}))
 
 	require.Contains(t, got, "^C quit")
@@ -115,8 +115,8 @@ func TestStatusBar_compacts_lower_priority_status_first(t *testing.T) {
 			ID:       "metrics",
 			Side:     ui.StatusSideRight,
 			Priority: 100,
-			Full:     "req 44  in 120  out 80  cost 0.2500",
-			Compact:  "120/80  0.2500",
+			Full:     "req 44  in 120  out 80  cache 10/4  cost 0.2500",
+			Compact:  "120/80  c10/4  0.2500",
 		},
 		{
 			ID:       "obs",

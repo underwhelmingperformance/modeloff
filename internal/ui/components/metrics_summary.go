@@ -64,16 +64,20 @@ func (m MetricsSummaryModel) StatusItems() []ui.StatusItem {
 		Side:     ui.StatusSideRight,
 		Priority: 100,
 		Full: fmt.Sprintf(
-			"req %d  in %d  out %d  cost %.4f",
+			"req %d  in %d  out %d  cache %d/%d  cost %.4f",
 			m.snapshot.Summary.Requests,
 			m.snapshot.Summary.PromptTokens,
 			m.snapshot.Summary.CompletionTokens,
+			m.snapshot.Summary.CachedTokens,
+			m.snapshot.Summary.CacheWriteTokens,
 			m.snapshot.Summary.CostCredits,
 		),
 		Compact: fmt.Sprintf(
-			"in %d  out %d  %.4f",
+			"in %d  out %d  c %d/%d  %.4f",
 			m.snapshot.Summary.PromptTokens,
 			m.snapshot.Summary.CompletionTokens,
+			m.snapshot.Summary.CachedTokens,
+			m.snapshot.Summary.CacheWriteTokens,
 			m.snapshot.Summary.CostCredits,
 		),
 	}}

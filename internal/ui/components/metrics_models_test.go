@@ -20,6 +20,8 @@ func TestMetricsSummaryModel_statusItems(t *testing.T) {
 				Requests:         4,
 				PromptTokens:     12,
 				CompletionTokens: 8,
+				CachedTokens:     5,
+				CacheWriteTokens: 2,
 				CostCredits:      0.25,
 			},
 		},
@@ -31,8 +33,8 @@ func TestMetricsSummaryModel_statusItems(t *testing.T) {
 		ID:       "metrics-summary",
 		Side:     ui.StatusSideRight,
 		Priority: 100,
-		Full:     "req 4  in 12  out 8  cost 0.2500",
-		Compact:  "in 12  out 8  0.2500",
+		Full:     "req 4  in 12  out 8  cache 5/2  cost 0.2500",
+		Compact:  "in 12  out 8  c 5/2  0.2500",
 	}}, model.StatusItems())
 }
 
@@ -47,6 +49,7 @@ func TestMetricsPane_view_renders_snapshot(t *testing.T) {
 				TotalTokens:      18,
 				ReasoningTokens:  3,
 				CachedTokens:     5,
+				CacheWriteTokens: 2,
 				CostCredits:      1.25,
 			},
 			Models: []observability.ModelUsageSnapshot{{
@@ -57,6 +60,7 @@ func TestMetricsPane_view_renders_snapshot(t *testing.T) {
 				TotalTokens:      18,
 				ReasoningTokens:  3,
 				CachedTokens:     5,
+				CacheWriteTokens: 2,
 				CostCredits:      1.25,
 			}},
 			Operations: []observability.OperationTimingSnapshot{{
@@ -73,6 +77,7 @@ func TestMetricsPane_view_renders_snapshot(t *testing.T) {
 
 	view := model.View(80, 12)
 	require.Contains(t, view, "req 2  in 11  out 7")
+	require.Contains(t, view, "cached 5  wrote 2")
 	require.Contains(t, view, "anthropic/claude-3-haiku")
 	require.Contains(t, view, "session.send_message")
 }

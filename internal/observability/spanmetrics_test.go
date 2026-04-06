@@ -25,6 +25,7 @@ func TestRuntime_snapshotMetrics_includes_span_derived_usage(t *testing.T) {
 		attribute.Int64(AttrCompletionTokens, 13),
 		attribute.Int64(AttrReasoningTokens, 5),
 		attribute.Int64(AttrCachedTokens, 8),
+		attribute.Int64(AttrCacheWriteTokens, 3),
 		attribute.Float64(AttrCostCredits, 0.75),
 	)
 	span.End()
@@ -38,6 +39,7 @@ func TestRuntime_snapshotMetrics_includes_span_derived_usage(t *testing.T) {
 	require.Equal(t, int64(34), snapshot.Summary.TotalTokens)
 	require.Equal(t, int64(5), snapshot.Summary.ReasoningTokens)
 	require.Equal(t, int64(8), snapshot.Summary.CachedTokens)
+	require.Equal(t, int64(3), snapshot.Summary.CacheWriteTokens)
 	require.Equal(t, 0.75, snapshot.Summary.CostCredits)
 	require.Len(t, snapshot.Models, 1)
 	require.Equal(t, "anthropic/claude-3-haiku", snapshot.Models[0].ModelID)

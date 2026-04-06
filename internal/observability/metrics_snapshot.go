@@ -19,6 +19,7 @@ type MetricsSummary struct {
 	TotalTokens      int64
 	ReasoningTokens  int64
 	CachedTokens     int64
+	CacheWriteTokens int64
 	CostCredits      float64
 }
 
@@ -31,6 +32,7 @@ type ModelUsageSnapshot struct {
 	TotalTokens      int64
 	ReasoningTokens  int64
 	CachedTokens     int64
+	CacheWriteTokens int64
 	CostCredits      float64
 }
 
@@ -130,6 +132,9 @@ func consumeInt64Sum(snapshot *MetricsSnapshot, models map[string]*ModelUsageSna
 		case MetricCachedTokens:
 			snapshot.Summary.CachedTokens += point.Value
 			model.CachedTokens += point.Value
+		case MetricCacheWriteTokens:
+			snapshot.Summary.CacheWriteTokens += point.Value
+			model.CacheWriteTokens += point.Value
 		}
 	}
 }

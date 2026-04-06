@@ -95,13 +95,14 @@ func renderMetricsSnapshot(snapshot observability.MetricsSnapshot, width int) []
 	wrap := lipgloss.NewStyle().Width(width)
 	lines := []string{
 		wrap.Render(fmt.Sprintf(
-			"req %d  in %d  out %d  total %d  reasoning %d  cached %d  cost %.4f",
+			"req %d  in %d  out %d  total %d  reasoning %d  cached %d  wrote %d  cost %.4f",
 			snapshot.Summary.Requests,
 			snapshot.Summary.PromptTokens,
 			snapshot.Summary.CompletionTokens,
 			snapshot.Summary.TotalTokens,
 			snapshot.Summary.ReasoningTokens,
 			snapshot.Summary.CachedTokens,
+			snapshot.Summary.CacheWriteTokens,
 			snapshot.Summary.CostCredits,
 		)),
 		"",
@@ -110,13 +111,14 @@ func renderMetricsSnapshot(snapshot observability.MetricsSnapshot, width int) []
 
 	for _, model := range snapshot.Models {
 		lines = append(lines, wrap.Render(fmt.Sprintf(
-			"%s  req %d  in %d  out %d  reasoning %d  cached %d  cost %.4f",
+			"%s  req %d  in %d  out %d  reasoning %d  cached %d  wrote %d  cost %.4f",
 			model.ModelID,
 			model.Requests,
 			model.PromptTokens,
 			model.CompletionTokens,
 			model.ReasoningTokens,
 			model.CachedTokens,
+			model.CacheWriteTokens,
 			model.CostCredits,
 		)))
 	}

@@ -38,6 +38,10 @@ func TestSnapshotFromResourceMetrics_summarises_usage_and_timings(t *testing.T) 
 					Data: metricdata.Sum[int64]{DataPoints: []metricdata.DataPoint[int64]{{Attributes: modelAttrs, Value: 5}}},
 				},
 				{
+					Name: MetricCacheWriteTokens,
+					Data: metricdata.Sum[int64]{DataPoints: []metricdata.DataPoint[int64]{{Attributes: modelAttrs, Value: 2}}},
+				},
+				{
 					Name: MetricCostCredits,
 					Data: metricdata.Sum[float64]{DataPoints: []metricdata.DataPoint[float64]{{Attributes: modelAttrs, Value: 1.25}}},
 				},
@@ -67,6 +71,7 @@ func TestSnapshotFromResourceMetrics_summarises_usage_and_timings(t *testing.T) 
 		TotalTokens:      18,
 		ReasoningTokens:  3,
 		CachedTokens:     5,
+		CacheWriteTokens: 2,
 		CostCredits:      1.25,
 	}, snapshot.Summary)
 	require.Len(t, snapshot.Models, 1)
@@ -78,6 +83,7 @@ func TestSnapshotFromResourceMetrics_summarises_usage_and_timings(t *testing.T) 
 		TotalTokens:      18,
 		ReasoningTokens:  3,
 		CachedTokens:     5,
+		CacheWriteTokens: 2,
 		CostCredits:      1.25,
 	}, snapshot.Models[0])
 	require.Equal(t, []OperationTimingSnapshot{{

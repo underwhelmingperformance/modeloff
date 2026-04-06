@@ -220,7 +220,7 @@ func (c *OpenRouterClient) SendEvents(
 
 	msgs := buildMessages(systemPrompt, history, events)
 
-	resp, rawResp, err := c.chatCompletion(ctx, openai.ChatCompletionNewParams{ //nolint:bodyclose // SDK reads and closes the body.
+	resp, rawResp, err := c.chatCompletion(ctx, modelID, openai.ChatCompletionNewParams{ //nolint:bodyclose // SDK reads and closes the body.
 		Model:          shared.ChatModel(string(modelID)),
 		Messages:       msgs,
 		Tools:          memoryTools(),
@@ -286,7 +286,7 @@ func (c *OpenRouterClient) ContinueWithToolResults(
 		msgs = append(msgs, openai.ToolMessage(r.Content, r.ToolCallID))
 	}
 
-	resp, rawResp, err := c.chatCompletion(ctx, openai.ChatCompletionNewParams{ //nolint:bodyclose // SDK reads and closes the body.
+	resp, rawResp, err := c.chatCompletion(ctx, conv.modelID, openai.ChatCompletionNewParams{ //nolint:bodyclose // SDK reads and closes the body.
 		Model:          shared.ChatModel(string(conv.modelID)),
 		Messages:       msgs,
 		Tools:          memoryTools(),
@@ -540,7 +540,7 @@ func (c *OpenRouterClient) GenerateNick(ctx context.Context, nickModel domain.Mo
 		string(modelID),
 	)
 
-	resp, rawResp, err := c.chatCompletion(ctx, openai.ChatCompletionNewParams{ //nolint:bodyclose // SDK reads and closes the body.
+	resp, rawResp, err := c.chatCompletion(ctx, nickModel, openai.ChatCompletionNewParams{ //nolint:bodyclose // SDK reads and closes the body.
 		Model: shared.ChatModel(string(nickModel)),
 		Messages: []openai.ChatCompletionMessageParamUnion{
 			openai.UserMessage(prompt),
@@ -616,20 +616,33 @@ func sanitizeNick(raw string) string {
 
 func (c *OpenRouterClient) chatCompletion(
 	ctx context.Context,
+	modelID domain.ModelID,
 	payload openai.ChatCompletionNewParams,
 ) (*openai.ChatCompletion, *http.Response, error) {
 	var rawResp *http.Response
 
+	opts := []option.RequestOption{
+		option.WithResponseInto(&rawResp),
+	}
+
+	if isAnthropicModel(modelID) {
+		opts = append(opts, option.WithJSONSet("cache_control", map[string]string{"type": "ephemeral"}))
+	}
+
 	completion, err := c.oai.Chat.Completions.New(
 		ctx,
 		payload,
-		option.WithResponseInto(&rawResp),
+		opts...,
 	)
 	if err != nil {
 		return nil, rawResp, fmt.Errorf("chat completion: %w", err)
 	}
 
 	return completion, rawResp, nil
+}
+
+func isAnthropicModel(modelID domain.ModelID) bool {
+	return strings.HasPrefix(string(modelID), "anthropic/")
 }
 
 func requestIDFromChatCompletion(resp *openai.ChatCompletion, rawResp *http.Response) string {
