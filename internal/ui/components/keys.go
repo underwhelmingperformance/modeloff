@@ -22,7 +22,7 @@ var DefaultSidebarKeyMap = SidebarKeyMap{
 	),
 	Select: key.NewBinding(
 		key.WithKeys("ctrl+o"),
-		key.WithHelp("^O", "switch"),
+		key.WithHelp("^O", "switch channel"),
 	),
 }
 

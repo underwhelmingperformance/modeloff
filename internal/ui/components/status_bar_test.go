@@ -13,7 +13,7 @@ import (
 func TestStatusBar_abbreviates_at_narrow_width(t *testing.T) {
 	bindings := []key.Binding{
 		key.NewBinding(key.WithKeys("ctrl+d", "ctrl+u"), key.WithHelp("^D/U", "channels")),
-		key.NewBinding(key.WithKeys("ctrl+o"), key.WithHelp("^O", "switch")),
+		key.NewBinding(key.WithKeys("ctrl+o"), key.WithHelp("^O", "switch channel")),
 		key.NewBinding(key.WithKeys("ctrl+n"), key.WithHelp("^N", "nicks")),
 		key.NewBinding(key.WithKeys("pgup", "pgdown"), key.WithHelp("PgUp/Dn", "scroll")),
 		key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("^C", "quit")),
@@ -88,7 +88,7 @@ func TestStatusBar_renders_rhs_summary_when_space_allows(t *testing.T) {
 func TestStatusBar_preserves_rhs_by_shortening_key_help(t *testing.T) {
 	got := ansi.Strip(RenderStatusBar(80, []key.Binding{
 		key.NewBinding(key.WithKeys("ctrl+d", "ctrl+u"), key.WithHelp("^D/U", "channels")),
-		key.NewBinding(key.WithKeys("ctrl+o"), key.WithHelp("^O", "switch")),
+		key.NewBinding(key.WithKeys("ctrl+o"), key.WithHelp("^O", "switch channel")),
 		key.NewBinding(key.WithKeys("ctrl+l"), key.WithHelp("^L", "logs")),
 		key.NewBinding(key.WithKeys("pgup", "pgdown"), key.WithHelp("PgUp/Dn", "scroll")),
 		key.NewBinding(key.WithKeys("ctrl+up", "ctrl+down"), key.WithHelp("^↑/↓", "scroll")),
