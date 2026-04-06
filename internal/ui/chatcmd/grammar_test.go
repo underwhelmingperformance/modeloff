@@ -117,11 +117,14 @@ func TestComplete_whois_suggests_all_instances(t *testing.T) {
 	require.Equal(t, []string{"haiku", "sonnet"}, suggestionValues(c))
 }
 
-func TestComplete_config_suggests_keys(t *testing.T) {
+func TestComplete_config_suggests_subcommands(t *testing.T) {
 	c := complete(t, "/config ")
 
 	require.True(t, c.Visible)
-	require.Equal(t, []string{"api-key", "nick-model", "poke-interval", "highlight"}, suggestionValues(c))
+	require.Equal(t, []string{
+		"api-key", "base-url", "poke-interval",
+		"nick-model", "embedding-model", "highlight",
+	}, suggestionValues(c))
 }
 
 func TestComplete_config_poke_interval_suggests_durations(t *testing.T) {

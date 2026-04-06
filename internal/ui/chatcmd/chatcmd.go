@@ -77,6 +77,17 @@ type HighlightWordsSetResult struct {
 	Words []string
 }
 
+// BaseURLSetResult signals that the API base URL was updated.
+type BaseURLSetResult struct {
+	URL string
+}
+
+// EmbeddingModelSetResult signals that the embedding model was
+// updated.
+type EmbeddingModelSetResult struct {
+	ModelID domain.ModelID
+}
+
 func errorEvent(operation string, err error) domain.ErrorEvent {
 	return domain.ErrorEvent{Operation: operation, Err: err, At: time.Now()}
 }

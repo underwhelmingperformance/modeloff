@@ -780,6 +780,57 @@ func (s *Session) SetHighlightWords(_ context.Context, words []string) (config.C
 	return cfg, nil
 }
 
+// SetBaseURL persists a new API base URL through the config store
+// and rebuilds the API client so it takes effect immediately.
+func (s *Session) SetBaseURL(_ context.Context, baseURL string) (config.Config, error) {
+	if s.config == nil {
+		return config.Config{}, fmt.Errorf("config store not configured")
+	}
+
+	cfg, err := s.config.Load()
+	if err != nil {
+		return config.Config{}, fmt.Errorf("load config: %w", err)
+	}
+
+	cfg.BaseURL = strings.TrimSpace(baseURL)
+
+	if s.factory != nil && s.apiKey != "" {
+		client, err := s.factory(cfg)
+		if err != nil {
+			return config.Config{}, fmt.Errorf("build api client: %w", err)
+		}
+
+		s.api = client
+	}
+
+	if err := s.config.Save(cfg); err != nil {
+		return config.Config{}, fmt.Errorf("save config: %w", err)
+	}
+
+	return cfg, nil
+}
+
+// SetEmbeddingModel persists a new embedding model through the
+// config store.
+func (s *Session) SetEmbeddingModel(_ context.Context, modelID domain.ModelID) (config.Config, error) {
+	if s.config == nil {
+		return config.Config{}, fmt.Errorf("config store not configured")
+	}
+
+	cfg, err := s.config.Load()
+	if err != nil {
+		return config.Config{}, fmt.Errorf("load config: %w", err)
+	}
+
+	cfg.EmbeddingModel = modelID
+
+	if err := s.config.Save(cfg); err != nil {
+		return config.Config{}, fmt.Errorf("save config: %w", err)
+	}
+
+	return cfg, nil
+}
+
 func (s *Session) dispatchToInstances(
 	ctx context.Context,
 	channelName domain.ChannelName,

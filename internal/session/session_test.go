@@ -1398,6 +1398,54 @@ func TestSession_SetHighlightWords(t *testing.T) {
 	require.Equal(t, 1, cfgStore.saveCalls)
 }
 
+func TestSession_SetBaseURL(t *testing.T) {
+	cfgStore := &fakeConfigStore{
+		cfg: config.Config{
+			APIKey:   "test-key",
+			UserNick: "testuser",
+		},
+	}
+	s := storemod.NewFileStore(t.TempDir())
+
+	var factoryCfg config.Config
+	factoryCalls := 0
+	newClient := &fakeAPIClient{}
+
+	sess := New(s, nil, &fakeAPIClient{}, cfgStore, "testuser")
+	sess.SetAPIFactory(func(cfg config.Config) (api.Client, error) {
+		factoryCalls++
+		factoryCfg = cfg
+		return newClient, nil
+	})
+
+	cfg, err := sess.SetBaseURL(t.Context(), "https://custom.example.com")
+	require.NoError(t, err)
+	require.Equal(t, "https://custom.example.com", cfg.BaseURL)
+	require.Equal(t, "https://custom.example.com", cfgStore.saved.BaseURL)
+	require.Equal(t, "test-key", cfgStore.saved.APIKey)
+	require.Equal(t, 1, cfgStore.saveCalls)
+	require.Equal(t, 1, factoryCalls)
+	require.Equal(t, "https://custom.example.com", factoryCfg.BaseURL)
+}
+
+func TestSession_SetEmbeddingModel(t *testing.T) {
+	cfgStore := &fakeConfigStore{
+		cfg: config.Config{
+			APIKey:   "test-key",
+			UserNick: "testuser",
+		},
+	}
+	s := storemod.NewFileStore(t.TempDir())
+	sess := New(s, nil, &fakeAPIClient{}, cfgStore, "testuser")
+
+	cfg, err := sess.SetEmbeddingModel(t.Context(), "openai/text-embedding-3-large")
+	require.NoError(t, err)
+	require.Equal(t, domain.ModelID("openai/text-embedding-3-large"), cfg.EmbeddingModel)
+	require.Equal(t, domain.ModelID("openai/text-embedding-3-large"), cfgStore.saved.EmbeddingModel)
+	require.Equal(t, "test-key", cfgStore.saved.APIKey)
+	require.Equal(t, 1, cfgStore.saveCalls)
+}
+
 func TestSession_DispatchToChannel_filters_history_before_join(t *testing.T) {
 	beforeJoin := fixedTime.Add(-10 * time.Minute)
 	atJoin := fixedTime

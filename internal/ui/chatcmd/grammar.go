@@ -60,26 +60,7 @@ func BuildParser(src Sources) Parser {
 		Whois: WhoisCommand{
 			nickSource: instancesSource,
 		},
-		Config: ConfigCommand{
-			keySource: command.LiteralSource(
-				command.Suggestion{Value: "api-key", Label: "api-key", Detail: "Activate OpenRouter immediately."},
-				command.Suggestion{Value: "nick-model", Label: "nick-model", Detail: "Set the model used to generate nicknames."},
-				command.Suggestion{Value: "poke-interval", Label: "poke-interval", Detail: "Set the background poke cadence."},
-				command.Suggestion{Value: "highlight", Label: "highlight", Detail: "Set words that trigger visual highlighting."},
-			),
-			valueSource: func(state command.InvocationState) []command.Suggestion {
-				if len(state.Args) == 0 || state.Args[0] != "poke-interval" {
-					return nil
-				}
-
-				return []command.Suggestion{
-					{Value: "5m", Label: "5m", Detail: "Fast poke cadence"},
-					{Value: "10m", Label: "10m", Detail: "Balanced poke cadence"},
-					{Value: "30m", Label: "30m", Detail: "Quiet channels"},
-					{Value: "1h", Label: "1h", Detail: "Very low activity"},
-				}
-			},
-		},
+		Config: ConfigCommand{},
 	}
 
 	return command.BuildParser[Context, tea.Cmd](grammar)

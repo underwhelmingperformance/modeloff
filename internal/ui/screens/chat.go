@@ -223,6 +223,12 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 			}),
 		)
 
+	case chatcmd.BaseURLSetResult:
+		return s, msgCmd(components.ConfigChanged{Operation: fmt.Sprintf("base URL set to %s", msg.URL)})
+
+	case chatcmd.EmbeddingModelSetResult:
+		return s, msgCmd(components.ConfigChanged{Operation: fmt.Sprintf("embedding model set to %s", msg.ModelID)})
+
 	case domain.JoinEvent:
 		return s.handleJoinEvent(msg)
 

@@ -160,7 +160,7 @@ func TestApp_config_commands_with_teatest(t *testing.T) {
 	tm.WaitFor("#general")
 
 	tm.Submit("/config")
-	tm.WaitFor("usage: /config api-key", "poke-interval")
+	tm.WaitFor("/config requires a subcommand")
 
 	tm.Submit("/config api-key test-key")
 	tm.WaitFor("OpenRouter API key saved and activated.")
@@ -169,7 +169,7 @@ func TestApp_config_commands_with_teatest(t *testing.T) {
 	tm.WaitFor("Poke interval set to 10m0s.")
 
 	tm.Submit("/config nonsense")
-	tm.WaitFor("unknown config key: nonsense")
+	tm.WaitFor("unknown subcommand")
 
 	tm.Submit("/config poke-interval nope")
 	tm.WaitFor("invalid duration")
@@ -299,7 +299,11 @@ func TestApp_input_history_and_sidebar_shortcuts_with_teatest(t *testing.T) {
 
 	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlU})
 	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlO})
-	tm.WaitFor("#general", "draft-only")
+	tm.WaitFor("testuser has joined #general")
+
+	view := ansi.Strip(tm.CurrentView())
+	require.Contains(t, view, "#general")
+	require.Contains(t, view, "draft-only")
 }
 
 func TestApp_ctrl_arrow_scroll_preserves_draft_with_teatest(t *testing.T) {

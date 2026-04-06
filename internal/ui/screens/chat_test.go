@@ -258,11 +258,11 @@ func TestChatScreen_kick_command(t *testing.T) {
 	tm.WaitFor("fakenick has been kicked from #general")
 }
 
-func TestChatScreen_config_usage(t *testing.T) {
+func TestChatScreen_config_no_subcommand(t *testing.T) {
 	tm, _ := newChatAppInChannel(t, "#general")
 
 	tm.Submit("/config")
-	tm.WaitFor("usage: /config api-key <value>", "poke-interval")
+	tm.WaitFor("/config requires a subcommand")
 }
 
 func TestChatScreen_config_set_api_key(t *testing.T) {
@@ -324,7 +324,7 @@ func TestChatScreen_config_invalid_subcommand(t *testing.T) {
 	tm, _ := newChatAppInChannel(t, "#general")
 
 	tm.Submit("/config nonsense")
-	tm.WaitFor("unknown config key: nonsense")
+	tm.WaitFor("unknown subcommand")
 }
 
 func TestChatScreen_config_invalid_duration(t *testing.T) {

@@ -293,90 +293,131 @@ type QuitCommand struct{}
 // Run implements Command.
 func (QuitCommand) Run(_ Context) tea.Cmd { return tea.Quit }
 
-// ConfigCommand represents `/config`.
+// ConfigCommand is a group node whose children are the individual
+// config keys. Each subcommand has its own args and Run method.
 type ConfigCommand struct {
-	Key         string   `arg:"" optional:"" help:"Choose a config key."`
-	Value       []string `arg:"" optional:"" help:"Values are free-form after the key."`
-	keySource   command.SuggestionSource
-	valueSource command.SuggestionSource
+	APIKey         APIKeyConfig         `cmd:"" name:"api-key" help:"Activate OpenRouter immediately."`
+	BaseURL        BaseURLConfig        `cmd:"" name:"base-url" help:"Set the API base URL."`
+	PokeInterval   PokeIntervalConfig   `cmd:"" name:"poke-interval" help:"Set the background poke cadence."`
+	NickModel      NickModelConfig      `cmd:"" name:"nick-model" help:"Set the model used to generate nicknames."`
+	EmbeddingModel EmbeddingModelConfig `cmd:"" name:"embedding-model" help:"Set the embedding model."`
+	Highlight      HighlightConfig      `cmd:"" help:"Set words that trigger visual highlighting."`
+}
+
+// APIKeyConfig represents `/config api-key <value>`.
+type APIKeyConfig struct {
+	Value string `arg:"" help:"OpenRouter API key"`
+}
+
+// Run implements Command.
+func (c APIKeyConfig) Run(rc Context) tea.Cmd {
+	return func() tea.Msg {
+		if _, err := rc.Session.SetAPIKey(rc.Ctx, c.Value); err != nil {
+			return errorEvent("config api-key", err)
+		}
+
+		return APIKeySetResult{}
+	}
+}
+
+// BaseURLConfig represents `/config base-url <url>`.
+type BaseURLConfig struct {
+	URL string `arg:"" help:"API base URL"`
+}
+
+// Run implements Command.
+func (c BaseURLConfig) Run(rc Context) tea.Cmd {
+	return func() tea.Msg {
+		if _, err := rc.Session.SetBaseURL(rc.Ctx, c.URL); err != nil {
+			return errorEvent("config base-url", err)
+		}
+
+		return BaseURLSetResult(c)
+	}
+}
+
+// PokeIntervalConfig represents `/config poke-interval <duration>`.
+type PokeIntervalConfig struct {
+	Duration string `arg:"" help:"Poke interval (e.g. 5m, 1h)"`
 }
 
 // Sources implements command.Completer.
-func (c ConfigCommand) Sources() map[string]command.SuggestionSource {
+func (PokeIntervalConfig) Sources() map[string]command.SuggestionSource {
 	return map[string]command.SuggestionSource{
-		"key":   c.keySource,
-		"value": c.valueSource,
+		"duration": command.LiteralSource(
+			command.Suggestion{Value: "5m", Label: "5m", Detail: "Fast poke cadence"},
+			command.Suggestion{Value: "10m", Label: "10m", Detail: "Balanced poke cadence"},
+			command.Suggestion{Value: "30m", Label: "30m", Detail: "Quiet channels"},
+			command.Suggestion{Value: "1h", Label: "1h", Detail: "Very low activity"},
+		),
 	}
 }
 
 // Run implements Command.
-func (c ConfigCommand) Run(rc Context) tea.Cmd {
+func (c PokeIntervalConfig) Run(rc Context) tea.Cmd {
 	return func() tea.Msg {
-		switch c.Key {
-		case "":
-			return UsageError{
-				Command: "config",
-				Usage:   "/config api-key <value> | /config nick-model <model-id> | /config poke-interval <duration>",
-			}
-
-		case "api-key":
-			value := strings.TrimSpace(strings.Join(c.Value, " "))
-			if value == "" {
-				return UsageError{Command: "config api-key", Usage: "/config api-key <value>"}
-			}
-
-			if _, err := rc.Session.SetAPIKey(rc.Ctx, value); err != nil {
-				return errorEvent("config api-key", err)
-			}
-
-			return APIKeySetResult{}
-
-		case "poke-interval":
-			value := strings.TrimSpace(strings.Join(c.Value, " "))
-			if value == "" {
-				return UsageError{Command: "config poke-interval", Usage: "/config poke-interval <duration>"}
-			}
-
-			interval, err := time.ParseDuration(value)
-			if err != nil {
-				return errorEvent("config poke-interval", domain.InvalidDurationError{
-					Input: value,
-					Err:   err,
-				})
-			}
-
-			if _, err := rc.Session.SetPokeInterval(rc.Ctx, interval); err != nil {
-				return errorEvent("config poke-interval", err)
-			}
-
-			return PokeIntervalSetResult{Interval: interval}
-
-		case "nick-model":
-			value := strings.TrimSpace(strings.Join(c.Value, " "))
-			if value == "" {
-				return UsageError{Command: "config nick-model", Usage: "/config nick-model <model-id>"}
-			}
-
-			modelID := domain.ModelID(value)
-			if _, err := rc.Session.SetNickModel(rc.Ctx, modelID); err != nil {
-				return errorEvent("config nick-model", err)
-			}
-
-			return NickModelSetResult{ModelID: modelID}
-
-		case "highlight":
-			if len(c.Value) == 0 {
-				return UsageError{Command: "config highlight", Usage: "/config highlight <word> [<word>...]"}
-			}
-
-			if _, err := rc.Session.SetHighlightWords(rc.Ctx, c.Value); err != nil {
-				return errorEvent("config highlight", err)
-			}
-
-			return HighlightWordsSetResult{Words: c.Value}
-
-		default:
-			return errorEvent("config", domain.UnknownConfigKeyError{Key: c.Key})
+		interval, err := time.ParseDuration(c.Duration)
+		if err != nil {
+			return errorEvent("config poke-interval", domain.InvalidDurationError{
+				Input: c.Duration,
+				Err:   err,
+			})
 		}
+
+		if _, err := rc.Session.SetPokeInterval(rc.Ctx, interval); err != nil {
+			return errorEvent("config poke-interval", err)
+		}
+
+		return PokeIntervalSetResult{Interval: interval}
+	}
+}
+
+// NickModelConfig represents `/config nick-model <model-id>`.
+type NickModelConfig struct {
+	ModelID string `arg:"" help:"Model ID for nick generation"`
+}
+
+// Run implements Command.
+func (c NickModelConfig) Run(rc Context) tea.Cmd {
+	return func() tea.Msg {
+		modelID := domain.ModelID(c.ModelID)
+		if _, err := rc.Session.SetNickModel(rc.Ctx, modelID); err != nil {
+			return errorEvent("config nick-model", err)
+		}
+
+		return NickModelSetResult{ModelID: modelID}
+	}
+}
+
+// EmbeddingModelConfig represents `/config embedding-model <model-id>`.
+type EmbeddingModelConfig struct {
+	ModelID string `arg:"" help:"Model ID for embeddings"`
+}
+
+// Run implements Command.
+func (c EmbeddingModelConfig) Run(rc Context) tea.Cmd {
+	return func() tea.Msg {
+		modelID := domain.ModelID(c.ModelID)
+		if _, err := rc.Session.SetEmbeddingModel(rc.Ctx, modelID); err != nil {
+			return errorEvent("config embedding-model", err)
+		}
+
+		return EmbeddingModelSetResult{ModelID: modelID}
+	}
+}
+
+// HighlightConfig represents `/config highlight <word> [<word>...]`.
+type HighlightConfig struct {
+	Words []string `arg:"" nargs:"1" help:"Words to highlight"`
+}
+
+// Run implements Command.
+func (c HighlightConfig) Run(rc Context) tea.Cmd {
+	return func() tea.Msg {
+		if _, err := rc.Session.SetHighlightWords(rc.Ctx, c.Words); err != nil {
+			return errorEvent("config highlight", err)
+		}
+
+		return HighlightWordsSetResult(c)
 	}
 }
