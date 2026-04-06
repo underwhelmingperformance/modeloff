@@ -2,7 +2,6 @@ package components
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
@@ -36,6 +35,7 @@ type Sidebar struct {
 	unread   map[domain.ChannelName]int
 	keyMap   SidebarKeyMap
 	bounds   ui.Rect
+	panel    PanelList
 }
 
 // NewSidebar creates a sidebar with the given initial channels and
@@ -47,6 +47,7 @@ func NewSidebar(channels []domain.Channel, active domain.ChannelName, unread map
 		active:   active,
 		unread:   unread,
 		keyMap:   DefaultSidebarKeyMap,
+		panel:    NewPanelList(),
 	}
 
 	return s.syncCursor()
@@ -76,7 +77,9 @@ func (s Sidebar) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		s = s.syncCursor()
 	}
 
-	return s, nil
+	cmd := s.panel.Update(msg)
+
+	return s, cmd
 }
 
 func (s Sidebar) handleKey(msg tea.KeyMsg) (ui.Model, tea.Cmd) {
@@ -110,11 +113,13 @@ func (s Sidebar) handleMouse(msg tea.MouseMsg) (ui.Model, tea.Cmd) {
 	}
 
 	_, localY := s.bounds.Local(msg.X, msg.Y)
-	if localY < 0 || localY >= len(s.channels) {
+	itemIdx := localY + s.panel.YOffset()
+
+	if itemIdx < 0 || itemIdx >= len(s.channels) {
 		return s, nil
 	}
 
-	s.cursor = localY
+	s.cursor = itemIdx
 
 	return s, s.selectCurrent()
 }
@@ -173,19 +178,11 @@ func (s Sidebar) KeyBindings() []key.Binding {
 
 // View implements ui.Model.
 func (s Sidebar) View(width, height int) string {
-	if len(s.channels) == 0 {
-		return lipgloss.Place(width, height,
-			lipgloss.Center, lipgloss.Center,
-			theme.Dim.Render("No channels"))
-	}
+	available := width - PanelPadLeft
 
-	var b strings.Builder
+	items := make([]string, 0, len(s.channels))
 
-	for i, ch := range s.channels {
-		if i >= height {
-			break
-		}
-
+	for _, ch := range s.channels {
 		name := string(ch.Name)
 		isDM := ch.Kind == domain.KindDM
 
@@ -194,54 +191,42 @@ func (s Sidebar) View(width, height int) string {
 		}
 
 		count := s.unread[ch.Name]
-		hasUnread := count > 0
-
-		if hasUnread {
+		if count > 0 {
 			name += fmt.Sprintf(" (%d)", count)
 		}
 
-		line := truncate(name, width)
+		name = truncate(name, available)
 
-		cursorStyle := theme.ChannelName
-		if isDM {
-			cursorStyle = theme.DMName
-		}
+		style := theme.InactiveChannel
 
 		switch {
-		case i == s.cursor && ch.Name == s.active:
-			line = theme.ActiveChannel.Render("▸ " + line)
-		case i == s.cursor:
-			line = cursorStyle.Render("▸ " + line)
 		case ch.Name == s.active:
-			line = theme.ActiveChannel.Render("  " + line)
-		case hasUnread:
-			line = theme.UnreadChannel.Render("  " + line)
-		default:
-			line = theme.InactiveChannel.Render("  " + line)
+			style = theme.ActiveChannel
+		case count > 0:
+			style = theme.UnreadChannel
 		}
 
-		b.WriteString(line)
-
-		if i < len(s.channels)-1 {
-			b.WriteByte('\n')
-		}
+		items = append(items, style.Render(name))
 	}
 
-	return b.String()
+	return s.panel.Render(width, height, PanelContent{
+		Items:  items,
+		Cursor: s.cursor,
+		Empty:  "No channels",
+	})
 }
 
 func truncate(s string, maxWidth int) string {
-	available := maxWidth - 3
-	if available <= 0 {
+	if maxWidth <= 0 {
 		return ""
 	}
 
-	if lipgloss.Width(s) <= available {
+	if lipgloss.Width(s) <= maxWidth {
 		return s
 	}
 
 	runes := []rune(s)
-	for len(runes) > 0 && lipgloss.Width(string(runes)) > available-1 {
+	for len(runes) > 0 && lipgloss.Width(string(runes)) > maxWidth-1 {
 		runes = runes[:len(runes)-1]
 	}
 

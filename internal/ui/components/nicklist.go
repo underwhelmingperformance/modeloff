@@ -4,9 +4,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/ui"
@@ -28,16 +26,14 @@ type NickListThinkingMsg struct {
 type NickList struct {
 	members  []domain.Member
 	thinking map[domain.Nick]bool
-	viewport viewport.Model
+	panel    PanelList
 }
 
 // NewNickList creates a nick list from the given members. The
 // members are copied and sorted by mode (ops first, then voice,
 // then regular) and alphabetically within each group.
 func NewNickList(members []domain.Member) NickList {
-	vp := viewport.New(0, 0)
-
-	nl := NickList{viewport: vp}
+	nl := NickList{panel: NewPanelList()}
 	nl.setMembers(members)
 
 	return nl
@@ -85,32 +81,16 @@ func (n NickList) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		return n, nil
 
 	default:
-		var cmd tea.Cmd
-		n.viewport, cmd = n.viewport.Update(msg)
+		cmd := n.panel.Update(msg)
 		return n, cmd
 	}
 }
 
 // View implements ui.Model.
 func (n NickList) View(width, height int) string {
-	if len(n.members) == 0 {
-		return lipgloss.Place(width, height,
-			lipgloss.Center, lipgloss.Center,
-			theme.Dim.Render("No members"))
-	}
+	items := make([]string, 0, len(n.members))
 
-	header := theme.Dim.Render(lipgloss.PlaceHorizontal(
-		width, lipgloss.Left, theme.Bold.Render("Users")))
-	headerHeight := lipgloss.Height(header)
-
-	listHeight := height - headerHeight
-	if listHeight < 0 {
-		listHeight = 0
-	}
-
-	var b strings.Builder
-
-	for i, member := range n.members {
+	for _, member := range n.members {
 		prefix := member.Mode.Prefix()
 		nick := string(member.Nick)
 		thinking := n.thinking[member.Nick]
@@ -127,17 +107,13 @@ func (n NickList) View(width, height int) string {
 			line += theme.Dim.Render(" …")
 		}
 
-		line = lipgloss.NewStyle().Width(width).Render(line)
-		b.WriteString(line)
-
-		if i < len(n.members)-1 {
-			b.WriteByte('\n')
-		}
+		items = append(items, line)
 	}
 
-	n.viewport.Width = width
-	n.viewport.Height = listHeight
-	n.viewport.SetContent(b.String())
-
-	return lipgloss.JoinVertical(lipgloss.Left, header, n.viewport.View())
+	return n.panel.Render(width, height, PanelContent{
+		Items:  items,
+		Header: "Users",
+		Cursor: -1,
+		Empty:  "No members",
+	})
 }

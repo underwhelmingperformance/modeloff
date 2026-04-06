@@ -128,4 +128,8 @@ var (
 			BorderStyle(lipgloss.NormalBorder()).
 			BorderLeft(true).
 			BorderForeground(colourBrightBlack)
+
+	// CursorHighlight is applied as a background to the cursor
+	// line in panel lists.
+	CursorHighlight = lipgloss.NewStyle().Background(colourBrightBlack)
 )
