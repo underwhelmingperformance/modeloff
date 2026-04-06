@@ -71,14 +71,21 @@ type nodeMeta struct {
 	Help        string
 	Positionals []positionalMeta
 	Flags       []flagMeta
+	Children    []nodeMeta
 }
 
 func toNodeMeta(n *Node) nodeMeta {
+	var children []nodeMeta
+	for _, child := range n.Children {
+		children = append(children, toNodeMeta(child))
+	}
+
 	return nodeMeta{
 		Name:        n.Name,
 		Help:        n.Help,
 		Positionals: toPositionalMeta(n.Positionals),
 		Flags:       toFlagMeta(n.Flags),
+		Children:    children,
 	}
 }
 
@@ -409,4 +416,134 @@ func TestBuild_panics_on_undecodable_field(t *testing.T) {
 	require.Panics(t, func() {
 		Build(grammar)
 	})
+}
+
+// --- Subcommand (recursive build) tests ---
+
+type buildSubGet struct {
+	Key string `arg:"" help:"Key to get"`
+}
+
+type buildSubSet struct {
+	Key   string `arg:"" help:"Key to set"`
+	Value string `arg:"" help:"Value to set"`
+}
+
+type buildSubReset struct{}
+
+type buildConfigGroup struct {
+	Get   buildSubGet   `cmd:"" help:"Get a config value."`
+	Set   buildSubSet   `cmd:"" help:"Set a config value."`
+	Reset buildSubReset `cmd:"" help:"Reset all config."`
+}
+
+type buildSubcommandGrammar struct {
+	Config buildConfigGroup `cmd:"" help:"Manage configuration."`
+	Quit   buildPartCommand `cmd:"" help:"Quit."`
+}
+
+func TestBuild_recursive_subcommands(t *testing.T) {
+	nodes, err := build(&buildSubcommandGrammar{})
+	require.NoError(t, err)
+
+	var metas []nodeMeta
+	for _, n := range nodes {
+		metas = append(metas, toNodeMeta(n))
+	}
+
+	require.Equal(t, []nodeMeta{
+		{
+			Name: "config",
+			Help: "Manage configuration.",
+			Children: []nodeMeta{
+				{
+					Name:        "get",
+					Help:        "Get a config value.",
+					Positionals: []positionalMeta{{Name: "key", Help: "Key to get"}},
+				},
+				{
+					Name: "set",
+					Help: "Set a config value.",
+					Positionals: []positionalMeta{
+						{Name: "key", Help: "Key to set"},
+						{Name: "value", Help: "Value to set"},
+					},
+				},
+				{
+					Name: "reset",
+					Help: "Reset all config.",
+				},
+			},
+		},
+		{
+			Name: "quit",
+			Help: "Quit.",
+		},
+	}, metas)
+}
+
+func TestBuild_group_nodes_have_nil_factory(t *testing.T) {
+	nodes, err := build(&buildSubcommandGrammar{})
+	require.NoError(t, err)
+
+	configNode := nodes[0]
+	require.Nil(t, configNode.factory, "group node should have nil factory")
+
+	for _, child := range configNode.Children {
+		require.NotNil(t, child.factory, "leaf child %q should have a factory", child.Name)
+	}
+
+	require.NotNil(t, nodes[1].factory, "top-level leaf should have a factory")
+}
+
+type buildDeepLeaf struct {
+	Name string `arg:"" help:"Name"`
+}
+
+type buildDeepMid struct {
+	Leaf buildDeepLeaf `cmd:"" help:"A leaf command."`
+}
+
+type buildDeepTop struct {
+	Mid buildDeepMid `cmd:"" help:"Middle level."`
+}
+
+type buildDeepGrammar struct {
+	Top buildDeepTop `cmd:"" help:"Top level."`
+}
+
+func TestBuild_three_level_nesting(t *testing.T) {
+	nodes, err := build(&buildDeepGrammar{})
+	require.NoError(t, err)
+
+	var metas []nodeMeta
+	for _, n := range nodes {
+		metas = append(metas, toNodeMeta(n))
+	}
+
+	require.Equal(t, []nodeMeta{
+		{
+			Name: "top",
+			Help: "Top level.",
+			Children: []nodeMeta{
+				{
+					Name: "mid",
+					Help: "Middle level.",
+					Children: []nodeMeta{
+						{
+							Name:        "leaf",
+							Help:        "A leaf command.",
+							Positionals: []positionalMeta{{Name: "name", Help: "Name"}},
+						},
+					},
+				},
+			},
+		},
+	}, metas)
+
+	// Only the deepest leaf should have a factory.
+	topNode := nodes[0]
+	require.Nil(t, topNode.factory)
+	require.Nil(t, topNode.Children[0].factory)
+	require.NotNil(t, topNode.Children[0].Children[0].factory)
 }

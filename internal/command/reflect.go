@@ -131,11 +131,42 @@ func buildFlags(fields []fieldMeta, sources map[string]SuggestionSource) []Flag 
 	return flags
 }
 
+// hasCmdChildren returns true if the struct type has any exported
+// fields tagged with `cmd:""`, indicating it is a group node whose
+// fields are subcommands rather than arguments.
+func hasCmdChildren(t reflect.Type) bool {
+	if t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+
+	if t.Kind() != reflect.Struct {
+		return false
+	}
+
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+
+		if _, ok := f.Tag.Lookup("cmd"); ok {
+			return true
+		}
+	}
+
+	return false
+}
+
 // build reflects over a grammar struct and produces a slice of
 // Nodes, one per field tagged with `cmd:""`. The grammar must be a
 // pointer to a struct. Name derives from the field name
 // (kebab-cased) or from a `name:""` tag. Help comes from the
 // `help:""` tag.
+//
+// If a `cmd`-tagged field is itself a struct whose fields carry
+// `cmd` tags, the field becomes a group node (no factory) and the
+// inner fields become its children. This recursion works at any
+// depth.
 func build(grammar any) ([]*Node, error) {
 	v := reflect.ValueOf(grammar)
 	if v.Kind() != reflect.Ptr {
@@ -167,8 +198,30 @@ func build(grammar any) ([]*Node, error) {
 		}
 
 		help := ft.Tag.Get("help")
-
 		fieldType := ft.Type
+
+		// If the field type has cmd-tagged children, it is a group
+		// node — recurse to build children instead of treating its
+		// fields as arguments.
+		if hasCmdChildren(fieldType) {
+			childPtr := reflect.New(fieldType).Interface()
+
+			children, err := build(childPtr)
+			if err != nil {
+				return nil, fmt.Errorf("field %s: %w", ft.Name, err)
+			}
+
+			node := &Node{
+				Name:     name,
+				Help:     help,
+				Children: children,
+			}
+
+			nodes = append(nodes, node)
+
+			continue
+		}
+
 		fields, err := resolveFieldMetas(reflect.New(fieldType).Elem().Interface())
 		if err != nil {
 			return nil, fmt.Errorf("field %s: %w", ft.Name, err)

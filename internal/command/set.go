@@ -223,15 +223,65 @@ func Complete(set Set, raw string, cursor int) Completion {
 		}
 	}
 
-	args := make([]string, 0, len(tokens)-1)
-	for _, tok := range tokens[1:] {
+	// Walk into children for group nodes, consuming tokens that
+	// match a child name. Stop when the node is a leaf, or when the
+	// current token is on the child-name position (so we offer child
+	// suggestions instead of recursing past it).
+	argStart := 1 // token index where arguments begin (after command name + subcommands)
+
+	for len(node.Children) > 0 {
+		// If the current token is the next one to consume, we're
+		// still selecting a child — offer child suggestions.
+		if index == argStart {
+			return Completion{
+				Visible:      true,
+				Suggestions:  filterSuggestions(childSuggestions(node), prefix),
+				ReplaceStart: start,
+				ReplaceEnd:   end,
+				AppendSpace:  true,
+			}
+		}
+
+		// A completed token exists at argStart — try to match a child.
+		if argStart >= len(tokens) {
+			break
+		}
+
+		child := node.Find(tokens[argStart].Text)
+		if child == nil {
+			// Unknown subcommand — no suggestions.
+			return Completion{
+				Visible:      true,
+				ReplaceStart: start,
+				ReplaceEnd:   end,
+			}
+		}
+
+		node = child
+		argStart++
+	}
+
+	// If we landed on a group node with no more tokens, offer
+	// child suggestions.
+	if len(node.Children) > 0 {
+		return Completion{
+			Visible:      true,
+			Suggestions:  filterSuggestions(childSuggestions(node), prefix),
+			ReplaceStart: start,
+			ReplaceEnd:   end,
+			AppendSpace:  true,
+		}
+	}
+
+	args := make([]string, 0, len(tokens)-argStart)
+	for _, tok := range tokens[argStart:] {
 		args = append(args, tok.Text)
 	}
 
 	// Classify preceding tokens (everything before the current token)
 	// into flags and positionals so we know the true positional index
 	// and whether we're completing a flag value.
-	preceding := argTokens(tokens, index)
+	preceding := argTokensFrom(tokens, argStart, index)
 	cctx := classifyForCompletion(node, preceding)
 
 	state := InvocationState{
@@ -248,12 +298,6 @@ func Complete(set Set, raw string, cursor int) Completion {
 		ReplaceStart: start,
 		ReplaceEnd:   end,
 		AppendSpace:  true,
-	}
-
-	// Subcommand completion.
-	if len(node.Children) > 0 {
-		completion.Suggestions = filterSuggestions(childSuggestions(node), prefix)
-		return completion
 	}
 
 	// Flag value completion: previous token was a flag name.
@@ -336,21 +380,22 @@ type completionClassification struct {
 	usedFlags          map[string]bool
 }
 
-// argTokens returns the token texts between the command name (index 0)
-// and the current token at index.
-func argTokens(tokens []token, currentIndex int) []string {
-	// tokens[0] is the command name; arguments start at tokens[1].
+// argTokensFrom returns the token texts between startIndex and
+// currentIndex. This generalises argTokens for subcommand parsing
+// where arguments begin after the subcommand token rather than
+// after index 0.
+func argTokensFrom(tokens []token, startIndex, currentIndex int) []string {
 	end := currentIndex
 	if end > len(tokens) {
 		end = len(tokens)
 	}
 
-	if end <= 1 {
+	if end <= startIndex {
 		return nil
 	}
 
-	out := make([]string, 0, end-1)
-	for _, tok := range tokens[1:end] {
+	out := make([]string, 0, end-startIndex)
+	for _, tok := range tokens[startIndex:end] {
 		out = append(out, tok.Text)
 	}
 

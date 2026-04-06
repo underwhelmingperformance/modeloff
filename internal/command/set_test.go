@@ -755,6 +755,157 @@ func TestComplete_flag_only_command(t *testing.T) {
 	}
 }
 
+func TestComplete_subcommand_recurses_into_child(t *testing.T) {
+	cmds := Set{
+		Commands: []*Node{
+			{
+				Name: "config",
+				Help: "Configuration",
+				Children: []*Node{
+					{
+						Name: "set",
+						Help: "Set a value",
+						Positionals: []Positional{
+							{
+								Name: "key",
+								Source: LiteralSource(
+									Suggestion{Value: "api-key", Label: "api-key"},
+									Suggestion{Value: "theme", Label: "theme"},
+								),
+							},
+						},
+					},
+					{Name: "get", Help: "Get a value"},
+					{Name: "reset", Help: "Reset config"},
+				},
+			},
+		},
+	}
+
+	tests := []struct {
+		name  string
+		raw   string
+		wants []string
+	}{
+		{
+			name:  "subcommand names after parent",
+			raw:   "/config ",
+			wants: []string{"set", "get", "reset"},
+		},
+		{
+			name:  "subcommand names filtered",
+			raw:   "/config s",
+			wants: []string{"set", "reset"},
+		},
+		{
+			name:  "child positional after subcommand selected",
+			raw:   "/config set ",
+			wants: []string{"api-key", "theme"},
+		},
+		{
+			name:  "child positional filtered",
+			raw:   "/config set th",
+			wants: []string{"theme"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			completion := Complete(cmds, tt.raw, len([]rune(tt.raw)))
+
+			require.True(t, completion.Visible)
+
+			var names []string
+			for _, s := range completion.Suggestions {
+				names = append(names, s.Value)
+			}
+
+			require.Equal(t, tt.wants, names)
+		})
+	}
+}
+
+func TestComplete_deep_nesting_walks_into_grandchildren(t *testing.T) {
+	cmds := Set{
+		Commands: []*Node{
+			{
+				Name: "admin",
+				Help: "Admin commands",
+				Children: []*Node{
+					{
+						Name: "user",
+						Help: "User management",
+						Children: []*Node{
+							{
+								Name: "ban",
+								Help: "Ban a user",
+								Positionals: []Positional{
+									{
+										Name: "nick",
+										Source: LiteralSource(
+											Suggestion{Value: "alice", Label: "alice"},
+											Suggestion{Value: "bob", Label: "bob"},
+										),
+									},
+								},
+							},
+							{Name: "unban", Help: "Unban a user"},
+						},
+					},
+					{Name: "stats", Help: "Show stats"},
+				},
+			},
+		},
+	}
+
+	tests := []struct {
+		name  string
+		raw   string
+		wants []string
+	}{
+		{
+			name:  "level 1: top children",
+			raw:   "/admin ",
+			wants: []string{"user", "stats"},
+		},
+		{
+			name:  "level 2: grandchildren",
+			raw:   "/admin user ",
+			wants: []string{"ban", "unban"},
+		},
+		{
+			name:  "level 2: filtered grandchildren",
+			raw:   "/admin user b",
+			wants: []string{"ban", "unban"},
+		},
+		{
+			name:  "level 3: leaf positional source",
+			raw:   "/admin user ban ",
+			wants: []string{"alice", "bob"},
+		},
+		{
+			name:  "level 3: leaf positional filtered",
+			raw:   "/admin user ban a",
+			wants: []string{"alice"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			completion := Complete(cmds, tt.raw, len([]rune(tt.raw)))
+
+			require.True(t, completion.Visible)
+
+			var names []string
+			for _, s := range completion.Suggestions {
+				names = append(names, s.Value)
+			}
+
+			require.Equal(t, tt.wants, names)
+		})
+	}
+}
+
 func TestComplete_optional_positional_with_source(t *testing.T) {
 	cmds := Set{
 		Commands: []*Node{

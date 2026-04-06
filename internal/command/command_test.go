@@ -284,3 +284,144 @@ func TestParser_Set_returns_underlying_set(t *testing.T) {
 	require.Len(t, set.Commands, 1)
 	require.Equal(t, "do", set.Commands[0].Name)
 }
+
+// --- Subcommand support ---
+
+type subGetCommand struct {
+	Key string `arg:"" help:"Key to get"`
+}
+
+type subSetCommand struct {
+	Key   string `arg:"" help:"Key to set"`
+	Value string `arg:"" help:"Value to set"`
+}
+
+type subResetCommand struct{}
+
+type parentConfigCommand struct {
+	Get   subGetCommand   `cmd:"" help:"Get a config value."`
+	Set   subSetCommand   `cmd:"" help:"Set a config value."`
+	Reset subResetCommand `cmd:"" help:"Reset all config."`
+}
+
+type subcommandGrammar struct {
+	Config parentConfigCommand `cmd:"" help:"Manage configuration."`
+	Quit   testQuitCommand     `cmd:"" help:"Quit."`
+}
+
+func TestParseValue_subcommands(t *testing.T) {
+	cmds := Build(&subcommandGrammar{})
+
+	tests := []struct {
+		name    string
+		input   string
+		want    any
+		wantErr string
+	}{
+		{
+			name:  "subcommand with one arg",
+			input: "/config get api-key",
+			want:  subGetCommand{Key: "api-key"},
+		},
+		{
+			name:  "subcommand with two args",
+			input: "/config set api-key sk-1234",
+			want:  subSetCommand{Key: "api-key", Value: "sk-1234"},
+		},
+		{
+			name:  "subcommand with no args",
+			input: "/config reset",
+			want:  subResetCommand{},
+		},
+		{
+			name:    "group node without subcommand",
+			input:   "/config",
+			wantErr: "subcommand",
+		},
+		{
+			name:    "unknown subcommand",
+			input:   "/config bogus",
+			wantErr: "unknown subcommand",
+		},
+		{
+			name:  "leaf command still works",
+			input: "/quit",
+			want:  testQuitCommand{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parsed, err := cmds.ParseValue(tt.input)
+
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+
+			require.NoError(t, err)
+			require.Equal(t, tt.want, parsed)
+		})
+	}
+}
+
+// Deep nesting: three levels.
+
+type deepLeafCommand struct {
+	Name string `arg:"" help:"Name"`
+}
+
+type deepMidCommand struct {
+	Leaf deepLeafCommand `cmd:"" help:"A leaf command."`
+}
+
+type deepTopCommand struct {
+	Mid deepMidCommand `cmd:"" help:"Middle level."`
+}
+
+type deepGrammar struct {
+	Top deepTopCommand `cmd:"" help:"Top level."`
+}
+
+func TestParseValue_deeply_nested_subcommands(t *testing.T) {
+	cmds := Build(&deepGrammar{})
+
+	tests := []struct {
+		name    string
+		input   string
+		want    any
+		wantErr string
+	}{
+		{
+			name:  "three levels deep",
+			input: "/top mid leaf hello",
+			want:  deepLeafCommand{Name: "hello"},
+		},
+		{
+			name:    "stops at group node",
+			input:   "/top mid",
+			wantErr: "subcommand",
+		},
+		{
+			name:    "stops at top group node",
+			input:   "/top",
+			wantErr: "subcommand",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parsed, err := cmds.ParseValue(tt.input)
+
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+
+			require.NoError(t, err)
+			require.Equal(t, tt.want, parsed)
+		})
+	}
+}

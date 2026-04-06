@@ -66,10 +66,32 @@ func Build(grammar any) Set {
 	return Set{Commands: nodes}
 }
 
+// SubcommandError is returned when a group node is invoked without
+// specifying a subcommand.
+type SubcommandError struct {
+	Node *Node
+}
+
+func (e *SubcommandError) Error() string {
+	names := make([]string, 0, len(e.Node.Children))
+	for _, child := range e.Node.Children {
+		names = append(names, child.Name)
+	}
+
+	return fmt.Sprintf(
+		"/%s requires a subcommand: %s",
+		e.Node.Name, strings.Join(names, ", "),
+	)
+}
+
 // ParseValue tokenises a raw slash-command string, resolves the
 // matching node in the set, and populates a command struct from the
 // arguments. The returned value is the concrete command struct
 // (value type, not pointer).
+//
+// For group nodes (nodes with children), the first argument is
+// matched against child names and parsing recurses into the matched
+// child. This continues until a leaf node is reached.
 func (s Set) ParseValue(input string) (any, error) {
 	input = strings.TrimSpace(input)
 
@@ -86,8 +108,26 @@ func (s Set) ParseValue(input string) (any, error) {
 		return nil, fmt.Errorf("unknown command: /%s", name)
 	}
 
+	// Walk into children for group nodes.
+	path := "/" + name
+
+	for len(node.Children) > 0 {
+		if len(args) == 0 {
+			return nil, &SubcommandError{Node: node}
+		}
+
+		child := node.Find(args[0])
+		if child == nil {
+			return nil, fmt.Errorf("unknown subcommand %q for %s", args[0], path)
+		}
+
+		path += " " + child.Name
+		node = child
+		args = args[1:]
+	}
+
 	if node.factory == nil {
-		return nil, fmt.Errorf("command /%s has no factory", name)
+		return nil, fmt.Errorf("command %s has no factory", path)
 	}
 
 	cmd := node.factory()
