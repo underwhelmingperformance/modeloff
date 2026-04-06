@@ -79,15 +79,19 @@ const (
 
 	// ToolCallDeleteMemory is a delete_memory tool call.
 	ToolCallDeleteMemory ToolCallKind = "delete_memory"
+
+	// ToolCallSearchMemory is a search_memory tool call.
+	ToolCallSearchMemory ToolCallKind = "search_memory"
 )
 
 // PendingToolCall represents a tool call from the model that requires
 // execution before the conversation can continue.
 type PendingToolCall struct {
-	ID   string
-	Kind ToolCallKind
-	Key  string
-	Body string
+	ID    string
+	Kind  ToolCallKind
+	Key   string
+	Body  string
+	Limit int
 }
 
 // ToolResult carries the outcome of executing a pending tool call,

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	chromem "github.com/philippgille/chromem-go"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/api"
@@ -160,10 +161,115 @@ func TestApp_reuse_existing_instance(t *testing.T) {
 	tm.WaitFor("persona: Helpful assistant", "channels: #general, #random")
 }
 
+func TestApp_vector_memory_write_and_search(t *testing.T) {
+	// Track which turn of ContinueWithToolResults we're on so we can
+	// simulate: write_memory → search_memory → reply.
+	var toolTurn int
+
+	apiClient := &integrationAPI{
+		generateNickFn: func(context.Context, domain.ModelID, domain.ModelID) (domain.Nick, error) {
+			return "membot", nil
+		},
+
+		// First API call: model requests write_memory.
+		sendEventsFullFn: func(
+			_ context.Context,
+			_ domain.ModelID,
+			_ string,
+			_ []protocol.IRCMessage,
+			events []protocol.IRCMessage,
+		) (api.CompletionResult, error) {
+			// Only trigger the tool loop on a user message, not on
+			// join events.
+			for _, ev := range events {
+				if ev.Kind == protocol.KindPrivMsg {
+					return api.CompletionResult{
+						PendingToolCalls: []api.PendingToolCall{{
+							ID:   "tc-write",
+							Kind: api.ToolCallWriteMemory,
+							Key:  "favourite-colour",
+							Body: "the user likes blue",
+						}},
+					}, nil
+				}
+			}
+
+			return api.CompletionResult{
+				Response: protocol.ModelResponse{Kind: protocol.ResponseSilence},
+			}, nil
+		},
+
+		// Tool loop turns:
+		//   turn 0 (after write_memory): model requests search_memory
+		//   turn 1 (after search_memory): model replies with what it found
+		continueWithToolResultsFn: func(
+			_ context.Context,
+			_ *api.Conversation,
+			results []api.ToolResult,
+		) (api.CompletionResult, error) {
+			turn := toolTurn
+			toolTurn++
+
+			switch turn {
+			case 0:
+				// write_memory succeeded — now search.
+				return api.CompletionResult{
+					PendingToolCalls: []api.PendingToolCall{{
+						ID:    "tc-search",
+						Kind:  api.ToolCallSearchMemory,
+						Body:  "colour",
+						Limit: 5,
+					}},
+				}, nil
+
+			default:
+				// search_memory returned results — reply with them.
+				return api.CompletionResult{
+					Response: protocol.ModelResponse{
+						Kind:     protocol.ResponseReply,
+						Messages: []protocol.ReplyPart{{Kind: protocol.ReplyMessage, Body: "I found: " + results[0].Content}},
+					},
+				}, nil
+			}
+		},
+	}
+
+	// Use an IndexedStore backed by an in-memory chromem DB so vector
+	// search works without a real embedding endpoint.
+	files := memory.NewFileStore(t.TempDir())
+	db := chromem.NewDB()
+	embedder := func(_ context.Context, _ string) ([]float32, error) {
+		return []float32{1.0, 0.0, 0.0}, nil
+	}
+	memStore := memory.NewIndexedStoreFromDB(files, db, embedder)
+
+	store := storemod.NewFileStore(t.TempDir())
+	cfgStore := &integrationConfigStore{
+		cfg: config.Config{
+			UserNick:     "testuser",
+			PokeInterval: 5 * time.Minute,
+		},
+	}
+	sess := session.New(store, memStore, apiClient, cfgStore, "testuser")
+
+	uitest.SeedChannel(t, sess, "#lab")
+
+	tm := uitest.New(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
+	tm.WaitFor("#lab")
+
+	tm.Submit("/invite test/model")
+	tm.WaitFor("membot (test/model) has joined #lab")
+
+	tm.Submit("what is my favourite colour?")
+	tm.WaitFor("I found:", "the user likes blue")
+}
+
 type integrationAPI struct {
-	mu             sync.Mutex
-	sendEventsFn   func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error)
-	generateNickFn func(context.Context, domain.ModelID, domain.ModelID) (domain.Nick, error)
+	mu                        sync.Mutex
+	sendEventsFn              func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error)
+	sendEventsFullFn          func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error)
+	continueWithToolResultsFn func(context.Context, *api.Conversation, []api.ToolResult) (api.CompletionResult, error)
+	generateNickFn            func(context.Context, domain.ModelID, domain.ModelID) (domain.Nick, error)
 }
 
 func (f *integrationAPI) ListModels(context.Context) ([]api.ModelInfo, error) {
@@ -180,6 +286,10 @@ func (f *integrationAPI) SendEvents(
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
+	if f.sendEventsFullFn != nil {
+		return f.sendEventsFullFn(ctx, modelID, system, history, events)
+	}
+
 	if f.sendEventsFn != nil {
 		response, err := f.sendEventsFn(ctx, modelID, system, history, events)
 		return api.CompletionResult{Response: response}, err
@@ -191,10 +301,17 @@ func (f *integrationAPI) SendEvents(
 }
 
 func (f *integrationAPI) ContinueWithToolResults(
-	context.Context,
-	*api.Conversation,
-	[]api.ToolResult,
+	ctx context.Context,
+	conv *api.Conversation,
+	results []api.ToolResult,
 ) (api.CompletionResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.continueWithToolResultsFn != nil {
+		return f.continueWithToolResultsFn(ctx, conv, results)
+	}
+
 	return api.CompletionResult{
 		Response: protocol.ModelResponse{Kind: protocol.ResponseSilence},
 	}, nil
@@ -225,6 +342,10 @@ func (s *integrationConfigStore) Save(cfg config.Config) error {
 
 	s.cfg = cfg
 	return nil
+}
+
+func (s *integrationConfigStore) OnChange(_ config.ChangeFunc) config.UnsubscribeFunc {
+	return func() {}
 }
 
 func newIntegrationSession(t *testing.T, apiClient api.Client) (*session.Session, *storemod.FileStore) {

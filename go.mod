@@ -10,6 +10,7 @@ require (
 	github.com/charmbracelet/x/exp/teatest v0.0.0-20260330094520-2dce04b6f8a4
 	github.com/invopop/jsonschema v0.13.0
 	github.com/openai/openai-go/v3 v3.30.0
+	github.com/philippgille/chromem-go v0.7.0
 	github.com/stretchr/testify v1.11.1
 	github.com/wk8/go-ordered-map/v2 v2.1.8
 	go.opentelemetry.io/contrib/bridges/otelslog v0.13.0

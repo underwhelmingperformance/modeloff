@@ -16,6 +16,10 @@ const (
 	AttrCacheWriteTokens = "modeloff.cache_write_tokens"
 	AttrCostCredits      = "modeloff.cost_credits"
 	AttrRequestID        = "modeloff.request_id"
+	AttrMemoryOperation  = "modeloff.memory.operation"
+	AttrMemoryNick       = "modeloff.memory.nick"
+	AttrSearchResults    = "modeloff.memory.search_results"
+	AttrSearchTopScore   = "modeloff.memory.search_top_score"
 )
 
 // OpenTelemetry metric instrument names for counters and histograms.
@@ -31,6 +35,9 @@ const (
 	MetricOperationDurationMs = "modeloff.operation.duration.ms"
 	MetricRequestDurationMs   = "modeloff.llm.request.duration.ms"
 	MetricDroppedLogs         = "modeloff.logs.dropped"
+	MetricMemoryOperations    = "modeloff.memory.operations"
+	MetricEmbeddingRequests   = "modeloff.memory.embedding.requests"
+	MetricEmbeddingDurationMs = "modeloff.memory.embedding.duration.ms"
 )
 
 // Values for the AttrResult span attribute, indicating how the

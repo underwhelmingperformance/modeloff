@@ -268,7 +268,7 @@ func TestChatScreen_config_usage(t *testing.T) {
 func TestChatScreen_config_set_api_key(t *testing.T) {
 	cfgStore := newFakeConfigStore()
 	sess := newTestSessionWithConfigStore(t, cfgStore)
-	sess.SetAPIFactory(func(string) (api.Client, error) {
+	sess.SetAPIFactory(func(config.Config) (api.Client, error) {
 		return &uitest.FakeAPI{}, nil
 	})
 	uitest.SeedChannel(t, sess, "#general")
@@ -285,7 +285,7 @@ func TestChatScreen_config_set_api_key(t *testing.T) {
 func TestChatScreen_config_set_api_key_updates_live_model_suggestions(t *testing.T) {
 	cfgStore := newFakeConfigStore()
 	sess := newTestSessionWithConfigStore(t, cfgStore)
-	sess.SetAPIFactory(func(string) (api.Client, error) {
+	sess.SetAPIFactory(func(config.Config) (api.Client, error) {
 		return &uitest.FakeAPI{
 			ListModelsFn: func(context.Context) ([]api.ModelInfo, error) {
 				return []api.ModelInfo{
@@ -435,6 +435,8 @@ func newFakeConfigStore() *fakeConfigStore {
 func (f *fakeConfigStore) Load() (config.Config, error) {
 	return f.cfg, nil
 }
+
+func (f *fakeConfigStore) OnChange(config.ChangeFunc) config.UnsubscribeFunc { return func() {} }
 
 func (f *fakeConfigStore) Save(cfg config.Config) error {
 	if f.saveErr != nil {

@@ -6,6 +6,7 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -40,7 +41,7 @@ type Session struct {
 	userNick  domain.Nick
 	apiKey    string
 	nickModel domain.ModelID
-	factory   func(string) (api.Client, error)
+	factory   func(config.Config) (api.Client, error)
 	now       func() time.Time
 	events    chan domain.SessionEvent
 
@@ -90,7 +91,7 @@ func (s *Session) Events() <-chan domain.SessionEvent {
 }
 
 // SetAPIFactory configures how runtime API clients are created.
-func (s *Session) SetAPIFactory(factory func(string) (api.Client, error)) {
+func (s *Session) SetAPIFactory(factory func(config.Config) (api.Client, error)) {
 	s.factory = factory
 }
 
@@ -672,10 +673,12 @@ func (s *Session) SetAPIKey(_ context.Context, apiKey string) (config.Config, er
 
 	apiKey = strings.TrimSpace(apiKey)
 
+	cfg.APIKey = apiKey
+
 	var nextClient api.Client
 	if apiKey != "" {
 		if s.factory != nil {
-			client, err := s.factory(apiKey)
+			client, err := s.factory(cfg)
 			if err != nil {
 				return config.Config{}, fmt.Errorf("build api client: %w", err)
 			}
@@ -685,8 +688,6 @@ func (s *Session) SetAPIKey(_ context.Context, apiKey string) (config.Config, er
 			nextClient = s.api
 		}
 	}
-
-	cfg.APIKey = apiKey
 
 	if err := s.config.Save(cfg); err != nil {
 		return config.Config{}, fmt.Errorf("save config: %w", err)
@@ -1045,6 +1046,7 @@ How to behave:
 type MemoryExecutor interface {
 	WriteMemory(ctx context.Context, key, content string) error
 	DeleteMemory(ctx context.Context, key string) error
+	SearchMemory(ctx context.Context, query string, limit int) ([]memory.SearchResult, error)
 }
 
 // instanceMemory closes over a nick and memory.Store to implement
@@ -1060,6 +1062,15 @@ func (m *instanceMemory) WriteMemory(ctx context.Context, key, content string) e
 
 func (m *instanceMemory) DeleteMemory(ctx context.Context, key string) error {
 	return m.store.Delete(ctx, m.nick, key)
+}
+
+func (m *instanceMemory) SearchMemory(ctx context.Context, query string, limit int) ([]memory.SearchResult, error) {
+	searcher, ok := m.store.(memory.Searcher)
+	if !ok {
+		return nil, fmt.Errorf("semantic search is not configured")
+	}
+
+	return searcher.Search(ctx, m.nick, query, limit)
 }
 
 const (
@@ -1170,21 +1181,52 @@ func (s *Session) executeMemoryTools(
 	calls []api.PendingToolCall,
 ) []api.ToolResult {
 	results := make([]api.ToolResult, 0, len(calls))
+	span := trace.SpanFromContext(ctx)
 
 	for _, call := range calls {
-		var err error
+		var content string
+		var toolErr error
 
 		switch call.Kind {
 		case api.ToolCallWriteMemory:
-			err = mem.WriteMemory(ctx, call.Key, call.Body)
+			toolErr = mem.WriteMemory(ctx, call.Key, call.Body)
+			if toolErr != nil {
+				content = toolErr.Error()
+			} else {
+				content = "ok"
+			}
+
 		case api.ToolCallDeleteMemory:
-			err = mem.DeleteMemory(ctx, call.Key)
+			toolErr = mem.DeleteMemory(ctx, call.Key)
+			if toolErr != nil {
+				content = toolErr.Error()
+			} else {
+				content = "ok"
+			}
+
+		case api.ToolCallSearchMemory:
+			searchResults, err := mem.SearchMemory(ctx, call.Body, call.Limit)
+			toolErr = err
+
+			if toolErr != nil {
+				content = toolErr.Error()
+			} else {
+				data, _ := json.Marshal(searchResults)
+				content = string(data)
+			}
 		}
 
-		content := "ok"
-		if err != nil {
-			content = err.Error()
+		eventAttrs := []attribute.KeyValue{
+			attribute.String(observability.AttrMemoryOperation, string(call.Kind)),
 		}
+
+		if toolErr != nil {
+			eventAttrs = append(eventAttrs, attribute.String(observability.AttrResult, observability.ResultError))
+		} else {
+			eventAttrs = append(eventAttrs, attribute.String(observability.AttrResult, observability.ResultOK))
+		}
+
+		span.AddEvent("memory.tool_call", trace.WithAttributes(eventAttrs...))
 
 		results = append(results, api.ToolResult{
 			ToolCallID: call.ID,

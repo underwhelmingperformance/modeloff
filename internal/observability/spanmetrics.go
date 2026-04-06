@@ -22,6 +22,10 @@ type metricInstruments struct {
 	operationDuration metric.Float64Histogram
 	requestDuration   metric.Float64Histogram
 	droppedLogs       metric.Int64Counter
+
+	memoryOperations    metric.Int64Counter
+	embeddingRequests   metric.Int64Counter
+	embeddingDurationMs metric.Float64Histogram
 }
 
 // SpanMetricsProcessor derives metrics from ended spans.
@@ -73,6 +77,18 @@ func (p *SpanMetricsProcessor) OnEnd(span sdktrace.ReadOnlySpan) {
 	durationMs := float64(span.EndTime().Sub(span.StartTime())) / float64(time.Millisecond)
 	p.instruments.operationDuration.Record(ctx, durationMs, metric.WithAttributes(attrs...))
 
+	if operation == "memory.embed" {
+		p.instruments.embeddingRequests.Add(ctx, 1, metric.WithAttributes(attrs...))
+		p.instruments.embeddingDurationMs.Record(ctx, durationMs, metric.WithAttributes(attrs...))
+
+		return
+	}
+
+	if isMemoryOperation(operation) {
+		p.instruments.memoryOperations.Add(ctx, 1, metric.WithAttributes(attrs...))
+		return
+	}
+
 	if operation != "api.openrouter.send_events" && operation != "api.openrouter.generate_nick" {
 		return
 	}
@@ -113,6 +129,15 @@ func (*SpanMetricsProcessor) ForceFlush(context.Context) error {
 // Shutdown performs no work.
 func (*SpanMetricsProcessor) Shutdown(context.Context) error {
 	return nil
+}
+
+func isMemoryOperation(operation string) bool {
+	switch operation {
+	case "memory.write", "memory.delete", "memory.search":
+		return true
+	}
+
+	return false
 }
 
 func findStringAttr(attrs []attribute.KeyValue, key string) (string, bool) {

@@ -39,7 +39,7 @@ func NewRuntime() (*Runtime, error) {
 		sdkmetric.WithResource(res),
 		sdkmetric.WithReader(reader),
 		sdkmetric.WithCardinalityLimit(256),
-		sdkmetric.WithView(durationView(MetricOperationDurationMs), durationView(MetricRequestDurationMs)),
+		sdkmetric.WithView(durationView(MetricOperationDurationMs), durationView(MetricRequestDurationMs), durationView(MetricEmbeddingDurationMs)),
 	)
 
 	meter := meterProvider.Meter("github.com/laney/modeloff/internal/observability")
@@ -177,6 +177,18 @@ func newMetricInstruments(meter metric.Meter) (metricInstruments, error) {
 	}
 
 	if instruments.droppedLogs, err = meter.Int64Counter(MetricDroppedLogs); err != nil {
+		return metricInstruments{}, err
+	}
+
+	if instruments.memoryOperations, err = meter.Int64Counter(MetricMemoryOperations); err != nil {
+		return metricInstruments{}, err
+	}
+
+	if instruments.embeddingRequests, err = meter.Int64Counter(MetricEmbeddingRequests); err != nil {
+		return metricInstruments{}, err
+	}
+
+	if instruments.embeddingDurationMs, err = meter.Float64Histogram(MetricEmbeddingDurationMs); err != nil {
 		return metricInstruments{}, err
 	}
 

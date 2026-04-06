@@ -24,24 +24,20 @@ import (
 	"github.com/openai/openai-go/v3/shared"
 )
 
-const defaultBaseURL = "https://openrouter.ai/api/v1"
-
 // OpenRouterClient implements Client using openai-go for chat
 // completions and direct HTTP for OpenRouter-specific endpoints.
 type OpenRouterClient struct {
-	oai     openai.Client
-	baseURL string
-	apiKey  string
-	http    *http.Client
+	oai           openai.Client
+	baseURL       string
+	apiKey        string
+	http          *http.Client
+	searchEnabled bool
 }
 
-// NewOpenRouterClient creates a client configured to talk to
-// OpenRouter. The baseURL can be overridden for testing.
-func NewOpenRouterClient(apiKey, baseURL string, httpClient *http.Client) *OpenRouterClient {
-	if baseURL == "" {
-		baseURL = defaultBaseURL
-	}
-
+// NewOpenRouterClient creates a client configured to talk to an
+// OpenAI-compatible API at baseURL. Set searchEnabled to true to
+// offer the search_memory tool to models.
+func NewOpenRouterClient(apiKey, baseURL string, httpClient *http.Client, searchEnabled bool) *OpenRouterClient {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
@@ -53,10 +49,11 @@ func NewOpenRouterClient(apiKey, baseURL string, httpClient *http.Client) *OpenR
 	)
 
 	return &OpenRouterClient{
-		oai:     oai,
-		baseURL: baseURL,
-		apiKey:  apiKey,
-		http:    httpClient,
+		oai:           oai,
+		baseURL:       baseURL,
+		apiKey:        apiKey,
+		http:          httpClient,
+		searchEnabled: searchEnabled,
 	}
 }
 
@@ -173,6 +170,11 @@ type deleteMemoryArgs struct {
 	Key string `json:"key" jsonschema_description:"The key of the memory to remove."`
 }
 
+type searchMemoryArgs struct {
+	Query string `json:"query" jsonschema_description:"A natural-language query describing what you want to recall."`
+	Limit int    `json:"limit" jsonschema_description:"Maximum number of results to return (1-20)."`
+}
+
 func writeMemoryTool() openai.ChatCompletionToolUnionParam {
 	return openai.ChatCompletionFunctionTool(shared.FunctionDefinitionParam{
 		Name:        "write_memory",
@@ -191,11 +193,26 @@ func deleteMemoryTool() openai.ChatCompletionToolUnionParam {
 	})
 }
 
-func memoryTools() []openai.ChatCompletionToolUnionParam {
-	return []openai.ChatCompletionToolUnionParam{
+func searchMemoryTool() openai.ChatCompletionToolUnionParam {
+	return openai.ChatCompletionFunctionTool(shared.FunctionDefinitionParam{
+		Name:        "search_memory",
+		Description: openai.String("Search your memories for information relevant to a query. Returns the most similar memories."),
+		Strict:      openai.Bool(true),
+		Parameters:  generateSchema[searchMemoryArgs](),
+	})
+}
+
+func memoryTools(searchEnabled bool) []openai.ChatCompletionToolUnionParam {
+	tools := []openai.ChatCompletionToolUnionParam{
 		writeMemoryTool(),
 		deleteMemoryTool(),
 	}
+
+	if searchEnabled {
+		tools = append(tools, searchMemoryTool())
+	}
+
+	return tools
 }
 
 // SendEvents sends protocol events to a model and returns its typed
@@ -223,7 +240,7 @@ func (c *OpenRouterClient) SendEvents(
 	resp, rawResp, err := c.chatCompletion(ctx, modelID, openai.ChatCompletionNewParams{ //nolint:bodyclose // SDK reads and closes the body.
 		Model:          shared.ChatModel(string(modelID)),
 		Messages:       msgs,
-		Tools:          memoryTools(),
+		Tools:          memoryTools(c.searchEnabled),
 		ResponseFormat: responseFormat(),
 	})
 	if err != nil {
@@ -289,7 +306,7 @@ func (c *OpenRouterClient) ContinueWithToolResults(
 	resp, rawResp, err := c.chatCompletion(ctx, conv.modelID, openai.ChatCompletionNewParams{ //nolint:bodyclose // SDK reads and closes the body.
 		Model:          shared.ChatModel(string(conv.modelID)),
 		Messages:       msgs,
-		Tools:          memoryTools(),
+		Tools:          memoryTools(c.searchEnabled),
 		ResponseFormat: responseFormat(),
 	})
 	if err != nil {
@@ -416,6 +433,20 @@ func parseCompletionResponse(resp *openai.ChatCompletion, rawResp *http.Response
 				ID:   call.ID,
 				Kind: ToolCallDeleteMemory,
 				Key:  args.Key,
+			})
+
+		case "search_memory":
+			var args searchMemoryArgs
+
+			if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
+				return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, fmt.Errorf("parse search_memory args: %w", err)
+			}
+
+			result.PendingToolCalls = append(result.PendingToolCalls, PendingToolCall{
+				ID:    call.ID,
+				Kind:  ToolCallSearchMemory,
+				Body:  args.Query,
+				Limit: args.Limit,
 			})
 
 		default:

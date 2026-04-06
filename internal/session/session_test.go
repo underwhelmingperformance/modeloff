@@ -2,11 +2,16 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"math"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	chromem "github.com/philippgille/chromem-go"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/api"
@@ -1319,8 +1324,8 @@ func TestSession_SetAPIKey(t *testing.T) {
 	initial := &fakeAPIClient{}
 	replacement := &fakeAPIClient{}
 	sess := New(s, nil, initial, cfgStore, "testuser")
-	sess.SetAPIFactory(func(apiKey string) (api.Client, error) {
-		require.Equal(t, "test-key", apiKey)
+	sess.SetAPIFactory(func(cfg config.Config) (api.Client, error) {
+		require.Equal(t, "test-key", cfg.APIKey)
 		return replacement, nil
 	})
 
@@ -1343,7 +1348,7 @@ func TestSession_SetAPIKey_factory_failure_keeps_existing_client(t *testing.T) {
 	s := storemod.NewFileStore(t.TempDir())
 	initial := &fakeAPIClient{}
 	sess := New(s, nil, initial, cfgStore, "testuser")
-	sess.SetAPIFactory(func(string) (api.Client, error) {
+	sess.SetAPIFactory(func(config.Config) (api.Client, error) {
 		return nil, fmt.Errorf("boom")
 	})
 
@@ -1618,6 +1623,8 @@ func (f *fakeConfigStore) Load() (config.Config, error) {
 
 	return f.cfg, nil
 }
+
+func (f *fakeConfigStore) OnChange(config.ChangeFunc) config.UnsubscribeFunc { return func() {} }
 
 func (f *fakeConfigStore) Save(cfg config.Config) error {
 	if f.saveErr != nil {
@@ -2035,6 +2042,290 @@ func TestSession_DispatchToChannel_multiple_memory_calls_in_one_response(t *test
 		{Key: "mood", Content: "happy"},
 		{Key: "topic", Content: "go programming"},
 	}, memories)
+}
+
+func TestSession_DispatchToChannel_search_memory_then_reply(t *testing.T) {
+	var continueResults []api.ToolResult
+	fake := &fakeAPIClient{
+		sendEventsFullFn: func(_ context.Context, _ domain.ModelID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
+			return api.CompletionResult{
+				Conversation: &api.Conversation{},
+				PendingToolCalls: []api.PendingToolCall{
+					{ID: "call_1", Kind: api.ToolCallSearchMemory, Body: "favourite colour", Limit: 5},
+				},
+			}, nil
+		},
+		continueWithToolResultsFn: func(_ context.Context, _ *api.Conversation, results []api.ToolResult) (api.CompletionResult, error) {
+			continueResults = results
+			return api.CompletionResult{
+				Response: protocol.Reply("your favourite colour is blue"),
+			}, nil
+		},
+	}
+
+	sess, s, memStore := newTestSessionWithMemory(t, fake)
+	ctx := t.Context()
+
+	require.NoError(t, memStore.Write(ctx, "botty", memory.Entry{Key: "colour", Content: "blue"}))
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: set.NewOrdered[domain.ChannelName]("#general"),
+	})
+
+	_, ircMsg := seedUserMessage(t, s, "#general", "what is my favourite colour?")
+
+	replies, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+	require.NoError(t, err)
+
+	// The search result should be an error because FileStore doesn't
+	// implement Searcher.
+	require.Equal(t, []api.ToolResult{
+		{ToolCallID: "call_1", Content: "semantic search is not configured"},
+	}, continueResults)
+
+	require.Equal(t, []domain.ModelReplyEvent{
+		{
+			Channel:  "#general",
+			Instance: "botty",
+			Message: domain.Message{
+				ID:      fmt.Sprintf("%d~botty~0", fixedTime.UnixNano()),
+				Channel: "#general",
+				From:    "botty",
+				Body:    "your favourite colour is blue",
+				SentAt:  fixedTime,
+			},
+			At: fixedTime,
+		},
+	}, replies)
+}
+
+// newEmbeddingServer returns an httptest server that responds to
+// OpenAI-compatible embedding requests. The topics map assigns each
+// keyword a dimension in the embedding vector; matching keywords get a
+// unit vector in that dimension, non-matching text gets a uniform
+// spread.
+func newEmbeddingServer(t *testing.T, dims int, topics map[string]int) *httptest.Server {
+	t.Helper()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/embeddings", r.URL.Path)
+
+		var req struct {
+			Input string `json:"input"`
+			Model string `json:"model"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+
+		vec := make([]float32, dims)
+
+		matched := false
+		for keyword, dim := range topics {
+			if strings.Contains(req.Input, keyword) {
+				vec[dim] = 1.0
+				matched = true
+
+				break
+			}
+		}
+
+		if !matched {
+			val := float32(1.0 / math.Sqrt(float64(dims)))
+			for i := range vec {
+				vec[i] = val
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		require.NoError(t, json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{
+				{"embedding": vec},
+			},
+		}))
+	}))
+	t.Cleanup(srv.Close)
+
+	return srv
+}
+
+func newTestSessionWithIndexedMemory(
+	t *testing.T,
+	apiClient api.Client,
+	embeddingURL string,
+) (*Session, *storemod.FileStore, *memory.IndexedStore) {
+	t.Helper()
+
+	s := storemod.NewFileStore(t.TempDir())
+	files := memory.NewFileStore(t.TempDir())
+
+	normalized := true
+	embeddingFunc := chromem.NewEmbeddingFuncOpenAICompat(
+		embeddingURL, "test-key", "test-model", &normalized,
+	)
+
+	m := memory.NewIndexedStoreFromDB(files, chromem.NewDB(), embeddingFunc)
+	sess := New(s, m, apiClient, nil, "testuser")
+	sess.now = func() time.Time { return fixedTime }
+
+	return sess, s, m
+}
+
+func TestSession_DispatchToChannel_search_memory_with_vector_store(t *testing.T) {
+	// Three topics in 3 dimensions. Querying "cats" produces [1,0,0],
+	// giving each entry a distinct cosine similarity:
+	//   "cats are great"    → [1,0,0] → 1.0
+	//   "no keyword match"  → uniform  → 1/√3 ≈ 0.577
+	//   "dogs are loyal"    → [0,1,0] → 0.0
+	embSrv := newEmbeddingServer(t, 3, map[string]int{
+		"cats": 0,
+		"dogs": 1,
+		"fish": 2,
+	})
+
+	uniformSim := float32(1.0 / math.Sqrt(3))
+
+	var continueResults []api.ToolResult
+	fake := &fakeAPIClient{
+		sendEventsFullFn: func(_ context.Context, _ domain.ModelID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
+			return api.CompletionResult{
+				Conversation: &api.Conversation{},
+				PendingToolCalls: []api.PendingToolCall{
+					{ID: "call_1", Kind: api.ToolCallSearchMemory, Body: "cats", Limit: 3},
+				},
+			}, nil
+		},
+		continueWithToolResultsFn: func(_ context.Context, _ *api.Conversation, results []api.ToolResult) (api.CompletionResult, error) {
+			continueResults = results
+			return api.CompletionResult{
+				Response: protocol.Reply("your favourite is cats"),
+			}, nil
+		},
+	}
+
+	sess, s, memStore := newTestSessionWithIndexedMemory(t, fake, embSrv.URL)
+	ctx := t.Context()
+
+	require.NoError(t, memStore.Write(ctx, "botty", memory.Entry{Key: "fav_pet", Content: "cats are great"}))
+	require.NoError(t, memStore.Write(ctx, "botty", memory.Entry{Key: "hobby", Content: "no keyword match here"}))
+	require.NoError(t, memStore.Write(ctx, "botty", memory.Entry{Key: "other_pet", Content: "dogs are loyal"}))
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: set.NewOrdered[domain.ChannelName]("#general"),
+	})
+
+	_, ircMsg := seedUserMessage(t, s, "#general", "what is my favourite pet?")
+
+	replies, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+	require.NoError(t, err)
+
+	// Unmarshal the JSON content so we can assert the full search
+	// results slice, then assert the full tool results wrapper too.
+	var searchResults []memory.SearchResult
+	require.NoError(t, json.Unmarshal([]byte(continueResults[0].Content), &searchResults))
+
+	require.Equal(t, []api.ToolResult{
+		{ToolCallID: "call_1", Content: continueResults[0].Content},
+	}, continueResults)
+
+	require.Equal(t, []memory.SearchResult{
+		{Entry: memory.Entry{Key: "fav_pet", Content: "cats are great"}, Similarity: 1.0},
+		{Entry: memory.Entry{Key: "hobby", Content: "no keyword match here"}, Similarity: uniformSim},
+		{Entry: memory.Entry{Key: "other_pet", Content: "dogs are loyal"}, Similarity: 0},
+	}, searchResults)
+
+	require.Equal(t, []domain.ModelReplyEvent{
+		{
+			Channel:  "#general",
+			Instance: "botty",
+			Message: domain.Message{
+				ID:      fmt.Sprintf("%d~botty~0", fixedTime.UnixNano()),
+				Channel: "#general",
+				From:    "botty",
+				Body:    "your favourite is cats",
+				SentAt:  fixedTime,
+			},
+			At: fixedTime,
+		},
+	}, replies)
+}
+
+func TestSession_DispatchToChannel_write_then_search_memory_with_vector_store(t *testing.T) {
+	// Two topics in 2 dimensions. After writing two entries, a search
+	// for "cats" returns both with distinct scores:
+	//   "cats are wonderful" → [1,0] → 1.0
+	//   "dogs are loyal"     → [0,1] → 0.0
+	embSrv := newEmbeddingServer(t, 2, map[string]int{
+		"cats": 0,
+		"dogs": 1,
+	})
+
+	var writeResults, searchResults []api.ToolResult
+	fake := &fakeAPIClient{
+		sendEventsFullFn: func(_ context.Context, _ domain.ModelID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
+			return api.CompletionResult{
+				Conversation: &api.Conversation{},
+				PendingToolCalls: []api.PendingToolCall{
+					{ID: "call_write_cats", Kind: api.ToolCallWriteMemory, Key: "pet_cats", Body: "cats are wonderful"},
+					{ID: "call_write_dogs", Kind: api.ToolCallWriteMemory, Key: "pet_dogs", Body: "dogs are loyal"},
+				},
+			}, nil
+		},
+		continueWithToolResultsFn: func(_ context.Context, _ *api.Conversation, results []api.ToolResult) (api.CompletionResult, error) {
+			// First continuation receives the write results;
+			// second receives the search results.
+			if writeResults == nil {
+				writeResults = results
+				return api.CompletionResult{
+					Conversation: &api.Conversation{},
+					PendingToolCalls: []api.PendingToolCall{
+						{ID: "call_search", Kind: api.ToolCallSearchMemory, Body: "cats", Limit: 5},
+					},
+				}, nil
+			}
+
+			searchResults = results
+			return api.CompletionResult{
+				Response: protocol.Reply("noted"),
+			}, nil
+		},
+	}
+
+	sess, s, _ := newTestSessionWithIndexedMemory(t, fake, embSrv.URL)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+	seedInstance(t, s, domain.ModelInstance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: set.NewOrdered[domain.ChannelName]("#general"),
+	})
+
+	_, ircMsg := seedUserMessage(t, s, "#general", "hello")
+
+	_, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+	require.NoError(t, err)
+
+	require.Equal(t, []api.ToolResult{
+		{ToolCallID: "call_write_cats", Content: "ok"},
+		{ToolCallID: "call_write_dogs", Content: "ok"},
+	}, writeResults)
+
+	var parsed []memory.SearchResult
+	require.NoError(t, json.Unmarshal([]byte(searchResults[0].Content), &parsed))
+
+	require.Equal(t, []api.ToolResult{
+		{ToolCallID: "call_search", Content: searchResults[0].Content},
+	}, searchResults)
+
+	require.Equal(t, []memory.SearchResult{
+		{Entry: memory.Entry{Key: "pet_cats", Content: "cats are wonderful"}, Similarity: 1.0},
+		{Entry: memory.Entry{Key: "pet_dogs", Content: "dogs are loyal"}, Similarity: 0},
+	}, parsed)
 }
 
 func TestSession_DispatchToChannel_memory_loop_respects_max_turns(t *testing.T) {

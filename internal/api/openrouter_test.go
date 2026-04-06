@@ -79,7 +79,7 @@ func TestOpenRouterClient_ListModels(t *testing.T) {
 			}))
 			t.Cleanup(srv.Close)
 
-			client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
+			client := NewOpenRouterClient("test-key", srv.URL, srv.Client(), false)
 
 			got, err := client.ListModels(t.Context())
 			if tt.wantErr {
@@ -167,7 +167,7 @@ func TestOpenRouterClient_SendEvents(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			srv := newStructuredChatServer(t, tt.content)
 
-			client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
+			client := NewOpenRouterClient("test-key", srv.URL, srv.Client(), false)
 
 			got, err := client.SendEvents(
 				t.Context(),
@@ -203,7 +203,7 @@ func TestOpenRouterClient_SendEventsWithHistory(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
+	client := NewOpenRouterClient("test-key", srv.URL, srv.Client(), false)
 
 	history := []protocol.IRCMessage{
 		{Kind: protocol.KindJoin, From: "bob", Target: "#test"},
@@ -297,7 +297,7 @@ func TestOpenRouterClient_SendEvents_preservesOpenRouterUsageMetadata(t *testing
 	}))
 	t.Cleanup(srv.Close)
 
-	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
+	client := NewOpenRouterClient("test-key", srv.URL, srv.Client(), false)
 
 	got, err := client.SendEvents(
 		t.Context(),
@@ -359,7 +359,7 @@ func TestOpenRouterClient_GenerateNick(t *testing.T) {
 			}))
 			t.Cleanup(srv.Close)
 
-			client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
+			client := NewOpenRouterClient("test-key", srv.URL, srv.Client(), false)
 
 			got, err := client.GenerateNick(t.Context(), "anthropic/claude-haiku-4.5", "anthropic/claude-3-haiku")
 			require.NoError(t, err)
@@ -404,7 +404,7 @@ func TestOpenRouterClient_SendEvents_write_memory(t *testing.T) {
 		args: `{"key": "mood", "content": "happy"}`,
 	})
 
-	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
+	client := NewOpenRouterClient("test-key", srv.URL, srv.Client(), false)
 
 	got, err := client.SendEvents(
 		t.Context(),
@@ -429,7 +429,7 @@ func TestOpenRouterClient_SendEvents_delete_memory(t *testing.T) {
 		args: `{"key": "old_stuff"}`,
 	})
 
-	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
+	client := NewOpenRouterClient("test-key", srv.URL, srv.Client(), false)
 
 	got, err := client.SendEvents(
 		t.Context(),
@@ -448,6 +448,113 @@ func TestOpenRouterClient_SendEvents_delete_memory(t *testing.T) {
 	require.NotNil(t, got.Conversation)
 }
 
+func TestOpenRouterClient_SendEvents_search_memory(t *testing.T) {
+	srv := newToolCallServer(t, toolCallFixture{
+		name: "search_memory",
+		args: `{"query": "favourite colour", "limit": 3}`,
+	})
+
+	client := NewOpenRouterClient("test-key", srv.URL, srv.Client(), false)
+
+	got, err := client.SendEvents(
+		t.Context(),
+		"test/model",
+		"You are a test bot.",
+		nil,
+		[]protocol.IRCMessage{
+			{Kind: protocol.KindPrivMsg, From: "alice", Target: "#test", Body: "hi"},
+		},
+	)
+
+	require.NoError(t, err)
+	require.Equal(t, []PendingToolCall{
+		{ID: "call_123", Kind: ToolCallSearchMemory, Body: "favourite colour", Limit: 3},
+	}, got.PendingToolCalls)
+	require.NotNil(t, got.Conversation)
+}
+
+func TestOpenRouterClient_SendEvents_searchEnabledIncludesSearchTool(t *testing.T) {
+	var receivedBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&receivedBody))
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(structuredChatResponse(
+			`{"response":{"kind":"pass","reason":"done"}}`,
+		))
+	}))
+	t.Cleanup(srv.Close)
+
+	client := NewOpenRouterClient("test-key", srv.URL, srv.Client(), true)
+
+	_, err := client.SendEvents(
+		t.Context(),
+		"test/model",
+		"You are a test bot.",
+		nil,
+		[]protocol.IRCMessage{
+			{Kind: protocol.KindPrivMsg, From: "alice", Target: "#test", Body: "hi"},
+		},
+	)
+	require.NoError(t, err)
+
+	tools, ok := receivedBody["tools"].([]any)
+	require.True(t, ok, "expected tools in request body")
+
+	var toolNames []string
+	for _, tool := range tools {
+		toolMap := tool.(map[string]any)
+		fn := toolMap["function"].(map[string]any)
+		toolNames = append(toolNames, fn["name"].(string))
+	}
+
+	require.Contains(t, toolNames, "search_memory")
+	require.Contains(t, toolNames, "write_memory")
+	require.Contains(t, toolNames, "delete_memory")
+}
+
+func TestOpenRouterClient_SendEvents_searchDisabledExcludesSearchTool(t *testing.T) {
+	var receivedBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&receivedBody))
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(structuredChatResponse(
+			`{"response":{"kind":"pass","reason":"done"}}`,
+		))
+	}))
+	t.Cleanup(srv.Close)
+
+	client := NewOpenRouterClient("test-key", srv.URL, srv.Client(), false)
+
+	_, err := client.SendEvents(
+		t.Context(),
+		"test/model",
+		"You are a test bot.",
+		nil,
+		[]protocol.IRCMessage{
+			{Kind: protocol.KindPrivMsg, From: "alice", Target: "#test", Body: "hi"},
+		},
+	)
+	require.NoError(t, err)
+
+	tools, ok := receivedBody["tools"].([]any)
+	require.True(t, ok, "expected tools in request body")
+
+	var toolNames []string
+	for _, tool := range tools {
+		toolMap := tool.(map[string]any)
+		fn := toolMap["function"].(map[string]any)
+		toolNames = append(toolNames, fn["name"].(string))
+	}
+
+	require.NotContains(t, toolNames, "search_memory")
+	require.Contains(t, toolNames, "write_memory")
+	require.Contains(t, toolNames, "delete_memory")
+}
+
 func TestOpenRouterClient_SendEvents_contentFiltered(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -464,7 +571,7 @@ func TestOpenRouterClient_SendEvents_contentFiltered(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
+	client := NewOpenRouterClient("test-key", srv.URL, srv.Client(), false)
 
 	_, err := client.SendEvents(
 		t.Context(), "test/model", "prompt", nil,
@@ -489,7 +596,7 @@ func TestOpenRouterClient_SendEvents_truncated(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
+	client := NewOpenRouterClient("test-key", srv.URL, srv.Client(), false)
 
 	_, err := client.SendEvents(
 		t.Context(), "test/model", "prompt", nil,
@@ -514,7 +621,7 @@ func TestOpenRouterClient_SendEvents_refusal(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
+	client := NewOpenRouterClient("test-key", srv.URL, srv.Client(), false)
 
 	_, err := client.SendEvents(
 		t.Context(), "test/model", "prompt", nil,
@@ -542,7 +649,7 @@ func TestOpenRouterClient_SendEvents_emptyResponse(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
+	client := NewOpenRouterClient("test-key", srv.URL, srv.Client(), false)
 
 	_, err := client.SendEvents(
 		t.Context(), "test/model", "prompt", nil,
@@ -590,7 +697,7 @@ func TestOpenRouterClient_ContinueWithToolResults(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
+	client := NewOpenRouterClient("test-key", srv.URL, srv.Client(), false)
 
 	initial, err := client.SendEvents(
 		t.Context(),

@@ -9,6 +9,37 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 )
 
+func TestRuntime_snapshotMetrics_includes_memory_operations(t *testing.T) {
+	runtime, err := NewRuntime()
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, runtime.Shutdown(context.Background()))
+	}()
+
+	operations := []string{"memory.write", "memory.delete", "memory.search"}
+	for _, op := range operations {
+		_, span := otel.Tracer("test").Start(context.Background(), op)
+		span.SetAttributes(
+			attribute.String(AttrOperation, op),
+			attribute.String(AttrMemoryNick, "claude"),
+			attribute.String(AttrResult, ResultOK),
+		)
+		span.End()
+	}
+
+	snapshot, err := runtime.SnapshotMetrics(context.Background())
+	require.NoError(t, err)
+
+	got := make(map[string]uint64, len(snapshot.Operations))
+	for _, op := range snapshot.Operations {
+		got[op.Operation] = op.Count
+	}
+
+	for _, op := range operations {
+		require.Equal(t, uint64(1), got[op], "expected exactly one %s operation", op)
+	}
+}
+
 func TestRuntime_snapshotMetrics_includes_span_derived_usage(t *testing.T) {
 	runtime, err := NewRuntime()
 	require.NoError(t, err)

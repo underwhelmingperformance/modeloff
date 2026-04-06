@@ -6,6 +6,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -14,6 +16,10 @@ const defaultPokeInterval = 5 * time.Minute
 // FileStore implements Store by reading and writing a JSON file on disc.
 type FileStore struct {
 	path string
+
+	mu        sync.Mutex
+	callbacks map[int64]ChangeFunc
+	nextID    atomic.Int64
 }
 
 // NewFileStore creates a FileStore that persists configuration to the
@@ -21,7 +27,8 @@ type FileStore struct {
 // config.json within that directory.
 func NewFileStore(dir string) *FileStore {
 	return &FileStore{
-		path: filepath.Join(dir, "config.json"),
+		path:      filepath.Join(dir, "config.json"),
+		callbacks: make(map[int64]ChangeFunc),
 	}
 }
 
@@ -44,9 +51,11 @@ func defaults() Config {
 	}
 
 	return Config{
+		BaseURL:        "https://openrouter.ai/api/v1",
 		UserNick:       nick,
 		PokeInterval:   defaultPokeInterval,
 		NickModel:      DefaultNickModel,
+		EmbeddingModel: DefaultEmbeddingModel,
 		HighlightWords: append([]string(nil), DefaultHighlightWords...),
 	}
 }
@@ -71,8 +80,11 @@ func (s *FileStore) Load() (Config, error) {
 }
 
 // Save writes the configuration to disk, creating the directory if
-// necessary.
+// necessary. Registered change callbacks are fired after a
+// successful write with the old and new values.
 func (s *FileStore) Save(cfg Config) error {
+	old, _ := s.Load()
+
 	dir := filepath.Dir(s.path)
 
 	if err := os.MkdirAll(dir, 0o750); err != nil {
@@ -84,5 +96,37 @@ func (s *FileStore) Save(cfg Config) error {
 		return err
 	}
 
-	return os.WriteFile(s.path, data, 0o600)
+	if err := os.WriteFile(s.path, data, 0o600); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	cbs := make([]ChangeFunc, 0, len(s.callbacks))
+	for _, fn := range s.callbacks {
+		cbs = append(cbs, fn)
+	}
+	s.mu.Unlock()
+
+	for _, fn := range cbs {
+		fn(old, cfg)
+	}
+
+	return nil
+}
+
+// OnChange registers a callback to be invoked after every successful
+// Save with the old and new configuration values. The returned
+// function removes the callback when called.
+func (s *FileStore) OnChange(fn ChangeFunc) UnsubscribeFunc {
+	id := s.nextID.Add(1)
+
+	s.mu.Lock()
+	s.callbacks[id] = fn
+	s.mu.Unlock()
+
+	return func() {
+		s.mu.Lock()
+		delete(s.callbacks, id)
+		s.mu.Unlock()
+	}
 }

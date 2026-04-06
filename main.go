@@ -35,7 +35,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	memStore, err := memory.NewDefaultFileStore()
+	memStore, err := memory.NewDefaultStore(cfg, cfgStore)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error creating memory store: %v\n", err)
 		os.Exit(1)
@@ -52,7 +52,8 @@ func main() {
 		}
 	}()
 
-	apiClient := api.NewOpenRouterClient(cfg.APIKey, "", nil)
+	_, searchEnabled := memStore.(memory.Searcher)
+	apiClient := api.NewOpenRouterClient(cfg.APIKey, cfg.BaseURL, nil, searchEnabled)
 
 	sess := session.New(
 		dataStore,
@@ -61,8 +62,9 @@ func main() {
 		cfgStore,
 		domain.Nick(cfg.UserNick),
 	)
-	sess.SetAPIFactory(func(apiKey string) (api.Client, error) {
-		return api.NewOpenRouterClient(apiKey, "", nil), nil
+	sess.SetAPIFactory(func(c config.Config) (api.Client, error) {
+		_, search := memStore.(memory.Searcher)
+		return api.NewOpenRouterClient(c.APIKey, c.BaseURL, nil, search), nil
 	})
 
 	appCtx, cancelApp := context.WithCancel(context.Background())

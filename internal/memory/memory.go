@@ -16,6 +16,13 @@ type Entry struct {
 	Content string `json:"content"`
 }
 
+// SearchResult pairs a memory entry with its similarity score from a
+// vector search.
+type SearchResult struct {
+	Entry      Entry
+	Similarity float32
+}
+
 // Store defines the interface for persisting model memories.
 type Store interface {
 	// Read retrieves all memories for a given model instance.
@@ -29,4 +36,11 @@ type Store interface {
 
 	// Reset removes all memories for all instances.
 	Reset(ctx context.Context) error
+}
+
+// Searcher is an optional interface that a Store can implement to
+// provide semantic search over memories. Callers should check for
+// this with a type assertion before offering search_memory as a tool.
+type Searcher interface {
+	Search(ctx context.Context, nick domain.Nick, query string, limit int) ([]SearchResult, error)
 }
