@@ -43,6 +43,9 @@ type Session struct {
 	factory   func(string) (api.Client, error)
 	now       func() time.Time
 	events    chan domain.SessionEvent
+
+	supportedModels      map[domain.ModelID]struct{}
+	supportedModelsReady bool
 }
 
 // New creates a Session with the given dependencies.
@@ -188,6 +191,12 @@ func (s *Session) Invite(
 
 		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 		return s.attachInstanceToChannel(ctx, ch, inst)
+	}
+
+	if err := s.ensureStructuredOutputModel(ctx, modelID); err != nil {
+		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+		span.SetStatus(codes.Error, err.Error())
+		return domain.ModelInvitedEvent{}, err
 	}
 
 	if inst, err := s.findInstanceByModelID(ctx, modelID); err == nil {
@@ -546,6 +555,8 @@ func (s *Session) ListModels(ctx context.Context) ([]api.ModelInfo, error) {
 		return nil, err
 	}
 
+	s.cacheSupportedModels(models)
+
 	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 
 	return models, nil
@@ -683,6 +694,8 @@ func (s *Session) SetAPIKey(_ context.Context, apiKey string) (config.Config, er
 
 	s.api = nextClient
 	s.apiKey = apiKey
+	s.supportedModels = nil
+	s.supportedModelsReady = false
 
 	return cfg, nil
 }
@@ -827,6 +840,12 @@ func (s *Session) dispatchToInstance(
 		}
 
 		history = append(history, protocol.FromMessage(msg))
+	}
+
+	if err := s.ensureStructuredOutputModel(ctx, inst.ModelID); err != nil {
+		instanceSpan.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+		instanceSpan.SetStatus(codes.Error, err.Error())
+		return nil, fmt.Errorf("send events to %s: %w", inst.Nick, err)
 	}
 
 	memories, err := s.memoriesForInstance(ctx, inst.Nick)
@@ -1203,4 +1222,34 @@ func channelKindName(kind domain.ChannelKind) string {
 	default:
 		return "channel"
 	}
+}
+
+func (s *Session) ensureStructuredOutputModel(ctx context.Context, modelID domain.ModelID) error {
+	if !s.HasAPIKey() || s.api == nil {
+		return nil
+	}
+
+	if !s.supportedModelsReady {
+		models, err := s.api.ListModels(ctx)
+		if err != nil {
+			return fmt.Errorf("list models: %w", err)
+		}
+
+		s.cacheSupportedModels(models)
+	}
+
+	if _, ok := s.supportedModels[modelID]; !ok {
+		return domain.UnsupportedModelError{ModelID: modelID}
+	}
+
+	return nil
+}
+
+func (s *Session) cacheSupportedModels(models []api.ModelInfo) {
+	s.supportedModels = make(map[domain.ModelID]struct{}, len(models))
+	for _, model := range models {
+		s.supportedModels[model.ID] = struct{}{}
+	}
+
+	s.supportedModelsReady = true
 }

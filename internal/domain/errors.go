@@ -40,3 +40,13 @@ type InvalidDurationError struct {
 func (e InvalidDurationError) Error() string {
 	return fmt.Sprintf("invalid duration %q: %v", e.Input, e.Err)
 }
+
+// UnsupportedModelError indicates a model cannot satisfy the app's
+// strict response contract.
+type UnsupportedModelError struct {
+	ModelID ModelID
+}
+
+func (e UnsupportedModelError) Error() string {
+	return fmt.Sprintf("model does not support structured outputs: %s", e.ModelID)
+}
