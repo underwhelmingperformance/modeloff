@@ -18,13 +18,14 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
+	orderedmap "github.com/wk8/go-ordered-map/v2"
+
 	"github.com/laney/modeloff/internal/api"
 	"github.com/laney/modeloff/internal/config"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/memory"
 	"github.com/laney/modeloff/internal/observability"
 	"github.com/laney/modeloff/internal/protocol"
-	"github.com/laney/modeloff/internal/set"
 	"github.com/laney/modeloff/internal/store"
 )
 
@@ -38,7 +39,7 @@ type Session struct {
 	api    api.Client
 	config config.Store
 
-	userNick  domain.Nick
+	user      *domain.Instance
 	apiKey    string
 	nickModel domain.ModelID
 	factory   func(config.Config) (api.Client, error)
@@ -58,13 +59,16 @@ func New(
 	userNick domain.Nick,
 ) *Session {
 	sess := &Session{
-		store:    s,
-		memory:   m,
-		api:      a,
-		config:   c,
-		userNick: userNick,
-		now:      time.Now,
-		events:   make(chan domain.SessionEvent, eventBufSize),
+		store:  s,
+		memory: m,
+		api:    a,
+		config: c,
+		user: &domain.Instance{
+			Nick:     userNick,
+			Channels: orderedmap.New[domain.ChannelName, time.Time](),
+		},
+		now:    time.Now,
+		events: make(chan domain.SessionEvent, eventBufSize),
 	}
 
 	if c != nil {
@@ -102,7 +106,17 @@ func (s *Session) HasAPIKey() bool {
 
 // UserNick returns the current user nickname.
 func (s *Session) UserNick() domain.Nick {
-	return s.userNick
+	return s.user.Nick
+}
+
+// UserJoinedAt returns the time the user joined the given channel,
+// or the zero time if the user is not in the channel.
+func (s *Session) UserJoinedAt(ch domain.ChannelName) time.Time {
+	if t, ok := s.user.Channels.Get(ch); ok {
+		return t
+	}
+
+	return time.Time{}
 }
 
 // Join creates or opens a channel. Events are emitted on the
@@ -118,7 +132,7 @@ func (s *Session) Join(ctx context.Context, channelName string) error {
 		created = true
 
 		members := domain.NewMemberList()
-		members.Add(s.userNick)
+		members.Add(s.user.Nick)
 
 		ch := domain.Channel{
 			Name:    name,
@@ -140,23 +154,25 @@ func (s *Session) Join(ctx context.Context, channelName string) error {
 		return fmt.Errorf("mark read: %w", err)
 	}
 
+	s.user.Channels.Set(name, now)
+
 	s.appendEvent(ctx, name, domain.ChannelJoin{
 		Channel: name,
-		Nick:    s.userNick,
+		Nick:    s.user.Nick,
 		Created: created,
 		At:      now,
 	})
 
 	s.emit(domain.JoinEvent{
 		Channel: name,
-		Nick:    s.userNick,
+		Nick:    s.user.Nick,
 		Created: created,
 		At:      now,
 	})
 
 	if created {
 		ch, _ := s.store.GetChannel(ctx, name)
-		ch.Members.SetMode(s.userNick, domain.ModeOp)
+		ch.Members.SetMode(s.user.Nick, domain.ModeOp)
 
 		if err := s.store.SaveChannel(ctx, ch); err != nil {
 			return fmt.Errorf("save channel after mode: %w", err)
@@ -164,14 +180,14 @@ func (s *Session) Join(ctx context.Context, channelName string) error {
 
 		s.appendEvent(ctx, name, domain.ChannelModeChange{
 			Channel: name,
-			Nick:    s.userNick,
+			Nick:    s.user.Nick,
 			Mode:    domain.ModeOp,
 			At:      now,
 		})
 
 		s.emit(domain.ModeChangeEvent{
 			Channel: name,
-			Nick:    s.userNick,
+			Nick:    s.user.Nick,
 			Mode:    domain.ModeOp,
 			Actor:   "ChanServ",
 			At:      now,
@@ -181,17 +197,19 @@ func (s *Session) Join(ctx context.Context, channelName string) error {
 	return nil
 }
 
-// Leave records the user leaving a channel. Events are emitted on
+// Part records the user leaving a channel. Events are emitted on
 // the session event channel.
-func (s *Session) Leave(ctx context.Context, ch domain.ChannelName) error {
+func (s *Session) Part(ctx context.Context, ch domain.ChannelName) error {
 	channel, err := s.store.GetChannel(ctx, ch)
 	if err != nil {
 		return fmt.Errorf("channel not found: %w", err)
 	}
 
-	if m, ok := channel.Members.Get(s.userNick); ok {
+	if m, ok := channel.Members.Get(s.user.Nick); ok {
 		channel.Members.Remove(m)
 	}
+
+	s.user.Channels.Delete(ch)
 
 	if err := s.store.SaveChannel(ctx, channel); err != nil {
 		return fmt.Errorf("save channel: %w", err)
@@ -201,13 +219,13 @@ func (s *Session) Leave(ctx context.Context, ch domain.ChannelName) error {
 
 	s.appendEvent(ctx, ch, domain.ChannelPart{
 		Channel: ch,
-		Nick:    s.userNick,
+		Nick:    s.user.Nick,
 		At:      now,
 	})
 
 	s.emit(domain.PartEvent{
 		Channel: ch,
-		Nick:    s.userNick,
+		Nick:    s.user.Nick,
 		At:      now,
 	})
 
@@ -220,7 +238,7 @@ func (s *Session) ListChannels(ctx context.Context) ([]domain.Channel, error) {
 }
 
 // ListInstances returns all persisted model instances.
-func (s *Session) ListInstances(ctx context.Context) ([]domain.ModelInstance, error) {
+func (s *Session) ListInstances(ctx context.Context) ([]domain.Instance, error) {
 	return s.store.ListInstances(ctx)
 }
 
@@ -281,11 +299,14 @@ func (s *Session) Invite(
 	nickResult.Usage.SetSpanAttributes(generateSpan, nickResult.RequestID)
 	generateSpan.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 
-	inst := domain.ModelInstance{
+	channels := orderedmap.New[domain.ChannelName, time.Time]()
+	channels.Set(ch, s.now())
+
+	inst := domain.Instance{
 		Nick:     nickResult.Nick,
 		ModelID:  modelID,
 		Persona:  strings.TrimSpace(persona),
-		Channels: set.NewOrdered(ch),
+		Channels: channels,
 	}
 
 	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
@@ -293,10 +314,10 @@ func (s *Session) Invite(
 	return s.attachInstanceToChannel(ctx, ch, inst)
 }
 
-func (s *Session) findInstanceByModelID(ctx context.Context, modelID domain.ModelID) (domain.ModelInstance, error) {
+func (s *Session) findInstanceByModelID(ctx context.Context, modelID domain.ModelID) (domain.Instance, error) {
 	instances, err := s.store.ListInstances(ctx)
 	if err != nil {
-		return domain.ModelInstance{}, err
+		return domain.Instance{}, err
 	}
 
 	for _, inst := range instances {
@@ -305,27 +326,25 @@ func (s *Session) findInstanceByModelID(ctx context.Context, modelID domain.Mode
 		}
 	}
 
-	return domain.ModelInstance{}, fmt.Errorf("no instance with model ID %s", modelID)
+	return domain.Instance{}, fmt.Errorf("no instance with model ID %s", modelID)
 }
 
 func (s *Session) attachInstanceToChannel(
 	ctx context.Context,
 	ch domain.ChannelName,
-	inst domain.ModelInstance,
+	inst domain.Instance,
 ) error {
 	channel, err := s.store.GetChannel(ctx, ch)
 	if err != nil {
 		return fmt.Errorf("get channel: %w", err)
 	}
 
-	inst.Channels.Add(ch)
-
-	if inst.JoinedAt == nil {
-		inst.JoinedAt = make(map[domain.ChannelName]time.Time)
+	if inst.Channels == nil {
+		inst.Channels = orderedmap.New[domain.ChannelName, time.Time]()
 	}
 
-	if _, ok := inst.JoinedAt[ch]; !ok {
-		inst.JoinedAt[ch] = s.now()
+	if _, ok := inst.Channels.Get(ch); !ok {
+		inst.Channels.Set(ch, s.now())
 	}
 
 	if err := s.store.SaveInstance(ctx, inst); err != nil {
@@ -404,7 +423,7 @@ func (s *Session) Kick(
 
 	inst, err := s.store.GetInstance(ctx, nick)
 	if err == nil {
-		inst.Channels.Remove(ch)
+		inst.Channels.Delete(ch)
 
 		if err := s.store.SaveInstance(ctx, inst); err != nil {
 			return fmt.Errorf("save instance: %w", err)
@@ -441,14 +460,14 @@ func (s *Session) SendMessage(
 	msg := domain.Message{
 		ID:      fmt.Sprintf("%d", s.now().UnixNano()),
 		Channel: ch,
-		From:    s.userNick,
+		From:    s.user.Nick,
 		Body:    body,
 		SentAt:  s.now(),
 	}
 
 	s.appendEvent(ctx, ch, domain.ChannelMessage{
 		Channel: ch,
-		From:    s.userNick,
+		From:    s.user.Nick,
 		Body:    body,
 		At:      msg.SentAt,
 	})
@@ -472,7 +491,7 @@ func (s *Session) SendAction(
 	msg := domain.Message{
 		ID:      fmt.Sprintf("%d", s.now().UnixNano()),
 		Channel: ch,
-		From:    s.userNick,
+		From:    s.user.Nick,
 		Body:    body,
 		Action:  true,
 		SentAt:  s.now(),
@@ -480,7 +499,7 @@ func (s *Session) SendAction(
 
 	s.appendEvent(ctx, ch, domain.ChannelMessage{
 		Channel: ch,
-		From:    s.userNick,
+		From:    s.user.Nick,
 		Body:    body,
 		Action:  true,
 		At:      msg.SentAt,
@@ -535,7 +554,7 @@ func (s *Session) SetTopic(
 	}
 
 	channel.Topic = topic
-	channel.TopicSetBy = s.userNick
+	channel.TopicSetBy = s.user.Nick
 	channel.TopicSetAt = s.now()
 
 	if err := s.store.SaveChannel(ctx, channel); err != nil {
@@ -546,14 +565,14 @@ func (s *Session) SetTopic(
 	s.appendEvent(ctx, ch, domain.ChannelTopicChange{
 		Channel: ch,
 		Topic:   topic,
-		By:      s.userNick,
+		By:      s.user.Nick,
 		At:      now,
 	})
 
 	s.emit(domain.TopicChangeEvent{
 		Channel: ch,
 		Topic:   topic,
-		By:      s.userNick,
+		By:      s.user.Nick,
 		At:      now,
 	})
 
@@ -581,9 +600,9 @@ func (s *Session) ChangeNick(
 		return fmt.Errorf("save config: %w", err)
 	}
 
-	oldNick := s.userNick
+	oldNick := s.user.Nick
 	now := s.now()
-	s.userNick = newNick
+	s.user.Nick = newNick
 
 	// Update membership and emit a nick change event per channel.
 	channels, _ := s.store.ListChannels(ctx)
@@ -620,7 +639,7 @@ func (s *Session) ChangeNick(
 }
 
 // Whois returns metadata about a model instance.
-func (s *Session) Whois(ctx context.Context, nick domain.Nick) (domain.ModelInstance, error) {
+func (s *Session) Whois(ctx context.Context, nick domain.Nick) (domain.Instance, error) {
 	return s.store.GetInstance(ctx, nick)
 }
 
@@ -731,8 +750,8 @@ func (s *Session) OpenDM(ctx context.Context, nick domain.Nick) (domain.Channel,
 	created := false
 	if err != nil {
 		members := domain.NewMemberList()
-		members.Add(s.userNick)
-		members.SetMode(s.userNick, domain.ModeOp)
+		members.Add(s.user.Nick)
+		members.SetMode(s.user.Nick, domain.ModeOp)
 		members.Add(nick)
 		members.SetMode(nick, domain.ModeVoice)
 
@@ -750,14 +769,12 @@ func (s *Session) OpenDM(ctx context.Context, nick domain.Nick) (domain.Channel,
 		created = true
 	}
 
-	if inst.Channels.Add(name) {
-		if inst.JoinedAt == nil {
-			inst.JoinedAt = make(map[domain.ChannelName]time.Time)
-		}
+	if inst.Channels == nil {
+		inst.Channels = orderedmap.New[domain.ChannelName, time.Time]()
+	}
 
-		if _, ok := inst.JoinedAt[name]; !ok {
-			inst.JoinedAt[name] = s.now()
-		}
+	if _, ok := inst.Channels.Get(name); !ok {
+		inst.Channels.Set(name, s.now())
 
 		if err := s.store.SaveInstance(ctx, inst); err != nil {
 			return domain.Channel{}, false, fmt.Errorf("save instance: %w", err)
@@ -1013,7 +1030,7 @@ func (s *Session) dispatchToInstances(
 func (s *Session) dispatchToInstance(
 	ctx context.Context,
 	channel domain.Channel,
-	inst domain.ModelInstance,
+	inst domain.Instance,
 	channelName domain.ChannelName,
 	historyEvents []domain.StoredEvent,
 	events []protocol.IRCMessage,
@@ -1027,7 +1044,7 @@ func (s *Session) dispatchToInstance(
 	)
 	defer instanceSpan.End()
 
-	joinedAt := inst.JoinedAt[channelName]
+	joinedAt, _ := inst.Channels.Get(channelName)
 
 	history := make([]protocol.IRCMessage, 0, len(historyEvents))
 	for _, se := range historyEvents {
@@ -1117,20 +1134,20 @@ func (s *Session) dispatchToInstance(
 	return replies, nil
 }
 
-func (s *Session) instancesForChannel(ctx context.Context, channel domain.Channel) ([]domain.ModelInstance, error) {
+func (s *Session) instancesForChannel(ctx context.Context, channel domain.Channel) ([]domain.Instance, error) {
 	instances, err := s.store.ListInstances(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	indexed := make(map[domain.Nick]domain.ModelInstance, len(instances))
+	indexed := make(map[domain.Nick]domain.Instance, len(instances))
 	for _, inst := range instances {
 		indexed[inst.Nick] = inst
 	}
 
-	filtered := make([]domain.ModelInstance, 0, channel.Members.Len())
+	filtered := make([]domain.Instance, 0, channel.Members.Len())
 	for nick := range channel.Members.Nicks() {
-		if nick == s.userNick {
+		if nick == s.user.Nick {
 			continue
 		}
 
@@ -1228,7 +1245,7 @@ func (s *Session) memoriesForInstance(ctx context.Context, nick domain.Nick) ([]
 	return s.memory.Read(ctx, nick)
 }
 
-func buildSystemPrompt(ch domain.Channel, inst domain.ModelInstance, memories []memory.Entry) string {
+func buildSystemPrompt(ch domain.Channel, inst domain.Instance, memories []memory.Entry) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, `You are %s on %s. You are an IRC regular — you've been here a while and you fit in naturally.
@@ -1314,7 +1331,7 @@ const (
 // multiple API turns if the model uses memory tools.
 func (s *Session) sendWithRetry(
 	ctx context.Context,
-	inst domain.ModelInstance,
+	inst domain.Instance,
 	prompt string,
 	history []protocol.IRCMessage,
 	events []protocol.IRCMessage,
@@ -1370,7 +1387,7 @@ func (s *Session) sendWithRetry(
 // until the model calls reply or pass, or maxToolLoopTurns is reached.
 func (s *Session) sendWithMemoryLoop(
 	ctx context.Context,
-	inst domain.ModelInstance,
+	inst domain.Instance,
 	prompt string,
 	history []protocol.IRCMessage,
 	events []protocol.IRCMessage,

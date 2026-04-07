@@ -59,7 +59,7 @@ func (PartCommand) Run(rc Context) tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		if err := rc.Session.Leave(rc.Ctx, rc.Active); err != nil {
+		if err := rc.Session.Part(rc.Ctx, rc.Active); err != nil {
 			return errorEvent("part", err)
 		}
 

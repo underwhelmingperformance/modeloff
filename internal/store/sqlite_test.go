@@ -7,9 +7,9 @@ import (
 
 	_ "github.com/ncruces/go-sqlite3/driver"
 	"github.com/stretchr/testify/require"
+	orderedmap "github.com/wk8/go-ordered-map/v2"
 
 	"github.com/laney/modeloff/internal/domain"
-	"github.com/laney/modeloff/internal/set"
 )
 
 var testTime = time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC)
@@ -377,11 +377,15 @@ func TestSQLiteStore_SaveAndGetInstance(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
 
-	inst := domain.ModelInstance{
+	channels := orderedmap.New[domain.ChannelName, time.Time]()
+	channels.Set("#general", testTime)
+	channels.Set("#dev", testTime)
+
+	inst := domain.Instance{
 		Nick:     "claude",
 		ModelID:  "anthropic/claude-3-haiku",
 		Persona:  "Helpful assistant",
-		Channels: set.NewOrdered[domain.ChannelName]("#general", "#dev"),
+		Channels: channels,
 	}
 
 	require.NoError(t, s.SaveInstance(ctx, inst))
@@ -402,7 +406,7 @@ func TestSQLiteStore_DeleteInstance(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
 
-	inst := domain.ModelInstance{Nick: "temp", ModelID: "test/model"}
+	inst := domain.Instance{Nick: "temp", ModelID: "test/model"}
 	require.NoError(t, s.SaveInstance(ctx, inst))
 	require.NoError(t, s.DeleteInstance(ctx, "temp"))
 
@@ -414,7 +418,7 @@ func TestSQLiteStore_ListInstances(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
 
-	instances := []domain.ModelInstance{
+	instances := []domain.Instance{
 		{Nick: "a", ModelID: "model/a"},
 		{Nick: "b", ModelID: "model/b"},
 	}
@@ -546,7 +550,7 @@ func TestSQLiteStore_Reset(t *testing.T) {
 		Channel: "#general", Nick: "alice", At: testTime,
 	})
 	require.NoError(t, err)
-	require.NoError(t, s.SaveInstance(ctx, domain.ModelInstance{
+	require.NoError(t, s.SaveInstance(ctx, domain.Instance{
 		Nick: "botty", ModelID: "test/model",
 	}))
 	require.NoError(t, s.SetLastChannel(ctx, "#general"))

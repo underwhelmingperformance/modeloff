@@ -92,7 +92,7 @@ func TestApp_open_dm_and_send_message(t *testing.T) {
 	apiClient := &integrationAPI{}
 	sess, store := newIntegrationSession(t, apiClient)
 	uitest.SeedChannel(t, sess, "#general")
-	seedInstance(t, store, domain.ModelInstance{
+	seedInstance(t, store, domain.Instance{
 		Nick:    "botty",
 		ModelID: "test/model",
 	})
@@ -382,7 +382,7 @@ func advanceConnection(tm *uitest.App, ticks int) {
 	}
 }
 
-func seedInstance(t *testing.T, store *storemod.SQLiteStore, inst domain.ModelInstance) {
+func seedInstance(t *testing.T, store *storemod.SQLiteStore, inst domain.Instance) {
 	t.Helper()
 
 	require.NoError(t, store.SaveInstance(t.Context(), inst))

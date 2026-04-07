@@ -33,7 +33,7 @@ type Grammar struct {
 // always reflects the latest state without rebuilding.
 type Sources struct {
 	Channels      func() iter.Seq[domain.Channel]
-	Instances     func() iter.Seq[domain.ModelInstance]
+	Instances     func() iter.Seq[domain.Instance]
 	ActiveChannel func() domain.ChannelName
 	ActiveMembers func() iter.Seq[domain.Nick]
 	UserNick      func() domain.Nick

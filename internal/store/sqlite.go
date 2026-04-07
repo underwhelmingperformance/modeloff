@@ -221,35 +221,35 @@ func (s *SQLiteStore) EventsFrom(ctx context.Context, ch domain.ChannelName, fro
 }
 
 // ListInstances implements Store.
-func (s *SQLiteStore) ListInstances(ctx context.Context) ([]domain.ModelInstance, error) {
+func (s *SQLiteStore) ListInstances(ctx context.Context) ([]domain.Instance, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT data FROM instances ORDER BY nick`)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
 
-	return scanJSON[domain.ModelInstance](rows)
+	return scanJSON[domain.Instance](rows)
 }
 
 // GetInstance implements Store.
-func (s *SQLiteStore) GetInstance(ctx context.Context, nick domain.Nick) (domain.ModelInstance, error) {
+func (s *SQLiteStore) GetInstance(ctx context.Context, nick domain.Nick) (domain.Instance, error) {
 	var data string
 
 	err := s.db.QueryRowContext(ctx, `SELECT data FROM instances WHERE nick = ?`, nick).Scan(&data)
 	if err != nil {
-		return domain.ModelInstance{}, fmt.Errorf("instance %q: %w", nick, err)
+		return domain.Instance{}, fmt.Errorf("instance %q: %w", nick, err)
 	}
 
-	var inst domain.ModelInstance
+	var inst domain.Instance
 	if err := json.Unmarshal([]byte(data), &inst); err != nil {
-		return domain.ModelInstance{}, err
+		return domain.Instance{}, err
 	}
 
 	return inst, nil
 }
 
 // SaveInstance implements Store.
-func (s *SQLiteStore) SaveInstance(ctx context.Context, inst domain.ModelInstance) error {
+func (s *SQLiteStore) SaveInstance(ctx context.Context, inst domain.Instance) error {
 	data, err := json.Marshal(inst)
 	if err != nil {
 		return err

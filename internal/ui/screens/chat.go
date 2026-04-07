@@ -50,7 +50,7 @@ type ChatScreen struct {
 	keyMap components.ChatScreenKeyMap
 
 	channels   *set.Sorted[domain.Channel]
-	instances  *set.Sorted[domain.ModelInstance]
+	instances  *set.Sorted[domain.Instance]
 	liveModels *[]chatcmd.ModelOption
 	parser     chatcmd.Parser
 	replyQueue []domain.ModelReplyEvent
@@ -80,7 +80,7 @@ func NewChatScreen(ctx context.Context, sess *session.Session) ChatScreen {
 		channels: set.NewSorted(func(a, b domain.Channel) bool {
 			return a.Name < b.Name
 		}),
-		instances: set.NewSorted(func(a, b domain.ModelInstance) bool {
+		instances: set.NewSorted(func(a, b domain.Instance) bool {
 			return a.Nick < b.Nick
 		}),
 		active:     &active,
@@ -359,7 +359,7 @@ func msgCmd(msg tea.Msg) tea.Cmd {
 func (s ChatScreen) buildParser() chatcmd.Parser {
 	return chatcmd.BuildParser(chatcmd.Sources{
 		Channels:      func() iter.Seq[domain.Channel] { return s.channels.All() },
-		Instances:     func() iter.Seq[domain.ModelInstance] { return s.instances.All() },
+		Instances:     func() iter.Seq[domain.Instance] { return s.instances.All() },
 		ActiveChannel: func() domain.ChannelName { return *s.active },
 		ActiveMembers: func() iter.Seq[domain.Nick] { return s.activeMemberNicks() },
 		UserNick:      func() domain.Nick { return s.sess.UserNick() },

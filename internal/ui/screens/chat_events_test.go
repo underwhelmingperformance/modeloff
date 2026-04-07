@@ -19,7 +19,7 @@ func TestChatScreen_PartEvent_leaving_active_switches_channel(t *testing.T) {
 	tm.WaitFor("#random")
 
 	// Part #random via the session — events flow through the event channel.
-	require.NoError(t, sess.Leave(t.Context(), "#random"))
+	require.NoError(t, sess.Part(t.Context(), "#random"))
 
 	tm.WaitFor("Created channel #general")
 
@@ -36,7 +36,7 @@ func TestChatScreen_PartEvent_leaving_last_channel_shows_welcome(t *testing.T) {
 	tm := newChatApp(t, sess)
 	tm.WaitFor("#only")
 
-	require.NoError(t, sess.Leave(t.Context(), "#only"))
+	require.NoError(t, sess.Part(t.Context(), "#only"))
 
 	tm.WaitFor(
 		"Welcome to modeloff",

@@ -329,8 +329,8 @@ func (s ChatScreen) handleModelKickedEvent(msg domain.ModelKickedEvent) (ui.Mode
 	}
 
 	// Update the instance's channel list.
-	if inst, ok := s.instances.Get(domain.ModelInstance{Nick: msg.Nick}); ok {
-		inst.Channels.Remove(msg.Channel)
+	if inst, ok := s.instances.Get(domain.Instance{Nick: msg.Nick}); ok {
+		inst.Channels.Delete(msg.Channel)
 		s.instances.Insert(inst)
 	}
 

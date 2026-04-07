@@ -131,10 +131,10 @@ func renderWhoisEvent(w domain.ChannelWhois) string {
 		lines = append(lines, fmt.Sprintf("  persona: %s", w.Instance.Persona))
 	}
 
-	if len(w.Instance.Channels) > 0 {
+	if w.Instance.Channels != nil && w.Instance.Channels.Len() > 0 {
 		var chStrs []string
-		for ch := range w.Instance.Channels.Sorted() {
-			chStrs = append(chStrs, string(ch))
+		for pair := w.Instance.Channels.Oldest(); pair != nil; pair = pair.Next() {
+			chStrs = append(chStrs, string(pair.Key))
 		}
 
 		lines = append(lines, fmt.Sprintf("  channels: %s", strings.Join(chStrs, ", ")))

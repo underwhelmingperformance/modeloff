@@ -33,7 +33,7 @@ type HelpResult struct{}
 
 // WhoisResult carries the instance metadata for a /whois reply.
 type WhoisResult struct {
-	Instance domain.ModelInstance
+	Instance domain.Instance
 }
 
 // TopicInfoResult carries the current topic metadata for display.

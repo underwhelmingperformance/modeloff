@@ -26,9 +26,9 @@ type Store interface {
 
 	// Model instances
 
-	ListInstances(ctx context.Context) ([]domain.ModelInstance, error)
-	GetInstance(ctx context.Context, nick domain.Nick) (domain.ModelInstance, error)
-	SaveInstance(ctx context.Context, inst domain.ModelInstance) error
+	ListInstances(ctx context.Context) ([]domain.Instance, error)
+	GetInstance(ctx context.Context, nick domain.Nick) (domain.Instance, error)
+	SaveInstance(ctx context.Context, inst domain.Instance) error
 	DeleteInstance(ctx context.Context, nick domain.Nick) error
 
 	// State

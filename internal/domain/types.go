@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/laney/modeloff/internal/set"
+	orderedmap "github.com/wk8/go-ordered-map/v2"
 )
 
 // Nick represents a user or model nickname in the system.
@@ -67,15 +68,19 @@ type Message struct {
 	SentAt  time.Time
 }
 
-// ModelInstance represents a specific instance of a model that has been
-// invited into the system. Each instance has its own nick and persona.
-type ModelInstance struct {
+// Instance represents an actor on the IRC server. Both the human
+// user and model instances share this type. The human user has an
+// empty ModelID.
+type Instance struct {
 	Nick     Nick
 	ModelID  ModelID
 	Persona  string
-	Channels set.Ordered[ChannelName]
-	JoinedAt map[ChannelName]time.Time
+	Channels *orderedmap.OrderedMap[ChannelName, time.Time]
 }
+
+// IsModel reports whether the instance is a model (as opposed to
+// the human user).
+func (i Instance) IsModel() bool { return i.ModelID != "" }
 
 // NickMode represents a user's privilege level in a channel, following
 // IRC conventions.
@@ -262,9 +267,4 @@ func (ml *MemberList) UnmarshalJSON(data []byte) error {
 	}
 
 	return nil
-}
-
-// User represents the local user of the application.
-type User struct {
-	Nick Nick
 }

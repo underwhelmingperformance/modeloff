@@ -5,11 +5,13 @@ import (
 	"slices"
 	"testing"
 
+	"time"
+
 	"github.com/stretchr/testify/require"
+	orderedmap "github.com/wk8/go-ordered-map/v2"
 
 	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
-	"github.com/laney/modeloff/internal/set"
 )
 
 func testSources() Sources {
@@ -17,8 +19,12 @@ func testSources() Sources {
 		{Name: "#general", Topic: "Welcome"},
 		{Name: "#random"},
 	}
-	instances := []domain.ModelInstance{
-		{Nick: "haiku", ModelID: "anthropic/haiku", Channels: set.NewOrdered[domain.ChannelName]("#general")},
+	instances := []domain.Instance{
+		{Nick: "haiku", ModelID: "anthropic/haiku", Channels: func() *orderedmap.OrderedMap[domain.ChannelName, time.Time] {
+			m := orderedmap.New[domain.ChannelName, time.Time]()
+			m.Set("#general", time.Time{})
+			return m
+		}()},
 		{Nick: "sonnet", ModelID: "anthropic/sonnet"},
 	}
 	members := []domain.Nick{"testuser", "haiku"}
@@ -29,7 +35,7 @@ func testSources() Sources {
 
 	return Sources{
 		Channels:      func() iter.Seq[domain.Channel] { return slices.Values(channels) },
-		Instances:     func() iter.Seq[domain.ModelInstance] { return slices.Values(instances) },
+		Instances:     func() iter.Seq[domain.Instance] { return slices.Values(instances) },
 		ActiveChannel: func() domain.ChannelName { return "#general" },
 		ActiveMembers: func() iter.Seq[domain.Nick] { return slices.Values(members) },
 		UserNick:      func() domain.Nick { return "testuser" },

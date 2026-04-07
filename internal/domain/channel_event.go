@@ -190,9 +190,9 @@ func (ChannelHelp) ModelVisible() bool { return false }
 
 // ChannelWhois records /whois output.
 type ChannelWhois struct {
-	Channel  ChannelName   `json:"channel"`
-	Instance ModelInstance `json:"instance"`
-	At       time.Time     `json:"at"`
+	Channel  ChannelName `json:"channel"`
+	Instance Instance    `json:"instance"`
+	At       time.Time   `json:"at"`
 }
 
 func (ChannelWhois) channelEvent()                 {}

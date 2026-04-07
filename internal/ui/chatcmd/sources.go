@@ -54,7 +54,7 @@ func ActiveMembersSource(members iter.Seq[domain.Nick], userNick domain.Nick) co
 }
 
 // InstancesSource suggests known instance nicks.
-func InstancesSource(instances iter.Seq[domain.ModelInstance]) command.SuggestionSource {
+func InstancesSource(instances iter.Seq[domain.Instance]) command.SuggestionSource {
 	return func(_ command.InvocationState) []command.Suggestion {
 		if instances == nil {
 			return nil
@@ -76,7 +76,7 @@ func InstancesSource(instances iter.Seq[domain.ModelInstance]) command.Suggestio
 
 // ReusableInstancesSource suggests instance nicks not already in the
 // given active channel.
-func ReusableInstancesSource(instances iter.Seq[domain.ModelInstance], active domain.ChannelName) command.SuggestionSource {
+func ReusableInstancesSource(instances iter.Seq[domain.Instance], active domain.ChannelName) command.SuggestionSource {
 	return func(_ command.InvocationState) []command.Suggestion {
 		if instances == nil {
 			return nil
@@ -85,8 +85,10 @@ func ReusableInstancesSource(instances iter.Seq[domain.ModelInstance], active do
 		var suggestions []command.Suggestion
 
 		for inst := range instances {
-			if inst.Channels.Has(active) {
-				continue
+			if inst.Channels != nil {
+				if _, ok := inst.Channels.Get(active); ok {
+					continue
+				}
 			}
 
 			suggestions = append(suggestions, command.Suggestion{

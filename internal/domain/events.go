@@ -46,7 +46,7 @@ type TopicChangeEvent struct {
 // channel.
 type ModelInvitedEvent struct {
 	Channel  ChannelName
-	Instance ModelInstance
+	Instance Instance
 	At       time.Time
 }
 
@@ -141,7 +141,7 @@ func (DispatchDoneEvent) sessionEvent()    {}
 // after loading from the session at startup.
 type InitialLoadEvent struct {
 	Channels  []Channel
-	Instances []ModelInstance
+	Instances []Instance
 	Active    ChannelName
 	Topic     string
 	Unread    map[ChannelName]int
