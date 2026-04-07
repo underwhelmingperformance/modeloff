@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -400,6 +401,74 @@ func TestSession_ProcessPendingQuit_dispatches_and_clears(t *testing.T) {
 
 	// Model should have been dispatched a QUIT event.
 	require.Equal(t, []string{"testuser"}, dispatched)
+
+	// Pending quit should be cleared.
+	got, err := s.GetPendingQuit(ctx)
+	require.NoError(t, err)
+	require.Nil(t, got)
+}
+
+func TestSession_ProcessPendingQuit_multi_channel(t *testing.T) {
+	var mu sync.Mutex
+	var dispatchedModels []string
+
+	fake := &fakeAPIClient{
+		sendEventsFn: func(_ context.Context, modelID domain.ModelID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			for _, ev := range events {
+				if ev.Kind == protocol.KindQuit {
+					mu.Lock()
+					dispatchedModels = append(dispatchedModels, string(modelID))
+					mu.Unlock()
+				}
+			}
+
+			return protocol.Reply("bye"), nil
+		},
+	}
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "alpha", "beta")
+	seedChannelWithMembers(t, s, "#random", "testuser", "gamma")
+
+	seedInstance(t, s, domain.Instance{
+		Nick:     "alpha",
+		ModelID:  "test/alpha",
+		Channels: testChannels("#general"),
+	})
+	seedInstance(t, s, domain.Instance{
+		Nick:     "beta",
+		ModelID:  "test/beta",
+		Channels: testChannels("#general"),
+	})
+	seedInstance(t, s, domain.Instance{
+		Nick:     "gamma",
+		ModelID:  "test/gamma",
+		Channels: testChannels("#random"),
+	})
+
+	pq := domain.PendingQuit{
+		Nick:     "testuser",
+		Message:  "goodnight all",
+		At:       fixedTime,
+		Channels: []domain.ChannelName{"#general", "#random"},
+	}
+	require.NoError(t, s.SavePendingQuit(ctx, pq))
+
+	require.NoError(t, sess.ProcessPendingQuit(ctx))
+
+	// Quit events should be appended to each channel.
+	generalEvents := channelEventTypes(t, s, "#general")
+	require.Contains(t, generalEvents, "quit")
+
+	randomEvents := channelEventTypes(t, s, "#random")
+	require.Contains(t, randomEvents, "quit")
+
+	// All models across both channels should have been dispatched.
+	mu.Lock()
+	defer mu.Unlock()
+
+	require.ElementsMatch(t, []string{"test/alpha", "test/beta", "test/gamma"}, dispatchedModels)
 
 	// Pending quit should be cleared.
 	got, err := s.GetPendingQuit(ctx)
@@ -2780,6 +2849,21 @@ func channelMessages(t *testing.T, s *storemod.SQLiteStore, ch domain.ChannelNam
 	}
 
 	return msgs
+}
+
+func channelEventTypes(t *testing.T, s *storemod.SQLiteStore, ch domain.ChannelName) []string {
+	t.Helper()
+
+	events, err := s.EventsBefore(t.Context(), ch, nil, 1000)
+	require.NoError(t, err)
+
+	types := make([]string, len(events))
+
+	for i, se := range events {
+		types[i] = domain.ChannelEventType(se.Event)
+	}
+
+	return types
 }
 
 func TestSession_DispatchToChannel_content_filtered_returns_silence(t *testing.T) {

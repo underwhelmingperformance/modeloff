@@ -29,6 +29,10 @@ import (
 	"github.com/laney/modeloff/internal/store"
 )
 
+// eventBufSize is the capacity of the session event channel. It must
+// be large enough that normal event bursts (join + mode change, message
+// + dispatch started/done) don't block callers. Anything that writes
+// to this channel without a consumer draining it risks deadlock.
 const eventBufSize = 64
 
 // Session is the backend coordinator. It bridges the UI layer and
@@ -293,14 +297,8 @@ func (s *Session) ProcessPendingQuit(ctx context.Context) error {
 			At:      pq.At,
 		})
 
-		replies, err := s.DispatchToChannel(ctx, ch, []protocol.IRCMessage{quitMsg})
-		if err != nil {
+		if _, err := s.DispatchToChannel(ctx, ch, []protocol.IRCMessage{quitMsg}); err != nil {
 			slog.Default().ErrorContext(ctx, "process pending quit dispatch", "channel", ch, "error", err)
-			continue
-		}
-
-		for _, reply := range replies {
-			s.emitUIOnly(reply)
 		}
 	}
 
@@ -1316,31 +1314,22 @@ func (s *Session) instanceChannelNames(inst domain.Instance) []domain.ChannelNam
 }
 
 func (s *Session) instancesForChannel(ctx context.Context, channel domain.Channel) ([]domain.Instance, error) {
-	instances, err := s.store.ListInstances(ctx)
-	if err != nil {
-		return nil, err
-	}
+	var instances []domain.Instance
 
-	indexed := make(map[domain.Nick]domain.Instance, len(instances))
-	for _, inst := range instances {
-		indexed[inst.Nick] = inst
-	}
-
-	filtered := make([]domain.Instance, 0, channel.Members.Len())
 	for nick := range channel.Members.Nicks() {
 		if nick == s.user.Nick {
 			continue
 		}
 
-		inst, ok := indexed[nick]
-		if !ok {
+		inst, err := s.store.GetInstance(ctx, nick)
+		if err != nil {
 			continue
 		}
 
-		filtered = append(filtered, inst)
+		instances = append(instances, inst)
 	}
 
-	return filtered, nil
+	return instances, nil
 }
 
 // EventsBefore returns up to n events before the given ID (or the
@@ -1572,8 +1561,7 @@ func (s *Session) sendWithRetry(
 	events []protocol.IRCMessage,
 	mem MemoryExecutor,
 ) (api.CompletionResult, error) {
-	for attempt := range maxNewlineRetries + 1 {
-		_ = attempt
+	for range maxNewlineRetries + 1 {
 
 		result, err := s.sendWithMemoryLoop(ctx, inst, prompt, history, events, mem)
 		if err != nil {
@@ -1633,8 +1621,7 @@ func (s *Session) sendWithMemoryLoop(
 		return api.CompletionResult{}, err
 	}
 
-	for turn := range maxToolLoopTurns {
-		_ = turn
+	for range maxToolLoopTurns {
 
 		if len(result.PendingToolCalls) == 0 {
 			return result, nil
