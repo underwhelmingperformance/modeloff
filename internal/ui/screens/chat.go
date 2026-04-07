@@ -153,7 +153,7 @@ func (s ChatScreen) Init() tea.Cmd {
 		}
 	}
 
-	cmds := []tea.Cmd{loadInitial, s.loadLiveModels(), s.listenForEvents()}
+	cmds := []tea.Cmd{loadInitial, s.processPendingQuit(), s.loadLiveModels(), s.listenForEvents()}
 
 	if s.obs != nil {
 		cmds = append(cmds, s.summary.Init(), s.waitForLogUpdateCmd())
@@ -282,6 +282,9 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 	case domain.PartEvent:
 		return s.handlePartEvent(msg)
+
+	case domain.QuitEvent:
+		return s.handleQuitEvent(msg)
 
 	case domain.TopicChangeEvent:
 		return s.handleTopicChangeEvent(msg)
@@ -438,6 +441,10 @@ func (s ChatScreen) logAndShow(event domain.ChannelEvent) tea.Cmd {
 // channel from the event log and sends them as a HistoryLoadedMsg.
 // The number of events fetched is based on the viewport height.
 func (s ChatScreen) fetchHistory(ch domain.ChannelName) tea.Cmd {
+	return s.fetchHistoryAfter(ch, time.Time{})
+}
+
+func (s ChatScreen) fetchHistoryAfter(ch domain.ChannelName, after time.Time) tea.Cmd {
 	if ch == "" {
 		return nil
 	}
@@ -450,7 +457,32 @@ func (s ChatScreen) fetchHistory(ch domain.ChannelName) tea.Cmd {
 			return nil
 		}
 
+		if !after.IsZero() {
+			filtered := events[:0]
+			for _, evt := range events {
+				if !domain.ChannelEventTime(evt.Event).Before(after) {
+					filtered = append(filtered, evt)
+				}
+			}
+
+			events = filtered
+		}
+
 		return components.HistoryLoadedMsg{Events: events}
+	}
+}
+
+func (s ChatScreen) processPendingQuit() tea.Cmd {
+	return func() tea.Msg {
+		if err := s.sess.ProcessPendingQuit(s.ctx); err != nil {
+			return domain.ErrorEvent{
+				Operation: "pending quit",
+				Err:       err,
+				At:        time.Now(),
+			}
+		}
+
+		return nil
 	}
 }
 

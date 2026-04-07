@@ -385,6 +385,28 @@ func TestChatScreen_unknown_command_shows_error(t *testing.T) {
 	tm.WaitFor("unknown command: /unknown")
 }
 
+func TestChatScreen_part_command_with_message(t *testing.T) {
+	sess := newTestSession(t)
+	uitest.SeedChannel(t, sess, "#general")
+	uitest.SeedChannel(t, sess, "#random")
+
+	tm := newChatApp(t, sess)
+	tm.WaitFor("#random")
+
+	tm.Submit("/part see you later")
+}
+
+func TestChatScreen_quit_command_with_message(t *testing.T) {
+	sess := newTestSession(t)
+	uitest.SeedChannel(t, sess, "#general")
+
+	tm := newChatApp(t, sess)
+	tm.WaitFor("#general")
+
+	tm.Submit("/quit goodbye world")
+	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
+}
+
 func TestChatScreen_View_responsive(t *testing.T) {
 	newChatAppInChannel(t, "#general")
 }

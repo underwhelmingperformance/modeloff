@@ -98,6 +98,47 @@ func TestChatScreen_TopicChangeEvent_different_channel(t *testing.T) {
 	require.NotContains(t, view, "Random topic")
 }
 
+func TestChatScreen_QuitEvent_shows_quit_message(t *testing.T) {
+	sess := newTestSession(t)
+	uitest.SeedChannel(t, sess, "#general")
+
+	require.NoError(t, sess.Invite(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
+	uitest.DrainEvents(sess)
+
+	tm := newChatApp(t, sess)
+	tm.WaitFor("#general")
+
+	tm.Send(domain.QuitEvent{
+		Nick:    "fakenick",
+		Message: "shutting down",
+		At:      time.Now(),
+	})
+
+	tm.WaitFor("fakenick has quit (shutting down)")
+}
+
+func TestChatScreen_QuitEvent_removes_instance_from_nick_list(t *testing.T) {
+	sess := newTestSession(t)
+	uitest.SeedChannel(t, sess, "#general")
+
+	require.NoError(t, sess.Invite(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
+	uitest.DrainEvents(sess)
+
+	tm := newChatApp(t, sess)
+	tm.WaitFor("#general", "fakenick")
+
+	tm.Send(domain.QuitEvent{
+		Nick:    "fakenick",
+		Message: "",
+		At:      time.Now(),
+	})
+
+	tm.WaitFor("fakenick has quit")
+
+	view := tm.CurrentView()
+	require.Contains(t, view, "fakenick has quit")
+}
+
 func TestChatScreen_MessageEvent_inactive_channel(t *testing.T) {
 	sess := newTestSession(t)
 	uitest.SeedChannel(t, sess, "#general")

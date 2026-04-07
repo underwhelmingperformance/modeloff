@@ -45,8 +45,20 @@ func renderChannelEvent(event domain.ChannelEvent, width int, highlightWords []s
 		return wrap.Render(theme.SystemEvent.Render("*** " + text))
 
 	case domain.ChannelPart:
-		return wrap.Render(theme.SystemEvent.Render(
-			fmt.Sprintf("*** %s has left %s", e.Nick, e.Channel)))
+		text := fmt.Sprintf("%s has left %s", e.Nick, e.Channel)
+		if e.Message != "" {
+			text += fmt.Sprintf(" (%s)", e.Message)
+		}
+
+		return wrap.Render(theme.SystemEvent.Render("*** " + text))
+
+	case domain.ChannelQuit:
+		text := fmt.Sprintf("%s has quit", e.Nick)
+		if e.Message != "" {
+			text += fmt.Sprintf(" (%s)", e.Message)
+		}
+
+		return wrap.Render(theme.SystemEvent.Render("*** " + text))
 
 	case domain.ChannelTopicChange:
 		var text string

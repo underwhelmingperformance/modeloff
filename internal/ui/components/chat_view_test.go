@@ -508,6 +508,21 @@ func TestRenderLine_IRC_events(t *testing.T) {
 			"*** alice has left #general",
 		},
 		{
+			"part_with_message",
+			domain.StoredEvent{Event: domain.ChannelPart{Channel: "#general", Nick: "alice", Message: "see you later", At: now}},
+			"*** alice has left #general (see you later)",
+		},
+		{
+			"quit",
+			domain.StoredEvent{Event: domain.ChannelQuit{Channel: "#general", Nick: "alice", At: now}},
+			"*** alice has quit",
+		},
+		{
+			"quit_with_message",
+			domain.StoredEvent{Event: domain.ChannelQuit{Channel: "#general", Nick: "alice", Message: "shutting down", At: now}},
+			"*** alice has quit (shutting down)",
+		},
+		{
 			"nick_change",
 			domain.StoredEvent{Event: domain.ChannelNickChange{Channel: "#test", OldNick: "alice", NewNick: "bob", At: now}},
 			"*** alice is now known as bob",

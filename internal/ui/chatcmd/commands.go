@@ -49,17 +49,21 @@ func (c JoinCommand) Run(rc Context) tea.Cmd {
 	}
 }
 
-// PartCommand represents `/part`.
-type PartCommand struct{}
+// PartCommand represents `/part [message]`.
+type PartCommand struct {
+	Message []string `arg:"" optional:"" nargs:"1" help:"Optional farewell message"`
+}
 
 // Run implements Command.
-func (PartCommand) Run(rc Context) tea.Cmd {
+func (c PartCommand) Run(rc Context) tea.Cmd {
 	if rc.Active == "" {
 		return noChannelCmd()
 	}
 
+	msg := strings.TrimSpace(strings.Join(c.Message, " "))
+
 	return func() tea.Msg {
-		if err := rc.Session.Part(rc.Ctx, rc.Active, ""); err != nil {
+		if err := rc.Session.Part(rc.Ctx, rc.Active, msg); err != nil {
 			return errorEvent("part", err)
 		}
 
@@ -280,11 +284,23 @@ func (HelpCommand) Run(_ Context) tea.Cmd {
 	return func() tea.Msg { return HelpResult{} }
 }
 
-// QuitCommand represents `/quit`.
-type QuitCommand struct{}
+// QuitCommand represents `/quit [message]`.
+type QuitCommand struct {
+	Message []string `arg:"" optional:"" nargs:"1" help:"Optional farewell message"`
+}
 
 // Run implements Command.
-func (QuitCommand) Run(_ Context) tea.Cmd { return tea.Quit }
+func (c QuitCommand) Run(rc Context) tea.Cmd {
+	msg := strings.TrimSpace(strings.Join(c.Message, " "))
+
+	return func() tea.Msg {
+		if err := rc.Session.Quit(rc.Ctx, msg); err != nil {
+			return errorEvent("quit", err)
+		}
+
+		return tea.QuitMsg{}
+	}
+}
 
 // ConfigCommand is a group node whose children are the individual
 // config keys. Each subcommand has its own args and Run method.
