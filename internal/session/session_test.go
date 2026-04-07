@@ -223,9 +223,9 @@ func TestSession_model_ResponsePart_removes_from_channel(t *testing.T) {
 	fake := &fakeAPIClient{
 		sendEventsFn: func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
 			return protocol.ModelResponse{
-				Kind:        protocol.ResponsePart,
-				Messages:    []protocol.ReplyPart{{Kind: protocol.ReplyMessage, Body: "goodbye friends"}},
-				PartMessage: "off to explore",
+				Kind:            protocol.ResponsePart,
+				Messages:        []protocol.ReplyPart{{Kind: protocol.ReplyMessage, Body: "goodbye friends"}},
+				FarewellMessage: "off to explore",
 			}, nil
 		},
 	}
@@ -283,9 +283,9 @@ func TestSession_model_ResponseQuit_removes_from_all_channels(t *testing.T) {
 	fake := &fakeAPIClient{
 		sendEventsFn: func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
 			return protocol.ModelResponse{
-				Kind:        protocol.ResponseQuit,
-				Messages:    []protocol.ReplyPart{{Kind: protocol.ReplyMessage, Body: "farewell"}},
-				PartMessage: "shutting down",
+				Kind:            protocol.ResponseQuit,
+				Messages:        []protocol.ReplyPart{{Kind: protocol.ReplyMessage, Body: "farewell"}},
+				FarewellMessage: "shutting down",
 			}, nil
 		},
 	}
@@ -313,10 +313,11 @@ func TestSession_model_ResponseQuit_removes_from_all_channels(t *testing.T) {
 		Nicks:   []domain.Nick{"botty"},
 	}, events[0])
 
-	require.IsType(t, domain.QuitEvent{}, events[1])
-	quit := events[1].(domain.QuitEvent)
-	require.Equal(t, domain.Nick("botty"), quit.Nick)
-	require.Equal(t, "shutting down", quit.Message)
+	require.Equal(t, domain.QuitEvent{
+		Nick:    "botty",
+		Message: "shutting down",
+		At:      fixedTime,
+	}, events[1])
 
 	require.IsType(t, domain.ModelReplyEvent{}, events[2])
 

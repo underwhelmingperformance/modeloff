@@ -163,7 +163,7 @@ func (s *Session) Join(ctx context.Context, channelName string) error {
 		At:      now,
 	})
 
-	s.emit(domain.JoinEvent{
+	s.emit(ctx, domain.JoinEvent{
 		Channel: name,
 		Nick:    s.user.Nick,
 		Created: created,
@@ -185,7 +185,7 @@ func (s *Session) Join(ctx context.Context, channelName string) error {
 			At:      now,
 		})
 
-		s.emit(domain.ModeChangeEvent{
+		s.emit(ctx, domain.ModeChangeEvent{
 			Channel: name,
 			Nick:    s.user.Nick,
 			Mode:    domain.ModeOp,
@@ -225,7 +225,7 @@ func (s *Session) Part(ctx context.Context, ch domain.ChannelName, message strin
 		At:      now,
 	})
 
-	s.emit(domain.PartEvent{
+	s.emit(ctx, domain.PartEvent{
 		Channel: ch,
 		Nick:    s.user.Nick,
 		Message: message,
@@ -445,7 +445,7 @@ func (s *Session) attachInstanceToChannel(
 		At:      now,
 	})
 
-	s.emit(domain.ModelInvitedEvent{
+	s.emit(ctx, domain.ModelInvitedEvent{
 		Channel:  ch,
 		Instance: inst,
 		At:       now,
@@ -465,7 +465,7 @@ func (s *Session) attachInstanceToChannel(
 			At:      now,
 		})
 
-		s.emit(domain.ModeChangeEvent{
+		s.emit(ctx, domain.ModeChangeEvent{
 			Channel: ch,
 			Nick:    inst.Nick,
 			Mode:    domain.ModeVoice,
@@ -512,7 +512,7 @@ func (s *Session) Kick(
 		At:      now,
 	})
 
-	s.emit(domain.ModelKickedEvent{
+	s.emit(ctx, domain.ModelKickedEvent{
 		Channel: ch,
 		Nick:    nick,
 		At:      now,
@@ -549,7 +549,7 @@ func (s *Session) SendMessage(
 
 	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 
-	s.emit(domain.MessageEvent{Message: msg})
+	s.emit(ctx, domain.MessageEvent{Message: msg})
 
 	return nil
 }
@@ -579,7 +579,7 @@ func (s *Session) SendAction(
 		At:      msg.SentAt,
 	})
 
-	s.emit(domain.MessageEvent{Message: msg})
+	s.emit(ctx, domain.MessageEvent{Message: msg})
 
 	return nil
 }
@@ -641,7 +641,7 @@ func (s *Session) SetTopic(
 		At:      now,
 	})
 
-	s.emit(domain.TopicChangeEvent{
+	s.emit(ctx, domain.TopicChangeEvent{
 		Channel: ch,
 		Topic:   topic,
 		By:      s.user.Nick,
@@ -699,7 +699,7 @@ func (s *Session) ChangeNick(
 			At:      now,
 		})
 
-		s.emit(domain.NickChangeEvent{
+		s.emit(ctx, domain.NickChangeEvent{
 			Channel: ch.Name,
 			OldNick: oldNick,
 			NewNick: newNick,
@@ -878,7 +878,7 @@ func (s *Session) Poke(ctx context.Context) error {
 	now := s.now()
 
 	for _, ch := range channels {
-		s.emit(domain.PokeEvent{
+		s.emit(ctx, domain.PokeEvent{
 			Channel: ch.Name,
 			At:      now,
 		})
@@ -1173,14 +1173,14 @@ func (s *Session) dispatchToInstance(
 		s.appendEvent(ctx, channelName, domain.ChannelPart{
 			Channel: channelName,
 			Nick:    inst.Nick,
-			Message: response.PartMessage,
+			Message: response.FarewellMessage,
 			At:      now,
 		})
 
 		s.emitUIOnly(domain.PartEvent{
 			Channel: channelName,
 			Nick:    inst.Nick,
-			Message: response.PartMessage,
+			Message: response.FarewellMessage,
 			At:      now,
 		})
 
@@ -1198,14 +1198,14 @@ func (s *Session) dispatchToInstance(
 			s.appendEvent(ctx, ch, domain.ChannelQuit{
 				Channel: ch,
 				Nick:    inst.Nick,
-				Message: response.PartMessage,
+				Message: response.FarewellMessage,
 				At:      now,
 			})
 		}
 
 		s.emitUIOnly(domain.QuitEvent{
 			Nick:    inst.Nick,
-			Message: response.PartMessage,
+			Message: response.FarewellMessage,
 			At:      s.now(),
 		})
 
@@ -1275,6 +1275,7 @@ func (s *Session) buildReplies(
 func (s *Session) removeInstanceFromChannel(ctx context.Context, nick domain.Nick, ch domain.ChannelName) {
 	channel, err := s.store.GetChannel(ctx, ch)
 	if err != nil {
+		slog.Default().ErrorContext(ctx, "remove instance: get channel", "nick", nick, "channel", ch, "error", err)
 		return
 	}
 
@@ -1282,15 +1283,21 @@ func (s *Session) removeInstanceFromChannel(ctx context.Context, nick domain.Nic
 		channel.Members.Remove(m)
 	}
 
-	_ = s.store.SaveChannel(ctx, channel)
+	if err := s.store.SaveChannel(ctx, channel); err != nil {
+		slog.Default().ErrorContext(ctx, "remove instance: save channel", "nick", nick, "channel", ch, "error", err)
+	}
 
 	inst, err := s.store.GetInstance(ctx, nick)
 	if err != nil {
+		slog.Default().ErrorContext(ctx, "remove instance: get instance", "nick", nick, "channel", ch, "error", err)
 		return
 	}
 
 	inst.Channels.Delete(ch)
-	_ = s.store.SaveInstance(ctx, inst)
+
+	if err := s.store.SaveInstance(ctx, inst); err != nil {
+		slog.Default().ErrorContext(ctx, "remove instance: save instance", "nick", nick, "channel", ch, "error", err)
+	}
 }
 
 // instanceChannelNames returns the list of channels an instance is in.
@@ -1357,9 +1364,10 @@ func (s *Session) LogEvent(ctx context.Context, ch domain.ChannelName, event dom
 
 // emit sends an event to the UI channel and, for dispatchable event
 // types, triggers background model dispatch for the relevant channel.
-func (s *Session) emit(evt domain.SessionEvent) {
+// The context is threaded through to preserve OTel trace parenting.
+func (s *Session) emit(ctx context.Context, evt domain.SessionEvent) {
 	s.events <- evt
-	s.maybeDispatch(evt)
+	s.maybeDispatch(ctx, evt)
 }
 
 // emitUIOnly sends an event to the UI channel without triggering model
@@ -1370,32 +1378,32 @@ func (s *Session) emitUIOnly(evt domain.SessionEvent) {
 
 // maybeDispatch checks whether an event is dispatchable and, if so,
 // starts a background dispatch for the relevant channel.
-func (s *Session) maybeDispatch(evt domain.SessionEvent) {
+func (s *Session) maybeDispatch(ctx context.Context, evt domain.SessionEvent) {
 	switch e := evt.(type) {
 	case domain.MessageEvent:
 		s.dispatchInBackground(
-			context.Background(),
+			ctx,
 			e.Message.Channel,
 			[]protocol.IRCMessage{protocol.FromMessage(e.Message)},
 		)
 
 	case domain.JoinEvent:
 		s.dispatchInBackground(
-			context.Background(),
+			ctx,
 			e.Channel,
 			[]protocol.IRCMessage{protocol.FromJoinEvent(e)},
 		)
 
 	case domain.PartEvent:
 		s.dispatchInBackground(
-			context.Background(),
+			ctx,
 			e.Channel,
 			[]protocol.IRCMessage{protocol.FromPartEvent(e)},
 		)
 
 	case domain.PokeEvent:
 		s.dispatchInBackground(
-			context.Background(),
+			ctx,
 			e.Channel,
 			[]protocol.IRCMessage{{
 				Kind:   protocol.KindPoke,
@@ -1498,7 +1506,7 @@ How to behave:
 
 	b.WriteString(`
 
-You can voluntarily leave a channel by responding with kind "part", or quit the server entirely with kind "quit". When using part or quit, you may include a farewell in the part_message field and any final messages in the messages array. Quitting means you are shutting down — use it only when you genuinely want to leave permanently.`)
+You can voluntarily leave a channel by responding with kind "part", or quit the server entirely with kind "quit". When using part or quit, you may include a farewell in the farewell_message field and any final messages in the messages array. Quitting means you are shutting down — use it only when you genuinely want to leave permanently.`)
 
 	b.WriteString("\n\nYou have a personal memory system. Your current memories are shown below. You can use write_memory to store new memories and delete_memory to remove them.")
 

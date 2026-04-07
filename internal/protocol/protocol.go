@@ -104,10 +104,10 @@ type ReplyPart struct {
 // ModelResponse is the typed response from a model after receiving
 // events. The model must explicitly choose to reply or stay silent.
 type ModelResponse struct {
-	Kind        ResponseKind `json:"kind"`
-	Messages    []ReplyPart  `json:"messages,omitempty"`
-	Reason      string       `json:"reason,omitempty"`
-	PartMessage string       `json:"part_message,omitempty"`
+	Kind            ResponseKind `json:"kind"`
+	Messages        []ReplyPart  `json:"messages,omitempty"`
+	Reason          string       `json:"reason,omitempty"`
+	FarewellMessage string       `json:"farewell_message,omitempty"`
 }
 
 // FromMessage converts a stored domain message into an IRC-style
