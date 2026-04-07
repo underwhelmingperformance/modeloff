@@ -473,7 +473,6 @@ func (s *Session) SendMessage(
 	})
 
 	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-	s.dispatchInBackground(ctx, ch, []protocol.IRCMessage{protocol.FromMessage(msg)})
 
 	s.emit(domain.MessageEvent{Message: msg})
 
@@ -504,8 +503,6 @@ func (s *Session) SendAction(
 		Action:  true,
 		At:      msg.SentAt,
 	})
-
-	s.dispatchInBackground(ctx, ch, []protocol.IRCMessage{protocol.FromMessage(msg)})
 
 	s.emit(domain.MessageEvent{Message: msg})
 
@@ -803,16 +800,13 @@ func (s *Session) Poke(ctx context.Context) error {
 		return fmt.Errorf("list channels: %w", err)
 	}
 
-	for _, ch := range channels {
-		pokeEvent := protocol.IRCMessage{
-			Kind:   protocol.KindPoke,
-			From:   "modeloff",
-			Target: string(ch.Name),
-			Body:   "the channel is quiet. if something comes to mind, say it — otherwise just lurk. don't force it.",
-			At:     s.now(),
-		}
+	now := s.now()
 
-		s.dispatchInBackground(ctx, ch.Name, []protocol.IRCMessage{pokeEvent})
+	for _, ch := range channels {
+		s.emit(domain.PokeEvent{
+			Channel: ch.Name,
+			At:      now,
+		})
 	}
 
 	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
@@ -1181,8 +1175,57 @@ func (s *Session) LogEvent(ctx context.Context, ch domain.ChannelName, event dom
 	return domain.StoredEvent{ID: id, Event: event}, nil
 }
 
+// emit sends an event to the UI channel and, for dispatchable event
+// types, triggers background model dispatch for the relevant channel.
 func (s *Session) emit(evt domain.SessionEvent) {
 	s.events <- evt
+	s.maybeDispatch(evt)
+}
+
+// emitUIOnly sends an event to the UI channel without triggering model
+// dispatch. Use this for model-initiated events to prevent loops.
+func (s *Session) emitUIOnly(evt domain.SessionEvent) {
+	s.events <- evt
+}
+
+// maybeDispatch checks whether an event is dispatchable and, if so,
+// starts a background dispatch for the relevant channel.
+func (s *Session) maybeDispatch(evt domain.SessionEvent) {
+	switch e := evt.(type) {
+	case domain.MessageEvent:
+		s.dispatchInBackground(
+			context.Background(),
+			e.Message.Channel,
+			[]protocol.IRCMessage{protocol.FromMessage(e.Message)},
+		)
+
+	case domain.JoinEvent:
+		s.dispatchInBackground(
+			context.Background(),
+			e.Channel,
+			[]protocol.IRCMessage{protocol.FromJoinEvent(e)},
+		)
+
+	case domain.PartEvent:
+		s.dispatchInBackground(
+			context.Background(),
+			e.Channel,
+			[]protocol.IRCMessage{protocol.FromPartEvent(e)},
+		)
+
+	case domain.PokeEvent:
+		s.dispatchInBackground(
+			context.Background(),
+			e.Channel,
+			[]protocol.IRCMessage{{
+				Kind:   protocol.KindPoke,
+				From:   "modeloff",
+				Target: string(e.Channel),
+				Body:   "the channel is quiet. if something comes to mind, say it — otherwise just lurk. don't force it.",
+				At:     e.At,
+			}},
+		)
+	}
 }
 
 func (s *Session) appendEvent(ctx context.Context, ch domain.ChannelName, event domain.ChannelEvent) {
@@ -1192,20 +1235,20 @@ func (s *Session) appendEvent(ctx context.Context, ch domain.ChannelName, event 
 }
 
 // dispatchInBackground runs dispatch for a channel in the background,
-// emitting events to the events channel.
+// emitting events via emitUIOnly to avoid re-triggering the reactor.
 func (s *Session) dispatchInBackground(ctx context.Context, ch domain.ChannelName, triggerEvents []protocol.IRCMessage) {
 	go func() {
-		defer s.emit(domain.DispatchDoneEvent{Channel: ch})
+		defer s.emitUIOnly(domain.DispatchDoneEvent{Channel: ch})
 
 		channel, err := s.store.GetChannel(ctx, ch)
 		if err != nil {
-			s.emit(domain.ErrorEvent{Operation: "dispatch", Err: err, At: s.now()})
+			s.emitUIOnly(domain.ErrorEvent{Operation: "dispatch", Err: err, At: s.now()})
 			return
 		}
 
 		instances, err := s.instancesForChannel(ctx, channel)
 		if err != nil {
-			s.emit(domain.ErrorEvent{Operation: "dispatch", Err: err, At: s.now()})
+			s.emitUIOnly(domain.ErrorEvent{Operation: "dispatch", Err: err, At: s.now()})
 			return
 		}
 
@@ -1218,21 +1261,21 @@ func (s *Session) dispatchInBackground(ctx context.Context, ch domain.ChannelNam
 			nicks[i] = inst.Nick
 		}
 
-		s.emit(domain.DispatchStartedEvent{Channel: ch, Nicks: nicks})
+		s.emitUIOnly(domain.DispatchStartedEvent{Channel: ch, Nicks: nicks})
 
 		historyEvents, err := s.store.EventsBefore(ctx, ch, nil, 500)
 		if err != nil {
-			s.emit(domain.ErrorEvent{Operation: "dispatch", Err: err, At: s.now()})
+			s.emitUIOnly(domain.ErrorEvent{Operation: "dispatch", Err: err, At: s.now()})
 			return
 		}
 
 		replies, err := s.dispatchToInstances(ctx, ch, historyEvents, triggerEvents)
 		if err != nil {
-			s.emit(domain.ErrorEvent{Operation: "dispatch", Err: err, At: s.now()})
+			s.emitUIOnly(domain.ErrorEvent{Operation: "dispatch", Err: err, At: s.now()})
 		}
 
 		for _, reply := range replies {
-			s.emit(reply)
+			s.emitUIOnly(reply)
 		}
 	}()
 }

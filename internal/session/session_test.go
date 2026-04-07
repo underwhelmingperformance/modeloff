@@ -340,6 +340,90 @@ func TestSession_SendMessage_emits_dispatch_events(t *testing.T) {
 	}, events)
 }
 
+func TestSession_JoinEvent_triggers_dispatch(t *testing.T) {
+	var receivedEvents []protocol.IRCMessage
+
+	fake := &fakeAPIClient{
+		sendEventsFn: func(_ context.Context, _ domain.ModelID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			receivedEvents = events
+			return protocol.Reply("welcome"), nil
+		},
+	}
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := t.Context()
+
+	// Seed a channel with a model already present so join dispatch
+	// has someone to notify.
+	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+	seedInstance(t, s, domain.Instance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: testChannels("#general"),
+	})
+
+	// Join an existing channel — the reactive dispatch should fire.
+	require.NoError(t, sess.Join(ctx, "#general"))
+
+	drainEvent[domain.JoinEvent](t, sess)
+	events := drainEvents(t, sess, 1)
+
+	require.Equal(t, []domain.SessionEvent{
+		domain.DispatchStartedEvent{Channel: "#general", Nicks: []domain.Nick{"botty"}},
+		domain.ModelReplyEvent{
+			Channel:  "#general",
+			Instance: "botty",
+			Message: domain.Message{
+				ID:      fmt.Sprintf("%d~botty~0", fixedTime.UnixNano()),
+				Channel: "#general",
+				From:    "botty",
+				Body:    "welcome",
+				SentAt:  fixedTime,
+			},
+			At: fixedTime,
+		},
+		domain.DispatchDoneEvent{Channel: "#general"},
+	}, events)
+
+	// The trigger event sent to the model should be a JOIN message.
+	require.Equal(t, []protocol.IRCMessage{{
+		Kind:   protocol.KindJoin,
+		From:   "testuser",
+		Target: "#general",
+		At:     fixedTime,
+	}}, receivedEvents)
+}
+
+func TestSession_model_reply_does_not_retrigger_dispatch(t *testing.T) {
+	var dispatchCount int
+
+	fake := &fakeAPIClient{
+		sendEventsFn: func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			dispatchCount++
+			return protocol.Reply("got it"), nil
+		},
+	}
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+	seedInstance(t, s, domain.Instance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: testChannels("#general"),
+	})
+
+	require.NoError(t, sess.SendMessage(ctx, "#general", "hello"))
+
+	// Drain the MessageEvent and all dispatch events.
+	drainEvent[domain.MessageEvent](t, sess)
+	drainEvents(t, sess, 1)
+
+	// Only one dispatch should have occurred — the ModelReplyEvent
+	// emitted by the dispatch goroutine must not trigger another
+	// dispatch.
+	require.Equal(t, 1, dispatchCount)
+}
+
 func TestSession_DispatchToChannel_broadcasts_to_channel_instances(t *testing.T) {
 	fake := &fakeAPIClient{
 		sendEventsFn: func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
@@ -706,9 +790,11 @@ func TestSession_ChangeNick(t *testing.T) {
 	sess.now = func() time.Time { return fixedTime }
 
 	// Join a channel so the nick change emits per-channel events.
+	// Creating a channel emits JoinEvent, ModeChangeEvent, and a
+	// DispatchDoneEvent from reactive dispatch (no models → immediate
+	// done). The ModeChangeEvent and DispatchDoneEvent race.
 	require.NoError(t, sess.Join(t.Context(), "#general"))
-	drainEvent[domain.JoinEvent](t, sess)
-	drainEvent[domain.ModeChangeEvent](t, sess)
+	drainNEvents(t, sess, 3)
 
 	require.NoError(t, sess.ChangeNick(t.Context(), "newname"))
 	evt := drainEvent[domain.NickChangeEvent](t, sess)
@@ -1095,6 +1181,12 @@ func TestSession_Poke_emits_dispatch_events(t *testing.T) {
 	})
 
 	require.NoError(t, sess.Poke(ctx))
+
+	// PokeEvent is emitted via emit(), then the reactive dispatch
+	// runs in the background.
+	pokeEvt := drainEvent[domain.PokeEvent](t, sess)
+	require.Equal(t, domain.PokeEvent{Channel: "#general", At: fixedTime}, pokeEvt)
+
 	events := drainEvents(t, sess, 1)
 
 	require.Equal(t, []domain.SessionEvent{
@@ -2543,6 +2635,21 @@ func TestSession_DispatchToChannel_truncated_returns_error(t *testing.T) {
 
 	_, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
 	require.ErrorIs(t, err, api.ErrResponseTruncated)
+}
+
+// drainNEvents reads exactly n events from the session events channel
+// and discards them. Use when you need to clear events without
+// inspecting them.
+func drainNEvents(t *testing.T, sess *Session, n int) {
+	t.Helper()
+
+	for range n {
+		select {
+		case <-sess.Events():
+		case <-time.After(time.Second):
+			t.Fatal("timed out draining events")
+		}
+	}
 }
 
 // drainEvents reads from the session events channel until n

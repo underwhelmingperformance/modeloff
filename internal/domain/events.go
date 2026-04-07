@@ -93,6 +93,13 @@ type ConfigChangedEvent struct {
 	At        time.Time
 }
 
+// PokeEvent is emitted when a periodic poke should be dispatched to
+// model instances in a channel.
+type PokeEvent struct {
+	Channel ChannelName
+	At      time.Time
+}
+
 // ErrorEvent wraps a backend error as a domain event.
 type ErrorEvent struct {
 	Operation string
@@ -133,6 +140,7 @@ func (ModelReplyEvent) sessionEvent()      {}
 func (ModeChangeEvent) sessionEvent()      {}
 func (DMOpenedEvent) sessionEvent()        {}
 func (ConfigChangedEvent) sessionEvent()   {}
+func (PokeEvent) sessionEvent()            {}
 func (ErrorEvent) sessionEvent()           {}
 func (DispatchStartedEvent) sessionEvent() {}
 func (DispatchDoneEvent) sessionEvent()    {}
