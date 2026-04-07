@@ -19,11 +19,8 @@ func (r Rect) Local(x, y int) (int, int) {
 }
 
 // BoundsMsg tells a child model the absolute bounds it occupies.
-//
-// Layout containers send BoundsMsg before forwarding the original
-// WindowSizeMsg to the same child. This lets the child update any
-// bounds-dependent hit-testing or cached layout state before it
-// handles resize-driven rendering logic.
+// Layout containers translate WindowSizeMsg into per-child BoundsMsg
+// so that children never see raw terminal dimensions.
 type BoundsMsg struct {
 	Rect Rect
 }

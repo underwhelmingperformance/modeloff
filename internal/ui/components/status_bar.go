@@ -31,60 +31,21 @@ func RenderStatusBar(width int, bindings []key.Binding, items []ui.StatusItem) s
 		if keyText != "" {
 			rightBudget--
 		}
-		if rightBudget < 0 {
-			rightBudget = 0
-		}
+		rightBudget = max(rightBudget, 0)
 
 		rightText := renderStatusItems(rightItems, rightBudget)
 		leftBudget := width - lipgloss.Width(rightText)
 		if rightText != "" {
 			leftBudget--
 		}
-		if leftBudget < 0 {
-			leftBudget = 0
+		leftBudget = max(leftBudget, 0)
+
+		leftText := assembleLeftText(keyText, leftItems, leftBudget)
+
+		best = composeStatusLine(leftText, rightText, width)
+		if best != "" && lipgloss.Width(best) <= width {
+			break
 		}
-
-		leftText := keyText
-		leftStatusBudget := leftBudget - lipgloss.Width(keyText)
-		if keyText != "" {
-			leftStatusBudget -= 2
-		}
-
-		leftStatusText := renderStatusItems(leftItems, leftStatusBudget)
-		if leftStatusText != "" {
-			if leftText != "" {
-				leftText += "  " + leftStatusText
-			} else {
-				leftText = leftStatusText
-			}
-		}
-
-		if rightText == "" {
-			best = leftText
-			if lipgloss.Width(best) <= width {
-				break
-			}
-
-			continue
-		}
-
-		if leftText == "" {
-			best = rightText
-			if lipgloss.Width(best) <= width {
-				break
-			}
-
-			continue
-		}
-
-		if lipgloss.Width(leftText)+1+lipgloss.Width(rightText) > width {
-			best = rightText
-			continue
-		}
-
-		spacing := strings.Repeat(" ", width-lipgloss.Width(leftText)-lipgloss.Width(rightText))
-		best = leftText + spacing + rightText
-		break
 	}
 
 	if best == "" {
@@ -92,6 +53,42 @@ func RenderStatusBar(width int, bindings []key.Binding, items []ui.StatusItem) s
 	}
 
 	return theme.Dim.Width(width).Render(truncateLine(best, width))
+}
+
+func assembleLeftText(keyText string, leftItems []ui.StatusItem, leftBudget int) string {
+	leftStatusBudget := leftBudget - lipgloss.Width(keyText)
+	if keyText != "" {
+		leftStatusBudget -= 2
+	}
+
+	leftStatusText := renderStatusItems(leftItems, leftStatusBudget)
+
+	switch {
+	case leftStatusText == "":
+		return keyText
+	case keyText == "":
+		return leftStatusText
+	default:
+		return keyText + "  " + leftStatusText
+	}
+}
+
+func composeStatusLine(leftText, rightText string, width int) string {
+	if rightText == "" {
+		return leftText
+	}
+
+	if leftText == "" {
+		return rightText
+	}
+
+	if lipgloss.Width(leftText)+1+lipgloss.Width(rightText) > width {
+		return rightText
+	}
+
+	spacing := strings.Repeat(" ", width-lipgloss.Width(leftText)-lipgloss.Width(rightText))
+
+	return leftText + spacing + rightText
 }
 
 func renderKeyTexts(bindings []key.Binding) (string, string) {
@@ -184,46 +181,71 @@ func renderStatusItems(items []ui.StatusItem, width int) string {
 	}
 
 	result := render()
+
 	for lipgloss.Width(result) > width {
-		changed := false
-
-		for _, index := range order {
-			if !compactible[index] {
-				continue
-			}
-
-			texts[index] = items[index].Compact
-			compactible[index] = false
-			result = render()
-			changed = true
-
-			if lipgloss.Width(result) <= width {
-				return result
-			}
+		if result, ok := compactItems(items, texts, compactible, order, width, render); ok {
+			return result
 		}
 
-		if changed {
-			continue
-		}
-
-		for _, index := range order {
-			if texts[index] == "" {
-				continue
-			}
-
-			texts[index] = ""
-			result = render()
-			changed = true
-
-			if lipgloss.Width(result) <= width {
-				return result
-			}
-		}
-
+		result, changed := dropItems(texts, order, width, render)
 		if !changed {
 			break
+		}
+
+		if lipgloss.Width(result) <= width {
+			return result
 		}
 	}
 
 	return result
+}
+
+func compactItems(
+	items []ui.StatusItem,
+	texts []string,
+	compactible []bool,
+	order []int,
+	width int,
+	render func() string,
+) (string, bool) {
+	for _, index := range order {
+		if !compactible[index] {
+			continue
+		}
+
+		texts[index] = items[index].Compact
+		compactible[index] = false
+
+		result := render()
+		if lipgloss.Width(result) <= width {
+			return result, true
+		}
+	}
+
+	return "", false
+}
+
+func dropItems(
+	texts []string,
+	order []int,
+	width int,
+	render func() string,
+) (string, bool) {
+	changed := false
+
+	for _, index := range order {
+		if texts[index] == "" {
+			continue
+		}
+
+		texts[index] = ""
+		changed = true
+
+		result := render()
+		if lipgloss.Width(result) <= width {
+			return result, true
+		}
+	}
+
+	return render(), changed
 }

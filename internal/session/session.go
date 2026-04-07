@@ -105,9 +105,11 @@ func (s *Session) UserNick() domain.Nick {
 	return s.userNick
 }
 
-// Join creates or opens a channel and returns a JoinEvent.
-func (s *Session) Join(ctx context.Context, channelName string) (domain.JoinEvent, error) {
+// Join creates or opens a channel. Events are emitted on the
+// session event channel.
+func (s *Session) Join(ctx context.Context, channelName string) error {
 	name := domain.ChannelName(channelName)
+	now := s.now()
 
 	var created bool
 
@@ -115,52 +117,101 @@ func (s *Session) Join(ctx context.Context, channelName string) (domain.JoinEven
 	if err != nil {
 		created = true
 
+		members := domain.NewMemberList()
+		members.Add(s.userNick)
+
 		ch := domain.Channel{
 			Name:    name,
 			Kind:    domain.KindChannel,
-			Members: set.NewOrdered(s.userNick),
-			Created: s.now(),
+			Members: members,
+			Created: now,
 		}
 
 		if err := s.store.SaveChannel(ctx, ch); err != nil {
-			return domain.JoinEvent{}, fmt.Errorf("save channel: %w", err)
+			return fmt.Errorf("save channel: %w", err)
 		}
 	}
 
 	if err := s.store.SetLastChannel(ctx, name); err != nil {
-		return domain.JoinEvent{}, fmt.Errorf("set last channel: %w", err)
+		return fmt.Errorf("set last channel: %w", err)
 	}
 
 	if err := s.MarkRead(ctx, name); err != nil {
-		return domain.JoinEvent{}, fmt.Errorf("mark read: %w", err)
+		return fmt.Errorf("mark read: %w", err)
 	}
 
-	return domain.JoinEvent{
+	s.appendEvent(ctx, name, domain.ChannelJoin{
 		Channel: name,
 		Nick:    s.userNick,
 		Created: created,
-		At:      s.now(),
-	}, nil
+		At:      now,
+	})
+
+	s.emit(domain.JoinEvent{
+		Channel: name,
+		Nick:    s.userNick,
+		Created: created,
+		At:      now,
+	})
+
+	if created {
+		ch, _ := s.store.GetChannel(ctx, name)
+		ch.Members.SetMode(s.userNick, domain.ModeOp)
+
+		if err := s.store.SaveChannel(ctx, ch); err != nil {
+			return fmt.Errorf("save channel after mode: %w", err)
+		}
+
+		s.appendEvent(ctx, name, domain.ChannelModeChange{
+			Channel: name,
+			Nick:    s.userNick,
+			Mode:    domain.ModeOp,
+			At:      now,
+		})
+
+		s.emit(domain.ModeChangeEvent{
+			Channel: name,
+			Nick:    s.userNick,
+			Mode:    domain.ModeOp,
+			Actor:   "ChanServ",
+			At:      now,
+		})
+	}
+
+	return nil
 }
 
-// Leave records the user leaving a channel and returns a PartEvent.
-func (s *Session) Leave(ctx context.Context, ch domain.ChannelName) (domain.PartEvent, error) {
+// Leave records the user leaving a channel. Events are emitted on
+// the session event channel.
+func (s *Session) Leave(ctx context.Context, ch domain.ChannelName) error {
 	channel, err := s.store.GetChannel(ctx, ch)
 	if err != nil {
-		return domain.PartEvent{}, fmt.Errorf("channel not found: %w", err)
+		return fmt.Errorf("channel not found: %w", err)
 	}
 
-	channel.Members.Remove(s.userNick)
+	if m, ok := channel.Members.Get(s.userNick); ok {
+		channel.Members.Remove(m)
+	}
 
 	if err := s.store.SaveChannel(ctx, channel); err != nil {
-		return domain.PartEvent{}, fmt.Errorf("save channel: %w", err)
+		return fmt.Errorf("save channel: %w", err)
 	}
 
-	return domain.PartEvent{
+	now := s.now()
+
+	s.appendEvent(ctx, ch, domain.ChannelPart{
 		Channel: ch,
 		Nick:    s.userNick,
-		At:      s.now(),
-	}, nil
+		At:      now,
+	})
+
+	s.emit(domain.PartEvent{
+		Channel: ch,
+		Nick:    s.userNick,
+		At:      now,
+	})
+
+	return nil
 }
 
 // ListChannels returns all persisted channels.
@@ -180,7 +231,7 @@ func (s *Session) Invite(
 	ch domain.ChannelName,
 	modelID domain.ModelID,
 	persona string,
-) (domain.ModelInvitedEvent, error) {
+) error {
 	logger := slog.Default().With("component", "session", "channel", ch, "model_id", modelID)
 	ctx, span := startSpan(ctx, "session.invite", attribute.String(observability.AttrOperation, "session.invite"))
 	defer span.End()
@@ -197,7 +248,7 @@ func (s *Session) Invite(
 	if err := s.ensureStructuredOutputModel(ctx, modelID); err != nil {
 		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
 		span.SetStatus(codes.Error, err.Error())
-		return domain.ModelInvitedEvent{}, err
+		return err
 	}
 
 	if inst, err := s.findInstanceByModelID(ctx, modelID); err == nil {
@@ -224,7 +275,7 @@ func (s *Session) Invite(
 		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
 		span.SetStatus(codes.Error, err.Error())
 		logger.ErrorContext(ctx, "generate nick failed", "error", err)
-		return domain.ModelInvitedEvent{}, fmt.Errorf("generate nick: %w", err)
+		return fmt.Errorf("generate nick: %w", err)
 	}
 
 	nickResult.Usage.SetSpanAttributes(generateSpan, nickResult.RequestID)
@@ -261,10 +312,10 @@ func (s *Session) attachInstanceToChannel(
 	ctx context.Context,
 	ch domain.ChannelName,
 	inst domain.ModelInstance,
-) (domain.ModelInvitedEvent, error) {
+) error {
 	channel, err := s.store.GetChannel(ctx, ch)
 	if err != nil {
-		return domain.ModelInvitedEvent{}, fmt.Errorf("get channel: %w", err)
+		return fmt.Errorf("get channel: %w", err)
 	}
 
 	inst.Channels.Add(ch)
@@ -278,20 +329,58 @@ func (s *Session) attachInstanceToChannel(
 	}
 
 	if err := s.store.SaveInstance(ctx, inst); err != nil {
-		return domain.ModelInvitedEvent{}, fmt.Errorf("save instance: %w", err)
+		return fmt.Errorf("save instance: %w", err)
 	}
 
-	channel.Members.Add(inst.Nick)
+	isNew := !channel.Members.Has(inst.Nick)
+	if isNew {
+		channel.Members.Add(inst.Nick)
+	}
 
 	if err := s.store.SaveChannel(ctx, channel); err != nil {
-		return domain.ModelInvitedEvent{}, fmt.Errorf("save channel: %w", err)
+		return fmt.Errorf("save channel: %w", err)
 	}
 
-	return domain.ModelInvitedEvent{
+	now := s.now()
+
+	s.appendEvent(ctx, ch, domain.ChannelModelInvited{
+		Channel: ch,
+		Nick:    inst.Nick,
+		ModelID: inst.ModelID,
+		Persona: inst.Persona,
+		At:      now,
+	})
+
+	s.emit(domain.ModelInvitedEvent{
 		Channel:  ch,
 		Instance: inst,
-		At:       s.now(),
-	}, nil
+		At:       now,
+	})
+
+	if isNew {
+		channel.Members.SetMode(inst.Nick, domain.ModeVoice)
+
+		if err := s.store.SaveChannel(ctx, channel); err != nil {
+			return fmt.Errorf("save channel after mode: %w", err)
+		}
+
+		s.appendEvent(ctx, ch, domain.ChannelModeChange{
+			Channel: ch,
+			Nick:    inst.Nick,
+			Mode:    domain.ModeVoice,
+			At:      now,
+		})
+
+		s.emit(domain.ModeChangeEvent{
+			Channel: ch,
+			Nick:    inst.Nick,
+			Mode:    domain.ModeVoice,
+			Actor:   "ChanServ",
+			At:      now,
+		})
+	}
+
+	return nil
 }
 
 // Kick removes a model instance from a channel.
@@ -299,16 +388,18 @@ func (s *Session) Kick(
 	ctx context.Context,
 	ch domain.ChannelName,
 	nick domain.Nick,
-) (domain.ModelKickedEvent, error) {
+) error {
 	channel, err := s.store.GetChannel(ctx, ch)
 	if err != nil {
-		return domain.ModelKickedEvent{}, fmt.Errorf("get channel: %w", err)
+		return fmt.Errorf("get channel: %w", err)
 	}
 
-	channel.Members.Remove(nick)
+	if m, ok := channel.Members.Get(nick); ok {
+		channel.Members.Remove(m)
+	}
 
 	if err := s.store.SaveChannel(ctx, channel); err != nil {
-		return domain.ModelKickedEvent{}, fmt.Errorf("save channel: %w", err)
+		return fmt.Errorf("save channel: %w", err)
 	}
 
 	inst, err := s.store.GetInstance(ctx, nick)
@@ -316,15 +407,24 @@ func (s *Session) Kick(
 		inst.Channels.Remove(ch)
 
 		if err := s.store.SaveInstance(ctx, inst); err != nil {
-			return domain.ModelKickedEvent{}, fmt.Errorf("save instance: %w", err)
+			return fmt.Errorf("save instance: %w", err)
 		}
 	}
 
-	return domain.ModelKickedEvent{
+	now := s.now()
+	s.appendEvent(ctx, ch, domain.ChannelModelKicked{
 		Channel: ch,
 		Nick:    nick,
-		At:      s.now(),
-	}, nil
+		At:      now,
+	})
+
+	s.emit(domain.ModelKickedEvent{
+		Channel: ch,
+		Nick:    nick,
+		At:      now,
+	})
+
+	return nil
 }
 
 // SendMessage saves a message to a channel and returns the message
@@ -334,7 +434,7 @@ func (s *Session) SendMessage(
 	ctx context.Context,
 	ch domain.ChannelName,
 	body string,
-) (domain.MessageEvent, error) {
+) error {
 	ctx, span := startSpan(ctx, "session.send_message", attribute.String(observability.AttrOperation, "session.send_message"))
 	defer span.End()
 
@@ -346,16 +446,19 @@ func (s *Session) SendMessage(
 		SentAt:  s.now(),
 	}
 
-	if err := s.store.SaveMessage(ctx, msg); err != nil {
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		span.SetStatus(codes.Error, err.Error())
-		return domain.MessageEvent{}, fmt.Errorf("save message: %w", err)
-	}
+	s.appendEvent(ctx, ch, domain.ChannelMessage{
+		Channel: ch,
+		From:    s.userNick,
+		Body:    body,
+		At:      msg.SentAt,
+	})
 
 	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 	s.dispatchInBackground(ctx, ch, []protocol.IRCMessage{protocol.FromMessage(msg)})
 
-	return domain.MessageEvent{Message: msg}, nil
+	s.emit(domain.MessageEvent{Message: msg})
+
+	return nil
 }
 
 // SendAction saves an action message (/me) to a channel and returns
@@ -365,7 +468,7 @@ func (s *Session) SendAction(
 	ctx context.Context,
 	ch domain.ChannelName,
 	body string,
-) (domain.MessageEvent, error) {
+) error {
 	msg := domain.Message{
 		ID:      fmt.Sprintf("%d", s.now().UnixNano()),
 		Channel: ch,
@@ -375,13 +478,19 @@ func (s *Session) SendAction(
 		SentAt:  s.now(),
 	}
 
-	if err := s.store.SaveMessage(ctx, msg); err != nil {
-		return domain.MessageEvent{}, fmt.Errorf("save action: %w", err)
-	}
+	s.appendEvent(ctx, ch, domain.ChannelMessage{
+		Channel: ch,
+		From:    s.userNick,
+		Body:    body,
+		Action:  true,
+		At:      msg.SentAt,
+	})
 
 	s.dispatchInBackground(ctx, ch, []protocol.IRCMessage{protocol.FromMessage(msg)})
 
-	return domain.MessageEvent{Message: msg}, nil
+	s.emit(domain.MessageEvent{Message: msg})
+
+	return nil
 }
 
 // DispatchToChannel sends new events to all model instances in a channel
@@ -395,14 +504,14 @@ func (s *Session) DispatchToChannel(
 	ctx, span := startSpan(ctx, "session.dispatch_to_channel", attribute.String(observability.AttrOperation, "session.dispatch_to_channel"))
 	defer span.End()
 
-	historyMessages, err := s.store.ListMessages(ctx, ch)
+	historyEvents, err := s.store.EventsBefore(ctx, ch, nil, 500)
 	if err != nil {
 		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("list history: %w", err)
 	}
 
-	replies, err := s.dispatchToInstances(ctx, ch, historyMessages, newEvents)
+	replies, err := s.dispatchToInstances(ctx, ch, historyEvents, newEvents)
 	if err != nil {
 		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
 		span.SetStatus(codes.Error, err.Error())
@@ -419,10 +528,10 @@ func (s *Session) SetTopic(
 	ctx context.Context,
 	ch domain.ChannelName,
 	topic string,
-) (domain.TopicChangeEvent, error) {
+) error {
 	channel, err := s.store.GetChannel(ctx, ch)
 	if err != nil {
-		return domain.TopicChangeEvent{}, fmt.Errorf("get channel: %w", err)
+		return fmt.Errorf("get channel: %w", err)
 	}
 
 	channel.Topic = topic
@@ -430,47 +539,84 @@ func (s *Session) SetTopic(
 	channel.TopicSetAt = s.now()
 
 	if err := s.store.SaveChannel(ctx, channel); err != nil {
-		return domain.TopicChangeEvent{}, fmt.Errorf("save channel: %w", err)
+		return fmt.Errorf("save channel: %w", err)
 	}
 
-	return domain.TopicChangeEvent{
+	now := s.now()
+	s.appendEvent(ctx, ch, domain.ChannelTopicChange{
 		Channel: ch,
 		Topic:   topic,
 		By:      s.userNick,
-		At:      s.now(),
-	}, nil
+		At:      now,
+	})
+
+	s.emit(domain.TopicChangeEvent{
+		Channel: ch,
+		Topic:   topic,
+		By:      s.userNick,
+		At:      now,
+	})
+
+	return nil
 }
 
 // ChangeNick changes the user's nickname and persists it through the
 // config store.
 func (s *Session) ChangeNick(
-	_ context.Context,
+	ctx context.Context,
 	newNick domain.Nick,
-) (domain.NickChangeEvent, error) {
+) error {
 	if s.config == nil {
-		return domain.NickChangeEvent{}, fmt.Errorf("config store not configured")
+		return fmt.Errorf("config store not configured")
 	}
 
 	cfg, err := s.config.Load()
 	if err != nil {
-		return domain.NickChangeEvent{}, fmt.Errorf("load config: %w", err)
+		return fmt.Errorf("load config: %w", err)
 	}
 
 	cfg.UserNick = string(newNick)
 
 	if err := s.config.Save(cfg); err != nil {
-		return domain.NickChangeEvent{}, fmt.Errorf("save config: %w", err)
+		return fmt.Errorf("save config: %w", err)
 	}
 
-	evt := domain.NickChangeEvent{
-		OldNick: s.userNick,
-		NewNick: newNick,
-		At:      s.now(),
-	}
-
+	oldNick := s.userNick
+	now := s.now()
 	s.userNick = newNick
 
-	return evt, nil
+	// Update membership and emit a nick change event per channel.
+	channels, _ := s.store.ListChannels(ctx)
+
+	for _, ch := range channels {
+		if !ch.Members.Has(oldNick) {
+			continue
+		}
+
+		if m, ok := ch.Members.Get(oldNick); ok {
+			ch.Members.Remove(m)
+			ch.Members.Add(newNick)
+			ch.Members.SetMode(newNick, m.Mode)
+		}
+
+		_ = s.store.SaveChannel(ctx, ch)
+
+		s.appendEvent(ctx, ch.Name, domain.ChannelNickChange{
+			Channel: ch.Name,
+			OldNick: oldNick,
+			NewNick: newNick,
+			At:      now,
+		})
+
+		s.emit(domain.NickChangeEvent{
+			Channel: ch.Name,
+			OldNick: oldNick,
+			NewNick: newNick,
+			At:      now,
+		})
+	}
+
+	return nil
 }
 
 // Whois returns metadata about a model instance.
@@ -488,53 +634,45 @@ func (s *Session) LastChannel(ctx context.Context) (domain.ChannelName, error) {
 	return s.store.GetLastChannel(ctx)
 }
 
-// Messages returns all messages for a channel.
-func (s *Session) Messages(ctx context.Context, ch domain.ChannelName) ([]domain.Message, error) {
-	return s.store.ListMessages(ctx, ch)
-}
-
-// MarkRead records that the user has seen all current messages in a
-// channel by storing the ID of the last message.
+// MarkRead records that the user has seen all current events in a
+// channel by storing the rowid of the last event.
 func (s *Session) MarkRead(ctx context.Context, ch domain.ChannelName) error {
-	msgs, err := s.store.ListMessages(ctx, ch)
+	events, err := s.store.EventsBefore(ctx, ch, nil, 1)
 	if err != nil {
-		return fmt.Errorf("list messages: %w", err)
+		return fmt.Errorf("get latest event: %w", err)
 	}
 
-	if len(msgs) == 0 {
+	if len(events) == 0 {
 		return nil
 	}
 
-	last := msgs[len(msgs)-1]
-
-	return s.store.SetLastRead(ctx, ch, last.ID)
+	return s.store.SetLastRead(ctx, ch, events[0].ID)
 }
 
-// UnreadCount returns the number of messages in a channel that arrived
-// after the last-read position. If nothing has been read yet, all
-// messages are considered unread.
+// UnreadCount returns the number of events in a channel that arrived
+// after the last-read position.
 func (s *Session) UnreadCount(ctx context.Context, ch domain.ChannelName) (int, error) {
-	msgs, err := s.store.ListMessages(ctx, ch)
-	if err != nil {
-		return 0, fmt.Errorf("list messages: %w", err)
-	}
-
-	lastRead, err := s.store.GetLastRead(ctx, ch)
+	lastID, err := s.store.GetLastRead(ctx, ch)
 	if err != nil {
 		return 0, fmt.Errorf("get last read: %w", err)
 	}
 
-	if lastRead == "" {
-		return len(msgs), nil
-	}
-
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].ID == lastRead {
-			return len(msgs) - 1 - i, nil
+	if lastID == 0 {
+		events, err := s.store.EventsBefore(ctx, ch, nil, 1000)
+		if err != nil {
+			return 0, err
 		}
+
+		return len(events), nil
 	}
 
-	return len(msgs), nil
+	fromID := lastID + 1
+	events, err := s.store.EventsFrom(ctx, ch, &fromID, 1000)
+	if err != nil {
+		return 0, err
+	}
+
+	return len(events), nil
 }
 
 // ListModels fetches live model metadata using the current API client.
@@ -592,10 +730,16 @@ func (s *Session) OpenDM(ctx context.Context, nick domain.Nick) (domain.Channel,
 	ch, err := s.store.GetChannel(ctx, name)
 	created := false
 	if err != nil {
+		members := domain.NewMemberList()
+		members.Add(s.userNick)
+		members.SetMode(s.userNick, domain.ModeOp)
+		members.Add(nick)
+		members.SetMode(nick, domain.ModeVoice)
+
 		ch = domain.Channel{
 			Name:    name,
 			Kind:    domain.KindDM,
-			Members: set.NewOrdered(s.userNick, nick),
+			Members: members,
 			Created: s.now(),
 		}
 
@@ -834,7 +978,7 @@ func (s *Session) SetEmbeddingModel(_ context.Context, modelID domain.ModelID) (
 func (s *Session) dispatchToInstances(
 	ctx context.Context,
 	channelName domain.ChannelName,
-	historyMessages []domain.Message,
+	historyEvents []domain.StoredEvent,
 	events []protocol.IRCMessage,
 ) ([]domain.ModelReplyEvent, error) {
 	channel, err := s.store.GetChannel(ctx, channelName)
@@ -851,7 +995,7 @@ func (s *Session) dispatchToInstances(
 	var replies []domain.ModelReplyEvent
 
 	for _, inst := range instances {
-		instReplies, instErr := s.dispatchToInstance(ctx, channel, inst, channelName, historyMessages, events)
+		instReplies, instErr := s.dispatchToInstance(ctx, channel, inst, channelName, historyEvents, events)
 		if instErr != nil {
 			errs = append(errs, instErr)
 		}
@@ -871,7 +1015,7 @@ func (s *Session) dispatchToInstance(
 	channel domain.Channel,
 	inst domain.ModelInstance,
 	channelName domain.ChannelName,
-	historyMessages []domain.Message,
+	historyEvents []domain.StoredEvent,
 	events []protocol.IRCMessage,
 ) ([]domain.ModelReplyEvent, error) {
 	ctx, instanceSpan := startSpan(
@@ -885,13 +1029,20 @@ func (s *Session) dispatchToInstance(
 
 	joinedAt := inst.JoinedAt[channelName]
 
-	history := make([]protocol.IRCMessage, 0, len(historyMessages))
-	for _, msg := range historyMessages {
-		if !joinedAt.IsZero() && msg.SentAt.Before(joinedAt) {
+	history := make([]protocol.IRCMessage, 0, len(historyEvents))
+	for _, se := range historyEvents {
+		if !se.Event.ModelVisible() {
 			continue
 		}
 
-		history = append(history, protocol.FromMessage(msg))
+		eventTime := domain.ChannelEventTime(se.Event)
+		if !joinedAt.IsZero() && eventTime.Before(joinedAt) {
+			continue
+		}
+
+		if msg, ok := protocol.FromChannelEvent(se.Event); ok {
+			history = append(history, msg)
+		}
 	}
 
 	if err := s.ensureStructuredOutputModel(ctx, inst.ModelID); err != nil {
@@ -946,17 +1097,20 @@ func (s *Session) dispatchToInstance(
 			SentAt:  s.now(),
 		}
 
-		if err := s.store.SaveMessage(ctx, reply); err != nil {
-			instanceSpan.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-			instanceSpan.SetStatus(codes.Error, err.Error())
-			return replies, fmt.Errorf("save model reply: %w", err)
-		}
+		now := s.now()
+		s.appendEvent(ctx, channelName, domain.ChannelMessage{
+			Channel: channelName,
+			From:    inst.Nick,
+			Body:    reply.Body,
+			Action:  reply.Action,
+			At:      now,
+		})
 
 		replies = append(replies, domain.ModelReplyEvent{
 			Channel:  channelName,
 			Message:  reply,
 			Instance: inst.Nick,
-			At:       s.now(),
+			At:       now,
 		})
 	}
 
@@ -974,8 +1128,8 @@ func (s *Session) instancesForChannel(ctx context.Context, channel domain.Channe
 		indexed[inst.Nick] = inst
 	}
 
-	filtered := make([]domain.ModelInstance, 0, len(channel.Members))
-	for nick := range channel.Members.Sorted() {
+	filtered := make([]domain.ModelInstance, 0, channel.Members.Len())
+	for nick := range channel.Members.Nicks() {
 		if nick == s.userNick {
 			continue
 		}
@@ -991,8 +1145,33 @@ func (s *Session) instancesForChannel(ctx context.Context, channel domain.Channe
 	return filtered, nil
 }
 
+// EventsBefore returns up to n events before the given ID (or the
+// latest if before is nil) in chronological order.
+func (s *Session) EventsBefore(ctx context.Context, ch domain.ChannelName, before *int64, n int) ([]domain.StoredEvent, error) {
+	return s.store.EventsBefore(ctx, ch, before, n)
+}
+
+// LogEvent persists a channel event to the event log and returns
+// the stored event with its assigned ID. This is used by the UI to
+// persist client-local events (help output, errors, etc.) that
+// don't originate from session operations.
+func (s *Session) LogEvent(ctx context.Context, ch domain.ChannelName, event domain.ChannelEvent) (domain.StoredEvent, error) {
+	id, err := s.store.AppendEvent(ctx, ch, event)
+	if err != nil {
+		return domain.StoredEvent{}, err
+	}
+
+	return domain.StoredEvent{ID: id, Event: event}, nil
+}
+
 func (s *Session) emit(evt domain.SessionEvent) {
 	s.events <- evt
+}
+
+func (s *Session) appendEvent(ctx context.Context, ch domain.ChannelName, event domain.ChannelEvent) {
+	if _, err := s.store.AppendEvent(ctx, ch, event); err != nil {
+		slog.Default().ErrorContext(ctx, "append event", "channel", ch, "error", err)
+	}
 }
 
 // dispatchInBackground runs dispatch for a channel in the background,
@@ -1024,13 +1203,13 @@ func (s *Session) dispatchInBackground(ctx context.Context, ch domain.ChannelNam
 
 		s.emit(domain.DispatchStartedEvent{Channel: ch, Nicks: nicks})
 
-		historyMessages, err := s.store.ListMessages(ctx, ch)
+		historyEvents, err := s.store.EventsBefore(ctx, ch, nil, 500)
 		if err != nil {
 			s.emit(domain.ErrorEvent{Operation: "dispatch", Err: err, At: s.now()})
 			return
 		}
 
-		replies, err := s.dispatchToInstances(ctx, ch, historyMessages, triggerEvents)
+		replies, err := s.dispatchToInstances(ctx, ch, historyEvents, triggerEvents)
 		if err != nil {
 			s.emit(domain.ErrorEvent{Operation: "dispatch", Err: err, At: s.now()})
 		}

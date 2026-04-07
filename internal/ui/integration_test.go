@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/x/exp/teatest"
 	chromem "github.com/philippgille/chromem-go"
 	"github.com/stretchr/testify/require"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/session"
 	storemod "github.com/laney/modeloff/internal/store"
+	"github.com/laney/modeloff/internal/store/storetest"
 	uipkg "github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/screens"
 	"github.com/laney/modeloff/internal/ui/uitest"
@@ -124,8 +126,8 @@ func TestApp_periodic_poke_generates_message(t *testing.T) {
 	sess, _ := newIntegrationSession(t, apiClient)
 	uitest.SeedChannel(t, sess, "#general")
 
-	_, err := sess.Invite(t.Context(), "#general", "test/model", "")
-	require.NoError(t, err)
+	require.NoError(t, sess.Invite(t.Context(), "#general", "test/model", ""))
+	uitest.DrainEvents(sess)
 
 	tm := uitest.New(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
 	tm.WaitFor("#general")
@@ -137,7 +139,7 @@ func TestApp_periodic_poke_generates_message(t *testing.T) {
 func TestApp_reuse_existing_instance(t *testing.T) {
 	apiClient := &integrationAPI{}
 	_, store := newIntegrationSession(t, apiClient)
-	memStore := memory.NewFileStore(t.TempDir())
+	memStore := memory.NewStoreAdapter(storetest.NewMemoryStore(t))
 	require.NoError(t, memStore.Write(t.Context(), "botty", memory.Entry{
 		Key:     "topic",
 		Content: "favourite channel regular",
@@ -148,8 +150,8 @@ func TestApp_reuse_existing_instance(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#general")
 	uitest.SeedChannel(t, sess, "#random")
 
-	_, err := sess.Invite(t.Context(), "#general", "test/model", "Helpful assistant")
-	require.NoError(t, err)
+	require.NoError(t, sess.Invite(t.Context(), "#general", "test/model", "Helpful assistant"))
+	uitest.DrainEvents(sess)
 
 	tm := uitest.New(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
 	tm.WaitFor("#random")
@@ -236,14 +238,14 @@ func TestApp_vector_memory_write_and_search(t *testing.T) {
 
 	// Use an IndexedStore backed by an in-memory chromem DB so vector
 	// search works without a real embedding endpoint.
-	files := memory.NewFileStore(t.TempDir())
+	backing := memory.NewStoreAdapter(storetest.NewMemoryStore(t))
 	db := chromem.NewDB()
 	embedder := func(_ context.Context, _ string) ([]float32, error) {
 		return []float32{1.0, 0.0, 0.0}, nil
 	}
-	memStore := memory.NewIndexedStoreFromDB(files, db, embedder)
+	memStore := memory.NewIndexedStoreFromDB(backing, db, embedder)
 
-	store := storemod.NewFileStore(t.TempDir())
+	store := storetest.NewMemoryStore(t)
 	cfgStore := &integrationConfigStore{
 		cfg: config.Config{
 			UserNick:     "testuser",
@@ -254,7 +256,8 @@ func TestApp_vector_memory_write_and_search(t *testing.T) {
 
 	uitest.SeedChannel(t, sess, "#lab")
 
-	tm := uitest.New(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
+	tm := uitest.New(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)),
+		teatest.WithInitialTermSize(200, 30))
 	tm.WaitFor("#lab")
 
 	tm.Submit("/invite test/model")
@@ -348,7 +351,7 @@ func (s *integrationConfigStore) OnChange(_ config.ChangeFunc) config.Unsubscrib
 	return func() {}
 }
 
-func newIntegrationSession(t *testing.T, apiClient api.Client) (*session.Session, *storemod.FileStore) {
+func newIntegrationSession(t *testing.T, apiClient api.Client) (*session.Session, *storemod.SQLiteStore) {
 	t.Helper()
 
 	return newIntegrationSessionWithConfigStore(t, apiClient, &integrationConfigStore{
@@ -363,11 +366,11 @@ func newIntegrationSessionWithConfigStore(
 	t *testing.T,
 	apiClient api.Client,
 	cfgStore *integrationConfigStore,
-) (*session.Session, *storemod.FileStore) {
+) (*session.Session, *storemod.SQLiteStore) {
 	t.Helper()
 
-	store := storemod.NewFileStore(t.TempDir())
-	memStore := memory.NewFileStore(t.TempDir())
+	store := storetest.NewMemoryStore(t)
+	memStore := memory.NewStoreAdapter(storetest.NewMemoryStore(t))
 	sess := session.New(store, memStore, apiClient, cfgStore, "testuser")
 
 	return sess, store
@@ -379,7 +382,7 @@ func advanceConnection(tm *uitest.App, ticks int) {
 	}
 }
 
-func seedInstance(t *testing.T, store *storemod.FileStore, inst domain.ModelInstance) {
+func seedInstance(t *testing.T, store *storemod.SQLiteStore, inst domain.ModelInstance) {
 	t.Helper()
 
 	require.NoError(t, store.SaveInstance(t.Context(), inst))

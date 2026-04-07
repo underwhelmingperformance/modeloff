@@ -15,14 +15,14 @@ import (
 // command set. Completion suggestions always reflect the latest
 // channels, instances, and active channel.
 func (s ChatScreen) Commands() command.Set {
-	return s.buildParser().Set()
+	return s.parser.Set()
 }
 
 func (s ChatScreen) runContext() chatcmd.Context {
 	return chatcmd.Context{
 		Ctx:     s.ctx,
 		Session: s.sess,
-		Active:  s.active,
+		Active:  *s.active,
 		Nick:    s.sess.UserNick(),
 	}
 }
@@ -32,7 +32,7 @@ func errorEvent(operation string, err error) domain.ErrorEvent {
 }
 
 func (s ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
-	cmd, err := s.buildParser().Parse(msg.Raw)
+	cmd, err := s.parser.Parse(msg.Raw)
 	if err != nil {
 		return func() tea.Msg { return errorEvent("command", err) }
 	}

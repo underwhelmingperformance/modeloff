@@ -58,8 +58,8 @@ type FieldDecoder interface {
 }
 
 var (
-	fieldDecoderType    = reflect.TypeOf((*FieldDecoder)(nil)).Elem()
-	textUnmarshalerType = reflect.TypeOf((*encoding.TextUnmarshaler)(nil)).Elem()
+	fieldDecoderType    = reflect.TypeFor[FieldDecoder]()
+	textUnmarshalerType = reflect.TypeFor[encoding.TextUnmarshaler]()
 )
 
 // Registry maps types and kinds to Decoders. Resolution order:
@@ -143,9 +143,9 @@ func (r *Registry) RegisterDefaults() *Registry {
 		RegisterKind(reflect.Uint64, uintDecoder(64)).
 		RegisterKind(reflect.Float32, floatDecoder(32)).
 		RegisterKind(reflect.Float64, floatDecoder(64)).
-		RegisterType(reflect.TypeOf(time.Duration(0)), durationDecoder()).
-		RegisterType(reflect.TypeOf(time.Time{}), timeDecoder()).
-		RegisterType(reflect.TypeOf(&url.URL{}), urlDecoder())
+		RegisterType(reflect.TypeFor[time.Duration](), durationDecoder()).
+		RegisterType(reflect.TypeFor[time.Time](), timeDecoder()).
+		RegisterType(reflect.TypeFor[*url.URL](), urlDecoder())
 }
 
 type fieldDecoderAdapter struct{}

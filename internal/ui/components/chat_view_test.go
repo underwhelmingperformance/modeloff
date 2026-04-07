@@ -6,10 +6,11 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/require"
+
+	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
@@ -18,14 +19,46 @@ import (
 	"github.com/laney/modeloff/internal/ui/theme"
 )
 
-var testMessages = components.MessagesToLines([]domain.Message{
-	{ID: "1", Channel: "#general", From: "alice", Body: "hello", SentAt: time.Date(2025, 1, 1, 10, 0, 0, 0, time.UTC)},
-	{ID: "2", Channel: "#general", From: "bob", Body: "hi there", SentAt: time.Date(2025, 1, 1, 10, 1, 0, 0, time.UTC)},
-	{ID: "3", Channel: "#general", From: "alice", Body: "how are you?", SentAt: time.Date(2025, 1, 1, 10, 2, 0, 0, time.UTC)},
-})
+var testEvents = []domain.StoredEvent{
+	{Event: domain.ChannelMessage{Channel: "#general", From: "alice", Body: "hello", At: time.Date(2025, 1, 1, 10, 0, 0, 0, time.UTC)}},
+	{Event: domain.ChannelMessage{Channel: "#general", From: "bob", Body: "hi there", At: time.Date(2025, 1, 1, 10, 1, 0, 0, time.UTC)}},
+	{Event: domain.ChannelMessage{Channel: "#general", From: "alice", Body: "how are you?", At: time.Date(2025, 1, 1, 10, 2, 0, 0, time.UTC)}},
+}
+
+// messagesToEvents converts domain messages into stored events.
+func messagesToEvents(msgs []domain.Message) []domain.StoredEvent {
+	events := make([]domain.StoredEvent, len(msgs))
+
+	for i, m := range msgs {
+		events[i] = domain.StoredEvent{
+			Event: domain.ChannelMessage{
+				Channel: m.Channel,
+				From:    m.From,
+				Body:    m.Body,
+				Action:  m.Action,
+				At:      m.SentAt,
+			},
+		}
+	}
+
+	return events
+}
+
+// newChatViewWithEvents creates a ChatView and loads events via HistoryLoadedMsg.
+func newChatViewWithEvents(ch domain.ChannelName, userNick domain.Nick, topic string, events []domain.StoredEvent) components.ChatView {
+	cv := components.NewChatView(ch, userNick, topic)
+
+	if len(events) == 0 {
+		return cv
+	}
+
+	m, _ := cv.Update(components.HistoryLoadedMsg{Events: events})
+
+	return m.(components.ChatView)
+}
 
 func TestChatView_View_shows_messages(t *testing.T) {
-	cv := components.NewChatView("#general", "testuser", "", testMessages)
+	cv := newChatViewWithEvents("#general", "testuser", "", testEvents)
 	v := cv.View(80, 24)
 
 	require.Contains(t, v, "hello")
@@ -36,7 +69,7 @@ func TestChatView_View_shows_messages(t *testing.T) {
 }
 
 func TestChatView_View_shows_timestamps(t *testing.T) {
-	cv := components.NewChatView("#general", "testuser", "", testMessages)
+	cv := newChatViewWithEvents("#general", "testuser", "", testEvents)
 	v := cv.View(80, 24)
 
 	require.Contains(t, v, "[10:00:00]")
@@ -46,11 +79,11 @@ func TestChatView_View_shows_timestamps(t *testing.T) {
 
 func TestChatView_View_wraps_long_messages(t *testing.T) {
 	longBody := strings.Repeat("word ", 30)
-	lines := components.MessagesToLines([]domain.Message{
-		{ID: "1", Channel: "#general", From: "alice", Body: longBody, SentAt: time.Date(2025, 1, 1, 10, 0, 0, 0, time.UTC)},
-	})
+	events := []domain.StoredEvent{
+		{Event: domain.ChannelMessage{Channel: "#general", From: "alice", Body: longBody, At: time.Date(2025, 1, 1, 10, 0, 0, 0, time.UTC)}},
+	}
 
-	cv := components.NewChatView("#general", "testuser", "", lines)
+	cv := newChatViewWithEvents("#general", "testuser", "", events)
 	v := cv.View(40, 24)
 
 	// The message should wrap, producing more rendered lines than one.
@@ -63,21 +96,21 @@ func TestChatView_View_wraps_long_messages(t *testing.T) {
 }
 
 func TestChatView_View_empty_messages(t *testing.T) {
-	cv := components.NewChatView("#general", "testuser", "", nil)
+	cv := components.NewChatView("#general", "testuser", "")
 	v := cv.View(80, 24)
 
 	require.Contains(t, v, "No messages yet")
 }
 
 func TestChatView_View_has_input_prompt(t *testing.T) {
-	cv := components.NewChatView("#general", "testuser", "", testMessages)
+	cv := newChatViewWithEvents("#general", "testuser", "", testEvents)
 	v := cv.View(80, 24)
 
 	require.Contains(t, v, ">")
 }
 
 func TestChatView_typing_goes_to_input(t *testing.T) {
-	cv := components.NewChatView("#general", "testuser", "", nil)
+	cv := components.NewChatView("#general", "testuser", "")
 	var m ui.Model = cv
 
 	m = typeText(t, m, "test message")
@@ -92,7 +125,7 @@ func TestChatView_typing_goes_to_input(t *testing.T) {
 }
 
 func TestChatView_command_from_input(t *testing.T) {
-	cv := components.NewChatView("#general", "testuser", "", nil)
+	cv := components.NewChatView("#general", "testuser", "")
 	var m ui.Model = cv
 
 	m = typeText(t, m, "/join #random")
@@ -105,43 +138,38 @@ func TestChatView_command_from_input(t *testing.T) {
 }
 
 func TestChatView_messages_updated(t *testing.T) {
-	cv := components.NewChatView("#general", "testuser", "", nil)
+	cv := components.NewChatView("#general", "testuser", "")
 	var m ui.Model = cv
 
-	newMsgs := []domain.Message{
-		{ID: "10", Channel: "#general", From: "charlie", Body: "new message"},
-	}
-
-	m, _ = m.Update(components.MessagesUpdatedMsg{
-		Channel: "#general",
-		Lines:   components.MessagesToLines(newMsgs),
-	})
+	m, _ = m.Update(components.HistoryLoadedMsg{Events: []domain.StoredEvent{
+		{Event: domain.ChannelMessage{Channel: "#general", From: "charlie", Body: "new message", At: time.Now()}},
+	}})
 
 	v := m.View(80, 24)
 	require.Contains(t, v, "new message")
 	require.Contains(t, v, "charlie")
 }
 
-func TestChatView_messages_updated_wrong_channel(t *testing.T) {
-	cv := components.NewChatView("#general", "testuser", "", testMessages)
+func TestChatView_original_messages_persist(t *testing.T) {
+	cv := newChatViewWithEvents("#general", "testuser", "", testEvents)
 	var m ui.Model = cv
 
-	m, _ = m.Update(components.MessagesUpdatedMsg{
-		Channel: "#other",
-		Lines:   nil,
+	// Append a new event — original messages should still be present.
+	m, _ = m.Update(domain.StoredEvent{
+		Event: domain.ChannelMessage{Channel: "#general", From: "charlie", Body: "extra", At: time.Now()},
 	})
 
-	// Should still show the original messages.
 	v := m.View(80, 24)
 	require.Contains(t, v, "hello")
+	require.Contains(t, v, "extra")
 }
 
-func TestChatView_append_line(t *testing.T) {
-	cv := components.NewChatView("#general", "testuser", "", testMessages)
+func TestChatView_append_event(t *testing.T) {
+	cv := newChatViewWithEvents("#general", "testuser", "", testEvents)
 	var m ui.Model = cv
 
-	m, _ = m.Update(components.MessageLine{
-		Message: domain.Message{ID: "10", Channel: "#general", From: "dave", Body: "appended message"},
+	m, _ = m.Update(domain.StoredEvent{
+		Event: domain.ChannelMessage{Channel: "#general", From: "dave", Body: "appended message", At: time.Now()},
 	})
 
 	v := m.View(80, 24)
@@ -163,7 +191,7 @@ func TestChatView_scroll(t *testing.T) {
 		}
 	}
 
-	cv := components.NewChatView("#general", "testuser", "", components.MessagesToLines(msgs))
+	cv := newChatViewWithEvents("#general", "testuser", "", messagesToEvents(msgs))
 	var m ui.Model = cv
 
 	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{Width: 80, Height: 24}})
@@ -194,7 +222,7 @@ func TestChatView_scroll_indicator(t *testing.T) {
 		}
 	}
 
-	cv := components.NewChatView("#general", "testuser", "", components.MessagesToLines(msgs))
+	cv := newChatViewWithEvents("#general", "testuser", "", messagesToEvents(msgs))
 	var m ui.Model = cv
 	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{Width: 80, Height: 24}})
 
@@ -229,7 +257,7 @@ func TestChatView_ctrl_arrow_scroll(t *testing.T) {
 		}
 	}
 
-	cv := components.NewChatView("#general", "testuser", "", components.MessagesToLines(msgs))
+	cv := newChatViewWithEvents("#general", "testuser", "", messagesToEvents(msgs))
 	var m ui.Model = cv
 	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{Width: 80, Height: 24}})
 
@@ -245,7 +273,7 @@ func TestChatView_ctrl_arrow_scroll(t *testing.T) {
 }
 
 func TestChatView_scroll_does_not_go_negative(t *testing.T) {
-	cv := components.NewChatView("#general", "testuser", "", testMessages)
+	cv := newChatViewWithEvents("#general", "testuser", "", testEvents)
 	var m ui.Model = cv
 
 	// Try to scroll down past zero.
@@ -267,7 +295,7 @@ func TestChatView_arrow_keys_stay_with_input(t *testing.T) {
 		}
 	}
 
-	cv := components.NewChatView("#general", "testuser", "", components.MessagesToLines(msgs))
+	cv := newChatViewWithEvents("#general", "testuser", "", messagesToEvents(msgs))
 	var m ui.Model = cv
 	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{Width: 80, Height: 24}})
 
@@ -299,7 +327,7 @@ func TestChatView_nicks_use_hashed_colours(t *testing.T) {
 		{ID: "2", Channel: "#general", From: "bot", Body: "from model"},
 	}
 
-	cv := components.NewChatView("#general", "alice", "", components.MessagesToLines(msgs))
+	cv := newChatViewWithEvents("#general", "alice", "", messagesToEvents(msgs))
 	v := cv.View(80, 24)
 
 	// Each nick is rendered with a colour derived from its name.
@@ -311,7 +339,7 @@ func TestChatView_nicks_use_hashed_colours(t *testing.T) {
 }
 
 func TestChatView_shows_nick_in_input_area(t *testing.T) {
-	cv := components.NewChatView("#general", "alice", "", testMessages)
+	cv := newChatViewWithEvents("#general", "alice", "", testEvents)
 	v := cv.View(80, 24)
 
 	require.Contains(t, v, "alice")
@@ -319,8 +347,8 @@ func TestChatView_shows_nick_in_input_area(t *testing.T) {
 }
 
 func TestChatView_nick_updates_after_change(t *testing.T) {
-	cv1 := components.NewChatView("#general", "oldnick", "", testMessages)
-	cv2 := components.NewChatView("#general", "newnick", "", testMessages)
+	cv1 := newChatViewWithEvents("#general", "oldnick", "", testEvents)
+	cv2 := newChatViewWithEvents("#general", "newnick", "", testEvents)
 
 	v1 := cv1.View(80, 24)
 	v2 := cv2.View(80, 24)
@@ -332,15 +360,15 @@ func TestChatView_nick_updates_after_change(t *testing.T) {
 }
 
 func TestChatView_topic_bar_shown(t *testing.T) {
-	cv := components.NewChatView("#general", "testuser", "Welcome to general", testMessages)
+	cv := newChatViewWithEvents("#general", "testuser", "Welcome to general", testEvents)
 	v := cv.View(80, 24)
 
 	require.Contains(t, v, "Welcome to general")
 }
 
 func TestChatView_no_topic_bar_when_empty(t *testing.T) {
-	withTitle := components.NewChatView("#general", "testuser", "some topic", testMessages)
-	without := components.NewChatView("#general", "testuser", "", testMessages)
+	withTitle := newChatViewWithEvents("#general", "testuser", "some topic", testEvents)
+	without := newChatViewWithEvents("#general", "testuser", "", testEvents)
 
 	vWith := withTitle.View(80, 24)
 	vWithout := without.View(80, 24)
@@ -360,10 +388,10 @@ func TestChatView_topic_bar_reduces_message_area(t *testing.T) {
 		}
 	}
 
-	lines := components.MessagesToLines(msgs)
+	events := messagesToEvents(msgs)
 
-	withTitle := components.NewChatView("#general", "testuser", "A topic", lines)
-	without := components.NewChatView("#general", "testuser", "", lines)
+	withTitle := newChatViewWithEvents("#general", "testuser", "A topic", events)
+	without := newChatViewWithEvents("#general", "testuser", "", events)
 
 	vWith := withTitle.View(80, 24)
 	vWithout := without.View(80, 24)
@@ -376,7 +404,7 @@ func TestChatView_topic_bar_reduces_message_area(t *testing.T) {
 }
 
 func TestChatView_TopicUpdatedMsg_updates_topic_bar(t *testing.T) {
-	var m ui.Model = components.NewChatView("#general", "testuser", "", testMessages)
+	var m ui.Model = newChatViewWithEvents("#general", "testuser", "", testEvents)
 
 	// No topic initially.
 	v := m.View(80, 24)
@@ -399,7 +427,7 @@ func TestChatView_TopicUpdatedMsg_updates_topic_bar(t *testing.T) {
 }
 
 func TestChatView_pending_indicator(t *testing.T) {
-	cv := components.NewChatView("#general", "testuser", "", testMessages)
+	cv := newChatViewWithEvents("#general", "testuser", "", testEvents)
 	var m ui.Model = cv
 
 	// Initially no pending indicator.
@@ -430,7 +458,7 @@ func TestChatView_pending_indicator_reduces_message_area(t *testing.T) {
 		}
 	}
 
-	cv := components.NewChatView("#general", "testuser", "", components.MessagesToLines(msgs))
+	cv := newChatViewWithEvents("#general", "testuser", "", messagesToEvents(msgs))
 	var m ui.Model = cv
 
 	m, _ = m.Update(components.PendingResponseMsg{Pending: true})
@@ -443,12 +471,15 @@ func TestChatView_pending_indicator_reduces_message_area(t *testing.T) {
 	require.Contains(t, v, "responding")
 }
 
-func renderSingleLine(line tea.Msg) string {
-	return renderSingleLineWithHighlight(line, nil, "testuser")
+func renderSingleEvent(event domain.StoredEvent) string {
+	return renderSingleEventWithHighlight(event, nil, "testuser")
 }
 
-func renderSingleLineWithHighlight(line tea.Msg, words []string, nick domain.Nick) string {
-	var m ui.Model = components.NewChatView("#test", nick, "", []tea.Msg{line})
+func renderSingleEventWithHighlight(event domain.StoredEvent, words []string, nick domain.Nick) string {
+	cv := components.NewChatView("#test", nick, "")
+	var m ui.Model = cv
+
+	m, _ = m.Update(components.HistoryLoadedMsg{Events: []domain.StoredEvent{event}})
 	m, _ = m.Update(components.CommandStateMsg{
 		Commands: command.Set{
 			Commands: []*command.Node{
@@ -468,90 +499,91 @@ func renderSingleLineWithHighlight(line tea.Msg, words []string, nick domain.Nic
 }
 
 func TestRenderLine_IRC_events(t *testing.T) {
+	now := time.Now()
+
 	tests := []struct {
-		name string
-		line tea.Msg
-		want string
+		name  string
+		event domain.StoredEvent
+		want  string
 	}{
 		{
 			"join",
-			components.Join{JoinEvent: domain.JoinEvent{Channel: "#general", Nick: "alice"}},
+			domain.StoredEvent{Event: domain.ChannelJoin{Channel: "#general", Nick: "alice", At: now}},
 			"*** alice has joined #general",
 		},
 		{
 			"join_created",
-			components.Join{JoinEvent: domain.JoinEvent{Channel: "#general", Nick: "alice", Created: true}},
+			domain.StoredEvent{Event: domain.ChannelJoin{Channel: "#general", Nick: "alice", Created: true, At: now}},
 			"*** Created channel #general",
 		},
 		{
 			"part",
-			components.Part{PartEvent: domain.PartEvent{Channel: "#general", Nick: "alice"}},
+			domain.StoredEvent{Event: domain.ChannelPart{Channel: "#general", Nick: "alice", At: now}},
 			"*** alice has left #general",
 		},
 		{
 			"nick_change",
-			components.NickChange{NickChangeEvent: domain.NickChangeEvent{OldNick: "alice", NewNick: "bob"}},
+			domain.StoredEvent{Event: domain.ChannelNickChange{Channel: "#test", OldNick: "alice", NewNick: "bob", At: now}},
 			"*** alice is now known as bob",
 		},
 		{
 			"topic_set_with_author",
-			components.TopicChange{TopicChangeEvent: domain.TopicChangeEvent{Channel: "#general", Topic: "cool topic", By: "alice"}},
+			domain.StoredEvent{Event: domain.ChannelTopicChange{Channel: "#general", Topic: "cool topic", By: "alice", At: now}},
 			"*** topic for #general set by alice: cool topic",
 		},
 		{
 			"topic_set_no_author",
-			components.TopicChange{TopicChangeEvent: domain.TopicChangeEvent{Channel: "#general", Topic: "cool topic"}},
+			domain.StoredEvent{Event: domain.ChannelTopicChange{Channel: "#general", Topic: "cool topic", At: now}},
 			"*** topic for #general set to: cool topic",
 		},
 		{
 			"topic_cleared",
-			components.TopicChange{TopicChangeEvent: domain.TopicChangeEvent{Channel: "#general", Topic: "", By: "alice"}},
+			domain.StoredEvent{Event: domain.ChannelTopicChange{Channel: "#general", Topic: "", By: "alice", At: now}},
 			"*** topic for #general cleared by alice",
 		},
 		{
 			"topic_info_with_metadata",
-			components.TopicInfo{Channel: domain.Channel{
-				Name: "#general", Topic: "cool topic",
+			domain.StoredEvent{Event: domain.ChannelTopicInfo{
+				Channel: "#general", Topic: "cool topic",
 				TopicSetBy: "alice", TopicSetAt: time.Date(2026, 4, 4, 23, 30, 0, 0, time.UTC),
+				At: now,
 			}},
 			"*** topic for #general: cool topic (set by alice on 2026-04-04 23:30)",
 		},
 		{
 			"topic_info_no_topic",
-			components.TopicInfo{Channel: domain.Channel{Name: "#general"}},
+			domain.StoredEvent{Event: domain.ChannelTopicInfo{Channel: "#general", At: now}},
 			"*** No topic set for #general",
 		},
 		{
 			"model_invited",
-			components.ModelInvited{ModelInvitedEvent: domain.ModelInvitedEvent{
-				Channel:  "#general",
-				Instance: domain.ModelInstance{Nick: "botty", ModelID: "anthropic/haiku"},
+			domain.StoredEvent{Event: domain.ChannelModelInvited{
+				Channel: "#general", Nick: "botty", ModelID: "anthropic/haiku", At: now,
 			}},
 			"*** botty (anthropic/haiku) has joined #general",
 		},
 		{
 			"model_invited_with_persona",
-			components.ModelInvited{ModelInvitedEvent: domain.ModelInvitedEvent{
-				Channel:  "#general",
-				Instance: domain.ModelInstance{Nick: "botty", ModelID: "anthropic/haiku", Persona: "helpful"},
+			domain.StoredEvent{Event: domain.ChannelModelInvited{
+				Channel: "#general", Nick: "botty", ModelID: "anthropic/haiku", Persona: "helpful", At: now,
 			}},
 			`*** botty (anthropic/haiku) has joined #general with persona "helpful"`,
 		},
 		{
 			"model_kicked",
-			components.ModelKicked{ModelKickedEvent: domain.ModelKickedEvent{Channel: "#general", Nick: "botty"}},
+			domain.StoredEvent{Event: domain.ChannelModelKicked{Channel: "#general", Nick: "botty", At: now}},
 			"*** botty has been kicked from #general",
 		},
 		{
 			"action_message",
-			components.MessageLine{Message: domain.Message{From: "alice", Body: "waves", Action: true, SentAt: time.Now()}},
+			domain.StoredEvent{Event: domain.ChannelMessage{Channel: "#test", From: "alice", Body: "waves", Action: true, At: now}},
 			"* alice waves",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := renderSingleLine(tt.line)
+			got := renderSingleEvent(tt.event)
 
 			require.Contains(t, got, tt.want)
 		})
@@ -559,98 +591,91 @@ func TestRenderLine_IRC_events(t *testing.T) {
 }
 
 func TestRenderLine_application_feedback(t *testing.T) {
+	now := time.Now()
+
 	tests := []struct {
-		name string
-		line tea.Msg
-		want string
+		name  string
+		event domain.StoredEvent
+		want  string
 	}{
 		{
 			"help",
-			components.Help{},
+			domain.StoredEvent{Event: domain.ChannelHelp{Channel: "#test", At: now}},
 			"*** /join <channel>",
 		},
 		{
 			"channel_list",
-			components.ChannelList{Channels: []domain.Channel{
+			domain.StoredEvent{Event: domain.ChannelListOutput{Channels: []domain.Channel{
 				{Name: "#general"},
 				{Name: "#random", Topic: "cool"},
-			}},
+			}, At: now}},
 			"*** #general",
 		},
 		{
 			"channel_list_empty",
-			components.ChannelList{},
+			domain.StoredEvent{Event: domain.ChannelListOutput{At: now}},
 			"*** no channels",
 		},
 		{
 			"api_key_saved",
-			components.APIKeySaved{},
-			"✓ OpenRouter API key saved",
+			domain.StoredEvent{Event: domain.ChannelSystemNotice{Channel: "#test", Text: "OpenRouter API key saved and activated.", At: now}},
+			"OpenRouter API key saved",
 		},
 		{
 			"poke_interval_set",
-			components.PokeIntervalSet{Interval: 10 * time.Minute},
-			"✓ Poke interval set to 10m0s.",
-		},
-		{
-			"dm_opened",
-			components.DMOpened{Nick: "botty"},
-			"✓ Opened direct message with botty",
+			domain.StoredEvent{Event: domain.ChannelSystemNotice{Channel: "#test", Text: "Poke interval set to 10m0s.", At: now}},
+			"Poke interval set to 10m0s.",
 		},
 		{
 			"usage_hint_config",
-			components.UsageHint{
+			domain.StoredEvent{Event: domain.ChannelUsageHint{
+				Channel: "#test",
 				Command: "config",
 				Usage:   "/config api-key <value> | /config nick-model <model-id> | /config poke-interval <duration>",
-			},
-			"⚠ usage: /config api-key",
+				At:      now,
+			}},
+			"usage: /config api-key",
 		},
 		{
 			"usage_hint_invite",
-			components.UsageHint{
+			domain.StoredEvent{Event: domain.ChannelUsageHint{
+				Channel: "#test",
 				Command: "invite",
 				Usage:   "/invite <model-id> [--persona <text>]",
-			},
-			"⚠ usage: /invite",
+				At:      now,
+			}},
+			"usage: /invite",
 		},
 		{
 			"no_channel",
-			components.NoChannel{},
-			"⚠ join a channel first",
+			domain.StoredEvent{Event: domain.ChannelUsageHint{Usage: "join a channel first", At: now}},
+			"join a channel first",
 		},
 		{
 			"command_error",
-			components.CommandError{Err: domain.UnknownCommandError{Name: "foo"}},
-			"✗ unknown command: /foo",
+			domain.StoredEvent{Event: domain.ChannelCommandError{Channel: "#test", Err: "unknown command: /foo", At: now}},
+			"unknown command: /foo",
 		},
 		{
 			"unknown_nick_error",
-			components.CommandError{Err: domain.UnknownNickError{Nick: "ghost"}},
-			"✗ no such nick: ghost",
+			domain.StoredEvent{Event: domain.ChannelCommandError{Channel: "#test", Err: "no such nick: ghost", At: now}},
+			"no such nick: ghost",
 		},
 		{
 			"config_changed",
-			components.ConfigChanged{Operation: "API key saved"},
-			"✓ API key saved",
+			domain.StoredEvent{Event: domain.ChannelSystemNotice{Channel: "#test", Text: "API key saved", At: now}},
+			"API key saved",
 		},
 		{
 			"backend_error",
-			components.BackendError{
-				Operation: "model invocation",
-				Err:       fmt.Errorf("connection refused"),
-			},
-			"✗ model invocation: connection refused",
-		},
-		{
-			"new_messages_divider",
-			components.NewMessagesDivider{},
-			"new messages",
+			domain.StoredEvent{Event: domain.ChannelCommandError{Channel: "#test", Err: "model invocation: connection refused", At: now}},
+			"model invocation: connection refused",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := renderSingleLine(tt.line)
+			got := renderSingleEvent(tt.event)
 
 			require.Contains(t, got, tt.want)
 		})
@@ -658,29 +683,53 @@ func TestRenderLine_application_feedback(t *testing.T) {
 }
 
 func TestNewMessagesDivider_fills_width(t *testing.T) {
-	cv := components.NewChatView("#test", "testuser", "", []tea.Msg{
-		components.NewMessagesDivider{},
+	// Create enough events to overflow the viewport so we can scroll.
+	events := make([]domain.StoredEvent, 30)
+	for i := range events {
+		events[i] = domain.StoredEvent{
+			Event: domain.ChannelMessage{
+				Channel: "#test",
+				From:    "user",
+				Body:    fmt.Sprintf("message %d", i),
+				At:      time.Now(),
+			},
+		}
+	}
+
+	cv := newChatViewWithEvents("#test", "testuser", "", events)
+	var m ui.Model = cv
+	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{Width: 80, Height: 24}})
+
+	// Scroll up, then add a new event to trigger the divider.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	m, _ = m.Update(domain.StoredEvent{
+		Event: domain.ChannelMessage{Channel: "#test", From: "other", Body: "new arrival", At: time.Now()},
 	})
 
-	v := cv.View(80, 24)
+	// Scroll back to bottom to see the divider.
+	for range 5 {
+		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	}
+
+	v := m.View(80, 24)
 	stripped := ansi.Strip(v)
 
 	require.Contains(t, stripped, "new messages")
 	require.Contains(t, stripped, "──")
 
-	// The divider dashes should span most of the width.
-	for _, line := range strings.Split(stripped, "\n") {
+	for line := range strings.SplitSeq(stripped, "\n") {
 		if strings.Contains(line, "new messages") {
 			require.Contains(t, line, "─")
 			require.GreaterOrEqual(t, len([]rune(line)), 40,
 				"divider should span a significant portion of the width")
+
 			break
 		}
 	}
 }
 
 func TestChatView_command_popover_renders_and_completes(t *testing.T) {
-	var m ui.Model = components.NewChatView("#general", "testuser", "", nil)
+	var m ui.Model = components.NewChatView("#general", "testuser", "")
 	m, _ = m.Update(components.CommandStateMsg{
 		Commands: command.Set{
 			Commands: []*command.Node{
@@ -720,7 +769,7 @@ func TestChatView_command_popover_renders_and_completes(t *testing.T) {
 }
 
 func TestChatView_popover_arrow_keys_do_not_fall_through(t *testing.T) {
-	var m ui.Model = components.NewChatView("#general", "testuser", "", nil)
+	var m ui.Model = components.NewChatView("#general", "testuser", "")
 	m, _ = m.Update(components.CommandStateMsg{
 		Commands: command.Set{
 			Commands: []*command.Node{
@@ -762,7 +811,7 @@ func TestChatView_popover_arrow_keys_do_not_fall_through(t *testing.T) {
 }
 
 func TestChatView_popover_renders_usage_in_suggestions(t *testing.T) {
-	var m ui.Model = components.NewChatView("#general", "testuser", "", nil)
+	var m ui.Model = components.NewChatView("#general", "testuser", "")
 	m, _ = m.Update(components.CommandStateMsg{
 		Commands: command.Set{
 			Commands: []*command.Node{
@@ -786,7 +835,7 @@ func TestChatView_popover_renders_usage_in_suggestions(t *testing.T) {
 }
 
 func TestChatView_mouse_click_positions_input_cursor(t *testing.T) {
-	cv := components.NewChatView("#general", "testuser", "", nil)
+	cv := components.NewChatView("#general", "testuser", "")
 	var m ui.Model = cv
 
 	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 20, Y: 0, Width: 60, Height: 24}})
@@ -808,52 +857,47 @@ func TestChatView_mouse_click_positions_input_cursor(t *testing.T) {
 }
 
 func TestChatView_divider_inserted_when_scrolled_up(t *testing.T) {
-	// Create enough messages to fill the viewport.
-	msgs := make([]domain.Message, 30)
-	for i := range msgs {
-		msgs[i] = domain.Message{
-			ID:      fmt.Sprintf("%d", i),
-			Channel: "#general",
-			From:    "user",
-			Body:    fmt.Sprintf("message %d", i),
+	events := make([]domain.StoredEvent, 30)
+	for i := range events {
+		events[i] = domain.StoredEvent{
+			Event: domain.ChannelMessage{
+				Channel: "#general",
+				From:    "user",
+				Body:    fmt.Sprintf("message %d", i),
+				At:      time.Now(),
+			},
 		}
 	}
 
-	var m ui.Model = components.NewChatView("#general", "testuser", "",
-		components.MessagesToLines(msgs))
+	cv := newChatViewWithEvents("#general", "testuser", "", events)
+	var m ui.Model = cv
 	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{Width: 80, Height: 24}})
 
 	// Scroll up so we're no longer at the bottom.
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
 
-	// Verify we're scrolled up.
 	v := m.View(80, 24)
 	require.NotContains(t, v, "message 29")
 
-	// Add new messages via SetLines.
-	newMsgs := make([]domain.Message, 33)
-	copy(newMsgs, msgs)
-
+	// Append new events while scrolled up.
 	for i := 30; i < 33; i++ {
-		newMsgs[i] = domain.Message{
-			ID:      fmt.Sprintf("%d", i),
-			Channel: "#general",
-			From:    "other",
-			Body:    fmt.Sprintf("new message %d", i),
-		}
+		m, _ = m.Update(domain.StoredEvent{
+			Event: domain.ChannelMessage{
+				Channel: "#general",
+				From:    "other",
+				Body:    fmt.Sprintf("new message %d", i),
+				At:      time.Now(),
+			},
+		})
 	}
 
-	m, _ = m.Update(components.SetLinesMsg{Lines: components.MessagesToLines(newMsgs)})
-
-	// Check the view while still scrolled up — divider shouldn't be visible yet
-	// but new messages shouldn't auto-scroll us.
 	vScrolledUp := ansi.Strip(m.View(80, 24))
 	t.Logf("while scrolled up:\n%s", vScrolledUp)
 
 	// Scroll to bottom to see the divider.
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	for range 5 {
+		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	}
 
 	v = m.View(80, 24)
 	stripped := ansi.Strip(v)
@@ -863,40 +907,126 @@ func TestChatView_divider_inserted_when_scrolled_up(t *testing.T) {
 }
 
 func TestChatView_no_divider_when_at_bottom(t *testing.T) {
-	msgs := make([]domain.Message, 5)
-	for i := range msgs {
-		msgs[i] = domain.Message{
-			ID:      fmt.Sprintf("%d", i),
-			Channel: "#general",
-			From:    "user",
-			Body:    fmt.Sprintf("message %d", i),
+	events := make([]domain.StoredEvent, 5)
+	for i := range events {
+		events[i] = domain.StoredEvent{
+			Event: domain.ChannelMessage{
+				Channel: "#general",
+				From:    "user",
+				Body:    fmt.Sprintf("message %d", i),
+				At:      time.Now(),
+			},
 		}
 	}
 
-	var m ui.Model = components.NewChatView("#general", "testuser", "",
-		components.MessagesToLines(msgs))
+	cv := newChatViewWithEvents("#general", "testuser", "", events)
+	var m ui.Model = cv
 	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{Width: 80, Height: 24}})
 
-	// Add more messages while at bottom.
-	newMsgs := make([]domain.Message, 8)
-	copy(newMsgs, msgs)
-
+	// Add more events while at bottom.
 	for i := 5; i < 8; i++ {
-		newMsgs[i] = domain.Message{
-			ID:      fmt.Sprintf("%d", i),
-			Channel: "#general",
-			From:    "other",
-			Body:    fmt.Sprintf("new message %d", i),
-		}
+		m, _ = m.Update(domain.StoredEvent{
+			Event: domain.ChannelMessage{
+				Channel: "#general",
+				From:    "other",
+				Body:    fmt.Sprintf("new message %d", i),
+				At:      time.Now(),
+			},
+		})
 	}
-
-	m, _ = m.Update(components.SetLinesMsg{Lines: components.MessagesToLines(newMsgs)})
 
 	v := m.View(80, 24)
 	stripped := ansi.Strip(v)
 
 	require.NotContains(t, stripped, "new messages",
 		"no divider should appear when viewport is at bottom")
+}
+
+func TestChatView_stored_events_insert_divider_when_scrolled_up(t *testing.T) {
+	events := make([]domain.StoredEvent, 30)
+	for i := range 30 {
+		events[i] = domain.StoredEvent{
+			Event: domain.ChannelMessage{
+				Channel: "#general",
+				From:    "user",
+				Body:    fmt.Sprintf("message %d", i),
+			},
+		}
+	}
+
+	cv := newChatViewWithEvents("#general", "testuser", "", events)
+	var m ui.Model = cv
+	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{Width: 80, Height: 24}})
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+
+	for i := 30; i < 33; i++ {
+		m, _ = m.Update(domain.StoredEvent{
+			Event: domain.ChannelMessage{
+				Channel: "#general",
+				From:    "user",
+				Body:    fmt.Sprintf("new message %d", i),
+			},
+		})
+	}
+
+	for range 5 {
+		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	}
+
+	v := ansi.Strip(m.View(80, 24))
+
+	require.Contains(t, v, "new messages")
+	require.Contains(t, v, "new message 30")
+	require.Contains(t, v, "new message 32")
+}
+
+func TestChatView_stored_events_keep_divider_when_more_arrive_during_catch_up(t *testing.T) {
+	events := make([]domain.StoredEvent, 30)
+	for i := range 30 {
+		events[i] = domain.StoredEvent{
+			Event: domain.ChannelMessage{
+				Channel: "#general",
+				From:    "user",
+				Body:    fmt.Sprintf("message %d", i),
+			},
+		}
+	}
+
+	cv := newChatViewWithEvents("#general", "testuser", "", events)
+	var m ui.Model = cv
+	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{Width: 80, Height: 24}})
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+
+	// First new event while scrolled up — divider is armed.
+	m, _ = m.Update(domain.StoredEvent{
+		Event: domain.ChannelMessage{
+			Channel: "#general",
+			From:    "user",
+			Body:    "new message 30",
+		},
+	})
+
+	// Second new event while still scrolled up — divider stays.
+	m, _ = m.Update(domain.StoredEvent{
+		Event: domain.ChannelMessage{
+			Channel: "#general",
+			From:    "user",
+			Body:    "new message 31",
+		},
+	})
+
+	// Scroll to bottom to see both new events and the divider.
+	for range 5 {
+		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	}
+
+	v := ansi.Strip(m.View(80, 24))
+
+	require.Contains(t, v, "new messages")
+	require.Contains(t, v, "new message 30")
+	require.Contains(t, v, "new message 31")
 }
 
 func TestChatView_mouse_wheel_scrolls_messages(t *testing.T) {
@@ -910,7 +1040,7 @@ func TestChatView_mouse_wheel_scrolls_messages(t *testing.T) {
 		}
 	}
 
-	cv := components.NewChatView("#general", "testuser", "", components.MessagesToLines(msgs))
+	cv := newChatViewWithEvents("#general", "testuser", "", messagesToEvents(msgs))
 	var m ui.Model = cv
 	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 20, Y: 0, Width: 60, Height: 24}})
 
@@ -926,7 +1056,7 @@ func TestChatView_mouse_wheel_scrolls_messages(t *testing.T) {
 }
 
 func TestChatView_mouse_click_accepts_popover_suggestion(t *testing.T) {
-	var m ui.Model = components.NewChatView("#general", "testuser", "", nil)
+	var m ui.Model = components.NewChatView("#general", "testuser", "")
 	m, _ = m.Update(components.CommandStateMsg{
 		Commands: command.Set{
 			Commands: []*command.Node{

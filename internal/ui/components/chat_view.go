@@ -1,7 +1,7 @@
 package components
 
 import (
-	"time"
+	"slices"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
@@ -13,113 +13,24 @@ import (
 	"github.com/laney/modeloff/internal/ui/theme"
 )
 
-// MessageLine wraps a domain.Message for display in the chat view.
-type MessageLine struct {
-	Message domain.Message
-}
-
-// IRC lifecycle events — rendered with "*** " prefix.
-
-// Join represents a user joining a channel.
-type Join struct{ domain.JoinEvent }
-
-// Part represents a user leaving a channel.
-type Part struct{ domain.PartEvent }
-
-// NickChange represents a nick change.
-type NickChange struct{ domain.NickChangeEvent }
-
-// TopicChange represents a channel topic change.
-type TopicChange struct{ domain.TopicChangeEvent }
-
-// ModelInvited represents a model being invited to a channel.
-type ModelInvited struct{ domain.ModelInvitedEvent }
-
-// ModelKicked represents a model being kicked from a channel.
-type ModelKicked struct{ domain.ModelKickedEvent }
-
-// TopicInfo displays the current topic with metadata (who set it, when).
-type TopicInfo struct{ Channel domain.Channel }
-
-// Application feedback — typed by origin.
-
-// Help is the output of the /help command.
-type Help struct{}
-
-// Whois is the output of the /whois command.
-type Whois struct{ domain.ModelInstance }
-
-// ChannelList is the output of the /list command.
-type ChannelList struct{ Channels []domain.Channel }
-
-// APIKeySaved confirms the API key was persisted.
-type APIKeySaved struct{}
-
-// PokeIntervalSet confirms the poke interval was changed.
-type PokeIntervalSet struct{ Interval time.Duration }
-
-// NickModelSet confirms the nick generation model was changed.
-type NickModelSet struct{ ModelID domain.ModelID }
-
-// DMOpened confirms a direct message was opened.
-type DMOpened struct{ Nick domain.Nick }
-
-// UsageHint is a warning about incorrect command usage. Usage carries
-// the human-readable usage string produced by the command definition.
-type UsageHint struct {
-	Command string
-	Usage   string
-}
-
-// NoChannel is a warning shown when a command requires an active
-// channel but none is selected.
-type NoChannel struct{}
-
-// CommandError wraps any error from command execution.
-type CommandError struct{ Err error }
-
-// ConfigChanged confirms a configuration change.
-type ConfigChanged struct{ Operation string }
-
-// BackendError wraps a backend error for display in the chat view.
-type BackendError struct {
-	Operation string
-	Err       error
-}
-
-// NewMessagesDivider is a separator inserted into the chat view when
-// new messages arrive while the viewport is scrolled up.
-type NewMessagesDivider struct{}
-
-// MessagesToLines converts a slice of domain messages into line values.
-func MessagesToLines(msgs []domain.Message) []tea.Msg {
-	lines := make([]tea.Msg, len(msgs))
-
-	for i, m := range msgs {
-		lines[i] = MessageLine{Message: m}
-	}
-
-	return lines
-}
-
-// MessagesUpdatedMsg tells the chat view to refresh its message list.
-type MessagesUpdatedMsg struct {
-	Channel domain.ChannelName
-	Lines   []tea.Msg
-}
-
 // PendingResponseMsg sets or clears the "awaiting response" indicator
 // in the chat view.
 type PendingResponseMsg struct {
 	Pending bool
 }
 
-// SetChannelMsg updates the channel identity, topic, and lines for a
-// channel switch.
+// SetChannelMsg updates the channel identity and topic for a channel
+// switch. The message list is cleared; history arrives separately via
+// HistoryLoadedMsg.
 type SetChannelMsg struct {
 	Channel domain.ChannelName
 	Topic   string
-	Lines   []tea.Msg
+}
+
+// HistoryLoadedMsg populates the message list with events loaded from
+// the event log (e.g. on channel switch or scroll-back).
+type HistoryLoadedMsg struct {
+	Events []domain.StoredEvent
 }
 
 // SetLinesMsg replaces the displayed lines, preserving divider logic.
@@ -165,10 +76,10 @@ type chatViewLayout struct {
 }
 
 // NewChatView creates a chat view for the given channel.
-func NewChatView(ch domain.ChannelName, userNick domain.Nick, topic string, lines []tea.Msg) ChatView {
+func NewChatView(ch domain.ChannelName, userNick domain.Nick, topic string) ChatView {
 	keyMap := DefaultChatViewKeyMap
 
-	ml := NewMessageList(ch, lines).SetKeyMap(keyMap)
+	ml := NewMessageList(ch).SetKeyMap(keyMap)
 
 	return ChatView{
 		channel:  ch,
@@ -194,14 +105,14 @@ func (c ChatView) KeyBindings() []key.Binding {
 				key.WithKeys("pgup", "pgdown"),
 				key.WithHelp("PgUp/Dn", "scroll"),
 			),
-			len(c.messages.Lines()) > 0,
+			c.messages.Len() > 0,
 		),
 		ui.WithBindingEnabled(
 			key.NewBinding(
 				key.WithKeys("ctrl+up", "ctrl+down"),
 				key.WithHelp("^↑/↓", "scroll"),
 			),
-			len(c.messages.Lines()) > 0,
+			c.messages.Len() > 0,
 		),
 	}
 
@@ -269,19 +180,13 @@ func (c ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		return c, nil
 
 	case NickListUpdatedMsg:
-		nicks := make([]domain.Nick, len(msg.Members))
-		for i, m := range msg.Members {
-			nicks[i] = m.Nick
-		}
-
+		nicks := slices.Collect(msg.Members.Nicks())
 		c.input = c.input.SetNicks(nicks)
 
 		return c, nil
 
-	case SetLinesMsg, SetPlaceholderMsg, PendingResponseMsg, MessagesUpdatedMsg, HighlightWordsMsg,
-		MessageLine, Join, Part, NickChange, TopicChange, ModelInvited, ModelKicked, TopicInfo,
-		Help, Whois, ChannelList, APIKeySaved, PokeIntervalSet, NickModelSet, DMOpened,
-		UsageHint, NoChannel, CommandError, ConfigChanged, BackendError, NewMessagesDivider:
+	case SetPlaceholderMsg, PendingResponseMsg, HighlightWordsMsg,
+		HistoryLoadedMsg, domain.StoredEvent:
 		var cmd tea.Cmd
 		c, cmd = c.updateMessages(msg)
 		c = c.syncMessageViewport()
@@ -409,10 +314,7 @@ func (c ChatView) View(width, height int) string {
 		topicHeight = lipgloss.Height(topicView)
 	}
 
-	messageListHeight := height - inputHeight - topicHeight - popoverHeight
-	if messageListHeight < 0 {
-		messageListHeight = 0
-	}
+	messageListHeight := max(height-inputHeight-topicHeight-popoverHeight, 0)
 
 	messageView := c.messages.View(width, messageListHeight)
 
@@ -488,7 +390,9 @@ func (c ChatView) updateMessages(msg tea.Msg) (ChatView, tea.Cmd) {
 
 func (c ChatView) syncMessageViewport() ChatView {
 	layout := c.layoutRects()
-	c.messages = c.messages.SyncViewport(layout.MessageRect.Width, layout.MessageRect.Height)
+
+	updated, _ := c.messages.Update(ui.BoundsMsg{Rect: layout.MessageRect})
+	c.messages = updated.(MessageList)
 
 	return c
 }

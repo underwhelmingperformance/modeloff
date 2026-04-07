@@ -12,7 +12,7 @@ import (
 	"github.com/laney/modeloff/internal/config"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/session"
-	storemod "github.com/laney/modeloff/internal/store"
+	"github.com/laney/modeloff/internal/store/storetest"
 	uipkg "github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/screens"
 	"github.com/laney/modeloff/internal/ui/uitest"
@@ -21,19 +21,21 @@ import (
 func newTestSession(t *testing.T) *session.Session {
 	t.Helper()
 
-	s := storemod.NewFileStore(t.TempDir())
+	s := storetest.NewMemoryStore(t)
 	return session.New(s, nil, &uitest.FakeAPI{}, newFakeConfigStore(), "testuser")
 }
 
 func newTestSessionWithConfigStore(t *testing.T, cfgStore config.Store) *session.Session {
 	t.Helper()
 
-	s := storemod.NewFileStore(t.TempDir())
+	s := storetest.NewMemoryStore(t)
 	return session.New(s, nil, &uitest.FakeAPI{}, cfgStore, "testuser")
 }
 
 func newChatApp(t *testing.T, sess *session.Session) *uitest.App {
 	t.Helper()
+
+	uitest.DrainEvents(sess)
 
 	root := uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess))
 	return uitest.New(t, root, teatest.WithInitialTermSize(256, 256))
@@ -166,8 +168,7 @@ func TestChatScreen_whois_command(t *testing.T) {
 	sess := newTestSession(t)
 	uitest.SeedChannel(t, sess, "#general")
 
-	_, err := sess.Invite(t.Context(), "#general", "anthropic/claude-3-haiku", "")
-	require.NoError(t, err)
+	require.NoError(t, sess.Invite(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
 
 	tm := newChatApp(t, sess)
 	tm.WaitFor("#general")
@@ -231,8 +232,7 @@ func TestChatScreen_invite_existing_instance(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#general")
 	uitest.SeedChannel(t, sess, "#random")
 
-	_, err := sess.Invite(t.Context(), "#general", "anthropic/claude-3-haiku", "")
-	require.NoError(t, err)
+	require.NoError(t, sess.Invite(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
 
 	tm := newChatApp(t, sess)
 	tm.WaitFor("#random")
@@ -248,8 +248,7 @@ func TestChatScreen_kick_command(t *testing.T) {
 	sess := newTestSession(t)
 	uitest.SeedChannel(t, sess, "#general")
 
-	_, err := sess.Invite(t.Context(), "#general", "anthropic/claude-3-haiku", "")
-	require.NoError(t, err)
+	require.NoError(t, sess.Invite(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
 
 	tm := newChatApp(t, sess)
 	tm.WaitFor("#general")
@@ -337,8 +336,7 @@ func TestChatScreen_config_invalid_duration(t *testing.T) {
 func TestChatScreen_msg_command_opens_dm(t *testing.T) {
 	sess := newTestSession(t)
 	uitest.SeedChannel(t, sess, "#general")
-	_, err := sess.Invite(t.Context(), "#general", "anthropic/claude-3-haiku", "")
-	require.NoError(t, err)
+	require.NoError(t, sess.Invite(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
 
 	tm := newChatApp(t, sess)
 	tm.WaitFor("#general")
@@ -350,8 +348,7 @@ func TestChatScreen_msg_command_opens_dm(t *testing.T) {
 func TestChatScreen_msg_command_opens_dm_and_sends_message(t *testing.T) {
 	sess := newTestSession(t)
 	uitest.SeedChannel(t, sess, "#general")
-	_, err := sess.Invite(t.Context(), "#general", "anthropic/claude-3-haiku", "")
-	require.NoError(t, err)
+	require.NoError(t, sess.Invite(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
 
 	tm := newChatApp(t, sess)
 	tm.WaitFor("#general")

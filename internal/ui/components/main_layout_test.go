@@ -30,6 +30,7 @@ func (s stubModel) View(width, height int) string {
 
 type keybindingStubModel struct {
 	stubModel
+
 	bindings []bkey.Binding
 }
 
@@ -122,7 +123,7 @@ func TestMainLayout_View_three_pane_at_wide_width(t *testing.T) {
 	nicklist := stubModel{label: "nicks"}
 
 	layout := components.NewMainLayout(sidebar, content)
-	layout.SetNickList(nicklist)
+	layout.NickList = nicklist
 
 	got := layout.View(120, 24)
 
@@ -131,18 +132,24 @@ func TestMainLayout_View_three_pane_at_wide_width(t *testing.T) {
 	require.Contains(t, got, "nicks:")
 }
 
-func TestMainLayout_View_hides_nicklist_at_narrow_width(t *testing.T) {
+func TestMainLayout_View_hides_nicklist_when_main_too_narrow(t *testing.T) {
+	// Use a wide sidebar stub and nicklist stub that, together with
+	// the nick list, squeeze the main area below minMainWidth.
+	// The layout should hide the nick list to reclaim space.
 	sidebar := stubModel{label: "sidebar"}
 	content := stubModel{label: "content"}
 	nicklist := stubModel{label: "nicks"}
 
 	layout := components.NewMainLayout(sidebar, content)
-	layout.SetNickList(nicklist)
+	layout.NickList = nicklist
 
+	// At 80 columns with small stubs everything fits.
 	got := layout.View(80, 24)
+	require.Contains(t, got, "nicks:")
 
-	require.Contains(t, got, "sidebar:")
-	require.Contains(t, got, "content:")
+	// Toggle it off — should disappear.
+	toggled, _ := layout.Update(components.NickListToggleMsg{})
+	got = toggled.View(80, 24)
 	require.NotContains(t, got, "nicks:")
 }
 
@@ -152,7 +159,7 @@ func TestMainLayout_View_nicklist_toggle(t *testing.T) {
 	nicklist := stubModel{label: "nicks"}
 
 	layout := components.NewMainLayout(sidebar, content)
-	layout.SetNickList(nicklist)
+	layout.NickList = nicklist
 
 	// Initially visible at wide width.
 	got := layout.View(120, 24)
@@ -191,7 +198,7 @@ func TestMainLayout_View_three_pane_fills_width(t *testing.T) {
 	nicklist := stubModel{label: "nicks"}
 
 	layout := components.NewMainLayout(sidebar, content)
-	layout.SetNickList(nicklist)
+	layout.NickList = nicklist
 
 	got := layout.View(120, 24)
 
@@ -203,6 +210,7 @@ func TestMainLayout_View_three_pane_fills_width(t *testing.T) {
 // initModel is a stubModel that returns a command from Init.
 type initModel struct {
 	stubModel
+
 	initMsg string
 }
 

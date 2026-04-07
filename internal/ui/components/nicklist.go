@@ -1,9 +1,6 @@
 package components
 
 import (
-	"slices"
-	"strings"
-
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/laney/modeloff/internal/domain"
@@ -13,7 +10,7 @@ import (
 
 // NickListUpdatedMsg tells the nick list to refresh its members.
 type NickListUpdatedMsg struct {
-	Members []domain.Member
+	Members domain.MemberList
 }
 
 // NickListThinkingMsg updates which nicks are currently responding.
@@ -22,46 +19,45 @@ type NickListThinkingMsg struct {
 	Nicks map[domain.Nick]bool
 }
 
-// NickList displays the sorted members of the current channel.
-type NickList struct {
-	members  []domain.Member
-	thinking map[domain.Nick]bool
-	panel    PanelList
-}
+func nickListView(thinking map[domain.Nick]bool) func(domain.Member, ViewState, int) string {
+	return func(m domain.Member, _ ViewState, _ int) string {
+		prefix := m.Mode.String()
+		nick := string(m.Nick)
 
-// NewNickList creates a nick list from the given members. The
-// members are copied and sorted by mode (ops first, then voice,
-// then regular) and alphabetically within each group.
-func NewNickList(members []domain.Member) NickList {
-	nl := NickList{panel: NewPanelList()}
-	nl.setMembers(members)
+		var text string
 
-	return nl
-}
-
-func (n *NickList) setMembers(members []domain.Member) {
-	if len(members) == 0 {
-		n.members = nil
-		return
-	}
-
-	sorted := make([]domain.Member, len(members))
-	copy(sorted, members)
-
-	slices.SortFunc(sorted, func(a, b domain.Member) int {
-		if a.Mode != b.Mode {
-			// Higher modes (Op=2, Voice=1) sort first.
-			if a.Mode > b.Mode {
-				return -1
-			}
-
-			return 1
+		if prefix != "" {
+			text = theme.Dim.Render(prefix) + theme.NickStyle(nick).Render(nick)
+		} else {
+			text = " " + theme.NickStyle(nick).Render(nick)
 		}
 
-		return strings.Compare(string(a.Nick), string(b.Nick))
-	})
+		if thinking[m.Nick] {
+			text += theme.Dim.Render(" …")
+		}
 
-	n.members = sorted
+		return text
+	}
+}
+
+// NickList displays the sorted members of the current channel.
+type NickList struct {
+	panel    Sidebar[domain.Member, domain.Nick]
+	thinking map[domain.Nick]bool
+}
+
+// NewNickList creates a nick list backed by the given member list.
+func NewNickList(members domain.MemberList) NickList {
+	nl := NickList{}
+
+	nl.panel = NewSidebar(members.SortedSet(), SidebarConfig[domain.Member, domain.Nick]{
+		Key:  func(m domain.Member) domain.Nick { return m.Nick },
+		View: nickListView(nl.thinking),
+	}).
+		SetHeader("Users").
+		SetEmpty("No members")
+
+	return nl
 }
 
 // Init implements ui.Model.
@@ -73,47 +69,25 @@ func (n NickList) Init() tea.Cmd {
 func (n NickList) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case NickListUpdatedMsg:
-		n.setMembers(msg.Members)
+		n.panel = n.panel.SetItems(msg.Members.SortedSet())
+
 		return n, nil
 
 	case NickListThinkingMsg:
 		n.thinking = msg.Nicks
+		n.panel.cfg.View = nickListView(n.thinking)
+
 		return n, nil
 
 	default:
-		cmd := n.panel.Update(msg)
+		updated, cmd := n.panel.Update(msg)
+		n.panel = updated.(Sidebar[domain.Member, domain.Nick])
+
 		return n, cmd
 	}
 }
 
 // View implements ui.Model.
 func (n NickList) View(width, height int) string {
-	items := make([]string, 0, len(n.members))
-
-	for _, member := range n.members {
-		prefix := member.Mode.Prefix()
-		nick := string(member.Nick)
-		thinking := n.thinking[member.Nick]
-
-		var line string
-
-		if prefix != "" {
-			line = theme.Dim.Render(prefix) + theme.NickStyle(nick).Render(nick)
-		} else {
-			line = " " + theme.NickStyle(nick).Render(nick)
-		}
-
-		if thinking {
-			line += theme.Dim.Render(" …")
-		}
-
-		items = append(items, line)
-	}
-
-	return n.panel.Render(width, height, PanelContent{
-		Items:  items,
-		Header: "Users",
-		Cursor: -1,
-		Empty:  "No members",
-	})
+	return n.panel.View(width, height)
 }

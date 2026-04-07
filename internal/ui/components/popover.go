@@ -365,10 +365,7 @@ func (p Popover) visibleSuggestions() []command.Suggestion {
 		start = 0
 	}
 
-	end := start + maxPopoverSuggestions
-	if end > len(p.completion.Suggestions) {
-		end = len(p.completion.Suggestions)
-	}
+	end := min(start+maxPopoverSuggestions, len(p.completion.Suggestions))
 
 	return p.completion.Suggestions[start:end]
 }

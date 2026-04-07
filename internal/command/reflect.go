@@ -143,8 +143,7 @@ func hasCmdChildren(t reflect.Type) bool {
 		return false
 	}
 
-	for i := 0; i < t.NumField(); i++ {
-		f := t.Field(i)
+	for f := range t.Fields() {
 		if !f.IsExported() {
 			continue
 		}

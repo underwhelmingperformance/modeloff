@@ -13,16 +13,27 @@ import (
 	"github.com/laney/modeloff/internal/ui/components"
 )
 
+func members(ms ...domain.Member) domain.MemberList {
+	ml := domain.NewMemberList()
+
+	for _, m := range ms {
+		ml.Add(m.Nick)
+		ml.SetMode(m.Nick, m.Mode)
+	}
+
+	return ml
+}
+
 func member(nick string, mode domain.NickMode) domain.Member {
 	return domain.Member{Nick: domain.Nick(nick), Mode: mode}
 }
 
-func TestNickList_View_shows_sorted_members(t *testing.T) {
-	nl := components.NewNickList([]domain.Member{
-		member("charlie", domain.ModeVoice),
+func TestNickList_View_shows_members(t *testing.T) {
+	nl := components.NewNickList(members(
 		member("alice", domain.ModeOp),
+		member("charlie", domain.ModeVoice),
 		member("bob", domain.ModeNone),
-	})
+	))
 
 	v := nl.View(20, 10)
 
@@ -33,7 +44,7 @@ func TestNickList_View_shows_sorted_members(t *testing.T) {
 }
 
 func TestNickList_View_empty(t *testing.T) {
-	nl := components.NewNickList(nil)
+	nl := components.NewNickList(domain.NewMemberList())
 
 	v := nl.View(20, 10)
 
@@ -41,13 +52,13 @@ func TestNickList_View_empty(t *testing.T) {
 }
 
 func TestNickList_Update_handles_NickListUpdatedMsg(t *testing.T) {
-	nl := components.NewNickList(nil)
+	nl := components.NewNickList(domain.NewMemberList())
 
 	updated, _ := nl.Update(components.NickListUpdatedMsg{
-		Members: []domain.Member{
-			member("dave", domain.ModeNone),
+		Members: members(
 			member("eve", domain.ModeVoice),
-		},
+			member("dave", domain.ModeNone),
+		),
 	})
 
 	v := updated.View(20, 10)
@@ -57,24 +68,26 @@ func TestNickList_Update_handles_NickListUpdatedMsg(t *testing.T) {
 }
 
 func TestNickList_Update_clears_on_empty(t *testing.T) {
-	nl := components.NewNickList([]domain.Member{member("alice", domain.ModeNone)})
+	nl := components.NewNickList(members(member("alice", domain.ModeNone)))
 
 	v := nl.View(20, 10)
 	require.Contains(t, v, "alice")
 
-	updated, _ := nl.Update(components.NickListUpdatedMsg{Members: nil})
+	updated, _ := nl.Update(components.NickListUpdatedMsg{
+		Members: domain.NewMemberList(),
+	})
 
 	v = updated.View(20, 10)
 	require.Contains(t, v, "No members")
 }
 
 func TestNickList_View_overflow_fits_height(t *testing.T) {
-	members := make([]domain.Member, 20)
-	for i := range members {
-		members[i] = member(fmt.Sprintf("user%02d", i), domain.ModeNone)
+	ml := domain.NewMemberList()
+	for i := range 20 {
+		ml.Add(domain.Nick(fmt.Sprintf("user%02d", i)))
 	}
 
-	nl := components.NewNickList(members)
+	nl := components.NewNickList(ml)
 
 	v := nl.View(20, 5)
 
@@ -86,10 +99,10 @@ func TestNickList_View_overflow_fits_height(t *testing.T) {
 }
 
 func TestNickList_View_responsive(t *testing.T) {
-	nl := components.NewNickList([]domain.Member{
+	nl := components.NewNickList(members(
 		member("alice", domain.ModeOp),
 		member("bob", domain.ModeVoice),
-	})
+	))
 
 	sizes := []struct{ w, h int }{
 		{20, 10},
@@ -106,11 +119,11 @@ func TestNickList_View_responsive(t *testing.T) {
 }
 
 func TestNickList_View_shows_mode_prefixes(t *testing.T) {
-	nl := components.NewNickList([]domain.Member{
+	nl := components.NewNickList(members(
 		member("alice", domain.ModeOp),
 		member("botty", domain.ModeVoice),
 		member("charlie", domain.ModeNone),
-	})
+	))
 
 	v := nl.View(20, 10)
 	stripped := ansi.Strip(v)
@@ -123,11 +136,11 @@ func TestNickList_View_shows_mode_prefixes(t *testing.T) {
 }
 
 func TestNickList_View_shows_thinking_indicator(t *testing.T) {
-	nl := components.NewNickList([]domain.Member{
+	nl := components.NewNickList(members(
 		member("alice", domain.ModeOp),
 		member("botty", domain.ModeVoice),
 		member("claude", domain.ModeVoice),
-	})
+	))
 
 	updated, _ := nl.Update(components.NickListThinkingMsg{
 		Nicks: map[domain.Nick]bool{"botty": true, "claude": true},
@@ -142,10 +155,10 @@ func TestNickList_View_shows_thinking_indicator(t *testing.T) {
 }
 
 func TestNickList_View_clears_thinking_indicator(t *testing.T) {
-	nl := components.NewNickList([]domain.Member{
+	nl := components.NewNickList(members(
 		member("alice", domain.ModeOp),
 		member("botty", domain.ModeVoice),
-	})
+	))
 
 	updated, _ := nl.Update(components.NickListThinkingMsg{
 		Nicks: map[domain.Nick]bool{"botty": true},
@@ -159,18 +172,17 @@ func TestNickList_View_clears_thinking_indicator(t *testing.T) {
 	require.NotContains(t, stripped, "…")
 }
 
-func TestNickList_View_sorts_by_mode_then_name(t *testing.T) {
-	nl := components.NewNickList([]domain.Member{
-		member("zara", domain.ModeVoice),
-		member("bob", domain.ModeNone),
+func TestNickList_View_preserves_display_order(t *testing.T) {
+	nl := components.NewNickList(members(
 		member("alice", domain.ModeOp),
 		member("dave", domain.ModeVoice),
-	})
+		member("zara", domain.ModeVoice),
+		member("bob", domain.ModeNone),
+	))
 
 	v := nl.View(30, 10)
 	stripped := ansi.Strip(v)
 
-	// Op first, then voice (sorted), then regular.
 	aliceIdx := strings.Index(stripped, "@alice")
 	daveIdx := strings.Index(stripped, "+dave")
 	zaraIdx := strings.Index(stripped, "+zara")

@@ -6,19 +6,20 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/store/storetest"
 )
 
-func TestFileStore_ReadEmpty(t *testing.T) {
-	store := NewFileStore(t.TempDir())
+func TestStoreAdapter_ReadEmpty(t *testing.T) {
+	store := NewStoreAdapter(storetest.NewMemoryStore(t))
 
 	got, err := store.Read(t.Context(), "alice")
 	require.NoError(t, err)
 	require.Empty(t, got)
 }
 
-func TestFileStore_WriteAndRead(t *testing.T) {
+func TestStoreAdapter_WriteAndRead(t *testing.T) {
 	ctx := t.Context()
-	store := NewFileStore(t.TempDir())
+	store := NewStoreAdapter(storetest.NewMemoryStore(t))
 	nick := domain.Nick("bob")
 
 	entries := []Entry{
@@ -35,9 +36,9 @@ func TestFileStore_WriteAndRead(t *testing.T) {
 	require.Equal(t, entries, got)
 }
 
-func TestFileStore_WriteOverwritesExistingKey(t *testing.T) {
+func TestStoreAdapter_WriteOverwritesExistingKey(t *testing.T) {
 	ctx := t.Context()
-	store := NewFileStore(t.TempDir())
+	store := NewStoreAdapter(storetest.NewMemoryStore(t))
 	nick := domain.Nick("charlie")
 
 	require.NoError(t, store.Write(ctx, nick, Entry{Key: "mood", Content: "happy"}))
@@ -48,9 +49,9 @@ func TestFileStore_WriteOverwritesExistingKey(t *testing.T) {
 	require.Equal(t, []Entry{{Key: "mood", Content: "excited"}}, got)
 }
 
-func TestFileStore_Delete(t *testing.T) {
+func TestStoreAdapter_Delete(t *testing.T) {
 	ctx := t.Context()
-	store := NewFileStore(t.TempDir())
+	store := NewStoreAdapter(storetest.NewMemoryStore(t))
 	nick := domain.Nick("dave")
 
 	entries := []Entry{
@@ -76,16 +77,16 @@ func TestFileStore_Delete(t *testing.T) {
 	require.Equal(t, want, got)
 }
 
-func TestFileStore_DeleteNonexistent(t *testing.T) {
+func TestStoreAdapter_DeleteNonexistent(t *testing.T) {
 	ctx := t.Context()
-	store := NewFileStore(t.TempDir())
+	store := NewStoreAdapter(storetest.NewMemoryStore(t))
 
 	require.NoError(t, store.Delete(ctx, "eve", "nonexistent"))
 }
 
-func TestFileStore_IsolationBetweenNicks(t *testing.T) {
+func TestStoreAdapter_IsolationBetweenNicks(t *testing.T) {
 	ctx := t.Context()
-	store := NewFileStore(t.TempDir())
+	store := NewStoreAdapter(storetest.NewMemoryStore(t))
 
 	require.NoError(t, store.Write(ctx, "nick-a", Entry{Key: "k", Content: "from-a"}))
 	require.NoError(t, store.Write(ctx, "nick-b", Entry{Key: "k", Content: "from-b"}))
@@ -99,9 +100,9 @@ func TestFileStore_IsolationBetweenNicks(t *testing.T) {
 	require.Equal(t, []Entry{{Key: "k", Content: "from-b"}}, gotB)
 }
 
-func TestFileStore_Reset(t *testing.T) {
+func TestStoreAdapter_Reset(t *testing.T) {
 	ctx := t.Context()
-	store := NewFileStore(t.TempDir())
+	store := NewStoreAdapter(storetest.NewMemoryStore(t))
 
 	require.NoError(t, store.Write(ctx, "alice", Entry{Key: "k1", Content: "v1"}))
 	require.NoError(t, store.Write(ctx, "bob", Entry{Key: "k2", Content: "v2"}))
@@ -117,8 +118,8 @@ func TestFileStore_Reset(t *testing.T) {
 	require.Empty(t, gotB)
 }
 
-func TestFileStore_Reset_empty(t *testing.T) {
-	store := NewFileStore(t.TempDir())
+func TestStoreAdapter_Reset_empty(t *testing.T) {
+	store := NewStoreAdapter(storetest.NewMemoryStore(t))
 
 	require.NoError(t, store.Reset(t.Context()))
 }

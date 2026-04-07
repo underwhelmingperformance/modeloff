@@ -315,10 +315,7 @@ func (w ChatWorkspace) layout(width, height int) workspaceLayout {
 		return layout
 	}
 
-	drawerHeight := height * 30 / 100
-	if drawerHeight < minObservabilityDrawerHeight {
-		drawerHeight = minObservabilityDrawerHeight
-	}
+	drawerHeight := max(height*30/100, minObservabilityDrawerHeight)
 	if drawerHeight >= height {
 		drawerHeight = height / 2
 	}

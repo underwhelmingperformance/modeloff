@@ -160,6 +160,79 @@ func FromNickChangeEvent(evt domain.NickChangeEvent) IRCMessage {
 	}
 }
 
+// FromChannelEvent converts a model-visible channel event into an
+// IRC-style protocol message. Returns the message and true if the
+// event type is supported, or a zero message and false otherwise.
+func FromChannelEvent(evt domain.ChannelEvent) (IRCMessage, bool) {
+	switch e := evt.(type) {
+	case domain.ChannelMessage:
+		kind := KindPrivMsg
+		if e.Action {
+			kind = KindAction
+		}
+
+		return IRCMessage{
+			Kind:   kind,
+			From:   string(e.From),
+			Target: string(e.Channel),
+			Body:   e.Body,
+			At:     e.At,
+		}, true
+
+	case domain.ChannelJoin:
+		return IRCMessage{
+			Kind:   KindJoin,
+			From:   string(e.Nick),
+			Target: string(e.Channel),
+			At:     e.At,
+		}, true
+
+	case domain.ChannelPart:
+		return IRCMessage{
+			Kind:   KindPart,
+			From:   string(e.Nick),
+			Target: string(e.Channel),
+			At:     e.At,
+		}, true
+
+	case domain.ChannelTopicChange:
+		return IRCMessage{
+			Kind:   KindTopic,
+			From:   string(e.By),
+			Target: string(e.Channel),
+			Body:   e.Topic,
+			At:     e.At,
+		}, true
+
+	case domain.ChannelNickChange:
+		return IRCMessage{
+			Kind:   KindNick,
+			From:   string(e.OldNick),
+			Target: string(e.NewNick),
+			At:     e.At,
+		}, true
+
+	case domain.ChannelModelInvited:
+		return IRCMessage{
+			Kind:   KindInvite,
+			From:   string(e.Nick),
+			Target: string(e.Channel),
+			At:     e.At,
+		}, true
+
+	case domain.ChannelModelKicked:
+		return IRCMessage{
+			Kind:   KindKick,
+			From:   string(e.Nick),
+			Target: string(e.Channel),
+			At:     e.At,
+		}, true
+
+	default:
+		return IRCMessage{}, false
+	}
+}
+
 // Reply creates a ModelResponse containing a single regular message.
 func Reply(body string) ModelResponse {
 	return ModelResponse{

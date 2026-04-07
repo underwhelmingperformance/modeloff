@@ -2,137 +2,56 @@ package memory
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
-	"io/fs"
-	"os"
-	"path/filepath"
 
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/store"
 )
 
-// FileStore implements Store by persisting per-nick memories as
-// individual JSON files in a directory.
-type FileStore struct {
-	dir string
+// StoreAdapter implements the memory Store interface by delegating
+// to a store.Store's memory methods.
+type StoreAdapter struct {
+	store store.Store
 }
 
-// NewFileStore creates a FileStore rooted at the given directory. Each
-// model instance's memories are stored in a separate JSON file keyed
-// by nick.
-func NewFileStore(dir string) *FileStore {
-	return &FileStore{dir: dir}
-}
-
-// NewDefaultFileStore creates a FileStore using the system's default
-// data directory (~/.local/share/modeloff/memories or equivalent).
-func NewDefaultFileStore() (*FileStore, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, err
-	}
-
-	return NewFileStore(filepath.Join(home, ".local", "share", "modeloff", "memories")), nil
-}
-
-func (s *FileStore) path(nick domain.Nick) string {
-	return filepath.Join(s.dir, string(nick)+".json")
-}
-
-func (s *FileStore) load(nick domain.Nick) ([]Entry, error) {
-	data, err := os.ReadFile(s.path(nick))
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	var entries []Entry
-	if err := json.Unmarshal(data, &entries); err != nil {
-		return nil, err
-	}
-
-	return entries, nil
-}
-
-func (s *FileStore) save(nick domain.Nick, entries []Entry) error {
-	if err := os.MkdirAll(s.dir, 0o750); err != nil {
-		return err
-	}
-
-	data, err := json.MarshalIndent(entries, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	return os.WriteFile(s.path(nick), data, 0o600)
+// NewStoreAdapter creates a memory store backed by the given data
+// store.
+func NewStoreAdapter(s store.Store) *StoreAdapter {
+	return &StoreAdapter{store: s}
 }
 
 // Read retrieves all memories for a given model instance.
-func (s *FileStore) Read(_ context.Context, nick domain.Nick) ([]Entry, error) {
-	entries, err := s.load(nick)
+func (a *StoreAdapter) Read(ctx context.Context, nick domain.Nick) ([]Entry, error) {
+	entries, err := a.store.ReadMemories(ctx, nick)
 	if err != nil {
 		return nil, err
 	}
 
-	if entries == nil {
-		return []Entry{}, nil
-	}
-
-	return entries, nil
-}
-
-// Write stores a memory entry for a given model instance. If an entry
-// with the same key already exists, it is overwritten.
-func (s *FileStore) Write(_ context.Context, nick domain.Nick, entry Entry) error {
-	entries, err := s.load(nick)
-	if err != nil {
-		return err
-	}
-
-	found := false
+	result := make([]Entry, len(entries))
 	for i, e := range entries {
-		if e.Key == entry.Key {
-			entries[i] = entry
-			found = true
-			break
-		}
+		result[i] = Entry{Key: e.Key, Content: e.Content}
 	}
 
-	if !found {
-		entries = append(entries, entry)
-	}
-
-	return s.save(nick, entries)
+	return result, nil
 }
 
-// Reset removes all memories for all instances.
-func (s *FileStore) Reset(_ context.Context) error {
-	if err := os.RemoveAll(s.dir); err != nil {
-		return err
-	}
-
-	return nil
+// Write stores a memory entry for a given model instance.
+func (a *StoreAdapter) Write(ctx context.Context, nick domain.Nick, entry Entry) error {
+	return a.store.WriteMemory(ctx, nick, entry.Key, entry.Content)
 }
 
 // Delete removes a specific memory entry by key.
-func (s *FileStore) Delete(_ context.Context, nick domain.Nick, key string) error {
-	entries, err := s.load(nick)
-	if err != nil {
-		return err
+func (a *StoreAdapter) Delete(ctx context.Context, nick domain.Nick, key string) error {
+	return a.store.DeleteMemory(ctx, nick, key)
+}
+
+// Reset removes all memories. This delegates to ResetMemories on the
+// store if available, otherwise it's a no-op.
+func (a *StoreAdapter) Reset(ctx context.Context) error {
+	if r, ok := a.store.(interface {
+		ResetMemories(context.Context) error
+	}); ok {
+		return r.ResetMemories(ctx)
 	}
 
-	filtered := entries[:0]
-	for _, e := range entries {
-		if e.Key != key {
-			filtered = append(filtered, e)
-		}
-	}
-
-	if len(filtered) == len(entries) {
-		return nil
-	}
-
-	return s.save(nick, filtered)
+	return nil
 }

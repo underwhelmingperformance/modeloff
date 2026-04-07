@@ -27,22 +27,21 @@ var (
 // indexing failures are logged rather than returned — the FileStore
 // is the source of truth.
 type IndexedStore struct {
-	files         *FileStore
+	backing       Store
 	db            *chromem.DB
 	embeddingFunc chromem.EmbeddingFunc
 }
 
-// NewIndexedStore creates an IndexedStore backed by the given FileStore
-// and a persistent chromem-go database at indexDir. The embeddingFunc
-// generates vector embeddings for writes and searches.
-func NewIndexedStore(files *FileStore, indexDir string, embeddingFunc chromem.EmbeddingFunc) (*IndexedStore, error) {
+// NewIndexedStore creates an IndexedStore backed by the given memory
+// Store and a persistent chromem-go database at indexDir.
+func NewIndexedStore(backing Store, indexDir string, embeddingFunc chromem.EmbeddingFunc) (*IndexedStore, error) {
 	db, err := chromem.NewPersistentDB(indexDir, false)
 	if err != nil {
 		return nil, fmt.Errorf("open vector index: %w", err)
 	}
 
 	return &IndexedStore{
-		files:         files,
+		backing:       backing,
 		db:            db,
 		embeddingFunc: instrumentEmbedding(embeddingFunc),
 	}, nil
@@ -51,9 +50,9 @@ func NewIndexedStore(files *FileStore, indexDir string, embeddingFunc chromem.Em
 // NewIndexedStoreFromDB creates an IndexedStore from an existing
 // chromem-go DB. This allows callers to provide an in-memory database
 // for testing while using a persistent one in production.
-func NewIndexedStoreFromDB(files *FileStore, db *chromem.DB, embeddingFunc chromem.EmbeddingFunc) *IndexedStore {
+func NewIndexedStoreFromDB(backing Store, db *chromem.DB, embeddingFunc chromem.EmbeddingFunc) *IndexedStore {
 	return &IndexedStore{
-		files:         files,
+		backing:       backing,
 		db:            db,
 		embeddingFunc: instrumentEmbedding(embeddingFunc),
 	}
@@ -65,7 +64,7 @@ func (s *IndexedStore) collection(nick domain.Nick) (*chromem.Collection, error)
 
 // Read delegates to the underlying FileStore.
 func (s *IndexedStore) Read(ctx context.Context, nick domain.Nick) ([]Entry, error) {
-	return s.files.Read(ctx, nick)
+	return s.backing.Read(ctx, nick)
 }
 
 // Search finds memories semantically similar to the query, returning
@@ -160,7 +159,7 @@ func (s *IndexedStore) Write(ctx context.Context, nick domain.Nick, entry Entry)
 	)
 	defer span.End()
 
-	if err := s.files.Write(ctx, nick, entry); err != nil {
+	if err := s.backing.Write(ctx, nick, entry); err != nil {
 		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
 		span.SetStatus(codes.Error, err.Error())
 
@@ -220,7 +219,7 @@ func (s *IndexedStore) Delete(ctx context.Context, nick domain.Nick, key string)
 		}
 	}
 
-	if err := s.files.Delete(ctx, nick, key); err != nil {
+	if err := s.backing.Delete(ctx, nick, key); err != nil {
 		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
 		span.SetStatus(codes.Error, err.Error())
 
@@ -239,14 +238,14 @@ func (s *IndexedStore) Reset(ctx context.Context) error {
 		return fmt.Errorf("reset vector index: %w", err)
 	}
 
-	return s.files.Reset(ctx)
+	return s.backing.Reset(ctx)
 }
 
 // reindexNick reads all entries for a nick from the FileStore and
 // indexes them. This handles migration from a plain FileStore and
 // recovery from a corrupted index.
 func (s *IndexedStore) reindexNick(ctx context.Context, nick domain.Nick) error {
-	entries, err := s.files.Read(ctx, nick)
+	entries, err := s.backing.Read(ctx, nick)
 	if err != nil {
 		return fmt.Errorf("read entries for %s: %w", nick, err)
 	}
@@ -273,7 +272,7 @@ func (s *IndexedStore) ensureIndexed(ctx context.Context, nick domain.Nick) erro
 		return nil
 	}
 
-	entries, err := s.files.Read(ctx, nick)
+	entries, err := s.backing.Read(ctx, nick)
 	if err != nil {
 		return fmt.Errorf("read entries for %s: %w", nick, err)
 	}

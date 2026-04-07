@@ -29,13 +29,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	dataStore, err := store.NewDefaultFileStore()
+	dataStore, err := store.NewDefaultSQLiteStore()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error creating data store: %v\n", err)
 		os.Exit(1)
 	}
+	defer func() { _ = dataStore.Close() }()
 
-	memStore, err := memory.NewDefaultStore(cfg, cfgStore)
+	memStore, err := memory.NewDefaultStore(dataStore, cfg, cfgStore)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error creating memory store: %v\n", err)
 		os.Exit(1)

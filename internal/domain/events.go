@@ -1,6 +1,8 @@
 package domain
 
-import "time"
+import (
+	"time"
+)
 
 // MessageEvent is emitted when a new message is sent in a channel.
 type MessageEvent struct {
@@ -24,7 +26,9 @@ type PartEvent struct {
 }
 
 // NickChangeEvent is emitted when a user changes their nickname.
+// One event is emitted per channel the user is in.
 type NickChangeEvent struct {
+	Channel ChannelName
 	OldNick Nick
 	NewNick Nick
 	At      time.Time
@@ -63,6 +67,16 @@ type ModelReplyEvent struct {
 	At       time.Time
 }
 
+// ModeChangeEvent is emitted when a member's privilege level changes
+// in a channel.
+type ModeChangeEvent struct {
+	Channel ChannelName
+	Nick    Nick
+	Mode    NickMode
+	Actor   string
+	At      time.Time
+}
+
 // DMOpenedEvent is emitted when a direct message conversation is
 // opened or created.
 type DMOpenedEvent struct {
@@ -99,21 +113,29 @@ type DispatchStartedEvent struct {
 	Nicks   []Nick
 }
 
-func (DispatchStartedEvent) sessionEvent() {}
-
 // DispatchDoneEvent is emitted when dispatch to all model instances
 // in a channel has completed.
 type DispatchDoneEvent struct {
 	Channel ChannelName
 }
 
-func (DispatchDoneEvent) sessionEvent() {}
+// All event types implement SessionEvent so they can flow through the
+// session's unified event channel.
 
-// Marker methods for existing event types that can appear on the
-// session event channel.
-
-func (ModelReplyEvent) sessionEvent() {}
-func (ErrorEvent) sessionEvent()      {}
+func (MessageEvent) sessionEvent()         {}
+func (JoinEvent) sessionEvent()            {}
+func (PartEvent) sessionEvent()            {}
+func (NickChangeEvent) sessionEvent()      {}
+func (TopicChangeEvent) sessionEvent()     {}
+func (ModelInvitedEvent) sessionEvent()    {}
+func (ModelKickedEvent) sessionEvent()     {}
+func (ModelReplyEvent) sessionEvent()      {}
+func (ModeChangeEvent) sessionEvent()      {}
+func (DMOpenedEvent) sessionEvent()        {}
+func (ConfigChangedEvent) sessionEvent()   {}
+func (ErrorEvent) sessionEvent()           {}
+func (DispatchStartedEvent) sessionEvent() {}
+func (DispatchDoneEvent) sessionEvent()    {}
 
 // InitialLoadEvent carries the data needed to render the chat screen
 // after loading from the session at startup.
@@ -122,8 +144,7 @@ type InitialLoadEvent struct {
 	Instances []ModelInstance
 	Active    ChannelName
 	Topic     string
-	Messages  []Message
 	Unread    map[ChannelName]int
-	Members   []Member
+	Members   MemberList
 	At        time.Time
 }

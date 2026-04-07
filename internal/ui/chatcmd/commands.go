@@ -41,12 +41,11 @@ func (c JoinCommand) Sources() map[string]command.SuggestionSource {
 // Run implements Command.
 func (c JoinCommand) Run(rc Context) tea.Cmd {
 	return func() tea.Msg {
-		evt, err := rc.Session.Join(rc.Ctx, c.Channel.String())
-		if err != nil {
+		if err := rc.Session.Join(rc.Ctx, c.Channel.String()); err != nil {
 			return errorEvent("join", err)
 		}
 
-		return evt
+		return nil
 	}
 }
 
@@ -60,12 +59,11 @@ func (PartCommand) Run(rc Context) tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		evt, err := rc.Session.Leave(rc.Ctx, rc.Active)
-		if err != nil {
+		if err := rc.Session.Leave(rc.Ctx, rc.Active); err != nil {
 			return errorEvent("part", err)
 		}
 
-		return evt
+		return nil
 	}
 }
 
@@ -107,12 +105,11 @@ func (c InviteCommand) Run(rc Context) tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		evt, err := rc.Session.Invite(rc.Ctx, rc.Active, domain.ModelID(c.Model), strings.Join(c.Persona, " "))
-		if err != nil {
+		if err := rc.Session.Invite(rc.Ctx, rc.Active, domain.ModelID(c.Model), strings.Join(c.Persona, " ")); err != nil {
 			return errorEvent("invite", err)
 		}
 
-		return evt
+		return nil
 	}
 }
 
@@ -134,12 +131,11 @@ func (c KickCommand) Run(rc Context) tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		evt, err := rc.Session.Kick(rc.Ctx, rc.Active, domain.Nick(c.Nick))
-		if err != nil {
+		if err := rc.Session.Kick(rc.Ctx, rc.Active, domain.Nick(c.Nick)); err != nil {
 			return errorEvent("kick", err)
 		}
 
-		return evt
+		return nil
 	}
 }
 
@@ -167,7 +163,7 @@ func (c MsgCommand) Run(rc Context) tea.Cmd {
 
 		body := strings.TrimSpace(strings.Join(c.Body, " "))
 		if body != "" {
-			if _, err := rc.Session.SendMessage(rc.Ctx, ch.Name, body); err != nil {
+			if err := rc.Session.SendMessage(rc.Ctx, ch.Name, body); err != nil {
 				return errorEvent("msg", err)
 			}
 		}
@@ -189,12 +185,11 @@ type NickCommand struct {
 // Run implements Command.
 func (c NickCommand) Run(rc Context) tea.Cmd {
 	return func() tea.Msg {
-		evt, err := rc.Session.ChangeNick(rc.Ctx, domain.Nick(c.Nick))
-		if err != nil {
+		if err := rc.Session.ChangeNick(rc.Ctx, domain.Nick(c.Nick)); err != nil {
 			return errorEvent("nick", err)
 		}
 
-		return evt
+		return nil
 	}
 }
 
@@ -221,12 +216,11 @@ func (c TopicCommand) Run(rc Context) tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		evt, err := rc.Session.SetTopic(rc.Ctx, rc.Active, strings.Join(c.Topic, " "))
-		if err != nil {
+		if err := rc.Session.SetTopic(rc.Ctx, rc.Active, strings.Join(c.Topic, " ")); err != nil {
 			return errorEvent("topic", err)
 		}
 
-		return evt
+		return nil
 	}
 }
 
@@ -247,12 +241,11 @@ func (c MeCommand) Run(rc Context) tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		evt, err := rc.Session.SendAction(rc.Ctx, rc.Active, body)
-		if err != nil {
+		if err := rc.Session.SendAction(rc.Ctx, rc.Active, body); err != nil {
 			return errorEvent("me", err)
 		}
 
-		return evt
+		return nil
 	}
 }
 

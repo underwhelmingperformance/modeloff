@@ -1,6 +1,8 @@
 package chatcmd
 
 import (
+	"iter"
+
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/laney/modeloff/internal/command"
@@ -26,39 +28,54 @@ type Grammar struct {
 
 // Sources carries snapshot data for command completion. Each field
 // holds the current value at the time the parser is built.
+// Sources provides live accessors for command completion data. Each
+// field is a function so the grammar can be built once and completion
+// always reflects the latest state without rebuilding.
 type Sources struct {
-	Channels      []domain.Channel
-	Instances     []domain.ModelInstance
-	ActiveChannel domain.ChannelName
-	ActiveMembers []domain.Nick
-	UserNick      domain.Nick
-	LiveModels    []ModelOption
+	Channels      func() iter.Seq[domain.Channel]
+	Instances     func() iter.Seq[domain.ModelInstance]
+	ActiveChannel func() domain.ChannelName
+	ActiveMembers func() iter.Seq[domain.Nick]
+	UserNick      func() domain.Nick
+	LiveModels    func() []ModelOption
 }
 
 // BuildParser creates a typed Parser from a snapshot of the current
 // application state. It should be rebuilt whenever the completion-
 // relevant state changes (channels, instances, active channel, etc.).
 func BuildParser(src Sources) Parser {
-	instancesSource := InstancesSource(src.Instances)
+	lazy := func(fn func(command.InvocationState) []command.Suggestion) command.SuggestionSource {
+		return fn
+	}
 
 	grammar := &Grammar{
 		Join: JoinCommand{
-			channelSource: ChannelsSource(src.Channels),
+			channelSource: lazy(func(s command.InvocationState) []command.Suggestion {
+				return ChannelsSource(src.Channels())(s)
+			}),
 		},
 		Invite: InviteCommand{
-			modelSource: command.ComposeSources(
-				ReusableInstancesSource(src.Instances, src.ActiveChannel),
-				LiveModelsSource(src.LiveModels),
-			),
+			modelSource: lazy(func(s command.InvocationState) []command.Suggestion {
+				return command.ComposeSources(
+					ReusableInstancesSource(src.Instances(), src.ActiveChannel()),
+					LiveModelsSource(src.LiveModels()),
+				)(s)
+			}),
 		},
 		Kick: KickCommand{
-			nickSource: ActiveMembersSource(src.ActiveMembers, src.UserNick),
+			nickSource: lazy(func(s command.InvocationState) []command.Suggestion {
+				return ActiveMembersSource(src.ActiveMembers(), src.UserNick())(s)
+			}),
 		},
 		Msg: MsgCommand{
-			nickSource: instancesSource,
+			nickSource: lazy(func(s command.InvocationState) []command.Suggestion {
+				return InstancesSource(src.Instances())(s)
+			}),
 		},
 		Whois: WhoisCommand{
-			nickSource: instancesSource,
+			nickSource: lazy(func(s command.InvocationState) []command.Suggestion {
+				return InstancesSource(src.Instances())(s)
+			}),
 		},
 		Config: ConfigCommand{},
 	}

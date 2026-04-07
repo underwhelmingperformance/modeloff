@@ -41,8 +41,8 @@ func TestApp_send_message_shows_pending_indicator(t *testing.T) {
 	sess, _ := newIntegrationSession(t, apiClient)
 	uitest.SeedChannel(t, sess, "#general")
 
-	_, err := sess.Invite(t.Context(), "#general", "test/model", "")
-	require.NoError(t, err)
+	require.NoError(t, sess.Invite(t.Context(), "#general", "test/model", ""))
+	uitest.DrainEvents(sess)
 
 	tm := uitest.New(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
 	tm.WaitFor("#general")
@@ -130,7 +130,8 @@ func TestApp_invite_whois_and_kick_commands_with_teatest(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#general")
 	uitest.SeedChannel(t, sess, "#random")
 
-	tm := uitest.New(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
+	tm := uitest.New(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)),
+		teatest.WithInitialTermSize(120, 24))
 	tm.WaitFor("#random")
 
 	tm.Submit("/invite")
@@ -261,11 +262,12 @@ func TestApp_unread_counts_clear_when_visiting_channel_with_teatest(t *testing.T
 	uitest.SeedChannel(t, sess, "#general")
 	uitest.SeedChannel(t, sess, "#random")
 
-	_, err := sess.SendMessage(t.Context(), "#general", "general unread")
-	require.NoError(t, err)
+	require.NoError(t, sess.SendMessage(t.Context(), "#general", "general unread"))
+	uitest.DrainEvents(sess)
 
 	tm := uitest.New(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
-	tm.WaitFor("#general (1)", "#random")
+	// Unread count includes all events: JoinEvent + ModeChangeEvent + ChannelMessage.
+	tm.WaitFor("#general (3)", "#random")
 
 	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlU})
 	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlO})
@@ -273,7 +275,7 @@ func TestApp_unread_counts_clear_when_visiting_channel_with_teatest(t *testing.T
 
 	view := tm.CurrentView()
 	require.Contains(t, view, "general unread")
-	require.NotContains(t, view, "#general (1)")
+	require.NotContains(t, view, "#general (3)")
 }
 
 func TestApp_input_history_and_sidebar_shortcuts_with_teatest(t *testing.T) {
@@ -311,9 +313,10 @@ func TestApp_ctrl_arrow_scroll_preserves_draft_with_teatest(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#general")
 
 	for i := range 30 {
-		_, err := sess.SendMessage(t.Context(), "#general", fmt.Sprintf("message %d", i))
-		require.NoError(t, err)
+		require.NoError(t, sess.SendMessage(t.Context(), "#general", fmt.Sprintf("message %d", i)))
 	}
+
+	uitest.DrainEvents(sess)
 
 	tm := uitest.New(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
 	tm.WaitFor("#general")
@@ -331,9 +334,10 @@ func TestApp_new_messages_divider_with_teatest(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#general")
 
 	for i := range 30 {
-		_, err := sess.SendMessage(t.Context(), "#general", fmt.Sprintf("message %d", i))
-		require.NoError(t, err)
+		require.NoError(t, sess.SendMessage(t.Context(), "#general", fmt.Sprintf("message %d", i)))
 	}
+
+	uitest.DrainEvents(sess)
 
 	tm := uitest.New(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
 	tm.WaitFor("#general")
@@ -346,16 +350,22 @@ func TestApp_new_messages_divider_with_teatest(t *testing.T) {
 	tm.Submit("fresh divider trigger 3")
 
 	require.Eventually(t, func() bool {
-		messages, err := sess.Messages(t.Context(), "#general")
-		if err != nil || len(messages) != 33 {
+		events, err := sess.EventsBefore(t.Context(), "#general", nil, 100)
+		if err != nil {
 			return false
 		}
 
-		return messages[len(messages)-1].Body == "fresh divider trigger 3"
+		for i := len(events) - 1; i >= 0; i-- {
+			if msg, ok := events[i].Event.(domain.ChannelMessage); ok && msg.Body == "fresh divider trigger 3" {
+				return true
+			}
+		}
+
+		return false
 	}, 2*time.Second, 10*time.Millisecond)
 
-	for range 11 {
-		tm.Send(tea.KeyMsg{Type: tea.KeyCtrlDown})
+	for range 5 {
+		tm.Send(tea.KeyMsg{Type: tea.KeyPgDown})
 	}
 
 	tm.WaitFor("new messages")

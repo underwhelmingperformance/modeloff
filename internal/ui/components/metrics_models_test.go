@@ -84,7 +84,7 @@ func TestMetricsPane_view_renders_snapshot(t *testing.T) {
 
 func TestChatWorkspace_statusItems_follow_observability_state(t *testing.T) {
 	workspace := NewChatWorkspace(
-		NewChatView("#general", "testuser", "", nil),
+		NewChatView("#general", "testuser", ""),
 	).WithMetrics(NewMetricsPane(context.Background(), nil))
 
 	require.Empty(t, workspace.StatusItems())

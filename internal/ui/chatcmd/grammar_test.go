@@ -1,6 +1,8 @@
 package chatcmd
 
 import (
+	"iter"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -11,22 +13,27 @@ import (
 )
 
 func testSources() Sources {
+	channels := []domain.Channel{
+		{Name: "#general", Topic: "Welcome"},
+		{Name: "#random"},
+	}
+	instances := []domain.ModelInstance{
+		{Nick: "haiku", ModelID: "anthropic/haiku", Channels: set.NewOrdered[domain.ChannelName]("#general")},
+		{Nick: "sonnet", ModelID: "anthropic/sonnet"},
+	}
+	members := []domain.Nick{"testuser", "haiku"}
+	models := []ModelOption{
+		{ID: "anthropic/haiku", Name: "Haiku"},
+		{ID: "anthropic/sonnet", Name: "Sonnet"},
+	}
+
 	return Sources{
-		Channels: []domain.Channel{
-			{Name: "#general", Topic: "Welcome"},
-			{Name: "#random"},
-		},
-		Instances: []domain.ModelInstance{
-			{Nick: "haiku", ModelID: "anthropic/haiku", Channels: set.NewOrdered[domain.ChannelName]("#general")},
-			{Nick: "sonnet", ModelID: "anthropic/sonnet"},
-		},
-		ActiveChannel: "#general",
-		ActiveMembers: []domain.Nick{"testuser", "haiku"},
-		UserNick:      "testuser",
-		LiveModels: []ModelOption{
-			{ID: "anthropic/haiku", Name: "Haiku"},
-			{ID: "anthropic/sonnet", Name: "Sonnet"},
-		},
+		Channels:      func() iter.Seq[domain.Channel] { return slices.Values(channels) },
+		Instances:     func() iter.Seq[domain.ModelInstance] { return slices.Values(instances) },
+		ActiveChannel: func() domain.ChannelName { return "#general" },
+		ActiveMembers: func() iter.Seq[domain.Nick] { return slices.Values(members) },
+		UserNick:      func() domain.Nick { return "testuser" },
+		LiveModels:    func() []ModelOption { return models },
 	}
 }
 
@@ -141,14 +148,22 @@ func TestComplete_config_api_key_no_value_suggestions(t *testing.T) {
 	require.Empty(t, c.Suggestions)
 }
 
-func TestComplete_rebuild_reflects_new_data(t *testing.T) {
-	src := Sources{UserNick: "u"}
+func TestComplete_live_data_reflects_changes(t *testing.T) {
+	var channels []domain.Channel
 
-	before := command.Complete(BuildParser(src).Set(), "/join ", 6)
+	src := Sources{
+		Channels: func() iter.Seq[domain.Channel] { return slices.Values(channels) },
+		UserNick: func() domain.Nick { return "u" },
+	}
+
+	parser := BuildParser(src)
+
+	before := command.Complete(parser.Set(), "/join ", 6)
 	require.Empty(t, before.Suggestions)
 
-	src.Channels = []domain.Channel{{Name: "#new"}}
+	// Mutate the underlying data — the same parser sees the change.
+	channels = []domain.Channel{{Name: "#new"}}
 
-	after := command.Complete(BuildParser(src).Set(), "/join ", 6)
+	after := command.Complete(parser.Set(), "/join ", 6)
 	require.Equal(t, []string{"#new"}, suggestionValues(after))
 }

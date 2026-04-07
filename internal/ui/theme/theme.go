@@ -81,12 +81,15 @@ func NickStyle(nick string) lipgloss.Style {
 
 // Channel styles.
 var (
-	ChannelName     = lipgloss.NewStyle().Foreground(colourCyan).Bold(true)
-	DMName          = lipgloss.NewStyle().Foreground(colourMagenta).Bold(true)
-	ChannelTitle    = lipgloss.NewStyle().Foreground(colourYellow).Italic(true)
-	ActiveChannel   = lipgloss.NewStyle().Foreground(colourWhite).Bold(true)
-	InactiveChannel = lipgloss.NewStyle().Foreground(colourBrightBlack)
-	UnreadChannel   = lipgloss.NewStyle().Foreground(colourWhite).Bold(true)
+	ChannelTitle = lipgloss.NewStyle().Foreground(colourYellow).Italic(true)
+
+	// Sidebar item states.
+	SidebarInactive            = lipgloss.NewStyle().Foreground(colourBrightBlack)
+	SidebarActive              = lipgloss.NewStyle().Foreground(colourWhite).Bold(true)
+	SidebarSelected            = lipgloss.NewStyle().Foreground(colourCyan).Bold(true).Background(colourBrightBlack)
+	SidebarActiveSelected      = lipgloss.NewStyle().Foreground(colourWhite).Bold(true).Background(colourBrightBlack)
+	SidebarHighlighted         = lipgloss.NewStyle().Foreground(colourWhite).Bold(true)
+	SidebarHighlightedSelected = lipgloss.NewStyle().Foreground(colourWhite).Bold(true).Background(colourBrightBlack)
 )
 
 // System message styles — for join/part/topic events.
@@ -128,8 +131,4 @@ var (
 			BorderStyle(lipgloss.NormalBorder()).
 			BorderLeft(true).
 			BorderForeground(colourBrightBlack)
-
-	// CursorHighlight is applied as a background to the cursor
-	// line in panel lists.
-	CursorHighlight = lipgloss.NewStyle().Background(colourBrightBlack)
 )

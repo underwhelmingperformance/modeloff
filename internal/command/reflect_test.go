@@ -6,6 +6,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+var nargs1 = 1
+
 // positionalMeta is Positional without the Source field, which is not
 // comparable.
 type positionalMeta struct {
@@ -89,8 +91,6 @@ func toNodeMeta(n *Node) nodeMeta {
 	}
 }
 
-func intPtr(n int) *int { return &n }
-
 // fieldMetaMeta is fieldMeta without the decoder, for test comparison.
 type fieldMetaMeta struct {
 	Name     string
@@ -153,7 +153,7 @@ func TestResolveFieldMetas(t *testing.T) {
 			cmd:  testMsgCommand{},
 			want: []fieldMetaMeta{
 				{Name: "nick", Help: "Nick to message", Index: 0},
-				{Name: "body", Help: "Message text", Optional: true, Variadic: true, Nargs: intPtr(1), Index: 1},
+				{Name: "body", Help: "Message text", Optional: true, Variadic: true, Nargs: &nargs1, Index: 1},
 			},
 		},
 		{

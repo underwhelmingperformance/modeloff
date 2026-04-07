@@ -29,6 +29,7 @@ import (
 // FinalView return all rendered content.
 type App struct {
 	*teatest.TestModel
+
 	t testing.TB
 
 	mu  sync.Mutex
@@ -220,14 +221,27 @@ func (f *FakeAPI) GenerateNick(ctx context.Context, nickModel domain.ModelID, mo
 func SeedChannel(t testing.TB, sess *session.Session, name string) {
 	t.Helper()
 
-	_, err := sess.Join(t.Context(), name)
-	require.NoError(t, err)
+	require.NoError(t, sess.Join(t.Context(), name))
+	DrainEvents(sess)
 }
 
 // SeedMessage sends a message to a channel via the session.
 func SeedMessage(t testing.TB, sess *session.Session, channel, body string) {
 	t.Helper()
 
-	_, err := sess.SendMessage(t.Context(), domain.ChannelName(channel), body)
-	require.NoError(t, err)
+	require.NoError(t, sess.SendMessage(t.Context(), domain.ChannelName(channel), body))
+	DrainEvents(sess)
+}
+
+// DrainEvents discards any buffered events on the session's events
+// channel. This prevents seed operations from leaking stale events
+// into the UI when tests start.
+func DrainEvents(sess *session.Session) {
+	for {
+		select {
+		case <-sess.Events():
+		default:
+			return
+		}
+	}
 }

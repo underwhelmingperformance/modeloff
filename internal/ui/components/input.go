@@ -1,7 +1,7 @@
 package components
 
 import (
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -246,9 +246,7 @@ func (b InputBar) matchNicks(prefix string) []domain.Nick {
 		}
 	}
 
-	sort.Slice(matches, func(i, j int) bool {
-		return matches[i] < matches[j]
-	})
+	slices.Sort(matches)
 
 	return matches
 }
@@ -296,9 +294,7 @@ func (b InputBar) ReplaceRange(start, end int, replacement string) InputBar {
 	value := []rune(b.input.Value())
 	start = clampInputIndex(start, len(value))
 	end = clampInputIndex(end, len(value))
-	if end < start {
-		end = start
-	}
+	end = max(end, start)
 
 	runes := []rune(replacement)
 	next := make([]rune, 0, start+len(runes)+len(value)-end)
@@ -321,7 +317,7 @@ func (b InputBar) SetCursorFromCell(x int) InputBar {
 
 	value := []rune(b.input.Value())
 	width := 0
-	for i := 0; i < len(value); i++ {
+	for i := range len(value) {
 		nextWidth := width + lipgloss.Width(string(value[i]))
 		if x <= nextWidth {
 			if x-width <= nextWidth-x {

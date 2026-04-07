@@ -2,12 +2,17 @@ version: "2"
 
 linters:
   enable:
+    - asciicheck
     - bodyclose
+    - decorder
+    - embeddedstructfieldcheck
     - errcheck
+    - gocognit
     - govet
     - gosec
     - ineffassign
     - misspell
+    - modernize
     - nilerr
     - revive
     - staticcheck

@@ -4,34 +4,23 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"sync/atomic"
 
+	"github.com/adrg/xdg"
 	chromem "github.com/philippgille/chromem-go"
 
 	"github.com/laney/modeloff/internal/config"
+	"github.com/laney/modeloff/internal/store"
 )
 
-// NewDefaultStore creates a memory Store using the system's default
-// data directories. It returns an IndexedStore backed by a FileStore
-// and a chromem-go vector index when possible, falling back to a plain
-// FileStore if index creation fails.
-//
-// The embedding function is rebuilt automatically whenever the API key,
-// base URL, or embedding model changes in the config store.
-func NewDefaultStore(cfg config.Config, cfgStore config.Store) (Store, error) {
-	files, err := NewDefaultFileStore()
-	if err != nil {
-		return nil, err
-	}
+// NewDefaultStore creates a memory Store using the given data store
+// for persistence and chromem-go for vector search. If the vector
+// index cannot be created, it falls back to a plain store adapter.
+func NewDefaultStore(dataStore store.Store, cfg config.Config, cfgStore config.Store) (Store, error) {
+	adapter := NewStoreAdapter(dataStore)
 
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, err
-	}
-
-	indexDir := filepath.Join(home, ".local", "share", "modeloff", "memory_index")
+	indexDir := filepath.Join(xdg.DataHome, "modeloff", "memory_index")
 
 	var embeddingPtr atomic.Pointer[chromem.EmbeddingFunc]
 	storeEmbedder(&embeddingPtr, cfg)
@@ -55,12 +44,12 @@ func NewDefaultStore(cfg config.Config, cfgStore config.Store) (Store, error) {
 		return (*fn)(ctx, text)
 	}
 
-	indexed, err := NewIndexedStore(files, indexDir, embeddingFunc)
+	indexed, err := NewIndexedStore(adapter, indexDir, embeddingFunc)
 	if err != nil {
-		slog.Default().Warn("vector index unavailable, falling back to file store",
+		slog.Default().Warn("vector index unavailable, falling back to store adapter",
 			"error", err)
 
-		return files, nil
+		return adapter, nil
 	}
 
 	return indexed, nil

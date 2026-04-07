@@ -2,6 +2,7 @@ package components
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -218,10 +219,7 @@ func (f FeedView) renderDivider(width int) string {
 }
 
 func insertFeedDivider(lines []string, seenCount int) []string {
-	pos := seenCount
-	if pos > len(lines) {
-		pos = len(lines)
-	}
+	pos := min(seenCount, len(lines))
 
 	result := make([]string, 0, len(lines)+1)
 	result = append(result, lines[:pos]...)
@@ -258,11 +256,5 @@ func countFeedLines(lines []string) int {
 }
 
 func hasFeedDivider(lines []string) bool {
-	for _, line := range lines {
-		if line == feedDividerSentinel {
-			return true
-		}
-	}
-
-	return false
+	return slices.Contains(lines, feedDividerSentinel)
 }

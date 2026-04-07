@@ -27,7 +27,7 @@ func TestApp_observability_drawer_and_fullscreen_with_teatest(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#general")
 
 	tm := uitest.New(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess).WithObservability(obs)))
-	tm.Send(tea.WindowSizeMsg{Width: 120, Height: 30})
+	tm.Send(tea.WindowSizeMsg{Width: 140, Height: 30})
 	tm.WaitFor("#general")
 
 	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlL})
@@ -53,7 +53,7 @@ func TestApp_status_bar_shows_metrics_summary_with_teatest(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#general")
 
 	tm := uitest.New(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess).WithObservability(obs)))
-	tm.Send(tea.WindowSizeMsg{Width: 120, Height: 30})
+	tm.Send(tea.WindowSizeMsg{Width: 200, Height: 30})
 	tm.WaitFor("#general")
 	tm.WaitFor("req 1", "in 12", "out 8", "0.2500")
 

@@ -18,10 +18,11 @@ type Store interface {
 	SaveChannel(ctx context.Context, ch domain.Channel) error
 	DeleteChannel(ctx context.Context, name domain.ChannelName) error
 
-	// Messages
+	// Event log
 
-	ListMessages(ctx context.Context, ch domain.ChannelName) ([]domain.Message, error)
-	SaveMessage(ctx context.Context, msg domain.Message) error
+	AppendEvent(ctx context.Context, ch domain.ChannelName, event domain.ChannelEvent) (int64, error)
+	EventsBefore(ctx context.Context, ch domain.ChannelName, before *int64, n int) ([]domain.StoredEvent, error)
+	EventsFrom(ctx context.Context, ch domain.ChannelName, from *int64, n int) ([]domain.StoredEvent, error)
 
 	// Model instances
 
@@ -37,10 +38,22 @@ type Store interface {
 
 	// Last-read tracking
 
-	GetLastRead(ctx context.Context, ch domain.ChannelName) (string, error)
-	SetLastRead(ctx context.Context, ch domain.ChannelName, messageID string) error
+	GetLastRead(ctx context.Context, ch domain.ChannelName) (int64, error)
+	SetLastRead(ctx context.Context, ch domain.ChannelName, eventID int64) error
+
+	// Memories
+
+	ReadMemories(ctx context.Context, nick domain.Nick) ([]MemoryEntry, error)
+	WriteMemory(ctx context.Context, nick domain.Nick, key, content string) error
+	DeleteMemory(ctx context.Context, nick domain.Nick, key string) error
 
 	// Reset
 
 	Reset(ctx context.Context) error
+}
+
+// MemoryEntry is a single memory stored by a model instance.
+type MemoryEntry struct {
+	Key     string
+	Content string
 }

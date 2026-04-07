@@ -385,10 +385,7 @@ type completionClassification struct {
 // where arguments begin after the subcommand token rather than
 // after index 0.
 func argTokensFrom(tokens []token, startIndex, currentIndex int) []string {
-	end := currentIndex
-	if end > len(tokens) {
-		end = len(tokens)
-	}
+	end := min(currentIndex, len(tokens))
 
 	if end <= startIndex {
 		return nil

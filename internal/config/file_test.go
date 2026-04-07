@@ -156,7 +156,6 @@ func TestFileStore_OnChange_multiple_callbacks(t *testing.T) {
 	var order []int
 
 	for i := range 3 {
-		i := i
 		store.OnChange(func(_, _ Config) {
 			mu.Lock()
 			order = append(order, i)
@@ -179,14 +178,10 @@ func TestFileStore_OnChange_concurrent_safety(t *testing.T) {
 	var wg sync.WaitGroup
 
 	for range 10 {
-		wg.Add(1)
-
-		go func() {
-			defer wg.Done()
-
+		wg.Go(func() {
 			unsub := store.OnChange(func(_, _ Config) {})
 			unsub()
-		}()
+		})
 	}
 
 	wg.Wait()

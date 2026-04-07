@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/store/storetest"
 )
 
 // fakeEmbedder produces deterministic embeddings by assigning each
@@ -50,10 +51,10 @@ func containsWord(text, word string) bool {
 func newTestIndexedStore(t *testing.T, embedder chromem.EmbeddingFunc) *IndexedStore {
 	t.Helper()
 
-	files := NewFileStore(t.TempDir())
+	backing := NewStoreAdapter(storetest.NewMemoryStore(t))
 	db := chromem.NewDB()
 
-	return NewIndexedStoreFromDB(files, db, embedder)
+	return NewIndexedStoreFromDB(backing, db, embedder)
 }
 
 // trivialEmbedder returns a constant vector — sufficient for
@@ -356,8 +357,8 @@ func TestIndexedStore_Search_embedding_failure_on_query(t *testing.T) {
 		[]string{"k: v"},
 	))
 
-	files := NewFileStore(t.TempDir())
-	store := NewIndexedStoreFromDB(files, db, failingEmbedder())
+	backing := NewStoreAdapter(storetest.NewMemoryStore(t))
+	store := NewIndexedStoreFromDB(backing, db, failingEmbedder())
 
 	_, err = store.Search(ctx, nick, "query", 5)
 	require.Error(t, err)
@@ -367,22 +368,24 @@ func TestIndexedStore_Search_embedding_failure_on_query(t *testing.T) {
 
 func TestIndexedStore_persistence(t *testing.T) {
 	ctx := t.Context()
-	filesDir := t.TempDir()
 	indexDir := t.TempDir()
 	nick := domain.Nick("persist")
 
 	embedder := fakeEmbedder(3, map[string]int{"cats": 0, "dogs": 1, "fish": 2})
 
-	files1 := NewFileStore(filesDir)
-	store1, err := NewIndexedStore(files1, indexDir, embedder)
+	// Use a single SQLite store to simulate persistence across reopens.
+	sqlStore := storetest.NewMemoryStore(t)
+
+	backing1 := NewStoreAdapter(sqlStore)
+	store1, err := NewIndexedStore(backing1, indexDir, embedder)
 	require.NoError(t, err)
 
 	require.NoError(t, store1.Write(ctx, nick, Entry{Key: "cat", Content: "cats are great"}))
 	require.NoError(t, store1.Write(ctx, nick, Entry{Key: "dog", Content: "dogs are loyal"}))
 
-	// Reopen on the same directories.
-	files2 := NewFileStore(filesDir)
-	store2, err := NewIndexedStore(files2, indexDir, embedder)
+	// Reopen: new adapter and index on the same backing store and directory.
+	backing2 := NewStoreAdapter(sqlStore)
+	store2, err := NewIndexedStore(backing2, indexDir, embedder)
 	require.NoError(t, err)
 
 	got, err := store2.Read(ctx, nick)
@@ -401,18 +404,18 @@ func TestIndexedStore_persistence(t *testing.T) {
 
 // --- Lazy reindex ---
 
-func TestIndexedStore_Search_reindexes_from_file_store(t *testing.T) {
+func TestIndexedStore_Search_reindexes_from_backing_store(t *testing.T) {
 	ctx := t.Context()
 	embedder := fakeEmbedder(2, map[string]int{"cats": 0, "dogs": 1})
 	nick := domain.Nick("reindex")
 
-	// Write entries directly to the FileStore (simulating migration
-	// from a plain FileStore with no vector index).
-	files := NewFileStore(t.TempDir())
-	require.NoError(t, files.Write(ctx, nick, Entry{Key: "cat", Content: "cats are great"}))
-	require.NoError(t, files.Write(ctx, nick, Entry{Key: "dog", Content: "dogs are loyal"}))
+	// Write entries directly to the backing store (simulating migration
+	// from a plain store with no vector index).
+	backing := NewStoreAdapter(storetest.NewMemoryStore(t))
+	require.NoError(t, backing.Write(ctx, nick, Entry{Key: "cat", Content: "cats are great"}))
+	require.NoError(t, backing.Write(ctx, nick, Entry{Key: "dog", Content: "dogs are loyal"}))
 
-	store := NewIndexedStoreFromDB(files, chromem.NewDB(), embedder)
+	store := NewIndexedStoreFromDB(backing, chromem.NewDB(), embedder)
 
 	// Search should trigger a lazy reindex and return results.
 	results, err := store.Search(ctx, nick, "cats", 1)

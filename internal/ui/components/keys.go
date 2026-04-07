@@ -2,6 +2,16 @@ package components
 
 import "github.com/charmbracelet/bubbles/key"
 
+// SidebarAction identifies a sidebar keybinding action.
+type SidebarAction int
+
+// Sidebar keybinding actions.
+const (
+	SidebarDown SidebarAction = iota
+	SidebarUp
+	SidebarSelect
+)
+
 // SidebarKeyMap defines keybindings for the sidebar component.
 type SidebarKeyMap struct {
 	Down   key.Binding
@@ -9,20 +19,42 @@ type SidebarKeyMap struct {
 	Select key.Binding
 }
 
+// WithHelp returns a copy with the help description overridden for
+// the given action.
+func (km SidebarKeyMap) WithHelp(action SidebarAction, desc string) SidebarKeyMap {
+	override := func(b key.Binding, desc string) key.Binding {
+		h := b.Help()
+		b.SetHelp(h.Key, desc)
+
+		return b
+	}
+
+	switch action {
+	case SidebarDown:
+		km.Down = override(km.Down, desc)
+	case SidebarUp:
+		km.Up = override(km.Up, desc)
+	case SidebarSelect:
+		km.Select = override(km.Select, desc)
+	}
+
+	return km
+}
+
 // DefaultSidebarKeyMap is the default set of keybindings for the
 // sidebar.
 var DefaultSidebarKeyMap = SidebarKeyMap{
 	Down: key.NewBinding(
 		key.WithKeys("ctrl+d"),
-		key.WithHelp("^D", "↓ channels"),
+		key.WithHelp("^D", "↓"),
 	),
 	Up: key.NewBinding(
 		key.WithKeys("ctrl+u"),
-		key.WithHelp("^U", "↑ channels"),
+		key.WithHelp("^U", "↑"),
 	),
 	Select: key.NewBinding(
 		key.WithKeys("ctrl+o"),
-		key.WithHelp("^O", "switch channel"),
+		key.WithHelp("^O", "select"),
 	),
 }
 

@@ -1,16 +1,22 @@
 package chatcmd
 
 import (
+	"iter"
+
 	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
 )
 
-// ChannelsSource suggests known channels from a snapshot.
-func ChannelsSource(channels []domain.Channel) command.SuggestionSource {
+// ChannelsSource suggests known channels.
+func ChannelsSource(channels iter.Seq[domain.Channel]) command.SuggestionSource {
 	return func(_ command.InvocationState) []command.Suggestion {
-		suggestions := make([]command.Suggestion, 0, len(channels))
+		if channels == nil {
+			return nil
+		}
 
-		for _, ch := range channels {
+		var suggestions []command.Suggestion
+
+		for ch := range channels {
 			suggestions = append(suggestions, command.Suggestion{
 				Value:  string(ch.Name),
 				Label:  string(ch.Name),
@@ -24,11 +30,15 @@ func ChannelsSource(channels []domain.Channel) command.SuggestionSource {
 
 // ActiveMembersSource suggests members of the active channel,
 // excluding the user's own nick.
-func ActiveMembersSource(members []domain.Nick, userNick domain.Nick) command.SuggestionSource {
+func ActiveMembersSource(members iter.Seq[domain.Nick], userNick domain.Nick) command.SuggestionSource {
 	return func(_ command.InvocationState) []command.Suggestion {
-		suggestions := make([]command.Suggestion, 0, len(members))
+		if members == nil {
+			return nil
+		}
 
-		for _, nick := range members {
+		var suggestions []command.Suggestion
+
+		for nick := range members {
 			if nick == userNick {
 				continue
 			}
@@ -43,12 +53,16 @@ func ActiveMembersSource(members []domain.Nick, userNick domain.Nick) command.Su
 	}
 }
 
-// InstancesSource suggests known instance nicks from a snapshot.
-func InstancesSource(instances []domain.ModelInstance) command.SuggestionSource {
+// InstancesSource suggests known instance nicks.
+func InstancesSource(instances iter.Seq[domain.ModelInstance]) command.SuggestionSource {
 	return func(_ command.InvocationState) []command.Suggestion {
-		suggestions := make([]command.Suggestion, 0, len(instances))
+		if instances == nil {
+			return nil
+		}
 
-		for _, inst := range instances {
+		var suggestions []command.Suggestion
+
+		for inst := range instances {
 			suggestions = append(suggestions, command.Suggestion{
 				Value:  string(inst.Nick),
 				Label:  string(inst.Nick),
@@ -62,11 +76,15 @@ func InstancesSource(instances []domain.ModelInstance) command.SuggestionSource 
 
 // ReusableInstancesSource suggests instance nicks not already in the
 // given active channel.
-func ReusableInstancesSource(instances []domain.ModelInstance, active domain.ChannelName) command.SuggestionSource {
+func ReusableInstancesSource(instances iter.Seq[domain.ModelInstance], active domain.ChannelName) command.SuggestionSource {
 	return func(_ command.InvocationState) []command.Suggestion {
-		suggestions := make([]command.Suggestion, 0, len(instances))
+		if instances == nil {
+			return nil
+		}
 
-		for _, inst := range instances {
+		var suggestions []command.Suggestion
+
+		for inst := range instances {
 			if inst.Channels.Has(active) {
 				continue
 			}
@@ -89,7 +107,7 @@ type ModelOption struct {
 	Description string
 }
 
-// LiveModelsSource suggests live model identifiers from a snapshot.
+// LiveModelsSource suggests live model identifiers.
 func LiveModelsSource(models []ModelOption) command.SuggestionSource {
 	return func(_ command.InvocationState) []command.Suggestion {
 		suggestions := make([]command.Suggestion, 0, len(models))

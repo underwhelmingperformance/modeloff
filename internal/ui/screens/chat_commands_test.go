@@ -11,7 +11,7 @@ import (
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/session"
-	storemod "github.com/laney/modeloff/internal/store"
+	"github.com/laney/modeloff/internal/store/storetest"
 	"github.com/laney/modeloff/internal/ui/chatcmd"
 )
 
@@ -48,7 +48,8 @@ func (stubAPI) GenerateNick(context.Context, domain.ModelID, domain.ModelID) (ap
 func newTestSession(t *testing.T) *session.Session {
 	t.Helper()
 
-	return session.New(storemod.NewFileStore(t.TempDir()), nil, stubAPI{}, nil, "testuser")
+	s := storetest.NewMemoryStore(t)
+	return session.New(s, nil, stubAPI{}, nil, "testuser")
 }
 
 func TestChatScreen_Commands_specs_are_complete(t *testing.T) {

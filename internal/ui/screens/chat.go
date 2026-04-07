@@ -3,6 +3,7 @@ package screens
 import (
 	"context"
 	"fmt"
+	"iter"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -48,34 +49,49 @@ type ChatScreen struct {
 	layout components.MainLayout
 	keyMap components.ChatScreenKeyMap
 
-	channels     []domain.Channel
-	instances    []domain.ModelInstance
-	liveModels   []chatcmd.ModelOption
-	replyQueue   []domain.ModelReplyEvent
-	width        int
-	height       int
-	active       domain.ChannelName
-	topic        string
-	channelCount int
-	obs          *observability.Runtime
-	summary      components.MetricsSummaryModel
+	channels   *set.Sorted[domain.Channel]
+	instances  *set.Sorted[domain.ModelInstance]
+	liveModels *[]chatcmd.ModelOption
+	parser     chatcmd.Parser
+	replyQueue []domain.ModelReplyEvent
+	width      int
+	height     int
+	active     *domain.ChannelName
+	topic      string
+	obs        *observability.Runtime
+	summary    components.MetricsSummaryModel
 }
 
 // NewChatScreen creates a chat screen backed by the given session.
 // The provided context is used for all backend operations, allowing
 // them to be cancelled on shutdown.
 func NewChatScreen(ctx context.Context, sess *session.Session) ChatScreen {
-	sidebar := components.NewSidebar(nil, "", nil)
-	chatView := components.NewChatView("", sess.UserNick(), "", nil)
+	sidebar := components.NewChannelSidebar()
+	chatView := components.NewChatView("", sess.UserNick(), "")
 	layout := components.NewMainLayout(sidebar, chatView)
-	layout.SetNickList(components.NewNickList(nil))
+	layout.NickList = components.NewNickList(domain.NewMemberList())
 
-	return ChatScreen{
-		ctx:    ctx,
-		sess:   sess,
-		layout: layout,
-		keyMap: components.DefaultChatScreenKeyMap,
+	active := domain.ChannelName("")
+	liveModels := []chatcmd.ModelOption(nil)
+
+	cs := ChatScreen{
+		ctx:  ctx,
+		sess: sess,
+		channels: set.NewSorted(func(a, b domain.Channel) bool {
+			return a.Name < b.Name
+		}),
+		instances: set.NewSorted(func(a, b domain.ModelInstance) bool {
+			return a.Nick < b.Nick
+		}),
+		active:     &active,
+		liveModels: &liveModels,
+		layout:     layout,
+		keyMap:     components.DefaultChatScreenKeyMap,
 	}
+
+	cs.parser = cs.buildParser()
+
+	return cs
 }
 
 // WithObservability wires local observability into the chat screen.
@@ -116,16 +132,13 @@ func (s ChatScreen) Init() tea.Cmd {
 			active = ""
 		}
 
-		var messages []domain.Message
 		var topic string
-		var members []domain.Member
+		var members domain.MemberList
 
 		if active != "" {
-			messages, _ = s.sess.Messages(ctx, active)
-
 			if ch, err := s.sess.GetChannel(ctx, active); err == nil {
 				topic = ch.Topic
-				members = s.sortedMembers(ch.Members)
+				members = ch.Members
 			}
 		}
 
@@ -134,7 +147,6 @@ func (s ChatScreen) Init() tea.Cmd {
 			Instances: instances,
 			Active:    active,
 			Topic:     topic,
-			Messages:  messages,
 			Unread:    s.unreadCounts(ctx, channels),
 			Members:   members,
 			At:        time.Now(),
@@ -185,38 +197,66 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		return s.handleSessionEvent(msg)
 
 	case chatcmd.HelpResult:
-		return s, msgCmd(components.Help{})
+		return s, s.logAndShow(domain.ChannelHelp{Channel: *s.active, At: time.Now()})
 
 	case chatcmd.TopicInfoResult:
-		return s, msgCmd(components.TopicInfo{Channel: msg.Channel})
+		return s, s.logAndShow(domain.ChannelTopicInfo{
+			Channel:    msg.Channel.Name,
+			Topic:      msg.Channel.Topic,
+			TopicSetBy: msg.Channel.TopicSetBy,
+			TopicSetAt: msg.Channel.TopicSetAt,
+			At:         time.Now(),
+		})
 
 	case chatcmd.WhoisResult:
-		return s, msgCmd(components.Whois{ModelInstance: msg.Instance})
+		return s, s.logAndShow(domain.ChannelWhois{
+			Channel: *s.active, Instance: msg.Instance, At: time.Now(),
+		})
 
 	case chatcmd.ListResult:
-		return s, msgCmd(components.ChannelList{Channels: msg.Channels})
+		return s, s.logAndShow(domain.ChannelListOutput{
+			Channels: msg.Channels, At: time.Now(),
+		})
 
 	case chatcmd.UsageError:
-		return s, msgCmd(components.UsageHint{Command: msg.Command, Usage: msg.Usage})
+		return s, s.logAndShow(domain.ChannelUsageHint{
+			Channel: *s.active, Command: msg.Command, Usage: msg.Usage, At: time.Now(),
+		})
 
 	case chatcmd.NoChannelError:
-		return s, msgCmd(components.NoChannel{})
+		return s, s.logAndShow(domain.ChannelUsageHint{
+			Command: "", Usage: "join a channel first", At: time.Now(),
+		})
 
 	case chatcmd.APIKeySetResult:
 		return s, tea.Batch(
-			msgCmd(components.APIKeySaved{}),
+			s.logAndShow(domain.ChannelSystemNotice{
+				Channel: *s.active, Text: "OpenRouter API key saved and activated.", At: time.Now(),
+			}),
 			s.loadLiveModels(),
 		)
 
 	case chatcmd.PokeIntervalSetResult:
-		return s, msgCmd(components.PokeIntervalSet{Interval: msg.Interval})
+		return s, s.logAndShow(domain.ChannelSystemNotice{
+			Channel: *s.active,
+			Text:    fmt.Sprintf("Poke interval set to %s.", msg.Interval),
+			At:      time.Now(),
+		})
 
 	case chatcmd.NickModelSetResult:
-		return s, msgCmd(components.NickModelSet{ModelID: msg.ModelID})
+		return s, s.logAndShow(domain.ChannelSystemNotice{
+			Channel: *s.active,
+			Text:    fmt.Sprintf("Nick generation model set to %s.", msg.ModelID),
+			At:      time.Now(),
+		})
 
 	case chatcmd.HighlightWordsSetResult:
 		return s, tea.Batch(
-			msgCmd(components.ConfigChanged{Operation: fmt.Sprintf("highlight words set to: %v", msg.Words)}),
+			s.logAndShow(domain.ChannelSystemNotice{
+				Channel: *s.active,
+				Text:    fmt.Sprintf("highlight words set to: %v", msg.Words),
+				At:      time.Now(),
+			}),
 			msgCmd(components.HighlightWordsMsg{
 				Words:    msg.Words,
 				UserNick: s.sess.UserNick(),
@@ -224,10 +264,18 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		)
 
 	case chatcmd.BaseURLSetResult:
-		return s, msgCmd(components.ConfigChanged{Operation: fmt.Sprintf("base URL set to %s", msg.URL)})
+		return s, s.logAndShow(domain.ChannelSystemNotice{
+			Channel: *s.active,
+			Text:    fmt.Sprintf("base URL set to %s", msg.URL),
+			At:      time.Now(),
+		})
 
 	case chatcmd.EmbeddingModelSetResult:
-		return s, msgCmd(components.ConfigChanged{Operation: fmt.Sprintf("embedding model set to %s", msg.ModelID)})
+		return s, s.logAndShow(domain.ChannelSystemNotice{
+			Channel: *s.active,
+			Text:    fmt.Sprintf("embedding model set to %s", msg.ModelID),
+			At:      time.Now(),
+		})
 
 	case domain.JoinEvent:
 		return s.handleJoinEvent(msg)
@@ -279,8 +327,10 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		return s, s.switchChannel(msg.Channel)
 
 	case components.MessageSubmitMsg:
-		if s.active == "" {
-			return s, msgCmd(components.NoChannel{})
+		if *s.active == "" {
+			return s, s.logAndShow(domain.ChannelUsageHint{
+				Usage: "join a channel first", At: time.Now(),
+			})
 		}
 
 		return s, s.sendMessage(msg.Text)
@@ -308,12 +358,12 @@ func msgCmd(msg tea.Msg) tea.Cmd {
 
 func (s ChatScreen) buildParser() chatcmd.Parser {
 	return chatcmd.BuildParser(chatcmd.Sources{
-		Channels:      s.channels,
-		Instances:     s.instances,
-		ActiveChannel: s.active,
-		ActiveMembers: s.activeMembers(),
-		UserNick:      s.sess.UserNick(),
-		LiveModels:    s.liveModels,
+		Channels:      func() iter.Seq[domain.Channel] { return s.channels.All() },
+		Instances:     func() iter.Seq[domain.ModelInstance] { return s.instances.All() },
+		ActiveChannel: func() domain.ChannelName { return *s.active },
+		ActiveMembers: func() iter.Seq[domain.Nick] { return s.activeMemberNicks() },
+		UserNick:      func() domain.Nick { return s.sess.UserNick() },
+		LiveModels:    func() []chatcmd.ModelOption { return *s.liveModels },
 	})
 }
 
@@ -332,28 +382,6 @@ func (s ChatScreen) unreadCounts(ctx context.Context, channels []domain.Channel)
 	}
 
 	return counts
-}
-
-func (s ChatScreen) sortedMembers(members set.Ordered[domain.Nick]) []domain.Member {
-	if members == nil {
-		return nil
-	}
-
-	userNick := s.sess.UserNick()
-
-	var result []domain.Member
-
-	for nick := range members.Sorted() {
-		mode := domain.ModeVoice
-
-		if nick == userNick {
-			mode = domain.ModeOp
-		}
-
-		result = append(result, domain.Member{Nick: nick, Mode: mode})
-	}
-
-	return result
 }
 
 func (s ChatScreen) loadLiveModels() tea.Cmd {
@@ -385,33 +413,64 @@ func (s ChatScreen) layoutHeight() int {
 		return s.height
 	}
 
-	height := s.height - lipgloss.Height(components.RenderStatusBar(s.width, s.KeyBindings(), s.StatusItems()))
-	if height < 0 {
-		return 0
+	return max(s.height-lipgloss.Height(components.RenderStatusBar(s.width, s.KeyBindings(), s.StatusItems())), 0)
+}
+
+// logAndShow persists a channel event to the event log and returns
+// a command that sends the StoredEvent to the message list. When no
+// channel is active the event is still sent for rendering but is not
+// persisted to the store.
+func (s ChatScreen) logAndShow(event domain.ChannelEvent) tea.Cmd {
+	ch := *s.active
+	if ch == "" {
+		return msgCmd(domain.StoredEvent{Event: event})
 	}
 
-	return height
+	stored, err := s.sess.LogEvent(s.ctx, ch, event)
+	if err != nil {
+		return nil
+	}
+
+	return msgCmd(stored)
+}
+
+// fetchHistory returns a Cmd that loads the latest events for a
+// channel from the event log and sends them as a HistoryLoadedMsg.
+// The number of events fetched is based on the viewport height.
+func (s ChatScreen) fetchHistory(ch domain.ChannelName) tea.Cmd {
+	if ch == "" {
+		return nil
+	}
+
+	n := max(s.height, 50)
+
+	return func() tea.Msg {
+		events, err := s.sess.EventsBefore(s.ctx, ch, nil, n)
+		if err != nil {
+			return nil
+		}
+
+		return components.HistoryLoadedMsg{Events: events}
+	}
 }
 
 func (s ChatScreen) switchChannel(ch domain.ChannelName) tea.Cmd {
 	return func() tea.Msg {
-		evt, err := s.sess.Join(s.ctx, string(ch))
-		if err != nil {
+		if err := s.sess.Join(s.ctx, string(ch)); err != nil {
 			return domain.ErrorEvent{Operation: "switch", Err: err, At: time.Now()}
 		}
 
-		return evt
+		return nil
 	}
 }
 
 func (s ChatScreen) sendMessage(text string) tea.Cmd {
 	return func() tea.Msg {
-		evt, err := s.sess.SendMessage(s.ctx, s.active, text)
-		if err != nil {
+		if err := s.sess.SendMessage(s.ctx, *s.active, text); err != nil {
 			return domain.ErrorEvent{Operation: "send", Err: err, At: time.Now()}
 		}
 
-		return evt
+		return nil
 	}
 }
 
@@ -436,11 +495,7 @@ func (s ChatScreen) View(width, height int) string {
 
 	bar := components.RenderStatusBar(width, s.KeyBindings(), s.StatusItems())
 	layoutHeight := height - lipgloss.Height(bar)
-	if layoutHeight < 0 {
-		layoutHeight = 0
-	}
-
-	view := s.layout.View(width, layoutHeight)
+	view := s.layout.View(width, max(layoutHeight, 0))
 	if bar == "" {
 		return view
 	}

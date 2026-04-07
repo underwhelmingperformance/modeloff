@@ -22,35 +22,43 @@ type HighlightWordsMsg struct {
 	UserNick domain.Nick
 }
 
-// MessageList displays chat lines in a scrollable viewport with
+const defaultBufferCap = 100
+
+// MessageList displays channel events in a scrollable viewport with
 // support for a new-messages divider, a pending-response spinner,
 // and an empty-state placeholder.
 type MessageList struct {
 	channel     domain.ChannelName
-	lines       []tea.Msg
+	events      *RingBuffer[domain.StoredEvent]
 	viewport    viewport.Model
 	pending     bool
 	spinner     spinner.Model
 	placeholder string
-	seenCount   int
 
-	// commands is kept so that renderHelp can list them.
-	commands command.Set
+	// seenCount is the number of events the user has "seen" (i.e.
+	// were present when the viewport was last at the bottom). The
+	// new-messages divider is rendered between seenCount and the
+	// next event during renderedContent.
+	seenCount int
 
+	// showDivider is true when the viewport is scrolled up and new
+	// events have arrived since.
+	showDivider bool
+
+	commands       command.Set
 	highlightWords []string
 	userNick       domain.Nick
 }
 
-// NewMessageList creates a message list for the given channel.
-func NewMessageList(ch domain.ChannelName, lines []tea.Msg) MessageList {
+// NewMessageList creates an empty message list.
+func NewMessageList(ch domain.ChannelName) MessageList {
 	vp := viewport.New(0, 0)
 	vp.MouseWheelEnabled = true
 
 	return MessageList{
-		channel:   ch,
-		lines:     lines,
-		seenCount: len(lines),
-		viewport:  vp,
+		channel:  ch,
+		events:   NewRingBuffer[domain.StoredEvent](defaultBufferCap),
+		viewport: vp,
 		spinner: spinner.New(
 			spinner.WithSpinner(spinner.Dot),
 			spinner.WithStyle(theme.Dim),
@@ -58,9 +66,9 @@ func NewMessageList(ch domain.ChannelName, lines []tea.Msg) MessageList {
 	}
 }
 
-// Lines returns the current chat lines.
-func (m MessageList) Lines() []tea.Msg {
-	return m.lines
+// Len returns the number of events in the buffer.
+func (m MessageList) Len() int {
+	return m.events.Len()
 }
 
 // Pending returns whether the pending indicator is active.
@@ -89,11 +97,11 @@ func (m MessageList) Init() tea.Cmd {
 func (m MessageList) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case SetChannelMsg:
-		m = m.setChannel(msg.Channel, msg.Lines)
+		m = m.setChannel(msg.Channel)
 		return m, nil
 
-	case SetLinesMsg:
-		m = m.setLines(msg.Lines)
+	case HistoryLoadedMsg:
+		m = m.loadHistory(msg.Events)
 		return m, nil
 
 	case SetPlaceholderMsg:
@@ -128,21 +136,16 @@ func (m MessageList) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 		return m, cmd
 
-	case MessagesUpdatedMsg:
-		if msg.Channel != m.channel {
-			return m, nil
-		}
-
-		m.lines = msg.Lines
-		m.seenCount = len(msg.Lines)
-		m.viewport.GotoBottom()
+	case domain.StoredEvent:
+		m = m.appendEvent(msg)
 
 		return m, nil
 
-	case MessageLine, Join, Part, NickChange, TopicChange, ModelInvited, ModelKicked, TopicInfo,
-		Help, Whois, ChannelList, APIKeySaved, PokeIntervalSet, NickModelSet, DMOpened,
-		UsageHint, NoChannel, CommandError, ConfigChanged, BackendError, NewMessagesDivider:
-		m = m.appendLines([]tea.Msg{msg})
+	case ui.BoundsMsg:
+		wasAtBottom := m.viewport.AtBottom() || m.viewport.TotalLineCount() == 0
+		m.viewport.Width = max(msg.Rect.Width, 0)
+		m.viewport.Height = max(msg.Rect.Height, 0)
+		m = m.refreshContent(wasAtBottom)
 
 		return m, nil
 	}
@@ -153,10 +156,7 @@ func (m MessageList) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// View implements ui.Model. It renders the message list, pending
-// indicator, and spinner into the given dimensions. It returns the
-// rendered view, whether the viewport is scrolled up, and the scroll
-// percentage.
+// View implements ui.Model.
 func (m MessageList) View(width, height int) string {
 	var pendingView string
 	pendingHeight := 0
@@ -166,10 +166,7 @@ func (m MessageList) View(width, height int) string {
 		pendingHeight = lipgloss.Height(pendingView)
 	}
 
-	maxListHeight := height - pendingHeight
-	if maxListHeight < 0 {
-		maxListHeight = 0
-	}
+	maxListHeight := max(height-pendingHeight, 0)
 
 	messageView, scrolled, scrollPct := m.renderMessages(width, maxListHeight)
 
@@ -178,10 +175,7 @@ func (m MessageList) View(width, height int) string {
 		indicator := theme.Dim.Render(fmt.Sprintf("(%d%%)", int(scrollPct*100)))
 		scrollView = lipgloss.PlaceHorizontal(width, lipgloss.Right, indicator)
 
-		listHeight := maxListHeight - 1
-		if listHeight < 0 {
-			listHeight = 0
-		}
+		listHeight := max(maxListHeight-1, 0)
 
 		messageView, _, _ = m.renderMessages(width, listHeight)
 	}
@@ -207,70 +201,49 @@ func (m MessageList) ScrollInfo() (scrolled bool, pct float64) {
 	return !m.viewport.AtBottom(), m.viewport.ScrollPercent()
 }
 
-// SyncViewport sets the viewport dimensions and re-renders content.
-// If the viewport was at the bottom (or unsized), it stays there.
-func (m MessageList) SyncViewport(width, height int) MessageList {
-	if width < 0 {
-		width = 0
-	}
-
-	if height < 0 {
-		height = 0
-	}
-
-	wasAtBottom := m.viewport.AtBottom() || m.viewport.TotalLineCount() == 0
-
-	m.viewport.Width = width
-	m.viewport.Height = height
-
-	return m.refreshContent(wasAtBottom)
-}
-
-func (m MessageList) setLines(lines []tea.Msg) MessageList {
-	wasEmpty := len(m.lines) == 0
-
-	scrolledUp := !m.viewport.AtBottom() && m.viewport.TotalLineCount() > 0
-	newContent := len(lines) > m.seenCount
-
-	if scrolledUp && newContent && m.seenCount > 0 {
-		lines = m.insertDivider(lines)
-	}
-
-	m.lines = lines
-
-	if !scrolledUp {
-		m.seenCount = m.countWithoutDivider(lines)
-	}
-
-	if wasEmpty && len(lines) > 0 {
-		m.viewport.SetContent("")
-	}
-
-	return m
-}
-
-func (m MessageList) setChannel(ch domain.ChannelName, lines []tea.Msg) MessageList {
+func (m MessageList) setChannel(ch domain.ChannelName) MessageList {
 	m.channel = ch
-	m.lines = lines
-	m.seenCount = len(lines)
+	m.events.Clear()
+	m.seenCount = 0
+	m.showDivider = false
 	m.viewport.SetContent("")
 	m.viewport.GotoBottom()
 
 	return m
 }
 
-func (m MessageList) appendLines(newLines []tea.Msg) MessageList {
-	m = m.clearDivider()
-	m.lines = append(m.lines, newLines...)
-	m.seenCount = m.countWithoutDivider(m.lines)
+func (m MessageList) loadHistory(events []domain.StoredEvent) MessageList {
+	m.events.Clear()
 
+	for _, e := range events {
+		m.events.Append(e)
+	}
+
+	m.seenCount = m.events.Len()
+	m.showDivider = false
+	m.viewport.GotoBottom()
+
+	return m.refreshContent(true)
+}
+
+func (m MessageList) appendEvent(event domain.StoredEvent) MessageList {
 	wasAtBottom := m.viewport.AtBottom() || m.viewport.TotalLineCount() == 0
+	scrolledUp := !wasAtBottom && m.viewport.TotalLineCount() > 0
+
+	m.events.Append(event)
+
+	if scrolledUp && m.seenCount > 0 {
+		m.showDivider = true
+	}
+
+	if !scrolledUp {
+		m.seenCount = m.events.Len()
+		m.showDivider = false
+	}
 
 	return m.refreshContent(wasAtBottom)
 }
 
-// refreshContent re-renders lines into the viewport. If wasAtBottom
-// is true, the viewport scrolls to the bottom after setting content.
 func (m MessageList) refreshContent(wasAtBottom bool) MessageList {
 	if m.viewport.Width == 0 {
 		return m
@@ -286,7 +259,7 @@ func (m MessageList) refreshContent(wasAtBottom bool) MessageList {
 }
 
 func (m MessageList) renderMessages(width, height int) (view string, scrolled bool, scrollPct float64) {
-	if len(m.lines) == 0 {
+	if m.events.Len() == 0 {
 		text := theme.Dim.Render("No messages yet")
 		if m.placeholder != "" {
 			text = m.placeholder
@@ -296,9 +269,6 @@ func (m MessageList) renderMessages(width, height int) (view string, scrolled bo
 			lipgloss.Center, lipgloss.Center, text), false, 0
 	}
 
-	// Render content at the requested width for display. The
-	// viewport's scroll position is authoritative — we just need
-	// to produce a view at the right dimensions.
 	vp := m.viewport
 	vp.Width = width
 	vp.Height = height
@@ -309,56 +279,23 @@ func (m MessageList) renderMessages(width, height int) (view string, scrolled bo
 }
 
 func (m MessageList) renderedContent(width int) string {
-	rendered := make([]string, 0, len(m.lines))
-	for _, line := range m.lines {
-		rendered = append(rendered, renderLine(line, width, m.highlightWords, m.userNick, m.commands))
+	rendered := make([]string, 0, m.events.Len()+1)
+
+	for i := range m.events.Len() {
+		if m.showDivider && i == m.seenCount {
+			rendered = append(rendered, renderNewMessagesDivider(width))
+		}
+
+		event, _ := m.events.GetAt(i)
+		rendered = append(rendered, renderChannelEvent(
+			event.Event, width, m.highlightWords, m.userNick, m.commands))
+	}
+
+	// Divider at the end if seenCount == total (all seen, new arrived
+	// while scrolled up).
+	if m.showDivider && m.seenCount >= m.events.Len() {
+		rendered = append(rendered, renderNewMessagesDivider(width))
 	}
 
 	return strings.Join(rendered, "\n")
-}
-
-func (m MessageList) insertDivider(lines []tea.Msg) []tea.Msg {
-	cleaned := m.stripDivider(lines)
-
-	pos := m.seenCount
-	if pos > len(cleaned) {
-		pos = len(cleaned)
-	}
-
-	result := make([]tea.Msg, 0, len(cleaned)+1)
-	result = append(result, cleaned[:pos]...)
-	result = append(result, NewMessagesDivider{})
-	result = append(result, cleaned[pos:]...)
-
-	return result
-}
-
-func (m MessageList) stripDivider(lines []tea.Msg) []tea.Msg {
-	result := make([]tea.Msg, 0, len(lines))
-
-	for _, l := range lines {
-		if _, ok := l.(NewMessagesDivider); !ok {
-			result = append(result, l)
-		}
-	}
-
-	return result
-}
-
-func (m MessageList) clearDivider() MessageList {
-	m.lines = m.stripDivider(m.lines)
-
-	return m
-}
-
-func (m MessageList) countWithoutDivider(lines []tea.Msg) int {
-	n := 0
-
-	for _, l := range lines {
-		if _, ok := l.(NewMessagesDivider); !ok {
-			n++
-		}
-	}
-
-	return n
 }

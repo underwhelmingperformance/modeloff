@@ -3,15 +3,18 @@ module github.com/laney/modeloff
 go 1.26.1
 
 require (
+	github.com/adrg/xdg v0.5.3
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/charmbracelet/x/ansi v0.11.6
 	github.com/charmbracelet/x/exp/teatest v0.0.0-20260330094520-2dce04b6f8a4
 	github.com/invopop/jsonschema v0.13.0
+	github.com/ncruces/go-sqlite3 v0.33.2
 	github.com/openai/openai-go/v3 v3.30.0
 	github.com/philippgille/chromem-go v0.7.0
 	github.com/stretchr/testify v1.11.1
+	github.com/tidwall/btree v1.8.1
 	github.com/wk8/go-ordered-map/v2 v2.1.8
 	go.opentelemetry.io/contrib/bridges/otelslog v0.13.0
 	go.opentelemetry.io/otel v1.43.0
@@ -50,6 +53,8 @@ require (
 	github.com/muesli/ansi v0.0.0-20230316100256-276c6243b2f6 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
 	github.com/muesli/termenv v0.16.0 // indirect
+	github.com/ncruces/go-sqlite3-wasm v1.0.4-0.20260329114232-2491c387476c // indirect
+	github.com/ncruces/julianday v1.0.0 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/tidwall/gjson v1.18.0 // indirect
@@ -59,6 +64,6 @@ require (
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	golang.org/x/sys v0.42.0 // indirect
-	golang.org/x/text v0.28.0 // indirect
+	golang.org/x/text v0.34.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

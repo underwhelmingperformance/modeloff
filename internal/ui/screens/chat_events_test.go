@@ -18,20 +18,15 @@ func TestChatScreen_PartEvent_leaving_active_switches_channel(t *testing.T) {
 	tm := newChatApp(t, sess)
 	tm.WaitFor("#random")
 
-	tm.Send(domain.JoinEvent{
-		Channel: "#random",
-		Nick:    "testuser",
-		At:      time.Now(),
-	})
-	tm.WaitFor("testuser has joined #random")
+	// Part #random via the session — events flow through the event channel.
+	require.NoError(t, sess.Leave(t.Context(), "#random"))
 
-	tm.Send(domain.PartEvent{
-		Channel: "#random",
-		Nick:    "testuser",
-		At:      time.Now(),
-	})
+	tm.WaitFor("Created channel #general")
 
-	tm.WaitFor("#general")
+	view := tm.CurrentView()
+	require.Contains(t, view, "#general")
+	require.Contains(t, view, "Created channel #general")
+	require.NotContains(t, view, "#random")
 }
 
 func TestChatScreen_PartEvent_leaving_non_active_keeps_active(t *testing.T) {
