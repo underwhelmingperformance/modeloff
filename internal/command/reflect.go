@@ -45,6 +45,7 @@ func resolveFieldMetas(cmd any) ([]fieldMeta, error) {
 			}
 		} else {
 			m.isFlag = true
+			m.boolFlag = f.Type.Kind() == reflect.Bool
 			m.name = toKebabCase(f.Name)
 			m.flagName = "--" + m.name
 		}
@@ -119,6 +120,7 @@ func buildFlags(fields []fieldMeta, sources map[string]SuggestionSource) []Flag 
 		fl := Flag{
 			Name:     f.flagName,
 			Help:     f.help,
+			Boolean:  f.boolFlag,
 			Optional: f.optional,
 			Variadic: f.variadic,
 		}

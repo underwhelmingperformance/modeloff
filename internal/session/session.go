@@ -917,6 +917,11 @@ func (s *Session) SetAPIKey(_ context.Context, apiKey string) (config.Config, er
 	return cfg, nil
 }
 
+// ResetAPIKey removes the configured API key.
+func (s *Session) ResetAPIKey(ctx context.Context) (config.Config, error) {
+	return s.SetAPIKey(ctx, "")
+}
+
 // SetPokeInterval persists a new poke interval through the config
 // store.
 func (s *Session) SetPokeInterval(_ context.Context, interval time.Duration) (config.Config, error) {
@@ -936,6 +941,11 @@ func (s *Session) SetPokeInterval(_ context.Context, interval time.Duration) (co
 	}
 
 	return cfg, nil
+}
+
+// ResetPokeInterval restores the default poke interval.
+func (s *Session) ResetPokeInterval(ctx context.Context) (config.Config, error) {
+	return s.SetPokeInterval(ctx, config.DefaultPokeInterval)
 }
 
 // SetNickModel persists a new nick generation model through the
@@ -959,6 +969,11 @@ func (s *Session) SetNickModel(_ context.Context, modelID domain.ModelID) (confi
 	s.nickModel = modelID
 
 	return cfg, nil
+}
+
+// ResetNickModel restores the default nick generation model.
+func (s *Session) ResetNickModel(ctx context.Context) (config.Config, error) {
+	return s.SetNickModel(ctx, config.DefaultNickModel)
 }
 
 // HighlightWords returns the currently configured highlight words.
@@ -1034,6 +1049,16 @@ func (s *Session) SetTimestampFormat(_ context.Context, format *string) (config.
 	return cfg, nil
 }
 
+// ResetTimestampFormat restores locale-default timestamp formatting.
+func (s *Session) ResetTimestampFormat(ctx context.Context) (config.Config, error) {
+	return s.SetTimestampFormat(ctx, nil)
+}
+
+// ResetHighlightWords restores the default highlight words.
+func (s *Session) ResetHighlightWords(ctx context.Context) (config.Config, error) {
+	return s.SetHighlightWords(ctx, append([]string(nil), config.DefaultHighlightWords...))
+}
+
 // SetBaseURL persists a new API base URL through the config store
 // and rebuilds the API client so it takes effect immediately.
 func (s *Session) SetBaseURL(_ context.Context, baseURL string) (config.Config, error) {
@@ -1064,6 +1089,11 @@ func (s *Session) SetBaseURL(_ context.Context, baseURL string) (config.Config, 
 	return cfg, nil
 }
 
+// ResetBaseURL restores the default API base URL.
+func (s *Session) ResetBaseURL(ctx context.Context) (config.Config, error) {
+	return s.SetBaseURL(ctx, config.DefaultBaseURL)
+}
+
 // SetEmbeddingModel persists a new embedding model through the
 // config store.
 func (s *Session) SetEmbeddingModel(_ context.Context, modelID domain.ModelID) (config.Config, error) {
@@ -1083,6 +1113,11 @@ func (s *Session) SetEmbeddingModel(_ context.Context, modelID domain.ModelID) (
 	}
 
 	return cfg, nil
+}
+
+// ResetEmbeddingModel restores the default embedding model.
+func (s *Session) ResetEmbeddingModel(ctx context.Context) (config.Config, error) {
+	return s.SetEmbeddingModel(ctx, config.DefaultEmbeddingModel)
 }
 
 func (s *Session) dispatchToInstances(

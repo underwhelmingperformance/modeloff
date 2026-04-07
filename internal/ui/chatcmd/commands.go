@@ -305,6 +305,7 @@ func (c QuitCommand) Run(rc Context) tea.Cmd {
 // ConfigCommand is a group node whose children are the individual
 // config keys. Each subcommand has its own args and Run method.
 type ConfigCommand struct {
+	Reset           bool                  `optional:"" help:"Reset the selected setting to its default"`
 	APIKey          APIKeyConfig          `cmd:"" name:"api-key" help:"Activate OpenRouter immediately."`
 	BaseURL         BaseURLConfig         `cmd:"" name:"base-url" help:"Set the API base URL."`
 	PokeInterval    PokeIntervalConfig    `cmd:"" name:"poke-interval" help:"Set the background poke cadence."`
@@ -316,11 +317,25 @@ type ConfigCommand struct {
 
 // APIKeyConfig represents `/config api-key <value>`.
 type APIKeyConfig struct {
-	Value string `arg:"" help:"OpenRouter API key"`
+	Value string `arg:"" optional:"" help:"OpenRouter API key"`
 }
 
 // Run implements Command.
 func (c APIKeyConfig) Run(rc Context) tea.Cmd {
+	if rc.configResetRequested() {
+		return func() tea.Msg {
+			if _, err := rc.Session.ResetAPIKey(rc.Ctx); err != nil {
+				return errorEvent("config api-key", err)
+			}
+
+			return APIKeySetResult{Reset: true}
+		}
+	}
+
+	if strings.TrimSpace(c.Value) == "" {
+		return usageCmd("config", "/config api-key <value>")
+	}
+
 	return func() tea.Msg {
 		if _, err := rc.Session.SetAPIKey(rc.Ctx, c.Value); err != nil {
 			return errorEvent("config api-key", err)
@@ -332,23 +347,38 @@ func (c APIKeyConfig) Run(rc Context) tea.Cmd {
 
 // BaseURLConfig represents `/config base-url <url>`.
 type BaseURLConfig struct {
-	URL string `arg:"" help:"API base URL"`
+	URL string `arg:"" optional:"" help:"API base URL"`
 }
 
 // Run implements Command.
 func (c BaseURLConfig) Run(rc Context) tea.Cmd {
+	if rc.configResetRequested() {
+		return func() tea.Msg {
+			cfg, err := rc.Session.ResetBaseURL(rc.Ctx)
+			if err != nil {
+				return errorEvent("config base-url", err)
+			}
+
+			return BaseURLSetResult{URL: cfg.BaseURL, Reset: true}
+		}
+	}
+
+	if strings.TrimSpace(c.URL) == "" {
+		return usageCmd("config", "/config base-url <url>")
+	}
+
 	return func() tea.Msg {
 		if _, err := rc.Session.SetBaseURL(rc.Ctx, c.URL); err != nil {
 			return errorEvent("config base-url", err)
 		}
 
-		return BaseURLSetResult(c)
+		return BaseURLSetResult{URL: c.URL}
 	}
 }
 
 // PokeIntervalConfig represents `/config poke-interval <duration>`.
 type PokeIntervalConfig struct {
-	Duration string `arg:"" help:"Poke interval (e.g. 5m, 1h)"`
+	Duration string `arg:"" optional:"" help:"Poke interval (e.g. 5m, 1h)"`
 }
 
 // Sources implements command.Completer.
@@ -365,6 +395,21 @@ func (PokeIntervalConfig) Sources() map[string]command.SuggestionSource {
 
 // Run implements Command.
 func (c PokeIntervalConfig) Run(rc Context) tea.Cmd {
+	if rc.configResetRequested() {
+		return func() tea.Msg {
+			cfg, err := rc.Session.ResetPokeInterval(rc.Ctx)
+			if err != nil {
+				return errorEvent("config poke-interval", err)
+			}
+
+			return PokeIntervalSetResult{Interval: cfg.PokeInterval, Reset: true}
+		}
+	}
+
+	if strings.TrimSpace(c.Duration) == "" {
+		return usageCmd("config", "/config poke-interval <duration>")
+	}
+
 	return func() tea.Msg {
 		interval, err := time.ParseDuration(c.Duration)
 		if err != nil {
@@ -384,11 +429,26 @@ func (c PokeIntervalConfig) Run(rc Context) tea.Cmd {
 
 // NickModelConfig represents `/config nick-model <model-id>`.
 type NickModelConfig struct {
-	ModelID string `arg:"" help:"Model ID for nick generation"`
+	ModelID string `arg:"" optional:"" help:"Model ID for nick generation"`
 }
 
 // Run implements Command.
 func (c NickModelConfig) Run(rc Context) tea.Cmd {
+	if rc.configResetRequested() {
+		return func() tea.Msg {
+			cfg, err := rc.Session.ResetNickModel(rc.Ctx)
+			if err != nil {
+				return errorEvent("config nick-model", err)
+			}
+
+			return NickModelSetResult{ModelID: cfg.NickModel, Reset: true}
+		}
+	}
+
+	if strings.TrimSpace(c.ModelID) == "" {
+		return usageCmd("config", "/config nick-model <model-id>")
+	}
+
 	return func() tea.Msg {
 		modelID := domain.ModelID(c.ModelID)
 		if _, err := rc.Session.SetNickModel(rc.Ctx, modelID); err != nil {
@@ -401,11 +461,26 @@ func (c NickModelConfig) Run(rc Context) tea.Cmd {
 
 // EmbeddingModelConfig represents `/config embedding-model <model-id>`.
 type EmbeddingModelConfig struct {
-	ModelID string `arg:"" help:"Model ID for embeddings"`
+	ModelID string `arg:"" optional:"" help:"Model ID for embeddings"`
 }
 
 // Run implements Command.
 func (c EmbeddingModelConfig) Run(rc Context) tea.Cmd {
+	if rc.configResetRequested() {
+		return func() tea.Msg {
+			cfg, err := rc.Session.ResetEmbeddingModel(rc.Ctx)
+			if err != nil {
+				return errorEvent("config embedding-model", err)
+			}
+
+			return EmbeddingModelSetResult{ModelID: cfg.EmbeddingModel, Reset: true}
+		}
+	}
+
+	if strings.TrimSpace(c.ModelID) == "" {
+		return usageCmd("config", "/config embedding-model <model-id>")
+	}
+
 	return func() tea.Msg {
 		modelID := domain.ModelID(c.ModelID)
 		if _, err := rc.Session.SetEmbeddingModel(rc.Ctx, modelID); err != nil {
@@ -418,17 +493,32 @@ func (c EmbeddingModelConfig) Run(rc Context) tea.Cmd {
 
 // HighlightConfig represents `/config highlight <word> [<word>...]`.
 type HighlightConfig struct {
-	Words []string `arg:"" nargs:"1" help:"Words to highlight"`
+	Words []string `arg:"" optional:"" help:"Words to highlight"`
 }
 
 // Run implements Command.
 func (c HighlightConfig) Run(rc Context) tea.Cmd {
+	if rc.configResetRequested() {
+		return func() tea.Msg {
+			cfg, err := rc.Session.ResetHighlightWords(rc.Ctx)
+			if err != nil {
+				return errorEvent("config highlight", err)
+			}
+
+			return HighlightWordsSetResult{Words: cfg.HighlightWords, Reset: true}
+		}
+	}
+
+	if len(c.Words) == 0 {
+		return usageCmd("config", "/config highlight <word> [<word>...]")
+	}
+
 	return func() tea.Msg {
 		if _, err := rc.Session.SetHighlightWords(rc.Ctx, c.Words); err != nil {
 			return errorEvent("config highlight", err)
 		}
 
-		return HighlightWordsSetResult(c)
+		return HighlightWordsSetResult{Words: c.Words}
 	}
 }
 
@@ -439,6 +529,17 @@ type TimestampFormatConfig struct {
 
 // Run implements Command.
 func (c TimestampFormatConfig) Run(rc Context) tea.Cmd {
+	if rc.configResetRequested() {
+		return func() tea.Msg {
+			cfg, err := rc.Session.ResetTimestampFormat(rc.Ctx)
+			if err != nil {
+				return errorEvent("config timestamp-format", err)
+			}
+
+			return TimestampFormatSetResult{Format: cfg.TimestampFormat, Reset: true}
+		}
+	}
+
 	return func() tea.Msg {
 		format := normaliseTimestampFormat(c.Format)
 

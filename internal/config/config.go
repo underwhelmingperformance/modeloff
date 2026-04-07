@@ -8,6 +8,14 @@ import (
 	"github.com/laney/modeloff/internal/domain"
 )
 
+// DefaultBaseURL is the OpenRouter-compatible API base URL used when
+// no override has been configured.
+const DefaultBaseURL = "https://openrouter.ai/api/v1"
+
+// DefaultPokeInterval is the cadence used for idle channel pokes when
+// no override has been configured.
+const DefaultPokeInterval = 5 * time.Minute
+
 // DefaultNickModel is the model used to generate nicknames for invited
 // model instances when no override has been configured.
 const DefaultNickModel = domain.ModelID("anthropic/claude-haiku-4.5")

@@ -934,6 +934,31 @@ func TestComplete_used_ancestor_flags_are_excluded(t *testing.T) {
 	require.Empty(t, completion.Suggestions)
 }
 
+func TestComplete_bool_flag_does_not_expect_a_value(t *testing.T) {
+	cmds := Set{
+		Commands: []*Node{
+			{
+				Name: "config",
+				Flags: []Flag{
+					{Name: "--reset", Boolean: true, Optional: true, Help: "Reset"},
+				},
+				Children: []*Node{
+					{Name: "api-key", Help: "API key"},
+					{Name: "poke-interval", Help: "Poke interval"},
+				},
+			},
+		},
+	}
+
+	completion := Complete(cmds, "/config --reset ", len([]rune("/config --reset ")))
+
+	require.True(t, completion.Visible)
+	require.Equal(t, []Suggestion{
+		{Value: "api-key", Label: "api-key", Detail: "API key"},
+		{Value: "poke-interval", Label: "poke-interval", Detail: "Poke interval"},
+	}, completion.Suggestions)
+}
+
 func TestComplete_deep_nesting_walks_into_grandchildren(t *testing.T) {
 	cmds := Set{
 		Commands: []*Node{

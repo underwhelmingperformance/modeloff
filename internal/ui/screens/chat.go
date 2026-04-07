@@ -229,32 +229,52 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		})
 
 	case chatcmd.APIKeySetResult:
+		text := "OpenRouter API key saved and activated."
+		if msg.Reset {
+			text = "OpenRouter API key cleared."
+		}
+
 		return s, tea.Batch(
 			s.logAndShow(domain.ChannelSystemNotice{
-				Channel: *s.active, Text: "OpenRouter API key saved and activated.", At: time.Now(),
+				Channel: *s.active, Text: text, At: time.Now(),
 			}),
 			s.loadLiveModels(),
 		)
 
 	case chatcmd.PokeIntervalSetResult:
+		text := fmt.Sprintf("Poke interval set to %s.", msg.Interval)
+		if msg.Reset {
+			text = fmt.Sprintf("Poke interval reset to %s.", msg.Interval)
+		}
+
 		return s, s.logAndShow(domain.ChannelSystemNotice{
 			Channel: *s.active,
-			Text:    fmt.Sprintf("Poke interval set to %s.", msg.Interval),
+			Text:    text,
 			At:      time.Now(),
 		})
 
 	case chatcmd.NickModelSetResult:
+		text := fmt.Sprintf("Nick generation model set to %s.", msg.ModelID)
+		if msg.Reset {
+			text = fmt.Sprintf("Nick generation model reset to %s.", msg.ModelID)
+		}
+
 		return s, s.logAndShow(domain.ChannelSystemNotice{
 			Channel: *s.active,
-			Text:    fmt.Sprintf("Nick generation model set to %s.", msg.ModelID),
+			Text:    text,
 			At:      time.Now(),
 		})
 
 	case chatcmd.HighlightWordsSetResult:
+		text := fmt.Sprintf("highlight words set to: %v", msg.Words)
+		if msg.Reset {
+			text = fmt.Sprintf("highlight words reset to: %v", msg.Words)
+		}
+
 		return s, tea.Batch(
 			s.logAndShow(domain.ChannelSystemNotice{
 				Channel: *s.active,
-				Text:    fmt.Sprintf("highlight words set to: %v", msg.Words),
+				Text:    text,
 				At:      time.Now(),
 			}),
 			msgCmd(components.HighlightWordsMsg{
@@ -264,23 +284,39 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		)
 
 	case chatcmd.BaseURLSetResult:
+		text := fmt.Sprintf("base URL set to %s", msg.URL)
+		if msg.Reset {
+			text = fmt.Sprintf("base URL reset to %s", msg.URL)
+		}
+
 		return s, s.logAndShow(domain.ChannelSystemNotice{
 			Channel: *s.active,
-			Text:    fmt.Sprintf("base URL set to %s", msg.URL),
+			Text:    text,
 			At:      time.Now(),
 		})
 
 	case chatcmd.EmbeddingModelSetResult:
+		text := fmt.Sprintf("embedding model set to %s", msg.ModelID)
+		if msg.Reset {
+			text = fmt.Sprintf("embedding model reset to %s", msg.ModelID)
+		}
+
 		return s, s.logAndShow(domain.ChannelSystemNotice{
 			Channel: *s.active,
-			Text:    fmt.Sprintf("embedding model set to %s", msg.ModelID),
+			Text:    text,
 			At:      time.Now(),
 		})
 
 	case chatcmd.TimestampFormatSetResult:
-		text := "timestamps disabled"
-		if msg.Format != nil && *msg.Format != "" {
+		var text string
+
+		switch {
+		case msg.Reset:
+			text = "Timestamp format reset to locale default."
+		case msg.Format != nil && *msg.Format != "":
 			text = fmt.Sprintf("timestamp format set to %s", *msg.Format)
+		default:
+			text = "timestamps disabled"
 		}
 
 		return s, tea.Batch(

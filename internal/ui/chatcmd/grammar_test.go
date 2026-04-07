@@ -136,7 +136,7 @@ func TestComplete_config_suggests_subcommands(t *testing.T) {
 	require.True(t, c.Visible)
 	require.Equal(t, []string{
 		"api-key", "base-url", "poke-interval",
-		"nick-model", "embedding-model", "highlight", "timestamp-format",
+		"nick-model", "embedding-model", "highlight", "timestamp-format", "--reset",
 	}, suggestionValues(c))
 }
 
@@ -149,6 +149,23 @@ func TestComplete_config_poke_interval_suggests_durations(t *testing.T) {
 
 func TestComplete_config_api_key_no_value_suggestions(t *testing.T) {
 	c := complete(t, "/config api-key ")
+
+	require.True(t, c.Visible)
+	require.Empty(t, c.Suggestions)
+}
+
+func TestComplete_config_reset_before_subcommand(t *testing.T) {
+	c := complete(t, "/config --reset ")
+
+	require.True(t, c.Visible)
+	require.Equal(t, []string{
+		"api-key", "base-url", "poke-interval",
+		"nick-model", "embedding-model", "highlight", "timestamp-format",
+	}, suggestionValues(c))
+}
+
+func TestComplete_config_reset_after_subcommand_does_not_expect_value(t *testing.T) {
+	c := complete(t, "/config api-key --reset ")
 
 	require.True(t, c.Visible)
 	require.Empty(t, c.Suggestions)

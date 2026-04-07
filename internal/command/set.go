@@ -34,6 +34,7 @@ type Positional struct {
 type Flag struct {
 	Name     string
 	Help     string
+	Boolean  bool
 	Optional bool
 	Variadic bool
 	Source   SuggestionSource
@@ -432,6 +433,10 @@ func classifyForCompletion(node *Node, preceding []string) completionClassificat
 
 		if binding, ok := findFlagBinding(cc.node, tok); ok {
 			cc.usedFlags[tok] = true
+
+			if binding.Flag.Boolean {
+				continue
+			}
 
 			if binding.Flag.Variadic {
 				// Variadic flag consumes remaining tokens.

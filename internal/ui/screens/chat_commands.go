@@ -1,6 +1,7 @@
 package screens
 
 import (
+	"fmt"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -32,12 +33,23 @@ func errorEvent(operation string, err error) domain.ErrorEvent {
 }
 
 func (s ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
-	cmd, err := s.parser.Parse(msg.Raw)
+	invocation, err := s.parser.ParseInvocation(msg.Raw)
 	if err != nil {
 		return func() tea.Msg { return errorEvent("command", err) }
 	}
 
-	return cmd.Run(s.runContext())
+	cmd, ok := invocation.Leaf().(chatcmd.Command)
+	if !ok {
+		return func() tea.Msg {
+			return errorEvent("command",
+				fmt.Errorf("parsed command %T does not implement the expected command interface", invocation.Leaf()))
+		}
+	}
+
+	ctx := s.runContext()
+	ctx.Invocation = invocation
+
+	return cmd.Run(ctx)
 }
 
 func (s ChatScreen) handlePoke() tea.Cmd {

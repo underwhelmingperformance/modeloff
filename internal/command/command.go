@@ -36,6 +36,12 @@ type NodeValue struct {
 	Value any
 }
 
+type nodeState struct {
+	args            []string
+	positionalIndex int
+	variadic        bool
+}
+
 // Selected returns the matched leaf node.
 func (i Invocation) Selected() *Node {
 	if len(i.Path) == 0 {
@@ -58,6 +64,18 @@ func (i Invocation) Leaf() any {
 func (i Invocation) ValueFor(node *Node) (any, bool) {
 	for _, entry := range i.Path {
 		if entry.Node == node {
+			return entry.Value, true
+		}
+	}
+
+	return nil, false
+}
+
+// ValueAtPath returns the parsed value for the node at the given
+// command path, such as "config" or "config set".
+func (i Invocation) ValueAtPath(path string) (any, bool) {
+	for _, entry := range i.Path {
+		if entry.Node != nil && entry.Node.Path() == path {
 			return entry.Value, true
 		}
 	}
@@ -143,12 +161,6 @@ func (s Set) ParseValue(input string) (any, error) {
 	return invocation.Leaf(), nil
 }
 
-type nodeState struct {
-	args            []string
-	positionalIndex int
-	variadic        bool
-}
-
 // ParseInvocation tokenises a raw slash-command string, resolves the
 // matching branch in the set, and populates values for each matched
 // node from the top-level command to the selected leaf.
@@ -180,87 +192,131 @@ func (s Set) ParseInvocation(input string) (Invocation, error) {
 		values[node] = node.factory()
 	}
 
-	current := node
-
-	for i := 0; i < len(args); i++ {
-		tok := args[i]
-
-		if binding, ok := findFlagBinding(current, tok); ok {
-			state := states[binding.Owner]
-			state.args = append(state.args, tok)
-
-			if i+1 >= len(args) {
-				continue
-			}
-
-			if binding.Flag.Variadic {
-				state.args = append(state.args, args[i+1:]...)
-				i = len(args)
-				continue
-			}
-
-			state.args = append(state.args, args[i+1])
-			i++
-			continue
-		}
-
-		state := states[current]
-
-		if strings.HasPrefix(tok, "--") {
-			state.args = append(state.args, args[i:]...)
-			break
-		}
-
-		if state.variadic {
-			state.args = append(state.args, tok)
-			continue
-		}
-
-		if pos := resolvePositional(current.Positionals, state.positionalIndex); pos != nil {
-			state.args = append(state.args, tok)
-
-			if pos.Variadic {
-				state.variadic = true
-				continue
-			}
-
-			state.positionalIndex++
-			continue
-		}
-
-		if child := current.Find(tok); child != nil {
-			current = child
-			path = append(path, child)
-			states[child] = &nodeState{}
-
-			if child.factory != nil {
-				values[child] = child.factory()
-			}
-
-			continue
-		}
-
-		if len(current.Children) > 0 {
-			return Invocation{}, fmt.Errorf("unknown subcommand %q for /%s", tok, current.Path())
-		}
-
-		state.args = append(state.args, tok)
+	current, err := parseInvocationArgs(args, node, &path, values, states)
+	if err != nil {
+		return Invocation{}, err
 	}
 
 	if len(current.Children) > 0 {
 		return Invocation{}, &SubcommandError{Node: current}
 	}
 
-	return assembleInvocation(path, values, states)
+	return buildInvocation(path, values, states)
 }
 
-// assembleInvocation parses the collected args for each node on the
-// matched branch and builds the final Invocation.
-func assembleInvocation(
-	path []*Node,
+func parseInvocationArgs(
+	args []string,
+	root *Node,
+	path *[]*Node,
 	values map[*Node]any,
 	states map[*Node]*nodeState,
-) (Invocation, error) {
+) (*Node, error) {
+	current := root
+
+	for i := 0; i < len(args); i++ {
+		next, nextIndex, done, err := consumeInvocationToken(args, i, current, path, values, states)
+		if err != nil {
+			return nil, err
+		}
+
+		current = next
+		i = nextIndex
+
+		if done {
+			break
+		}
+	}
+
+	return current, nil
+}
+
+func consumeInvocationToken(
+	args []string,
+	index int,
+	current *Node,
+	path *[]*Node,
+	values map[*Node]any,
+	states map[*Node]*nodeState,
+) (*Node, int, bool, error) {
+	tok := args[index]
+
+	if binding, ok := findFlagBinding(current, tok); ok {
+		nextIndex, done := consumeInvocationFlag(args, index, binding, states)
+		return current, nextIndex, done, nil
+	}
+
+	state := states[current]
+
+	if strings.HasPrefix(tok, "--") {
+		state.args = append(state.args, args[index:]...)
+		return current, index, true, nil
+	}
+
+	if state.variadic {
+		state.args = append(state.args, tok)
+		return current, index, false, nil
+	}
+
+	if pos := resolvePositional(current.Positionals, state.positionalIndex); pos != nil {
+		state.args = append(state.args, tok)
+		if pos.Variadic {
+			state.variadic = true
+			return current, index, false, nil
+		}
+
+		state.positionalIndex++
+		return current, index, false, nil
+	}
+
+	if child := current.Find(tok); child != nil {
+		appendInvocationNode(path, child, values, states)
+		return child, index, false, nil
+	}
+
+	if len(current.Children) > 0 {
+		return nil, index, false, fmt.Errorf("unknown subcommand %q for /%s", tok, current.Path())
+	}
+
+	state.args = append(state.args, tok)
+	return current, index, false, nil
+}
+
+func consumeInvocationFlag(
+	args []string,
+	index int,
+	binding flagBinding,
+	states map[*Node]*nodeState,
+) (int, bool) {
+	state := states[binding.Owner]
+	state.args = append(state.args, args[index])
+
+	if binding.Flag.Boolean {
+		return index, false
+	}
+
+	if index+1 >= len(args) {
+		return index, false
+	}
+
+	if binding.Flag.Variadic {
+		state.args = append(state.args, args[index+1:]...)
+		return len(args), true
+	}
+
+	state.args = append(state.args, args[index+1])
+	return index + 1, false
+}
+
+func appendInvocationNode(path *[]*Node, node *Node, values map[*Node]any, states map[*Node]*nodeState) {
+	*path = append(*path, node)
+	states[node] = &nodeState{}
+
+	if node.factory != nil {
+		values[node] = node.factory()
+	}
+}
+
+func buildInvocation(path []*Node, values map[*Node]any, states map[*Node]*nodeState) (Invocation, error) {
 	invocation := Invocation{
 		Path: make([]NodeValue, 0, len(path)),
 	}

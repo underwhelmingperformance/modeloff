@@ -53,6 +53,7 @@ type fieldMeta struct {
 	help     string
 	index    int
 	isFlag   bool
+	boolFlag bool
 	flagName string
 	optional bool
 	variadic bool
@@ -113,6 +114,11 @@ func classifyArgs(args []string, fields []fieldMeta) (map[string][]string, []str
 		a := args[i]
 
 		if fm, ok := flagMeta[a]; ok {
+			if fm.boolFlag {
+				flags[a] = []string{"true"}
+				continue
+			}
+
 			if i+1 >= len(args) {
 				flags[a] = nil
 				continue
@@ -158,7 +164,11 @@ func applyFlags(v reflect.Value, fields []fieldMeta, flags map[string][]string) 
 		}
 
 		if len(values) == 0 {
-			return &MissingFlagValueError{Flag: f.flagName}
+			if f.boolFlag {
+				values = []string{"true"}
+			} else {
+				return &MissingFlagValueError{Flag: f.flagName}
+			}
 		}
 
 		for _, raw := range values {

@@ -52,6 +52,11 @@ type portCmd struct {
 	Port int `arg:"" help:"Port number"`
 }
 
+type boolFlagCmd struct {
+	Reset bool   `optional:"" help:"Reset value"`
+	Name  string `arg:"" optional:"" help:"Name"`
+}
+
 func TestParseInto_single_positional(t *testing.T) {
 	cmd := &kickCmd{}
 
@@ -285,4 +290,24 @@ func TestParseInto_variadic_slice_flag(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "widget", cmd.Name)
 	require.Equal(t, []string{"red", "blue", "green"}, cmd.Tags)
+}
+
+func TestParseInto_bool_flag_without_value(t *testing.T) {
+	cmd := &boolFlagCmd{}
+
+	err := ParseInto(cmd, []string{"--reset"})
+
+	require.NoError(t, err)
+	require.True(t, cmd.Reset)
+	require.Empty(t, cmd.Name)
+}
+
+func TestParseInto_bool_flag_before_positional(t *testing.T) {
+	cmd := &boolFlagCmd{}
+
+	err := ParseInto(cmd, []string{"--reset", "widget"})
+
+	require.NoError(t, err)
+	require.True(t, cmd.Reset)
+	require.Equal(t, "widget", cmd.Name)
 }

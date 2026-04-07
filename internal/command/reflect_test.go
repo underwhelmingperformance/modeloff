@@ -42,6 +42,7 @@ func toPositionalMeta(positionals []Positional) []positionalMeta {
 type flagMeta struct {
 	Name     string
 	Help     string
+	Boolean  bool
 	Optional bool
 	Variadic bool
 }
@@ -57,6 +58,7 @@ func toFlagMeta(flags []Flag) []flagMeta {
 		out[i] = flagMeta{
 			Name:     f.Name,
 			Help:     f.Help,
+			Boolean:  f.Boolean,
 			Optional: f.Optional,
 			Variadic: f.Variadic,
 		}
@@ -97,6 +99,7 @@ type fieldMetaMeta struct {
 	Help     string
 	Index    int
 	IsFlag   bool
+	BoolFlag bool
 	FlagName string
 	Optional bool
 	Variadic bool
@@ -112,6 +115,7 @@ func toFieldMeta(fields []fieldMeta) []fieldMetaMeta {
 			Help:     f.help,
 			Index:    f.index,
 			IsFlag:   f.isFlag,
+			BoolFlag: f.boolFlag,
 			FlagName: f.flagName,
 			Optional: f.optional,
 			Variadic: f.variadic,
@@ -245,6 +249,18 @@ func TestBuildFlags(t *testing.T) {
 
 	require.Equal(t, []flagMeta{
 		{Name: "--persona", Help: "Persona", Variadic: true},
+	}, toFlagMeta(flags))
+}
+
+func TestBuildFlags_marks_bool_flags(t *testing.T) {
+	fields := []fieldMeta{
+		{name: "reset", help: "Reset", isFlag: true, boolFlag: true, flagName: "--reset", index: 0},
+	}
+
+	flags := buildFlags(fields, nil)
+
+	require.Equal(t, []flagMeta{
+		{Name: "--reset", Help: "Reset", Boolean: true},
 	}, toFlagMeta(flags))
 }
 

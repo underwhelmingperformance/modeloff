@@ -22,10 +22,11 @@ type Parser = command.Parser[Context, tea.Cmd]
 
 // Context carries the dependencies a command needs to execute.
 type Context struct {
-	Ctx     context.Context
-	Session *session.Session
-	Active  domain.ChannelName
-	Nick    domain.Nick
+	Ctx        context.Context
+	Session    *session.Session
+	Active     domain.ChannelName
+	Nick       domain.Nick
+	Invocation command.Invocation
 }
 
 // HelpResult signals that the help screen should be shown.
@@ -58,40 +59,48 @@ type UsageError struct {
 type NoChannelError struct{}
 
 // APIKeySetResult signals that the API key was updated.
-type APIKeySetResult struct{}
+type APIKeySetResult struct {
+	Reset bool
+}
 
 // PokeIntervalSetResult signals that the poke interval was updated.
 type PokeIntervalSetResult struct {
 	Interval time.Duration
+	Reset    bool
 }
 
 // NickModelSetResult signals that the nick generation model was
 // updated.
 type NickModelSetResult struct {
 	ModelID domain.ModelID
+	Reset   bool
 }
 
 // HighlightWordsSetResult signals that the highlight words were
 // updated.
 type HighlightWordsSetResult struct {
 	Words []string
+	Reset bool
 }
 
 // BaseURLSetResult signals that the API base URL was updated.
 type BaseURLSetResult struct {
-	URL string
+	URL   string
+	Reset bool
 }
 
 // EmbeddingModelSetResult signals that the embedding model was
 // updated.
 type EmbeddingModelSetResult struct {
 	ModelID domain.ModelID
+	Reset   bool
 }
 
 // TimestampFormatSetResult signals that the timestamp format was
 // updated.
 type TimestampFormatSetResult struct {
 	Format *string
+	Reset  bool
 }
 
 func errorEvent(operation string, err error) domain.ErrorEvent {
@@ -104,4 +113,18 @@ func usageCmd(cmd, usage string) tea.Cmd {
 
 func noChannelCmd() tea.Cmd {
 	return func() tea.Msg { return NoChannelError{} }
+}
+
+func (c Context) configResetRequested() bool {
+	value, ok := c.Invocation.ValueAtPath("config")
+	if !ok {
+		return false
+	}
+
+	cfg, ok := value.(ConfigCommand)
+	if !ok {
+		return false
+	}
+
+	return cfg.Reset
 }

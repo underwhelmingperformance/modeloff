@@ -8,10 +8,7 @@ import (
 	"path/filepath"
 	"sync"
 	"sync/atomic"
-	"time"
 )
-
-const defaultPokeInterval = 5 * time.Minute
 
 // FileStore implements Store by reading and writing a JSON file on disc.
 type FileStore struct {
@@ -51,9 +48,9 @@ func defaults() Config {
 	}
 
 	return Config{
-		BaseURL:        "https://openrouter.ai/api/v1",
+		BaseURL:        DefaultBaseURL,
 		UserNick:       nick,
-		PokeInterval:   defaultPokeInterval,
+		PokeInterval:   DefaultPokeInterval,
 		NickModel:      DefaultNickModel,
 		EmbeddingModel: DefaultEmbeddingModel,
 		HighlightWords: append([]string(nil), DefaultHighlightWords...),

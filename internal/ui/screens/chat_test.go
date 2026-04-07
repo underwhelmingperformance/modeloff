@@ -364,6 +364,52 @@ func TestChatScreen_config_disable_timestamp_format_with_empty_quotes(t *testing
 	require.Equal(t, "", *cfgStore.cfg.TimestampFormat)
 }
 
+func TestChatScreen_config_reset_poke_interval_from_parent_flag(t *testing.T) {
+	cfgStore := newFakeConfigStore()
+	cfgStore.cfg.PokeInterval = 10 * time.Minute
+	sess := newTestSessionWithConfigStore(t, cfgStore)
+	uitest.SeedChannel(t, sess, "#general")
+
+	tm := newChatApp(t, sess)
+	tm.WaitFor("#general")
+
+	tm.Submit("/config --reset poke-interval")
+	tm.WaitFor("Poke interval reset to 5m0s.")
+
+	require.Equal(t, config.DefaultPokeInterval, cfgStore.cfg.PokeInterval)
+}
+
+func TestChatScreen_config_reset_api_key_from_child_flag(t *testing.T) {
+	cfgStore := newFakeConfigStore()
+	cfgStore.cfg.APIKey = "test-key"
+	sess := newTestSessionWithConfigStore(t, cfgStore)
+	uitest.SeedChannel(t, sess, "#general")
+
+	tm := newChatApp(t, sess)
+	tm.WaitFor("#general")
+
+	tm.Submit("/config api-key --reset")
+	tm.WaitFor("OpenRouter API key cleared.")
+
+	require.Empty(t, cfgStore.cfg.APIKey)
+}
+
+func TestChatScreen_config_reset_timestamp_format(t *testing.T) {
+	custom := "%c"
+	cfgStore := newFakeConfigStore()
+	cfgStore.cfg.TimestampFormat = &custom
+	sess := newTestSessionWithConfigStore(t, cfgStore)
+	uitest.SeedChannel(t, sess, "#general")
+
+	tm := newChatApp(t, sess)
+	tm.WaitFor("#general")
+
+	tm.Submit("/config --reset timestamp-format")
+	tm.WaitFor("Timestamp format reset to locale default.")
+
+	require.Nil(t, cfgStore.cfg.TimestampFormat)
+}
+
 func TestChatScreen_config_invalid_subcommand(t *testing.T) {
 	tm, _ := newChatAppInChannel(t, "#general")
 

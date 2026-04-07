@@ -466,6 +466,10 @@ func TestParseInvocation_returns_branch_values(t *testing.T) {
 	parentValue, ok := invocation.ValueFor(invocation.Path[0].Node)
 	require.True(t, ok)
 	require.Equal(t, parentConfigCommand{Format: "json"}, parentValue)
+
+	pathValue, ok := invocation.ValueAtPath("config")
+	require.True(t, ok)
+	require.Equal(t, parentConfigCommand{Format: "json"}, pathValue)
 }
 
 func TestParseInvocation_unknown_flag_checks_active_ancestors(t *testing.T) {
