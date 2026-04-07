@@ -334,11 +334,11 @@ type integrationConfigStore struct {
 	saveErr error
 }
 
-func (s *integrationConfigStore) Load() (config.Config, error) {
+func (s *integrationConfigStore) Load(context.Context) (config.Config, error) {
 	return s.cfg, nil
 }
 
-func (s *integrationConfigStore) Save(cfg config.Config) error {
+func (s *integrationConfigStore) Save(_ context.Context, cfg config.Config) error {
 	if s.saveErr != nil {
 		return s.saveErr
 	}

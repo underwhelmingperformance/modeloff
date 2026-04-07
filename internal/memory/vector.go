@@ -95,6 +95,7 @@ func (s *IndexedStore) Search(ctx context.Context, nick domain.Nick, query strin
 
 	count := col.Count()
 	if count == 0 {
+		observability.RecordMemorySearchResults(ctx, 0)
 		span.SetAttributes(
 			attribute.String(observability.AttrResult, observability.ResultOK),
 			attribute.Int(observability.AttrSearchResults, 0),
@@ -138,7 +139,10 @@ func (s *IndexedStore) Search(ctx context.Context, nick domain.Nick, query strin
 		attribute.Int(observability.AttrSearchResults, len(searchResults)),
 	}
 
+	observability.RecordMemorySearchResults(ctx, len(searchResults))
+
 	if len(searchResults) > 0 {
+		observability.RecordMemorySearchTopScore(ctx, float64(searchResults[0].Similarity))
 		searchAttrs = append(searchAttrs,
 			attribute.Float64(observability.AttrSearchTopScore, float64(searchResults[0].Similarity)))
 	}

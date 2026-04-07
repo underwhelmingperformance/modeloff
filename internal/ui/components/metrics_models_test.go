@@ -24,6 +24,9 @@ func TestMetricsSummaryModel_statusItems(t *testing.T) {
 				CacheWriteTokens: 2,
 				CostCredits:      0.25,
 			},
+			RuntimeHealth: observability.RuntimeHealthSnapshot{
+				DroppedLogs: 3,
+			},
 		},
 	})
 	require.Nil(t, cmd)
@@ -33,13 +36,19 @@ func TestMetricsSummaryModel_statusItems(t *testing.T) {
 		ID:       "metrics-summary",
 		Side:     ui.StatusSideRight,
 		Priority: 100,
-		Full:     "req 4  in 12  out 8  cache 5/2  cost 0.2500",
-		Compact:  "in 12  out 8  c 5/2  0.2500",
+		Full:     "req 4  in 12  out 8  cache 5/2  cost 0.2500  dropped 3",
+		Compact:  "in 12  out 8  c 5/2  0.2500  d3",
 	}}, model.StatusItems())
 }
 
 func TestMetricsPane_view_renders_snapshot(t *testing.T) {
 	model := NewMetricsPane(context.Background(), nil)
+
+	sized, _ := model.Update(ui.BoundsMsg{
+		Rect: ui.Rect{Width: 80, Height: 30},
+	})
+	model = sized.(MetricsPane)
+
 	updated, cmd := model.Update(metricsPaneRefreshedMsg{
 		snapshot: observability.MetricsSnapshot{
 			Summary: observability.MetricsSummary{
@@ -63,6 +72,26 @@ func TestMetricsPane_view_renders_snapshot(t *testing.T) {
 				CacheWriteTokens: 2,
 				CostCredits:      1.25,
 			}},
+			OperationCounts: []observability.OperationCountSnapshot{{
+				Operation: "session.dispatch_to_instance",
+				Result:    "reply",
+				Count:     2,
+			}},
+			MemoryTools: []observability.MemoryToolSnapshot{{
+				Kind:   "write_memory",
+				Result: "ok",
+				Count:  1,
+			}},
+			MemorySearch: observability.MemorySearchSnapshot{
+				Searches:        2,
+				ZeroHitSearches: 1,
+				AverageResults:  1.5,
+				MaxTopScore:     0.875,
+			},
+			RuntimeHealth: observability.RuntimeHealthSnapshot{
+				DroppedLogs:       2,
+				EmbeddingRequests: 3,
+			},
 			Operations: []observability.OperationTimingSnapshot{{
 				Operation: "session.send_message",
 				Count:     2,
@@ -75,10 +104,17 @@ func TestMetricsPane_view_renders_snapshot(t *testing.T) {
 	require.Nil(t, cmd)
 	model = updated.(MetricsPane)
 
-	view := model.View(80, 12)
+	view := model.View(80, 30)
 	require.Contains(t, view, "req 2  in 11  out 7")
 	require.Contains(t, view, "cached 5  wrote 2")
 	require.Contains(t, view, "anthropic/claude-3-haiku")
+	require.Contains(t, view, "Operation outcomes:")
+	require.Contains(t, view, "session.dispatch_to_instance  reply  count 2")
+	require.Contains(t, view, "Memory activity:")
+	require.Contains(t, view, "searches 2  zero-hit 1")
+	require.Contains(t, view, "write_memory  ok  count 1")
+	require.Contains(t, view, "Runtime health:")
+	require.Contains(t, view, "dropped logs 2  embedding requests 3")
 	require.Contains(t, view, "session.send_message")
 }
 

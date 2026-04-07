@@ -55,31 +55,40 @@ func (m MetricsSummaryModel) StatusItems() []ui.StatusItem {
 		m.snapshot.Summary.Requests == 0 &&
 		m.snapshot.Summary.PromptTokens == 0 &&
 		m.snapshot.Summary.CompletionTokens == 0 &&
-		m.snapshot.Summary.CostCredits == 0 {
+		m.snapshot.Summary.CostCredits == 0 &&
+		m.snapshot.RuntimeHealth.DroppedLogs == 0 {
 		return nil
+	}
+
+	full := fmt.Sprintf(
+		"req %d  in %d  out %d  cache %d/%d  cost %.4f",
+		m.snapshot.Summary.Requests,
+		m.snapshot.Summary.PromptTokens,
+		m.snapshot.Summary.CompletionTokens,
+		m.snapshot.Summary.CachedTokens,
+		m.snapshot.Summary.CacheWriteTokens,
+		m.snapshot.Summary.CostCredits,
+	)
+	compact := fmt.Sprintf(
+		"in %d  out %d  c %d/%d  %.4f",
+		m.snapshot.Summary.PromptTokens,
+		m.snapshot.Summary.CompletionTokens,
+		m.snapshot.Summary.CachedTokens,
+		m.snapshot.Summary.CacheWriteTokens,
+		m.snapshot.Summary.CostCredits,
+	)
+
+	if m.snapshot.RuntimeHealth.DroppedLogs > 0 {
+		full += fmt.Sprintf("  dropped %d", m.snapshot.RuntimeHealth.DroppedLogs)
+		compact += fmt.Sprintf("  d%d", m.snapshot.RuntimeHealth.DroppedLogs)
 	}
 
 	return []ui.StatusItem{{
 		ID:       "metrics-summary",
 		Side:     ui.StatusSideRight,
 		Priority: 100,
-		Full: fmt.Sprintf(
-			"req %d  in %d  out %d  cache %d/%d  cost %.4f",
-			m.snapshot.Summary.Requests,
-			m.snapshot.Summary.PromptTokens,
-			m.snapshot.Summary.CompletionTokens,
-			m.snapshot.Summary.CachedTokens,
-			m.snapshot.Summary.CacheWriteTokens,
-			m.snapshot.Summary.CostCredits,
-		),
-		Compact: fmt.Sprintf(
-			"in %d  out %d  c %d/%d  %.4f",
-			m.snapshot.Summary.PromptTokens,
-			m.snapshot.Summary.CompletionTokens,
-			m.snapshot.Summary.CachedTokens,
-			m.snapshot.Summary.CacheWriteTokens,
-			m.snapshot.Summary.CostCredits,
-		),
+		Full:     full,
+		Compact:  compact,
 	}}
 }
 

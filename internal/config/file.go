@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io/fs"
@@ -8,6 +9,13 @@ import (
 	"path/filepath"
 	"sync"
 	"sync/atomic"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/laney/modeloff/internal/observability"
 )
 
 // FileStore implements Store by reading and writing a JSON file on disc.
@@ -59,41 +67,54 @@ func defaults() Config {
 
 // Load reads the configuration from disk, returning defaults if the
 // file does not yet exist.
-func (s *FileStore) Load() (Config, error) {
+func (s *FileStore) Load(ctx context.Context) (Config, error) {
+	_, span := startConfigSpan(ctx, "config.file.load")
+	defer span.End()
+
 	data, err := os.ReadFile(s.path)
 	if errors.Is(err, fs.ErrNotExist) {
+		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 		return defaults(), nil
 	}
 	if err != nil {
+		recordConfigError(span, err)
 		return Config{}, err
 	}
 
 	cfg := defaults()
 	if err := json.Unmarshal(data, &cfg); err != nil {
+		recordConfigError(span, err)
 		return Config{}, err
 	}
 
+	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 	return cfg, nil
 }
 
 // Save writes the configuration to disk, creating the directory if
 // necessary. Registered change callbacks are fired after a
 // successful write with the old and new values.
-func (s *FileStore) Save(cfg Config) error {
-	old, _ := s.Load()
+func (s *FileStore) Save(ctx context.Context, cfg Config) error {
+	_, span := startConfigSpan(ctx, "config.file.save")
+	defer span.End()
+
+	old, _ := s.Load(ctx)
 
 	dir := filepath.Dir(s.path)
 
 	if err := os.MkdirAll(dir, 0o750); err != nil {
+		recordConfigError(span, err)
 		return err
 	}
 
 	data, err := json.MarshalIndent(cfg, "", "  ") //nolint:gosec // G117: API key is intentionally persisted to the config file.
 	if err != nil {
+		recordConfigError(span, err)
 		return err
 	}
 
 	if err := os.WriteFile(s.path, data, 0o600); err != nil {
+		recordConfigError(span, err)
 		return err
 	}
 
@@ -108,7 +129,21 @@ func (s *FileStore) Save(cfg Config) error {
 		fn(old, cfg)
 	}
 
+	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 	return nil
+}
+
+func startConfigSpan(ctx context.Context, operation string) (context.Context, trace.Span) {
+	tracer := otel.Tracer("github.com/laney/modeloff/internal/config")
+	ctx, span := tracer.Start(ctx, operation)
+	span.SetAttributes(attribute.String(observability.AttrOperation, operation))
+
+	return ctx, span
+}
+
+func recordConfigError(span trace.Span, err error) {
+	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+	span.SetStatus(codes.Error, err.Error())
 }
 
 // OnChange registers a callback to be invoked after every successful

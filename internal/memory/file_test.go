@@ -6,6 +6,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/observability"
+	"github.com/laney/modeloff/internal/observability/oteltest"
 	"github.com/laney/modeloff/internal/store/storetest"
 )
 
@@ -34,6 +36,18 @@ func TestStoreAdapter_WriteAndRead(t *testing.T) {
 	got, err := store.Read(ctx, nick)
 	require.NoError(t, err)
 	require.Equal(t, entries, got)
+}
+
+func TestStoreAdapter_Write_recordsSpan(t *testing.T) {
+	recorder := oteltest.InstallSpanRecorder(t)
+	store := NewStoreAdapter(storetest.NewMemoryStore(t))
+
+	require.NoError(t, store.Write(t.Context(), "bob", Entry{Key: "greeting", Content: "hello"}))
+
+	span := oteltest.FindSpan(t, recorder, "memory.file.write")
+	require.Equal(t, "memory.file.write", oteltest.AttrValue(span.Attributes(), observability.AttrOperation))
+	require.Equal(t, "bob", oteltest.AttrValue(span.Attributes(), observability.AttrNick))
+	require.Equal(t, observability.ResultOK, oteltest.AttrValue(span.Attributes(), observability.AttrResult))
 }
 
 func TestStoreAdapter_WriteOverwritesExistingKey(t *testing.T) {

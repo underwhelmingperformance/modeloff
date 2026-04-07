@@ -39,7 +39,12 @@ func NewRuntime() (*Runtime, error) {
 		sdkmetric.WithResource(res),
 		sdkmetric.WithReader(reader),
 		sdkmetric.WithCardinalityLimit(256),
-		sdkmetric.WithView(durationView(MetricOperationDurationMs), durationView(MetricRequestDurationMs), durationView(MetricEmbeddingDurationMs)),
+		sdkmetric.WithView(
+			durationView(MetricOperationDurationMs),
+			durationView(MetricRequestDurationMs),
+			durationView(MetricEmbeddingDurationMs),
+			searchResultsView(MetricMemorySearchResults),
+		),
 	)
 
 	meter := meterProvider.Meter("github.com/laney/modeloff/internal/observability")
@@ -184,6 +189,18 @@ func newMetricInstruments(meter metric.Meter) (metricInstruments, error) {
 		return metricInstruments{}, err
 	}
 
+	if instruments.memoryToolCalls, err = meter.Int64Counter(MetricMemoryToolCalls); err != nil {
+		return metricInstruments{}, err
+	}
+
+	if instruments.memorySearchResults, err = meter.Int64Histogram(MetricMemorySearchResults); err != nil {
+		return metricInstruments{}, err
+	}
+
+	if instruments.memorySearchTopScore, err = meter.Float64Histogram(MetricMemorySearchTopScore); err != nil {
+		return metricInstruments{}, err
+	}
+
 	if instruments.embeddingRequests, err = meter.Int64Counter(MetricEmbeddingRequests); err != nil {
 		return metricInstruments{}, err
 	}
@@ -193,6 +210,17 @@ func newMetricInstruments(meter metric.Meter) (metricInstruments, error) {
 	}
 
 	return instruments, nil
+}
+
+func searchResultsView(name string) sdkmetric.View {
+	return sdkmetric.NewView(
+		sdkmetric.Instrument{Name: name, Kind: sdkmetric.InstrumentKindHistogram},
+		sdkmetric.Stream{
+			Aggregation: sdkmetric.AggregationExplicitBucketHistogram{
+				Boundaries: []float64{0, 1, 2, 3, 5, 8, 13},
+			},
+		},
+	)
 }
 
 func buildVersion() string {

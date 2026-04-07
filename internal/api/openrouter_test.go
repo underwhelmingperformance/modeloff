@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -9,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/observability"
 	"github.com/laney/modeloff/internal/protocol"
 )
 
@@ -188,6 +190,14 @@ func TestOpenRouterClient_SendEvents(t *testing.T) {
 			require.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestCompletionParseErrorKind(t *testing.T) {
+	require.Equal(
+		t,
+		observability.ErrorKindResponseParse,
+		completionParseErrorKind(&completionParseError{target: "structured response", err: errors.New("bad json")}),
+	)
 }
 
 func TestOpenRouterClient_SendEventsWithHistory(t *testing.T) {

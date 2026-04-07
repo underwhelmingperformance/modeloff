@@ -77,7 +77,7 @@ func New(
 	}
 
 	if c != nil {
-		cfg, err := c.Load()
+		cfg, err := c.Load(context.Background())
 		if err == nil {
 			sess.apiKey = strings.TrimSpace(cfg.APIKey)
 			sess.nickModel = cfg.NickModel
@@ -128,6 +128,14 @@ func (s *Session) UserJoinedAt(ch domain.ChannelName) time.Time {
 // session event channel.
 func (s *Session) Join(ctx context.Context, channelName string) error {
 	name := domain.ChannelName(channelName)
+	ctx, span := startSpan(
+		ctx,
+		"session.join",
+		attribute.String(observability.AttrOperation, "session.join"),
+		attribute.String(observability.AttrChannel, string(name)),
+	)
+	defer span.End()
+
 	now := s.now()
 
 	var created bool
@@ -147,15 +155,21 @@ func (s *Session) Join(ctx context.Context, channelName string) error {
 		}
 
 		if err := s.store.SaveChannel(ctx, ch); err != nil {
+			span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+			span.SetStatus(codes.Error, err.Error())
 			return fmt.Errorf("save channel: %w", err)
 		}
 	}
 
 	if err := s.store.SetLastChannel(ctx, name); err != nil {
+		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("set last channel: %w", err)
 	}
 
 	if err := s.MarkRead(ctx, name); err != nil {
+		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("mark read: %w", err)
 	}
 
@@ -180,6 +194,8 @@ func (s *Session) Join(ctx context.Context, channelName string) error {
 		ch.Members.SetMode(s.user.Nick, domain.ModeOp)
 
 		if err := s.store.SaveChannel(ctx, ch); err != nil {
+			span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+			span.SetStatus(codes.Error, err.Error())
 			return fmt.Errorf("save channel after mode: %w", err)
 		}
 
@@ -199,6 +215,8 @@ func (s *Session) Join(ctx context.Context, channelName string) error {
 		})
 	}
 
+	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
+
 	return nil
 }
 
@@ -206,8 +224,18 @@ func (s *Session) Join(ctx context.Context, channelName string) error {
 // message is included in the event. Events are emitted on the
 // session event channel.
 func (s *Session) Part(ctx context.Context, ch domain.ChannelName, message string) error {
+	ctx, span := startSpan(
+		ctx,
+		"session.part",
+		attribute.String(observability.AttrOperation, "session.part"),
+		attribute.String(observability.AttrChannel, string(ch)),
+	)
+	defer span.End()
+
 	channel, err := s.store.GetChannel(ctx, ch)
 	if err != nil {
+		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("channel not found: %w", err)
 	}
 
@@ -218,6 +246,8 @@ func (s *Session) Part(ctx context.Context, ch domain.ChannelName, message strin
 	s.user.Channels.Delete(ch)
 
 	if err := s.store.SaveChannel(ctx, channel); err != nil {
+		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("save channel: %w", err)
 	}
 
@@ -236,6 +266,8 @@ func (s *Session) Part(ctx context.Context, ch domain.ChannelName, message strin
 		Message: message,
 		At:      now,
 	})
+
+	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 
 	return nil
 }
@@ -482,8 +514,19 @@ func (s *Session) Kick(
 	ch domain.ChannelName,
 	nick domain.Nick,
 ) error {
+	ctx, span := startSpan(
+		ctx,
+		"session.kick",
+		attribute.String(observability.AttrOperation, "session.kick"),
+		attribute.String(observability.AttrChannel, string(ch)),
+		attribute.String(observability.AttrNick, string(nick)),
+	)
+	defer span.End()
+
 	channel, err := s.store.GetChannel(ctx, ch)
 	if err != nil {
+		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("get channel: %w", err)
 	}
 
@@ -492,6 +535,8 @@ func (s *Session) Kick(
 	}
 
 	if err := s.store.SaveChannel(ctx, channel); err != nil {
+		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("save channel: %w", err)
 	}
 
@@ -500,6 +545,8 @@ func (s *Session) Kick(
 		inst.Channels.Delete(ch)
 
 		if err := s.store.SaveInstance(ctx, inst); err != nil {
+			span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+			span.SetStatus(codes.Error, err.Error())
 			return fmt.Errorf("save instance: %w", err)
 		}
 	}
@@ -516,6 +563,8 @@ func (s *Session) Kick(
 		Nick:    nick,
 		At:      now,
 	})
+
+	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 
 	return nil
 }
@@ -606,8 +655,18 @@ func (s *Session) SetTopic(
 	ch domain.ChannelName,
 	topic string,
 ) error {
+	ctx, span := startSpan(
+		ctx,
+		"session.set_topic",
+		attribute.String(observability.AttrOperation, "session.set_topic"),
+		attribute.String(observability.AttrChannel, string(ch)),
+	)
+	defer span.End()
+
 	channel, err := s.store.GetChannel(ctx, ch)
 	if err != nil {
+		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("get channel: %w", err)
 	}
 
@@ -616,6 +675,8 @@ func (s *Session) SetTopic(
 	channel.TopicSetAt = s.now()
 
 	if err := s.store.SaveChannel(ctx, channel); err != nil {
+		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("save channel: %w", err)
 	}
 
@@ -634,6 +695,8 @@ func (s *Session) SetTopic(
 		At:      now,
 	})
 
+	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
+
 	return nil
 }
 
@@ -643,18 +706,33 @@ func (s *Session) ChangeNick(
 	ctx context.Context,
 	newNick domain.Nick,
 ) error {
+	ctx, span := startSpan(
+		ctx,
+		"session.change_nick",
+		attribute.String(observability.AttrOperation, "session.change_nick"),
+		attribute.String(observability.AttrNick, string(newNick)),
+	)
+	defer span.End()
+
 	if s.config == nil {
-		return fmt.Errorf("config store not configured")
+		err := fmt.Errorf("config store not configured")
+		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+		span.SetStatus(codes.Error, err.Error())
+		return err
 	}
 
-	cfg, err := s.config.Load()
+	cfg, err := s.config.Load(ctx)
 	if err != nil {
+		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("load config: %w", err)
 	}
 
 	cfg.UserNick = string(newNick)
 
-	if err := s.config.Save(cfg); err != nil {
+	if err := s.config.Save(ctx, cfg); err != nil {
+		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("save config: %w", err)
 	}
 
@@ -692,6 +770,8 @@ func (s *Session) ChangeNick(
 			At:      now,
 		})
 	}
+
+	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 
 	return nil
 }
@@ -781,15 +861,24 @@ func (s *Session) ListModels(ctx context.Context) ([]api.ModelInfo, error) {
 // Reset clears all channels, messages, model instances, and memories,
 // returning the application to a fresh state. Config is preserved.
 func (s *Session) Reset(ctx context.Context) error {
+	ctx, span := startSpan(ctx, "session.reset", attribute.String(observability.AttrOperation, "session.reset"))
+	defer span.End()
+
 	if err := s.store.Reset(ctx); err != nil {
+		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("reset store: %w", err)
 	}
 
 	if s.memory != nil {
 		if err := s.memory.Reset(ctx); err != nil {
+			span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+			span.SetStatus(codes.Error, err.Error())
 			return fmt.Errorf("reset memories: %w", err)
 		}
 	}
+
+	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 
 	return nil
 }
@@ -797,8 +886,18 @@ func (s *Session) Reset(ctx context.Context) error {
 // OpenDM opens or creates a direct-message conversation with a known
 // model instance and makes it the active conversation.
 func (s *Session) OpenDM(ctx context.Context, nick domain.Nick) (domain.Channel, bool, error) {
+	ctx, span := startSpan(
+		ctx,
+		"session.open_dm",
+		attribute.String(observability.AttrOperation, "session.open_dm"),
+		attribute.String(observability.AttrNick, string(nick)),
+	)
+	defer span.End()
+
 	inst, err := s.store.GetInstance(ctx, nick)
 	if err != nil {
+		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+		span.SetStatus(codes.Error, err.Error())
 		return domain.Channel{}, false, fmt.Errorf("get instance: %w", err)
 	}
 
@@ -821,6 +920,8 @@ func (s *Session) OpenDM(ctx context.Context, nick domain.Nick) (domain.Channel,
 		}
 
 		if err := s.store.SaveChannel(ctx, ch); err != nil {
+			span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+			span.SetStatus(codes.Error, err.Error())
 			return domain.Channel{}, false, fmt.Errorf("save dm channel: %w", err)
 		}
 
@@ -835,13 +936,22 @@ func (s *Session) OpenDM(ctx context.Context, nick domain.Nick) (domain.Channel,
 		inst.Channels.Set(name, s.now())
 
 		if err := s.store.SaveInstance(ctx, inst); err != nil {
+			span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+			span.SetStatus(codes.Error, err.Error())
 			return domain.Channel{}, false, fmt.Errorf("save instance: %w", err)
 		}
 	}
 
 	if err := s.store.SetLastChannel(ctx, name); err != nil {
+		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+		span.SetStatus(codes.Error, err.Error())
 		return domain.Channel{}, false, fmt.Errorf("set last channel: %w", err)
 	}
+
+	span.SetAttributes(
+		attribute.String(observability.AttrChannel, string(name)),
+		attribute.String(observability.AttrResult, observability.ResultOK),
+	)
 
 	return ch, created, nil
 }
@@ -877,12 +987,12 @@ func (s *Session) Poke(ctx context.Context) error {
 }
 
 // SetAPIKey persists a new API key through the config store.
-func (s *Session) SetAPIKey(_ context.Context, apiKey string) (config.Config, error) {
+func (s *Session) SetAPIKey(ctx context.Context, apiKey string) (config.Config, error) {
 	if s.config == nil {
 		return config.Config{}, fmt.Errorf("config store not configured")
 	}
 
-	cfg, err := s.config.Load()
+	cfg, err := s.config.Load(ctx)
 	if err != nil {
 		return config.Config{}, fmt.Errorf("load config: %w", err)
 	}
@@ -905,7 +1015,7 @@ func (s *Session) SetAPIKey(_ context.Context, apiKey string) (config.Config, er
 		}
 	}
 
-	if err := s.config.Save(cfg); err != nil {
+	if err := s.config.Save(ctx, cfg); err != nil {
 		return config.Config{}, fmt.Errorf("save config: %w", err)
 	}
 
@@ -924,19 +1034,19 @@ func (s *Session) ResetAPIKey(ctx context.Context) (config.Config, error) {
 
 // SetPokeInterval persists a new poke interval through the config
 // store.
-func (s *Session) SetPokeInterval(_ context.Context, interval time.Duration) (config.Config, error) {
+func (s *Session) SetPokeInterval(ctx context.Context, interval time.Duration) (config.Config, error) {
 	if s.config == nil {
 		return config.Config{}, fmt.Errorf("config store not configured")
 	}
 
-	cfg, err := s.config.Load()
+	cfg, err := s.config.Load(ctx)
 	if err != nil {
 		return config.Config{}, fmt.Errorf("load config: %w", err)
 	}
 
 	cfg.PokeInterval = interval
 
-	if err := s.config.Save(cfg); err != nil {
+	if err := s.config.Save(ctx, cfg); err != nil {
 		return config.Config{}, fmt.Errorf("save config: %w", err)
 	}
 
@@ -950,19 +1060,19 @@ func (s *Session) ResetPokeInterval(ctx context.Context) (config.Config, error) 
 
 // SetNickModel persists a new nick generation model through the
 // config store.
-func (s *Session) SetNickModel(_ context.Context, modelID domain.ModelID) (config.Config, error) {
+func (s *Session) SetNickModel(ctx context.Context, modelID domain.ModelID) (config.Config, error) {
 	if s.config == nil {
 		return config.Config{}, fmt.Errorf("config store not configured")
 	}
 
-	cfg, err := s.config.Load()
+	cfg, err := s.config.Load(ctx)
 	if err != nil {
 		return config.Config{}, fmt.Errorf("load config: %w", err)
 	}
 
 	cfg.NickModel = modelID
 
-	if err := s.config.Save(cfg); err != nil {
+	if err := s.config.Save(ctx, cfg); err != nil {
 		return config.Config{}, fmt.Errorf("save config: %w", err)
 	}
 
@@ -982,7 +1092,7 @@ func (s *Session) HighlightWords() []string {
 		return config.DefaultHighlightWords
 	}
 
-	cfg, err := s.config.Load()
+	cfg, err := s.config.Load(context.Background())
 	if err != nil {
 		return config.DefaultHighlightWords
 	}
@@ -998,7 +1108,7 @@ func (s *Session) TimestampFormat() *string {
 		return nil
 	}
 
-	cfg, err := s.config.Load()
+	cfg, err := s.config.Load(context.Background())
 	if err != nil {
 		return nil
 	}
@@ -1008,19 +1118,19 @@ func (s *Session) TimestampFormat() *string {
 
 // SetHighlightWords persists a new set of highlight words through
 // the config store.
-func (s *Session) SetHighlightWords(_ context.Context, words []string) (config.Config, error) {
+func (s *Session) SetHighlightWords(ctx context.Context, words []string) (config.Config, error) {
 	if s.config == nil {
 		return config.Config{}, fmt.Errorf("config store not configured")
 	}
 
-	cfg, err := s.config.Load()
+	cfg, err := s.config.Load(ctx)
 	if err != nil {
 		return config.Config{}, fmt.Errorf("load config: %w", err)
 	}
 
 	cfg.HighlightWords = words
 
-	if err := s.config.Save(cfg); err != nil {
+	if err := s.config.Save(ctx, cfg); err != nil {
 		return config.Config{}, fmt.Errorf("save config: %w", err)
 	}
 
@@ -1030,19 +1140,19 @@ func (s *Session) SetHighlightWords(_ context.Context, words []string) (config.C
 // SetTimestampFormat persists a new timestamp format through the
 // config store. Nil means locale-default formatting, while an
 // explicit empty string disables timestamps entirely.
-func (s *Session) SetTimestampFormat(_ context.Context, format *string) (config.Config, error) {
+func (s *Session) SetTimestampFormat(ctx context.Context, format *string) (config.Config, error) {
 	if s.config == nil {
 		return config.Config{}, fmt.Errorf("config store not configured")
 	}
 
-	cfg, err := s.config.Load()
+	cfg, err := s.config.Load(ctx)
 	if err != nil {
 		return config.Config{}, fmt.Errorf("load config: %w", err)
 	}
 
 	cfg.TimestampFormat = ptr.CloneString(format)
 
-	if err := s.config.Save(cfg); err != nil {
+	if err := s.config.Save(ctx, cfg); err != nil {
 		return config.Config{}, fmt.Errorf("save config: %w", err)
 	}
 
@@ -1061,12 +1171,12 @@ func (s *Session) ResetHighlightWords(ctx context.Context) (config.Config, error
 
 // SetBaseURL persists a new API base URL through the config store
 // and rebuilds the API client so it takes effect immediately.
-func (s *Session) SetBaseURL(_ context.Context, baseURL string) (config.Config, error) {
+func (s *Session) SetBaseURL(ctx context.Context, baseURL string) (config.Config, error) {
 	if s.config == nil {
 		return config.Config{}, fmt.Errorf("config store not configured")
 	}
 
-	cfg, err := s.config.Load()
+	cfg, err := s.config.Load(ctx)
 	if err != nil {
 		return config.Config{}, fmt.Errorf("load config: %w", err)
 	}
@@ -1082,7 +1192,7 @@ func (s *Session) SetBaseURL(_ context.Context, baseURL string) (config.Config, 
 		s.api = client
 	}
 
-	if err := s.config.Save(cfg); err != nil {
+	if err := s.config.Save(ctx, cfg); err != nil {
 		return config.Config{}, fmt.Errorf("save config: %w", err)
 	}
 
@@ -1096,19 +1206,19 @@ func (s *Session) ResetBaseURL(ctx context.Context) (config.Config, error) {
 
 // SetEmbeddingModel persists a new embedding model through the
 // config store.
-func (s *Session) SetEmbeddingModel(_ context.Context, modelID domain.ModelID) (config.Config, error) {
+func (s *Session) SetEmbeddingModel(ctx context.Context, modelID domain.ModelID) (config.Config, error) {
 	if s.config == nil {
 		return config.Config{}, fmt.Errorf("config store not configured")
 	}
 
-	cfg, err := s.config.Load()
+	cfg, err := s.config.Load(ctx)
 	if err != nil {
 		return config.Config{}, fmt.Errorf("load config: %w", err)
 	}
 
 	cfg.EmbeddingModel = modelID
 
-	if err := s.config.Save(cfg); err != nil {
+	if err := s.config.Save(ctx, cfg); err != nil {
 		return config.Config{}, fmt.Errorf("save config: %w", err)
 	}
 
@@ -1211,15 +1321,24 @@ func (s *Session) dispatchToInstance(
 		mem = &instanceMemory{nick: inst.Nick, store: s.memory}
 	}
 
-	result, err := s.sendWithRetry(ctx, inst, prompt, history, events, mem)
+	outcome, err := s.sendWithRetry(ctx, inst, prompt, history, events, mem)
 	if err != nil {
 		instanceSpan.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
 		instanceSpan.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("send events to %s: %w", inst.Nick, err)
 	}
 
+	result := outcome.result
 	result.Usage.SetSpanAttributes(instanceSpan, result.RequestID)
-	instanceSpan.SetAttributes(attribute.String(observability.AttrResult, api.ResponseResultKind(result.Response)))
+	instanceAttrs := []attribute.KeyValue{
+		attribute.String(observability.AttrResult, api.ResponseResultKind(result.Response)),
+		attribute.Int(observability.AttrRetryCount, outcome.retryCount),
+		attribute.Int(observability.AttrToolTurnCount, outcome.toolTurnCount),
+	}
+	if outcome.passReason != "" {
+		instanceAttrs = append(instanceAttrs, attribute.String(observability.AttrPassReason, outcome.passReason))
+	}
+	instanceSpan.SetAttributes(instanceAttrs...)
 
 	response := result.Response
 
@@ -1470,21 +1589,33 @@ func (s *Session) appendEvent(ctx context.Context, ch domain.ChannelName, event 
 // emitting events via emitUIOnly to avoid re-triggering the reactor.
 func (s *Session) dispatchInBackground(ctx context.Context, ch domain.ChannelName, triggerEvents []protocol.IRCMessage) {
 	go func() {
+		ctx, span := startSpan(
+			ctx,
+			"session.dispatch_background",
+			attribute.String(observability.AttrOperation, "session.dispatch_background"),
+			attribute.String(observability.AttrChannel, string(ch)),
+		)
+		defer span.End()
 		defer s.emitUIOnly(domain.DispatchDoneEvent{Channel: ch})
 
 		channel, err := s.store.GetChannel(ctx, ch)
 		if err != nil {
+			span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+			span.SetStatus(codes.Error, err.Error())
 			s.emitUIOnly(domain.ErrorEvent{Operation: "dispatch", Err: err, At: s.now()})
 			return
 		}
 
 		instances, err := s.instancesForChannel(ctx, channel)
 		if err != nil {
+			span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+			span.SetStatus(codes.Error, err.Error())
 			s.emitUIOnly(domain.ErrorEvent{Operation: "dispatch", Err: err, At: s.now()})
 			return
 		}
 
 		if len(instances) == 0 {
+			span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 			return
 		}
 
@@ -1497,18 +1628,24 @@ func (s *Session) dispatchInBackground(ctx context.Context, ch domain.ChannelNam
 
 		historyEvents, err := s.store.EventsBefore(ctx, ch, nil, 500)
 		if err != nil {
+			span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+			span.SetStatus(codes.Error, err.Error())
 			s.emitUIOnly(domain.ErrorEvent{Operation: "dispatch", Err: err, At: s.now()})
 			return
 		}
 
 		replies, err := s.dispatchToInstances(ctx, ch, historyEvents, triggerEvents)
 		if err != nil {
+			span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+			span.SetStatus(codes.Error, err.Error())
 			s.emitUIOnly(domain.ErrorEvent{Operation: "dispatch", Err: err, At: s.now()})
 		}
 
 		for _, reply := range replies {
 			s.emitUIOnly(reply)
 		}
+
+		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 	}()
 }
 
@@ -1600,14 +1737,23 @@ func (m *instanceMemory) SearchMemory(ctx context.Context, query string, limit i
 }
 
 const (
-	maxNewlineRetries = 2
-	maxToolLoopTurns  = 5
+	maxNewlineRetries            = 2
+	maxToolLoopTurns             = 5
+	silenceReasonContentFiltered = "content filtered"
+	silenceReasonNewlineRetries  = "response contained newlines after retries"
 )
 
 // sendWithRetry sends events to a model and retries if the response
 // contains newlines in any message body. After maxNewlineRetries
 // retries, a silent pass is returned. Each attempt may involve
 // multiple API turns if the model uses memory tools.
+type sendOutcome struct {
+	result        api.CompletionResult
+	retryCount    int
+	toolTurnCount int
+	passReason    string
+}
+
 func (s *Session) sendWithRetry(
 	ctx context.Context,
 	inst domain.Instance,
@@ -1615,47 +1761,69 @@ func (s *Session) sendWithRetry(
 	history []protocol.IRCMessage,
 	events []protocol.IRCMessage,
 	mem MemoryExecutor,
-) (api.CompletionResult, error) {
-	for range maxNewlineRetries + 1 {
-
-		result, err := s.sendWithMemoryLoop(ctx, inst, prompt, history, events, mem)
+) (sendOutcome, error) {
+	for attempt := range maxNewlineRetries + 1 {
+		result, toolTurnCount, err := s.sendWithMemoryLoop(ctx, inst, prompt, history, events, mem)
 		if err != nil {
 			var refused *api.ErrModelRefused
 			if errors.As(err, &refused) {
-				return api.CompletionResult{
-					Response: protocol.ModelResponse{
-						Kind:   protocol.ResponseSilence,
-						Reason: refused.Reason,
+				return sendOutcome{
+					result: api.CompletionResult{
+						Response: protocol.ModelResponse{
+							Kind:   protocol.ResponseSilence,
+							Reason: refused.Reason,
+						},
 					},
+					retryCount:    attempt,
+					toolTurnCount: toolTurnCount,
+					passReason:    observability.PassReasonModelRefused,
 				}, nil
 			}
 
 			if errors.Is(err, api.ErrContentFiltered) {
-				return api.CompletionResult{
-					Response: protocol.ModelResponse{
-						Kind:   protocol.ResponseSilence,
-						Reason: "content filtered",
+				return sendOutcome{
+					result: api.CompletionResult{
+						Response: protocol.ModelResponse{
+							Kind:   protocol.ResponseSilence,
+							Reason: silenceReasonContentFiltered,
+						},
 					},
+					retryCount:    attempt,
+					toolTurnCount: toolTurnCount,
+					passReason:    observability.PassReasonContentFiltered,
 				}, nil
 			}
 
-			return api.CompletionResult{}, err
+			return sendOutcome{}, err
 		}
 
 		if result.Response.Kind != protocol.ResponseReply || len(result.Response.Messages) == 0 {
-			return result, nil
+			return sendOutcome{
+				result:        result,
+				retryCount:    attempt,
+				toolTurnCount: toolTurnCount,
+				passReason:    passReasonForResponse(result.Response),
+			}, nil
 		}
 
 		if !containsNewlines(result.Response) {
-			return result, nil
+			return sendOutcome{
+				result:        result,
+				retryCount:    attempt,
+				toolTurnCount: toolTurnCount,
+			}, nil
 		}
 	}
 
-	return api.CompletionResult{
-		Response: protocol.ModelResponse{
-			Kind:   protocol.ResponseSilence,
-			Reason: "response contained newlines after retries",
+	return sendOutcome{
+		result: api.CompletionResult{
+			Response: protocol.ModelResponse{
+				Kind:   protocol.ResponseSilence,
+				Reason: silenceReasonNewlineRetries,
+			},
 		},
+		retryCount: maxNewlineRetries,
+		passReason: observability.PassReasonNewlineRetryExhausted,
 	}, nil
 }
 
@@ -1670,31 +1838,33 @@ func (s *Session) sendWithMemoryLoop(
 	history []protocol.IRCMessage,
 	events []protocol.IRCMessage,
 	mem MemoryExecutor,
-) (api.CompletionResult, error) {
+) (api.CompletionResult, int, error) {
 	result, err := s.api.SendEvents(ctx, inst.ModelID, prompt, history, events)
 	if err != nil {
-		return api.CompletionResult{}, err
+		return api.CompletionResult{}, 0, err
 	}
 
+	toolTurnCount := 0
 	for range maxToolLoopTurns {
 
 		if len(result.PendingToolCalls) == 0 {
-			return result, nil
+			return result, toolTurnCount, nil
 		}
 
 		if mem == nil {
-			return result, nil
+			return result, toolTurnCount, nil
 		}
 
 		toolResults := s.executeMemoryTools(ctx, mem, result.PendingToolCalls)
+		toolTurnCount++
 
 		result, err = s.api.ContinueWithToolResults(ctx, result.Conversation, toolResults)
 		if err != nil {
-			return api.CompletionResult{}, err
+			return api.CompletionResult{}, toolTurnCount, err
 		}
 	}
 
-	return result, nil
+	return result, toolTurnCount, nil
 }
 
 // executeMemoryTools runs the pending memory tool calls and returns
@@ -1742,11 +1912,14 @@ func (s *Session) executeMemoryTools(
 
 		eventAttrs := []attribute.KeyValue{
 			attribute.String(observability.AttrMemoryOperation, string(call.Kind)),
+			attribute.String(observability.AttrMemoryToolKind, string(call.Kind)),
 		}
 
 		if toolErr != nil {
+			observability.RecordMemoryToolCall(ctx, string(call.Kind), observability.ResultError)
 			eventAttrs = append(eventAttrs, attribute.String(observability.AttrResult, observability.ResultError))
 		} else {
+			observability.RecordMemoryToolCall(ctx, string(call.Kind), observability.ResultOK)
 			eventAttrs = append(eventAttrs, attribute.String(observability.AttrResult, observability.ResultOK))
 		}
 
@@ -1759,6 +1932,21 @@ func (s *Session) executeMemoryTools(
 	}
 
 	return results
+}
+
+func passReasonForResponse(response protocol.ModelResponse) string {
+	if response.Kind != protocol.ResponseSilence {
+		return ""
+	}
+
+	switch response.Reason {
+	case silenceReasonContentFiltered:
+		return observability.PassReasonContentFiltered
+	case silenceReasonNewlineRetries:
+		return observability.PassReasonNewlineRetryExhausted
+	default:
+		return observability.PassReasonModelPass
+	}
 }
 
 // containsNewlines reports whether any reply part body contains a

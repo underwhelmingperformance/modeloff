@@ -3,6 +3,7 @@
 package config
 
 import (
+	"context"
 	"time"
 
 	"github.com/laney/modeloff/internal/domain"
@@ -51,8 +52,8 @@ type UnsubscribeFunc func()
 
 // Store defines the interface for loading and saving configuration.
 type Store interface {
-	Load() (Config, error)
-	Save(cfg Config) error
+	Load(ctx context.Context) (Config, error)
+	Save(ctx context.Context, cfg Config) error
 
 	// OnChange registers a callback to be invoked after every
 	// successful Save. It returns a function that removes the

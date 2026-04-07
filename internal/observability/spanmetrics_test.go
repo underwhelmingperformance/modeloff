@@ -72,7 +72,95 @@ func TestRuntime_snapshotMetrics_includes_span_derived_usage(t *testing.T) {
 	require.Equal(t, int64(8), snapshot.Summary.CachedTokens)
 	require.Equal(t, int64(3), snapshot.Summary.CacheWriteTokens)
 	require.Equal(t, 0.75, snapshot.Summary.CostCredits)
-	require.Len(t, snapshot.Models, 1)
-	require.Equal(t, "anthropic/claude-3-haiku", snapshot.Models[0].ModelID)
+	require.Equal(t, []ModelUsageSnapshot{{
+		ModelID:          "anthropic/claude-3-haiku",
+		Requests:         1,
+		PromptTokens:     21,
+		CompletionTokens: 13,
+		TotalTokens:      34,
+		ReasoningTokens:  5,
+		CachedTokens:     8,
+		CacheWriteTokens: 3,
+		CostCredits:      0.75,
+	}}, snapshot.Models)
 	require.NotEmpty(t, snapshot.Operations)
+}
+
+func TestRuntime_snapshotMetrics_counts_tool_follow_up_requests(t *testing.T) {
+	runtime, err := NewRuntime()
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, runtime.Shutdown(context.Background()))
+	}()
+
+	recordLLMUsageSpan(t, "api.openrouter.send_events", "anthropic/claude-3-haiku", ResultReply, 21, 13, 0.75)
+	recordLLMUsageSpan(t, "api.openrouter.continue_with_tool_results", "anthropic/claude-3-haiku", ResultReply, 5, 7, 0.25)
+
+	snapshot, err := runtime.SnapshotMetrics(context.Background())
+	require.NoError(t, err)
+
+	require.Equal(t, int64(2), snapshot.Summary.Requests)
+	require.Equal(t, int64(26), snapshot.Summary.PromptTokens)
+	require.Equal(t, int64(20), snapshot.Summary.CompletionTokens)
+	require.Equal(t, int64(46), snapshot.Summary.TotalTokens)
+	require.Equal(t, 1.0, snapshot.Summary.CostCredits)
+	require.Equal(t, []ModelUsageSnapshot{{
+		ModelID:          "anthropic/claude-3-haiku",
+		Requests:         2,
+		PromptTokens:     26,
+		CompletionTokens: 20,
+		TotalTokens:      46,
+		CostCredits:      1.0,
+	}}, snapshot.Models)
+}
+
+func TestRuntime_snapshotMetrics_includes_memory_tool_and_search_metrics(t *testing.T) {
+	runtime, err := NewRuntime()
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, runtime.Shutdown(context.Background()))
+	}()
+
+	RecordMemoryToolCall(context.Background(), "write_memory", ResultOK)
+	RecordMemorySearchResults(context.Background(), 0)
+	RecordMemorySearchResults(context.Background(), 3)
+	RecordMemorySearchTopScore(context.Background(), 0.875)
+
+	snapshot, err := runtime.SnapshotMetrics(context.Background())
+	require.NoError(t, err)
+
+	require.Equal(t, []MemoryToolSnapshot{{
+		Kind:   "write_memory",
+		Result: "ok",
+		Count:  1,
+	}}, snapshot.MemoryTools)
+	require.Equal(t, MemorySearchSnapshot{
+		Searches:        2,
+		ZeroHitSearches: 1,
+		AverageResults:  1.5,
+		MaxTopScore:     0.875,
+	}, snapshot.MemorySearch)
+}
+
+func recordLLMUsageSpan(
+	t *testing.T,
+	operation string,
+	modelID string,
+	result string,
+	promptTokens int64,
+	completionTokens int64,
+	costCredits float64,
+) {
+	t.Helper()
+
+	_, span := otel.Tracer("test").Start(context.Background(), operation)
+	span.SetAttributes(
+		attribute.String(AttrOperation, operation),
+		attribute.String(AttrModelID, modelID),
+		attribute.String(AttrResult, result),
+		attribute.Int64(AttrPromptTokens, promptTokens),
+		attribute.Int64(AttrCompletionTokens, completionTokens),
+		attribute.Float64(AttrCostCredits, costCredits),
+	)
+	span.End()
 }

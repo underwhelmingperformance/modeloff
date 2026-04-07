@@ -127,6 +127,50 @@ func renderMetricsSnapshot(snapshot observability.MetricsSnapshot, width int) []
 		lines = append(lines, "No model usage yet")
 	}
 
+	lines = append(lines, "", "Operation outcomes:")
+
+	for _, operation := range snapshot.OperationCounts {
+		lines = append(lines, wrap.Render(fmt.Sprintf(
+			"%s  %s  count %d",
+			operation.Operation,
+			operation.Result,
+			operation.Count,
+		)))
+	}
+
+	if len(snapshot.OperationCounts) == 0 {
+		lines = append(lines, "No operation counts yet")
+	}
+
+	lines = append(lines, "", "Memory activity:")
+	lines = append(lines, wrap.Render(fmt.Sprintf(
+		"searches %d  zero-hit %d  avg results %.2f  max top score %.4f",
+		snapshot.MemorySearch.Searches,
+		snapshot.MemorySearch.ZeroHitSearches,
+		snapshot.MemorySearch.AverageResults,
+		snapshot.MemorySearch.MaxTopScore,
+	)))
+
+	for _, tool := range snapshot.MemoryTools {
+		lines = append(lines, wrap.Render(fmt.Sprintf(
+			"%s  %s  count %d",
+			tool.Kind,
+			tool.Result,
+			tool.Count,
+		)))
+	}
+
+	if len(snapshot.MemoryTools) == 0 {
+		lines = append(lines, "No memory tool calls yet")
+	}
+
+	lines = append(lines, "", "Runtime health:")
+	lines = append(lines, wrap.Render(fmt.Sprintf(
+		"dropped logs %d  embedding requests %d",
+		snapshot.RuntimeHealth.DroppedLogs,
+		snapshot.RuntimeHealth.EmbeddingRequests,
+	)))
+
 	lines = append(lines, "", "Operation timings:")
 
 	for _, operation := range snapshot.Operations {

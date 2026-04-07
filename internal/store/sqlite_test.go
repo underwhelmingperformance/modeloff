@@ -10,6 +10,8 @@ import (
 	orderedmap "github.com/wk8/go-ordered-map/v2"
 
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/observability"
+	"github.com/laney/modeloff/internal/observability/oteltest"
 )
 
 var testTime = time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC)
@@ -127,6 +129,26 @@ func TestSQLiteStore_SaveAndGetChannel(t *testing.T) {
 	got, err := s.GetChannel(ctx, "#general")
 	require.NoError(t, err)
 	requireChannelsEqual(t, []domain.Channel{ch}, []domain.Channel{got})
+}
+
+func TestSQLiteStore_SaveChannel_recordsSpan(t *testing.T) {
+	recorder := oteltest.InstallSpanRecorder(t)
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	ch := domain.Channel{
+		Name:    "#observability",
+		Kind:    domain.KindChannel,
+		Members: storeTestMembers("alice"),
+		Created: testTime,
+	}
+
+	require.NoError(t, s.SaveChannel(ctx, ch))
+
+	span := oteltest.FindSpan(t, recorder, "store.sqlite.save_channel")
+	require.Equal(t, "store.sqlite.save_channel", oteltest.AttrValue(span.Attributes(), observability.AttrOperation))
+	require.Equal(t, "#observability", oteltest.AttrValue(span.Attributes(), observability.AttrChannel))
+	require.Equal(t, observability.ResultOK, oteltest.AttrValue(span.Attributes(), observability.AttrResult))
 }
 
 func TestSQLiteStore_GetChannelNotFound(t *testing.T) {

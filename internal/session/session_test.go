@@ -15,11 +15,14 @@ import (
 	chromem "github.com/philippgille/chromem-go"
 	"github.com/stretchr/testify/require"
 	orderedmap "github.com/wk8/go-ordered-map/v2"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
 	"github.com/laney/modeloff/internal/api"
 	"github.com/laney/modeloff/internal/config"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/memory"
+	"github.com/laney/modeloff/internal/observability"
+	"github.com/laney/modeloff/internal/observability/oteltest"
 	"github.com/laney/modeloff/internal/protocol"
 	storemod "github.com/laney/modeloff/internal/store"
 	"github.com/laney/modeloff/internal/store/storetest"
@@ -552,6 +555,120 @@ func TestSession_Kick(t *testing.T) {
 	inst, err := s.GetInstance(ctx, "botty")
 	require.NoError(t, err)
 	requireChannels(t, inst.Channels, "#random")
+}
+
+func TestSession_mutationOperations_recordSpans(t *testing.T) {
+	recorder := oteltest.InstallSpanRecorder(t)
+	store := storetest.NewMemoryStore(t)
+	cfgStore := &fakeConfigStore{cfg: config.Config{UserNick: "testuser", PokeInterval: time.Minute}}
+	sess := New(store, nil, &fakeAPIClient{}, cfgStore, "testuser")
+	sess.now = func() time.Time { return fixedTime }
+	ctx := t.Context()
+
+	require.NoError(t, sess.Join(ctx, "#general"))
+
+	seedChannelWithMembers(t, store, "#leave", "testuser")
+	require.NoError(t, sess.Part(ctx, "#leave", ""))
+
+	seedInstance(t, store, domain.Instance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: testChannels("#general"),
+	})
+	channel, err := store.GetChannel(ctx, "#general")
+	require.NoError(t, err)
+	channel.Members.Add("botty")
+	require.NoError(t, store.SaveChannel(ctx, channel))
+	require.NoError(t, sess.Kick(ctx, "#general", "botty"))
+
+	require.NoError(t, sess.SetTopic(ctx, "#general", "observability"))
+	require.NoError(t, sess.ChangeNick(ctx, "renamed"))
+
+	seedInstance(t, store, domain.Instance{
+		Nick:     "dm-bot",
+		ModelID:  "test/dm-model",
+		Channels: testChannels(),
+	})
+	_, _, err = sess.OpenDM(ctx, "dm-bot")
+	require.NoError(t, err)
+
+	require.NoError(t, sess.Reset(ctx))
+
+	ended := make(map[string]sdktrace.ReadOnlySpan)
+	for _, span := range recorder.Ended() {
+		ended[span.Name()] = span
+	}
+
+	require.Contains(t, ended, "session.join")
+	require.Contains(t, ended, "session.part")
+	require.Contains(t, ended, "session.kick")
+	require.Contains(t, ended, "session.set_topic")
+	require.Contains(t, ended, "session.change_nick")
+	require.Contains(t, ended, "session.open_dm")
+	require.Contains(t, ended, "session.reset")
+}
+
+func TestSession_dispatchToInstance_recordsPassReasonAndToolTurns(t *testing.T) {
+	recorder := oteltest.InstallSpanRecorder(t)
+	dataStore := storetest.NewMemoryStore(t)
+	memStore := memory.NewStoreAdapter(storetest.NewMemoryStore(t))
+	fake := &fakeAPIClient{
+		sendEventsFullFn: func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
+			return api.CompletionResult{
+				PendingToolCalls: []api.PendingToolCall{{
+					ID:   "call-1",
+					Kind: api.ToolCallWriteMemory,
+					Key:  "topic",
+					Body: "observability",
+				}},
+			}, nil
+		},
+		continueWithToolResultsFn: func(context.Context, *api.Conversation, []api.ToolResult) (api.CompletionResult, error) {
+			return api.CompletionResult{
+				Response: protocol.ModelResponse{
+					Kind:   protocol.ResponseSilence,
+					Reason: "nothing to say",
+				},
+			}, nil
+		},
+	}
+	sess := New(dataStore, memStore, fake, nil, "testuser")
+	sess.now = func() time.Time { return fixedTime }
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, dataStore, "#general", "testuser", "botty")
+	channel, err := dataStore.GetChannel(ctx, "#general")
+	require.NoError(t, err)
+	inst := domain.Instance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: testChannels("#general"),
+	}
+
+	replies, err := sess.dispatchToInstance(ctx, channel, inst, "#general", nil, nil)
+	require.NoError(t, err)
+	require.Empty(t, replies)
+
+	span := oteltest.FindSpan(t, recorder, "session.dispatch_to_instance")
+	require.Equal(t, observability.ResultPass, oteltest.AttrValue(span.Attributes(), observability.AttrResult))
+	require.Equal(t, observability.PassReasonModelPass, oteltest.AttrValue(span.Attributes(), observability.AttrPassReason))
+	require.Equal(t, "0", oteltest.AttrValue(span.Attributes(), observability.AttrRetryCount))
+	require.Equal(t, "1", oteltest.AttrValue(span.Attributes(), observability.AttrToolTurnCount))
+}
+
+func TestSession_dispatchInBackground_recordsSpan(t *testing.T) {
+	recorder := oteltest.InstallSpanRecorder(t)
+	sess, s := newTestSession(t)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#general", "testuser")
+	sess.dispatchInBackground(ctx, "#general", nil)
+
+	drainEvent[domain.DispatchDoneEvent](t, sess)
+
+	span := oteltest.FindSpan(t, recorder, "session.dispatch_background")
+	require.Equal(t, "#general", oteltest.AttrValue(span.Attributes(), observability.AttrChannel))
+	require.Equal(t, observability.ResultOK, oteltest.AttrValue(span.Attributes(), observability.AttrResult))
 }
 
 func TestSession_SendMessage(t *testing.T) {
@@ -2161,7 +2278,7 @@ func (f *failingMemoryStore) Reset(_ context.Context) error {
 	return nil
 }
 
-func (f *fakeConfigStore) Load() (config.Config, error) {
+func (f *fakeConfigStore) Load(context.Context) (config.Config, error) {
 	if f.loadErr != nil {
 		return config.Config{}, f.loadErr
 	}
@@ -2171,7 +2288,7 @@ func (f *fakeConfigStore) Load() (config.Config, error) {
 
 func (f *fakeConfigStore) OnChange(config.ChangeFunc) config.UnsubscribeFunc { return func() {} }
 
-func (f *fakeConfigStore) Save(cfg config.Config) error {
+func (f *fakeConfigStore) Save(_ context.Context, cfg config.Config) error {
 	if f.saveErr != nil {
 		return f.saveErr
 	}

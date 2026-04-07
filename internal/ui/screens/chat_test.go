@@ -542,13 +542,13 @@ func newFakeConfigStore() *fakeConfigStore {
 	}
 }
 
-func (f *fakeConfigStore) Load() (config.Config, error) {
+func (f *fakeConfigStore) Load(context.Context) (config.Config, error) {
 	return f.cfg, nil
 }
 
 func (f *fakeConfigStore) OnChange(config.ChangeFunc) config.UnsubscribeFunc { return func() {} }
 
-func (f *fakeConfigStore) Save(cfg config.Config) error {
+func (f *fakeConfigStore) Save(_ context.Context, cfg config.Config) error {
 	if f.saveErr != nil {
 		return f.saveErr
 	}

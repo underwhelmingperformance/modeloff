@@ -23,9 +23,12 @@ type metricInstruments struct {
 	requestDuration   metric.Float64Histogram
 	droppedLogs       metric.Int64Counter
 
-	memoryOperations    metric.Int64Counter
-	embeddingRequests   metric.Int64Counter
-	embeddingDurationMs metric.Float64Histogram
+	memoryOperations     metric.Int64Counter
+	memoryToolCalls      metric.Int64Counter
+	memorySearchResults  metric.Int64Histogram
+	memorySearchTopScore metric.Float64Histogram
+	embeddingRequests    metric.Int64Counter
+	embeddingDurationMs  metric.Float64Histogram
 }
 
 // SpanMetricsProcessor derives metrics from ended spans.
@@ -64,11 +67,11 @@ func (p *SpanMetricsProcessor) OnEnd(span sdktrace.ReadOnlySpan) {
 		result = ResultError
 	}
 
-	attrs = append(attrs, attribute.String("operation", operation), attribute.String("result", result))
+	attrs = append(attrs, attribute.String(AttrOperation, operation), attribute.String(AttrResult, result))
 
 	if value, ok := findStringAttr(spanAttrs, AttrModelID); ok && value != "" {
 		modelID = value
-		attrs = append(attrs, attribute.String("model_id", modelID))
+		attrs = append(attrs, attribute.String(AttrModelID, modelID))
 	}
 
 	ctx := context.Background()
@@ -89,7 +92,7 @@ func (p *SpanMetricsProcessor) OnEnd(span sdktrace.ReadOnlySpan) {
 		return
 	}
 
-	if operation != "api.openrouter.send_events" && operation != "api.openrouter.generate_nick" {
+	if !isLLMUsageOperation(operation) {
 		return
 	}
 
@@ -134,6 +137,15 @@ func (*SpanMetricsProcessor) Shutdown(context.Context) error {
 func isMemoryOperation(operation string) bool {
 	switch operation {
 	case "memory.write", "memory.delete", "memory.search":
+		return true
+	}
+
+	return false
+}
+
+func isLLMUsageOperation(operation string) bool {
+	switch operation {
+	case "api.openrouter.send_events", "api.openrouter.continue_with_tool_results", "api.openrouter.generate_nick":
 		return true
 	}
 

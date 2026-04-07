@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -66,6 +67,19 @@ type openRouterUsageExtras struct {
 	CostDetails struct {
 		UpstreamInferenceCost float64 `json:"upstream_inference_cost"`
 	} `json:"cost_details"`
+}
+
+type completionParseError struct {
+	target string
+	err    error
+}
+
+func (e *completionParseError) Error() string {
+	return fmt.Sprintf("parse %s: %v", e.target, e.err)
+}
+
+func (e *completionParseError) Unwrap() error {
+	return e.err
 }
 
 // generateSchema reflects a Go type into a JSON Schema map suitable
@@ -244,16 +258,14 @@ func (c *OpenRouterClient) SendEvents(
 		ResponseFormat: responseFormat(),
 	})
 	if err != nil {
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		span.SetStatus(codes.Error, err.Error())
+		markSpanError(span, observability.ErrorKindTransport, 0, err)
 		logger.ErrorContext(ctx, "openrouter send events failed", "error", err)
 		return CompletionResult{}, err
 	}
 
 	result, assistantMsg, err := parseCompletionResponse(resp, rawResp)
 	if err != nil {
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		span.SetStatus(codes.Error, err.Error())
+		markSpanError(span, completionParseErrorKind(err), 0, err)
 		logger.ErrorContext(ctx, "openrouter response parse failed", "error", err)
 		return CompletionResult{}, err
 	}
@@ -310,16 +322,14 @@ func (c *OpenRouterClient) ContinueWithToolResults(
 		ResponseFormat: responseFormat(),
 	})
 	if err != nil {
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		span.SetStatus(codes.Error, err.Error())
+		markSpanError(span, observability.ErrorKindTransport, 0, err)
 		logger.ErrorContext(ctx, "openrouter continue failed", "error", err)
 		return CompletionResult{}, err
 	}
 
 	result, assistantMsg, err := parseCompletionResponse(resp, rawResp)
 	if err != nil {
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		span.SetStatus(codes.Error, err.Error())
+		markSpanError(span, completionParseErrorKind(err), 0, err)
 		logger.ErrorContext(ctx, "openrouter continue parse failed", "error", err)
 		return CompletionResult{}, err
 	}
@@ -412,7 +422,7 @@ func parseCompletionResponse(resp *openai.ChatCompletion, rawResp *http.Response
 			var args writeMemoryArgs
 
 			if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
-				return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, fmt.Errorf("parse write_memory args: %w", err)
+				return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, &completionParseError{target: "write_memory args", err: err}
 			}
 
 			result.PendingToolCalls = append(result.PendingToolCalls, PendingToolCall{
@@ -426,7 +436,7 @@ func parseCompletionResponse(resp *openai.ChatCompletion, rawResp *http.Response
 			var args deleteMemoryArgs
 
 			if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
-				return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, fmt.Errorf("parse delete_memory args: %w", err)
+				return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, &completionParseError{target: "delete_memory args", err: err}
 			}
 
 			result.PendingToolCalls = append(result.PendingToolCalls, PendingToolCall{
@@ -439,7 +449,7 @@ func parseCompletionResponse(resp *openai.ChatCompletion, rawResp *http.Response
 			var args searchMemoryArgs
 
 			if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
-				return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, fmt.Errorf("parse search_memory args: %w", err)
+				return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, &completionParseError{target: "search_memory args", err: err}
 			}
 
 			result.PendingToolCalls = append(result.PendingToolCalls, PendingToolCall{
@@ -458,7 +468,7 @@ func parseCompletionResponse(resp *openai.ChatCompletion, rawResp *http.Response
 		var structured structuredModelResponse
 
 		if err := json.Unmarshal([]byte(msg.Content), &structured); err != nil {
-			return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, fmt.Errorf("parse structured response: %w", err)
+			return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, &completionParseError{target: "structured response", err: err}
 		}
 
 		switch structured.Response.Kind {
@@ -504,8 +514,7 @@ func (c *OpenRouterClient) ListModels(ctx context.Context) ([]ModelInfo, error) 
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/models", nil)
 	if err != nil {
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		span.SetStatus(codes.Error, err.Error())
+		markSpanError(span, observability.ErrorKindTransport, 0, err)
 		return nil, err
 	}
 
@@ -513,8 +522,7 @@ func (c *OpenRouterClient) ListModels(ctx context.Context) ([]ModelInfo, error) 
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		span.SetStatus(codes.Error, err.Error())
+		markSpanError(span, observability.ErrorKindTransport, 0, err)
 		logger.ErrorContext(ctx, "openrouter list models failed", "error", err)
 		return nil, fmt.Errorf("list models: %w", err)
 	}
@@ -523,15 +531,13 @@ func (c *OpenRouterClient) ListModels(ctx context.Context) ([]ModelInfo, error) 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		err := fmt.Errorf("list models: status %d: %s", resp.StatusCode, body)
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		span.SetStatus(codes.Error, err.Error())
+		markSpanError(span, observability.ErrorKindHTTPStatus, resp.StatusCode, err)
 		return nil, err
 	}
 
 	var mr modelsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&mr); err != nil {
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		span.SetStatus(codes.Error, err.Error())
+		markSpanError(span, observability.ErrorKindResponseParse, 0, err)
 		return nil, fmt.Errorf("list models: %w", err)
 	}
 
@@ -578,32 +584,28 @@ func (c *OpenRouterClient) GenerateNick(ctx context.Context, nickModel domain.Mo
 		},
 	})
 	if err != nil {
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		span.SetStatus(codes.Error, err.Error())
+		markSpanError(span, observability.ErrorKindTransport, 0, err)
 		logger.ErrorContext(ctx, "openrouter generate nick failed", "error", err)
 		return NicknameResult{}, err
 	}
 
 	if len(resp.Choices) == 0 {
 		err := fmt.Errorf("generate nick: no choices in response")
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		span.SetStatus(codes.Error, err.Error())
+		markSpanError(span, observability.ErrorKindInvalidResponse, 0, err)
 		return NicknameResult{}, err
 	}
 
 	choice := resp.Choices[0]
 
 	if err := validateChoice(choice); err != nil {
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		span.SetStatus(codes.Error, err.Error())
+		markSpanError(span, observability.ErrorKindInvalidResponse, 0, err)
 		return NicknameResult{}, err
 	}
 
 	nick := sanitizeNick(choice.Message.Content)
 	if nick == "" {
 		err := fmt.Errorf("generate nick: model returned empty or unsalvageable response")
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		span.SetStatus(codes.Error, err.Error())
+		markSpanError(span, observability.ErrorKindInvalidResponse, 0, err)
 		return NicknameResult{}, err
 	}
 
@@ -714,5 +716,36 @@ func usageFromResponse(response openai.CompletionUsage) Usage {
 		CacheWriteTokens:      cacheWriteTokens,
 		CostCredits:           extra.Cost,
 		UpstreamInferenceCost: extra.CostDetails.UpstreamInferenceCost,
+	}
+}
+
+func markSpanError(span interface {
+	SetAttributes(...attribute.KeyValue)
+	SetStatus(codes.Code, string)
+}, errorKind string, httpStatusCode int, err error) {
+	attrs := []attribute.KeyValue{
+		attribute.String(observability.AttrResult, observability.ResultError),
+		attribute.String(observability.AttrErrorKind, errorKind),
+	}
+	if httpStatusCode > 0 {
+		attrs = append(attrs, attribute.Int(observability.AttrHTTPStatusCode, httpStatusCode))
+	}
+
+	span.SetAttributes(attrs...)
+	span.SetStatus(codes.Error, err.Error())
+}
+
+func completionParseErrorKind(err error) string {
+	var refused *ErrModelRefused
+	var parseErr *completionParseError
+	switch {
+	case errors.As(err, &refused):
+		return observability.ErrorKindInvalidResponse
+	case errors.Is(err, ErrContentFiltered), errors.Is(err, ErrResponseTruncated):
+		return observability.ErrorKindInvalidResponse
+	case errors.As(err, &parseErr):
+		return observability.ErrorKindResponseParse
+	default:
+		return observability.ErrorKindInvalidResponse
 	}
 }

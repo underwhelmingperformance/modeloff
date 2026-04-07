@@ -23,7 +23,9 @@ import (
 )
 
 func main() {
-	cfg, cfgStore, err := loadConfig()
+	ctx := context.Background()
+
+	cfg, cfgStore, err := loadConfig(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error loading config: %v\n", err)
 		os.Exit(1)
@@ -101,13 +103,13 @@ func main() {
 	}
 }
 
-func loadConfig() (config.Config, *config.FileStore, error) {
+func loadConfig(ctx context.Context) (config.Config, *config.FileStore, error) {
 	cfgStore, err := config.NewDefaultFileStore()
 	if err != nil {
 		return config.Config{}, nil, err
 	}
 
-	cfg, err := cfgStore.Load()
+	cfg, err := cfgStore.Load(ctx)
 	if err != nil {
 		return config.Config{}, nil, err
 	}
@@ -117,7 +119,7 @@ func loadConfig() (config.Config, *config.FileStore, error) {
 
 func runPokeLoop(ctx context.Context, p *tea.Program, cfgStore config.Store) {
 	for {
-		cfg, err := cfgStore.Load()
+		cfg, err := cfgStore.Load(ctx)
 		if err != nil || cfg.APIKey == "" || cfg.PokeInterval <= 0 {
 			if !sleepOrDone(ctx, time.Minute) {
 				return
