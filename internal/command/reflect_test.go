@@ -432,6 +432,8 @@ type buildSubSet struct {
 type buildSubReset struct{}
 
 type buildConfigGroup struct {
+	Format string `optional:"" help:"Output format"`
+
 	Get   buildSubGet   `cmd:"" help:"Get a config value."`
 	Set   buildSubSet   `cmd:"" help:"Set a config value."`
 	Reset buildSubReset `cmd:"" help:"Reset all config."`
@@ -455,6 +457,9 @@ func TestBuild_recursive_subcommands(t *testing.T) {
 		{
 			Name: "config",
 			Help: "Manage configuration.",
+			Flags: []flagMeta{
+				{Name: "--format", Help: "Output format", Optional: true},
+			},
 			Children: []nodeMeta{
 				{
 					Name:        "get",
@@ -482,18 +487,40 @@ func TestBuild_recursive_subcommands(t *testing.T) {
 	}, metas)
 }
 
-func TestBuild_group_nodes_have_nil_factory(t *testing.T) {
+func TestBuild_group_nodes_have_factories_and_parent_links(t *testing.T) {
 	nodes, err := build(&buildSubcommandGrammar{})
 	require.NoError(t, err)
 
 	configNode := nodes[0]
-	require.Nil(t, configNode.factory, "group node should have nil factory")
+	require.NotNil(t, configNode.factory, "group node should keep a factory")
+	require.Nil(t, configNode.Parent)
 
 	for _, child := range configNode.Children {
 		require.NotNil(t, child.factory, "leaf child %q should have a factory", child.Name)
+		require.Equal(t, configNode, child.Parent, "child %q should link back to parent", child.Name)
 	}
 
 	require.NotNil(t, nodes[1].factory, "top-level leaf should have a factory")
+}
+
+func TestNode_AllFlags_includes_ancestor_flags(t *testing.T) {
+	nodes, err := build(&buildDeepGrammar{})
+	require.NoError(t, err)
+
+	top := nodes[0]
+	top.Flags = []Flag{{Name: "--top-flag", Help: "Top", Optional: true}}
+
+	mid := top.Children[0]
+	mid.Flags = []Flag{{Name: "--mid-flag", Help: "Mid", Optional: true}}
+
+	leaf := mid.Children[0]
+	leaf.Flags = []Flag{{Name: "--leaf-flag", Help: "Leaf", Optional: true}}
+
+	require.Equal(t, []flagMeta{
+		{Name: "--top-flag", Help: "Top", Optional: true},
+		{Name: "--mid-flag", Help: "Mid", Optional: true},
+		{Name: "--leaf-flag", Help: "Leaf", Optional: true},
+	}, toFlagMeta(leaf.AllFlags()))
 }
 
 type buildDeepLeaf struct {
@@ -541,9 +568,10 @@ func TestBuild_three_level_nesting(t *testing.T) {
 		},
 	}, metas)
 
-	// Only the deepest leaf should have a factory.
+	// Every node in the branch keeps a factory so ancestor flags can
+	// be parsed into their own values.
 	topNode := nodes[0]
-	require.Nil(t, topNode.factory)
-	require.Nil(t, topNode.Children[0].factory)
+	require.NotNil(t, topNode.factory)
+	require.NotNil(t, topNode.Children[0].factory)
 	require.NotNil(t, topNode.Children[0].Children[0].factory)
 }

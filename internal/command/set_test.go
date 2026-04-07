@@ -261,6 +261,24 @@ func TestNode_Usage(t *testing.T) {
 			},
 			want: "/admin <command>",
 		},
+		{
+			name: "inherits ancestor flags",
+			node: func() Node {
+				parent := &Node{
+					Name:  "config",
+					Flags: []Flag{{Name: "--format", Variadic: true}},
+				}
+
+				child := &Node{
+					Parent:      parent,
+					Name:        "set",
+					Positionals: []Positional{{Name: "key"}},
+				}
+
+				return *child
+			}(),
+			want: "/config set <key> [--format <format>]",
+		},
 	}
 
 	for _, tt := range tests {
@@ -761,6 +779,9 @@ func TestComplete_subcommand_recurses_into_child(t *testing.T) {
 			{
 				Name: "config",
 				Help: "Configuration",
+				Flags: []Flag{
+					{Name: "--format", Optional: true, Help: "Output format"},
+				},
 				Children: []*Node{
 					{
 						Name: "set",
@@ -790,7 +811,7 @@ func TestComplete_subcommand_recurses_into_child(t *testing.T) {
 		{
 			name:  "subcommand names after parent",
 			raw:   "/config ",
-			wants: []string{"set", "get", "reset"},
+			wants: []string{"set", "get", "reset", "--format"},
 		},
 		{
 			name:  "subcommand names filtered",
@@ -801,6 +822,11 @@ func TestComplete_subcommand_recurses_into_child(t *testing.T) {
 			name:  "child positional after subcommand selected",
 			raw:   "/config set ",
 			wants: []string{"api-key", "theme"},
+		},
+		{
+			name:  "ancestor flag suggested on child",
+			raw:   "/config set --",
+			wants: []string{"--format"},
 		},
 		{
 			name:  "child positional filtered",
@@ -823,6 +849,89 @@ func TestComplete_subcommand_recurses_into_child(t *testing.T) {
 			require.Equal(t, tt.wants, names)
 		})
 	}
+}
+
+func TestComplete_group_node_combines_child_and_flag_suggestions(t *testing.T) {
+	cmds := Set{
+		Commands: []*Node{
+			{
+				Name: "config",
+				Flags: []Flag{
+					{Name: "--format", Optional: true, Help: "Output format"},
+				},
+				Children: []*Node{
+					{Name: "set", Help: "Set a value"},
+					{Name: "get", Help: "Get a value"},
+				},
+			},
+		},
+	}
+
+	completion := Complete(cmds, "/config ", len([]rune("/config ")))
+
+	require.True(t, completion.Visible)
+	require.Equal(t, []Suggestion{
+		{Value: "set", Label: "set", Detail: "Set a value"},
+		{Value: "get", Label: "get", Detail: "Get a value"},
+		{Value: "--format", Label: "--format", Detail: "Output format"},
+	}, completion.Suggestions)
+}
+
+func TestComplete_ancestor_flag_value_uses_source(t *testing.T) {
+	cmds := Set{
+		Commands: []*Node{
+			{
+				Name: "config",
+				Flags: []Flag{
+					{
+						Name:     "--format",
+						Optional: true,
+						Source: LiteralSource(
+							Suggestion{Value: "json", Label: "json"},
+							Suggestion{Value: "yaml", Label: "yaml"},
+						),
+					},
+				},
+				Children: []*Node{
+					{
+						Name: "set",
+						Positionals: []Positional{
+							{Name: "key"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	completion := Complete(cmds, "/config set --format ", len([]rune("/config set --format ")))
+
+	require.True(t, completion.Visible)
+	require.Equal(t, []Suggestion{
+		{Value: "json", Label: "json"},
+		{Value: "yaml", Label: "yaml"},
+	}, completion.Suggestions)
+}
+
+func TestComplete_used_ancestor_flags_are_excluded(t *testing.T) {
+	cmds := Set{
+		Commands: []*Node{
+			{
+				Name: "config",
+				Flags: []Flag{
+					{Name: "--format", Optional: true, Help: "Output format"},
+				},
+				Children: []*Node{
+					{Name: "set", Help: "Set"},
+				},
+			},
+		},
+	}
+
+	completion := Complete(cmds, "/config set --format json --", len([]rune("/config set --format json --")))
+
+	require.True(t, completion.Visible)
+	require.Empty(t, completion.Suggestions)
 }
 
 func TestComplete_deep_nesting_walks_into_grandchildren(t *testing.T) {

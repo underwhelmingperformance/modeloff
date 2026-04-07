@@ -43,6 +43,7 @@ type Flag struct {
 // are executable commands. Non-leaf nodes are command groups whose
 // children are subcommands.
 type Node struct {
+	Parent      *Node
 	Name        string
 	Help        string
 	Positionals []Positional
@@ -61,7 +62,7 @@ func (n *Node) Usage() string {
 	var b strings.Builder
 
 	b.WriteString("/")
-	b.WriteString(n.Name)
+	b.WriteString(n.Path())
 
 	for _, p := range n.Positionals {
 		b.WriteString(" ")
@@ -77,7 +78,7 @@ func (n *Node) Usage() string {
 		}
 	}
 
-	for _, f := range n.Flags {
+	for _, f := range n.AllFlags() {
 		b.WriteString(" [")
 		b.WriteString(f.Name)
 
@@ -98,9 +99,40 @@ func (n *Node) Usage() string {
 	return b.String()
 }
 
+// Path returns the node's command path relative to the set root.
+func (n *Node) Path() string {
+	if n == nil {
+		return ""
+	}
+
+	if n.Parent == nil {
+		return n.Name
+	}
+
+	parent := n.Parent.Path()
+	if parent == "" {
+		return n.Name
+	}
+
+	return parent + " " + n.Name
+}
+
 // Leaf returns true if this node has no children.
 func (n *Node) Leaf() bool {
 	return len(n.Children) == 0
+}
+
+// AllFlags returns flags visible at this node, starting with
+// ancestors and ending with the node's own flags.
+func (n *Node) AllFlags() []Flag {
+	bindings := allFlagBindings(n)
+	flags := make([]Flag, 0, len(bindings))
+
+	for _, binding := range bindings {
+		flags = append(flags, *binding.Flag)
+	}
+
+	return flags
 }
 
 // Find looks up a direct child node by name.
@@ -120,6 +152,11 @@ type Set struct {
 	Commands []*Node
 }
 
+type flagBinding struct {
+	Owner *Node
+	Flag  *Flag
+}
+
 // Completer is implemented by command structs that provide their own
 // suggestion sources. The returned map keys are positional or flag
 // names.
@@ -136,6 +173,24 @@ func (s Set) Find(name string) *Node {
 	}
 
 	return nil
+}
+
+func (s Set) linkParents() {
+	for _, node := range s.Commands {
+		linkNode(node, nil)
+	}
+}
+
+func linkNode(node, parent *Node) {
+	if node == nil {
+		return
+	}
+
+	node.Parent = parent
+
+	for _, child := range node.Children {
+		linkNode(child, node)
+	}
 }
 
 // InvocationState describes the current parse state for completion.
@@ -184,6 +239,8 @@ func Merge(sets ...Set) Set {
 
 // Complete resolves the completion state for the current buffer.
 func Complete(set Set, raw string, cursor int) Completion {
+	set.linkParents()
+
 	raw = clampRaw(raw)
 	if !strings.HasPrefix(raw, "/") {
 		return Completion{}
@@ -223,72 +280,27 @@ func Complete(set Set, raw string, cursor int) Completion {
 		}
 	}
 
-	// Walk into children for group nodes, consuming tokens that
-	// match a child name. Stop when the node is a leaf, or when the
-	// current token is on the child-name position (so we offer child
-	// suggestions instead of recursing past it).
-	argStart := 1 // token index where arguments begin (after command name + subcommands)
-
-	for len(node.Children) > 0 {
-		// If the current token is the next one to consume, we're
-		// still selecting a child — offer child suggestions.
-		if index == argStart {
-			return Completion{
-				Visible:      true,
-				Suggestions:  filterSuggestions(childSuggestions(node), prefix),
-				ReplaceStart: start,
-				ReplaceEnd:   end,
-				AppendSpace:  true,
-			}
-		}
-
-		// A completed token exists at argStart — try to match a child.
-		if argStart >= len(tokens) {
-			break
-		}
-
-		child := node.Find(tokens[argStart].Text)
-		if child == nil {
-			// Unknown subcommand — no suggestions.
-			return Completion{
-				Visible:      true,
-				ReplaceStart: start,
-				ReplaceEnd:   end,
-			}
-		}
-
-		node = child
-		argStart++
-	}
-
-	// If we landed on a group node with no more tokens, offer
-	// child suggestions.
-	if len(node.Children) > 0 {
-		return Completion{
-			Visible:      true,
-			Suggestions:  filterSuggestions(childSuggestions(node), prefix),
-			ReplaceStart: start,
-			ReplaceEnd:   end,
-			AppendSpace:  true,
-		}
-	}
-
-	args := make([]string, 0, len(tokens)-argStart)
-	for _, tok := range tokens[argStart:] {
+	args := make([]string, 0, len(tokens)-1)
+	for _, tok := range tokens[1:] {
 		args = append(args, tok.Text)
 	}
 
-	// Classify preceding tokens (everything before the current token)
-	// into flags and positionals so we know the true positional index
-	// and whether we're completing a flag value.
-	preceding := argTokensFrom(tokens, argStart, index)
+	preceding := argTokensFrom(tokens, 1, index)
 	cctx := classifyForCompletion(node, preceding)
+
+	if cctx.invalid {
+		return Completion{
+			Visible:      true,
+			ReplaceStart: start,
+			ReplaceEnd:   end,
+		}
+	}
 
 	state := InvocationState{
 		Raw:          raw,
 		Name:         name,
 		Args:         args,
-		Command:      node,
+		Command:      cctx.node,
 		CurrentIndex: cctx.positionalIndex,
 		CurrentToken: prefix,
 	}
@@ -313,25 +325,30 @@ func Complete(set Set, raw string, cursor int) Completion {
 
 	// Flag name completion: current token starts with "--".
 	if strings.HasPrefix(prefix, "--") {
-		completion.Suggestions = filterSuggestions(flagSuggestions(node, cctx.usedFlags), prefix)
+		completion.Suggestions = filterSuggestions(flagSuggestions(cctx.node, cctx.usedFlags), prefix)
+		return completion
+	}
+
+	if len(cctx.node.Children) > 0 && resolvePositional(cctx.node.Positionals, cctx.positionalIndex) == nil {
+		completion.Suggestions = filterSuggestions(groupSuggestions(cctx.node, cctx.usedFlags), prefix)
 		return completion
 	}
 
 	// Positional completion.
-	pos := resolvePositional(node.Positionals, cctx.positionalIndex)
+	pos := resolvePositional(cctx.node.Positionals, cctx.positionalIndex)
 	if pos != nil && pos.Source != nil {
 		completion.Suggestions = filterSuggestions(pos.Source(state), prefix)
-		completion.AppendSpace = hasContinuation(node, cctx.positionalIndex)
+		completion.AppendSpace = hasContinuation(cctx.node, cctx.positionalIndex)
 		return completion
 	}
 
 	if pos != nil {
-		completion.AppendSpace = hasContinuation(node, cctx.positionalIndex)
+		completion.AppendSpace = hasContinuation(cctx.node, cctx.positionalIndex)
 		return completion
 	}
 
 	// Past all positionals: offer flag names.
-	flags := flagSuggestions(node, cctx.usedFlags)
+	flags := flagSuggestions(cctx.node, cctx.usedFlags)
 	if len(flags) > 0 {
 		completion.Suggestions = filterSuggestions(flags, prefix)
 		return completion
@@ -375,9 +392,11 @@ func commandSuggestions(set Set) []Suggestion {
 // completionClassification holds the result of classifying the tokens
 // preceding the cursor into flags and positionals.
 type completionClassification struct {
+	node               *Node
 	positionalIndex    int
 	expectingFlagValue *Flag
 	usedFlags          map[string]bool
+	invalid            bool
 }
 
 // argTokensFrom returns the token texts between startIndex and
@@ -403,24 +422,22 @@ func argTokensFrom(tokens []token, startIndex, currentIndex int) []string {
 // determines the current positional index, whether we're expecting a
 // flag value, and which flags have already been used.
 func classifyForCompletion(node *Node, preceding []string) completionClassification {
-	flagSet := map[string]*Flag{}
-	for i := range node.Flags {
-		flagSet[node.Flags[i].Name] = &node.Flags[i]
-	}
-
 	cc := completionClassification{
+		node:      node,
 		usedFlags: map[string]bool{},
 	}
 
 	for i := 0; i < len(preceding); i++ {
 		tok := preceding[i]
 
-		if f, ok := flagSet[tok]; ok {
+		if binding, ok := findFlagBinding(cc.node, tok); ok {
 			cc.usedFlags[tok] = true
 
-			if f.Variadic {
+			if binding.Flag.Variadic {
 				// Variadic flag consumes remaining tokens.
-				cc.expectingFlagValue = nil
+				if i+1 >= len(preceding) {
+					cc.expectingFlagValue = binding.Flag
+				}
 				return cc
 			}
 
@@ -429,11 +446,33 @@ func classifyForCompletion(node *Node, preceding []string) completionClassificat
 				i++
 			} else {
 				// Current token is the flag value.
-				cc.expectingFlagValue = f
+				cc.expectingFlagValue = binding.Flag
 				return cc
 			}
 
 			continue
+		}
+
+		pos := resolvePositional(cc.node.Positionals, cc.positionalIndex)
+		if pos != nil {
+			if !pos.Variadic {
+				cc.positionalIndex++
+				continue
+			}
+
+			return cc
+		}
+
+		child := cc.node.Find(tok)
+		if child != nil {
+			cc.node = child
+			cc.positionalIndex = 0
+			continue
+		}
+
+		if len(cc.node.Children) > 0 {
+			cc.invalid = true
+			return cc
 		}
 
 		// Not a recognised flag: it's a positional.
@@ -446,18 +485,24 @@ func classifyForCompletion(node *Node, preceding []string) completionClassificat
 func flagSuggestions(node *Node, used map[string]bool) []Suggestion {
 	var suggestions []Suggestion
 
-	for _, f := range node.Flags {
-		if used[f.Name] {
+	for _, binding := range allFlagBindings(node) {
+		if used[binding.Flag.Name] {
 			continue
 		}
 
 		suggestions = append(suggestions, Suggestion{
-			Value:  f.Name,
-			Label:  f.Name,
-			Detail: f.Help,
+			Value:  binding.Flag.Name,
+			Label:  binding.Flag.Name,
+			Detail: binding.Flag.Help,
 		})
 	}
 
+	return suggestions
+}
+
+func groupSuggestions(node *Node, used map[string]bool) []Suggestion {
+	suggestions := childSuggestions(node)
+	suggestions = append(suggestions, flagSuggestions(node, used)...)
 	return suggestions
 }
 
@@ -558,7 +603,7 @@ func resolvePositional(positionals []Positional, index int) *Positional {
 
 func hasContinuation(node *Node, index int) bool {
 	if index < 0 {
-		return len(node.Positionals) > 0 || len(node.Flags) > 0
+		return len(node.Positionals) > 0 || len(node.Children) > 0 || len(node.AllFlags()) > 0
 	}
 
 	for i := index + 1; i < len(node.Positionals); i++ {
@@ -571,7 +616,7 @@ func hasContinuation(node *Node, index int) bool {
 		}
 	}
 
-	return len(node.Flags) > 0
+	return len(node.Children) > 0 || len(node.AllFlags()) > 0
 }
 
 func filterSuggestions(all []Suggestion, prefix string) []Suggestion {
@@ -646,4 +691,57 @@ func ComposeSources(sources ...SuggestionSource) SuggestionSource {
 
 		return suggestions
 	}
+}
+
+func allFlagBindings(node *Node) []flagBinding {
+	if node == nil {
+		return nil
+	}
+
+	var bindings []flagBinding
+
+	if node.Parent != nil {
+		bindings = append(bindings, allFlagBindings(node.Parent)...)
+	}
+
+	for i := range node.Flags {
+		bindings = append(bindings, flagBinding{
+			Owner: node,
+			Flag:  &node.Flags[i],
+		})
+	}
+
+	return dedupeFlagBindings(bindings)
+}
+
+func dedupeFlagBindings(bindings []flagBinding) []flagBinding {
+	if len(bindings) == 0 {
+		return nil
+	}
+
+	latest := map[string]int{}
+	for i, binding := range bindings {
+		latest[binding.Flag.Name] = i
+	}
+
+	deduped := make([]flagBinding, 0, len(latest))
+	for i, binding := range bindings {
+		if latest[binding.Flag.Name] != i {
+			continue
+		}
+
+		deduped = append(deduped, binding)
+	}
+
+	return deduped
+}
+
+func findFlagBinding(node *Node, name string) (flagBinding, bool) {
+	for _, binding := range allFlagBindings(node) {
+		if binding.Flag.Name == name {
+			return binding, true
+		}
+	}
+
+	return flagBinding{}, false
 }

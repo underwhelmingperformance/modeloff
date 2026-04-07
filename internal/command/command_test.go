@@ -299,6 +299,8 @@ type subSetCommand struct {
 type subResetCommand struct{}
 
 type parentConfigCommand struct {
+	Format string `optional:"" help:"Output format"`
+
 	Get   subGetCommand   `cmd:"" help:"Get a config value."`
 	Set   subSetCommand   `cmd:"" help:"Set a config value."`
 	Reset subResetCommand `cmd:"" help:"Reset all config."`
@@ -332,6 +334,16 @@ func TestParseValue_subcommands(t *testing.T) {
 			name:  "subcommand with no args",
 			input: "/config reset",
 			want:  subResetCommand{},
+		},
+		{
+			name:  "parent flag before child",
+			input: "/config --format json set api-key sk-1234",
+			want:  subSetCommand{Key: "api-key", Value: "sk-1234"},
+		},
+		{
+			name:  "parent flag after child",
+			input: "/config set --format json api-key sk-1234",
+			want:  subSetCommand{Key: "api-key", Value: "sk-1234"},
 		},
 		{
 			name:    "group node without subcommand",
@@ -373,10 +385,14 @@ type deepLeafCommand struct {
 }
 
 type deepMidCommand struct {
+	Theme string `optional:"" help:"Theme"`
+
 	Leaf deepLeafCommand `cmd:"" help:"A leaf command."`
 }
 
 type deepTopCommand struct {
+	Format string `optional:"" help:"Format"`
+
 	Mid deepMidCommand `cmd:"" help:"Middle level."`
 }
 
@@ -396,6 +412,11 @@ func TestParseValue_deeply_nested_subcommands(t *testing.T) {
 		{
 			name:  "three levels deep",
 			input: "/top mid leaf hello",
+			want:  deepLeafCommand{Name: "hello"},
+		},
+		{
+			name:  "ancestor flags at multiple levels",
+			input: "/top --format json mid --theme dark leaf hello",
 			want:  deepLeafCommand{Name: "hello"},
 		},
 		{
@@ -424,4 +445,35 @@ func TestParseValue_deeply_nested_subcommands(t *testing.T) {
 			require.Equal(t, tt.want, parsed)
 		})
 	}
+}
+
+func TestParseInvocation_returns_branch_values(t *testing.T) {
+	cmds := Build(&subcommandGrammar{})
+
+	invocation, err := cmds.ParseInvocation("/config set --format json api-key sk-1234")
+	require.NoError(t, err)
+
+	require.Equal(t, 2, len(invocation.Path), "expected 2-element path [config, set]")
+
+	parent := invocation.Path[0]
+	require.Equal(t, "config", parent.Node.Name)
+	require.Equal(t, parentConfigCommand{Format: "json"}, parent.Value)
+
+	leaf := invocation.Path[1]
+	require.Equal(t, "set", leaf.Node.Name)
+	require.Equal(t, subSetCommand{Key: "api-key", Value: "sk-1234"}, leaf.Value)
+
+	parentValue, ok := invocation.ValueFor(invocation.Path[0].Node)
+	require.True(t, ok)
+	require.Equal(t, parentConfigCommand{Format: "json"}, parentValue)
+}
+
+func TestParseInvocation_unknown_flag_checks_active_ancestors(t *testing.T) {
+	cmds := Build(&subcommandGrammar{})
+
+	_, err := cmds.ParseInvocation("/config set --unknown value api-key sk-1234")
+
+	var unknown *UnknownFlagError
+	require.ErrorAs(t, err, &unknown)
+	require.Equal(t, "--unknown", unknown.Flag)
 }

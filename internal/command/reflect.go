@@ -26,6 +26,10 @@ func resolveFieldMetas(cmd any) ([]fieldMeta, error) {
 	for i := 0; i < t.NumField(); i++ {
 		f := t.Field(i)
 
+		if _, ok := f.Tag.Lookup("cmd"); ok {
+			continue
+		}
+
 		if !hasTag(f) {
 			continue
 		}
@@ -163,8 +167,8 @@ func hasCmdChildren(t reflect.Type) bool {
 // `help:""` tag.
 //
 // If a `cmd`-tagged field is itself a struct whose fields carry
-// `cmd` tags, the field becomes a group node (no factory) and the
-// inner fields become its children. This recursion works at any
+// `cmd` tags, the field becomes a branch node that can have both its
+// own args/flags and child commands. This recursion works at any
 // depth.
 func build(grammar any) ([]*Node, error) {
 	v := reflect.ValueOf(grammar)
@@ -199,28 +203,6 @@ func build(grammar any) ([]*Node, error) {
 		help := ft.Tag.Get("help")
 		fieldType := ft.Type
 
-		// If the field type has cmd-tagged children, it is a group
-		// node — recurse to build children instead of treating its
-		// fields as arguments.
-		if hasCmdChildren(fieldType) {
-			childPtr := reflect.New(fieldType).Interface()
-
-			children, err := build(childPtr)
-			if err != nil {
-				return nil, fmt.Errorf("field %s: %w", ft.Name, err)
-			}
-
-			node := &Node{
-				Name:     name,
-				Help:     help,
-				Children: children,
-			}
-
-			nodes = append(nodes, node)
-
-			continue
-		}
-
 		fields, err := resolveFieldMetas(reflect.New(fieldType).Elem().Interface())
 		if err != nil {
 			return nil, fmt.Errorf("field %s: %w", ft.Name, err)
@@ -241,6 +223,21 @@ func build(grammar any) ([]*Node, error) {
 			factory: func() any {
 				return reflect.New(fieldType).Interface()
 			},
+		}
+
+		if hasCmdChildren(fieldType) {
+			childPtr := reflect.New(fieldType).Interface()
+
+			children, err := build(childPtr)
+			if err != nil {
+				return nil, fmt.Errorf("field %s: %w", ft.Name, err)
+			}
+
+			node.Children = children
+
+			for _, child := range node.Children {
+				child.Parent = node
+			}
 		}
 
 		nodes = append(nodes, node)
