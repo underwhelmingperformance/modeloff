@@ -89,7 +89,7 @@ func TestChatScreen_DispatchDone_deferred_while_replies_queued(t *testing.T) {
 	screen := NewChatScreen(t.Context(), newTestSession(t))
 	*screen.active = "#general"
 	screen.replyQueue = []domain.ModelReplyEvent{
-		{Message: domain.Message{Channel: "#general", From: "botty", Body: "queued"}},
+		{Event: domain.ChannelMessage{Channel: "#general", From: "botty", Body: "queued"}},
 	}
 
 	// With replies still queued, DispatchDone should not clear the
@@ -107,7 +107,7 @@ func TestChatScreen_ModelReply_queues_and_paces(t *testing.T) {
 
 	// First reply is delivered immediately (via deliverNextReplyMsg).
 	first := domain.ModelReplyEvent{
-		Message:  domain.Message{Channel: "#general", From: "botty", Body: "line one"},
+		Event:    domain.ChannelMessage{Channel: "#general", From: "botty", Body: "line one"},
 		Instance: "botty",
 	}
 	updated, cmd := screen.handleModelReplyEvent(first)
@@ -121,7 +121,7 @@ func TestChatScreen_ModelReply_queues_and_paces(t *testing.T) {
 
 	// Second reply is only enqueued; no new delivery trigger.
 	second := domain.ModelReplyEvent{
-		Message:  domain.Message{Channel: "#general", From: "botty", Body: "line two"},
+		Event:    domain.ChannelMessage{Channel: "#general", From: "botty", Body: "line two"},
 		Instance: "botty",
 	}
 	updated, cmd = screen.handleModelReplyEvent(second)
@@ -172,7 +172,7 @@ func TestChatScreen_handleSessionEvent_routing(t *testing.T) {
 		{
 			name: "ModelReplyEvent routes to delivery",
 			event: domain.ModelReplyEvent{
-				Message:  domain.Message{Channel: "#general", From: "botty", Body: "hi"},
+				Event:    domain.ChannelMessage{Channel: "#general", From: "botty", Body: "hi"},
 				Instance: "botty",
 			},
 			wantType: deliverNextReplyMsg{},

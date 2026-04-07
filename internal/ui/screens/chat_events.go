@@ -353,23 +353,15 @@ func (s ChatScreen) handleModelKickedEvent(msg domain.ModelKickedEvent) (ui.Mode
 }
 
 func (s ChatScreen) handleMessageEvent(msg domain.MessageEvent) (ui.Model, tea.Cmd) {
-	event := domain.StoredEvent{
-		Event: domain.ChannelMessage{
-			Channel: msg.Message.Channel,
-			From:    msg.Message.From,
-			Body:    msg.Message.Body,
-			Action:  msg.Message.Action,
-			At:      msg.Message.SentAt,
-		},
-	}
+	event := domain.StoredEvent{Event: msg.Event}
 
-	if msg.Message.Channel == *s.active {
+	if msg.Event.Channel == *s.active {
 		return s, msgCmd(event)
 	}
 
-	count, _ := s.sess.UnreadCount(s.ctx, msg.Message.Channel)
+	count, _ := s.sess.UnreadCount(s.ctx, msg.Event.Channel)
 
-	return s, msgCmd(components.ChannelUnreadMsg{Channel: msg.Message.Channel, Count: count})
+	return s, msgCmd(components.ChannelUnreadMsg{Channel: msg.Event.Channel, Count: count})
 }
 
 func (s ChatScreen) handleModelReplyEvent(msg domain.ModelReplyEvent) (ui.Model, tea.Cmd) {
@@ -503,23 +495,15 @@ func (s ChatScreen) deliverNextReply() (ui.Model, tea.Cmd) {
 }
 
 func (s ChatScreen) showReply(msg domain.ModelReplyEvent) (ui.Model, tea.Cmd) {
-	event := domain.StoredEvent{
-		Event: domain.ChannelMessage{
-			Channel: msg.Message.Channel,
-			From:    msg.Message.From,
-			Body:    msg.Message.Body,
-			Action:  msg.Message.Action,
-			At:      msg.Message.SentAt,
-		},
-	}
+	event := domain.StoredEvent{Event: msg.Event}
 
-	if msg.Message.Channel == *s.active {
+	if msg.Channel == *s.active {
 		return s, msgCmd(event)
 	}
 
-	count, _ := s.sess.UnreadCount(s.ctx, msg.Message.Channel)
+	count, _ := s.sess.UnreadCount(s.ctx, msg.Channel)
 
-	return s, msgCmd(components.ChannelUnreadMsg{Channel: msg.Message.Channel, Count: count})
+	return s, msgCmd(components.ChannelUnreadMsg{Channel: msg.Channel, Count: count})
 }
 
 func (s ChatScreen) handleLiveModelsLoaded(msg liveModelsLoadedMsg) (ui.Model, tea.Cmd) {

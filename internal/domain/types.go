@@ -58,16 +58,6 @@ func (ch Channel) DisplayName() string {
 	return string(ch.Name)
 }
 
-// Message represents a single message in a channel.
-type Message struct {
-	ID      string
-	Channel ChannelName
-	From    Nick
-	Body    string
-	Action  bool
-	SentAt  time.Time
-}
-
 // Instance represents an actor on the IRC server. Both the human
 // user and model instances share this type. The human user has an
 // empty ModelID.

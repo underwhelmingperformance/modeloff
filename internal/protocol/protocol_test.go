@@ -9,25 +9,6 @@ import (
 	"github.com/laney/modeloff/internal/domain"
 )
 
-func TestFromMessage(t *testing.T) {
-	at := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
-
-	got := FromMessage(domain.Message{
-		Channel: "#general",
-		From:    "alice",
-		Body:    "hello",
-		SentAt:  at,
-	})
-
-	require.Equal(t, IRCMessage{
-		Kind:   KindPrivMsg,
-		From:   "alice",
-		Target: "#general",
-		Body:   "hello",
-		At:     at,
-	}, got)
-}
-
 func TestFromJoinEvent(t *testing.T) {
 	at := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
 

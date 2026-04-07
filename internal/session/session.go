@@ -530,24 +530,18 @@ func (s *Session) SendMessage(
 	ctx, span := startSpan(ctx, "session.send_message", attribute.String(observability.AttrOperation, "session.send_message"))
 	defer span.End()
 
-	msg := domain.Message{
-		ID:      fmt.Sprintf("%d", s.now().UnixNano()),
+	cm := domain.ChannelMessage{
 		Channel: ch,
 		From:    s.user.Nick,
 		Body:    body,
-		SentAt:  s.now(),
+		At:      s.now(),
 	}
 
-	s.appendEvent(ctx, ch, domain.ChannelMessage{
-		Channel: ch,
-		From:    s.user.Nick,
-		Body:    body,
-		At:      msg.SentAt,
-	})
+	s.appendEvent(ctx, ch, cm)
 
 	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 
-	s.emit(ctx, domain.MessageEvent{Message: msg})
+	s.emit(ctx, domain.MessageEvent{Event: cm})
 
 	return nil
 }
@@ -560,24 +554,17 @@ func (s *Session) SendAction(
 	ch domain.ChannelName,
 	body string,
 ) error {
-	msg := domain.Message{
-		ID:      fmt.Sprintf("%d", s.now().UnixNano()),
+	cm := domain.ChannelMessage{
 		Channel: ch,
 		From:    s.user.Nick,
 		Body:    body,
 		Action:  true,
-		SentAt:  s.now(),
+		At:      s.now(),
 	}
 
-	s.appendEvent(ctx, ch, domain.ChannelMessage{
-		Channel: ch,
-		From:    s.user.Nick,
-		Body:    body,
-		Action:  true,
-		At:      msg.SentAt,
-	})
+	s.appendEvent(ctx, ch, cm)
 
-	s.emit(ctx, domain.MessageEvent{Message: msg})
+	s.emit(ctx, domain.MessageEvent{Event: cm})
 
 	return nil
 }
@@ -1087,7 +1074,8 @@ func (s *Session) dispatchToInstances(
 		replies = append(replies, instReplies...)
 
 		for _, r := range instReplies {
-			events = append(events, protocol.FromMessage(r.Message))
+			ircMsg, _ := protocol.FromChannelEvent(r.Event)
+			events = append(events, ircMsg)
 		}
 	}
 
@@ -1231,34 +1219,26 @@ func (s *Session) buildReplies(
 ) []domain.ModelReplyEvent {
 	var replies []domain.ModelReplyEvent
 
-	for i, part := range parts {
+	for _, part := range parts {
 		body := strings.TrimSpace(part.Body)
 		if body == "" {
 			continue
 		}
 
-		reply := domain.Message{
-			ID:      fmt.Sprintf("%d~%s~%d", s.now().UnixNano(), nick, i),
+		now := s.now()
+		cm := domain.ChannelMessage{
 			Channel: channelName,
 			From:    nick,
 			Body:    body,
 			Action:  part.Kind == protocol.ReplyAction,
-			SentAt:  s.now(),
+			At:      now,
 		}
 
-		now := s.now()
-
-		s.appendEvent(ctx, channelName, domain.ChannelMessage{
-			Channel: channelName,
-			From:    nick,
-			Body:    reply.Body,
-			Action:  reply.Action,
-			At:      now,
-		})
+		s.appendEvent(ctx, channelName, cm)
 
 		replies = append(replies, domain.ModelReplyEvent{
 			Channel:  channelName,
-			Message:  reply,
+			Event:    cm,
 			Instance: nick,
 			At:       now,
 		})
@@ -1370,10 +1350,11 @@ func (s *Session) emitUIOnly(evt domain.SessionEvent) {
 func (s *Session) maybeDispatch(ctx context.Context, evt domain.SessionEvent) {
 	switch e := evt.(type) {
 	case domain.MessageEvent:
+		ircMsg, _ := protocol.FromChannelEvent(e.Event)
 		s.dispatchInBackground(
 			ctx,
-			e.Message.Channel,
-			[]protocol.IRCMessage{protocol.FromMessage(e.Message)},
+			e.Event.Channel,
+			[]protocol.IRCMessage{ircMsg},
 		)
 
 	case domain.JoinEvent:

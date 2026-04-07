@@ -25,20 +25,12 @@ var testEvents = []domain.StoredEvent{
 	{Event: domain.ChannelMessage{Channel: "#general", From: "alice", Body: "how are you?", At: time.Date(2025, 1, 1, 10, 2, 0, 0, time.UTC)}},
 }
 
-// messagesToEvents converts domain messages into stored events.
-func messagesToEvents(msgs []domain.Message) []domain.StoredEvent {
+// messagesToEvents converts channel messages into stored events.
+func messagesToEvents(msgs []domain.ChannelMessage) []domain.StoredEvent {
 	events := make([]domain.StoredEvent, len(msgs))
 
 	for i, m := range msgs {
-		events[i] = domain.StoredEvent{
-			Event: domain.ChannelMessage{
-				Channel: m.Channel,
-				From:    m.From,
-				Body:    m.Body,
-				Action:  m.Action,
-				At:      m.SentAt,
-			},
-		}
+		events[i] = domain.StoredEvent{Event: m}
 	}
 
 	return events
@@ -181,10 +173,9 @@ func TestChatView_append_event(t *testing.T) {
 
 func TestChatView_scroll(t *testing.T) {
 	// Create many messages to fill the view.
-	msgs := make([]domain.Message, 30)
+	msgs := make([]domain.ChannelMessage, 30)
 	for i := range msgs {
-		msgs[i] = domain.Message{
-			ID:      fmt.Sprintf("%d", i),
+		msgs[i] = domain.ChannelMessage{
 			Channel: "#general",
 			From:    "user",
 			Body:    fmt.Sprintf("message %d", i),
@@ -212,10 +203,9 @@ func TestChatView_scroll(t *testing.T) {
 }
 
 func TestChatView_scroll_indicator(t *testing.T) {
-	msgs := make([]domain.Message, 30)
+	msgs := make([]domain.ChannelMessage, 30)
 	for i := range msgs {
-		msgs[i] = domain.Message{
-			ID:      fmt.Sprintf("%d", i),
+		msgs[i] = domain.ChannelMessage{
 			Channel: "#general",
 			From:    "user",
 			Body:    fmt.Sprintf("message %d", i),
@@ -247,10 +237,9 @@ func TestChatView_scroll_indicator(t *testing.T) {
 }
 
 func TestChatView_ctrl_arrow_scroll(t *testing.T) {
-	msgs := make([]domain.Message, 30)
+	msgs := make([]domain.ChannelMessage, 30)
 	for i := range msgs {
-		msgs[i] = domain.Message{
-			ID:      fmt.Sprintf("%d", i),
+		msgs[i] = domain.ChannelMessage{
 			Channel: "#general",
 			From:    "user",
 			Body:    fmt.Sprintf("message %d", i),
@@ -285,10 +274,9 @@ func TestChatView_scroll_does_not_go_negative(t *testing.T) {
 }
 
 func TestChatView_arrow_keys_stay_with_input(t *testing.T) {
-	msgs := make([]domain.Message, 30)
+	msgs := make([]domain.ChannelMessage, 30)
 	for i := range msgs {
-		msgs[i] = domain.Message{
-			ID:      fmt.Sprintf("%d", i),
+		msgs[i] = domain.ChannelMessage{
 			Channel: "#general",
 			From:    "user",
 			Body:    fmt.Sprintf("message %d", i),
@@ -322,9 +310,9 @@ func TestChatView_arrow_keys_stay_with_input(t *testing.T) {
 }
 
 func TestChatView_nicks_use_hashed_colours(t *testing.T) {
-	msgs := []domain.Message{
-		{ID: "1", Channel: "#general", From: "alice", Body: "from user"},
-		{ID: "2", Channel: "#general", From: "bot", Body: "from model"},
+	msgs := []domain.ChannelMessage{
+		{Channel: "#general", From: "alice", Body: "from user"},
+		{Channel: "#general", From: "bot", Body: "from model"},
 	}
 
 	cv := newChatViewWithEvents("#general", "alice", "", messagesToEvents(msgs))
@@ -378,10 +366,9 @@ func TestChatView_no_topic_bar_when_empty(t *testing.T) {
 }
 
 func TestChatView_topic_bar_reduces_message_area(t *testing.T) {
-	msgs := make([]domain.Message, 30)
+	msgs := make([]domain.ChannelMessage, 30)
 	for i := range msgs {
-		msgs[i] = domain.Message{
-			ID:      fmt.Sprintf("%d", i),
+		msgs[i] = domain.ChannelMessage{
 			Channel: "#general",
 			From:    "user",
 			Body:    fmt.Sprintf("msg %d", i),
@@ -448,10 +435,9 @@ func TestChatView_pending_indicator(t *testing.T) {
 }
 
 func TestChatView_pending_indicator_reduces_message_area(t *testing.T) {
-	msgs := make([]domain.Message, 30)
+	msgs := make([]domain.ChannelMessage, 30)
 	for i := range msgs {
-		msgs[i] = domain.Message{
-			ID:      fmt.Sprintf("%d", i),
+		msgs[i] = domain.ChannelMessage{
 			Channel: "#general",
 			From:    "user",
 			Body:    fmt.Sprintf("msg %d", i),
@@ -1030,10 +1016,9 @@ func TestChatView_stored_events_keep_divider_when_more_arrive_during_catch_up(t 
 }
 
 func TestChatView_mouse_wheel_scrolls_messages(t *testing.T) {
-	msgs := make([]domain.Message, 30)
+	msgs := make([]domain.ChannelMessage, 30)
 	for i := range msgs {
-		msgs[i] = domain.Message{
-			ID:      fmt.Sprintf("%d", i),
+		msgs[i] = domain.ChannelMessage{
 			Channel: "#general",
 			From:    "user",
 			Body:    fmt.Sprintf("message %d", i),

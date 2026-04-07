@@ -6,7 +6,7 @@ import (
 
 // MessageEvent is emitted when a new message is sent in a channel.
 type MessageEvent struct {
-	Message Message
+	Event ChannelMessage
 }
 
 // JoinEvent is emitted when a user or model joins a channel. Created
@@ -72,7 +72,7 @@ type ModelKickedEvent struct {
 // in a channel.
 type ModelReplyEvent struct {
 	Channel  ChannelName
-	Message  Message
+	Event    ChannelMessage
 	Instance Nick
 	At       time.Time
 }

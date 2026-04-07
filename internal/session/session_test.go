@@ -263,7 +263,7 @@ func TestSession_model_ResponsePart_removes_from_channel(t *testing.T) {
 
 	require.IsType(t, domain.ModelReplyEvent{}, events[2])
 	reply := events[2].(domain.ModelReplyEvent)
-	require.Equal(t, "goodbye friends", reply.Message.Body)
+	require.Equal(t, "goodbye friends", reply.Event.Body)
 
 	require.Equal(t, domain.DispatchDoneEvent{Channel: "#general"}, events[3])
 
@@ -563,12 +563,11 @@ func TestSession_SendMessage(t *testing.T) {
 	require.NoError(t, sess.SendMessage(ctx, "#general", "hello world"))
 	evt := drainEvent[domain.MessageEvent](t, sess)
 	require.Equal(t, domain.MessageEvent{
-		Message: domain.Message{
-			ID:      fmt.Sprintf("%d", fixedTime.UnixNano()),
+		Event: domain.ChannelMessage{
 			Channel: "#general",
 			From:    "testuser",
 			Body:    "hello world",
-			SentAt:  fixedTime,
+			At:      fixedTime,
 		},
 	}, evt)
 
@@ -612,12 +611,11 @@ func TestSession_SendMessage_emits_dispatch_events(t *testing.T) {
 		domain.ModelReplyEvent{
 			Channel:  "#general",
 			Instance: "botty",
-			Message: domain.Message{
-				ID:      fmt.Sprintf("%d~botty~0", fixedTime.UnixNano()),
+			Event: domain.ChannelMessage{
 				Channel: "#general",
 				From:    "botty",
 				Body:    "got it",
-				SentAt:  fixedTime,
+				At:      fixedTime,
 			},
 			At: fixedTime,
 		},
@@ -657,12 +655,11 @@ func TestSession_JoinEvent_triggers_dispatch(t *testing.T) {
 		domain.ModelReplyEvent{
 			Channel:  "#general",
 			Instance: "botty",
-			Message: domain.Message{
-				ID:      fmt.Sprintf("%d~botty~0", fixedTime.UnixNano()),
+			Event: domain.ChannelMessage{
 				Channel: "#general",
 				From:    "botty",
 				Body:    "welcome",
-				SentAt:  fixedTime,
+				At:      fixedTime,
 			},
 			At: fixedTime,
 		},
@@ -1479,12 +1476,11 @@ func TestSession_Poke_emits_dispatch_events(t *testing.T) {
 		domain.ModelReplyEvent{
 			Channel:  "#general",
 			Instance: "botty",
-			Message: domain.Message{
-				ID:      fmt.Sprintf("%d~botty~0", fixedTime.UnixNano()),
+			Event: domain.ChannelMessage{
 				Channel: "#general",
 				From:    "botty",
 				Body:    "poke received",
-				SentAt:  fixedTime,
+				At:      fixedTime,
 			},
 			At: fixedTime,
 		},
@@ -2120,12 +2116,11 @@ func TestSession_DispatchToChannel_retries_on_multiline_reply(t *testing.T) {
 		{
 			Channel:  "#general",
 			Instance: "botty",
-			Message: domain.Message{
-				ID:      fmt.Sprintf("%d~botty~0", fixedTime.UnixNano()),
+			Event: domain.ChannelMessage{
 				Channel: "#general",
 				From:    "botty",
 				Body:    "clean reply",
-				SentAt:  fixedTime,
+				At:      fixedTime,
 			},
 			At: fixedTime,
 		},
@@ -2189,12 +2184,11 @@ func TestSession_DispatchToChannel_accepts_single_line_reply(t *testing.T) {
 		{
 			Channel:  "#general",
 			Instance: "botty",
-			Message: domain.Message{
-				ID:      fmt.Sprintf("%d~botty~0", fixedTime.UnixNano()),
+			Event: domain.ChannelMessage{
 				Channel: "#general",
 				From:    "botty",
 				Body:    "no newlines here",
-				SentAt:  fixedTime,
+				At:      fixedTime,
 			},
 			At: fixedTime,
 		},
@@ -2255,12 +2249,11 @@ func TestSession_DispatchToChannel_write_memory_then_reply(t *testing.T) {
 		{
 			Channel:  "#general",
 			Instance: "botty",
-			Message: domain.Message{
-				ID:      fmt.Sprintf("%d~botty~0", fixedTime.UnixNano()),
+			Event: domain.ChannelMessage{
 				Channel: "#general",
 				From:    "botty",
 				Body:    "noted!",
-				SentAt:  fixedTime,
+				At:      fixedTime,
 			},
 			At: fixedTime,
 		},
@@ -2362,12 +2355,11 @@ func TestSession_DispatchToChannel_memory_write_error_returns_error_to_model(t *
 		{
 			Channel:  "#general",
 			Instance: "botty",
-			Message: domain.Message{
-				ID:      fmt.Sprintf("%d~botty~0", fixedTime.UnixNano()),
+			Event: domain.ChannelMessage{
 				Channel: "#general",
 				From:    "botty",
 				Body:    "ok anyway",
-				SentAt:  fixedTime,
+				At:      fixedTime,
 			},
 			At: fixedTime,
 		},
@@ -2418,12 +2410,11 @@ func TestSession_DispatchToChannel_multiple_memory_calls_in_one_response(t *test
 		{
 			Channel:  "#general",
 			Instance: "botty",
-			Message: domain.Message{
-				ID:      fmt.Sprintf("%d~botty~0", fixedTime.UnixNano()),
+			Event: domain.ChannelMessage{
 				Channel: "#general",
 				From:    "botty",
 				Body:    "stored both",
-				SentAt:  fixedTime,
+				At:      fixedTime,
 			},
 			At: fixedTime,
 		},
@@ -2483,12 +2474,11 @@ func TestSession_DispatchToChannel_search_memory_then_reply(t *testing.T) {
 		{
 			Channel:  "#general",
 			Instance: "botty",
-			Message: domain.Message{
-				ID:      fmt.Sprintf("%d~botty~0", fixedTime.UnixNano()),
+			Event: domain.ChannelMessage{
 				Channel: "#general",
 				From:    "botty",
 				Body:    "your favourite colour is blue",
-				SentAt:  fixedTime,
+				At:      fixedTime,
 			},
 			At: fixedTime,
 		},
@@ -2636,12 +2626,11 @@ func TestSession_DispatchToChannel_search_memory_with_vector_store(t *testing.T)
 		{
 			Channel:  "#general",
 			Instance: "botty",
-			Message: domain.Message{
-				ID:      fmt.Sprintf("%d~botty~0", fixedTime.UnixNano()),
+			Event: domain.ChannelMessage{
 				Channel: "#general",
 				From:    "botty",
 				Body:    "your favourite is cats",
-				SentAt:  fixedTime,
+				At:      fixedTime,
 			},
 			At: fixedTime,
 		},
@@ -2808,29 +2797,24 @@ func seedInstance(t *testing.T, s *storemod.SQLiteStore, inst domain.Instance) {
 }
 
 // seedUserMessage appends a user message as a ChannelMessage event and
-// returns the original Message (for assertions elsewhere) and its
-// protocol representation. Unlike sess.SendMessage, this does not
-// trigger background dispatch.
-func seedUserMessage(t *testing.T, s *storemod.SQLiteStore, ch domain.ChannelName, body string) (domain.Message, protocol.IRCMessage) {
+// returns the event and its protocol representation. Unlike
+// sess.SendMessage, this does not trigger background dispatch.
+func seedUserMessage(t *testing.T, s *storemod.SQLiteStore, ch domain.ChannelName, body string) (domain.ChannelMessage, protocol.IRCMessage) {
 	t.Helper()
 
-	msg := domain.Message{
-		ID:      fmt.Sprintf("%d", fixedTime.UnixNano()),
+	cm := domain.ChannelMessage{
 		Channel: ch,
 		From:    "testuser",
 		Body:    body,
-		SentAt:  fixedTime,
+		At:      fixedTime,
 	}
 
-	_, err := s.AppendEvent(t.Context(), ch, domain.ChannelMessage{
-		Channel: ch,
-		From:    msg.From,
-		Body:    msg.Body,
-		At:      msg.SentAt,
-	})
+	_, err := s.AppendEvent(t.Context(), ch, cm)
 	require.NoError(t, err)
 
-	return msg, protocol.FromMessage(msg)
+	ircMsg, _ := protocol.FromChannelEvent(cm)
+
+	return cm, ircMsg
 }
 
 // channelMessages extracts ChannelMessage events from stored events.

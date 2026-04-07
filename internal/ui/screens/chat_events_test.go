@@ -114,7 +114,7 @@ func TestChatScreen_MessageEvent_inactive_channel(t *testing.T) {
 	tm.WaitFor("#general")
 
 	tm.Send(domain.MessageEvent{
-		Message: domain.Message{
+		Event: domain.ChannelMessage{
 			Channel: "#random",
 			From:    "bob",
 			Body:    "hello from random",

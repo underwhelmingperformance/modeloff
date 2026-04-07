@@ -110,23 +110,6 @@ type ModelResponse struct {
 	FarewellMessage string       `json:"farewell_message,omitempty"`
 }
 
-// FromMessage converts a stored domain message into an IRC-style
-// protocol message for model consumption.
-func FromMessage(msg domain.Message) IRCMessage {
-	kind := KindPrivMsg
-	if msg.Action {
-		kind = KindAction
-	}
-
-	return IRCMessage{
-		Kind:   kind,
-		From:   string(msg.From),
-		Target: string(msg.Channel),
-		Body:   msg.Body,
-		At:     msg.SentAt,
-	}
-}
-
 // FromJoinEvent converts a join event into an IRC-style protocol
 // message.
 func FromJoinEvent(evt domain.JoinEvent) IRCMessage {
