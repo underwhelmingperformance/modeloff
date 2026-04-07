@@ -193,6 +193,9 @@ func (s ChatScreen) handlePartEvent(msg domain.PartEvent) (ui.Model, tea.Cmd) {
 		} else {
 			*s.active = ""
 			s.topic = ""
+			cmds = append(cmds, msgCmd(components.SetPlaceholderMsg{
+				Text: welcomeText(s.sess.UserNick()),
+			}))
 		}
 
 		cmds = append(cmds, msgCmd(components.SetChannelMsg{

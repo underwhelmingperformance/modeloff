@@ -29,6 +29,23 @@ func TestChatScreen_PartEvent_leaving_active_switches_channel(t *testing.T) {
 	require.NotContains(t, view, "#random")
 }
 
+func TestChatScreen_PartEvent_leaving_last_channel_shows_welcome(t *testing.T) {
+	sess := newTestSession(t)
+	uitest.SeedChannel(t, sess, "#only")
+
+	tm := newChatApp(t, sess)
+	tm.WaitFor("#only")
+
+	require.NoError(t, sess.Leave(t.Context(), "#only"))
+
+	tm.WaitFor(
+		"Welcome to modeloff",
+		"Connected as",
+		"testuser",
+		"/join #general",
+	)
+}
+
 func TestChatScreen_PartEvent_leaving_non_active_keeps_active(t *testing.T) {
 	sess := newTestSession(t)
 	uitest.SeedChannel(t, sess, "#general")
