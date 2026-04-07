@@ -57,7 +57,6 @@ type ChatScreen struct {
 	width      int
 	height     int
 	active     *domain.ChannelName
-	topic      string
 	obs        *observability.Runtime
 	summary    components.MetricsSummaryModel
 }

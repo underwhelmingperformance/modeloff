@@ -22,13 +22,12 @@ func (s ChatScreen) handleInitialLoad(msg domain.InitialLoadEvent) (ui.Model, te
 	}
 
 	*s.active = msg.Active
-	s.topic = msg.Topic
 
 	var cmds []tea.Cmd
 
 	cmds = append(cmds, msgCmd(components.SetChannelMsg{
 		Channel: msg.Active,
-		Topic:   msg.Topic,
+		Topic:   s.activeTopic(),
 	}))
 
 	if s.channels.Len() == 0 {
@@ -134,13 +133,12 @@ func (s ChatScreen) handleJoinEvent(msg domain.JoinEvent) (ui.Model, tea.Cmd) {
 	}
 
 	s.channels.Insert(ch)
-	s.topic = ch.Topic
 
 	var cmds []tea.Cmd
 	cmds = append(cmds, msgCmd(components.SetPlaceholderMsg{}))
 	cmds = append(cmds, msgCmd(components.SetChannelMsg{
 		Channel: msg.Channel,
-		Topic:   ch.Topic,
+		Topic:   s.activeTopic(),
 	}))
 	cmds = append(cmds, msgCmd(components.ChannelAddedMsg{Channel: ch}))
 	cmds = append(cmds, msgCmd(components.ChannelActiveMsg{Channel: msg.Channel}))
@@ -191,10 +189,8 @@ func (s ChatScreen) handlePartEvent(msg domain.PartEvent) (ui.Model, tea.Cmd) {
 		if s.channels.Len() > 0 {
 			first, _ := s.channels.GetAt(0)
 			*s.active = first.Name
-			s.topic = first.Topic
 		} else {
 			*s.active = ""
-			s.topic = ""
 			cmds = append(cmds, msgCmd(components.SetPlaceholderMsg{
 				Text: welcomeText(s.sess.UserNick()),
 			}))
@@ -202,7 +198,7 @@ func (s ChatScreen) handlePartEvent(msg domain.PartEvent) (ui.Model, tea.Cmd) {
 
 		cmds = append(cmds, msgCmd(components.SetChannelMsg{
 			Channel: *s.active,
-			Topic:   s.topic,
+			Topic:   s.activeTopic(),
 		}))
 		cmds = append(cmds, msgCmd(components.ChannelActiveMsg{Channel: *s.active}))
 	}
@@ -275,10 +271,6 @@ func (s ChatScreen) handleTopicChangeEvent(msg domain.TopicChangeEvent) (ui.Mode
 		ch.TopicSetBy = msg.By
 		ch.TopicSetAt = msg.At
 		s.channels.Insert(ch)
-	}
-
-	if msg.Channel == *s.active {
-		s.topic = msg.Topic
 	}
 
 	if *s.active != msg.Channel {
@@ -420,7 +412,6 @@ func (s ChatScreen) handleModelReplyEvent(msg domain.ModelReplyEvent) (ui.Model,
 func (s ChatScreen) handleDMOpenedEvent(msg domain.DMOpenedEvent) (ui.Model, tea.Cmd) {
 	*s.active = msg.Channel.Name
 	s.channels.Insert(msg.Channel)
-	s.topic = msg.Channel.Topic
 
 	var members domain.MemberList
 
@@ -432,7 +423,7 @@ func (s ChatScreen) handleDMOpenedEvent(msg domain.DMOpenedEvent) (ui.Model, tea
 	cmds = append(cmds, msgCmd(components.SetPlaceholderMsg{}))
 	cmds = append(cmds, msgCmd(components.SetChannelMsg{
 		Channel: msg.Channel.Name,
-		Topic:   msg.Channel.Topic,
+		Topic:   s.activeTopic(),
 	}))
 	cmds = append(cmds, msgCmd(components.ChannelAddedMsg{Channel: msg.Channel}))
 	cmds = append(cmds, msgCmd(components.ChannelActiveMsg{Channel: msg.Channel.Name}))
@@ -552,6 +543,19 @@ func (s ChatScreen) handleLiveModelsLoaded(msg liveModelsLoadedMsg) (ui.Model, t
 	*s.liveModels = msg.models
 
 	return s, nil
+}
+
+func (s ChatScreen) activeTopic() string {
+	if *s.active == "" {
+		return ""
+	}
+
+	ch, ok := s.channels.Get(domain.Channel{Name: *s.active})
+	if !ok {
+		return ""
+	}
+
+	return ch.Topic
 }
 
 func (s ChatScreen) activeMemberNicks() iter.Seq[domain.Nick] {
