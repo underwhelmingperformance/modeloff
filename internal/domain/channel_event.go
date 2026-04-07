@@ -32,6 +32,7 @@ var (
 	_ ChannelEvent = ChannelMessage{}
 	_ ChannelEvent = ChannelJoin{}
 	_ ChannelEvent = ChannelPart{}
+	_ ChannelEvent = ChannelQuit{}
 	_ ChannelEvent = ChannelTopicChange{}
 	_ ChannelEvent = ChannelModeChange{}
 	_ ChannelEvent = ChannelModelInvited{}
@@ -66,6 +67,7 @@ type ChannelJoin struct {
 	Channel ChannelName `json:"channel"`
 	Nick    Nick        `json:"nick"`
 	Created bool        `json:"created,omitempty"`
+	Message string      `json:"message,omitempty"`
 	At      time.Time   `json:"at"`
 }
 
@@ -79,6 +81,7 @@ func (ChannelJoin) ModelVisible() bool { return true }
 type ChannelPart struct {
 	Channel ChannelName `json:"channel"`
 	Nick    Nick        `json:"nick"`
+	Message string      `json:"message,omitempty"`
 	At      time.Time   `json:"at"`
 }
 
@@ -87,6 +90,21 @@ func (e ChannelPart) channelEventTime() time.Time { return e.At }
 
 // ModelVisible implements ChannelEvent.
 func (ChannelPart) ModelVisible() bool { return true }
+
+// ChannelQuit records a user or model quitting the server. One event
+// is recorded per channel the actor was in.
+type ChannelQuit struct {
+	Channel ChannelName `json:"channel"`
+	Nick    Nick        `json:"nick"`
+	Message string      `json:"message,omitempty"`
+	At      time.Time   `json:"at"`
+}
+
+func (ChannelQuit) channelEvent()                 {}
+func (e ChannelQuit) channelEventTime() time.Time { return e.At }
+
+// ModelVisible implements ChannelEvent.
+func (ChannelQuit) ModelVisible() bool { return true }
 
 // ChannelTopicChange records a topic change.
 type ChannelTopicChange struct {
@@ -269,6 +287,8 @@ func ChannelEventType(e ChannelEvent) string {
 		return "join"
 	case ChannelPart:
 		return "part"
+	case ChannelQuit:
+		return "quit"
 	case ChannelTopicChange:
 		return "topic_change"
 	case ChannelModeChange:
@@ -340,6 +360,9 @@ func UnmarshalChannelEvent(b []byte) (ChannelEvent, error) {
 		return e, unmarshal(&e)
 	case "part":
 		var e ChannelPart
+		return e, unmarshal(&e)
+	case "quit":
+		var e ChannelQuit
 		return e, unmarshal(&e)
 	case "topic_change":
 		var e ChannelTopicChange

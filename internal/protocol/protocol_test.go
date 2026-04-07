@@ -81,6 +81,61 @@ func TestFromTopicChangeEvent(t *testing.T) {
 	}, got)
 }
 
+func TestFromJoinEvent_with_message(t *testing.T) {
+	at := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
+
+	got := FromJoinEvent(domain.JoinEvent{
+		Channel: "#general",
+		Nick:    "alice",
+		Message: "hello everyone",
+		At:      at,
+	})
+
+	require.Equal(t, IRCMessage{
+		Kind:   KindJoin,
+		From:   "alice",
+		Target: "#general",
+		Body:   "hello everyone",
+		At:     at,
+	}, got)
+}
+
+func TestFromPartEvent_with_message(t *testing.T) {
+	at := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
+
+	got := FromPartEvent(domain.PartEvent{
+		Channel: "#general",
+		Nick:    "alice",
+		Message: "goodbye",
+		At:      at,
+	})
+
+	require.Equal(t, IRCMessage{
+		Kind:   KindPart,
+		From:   "alice",
+		Target: "#general",
+		Body:   "goodbye",
+		At:     at,
+	}, got)
+}
+
+func TestFromQuitEvent(t *testing.T) {
+	at := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
+
+	got := FromQuitEvent(domain.QuitEvent{
+		Nick:    "alice",
+		Message: "gone fishing",
+		At:      at,
+	})
+
+	require.Equal(t, IRCMessage{
+		Kind: KindQuit,
+		From: "alice",
+		Body: "gone fishing",
+		At:   at,
+	}, got)
+}
+
 func TestFromNickChangeEvent(t *testing.T) {
 	at := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
 

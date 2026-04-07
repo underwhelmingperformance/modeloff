@@ -23,13 +23,14 @@ const DefaultEmbeddingModel = domain.ModelID("openai/text-embedding-3-small")
 
 // Config holds all application settings.
 type Config struct {
-	APIKey         string         `json:"api_key"`
-	BaseURL        string         `json:"base_url,omitempty"`
-	UserNick       string         `json:"user_nick"`
-	PokeInterval   time.Duration  `json:"poke_interval"`
-	NickModel      domain.ModelID `json:"nick_model"`
-	EmbeddingModel domain.ModelID `json:"embedding_model"`
-	HighlightWords []string       `json:"highlight_words"`
+	APIKey          string         `json:"api_key"`
+	BaseURL         string         `json:"base_url,omitempty"`
+	UserNick        string         `json:"user_nick"`
+	PokeInterval    time.Duration  `json:"poke_interval"`
+	NickModel       domain.ModelID `json:"nick_model"`
+	EmbeddingModel  domain.ModelID `json:"embedding_model"`
+	HighlightWords  []string       `json:"highlight_words"`
+	TimestampFormat string         `json:"timestamp_format,omitempty"`
 }
 
 // ChangeFunc is called after a successful Save with the old and new

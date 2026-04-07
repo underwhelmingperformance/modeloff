@@ -36,6 +36,12 @@ type Store interface {
 	GetLastChannel(ctx context.Context) (domain.ChannelName, error)
 	SetLastChannel(ctx context.Context, name domain.ChannelName) error
 
+	// Pending quit
+
+	SavePendingQuit(ctx context.Context, pq domain.PendingQuit) error
+	GetPendingQuit(ctx context.Context) (*domain.PendingQuit, error)
+	ClearPendingQuit(ctx context.Context) error
+
 	// Last-read tracking
 
 	GetLastRead(ctx context.Context, ch domain.ChannelName) (int64, error)

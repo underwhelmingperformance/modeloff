@@ -350,6 +350,43 @@ func (s *SQLiteStore) ResetMemories(ctx context.Context) error {
 	return err
 }
 
+// SavePendingQuit implements Store.
+func (s *SQLiteStore) SavePendingQuit(ctx context.Context, pq domain.PendingQuit) error {
+	data, err := json.Marshal(pq)
+	if err != nil {
+		return fmt.Errorf("marshal pending quit: %w", err)
+	}
+
+	return setState(ctx, s.db, "pending_quit", string(data))
+}
+
+// GetPendingQuit implements Store. Returns nil if no pending quit
+// exists.
+func (s *SQLiteStore) GetPendingQuit(ctx context.Context) (*domain.PendingQuit, error) {
+	raw, err := getState[string](ctx, s.db, "pending_quit")
+	if err != nil {
+		return nil, err
+	}
+
+	if raw == "" {
+		return nil, nil
+	}
+
+	var pq domain.PendingQuit
+	if err := json.Unmarshal([]byte(raw), &pq); err != nil {
+		return nil, fmt.Errorf("unmarshal pending quit: %w", err)
+	}
+
+	return &pq, nil
+}
+
+// ClearPendingQuit implements Store.
+func (s *SQLiteStore) ClearPendingQuit(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM state WHERE key = ?`, "pending_quit")
+
+	return err
+}
+
 // Reset implements Store.
 func (s *SQLiteStore) Reset(ctx context.Context) error {
 	// Order: children before parents (last_read → channels, events).

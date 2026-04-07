@@ -53,8 +53,43 @@ func TestChannelEvent_JSON_round_trip(t *testing.T) {
 			},
 		},
 		{
+			name: "join with message",
+			event: domain.ChannelJoin{
+				Channel: "#general",
+				Nick:    "bob",
+				Message: "hello everyone",
+				At:      ts,
+			},
+		},
+		{
 			name: "part",
 			event: domain.ChannelPart{
+				Channel: "#general",
+				Nick:    "bob",
+				At:      ts,
+			},
+		},
+		{
+			name: "part with message",
+			event: domain.ChannelPart{
+				Channel: "#general",
+				Nick:    "bob",
+				Message: "see ya later",
+				At:      ts,
+			},
+		},
+		{
+			name: "quit",
+			event: domain.ChannelQuit{
+				Channel: "#general",
+				Nick:    "bob",
+				Message: "gone fishing",
+				At:      ts,
+			},
+		},
+		{
+			name: "quit without message",
+			event: domain.ChannelQuit{
 				Channel: "#general",
 				Nick:    "bob",
 				At:      ts,

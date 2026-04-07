@@ -15,6 +15,7 @@ type JoinEvent struct {
 	Channel ChannelName
 	Nick    Nick
 	Created bool
+	Message string
 	At      time.Time
 }
 
@@ -22,6 +23,15 @@ type JoinEvent struct {
 type PartEvent struct {
 	Channel ChannelName
 	Nick    Nick
+	Message string
+	At      time.Time
+}
+
+// QuitEvent is emitted when a user or model quits the server,
+// leaving all channels.
+type QuitEvent struct {
+	Nick    Nick
+	Message string
 	At      time.Time
 }
 
@@ -132,6 +142,7 @@ type DispatchDoneEvent struct {
 func (MessageEvent) sessionEvent()         {}
 func (JoinEvent) sessionEvent()            {}
 func (PartEvent) sessionEvent()            {}
+func (QuitEvent) sessionEvent()            {}
 func (NickChangeEvent) sessionEvent()      {}
 func (TopicChangeEvent) sessionEvent()     {}
 func (ModelInvitedEvent) sessionEvent()    {}

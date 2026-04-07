@@ -41,6 +41,9 @@ const (
 	// KindAction is a /me action message (e.g. "* nick does something").
 	KindAction MessageKind = "ACTION"
 
+	// KindQuit indicates a user or model has quit the server.
+	KindQuit MessageKind = "QUIT"
+
 	// KindPoke is a periodic nudge sent to models to prompt
 	// unsolicited conversation.
 	KindPoke MessageKind = "POKE"
@@ -70,6 +73,14 @@ const (
 	// ResponseSilence means the model chose not to respond. The
 	// Reason field on ModelResponse may explain why.
 	ResponseSilence ResponseKind = "silence"
+
+	// ResponsePart means the model wants to leave the current
+	// channel. It may include farewell messages.
+	ResponsePart ResponseKind = "part"
+
+	// ResponseQuit means the model wants to quit the server entirely,
+	// leaving all channels.
+	ResponseQuit ResponseKind = "quit"
 )
 
 // ReplyKind distinguishes regular messages from actions in a model
@@ -93,9 +104,10 @@ type ReplyPart struct {
 // ModelResponse is the typed response from a model after receiving
 // events. The model must explicitly choose to reply or stay silent.
 type ModelResponse struct {
-	Kind     ResponseKind `json:"kind"`
-	Messages []ReplyPart  `json:"messages,omitempty"`
-	Reason   string       `json:"reason,omitempty"`
+	Kind        ResponseKind `json:"kind"`
+	Messages    []ReplyPart  `json:"messages,omitempty"`
+	Reason      string       `json:"reason,omitempty"`
+	PartMessage string       `json:"part_message,omitempty"`
 }
 
 // FromMessage converts a stored domain message into an IRC-style
@@ -122,6 +134,7 @@ func FromJoinEvent(evt domain.JoinEvent) IRCMessage {
 		Kind:   KindJoin,
 		From:   string(evt.Nick),
 		Target: string(evt.Channel),
+		Body:   evt.Message,
 		At:     evt.At,
 	}
 }
@@ -133,7 +146,19 @@ func FromPartEvent(evt domain.PartEvent) IRCMessage {
 		Kind:   KindPart,
 		From:   string(evt.Nick),
 		Target: string(evt.Channel),
+		Body:   evt.Message,
 		At:     evt.At,
+	}
+}
+
+// FromQuitEvent converts a quit event into an IRC-style protocol
+// message.
+func FromQuitEvent(evt domain.QuitEvent) IRCMessage {
+	return IRCMessage{
+		Kind: KindQuit,
+		From: string(evt.Nick),
+		Body: evt.Message,
+		At:   evt.At,
 	}
 }
 
@@ -184,6 +209,7 @@ func FromChannelEvent(evt domain.ChannelEvent) (IRCMessage, bool) {
 			Kind:   KindJoin,
 			From:   string(e.Nick),
 			Target: string(e.Channel),
+			Body:   e.Message,
 			At:     e.At,
 		}, true
 
@@ -192,6 +218,16 @@ func FromChannelEvent(evt domain.ChannelEvent) (IRCMessage, bool) {
 			Kind:   KindPart,
 			From:   string(e.Nick),
 			Target: string(e.Channel),
+			Body:   e.Message,
+			At:     e.At,
+		}, true
+
+	case domain.ChannelQuit:
+		return IRCMessage{
+			Kind:   KindQuit,
+			From:   string(e.Nick),
+			Target: string(e.Channel),
+			Body:   e.Message,
 			At:     e.At,
 		}, true
 

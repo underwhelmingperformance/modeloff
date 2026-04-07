@@ -82,6 +82,15 @@ type Instance struct {
 // the human user).
 func (i Instance) IsModel() bool { return i.ModelID != "" }
 
+// PendingQuit records a quit that was initiated but not yet fully
+// processed. Models in the listed channels still need to be notified.
+type PendingQuit struct {
+	Nick     Nick          `json:"nick"`
+	Message  string        `json:"message,omitempty"`
+	At       time.Time     `json:"at"`
+	Channels []ChannelName `json:"channels"`
+}
+
 // NickMode represents a user's privilege level in a channel, following
 // IRC conventions.
 type NickMode int

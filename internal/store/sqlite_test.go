@@ -579,6 +579,76 @@ func TestSQLiteStore_Reset(t *testing.T) {
 	require.Empty(t, lastRead)
 }
 
+func TestSQLiteStore_PendingQuit_round_trip(t *testing.T) {
+	s := newTestStore(t)
+	ctx := t.Context()
+
+	pq := domain.PendingQuit{
+		Nick:     "testuser",
+		Message:  "see ya",
+		At:       time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
+		Channels: []domain.ChannelName{"#general", "#random"},
+	}
+
+	require.NoError(t, s.SavePendingQuit(ctx, pq))
+
+	got, err := s.GetPendingQuit(ctx)
+	require.NoError(t, err)
+	require.Equal(t, &pq, got)
+}
+
+func TestSQLiteStore_PendingQuit_get_when_none(t *testing.T) {
+	s := newTestStore(t)
+
+	got, err := s.GetPendingQuit(t.Context())
+	require.NoError(t, err)
+	require.Nil(t, got)
+}
+
+func TestSQLiteStore_PendingQuit_clear(t *testing.T) {
+	s := newTestStore(t)
+	ctx := t.Context()
+
+	pq := domain.PendingQuit{
+		Nick:     "testuser",
+		At:       time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
+		Channels: []domain.ChannelName{"#general"},
+	}
+
+	require.NoError(t, s.SavePendingQuit(ctx, pq))
+	require.NoError(t, s.ClearPendingQuit(ctx))
+
+	got, err := s.GetPendingQuit(ctx)
+	require.NoError(t, err)
+	require.Nil(t, got)
+}
+
+func TestSQLiteStore_PendingQuit_overwrite(t *testing.T) {
+	s := newTestStore(t)
+	ctx := t.Context()
+
+	pq1 := domain.PendingQuit{
+		Nick:     "testuser",
+		Message:  "first",
+		At:       time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
+		Channels: []domain.ChannelName{"#general"},
+	}
+
+	pq2 := domain.PendingQuit{
+		Nick:     "testuser",
+		Message:  "second",
+		At:       time.Date(2025, 6, 15, 13, 0, 0, 0, time.UTC),
+		Channels: []domain.ChannelName{"#random"},
+	}
+
+	require.NoError(t, s.SavePendingQuit(ctx, pq1))
+	require.NoError(t, s.SavePendingQuit(ctx, pq2))
+
+	got, err := s.GetPendingQuit(ctx)
+	require.NoError(t, err)
+	require.Equal(t, &pq2, got)
+}
+
 func TestSQLiteStore_Reset_empty_store(t *testing.T) {
 	s := newTestStore(t)
 
