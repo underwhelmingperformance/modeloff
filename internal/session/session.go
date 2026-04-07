@@ -197,9 +197,10 @@ func (s *Session) Join(ctx context.Context, channelName string) error {
 	return nil
 }
 
-// Part records the user leaving a channel. Events are emitted on
-// the session event channel.
-func (s *Session) Part(ctx context.Context, ch domain.ChannelName) error {
+// Part records the user leaving a channel. An optional farewell
+// message is included in the event. Events are emitted on the
+// session event channel.
+func (s *Session) Part(ctx context.Context, ch domain.ChannelName, message string) error {
 	channel, err := s.store.GetChannel(ctx, ch)
 	if err != nil {
 		return fmt.Errorf("channel not found: %w", err)
@@ -220,16 +221,90 @@ func (s *Session) Part(ctx context.Context, ch domain.ChannelName) error {
 	s.appendEvent(ctx, ch, domain.ChannelPart{
 		Channel: ch,
 		Nick:    s.user.Nick,
+		Message: message,
 		At:      now,
 	})
 
 	s.emit(domain.PartEvent{
 		Channel: ch,
 		Nick:    s.user.Nick,
+		Message: message,
 		At:      now,
 	})
 
 	return nil
+}
+
+// Quit builds a PendingQuit from the user's current channels and
+// persists it. The caller is responsible for triggering tea.Quit
+// after calling this. The pending quit is replayed on next startup
+// via ProcessPendingQuit.
+func (s *Session) Quit(ctx context.Context, message string) error {
+	var channels []domain.ChannelName
+
+	for pair := s.user.Channels.Oldest(); pair != nil; pair = pair.Next() {
+		channels = append(channels, pair.Key)
+	}
+
+	if len(channels) == 0 {
+		return nil
+	}
+
+	pq := domain.PendingQuit{
+		Nick:     s.user.Nick,
+		Message:  message,
+		At:       s.now(),
+		Channels: channels,
+	}
+
+	return s.store.SavePendingQuit(ctx, pq)
+}
+
+// ProcessPendingQuit loads a pending quit from the store and dispatches
+// QUIT to models in each channel synchronously, saving their replies.
+// The pending quit is cleared after processing. A 30-second timeout
+// is applied.
+func (s *Session) ProcessPendingQuit(ctx context.Context) error {
+	pq, err := s.store.GetPendingQuit(ctx)
+	if err != nil {
+		return fmt.Errorf("get pending quit: %w", err)
+	}
+
+	if pq == nil {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	quitEvt := domain.QuitEvent{
+		Nick:    pq.Nick,
+		Message: pq.Message,
+		At:      pq.At,
+	}
+
+	quitMsg := protocol.FromQuitEvent(quitEvt)
+
+	for _, ch := range pq.Channels {
+		s.appendEvent(ctx, ch, domain.ChannelQuit{
+			Channel: ch,
+			Nick:    pq.Nick,
+			Message: pq.Message,
+			At:      pq.At,
+		})
+
+		replies, err := s.DispatchToChannel(ctx, ch, []protocol.IRCMessage{quitMsg})
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "process pending quit dispatch", "channel", ch, "error", err)
+			continue
+		}
+
+		for _, reply := range replies {
+			s.emitUIOnly(reply)
+		}
+	}
+
+	return s.store.ClearPendingQuit(ctx)
 }
 
 // ListChannels returns all persisted channels.
@@ -1087,31 +1162,97 @@ func (s *Session) dispatchToInstance(
 	instanceSpan.SetAttributes(attribute.String(observability.AttrResult, api.ResponseResultKind(result.Response)))
 
 	response := result.Response
-	if response.Kind != protocol.ResponseReply || len(response.Messages) == 0 {
+
+	switch response.Kind {
+	case protocol.ResponsePart:
+		replies := s.buildReplies(ctx, channelName, inst.Nick, response.Messages)
+		s.removeInstanceFromChannel(ctx, inst.Nick, channelName)
+
+		now := s.now()
+
+		s.appendEvent(ctx, channelName, domain.ChannelPart{
+			Channel: channelName,
+			Nick:    inst.Nick,
+			Message: response.PartMessage,
+			At:      now,
+		})
+
+		s.emitUIOnly(domain.PartEvent{
+			Channel: channelName,
+			Nick:    inst.Nick,
+			Message: response.PartMessage,
+			At:      now,
+		})
+
+		return replies, nil
+
+	case protocol.ResponseQuit:
+		replies := s.buildReplies(ctx, channelName, inst.Nick, response.Messages)
+
+		channels := s.instanceChannelNames(inst)
+		for _, ch := range channels {
+			s.removeInstanceFromChannel(ctx, inst.Nick, ch)
+
+			now := s.now()
+
+			s.appendEvent(ctx, ch, domain.ChannelQuit{
+				Channel: ch,
+				Nick:    inst.Nick,
+				Message: response.PartMessage,
+				At:      now,
+			})
+		}
+
+		s.emitUIOnly(domain.QuitEvent{
+			Nick:    inst.Nick,
+			Message: response.PartMessage,
+			At:      s.now(),
+		})
+
+		return replies, nil
+
+	case protocol.ResponseReply:
+		if len(response.Messages) == 0 {
+			return nil, nil
+		}
+
+		return s.buildReplies(ctx, channelName, inst.Nick, response.Messages), nil
+
+	default:
 		return nil, nil
 	}
+}
 
+// buildReplies converts model reply parts into domain events, persisting
+// each message to the event log.
+func (s *Session) buildReplies(
+	ctx context.Context,
+	channelName domain.ChannelName,
+	nick domain.Nick,
+	parts []protocol.ReplyPart,
+) []domain.ModelReplyEvent {
 	var replies []domain.ModelReplyEvent
 
-	for i, part := range response.Messages {
+	for i, part := range parts {
 		body := strings.TrimSpace(part.Body)
 		if body == "" {
 			continue
 		}
 
 		reply := domain.Message{
-			ID:      fmt.Sprintf("%d~%s~%d", s.now().UnixNano(), inst.Nick, i),
+			ID:      fmt.Sprintf("%d~%s~%d", s.now().UnixNano(), nick, i),
 			Channel: channelName,
-			From:    inst.Nick,
+			From:    nick,
 			Body:    body,
 			Action:  part.Kind == protocol.ReplyAction,
 			SentAt:  s.now(),
 		}
 
 		now := s.now()
+
 		s.appendEvent(ctx, channelName, domain.ChannelMessage{
 			Channel: channelName,
-			From:    inst.Nick,
+			From:    nick,
 			Body:    reply.Body,
 			Action:  reply.Action,
 			At:      now,
@@ -1120,12 +1261,51 @@ func (s *Session) dispatchToInstance(
 		replies = append(replies, domain.ModelReplyEvent{
 			Channel:  channelName,
 			Message:  reply,
-			Instance: inst.Nick,
+			Instance: nick,
 			At:       now,
 		})
 	}
 
-	return replies, nil
+	return replies
+}
+
+// removeInstanceFromChannel removes a model instance from a single
+// channel's membership and updates the store. Used for model-initiated
+// part/quit.
+func (s *Session) removeInstanceFromChannel(ctx context.Context, nick domain.Nick, ch domain.ChannelName) {
+	channel, err := s.store.GetChannel(ctx, ch)
+	if err != nil {
+		return
+	}
+
+	if m, ok := channel.Members.Get(nick); ok {
+		channel.Members.Remove(m)
+	}
+
+	_ = s.store.SaveChannel(ctx, channel)
+
+	inst, err := s.store.GetInstance(ctx, nick)
+	if err != nil {
+		return
+	}
+
+	inst.Channels.Delete(ch)
+	_ = s.store.SaveInstance(ctx, inst)
+}
+
+// instanceChannelNames returns the list of channels an instance is in.
+func (s *Session) instanceChannelNames(inst domain.Instance) []domain.ChannelName {
+	if inst.Channels == nil {
+		return nil
+	}
+
+	var names []domain.ChannelName
+
+	for pair := inst.Channels.Oldest(); pair != nil; pair = pair.Next() {
+		names = append(names, pair.Key)
+	}
+
+	return names
 }
 
 func (s *Session) instancesForChannel(ctx context.Context, channel domain.Channel) ([]domain.Instance, error) {
@@ -1315,6 +1495,10 @@ How to behave:
 	if inst.Persona != "" {
 		fmt.Fprintf(&b, "\n\nYour persona: %s", inst.Persona)
 	}
+
+	b.WriteString(`
+
+You can voluntarily leave a channel by responding with kind "part", or quit the server entirely with kind "quit". When using part or quit, you may include a farewell in the part_message field and any final messages in the messages array. Quitting means you are shutting down — use it only when you genuinely want to leave permanently.`)
 
 	b.WriteString("\n\nYou have a personal memory system. Your current memories are shown below. You can use write_memory to store new memories and delete_memory to remove them.")
 

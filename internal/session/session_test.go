@@ -173,7 +173,7 @@ func TestSession_Leave(t *testing.T) {
 	}
 	require.NoError(t, s.SaveChannel(ctx, ch))
 
-	require.NoError(t, sess.Part(ctx, "#leaving"))
+	require.NoError(t, sess.Part(ctx, "#leaving", ""))
 	evt := drainEvent[domain.PartEvent](t, sess)
 	require.Equal(t, domain.PartEvent{
 		Channel: "#leaving",
@@ -194,7 +194,222 @@ func TestSession_Leave(t *testing.T) {
 func TestSession_LeaveNonexistent(t *testing.T) {
 	sess, _ := newTestSession(t)
 
-	require.Error(t, sess.Part(t.Context(), "#ghost"))
+	require.Error(t, sess.Part(t.Context(), "#ghost", ""))
+}
+
+func TestSession_Part_carries_message(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := t.Context()
+
+	ch := domain.Channel{
+		Name:    "#farewell",
+		Kind:    domain.KindChannel,
+		Members: testMembers("testuser"),
+		Created: fixedTime,
+	}
+	require.NoError(t, s.SaveChannel(ctx, ch))
+
+	require.NoError(t, sess.Part(ctx, "#farewell", "see ya later"))
+	evt := drainEvent[domain.PartEvent](t, sess)
+	require.Equal(t, domain.PartEvent{
+		Channel: "#farewell",
+		Nick:    "testuser",
+		Message: "see ya later",
+		At:      fixedTime,
+	}, evt)
+}
+
+func TestSession_model_ResponsePart_removes_from_channel(t *testing.T) {
+	fake := &fakeAPIClient{
+		sendEventsFn: func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			return protocol.ModelResponse{
+				Kind:        protocol.ResponsePart,
+				Messages:    []protocol.ReplyPart{{Kind: protocol.ReplyMessage, Body: "goodbye friends"}},
+				PartMessage: "off to explore",
+			}, nil
+		},
+	}
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+	seedInstance(t, s, domain.Instance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: testChannels("#general"),
+	})
+
+	require.NoError(t, sess.SendMessage(ctx, "#general", "hello"))
+
+	// Drain MessageEvent first.
+	drainEvent[domain.MessageEvent](t, sess)
+	events := drainEvents(t, sess, 1)
+
+	// PartEvent is emitted from within dispatchToInstance before
+	// replies are returned, so the order is: DispatchStarted,
+	// PartEvent, ModelReply, DispatchDone.
+	require.Equal(t, domain.DispatchStartedEvent{
+		Channel: "#general",
+		Nicks:   []domain.Nick{"botty"},
+	}, events[0])
+
+	require.Equal(t, domain.PartEvent{
+		Channel: "#general",
+		Nick:    "botty",
+		Message: "off to explore",
+		At:      fixedTime,
+	}, events[1])
+
+	require.IsType(t, domain.ModelReplyEvent{}, events[2])
+	reply := events[2].(domain.ModelReplyEvent)
+	require.Equal(t, "goodbye friends", reply.Message.Body)
+
+	require.Equal(t, domain.DispatchDoneEvent{Channel: "#general"}, events[3])
+
+	// Verify model is removed from the channel.
+	ch, err := s.GetChannel(ctx, "#general")
+	require.NoError(t, err)
+	require.False(t, ch.Members.Has("botty"))
+
+	// Instance channels should be updated.
+	inst, err := s.GetInstance(ctx, "botty")
+	require.NoError(t, err)
+
+	_, ok := inst.Channels.Get("#general")
+	require.False(t, ok)
+}
+
+func TestSession_model_ResponseQuit_removes_from_all_channels(t *testing.T) {
+	fake := &fakeAPIClient{
+		sendEventsFn: func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			return protocol.ModelResponse{
+				Kind:        protocol.ResponseQuit,
+				Messages:    []protocol.ReplyPart{{Kind: protocol.ReplyMessage, Body: "farewell"}},
+				PartMessage: "shutting down",
+			}, nil
+		},
+	}
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+	seedChannelWithMembers(t, s, "#random", "testuser", "botty")
+	seedInstance(t, s, domain.Instance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: testChannels("#general", "#random"),
+	})
+
+	require.NoError(t, sess.SendMessage(ctx, "#general", "hello"))
+
+	drainEvent[domain.MessageEvent](t, sess)
+	events := drainEvents(t, sess, 1)
+
+	// QuitEvent is emitted from within dispatchToInstance before
+	// replies are returned: DispatchStarted, QuitEvent, ModelReply,
+	// DispatchDone.
+	require.Equal(t, domain.DispatchStartedEvent{
+		Channel: "#general",
+		Nicks:   []domain.Nick{"botty"},
+	}, events[0])
+
+	require.IsType(t, domain.QuitEvent{}, events[1])
+	quit := events[1].(domain.QuitEvent)
+	require.Equal(t, domain.Nick("botty"), quit.Nick)
+	require.Equal(t, "shutting down", quit.Message)
+
+	require.IsType(t, domain.ModelReplyEvent{}, events[2])
+
+	require.Equal(t, domain.DispatchDoneEvent{Channel: "#general"}, events[3])
+
+	// Verify model is removed from both channels.
+	for _, chName := range []domain.ChannelName{"#general", "#random"} {
+		ch, err := s.GetChannel(ctx, chName)
+		require.NoError(t, err)
+		require.False(t, ch.Members.Has("botty"), "botty should be removed from %s", chName)
+	}
+
+	inst, err := s.GetInstance(ctx, "botty")
+	require.NoError(t, err)
+	require.Equal(t, 0, inst.Channels.Len())
+}
+
+func TestSession_Quit_saves_pending_quit(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := t.Context()
+
+	require.NoError(t, sess.Join(ctx, "#general"))
+	drainNEvents(t, sess, 3) // JoinEvent + ModeChangeEvent + DispatchDoneEvent
+
+	require.NoError(t, sess.Join(ctx, "#random"))
+	drainNEvents(t, sess, 3)
+
+	require.NoError(t, sess.Quit(ctx, "goodnight"))
+
+	pq, err := s.GetPendingQuit(ctx)
+	require.NoError(t, err)
+	require.Equal(t, domain.Nick("testuser"), pq.Nick)
+	require.Equal(t, "goodnight", pq.Message)
+	require.Equal(t, []domain.ChannelName{"#general", "#random"}, pq.Channels)
+}
+
+func TestSession_Quit_no_channels_is_noop(t *testing.T) {
+	sess, s := newTestSession(t)
+
+	require.NoError(t, sess.Quit(t.Context(), "bye"))
+
+	pq, err := s.GetPendingQuit(t.Context())
+	require.NoError(t, err)
+	require.Nil(t, pq)
+}
+
+func TestSession_ProcessPendingQuit_dispatches_and_clears(t *testing.T) {
+	var dispatched []string
+
+	fake := &fakeAPIClient{
+		sendEventsFn: func(_ context.Context, _ domain.ModelID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			for _, ev := range events {
+				if ev.Kind == protocol.KindQuit {
+					dispatched = append(dispatched, ev.From)
+				}
+			}
+
+			return protocol.Reply("goodbye"), nil
+		},
+	}
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+	seedInstance(t, s, domain.Instance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: testChannels("#general"),
+	})
+
+	pq := domain.PendingQuit{
+		Nick:     "testuser",
+		Message:  "goodnight",
+		At:       fixedTime,
+		Channels: []domain.ChannelName{"#general"},
+	}
+	require.NoError(t, s.SavePendingQuit(ctx, pq))
+
+	require.NoError(t, sess.ProcessPendingQuit(ctx))
+
+	// Model should have been dispatched a QUIT event.
+	require.Equal(t, []string{"testuser"}, dispatched)
+
+	// Pending quit should be cleared.
+	got, err := s.GetPendingQuit(ctx)
+	require.NoError(t, err)
+	require.Nil(t, got)
+}
+
+func TestSession_ProcessPendingQuit_no_pending_is_noop(t *testing.T) {
+	sess, _ := newTestSession(t)
+
+	require.NoError(t, sess.ProcessPendingQuit(t.Context()))
 }
 
 func TestSession_Invite(t *testing.T) {
