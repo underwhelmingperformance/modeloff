@@ -136,7 +136,7 @@ func TestComplete_config_suggests_subcommands(t *testing.T) {
 	require.True(t, c.Visible)
 	require.Equal(t, []string{
 		"api-key", "base-url", "poke-interval",
-		"nick-model", "embedding-model", "highlight",
+		"nick-model", "embedding-model", "highlight", "timestamp-format",
 	}, suggestionValues(c))
 }
 

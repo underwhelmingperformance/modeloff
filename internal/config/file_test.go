@@ -207,3 +207,52 @@ func TestFileStore_SaveAndLoadHighlightWords(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, saved, got)
 }
+
+func TestFileStore_SaveAndLoadTimestampFormat(t *testing.T) {
+	t.Setenv("USER", "testuser")
+
+	dir := t.TempDir()
+	store := NewFileStore(dir)
+	custom := "%c"
+
+	saved := Config{
+		BaseURL:         "https://openrouter.ai/api/v1",
+		UserNick:        "testuser",
+		PokeInterval:    5 * time.Minute,
+		NickModel:       DefaultNickModel,
+		EmbeddingModel:  DefaultEmbeddingModel,
+		HighlightWords:  []string{"$nick"},
+		TimestampFormat: &custom,
+	}
+
+	require.NoError(t, store.Save(saved))
+
+	got, err := store.Load()
+	require.NoError(t, err)
+	require.Equal(t, saved, got)
+}
+
+func TestFileStore_SaveAndLoadDisabledTimestampFormat(t *testing.T) {
+	t.Setenv("USER", "testuser")
+
+	dir := t.TempDir()
+	store := NewFileStore(dir)
+	disabled := ""
+
+	saved := Config{
+		BaseURL:         "https://openrouter.ai/api/v1",
+		UserNick:        "testuser",
+		PokeInterval:    5 * time.Minute,
+		NickModel:       DefaultNickModel,
+		EmbeddingModel:  DefaultEmbeddingModel,
+		HighlightWords:  []string{"$nick"},
+		TimestampFormat: &disabled,
+	}
+
+	require.NoError(t, store.Save(saved))
+
+	got, err := store.Load()
+	require.NoError(t, err)
+	require.NotNil(t, got.TimestampFormat)
+	require.Equal(t, "", *got.TimestampFormat)
+}

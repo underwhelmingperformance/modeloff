@@ -305,12 +305,13 @@ func (c QuitCommand) Run(rc Context) tea.Cmd {
 // ConfigCommand is a group node whose children are the individual
 // config keys. Each subcommand has its own args and Run method.
 type ConfigCommand struct {
-	APIKey         APIKeyConfig         `cmd:"" name:"api-key" help:"Activate OpenRouter immediately."`
-	BaseURL        BaseURLConfig        `cmd:"" name:"base-url" help:"Set the API base URL."`
-	PokeInterval   PokeIntervalConfig   `cmd:"" name:"poke-interval" help:"Set the background poke cadence."`
-	NickModel      NickModelConfig      `cmd:"" name:"nick-model" help:"Set the model used to generate nicknames."`
-	EmbeddingModel EmbeddingModelConfig `cmd:"" name:"embedding-model" help:"Set the embedding model."`
-	Highlight      HighlightConfig      `cmd:"" help:"Set words that trigger visual highlighting."`
+	APIKey          APIKeyConfig          `cmd:"" name:"api-key" help:"Activate OpenRouter immediately."`
+	BaseURL         BaseURLConfig         `cmd:"" name:"base-url" help:"Set the API base URL."`
+	PokeInterval    PokeIntervalConfig    `cmd:"" name:"poke-interval" help:"Set the background poke cadence."`
+	NickModel       NickModelConfig       `cmd:"" name:"nick-model" help:"Set the model used to generate nicknames."`
+	EmbeddingModel  EmbeddingModelConfig  `cmd:"" name:"embedding-model" help:"Set the embedding model."`
+	Highlight       HighlightConfig       `cmd:"" help:"Set words that trigger visual highlighting."`
+	TimestampFormat TimestampFormatConfig `cmd:"" name:"timestamp-format" help:"Set or disable timestamp formatting."`
 }
 
 // APIKeyConfig represents `/config api-key <value>`.
@@ -429,4 +430,37 @@ func (c HighlightConfig) Run(rc Context) tea.Cmd {
 
 		return HighlightWordsSetResult(c)
 	}
+}
+
+// TimestampFormatConfig represents `/config timestamp-format [<format>...]`.
+type TimestampFormatConfig struct {
+	Format []string `arg:"" optional:"" help:"Timestamp format"`
+}
+
+// Run implements Command.
+func (c TimestampFormatConfig) Run(rc Context) tea.Cmd {
+	return func() tea.Msg {
+		format := normaliseTimestampFormat(c.Format)
+
+		if _, err := rc.Session.SetTimestampFormat(rc.Ctx, format); err != nil {
+			return errorEvent("config timestamp-format", err)
+		}
+
+		return TimestampFormatSetResult{Format: format}
+	}
+}
+
+func normaliseTimestampFormat(parts []string) *string {
+	if len(parts) == 0 {
+		disabled := ""
+		return &disabled
+	}
+
+	joined := strings.TrimSpace(strings.Join(parts, " "))
+	if joined == `""` || joined == `''` {
+		disabled := ""
+		return &disabled
+	}
+
+	return &joined
 }

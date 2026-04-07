@@ -26,6 +26,7 @@ import (
 	"github.com/laney/modeloff/internal/memory"
 	"github.com/laney/modeloff/internal/observability"
 	"github.com/laney/modeloff/internal/protocol"
+	"github.com/laney/modeloff/internal/ptr"
 	"github.com/laney/modeloff/internal/store"
 )
 
@@ -974,6 +975,22 @@ func (s *Session) HighlightWords() []string {
 	return cfg.HighlightWords
 }
 
+// TimestampFormat returns the currently configured timestamp format.
+// Nil means locale-default formatting, while an explicit empty string
+// disables timestamps entirely.
+func (s *Session) TimestampFormat() *string {
+	if s.config == nil {
+		return nil
+	}
+
+	cfg, err := s.config.Load()
+	if err != nil {
+		return nil
+	}
+
+	return ptr.CloneString(cfg.TimestampFormat)
+}
+
 // SetHighlightWords persists a new set of highlight words through
 // the config store.
 func (s *Session) SetHighlightWords(_ context.Context, words []string) (config.Config, error) {
@@ -987,6 +1004,28 @@ func (s *Session) SetHighlightWords(_ context.Context, words []string) (config.C
 	}
 
 	cfg.HighlightWords = words
+
+	if err := s.config.Save(cfg); err != nil {
+		return config.Config{}, fmt.Errorf("save config: %w", err)
+	}
+
+	return cfg, nil
+}
+
+// SetTimestampFormat persists a new timestamp format through the
+// config store. Nil means locale-default formatting, while an
+// explicit empty string disables timestamps entirely.
+func (s *Session) SetTimestampFormat(_ context.Context, format *string) (config.Config, error) {
+	if s.config == nil {
+		return config.Config{}, fmt.Errorf("config store not configured")
+	}
+
+	cfg, err := s.config.Load()
+	if err != nil {
+		return config.Config{}, fmt.Errorf("load config: %w", err)
+	}
+
+	cfg.TimestampFormat = ptr.CloneString(format)
 
 	if err := s.config.Save(cfg); err != nil {
 		return config.Config{}, fmt.Errorf("save config: %w", err)

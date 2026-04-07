@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/text/language"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -39,6 +40,12 @@ func messagesToEvents(msgs []domain.ChannelMessage) []domain.StoredEvent {
 // newChatViewWithEvents creates a ChatView and loads events via HistoryLoadedMsg.
 func newChatViewWithEvents(ch domain.ChannelName, userNick domain.Nick, topic string, events []domain.StoredEvent) components.ChatView {
 	cv := components.NewChatView(ch, userNick, topic)
+	legacyFormat := "[15:04:05]"
+	updated, _ := cv.Update(components.TimestampFormatMsg{
+		Format: &legacyFormat,
+		Locale: language.BritishEnglish,
+	})
+	cv = updated.(components.ChatView)
 
 	if len(events) == 0 {
 		return cv
@@ -67,6 +74,39 @@ func TestChatView_View_shows_timestamps(t *testing.T) {
 	require.Contains(t, v, "[10:00:00]")
 	require.Contains(t, v, "[10:01:00]")
 	require.Contains(t, v, "[10:02:00]")
+}
+
+func TestChatView_View_disables_timestamps(t *testing.T) {
+	cv := components.NewChatView("#general", "testuser", "")
+	disabled := ""
+	var m ui.Model = cv
+
+	m, _ = m.Update(components.TimestampFormatMsg{
+		Format: &disabled,
+		Locale: language.BritishEnglish,
+	})
+	m, _ = m.Update(components.HistoryLoadedMsg{Events: testEvents})
+
+	v := m.View(80, 24)
+
+	require.NotContains(t, v, "10:00:00")
+	require.Contains(t, v, "<alice> hello")
+}
+
+func TestChatView_View_uses_strftime_timestamp_format(t *testing.T) {
+	cv := components.NewChatView("#general", "testuser", "")
+	format := "%X"
+	var m ui.Model = cv
+
+	m, _ = m.Update(components.TimestampFormatMsg{
+		Format: &format,
+		Locale: language.BritishEnglish,
+	})
+	m, _ = m.Update(components.HistoryLoadedMsg{Events: testEvents[:1]})
+
+	v := ansi.Strip(m.View(80, 24))
+
+	require.Contains(t, v, "10:00:00 <alice> hello")
 }
 
 func TestChatView_View_wraps_long_messages(t *testing.T) {
@@ -464,6 +504,7 @@ func renderSingleEvent(event domain.StoredEvent) string {
 func renderSingleEventWithHighlight(event domain.StoredEvent, words []string, nick domain.Nick) string {
 	cv := components.NewChatView("#test", nick, "")
 	var m ui.Model = cv
+	topicFormat := "2006-01-02 15:04"
 
 	m, _ = m.Update(components.HistoryLoadedMsg{Events: []domain.StoredEvent{event}})
 	m, _ = m.Update(components.CommandStateMsg{
@@ -473,6 +514,10 @@ func renderSingleEventWithHighlight(event domain.StoredEvent, words []string, ni
 				{Name: "help", Help: "Show available commands."},
 			},
 		},
+	})
+	m, _ = m.Update(components.TimestampFormatMsg{
+		Format: &topicFormat,
+		Locale: language.BritishEnglish,
 	})
 
 	if len(words) > 0 {
@@ -589,6 +634,31 @@ func TestRenderLine_IRC_events(t *testing.T) {
 			require.Contains(t, got, tt.want)
 		})
 	}
+}
+
+func TestRenderLine_topic_info_omits_timestamp_when_disabled(t *testing.T) {
+	cv := components.NewChatView("#test", "testuser", "")
+	var m ui.Model = cv
+	disabled := ""
+
+	m, _ = m.Update(components.TimestampFormatMsg{
+		Format: &disabled,
+		Locale: language.BritishEnglish,
+	})
+	m, _ = m.Update(components.HistoryLoadedMsg{Events: []domain.StoredEvent{{
+		Event: domain.ChannelTopicInfo{
+			Channel:    "#general",
+			Topic:      "cool topic",
+			TopicSetBy: "alice",
+			TopicSetAt: time.Date(2026, 4, 4, 23, 30, 0, 0, time.UTC),
+			At:         time.Now(),
+		},
+	}}})
+
+	v := ansi.Strip(m.View(200, 24))
+
+	require.Contains(t, v, "*** topic for #general: cool topic (set by alice)")
+	require.NotContains(t, v, " on ")
 }
 
 func TestRenderLine_application_feedback(t *testing.T) {

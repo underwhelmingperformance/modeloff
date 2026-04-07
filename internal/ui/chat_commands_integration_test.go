@@ -169,6 +169,12 @@ func TestApp_config_commands_with_teatest(t *testing.T) {
 	tm.Submit("/config poke-interval 10m")
 	tm.WaitFor("Poke interval set to 10m0s.")
 
+	tm.Submit("/config timestamp-format %c")
+	tm.WaitFor("timestamp format set to %c")
+
+	tm.Submit(`/config timestamp-format ""`)
+	tm.WaitFor("timestamps disabled")
+
 	tm.Submit("/config nonsense")
 	tm.WaitFor("unknown subcommand")
 
@@ -177,6 +183,8 @@ func TestApp_config_commands_with_teatest(t *testing.T) {
 
 	require.Equal(t, "test-key", cfgStore.cfg.APIKey)
 	require.Equal(t, 10*time.Minute, cfgStore.cfg.PokeInterval)
+	require.NotNil(t, cfgStore.cfg.TimestampFormat)
+	require.Equal(t, "", *cfgStore.cfg.TimestampFormat)
 }
 
 func TestApp_unknown_command_on_welcome_screen_with_teatest(t *testing.T) {
@@ -271,10 +279,11 @@ func TestApp_unread_counts_clear_when_visiting_channel_with_teatest(t *testing.T
 
 	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlU})
 	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlO})
-	tm.WaitFor("general unread")
+	tm.WaitFor("general", "unread")
 
 	view := tm.CurrentView()
-	require.Contains(t, view, "general unread")
+	require.Contains(t, view, "general")
+	require.Contains(t, view, "unread")
 	require.NotContains(t, view, "#general (3)")
 }
 
@@ -287,10 +296,10 @@ func TestApp_input_history_and_sidebar_shortcuts_with_teatest(t *testing.T) {
 	tm.WaitFor("#random")
 
 	tm.Submit("first history entry")
-	tm.WaitFor("first history entry")
+	tm.WaitFor("first", "history", "entry")
 
 	tm.Submit("second history entry")
-	tm.WaitFor("second history entry")
+	tm.WaitFor("second", "history", "entry")
 
 	tm.Type("draft-only")
 	tm.Send(tea.KeyMsg{Type: tea.KeyUp})
@@ -301,7 +310,7 @@ func TestApp_input_history_and_sidebar_shortcuts_with_teatest(t *testing.T) {
 
 	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlU})
 	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlO})
-	tm.WaitFor("testuser has joined #general")
+	tm.WaitFor("testuser", "has joined #general")
 
 	view := ansi.Strip(tm.CurrentView())
 	require.Contains(t, view, "#general")

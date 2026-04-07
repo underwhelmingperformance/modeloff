@@ -1776,6 +1776,47 @@ func TestSession_SetBaseURL(t *testing.T) {
 	require.Equal(t, "https://custom.example.com", factoryCfg.BaseURL)
 }
 
+func TestSession_SetTimestampFormat(t *testing.T) {
+	custom := "%c"
+	cfgStore := &fakeConfigStore{
+		cfg: config.Config{
+			APIKey:          "test-key",
+			UserNick:        "testuser",
+			TimestampFormat: nil,
+		},
+	}
+	s := storetest.NewMemoryStore(t)
+	sess := New(s, nil, &fakeAPIClient{}, cfgStore, "testuser")
+
+	cfg, err := sess.SetTimestampFormat(t.Context(), &custom)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.TimestampFormat)
+	require.Equal(t, custom, *cfg.TimestampFormat)
+	require.NotNil(t, cfgStore.saved.TimestampFormat)
+	require.Equal(t, custom, *cfgStore.saved.TimestampFormat)
+	require.Equal(t, 1, cfgStore.saveCalls)
+}
+
+func TestSession_SetTimestampFormat_disable(t *testing.T) {
+	cfgStore := &fakeConfigStore{
+		cfg: config.Config{
+			APIKey:   "test-key",
+			UserNick: "testuser",
+		},
+	}
+	s := storetest.NewMemoryStore(t)
+	sess := New(s, nil, &fakeAPIClient{}, cfgStore, "testuser")
+	disabled := ""
+
+	cfg, err := sess.SetTimestampFormat(t.Context(), &disabled)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.TimestampFormat)
+	require.Equal(t, "", *cfg.TimestampFormat)
+	require.NotNil(t, cfgStore.saved.TimestampFormat)
+	require.Equal(t, "", *cfgStore.saved.TimestampFormat)
+	require.Equal(t, 1, cfgStore.saveCalls)
+}
+
 func TestSession_SetEmbeddingModel(t *testing.T) {
 	cfgStore := &fakeConfigStore{
 		cfg: config.Config{

@@ -10,6 +10,7 @@ import (
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/components"
+	uitimestamp "github.com/laney/modeloff/internal/ui/timestamp"
 )
 
 func (s ChatScreen) handleInitialLoad(msg domain.InitialLoadEvent) (ui.Model, tea.Cmd) {
@@ -64,6 +65,10 @@ func (s ChatScreen) handleInitialLoad(msg domain.InitialLoadEvent) (ui.Model, te
 	cmds = append(cmds, msgCmd(components.HighlightWordsMsg{
 		Words:    s.sess.HighlightWords(),
 		UserNick: s.sess.UserNick(),
+	}))
+	cmds = append(cmds, msgCmd(components.TimestampFormatMsg{
+		Format: s.sess.TimestampFormat(),
+		Locale: uitimestamp.CurrentLocale(),
 	}))
 
 	return s, tea.Sequence(cmds...)

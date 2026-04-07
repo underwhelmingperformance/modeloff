@@ -3,22 +3,33 @@ package components
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"golang.org/x/text/language"
 
 	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/ui/theme"
+	"github.com/laney/modeloff/internal/ui/timestamp"
 )
 
 // renderChannelEvent renders a domain.ChannelEvent into a styled
 // string at the given width.
-func renderChannelEvent(event domain.ChannelEvent, width int, highlightWords []string, userNick domain.Nick, commands command.Set) string {
+func renderChannelEvent(
+	event domain.ChannelEvent,
+	width int,
+	highlightWords []string,
+	userNick domain.Nick,
+	commands command.Set,
+	timestampFormat *string,
+	locale language.Tag,
+) string {
 	wrap := lipgloss.NewStyle().Width(width)
 
 	switch e := event.(type) {
 	case domain.ChannelMessage:
-		ts := theme.Dim.Render(e.At.Format("[15:04:05]"))
+		ts := formatTimestampPrefix(e.At, timestampFormat, locale)
 		highlighted := ContainsHighlightWord(e.Body, highlightWords, userNick)
 
 		body := e.Body
@@ -28,13 +39,13 @@ func renderChannelEvent(event domain.ChannelEvent, width int, highlightWords []s
 
 		if e.Action {
 			nick := theme.NickStyle(string(e.From)).Render(string(e.From))
-			return wrap.Render(fmt.Sprintf("%s * %s %s", ts, nick, body))
+			return wrap.Render(strings.TrimSpace(fmt.Sprintf("%s* %s %s", ts, nick, body)))
 		}
 
 		nick := theme.NickStyle(string(e.From)).
 			Render(fmt.Sprintf("<%s>", string(e.From)))
 
-		return wrap.Render(fmt.Sprintf("%s %s %s", ts, nick, body))
+		return wrap.Render(strings.TrimSpace(fmt.Sprintf("%s%s %s", ts, nick, body)))
 
 	case domain.ChannelJoin:
 		text := fmt.Sprintf("%s has joined %s", e.Nick, e.Channel)
@@ -101,8 +112,12 @@ func renderChannelEvent(event domain.ChannelEvent, width int, highlightWords []s
 
 		text := fmt.Sprintf("topic for %s: %s", e.Channel, e.Topic)
 		if e.TopicSetBy != "" {
-			text += fmt.Sprintf(" (set by %s on %s)",
-				e.TopicSetBy, e.TopicSetAt.Format("2006-01-02 15:04"))
+			topicTime := timestamp.Format(e.TopicSetAt, timestampFormat, locale)
+			if topicTime == "" {
+				text += fmt.Sprintf(" (set by %s)", e.TopicSetBy)
+			} else {
+				text += fmt.Sprintf(" (set by %s on %s)", e.TopicSetBy, topicTime)
+			}
 		}
 
 		return wrap.Render(theme.SystemEvent.Render("*** " + text))
@@ -132,6 +147,15 @@ func renderChannelEvent(event domain.ChannelEvent, width int, highlightWords []s
 	default:
 		return ""
 	}
+}
+
+func formatTimestampPrefix(at time.Time, format *string, locale language.Tag) string {
+	rendered := timestamp.Format(at, format, locale)
+	if rendered == "" {
+		return ""
+	}
+
+	return theme.Dim.Render(rendered + " ")
 }
 
 func renderWhoisEvent(w domain.ChannelWhois) string {

@@ -185,7 +185,7 @@ func (c ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 		return c, nil
 
-	case SetPlaceholderMsg, PendingResponseMsg, HighlightWordsMsg,
+	case SetPlaceholderMsg, PendingResponseMsg, HighlightWordsMsg, TimestampFormatMsg,
 		HistoryLoadedMsg, domain.StoredEvent:
 		var cmd tea.Cmd
 		c, cmd = c.updateMessages(msg)

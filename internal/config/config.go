@@ -30,7 +30,7 @@ type Config struct {
 	NickModel       domain.ModelID `json:"nick_model"`
 	EmbeddingModel  domain.ModelID `json:"embedding_model"`
 	HighlightWords  []string       `json:"highlight_words"`
-	TimestampFormat string         `json:"timestamp_format,omitempty"`
+	TimestampFormat *string        `json:"timestamp_format,omitempty"`
 }
 
 // ChangeFunc is called after a successful Save with the old and new

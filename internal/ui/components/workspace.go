@@ -7,10 +7,13 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"golang.org/x/text/language"
 
 	"github.com/laney/modeloff/internal/observability"
+	"github.com/laney/modeloff/internal/ptr"
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/theme"
+	"github.com/laney/modeloff/internal/ui/timestamp"
 )
 
 const minObservabilityDrawerHeight = 8
@@ -41,7 +44,9 @@ type ChatWorkspace struct {
 	keyMap     WorkspaceKeyMap
 	bounds     ui.Rect
 
-	logEntries []observability.PanelEntry
+	logEntries      []observability.PanelEntry
+	timestampFormat *string
+	locale          language.Tag
 }
 
 // NewChatWorkspace creates the chat content workspace.
@@ -51,6 +56,7 @@ func NewChatWorkspace(chat ChatView) ChatWorkspace {
 		Logs:   NewFeedView("No logs yet", "new logs"),
 		keyMap: DefaultWorkspaceKeyMap,
 		Focus:  workspaceFocusLogs,
+		locale: timestamp.CurrentLocale(),
 	}
 }
 
@@ -78,6 +84,12 @@ func (w ChatWorkspace) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	case ui.BoundsMsg:
 		w.bounds = msg.Rect
 		return w.updateChildBounds()
+
+	case TimestampFormatMsg:
+		w.timestampFormat = ptr.CloneString(msg.Format)
+		w.locale = msg.Locale
+		w = w.refreshLogs()
+		return w, nil
 
 	case tea.KeyMsg:
 		switch {
@@ -280,7 +292,7 @@ func (w ChatWorkspace) updateChildBounds() (ui.Model, tea.Cmd) {
 func (w ChatWorkspace) refreshLogs() ChatWorkspace {
 	layout := w.currentLayout()
 	innerWidth, _ := borderedInnerSize(layout.LogsRect.Width, layout.LogsRect.Height)
-	w.Logs = w.Logs.SetLines(renderLogEntries(w.logEntries, innerWidth))
+	w.Logs = w.Logs.SetLines(renderLogEntries(w.logEntries, innerWidth, w.timestampFormat, w.locale))
 
 	return w
 }
@@ -371,13 +383,14 @@ func (w ChatWorkspace) renderMetricsPane(width, height int) string {
 	return w.Metrics.View(innerWidth, innerHeight)
 }
 
-func renderLogEntries(entries []observability.PanelEntry, width int) []string {
+func renderLogEntries(entries []observability.PanelEntry, width int, format *string, locale language.Tag) []string {
 	lines := make([]string, 0, len(entries))
 
 	for _, entry := range entries {
-		parts := []string{
-			theme.Dim.Render(entry.Timestamp.Format("15:04:05")),
-			renderLogLevel(entry.Level),
+		parts := []string{renderLogLevel(entry.Level)}
+
+		if ts := timestamp.Format(entry.Timestamp, format, locale); ts != "" {
+			parts = append([]string{theme.Dim.Render(ts)}, parts...)
 		}
 
 		if entry.Scope != "" {

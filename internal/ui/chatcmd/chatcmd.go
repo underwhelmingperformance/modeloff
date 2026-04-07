@@ -88,6 +88,12 @@ type EmbeddingModelSetResult struct {
 	ModelID domain.ModelID
 }
 
+// TimestampFormatSetResult signals that the timestamp format was
+// updated.
+type TimestampFormatSetResult struct {
+	Format *string
+}
+
 func errorEvent(operation string, err error) domain.ErrorEvent {
 	return domain.ErrorEvent{Operation: operation, Err: err, At: time.Now()}
 }

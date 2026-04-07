@@ -319,6 +319,51 @@ func TestChatScreen_config_set_poke_interval(t *testing.T) {
 	require.Equal(t, 10*time.Minute, cfgStore.cfg.PokeInterval)
 }
 
+func TestChatScreen_config_set_timestamp_format(t *testing.T) {
+	cfgStore := newFakeConfigStore()
+	sess := newTestSessionWithConfigStore(t, cfgStore)
+	uitest.SeedChannel(t, sess, "#general")
+
+	tm := newChatApp(t, sess)
+	tm.WaitFor("#general")
+
+	tm.Submit("/config timestamp-format 02/01 15:04:05")
+	tm.WaitFor("timestamp format set to 02/01 15:04:05")
+
+	require.NotNil(t, cfgStore.cfg.TimestampFormat)
+	require.Equal(t, "02/01 15:04:05", *cfgStore.cfg.TimestampFormat)
+}
+
+func TestChatScreen_config_disable_timestamp_format(t *testing.T) {
+	cfgStore := newFakeConfigStore()
+	sess := newTestSessionWithConfigStore(t, cfgStore)
+	uitest.SeedChannel(t, sess, "#general")
+
+	tm := newChatApp(t, sess)
+	tm.WaitFor("#general")
+
+	tm.Submit("/config timestamp-format")
+	tm.WaitFor("timestamps disabled")
+
+	require.NotNil(t, cfgStore.cfg.TimestampFormat)
+	require.Equal(t, "", *cfgStore.cfg.TimestampFormat)
+}
+
+func TestChatScreen_config_disable_timestamp_format_with_empty_quotes(t *testing.T) {
+	cfgStore := newFakeConfigStore()
+	sess := newTestSessionWithConfigStore(t, cfgStore)
+	uitest.SeedChannel(t, sess, "#general")
+
+	tm := newChatApp(t, sess)
+	tm.WaitFor("#general")
+
+	tm.Submit(`/config timestamp-format ""`)
+	tm.WaitFor("timestamps disabled")
+
+	require.NotNil(t, cfgStore.cfg.TimestampFormat)
+	require.Equal(t, "", *cfgStore.cfg.TimestampFormat)
+}
+
 func TestChatScreen_config_invalid_subcommand(t *testing.T) {
 	tm, _ := newChatAppInChannel(t, "#general")
 

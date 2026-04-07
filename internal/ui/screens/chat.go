@@ -18,6 +18,7 @@ import (
 	"github.com/laney/modeloff/internal/ui/chatcmd"
 	"github.com/laney/modeloff/internal/ui/components"
 	"github.com/laney/modeloff/internal/ui/theme"
+	uitimestamp "github.com/laney/modeloff/internal/ui/timestamp"
 )
 
 // sessionEventMsg wraps a domain.SessionEvent received from the
@@ -275,6 +276,24 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 			Text:    fmt.Sprintf("embedding model set to %s", msg.ModelID),
 			At:      time.Now(),
 		})
+
+	case chatcmd.TimestampFormatSetResult:
+		text := "timestamps disabled"
+		if msg.Format != nil && *msg.Format != "" {
+			text = fmt.Sprintf("timestamp format set to %s", *msg.Format)
+		}
+
+		return s, tea.Batch(
+			s.logAndShow(domain.ChannelSystemNotice{
+				Channel: *s.active,
+				Text:    text,
+				At:      time.Now(),
+			}),
+			msgCmd(components.TimestampFormatMsg{
+				Format: msg.Format,
+				Locale: uitimestamp.CurrentLocale(),
+			}),
+		)
 
 	case domain.JoinEvent:
 		return s.handleJoinEvent(msg)

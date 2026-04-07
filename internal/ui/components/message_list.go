@@ -8,11 +8,14 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"golang.org/x/text/language"
 
 	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/ptr"
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/theme"
+	"github.com/laney/modeloff/internal/ui/timestamp"
 )
 
 // HighlightWordsMsg updates the set of words that trigger visual
@@ -20,6 +23,13 @@ import (
 type HighlightWordsMsg struct {
 	Words    []string
 	UserNick domain.Nick
+}
+
+// TimestampFormatMsg updates the timestamp formatting configuration
+// for rendered message lines.
+type TimestampFormatMsg struct {
+	Format *string
+	Locale language.Tag
 }
 
 const defaultBufferCap = 100
@@ -45,9 +55,11 @@ type MessageList struct {
 	// events have arrived since.
 	showDivider bool
 
-	commands       command.Set
-	highlightWords []string
-	userNick       domain.Nick
+	commands        command.Set
+	highlightWords  []string
+	userNick        domain.Nick
+	timestampFormat *string
+	locale          language.Tag
 }
 
 // NewMessageList creates an empty message list.
@@ -59,6 +71,7 @@ func NewMessageList(ch domain.ChannelName) MessageList {
 		channel:  ch,
 		events:   NewRingBuffer[domain.StoredEvent](defaultBufferCap),
 		viewport: vp,
+		locale:   timestamp.CurrentLocale(),
 		spinner: spinner.New(
 			spinner.WithSpinner(spinner.Dot),
 			spinner.WithStyle(theme.Dim),
@@ -111,6 +124,11 @@ func (m MessageList) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	case HighlightWordsMsg:
 		m.highlightWords = msg.Words
 		m.userNick = msg.UserNick
+		return m, nil
+
+	case TimestampFormatMsg:
+		m.timestampFormat = ptr.CloneString(msg.Format)
+		m.locale = msg.Locale
 		return m, nil
 
 	case CommandStateMsg:
@@ -288,7 +306,14 @@ func (m MessageList) renderedContent(width int) string {
 
 		event, _ := m.events.GetAt(i)
 		rendered = append(rendered, renderChannelEvent(
-			event.Event, width, m.highlightWords, m.userNick, m.commands))
+			event.Event,
+			width,
+			m.highlightWords,
+			m.userNick,
+			m.commands,
+			m.timestampFormat,
+			m.locale,
+		))
 	}
 
 	// Divider at the end if seenCount == total (all seen, new arrived

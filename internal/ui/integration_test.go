@@ -50,7 +50,7 @@ func TestApp_startup_with_saved_channels(t *testing.T) {
 	tm := uitest.New(t, root)
 
 	advanceConnection(tm, 4)
-	tm.WaitFor("#general", "#random", "hello from last time")
+	tm.WaitFor("#general", "#random", "hello from", "last time")
 
 	last, err := store.GetLastChannel(t.Context())
 	require.NoError(t, err)
