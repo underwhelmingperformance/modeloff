@@ -78,6 +78,15 @@ type nodeMeta struct {
 	Children    []nodeMeta
 }
 
+func toNodeMetas(nodes []*Node) []nodeMeta {
+	metas := make([]nodeMeta, len(nodes))
+	for i, n := range nodes {
+		metas[i] = toNodeMeta(n)
+	}
+
+	return metas
+}
+
 func toNodeMeta(n *Node) nodeMeta {
 	var children []nodeMeta
 	for _, child := range n.Children {
@@ -311,19 +320,18 @@ func TestBuild_produces_nodes_from_grammar(t *testing.T) {
 	nodes, err := build(&buildGrammar{})
 	require.NoError(t, err)
 
-	require.Len(t, nodes, 2)
-
-	require.Equal(t, nodeMeta{
-		Name:        "join",
-		Help:        "Join a channel.",
-		Positionals: []positionalMeta{{Name: "channel", Help: "Channel to join"}},
-	}, toNodeMeta(nodes[0]))
+	require.Equal(t, []nodeMeta{
+		{
+			Name:        "join",
+			Help:        "Join a channel.",
+			Positionals: []positionalMeta{{Name: "channel", Help: "Channel to join"}},
+		},
+		{
+			Name: "part",
+			Help: "Part from the channel.",
+		},
+	}, toNodeMetas(nodes))
 	require.NotNil(t, nodes[0].factory)
-
-	require.Equal(t, nodeMeta{
-		Name: "part",
-		Help: "Part from the channel.",
-	}, toNodeMeta(nodes[1]))
 	require.NotNil(t, nodes[1].factory)
 }
 
@@ -336,8 +344,9 @@ func TestBuild_name_tag_overrides_field_name(t *testing.T) {
 	nodes, err := build(grammar)
 	require.NoError(t, err)
 
-	require.Len(t, nodes, 1)
-	require.Equal(t, "bar", nodes[0].Name)
+	require.Equal(t, []nodeMeta{
+		{Name: "bar", Help: "A renamed command."},
+	}, toNodeMetas(nodes))
 }
 
 func TestBuild_skips_non_cmd_fields(t *testing.T) {
@@ -350,8 +359,9 @@ func TestBuild_skips_non_cmd_fields(t *testing.T) {
 	nodes, err := build(grammar)
 	require.NoError(t, err)
 
-	require.Len(t, nodes, 1)
-	require.Equal(t, "cmd", nodes[0].Name)
+	require.Equal(t, []nodeMeta{
+		{Name: "cmd", Help: "A command."},
+	}, toNodeMetas(nodes))
 }
 
 func TestBuild_rejects_non_pointer(t *testing.T) {
@@ -370,6 +380,18 @@ func TestBuild_factory_creates_pointer(t *testing.T) {
 	nodes, err := build(&buildGrammar{})
 	require.NoError(t, err)
 
+	require.Equal(t, []nodeMeta{
+		{
+			Name:        "join",
+			Help:        "Join a channel.",
+			Positionals: []positionalMeta{{Name: "channel", Help: "Channel to join"}},
+		},
+		{
+			Name: "part",
+			Help: "Part from the channel.",
+		},
+	}, toNodeMetas(nodes))
+
 	cmd := nodes[0].factory()
 	require.IsType(t, &buildJoinCommand{}, cmd)
 }
@@ -384,8 +406,9 @@ func TestBuild_unexported_fields_are_skipped(t *testing.T) {
 	nodes, err := build(grammar)
 	require.NoError(t, err)
 
-	require.Len(t, nodes, 1)
-	require.Equal(t, "pub", nodes[0].Name)
+	require.Equal(t, []nodeMeta{
+		{Name: "pub", Help: "Public."},
+	}, toNodeMetas(nodes))
 }
 
 func TestBuild_empty_grammar(t *testing.T) {
@@ -415,8 +438,9 @@ func TestBuild_picks_up_completer_sources(t *testing.T) {
 	nodes, err := build(grammar)
 	require.NoError(t, err)
 
-	require.Len(t, nodes, 1)
-	require.Len(t, nodes[0].Positionals, 1)
+	require.Equal(t, []nodeMeta{
+		{Name: "do", Help: "Do something.", Positionals: []positionalMeta{{Name: "target", Help: "Target"}}},
+	}, toNodeMetas(nodes))
 	require.NotNil(t, nodes[0].Positionals[0].Source, "Source should be wired from Completer")
 }
 
@@ -464,10 +488,43 @@ func TestBuild_recursive_subcommands(t *testing.T) {
 	nodes, err := build(&buildSubcommandGrammar{})
 	require.NoError(t, err)
 
-	var metas []nodeMeta
-	for _, n := range nodes {
-		metas = append(metas, toNodeMeta(n))
-	}
+	require.Equal(t, []nodeMeta{
+		{
+			Name: "config",
+			Help: "Manage configuration.",
+			Flags: []flagMeta{
+				{Name: "--format", Help: "Output format", Optional: true},
+			},
+			Children: []nodeMeta{
+				{
+					Name:        "get",
+					Help:        "Get a config value.",
+					Positionals: []positionalMeta{{Name: "key", Help: "Key to get"}},
+				},
+				{
+					Name: "set",
+					Help: "Set a config value.",
+					Positionals: []positionalMeta{
+						{Name: "key", Help: "Key to set"},
+						{Name: "value", Help: "Value to set"},
+					},
+				},
+				{
+					Name: "reset",
+					Help: "Reset all config.",
+				},
+			},
+		},
+		{
+			Name: "quit",
+			Help: "Quit.",
+		},
+	}, toNodeMetas(nodes))
+}
+
+func TestBuild_group_nodes_have_factories_and_parent_links(t *testing.T) {
+	nodes, err := build(&buildSubcommandGrammar{})
+	require.NoError(t, err)
 
 	require.Equal(t, []nodeMeta{
 		{
@@ -500,12 +557,7 @@ func TestBuild_recursive_subcommands(t *testing.T) {
 			Name: "quit",
 			Help: "Quit.",
 		},
-	}, metas)
-}
-
-func TestBuild_group_nodes_have_factories_and_parent_links(t *testing.T) {
-	nodes, err := build(&buildSubcommandGrammar{})
-	require.NoError(t, err)
+	}, toNodeMetas(nodes))
 
 	configNode := nodes[0]
 	require.NotNil(t, configNode.factory, "group node should keep a factory")
@@ -522,6 +574,26 @@ func TestBuild_group_nodes_have_factories_and_parent_links(t *testing.T) {
 func TestNode_AllFlags_includes_ancestor_flags(t *testing.T) {
 	nodes, err := build(&buildDeepGrammar{})
 	require.NoError(t, err)
+
+	require.Equal(t, []nodeMeta{
+		{
+			Name: "top",
+			Help: "Top level.",
+			Children: []nodeMeta{
+				{
+					Name: "mid",
+					Help: "Middle level.",
+					Children: []nodeMeta{
+						{
+							Name:        "leaf",
+							Help:        "A leaf command.",
+							Positionals: []positionalMeta{{Name: "name", Help: "Name"}},
+						},
+					},
+				},
+			},
+		},
+	}, toNodeMetas(nodes))
 
 	top := nodes[0]
 	top.Flags = []Flag{{Name: "--top-flag", Help: "Top", Optional: true}}
@@ -559,11 +631,6 @@ func TestBuild_three_level_nesting(t *testing.T) {
 	nodes, err := build(&buildDeepGrammar{})
 	require.NoError(t, err)
 
-	var metas []nodeMeta
-	for _, n := range nodes {
-		metas = append(metas, toNodeMeta(n))
-	}
-
 	require.Equal(t, []nodeMeta{
 		{
 			Name: "top",
@@ -582,10 +649,8 @@ func TestBuild_three_level_nesting(t *testing.T) {
 				},
 			},
 		},
-	}, metas)
+	}, toNodeMetas(nodes))
 
-	// Every node in the branch keeps a factory so ancestor flags can
-	// be parsed into their own values.
 	topNode := nodes[0]
 	require.NotNil(t, topNode.factory)
 	require.NotNil(t, topNode.Children[0].factory)

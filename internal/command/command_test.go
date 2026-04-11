@@ -281,8 +281,15 @@ func TestParser_Set_returns_underlying_set(t *testing.T) {
 	parser := BuildParser[testContext, testResult](&runnableGrammar{})
 
 	set := parser.Set()
-	require.Len(t, set.Commands, 1)
-	require.Equal(t, "do", set.Commands[0].Name)
+
+	var metas []nodeMeta
+	for _, n := range set.Commands {
+		metas = append(metas, toNodeMeta(n))
+	}
+
+	require.Equal(t, []nodeMeta{
+		{Name: "do", Help: "Do something.", Positionals: []positionalMeta{{Name: "arg", Help: "An argument"}}},
+	}, metas)
 }
 
 // --- Subcommand support ---
@@ -453,15 +460,14 @@ func TestParseInvocation_returns_branch_values(t *testing.T) {
 	invocation, err := cmds.ParseInvocation("/config set --format json api-key sk-1234")
 	require.NoError(t, err)
 
-	require.Equal(t, 2, len(invocation.Path), "expected 2-element path [config, set]")
+	pathNames := make([]string, len(invocation.Path))
+	for i, p := range invocation.Path {
+		pathNames[i] = p.Node.Name
+	}
 
-	parent := invocation.Path[0]
-	require.Equal(t, "config", parent.Node.Name)
-	require.Equal(t, parentConfigCommand{Format: "json"}, parent.Value)
-
-	leaf := invocation.Path[1]
-	require.Equal(t, "set", leaf.Node.Name)
-	require.Equal(t, subSetCommand{Key: "api-key", Value: "sk-1234"}, leaf.Value)
+	require.Equal(t, []string{"config", "set"}, pathNames)
+	require.Equal(t, parentConfigCommand{Format: "json"}, invocation.Path[0].Value)
+	require.Equal(t, subSetCommand{Key: "api-key", Value: "sk-1234"}, invocation.Path[1].Value)
 
 	parentValue, ok := invocation.ValueFor(invocation.Path[0].Node)
 	require.True(t, ok)

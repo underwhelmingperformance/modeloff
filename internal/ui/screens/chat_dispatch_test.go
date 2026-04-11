@@ -113,7 +113,7 @@ func TestChatScreen_ModelReply_queues_and_paces(t *testing.T) {
 	updated, cmd := screen.handleModelReplyEvent(first)
 	screen = updated.(ChatScreen)
 
-	require.Len(t, screen.replyQueue, 1)
+	require.Equal(t, []domain.ModelReplyEvent{first}, screen.replyQueue)
 
 	msgs := collectMsgs(cmd)
 	_, hasDeliver := containsMsg[deliverNextReplyMsg](msgs)
@@ -127,14 +127,14 @@ func TestChatScreen_ModelReply_queues_and_paces(t *testing.T) {
 	updated, cmd = screen.handleModelReplyEvent(second)
 	screen = updated.(ChatScreen)
 
-	require.Len(t, screen.replyQueue, 2)
+	require.Equal(t, []domain.ModelReplyEvent{first, second}, screen.replyQueue)
 	require.Nil(t, cmd, "second reply should not trigger delivery while first is pending")
 
 	// Delivering the first reply should schedule the next after a tick.
 	updated, cmd = screen.deliverNextReply()
 	screen = updated.(ChatScreen)
 
-	require.Len(t, screen.replyQueue, 1)
+	require.Equal(t, []domain.ModelReplyEvent{second}, screen.replyQueue)
 	require.NotNil(t, cmd, "should schedule next reply delivery")
 
 	// Delivering the last reply clears the pending indicator.

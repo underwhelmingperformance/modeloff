@@ -274,9 +274,13 @@ func TestSQLiteStore_EventsBefore_nil_returns_latest(t *testing.T) {
 
 	got, err := s.EventsBefore(ctx, "#general", nil, 3)
 	require.NoError(t, err)
-	require.Equal(t, 3, len(got))
-	require.Equal(t, ids[2], got[0].ID)
-	require.Equal(t, ids[4], got[2].ID)
+
+	gotIDs := make([]int64, len(got))
+	for i, e := range got {
+		gotIDs[i] = e.ID
+	}
+
+	require.Equal(t, []int64{ids[2], ids[3], ids[4]}, gotIDs)
 }
 
 func TestSQLiteStore_EventsBefore_with_cursor(t *testing.T) {
@@ -287,9 +291,13 @@ func TestSQLiteStore_EventsBefore_with_cursor(t *testing.T) {
 
 	got, err := s.EventsBefore(ctx, "#general", &ids[3], 2)
 	require.NoError(t, err)
-	require.Equal(t, 2, len(got))
-	require.Equal(t, ids[1], got[0].ID)
-	require.Equal(t, ids[2], got[1].ID)
+
+	gotIDs := make([]int64, len(got))
+	for i, e := range got {
+		gotIDs[i] = e.ID
+	}
+
+	require.Equal(t, []int64{ids[1], ids[2]}, gotIDs)
 }
 
 func TestSQLiteStore_EventsFrom_nil_returns_earliest(t *testing.T) {
@@ -300,9 +308,13 @@ func TestSQLiteStore_EventsFrom_nil_returns_earliest(t *testing.T) {
 
 	got, err := s.EventsFrom(ctx, "#general", nil, 3)
 	require.NoError(t, err)
-	require.Equal(t, 3, len(got))
-	require.Equal(t, ids[0], got[0].ID)
-	require.Equal(t, ids[2], got[2].ID)
+
+	gotIDs := make([]int64, len(got))
+	for i, e := range got {
+		gotIDs[i] = e.ID
+	}
+
+	require.Equal(t, []int64{ids[0], ids[1], ids[2]}, gotIDs)
 }
 
 func TestSQLiteStore_EventsFrom_with_cursor(t *testing.T) {
@@ -313,20 +325,30 @@ func TestSQLiteStore_EventsFrom_with_cursor(t *testing.T) {
 
 	got, err := s.EventsFrom(ctx, "#general", &ids[2], 2)
 	require.NoError(t, err)
-	require.Equal(t, 2, len(got))
-	require.Equal(t, ids[2], got[0].ID)
-	require.Equal(t, ids[3], got[1].ID)
+
+	gotIDs := make([]int64, len(got))
+	for i, e := range got {
+		gotIDs[i] = e.ID
+	}
+
+	require.Equal(t, []int64{ids[2], ids[3]}, gotIDs)
 }
 
 func TestSQLiteStore_Events_fewer_than_requested(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
 
-	appendTestEvents(t, s, "#general", 2)
+	ids := appendTestEvents(t, s, "#general", 2)
 
 	got, err := s.EventsBefore(ctx, "#general", nil, 10)
 	require.NoError(t, err)
-	require.Equal(t, 2, len(got))
+
+	gotIDs := make([]int64, len(got))
+	for i, e := range got {
+		gotIDs[i] = e.ID
+	}
+
+	require.Equal(t, []int64{ids[0], ids[1]}, gotIDs)
 }
 
 func TestSQLiteStore_Events_empty_channel(t *testing.T) {
@@ -342,16 +364,28 @@ func TestSQLiteStore_Events_isolated_by_channel(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
 
-	appendTestEvents(t, s, "#alpha", 3)
-	appendTestEvents(t, s, "#beta", 2)
+	alphaIDs := appendTestEvents(t, s, "#alpha", 3)
+	betaIDs := appendTestEvents(t, s, "#beta", 2)
 
 	gotA, err := s.EventsBefore(ctx, "#alpha", nil, 10)
 	require.NoError(t, err)
-	require.Equal(t, 3, len(gotA))
+
+	gotAIDs := make([]int64, len(gotA))
+	for i, e := range gotA {
+		gotAIDs[i] = e.ID
+	}
+
+	require.Equal(t, []int64{alphaIDs[0], alphaIDs[1], alphaIDs[2]}, gotAIDs)
 
 	gotB, err := s.EventsBefore(ctx, "#beta", nil, 10)
 	require.NoError(t, err)
-	require.Equal(t, 2, len(gotB))
+
+	gotBIDs := make([]int64, len(gotB))
+	for i, e := range gotB {
+		gotBIDs[i] = e.ID
+	}
+
+	require.Equal(t, []int64{betaIDs[0], betaIDs[1]}, gotBIDs)
 }
 
 func TestSQLiteStore_Events_type_discriminator_round_trip(t *testing.T) {

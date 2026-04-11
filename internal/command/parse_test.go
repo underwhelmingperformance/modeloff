@@ -63,7 +63,7 @@ func TestParseInto_single_positional(t *testing.T) {
 	err := ParseInto(cmd, []string{"botty"})
 
 	require.NoError(t, err)
-	require.Equal(t, "botty", cmd.Nick)
+	require.Equal(t, kickCmd{Nick: "botty"}, *cmd)
 }
 
 func TestParseInto_positional_with_custom_decoder(t *testing.T) {
@@ -81,7 +81,7 @@ func TestParseInto_positional_with_custom_decoder(t *testing.T) {
 			cmd := &joinCmd{}
 
 			require.NoError(t, ParseInto(cmd, []string{tt.input}))
-			require.Equal(t, tt.want, cmd.Channel)
+			require.Equal(t, joinCmd{Channel: tt.want}, *cmd)
 		})
 	}
 }
@@ -92,8 +92,7 @@ func TestParseInto_variadic_positional(t *testing.T) {
 	err := ParseInto(cmd, []string{"alice", "hello", "world"})
 
 	require.NoError(t, err)
-	require.Equal(t, "alice", cmd.Nick)
-	require.Equal(t, []string{"hello", "world"}, cmd.Body)
+	require.Equal(t, msgCmd{Nick: "alice", Body: []string{"hello", "world"}}, *cmd)
 }
 
 func TestParseInto_variadic_with_nargs_satisfied(t *testing.T) {
@@ -102,8 +101,7 @@ func TestParseInto_variadic_with_nargs_satisfied(t *testing.T) {
 	err := ParseInto(cmd, []string{"alice", "hi"})
 
 	require.NoError(t, err)
-	require.Equal(t, "alice", cmd.Nick)
-	require.Equal(t, []string{"hi"}, cmd.Body)
+	require.Equal(t, msgCmd{Nick: "alice", Body: []string{"hi"}}, *cmd)
 }
 
 func TestParseInto_variadic_with_nargs_violated(t *testing.T) {
@@ -122,7 +120,7 @@ func TestParseInto_optional_variadic_absent(t *testing.T) {
 	err := ParseInto(cmd, nil)
 
 	require.NoError(t, err)
-	require.Nil(t, cmd.Topic)
+	require.Equal(t, topicCmd{}, *cmd)
 }
 
 func TestParseInto_optional_variadic_present(t *testing.T) {
@@ -131,7 +129,7 @@ func TestParseInto_optional_variadic_present(t *testing.T) {
 	err := ParseInto(cmd, []string{"General", "Discussion"})
 
 	require.NoError(t, err)
-	require.Equal(t, []string{"General", "Discussion"}, cmd.Topic)
+	require.Equal(t, topicCmd{Topic: []string{"General", "Discussion"}}, *cmd)
 }
 
 func TestParseInto_no_fields(t *testing.T) {
@@ -168,8 +166,7 @@ func TestParseInto_flag_parsing(t *testing.T) {
 	err := ParseInto(cmd, []string{"some-model", "--persona", "Helpful assistant"})
 
 	require.NoError(t, err)
-	require.Equal(t, "some-model", cmd.Model)
-	require.Equal(t, "Helpful assistant", cmd.Persona)
+	require.Equal(t, flagCmd{Model: "some-model", Persona: "Helpful assistant"}, *cmd)
 }
 
 func TestParseInto_flag_without_value(t *testing.T) {
@@ -188,8 +185,7 @@ func TestParseInto_flag_only(t *testing.T) {
 	err := ParseInto(cmd, []string{"--persona", "Be nice"})
 
 	require.NoError(t, err)
-	require.Equal(t, "", cmd.Model)
-	require.Equal(t, "Be nice", cmd.Persona)
+	require.Equal(t, flagCmd{Persona: "Be nice"}, *cmd)
 }
 
 func TestParseInto_unknown_flag(t *testing.T) {
@@ -208,9 +204,7 @@ func TestParseInto_mixed_positional_flag_variadic(t *testing.T) {
 	err := ParseInto(cmd, []string{"target1", "--force", "yes", "a", "b"})
 
 	require.NoError(t, err)
-	require.Equal(t, "target1", cmd.Target)
-	require.Equal(t, "yes", cmd.Force)
-	require.Equal(t, []string{"a", "b"}, cmd.Rest)
+	require.Equal(t, mixedCmd{Target: "target1", Force: "yes", Rest: []string{"a", "b"}}, *cmd)
 }
 
 func TestParseInto_int_field(t *testing.T) {
@@ -219,7 +213,7 @@ func TestParseInto_int_field(t *testing.T) {
 	err := ParseInto(cmd, []string{"8080"})
 
 	require.NoError(t, err)
-	require.Equal(t, 8080, cmd.Port)
+	require.Equal(t, portCmd{Port: 8080}, *cmd)
 }
 
 func TestParseInto_int_decode_error(t *testing.T) {
@@ -238,8 +232,7 @@ func TestParseInto_flag_before_positional(t *testing.T) {
 	err := ParseInto(cmd, []string{"--persona", "Be nice", "some-model"})
 
 	require.NoError(t, err)
-	require.Equal(t, "some-model", cmd.Model)
-	require.Equal(t, "Be nice", cmd.Persona)
+	require.Equal(t, flagCmd{Model: "some-model", Persona: "Be nice"}, *cmd)
 }
 
 func TestParseInto_variadic_flag_consumes_remaining(t *testing.T) {
@@ -253,8 +246,7 @@ func TestParseInto_variadic_flag_consumes_remaining(t *testing.T) {
 	err := ParseInto(cmd, []string{"model-a", "--tags", "x", "y", "z"})
 
 	require.NoError(t, err)
-	require.Equal(t, "model-a", cmd.Model)
-	require.Equal(t, []string{"x", "y", "z"}, cmd.Tags)
+	require.Equal(t, varFlagCmd{Model: "model-a", Tags: []string{"x", "y", "z"}}, *cmd)
 }
 
 func TestParseInto_empty_string_is_rejected_for_required_field(t *testing.T) {
@@ -288,8 +280,7 @@ func TestParseInto_variadic_slice_flag(t *testing.T) {
 	err := ParseInto(cmd, []string{"widget", "--tags", "red", "blue", "green"})
 
 	require.NoError(t, err)
-	require.Equal(t, "widget", cmd.Name)
-	require.Equal(t, []string{"red", "blue", "green"}, cmd.Tags)
+	require.Equal(t, tagCmd{Name: "widget", Tags: []string{"red", "blue", "green"}}, *cmd)
 }
 
 func TestParseInto_bool_flag_without_value(t *testing.T) {
@@ -298,8 +289,7 @@ func TestParseInto_bool_flag_without_value(t *testing.T) {
 	err := ParseInto(cmd, []string{"--reset"})
 
 	require.NoError(t, err)
-	require.True(t, cmd.Reset)
-	require.Empty(t, cmd.Name)
+	require.Equal(t, boolFlagCmd{Reset: true}, *cmd)
 }
 
 func TestParseInto_bool_flag_before_positional(t *testing.T) {
@@ -308,6 +298,5 @@ func TestParseInto_bool_flag_before_positional(t *testing.T) {
 	err := ParseInto(cmd, []string{"--reset", "widget"})
 
 	require.NoError(t, err)
-	require.True(t, cmd.Reset)
-	require.Equal(t, "widget", cmd.Name)
+	require.Equal(t, boolFlagCmd{Reset: true, Name: "widget"}, *cmd)
 }

@@ -63,7 +63,9 @@ func TestMerge(t *testing.T) {
 
 		merged := Merge(child, parent)
 
-		require.Equal(t, "child", merged.Commands[0].Help)
+		require.Equal(t, []nodeMeta{
+			{Name: "join", Help: "child"},
+		}, toNodeMetas(merged.Commands))
 	})
 }
 
@@ -309,12 +311,17 @@ func TestComplete_token_boundaries(t *testing.T) {
 		},
 	}
 
+	allNicks := []Suggestion{
+		{Value: "alice", Label: "alice"},
+		{Value: "bob", Label: "bob"},
+	}
+
 	tests := []struct {
-		name       string
-		raw        string
-		cursor     int
-		wantCmd    bool
-		wantArgLen int
+		name            string
+		raw             string
+		cursor          int
+		wantCmd         bool
+		wantSuggestions []Suggestion
 	}{
 		{
 			name:    "cursor at zero shows command suggestions",
@@ -329,34 +336,33 @@ func TestComplete_token_boundaries(t *testing.T) {
 			wantCmd: true,
 		},
 		{
-			name:       "cursor after space shows argument suggestions",
-			raw:        "/kick ",
-			cursor:     6,
-			wantArgLen: 2,
+			name:            "cursor after space shows argument suggestions",
+			raw:             "/kick ",
+			cursor:          6,
+			wantSuggestions: allNicks,
 		},
 		{
-			name:       "cursor mid-argument filters",
-			raw:        "/kick al",
-			cursor:     8,
-			wantArgLen: 1,
+			name:            "cursor mid-argument filters",
+			raw:             "/kick al",
+			cursor:          8,
+			wantSuggestions: []Suggestion{{Value: "alice", Label: "alice"}},
 		},
 		{
-			name:       "cursor beyond length is clamped",
-			raw:        "/kick ",
-			cursor:     100,
-			wantArgLen: 2,
+			name:            "cursor beyond length is clamped",
+			raw:             "/kick ",
+			cursor:          100,
+			wantSuggestions: allNicks,
 		},
 		{
-			name:    "not a command",
-			raw:     "hello",
-			cursor:  5,
-			wantCmd: false,
+			name:   "not a command",
+			raw:    "hello",
+			cursor: 5,
 		},
 		{
-			name:       "multiple spaces between tokens",
-			raw:        "/kick   a",
-			cursor:     9,
-			wantArgLen: 1,
+			name:            "multiple spaces between tokens",
+			raw:             "/kick   a",
+			cursor:          9,
+			wantSuggestions: []Suggestion{{Value: "alice", Label: "alice"}},
 		},
 	}
 
@@ -364,15 +370,15 @@ func TestComplete_token_boundaries(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			completion := Complete(cmds, tt.raw, tt.cursor)
 
-			if !tt.wantCmd && tt.wantArgLen == 0 {
+			if !tt.wantCmd && tt.wantSuggestions == nil {
 				require.False(t, completion.Visible)
 				return
 			}
 
 			require.True(t, completion.Visible)
 
-			if tt.wantArgLen > 0 {
-				require.Len(t, completion.Suggestions, tt.wantArgLen)
+			if tt.wantSuggestions != nil {
+				require.Equal(t, tt.wantSuggestions, completion.Suggestions)
 			}
 		})
 	}

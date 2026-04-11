@@ -6,11 +6,12 @@ package session
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
-	"math/rand/v2"
+	"math/big"
 	"strings"
 	"time"
 
@@ -46,9 +47,9 @@ type Session struct {
 	user       *domain.Instance
 	apiKey     string
 	smallModel domain.ModelID
-	factory   func(apiKey, baseURL string) (api.Client, error)
-	now       func() time.Time
-	events    chan domain.SessionEvent
+	factory    func(apiKey, baseURL string) (api.Client, error)
+	now        func() time.Time
+	events     chan domain.SessionEvent
 
 	supportedModels      map[domain.ModelID]struct{}
 	supportedModelsReady bool
@@ -993,7 +994,6 @@ func (s *Session) SetAPIKey(apiKey, baseURL string) error {
 	return nil
 }
 
-
 // SetSmallModel updates the model used for lightweight tasks such as
 // nick generation.
 func (s *Session) SetSmallModel(modelID domain.ModelID) {
@@ -1037,7 +1037,12 @@ func (s *Session) RandomPersona(ctx context.Context) (domain.Persona, error) {
 		return domain.Persona{}, fmt.Errorf("no personas available")
 	}
 
-	return personas[rand.IntN(len(personas))], nil
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(len(personas))))
+	if err != nil {
+		return domain.Persona{}, fmt.Errorf("random selection: %w", err)
+	}
+
+	return personas[n.Int64()], nil
 }
 
 // RegeneratePersonas generates a fresh set of personas via the API,
@@ -1117,7 +1122,6 @@ func (s *Session) SetBaseURL(baseURL string) error {
 
 	return nil
 }
-
 
 func (s *Session) dispatchToInstances(
 	ctx context.Context,

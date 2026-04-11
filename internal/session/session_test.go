@@ -251,6 +251,18 @@ func TestSession_model_ResponsePart_removes_from_channel(t *testing.T) {
 	// PartEvent is emitted from within dispatchToInstance before
 	// replies are returned, so the order is: DispatchStarted,
 	// PartEvent, ModelReply, DispatchDone.
+	types := make([]string, len(events))
+	for i, e := range events {
+		types[i] = fmt.Sprintf("%T", e)
+	}
+
+	require.Equal(t, []string{
+		"domain.DispatchStartedEvent",
+		"domain.PartEvent",
+		"domain.ModelReplyEvent",
+		"domain.DispatchDoneEvent",
+	}, types)
+
 	require.Equal(t, domain.DispatchStartedEvent{
 		Channel: "#general",
 		Nicks:   []domain.Nick{"botty"},
@@ -263,7 +275,6 @@ func TestSession_model_ResponsePart_removes_from_channel(t *testing.T) {
 		At:      fixedTime,
 	}, events[1])
 
-	require.IsType(t, domain.ModelReplyEvent{}, events[2])
 	reply := events[2].(domain.ModelReplyEvent)
 	require.Equal(t, "goodbye friends", reply.Event.Body)
 
@@ -311,6 +322,18 @@ func TestSession_model_ResponseQuit_removes_from_all_channels(t *testing.T) {
 	// QuitEvent is emitted from within dispatchToInstance before
 	// replies are returned: DispatchStarted, QuitEvent, ModelReply,
 	// DispatchDone.
+	types := make([]string, len(events))
+	for i, e := range events {
+		types[i] = fmt.Sprintf("%T", e)
+	}
+
+	require.Equal(t, []string{
+		"domain.DispatchStartedEvent",
+		"domain.QuitEvent",
+		"domain.ModelReplyEvent",
+		"domain.DispatchDoneEvent",
+	}, types)
+
 	require.Equal(t, domain.DispatchStartedEvent{
 		Channel: "#general",
 		Nicks:   []domain.Nick{"botty"},
@@ -321,8 +344,6 @@ func TestSession_model_ResponseQuit_removes_from_all_channels(t *testing.T) {
 		Message: "shutting down",
 		At:      fixedTime,
 	}, events[1])
-
-	require.IsType(t, domain.ModelReplyEvent{}, events[2])
 
 	require.Equal(t, domain.DispatchDoneEvent{Channel: "#general"}, events[3])
 
@@ -1757,7 +1778,7 @@ func TestSession_SetAPIKey(t *testing.T) {
 	initial := &fakeAPIClient{}
 	replacement := &fakeAPIClient{}
 	sess := New(s, nil, initial, "testuser", "", "")
-	sess.SetAPIFactory(func(apiKey, baseURL string) (api.Client, error) {
+	sess.SetAPIFactory(func(apiKey, _ string) (api.Client, error) {
 		require.Equal(t, "test-key", apiKey)
 		return replacement, nil
 	})
@@ -1789,7 +1810,7 @@ func TestSession_SetBaseURL(t *testing.T) {
 	newClient := &fakeAPIClient{}
 
 	sess := New(s, nil, &fakeAPIClient{}, "testuser", "test-key", "")
-	sess.SetAPIFactory(func(apiKey, baseURL string) (api.Client, error) {
+	sess.SetAPIFactory(func(_, baseURL string) (api.Client, error) {
 		factoryCalls++
 		factoryBaseURL = baseURL
 		return newClient, nil

@@ -154,8 +154,8 @@ func noChannelCmd() tea.Cmd {
 	return func() tea.Msg { return NoChannelError{} }
 }
 
-func (c Context) configResetRequested() bool {
-	value, ok := c.Invocation.ValueAtPath("config")
+func (rc Context) configResetRequested() bool {
+	value, ok := rc.Invocation.ValueAtPath("config")
 	if !ok {
 		return false
 	}

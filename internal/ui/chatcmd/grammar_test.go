@@ -82,7 +82,7 @@ func TestBuildParser_parse_returns_typed_command(t *testing.T) {
 
 	cmd, err := parser.Parse("/help")
 	require.NoError(t, err)
-	require.NotNil(t, cmd)
+	require.Equal(t, HelpCommand{}, cmd)
 }
 
 func TestComplete_join_suggests_channels(t *testing.T) {
