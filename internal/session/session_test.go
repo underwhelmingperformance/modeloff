@@ -222,143 +222,6 @@ func TestSession_Part_carries_message(t *testing.T) {
 	}, evt)
 }
 
-func TestSession_model_ResponsePart_removes_from_channel(t *testing.T) {
-	fake := &fakeAPIClient{
-		sendEventsFn: func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
-			return protocol.ModelResponse{
-				Kind:            protocol.ResponsePart,
-				Messages:        []protocol.ReplyPart{{Kind: protocol.ReplyMessage, Body: "goodbye friends"}},
-				FarewellMessage: "off to explore",
-			}, nil
-		},
-	}
-	sess, s := newTestSessionWithAPI(t, fake)
-	ctx := t.Context()
-
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
-	seedInstance(t, s, domain.Instance{
-		Nick:     "botty",
-		ModelID:  "test/model",
-		Channels: testChannels("#general"),
-	})
-
-	require.NoError(t, sess.SendMessage(ctx, "#general", "hello"))
-
-	// Drain MessageEvent first.
-	drainEvent[domain.MessageEvent](t, sess)
-	events := drainEvents(t, sess, 1)
-
-	// PartEvent is emitted from within dispatchToInstance before
-	// replies are returned, so the order is: DispatchStarted,
-	// PartEvent, ModelReply, DispatchDone.
-	types := make([]string, len(events))
-	for i, e := range events {
-		types[i] = fmt.Sprintf("%T", e)
-	}
-
-	require.Equal(t, []string{
-		"domain.DispatchStartedEvent",
-		"domain.PartEvent",
-		"domain.ModelReplyEvent",
-		"domain.DispatchDoneEvent",
-	}, types)
-
-	require.Equal(t, domain.DispatchStartedEvent{
-		Channel: "#general",
-		Nicks:   []domain.Nick{"botty"},
-	}, events[0])
-
-	require.Equal(t, domain.PartEvent{
-		Channel: "#general",
-		Nick:    "botty",
-		Message: "off to explore",
-		At:      fixedTime,
-	}, events[1])
-
-	reply := events[2].(domain.ModelReplyEvent)
-	require.Equal(t, "goodbye friends", reply.Event.Body)
-
-	require.Equal(t, domain.DispatchDoneEvent{Channel: "#general"}, events[3])
-
-	// Verify model is removed from the channel.
-	ch, err := s.GetChannel(ctx, "#general")
-	require.NoError(t, err)
-	require.False(t, ch.Members.Has("botty"))
-
-	// Instance channels should be updated.
-	inst, err := s.GetInstance(ctx, "botty")
-	require.NoError(t, err)
-
-	_, ok := inst.Channels.Get("#general")
-	require.False(t, ok)
-}
-
-func TestSession_model_ResponseQuit_removes_from_all_channels(t *testing.T) {
-	fake := &fakeAPIClient{
-		sendEventsFn: func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
-			return protocol.ModelResponse{
-				Kind:            protocol.ResponseQuit,
-				Messages:        []protocol.ReplyPart{{Kind: protocol.ReplyMessage, Body: "farewell"}},
-				FarewellMessage: "shutting down",
-			}, nil
-		},
-	}
-	sess, s := newTestSessionWithAPI(t, fake)
-	ctx := t.Context()
-
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
-	seedChannelWithMembers(t, s, "#random", "testuser", "botty")
-	seedInstance(t, s, domain.Instance{
-		Nick:     "botty",
-		ModelID:  "test/model",
-		Channels: testChannels("#general", "#random"),
-	})
-
-	require.NoError(t, sess.SendMessage(ctx, "#general", "hello"))
-
-	drainEvent[domain.MessageEvent](t, sess)
-	events := drainEvents(t, sess, 1)
-
-	// QuitEvent is emitted from within dispatchToInstance before
-	// replies are returned: DispatchStarted, QuitEvent, ModelReply,
-	// DispatchDone.
-	types := make([]string, len(events))
-	for i, e := range events {
-		types[i] = fmt.Sprintf("%T", e)
-	}
-
-	require.Equal(t, []string{
-		"domain.DispatchStartedEvent",
-		"domain.QuitEvent",
-		"domain.ModelReplyEvent",
-		"domain.DispatchDoneEvent",
-	}, types)
-
-	require.Equal(t, domain.DispatchStartedEvent{
-		Channel: "#general",
-		Nicks:   []domain.Nick{"botty"},
-	}, events[0])
-
-	require.Equal(t, domain.QuitEvent{
-		Nick:    "botty",
-		Message: "shutting down",
-		At:      fixedTime,
-	}, events[1])
-
-	require.Equal(t, domain.DispatchDoneEvent{Channel: "#general"}, events[3])
-
-	// Verify model is removed from both channels.
-	for _, chName := range []domain.ChannelName{"#general", "#random"} {
-		ch, err := s.GetChannel(ctx, chName)
-		require.NoError(t, err)
-		require.False(t, ch.Members.Has("botty"), "botty should be removed from %s", chName)
-	}
-
-	inst, err := s.GetInstance(ctx, "botty")
-	require.NoError(t, err)
-	require.Equal(t, 0, inst.Channels.Len())
-}
-
 func TestSession_Quit_saves_pending_quit(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
@@ -505,7 +368,7 @@ func TestSession_ProcessPendingQuit_no_pending_is_noop(t *testing.T) {
 	require.NoError(t, sess.ProcessPendingQuit(t.Context()))
 }
 
-func TestSession_Invite(t *testing.T) {
+func TestSession_AddModel(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
@@ -517,7 +380,7 @@ func TestSession_Invite(t *testing.T) {
 	}
 	require.NoError(t, s.SaveChannel(ctx, ch))
 
-	require.NoError(t, sess.Invite(ctx, "#dev", "anthropic/claude-3-haiku", ""))
+	require.NoError(t, sess.AddModel(ctx, "#dev", "anthropic/claude-3-haiku", ""))
 	evt := drainEvent[domain.ModelInvitedEvent](t, sess)
 	require.Equal(t, domain.ModelInvitedEvent{
 		Channel: "#dev",
@@ -636,9 +499,8 @@ func TestSession_dispatchToInstance_recordsPassReasonAndToolTurns(t *testing.T) 
 			return api.CompletionResult{
 				PendingToolCalls: []api.PendingToolCall{{
 					ID:   "call-1",
-					Kind: api.ToolCallWriteMemory,
-					Key:  "topic",
-					Body: "observability",
+					Name: "write_memory",
+					Args: mustRawJSON(t, `{"key":"topic","content":"observability"}`),
 				}},
 			}, nil
 		},
@@ -1244,13 +1106,13 @@ func TestSession_WhoisNotFound(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestSession_InviteNonexistentChannel(t *testing.T) {
+func TestSession_AddModelNonexistentChannel(t *testing.T) {
 	sess, _ := newTestSession(t)
 
-	require.Error(t, sess.Invite(t.Context(), "#ghost", "anthropic/claude-3-haiku", ""))
+	require.Error(t, sess.AddModel(t.Context(), "#ghost", "anthropic/claude-3-haiku", ""))
 }
 
-func TestSession_Invite_existing_instance_to_nonexistent_channel_does_not_corrupt(t *testing.T) {
+func TestSession_InviteAs_existing_instance_to_nonexistent_channel_does_not_corrupt(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
@@ -1261,7 +1123,7 @@ func TestSession_Invite_existing_instance_to_nonexistent_channel_does_not_corrup
 		Channels: testChannels("#general"),
 	})
 
-	require.Error(t, sess.Invite(ctx, "#ghost", "botty", ""))
+	require.Error(t, sess.InviteAs(ctx, sess.UserNick(), "botty", "#ghost"))
 
 	// Instance should not have the phantom channel in its set.
 	inst, err := s.GetInstance(ctx, "botty")
@@ -1269,7 +1131,7 @@ func TestSession_Invite_existing_instance_to_nonexistent_channel_does_not_corrup
 	requireChannels(t, inst.Channels, "#general")
 }
 
-func TestSession_InviteGenerateNickError(t *testing.T) {
+func TestSession_AddModelGenerateNickError(t *testing.T) {
 	fake := &fakeAPIClient{
 		generateNickFn: func(_ context.Context, _, _ domain.ModelID) (domain.Nick, error) {
 			return "", fmt.Errorf("API unavailable")
@@ -1287,16 +1149,16 @@ func TestSession_InviteGenerateNickError(t *testing.T) {
 	}
 	require.NoError(t, s.SaveChannel(ctx, ch))
 
-	require.Error(t, sess.Invite(ctx, "#dev", "anthropic/claude-3-haiku", ""))
+	require.Error(t, sess.AddModel(ctx, "#dev", "anthropic/claude-3-haiku", ""))
 }
 
-func TestSession_Invite_persists_persona(t *testing.T) {
+func TestSession_AddModel_persists_persona(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
 	seedChannelWithMembers(t, s, "#general", "testuser")
 
-	require.NoError(t, sess.Invite(ctx, "#general", "anthropic/claude-3-haiku", "Helpful assistant"))
+	require.NoError(t, sess.AddModel(ctx, "#general", "anthropic/claude-3-haiku", "Helpful assistant"))
 	evt := drainEvent[domain.ModelInvitedEvent](t, sess)
 	require.Equal(t, "Helpful assistant", evt.Instance.Persona)
 
@@ -1305,7 +1167,7 @@ func TestSession_Invite_persists_persona(t *testing.T) {
 	require.Equal(t, "Helpful assistant", inst.Persona)
 }
 
-func TestSession_Invite_reuses_existing_instance(t *testing.T) {
+func TestSession_InviteAs_reuses_existing_instance(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
@@ -1318,7 +1180,7 @@ func TestSession_Invite_reuses_existing_instance(t *testing.T) {
 		Channels: testChannels("#general"),
 	})
 
-	require.NoError(t, sess.Invite(ctx, "#random", "botty", ""))
+	require.NoError(t, sess.InviteAs(ctx, sess.UserNick(), "botty", "#random"))
 	evt := drainEvent[domain.ModelInvitedEvent](t, sess)
 	require.Equal(t, domain.ModelInvitedEvent{
 		Channel: "#random",
@@ -1343,7 +1205,7 @@ func TestSession_Invite_reuses_existing_instance(t *testing.T) {
 	require.Equal(t, testMembers("testuser", "botty").Slice(), channel.Members.Slice())
 }
 
-func TestSession_Invite_existing_instance_is_idempotent(t *testing.T) {
+func TestSession_InviteAs_existing_instance_is_idempotent(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
@@ -1354,7 +1216,7 @@ func TestSession_Invite_existing_instance_is_idempotent(t *testing.T) {
 		Channels: testChannels("#general"),
 	})
 
-	require.NoError(t, sess.Invite(ctx, "#general", "botty", ""))
+	require.NoError(t, sess.InviteAs(ctx, sess.UserNick(), "botty", "#general"))
 
 	inst, err := s.GetInstance(ctx, "botty")
 	require.NoError(t, err)
@@ -1365,7 +1227,7 @@ func TestSession_Invite_existing_instance_is_idempotent(t *testing.T) {
 	require.Equal(t, testMembers("testuser", "botty").Slice(), channel.Members.Slice())
 }
 
-func TestSession_Invite_existing_instance_preserves_persona(t *testing.T) {
+func TestSession_InviteAs_existing_instance_preserves_persona(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
@@ -1378,7 +1240,7 @@ func TestSession_Invite_existing_instance_preserves_persona(t *testing.T) {
 		Channels: testChannels("#general"),
 	})
 
-	require.NoError(t, sess.Invite(ctx, "#random", "botty", "New persona"))
+	require.NoError(t, sess.InviteAs(ctx, sess.UserNick(), "botty", "#random"))
 	evt := drainEvent[domain.ModelInvitedEvent](t, sess)
 	require.Equal(t, "Existing persona", evt.Instance.Persona)
 
@@ -1387,20 +1249,20 @@ func TestSession_Invite_existing_instance_preserves_persona(t *testing.T) {
 	require.Equal(t, "Existing persona", inst.Persona)
 }
 
-func TestSession_Invite_same_model_id_reuses_instance(t *testing.T) {
+func TestSession_AddModel_same_model_id_reuses_instance(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
 	seedChannelWithMembers(t, s, "#general", "testuser")
 	seedChannelWithMembers(t, s, "#random", "testuser")
 
-	require.NoError(t, sess.Invite(ctx, "#general", "test/model", "Helpful assistant"))
+	require.NoError(t, sess.AddModel(ctx, "#general", "test/model", "Helpful assistant"))
 	evt1 := drainEvent[domain.ModelInvitedEvent](t, sess)
 	require.Equal(t, domain.Nick("fakenick"), evt1.Instance.Nick)
 	// New member also emits a ModeChangeEvent; drain it.
 	drainEvent[domain.ModeChangeEvent](t, sess)
 
-	require.NoError(t, sess.Invite(ctx, "#random", "test/model", ""))
+	require.NoError(t, sess.AddModel(ctx, "#random", "test/model", ""))
 	evt2 := drainEvent[domain.ModelInvitedEvent](t, sess)
 	require.Equal(t, domain.ModelInvitedEvent{
 		Channel: "#random",
@@ -1553,8 +1415,6 @@ func TestBuildSystemPrompt_with_memories(t *testing.T) {
 
 	require.Contains(t, prompt, "[mood=curious]")
 	require.Contains(t, prompt, "[goal=learn go]")
-	require.Contains(t, prompt, "write_memory")
-	require.Contains(t, prompt, "delete_memory")
 	require.NotContains(t, prompt, "no memories yet")
 }
 
@@ -1964,6 +1824,7 @@ func (f *fakeAPIClient) SendEvents(
 	system string,
 	history []protocol.IRCMessage,
 	events []protocol.IRCMessage,
+	_ ...api.ToolDefinition,
 ) (api.CompletionResult, error) {
 	if f.sendEventsFullFn != nil {
 		return f.sendEventsFullFn(ctx, modelID, system, history, events)
@@ -1983,6 +1844,7 @@ func (f *fakeAPIClient) ContinueWithToolResults(
 	ctx context.Context,
 	conv *api.Conversation,
 	results []api.ToolResult,
+	_ ...api.ToolDefinition,
 ) (api.CompletionResult, error) {
 	if f.continueWithToolResultsFn != nil {
 		return f.continueWithToolResultsFn(ctx, conv, results)
@@ -2213,6 +2075,21 @@ func newTestSessionWithMemory(t *testing.T, apiClient api.Client) (*Session, *st
 	return sess, s, m
 }
 
+func mustRawJSON(t *testing.T, raw string) json.RawMessage {
+	t.Helper()
+
+	return json.RawMessage(raw)
+}
+
+func mustToolResultContent(t *testing.T, payload ToolResultPayload) string {
+	t.Helper()
+
+	data, err := json.Marshal(payload)
+	require.NoError(t, err)
+
+	return string(data)
+}
+
 func TestSession_DispatchToChannel_write_memory_then_reply(t *testing.T) {
 	var continueResults []api.ToolResult
 	fake := &fakeAPIClient{
@@ -2220,7 +2097,7 @@ func TestSession_DispatchToChannel_write_memory_then_reply(t *testing.T) {
 			return api.CompletionResult{
 				Conversation: &api.Conversation{},
 				PendingToolCalls: []api.PendingToolCall{
-					{ID: "call_1", Kind: api.ToolCallWriteMemory, Key: "mood", Body: "happy"},
+					{ID: "call_1", Name: "write_memory", Args: mustRawJSON(t, `{"key":"mood","content":"happy"}`)},
 				},
 			}, nil
 		},
@@ -2248,7 +2125,7 @@ func TestSession_DispatchToChannel_write_memory_then_reply(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Equal(t, []api.ToolResult{
-		{ToolCallID: "call_1", Content: "ok"},
+		{ToolCallID: "call_1", Content: mustToolResultContent(t, ToolResultPayload{OK: true, Summary: `stored memory "mood"`})},
 	}, continueResults)
 
 	require.Equal(t, []domain.ModelReplyEvent{
@@ -2277,7 +2154,7 @@ func TestSession_DispatchToChannel_delete_memory_then_pass(t *testing.T) {
 			return api.CompletionResult{
 				Conversation: &api.Conversation{},
 				PendingToolCalls: []api.PendingToolCall{
-					{ID: "call_1", Kind: api.ToolCallDeleteMemory, Key: "old_stuff"},
+					{ID: "call_1", Name: "delete_memory", Args: mustRawJSON(t, `{"key":"old_stuff"}`)},
 				},
 			}, nil
 		},
@@ -2308,7 +2185,7 @@ func TestSession_DispatchToChannel_delete_memory_then_pass(t *testing.T) {
 	require.Empty(t, replies)
 
 	require.Equal(t, []api.ToolResult{
-		{ToolCallID: "call_1", Content: "ok"},
+		{ToolCallID: "call_1", Content: mustToolResultContent(t, ToolResultPayload{OK: true, Summary: `deleted memory "old_stuff"`})},
 	}, continueResults)
 
 	memories, err := memStore.Read(ctx, "botty")
@@ -2323,7 +2200,7 @@ func TestSession_DispatchToChannel_memory_write_error_returns_error_to_model(t *
 			return api.CompletionResult{
 				Conversation: &api.Conversation{},
 				PendingToolCalls: []api.PendingToolCall{
-					{ID: "call_1", Kind: api.ToolCallWriteMemory, Key: "mood", Body: "happy"},
+					{ID: "call_1", Name: "write_memory", Args: mustRawJSON(t, `{"key":"mood","content":"happy"}`)},
 				},
 			}, nil
 		},
@@ -2354,7 +2231,7 @@ func TestSession_DispatchToChannel_memory_write_error_returns_error_to_model(t *
 	require.NoError(t, err)
 
 	require.Equal(t, []api.ToolResult{
-		{ToolCallID: "call_1", Content: "disk full"},
+		{ToolCallID: "call_1", Content: mustToolResultContent(t, ToolResultPayload{OK: false, Error: "disk full"})},
 	}, continueResults)
 
 	require.Equal(t, []domain.ModelReplyEvent{
@@ -2379,8 +2256,8 @@ func TestSession_DispatchToChannel_multiple_memory_calls_in_one_response(t *test
 			return api.CompletionResult{
 				Conversation: &api.Conversation{},
 				PendingToolCalls: []api.PendingToolCall{
-					{ID: "call_1", Kind: api.ToolCallWriteMemory, Key: "mood", Body: "happy"},
-					{ID: "call_2", Kind: api.ToolCallWriteMemory, Key: "topic", Body: "go programming"},
+					{ID: "call_1", Name: "write_memory", Args: mustRawJSON(t, `{"key":"mood","content":"happy"}`)},
+					{ID: "call_2", Name: "write_memory", Args: mustRawJSON(t, `{"key":"topic","content":"go programming"}`)},
 				},
 			}, nil
 		},
@@ -2408,8 +2285,8 @@ func TestSession_DispatchToChannel_multiple_memory_calls_in_one_response(t *test
 	require.NoError(t, err)
 
 	require.Equal(t, []api.ToolResult{
-		{ToolCallID: "call_1", Content: "ok"},
-		{ToolCallID: "call_2", Content: "ok"},
+		{ToolCallID: "call_1", Content: mustToolResultContent(t, ToolResultPayload{OK: true, Summary: `stored memory "mood"`})},
+		{ToolCallID: "call_2", Content: mustToolResultContent(t, ToolResultPayload{OK: true, Summary: `stored memory "topic"`})},
 	}, continueResults)
 
 	require.Equal(t, []domain.ModelReplyEvent{
@@ -2441,7 +2318,7 @@ func TestSession_DispatchToChannel_search_memory_then_reply(t *testing.T) {
 			return api.CompletionResult{
 				Conversation: &api.Conversation{},
 				PendingToolCalls: []api.PendingToolCall{
-					{ID: "call_1", Kind: api.ToolCallSearchMemory, Body: "favourite colour", Limit: 5},
+					{ID: "call_1", Name: "search_memory", Args: mustRawJSON(t, `{"query":"favourite colour","limit":5}`)},
 				},
 			}, nil
 		},
@@ -2470,10 +2347,8 @@ func TestSession_DispatchToChannel_search_memory_then_reply(t *testing.T) {
 	replies, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 
-	// The search result should be an error because StoreAdapter doesn't
-	// implement Searcher.
 	require.Equal(t, []api.ToolResult{
-		{ToolCallID: "call_1", Content: "semantic search is not configured"},
+		{ToolCallID: "call_1", Content: mustToolResultContent(t, ToolResultPayload{OK: false, Error: "unknown tool \"search_memory\""})},
 	}, continueResults)
 
 	require.Equal(t, []domain.ModelReplyEvent{
@@ -2582,7 +2457,7 @@ func TestSession_DispatchToChannel_search_memory_with_vector_store(t *testing.T)
 			return api.CompletionResult{
 				Conversation: &api.Conversation{},
 				PendingToolCalls: []api.PendingToolCall{
-					{ID: "call_1", Kind: api.ToolCallSearchMemory, Body: "cats", Limit: 3},
+					{ID: "call_1", Name: "search_memory", Args: mustRawJSON(t, `{"query":"cats","limit":3}`)},
 				},
 			}, nil
 		},
@@ -2615,8 +2490,16 @@ func TestSession_DispatchToChannel_search_memory_with_vector_store(t *testing.T)
 
 	// Unmarshal the JSON content so we can assert the full search
 	// results slice, then assert the full tool results wrapper too.
+	var payload ToolResultPayload
+	require.NoError(t, json.Unmarshal([]byte(continueResults[0].Content), &payload))
+	require.True(t, payload.OK)
+	require.Equal(t, "found 3 matching memories", payload.Summary)
+
+	data, err := json.Marshal(payload.Data)
+	require.NoError(t, err)
+
 	var searchResults []memory.SearchResult
-	require.NoError(t, json.Unmarshal([]byte(continueResults[0].Content), &searchResults))
+	require.NoError(t, json.Unmarshal(data, &searchResults))
 
 	require.Equal(t, []api.ToolResult{
 		{ToolCallID: "call_1", Content: continueResults[0].Content},
@@ -2659,8 +2542,8 @@ func TestSession_DispatchToChannel_write_then_search_memory_with_vector_store(t 
 			return api.CompletionResult{
 				Conversation: &api.Conversation{},
 				PendingToolCalls: []api.PendingToolCall{
-					{ID: "call_write_cats", Kind: api.ToolCallWriteMemory, Key: "pet_cats", Body: "cats are wonderful"},
-					{ID: "call_write_dogs", Kind: api.ToolCallWriteMemory, Key: "pet_dogs", Body: "dogs are loyal"},
+					{ID: "call_write_cats", Name: "write_memory", Args: mustRawJSON(t, `{"key":"pet_cats","content":"cats are wonderful"}`)},
+					{ID: "call_write_dogs", Name: "write_memory", Args: mustRawJSON(t, `{"key":"pet_dogs","content":"dogs are loyal"}`)},
 				},
 			}, nil
 		},
@@ -2672,7 +2555,7 @@ func TestSession_DispatchToChannel_write_then_search_memory_with_vector_store(t 
 				return api.CompletionResult{
 					Conversation: &api.Conversation{},
 					PendingToolCalls: []api.PendingToolCall{
-						{ID: "call_search", Kind: api.ToolCallSearchMemory, Body: "cats", Limit: 5},
+						{ID: "call_search", Name: "search_memory", Args: mustRawJSON(t, `{"query":"cats","limit":5}`)},
 					},
 				}, nil
 			}
@@ -2700,12 +2583,19 @@ func TestSession_DispatchToChannel_write_then_search_memory_with_vector_store(t 
 	require.NoError(t, err)
 
 	require.Equal(t, []api.ToolResult{
-		{ToolCallID: "call_write_cats", Content: "ok"},
-		{ToolCallID: "call_write_dogs", Content: "ok"},
+		{ToolCallID: "call_write_cats", Content: mustToolResultContent(t, ToolResultPayload{OK: true, Summary: `stored memory "pet_cats"`})},
+		{ToolCallID: "call_write_dogs", Content: mustToolResultContent(t, ToolResultPayload{OK: true, Summary: `stored memory "pet_dogs"`})},
 	}, writeResults)
 
+	var searchPayload ToolResultPayload
+	require.NoError(t, json.Unmarshal([]byte(searchResults[0].Content), &searchPayload))
+	require.True(t, searchPayload.OK)
+
+	data, err := json.Marshal(searchPayload.Data)
+	require.NoError(t, err)
+
 	var parsed []memory.SearchResult
-	require.NoError(t, json.Unmarshal([]byte(searchResults[0].Content), &parsed))
+	require.NoError(t, json.Unmarshal(data, &parsed))
 
 	require.Equal(t, []api.ToolResult{
 		{ToolCallID: "call_search", Content: searchResults[0].Content},
@@ -2727,7 +2617,7 @@ func TestSession_DispatchToChannel_memory_loop_respects_max_turns(t *testing.T) 
 			return api.CompletionResult{
 				Conversation: &api.Conversation{},
 				PendingToolCalls: []api.PendingToolCall{
-					{ID: "call_init", Kind: api.ToolCallWriteMemory, Key: "k0", Body: "v0"},
+					{ID: "call_init", Name: "write_memory", Args: mustRawJSON(t, `{"key":"k0","content":"v0"}`)},
 				},
 			}, nil
 		},
@@ -2741,7 +2631,7 @@ func TestSession_DispatchToChannel_memory_loop_respects_max_turns(t *testing.T) 
 			return api.CompletionResult{
 				Conversation: &api.Conversation{},
 				PendingToolCalls: []api.PendingToolCall{
-					{ID: "call_" + nextKey, Kind: api.ToolCallWriteMemory, Key: nextKey, Body: "val"},
+					{ID: "call_" + nextKey, Name: "write_memory", Args: mustRawJSON(t, fmt.Sprintf(`{"key":"%s","content":"val"}`, nextKey))},
 				},
 			}, nil
 		},
@@ -2772,17 +2662,6 @@ func TestSession_DispatchToChannel_memory_loop_respects_max_turns(t *testing.T) 
 		"call_k3",
 		"call_k4",
 	}, writtenKeys)
-}
-
-func TestBuildSystemPrompt_mentions_memory_tools(t *testing.T) {
-	ch := domain.Channel{Name: "#dev", Kind: domain.KindChannel}
-	inst := domain.Instance{Nick: "botty", ModelID: "test/model"}
-
-	prompt := buildSystemPrompt(ch, inst, nil)
-
-	require.Contains(t, prompt, "write_memory")
-	require.Contains(t, prompt, "delete_memory")
-	require.Contains(t, prompt, "no memories yet")
 }
 
 func seedChannelWithMembers(t *testing.T, s *storemod.SQLiteStore, name domain.ChannelName, members ...domain.Nick) {
@@ -3010,7 +2889,7 @@ func TestSession_Invite_without_persona_assigns_from_pool(t *testing.T) {
 
 	seedChannelWithMembers(t, s, "#dev", "testuser")
 
-	require.NoError(t, sess.Invite(ctx, "#dev", "anthropic/claude-3-haiku", ""))
+	require.NoError(t, sess.AddModel(ctx, "#dev", "anthropic/claude-3-haiku", ""))
 	evt := drainEvent[domain.ModelInvitedEvent](t, sess)
 
 	// Should have been assigned a persona description from the pool.
@@ -3038,7 +2917,7 @@ func TestSession_Invite_with_explicit_persona_skips_pool(t *testing.T) {
 
 	seedChannelWithMembers(t, s, "#dev", "testuser")
 
-	require.NoError(t, sess.Invite(ctx, "#dev", "anthropic/claude-3-haiku", "Custom persona"))
+	require.NoError(t, sess.AddModel(ctx, "#dev", "anthropic/claude-3-haiku", "Custom persona"))
 	evt := drainEvent[domain.ModelInvitedEvent](t, sess)
 	require.Equal(t, "Custom persona", evt.Instance.Persona)
 }

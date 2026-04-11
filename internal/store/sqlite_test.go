@@ -45,8 +45,8 @@ func normaliseChannels(channels []domain.Channel) []comparableChannel {
 			Topic:      ch.Topic,
 			TopicSetBy: ch.TopicSetBy,
 			TopicSetAt: ch.TopicSetAt,
-			Members: ch.Members.Slice(),
-			Created: ch.Created,
+			Members:    ch.Members.Slice(),
+			Created:    ch.Created,
 		}
 	}
 

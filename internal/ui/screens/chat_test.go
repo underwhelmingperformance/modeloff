@@ -175,7 +175,7 @@ func TestChatScreen_whois_command(t *testing.T) {
 	sess := newTestSession(t)
 	uitest.SeedChannel(t, sess, "#general")
 
-	require.NoError(t, sess.Invite(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
+	require.NoError(t, sess.AddModel(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
 
 	tm := newChatApp(t, sess)
 	tm.WaitFor("#general")
@@ -213,25 +213,25 @@ func TestChatScreen_list_empty(t *testing.T) {
 	tm.WaitFor("no channels")
 }
 
-func TestChatScreen_invite_command(t *testing.T) {
+func TestChatScreen_add_model_command(t *testing.T) {
 	tm, _ := newChatAppInChannel(t, "#general")
 
-	tm.Submit("/invite anthropic/claude-3-haiku")
+	tm.Submit("/add-model anthropic/claude-3-haiku")
 	tm.WaitFor("fakenick (anthropic/claude-3-haiku) has joined #general")
 }
 
-func TestChatScreen_invite_with_persona(t *testing.T) {
+func TestChatScreen_add_model_with_persona(t *testing.T) {
 	tm, _ := newChatAppInChannel(t, "#general")
 
-	tm.Submit("/invite anthropic/claude-3-haiku --persona Helpful assistant")
+	tm.Submit("/add-model anthropic/claude-3-haiku --persona Helpful assistant")
 	tm.WaitFor("fakenick (anthropic/claude-3-haiku) has joined #general", `persona "Helpful assistant"`)
 }
 
-func TestChatScreen_invite_no_args(t *testing.T) {
+func TestChatScreen_add_model_no_args(t *testing.T) {
 	tm, _ := newChatAppInChannel(t, "#general")
 
-	tm.Submit("/invite")
-	tm.WaitFor("usage: /invite <model-id> [--persona <text>]")
+	tm.Submit("/add-model")
+	tm.WaitFor("usage: /add-model <model-id> [--persona <text>]")
 }
 
 func TestChatScreen_invite_existing_instance(t *testing.T) {
@@ -239,7 +239,7 @@ func TestChatScreen_invite_existing_instance(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#general")
 	uitest.SeedChannel(t, sess, "#random")
 
-	require.NoError(t, sess.Invite(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
+	require.NoError(t, sess.AddModel(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
 
 	tm := newChatApp(t, sess)
 	tm.WaitFor("#random")
@@ -255,7 +255,7 @@ func TestChatScreen_kick_command(t *testing.T) {
 	sess := newTestSession(t)
 	uitest.SeedChannel(t, sess, "#general")
 
-	require.NoError(t, sess.Invite(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
+	require.NoError(t, sess.AddModel(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
 
 	tm := newChatApp(t, sess)
 	tm.WaitFor("#general")
@@ -308,7 +308,7 @@ func TestChatScreen_config_set_api_key_updates_live_model_suggestions(t *testing
 	tm.Submit("/config api-key test-key")
 	tm.WaitFor("OpenRouter API key saved and activated.")
 
-	tm.Type("/invite anth")
+	tm.Type("/add-model anth")
 	tm.WaitFor("anthropic/claude-3-haiku")
 }
 
@@ -494,7 +494,7 @@ func TestChatScreen_config_invalid_duration(t *testing.T) {
 func TestChatScreen_msg_command_opens_dm(t *testing.T) {
 	sess := newTestSession(t)
 	uitest.SeedChannel(t, sess, "#general")
-	require.NoError(t, sess.Invite(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
+	require.NoError(t, sess.AddModel(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
 
 	tm := newChatApp(t, sess)
 	tm.WaitFor("#general")
@@ -506,7 +506,7 @@ func TestChatScreen_msg_command_opens_dm(t *testing.T) {
 func TestChatScreen_msg_command_opens_dm_and_sends_message(t *testing.T) {
 	sess := newTestSession(t)
 	uitest.SeedChannel(t, sess, "#general")
-	require.NoError(t, sess.Invite(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
+	require.NoError(t, sess.AddModel(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
 
 	tm := newChatApp(t, sess)
 	tm.WaitFor("#general")

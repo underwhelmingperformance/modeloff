@@ -180,6 +180,7 @@ func (f *FakeAPI) SendEvents(
 	system string,
 	history []protocol.IRCMessage,
 	events []protocol.IRCMessage,
+	_ ...api.ToolDefinition,
 ) (api.CompletionResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -199,6 +200,7 @@ func (f *FakeAPI) ContinueWithToolResults(
 	_ context.Context,
 	_ *api.Conversation,
 	_ []api.ToolResult,
+	_ ...api.ToolDefinition,
 ) (api.CompletionResult, error) {
 	return api.CompletionResult{
 		Response: protocol.ModelResponse{Kind: protocol.ResponseSilence},

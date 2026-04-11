@@ -13,7 +13,12 @@ type testJoinCommand struct {
 type testPartCommand struct{}
 
 type testInviteCommand struct {
-	Model   string   `arg:"" optional:"" help:"Model to invite"`
+	Nick    string `arg:"" optional:"" help:"Nick to invite"`
+	Channel string `arg:"channel" optional:"" help:"Channel to invite them to"`
+}
+
+type testAddModelCommand struct {
+	Model   string   `arg:"" optional:"" help:"Model to add"`
 	Persona []string `optional:"" help:"Optional persona"`
 }
 
@@ -48,18 +53,19 @@ type testConfigCommand struct {
 }
 
 type testGrammar struct {
-	Join   testJoinCommand   `cmd:"" help:"Join a channel."`
-	Part   testPartCommand   `cmd:"" help:"Part."`
-	List   testListCommand   `cmd:"" help:"List channels."`
-	Invite testInviteCommand `cmd:"" help:"Invite a model."`
-	Kick   testKickCommand   `cmd:"" help:"Kick."`
-	Msg    testMsgCommand    `cmd:"" help:"Message."`
-	Nick   testNickCommand   `cmd:"" help:"Change nick."`
-	Topic  testTopicCommand  `cmd:"" help:"Set topic."`
-	Whois  testWhoisCommand  `cmd:"" help:"Whois."`
-	Config testConfigCommand `cmd:"" help:"Config."`
-	Help   testHelpCommand   `cmd:"" help:"Help."`
-	Quit   testQuitCommand   `cmd:"" help:"Quit."`
+	Join     testJoinCommand     `cmd:"" help:"Join a channel."`
+	Part     testPartCommand     `cmd:"" help:"Part."`
+	List     testListCommand     `cmd:"" help:"List channels."`
+	AddModel testAddModelCommand `cmd:"" help:"Add a model."`
+	Invite   testInviteCommand   `cmd:"" help:"Invite a model."`
+	Kick     testKickCommand     `cmd:"" help:"Kick."`
+	Msg      testMsgCommand      `cmd:"" help:"Message."`
+	Nick     testNickCommand     `cmd:"" help:"Change nick."`
+	Topic    testTopicCommand    `cmd:"" help:"Set topic."`
+	Whois    testWhoisCommand    `cmd:"" help:"Whois."`
+	Config   testConfigCommand   `cmd:"" help:"Config."`
+	Help     testHelpCommand     `cmd:"" help:"Help."`
+	Quit     testQuitCommand     `cmd:"" help:"Quit."`
 }
 
 func allCommands() Set {
@@ -101,17 +107,32 @@ func TestParseValue(t *testing.T) {
 			want:  testListCommand{},
 		},
 		{
-			name:  "invite with model",
-			input: "/invite anthropic/claude-3-haiku",
-			want:  testInviteCommand{Model: "anthropic/claude-3-haiku"},
+			name:  "add-model with model",
+			input: "/add-model anthropic/claude-3-haiku",
+			want:  testAddModelCommand{Model: "anthropic/claude-3-haiku"},
 		},
 		{
-			name:  "invite with persona",
-			input: "/invite anthropic/claude-3-haiku --persona Helpful assistant",
-			want: testInviteCommand{
+			name:  "add-model with persona",
+			input: "/add-model anthropic/claude-3-haiku --persona Helpful assistant",
+			want: testAddModelCommand{
 				Model:   "anthropic/claude-3-haiku",
 				Persona: []string{"Helpful", "assistant"},
 			},
+		},
+		{
+			name:  "add-model without args",
+			input: "/add-model",
+			want:  testAddModelCommand{},
+		},
+		{
+			name:  "invite with nick",
+			input: "/invite botty",
+			want:  testInviteCommand{Nick: "botty"},
+		},
+		{
+			name:  "invite with nick and channel",
+			input: "/invite botty #general",
+			want:  testInviteCommand{Nick: "botty", Channel: "#general"},
 		},
 		{
 			name:  "invite without args",

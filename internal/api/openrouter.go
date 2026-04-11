@@ -28,17 +28,15 @@ import (
 // OpenRouterClient implements Client using openai-go for chat
 // completions and direct HTTP for OpenRouter-specific endpoints.
 type OpenRouterClient struct {
-	oai           openai.Client
-	baseURL       string
-	apiKey        string
-	http          *http.Client
-	searchEnabled bool
+	oai     openai.Client
+	baseURL string
+	apiKey  string
+	http    *http.Client
 }
 
 // NewOpenRouterClient creates a client configured to talk to an
-// OpenAI-compatible API at baseURL. Set searchEnabled to true to
-// offer the search_memory tool to models.
-func NewOpenRouterClient(apiKey, baseURL string, httpClient *http.Client, searchEnabled bool) *OpenRouterClient {
+// OpenAI-compatible API at baseURL.
+func NewOpenRouterClient(apiKey, baseURL string, httpClient *http.Client) *OpenRouterClient {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
@@ -50,11 +48,10 @@ func NewOpenRouterClient(apiKey, baseURL string, httpClient *http.Client, search
 	)
 
 	return &OpenRouterClient{
-		oai:           oai,
-		baseURL:       baseURL,
-		apiKey:        apiKey,
-		http:          httpClient,
-		searchEnabled: searchEnabled,
+		oai:     oai,
+		baseURL: baseURL,
+		apiKey:  apiKey,
+		http:    httpClient,
 	}
 }
 
@@ -175,55 +172,16 @@ func responseFormat() openai.ChatCompletionNewParamsResponseFormatUnion {
 	}
 }
 
-type writeMemoryArgs struct {
-	Key     string `json:"key" jsonschema_description:"A short identifier for this memory (e.g. favourite_topic, user_name)."`
-	Content string `json:"content" jsonschema_description:"The content to remember."`
-}
+func toolParams(definitions []ToolDefinition) []openai.ChatCompletionToolUnionParam {
+	tools := make([]openai.ChatCompletionToolUnionParam, 0, len(definitions))
 
-type deleteMemoryArgs struct {
-	Key string `json:"key" jsonschema_description:"The key of the memory to remove."`
-}
-
-type searchMemoryArgs struct {
-	Query string `json:"query" jsonschema_description:"A natural-language query describing what you want to recall."`
-	Limit int    `json:"limit" jsonschema_description:"Maximum number of results to return (1-20)."`
-}
-
-func writeMemoryTool() openai.ChatCompletionToolUnionParam {
-	return openai.ChatCompletionFunctionTool(shared.FunctionDefinitionParam{
-		Name:        "write_memory",
-		Description: openai.String("Store a memory. Use this to remember something for future conversations."),
-		Strict:      openai.Bool(true),
-		Parameters:  generateSchema[writeMemoryArgs](),
-	})
-}
-
-func deleteMemoryTool() openai.ChatCompletionToolUnionParam {
-	return openai.ChatCompletionFunctionTool(shared.FunctionDefinitionParam{
-		Name:        "delete_memory",
-		Description: openai.String("Remove a memory by key. Use this when a memory is no longer relevant."),
-		Strict:      openai.Bool(true),
-		Parameters:  generateSchema[deleteMemoryArgs](),
-	})
-}
-
-func searchMemoryTool() openai.ChatCompletionToolUnionParam {
-	return openai.ChatCompletionFunctionTool(shared.FunctionDefinitionParam{
-		Name:        "search_memory",
-		Description: openai.String("Search your memories for information relevant to a query. Returns the most similar memories."),
-		Strict:      openai.Bool(true),
-		Parameters:  generateSchema[searchMemoryArgs](),
-	})
-}
-
-func memoryTools(searchEnabled bool) []openai.ChatCompletionToolUnionParam {
-	tools := []openai.ChatCompletionToolUnionParam{
-		writeMemoryTool(),
-		deleteMemoryTool(),
-	}
-
-	if searchEnabled {
-		tools = append(tools, searchMemoryTool())
+	for _, definition := range definitions {
+		tools = append(tools, openai.ChatCompletionFunctionTool(shared.FunctionDefinitionParam{
+			Name:        definition.Name,
+			Description: openai.String(definition.Description),
+			Strict:      openai.Bool(true),
+			Parameters:  definition.Parameters,
+		}))
 	}
 
 	return tools
@@ -238,6 +196,7 @@ func (c *OpenRouterClient) SendEvents(
 	systemPrompt string,
 	history []protocol.IRCMessage,
 	events []protocol.IRCMessage,
+	tools ...ToolDefinition,
 ) (CompletionResult, error) {
 	logger := slog.Default().With("component", "api.openrouter", "model_id", modelID)
 	tracer := otel.Tracer("github.com/laney/modeloff/internal/api")
@@ -250,11 +209,10 @@ func (c *OpenRouterClient) SendEvents(
 	defer span.End()
 
 	msgs := buildMessages(systemPrompt, history, events)
-
 	resp, rawResp, err := c.chatCompletion(ctx, modelID, openai.ChatCompletionNewParams{ //nolint:bodyclose // SDK reads and closes the body.
 		Model:          shared.ChatModel(string(modelID)),
 		Messages:       msgs,
-		Tools:          memoryTools(c.searchEnabled),
+		Tools:          toolParams(tools),
 		ResponseFormat: responseFormat(),
 	})
 	if err != nil {
@@ -299,6 +257,7 @@ func (c *OpenRouterClient) ContinueWithToolResults(
 	ctx context.Context,
 	conv *Conversation,
 	results []ToolResult,
+	tools ...ToolDefinition,
 ) (CompletionResult, error) {
 	logger := slog.Default().With("component", "api.openrouter", "model_id", conv.modelID)
 	tracer := otel.Tracer("github.com/laney/modeloff/internal/api")
@@ -318,7 +277,7 @@ func (c *OpenRouterClient) ContinueWithToolResults(
 	resp, rawResp, err := c.chatCompletion(ctx, conv.modelID, openai.ChatCompletionNewParams{ //nolint:bodyclose // SDK reads and closes the body.
 		Model:          shared.ChatModel(string(conv.modelID)),
 		Messages:       msgs,
-		Tools:          memoryTools(c.searchEnabled),
+		Tools:          toolParams(tools),
 		ResponseFormat: responseFormat(),
 	})
 	if err != nil {
@@ -389,13 +348,13 @@ type structuredModelResponse struct {
 }
 
 // parseCompletionResponse extracts the model's structured response and
-// any memory tool calls from an API response. It returns the
+// any tool calls from an API response. It returns the
 // CompletionResult plus the raw assistant message (needed to build
 // the next turn in multi-turn exchanges).
 //
 // The model's reply/pass decision arrives as structured JSON in the
-// message content. Memory tool calls (write_memory, delete_memory)
-// arrive as tool_calls and are returned as PendingToolCalls. When
+// message content. Tool calls arrive as tool_calls and are returned
+// as PendingToolCalls. When
 // pending calls are present, the caller must continue the
 // conversation.
 func parseCompletionResponse(resp *openai.ChatCompletion, rawResp *http.Response) (CompletionResult, openai.ChatCompletionMessageParamUnion, error) {
@@ -417,51 +376,11 @@ func parseCompletionResponse(resp *openai.ChatCompletion, rawResp *http.Response
 	assistantMsg := msg.ToParam()
 
 	for _, call := range msg.ToolCalls {
-		switch call.Function.Name {
-		case "write_memory":
-			var args writeMemoryArgs
-
-			if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
-				return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, &completionParseError{target: "write_memory args", err: err}
-			}
-
-			result.PendingToolCalls = append(result.PendingToolCalls, PendingToolCall{
-				ID:   call.ID,
-				Kind: ToolCallWriteMemory,
-				Key:  args.Key,
-				Body: args.Content,
-			})
-
-		case "delete_memory":
-			var args deleteMemoryArgs
-
-			if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
-				return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, &completionParseError{target: "delete_memory args", err: err}
-			}
-
-			result.PendingToolCalls = append(result.PendingToolCalls, PendingToolCall{
-				ID:   call.ID,
-				Kind: ToolCallDeleteMemory,
-				Key:  args.Key,
-			})
-
-		case "search_memory":
-			var args searchMemoryArgs
-
-			if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
-				return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, &completionParseError{target: "search_memory args", err: err}
-			}
-
-			result.PendingToolCalls = append(result.PendingToolCalls, PendingToolCall{
-				ID:    call.ID,
-				Kind:  ToolCallSearchMemory,
-				Body:  args.Query,
-				Limit: args.Limit,
-			})
-
-		default:
-			return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, fmt.Errorf("unknown tool call: %q", call.Function.Name)
-		}
+		result.PendingToolCalls = append(result.PendingToolCalls, PendingToolCall{
+			ID:   call.ID,
+			Name: call.Function.Name,
+			Args: json.RawMessage(call.Function.Arguments),
+		})
 	}
 
 	if msg.Content != "" {

@@ -5,6 +5,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -70,28 +71,19 @@ type Usage struct {
 	UpstreamInferenceCost float64
 }
 
-// ToolCallKind identifies the type of memory tool call.
-type ToolCallKind string
-
-const (
-	// ToolCallWriteMemory is a write_memory tool call.
-	ToolCallWriteMemory ToolCallKind = "write_memory"
-
-	// ToolCallDeleteMemory is a delete_memory tool call.
-	ToolCallDeleteMemory ToolCallKind = "delete_memory"
-
-	// ToolCallSearchMemory is a search_memory tool call.
-	ToolCallSearchMemory ToolCallKind = "search_memory"
-)
+// ToolDefinition describes a model-callable tool.
+type ToolDefinition struct {
+	Name        string
+	Description string
+	Parameters  map[string]any
+}
 
 // PendingToolCall represents a tool call from the model that requires
 // execution before the conversation can continue.
 type PendingToolCall struct {
-	ID    string
-	Kind  ToolCallKind
-	Key   string
-	Body  string
-	Limit int
+	ID   string
+	Name string
+	Args json.RawMessage
 }
 
 // ToolResult carries the outcome of executing a pending tool call,
@@ -145,6 +137,7 @@ type Client interface {
 		systemPrompt string,
 		history []protocol.IRCMessage,
 		events []protocol.IRCMessage,
+		tools ...ToolDefinition,
 	) (CompletionResult, error)
 
 	// ContinueWithToolResults sends tool execution results back to
@@ -155,6 +148,7 @@ type Client interface {
 		ctx context.Context,
 		conv *Conversation,
 		results []ToolResult,
+		tools ...ToolDefinition,
 	) (CompletionResult, error)
 
 	// GenerateNick asks a model to generate a nickname for the given

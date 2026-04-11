@@ -52,6 +52,7 @@ type fieldMeta struct {
 	name     string
 	help     string
 	index    int
+	typ      reflect.Type
 	isFlag   bool
 	boolFlag bool
 	flagName string

@@ -1,6 +1,9 @@
 package command
 
 import (
+	"encoding/json"
+	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 )
@@ -40,6 +43,12 @@ type Flag struct {
 	Source   SuggestionSource
 }
 
+// ToolDescriber is implemented by commands that need rich,
+// multi-line tool descriptions beyond what fits in a struct tag.
+type ToolDescriber interface {
+	ToolDescription() string
+}
+
 // Node is a command in the command tree. Leaf nodes (no children)
 // are executable commands. Non-leaf nodes are command groups whose
 // children are subcommands.
@@ -47,6 +56,8 @@ type Node struct {
 	Parent      *Node
 	Name        string
 	Help        string
+	Tool        bool
+	ToolDesc    string
 	Positionals []Positional
 	Flags       []Flag
 	Children    []*Node
@@ -54,6 +65,7 @@ type Node struct {
 	// factory creates a zero-valued pointer to the command struct for
 	// parsing. Nil for group nodes that have no struct of their own.
 	factory func() any
+	fields  []fieldMeta
 }
 
 // Usage returns a human-readable usage string for this node,
@@ -123,6 +135,110 @@ func (n *Node) Leaf() bool {
 	return len(n.Children) == 0
 }
 
+// ToolDescription returns the tool description using three tiers:
+//  1. If value implements ToolDescriber, use its ToolDescription().
+//  2. Else if the tool:"..." tag has a non-empty value, use that.
+//  3. Else fall back to the help:"" tag text.
+func (n *Node) ToolDescription(value any) string {
+	if d, ok := value.(ToolDescriber); ok {
+		return d.ToolDescription()
+	}
+
+	if n.ToolDesc != "" {
+		return n.ToolDesc
+	}
+
+	return n.Help
+}
+
+// NewZero returns a zero-valued pointer to the command struct
+// for this node. This is useful for type assertions without
+// needing parsed arguments.
+func (n *Node) NewZero() any {
+	if n.factory == nil {
+		return nil
+	}
+
+	return n.factory()
+}
+
+// ToolName returns the canonical model-tool name for this node.
+func (n *Node) ToolName() string {
+	return toSnakeCase(n.Path())
+}
+
+// ToolParameters returns the JSON-schema-like parameter object for a
+// tool-capable leaf node.
+func (n *Node) ToolParameters() map[string]any {
+	properties := map[string]any{}
+	required := make([]string, 0, len(n.fields))
+
+	for _, field := range n.fields {
+		name := toSnakeCase(field.name)
+		properties[name] = toolSchemaForField(field)
+
+		if field.optional {
+			continue
+		}
+
+		required = append(required, name)
+	}
+
+	schema := map[string]any{
+		"type":                 "object",
+		"properties":           properties,
+		"additionalProperties": false,
+	}
+
+	if len(required) > 0 {
+		schema["required"] = required
+	}
+
+	return schema
+}
+
+// ToolValue decodes structured tool arguments into the leaf value.
+func (n *Node) ToolValue(rawArgs json.RawMessage) (any, error) {
+	if !n.Leaf() {
+		return nil, fmt.Errorf("node /%s is not a tool leaf", n.Path())
+	}
+
+	if n.factory == nil {
+		return nil, fmt.Errorf("node /%s has no factory", n.Path())
+	}
+
+	if len(rawArgs) == 0 {
+		rawArgs = []byte("{}")
+	}
+
+	var args map[string]json.RawMessage
+	if err := json.Unmarshal(rawArgs, &args); err != nil {
+		return nil, fmt.Errorf("decode tool args for /%s: %w", n.Path(), err)
+	}
+
+	value := n.factory()
+	target := reflect.ValueOf(value).Elem()
+
+	for _, field := range n.fields {
+		key := toSnakeCase(field.name)
+		raw, ok := args[key]
+
+		if !ok || string(raw) == "null" {
+			if field.optional {
+				continue
+			}
+
+			return nil, &MissingArgError{Name: key}
+		}
+
+		if err := json.Unmarshal(raw, target.Field(field.index).Addr().Interface()); err != nil {
+			return nil, fmt.Errorf("decode tool field %q for /%s: %w", key, n.Path(), err)
+		}
+	}
+
+	return target.Interface(), nil
+}
+
 // AllFlags returns flags visible at this node, starting with
 // ancestors and ending with the node's own flags.
 func (n *Node) AllFlags() []Flag {
@@ -174,6 +290,32 @@ func (s Set) Find(name string) *Node {
 	}
 
 	return nil
+}
+
+// ToolNodes returns every tool-capable leaf node in the set.
+func (s Set) ToolNodes() []*Node {
+	var nodes []*Node
+
+	var walk func(node *Node)
+	walk = func(node *Node) {
+		if node == nil {
+			return
+		}
+
+		if node.Tool && node.Leaf() {
+			nodes = append(nodes, node)
+		}
+
+		for _, child := range node.Children {
+			walk(child)
+		}
+	}
+
+	for _, node := range s.Commands {
+		walk(node)
+	}
+
+	return nodes
 }
 
 func (s Set) linkParents() {
@@ -357,6 +499,44 @@ func Complete(set Set, raw string, cursor int) Completion {
 
 	completion.AppendSpace = false
 	return completion
+}
+
+func toolSchemaForField(field fieldMeta) map[string]any {
+	typ := field.typ
+	schema := toolSchemaForType(typ)
+
+	if field.help != "" {
+		schema["description"] = field.help
+	}
+
+	return schema
+}
+
+func toolSchemaForType(typ reflect.Type) map[string]any {
+	for typ.Kind() == reflect.Ptr {
+		typ = typ.Elem()
+	}
+
+	switch typ.Kind() {
+	case reflect.Bool:
+		return map[string]any{"type": "boolean"}
+
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return map[string]any{"type": "integer"}
+
+	case reflect.Float32, reflect.Float64:
+		return map[string]any{"type": "number"}
+
+	case reflect.Slice:
+		return map[string]any{
+			"type":  "array",
+			"items": toolSchemaForType(typ.Elem()),
+		}
+
+	default:
+		return map[string]any{"type": "string"}
+	}
 }
 
 func clampRaw(raw string) string {

@@ -102,7 +102,7 @@ func TestChatScreen_QuitEvent_shows_quit_message(t *testing.T) {
 	sess := newTestSession(t)
 	uitest.SeedChannel(t, sess, "#general")
 
-	require.NoError(t, sess.Invite(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
+	require.NoError(t, sess.AddModel(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
 	uitest.DrainEvents(sess)
 
 	tm := newChatApp(t, sess)
@@ -121,7 +121,7 @@ func TestChatScreen_QuitEvent_removes_instance_from_nick_list(t *testing.T) {
 	sess := newTestSession(t)
 	uitest.SeedChannel(t, sess, "#general")
 
-	require.NoError(t, sess.Invite(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
+	require.NoError(t, sess.AddModel(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
 	uitest.DrainEvents(sess)
 
 	tm := newChatApp(t, sess)

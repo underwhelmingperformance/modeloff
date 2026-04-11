@@ -68,7 +68,7 @@ type ListResult struct {
 }
 
 // UsageError indicates a command was invoked incorrectly. Usage
-// carries the human-readable usage string (e.g. "/invite <model>").
+// carries the human-readable usage string (e.g. "/add-model <model-id>").
 type UsageError struct {
 	Command string
 	Usage   string

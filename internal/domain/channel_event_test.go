@@ -174,7 +174,7 @@ func TestChannelEvent_JSON_round_trip(t *testing.T) {
 			event: domain.ChannelUsageHint{
 				Channel: "#general",
 				Command: "invite",
-				Usage:   "/invite <model-id>",
+				Usage:   "/add-model <model-id> [--persona <text>]",
 				At:      ts,
 			},
 		},

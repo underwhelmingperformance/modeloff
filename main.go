@@ -19,6 +19,7 @@ import (
 	"github.com/laney/modeloff/internal/session"
 	"github.com/laney/modeloff/internal/store"
 	"github.com/laney/modeloff/internal/ui"
+	"github.com/laney/modeloff/internal/ui/chatcmd"
 	"github.com/laney/modeloff/internal/ui/screens"
 )
 
@@ -55,8 +56,7 @@ func main() {
 		}
 	}()
 
-	_, searchEnabled := memStore.(memory.Searcher)
-	apiClient := api.NewOpenRouterClient(cfg.APIKey, cfg.BaseURL, nil, searchEnabled)
+	apiClient := api.NewOpenRouterClient(cfg.APIKey, cfg.BaseURL, nil)
 
 	sess := session.New(
 		dataStore,
@@ -67,9 +67,16 @@ func main() {
 		cfg.SmallModel,
 	)
 	sess.SetAPIFactory(func(apiKey, baseURL string) (api.Client, error) {
-		_, search := memStore.(memory.Searcher)
-		return api.NewOpenRouterClient(apiKey, baseURL, nil, search), nil
+		return api.NewOpenRouterClient(apiKey, baseURL, nil), nil
 	})
+
+	toolRegistry, err := chatcmd.BuildToolRegistry()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error building tool registry: %v\n", err)
+		os.Exit(1)
+	}
+
+	sess.SetToolRegistry(toolRegistry)
 
 	appCtx, cancelApp := context.WithCancel(context.Background())
 	defer cancelApp()

@@ -1,6 +1,8 @@
 package command
 
 import (
+	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -1074,4 +1076,287 @@ func TestComplete_optional_positional_with_source(t *testing.T) {
 		{Value: "claude", Label: "claude"},
 		{Value: "gemini", Label: "gemini"},
 	}, completion.Suggestions)
+}
+
+// --- Tool schema tests ---
+
+type toolJoinCmd struct {
+	Channel string `arg:"channel" help:"Channel to join"`
+}
+
+type toolTopicCmd struct {
+	Topic []string `arg:"" optional:"" help:"Topic text"`
+}
+
+type toolKickCmd struct {
+	Nick   string `arg:"" help:"Nick to kick"`
+	Reason string `arg:"" optional:"" help:"Kick reason"`
+}
+
+type toolCountCmd struct {
+	Count int  `arg:"" help:"Number of items"`
+	Force bool `arg:"" optional:"" help:"Force operation"`
+}
+
+type toolSliceCmd struct {
+	Tags []string `arg:"" optional:"" help:"Tags to apply"`
+}
+
+type toolNoToolCmd struct{}
+
+type toolDescriberCmd struct{}
+
+func (toolDescriberCmd) ToolDescription() string {
+	return "rich multi-line description from method"
+}
+
+type toolGrammar struct {
+	Join   toolJoinCmd      `cmd:"" tool:"" help:"Join a channel."`
+	Topic  toolTopicCmd     `cmd:"" tool:"" help:"Set topic."`
+	Kick   toolKickCmd      `cmd:"" tool:"" help:"Kick a nick."`
+	NoTool toolNoToolCmd    `cmd:"" help:"Not a tool."`
+	Count  toolCountCmd     `cmd:"" tool:"" help:"Count items."`
+	Slice  toolSliceCmd     `cmd:"" tool:"" help:"Tag things."`
+	Quit   toolDescriberCmd `cmd:"" tool:"Exit the application." help:"Quit."`
+}
+
+func toolSet() Set {
+	return Build(&toolGrammar{})
+}
+
+func TestToolNodes_returns_only_tool_tagged_leaves(t *testing.T) {
+	s := toolSet()
+	nodes := s.ToolNodes()
+
+	var names []string
+	for _, n := range nodes {
+		names = append(names, n.Name)
+	}
+
+	require.Equal(t, []string{"join", "topic", "kick", "count", "slice", "quit"}, names)
+}
+
+func TestToolName(t *testing.T) {
+	tests := []struct {
+		name string
+		node Node
+		want string
+	}{
+		{name: "simple", node: Node{Name: "join"}, want: "join"},
+		{name: "with parent", node: func() Node {
+			parent := &Node{Name: "config"}
+			child := &Node{Name: "set", Parent: parent}
+			return *child
+		}(), want: "config set"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, tt.node.ToolName())
+		})
+	}
+}
+
+func TestToolParameters(t *testing.T) {
+	s := toolSet()
+
+	t.Run("required positional", func(t *testing.T) {
+		node := s.Find("join")
+		params := node.ToolParameters()
+
+		require.Equal(t, map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"channel": map[string]any{"type": "string", "description": "Channel to join"},
+			},
+			"required":             []string{"channel"},
+			"additionalProperties": false,
+		}, params)
+	})
+
+	t.Run("optional variadic", func(t *testing.T) {
+		node := s.Find("topic")
+		params := node.ToolParameters()
+
+		require.Equal(t, map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"topic": map[string]any{
+					"type":        "array",
+					"items":       map[string]any{"type": "string"},
+					"description": "Topic text",
+				},
+			},
+			"additionalProperties": false,
+		}, params)
+	})
+
+	t.Run("mixed required and optional", func(t *testing.T) {
+		node := s.Find("kick")
+		params := node.ToolParameters()
+
+		props := params["properties"].(map[string]any)
+		require.Contains(t, props, "nick")
+		require.Contains(t, props, "reason")
+		require.Equal(t, []string{"nick"}, params["required"])
+	})
+
+	t.Run("int and bool types", func(t *testing.T) {
+		node := s.Find("count")
+		params := node.ToolParameters()
+
+		props := params["properties"].(map[string]any)
+		require.Equal(t, map[string]any{"type": "integer", "description": "Number of items"}, props["count"])
+		require.Equal(t, map[string]any{"type": "boolean", "description": "Force operation"}, props["force"])
+	})
+
+	t.Run("slice type", func(t *testing.T) {
+		node := s.Find("slice")
+		params := node.ToolParameters()
+
+		props := params["properties"].(map[string]any)
+		require.Equal(t, map[string]any{
+			"type":        "array",
+			"items":       map[string]any{"type": "string"},
+			"description": "Tags to apply",
+		}, props["tags"])
+	})
+}
+
+func TestToolValue(t *testing.T) {
+	s := toolSet()
+
+	t.Run("valid args", func(t *testing.T) {
+		node := s.Find("join")
+		raw := json.RawMessage(`{"channel": "#general"}`)
+
+		val, err := node.ToolValue(raw)
+		require.NoError(t, err)
+		require.Equal(t, toolJoinCmd{Channel: "#general"}, val)
+	})
+
+	t.Run("empty args uses defaults", func(t *testing.T) {
+		node := s.Find("topic")
+
+		val, err := node.ToolValue(nil)
+		require.NoError(t, err)
+		require.Equal(t, toolTopicCmd{}, val)
+	})
+
+	t.Run("missing required arg", func(t *testing.T) {
+		node := s.Find("join")
+		raw := json.RawMessage(`{}`)
+
+		_, err := node.ToolValue(raw)
+
+		var me *MissingArgError
+		require.ErrorAs(t, err, &me)
+		require.Equal(t, "channel", me.Name)
+	})
+
+	t.Run("malformed JSON", func(t *testing.T) {
+		node := s.Find("join")
+
+		_, err := node.ToolValue(json.RawMessage(`{not json}`))
+		require.Error(t, err)
+	})
+
+	t.Run("no factory", func(t *testing.T) {
+		node := &Node{Name: "broken"}
+
+		_, err := node.ToolValue(json.RawMessage(`{}`))
+		require.ErrorContains(t, err, "no factory")
+	})
+
+	t.Run("non-leaf", func(t *testing.T) {
+		node := &Node{Name: "parent", Children: []*Node{{Name: "child"}}}
+
+		_, err := node.ToolValue(json.RawMessage(`{}`))
+		require.ErrorContains(t, err, "not a tool leaf")
+	})
+}
+
+func TestToolSchemaForType(t *testing.T) {
+	tests := []struct {
+		name string
+		typ  reflect.Type
+		want map[string]any
+	}{
+		{name: "string", typ: reflect.TypeFor[string](), want: map[string]any{"type": "string"}},
+		{name: "int", typ: reflect.TypeFor[int](), want: map[string]any{"type": "integer"}},
+		{name: "bool", typ: reflect.TypeFor[bool](), want: map[string]any{"type": "boolean"}},
+		{name: "float64", typ: reflect.TypeFor[float64](), want: map[string]any{"type": "number"}},
+		{
+			name: "string slice",
+			typ:  reflect.TypeFor[[]string](),
+			want: map[string]any{
+				"type":  "array",
+				"items": map[string]any{"type": "string"},
+			},
+		},
+		{name: "pointer to string", typ: reflect.TypeFor[*string](), want: map[string]any{"type": "string"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, toolSchemaForType(tt.typ))
+		})
+	}
+}
+
+func TestToolDescription_three_tiers(t *testing.T) {
+	t.Run("tier 3: falls back to help", func(t *testing.T) {
+		node := &Node{Help: "Join a channel.", ToolDesc: ""}
+
+		require.Equal(t, "Join a channel.", node.ToolDescription(struct{}{}))
+	})
+
+	t.Run("tier 2: non-empty tool tag", func(t *testing.T) {
+		node := &Node{Help: "Exit modeloff.", ToolDesc: "Shut down your instance."}
+
+		require.Equal(t, "Shut down your instance.", node.ToolDescription(struct{}{}))
+	})
+
+	t.Run("tier 1: ToolDescriber interface", func(t *testing.T) {
+		node := &Node{Help: "Quit.", ToolDesc: "Should be overridden."}
+
+		require.Equal(t, "rich multi-line description from method", node.ToolDescription(toolDescriberCmd{}))
+	})
+}
+
+func TestToolDescription_from_grammar(t *testing.T) {
+	s := toolSet()
+
+	t.Run("quit uses tier 1 ToolDescriber", func(t *testing.T) {
+		node := s.Find("quit")
+		desc := node.ToolDescription(node.NewZero())
+
+		// toolDescriberCmd implements ToolDescriber, so tier 1 wins.
+		require.Equal(t, "rich multi-line description from method", desc)
+	})
+
+	t.Run("join uses tier 3 help text", func(t *testing.T) {
+		node := s.Find("join")
+		desc := node.ToolDescription(node.NewZero())
+
+		require.Equal(t, "Join a channel.", desc)
+	})
+}
+
+func TestNewZero(t *testing.T) {
+	s := toolSet()
+
+	t.Run("returns zero-valued pointer", func(t *testing.T) {
+		node := s.Find("join")
+		val := node.NewZero()
+
+		require.NotNil(t, val)
+		require.IsType(t, (*toolJoinCmd)(nil), val)
+		require.Equal(t, &toolJoinCmd{}, val)
+	})
+
+	t.Run("nil factory returns nil", func(t *testing.T) {
+		node := &Node{Name: "broken"}
+		require.Nil(t, node.NewZero())
+	})
 }

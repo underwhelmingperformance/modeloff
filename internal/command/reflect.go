@@ -34,7 +34,7 @@ func resolveFieldMetas(cmd any) ([]fieldMeta, error) {
 			continue
 		}
 
-		m := fieldMeta{index: i}
+		m := fieldMeta{index: i, typ: f.Type}
 
 		if argName, ok := f.Tag.Lookup("arg"); ok {
 			m.isFlag = false
@@ -220,8 +220,11 @@ func build(grammar any) ([]*Node, error) {
 		node := &Node{
 			Name:        name,
 			Help:        help,
+			Tool:        hasToolTag(ft),
+			ToolDesc:    toolDescFromTag(ft),
 			Positionals: buildPositionals(fields, sources),
 			Flags:       buildFlags(fields, sources),
+			fields:      fields,
 			factory: func() any {
 				return reflect.New(fieldType).Interface()
 			},
@@ -260,6 +263,18 @@ func hasTag(f reflect.StructField) bool {
 	return false
 }
 
+func hasToolTag(f reflect.StructField) bool {
+	_, ok := f.Tag.Lookup("tool")
+
+	return ok
+}
+
+func toolDescFromTag(f reflect.StructField) string {
+	v, _ := f.Tag.Lookup("tool")
+
+	return v
+}
+
 // toKebabCase converts PascalCase to kebab-case.
 func toKebabCase(s string) string {
 	var b strings.Builder
@@ -282,4 +297,8 @@ func toKebabCase(s string) string {
 	}
 
 	return b.String()
+}
+
+func toSnakeCase(s string) string {
+	return strings.ReplaceAll(toKebabCase(s), "-", "_")
 }

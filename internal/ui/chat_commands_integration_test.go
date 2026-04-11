@@ -41,7 +41,7 @@ func TestApp_send_message_shows_pending_indicator(t *testing.T) {
 	sess, _, cfgStore := newIntegrationSession(t, apiClient)
 	uitest.SeedChannel(t, sess, "#general")
 
-	require.NoError(t, sess.Invite(t.Context(), "#general", "test/model", ""))
+	require.NoError(t, sess.AddModel(t.Context(), "#general", "test/model", ""))
 	uitest.DrainEvents(sess)
 
 	tm := uitest.New(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess, cfgStore)))
@@ -134,10 +134,10 @@ func TestApp_invite_whois_and_kick_commands_with_teatest(t *testing.T) {
 		teatest.WithInitialTermSize(120, 24))
 	tm.WaitFor("#random")
 
-	tm.Submit("/invite")
-	tm.WaitFor("usage: /invite <model-id> [--persona <text>]")
+	tm.Submit("/add-model")
+	tm.WaitFor("usage: /add-model <model-id> [--persona <text>]")
 
-	tm.Submit("/invite anthropic/claude-3-haiku --persona Helpful assistant")
+	tm.Submit("/add-model anthropic/claude-3-haiku --persona Helpful assistant")
 	tm.WaitFor("fakenick (anthropic/claude-3-haiku) has joined #random")
 
 	tm.Submit("/whois fakenick")

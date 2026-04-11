@@ -70,7 +70,7 @@ func TestBuildParser_produces_all_commands(t *testing.T) {
 	}
 
 	require.Equal(t, []string{
-		"join", "part", "list", "invite", "kick",
+		"join", "part", "list", "add-model", "invite", "kick",
 		"msg", "nick", "topic", "me", "whois", "config",
 		"personas", "regenerate-personas",
 		"help", "quit",
@@ -106,8 +106,8 @@ func TestComplete_kick_suggests_active_members_excluding_self(t *testing.T) {
 	require.Equal(t, []string{"haiku"}, suggestionValues(c))
 }
 
-func TestComplete_invite_suggests_reusable_then_live(t *testing.T) {
-	c := complete(t, "/invite ")
+func TestComplete_add_model_suggests_reusable_then_live(t *testing.T) {
+	c := complete(t, "/add-model ")
 
 	require.True(t, c.Visible)
 
@@ -115,6 +115,13 @@ func TestComplete_invite_suggests_reusable_then_live(t *testing.T) {
 	// sonnet is reusable (not in #general), haiku is excluded (already in #general)
 	// then live models follow
 	require.Equal(t, []string{"sonnet", "anthropic/haiku", "anthropic/sonnet"}, values)
+}
+
+func TestComplete_invite_suggests_instance_nicks(t *testing.T) {
+	c := complete(t, "/invite ")
+
+	require.True(t, c.Visible)
+	require.Equal(t, []string{"haiku", "sonnet"}, suggestionValues(c))
 }
 
 func TestComplete_msg_suggests_all_instances(t *testing.T) {

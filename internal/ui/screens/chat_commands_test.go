@@ -25,6 +25,7 @@ func (stubAPI) SendEvents(
 	string,
 	[]protocol.IRCMessage,
 	[]protocol.IRCMessage,
+	...api.ToolDefinition,
 ) (api.CompletionResult, error) {
 	return api.CompletionResult{
 		Response: protocol.ModelResponse{Kind: protocol.ResponseSilence},
@@ -35,6 +36,7 @@ func (stubAPI) ContinueWithToolResults(
 	context.Context,
 	*api.Conversation,
 	[]api.ToolResult,
+	...api.ToolDefinition,
 ) (api.CompletionResult, error) {
 	return api.CompletionResult{
 		Response: protocol.ModelResponse{Kind: protocol.ResponseSilence},
@@ -87,6 +89,7 @@ func TestChatScreen_Commands_exposes_chat_commands(t *testing.T) {
 		"join",
 		"part",
 		"list",
+		"add-model",
 		"invite",
 		"kick",
 		"msg",

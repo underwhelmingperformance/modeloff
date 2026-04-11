@@ -157,8 +157,8 @@ func TestResolveFieldMetas(t *testing.T) {
 			name: "positional and flag",
 			cmd:  testInviteCommand{},
 			want: []fieldMetaMeta{
-				{Name: "model", Help: "Model to invite", Optional: true, Index: 0},
-				{Name: "persona", Help: "Optional persona", Optional: true, Variadic: true, IsFlag: true, FlagName: "--persona", Index: 1},
+				{Name: "nick", Help: "Nick to invite", Optional: true, Index: 0},
+				{Name: "channel", Help: "Channel to invite them to", Optional: true, Index: 1},
 			},
 		},
 		{

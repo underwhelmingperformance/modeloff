@@ -73,14 +73,6 @@ const (
 	// ResponseSilence means the model chose not to respond. The
 	// Reason field on ModelResponse may explain why.
 	ResponseSilence ResponseKind = "silence"
-
-	// ResponsePart means the model wants to leave the current
-	// channel. It may include farewell messages.
-	ResponsePart ResponseKind = "part"
-
-	// ResponseQuit means the model wants to quit the server entirely,
-	// leaving all channels.
-	ResponseQuit ResponseKind = "quit"
 )
 
 // ReplyKind distinguishes regular messages from actions in a model
@@ -104,10 +96,9 @@ type ReplyPart struct {
 // ModelResponse is the typed response from a model after receiving
 // events. The model must explicitly choose to reply or stay silent.
 type ModelResponse struct {
-	Kind            ResponseKind `json:"kind"`
-	Messages        []ReplyPart  `json:"messages,omitempty"`
-	Reason          string       `json:"reason,omitempty"`
-	FarewellMessage string       `json:"farewell_message,omitempty"`
+	Kind     ResponseKind `json:"kind"`
+	Messages []ReplyPart  `json:"messages,omitempty"`
+	Reason   string       `json:"reason,omitempty"`
 }
 
 // FromJoinEvent converts a join event into an IRC-style protocol

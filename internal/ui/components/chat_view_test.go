@@ -711,11 +711,11 @@ func TestRenderLine_application_feedback(t *testing.T) {
 			"usage_hint_invite",
 			domain.StoredEvent{Event: domain.ChannelUsageHint{
 				Channel: "#test",
-				Command: "invite",
-				Usage:   "/invite <model-id> [--persona <text>]",
+				Command: "add-model",
+				Usage:   "/add-model <model-id> [--persona <text>]",
 				At:      now,
 			}},
-			"usage: /invite",
+			"usage: /add-model",
 		},
 		{
 			"no_channel",

@@ -2,6 +2,7 @@ package ui_test
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"testing"
 	"time"
@@ -57,7 +58,7 @@ func TestApp_startup_with_saved_channels(t *testing.T) {
 	require.Equal(t, domain.ChannelName("#random"), last)
 }
 
-func TestApp_invite_and_receive_reply(t *testing.T) {
+func TestApp_add_model_and_receive_reply(t *testing.T) {
 	apiClient := &integrationAPI{
 		generateNickFn: func(context.Context, domain.ModelID, domain.ModelID) (domain.Nick, error) {
 			return "botty", nil
@@ -81,7 +82,7 @@ func TestApp_invite_and_receive_reply(t *testing.T) {
 	tm := uitest.New(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess, cfgStore)))
 	tm.WaitFor("#general")
 
-	tm.Submit("/invite test/model")
+	tm.Submit("/add-model test/model")
 	tm.WaitFor("botty (test/model) has joined #general")
 
 	tm.Submit("hello world")
@@ -126,7 +127,7 @@ func TestApp_periodic_poke_generates_message(t *testing.T) {
 	sess, _, cfgStore := newIntegrationSession(t, apiClient)
 	uitest.SeedChannel(t, sess, "#general")
 
-	require.NoError(t, sess.Invite(t.Context(), "#general", "test/model", ""))
+	require.NoError(t, sess.AddModel(t.Context(), "#general", "test/model", ""))
 	uitest.DrainEvents(sess)
 
 	tm := uitest.New(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess, cfgStore)))
@@ -151,7 +152,7 @@ func TestApp_reuse_existing_instance(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#general")
 	uitest.SeedChannel(t, sess, "#random")
 
-	require.NoError(t, sess.Invite(t.Context(), "#general", "test/model", "Helpful assistant"))
+	require.NoError(t, sess.AddModel(t.Context(), "#general", "test/model", "Helpful assistant"))
 	uitest.DrainEvents(sess)
 
 	tm := uitest.New(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess, cfgStore)))
@@ -189,9 +190,8 @@ func TestApp_vector_memory_write_and_search(t *testing.T) {
 					return api.CompletionResult{
 						PendingToolCalls: []api.PendingToolCall{{
 							ID:   "tc-write",
-							Kind: api.ToolCallWriteMemory,
-							Key:  "favourite-colour",
-							Body: "the user likes blue",
+							Name: "write_memory",
+							Args: json.RawMessage(`{"key":"favourite-colour","content":"the user likes blue"}`),
 						}},
 					}, nil
 				}
@@ -218,19 +218,39 @@ func TestApp_vector_memory_write_and_search(t *testing.T) {
 				// write_memory succeeded — now search.
 				return api.CompletionResult{
 					PendingToolCalls: []api.PendingToolCall{{
-						ID:    "tc-search",
-						Kind:  api.ToolCallSearchMemory,
-						Body:  "colour",
-						Limit: 5,
+						ID:   "tc-search",
+						Name: "search_memory",
+						Args: json.RawMessage(`{"query":"colour","limit":5}`),
 					}},
 				}, nil
 
 			default:
-				// search_memory returned results — reply with them.
+				// search_memory returned results — reply with the
+				// remembered content.
+				var payload session.ToolResultPayload
+				if err := json.Unmarshal([]byte(results[0].Content), &payload); err != nil {
+					return api.CompletionResult{}, err
+				}
+
+				data, err := json.Marshal(payload.Data)
+				if err != nil {
+					return api.CompletionResult{}, err
+				}
+
+				var matches []memory.SearchResult
+				if err := json.Unmarshal(data, &matches); err != nil {
+					return api.CompletionResult{}, err
+				}
+
+				body := "I found nothing"
+				if len(matches) > 0 {
+					body = "I found: " + matches[0].Entry.Content
+				}
+
 				return api.CompletionResult{
 					Response: protocol.ModelResponse{
 						Kind:     protocol.ResponseReply,
-						Messages: []protocol.ReplyPart{{Kind: protocol.ReplyMessage, Body: "I found: " + results[0].Content}},
+						Messages: []protocol.ReplyPart{{Kind: protocol.ReplyMessage, Body: body}},
 					},
 				}, nil
 			}
@@ -261,7 +281,7 @@ func TestApp_vector_memory_write_and_search(t *testing.T) {
 		teatest.WithInitialTermSize(200, 30))
 	tm.WaitFor("#lab")
 
-	tm.Submit("/invite test/model")
+	tm.Submit("/add-model test/model")
 	tm.WaitFor("membot (test/model) has joined #lab")
 
 	tm.Submit("what is my favourite colour?")
@@ -286,6 +306,7 @@ func (f *integrationAPI) SendEvents(
 	system string,
 	history []protocol.IRCMessage,
 	events []protocol.IRCMessage,
+	_ ...api.ToolDefinition,
 ) (api.CompletionResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -308,6 +329,7 @@ func (f *integrationAPI) ContinueWithToolResults(
 	ctx context.Context,
 	conv *api.Conversation,
 	results []api.ToolResult,
+	_ ...api.ToolDefinition,
 ) (api.CompletionResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

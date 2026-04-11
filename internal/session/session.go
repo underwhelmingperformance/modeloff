@@ -43,6 +43,7 @@ type Session struct {
 	store  store.Store
 	memory memory.Store
 	api    api.Client
+	tools  *ToolRegistry
 
 	user       *domain.Instance
 	apiKey     string
@@ -96,6 +97,11 @@ func (s *Session) SetAPIFactory(factory func(apiKey, baseURL string) (api.Client
 	s.factory = factory
 }
 
+// SetToolRegistry configures additional model-callable tools.
+func (s *Session) SetToolRegistry(registry *ToolRegistry) {
+	s.tools = registry
+}
+
 // HasAPIKey reports whether the session has an active API key.
 func (s *Session) HasAPIKey() bool {
 	return strings.TrimSpace(s.apiKey) != ""
@@ -119,149 +125,14 @@ func (s *Session) UserJoinedAt(ch domain.ChannelName) time.Time {
 // Join creates or opens a channel. Events are emitted on the
 // session event channel.
 func (s *Session) Join(ctx context.Context, channelName string) error {
-	name := domain.ChannelName(channelName)
-	ctx, span := startSpan(
-		ctx,
-		"session.join",
-		attribute.String(observability.AttrOperation, "session.join"),
-		attribute.String(observability.AttrChannel, string(name)),
-	)
-	defer span.End()
-
-	now := s.now()
-
-	var created bool
-
-	_, err := s.store.GetChannel(ctx, name)
-	if err != nil {
-		created = true
-
-		members := domain.NewMemberList()
-		members.Add(s.user.Nick)
-
-		ch := domain.Channel{
-			Name:    name,
-			Kind:    domain.KindChannel,
-			Members: members,
-			Created: now,
-		}
-
-		if err := s.store.SaveChannel(ctx, ch); err != nil {
-			span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-			span.SetStatus(codes.Error, err.Error())
-			return fmt.Errorf("save channel: %w", err)
-		}
-	}
-
-	if err := s.store.SetLastChannel(ctx, name); err != nil {
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("set last channel: %w", err)
-	}
-
-	if err := s.MarkRead(ctx, name); err != nil {
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("mark read: %w", err)
-	}
-
-	s.user.Channels.Set(name, now)
-
-	s.appendEvent(ctx, name, domain.ChannelJoin{
-		Channel: name,
-		Nick:    s.user.Nick,
-		Created: created,
-		At:      now,
-	})
-
-	s.emit(ctx, domain.JoinEvent{
-		Channel: name,
-		Nick:    s.user.Nick,
-		Created: created,
-		At:      now,
-	})
-
-	if created {
-		ch, _ := s.store.GetChannel(ctx, name)
-		ch.Members.SetMode(s.user.Nick, domain.ModeOp)
-
-		if err := s.store.SaveChannel(ctx, ch); err != nil {
-			span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-			span.SetStatus(codes.Error, err.Error())
-			return fmt.Errorf("save channel after mode: %w", err)
-		}
-
-		s.appendEvent(ctx, name, domain.ChannelModeChange{
-			Channel: name,
-			Nick:    s.user.Nick,
-			Mode:    domain.ModeOp,
-			At:      now,
-		})
-
-		s.emit(ctx, domain.ModeChangeEvent{
-			Channel: name,
-			Nick:    s.user.Nick,
-			Mode:    domain.ModeOp,
-			Actor:   "ChanServ",
-			At:      now,
-		})
-	}
-
-	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-
-	return nil
+	return s.JoinAs(ctx, s.user.Nick, domain.ChannelName(channelName))
 }
 
 // Part records the user leaving a channel. An optional farewell
 // message is included in the event. Events are emitted on the
 // session event channel.
 func (s *Session) Part(ctx context.Context, ch domain.ChannelName, message string) error {
-	ctx, span := startSpan(
-		ctx,
-		"session.part",
-		attribute.String(observability.AttrOperation, "session.part"),
-		attribute.String(observability.AttrChannel, string(ch)),
-	)
-	defer span.End()
-
-	channel, err := s.store.GetChannel(ctx, ch)
-	if err != nil {
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("channel not found: %w", err)
-	}
-
-	if m, ok := channel.Members.Get(s.user.Nick); ok {
-		channel.Members.Remove(m)
-	}
-
-	s.user.Channels.Delete(ch)
-
-	if err := s.store.SaveChannel(ctx, channel); err != nil {
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("save channel: %w", err)
-	}
-
-	now := s.now()
-
-	s.appendEvent(ctx, ch, domain.ChannelPart{
-		Channel: ch,
-		Nick:    s.user.Nick,
-		Message: message,
-		At:      now,
-	})
-
-	s.emit(ctx, domain.PartEvent{
-		Channel: ch,
-		Nick:    s.user.Nick,
-		Message: message,
-		At:      now,
-	})
-
-	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-
-	return nil
+	return s.PartAs(ctx, s.user.Nick, ch, message)
 }
 
 // Quit builds a PendingQuit from the user's current channels and
@@ -293,7 +164,12 @@ func (s *Session) Quit(ctx context.Context, message string) error {
 // QUIT to models in each channel synchronously, saving their replies.
 // The pending quit is cleared after processing. A 30-second timeout
 // is applied.
-func (s *Session) ProcessPendingQuit(ctx context.Context) error {
+func (s *Session) ProcessPendingQuit(ctx context.Context) (retErr error) {
+	ctx, span := startSpan(ctx, "session.process_pending_quit",
+		attribute.String(observability.AttrOperation, "session.process_pending_quit"),
+	)
+	defer endSpan(span, &retErr)
+
 	pq, err := s.store.GetPendingQuit(ctx)
 	if err != nil {
 		return fmt.Errorf("get pending quit: %w", err)
@@ -340,9 +216,9 @@ func (s *Session) ListInstances(ctx context.Context) ([]domain.Instance, error) 
 	return s.store.ListInstances(ctx)
 }
 
-// Invite adds a model instance to a channel. If the model has no nick
+// AddModel adds a model instance to a channel. If the model has no nick
 // yet, one is generated via the API.
-func (s *Session) Invite(
+func (s *Session) AddModel(
 	ctx context.Context,
 	ch domain.ChannelName,
 	modelID domain.ModelID,
@@ -513,114 +389,22 @@ func (s *Session) attachInstanceToChannel(
 }
 
 // Kick removes a model instance from a channel.
-func (s *Session) Kick(
-	ctx context.Context,
-	ch domain.ChannelName,
-	nick domain.Nick,
-) error {
-	ctx, span := startSpan(
-		ctx,
-		"session.kick",
-		attribute.String(observability.AttrOperation, "session.kick"),
-		attribute.String(observability.AttrChannel, string(ch)),
-		attribute.String(observability.AttrNick, string(nick)),
-	)
-	defer span.End()
-
-	channel, err := s.store.GetChannel(ctx, ch)
-	if err != nil {
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("get channel: %w", err)
-	}
-
-	if m, ok := channel.Members.Get(nick); ok {
-		channel.Members.Remove(m)
-	}
-
-	if err := s.store.SaveChannel(ctx, channel); err != nil {
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("save channel: %w", err)
-	}
-
-	inst, err := s.store.GetInstance(ctx, nick)
-	if err == nil {
-		inst.Channels.Delete(ch)
-
-		if err := s.store.SaveInstance(ctx, inst); err != nil {
-			span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-			span.SetStatus(codes.Error, err.Error())
-			return fmt.Errorf("save instance: %w", err)
-		}
-	}
-
-	now := s.now()
-	s.appendEvent(ctx, ch, domain.ChannelModelKicked{
-		Channel: ch,
-		Nick:    nick,
-		At:      now,
-	})
-
-	s.emit(ctx, domain.ModelKickedEvent{
-		Channel: ch,
-		Nick:    nick,
-		At:      now,
-	})
-
-	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-
-	return nil
+func (s *Session) Kick(ctx context.Context, ch domain.ChannelName, nick domain.Nick) error {
+	return s.KickAs(ctx, s.user.Nick, nick, ch)
 }
 
 // SendMessage saves a message to a channel and returns the message
 // event. It also spawns a background goroutine to dispatch the
 // message to model instances, emitting events on the Events channel.
-func (s *Session) SendMessage(
-	ctx context.Context,
-	ch domain.ChannelName,
-	body string,
-) error {
-	ctx, span := startSpan(ctx, "session.send_message", attribute.String(observability.AttrOperation, "session.send_message"))
-	defer span.End()
-
-	cm := domain.ChannelMessage{
-		Channel: ch,
-		From:    s.user.Nick,
-		Body:    body,
-		At:      s.now(),
-	}
-
-	s.appendEvent(ctx, ch, cm)
-
-	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-
-	s.emit(ctx, domain.MessageEvent{Event: cm})
-
-	return nil
+func (s *Session) SendMessage(ctx context.Context, ch domain.ChannelName, body string) error {
+	return s.SendMessageAs(ctx, s.user.Nick, ch, body)
 }
 
 // SendAction saves an action message (/me) to a channel and returns
 // the message event. It also spawns a background goroutine to
 // dispatch the action to model instances.
-func (s *Session) SendAction(
-	ctx context.Context,
-	ch domain.ChannelName,
-	body string,
-) error {
-	cm := domain.ChannelMessage{
-		Channel: ch,
-		From:    s.user.Nick,
-		Body:    body,
-		Action:  true,
-		At:      s.now(),
-	}
-
-	s.appendEvent(ctx, ch, cm)
-
-	s.emit(ctx, domain.MessageEvent{Event: cm})
-
-	return nil
+func (s *Session) SendAction(ctx context.Context, ch domain.ChannelName, body string) error {
+	return s.SendActionAs(ctx, s.user.Nick, ch, body)
 }
 
 // DispatchToChannel sends new events to all model instances in a channel
@@ -654,108 +438,14 @@ func (s *Session) DispatchToChannel(
 }
 
 // SetTopic sets the topic of a channel.
-func (s *Session) SetTopic(
-	ctx context.Context,
-	ch domain.ChannelName,
-	topic string,
-) error {
-	ctx, span := startSpan(
-		ctx,
-		"session.set_topic",
-		attribute.String(observability.AttrOperation, "session.set_topic"),
-		attribute.String(observability.AttrChannel, string(ch)),
-	)
-	defer span.End()
-
-	channel, err := s.store.GetChannel(ctx, ch)
-	if err != nil {
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("get channel: %w", err)
-	}
-
-	channel.Topic = topic
-	channel.TopicSetBy = s.user.Nick
-	channel.TopicSetAt = s.now()
-
-	if err := s.store.SaveChannel(ctx, channel); err != nil {
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("save channel: %w", err)
-	}
-
-	now := s.now()
-	s.appendEvent(ctx, ch, domain.ChannelTopicChange{
-		Channel: ch,
-		Topic:   topic,
-		By:      s.user.Nick,
-		At:      now,
-	})
-
-	s.emit(ctx, domain.TopicChangeEvent{
-		Channel: ch,
-		Topic:   topic,
-		By:      s.user.Nick,
-		At:      now,
-	})
-
-	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-
-	return nil
+func (s *Session) SetTopic(ctx context.Context, ch domain.ChannelName, topic string) error {
+	return s.SetTopicAs(ctx, s.user.Nick, ch, topic)
 }
 
 // ChangeNick changes the user's nickname and updates all channel
 // memberships accordingly.
-func (s *Session) ChangeNick(
-	ctx context.Context,
-	newNick domain.Nick,
-) error {
-	ctx, span := startSpan(
-		ctx,
-		"session.change_nick",
-		attribute.String(observability.AttrOperation, "session.change_nick"),
-		attribute.String(observability.AttrNick, string(newNick)),
-	)
-	defer span.End()
-
-	oldNick := s.user.Nick
-	now := s.now()
-	s.user.Nick = newNick
-
-	// Update membership and emit a nick change event per channel.
-	channels, _ := s.store.ListChannels(ctx)
-
-	for _, ch := range channels {
-		if !ch.Members.Has(oldNick) {
-			continue
-		}
-
-		if m, ok := ch.Members.Get(oldNick); ok {
-			ch.Members.Remove(m)
-			ch.Members.Add(newNick)
-			ch.Members.SetMode(newNick, m.Mode)
-		}
-
-		_ = s.store.SaveChannel(ctx, ch)
-
-		s.appendEvent(ctx, ch.Name, domain.ChannelNickChange{
-			Channel: ch.Name,
-			OldNick: oldNick,
-			NewNick: newNick,
-			At:      now,
-		})
-
-		s.emit(ctx, domain.NickChangeEvent{
-			Channel: ch.Name,
-			OldNick: oldNick,
-			NewNick: newNick,
-			At:      now,
-		})
-	}
-
-	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-
-	return nil
+func (s *Session) ChangeNick(ctx context.Context, newNick domain.Nick) error {
+	return s.ChangeNickAs(ctx, s.user.Nick, newNick)
 }
 
 // Whois returns metadata about a model instance.
@@ -1002,7 +692,12 @@ func (s *Session) SetSmallModel(modelID domain.ModelID) {
 
 // EnsurePersonas populates the persona pool if it is empty. It calls
 // the API to generate personas and saves each to the store.
-func (s *Session) EnsurePersonas(ctx context.Context) error {
+func (s *Session) EnsurePersonas(ctx context.Context) (retErr error) {
+	ctx, span := startSpan(ctx, "session.ensure_personas",
+		attribute.String(observability.AttrOperation, "session.ensure_personas"),
+	)
+	defer endSpan(span, &retErr)
+
 	existing, err := s.store.ListPersonas(ctx)
 	if err != nil {
 		return fmt.Errorf("list personas: %w", err)
@@ -1027,7 +722,12 @@ func (s *Session) EnsurePersonas(ctx context.Context) error {
 }
 
 // RandomPersona picks a random persona from the store pool.
-func (s *Session) RandomPersona(ctx context.Context) (domain.Persona, error) {
+func (s *Session) RandomPersona(ctx context.Context) (_ domain.Persona, retErr error) {
+	ctx, span := startSpan(ctx, "session.random_persona",
+		attribute.String(observability.AttrOperation, "session.random_persona"),
+	)
+	defer endSpan(span, &retErr)
+
 	personas, err := s.store.ListPersonas(ctx)
 	if err != nil {
 		return domain.Persona{}, fmt.Errorf("list personas: %w", err)
@@ -1049,7 +749,12 @@ func (s *Session) RandomPersona(ctx context.Context) (domain.Persona, error) {
 // then replaces all generated personas in the store. The API call
 // happens first so that the existing pool is preserved if generation
 // fails. User-defined personas are never touched.
-func (s *Session) RegeneratePersonas(ctx context.Context) ([]domain.Persona, error) {
+func (s *Session) RegeneratePersonas(ctx context.Context) (_ []domain.Persona, retErr error) {
+	ctx, span := startSpan(ctx, "session.regenerate_personas",
+		attribute.String(observability.AttrOperation, "session.regenerate_personas"),
+	)
+	defer endSpan(span, &retErr)
+
 	personas, err := s.api.GeneratePersonas(ctx, s.smallModel)
 	if err != nil {
 		return nil, fmt.Errorf("generate personas: %w", err)
@@ -1063,7 +768,13 @@ func (s *Session) RegeneratePersonas(ctx context.Context) ([]domain.Persona, err
 }
 
 // SetPersona saves a user-defined persona to the store.
-func (s *Session) SetPersona(ctx context.Context, id string, description string) error {
+func (s *Session) SetPersona(ctx context.Context, id string, description string) (retErr error) {
+	ctx, span := startSpan(ctx, "session.set_persona",
+		attribute.String(observability.AttrOperation, "session.set_persona"),
+		attribute.String("persona.id", id),
+	)
+	defer endSpan(span, &retErr)
+
 	p := domain.Persona{
 		ID:          id,
 		Description: description,
@@ -1074,14 +785,24 @@ func (s *Session) SetPersona(ctx context.Context, id string, description string)
 }
 
 // ListPersonas returns all personas from the store.
-func (s *Session) ListPersonas(ctx context.Context) ([]domain.Persona, error) {
+func (s *Session) ListPersonas(ctx context.Context) (_ []domain.Persona, retErr error) {
+	ctx, span := startSpan(ctx, "session.list_personas",
+		attribute.String(observability.AttrOperation, "session.list_personas"),
+	)
+	defer endSpan(span, &retErr)
+
 	return s.store.ListPersonas(ctx)
 }
 
 // ResetPersonas removes all user-defined personas from the store,
 // leaving only generated ones. It returns the number of personas
 // that were removed.
-func (s *Session) ResetPersonas(ctx context.Context) (int, error) {
+func (s *Session) ResetPersonas(ctx context.Context) (_ int, retErr error) {
+	ctx, span := startSpan(ctx, "session.reset_personas",
+		attribute.String(observability.AttrOperation, "session.reset_personas"),
+	)
+	defer endSpan(span, &retErr)
+
 	personas, err := s.store.ListPersonas(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("list personas: %w", err)
@@ -1208,7 +929,12 @@ func (s *Session) dispatchToInstance(
 		mem = &instanceMemory{nick: inst.Nick, store: s.memory}
 	}
 
-	outcome, err := s.sendWithRetry(ctx, inst, prompt, history, events, mem)
+	registry := MergeToolRegistries(
+		memoryToolRegistry(mem, s.memory != nil && searchEnabled(s.memory)),
+		s.tools,
+	)
+
+	outcome, err := s.sendWithRetry(ctx, inst, channelName, prompt, history, events, registry)
 	if err != nil {
 		instanceSpan.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
 		instanceSpan.SetStatus(codes.Error, err.Error())
@@ -1230,53 +956,6 @@ func (s *Session) dispatchToInstance(
 	response := result.Response
 
 	switch response.Kind {
-	case protocol.ResponsePart:
-		replies := s.buildReplies(ctx, channelName, inst.Nick, response.Messages)
-		s.removeInstanceFromChannel(ctx, inst.Nick, channelName)
-
-		now := s.now()
-
-		s.appendEvent(ctx, channelName, domain.ChannelPart{
-			Channel: channelName,
-			Nick:    inst.Nick,
-			Message: response.FarewellMessage,
-			At:      now,
-		})
-
-		s.emitUIOnly(domain.PartEvent{
-			Channel: channelName,
-			Nick:    inst.Nick,
-			Message: response.FarewellMessage,
-			At:      now,
-		})
-
-		return replies, nil
-
-	case protocol.ResponseQuit:
-		replies := s.buildReplies(ctx, channelName, inst.Nick, response.Messages)
-
-		channels := s.instanceChannelNames(inst)
-		for _, ch := range channels {
-			s.removeInstanceFromChannel(ctx, inst.Nick, ch)
-
-			now := s.now()
-
-			s.appendEvent(ctx, ch, domain.ChannelQuit{
-				Channel: ch,
-				Nick:    inst.Nick,
-				Message: response.FarewellMessage,
-				At:      now,
-			})
-		}
-
-		s.emitUIOnly(domain.QuitEvent{
-			Nick:    inst.Nick,
-			Message: response.FarewellMessage,
-			At:      s.now(),
-		})
-
-		return replies, nil
-
 	case protocol.ResponseReply:
 		if len(response.Messages) == 0 {
 			return nil, nil
@@ -1425,6 +1104,16 @@ func (s *Session) emitUIOnly(evt domain.SessionEvent) {
 	s.events <- evt
 }
 
+// emitFor dispatches an event through either emit (user-initiated,
+// triggers model dispatch) or emitUIOnly (model-initiated, UI only).
+func (s *Session) emitFor(ctx context.Context, actor domain.Nick, evt domain.SessionEvent) {
+	if actor == s.user.Nick {
+		s.emit(ctx, evt)
+	} else {
+		s.emitUIOnly(evt)
+	}
+}
+
 // maybeDispatch checks whether an event is dispatchable and, if so,
 // starts a background dispatch for the relevant channel.
 func (s *Session) maybeDispatch(ctx context.Context, evt domain.SessionEvent) {
@@ -1532,7 +1221,9 @@ func (s *Session) dispatchInBackground(ctx context.Context, ch domain.ChannelNam
 			s.emitUIOnly(reply)
 		}
 
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
+		if err == nil {
+			span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
+		}
 	}()
 }
 
@@ -1574,9 +1265,28 @@ How to behave:
 
 	b.WriteString(`
 
-You can voluntarily leave a channel by responding with kind "part", or quit the server entirely with kind "quit". When using part or quit, you may include a farewell in the farewell_message field and any final messages in the messages array. Quitting means you are shutting down — use it only when you genuinely want to leave permanently.`)
+You have a personal memory system for facts that may matter across future conversations.
 
-	b.WriteString("\n\nYou have a personal memory system. Your current memories are shown below. You can use write_memory to store new memories and delete_memory to remove them.")
+Current memories are shown below. Treat them as potentially useful prior context, not as guaranteed-current facts.
+
+How to use memory:
+- Use memory sparingly.
+- Store only durable, reusable context.
+- Do not store temporary details from the current exchange unless they are likely to matter later.
+- Do not store obvious facts already present in the current prompt or recent chat history.
+- Good memory candidates:
+  - stable user preferences
+  - recurring project or channel context
+  - long-lived facts about people, tools, habits, or goals
+  - decisions that should stay consistent later
+- Bad memory candidates:
+  - fleeting small talk
+  - one-off jokes
+  - transient status updates
+  - speculative guesses
+  - facts you are not confident are true
+
+If there are no relevant memories, continue normally without using memory.`)
 
 	if len(memories) == 0 {
 		b.WriteString("\n\nYou have no memories yet.")
@@ -1644,13 +1354,14 @@ type sendOutcome struct {
 func (s *Session) sendWithRetry(
 	ctx context.Context,
 	inst domain.Instance,
+	channelName domain.ChannelName,
 	prompt string,
 	history []protocol.IRCMessage,
 	events []protocol.IRCMessage,
-	mem MemoryExecutor,
+	registry *ToolRegistry,
 ) (sendOutcome, error) {
 	for attempt := range maxNewlineRetries + 1 {
-		result, toolTurnCount, err := s.sendWithMemoryLoop(ctx, inst, prompt, history, events, mem)
+		result, toolTurnCount, err := s.sendWithToolLoop(ctx, inst, channelName, prompt, history, events, registry)
 		if err != nil {
 			var refused *api.ErrModelRefused
 			if errors.As(err, &refused) {
@@ -1714,19 +1425,20 @@ func (s *Session) sendWithRetry(
 	}, nil
 }
 
-// sendWithMemoryLoop sends events to a model and handles memory tool
-// calls in a loop. If the model calls write_memory or delete_memory,
-// those are executed and the results sent back. The loop continues
-// until the model calls reply or pass, or maxToolLoopTurns is reached.
-func (s *Session) sendWithMemoryLoop(
+// sendWithToolLoop sends events to a model and handles tool calls in a
+// loop until the model replies, passes, or exceeds the tool turn limit.
+func (s *Session) sendWithToolLoop(
 	ctx context.Context,
 	inst domain.Instance,
+	channelName domain.ChannelName,
 	prompt string,
 	history []protocol.IRCMessage,
 	events []protocol.IRCMessage,
-	mem MemoryExecutor,
+	registry *ToolRegistry,
 ) (api.CompletionResult, int, error) {
-	result, err := s.api.SendEvents(ctx, inst.ModelID, prompt, history, events)
+	definitions := registry.Definitions()
+
+	result, err := s.api.SendEvents(ctx, inst.ModelID, prompt, history, events, definitions...)
 	if err != nil {
 		return api.CompletionResult{}, 0, err
 	}
@@ -1738,14 +1450,18 @@ func (s *Session) sendWithMemoryLoop(
 			return result, toolTurnCount, nil
 		}
 
-		if mem == nil {
+		if registry == nil {
 			return result, toolTurnCount, nil
 		}
 
-		toolResults := s.executeMemoryTools(ctx, mem, result.PendingToolCalls)
+		toolResults := s.executeTools(ctx, ToolContext{
+			Session: s,
+			Actor:   inst.Nick,
+			Channel: channelName,
+		}, registry, result.PendingToolCalls)
 		toolTurnCount++
 
-		result, err = s.api.ContinueWithToolResults(ctx, result.Conversation, toolResults)
+		result, err = s.api.ContinueWithToolResults(ctx, result.Conversation, toolResults, definitions...)
 		if err != nil {
 			return api.CompletionResult{}, toolTurnCount, err
 		}
@@ -1754,68 +1470,51 @@ func (s *Session) sendWithMemoryLoop(
 	return result, toolTurnCount, nil
 }
 
-// executeMemoryTools runs the pending memory tool calls and returns
-// the results to feed back to the model.
-func (s *Session) executeMemoryTools(
+// executeTools runs pending tool calls and returns the results to feed
+// back to the model.
+func (s *Session) executeTools(
 	ctx context.Context,
-	mem MemoryExecutor,
+	toolCtx ToolContext,
+	registry *ToolRegistry,
 	calls []api.PendingToolCall,
 ) []api.ToolResult {
 	results := make([]api.ToolResult, 0, len(calls))
-	span := trace.SpanFromContext(ctx)
 
 	for _, call := range calls {
-		var content string
-		var toolErr error
+		toolName := call.Name
 
-		switch call.Kind {
-		case api.ToolCallWriteMemory:
-			toolErr = mem.WriteMemory(ctx, call.Key, call.Body)
-			if toolErr != nil {
-				content = toolErr.Error()
+		callCtx, callSpan := startSpan(
+			ctx,
+			"session.execute_tool",
+			attribute.String(observability.AttrOperation, "session.execute_tool"),
+			attribute.String("tool.name", toolName),
+		)
+
+		payload := ToolResultPayload{
+			OK:    false,
+			Error: fmt.Sprintf("unknown tool %q", toolName),
+		}
+
+		if spec, ok := registry.Find(toolName); ok {
+			nextPayload, err := spec.Execute(callCtx, toolCtx, call.Args)
+			if err != nil {
+				payload = ToolResultPayload{OK: false, Error: err.Error()}
 			} else {
-				content = "ok"
-			}
-
-		case api.ToolCallDeleteMemory:
-			toolErr = mem.DeleteMemory(ctx, call.Key)
-			if toolErr != nil {
-				content = toolErr.Error()
-			} else {
-				content = "ok"
-			}
-
-		case api.ToolCallSearchMemory:
-			searchResults, err := mem.SearchMemory(ctx, call.Body, call.Limit)
-			toolErr = err
-
-			if toolErr != nil {
-				content = toolErr.Error()
-			} else {
-				data, _ := json.Marshal(searchResults)
-				content = string(data)
+				payload = nextPayload
 			}
 		}
 
-		eventAttrs := []attribute.KeyValue{
-			attribute.String(observability.AttrMemoryOperation, string(call.Kind)),
-			attribute.String(observability.AttrMemoryToolKind, string(call.Kind)),
-		}
-
-		if toolErr != nil {
-			observability.RecordMemoryToolCall(ctx, string(call.Kind), observability.ResultError)
-			eventAttrs = append(eventAttrs, attribute.String(observability.AttrResult, observability.ResultError))
+		if payload.OK {
+			callSpan.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 		} else {
-			observability.RecordMemoryToolCall(ctx, string(call.Kind), observability.ResultOK)
-			eventAttrs = append(eventAttrs, attribute.String(observability.AttrResult, observability.ResultOK))
+			callSpan.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+			callSpan.SetStatus(codes.Error, payload.Error)
 		}
 
-		span.AddEvent("memory.tool_call", trace.WithAttributes(eventAttrs...))
+		callSpan.End()
 
-		results = append(results, api.ToolResult{
-			ToolCallID: call.ID,
-			Content:    content,
-		})
+		data, _ := json.Marshal(payload)
+		results = append(results, api.ToolResult{ToolCallID: call.ID, Content: string(data)})
 	}
 
 	return results
@@ -1854,6 +1553,17 @@ func startSpan(ctx context.Context, name string, attrs ...attribute.KeyValue) (c
 	span.SetAttributes(attrs...)
 
 	return ctx, span
+}
+
+func endSpan(span trace.Span, errPtr *error) {
+	if *errPtr != nil {
+		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+		span.SetStatus(codes.Error, (*errPtr).Error())
+	} else {
+		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
+	}
+
+	span.End()
 }
 
 func channelKindName(kind domain.ChannelKind) string {
