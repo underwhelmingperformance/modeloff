@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"strings"
 	"time"
 
@@ -395,13 +396,25 @@ func (s *Session) Invite(
 	nickResult.Usage.SetSpanAttributes(generateSpan, nickResult.RequestID)
 	generateSpan.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 
+	assignedPersona := strings.TrimSpace(persona)
+
+	if assignedPersona == "" {
+		if err := s.EnsurePersonas(ctx); err != nil {
+			logger.WarnContext(ctx, "persona pool generation failed", "error", err)
+		}
+
+		if p, err := s.RandomPersona(ctx); err == nil {
+			assignedPersona = p.Description
+		}
+	}
+
 	channels := orderedmap.New[domain.ChannelName, time.Time]()
 	channels.Set(ch, s.now())
 
 	inst := domain.Instance{
 		Nick:     nickResult.Nick,
 		ModelID:  modelID,
-		Persona:  strings.TrimSpace(persona),
+		Persona:  assignedPersona,
 		Channels: channels,
 	}
 
@@ -987,6 +1000,84 @@ func (s *Session) SetSmallModel(modelID domain.ModelID) {
 	s.smallModel = modelID
 }
 
+// EnsurePersonas populates the persona pool if it is empty. It calls
+// the API to generate personas and saves each to the store.
+func (s *Session) EnsurePersonas(ctx context.Context) error {
+	existing, err := s.store.ListPersonas(ctx)
+	if err != nil {
+		return fmt.Errorf("list personas: %w", err)
+	}
+
+	if len(existing) > 0 {
+		return nil
+	}
+
+	personas, err := s.api.GeneratePersonas(ctx, s.smallModel)
+	if err != nil {
+		return fmt.Errorf("generate personas: %w", err)
+	}
+
+	for _, p := range personas {
+		if err := s.store.SavePersona(ctx, p); err != nil {
+			return fmt.Errorf("save persona %q: %w", p.ID, err)
+		}
+	}
+
+	return nil
+}
+
+// RandomPersona picks a random persona from the store pool.
+func (s *Session) RandomPersona(ctx context.Context) (domain.Persona, error) {
+	personas, err := s.store.ListPersonas(ctx)
+	if err != nil {
+		return domain.Persona{}, fmt.Errorf("list personas: %w", err)
+	}
+
+	if len(personas) == 0 {
+		return domain.Persona{}, fmt.Errorf("no personas available")
+	}
+
+	return personas[rand.IntN(len(personas))], nil
+}
+
+// RegeneratePersonas generates a fresh set of personas via the API,
+// then replaces all generated personas in the store. The API call
+// happens first so that the existing pool is preserved if generation
+// fails. User-defined personas are never touched.
+func (s *Session) RegeneratePersonas(ctx context.Context) ([]domain.Persona, error) {
+	personas, err := s.api.GeneratePersonas(ctx, s.smallModel)
+	if err != nil {
+		return nil, fmt.Errorf("generate personas: %w", err)
+	}
+
+	if err := s.store.DeletePersonasByOrigin(ctx, domain.PersonaGenerated); err != nil {
+		return nil, fmt.Errorf("delete generated personas: %w", err)
+	}
+
+	for _, p := range personas {
+		if err := s.store.SavePersona(ctx, p); err != nil {
+			return nil, fmt.Errorf("save persona %q: %w", p.ID, err)
+		}
+	}
+
+	return personas, nil
+}
+
+// SetPersona saves a user-defined persona to the store.
+func (s *Session) SetPersona(ctx context.Context, id string, description string) error {
+	p := domain.Persona{
+		ID:          id,
+		Description: description,
+		Origin:      domain.PersonaUser,
+	}
+
+	return s.store.SavePersona(ctx, p)
+}
+
+// ListPersonas returns all personas from the store.
+func (s *Session) ListPersonas(ctx context.Context) ([]domain.Persona, error) {
+	return s.store.ListPersonas(ctx)
+}
 
 // SetBaseURL rebuilds the API client with the given base URL.
 func (s *Session) SetBaseURL(baseURL string) error {

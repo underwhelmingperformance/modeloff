@@ -1926,6 +1926,7 @@ type fakeAPIClient struct {
 	sendEventsFullFn          func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error)
 	continueWithToolResultsFn func(context.Context, *api.Conversation, []api.ToolResult) (api.CompletionResult, error)
 	generateNickFn            func(context.Context, domain.ModelID, domain.ModelID) (domain.Nick, error)
+	generatePersonasFn        func(context.Context, domain.ModelID) ([]domain.Persona, error)
 }
 
 func (f *fakeAPIClient) ListModels(ctx context.Context) ([]api.ModelInfo, error) {
@@ -1980,7 +1981,11 @@ func (f *fakeAPIClient) GenerateNick(ctx context.Context, nickModel domain.Model
 	return api.NicknameResult{Nick: "fakenick"}, nil
 }
 
-func (f *fakeAPIClient) GeneratePersonas(context.Context, domain.ModelID) ([]domain.Persona, error) {
+func (f *fakeAPIClient) GeneratePersonas(ctx context.Context, smallModel domain.ModelID) ([]domain.Persona, error) {
+	if f.generatePersonasFn != nil {
+		return f.generatePersonasFn(ctx, smallModel)
+	}
+
 	return nil, nil
 }
 
@@ -2938,4 +2943,158 @@ func drainEvents(t *testing.T, sess *Session, doneCount int) []domain.SessionEve
 	t.Fatal("events channel closed before receiving all DispatchDoneEvents")
 
 	return nil
+}
+
+func testPersonas() []domain.Persona {
+	return []domain.Persona{
+		{ID: "grumpy-sysadmin", Description: "Runs FreeBSD on everything.", Origin: domain.PersonaGenerated},
+		{ID: "lurker-larry", Description: "Only corrects RFC citations.", Origin: domain.PersonaGenerated},
+		{ID: "retro-gamer", Description: "Speedruns Doom on a toaster.", Origin: domain.PersonaGenerated},
+	}
+}
+
+func TestSession_EnsurePersonas_lazy_generation(t *testing.T) {
+	calls := 0
+	fake := &fakeAPIClient{
+		generatePersonasFn: func(_ context.Context, _ domain.ModelID) ([]domain.Persona, error) {
+			calls++
+			return testPersonas(), nil
+		},
+	}
+
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := t.Context()
+
+	require.NoError(t, sess.EnsurePersonas(ctx))
+	require.Equal(t, 1, calls)
+
+	got, err := s.ListPersonas(ctx)
+	require.NoError(t, err)
+	require.Equal(t, testPersonas(), got)
+
+	// Second call should not generate again — pool is already populated.
+	require.NoError(t, sess.EnsurePersonas(ctx))
+	require.Equal(t, 1, calls)
+}
+
+func TestSession_Invite_without_persona_assigns_from_pool(t *testing.T) {
+	fake := &fakeAPIClient{
+		generatePersonasFn: func(_ context.Context, _ domain.ModelID) ([]domain.Persona, error) {
+			return testPersonas(), nil
+		},
+	}
+
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#dev", "testuser")
+
+	require.NoError(t, sess.Invite(ctx, "#dev", "anthropic/claude-3-haiku", ""))
+	evt := drainEvent[domain.ModelInvitedEvent](t, sess)
+
+	// Should have been assigned a persona description from the pool.
+	require.NotEmpty(t, evt.Instance.Persona)
+
+	descriptions := make(map[string]bool)
+	for _, p := range testPersonas() {
+		descriptions[p.Description] = true
+	}
+
+	require.True(t, descriptions[evt.Instance.Persona],
+		"assigned persona %q not in pool", evt.Instance.Persona)
+}
+
+func TestSession_Invite_with_explicit_persona_skips_pool(t *testing.T) {
+	fake := &fakeAPIClient{
+		generatePersonasFn: func(_ context.Context, _ domain.ModelID) ([]domain.Persona, error) {
+			t.Fatal("GeneratePersonas should not be called when persona is explicit")
+			return nil, nil
+		},
+	}
+
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#dev", "testuser")
+
+	require.NoError(t, sess.Invite(ctx, "#dev", "anthropic/claude-3-haiku", "Custom persona"))
+	evt := drainEvent[domain.ModelInvitedEvent](t, sess)
+	require.Equal(t, "Custom persona", evt.Instance.Persona)
+}
+
+func TestSession_RandomPersona(t *testing.T) {
+	sess, s := newTestSessionWithAPI(t, &fakeAPIClient{})
+	ctx := t.Context()
+
+	for _, p := range testPersonas() {
+		require.NoError(t, s.SavePersona(ctx, p))
+	}
+
+	got, err := sess.RandomPersona(ctx)
+	require.NoError(t, err)
+
+	ids := make(map[string]bool)
+	for _, p := range testPersonas() {
+		ids[p.ID] = true
+	}
+
+	require.True(t, ids[got.ID], "random persona %q not in pool", got.ID)
+}
+
+func TestSession_RandomPersona_empty_pool(t *testing.T) {
+	sess, _ := newTestSessionWithAPI(t, &fakeAPIClient{})
+
+	_, err := sess.RandomPersona(t.Context())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "no personas available")
+}
+
+func TestSession_RegeneratePersonas_preserves_user_defined(t *testing.T) {
+	fake := &fakeAPIClient{
+		generatePersonasFn: func(_ context.Context, _ domain.ModelID) ([]domain.Persona, error) {
+			return []domain.Persona{
+				{ID: "new-gen", Description: "Freshly generated.", Origin: domain.PersonaGenerated},
+			}, nil
+		},
+	}
+
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := t.Context()
+
+	// Seed a user-defined persona and a generated one.
+	require.NoError(t, s.SavePersona(ctx, domain.Persona{
+		ID: "my-persona", Description: "User defined.", Origin: domain.PersonaUser,
+	}))
+	require.NoError(t, s.SavePersona(ctx, domain.Persona{
+		ID: "old-gen", Description: "Old generated.", Origin: domain.PersonaGenerated,
+	}))
+
+	got, err := sess.RegeneratePersonas(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []domain.Persona{
+		{ID: "new-gen", Description: "Freshly generated.", Origin: domain.PersonaGenerated},
+	}, got)
+
+	// Store should have the user persona plus the new generated one.
+	all, err := s.ListPersonas(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []domain.Persona{
+		{ID: "my-persona", Description: "User defined.", Origin: domain.PersonaUser},
+		{ID: "new-gen", Description: "Freshly generated.", Origin: domain.PersonaGenerated},
+	}, all)
+}
+
+func TestSession_SetPersona(t *testing.T) {
+	sess, s := newTestSessionWithAPI(t, &fakeAPIClient{})
+	ctx := t.Context()
+
+	require.NoError(t, sess.SetPersona(ctx, "custom-bot", "A friendly helper."))
+
+	got, err := s.GetPersona(ctx, "custom-bot")
+	require.NoError(t, err)
+	require.Equal(t, domain.Persona{
+		ID:          "custom-bot",
+		Description: "A friendly helper.",
+		Origin:      domain.PersonaUser,
+	}, got)
 }
