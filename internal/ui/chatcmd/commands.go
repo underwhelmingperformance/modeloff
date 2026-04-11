@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/laney/modeloff/internal/command"
+	"github.com/laney/modeloff/internal/config"
 	"github.com/laney/modeloff/internal/domain"
 )
 
@@ -189,7 +190,15 @@ type NickCommand struct {
 // Run implements Command.
 func (c NickCommand) Run(rc Context) tea.Cmd {
 	return func() tea.Msg {
-		if err := rc.Session.ChangeNick(rc.Ctx, domain.Nick(c.Nick)); err != nil {
+		nick := domain.Nick(c.Nick)
+
+		if _, err := rc.updateConfig(func(cfg *config.Config) {
+			cfg.UserNick = string(nick)
+		}); err != nil {
+			return errorEvent("nick", err)
+		}
+
+		if err := rc.Session.ChangeNick(rc.Ctx, nick); err != nil {
 			return errorEvent("nick", err)
 		}
 
@@ -324,7 +333,13 @@ type APIKeyConfig struct {
 func (c APIKeyConfig) Run(rc Context) tea.Cmd {
 	if rc.configResetRequested() {
 		return func() tea.Msg {
-			if _, err := rc.Session.ResetAPIKey(rc.Ctx); err != nil {
+			if err := rc.Session.SetAPIKey("", config.DefaultBaseURL); err != nil {
+				return errorEvent("config api-key", err)
+			}
+
+			if _, err := rc.updateConfig(func(cfg *config.Config) {
+				cfg.APIKey = ""
+			}); err != nil {
 				return errorEvent("config api-key", err)
 			}
 
@@ -337,7 +352,18 @@ func (c APIKeyConfig) Run(rc Context) tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		if _, err := rc.Session.SetAPIKey(rc.Ctx, c.Value); err != nil {
+		cfg, err := rc.Config.Load(rc.Ctx)
+		if err != nil {
+			return errorEvent("config api-key", err)
+		}
+
+		if err := rc.Session.SetAPIKey(c.Value, cfg.BaseURL); err != nil {
+			return errorEvent("config api-key", err)
+		}
+
+		if _, err := rc.updateConfig(func(cfg *config.Config) {
+			cfg.APIKey = c.Value
+		}); err != nil {
 			return errorEvent("config api-key", err)
 		}
 
@@ -354,12 +380,17 @@ type BaseURLConfig struct {
 func (c BaseURLConfig) Run(rc Context) tea.Cmd {
 	if rc.configResetRequested() {
 		return func() tea.Msg {
-			cfg, err := rc.Session.ResetBaseURL(rc.Ctx)
-			if err != nil {
+			if err := rc.Session.SetBaseURL(config.DefaultBaseURL); err != nil {
 				return errorEvent("config base-url", err)
 			}
 
-			return BaseURLSetResult{URL: cfg.BaseURL, Reset: true}
+			if _, err := rc.updateConfig(func(cfg *config.Config) {
+				cfg.BaseURL = config.DefaultBaseURL
+			}); err != nil {
+				return errorEvent("config base-url", err)
+			}
+
+			return BaseURLSetResult{URL: config.DefaultBaseURL, Reset: true}
 		}
 	}
 
@@ -368,7 +399,13 @@ func (c BaseURLConfig) Run(rc Context) tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		if _, err := rc.Session.SetBaseURL(rc.Ctx, c.URL); err != nil {
+		if err := rc.Session.SetBaseURL(c.URL); err != nil {
+			return errorEvent("config base-url", err)
+		}
+
+		if _, err := rc.updateConfig(func(cfg *config.Config) {
+			cfg.BaseURL = c.URL
+		}); err != nil {
 			return errorEvent("config base-url", err)
 		}
 
@@ -397,12 +434,13 @@ func (PokeIntervalConfig) Sources() map[string]command.SuggestionSource {
 func (c PokeIntervalConfig) Run(rc Context) tea.Cmd {
 	if rc.configResetRequested() {
 		return func() tea.Msg {
-			cfg, err := rc.Session.ResetPokeInterval(rc.Ctx)
-			if err != nil {
+			if _, err := rc.updateConfig(func(cfg *config.Config) {
+				cfg.PokeInterval = config.DefaultPokeInterval
+			}); err != nil {
 				return errorEvent("config poke-interval", err)
 			}
 
-			return PokeIntervalSetResult{Interval: cfg.PokeInterval, Reset: true}
+			return PokeIntervalSetResult{Interval: config.DefaultPokeInterval, Reset: true}
 		}
 	}
 
@@ -419,7 +457,9 @@ func (c PokeIntervalConfig) Run(rc Context) tea.Cmd {
 			})
 		}
 
-		if _, err := rc.Session.SetPokeInterval(rc.Ctx, interval); err != nil {
+		if _, err := rc.updateConfig(func(cfg *config.Config) {
+			cfg.PokeInterval = interval
+		}); err != nil {
 			return errorEvent("config poke-interval", err)
 		}
 
@@ -436,12 +476,15 @@ type NickModelConfig struct {
 func (c NickModelConfig) Run(rc Context) tea.Cmd {
 	if rc.configResetRequested() {
 		return func() tea.Msg {
-			cfg, err := rc.Session.ResetNickModel(rc.Ctx)
-			if err != nil {
+			rc.Session.SetNickModel(config.DefaultNickModel)
+
+			if _, err := rc.updateConfig(func(cfg *config.Config) {
+				cfg.NickModel = config.DefaultNickModel
+			}); err != nil {
 				return errorEvent("config nick-model", err)
 			}
 
-			return NickModelSetResult{ModelID: cfg.NickModel, Reset: true}
+			return NickModelSetResult{ModelID: config.DefaultNickModel, Reset: true}
 		}
 	}
 
@@ -451,7 +494,11 @@ func (c NickModelConfig) Run(rc Context) tea.Cmd {
 
 	return func() tea.Msg {
 		modelID := domain.ModelID(c.ModelID)
-		if _, err := rc.Session.SetNickModel(rc.Ctx, modelID); err != nil {
+		rc.Session.SetNickModel(modelID)
+
+		if _, err := rc.updateConfig(func(cfg *config.Config) {
+			cfg.NickModel = modelID
+		}); err != nil {
 			return errorEvent("config nick-model", err)
 		}
 
@@ -468,12 +515,13 @@ type EmbeddingModelConfig struct {
 func (c EmbeddingModelConfig) Run(rc Context) tea.Cmd {
 	if rc.configResetRequested() {
 		return func() tea.Msg {
-			cfg, err := rc.Session.ResetEmbeddingModel(rc.Ctx)
-			if err != nil {
+			if _, err := rc.updateConfig(func(cfg *config.Config) {
+				cfg.EmbeddingModel = config.DefaultEmbeddingModel
+			}); err != nil {
 				return errorEvent("config embedding-model", err)
 			}
 
-			return EmbeddingModelSetResult{ModelID: cfg.EmbeddingModel, Reset: true}
+			return EmbeddingModelSetResult{ModelID: config.DefaultEmbeddingModel, Reset: true}
 		}
 	}
 
@@ -483,7 +531,10 @@ func (c EmbeddingModelConfig) Run(rc Context) tea.Cmd {
 
 	return func() tea.Msg {
 		modelID := domain.ModelID(c.ModelID)
-		if _, err := rc.Session.SetEmbeddingModel(rc.Ctx, modelID); err != nil {
+
+		if _, err := rc.updateConfig(func(cfg *config.Config) {
+			cfg.EmbeddingModel = modelID
+		}); err != nil {
 			return errorEvent("config embedding-model", err)
 		}
 
@@ -500,12 +551,15 @@ type HighlightConfig struct {
 func (c HighlightConfig) Run(rc Context) tea.Cmd {
 	if rc.configResetRequested() {
 		return func() tea.Msg {
-			cfg, err := rc.Session.ResetHighlightWords(rc.Ctx)
-			if err != nil {
+			words := append([]string(nil), config.DefaultHighlightWords...)
+
+			if _, err := rc.updateConfig(func(cfg *config.Config) {
+				cfg.HighlightWords = words
+			}); err != nil {
 				return errorEvent("config highlight", err)
 			}
 
-			return HighlightWordsSetResult{Words: cfg.HighlightWords, Reset: true}
+			return HighlightWordsSetResult{Words: words, Reset: true}
 		}
 	}
 
@@ -514,7 +568,9 @@ func (c HighlightConfig) Run(rc Context) tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		if _, err := rc.Session.SetHighlightWords(rc.Ctx, c.Words); err != nil {
+		if _, err := rc.updateConfig(func(cfg *config.Config) {
+			cfg.HighlightWords = c.Words
+		}); err != nil {
 			return errorEvent("config highlight", err)
 		}
 
@@ -531,7 +587,9 @@ type TimestampFormatConfig struct {
 func (c TimestampFormatConfig) Run(rc Context) tea.Cmd {
 	if rc.configResetRequested() {
 		return func() tea.Msg {
-			cfg, err := rc.Session.ResetTimestampFormat(rc.Ctx)
+			cfg, err := rc.updateConfig(func(cfg *config.Config) {
+				cfg.TimestampFormat = nil
+			})
 			if err != nil {
 				return errorEvent("config timestamp-format", err)
 			}
@@ -543,7 +601,9 @@ func (c TimestampFormatConfig) Run(rc Context) tea.Cmd {
 	return func() tea.Msg {
 		format := normaliseTimestampFormat(c.Format)
 
-		if _, err := rc.Session.SetTimestampFormat(rc.Ctx, format); err != nil {
+		if _, err := rc.updateConfig(func(cfg *config.Config) {
+			cfg.TimestampFormat = format
+		}); err != nil {
 			return errorEvent("config timestamp-format", err)
 		}
 

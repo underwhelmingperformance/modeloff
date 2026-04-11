@@ -26,7 +26,6 @@ import (
 	"github.com/laney/modeloff/internal/memory"
 	"github.com/laney/modeloff/internal/observability"
 	"github.com/laney/modeloff/internal/protocol"
-	"github.com/laney/modeloff/internal/ptr"
 	"github.com/laney/modeloff/internal/store"
 )
 
@@ -42,12 +41,11 @@ type Session struct {
 	store  store.Store
 	memory memory.Store
 	api    api.Client
-	config config.Store
 
 	user      *domain.Instance
 	apiKey    string
 	nickModel domain.ModelID
-	factory   func(config.Config) (api.Client, error)
+	factory   func(apiKey, baseURL string) (api.Client, error)
 	now       func() time.Time
 	events    chan domain.SessionEvent
 
@@ -60,14 +58,20 @@ func New(
 	s store.Store,
 	m memory.Store,
 	a api.Client,
-	c config.Store,
 	userNick domain.Nick,
+	apiKey string,
+	nickModel domain.ModelID,
 ) *Session {
-	sess := &Session{
-		store:  s,
-		memory: m,
-		api:    a,
-		config: c,
+	if nickModel == "" {
+		nickModel = config.DefaultNickModel
+	}
+
+	return &Session{
+		store:     s,
+		memory:    m,
+		api:       a,
+		apiKey:    strings.TrimSpace(apiKey),
+		nickModel: nickModel,
 		user: &domain.Instance{
 			Nick:     userNick,
 			Channels: orderedmap.New[domain.ChannelName, time.Time](),
@@ -75,20 +79,6 @@ func New(
 		now:    time.Now,
 		events: make(chan domain.SessionEvent, eventBufSize),
 	}
-
-	if c != nil {
-		cfg, err := c.Load(context.Background())
-		if err == nil {
-			sess.apiKey = strings.TrimSpace(cfg.APIKey)
-			sess.nickModel = cfg.NickModel
-		}
-	}
-
-	if sess.nickModel == "" {
-		sess.nickModel = config.DefaultNickModel
-	}
-
-	return sess
 }
 
 // Events returns the channel on which background dispatch events are
@@ -100,7 +90,7 @@ func (s *Session) Events() <-chan domain.SessionEvent {
 }
 
 // SetAPIFactory configures how runtime API clients are created.
-func (s *Session) SetAPIFactory(factory func(config.Config) (api.Client, error)) {
+func (s *Session) SetAPIFactory(factory func(apiKey, baseURL string) (api.Client, error)) {
 	s.factory = factory
 }
 
@@ -700,8 +690,8 @@ func (s *Session) SetTopic(
 	return nil
 }
 
-// ChangeNick changes the user's nickname and persists it through the
-// config store.
+// ChangeNick changes the user's nickname and updates all channel
+// memberships accordingly.
 func (s *Session) ChangeNick(
 	ctx context.Context,
 	newNick domain.Nick,
@@ -713,28 +703,6 @@ func (s *Session) ChangeNick(
 		attribute.String(observability.AttrNick, string(newNick)),
 	)
 	defer span.End()
-
-	if s.config == nil {
-		err := fmt.Errorf("config store not configured")
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		span.SetStatus(codes.Error, err.Error())
-		return err
-	}
-
-	cfg, err := s.config.Load(ctx)
-	if err != nil {
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("load config: %w", err)
-	}
-
-	cfg.UserNick = string(newNick)
-
-	if err := s.config.Save(ctx, cfg); err != nil {
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("save config: %w", err)
-	}
 
 	oldNick := s.user.Nick
 	now := s.now()
@@ -986,27 +954,16 @@ func (s *Session) Poke(ctx context.Context) error {
 	return nil
 }
 
-// SetAPIKey persists a new API key through the config store.
-func (s *Session) SetAPIKey(ctx context.Context, apiKey string) (config.Config, error) {
-	if s.config == nil {
-		return config.Config{}, fmt.Errorf("config store not configured")
-	}
-
-	cfg, err := s.config.Load(ctx)
-	if err != nil {
-		return config.Config{}, fmt.Errorf("load config: %w", err)
-	}
-
+// SetAPIKey updates the active API key and rebuilds the API client.
+func (s *Session) SetAPIKey(apiKey, baseURL string) error {
 	apiKey = strings.TrimSpace(apiKey)
-
-	cfg.APIKey = apiKey
 
 	var nextClient api.Client
 	if apiKey != "" {
 		if s.factory != nil {
-			client, err := s.factory(cfg)
+			client, err := s.factory(apiKey, baseURL)
 			if err != nil {
-				return config.Config{}, fmt.Errorf("build api client: %w", err)
+				return fmt.Errorf("build api client: %w", err)
 			}
 
 			nextClient = client
@@ -1015,220 +972,37 @@ func (s *Session) SetAPIKey(ctx context.Context, apiKey string) (config.Config, 
 		}
 	}
 
-	if err := s.config.Save(ctx, cfg); err != nil {
-		return config.Config{}, fmt.Errorf("save config: %w", err)
-	}
-
 	s.api = nextClient
 	s.apiKey = apiKey
 	s.supportedModels = nil
 	s.supportedModelsReady = false
 
-	return cfg, nil
+	return nil
 }
 
-// ResetAPIKey removes the configured API key.
-func (s *Session) ResetAPIKey(ctx context.Context) (config.Config, error) {
-	return s.SetAPIKey(ctx, "")
-}
 
-// SetPokeInterval persists a new poke interval through the config
-// store.
-func (s *Session) SetPokeInterval(ctx context.Context, interval time.Duration) (config.Config, error) {
-	if s.config == nil {
-		return config.Config{}, fmt.Errorf("config store not configured")
-	}
-
-	cfg, err := s.config.Load(ctx)
-	if err != nil {
-		return config.Config{}, fmt.Errorf("load config: %w", err)
-	}
-
-	cfg.PokeInterval = interval
-
-	if err := s.config.Save(ctx, cfg); err != nil {
-		return config.Config{}, fmt.Errorf("save config: %w", err)
-	}
-
-	return cfg, nil
-}
-
-// ResetPokeInterval restores the default poke interval.
-func (s *Session) ResetPokeInterval(ctx context.Context) (config.Config, error) {
-	return s.SetPokeInterval(ctx, config.DefaultPokeInterval)
-}
-
-// SetNickModel persists a new nick generation model through the
-// config store.
-func (s *Session) SetNickModel(ctx context.Context, modelID domain.ModelID) (config.Config, error) {
-	if s.config == nil {
-		return config.Config{}, fmt.Errorf("config store not configured")
-	}
-
-	cfg, err := s.config.Load(ctx)
-	if err != nil {
-		return config.Config{}, fmt.Errorf("load config: %w", err)
-	}
-
-	cfg.NickModel = modelID
-
-	if err := s.config.Save(ctx, cfg); err != nil {
-		return config.Config{}, fmt.Errorf("save config: %w", err)
-	}
-
+// SetNickModel updates the model used for nick generation.
+func (s *Session) SetNickModel(modelID domain.ModelID) {
 	s.nickModel = modelID
-
-	return cfg, nil
 }
 
-// ResetNickModel restores the default nick generation model.
-func (s *Session) ResetNickModel(ctx context.Context) (config.Config, error) {
-	return s.SetNickModel(ctx, config.DefaultNickModel)
-}
 
-// HighlightWords returns the currently configured highlight words.
-func (s *Session) HighlightWords() []string {
-	if s.config == nil {
-		return config.DefaultHighlightWords
-	}
-
-	cfg, err := s.config.Load(context.Background())
-	if err != nil {
-		return config.DefaultHighlightWords
-	}
-
-	return cfg.HighlightWords
-}
-
-// TimestampFormat returns the currently configured timestamp format.
-// Nil means locale-default formatting, while an explicit empty string
-// disables timestamps entirely.
-func (s *Session) TimestampFormat() *string {
-	if s.config == nil {
-		return nil
-	}
-
-	cfg, err := s.config.Load(context.Background())
-	if err != nil {
-		return nil
-	}
-
-	return ptr.CloneString(cfg.TimestampFormat)
-}
-
-// SetHighlightWords persists a new set of highlight words through
-// the config store.
-func (s *Session) SetHighlightWords(ctx context.Context, words []string) (config.Config, error) {
-	if s.config == nil {
-		return config.Config{}, fmt.Errorf("config store not configured")
-	}
-
-	cfg, err := s.config.Load(ctx)
-	if err != nil {
-		return config.Config{}, fmt.Errorf("load config: %w", err)
-	}
-
-	cfg.HighlightWords = words
-
-	if err := s.config.Save(ctx, cfg); err != nil {
-		return config.Config{}, fmt.Errorf("save config: %w", err)
-	}
-
-	return cfg, nil
-}
-
-// SetTimestampFormat persists a new timestamp format through the
-// config store. Nil means locale-default formatting, while an
-// explicit empty string disables timestamps entirely.
-func (s *Session) SetTimestampFormat(ctx context.Context, format *string) (config.Config, error) {
-	if s.config == nil {
-		return config.Config{}, fmt.Errorf("config store not configured")
-	}
-
-	cfg, err := s.config.Load(ctx)
-	if err != nil {
-		return config.Config{}, fmt.Errorf("load config: %w", err)
-	}
-
-	cfg.TimestampFormat = ptr.CloneString(format)
-
-	if err := s.config.Save(ctx, cfg); err != nil {
-		return config.Config{}, fmt.Errorf("save config: %w", err)
-	}
-
-	return cfg, nil
-}
-
-// ResetTimestampFormat restores locale-default timestamp formatting.
-func (s *Session) ResetTimestampFormat(ctx context.Context) (config.Config, error) {
-	return s.SetTimestampFormat(ctx, nil)
-}
-
-// ResetHighlightWords restores the default highlight words.
-func (s *Session) ResetHighlightWords(ctx context.Context) (config.Config, error) {
-	return s.SetHighlightWords(ctx, append([]string(nil), config.DefaultHighlightWords...))
-}
-
-// SetBaseURL persists a new API base URL through the config store
-// and rebuilds the API client so it takes effect immediately.
-func (s *Session) SetBaseURL(ctx context.Context, baseURL string) (config.Config, error) {
-	if s.config == nil {
-		return config.Config{}, fmt.Errorf("config store not configured")
-	}
-
-	cfg, err := s.config.Load(ctx)
-	if err != nil {
-		return config.Config{}, fmt.Errorf("load config: %w", err)
-	}
-
-	cfg.BaseURL = strings.TrimSpace(baseURL)
+// SetBaseURL rebuilds the API client with the given base URL.
+func (s *Session) SetBaseURL(baseURL string) error {
+	baseURL = strings.TrimSpace(baseURL)
 
 	if s.factory != nil && s.apiKey != "" {
-		client, err := s.factory(cfg)
+		client, err := s.factory(s.apiKey, baseURL)
 		if err != nil {
-			return config.Config{}, fmt.Errorf("build api client: %w", err)
+			return fmt.Errorf("build api client: %w", err)
 		}
 
 		s.api = client
 	}
 
-	if err := s.config.Save(ctx, cfg); err != nil {
-		return config.Config{}, fmt.Errorf("save config: %w", err)
-	}
-
-	return cfg, nil
+	return nil
 }
 
-// ResetBaseURL restores the default API base URL.
-func (s *Session) ResetBaseURL(ctx context.Context) (config.Config, error) {
-	return s.SetBaseURL(ctx, config.DefaultBaseURL)
-}
-
-// SetEmbeddingModel persists a new embedding model through the
-// config store.
-func (s *Session) SetEmbeddingModel(ctx context.Context, modelID domain.ModelID) (config.Config, error) {
-	if s.config == nil {
-		return config.Config{}, fmt.Errorf("config store not configured")
-	}
-
-	cfg, err := s.config.Load(ctx)
-	if err != nil {
-		return config.Config{}, fmt.Errorf("load config: %w", err)
-	}
-
-	cfg.EmbeddingModel = modelID
-
-	if err := s.config.Save(ctx, cfg); err != nil {
-		return config.Config{}, fmt.Errorf("save config: %w", err)
-	}
-
-	return cfg, nil
-}
-
-// ResetEmbeddingModel restores the default embedding model.
-func (s *Session) ResetEmbeddingModel(ctx context.Context) (config.Config, error) {
-	return s.SetEmbeddingModel(ctx, config.DefaultEmbeddingModel)
-}
 
 func (s *Session) dispatchToInstances(
 	ctx context.Context,

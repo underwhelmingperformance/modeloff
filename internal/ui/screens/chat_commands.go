@@ -23,6 +23,7 @@ func (s ChatScreen) runContext() chatcmd.Context {
 	return chatcmd.Context{
 		Ctx:     s.ctx,
 		Session: s.sess,
+		Config:  s.cfgStore,
 		Active:  *s.active,
 		Nick:    s.sess.UserNick(),
 	}

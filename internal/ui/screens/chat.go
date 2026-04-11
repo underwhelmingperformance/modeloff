@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/laney/modeloff/internal/config"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/observability"
 	"github.com/laney/modeloff/internal/session"
@@ -45,10 +46,11 @@ type PokeTickMsg struct{}
 // MainLayout. It holds a reference to the session for backend
 // operations.
 type ChatScreen struct {
-	ctx    context.Context
-	sess   *session.Session
-	layout components.MainLayout
-	keyMap components.ChatScreenKeyMap
+	ctx      context.Context
+	sess     *session.Session
+	cfgStore config.Store
+	layout   components.MainLayout
+	keyMap   components.ChatScreenKeyMap
 
 	channels   *set.Sorted[domain.Channel]
 	instances  *set.Sorted[domain.Instance]
@@ -65,7 +67,7 @@ type ChatScreen struct {
 // NewChatScreen creates a chat screen backed by the given session.
 // The provided context is used for all backend operations, allowing
 // them to be cancelled on shutdown.
-func NewChatScreen(ctx context.Context, sess *session.Session) ChatScreen {
+func NewChatScreen(ctx context.Context, sess *session.Session, cfgStore config.Store) ChatScreen {
 	sidebar := components.NewChannelSidebar()
 	chatView := components.NewChatView("", sess.UserNick(), "")
 	layout := components.NewMainLayout(sidebar, chatView)
@@ -75,8 +77,9 @@ func NewChatScreen(ctx context.Context, sess *session.Session) ChatScreen {
 	liveModels := []chatcmd.ModelOption(nil)
 
 	cs := ChatScreen{
-		ctx:  ctx,
-		sess: sess,
+		ctx:      ctx,
+		sess:     sess,
+		cfgStore: cfgStore,
 		channels: set.NewSorted(func(a, b domain.Channel) bool {
 			return a.Name < b.Name
 		}),
@@ -92,6 +95,16 @@ func NewChatScreen(ctx context.Context, sess *session.Session) ChatScreen {
 	cs.parser = cs.buildParser()
 
 	return cs
+}
+
+func (s ChatScreen) loadConfig() (config.Config, error) {
+	if s.cfgStore == nil {
+		return config.Config{
+			HighlightWords: config.DefaultHighlightWords,
+		}, nil
+	}
+
+	return s.cfgStore.Load(s.ctx)
 }
 
 // WithObservability wires local observability into the chat screen.

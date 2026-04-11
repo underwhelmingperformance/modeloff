@@ -35,7 +35,7 @@ func TestApp_startup_without_api_key(t *testing.T) {
 }
 
 func TestApp_startup_with_saved_channels(t *testing.T) {
-	sess, store := newIntegrationSession(t, &integrationAPI{})
+	sess, store, cfgStore := newIntegrationSession(t, &integrationAPI{})
 
 	uitest.SeedChannel(t, sess, "#general")
 	uitest.SeedChannel(t, sess, "#random")
@@ -45,7 +45,7 @@ func TestApp_startup_with_saved_channels(t *testing.T) {
 		HasAPIKey:    true,
 		ChannelCount: 2,
 		Nick:         string(sess.UserNick()),
-		Next:         screens.NewChatScreen(t.Context(), sess),
+		Next:         screens.NewChatScreen(t.Context(), sess, cfgStore),
 	}))
 	tm := uitest.New(t, root)
 
@@ -75,10 +75,10 @@ func TestApp_invite_and_receive_reply(t *testing.T) {
 			}, nil
 		},
 	}
-	sess, _ := newIntegrationSession(t, apiClient)
+	sess, _, cfgStore := newIntegrationSession(t, apiClient)
 	uitest.SeedChannel(t, sess, "#general")
 
-	tm := uitest.New(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
+	tm := uitest.New(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess, cfgStore)))
 	tm.WaitFor("#general")
 
 	tm.Submit("/invite test/model")
@@ -90,14 +90,14 @@ func TestApp_invite_and_receive_reply(t *testing.T) {
 
 func TestApp_open_dm_and_send_message(t *testing.T) {
 	apiClient := &integrationAPI{}
-	sess, store := newIntegrationSession(t, apiClient)
+	sess, store, cfgStore := newIntegrationSession(t, apiClient)
 	uitest.SeedChannel(t, sess, "#general")
 	seedInstance(t, store, domain.Instance{
 		Nick:    "botty",
 		ModelID: "test/model",
 	})
 
-	tm := uitest.New(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
+	tm := uitest.New(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess, cfgStore)))
 	tm.WaitFor("#general")
 
 	tm.Submit("/msg botty hello there")
@@ -123,13 +123,13 @@ func TestApp_periodic_poke_generates_message(t *testing.T) {
 			return protocol.ModelResponse{Kind: protocol.ResponseSilence}, nil
 		},
 	}
-	sess, _ := newIntegrationSession(t, apiClient)
+	sess, _, cfgStore := newIntegrationSession(t, apiClient)
 	uitest.SeedChannel(t, sess, "#general")
 
 	require.NoError(t, sess.Invite(t.Context(), "#general", "test/model", ""))
 	uitest.DrainEvents(sess)
 
-	tm := uitest.New(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
+	tm := uitest.New(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess, cfgStore)))
 	tm.WaitFor("#general")
 
 	tm.Send(screens.PokeTickMsg{})
@@ -138,14 +138,15 @@ func TestApp_periodic_poke_generates_message(t *testing.T) {
 
 func TestApp_reuse_existing_instance(t *testing.T) {
 	apiClient := &integrationAPI{}
-	_, store := newIntegrationSession(t, apiClient)
+	_, store, _ := newIntegrationSession(t, apiClient)
 	memStore := memory.NewStoreAdapter(storetest.NewMemoryStore(t))
 	require.NoError(t, memStore.Write(t.Context(), "botty", memory.Entry{
 		Key:     "topic",
 		Content: "favourite channel regular",
 	}))
 
-	sess := session.New(store, memStore, apiClient, &integrationConfigStore{}, "testuser")
+	cfgStore := &integrationConfigStore{}
+	sess := session.New(store, memStore, apiClient, "testuser", cfgStore.cfg.APIKey, cfgStore.cfg.NickModel)
 
 	uitest.SeedChannel(t, sess, "#general")
 	uitest.SeedChannel(t, sess, "#random")
@@ -153,7 +154,7 @@ func TestApp_reuse_existing_instance(t *testing.T) {
 	require.NoError(t, sess.Invite(t.Context(), "#general", "test/model", "Helpful assistant"))
 	uitest.DrainEvents(sess)
 
-	tm := uitest.New(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)))
+	tm := uitest.New(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess, cfgStore)))
 	tm.WaitFor("#random")
 
 	tm.Submit("/invite botty")
@@ -252,11 +253,11 @@ func TestApp_vector_memory_write_and_search(t *testing.T) {
 			PokeInterval: 5 * time.Minute,
 		},
 	}
-	sess := session.New(store, memStore, apiClient, cfgStore, "testuser")
+	sess := session.New(store, memStore, apiClient, "testuser", cfgStore.cfg.APIKey, cfgStore.cfg.NickModel)
 
 	uitest.SeedChannel(t, sess, "#lab")
 
-	tm := uitest.New(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess)),
+	tm := uitest.New(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess, cfgStore)),
 		teatest.WithInitialTermSize(200, 30))
 	tm.WaitFor("#lab")
 
@@ -351,15 +352,18 @@ func (s *integrationConfigStore) OnChange(_ config.ChangeFunc) config.Unsubscrib
 	return func() {}
 }
 
-func newIntegrationSession(t *testing.T, apiClient api.Client) (*session.Session, *storemod.SQLiteStore) {
+func newIntegrationSession(t *testing.T, apiClient api.Client) (*session.Session, *storemod.SQLiteStore, *integrationConfigStore) {
 	t.Helper()
 
-	return newIntegrationSessionWithConfigStore(t, apiClient, &integrationConfigStore{
+	cfgStore := &integrationConfigStore{
 		cfg: config.Config{
 			UserNick:     "testuser",
 			PokeInterval: 5 * time.Minute,
 		},
-	})
+	}
+
+	sess, store := newIntegrationSessionWithConfigStore(t, apiClient, cfgStore)
+	return sess, store, cfgStore
 }
 
 func newIntegrationSessionWithConfigStore(
@@ -371,7 +375,7 @@ func newIntegrationSessionWithConfigStore(
 
 	store := storetest.NewMemoryStore(t)
 	memStore := memory.NewStoreAdapter(storetest.NewMemoryStore(t))
-	sess := session.New(store, memStore, apiClient, cfgStore, "testuser")
+	sess := session.New(store, memStore, apiClient, "testuser", cfgStore.cfg.APIKey, cfgStore.cfg.NickModel)
 
 	return sess, store
 }

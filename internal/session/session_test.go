@@ -18,7 +18,6 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
 	"github.com/laney/modeloff/internal/api"
-	"github.com/laney/modeloff/internal/config"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/memory"
 	"github.com/laney/modeloff/internal/observability"
@@ -103,7 +102,7 @@ func newTestSessionWithAPI(t *testing.T, apiClient api.Client) (*Session, *store
 
 	s := storetest.NewMemoryStore(t)
 
-	sess := New(s, nil, apiClient, nil, "testuser")
+	sess := New(s, nil, apiClient, "testuser", "", "")
 	sess.now = func() time.Time { return fixedTime }
 
 	return sess, s
@@ -560,8 +559,7 @@ func TestSession_Kick(t *testing.T) {
 func TestSession_mutationOperations_recordSpans(t *testing.T) {
 	recorder := oteltest.InstallSpanRecorder(t)
 	store := storetest.NewMemoryStore(t)
-	cfgStore := &fakeConfigStore{cfg: config.Config{UserNick: "testuser", PokeInterval: time.Minute}}
-	sess := New(store, nil, &fakeAPIClient{}, cfgStore, "testuser")
+	sess := New(store, nil, &fakeAPIClient{}, "testuser", "", "")
 	sess.now = func() time.Time { return fixedTime }
 	ctx := t.Context()
 
@@ -632,7 +630,7 @@ func TestSession_dispatchToInstance_recordsPassReasonAndToolTurns(t *testing.T) 
 			}, nil
 		},
 	}
-	sess := New(dataStore, memStore, fake, nil, "testuser")
+	sess := New(dataStore, memStore, fake, "testuser", "", "")
 	sess.now = func() time.Time { return fixedTime }
 	ctx := t.Context()
 
@@ -1178,14 +1176,8 @@ func TestSession_SetTopic(t *testing.T) {
 }
 
 func TestSession_ChangeNick(t *testing.T) {
-	cfgStore := &fakeConfigStore{
-		cfg: config.Config{
-			UserNick:     "testuser",
-			PokeInterval: 5 * time.Minute,
-		},
-	}
 	s := storetest.NewMemoryStore(t)
-	sess := New(s, nil, &fakeAPIClient{}, cfgStore, "testuser")
+	sess := New(s, nil, &fakeAPIClient{}, "testuser", "", "")
 	sess.now = func() time.Time { return fixedTime }
 
 	// Join a channel so the nick change emits per-channel events.
@@ -1205,24 +1197,6 @@ func TestSession_ChangeNick(t *testing.T) {
 	}, evt)
 
 	require.Equal(t, domain.Nick("newname"), sess.UserNick())
-	require.Equal(t, "newname", cfgStore.saved.UserNick)
-	require.Equal(t, 1, cfgStore.saveCalls)
-}
-
-func TestSession_ChangeNick_save_failure_does_not_update_runtime(t *testing.T) {
-	cfgStore := &fakeConfigStore{
-		cfg: config.Config{
-			UserNick:     "testuser",
-			PokeInterval: 5 * time.Minute,
-		},
-		saveErr: fmt.Errorf("disk full"),
-	}
-	s := storetest.NewMemoryStore(t)
-	sess := New(s, nil, &fakeAPIClient{}, cfgStore, "testuser")
-	sess.now = func() time.Time { return fixedTime }
-
-	require.Error(t, sess.ChangeNick(t.Context(), "newname"))
-	require.Equal(t, domain.Nick("testuser"), sess.UserNick())
 }
 
 func TestSession_Whois(t *testing.T) {
@@ -1484,7 +1458,7 @@ func TestSession_DispatchToChannel_includes_memory_in_prompt(t *testing.T) {
 		},
 	}
 	s := storetest.NewMemoryStore(t)
-	sess := New(s, memStore, fake, nil, "testuser")
+	sess := New(s, memStore, fake, "testuser", "", "")
 	sess.now = func() time.Time { return fixedTime }
 
 	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
@@ -1779,294 +1753,51 @@ func TestSession_Join_marks_channel_as_read(t *testing.T) {
 }
 
 func TestSession_SetAPIKey(t *testing.T) {
-	cfgStore := &fakeConfigStore{
-		cfg: config.Config{
-			UserNick:     "testuser",
-			PokeInterval: 5 * time.Minute,
-		},
-	}
 	s := storetest.NewMemoryStore(t)
 	initial := &fakeAPIClient{}
 	replacement := &fakeAPIClient{}
-	sess := New(s, nil, initial, cfgStore, "testuser")
-	sess.SetAPIFactory(func(cfg config.Config) (api.Client, error) {
-		require.Equal(t, "test-key", cfg.APIKey)
+	sess := New(s, nil, initial, "testuser", "", "")
+	sess.SetAPIFactory(func(apiKey, baseURL string) (api.Client, error) {
+		require.Equal(t, "test-key", apiKey)
 		return replacement, nil
 	})
 
-	cfg, err := sess.SetAPIKey(t.Context(), "test-key")
-	require.NoError(t, err)
-	require.Equal(t, "test-key", cfg.APIKey)
-	require.Equal(t, "test-key", cfgStore.saved.APIKey)
-	require.Equal(t, 1, cfgStore.saveCalls)
+	require.NoError(t, sess.SetAPIKey("test-key", ""))
 	require.Equal(t, "test-key", sess.apiKey)
 	require.Same(t, replacement, sess.api)
 }
 
 func TestSession_SetAPIKey_factory_failure_keeps_existing_client(t *testing.T) {
-	cfgStore := &fakeConfigStore{
-		cfg: config.Config{
-			UserNick:     "testuser",
-			PokeInterval: 5 * time.Minute,
-		},
-	}
 	s := storetest.NewMemoryStore(t)
 	initial := &fakeAPIClient{}
-	sess := New(s, nil, initial, cfgStore, "testuser")
-	sess.SetAPIFactory(func(config.Config) (api.Client, error) {
+	sess := New(s, nil, initial, "testuser", "", "")
+	sess.SetAPIFactory(func(string, string) (api.Client, error) {
 		return nil, fmt.Errorf("boom")
 	})
 
-	_, err := sess.SetAPIKey(context.Background(), "test-key")
+	err := sess.SetAPIKey("test-key", "")
 	require.Error(t, err)
-	require.Equal(t, 0, cfgStore.saveCalls)
-	require.Empty(t, cfgStore.saved.APIKey)
 	require.Same(t, initial, sess.api)
 	require.Empty(t, sess.apiKey)
 }
 
-func TestSession_ResetAPIKey(t *testing.T) {
-	cfgStore := &fakeConfigStore{
-		cfg: config.Config{
-			APIKey:       "test-key",
-			UserNick:     "testuser",
-			PokeInterval: config.DefaultPokeInterval,
-		},
-	}
-	s := storetest.NewMemoryStore(t)
-	sess := New(s, nil, &fakeAPIClient{}, cfgStore, "testuser")
-
-	cfg, err := sess.ResetAPIKey(t.Context())
-	require.NoError(t, err)
-	require.Empty(t, cfg.APIKey)
-	require.Empty(t, cfgStore.saved.APIKey)
-	require.Empty(t, sess.apiKey)
-}
-
-func TestSession_SetPokeInterval(t *testing.T) {
-	cfgStore := &fakeConfigStore{
-		cfg: config.Config{
-			APIKey:       "test-key",
-			UserNick:     "testuser",
-			PokeInterval: 5 * time.Minute,
-		},
-	}
-	s := storetest.NewMemoryStore(t)
-	sess := New(s, nil, &fakeAPIClient{}, cfgStore, "testuser")
-
-	cfg, err := sess.SetPokeInterval(t.Context(), 10*time.Minute)
-	require.NoError(t, err)
-	require.Equal(t, 10*time.Minute, cfg.PokeInterval)
-	require.Equal(t, 10*time.Minute, cfgStore.saved.PokeInterval)
-	require.Equal(t, "test-key", cfgStore.saved.APIKey)
-	require.Equal(t, 1, cfgStore.saveCalls)
-}
-
-func TestSession_ResetPokeInterval(t *testing.T) {
-	cfgStore := &fakeConfigStore{
-		cfg: config.Config{
-			UserNick:     "testuser",
-			PokeInterval: 10 * time.Minute,
-		},
-	}
-	s := storetest.NewMemoryStore(t)
-	sess := New(s, nil, &fakeAPIClient{}, cfgStore, "testuser")
-
-	cfg, err := sess.ResetPokeInterval(t.Context())
-	require.NoError(t, err)
-	require.Equal(t, config.DefaultPokeInterval, cfg.PokeInterval)
-	require.Equal(t, config.DefaultPokeInterval, cfgStore.saved.PokeInterval)
-}
-
-func TestSession_SetHighlightWords(t *testing.T) {
-	cfgStore := &fakeConfigStore{
-		cfg: config.Config{
-			APIKey:         "test-key",
-			UserNick:       "testuser",
-			HighlightWords: []string{"$nick"},
-		},
-	}
-	s := storetest.NewMemoryStore(t)
-	sess := New(s, nil, &fakeAPIClient{}, cfgStore, "testuser")
-
-	cfg, err := sess.SetHighlightWords(t.Context(), []string{"$nick", "important", "urgent"})
-	require.NoError(t, err)
-	require.Equal(t, []string{"$nick", "important", "urgent"}, cfg.HighlightWords)
-	require.Equal(t, []string{"$nick", "important", "urgent"}, cfgStore.saved.HighlightWords)
-	require.Equal(t, "test-key", cfgStore.saved.APIKey)
-	require.Equal(t, 1, cfgStore.saveCalls)
-}
-
-func TestSession_ResetNickModel(t *testing.T) {
-	cfgStore := &fakeConfigStore{
-		cfg: config.Config{
-			UserNick:  "testuser",
-			NickModel: "anthropic/claude-sonnet-4.5",
-		},
-	}
-	s := storetest.NewMemoryStore(t)
-	sess := New(s, nil, &fakeAPIClient{}, cfgStore, "testuser")
-
-	cfg, err := sess.ResetNickModel(t.Context())
-	require.NoError(t, err)
-	require.Equal(t, config.DefaultNickModel, cfg.NickModel)
-	require.Equal(t, config.DefaultNickModel, cfgStore.saved.NickModel)
-}
-
-func TestSession_ResetHighlightWords(t *testing.T) {
-	cfgStore := &fakeConfigStore{
-		cfg: config.Config{
-			UserNick:       "testuser",
-			HighlightWords: []string{"urgent"},
-		},
-	}
-	s := storetest.NewMemoryStore(t)
-	sess := New(s, nil, &fakeAPIClient{}, cfgStore, "testuser")
-
-	cfg, err := sess.ResetHighlightWords(t.Context())
-	require.NoError(t, err)
-	require.Equal(t, config.DefaultHighlightWords, cfg.HighlightWords)
-	require.Equal(t, config.DefaultHighlightWords, cfgStore.saved.HighlightWords)
-}
-
 func TestSession_SetBaseURL(t *testing.T) {
-	cfgStore := &fakeConfigStore{
-		cfg: config.Config{
-			APIKey:   "test-key",
-			UserNick: "testuser",
-		},
-	}
 	s := storetest.NewMemoryStore(t)
 
-	var factoryCfg config.Config
+	var factoryBaseURL string
 	factoryCalls := 0
 	newClient := &fakeAPIClient{}
 
-	sess := New(s, nil, &fakeAPIClient{}, cfgStore, "testuser")
-	sess.SetAPIFactory(func(cfg config.Config) (api.Client, error) {
+	sess := New(s, nil, &fakeAPIClient{}, "testuser", "test-key", "")
+	sess.SetAPIFactory(func(apiKey, baseURL string) (api.Client, error) {
 		factoryCalls++
-		factoryCfg = cfg
+		factoryBaseURL = baseURL
 		return newClient, nil
 	})
 
-	cfg, err := sess.SetBaseURL(t.Context(), "https://custom.example.com")
-	require.NoError(t, err)
-	require.Equal(t, "https://custom.example.com", cfg.BaseURL)
-	require.Equal(t, "https://custom.example.com", cfgStore.saved.BaseURL)
-	require.Equal(t, "test-key", cfgStore.saved.APIKey)
-	require.Equal(t, 1, cfgStore.saveCalls)
+	require.NoError(t, sess.SetBaseURL("https://custom.example.com"))
 	require.Equal(t, 1, factoryCalls)
-	require.Equal(t, "https://custom.example.com", factoryCfg.BaseURL)
-}
-
-func TestSession_SetTimestampFormat(t *testing.T) {
-	custom := "%c"
-	cfgStore := &fakeConfigStore{
-		cfg: config.Config{
-			APIKey:          "test-key",
-			UserNick:        "testuser",
-			TimestampFormat: nil,
-		},
-	}
-	s := storetest.NewMemoryStore(t)
-	sess := New(s, nil, &fakeAPIClient{}, cfgStore, "testuser")
-
-	cfg, err := sess.SetTimestampFormat(t.Context(), &custom)
-	require.NoError(t, err)
-	require.NotNil(t, cfg.TimestampFormat)
-	require.Equal(t, custom, *cfg.TimestampFormat)
-	require.NotNil(t, cfgStore.saved.TimestampFormat)
-	require.Equal(t, custom, *cfgStore.saved.TimestampFormat)
-	require.Equal(t, 1, cfgStore.saveCalls)
-}
-
-func TestSession_SetTimestampFormat_disable(t *testing.T) {
-	cfgStore := &fakeConfigStore{
-		cfg: config.Config{
-			APIKey:   "test-key",
-			UserNick: "testuser",
-		},
-	}
-	s := storetest.NewMemoryStore(t)
-	sess := New(s, nil, &fakeAPIClient{}, cfgStore, "testuser")
-	disabled := ""
-
-	cfg, err := sess.SetTimestampFormat(t.Context(), &disabled)
-	require.NoError(t, err)
-	require.NotNil(t, cfg.TimestampFormat)
-	require.Equal(t, "", *cfg.TimestampFormat)
-	require.NotNil(t, cfgStore.saved.TimestampFormat)
-	require.Equal(t, "", *cfgStore.saved.TimestampFormat)
-	require.Equal(t, 1, cfgStore.saveCalls)
-}
-
-func TestSession_ResetTimestampFormat(t *testing.T) {
-	custom := "%c"
-	cfgStore := &fakeConfigStore{
-		cfg: config.Config{
-			APIKey:          "test-key",
-			UserNick:        "testuser",
-			TimestampFormat: &custom,
-		},
-	}
-	s := storetest.NewMemoryStore(t)
-	sess := New(s, nil, &fakeAPIClient{}, cfgStore, "testuser")
-
-	cfg, err := sess.ResetTimestampFormat(t.Context())
-	require.NoError(t, err)
-	require.Nil(t, cfg.TimestampFormat)
-	require.Nil(t, cfgStore.saved.TimestampFormat)
-}
-
-func TestSession_ResetBaseURL(t *testing.T) {
-	cfgStore := &fakeConfigStore{
-		cfg: config.Config{
-			APIKey:   "test-key",
-			BaseURL:  "https://custom.example.com",
-			UserNick: "testuser",
-		},
-	}
-	s := storetest.NewMemoryStore(t)
-	sess := New(s, nil, &fakeAPIClient{}, cfgStore, "testuser")
-
-	cfg, err := sess.ResetBaseURL(t.Context())
-	require.NoError(t, err)
-	require.Equal(t, config.DefaultBaseURL, cfg.BaseURL)
-	require.Equal(t, config.DefaultBaseURL, cfgStore.saved.BaseURL)
-}
-
-func TestSession_SetEmbeddingModel(t *testing.T) {
-	cfgStore := &fakeConfigStore{
-		cfg: config.Config{
-			APIKey:   "test-key",
-			UserNick: "testuser",
-		},
-	}
-	s := storetest.NewMemoryStore(t)
-	sess := New(s, nil, &fakeAPIClient{}, cfgStore, "testuser")
-
-	cfg, err := sess.SetEmbeddingModel(t.Context(), "openai/text-embedding-3-large")
-	require.NoError(t, err)
-	require.Equal(t, domain.ModelID("openai/text-embedding-3-large"), cfg.EmbeddingModel)
-	require.Equal(t, domain.ModelID("openai/text-embedding-3-large"), cfgStore.saved.EmbeddingModel)
-	require.Equal(t, "test-key", cfgStore.saved.APIKey)
-	require.Equal(t, 1, cfgStore.saveCalls)
-}
-
-func TestSession_ResetEmbeddingModel(t *testing.T) {
-	cfgStore := &fakeConfigStore{
-		cfg: config.Config{
-			UserNick:       "testuser",
-			EmbeddingModel: "openai/text-embedding-3-large",
-		},
-	}
-	s := storetest.NewMemoryStore(t)
-	sess := New(s, nil, &fakeAPIClient{}, cfgStore, "testuser")
-
-	cfg, err := sess.ResetEmbeddingModel(t.Context())
-	require.NoError(t, err)
-	require.Equal(t, config.DefaultEmbeddingModel, cfg.EmbeddingModel)
-	require.Equal(t, config.DefaultEmbeddingModel, cfgStore.saved.EmbeddingModel)
+	require.Equal(t, "https://custom.example.com", factoryBaseURL)
 }
 
 func TestSession_DispatchToChannel_filters_history_before_join(t *testing.T) {
@@ -2197,14 +1928,6 @@ type fakeAPIClient struct {
 	generateNickFn            func(context.Context, domain.ModelID, domain.ModelID) (domain.Nick, error)
 }
 
-type fakeConfigStore struct {
-	cfg       config.Config
-	loadErr   error
-	saveErr   error
-	saveCalls int
-	saved     config.Config
-}
-
 func (f *fakeAPIClient) ListModels(ctx context.Context) ([]api.ModelInfo, error) {
 	if f.listModelsFn != nil {
 		return f.listModelsFn(ctx)
@@ -2278,32 +2001,10 @@ func (f *failingMemoryStore) Reset(_ context.Context) error {
 	return nil
 }
 
-func (f *fakeConfigStore) Load(context.Context) (config.Config, error) {
-	if f.loadErr != nil {
-		return config.Config{}, f.loadErr
-	}
-
-	return f.cfg, nil
-}
-
-func (f *fakeConfigStore) OnChange(config.ChangeFunc) config.UnsubscribeFunc { return func() {} }
-
-func (f *fakeConfigStore) Save(_ context.Context, cfg config.Config) error {
-	if f.saveErr != nil {
-		return f.saveErr
-	}
-
-	f.saveCalls++
-	f.saved = cfg
-	f.cfg = cfg
-
-	return nil
-}
-
 func TestSession_Reset(t *testing.T) {
 	s := storetest.NewMemoryStore(t)
 	memStore := memory.NewStoreAdapter(storetest.NewMemoryStore(t))
-	sess := New(s, memStore, &fakeAPIClient{}, nil, "testuser")
+	sess := New(s, memStore, &fakeAPIClient{}, "testuser", "", "")
 	sess.now = func() time.Time { return fixedTime }
 	ctx := t.Context()
 
@@ -2476,7 +2177,7 @@ func newTestSessionWithMemory(t *testing.T, apiClient api.Client) (*Session, *st
 	s := storetest.NewMemoryStore(t)
 
 	m := memory.NewStoreAdapter(storetest.NewMemoryStore(t))
-	sess := New(s, m, apiClient, nil, "testuser")
+	sess := New(s, m, apiClient, "testuser", "", "")
 	sess.now = func() time.Time { return fixedTime }
 
 	return sess, s, m
@@ -2606,7 +2307,7 @@ func TestSession_DispatchToChannel_memory_write_error_returns_error_to_model(t *
 
 	s := storetest.NewMemoryStore(t)
 	memStore := &failingMemoryStore{writeErr: fmt.Errorf("disk full")}
-	sess := New(s, memStore, fake, nil, "testuser")
+	sess := New(s, memStore, fake, "testuser", "", "")
 	sess.now = func() time.Time { return fixedTime }
 	ctx := t.Context()
 
@@ -2825,7 +2526,7 @@ func newTestSessionWithIndexedMemory(
 	)
 
 	m := memory.NewIndexedStoreFromDB(backing, chromem.NewDB(), embeddingFunc)
-	sess := New(s, m, apiClient, nil, "testuser")
+	sess := New(s, m, apiClient, "testuser", "", "")
 	sess.now = func() time.Time { return fixedTime }
 
 	return sess, s, m

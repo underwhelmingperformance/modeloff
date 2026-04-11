@@ -22,22 +22,29 @@ func newTestSession(t *testing.T) *session.Session {
 	t.Helper()
 
 	s := storetest.NewMemoryStore(t)
-	return session.New(s, nil, &uitest.FakeAPI{}, newFakeConfigStore(), "testuser")
+	return session.New(s, nil, &uitest.FakeAPI{}, "testuser", "", "")
 }
 
 func newTestSessionWithConfigStore(t *testing.T, cfgStore config.Store) *session.Session {
 	t.Helper()
 
 	s := storetest.NewMemoryStore(t)
-	return session.New(s, nil, &uitest.FakeAPI{}, cfgStore, "testuser")
+	cfg, _ := cfgStore.Load(context.Background())
+	return session.New(s, nil, &uitest.FakeAPI{}, "testuser", cfg.APIKey, cfg.NickModel)
 }
 
 func newChatApp(t *testing.T, sess *session.Session) *uitest.App {
 	t.Helper()
 
+	return newChatAppWithConfig(t, sess, newFakeConfigStore())
+}
+
+func newChatAppWithConfig(t *testing.T, sess *session.Session, cfgStore config.Store) *uitest.App {
+	t.Helper()
+
 	uitest.DrainEvents(sess)
 
-	root := uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess))
+	root := uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess, cfgStore))
 	return uitest.New(t, root, teatest.WithInitialTermSize(256, 256))
 }
 
@@ -131,7 +138,7 @@ func TestChatScreen_nick_command_reports_persist_error(t *testing.T) {
 	sess := newTestSessionWithConfigStore(t, cfgStore)
 	uitest.SeedChannel(t, sess, "#general")
 
-	tm := newChatApp(t, sess)
+	tm := newChatAppWithConfig(t, sess, cfgStore)
 	tm.WaitFor("#general")
 
 	tm.Submit("/nick newnick")
@@ -267,12 +274,12 @@ func TestChatScreen_config_no_subcommand(t *testing.T) {
 func TestChatScreen_config_set_api_key(t *testing.T) {
 	cfgStore := newFakeConfigStore()
 	sess := newTestSessionWithConfigStore(t, cfgStore)
-	sess.SetAPIFactory(func(config.Config) (api.Client, error) {
+	sess.SetAPIFactory(func(string, string) (api.Client, error) {
 		return &uitest.FakeAPI{}, nil
 	})
 	uitest.SeedChannel(t, sess, "#general")
 
-	tm := newChatApp(t, sess)
+	tm := newChatAppWithConfig(t, sess, cfgStore)
 	tm.WaitFor("#general")
 
 	tm.Submit("/config api-key test-key")
@@ -284,7 +291,7 @@ func TestChatScreen_config_set_api_key(t *testing.T) {
 func TestChatScreen_config_set_api_key_updates_live_model_suggestions(t *testing.T) {
 	cfgStore := newFakeConfigStore()
 	sess := newTestSessionWithConfigStore(t, cfgStore)
-	sess.SetAPIFactory(func(config.Config) (api.Client, error) {
+	sess.SetAPIFactory(func(string, string) (api.Client, error) {
 		return &uitest.FakeAPI{
 			ListModelsFn: func(context.Context) ([]api.ModelInfo, error) {
 				return []api.ModelInfo{
@@ -295,7 +302,7 @@ func TestChatScreen_config_set_api_key_updates_live_model_suggestions(t *testing
 	})
 	uitest.SeedChannel(t, sess, "#general")
 
-	tm := newChatApp(t, sess)
+	tm := newChatAppWithConfig(t, sess, cfgStore)
 	tm.WaitFor("#general")
 
 	tm.Submit("/config api-key test-key")
@@ -310,7 +317,7 @@ func TestChatScreen_config_set_poke_interval(t *testing.T) {
 	sess := newTestSessionWithConfigStore(t, cfgStore)
 	uitest.SeedChannel(t, sess, "#general")
 
-	tm := newChatApp(t, sess)
+	tm := newChatAppWithConfig(t, sess, cfgStore)
 	tm.WaitFor("#general")
 
 	tm.Submit("/config poke-interval 10m")
@@ -324,7 +331,7 @@ func TestChatScreen_config_set_timestamp_format(t *testing.T) {
 	sess := newTestSessionWithConfigStore(t, cfgStore)
 	uitest.SeedChannel(t, sess, "#general")
 
-	tm := newChatApp(t, sess)
+	tm := newChatAppWithConfig(t, sess, cfgStore)
 	tm.WaitFor("#general")
 
 	tm.Submit("/config timestamp-format 02/01 15:04:05")
@@ -339,7 +346,7 @@ func TestChatScreen_config_disable_timestamp_format(t *testing.T) {
 	sess := newTestSessionWithConfigStore(t, cfgStore)
 	uitest.SeedChannel(t, sess, "#general")
 
-	tm := newChatApp(t, sess)
+	tm := newChatAppWithConfig(t, sess, cfgStore)
 	tm.WaitFor("#general")
 
 	tm.Submit("/config timestamp-format")
@@ -354,7 +361,7 @@ func TestChatScreen_config_disable_timestamp_format_with_empty_quotes(t *testing
 	sess := newTestSessionWithConfigStore(t, cfgStore)
 	uitest.SeedChannel(t, sess, "#general")
 
-	tm := newChatApp(t, sess)
+	tm := newChatAppWithConfig(t, sess, cfgStore)
 	tm.WaitFor("#general")
 
 	tm.Submit(`/config timestamp-format ""`)
@@ -370,7 +377,7 @@ func TestChatScreen_config_reset_poke_interval_from_parent_flag(t *testing.T) {
 	sess := newTestSessionWithConfigStore(t, cfgStore)
 	uitest.SeedChannel(t, sess, "#general")
 
-	tm := newChatApp(t, sess)
+	tm := newChatAppWithConfig(t, sess, cfgStore)
 	tm.WaitFor("#general")
 
 	tm.Submit("/config --reset poke-interval")
@@ -385,7 +392,7 @@ func TestChatScreen_config_reset_api_key_from_child_flag(t *testing.T) {
 	sess := newTestSessionWithConfigStore(t, cfgStore)
 	uitest.SeedChannel(t, sess, "#general")
 
-	tm := newChatApp(t, sess)
+	tm := newChatAppWithConfig(t, sess, cfgStore)
 	tm.WaitFor("#general")
 
 	tm.Submit("/config api-key --reset")
@@ -401,7 +408,7 @@ func TestChatScreen_config_reset_timestamp_format(t *testing.T) {
 	sess := newTestSessionWithConfigStore(t, cfgStore)
 	uitest.SeedChannel(t, sess, "#general")
 
-	tm := newChatApp(t, sess)
+	tm := newChatAppWithConfig(t, sess, cfgStore)
 	tm.WaitFor("#general")
 
 	tm.Submit("/config --reset timestamp-format")

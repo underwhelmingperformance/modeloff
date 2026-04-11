@@ -49,11 +49,11 @@ func newTestSession(t *testing.T) *session.Session {
 	t.Helper()
 
 	s := storetest.NewMemoryStore(t)
-	return session.New(s, nil, stubAPI{}, nil, "testuser")
+	return session.New(s, nil, stubAPI{}, "testuser", "", "")
 }
 
 func TestChatScreen_Commands_specs_are_complete(t *testing.T) {
-	screen := NewChatScreen(t.Context(), newTestSession(t))
+	screen := NewChatScreen(t.Context(), newTestSession(t), nil)
 	cmds := screen.Commands()
 
 	require.NotEmpty(t, cmds.Commands)
@@ -71,7 +71,7 @@ func TestChatScreen_Commands_specs_are_complete(t *testing.T) {
 }
 
 func TestChatScreen_Commands_exposes_chat_commands(t *testing.T) {
-	screen := NewChatScreen(t.Context(), newTestSession(t))
+	screen := NewChatScreen(t.Context(), newTestSession(t), nil)
 
 	cmds := screen.Commands()
 	names := make([]string, 0, len(cmds.Commands))
@@ -97,7 +97,7 @@ func TestChatScreen_Commands_exposes_chat_commands(t *testing.T) {
 }
 
 func TestChatScreen_HelpCommand_emits_typed_event(t *testing.T) {
-	screen := NewChatScreen(t.Context(), newTestSession(t))
+	screen := NewChatScreen(t.Context(), newTestSession(t), nil)
 
 	cmd, err := screen.buildParser().Parse("/help")
 	require.NoError(t, err)
@@ -107,7 +107,7 @@ func TestChatScreen_HelpCommand_emits_typed_event(t *testing.T) {
 }
 
 func TestChatScreen_QuitCommand_returns_quit(t *testing.T) {
-	screen := NewChatScreen(t.Context(), newTestSession(t))
+	screen := NewChatScreen(t.Context(), newTestSession(t), nil)
 
 	cmd, err := screen.buildParser().Parse("/quit")
 	require.NoError(t, err)

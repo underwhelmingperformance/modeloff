@@ -5,11 +5,13 @@ package chatcmd
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/laney/modeloff/internal/command"
+	"github.com/laney/modeloff/internal/config"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/session"
 )
@@ -24,9 +26,27 @@ type Parser = command.Parser[Context, tea.Cmd]
 type Context struct {
 	Ctx        context.Context
 	Session    *session.Session
+	Config     config.Store
 	Active     domain.ChannelName
 	Nick       domain.Nick
 	Invocation command.Invocation
+}
+
+// updateConfig loads the current configuration, applies fn, and saves
+// the result. It returns the updated configuration.
+func (rc Context) updateConfig(fn func(*config.Config)) (config.Config, error) {
+	cfg, err := rc.Config.Load(rc.Ctx)
+	if err != nil {
+		return config.Config{}, fmt.Errorf("load config: %w", err)
+	}
+
+	fn(&cfg)
+
+	if err := rc.Config.Save(rc.Ctx, cfg); err != nil {
+		return config.Config{}, fmt.Errorf("save config: %w", err)
+	}
+
+	return cfg, nil
 }
 
 // HelpResult signals that the help screen should be shown.

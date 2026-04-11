@@ -62,12 +62,13 @@ func (s ChatScreen) handleInitialLoad(msg domain.InitialLoadEvent) (ui.Model, te
 	cmds = append(cmds, msgCmd(components.CommandStateMsg{
 		Commands: s.Commands(),
 	}))
+	cfg, _ := s.loadConfig()
 	cmds = append(cmds, msgCmd(components.HighlightWordsMsg{
-		Words:    s.sess.HighlightWords(),
+		Words:    cfg.HighlightWords,
 		UserNick: s.sess.UserNick(),
 	}))
 	cmds = append(cmds, msgCmd(components.TimestampFormatMsg{
-		Format: s.sess.TimestampFormat(),
+		Format: cfg.TimestampFormat,
 		Locale: uitimestamp.CurrentLocale(),
 	}))
 
@@ -314,8 +315,9 @@ func (s ChatScreen) handleNickChangeEvent(msg domain.NickChangeEvent) (ui.Model,
 	cmds = append(cmds, msgCmd(domain.StoredEvent{
 		Event: domain.ChannelNickChange(msg),
 	}))
+	nickCfg, _ := s.loadConfig()
 	cmds = append(cmds, msgCmd(components.HighlightWordsMsg{
-		Words:    s.sess.HighlightWords(),
+		Words:    nickCfg.HighlightWords,
 		UserNick: s.sess.UserNick(),
 	}))
 

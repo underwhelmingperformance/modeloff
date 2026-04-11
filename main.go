@@ -62,12 +62,13 @@ func main() {
 		dataStore,
 		memStore,
 		apiClient,
-		cfgStore,
 		domain.Nick(cfg.UserNick),
+		cfg.APIKey,
+		cfg.NickModel,
 	)
-	sess.SetAPIFactory(func(c config.Config) (api.Client, error) {
+	sess.SetAPIFactory(func(apiKey, baseURL string) (api.Client, error) {
 		_, search := memStore.(memory.Searcher)
-		return api.NewOpenRouterClient(c.APIKey, c.BaseURL, nil, search), nil
+		return api.NewOpenRouterClient(apiKey, baseURL, nil, search), nil
 	})
 
 	appCtx, cancelApp := context.WithCancel(context.Background())
@@ -80,7 +81,7 @@ func main() {
 		channelCount = len(channels)
 	}
 
-	chatScreen := screens.NewChatScreen(appCtx, sess).WithObservability(obs)
+	chatScreen := screens.NewChatScreen(appCtx, sess, cfgStore).WithObservability(obs)
 
 	connScreen := screens.NewConnectionScreen(screens.ConnectionConfig{
 		HasAPIKey:    cfg.APIKey != "",
