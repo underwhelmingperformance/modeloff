@@ -21,11 +21,6 @@ const DefaultPokeInterval = 5 * time.Minute
 // nick generation when no override has been configured.
 const DefaultSmallModel = domain.ModelID("anthropic/claude-haiku-4.5")
 
-// DefaultNickModel is an alias kept for backward compatibility.
-//
-// Deprecated: use DefaultSmallModel.
-const DefaultNickModel = DefaultSmallModel
-
 // DefaultHighlightWords is the default set of words that trigger
 // visual highlighting. The $nick placeholder is expanded to the
 // user's current nick at render time.
