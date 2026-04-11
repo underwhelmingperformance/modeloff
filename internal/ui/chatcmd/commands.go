@@ -640,7 +640,7 @@ type APIKeyConfig struct {
 func (c APIKeyConfig) Run(rc Context) tea.Cmd {
 	if rc.configResetRequested() {
 		return func() tea.Msg {
-			if err := rc.Session.SetAPIKey("", config.DefaultBaseURL); err != nil {
+			if err := rc.Session.SetAPIKey(rc.Ctx, "", config.DefaultBaseURL); err != nil {
 				return errorEvent("config api-key", err)
 			}
 
@@ -664,7 +664,7 @@ func (c APIKeyConfig) Run(rc Context) tea.Cmd {
 			return errorEvent("config api-key", err)
 		}
 
-		if err := rc.Session.SetAPIKey(c.Value, cfg.BaseURL); err != nil {
+		if err := rc.Session.SetAPIKey(rc.Ctx, c.Value, cfg.BaseURL); err != nil {
 			return errorEvent("config api-key", err)
 		}
 
@@ -687,7 +687,7 @@ type BaseURLConfig struct {
 func (c BaseURLConfig) Run(rc Context) tea.Cmd {
 	if rc.configResetRequested() {
 		return func() tea.Msg {
-			if err := rc.Session.SetBaseURL(config.DefaultBaseURL); err != nil {
+			if err := rc.Session.SetBaseURL(rc.Ctx, config.DefaultBaseURL); err != nil {
 				return errorEvent("config base-url", err)
 			}
 
@@ -706,7 +706,7 @@ func (c BaseURLConfig) Run(rc Context) tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		if err := rc.Session.SetBaseURL(c.URL); err != nil {
+		if err := rc.Session.SetBaseURL(rc.Ctx, c.URL); err != nil {
 			return errorEvent("config base-url", err)
 		}
 
@@ -783,7 +783,7 @@ type SmallModelConfig struct {
 func (c SmallModelConfig) Run(rc Context) tea.Cmd {
 	if rc.configResetRequested() {
 		return func() tea.Msg {
-			rc.Session.SetSmallModel(config.DefaultSmallModel)
+			rc.Session.SetSmallModel(rc.Ctx, config.DefaultSmallModel)
 
 			if _, err := rc.updateConfig(func(cfg *config.Config) {
 				cfg.SmallModel = config.DefaultSmallModel
@@ -801,7 +801,7 @@ func (c SmallModelConfig) Run(rc Context) tea.Cmd {
 
 	return func() tea.Msg {
 		modelID := domain.ModelID(c.ModelID)
-		rc.Session.SetSmallModel(modelID)
+		rc.Session.SetSmallModel(rc.Ctx, modelID)
 
 		if _, err := rc.updateConfig(func(cfg *config.Config) {
 			cfg.SmallModel = modelID

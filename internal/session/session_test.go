@@ -1643,7 +1643,7 @@ func TestSession_SetAPIKey(t *testing.T) {
 		return replacement, nil
 	})
 
-	require.NoError(t, sess.SetAPIKey("test-key", ""))
+	require.NoError(t, sess.SetAPIKey(t.Context(), "test-key", ""))
 	require.Equal(t, "test-key", sess.apiKey)
 	require.Same(t, replacement, sess.api)
 }
@@ -1656,7 +1656,7 @@ func TestSession_SetAPIKey_factory_failure_keeps_existing_client(t *testing.T) {
 		return nil, fmt.Errorf("boom")
 	})
 
-	err := sess.SetAPIKey("test-key", "")
+	err := sess.SetAPIKey(t.Context(), "test-key", "")
 	require.Error(t, err)
 	require.Same(t, initial, sess.api)
 	require.Empty(t, sess.apiKey)
@@ -1676,9 +1676,32 @@ func TestSession_SetBaseURL(t *testing.T) {
 		return newClient, nil
 	})
 
-	require.NoError(t, sess.SetBaseURL("https://custom.example.com"))
+	require.NoError(t, sess.SetBaseURL(t.Context(), "https://custom.example.com"))
 	require.Equal(t, 1, factoryCalls)
 	require.Equal(t, "https://custom.example.com", factoryBaseURL)
+}
+
+func TestSession_runtimeConfigOperations_recordSpans(t *testing.T) {
+	recorder := oteltest.InstallSpanRecorder(t)
+	s := storetest.NewMemoryStore(t)
+	sess := New(s, nil, &fakeAPIClient{}, "testuser", "test-key", "")
+	sess.SetAPIFactory(func(_, _ string) (api.Client, error) {
+		return &fakeAPIClient{}, nil
+	})
+
+	require.NoError(t, sess.SetAPIKey(t.Context(), "next-key", "https://openrouter.ai/api/v1"))
+	sess.SetSmallModel(t.Context(), "anthropic/claude-haiku-4.5")
+	require.NoError(t, sess.SetBaseURL(t.Context(), "https://custom.example.com"))
+
+	apiKeySpan := oteltest.FindSpan(t, recorder, "session.set_api_key")
+	require.Equal(t, observability.ResultOK, oteltest.AttrValue(apiKeySpan.Attributes(), observability.AttrResult))
+
+	smallModelSpan := oteltest.FindSpan(t, recorder, "session.set_small_model")
+	require.Equal(t, observability.ResultOK, oteltest.AttrValue(smallModelSpan.Attributes(), observability.AttrResult))
+	require.Equal(t, "anthropic/claude-haiku-4.5", oteltest.AttrValue(smallModelSpan.Attributes(), observability.AttrModelID))
+
+	baseURLSpan := oteltest.FindSpan(t, recorder, "session.set_base_url")
+	require.Equal(t, observability.ResultOK, oteltest.AttrValue(baseURLSpan.Attributes(), observability.AttrResult))
 }
 
 func TestSession_DispatchToChannel_filters_history_before_join(t *testing.T) {

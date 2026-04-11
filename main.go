@@ -26,6 +26,17 @@ import (
 func main() {
 	ctx := context.Background()
 
+	obs, err := observability.NewRuntime()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error initialising observability: %v\n", err)
+		os.Exit(1)
+	}
+	defer func() {
+		if shutdownErr := obs.Shutdown(context.Background()); shutdownErr != nil {
+			fmt.Fprintf(os.Stderr, "error shutting down observability: %v\n", shutdownErr)
+		}
+	}()
+
 	cfg, cfgStore, err := loadConfig(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error loading config: %v\n", err)
@@ -44,17 +55,6 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error creating memory store: %v\n", err)
 		os.Exit(1)
 	}
-
-	obs, err := observability.NewRuntime()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error initialising observability: %v\n", err)
-		os.Exit(1)
-	}
-	defer func() {
-		if shutdownErr := obs.Shutdown(context.Background()); shutdownErr != nil {
-			fmt.Fprintf(os.Stderr, "error shutting down observability: %v\n", shutdownErr)
-		}
-	}()
 
 	apiClient := api.NewOpenRouterClient(cfg.APIKey, cfg.BaseURL, nil)
 

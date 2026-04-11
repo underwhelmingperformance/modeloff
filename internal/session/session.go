@@ -659,7 +659,10 @@ func (s *Session) Poke(ctx context.Context) error {
 }
 
 // SetAPIKey updates the active API key and rebuilds the API client.
-func (s *Session) SetAPIKey(apiKey, baseURL string) error {
+func (s *Session) SetAPIKey(ctx context.Context, apiKey, baseURL string) error {
+	_, span := startSpan(ctx, "session.set_api_key",
+		attribute.String(observability.AttrOperation, "session.set_api_key"))
+	defer span.End()
 	apiKey = strings.TrimSpace(apiKey)
 
 	var nextClient api.Client
@@ -667,6 +670,8 @@ func (s *Session) SetAPIKey(apiKey, baseURL string) error {
 		if s.factory != nil {
 			client, err := s.factory(apiKey, baseURL)
 			if err != nil {
+				span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+				span.SetStatus(codes.Error, err.Error())
 				return fmt.Errorf("build api client: %w", err)
 			}
 
@@ -681,13 +686,21 @@ func (s *Session) SetAPIKey(apiKey, baseURL string) error {
 	s.supportedModels = nil
 	s.supportedModelsReady = false
 
+	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 	return nil
 }
 
 // SetSmallModel updates the model used for lightweight tasks such as
 // nick generation.
-func (s *Session) SetSmallModel(modelID domain.ModelID) {
+func (s *Session) SetSmallModel(ctx context.Context, modelID domain.ModelID) {
+	_, span := startSpan(ctx, "session.set_small_model",
+		attribute.String(observability.AttrOperation, "session.set_small_model"),
+		attribute.String(observability.AttrModelID, string(modelID)))
+	defer span.End()
+
 	s.smallModel = modelID
+
+	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 }
 
 // EnsurePersonas populates the persona pool if it is empty. It calls
@@ -823,18 +836,25 @@ func (s *Session) ResetPersonas(ctx context.Context) (_ int, retErr error) {
 }
 
 // SetBaseURL rebuilds the API client with the given base URL.
-func (s *Session) SetBaseURL(baseURL string) error {
+func (s *Session) SetBaseURL(ctx context.Context, baseURL string) error {
+	_, span := startSpan(ctx, "session.set_base_url",
+		attribute.String(observability.AttrOperation, "session.set_base_url"))
+	defer span.End()
+
 	baseURL = strings.TrimSpace(baseURL)
 
 	if s.factory != nil && s.apiKey != "" {
 		client, err := s.factory(s.apiKey, baseURL)
 		if err != nil {
+			span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+			span.SetStatus(codes.Error, err.Error())
 			return fmt.Errorf("build api client: %w", err)
 		}
 
 		s.api = client
 	}
 
+	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 	return nil
 }
 

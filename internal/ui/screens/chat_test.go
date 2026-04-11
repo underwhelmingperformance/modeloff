@@ -29,7 +29,7 @@ func newTestSessionWithConfigStore(t *testing.T, cfgStore config.Store) *session
 	t.Helper()
 
 	s := storetest.NewMemoryStore(t)
-	cfg, _ := cfgStore.Load(context.Background())
+	cfg, _ := cfgStore.Load(t.Context())
 	return session.New(s, nil, &uitest.FakeAPI{}, "testuser", cfg.APIKey, cfg.SmallModel)
 }
 
