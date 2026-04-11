@@ -46,6 +46,22 @@ func TestMerge(t *testing.T) {
 			sets:  []Set{{}, {}},
 			wants: nil,
 		},
+		{
+			name: "alias in higher-priority set shadows name in lower-priority set",
+			sets: []Set{
+				{Commands: []*Node{{Name: "join", Aliases: []string{"j"}}}},
+				{Commands: []*Node{{Name: "j", Help: "bare j"}}},
+			},
+			wants: []string{"join"},
+		},
+		{
+			name: "name in higher-priority set shadows alias in lower-priority set",
+			sets: []Set{
+				{Commands: []*Node{{Name: "j"}}},
+				{Commands: []*Node{{Name: "join", Aliases: []string{"j"}}}},
+			},
+			wants: []string{"j"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -293,7 +309,7 @@ func TestNode_Usage(t *testing.T) {
 		{
 			name: "no args",
 			node: Node{Name: "quit"},
-			want: "/quit",
+			want: "",
 		},
 		{
 			name: "required positional",
@@ -301,7 +317,7 @@ func TestNode_Usage(t *testing.T) {
 				Name:        "join",
 				Positionals: []Positional{{Name: "channel"}},
 			},
-			want: "/join <channel>",
+			want: "<channel>",
 		},
 		{
 			name: "optional positional",
@@ -309,7 +325,7 @@ func TestNode_Usage(t *testing.T) {
 				Name:        "topic",
 				Positionals: []Positional{{Name: "text", Optional: true}},
 			},
-			want: "/topic [text]",
+			want: "[text]",
 		},
 		{
 			name: "mixed positionals",
@@ -320,7 +336,7 @@ func TestNode_Usage(t *testing.T) {
 					{Name: "message", Optional: true},
 				},
 			},
-			want: "/msg <nick> [message]",
+			want: "<nick> [message]",
 		},
 		{
 			name: "with flag",
@@ -329,7 +345,7 @@ func TestNode_Usage(t *testing.T) {
 				Positionals: []Positional{{Name: "model", Optional: true}},
 				Flags:       []Flag{{Name: "--persona", Variadic: true}},
 			},
-			want: "/invite [model] [--persona <persona>]",
+			want: "[model] [--persona <persona>]",
 		},
 		{
 			name: "with children",
@@ -337,7 +353,7 @@ func TestNode_Usage(t *testing.T) {
 				Name:     "admin",
 				Children: []*Node{{Name: "ban"}},
 			},
-			want: "/admin <command>",
+			want: "<command>",
 		},
 		{
 			name: "inherits ancestor flags",
@@ -355,7 +371,14 @@ func TestNode_Usage(t *testing.T) {
 
 				return *child
 			}(),
-			want: "/config set <key> [--format <format>]",
+			want: "<key> [--format <format>]",
+		},
+		{
+			name: "no positionals or flags",
+			node: Node{
+				Name: "help",
+			},
+			want: "",
 		},
 	}
 
@@ -1347,6 +1370,111 @@ func TestComplete_optional_positional_with_source(t *testing.T) {
 			{Value: "gemini", Label: "gemini"},
 		},
 	}, completion)
+}
+
+func TestComplete_command_suggestions_include_aliases(t *testing.T) {
+	cmds := Set{
+		Commands: []*Node{
+			{Name: "join", Help: "Join a channel", Aliases: []string{"j", "jo"}, Positionals: []Positional{{Name: "channel"}}},
+			{Name: "quit", Help: "Exit.", Aliases: []string{"q"}},
+		},
+	}
+
+	tests := []struct {
+		name        string
+		raw         string
+		suggestions []Suggestion
+	}{
+		{
+			name: "all suggestions include aliases",
+			raw:  "/",
+			suggestions: []Suggestion{
+				{Value: "join", Label: "/join", Detail: "Join a channel", Usage: "/join (/j, /jo) <channel>"},
+				{Value: "j", Label: "/j", Detail: "Join a channel", Usage: "/join (/j, /jo) <channel>"},
+				{Value: "jo", Label: "/jo", Detail: "Join a channel", Usage: "/join (/j, /jo) <channel>"},
+				{Value: "quit", Label: "/quit", Detail: "Exit.", Usage: "/quit (/q)"},
+				{Value: "q", Label: "/q", Detail: "Exit.", Usage: "/quit (/q)"},
+			},
+		},
+		{
+			name: "alias prefix filters",
+			raw:  "/j",
+			suggestions: []Suggestion{
+				{Value: "join", Label: "/join", Detail: "Join a channel", Usage: "/join (/j, /jo) <channel>"},
+				{Value: "j", Label: "/j", Detail: "Join a channel", Usage: "/join (/j, /jo) <channel>"},
+				{Value: "jo", Label: "/jo", Detail: "Join a channel", Usage: "/join (/j, /jo) <channel>"},
+			},
+		},
+		{
+			name: "alias exact match",
+			raw:  "/q",
+			suggestions: []Suggestion{
+				{Value: "quit", Label: "/quit", Detail: "Exit.", Usage: "/quit (/q)"},
+				{Value: "q", Label: "/q", Detail: "Exit.", Usage: "/quit (/q)"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			completion := Complete(cmds, tt.raw, len([]rune(tt.raw)), domain.KindChannel)
+
+			require.True(t, completion.Visible)
+			require.Equal(t, tt.suggestions, completion.Suggestions)
+		})
+	}
+}
+
+func TestComplete_child_suggestions_include_aliases(t *testing.T) {
+	cmds := Set{
+		Commands: []*Node{
+			{
+				Name: "config",
+				Help: "Configuration",
+				Children: []*Node{
+					{Name: "set", Help: "Set a value", Aliases: []string{"s"}},
+					{Name: "get", Help: "Get a value"},
+				},
+			},
+		},
+	}
+
+	completion := Complete(cmds, "/config ", len([]rune("/config ")), domain.KindChannel)
+
+	require.True(t, completion.Visible)
+	require.Equal(t, []Suggestion{
+		{Value: "set", Label: "set", Detail: "Set a value"},
+		{Value: "s", Label: "s", Detail: "Set a value"},
+		{Value: "get", Label: "get", Detail: "Get a value"},
+	}, completion.Suggestions)
+}
+
+func TestComplete_alias_resolves_to_positional_suggestions(t *testing.T) {
+	channels := LiteralSource(
+		Suggestion{Value: "#general", Label: "#general"},
+		Suggestion{Value: "#random", Label: "#random"},
+	)
+
+	cmds := Set{
+		Commands: []*Node{
+			{
+				Name:    "join",
+				Help:    "Join a channel",
+				Aliases: []string{"j"},
+				Positionals: []Positional{
+					{Name: "channel", Source: channels},
+				},
+			},
+		},
+	}
+
+	completion := Complete(cmds, "/j ", len([]rune("/j ")), domain.KindChannel)
+
+	require.True(t, completion.Visible)
+	require.Equal(t, []Suggestion{
+		{Value: "#general", Label: "#general"},
+		{Value: "#random", Label: "#random"},
+	}, completion.Suggestions)
 }
 
 // --- Tool schema tests ---

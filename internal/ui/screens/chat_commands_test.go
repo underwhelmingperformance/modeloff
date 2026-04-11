@@ -69,7 +69,7 @@ func TestChatScreen_Commands_specs_are_complete(t *testing.T) {
 	for _, spec := range cmds.Commands {
 		require.NotEmpty(t, spec.Name)
 		require.NotEmpty(t, spec.Help)
-		require.NotEmpty(t, spec.Usage())
+		require.NotEmpty(t, spec.DisplayName())
 
 		_, exists := seen[spec.Name]
 		require.Falsef(t, exists, "duplicate command %q", spec.Name)

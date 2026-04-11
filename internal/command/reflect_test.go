@@ -72,6 +72,7 @@ func toFlagMeta(flags []Flag) []flagMeta {
 // assertions.
 type nodeMeta struct {
 	Name        string
+	Aliases     []string
 	Help        string
 	Positionals []positionalMeta
 	Flags       []flagMeta
@@ -95,6 +96,7 @@ func toNodeMeta(n *Node) nodeMeta {
 
 	return nodeMeta{
 		Name:        n.Name,
+		Aliases:     n.Aliases,
 		Help:        n.Help,
 		Positionals: toPositionalMeta(n.Positionals),
 		Flags:       toFlagMeta(n.Flags),
@@ -312,7 +314,7 @@ type buildJoinCommand struct {
 type buildPartCommand struct{}
 
 type buildGrammar struct {
-	Join buildJoinCommand `cmd:"" help:"Join a channel."`
+	Join buildJoinCommand `cmd:"" aliases:"j" help:"Join a channel."`
 	Part buildPartCommand `cmd:"" help:"Part from the channel."`
 }
 
@@ -323,6 +325,7 @@ func TestBuild_produces_nodes_from_grammar(t *testing.T) {
 	require.Equal(t, []nodeMeta{
 		{
 			Name:        "join",
+			Aliases:     []string{"j"},
 			Help:        "Join a channel.",
 			Positionals: []positionalMeta{{Name: "channel", Help: "Channel to join"}},
 		},
@@ -383,6 +386,7 @@ func TestBuild_factory_creates_pointer(t *testing.T) {
 	require.Equal(t, []nodeMeta{
 		{
 			Name:        "join",
+			Aliases:     []string{"j"},
 			Help:        "Join a channel.",
 			Positionals: []positionalMeta{{Name: "channel", Help: "Channel to join"}},
 		},

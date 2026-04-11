@@ -222,11 +222,11 @@ func renderPersonasListEvent(pl domain.ChannelPersonasList) string {
 func renderHelp(commands command.Set) string {
 	lines := make([]string, 0, len(commands.Commands))
 	for _, node := range commands.Commands {
-		usage := node.Usage()
+		full := node.FullUsage()
 
-		line := usage
+		line := full
 		if node.Help != "" {
-			line = fmt.Sprintf("%-32s %s", usage, node.Help)
+			line = fmt.Sprintf("%-32s %s", full, node.Help)
 		}
 
 		lines = append(lines, strings.TrimRight(line, " "))

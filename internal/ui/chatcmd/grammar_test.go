@@ -76,10 +76,10 @@ func TestComplete_dm_excludes_channel_only_commands(t *testing.T) {
 	c := completeInKind(t, "/", domain.KindDM)
 
 	require.Equal(t, []string{
-		"join", "part", "list",
+		"join", "j", "part", "list",
 		"msg", "nick", "me", "whois", "config",
 		"personas", "regenerate-personas",
-		"help", "clear", "quit",
+		"help", "clear", "quit", "q",
 	}, suggestionValues(c))
 }
 
@@ -87,10 +87,10 @@ func TestComplete_channel_includes_all_commands(t *testing.T) {
 	c := completeInKind(t, "/", domain.KindChannel)
 
 	require.Equal(t, []string{
-		"join", "part", "list", "add-model", "invite", "kick",
+		"join", "j", "part", "list", "add-model", "invite", "kick",
 		"msg", "nick", "topic", "me", "whois", "config",
 		"personas", "regenerate-personas",
-		"help", "clear", "quit",
+		"help", "clear", "quit", "q",
 	}, suggestionValues(c))
 }
 
@@ -109,6 +109,12 @@ func TestBuildParser_produces_all_commands(t *testing.T) {
 		"personas", "regenerate-personas",
 		"help", "clear", "quit",
 	}, names)
+
+	join := set.Find("join")
+	require.Equal(t, []string{"j"}, join.Aliases)
+
+	quit := set.Find("quit")
+	require.Equal(t, []string{"q"}, quit.Aliases)
 }
 
 func TestBuildParser_parse_returns_typed_command(t *testing.T) {

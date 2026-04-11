@@ -53,7 +53,7 @@ type testConfigCommand struct {
 }
 
 type testGrammar struct {
-	Join     testJoinCommand     `cmd:"" help:"Join a channel."`
+	Join     testJoinCommand     `cmd:"" aliases:"j,jo" help:"Join a channel."`
 	Part     testPartCommand     `cmd:"" help:"Part."`
 	List     testListCommand     `cmd:"" help:"List channels."`
 	AddModel testAddModelCommand `cmd:"" help:"Add a model."`
@@ -65,7 +65,7 @@ type testGrammar struct {
 	Whois    testWhoisCommand    `cmd:"" help:"Whois."`
 	Config   testConfigCommand   `cmd:"" help:"Config."`
 	Help     testHelpCommand     `cmd:"" help:"Help."`
-	Quit     testQuitCommand     `cmd:"" help:"Quit."`
+	Quit     testQuitCommand     `cmd:"" aliases:"q" help:"Quit."`
 }
 
 func allCommands() Set {
@@ -238,6 +238,27 @@ func TestParseValue(t *testing.T) {
 		{
 			name:    "slash only",
 			input:   "/",
+			wantErr: true,
+		},
+		// Alias support
+		{
+			name:  "alias resolves to command",
+			input: "/j test-channel",
+			want:  testJoinCommand{Channel: "test-channel"},
+		},
+		{
+			name:  "second alias resolves to command",
+			input: "/jo test-channel",
+			want:  testJoinCommand{Channel: "test-channel"},
+		},
+		{
+			name:  "single alias resolves to command",
+			input: "/q",
+			want:  testQuitCommand{},
+		},
+		{
+			name:    "unknown alias errors",
+			input:   "/z",
 			wantErr: true,
 		},
 	}
@@ -504,4 +525,164 @@ func TestParseInvocation_unknown_flag_checks_active_ancestors(t *testing.T) {
 	var unknown *UnknownFlagError
 	require.ErrorAs(t, err, &unknown)
 	require.Equal(t, "--unknown", unknown.Flag)
+}
+
+func TestBuild_rejects_alias_collisions(t *testing.T) {
+	tests := []struct {
+		name    string
+		grammar any
+		wantErr string
+	}{
+		{
+			name: "alias collides with command name",
+			grammar: &struct {
+				J    struct{} `cmd:"" help:"Exact J."`
+				Join struct{} `cmd:"" aliases:"j" help:"Join."`
+			}{},
+			wantErr: `alias "j" on command "join" conflicts with j`,
+		},
+		{
+			name: "duplicate alias across commands",
+			grammar: &struct {
+				Join struct{} `cmd:"" aliases:"j" help:"Join."`
+				Jump struct{} `cmd:"" aliases:"j" help:"Jump."`
+			}{},
+			wantErr: `alias "j" on command "jump" conflicts with join`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := build(tt.grammar)
+			require.EqualError(t, err, tt.wantErr)
+		})
+	}
+}
+
+func TestNode_Aliases_are_populated(t *testing.T) {
+	cmds := allCommands()
+	join := cmds.Find("join")
+
+	require.Equal(t, []string{"j", "jo"}, join.Aliases)
+}
+
+func TestSet_Find_resolves_alias(t *testing.T) {
+	cmds := allCommands()
+
+	tests := []struct {
+		name     string
+		lookup   string
+		wantName string
+	}{
+		{name: "exact name", lookup: "join", wantName: "join"},
+		{name: "first alias", lookup: "j", wantName: "join"},
+		{name: "second alias", lookup: "jo", wantName: "join"},
+		{name: "single alias", lookup: "q", wantName: "quit"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			node := cmds.Find(tt.lookup)
+			require.NotNil(t, node)
+			require.Equal(t, tt.wantName, node.Name)
+		})
+	}
+}
+
+func TestNode_Find_resolves_child_alias(t *testing.T) {
+	type subCmd struct{}
+	type parentCmd struct {
+		Sub subCmd `cmd:"" aliases:"s" help:"Sub."`
+	}
+	type grammar struct {
+		Parent parentCmd `cmd:"" help:"Parent."`
+	}
+
+	cmds := Build(&grammar{})
+	parent := cmds.Find("parent")
+	require.NotNil(t, parent)
+
+	child := parent.Find("s")
+	require.NotNil(t, child)
+	require.Equal(t, "sub", child.Name)
+}
+
+func TestNode_DisplayName(t *testing.T) {
+	cmds := allCommands()
+
+	join := cmds.Find("join")
+	require.Equal(t, "/join (/j, /jo)", join.DisplayName())
+
+	quit := cmds.Find("quit")
+	require.Equal(t, "/quit (/q)", quit.DisplayName())
+
+	part := cmds.Find("part")
+	require.Equal(t, "/part", part.DisplayName())
+}
+
+func TestNode_FullUsage(t *testing.T) {
+	cmds := allCommands()
+
+	join := cmds.Find("join")
+	require.Equal(t, "/join (/j, /jo) <channel>", join.FullUsage())
+
+	quit := cmds.Find("quit")
+	require.Equal(t, "/quit (/q)", quit.FullUsage())
+
+	part := cmds.Find("part")
+	require.Equal(t, "/part", part.FullUsage())
+}
+
+func TestParseValue_subcommand_alias(t *testing.T) {
+	type subCmd struct {
+		Key string `arg:"" help:"Key"`
+	}
+	type parentCmd struct {
+		Get subCmd `cmd:"" aliases:"g" help:"Get."`
+	}
+	type grammar struct {
+		Config parentCmd `cmd:"" help:"Config."`
+	}
+
+	cmds := Build(&grammar{})
+	parsed, err := cmds.ParseValue("/config g my-key")
+
+	require.NoError(t, err)
+	require.Equal(t, subCmd{Key: "my-key"}, parsed)
+}
+
+func TestNode_DisplayName_subcommand(t *testing.T) {
+	type subCmd struct{}
+	type parentCmd struct {
+		Get subCmd `cmd:"" aliases:"g" help:"Get."`
+		Set subCmd `cmd:"" help:"Set."`
+	}
+	type grammar struct {
+		Config parentCmd `cmd:"" help:"Config."`
+	}
+
+	cmds := Build(&grammar{})
+	config := cmds.Find("config")
+
+	get := config.Find("get")
+	require.Equal(t, "/get (/g)", get.DisplayName())
+
+	set := config.Find("set")
+	require.Equal(t, "/set", set.DisplayName())
+}
+
+func TestSubcommandError_includes_aliases(t *testing.T) {
+	type subCmd struct{}
+	type parentCmd struct {
+		Get subCmd `cmd:"" aliases:"g" help:"Get."`
+		Set subCmd `cmd:"" help:"Set."`
+	}
+	type grammar struct {
+		Config parentCmd `cmd:"" help:"Config."`
+	}
+
+	cmds := Build(&grammar{})
+	_, err := cmds.ParseValue("/config")
+
+	require.EqualError(t, err, "/config requires a subcommand: get, g, set")
 }

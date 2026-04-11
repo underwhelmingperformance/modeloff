@@ -139,9 +139,11 @@ type SubcommandError struct {
 }
 
 func (e *SubcommandError) Error() string {
-	names := make([]string, 0, len(e.Node.Children))
+	var names []string
 	for _, child := range e.Node.Children {
-		names = append(names, child.Name)
+		for name := range child.Names() {
+			names = append(names, name)
+		}
 	}
 
 	return fmt.Sprintf(

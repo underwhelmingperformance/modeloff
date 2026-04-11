@@ -3,6 +3,7 @@ package command
 import (
 	"encoding/json"
 	"fmt"
+	"iter"
 	"reflect"
 	"slices"
 	"strings"
@@ -70,6 +71,7 @@ func parseRequiredKind(tag string) *domain.ChannelKind {
 type Node struct {
 	Parent       *Node
 	Name         string
+	Aliases      []string
 	Help         string
 	RequiredKind *domain.ChannelKind
 	Tool         bool
@@ -84,17 +86,60 @@ type Node struct {
 	fields  []fieldMeta
 }
 
-// Usage returns a human-readable usage string for this node,
-// generated from its name, positionals, and flags. This mirrors
-// Kong's Node.Summary().
-func (n *Node) Usage() string {
+// Names yields the canonical name followed by any aliases.
+func (n *Node) Names() iter.Seq[string] {
+	return func(yield func(string) bool) {
+		if !yield(n.Name) {
+			return
+		}
+
+		for _, alias := range n.Aliases {
+			if !yield(alias) {
+				return
+			}
+		}
+	}
+}
+
+// DisplayName returns the slash-prefixed command name with any
+// aliases in parentheses, e.g. "/join (/j, /jo)". For subcommand
+// nodes this returns only the local name, not the full ancestor
+// path.
+func (n *Node) DisplayName() string {
 	var b strings.Builder
 
 	b.WriteString("/")
-	b.WriteString(n.Path())
+	b.WriteString(n.Name)
+
+	rest := false
+	for _, alias := range n.Aliases {
+		if !rest {
+			b.WriteString(" (/")
+			rest = true
+		} else {
+			b.WriteString(", /")
+		}
+
+		b.WriteString(alias)
+	}
+
+	if rest {
+		b.WriteString(")")
+	}
+
+	return b.String()
+}
+
+// Usage returns the argument synopsis for this node, e.g.
+// "<channel>", "[--persona <persona>]". It does not include the
+// command name or aliases — use DisplayName for that.
+func (n *Node) Usage() string {
+	var b strings.Builder
 
 	for _, p := range n.Positionals {
-		b.WriteString(" ")
+		if b.Len() > 0 {
+			b.WriteString(" ")
+		}
 
 		if p.Optional {
 			b.WriteString("[")
@@ -108,12 +153,15 @@ func (n *Node) Usage() string {
 	}
 
 	for _, f := range n.AllFlags() {
-		b.WriteString(" [")
+		if b.Len() > 0 {
+			b.WriteString(" ")
+		}
+
+		b.WriteString("[")
 		b.WriteString(f.Name)
 
 		if f.Variadic {
 			b.WriteString(" <")
-			// Strip the -- prefix for the placeholder.
 			b.WriteString(strings.TrimPrefix(f.Name, "--"))
 			b.WriteString(">")
 		}
@@ -122,10 +170,25 @@ func (n *Node) Usage() string {
 	}
 
 	if len(n.Children) > 0 && len(n.Positionals) == 0 {
-		b.WriteString(" <command>")
+		if b.Len() > 0 {
+			b.WriteString(" ")
+		}
+
+		b.WriteString("<command>")
 	}
 
 	return b.String()
+}
+
+// FullUsage returns DisplayName and Usage joined together, e.g.
+// "/join (/j, /jo) <channel>".
+func (n *Node) FullUsage() string {
+	usage := n.Usage()
+	if usage == "" {
+		return n.DisplayName()
+	}
+
+	return n.DisplayName() + " " + usage
 }
 
 // Path returns the node's command path relative to the set root.
@@ -268,10 +331,17 @@ func (n *Node) AllFlags() []Flag {
 	return flags
 }
 
-// Find looks up a direct child node by name.
+// Find looks up a direct child node by name, falling back to
+// aliases if no exact name match is found.
 func (n *Node) Find(name string) *Node {
 	for _, child := range n.Children {
 		if child.Name == name {
+			return child
+		}
+	}
+
+	for _, child := range n.Children {
+		if slices.Contains(child.Aliases, name) {
 			return child
 		}
 	}
@@ -297,10 +367,17 @@ type Completer interface {
 	Sources() map[string]SuggestionSource
 }
 
-// Find looks up a top-level node by name.
+// Find looks up a top-level node by name, falling back to aliases
+// if no exact name match is found.
 func (s Set) Find(name string) *Node {
 	for _, node := range s.Commands {
 		if node.Name == name {
+			return node
+		}
+	}
+
+	for _, node := range s.Commands {
+		if slices.Contains(node.Aliases, name) {
 			return node
 		}
 	}
@@ -378,17 +455,30 @@ type token struct {
 }
 
 // Merge combines command sets from most-local to least-local precedence.
+// A command is skipped if its name or any of its aliases collide with a
+// name or alias already claimed by a higher-priority set.
 func Merge(sets ...Set) Set {
 	merged := Set{}
 	seen := map[string]struct{}{}
 
 	for _, set := range sets {
 		for _, node := range set.Commands {
-			if _, ok := seen[node.Name]; ok {
+			skip := false
+			for name := range node.Names() {
+				if _, ok := seen[name]; ok {
+					skip = true
+					break
+				}
+			}
+
+			if skip {
 				continue
 			}
 
-			seen[node.Name] = struct{}{}
+			for name := range node.Names() {
+				seen[name] = struct{}{}
+			}
+
 			merged.Commands = append(merged.Commands, node)
 		}
 	}
@@ -581,12 +671,16 @@ func commandSuggestions(set Set, kind domain.ChannelKind) []Suggestion {
 			continue
 		}
 
-		suggestions = append(suggestions, Suggestion{
-			Value:  node.Name,
-			Label:  "/" + node.Name,
-			Detail: node.Help,
-			Usage:  node.Usage(),
-		})
+		fullUsage := node.FullUsage()
+
+		for name := range node.Names() {
+			suggestions = append(suggestions, Suggestion{
+				Value:  name,
+				Label:  "/" + name,
+				Detail: node.Help,
+				Usage:  fullUsage,
+			})
+		}
 	}
 
 	return suggestions
@@ -717,11 +811,13 @@ func childSuggestions(node *Node) []Suggestion {
 	suggestions := make([]Suggestion, 0, len(node.Children))
 
 	for _, child := range node.Children {
-		suggestions = append(suggestions, Suggestion{
-			Value:  child.Name,
-			Label:  child.Name,
-			Detail: child.Help,
-		})
+		for name := range child.Names() {
+			suggestions = append(suggestions, Suggestion{
+				Value:  name,
+				Label:  name,
+				Detail: child.Help,
+			})
+		}
 	}
 
 	return suggestions

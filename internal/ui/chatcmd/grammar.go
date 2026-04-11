@@ -11,7 +11,7 @@ import (
 
 // Grammar defines the complete set of chat screen commands.
 type Grammar struct {
-	Join               JoinCommand               `cmd:"" tool:"" help:"Switch to a channel or create it if needed."`
+	Join               JoinCommand               `cmd:"" aliases:"j" tool:"" help:"Switch to a channel or create it if needed."`
 	Part               PartCommand               `cmd:"" tool:"Leave the current channel with an optional farewell message." help:"Part from the current channel."`
 	List               ListCommand               `cmd:"" tool:"" help:"List all known channels."`
 	AddModel           AddModelCommand           `cmd:"" kind:"channel" help:"Add a model or reusable instance into the current channel."`
@@ -27,7 +27,7 @@ type Grammar struct {
 	RegeneratePersonas RegeneratePersonasCommand `cmd:"" name:"regenerate-personas" help:"Regenerate AI-created personas."`
 	Help               HelpCommand               `cmd:"" tool:"" help:"Show available commands."`
 	Clear              ClearCommand              `cmd:"" help:"Clear the current window."`
-	Quit               QuitCommand               `cmd:"" tool:"Shut down your instance and leave all channels." help:"Exit modeloff."`
+	Quit               QuitCommand               `cmd:"" aliases:"q" tool:"Shut down your instance and leave all channels." help:"Exit modeloff."`
 }
 
 // Sources provides live accessors for command completion data. Each

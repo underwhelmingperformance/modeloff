@@ -172,6 +172,65 @@ func hasCmdChildren(t reflect.Type) bool {
 // `cmd` tags, the field becomes a branch node that can have both its
 // own args/flags and child commands. This recursion works at any
 // depth.
+func buildNode(ft reflect.StructField, fieldVal reflect.Value) (*Node, error) {
+	name := ft.Tag.Get("name")
+	if name == "" {
+		name = toKebabCase(ft.Name)
+	}
+
+	help := ft.Tag.Get("help")
+
+	var aliases []string
+	if aliasStr := ft.Tag.Get("aliases"); aliasStr != "" {
+		aliases = strings.Split(aliasStr, ",")
+	}
+
+	fieldType := ft.Type
+
+	fields, err := resolveFieldMetas(reflect.New(fieldType).Elem().Interface())
+	if err != nil {
+		return nil, err
+	}
+
+	var sources map[string]SuggestionSource
+
+	if c, ok := fieldVal.Interface().(Completer); ok {
+		sources = c.Sources()
+	}
+
+	node := &Node{
+		Name:         name,
+		Aliases:      aliases,
+		Help:         help,
+		RequiredKind: parseRequiredKind(ft.Tag.Get("kind")),
+		Tool:         hasToolTag(ft),
+		ToolDesc:     toolDescFromTag(ft),
+		Positionals:  buildPositionals(fields, sources),
+		Flags:        buildFlags(fields, sources),
+		fields:       fields,
+		factory: func() any {
+			return reflect.New(fieldType).Interface()
+		},
+	}
+
+	if hasCmdChildren(fieldType) {
+		childPtr := reflect.New(fieldType).Interface()
+
+		children, err := build(childPtr)
+		if err != nil {
+			return nil, err
+		}
+
+		node.Children = children
+
+		for _, child := range node.Children {
+			child.Parent = node
+		}
+	}
+
+	return node, nil
+}
+
 func build(grammar any) ([]*Node, error) {
 	v := reflect.ValueOf(grammar)
 	if v.Kind() != reflect.Ptr {
@@ -185,6 +244,7 @@ func build(grammar any) ([]*Node, error) {
 
 	t := v.Type()
 	var nodes []*Node
+	seenNames := map[string]string{}
 
 	for i := 0; i < t.NumField(); i++ {
 		ft := t.Field(i)
@@ -197,53 +257,23 @@ func build(grammar any) ([]*Node, error) {
 			continue
 		}
 
-		name := ft.Tag.Get("name")
-		if name == "" {
-			name = toKebabCase(ft.Name)
-		}
-
-		help := ft.Tag.Get("help")
-		fieldType := ft.Type
-
-		fields, err := resolveFieldMetas(reflect.New(fieldType).Elem().Interface())
+		node, err := buildNode(ft, v.Field(i))
 		if err != nil {
 			return nil, fmt.Errorf("field %s: %w", ft.Name, err)
 		}
 
-		var sources map[string]SuggestionSource
-
-		fieldVal := v.Field(i).Interface()
-		if c, ok := fieldVal.(Completer); ok {
-			sources = c.Sources()
+		if owner, ok := seenNames[node.Name]; ok {
+			return nil, fmt.Errorf("duplicate command name %q (conflicts with %s)", node.Name, owner)
 		}
 
-		node := &Node{
-			Name:         name,
-			Help:         help,
-			RequiredKind: parseRequiredKind(ft.Tag.Get("kind")),
-			Tool:         hasToolTag(ft),
-			ToolDesc:     toolDescFromTag(ft),
-			Positionals:  buildPositionals(fields, sources),
-			Flags:        buildFlags(fields, sources),
-			fields:       fields,
-			factory: func() any {
-				return reflect.New(fieldType).Interface()
-			},
-		}
+		seenNames[node.Name] = node.Name
 
-		if hasCmdChildren(fieldType) {
-			childPtr := reflect.New(fieldType).Interface()
-
-			children, err := build(childPtr)
-			if err != nil {
-				return nil, fmt.Errorf("field %s: %w", ft.Name, err)
+		for _, alias := range node.Aliases {
+			if owner, ok := seenNames[alias]; ok {
+				return nil, fmt.Errorf("alias %q on command %q conflicts with %s", alias, node.Name, owner)
 			}
 
-			node.Children = children
-
-			for _, child := range node.Children {
-				child.Parent = node
-			}
+			seenNames[alias] = node.Name
 		}
 
 		nodes = append(nodes, node)
