@@ -330,6 +330,10 @@ func (f *integrationAPI) GenerateNick(ctx context.Context, nickModel domain.Mode
 	return api.NicknameResult{Nick: "botty"}, nil
 }
 
+func (f *integrationAPI) GeneratePersonas(context.Context, domain.ModelID) ([]domain.Persona, error) {
+	return nil, nil
+}
+
 type integrationConfigStore struct {
 	cfg     config.Config
 	saveErr error

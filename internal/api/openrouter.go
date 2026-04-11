@@ -623,6 +623,101 @@ func (c *OpenRouterClient) GenerateNick(ctx context.Context, nickModel domain.Mo
 	return result, nil
 }
 
+// personaItem is the per-persona shape returned by the model.
+type personaItem struct {
+	ID          string `json:"id" jsonschema_description:"A short kebab-case identifier for this persona."`
+	Description string `json:"description" jsonschema_description:"A one-line description of the persona."`
+}
+
+// personaListWrapper is the top-level structured output envelope.
+type personaListWrapper struct {
+	Personas []personaItem `json:"personas"`
+}
+
+var personaSchemaMap = generateSchema[personaListWrapper]()
+
+func personaResponseFormat() openai.ChatCompletionNewParamsResponseFormatUnion {
+	return openai.ChatCompletionNewParamsResponseFormatUnion{
+		OfJSONSchema: &shared.ResponseFormatJSONSchemaParam{
+			JSONSchema: shared.ResponseFormatJSONSchemaJSONSchemaParam{
+				Name:   "persona_list",
+				Schema: personaSchemaMap,
+				Strict: openai.Bool(true),
+			},
+		},
+	}
+}
+
+// GeneratePersonas asks a model to generate a set of IRC user personas
+// using structured output, returning them with PersonaGenerated origin.
+func (c *OpenRouterClient) GeneratePersonas(ctx context.Context, smallModel domain.ModelID) ([]domain.Persona, error) {
+	logger := slog.Default().With("component", "api.openrouter", "model_id", smallModel)
+	tracer := otel.Tracer("github.com/laney/modeloff/internal/api")
+
+	ctx, span := tracer.Start(ctx, "api.openrouter.generate_personas")
+	span.SetAttributes(
+		attribute.String(observability.AttrOperation, "api.openrouter.generate_personas"),
+		attribute.String(observability.AttrModelID, string(smallModel)),
+	)
+	defer span.End()
+
+	prompt := "Generate 10 distinct IRC user personas. Each should have a short kebab-case ID " +
+		"and a one-line description. Make them varied. No AI-isms. These are IRC regulars."
+
+	resp, rawResp, err := c.chatCompletion(ctx, smallModel, openai.ChatCompletionNewParams{ //nolint:bodyclose // SDK reads and closes the body.
+		Model: shared.ChatModel(string(smallModel)),
+		Messages: []openai.ChatCompletionMessageParamUnion{
+			openai.UserMessage(prompt),
+		},
+		ResponseFormat: personaResponseFormat(),
+	})
+	if err != nil {
+		markSpanError(span, observability.ErrorKindTransport, 0, err)
+		logger.ErrorContext(ctx, "openrouter generate personas failed", "error", err)
+		return nil, err
+	}
+
+	if len(resp.Choices) == 0 {
+		err := fmt.Errorf("generate personas: no choices in response")
+		markSpanError(span, observability.ErrorKindInvalidResponse, 0, err)
+		return nil, err
+	}
+
+	choice := resp.Choices[0]
+
+	if err := validateChoice(choice); err != nil {
+		markSpanError(span, observability.ErrorKindInvalidResponse, 0, err)
+		return nil, err
+	}
+
+	var wrapper personaListWrapper
+	if err := json.Unmarshal([]byte(choice.Message.Content), &wrapper); err != nil {
+		markSpanError(span, observability.ErrorKindResponseParse, 0, err)
+		return nil, &completionParseError{target: "persona list", err: err}
+	}
+
+	personas := make([]domain.Persona, len(wrapper.Personas))
+	for i, p := range wrapper.Personas {
+		personas[i] = domain.Persona{
+			ID:          p.ID,
+			Description: p.Description,
+			Origin:      domain.PersonaGenerated,
+		}
+	}
+
+	usage := usageFromResponse(resp.Usage)
+	requestID := requestIDFromChatCompletion(resp, rawResp)
+	usage.SetSpanAttributes(span, requestID)
+	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
+
+	logger.InfoContext(ctx, "openrouter generate personas completed",
+		"request_id", requestID,
+		"count", len(personas),
+	)
+
+	return personas, nil
+}
+
 const maxNickLen = 12
 
 func sanitizeNick(raw string) string {

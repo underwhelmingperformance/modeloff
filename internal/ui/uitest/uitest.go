@@ -154,10 +154,11 @@ func (a *App) CurrentView() string {
 // to a sensible default otherwise. The mutex protects concurrent access
 // from model goroutines during teatest runs.
 type FakeAPI struct {
-	mu             sync.Mutex
-	ListModelsFn   func(context.Context) ([]api.ModelInfo, error)
-	SendEventsFn   func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error)
-	GenerateNickFn func(context.Context, domain.ModelID, domain.ModelID) (domain.Nick, error)
+	mu                 sync.Mutex
+	ListModelsFn       func(context.Context) ([]api.ModelInfo, error)
+	SendEventsFn       func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error)
+	GenerateNickFn     func(context.Context, domain.ModelID, domain.ModelID) (domain.Nick, error)
+	GeneratePersonasFn func(context.Context, domain.ModelID) ([]domain.Persona, error)
 }
 
 // ListModels delegates to ListModelsFn or returns nil.
@@ -215,6 +216,18 @@ func (f *FakeAPI) GenerateNick(ctx context.Context, nickModel domain.ModelID, mo
 	}
 
 	return api.NicknameResult{Nick: "fakenick"}, nil
+}
+
+// GeneratePersonas delegates to GeneratePersonasFn or returns nil.
+func (f *FakeAPI) GeneratePersonas(ctx context.Context, smallModel domain.ModelID) ([]domain.Persona, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.GeneratePersonasFn != nil {
+		return f.GeneratePersonasFn(ctx, smallModel)
+	}
+
+	return nil, nil
 }
 
 // SeedChannel creates a channel via the session.

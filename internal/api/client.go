@@ -161,6 +161,11 @@ type Client interface {
 	// model ID, returning the suggested nick. The nickModel parameter
 	// selects which model performs the generation.
 	GenerateNick(ctx context.Context, nickModel domain.ModelID, modelID domain.ModelID) (NicknameResult, error)
+
+	// GeneratePersonas asks a model to generate a set of IRC user
+	// personas. Each returned persona has Origin set to
+	// domain.PersonaGenerated.
+	GeneratePersonas(ctx context.Context, smallModel domain.ModelID) ([]domain.Persona, error)
 }
 
 // SetSpanAttributes records usage and request metadata on a span.

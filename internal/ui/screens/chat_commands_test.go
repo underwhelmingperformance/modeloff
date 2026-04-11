@@ -45,6 +45,10 @@ func (stubAPI) GenerateNick(context.Context, domain.ModelID, domain.ModelID) (ap
 	return api.NicknameResult{Nick: "testbot"}, nil
 }
 
+func (stubAPI) GeneratePersonas(context.Context, domain.ModelID) ([]domain.Persona, error) {
+	return nil, nil
+}
+
 func newTestSession(t *testing.T) *session.Session {
 	t.Helper()
 

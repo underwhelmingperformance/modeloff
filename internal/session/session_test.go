@@ -1980,6 +1980,10 @@ func (f *fakeAPIClient) GenerateNick(ctx context.Context, nickModel domain.Model
 	return api.NicknameResult{Nick: "fakenick"}, nil
 }
 
+func (f *fakeAPIClient) GeneratePersonas(context.Context, domain.ModelID) ([]domain.Persona, error) {
+	return nil, nil
+}
+
 type failingMemoryStore struct {
 	writeErr  error
 	deleteErr error
