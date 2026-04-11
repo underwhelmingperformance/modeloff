@@ -136,7 +136,7 @@ func TestComplete_config_suggests_subcommands(t *testing.T) {
 	require.True(t, c.Visible)
 	require.Equal(t, []string{
 		"api-key", "base-url", "poke-interval",
-		"nick-model", "embedding-model", "highlight", "timestamp-format", "--reset",
+		"small-model", "embedding-model", "highlight", "timestamp-format", "--reset",
 	}, suggestionValues(c))
 }
 
@@ -160,7 +160,7 @@ func TestComplete_config_reset_before_subcommand(t *testing.T) {
 	require.True(t, c.Visible)
 	require.Equal(t, []string{
 		"api-key", "base-url", "poke-interval",
-		"nick-model", "embedding-model", "highlight", "timestamp-format",
+		"small-model", "embedding-model", "highlight", "timestamp-format",
 	}, suggestionValues(c))
 }
 

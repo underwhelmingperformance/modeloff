@@ -64,7 +64,7 @@ func main() {
 		apiClient,
 		domain.Nick(cfg.UserNick),
 		cfg.APIKey,
-		cfg.NickModel,
+		cfg.SmallModel,
 	)
 	sess.SetAPIFactory(func(apiKey, baseURL string) (api.Client, error) {
 		_, search := memStore.(memory.Searcher)

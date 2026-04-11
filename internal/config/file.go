@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/observability"
 )
 
@@ -59,7 +60,7 @@ func defaults() Config {
 		BaseURL:        DefaultBaseURL,
 		UserNick:       nick,
 		PokeInterval:   DefaultPokeInterval,
-		NickModel:      DefaultNickModel,
+		SmallModel:     DefaultSmallModel,
 		EmbeddingModel: DefaultEmbeddingModel,
 		HighlightWords: append([]string(nil), DefaultHighlightWords...),
 	}
@@ -85,6 +86,19 @@ func (s *FileStore) Load(ctx context.Context) (Config, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		recordConfigError(span, err)
 		return Config{}, err
+	}
+
+	// Backward compat: migrate the old "nick_model" key.
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err == nil {
+		if _, hasNew := raw["small_model"]; !hasNew {
+			if v, ok := raw["nick_model"]; ok {
+				var old domain.ModelID
+				if err := json.Unmarshal(v, &old); err == nil && old != "" {
+					cfg.SmallModel = old
+				}
+			}
+		}
 	}
 
 	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))

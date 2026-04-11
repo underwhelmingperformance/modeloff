@@ -266,10 +266,10 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 			At:      time.Now(),
 		})
 
-	case chatcmd.NickModelSetResult:
-		text := fmt.Sprintf("Nick generation model set to %s.", msg.ModelID)
+	case chatcmd.SmallModelSetResult:
+		text := fmt.Sprintf("Small model set to %s.", msg.ModelID)
 		if msg.Reset {
-			text = fmt.Sprintf("Nick generation model reset to %s.", msg.ModelID)
+			text = fmt.Sprintf("Small model reset to %s.", msg.ModelID)
 		}
 
 		return s, s.logAndShow(domain.ChannelSystemNotice{

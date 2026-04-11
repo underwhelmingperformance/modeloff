@@ -318,7 +318,7 @@ type ConfigCommand struct {
 	APIKey          APIKeyConfig          `cmd:"" name:"api-key" help:"Activate OpenRouter immediately."`
 	BaseURL         BaseURLConfig         `cmd:"" name:"base-url" help:"Set the API base URL."`
 	PokeInterval    PokeIntervalConfig    `cmd:"" name:"poke-interval" help:"Set the background poke cadence."`
-	NickModel       NickModelConfig       `cmd:"" name:"nick-model" help:"Set the model used to generate nicknames."`
+	SmallModel      SmallModelConfig      `cmd:"" name:"small-model" help:"Set the model used for lightweight tasks."`
 	EmbeddingModel  EmbeddingModelConfig  `cmd:"" name:"embedding-model" help:"Set the embedding model."`
 	Highlight       HighlightConfig       `cmd:"" help:"Set words that trigger visual highlighting."`
 	TimestampFormat TimestampFormatConfig `cmd:"" name:"timestamp-format" help:"Set or disable timestamp formatting."`
@@ -467,42 +467,42 @@ func (c PokeIntervalConfig) Run(rc Context) tea.Cmd {
 	}
 }
 
-// NickModelConfig represents `/config nick-model <model-id>`.
-type NickModelConfig struct {
-	ModelID string `arg:"" optional:"" help:"Model ID for nick generation"`
+// SmallModelConfig represents `/config small-model <model-id>`.
+type SmallModelConfig struct {
+	ModelID string `arg:"" optional:"" help:"Model ID for lightweight tasks"`
 }
 
 // Run implements Command.
-func (c NickModelConfig) Run(rc Context) tea.Cmd {
+func (c SmallModelConfig) Run(rc Context) tea.Cmd {
 	if rc.configResetRequested() {
 		return func() tea.Msg {
-			rc.Session.SetNickModel(config.DefaultNickModel)
+			rc.Session.SetSmallModel(config.DefaultSmallModel)
 
 			if _, err := rc.updateConfig(func(cfg *config.Config) {
-				cfg.NickModel = config.DefaultNickModel
+				cfg.SmallModel = config.DefaultSmallModel
 			}); err != nil {
-				return errorEvent("config nick-model", err)
+				return errorEvent("config small-model", err)
 			}
 
-			return NickModelSetResult{ModelID: config.DefaultNickModel, Reset: true}
+			return SmallModelSetResult{ModelID: config.DefaultSmallModel, Reset: true}
 		}
 	}
 
 	if strings.TrimSpace(c.ModelID) == "" {
-		return usageCmd("config", "/config nick-model <model-id>")
+		return usageCmd("config", "/config small-model <model-id>")
 	}
 
 	return func() tea.Msg {
 		modelID := domain.ModelID(c.ModelID)
-		rc.Session.SetNickModel(modelID)
+		rc.Session.SetSmallModel(modelID)
 
 		if _, err := rc.updateConfig(func(cfg *config.Config) {
-			cfg.NickModel = modelID
+			cfg.SmallModel = modelID
 		}); err != nil {
-			return errorEvent("config nick-model", err)
+			return errorEvent("config small-model", err)
 		}
 
-		return NickModelSetResult{ModelID: modelID}
+		return SmallModelSetResult{ModelID: modelID}
 	}
 }
 

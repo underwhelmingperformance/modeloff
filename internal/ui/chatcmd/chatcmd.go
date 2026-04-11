@@ -89,9 +89,8 @@ type PokeIntervalSetResult struct {
 	Reset    bool
 }
 
-// NickModelSetResult signals that the nick generation model was
-// updated.
-type NickModelSetResult struct {
+// SmallModelSetResult signals that the small model was updated.
+type SmallModelSetResult struct {
 	ModelID domain.ModelID
 	Reset   bool
 }

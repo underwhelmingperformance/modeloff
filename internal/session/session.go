@@ -42,9 +42,9 @@ type Session struct {
 	memory memory.Store
 	api    api.Client
 
-	user      *domain.Instance
-	apiKey    string
-	nickModel domain.ModelID
+	user       *domain.Instance
+	apiKey     string
+	smallModel domain.ModelID
 	factory   func(apiKey, baseURL string) (api.Client, error)
 	now       func() time.Time
 	events    chan domain.SessionEvent
@@ -60,18 +60,18 @@ func New(
 	a api.Client,
 	userNick domain.Nick,
 	apiKey string,
-	nickModel domain.ModelID,
+	smallModel domain.ModelID,
 ) *Session {
-	if nickModel == "" {
-		nickModel = config.DefaultNickModel
+	if smallModel == "" {
+		smallModel = config.DefaultSmallModel
 	}
 
 	return &Session{
-		store:     s,
-		memory:    m,
-		api:       a,
-		apiKey:    strings.TrimSpace(apiKey),
-		nickModel: nickModel,
+		store:      s,
+		memory:     m,
+		api:        a,
+		apiKey:     strings.TrimSpace(apiKey),
+		smallModel: smallModel,
 		user: &domain.Instance{
 			Nick:     userNick,
 			Channels: orderedmap.New[domain.ChannelName, time.Time](),
@@ -382,7 +382,7 @@ func (s *Session) Invite(
 	)
 	defer generateSpan.End()
 
-	nickResult, err := s.api.GenerateNick(generateCtx, s.nickModel, modelID)
+	nickResult, err := s.api.GenerateNick(generateCtx, s.smallModel, modelID)
 	if err != nil {
 		generateSpan.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
 		generateSpan.SetStatus(codes.Error, err.Error())
@@ -981,9 +981,10 @@ func (s *Session) SetAPIKey(apiKey, baseURL string) error {
 }
 
 
-// SetNickModel updates the model used for nick generation.
-func (s *Session) SetNickModel(modelID domain.ModelID) {
-	s.nickModel = modelID
+// SetSmallModel updates the model used for lightweight tasks such as
+// nick generation.
+func (s *Session) SetSmallModel(modelID domain.ModelID) {
+	s.smallModel = modelID
 }
 
 

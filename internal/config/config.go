@@ -17,9 +17,14 @@ const DefaultBaseURL = "https://openrouter.ai/api/v1"
 // no override has been configured.
 const DefaultPokeInterval = 5 * time.Minute
 
-// DefaultNickModel is the model used to generate nicknames for invited
-// model instances when no override has been configured.
-const DefaultNickModel = domain.ModelID("anthropic/claude-haiku-4.5")
+// DefaultSmallModel is the model used for lightweight tasks such as
+// nick generation when no override has been configured.
+const DefaultSmallModel = domain.ModelID("anthropic/claude-haiku-4.5")
+
+// DefaultNickModel is an alias kept for backward compatibility.
+//
+// Deprecated: use DefaultSmallModel.
+const DefaultNickModel = DefaultSmallModel
 
 // DefaultHighlightWords is the default set of words that trigger
 // visual highlighting. The $nick placeholder is expanded to the
@@ -36,7 +41,7 @@ type Config struct {
 	BaseURL         string         `json:"base_url,omitempty"`
 	UserNick        string         `json:"user_nick"`
 	PokeInterval    time.Duration  `json:"poke_interval"`
-	NickModel       domain.ModelID `json:"nick_model"`
+	SmallModel      domain.ModelID `json:"small_model"`
 	EmbeddingModel  domain.ModelID `json:"embedding_model"`
 	HighlightWords  []string       `json:"highlight_words"`
 	TimestampFormat *string        `json:"timestamp_format,omitempty"`

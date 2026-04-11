@@ -25,7 +25,7 @@ func TestFileStore_LoadDefaults(t *testing.T) {
 		BaseURL:        "https://openrouter.ai/api/v1",
 		UserNick:       "testuser",
 		PokeInterval:   5 * time.Minute,
-		NickModel:      DefaultNickModel,
+		SmallModel:     DefaultSmallModel,
 		EmbeddingModel: DefaultEmbeddingModel,
 		HighlightWords: []string{"$nick"},
 	}
@@ -106,7 +106,86 @@ func TestFileStore_LoadMergesWithDefaults(t *testing.T) {
 		BaseURL:        "https://openrouter.ai/api/v1",
 		UserNick:       "testuser",
 		PokeInterval:   5 * time.Minute,
-		NickModel:      DefaultNickModel,
+		SmallModel:     DefaultSmallModel,
+		EmbeddingModel: DefaultEmbeddingModel,
+		HighlightWords: []string{"$nick"},
+	}
+
+	require.Equal(t, want, got)
+}
+
+func TestFileStore_LoadMigratesNickModel(t *testing.T) {
+	t.Setenv("USER", "testuser")
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+
+	data := []byte(`{"api_key": "sk-old", "nick_model": "google/gemini-2.0-flash-001"}`)
+	require.NoError(t, os.WriteFile(path, data, 0o600))
+
+	store := NewFileStore(dir)
+
+	got, err := store.Load(t.Context())
+	require.NoError(t, err)
+
+	want := Config{
+		APIKey:         "sk-old",
+		BaseURL:        "https://openrouter.ai/api/v1",
+		UserNick:       "testuser",
+		PokeInterval:   5 * time.Minute,
+		SmallModel:     "google/gemini-2.0-flash-001",
+		EmbeddingModel: DefaultEmbeddingModel,
+		HighlightWords: []string{"$nick"},
+	}
+
+	require.Equal(t, want, got)
+}
+
+func TestFileStore_LoadMigratesNickModel_ignoredWhenSmallModelSet(t *testing.T) {
+	t.Setenv("USER", "testuser")
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+
+	data := []byte(`{"small_model": "custom/model", "nick_model": "google/gemini-2.0-flash-001"}`)
+	require.NoError(t, os.WriteFile(path, data, 0o600))
+
+	store := NewFileStore(dir)
+
+	got, err := store.Load(t.Context())
+	require.NoError(t, err)
+
+	want := Config{
+		BaseURL:        "https://openrouter.ai/api/v1",
+		UserNick:       "testuser",
+		PokeInterval:   5 * time.Minute,
+		SmallModel:     "custom/model",
+		EmbeddingModel: DefaultEmbeddingModel,
+		HighlightWords: []string{"$nick"},
+	}
+
+	require.Equal(t, want, got)
+}
+
+func TestFileStore_LoadMigratesNickModel_ignoredWhenSmallModelMatchesDefault(t *testing.T) {
+	t.Setenv("USER", "testuser")
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+
+	data := []byte(`{"small_model": "anthropic/claude-haiku-4.5", "nick_model": "other/model"}`)
+	require.NoError(t, os.WriteFile(path, data, 0o600))
+
+	store := NewFileStore(dir)
+
+	got, err := store.Load(t.Context())
+	require.NoError(t, err)
+
+	want := Config{
+		BaseURL:        "https://openrouter.ai/api/v1",
+		UserNick:       "testuser",
+		PokeInterval:   5 * time.Minute,
+		SmallModel:     DefaultSmallModel,
 		EmbeddingModel: DefaultEmbeddingModel,
 		HighlightWords: []string{"$nick"},
 	}
@@ -215,7 +294,7 @@ func TestFileStore_SaveAndLoadHighlightWords(t *testing.T) {
 		BaseURL:        "https://openrouter.ai/api/v1",
 		UserNick:       "testuser",
 		PokeInterval:   5 * time.Minute,
-		NickModel:      DefaultNickModel,
+		SmallModel:     DefaultSmallModel,
 		HighlightWords: []string{"$nick", "important", "urgent"},
 	}
 
@@ -237,7 +316,7 @@ func TestFileStore_SaveAndLoadTimestampFormat(t *testing.T) {
 		BaseURL:         "https://openrouter.ai/api/v1",
 		UserNick:        "testuser",
 		PokeInterval:    5 * time.Minute,
-		NickModel:       DefaultNickModel,
+		SmallModel:      DefaultSmallModel,
 		EmbeddingModel:  DefaultEmbeddingModel,
 		HighlightWords:  []string{"$nick"},
 		TimestampFormat: &custom,
@@ -261,7 +340,7 @@ func TestFileStore_SaveAndLoadDisabledTimestampFormat(t *testing.T) {
 		BaseURL:         "https://openrouter.ai/api/v1",
 		UserNick:        "testuser",
 		PokeInterval:    5 * time.Minute,
-		NickModel:       DefaultNickModel,
+		SmallModel:      DefaultSmallModel,
 		EmbeddingModel:  DefaultEmbeddingModel,
 		HighlightWords:  []string{"$nick"},
 		TimestampFormat: &disabled,

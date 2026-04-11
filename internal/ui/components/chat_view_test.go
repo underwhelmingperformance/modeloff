@@ -702,7 +702,7 @@ func TestRenderLine_application_feedback(t *testing.T) {
 			domain.StoredEvent{Event: domain.ChannelUsageHint{
 				Channel: "#test",
 				Command: "config",
-				Usage:   "/config api-key <value> | /config nick-model <model-id> | /config poke-interval <duration>",
+				Usage:   "/config api-key <value> | /config small-model <model-id> | /config poke-interval <duration>",
 				At:      now,
 			}},
 			"usage: /config api-key",

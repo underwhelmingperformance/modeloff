@@ -30,7 +30,7 @@ func newTestSessionWithConfigStore(t *testing.T, cfgStore config.Store) *session
 
 	s := storetest.NewMemoryStore(t)
 	cfg, _ := cfgStore.Load(context.Background())
-	return session.New(s, nil, &uitest.FakeAPI{}, "testuser", cfg.APIKey, cfg.NickModel)
+	return session.New(s, nil, &uitest.FakeAPI{}, "testuser", cfg.APIKey, cfg.SmallModel)
 }
 
 func newChatApp(t *testing.T, sess *session.Session) *uitest.App {
