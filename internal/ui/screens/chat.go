@@ -320,6 +320,33 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 			At:      time.Now(),
 		})
 
+	case chatcmd.PersonasListResult:
+		return s, s.logAndShow(domain.ChannelPersonasList{
+			Personas: msg.Personas,
+			At:       time.Now(),
+		})
+
+	case chatcmd.PersonasRegeneratedResult:
+		return s, s.logAndShow(domain.ChannelSystemNotice{
+			Channel: *s.active,
+			Text:    fmt.Sprintf("Generated %d personas.", msg.Count),
+			At:      time.Now(),
+		})
+
+	case chatcmd.PersonaSetResult:
+		return s, s.logAndShow(domain.ChannelSystemNotice{
+			Channel: *s.active,
+			Text:    fmt.Sprintf("Persona %s saved.", msg.ID),
+			At:      time.Now(),
+		})
+
+	case chatcmd.PersonaResetResult:
+		return s, s.logAndShow(domain.ChannelSystemNotice{
+			Channel: *s.active,
+			Text:    fmt.Sprintf("Removed %d user-defined persona(s).", msg.Count),
+			At:      time.Now(),
+		})
+
 	case chatcmd.TimestampFormatSetResult:
 		var text string
 

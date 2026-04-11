@@ -95,6 +95,8 @@ func TestChatScreen_Commands_exposes_chat_commands(t *testing.T) {
 		"me",
 		"whois",
 		"config",
+		"personas",
+		"regenerate-personas",
 		"help",
 		"quit",
 	}, names)

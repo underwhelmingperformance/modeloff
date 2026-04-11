@@ -45,6 +45,7 @@ var (
 	_ ChannelEvent = ChannelCommandError{}
 	_ ChannelEvent = ChannelUsageHint{}
 	_ ChannelEvent = ChannelSystemNotice{}
+	_ ChannelEvent = ChannelPersonasList{}
 )
 
 // ChannelMessage records a message sent in a channel.
@@ -272,6 +273,18 @@ func (e ChannelSystemNotice) channelEventTime() time.Time { return e.At }
 // ModelVisible implements ChannelEvent.
 func (ChannelSystemNotice) ModelVisible() bool { return false }
 
+// ChannelPersonasList records /personas output.
+type ChannelPersonasList struct {
+	Personas []Persona `json:"personas"`
+	At       time.Time `json:"at"`
+}
+
+func (ChannelPersonasList) channelEvent()                 {}
+func (e ChannelPersonasList) channelEventTime() time.Time { return e.At }
+
+// ModelVisible implements ChannelEvent.
+func (ChannelPersonasList) ModelVisible() bool { return false }
+
 // ChannelEventTime returns the timestamp of a channel event.
 func ChannelEventTime(e ChannelEvent) time.Time {
 	return e.channelEventTime()
@@ -313,6 +326,8 @@ func ChannelEventType(e ChannelEvent) string {
 		return "usage_hint"
 	case ChannelSystemNotice:
 		return "system_notice"
+	case ChannelPersonasList:
+		return "personas_list"
 	default:
 		return ""
 	}
@@ -399,6 +414,9 @@ func UnmarshalChannelEvent(b []byte) (ChannelEvent, error) {
 		return e, unmarshal(&e)
 	case "system_notice":
 		var e ChannelSystemNotice
+		return e, unmarshal(&e)
+	case "personas_list":
+		var e ChannelPersonasList
 		return e, unmarshal(&e)
 	default:
 		return nil, fmt.Errorf("unknown channel event type: %q", env.Type)

@@ -11,19 +11,21 @@ import (
 
 // Grammar defines the complete set of chat screen commands.
 type Grammar struct {
-	Join   JoinCommand   `cmd:"" help:"Switch to a channel or create it if needed."`
-	Part   PartCommand   `cmd:"" help:"Part from the current channel."`
-	List   ListCommand   `cmd:"" help:"List all known channels."`
-	Invite InviteCommand `cmd:"" help:"Invite a model or reusable instance into the current channel."`
-	Kick   KickCommand   `cmd:"" help:"Remove a model instance from the current channel."`
-	Msg    MsgCommand    `cmd:"" help:"Open a direct message and optionally send text."`
-	Nick   NickCommand   `cmd:"" help:"Change your nickname."`
-	Topic  TopicCommand  `cmd:"" help:"Set or clear the current channel topic."`
-	Me     MeCommand     `cmd:"" help:"Send an action message (e.g. /me waves)."`
-	Whois  WhoisCommand  `cmd:"" help:"Show details about a model instance."`
-	Config ConfigCommand `cmd:"" help:"Update runtime configuration."`
-	Help   HelpCommand   `cmd:"" help:"Show available commands."`
-	Quit   QuitCommand   `cmd:"" help:"Exit modeloff."`
+	Join               JoinCommand               `cmd:"" help:"Switch to a channel or create it if needed."`
+	Part               PartCommand               `cmd:"" help:"Part from the current channel."`
+	List               ListCommand               `cmd:"" help:"List all known channels."`
+	Invite             InviteCommand             `cmd:"" help:"Invite a model or reusable instance into the current channel."`
+	Kick               KickCommand               `cmd:"" help:"Remove a model instance from the current channel."`
+	Msg                MsgCommand                `cmd:"" help:"Open a direct message and optionally send text."`
+	Nick               NickCommand               `cmd:"" help:"Change your nickname."`
+	Topic              TopicCommand              `cmd:"" help:"Set or clear the current channel topic."`
+	Me                 MeCommand                 `cmd:"" help:"Send an action message (e.g. /me waves)."`
+	Whois              WhoisCommand              `cmd:"" help:"Show details about a model instance."`
+	Config             ConfigCommand             `cmd:"" help:"Update runtime configuration."`
+	Personas           PersonasCommand           `cmd:"" help:"List all defined personas."`
+	RegeneratePersonas RegeneratePersonasCommand `cmd:"" name:"regenerate-personas" help:"Regenerate AI-created personas."`
+	Help               HelpCommand               `cmd:"" help:"Show available commands."`
+	Quit               QuitCommand               `cmd:"" help:"Exit modeloff."`
 }
 
 // Sources carries snapshot data for command completion. Each field

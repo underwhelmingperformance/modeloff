@@ -131,6 +131,9 @@ func renderChannelEvent(
 	case domain.ChannelListOutput:
 		return wrap.Render(renderChannelListEvent(e))
 
+	case domain.ChannelPersonasList:
+		return wrap.Render(renderPersonasListEvent(e))
+
 	case domain.ChannelCommandError:
 		return wrap.Render(theme.Error.Render("✗ " + e.Err))
 
@@ -196,6 +199,20 @@ func renderChannelListEvent(cl domain.ChannelListOutput) string {
 			line += " — " + ch.Topic
 		}
 
+		parts = append(parts, theme.SystemEvent.Render("*** "+line))
+	}
+
+	return strings.Join(parts, "\n")
+}
+
+func renderPersonasListEvent(pl domain.ChannelPersonasList) string {
+	if len(pl.Personas) == 0 {
+		return theme.SystemEvent.Render("*** No personas defined.")
+	}
+
+	var parts []string
+	for _, p := range pl.Personas {
+		line := fmt.Sprintf("%s (%s): %s", p.ID, p.Origin, p.Description)
 		parts = append(parts, theme.SystemEvent.Render("*** "+line))
 	}
 

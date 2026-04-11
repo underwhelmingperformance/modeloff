@@ -1079,6 +1079,29 @@ func (s *Session) ListPersonas(ctx context.Context) ([]domain.Persona, error) {
 	return s.store.ListPersonas(ctx)
 }
 
+// ResetPersonas removes all user-defined personas from the store,
+// leaving only generated ones. It returns the number of personas
+// that were removed.
+func (s *Session) ResetPersonas(ctx context.Context) (int, error) {
+	personas, err := s.store.ListPersonas(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("list personas: %w", err)
+	}
+
+	count := 0
+	for _, p := range personas {
+		if p.Origin == domain.PersonaUser {
+			count++
+		}
+	}
+
+	if err := s.store.DeletePersonasByOrigin(ctx, domain.PersonaUser); err != nil {
+		return 0, err
+	}
+
+	return count, nil
+}
+
 // SetBaseURL rebuilds the API client with the given base URL.
 func (s *Session) SetBaseURL(baseURL string) error {
 	baseURL = strings.TrimSpace(baseURL)

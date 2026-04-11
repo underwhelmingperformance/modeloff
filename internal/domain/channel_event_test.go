@@ -186,6 +186,16 @@ func TestChannelEvent_JSON_round_trip(t *testing.T) {
 				At:      ts,
 			},
 		},
+		{
+			name: "personas list",
+			event: domain.ChannelPersonasList{
+				Personas: []domain.Persona{
+					{ID: "pirate", Description: "A salty sea dog", Origin: domain.PersonaUser},
+					{ID: "wizard", Description: "A wise old mage", Origin: domain.PersonaGenerated},
+				},
+				At: ts,
+			},
+		},
 	}
 
 	for _, tt := range tests {

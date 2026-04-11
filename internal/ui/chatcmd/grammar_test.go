@@ -72,6 +72,7 @@ func TestBuildParser_produces_all_commands(t *testing.T) {
 	require.Equal(t, []string{
 		"join", "part", "list", "invite", "kick",
 		"msg", "nick", "topic", "me", "whois", "config",
+		"personas", "regenerate-personas",
 		"help", "quit",
 	}, names)
 }
@@ -136,7 +137,7 @@ func TestComplete_config_suggests_subcommands(t *testing.T) {
 	require.True(t, c.Visible)
 	require.Equal(t, []string{
 		"api-key", "base-url", "poke-interval",
-		"small-model", "embedding-model", "highlight", "timestamp-format", "--reset",
+		"small-model", "embedding-model", "highlight", "timestamp-format", "persona", "--reset",
 	}, suggestionValues(c))
 }
 
@@ -160,12 +161,43 @@ func TestComplete_config_reset_before_subcommand(t *testing.T) {
 	require.True(t, c.Visible)
 	require.Equal(t, []string{
 		"api-key", "base-url", "poke-interval",
-		"small-model", "embedding-model", "highlight", "timestamp-format",
+		"small-model", "embedding-model", "highlight", "timestamp-format", "persona",
 	}, suggestionValues(c))
 }
 
 func TestComplete_config_reset_after_subcommand_does_not_expect_value(t *testing.T) {
 	c := complete(t, "/config api-key --reset ")
+
+	require.True(t, c.Visible)
+	require.Empty(t, c.Suggestions)
+}
+
+func TestParse_personas_command(t *testing.T) {
+	parser := BuildParser(testSources())
+
+	cmd, err := parser.Parse("/personas")
+	require.NoError(t, err)
+	require.IsType(t, PersonasCommand{}, cmd)
+}
+
+func TestParse_regenerate_personas_command(t *testing.T) {
+	parser := BuildParser(testSources())
+
+	cmd, err := parser.Parse("/regenerate-personas")
+	require.NoError(t, err)
+	require.IsType(t, RegeneratePersonasCommand{}, cmd)
+}
+
+func TestParse_config_persona_command(t *testing.T) {
+	parser := BuildParser(testSources())
+
+	cmd, err := parser.Parse("/config persona bard A travelling storyteller")
+	require.NoError(t, err)
+	require.Equal(t, PersonaConfig{ID: "bard", Description: []string{"A", "travelling", "storyteller"}}, cmd)
+}
+
+func TestComplete_config_persona_no_value_suggestions(t *testing.T) {
+	c := complete(t, "/config persona ")
 
 	require.True(t, c.Visible)
 	require.Empty(t, c.Suggestions)

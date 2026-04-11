@@ -3098,3 +3098,25 @@ func TestSession_SetPersona(t *testing.T) {
 		Origin:      domain.PersonaUser,
 	}, got)
 }
+
+func TestSession_ResetPersonas_removes_user_keeps_generated(t *testing.T) {
+	sess, s := newTestSessionWithAPI(t, &fakeAPIClient{})
+	ctx := t.Context()
+
+	require.NoError(t, s.SavePersona(ctx, domain.Persona{
+		ID: "my-persona", Description: "User defined.", Origin: domain.PersonaUser,
+	}))
+	require.NoError(t, s.SavePersona(ctx, domain.Persona{
+		ID: "gen-persona", Description: "Generated.", Origin: domain.PersonaGenerated,
+	}))
+
+	removed, err := sess.ResetPersonas(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1, removed)
+
+	got, err := s.ListPersonas(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []domain.Persona{
+		{ID: "gen-persona", Description: "Generated.", Origin: domain.PersonaGenerated},
+	}, got)
+}

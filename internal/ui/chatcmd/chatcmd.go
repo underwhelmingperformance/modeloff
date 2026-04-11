@@ -122,6 +122,26 @@ type TimestampFormatSetResult struct {
 	Reset  bool
 }
 
+// PersonasListResult carries the persona list for a /personas reply.
+type PersonasListResult struct {
+	Personas []domain.Persona
+}
+
+// PersonasRegeneratedResult signals that personas were regenerated.
+type PersonasRegeneratedResult struct {
+	Count int
+}
+
+// PersonaSetResult signals that a persona was saved.
+type PersonaSetResult struct {
+	ID string
+}
+
+// PersonaResetResult signals that user-defined personas were removed.
+type PersonaResetResult struct {
+	Count int
+}
+
 func errorEvent(operation string, err error) domain.ErrorEvent {
 	return domain.ErrorEvent{Operation: operation, Err: err, At: time.Now()}
 }

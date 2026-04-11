@@ -535,6 +535,73 @@ func TestChatScreen_WelcomeState_responsive(t *testing.T) {
 	tm.WaitFor("Welcome to modeloff", "/join #general")
 }
 
+func TestChatScreen_personas_command(t *testing.T) {
+	sess := newTestSession(t)
+	uitest.SeedChannel(t, sess, "#general")
+
+	require.NoError(t, sess.SetPersona(t.Context(), "pirate", "A salty sea dog"))
+	require.NoError(t, sess.SetPersona(t.Context(), "wizard", "A wise old mage"))
+
+	tm := newChatApp(t, sess)
+	tm.WaitFor("#general")
+
+	tm.Submit("/personas")
+	tm.WaitFor("pirate (user): A salty sea dog", "wizard (user): A wise old mage")
+}
+
+func TestChatScreen_personas_command_empty(t *testing.T) {
+	tm, _ := newChatAppInChannel(t, "#general")
+
+	tm.Submit("/personas")
+	tm.WaitFor("No personas defined.")
+}
+
+func TestChatScreen_regenerate_personas_command(t *testing.T) {
+	sess := newTestSession(t)
+	uitest.SeedChannel(t, sess, "#general")
+
+	tm := newChatAppWithConfig(t, sess, newFakeConfigStore())
+	tm.WaitFor("#general")
+
+	tm.Submit("/regenerate-personas")
+	tm.WaitFor("Generated")
+}
+
+func TestChatScreen_config_persona_command(t *testing.T) {
+	tm, _ := newChatAppInChannel(t, "#general")
+
+	tm.Submit("/config persona bard A travelling storyteller")
+	tm.WaitFor("Persona bard saved.")
+}
+
+func TestChatScreen_config_persona_no_args(t *testing.T) {
+	tm, _ := newChatAppInChannel(t, "#general")
+
+	tm.Submit("/config persona")
+	tm.WaitFor("usage: /config persona <id> <description...>")
+}
+
+func TestChatScreen_config_persona_no_description(t *testing.T) {
+	tm, _ := newChatAppInChannel(t, "#general")
+
+	tm.Submit("/config persona bard")
+	tm.WaitFor("usage: /config persona <id> <description...>")
+}
+
+func TestChatScreen_config_persona_reset(t *testing.T) {
+	sess := newTestSession(t)
+	uitest.SeedChannel(t, sess, "#general")
+
+	require.NoError(t, sess.SetPersona(t.Context(), "pirate", "A salty sea dog"))
+	require.NoError(t, sess.SetPersona(t.Context(), "wizard", "A wise old mage"))
+
+	tm := newChatApp(t, sess)
+	tm.WaitFor("#general")
+
+	tm.Submit("/config --reset persona")
+	tm.WaitFor("Removed 2 user-defined persona(s).")
+}
+
 type fakeConfigStore struct {
 	cfg     config.Config
 	saveErr error

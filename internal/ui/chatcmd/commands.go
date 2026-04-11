@@ -311,6 +311,36 @@ func (c QuitCommand) Run(rc Context) tea.Cmd {
 	}
 }
 
+// PersonasCommand represents `/personas`.
+type PersonasCommand struct{}
+
+// Run implements Command.
+func (PersonasCommand) Run(rc Context) tea.Cmd {
+	return func() tea.Msg {
+		personas, err := rc.Session.ListPersonas(rc.Ctx)
+		if err != nil {
+			return errorEvent("personas", err)
+		}
+
+		return PersonasListResult{Personas: personas}
+	}
+}
+
+// RegeneratePersonasCommand represents `/regenerate-personas`.
+type RegeneratePersonasCommand struct{}
+
+// Run implements Command.
+func (RegeneratePersonasCommand) Run(rc Context) tea.Cmd {
+	return func() tea.Msg {
+		personas, err := rc.Session.RegeneratePersonas(rc.Ctx)
+		if err != nil {
+			return errorEvent("regenerate-personas", err)
+		}
+
+		return PersonasRegeneratedResult{Count: len(personas)}
+	}
+}
+
 // ConfigCommand is a group node whose children are the individual
 // config keys. Each subcommand has its own args and Run method.
 type ConfigCommand struct {
@@ -322,6 +352,7 @@ type ConfigCommand struct {
 	EmbeddingModel  EmbeddingModelConfig  `cmd:"" name:"embedding-model" help:"Set the embedding model."`
 	Highlight       HighlightConfig       `cmd:"" help:"Set words that trigger visual highlighting."`
 	TimestampFormat TimestampFormatConfig `cmd:"" name:"timestamp-format" help:"Set or disable timestamp formatting."`
+	Persona         PersonaConfig         `cmd:"" help:"Define a custom persona."`
 }
 
 // APIKeyConfig represents `/config api-key <value>`.
@@ -608,6 +639,43 @@ func (c TimestampFormatConfig) Run(rc Context) tea.Cmd {
 		}
 
 		return TimestampFormatSetResult{Format: format}
+	}
+}
+
+// PersonaConfig represents `/config persona <id> <description...>`.
+type PersonaConfig struct {
+	ID          string   `arg:"" optional:"" help:"Persona identifier"`
+	Description []string `arg:"" optional:"" help:"Persona description"`
+}
+
+// Run implements Command.
+func (c PersonaConfig) Run(rc Context) tea.Cmd {
+	if rc.configResetRequested() {
+		return func() tea.Msg {
+			count, err := rc.Session.ResetPersonas(rc.Ctx)
+			if err != nil {
+				return errorEvent("config persona", err)
+			}
+
+			return PersonaResetResult{Count: count}
+		}
+	}
+
+	if strings.TrimSpace(c.ID) == "" {
+		return usageCmd("config persona", "/config persona <id> <description...>")
+	}
+
+	desc := strings.TrimSpace(strings.Join(c.Description, " "))
+	if desc == "" {
+		return usageCmd("config persona", "/config persona <id> <description...>")
+	}
+
+	return func() tea.Msg {
+		if err := rc.Session.SetPersona(rc.Ctx, c.ID, desc); err != nil {
+			return errorEvent("config persona", err)
+		}
+
+		return PersonaSetResult{ID: c.ID}
 	}
 }
 
