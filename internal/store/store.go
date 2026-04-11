@@ -53,6 +53,13 @@ type Store interface {
 	WriteMemory(ctx context.Context, nick domain.Nick, key, content string) error
 	DeleteMemory(ctx context.Context, nick domain.Nick, key string) error
 
+	// Personas
+
+	ListPersonas(ctx context.Context) ([]domain.Persona, error)
+	GetPersona(ctx context.Context, id string) (domain.Persona, error)
+	SavePersona(ctx context.Context, p domain.Persona) error
+	DeletePersonasByOrigin(ctx context.Context, origin domain.PersonaOrigin) error
+
 	// Reset
 
 	Reset(ctx context.Context) error

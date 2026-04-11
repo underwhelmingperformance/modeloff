@@ -49,6 +49,12 @@ CREATE TABLE IF NOT EXISTS memories (
     PRIMARY KEY (nick, key)
 );
 
+CREATE TABLE IF NOT EXISTS personas (
+    id          TEXT PRIMARY KEY,
+    description TEXT NOT NULL,
+    origin      TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS state (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -512,6 +518,92 @@ func (s *SQLiteStore) DeleteMemory(ctx context.Context, nick domain.Nick, key st
 	return nil
 }
 
+// ListPersonas implements Store.
+func (s *SQLiteStore) ListPersonas(ctx context.Context) ([]domain.Persona, error) {
+	ctx, span := startSQLiteSpan(ctx, "store.sqlite.list_personas")
+	defer span.End()
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, description, origin FROM personas ORDER BY id`)
+	if err != nil {
+		recordSQLiteError(span, err)
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var personas []domain.Persona
+
+	for rows.Next() {
+		var p domain.Persona
+		if err := rows.Scan(&p.ID, &p.Description, &p.Origin); err != nil {
+			recordSQLiteError(span, err)
+			return nil, err
+		}
+
+		personas = append(personas, p)
+	}
+
+	if err := rows.Err(); err != nil {
+		recordSQLiteError(span, err)
+		return nil, err
+	}
+
+	recordSQLiteSuccess(span)
+	return personas, nil
+}
+
+// GetPersona implements Store.
+func (s *SQLiteStore) GetPersona(ctx context.Context, id string) (domain.Persona, error) {
+	ctx, span := startSQLiteSpan(ctx, "store.sqlite.get_persona", attribute.String("persona.id", id))
+	defer span.End()
+
+	var p domain.Persona
+
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, description, origin FROM personas WHERE id = ?`, id).
+		Scan(&p.ID, &p.Description, &p.Origin)
+	if err != nil {
+		recordSQLiteError(span, err)
+		return domain.Persona{}, fmt.Errorf("persona %q: %w", id, err)
+	}
+
+	recordSQLiteSuccess(span)
+	return p, nil
+}
+
+// SavePersona implements Store.
+func (s *SQLiteStore) SavePersona(ctx context.Context, p domain.Persona) error {
+	ctx, span := startSQLiteSpan(ctx, "store.sqlite.save_persona", attribute.String("persona.id", p.ID))
+	defer span.End()
+
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO personas (id, description, origin) VALUES (?, ?, ?)
+		 ON CONFLICT (id) DO UPDATE SET description = excluded.description, origin = excluded.origin`,
+		p.ID, p.Description, p.Origin)
+	if err != nil {
+		recordSQLiteError(span, err)
+		return err
+	}
+
+	recordSQLiteSuccess(span)
+	return nil
+}
+
+// DeletePersonasByOrigin implements Store.
+func (s *SQLiteStore) DeletePersonasByOrigin(ctx context.Context, origin domain.PersonaOrigin) error {
+	ctx, span := startSQLiteSpan(ctx, "store.sqlite.delete_personas_by_origin", attribute.String("persona.origin", string(origin)))
+	defer span.End()
+
+	_, err := s.db.ExecContext(ctx, `DELETE FROM personas WHERE origin = ?`, origin)
+	if err != nil {
+		recordSQLiteError(span, err)
+		return err
+	}
+
+	recordSQLiteSuccess(span)
+	return nil
+}
+
 // ResetMemories implements Store.
 func (s *SQLiteStore) ResetMemories(ctx context.Context) error {
 	ctx, span := startSQLiteSpan(ctx, "store.sqlite.reset_memories")
@@ -601,6 +693,7 @@ func (s *SQLiteStore) Reset(ctx context.Context) error {
 		`DELETE FROM events`,
 		`DELETE FROM instances`,
 		`DELETE FROM memories`,
+		`DELETE FROM personas`,
 		`DELETE FROM state`,
 	} {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {

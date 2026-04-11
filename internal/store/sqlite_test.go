@@ -677,6 +677,128 @@ func TestSQLiteStore_Reset_empty_store(t *testing.T) {
 	require.NoError(t, s.Reset(t.Context()))
 }
 
+// --- Personas ---
+
+func TestSQLiteStore_ListPersonasEmpty(t *testing.T) {
+	s := newTestStore(t)
+
+	got, err := s.ListPersonas(t.Context())
+	require.NoError(t, err)
+	require.Empty(t, got)
+}
+
+func TestSQLiteStore_SaveAndGetPersona(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	p := domain.Persona{
+		ID:          "grumpy-sysadmin",
+		Description: "A grumpy sysadmin who has seen it all.",
+		Origin:      domain.PersonaGenerated,
+	}
+
+	require.NoError(t, s.SavePersona(ctx, p))
+
+	got, err := s.GetPersona(ctx, "grumpy-sysadmin")
+	require.NoError(t, err)
+	require.Equal(t, p, got)
+}
+
+func TestSQLiteStore_GetPersonaNotFound(t *testing.T) {
+	s := newTestStore(t)
+
+	_, err := s.GetPersona(t.Context(), "ghost")
+	require.Error(t, err)
+}
+
+func TestSQLiteStore_SavePersona_upsert(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	original := domain.Persona{
+		ID:          "the-optimist",
+		Description: "Always looks on the bright side.",
+		Origin:      domain.PersonaGenerated,
+	}
+
+	require.NoError(t, s.SavePersona(ctx, original))
+
+	updated := domain.Persona{
+		ID:          "the-optimist",
+		Description: "Relentlessly positive.",
+		Origin:      domain.PersonaUser,
+	}
+
+	require.NoError(t, s.SavePersona(ctx, updated))
+
+	got, err := s.GetPersona(ctx, "the-optimist")
+	require.NoError(t, err)
+	require.Equal(t, updated, got)
+}
+
+func TestSQLiteStore_ListPersonas_ordered(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	personas := []domain.Persona{
+		{ID: "alpha", Description: "First", Origin: domain.PersonaUser},
+		{ID: "beta", Description: "Second", Origin: domain.PersonaGenerated},
+		{ID: "gamma", Description: "Third", Origin: domain.PersonaGenerated},
+	}
+
+	for _, p := range personas {
+		require.NoError(t, s.SavePersona(ctx, p))
+	}
+
+	got, err := s.ListPersonas(ctx)
+	require.NoError(t, err)
+	require.Equal(t, personas, got)
+}
+
+func TestSQLiteStore_DeletePersonasByOrigin(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	personas := []domain.Persona{
+		{ID: "gen-one", Description: "Generated one", Origin: domain.PersonaGenerated},
+		{ID: "gen-two", Description: "Generated two", Origin: domain.PersonaGenerated},
+		{ID: "custom", Description: "User custom", Origin: domain.PersonaUser},
+	}
+
+	for _, p := range personas {
+		require.NoError(t, s.SavePersona(ctx, p))
+	}
+
+	require.NoError(t, s.DeletePersonasByOrigin(ctx, domain.PersonaGenerated))
+
+	got, err := s.ListPersonas(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []domain.Persona{
+		{ID: "custom", Description: "User custom", Origin: domain.PersonaUser},
+	}, got)
+}
+
+func TestSQLiteStore_DeletePersonasByOrigin_noop_when_none(t *testing.T) {
+	s := newTestStore(t)
+
+	require.NoError(t, s.DeletePersonasByOrigin(t.Context(), domain.PersonaGenerated))
+}
+
+func TestSQLiteStore_Reset_includes_personas(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	require.NoError(t, s.SavePersona(ctx, domain.Persona{
+		ID: "test", Description: "Test persona", Origin: domain.PersonaUser,
+	}))
+
+	require.NoError(t, s.Reset(ctx))
+
+	got, err := s.ListPersonas(ctx)
+	require.NoError(t, err)
+	require.Empty(t, got)
+}
+
 // --- Helpers ---
 
 func appendTestEvents(t *testing.T, s *SQLiteStore, ch domain.ChannelName, n int) []int64 {
