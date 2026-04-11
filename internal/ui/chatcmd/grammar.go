@@ -28,8 +28,6 @@ type Grammar struct {
 	Quit               QuitCommand               `cmd:"" help:"Exit modeloff."`
 }
 
-// Sources carries snapshot data for command completion. Each field
-// holds the current value at the time the parser is built.
 // Sources provides live accessors for command completion data. Each
 // field is a function so the grammar can be built once and completion
 // always reflects the latest state without rebuilding.
