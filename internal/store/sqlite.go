@@ -604,6 +604,45 @@ func (s *SQLiteStore) DeletePersonasByOrigin(ctx context.Context, origin domain.
 	return nil
 }
 
+// ReplaceGeneratedPersonas implements Store. It atomically deletes all
+// generated personas and inserts the given replacements in a single
+// transaction.
+func (s *SQLiteStore) ReplaceGeneratedPersonas(ctx context.Context, personas []domain.Persona) error {
+	ctx, span := startSQLiteSpan(ctx, "store.sqlite.replace_generated_personas")
+	defer span.End()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		recordSQLiteError(span, err)
+		return fmt.Errorf("begin tx: %w", err)
+	}
+
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM personas WHERE origin = ?`, domain.PersonaGenerated); err != nil {
+		recordSQLiteError(span, err)
+		return fmt.Errorf("delete generated: %w", err)
+	}
+
+	for _, p := range personas {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO personas (id, description, origin) VALUES (?, ?, ?)
+			 ON CONFLICT (id) DO UPDATE SET description = excluded.description, origin = excluded.origin`,
+			p.ID, p.Description, p.Origin); err != nil {
+			recordSQLiteError(span, err)
+			return fmt.Errorf("insert persona %q: %w", p.ID, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		recordSQLiteError(span, err)
+		return fmt.Errorf("commit: %w", err)
+	}
+
+	recordSQLiteSuccess(span)
+	return nil
+}
+
 // ResetMemories implements Store.
 func (s *SQLiteStore) ResetMemories(ctx context.Context) error {
 	ctx, span := startSQLiteSpan(ctx, "store.sqlite.reset_memories")

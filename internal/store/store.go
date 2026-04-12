@@ -59,6 +59,7 @@ type Store interface {
 	GetPersona(ctx context.Context, id string) (domain.Persona, error)
 	SavePersona(ctx context.Context, p domain.Persona) error
 	DeletePersonasByOrigin(ctx context.Context, origin domain.PersonaOrigin) error
+	ReplaceGeneratedPersonas(ctx context.Context, personas []domain.Persona) error
 
 	// Reset
 

@@ -812,6 +812,38 @@ func TestSQLiteStore_DeletePersonasByOrigin(t *testing.T) {
 	}, got)
 }
 
+func TestSQLiteStore_ReplaceGeneratedPersonas(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	initial := []domain.Persona{
+		{ID: "gen-one", Description: "Generated one", Origin: domain.PersonaGenerated},
+		{ID: "gen-two", Description: "Generated two", Origin: domain.PersonaGenerated},
+		{ID: "custom", Description: "User custom", Origin: domain.PersonaUser},
+	}
+
+	for _, p := range initial {
+		require.NoError(t, s.SavePersona(ctx, p))
+	}
+
+	replacements := []domain.Persona{
+		{ID: "new-a", Description: "New A", Origin: domain.PersonaGenerated},
+		{ID: "new-b", Description: "New B", Origin: domain.PersonaGenerated},
+		{ID: "new-c", Description: "New C", Origin: domain.PersonaGenerated},
+	}
+
+	require.NoError(t, s.ReplaceGeneratedPersonas(ctx, replacements))
+
+	got, err := s.ListPersonas(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []domain.Persona{
+		{ID: "custom", Description: "User custom", Origin: domain.PersonaUser},
+		{ID: "new-a", Description: "New A", Origin: domain.PersonaGenerated},
+		{ID: "new-b", Description: "New B", Origin: domain.PersonaGenerated},
+		{ID: "new-c", Description: "New C", Origin: domain.PersonaGenerated},
+	}, got)
+}
+
 func TestSQLiteStore_DeletePersonasByOrigin_noop_when_none(t *testing.T) {
 	s := newTestStore(t)
 

@@ -1055,14 +1055,8 @@ func (s *Session) RegeneratePersonas(ctx context.Context) ([]domain.Persona, err
 		return nil, fmt.Errorf("generate personas: %w", err)
 	}
 
-	if err := s.store.DeletePersonasByOrigin(ctx, domain.PersonaGenerated); err != nil {
-		return nil, fmt.Errorf("delete generated personas: %w", err)
-	}
-
-	for _, p := range personas {
-		if err := s.store.SavePersona(ctx, p); err != nil {
-			return nil, fmt.Errorf("save persona %q: %w", p.ID, err)
-		}
+	if err := s.store.ReplaceGeneratedPersonas(ctx, personas); err != nil {
+		return nil, fmt.Errorf("replace generated personas: %w", err)
 	}
 
 	return personas, nil
