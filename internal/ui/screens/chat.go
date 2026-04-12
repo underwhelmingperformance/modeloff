@@ -213,6 +213,9 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	case chatcmd.HelpResult:
 		return s, s.logAndShow(domain.ChannelHelp{Channel: *s.active, At: time.Now()})
 
+	case chatcmd.ClearResult:
+		return s, func() tea.Msg { return components.ClearMessagesMsg{} }
+
 	case chatcmd.TopicInfoResult:
 		return s, s.logAndShow(domain.ChannelTopicInfo{
 			Channel:    msg.Channel.Name,

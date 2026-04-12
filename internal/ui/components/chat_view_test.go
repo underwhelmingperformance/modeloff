@@ -67,6 +67,20 @@ func TestChatView_View_shows_messages(t *testing.T) {
 	require.Contains(t, v, "bob")
 }
 
+func TestChatView_clear_messages_removes_visible_messages(t *testing.T) {
+	cv := newChatViewWithEvents("#general", "testuser", "", testEvents)
+	v := cv.View(80, 24)
+	require.Contains(t, v, "hello")
+
+	updated, _ := cv.Update(components.ClearMessagesMsg{})
+	cv = updated.(components.ChatView)
+
+	v = cv.View(80, 24)
+	require.NotContains(t, v, "hello")
+	require.NotContains(t, v, "hi there")
+	require.NotContains(t, v, "how are you?")
+}
+
 func TestChatView_View_fits_available_width_with_input_prefix(t *testing.T) {
 	cv := newChatViewWithEvents("#general", "testuser", "", []domain.StoredEvent{
 		{Event: domain.ChannelJoin{Channel: "#general", Nick: "testuser"}},

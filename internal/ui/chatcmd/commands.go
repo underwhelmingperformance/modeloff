@@ -559,6 +559,14 @@ func (HelpCommand) RunTool(_ context.Context, _ session.ToolContext) session.Too
 	}
 }
 
+// ClearCommand represents `/clear`.
+type ClearCommand struct{}
+
+// Run implements Command.
+func (ClearCommand) Run(_ Context) tea.Cmd {
+	return func() tea.Msg { return ClearResult{} }
+}
+
 // QuitCommand represents `/quit [message]`.
 type QuitCommand struct {
 	Message []string `arg:"" optional:"" nargs:"1" help:"Optional farewell message"`

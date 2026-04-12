@@ -54,6 +54,10 @@ type CommandStateMsg struct {
 	Commands command.Set
 }
 
+// ClearMessagesMsg clears the visible messages in the current channel
+// without affecting the persistent event log.
+type ClearMessagesMsg struct{}
+
 // ChatView displays messages for a single channel with an input bar
 // at the bottom.
 type ChatView struct {
@@ -186,7 +190,7 @@ func (c ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		return c, nil
 
 	case SetPlaceholderMsg, PendingResponseMsg, HighlightWordsMsg, TimestampFormatMsg,
-		HistoryLoadedMsg, domain.StoredEvent:
+		HistoryLoadedMsg, ClearMessagesMsg, domain.StoredEvent:
 		var cmd tea.Cmd
 		c, cmd = c.updateMessages(msg)
 		c = c.syncMessageViewport()

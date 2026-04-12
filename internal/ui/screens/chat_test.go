@@ -529,6 +529,21 @@ func TestChatScreen_help_command(t *testing.T) {
 	tm.WaitFor("/join", "/help")
 }
 
+func TestChatScreen_clear_command_removes_messages(t *testing.T) {
+	sess := newTestSession(t)
+	uitest.SeedChannel(t, sess, "#general")
+	uitest.SeedMessage(t, sess, "#general", "visible text")
+
+	tm := newChatApp(t, sess)
+	tm.WaitFor("#general", "visible text")
+
+	tm.Submit("/clear")
+	tm.WaitFor("No messages yet")
+
+	view := tm.CurrentView()
+	require.NotContains(t, view, "visible text")
+}
+
 func TestChatScreen_invalid_command(t *testing.T) {
 	tm, _ := newChatAppInChannel(t, "#general")
 

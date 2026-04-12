@@ -79,7 +79,7 @@ func TestBuildParser_produces_all_commands(t *testing.T) {
 		"join", "part", "list", "add-model", "invite", "kick",
 		"msg", "nick", "topic", "me", "whois", "config",
 		"personas", "regenerate-personas",
-		"help", "quit",
+		"help", "clear", "quit",
 	}, names)
 }
 
@@ -206,6 +206,21 @@ func TestParse_regenerate_personas_command(t *testing.T) {
 	cmd, err := parser.Parse("/regenerate-personas")
 	require.NoError(t, err)
 	require.IsType(t, RegeneratePersonasCommand{}, cmd)
+}
+
+func TestParse_clear_command(t *testing.T) {
+	parser := BuildParser(testSources())
+
+	cmd, err := parser.Parse("/clear")
+	require.NoError(t, err)
+	require.Equal(t, ClearCommand{}, cmd)
+}
+
+func TestClearCommand_Run_returns_ClearResult(t *testing.T) {
+	cmd := ClearCommand{}
+	c := cmd.Run(Context{})
+	msg := c()
+	require.Equal(t, ClearResult{}, msg)
 }
 
 func TestParse_config_persona_command(t *testing.T) {

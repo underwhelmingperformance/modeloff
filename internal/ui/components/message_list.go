@@ -117,6 +117,14 @@ func (m MessageList) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		m = m.loadHistory(msg.Events)
 		return m, nil
 
+	case ClearMessagesMsg:
+		m.events.Clear()
+		m.seenCount = 0
+		m.showDivider = false
+		m.viewport.SetContent("")
+		m.viewport.GotoBottom()
+		return m, nil
+
 	case SetPlaceholderMsg:
 		m.placeholder = msg.Text
 		return m, nil

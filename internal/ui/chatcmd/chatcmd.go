@@ -52,6 +52,9 @@ func (rc Context) updateConfig(fn func(*config.Config)) (config.Config, error) {
 // HelpResult signals that the help screen should be shown.
 type HelpResult struct{}
 
+// ClearResult signals that the current window should be cleared.
+type ClearResult struct{}
+
 // WhoisResult carries the instance metadata for a /whois reply.
 type WhoisResult struct {
 	Instance domain.Instance
