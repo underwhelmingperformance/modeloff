@@ -102,6 +102,27 @@ func ReusableInstancesSource(instances iter.Seq[domain.Instance], active domain.
 	}
 }
 
+// PersonasSource suggests known persona identifiers.
+func PersonasSource(personas iter.Seq[domain.Persona]) command.SuggestionSource {
+	return func(_ command.InvocationState) []command.Suggestion {
+		if personas == nil {
+			return nil
+		}
+
+		var suggestions []command.Suggestion
+
+		for p := range personas {
+			suggestions = append(suggestions, command.Suggestion{
+				Value:  p.ID,
+				Label:  p.ID,
+				Detail: p.Description,
+			})
+		}
+
+		return suggestions
+	}
+}
+
 // ModelOption describes a live model for completion suggestions.
 type ModelOption struct {
 	ID          domain.ModelID

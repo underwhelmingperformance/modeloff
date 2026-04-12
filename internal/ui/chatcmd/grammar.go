@@ -39,6 +39,7 @@ type Sources struct {
 	ActiveMembers func() iter.Seq[domain.Nick]
 	UserNick      func() domain.Nick
 	LiveModels    func() []ModelOption
+	Personas      func() iter.Seq[domain.Persona]
 }
 
 // BuildParser creates a typed Parser from a snapshot of the current
@@ -61,6 +62,9 @@ func BuildParser(src Sources) Parser {
 					ReusableInstancesSource(src.Instances(), src.ActiveChannel()),
 					LiveModelsSource(src.LiveModels()),
 				)(s)
+			}),
+			personaSource: lazy(func(s command.InvocationState) []command.Suggestion {
+				return PersonasSource(src.Personas())(s)
 			}),
 		},
 		Invite: InviteCommand{

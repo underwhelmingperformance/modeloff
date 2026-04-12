@@ -33,6 +33,11 @@ func testSources() Sources {
 		{ID: "anthropic/sonnet", Name: "Sonnet"},
 	}
 
+	personas := []domain.Persona{
+		{ID: "bard", Description: "A travelling storyteller"},
+		{ID: "sage", Description: "A wise advisor"},
+	}
+
 	return Sources{
 		Channels:      func() iter.Seq[domain.Channel] { return slices.Values(channels) },
 		Instances:     func() iter.Seq[domain.Instance] { return slices.Values(instances) },
@@ -40,6 +45,7 @@ func testSources() Sources {
 		ActiveMembers: func() iter.Seq[domain.Nick] { return slices.Values(members) },
 		UserNick:      func() domain.Nick { return "testuser" },
 		LiveModels:    func() []ModelOption { return models },
+		Personas:      func() iter.Seq[domain.Persona] { return slices.Values(personas) },
 	}
 }
 
@@ -115,6 +121,13 @@ func TestComplete_add_model_suggests_reusable_then_live(t *testing.T) {
 	// sonnet is reusable (not in #general), haiku is excluded (already in #general)
 	// then live models follow
 	require.Equal(t, []string{"sonnet", "anthropic/haiku", "anthropic/sonnet"}, values)
+}
+
+func TestComplete_add_model_persona_suggests_personas(t *testing.T) {
+	c := complete(t, "/add-model somemodel --persona ")
+
+	require.True(t, c.Visible)
+	require.Equal(t, []string{"bard", "sage"}, suggestionValues(c))
 }
 
 func TestComplete_invite_suggests_instance_nicks(t *testing.T) {

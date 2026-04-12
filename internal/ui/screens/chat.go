@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"slices"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -461,6 +462,10 @@ func (s ChatScreen) buildParser() chatcmd.Parser {
 		ActiveMembers: func() iter.Seq[domain.Nick] { return s.activeMemberNicks() },
 		UserNick:      func() domain.Nick { return s.sess.UserNick() },
 		LiveModels:    func() []chatcmd.ModelOption { return *s.liveModels },
+		Personas: func() iter.Seq[domain.Persona] {
+			personas, _ := s.sess.ListPersonas(s.ctx)
+			return slices.Values(personas)
+		},
 	})
 }
 

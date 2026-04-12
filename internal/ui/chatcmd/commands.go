@@ -139,14 +139,18 @@ func (ListCommand) RunTool(ctx context.Context, tc session.ToolContext) session.
 
 // AddModelCommand represents `/add-model [model] [--persona text]`.
 type AddModelCommand struct {
-	Model       string   `arg:"" optional:"" help:"Model to invite"`
-	Persona     []string `optional:"" help:"Optional persona"`
-	modelSource command.SuggestionSource
+	Model         string   `arg:"" optional:"" help:"Model to invite"`
+	Persona       []string `optional:"" help:"Optional persona"`
+	modelSource   command.SuggestionSource
+	personaSource command.SuggestionSource
 }
 
 // Sources implements command.Completer.
 func (c AddModelCommand) Sources() map[string]command.SuggestionSource {
-	return map[string]command.SuggestionSource{"model": c.modelSource}
+	return map[string]command.SuggestionSource{
+		"model":   c.modelSource,
+		"persona": c.personaSource,
+	}
 }
 
 // Run implements Command.
