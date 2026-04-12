@@ -92,7 +92,7 @@ func (p *SpanMetricsProcessor) OnEnd(span sdktrace.ReadOnlySpan) {
 		return
 	}
 
-	if !isLLMUsageOperation(operation) {
+	if !hasLLMUsageAttrs(spanAttrs) {
 		return
 	}
 
@@ -143,10 +143,11 @@ func isMemoryOperation(operation string) bool {
 	return false
 }
 
-func isLLMUsageOperation(operation string) bool {
-	switch operation {
-	case "api.openrouter.send_events", "api.openrouter.continue_with_tool_results", "api.openrouter.generate_nick":
-		return true
+func hasLLMUsageAttrs(attrs []attribute.KeyValue) bool {
+	for _, attr := range attrs {
+		if string(attr.Key) == AttrPromptTokens {
+			return true
+		}
 	}
 
 	return false
