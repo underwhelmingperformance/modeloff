@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/domain"
@@ -186,6 +187,16 @@ func TestInputBar_View_contains_prompt(t *testing.T) {
 	v := b.View(40, 1)
 
 	require.Contains(t, v, ">")
+}
+
+func TestInputBar_View_includes_user_nick_and_fits_width(t *testing.T) {
+	b := components.NewInputBar().SetUserNick("testuser")
+
+	v := b.View(20, 1)
+
+	require.Contains(t, v, "testuser")
+	require.Contains(t, v, ">")
+	require.LessOrEqual(t, lipgloss.Width(v), 20)
 }
 
 func TestInputBar_history_up_down(t *testing.T) {

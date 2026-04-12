@@ -67,6 +67,16 @@ func TestChatView_View_shows_messages(t *testing.T) {
 	require.Contains(t, v, "bob")
 }
 
+func TestChatView_View_fits_available_width_with_input_prefix(t *testing.T) {
+	cv := newChatViewWithEvents("#general", "testuser", "", []domain.StoredEvent{
+		{Event: domain.ChannelJoin{Channel: "#general", Nick: "testuser"}},
+	})
+
+	v := cv.View(40, 10)
+
+	require.LessOrEqual(t, lipgloss.Width(v), 40)
+}
+
 func TestChatView_View_shows_timestamps(t *testing.T) {
 	cv := newChatViewWithEvents("#general", "testuser", "", testEvents)
 	v := cv.View(80, 24)

@@ -44,8 +44,9 @@ type nickCompletion struct {
 // InputBar wraps bubbles/textinput with command detection and input
 // history recall via Up/Down arrows.
 type InputBar struct {
-	input  textinput.Model
-	keyMap InputBarKeyMap
+	input    textinput.Model
+	keyMap   InputBarKeyMap
+	userNick domain.Nick
 
 	history   []string
 	histPos   int // -1 = editing new input, 0..len(history)-1 = browsing
@@ -77,6 +78,13 @@ func NewInputBar() InputBar {
 // SetNicks updates the list of nicks available for Tab completion.
 func (b InputBar) SetNicks(nicks []domain.Nick) InputBar {
 	b.nicks = nicks
+
+	return b
+}
+
+// SetUserNick updates the nick rendered in the composer prefix.
+func (b InputBar) SetUserNick(nick domain.Nick) InputBar {
+	b.userNick = nick
 
 	return b
 }
@@ -310,6 +318,8 @@ func (b InputBar) ReplaceRange(start, end int, replacement string) InputBar {
 
 // SetCursorFromCell moves the cursor to the nearest cell within the input area.
 func (b InputBar) SetCursorFromCell(x int) InputBar {
+	x -= b.prefixWidth()
+
 	if x <= 0 {
 		b.input.SetCursor(0)
 		return b
@@ -359,9 +369,19 @@ func promptWidth() int {
 	return lipgloss.Width(theme.Prompt.Render("> "))
 }
 
+func (b InputBar) prefixWidth() int {
+	return lipgloss.Width(theme.UserNick.Render(string(b.userNick))) + 1 + promptWidth()
+}
+
 // View implements ui.Model.
 func (b InputBar) View(width, _ int) string {
-	b.input.Width = width
+	nickLabel := theme.UserNick.Render(string(b.userNick)) + " "
+	nickWidth := lipgloss.Width(nickLabel)
 
-	return b.input.View()
+	// textinput renders: prompt + text/padding(Width cells) + cursor(1 cell).
+	// The cursor sits outside the Width when the input is empty, so subtract
+	// an extra cell to keep the total within the available space.
+	b.input.Width = max(width-nickWidth-promptWidth()-1, 0)
+
+	return nickLabel + b.input.View()
 }

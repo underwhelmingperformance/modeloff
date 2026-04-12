@@ -7,9 +7,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/exp/teatest"
 	chromem "github.com/philippgille/chromem-go"
 	"github.com/stretchr/testify/require"
+	orderedmap "github.com/wk8/go-ordered-map/v2"
 
 	"github.com/laney/modeloff/internal/api"
 	"github.com/laney/modeloff/internal/config"
@@ -103,6 +105,34 @@ func TestApp_open_dm_and_send_message(t *testing.T) {
 
 	tm.Submit("/msg botty hello there")
 	tm.WaitFor("Opened direct message with botty", "hello there")
+}
+
+func TestApp_terminal_output_shows_full_model_nick_in_user_list(t *testing.T) {
+	sess, store, cfgStore := newIntegrationSession(t, &integrationAPI{})
+	uitest.SeedChannel(t, sess, "#general")
+
+	ch, err := store.GetChannel(t.Context(), "#general")
+	require.NoError(t, err)
+
+	ch.Members.Add("grok420_bot")
+	ch.Members.SetMode("grok420_bot", domain.ModeVoice)
+	require.NoError(t, store.SaveChannel(t.Context(), ch))
+
+	channels := orderedmap.New[domain.ChannelName, time.Time]()
+	channels.Set("#general", time.Now())
+
+	seedInstance(t, store, domain.Instance{
+		Nick:     "grok420_bot",
+		ModelID:  "test/model",
+		Channels: channels,
+	})
+
+	tm := uitest.New(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess, cfgStore)),
+		teatest.WithInitialTermSize(365, 90))
+	tm.WaitFor("#general", "grok420_bot")
+
+	view := ansi.Strip(tm.CurrentView())
+	require.Contains(t, view, "grok420_bot")
 }
 
 func TestApp_periodic_poke_generates_message(t *testing.T) {

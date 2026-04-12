@@ -86,7 +86,7 @@ func NewChatView(ch domain.ChannelName, userNick domain.Nick, topic string) Chat
 		topic:    topic,
 		userNick: userNick,
 		messages: ml,
-		input:    NewInputBar(),
+		input:    NewInputBar().SetUserNick(userNick),
 		keyMap:   keyMap,
 		popover:  NewPopover(),
 	}
@@ -269,7 +269,7 @@ func (c ChatView) handleMouse(msg tea.MouseMsg) (ChatView, bool, tea.Cmd) {
 		case tea.MouseActionPress:
 			if msg.Button == tea.MouseButtonLeft {
 				localX, _ := layout.InputRect.Local(msg.X, msg.Y)
-				c.input = c.input.SetCursorFromCell(localX - c.composerPrefixWidth())
+				c.input = c.input.SetCursorFromCell(localX)
 				c, _ = c.updatePopover(PopoverRefreshMsg{
 					Raw:    c.input.Value(),
 					Cursor: c.input.Cursor(),
@@ -297,8 +297,7 @@ func (c ChatView) handleMouse(msg tea.MouseMsg) (ChatView, bool, tea.Cmd) {
 
 // View implements ui.Model.
 func (c ChatView) View(width, height int) string {
-	nickLabel := theme.UserNick.Render(string(c.userNick)) + " "
-	inputView := nickLabel + c.input.View(width-lipgloss.Width(nickLabel), 1)
+	inputView := c.input.View(width, 1)
 	inputHeight := lipgloss.Height(inputView)
 
 	popoverView := c.popover.Render(width)
@@ -402,10 +401,6 @@ func (c ChatView) updatePopover(msg tea.Msg) (ChatView, tea.Cmd) {
 	c.popover = updated.(Popover)
 
 	return c, cmd
-}
-
-func (c ChatView) composerPrefixWidth() int {
-	return lipgloss.Width(theme.UserNick.Render(string(c.userNick))) + 1 + promptWidth()
 }
 
 func (c ChatView) renderTopic(width int) string {
