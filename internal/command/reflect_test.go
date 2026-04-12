@@ -393,7 +393,7 @@ func TestBuild_factory_creates_pointer(t *testing.T) {
 	}, toNodeMetas(nodes))
 
 	cmd := nodes[0].factory()
-	require.IsType(t, &buildJoinCommand{}, cmd)
+	require.Equal(t, &buildJoinCommand{}, cmd)
 }
 
 func TestBuild_unexported_fields_are_skipped(t *testing.T) {

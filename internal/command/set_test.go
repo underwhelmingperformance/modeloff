@@ -81,31 +81,49 @@ func TestComplete_command_suggestions_carry_usage(t *testing.T) {
 	}
 
 	tests := []struct {
-		name        string
-		raw         string
-		suggestions []Suggestion
+		name string
+		raw  string
+		want Completion
 	}{
 		{
 			name: "partial match",
 			raw:  "/j",
-			suggestions: []Suggestion{
-				{Value: "join", Label: "/join", Detail: "Join channels", Usage: "/join <channel>"},
+			want: Completion{
+				Visible:      true,
+				ReplaceStart: 1,
+				ReplaceEnd:   2,
+				AppendSpace:  true,
+				Suggestions: []Suggestion{
+					{Value: "join", Label: "/join", Detail: "Join channels", Usage: "/join <channel>"},
+				},
 			},
 		},
 		{
 			name: "exact match is still a suggestion",
 			raw:  "/quit",
-			suggestions: []Suggestion{
-				{Value: "quit", Label: "/quit", Detail: "Exit.", Usage: "/quit"},
+			want: Completion{
+				Visible:      true,
+				ReplaceStart: 1,
+				ReplaceEnd:   5,
+				AppendSpace:  true,
+				Suggestions: []Suggestion{
+					{Value: "quit", Label: "/quit", Detail: "Exit.", Usage: "/quit"},
+				},
 			},
 		},
 		{
 			name: "all commands",
 			raw:  "/",
-			suggestions: []Suggestion{
-				{Value: "join", Label: "/join", Detail: "Join channels", Usage: "/join <channel>"},
-				{Value: "list", Label: "/list", Detail: "List channels", Usage: "/list"},
-				{Value: "quit", Label: "/quit", Detail: "Exit.", Usage: "/quit"},
+			want: Completion{
+				Visible:      true,
+				ReplaceStart: 1,
+				ReplaceEnd:   1,
+				AppendSpace:  true,
+				Suggestions: []Suggestion{
+					{Value: "join", Label: "/join", Detail: "Join channels", Usage: "/join <channel>"},
+					{Value: "list", Label: "/list", Detail: "List channels", Usage: "/list"},
+					{Value: "quit", Label: "/quit", Detail: "Exit.", Usage: "/quit"},
+				},
 			},
 		},
 	}
@@ -114,8 +132,7 @@ func TestComplete_command_suggestions_carry_usage(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			completion := Complete(cmds, tt.raw, len([]rune(tt.raw)))
 
-			require.True(t, completion.Visible)
-			require.Equal(t, tt.suggestions, completion.Suggestions)
+			require.Equal(t, tt.want, completion)
 		})
 	}
 }
@@ -142,8 +159,12 @@ func TestComplete_argument_sources_are_contextual(t *testing.T) {
 
 	completion := Complete(cmds, "/kick h", 7)
 
-	require.Equal(t, []Suggestion{{Value: "helper", Label: "helper"}}, completion.Suggestions)
-	require.False(t, completion.AppendSpace)
+	require.Equal(t, Completion{
+		Visible:      true,
+		ReplaceStart: 6,
+		ReplaceEnd:   7,
+		Suggestions:  []Suggestion{{Value: "helper", Label: "helper"}},
+	}, completion)
 }
 
 func TestComplete_free_form_arguments_have_no_suggestions(t *testing.T) {
@@ -166,8 +187,11 @@ func TestComplete_free_form_arguments_have_no_suggestions(t *testing.T) {
 
 	completion := Complete(cmds, "/msg botty hello", len([]rune("/msg botty hello")))
 
-	require.True(t, completion.Visible)
-	require.Empty(t, completion.Suggestions)
+	require.Equal(t, Completion{
+		Visible:      true,
+		ReplaceStart: 11,
+		ReplaceEnd:   16,
+	}, completion)
 }
 
 func TestComplete_composes_sources(t *testing.T) {
@@ -203,11 +227,16 @@ func TestComplete_composes_sources(t *testing.T) {
 
 	completion := Complete(cmds, "/invite ", len([]rune("/invite ")))
 
-	require.Equal(t, []Suggestion{
-		{Value: "botty", Label: "botty", Detail: "test/model-a"},
-		{Value: "anthropic/claude-3-haiku", Label: "anthropic/claude-3-haiku", Detail: "Claude Haiku"},
-	}, completion.Suggestions)
-	require.True(t, completion.AppendSpace)
+	require.Equal(t, Completion{
+		Visible:      true,
+		ReplaceStart: 8,
+		ReplaceEnd:   8,
+		AppendSpace:  true,
+		Suggestions: []Suggestion{
+			{Value: "botty", Label: "botty", Detail: "test/model-a"},
+			{Value: "anthropic/claude-3-haiku", Label: "anthropic/claude-3-haiku", Detail: "Claude Haiku"},
+		},
+	}, completion)
 }
 
 func TestNode_Usage(t *testing.T) {
@@ -319,52 +348,88 @@ func TestComplete_token_boundaries(t *testing.T) {
 	}
 
 	tests := []struct {
-		name            string
-		raw             string
-		cursor          int
-		wantCmd         bool
-		wantSuggestions []Suggestion
+		name   string
+		raw    string
+		cursor int
+		want   Completion
 	}{
 		{
-			name:    "cursor at zero shows command suggestions",
-			raw:     "/k",
-			cursor:  0,
-			wantCmd: true,
+			name:   "cursor at zero shows command suggestions",
+			raw:    "/k",
+			cursor: 0,
+			want: Completion{
+				Visible:      true,
+				ReplaceStart: 1,
+				ReplaceEnd:   2,
+				AppendSpace:  true,
+				Suggestions: []Suggestion{
+					{Value: "kick", Label: "/kick", Detail: "Kick a nick", Usage: "/kick <nick>"},
+				},
+			},
 		},
 		{
-			name:    "cursor at 1 shows command suggestions",
-			raw:     "/kick alice",
-			cursor:  1,
-			wantCmd: true,
+			name:   "cursor at 1 shows command suggestions",
+			raw:    "/kick alice",
+			cursor: 1,
+			want: Completion{
+				Visible:      true,
+				ReplaceStart: 1,
+				ReplaceEnd:   5,
+				AppendSpace:  true,
+				Suggestions: []Suggestion{
+					{Value: "kick", Label: "/kick", Detail: "Kick a nick", Usage: "/kick <nick>"},
+				},
+			},
 		},
 		{
-			name:            "cursor after space shows argument suggestions",
-			raw:             "/kick ",
-			cursor:          6,
-			wantSuggestions: allNicks,
+			name:   "cursor after space shows argument suggestions",
+			raw:    "/kick ",
+			cursor: 6,
+			want: Completion{
+				Visible:      true,
+				ReplaceStart: 6,
+				ReplaceEnd:   6,
+				Suggestions:  allNicks,
+			},
 		},
 		{
-			name:            "cursor mid-argument filters",
-			raw:             "/kick al",
-			cursor:          8,
-			wantSuggestions: []Suggestion{{Value: "alice", Label: "alice"}},
+			name:   "cursor mid-argument filters",
+			raw:    "/kick al",
+			cursor: 8,
+			want: Completion{
+				Visible:      true,
+				ReplaceStart: 6,
+				ReplaceEnd:   8,
+				Suggestions:  []Suggestion{{Value: "alice", Label: "alice"}},
+			},
 		},
 		{
-			name:            "cursor beyond length is clamped",
-			raw:             "/kick ",
-			cursor:          100,
-			wantSuggestions: allNicks,
+			name:   "cursor beyond length is clamped",
+			raw:    "/kick ",
+			cursor: 100,
+			want: Completion{
+				Visible:      true,
+				ReplaceStart: 6,
+				ReplaceEnd:   6,
+				Suggestions:  allNicks,
+			},
 		},
 		{
 			name:   "not a command",
 			raw:    "hello",
 			cursor: 5,
+			want:   Completion{},
 		},
 		{
-			name:            "multiple spaces between tokens",
-			raw:             "/kick   a",
-			cursor:          9,
-			wantSuggestions: []Suggestion{{Value: "alice", Label: "alice"}},
+			name:   "multiple spaces between tokens",
+			raw:    "/kick   a",
+			cursor: 9,
+			want: Completion{
+				Visible:      true,
+				ReplaceStart: 8,
+				ReplaceEnd:   9,
+				Suggestions:  []Suggestion{{Value: "alice", Label: "alice"}},
+			},
 		},
 	}
 
@@ -372,16 +437,7 @@ func TestComplete_token_boundaries(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			completion := Complete(cmds, tt.raw, tt.cursor)
 
-			if !tt.wantCmd && tt.wantSuggestions == nil {
-				require.False(t, completion.Visible)
-				return
-			}
-
-			require.True(t, completion.Visible)
-
-			if tt.wantSuggestions != nil {
-				require.Equal(t, tt.wantSuggestions, completion.Suggestions)
-			}
+			require.Equal(t, tt.want, completion)
 		})
 	}
 }
@@ -393,8 +449,11 @@ func TestComplete_unknown_command_has_no_suggestions(t *testing.T) {
 
 	completion := Complete(cmds, "/unknown arg", len([]rune("/unknown arg")))
 
-	require.True(t, completion.Visible)
-	require.Empty(t, completion.Suggestions)
+	require.Equal(t, Completion{
+		Visible:      true,
+		ReplaceStart: 9,
+		ReplaceEnd:   12,
+	}, completion)
 }
 
 func TestComplete_contains_match(t *testing.T) {
@@ -408,10 +467,15 @@ func TestComplete_contains_match(t *testing.T) {
 	raw := "/aiku"
 	completion := Complete(cmds, raw, len([]rune(raw)))
 
-	require.True(t, completion.Visible)
-	require.Equal(t, []Suggestion{
-		{Value: "claude-3-haiku", Label: "/claude-3-haiku", Detail: "Haiku model", Usage: "/claude-3-haiku"},
-	}, completion.Suggestions)
+	require.Equal(t, Completion{
+		Visible:      true,
+		ReplaceStart: 1,
+		ReplaceEnd:   5,
+		AppendSpace:  true,
+		Suggestions: []Suggestion{
+			{Value: "claude-3-haiku", Label: "/claude-3-haiku", Detail: "Haiku model", Usage: "/claude-3-haiku"},
+		},
+	}, completion)
 }
 
 func TestNode_Find(t *testing.T) {
@@ -427,8 +491,8 @@ func TestNode_Find(t *testing.T) {
 }
 
 func TestNode_Leaf(t *testing.T) {
-	require.True(t, (&Node{Name: "quit"}).Leaf())
-	require.False(t, (&Node{Name: "admin", Children: []*Node{{Name: "ban"}}}).Leaf())
+	require.Equal(t, true, (&Node{Name: "quit"}).Leaf())
+	require.Equal(t, false, (&Node{Name: "admin", Children: []*Node{{Name: "ban"}}}).Leaf())
 }
 
 func TestParseValue_no_factory(t *testing.T) {
@@ -485,8 +549,13 @@ func TestComplete_whitespace_after_slash(t *testing.T) {
 
 	completion := Complete(cmds, "/ ", len([]rune("/ ")))
 
-	require.True(t, completion.Visible)
-	require.Empty(t, completion.Suggestions)
+	require.Equal(t, Completion{
+		Visible:      true,
+		Suggestions:  []Suggestion{},
+		ReplaceStart: 1,
+		ReplaceEnd:   2,
+		AppendSpace:  true,
+	}, completion)
 }
 
 func TestComplete_cursor_mid_command_name(t *testing.T) {
@@ -498,17 +567,18 @@ func TestComplete_cursor_mid_command_name(t *testing.T) {
 	}
 
 	raw := "/quit"
+	// Cursor mid-token still filters with the full token text.
 	completion := Complete(cmds, raw, 3)
 
-	require.True(t, completion.Visible)
-
-	var names []string
-	for _, s := range completion.Suggestions {
-		names = append(names, s.Value)
-	}
-
-	// Cursor mid-token still filters with the full token text.
-	require.Equal(t, []string{"quit"}, names)
+	require.Equal(t, Completion{
+		Visible:      true,
+		ReplaceStart: 1,
+		ReplaceEnd:   5,
+		AppendSpace:  true,
+		Suggestions: []Suggestion{
+			{Value: "quit", Label: "/quit", Detail: "Exit.", Usage: "/quit"},
+		},
+	}, completion)
 }
 
 func TestComplete_multiple_prefix_matches(t *testing.T) {
@@ -523,14 +593,17 @@ func TestComplete_multiple_prefix_matches(t *testing.T) {
 	raw := "/qu"
 	completion := Complete(cmds, raw, len([]rune(raw)))
 
-	require.True(t, completion.Visible)
-
-	var names []string
-	for _, s := range completion.Suggestions {
-		names = append(names, s.Value)
-	}
-
-	require.Equal(t, []string{"quit", "query", "queue"}, names)
+	require.Equal(t, Completion{
+		Visible:      true,
+		ReplaceStart: 1,
+		ReplaceEnd:   3,
+		AppendSpace:  true,
+		Suggestions: []Suggestion{
+			{Value: "quit", Label: "/quit", Detail: "Exit.", Usage: "/quit"},
+			{Value: "query", Label: "/query", Detail: "Query.", Usage: "/query"},
+			{Value: "queue", Label: "/queue", Detail: "Queue.", Usage: "/queue"},
+		},
+	}, completion)
 }
 
 func TestComplete_flag_name_after_positionals(t *testing.T) {
@@ -550,10 +623,15 @@ func TestComplete_flag_name_after_positionals(t *testing.T) {
 	raw := "/kick botty "
 	completion := Complete(cmds, raw, len([]rune(raw)))
 
-	require.True(t, completion.Visible)
-	require.Equal(t, []Suggestion{
-		{Value: "--reason", Label: "--reason", Detail: "Kick reason"},
-	}, completion.Suggestions)
+	require.Equal(t, Completion{
+		Visible:      true,
+		ReplaceStart: 12,
+		ReplaceEnd:   12,
+		AppendSpace:  true,
+		Suggestions: []Suggestion{
+			{Value: "--reason", Label: "--reason", Detail: "Kick reason"},
+		},
+	}, completion)
 }
 
 func TestComplete_flag_name_prefix_filters(t *testing.T) {
@@ -576,10 +654,15 @@ func TestComplete_flag_name_prefix_filters(t *testing.T) {
 	raw := "/invite model-a --per"
 	completion := Complete(cmds, raw, len([]rune(raw)))
 
-	require.True(t, completion.Visible)
-	require.Equal(t, []Suggestion{
-		{Value: "--persona", Label: "--persona", Detail: "Persona text"},
-	}, completion.Suggestions)
+	require.Equal(t, Completion{
+		Visible:      true,
+		ReplaceStart: 16,
+		ReplaceEnd:   21,
+		AppendSpace:  true,
+		Suggestions: []Suggestion{
+			{Value: "--persona", Label: "--persona", Detail: "Persona text"},
+		},
+	}, completion)
 }
 
 func TestComplete_flag_value_uses_source(t *testing.T) {
@@ -612,11 +695,16 @@ func TestComplete_flag_value_uses_source(t *testing.T) {
 	raw := "/config api-key --format "
 	completion := Complete(cmds, raw, len([]rune(raw)))
 
-	require.True(t, completion.Visible)
-	require.Equal(t, []Suggestion{
-		{Value: "json", Label: "json"},
-		{Value: "yaml", Label: "yaml"},
-	}, completion.Suggestions)
+	require.Equal(t, Completion{
+		Visible:      true,
+		ReplaceStart: 25,
+		ReplaceEnd:   25,
+		AppendSpace:  true,
+		Suggestions: []Suggestion{
+			{Value: "json", Label: "json"},
+			{Value: "yaml", Label: "yaml"},
+		},
+	}, completion)
 }
 
 func TestComplete_flag_value_filters_by_prefix(t *testing.T) {
@@ -642,10 +730,15 @@ func TestComplete_flag_value_filters_by_prefix(t *testing.T) {
 	raw := "/config --format j"
 	completion := Complete(cmds, raw, len([]rune(raw)))
 
-	require.True(t, completion.Visible)
-	require.Equal(t, []Suggestion{
-		{Value: "json", Label: "json"},
-	}, completion.Suggestions)
+	require.Equal(t, Completion{
+		Visible:      true,
+		ReplaceStart: 17,
+		ReplaceEnd:   18,
+		AppendSpace:  true,
+		Suggestions: []Suggestion{
+			{Value: "json", Label: "json"},
+		},
+	}, completion)
 }
 
 func TestComplete_flags_interleaved_with_positionals(t *testing.T) {
@@ -670,10 +763,15 @@ func TestComplete_flags_interleaved_with_positionals(t *testing.T) {
 	raw := "/invite --persona friendly "
 	completion := Complete(cmds, raw, len([]rune(raw)))
 
-	require.True(t, completion.Visible)
-	require.Equal(t, []Suggestion{
-		{Value: "claude", Label: "claude"},
-	}, completion.Suggestions)
+	require.Equal(t, Completion{
+		Visible:      true,
+		ReplaceStart: 27,
+		ReplaceEnd:   27,
+		AppendSpace:  true,
+		Suggestions: []Suggestion{
+			{Value: "claude", Label: "claude"},
+		},
+	}, completion)
 }
 
 func TestComplete_subcommand_names(t *testing.T) {
@@ -692,24 +790,48 @@ func TestComplete_subcommand_names(t *testing.T) {
 	}
 
 	tests := []struct {
-		name  string
-		raw   string
-		wants []string
+		name string
+		raw  string
+		want Completion
 	}{
 		{
-			name:  "all subcommands",
-			raw:   "/admin ",
-			wants: []string{"ban", "unban", "mute"},
+			name: "all subcommands",
+			raw:  "/admin ",
+			want: Completion{
+				Visible:      true,
+				ReplaceStart: 7,
+				ReplaceEnd:   7,
+				AppendSpace:  true,
+				Suggestions: []Suggestion{
+					{Value: "ban", Label: "ban", Detail: "Ban a user"},
+					{Value: "unban", Label: "unban", Detail: "Unban a user"},
+					{Value: "mute", Label: "mute", Detail: "Mute a user"},
+				},
+			},
 		},
 		{
-			name:  "filtered by prefix",
-			raw:   "/admin mu",
-			wants: []string{"mute"},
+			name: "filtered by prefix",
+			raw:  "/admin mu",
+			want: Completion{
+				Visible:      true,
+				ReplaceStart: 7,
+				ReplaceEnd:   9,
+				AppendSpace:  true,
+				Suggestions: []Suggestion{
+					{Value: "mute", Label: "mute", Detail: "Mute a user"},
+				},
+			},
 		},
 		{
-			name:  "no match",
-			raw:   "/admin x",
-			wants: nil,
+			name: "no match",
+			raw:  "/admin x",
+			want: Completion{
+				Visible:      true,
+				Suggestions:  []Suggestion{},
+				ReplaceStart: 7,
+				ReplaceEnd:   8,
+				AppendSpace:  true,
+			},
 		},
 	}
 
@@ -717,14 +839,7 @@ func TestComplete_subcommand_names(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			completion := Complete(cmds, tt.raw, len([]rune(tt.raw)))
 
-			require.True(t, completion.Visible)
-
-			var names []string
-			for _, s := range completion.Suggestions {
-				names = append(names, s.Value)
-			}
-
-			require.Equal(t, tt.wants, names)
+			require.Equal(t, tt.want, completion)
 		})
 	}
 }
@@ -744,24 +859,45 @@ func TestComplete_flag_only_command(t *testing.T) {
 	}
 
 	tests := []struct {
-		name  string
-		raw   string
-		wants []string
+		name string
+		raw  string
+		want Completion
 	}{
 		{
-			name:  "all flags offered",
-			raw:   "/config ",
-			wants: []string{"--api-key", "--theme"},
+			name: "all flags offered",
+			raw:  "/config ",
+			want: Completion{
+				Visible:      true,
+				ReplaceStart: 8,
+				ReplaceEnd:   8,
+				AppendSpace:  true,
+				Suggestions: []Suggestion{
+					{Value: "--api-key", Label: "--api-key", Detail: "API key"},
+					{Value: "--theme", Label: "--theme", Detail: "Theme"},
+				},
+			},
 		},
 		{
-			name:  "used flag excluded",
-			raw:   "/config --api-key secret ",
-			wants: []string{"--theme"},
+			name: "used flag excluded",
+			raw:  "/config --api-key secret ",
+			want: Completion{
+				Visible:      true,
+				ReplaceStart: 25,
+				ReplaceEnd:   25,
+				AppendSpace:  true,
+				Suggestions: []Suggestion{
+					{Value: "--theme", Label: "--theme", Detail: "Theme"},
+				},
+			},
 		},
 		{
-			name:  "all flags used",
-			raw:   "/config --api-key secret --theme dark ",
-			wants: nil,
+			name: "all flags used",
+			raw:  "/config --api-key secret --theme dark ",
+			want: Completion{
+				Visible:      true,
+				ReplaceStart: 38,
+				ReplaceEnd:   38,
+			},
 		},
 	}
 
@@ -769,14 +905,7 @@ func TestComplete_flag_only_command(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			completion := Complete(cmds, tt.raw, len([]rune(tt.raw)))
 
-			require.True(t, completion.Visible)
-
-			var names []string
-			for _, s := range completion.Suggestions {
-				names = append(names, s.Value)
-			}
-
-			require.Equal(t, tt.wants, names)
+			require.Equal(t, tt.want, completion)
 		})
 	}
 }
@@ -812,34 +941,79 @@ func TestComplete_subcommand_recurses_into_child(t *testing.T) {
 	}
 
 	tests := []struct {
-		name  string
-		raw   string
-		wants []string
+		name string
+		raw  string
+		want Completion
 	}{
 		{
-			name:  "subcommand names after parent",
-			raw:   "/config ",
-			wants: []string{"set", "get", "reset", "--format"},
+			name: "subcommand names after parent",
+			raw:  "/config ",
+			want: Completion{
+				Visible:      true,
+				ReplaceStart: 8,
+				ReplaceEnd:   8,
+				AppendSpace:  true,
+				Suggestions: []Suggestion{
+					{Value: "set", Label: "set", Detail: "Set a value"},
+					{Value: "get", Label: "get", Detail: "Get a value"},
+					{Value: "reset", Label: "reset", Detail: "Reset config"},
+					{Value: "--format", Label: "--format", Detail: "Output format"},
+				},
+			},
 		},
 		{
-			name:  "subcommand names filtered",
-			raw:   "/config s",
-			wants: []string{"set", "reset"},
+			name: "subcommand names filtered",
+			raw:  "/config s",
+			want: Completion{
+				Visible:      true,
+				ReplaceStart: 8,
+				ReplaceEnd:   9,
+				AppendSpace:  true,
+				Suggestions: []Suggestion{
+					{Value: "set", Label: "set", Detail: "Set a value"},
+					{Value: "reset", Label: "reset", Detail: "Reset config"},
+				},
+			},
 		},
 		{
-			name:  "child positional after subcommand selected",
-			raw:   "/config set ",
-			wants: []string{"api-key", "theme"},
+			name: "child positional after subcommand selected",
+			raw:  "/config set ",
+			want: Completion{
+				Visible:      true,
+				ReplaceStart: 12,
+				ReplaceEnd:   12,
+				AppendSpace:  true,
+				Suggestions: []Suggestion{
+					{Value: "api-key", Label: "api-key"},
+					{Value: "theme", Label: "theme"},
+				},
+			},
 		},
 		{
-			name:  "ancestor flag suggested on child",
-			raw:   "/config set --",
-			wants: []string{"--format"},
+			name: "ancestor flag suggested on child",
+			raw:  "/config set --",
+			want: Completion{
+				Visible:      true,
+				ReplaceStart: 12,
+				ReplaceEnd:   14,
+				AppendSpace:  true,
+				Suggestions: []Suggestion{
+					{Value: "--format", Label: "--format", Detail: "Output format"},
+				},
+			},
 		},
 		{
-			name:  "child positional filtered",
-			raw:   "/config set th",
-			wants: []string{"theme"},
+			name: "child positional filtered",
+			raw:  "/config set th",
+			want: Completion{
+				Visible:      true,
+				ReplaceStart: 12,
+				ReplaceEnd:   14,
+				AppendSpace:  true,
+				Suggestions: []Suggestion{
+					{Value: "theme", Label: "theme"},
+				},
+			},
 		},
 	}
 
@@ -847,14 +1021,7 @@ func TestComplete_subcommand_recurses_into_child(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			completion := Complete(cmds, tt.raw, len([]rune(tt.raw)))
 
-			require.True(t, completion.Visible)
-
-			var names []string
-			for _, s := range completion.Suggestions {
-				names = append(names, s.Value)
-			}
-
-			require.Equal(t, tt.wants, names)
+			require.Equal(t, tt.want, completion)
 		})
 	}
 }
@@ -877,12 +1044,17 @@ func TestComplete_group_node_combines_child_and_flag_suggestions(t *testing.T) {
 
 	completion := Complete(cmds, "/config ", len([]rune("/config ")))
 
-	require.True(t, completion.Visible)
-	require.Equal(t, []Suggestion{
-		{Value: "set", Label: "set", Detail: "Set a value"},
-		{Value: "get", Label: "get", Detail: "Get a value"},
-		{Value: "--format", Label: "--format", Detail: "Output format"},
-	}, completion.Suggestions)
+	require.Equal(t, Completion{
+		Visible:      true,
+		ReplaceStart: 8,
+		ReplaceEnd:   8,
+		AppendSpace:  true,
+		Suggestions: []Suggestion{
+			{Value: "set", Label: "set", Detail: "Set a value"},
+			{Value: "get", Label: "get", Detail: "Get a value"},
+			{Value: "--format", Label: "--format", Detail: "Output format"},
+		},
+	}, completion)
 }
 
 func TestComplete_ancestor_flag_value_uses_source(t *testing.T) {
@@ -914,11 +1086,16 @@ func TestComplete_ancestor_flag_value_uses_source(t *testing.T) {
 
 	completion := Complete(cmds, "/config set --format ", len([]rune("/config set --format ")))
 
-	require.True(t, completion.Visible)
-	require.Equal(t, []Suggestion{
-		{Value: "json", Label: "json"},
-		{Value: "yaml", Label: "yaml"},
-	}, completion.Suggestions)
+	require.Equal(t, Completion{
+		Visible:      true,
+		ReplaceStart: 21,
+		ReplaceEnd:   21,
+		AppendSpace:  true,
+		Suggestions: []Suggestion{
+			{Value: "json", Label: "json"},
+			{Value: "yaml", Label: "yaml"},
+		},
+	}, completion)
 }
 
 func TestComplete_used_ancestor_flags_are_excluded(t *testing.T) {
@@ -938,8 +1115,13 @@ func TestComplete_used_ancestor_flags_are_excluded(t *testing.T) {
 
 	completion := Complete(cmds, "/config set --format json --", len([]rune("/config set --format json --")))
 
-	require.True(t, completion.Visible)
-	require.Empty(t, completion.Suggestions)
+	require.Equal(t, Completion{
+		Visible:      true,
+		Suggestions:  []Suggestion{},
+		ReplaceStart: 26,
+		ReplaceEnd:   28,
+		AppendSpace:  true,
+	}, completion)
 }
 
 func TestComplete_bool_flag_does_not_expect_a_value(t *testing.T) {
@@ -960,11 +1142,16 @@ func TestComplete_bool_flag_does_not_expect_a_value(t *testing.T) {
 
 	completion := Complete(cmds, "/config --reset ", len([]rune("/config --reset ")))
 
-	require.True(t, completion.Visible)
-	require.Equal(t, []Suggestion{
-		{Value: "api-key", Label: "api-key", Detail: "API key"},
-		{Value: "poke-interval", Label: "poke-interval", Detail: "Poke interval"},
-	}, completion.Suggestions)
+	require.Equal(t, Completion{
+		Visible:      true,
+		ReplaceStart: 16,
+		ReplaceEnd:   16,
+		AppendSpace:  true,
+		Suggestions: []Suggestion{
+			{Value: "api-key", Label: "api-key", Detail: "API key"},
+			{Value: "poke-interval", Label: "poke-interval", Detail: "Poke interval"},
+		},
+	}, completion)
 }
 
 func TestComplete_deep_nesting_walks_into_grandchildren(t *testing.T) {
@@ -1001,34 +1188,76 @@ func TestComplete_deep_nesting_walks_into_grandchildren(t *testing.T) {
 	}
 
 	tests := []struct {
-		name  string
-		raw   string
-		wants []string
+		name string
+		raw  string
+		want Completion
 	}{
 		{
-			name:  "level 1: top children",
-			raw:   "/admin ",
-			wants: []string{"user", "stats"},
+			name: "level 1: top children",
+			raw:  "/admin ",
+			want: Completion{
+				Visible:      true,
+				ReplaceStart: 7,
+				ReplaceEnd:   7,
+				AppendSpace:  true,
+				Suggestions: []Suggestion{
+					{Value: "user", Label: "user", Detail: "User management"},
+					{Value: "stats", Label: "stats", Detail: "Show stats"},
+				},
+			},
 		},
 		{
-			name:  "level 2: grandchildren",
-			raw:   "/admin user ",
-			wants: []string{"ban", "unban"},
+			name: "level 2: grandchildren",
+			raw:  "/admin user ",
+			want: Completion{
+				Visible:      true,
+				ReplaceStart: 12,
+				ReplaceEnd:   12,
+				AppendSpace:  true,
+				Suggestions: []Suggestion{
+					{Value: "ban", Label: "ban", Detail: "Ban a user"},
+					{Value: "unban", Label: "unban", Detail: "Unban a user"},
+				},
+			},
 		},
 		{
-			name:  "level 2: filtered grandchildren",
-			raw:   "/admin user b",
-			wants: []string{"ban", "unban"},
+			name: "level 2: filtered grandchildren",
+			raw:  "/admin user b",
+			want: Completion{
+				Visible:      true,
+				ReplaceStart: 12,
+				ReplaceEnd:   13,
+				AppendSpace:  true,
+				Suggestions: []Suggestion{
+					{Value: "ban", Label: "ban", Detail: "Ban a user"},
+					{Value: "unban", Label: "unban", Detail: "Unban a user"},
+				},
+			},
 		},
 		{
-			name:  "level 3: leaf positional source",
-			raw:   "/admin user ban ",
-			wants: []string{"alice", "bob"},
+			name: "level 3: leaf positional source",
+			raw:  "/admin user ban ",
+			want: Completion{
+				Visible:      true,
+				ReplaceStart: 16,
+				ReplaceEnd:   16,
+				Suggestions: []Suggestion{
+					{Value: "alice", Label: "alice"},
+					{Value: "bob", Label: "bob"},
+				},
+			},
 		},
 		{
-			name:  "level 3: leaf positional filtered",
-			raw:   "/admin user ban a",
-			wants: []string{"alice"},
+			name: "level 3: leaf positional filtered",
+			raw:  "/admin user ban a",
+			want: Completion{
+				Visible:      true,
+				ReplaceStart: 16,
+				ReplaceEnd:   17,
+				Suggestions: []Suggestion{
+					{Value: "alice", Label: "alice"},
+				},
+			},
 		},
 	}
 
@@ -1036,14 +1265,7 @@ func TestComplete_deep_nesting_walks_into_grandchildren(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			completion := Complete(cmds, tt.raw, len([]rune(tt.raw)))
 
-			require.True(t, completion.Visible)
-
-			var names []string
-			for _, s := range completion.Suggestions {
-				names = append(names, s.Value)
-			}
-
-			require.Equal(t, tt.wants, names)
+			require.Equal(t, tt.want, completion)
 		})
 	}
 }
@@ -1071,11 +1293,15 @@ func TestComplete_optional_positional_with_source(t *testing.T) {
 	raw := "/invite "
 	completion := Complete(cmds, raw, len([]rune(raw)))
 
-	require.True(t, completion.Visible)
-	require.Equal(t, []Suggestion{
-		{Value: "claude", Label: "claude"},
-		{Value: "gemini", Label: "gemini"},
-	}, completion.Suggestions)
+	require.Equal(t, Completion{
+		Visible:      true,
+		ReplaceStart: 8,
+		ReplaceEnd:   8,
+		Suggestions: []Suggestion{
+			{Value: "claude", Label: "claude"},
+			{Value: "gemini", Label: "gemini"},
+		},
+	}, completion)
 }
 
 // --- Tool schema tests ---
@@ -1195,31 +1421,47 @@ func TestToolParameters(t *testing.T) {
 		node := s.Find("kick")
 		params := node.ToolParameters()
 
-		props := params["properties"].(map[string]any)
-		require.Contains(t, props, "nick")
-		require.Contains(t, props, "reason")
-		require.Equal(t, []string{"nick"}, params["required"])
+		require.Equal(t, map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"nick":   map[string]any{"type": "string", "description": "Nick to kick"},
+				"reason": map[string]any{"type": "string", "description": "Kick reason"},
+			},
+			"required":             []string{"nick"},
+			"additionalProperties": false,
+		}, params)
 	})
 
 	t.Run("int and bool types", func(t *testing.T) {
 		node := s.Find("count")
 		params := node.ToolParameters()
 
-		props := params["properties"].(map[string]any)
-		require.Equal(t, map[string]any{"type": "integer", "description": "Number of items"}, props["count"])
-		require.Equal(t, map[string]any{"type": "boolean", "description": "Force operation"}, props["force"])
+		require.Equal(t, map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"count": map[string]any{"type": "integer", "description": "Number of items"},
+				"force": map[string]any{"type": "boolean", "description": "Force operation"},
+			},
+			"required":             []string{"count"},
+			"additionalProperties": false,
+		}, params)
 	})
 
 	t.Run("slice type", func(t *testing.T) {
 		node := s.Find("slice")
 		params := node.ToolParameters()
 
-		props := params["properties"].(map[string]any)
 		require.Equal(t, map[string]any{
-			"type":        "array",
-			"items":       map[string]any{"type": "string"},
-			"description": "Tags to apply",
-		}, props["tags"])
+			"type": "object",
+			"properties": map[string]any{
+				"tags": map[string]any{
+					"type":        "array",
+					"items":       map[string]any{"type": "string"},
+					"description": "Tags to apply",
+				},
+			},
+			"additionalProperties": false,
+		}, params)
 	})
 }
 
@@ -1350,8 +1592,6 @@ func TestNewZero(t *testing.T) {
 		node := s.Find("join")
 		val := node.NewZero()
 
-		require.NotNil(t, val)
-		require.IsType(t, (*toolJoinCmd)(nil), val)
 		require.Equal(t, &toolJoinCmd{}, val)
 	})
 

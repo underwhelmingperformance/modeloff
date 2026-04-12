@@ -294,8 +294,7 @@ func TestParser_Parse_rejects_non_command(t *testing.T) {
 	parser := BuildParser[testContext, testResult](&nonRunnableGrammar{})
 
 	_, err := parser.Parse("/join foo")
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "does not implement")
+	require.ErrorContains(t, err, "does not implement")
 }
 
 func TestParser_Set_returns_underlying_set(t *testing.T) {
@@ -490,12 +489,10 @@ func TestParseInvocation_returns_branch_values(t *testing.T) {
 	require.Equal(t, parentConfigCommand{Format: "json"}, invocation.Path[0].Value)
 	require.Equal(t, subSetCommand{Key: "api-key", Value: "sk-1234"}, invocation.Path[1].Value)
 
-	parentValue, ok := invocation.ValueFor(invocation.Path[0].Node)
-	require.True(t, ok)
+	parentValue, _ := invocation.ValueFor(invocation.Path[0].Node)
 	require.Equal(t, parentConfigCommand{Format: "json"}, parentValue)
 
-	pathValue, ok := invocation.ValueAtPath("config")
-	require.True(t, ok)
+	pathValue, _ := invocation.ValueAtPath("config")
 	require.Equal(t, parentConfigCommand{Format: "json"}, pathValue)
 }
 
