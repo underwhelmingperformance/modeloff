@@ -1,6 +1,7 @@
 package command
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -448,7 +449,7 @@ func TestBuild_picks_up_completer_sources(t *testing.T) {
 	require.NotNil(t, nodes[0].Positionals[0].Source, "Source should be wired from Completer")
 }
 
-func TestBuild_panics_on_undecodable_field(t *testing.T) {
+func TestBuild_undecodable_field_returns_field_error(t *testing.T) {
 	type badCommand struct {
 		Ch chan int `arg:"" help:"A channel"`
 	}
@@ -457,9 +458,12 @@ func TestBuild_panics_on_undecodable_field(t *testing.T) {
 		Bad badCommand `cmd:"" help:"Bad."`
 	}{}
 
-	require.Panics(t, func() {
-		Build(grammar)
-	})
+	_, err := build(grammar)
+
+	var fieldErr *FieldError
+	require.ErrorAs(t, err, &fieldErr)
+	require.Equal(t, "Bad", fieldErr.Field)
+	require.Equal(t, &NoDecoderError{Type: reflect.TypeFor[chan int]()}, fieldErr.Err)
 }
 
 // --- Subcommand (recursive build) tests ---

@@ -106,7 +106,7 @@ func (p Parser[C, R]) Parse(input string) (Command[C, R], error) {
 
 	cmd, ok := invocation.Leaf().(Command[C, R])
 	if !ok {
-		return nil, fmt.Errorf("parsed command %T does not implement the expected command interface", invocation.Leaf())
+		return nil, &InterfaceError{Value: invocation.Leaf()}
 	}
 
 	return cmd, nil
@@ -132,26 +132,6 @@ func Build(grammar any) Set {
 	return Set{Commands: nodes}
 }
 
-// SubcommandError is returned when a group node is invoked without
-// specifying a subcommand.
-type SubcommandError struct {
-	Node *Node
-}
-
-func (e *SubcommandError) Error() string {
-	var names []string
-	for _, child := range e.Node.Children {
-		for name := range child.Names() {
-			names = append(names, name)
-		}
-	}
-
-	return fmt.Sprintf(
-		"/%s requires a subcommand: %s",
-		e.Node.Path(), strings.Join(names, ", "),
-	)
-}
-
 // ParseValue tokenises a raw slash-command string, resolves the
 // matching branch in the set, and returns the selected leaf value.
 func (s Set) ParseValue(input string) (any, error) {
@@ -172,7 +152,7 @@ func (s Set) ParseInvocation(input string) (Invocation, error) {
 	input = strings.TrimSpace(input)
 
 	if input == "" || input[0] != '/' {
-		return Invocation{}, fmt.Errorf("not a command: %q", input)
+		return Invocation{}, &NotACommandError{Input: input}
 	}
 
 	fields := strings.Fields(input)
@@ -181,7 +161,7 @@ func (s Set) ParseInvocation(input string) (Invocation, error) {
 
 	node := s.Find(name)
 	if node == nil {
-		return Invocation{}, fmt.Errorf("unknown command: /%s", name)
+		return Invocation{}, &UnknownCommandError{Name: name}
 	}
 
 	path := []*Node{node}
@@ -276,7 +256,7 @@ func consumeInvocationToken(
 	}
 
 	if len(current.Children) > 0 {
-		return nil, index, false, fmt.Errorf("unknown subcommand %q for /%s", tok, current.Path())
+		return nil, index, false, &UnknownSubcommandError{Name: tok, Node: current}
 	}
 
 	state.args = append(state.args, tok)
@@ -328,7 +308,7 @@ func buildInvocation(path []*Node, values map[*Node]any, states map[*Node]*nodeS
 
 		if pathNode.factory == nil {
 			if len(pathNode.Children) == 0 {
-				return Invocation{}, fmt.Errorf("command /%s has no factory", pathNode.Path())
+				return Invocation{}, &NoFactoryError{Node: pathNode}
 			}
 
 			invocation.Path = append(invocation.Path, NodeValue{

@@ -570,7 +570,9 @@ func TestParseValue_no_factory(t *testing.T) {
 
 	_, err := cmds.ParseValue("/broken")
 
-	require.ErrorContains(t, err, "no factory")
+	var noFactory *NoFactoryError
+	require.ErrorAs(t, err, &noFactory)
+	require.Equal(t, &NoFactoryError{Node: cmds.Commands[0]}, noFactory)
 }
 
 func TestParseValue_after_merge(t *testing.T) {

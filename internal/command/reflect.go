@@ -259,18 +259,18 @@ func build(grammar any) ([]*Node, error) {
 
 		node, err := buildNode(ft, v.Field(i))
 		if err != nil {
-			return nil, fmt.Errorf("field %s: %w", ft.Name, err)
+			return nil, &FieldError{Field: ft.Name, Err: err}
 		}
 
 		if owner, ok := seenNames[node.Name]; ok {
-			return nil, fmt.Errorf("duplicate command name %q (conflicts with %s)", node.Name, owner)
+			return nil, &DuplicateCommandError{Name: node.Name, ConflictsWith: owner}
 		}
 
 		seenNames[node.Name] = node.Name
 
 		for _, alias := range node.Aliases {
 			if owner, ok := seenNames[alias]; ok {
-				return nil, fmt.Errorf("alias %q on command %q conflicts with %s", alias, node.Name, owner)
+				return nil, &AliasCollisionError{Alias: alias, Command: node.Name, ConflictsWith: owner}
 			}
 
 			seenNames[alias] = node.Name

@@ -76,10 +76,9 @@ func TestParseValue(t *testing.T) {
 	cmds := allCommands()
 
 	tests := []struct {
-		name    string
-		input   string
-		want    any
-		wantErr bool
+		name  string
+		input string
+		want  any
 	}{
 		{
 			name:  "join with arg",
@@ -87,19 +86,9 @@ func TestParseValue(t *testing.T) {
 			want:  testJoinCommand{Channel: "test-channel"},
 		},
 		{
-			name:    "join without args",
-			input:   "/join",
-			wantErr: true,
-		},
-		{
 			name:  "part",
 			input: "/part",
 			want:  testPartCommand{},
-		},
-		{
-			name:    "part rejects extra args",
-			input:   "/part extra stuff",
-			wantErr: true,
 		},
 		{
 			name:  "list",
@@ -145,11 +134,6 @@ func TestParseValue(t *testing.T) {
 			want:  testKickCommand{Nick: "claud3"},
 		},
 		{
-			name:    "kick without args",
-			input:   "/kick",
-			wantErr: true,
-		},
-		{
 			name:  "msg with nick and message",
 			input: "/msg claud3 hello there",
 			want:  testMsgCommand{Nick: "claud3", Body: []string{"hello", "there"}},
@@ -160,19 +144,9 @@ func TestParseValue(t *testing.T) {
 			want:  testMsgCommand{Nick: "claud3"},
 		},
 		{
-			name:    "msg without args",
-			input:   "/msg",
-			wantErr: true,
-		},
-		{
 			name:  "nick with new name",
 			input: "/nick alice",
 			want:  testNickCommand{Nick: "alice"},
-		},
-		{
-			name:    "nick without args",
-			input:   "/nick",
-			wantErr: true,
 		},
 		{
 			name:  "topic with text",
@@ -188,11 +162,6 @@ func TestParseValue(t *testing.T) {
 			name:  "whois with nick",
 			input: "/whois claud3",
 			want:  testWhoisCommand{Nick: "claud3"},
-		},
-		{
-			name:    "whois without args",
-			input:   "/whois",
-			wantErr: true,
 		},
 		{
 			name:  "help",
@@ -214,33 +183,11 @@ func TestParseValue(t *testing.T) {
 			input: "/config api-key test-key",
 			want:  testConfigCommand{Key: "api-key", Value: []string{"test-key"}},
 		},
-		// Edge cases
-		{
-			name:    "empty string",
-			input:   "",
-			wantErr: true,
-		},
-		{
-			name:    "not a command",
-			input:   "hello world",
-			wantErr: true,
-		},
-		{
-			name:    "unknown command",
-			input:   "/unknown",
-			wantErr: true,
-		},
 		{
 			name:  "command with extra whitespace",
 			input: "/join   test-channel  ",
 			want:  testJoinCommand{Channel: "test-channel"},
 		},
-		{
-			name:    "slash only",
-			input:   "/",
-			wantErr: true,
-		},
-		// Alias support
 		{
 			name:  "alias resolves to command",
 			input: "/j test-channel",
@@ -256,24 +203,42 @@ func TestParseValue(t *testing.T) {
 			input: "/q",
 			want:  testQuitCommand{},
 		},
-		{
-			name:    "unknown alias errors",
-			input:   "/z",
-			wantErr: true,
-		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			parsed, err := cmds.ParseValue(tt.input)
-
-			if tt.wantErr {
-				require.Error(t, err)
-				return
-			}
-
 			require.NoError(t, err)
 			require.Equal(t, tt.want, parsed)
+		})
+	}
+}
+
+func TestParseValue_errors(t *testing.T) {
+	cmds := allCommands()
+
+	tests := []struct {
+		name    string
+		input   string
+		wantErr error
+	}{
+		{name: "empty string", input: "", wantErr: &NotACommandError{}},
+		{name: "not a command", input: "hello world", wantErr: &NotACommandError{}},
+		{name: "slash only", input: "/", wantErr: &UnknownCommandError{}},
+		{name: "unknown command", input: "/unknown", wantErr: &UnknownCommandError{}},
+		{name: "unknown alias", input: "/z", wantErr: &UnknownCommandError{}},
+		{name: "join without args", input: "/join", wantErr: &MissingArgError{}},
+		{name: "part rejects extra args", input: "/part extra stuff", wantErr: &ExtraArgsError{}},
+		{name: "kick without args", input: "/kick", wantErr: &MissingArgError{}},
+		{name: "msg without args", input: "/msg", wantErr: &MissingArgError{}},
+		{name: "nick without args", input: "/nick", wantErr: &MissingArgError{}},
+		{name: "whois without args", input: "/whois", wantErr: &MissingArgError{}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := cmds.ParseValue(tt.input)
+			require.ErrorAs(t, err, &tt.wantErr)
 		})
 	}
 }
@@ -307,7 +272,6 @@ func TestParser_Parse_returns_typed_command(t *testing.T) {
 }
 
 func TestParser_Parse_rejects_non_command(t *testing.T) {
-	// testJoinCommand does not implement Command[testContext, testResult]
 	type nonRunnableGrammar struct {
 		Join testJoinCommand `cmd:"" help:"Join."`
 	}
@@ -315,7 +279,10 @@ func TestParser_Parse_rejects_non_command(t *testing.T) {
 	parser := BuildParser[testContext, testResult](&nonRunnableGrammar{})
 
 	_, err := parser.Parse("/join foo")
-	require.ErrorContains(t, err, "does not implement")
+
+	var cmdErr *InterfaceError
+	require.ErrorAs(t, err, &cmdErr)
+	require.Equal(t, &InterfaceError{Value: testJoinCommand{Channel: "foo"}}, cmdErr)
 }
 
 func TestParser_Set_returns_underlying_set(t *testing.T) {
@@ -363,65 +330,43 @@ func TestParseValue_subcommands(t *testing.T) {
 	cmds := Build(&subcommandGrammar{})
 
 	tests := []struct {
-		name    string
-		input   string
-		want    any
-		wantErr string
+		name  string
+		input string
+		want  any
 	}{
-		{
-			name:  "subcommand with one arg",
-			input: "/config get api-key",
-			want:  subGetCommand{Key: "api-key"},
-		},
-		{
-			name:  "subcommand with two args",
-			input: "/config set api-key sk-1234",
-			want:  subSetCommand{Key: "api-key", Value: "sk-1234"},
-		},
-		{
-			name:  "subcommand with no args",
-			input: "/config reset",
-			want:  subResetCommand{},
-		},
-		{
-			name:  "parent flag before child",
-			input: "/config --format json set api-key sk-1234",
-			want:  subSetCommand{Key: "api-key", Value: "sk-1234"},
-		},
-		{
-			name:  "parent flag after child",
-			input: "/config set --format json api-key sk-1234",
-			want:  subSetCommand{Key: "api-key", Value: "sk-1234"},
-		},
-		{
-			name:    "group node without subcommand",
-			input:   "/config",
-			wantErr: "subcommand",
-		},
-		{
-			name:    "unknown subcommand",
-			input:   "/config bogus",
-			wantErr: "unknown subcommand",
-		},
-		{
-			name:  "leaf command still works",
-			input: "/quit",
-			want:  testQuitCommand{},
-		},
+		{name: "subcommand with one arg", input: "/config get api-key", want: subGetCommand{Key: "api-key"}},
+		{name: "subcommand with two args", input: "/config set api-key sk-1234", want: subSetCommand{Key: "api-key", Value: "sk-1234"}},
+		{name: "subcommand with no args", input: "/config reset", want: subResetCommand{}},
+		{name: "parent flag before child", input: "/config --format json set api-key sk-1234", want: subSetCommand{Key: "api-key", Value: "sk-1234"}},
+		{name: "parent flag after child", input: "/config set --format json api-key sk-1234", want: subSetCommand{Key: "api-key", Value: "sk-1234"}},
+		{name: "leaf command still works", input: "/quit", want: testQuitCommand{}},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			parsed, err := cmds.ParseValue(tt.input)
-
-			if tt.wantErr != "" {
-				require.Error(t, err)
-				require.ErrorContains(t, err, tt.wantErr)
-				return
-			}
-
 			require.NoError(t, err)
 			require.Equal(t, tt.want, parsed)
+		})
+	}
+}
+
+func TestParseValue_subcommand_errors(t *testing.T) {
+	cmds := Build(&subcommandGrammar{})
+
+	tests := []struct {
+		name    string
+		input   string
+		wantErr error
+	}{
+		{name: "group node without subcommand", input: "/config", wantErr: &SubcommandError{}},
+		{name: "unknown subcommand", input: "/config bogus", wantErr: &UnknownSubcommandError{}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := cmds.ParseValue(tt.input)
+			require.ErrorAs(t, err, &tt.wantErr)
 		})
 	}
 }
@@ -452,45 +397,39 @@ func TestParseValue_deeply_nested_subcommands(t *testing.T) {
 	cmds := Build(&deepGrammar{})
 
 	tests := []struct {
-		name    string
-		input   string
-		want    any
-		wantErr string
+		name  string
+		input string
+		want  any
 	}{
-		{
-			name:  "three levels deep",
-			input: "/top mid leaf hello",
-			want:  deepLeafCommand{Name: "hello"},
-		},
-		{
-			name:  "ancestor flags at multiple levels",
-			input: "/top --format json mid --theme dark leaf hello",
-			want:  deepLeafCommand{Name: "hello"},
-		},
-		{
-			name:    "stops at group node",
-			input:   "/top mid",
-			wantErr: "subcommand",
-		},
-		{
-			name:    "stops at top group node",
-			input:   "/top",
-			wantErr: "subcommand",
-		},
+		{name: "three levels deep", input: "/top mid leaf hello", want: deepLeafCommand{Name: "hello"}},
+		{name: "ancestor flags at multiple levels", input: "/top --format json mid --theme dark leaf hello", want: deepLeafCommand{Name: "hello"}},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			parsed, err := cmds.ParseValue(tt.input)
-
-			if tt.wantErr != "" {
-				require.Error(t, err)
-				require.ErrorContains(t, err, tt.wantErr)
-				return
-			}
-
 			require.NoError(t, err)
 			require.Equal(t, tt.want, parsed)
+		})
+	}
+}
+
+func TestParseValue_deeply_nested_subcommand_errors(t *testing.T) {
+	cmds := Build(&deepGrammar{})
+
+	tests := []struct {
+		name    string
+		input   string
+		wantErr error
+	}{
+		{name: "stops at group node", input: "/top mid", wantErr: &SubcommandError{}},
+		{name: "stops at top group node", input: "/top", wantErr: &SubcommandError{}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := cmds.ParseValue(tt.input)
+			require.ErrorAs(t, err, &tt.wantErr)
 		})
 	}
 }
@@ -531,7 +470,7 @@ func TestBuild_rejects_alias_collisions(t *testing.T) {
 	tests := []struct {
 		name    string
 		grammar any
-		wantErr string
+		wantErr error
 	}{
 		{
 			name: "alias collides with command name",
@@ -539,7 +478,7 @@ func TestBuild_rejects_alias_collisions(t *testing.T) {
 				J    struct{} `cmd:"" help:"Exact J."`
 				Join struct{} `cmd:"" aliases:"j" help:"Join."`
 			}{},
-			wantErr: `alias "j" on command "join" conflicts with j`,
+			wantErr: &AliasCollisionError{Alias: "j", Command: "join", ConflictsWith: "j"},
 		},
 		{
 			name: "duplicate alias across commands",
@@ -547,14 +486,14 @@ func TestBuild_rejects_alias_collisions(t *testing.T) {
 				Join struct{} `cmd:"" aliases:"j" help:"Join."`
 				Jump struct{} `cmd:"" aliases:"j" help:"Jump."`
 			}{},
-			wantErr: `alias "j" on command "jump" conflicts with join`,
+			wantErr: &AliasCollisionError{Alias: "j", Command: "jump", ConflictsWith: "join"},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := build(tt.grammar)
-			require.EqualError(t, err, tt.wantErr)
+			require.Equal(t, tt.wantErr, err)
 		})
 	}
 }
@@ -684,5 +623,8 @@ func TestSubcommandError_includes_aliases(t *testing.T) {
 	cmds := Build(&grammar{})
 	_, err := cmds.ParseValue("/config")
 
-	require.EqualError(t, err, "/config requires a subcommand: get, g, set")
+	var subErr *SubcommandError
+	require.ErrorAs(t, err, &subErr)
+	require.Equal(t, "config", subErr.Node.Name)
+	require.Equal(t, "/config requires a subcommand: get, g, set", subErr.Error())
 }
