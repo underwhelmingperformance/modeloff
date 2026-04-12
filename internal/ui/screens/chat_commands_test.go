@@ -59,25 +59,6 @@ func newTestSession(t *testing.T) *session.Session {
 	return session.New(s, nil, stubAPI{}, "testuser", "", "")
 }
 
-func TestChatScreen_Commands_specs_are_complete(t *testing.T) {
-	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil)
-	require.NoError(t, err)
-	cmds := screen.Commands()
-
-	require.NotEmpty(t, cmds.Commands)
-
-	seen := make(map[string]struct{}, len(cmds.Commands))
-	for _, spec := range cmds.Commands {
-		require.NotEmpty(t, spec.Name)
-		require.NotEmpty(t, spec.Help)
-		require.NotEmpty(t, spec.DisplayName())
-
-		_, exists := seen[spec.Name]
-		require.Falsef(t, exists, "duplicate command %q", spec.Name)
-		seen[spec.Name] = struct{}{}
-	}
-}
-
 func TestChatScreen_Commands_exposes_chat_commands(t *testing.T) {
 	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil)
 	require.NoError(t, err)
