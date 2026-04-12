@@ -110,6 +110,13 @@ type PokeEvent struct {
 	At      time.Time
 }
 
+// ChannelFocusEvent is returned by UI commands when the user switches
+// to a channel they already belong to. Unlike JoinEvent, it is not
+// emitted by the session and does not flow through the event channel.
+type ChannelFocusEvent struct {
+	Channel ChannelName
+}
+
 // ErrorEvent wraps a backend error as a domain event.
 type ErrorEvent struct {
 	Operation string

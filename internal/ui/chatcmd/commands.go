@@ -48,7 +48,7 @@ func (c JoinCommand) Run(rc Context) tea.Cmd {
 			return errorEvent("join", err)
 		}
 
-		return nil
+		return domain.ChannelFocusEvent{Channel: domain.ChannelName(c.Channel.String())}
 	}
 }
 

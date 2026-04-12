@@ -33,8 +33,11 @@ func TestChatScreen_join_flow_with_teatest(t *testing.T) {
 	tm.Submit("/join #general")
 	tm.WaitFor("Created channel #general")
 
+	// Second join is idempotent: no join event is emitted, but the
+	// channel stays active. Send a message to confirm we're still in it.
 	tm.Submit("/join #general")
-	tm.WaitFor("testuser has joined #general")
+	tm.Submit("still here")
+	tm.WaitFor("still here")
 }
 
 func TestChatScreen_leave_flow_with_teatest(t *testing.T) {

@@ -290,6 +290,7 @@ func TestApp_unread_counts_clear_when_visiting_channel_with_teatest(t *testing.T
 func TestApp_input_history_and_sidebar_shortcuts_with_teatest(t *testing.T) {
 	sess, _, cfgStore := newIntegrationSession(t, &integrationAPI{})
 	uitest.SeedChannel(t, sess, "#general")
+	uitest.SeedMessage(t, sess, "#general", "general msg")
 	uitest.SeedChannel(t, sess, "#random")
 
 	tm := uitest.New(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess, cfgStore)))
@@ -310,7 +311,7 @@ func TestApp_input_history_and_sidebar_shortcuts_with_teatest(t *testing.T) {
 
 	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlU})
 	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlO})
-	tm.WaitFor("testuser", "has joined #general")
+	tm.WaitFor("general msg")
 
 	view := ansi.Strip(tm.CurrentView())
 	require.Contains(t, view, "#general")

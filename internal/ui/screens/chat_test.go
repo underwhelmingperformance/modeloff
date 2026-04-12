@@ -105,13 +105,14 @@ func TestChatScreen_join_new_channel(t *testing.T) {
 func TestChatScreen_join_existing_channel(t *testing.T) {
 	sess := newTestSession(t)
 	uitest.SeedChannel(t, sess, "#general")
+	uitest.SeedMessage(t, sess, "#general", "general msg")
 	uitest.SeedChannel(t, sess, "#existing")
 
 	tm := newChatApp(t, sess)
 	tm.WaitFor("#existing")
 
 	tm.Submit("/join #general")
-	tm.WaitFor("#general", "testuser has joined #general")
+	tm.WaitFor("#general", "general msg")
 }
 
 func TestChatScreen_part_command(t *testing.T) {
@@ -243,9 +244,6 @@ func TestChatScreen_invite_existing_instance(t *testing.T) {
 
 	tm := newChatApp(t, sess)
 	tm.WaitFor("#random")
-
-	tm.Submit("/join #random")
-	tm.WaitFor("testuser has joined #random")
 
 	tm.Submit("/invite fakenick")
 	tm.WaitFor("fakenick (anthropic/claude-3-haiku) has joined #random")

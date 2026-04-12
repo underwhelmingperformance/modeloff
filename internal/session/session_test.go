@@ -151,17 +151,49 @@ func TestSession_JoinExistingChannel(t *testing.T) {
 	require.NoError(t, s.SaveChannel(ctx, existing))
 
 	require.NoError(t, sess.Join(ctx, "#existing"))
-	evt := drainEvent[domain.JoinEvent](t, sess)
-	require.Equal(t, domain.JoinEvent{
-		Channel: "#existing",
-		Nick:    "testuser",
-		At:      fixedTime,
-	}, evt)
 
 	// Channel should not be overwritten.
 	ch, err := s.GetChannel(ctx, "#existing")
 	require.NoError(t, err)
 	require.Equal(t, "Already here", ch.Topic)
+
+	// No join event should be stored since the user was already a member.
+	types := channelEventTypes(t, s, "#existing")
+	require.Empty(t, types)
+}
+
+func TestSession_JoinAlreadyMember_no_duplicate_event(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := t.Context()
+
+	require.NoError(t, sess.Join(ctx, "#general"))
+
+	// Join again — should not emit a second join event.
+	require.NoError(t, sess.Join(ctx, "#general"))
+
+	// First join creates the channel, so we get join + mode_change.
+	// Second join should add nothing.
+	types := channelEventTypes(t, s, "#general")
+	require.Equal(t, []string{"join", "mode_change"}, types)
+}
+
+func TestSession_JoinSwitchAndReturn_no_duplicate_event(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := t.Context()
+
+	require.NoError(t, sess.Join(ctx, "#general"))
+	require.NoError(t, sess.Join(ctx, "#random"))
+
+	// Switch back to #general — no new join event.
+	require.NoError(t, sess.Join(ctx, "#general"))
+
+	types := channelEventTypes(t, s, "#general")
+	require.Equal(t, []string{"join", "mode_change"}, types)
+
+	// SetLastChannel should still be updated.
+	last, err := s.GetLastChannel(ctx)
+	require.NoError(t, err)
+	require.Equal(t, domain.ChannelName("#general"), last)
 }
 
 func TestSession_Leave(t *testing.T) {
@@ -634,8 +666,8 @@ func TestSession_JoinEvent_triggers_dispatch(t *testing.T) {
 	ctx := t.Context()
 
 	// Seed a channel with a model already present so join dispatch
-	// has someone to notify.
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+	// has someone to notify. The user is NOT yet a member.
+	seedChannelWithMembers(t, s, "#general", "botty")
 	seedInstance(t, s, domain.Instance{
 		Nick:     "botty",
 		ModelID:  "test/model",
@@ -1626,11 +1658,11 @@ func TestSession_Join_marks_channel_as_read(t *testing.T) {
 
 	require.NoError(t, sess.Join(ctx, "#general"))
 
-	// MarkRead is called before the JoinEvent is appended, so the
-	// JoinEvent itself is the one unread event.
+	// The user is already a member, so no JoinEvent is appended.
+	// MarkRead clears the unread count to zero.
 	count, err := sess.UnreadCount(ctx, "#general")
 	require.NoError(t, err)
-	require.Equal(t, 1, count)
+	require.Equal(t, 0, count)
 }
 
 func TestSession_SetAPIKey(t *testing.T) {

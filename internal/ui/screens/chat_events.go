@@ -121,6 +121,28 @@ func (s ChatScreen) handleSessionEvent(msg sessionEventMsg) (ui.Model, tea.Cmd) 
 	return s, tea.Batch(cmd, s.listenForEvents())
 }
 
+func (s ChatScreen) handleChannelFocus(msg domain.ChannelFocusEvent) (ui.Model, tea.Cmd) {
+	ch, exists := s.channels.Get(domain.Channel{Name: msg.Channel})
+	if !exists {
+		return s, nil
+	}
+
+	*s.active = msg.Channel
+
+	var cmds []tea.Cmd
+	cmds = append(cmds, msgCmd(components.SetPlaceholderMsg{}))
+	cmds = append(cmds, msgCmd(components.SetChannelMsg{
+		Channel: msg.Channel,
+		Topic:   s.activeTopic(),
+	}))
+	cmds = append(cmds, msgCmd(components.ChannelActiveMsg{Channel: msg.Channel}))
+	cmds = append(cmds, msgCmd(components.ChannelUnreadMsg{Channel: msg.Channel, Count: 0}))
+	cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: ch.Members}))
+	cmds = append(cmds, s.fetchHistory(msg.Channel))
+
+	return s, tea.Sequence(cmds...)
+}
+
 func (s ChatScreen) handleJoinEvent(msg domain.JoinEvent) (ui.Model, tea.Cmd) {
 	*s.active = msg.Channel
 

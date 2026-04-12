@@ -48,7 +48,9 @@ func (s *Session) JoinAs(ctx context.Context, actor domain.Nick, ch domain.Chann
 		created = true
 	}
 
-	if !channel.Members.Has(actor) {
+	alreadyMember := !created && channel.Members.Has(actor)
+
+	if !alreadyMember {
 		channel.Members.Add(actor)
 
 		if err := s.store.SaveChannel(ctx, channel); err != nil {
@@ -83,10 +85,12 @@ func (s *Session) JoinAs(ctx context.Context, actor domain.Nick, ch domain.Chann
 		}
 	}
 
-	s.appendEvent(ctx, ch, domain.ChannelJoin{Channel: ch, Nick: actor, Created: created, At: now})
-	s.emitFor(ctx, actor, domain.JoinEvent{Channel: ch, Nick: actor, Created: created, At: now})
+	if !alreadyMember {
+		s.appendEvent(ctx, ch, domain.ChannelJoin{Channel: ch, Nick: actor, Created: created, At: now})
+		s.emitFor(ctx, actor, domain.JoinEvent{Channel: ch, Nick: actor, Created: created, At: now})
+	}
 
-	if created && isUser {
+	if !alreadyMember && created && isUser {
 		channel, _ = s.store.GetChannel(ctx, ch)
 		channel.Members.SetMode(actor, domain.ModeOp)
 

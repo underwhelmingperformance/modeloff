@@ -411,6 +411,9 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	case domain.ErrorEvent:
 		return s.handleErrorEvent(msg)
 
+	case domain.ChannelFocusEvent:
+		return s.handleChannelFocus(msg)
+
 	case liveModelsLoadedMsg:
 		return s.handleLiveModelsLoaded(msg)
 
@@ -594,7 +597,7 @@ func (s ChatScreen) switchChannel(ch domain.ChannelName) tea.Cmd {
 			return domain.ErrorEvent{Operation: "switch", Err: err, At: time.Now()}
 		}
 
-		return nil
+		return domain.ChannelFocusEvent{Channel: ch}
 	}
 }
 
