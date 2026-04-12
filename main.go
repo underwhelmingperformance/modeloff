@@ -88,7 +88,13 @@ func main() {
 		channelCount = len(channels)
 	}
 
-	chatScreen := screens.NewChatScreen(appCtx, sess, cfgStore).WithObservability(obs)
+	chatScreen, err := screens.NewChatScreen(appCtx, sess, cfgStore)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error building command grammar: %v\n", err)
+		os.Exit(1)
+	}
+
+	chatScreen = chatScreen.WithObservability(obs)
 
 	connScreen := screens.NewConnectionScreen(screens.ConnectionConfig{
 		HasAPIKey:    cfg.APIKey != "",

@@ -26,7 +26,10 @@ func TestApp_observability_drawer_and_fullscreen_with_teatest(t *testing.T) {
 	sess, _, cfgStore := newIntegrationSession(t, &integrationAPI{})
 	uitest.SeedChannel(t, sess, "#general")
 
-	tm := uitest.New(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess, cfgStore).WithObservability(obs)))
+	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore)
+	require.NoError(t, err)
+
+	tm := uitest.New(t, uipkg.NewRoot(chatScreen.WithObservability(obs)))
 	tm.Send(tea.WindowSizeMsg{Width: 140, Height: 30})
 	tm.WaitFor("#general")
 
@@ -52,7 +55,10 @@ func TestApp_status_bar_shows_metrics_summary_with_teatest(t *testing.T) {
 	sess, _, cfgStore := newIntegrationSession(t, &integrationAPI{})
 	uitest.SeedChannel(t, sess, "#general")
 
-	tm := uitest.New(t, uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess, cfgStore).WithObservability(obs)))
+	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore)
+	require.NoError(t, err)
+
+	tm := uitest.New(t, uipkg.NewRoot(chatScreen.WithObservability(obs)))
 	tm.Send(tea.WindowSizeMsg{Width: 200, Height: 30})
 	tm.WaitFor("#general")
 	tm.WaitFor("req 1", "in 12", "out 8", "0.2500")

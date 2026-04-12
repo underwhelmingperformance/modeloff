@@ -49,7 +49,8 @@ func containsMsg[T any](msgs []tea.Msg) (T, bool) {
 }
 
 func TestChatScreen_DispatchStarted_shows_pending(t *testing.T) {
-	screen := NewChatScreen(t.Context(), newTestSession(t), nil)
+	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil)
+	require.NoError(t, err)
 	*screen.active = "#general"
 
 	_, cmd := screen.handleDispatchStarted(domain.DispatchStartedEvent{
@@ -71,7 +72,8 @@ func TestChatScreen_DispatchStarted_shows_pending(t *testing.T) {
 }
 
 func TestChatScreen_DispatchDone_clears_pending(t *testing.T) {
-	screen := NewChatScreen(t.Context(), newTestSession(t), nil)
+	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil)
+	require.NoError(t, err)
 	*screen.active = "#general"
 
 	_, cmd := screen.handleDispatchDone(domain.DispatchDoneEvent{Channel: "#general"})
@@ -86,7 +88,8 @@ func TestChatScreen_DispatchDone_clears_pending(t *testing.T) {
 }
 
 func TestChatScreen_DispatchDone_deferred_while_replies_queued(t *testing.T) {
-	screen := NewChatScreen(t.Context(), newTestSession(t), nil)
+	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil)
+	require.NoError(t, err)
 	*screen.active = "#general"
 	screen.replyQueue = []domain.ModelReplyEvent{
 		{Event: domain.ChannelMessage{Channel: "#general", From: "botty", Body: "queued"}},
@@ -102,7 +105,8 @@ func TestChatScreen_ModelReply_queues_and_paces(t *testing.T) {
 	sess := newTestSession(t)
 	require.NoError(t, sess.Join(t.Context(), "#general"))
 
-	screen := NewChatScreen(t.Context(), sess, nil)
+	screen, err := NewChatScreen(t.Context(), sess, nil)
+	require.NoError(t, err)
 	*screen.active = "#general"
 
 	// First reply is delivered immediately (via deliverNextReplyMsg).
@@ -190,7 +194,8 @@ func TestChatScreen_handleSessionEvent_routing(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			screen := NewChatScreen(t.Context(), newTestSession(t), nil)
+			screen, err := NewChatScreen(t.Context(), newTestSession(t), nil)
+			require.NoError(t, err)
 			*screen.active = "#general"
 
 			// handleSessionEvent returns tea.Batch(innerCmd,
@@ -223,7 +228,8 @@ func TestChatScreen_handleSessionEvent_routing(t *testing.T) {
 }
 
 func TestChatScreen_ErrorEvent_no_active_channel(t *testing.T) {
-	screen := NewChatScreen(t.Context(), newTestSession(t), nil)
+	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil)
+	require.NoError(t, err)
 
 	// No active channel set — error should still produce a StoredEvent
 	// message so the UI can display it.

@@ -590,8 +590,12 @@ func TestParseValue_after_merge(t *testing.T) {
 		Quit mergeQuitCmd `cmd:"" help:"Quit."`
 	}
 
-	child := Build(&childGrammar{})
-	parent := Build(&parentGrammar{})
+	child, err := Build(&childGrammar{})
+	require.NoError(t, err)
+
+	parent, err := Build(&parentGrammar{})
+	require.NoError(t, err)
+
 	merged := Merge(child, parent)
 
 	t.Run("child command wins", func(t *testing.T) {
@@ -1383,46 +1387,61 @@ func TestComplete_command_suggestions_include_aliases(t *testing.T) {
 	}
 
 	tests := []struct {
-		name        string
-		raw         string
-		suggestions []Suggestion
+		name string
+		raw  string
+		want Completion
 	}{
 		{
 			name: "all suggestions include aliases",
 			raw:  "/",
-			suggestions: []Suggestion{
-				{Value: "join", Label: "/join", Detail: "Join a channel", Usage: "/join (/j, /jo) <channel>"},
-				{Value: "j", Label: "/j", Detail: "Join a channel", Usage: "/join (/j, /jo) <channel>"},
-				{Value: "jo", Label: "/jo", Detail: "Join a channel", Usage: "/join (/j, /jo) <channel>"},
-				{Value: "quit", Label: "/quit", Detail: "Exit.", Usage: "/quit (/q)"},
-				{Value: "q", Label: "/q", Detail: "Exit.", Usage: "/quit (/q)"},
+			want: Completion{
+				Visible:      true,
+				ReplaceStart: 1,
+				ReplaceEnd:   1,
+				AppendSpace:  true,
+				Suggestions: []Suggestion{
+					{Value: "join", Label: "/join", Detail: "Join a channel", Usage: "/join (/j, /jo) <channel>"},
+					{Value: "j", Label: "/j", Detail: "Join a channel", Usage: "/join (/j, /jo) <channel>"},
+					{Value: "jo", Label: "/jo", Detail: "Join a channel", Usage: "/join (/j, /jo) <channel>"},
+					{Value: "quit", Label: "/quit", Detail: "Exit.", Usage: "/quit (/q)"},
+					{Value: "q", Label: "/q", Detail: "Exit.", Usage: "/quit (/q)"},
+				},
 			},
 		},
 		{
 			name: "alias prefix filters",
 			raw:  "/j",
-			suggestions: []Suggestion{
-				{Value: "join", Label: "/join", Detail: "Join a channel", Usage: "/join (/j, /jo) <channel>"},
-				{Value: "j", Label: "/j", Detail: "Join a channel", Usage: "/join (/j, /jo) <channel>"},
-				{Value: "jo", Label: "/jo", Detail: "Join a channel", Usage: "/join (/j, /jo) <channel>"},
+			want: Completion{
+				Visible:      true,
+				ReplaceStart: 1,
+				ReplaceEnd:   2,
+				AppendSpace:  true,
+				Suggestions: []Suggestion{
+					{Value: "join", Label: "/join", Detail: "Join a channel", Usage: "/join (/j, /jo) <channel>"},
+					{Value: "j", Label: "/j", Detail: "Join a channel", Usage: "/join (/j, /jo) <channel>"},
+					{Value: "jo", Label: "/jo", Detail: "Join a channel", Usage: "/join (/j, /jo) <channel>"},
+				},
 			},
 		},
 		{
 			name: "alias exact match",
 			raw:  "/q",
-			suggestions: []Suggestion{
-				{Value: "quit", Label: "/quit", Detail: "Exit.", Usage: "/quit (/q)"},
-				{Value: "q", Label: "/q", Detail: "Exit.", Usage: "/quit (/q)"},
+			want: Completion{
+				Visible:      true,
+				ReplaceStart: 1,
+				ReplaceEnd:   2,
+				AppendSpace:  true,
+				Suggestions: []Suggestion{
+					{Value: "quit", Label: "/quit", Detail: "Exit.", Usage: "/quit (/q)"},
+					{Value: "q", Label: "/q", Detail: "Exit.", Usage: "/quit (/q)"},
+				},
 			},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			completion := Complete(cmds, tt.raw, len([]rune(tt.raw)), domain.KindChannel)
-
-			require.True(t, completion.Visible)
-			require.Equal(t, tt.suggestions, completion.Suggestions)
+			require.Equal(t, tt.want, Complete(cmds, tt.raw, len([]rune(tt.raw)), domain.KindChannel))
 		})
 	}
 }
@@ -1441,14 +1460,18 @@ func TestComplete_child_suggestions_include_aliases(t *testing.T) {
 		},
 	}
 
-	completion := Complete(cmds, "/config ", len([]rune("/config ")), domain.KindChannel)
-
-	require.True(t, completion.Visible)
-	require.Equal(t, []Suggestion{
-		{Value: "set", Label: "set", Detail: "Set a value"},
-		{Value: "s", Label: "s", Detail: "Set a value"},
-		{Value: "get", Label: "get", Detail: "Get a value"},
-	}, completion.Suggestions)
+	raw := "/config "
+	require.Equal(t, Completion{
+		Visible:      true,
+		ReplaceStart: 8,
+		ReplaceEnd:   8,
+		AppendSpace:  true,
+		Suggestions: []Suggestion{
+			{Value: "set", Label: "set", Detail: "Set a value"},
+			{Value: "s", Label: "s", Detail: "Set a value"},
+			{Value: "get", Label: "get", Detail: "Get a value"},
+		},
+	}, Complete(cmds, raw, len([]rune(raw)), domain.KindChannel))
 }
 
 func TestComplete_alias_resolves_to_positional_suggestions(t *testing.T) {
@@ -1470,13 +1493,17 @@ func TestComplete_alias_resolves_to_positional_suggestions(t *testing.T) {
 		},
 	}
 
-	completion := Complete(cmds, "/j ", len([]rune("/j ")), domain.KindChannel)
-
-	require.True(t, completion.Visible)
-	require.Equal(t, []Suggestion{
-		{Value: "#general", Label: "#general"},
-		{Value: "#random", Label: "#random"},
-	}, completion.Suggestions)
+	raw := "/j "
+	require.Equal(t, Completion{
+		Visible:      true,
+		ReplaceStart: 3,
+		ReplaceEnd:   3,
+		AppendSpace:  false,
+		Suggestions: []Suggestion{
+			{Value: "#general", Label: "#general"},
+			{Value: "#random", Label: "#random"},
+		},
+	}, Complete(cmds, raw, len([]rune(raw)), domain.KindChannel))
 }
 
 // --- Tool schema tests ---
@@ -1521,12 +1548,17 @@ type toolGrammar struct {
 	Quit   toolDescriberCmd `cmd:"" tool:"Exit the application." help:"Quit."`
 }
 
-func toolSet() Set {
-	return Build(&toolGrammar{})
+func toolSet(t *testing.T) Set {
+	t.Helper()
+
+	set, err := Build(&toolGrammar{})
+	require.NoError(t, err)
+
+	return set
 }
 
 func TestToolNodes_returns_only_tool_tagged_leaves(t *testing.T) {
-	s := toolSet()
+	s := toolSet(t)
 	nodes := s.ToolNodes()
 
 	var names []string
@@ -1559,7 +1591,7 @@ func TestToolName(t *testing.T) {
 }
 
 func TestToolParameters(t *testing.T) {
-	s := toolSet()
+	s := toolSet(t)
 
 	t.Run("required positional", func(t *testing.T) {
 		node := s.Find("join")
@@ -1641,7 +1673,7 @@ func TestToolParameters(t *testing.T) {
 }
 
 func TestToolValue(t *testing.T) {
-	s := toolSet()
+	s := toolSet(t)
 
 	t.Run("valid args", func(t *testing.T) {
 		node := s.Find("join")
@@ -1742,7 +1774,7 @@ func TestToolDescription_three_tiers(t *testing.T) {
 }
 
 func TestToolDescription_from_grammar(t *testing.T) {
-	s := toolSet()
+	s := toolSet(t)
 
 	t.Run("quit uses tier 1 ToolDescriber", func(t *testing.T) {
 		node := s.Find("quit")
@@ -1761,7 +1793,7 @@ func TestToolDescription_from_grammar(t *testing.T) {
 }
 
 func TestNewZero(t *testing.T) {
-	s := toolSet()
+	s := toolSet(t)
 
 	t.Run("returns zero-valued pointer", func(t *testing.T) {
 		node := s.Find("join")

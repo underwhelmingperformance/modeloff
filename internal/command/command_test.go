@@ -68,12 +68,17 @@ type testGrammar struct {
 	Quit     testQuitCommand     `cmd:"" aliases:"q" help:"Quit."`
 }
 
-func allCommands() Set {
-	return Build(&testGrammar{})
+func allCommands(t *testing.T) Set {
+	t.Helper()
+
+	set, err := Build(&testGrammar{})
+	require.NoError(t, err)
+
+	return set
 }
 
 func TestParseValue(t *testing.T) {
-	cmds := allCommands()
+	cmds := allCommands(t)
 
 	tests := []struct {
 		name  string
@@ -215,7 +220,7 @@ func TestParseValue(t *testing.T) {
 }
 
 func TestParseValue_errors(t *testing.T) {
-	cmds := allCommands()
+	cmds := allCommands(t)
 
 	tests := []struct {
 		name    string
@@ -262,7 +267,8 @@ type runnableGrammar struct {
 }
 
 func TestParser_Parse_returns_typed_command(t *testing.T) {
-	parser := BuildParser[testContext, testResult](&runnableGrammar{})
+	parser, err := BuildParser[testContext, testResult](&runnableGrammar{})
+	require.NoError(t, err)
 
 	cmd, err := parser.Parse("/do hello")
 	require.NoError(t, err)
@@ -276,9 +282,10 @@ func TestParser_Parse_rejects_non_command(t *testing.T) {
 		Join testJoinCommand `cmd:"" help:"Join."`
 	}
 
-	parser := BuildParser[testContext, testResult](&nonRunnableGrammar{})
+	parser, err := BuildParser[testContext, testResult](&nonRunnableGrammar{})
+	require.NoError(t, err)
 
-	_, err := parser.Parse("/join foo")
+	_, err = parser.Parse("/join foo")
 
 	var cmdErr *InterfaceError
 	require.ErrorAs(t, err, &cmdErr)
@@ -286,7 +293,8 @@ func TestParser_Parse_rejects_non_command(t *testing.T) {
 }
 
 func TestParser_Set_returns_underlying_set(t *testing.T) {
-	parser := BuildParser[testContext, testResult](&runnableGrammar{})
+	parser, err := BuildParser[testContext, testResult](&runnableGrammar{})
+	require.NoError(t, err)
 
 	set := parser.Set()
 
@@ -327,7 +335,8 @@ type subcommandGrammar struct {
 }
 
 func TestParseValue_subcommands(t *testing.T) {
-	cmds := Build(&subcommandGrammar{})
+	cmds, err := Build(&subcommandGrammar{})
+	require.NoError(t, err)
 
 	tests := []struct {
 		name  string
@@ -352,7 +361,8 @@ func TestParseValue_subcommands(t *testing.T) {
 }
 
 func TestParseValue_subcommand_errors(t *testing.T) {
-	cmds := Build(&subcommandGrammar{})
+	cmds, err := Build(&subcommandGrammar{})
+	require.NoError(t, err)
 
 	tests := []struct {
 		name    string
@@ -394,7 +404,8 @@ type deepGrammar struct {
 }
 
 func TestParseValue_deeply_nested_subcommands(t *testing.T) {
-	cmds := Build(&deepGrammar{})
+	cmds, err := Build(&deepGrammar{})
+	require.NoError(t, err)
 
 	tests := []struct {
 		name  string
@@ -415,7 +426,8 @@ func TestParseValue_deeply_nested_subcommands(t *testing.T) {
 }
 
 func TestParseValue_deeply_nested_subcommand_errors(t *testing.T) {
-	cmds := Build(&deepGrammar{})
+	cmds, err := Build(&deepGrammar{})
+	require.NoError(t, err)
 
 	tests := []struct {
 		name    string
@@ -435,7 +447,8 @@ func TestParseValue_deeply_nested_subcommand_errors(t *testing.T) {
 }
 
 func TestParseInvocation_returns_branch_values(t *testing.T) {
-	cmds := Build(&subcommandGrammar{})
+	cmds, err := Build(&subcommandGrammar{})
+	require.NoError(t, err)
 
 	invocation, err := cmds.ParseInvocation("/config set --format json api-key sk-1234")
 	require.NoError(t, err)
@@ -457,9 +470,10 @@ func TestParseInvocation_returns_branch_values(t *testing.T) {
 }
 
 func TestParseInvocation_unknown_flag_checks_active_ancestors(t *testing.T) {
-	cmds := Build(&subcommandGrammar{})
+	cmds, err := Build(&subcommandGrammar{})
+	require.NoError(t, err)
 
-	_, err := cmds.ParseInvocation("/config set --unknown value api-key sk-1234")
+	_, err = cmds.ParseInvocation("/config set --unknown value api-key sk-1234")
 
 	var unknown *UnknownFlagError
 	require.ErrorAs(t, err, &unknown)
@@ -499,14 +513,14 @@ func TestBuild_rejects_alias_collisions(t *testing.T) {
 }
 
 func TestNode_Aliases_are_populated(t *testing.T) {
-	cmds := allCommands()
+	cmds := allCommands(t)
 	join := cmds.Find("join")
 
 	require.Equal(t, []string{"j", "jo"}, join.Aliases)
 }
 
 func TestSet_Find_resolves_alias(t *testing.T) {
-	cmds := allCommands()
+	cmds := allCommands(t)
 
 	tests := []struct {
 		name     string
@@ -522,7 +536,6 @@ func TestSet_Find_resolves_alias(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			node := cmds.Find(tt.lookup)
-			require.NotNil(t, node)
 			require.Equal(t, tt.wantName, node.Name)
 		})
 	}
@@ -537,17 +550,15 @@ func TestNode_Find_resolves_child_alias(t *testing.T) {
 		Parent parentCmd `cmd:"" help:"Parent."`
 	}
 
-	cmds := Build(&grammar{})
-	parent := cmds.Find("parent")
-	require.NotNil(t, parent)
+	cmds, err := Build(&grammar{})
+	require.NoError(t, err)
 
-	child := parent.Find("s")
-	require.NotNil(t, child)
+	child := cmds.Find("parent").Find("s")
 	require.Equal(t, "sub", child.Name)
 }
 
 func TestNode_DisplayName(t *testing.T) {
-	cmds := allCommands()
+	cmds := allCommands(t)
 
 	join := cmds.Find("join")
 	require.Equal(t, "/join (/j, /jo)", join.DisplayName())
@@ -560,7 +571,7 @@ func TestNode_DisplayName(t *testing.T) {
 }
 
 func TestNode_FullUsage(t *testing.T) {
-	cmds := allCommands()
+	cmds := allCommands(t)
 
 	join := cmds.Find("join")
 	require.Equal(t, "/join (/j, /jo) <channel>", join.FullUsage())
@@ -583,7 +594,8 @@ func TestParseValue_subcommand_alias(t *testing.T) {
 		Config parentCmd `cmd:"" help:"Config."`
 	}
 
-	cmds := Build(&grammar{})
+	cmds, err := Build(&grammar{})
+	require.NoError(t, err)
 	parsed, err := cmds.ParseValue("/config g my-key")
 
 	require.NoError(t, err)
@@ -600,7 +612,8 @@ func TestNode_DisplayName_subcommand(t *testing.T) {
 		Config parentCmd `cmd:"" help:"Config."`
 	}
 
-	cmds := Build(&grammar{})
+	cmds, err := Build(&grammar{})
+	require.NoError(t, err)
 	config := cmds.Find("config")
 
 	get := config.Find("get")
@@ -620,8 +633,9 @@ func TestSubcommandError_includes_aliases(t *testing.T) {
 		Config parentCmd `cmd:"" help:"Config."`
 	}
 
-	cmds := Build(&grammar{})
-	_, err := cmds.ParseValue("/config")
+	cmds, err := Build(&grammar{})
+	require.NoError(t, err)
+	_, err = cmds.ParseValue("/config")
 
 	var subErr *SubcommandError
 	require.ErrorAs(t, err, &subErr)

@@ -69,7 +69,7 @@ type ChatScreen struct {
 // NewChatScreen creates a chat screen backed by the given session.
 // The provided context is used for all backend operations, allowing
 // them to be cancelled on shutdown.
-func NewChatScreen(ctx context.Context, sess *session.Session, cfgStore config.Store) ChatScreen {
+func NewChatScreen(ctx context.Context, sess *session.Session, cfgStore config.Store) (ChatScreen, error) {
 	sidebar := components.NewChannelSidebar()
 	chatView := components.NewChatView("", sess.UserNick(), "")
 	layout := components.NewMainLayout(sidebar, chatView)
@@ -94,9 +94,14 @@ func NewChatScreen(ctx context.Context, sess *session.Session, cfgStore config.S
 		keyMap:     components.DefaultChatScreenKeyMap,
 	}
 
-	cs.parser = cs.buildParser()
+	parser, err := cs.buildParser()
+	if err != nil {
+		return ChatScreen{}, err
+	}
 
-	return cs
+	cs.parser = parser
+
+	return cs, nil
 }
 
 func (s ChatScreen) loadConfig() (config.Config, error) {
@@ -467,7 +472,7 @@ func msgCmd(msg tea.Msg) tea.Cmd {
 	return func() tea.Msg { return msg }
 }
 
-func (s ChatScreen) buildParser() chatcmd.Parser {
+func (s ChatScreen) buildParser() (chatcmd.Parser, error) {
 	return chatcmd.BuildParser(chatcmd.Sources{
 		Channels:      func() iter.Seq[domain.Channel] { return s.channels.All() },
 		Instances:     func() iter.Seq[domain.Instance] { return s.instances.All() },

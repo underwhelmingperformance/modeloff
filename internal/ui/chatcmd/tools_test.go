@@ -28,62 +28,62 @@ func TestBuildToolRegistry_returns_expected_tools(t *testing.T) {
 		{
 			Name:        "join",
 			Description: "Switch to a channel or create it if needed.",
-			Parameters:  toolParams("join"),
+			Parameters:  toolParams(t, "join"),
 		},
 		{
 			Name:        "part",
 			Description: "Leave the current channel with an optional farewell message.",
-			Parameters:  toolParams("part"),
+			Parameters:  toolParams(t, "part"),
 		},
 		{
 			Name:        "list",
 			Description: "List all known channels.",
-			Parameters:  toolParams("list"),
+			Parameters:  toolParams(t, "list"),
 		},
 		{
 			Name:        "invite",
 			Description: "Invite a nick to a channel.",
-			Parameters:  toolParams("invite"),
+			Parameters:  toolParams(t, "invite"),
 		},
 		{
 			Name:        "kick",
 			Description: "Remove a nick from the current channel.",
-			Parameters:  toolParams("kick"),
+			Parameters:  toolParams(t, "kick"),
 		},
 		{
 			Name:        "msg",
 			Description: "Open a direct message and optionally send text.",
-			Parameters:  toolParams("msg"),
+			Parameters:  toolParams(t, "msg"),
 		},
 		{
 			Name:        "nick",
 			Description: "Change your nickname.",
-			Parameters:  toolParams("nick"),
+			Parameters:  toolParams(t, "nick"),
 		},
 		{
 			Name:        "topic",
 			Description: "Set or clear the current channel topic.",
-			Parameters:  toolParams("topic"),
+			Parameters:  toolParams(t, "topic"),
 		},
 		{
 			Name:        "me",
 			Description: "Send an action message (e.g. /me waves).",
-			Parameters:  toolParams("me"),
+			Parameters:  toolParams(t, "me"),
 		},
 		{
 			Name:        "whois",
 			Description: "Show details about a model instance.",
-			Parameters:  toolParams("whois"),
+			Parameters:  toolParams(t, "whois"),
 		},
 		{
 			Name:        "help",
 			Description: "Show available commands.",
-			Parameters:  toolParams("help"),
+			Parameters:  toolParams(t, "help"),
 		},
 		{
 			Name:        "quit",
 			Description: "Shut down your instance and leave all channels.",
-			Parameters:  toolParams("quit"),
+			Parameters:  toolParams(t, "quit"),
 		},
 	}, got)
 }
@@ -120,8 +120,11 @@ func TestBuildToolRegistry_tool_tag_overrides_help(t *testing.T) {
 }
 
 // toolParams returns ToolParameters for the named tool node in the grammar.
-func toolParams(name string) map[string]any {
-	set := command.Build(&Grammar{})
+func toolParams(t *testing.T, name string) map[string]any {
+	t.Helper()
+
+	set, err := command.Build(&Grammar{})
+	require.NoError(t, err)
 
 	for _, node := range set.ToolNodes() {
 		if node.ToolName() == name {
@@ -179,7 +182,8 @@ func newToolTestSession(t *testing.T) *session.Session {
 func toolValue(t *testing.T, name string, rawJSON string) any {
 	t.Helper()
 
-	set := command.Build(&Grammar{})
+	set, err := command.Build(&Grammar{})
+	require.NoError(t, err)
 
 	for _, node := range set.ToolNodes() {
 		if node.ToolName() == name {

@@ -46,7 +46,7 @@ type Sources struct {
 // BuildParser creates a typed Parser from a snapshot of the current
 // application state. It should be rebuilt whenever the completion-
 // relevant state changes (channels, instances, active channel, etc.).
-func BuildParser(src Sources) Parser {
+func BuildParser(src Sources) (Parser, error) {
 	lazy := func(fn func(command.InvocationState) []command.Suggestion) command.SuggestionSource {
 		return fn
 	}

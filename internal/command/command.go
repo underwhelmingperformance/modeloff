@@ -5,7 +5,6 @@
 package command
 
 import (
-	"fmt"
 	"reflect"
 	"strings"
 )
@@ -85,8 +84,13 @@ func (i Invocation) ValueAtPath(path string) (any, bool) {
 
 // BuildParser reflects over a grammar struct and produces a typed
 // Parser. Each field tagged with `cmd:""` becomes a command node.
-func BuildParser[C any, R any](grammar any) Parser[C, R] {
-	return Parser[C, R]{set: Build(grammar)}
+func BuildParser[C any, R any](grammar any) (Parser[C, R], error) {
+	set, err := Build(grammar)
+	if err != nil {
+		return Parser[C, R]{}, err
+	}
+
+	return Parser[C, R]{set: set}, nil
 }
 
 // Set returns the underlying command Set for use with completion
@@ -123,13 +127,13 @@ func (p Parser[C, R]) ParseInvocation(input string) (Invocation, error) {
 // from the field name (kebab-cased) or from a `name:""` tag. Help
 // comes from the `help:""` tag. The grammar must be a pointer to a
 // struct.
-func Build(grammar any) Set {
+func Build(grammar any) (Set, error) {
 	nodes, err := build(grammar)
 	if err != nil {
-		panic(fmt.Sprintf("building command set: %v", err))
+		return Set{}, err
 	}
 
-	return Set{Commands: nodes}
+	return Set{Commands: nodes}, nil
 }
 
 // ParseValue tokenises a raw slash-command string, resolves the

@@ -18,7 +18,10 @@ type ToolCommand interface {
 
 // BuildToolRegistry derives tool specs from the command grammar.
 func BuildToolRegistry() (*session.ToolRegistry, error) {
-	set := command.Build(&Grammar{})
+	set, err := command.Build(&Grammar{})
+	if err != nil {
+		return nil, err
+	}
 	nodes := set.ToolNodes()
 	specs := make([]session.ToolSpec, 0, len(nodes))
 

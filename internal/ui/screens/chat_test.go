@@ -44,7 +44,10 @@ func newChatAppWithConfig(t *testing.T, sess *session.Session, cfgStore config.S
 
 	uitest.DrainEvents(sess)
 
-	root := uipkg.NewRoot(screens.NewChatScreen(t.Context(), sess, cfgStore))
+	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore)
+	require.NoError(t, err)
+
+	root := uipkg.NewRoot(chatScreen)
 	return uitest.New(t, root, teatest.WithInitialTermSize(256, 256))
 }
 

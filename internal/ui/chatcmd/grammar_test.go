@@ -58,7 +58,8 @@ func complete(t *testing.T, input string) command.Completion {
 func completeInKind(t *testing.T, input string, kind domain.ChannelKind) command.Completion {
 	t.Helper()
 
-	parser := BuildParser(testSources())
+	parser, err := BuildParser(testSources())
+	require.NoError(t, err)
 
 	return command.Complete(parser.Set(), input, len(input), kind)
 }
@@ -95,7 +96,8 @@ func TestComplete_channel_includes_all_commands(t *testing.T) {
 }
 
 func TestBuildParser_produces_all_commands(t *testing.T) {
-	parser := BuildParser(testSources())
+	parser, err := BuildParser(testSources())
+	require.NoError(t, err)
 	set := parser.Set()
 
 	names := make([]string, 0, len(set.Commands))
@@ -118,7 +120,8 @@ func TestBuildParser_produces_all_commands(t *testing.T) {
 }
 
 func TestBuildParser_parse_returns_typed_command(t *testing.T) {
-	parser := BuildParser(testSources())
+	parser, err := BuildParser(testSources())
+	require.NoError(t, err)
 
 	cmd, err := parser.Parse("/help")
 	require.NoError(t, err)
@@ -227,7 +230,8 @@ func TestComplete_config_reset_after_subcommand_does_not_expect_value(t *testing
 }
 
 func TestParse_personas_command(t *testing.T) {
-	parser := BuildParser(testSources())
+	parser, err := BuildParser(testSources())
+	require.NoError(t, err)
 
 	cmd, err := parser.Parse("/personas")
 	require.NoError(t, err)
@@ -235,7 +239,8 @@ func TestParse_personas_command(t *testing.T) {
 }
 
 func TestParse_regenerate_personas_command(t *testing.T) {
-	parser := BuildParser(testSources())
+	parser, err := BuildParser(testSources())
+	require.NoError(t, err)
 
 	cmd, err := parser.Parse("/regenerate-personas")
 	require.NoError(t, err)
@@ -243,7 +248,8 @@ func TestParse_regenerate_personas_command(t *testing.T) {
 }
 
 func TestParse_clear_command(t *testing.T) {
-	parser := BuildParser(testSources())
+	parser, err := BuildParser(testSources())
+	require.NoError(t, err)
 
 	cmd, err := parser.Parse("/clear")
 	require.NoError(t, err)
@@ -258,7 +264,8 @@ func TestClearCommand_Run_returns_ClearResult(t *testing.T) {
 }
 
 func TestParse_config_persona_command(t *testing.T) {
-	parser := BuildParser(testSources())
+	parser, err := BuildParser(testSources())
+	require.NoError(t, err)
 
 	cmd, err := parser.Parse("/config persona bard A travelling storyteller")
 	require.NoError(t, err)
@@ -280,7 +287,8 @@ func TestComplete_live_data_reflects_changes(t *testing.T) {
 		UserNick: func() domain.Nick { return "u" },
 	}
 
-	parser := BuildParser(src)
+	parser, err := BuildParser(src)
+	require.NoError(t, err)
 
 	before := command.Complete(parser.Set(), "/join ", 6, domain.KindChannel)
 	require.Empty(t, before.Suggestions)
