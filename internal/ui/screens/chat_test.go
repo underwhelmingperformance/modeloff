@@ -417,6 +417,66 @@ func TestChatScreen_config_reset_timestamp_format(t *testing.T) {
 	require.Nil(t, cfgStore.cfg.TimestampFormat)
 }
 
+func TestChatScreen_config_reset_base_url(t *testing.T) {
+	cfgStore := newFakeConfigStore()
+	cfgStore.cfg.BaseURL = "https://custom.example.com/v1"
+	sess := newTestSessionWithConfigStore(t, cfgStore)
+	uitest.SeedChannel(t, sess, "#general")
+
+	tm := newChatAppWithConfig(t, sess, cfgStore)
+	tm.WaitFor("#general")
+
+	tm.Submit("/config --reset base-url")
+	tm.WaitFor("base URL reset to https://openrouter.ai/api/v1")
+
+	require.Equal(t, config.DefaultBaseURL, cfgStore.cfg.BaseURL)
+}
+
+func TestChatScreen_config_reset_small_model(t *testing.T) {
+	cfgStore := newFakeConfigStore()
+	cfgStore.cfg.SmallModel = "custom/small-model"
+	sess := newTestSessionWithConfigStore(t, cfgStore)
+	uitest.SeedChannel(t, sess, "#general")
+
+	tm := newChatAppWithConfig(t, sess, cfgStore)
+	tm.WaitFor("#general")
+
+	tm.Submit("/config --reset small-model")
+	tm.WaitFor("Small model reset to anthropic/claude-haiku-4.5.")
+
+	require.Equal(t, config.DefaultSmallModel, cfgStore.cfg.SmallModel)
+}
+
+func TestChatScreen_config_reset_embedding_model(t *testing.T) {
+	cfgStore := newFakeConfigStore()
+	cfgStore.cfg.EmbeddingModel = "custom/embedding-model"
+	sess := newTestSessionWithConfigStore(t, cfgStore)
+	uitest.SeedChannel(t, sess, "#general")
+
+	tm := newChatAppWithConfig(t, sess, cfgStore)
+	tm.WaitFor("#general")
+
+	tm.Submit("/config --reset embedding-model")
+	tm.WaitFor("embedding model reset to openai/text-embedding-3-small")
+
+	require.Equal(t, config.DefaultEmbeddingModel, cfgStore.cfg.EmbeddingModel)
+}
+
+func TestChatScreen_config_reset_highlight(t *testing.T) {
+	cfgStore := newFakeConfigStore()
+	cfgStore.cfg.HighlightWords = []string{"custom", "words"}
+	sess := newTestSessionWithConfigStore(t, cfgStore)
+	uitest.SeedChannel(t, sess, "#general")
+
+	tm := newChatAppWithConfig(t, sess, cfgStore)
+	tm.WaitFor("#general")
+
+	tm.Submit("/config --reset highlight")
+	tm.WaitFor("highlight words reset to: [$nick]")
+
+	require.Equal(t, config.DefaultHighlightWords, cfgStore.cfg.HighlightWords)
+}
+
 func TestChatScreen_config_invalid_subcommand(t *testing.T) {
 	tm, _ := newChatAppInChannel(t, "#general")
 
