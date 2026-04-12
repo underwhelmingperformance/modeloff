@@ -358,26 +358,15 @@ func TestApp_new_messages_divider_with_teatest(t *testing.T) {
 	tm.Submit("fresh divider trigger 2")
 	tm.Submit("fresh divider trigger 3")
 
-	require.Eventually(t, func() bool {
-		events, err := sess.EventsBefore(t.Context(), "#general", nil, 100)
-		if err != nil {
-			return false
-		}
-
-		for i := len(events) - 1; i >= 0; i-- {
-			if msg, ok := events[i].Event.(domain.ChannelMessage); ok && msg.Body == "fresh divider trigger 3" {
-				return true
-			}
-		}
-
-		return false
-	}, 2*time.Second, 10*time.Millisecond)
-
-	for range 5 {
-		tm.Send(tea.KeyMsg{Type: tea.KeyPgDown})
-	}
-
-	tm.WaitFor("new messages")
+	// The messages are processed asynchronously — the session emits
+	// events that the UI picks up on a later render cycle. Scroll
+	// down one line at a time so events arrive while the viewport
+	// is still scrolled up (setting showDivider). Once the divider
+	// scrolls into view the condition matches.
+	tm.WaitForCondition(func(out []byte) bool {
+		tm.Send(tea.KeyMsg{Type: tea.KeyCtrlDown})
+		return bytes.Contains(out, []byte("new messages"))
+	})
 
 	view := ansi.Strip(tm.FinalView())
 	require.Contains(t, view, "new messages")
