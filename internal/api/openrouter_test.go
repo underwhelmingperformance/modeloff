@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	openai "github.com/openai/openai-go/v3"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/domain"
@@ -239,6 +240,27 @@ func TestCompletionParseErrorKind(t *testing.T) {
 	)
 }
 
+func messageRoles(msgs []openai.ChatCompletionMessageParamUnion) []string {
+	roles := make([]string, len(msgs))
+
+	for i, m := range msgs {
+		switch {
+		case m.OfSystem != nil:
+			roles[i] = "system"
+		case m.OfAssistant != nil:
+			roles[i] = "assistant"
+		case m.OfUser != nil:
+			roles[i] = "user"
+		case m.OfTool != nil:
+			roles[i] = "tool"
+		case m.OfDeveloper != nil:
+			roles[i] = "developer"
+		}
+	}
+
+	return roles
+}
+
 func TestBuildMessages_self_messages_are_assistant_role(t *testing.T) {
 	const selfID = "inst-abc123"
 
@@ -253,12 +275,7 @@ func TestBuildMessages_self_messages_are_assistant_role(t *testing.T) {
 
 	msgs := buildMessages("system prompt", selfID, history, events)
 
-	require.Equal(t, 5, len(msgs))
-	require.NotNil(t, msgs[0].OfSystem, "msgs[0] should be system")
-	require.NotNil(t, msgs[1].OfAssistant, "msgs[1] (botty history) should be assistant")
-	require.NotNil(t, msgs[2].OfUser, "msgs[2] (alice history) should be user")
-	require.NotNil(t, msgs[3].OfUser, "msgs[3] (bob event) should be user")
-	require.NotNil(t, msgs[4].OfAssistant, "msgs[4] (botty event) should be assistant")
+	require.Equal(t, []string{"system", "assistant", "user", "user", "assistant"}, messageRoles(msgs))
 }
 
 func TestBuildMessages_survives_nick_rename(t *testing.T) {
@@ -272,10 +289,7 @@ func TestBuildMessages_survives_nick_rename(t *testing.T) {
 
 	msgs := buildMessages("system prompt", selfID, history, nil)
 
-	require.Equal(t, 4, len(msgs))
-	require.NotNil(t, msgs[1].OfAssistant, "old-nick message should be assistant")
-	require.NotNil(t, msgs[2].OfAssistant, "new-nick message should be assistant")
-	require.NotNil(t, msgs[3].OfUser, "alice message should be user")
+	require.Equal(t, []string{"system", "assistant", "assistant", "user"}, messageRoles(msgs))
 }
 
 func TestBuildMessages_instance_id_stripped_from_json(t *testing.T) {
@@ -285,10 +299,11 @@ func TestBuildMessages_instance_id_stripped_from_json(t *testing.T) {
 
 	msgs := buildMessages("system prompt", "", events, nil)
 
-	// The marshalled content should not contain the instance ID.
-	data, err := json.Marshal(msgs[1])
-	require.NoError(t, err)
-	require.NotContains(t, string(data), "inst-xyz")
+	for _, m := range msgs {
+		data, err := json.Marshal(m)
+		require.NoError(t, err)
+		require.NotContains(t, string(data), "inst-xyz")
+	}
 }
 
 func TestOpenRouterClient_SendEventsWithHistory(t *testing.T) {
