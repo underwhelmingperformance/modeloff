@@ -264,7 +264,7 @@ func messageRoles(msgs []openai.ChatCompletionMessageParamUnion) []string {
 	return roles
 }
 
-func TestBuildMessages_self_messages_are_assistant_role(t *testing.T) {
+func TestBuildMessages_self_messages_are_assistant_role_in_history(t *testing.T) {
 	const selfID = "inst-abc123"
 
 	history := []protocol.IRCMessage{
@@ -273,12 +273,25 @@ func TestBuildMessages_self_messages_are_assistant_role(t *testing.T) {
 	}
 	events := []protocol.IRCMessage{
 		{Kind: protocol.KindPrivMsg, From: "bob", Target: "#test", Body: "bob said this"},
-		{Kind: protocol.KindPrivMsg, From: "botty", InstanceID: selfID, Target: "#test", Body: "I said this too"},
 	}
 
 	msgs := buildMessages("system prompt", selfID, history, events)
 
-	require.Equal(t, []string{"system", "assistant", "user", "user", "assistant"}, messageRoles(msgs))
+	require.Equal(t, []string{"system", "assistant", "user", "user"}, messageRoles(msgs))
+}
+
+func TestBuildMessages_self_events_are_excluded(t *testing.T) {
+	const selfID = "inst-abc123"
+
+	events := []protocol.IRCMessage{
+		{Kind: protocol.KindPrivMsg, From: "bob", Target: "#test", Body: "bob said this"},
+		{Kind: protocol.KindPrivMsg, From: "botty", InstanceID: selfID, Target: "#test", Body: "I said this too"},
+		{Kind: protocol.KindPrivMsg, From: "alice", Target: "#test", Body: "alice chiming in"},
+	}
+
+	msgs := buildMessages("system prompt", selfID, nil, events)
+
+	require.Equal(t, []string{"system", "user", "user"}, messageRoles(msgs))
 }
 
 func TestBuildMessages_survives_nick_rename(t *testing.T) {

@@ -877,8 +877,7 @@ func (s *Session) dispatchToInstances(
 	var replies []domain.ModelReplyEvent
 
 	for _, inst := range instances {
-		filtered := filterEventsForInstance(events, inst.InstanceID)
-		instReplies, instErr := s.dispatchToInstance(ctx, channel, inst, channelName, historyEvents, filtered)
+		instReplies, instErr := s.dispatchToInstance(ctx, channel, inst, channelName, historyEvents, events)
 		if instErr != nil {
 			errs = append(errs, instErr)
 		}
@@ -892,24 +891,6 @@ func (s *Session) dispatchToInstances(
 	}
 
 	return replies, errors.Join(errs...)
-}
-
-// filterEventsForInstance returns a copy of events excluding any that
-// originated from the given instance. This prevents a model from
-// receiving its own messages as trigger events.
-func filterEventsForInstance(events []protocol.IRCMessage, instanceID string) []protocol.IRCMessage {
-	if instanceID == "" {
-		return events
-	}
-
-	filtered := make([]protocol.IRCMessage, 0, len(events))
-	for _, e := range events {
-		if e.InstanceID != instanceID {
-			filtered = append(filtered, e)
-		}
-	}
-
-	return filtered
 }
 
 func (s *Session) dispatchToInstance(

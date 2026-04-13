@@ -353,6 +353,10 @@ func buildMessages(
 	}
 
 	for _, e := range events {
+		if selfInstanceID != "" && e.InstanceID == selfInstanceID {
+			continue
+		}
+
 		appendMsg(e)
 	}
 

@@ -748,8 +748,16 @@ func TestDispatchToInstance_excludes_own_events(t *testing.T) {
 	eventsByModel := make(map[domain.ModelID][]protocol.IRCMessage)
 
 	fake := &fakeAPIClient{
-		sendEventsFn: func(_ context.Context, modelID domain.ModelID, _ string, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (protocol.ModelResponse, error) {
-			eventsByModel[modelID] = append([]protocol.IRCMessage{}, events...)
+		sendEventsFn: func(_ context.Context, modelID domain.ModelID, selfID string, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			// Simulate what buildMessages does: exclude self-events.
+			for _, e := range events {
+				if selfID != "" && e.InstanceID == selfID {
+					continue
+				}
+
+				eventsByModel[modelID] = append(eventsByModel[modelID], e)
+			}
+
 			return protocol.Reply("hello"), nil
 		},
 	}
@@ -779,13 +787,18 @@ func TestDispatchToInstance_excludes_own_events(t *testing.T) {
 	_, err := sess.DispatchToChannel(ctx, "#general", triggerEvents)
 	require.NoError(t, err)
 
-	// botty should NOT have received its own message in events.
-	for _, e := range eventsByModel["test/model-a"] {
-		require.NotEqual(t, bottyID, e.InstanceID, "botty received its own message as a trigger event")
-	}
+	// botty should only see alice's message, not its own.
+	require.Equal(t, []protocol.IRCMessage{
+		{Kind: protocol.KindPrivMsg, From: "alice", Target: "#general", Body: "hi", At: fixedTime},
+	}, eventsByModel["test/model-a"])
 
-	// helper SHOULD have received botty's message (it's not helper's own).
-	require.NotEmpty(t, eventsByModel["test/model-b"])
+	// helper should see alice's message, botty's original message, and
+	// botty's reply (appended by the dispatch loop).
+	require.Equal(t, []protocol.IRCMessage{
+		{Kind: protocol.KindPrivMsg, From: "alice", Target: "#general", Body: "hi", At: fixedTime},
+		{Kind: protocol.KindPrivMsg, From: "botty", InstanceID: bottyID, Target: "#general", Body: "my own msg", At: fixedTime},
+		{Kind: protocol.KindPrivMsg, From: "botty", InstanceID: bottyID, Target: "#general", Body: "hello", At: fixedTime},
+	}, eventsByModel["test/model-b"])
 }
 
 func TestDispatchToInstances_model_does_not_reply_to_self(t *testing.T) {
@@ -795,8 +808,14 @@ func TestDispatchToInstances_model_does_not_reply_to_self(t *testing.T) {
 	receivedByModel := make(map[domain.ModelID][]protocol.IRCMessage)
 
 	fake := &fakeAPIClient{
-		sendEventsFn: func(_ context.Context, modelID domain.ModelID, _ string, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (protocol.ModelResponse, error) {
-			receivedByModel[modelID] = append(receivedByModel[modelID], events...)
+		sendEventsFn: func(_ context.Context, modelID domain.ModelID, selfID string, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			for _, e := range events {
+				if selfID != "" && e.InstanceID == selfID {
+					continue
+				}
+
+				receivedByModel[modelID] = append(receivedByModel[modelID], e)
+			}
 
 			if modelID == "test/model-a" {
 				return protocol.Reply("first reply"), nil
@@ -827,15 +846,15 @@ func TestDispatchToInstances_model_does_not_reply_to_self(t *testing.T) {
 	_, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 
-	// model-a (botty) should not have received any events from itself.
-	for _, e := range receivedByModel["test/model-a"] {
-		require.NotEqual(t, bottyID, e.InstanceID, "botty received its own message")
-	}
+	// model-a (botty) should only see the user's message, not its own reply.
+	require.Equal(t, []protocol.IRCMessage{ircMsg}, receivedByModel["test/model-a"])
 
-	// model-b (helper) should not have received any events from itself.
-	for _, e := range receivedByModel["test/model-b"] {
-		require.NotEqual(t, helperID, e.InstanceID, "helper received its own message")
-	}
+	// model-b (helper) should see the user's message plus botty's reply,
+	// but not its own.
+	require.Equal(t, []protocol.IRCMessage{
+		ircMsg,
+		{Kind: protocol.KindPrivMsg, From: "botty", InstanceID: bottyID, Target: "#general", Body: "first reply", At: fixedTime},
+	}, receivedByModel["test/model-b"])
 }
 
 func TestSession_DispatchToChannel_broadcasts_to_channel_instances(t *testing.T) {
