@@ -54,12 +54,8 @@ func TestChatScreen_PartEvent_leaving_non_active_keeps_active(t *testing.T) {
 	tm := newChatApp(t, sess)
 	tm.WaitFor("#random")
 
-	tm.Send(domain.JoinEvent{
-		Channel: "#general",
-		Nick:    "testuser",
-		At:      time.Now(),
-	})
-	tm.WaitFor("#general")
+	tm.Send(domain.ChannelFocusEvent{Channel: "#general"})
+	tm.WaitFor("Created channel #general")
 
 	tm.Send(domain.PartEvent{
 		Channel: "#random",
@@ -80,12 +76,8 @@ func TestChatScreen_TopicChangeEvent_different_channel(t *testing.T) {
 	tm := newChatApp(t, sess)
 	tm.WaitFor("#random")
 
-	tm.Send(domain.JoinEvent{
-		Channel: "#general",
-		Nick:    "testuser",
-		At:      time.Now(),
-	})
-	tm.WaitFor("#general")
+	tm.Send(domain.ChannelFocusEvent{Channel: "#general"})
+	tm.WaitFor("Created channel #general")
 
 	tm.Send(domain.TopicChangeEvent{
 		Channel: "#random",
@@ -180,14 +172,7 @@ func TestChatScreen_model_join_does_not_switch_active(t *testing.T) {
 	tm.WaitFor("#random")
 
 	// Switch to #general so it's the active channel.
-	tm.Send(domain.JoinEvent{
-		Channel: "#general",
-		Nick:    "testuser",
-		At:      time.Now(),
-	})
-	tm.WaitFor("#general")
-
-	// Wait for #general's history to finish loading.
+	tm.Send(domain.ChannelFocusEvent{Channel: "#general"})
 	tm.WaitFor("Created channel #general")
 
 	// A model joins #random (which the user is in).
@@ -214,6 +199,77 @@ func TestChatScreen_model_join_does_not_switch_active(t *testing.T) {
 	require.Contains(t, view, "Created channel #general")
 }
 
+func TestChatScreen_rapid_switch_does_not_revert(t *testing.T) {
+	sess := newTestSession(t)
+	uitest.SeedChannel(t, sess, "#general")
+	uitest.SeedChannel(t, sess, "#random")
+	uitest.SeedChannel(t, sess, "#chat")
+
+	tm := newChatApp(t, sess)
+	tm.WaitFor("#chat")
+
+	// Switch to #chat so it's the active channel.
+	tm.Send(domain.ChannelFocusEvent{Channel: "#chat"})
+	tm.WaitFor("Created channel #chat")
+
+	// Simulate rapid switch: JoinEvents from two switches arrive
+	// back to back. With the fix, these no longer change the active
+	// channel — they only update the sidebar.
+	tm.Send(domain.JoinEvent{
+		Channel: "#random",
+		Nick:    "testuser",
+		At:      time.Now(),
+	})
+	tm.Send(domain.JoinEvent{
+		Channel: "#general",
+		Nick:    "testuser",
+		At:      time.Now(),
+	})
+
+	// Send a sync marker to #chat to ensure the JoinEvents have
+	// been fully processed.
+	tm.Send(domain.MessageEvent{
+		Event: domain.ChannelMessage{
+			Channel: "#chat",
+			From:    "alice",
+			Body:    "sync marker",
+			At:      time.Now(),
+		},
+	})
+	tm.WaitFor("sync marker")
+
+	// Active channel should still be #chat — JoinEvents for the
+	// user should not have switched the active channel. The sync
+	// marker was sent to #chat so it should be in the final view.
+	view := tm.CurrentView()
+	require.Contains(t, view, "sync marker",
+		"#chat content should be visible — active channel should still be #chat")
+	require.NotContains(t, view, "Created channel #random",
+		"#random should not be the active view")
+	require.NotContains(t, view, "Created channel #general",
+		"#general should not be the active view")
+}
+
+func TestChatScreen_focus_new_channel_before_join_event(t *testing.T) {
+	sess := newTestSession(t)
+	uitest.SeedChannel(t, sess, "#general")
+
+	tm := newChatApp(t, sess)
+	tm.WaitFor("#general")
+
+	// ChannelFocusEvent for a channel that hasn't been joined yet.
+	// This can happen when /join triggers ChannelFocusEvent before
+	// the backend JoinEvent arrives.
+	tm.Send(domain.ChannelFocusEvent{Channel: "#newchannel"})
+	tm.WaitFor("#newchannel")
+
+	view := tm.CurrentView()
+	require.Contains(t, view, "#newchannel",
+		"new channel should appear in the sidebar")
+	require.NotContains(t, view, "Created channel #general",
+		"#general content should not be shown — #newchannel is active")
+}
+
 func TestChatScreen_MessageEvent_inactive_channel(t *testing.T) {
 	sess := newTestSession(t)
 	uitest.SeedChannel(t, sess, "#general")
@@ -222,12 +278,10 @@ func TestChatScreen_MessageEvent_inactive_channel(t *testing.T) {
 	tm := newChatApp(t, sess)
 	tm.WaitFor("#random")
 
-	tm.Send(domain.JoinEvent{
-		Channel: "#general",
-		Nick:    "testuser",
-		At:      time.Now(),
-	})
-	tm.WaitFor("#general")
+	// Switch to #general via ChannelFocusEvent (the authoritative
+	// channel-switch mechanism).
+	tm.Send(domain.ChannelFocusEvent{Channel: "#general"})
+	tm.WaitFor("Created channel #general")
 
 	tm.Send(domain.MessageEvent{
 		Event: domain.ChannelMessage{
@@ -236,6 +290,18 @@ func TestChatScreen_MessageEvent_inactive_channel(t *testing.T) {
 			Body:    "hello from random",
 		},
 	})
+
+	// Send a sync marker to #general to ensure the MessageEvent
+	// for #random has been fully processed.
+	tm.Send(domain.MessageEvent{
+		Event: domain.ChannelMessage{
+			Channel: "#general",
+			From:    "alice",
+			Body:    "sync marker",
+			At:      time.Now(),
+		},
+	})
+	tm.WaitFor("sync marker")
 
 	view := tm.CurrentView()
 	require.Contains(t, view, "#general")

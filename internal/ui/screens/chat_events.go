@@ -125,7 +125,12 @@ func (s ChatScreen) handleSessionEvent(msg sessionEventMsg) (ui.Model, tea.Cmd) 
 func (s ChatScreen) handleChannelFocus(msg domain.ChannelFocusEvent) (ui.Model, tea.Cmd) {
 	ch, exists := s.channels.Get(domain.Channel{Name: msg.Channel})
 	if !exists {
-		return s, nil
+		ch = domain.Channel{
+			Name:    msg.Channel,
+			Kind:    domain.KindChannel,
+			Members: domain.NewMemberList(),
+		}
+		s.channels.Insert(ch)
 	}
 
 	*s.active = msg.Channel
@@ -137,6 +142,11 @@ func (s ChatScreen) handleChannelFocus(msg domain.ChannelFocusEvent) (ui.Model, 
 		Topic:   s.activeTopic(),
 		Kind:    ch.Kind,
 	}))
+
+	if !exists {
+		cmds = append(cmds, msgCmd(components.ChannelAddedMsg{Channel: ch}))
+	}
+
 	cmds = append(cmds, msgCmd(components.ChannelActiveMsg{Channel: msg.Channel}))
 	cmds = append(cmds, msgCmd(components.ChannelUnreadMsg{Channel: msg.Channel, Count: 0}))
 	cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: ch.Members}))
@@ -151,10 +161,6 @@ func (s ChatScreen) handleJoinEvent(msg domain.JoinEvent) (ui.Model, tea.Cmd) {
 
 	if !isUser && !channelKnown {
 		return s, nil
-	}
-
-	if isUser {
-		*s.active = msg.Channel
 	}
 
 	ch, exists := s.channels.Get(domain.Channel{Name: msg.Channel})
@@ -173,7 +179,6 @@ func (s ChatScreen) handleJoinEvent(msg domain.JoinEvent) (ui.Model, tea.Cmd) {
 
 	s.channels.Insert(ch)
 
-	// For non-user joins in a known channel, just update the nick list.
 	if !isUser {
 		if msg.Channel == *s.active {
 			return s, msgCmd(components.NickListUpdatedMsg{Members: ch.Members})
@@ -182,20 +187,14 @@ func (s ChatScreen) handleJoinEvent(msg domain.JoinEvent) (ui.Model, tea.Cmd) {
 		return s, nil
 	}
 
-	var cmds []tea.Cmd
-	cmds = append(cmds, msgCmd(components.SetPlaceholderMsg{}))
-	cmds = append(cmds, msgCmd(components.SetChannelMsg{
-		Channel: msg.Channel,
-		Topic:   s.activeTopic(),
-		Kind:    ch.Kind,
-	}))
-	cmds = append(cmds, msgCmd(components.ChannelAddedMsg{Channel: ch}))
-	cmds = append(cmds, msgCmd(components.ChannelActiveMsg{Channel: msg.Channel}))
-	cmds = append(cmds, msgCmd(components.ChannelUnreadMsg{Channel: msg.Channel, Count: 0}))
-	cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: ch.Members}))
-	cmds = append(cmds, s.fetchHistory(msg.Channel))
-
-	return s, tea.Sequence(cmds...)
+	// For user joins, update the sidebar and member list only. The
+	// ChannelFocusEvent from switchChannel is the authoritative
+	// source for active-channel switches, avoiding races when the
+	// user switches channels rapidly.
+	return s, tea.Batch(
+		msgCmd(components.ChannelAddedMsg{Channel: ch}),
+		msgCmd(components.ChannelUnreadMsg{Channel: msg.Channel, Count: 0}),
+	)
 }
 
 func (s ChatScreen) handleModeChangeEvent(msg domain.ModeChangeEvent) (ui.Model, tea.Cmd) {
