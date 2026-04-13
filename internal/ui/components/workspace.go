@@ -210,21 +210,52 @@ func (w ChatWorkspace) KeyBindings() []key.Binding {
 	return append(bindings, ui.CollectKeyBindings(w.Chat)...)
 }
 
+// ObsHeight returns the height the observability drawer needs. In
+// split mode, this is the drawer height that MainLayout should
+// reserve below the three-column area. In fullscreen or closed
+// mode it returns 0 because the drawer is handled entirely within
+// View.
+func (w ChatWorkspace) ObsHeight(totalHeight int) int {
+	if !w.Open || w.Fullscreen {
+		return 0
+	}
+
+	h := max(totalHeight*30/100, minObservabilityDrawerHeight)
+	if h >= totalHeight {
+		h = totalHeight / 2
+	}
+	if h < 0 {
+		h = 0
+	}
+
+	return h
+}
+
+// ObsView renders the observability panes at the given dimensions.
+// MainLayout calls this to render the drawer spanning the full
+// terminal width below the three-column area.
+func (w ChatWorkspace) ObsView(width, height int) string {
+	if !w.Open || w.Fullscreen || height <= 0 {
+		return ""
+	}
+
+	layout := w.obsLayout(width, height)
+
+	return w.renderObservabilityLayout(layout, width, height)
+}
+
 // View implements ui.Model.
 func (w ChatWorkspace) View(width, height int) string {
-	layout := w.layout(width, height)
 	if !w.Open {
 		return w.Chat.View(width, height)
 	}
 
 	if w.Fullscreen {
+		layout := w.layout(width, height)
 		return w.renderObservabilityLayout(layout, width, height)
 	}
 
-	chat := w.Chat.View(width, layout.ChatRect.Height)
-	obs := w.renderObservabilityLayout(layout, width, layout.ObsRect.Height)
-
-	return lipgloss.JoinVertical(lipgloss.Left, chat, obs)
+	return w.Chat.View(width, height)
 }
 
 // SetLogEntries updates the log pane content.
@@ -266,39 +297,65 @@ func (w ChatWorkspace) StatusItems() []ui.StatusItem {
 }
 
 func (w ChatWorkspace) updateChildBounds() (ui.Model, tea.Cmd) {
-	layout := w.currentLayout()
 	var cmds []tea.Cmd
 
-	if !w.Fullscreen {
-		updatedChat, cmd := w.Chat.Update(ui.BoundsMsg{Rect: layout.ChatRect})
-		w.Chat = updatedChat.(ChatView)
+	if w.Fullscreen {
+		layout := w.layout(w.bounds.Width, w.bounds.Height)
+
+		w = w.refreshLogs()
+		updatedLogs, cmd := w.Logs.Update(ui.BoundsMsg{Rect: layout.LogsRect})
+		w.Logs = updatedLogs
 		cmds = append(cmds, cmd)
+
+		if w.HasMetrics {
+			updatedMetrics, cmd := w.Metrics.Update(ui.BoundsMsg{Rect: layout.MetricsRect})
+			w.Metrics = updatedMetrics.(MetricsPane)
+			cmds = append(cmds, cmd)
+		}
+
+		return w, tea.Batch(cmds...)
 	}
 
-	w = w.refreshLogs()
-	updatedLogs, cmd := w.Logs.Update(ui.BoundsMsg{Rect: layout.LogsRect})
-	w.Logs = updatedLogs
+	obsH := w.ObsHeight(w.bounds.Height)
+	chatHeight := w.bounds.Height - obsH
+
+	chatRect := ui.Rect{X: w.bounds.X, Y: w.bounds.Y, Width: w.bounds.Width, Height: chatHeight}
+	updatedChat, cmd := w.Chat.Update(ui.BoundsMsg{Rect: chatRect})
+	w.Chat = updatedChat.(ChatView)
 	cmds = append(cmds, cmd)
 
-	if w.HasMetrics {
-		updatedMetrics, cmd := w.Metrics.Update(ui.BoundsMsg{Rect: layout.MetricsRect})
-		w.Metrics = updatedMetrics.(MetricsPane)
+	if w.Open {
+		obsLay := w.obsLayout(w.bounds.Width, obsH)
+
+		w = w.refreshLogs()
+		updatedLogs, cmd := w.Logs.Update(ui.BoundsMsg{Rect: obsLay.LogsRect})
+		w.Logs = updatedLogs
 		cmds = append(cmds, cmd)
+
+		if w.HasMetrics {
+			updatedMetrics, cmd := w.Metrics.Update(ui.BoundsMsg{Rect: obsLay.MetricsRect})
+			w.Metrics = updatedMetrics.(MetricsPane)
+			cmds = append(cmds, cmd)
+		}
 	}
 
 	return w, tea.Batch(cmds...)
 }
 
 func (w ChatWorkspace) refreshLogs() ChatWorkspace {
-	layout := w.currentLayout()
-	innerWidth, _ := borderedInnerSize(layout.LogsRect.Width, layout.LogsRect.Height)
-	w.Logs = w.Logs.SetLines(renderLogEntries(w.logEntries, innerWidth, w.timestampFormat, w.locale))
+	var logsWidth int
+
+	if w.Fullscreen {
+		layout := w.layout(w.bounds.Width, w.bounds.Height)
+		logsWidth, _ = borderedInnerSize(layout.LogsRect.Width, layout.LogsRect.Height)
+	} else {
+		obsLay := w.obsLayout(w.bounds.Width, w.ObsHeight(w.bounds.Height))
+		logsWidth, _ = borderedInnerSize(obsLay.LogsRect.Width, obsLay.LogsRect.Height)
+	}
+
+	w.Logs = w.Logs.SetLines(renderLogEntries(w.logEntries, logsWidth, w.timestampFormat, w.locale))
 
 	return w
-}
-
-func (w ChatWorkspace) currentLayout() workspaceLayout {
-	return w.layout(w.bounds.Width, w.bounds.Height)
 }
 
 func (w ChatWorkspace) layout(width, height int) workspaceLayout {
@@ -345,6 +402,22 @@ func (w ChatWorkspace) layout(width, height int) workspaceLayout {
 	}
 	layout.LogsRect = ui.Rect{X: w.bounds.X, Y: layout.ObsRect.Y, Width: width, Height: logsHeight}
 	layout.MetricsRect = ui.Rect{X: w.bounds.X, Y: layout.ObsRect.Y + logsHeight, Width: width, Height: drawerHeight - logsHeight}
+
+	return layout
+}
+
+func (w ChatWorkspace) obsLayout(width, height int) workspaceLayout {
+	layout := workspaceLayout{
+		ObsRect: ui.Rect{Width: width, Height: height},
+	}
+
+	logsHeight := height * 70 / 100
+	if logsHeight < 3 {
+		logsHeight = height
+	}
+
+	layout.LogsRect = ui.Rect{Width: width, Height: logsHeight}
+	layout.MetricsRect = ui.Rect{Y: logsHeight, Width: width, Height: height - logsHeight}
 
 	return layout
 }

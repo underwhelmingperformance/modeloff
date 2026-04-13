@@ -30,6 +30,13 @@ type nickListPreference interface {
 	WantsNickListHidden() bool
 }
 
+// obsProvider is implemented by content models that can render an
+// observability drawer spanning the full layout width.
+type obsProvider interface {
+	ObsView(width, height int) string
+	ObsHeight(totalHeight int) int
+}
+
 // MainLayout splits the screen horizontally into a left panel, a
 // content area in the middle, and an optional right panel.
 type MainLayout struct {
@@ -71,10 +78,11 @@ func (m MainLayout) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	if size, ok := msg.(tea.WindowSizeMsg); ok {
-		layout := m.computeLayout(size.Width, size.Height)
+		colHeight := m.columnHeight(size.Height)
+		layout := m.computeLayout(size.Width, colHeight)
 
 		left, cmd := m.Sidebar.Update(ui.BoundsMsg{
-			Rect: ui.Rect{X: 0, Y: 0, Width: layout.sidebarInner, Height: size.Height},
+			Rect: ui.Rect{X: 0, Y: 0, Width: layout.sidebarInner, Height: colHeight},
 		})
 		m.Sidebar = left
 		cmds = append(cmds, cmd)
@@ -91,7 +99,7 @@ func (m MainLayout) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 					X:      layout.sidebarOuter + layout.content,
 					Y:      0,
 					Width:  layout.nickListInner,
-					Height: size.Height,
+					Height: colHeight,
 				},
 			})
 			m.NickList = r
@@ -212,15 +220,35 @@ func (m MainLayout) wantsNickList() bool {
 	return true
 }
 
+func (m MainLayout) columnHeight(totalHeight int) int {
+	if obs, ok := m.Content.(obsProvider); ok {
+		return totalHeight - obs.ObsHeight(totalHeight)
+	}
+
+	return totalHeight
+}
+
 // View implements ui.Model.
 func (m MainLayout) View(width, height int) string {
 	if width < theme.MinTerminalWidth {
 		return theme.NarrowTerminalView(width, height)
 	}
 
-	sidebarBorder := theme.SidebarBorder.Height(height)
+	obsH := 0
+	var obsView string
+
+	if obs, ok := m.Content.(obsProvider); ok {
+		obsH = obs.ObsHeight(height)
+		if obsH > 0 {
+			obsView = obs.ObsView(width, obsH)
+		}
+	}
+
+	colHeight := height - obsH
+
+	sidebarBorder := theme.SidebarBorder.Height(colHeight)
 	sidebarCap := int(float64(width) * maxSidebarFraction)
-	left := sidebarBorder.Render(m.Sidebar.View(sidebarCap, height))
+	left := sidebarBorder.Render(m.Sidebar.View(sidebarCap, colHeight))
 	sidebarW := lipgloss.Width(left)
 
 	showNL := m.wantsNickList()
@@ -228,9 +256,9 @@ func (m MainLayout) View(width, height int) string {
 	nlW := 0
 
 	if showNL {
-		nlBorder := theme.NickListBorder.Height(height)
+		nlBorder := theme.NickListBorder.Height(colHeight)
 		nlCap := int(float64(width) * maxNickListFraction)
-		nlView = nlBorder.Render(m.NickList.View(nlCap, height))
+		nlView = nlBorder.Render(m.NickList.View(nlCap, colHeight))
 		nlW = lipgloss.Width(nlView)
 	}
 
@@ -248,14 +276,14 @@ func (m MainLayout) View(width, height int) string {
 		sidebarFrame, _ := sidebarBorder.GetFrameSize()
 
 		newSidebarInner := max(sidebarW-sidebarFrame-shrinkEach, 0)
-		left = sidebarBorder.Render(m.Sidebar.View(newSidebarInner, height))
+		left = sidebarBorder.Render(m.Sidebar.View(newSidebarInner, colHeight))
 		sidebarW = lipgloss.Width(left)
 
 		if showNL {
-			nlBorder := theme.NickListBorder.Height(height)
+			nlBorder := theme.NickListBorder.Height(colHeight)
 			nlFrame, _ := nlBorder.GetFrameSize()
 			newNLInner := max(nlW-nlFrame-shrinkEach, 0)
-			shrunk := nlBorder.Render(m.NickList.View(newNLInner, height))
+			shrunk := nlBorder.Render(m.NickList.View(newNLInner, colHeight))
 
 			if lipgloss.Width(shrunk) > nlW-shrinkEach {
 				showNL = false
@@ -270,13 +298,20 @@ func (m MainLayout) View(width, height int) string {
 		contentW = width - sidebarW - nlW
 	}
 
-	content := m.Content.View(contentW, height)
+	content := m.Content.View(contentW, colHeight)
 
+	var columns string
 	if showNL {
-		return lipgloss.JoinHorizontal(lipgloss.Top, left, content, nlView)
+		columns = lipgloss.JoinHorizontal(lipgloss.Top, left, content, nlView)
+	} else {
+		columns = lipgloss.JoinHorizontal(lipgloss.Top, left, content)
 	}
 
-	return lipgloss.JoinHorizontal(lipgloss.Top, left, content)
+	if obsH > 0 {
+		return lipgloss.JoinVertical(lipgloss.Left, columns, obsView)
+	}
+
+	return columns
 }
 
 // KeyBindings implements ui.Keybinding.

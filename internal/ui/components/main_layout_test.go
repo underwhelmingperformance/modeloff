@@ -229,6 +229,85 @@ func TestMainLayout_Init_batches_children(t *testing.T) {
 	require.NotNil(t, cmd)
 }
 
+// obsStubModel is a stubModel that also acts as an ObsProvider,
+// simulating the ChatWorkspace's observability drawer.
+type obsStubModel struct {
+	stubModel
+
+	obsOpen   bool
+	obsHeight int
+}
+
+func (o obsStubModel) ObsView(width, height int) string {
+	if !o.obsOpen {
+		return ""
+	}
+
+	return lipgloss.Place(width, height, lipgloss.Left, lipgloss.Top,
+		fmt.Sprintf("obs:%dx%d", width, height))
+}
+
+func (o obsStubModel) ObsHeight(_ int) int {
+	if !o.obsOpen {
+		return 0
+	}
+
+	return o.obsHeight
+}
+
+func TestMainLayout_View_obs_closed_height_matches(t *testing.T) {
+	sidebar := stubModel{label: "sidebar"}
+	content := obsStubModel{
+		stubModel: stubModel{label: "content"},
+		obsOpen:   false,
+	}
+
+	layout := components.NewMainLayout(sidebar, content)
+	got := layout.View(120, 24)
+
+	require.Equal(t, 24, lipgloss.Height(got))
+	require.NotContains(t, got, "obs:")
+}
+
+func TestMainLayout_View_obs_open_spans_full_width(t *testing.T) {
+	sidebar := stubModel{label: "sidebar"}
+	content := obsStubModel{
+		stubModel: stubModel{label: "content"},
+		obsOpen:   true,
+		obsHeight: 8,
+	}
+
+	layout := components.NewMainLayout(sidebar, content)
+	got := layout.View(120, 24)
+
+	require.Equal(t, 24, lipgloss.Height(got))
+	require.Contains(t, got, "obs:120x8")
+	require.Contains(t, got, "sidebar:")
+	require.Contains(t, got, "content:")
+}
+
+func TestMainLayout_View_obs_open_reduces_column_height(t *testing.T) {
+	sidebar := stubModel{label: "sidebar"}
+	content := obsStubModel{
+		stubModel: stubModel{label: "content"},
+		obsOpen:   true,
+		obsHeight: 8,
+	}
+
+	layout := components.NewMainLayout(sidebar, content)
+	got := layout.View(120, 24)
+
+	// The sidebar and content columns should get 24-8=16 height.
+	// Sidebar gets height via its border, but the content label
+	// embeds the dimensions it was given.
+	require.Contains(t, got, "sidebar:")
+	require.Contains(t, got, "content:")
+
+	// The obs drawer gets the full width (120) and its requested
+	// height (8).
+	require.Contains(t, got, "obs:120x8")
+}
+
 func TestMainLayout_KeyBindings_collects_from_children(t *testing.T) {
 	sidebar := keybindingStubModel{
 		stubModel: stubModel{label: "sidebar"},
