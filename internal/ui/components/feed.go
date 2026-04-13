@@ -160,9 +160,16 @@ func (f FeedView) View(width, height int) (view string, scrolled bool, scrollPct
 	vp := f.viewport
 	vp.Width = width
 	vp.Height = height
-	vp.SetContent(f.renderedContent(width))
 
-	return vp.View(), !vp.AtBottom(), vp.ScrollPercent()
+	content := f.renderedContent(width)
+	vp.SetContent(content)
+
+	rendered := vp.View()
+	if lipgloss.Height(content) <= height {
+		rendered = lipgloss.Place(width, height, lipgloss.Left, lipgloss.Bottom, content)
+	}
+
+	return rendered, !vp.AtBottom(), vp.ScrollPercent()
 }
 
 // SyncViewport sets the viewport dimensions and re-renders content.

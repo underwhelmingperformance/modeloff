@@ -1320,3 +1320,29 @@ func TestContainsHighlightWord(t *testing.T) {
 		})
 	}
 }
+
+func TestChatView_few_messages_bottom_aligned(t *testing.T) {
+	cv := newChatViewWithEvents("#general", "testuser", "", testEvents[:1])
+	v := ansi.Strip(cv.View(80, 24))
+	lines := strings.Split(v, "\n")
+
+	// With only one message in a 24-line viewport, the message
+	// content should appear near the bottom, not at the top.
+	// Find the first line containing the message text.
+	msgLine := -1
+
+	for i, line := range lines {
+		if strings.Contains(line, "hello") {
+			msgLine = i
+
+			break
+		}
+	}
+
+	require.NotEqual(t, -1, msgLine, "message 'hello' should appear in the view")
+
+	// The input bar takes 1 line at the bottom. The message should
+	// be anchored just above it, not at line 0.
+	require.Greater(t, msgLine, 5,
+		"with one message in a 24-line viewport, content should be bottom-aligned, not top-aligned; found at line %d", msgLine)
+}

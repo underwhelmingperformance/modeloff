@@ -303,7 +303,12 @@ func (m MessageList) renderMessages(width, height int) (view string, scrolled bo
 	content := m.renderedContent(width)
 	vp.SetContent(content)
 
-	return vp.View(), !m.viewport.AtBottom(), m.viewport.ScrollPercent()
+	rendered := vp.View()
+	if lipgloss.Height(content) <= height {
+		rendered = lipgloss.Place(width, height, lipgloss.Left, lipgloss.Bottom, content)
+	}
+
+	return rendered, !m.viewport.AtBottom(), m.viewport.ScrollPercent()
 }
 
 func (m MessageList) renderedContent(width int) string {
