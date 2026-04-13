@@ -89,7 +89,7 @@ func (s *Session) JoinAs(ctx context.Context, actor domain.Nick, ch domain.Chann
 
 	if !alreadyMember && channel.Kind != domain.KindDM {
 		s.appendEvent(ctx, ch, domain.ChannelJoin{Channel: ch, Nick: actor, Created: created, At: now})
-		s.emitFor(ctx, actor, domain.JoinEvent{Channel: ch, Nick: actor, Created: created, At: now})
+		s.emit(ctx, domain.JoinEvent{Channel: ch, Nick: actor, Created: created, At: now})
 	}
 
 	if !alreadyMember && created && isUser && channel.Kind != domain.KindDM {
@@ -103,7 +103,7 @@ func (s *Session) JoinAs(ctx context.Context, actor domain.Nick, ch domain.Chann
 		s.appendEvent(ctx, ch, domain.ChannelModeChange{
 			Channel: ch, Nick: actor, Mode: domain.ModeOp, At: now,
 		})
-		s.emitFor(ctx, actor, domain.ModeChangeEvent{
+		s.emit(ctx, domain.ModeChangeEvent{
 			Channel: ch, Nick: actor, Mode: domain.ModeOp, Actor: "ChanServ", At: now,
 		})
 	}
@@ -147,7 +147,7 @@ func (s *Session) PartAs(ctx context.Context, actor domain.Nick, ch domain.Chann
 
 	now := s.now()
 	s.appendEvent(ctx, ch, domain.ChannelPart{Channel: ch, Nick: actor, Message: message, At: now})
-	s.emitFor(ctx, actor, domain.PartEvent{Channel: ch, Nick: actor, Message: message, At: now})
+	s.emit(ctx, domain.PartEvent{Channel: ch, Nick: actor, Message: message, At: now})
 
 	return nil
 }
@@ -249,7 +249,7 @@ func (s *Session) ChangeNickAs(ctx context.Context, actor domain.Nick, newNick d
 		s.appendEvent(ctx, chName, domain.ChannelNickChange{
 			Channel: chName, OldNick: actor, NewNick: newNick, At: now,
 		})
-		s.emitFor(ctx, actor, domain.NickChangeEvent{
+		s.emit(ctx, domain.NickChangeEvent{
 			Channel: chName, OldNick: actor, NewNick: newNick, At: now,
 		})
 	}
@@ -282,17 +282,7 @@ func (s *Session) SendMessageAs(ctx context.Context, actor domain.Nick, ch domai
 	}
 
 	s.appendEvent(ctx, ch, cm)
-
-	evt := domain.MessageEvent{Event: cm}
-
-	// DM channels always dispatch so that the recipient model sees the
-	// message, even when the sender is also a model.
-	channel, _ := s.store.GetChannel(ctx, ch)
-	if channel.Kind == domain.KindDM {
-		s.emit(ctx, evt)
-	} else {
-		s.emitFor(ctx, actor, evt)
-	}
+	s.emit(ctx, domain.MessageEvent{Event: cm})
 
 	return nil
 }
@@ -323,15 +313,7 @@ func (s *Session) SendActionAs(ctx context.Context, actor domain.Nick, ch domain
 	}
 
 	s.appendEvent(ctx, ch, cm)
-
-	evt := domain.MessageEvent{Event: cm}
-
-	channel, _ := s.store.GetChannel(ctx, ch)
-	if channel.Kind == domain.KindDM {
-		s.emit(ctx, evt)
-	} else {
-		s.emitFor(ctx, actor, evt)
-	}
+	s.emit(ctx, domain.MessageEvent{Event: cm})
 
 	return nil
 }
@@ -367,13 +349,13 @@ func (s *Session) SetTopicAs(ctx context.Context, actor domain.Nick, ch domain.C
 	}
 
 	s.appendEvent(ctx, ch, domain.ChannelTopicChange{Channel: ch, Topic: topic, By: actor, At: now})
-	s.emitFor(ctx, actor, domain.TopicChangeEvent{Channel: ch, Topic: topic, By: actor, At: now})
+	s.emit(ctx, domain.TopicChangeEvent{Channel: ch, Topic: topic, By: actor, At: now})
 
 	return nil
 }
 
-// KickAs removes a nick from a channel on behalf of the actor.
-func (s *Session) KickAs(ctx context.Context, actor domain.Nick, target domain.Nick, ch domain.ChannelName) (retErr error) {
+// KickAs removes a nick from a channel.
+func (s *Session) KickAs(ctx context.Context, target domain.Nick, ch domain.ChannelName) (retErr error) {
 	ctx, span := startSpan(
 		ctx,
 		"session.kick",
@@ -412,7 +394,7 @@ func (s *Session) KickAs(ctx context.Context, actor domain.Nick, target domain.N
 
 	now := s.now()
 	s.appendEvent(ctx, ch, domain.ChannelModelKicked{Channel: ch, Nick: target, At: now})
-	s.emitFor(ctx, actor, domain.ModelKickedEvent{Channel: ch, Nick: target, At: now})
+	s.emit(ctx, domain.ModelKickedEvent{Channel: ch, Nick: target, At: now})
 
 	return nil
 }

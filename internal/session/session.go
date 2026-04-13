@@ -391,7 +391,7 @@ func (s *Session) attachInstanceToChannel(
 
 // Kick removes a model instance from a channel.
 func (s *Session) Kick(ctx context.Context, ch domain.ChannelName, nick domain.Nick) error {
-	return s.KickAs(ctx, s.user.Nick, nick, ch)
+	return s.KickAs(ctx, nick, ch)
 }
 
 // SendMessage saves a message to a channel and returns the message
@@ -877,7 +877,12 @@ func (s *Session) dispatchToInstances(
 	var replies []domain.ModelReplyEvent
 
 	for _, inst := range instances {
-		instReplies, instErr := s.dispatchToInstance(ctx, channel, inst, channelName, historyEvents, events)
+		filtered := filterSelfEvents(events, inst.InstanceID)
+		if len(filtered) == 0 {
+			continue
+		}
+
+		instReplies, instErr := s.dispatchToInstance(ctx, channel, inst, channelName, historyEvents, filtered)
 		if instErr != nil {
 			errs = append(errs, instErr)
 		}
@@ -891,6 +896,21 @@ func (s *Session) dispatchToInstances(
 	}
 
 	return replies, errors.Join(errs...)
+}
+
+func filterSelfEvents(events []protocol.IRCMessage, instanceID string) []protocol.IRCMessage {
+	if instanceID == "" {
+		return events
+	}
+
+	out := make([]protocol.IRCMessage, 0, len(events))
+	for _, e := range events {
+		if e.InstanceID != instanceID {
+			out = append(out, e)
+		}
+	}
+
+	return out
 }
 
 func (s *Session) dispatchToInstance(
@@ -1170,16 +1190,6 @@ func (s *Session) emit(ctx context.Context, evt domain.SessionEvent) {
 // dispatch. Use this for model-initiated events to prevent loops.
 func (s *Session) emitUIOnly(evt domain.SessionEvent) {
 	s.events <- evt
-}
-
-// emitFor dispatches an event through either emit (user-initiated,
-// triggers model dispatch) or emitUIOnly (model-initiated, UI only).
-func (s *Session) emitFor(ctx context.Context, actor domain.Nick, evt domain.SessionEvent) {
-	if actor == s.user.Nick {
-		s.emit(ctx, evt)
-	} else {
-		s.emitUIOnly(evt)
-	}
 }
 
 // maybeDispatch checks whether an event is dispatchable and, if so,

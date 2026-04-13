@@ -3327,3 +3327,50 @@ func TestDispatchToInstance_logs_pass_reason(t *testing.T) {
 	require.Equal(t, "pass", record["result"])
 	require.Equal(t, "nothing to say", record["reply_preview"])
 }
+
+func TestSendMessageAs_model_triggers_dispatch_to_other_models(t *testing.T) {
+	dispatched := make(map[domain.ModelID][]protocol.IRCMessage)
+
+	fake := &fakeAPIClient{
+		sendEventsFn: func(_ context.Context, modelID domain.ModelID, _ string, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			dispatched[modelID] = append(dispatched[modelID], events...)
+			return protocol.ModelResponse{Kind: protocol.ResponseSilence, Reason: "ok"}, nil
+		},
+	}
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "alpha", "beta")
+	seedInstance(t, s, domain.Instance{
+		InstanceID: "inst-alpha",
+		Nick:       "alpha",
+		ModelID:    "test/model-a",
+		Channels:   testChannels("#general"),
+	})
+	seedInstance(t, s, domain.Instance{
+		InstanceID: "inst-beta",
+		Nick:       "beta",
+		ModelID:    "test/model-b",
+		Channels:   testChannels("#general"),
+	})
+
+	require.NoError(t, sess.SendMessageAs(ctx, "alpha", "#general", "hello from alpha"))
+
+	// Wait for async dispatch to complete.
+	drainEvent[domain.MessageEvent](t, sess)
+	drainEvent[domain.DispatchStartedEvent](t, sess)
+	drainEvent[domain.DispatchDoneEvent](t, sess)
+
+	wantMsg := protocol.IRCMessage{
+		Kind:       protocol.KindPrivMsg,
+		From:       "alpha",
+		InstanceID: "inst-alpha",
+		Target:     "#general",
+		Body:       "hello from alpha",
+		At:         fixedTime,
+	}
+
+	require.Equal(t, map[domain.ModelID][]protocol.IRCMessage{
+		"test/model-b": {wantMsg},
+	}, dispatched)
+}

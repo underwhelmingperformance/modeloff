@@ -179,7 +179,7 @@ func TestKickAs_model_actor(t *testing.T) {
 		Channels: testChannels("#dev"),
 	})
 
-	require.NoError(t, sess.KickAs(ctx, "botty", "helper", "#dev"))
+	require.NoError(t, sess.KickAs(ctx, "helper", "#dev"))
 
 	evt := drainEvent[domain.ModelKickedEvent](t, sess)
 	require.Equal(t, domain.ModelKickedEvent{
