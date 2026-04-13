@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"log/slog"
 	"slices"
 	"time"
 
@@ -444,6 +445,12 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		if key.Matches(msg, s.keyMap.ToggleNickList) {
+			slog.Default().InfoContext(s.ctx, "keybind triggered",
+				"component", "ui",
+				"action", "toggle_nick_list",
+				"key", msg.String(),
+			)
+
 			return s, msgCmd(components.NickListToggleMsg{})
 		}
 	}

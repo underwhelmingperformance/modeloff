@@ -2,6 +2,7 @@ package screens
 
 import (
 	"fmt"
+	"log/slog"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -36,6 +37,12 @@ func errorEvent(operation string, err error) domain.ErrorEvent {
 func (s ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
 	invocation, err := s.parser.ParseInvocation(msg.Raw)
 	if err != nil {
+		slog.Default().WarnContext(s.ctx, "command parse failed",
+			"component", "ui",
+			"raw", msg.Raw,
+			"error", err,
+		)
+
 		return func() tea.Msg { return errorEvent("command", err) }
 	}
 
@@ -46,6 +53,13 @@ func (s ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
 				fmt.Errorf("parsed command %T does not implement the expected command interface", invocation.Leaf()))
 		}
 	}
+
+	slog.Default().InfoContext(s.ctx, "command executed",
+		"component", "ui",
+		"command", invocation.Selected().Name,
+		"raw", msg.Raw,
+		"channel", string(*s.active),
+	)
 
 	ctx := s.runContext()
 	ctx.Invocation = invocation

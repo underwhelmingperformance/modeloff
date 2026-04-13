@@ -1,9 +1,11 @@
 package session
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -1962,6 +1964,46 @@ func TestSession_DispatchToChannel_forwards_replies_to_subsequent_models(t *test
 	}, eventsByModel["test/beta"])
 }
 
+// --- Log capture ---
+
+// logBuffer is a thread-safe bytes.Buffer that captures slog JSON
+// output and allows searching for records by message.
+type logBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (lb *logBuffer) Write(p []byte) (int, error) {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+
+	return lb.buf.Write(p)
+}
+
+// find returns the first JSON log record whose "msg" field equals the
+// given message, or nil if not found.
+func (lb *logBuffer) find(msg string) map[string]any {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+
+	for line := range bytes.SplitSeq(lb.buf.Bytes(), []byte("\n")) {
+		if len(line) == 0 {
+			continue
+		}
+
+		var record map[string]any
+		if json.Unmarshal(line, &record) != nil {
+			continue
+		}
+
+		if record["msg"] == msg {
+			return record
+		}
+	}
+
+	return nil
+}
+
 // --- Fake API client ---
 
 type fakeAPIClient struct {
@@ -3183,4 +3225,85 @@ func TestSession_ResetPersonas_removes_user_keeps_generated(t *testing.T) {
 	require.Equal(t, []domain.Persona{
 		{ID: "gen-persona", Description: "Generated.", Origin: domain.PersonaGenerated},
 	}, got)
+}
+
+func TestDispatchToInstance_logs_dispatch_attributes(t *testing.T) {
+	var buf logBuffer
+
+	handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})
+	slog.SetDefault(slog.New(handler))
+	t.Cleanup(func() { slog.SetDefault(slog.New(slog.NewTextHandler(nil, nil))) })
+
+	fake := &fakeAPIClient{
+		sendEventsFn: func(_ context.Context, _ domain.ModelID, _ string, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			return protocol.Reply("I have thoughts"), nil
+		},
+	}
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#dev", "testuser", "botty")
+	seedInstance(t, s, domain.Instance{
+		InstanceID: "inst-botty",
+		Nick:       "botty",
+		ModelID:    "test/model-a",
+		Channels:   testChannels("#dev"),
+	})
+
+	triggerEvents := []protocol.IRCMessage{
+		{Kind: protocol.KindPrivMsg, From: "alice", Target: "#dev", Body: "hi there", At: fixedTime},
+		{Kind: protocol.KindJoin, From: "bob", Target: "#dev", At: fixedTime},
+	}
+
+	_, err := sess.DispatchToChannel(ctx, "#dev", triggerEvents)
+	require.NoError(t, err)
+
+	record := buf.find("dispatch to instance")
+	require.NotNil(t, record, "expected 'dispatch to instance' log entry")
+
+	require.Equal(t, "session", record["component"])
+	require.Equal(t, "#dev", record["channel"])
+	require.Equal(t, "botty", record["nick"])
+	require.Equal(t, "test/model-a", record["model_id"])
+	require.Equal(t, float64(2), record["trigger_count"])
+	require.Equal(t, "PRIVMSG from alice; JOIN from bob", record["trigger_summary"])
+	require.Equal(t, "reply", record["result"])
+	require.Equal(t, "I have thoughts", record["reply_preview"])
+}
+
+func TestDispatchToInstance_logs_pass_reason(t *testing.T) {
+	var buf logBuffer
+
+	handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})
+	slog.SetDefault(slog.New(handler))
+	t.Cleanup(func() { slog.SetDefault(slog.New(slog.NewTextHandler(nil, nil))) })
+
+	fake := &fakeAPIClient{
+		sendEventsFn: func(_ context.Context, _ domain.ModelID, _ string, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			return protocol.ModelResponse{Kind: protocol.ResponseSilence, Reason: "nothing to say"}, nil
+		},
+	}
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#dev", "testuser", "botty")
+	seedInstance(t, s, domain.Instance{
+		InstanceID: "inst-botty",
+		Nick:       "botty",
+		ModelID:    "test/model-a",
+		Channels:   testChannels("#dev"),
+	})
+
+	triggerEvents := []protocol.IRCMessage{
+		{Kind: protocol.KindPrivMsg, From: "alice", Target: "#dev", Body: "anyone?", At: fixedTime},
+	}
+
+	_, err := sess.DispatchToChannel(ctx, "#dev", triggerEvents)
+	require.NoError(t, err)
+
+	record := buf.find("dispatch to instance")
+	require.NotNil(t, record, "expected 'dispatch to instance' log entry")
+
+	require.Equal(t, "pass", record["result"])
+	require.Equal(t, "nothing to say", record["reply_preview"])
 }

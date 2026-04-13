@@ -247,6 +247,8 @@ func (c *OpenRouterClient) SendEvents(
 		"prompt_tokens", result.Usage.PromptTokens,
 		"completion_tokens", result.Usage.CompletionTokens,
 		"cost_credits", result.Usage.CostCredits,
+		"event_count", len(events),
+		"history_count", len(history),
 	)
 
 	return result, nil
@@ -315,6 +317,9 @@ func (c *OpenRouterClient) ContinueWithToolResults(
 		"openrouter continue completed",
 		"request_id", result.RequestID,
 		"result", ResponseResultKind(result.Response),
+		"prompt_tokens", result.Usage.PromptTokens,
+		"completion_tokens", result.Usage.CompletionTokens,
+		"cost_credits", result.Usage.CostCredits,
 	)
 
 	return result, nil

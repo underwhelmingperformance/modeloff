@@ -1,10 +1,13 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	openai "github.com/openai/openai-go/v3"
@@ -1026,4 +1029,115 @@ func newToolCallServer(t *testing.T, tc toolCallFixture) *httptest.Server {
 	t.Cleanup(srv.Close)
 
 	return srv
+}
+
+// --- Log capture ---
+
+type apiLogBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (lb *apiLogBuffer) Write(p []byte) (int, error) {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+
+	return lb.buf.Write(p)
+}
+
+func (lb *apiLogBuffer) find(msg string) map[string]any {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+
+	for line := range bytes.SplitSeq(lb.buf.Bytes(), []byte("\n")) {
+		if len(line) == 0 {
+			continue
+		}
+
+		var record map[string]any
+		if json.Unmarshal(line, &record) != nil {
+			continue
+		}
+
+		if record["msg"] == msg {
+			return record
+		}
+	}
+
+	return nil
+}
+
+func TestSendEvents_logs_event_and_history_counts(t *testing.T) {
+	var buf apiLogBuffer
+
+	handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})
+	slog.SetDefault(slog.New(handler))
+	t.Cleanup(func() { slog.SetDefault(slog.New(slog.NewTextHandler(nil, nil))) })
+
+	srv := newStructuredChatServer(t, `{"response":{"kind":"pass","reason":"nothing"}}`)
+
+	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
+
+	history := []protocol.IRCMessage{
+		{Kind: protocol.KindJoin, From: "bob", Target: "#test"},
+		{Kind: protocol.KindPrivMsg, From: "alice", Target: "#test", Body: "earlier"},
+	}
+	events := []protocol.IRCMessage{
+		{Kind: protocol.KindPrivMsg, From: "alice", Target: "#test", Body: "hello"},
+		{Kind: protocol.KindPrivMsg, From: "bob", Target: "#test", Body: "world"},
+		{Kind: protocol.KindJoin, From: "charlie", Target: "#test"},
+	}
+
+	_, err := client.SendEvents(t.Context(), "test/model", "", "system", history, events)
+	require.NoError(t, err)
+
+	record := buf.find("openrouter send events completed")
+	require.NotNil(t, record, "expected 'openrouter send events completed' log entry")
+
+	require.Equal(t, float64(3), record["event_count"])
+	require.Equal(t, float64(2), record["history_count"])
+}
+
+func TestContinueWithToolResults_logs_token_counts(t *testing.T) {
+	var buf apiLogBuffer
+
+	handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})
+	slog.SetDefault(slog.New(handler))
+	t.Cleanup(func() { slog.SetDefault(slog.New(slog.NewTextHandler(nil, nil))) })
+
+	// Server that returns tool calls on the first request.
+	toolSrv := newToolCallServer(t, toolCallFixture{
+		name: "write_memory",
+		args: `{"key":"k","value":"v"}`,
+	})
+
+	client := NewOpenRouterClient("test-key", toolSrv.URL, toolSrv.Client())
+
+	result, err := client.SendEvents(
+		t.Context(), "test/model", "", "system", nil,
+		[]protocol.IRCMessage{{Kind: protocol.KindPrivMsg, From: "alice", Target: "#test", Body: "hi"}},
+		testMemoryTools(false)...,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, result.Conversation)
+
+	// For the continuation, use a server that returns a structured response.
+	continueSrv := newStructuredChatServer(t, `{"response":{"kind":"pass","reason":"done"}}`)
+	continueClient := NewOpenRouterClient("test-key", continueSrv.URL, continueSrv.Client())
+
+	// Transplant the conversation to the new client's server.
+	_, err = continueClient.ContinueWithToolResults(
+		t.Context(),
+		result.Conversation,
+		[]ToolResult{{ToolCallID: "call-1", Content: "ok"}},
+		testMemoryTools(false)...,
+	)
+	require.NoError(t, err)
+
+	record := buf.find("openrouter continue completed")
+	require.NotNil(t, record, "expected 'openrouter continue completed' log entry")
+
+	require.Equal(t, float64(10), record["prompt_tokens"])
+	require.Equal(t, float64(5), record["completion_tokens"])
+	require.Equal(t, 0.125, record["cost_credits"])
 }

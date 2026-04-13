@@ -993,6 +993,36 @@ func (s *Session) dispatchToInstance(
 
 	response := result.Response
 
+	var replyPreview string
+
+	switch response.Kind {
+	case protocol.ResponseReply:
+		var parts []string
+		for _, m := range response.Messages {
+			parts = append(parts, m.Body)
+		}
+
+		replyPreview = strings.Join(parts, " ")
+
+	default:
+		replyPreview = response.Reason
+	}
+
+	if len(replyPreview) > 200 {
+		replyPreview = replyPreview[:200]
+	}
+
+	logger := slog.Default().With("component", "session")
+	logger.InfoContext(ctx, "dispatch to instance",
+		"channel", channelName,
+		"nick", inst.Nick,
+		"model_id", inst.ModelID,
+		"trigger_count", len(events),
+		"trigger_summary", triggerSummary(events),
+		"result", api.ResponseResultKind(result.Response),
+		"reply_preview", replyPreview,
+	)
+
 	switch response.Kind {
 	case protocol.ResponseReply:
 		if len(response.Messages) == 0 {
@@ -1004,6 +1034,23 @@ func (s *Session) dispatchToInstance(
 	default:
 		return nil, nil
 	}
+}
+
+// triggerSummary formats trigger events as a short description string.
+// Each event is rendered as "<Kind> from <From>" and joined with "; ".
+// The result is truncated to 200 characters.
+func triggerSummary(events []protocol.IRCMessage) string {
+	parts := make([]string, len(events))
+	for i, e := range events {
+		parts[i] = string(e.Kind) + " from " + e.From
+	}
+
+	s := strings.Join(parts, "; ")
+	if len(s) > 200 {
+		s = s[:200]
+	}
+
+	return s
 }
 
 // buildReplies converts model reply parts into domain events, persisting
