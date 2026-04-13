@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"iter"
+	"strings"
 	"time"
 
 	"github.com/laney/modeloff/internal/set"
@@ -47,6 +48,16 @@ const ChannelPrefix = "#"
 
 // ChannelName represents a chat channel name (with # prefix).
 type ChannelName string
+
+// NormaliseChannelName ensures a channel name has the standard #
+// prefix. Names that already start with # are returned unchanged.
+func NormaliseChannelName(name ChannelName) ChannelName {
+	if !strings.HasPrefix(string(name), ChannelPrefix) {
+		return ChannelName(ChannelPrefix + string(name))
+	}
+
+	return name
+}
 
 // ModelID represents an OpenRouter model identifier (e.g. "anthropic/claude-3-haiku").
 type ModelID string

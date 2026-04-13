@@ -15,6 +15,8 @@ import (
 
 // JoinAs joins the given actor to a channel.
 func (s *Session) JoinAs(ctx context.Context, actor domain.Nick, ch domain.ChannelName) (retErr error) {
+	ch = domain.NormaliseChannelName(ch)
+
 	ctx, span := startSpan(
 		ctx,
 		"session.join",

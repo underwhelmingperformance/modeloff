@@ -434,3 +434,29 @@ func TestOpenDMAs_model_to_model_message_dispatches(t *testing.T) {
 		{Channel: "helper", From: "botty", Body: "hey there", At: fixedTime},
 	}, msgs)
 }
+
+func TestJoinAs_normalises_channel_prefix(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := t.Context()
+
+	seedInstance(t, s, domain.Instance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: orderedmap.New[domain.ChannelName, time.Time](),
+	})
+
+	// Model joins with bare name (no # prefix).
+	require.NoError(t, sess.JoinAs(ctx, "botty", "modeloff"))
+
+	evt := drainEvent[domain.JoinEvent](t, sess)
+	require.Equal(t, domain.ChannelName("#modeloff"), evt.Channel)
+
+	// Channel should exist with the normalised name.
+	ch, err := s.GetChannel(ctx, "#modeloff")
+	require.NoError(t, err)
+	require.True(t, ch.Members.Has("botty"))
+
+	// The bare name should not exist.
+	_, err = s.GetChannel(ctx, "modeloff")
+	require.Error(t, err)
+}
