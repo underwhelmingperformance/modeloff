@@ -8,7 +8,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/laney/modeloff/internal/command"
-	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/theme"
 )
@@ -24,12 +23,11 @@ type PopoverAcceptMsg struct {
 	Replacement  string
 }
 
-// PopoverApplyMsg updates the command set and recomputes suggestions.
+// PopoverApplyMsg updates the completer and recomputes suggestions.
 type PopoverApplyMsg struct {
-	Commands command.Set
-	Kind     domain.ChannelKind
-	Raw      string
-	Cursor   int
+	Completer command.Completable
+	Raw       string
+	Cursor    int
 }
 
 // PopoverRefreshMsg recomputes suggestions for the current input.
@@ -47,8 +45,7 @@ type PopoverDismissMsg struct {
 // It owns completion suggestions, selection index, and visibility
 // state.
 type Popover struct {
-	commands   command.Set
-	kind       domain.ChannelKind
+	completer  command.Completable
 	completion command.Completion
 	selected   int
 	offset     int
@@ -134,8 +131,7 @@ func (p Popover) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		return p, nil
 
 	case PopoverApplyMsg:
-		p.commands = msg.Commands
-		p.kind = msg.Kind
+		p.completer = msg.Completer
 		p = p.refresh(msg.Raw, msg.Cursor)
 		return p, nil
 
@@ -342,7 +338,12 @@ func (p Popover) refresh(raw string, cursor int) Popover {
 		return p
 	}
 
-	p.completion = command.Complete(p.commands, raw, cursor, p.kind)
+	if p.completer == nil {
+		p.completion = command.Completion{}
+		return p
+	}
+
+	p.completion = p.completer.Complete(raw, cursor)
 	if !p.completion.Visible || len(p.completion.Suggestions) == 0 {
 		p.selected = 0
 		p.offset = 0

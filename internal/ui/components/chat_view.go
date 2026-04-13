@@ -50,9 +50,12 @@ type TopicUpdatedMsg struct {
 	Topic string
 }
 
-// CommandStateMsg updates the available commands for completion.
+// CommandStateMsg updates the available commands for completion and
+// help rendering. Completer is used by the popover; Commands is used
+// by the message list for /help output.
 type CommandStateMsg struct {
-	Commands command.Set
+	Completer command.Completable
+	Commands  []*command.Node
 }
 
 // ClearMessagesMsg clears the visible messages in the current channel
@@ -178,10 +181,9 @@ func (c ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		c, cmd = c.updateMessages(msg)
 		c, _ = c.updatePopover(PopoverApplyMsg{
-			Commands: c.popover.commands,
-			Kind:     c.kind,
-			Raw:      c.input.Value(),
-			Cursor:   c.input.Cursor(),
+			Completer: c.popover.completer,
+			Raw:       c.input.Value(),
+			Cursor:    c.input.Cursor(),
 		})
 		c = c.syncMessageViewport()
 
@@ -209,10 +211,9 @@ func (c ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	case CommandStateMsg:
 		c, _ = c.updateMessages(msg)
 		c, _ = c.updatePopover(PopoverApplyMsg{
-			Commands: msg.Commands,
-			Kind:     c.kind,
-			Raw:      c.input.Value(),
-			Cursor:   c.input.Cursor(),
+			Completer: msg.Completer,
+			Raw:       c.input.Value(),
+			Cursor:    c.input.Cursor(),
 		})
 		c = c.syncMessageViewport()
 

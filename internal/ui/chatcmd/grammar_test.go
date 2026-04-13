@@ -4,7 +4,6 @@ import (
 	"iter"
 	"slices"
 	"testing"
-
 	"time"
 
 	"github.com/stretchr/testify/require"
@@ -14,7 +13,7 @@ import (
 	"github.com/laney/modeloff/internal/domain"
 )
 
-func testSources() Sources {
+func testContext(kind domain.ChannelKind) CompletionContext {
 	channels := []domain.Channel{
 		{Name: "#general", Topic: "Welcome"},
 		{Name: "#random"},
@@ -32,36 +31,49 @@ func testSources() Sources {
 		{ID: "anthropic/haiku", Name: "Haiku"},
 		{ID: "anthropic/sonnet", Name: "Sonnet"},
 	}
-
 	personas := []domain.Persona{
 		{ID: "bard", Description: "A travelling storyteller"},
 		{ID: "sage", Description: "A wise advisor"},
 	}
 
-	return Sources{
+	return CompletionContext{
 		Channels:      func() iter.Seq[domain.Channel] { return slices.Values(channels) },
 		Instances:     func() iter.Seq[domain.Instance] { return slices.Values(instances) },
-		ActiveChannel: func() domain.ChannelName { return "#general" },
 		ActiveMembers: func() iter.Seq[domain.Nick] { return slices.Values(members) },
+		ActiveChannel: func() domain.ChannelName { return "#general" },
 		UserNick:      func() domain.Nick { return "testuser" },
-		LiveModels:    func() []ModelOption { return models },
+		LiveModels:    func() iter.Seq[ModelOption] { return slices.Values(models) },
 		Personas:      func() iter.Seq[domain.Persona] { return slices.Values(personas) },
+		Kind:          func() domain.ChannelKind { return kind },
+	}
+}
+
+var testParser = func() Parser {
+	p, err := NewParser()
+	if err != nil {
+		panic(err)
+	}
+
+	return p
+}()
+
+func testSet(ctx CompletionContext) command.CompletionSet[CompletionContext] {
+	return command.CompletionSet[CompletionContext]{
+		Set: testParser.Set(),
+		Ctx: ctx,
 	}
 }
 
 func complete(t *testing.T, input string) command.Completion {
 	t.Helper()
 
-	return completeInKind(t, input, domain.KindChannel)
+	return testSet(testContext(domain.KindChannel)).Complete(input, len(input))
 }
 
 func completeInKind(t *testing.T, input string, kind domain.ChannelKind) command.Completion {
 	t.Helper()
 
-	parser, err := BuildParser(testSources())
-	require.NoError(t, err)
-
-	return command.Complete(parser.Set(), input, len(input), kind)
+	return testSet(testContext(kind)).Complete(input, len(input))
 }
 
 func suggestionValues(c command.Completion) []string {
@@ -95,10 +107,8 @@ func TestComplete_channel_includes_all_commands(t *testing.T) {
 	}, suggestionValues(c))
 }
 
-func TestBuildParser_produces_all_commands(t *testing.T) {
-	parser, err := BuildParser(testSources())
-	require.NoError(t, err)
-	set := parser.Set()
+func TestNewParser_produces_all_commands(t *testing.T) {
+	set := testParser.Set()
 
 	names := make([]string, 0, len(set.Commands))
 	for _, node := range set.Commands {
@@ -119,11 +129,8 @@ func TestBuildParser_produces_all_commands(t *testing.T) {
 	require.Equal(t, []string{"q"}, quit.Aliases)
 }
 
-func TestBuildParser_parse_returns_typed_command(t *testing.T) {
-	parser, err := BuildParser(testSources())
-	require.NoError(t, err)
-
-	cmd, err := parser.Parse("/help")
+func TestNewParser_parse_returns_typed_command(t *testing.T) {
+	cmd, err := testParser.Parse("/help")
 	require.NoError(t, err)
 	require.Equal(t, HelpCommand{}, cmd)
 }
@@ -230,28 +237,19 @@ func TestComplete_config_reset_after_subcommand_does_not_expect_value(t *testing
 }
 
 func TestParse_personas_command(t *testing.T) {
-	parser, err := BuildParser(testSources())
-	require.NoError(t, err)
-
-	cmd, err := parser.Parse("/personas")
+	cmd, err := testParser.Parse("/personas")
 	require.NoError(t, err)
 	require.IsType(t, PersonasCommand{}, cmd)
 }
 
 func TestParse_regenerate_personas_command(t *testing.T) {
-	parser, err := BuildParser(testSources())
-	require.NoError(t, err)
-
-	cmd, err := parser.Parse("/regenerate-personas")
+	cmd, err := testParser.Parse("/regenerate-personas")
 	require.NoError(t, err)
 	require.IsType(t, RegeneratePersonasCommand{}, cmd)
 }
 
 func TestParse_clear_command(t *testing.T) {
-	parser, err := BuildParser(testSources())
-	require.NoError(t, err)
-
-	cmd, err := parser.Parse("/clear")
+	cmd, err := testParser.Parse("/clear")
 	require.NoError(t, err)
 	require.Equal(t, ClearCommand{}, cmd)
 }
@@ -264,10 +262,7 @@ func TestClearCommand_Run_returns_ClearResult(t *testing.T) {
 }
 
 func TestParse_config_persona_command(t *testing.T) {
-	parser, err := BuildParser(testSources())
-	require.NoError(t, err)
-
-	cmd, err := parser.Parse("/config persona bard A travelling storyteller")
+	cmd, err := testParser.Parse("/config persona bard A travelling storyteller")
 	require.NoError(t, err)
 	require.Equal(t, PersonaConfig{ID: "bard", Description: []string{"A", "travelling", "storyteller"}}, cmd)
 }
@@ -282,20 +277,32 @@ func TestComplete_config_persona_no_value_suggestions(t *testing.T) {
 func TestComplete_live_data_reflects_changes(t *testing.T) {
 	var channels []domain.Channel
 
-	src := Sources{
+	ctx := CompletionContext{
 		Channels: func() iter.Seq[domain.Channel] { return slices.Values(channels) },
 		UserNick: func() domain.Nick { return "u" },
+		Kind:     func() domain.ChannelKind { return domain.KindChannel },
 	}
 
-	parser, err := BuildParser(src)
-	require.NoError(t, err)
+	cs := testSet(ctx)
 
-	before := command.Complete(parser.Set(), "/join ", 6, domain.KindChannel)
-	require.Empty(t, before.Suggestions)
+	before := cs.Complete("/join ", 6)
+	require.Equal(t, command.Completion{
+		Visible:      true,
+		Suggestions:  []command.Suggestion{},
+		ReplaceStart: 6,
+		ReplaceEnd:   6,
+	}, before)
 
-	// Mutate the underlying data — the same parser sees the change.
+	// Mutate the underlying data — the live context sees the change.
 	channels = []domain.Channel{{Name: "#new"}}
 
-	after := command.Complete(parser.Set(), "/join ", 6, domain.KindChannel)
-	require.Equal(t, []string{"#new"}, suggestionValues(after))
+	after := cs.Complete("/join ", 6)
+	require.Equal(t, command.Completion{
+		Visible:      true,
+		ReplaceStart: 6,
+		ReplaceEnd:   6,
+		Suggestions: []command.Suggestion{
+			{Value: "#new", Label: "#new"},
+		},
+	}, after)
 }

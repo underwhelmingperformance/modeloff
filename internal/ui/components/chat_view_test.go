@@ -20,6 +20,13 @@ import (
 	"github.com/laney/modeloff/internal/ui/theme"
 )
 
+// testKind is a minimal KindProvider for component tests.
+type testKind domain.ChannelKind
+
+func (k testKind) ChannelKind() domain.ChannelKind { return domain.ChannelKind(k) }
+
+const testKindChannel = testKind(domain.KindChannel)
+
 var testEvents = []domain.StoredEvent{
 	{Event: domain.ChannelMessage{Channel: "#general", From: "alice", Body: "hello", At: time.Date(2025, 1, 1, 10, 0, 0, 0, time.UTC)}},
 	{Event: domain.ChannelMessage{Channel: "#general", From: "bob", Body: "hi there", At: time.Date(2025, 1, 1, 10, 1, 0, 0, time.UTC)}},
@@ -598,11 +605,9 @@ func renderSingleEventWithHighlight(event domain.StoredEvent, words []string, ni
 
 	m, _ = m.Update(components.HistoryLoadedMsg{Events: []domain.StoredEvent{event}})
 	m, _ = m.Update(components.CommandStateMsg{
-		Commands: command.Set{
-			Commands: []*command.Node{
-				{Name: "join", Help: "Join or create a channel", Positionals: []command.Positional{{Name: "channel"}}},
-				{Name: "help", Help: "Show available commands."},
-			},
+		Commands: []*command.Node{
+			{Name: "join", Help: "Join or create a channel", Positionals: []command.Positional{{Name: "channel"}}},
+			{Name: "help", Help: "Show available commands."},
 		},
 	})
 	m, _ = m.Update(components.TimestampFormatMsg{
@@ -884,21 +889,21 @@ func TestNewMessagesDivider_fills_width(t *testing.T) {
 
 func TestChatView_command_popover_renders_and_completes(t *testing.T) {
 	var m ui.Model = components.NewChatView("#general", "testuser", "")
-	m, _ = m.Update(components.CommandStateMsg{
-		Commands: command.Set{
-			Commands: []*command.Node{
-				{
-					Name: "join",
-					Help: "Join a channel",
-					Positionals: []command.Positional{
-						{Name: "channel", Source: command.LiteralSource(
-							command.Suggestion{Value: "#general", Label: "#general"},
-							command.Suggestion{Value: "#random", Label: "#random"},
-						)},
-					},
-				},
+	nodes := []*command.Node{
+		{
+			Name: "join",
+			Help: "Join a channel",
+			Positionals: []command.Positional{
+				{Name: "channel", Source: command.LiteralSource(
+					command.Suggestion{Value: "#general", Label: "#general"},
+					command.Suggestion{Value: "#random", Label: "#random"},
+				)},
 			},
 		},
+	}
+	m, _ = m.Update(components.CommandStateMsg{
+		Commands:  nodes,
+		Completer: command.CompletionSet[testKind]{Set: command.Set{Commands: nodes}, Ctx: testKindChannel},
 	})
 
 	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 20, Y: 0, Width: 60, Height: 24}})
@@ -924,14 +929,14 @@ func TestChatView_command_popover_renders_and_completes(t *testing.T) {
 
 func TestChatView_popover_arrow_keys_do_not_fall_through(t *testing.T) {
 	var m ui.Model = components.NewChatView("#general", "testuser", "")
+	nodes := []*command.Node{
+		{Name: "join", Help: "Join a channel"},
+		{Name: "part", Help: "Part from the current channel"},
+		{Name: "quit", Help: "Exit modeloff"},
+	}
 	m, _ = m.Update(components.CommandStateMsg{
-		Commands: command.Set{
-			Commands: []*command.Node{
-				{Name: "join", Help: "Join a channel"},
-				{Name: "part", Help: "Part from the current channel"},
-				{Name: "quit", Help: "Exit modeloff"},
-			},
-		},
+		Commands:  nodes,
+		Completer: command.CompletionSet[testKind]{Set: command.Set{Commands: nodes}, Ctx: testKindChannel},
 	})
 
 	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 0, Y: 0, Width: 60, Height: 24}})
@@ -966,14 +971,14 @@ func TestChatView_popover_arrow_keys_do_not_fall_through(t *testing.T) {
 
 func TestChatView_popover_renders_usage_in_suggestions(t *testing.T) {
 	var m ui.Model = components.NewChatView("#general", "testuser", "")
+	nodes := []*command.Node{
+		{Name: "join", Help: "Join a channel", Positionals: []command.Positional{{Name: "channel"}}},
+		{Name: "part", Help: "Part from the current channel"},
+		{Name: "quit", Help: "Exit modeloff"},
+	}
 	m, _ = m.Update(components.CommandStateMsg{
-		Commands: command.Set{
-			Commands: []*command.Node{
-				{Name: "join", Help: "Join a channel", Positionals: []command.Positional{{Name: "channel"}}},
-				{Name: "part", Help: "Part from the current channel"},
-				{Name: "quit", Help: "Exit modeloff"},
-			},
-		},
+		Commands:  nodes,
+		Completer: command.CompletionSet[testKind]{Set: command.Set{Commands: nodes}, Ctx: testKindChannel},
 	})
 
 	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 0, Y: 0, Width: 60, Height: 24}})
@@ -1210,21 +1215,21 @@ func TestChatView_mouse_wheel_scrolls_messages(t *testing.T) {
 
 func TestChatView_mouse_click_accepts_popover_suggestion(t *testing.T) {
 	var m ui.Model = components.NewChatView("#general", "testuser", "")
-	m, _ = m.Update(components.CommandStateMsg{
-		Commands: command.Set{
-			Commands: []*command.Node{
-				{
-					Name: "join",
-					Help: "Join a channel",
-					Positionals: []command.Positional{
-						{Name: "channel", Source: command.LiteralSource(
-							command.Suggestion{Value: "#general", Label: "#general"},
-							command.Suggestion{Value: "#random", Label: "#random"},
-						)},
-					},
-				},
+	nodes := []*command.Node{
+		{
+			Name: "join",
+			Help: "Join a channel",
+			Positionals: []command.Positional{
+				{Name: "channel", Source: command.LiteralSource(
+					command.Suggestion{Value: "#general", Label: "#general"},
+					command.Suggestion{Value: "#random", Label: "#random"},
+				)},
 			},
 		},
+	}
+	m, _ = m.Update(components.CommandStateMsg{
+		Commands:  nodes,
+		Completer: command.CompletionSet[testKind]{Set: command.Set{Commands: nodes}, Ctx: testKindChannel},
 	})
 
 	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 20, Y: 0, Width: 60, Height: 24}})

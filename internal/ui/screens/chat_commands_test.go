@@ -59,13 +59,50 @@ func newTestSession(t *testing.T) *session.Session {
 	return session.New(s, nil, stubAPI{}, "testuser", "", "")
 }
 
+func TestChatScreen_Commands_specs_are_complete(t *testing.T) {
+	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil)
+	require.NoError(t, err)
+
+	msg := screen.commandStateMsg()
+
+	type spec struct {
+		Name string
+		Help string
+	}
+
+	var specs []spec
+	for _, node := range msg.Commands {
+		specs = append(specs, spec{Name: node.Name, Help: node.Help})
+	}
+
+	require.Equal(t, []spec{
+		{Name: "join", Help: "Switch to a channel or create it if needed."},
+		{Name: "part", Help: "Part from the current channel."},
+		{Name: "list", Help: "List all known channels."},
+		{Name: "add-model", Help: "Add a model or reusable instance into the current channel."},
+		{Name: "invite", Help: "Invite a nick to a channel."},
+		{Name: "kick", Help: "Remove a nick from the current channel."},
+		{Name: "msg", Help: "Open a direct message and optionally send text."},
+		{Name: "nick", Help: "Change your nickname."},
+		{Name: "topic", Help: "Set or clear the current channel topic."},
+		{Name: "me", Help: "Send an action message (e.g. /me waves)."},
+		{Name: "whois", Help: "Show details about a model instance."},
+		{Name: "config", Help: "Update runtime configuration."},
+		{Name: "personas", Help: "List all defined personas."},
+		{Name: "regenerate-personas", Help: "Regenerate AI-created personas."},
+		{Name: "help", Help: "Show available commands."},
+		{Name: "clear", Help: "Clear the current window."},
+		{Name: "quit", Help: "Exit modeloff."},
+	}, specs)
+}
+
 func TestChatScreen_Commands_exposes_chat_commands(t *testing.T) {
 	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil)
 	require.NoError(t, err)
 
-	cmds := screen.Commands()
-	names := make([]string, 0, len(cmds.Commands))
-	for _, spec := range cmds.Commands {
+	msg := screen.commandStateMsg()
+	names := make([]string, 0, len(msg.Commands))
+	for _, spec := range msg.Commands {
 		names = append(names, spec.Name)
 	}
 
@@ -94,10 +131,7 @@ func TestChatScreen_HelpCommand_emits_typed_event(t *testing.T) {
 	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil)
 	require.NoError(t, err)
 
-	parser, err := screen.buildParser()
-	require.NoError(t, err)
-
-	cmd, err := parser.Parse("/help")
+	cmd, err := screen.parser.Parse("/help")
 	require.NoError(t, err)
 
 	msg := cmd.Run(screen.runContext())()
@@ -108,10 +142,7 @@ func TestChatScreen_QuitCommand_returns_quit(t *testing.T) {
 	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil)
 	require.NoError(t, err)
 
-	parser, err := screen.buildParser()
-	require.NoError(t, err)
-
-	cmd, err := parser.Parse("/quit")
+	cmd, err := screen.parser.Parse("/quit")
 	require.NoError(t, err)
 
 	msg := cmd.Run(screen.runContext())()

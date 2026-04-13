@@ -60,9 +60,7 @@ func (s ChatScreen) handleInitialLoad(msg domain.InitialLoadEvent) (ui.Model, te
 	}
 
 	cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: msg.Members}))
-	cmds = append(cmds, msgCmd(components.CommandStateMsg{
-		Commands: s.Commands(),
-	}))
+	cmds = append(cmds, msgCmd(s.commandStateMsg()))
 	cfg, _ := s.loadConfig()
 	cmds = append(cmds, msgCmd(components.HighlightWordsMsg{
 		Words:    cfg.HighlightWords,

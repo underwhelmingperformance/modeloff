@@ -7,120 +7,139 @@ import (
 	"github.com/laney/modeloff/internal/domain"
 )
 
-// ChannelsSource suggests known channels.
-func ChannelsSource(channels iter.Seq[domain.Channel]) command.SuggestionSource {
-	return func(_ command.InvocationState) []command.Suggestion {
-		if channels == nil {
-			return nil
-		}
-
-		var suggestions []command.Suggestion
-
-		for ch := range channels {
-			suggestions = append(suggestions, command.Suggestion{
-				Value:  string(ch.Name),
-				Label:  string(ch.Name),
-				Detail: channelDetail(ch),
-			})
-		}
-
-		return suggestions
-	}
+// CompletionContext provides live accessors for suggestion data.
+// Collection fields are iterator factories so that sources only
+// materialise the data they need, and always see the latest state.
+type CompletionContext struct {
+	Channels      func() iter.Seq[domain.Channel]
+	Instances     func() iter.Seq[domain.Instance]
+	ActiveMembers func() iter.Seq[domain.Nick]
+	ActiveChannel func() domain.ChannelName
+	UserNick      func() domain.Nick
+	LiveModels    func() iter.Seq[ModelOption]
+	Personas      func() iter.Seq[domain.Persona]
+	Kind          func() domain.ChannelKind
 }
 
-// ActiveMembersSource suggests members of the active channel,
+// ChannelKind implements command.KindProvider.
+func (ctx CompletionContext) ChannelKind() domain.ChannelKind {
+	return ctx.Kind()
+}
+
+// source wraps a typed source function so that chatcmd code never
+// mentions the any type directly.
+func source(fn func(CompletionContext, command.InvocationState) []command.Suggestion) command.SuggestionSource {
+	return command.TypedSource(fn)
+}
+
+// channelsSource suggests known channels.
+func channelsSource(ctx CompletionContext, _ command.InvocationState) []command.Suggestion {
+	var suggestions []command.Suggestion
+
+	for ch := range ctx.Channels() {
+		suggestions = append(suggestions, command.Suggestion{
+			Value:  string(ch.Name),
+			Label:  string(ch.Name),
+			Detail: channelDetail(ch),
+		})
+	}
+
+	return suggestions
+}
+
+// activeMembersSource suggests members of the active channel,
 // excluding the user's own nick.
-func ActiveMembersSource(members iter.Seq[domain.Nick], userNick domain.Nick) command.SuggestionSource {
-	return func(_ command.InvocationState) []command.Suggestion {
-		if members == nil {
-			return nil
+func activeMembersSource(ctx CompletionContext, _ command.InvocationState) []command.Suggestion {
+	userNick := ctx.UserNick()
+
+	var suggestions []command.Suggestion
+
+	for nick := range ctx.ActiveMembers() {
+		if nick == userNick {
+			continue
 		}
 
-		var suggestions []command.Suggestion
+		suggestions = append(suggestions, command.Suggestion{
+			Value: string(nick),
+			Label: string(nick),
+		})
+	}
 
-		for nick := range members {
-			if nick == userNick {
+	return suggestions
+}
+
+// instancesSource suggests known instance nicks.
+func instancesSource(ctx CompletionContext, _ command.InvocationState) []command.Suggestion {
+	var suggestions []command.Suggestion
+
+	for inst := range ctx.Instances() {
+		suggestions = append(suggestions, command.Suggestion{
+			Value:  string(inst.Nick),
+			Label:  string(inst.Nick),
+			Detail: string(inst.ModelID),
+		})
+	}
+
+	return suggestions
+}
+
+// reusableInstancesSource suggests instance nicks not already in the
+// active channel.
+func reusableInstancesSource(ctx CompletionContext, _ command.InvocationState) []command.Suggestion {
+	active := ctx.ActiveChannel()
+
+	var suggestions []command.Suggestion
+
+	for inst := range ctx.Instances() {
+		if inst.Channels != nil {
+			if _, ok := inst.Channels.Get(active); ok {
 				continue
 			}
-
-			suggestions = append(suggestions, command.Suggestion{
-				Value: string(nick),
-				Label: string(nick),
-			})
 		}
 
-		return suggestions
+		suggestions = append(suggestions, command.Suggestion{
+			Value:  string(inst.Nick),
+			Label:  string(inst.Nick),
+			Detail: string(inst.ModelID),
+		})
 	}
+
+	return suggestions
 }
 
-// InstancesSource suggests known instance nicks.
-func InstancesSource(instances iter.Seq[domain.Instance]) command.SuggestionSource {
-	return func(_ command.InvocationState) []command.Suggestion {
-		if instances == nil {
-			return nil
-		}
+// personasSource suggests known persona identifiers.
+func personasSource(ctx CompletionContext, _ command.InvocationState) []command.Suggestion {
+	var suggestions []command.Suggestion
 
-		var suggestions []command.Suggestion
-
-		for inst := range instances {
-			suggestions = append(suggestions, command.Suggestion{
-				Value:  string(inst.Nick),
-				Label:  string(inst.Nick),
-				Detail: string(inst.ModelID),
-			})
-		}
-
-		return suggestions
+	for p := range ctx.Personas() {
+		suggestions = append(suggestions, command.Suggestion{
+			Value:  p.ID,
+			Label:  p.ID,
+			Detail: p.Description,
+		})
 	}
+
+	return suggestions
 }
 
-// ReusableInstancesSource suggests instance nicks not already in the
-// given active channel.
-func ReusableInstancesSource(instances iter.Seq[domain.Instance], active domain.ChannelName) command.SuggestionSource {
-	return func(_ command.InvocationState) []command.Suggestion {
-		if instances == nil {
-			return nil
+// liveModelsSource suggests live model identifiers.
+func liveModelsSource(ctx CompletionContext, _ command.InvocationState) []command.Suggestion {
+	var suggestions []command.Suggestion
+
+	for model := range ctx.LiveModels() {
+		detail := model.Name
+		if detail == "" {
+			detail = model.Description
 		}
 
-		var suggestions []command.Suggestion
-
-		for inst := range instances {
-			if inst.Channels != nil {
-				if _, ok := inst.Channels.Get(active); ok {
-					continue
-				}
-			}
-
-			suggestions = append(suggestions, command.Suggestion{
-				Value:  string(inst.Nick),
-				Label:  string(inst.Nick),
-				Detail: string(inst.ModelID),
-			})
-		}
-
-		return suggestions
+		suggestions = append(suggestions, command.Suggestion{
+			Value:  string(model.ID),
+			Label:  string(model.ID),
+			Detail: detail,
+		})
 	}
-}
 
-// PersonasSource suggests known persona identifiers.
-func PersonasSource(personas iter.Seq[domain.Persona]) command.SuggestionSource {
-	return func(_ command.InvocationState) []command.Suggestion {
-		if personas == nil {
-			return nil
-		}
-
-		var suggestions []command.Suggestion
-
-		for p := range personas {
-			suggestions = append(suggestions, command.Suggestion{
-				Value:  p.ID,
-				Label:  p.ID,
-				Detail: p.Description,
-			})
-		}
-
-		return suggestions
-	}
+	return suggestions
 }
 
 // ModelOption describes a live model for completion suggestions.
@@ -128,28 +147,6 @@ type ModelOption struct {
 	ID          domain.ModelID
 	Name        string
 	Description string
-}
-
-// LiveModelsSource suggests live model identifiers.
-func LiveModelsSource(models []ModelOption) command.SuggestionSource {
-	return func(_ command.InvocationState) []command.Suggestion {
-		suggestions := make([]command.Suggestion, 0, len(models))
-
-		for _, model := range models {
-			detail := model.Name
-			if detail == "" {
-				detail = model.Description
-			}
-
-			suggestions = append(suggestions, command.Suggestion{
-				Value:  string(model.ID),
-				Label:  string(model.ID),
-				Detail: detail,
-			})
-		}
-
-		return suggestions
-	}
 }
 
 func channelDetail(ch domain.Channel) string {

@@ -7,17 +7,19 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/ui/chatcmd"
 	"github.com/laney/modeloff/internal/ui/components"
 )
 
-// Commands builds a parser from current state and returns the
-// command set. Completion suggestions always reflect the latest
-// channels, instances, and active channel.
-func (s ChatScreen) Commands() command.Set {
-	return s.parser.Set()
+// commandStateMsg builds a CommandStateMsg from the current state,
+// providing both the node list for help rendering and the live
+// completer for the popover.
+func (s ChatScreen) commandStateMsg() components.CommandStateMsg {
+	return components.CommandStateMsg{
+		Commands:  s.parser.Set().Commands,
+		Completer: s.completer,
+	}
 }
 
 func (s ChatScreen) runContext() chatcmd.Context {

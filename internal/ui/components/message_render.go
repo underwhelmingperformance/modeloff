@@ -21,7 +21,7 @@ func renderChannelEvent(
 	width int,
 	highlightWords []string,
 	userNick domain.Nick,
-	commands command.Set,
+	commands []*command.Node,
 	timestampFormat *string,
 	locale language.Tag,
 ) string {
@@ -215,9 +215,9 @@ func renderPersonasListEvent(pl domain.ChannelPersonasList) string {
 	return strings.Join(parts, "\n")
 }
 
-func renderHelp(commands command.Set) string {
-	lines := make([]string, 0, len(commands.Commands))
-	for _, node := range commands.Commands {
+func renderHelp(commands []*command.Node) string {
+	lines := make([]string, 0, len(commands))
+	for _, node := range commands {
 		full := node.FullUsage()
 
 		line := full

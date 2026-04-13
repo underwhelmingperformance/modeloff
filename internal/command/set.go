@@ -23,8 +23,10 @@ type Suggestion struct {
 }
 
 // SuggestionSource returns suggestions for the current argument.
-// Sources are closures that capture whatever live data they need.
-type SuggestionSource func(InvocationState) []Suggestion
+// The first parameter is a caller-defined completion context (passed
+// through from Completable.Complete); sources type-assert it to the
+// concrete context type they expect.
+type SuggestionSource func(ctx any, state InvocationState) []Suggestion
 
 // Positional describes a positional command argument.
 type Positional struct {
@@ -355,6 +357,13 @@ type Set struct {
 	Commands []*Node
 }
 
+// Completable computes completions for a raw input string at the
+// given cursor position. Implementations bind a Set together with
+// a caller-defined context and channel kind.
+type Completable interface {
+	Complete(raw string, cursor int) Completion
+}
+
 type flagBinding struct {
 	Owner *Node
 	Flag  *Flag
@@ -486,10 +495,9 @@ func Merge(sets ...Set) Set {
 	return merged
 }
 
-// Complete resolves the completion state for the current buffer.
-// kind restricts which top-level commands appear in suggestions;
-// commands whose Context does not accept the kind are excluded.
-func Complete(set Set, raw string, cursor int, kind domain.ChannelKind) Completion {
+// complete resolves the completion state for the current buffer.
+// ctx is forwarded to SuggestionSources.
+func complete(set Set, ctx any, raw string, cursor int, kind domain.ChannelKind) Completion {
 	set.linkParents()
 
 	raw = clampRaw(raw)
@@ -568,7 +576,7 @@ func Complete(set Set, raw string, cursor int, kind domain.ChannelKind) Completi
 		flag := cctx.expectingFlagValue
 
 		if flag.Source != nil {
-			completion.Suggestions = filterSuggestions(flag.Source(state), prefix)
+			completion.Suggestions = filterSuggestions(flag.Source(ctx, state), prefix)
 		}
 
 		return completion
@@ -588,7 +596,7 @@ func Complete(set Set, raw string, cursor int, kind domain.ChannelKind) Completi
 	// Positional completion.
 	pos := resolvePositional(cctx.node.Positionals, cctx.positionalIndex)
 	if pos != nil && pos.Source != nil {
-		completion.Suggestions = filterSuggestions(pos.Source(state), prefix)
+		completion.Suggestions = filterSuggestions(pos.Source(ctx, state), prefix)
 		completion.AppendSpace = hasContinuation(cctx.node, cctx.positionalIndex)
 		return completion
 	}
@@ -972,28 +980,57 @@ func dedupeSuggestions(all []Suggestion) []Suggestion {
 }
 
 // LiteralSource suggests a fixed set of values in the declared order.
+// The context parameter is ignored since the values are static.
 func LiteralSource(values ...Suggestion) SuggestionSource {
 	literals := append([]Suggestion(nil), values...)
 
-	return func(_ InvocationState) []Suggestion {
+	return func(_ any, _ InvocationState) []Suggestion {
 		return slices.Clone(literals)
 	}
 }
 
 // ComposeSources concatenates multiple sources in declaration order.
 func ComposeSources(sources ...SuggestionSource) SuggestionSource {
-	return func(state InvocationState) []Suggestion {
+	return func(ctx any, state InvocationState) []Suggestion {
 		var suggestions []Suggestion
 		for _, source := range sources {
 			if source == nil {
 				continue
 			}
 
-			suggestions = append(suggestions, source(state)...)
+			suggestions = append(suggestions, source(ctx, state)...)
 		}
 
 		return suggestions
 	}
+}
+
+// TypedSource wraps a typed source function into a SuggestionSource.
+// This keeps the any type-assertion internal to the command package
+// so that callers work with concrete context types.
+func TypedSource[C any](fn func(C, InvocationState) []Suggestion) SuggestionSource {
+	return func(ctx any, state InvocationState) []Suggestion {
+		return fn(ctx.(C), state)
+	}
+}
+
+// KindProvider is implemented by completion contexts that know the
+// current channel kind. CompletionSet uses this to filter commands.
+type KindProvider interface {
+	ChannelKind() domain.ChannelKind
+}
+
+// CompletionSet binds a command Set with a typed completion context.
+// C must implement KindProvider so that command filtering works.
+type CompletionSet[C KindProvider] struct {
+	Set
+
+	Ctx C
+}
+
+// Complete resolves the completion state for the current buffer.
+func (cs CompletionSet[C]) Complete(raw string, cursor int) Completion {
+	return complete(cs.Set, cs.Ctx, raw, cursor, cs.Ctx.ChannelKind())
 }
 
 func allFlagBindings(node *Node) []flagBinding {

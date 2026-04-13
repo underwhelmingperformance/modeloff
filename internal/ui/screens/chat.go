@@ -12,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/config"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/observability"
@@ -58,6 +59,7 @@ type ChatScreen struct {
 	instances  *set.Sorted[domain.Instance]
 	liveModels *[]chatcmd.ModelOption
 	parser     chatcmd.Parser
+	completer  command.Completable
 	replyQueue []domain.ModelReplyEvent
 	width      int
 	height     int
@@ -94,12 +96,13 @@ func NewChatScreen(ctx context.Context, sess *session.Session, cfgStore config.S
 		keyMap:     components.DefaultChatScreenKeyMap,
 	}
 
-	parser, err := cs.buildParser()
+	parser, err := chatcmd.NewParser()
 	if err != nil {
 		return ChatScreen{}, err
 	}
 
 	cs.parser = parser
+	cs.completer = cs.completionSet()
 
 	return cs, nil
 }
@@ -472,19 +475,25 @@ func msgCmd(msg tea.Msg) tea.Cmd {
 	return func() tea.Msg { return msg }
 }
 
-func (s ChatScreen) buildParser() (chatcmd.Parser, error) {
-	return chatcmd.BuildParser(chatcmd.Sources{
-		Channels:      func() iter.Seq[domain.Channel] { return s.channels.All() },
-		Instances:     func() iter.Seq[domain.Instance] { return s.instances.All() },
-		ActiveChannel: func() domain.ChannelName { return *s.active },
-		ActiveMembers: func() iter.Seq[domain.Nick] { return s.activeMemberNicks() },
-		UserNick:      func() domain.Nick { return s.sess.UserNick() },
-		LiveModels:    func() []chatcmd.ModelOption { return *s.liveModels },
-		Personas: func() iter.Seq[domain.Persona] {
-			personas, _ := s.sess.ListPersonas(s.ctx)
-			return slices.Values(personas)
+func (s ChatScreen) completionSet() command.CompletionSet[chatcmd.CompletionContext] {
+	return command.CompletionSet[chatcmd.CompletionContext]{
+		Set: s.parser.Set(),
+		Ctx: chatcmd.CompletionContext{
+			Channels:      func() iter.Seq[domain.Channel] { return s.channels.All() },
+			Instances:     func() iter.Seq[domain.Instance] { return s.instances.All() },
+			ActiveMembers: func() iter.Seq[domain.Nick] { return s.activeMemberNicks() },
+			ActiveChannel: func() domain.ChannelName { return *s.active },
+			UserNick:      func() domain.Nick { return s.sess.UserNick() },
+			LiveModels: func() iter.Seq[chatcmd.ModelOption] {
+				return slices.Values(*s.liveModels)
+			},
+			Personas: func() iter.Seq[domain.Persona] {
+				personas, _ := s.sess.ListPersonas(s.ctx)
+				return slices.Values(personas)
+			},
+			Kind: func() domain.ChannelKind { return s.activeKind() },
 		},
-	})
+	}
 }
 
 func (s ChatScreen) unreadCounts(ctx context.Context, channels []domain.Channel) map[domain.ChannelName]int {

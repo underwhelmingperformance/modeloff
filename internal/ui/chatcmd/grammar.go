@@ -1,12 +1,9 @@
 package chatcmd
 
 import (
-	"iter"
-
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/laney/modeloff/internal/command"
-	"github.com/laney/modeloff/internal/domain"
 )
 
 // Grammar defines the complete set of chat screen commands.
@@ -30,66 +27,8 @@ type Grammar struct {
 	Quit               QuitCommand               `cmd:"" aliases:"q" tool:"Shut down your instance and leave all channels." help:"Exit modeloff."`
 }
 
-// Sources provides live accessors for command completion data. Each
-// field is a function so the grammar can be built once and completion
-// always reflects the latest state without rebuilding.
-type Sources struct {
-	Channels      func() iter.Seq[domain.Channel]
-	Instances     func() iter.Seq[domain.Instance]
-	ActiveChannel func() domain.ChannelName
-	ActiveMembers func() iter.Seq[domain.Nick]
-	UserNick      func() domain.Nick
-	LiveModels    func() []ModelOption
-	Personas      func() iter.Seq[domain.Persona]
-}
-
-// BuildParser creates a typed Parser from a snapshot of the current
-// application state. It should be rebuilt whenever the completion-
-// relevant state changes (channels, instances, active channel, etc.).
-func BuildParser(src Sources) (Parser, error) {
-	lazy := func(fn func(command.InvocationState) []command.Suggestion) command.SuggestionSource {
-		return fn
-	}
-
-	grammar := &Grammar{
-		Join: JoinCommand{
-			channelSource: lazy(func(s command.InvocationState) []command.Suggestion {
-				return ChannelsSource(src.Channels())(s)
-			}),
-		},
-		AddModel: AddModelCommand{
-			modelSource: lazy(func(s command.InvocationState) []command.Suggestion {
-				return command.ComposeSources(
-					ReusableInstancesSource(src.Instances(), src.ActiveChannel()),
-					LiveModelsSource(src.LiveModels()),
-				)(s)
-			}),
-			personaSource: lazy(func(s command.InvocationState) []command.Suggestion {
-				return PersonasSource(src.Personas())(s)
-			}),
-		},
-		Invite: InviteCommand{
-			nickSource: lazy(func(s command.InvocationState) []command.Suggestion {
-				return InstancesSource(src.Instances())(s)
-			}),
-		},
-		Kick: KickCommand{
-			nickSource: lazy(func(s command.InvocationState) []command.Suggestion {
-				return ActiveMembersSource(src.ActiveMembers(), src.UserNick())(s)
-			}),
-		},
-		Msg: MsgCommand{
-			nickSource: lazy(func(s command.InvocationState) []command.Suggestion {
-				return InstancesSource(src.Instances())(s)
-			}),
-		},
-		Whois: WhoisCommand{
-			nickSource: lazy(func(s command.InvocationState) []command.Suggestion {
-				return InstancesSource(src.Instances())(s)
-			}),
-		},
-		Config: ConfigCommand{},
-	}
-
-	return command.BuildParser[Context, tea.Cmd](grammar)
+// NewParser builds the command parser. The grammar is static; all
+// completion data flows through CompletionContext at suggestion time.
+func NewParser() (Parser, error) {
+	return command.BuildParser[Context, tea.Cmd](&Grammar{})
 }

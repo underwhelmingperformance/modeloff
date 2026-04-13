@@ -32,13 +32,12 @@ func (c ChannelArg) String() string { return string(c) }
 
 // JoinCommand represents `/join <channel>`.
 type JoinCommand struct {
-	Channel       ChannelArg `arg:"channel" help:"Channel to join or create"`
-	channelSource command.SuggestionSource
+	Channel ChannelArg `arg:"channel" help:"Channel to join or create"`
 }
 
 // Sources implements command.Completer.
-func (c JoinCommand) Sources() map[string]command.SuggestionSource {
-	return map[string]command.SuggestionSource{"channel": c.channelSource}
+func (JoinCommand) Sources() map[string]command.SuggestionSource {
+	return map[string]command.SuggestionSource{"channel": source(channelsSource)}
 }
 
 // Run implements Command.
@@ -139,17 +138,15 @@ func (ListCommand) RunTool(ctx context.Context, tc session.ToolContext) session.
 
 // AddModelCommand represents `/add-model [model] [--persona text]`.
 type AddModelCommand struct {
-	Model         string   `arg:"" optional:"" help:"Model to invite"`
-	Persona       []string `optional:"" help:"Optional persona"`
-	modelSource   command.SuggestionSource
-	personaSource command.SuggestionSource
+	Model   string   `arg:"" optional:"" help:"Model to invite"`
+	Persona []string `optional:"" help:"Optional persona"`
 }
 
 // Sources implements command.Completer.
-func (c AddModelCommand) Sources() map[string]command.SuggestionSource {
+func (AddModelCommand) Sources() map[string]command.SuggestionSource {
 	return map[string]command.SuggestionSource{
-		"model":   c.modelSource,
-		"persona": c.personaSource,
+		"model":   command.ComposeSources(source(reusableInstancesSource), source(liveModelsSource)),
+		"persona": source(personasSource),
 	}
 }
 
@@ -174,14 +171,13 @@ func (c AddModelCommand) Run(rc Context) tea.Cmd {
 
 // InviteCommand represents `/invite <nick> [channel]`.
 type InviteCommand struct {
-	Nick       string     `arg:"" optional:"" help:"Nick to invite"`
-	Channel    ChannelArg `arg:"channel" optional:"" help:"Channel to invite them to"`
-	nickSource command.SuggestionSource
+	Nick    string     `arg:"" optional:"" help:"Nick to invite"`
+	Channel ChannelArg `arg:"channel" optional:"" help:"Channel to invite them to"`
 }
 
 // Sources implements command.Completer.
-func (c InviteCommand) Sources() map[string]command.SuggestionSource {
-	return map[string]command.SuggestionSource{"nick": c.nickSource}
+func (InviteCommand) Sources() map[string]command.SuggestionSource {
+	return map[string]command.SuggestionSource{"nick": source(instancesSource)}
 }
 
 // Run implements Command.
@@ -244,13 +240,12 @@ func (c InviteCommand) RunTool(ctx context.Context, tc session.ToolContext) sess
 
 // KickCommand represents `/kick <nick>`.
 type KickCommand struct {
-	Nick       string `arg:"" help:"Nick to kick"`
-	nickSource command.SuggestionSource
+	Nick string `arg:"" help:"Nick to kick"`
 }
 
 // Sources implements command.Completer.
-func (c KickCommand) Sources() map[string]command.SuggestionSource {
-	return map[string]command.SuggestionSource{"nick": c.nickSource}
+func (KickCommand) Sources() map[string]command.SuggestionSource {
+	return map[string]command.SuggestionSource{"nick": source(activeMembersSource)}
 }
 
 // Run implements Command.
@@ -290,14 +285,13 @@ func (c KickCommand) RunTool(ctx context.Context, tc session.ToolContext) sessio
 
 // MsgCommand represents `/msg <nick> [message]`.
 type MsgCommand struct {
-	Nick       string   `arg:"" help:"Nick to message"`
-	Body       []string `arg:"" optional:"" nargs:"1" help:"Message text"`
-	nickSource command.SuggestionSource
+	Nick string   `arg:"" help:"Nick to message"`
+	Body []string `arg:"" optional:"" nargs:"1" help:"Message text"`
 }
 
 // Sources implements command.Completer.
-func (c MsgCommand) Sources() map[string]command.SuggestionSource {
-	return map[string]command.SuggestionSource{"nick": c.nickSource}
+func (MsgCommand) Sources() map[string]command.SuggestionSource {
+	return map[string]command.SuggestionSource{"nick": source(instancesSource)}
 }
 
 // Run implements Command.
@@ -508,13 +502,12 @@ func (c MeCommand) RunTool(ctx context.Context, tc session.ToolContext) session.
 
 // WhoisCommand represents `/whois <nick>`.
 type WhoisCommand struct {
-	Nick       string `arg:"" help:"Nick to look up"`
-	nickSource command.SuggestionSource
+	Nick string `arg:"" help:"Nick to look up"`
 }
 
 // Sources implements command.Completer.
-func (c WhoisCommand) Sources() map[string]command.SuggestionSource {
-	return map[string]command.SuggestionSource{"nick": c.nickSource}
+func (WhoisCommand) Sources() map[string]command.SuggestionSource {
+	return map[string]command.SuggestionSource{"nick": source(instancesSource)}
 }
 
 // Run implements Command.

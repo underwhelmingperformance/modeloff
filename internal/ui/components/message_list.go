@@ -56,7 +56,7 @@ type MessageList struct {
 	// events have arrived since.
 	showDivider bool
 
-	commands        command.Set
+	commands        []*command.Node
 	highlightWords  []string
 	userNick        domain.Nick
 	timestampFormat *string
