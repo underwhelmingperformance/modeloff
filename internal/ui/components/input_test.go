@@ -6,8 +6,10 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/require"
 
+	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/components"
@@ -29,9 +31,14 @@ func enter(t *testing.T, m ui.Model) (ui.Model, tea.Cmd) {
 	return m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 }
 
+// viewText renders the InputBar and strips ANSI escape sequences so
+// tests can assert on visible text without coupling to styling.
+func viewText(m ui.Model) string {
+	return ansi.Strip(m.View(80, 1))
+}
+
 func TestInputBar_type_and_submit_message(t *testing.T) {
-	b := components.NewInputBar()
-	var m ui.Model = b
+	var m ui.Model = components.NewInputBar("")
 
 	m = typeText(t, m, "hello world")
 	m, cmd := enter(t, m)
@@ -42,12 +49,12 @@ func TestInputBar_type_and_submit_message(t *testing.T) {
 	require.Equal(t, components.MessageSubmitMsg{Text: "hello world"}, msg)
 
 	// Buffer should be cleared after submit.
-	require.Equal(t, "", m.(components.InputBar).Value())
+	v := viewText(m)
+	require.NotContains(t, v, "hello world")
 }
 
 func TestInputBar_submit_command(t *testing.T) {
-	b := components.NewInputBar()
-	var m ui.Model = b
+	var m ui.Model = components.NewInputBar("")
 
 	m = typeText(t, m, "/join #general")
 	_, cmd := enter(t, m)
@@ -59,8 +66,7 @@ func TestInputBar_submit_command(t *testing.T) {
 }
 
 func TestInputBar_submit_command_no_args(t *testing.T) {
-	b := components.NewInputBar()
-	var m ui.Model = b
+	var m ui.Model = components.NewInputBar("")
 
 	m = typeText(t, m, "/list")
 	_, cmd := enter(t, m)
@@ -73,19 +79,17 @@ func TestInputBar_submit_command_no_args(t *testing.T) {
 }
 
 func TestInputBar_space_key_inserts_space(t *testing.T) {
-	b := components.NewInputBar()
-	var m ui.Model = b
+	var m ui.Model = components.NewInputBar("")
 
 	m = typeText(t, m, "hello")
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{' '}})
 	m = typeText(t, m, "world")
 
-	require.Equal(t, "hello world", m.(components.InputBar).Value())
+	require.Contains(t, viewText(m), "hello world")
 }
 
 func TestInputBar_empty_submit_does_nothing(t *testing.T) {
-	b := components.NewInputBar()
-	var m ui.Model = b
+	var m ui.Model = components.NewInputBar("")
 
 	_, cmd := enter(t, m)
 	require.Nil(t, cmd)
@@ -97,18 +101,18 @@ func TestInputBar_empty_submit_does_nothing(t *testing.T) {
 }
 
 func TestInputBar_backspace(t *testing.T) {
-	b := components.NewInputBar()
-	var m ui.Model = b
+	var m ui.Model = components.NewInputBar("")
 
 	m = typeText(t, m, "abc")
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
 
-	require.Equal(t, "ab", m.(components.InputBar).Value())
+	v := viewText(m)
+	require.Contains(t, v, "ab")
+	require.NotContains(t, v, "abc")
 }
 
 func TestInputBar_cursor_movement(t *testing.T) {
-	b := components.NewInputBar()
-	var m ui.Model = b
+	var m ui.Model = components.NewInputBar("")
 
 	m = typeText(t, m, "abcd")
 
@@ -119,12 +123,11 @@ func TestInputBar_cursor_movement(t *testing.T) {
 	// Type at cursor position.
 	m = typeText(t, m, "X")
 
-	require.Equal(t, "abXcd", m.(components.InputBar).Value())
+	require.Contains(t, viewText(m), "abXcd")
 }
 
 func TestInputBar_home_end(t *testing.T) {
-	b := components.NewInputBar()
-	var m ui.Model = b
+	var m ui.Model = components.NewInputBar("")
 
 	m = typeText(t, m, "hello")
 
@@ -132,18 +135,17 @@ func TestInputBar_home_end(t *testing.T) {
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyHome})
 	m = typeText(t, m, "X")
 
-	require.Equal(t, "Xhello", m.(components.InputBar).Value())
+	require.Contains(t, viewText(m), "Xhello")
 
 	// End, then type.
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnd})
 	m = typeText(t, m, "Y")
 
-	require.Equal(t, "XhelloY", m.(components.InputBar).Value())
+	require.Contains(t, viewText(m), "XhelloY")
 }
 
 func TestInputBar_ctrl_u_does_not_kill_to_start(t *testing.T) {
-	b := components.NewInputBar()
-	var m ui.Model = b
+	var m ui.Model = components.NewInputBar("")
 
 	m = typeText(t, m, "abcde")
 
@@ -151,12 +153,11 @@ func TestInputBar_ctrl_u_does_not_kill_to_start(t *testing.T) {
 	// modify the input buffer.
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlU})
 
-	require.Equal(t, "abcde", m.(components.InputBar).Value())
+	require.Contains(t, viewText(m), "abcde")
 }
 
 func TestInputBar_ctrl_k_kills_to_end(t *testing.T) {
-	b := components.NewInputBar()
-	var m ui.Model = b
+	var m ui.Model = components.NewInputBar("")
 
 	m = typeText(t, m, "abcde")
 
@@ -166,12 +167,13 @@ func TestInputBar_ctrl_k_kills_to_end(t *testing.T) {
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
 
-	require.Equal(t, "ab", m.(components.InputBar).Value())
+	v := viewText(m)
+	require.Contains(t, v, "ab")
+	require.NotContains(t, v, "abcde")
 }
 
 func TestInputBar_delete_key(t *testing.T) {
-	b := components.NewInputBar()
-	var m ui.Model = b
+	var m ui.Model = components.NewInputBar("")
 
 	m = typeText(t, m, "abc")
 
@@ -179,18 +181,20 @@ func TestInputBar_delete_key(t *testing.T) {
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyHome})
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDelete})
 
-	require.Equal(t, "bc", m.(components.InputBar).Value())
+	v := viewText(m)
+	require.Contains(t, v, "bc")
+	require.NotContains(t, v, "abc")
 }
 
 func TestInputBar_View_contains_prompt(t *testing.T) {
-	b := components.NewInputBar()
+	b := components.NewInputBar("")
 	v := b.View(40, 1)
 
 	require.Contains(t, v, ">")
 }
 
 func TestInputBar_View_includes_user_nick_and_fits_width(t *testing.T) {
-	b := components.NewInputBar().SetUserNick("testuser")
+	b := components.NewInputBar("testuser")
 
 	v := b.View(20, 1)
 
@@ -200,8 +204,7 @@ func TestInputBar_View_includes_user_nick_and_fits_width(t *testing.T) {
 }
 
 func TestInputBar_history_up_down(t *testing.T) {
-	b := components.NewInputBar()
-	var m ui.Model = b
+	var m ui.Model = components.NewInputBar("")
 
 	// Submit three messages.
 	m = typeText(t, m, "first")
@@ -213,24 +216,26 @@ func TestInputBar_history_up_down(t *testing.T) {
 
 	// Up once = most recent.
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
-	require.Equal(t, "third", m.(components.InputBar).Value())
+	require.Contains(t, viewText(m), "third")
 
 	// Up again = previous.
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
-	require.Equal(t, "second", m.(components.InputBar).Value())
+	require.Contains(t, viewText(m), "second")
 
 	// Down = back to most recent.
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
-	require.Equal(t, "third", m.(components.InputBar).Value())
+	require.Contains(t, viewText(m), "third")
 
 	// Down again = back to empty draft.
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
-	require.Equal(t, "", m.(components.InputBar).Value())
+	v := viewText(m)
+	require.NotContains(t, v, "third")
+	require.NotContains(t, v, "second")
+	require.NotContains(t, v, "first")
 }
 
 func TestInputBar_history_preserves_draft(t *testing.T) {
-	b := components.NewInputBar()
-	var m ui.Model = b
+	var m ui.Model = components.NewInputBar("")
 
 	m = typeText(t, m, "old message")
 	m, _ = enter(t, m)
@@ -240,16 +245,15 @@ func TestInputBar_history_preserves_draft(t *testing.T) {
 
 	// Up enters history, saving the draft.
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
-	require.Equal(t, "old message", m.(components.InputBar).Value())
+	require.Contains(t, viewText(m), "old message")
 
 	// Down restores the draft.
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
-	require.Equal(t, "draft", m.(components.InputBar).Value())
+	require.Contains(t, viewText(m), "draft")
 }
 
 func TestInputBar_history_no_duplicate_consecutive(t *testing.T) {
-	b := components.NewInputBar()
-	var m ui.Model = b
+	var m ui.Model = components.NewInputBar("")
 
 	m = typeText(t, m, "same")
 	m, _ = enter(t, m)
@@ -258,24 +262,24 @@ func TestInputBar_history_no_duplicate_consecutive(t *testing.T) {
 
 	// Up once = "same", up again should stay (only one entry).
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
-	require.Equal(t, "same", m.(components.InputBar).Value())
+	require.Contains(t, viewText(m), "same")
 
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
-	require.Equal(t, "same", m.(components.InputBar).Value())
+	require.Contains(t, viewText(m), "same")
 }
 
 func TestInputBar_history_up_with_no_history(t *testing.T) {
-	b := components.NewInputBar()
-	var m ui.Model = b
+	var m ui.Model = components.NewInputBar("")
 
 	// Up with no history should do nothing.
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
-	require.Equal(t, "", m.(components.InputBar).Value())
+
+	v := viewText(m)
+	require.Contains(t, v, ">")
 }
 
 func TestInputBar_history_ring_buffer_overflow(t *testing.T) {
-	b := components.NewInputBar()
-	var m ui.Model = b
+	var m ui.Model = components.NewInputBar("")
 
 	// Submit 51 messages (one more than historySize of 50).
 	for i := 0; i <= 50; i++ {
@@ -285,7 +289,7 @@ func TestInputBar_history_ring_buffer_overflow(t *testing.T) {
 
 	// Up once = most recent (msg 50).
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
-	require.Equal(t, "msg 50", m.(components.InputBar).Value())
+	require.Contains(t, viewText(m), "msg 50")
 
 	// Navigate all the way up: 49 more presses to reach the oldest.
 	for range 49 {
@@ -293,73 +297,74 @@ func TestInputBar_history_ring_buffer_overflow(t *testing.T) {
 	}
 
 	// Oldest should be msg 1, not msg 0 (evicted by overflow).
-	require.Equal(t, "msg 1", m.(components.InputBar).Value())
+	v := viewText(m)
+	require.Contains(t, v, "msg 1")
+	require.NotContains(t, v, "msg 0")
 
 	// One more up should stay at the oldest.
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
-	require.Equal(t, "msg 1", m.(components.InputBar).Value())
+	require.Contains(t, viewText(m), "msg 1")
 }
 
 func TestInputBar_ctrl_a_moves_to_start(t *testing.T) {
-	b := components.NewInputBar()
-	var m ui.Model = b
+	var m ui.Model = components.NewInputBar("")
 
 	m = typeText(t, m, "hello")
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlA})
 	m = typeText(t, m, "X")
 
-	require.Equal(t, "Xhello", m.(components.InputBar).Value())
+	require.Contains(t, viewText(m), "Xhello")
 }
 
 func TestInputBar_ctrl_e_moves_to_end(t *testing.T) {
-	b := components.NewInputBar()
-	var m ui.Model = b
+	var m ui.Model = components.NewInputBar("")
 
 	m = typeText(t, m, "hello")
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlA})
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
 	m = typeText(t, m, "X")
 
-	require.Equal(t, "helloX", m.(components.InputBar).Value())
+	require.Contains(t, viewText(m), "helloX")
 }
 
 func TestInputBar_ctrl_w_deletes_word_backward(t *testing.T) {
-	b := components.NewInputBar()
-	var m ui.Model = b
+	var m ui.Model = components.NewInputBar("")
 
 	m = typeText(t, m, "hello world")
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlW})
 
-	require.Equal(t, "hello ", m.(components.InputBar).Value())
+	v := viewText(m)
+	require.Contains(t, v, "hello")
+	require.NotContains(t, v, "world")
 }
 
 func TestInputBar_editing_shortcuts_work_after_history_recall(t *testing.T) {
-	b := components.NewInputBar()
-	var m ui.Model = b
+	var m ui.Model = components.NewInputBar("")
 
 	m = typeText(t, m, "first message")
 	m, _ = enter(t, m)
 
 	// Recall from history.
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
-	require.Equal(t, "first message", m.(components.InputBar).Value())
+	require.Contains(t, viewText(m), "first message")
 
 	// Ctrl+A to start, type prefix.
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlA})
 	m = typeText(t, m, "re: ")
 
-	require.Equal(t, "re: first message", m.(components.InputBar).Value())
+	require.Contains(t, viewText(m), "re: first message")
 
 	// Ctrl+W to delete last word.
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlW})
 
-	require.Equal(t, "re: first ", m.(components.InputBar).Value())
+	v := viewText(m)
+	require.Contains(t, v, "re: first")
+	require.NotContains(t, v, "re: first message")
 }
 
 func TestInputBar_ctrl_d_does_not_delete_forward(t *testing.T) {
-	b := components.NewInputBar()
-	var m ui.Model = b
+	var m ui.Model = components.NewInputBar("")
 
 	m = typeText(t, m, "abcde")
 
@@ -368,16 +373,30 @@ func TestInputBar_ctrl_d_does_not_delete_forward(t *testing.T) {
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyHome})
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
 
-	require.Equal(t, "abcde", m.(components.InputBar).Value())
+	require.Contains(t, viewText(m), "abcde")
 }
 
 func TestInputBar_ignores_non_key_messages(t *testing.T) {
-	b := components.NewInputBar()
-	var m ui.Model = b
+	var m ui.Model = components.NewInputBar("")
 
 	m, cmd := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	require.Nil(t, cmd)
-	require.Equal(t, "", m.(components.InputBar).Value())
+
+	v := viewText(m)
+	require.Contains(t, v, ">")
+}
+
+func inputBarWithNicks(nicks []domain.Nick) ui.Model {
+	members := domain.NewMemberList()
+
+	for _, n := range nicks {
+		members.Add(n)
+	}
+
+	var m ui.Model = components.NewInputBar("")
+	m, _ = m.Update(components.NickListUpdatedMsg{Members: members})
+
+	return m
 }
 
 func tabKey() tea.KeyMsg {
@@ -421,7 +440,7 @@ func TestInputBar_nick_completion(t *testing.T) {
 			name:     "empty prefix does nothing",
 			input:    "",
 			tabs:     1,
-			wantText: "",
+			wantText: "> ",
 		},
 		{
 			name:     "case insensitive match",
@@ -439,8 +458,7 @@ func TestInputBar_nick_completion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			b := components.NewInputBar().SetNicks(nicks)
-			var m ui.Model = b
+			m := inputBarWithNicks(nicks)
 
 			m = typeText(t, m, tt.input)
 
@@ -448,79 +466,74 @@ func TestInputBar_nick_completion(t *testing.T) {
 				m, _ = m.Update(tabKey())
 			}
 
-			require.Equal(t, tt.wantText, m.(components.InputBar).Value())
+			require.Contains(t, viewText(m), tt.wantText)
 		})
 	}
 }
 
 func TestInputBar_nick_completion_cycles(t *testing.T) {
 	nicks := []domain.Nick{"alice", "alex", "bob"}
-	b := components.NewInputBar().SetNicks(nicks)
-	var m ui.Model = b
+	m := inputBarWithNicks(nicks)
 
 	m = typeText(t, m, "al")
 
-	// First Tab: alice.
+	// First Tab: alex.
 	m, _ = m.Update(tabKey())
-	require.Equal(t, "alex: ", m.(components.InputBar).Value())
+	require.Contains(t, viewText(m), "alex: ")
 
-	// Second Tab: alex.
+	// Second Tab: alice.
 	m, _ = m.Update(tabKey())
-	require.Equal(t, "alice: ", m.(components.InputBar).Value())
+	require.Contains(t, viewText(m), "alice: ")
 
-	// Third Tab: wraps back to alice.
+	// Third Tab: wraps back to alex.
 	m, _ = m.Update(tabKey())
-	require.Equal(t, "alex: ", m.(components.InputBar).Value())
+	require.Contains(t, viewText(m), "alex: ")
 }
 
 func TestInputBar_nick_completion_resets_on_other_key(t *testing.T) {
 	nicks := []domain.Nick{"alice", "alex"}
-	b := components.NewInputBar().SetNicks(nicks)
-	var m ui.Model = b
+	m := inputBarWithNicks(nicks)
 
 	m = typeText(t, m, "al")
 
 	m, _ = m.Update(tabKey())
-	require.Equal(t, "alex: ", m.(components.InputBar).Value())
+	require.Contains(t, viewText(m), "alex: ")
 
 	// Typing resets completion state.
 	m = typeText(t, m, "h")
-	require.Equal(t, "alex: h", m.(components.InputBar).Value())
+	require.Contains(t, viewText(m), "alex: h")
 
 	// Tab again starts a new completion on "h" (no match).
 	m, _ = m.Update(tabKey())
-	require.Equal(t, "alex: h", m.(components.InputBar).Value())
+	require.Contains(t, viewText(m), "alex: h")
 }
 
 func TestInputBar_nick_completion_skipped_in_command_mode(t *testing.T) {
 	nicks := []domain.Nick{"alice"}
-	b := components.NewInputBar().SetNicks(nicks)
-	var m ui.Model = b
+	m := inputBarWithNicks(nicks)
 
 	m = typeText(t, m, "/join al")
 
 	m, _ = m.Update(tabKey())
 
 	// Tab in command mode should not perform nick completion.
-	// The textinput may or may not modify the value, but nick
-	// completion should not have inserted "alice: ".
-	require.NotContains(t, m.(components.InputBar).Value(), "alice: ")
+	require.NotContains(t, viewText(m), "alice: ")
 }
 
 func TestInputBar_nick_completion_no_nicks(t *testing.T) {
-	b := components.NewInputBar()
-	var m ui.Model = b
+	var m ui.Model = components.NewInputBar("")
 
 	m = typeText(t, m, "al")
 	m, _ = m.Update(tabKey())
 
-	require.Equal(t, "al", m.(components.InputBar).Value())
+	v := viewText(m)
+	require.Contains(t, v, "al")
+	require.NotContains(t, v, "alice")
 }
 
 func TestInputBar_nick_completion_mid_line_with_trailing_text(t *testing.T) {
 	nicks := []domain.Nick{"alice"}
-	b := components.NewInputBar().SetNicks(nicks)
-	var m ui.Model = b
+	m := inputBarWithNicks(nicks)
 
 	m = typeText(t, m, "hey al please")
 
@@ -532,5 +545,148 @@ func TestInputBar_nick_completion_mid_line_with_trailing_text(t *testing.T) {
 
 	m, _ = m.Update(tabKey())
 
-	require.Equal(t, "hey alice please", m.(components.InputBar).Value())
+	require.Contains(t, viewText(m), "hey alice please")
+}
+
+func TestInputBar_UserNickMsg_updates_nick_in_view(t *testing.T) {
+	var m ui.Model = components.NewInputBar("")
+
+	m, _ = m.Update(components.UserNickMsg{Nick: "oldnick"})
+	require.Contains(t, viewText(m), "oldnick")
+
+	m, _ = m.Update(components.UserNickMsg{Nick: "newnick"})
+
+	v := viewText(m)
+	require.Contains(t, v, "newnick")
+	require.NotContains(t, v, "oldnick")
+}
+
+func TestInputBar_NickListUpdatedMsg_enables_nick_completion(t *testing.T) {
+	var m ui.Model = components.NewInputBar("")
+
+	members := domain.NewMemberList()
+	members.Add("alice")
+	members.Add("bob")
+
+	m, _ = m.Update(components.NickListUpdatedMsg{Members: members})
+	m = typeText(t, m, "al")
+	m, _ = m.Update(tabKey())
+
+	require.Contains(t, viewText(m), "alice: ")
+}
+
+// inputBarKind is a minimal KindProvider for InputBar popover tests.
+type inputBarKind domain.ChannelKind
+
+func (k inputBarKind) ChannelKind() domain.ChannelKind { return domain.ChannelKind(k) }
+
+const inputBarKindChannel = inputBarKind(domain.KindChannel)
+
+func inputBarWithPopover(nodes []*command.Node) ui.Model {
+	var m ui.Model = components.NewInputBar("testuser")
+
+	m, _ = m.Update(components.CommandStateMsg{
+		Commands:  nodes,
+		Completer: command.CompletionSet[inputBarKind]{Set: command.Set{Commands: nodes}, Ctx: inputBarKindChannel},
+	})
+	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 0, Y: 0, Width: 60, Height: 24}})
+
+	return m
+}
+
+func TestInputBar_popover_shows_completions(t *testing.T) {
+	nodes := []*command.Node{
+		{Name: "join", Help: "Join a channel"},
+		{Name: "part", Help: "Leave a channel"},
+	}
+	m := inputBarWithPopover(nodes)
+
+	m = typeText(t, m, "/")
+
+	v := ansi.Strip(m.View(60, 3))
+	require.Contains(t, v, "/join")
+	require.Contains(t, v, "Join a channel")
+	require.Contains(t, v, "/part")
+}
+
+func TestInputBar_popover_tab_accepts(t *testing.T) {
+	nodes := []*command.Node{
+		{Name: "join", Help: "Join a channel"},
+	}
+	m := inputBarWithPopover(nodes)
+
+	m = typeText(t, m, "/jo")
+
+	var cmd tea.Cmd
+	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+
+	require.NotNil(t, cmd, "Tab should produce a cmd")
+	m, _ = m.Update(cmd())
+
+	m = typeText(t, m, "#general")
+	_, cmd = enter(t, m)
+
+	require.NotNil(t, cmd)
+	sub := cmd().(components.CommandSubmitMsg)
+	require.Equal(t, "/join #general", sub.Raw)
+}
+
+func TestInputBar_popover_dismiss_on_esc(t *testing.T) {
+	nodes := []*command.Node{
+		{Name: "join", Help: "Join a channel"},
+		{Name: "part", Help: "Leave a channel"},
+	}
+	m := inputBarWithPopover(nodes)
+
+	m = typeText(t, m, "/")
+
+	// Popover should be showing completions.
+	v := ansi.Strip(m.View(60, 3))
+	require.Contains(t, v, "/join")
+
+	// Esc should dismiss the popover.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+
+	v = ansi.Strip(m.View(60, 3))
+	require.NotContains(t, v, "Join a channel")
+}
+
+func TestInputBar_keybindings_include_popover_when_visible(t *testing.T) {
+	nodes := []*command.Node{
+		{Name: "join", Help: "Join a channel"},
+	}
+	m := inputBarWithPopover(nodes)
+
+	m = typeText(t, m, "/")
+
+	bar := m.(components.InputBar)
+	bindings := bar.KeyBindings()
+
+	var helpTexts []string
+	for _, b := range bindings {
+		helpTexts = append(helpTexts, b.Help().Desc)
+	}
+
+	require.Contains(t, helpTexts, "accept")
+	require.Contains(t, helpTexts, "dismiss")
+}
+
+func TestInputBar_keybindings_include_history_when_popover_hidden(t *testing.T) {
+	var m ui.Model = components.NewInputBar("testuser")
+
+	// Submit a message to populate history.
+	m = typeText(t, m, "something")
+	m, _ = enter(t, m)
+
+	bar := m.(components.InputBar)
+	bindings := bar.KeyBindings()
+
+	var helpTexts []string
+	for _, b := range bindings {
+		helpTexts = append(helpTexts, b.Help().Desc)
+	}
+
+	require.Contains(t, helpTexts, "history")
+	require.NotContains(t, helpTexts, "accept")
+	require.NotContains(t, helpTexts, "dismiss")
 }

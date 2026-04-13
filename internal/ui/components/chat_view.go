@@ -1,8 +1,6 @@
 package components
 
 import (
-	"slices"
-
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -79,14 +77,11 @@ type ChatView struct {
 	keyMap   ChatViewKeyMap
 
 	bounds ui.Rect
-
-	popover Popover
 }
 
 type chatViewLayout struct {
-	InputRect     ui.Rect
-	MessageRect   ui.Rect
-	PopoverLayout PopoverLayout
+	InputRect   ui.Rect
+	MessageRect ui.Rect
 }
 
 // NewChatView creates a chat view for the given channel.
@@ -100,9 +95,8 @@ func NewChatView(ch domain.ChannelName, userNick domain.Nick, topic string) Chat
 		topic:    topic,
 		userNick: userNick,
 		messages: ml,
-		input:    NewInputBar().SetUserNick(userNick),
+		input:    NewInputBar(userNick),
 		keyMap:   keyMap,
-		popover:  NewPopover(),
 	}
 }
 
@@ -130,40 +124,6 @@ func (c ChatView) KeyBindings() []key.Binding {
 		),
 	}
 
-	popoverVisible := c.popover.IsVisible()
-	if popoverVisible {
-		bindings = append(bindings,
-			ui.WithBindingEnabled(
-				key.NewBinding(
-					key.WithKeys("tab"),
-					key.WithHelp("Tab", "accept"),
-				),
-				c.popover.HasSuggestions(),
-			),
-			ui.WithBindingEnabled(
-				key.NewBinding(
-					key.WithKeys("up", "down", "shift+tab"),
-					key.WithHelp("↑↓", "navigate"),
-				),
-				c.popover.HasSuggestions(),
-			),
-			key.NewBinding(
-				key.WithKeys("esc"),
-				key.WithHelp("Esc", "dismiss"),
-			),
-		)
-	} else {
-		bindings = append(bindings,
-			ui.WithBindingEnabled(
-				key.NewBinding(
-					key.WithKeys("up", "down"),
-					key.WithHelp("↑↓", "history"),
-				),
-				len(c.input.history) > 0,
-			),
-		)
-	}
-
 	bindings = append(bindings, ui.CollectKeyBindings(c.input)...)
 
 	return bindings
@@ -174,7 +134,7 @@ func (c ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case ui.BoundsMsg:
 		c.bounds = msg.Rect
-		c, _ = c.updatePopover(msg)
+		c = c.updateInput(msg)
 		c = c.syncMessageViewport()
 		return c, nil
 
@@ -185,11 +145,6 @@ func (c ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 		var cmd tea.Cmd
 		c, cmd = c.updateMessages(msg)
-		c, _ = c.updatePopover(PopoverApplyMsg{
-			Completer: c.popover.completer,
-			Raw:       c.input.Value(),
-			Cursor:    c.input.Cursor(),
-		})
 		c = c.syncMessageViewport()
 
 		return c, cmd
@@ -201,12 +156,12 @@ func (c ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 	case UserNickMsg:
 		c.userNick = msg.Nick
-		c.input = c.input.SetUserNick(msg.Nick)
+		c = c.updateInput(msg)
+
 		return c, nil
 
 	case NickListUpdatedMsg:
-		nicks := slices.Collect(msg.Members.Nicks())
-		c.input = c.input.SetNicks(nicks)
+		c = c.updateInput(msg)
 
 		return c, nil
 
@@ -220,35 +175,10 @@ func (c ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 	case CommandStateMsg:
 		c, _ = c.updateMessages(msg)
-		c, _ = c.updatePopover(PopoverApplyMsg{
-			Completer: msg.Completer,
-			Raw:       c.input.Value(),
-			Cursor:    c.input.Cursor(),
-		})
+		c = c.updateInput(msg)
 		c = c.syncMessageViewport()
 
 		return c, nil
-
-	case PopoverAcceptMsg:
-		c.input = c.input.ReplaceRange(msg.ReplaceStart, msg.ReplaceEnd, msg.Replacement)
-		c, _ = c.updatePopover(PopoverRefreshMsg{
-			Raw:    c.input.Value(),
-			Cursor: c.input.Cursor(),
-		})
-		c = c.syncMessageViewport()
-
-		return c, nil
-
-	case tea.KeyMsg:
-		if c.popover.IsVisible() {
-			var cmd tea.Cmd
-			c, cmd = c.updatePopover(msg)
-
-			if c.popover.Handled() {
-				c = c.syncMessageViewport()
-				return c, cmd
-			}
-		}
 
 	case tea.MouseMsg:
 		if updated, handled, cmd := c.handleMouse(msg); handled {
@@ -262,10 +192,6 @@ func (c ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 	updated, inputCmd := c.input.Update(msg)
 	c.input = updated.(InputBar)
-	c, _ = c.updatePopover(PopoverRefreshMsg{
-		Raw:    c.input.Value(),
-		Cursor: c.input.Cursor(),
-	})
 	c = c.syncMessageViewport()
 
 	return c, tea.Batch(mlCmd, inputCmd)
@@ -278,33 +204,15 @@ func (c ChatView) handleMouse(msg tea.MouseMsg) (ChatView, bool, tea.Cmd) {
 
 	layout := c.layoutRects()
 
-	if layout.PopoverLayout.Rect.Contains(msg.X, msg.Y) {
-		var cmd tea.Cmd
-		c, cmd = c.updatePopover(msg)
-
-		return c, true, cmd
-	}
-
-	if c.popover.IsVisible() && msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
-		c, _ = c.updatePopover(PopoverDismissMsg{Raw: c.input.Value()})
-	}
-
 	if layout.InputRect.Contains(msg.X, msg.Y) {
-		switch msg.Action {
-		case tea.MouseActionPress:
-			if msg.Button == tea.MouseButtonLeft {
-				localX, _ := layout.InputRect.Local(msg.X, msg.Y)
-				c.input = c.input.SetCursorFromCell(localX)
-				c, _ = c.updatePopover(PopoverRefreshMsg{
-					Raw:    c.input.Value(),
-					Cursor: c.input.Cursor(),
-				})
+		updated, cmd := c.input.Update(msg)
+		c.input = updated.(InputBar)
 
-				return c, true, nil
-			}
-		case tea.MouseActionMotion:
-			return c, true, nil
+		if cmd != nil {
+			return c, true, cmd
 		}
+
+		return c, true, nil
 	}
 
 	if layout.MessageRect.Contains(msg.X, msg.Y) && msg.Action == tea.MouseActionPress {
@@ -325,12 +233,6 @@ func (c ChatView) View(width, height int) string {
 	inputView := c.input.View(width, 1)
 	inputHeight := lipgloss.Height(inputView)
 
-	popoverView := c.popover.Render(width)
-	popoverHeight := 0
-	if popoverView != "" {
-		popoverHeight = lipgloss.Height(popoverView)
-	}
-
 	var topicView string
 	topicHeight := 0
 	if c.topic != "" && c.kind != domain.KindDM {
@@ -338,22 +240,16 @@ func (c ChatView) View(width, height int) string {
 		topicHeight = lipgloss.Height(topicView)
 	}
 
-	messageListHeight := max(height-inputHeight-topicHeight-popoverHeight, 0)
+	messageListHeight := max(height-inputHeight-topicHeight, 0)
 
 	messageView := c.messages.View(width, messageListHeight)
 
-	parts := make([]string, 0, 4)
+	parts := make([]string, 0, 3)
 	if topicView != "" {
 		parts = append(parts, topicView)
 	}
 
-	parts = append(parts, messageView)
-
-	if popoverView != "" {
-		parts = append(parts, popoverView)
-	}
-
-	parts = append(parts, inputView)
+	parts = append(parts, messageView, inputView)
 
 	view := lipgloss.JoinVertical(lipgloss.Left, parts...)
 	if lipgloss.Height(view) >= height {
@@ -369,14 +265,15 @@ func (c ChatView) layoutRects() chatViewLayout {
 		return chatViewLayout{}
 	}
 
+	inputView := c.input.View(width, 1)
+	inputHeight := lipgloss.Height(inputView)
+
 	inputRect := ui.Rect{
 		X:      c.bounds.X,
-		Y:      c.bounds.Y + c.bounds.Height - 1,
+		Y:      c.bounds.Y + c.bounds.Height - inputHeight,
 		Width:  width,
-		Height: 1,
+		Height: inputHeight,
 	}
-
-	popoverLayout := c.popover.Layout(c.bounds, inputRect)
 
 	topicHeight := 0
 	if c.topic != "" && c.kind != domain.KindDM {
@@ -392,16 +289,15 @@ func (c ChatView) layoutRects() chatViewLayout {
 		X:      c.bounds.X,
 		Y:      c.bounds.Y + topicHeight,
 		Width:  width,
-		Height: c.bounds.Height - topicHeight - pendingHeight - popoverLayout.Rect.Height - 1,
+		Height: c.bounds.Height - topicHeight - pendingHeight - inputHeight,
 	}
 	if messageRect.Height < 0 {
 		messageRect.Height = 0
 	}
 
 	return chatViewLayout{
-		InputRect:     inputRect,
-		MessageRect:   messageRect,
-		PopoverLayout: popoverLayout,
+		InputRect:   inputRect,
+		MessageRect: messageRect,
 	}
 }
 
@@ -421,11 +317,11 @@ func (c ChatView) syncMessageViewport() ChatView {
 	return c
 }
 
-func (c ChatView) updatePopover(msg tea.Msg) (ChatView, tea.Cmd) {
-	updated, cmd := c.popover.Update(msg)
-	c.popover = updated.(Popover)
+func (c ChatView) updateInput(msg tea.Msg) ChatView {
+	updated, _ := c.input.Update(msg)
+	c.input = updated.(InputBar)
 
-	return c, cmd
+	return c
 }
 
 func (c ChatView) renderTopic(width int) string {

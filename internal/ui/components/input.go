@@ -41,12 +41,15 @@ type nickCompletion struct {
 	index   int
 }
 
-// InputBar wraps bubbles/textinput with command detection and input
-// history recall via Up/Down arrows.
+// InputBar wraps bubbles/textinput with command completion, nick
+// completion, and input history. It owns the command popover as a
+// child model.
 type InputBar struct {
 	input    textinput.Model
 	keyMap   InputBarKeyMap
 	userNick domain.Nick
+	popover  Popover
+	bounds   ui.Rect
 
 	history   []string
 	histPos   int // -1 = editing new input, 0..len(history)-1 = browsing
@@ -56,8 +59,8 @@ type InputBar struct {
 	nickComp nickCompletion
 }
 
-// NewInputBar creates an empty input bar.
-func NewInputBar() InputBar {
+// NewInputBar creates an input bar with the given user nick.
+func NewInputBar(userNick domain.Nick) InputBar {
 	ti := textinput.New()
 	ti.Prompt = theme.Prompt.Render("> ")
 	ti.Focus()
@@ -69,24 +72,12 @@ func NewInputBar() InputBar {
 	ti.KeyMap.DeleteBeforeCursor = key.NewBinding(key.WithDisabled())
 
 	return InputBar{
-		input:   ti,
-		keyMap:  DefaultInputBarKeyMap,
-		histPos: -1,
+		input:    ti,
+		keyMap:   DefaultInputBarKeyMap,
+		userNick: userNick,
+		popover:  NewPopover(),
+		histPos:  -1,
 	}
-}
-
-// SetNicks updates the list of nicks available for Tab completion.
-func (b InputBar) SetNicks(nicks []domain.Nick) InputBar {
-	b.nicks = nicks
-
-	return b
-}
-
-// SetUserNick updates the nick rendered in the composer prefix.
-func (b InputBar) SetUserNick(nick domain.Nick) InputBar {
-	b.userNick = nick
-
-	return b
 }
 
 // Init implements ui.Model.
@@ -96,25 +87,89 @@ func (b InputBar) Init() tea.Cmd {
 
 // Update implements ui.Model.
 func (b InputBar) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
-	km, ok := msg.(tea.KeyMsg)
-	if !ok {
-		var cmd tea.Cmd
-		b.input, cmd = b.input.Update(msg)
+	switch msg := msg.(type) {
+	case UserNickMsg:
+		b.userNick = msg.Nick
+		return b, nil
 
-		return b, cmd
+	case NickListUpdatedMsg:
+		b.nicks = slices.Collect(msg.Members.Nicks())
+		return b, nil
+
+	case CommandStateMsg:
+		b = b.refreshPopover(PopoverApplyMsg{
+			Completer: msg.Completer,
+			Raw:       b.input.Value(),
+			Cursor:    b.input.Position(),
+		})
+		return b, nil
+
+	case PopoverAcceptMsg:
+		b = b.replaceRange(msg.ReplaceStart, msg.ReplaceEnd, msg.Replacement)
+		b = b.refreshPopover(PopoverRefreshMsg{
+			Raw:    b.input.Value(),
+			Cursor: b.input.Position(),
+		})
+		return b, nil
+
+	case ui.BoundsMsg:
+		b.bounds = msg.Rect
+		b = b.refreshPopover(msg)
+		return b, nil
+
+	case tea.MouseMsg:
+		if updated, handled, cmd := b.handleMouse(msg); handled {
+			return updated, cmd
+		}
+
+		return b, nil
+
+	case tea.KeyMsg:
+		return b.handleKey(msg)
+	}
+
+	var cmd tea.Cmd
+	b.input, cmd = b.input.Update(msg)
+
+	return b, cmd
+}
+
+func (b InputBar) handleKey(msg tea.KeyMsg) (ui.Model, tea.Cmd) {
+	// When the popover is visible, give it first shot at keys.
+	if b.popover.IsVisible() {
+		updated, cmd := b.popover.Update(msg)
+		b.popover = updated.(Popover)
+
+		if b.popover.Handled() {
+			return b, cmd
+		}
 	}
 
 	switch {
-	case key.Matches(km, b.keyMap.Submit):
+	case key.Matches(msg, b.keyMap.Submit):
 		return b.submit()
 
-	case key.Matches(km, b.keyMap.HistoryUp):
-		return b.historyUp(), nil
+	case key.Matches(msg, b.keyMap.HistoryUp):
+		if !b.popover.IsVisible() {
+			b = b.historyUp()
+			b = b.refreshPopover(PopoverRefreshMsg{
+				Raw:    b.input.Value(),
+				Cursor: b.input.Position(),
+			})
+			return b, nil
+		}
 
-	case key.Matches(km, b.keyMap.HistoryDn):
-		return b.historyDown(), nil
+	case key.Matches(msg, b.keyMap.HistoryDn):
+		if !b.popover.IsVisible() {
+			b = b.historyDown()
+			b = b.refreshPopover(PopoverRefreshMsg{
+				Raw:    b.input.Value(),
+				Cursor: b.input.Position(),
+			})
+			return b, nil
+		}
 
-	case km.Type == tea.KeyTab:
+	case msg.Type == tea.KeyTab:
 		if !strings.HasPrefix(b.input.Value(), "/") {
 			return b.completeNick(), nil
 		}
@@ -125,7 +180,52 @@ func (b InputBar) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	b.input, cmd = b.input.Update(msg)
 
+	b = b.refreshPopover(PopoverRefreshMsg{
+		Raw:    b.input.Value(),
+		Cursor: b.input.Position(),
+	})
+
 	return b, cmd
+}
+
+func (b InputBar) handleMouse(msg tea.MouseMsg) (InputBar, bool, tea.Cmd) {
+	if b.bounds.Width == 0 || b.bounds.Height == 0 {
+		return b, false, nil
+	}
+
+	inputRect := b.inputRect()
+	popoverLayout := b.popover.Layout(b.bounds, inputRect)
+
+	if popoverLayout.Rect.Contains(msg.X, msg.Y) {
+		updated, cmd := b.popover.Update(msg)
+		b.popover = updated.(Popover)
+
+		return b, true, cmd
+	}
+
+	if b.popover.IsVisible() && msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+		b = b.refreshPopover(PopoverDismissMsg{Raw: b.input.Value()})
+	}
+
+	if inputRect.Contains(msg.X, msg.Y) {
+		switch msg.Action {
+		case tea.MouseActionPress:
+			if msg.Button == tea.MouseButtonLeft {
+				localX, _ := inputRect.Local(msg.X, msg.Y)
+				b = b.setCursorFromCell(localX)
+				b = b.refreshPopover(PopoverRefreshMsg{
+					Raw:    b.input.Value(),
+					Cursor: b.input.Position(),
+				})
+
+				return b, true, nil
+			}
+		case tea.MouseActionMotion:
+			return b, true, nil
+		}
+	}
+
+	return b, false, nil
 }
 
 func (b InputBar) submit() (ui.Model, tea.Cmd) {
@@ -138,6 +238,11 @@ func (b InputBar) submit() (ui.Model, tea.Cmd) {
 	b.input.Reset()
 	b.histPos = -1
 	b.histDraft = ""
+
+	b = b.refreshPopover(PopoverRefreshMsg{
+		Raw:    b.input.Value(),
+		Cursor: b.input.Position(),
+	})
 
 	if strings.HasPrefix(text, "/") {
 		return b, func() tea.Msg {
@@ -287,18 +392,7 @@ func (b InputBar) applyNickCompletion() InputBar {
 	return b
 }
 
-// Value returns the current text in the input buffer.
-func (b InputBar) Value() string {
-	return b.input.Value()
-}
-
-// Cursor returns the cursor position in runes.
-func (b InputBar) Cursor() int {
-	return b.input.Position()
-}
-
-// ReplaceRange replaces the given rune range with the provided text.
-func (b InputBar) ReplaceRange(start, end int, replacement string) InputBar {
+func (b InputBar) replaceRange(start, end int, replacement string) InputBar {
 	value := []rune(b.input.Value())
 	start = clampInputIndex(start, len(value))
 	end = clampInputIndex(end, len(value))
@@ -316,8 +410,7 @@ func (b InputBar) ReplaceRange(start, end int, replacement string) InputBar {
 	return b
 }
 
-// SetCursorFromCell moves the cursor to the nearest cell within the input area.
-func (b InputBar) SetCursorFromCell(x int) InputBar {
+func (b InputBar) setCursorFromCell(x int) InputBar {
 	x -= b.prefixWidth()
 
 	if x <= 0 {
@@ -348,8 +441,59 @@ func (b InputBar) SetCursorFromCell(x int) InputBar {
 
 // KeyBindings implements ui.Keybinding.
 func (b InputBar) KeyBindings() []key.Binding {
-	return []key.Binding{
+	bindings := []key.Binding{
 		b.keyMap.Submit,
+	}
+
+	if b.popover.IsVisible() {
+		bindings = append(bindings,
+			ui.WithBindingEnabled(
+				key.NewBinding(
+					key.WithKeys("tab"),
+					key.WithHelp("Tab", "accept"),
+				),
+				b.popover.HasSuggestions(),
+			),
+			ui.WithBindingEnabled(
+				key.NewBinding(
+					key.WithKeys("up", "down", "shift+tab"),
+					key.WithHelp("↑↓", "navigate"),
+				),
+				b.popover.HasSuggestions(),
+			),
+			key.NewBinding(
+				key.WithKeys("esc"),
+				key.WithHelp("Esc", "dismiss"),
+			),
+		)
+	} else {
+		bindings = append(bindings,
+			ui.WithBindingEnabled(
+				key.NewBinding(
+					key.WithKeys("up", "down"),
+					key.WithHelp("↑↓", "history"),
+				),
+				len(b.history) > 0,
+			),
+		)
+	}
+
+	return bindings
+}
+
+func (b InputBar) refreshPopover(msg tea.Msg) InputBar {
+	updated, _ := b.popover.Update(msg)
+	b.popover = updated.(Popover)
+
+	return b
+}
+
+func (b InputBar) inputRect() ui.Rect {
+	return ui.Rect{
+		X:      b.bounds.X,
+		Y:      b.bounds.Y + b.bounds.Height - 1,
+		Width:  b.bounds.Width,
+		Height: 1,
 	}
 }
 
@@ -373,7 +517,8 @@ func (b InputBar) prefixWidth() int {
 	return lipgloss.Width(theme.UserNick.Render(string(b.userNick))) + 1 + promptWidth()
 }
 
-// View implements ui.Model.
+// View implements ui.Model. It renders the popover (if visible)
+// above the input line.
 func (b InputBar) View(width, _ int) string {
 	nickLabel := theme.UserNick.Render(string(b.userNick)) + " "
 	nickWidth := lipgloss.Width(nickLabel)
@@ -383,5 +528,12 @@ func (b InputBar) View(width, _ int) string {
 	// an extra cell to keep the total within the available space.
 	b.input.Width = max(width-nickWidth-promptWidth()-1, 0)
 
-	return nickLabel + b.input.View()
+	inputLine := nickLabel + b.input.View()
+
+	popoverView := b.popover.Render(width)
+	if popoverView == "" {
+		return inputLine
+	}
+
+	return lipgloss.JoinVertical(lipgloss.Left, popoverView, inputLine)
 }
