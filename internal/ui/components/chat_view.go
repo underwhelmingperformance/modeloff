@@ -62,6 +62,11 @@ type CommandStateMsg struct {
 // without affecting the persistent event log.
 type ClearMessagesMsg struct{}
 
+// UserNickMsg updates the user's nick in the chat view and input bar.
+type UserNickMsg struct {
+	Nick domain.Nick
+}
+
 // ChatView displays messages for a single channel with an input bar
 // at the bottom.
 type ChatView struct {
@@ -192,6 +197,11 @@ func (c ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	case TopicUpdatedMsg:
 		c.topic = msg.Topic
 		c = c.syncMessageViewport()
+		return c, nil
+
+	case UserNickMsg:
+		c.userNick = msg.Nick
+		c.input = c.input.SetUserNick(msg.Nick)
 		return c, nil
 
 	case NickListUpdatedMsg:

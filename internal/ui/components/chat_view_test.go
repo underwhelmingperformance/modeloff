@@ -1321,6 +1321,23 @@ func TestContainsHighlightWord(t *testing.T) {
 	}
 }
 
+func TestChatView_user_nick_update_changes_input_prefix(t *testing.T) {
+	cv := newChatViewWithEvents("#general", "testuser", "", testEvents)
+	var m ui.Model = cv
+
+	v := ansi.Strip(m.View(80, 24))
+	require.Contains(t, v, "testuser",
+		"input bar should show original nick")
+
+	m, _ = m.Update(components.UserNickMsg{Nick: "newnick"})
+
+	v = ansi.Strip(m.View(80, 24))
+	require.Contains(t, v, "newnick",
+		"input bar should show the updated nick after UserNickMsg")
+	require.NotContains(t, v, "testuser >",
+		"old nick should no longer appear in the input prefix")
+}
+
 func TestChatView_few_messages_bottom_aligned(t *testing.T) {
 	cv := newChatViewWithEvents("#general", "testuser", "", testEvents[:1])
 	v := ansi.Strip(cv.View(80, 24))

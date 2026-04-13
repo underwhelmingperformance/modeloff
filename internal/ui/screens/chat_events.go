@@ -356,6 +356,11 @@ func (s ChatScreen) handleNickChangeEvent(msg domain.NickChangeEvent) (ui.Model,
 	cmds = append(cmds, msgCmd(domain.StoredEvent{
 		Event: domain.ChannelNickChange(msg),
 	}))
+
+	if msg.NewNick == s.sess.UserNick() {
+		cmds = append(cmds, msgCmd(components.UserNickMsg{Nick: msg.NewNick}))
+	}
+
 	nickCfg, _ := s.loadConfig()
 	cmds = append(cmds, msgCmd(components.HighlightWordsMsg{
 		Words:    nickCfg.HighlightWords,

@@ -136,6 +136,17 @@ func TestChatScreen_nick_command(t *testing.T) {
 	tm.WaitFor("testuser is now known as newnick")
 }
 
+func TestChatScreen_nick_command_updates_input_bar(t *testing.T) {
+	tm, _ := newChatAppInChannel(t, "#general")
+
+	tm.Submit("/nick newnick")
+	tm.WaitFor("testuser is now known as newnick")
+
+	view := tm.CurrentView()
+	require.Contains(t, view, "newnick >",
+		"input bar should show the new nick after /nick command")
+}
+
 func TestChatScreen_nick_command_reports_persist_error(t *testing.T) {
 	cfgStore := newFakeConfigStore()
 	cfgStore.saveErr = context.DeadlineExceeded
