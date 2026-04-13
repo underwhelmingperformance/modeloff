@@ -392,8 +392,7 @@ func (s ChatScreen) handleModelInvitedEvent(msg domain.ModelInvitedEvent) (ui.Mo
 			Event: domain.ChannelModelInvited{
 				Channel: msg.Channel,
 				Nick:    msg.Instance.Nick,
-				ModelID: msg.Instance.ModelID,
-				Persona: msg.Instance.Persona,
+				By:      msg.By,
 				At:      msg.At,
 			},
 		}))

@@ -91,7 +91,7 @@ func TestApp_add_model_and_receive_reply(t *testing.T) {
 	tm.WaitFor("#general")
 
 	tm.Submit("/add-model test/model")
-	tm.WaitFor("botty (test/model) has joined #general")
+	tm.WaitFor("botty has joined #general")
 
 	tm.Submit("hello world")
 	tm.WaitFor("hello world", "hello back")
@@ -207,7 +207,7 @@ func TestApp_reuse_existing_instance(t *testing.T) {
 	tm.WaitFor("#random")
 
 	tm.Submit("/invite botty")
-	tm.WaitFor("botty (test/model) has joined #random")
+	tm.WaitFor("botty has joined #random")
 
 	tm.Submit("/whois botty")
 	tm.WaitFor("persona: Helpful assistant", "channels: #general, #random")
@@ -333,7 +333,7 @@ func TestApp_vector_memory_write_and_search(t *testing.T) {
 	tm.WaitFor("#lab")
 
 	tm.Submit("/add-model test/model")
-	tm.WaitFor("membot (test/model) has joined #lab")
+	tm.WaitFor("membot has joined #lab")
 
 	tm.Submit("what is my favourite colour?")
 	tm.WaitFor("I found:", "the user likes blue")

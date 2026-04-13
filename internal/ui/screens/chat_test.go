@@ -221,14 +221,14 @@ func TestChatScreen_add_model_command(t *testing.T) {
 	tm, _ := newChatAppInChannel(t, "#general")
 
 	tm.Submit("/add-model anthropic/claude-3-haiku")
-	tm.WaitFor("fakenick (anthropic/claude-3-haiku) has joined #general")
+	tm.WaitFor("fakenick has joined #general")
 }
 
 func TestChatScreen_add_model_with_persona(t *testing.T) {
 	tm, _ := newChatAppInChannel(t, "#general")
 
 	tm.Submit("/add-model anthropic/claude-3-haiku --persona Helpful assistant")
-	tm.WaitFor("fakenick (anthropic/claude-3-haiku) has joined #general", `persona "Helpful assistant"`)
+	tm.WaitFor("fakenick has joined #general")
 }
 
 func TestChatScreen_add_model_no_args(t *testing.T) {
@@ -249,7 +249,7 @@ func TestChatScreen_invite_existing_instance(t *testing.T) {
 	tm.WaitFor("#random")
 
 	tm.Submit("/invite fakenick")
-	tm.WaitFor("fakenick (anthropic/claude-3-haiku) has joined #random")
+	tm.WaitFor("fakenick has joined #random")
 }
 
 func TestChatScreen_kick_command(t *testing.T) {

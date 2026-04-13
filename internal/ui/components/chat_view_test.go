@@ -694,16 +694,9 @@ func TestRenderLine_IRC_events(t *testing.T) {
 		{
 			"model_invited",
 			domain.StoredEvent{Event: domain.ChannelModelInvited{
-				Channel: "#general", Nick: "botty", ModelID: "anthropic/haiku", At: now,
+				Channel: "#general", Nick: "botty", By: "alice", At: now,
 			}},
-			"*** botty (anthropic/haiku) has joined #general",
-		},
-		{
-			"model_invited_with_persona",
-			domain.StoredEvent{Event: domain.ChannelModelInvited{
-				Channel: "#general", Nick: "botty", ModelID: "anthropic/haiku", Persona: "helpful", At: now,
-			}},
-			`*** botty (anthropic/haiku) has joined #general with persona "helpful"`,
+			"*** botty has joined #general",
 		},
 		{
 			"model_kicked",

@@ -118,7 +118,7 @@ func TestChannelEvent_JSON_round_trip(t *testing.T) {
 			event: domain.ChannelModelInvited{
 				Channel: "#general",
 				Nick:    "botty",
-				ModelID: "anthropic/claude-3-haiku",
+				By:      "alice",
 				At:      ts,
 			},
 		},

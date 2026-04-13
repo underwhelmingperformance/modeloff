@@ -501,7 +501,7 @@ func (s *Session) inviteActor(ctx context.Context, actor domain.Nick, target dom
 
 	if actor == s.user.Nick {
 		if inst, err := s.store.GetInstance(ctx, target); err == nil {
-			return s.attachInstanceToChannel(ctx, ch, inst)
+			return s.attachInstanceToChannel(ctx, ch, inst, actor)
 		}
 	}
 

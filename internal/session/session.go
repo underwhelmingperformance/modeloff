@@ -234,7 +234,7 @@ func (s *Session) AddModel(
 		}
 
 		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-		return s.attachInstanceToChannel(ctx, ch, inst)
+		return s.attachInstanceToChannel(ctx, ch, inst, s.user.Nick)
 	}
 
 	if err := s.ensureStructuredOutputModel(ctx, modelID); err != nil {
@@ -249,7 +249,7 @@ func (s *Session) AddModel(
 		}
 
 		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-		return s.attachInstanceToChannel(ctx, ch, inst)
+		return s.attachInstanceToChannel(ctx, ch, inst, s.user.Nick)
 	}
 
 	generateCtx, generateSpan := startSpan(
@@ -298,7 +298,7 @@ func (s *Session) AddModel(
 
 	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 
-	return s.attachInstanceToChannel(ctx, ch, inst)
+	return s.attachInstanceToChannel(ctx, ch, inst, s.user.Nick)
 }
 
 func (s *Session) findInstanceByModelID(ctx context.Context, modelID domain.ModelID) (domain.Instance, error) {
@@ -320,6 +320,7 @@ func (s *Session) attachInstanceToChannel(
 	ctx context.Context,
 	ch domain.ChannelName,
 	inst domain.Instance,
+	by domain.Nick,
 ) error {
 	channel, err := s.store.GetChannel(ctx, ch)
 	if err != nil {
@@ -352,14 +353,14 @@ func (s *Session) attachInstanceToChannel(
 	s.appendEvent(ctx, ch, domain.ChannelModelInvited{
 		Channel: ch,
 		Nick:    inst.Nick,
-		ModelID: inst.ModelID,
-		Persona: inst.Persona,
+		By:      by,
 		At:      now,
 	})
 
 	s.emit(ctx, domain.ModelInvitedEvent{
 		Channel:  ch,
 		Instance: inst,
+		By:       by,
 		At:       now,
 	})
 
@@ -385,6 +386,13 @@ func (s *Session) attachInstanceToChannel(
 			At:      now,
 		})
 	}
+
+	s.dispatchToInstanceInBackground(ctx, ch, inst, []protocol.IRCMessage{{
+		Kind:   protocol.KindInvite,
+		From:   string(by),
+		Target: string(ch),
+		At:     now,
+	}})
 
 	return nil
 }
@@ -1230,6 +1238,7 @@ func (s *Session) maybeDispatch(ctx context.Context, evt domain.SessionEvent) {
 				At:     e.At,
 			}},
 		)
+
 	}
 }
 
@@ -1302,6 +1311,59 @@ func (s *Session) dispatchInBackground(ctx context.Context, ch domain.ChannelNam
 		if err == nil {
 			span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 		}
+	}()
+}
+
+// dispatchToInstanceInBackground sends trigger events to a single
+// instance in the background, emitting replies via emitUIOnly.
+func (s *Session) dispatchToInstanceInBackground(
+	ctx context.Context,
+	ch domain.ChannelName,
+	inst domain.Instance,
+	triggerEvents []protocol.IRCMessage,
+) {
+	go func() {
+		ctx, span := startSpan(
+			ctx,
+			"session.dispatch_to_instance_background",
+			attribute.String(observability.AttrOperation, "session.dispatch_to_instance_background"),
+			attribute.String(observability.AttrChannel, string(ch)),
+			attribute.String(observability.AttrModelID, string(inst.ModelID)),
+		)
+		defer span.End()
+		defer s.emitUIOnly(domain.DispatchDoneEvent{Channel: ch})
+
+		channel, err := s.store.GetChannel(ctx, ch)
+		if err != nil {
+			span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+			span.SetStatus(codes.Error, err.Error())
+			s.emitUIOnly(domain.ErrorEvent{Operation: "dispatch", Err: err, At: s.now()})
+			return
+		}
+
+		historyEvents, err := s.store.EventsBefore(ctx, ch, nil, 500)
+		if err != nil {
+			span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+			span.SetStatus(codes.Error, err.Error())
+			s.emitUIOnly(domain.ErrorEvent{Operation: "dispatch", Err: err, At: s.now()})
+			return
+		}
+
+		s.emitUIOnly(domain.DispatchStartedEvent{Channel: ch, Nicks: []domain.Nick{inst.Nick}})
+
+		replies, err := s.dispatchToInstance(ctx, channel, inst, ch, historyEvents, triggerEvents)
+		if err != nil {
+			span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+			span.SetStatus(codes.Error, err.Error())
+			s.emitUIOnly(domain.ErrorEvent{Operation: "dispatch", Err: err, At: s.now()})
+			return
+		}
+
+		for _, reply := range replies {
+			s.emitUIOnly(reply)
+		}
+
+		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 	}()
 }
 

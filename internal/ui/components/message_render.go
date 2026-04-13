@@ -89,12 +89,8 @@ func renderChannelEvent(
 			fmt.Sprintf("*** %s sets mode %s %s", e.Channel, e.Mode, e.Nick)))
 
 	case domain.ChannelModelInvited:
-		text := fmt.Sprintf("%s (%s) has joined %s", e.Nick, e.ModelID, e.Channel)
-		if e.Persona != "" {
-			text = fmt.Sprintf("%s with persona %q", text, e.Persona)
-		}
-
-		return wrap.Render(theme.SystemEvent.Render("*** " + text))
+		return wrap.Render(theme.SystemEvent.Render(
+			fmt.Sprintf("*** %s has joined %s", e.Nick, e.Channel)))
 
 	case domain.ChannelModelKicked:
 		return wrap.Render(theme.SystemEvent.Render(

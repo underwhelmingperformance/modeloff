@@ -57,6 +57,7 @@ type TopicChangeEvent struct {
 type ModelInvitedEvent struct {
 	Channel  ChannelName
 	Instance Instance
+	By       Nick
 	At       time.Time
 }
 

@@ -425,6 +425,7 @@ func TestSession_AddModel(t *testing.T) {
 			Nick:       "fakenick",
 			ModelID:    "anthropic/claude-3-haiku",
 			Channels:   testChannels("#dev")},
+		By: "testuser",
 		At: fixedTime,
 	}, evt)
 
@@ -1344,6 +1345,7 @@ func TestSession_InviteAs_reuses_existing_instance(t *testing.T) {
 			ModelID:  "test/model",
 			Persona:  "Helpful assistant",
 			Channels: testChannels("#general", "#random")},
+		By: "testuser",
 		At: fixedTime,
 	}, evt)
 
@@ -1416,8 +1418,9 @@ func TestSession_AddModel_same_model_id_reuses_instance(t *testing.T) {
 	require.Equal(t, domain.Nick("fakenick"), evt1.Instance.Nick)
 	require.NotEmpty(t, evt1.Instance.InstanceID)
 	instanceID := evt1.Instance.InstanceID
-	// New member also emits a ModeChangeEvent; drain it.
 	drainEvent[domain.ModeChangeEvent](t, sess)
+	drainEvent[domain.DispatchStartedEvent](t, sess)
+	drainEvent[domain.DispatchDoneEvent](t, sess)
 
 	require.NoError(t, sess.AddModel(ctx, "#random", "test/model", ""))
 	evt2 := drainEvent[domain.ModelInvitedEvent](t, sess)
@@ -1429,6 +1432,7 @@ func TestSession_AddModel_same_model_id_reuses_instance(t *testing.T) {
 			ModelID:    "test/model",
 			Persona:    "Helpful assistant",
 			Channels:   testChannels("#general", "#random")},
+		By: "testuser",
 		At: fixedTime,
 	}, evt2)
 
@@ -3374,5 +3378,41 @@ func TestSendMessageAs_model_triggers_dispatch_to_other_models(t *testing.T) {
 
 	require.Equal(t, map[domain.ModelID][]protocol.IRCMessage{
 		"test/model-b": {wantMsg},
+	}, dispatched)
+}
+
+func TestAddModel_dispatches_invite_notification_to_model(t *testing.T) {
+	dispatched := make(map[domain.ModelID][]protocol.IRCMessage)
+
+	fake := &fakeAPIClient{
+		sendEventsFn: func(_ context.Context, modelID domain.ModelID, _ string, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			dispatched[modelID] = append(dispatched[modelID], events...)
+			return protocol.ModelResponse{Kind: protocol.ResponseSilence, Reason: "ok"}, nil
+		},
+		generateNickFn: func(_ context.Context, _ domain.ModelID, _ domain.ModelID) (domain.Nick, error) {
+			return "botty", nil
+		},
+	}
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#dev", "testuser")
+
+	require.NoError(t, sess.AddModel(ctx, "#dev", "test/model", ""))
+
+	drainEvent[domain.ModelInvitedEvent](t, sess)
+	drainEvent[domain.ModeChangeEvent](t, sess)
+	drainEvent[domain.DispatchStartedEvent](t, sess)
+	drainEvent[domain.DispatchDoneEvent](t, sess)
+
+	require.Equal(t, map[domain.ModelID][]protocol.IRCMessage{
+		"test/model": {
+			{
+				Kind:   protocol.KindInvite,
+				From:   "testuser",
+				Target: "#dev",
+				At:     fixedTime,
+			},
+		},
 	}, dispatched)
 }

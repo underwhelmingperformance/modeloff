@@ -153,7 +153,7 @@ func TestApp_invite_whois_and_kick_commands_with_teatest(t *testing.T) {
 	tm.WaitFor("usage: /add-model <model-id> [--persona <text>]")
 
 	tm.Submit("/add-model anthropic/claude-3-haiku --persona Helpful assistant")
-	tm.WaitFor("fakenick (anthropic/claude-3-haiku) has joined #random")
+	tm.WaitFor("fakenick has joined #random")
 
 	tm.Submit("/whois fakenick")
 	tm.WaitFor("fakenick is anthropic/claude-3-haiku", "persona: Helpful assistant")

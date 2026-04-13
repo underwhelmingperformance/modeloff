@@ -141,8 +141,7 @@ func (ChannelModeChange) ModelVisible() bool { return true }
 type ChannelModelInvited struct {
 	Channel ChannelName `json:"channel"`
 	Nick    Nick        `json:"nick"`
-	ModelID ModelID     `json:"model_id"`
-	Persona string      `json:"persona,omitempty"`
+	By      Nick        `json:"by"`
 	At      time.Time   `json:"at"`
 }
 
