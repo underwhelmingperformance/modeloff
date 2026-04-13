@@ -224,6 +224,104 @@ func TestInviteAs_model_actor(t *testing.T) {
 	}, notices)
 }
 
+func TestOpenDM_members_have_no_mode(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := t.Context()
+
+	seedInstance(t, s, domain.Instance{
+		Nick:    "botty",
+		ModelID: "test/model",
+	})
+
+	ch, _, err := sess.OpenDM(ctx, "botty")
+	require.NoError(t, err)
+
+	require.Equal(t, []domain.Member{
+		{Nick: "botty", Mode: domain.ModeNone},
+		{Nick: "testuser", Mode: domain.ModeNone},
+	}, ch.Members.Slice())
+}
+
+func TestOpenDMAs_members_have_no_mode(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := t.Context()
+
+	seedInstance(t, s, domain.Instance{
+		Nick:     "botty",
+		ModelID:  "test/model-a",
+		Channels: orderedmap.New[domain.ChannelName, time.Time](),
+	})
+	seedInstance(t, s, domain.Instance{
+		Nick:     "helper",
+		ModelID:  "test/model-b",
+		Channels: orderedmap.New[domain.ChannelName, time.Time](),
+	})
+
+	ch, _, err := sess.OpenDMAs(ctx, "botty", "helper")
+	require.NoError(t, err)
+
+	require.Equal(t, []domain.Member{
+		{Nick: "botty", Mode: domain.ModeNone},
+		{Nick: "helper", Mode: domain.ModeNone},
+	}, ch.Members.Slice())
+}
+
+func TestSetTopicAs_rejects_DM(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := t.Context()
+
+	seedInstance(t, s, domain.Instance{
+		Nick:    "botty",
+		ModelID: "test/model",
+	})
+
+	_, _, err := sess.OpenDM(ctx, "botty")
+	require.NoError(t, err)
+
+	err = sess.SetTopic(ctx, "botty", "some topic")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "cannot set topic on a direct message")
+}
+
+func TestKickAs_rejects_DM(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := t.Context()
+
+	seedInstance(t, s, domain.Instance{
+		Nick:    "botty",
+		ModelID: "test/model",
+	})
+
+	_, _, err := sess.OpenDM(ctx, "botty")
+	require.NoError(t, err)
+
+	err = sess.Kick(ctx, "botty", "botty")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "cannot kick from a direct message")
+}
+
+func TestJoinAs_DM_no_join_event(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := t.Context()
+
+	// Seed a DM channel where the user is NOT yet a member.
+	members := domain.NewMemberList()
+	members.Add("botty")
+
+	require.NoError(t, s.SaveChannel(ctx, domain.Channel{
+		Name:    "botty",
+		Kind:    domain.KindDM,
+		Members: members,
+		Created: fixedTime,
+	}))
+
+	// Join the DM channel — should not emit join events.
+	require.NoError(t, sess.Join(ctx, "botty"))
+
+	types := channelEventTypes(t, s, "botty")
+	require.Empty(t, types)
+}
+
 func TestOpenDMAs_model_to_model(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
@@ -245,8 +343,8 @@ func TestOpenDMAs_model_to_model(t *testing.T) {
 	require.Equal(t, domain.ChannelName("helper"), ch.Name)
 	require.Equal(t, domain.KindDM, ch.Kind)
 	require.Equal(t, []domain.Member{
-		{Nick: "botty", Mode: domain.ModeVoice},
-		{Nick: "helper", Mode: domain.ModeVoice},
+		{Nick: "botty", Mode: domain.ModeNone},
+		{Nick: "helper", Mode: domain.ModeNone},
 	}, ch.Members.Slice())
 
 	// Both instances should have the DM channel attached.

@@ -25,6 +25,7 @@ type PendingResponseMsg struct {
 type SetChannelMsg struct {
 	Channel domain.ChannelName
 	Topic   string
+	Kind    domain.ChannelKind
 }
 
 // HistoryLoadedMsg populates the message list with events loaded from
@@ -62,6 +63,7 @@ type ClearMessagesMsg struct{}
 // at the bottom.
 type ChatView struct {
 	channel  domain.ChannelName
+	kind     domain.ChannelKind
 	topic    string
 	userNick domain.Nick
 	messages MessageList
@@ -170,10 +172,17 @@ func (c ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 	case SetChannelMsg:
 		c.channel = msg.Channel
+		c.kind = msg.Kind
 		c.topic = msg.Topic
 
 		var cmd tea.Cmd
 		c, cmd = c.updateMessages(msg)
+		c, _ = c.updatePopover(PopoverApplyMsg{
+			Commands: c.popover.commands,
+			Kind:     c.kind,
+			Raw:      c.input.Value(),
+			Cursor:   c.input.Cursor(),
+		})
 		c = c.syncMessageViewport()
 
 		return c, cmd
@@ -201,6 +210,7 @@ func (c ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		c, _ = c.updateMessages(msg)
 		c, _ = c.updatePopover(PopoverApplyMsg{
 			Commands: msg.Commands,
+			Kind:     c.kind,
 			Raw:      c.input.Value(),
 			Cursor:   c.input.Cursor(),
 		})
@@ -312,7 +322,7 @@ func (c ChatView) View(width, height int) string {
 
 	var topicView string
 	topicHeight := 0
-	if c.topic != "" {
+	if c.topic != "" && c.kind != domain.KindDM {
 		topicView = c.renderTopic(width)
 		topicHeight = lipgloss.Height(topicView)
 	}
@@ -358,7 +368,7 @@ func (c ChatView) layoutRects() chatViewLayout {
 	popoverLayout := c.popover.Layout(c.bounds, inputRect)
 
 	topicHeight := 0
-	if c.topic != "" {
+	if c.topic != "" && c.kind != domain.KindDM {
 		topicHeight = lipgloss.Height(c.renderTopic(width))
 	}
 

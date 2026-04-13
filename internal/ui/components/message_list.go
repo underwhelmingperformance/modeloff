@@ -39,6 +39,7 @@ const defaultBufferCap = 100
 // and an empty-state placeholder.
 type MessageList struct {
 	channel     domain.ChannelName
+	kind        domain.ChannelKind
 	events      *RingBuffer[domain.StoredEvent]
 	viewport    viewport.Model
 	pending     bool
@@ -111,6 +112,7 @@ func (m MessageList) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case SetChannelMsg:
 		m = m.setChannel(msg.Channel)
+		m.kind = msg.Kind
 		return m, nil
 
 	case HistoryLoadedMsg:
@@ -313,6 +315,10 @@ func (m MessageList) renderedContent(width int) string {
 		}
 
 		event, _ := m.events.GetAt(i)
+		if m.kind == domain.KindDM && isDMSuppressedEvent(event.Event) {
+			continue
+		}
+
 		rendered = append(rendered, renderChannelEvent(
 			event.Event,
 			width,
@@ -331,4 +337,18 @@ func (m MessageList) renderedContent(width int) string {
 	}
 
 	return strings.Join(rendered, "\n")
+}
+
+func isDMSuppressedEvent(event domain.ChannelEvent) bool {
+	switch event.(type) {
+	case domain.ChannelJoin,
+		domain.ChannelPart,
+		domain.ChannelModeChange,
+		domain.ChannelTopicChange,
+		domain.ChannelModelInvited,
+		domain.ChannelModelKicked:
+		return true
+	}
+
+	return false
 }

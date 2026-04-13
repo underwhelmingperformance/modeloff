@@ -29,6 +29,7 @@ func (s ChatScreen) handleInitialLoad(msg domain.InitialLoadEvent) (ui.Model, te
 	cmds = append(cmds, msgCmd(components.SetChannelMsg{
 		Channel: msg.Active,
 		Topic:   s.activeTopic(),
+		Kind:    s.activeKind(),
 	}))
 
 	if s.channels.Len() == 0 {
@@ -134,6 +135,7 @@ func (s ChatScreen) handleChannelFocus(msg domain.ChannelFocusEvent) (ui.Model, 
 	cmds = append(cmds, msgCmd(components.SetChannelMsg{
 		Channel: msg.Channel,
 		Topic:   s.activeTopic(),
+		Kind:    ch.Kind,
 	}))
 	cmds = append(cmds, msgCmd(components.ChannelActiveMsg{Channel: msg.Channel}))
 	cmds = append(cmds, msgCmd(components.ChannelUnreadMsg{Channel: msg.Channel, Count: 0}))
@@ -167,6 +169,7 @@ func (s ChatScreen) handleJoinEvent(msg domain.JoinEvent) (ui.Model, tea.Cmd) {
 	cmds = append(cmds, msgCmd(components.SetChannelMsg{
 		Channel: msg.Channel,
 		Topic:   s.activeTopic(),
+		Kind:    ch.Kind,
 	}))
 	cmds = append(cmds, msgCmd(components.ChannelAddedMsg{Channel: ch}))
 	cmds = append(cmds, msgCmd(components.ChannelActiveMsg{Channel: msg.Channel}))
@@ -227,6 +230,7 @@ func (s ChatScreen) handlePartEvent(msg domain.PartEvent) (ui.Model, tea.Cmd) {
 		cmds = append(cmds, msgCmd(components.SetChannelMsg{
 			Channel: *s.active,
 			Topic:   s.activeTopic(),
+			Kind:    s.activeKind(),
 		}))
 		cmds = append(cmds, msgCmd(components.ChannelActiveMsg{Channel: *s.active}))
 	}
@@ -453,6 +457,7 @@ func (s ChatScreen) handleDMOpenedEvent(msg domain.DMOpenedEvent) (ui.Model, tea
 	cmds = append(cmds, msgCmd(components.SetChannelMsg{
 		Channel: msg.Channel.Name,
 		Topic:   s.activeTopic(),
+		Kind:    msg.Channel.Kind,
 	}))
 	cmds = append(cmds, msgCmd(components.ChannelAddedMsg{Channel: msg.Channel}))
 	cmds = append(cmds, msgCmd(components.ChannelActiveMsg{Channel: msg.Channel.Name}))
@@ -585,6 +590,19 @@ func (s ChatScreen) activeTopic() string {
 	}
 
 	return ch.Topic
+}
+
+func (s ChatScreen) activeKind() domain.ChannelKind {
+	if *s.active == "" {
+		return domain.KindChannel
+	}
+
+	ch, ok := s.channels.Get(domain.Channel{Name: *s.active})
+	if !ok {
+		return domain.KindChannel
+	}
+
+	return ch.Kind
 }
 
 func (s ChatScreen) activeMemberNicks() iter.Seq[domain.Nick] {

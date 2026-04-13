@@ -52,9 +52,15 @@ func testSources() Sources {
 func complete(t *testing.T, input string) command.Completion {
 	t.Helper()
 
+	return completeInKind(t, input, domain.KindChannel)
+}
+
+func completeInKind(t *testing.T, input string, kind domain.ChannelKind) command.Completion {
+	t.Helper()
+
 	parser := BuildParser(testSources())
 
-	return command.Complete(parser.Set(), input, len(input))
+	return command.Complete(parser.Set(), input, len(input), kind)
 }
 
 func suggestionValues(c command.Completion) []string {
@@ -64,6 +70,28 @@ func suggestionValues(c command.Completion) []string {
 	}
 
 	return values
+}
+
+func TestComplete_dm_excludes_channel_only_commands(t *testing.T) {
+	c := completeInKind(t, "/", domain.KindDM)
+
+	require.Equal(t, []string{
+		"join", "part", "list",
+		"msg", "nick", "me", "whois", "config",
+		"personas", "regenerate-personas",
+		"help", "clear", "quit",
+	}, suggestionValues(c))
+}
+
+func TestComplete_channel_includes_all_commands(t *testing.T) {
+	c := completeInKind(t, "/", domain.KindChannel)
+
+	require.Equal(t, []string{
+		"join", "part", "list", "add-model", "invite", "kick",
+		"msg", "nick", "topic", "me", "whois", "config",
+		"personas", "regenerate-personas",
+		"help", "clear", "quit",
+	}, suggestionValues(c))
 }
 
 func TestBuildParser_produces_all_commands(t *testing.T) {
@@ -248,12 +276,12 @@ func TestComplete_live_data_reflects_changes(t *testing.T) {
 
 	parser := BuildParser(src)
 
-	before := command.Complete(parser.Set(), "/join ", 6)
+	before := command.Complete(parser.Set(), "/join ", 6, domain.KindChannel)
 	require.Empty(t, before.Suggestions)
 
 	// Mutate the underlying data — the same parser sees the change.
 	channels = []domain.Channel{{Name: "#new"}}
 
-	after := command.Complete(parser.Set(), "/join ", 6)
+	after := command.Complete(parser.Set(), "/join ", 6, domain.KindChannel)
 	require.Equal(t, []string{"#new"}, suggestionValues(after))
 }

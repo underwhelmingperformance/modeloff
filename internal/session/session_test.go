@@ -1509,10 +1509,14 @@ func TestSession_OpenDM_creates_dm_channel(t *testing.T) {
 	ch, created, err := sess.OpenDM(ctx, "botty")
 	require.NoError(t, err)
 	require.True(t, created)
+	dmMembers := domain.NewMemberList()
+	dmMembers.Add("testuser")
+	dmMembers.Add("botty")
+
 	requireChannelEqual(t, domain.Channel{
 		Name:    "botty",
 		Kind:    domain.KindDM,
-		Members: testMembers("testuser", "botty"),
+		Members: dmMembers,
 		Created: fixedTime,
 	}, ch)
 

@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/laney/modeloff/internal/command"
+	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/theme"
 )
@@ -26,6 +27,7 @@ type PopoverAcceptMsg struct {
 // PopoverApplyMsg updates the command set and recomputes suggestions.
 type PopoverApplyMsg struct {
 	Commands command.Set
+	Kind     domain.ChannelKind
 	Raw      string
 	Cursor   int
 }
@@ -46,6 +48,7 @@ type PopoverDismissMsg struct {
 // state.
 type Popover struct {
 	commands   command.Set
+	kind       domain.ChannelKind
 	completion command.Completion
 	selected   int
 	offset     int
@@ -132,6 +135,7 @@ func (p Popover) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 	case PopoverApplyMsg:
 		p.commands = msg.Commands
+		p.kind = msg.Kind
 		p = p.refresh(msg.Raw, msg.Cursor)
 		return p, nil
 
@@ -338,7 +342,7 @@ func (p Popover) refresh(raw string, cursor int) Popover {
 		return p
 	}
 
-	p.completion = command.Complete(p.commands, raw, cursor)
+	p.completion = command.Complete(p.commands, raw, cursor, p.kind)
 	if !p.completion.Visible || len(p.completion.Suggestions) == 0 {
 		p.selected = 0
 		p.offset = 0

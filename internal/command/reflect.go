@@ -218,13 +218,14 @@ func build(grammar any) ([]*Node, error) {
 		}
 
 		node := &Node{
-			Name:        name,
-			Help:        help,
-			Tool:        hasToolTag(ft),
-			ToolDesc:    toolDescFromTag(ft),
-			Positionals: buildPositionals(fields, sources),
-			Flags:       buildFlags(fields, sources),
-			fields:      fields,
+			Name:         name,
+			Help:         help,
+			RequiredKind: parseRequiredKind(ft.Tag.Get("kind")),
+			Tool:         hasToolTag(ft),
+			ToolDesc:     toolDescFromTag(ft),
+			Positionals:  buildPositionals(fields, sources),
+			Flags:        buildFlags(fields, sources),
+			fields:       fields,
 			factory: func() any {
 				return reflect.New(fieldType).Interface()
 			},

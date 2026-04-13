@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+
+	"github.com/laney/modeloff/internal/domain"
 )
 
 // Suggestion is a single completion option. Every suggestion carries
@@ -49,18 +51,32 @@ type ToolDescriber interface {
 	ToolDescription() string
 }
 
+// parseRequiredKind maps a `kind` struct tag value to a channel kind
+// restriction. A nil return means the command is available in all
+// channel kinds.
+func parseRequiredKind(tag string) *domain.ChannelKind {
+	switch tag {
+	case "channel":
+		k := domain.KindChannel
+		return &k
+	default:
+		return nil
+	}
+}
+
 // Node is a command in the command tree. Leaf nodes (no children)
 // are executable commands. Non-leaf nodes are command groups whose
 // children are subcommands.
 type Node struct {
-	Parent      *Node
-	Name        string
-	Help        string
-	Tool        bool
-	ToolDesc    string
-	Positionals []Positional
-	Flags       []Flag
-	Children    []*Node
+	Parent       *Node
+	Name         string
+	Help         string
+	RequiredKind *domain.ChannelKind
+	Tool         bool
+	ToolDesc     string
+	Positionals  []Positional
+	Flags        []Flag
+	Children     []*Node
 
 	// factory creates a zero-valued pointer to the command struct for
 	// parsing. Nil for group nodes that have no struct of their own.
@@ -381,7 +397,9 @@ func Merge(sets ...Set) Set {
 }
 
 // Complete resolves the completion state for the current buffer.
-func Complete(set Set, raw string, cursor int) Completion {
+// kind restricts which top-level commands appear in suggestions;
+// commands whose Context does not accept the kind are excluded.
+func Complete(set Set, raw string, cursor int, kind domain.ChannelKind) Completion {
 	set.linkParents()
 
 	raw = clampRaw(raw)
@@ -402,7 +420,7 @@ func Complete(set Set, raw string, cursor int) Completion {
 	if index == 0 {
 		return Completion{
 			Visible:      true,
-			Suggestions:  filterSuggestions(commandSuggestions(set), prefix),
+			Suggestions:  filterSuggestions(commandSuggestions(set, kind), prefix),
 			ReplaceStart: start,
 			ReplaceEnd:   end,
 			AppendSpace:  true,
@@ -555,10 +573,14 @@ func clampCursor(cursor, length int) int {
 	return cursor
 }
 
-func commandSuggestions(set Set) []Suggestion {
+func commandSuggestions(set Set, kind domain.ChannelKind) []Suggestion {
 	suggestions := make([]Suggestion, 0, len(set.Commands))
 
 	for _, node := range set.Commands {
+		if node.RequiredKind != nil && *node.RequiredKind != kind {
+			continue
+		}
+
 		suggestions = append(suggestions, Suggestion{
 			Value:  node.Name,
 			Label:  "/" + node.Name,

@@ -411,6 +411,72 @@ func TestChatView_nick_updates_after_change(t *testing.T) {
 	require.NotContains(t, v2, "oldnick")
 }
 
+func TestChatView_dm_hides_topic_bar(t *testing.T) {
+	cv := newChatViewWithEvents("botname", "testuser", "", testEvents)
+
+	m, _ := cv.Update(components.SetChannelMsg{
+		Channel: "botname",
+		Topic:   "should not appear",
+		Kind:    domain.KindDM,
+	})
+	cv = m.(components.ChatView)
+
+	v := cv.View(80, 24)
+	stripped := ansi.Strip(v)
+
+	require.NotContains(t, stripped, "should not appear")
+}
+
+func TestChatView_dm_suppresses_join_part_events(t *testing.T) {
+	now := time.Date(2025, 1, 1, 10, 0, 0, 0, time.UTC)
+	events := []domain.StoredEvent{
+		{Event: domain.ChannelJoin{Channel: "botname", Nick: "testuser", At: now}},
+		{Event: domain.ChannelPart{Channel: "botname", Nick: "testuser", At: now}},
+		{Event: domain.ChannelModeChange{Channel: "botname", Nick: "testuser", Mode: domain.ModeOp, At: now}},
+		{Event: domain.ChannelTopicChange{Channel: "botname", Topic: "x", By: "testuser", At: now}},
+		{Event: domain.ChannelMessage{Channel: "botname", From: "bot", Body: "hello human", At: now}},
+	}
+
+	cv := components.NewChatView("botname", "testuser", "")
+	m, _ := cv.Update(components.SetChannelMsg{
+		Channel: "botname",
+		Kind:    domain.KindDM,
+	})
+	cv = m.(components.ChatView)
+
+	m, _ = cv.Update(components.HistoryLoadedMsg{Events: events})
+	cv = m.(components.ChatView)
+
+	v := ansi.Strip(cv.View(80, 24))
+
+	require.Contains(t, v, "hello human")
+	require.NotContains(t, v, "has joined")
+	require.NotContains(t, v, "has left")
+	require.NotContains(t, v, "sets mode")
+	require.NotContains(t, v, "topic for")
+}
+
+func TestChatView_dm_shows_quit_messages(t *testing.T) {
+	now := time.Date(2025, 1, 1, 10, 0, 0, 0, time.UTC)
+	events := []domain.StoredEvent{
+		{Event: domain.ChannelQuit{Nick: "bot", Message: "goodbye", At: now}},
+	}
+
+	cv := components.NewChatView("botname", "testuser", "")
+	m, _ := cv.Update(components.SetChannelMsg{
+		Channel: "botname",
+		Kind:    domain.KindDM,
+	})
+	cv = m.(components.ChatView)
+
+	m, _ = cv.Update(components.HistoryLoadedMsg{Events: events})
+	cv = m.(components.ChatView)
+
+	v := ansi.Strip(cv.View(80, 24))
+
+	require.Contains(t, v, "has quit")
+}
+
 func TestChatView_topic_bar_shown(t *testing.T) {
 	cv := newChatViewWithEvents("#general", "testuser", "Welcome to general", testEvents)
 	v := cv.View(80, 24)

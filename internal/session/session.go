@@ -580,9 +580,7 @@ func (s *Session) OpenDM(ctx context.Context, nick domain.Nick) (domain.Channel,
 	if err != nil {
 		members := domain.NewMemberList()
 		members.Add(s.user.Nick)
-		members.SetMode(s.user.Nick, domain.ModeOp)
 		members.Add(nick)
-		members.SetMode(nick, domain.ModeVoice)
 
 		ch = domain.Channel{
 			Name:    name,

@@ -85,12 +85,12 @@ func (s *Session) JoinAs(ctx context.Context, actor domain.Nick, ch domain.Chann
 		}
 	}
 
-	if !alreadyMember {
+	if !alreadyMember && channel.Kind != domain.KindDM {
 		s.appendEvent(ctx, ch, domain.ChannelJoin{Channel: ch, Nick: actor, Created: created, At: now})
 		s.emitFor(ctx, actor, domain.JoinEvent{Channel: ch, Nick: actor, Created: created, At: now})
 	}
 
-	if !alreadyMember && created && isUser {
+	if !alreadyMember && created && isUser && channel.Kind != domain.KindDM {
 		channel, _ = s.store.GetChannel(ctx, ch)
 		channel.Members.SetMode(actor, domain.ModeOp)
 
@@ -340,6 +340,10 @@ func (s *Session) SetTopicAs(ctx context.Context, actor domain.Nick, ch domain.C
 		return fmt.Errorf("get channel: %w", err)
 	}
 
+	if channel.Kind == domain.KindDM {
+		return fmt.Errorf("cannot set topic on a direct message")
+	}
+
 	channel.Topic = topic
 	channel.TopicSetBy = actor
 	channel.TopicSetAt = now
@@ -368,6 +372,10 @@ func (s *Session) KickAs(ctx context.Context, actor domain.Nick, target domain.N
 	channel, err := s.store.GetChannel(ctx, ch)
 	if err != nil {
 		return fmt.Errorf("get channel: %w", err)
+	}
+
+	if channel.Kind == domain.KindDM {
+		return fmt.Errorf("cannot kick from a direct message")
 	}
 
 	if m, ok := channel.Members.Get(target); ok {
@@ -419,14 +427,10 @@ func (s *Session) OpenDMAs(ctx context.Context, actor domain.Nick, target domain
 
 		if target == s.user.Nick {
 			members.Add(s.user.Nick)
-			members.SetMode(s.user.Nick, domain.ModeOp)
 			members.Add(actor)
-			members.SetMode(actor, domain.ModeVoice)
 		} else {
 			members.Add(actor)
-			members.SetMode(actor, domain.ModeVoice)
 			members.Add(target)
-			members.SetMode(target, domain.ModeVoice)
 		}
 
 		ch = domain.Channel{

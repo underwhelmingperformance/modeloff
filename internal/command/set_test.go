@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/laney/modeloff/internal/domain"
 )
 
 func TestMerge(t *testing.T) {
@@ -130,9 +132,52 @@ func TestComplete_command_suggestions_carry_usage(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			completion := Complete(cmds, tt.raw, len([]rune(tt.raw)))
+			completion := Complete(cmds, tt.raw, len([]rune(tt.raw)), domain.KindChannel)
 
 			require.Equal(t, tt.want, completion)
+		})
+	}
+}
+
+func TestComplete_filters_commands_by_channel_kind(t *testing.T) {
+	channelOnly := domain.KindChannel
+
+	cmds := Set{
+		Commands: []*Node{
+			{Name: "join", Help: "Join channels"},
+			{Name: "topic", Help: "Set topic", RequiredKind: &channelOnly},
+			{Name: "kick", Help: "Kick a nick", RequiredKind: &channelOnly},
+			{Name: "quit", Help: "Exit"},
+		},
+	}
+
+	tests := []struct {
+		name string
+		kind domain.ChannelKind
+		want []string
+	}{
+		{
+			name: "channel shows all commands",
+			kind: domain.KindChannel,
+			want: []string{"join", "topic", "kick", "quit"},
+		},
+		{
+			name: "DM hides channel-only commands",
+			kind: domain.KindDM,
+			want: []string{"join", "quit"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			completion := Complete(cmds, "/", 1, tt.kind)
+
+			var names []string
+			for _, s := range completion.Suggestions {
+				names = append(names, s.Value)
+			}
+
+			require.Equal(t, tt.want, names)
 		})
 	}
 }
@@ -157,7 +202,7 @@ func TestComplete_argument_sources_are_contextual(t *testing.T) {
 		},
 	}
 
-	completion := Complete(cmds, "/kick h", 7)
+	completion := Complete(cmds, "/kick h", 7, domain.KindChannel)
 
 	require.Equal(t, Completion{
 		Visible:      true,
@@ -185,7 +230,7 @@ func TestComplete_free_form_arguments_have_no_suggestions(t *testing.T) {
 		},
 	}
 
-	completion := Complete(cmds, "/msg botty hello", len([]rune("/msg botty hello")))
+	completion := Complete(cmds, "/msg botty hello", len([]rune("/msg botty hello")), domain.KindChannel)
 
 	require.Equal(t, Completion{
 		Visible:      true,
@@ -225,7 +270,7 @@ func TestComplete_composes_sources(t *testing.T) {
 		},
 	}
 
-	completion := Complete(cmds, "/invite ", len([]rune("/invite ")))
+	completion := Complete(cmds, "/invite ", len([]rune("/invite ")), domain.KindChannel)
 
 	require.Equal(t, Completion{
 		Visible:      true,
@@ -435,7 +480,7 @@ func TestComplete_token_boundaries(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			completion := Complete(cmds, tt.raw, tt.cursor)
+			completion := Complete(cmds, tt.raw, tt.cursor, domain.KindChannel)
 
 			require.Equal(t, tt.want, completion)
 		})
@@ -447,7 +492,7 @@ func TestComplete_unknown_command_has_no_suggestions(t *testing.T) {
 		Commands: []*Node{{Name: "quit", Help: "Exit."}},
 	}
 
-	completion := Complete(cmds, "/unknown arg", len([]rune("/unknown arg")))
+	completion := Complete(cmds, "/unknown arg", len([]rune("/unknown arg")), domain.KindChannel)
 
 	require.Equal(t, Completion{
 		Visible:      true,
@@ -465,7 +510,7 @@ func TestComplete_contains_match(t *testing.T) {
 	}
 
 	raw := "/aiku"
-	completion := Complete(cmds, raw, len([]rune(raw)))
+	completion := Complete(cmds, raw, len([]rune(raw)), domain.KindChannel)
 
 	require.Equal(t, Completion{
 		Visible:      true,
@@ -547,7 +592,7 @@ func TestComplete_whitespace_after_slash(t *testing.T) {
 		Commands: []*Node{{Name: "quit", Help: "Exit."}},
 	}
 
-	completion := Complete(cmds, "/ ", len([]rune("/ ")))
+	completion := Complete(cmds, "/ ", len([]rune("/ ")), domain.KindChannel)
 
 	require.Equal(t, Completion{
 		Visible:      true,
@@ -568,7 +613,7 @@ func TestComplete_cursor_mid_command_name(t *testing.T) {
 
 	raw := "/quit"
 	// Cursor mid-token still filters with the full token text.
-	completion := Complete(cmds, raw, 3)
+	completion := Complete(cmds, raw, 3, domain.KindChannel)
 
 	require.Equal(t, Completion{
 		Visible:      true,
@@ -591,7 +636,7 @@ func TestComplete_multiple_prefix_matches(t *testing.T) {
 	}
 
 	raw := "/qu"
-	completion := Complete(cmds, raw, len([]rune(raw)))
+	completion := Complete(cmds, raw, len([]rune(raw)), domain.KindChannel)
 
 	require.Equal(t, Completion{
 		Visible:      true,
@@ -621,7 +666,7 @@ func TestComplete_flag_name_after_positionals(t *testing.T) {
 	}
 
 	raw := "/kick botty "
-	completion := Complete(cmds, raw, len([]rune(raw)))
+	completion := Complete(cmds, raw, len([]rune(raw)), domain.KindChannel)
 
 	require.Equal(t, Completion{
 		Visible:      true,
@@ -652,7 +697,7 @@ func TestComplete_flag_name_prefix_filters(t *testing.T) {
 	}
 
 	raw := "/invite model-a --per"
-	completion := Complete(cmds, raw, len([]rune(raw)))
+	completion := Complete(cmds, raw, len([]rune(raw)), domain.KindChannel)
 
 	require.Equal(t, Completion{
 		Visible:      true,
@@ -693,7 +738,7 @@ func TestComplete_flag_value_uses_source(t *testing.T) {
 	}
 
 	raw := "/config api-key --format "
-	completion := Complete(cmds, raw, len([]rune(raw)))
+	completion := Complete(cmds, raw, len([]rune(raw)), domain.KindChannel)
 
 	require.Equal(t, Completion{
 		Visible:      true,
@@ -728,7 +773,7 @@ func TestComplete_flag_value_filters_by_prefix(t *testing.T) {
 	}
 
 	raw := "/config --format j"
-	completion := Complete(cmds, raw, len([]rune(raw)))
+	completion := Complete(cmds, raw, len([]rune(raw)), domain.KindChannel)
 
 	require.Equal(t, Completion{
 		Visible:      true,
@@ -761,7 +806,7 @@ func TestComplete_flags_interleaved_with_positionals(t *testing.T) {
 
 	// Flag before positional: after --persona value, should offer model suggestions.
 	raw := "/invite --persona friendly "
-	completion := Complete(cmds, raw, len([]rune(raw)))
+	completion := Complete(cmds, raw, len([]rune(raw)), domain.KindChannel)
 
 	require.Equal(t, Completion{
 		Visible:      true,
@@ -837,7 +882,7 @@ func TestComplete_subcommand_names(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			completion := Complete(cmds, tt.raw, len([]rune(tt.raw)))
+			completion := Complete(cmds, tt.raw, len([]rune(tt.raw)), domain.KindChannel)
 
 			require.Equal(t, tt.want, completion)
 		})
@@ -903,7 +948,7 @@ func TestComplete_flag_only_command(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			completion := Complete(cmds, tt.raw, len([]rune(tt.raw)))
+			completion := Complete(cmds, tt.raw, len([]rune(tt.raw)), domain.KindChannel)
 
 			require.Equal(t, tt.want, completion)
 		})
@@ -1019,7 +1064,7 @@ func TestComplete_subcommand_recurses_into_child(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			completion := Complete(cmds, tt.raw, len([]rune(tt.raw)))
+			completion := Complete(cmds, tt.raw, len([]rune(tt.raw)), domain.KindChannel)
 
 			require.Equal(t, tt.want, completion)
 		})
@@ -1042,7 +1087,7 @@ func TestComplete_group_node_combines_child_and_flag_suggestions(t *testing.T) {
 		},
 	}
 
-	completion := Complete(cmds, "/config ", len([]rune("/config ")))
+	completion := Complete(cmds, "/config ", len([]rune("/config ")), domain.KindChannel)
 
 	require.Equal(t, Completion{
 		Visible:      true,
@@ -1084,7 +1129,7 @@ func TestComplete_ancestor_flag_value_uses_source(t *testing.T) {
 		},
 	}
 
-	completion := Complete(cmds, "/config set --format ", len([]rune("/config set --format ")))
+	completion := Complete(cmds, "/config set --format ", len([]rune("/config set --format ")), domain.KindChannel)
 
 	require.Equal(t, Completion{
 		Visible:      true,
@@ -1113,7 +1158,7 @@ func TestComplete_used_ancestor_flags_are_excluded(t *testing.T) {
 		},
 	}
 
-	completion := Complete(cmds, "/config set --format json --", len([]rune("/config set --format json --")))
+	completion := Complete(cmds, "/config set --format json --", len([]rune("/config set --format json --")), domain.KindChannel)
 
 	require.Equal(t, Completion{
 		Visible:      true,
@@ -1140,7 +1185,7 @@ func TestComplete_bool_flag_does_not_expect_a_value(t *testing.T) {
 		},
 	}
 
-	completion := Complete(cmds, "/config --reset ", len([]rune("/config --reset ")))
+	completion := Complete(cmds, "/config --reset ", len([]rune("/config --reset ")), domain.KindChannel)
 
 	require.Equal(t, Completion{
 		Visible:      true,
@@ -1263,7 +1308,7 @@ func TestComplete_deep_nesting_walks_into_grandchildren(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			completion := Complete(cmds, tt.raw, len([]rune(tt.raw)))
+			completion := Complete(cmds, tt.raw, len([]rune(tt.raw)), domain.KindChannel)
 
 			require.Equal(t, tt.want, completion)
 		})
@@ -1291,7 +1336,7 @@ func TestComplete_optional_positional_with_source(t *testing.T) {
 	}
 
 	raw := "/invite "
-	completion := Complete(cmds, raw, len([]rune(raw)))
+	completion := Complete(cmds, raw, len([]rune(raw)), domain.KindChannel)
 
 	require.Equal(t, Completion{
 		Visible:      true,
