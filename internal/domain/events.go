@@ -65,6 +65,7 @@ type ModelInvitedEvent struct {
 type ModelKickedEvent struct {
 	Channel ChannelName
 	Nick    Nick
+	By      Nick
 	At      time.Time
 }
 

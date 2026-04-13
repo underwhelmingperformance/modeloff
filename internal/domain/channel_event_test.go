@@ -127,6 +127,7 @@ func TestChannelEvent_JSON_round_trip(t *testing.T) {
 			event: domain.ChannelModelKicked{
 				Channel: "#general",
 				Nick:    "botty",
+				By:      "alice",
 				At:      ts,
 			},
 		},

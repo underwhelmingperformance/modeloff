@@ -354,8 +354,8 @@ func (s *Session) SetTopicAs(ctx context.Context, actor domain.Nick, ch domain.C
 	return nil
 }
 
-// KickAs removes a nick from a channel.
-func (s *Session) KickAs(ctx context.Context, target domain.Nick, ch domain.ChannelName) (retErr error) {
+// KickAs removes a nick from a channel on behalf of the actor.
+func (s *Session) KickAs(ctx context.Context, actor domain.Nick, target domain.Nick, ch domain.ChannelName) (retErr error) {
 	ctx, span := startSpan(
 		ctx,
 		"session.kick",
@@ -393,8 +393,8 @@ func (s *Session) KickAs(ctx context.Context, target domain.Nick, ch domain.Chan
 	}
 
 	now := s.now()
-	s.appendEvent(ctx, ch, domain.ChannelModelKicked{Channel: ch, Nick: target, At: now})
-	s.emit(ctx, domain.ModelKickedEvent{Channel: ch, Nick: target, At: now})
+	s.appendEvent(ctx, ch, domain.ChannelModelKicked{Channel: ch, Nick: target, By: actor, At: now})
+	s.emit(ctx, domain.ModelKickedEvent{Channel: ch, Nick: target, By: actor, At: now})
 
 	return nil
 }

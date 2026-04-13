@@ -465,6 +465,7 @@ func TestSession_Kick(t *testing.T) {
 	require.Equal(t, domain.ModelKickedEvent{
 		Channel: "#dev",
 		Nick:    "botty",
+		By:      "testuser",
 		At:      fixedTime,
 	}, evt)
 
@@ -1466,6 +1467,7 @@ func TestSession_KickNonMember(t *testing.T) {
 	require.Equal(t, domain.ModelKickedEvent{
 		Channel: "#dev",
 		Nick:    "nobody",
+		By:      "testuser",
 		At:      fixedTime,
 	}, evt)
 

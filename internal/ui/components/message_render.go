@@ -98,7 +98,7 @@ func renderChannelEvent(
 
 	case domain.ChannelModelKicked:
 		return wrap.Render(theme.SystemEvent.Render(
-			fmt.Sprintf("*** %s has been kicked from %s", e.Nick, e.Channel)))
+			fmt.Sprintf("*** %s was kicked from %s by %s", e.Nick, e.Channel, e.By)))
 
 	case domain.ChannelNickChange:
 		return wrap.Render(theme.SystemEvent.Render(

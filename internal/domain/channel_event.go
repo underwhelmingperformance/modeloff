@@ -157,6 +157,7 @@ func (ChannelModelInvited) ModelVisible() bool { return true }
 type ChannelModelKicked struct {
 	Channel ChannelName `json:"channel"`
 	Nick    Nick        `json:"nick"`
+	By      Nick        `json:"by"`
 	At      time.Time   `json:"at"`
 }
 

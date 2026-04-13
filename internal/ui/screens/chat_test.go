@@ -262,7 +262,7 @@ func TestChatScreen_kick_command(t *testing.T) {
 	tm.WaitFor("#general")
 
 	tm.Submit("/kick fakenick")
-	tm.WaitFor("fakenick has been kicked from #general")
+	tm.WaitFor("fakenick was kicked from #general by testuser")
 }
 
 func TestChatScreen_config_no_subcommand(t *testing.T) {

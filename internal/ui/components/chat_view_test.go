@@ -707,8 +707,8 @@ func TestRenderLine_IRC_events(t *testing.T) {
 		},
 		{
 			"model_kicked",
-			domain.StoredEvent{Event: domain.ChannelModelKicked{Channel: "#general", Nick: "botty", At: now}},
-			"*** botty has been kicked from #general",
+			domain.StoredEvent{Event: domain.ChannelModelKicked{Channel: "#general", Nick: "botty", By: "someone", At: now}},
+			"*** botty was kicked from #general by someone",
 		},
 		{
 			"action_message",

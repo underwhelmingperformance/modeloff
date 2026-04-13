@@ -260,7 +260,7 @@ func (c KickCommand) Run(rc Context) tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		if err := c.executeKick(rc.Ctx, rc.Session, rc.Active); err != nil {
+		if err := c.executeKick(rc.Ctx, rc.Session, rc.Nick, rc.Active); err != nil {
 			return errorEvent("kick", err)
 		}
 
@@ -268,8 +268,8 @@ func (c KickCommand) Run(rc Context) tea.Cmd {
 	}
 }
 
-func (c KickCommand) executeKick(ctx context.Context, sess *session.Session, ch domain.ChannelName) error {
-	return sess.KickAs(ctx, domain.Nick(c.Nick), ch)
+func (c KickCommand) executeKick(ctx context.Context, sess *session.Session, actor domain.Nick, ch domain.ChannelName) error {
+	return sess.KickAs(ctx, actor, domain.Nick(c.Nick), ch)
 }
 
 // RunTool implements ToolCommand.
@@ -278,7 +278,7 @@ func (c KickCommand) RunTool(ctx context.Context, tc session.ToolContext) sessio
 		return session.ToolResultPayload{OK: false, Error: "no active channel"}
 	}
 
-	if err := c.executeKick(ctx, tc.Session, tc.Channel); err != nil {
+	if err := c.executeKick(ctx, tc.Session, tc.Actor, tc.Channel); err != nil {
 		return session.ToolResultPayload{OK: false, Error: err.Error()}
 	}
 

@@ -159,7 +159,7 @@ func TestApp_invite_whois_and_kick_commands_with_teatest(t *testing.T) {
 	tm.WaitFor("fakenick is anthropic/claude-3-haiku", "persona: Helpful assistant")
 
 	tm.Submit("/kick fakenick")
-	tm.WaitFor("fakenick has been kicked from #random")
+	tm.WaitFor("fakenick was kicked from #random by testuser")
 }
 
 func TestApp_config_commands_with_teatest(t *testing.T) {

@@ -391,7 +391,7 @@ func (s *Session) attachInstanceToChannel(
 
 // Kick removes a model instance from a channel.
 func (s *Session) Kick(ctx context.Context, ch domain.ChannelName, nick domain.Nick) error {
-	return s.KickAs(ctx, nick, ch)
+	return s.KickAs(ctx, s.user.Nick, nick, ch)
 }
 
 // SendMessage saves a message to a channel and returns the message
