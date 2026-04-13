@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -1085,7 +1086,7 @@ func TestSendEvents_logs_event_and_history_counts(t *testing.T) {
 
 	handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})
 	slog.SetDefault(slog.New(handler))
-	t.Cleanup(func() { slog.SetDefault(slog.New(slog.NewTextHandler(nil, nil))) })
+	t.Cleanup(func() { slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil))) })
 
 	srv := newStructuredChatServer(t, `{"response":{"kind":"pass","reason":"nothing"}}`)
 
@@ -1116,7 +1117,7 @@ func TestContinueWithToolResults_logs_token_counts(t *testing.T) {
 
 	handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})
 	slog.SetDefault(slog.New(handler))
-	t.Cleanup(func() { slog.SetDefault(slog.New(slog.NewTextHandler(nil, nil))) })
+	t.Cleanup(func() { slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil))) })
 
 	// Server that returns tool calls on the first request.
 	toolSrv := newToolCallServer(t, toolCallFixture{

@@ -50,27 +50,29 @@ func (p *SpanMetricsProcessor) OnEnd(span sdktrace.ReadOnlySpan) {
 		return
 	}
 
+	attrSet := attribute.NewSet(span.Attributes()...)
+
 	operation := span.Name()
 	result := ResultOK
 	modelID := ""
 
-	attrs := make([]attribute.KeyValue, 0, 3)
-	spanAttrs := span.Attributes()
-
-	if value, ok := findStringAttr(spanAttrs, AttrOperation); ok && value != "" {
-		operation = value
+	if val, ok := attrSet.Value(attribute.Key(AttrOperation)); ok && val.AsString() != "" {
+		operation = val.AsString()
 	}
 
-	if value, ok := findStringAttr(spanAttrs, AttrResult); ok && value != "" {
-		result = value
+	if val, ok := attrSet.Value(attribute.Key(AttrResult)); ok && val.AsString() != "" {
+		result = val.AsString()
 	} else if span.Status().Code != codes.Unset {
 		result = ResultError
 	}
 
-	attrs = append(attrs, attribute.String(AttrOperation, operation), attribute.String(AttrResult, result))
+	attrs := []attribute.KeyValue{
+		attribute.String(AttrOperation, operation),
+		attribute.String(AttrResult, result),
+	}
 
-	if value, ok := findStringAttr(spanAttrs, AttrModelID); ok && value != "" {
-		modelID = value
+	if val, ok := attrSet.Value(attribute.Key(AttrModelID)); ok && val.AsString() != "" {
+		modelID = val.AsString()
 		attrs = append(attrs, attribute.String(AttrModelID, modelID))
 	}
 
@@ -92,35 +94,35 @@ func (p *SpanMetricsProcessor) OnEnd(span sdktrace.ReadOnlySpan) {
 		return
 	}
 
-	if !hasLLMUsageAttrs(spanAttrs) {
+	if _, hasUsage := attrSet.Value(attribute.Key(AttrPromptTokens)); !hasUsage {
 		return
 	}
 
 	p.instruments.llmRequests.Add(ctx, 1, metric.WithAttributes(attrs...))
 	p.instruments.requestDuration.Record(ctx, durationMs, metric.WithAttributes(attrs...))
 
-	if value, ok := findInt64Attr(spanAttrs, AttrPromptTokens); ok {
-		p.instruments.promptTokens.Add(ctx, value, metric.WithAttributes(attrs...))
+	if val, ok := attrSet.Value(attribute.Key(AttrPromptTokens)); ok {
+		p.instruments.promptTokens.Add(ctx, val.AsInt64(), metric.WithAttributes(attrs...))
 	}
 
-	if value, ok := findInt64Attr(spanAttrs, AttrCompletionTokens); ok {
-		p.instruments.completionTokens.Add(ctx, value, metric.WithAttributes(attrs...))
+	if val, ok := attrSet.Value(attribute.Key(AttrCompletionTokens)); ok {
+		p.instruments.completionTokens.Add(ctx, val.AsInt64(), metric.WithAttributes(attrs...))
 	}
 
-	if value, ok := findInt64Attr(spanAttrs, AttrReasoningTokens); ok {
-		p.instruments.reasoningTokens.Add(ctx, value, metric.WithAttributes(attrs...))
+	if val, ok := attrSet.Value(attribute.Key(AttrReasoningTokens)); ok {
+		p.instruments.reasoningTokens.Add(ctx, val.AsInt64(), metric.WithAttributes(attrs...))
 	}
 
-	if value, ok := findInt64Attr(spanAttrs, AttrCachedTokens); ok {
-		p.instruments.cachedTokens.Add(ctx, value, metric.WithAttributes(attrs...))
+	if val, ok := attrSet.Value(attribute.Key(AttrCachedTokens)); ok {
+		p.instruments.cachedTokens.Add(ctx, val.AsInt64(), metric.WithAttributes(attrs...))
 	}
 
-	if value, ok := findInt64Attr(spanAttrs, AttrCacheWriteTokens); ok {
-		p.instruments.cacheWriteTokens.Add(ctx, value, metric.WithAttributes(attrs...))
+	if val, ok := attrSet.Value(attribute.Key(AttrCacheWriteTokens)); ok {
+		p.instruments.cacheWriteTokens.Add(ctx, val.AsInt64(), metric.WithAttributes(attrs...))
 	}
 
-	if value, ok := findFloat64Attr(spanAttrs, AttrCostCredits); ok {
-		p.instruments.costCredits.Add(ctx, value, metric.WithAttributes(attrs...))
+	if val, ok := attrSet.Value(attribute.Key(AttrCostCredits)); ok {
+		p.instruments.costCredits.Add(ctx, val.AsFloat64(), metric.WithAttributes(attrs...))
 	}
 }
 
@@ -141,50 +143,4 @@ func isMemoryOperation(operation string) bool {
 	}
 
 	return false
-}
-
-func hasLLMUsageAttrs(attrs []attribute.KeyValue) bool {
-	for _, attr := range attrs {
-		if string(attr.Key) == AttrPromptTokens {
-			return true
-		}
-	}
-
-	return false
-}
-
-func findStringAttr(attrs []attribute.KeyValue, key string) (string, bool) {
-	for _, attr := range attrs {
-		if string(attr.Key) != key {
-			continue
-		}
-
-		return attr.Value.AsString(), true
-	}
-
-	return "", false
-}
-
-func findInt64Attr(attrs []attribute.KeyValue, key string) (int64, bool) {
-	for _, attr := range attrs {
-		if string(attr.Key) != key {
-			continue
-		}
-
-		return attr.Value.AsInt64(), true
-	}
-
-	return 0, false
-}
-
-func findFloat64Attr(attrs []attribute.KeyValue, key string) (float64, bool) {
-	for _, attr := range attrs {
-		if string(attr.Key) != key {
-			continue
-		}
-
-		return attr.Value.AsFloat64(), true
-	}
-
-	return 0, false
 }

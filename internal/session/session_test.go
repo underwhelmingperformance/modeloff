@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"net/http"
@@ -3251,7 +3252,7 @@ func TestDispatchToInstance_logs_dispatch_attributes(t *testing.T) {
 
 	handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})
 	slog.SetDefault(slog.New(handler))
-	t.Cleanup(func() { slog.SetDefault(slog.New(slog.NewTextHandler(nil, nil))) })
+	t.Cleanup(func() { slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil))) })
 
 	fake := &fakeAPIClient{
 		sendEventsFn: func(_ context.Context, _ domain.ModelID, _ string, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (protocol.ModelResponse, error) {
@@ -3295,7 +3296,7 @@ func TestDispatchToInstance_logs_pass_reason(t *testing.T) {
 
 	handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})
 	slog.SetDefault(slog.New(handler))
-	t.Cleanup(func() { slog.SetDefault(slog.New(slog.NewTextHandler(nil, nil))) })
+	t.Cleanup(func() { slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil))) })
 
 	fake := &fakeAPIClient{
 		sendEventsFn: func(_ context.Context, _ domain.ModelID, _ string, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (protocol.ModelResponse, error) {
