@@ -134,6 +134,7 @@ type Client interface {
 	SendEvents(
 		ctx context.Context,
 		modelID domain.ModelID,
+		selfInstanceID string,
 		systemPrompt string,
 		history []protocol.IRCMessage,
 		events []protocol.IRCMessage,

@@ -140,6 +140,7 @@ func (toolTestAPI) SendEvents(
 	context.Context,
 	domain.ModelID,
 	string,
+	string,
 	[]protocol.IRCMessage,
 	[]protocol.IRCMessage,
 	...api.ToolDefinition,

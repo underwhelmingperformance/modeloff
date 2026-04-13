@@ -193,6 +193,7 @@ func toolParams(definitions []ToolDefinition) []openai.ChatCompletionToolUnionPa
 func (c *OpenRouterClient) SendEvents(
 	ctx context.Context,
 	modelID domain.ModelID,
+	selfInstanceID string,
 	systemPrompt string,
 	history []protocol.IRCMessage,
 	events []protocol.IRCMessage,
@@ -208,7 +209,7 @@ func (c *OpenRouterClient) SendEvents(
 	)
 	defer span.End()
 
-	msgs := buildMessages(systemPrompt, history, events)
+	msgs := buildMessages(systemPrompt, selfInstanceID, history, events)
 	resp, rawResp, err := c.chatCompletion(ctx, modelID, openai.ChatCompletionNewParams{ //nolint:bodyclose // SDK reads and closes the body.
 		Model:          shared.ChatModel(string(modelID)),
 		Messages:       msgs,
@@ -321,19 +322,33 @@ func (c *OpenRouterClient) ContinueWithToolResults(
 
 func buildMessages(
 	systemPrompt string,
+	selfInstanceID string,
 	history []protocol.IRCMessage,
 	events []protocol.IRCMessage,
 ) []openai.ChatCompletionMessageParamUnion {
 	msgs := []openai.ChatCompletionMessageParamUnion{openai.SystemMessage(systemPrompt)}
 
+	appendMsg := func(m protocol.IRCMessage) {
+		isSelf := selfInstanceID != "" && m.InstanceID == selfInstanceID
+
+		// Strip the internal instance ID before marshalling so it
+		// never appears in the prompt sent to the model.
+		m.InstanceID = ""
+
+		data, _ := json.Marshal(m)
+		if isSelf {
+			msgs = append(msgs, openai.AssistantMessage(string(data)))
+		} else {
+			msgs = append(msgs, openai.UserMessage(string(data)))
+		}
+	}
+
 	for _, h := range history {
-		data, _ := json.Marshal(h)
-		msgs = append(msgs, openai.UserMessage(string(data)))
+		appendMsg(h)
 	}
 
 	for _, e := range events {
-		data, _ := json.Marshal(e)
-		msgs = append(msgs, openai.UserMessage(string(data)))
+		appendMsg(e)
 	}
 
 	return msgs

@@ -50,11 +50,12 @@ var (
 
 // ChannelMessage records a message sent in a channel.
 type ChannelMessage struct {
-	Channel ChannelName `json:"channel"`
-	From    Nick        `json:"from"`
-	Body    string      `json:"body"`
-	Action  bool        `json:"action,omitempty"`
-	At      time.Time   `json:"at"`
+	Channel    ChannelName `json:"channel"`
+	From       Nick        `json:"from"`
+	InstanceID string      `json:"instance_id,omitzero"`
+	Body       string      `json:"body"`
+	Action     bool        `json:"action,omitempty"`
+	At         time.Time   `json:"at"`
 }
 
 func (ChannelMessage) channelEvent()                 {}

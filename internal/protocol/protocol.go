@@ -51,13 +51,16 @@ const (
 
 // IRCMessage is the structured representation of an event sent to a
 // model. It mirrors IRC message structure: a sender, a kind, a
-// target (channel or nick), and a body.
+// target (channel or nick), and a body. InstanceID identifies the
+// originating model instance and is used internally for
+// self-message detection; it is omitted from JSON sent to models.
 type IRCMessage struct {
-	Kind   MessageKind `json:"kind"`
-	From   string      `json:"from"`
-	Target string      `json:"target"`
-	Body   string      `json:"body,omitempty"`
-	At     time.Time   `json:"at"`
+	Kind       MessageKind `json:"kind"`
+	From       string      `json:"from"`
+	InstanceID string      `json:"instance_id,omitzero"`
+	Target     string      `json:"target"`
+	Body       string      `json:"body,omitempty"`
+	At         time.Time   `json:"at"`
 }
 
 // ResponseKind indicates whether the model chose to reply.
@@ -171,11 +174,12 @@ func FromChannelEvent(evt domain.ChannelEvent) (IRCMessage, bool) {
 		}
 
 		return IRCMessage{
-			Kind:   kind,
-			From:   string(e.From),
-			Target: string(e.Channel),
-			Body:   e.Body,
-			At:     e.At,
+			Kind:       kind,
+			From:       string(e.From),
+			InstanceID: e.InstanceID,
+			Target:     string(e.Channel),
+			Body:       e.Body,
+			At:         e.At,
 		}, true
 
 	case domain.ChannelJoin:

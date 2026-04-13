@@ -266,11 +266,17 @@ func (s *Session) SendMessageAs(ctx context.Context, actor domain.Nick, ch domai
 	)
 	defer endSpan(span, &retErr)
 
+	var instanceID string
+	if inst, err := s.store.GetInstance(ctx, actor); err == nil {
+		instanceID = inst.InstanceID
+	}
+
 	cm := domain.ChannelMessage{
-		Channel: ch,
-		From:    actor,
-		Body:    body,
-		At:      s.now(),
+		Channel:    ch,
+		From:       actor,
+		InstanceID: instanceID,
+		Body:       body,
+		At:         s.now(),
 	}
 
 	s.appendEvent(ctx, ch, cm)
@@ -300,12 +306,18 @@ func (s *Session) SendActionAs(ctx context.Context, actor domain.Nick, ch domain
 	)
 	defer endSpan(span, &retErr)
 
+	var instanceID string
+	if inst, err := s.store.GetInstance(ctx, actor); err == nil {
+		instanceID = inst.InstanceID
+	}
+
 	cm := domain.ChannelMessage{
-		Channel: ch,
-		From:    actor,
-		Body:    body,
-		Action:  true,
-		At:      s.now(),
+		Channel:    ch,
+		From:       actor,
+		InstanceID: instanceID,
+		Body:       body,
+		Action:     true,
+		At:         s.now(),
 	}
 
 	s.appendEvent(ctx, ch, cm)

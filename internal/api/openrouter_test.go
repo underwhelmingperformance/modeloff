@@ -211,6 +211,7 @@ func TestOpenRouterClient_SendEvents(t *testing.T) {
 			got, err := client.SendEvents(
 				t.Context(),
 				"test/model",
+				"",
 				"You are a test bot.",
 				nil,
 				[]protocol.IRCMessage{
@@ -238,6 +239,58 @@ func TestCompletionParseErrorKind(t *testing.T) {
 	)
 }
 
+func TestBuildMessages_self_messages_are_assistant_role(t *testing.T) {
+	const selfID = "inst-abc123"
+
+	history := []protocol.IRCMessage{
+		{Kind: protocol.KindPrivMsg, From: "botty", InstanceID: selfID, Target: "#test", Body: "I said this"},
+		{Kind: protocol.KindPrivMsg, From: "alice", Target: "#test", Body: "alice said this"},
+	}
+	events := []protocol.IRCMessage{
+		{Kind: protocol.KindPrivMsg, From: "bob", Target: "#test", Body: "bob said this"},
+		{Kind: protocol.KindPrivMsg, From: "botty", InstanceID: selfID, Target: "#test", Body: "I said this too"},
+	}
+
+	msgs := buildMessages("system prompt", selfID, history, events)
+
+	require.Equal(t, 5, len(msgs))
+	require.NotNil(t, msgs[0].OfSystem, "msgs[0] should be system")
+	require.NotNil(t, msgs[1].OfAssistant, "msgs[1] (botty history) should be assistant")
+	require.NotNil(t, msgs[2].OfUser, "msgs[2] (alice history) should be user")
+	require.NotNil(t, msgs[3].OfUser, "msgs[3] (bob event) should be user")
+	require.NotNil(t, msgs[4].OfAssistant, "msgs[4] (botty event) should be assistant")
+}
+
+func TestBuildMessages_survives_nick_rename(t *testing.T) {
+	const selfID = "inst-stable"
+
+	history := []protocol.IRCMessage{
+		{Kind: protocol.KindPrivMsg, From: "old-nick", InstanceID: selfID, Target: "#test", Body: "before rename"},
+		{Kind: protocol.KindPrivMsg, From: "new-nick", InstanceID: selfID, Target: "#test", Body: "after rename"},
+		{Kind: protocol.KindPrivMsg, From: "alice", Target: "#test", Body: "other user"},
+	}
+
+	msgs := buildMessages("system prompt", selfID, history, nil)
+
+	require.Equal(t, 4, len(msgs))
+	require.NotNil(t, msgs[1].OfAssistant, "old-nick message should be assistant")
+	require.NotNil(t, msgs[2].OfAssistant, "new-nick message should be assistant")
+	require.NotNil(t, msgs[3].OfUser, "alice message should be user")
+}
+
+func TestBuildMessages_instance_id_stripped_from_json(t *testing.T) {
+	events := []protocol.IRCMessage{
+		{Kind: protocol.KindPrivMsg, From: "botty", InstanceID: "inst-xyz", Target: "#test", Body: "hello"},
+	}
+
+	msgs := buildMessages("system prompt", "", events, nil)
+
+	// The marshalled content should not contain the instance ID.
+	data, err := json.Marshal(msgs[1])
+	require.NoError(t, err)
+	require.NotContains(t, string(data), "inst-xyz")
+}
+
 func TestOpenRouterClient_SendEventsWithHistory(t *testing.T) {
 	var receivedBody map[string]any
 
@@ -263,6 +316,7 @@ func TestOpenRouterClient_SendEventsWithHistory(t *testing.T) {
 	_, err := client.SendEvents(
 		t.Context(),
 		"test/model",
+		"",
 		"System prompt",
 		history,
 		events,
@@ -350,6 +404,7 @@ func TestOpenRouterClient_SendEvents_preservesOpenRouterUsageMetadata(t *testing
 	got, err := client.SendEvents(
 		t.Context(),
 		"test/model",
+		"",
 		"You are a test bot.",
 		nil,
 		[]protocol.IRCMessage{
@@ -458,6 +513,7 @@ func TestOpenRouterClient_SendEvents_write_memory(t *testing.T) {
 	got, err := client.SendEvents(
 		t.Context(),
 		"test/model",
+		"",
 		"You are a test bot.",
 		nil,
 		[]protocol.IRCMessage{
@@ -488,6 +544,7 @@ func TestOpenRouterClient_SendEvents_delete_memory(t *testing.T) {
 	got, err := client.SendEvents(
 		t.Context(),
 		"test/model",
+		"",
 		"You are a test bot.",
 		nil,
 		[]protocol.IRCMessage{
@@ -518,6 +575,7 @@ func TestOpenRouterClient_SendEvents_search_memory(t *testing.T) {
 	got, err := client.SendEvents(
 		t.Context(),
 		"test/model",
+		"",
 		"You are a test bot.",
 		nil,
 		[]protocol.IRCMessage{
@@ -555,6 +613,7 @@ func TestOpenRouterClient_SendEvents_includes_explicit_search_tool(t *testing.T)
 	_, err := client.SendEvents(
 		t.Context(),
 		"test/model",
+		"",
 		"You are a test bot.",
 		nil,
 		[]protocol.IRCMessage{
@@ -597,6 +656,7 @@ func TestOpenRouterClient_SendEvents_excludes_search_without_explicit_tool(t *te
 	_, err := client.SendEvents(
 		t.Context(),
 		"test/model",
+		"",
 		"You are a test bot.",
 		nil,
 		[]protocol.IRCMessage{
@@ -640,7 +700,7 @@ func TestOpenRouterClient_SendEvents_contentFiltered(t *testing.T) {
 	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
 
 	_, err := client.SendEvents(
-		t.Context(), "test/model", "prompt", nil,
+		t.Context(), "test/model", "", "prompt", nil,
 		[]protocol.IRCMessage{{Kind: protocol.KindPrivMsg, From: "a", Target: "#t", Body: "x"}},
 	)
 	require.ErrorIs(t, err, ErrContentFiltered)
@@ -665,7 +725,7 @@ func TestOpenRouterClient_SendEvents_truncated(t *testing.T) {
 	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
 
 	_, err := client.SendEvents(
-		t.Context(), "test/model", "prompt", nil,
+		t.Context(), "test/model", "", "prompt", nil,
 		[]protocol.IRCMessage{{Kind: protocol.KindPrivMsg, From: "a", Target: "#t", Body: "x"}},
 	)
 	require.ErrorIs(t, err, ErrResponseTruncated)
@@ -690,7 +750,7 @@ func TestOpenRouterClient_SendEvents_refusal(t *testing.T) {
 	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
 
 	_, err := client.SendEvents(
-		t.Context(), "test/model", "prompt", nil,
+		t.Context(), "test/model", "", "prompt", nil,
 		[]protocol.IRCMessage{{Kind: protocol.KindPrivMsg, From: "a", Target: "#t", Body: "x"}},
 	)
 
@@ -718,7 +778,7 @@ func TestOpenRouterClient_SendEvents_emptyResponse(t *testing.T) {
 	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
 
 	_, err := client.SendEvents(
-		t.Context(), "test/model", "prompt", nil,
+		t.Context(), "test/model", "", "prompt", nil,
 		[]protocol.IRCMessage{{Kind: protocol.KindPrivMsg, From: "a", Target: "#t", Body: "x"}},
 	)
 	require.Error(t, err)
@@ -768,6 +828,7 @@ func TestOpenRouterClient_ContinueWithToolResults(t *testing.T) {
 	initial, err := client.SendEvents(
 		t.Context(),
 		"test/model",
+		"",
 		"You are a test bot.",
 		nil,
 		[]protocol.IRCMessage{

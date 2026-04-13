@@ -289,10 +289,11 @@ func (s *Session) AddModel(
 	channels.Set(ch, s.now())
 
 	inst := domain.Instance{
-		Nick:     nickResult.Nick,
-		ModelID:  modelID,
-		Persona:  assignedPersona,
-		Channels: channels,
+		InstanceID: domain.GenerateInstanceID(),
+		Nick:       nickResult.Nick,
+		ModelID:    modelID,
+		Persona:    assignedPersona,
+		Channels:   channels,
 	}
 
 	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
@@ -876,7 +877,8 @@ func (s *Session) dispatchToInstances(
 	var replies []domain.ModelReplyEvent
 
 	for _, inst := range instances {
-		instReplies, instErr := s.dispatchToInstance(ctx, channel, inst, channelName, historyEvents, events)
+		filtered := filterEventsForInstance(events, inst.InstanceID)
+		instReplies, instErr := s.dispatchToInstance(ctx, channel, inst, channelName, historyEvents, filtered)
 		if instErr != nil {
 			errs = append(errs, instErr)
 		}
@@ -890,6 +892,24 @@ func (s *Session) dispatchToInstances(
 	}
 
 	return replies, errors.Join(errs...)
+}
+
+// filterEventsForInstance returns a copy of events excluding any that
+// originated from the given instance. This prevents a model from
+// receiving its own messages as trigger events.
+func filterEventsForInstance(events []protocol.IRCMessage, instanceID string) []protocol.IRCMessage {
+	if instanceID == "" {
+		return events
+	}
+
+	filtered := make([]protocol.IRCMessage, 0, len(events))
+	for _, e := range events {
+		if e.InstanceID != instanceID {
+			filtered = append(filtered, e)
+		}
+	}
+
+	return filtered
 }
 
 func (s *Session) dispatchToInstance(
@@ -979,7 +999,7 @@ func (s *Session) dispatchToInstance(
 			return nil, nil
 		}
 
-		return s.buildReplies(ctx, channelName, inst.Nick, response.Messages), nil
+		return s.buildReplies(ctx, channelName, inst.Nick, inst.InstanceID, response.Messages), nil
 
 	default:
 		return nil, nil
@@ -992,6 +1012,7 @@ func (s *Session) buildReplies(
 	ctx context.Context,
 	channelName domain.ChannelName,
 	nick domain.Nick,
+	instanceID string,
 	parts []protocol.ReplyPart,
 ) []domain.ModelReplyEvent {
 	var replies []domain.ModelReplyEvent
@@ -1004,11 +1025,12 @@ func (s *Session) buildReplies(
 
 		now := s.now()
 		cm := domain.ChannelMessage{
-			Channel: channelName,
-			From:    nick,
-			Body:    body,
-			Action:  part.Kind == protocol.ReplyAction,
-			At:      now,
+			Channel:    channelName,
+			From:       nick,
+			InstanceID: instanceID,
+			Body:       body,
+			Action:     part.Kind == protocol.ReplyAction,
+			At:         now,
 		}
 
 		s.appendEvent(ctx, channelName, cm)
@@ -1456,7 +1478,7 @@ func (s *Session) sendWithToolLoop(
 ) (api.CompletionResult, int, error) {
 	definitions := registry.Definitions()
 
-	result, err := s.api.SendEvents(ctx, inst.ModelID, prompt, history, events, definitions...)
+	result, err := s.api.SendEvents(ctx, inst.ModelID, inst.InstanceID, prompt, history, events, definitions...)
 	if err != nil {
 		return api.CompletionResult{}, 0, err
 	}

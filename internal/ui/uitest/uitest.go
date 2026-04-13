@@ -177,6 +177,7 @@ func (f *FakeAPI) ListModels(ctx context.Context) ([]api.ModelInfo, error) {
 func (f *FakeAPI) SendEvents(
 	ctx context.Context,
 	modelID domain.ModelID,
+	_ string,
 	system string,
 	history []protocol.IRCMessage,
 	events []protocol.IRCMessage,

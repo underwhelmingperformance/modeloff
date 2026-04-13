@@ -2,6 +2,8 @@
 package domain
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"iter"
 	"time"
@@ -9,6 +11,15 @@ import (
 	"github.com/laney/modeloff/internal/set"
 	orderedmap "github.com/wk8/go-ordered-map/v2"
 )
+
+// GenerateInstanceID returns a random 8-byte hex string suitable for
+// use as a stable instance identifier.
+func GenerateInstanceID() string {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+
+	return hex.EncodeToString(b[:])
+}
 
 // PersonaOrigin distinguishes how a persona was created.
 type PersonaOrigin string
@@ -80,10 +91,11 @@ func (ch Channel) DisplayName() string {
 // user and model instances share this type. The human user has an
 // empty ModelID.
 type Instance struct {
-	Nick     Nick
-	ModelID  ModelID
-	Persona  string
-	Channels *orderedmap.OrderedMap[ChannelName, time.Time]
+	InstanceID string
+	Nick       Nick
+	ModelID    ModelID
+	Persona    string
+	Channels   *orderedmap.OrderedMap[ChannelName, time.Time]
 }
 
 // IsModel reports whether the instance is a model (as opposed to
