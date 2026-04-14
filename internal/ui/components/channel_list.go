@@ -23,15 +23,16 @@ type SetChannelsMsg struct {
 // ChannelSidebar is a ui.Model that wraps Sidebar with
 // channel-specific keybindings, header, and unread tracking.
 type ChannelSidebar struct {
-	panel  Sidebar[domain.Channel, domain.ChannelName]
-	unread map[domain.ChannelName]int
+	panel    Sidebar[domain.Channel, domain.ChannelName]
+	unread   map[domain.ChannelName]int
+	mentions map[domain.ChannelName]bool
 }
 
 func channelLess(a, b domain.Channel) bool {
 	return a.Name < b.Name
 }
 
-func channelView(unread map[domain.ChannelName]int) func(domain.Channel, ViewState, int) string {
+func channelView(unread map[domain.ChannelName]int, mentions map[domain.ChannelName]bool) func(domain.Channel, ViewState, int) string {
 	return func(ch domain.Channel, state ViewState, _ int) string {
 		name := ch.DisplayName()
 
@@ -41,6 +42,7 @@ func channelView(unread map[domain.ChannelName]int) func(domain.Channel, ViewSta
 		}
 
 		highlighted := count > 0
+		mention := mentions[ch.Name]
 
 		style := theme.SidebarInactive
 
@@ -49,10 +51,14 @@ func channelView(unread map[domain.ChannelName]int) func(domain.Channel, ViewSta
 			style = theme.SidebarActiveSelected
 		case state == StateActive:
 			style = theme.SidebarActive
+		case state == StateSelected && mention:
+			style = theme.SidebarMentionSelected
 		case state == StateSelected && highlighted:
 			style = theme.SidebarHighlightedSelected
 		case state == StateSelected:
 			style = theme.SidebarSelected
+		case mention:
+			style = theme.SidebarMention
 		case highlighted:
 			style = theme.SidebarHighlighted
 		}
@@ -69,13 +75,14 @@ func channelView(unread map[domain.ChannelName]int) func(domain.Channel, ViewSta
 // NewChannelSidebar creates an empty channel list sidebar.
 func NewChannelSidebar() ChannelSidebar {
 	unread := make(map[domain.ChannelName]int)
+	mentions := make(map[domain.ChannelName]bool)
 
 	return ChannelSidebar{
 		panel: NewSidebar(
 			set.NewSorted(channelLess),
 			SidebarConfig[domain.Channel, domain.ChannelName]{
 				Key:  func(ch domain.Channel) domain.ChannelName { return ch.Name },
-				View: channelView(unread),
+				View: channelView(unread, mentions),
 				OnActivate: func(ch domain.Channel) tea.Cmd {
 					return func() tea.Msg {
 						return ChannelSelectedMsg{Channel: ch.Name}
@@ -89,7 +96,8 @@ func NewChannelSidebar() ChannelSidebar {
 				WithHelp(SidebarDown, "channels").
 				WithHelp(SidebarUp, "channels").
 				WithHelp(SidebarSelect, "switch channel")),
-		unread: unread,
+		unread:   unread,
+		mentions: mentions,
 	}
 }
 
@@ -116,19 +124,26 @@ func (cl ChannelSidebar) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	case ChannelRemovedMsg:
 		cl.panel.items.Remove(domain.Channel{Name: msg.Channel})
 		delete(cl.unread, msg.Channel)
+		delete(cl.mentions, msg.Channel)
 
 		return cl, nil
 
 	case ChannelActiveMsg:
 		cl.panel = cl.panel.SetActiveKey(msg.Channel)
+		delete(cl.mentions, msg.Channel)
 
 		return cl, nil
 
 	case ChannelUnreadMsg:
 		if msg.Count > 0 {
 			cl.unread[msg.Channel] = msg.Count
+
+			if msg.Mention {
+				cl.mentions[msg.Channel] = true
+			}
 		} else {
 			delete(cl.unread, msg.Channel)
+			delete(cl.mentions, msg.Channel)
 		}
 
 		return cl, nil
@@ -149,6 +164,7 @@ func (cl ChannelSidebar) setChannels(msg SetChannelsMsg) ChannelSidebar {
 	}
 
 	cl.unread = make(map[domain.ChannelName]int)
+	cl.mentions = make(map[domain.ChannelName]bool)
 
 	if msg.Unread != nil {
 		for k, v := range msg.Unread {
@@ -158,7 +174,7 @@ func (cl ChannelSidebar) setChannels(msg SetChannelsMsg) ChannelSidebar {
 		}
 	}
 
-	cl.panel.cfg.View = channelView(cl.unread)
+	cl.panel.cfg.View = channelView(cl.unread, cl.mentions)
 	cl.panel = cl.panel.SetItems(items)
 
 	if msg.Active != "" {

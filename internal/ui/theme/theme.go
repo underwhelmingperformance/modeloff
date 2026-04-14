@@ -90,6 +90,8 @@ var (
 	SidebarActiveSelected      = lipgloss.NewStyle().Foreground(colourWhite).Bold(true).Background(colourBrightBlack)
 	SidebarHighlighted         = lipgloss.NewStyle().Foreground(colourWhite).Bold(true)
 	SidebarHighlightedSelected = lipgloss.NewStyle().Foreground(colourWhite).Bold(true).Background(colourBrightBlack)
+	SidebarMention             = lipgloss.NewStyle().Foreground(colourMagenta).Bold(true)
+	SidebarMentionSelected     = lipgloss.NewStyle().Foreground(colourMagenta).Bold(true).Background(colourBrightBlack)
 )
 
 // System message styles — for join/part/topic events.

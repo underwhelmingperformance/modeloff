@@ -446,8 +446,9 @@ func (s ChatScreen) handleMessageEvent(msg domain.MessageEvent) (ui.Model, tea.C
 	}
 
 	count, _ := s.sess.UnreadCount(s.ctx, msg.Event.Channel)
+	mention := s.isHighlight(msg.Event.Body)
 
-	return s, msgCmd(components.ChannelUnreadMsg{Channel: msg.Event.Channel, Count: count})
+	return s, msgCmd(components.ChannelUnreadMsg{Channel: msg.Event.Channel, Count: count, Mention: mention})
 }
 
 func (s ChatScreen) handleModelReplyEvent(msg domain.ModelReplyEvent) (ui.Model, tea.Cmd) {
@@ -588,8 +589,15 @@ func (s ChatScreen) showReply(msg domain.ModelReplyEvent) (ui.Model, tea.Cmd) {
 	}
 
 	count, _ := s.sess.UnreadCount(s.ctx, msg.Channel)
+	mention := s.isHighlight(msg.Event.Body)
 
-	return s, msgCmd(components.ChannelUnreadMsg{Channel: msg.Channel, Count: count})
+	return s, msgCmd(components.ChannelUnreadMsg{Channel: msg.Channel, Count: count, Mention: mention})
+}
+
+func (s ChatScreen) isHighlight(body string) bool {
+	cfg, _ := s.loadConfig()
+
+	return components.ContainsHighlightWord(body, cfg.HighlightWords, s.sess.UserNick())
 }
 
 func (s ChatScreen) handleLiveModelsLoaded(msg liveModelsLoadedMsg) (ui.Model, tea.Cmd) {

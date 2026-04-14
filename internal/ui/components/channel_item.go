@@ -33,8 +33,11 @@ type (
 
 	// ChannelUnreadMsg updates the unread count for a channel.
 	// Items receive this through the tree and match on Channel.
+	// Mention is true when at least one unread message contains a
+	// highlight word (e.g. the user's nick).
 	ChannelUnreadMsg struct {
 		Channel domain.ChannelName
 		Count   int
+		Mention bool
 	}
 )

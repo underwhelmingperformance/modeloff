@@ -5,6 +5,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/domain"
@@ -298,6 +300,92 @@ func TestChannelSidebar_mouse_wheel_moves_cursor_without_activating(t *testing.T
 	// Ctrl+O to confirm cursor moved to #general.
 	_, ch := activateAndGetChannel(t, m, ctrlKey("ctrl+o"))
 	require.Equal(t, domain.ChannelName("#general"), ch)
+}
+
+func TestChannelSidebar_mention_renders_differently_from_normal_unread(t *testing.T) {
+	// Force colour output so style differences are visible in test.
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	// Set up two sidebars with the same unread count: one with mention,
+	// one without.
+	mNormal := newTestChannelSidebar(testChannels, "#general", nil)
+	mNormal, _ = mNormal.Update(components.ChannelUnreadMsg{
+		Channel: "#random",
+		Count:   3,
+	})
+
+	mMention := newTestChannelSidebar(testChannels, "#general", nil)
+	mMention, _ = mMention.Update(components.ChannelUnreadMsg{
+		Channel: "#random",
+		Count:   3,
+		Mention: true,
+	})
+
+	vNormal := mNormal.View(30, 10)
+	vMention := mMention.View(30, 10)
+
+	// Both should show the unread count.
+	require.Contains(t, vNormal, "#random (3)")
+	require.Contains(t, vMention, "#random (3)")
+
+	// The mention view should be styled differently (different ANSI
+	// escape codes).
+	require.NotEqual(t, vNormal, vMention,
+		"mention unread should render with a distinct style")
+}
+
+func TestChannelSidebar_mention_clears_on_zero_count(t *testing.T) {
+	m := newTestChannelSidebar(testChannels, "#general", nil)
+
+	// Set a mention.
+	m, _ = m.Update(components.ChannelUnreadMsg{
+		Channel: "#random",
+		Count:   3,
+		Mention: true,
+	})
+	require.Contains(t, m.View(30, 10), "#random (3)")
+
+	// Clear the unread count.
+	m, _ = m.Update(components.ChannelUnreadMsg{
+		Channel: "#random",
+		Count:   0,
+	})
+
+	// After clearing, there should be no unread indicator.
+	v := m.View(30, 10)
+	require.NotContains(t, v, "#random (")
+}
+
+func TestChannelSidebar_mention_clears_on_activation(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	m := newTestChannelSidebar(testChannels, "#general", nil)
+
+	// Set a mention on #random.
+	m, _ = m.Update(components.ChannelUnreadMsg{
+		Channel: "#random",
+		Count:   3,
+		Mention: true,
+	})
+
+	vBefore := m.View(30, 10)
+
+	// Activate #random (simulates switching to that channel).
+	m, _ = m.Update(components.ChannelActiveMsg{Channel: "#random"})
+
+	// Send a new non-mention unread to verify the mention style is gone.
+	m, _ = m.Update(components.ChannelUnreadMsg{
+		Channel: "#random",
+		Count:   3,
+	})
+
+	vAfter := m.View(30, 10)
+	require.NotEqual(t, vBefore, vAfter,
+		"mention style should be cleared after activating channel")
 }
 
 func TestChannelSidebar_ignores_other_messages(t *testing.T) {
