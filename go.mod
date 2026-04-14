@@ -12,9 +12,11 @@ require (
 	github.com/charmbracelet/x/exp/teatest v0.0.0-20260330094520-2dce04b6f8a4
 	github.com/invopop/jsonschema v0.13.0
 	github.com/jeandeaual/go-locale v0.0.0-20250612000132-0ef82f21eade
+	github.com/muesli/termenv v0.16.0
 	github.com/ncruces/go-sqlite3 v0.33.2
 	github.com/openai/openai-go/v3 v3.30.0
 	github.com/philippgille/chromem-go v0.7.0
+	github.com/rivo/uniseg v0.4.7
 	github.com/stretchr/testify v1.11.1
 	github.com/tidwall/btree v1.8.1
 	github.com/wk8/go-ordered-map/v2 v2.1.8
@@ -30,7 +32,6 @@ require (
 )
 
 require (
-	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/aymanbagabas/go-udiff v0.3.1 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
@@ -55,11 +56,9 @@ require (
 	github.com/mattn/go-runewidth v0.0.19 // indirect
 	github.com/muesli/ansi v0.0.0-20230316100256-276c6243b2f6 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
-	github.com/muesli/termenv v0.16.0 // indirect
 	github.com/ncruces/go-sqlite3-wasm v1.0.4-0.20260329114232-2491c387476c // indirect
 	github.com/ncruces/julianday v1.0.0 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
-	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/tidwall/gjson v1.18.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect

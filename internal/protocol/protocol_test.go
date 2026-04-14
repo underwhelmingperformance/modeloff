@@ -133,3 +133,65 @@ func TestFromNickChangeEvent(t *testing.T) {
 		At:     at,
 	}, got)
 }
+
+func TestValidateReplyPart(t *testing.T) {
+	t.Run("valid body", func(t *testing.T) {
+		err := ValidateReplyPart(ReplyPart{
+			Kind: ReplyMessage,
+			Body: "hello world",
+		})
+
+		require.NoError(t, err)
+	})
+
+	t.Run("valid spans", func(t *testing.T) {
+		fg := uint8(4)
+		err := ValidateReplyPart(ReplyPart{
+			Kind: ReplyMessage,
+			Spans: []ReplySpan{
+				{Text: "hello "},
+				{Text: "world", Style: &ReplyStyle{Bold: true, FG: &fg}},
+			},
+		})
+
+		require.NoError(t, err)
+	})
+
+	t.Run("rejects body and spans together", func(t *testing.T) {
+		err := ValidateReplyPart(ReplyPart{
+			Body: "hello",
+			Spans: []ReplySpan{
+				{Text: "world"},
+			},
+		})
+
+		require.ErrorContains(t, err, "exactly one of body or spans")
+	})
+
+	t.Run("rejects empty span", func(t *testing.T) {
+		err := ValidateReplyPart(ReplyPart{
+			Spans: []ReplySpan{
+				{Text: ""},
+			},
+		})
+
+		require.ErrorContains(t, err, "span 0 is empty")
+	})
+
+	t.Run("rejects invalid style colour", func(t *testing.T) {
+		fg := uint8(16)
+		err := ValidateReplyPart(ReplyPart{
+			Spans: []ReplySpan{
+				{Text: "hello", Style: &ReplyStyle{FG: &fg}},
+			},
+		})
+
+		require.ErrorContains(t, err, "foreground colour 16 is out of range")
+	})
+
+	t.Run("rejects missing body and spans", func(t *testing.T) {
+		err := ValidateReplyPart(ReplyPart{})
+
+		require.ErrorContains(t, err, "exactly one of body or spans")
+	})
+}

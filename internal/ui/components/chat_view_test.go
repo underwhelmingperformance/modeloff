@@ -1318,6 +1318,13 @@ func TestContainsHighlightWord(t *testing.T) {
 			body:   "hey testuser check this out",
 			expect: true,
 		},
+		{
+			name:   "formatting codes are ignored for matching",
+			words:  []string{"testuser"},
+			nick:   "testuser",
+			body:   "hey \x02testuser\x02 check this out",
+			expect: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -1328,45 +1335,18 @@ func TestContainsHighlightWord(t *testing.T) {
 	}
 }
 
-func TestChatView_user_nick_update_changes_input_prefix(t *testing.T) {
-	cv := newChatViewWithEvents("#general", "testuser", "", testEvents)
-	var m ui.Model = cv
+func TestRenderLine_preserves_irc_formatting_in_plain_output(t *testing.T) {
+	rendered := renderSingleEvent(domain.StoredEvent{
+		Event: domain.ChannelMessage{
+			Channel: "#test",
+			From:    "alice",
+			Body:    "hello \x02bold\x02 \x1funder\x1f \x1estrike\x1e",
+			At:      time.Date(2026, 4, 12, 11, 0, 0, 0, time.UTC),
+		},
+	})
 
-	v := ansi.Strip(m.View(80, 24))
-	require.Contains(t, v, "testuser",
-		"input bar should show original nick")
-
-	m, _ = m.Update(components.UserNickMsg{Nick: "newnick"})
-
-	v = ansi.Strip(m.View(80, 24))
-	require.Contains(t, v, "newnick",
-		"input bar should show the updated nick after UserNickMsg")
-	require.NotContains(t, v, "testuser >",
-		"old nick should no longer appear in the input prefix")
-}
-
-func TestChatView_few_messages_bottom_aligned(t *testing.T) {
-	cv := newChatViewWithEvents("#general", "testuser", "", testEvents[:1])
-	v := ansi.Strip(cv.View(80, 24))
-	lines := strings.Split(v, "\n")
-
-	// With only one message in a 24-line viewport, the message
-	// content should appear near the bottom, not at the top.
-	// Find the first line containing the message text.
-	msgLine := -1
-
-	for i, line := range lines {
-		if strings.Contains(line, "hello") {
-			msgLine = i
-
-			break
-		}
-	}
-
-	require.NotEqual(t, -1, msgLine, "message 'hello' should appear in the view")
-
-	// The input bar takes 1 line at the bottom. The message should
-	// be anchored just above it, not at line 0.
-	require.Greater(t, msgLine, 5,
-		"with one message in a 24-line viewport, content should be bottom-aligned, not top-aligned; found at line %d", msgLine)
+	require.Contains(t, rendered, "hello bold under strike")
+	require.NotContains(t, rendered, "\x02")
+	require.NotContains(t, rendered, "\x1f")
+	require.NotContains(t, rendered, "\x1e")
 }

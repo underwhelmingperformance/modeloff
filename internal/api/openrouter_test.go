@@ -1155,3 +1155,61 @@ func TestContinueWithToolResults_logs_token_counts(t *testing.T) {
 	require.Equal(t, float64(5), record["completion_tokens"])
 	require.Equal(t, 0.125, record["cost_credits"])
 }
+
+func TestModelResponseSchema_uses_shared_span_definitions(t *testing.T) {
+	properties := requireSchemaMap(t, modelResponseSchemaMap["properties"])
+	response := requireSchemaMap(t, properties["response"])
+	defs := requireSchemaMap(t, response["$defs"])
+	require.Contains(t, defs, "ReplySpan")
+	require.Contains(t, defs, "ReplyStyle")
+
+	anyOf := requireSchemaSlice(t, response["anyOf"])
+	require.NotEmpty(t, anyOf)
+
+	replyBranch := requireSchemaBranch(t, anyOf, "reply")
+	replyProperties := requireSchemaMap(t, replyBranch["properties"])
+	messages := requireSchemaMap(t, replyProperties["messages"])
+	items := requireSchemaMap(t, messages["items"])
+	itemProperties := requireSchemaMap(t, items["properties"])
+	spans := requireSchemaMap(t, itemProperties["spans"])
+	spanItems := requireSchemaMap(t, spans["items"])
+
+	require.Equal(t, "#/$defs/ReplySpan", spanItems["$ref"])
+	require.Equal(t, []any{"type"}, items["required"])
+	require.NotContains(t, items, "anyOf")
+}
+
+func requireSchemaMap(t *testing.T, value any) map[string]any {
+	t.Helper()
+
+	result, ok := value.(map[string]any)
+	require.True(t, ok)
+
+	return result
+}
+
+func requireSchemaSlice(t *testing.T, value any) []any {
+	t.Helper()
+
+	result, ok := value.([]any)
+	require.True(t, ok)
+
+	return result
+}
+
+func requireSchemaBranch(t *testing.T, branches []any, kind string) map[string]any {
+	t.Helper()
+
+	for _, branch := range branches {
+		candidate := requireSchemaMap(t, branch)
+		properties := requireSchemaMap(t, candidate["properties"])
+		kindSchema := requireSchemaMap(t, properties["kind"])
+		if kindSchema["const"] == kind {
+			return candidate
+		}
+	}
+
+	t.Fatalf("schema branch for kind %q not found", kind)
+
+	return nil
+}

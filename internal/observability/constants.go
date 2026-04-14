@@ -66,6 +66,7 @@ const (
 	PassReasonModelRefused          = "model_refused"
 	PassReasonContentFiltered       = "content_filtered"
 	PassReasonNewlineRetryExhausted = "newline_retry_exhausted"
+	PassReasonFormatRetryExhausted  = "format_retry_exhausted"
 )
 
 // Values for stable error_kind attributes.

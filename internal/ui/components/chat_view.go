@@ -81,6 +81,7 @@ type ChatView struct {
 
 type chatViewLayout struct {
 	InputRect   ui.Rect
+	PaletteRect ui.Rect
 	MessageRect ui.Rect
 }
 
@@ -204,6 +205,19 @@ func (c ChatView) handleMouse(msg tea.MouseMsg) (ChatView, bool, tea.Cmd) {
 
 	layout := c.layoutRects()
 
+	if layout.PaletteRect.Contains(msg.X, msg.Y) {
+		localX, localY := layout.PaletteRect.Local(msg.X, msg.Y)
+		local := msg
+		local.X = localX
+		local.Y = localY
+
+		updated, handled, cmd := c.input.HandlePaletteMouse(local)
+		if handled {
+			c.input = updated
+			return c, true, cmd
+		}
+	}
+
 	if layout.InputRect.Contains(msg.X, msg.Y) {
 		updated, cmd := c.input.Update(msg)
 		c.input = updated.(InputBar)
@@ -233,6 +247,12 @@ func (c ChatView) View(width, height int) string {
 	inputView := c.input.View(width, 1)
 	inputHeight := lipgloss.Height(inputView)
 
+	paletteView := c.input.PaletteView(width)
+	paletteHeight := 0
+	if paletteView != "" {
+		paletteHeight = lipgloss.Height(paletteView)
+	}
+
 	var topicView string
 	topicHeight := 0
 	if c.topic != "" && c.kind != domain.KindDM {
@@ -240,16 +260,22 @@ func (c ChatView) View(width, height int) string {
 		topicHeight = lipgloss.Height(topicView)
 	}
 
-	messageListHeight := max(height-inputHeight-topicHeight, 0)
+	messageListHeight := max(height-inputHeight-topicHeight-paletteHeight, 0)
 
 	messageView := c.messages.View(width, messageListHeight)
 
-	parts := make([]string, 0, 3)
+	parts := make([]string, 0, 4)
 	if topicView != "" {
 		parts = append(parts, topicView)
 	}
 
-	parts = append(parts, messageView, inputView)
+	parts = append(parts, messageView)
+
+	if paletteView != "" {
+		parts = append(parts, paletteView)
+	}
+
+	parts = append(parts, inputView)
 
 	view := lipgloss.JoinVertical(lipgloss.Left, parts...)
 	if lipgloss.Height(view) >= height {
@@ -267,12 +293,20 @@ func (c ChatView) layoutRects() chatViewLayout {
 
 	inputView := c.input.View(width, 1)
 	inputHeight := lipgloss.Height(inputView)
+	paletteHeight := c.input.PaletteHeight(width)
 
 	inputRect := ui.Rect{
 		X:      c.bounds.X,
 		Y:      c.bounds.Y + c.bounds.Height - inputHeight,
 		Width:  width,
 		Height: inputHeight,
+	}
+
+	paletteRect := ui.Rect{
+		X:      c.bounds.X,
+		Y:      inputRect.Y - paletteHeight,
+		Width:  width,
+		Height: paletteHeight,
 	}
 
 	topicHeight := 0
@@ -289,7 +323,7 @@ func (c ChatView) layoutRects() chatViewLayout {
 		X:      c.bounds.X,
 		Y:      c.bounds.Y + topicHeight,
 		Width:  width,
-		Height: c.bounds.Height - topicHeight - pendingHeight - inputHeight,
+		Height: c.bounds.Height - topicHeight - pendingHeight - paletteHeight - inputHeight,
 	}
 	if messageRect.Height < 0 {
 		messageRect.Height = 0
@@ -297,6 +331,7 @@ func (c ChatView) layoutRects() chatViewLayout {
 
 	return chatViewLayout{
 		InputRect:   inputRect,
+		PaletteRect: paletteRect,
 		MessageRect: messageRect,
 	}
 }

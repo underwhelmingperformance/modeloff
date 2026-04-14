@@ -2185,14 +2185,15 @@ func TestBuildSystemPrompt_instructs_single_line_messages(t *testing.T) {
 }
 
 func TestSession_DispatchToChannel_retries_on_multiline_reply(t *testing.T) {
-	calls := 0
+	attempts := make([]string, 0, 2)
 	fake := &fakeAPIClient{
 		sendEventsFn: func(context.Context, domain.ModelID, string, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
-			calls++
-			if calls == 1 {
+			if len(attempts) == 0 {
+				attempts = append(attempts, "multiline")
 				return protocol.Reply("line one\nline two"), nil
 			}
 
+			attempts = append(attempts, "clean")
 			return protocol.Reply("clean reply"), nil
 		},
 	}
@@ -2211,7 +2212,7 @@ func TestSession_DispatchToChannel_retries_on_multiline_reply(t *testing.T) {
 	replies, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 
-	require.Equal(t, 2, calls)
+	require.Equal(t, []string{"multiline", "clean"}, attempts)
 	require.Equal(t, []domain.ModelReplyEvent{
 		{
 			Channel:  "#general",
@@ -2894,6 +2895,124 @@ func TestSession_DispatchToChannel_memory_loop_respects_max_turns(t *testing.T) 
 		"call_k3",
 		"call_k4",
 	}, writtenKeys)
+}
+
+func TestBuildSystemPrompt_mentions_memory_tools(t *testing.T) {
+	ch := domain.Channel{Name: "#dev", Kind: domain.KindChannel}
+	inst := domain.Instance{Nick: "botty", ModelID: "test/model"}
+
+	prompt := buildSystemPrompt(ch, inst, nil)
+
+	require.Contains(t, prompt, "write_memory")
+	require.Contains(t, prompt, "delete_memory")
+	require.Contains(t, prompt, "no memories yet")
+}
+
+func TestBuildSystemPrompt_mentions_span_replies(t *testing.T) {
+	ch := domain.Channel{Name: "#dev", Kind: domain.KindChannel}
+	inst := domain.Instance{Nick: "botty", ModelID: "test/model"}
+
+	prompt := buildSystemPrompt(ch, inst, nil)
+
+	require.Contains(t, prompt, "spans")
+	require.Contains(t, prompt, "Do not emit raw IRC control characters yourself")
+}
+
+func TestSession_DispatchToChannel_encodes_structured_reply_formatting(t *testing.T) {
+	fake := &fakeAPIClient{
+		sendEventsFn: func(context.Context, domain.ModelID, string, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			fg := uint8(4)
+			return protocol.ModelResponse{
+				Kind: protocol.ResponseReply,
+				Messages: []protocol.ReplyPart{{
+					Kind: protocol.ReplyMessage,
+					Spans: []protocol.ReplySpan{
+						{Text: "hello "},
+						{Text: "world", Style: &protocol.ReplyStyle{Bold: true, FG: &fg}},
+					},
+				}},
+			}, nil
+		},
+	}
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+	seedInstance(t, s, domain.Instance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: testChannels("#general"),
+	})
+
+	_, ircMsg := seedUserMessage(t, s, "#general", "hello")
+
+	replies, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+	require.NoError(t, err)
+
+	require.Equal(t, []domain.ModelReplyEvent{
+		{
+			Channel:  "#general",
+			Instance: "botty",
+			Event: domain.ChannelMessage{
+				Channel: "#general",
+				From:    "botty",
+				Body:    "hello \x02\x0304world\x0f",
+				At:      fixedTime,
+			},
+			At: fixedTime,
+		},
+	}, replies)
+}
+
+func TestSession_DispatchToChannel_retries_on_invalid_structured_formatting(t *testing.T) {
+	attempts := make([]string, 0, 2)
+	fake := &fakeAPIClient{
+		sendEventsFn: func(context.Context, domain.ModelID, string, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			if len(attempts) == 0 {
+				attempts = append(attempts, "invalid")
+				return protocol.ModelResponse{
+					Kind: protocol.ResponseReply,
+					Messages: []protocol.ReplyPart{{
+						Kind: protocol.ReplyMessage,
+						Spans: []protocol.ReplySpan{
+							{Text: "", Style: &protocol.ReplyStyle{Bold: true}},
+						},
+					}},
+				}, nil
+			}
+
+			attempts = append(attempts, "clean")
+			return protocol.Reply("clean reply"), nil
+		},
+	}
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+	seedInstance(t, s, domain.Instance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: testChannels("#general"),
+	})
+
+	_, ircMsg := seedUserMessage(t, s, "#general", "hello")
+
+	replies, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+	require.NoError(t, err)
+	require.Equal(t, []string{"invalid", "clean"}, attempts)
+	require.Equal(t, []domain.ModelReplyEvent{
+		{
+			Channel:  "#general",
+			Instance: "botty",
+			Event: domain.ChannelMessage{
+				Channel: "#general",
+				From:    "botty",
+				Body:    "clean reply",
+				At:      fixedTime,
+			},
+			At: fixedTime,
+		},
+	}, replies)
 }
 
 func seedChannelWithMembers(t *testing.T, s *storemod.SQLiteStore, name domain.ChannelName, members ...domain.Nick) {

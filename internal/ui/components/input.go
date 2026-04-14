@@ -5,11 +5,11 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/ircfmt"
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/theme"
 )
@@ -41,11 +41,11 @@ type nickCompletion struct {
 	index   int
 }
 
-// InputBar wraps bubbles/textinput with command completion, nick
+// InputBar wraps the rich composer with command completion, nick
 // completion, and input history. It owns the command popover as a
 // child model.
 type InputBar struct {
-	input    textinput.Model
+	input    RichTextarea
 	keyMap   InputBarKeyMap
 	userNick domain.Nick
 	popover  Popover
@@ -59,30 +59,33 @@ type InputBar struct {
 	nickComp nickCompletion
 }
 
-// NewInputBar creates an input bar with the given user nick.
-func NewInputBar(userNick domain.Nick) InputBar {
-	ti := textinput.New()
-	ti.Prompt = theme.Prompt.Render("> ")
-	ti.Focus()
+// NewInputBar creates an input bar with an optional user nick. When
+// called with no arguments, the nick is left empty (set later via
+// UserNickMsg). A single argument sets the initial nick.
+func NewInputBar(nick ...domain.Nick) InputBar {
+	editor := NewRichTextarea(RichTextareaConfig{
+		SingleLine:      true,
+		Wrap:            false,
+		AllowFormatting: true,
+	})
 
-	// Ctrl+D and Ctrl+U are reserved for sidebar navigation (channel
-	// up/down). Remove them from the textinput bindings so they don't
-	// conflict. Delete key still works for forward-delete.
-	ti.KeyMap.DeleteCharacterForward = key.NewBinding(key.WithKeys("delete"))
-	ti.KeyMap.DeleteBeforeCursor = key.NewBinding(key.WithDisabled())
-
-	return InputBar{
-		input:    ti,
-		keyMap:   DefaultInputBarKeyMap,
-		userNick: userNick,
-		popover:  NewPopover(),
-		histPos:  -1,
+	b := InputBar{
+		input:   editor,
+		keyMap:  DefaultInputBarKeyMap,
+		popover: NewPopover(),
+		histPos: -1,
 	}
+
+	if len(nick) > 0 {
+		b.userNick = nick[0]
+	}
+
+	return b
 }
 
 // Init implements ui.Model.
 func (b InputBar) Init() tea.Cmd {
-	return textinput.Blink
+	return b.input.Init()
 }
 
 // Update implements ui.Model.
@@ -100,15 +103,15 @@ func (b InputBar) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		b = b.refreshPopover(PopoverApplyMsg{
 			Completer: msg.Completer,
 			Raw:       b.input.Value(),
-			Cursor:    b.input.Position(),
+			Cursor:    b.input.Cursor(),
 		})
 		return b, nil
 
 	case PopoverAcceptMsg:
-		b = b.replaceRange(msg.ReplaceStart, msg.ReplaceEnd, msg.Replacement)
+		b = b.ReplaceRange(msg.ReplaceStart, msg.ReplaceEnd, msg.Replacement)
 		b = b.refreshPopover(PopoverRefreshMsg{
 			Raw:    b.input.Value(),
-			Cursor: b.input.Position(),
+			Cursor: b.input.Cursor(),
 		})
 		return b, nil
 
@@ -129,7 +132,8 @@ func (b InputBar) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	}
 
 	var cmd tea.Cmd
-	b.input, cmd = b.input.Update(msg)
+	updated, cmd := b.input.Update(msg)
+	b.input = updated.(RichTextarea)
 
 	return b, cmd
 }
@@ -154,7 +158,7 @@ func (b InputBar) handleKey(msg tea.KeyMsg) (ui.Model, tea.Cmd) {
 			b = b.historyUp()
 			b = b.refreshPopover(PopoverRefreshMsg{
 				Raw:    b.input.Value(),
-				Cursor: b.input.Position(),
+				Cursor: b.input.Cursor(),
 			})
 			return b, nil
 		}
@@ -164,7 +168,7 @@ func (b InputBar) handleKey(msg tea.KeyMsg) (ui.Model, tea.Cmd) {
 			b = b.historyDown()
 			b = b.refreshPopover(PopoverRefreshMsg{
 				Raw:    b.input.Value(),
-				Cursor: b.input.Position(),
+				Cursor: b.input.Cursor(),
 			})
 			return b, nil
 		}
@@ -177,12 +181,14 @@ func (b InputBar) handleKey(msg tea.KeyMsg) (ui.Model, tea.Cmd) {
 
 	b.nickComp.active = false
 
-	var cmd tea.Cmd
-	b.input, cmd = b.input.Update(msg)
+	b.input = b.input.SetAllowFormatting(!strings.HasPrefix(b.input.Value(), "/"))
+	updated, cmd := b.input.Update(msg)
+	b.input = updated.(RichTextarea)
+	b.input = b.input.SetAllowFormatting(!strings.HasPrefix(b.input.Value(), "/"))
 
 	b = b.refreshPopover(PopoverRefreshMsg{
 		Raw:    b.input.Value(),
-		Cursor: b.input.Position(),
+		Cursor: b.input.Cursor(),
 	})
 
 	return b, cmd
@@ -212,10 +218,10 @@ func (b InputBar) handleMouse(msg tea.MouseMsg) (InputBar, bool, tea.Cmd) {
 		case tea.MouseActionPress:
 			if msg.Button == tea.MouseButtonLeft {
 				localX, _ := inputRect.Local(msg.X, msg.Y)
-				b = b.setCursorFromCell(localX)
+				b = b.SetCursorFromCell(localX)
 				b = b.refreshPopover(PopoverRefreshMsg{
 					Raw:    b.input.Value(),
-					Cursor: b.input.Position(),
+					Cursor: b.input.Cursor(),
 				})
 
 				return b, true, nil
@@ -234,14 +240,19 @@ func (b InputBar) submit() (ui.Model, tea.Cmd) {
 		return b, nil
 	}
 
-	b = b.pushHistory(text)
-	b.input.Reset()
+	raw := b.rawValue()
+	b = b.pushHistory(raw)
+	b.input = NewRichTextarea(RichTextareaConfig{
+		SingleLine:      true,
+		Wrap:            false,
+		AllowFormatting: true,
+	})
 	b.histPos = -1
 	b.histDraft = ""
 
 	b = b.refreshPopover(PopoverRefreshMsg{
 		Raw:    b.input.Value(),
-		Cursor: b.input.Position(),
+		Cursor: b.input.Cursor(),
 	})
 
 	if strings.HasPrefix(text, "/") {
@@ -251,7 +262,7 @@ func (b InputBar) submit() (ui.Model, tea.Cmd) {
 	}
 
 	return b, func() tea.Msg {
-		return MessageSubmitMsg{Text: text}
+		return MessageSubmitMsg{Text: raw}
 	}
 }
 
@@ -275,7 +286,7 @@ func (b InputBar) historyUp() InputBar {
 	}
 
 	if b.histPos == -1 {
-		b.histDraft = b.input.Value()
+		b.histDraft = b.rawValue()
 		b.histPos = len(b.history) - 1
 	} else if b.histPos > 0 {
 		b.histPos--
@@ -283,8 +294,7 @@ func (b InputBar) historyUp() InputBar {
 		return b
 	}
 
-	b.input.SetValue(b.history[b.histPos])
-	b.input.CursorEnd()
+	b = b.setRawValue(b.history[b.histPos])
 
 	return b
 }
@@ -296,14 +306,12 @@ func (b InputBar) historyDown() InputBar {
 
 	if b.histPos < len(b.history)-1 {
 		b.histPos++
-		b.input.SetValue(b.history[b.histPos])
+		b = b.setRawValue(b.history[b.histPos])
 	} else {
 		b.histPos = -1
-		b.input.SetValue(b.histDraft)
+		b = b.setRawValue(b.histDraft)
 		b.histDraft = ""
 	}
-
-	b.input.CursorEnd()
 
 	return b
 }
@@ -319,7 +327,7 @@ func (b InputBar) completeNick() InputBar {
 	}
 
 	value := []rune(b.input.Value())
-	cursor := b.input.Position()
+	cursor := b.input.Cursor()
 
 	// Find the word boundary before the cursor.
 	start := cursor
@@ -379,74 +387,55 @@ func (b InputBar) applyNickCompletion() InputBar {
 
 	replacement := string(nick) + suffix
 
-	b.input.SetValue(
-		string(value[:b.nickComp.start]) +
-			replacement +
-			string(value[b.nickComp.end:]),
-	)
+	b.input = b.input.ReplaceRange(b.nickComp.start, b.nickComp.end, replacement)
 
 	newEnd := b.nickComp.start + len([]rune(replacement))
-	b.input.SetCursor(newEnd)
+	b.input = b.input.SetCursorFromRuneIndex(newEnd)
 	b.nickComp.end = newEnd
 
 	return b
 }
 
-func (b InputBar) replaceRange(start, end int, replacement string) InputBar {
+// Value returns the current text in the input buffer.
+func (b InputBar) Value() string {
+	return b.input.Value()
+}
+
+// Cursor returns the cursor position in runes.
+func (b InputBar) Cursor() int {
+	return b.input.Cursor()
+}
+
+// ReplaceRange replaces the given rune range with the provided text.
+func (b InputBar) ReplaceRange(start, end int, replacement string) InputBar {
 	value := []rune(b.input.Value())
 	start = clampInputIndex(start, len(value))
 	end = clampInputIndex(end, len(value))
 	end = max(end, start)
-
-	runes := []rune(replacement)
-	next := make([]rune, 0, start+len(runes)+len(value)-end)
-	next = append(next, value[:start]...)
-	next = append(next, runes...)
-	next = append(next, value[end:]...)
-
-	b.input.SetValue(string(next))
-	b.input.SetCursor(start + len(runes))
+	b.input = b.input.ReplaceRange(start, end, replacement)
 
 	return b
 }
 
-func (b InputBar) setCursorFromCell(x int) InputBar {
+// SetCursorFromCell moves the cursor to the nearest cell within the input area.
+func (b InputBar) SetCursorFromCell(x int) InputBar {
 	x -= b.prefixWidth()
 
 	if x <= 0 {
-		b.input.SetCursor(0)
+		b.input = b.input.SetCursorFromRuneIndex(0)
 		return b
 	}
 
-	value := []rune(b.input.Value())
-	width := 0
-	for i := range len(value) {
-		nextWidth := width + lipgloss.Width(string(value[i]))
-		if x <= nextWidth {
-			if x-width <= nextWidth-x {
-				b.input.SetCursor(i)
-				return b
-			}
+	b.input = b.input.SetCursorFromCell(x)
 
-			b.input.SetCursor(i + 1)
-			return b
-		}
-
-		width = nextWidth
-	}
-
-	b.input.SetCursor(len(value))
 	return b
 }
 
 // KeyBindings implements ui.Keybinding.
 func (b InputBar) KeyBindings() []key.Binding {
-	bindings := []key.Binding{
-		b.keyMap.Submit,
-	}
-
 	if b.popover.IsVisible() {
-		bindings = append(bindings,
+		return []key.Binding{
+			b.keyMap.Submit,
 			ui.WithBindingEnabled(
 				key.NewBinding(
 					key.WithKeys("tab"),
@@ -465,18 +454,36 @@ func (b InputBar) KeyBindings() []key.Binding {
 				key.WithKeys("esc"),
 				key.WithHelp("Esc", "dismiss"),
 			),
-		)
-	} else {
-		bindings = append(bindings,
-			ui.WithBindingEnabled(
-				key.NewBinding(
-					key.WithKeys("up", "down"),
-					key.WithHelp("↑↓", "history"),
-				),
-				len(b.history) > 0,
-			),
-		)
+		}
 	}
+
+	bindings := []key.Binding{
+		b.keyMap.Submit,
+		ui.WithBindingEnabled(b.keyMap.HistoryUp, len(b.history) > 0),
+		ui.WithBindingEnabled(b.keyMap.HistoryDn, len(b.history) > 0),
+		b.keyMap.WordLeft,
+		b.keyMap.WordRight,
+		b.keyMap.DeleteWordBack,
+		b.keyMap.DeleteWordFwd,
+		b.keyMap.DeleteToEnd,
+		b.keyMap.Home,
+		b.keyMap.End,
+	}
+
+	commandMode := strings.HasPrefix(b.input.Value(), "/")
+	if commandMode {
+		return bindings
+	}
+
+	bindings = append(bindings,
+		b.keyMap.ToggleBold,
+		b.keyMap.ToggleItalic,
+		b.keyMap.ToggleUnderline,
+		b.keyMap.ToggleReverse,
+		b.keyMap.ToggleStrike,
+		b.keyMap.OpenPalette,
+		b.keyMap.ResetFormat,
+	)
 
 	return bindings
 }
@@ -521,14 +528,24 @@ func (b InputBar) prefixWidth() int {
 // above the input line.
 func (b InputBar) View(width, _ int) string {
 	nickLabel := theme.UserNick.Render(string(b.userNick)) + " "
-	nickWidth := lipgloss.Width(nickLabel)
+	prompt := theme.Prompt.Render("> ")
+	status := ""
+	if !strings.HasPrefix(b.input.Value(), "/") {
+		status = theme.Dim.Render("[" + b.input.StatusText() + "]")
+	}
 
-	// textinput renders: prompt + text/padding(Width cells) + cursor(1 cell).
-	// The cursor sits outside the Width when the input is empty, so subtract
-	// an extra cell to keep the total within the available space.
-	b.input.Width = max(width-nickWidth-promptWidth()-1, 0)
+	editorWidth := max(width-lipgloss.Width(nickLabel)-lipgloss.Width(prompt)-lipgloss.Width(status), 0)
+	if status != "" && editorWidth > 1 {
+		editorWidth--
+	}
 
-	inputLine := nickLabel + b.input.View()
+	inputLine := nickLabel + prompt + b.input.View(editorWidth, 1)
+	if status != "" {
+		gap := width - lipgloss.Width(inputLine) - lipgloss.Width(status)
+		if gap >= 1 {
+			inputLine = inputLine + strings.Repeat(" ", gap) + status
+		}
+	}
 
 	popoverView := b.popover.Render(width)
 	if popoverView == "" {
@@ -536,4 +553,60 @@ func (b InputBar) View(width, _ int) string {
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Left, popoverView, inputLine)
+}
+
+// PaletteVisible reports whether the colour palette is open.
+func (b InputBar) PaletteVisible() bool {
+	return b.input.PaletteVisible()
+}
+
+// PaletteView renders the colour palette picker.
+func (b InputBar) PaletteView(width int) string {
+	return b.input.PaletteView(width)
+}
+
+// PaletteHeight returns the rendered height of the palette, or 0.
+func (b InputBar) PaletteHeight(width int) int {
+	view := b.PaletteView(width)
+	if view == "" {
+		return 0
+	}
+
+	return lipgloss.Height(view)
+}
+
+// HandlePaletteMouse forwards a mouse event to the palette.
+func (b InputBar) HandlePaletteMouse(msg tea.MouseMsg) (InputBar, bool, tea.Cmd) {
+	updated, handled := b.input.handlePaletteMouse(msg)
+	if !handled {
+		return b, false, nil
+	}
+
+	b.input = updated
+
+	return b, true, nil
+}
+
+func (b InputBar) rawValue() string {
+	plain := b.input.Value()
+	if strings.HasPrefix(plain, "/") {
+		return plain
+	}
+
+	return ircfmt.Encode(b.input.Document())
+}
+
+func (b InputBar) setRawValue(raw string) InputBar {
+	if strings.HasPrefix(raw, "/") {
+		b.input = b.input.SetPlainText(raw)
+		b.input = b.input.SetAllowFormatting(false)
+		b.input = b.input.SetCursorFromRuneIndex(len([]rune(b.input.Value())))
+		return b
+	}
+
+	b.input = b.input.SetDocument(ircfmt.Parse(raw))
+	b.input = b.input.SetAllowFormatting(true)
+	b.input = b.input.SetCursorFromRuneIndex(len([]rune(b.input.Value())))
+
+	return b
 }

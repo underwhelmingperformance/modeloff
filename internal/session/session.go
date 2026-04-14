@@ -25,9 +25,11 @@ import (
 	"github.com/laney/modeloff/internal/api"
 	"github.com/laney/modeloff/internal/config"
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/ircfmt"
 	"github.com/laney/modeloff/internal/memory"
 	"github.com/laney/modeloff/internal/observability"
 	"github.com/laney/modeloff/internal/protocol"
+	"github.com/laney/modeloff/internal/richtext"
 	"github.com/laney/modeloff/internal/store"
 )
 
@@ -1075,7 +1077,7 @@ func (s *Session) buildReplies(
 	var replies []domain.ModelReplyEvent
 
 	for _, part := range parts {
-		body := strings.TrimSpace(part.Body)
+		body := strings.TrimSpace(renderReplyBody(part))
 		if body == "" {
 			continue
 		}
@@ -1385,7 +1387,12 @@ How to behave:
 - Keep messages short. One thought per line, like real IRC. Never send paragraphs.
 - Use lowercase casual tone. Less capitalisation, less punctuation. Be natural.
 - Use ASCII emoticons only (:) :P :/ :S ;) :D). NEVER use emoji (no unicode emoji whatsoever).
-- Use plain text only. NEVER use markdown formatting (no bold, italic, headers, lists, code blocks).
+- Use plain text only in message bodies. NEVER use markdown formatting (no bold, italic, headers, lists, code blocks).
+- A reply message can use either:
+  - body: plain text only
+  - spans: styled text spans, where each span has text and optional style
+- If you want IRC-style formatting, use spans. Do not emit raw IRC control characters yourself.
+- Omit style entirely on plain spans. Keep formatting tasteful and sparse.
 - Use IRC slang where it fits naturally (afk, brb, imo, tbh, iirc, fwiw, ngl).
 - Address people by nick when replying to them (e.g. "laney: yeah sounds good").
 - Each message must be a single line with no newline characters. If you want to say multiple things, use multiple items in the messages array — one thought per message.
@@ -1429,6 +1436,21 @@ How to use memory:
 
 If there are no relevant memories, continue normally without using memory.`)
 
+	b.WriteString(`
+
+Available memory tools:
+- write_memory: create or update a durable memory by key
+- delete_memory: remove a memory that is outdated, incorrect, or no longer useful
+- search_memory: if available, search for relevant memories when useful context may exist but is not visible here
+
+Memory tool guidance:
+- Prefer updating an existing key over creating near-duplicate keys.
+- Use short, stable keys that describe the fact clearly.
+- Before writing a new memory, consider whether the fact already exists under another key.
+- Use search_memory when you need prior context that is not shown below, or when you think a relevant memory may already exist.
+- If a memory becomes wrong or stale, delete or replace it.
+- Do not call memory tools repeatedly without a clear reason.`)
+
 	if len(memories) == 0 {
 		b.WriteString("\n\nYou have no memories yet.")
 		return b.String()
@@ -1440,6 +1462,54 @@ If there are no relevant memories, continue normally without using memory.`)
 	}
 
 	return b.String()
+}
+
+func renderReplyBody(part protocol.ReplyPart) string {
+	if len(part.Spans) == 0 {
+		return part.Body
+	}
+
+	if err := protocol.ValidateReplyPart(part); err != nil {
+		return part.Body
+	}
+
+	spans := make([]richtext.Span, 0, len(part.Spans))
+
+	for _, span := range part.Spans {
+		attrs := richtext.Attrs{}
+		if span.Style != nil {
+			attrs = replyStyleToAttrs(*span.Style)
+		}
+
+		spans = append(spans, richtext.Span{
+			Text:  span.Text,
+			Attrs: attrs,
+		})
+	}
+
+	return ircfmt.Encode(richtext.NewDocumentFromLines([]richtext.Line{{Spans: spans}}))
+}
+
+func replyStyleToAttrs(style protocol.ReplyStyle) richtext.Attrs {
+	return richtext.Attrs{
+		Bold:      style.Bold,
+		Italic:    style.Italic,
+		Underline: style.Underline,
+		Reverse:   style.Reverse,
+		Strike:    style.Strike,
+		FG:        cloneReplyColour(style.FG),
+		BG:        cloneReplyColour(style.BG),
+	}
+}
+
+func cloneReplyColour(colour *uint8) *uint8 {
+	if colour == nil {
+		return nil
+	}
+
+	value := *colour
+
+	return &value
 }
 
 // MemoryExecutor executes memory tool calls on behalf of a model
@@ -1479,6 +1549,7 @@ const (
 	maxToolLoopTurns             = 5
 	silenceReasonContentFiltered = "content filtered"
 	silenceReasonNewlineRetries  = "response contained newlines after retries"
+	silenceReasonFormatRetries   = "response contained invalid formatting after retries"
 )
 
 // sendWithRetry sends events to a model and retries if the response
@@ -1501,6 +1572,8 @@ func (s *Session) sendWithRetry(
 	events []protocol.IRCMessage,
 	registry *ToolRegistry,
 ) (sendOutcome, error) {
+	lastRetryReason := silenceReasonNewlineRetries
+
 	for attempt := range maxNewlineRetries + 1 {
 		result, toolTurnCount, err := s.sendWithToolLoop(ctx, inst, channelName, prompt, history, events, registry)
 		if err != nil {
@@ -1545,12 +1618,20 @@ func (s *Session) sendWithRetry(
 			}, nil
 		}
 
-		if !containsNewlines(result.Response) {
+		hasNewlines := containsNewlines(result.Response)
+		hasInvalidFormatting := containsInvalidFormatting(result.Response)
+		if !hasNewlines && !hasInvalidFormatting {
 			return sendOutcome{
 				result:        result,
 				retryCount:    attempt,
 				toolTurnCount: toolTurnCount,
 			}, nil
+		}
+
+		if hasInvalidFormatting {
+			lastRetryReason = silenceReasonFormatRetries
+		} else {
+			lastRetryReason = silenceReasonNewlineRetries
 		}
 	}
 
@@ -1558,11 +1639,11 @@ func (s *Session) sendWithRetry(
 		result: api.CompletionResult{
 			Response: protocol.ModelResponse{
 				Kind:   protocol.ResponseSilence,
-				Reason: silenceReasonNewlineRetries,
+				Reason: lastRetryReason,
 			},
 		},
 		retryCount: maxNewlineRetries,
-		passReason: observability.PassReasonNewlineRetryExhausted,
+		passReason: observability.PassReasonFormatRetryExhausted,
 	}, nil
 }
 
@@ -1671,6 +1752,8 @@ func passReasonForResponse(response protocol.ModelResponse) string {
 		return observability.PassReasonContentFiltered
 	case silenceReasonNewlineRetries:
 		return observability.PassReasonNewlineRetryExhausted
+	case silenceReasonFormatRetries:
+		return observability.PassReasonFormatRetryExhausted
 	default:
 		return observability.PassReasonModelPass
 	}
@@ -1681,6 +1764,16 @@ func passReasonForResponse(response protocol.ModelResponse) string {
 func containsNewlines(resp protocol.ModelResponse) bool {
 	for _, part := range resp.Messages {
 		if strings.Contains(strings.TrimSpace(part.Body), "\n") {
+			return true
+		}
+	}
+
+	return false
+}
+
+func containsInvalidFormatting(resp protocol.ModelResponse) bool {
+	for _, part := range resp.Messages {
+		if err := protocol.ValidateReplyPart(part); err != nil {
 			return true
 		}
 	}

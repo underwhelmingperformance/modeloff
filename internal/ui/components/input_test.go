@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"testing"
 
+	bubbleskey "github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -76,6 +77,18 @@ func TestInputBar_submit_command_no_args(t *testing.T) {
 	msg := cmd()
 	sub := msg.(components.CommandSubmitMsg)
 	require.Equal(t, "/list", sub.Raw)
+}
+
+func TestInputBar_submit_rich_message_as_irc_formatting(t *testing.T) {
+	b := components.NewInputBar()
+	var m ui.Model = b
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}, Alt: true})
+	m = typeText(t, m, "bold")
+	_, cmd := enter(t, m)
+
+	require.NotNil(t, cmd)
+	require.Equal(t, components.MessageSubmitMsg{Text: "\x02bold\x0f"}, cmd())
 }
 
 func TestInputBar_space_key_inserts_space(t *testing.T) {
@@ -201,6 +214,19 @@ func TestInputBar_View_includes_user_nick_and_fits_width(t *testing.T) {
 	require.Contains(t, v, "testuser")
 	require.Contains(t, v, ">")
 	require.LessOrEqual(t, lipgloss.Width(v), 20)
+}
+
+func TestInputBar_set_cursor_from_cell(t *testing.T) {
+	b := components.NewInputBar()
+	var m ui.Model = b
+
+	m = typeText(t, m, "hello")
+	b = m.(components.InputBar).SetCursorFromCell(4)
+	require.Equal(t, 1, b.Cursor())
+	m = b
+	m = typeText(t, m, "X")
+
+	require.Equal(t, "hXello", m.(components.InputBar).Value())
 }
 
 func TestInputBar_history_up_down(t *testing.T) {
@@ -374,6 +400,57 @@ func TestInputBar_ctrl_d_does_not_delete_forward(t *testing.T) {
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
 
 	require.Contains(t, viewText(m), "abcde")
+}
+
+func TestInputBar_history_preserves_rich_formatting(t *testing.T) {
+	b := components.NewInputBar()
+	var m ui.Model = b
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}, Alt: true})
+	m = typeText(t, m, "bold")
+	m, _ = enter(t, m)
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	_, cmd := enter(t, m)
+
+	require.NotNil(t, cmd)
+	require.Equal(t, components.MessageSubmitMsg{Text: "\x02bold\x0f"}, cmd())
+}
+
+func TestInputBar_command_mode_disables_formatting_shortcuts(t *testing.T) {
+	b := components.NewInputBar()
+	var m ui.Model = b
+
+	m = typeText(t, m, "/join ")
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}, Alt: true})
+	m = typeText(t, m, "#general")
+	_, cmd := enter(t, m)
+
+	require.NotNil(t, cmd)
+	require.Equal(t, components.CommandSubmitMsg{Raw: "/join #general"}, cmd())
+}
+
+func TestInputBar_keybindings_include_rich_shortcuts(t *testing.T) {
+	b := components.NewInputBar()
+
+	bindings := keyMapByHelp(b.KeyBindings())
+	require.Contains(t, bindings, "M-B\x00bold")
+	require.Contains(t, bindings, "^←\x00word ←")
+	require.Contains(t, bindings, "^W\x00del word")
+
+	b = typeText(t, b, "/join").(components.InputBar)
+	bindings = keyMapByHelp(b.KeyBindings())
+	require.NotContains(t, bindings, "M-B\x00bold")
+}
+
+func keyMapByHelp(bindings []bubbleskey.Binding) map[string]struct{} {
+	index := map[string]struct{}{}
+	for _, binding := range bindings {
+		help := binding.Help()
+		index[help.Key+"\x00"+help.Desc] = struct{}{}
+	}
+
+	return index
 }
 
 func TestInputBar_ignores_non_key_messages(t *testing.T) {

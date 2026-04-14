@@ -10,6 +10,7 @@ import (
 
 	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/ircfmt"
 	"github.com/laney/modeloff/internal/ui/theme"
 	"github.com/laney/modeloff/internal/ui/timestamp"
 )
@@ -31,21 +32,26 @@ func renderChannelEvent(
 	case domain.ChannelMessage:
 		ts := formatTimestampPrefix(e.At, timestampFormat, locale)
 		highlighted := ContainsHighlightWord(e.Body, highlightWords, userNick)
-
-		body := e.Body
-		if highlighted {
-			body = theme.Highlight.Render(body)
-		}
+		body := renderIRCBody(e.Body)
 
 		if e.Action {
 			nick := theme.NickStyle(string(e.From)).Render(string(e.From))
-			return wrap.Render(strings.TrimSpace(fmt.Sprintf("%s* %s %s", ts, nick, body)))
+			prefix := fmt.Sprintf("%s* %s", ts, nick)
+			if highlighted {
+				prefix = theme.Highlight.Render(strings.TrimSpace(prefix))
+			}
+
+			return wrap.Render(strings.TrimSpace(fmt.Sprintf("%s %s", prefix, body)))
 		}
 
 		nick := theme.NickStyle(string(e.From)).
 			Render(fmt.Sprintf("<%s>", string(e.From)))
+		prefix := ts + nick
+		if highlighted {
+			prefix = theme.Highlight.Render(strings.TrimSpace(prefix))
+		}
 
-		return wrap.Render(strings.TrimSpace(fmt.Sprintf("%s%s %s", ts, nick, body)))
+		return wrap.Render(strings.TrimSpace(fmt.Sprintf("%s %s", prefix, body)))
 
 	case domain.ChannelJoin:
 		text := fmt.Sprintf("%s has joined %s", e.Nick, e.Channel)
@@ -232,6 +238,11 @@ func renderHelp(commands []*command.Node) string {
 		lines = []string{"/help                            Show available commands."}
 	}
 
+	lines = append(lines,
+		"formatting                      M-B/M-I/M-U/M-R/M-S toggle styles",
+		"formatting                      M-C colours, M-O clears formatting",
+	)
+
 	var parts []string
 	for _, line := range lines {
 		parts = append(parts, theme.SystemEvent.Render("*** "+line))
@@ -261,7 +272,7 @@ func ContainsHighlightWord(body string, words []string, userNick domain.Nick) bo
 		return false
 	}
 
-	lower := strings.ToLower(body)
+	lower := strings.ToLower(ircfmt.Strip(body))
 
 	for _, word := range words {
 		w := word
@@ -279,4 +290,19 @@ func ContainsHighlightWord(body string, words []string, userNick domain.Nick) bo
 	}
 
 	return false
+}
+
+func renderIRCBody(body string) string {
+	document := ircfmt.Parse(body)
+	var builder strings.Builder
+
+	for lineIndex := range document.LineCount() {
+		line := document.Line(lineIndex)
+		for _, span := range line.Spans {
+			builder.WriteString(styleForAttrs(span.Attrs).Render(span.Text))
+		}
+		builder.WriteByte('\n')
+	}
+
+	return strings.TrimSuffix(builder.String(), "\n")
 }

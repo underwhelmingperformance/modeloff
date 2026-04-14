@@ -60,9 +60,23 @@ var DefaultSidebarKeyMap = SidebarKeyMap{
 
 // InputBarKeyMap defines keybindings for the input bar component.
 type InputBarKeyMap struct {
-	Submit    key.Binding
-	HistoryUp key.Binding
-	HistoryDn key.Binding
+	Submit          key.Binding
+	HistoryUp       key.Binding
+	HistoryDn       key.Binding
+	WordLeft        key.Binding
+	WordRight       key.Binding
+	DeleteWordBack  key.Binding
+	DeleteWordFwd   key.Binding
+	DeleteToEnd     key.Binding
+	Home            key.Binding
+	End             key.Binding
+	ToggleBold      key.Binding
+	ToggleItalic    key.Binding
+	ToggleUnderline key.Binding
+	ToggleReverse   key.Binding
+	ToggleStrike    key.Binding
+	OpenPalette     key.Binding
+	ResetFormat     key.Binding
 }
 
 // DefaultInputBarKeyMap is the default set of keybindings for the
@@ -79,6 +93,62 @@ var DefaultInputBarKeyMap = InputBarKeyMap{
 	HistoryDn: key.NewBinding(
 		key.WithKeys("down"),
 		key.WithHelp("↓", "history"),
+	),
+	WordLeft: key.NewBinding(
+		key.WithKeys("ctrl+left"),
+		key.WithHelp("^←", "word ←"),
+	),
+	WordRight: key.NewBinding(
+		key.WithKeys("ctrl+right"),
+		key.WithHelp("^→", "word →"),
+	),
+	DeleteWordBack: key.NewBinding(
+		key.WithKeys("ctrl+w"),
+		key.WithHelp("^W", "del word"),
+	),
+	DeleteWordFwd: key.NewBinding(
+		key.WithKeys("alt+d"),
+		key.WithHelp("M-D", "del next word"),
+	),
+	DeleteToEnd: key.NewBinding(
+		key.WithKeys("ctrl+k"),
+		key.WithHelp("^K", "del → end"),
+	),
+	Home: key.NewBinding(
+		key.WithKeys("home", "ctrl+a"),
+		key.WithHelp("Home", "line start"),
+	),
+	End: key.NewBinding(
+		key.WithKeys("end", "ctrl+e"),
+		key.WithHelp("End", "line end"),
+	),
+	ToggleBold: key.NewBinding(
+		key.WithKeys("alt+b"),
+		key.WithHelp("M-B", "bold"),
+	),
+	ToggleItalic: key.NewBinding(
+		key.WithKeys("alt+i"),
+		key.WithHelp("M-I", "italic"),
+	),
+	ToggleUnderline: key.NewBinding(
+		key.WithKeys("alt+u"),
+		key.WithHelp("M-U", "underline"),
+	),
+	ToggleReverse: key.NewBinding(
+		key.WithKeys("alt+r"),
+		key.WithHelp("M-R", "reverse"),
+	),
+	ToggleStrike: key.NewBinding(
+		key.WithKeys("alt+s"),
+		key.WithHelp("M-S", "strike"),
+	),
+	OpenPalette: key.NewBinding(
+		key.WithKeys("alt+c"),
+		key.WithHelp("M-C", "colour"),
+	),
+	ResetFormat: key.NewBinding(
+		key.WithKeys("alt+o"),
+		key.WithHelp("M-O", "reset fmt"),
 	),
 }
 

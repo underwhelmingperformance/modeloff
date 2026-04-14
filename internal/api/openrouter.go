@@ -104,6 +104,8 @@ func generateSchema[T any]() map[string]any {
 type modelResponseBody struct{}
 
 func (modelResponseBody) JSONSchema() *jsonschema.Schema {
+	reflector := jsonschema.Reflector{Anonymous: true}
+	replySpanSchema := reflector.Reflect(protocol.ReplySpan{})
 	replyProps := jsonschema.NewProperties()
 	replyProps.Set("kind", &jsonschema.Schema{Type: "string", Const: "reply"})
 	replyProps.Set("messages", &jsonschema.Schema{
@@ -111,7 +113,6 @@ func (modelResponseBody) JSONSchema() *jsonschema.Schema {
 		Description: "One or more messages to send.",
 		Items: &jsonschema.Schema{
 			Type:                 "object",
-			Required:             []string{"type", "body"},
 			AdditionalProperties: jsonschema.FalseSchema,
 			Properties: func() *orderedmap.OrderedMap[string, *jsonschema.Schema] {
 				p := jsonschema.NewProperties()
@@ -120,12 +121,23 @@ func (modelResponseBody) JSONSchema() *jsonschema.Schema {
 					Enum:        []any{"message", "action"},
 					Description: `"message" for a regular message, "action" for a /me action.`,
 				})
+				// Keep the message item schema flat. Runtime validation still
+				// enforces exactly one of body or spans, but avoiding a nested
+				// anyOf here keeps the schema friendlier to stricter providers.
 				p.Set("body", &jsonschema.Schema{
 					Type:        "string",
-					Description: "The message text. For actions, just the action body without /me.",
+					Description: "The plain message text. For actions, just the action body without /me. Provide either body or spans, not both.",
+				})
+				p.Set("spans", &jsonschema.Schema{
+					Type:        "array",
+					Description: "Optional styled spans. Prefer this over raw IRC control characters when you want formatting. Provide either spans or body, not both.",
+					Items: &jsonschema.Schema{
+						Ref: replySpanSchema.Ref,
+					},
 				})
 				return p
 			}(),
+			Required: []string{"type"},
 		},
 	})
 
@@ -137,6 +149,7 @@ func (modelResponseBody) JSONSchema() *jsonschema.Schema {
 	})
 
 	return &jsonschema.Schema{
+		Definitions: replySpanSchema.Definitions,
 		AnyOf: []*jsonschema.Schema{
 			{
 				Type:                 "object",
