@@ -72,7 +72,7 @@ type RichTextarea struct {
 func NewRichTextarea(config RichTextareaConfig) RichTextarea {
 	cur := cursor.New()
 	cur.Focus()
-	cur.SetMode(cursor.CursorStatic)
+	cur.SetMode(cursor.CursorBlink)
 	cur.TextStyle = lipgloss.NewStyle()
 
 	editor := RichTextarea{

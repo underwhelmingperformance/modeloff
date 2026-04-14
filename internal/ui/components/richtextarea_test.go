@@ -20,7 +20,7 @@ func colour(index uint8) *uint8 {
 func TestRichTextareaCursorVisibleByDefault(t *testing.T) {
 	editor := NewRichTextarea(RichTextareaConfig{SingleLine: true})
 	require.False(t, editor.cursor.Blink, "cursor must not be in blink-off state")
-	require.Equal(t, cursor.CursorStatic, editor.cursor.Mode(), "cursor must use static mode")
+	require.Equal(t, cursor.CursorBlink, editor.cursor.Mode(), "cursor must use blink mode")
 }
 
 func TestRichTextareaCursorAppearsInView(t *testing.T) {
