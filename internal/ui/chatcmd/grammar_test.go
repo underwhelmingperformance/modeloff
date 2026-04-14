@@ -135,6 +135,46 @@ func TestNewParser_parse_returns_typed_command(t *testing.T) {
 	require.Equal(t, HelpCommand{}, cmd)
 }
 
+func TestQuitCommand_quitMessage_defaults_to_leaving(t *testing.T) {
+	tests := []struct {
+		name string
+		cmd  QuitCommand
+		want string
+	}{
+		{
+			name: "nil message uses default",
+			cmd:  QuitCommand{},
+			want: "leaving",
+		},
+		{
+			name: "empty message uses default",
+			cmd:  QuitCommand{Message: []string{}},
+			want: "leaving",
+		},
+		{
+			name: "whitespace-only message uses default",
+			cmd:  QuitCommand{Message: []string{"  "}},
+			want: "leaving",
+		},
+		{
+			name: "custom message is preserved",
+			cmd:  QuitCommand{Message: []string{"see", "ya"}},
+			want: "see ya",
+		},
+		{
+			name: "single word message is preserved",
+			cmd:  QuitCommand{Message: []string{"goodbye"}},
+			want: "goodbye",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, tt.cmd.quitMessage())
+		})
+	}
+}
+
 func TestComplete_join_suggests_channels(t *testing.T) {
 	c := complete(t, "/join ")
 

@@ -576,8 +576,21 @@ func (c QuitCommand) Run(rc Context) tea.Cmd {
 	}
 }
 
+// defaultQuitMessage is used when the user types /quit without a
+// farewell message.
+const defaultQuitMessage = "leaving"
+
+func (c QuitCommand) quitMessage() string {
+	msg := strings.TrimSpace(strings.Join(c.Message, " "))
+	if msg == "" {
+		return defaultQuitMessage
+	}
+
+	return msg
+}
+
 func (c QuitCommand) executeQuit(ctx context.Context, sess *session.Session, actor domain.Nick) error {
-	return sess.QuitAs(ctx, actor, strings.TrimSpace(strings.Join(c.Message, " ")))
+	return sess.QuitAs(ctx, actor, c.quitMessage())
 }
 
 // RunTool implements ToolCommand.
