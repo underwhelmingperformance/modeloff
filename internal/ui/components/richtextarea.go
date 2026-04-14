@@ -71,6 +71,8 @@ type RichTextarea struct {
 // NewRichTextarea creates a new editor.
 func NewRichTextarea(config RichTextareaConfig) RichTextarea {
 	cur := cursor.New()
+	cur.Focus()
+	cur.SetMode(cursor.CursorStatic)
 	cur.TextStyle = lipgloss.NewStyle()
 
 	editor := RichTextarea{
@@ -85,7 +87,7 @@ func NewRichTextarea(config RichTextareaConfig) RichTextarea {
 
 // Init implements ui.Model.
 func (r RichTextarea) Init() tea.Cmd {
-	return r.cursor.Focus()
+	return nil
 }
 
 // Update implements ui.Model.
@@ -808,12 +810,18 @@ func (r RichTextarea) PaletteView(width int) string {
 	return r.renderPalette(width)
 }
 
+// activeAttrs returns the formatting attributes active at the cursor.
+func (r RichTextarea) activeAttrs() richtext.Attrs {
+	if !r.selection.Collapsed() {
+		return r.document.AttrsBefore(r.selection.Head)
+	}
+
+	return r.pending
+}
+
 // StatusText returns a compact summary of the active formatting state.
 func (r RichTextarea) StatusText() string {
-	active := r.pending
-	if !r.selection.Collapsed() {
-		active = r.document.AttrsBefore(r.selection.Head)
-	}
+	active := r.activeAttrs()
 
 	var bits []string
 	if active.Bold {

@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/bubbles/cursor"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/stretchr/testify/require"
 
@@ -14,6 +15,28 @@ func colour(index uint8) *uint8 {
 	value := index
 
 	return &value
+}
+
+func TestRichTextareaCursorVisibleByDefault(t *testing.T) {
+	editor := NewRichTextarea(RichTextareaConfig{SingleLine: true})
+	require.False(t, editor.cursor.Blink, "cursor must not be in blink-off state")
+	require.Equal(t, cursor.CursorStatic, editor.cursor.Mode(), "cursor must use static mode")
+}
+
+func TestRichTextareaCursorAppearsInView(t *testing.T) {
+	editor := NewRichTextarea(RichTextareaConfig{SingleLine: true})
+	editor = editor.SetPlainText("hello")
+	editor = editor.SetCursorFromRuneIndex(2)
+
+	view := editor.View(20, 1)
+
+	// The cursor renders the character under it ("l") via cursor.View().
+	// Even without a terminal colour profile, the character text must appear.
+	require.Contains(t, view, "l", "cursor character must appear in rendered view")
+
+	// The full text must also be present.
+	require.Contains(t, view, "he")
+	require.Contains(t, view, "lo")
 }
 
 func TestRichTextareaCtrlWordMovementUsesBoundaries(t *testing.T) {
