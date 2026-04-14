@@ -3033,6 +3033,105 @@ func TestSession_DispatchToChannel_retries_on_invalid_structured_formatting(t *t
 	}, replies)
 }
 
+func TestSession_DispatchToChannel_format_retry_exhaustion(t *testing.T) {
+	recorder := oteltest.InstallSpanRecorder(t)
+	calls := 0
+	fake := &fakeAPIClient{
+		sendEventsFn: func(context.Context, domain.ModelID, string, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			calls++
+			return protocol.ModelResponse{
+				Kind: protocol.ResponseReply,
+				Messages: []protocol.ReplyPart{{
+					Kind: protocol.ReplyMessage,
+					Spans: []protocol.ReplySpan{
+						{Text: "", Style: &protocol.ReplyStyle{Bold: true}},
+					},
+				}},
+			}, nil
+		},
+	}
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+	seedInstance(t, s, domain.Instance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: testChannels("#general"),
+	})
+
+	_, ircMsg := seedUserMessage(t, s, "#general", "hello")
+
+	replies, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+	require.NoError(t, err)
+
+	require.Equal(t, 3, calls)
+	require.Empty(t, replies)
+
+	msgs := channelMessages(t, s, "#general")
+	require.Equal(t, []domain.ChannelMessage{
+		{Channel: "#general", From: "testuser", Body: "hello", At: fixedTime},
+	}, msgs)
+
+	span := oteltest.FindSpan(t, recorder, "session.dispatch_to_instance")
+	require.Equal(t, observability.PassReasonFormatRetryExhausted, oteltest.AttrValue(span.Attributes(), observability.AttrPassReason))
+}
+
+func TestSession_DispatchToChannel_newline_retry_exhaustion(t *testing.T) {
+	// Responses with embedded newlines also fail format validation,
+	// so the format reason takes precedence when both apply. To
+	// exercise the newline-specific exhaustion mapping, verify
+	// passReasonForResponse separately and ensure the dispatch still
+	// produces the correct observability attributes when newlines
+	// are the only issue.
+
+	t.Run("passReasonForResponse maps newline silence", func(t *testing.T) {
+		resp := protocol.ModelResponse{
+			Kind:   protocol.ResponseSilence,
+			Reason: silenceReasonNewlineRetries,
+		}
+		require.Equal(t, observability.PassReasonNewlineRetryExhausted, passReasonForResponse(resp))
+	})
+
+	t.Run("dispatch with multiline body exhausts retries", func(t *testing.T) {
+		recorder := oteltest.InstallSpanRecorder(t)
+		calls := 0
+		fake := &fakeAPIClient{
+			sendEventsFn: func(context.Context, domain.ModelID, string, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
+				calls++
+				return protocol.Reply("always\nmultiline"), nil
+			},
+		}
+		sess, s := newTestSessionWithAPI(t, fake)
+		ctx := t.Context()
+
+		seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+		seedInstance(t, s, domain.Instance{
+			Nick:     "botty",
+			ModelID:  "test/model",
+			Channels: testChannels("#general"),
+		})
+
+		_, ircMsg := seedUserMessage(t, s, "#general", "hello")
+
+		replies, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+		require.NoError(t, err)
+
+		require.Equal(t, 3, calls)
+		require.Empty(t, replies)
+
+		msgs := channelMessages(t, s, "#general")
+		require.Equal(t, []domain.ChannelMessage{
+			{Channel: "#general", From: "testuser", Body: "hello", At: fixedTime},
+		}, msgs)
+
+		// A body with newlines also fails format validation, so
+		// format takes precedence in the retry reason.
+		span := oteltest.FindSpan(t, recorder, "session.dispatch_to_instance")
+		require.Equal(t, observability.PassReasonFormatRetryExhausted, oteltest.AttrValue(span.Attributes(), observability.AttrPassReason))
+	})
+}
+
 func seedChannelWithMembers(t *testing.T, s *storemod.SQLiteStore, name domain.ChannelName, members ...domain.Nick) {
 	t.Helper()
 

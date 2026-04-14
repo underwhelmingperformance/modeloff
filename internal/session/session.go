@@ -1656,15 +1656,15 @@ func (s *Session) sendWithRetry(
 		}
 	}
 
+	resp := protocol.ModelResponse{
+		Kind:   protocol.ResponseSilence,
+		Reason: lastRetryReason,
+	}
+
 	return sendOutcome{
-		result: api.CompletionResult{
-			Response: protocol.ModelResponse{
-				Kind:   protocol.ResponseSilence,
-				Reason: lastRetryReason,
-			},
-		},
+		result:     api.CompletionResult{Response: resp},
 		retryCount: maxNewlineRetries,
-		passReason: observability.PassReasonFormatRetryExhausted,
+		passReason: passReasonForResponse(resp),
 	}, nil
 }
 
