@@ -1156,60 +1156,95 @@ func TestContinueWithToolResults_logs_token_counts(t *testing.T) {
 	require.Equal(t, 0.125, record["cost_credits"])
 }
 
-func TestModelResponseSchema_uses_shared_span_definitions(t *testing.T) {
-	properties := requireSchemaMap(t, modelResponseSchemaMap["properties"])
-	response := requireSchemaMap(t, properties["response"])
-	defs := requireSchemaMap(t, response["$defs"])
-	require.Contains(t, defs, "ReplySpan")
-	require.Contains(t, defs, "ReplyStyle")
-
-	anyOf := requireSchemaSlice(t, response["anyOf"])
-	require.NotEmpty(t, anyOf)
-
-	replyBranch := requireSchemaBranch(t, anyOf, "reply")
-	replyProperties := requireSchemaMap(t, replyBranch["properties"])
-	messages := requireSchemaMap(t, replyProperties["messages"])
-	items := requireSchemaMap(t, messages["items"])
-	itemProperties := requireSchemaMap(t, items["properties"])
-	spans := requireSchemaMap(t, itemProperties["spans"])
-	spanItems := requireSchemaMap(t, spans["items"])
-
-	require.Equal(t, "#/$defs/ReplySpan", spanItems["$ref"])
-	require.Equal(t, []any{"type"}, items["required"])
-	require.NotContains(t, items, "anyOf")
-}
-
-func requireSchemaMap(t *testing.T, value any) map[string]any {
-	t.Helper()
-
-	result, ok := value.(map[string]any)
-	require.True(t, ok)
-
-	return result
-}
-
-func requireSchemaSlice(t *testing.T, value any) []any {
-	t.Helper()
-
-	result, ok := value.([]any)
-	require.True(t, ok)
-
-	return result
-}
-
-func requireSchemaBranch(t *testing.T, branches []any, kind string) map[string]any {
-	t.Helper()
-
-	for _, branch := range branches {
-		candidate := requireSchemaMap(t, branch)
-		properties := requireSchemaMap(t, candidate["properties"])
-		kindSchema := requireSchemaMap(t, properties["kind"])
-		if kindSchema["const"] == kind {
-			return candidate
-		}
+func TestModelResponseSchema_inlines_all_definitions(t *testing.T) {
+	want := map[string]any{
+		"$id":                  "https://github.com/laney/modeloff/internal/api/model-response-wrapper",
+		"$schema":              "https://json-schema.org/draft/2020-12/schema",
+		"additionalProperties": false,
+		"type":                 "object",
+		"required":             []any{"response"},
+		"properties": map[string]any{
+			"response": map[string]any{
+				"anyOf": []any{
+					map[string]any{
+						"additionalProperties": false,
+						"type":                 "object",
+						"required":             []any{"kind", "messages"},
+						"properties": map[string]any{
+							"kind": map[string]any{
+								"const": "reply",
+								"type":  "string",
+							},
+							"messages": map[string]any{
+								"description": "One or more messages to send.",
+								"type":        "array",
+								"items": map[string]any{
+									"additionalProperties": false,
+									"type":                 "object",
+									"required":             []any{"type"},
+									"properties": map[string]any{
+										"type": map[string]any{
+											"description": `"message" for a regular message, "action" for a /me action.`,
+											"type":        "string",
+											"enum":        []any{"message", "action"},
+										},
+										"body": map[string]any{
+											"description": "The plain message text. For actions, just the action body without /me. Provide either body or spans, not both.",
+											"type":        "string",
+										},
+										"spans": map[string]any{
+											"description": "Optional styled spans. Prefer this over raw IRC control characters when you want formatting. Provide either spans or body, not both.",
+											"type":        "array",
+											"items": map[string]any{
+												"$id":                  "https://github.com/laney/modeloff/internal/protocol/reply-span",
+												"$schema":              "https://json-schema.org/draft/2020-12/schema",
+												"additionalProperties": false,
+												"type":                 "object",
+												"required":             []any{"text"},
+												"properties": map[string]any{
+													"text": map[string]any{
+														"type": "string",
+													},
+													"style": map[string]any{
+														"additionalProperties": false,
+														"type":                 "object",
+														"properties": map[string]any{
+															"bold":      map[string]any{"type": "boolean"},
+															"italic":    map[string]any{"type": "boolean"},
+															"underline": map[string]any{"type": "boolean"},
+															"reverse":   map[string]any{"type": "boolean"},
+															"strike":    map[string]any{"type": "boolean"},
+															"fg":        map[string]any{"type": "integer"},
+															"bg":        map[string]any{"type": "integer"},
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					map[string]any{
+						"additionalProperties": false,
+						"type":                 "object",
+						"required":             []any{"kind", "reason"},
+						"properties": map[string]any{
+							"kind": map[string]any{
+								"const": "pass",
+								"type":  "string",
+							},
+							"reason": map[string]any{
+								"description": "A brief reason for not replying.",
+								"type":        "string",
+							},
+						},
+					},
+				},
+			},
+		},
 	}
 
-	t.Fatalf("schema branch for kind %q not found", kind)
-
-	return nil
+	require.Equal(t, want, modelResponseSchemaMap)
 }

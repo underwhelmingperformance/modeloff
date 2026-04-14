@@ -104,7 +104,7 @@ func generateSchema[T any]() map[string]any {
 type modelResponseBody struct{}
 
 func (modelResponseBody) JSONSchema() *jsonschema.Schema {
-	reflector := jsonschema.Reflector{Anonymous: true}
+	reflector := jsonschema.Reflector{DoNotReference: true}
 	replySpanSchema := reflector.Reflect(protocol.ReplySpan{})
 	replyProps := jsonschema.NewProperties()
 	replyProps.Set("kind", &jsonschema.Schema{Type: "string", Const: "reply"})
@@ -131,9 +131,7 @@ func (modelResponseBody) JSONSchema() *jsonschema.Schema {
 				p.Set("spans", &jsonschema.Schema{
 					Type:        "array",
 					Description: "Optional styled spans. Prefer this over raw IRC control characters when you want formatting. Provide either spans or body, not both.",
-					Items: &jsonschema.Schema{
-						Ref: replySpanSchema.Ref,
-					},
+					Items:       replySpanSchema,
 				})
 				return p
 			}(),
@@ -149,7 +147,6 @@ func (modelResponseBody) JSONSchema() *jsonschema.Schema {
 	})
 
 	return &jsonschema.Schema{
-		Definitions: replySpanSchema.Definitions,
 		AnyOf: []*jsonschema.Schema{
 			{
 				Type:                 "object",
