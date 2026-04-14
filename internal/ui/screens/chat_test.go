@@ -118,6 +118,49 @@ func TestChatScreen_join_existing_channel(t *testing.T) {
 	tm.WaitFor("#general", "general msg")
 }
 
+func TestChatScreen_rejoin_filters_old_events(t *testing.T) {
+	ctx := t.Context()
+	s := storetest.NewMemoryStore(t)
+
+	oldTime := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	members := domain.NewMemberList()
+	members.Add("testuser")
+
+	require.NoError(t, s.SaveChannel(ctx, domain.Channel{
+		Name:    "#general",
+		Kind:    domain.KindChannel,
+		Members: members,
+		Created: oldTime,
+	}))
+
+	require.NoError(t, s.SetLastChannel(ctx, "#general"))
+
+	_, err := s.AppendEvent(ctx, "#general", domain.ChannelMessage{
+		Channel: "#general",
+		From:    "oldnick",
+		Body:    "ancient history",
+		At:      oldTime,
+	})
+	require.NoError(t, err)
+
+	sess := session.New(s, nil, &uitest.FakeAPI{}, "testuser", "", "")
+	require.NoError(t, sess.RejoinChannels(ctx))
+
+	tm := newChatApp(t, sess)
+	tm.WaitFor("#general")
+
+	// Send a new message which should appear.
+	tm.Submit("fresh message")
+	tm.WaitFor("fresh message")
+
+	// The old event seeded before RejoinChannels should not be
+	// visible in the current view.
+	view := tm.CurrentView()
+	require.NotContains(t, view, "ancient history",
+		"events from before the session start should be filtered out")
+}
+
 func TestChatScreen_part_command(t *testing.T) {
 	sess := newTestSession(t)
 	uitest.SeedChannel(t, sess, "#general")

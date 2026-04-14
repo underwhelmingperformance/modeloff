@@ -69,7 +69,9 @@ func (s *Session) JoinAs(ctx context.Context, actor domain.Nick, ch domain.Chann
 			return fmt.Errorf("mark read: %w", err)
 		}
 
-		s.user.Channels.Set(ch, now)
+		if !alreadyMember {
+			s.user.Channels.Set(ch, now)
+		}
 	} else {
 		inst, err := s.store.GetInstance(ctx, actor)
 		if err == nil {

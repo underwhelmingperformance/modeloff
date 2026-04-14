@@ -199,6 +199,24 @@ func TestSession_JoinSwitchAndReturn_no_duplicate_event(t *testing.T) {
 	require.Equal(t, domain.ChannelName("#general"), last)
 }
 
+func TestSession_RejoinChannels_populates_user_join_times(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#general", "testuser")
+	seedChannelWithMembers(t, s, "#random", "testuser")
+
+	// Before RejoinChannels, UserJoinedAt returns zero.
+	require.True(t, sess.UserJoinedAt("#general").IsZero())
+	require.True(t, sess.UserJoinedAt("#random").IsZero())
+
+	require.NoError(t, sess.RejoinChannels(ctx))
+
+	// After RejoinChannels, UserJoinedAt returns the session start time.
+	require.Equal(t, fixedTime, sess.UserJoinedAt("#general"))
+	require.Equal(t, fixedTime, sess.UserJoinedAt("#random"))
+}
+
 func TestSession_Leave(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()

@@ -148,7 +148,7 @@ func (s ChatScreen) handleChannelFocus(msg domain.ChannelFocusEvent) (ui.Model, 
 	cmds = append(cmds, msgCmd(components.ChannelActiveMsg{Channel: msg.Channel}))
 	cmds = append(cmds, msgCmd(components.ChannelUnreadMsg{Channel: msg.Channel, Count: 0}))
 	cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: ch.Members}))
-	cmds = append(cmds, s.fetchHistory(msg.Channel))
+	cmds = append(cmds, s.fetchHistoryAfter(msg.Channel, s.sess.UserJoinedAt(msg.Channel)))
 
 	return s, tea.Sequence(cmds...)
 }
@@ -260,7 +260,7 @@ func (s ChatScreen) handlePartEvent(msg domain.PartEvent) (ui.Model, tea.Cmd) {
 
 	cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: members}))
 	if leavingActive {
-		cmds = append(cmds, s.fetchHistory(*s.active))
+		cmds = append(cmds, s.fetchHistoryAfter(*s.active, s.sess.UserJoinedAt(*s.active)))
 	}
 
 	if !leavingActive && *s.active == msg.Channel {
@@ -482,7 +482,7 @@ func (s ChatScreen) handleDMOpenedEvent(msg domain.DMOpenedEvent) (ui.Model, tea
 	cmds = append(cmds, msgCmd(components.ChannelAddedMsg{Channel: msg.Channel}))
 	cmds = append(cmds, msgCmd(components.ChannelActiveMsg{Channel: msg.Channel.Name}))
 	cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: members}))
-	cmds = append(cmds, s.fetchHistory(msg.Channel.Name))
+	cmds = append(cmds, s.fetchHistoryAfter(msg.Channel.Name, s.sess.UserJoinedAt(msg.Channel.Name)))
 	cmds = append(cmds, s.logAndShow(domain.ChannelSystemNotice{
 		Channel: msg.Channel.Name,
 		Text:    fmt.Sprintf("Opened direct message with %s", msg.Nick),

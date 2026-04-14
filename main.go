@@ -79,6 +79,11 @@ func main() {
 	sess.SetToolRegistry(toolRegistry)
 
 	appCtx, cancelApp := context.WithCancel(context.Background())
+
+	if err := sess.RejoinChannels(appCtx); err != nil {
+		fmt.Fprintf(os.Stderr, "error rejoining channels: %v\n", err)
+		os.Exit(1)
+	}
 	defer cancelApp()
 
 	channelCount := 0

@@ -568,13 +568,6 @@ func (s ChatScreen) logAndShow(event domain.ChannelEvent) tea.Cmd {
 	return msgCmd(stored)
 }
 
-// fetchHistory returns a Cmd that loads the latest events for a
-// channel from the event log and sends them as a HistoryLoadedMsg.
-// The number of events fetched is based on the viewport height.
-func (s ChatScreen) fetchHistory(ch domain.ChannelName) tea.Cmd {
-	return s.fetchHistoryAfter(ch, time.Time{})
-}
-
 func (s ChatScreen) fetchHistoryAfter(ch domain.ChannelName, after time.Time) tea.Cmd {
 	if ch == "" {
 		return nil

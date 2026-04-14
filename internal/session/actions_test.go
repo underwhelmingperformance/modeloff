@@ -461,3 +461,23 @@ func TestJoinAs_normalises_channel_prefix(t *testing.T) {
 	_, err = s.GetChannel(ctx, "modeloff")
 	require.Error(t, err)
 }
+
+func TestJoinAs_user_rejoin_preserves_join_time(t *testing.T) {
+	sess, _ := newTestSession(t)
+	ctx := t.Context()
+
+	require.NoError(t, sess.Join(ctx, "#general"))
+	drainEvent[domain.JoinEvent](t, sess)
+
+	originalJoinTime := sess.UserJoinedAt("#general")
+	require.Equal(t, fixedTime, originalJoinTime)
+
+	// Advance the clock so a second join would have a different time.
+	sess.now = func() time.Time { return fixedTime.Add(time.Hour) }
+
+	require.NoError(t, sess.Join(ctx, "#general"))
+
+	// No join event is emitted for an already-member rejoin, and the
+	// original join time is preserved.
+	require.Equal(t, originalJoinTime, sess.UserJoinedAt("#general"))
+}

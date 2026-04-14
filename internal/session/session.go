@@ -208,6 +208,27 @@ func (s *Session) ProcessPendingQuit(ctx context.Context) (retErr error) {
 	return s.store.ClearPendingQuit(ctx)
 }
 
+// RejoinChannels loads all persisted channels and records the current
+// time as the user's join time for each. This should be called once on
+// startup so that UserJoinedAt returns a meaningful time for channels
+// that existed before this session.
+func (s *Session) RejoinChannels(ctx context.Context) error {
+	channels, err := s.store.ListChannels(ctx)
+	if err != nil {
+		return fmt.Errorf("list channels: %w", err)
+	}
+
+	now := s.now()
+
+	for _, ch := range channels {
+		if ch.Members.Has(s.user.Nick) {
+			s.user.Channels.Set(ch.Name, now)
+		}
+	}
+
+	return nil
+}
+
 // ListChannels returns all persisted channels.
 func (s *Session) ListChannels(ctx context.Context) ([]domain.Channel, error) {
 	return s.store.ListChannels(ctx)
