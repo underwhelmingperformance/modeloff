@@ -61,6 +61,11 @@ type Store interface {
 	DeletePersonasByOrigin(ctx context.Context, origin domain.PersonaOrigin) error
 	ReplaceGeneratedPersonas(ctx context.Context, personas []domain.Persona) error
 
+	// Autojoin
+
+	ListAutojoinChannels(ctx context.Context) ([]domain.ChannelName, error)
+	SetAutojoinChannels(ctx context.Context, channels []domain.ChannelName) error
+
 	// Reset
 
 	Reset(ctx context.Context) error

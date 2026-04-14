@@ -152,6 +152,10 @@ func (s *Session) Quit(ctx context.Context, message string) error {
 		return nil
 	}
 
+	if err := s.store.SetAutojoinChannels(ctx, channels); err != nil {
+		return fmt.Errorf("save autojoin channels: %w", err)
+	}
+
 	pq := domain.PendingQuit{
 		Nick:     s.user.Nick,
 		Message:  message,
@@ -203,26 +207,35 @@ func (s *Session) ProcessPendingQuit(ctx context.Context) (retErr error) {
 		if _, err := s.DispatchToChannel(ctx, ch, []protocol.IRCMessage{quitMsg}); err != nil {
 			slog.Default().ErrorContext(ctx, "process pending quit dispatch", "channel", ch, "error", err)
 		}
+
+		channel, err := s.store.GetChannel(ctx, ch)
+		if err == nil {
+			if m, ok := channel.Members.Get(pq.Nick); ok {
+				channel.Members.Remove(m)
+			}
+
+			if err := s.store.SaveChannel(ctx, channel); err != nil {
+				slog.Default().ErrorContext(ctx, "save channel after quit removal", "channel", ch, "error", err)
+			}
+		}
 	}
 
 	return s.store.ClearPendingQuit(ctx)
 }
 
-// RejoinChannels loads all persisted channels and records the current
-// time as the user's join time for each. This should be called once on
-// startup so that UserJoinedAt returns a meaningful time for channels
-// that existed before this session.
+// RejoinChannels loads the autojoin channel list and calls JoinAs for
+// each. This should be called once on startup after ProcessPendingQuit
+// so that the user rejoins with the full IRC join protocol (join event,
+// ChanServ +o, topic info).
 func (s *Session) RejoinChannels(ctx context.Context) error {
-	channels, err := s.store.ListChannels(ctx)
+	channels, err := s.store.ListAutojoinChannels(ctx)
 	if err != nil {
-		return fmt.Errorf("list channels: %w", err)
+		return fmt.Errorf("list autojoin channels: %w", err)
 	}
 
-	now := s.now()
-
 	for _, ch := range channels {
-		if ch.Members.Has(s.user.Nick) {
-			s.user.Channels.Set(ch.Name, now)
+		if err := s.JoinAs(ctx, s.user.Nick, ch); err != nil {
+			slog.Default().ErrorContext(ctx, "rejoin channel", "channel", ch, "error", err)
 		}
 	}
 
@@ -1264,6 +1277,18 @@ func (s *Session) maybeDispatch(ctx context.Context, evt domain.SessionEvent) {
 		)
 
 	}
+}
+
+// saveAutojoinList persists the current user channel list as the
+// autojoin set.
+func (s *Session) saveAutojoinList(ctx context.Context) error {
+	var channels []domain.ChannelName
+
+	for pair := s.user.Channels.Oldest(); pair != nil; pair = pair.Next() {
+		channels = append(channels, pair.Key)
+	}
+
+	return s.store.SetAutojoinChannels(ctx, channels)
 }
 
 func (s *Session) appendEvent(ctx context.Context, ch domain.ChannelName, event domain.ChannelEvent) {

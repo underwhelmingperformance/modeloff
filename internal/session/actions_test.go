@@ -481,3 +481,155 @@ func TestJoinAs_user_rejoin_preserves_join_time(t *testing.T) {
 	// original join time is preserved.
 	require.Equal(t, originalJoinTime, sess.UserJoinedAt("#general"))
 }
+
+func TestJoinAs_user_new_channel_emits_join_and_mode(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := t.Context()
+
+	require.NoError(t, sess.JoinAs(ctx, "testuser", "#dev"))
+
+	joinEvt := drainEvent[domain.JoinEvent](t, sess)
+	require.Equal(t, domain.JoinEvent{
+		Channel: "#dev", Nick: "testuser", Created: true, At: fixedTime,
+	}, joinEvt)
+
+	modeEvt := drainEventSkipping[domain.ModeChangeEvent](t, sess)
+	require.Equal(t, domain.ModeChangeEvent{
+		Channel: "#dev", Nick: "testuser", Mode: domain.ModeOp, Actor: "ChanServ", At: fixedTime,
+	}, modeEvt)
+
+	ch, err := s.GetChannel(ctx, "#dev")
+	require.NoError(t, err)
+
+	m, ok := ch.Members.Get("testuser")
+	require.True(t, ok)
+	require.Equal(t, domain.ModeOp, m.Mode)
+}
+
+func TestJoinAs_user_existing_channel_with_topic(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := t.Context()
+
+	require.NoError(t, s.SaveChannel(ctx, domain.Channel{
+		Name:       "#dev",
+		Kind:       domain.KindChannel,
+		Topic:      "Go development",
+		TopicSetBy: "alice",
+		TopicSetAt: fixedTime.Add(-time.Hour),
+		Members:    testMembers("alice"),
+		Created:    fixedTime.Add(-time.Hour),
+	}))
+
+	require.NoError(t, sess.JoinAs(ctx, "testuser", "#dev"))
+
+	joinEvt := drainEvent[domain.JoinEvent](t, sess)
+	require.Equal(t, domain.JoinEvent{
+		Channel: "#dev", Nick: "testuser", Created: false, At: fixedTime,
+	}, joinEvt)
+
+	modeEvt := drainEventSkipping[domain.ModeChangeEvent](t, sess)
+	require.Equal(t, domain.ModeChangeEvent{
+		Channel: "#dev", Nick: "testuser", Mode: domain.ModeOp, Actor: "ChanServ", At: fixedTime,
+	}, modeEvt)
+
+	topicEvt := drainEventSkipping[domain.TopicInfoEvent](t, sess)
+	require.Equal(t, domain.TopicInfoEvent{
+		Channel:    "#dev",
+		Topic:      "Go development",
+		TopicSetBy: "alice",
+		TopicSetAt: fixedTime.Add(-time.Hour),
+		At:         fixedTime,
+	}, topicEvt)
+}
+
+func TestJoinAs_user_existing_channel_no_topic(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := t.Context()
+
+	require.NoError(t, s.SaveChannel(ctx, domain.Channel{
+		Name:    "#dev",
+		Kind:    domain.KindChannel,
+		Members: testMembers("alice"),
+		Created: fixedTime.Add(-time.Hour),
+	}))
+
+	require.NoError(t, sess.JoinAs(ctx, "testuser", "#dev"))
+
+	_ = drainEvent[domain.JoinEvent](t, sess)
+	_ = drainEventSkipping[domain.ModeChangeEvent](t, sess)
+
+	// No topic event should be emitted. Drain dispatch events, then verify.
+	drainDispatchEvents(t, sess)
+	select {
+	case evt := <-sess.Events():
+		t.Fatalf("unexpected event: %T %+v", evt, evt)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestJoinAs_model_no_mode_or_topic(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#dev", "testuser")
+	seedInstance(t, s, domain.Instance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: orderedmap.New[domain.ChannelName, time.Time](),
+	})
+
+	ch, _ := s.GetChannel(ctx, "#dev")
+	ch.Topic = "some topic"
+	require.NoError(t, s.SaveChannel(ctx, ch))
+
+	require.NoError(t, sess.JoinAs(ctx, "botty", "#dev"))
+
+	joinEvt := drainEvent[domain.JoinEvent](t, sess)
+	require.Equal(t, domain.Nick("botty"), joinEvt.Nick)
+
+	// Drain dispatch events triggered by the join.
+	drainDispatchEvents(t, sess)
+
+	select {
+	case evt := <-sess.Events():
+		t.Fatalf("unexpected event after model join: %T %+v", evt, evt)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestJoinAs_user_updates_autojoin(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := t.Context()
+
+	require.NoError(t, sess.JoinAs(ctx, "testuser", "#general"))
+	drainEventSkipping[domain.JoinEvent](t, sess)
+	drainEventSkipping[domain.ModeChangeEvent](t, sess)
+
+	require.NoError(t, sess.JoinAs(ctx, "testuser", "#dev"))
+	drainEventSkipping[domain.JoinEvent](t, sess)
+	drainEventSkipping[domain.ModeChangeEvent](t, sess)
+
+	got, err := s.ListAutojoinChannels(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []domain.ChannelName{"#dev", "#general"}, got)
+}
+
+func TestPartAs_user_updates_autojoin(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := t.Context()
+
+	require.NoError(t, sess.JoinAs(ctx, "testuser", "#general"))
+	drainEventSkipping[domain.JoinEvent](t, sess)
+	drainEventSkipping[domain.ModeChangeEvent](t, sess)
+
+	require.NoError(t, sess.JoinAs(ctx, "testuser", "#dev"))
+	drainEventSkipping[domain.JoinEvent](t, sess)
+	drainEventSkipping[domain.ModeChangeEvent](t, sess)
+
+	require.NoError(t, sess.PartAs(ctx, "testuser", "#general", "bye"))
+	drainEventSkipping[domain.PartEvent](t, sess)
+
+	got, err := s.ListAutojoinChannels(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []domain.ChannelName{"#dev"}, got)
+}

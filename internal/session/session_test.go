@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"reflect"
 	"net/http/httptest"
 	"strings"
 	"sync"
@@ -67,6 +68,53 @@ func drainEvent[T domain.SessionEvent](t *testing.T, sess *Session) T {
 	case <-time.After(time.Second):
 		t.Fatalf("timed out waiting for %T", *new(T))
 		return *new(T)
+	}
+}
+
+// drainEventSkipping reads events from the session channel, skipping
+// dispatch lifecycle events (DispatchStartedEvent, DispatchDoneEvent),
+// until it finds one matching T.
+func drainEventSkipping[T domain.SessionEvent](t *testing.T, sess *Session) T {
+	t.Helper()
+
+	for {
+		select {
+		case evt := <-sess.Events():
+			if got, ok := evt.(T); ok {
+				return got
+			}
+
+			switch evt.(type) {
+			case domain.DispatchStartedEvent, domain.DispatchDoneEvent:
+				continue
+			default:
+				t.Fatalf("expected %T, got %T", *new(T), evt)
+				return *new(T)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for %T", *new(T))
+			return *new(T)
+		}
+	}
+}
+
+// drainDispatchEvents reads and discards dispatch lifecycle events
+// until the channel is quiet.
+func drainDispatchEvents(t *testing.T, sess *Session) {
+	t.Helper()
+
+	for {
+		select {
+		case evt := <-sess.Events():
+			switch evt.(type) {
+			case domain.DispatchStartedEvent, domain.DispatchDoneEvent:
+				continue
+			default:
+				t.Fatalf("expected dispatch event, got %T", evt)
+			}
+		case <-time.After(100 * time.Millisecond):
+			return
+		}
 	}
 }
 
@@ -203,18 +251,51 @@ func TestSession_RejoinChannels_populates_user_join_times(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser")
-	seedChannelWithMembers(t, s, "#random", "testuser")
+	seedChannelWithMembers(t, s, "#general", "botty")
+	seedChannelWithMembers(t, s, "#random", "botty")
+	require.NoError(t, s.SetAutojoinChannels(ctx, []domain.ChannelName{"#general", "#random"}))
 
-	// Before RejoinChannels, UserJoinedAt returns zero.
 	require.True(t, sess.UserJoinedAt("#general").IsZero())
 	require.True(t, sess.UserJoinedAt("#random").IsZero())
 
 	require.NoError(t, sess.RejoinChannels(ctx))
 
-	// After RejoinChannels, UserJoinedAt returns the session start time.
+	// Drain join + mode events for each channel, skipping dispatch events.
+	for range 2 {
+		drainEventSkipping[domain.JoinEvent](t, sess)
+		drainEventSkipping[domain.ModeChangeEvent](t, sess)
+	}
+
 	require.Equal(t, fixedTime, sess.UserJoinedAt("#general"))
 	require.Equal(t, fixedTime, sess.UserJoinedAt("#random"))
+}
+
+func TestSession_RejoinChannels_empty_autojoin_is_noop(t *testing.T) {
+	sess, _ := newTestSession(t)
+
+	require.NoError(t, sess.RejoinChannels(t.Context()))
+	requireChannels(t, sess.user.Channels)
+}
+
+func TestSession_RejoinChannels_emits_join_events(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#alpha", "botty")
+	seedChannelWithMembers(t, s, "#beta", "botty")
+	require.NoError(t, s.SetAutojoinChannels(ctx, []domain.ChannelName{"#alpha", "#beta"}))
+
+	require.NoError(t, sess.RejoinChannels(ctx))
+
+	joinA := drainEventSkipping[domain.JoinEvent](t, sess)
+	require.Equal(t, domain.ChannelName("#alpha"), joinA.Channel)
+
+	_ = drainEventSkipping[domain.ModeChangeEvent](t, sess)
+
+	joinB := drainEventSkipping[domain.JoinEvent](t, sess)
+	require.Equal(t, domain.ChannelName("#beta"), joinB.Channel)
+
+	_ = drainEventSkipping[domain.ModeChangeEvent](t, sess)
 }
 
 func TestSession_Leave(t *testing.T) {
@@ -292,6 +373,10 @@ func TestSession_Quit_saves_pending_quit(t *testing.T) {
 	require.Equal(t, domain.Nick("testuser"), pq.Nick)
 	require.Equal(t, "goodnight", pq.Message)
 	require.Equal(t, []domain.ChannelName{"#general", "#random"}, pq.Channels)
+
+	autojoin, err := s.ListAutojoinChannels(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []domain.ChannelName{"#general", "#random"}, autojoin)
 }
 
 func TestSession_Quit_no_channels_is_noop(t *testing.T) {
@@ -419,6 +504,90 @@ func TestSession_ProcessPendingQuit_no_pending_is_noop(t *testing.T) {
 	sess, _ := newTestSession(t)
 
 	require.NoError(t, sess.ProcessPendingQuit(t.Context()))
+}
+
+func TestSession_ProcessPendingQuit_removes_user_from_members(t *testing.T) {
+	fake := &fakeAPIClient{
+		sendEventsFn: func(_ context.Context, _ domain.ModelID, _ string, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			return protocol.Reply("bye"), nil
+		},
+	}
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+	seedChannelWithMembers(t, s, "#random", "testuser")
+	seedInstance(t, s, domain.Instance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: testChannels("#general"),
+	})
+
+	pq := domain.PendingQuit{
+		Nick:     "testuser",
+		Message:  "night",
+		At:       fixedTime,
+		Channels: []domain.ChannelName{"#general", "#random"},
+	}
+	require.NoError(t, s.SavePendingQuit(ctx, pq))
+	require.NoError(t, sess.ProcessPendingQuit(ctx))
+
+	ch1, err := s.GetChannel(ctx, "#general")
+	require.NoError(t, err)
+	require.False(t, ch1.Members.Has("testuser"), "user should be removed from #general")
+	require.True(t, ch1.Members.Has("botty"), "model should remain in #general")
+
+	ch2, err := s.GetChannel(ctx, "#random")
+	require.NoError(t, err)
+	require.False(t, ch2.Members.Has("testuser"), "user should be removed from #random")
+}
+
+func TestSession_ProcessPendingQuit_then_rejoin_restores_membership(t *testing.T) {
+	fake := &fakeAPIClient{
+		sendEventsFn: func(_ context.Context, _ domain.ModelID, _ string, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			return protocol.Reply("bye"), nil
+		},
+	}
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+	seedInstance(t, s, domain.Instance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: testChannels("#general"),
+	})
+
+	require.NoError(t, s.SetAutojoinChannels(ctx, []domain.ChannelName{"#general"}))
+
+	pq := domain.PendingQuit{
+		Nick:     "testuser",
+		Message:  "night",
+		At:       fixedTime,
+		Channels: []domain.ChannelName{"#general"},
+	}
+	require.NoError(t, s.SavePendingQuit(ctx, pq))
+	require.NoError(t, sess.ProcessPendingQuit(ctx))
+
+	// User should be gone.
+	ch, err := s.GetChannel(ctx, "#general")
+	require.NoError(t, err)
+	require.False(t, ch.Members.Has("testuser"))
+
+	// Rejoin should restore membership with +o.
+	require.NoError(t, sess.RejoinChannels(ctx))
+
+	// Drain the join + mode events.
+	drainEvent[domain.JoinEvent](t, sess)
+	drainEventSkipping[domain.ModeChangeEvent](t, sess)
+
+	ch, err = s.GetChannel(ctx, "#general")
+	require.NoError(t, err)
+	require.True(t, ch.Members.Has("testuser"))
+
+	m, ok := ch.Members.Get("testuser")
+	require.True(t, ok)
+	require.Equal(t, domain.ModeOp, m.Mode)
 }
 
 func TestSession_AddModel(t *testing.T) {
@@ -703,24 +872,61 @@ func TestSession_JoinEvent_triggers_dispatch(t *testing.T) {
 	// Join an existing channel — the reactive dispatch should fire.
 	require.NoError(t, sess.Join(ctx, "#general"))
 
-	drainEvent[domain.JoinEvent](t, sess)
 	events := drainEvents(t, sess, 1)
 
-	require.Equal(t, []domain.SessionEvent{
-		domain.DispatchStartedEvent{Channel: "#general", Nicks: []domain.Nick{"botty"}},
-		domain.ModelReplyEvent{
-			Channel:  "#general",
-			Instance: "botty",
-			Event: domain.ChannelMessage{
-				Channel: "#general",
-				From:    "botty",
-				Body:    "welcome",
-				At:      fixedTime,
-			},
-			At: fixedTime,
+	// JoinEvent is always first — it is emitted synchronously before
+	// the dispatch goroutine starts. The remaining events include both
+	// synchronous protocol events (ModeChangeEvent) and async dispatch
+	// events. Because the dispatch goroutine races with the caller's
+	// emitJoinProtocol call, ModeChangeEvent and DispatchStartedEvent
+	// can appear in either order. Assert the full set and the relative
+	// ordering within the dispatch lifecycle.
+	require.IsType(t, domain.JoinEvent{}, events[0])
+	require.Equal(t,
+		domain.JoinEvent{Channel: "#general", Nick: "testuser", At: fixedTime},
+		events[0],
+	)
+
+	wantMode := domain.ModeChangeEvent{
+		Channel: "#general", Nick: "testuser",
+		Mode: domain.ModeOp, Actor: "ChanServ", At: fixedTime,
+	}
+	wantStarted := domain.DispatchStartedEvent{
+		Channel: "#general", Nicks: []domain.Nick{"botty"},
+	}
+	wantReply := domain.ModelReplyEvent{
+		Channel:  "#general",
+		Instance: "botty",
+		Event: domain.ChannelMessage{
+			Channel: "#general",
+			From:    "botty",
+			Body:    "welcome",
+			At:      fixedTime,
 		},
-		domain.DispatchDoneEvent{Channel: "#general"},
-	}, events)
+		At: fixedTime,
+	}
+	wantDone := domain.DispatchDoneEvent{Channel: "#general"}
+
+	rest := events[1:]
+	require.ElementsMatch(t,
+		[]domain.SessionEvent{wantMode, wantStarted, wantReply, wantDone},
+		rest,
+	)
+
+	// Dispatch lifecycle ordering: Started before Reply before Done.
+	idxOf := func(target domain.SessionEvent) int {
+		for i, e := range rest {
+			if reflect.DeepEqual(target, e) {
+				return i
+			}
+		}
+
+		t.Fatalf("event %T not found", target)
+		return -1
+	}
+
+	require.Less(t, idxOf(wantStarted), idxOf(wantReply), "DispatchStartedEvent must precede ModelReplyEvent")
+	require.Less(t, idxOf(wantReply), idxOf(wantDone), "ModelReplyEvent must precede DispatchDoneEvent")
 
 	// The trigger event sent to the model should be a JOIN message.
 	require.Equal(t, []protocol.IRCMessage{{

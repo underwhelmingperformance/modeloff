@@ -60,6 +60,10 @@ CREATE TABLE IF NOT EXISTS state (
     value TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS autojoin (
+    name TEXT PRIMARY KEY
+);
+
 CREATE TABLE IF NOT EXISTS last_read (
     channel  TEXT PRIMARY KEY REFERENCES channels(name) ON DELETE CASCADE,
     event_id INTEGER NOT NULL REFERENCES events(id)
@@ -720,6 +724,74 @@ func (s *SQLiteStore) ClearPendingQuit(ctx context.Context) error {
 	return nil
 }
 
+// ListAutojoinChannels implements Store.
+func (s *SQLiteStore) ListAutojoinChannels(ctx context.Context) ([]domain.ChannelName, error) {
+	ctx, span := startSQLiteSpan(ctx, "store.sqlite.list_autojoin_channels")
+	defer span.End()
+
+	rows, err := s.db.QueryContext(ctx, `SELECT name FROM autojoin ORDER BY name`)
+	if err != nil {
+		recordSQLiteError(span, err)
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var channels []domain.ChannelName
+
+	for rows.Next() {
+		var name domain.ChannelName
+		if err := rows.Scan(&name); err != nil {
+			recordSQLiteError(span, err)
+			return nil, err
+		}
+
+		channels = append(channels, name)
+	}
+
+	if err := rows.Err(); err != nil {
+		recordSQLiteError(span, err)
+		return nil, err
+	}
+
+	recordSQLiteSuccess(span)
+	return channels, nil
+}
+
+// SetAutojoinChannels implements Store.
+func (s *SQLiteStore) SetAutojoinChannels(ctx context.Context, channels []domain.ChannelName) error {
+	ctx, span := startSQLiteSpan(ctx, "store.sqlite.set_autojoin_channels")
+	defer span.End()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		recordSQLiteError(span, err)
+		return fmt.Errorf("begin tx: %w", err)
+	}
+
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM autojoin`); err != nil {
+		recordSQLiteError(span, err)
+		return fmt.Errorf("clear autojoin: %w", err)
+	}
+
+	for _, ch := range channels {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT OR IGNORE INTO autojoin (name) VALUES (?)`, ch); err != nil {
+			recordSQLiteError(span, err)
+			return fmt.Errorf("insert autojoin %q: %w", ch, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		recordSQLiteError(span, err)
+		return fmt.Errorf("commit: %w", err)
+	}
+
+	recordSQLiteSuccess(span)
+	return nil
+}
+
 // Reset implements Store.
 func (s *SQLiteStore) Reset(ctx context.Context) error {
 	ctx, span := startSQLiteSpan(ctx, "store.sqlite.reset")
@@ -734,6 +806,7 @@ func (s *SQLiteStore) Reset(ctx context.Context) error {
 		`DELETE FROM memories`,
 		`DELETE FROM personas`,
 		`DELETE FROM state`,
+		`DELETE FROM autojoin`,
 	} {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
 			recordSQLiteError(span, err)

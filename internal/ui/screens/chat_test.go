@@ -124,16 +124,18 @@ func TestChatScreen_rejoin_filters_old_events(t *testing.T) {
 
 	oldTime := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 
-	members := domain.NewMemberList()
-	members.Add("testuser")
-
+	// Simulate post-quit state: channel exists but user is not a member.
 	require.NoError(t, s.SaveChannel(ctx, domain.Channel{
-		Name:    "#general",
-		Kind:    domain.KindChannel,
-		Members: members,
-		Created: oldTime,
+		Name:       "#general",
+		Kind:       domain.KindChannel,
+		Members:    domain.NewMemberList(),
+		Created:    oldTime,
+		Topic:      "welcome topic",
+		TopicSetBy: "admin",
+		TopicSetAt: oldTime,
 	}))
 
+	require.NoError(t, s.SetAutojoinChannels(ctx, []domain.ChannelName{"#general"}))
 	require.NoError(t, s.SetLastChannel(ctx, "#general"))
 
 	_, err := s.AppendEvent(ctx, "#general", domain.ChannelMessage{
@@ -148,7 +150,14 @@ func TestChatScreen_rejoin_filters_old_events(t *testing.T) {
 	require.NoError(t, sess.RejoinChannels(ctx))
 
 	tm := newChatApp(t, sess)
-	tm.WaitFor("#general")
+
+	// The join protocol events emitted by RejoinChannels should
+	// appear: join, ChanServ +o, and topic info.
+	tm.WaitFor(
+		"has joined #general",
+		"ChanServ sets mode",
+		"welcome topic",
+	)
 
 	// Send a new message which should appear.
 	tm.Submit("fresh message")

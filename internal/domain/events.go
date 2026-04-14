@@ -98,6 +98,16 @@ type DMOpenedEvent struct {
 	At      time.Time
 }
 
+// TopicInfoEvent is emitted during the join protocol when a channel
+// has a topic. It is display-only and not persisted.
+type TopicInfoEvent struct {
+	Channel    ChannelName
+	Topic      string
+	TopicSetBy Nick
+	TopicSetAt time.Time
+	At         time.Time
+}
+
 // ConfigChangedEvent is emitted when a runtime configuration value is
 // updated.
 type ConfigChangedEvent struct {
@@ -159,6 +169,7 @@ func (ModelKickedEvent) sessionEvent()     {}
 func (ModelReplyEvent) sessionEvent()      {}
 func (ModeChangeEvent) sessionEvent()      {}
 func (DMOpenedEvent) sessionEvent()        {}
+func (TopicInfoEvent) sessionEvent()       {}
 func (ConfigChangedEvent) sessionEvent()   {}
 func (PokeEvent) sessionEvent()            {}
 func (ErrorEvent) sessionEvent()           {}

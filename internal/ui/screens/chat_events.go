@@ -47,18 +47,6 @@ func (s ChatScreen) handleInitialLoad(msg domain.InitialLoadEvent) (ui.Model, te
 	}))
 	cmds = append(cmds, s.fetchHistoryAfter(msg.Active, s.sess.UserJoinedAt(msg.Active)))
 
-	if msg.Active != "" && msg.Topic != "" {
-		if ch, ok := s.channels.Get(domain.Channel{Name: msg.Active}); ok {
-			cmds = append(cmds, s.logAndShow(domain.ChannelTopicInfo{
-				Channel:    ch.Name,
-				Topic:      ch.Topic,
-				TopicSetBy: ch.TopicSetBy,
-				TopicSetAt: ch.TopicSetAt,
-				At:         time.Now(),
-			}))
-		}
-	}
-
 	cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: msg.Members}))
 	cmds = append(cmds, msgCmd(s.commandStateMsg()))
 	cfg, _ := s.loadConfig()
@@ -99,6 +87,8 @@ func (s ChatScreen) handleSessionEvent(msg sessionEventMsg) (ui.Model, tea.Cmd) 
 		updated, cmd = s.handleModelInvitedEvent(evt)
 	case domain.ModelKickedEvent:
 		updated, cmd = s.handleModelKickedEvent(evt)
+	case domain.TopicInfoEvent:
+		updated, cmd = s.handleTopicInfoEvent(evt)
 	case domain.ConfigChangedEvent:
 		updated, cmd = s.handleConfigChangedEvent(evt)
 	case domain.DMOpenedEvent:
@@ -330,6 +320,14 @@ func (s ChatScreen) handleTopicChangeEvent(msg domain.TopicChangeEvent) (ui.Mode
 			Event: domain.ChannelTopicChange(msg),
 		}),
 	)
+}
+
+func (s ChatScreen) handleTopicInfoEvent(msg domain.TopicInfoEvent) (ui.Model, tea.Cmd) {
+	if *s.active != msg.Channel {
+		return s, nil
+	}
+
+	return s, s.logAndShow(domain.ChannelTopicInfo(msg))
 }
 
 func (s ChatScreen) handleNickChangeEvent(msg domain.NickChangeEvent) (ui.Model, tea.Cmd) {

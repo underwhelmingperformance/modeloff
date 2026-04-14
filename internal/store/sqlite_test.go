@@ -865,6 +865,74 @@ func TestSQLiteStore_Reset_includes_personas(t *testing.T) {
 	require.Empty(t, got)
 }
 
+// --- Autojoin ---
+
+func TestSQLiteStore_ListAutojoinChannels_empty(t *testing.T) {
+	s := newTestStore(t)
+
+	got, err := s.ListAutojoinChannels(t.Context())
+	require.NoError(t, err)
+	require.Empty(t, got)
+}
+
+func TestSQLiteStore_SetAndListAutojoinChannels(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	require.NoError(t, s.SetAutojoinChannels(ctx, []domain.ChannelName{"#general", "#dev"}))
+
+	got, err := s.ListAutojoinChannels(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []domain.ChannelName{"#dev", "#general"}, got)
+}
+
+func TestSQLiteStore_SetAutojoinChannels_replaces(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	require.NoError(t, s.SetAutojoinChannels(ctx, []domain.ChannelName{"#old"}))
+	require.NoError(t, s.SetAutojoinChannels(ctx, []domain.ChannelName{"#new-a", "#new-b"}))
+
+	got, err := s.ListAutojoinChannels(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []domain.ChannelName{"#new-a", "#new-b"}, got)
+}
+
+func TestSQLiteStore_SetAutojoinChannels_empty(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	require.NoError(t, s.SetAutojoinChannels(ctx, []domain.ChannelName{"#general"}))
+	require.NoError(t, s.SetAutojoinChannels(ctx, nil))
+
+	got, err := s.ListAutojoinChannels(ctx)
+	require.NoError(t, err)
+	require.Empty(t, got)
+}
+
+func TestSQLiteStore_SetAutojoinChannels_duplicates_ignored(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	require.NoError(t, s.SetAutojoinChannels(ctx, []domain.ChannelName{"#general", "#general", "#dev"}))
+
+	got, err := s.ListAutojoinChannels(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []domain.ChannelName{"#dev", "#general"}, got)
+}
+
+func TestSQLiteStore_Reset_includes_autojoin(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	require.NoError(t, s.SetAutojoinChannels(ctx, []domain.ChannelName{"#general"}))
+	require.NoError(t, s.Reset(ctx))
+
+	got, err := s.ListAutojoinChannels(ctx)
+	require.NoError(t, err)
+	require.Empty(t, got)
+}
+
 // --- Helpers ---
 
 func appendTestEvents(t *testing.T, s *SQLiteStore, ch domain.ChannelName, n int) []int64 {

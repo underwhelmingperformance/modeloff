@@ -32,6 +32,10 @@ func (s *Session) JoinAs(ctx context.Context, actor domain.Nick, ch domain.Chann
 	channel, err := s.store.GetChannel(ctx, ch)
 	created := false
 
+	if err == nil && channel.Members.Len() == 0 {
+		channel.Members = domain.NewMemberList()
+	}
+
 	if err != nil {
 		members := domain.NewMemberList()
 		members.Add(actor)
@@ -94,23 +98,44 @@ func (s *Session) JoinAs(ctx context.Context, actor domain.Nick, ch domain.Chann
 		s.emit(ctx, domain.JoinEvent{Channel: ch, Nick: actor, Created: created, At: now})
 	}
 
-	if !alreadyMember && created && isUser && channel.Kind != domain.KindDM {
+	if !alreadyMember && isUser && channel.Kind != domain.KindDM {
 		channel, _ = s.store.GetChannel(ctx, ch)
-		channel.Members.SetMode(actor, domain.ModeOp)
 
-		if err := s.store.SaveChannel(ctx, channel); err != nil {
-			return fmt.Errorf("save channel after mode: %w", err)
+		if err := s.emitJoinProtocol(ctx, ch, channel, now); err != nil {
+			return err
 		}
-
-		s.appendEvent(ctx, ch, domain.ChannelModeChange{
-			Channel: ch, Nick: actor, Mode: domain.ModeOp, By: "ChanServ", At: now,
-		})
-		s.emit(ctx, domain.ModeChangeEvent{
-			Channel: ch, Nick: actor, Mode: domain.ModeOp, Actor: "ChanServ", At: now,
-		})
 	}
 
 	return nil
+}
+
+// emitJoinProtocol sets the user's mode to +o, emits topic info if
+// the channel has a topic, and saves the autojoin list.
+func (s *Session) emitJoinProtocol(ctx context.Context, ch domain.ChannelName, channel domain.Channel, now time.Time) error {
+	channel.Members.SetMode(s.user.Nick, domain.ModeOp)
+
+	if err := s.store.SaveChannel(ctx, channel); err != nil {
+		return fmt.Errorf("save channel after mode: %w", err)
+	}
+
+	s.appendEvent(ctx, ch, domain.ChannelModeChange{
+		Channel: ch, Nick: s.user.Nick, Mode: domain.ModeOp, By: "ChanServ", At: now,
+	})
+	s.emitUIOnly(domain.ModeChangeEvent{
+		Channel: ch, Nick: s.user.Nick, Mode: domain.ModeOp, Actor: "ChanServ", At: now,
+	})
+
+	if channel.Topic != "" {
+		s.emitUIOnly(domain.TopicInfoEvent{
+			Channel:    ch,
+			Topic:      channel.Topic,
+			TopicSetBy: channel.TopicSetBy,
+			TopicSetAt: channel.TopicSetAt,
+			At:         now,
+		})
+	}
+
+	return s.saveAutojoinList(ctx)
 }
 
 // PartAs parts the given actor from a channel.
@@ -139,6 +164,10 @@ func (s *Session) PartAs(ctx context.Context, actor domain.Nick, ch domain.Chann
 
 	if actor == s.user.Nick {
 		s.user.Channels.Delete(ch)
+
+		if err := s.saveAutojoinList(ctx); err != nil {
+			return fmt.Errorf("save autojoin: %w", err)
+		}
 	} else if inst, err := s.store.GetInstance(ctx, actor); err == nil {
 		inst.Channels.Delete(ch)
 
