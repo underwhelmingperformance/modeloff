@@ -1,7 +1,6 @@
 package components
 
 import (
-	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/laney/modeloff/internal/ui"
@@ -315,7 +314,7 @@ func (m MainLayout) View(width, height int) string {
 }
 
 // KeyBindings implements ui.Keybinding.
-func (m MainLayout) KeyBindings() []key.Binding {
+func (m MainLayout) KeyBindings() []ui.KeyBinding {
 	bindings := ui.CollectKeyBindings(m.Sidebar, m.Content)
 
 	if m.NickList != nil && m.NickListVisible {

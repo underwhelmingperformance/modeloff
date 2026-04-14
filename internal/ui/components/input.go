@@ -10,9 +10,20 @@ import (
 
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/ircfmt"
+	"github.com/laney/modeloff/internal/richtext"
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/theme"
 )
+
+// ActiveFormats reports which formatting styles are currently active
+// at the cursor position in the input bar.
+type ActiveFormats struct {
+	Bold      bool
+	Italic    bool
+	Underline bool
+	Reverse   bool
+	Strike    bool
+}
 
 // MessageSubmitMsg is emitted when the user presses Enter with a
 // non-command message.
@@ -150,10 +161,10 @@ func (b InputBar) handleKey(msg tea.KeyMsg) (ui.Model, tea.Cmd) {
 	}
 
 	switch {
-	case key.Matches(msg, b.keyMap.Submit):
+	case ui.Matches(msg, b.keyMap.Submit):
 		return b.submit()
 
-	case key.Matches(msg, b.keyMap.HistoryUp):
+	case ui.Matches(msg, b.keyMap.HistoryUp):
 		if !b.popover.IsVisible() {
 			b = b.historyUp()
 			b = b.refreshPopover(PopoverRefreshMsg{
@@ -163,7 +174,7 @@ func (b InputBar) handleKey(msg tea.KeyMsg) (ui.Model, tea.Cmd) {
 			return b, nil
 		}
 
-	case key.Matches(msg, b.keyMap.HistoryDn):
+	case ui.Matches(msg, b.keyMap.HistoryDn):
 		if !b.popover.IsVisible() {
 			b = b.historyDown()
 			b = b.refreshPopover(PopoverRefreshMsg{
@@ -432,32 +443,32 @@ func (b InputBar) SetCursorFromCell(x int) InputBar {
 }
 
 // KeyBindings implements ui.Keybinding.
-func (b InputBar) KeyBindings() []key.Binding {
+func (b InputBar) KeyBindings() []ui.KeyBinding {
 	if b.popover.IsVisible() {
-		return []key.Binding{
+		return []ui.KeyBinding{
 			b.keyMap.Submit,
 			ui.WithBindingEnabled(
-				key.NewBinding(
+				ui.Bind(key.NewBinding(
 					key.WithKeys("tab"),
 					key.WithHelp("Tab", "accept"),
-				),
+				)),
 				b.popover.HasSuggestions(),
 			),
 			ui.WithBindingEnabled(
-				key.NewBinding(
+				ui.Bind(key.NewBinding(
 					key.WithKeys("up", "down", "shift+tab"),
 					key.WithHelp("↑↓", "navigate"),
-				),
+				)),
 				b.popover.HasSuggestions(),
 			),
-			key.NewBinding(
+			ui.Bind(key.NewBinding(
 				key.WithKeys("esc"),
 				key.WithHelp("Esc", "dismiss"),
-			),
+			)),
 		}
 	}
 
-	bindings := []key.Binding{
+	bindings := []ui.KeyBinding{
 		b.keyMap.Submit,
 		ui.WithBindingEnabled(b.keyMap.HistoryUp, len(b.history) > 0),
 		ui.WithBindingEnabled(b.keyMap.HistoryDn, len(b.history) > 0),
@@ -475,17 +486,22 @@ func (b InputBar) KeyBindings() []key.Binding {
 		return bindings
 	}
 
+	attrs := b.input.activeAttrs()
 	bindings = append(bindings,
-		b.keyMap.ToggleBold,
-		b.keyMap.ToggleItalic,
-		b.keyMap.ToggleUnderline,
-		b.keyMap.ToggleReverse,
-		b.keyMap.ToggleStrike,
-		b.keyMap.OpenPalette,
-		b.keyMap.ResetFormat,
+		b.fmtBinding(b.keyMap.ToggleBold, attrs.Bold),
+		b.fmtBinding(b.keyMap.ToggleItalic, attrs.Italic),
+		b.fmtBinding(b.keyMap.ToggleUnderline, attrs.Underline),
+		b.fmtBinding(b.keyMap.ToggleReverse, attrs.Reverse),
+		b.fmtBinding(b.keyMap.ToggleStrike, attrs.Strike),
+		b.fmtBinding(b.keyMap.OpenPalette, attrs.FG != nil || attrs.BG != nil),
+		b.fmtBinding(b.keyMap.ResetFormat, attrs != (richtext.Attrs{})),
 	)
 
 	return bindings
+}
+
+func (b InputBar) fmtBinding(binding ui.KeyBinding, active bool) ui.KeyBinding {
+	return ui.WithBindingActive(binding, active)
 }
 
 func (b InputBar) refreshPopover(msg tea.Msg) InputBar {
@@ -529,23 +545,9 @@ func (b InputBar) prefixWidth() int {
 func (b InputBar) View(width, _ int) string {
 	nickLabel := theme.UserNick.Render(string(b.userNick)) + " "
 	prompt := theme.Prompt.Render("> ")
-	status := ""
-	if !strings.HasPrefix(b.input.Value(), "/") {
-		status = theme.Dim.Render("[" + b.input.StatusText() + "]")
-	}
 
-	editorWidth := max(width-lipgloss.Width(nickLabel)-lipgloss.Width(prompt)-lipgloss.Width(status), 0)
-	if status != "" && editorWidth > 1 {
-		editorWidth--
-	}
-
+	editorWidth := max(width-lipgloss.Width(nickLabel)-lipgloss.Width(prompt), 0)
 	inputLine := nickLabel + prompt + b.input.View(editorWidth, 1)
-	if status != "" {
-		gap := width - lipgloss.Width(inputLine) - lipgloss.Width(status)
-		if gap >= 1 {
-			inputLine = inputLine + strings.Repeat(" ", gap) + status
-		}
-	}
 
 	popoverView := b.popover.Render(width)
 	if popoverView == "" {
@@ -553,6 +555,24 @@ func (b InputBar) View(width, _ int) string {
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Left, popoverView, inputLine)
+}
+
+// ActiveFormats returns the formatting state at the current cursor
+// position. In command mode all formats are reported as inactive.
+func (b InputBar) ActiveFormats() ActiveFormats {
+	if strings.HasPrefix(b.input.Value(), "/") {
+		return ActiveFormats{}
+	}
+
+	attrs := b.input.activeAttrs()
+
+	return ActiveFormats{
+		Bold:      attrs.Bold,
+		Italic:    attrs.Italic,
+		Underline: attrs.Underline,
+		Reverse:   attrs.Reverse,
+		Strike:    attrs.Strike,
+	}
 }
 
 // PaletteVisible reports whether the colour palette is open.

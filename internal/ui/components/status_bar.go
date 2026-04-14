@@ -1,19 +1,23 @@
 package components
 
 import (
-	"fmt"
 	"slices"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/theme"
 )
 
+var (
+	dimStyle       = theme.Dim
+	dimActiveStyle = theme.Dim.Bold(true)
+	dimSeparator   = dimStyle.Render("  ")
+)
+
 // RenderStatusBar renders the active keybindings and status items.
-func RenderStatusBar(width int, bindings []key.Binding, items []ui.StatusItem) string {
+func RenderStatusBar(width int, bindings []ui.KeyBinding, items []ui.StatusItem) string {
 	leftItems := filterStatusItems(items, ui.StatusSideLeft)
 	rightItems := filterStatusItems(items, ui.StatusSideRight)
 
@@ -52,7 +56,7 @@ func RenderStatusBar(width int, bindings []key.Binding, items []ui.StatusItem) s
 		return ""
 	}
 
-	return theme.Dim.Width(width).Render(truncateLine(best, width))
+	return lipgloss.PlaceHorizontal(width, lipgloss.Left, truncateLine(best, width))
 }
 
 func assembleLeftText(keyText string, leftItems []ui.StatusItem, leftBudget int) string {
@@ -69,7 +73,7 @@ func assembleLeftText(keyText string, leftItems []ui.StatusItem, leftBudget int)
 	case keyText == "":
 		return leftStatusText
 	default:
-		return keyText + "  " + leftStatusText
+		return lipgloss.JoinHorizontal(lipgloss.Top, keyText, dimSeparator, leftStatusText)
 	}
 }
 
@@ -88,10 +92,10 @@ func composeStatusLine(leftText, rightText string, width int) string {
 
 	spacing := strings.Repeat(" ", width-lipgloss.Width(leftText)-lipgloss.Width(rightText))
 
-	return leftText + spacing + rightText
+	return lipgloss.JoinHorizontal(lipgloss.Top, leftText, spacing, rightText)
 }
 
-func renderKeyTexts(bindings []key.Binding) (string, string) {
+func renderKeyTexts(bindings []ui.KeyBinding) (string, string) {
 	active := ui.ActiveKeyBindings(bindings)
 	if len(active) == 0 {
 		return "", ""
@@ -102,17 +106,40 @@ func renderKeyTexts(bindings []key.Binding) (string, string) {
 
 	for _, binding := range active {
 		help := binding.Help()
-		shortParts = append(shortParts, help.Key)
+		style := dimStyle
+		if binding.Active {
+			style = dimActiveStyle
+		}
+
+		keyLabel := style.Render(help.Key)
+		shortParts = append(shortParts, keyLabel)
 
 		if help.Desc == "" {
-			fullParts = append(fullParts, help.Key)
+			fullParts = append(fullParts, keyLabel)
 			continue
 		}
 
-		fullParts = append(fullParts, fmt.Sprintf("%s %s", help.Key, help.Desc))
+		fullParts = append(fullParts, lipgloss.JoinHorizontal(lipgloss.Top, keyLabel, " ", style.Render(help.Desc)))
 	}
 
-	return strings.Join(fullParts, "  "), strings.Join(shortParts, "  ")
+	return joinWithSeparator(fullParts), joinWithSeparator(shortParts)
+}
+
+func joinWithSeparator(parts []string) string {
+	if len(parts) == 0 {
+		return ""
+	}
+
+	result := make([]string, 0, len(parts)*2-1)
+	for i, part := range parts {
+		if i > 0 {
+			result = append(result, dimSeparator)
+		}
+
+		result = append(result, part)
+	}
+
+	return lipgloss.JoinHorizontal(lipgloss.Top, result...)
 }
 
 func filterStatusItems(items []ui.StatusItem, side ui.StatusSide) []ui.StatusItem {
@@ -174,10 +201,10 @@ func renderStatusItems(items []ui.StatusItem, width int) string {
 				continue
 			}
 
-			parts = append(parts, text)
+			parts = append(parts, dimStyle.Render(text))
 		}
 
-		return strings.Join(parts, "  ")
+		return joinWithSeparator(parts)
 	}
 
 	result := render()

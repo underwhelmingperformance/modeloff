@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"testing"
 
-	bubbleskey "github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/command"
@@ -443,7 +443,7 @@ func TestInputBar_keybindings_include_rich_shortcuts(t *testing.T) {
 	require.NotContains(t, bindings, "M-B\x00bold")
 }
 
-func keyMapByHelp(bindings []bubbleskey.Binding) map[string]struct{} {
+func keyMapByHelp(bindings []ui.KeyBinding) map[string]struct{} {
 	index := map[string]struct{}{}
 	for _, binding := range bindings {
 		help := binding.Help()
@@ -766,4 +766,95 @@ func TestInputBar_keybindings_include_history_when_popover_hidden(t *testing.T) 
 	require.Contains(t, helpTexts, "history")
 	require.NotContains(t, helpTexts, "accept")
 	require.NotContains(t, helpTexts, "dismiss")
+}
+
+func TestInputBar_view_does_not_show_plain_indicator(t *testing.T) {
+	b := components.NewInputBar("user")
+	v := viewText(b)
+
+	require.NotContains(t, v, "[plain]")
+}
+
+func TestInputBar_active_formats(t *testing.T) {
+	tests := []struct {
+		name   string
+		toggle rune
+		want   components.ActiveFormats
+	}{
+		{
+			name:   "no formatting active by default",
+			toggle: 0,
+			want:   components.ActiveFormats{},
+		},
+		{
+			name:   "bold active after toggle",
+			toggle: 'b',
+			want:   components.ActiveFormats{Bold: true},
+		},
+		{
+			name:   "italic active after toggle",
+			toggle: 'i',
+			want:   components.ActiveFormats{Italic: true},
+		},
+		{
+			name:   "underline active after toggle",
+			toggle: 'u',
+			want:   components.ActiveFormats{Underline: true},
+		},
+		{
+			name:   "reverse active after toggle",
+			toggle: 'r',
+			want:   components.ActiveFormats{Reverse: true},
+		},
+		{
+			name:   "strikethrough active after toggle",
+			toggle: 's',
+			want:   components.ActiveFormats{Strike: true},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var m ui.Model = components.NewInputBar()
+
+			if tt.toggle != 0 {
+				m, _ = m.Update(tea.KeyMsg{
+					Type:  tea.KeyRunes,
+					Runes: []rune{tt.toggle},
+					Alt:   true,
+				})
+			}
+
+			bar := m.(components.InputBar)
+			require.Equal(t, tt.want, bar.ActiveFormats())
+		})
+	}
+}
+
+func TestInputBar_status_bar_renders_active_format_bold(t *testing.T) {
+	// Force colour output so ANSI escapes are emitted.
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	var m ui.Model = components.NewInputBar("user")
+
+	// Toggle bold formatting.
+	m, _ = m.Update(tea.KeyMsg{
+		Type:  tea.KeyRunes,
+		Runes: []rune{'b'},
+		Alt:   true,
+	})
+
+	bar := m.(components.InputBar)
+	bindings := bar.KeyBindings()
+
+	// The status bar should render without [plain] and with the
+	// bold binding rendered in bold (ANSI bold escape).
+	rendered := components.RenderStatusBar(200, bindings, nil)
+
+	// The bold binding should be rendered with ANSI bold (SGR 1)
+	// applied directly to "M-B" and its description.
+	require.Contains(t, rendered, "\x1b[1;90mM-B")
+	require.Contains(t, rendered, "\x1b[1;90mbold")
 }

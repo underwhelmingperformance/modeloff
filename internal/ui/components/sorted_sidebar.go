@@ -153,15 +153,15 @@ func (s Sidebar[T, K]) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		switch {
-		case key.Matches(msg, s.keyMap.Down):
+		case ui.Matches(msg, s.keyMap.Down):
 			s.moveCursor(1)
 
 			return s, nil
-		case key.Matches(msg, s.keyMap.Up):
+		case ui.Matches(msg, s.keyMap.Up):
 			s.moveCursor(-1)
 
 			return s, nil
-		case key.Matches(msg, s.keyMap.Select):
+		case ui.Matches(msg, s.keyMap.Select):
 			cmd := s.activateIndex(s.cursorIdx)
 
 			return s, cmd
@@ -277,7 +277,7 @@ func (s Sidebar[T, K]) View(width, height int) string {
 }
 
 // KeyBindings returns the sidebar's key bindings for the status bar.
-func (s Sidebar[T, K]) KeyBindings() []key.Binding {
+func (s Sidebar[T, K]) KeyBindings() []ui.KeyBinding {
 	hasItems := s.items != nil && s.items.Len() > 0
 
 	downHelp := s.keyMap.Down.Help()
@@ -285,12 +285,12 @@ func (s Sidebar[T, K]) KeyBindings() []key.Binding {
 	combinedKey := downHelp.Key + "/" + upHelp.Key
 	combinedDesc := downHelp.Desc
 
-	return []key.Binding{
+	return []ui.KeyBinding{
 		ui.WithBindingEnabled(
-			key.NewBinding(
+			ui.Bind(key.NewBinding(
 				key.WithKeys(append(s.keyMap.Up.Keys(), s.keyMap.Down.Keys()...)...),
 				key.WithHelp(combinedKey, combinedDesc),
-			),
+			)),
 			hasItems,
 		),
 		ui.WithBindingEnabled(s.keyMap.Select, hasItems),

@@ -107,20 +107,20 @@ func (c ChatView) Init() tea.Cmd {
 }
 
 // KeyBindings implements ui.Keybinding.
-func (c ChatView) KeyBindings() []key.Binding {
-	bindings := []key.Binding{
+func (c ChatView) KeyBindings() []ui.KeyBinding {
+	bindings := []ui.KeyBinding{
 		ui.WithBindingEnabled(
-			key.NewBinding(
+			ui.Bind(key.NewBinding(
 				key.WithKeys("pgup", "pgdown"),
 				key.WithHelp("PgUp/Dn", "scroll"),
-			),
+			)),
 			c.messages.Len() > 0,
 		),
 		ui.WithBindingEnabled(
-			key.NewBinding(
+			ui.Bind(key.NewBinding(
 				key.WithKeys("ctrl+up", "ctrl+down"),
 				key.WithHelp("^↑/↓", "scroll"),
-			),
+			)),
 			c.messages.Len() > 0,
 		),
 	}

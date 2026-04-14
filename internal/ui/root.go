@@ -12,16 +12,16 @@ type ScreenMsg struct {
 
 // AppKeyMap defines application-level keybindings handled by Root.
 type AppKeyMap struct {
-	Quit key.Binding
+	Quit KeyBinding
 }
 
 // DefaultAppKeyMap is the default set of application-level
 // keybindings.
 var DefaultAppKeyMap = AppKeyMap{
-	Quit: key.NewBinding(
+	Quit: Bind(key.NewBinding(
 		key.WithKeys("ctrl+c"),
 		key.WithHelp("^C", "quit"),
-	),
+	)),
 }
 
 // Root is the top-level model that acts as a router between screens.
@@ -58,7 +58,7 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		r.height = msg.Height
 
 	case tea.KeyMsg:
-		if key.Matches(msg, r.keyMap.Quit) {
+		if Matches(msg, r.keyMap.Quit) {
 			return r, tea.Quit
 		}
 
@@ -87,9 +87,9 @@ func (r Root) View() string {
 }
 
 // KeyBindings implements Keybinding.
-func (r Root) KeyBindings() []key.Binding {
+func (r Root) KeyBindings() []KeyBinding {
 	if r.screen == nil {
-		return []key.Binding{r.keyMap.Quit}
+		return []KeyBinding{r.keyMap.Quit}
 	}
 
 	bindings := CollectKeyBindings(r.screen)

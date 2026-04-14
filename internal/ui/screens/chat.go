@@ -8,7 +8,6 @@ import (
 	"slices"
 	"time"
 
-	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -457,7 +456,7 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		return s, s.handleCommand(msg)
 
 	case tea.KeyMsg:
-		if key.Matches(msg, s.keyMap.ToggleNickList) {
+		if ui.Matches(msg, s.keyMap.ToggleNickList) {
 			slog.Default().InfoContext(s.ctx, "keybind triggered",
 				"component", "ui",
 				"action", "toggle_nick_list",
@@ -631,7 +630,7 @@ func (s ChatScreen) sendMessage(text string) tea.Cmd {
 }
 
 // KeyBindings implements ui.Keybinding.
-func (s ChatScreen) KeyBindings() []key.Binding {
+func (s ChatScreen) KeyBindings() []ui.KeyBinding {
 	bindings := ui.CollectKeyBindings(s.layout)
 	bindings = append(bindings, s.keyMap.ToggleNickList, ui.DefaultAppKeyMap.Quit)
 

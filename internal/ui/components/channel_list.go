@@ -3,7 +3,6 @@ package components
 import (
 	"fmt"
 
-	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/laney/modeloff/internal/domain"
@@ -190,6 +189,6 @@ func (cl ChannelSidebar) View(width, height int) string {
 }
 
 // KeyBindings implements ui.Keybinding.
-func (cl ChannelSidebar) KeyBindings() []key.Binding {
+func (cl ChannelSidebar) KeyBindings() []ui.KeyBinding {
 	return cl.panel.KeyBindings()
 }

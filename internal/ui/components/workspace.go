@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"golang.org/x/text/language"
@@ -93,18 +92,18 @@ func (w ChatWorkspace) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		switch {
-		case key.Matches(msg, w.keyMap.ToggleObservability):
+		case ui.Matches(msg, w.keyMap.ToggleObservability):
 			w.Open = !w.Open
 			if !w.Open {
 				w.Fullscreen = false
 			}
 			return w.updateChildBounds()
 
-		case w.Open && key.Matches(msg, w.keyMap.ToggleFullscreen):
+		case w.Open && ui.Matches(msg, w.keyMap.ToggleFullscreen):
 			w.Fullscreen = !w.Fullscreen
 			return w.updateChildBounds()
 
-		case w.Fullscreen && key.Matches(msg, w.keyMap.NextPane):
+		case w.Fullscreen && ui.Matches(msg, w.keyMap.NextPane):
 			if !w.HasMetrics {
 				return w, nil
 			}
@@ -117,7 +116,7 @@ func (w ChatWorkspace) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 			return w, nil
 
-		case w.Fullscreen && key.Matches(msg, w.keyMap.ExitFullscreen):
+		case w.Fullscreen && ui.Matches(msg, w.keyMap.ExitFullscreen):
 			w.Fullscreen = false
 			return w.updateChildBounds()
 		}
@@ -187,8 +186,8 @@ func (w ChatWorkspace) updateSplit(msg tea.Msg) (ui.Model, tea.Cmd) {
 }
 
 // KeyBindings implements ui.Keybinding.
-func (w ChatWorkspace) KeyBindings() []key.Binding {
-	bindings := []key.Binding{w.keyMap.ToggleObservability}
+func (w ChatWorkspace) KeyBindings() []ui.KeyBinding {
+	bindings := []ui.KeyBinding{w.keyMap.ToggleObservability}
 
 	if w.Open {
 		bindings = append(bindings, w.keyMap.ToggleFullscreen)

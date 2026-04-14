@@ -34,10 +34,10 @@ func NewFeedView(placeholder, dividerText string) FeedView {
 
 	keyMap := DefaultChatViewKeyMap
 	vp.KeyMap = viewport.KeyMap{
-		PageDown: keyMap.PageDown,
-		PageUp:   keyMap.PageUp,
-		Down:     keyMap.ScrollDown,
-		Up:       keyMap.ScrollUp,
+		PageDown: keyMap.PageDown.Binding,
+		PageUp:   keyMap.PageUp.Binding,
+		Down:     keyMap.ScrollDown.Binding,
+		Up:       keyMap.ScrollUp.Binding,
 	}
 
 	return FeedView{
@@ -127,20 +127,20 @@ func (f FeedView) Update(msg tea.Msg) (FeedView, tea.Cmd) {
 }
 
 // KeyBindings returns the active scroll keybindings.
-func (f FeedView) KeyBindings() []key.Binding {
-	return []key.Binding{
+func (f FeedView) KeyBindings() []ui.KeyBinding {
+	return []ui.KeyBinding{
 		ui.WithBindingEnabled(
-			key.NewBinding(
+			ui.Bind(key.NewBinding(
 				key.WithKeys("pgup", "pgdown"),
 				key.WithHelp("PgUp/Dn", "scroll"),
-			),
+			)),
 			len(f.lines) > 0,
 		),
 		ui.WithBindingEnabled(
-			key.NewBinding(
+			ui.Bind(key.NewBinding(
 				key.WithKeys("ctrl+up", "ctrl+down"),
 				key.WithHelp("^↑/↓", "scroll"),
-			),
+			)),
 			len(f.lines) > 0,
 		),
 	}

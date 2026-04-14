@@ -31,10 +31,10 @@ func (s stubModel) View(width, height int) string {
 type keybindingStubModel struct {
 	stubModel
 
-	bindings []bkey.Binding
+	bindings []ui.KeyBinding
 }
 
-func (s keybindingStubModel) KeyBindings() []bkey.Binding {
+func (s keybindingStubModel) KeyBindings() []ui.KeyBinding {
 	return s.bindings
 }
 
@@ -311,21 +311,21 @@ func TestMainLayout_View_obs_open_reduces_column_height(t *testing.T) {
 func TestMainLayout_KeyBindings_collects_from_children(t *testing.T) {
 	sidebar := keybindingStubModel{
 		stubModel: stubModel{label: "sidebar"},
-		bindings: []bkey.Binding{
-			bkey.NewBinding(bkey.WithKeys("ctrl+d"), bkey.WithHelp("^D", "channels")),
+		bindings: []ui.KeyBinding{
+			ui.Bind(bkey.NewBinding(bkey.WithKeys("ctrl+d"), bkey.WithHelp("^D", "channels"))),
 		},
 	}
 	content := keybindingStubModel{
 		stubModel: stubModel{label: "content"},
-		bindings: []bkey.Binding{
-			bkey.NewBinding(bkey.WithKeys("pgup"), bkey.WithHelp("PgUp", "scroll")),
+		bindings: []ui.KeyBinding{
+			ui.Bind(bkey.NewBinding(bkey.WithKeys("pgup"), bkey.WithHelp("PgUp", "scroll"))),
 		},
 	}
 
 	layout := components.NewMainLayout(sidebar, content)
 
-	require.Equal(t, []bkey.Binding{
-		bkey.NewBinding(bkey.WithKeys("ctrl+d"), bkey.WithHelp("^D", "channels")),
-		bkey.NewBinding(bkey.WithKeys("pgup"), bkey.WithHelp("PgUp", "scroll")),
+	require.Equal(t, []ui.KeyBinding{
+		ui.Bind(bkey.NewBinding(bkey.WithKeys("ctrl+d"), bkey.WithHelp("^D", "channels"))),
+		ui.Bind(bkey.NewBinding(bkey.WithKeys("pgup"), bkey.WithHelp("PgUp", "scroll"))),
 	}, layout.KeyBindings())
 }

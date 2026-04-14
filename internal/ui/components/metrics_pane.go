@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -72,7 +71,7 @@ func (m MetricsPane) View(width, height int) string {
 }
 
 // KeyBindings implements ui.Keybinding.
-func (m MetricsPane) KeyBindings() []key.Binding {
+func (m MetricsPane) KeyBindings() []ui.KeyBinding {
 	return m.feed.KeyBindings()
 }
 

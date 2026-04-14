@@ -93,10 +93,10 @@ func (m MessageList) Pending() bool {
 // SetKeyMap applies viewport key bindings from the ChatView key map.
 func (m MessageList) SetKeyMap(km ChatViewKeyMap) MessageList {
 	m.viewport.KeyMap = viewport.KeyMap{
-		PageDown: km.PageDown,
-		PageUp:   km.PageUp,
-		Down:     km.ScrollDown,
-		Up:       km.ScrollUp,
+		PageDown: km.PageDown.Binding,
+		PageUp:   km.PageUp.Binding,
+		Down:     km.ScrollDown.Binding,
+		Up:       km.ScrollUp.Binding,
 	}
 
 	return m
