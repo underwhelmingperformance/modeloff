@@ -390,12 +390,12 @@ func (s Sidebar[T, K]) handleMouse(msg tea.MouseMsg) (Sidebar[T, K], tea.Cmd) {
 	case msg.Button == tea.MouseButtonWheelUp:
 		s.moveCursor(-1)
 
-		return s, s.activateIndex(s.cursorIdx)
+		return s, nil
 
 	case msg.Button == tea.MouseButtonWheelDown:
 		s.moveCursor(1)
 
-		return s, s.activateIndex(s.cursorIdx)
+		return s, nil
 
 	case msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft:
 		if !s.bounds.Contains(msg.X, msg.Y) {

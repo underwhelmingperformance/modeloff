@@ -280,6 +280,26 @@ func TestChannelSidebar_cursor_clamps_when_active_not_in_list(t *testing.T) {
 	require.Equal(t, domain.ChannelName("#alpha"), ch)
 }
 
+func TestChannelSidebar_mouse_wheel_moves_cursor_without_activating(t *testing.T) {
+	// Sorted order: #dev, #general, #random. Active #dev = index 0.
+	m := newTestChannelSidebar(testChannels, "#dev", nil)
+	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 0, Y: 0, Width: 20, Height: 10}})
+
+	// Scroll down — should move cursor but NOT activate (no cmd).
+	m, cmd := m.Update(tea.MouseMsg{
+		X:      5,
+		Y:      2,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonWheelDown,
+	})
+
+	require.Nil(t, cmd, "wheel scroll should not activate a channel")
+
+	// Ctrl+O to confirm cursor moved to #general.
+	_, ch := activateAndGetChannel(t, m, ctrlKey("ctrl+o"))
+	require.Equal(t, domain.ChannelName("#general"), ch)
+}
+
 func TestChannelSidebar_ignores_other_messages(t *testing.T) {
 	m := newTestChannelSidebar(testChannels, "#general", nil)
 
