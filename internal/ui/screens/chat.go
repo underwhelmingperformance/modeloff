@@ -250,8 +250,13 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		})
 
 	case chatcmd.NoChannelError:
+		usage := "join a channel first"
+		if msg.Command == "part" {
+			usage = "no channel to part from"
+		}
+
 		return s, s.logAndShow(domain.ChannelUsageHint{
-			Command: "", Usage: "join a channel first", At: time.Now(),
+			Command: msg.Command, Usage: usage, At: time.Now(),
 		})
 
 	case chatcmd.APIKeySetResult:

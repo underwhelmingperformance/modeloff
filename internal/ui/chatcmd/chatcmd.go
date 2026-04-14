@@ -79,7 +79,9 @@ type UsageError struct {
 
 // NoChannelError indicates a command requires an active channel but
 // none is set.
-type NoChannelError struct{}
+type NoChannelError struct {
+	Command string
+}
 
 // APIKeySetResult signals that the API key was updated.
 type APIKeySetResult struct {
@@ -153,8 +155,8 @@ func usageCmd(cmd, usage string) tea.Cmd {
 	return func() tea.Msg { return UsageError{Command: cmd, Usage: usage} }
 }
 
-func noChannelCmd() tea.Cmd {
-	return func() tea.Msg { return NoChannelError{} }
+func noChannelCmd(command string) tea.Cmd {
+	return func() tea.Msg { return NoChannelError{Command: command} }
 }
 
 func (rc Context) configResetRequested() bool {

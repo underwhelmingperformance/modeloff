@@ -266,7 +266,7 @@ func TestApp_channel_command_on_welcome_screen_rejected_with_teatest(t *testing.
 	tm.WaitFor("Welcome to modeloff")
 
 	tm.Submit("/part")
-	tm.WaitFor("join a channel first")
+	tm.WaitFor("no channel to part from")
 }
 
 func TestApp_quit_command_with_teatest(t *testing.T) {

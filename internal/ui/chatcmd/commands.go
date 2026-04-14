@@ -75,7 +75,7 @@ type PartCommand struct {
 // Run implements Command.
 func (c PartCommand) Run(rc Context) tea.Cmd {
 	if rc.Active == "" {
-		return noChannelCmd()
+		return noChannelCmd("part")
 	}
 
 	return func() tea.Msg {
@@ -153,7 +153,7 @@ func (AddModelCommand) Sources() map[string]command.SuggestionSource {
 // Run implements Command.
 func (c AddModelCommand) Run(rc Context) tea.Cmd {
 	if rc.Active == "" {
-		return noChannelCmd()
+		return noChannelCmd("add-model")
 	}
 
 	if c.Model == "" {
@@ -183,7 +183,7 @@ func (InviteCommand) Sources() map[string]command.SuggestionSource {
 // Run implements Command.
 func (c InviteCommand) Run(rc Context) tea.Cmd {
 	if rc.Active == "" && c.Channel == "" {
-		return noChannelCmd()
+		return noChannelCmd("invite")
 	}
 
 	if strings.TrimSpace(c.Nick) == "" {
@@ -251,7 +251,7 @@ func (KickCommand) Sources() map[string]command.SuggestionSource {
 // Run implements Command.
 func (c KickCommand) Run(rc Context) tea.Cmd {
 	if rc.Active == "" {
-		return noChannelCmd()
+		return noChannelCmd("kick")
 	}
 
 	return func() tea.Msg {
@@ -399,7 +399,7 @@ type TopicCommand struct {
 // Run implements Command.
 func (c TopicCommand) Run(rc Context) tea.Cmd {
 	if rc.Active == "" {
-		return noChannelCmd()
+		return noChannelCmd("topic")
 	}
 
 	if len(c.Topic) == 0 {
@@ -463,7 +463,7 @@ type MeCommand struct {
 // Run implements Command.
 func (c MeCommand) Run(rc Context) tea.Cmd {
 	if rc.Active == "" {
-		return noChannelCmd()
+		return noChannelCmd("me")
 	}
 
 	body := strings.TrimSpace(strings.Join(c.Action, " "))
