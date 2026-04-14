@@ -127,6 +127,7 @@ type ChannelModeChange struct {
 	Channel ChannelName `json:"channel"`
 	Nick    Nick        `json:"nick"`
 	Mode    NickMode    `json:"mode"`
+	By      Nick        `json:"by"`
 	At      time.Time   `json:"at"`
 }
 

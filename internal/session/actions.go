@@ -101,7 +101,7 @@ func (s *Session) JoinAs(ctx context.Context, actor domain.Nick, ch domain.Chann
 		}
 
 		s.appendEvent(ctx, ch, domain.ChannelModeChange{
-			Channel: ch, Nick: actor, Mode: domain.ModeOp, At: now,
+			Channel: ch, Nick: actor, Mode: domain.ModeOp, By: "ChanServ", At: now,
 		})
 		s.emit(ctx, domain.ModeChangeEvent{
 			Channel: ch, Nick: actor, Mode: domain.ModeOp, Actor: "ChanServ", At: now,

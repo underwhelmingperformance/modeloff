@@ -86,7 +86,7 @@ func renderChannelEvent(
 
 	case domain.ChannelModeChange:
 		return wrap.Render(theme.SystemEvent.Render(
-			fmt.Sprintf("*** %s sets mode %s %s", e.Channel, e.Mode, e.Nick)))
+			fmt.Sprintf("*** %s sets mode %s %s", e.By, e.Mode.IRCMode(), e.Nick)))
 
 	case domain.ChannelModelInvited:
 		return wrap.Render(theme.SystemEvent.Render(

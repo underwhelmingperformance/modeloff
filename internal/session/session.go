@@ -375,6 +375,7 @@ func (s *Session) attachInstanceToChannel(
 			Channel: ch,
 			Nick:    inst.Nick,
 			Mode:    domain.ModeVoice,
+			By:      "ChanServ",
 			At:      now,
 		})
 

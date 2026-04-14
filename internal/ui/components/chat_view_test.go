@@ -439,7 +439,7 @@ func TestChatView_dm_suppresses_join_part_events(t *testing.T) {
 	events := []domain.StoredEvent{
 		{Event: domain.ChannelJoin{Channel: "botname", Nick: "testuser", At: now}},
 		{Event: domain.ChannelPart{Channel: "botname", Nick: "testuser", At: now}},
-		{Event: domain.ChannelModeChange{Channel: "botname", Nick: "testuser", Mode: domain.ModeOp, At: now}},
+		{Event: domain.ChannelModeChange{Channel: "botname", Nick: "testuser", Mode: domain.ModeOp, By: "ChanServ", At: now}},
 		{Event: domain.ChannelTopicChange{Channel: "botname", Topic: "x", By: "testuser", At: now}},
 		{Event: domain.ChannelMessage{Channel: "botname", From: "bot", Body: "hello human", At: now}},
 	}
@@ -695,6 +695,13 @@ func TestRenderLine_IRC_events(t *testing.T) {
 			"topic_info_no_topic",
 			domain.StoredEvent{Event: domain.ChannelTopicInfo{Channel: "#general", At: now}},
 			"*** No topic set for #general",
+		},
+		{
+			"mode_change",
+			domain.StoredEvent{Event: domain.ChannelModeChange{
+				Channel: "#general", Nick: "botty", Mode: domain.ModeVoice, By: "ChanServ", At: now,
+			}},
+			"*** ChanServ sets mode +v botty",
 		},
 		{
 			"model_invited",

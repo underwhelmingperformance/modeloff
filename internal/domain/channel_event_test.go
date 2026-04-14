@@ -110,6 +110,7 @@ func TestChannelEvent_JSON_round_trip(t *testing.T) {
 				Channel: "#general",
 				Nick:    "bob",
 				Mode:    domain.ModeVoice,
+				By:      "ChanServ",
 				At:      ts,
 			},
 		},

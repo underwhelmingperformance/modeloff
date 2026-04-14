@@ -151,6 +151,19 @@ func (m NickMode) String() string {
 	}
 }
 
+// IRCMode returns the IRC mode-change string for the mode, e.g. "+v"
+// for voice and "+o" for op.
+func (m NickMode) IRCMode() string {
+	switch m {
+	case ModeOp:
+		return "+o"
+	case ModeVoice:
+		return "+v"
+	default:
+		return ""
+	}
+}
+
 // Member pairs a nick with its channel mode for display in the nick
 // list.
 type Member struct {
