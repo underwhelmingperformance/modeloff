@@ -54,7 +54,7 @@ func NewNickList(members domain.MemberList) NickList {
 		Key:  func(m domain.Member) domain.Nick { return m.Nick },
 		View: nickListView(nl.thinking),
 	}).
-		SetHeader("Users").
+		SetHeader("Nicks").
 		SetEmpty("No members")
 
 	return nl

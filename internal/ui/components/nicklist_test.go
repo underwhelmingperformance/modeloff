@@ -40,7 +40,7 @@ func TestNickList_View_shows_members(t *testing.T) {
 	require.Contains(t, v, "alice")
 	require.Contains(t, v, "bob")
 	require.Contains(t, v, "charlie")
-	require.Contains(t, v, "Users")
+	require.Contains(t, v, "Nicks")
 }
 
 func TestNickList_View_empty(t *testing.T) {
