@@ -736,15 +736,15 @@ func TestComplete_subcommand_names(t *testing.T) {
 		{
 			name: "all subcommands", raw: "/admin ",
 			want: Completion{Visible: true, ReplaceStart: 7, ReplaceEnd: 7, AppendSpace: true, Suggestions: []Suggestion{
-				{Value: "ban", Label: "ban", Detail: "Ban a user"},
-				{Value: "unban", Label: "unban", Detail: "Unban a user"},
-				{Value: "mute", Label: "mute", Detail: "Mute a user"},
+				{Value: "ban", Label: "ban", Detail: "Ban a user", Usage: "ban"},
+				{Value: "unban", Label: "unban", Detail: "Unban a user", Usage: "unban"},
+				{Value: "mute", Label: "mute", Detail: "Mute a user", Usage: "mute"},
 			}},
 		},
 		{
 			name: "filtered by prefix", raw: "/admin mu",
 			want: Completion{Visible: true, ReplaceStart: 7, ReplaceEnd: 9, AppendSpace: true, Suggestions: []Suggestion{
-				{Value: "mute", Label: "mute", Detail: "Mute a user"},
+				{Value: "mute", Label: "mute", Detail: "Mute a user", Usage: "mute"},
 			}},
 		},
 		{
@@ -843,17 +843,17 @@ func TestComplete_subcommand_recurses_into_child(t *testing.T) {
 		{
 			name: "subcommand names after parent", raw: "/config ",
 			want: Completion{Visible: true, ReplaceStart: 8, ReplaceEnd: 8, AppendSpace: true, Suggestions: []Suggestion{
-				{Value: "set", Label: "set", Detail: "Set a value"},
-				{Value: "get", Label: "get", Detail: "Get a value"},
-				{Value: "reset", Label: "reset", Detail: "Reset config"},
+				{Value: "set", Label: "set", Detail: "Set a value", Usage: "set <key> [--format]"},
+				{Value: "get", Label: "get", Detail: "Get a value", Usage: "get [--format]"},
+				{Value: "reset", Label: "reset", Detail: "Reset config", Usage: "reset [--format]"},
 				{Value: "--format", Label: "--format", Detail: "Output format"},
 			}},
 		},
 		{
 			name: "subcommand names filtered", raw: "/config s",
 			want: Completion{Visible: true, ReplaceStart: 8, ReplaceEnd: 9, AppendSpace: true, Suggestions: []Suggestion{
-				{Value: "set", Label: "set", Detail: "Set a value"},
-				{Value: "reset", Label: "reset", Detail: "Reset config"},
+				{Value: "set", Label: "set", Detail: "Set a value", Usage: "set <key> [--format]"},
+				{Value: "reset", Label: "reset", Detail: "Reset config", Usage: "reset [--format]"},
 			}},
 		},
 		{
@@ -903,8 +903,8 @@ func TestComplete_group_node_combines_child_and_flag_suggestions(t *testing.T) {
 	require.Equal(t, Completion{
 		Visible: true, ReplaceStart: 8, ReplaceEnd: 8, AppendSpace: true,
 		Suggestions: []Suggestion{
-			{Value: "set", Label: "set", Detail: "Set a value"},
-			{Value: "get", Label: "get", Detail: "Get a value"},
+			{Value: "set", Label: "set", Detail: "Set a value", Usage: "set [--format]"},
+			{Value: "get", Label: "get", Detail: "Get a value", Usage: "get [--format]"},
 			{Value: "--format", Label: "--format", Detail: "Output format"},
 		},
 	}, complete(cmds, nil, "/config ", 8, domain.KindChannel))
@@ -986,8 +986,8 @@ func TestComplete_bool_flag_does_not_expect_a_value(t *testing.T) {
 	require.Equal(t, Completion{
 		Visible: true, ReplaceStart: 16, ReplaceEnd: 16, AppendSpace: true,
 		Suggestions: []Suggestion{
-			{Value: "api-key", Label: "api-key", Detail: "API key"},
-			{Value: "poke-interval", Label: "poke-interval", Detail: "Poke interval"},
+			{Value: "api-key", Label: "api-key", Detail: "API key", Usage: "api-key [--reset]"},
+			{Value: "poke-interval", Label: "poke-interval", Detail: "Poke interval", Usage: "poke-interval [--reset]"},
 		},
 	}, complete(cmds, nil, "/config --reset ", 16, domain.KindChannel))
 }
@@ -1033,22 +1033,22 @@ func TestComplete_deep_nesting_walks_into_grandchildren(t *testing.T) {
 		{
 			name: "level 1: top children", raw: "/admin ",
 			want: Completion{Visible: true, ReplaceStart: 7, ReplaceEnd: 7, AppendSpace: true, Suggestions: []Suggestion{
-				{Value: "user", Label: "user", Detail: "User management"},
-				{Value: "stats", Label: "stats", Detail: "Show stats"},
+				{Value: "user", Label: "user", Detail: "User management", Usage: "user <command>"},
+				{Value: "stats", Label: "stats", Detail: "Show stats", Usage: "stats"},
 			}},
 		},
 		{
 			name: "level 2: grandchildren", raw: "/admin user ",
 			want: Completion{Visible: true, ReplaceStart: 12, ReplaceEnd: 12, AppendSpace: true, Suggestions: []Suggestion{
-				{Value: "ban", Label: "ban", Detail: "Ban a user"},
-				{Value: "unban", Label: "unban", Detail: "Unban a user"},
+				{Value: "ban", Label: "ban", Detail: "Ban a user", Usage: "ban <nick>"},
+				{Value: "unban", Label: "unban", Detail: "Unban a user", Usage: "unban"},
 			}},
 		},
 		{
 			name: "level 2: filtered grandchildren", raw: "/admin user b",
 			want: Completion{Visible: true, ReplaceStart: 12, ReplaceEnd: 13, AppendSpace: true, Suggestions: []Suggestion{
-				{Value: "ban", Label: "ban", Detail: "Ban a user"},
-				{Value: "unban", Label: "unban", Detail: "Unban a user"},
+				{Value: "ban", Label: "ban", Detail: "Ban a user", Usage: "ban <nick>"},
+				{Value: "unban", Label: "unban", Detail: "Unban a user", Usage: "unban"},
 			}},
 		},
 		{
@@ -1110,26 +1110,36 @@ func TestComplete_command_suggestions_include_aliases(t *testing.T) {
 		},
 	}
 
+	joinSuggestion := Suggestion{
+		Value:   "join",
+		Label:   "/join (/j, /jo)",
+		Detail:  "Join a channel",
+		Usage:   "/join (/j, /jo) <channel>",
+		Aliases: []string{"j", "jo"},
+	}
+
+	quitSuggestion := Suggestion{
+		Value:   "quit",
+		Label:   "/quit (/q)",
+		Detail:  "Exit.",
+		Usage:   "/quit (/q)",
+		Aliases: []string{"q"},
+	}
+
 	tests := []struct {
 		name string
 		raw  string
 		want Completion
 	}{
 		{
-			name: "all suggestions include aliases",
+			name: "all commands appear once with aliases inline",
 			raw:  "/",
 			want: Completion{
 				Visible:      true,
 				ReplaceStart: 1,
 				ReplaceEnd:   1,
 				AppendSpace:  true,
-				Suggestions: []Suggestion{
-					{Value: "join", Label: "/join", Detail: "Join a channel", Usage: "/join (/j, /jo) <channel>"},
-					{Value: "j", Label: "/j", Detail: "Join a channel", Usage: "/join (/j, /jo) <channel>"},
-					{Value: "jo", Label: "/jo", Detail: "Join a channel", Usage: "/join (/j, /jo) <channel>"},
-					{Value: "quit", Label: "/quit", Detail: "Exit.", Usage: "/quit (/q)"},
-					{Value: "q", Label: "/q", Detail: "Exit.", Usage: "/quit (/q)"},
-				},
+				Suggestions:  []Suggestion{joinSuggestion, quitSuggestion},
 			},
 		},
 		{
@@ -1140,11 +1150,7 @@ func TestComplete_command_suggestions_include_aliases(t *testing.T) {
 				ReplaceStart: 1,
 				ReplaceEnd:   2,
 				AppendSpace:  true,
-				Suggestions: []Suggestion{
-					{Value: "join", Label: "/join", Detail: "Join a channel", Usage: "/join (/j, /jo) <channel>"},
-					{Value: "j", Label: "/j", Detail: "Join a channel", Usage: "/join (/j, /jo) <channel>"},
-					{Value: "jo", Label: "/jo", Detail: "Join a channel", Usage: "/join (/j, /jo) <channel>"},
-				},
+				Suggestions:  []Suggestion{joinSuggestion},
 			},
 		},
 		{
@@ -1155,10 +1161,7 @@ func TestComplete_command_suggestions_include_aliases(t *testing.T) {
 				ReplaceStart: 1,
 				ReplaceEnd:   2,
 				AppendSpace:  true,
-				Suggestions: []Suggestion{
-					{Value: "quit", Label: "/quit", Detail: "Exit.", Usage: "/quit (/q)"},
-					{Value: "q", Label: "/q", Detail: "Exit.", Usage: "/quit (/q)"},
-				},
+				Suggestions:  []Suggestion{quitSuggestion},
 			},
 		},
 	}
@@ -1191,9 +1194,47 @@ func TestComplete_child_suggestions_include_aliases(t *testing.T) {
 		ReplaceEnd:   8,
 		AppendSpace:  true,
 		Suggestions: []Suggestion{
-			{Value: "set", Label: "set", Detail: "Set a value"},
-			{Value: "s", Label: "s", Detail: "Set a value"},
-			{Value: "get", Label: "get", Detail: "Get a value"},
+			{Value: "set", Label: "set (s)", Detail: "Set a value", Usage: "set (s)", Aliases: []string{"s"}},
+			{Value: "get", Label: "get", Detail: "Get a value", Usage: "get"},
+		},
+	}, complete(cmds, nil, raw, len([]rune(raw)), domain.KindChannel))
+}
+
+func TestComplete_child_suggestion_usage_includes_args(t *testing.T) {
+	cmds := Set{
+		Commands: []*Node{
+			{
+				Name: "config",
+				Help: "Configuration",
+				Children: []*Node{
+					{
+						Name:    "set",
+						Help:    "Set a value",
+						Aliases: []string{"s"},
+						Positionals: []Positional{
+							{Name: "key"},
+							{Name: "value"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	raw := "/config "
+	require.Equal(t, Completion{
+		Visible:      true,
+		ReplaceStart: 8,
+		ReplaceEnd:   8,
+		AppendSpace:  true,
+		Suggestions: []Suggestion{
+			{
+				Value:   "set",
+				Label:   "set (s)",
+				Detail:  "Set a value",
+				Usage:   "set (s) <key> <value>",
+				Aliases: []string{"s"},
+			},
 		},
 	}, complete(cmds, nil, raw, len([]rune(raw)), domain.KindChannel))
 }

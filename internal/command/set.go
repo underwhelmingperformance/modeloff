@@ -14,12 +14,15 @@ import (
 // Suggestion is a single completion option. Every suggestion carries
 // its own Usage text so the popover can display it when the
 // suggestion is selected, without promoting any entry to a special
-// header.
+// header. Aliases, when present, are alternate names that should
+// match the suggestion during filtering — they are not displayed
+// as separate entries.
 type Suggestion struct {
-	Value  string
-	Label  string
-	Detail string
-	Usage  string
+	Value   string
+	Label   string
+	Detail  string
+	Usage   string
+	Aliases []string
 }
 
 // SuggestionSource returns suggestions for the current argument.
@@ -679,16 +682,13 @@ func commandSuggestions(set Set, kind domain.ChannelKind) []Suggestion {
 			continue
 		}
 
-		fullUsage := node.FullUsage()
-
-		for name := range node.Names() {
-			suggestions = append(suggestions, Suggestion{
-				Value:  name,
-				Label:  "/" + name,
-				Detail: node.Help,
-				Usage:  fullUsage,
-			})
-		}
+		suggestions = append(suggestions, Suggestion{
+			Value:   node.Name,
+			Label:   node.DisplayName(),
+			Detail:  node.Help,
+			Usage:   node.FullUsage(),
+			Aliases: slices.Clone(node.Aliases),
+		})
 	}
 
 	return suggestions
@@ -819,16 +819,42 @@ func childSuggestions(node *Node) []Suggestion {
 	suggestions := make([]Suggestion, 0, len(node.Children))
 
 	for _, child := range node.Children {
-		for name := range child.Names() {
-			suggestions = append(suggestions, Suggestion{
-				Value:  name,
-				Label:  name,
-				Detail: child.Help,
-			})
-		}
+		suggestions = append(suggestions, Suggestion{
+			Value:   child.Name,
+			Label:   childDisplayLabel(child),
+			Detail:  child.Help,
+			Usage:   childFullUsage(child),
+			Aliases: slices.Clone(child.Aliases),
+		})
 	}
 
 	return suggestions
+}
+
+// childDisplayLabel returns the local name of a child node with any
+// aliases appended in parentheses, e.g. "set (s)". Children do not
+// carry a leading slash because they are subcommands, not top-level
+// commands.
+func childDisplayLabel(child *Node) string {
+	if len(child.Aliases) == 0 {
+		return child.Name
+	}
+
+	return child.Name + " (" + strings.Join(child.Aliases, ", ") + ")"
+}
+
+// childFullUsage mirrors Node.FullUsage for subcommand nodes using the
+// slashless child label, e.g. "set (s) <key> <value>". If the child
+// takes no arguments the result degrades to just the label.
+func childFullUsage(child *Node) string {
+	label := childDisplayLabel(child)
+
+	args := child.Usage()
+	if args == "" {
+		return label
+	}
+
+	return label + " " + args
 }
 
 func scanTokens(runes []rune) []token {
@@ -948,19 +974,40 @@ func filterSuggestions(all []Suggestion, prefix string) []Suggestion {
 
 		label := strings.ToLower(strings.TrimPrefix(suggestion.Label, "/"))
 		value := strings.ToLower(strings.TrimPrefix(suggestion.Value, "/"))
-		if strings.HasPrefix(value, lower) || strings.HasPrefix(label, lower) {
+
+		if strings.HasPrefix(value, lower) || strings.HasPrefix(label, lower) || aliasHasPrefix(suggestion.Aliases, lower) {
 			seen[key] = struct{}{}
 			exact = append(exact, suggestion)
 			continue
 		}
 
-		if strings.Contains(value, lower) || strings.Contains(label, lower) {
+		if strings.Contains(value, lower) || strings.Contains(label, lower) || aliasContains(suggestion.Aliases, lower) {
 			seen[key] = struct{}{}
 			contains = append(contains, suggestion)
 		}
 	}
 
 	return append(exact, contains...)
+}
+
+func aliasHasPrefix(aliases []string, lower string) bool {
+	for _, alias := range aliases {
+		if strings.HasPrefix(strings.ToLower(alias), lower) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func aliasContains(aliases []string, lower string) bool {
+	for _, alias := range aliases {
+		if strings.Contains(strings.ToLower(alias), lower) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func dedupeSuggestions(all []Suggestion) []Suggestion {

@@ -89,10 +89,10 @@ func TestComplete_dm_excludes_channel_only_commands(t *testing.T) {
 	c := completeInKind(t, "/", domain.KindDM)
 
 	require.Equal(t, []string{
-		"join", "j", "part", "list",
+		"join", "part", "list",
 		"msg", "nick", "me", "whois", "config",
 		"personas", "regenerate-personas",
-		"help", "clear", "quit", "q",
+		"help", "clear", "quit",
 	}, suggestionValues(c))
 }
 
@@ -100,10 +100,10 @@ func TestComplete_channel_includes_all_commands(t *testing.T) {
 	c := completeInKind(t, "/", domain.KindChannel)
 
 	require.Equal(t, []string{
-		"join", "j", "part", "list", "add-model", "invite", "kick",
+		"join", "part", "list", "add-model", "invite", "kick",
 		"msg", "nick", "topic", "me", "whois", "config",
 		"personas", "regenerate-personas",
-		"help", "clear", "quit", "q",
+		"help", "clear", "quit",
 	}, suggestionValues(c))
 }
 

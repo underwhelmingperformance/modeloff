@@ -1268,6 +1268,40 @@ func TestChatView_popover_renders_usage_in_suggestions(t *testing.T) {
 	require.Equal(t, []string{"testuser", ">", "/"}, chatInputTokens(stripped))
 }
 
+func TestChatView_popover_collapses_aliases_onto_single_row(t *testing.T) {
+	// Regression guard for the `/j oin (/j) <channel>` garble that
+	// appeared when each alias was rendered as its own popover row
+	// with its Label trimmed against the canonical Usage. Aliases
+	// must be collapsed into the single parenthesised group after the
+	// canonical name, followed by positional args and the help text.
+	var m ui.Model = components.NewChatView("#general", "testuser", "")
+	nodes := []*command.Node{
+		{
+			Name:        "join",
+			Aliases:     []string{"j", "jo"},
+			Help:        "Join a channel",
+			Positionals: []command.Positional{{Name: "channel"}},
+		},
+		{Name: "quit", Aliases: []string{"q"}, Help: "Exit modeloff"},
+	}
+	m, _ = m.Update(components.CommandStateMsg{
+		Commands:  nodes,
+		Completer: command.CompletionSet[testKind]{Set: command.Set{Commands: nodes}, Ctx: testKindChannel},
+	})
+
+	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 0, Y: 0, Width: 80, Height: 24}})
+	m = typeText(t, m, "/")
+
+	v := m.View(80, 24)
+	stripped := ansi.Strip(v)
+
+	require.Equal(t, []string{
+		"/join (/j, /jo) <channel>  Join a channel",
+		"/quit (/q)  Exit modeloff",
+	}, popoverLines(stripped))
+	require.Equal(t, []string{"testuser", ">", "/"}, chatInputTokens(stripped))
+}
+
 func TestChatView_mouse_click_positions_input_cursor(t *testing.T) {
 	cv := components.NewChatView("#general", "testuser", "")
 	var m ui.Model = cv
