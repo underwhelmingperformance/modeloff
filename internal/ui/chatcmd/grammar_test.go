@@ -256,7 +256,7 @@ func TestComplete_config_api_key_no_value_suggestions(t *testing.T) {
 	c := complete(t, "/config api-key ")
 
 	require.True(t, c.Visible)
-	require.Empty(t, c.Suggestions)
+	require.Equal(t, []command.Suggestion(nil), c.Suggestions)
 }
 
 func TestComplete_config_reset_before_subcommand(t *testing.T) {
@@ -273,7 +273,7 @@ func TestComplete_config_reset_after_subcommand_does_not_expect_value(t *testing
 	c := complete(t, "/config api-key --reset ")
 
 	require.True(t, c.Visible)
-	require.Empty(t, c.Suggestions)
+	require.Equal(t, []command.Suggestion(nil), c.Suggestions)
 }
 
 func TestParse_personas_command(t *testing.T) {
@@ -311,7 +311,7 @@ func TestComplete_config_persona_no_value_suggestions(t *testing.T) {
 	c := complete(t, "/config persona ")
 
 	require.True(t, c.Visible)
-	require.Empty(t, c.Suggestions)
+	require.Equal(t, []command.Suggestion(nil), c.Suggestions)
 }
 
 func TestComplete_live_data_reflects_changes(t *testing.T) {

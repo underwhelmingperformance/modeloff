@@ -217,9 +217,11 @@ func TestApp_unknown_command_on_welcome_screen_with_teatest(t *testing.T) {
 	tm.Submit("/foo")
 	tm.WaitFor("unknown command: /foo")
 
-	view := tm.CurrentView()
-	require.Contains(t, view, "unknown command: /foo")
-	require.NotContains(t, view, "<testuser>")
+	require.Equal(t, []string{
+		"No channels",
+		"No members",
+		"✗ command: unknown command: /foo",
+	}, visibleBodySegments(tm.CurrentView()))
 }
 
 func TestApp_welcome_join_command_with_teatest(t *testing.T) {
@@ -235,8 +237,11 @@ func TestApp_welcome_join_command_with_teatest(t *testing.T) {
 	tm.WaitFor("Created channel #general")
 
 	view := tm.CurrentView()
-	require.Contains(t, view, "#general")
-	require.NotContains(t, view, "Welcome to modeloff")
+	require.Equal(t, []string{"Channels", "▸#general"}, sidebarColumn(view))
+	require.Equal(t, []string{
+		"*** Created channel #general",
+		"*** ChanServ sets mode +o testuser",
+	}, normaliseContent(contentColumn(view)))
 }
 
 func TestApp_message_on_welcome_screen_rejected_with_teatest(t *testing.T) {
@@ -251,9 +256,11 @@ func TestApp_message_on_welcome_screen_rejected_with_teatest(t *testing.T) {
 	tm.Submit("hello world")
 	tm.WaitFor("join a channel first")
 
-	view := tm.CurrentView()
-	require.Contains(t, view, "join a channel first")
-	require.NotContains(t, view, "<testuser>")
+	require.Equal(t, []string{
+		"No channels",
+		"No members",
+		"⚠ join a channel first",
+	}, visibleBodySegments(tm.CurrentView()))
 }
 
 func TestApp_channel_command_on_welcome_screen_rejected_with_teatest(t *testing.T) {
@@ -320,10 +327,7 @@ func TestApp_unread_counts_clear_when_visiting_channel_with_teatest(t *testing.T
 	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlO})
 	tm.WaitFor("general", "unread")
 
-	view := tm.CurrentView()
-	require.Contains(t, view, "general")
-	require.Contains(t, view, "unread")
-	require.NotContains(t, view, "#general (3)")
+	require.Equal(t, []string{"Channels", "▸#general", "#random (2)"}, sidebarColumn(tm.CurrentView()))
 }
 
 func TestApp_input_history_and_sidebar_shortcuts_with_teatest(t *testing.T) {
@@ -355,9 +359,12 @@ func TestApp_input_history_and_sidebar_shortcuts_with_teatest(t *testing.T) {
 	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlO})
 	tm.WaitFor("general msg")
 
-	view := ansi.Strip(tm.CurrentView())
-	require.Contains(t, view, "#general")
-	require.Contains(t, view, "draft-only")
+	view := tm.CurrentView()
+	require.Equal(t, []string{"Channels", "▸#general", "#random (2)"}, sidebarColumn(view))
+	// The typed-but-unsent draft must survive a sidebar-driven channel
+	// switch.
+	require.Contains(t, ansi.Strip(view), "draft-only",
+		"draft text should remain in the input bar after switching channel")
 }
 
 func TestApp_ctrl_arrow_scroll_preserves_draft_with_teatest(t *testing.T) {
@@ -380,8 +387,15 @@ func TestApp_ctrl_arrow_scroll_preserves_draft_with_teatest(t *testing.T) {
 	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlUp})
 
 	view := tm.CurrentView()
-	require.Contains(t, view, "draft-only")
-	require.NotContains(t, view, "message 29")
+	stripped := ansi.Strip(view)
+	require.Equal(t, []string{"Channels", "▸#general (32)"}, sidebarColumn(view))
+	// The typed draft must survive a Ctrl+Up viewport scroll.
+	require.Contains(t, stripped, "draft-only",
+		"draft text should remain in the input bar after scrolling")
+	// Ctrl+Up scrolls the viewport up by one line, pushing the most
+	// recent message off the bottom of the chat region.
+	require.NotContains(t, stripped, "message 29",
+		"viewport should have scrolled the latest message out of view")
 }
 
 func TestApp_new_messages_divider_with_teatest(t *testing.T) {
@@ -417,6 +431,21 @@ func TestApp_new_messages_divider_with_teatest(t *testing.T) {
 		return bytes.Contains(out, []byte("new messages"))
 	})
 
-	view := ansi.Strip(tm.FinalView())
-	require.Contains(t, view, "new messages")
+	divider := findDividerLine(contentColumn(tm.FinalView()))
+	require.NotEmpty(t, divider)
+	require.Contains(t, divider, "new messages")
+	require.GreaterOrEqual(t, len([]rune(divider)), 40,
+		"divider should span a significant portion of the width")
+}
+
+// findDividerLine returns the first "new messages" divider row from a
+// rendered content column, or an empty string when none is present.
+func findDividerLine(lines []string) string {
+	for _, line := range lines {
+		if bytes.Contains([]byte(line), []byte(" new messages ")) {
+			return line
+		}
+	}
+
+	return ""
 }

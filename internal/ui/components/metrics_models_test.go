@@ -1,7 +1,6 @@
 package components
 
 import (
-	"context"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -9,10 +8,11 @@ import (
 
 	"github.com/laney/modeloff/internal/observability"
 	"github.com/laney/modeloff/internal/ui"
+	"github.com/laney/modeloff/internal/ui/uitest"
 )
 
 func TestMetricsSummaryModel_statusItems(t *testing.T) {
-	model := NewMetricsSummaryModel(context.Background(), nil)
+	model := NewMetricsSummaryModel(t.Context(), nil)
 
 	updated, cmd := model.Update(metricsSummaryRefreshedMsg{
 		snapshot: observability.MetricsSnapshot{
@@ -42,7 +42,7 @@ func TestMetricsSummaryModel_statusItems(t *testing.T) {
 }
 
 func TestMetricsPane_view_renders_snapshot(t *testing.T) {
-	model := NewMetricsPane(context.Background(), nil)
+	model := NewMetricsPane(t.Context(), nil)
 
 	sized, _ := model.Update(ui.BoundsMsg{
 		Rect: ui.Rect{Width: 80, Height: 30},
@@ -105,23 +105,27 @@ func TestMetricsPane_view_renders_snapshot(t *testing.T) {
 	model = updated.(MetricsPane)
 
 	view := model.View(80, 30)
-	require.Contains(t, view, "req 2  in 11  out 7")
-	require.Contains(t, view, "cached 5  wrote 2")
-	require.Contains(t, view, "anthropic/claude-3-haiku")
-	require.Contains(t, view, "Operation outcomes:")
-	require.Contains(t, view, "session.dispatch_to_instance  reply  count 2")
-	require.Contains(t, view, "Memory activity:")
-	require.Contains(t, view, "searches 2  zero-hit 1")
-	require.Contains(t, view, "write_memory  ok  count 1")
-	require.Contains(t, view, "Runtime health:")
-	require.Contains(t, view, "dropped logs 2  embedding requests 3")
-	require.Contains(t, view, "session.send_message")
+	require.Equal(t, []string{
+		"req 2  in 11  out 7  total 18  reasoning 3  cached 5  wrote 2  cost 1.2500",
+		"By model:",
+		"anthropic/claude-3-haiku  req 2  in 11  out 7  reasoning 3  cached 5  wrote 2",
+		"cost 1.2500",
+		"Operation outcomes:",
+		"session.dispatch_to_instance  reply  count 2",
+		"Memory activity:",
+		"searches 2  zero-hit 1  avg results 1.50  max top score 0.8750",
+		"write_memory  ok  count 1",
+		"Runtime health:",
+		"dropped logs 2  embedding requests 3",
+		"Operation timings:",
+		"session.send_message  count 2  avg 30.00ms  min 20.00ms  max 40.00ms",
+	}, uitest.NonEmptyLines(view))
 }
 
 func TestChatWorkspace_statusItems_follow_observability_state(t *testing.T) {
 	workspace := NewChatWorkspace(
 		NewChatView("#general", "testuser", ""),
-	).WithMetrics(NewMetricsPane(context.Background(), nil))
+	).WithMetrics(NewMetricsPane(t.Context(), nil))
 
 	require.Empty(t, workspace.StatusItems())
 	require.False(t, workspace.WantsNickListHidden())
@@ -159,4 +163,46 @@ func TestChatWorkspace_statusItems_follow_observability_state(t *testing.T) {
 		Full:     "obs metrics",
 		Compact:  "obs",
 	}}, workspace.StatusItems())
+}
+
+func TestChatWorkspace_fullscreen_observability_renders_logs_and_metrics(t *testing.T) {
+	workspace := NewChatWorkspace(
+		NewChatView("#general", "testuser", ""),
+	).WithMetrics(NewMetricsPane(t.Context(), nil))
+
+	updated, _ := workspace.Update(ui.BoundsMsg{
+		Rect: ui.Rect{Width: 140, Height: 30},
+	})
+	workspace = updated.(ChatWorkspace)
+
+	updated, _ = workspace.Update(tea.KeyMsg{Type: tea.KeyCtrlL})
+	workspace = updated.(ChatWorkspace)
+
+	updated, _ = workspace.Update(tea.KeyMsg{Type: tea.KeyCtrlF})
+	workspace = updated.(ChatWorkspace)
+
+	view := workspace.View(140, 30)
+	require.Equal(t, []string{
+		"Logs",
+		"Metrics",
+		"req 0  in 0  out 0  total 0  reasoning 0  cached",
+		"0  wrote 0  cost 0.0000",
+		"By model:",
+		"No logs yet",
+		"No model usage yet",
+		"Operation outcomes:",
+		"No operation counts yet",
+		"Memory activity:",
+		"searches 0  zero-hit 0  avg results 0.00  max top",
+		"score 0.0000",
+		"No memory tool calls yet",
+		"Runtime health:",
+		"dropped logs 0  embedding requests 0",
+		"Operation timings:",
+		"No operation timings yet",
+	}, uitest.NonBorderSegments(view))
+
+	// The chat prompt must not remain visible once fullscreen
+	// observability has taken over the view.
+	require.NotContains(t, view, "testuser >")
 }

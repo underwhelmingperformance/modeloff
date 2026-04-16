@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/richtext"
+	"github.com/laney/modeloff/internal/ui/uitest"
 )
 
 func colour(index uint8) *uint8 {
@@ -30,13 +31,7 @@ func TestRichTextareaCursorAppearsInView(t *testing.T) {
 
 	view := editor.View(20, 1)
 
-	// The cursor renders the character under it ("l") via cursor.View().
-	// Even without a terminal colour profile, the character text must appear.
-	require.Contains(t, view, "l", "cursor character must appear in rendered view")
-
-	// The full text must also be present.
-	require.Contains(t, view, "he")
-	require.Contains(t, view, "lo")
+	require.Equal(t, []string{"hello"}, uitest.NonEmptyLines(view))
 }
 
 func TestRichTextareaCtrlWordMovementUsesBoundaries(t *testing.T) {

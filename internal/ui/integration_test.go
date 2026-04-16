@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/exp/teatest"
 	chromem "github.com/philippgille/chromem-go"
 	"github.com/stretchr/testify/require"
@@ -143,8 +142,7 @@ func TestApp_terminal_output_shows_full_model_nick_in_user_list(t *testing.T) {
 		teatest.WithInitialTermSize(365, 90))
 	tm.WaitFor("#general", "grok420_bot")
 
-	view := ansi.Strip(tm.CurrentView())
-	require.Contains(t, view, "grok420_bot")
+	require.Equal(t, []string{"Nicks", "@testuser", "+grok420_bot"}, uitest.NonEmptyColumn(bodyColumns(tm.CurrentView())[2]))
 }
 
 func TestApp_periodic_poke_generates_message(t *testing.T) {

@@ -7,10 +7,14 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"math"
 	"net/http"
-	"reflect"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -55,6 +59,66 @@ func requireChannels(t *testing.T, channels *orderedmap.OrderedMap[domain.Channe
 	}
 
 	require.Equal(t, []domain.ChannelName(expected), got)
+}
+
+type comparableChannel struct {
+	Name       domain.ChannelName
+	Kind       domain.ChannelKind
+	Topic      string
+	TopicSetBy domain.Nick
+	TopicSetAt time.Time
+	Members    []domain.Member
+	Created    time.Time
+}
+
+func normaliseChannel(ch domain.Channel) comparableChannel {
+	return comparableChannel{
+		Name:       ch.Name,
+		Kind:       ch.Kind,
+		Topic:      ch.Topic,
+		TopicSetBy: ch.TopicSetBy,
+		TopicSetAt: ch.TopicSetAt,
+		Members:    ch.Members.Slice(),
+		Created:    ch.Created,
+	}
+}
+
+func loadGolden(t *testing.T, name string) string {
+	t.Helper()
+
+	data, err := os.ReadFile(filepath.Join("testdata", name))
+	require.NoError(t, err)
+
+	return string(data)
+}
+
+type channelEntry struct {
+	Name     domain.ChannelName
+	JoinedAt time.Time
+}
+
+type comparableInstance struct {
+	Nick     domain.Nick
+	ModelID  domain.ModelID
+	Persona  string
+	Channels []channelEntry
+}
+
+func normaliseInstance(inst domain.Instance) comparableInstance {
+	var channels []channelEntry
+
+	if inst.Channels != nil {
+		for pair := inst.Channels.Oldest(); pair != nil; pair = pair.Next() {
+			channels = append(channels, channelEntry{Name: pair.Key, JoinedAt: pair.Value})
+		}
+	}
+
+	return comparableInstance{
+		Nick:     inst.Nick,
+		ModelID:  inst.ModelID,
+		Persona:  inst.Persona,
+		Channels: channels,
+	}
 }
 
 func drainEvent[T domain.SessionEvent](t *testing.T, sess *Session) T {
@@ -133,13 +197,14 @@ func testMembers(nicks ...domain.Nick) domain.MemberList {
 
 func requireChannelEqual(t *testing.T, expected, actual domain.Channel) {
 	t.Helper()
-	require.Equal(t, expected.Name, actual.Name, "channel name")
-	require.Equal(t, expected.Kind, actual.Kind, "channel kind")
-	require.Equal(t, expected.Topic, actual.Topic, "channel topic")
-	require.Equal(t, expected.TopicSetBy, actual.TopicSetBy, "channel topic set by")
-	require.Equal(t, expected.TopicSetAt, actual.TopicSetAt, "channel topic set at")
-	require.Equal(t, expected.Members.Slice(), actual.Members.Slice(), "channel members")
-	require.Equal(t, expected.Created, actual.Created, "channel created")
+
+	require.Equal(t, normaliseChannel(expected), normaliseChannel(actual))
+}
+
+func requireInstanceEqual(t *testing.T, expected, actual domain.Instance) {
+	t.Helper()
+
+	require.Equal(t, normaliseInstance(expected), normaliseInstance(actual))
 }
 
 func newTestSession(t *testing.T) (*Session, *storemod.SQLiteStore) {
@@ -483,10 +548,10 @@ func TestSession_ProcessPendingQuit_multi_channel(t *testing.T) {
 
 	// Quit events should be appended to each channel.
 	generalEvents := channelEventTypes(t, s, "#general")
-	require.Contains(t, generalEvents, "quit")
+	require.Equal(t, "quit", generalEvents[0])
 
 	randomEvents := channelEventTypes(t, s, "#random")
-	require.Contains(t, randomEvents, "quit")
+	require.Equal(t, "quit", randomEvents[0])
 
 	// All models across both channels should have been dispatched.
 	mu.Lock()
@@ -708,13 +773,26 @@ func TestSession_mutationOperations_recordSpans(t *testing.T) {
 		ended[span.Name()] = span
 	}
 
-	require.Contains(t, ended, "session.join")
-	require.Contains(t, ended, "session.part")
-	require.Contains(t, ended, "session.kick")
-	require.Contains(t, ended, "session.set_topic")
-	require.Contains(t, ended, "session.change_nick")
-	require.Contains(t, ended, "session.open_dm")
-	require.Contains(t, ended, "session.reset")
+	require.ElementsMatch(t, []string{
+		"session.change_nick",
+		"session.dispatch_background",
+		"session.join",
+		"session.kick",
+		"session.open_dm",
+		"session.part",
+		"session.reset",
+		"session.set_topic",
+		"store.sqlite.append_event",
+		"store.sqlite.events_before",
+		"store.sqlite.get_channel",
+		"store.sqlite.get_instance",
+		"store.sqlite.list_channels",
+		"store.sqlite.reset",
+		"store.sqlite.save_channel",
+		"store.sqlite.save_instance",
+		"store.sqlite.set_autojoin_channels",
+		"store.sqlite.set_last_channel",
+	}, slices.Collect(maps.Keys(ended)))
 }
 
 func TestSession_dispatchToInstance_recordsPassReasonAndToolTurns(t *testing.T) {
@@ -1767,22 +1845,7 @@ func TestBuildSystemPrompt(t *testing.T) {
 
 	prompt := buildSystemPrompt(ch, inst, nil)
 
-	// Must identify the model and channel.
-	require.Contains(t, prompt, "botty")
-	require.Contains(t, prompt, "#dev")
-
-	// Must include topic and persona.
-	require.Contains(t, prompt, "go stuff")
-	require.Contains(t, prompt, "grumpy sysadmin")
-
-	// Must instruct IRC-authentic behaviour.
-	require.Contains(t, prompt, "short")
-	require.Contains(t, prompt, "ASCII")
-	require.Contains(t, prompt, "emoji")
-	require.Contains(t, prompt, "markdown")
-	require.Contains(t, prompt, "lowercase")
-	require.Contains(t, prompt, "Lurk")
-	require.Contains(t, prompt, "nick")
+	require.Equal(t, loadGolden(t, "system_prompt.golden.txt"), prompt)
 }
 
 func TestBuildSystemPrompt_with_memories(t *testing.T) {
@@ -1801,9 +1864,7 @@ func TestBuildSystemPrompt_with_memories(t *testing.T) {
 
 	prompt := buildSystemPrompt(ch, inst, memories)
 
-	require.Contains(t, prompt, "[mood=curious]")
-	require.Contains(t, prompt, "[goal=learn go]")
-	require.NotContains(t, prompt, "no memories yet")
+	require.Equal(t, loadGolden(t, "system_prompt_with_memories.golden.txt"), prompt)
 }
 
 func TestSession_Poke_emits_dispatch_events(t *testing.T) {
@@ -2051,7 +2112,7 @@ func TestSession_SetAPIKey_factory_failure_keeps_existing_client(t *testing.T) {
 	err := sess.SetAPIKey(t.Context(), "test-key", "")
 	require.Error(t, err)
 	require.Same(t, initial, sess.api)
-	require.Empty(t, sess.apiKey)
+	require.Equal(t, "", sess.apiKey)
 }
 
 func TestSession_SetBaseURL(t *testing.T) {
@@ -2405,7 +2466,7 @@ func TestBuildSystemPrompt_instructs_single_line_messages(t *testing.T) {
 
 	prompt := buildSystemPrompt(ch, inst, nil)
 
-	require.Contains(t, prompt, "newline")
+	require.Contains(t, prompt, "Each message must be a single line with no newline characters.")
 }
 
 func TestSession_DispatchToChannel_retries_on_multiline_reply(t *testing.T) {
@@ -3127,9 +3188,9 @@ func TestBuildSystemPrompt_mentions_memory_tools(t *testing.T) {
 
 	prompt := buildSystemPrompt(ch, inst, nil)
 
-	require.Contains(t, prompt, "write_memory")
-	require.Contains(t, prompt, "delete_memory")
-	require.Contains(t, prompt, "no memories yet")
+	require.Contains(t, prompt, "- write_memory: create or update a durable memory by key")
+	require.Contains(t, prompt, "- delete_memory: remove a memory that is outdated, incorrect, or no longer useful")
+	require.Contains(t, prompt, "- search_memory: if available, search for relevant memories when useful context may exist but is not visible here")
 }
 
 func TestBuildSystemPrompt_mentions_span_replies(t *testing.T) {
@@ -3138,8 +3199,8 @@ func TestBuildSystemPrompt_mentions_span_replies(t *testing.T) {
 
 	prompt := buildSystemPrompt(ch, inst, nil)
 
-	require.Contains(t, prompt, "spans")
-	require.Contains(t, prompt, "Do not emit raw IRC control characters yourself")
+	require.Contains(t, prompt, "spans: styled text spans, where each span has text and optional style")
+	require.Contains(t, prompt, "If you want IRC-style formatting, use spans. Do not emit raw IRC control characters yourself.")
 }
 
 func TestSession_DispatchToChannel_encodes_structured_reply_formatting(t *testing.T) {
@@ -3619,8 +3680,7 @@ func TestSession_RandomPersona_empty_pool(t *testing.T) {
 	sess, _ := newTestSessionWithAPI(t, &fakeAPIClient{})
 
 	_, err := sess.RandomPersona(t.Context())
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "no personas available")
+	require.EqualError(t, err, "no personas available")
 }
 
 func TestSession_RegeneratePersonas_preserves_user_defined(t *testing.T) {

@@ -44,7 +44,7 @@ func TestRoot_View_delegates_to_screen(t *testing.T) {
 func TestRoot_View_nil_screen(t *testing.T) {
 	root := ui.NewRoot(nil)
 
-	require.Empty(t, root.View())
+	require.Equal(t, "", root.View())
 }
 
 func TestRoot_ScreenMsg_switches_screen(t *testing.T) {

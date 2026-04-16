@@ -32,18 +32,27 @@ func TestJoinAs_model_actor(t *testing.T) {
 
 	ch, err := s.GetChannel(ctx, "#dev")
 	require.NoError(t, err)
-	require.True(t, ch.Members.Has("botty"))
+	modelOnlyMembers := domain.NewMemberList()
+	modelOnlyMembers.Add("botty")
+	requireChannelEqual(t, domain.Channel{
+		Name:    "#dev",
+		Kind:    domain.KindChannel,
+		Members: modelOnlyMembers,
+		Created: fixedTime,
+	}, ch)
 
 	inst, err := s.GetInstance(ctx, "botty")
 	require.NoError(t, err)
-
-	_, ok := inst.Channels.Get("#dev")
-	require.True(t, ok)
+	requireInstanceEqual(t, domain.Instance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: testChannels("#dev"),
+	}, inst)
 
 	// Model join should not set last channel.
 	last, err := s.GetLastChannel(ctx)
 	require.NoError(t, err)
-	require.Empty(t, last)
+	require.Equal(t, domain.ChannelName(""), last)
 }
 
 func TestPartAs_model_actor(t *testing.T) {
@@ -69,14 +78,20 @@ func TestPartAs_model_actor(t *testing.T) {
 
 	ch, err := s.GetChannel(ctx, "#dev")
 	require.NoError(t, err)
-	require.False(t, ch.Members.Has("botty"))
-	require.True(t, ch.Members.Has("testuser"))
+	requireChannelEqual(t, domain.Channel{
+		Name:    "#dev",
+		Kind:    domain.KindChannel,
+		Members: testMembers("testuser"),
+		Created: fixedTime,
+	}, ch)
 
 	inst, err := s.GetInstance(ctx, "botty")
 	require.NoError(t, err)
-
-	_, ok := inst.Channels.Get("#dev")
-	require.False(t, ok)
+	requireInstanceEqual(t, domain.Instance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: testChannels(),
+	}, inst)
 }
 
 func TestQuitAs_model_actor(t *testing.T) {
@@ -107,11 +122,21 @@ func TestQuitAs_model_actor(t *testing.T) {
 	// Model should be removed from both channels.
 	ch1, err := s.GetChannel(ctx, "#dev")
 	require.NoError(t, err)
-	require.False(t, ch1.Members.Has("botty"))
+	requireChannelEqual(t, domain.Channel{
+		Name:    "#dev",
+		Kind:    domain.KindChannel,
+		Members: testMembers("testuser"),
+		Created: fixedTime,
+	}, ch1)
 
 	ch2, err := s.GetChannel(ctx, "#general")
 	require.NoError(t, err)
-	require.False(t, ch2.Members.Has("botty"))
+	requireChannelEqual(t, domain.Channel{
+		Name:    "#general",
+		Kind:    domain.KindChannel,
+		Members: testMembers("testuser"),
+		Created: fixedTime,
+	}, ch2)
 
 	// Quit events should be appended to both channels.
 	types1 := channelEventTypes(t, s, "#dev")
@@ -163,9 +188,15 @@ func TestSetTopicAs_model_actor(t *testing.T) {
 
 	ch, err := s.GetChannel(ctx, "#dev")
 	require.NoError(t, err)
-	require.Equal(t, "new topic", ch.Topic)
-	require.Equal(t, domain.Nick("botty"), ch.TopicSetBy)
-	require.Equal(t, fixedTime, ch.TopicSetAt)
+	requireChannelEqual(t, domain.Channel{
+		Name:       "#dev",
+		Kind:       domain.KindChannel,
+		Topic:      "new topic",
+		TopicSetBy: "botty",
+		TopicSetAt: fixedTime,
+		Members:    testMembers("testuser", "botty"),
+		Created:    fixedTime,
+	}, ch)
 }
 
 func TestKickAs_model_actor(t *testing.T) {
@@ -191,14 +222,20 @@ func TestKickAs_model_actor(t *testing.T) {
 
 	ch, err := s.GetChannel(ctx, "#dev")
 	require.NoError(t, err)
-	require.False(t, ch.Members.Has("helper"))
-	require.True(t, ch.Members.Has("botty"))
+	requireChannelEqual(t, domain.Channel{
+		Name:    "#dev",
+		Kind:    domain.KindChannel,
+		Members: testMembers("testuser", "botty"),
+		Created: fixedTime,
+	}, ch)
 
 	inst, err := s.GetInstance(ctx, "helper")
 	require.NoError(t, err)
-
-	_, ok := inst.Channels.Get("#dev")
-	require.False(t, ok)
+	requireInstanceEqual(t, domain.Instance{
+		Nick:     "helper",
+		ModelID:  "test/model-b",
+		Channels: testChannels(),
+	}, inst)
 }
 
 func TestInviteAs_model_actor(t *testing.T) {
@@ -280,8 +317,7 @@ func TestSetTopicAs_rejects_DM(t *testing.T) {
 	require.NoError(t, err)
 
 	err = sess.SetTopic(ctx, "botty", "some topic")
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "cannot set topic on a direct message")
+	require.EqualError(t, err, "cannot set topic on a direct message")
 }
 
 func TestKickAs_rejects_DM(t *testing.T) {
@@ -297,8 +333,7 @@ func TestKickAs_rejects_DM(t *testing.T) {
 	require.NoError(t, err)
 
 	err = sess.Kick(ctx, "botty", "botty")
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "cannot kick from a direct message")
+	require.EqualError(t, err, "cannot kick from a direct message")
 }
 
 func TestJoinAs_DM_no_join_event(t *testing.T) {
@@ -320,7 +355,7 @@ func TestJoinAs_DM_no_join_event(t *testing.T) {
 	require.NoError(t, sess.Join(ctx, "botty"))
 
 	types := channelEventTypes(t, s, "botty")
-	require.Empty(t, types)
+	require.Equal(t, []string{}, types)
 }
 
 func TestOpenDMAs_model_to_model(t *testing.T) {

@@ -9,7 +9,7 @@ import (
 
 func TestLogBuffer_keeps_latest_entries_within_capacity(t *testing.T) {
 	buffer := NewLogBuffer(2)
-	defer buffer.Close()
+	t.Cleanup(buffer.Close)
 
 	now := time.Now()
 	buffer.Ingest() <- PanelEntry{Message: "first", Timestamp: now}
@@ -24,7 +24,7 @@ func TestLogBuffer_keeps_latest_entries_within_capacity(t *testing.T) {
 
 func TestLogBuffer_emits_update_notifications(t *testing.T) {
 	buffer := NewLogBuffer(1)
-	defer buffer.Close()
+	t.Cleanup(buffer.Close)
 
 	buffer.Ingest() <- PanelEntry{Message: "entry", Timestamp: time.Now()}
 

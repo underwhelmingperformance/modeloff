@@ -12,13 +12,13 @@ import (
 func TestRuntime_snapshotMetrics_includes_memory_operations(t *testing.T) {
 	runtime, err := NewRuntime()
 	require.NoError(t, err)
-	defer func() {
-		require.NoError(t, runtime.Shutdown(context.Background()))
-	}()
+	t.Cleanup(func() {
+		require.NoError(t, runtime.Shutdown(context.WithoutCancel(t.Context())))
+	})
 
 	operations := []string{"memory.write", "memory.delete", "memory.search"}
 	for _, op := range operations {
-		_, span := otel.Tracer("test").Start(context.Background(), op)
+		_, span := otel.Tracer("test").Start(t.Context(), op)
 		span.SetAttributes(
 			attribute.String(AttrOperation, op),
 			attribute.String(AttrMemoryNick, "claude"),
@@ -27,27 +27,38 @@ func TestRuntime_snapshotMetrics_includes_memory_operations(t *testing.T) {
 		span.End()
 	}
 
-	snapshot, err := runtime.SnapshotMetrics(context.Background())
+	snapshot, err := runtime.SnapshotMetrics(t.Context())
 	require.NoError(t, err)
 
-	got := make(map[string]uint64, len(snapshot.Operations))
+	type opCount struct {
+		Operation string
+		Count     uint64
+	}
+	got := make([]opCount, 0, len(snapshot.Operations))
 	for _, op := range snapshot.Operations {
-		got[op.Operation] = op.Count
+		got = append(got, opCount{op.Operation, op.Count})
 	}
+	require.ElementsMatch(t, []opCount{
+		{"memory.write", 1},
+		{"memory.delete", 1},
+		{"memory.search", 1},
+	}, got)
 
-	for _, op := range operations {
-		require.Equal(t, uint64(1), got[op], "expected exactly one %s operation", op)
-	}
+	require.ElementsMatch(t, []OperationCountSnapshot{
+		{Operation: "memory.write", Result: ResultOK, Count: 1},
+		{Operation: "memory.delete", Result: ResultOK, Count: 1},
+		{Operation: "memory.search", Result: ResultOK, Count: 1},
+	}, snapshot.OperationCounts)
 }
 
 func TestRuntime_snapshotMetrics_includes_span_derived_usage(t *testing.T) {
 	runtime, err := NewRuntime()
 	require.NoError(t, err)
-	defer func() {
-		require.NoError(t, runtime.Shutdown(context.Background()))
-	}()
+	t.Cleanup(func() {
+		require.NoError(t, runtime.Shutdown(context.WithoutCancel(t.Context())))
+	})
 
-	ctx, span := otel.Tracer("test").Start(context.Background(), "api.openrouter.send_events")
+	ctx, span := otel.Tracer("test").Start(t.Context(), "api.openrouter.send_events")
 	span.SetAttributes(
 		attribute.String(AttrOperation, "api.openrouter.send_events"),
 		attribute.String(AttrModelID, "anthropic/claude-3-haiku"),
@@ -89,14 +100,14 @@ func TestRuntime_snapshotMetrics_includes_span_derived_usage(t *testing.T) {
 func TestRuntime_snapshotMetrics_counts_tool_follow_up_requests(t *testing.T) {
 	runtime, err := NewRuntime()
 	require.NoError(t, err)
-	defer func() {
-		require.NoError(t, runtime.Shutdown(context.Background()))
-	}()
+	t.Cleanup(func() {
+		require.NoError(t, runtime.Shutdown(context.WithoutCancel(t.Context())))
+	})
 
 	recordLLMUsageSpan(t, "api.openrouter.send_events", "anthropic/claude-3-haiku", ResultReply, 21, 13, 0.75)
 	recordLLMUsageSpan(t, "api.openrouter.continue_with_tool_results", "anthropic/claude-3-haiku", ResultReply, 5, 7, 0.25)
 
-	snapshot, err := runtime.SnapshotMetrics(context.Background())
+	snapshot, err := runtime.SnapshotMetrics(t.Context())
 	require.NoError(t, err)
 
 	require.Equal(t, int64(2), snapshot.Summary.Requests)
@@ -117,16 +128,16 @@ func TestRuntime_snapshotMetrics_counts_tool_follow_up_requests(t *testing.T) {
 func TestRuntime_snapshotMetrics_includes_memory_tool_and_search_metrics(t *testing.T) {
 	runtime, err := NewRuntime()
 	require.NoError(t, err)
-	defer func() {
-		require.NoError(t, runtime.Shutdown(context.Background()))
-	}()
+	t.Cleanup(func() {
+		require.NoError(t, runtime.Shutdown(context.WithoutCancel(t.Context())))
+	})
 
-	RecordMemoryToolCall(context.Background(), "write_memory", ResultOK)
-	RecordMemorySearchResults(context.Background(), 0)
-	RecordMemorySearchResults(context.Background(), 3)
-	RecordMemorySearchTopScore(context.Background(), 0.875)
+	RecordMemoryToolCall(t.Context(), "write_memory", ResultOK)
+	RecordMemorySearchResults(t.Context(), 0)
+	RecordMemorySearchResults(t.Context(), 3)
+	RecordMemorySearchTopScore(t.Context(), 0.875)
 
-	snapshot, err := runtime.SnapshotMetrics(context.Background())
+	snapshot, err := runtime.SnapshotMetrics(t.Context())
 	require.NoError(t, err)
 
 	require.Equal(t, []MemoryToolSnapshot{{
@@ -145,13 +156,13 @@ func TestRuntime_snapshotMetrics_includes_memory_tool_and_search_metrics(t *test
 func TestRuntime_snapshotMetrics_counts_generate_personas_as_LLM_usage(t *testing.T) {
 	runtime, err := NewRuntime()
 	require.NoError(t, err)
-	defer func() {
-		require.NoError(t, runtime.Shutdown(context.Background()))
-	}()
+	t.Cleanup(func() {
+		require.NoError(t, runtime.Shutdown(context.WithoutCancel(t.Context())))
+	})
 
 	recordLLMUsageSpan(t, "api.openrouter.generate_personas", "anthropic/claude-3-haiku", ResultReply, 30, 15, 0.5)
 
-	snapshot, err := runtime.SnapshotMetrics(context.Background())
+	snapshot, err := runtime.SnapshotMetrics(t.Context())
 	require.NoError(t, err)
 
 	require.Equal(t, int64(1), snapshot.Summary.Requests)
@@ -172,13 +183,13 @@ func TestRuntime_snapshotMetrics_counts_generate_personas_as_LLM_usage(t *testin
 func TestRuntime_snapshotMetrics_any_span_with_token_attrs_counts_as_LLM_usage(t *testing.T) {
 	runtime, err := NewRuntime()
 	require.NoError(t, err)
-	defer func() {
-		require.NoError(t, runtime.Shutdown(context.Background()))
-	}()
+	t.Cleanup(func() {
+		require.NoError(t, runtime.Shutdown(context.WithoutCancel(t.Context())))
+	})
 
 	recordLLMUsageSpan(t, "api.openrouter.hypothetical_future_op", "test/model", ResultReply, 10, 5, 0.1)
 
-	snapshot, err := runtime.SnapshotMetrics(context.Background())
+	snapshot, err := runtime.SnapshotMetrics(t.Context())
 	require.NoError(t, err)
 
 	require.Equal(t, MetricsSummary{
@@ -201,18 +212,18 @@ func TestRuntime_snapshotMetrics_any_span_with_token_attrs_counts_as_LLM_usage(t
 func TestRuntime_snapshotMetrics_span_without_token_attrs_not_counted(t *testing.T) {
 	runtime, err := NewRuntime()
 	require.NoError(t, err)
-	defer func() {
-		require.NoError(t, runtime.Shutdown(context.Background()))
-	}()
+	t.Cleanup(func() {
+		require.NoError(t, runtime.Shutdown(context.WithoutCancel(t.Context())))
+	})
 
-	_, span := otel.Tracer("test").Start(context.Background(), "api.openrouter.list_models")
+	_, span := otel.Tracer("test").Start(t.Context(), "api.openrouter.list_models")
 	span.SetAttributes(
 		attribute.String(AttrOperation, "api.openrouter.list_models"),
 		attribute.String(AttrResult, ResultOK),
 	)
 	span.End()
 
-	snapshot, err := runtime.SnapshotMetrics(context.Background())
+	snapshot, err := runtime.SnapshotMetrics(t.Context())
 	require.NoError(t, err)
 
 	require.Equal(t, MetricsSummary{}, snapshot.Summary)
@@ -230,7 +241,7 @@ func recordLLMUsageSpan(
 ) {
 	t.Helper()
 
-	_, span := otel.Tracer("test").Start(context.Background(), operation)
+	_, span := otel.Tracer("test").Start(t.Context(), operation)
 	span.SetAttributes(
 		attribute.String(AttrOperation, operation),
 		attribute.String(AttrModelID, modelID),

@@ -36,30 +36,40 @@ func TestConnectionScreen_with_api_key(t *testing.T) {
 	})
 
 	// Initial view: first step is shown as pending.
-	require.Contains(t, view(s), "Connecting to modeloff")
+	require.Equal(t, []string{"… Connecting to modeloff"}, trimmedVisibleLines(view(s)))
 
 	// Tick 1: "Connecting" completes.
 	var m ui.Model = s
 	m, cmd := tick(t, m)
 
 	v := view(m)
-	require.Contains(t, v, "✓")
-	require.Contains(t, v, "Connecting to modeloff")
-	require.Contains(t, v, "Checking configuration")
+	require.Equal(t, []string{
+		"✓ Connecting to modeloff",
+		"… Checking configuration",
+	}, trimmedVisibleLines(v))
 	require.NotNil(t, cmd)
 
 	// Tick 2: "Checking configuration" completes.
 	m, cmd = tick(t, m)
 
 	v = view(m)
-	require.Contains(t, v, "Loading channels (3 found)")
+	require.Equal(t, []string{
+		"✓ Connecting to modeloff",
+		"✓ Checking configuration",
+		"… Loading channels (3 found)",
+	}, trimmedVisibleLines(v))
 	require.NotNil(t, cmd)
 
 	// Tick 3: "Loading channels" completes.
 	m, cmd = tick(t, m)
 
 	v = view(m)
-	require.Contains(t, v, "Welcome, alice")
+	require.Equal(t, []string{
+		"✓ Connecting to modeloff",
+		"✓ Checking configuration",
+		"✓ Loading channels (3 found)",
+		"… Welcome, alice",
+	}, trimmedVisibleLines(v))
 	require.NotNil(t, cmd)
 
 	// Tick 4: "Welcome" completes — transitions to the next screen.
@@ -85,8 +95,11 @@ func TestConnectionScreen_no_api_key(t *testing.T) {
 	m, cmd = tick(t, m)
 
 	v := view(m)
-	require.Contains(t, v, "✗")
-	require.Contains(t, v, "/config")
+	require.Equal(t, []string{
+		"✓ Connecting to modeloff",
+		"✓ Checking configuration",
+		"✗ No API key configured — use /config to set one",
+	}, trimmedVisibleLines(v))
 	require.NotNil(t, cmd)
 
 	// Tick 3: error step is reached — no further ticks, no done msg.
@@ -112,15 +125,13 @@ func TestConnectionScreen_View_narrow_terminal(t *testing.T) {
 	t.Run("below threshold shows resize message", func(t *testing.T) {
 		got := s.View(79, 24)
 
-		require.Contains(t, got, "Resize terminal to 80+ columns")
-		require.NotContains(t, got, "Connecting")
+		require.Equal(t, []string{"Resize terminal to 80+ columns"}, trimmedVisibleLines(got))
 	})
 
 	t.Run("at threshold renders normally", func(t *testing.T) {
 		got := s.View(80, 24)
 
-		require.NotContains(t, got, "Resize terminal")
-		require.Contains(t, got, "Connecting to modeloff")
+		require.Equal(t, []string{"… Connecting to modeloff"}, trimmedVisibleLines(got))
 	})
 }
 
@@ -134,5 +145,5 @@ func TestConnectionScreen_ignores_other_messages(t *testing.T) {
 	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
 
 	require.Nil(t, cmd)
-	require.Contains(t, view(m), "Connecting to modeloff")
+	require.Equal(t, []string{"… Connecting to modeloff"}, trimmedVisibleLines(view(m)))
 }

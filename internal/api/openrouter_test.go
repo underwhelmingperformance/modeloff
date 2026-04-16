@@ -265,6 +265,27 @@ func messageRoles(msgs []openai.ChatCompletionMessageParamUnion) []string {
 	return roles
 }
 
+func messageContents(msgs []openai.ChatCompletionMessageParamUnion) []string {
+	contents := make([]string, len(msgs))
+
+	for i, m := range msgs {
+		switch {
+		case m.OfSystem != nil:
+			contents[i] = m.OfSystem.Content.OfString.Value
+		case m.OfAssistant != nil:
+			contents[i] = m.OfAssistant.Content.OfString.Value
+		case m.OfUser != nil:
+			contents[i] = m.OfUser.Content.OfString.Value
+		case m.OfDeveloper != nil:
+			contents[i] = m.OfDeveloper.Content.OfString.Value
+		case m.OfTool != nil:
+			contents[i] = m.OfTool.Content.OfString.Value
+		}
+	}
+
+	return contents
+}
+
 func TestBuildMessages_self_messages_are_assistant_role_in_history(t *testing.T) {
 	const selfID = "inst-abc123"
 
@@ -316,11 +337,16 @@ func TestBuildMessages_instance_id_stripped_from_json(t *testing.T) {
 
 	msgs := buildMessages("system prompt", "", events, nil)
 
-	for _, m := range msgs {
-		data, err := json.Marshal(m)
-		require.NoError(t, err)
-		require.NotContains(t, string(data), "inst-xyz")
-	}
+	expectedEvent := events[0]
+	expectedEvent.InstanceID = ""
+
+	expectedJSON, err := json.Marshal(expectedEvent)
+	require.NoError(t, err)
+
+	require.Equal(t, []string{
+		"system prompt",
+		string(expectedJSON),
+	}, messageContents(msgs))
 }
 
 func TestOpenRouterClient_SendEventsWithHistory(t *testing.T) {
@@ -665,9 +691,7 @@ func TestOpenRouterClient_SendEvents_includes_explicit_search_tool(t *testing.T)
 		toolNames = append(toolNames, fn["name"].(string))
 	}
 
-	require.Contains(t, toolNames, "search_memory")
-	require.Contains(t, toolNames, "write_memory")
-	require.Contains(t, toolNames, "delete_memory")
+	require.Equal(t, []string{"write_memory", "delete_memory", "search_memory"}, toolNames)
 }
 
 func TestOpenRouterClient_SendEvents_excludes_search_without_explicit_tool(t *testing.T) {
@@ -708,9 +732,7 @@ func TestOpenRouterClient_SendEvents_excludes_search_without_explicit_tool(t *te
 		toolNames = append(toolNames, fn["name"].(string))
 	}
 
-	require.NotContains(t, toolNames, "search_memory")
-	require.Contains(t, toolNames, "write_memory")
-	require.Contains(t, toolNames, "delete_memory")
+	require.Equal(t, []string{"write_memory", "delete_memory"}, toolNames)
 }
 
 func TestOpenRouterClient_SendEvents_contentFiltered(t *testing.T) {
@@ -814,7 +836,7 @@ func TestOpenRouterClient_SendEvents_emptyResponse(t *testing.T) {
 		[]protocol.IRCMessage{{Kind: protocol.KindPrivMsg, From: "a", Target: "#t", Body: "x"}},
 	)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "no response and no tool calls")
+	require.EqualError(t, err, "model returned no response and no tool calls")
 }
 
 func TestOpenRouterClient_ContinueWithToolResults(t *testing.T) {

@@ -145,7 +145,7 @@ func TestChatScreen_ModelReply_queues_and_paces(t *testing.T) {
 	updated, cmd = screen.deliverNextReply()
 	screen = updated.(ChatScreen)
 
-	require.Empty(t, screen.replyQueue)
+	require.Equal(t, []domain.ModelReplyEvent{}, screen.replyQueue)
 
 	msgs = collectMsgs(cmd)
 

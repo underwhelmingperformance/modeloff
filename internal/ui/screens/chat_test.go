@@ -2,6 +2,7 @@ package screens_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -220,7 +221,15 @@ func TestChatScreen_rejoin_filters_old_events(t *testing.T) {
 	// The old event seeded before RejoinChannels should not be
 	// visible in the current view.
 	view := tm.CurrentView()
-	require.NotContains(t, view, "ancient history",
+	body, _ := splitBodyAndStatus(view)
+	content := uitest.NonEmptyColumn(uitest.VisibleColumns(body)[1])
+	require.Equal(t, []string{
+		"<testuser> fresh message",
+		"testuser >",
+	}, []string{
+		withoutTimestampPrefix(content[len(content)-2]),
+		compactLine(content[len(content)-1]),
+	},
 		"events from before the session start should be filtered out")
 }
 
@@ -248,8 +257,9 @@ func TestChatScreen_nick_command_updates_input_bar(t *testing.T) {
 	tm.Submit("/nick newnick")
 	tm.WaitFor("testuser is now known as newnick")
 
-	view := tm.CurrentView()
-	require.Contains(t, view, "newnick >",
+	body, _ := splitBodyAndStatus(tm.CurrentView())
+	content := uitest.NonEmptyColumn(uitest.VisibleColumns(body)[1])
+	require.Equal(t, "newnick >", compactLine(content[len(content)-1]),
 		"input bar should show the new nick after /nick command")
 }
 
@@ -516,7 +526,7 @@ func TestChatScreen_config_reset_api_key_from_child_flag(t *testing.T) {
 	tm.Submit("/config api-key --reset")
 	tm.WaitFor("OpenRouter API key cleared.")
 
-	require.Empty(t, cfgStore.cfg.APIKey)
+	require.Equal(t, "", cfgStore.cfg.APIKey)
 }
 
 func TestChatScreen_config_reset_timestamp_format(t *testing.T) {
@@ -658,8 +668,12 @@ func TestChatScreen_clear_command_removes_messages(t *testing.T) {
 	tm.Submit("/clear")
 	tm.WaitFor("No messages yet")
 
-	view := tm.CurrentView()
-	require.NotContains(t, view, "visible text")
+	body, _ := splitBodyAndStatus(tm.CurrentView())
+	content := uitest.NonEmptyColumn(uitest.VisibleColumns(body)[1])
+	require.Equal(t, []string{"No messages yet", "testuser >"}, []string{
+		content[0],
+		compactLine(content[1]),
+	})
 }
 
 func TestChatScreen_invalid_command(t *testing.T) {
@@ -705,10 +719,11 @@ func TestChatScreen_View_responsive(t *testing.T) {
 func TestChatScreen_KeyBindings_collect_active_bindings(t *testing.T) {
 	tm, _ := newChatAppInChannel(t, "#general")
 
-	view := tm.FinalView()
-	require.Contains(t, view, "↵ send")
-	require.Contains(t, view, "^N nicks")
-	require.Contains(t, view, "^C quit")
+	_, status := splitBodyAndStatus(tm.FinalView())
+
+	tokens := strings.Fields(status)
+	require.Subset(t, tokens, []string{"^D/^U", "^O", "↵", "^W", "^C"},
+		"status bar must surface core navigation, submit and quit bindings")
 }
 
 func TestChatScreen_KeyBindings_switch_to_popover_bindings(t *testing.T) {

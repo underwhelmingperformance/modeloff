@@ -24,9 +24,14 @@ func TestChatScreen_PartEvent_leaving_active_switches_channel(t *testing.T) {
 	tm.WaitFor("Created channel #general")
 
 	view := tm.CurrentView()
-	require.Contains(t, view, "#general")
-	require.Contains(t, view, "Created channel #general")
-	require.NotContains(t, view, "#random")
+	body, _ := splitBodyAndStatus(view)
+	columns := uitest.VisibleColumns(body)
+	require.Equal(t, []string{"Channels", "▸#general (2)"}, uitest.NonEmptyColumn(columns[0]))
+	require.Equal(t, []string{
+		"*** Created channel #general",
+		"*** ChanServ sets mode +o testuser",
+		"testuser >",
+	}, normaliseContent(uitest.NonEmptyColumn(columns[1])))
 }
 
 func TestChatScreen_PartEvent_leaving_last_channel_shows_welcome(t *testing.T) {
@@ -65,7 +70,8 @@ func TestChatScreen_PartEvent_leaving_non_active_keeps_active(t *testing.T) {
 
 	// Active channel should remain #general since we parted #random.
 	view := tm.CurrentView()
-	require.Contains(t, view, "#general")
+	body, _ := splitBodyAndStatus(view)
+	require.Equal(t, []string{"Channels", "▸#general", "#random (2)"}, uitest.NonEmptyColumn(uitest.VisibleColumns(body)[0]))
 }
 
 func TestChatScreen_TopicChangeEvent_different_channel(t *testing.T) {
@@ -87,7 +93,12 @@ func TestChatScreen_TopicChangeEvent_different_channel(t *testing.T) {
 	})
 
 	view := tm.CurrentView()
-	require.NotContains(t, view, "Random topic")
+	body, _ := splitBodyAndStatus(view)
+	require.Equal(t, []string{
+		"*** Created channel #general",
+		"*** ChanServ sets mode +o testuser",
+		"testuser >",
+	}, normaliseContent(uitest.NonEmptyColumn(uitest.VisibleColumns(body)[1])))
 }
 
 func TestChatScreen_QuitEvent_shows_quit_message(t *testing.T) {
@@ -128,7 +139,15 @@ func TestChatScreen_QuitEvent_removes_instance_from_nick_list(t *testing.T) {
 	tm.WaitFor("fakenick has quit")
 
 	view := tm.CurrentView()
-	require.Contains(t, view, "fakenick has quit")
+	body, _ := splitBodyAndStatus(view)
+	require.Equal(t, []string{
+		"*** Created channel #general",
+		"*** ChanServ sets mode +o testuser",
+		"*** fakenick has joined #general",
+		"*** ChanServ sets mode +v fakenick",
+		"*** fakenick has quit",
+		"testuser >",
+	}, normaliseContent(uitest.NonEmptyColumn(uitest.VisibleColumns(body)[1])))
 }
 
 func TestChatScreen_ignores_join_for_unknown_channel(t *testing.T) {
@@ -159,8 +178,8 @@ func TestChatScreen_ignores_join_for_unknown_channel(t *testing.T) {
 
 	// The sidebar should NOT show #secret.
 	view := tm.CurrentView()
-	require.NotContains(t, view, "#secret")
-	require.Contains(t, view, "#general")
+	body, _ := splitBodyAndStatus(view)
+	require.Equal(t, []string{"Channels", "▸#general (2)"}, uitest.NonEmptyColumn(uitest.VisibleColumns(body)[0]))
 }
 
 func TestChatScreen_model_join_does_not_switch_active(t *testing.T) {
@@ -196,7 +215,13 @@ func TestChatScreen_model_join_does_not_switch_active(t *testing.T) {
 	// Active channel should remain #general — the view should show
 	// #general's content, not #random's.
 	view := tm.CurrentView()
-	require.Contains(t, view, "Created channel #general")
+	body, _ := splitBodyAndStatus(view)
+	require.Equal(t, []string{
+		"*** Created channel #general",
+		"*** ChanServ sets mode +o testuser",
+		"<alice> sync marker",
+		"testuser >",
+	}, normaliseContent(uitest.NonEmptyColumn(uitest.VisibleColumns(body)[1])))
 }
 
 func TestChatScreen_rapid_switch_does_not_revert(t *testing.T) {
@@ -242,12 +267,14 @@ func TestChatScreen_rapid_switch_does_not_revert(t *testing.T) {
 	// user should not have switched the active channel. The sync
 	// marker was sent to #chat so it should be in the final view.
 	view := tm.CurrentView()
-	require.Contains(t, view, "sync marker",
+	body, _ := splitBodyAndStatus(view)
+	require.Equal(t, []string{
+		"*** Created channel #chat",
+		"*** ChanServ sets mode +o testuser",
+		"<alice> sync marker",
+		"testuser >",
+	}, normaliseContent(uitest.NonEmptyColumn(uitest.VisibleColumns(body)[1])),
 		"#chat content should be visible — active channel should still be #chat")
-	require.NotContains(t, view, "Created channel #random",
-		"#random should not be the active view")
-	require.NotContains(t, view, "Created channel #general",
-		"#general should not be the active view")
 }
 
 func TestChatScreen_focus_new_channel_before_join_event(t *testing.T) {
@@ -264,9 +291,14 @@ func TestChatScreen_focus_new_channel_before_join_event(t *testing.T) {
 	tm.WaitFor("#newchannel")
 
 	view := tm.CurrentView()
-	require.Contains(t, view, "#newchannel",
+	body, _ := splitBodyAndStatus(view)
+	columns := uitest.VisibleColumns(body)
+	require.Equal(t, []string{"Channels", "#general (2)", "▸#newchannel"}, uitest.NonEmptyColumn(columns[0]),
 		"new channel should appear in the sidebar")
-	require.NotContains(t, view, "Created channel #general",
+	require.Equal(t, []string{
+		"No messages yet",
+		"testuser >",
+	}, normaliseContent(uitest.NonEmptyColumn(columns[1])),
 		"#general content should not be shown — #newchannel is active")
 }
 
@@ -304,6 +336,13 @@ func TestChatScreen_MessageEvent_inactive_channel(t *testing.T) {
 	tm.WaitFor("sync marker")
 
 	view := tm.CurrentView()
-	require.Contains(t, view, "#general")
-	require.NotContains(t, view, "hello from random")
+	body, _ := splitBodyAndStatus(view)
+	columns := uitest.VisibleColumns(body)
+	require.Equal(t, []string{"Channels", "▸#general", "#random (2)"}, uitest.NonEmptyColumn(columns[0]))
+	require.Equal(t, []string{
+		"*** Created channel #general",
+		"*** ChanServ sets mode +o testuser",
+		"<alice> sync marker",
+		"testuser >",
+	}, normaliseContent(uitest.NonEmptyColumn(columns[1])))
 }

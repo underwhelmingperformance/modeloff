@@ -1,13 +1,12 @@
 package components_test
 
 import (
-	"strings"
 	"testing"
 
-	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/ui/components"
+	"github.com/laney/modeloff/internal/ui/uitest"
 )
 
 func TestFeedView_few_lines_bottom_aligned(t *testing.T) {
@@ -15,24 +14,12 @@ func TestFeedView_few_lines_bottom_aligned(t *testing.T) {
 	fv = fv.SetLines([]string{"log line one", "log line two"})
 
 	view, _, _ := fv.View(80, 24)
-	stripped := ansi.Strip(view)
-	lines := strings.Split(stripped, "\n")
+	lines := uitest.RenderedLines(view)
 
-	// Find the first line containing content.
-	contentLine := -1
-
-	for i, line := range lines {
-		if strings.Contains(line, "log line one") {
-			contentLine = i
-
-			break
-		}
-	}
-
-	require.NotEqual(t, -1, contentLine, "'log line one' should appear in the view")
-
-	// Two lines of content in a 24-line viewport should be
-	// anchored near the bottom, not at the top.
-	require.Greater(t, contentLine, 10,
-		"with two lines in a 24-line viewport, content should be bottom-aligned, not top-aligned; found at line %d", contentLine)
+	// Bottom-aligned: the two log lines occupy the last two rows of the
+	// 24-row viewport, preceded by 22 blank rows.
+	want := make([]string, 24)
+	want[22] = "log line one"
+	want[23] = "log line two"
+	require.Equal(t, want, lines)
 }

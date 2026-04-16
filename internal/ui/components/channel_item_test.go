@@ -1,11 +1,13 @@
 package components_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
 	"github.com/stretchr/testify/require"
 
@@ -67,23 +69,21 @@ func TestChannelSidebar_View_shows_channels(t *testing.T) {
 	m := newTestChannelSidebar(testChannels, "#general", nil)
 	v := m.View(20, 10)
 
-	require.Contains(t, v, "#general")
-	require.Contains(t, v, "#random")
-	require.Contains(t, v, "#dev")
+	require.Equal(t, []string{"Channels", "#dev", "▸#general", "#random"}, visibleLines(v))
 }
 
 func TestChannelSidebar_View_empty(t *testing.T) {
 	m := newTestChannelSidebar(nil, "", nil)
 	v := m.View(20, 10)
 
-	require.Contains(t, v, "No channels")
+	require.Equal(t, []string{"No channels"}, visibleLines(v))
 }
 
 func TestChannelSidebar_View_active_channel_highlighted(t *testing.T) {
 	m := newTestChannelSidebar(testChannels, "#random", nil)
 	v := m.View(30, 10)
 
-	require.Contains(t, v, "#random")
+	require.Equal(t, []string{"Channels", "#dev", "#general", "▸#random"}, visibleLines(v))
 }
 
 func TestChannelSidebar_keyboard_navigation(t *testing.T) {
@@ -183,10 +183,7 @@ func TestChannelSidebar_set_channels_msg(t *testing.T) {
 	})
 
 	v := m.View(30, 10)
-	require.Contains(t, v, "#alpha")
-	require.Contains(t, v, "#beta")
-	require.NotContains(t, v, "#general")
-	require.Contains(t, v, "#alpha (5)")
+	require.Equal(t, []string{"Channels", "#alpha (5)", "▸#beta"}, visibleLines(v))
 }
 
 func TestChannelSidebar_unread_indicator(t *testing.T) {
@@ -209,9 +206,7 @@ func TestChannelSidebar_unread_indicator(t *testing.T) {
 			m := newTestChannelSidebar(testChannels, "#general", unread)
 			v := m.View(30, 10)
 
-			require.Contains(t, v, tt.wantText)
-			require.NotContains(t, v, "#general (")
-			require.NotContains(t, v, "#dev (")
+			require.Equal(t, []string{"Channels", "#dev", "▸#general", tt.wantText}, visibleLines(v))
 		})
 	}
 }
@@ -220,7 +215,7 @@ func TestChannelSidebar_no_unread_indicator_when_nil(t *testing.T) {
 	m := newTestChannelSidebar(testChannels, "#general", nil)
 	v := m.View(30, 10)
 
-	require.NotContains(t, v, "(")
+	require.Equal(t, []string{"Channels", "#dev", "▸#general", "#random"}, visibleLines(v))
 }
 
 func TestChannelSidebar_dm_shows_at_prefix(t *testing.T) {
@@ -232,9 +227,7 @@ func TestChannelSidebar_dm_shows_at_prefix(t *testing.T) {
 	m := newTestChannelSidebar(channels, "#general", nil)
 	v := m.View(30, 10)
 
-	require.Contains(t, v, "#general")
-	require.Contains(t, v, "@botty")
-	require.NotContains(t, v, "@#general")
+	require.Equal(t, []string{"Channels", "▸#general", "@botty"}, visibleLines(v))
 }
 
 func TestChannelSidebar_dm_cursor_uses_dm_style(t *testing.T) {
@@ -247,7 +240,7 @@ func TestChannelSidebar_dm_cursor_uses_dm_style(t *testing.T) {
 	m, _ = m.Update(ctrlKey("ctrl+d"))
 
 	v := m.View(30, 10)
-	require.Contains(t, v, "@botty")
+	require.Equal(t, []string{"Channels", "#general", "▸@botty"}, visibleLines(v))
 }
 
 func TestChannelSidebar_cursor_follows_active_on_set_channels(t *testing.T) {
@@ -326,14 +319,41 @@ func TestChannelSidebar_mention_renders_differently_from_normal_unread(t *testin
 	vNormal := mNormal.View(30, 10)
 	vMention := mMention.View(30, 10)
 
-	// Both should show the unread count.
-	require.Contains(t, vNormal, "#random (3)")
-	require.Contains(t, vMention, "#random (3)")
+	require.Equal(t, []string{"Channels", "#dev", "▸#general", "#random (3)"}, visibleLines(vNormal))
+	require.Equal(t, []string{"Channels", "#dev", "▸#general", "#random (3)"}, visibleLines(vMention))
 
-	// The mention view should be styled differently (different ANSI
-	// escape codes).
-	require.NotEqual(t, vNormal, vMention,
+	// Isolate the #random line from each view so the assertion targets
+	// the line the mention styling applies to.
+	normalLine := findLineContaining(t, vNormal, "#random")
+	mentionLine := findLineContaining(t, vMention, "#random")
+
+	// Both lines carry ANSI styling.
+	require.Contains(t, normalLine, "\x1b[")
+	require.Contains(t, mentionLine, "\x1b[")
+
+	// The visible text is identical — rules out whitespace-only drift.
+	require.Equal(t, ansi.Strip(normalLine), ansi.Strip(mentionLine))
+
+	// The raw lines differ, and since the visible text matches the
+	// difference must be due to styling.
+	require.NotEqual(t, normalLine, mentionLine,
 		"mention unread should render with a distinct style")
+}
+
+// findLineContaining returns the first rendered line that contains the
+// given substring after ANSI stripping.
+func findLineContaining(t *testing.T, view, substr string) string {
+	t.Helper()
+
+	for _, line := range strings.Split(view, "\n") {
+		if strings.Contains(ansi.Strip(line), substr) {
+			return line
+		}
+	}
+
+	t.Fatalf("no line containing %q in view:\n%s", substr, view)
+
+	return ""
 }
 
 func TestChannelSidebar_mention_clears_on_zero_count(t *testing.T) {
@@ -345,7 +365,7 @@ func TestChannelSidebar_mention_clears_on_zero_count(t *testing.T) {
 		Count:   3,
 		Mention: true,
 	})
-	require.Contains(t, m.View(30, 10), "#random (3)")
+	require.Equal(t, []string{"Channels", "#dev", "▸#general", "#random (3)"}, visibleLines(m.View(30, 10)))
 
 	// Clear the unread count.
 	m, _ = m.Update(components.ChannelUnreadMsg{
@@ -355,7 +375,7 @@ func TestChannelSidebar_mention_clears_on_zero_count(t *testing.T) {
 
 	// After clearing, there should be no unread indicator.
 	v := m.View(30, 10)
-	require.NotContains(t, v, "#random (")
+	require.Equal(t, []string{"Channels", "#dev", "▸#general", "#random"}, visibleLines(v))
 }
 
 func TestChannelSidebar_mention_clears_on_activation(t *testing.T) {
@@ -395,5 +415,5 @@ func TestChannelSidebar_ignores_other_messages(t *testing.T) {
 	require.Nil(t, cmd)
 
 	v := m.View(20, 10)
-	require.Contains(t, v, "#general")
+	require.Equal(t, []string{"Channels", "#dev", "▸#general", "#random"}, visibleLines(v))
 }

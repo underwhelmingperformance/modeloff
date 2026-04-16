@@ -2,12 +2,14 @@ package components_test
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/text/language"
 
@@ -17,7 +19,6 @@ import (
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/components"
-	"github.com/laney/modeloff/internal/ui/theme"
 )
 
 // testKind is a minimal KindProvider for component tests.
@@ -63,29 +64,210 @@ func newChatViewWithEvents(ch domain.ChannelName, userNick domain.Nick, topic st
 	return m.(components.ChatView)
 }
 
+// chatRegionLines returns the chat region's visible lines with the
+// final input-prompt row removed. The prompt row is detected via a
+// ` >` substring heuristic; if the prompt rendering changes shape (a
+// different separator, extra trailing glyph) this heuristic will stop
+// trimming the row and callers will see the prompt in their results.
+func chatRegionLines(view string) []string {
+	lines := visibleLines(view)
+	if len(lines) == 0 {
+		return nil
+	}
+
+	last := lines[len(lines)-1]
+	if strings.Contains(last, " >") {
+		return lines[:len(lines)-1]
+	}
+
+	return lines
+}
+
+func chatSegments(view string) []string {
+	lines := chatRegionLines(view)
+	segments := make([]string, 0, len(lines))
+
+	for _, line := range lines {
+		cleaned := strings.TrimSpace(line)
+		if cleaned == "" {
+			continue
+		}
+
+		if strings.Trim(cleaned, "┌┐└┘─│├┤┬┴┼") == "" {
+			continue
+		}
+
+		segments = append(segments, cleaned)
+	}
+
+	return segments
+}
+
+func chatRenderedLines(view string) []string {
+	return chatRegionLines(ansi.Strip(view))
+}
+
+func visibleEventLines(view string) []string {
+	lines := chatRenderedLines(view)
+	events := make([]string, 0, len(lines))
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		switch {
+		case trimmed == "":
+			continue
+		case strings.HasPrefix(trimmed, "(") && strings.HasSuffix(trimmed, "%)"):
+			continue
+		case strings.Contains(trimmed, "responding"):
+			continue
+		case strings.Contains(trimmed, " new messages "):
+			continue
+		case !strings.Contains(trimmed, "<") && !strings.HasPrefix(trimmed, "***") && trimmed != "No messages yet":
+			continue
+		}
+
+		events = append(events, trimmed)
+	}
+
+	return events
+}
+
+func scrollIndicatorLine(view string) string {
+	for _, line := range chatRenderedLines(view) {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "(") && strings.HasSuffix(trimmed, "%)") {
+			return trimmed
+		}
+	}
+
+	return ""
+}
+
+func pendingIndicatorLine(view string) string {
+	for _, line := range chatRenderedLines(view) {
+		trimmed := strings.TrimSpace(line)
+		if strings.Contains(trimmed, "responding") {
+			return trimmed
+		}
+	}
+
+	return ""
+}
+
+func dividerLine(view string) string {
+	for _, line := range chatRenderedLines(view) {
+		trimmed := strings.TrimSpace(line)
+		if strings.Contains(trimmed, " new messages ") {
+			return trimmed
+		}
+	}
+
+	return ""
+}
+
+func rawRenderedLines(view string) []string {
+	lines := strings.Split(strings.ReplaceAll(view, "\r\n", "\n"), "\n")
+
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+
+	for i := range lines {
+		lines[i] = strings.TrimRight(lines[i], " \t")
+	}
+
+	return lines
+}
+
+func withoutTimestamp(line string) string {
+	if idx := strings.Index(line, " <"); idx >= 0 {
+		return line[idx+1:]
+	}
+
+	if idx := strings.Index(line, " ***"); idx >= 0 {
+		return line[idx+1:]
+	}
+
+	return line
+}
+
+// visibleEventsWithoutTimestamps returns every visible event line with
+// its rendered timestamp prefix stripped, so full-slice assertions
+// remain stable against non-deterministic timestamps.
+func visibleEventsWithoutTimestamps(view string) []string {
+	events := visibleEventLines(view)
+	out := make([]string, len(events))
+
+	for i, line := range events {
+		out[i] = withoutTimestamp(line)
+	}
+
+	return out
+}
+
+// numberedUserMessages builds the expected event slice for tests that
+// render `<user> <body-prefix> N` messages across a contiguous index
+// range [start, start+count).
+func numberedUserMessages(bodyPrefix string, start, count int) []string {
+	out := make([]string, count)
+
+	for i := range count {
+		out[i] = fmt.Sprintf("<user> %s %d", bodyPrefix, start+i)
+	}
+
+	return out
+}
+
+func chatInputTokens(view string) []string {
+	lines := visibleLines(view)
+	if len(lines) == 0 {
+		return nil
+	}
+
+	return strings.Fields(lines[len(lines)-1])
+}
+
+func popoverLines(view string) []string {
+	lines := visibleLines(ansi.Strip(view))
+	if len(lines) == 0 {
+		return nil
+	}
+
+	popover := lines[:len(lines)-1]
+	filtered := make([]string, 0, len(popover))
+
+	for _, line := range popover {
+		if line == "No messages yet" {
+			continue
+		}
+
+		filtered = append(filtered, line)
+	}
+
+	return filtered
+}
+
 func TestChatView_View_shows_messages(t *testing.T) {
 	cv := newChatViewWithEvents("#general", "testuser", "", testEvents)
 	v := cv.View(80, 24)
 
-	require.Contains(t, v, "hello")
-	require.Contains(t, v, "hi there")
-	require.Contains(t, v, "how are you?")
-	require.Contains(t, v, "alice")
-	require.Contains(t, v, "bob")
+	require.Equal(t, []string{
+		"[10:00:00] <alice> hello",
+		"[10:01:00] <bob> hi there",
+		"[10:02:00] <alice> how are you?",
+	}, chatRegionLines(v))
+	require.Equal(t, []string{"testuser", ">"}, chatInputTokens(v))
 }
 
 func TestChatView_clear_messages_removes_visible_messages(t *testing.T) {
 	cv := newChatViewWithEvents("#general", "testuser", "", testEvents)
-	v := cv.View(80, 24)
-	require.Contains(t, v, "hello")
-
 	updated, _ := cv.Update(components.ClearMessagesMsg{})
 	cv = updated.(components.ChatView)
 
-	v = cv.View(80, 24)
-	require.NotContains(t, v, "hello")
-	require.NotContains(t, v, "hi there")
-	require.NotContains(t, v, "how are you?")
+	v := cv.View(80, 24)
+	require.Equal(t, []string{"No messages yet"}, chatRegionLines(v))
+	require.Equal(t, []string{"testuser", ">"}, chatInputTokens(v))
 }
 
 func TestChatView_View_fits_available_width_with_input_prefix(t *testing.T) {
@@ -102,9 +284,11 @@ func TestChatView_View_shows_timestamps(t *testing.T) {
 	cv := newChatViewWithEvents("#general", "testuser", "", testEvents)
 	v := cv.View(80, 24)
 
-	require.Contains(t, v, "[10:00:00]")
-	require.Contains(t, v, "[10:01:00]")
-	require.Contains(t, v, "[10:02:00]")
+	require.Equal(t, []string{
+		"[10:00:00] <alice> hello",
+		"[10:01:00] <bob> hi there",
+		"[10:02:00] <alice> how are you?",
+	}, chatRegionLines(v))
 }
 
 func TestChatView_View_disables_timestamps(t *testing.T) {
@@ -120,8 +304,11 @@ func TestChatView_View_disables_timestamps(t *testing.T) {
 
 	v := m.View(80, 24)
 
-	require.NotContains(t, v, "10:00:00")
-	require.Contains(t, v, "<alice> hello")
+	require.Equal(t, []string{
+		"<alice> hello",
+		"<bob> hi there",
+		"<alice> how are you?",
+	}, chatRegionLines(v))
 }
 
 func TestChatView_View_uses_strftime_timestamp_format(t *testing.T) {
@@ -137,7 +324,7 @@ func TestChatView_View_uses_strftime_timestamp_format(t *testing.T) {
 
 	v := ansi.Strip(m.View(80, 24))
 
-	require.Contains(t, v, "10:00:00 <alice> hello")
+	require.Equal(t, []string{"10:00:00 <alice> hello"}, chatRegionLines(v))
 }
 
 func TestChatView_View_wraps_long_messages(t *testing.T) {
@@ -153,23 +340,27 @@ func TestChatView_View_wraps_long_messages(t *testing.T) {
 	require.Greater(t, lipgloss.Height(v), 3,
 		"long message should wrap to multiple lines at narrow width")
 
-	// All the content should still be present.
-	require.Contains(t, v, "word")
-	require.Contains(t, v, "alice")
+	require.Equal(t, []string{
+		"[10:00:00] <alice> word word word word",
+		"word word word word word word word word",
+		"word word word word word word word word",
+		"word word word word word word word word",
+		"word word",
+	}, chatRegionLines(v))
 }
 
 func TestChatView_View_empty_messages(t *testing.T) {
 	cv := components.NewChatView("#general", "testuser", "")
 	v := cv.View(80, 24)
 
-	require.Contains(t, v, "No messages yet")
+	require.Equal(t, []string{"No messages yet"}, chatRegionLines(v))
 }
 
 func TestChatView_View_has_input_prompt(t *testing.T) {
 	cv := newChatViewWithEvents("#general", "testuser", "", testEvents)
 	v := cv.View(80, 24)
 
-	require.Contains(t, v, ">")
+	require.Equal(t, []string{"testuser", ">"}, chatInputTokens(v))
 }
 
 func TestChatView_typing_goes_to_input(t *testing.T) {
@@ -201,45 +392,50 @@ func TestChatView_command_from_input(t *testing.T) {
 }
 
 func TestChatView_messages_updated(t *testing.T) {
-	cv := components.NewChatView("#general", "testuser", "")
-	var m ui.Model = cv
+	updatedAt := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
+	cv := newChatViewWithEvents("#general", "testuser", "", []domain.StoredEvent{
+		{Event: domain.ChannelMessage{Channel: "#general", From: "charlie", Body: "new message", At: updatedAt}},
+	})
 
-	m, _ = m.Update(components.HistoryLoadedMsg{Events: []domain.StoredEvent{
-		{Event: domain.ChannelMessage{Channel: "#general", From: "charlie", Body: "new message", At: time.Now()}},
-	}})
-
-	v := m.View(80, 24)
-	require.Contains(t, v, "new message")
-	require.Contains(t, v, "charlie")
+	v := cv.View(80, 24)
+	require.Equal(t, []string{"[12:00:00] <charlie> new message"}, chatRegionLines(v))
 }
 
 func TestChatView_original_messages_persist(t *testing.T) {
 	cv := newChatViewWithEvents("#general", "testuser", "", testEvents)
 	var m ui.Model = cv
+	appendAt := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
 
 	// Append a new event — original messages should still be present.
 	m, _ = m.Update(domain.StoredEvent{
-		Event: domain.ChannelMessage{Channel: "#general", From: "charlie", Body: "extra", At: time.Now()},
+		Event: domain.ChannelMessage{Channel: "#general", From: "charlie", Body: "extra", At: appendAt},
 	})
 
 	v := m.View(80, 24)
-	require.Contains(t, v, "hello")
-	require.Contains(t, v, "extra")
+	require.Equal(t, []string{
+		"[10:00:00] <alice> hello",
+		"[10:01:00] <bob> hi there",
+		"[10:02:00] <alice> how are you?",
+		"[12:00:00] <charlie> extra",
+	}, chatRegionLines(v))
 }
 
 func TestChatView_append_event(t *testing.T) {
 	cv := newChatViewWithEvents("#general", "testuser", "", testEvents)
 	var m ui.Model = cv
+	appendAt := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
 
 	m, _ = m.Update(domain.StoredEvent{
-		Event: domain.ChannelMessage{Channel: "#general", From: "dave", Body: "appended message", At: time.Now()},
+		Event: domain.ChannelMessage{Channel: "#general", From: "dave", Body: "appended message", At: appendAt},
 	})
 
 	v := m.View(80, 24)
-	require.Contains(t, v, "appended message")
-	require.Contains(t, v, "dave")
-	// Original messages should still be there.
-	require.Contains(t, v, "hello")
+	require.Equal(t, []string{
+		"[10:00:00] <alice> hello",
+		"[10:01:00] <bob> hi there",
+		"[10:02:00] <alice> how are you?",
+		"[12:00:00] <dave> appended message",
+	}, chatRegionLines(v))
 }
 
 func TestChatView_scroll(t *testing.T) {
@@ -262,15 +458,15 @@ func TestChatView_scroll(t *testing.T) {
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
 
 	v := m.View(80, 24)
-	// After scrolling up, the last message should no longer be visible
-	// (it scrolled off the bottom).
-	require.NotContains(t, v, "message 29")
+	require.Equal(t, numberedUserMessages("message", 0, 22), visibleEventsWithoutTimestamps(v))
+	require.Equal(t, "(0%)", scrollIndicatorLine(v))
 
 	// Scroll back down.
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
 
 	v = m.View(80, 24)
-	require.Contains(t, v, "message 29")
+	require.Equal(t, numberedUserMessages("message", 7, 23), visibleEventsWithoutTimestamps(v))
+	require.Equal(t, "", scrollIndicatorLine(v))
 }
 
 func TestChatView_scroll_indicator(t *testing.T) {
@@ -289,13 +485,13 @@ func TestChatView_scroll_indicator(t *testing.T) {
 
 	// At the bottom — no indicator.
 	v := m.View(80, 24)
-	require.NotContains(t, v, "%)")
+	require.Equal(t, "", scrollIndicatorLine(v))
 
 	// Scroll up — indicator appears.
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
 
 	v = m.View(80, 24)
-	require.Contains(t, v, "%)")
+	require.Equal(t, "(0%)", scrollIndicatorLine(v))
 
 	// Total height stays the same.
 	require.Equal(t, 24, lipgloss.Height(v))
@@ -304,7 +500,7 @@ func TestChatView_scroll_indicator(t *testing.T) {
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
 
 	v = m.View(80, 24)
-	require.NotContains(t, v, "%)")
+	require.Equal(t, "", scrollIndicatorLine(v))
 }
 
 func TestChatView_ctrl_arrow_scroll(t *testing.T) {
@@ -324,12 +520,14 @@ func TestChatView_ctrl_arrow_scroll(t *testing.T) {
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlUp})
 
 	v := m.View(80, 24)
-	require.NotContains(t, v, "message 29")
+	require.Equal(t, numberedUserMessages("message", 6, 22), visibleEventsWithoutTimestamps(v))
+	require.Equal(t, "(85%)", scrollIndicatorLine(v))
 
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlDown})
 
 	v = m.View(80, 24)
-	require.Contains(t, v, "message 29")
+	require.Equal(t, numberedUserMessages("message", 7, 23), visibleEventsWithoutTimestamps(v))
+	require.Equal(t, "", scrollIndicatorLine(v))
 }
 
 func TestChatView_scroll_does_not_go_negative(t *testing.T) {
@@ -341,7 +539,11 @@ func TestChatView_scroll_does_not_go_negative(t *testing.T) {
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
 
 	v := m.View(80, 24)
-	require.Contains(t, v, "how are you?")
+	require.Equal(t, []string{
+		"[10:00:00] <alice> hello",
+		"[10:01:00] <bob> hi there",
+		"[10:02:00] <alice> how are you?",
+	}, visibleEventLines(v))
 }
 
 func TestChatView_arrow_keys_stay_with_input(t *testing.T) {
@@ -367,8 +569,8 @@ func TestChatView_arrow_keys_stay_with_input(t *testing.T) {
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 
 	v := m.View(80, 24)
-	require.Contains(t, v, "second")
-	require.Contains(t, v, "message 29")
+	require.Equal(t, []string{"testuser", ">", "second"}, chatInputTokens(v))
+	require.Equal(t, numberedUserMessages("message", 7, 23), visibleEventsWithoutTimestamps(v))
 
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyLeft})
@@ -376,33 +578,73 @@ func TestChatView_arrow_keys_stay_with_input(t *testing.T) {
 	m = typeText(t, m, "X")
 
 	v = m.View(80, 24)
-	require.Contains(t, v, "draXft")
-	require.Contains(t, v, "message 29")
+	require.Equal(t, []string{"testuser", ">", "draXft"}, chatInputTokens(v))
+	require.Equal(t, numberedUserMessages("message", 7, 23), visibleEventsWithoutTimestamps(v))
 }
 
 func TestChatView_nicks_use_hashed_colours(t *testing.T) {
-	msgs := []domain.ChannelMessage{
-		{Channel: "#general", From: "alice", Body: "from user"},
-		{Channel: "#general", From: "bot", Body: "from model"},
+	// Force the ANSI profile so escape codes are deterministic.
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	aliceToken := extractStyledNickToken(t, renderNick(t, "alice", "from user"), "alice")
+	botToken := extractStyledNickToken(t, renderNick(t, "bot", "from model"), "bot")
+
+	// Both tokens carry ANSI styling — rules out NickStyle returning the
+	// bare string.
+	require.Contains(t, aliceToken, "\x1b[")
+	require.Contains(t, botToken, "\x1b[")
+
+	// Distinct nicks produce distinct styled tokens (they must differ in
+	// at least the escape codes or the visible text).
+	require.NotEqual(t, aliceToken, botToken)
+
+	// Rendering alice again produces an identical token — pins the
+	// determinism of the hash.
+	aliceAgain := extractStyledNickToken(t, renderNick(t, "alice", "from user"), "alice")
+	require.Equal(t, aliceToken, aliceAgain)
+}
+
+// renderNick renders a single chat message and returns the raw line
+// containing the nick token, including its ANSI escapes.
+func renderNick(t *testing.T, nick, body string) string {
+	t.Helper()
+
+	cv := newChatViewWithEvents("#general", "user", "", messagesToEvents([]domain.ChannelMessage{
+		{Channel: "#general", From: domain.Nick(nick), Body: body},
+	}))
+
+	lines := rawRenderedLines(cv.View(80, 24))
+	for _, line := range lines {
+		if strings.Contains(line, "<"+nick+">") {
+			return line
+		}
 	}
 
-	cv := newChatViewWithEvents("#general", "alice", "", messagesToEvents(msgs))
-	v := cv.View(80, 24)
+	t.Fatalf("no line containing <%s> in view:\n%s", nick, strings.Join(lines, "\n"))
 
-	// Each nick is rendered with a colour derived from its name.
-	aliceStyled := theme.NickStyle("alice").Render("<alice>")
-	botStyled := theme.NickStyle("bot").Render("<bot>")
+	return ""
+}
 
-	require.Contains(t, v, aliceStyled)
-	require.Contains(t, v, botStyled)
+// extractStyledNickToken pulls the substring from the raw line
+// consisting of the ANSI escape wrapping the nick token plus the nick
+// token itself and the trailing reset.
+func extractStyledNickToken(t *testing.T, rawLine, nick string) string {
+	t.Helper()
+
+	re := regexp.MustCompile(`\x1b\[[0-9;]*m<` + regexp.QuoteMeta(nick) + `>\x1b\[[0-9;]*m`)
+	token := re.FindString(rawLine)
+	require.NotEmpty(t, token, "no styled <%s> token in line: %q", nick, rawLine)
+
+	return token
 }
 
 func TestChatView_shows_nick_in_input_area(t *testing.T) {
 	cv := newChatViewWithEvents("#general", "alice", "", testEvents)
 	v := cv.View(80, 24)
 
-	require.Contains(t, v, "alice")
-	require.Contains(t, v, ">")
+	require.Equal(t, []string{"alice", ">"}, chatInputTokens(v))
 }
 
 func TestChatView_nick_updates_after_change(t *testing.T) {
@@ -412,10 +654,8 @@ func TestChatView_nick_updates_after_change(t *testing.T) {
 	v1 := cv1.View(80, 24)
 	v2 := cv2.View(80, 24)
 
-	require.Contains(t, v1, "oldnick")
-	require.NotContains(t, v1, "newnick")
-	require.Contains(t, v2, "newnick")
-	require.NotContains(t, v2, "oldnick")
+	require.Equal(t, []string{"oldnick", ">"}, chatInputTokens(v1))
+	require.Equal(t, []string{"newnick", ">"}, chatInputTokens(v2))
 }
 
 func TestChatView_dm_hides_topic_bar(t *testing.T) {
@@ -429,9 +669,8 @@ func TestChatView_dm_hides_topic_bar(t *testing.T) {
 	cv = m.(components.ChatView)
 
 	v := cv.View(80, 24)
-	stripped := ansi.Strip(v)
 
-	require.NotContains(t, stripped, "should not appear")
+	require.Equal(t, []string{"No messages yet"}, chatSegments(ansi.Strip(v)))
 }
 
 func TestChatView_dm_suppresses_join_part_events(t *testing.T) {
@@ -456,11 +695,7 @@ func TestChatView_dm_suppresses_join_part_events(t *testing.T) {
 
 	v := ansi.Strip(cv.View(80, 24))
 
-	require.Contains(t, v, "hello human")
-	require.NotContains(t, v, "has joined")
-	require.NotContains(t, v, "has left")
-	require.NotContains(t, v, "sets mode")
-	require.NotContains(t, v, "topic for")
+	require.Equal(t, []string{"Wed 01 Jan 2025 10:00:00 UTC <bot> hello human"}, chatSegments(v))
 }
 
 func TestChatView_dm_shows_quit_messages(t *testing.T) {
@@ -481,14 +716,19 @@ func TestChatView_dm_shows_quit_messages(t *testing.T) {
 
 	v := ansi.Strip(cv.View(80, 24))
 
-	require.Contains(t, v, "has quit")
+	require.Equal(t, []string{"*** bot has quit (goodbye)"}, chatSegments(v))
 }
 
 func TestChatView_topic_bar_shown(t *testing.T) {
 	cv := newChatViewWithEvents("#general", "testuser", "Welcome to general", testEvents)
 	v := cv.View(80, 24)
 
-	require.Contains(t, v, "Welcome to general")
+	require.Equal(t, []string{
+		"Welcome to general",
+		"[10:00:00] <alice> hello",
+		"[10:01:00] <bob> hi there",
+		"[10:02:00] <alice> how are you?",
+	}, chatSegments(v))
 }
 
 func TestChatView_no_topic_bar_when_empty(t *testing.T) {
@@ -498,8 +738,17 @@ func TestChatView_no_topic_bar_when_empty(t *testing.T) {
 	vWith := withTitle.View(80, 24)
 	vWithout := without.View(80, 24)
 
-	require.Contains(t, vWith, "some topic")
-	require.NotContains(t, vWithout, "some topic")
+	require.Equal(t, []string{
+		"some topic",
+		"[10:00:00] <alice> hello",
+		"[10:01:00] <bob> hi there",
+		"[10:02:00] <alice> how are you?",
+	}, chatSegments(vWith))
+	require.Equal(t, []string{
+		"[10:00:00] <alice> hello",
+		"[10:01:00] <bob> hi there",
+		"[10:02:00] <alice> how are you?",
+	}, chatSegments(vWithout))
 }
 
 func TestChatView_topic_bar_reduces_message_area(t *testing.T) {
@@ -532,22 +781,32 @@ func TestChatView_TopicUpdatedMsg_updates_topic_bar(t *testing.T) {
 
 	// No topic initially.
 	v := m.View(80, 24)
-	stripped := ansi.Strip(v)
-	require.NotContains(t, stripped, "new topic")
+	require.Equal(t, []string{
+		"[10:00:00] <alice> hello",
+		"[10:01:00] <bob> hi there",
+		"[10:02:00] <alice> how are you?",
+	}, chatSegments(ansi.Strip(v)))
 
 	// Send TopicUpdatedMsg.
 	m, _ = m.Update(components.TopicUpdatedMsg{Topic: "new topic"})
 
 	v = m.View(80, 24)
-	stripped = ansi.Strip(v)
-	require.Contains(t, stripped, "new topic")
+	require.Equal(t, []string{
+		"new topic",
+		"[10:00:00] <alice> hello",
+		"[10:01:00] <bob> hi there",
+		"[10:02:00] <alice> how are you?",
+	}, chatSegments(ansi.Strip(v)))
 
 	// Clear topic.
 	m, _ = m.Update(components.TopicUpdatedMsg{Topic: ""})
 
 	v = m.View(80, 24)
-	stripped = ansi.Strip(v)
-	require.NotContains(t, stripped, "new topic")
+	require.Equal(t, []string{
+		"[10:00:00] <alice> hello",
+		"[10:01:00] <bob> hi there",
+		"[10:02:00] <alice> how are you?",
+	}, chatSegments(ansi.Strip(v)))
 }
 
 func TestChatView_pending_indicator(t *testing.T) {
@@ -556,19 +815,24 @@ func TestChatView_pending_indicator(t *testing.T) {
 
 	// Initially no pending indicator.
 	v := m.View(80, 24)
-	require.NotContains(t, v, "responding")
+	require.Equal(t, "", pendingIndicatorLine(v))
 
 	// Set pending.
 	m, _ = m.Update(components.PendingResponseMsg{Pending: true})
 
 	v = m.View(80, 24)
-	require.Contains(t, v, "responding")
+	require.True(t, strings.HasSuffix(pendingIndicatorLine(v), "responding…"))
+	require.Equal(t, []string{
+		"[10:00:00] <alice> hello",
+		"[10:01:00] <bob> hi there",
+		"[10:02:00] <alice> how are you?",
+	}, visibleEventLines(v))
 
 	// Clear pending.
 	m, _ = m.Update(components.PendingResponseMsg{Pending: false})
 
 	v = m.View(80, 24)
-	require.NotContains(t, v, "responding")
+	require.Equal(t, "", pendingIndicatorLine(v))
 }
 
 func TestChatView_pending_indicator_reduces_message_area(t *testing.T) {
@@ -591,7 +855,8 @@ func TestChatView_pending_indicator_reduces_message_area(t *testing.T) {
 
 	// Total height should stay the same.
 	require.Equal(t, 24, withLines)
-	require.Contains(t, v, "responding")
+	require.Equal(t, numberedUserMessages("msg", 0, 22), visibleEventsWithoutTimestamps(v))
+	require.NotEmpty(t, pendingIndicatorLine(v))
 }
 
 func renderSingleEvent(event domain.StoredEvent) string {
@@ -725,8 +990,12 @@ func TestRenderLine_IRC_events(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := renderSingleEvent(tt.event)
+			want := tt.want
+			if event, ok := tt.event.Event.(domain.ChannelMessage); ok && event.Action {
+				want = fmt.Sprintf("%s * alice waves", event.At.Format("2006-01-02 15:04"))
+			}
 
-			require.Contains(t, got, tt.want)
+			require.Equal(t, []string{want}, chatSegments(got))
 		})
 	}
 }
@@ -752,8 +1021,7 @@ func TestRenderLine_topic_info_omits_timestamp_when_disabled(t *testing.T) {
 
 	v := ansi.Strip(m.View(200, 24))
 
-	require.Contains(t, v, "*** topic for #general: cool topic (set by alice)")
-	require.NotContains(t, v, " on ")
+	require.Equal(t, []string{"*** topic for #general: cool topic (set by alice)"}, chatSegments(v))
 }
 
 func TestRenderLine_application_feedback(t *testing.T) {
@@ -762,12 +1030,17 @@ func TestRenderLine_application_feedback(t *testing.T) {
 	tests := []struct {
 		name  string
 		event domain.StoredEvent
-		want  string
+		want  []string
 	}{
 		{
 			"help",
 			domain.StoredEvent{Event: domain.ChannelHelp{Channel: "#test", At: now}},
-			"*** /join <channel>",
+			[]string{
+				"*** /join <channel>                  Join or create a channel",
+				"*** /help                            Show available commands.",
+				"*** formatting                      M-B/M-I/M-U/M-R/M-S toggle styles",
+				"*** formatting                      M-C colours, M-O clears formatting",
+			},
 		},
 		{
 			"channel_list",
@@ -775,22 +1048,22 @@ func TestRenderLine_application_feedback(t *testing.T) {
 				{Name: "#general"},
 				{Name: "#random", Topic: "cool"},
 			}, At: now}},
-			"*** #general",
+			[]string{"*** #general", "*** #random — cool"},
 		},
 		{
 			"channel_list_empty",
 			domain.StoredEvent{Event: domain.ChannelListOutput{At: now}},
-			"*** no channels",
+			[]string{"*** no channels"},
 		},
 		{
 			"api_key_saved",
 			domain.StoredEvent{Event: domain.ChannelSystemNotice{Channel: "#test", Text: "OpenRouter API key saved and activated.", At: now}},
-			"OpenRouter API key saved",
+			[]string{"✓ OpenRouter API key saved and activated."},
 		},
 		{
 			"poke_interval_set",
 			domain.StoredEvent{Event: domain.ChannelSystemNotice{Channel: "#test", Text: "Poke interval set to 10m0s.", At: now}},
-			"Poke interval set to 10m0s.",
+			[]string{"✓ Poke interval set to 10m0s."},
 		},
 		{
 			"usage_hint_config",
@@ -800,7 +1073,7 @@ func TestRenderLine_application_feedback(t *testing.T) {
 				Usage:   "/config api-key <value> | /config small-model <model-id> | /config poke-interval <duration>",
 				At:      now,
 			}},
-			"usage: /config api-key",
+			[]string{"⚠ usage: /config api-key <value> | /config small-model <model-id> | /config poke-interval <duration>"},
 		},
 		{
 			"usage_hint_invite",
@@ -810,32 +1083,32 @@ func TestRenderLine_application_feedback(t *testing.T) {
 				Usage:   "/add-model <model-id> [--persona <text>]",
 				At:      now,
 			}},
-			"usage: /add-model",
+			[]string{"⚠ usage: /add-model <model-id> [--persona <text>]"},
 		},
 		{
 			"no_channel",
 			domain.StoredEvent{Event: domain.ChannelUsageHint{Usage: "join a channel first", At: now}},
-			"join a channel first",
+			[]string{"⚠ join a channel first"},
 		},
 		{
 			"command_error",
 			domain.StoredEvent{Event: domain.ChannelCommandError{Channel: "#test", Err: "unknown command: /foo", At: now}},
-			"unknown command: /foo",
+			[]string{"✗ unknown command: /foo"},
 		},
 		{
 			"unknown_nick_error",
 			domain.StoredEvent{Event: domain.ChannelCommandError{Channel: "#test", Err: "no such nick: ghost", At: now}},
-			"no such nick: ghost",
+			[]string{"✗ no such nick: ghost"},
 		},
 		{
 			"config_changed",
 			domain.StoredEvent{Event: domain.ChannelSystemNotice{Channel: "#test", Text: "API key saved", At: now}},
-			"API key saved",
+			[]string{"✓ API key saved"},
 		},
 		{
 			"backend_error",
 			domain.StoredEvent{Event: domain.ChannelCommandError{Channel: "#test", Err: "model invocation: connection refused", At: now}},
-			"model invocation: connection refused",
+			[]string{"✗ model invocation: connection refused"},
 		},
 	}
 
@@ -843,7 +1116,7 @@ func TestRenderLine_application_feedback(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got := renderSingleEvent(tt.event)
 
-			require.Contains(t, got, tt.want)
+			require.Equal(t, tt.want, chatSegments(got))
 		})
 	}
 }
@@ -880,18 +1153,11 @@ func TestNewMessagesDivider_fills_width(t *testing.T) {
 	v := m.View(80, 24)
 	stripped := ansi.Strip(v)
 
-	require.Contains(t, stripped, "new messages")
-	require.Contains(t, stripped, "──")
-
-	for line := range strings.SplitSeq(stripped, "\n") {
-		if strings.Contains(line, "new messages") {
-			require.Contains(t, line, "─")
-			require.GreaterOrEqual(t, len([]rune(line)), 40,
-				"divider should span a significant portion of the width")
-
-			break
-		}
-	}
+	divider := dividerLine(stripped)
+	require.NotEmpty(t, divider)
+	require.GreaterOrEqual(t, len([]rune(divider)), 40,
+		"divider should span a significant portion of the width")
+	require.Equal(t, "───────────────────────────────── new messages ─────────────────────────────────", divider)
 }
 
 func TestChatView_command_popover_renders_and_completes(t *testing.T) {
@@ -917,8 +1183,8 @@ func TestChatView_command_popover_renders_and_completes(t *testing.T) {
 	m = typeText(t, m, "/jo")
 
 	v := m.View(60, 24)
-	require.Contains(t, v, "/join")
-	require.Contains(t, v, "Join a channel")
+	require.Equal(t, []string{"/join <channel>  Join a channel"}, popoverLines(v))
+	require.Equal(t, []string{"testuser", ">", "/jo"}, chatInputTokens(v))
 
 	var cmd tea.Cmd
 	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyTab})
@@ -994,10 +1260,12 @@ func TestChatView_popover_renders_usage_in_suggestions(t *testing.T) {
 	v := m.View(60, 24)
 	stripped := ansi.Strip(v)
 
-	require.Contains(t, stripped, "/join <channel>")
-	require.Contains(t, stripped, "Join a channel")
-	require.Contains(t, stripped, "/part")
-	require.Contains(t, stripped, "/quit")
+	require.Equal(t, []string{
+		"/join <channel>  Join a channel",
+		"/part  Part from the current channel",
+		"/quit  Exit modeloff",
+	}, popoverLines(stripped))
+	require.Equal(t, []string{"testuser", ">", "/"}, chatInputTokens(stripped))
 }
 
 func TestChatView_mouse_click_positions_input_cursor(t *testing.T) {
@@ -1043,7 +1311,7 @@ func TestChatView_divider_inserted_when_scrolled_up(t *testing.T) {
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
 
 	v := m.View(80, 24)
-	require.NotContains(t, v, "message 29")
+	require.Equal(t, numberedUserMessages("message", 0, 22), visibleEventsWithoutTimestamps(v))
 
 	// Append new events while scrolled up.
 	for i := 30; i < 33; i++ {
@@ -1068,8 +1336,11 @@ func TestChatView_divider_inserted_when_scrolled_up(t *testing.T) {
 	v = m.View(80, 24)
 	stripped := ansi.Strip(v)
 
-	require.Contains(t, stripped, "new messages",
-		"divider should be visible after scrolling down")
+	divider := dividerLine(stripped)
+	require.NotEmpty(t, divider)
+	require.Contains(t, divider, "new messages")
+	require.GreaterOrEqual(t, len([]rune(divider)), 40,
+		"divider should span a significant portion of the width")
 }
 
 func TestChatView_no_divider_when_at_bottom(t *testing.T) {
@@ -1104,8 +1375,7 @@ func TestChatView_no_divider_when_at_bottom(t *testing.T) {
 	v := m.View(80, 24)
 	stripped := ansi.Strip(v)
 
-	require.NotContains(t, stripped, "new messages",
-		"no divider should appear when viewport is at bottom")
+	require.Equal(t, "", dividerLine(stripped))
 }
 
 func TestChatView_stored_events_insert_divider_when_scrolled_up(t *testing.T) {
@@ -1142,9 +1412,35 @@ func TestChatView_stored_events_insert_divider_when_scrolled_up(t *testing.T) {
 
 	v := ansi.Strip(m.View(80, 24))
 
-	require.Contains(t, v, "new messages")
-	require.Contains(t, v, "new message 30")
-	require.Contains(t, v, "new message 32")
+	divider := dividerLine(v)
+	require.NotEmpty(t, divider)
+	require.Contains(t, divider, "new messages")
+	require.GreaterOrEqual(t, len([]rune(divider)), 40,
+		"divider should span a significant portion of the width")
+	require.Equal(t, []string{
+		"[00:00:00] <user> message 11",
+		"[00:00:00] <user> message 12",
+		"[00:00:00] <user> message 13",
+		"[00:00:00] <user> message 14",
+		"[00:00:00] <user> message 15",
+		"[00:00:00] <user> message 16",
+		"[00:00:00] <user> message 17",
+		"[00:00:00] <user> message 18",
+		"[00:00:00] <user> message 19",
+		"[00:00:00] <user> message 20",
+		"[00:00:00] <user> message 21",
+		"[00:00:00] <user> message 22",
+		"[00:00:00] <user> message 23",
+		"[00:00:00] <user> message 24",
+		"[00:00:00] <user> message 25",
+		"[00:00:00] <user> message 26",
+		"[00:00:00] <user> message 27",
+		"[00:00:00] <user> message 28",
+		"[00:00:00] <user> message 29",
+		"[00:00:00] <user> new message 30",
+		"[00:00:00] <user> new message 31",
+		"[00:00:00] <user> new message 32",
+	}, visibleEventLines(v))
 }
 
 func TestChatView_stored_events_keep_divider_when_more_arrive_during_catch_up(t *testing.T) {
@@ -1190,9 +1486,35 @@ func TestChatView_stored_events_keep_divider_when_more_arrive_during_catch_up(t 
 
 	v := ansi.Strip(m.View(80, 24))
 
-	require.Contains(t, v, "new messages")
-	require.Contains(t, v, "new message 30")
-	require.Contains(t, v, "new message 31")
+	divider := dividerLine(v)
+	require.NotEmpty(t, divider)
+	require.Contains(t, divider, "new messages")
+	require.GreaterOrEqual(t, len([]rune(divider)), 40,
+		"divider should span a significant portion of the width")
+	require.Equal(t, []string{
+		"[00:00:00] <user> message 10",
+		"[00:00:00] <user> message 11",
+		"[00:00:00] <user> message 12",
+		"[00:00:00] <user> message 13",
+		"[00:00:00] <user> message 14",
+		"[00:00:00] <user> message 15",
+		"[00:00:00] <user> message 16",
+		"[00:00:00] <user> message 17",
+		"[00:00:00] <user> message 18",
+		"[00:00:00] <user> message 19",
+		"[00:00:00] <user> message 20",
+		"[00:00:00] <user> message 21",
+		"[00:00:00] <user> message 22",
+		"[00:00:00] <user> message 23",
+		"[00:00:00] <user> message 24",
+		"[00:00:00] <user> message 25",
+		"[00:00:00] <user> message 26",
+		"[00:00:00] <user> message 27",
+		"[00:00:00] <user> message 28",
+		"[00:00:00] <user> message 29",
+		"[00:00:00] <user> new message 30",
+		"[00:00:00] <user> new message 31",
+	}, visibleEventLines(v))
 }
 
 func TestChatView_mouse_wheel_scrolls_messages(t *testing.T) {
@@ -1217,7 +1539,8 @@ func TestChatView_mouse_wheel_scrolls_messages(t *testing.T) {
 	})
 
 	v := m.View(60, 24)
-	require.NotContains(t, v, "message 29")
+	require.Equal(t, numberedUserMessages("message", 4, 22), visibleEventsWithoutTimestamps(v))
+	require.Equal(t, "(57%)", scrollIndicatorLine(v))
 }
 
 func TestChatView_mouse_click_accepts_popover_suggestion(t *testing.T) {
@@ -1345,8 +1668,5 @@ func TestRenderLine_preserves_irc_formatting_in_plain_output(t *testing.T) {
 		},
 	})
 
-	require.Contains(t, rendered, "hello bold under strike")
-	require.NotContains(t, rendered, "\x02")
-	require.NotContains(t, rendered, "\x1f")
-	require.NotContains(t, rendered, "\x1e")
+	require.Equal(t, []string{"2026-04-12 11:00 <alice> hello bold under strike"}, chatSegments(rendered))
 }

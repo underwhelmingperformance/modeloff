@@ -26,7 +26,7 @@ func TestPanelExporter_exports_records_to_entries(t *testing.T) {
 	record.SetSpanID(trace.SpanID{2})
 	record.AddAttributes(otellog.KeyValueFromAttribute(attribute.String("component", "session")))
 
-	require.NoError(t, exporter.Export(context.Background(), []sdklog.Record{record}))
+	require.NoError(t, exporter.Export(t.Context(), []sdklog.Record{record}))
 
 	entry := <-ingest
 	require.Equal(t, "INFO", entry.Level)
@@ -39,7 +39,9 @@ func TestPanelExporter_exports_records_to_entries(t *testing.T) {
 func TestPanelExporter_records_dropped_logs_on_backpressure(t *testing.T) {
 	reader := sdkmetric.NewManualReader()
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
-	defer func() { _ = provider.Shutdown(context.Background()) }()
+	t.Cleanup(func() {
+		require.NoError(t, provider.Shutdown(context.WithoutCancel(t.Context())))
+	})
 
 	counter, err := provider.Meter("test").Int64Counter(MetricDroppedLogs)
 	require.NoError(t, err)
@@ -51,10 +53,10 @@ func TestPanelExporter_records_dropped_logs_on_backpressure(t *testing.T) {
 	record.SetObservedTimestamp(time.Now())
 	record.SetBody(otellog.StringValue("dropped"))
 
-	require.NoError(t, exporter.Export(context.Background(), []sdklog.Record{record}))
+	require.NoError(t, exporter.Export(t.Context(), []sdklog.Record{record}))
 
 	var metrics metricdata.ResourceMetrics
-	require.NoError(t, reader.Collect(context.Background(), &metrics))
+	require.NoError(t, reader.Collect(t.Context(), &metrics))
 
 	require.Equal(t, int64(1), sumValueForMetric(metrics, MetricDroppedLogs))
 }

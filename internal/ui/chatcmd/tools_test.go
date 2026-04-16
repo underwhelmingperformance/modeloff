@@ -312,7 +312,7 @@ func TestRunTool_msg_opens_dm(t *testing.T) {
 	result := tool.RunTool(t.Context(), tc)
 
 	require.True(t, result.OK)
-	require.Contains(t, result.Summary, "testbot")
+	require.Equal(t, "created direct message with testbot", result.Summary)
 }
 
 func TestRunTool_nick_changes_nick(t *testing.T) {

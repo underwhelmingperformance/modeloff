@@ -13,6 +13,25 @@ import (
 	"github.com/laney/modeloff/internal/ui/components"
 )
 
+// Layout dimensions used across the MainLayout tests. These track
+// the current width-split heuristics; if the heuristics change
+// (e.g. a wider sidebar, different nicklist width) update these
+// constants in one place rather than touching every test.
+const (
+	sidebarWidthAt80            = 16
+	sidebarWidthAt100           = 20
+	sidebarWidthAt120           = 24
+	contentWidthAt80            = 66
+	contentWidthAt100           = 86
+	contentWidthAt120TwoPane    = 106
+	contentWidthAt120WithNicks  = 94
+	nickListWidthAt80           = 12
+	nickListWidthAt120          = 18
+	obsDrawerHeight             = 8
+	obsDrawerColumnHeight       = 16
+	defaultTestHeight           = 24
+)
+
 // stubModel is a minimal ui.Model for testing layout behaviour.
 type stubModel struct {
 	label string
@@ -28,6 +47,12 @@ func (s stubModel) View(width, height int) string {
 	return fmt.Sprintf("%s:%dx%d", s.label, width, height)
 }
 
+// dims formats a `label:WxH` dimension token matching stubModel.View,
+// so tests can express expectations in terms of the layout constants.
+func dims(label string, width, height int) string {
+	return fmt.Sprintf("%s:%dx%d", label, width, height)
+}
+
 type keybindingStubModel struct {
 	stubModel
 
@@ -40,22 +65,25 @@ func (s keybindingStubModel) KeyBindings() []ui.KeyBinding {
 
 func TestMainLayout_View_responsive(t *testing.T) {
 	tests := []struct {
-		name    string
-		width   int
-		height  int
-		wantSub string
+		name        string
+		width       int
+		height      int
+		wantSidebar []string
+		wantContent []string
 	}{
 		{
-			name:    "sidebar and content are both rendered",
-			width:   80,
-			height:  24,
-			wantSub: "sidebar:",
+			name:        "sidebar and content are both rendered",
+			width:       80,
+			height:      defaultTestHeight,
+			wantSidebar: []string{dims("sidebar", sidebarWidthAt80, defaultTestHeight)},
+			wantContent: []string{dims("content", contentWidthAt80, defaultTestHeight)},
 		},
 		{
-			name:    "content is rendered",
-			width:   80,
-			height:  24,
-			wantSub: "content:",
+			name:        "content width adjusts with terminal size",
+			width:       100,
+			height:      defaultTestHeight,
+			wantSidebar: []string{dims("sidebar", sidebarWidthAt100, defaultTestHeight)},
+			wantContent: []string{dims("content", contentWidthAt100, defaultTestHeight)},
 		},
 	}
 
@@ -66,10 +94,10 @@ func TestMainLayout_View_responsive(t *testing.T) {
 
 			layout := components.NewMainLayout(sidebar, content)
 			got := layout.View(tt.width, tt.height)
+			columns := visibleColumns(got)
 
-			require.Contains(t, got, tt.wantSub,
-				"View(%d, %d) should contain %q",
-				tt.width, tt.height, tt.wantSub)
+			require.Equal(t, tt.wantSidebar, nonEmptyColumn(columns[0]))
+			require.Equal(t, tt.wantContent, nonEmptyColumn(columns[1]))
 		})
 	}
 }
@@ -82,17 +110,15 @@ func TestMainLayout_View_narrow_terminal(t *testing.T) {
 	t.Run("below threshold shows resize message", func(t *testing.T) {
 		got := layout.View(79, 24)
 
-		require.Contains(t, got, "Resize terminal to 80+ columns")
-		require.NotContains(t, got, "sidebar:")
-		require.NotContains(t, got, "content:")
+		require.Equal(t, []string{"Resize terminal to 80+ columns"}, visibleLines(got))
 	})
 
 	t.Run("at threshold renders normally", func(t *testing.T) {
-		got := layout.View(80, 24)
+		got := layout.View(80, defaultTestHeight)
+		columns := visibleColumns(got)
 
-		require.NotContains(t, got, "Resize terminal")
-		require.Contains(t, got, "sidebar:")
-		require.Contains(t, got, "content:")
+		require.Equal(t, []string{dims("sidebar", sidebarWidthAt80, defaultTestHeight)}, nonEmptyColumn(columns[0]))
+		require.Equal(t, []string{dims("content", contentWidthAt80, defaultTestHeight)}, nonEmptyColumn(columns[1]))
 	})
 }
 
@@ -125,11 +151,12 @@ func TestMainLayout_View_three_pane_at_wide_width(t *testing.T) {
 	layout := components.NewMainLayout(sidebar, content)
 	layout.NickList = nicklist
 
-	got := layout.View(120, 24)
+	got := layout.View(120, defaultTestHeight)
+	columns := visibleColumns(got)
 
-	require.Contains(t, got, "sidebar:")
-	require.Contains(t, got, "content:")
-	require.Contains(t, got, "nicks:")
+	require.Equal(t, []string{dims("sidebar", sidebarWidthAt120, defaultTestHeight)}, nonEmptyColumn(columns[0]))
+	require.Equal(t, []string{dims("content", contentWidthAt120WithNicks, defaultTestHeight)}, nonEmptyColumn(columns[1]))
+	require.Equal(t, []string{dims("nicks", nickListWidthAt120, defaultTestHeight)}, nonEmptyColumn(columns[2]))
 }
 
 func TestMainLayout_View_hides_nicklist_when_main_too_narrow(t *testing.T) {
@@ -144,13 +171,13 @@ func TestMainLayout_View_hides_nicklist_when_main_too_narrow(t *testing.T) {
 	layout.NickList = nicklist
 
 	// At 80 columns with small stubs everything fits.
-	got := layout.View(80, 24)
-	require.Contains(t, got, "nicks:")
+	got := layout.View(80, defaultTestHeight)
+	require.Equal(t, []string{dims("nicks", nickListWidthAt80, defaultTestHeight)}, nonEmptyColumn(visibleColumns(got)[2]))
 
 	// Toggle it off — should disappear.
 	toggled, _ := layout.Update(components.NickListToggleMsg{})
 	got = toggled.View(80, 24)
-	require.NotContains(t, got, "nicks:")
+	require.Equal(t, 2, len(visibleColumns(got)))
 }
 
 func TestMainLayout_View_nicklist_toggle(t *testing.T) {
@@ -162,22 +189,22 @@ func TestMainLayout_View_nicklist_toggle(t *testing.T) {
 	layout.NickList = nicklist
 
 	// Initially visible at wide width.
-	got := layout.View(120, 24)
-	require.Contains(t, got, "nicks:")
+	got := layout.View(120, defaultTestHeight)
+	require.Equal(t, []string{dims("nicks", nickListWidthAt120, defaultTestHeight)}, nonEmptyColumn(visibleColumns(got)[2]))
 
 	// Toggle off.
 	updated, _ := layout.Update(components.NickListToggleMsg{})
 	layout = updated.(components.MainLayout)
 
-	got = layout.View(120, 24)
-	require.NotContains(t, got, "nicks:")
+	got = layout.View(120, defaultTestHeight)
+	require.Equal(t, 2, len(visibleColumns(got)))
 
 	// Toggle back on.
 	updated, _ = layout.Update(components.NickListToggleMsg{})
 	layout = updated.(components.MainLayout)
 
-	got = layout.View(120, 24)
-	require.Contains(t, got, "nicks:")
+	got = layout.View(120, defaultTestHeight)
+	require.Equal(t, []string{dims("nicks", nickListWidthAt120, defaultTestHeight)}, nonEmptyColumn(visibleColumns(got)[2]))
 }
 
 func TestMainLayout_View_no_nicklist_without_set(t *testing.T) {
@@ -186,10 +213,11 @@ func TestMainLayout_View_no_nicklist_without_set(t *testing.T) {
 
 	layout := components.NewMainLayout(sidebar, content)
 
-	got := layout.View(120, 24)
+	got := layout.View(120, defaultTestHeight)
 
-	require.Contains(t, got, "sidebar:")
-	require.Contains(t, got, "content:")
+	columns := visibleColumns(got)
+	require.Equal(t, []string{dims("sidebar", sidebarWidthAt120, defaultTestHeight)}, nonEmptyColumn(columns[0]))
+	require.Equal(t, []string{dims("content", contentWidthAt120TwoPane, defaultTestHeight)}, nonEmptyColumn(columns[1]))
 }
 
 func TestMainLayout_View_three_pane_fills_width(t *testing.T) {
@@ -263,10 +291,11 @@ func TestMainLayout_View_obs_closed_height_matches(t *testing.T) {
 	}
 
 	layout := components.NewMainLayout(sidebar, content)
-	got := layout.View(120, 24)
+	got := layout.View(120, defaultTestHeight)
 
-	require.Equal(t, 24, lipgloss.Height(got))
-	require.NotContains(t, got, "obs:")
+	require.Equal(t, defaultTestHeight, lipgloss.Height(got))
+	require.Equal(t, []string{dims("sidebar", sidebarWidthAt120, defaultTestHeight)}, nonEmptyColumn(visibleColumns(got)[0]))
+	require.Equal(t, []string{dims("content", contentWidthAt120TwoPane, defaultTestHeight)}, nonEmptyColumn(visibleColumns(got)[1]))
 }
 
 func TestMainLayout_View_obs_open_spans_full_width(t *testing.T) {
@@ -274,16 +303,20 @@ func TestMainLayout_View_obs_open_spans_full_width(t *testing.T) {
 	content := obsStubModel{
 		stubModel: stubModel{label: "content"},
 		obsOpen:   true,
-		obsHeight: 8,
+		obsHeight: obsDrawerHeight,
 	}
 
 	layout := components.NewMainLayout(sidebar, content)
-	got := layout.View(120, 24)
+	got := layout.View(120, defaultTestHeight)
 
-	require.Equal(t, 24, lipgloss.Height(got))
-	require.Contains(t, got, "obs:120x8")
-	require.Contains(t, got, "sidebar:")
-	require.Contains(t, got, "content:")
+	require.Equal(t, defaultTestHeight, lipgloss.Height(got))
+	require.Equal(t, []string{
+		dims("sidebar", sidebarWidthAt120, obsDrawerColumnHeight),
+		dims("obs", 120, obsDrawerHeight),
+	}, nonEmptyColumn(visibleColumns(got)[0]))
+	require.Equal(t, []string{
+		dims("content", contentWidthAt120TwoPane, obsDrawerColumnHeight),
+	}, nonEmptyColumn(visibleColumns(got)[1]))
 }
 
 func TestMainLayout_View_obs_open_reduces_column_height(t *testing.T) {
@@ -291,21 +324,20 @@ func TestMainLayout_View_obs_open_reduces_column_height(t *testing.T) {
 	content := obsStubModel{
 		stubModel: stubModel{label: "content"},
 		obsOpen:   true,
-		obsHeight: 8,
+		obsHeight: obsDrawerHeight,
 	}
 
 	layout := components.NewMainLayout(sidebar, content)
-	got := layout.View(120, 24)
+	got := layout.View(120, defaultTestHeight)
 
-	// The sidebar and content columns should get 24-8=16 height.
-	// Sidebar gets height via its border, but the content label
-	// embeds the dimensions it was given.
-	require.Contains(t, got, "sidebar:")
-	require.Contains(t, got, "content:")
-
-	// The obs drawer gets the full width (120) and its requested
-	// height (8).
-	require.Contains(t, got, "obs:120x8")
+	columns := visibleColumns(got)
+	require.Equal(t, []string{
+		dims("sidebar", sidebarWidthAt120, obsDrawerColumnHeight),
+		dims("obs", 120, obsDrawerHeight),
+	}, nonEmptyColumn(columns[0]))
+	require.Equal(t, []string{
+		dims("content", contentWidthAt120TwoPane, obsDrawerColumnHeight),
+	}, nonEmptyColumn(columns[1]))
 }
 
 func TestMainLayout_KeyBindings_collects_from_children(t *testing.T) {

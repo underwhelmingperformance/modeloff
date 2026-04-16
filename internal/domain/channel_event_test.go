@@ -216,7 +216,7 @@ func TestChannelEvent_JSON_round_trip(t *testing.T) {
 func TestUnmarshalChannelEvent_unknown_type(t *testing.T) {
 	_, err := domain.UnmarshalChannelEvent([]byte(`{"type":"unknown","data":{}}`))
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "unknown channel event type")
+	require.EqualError(t, err, `unknown channel event type: "unknown"`)
 }
 
 func TestUnmarshalChannelEvent_invalid_json(t *testing.T) {
