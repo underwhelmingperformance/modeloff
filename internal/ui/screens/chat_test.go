@@ -80,12 +80,66 @@ func TestChatScreen_Init_empty(t *testing.T) {
 		"Welcome to modeloff",
 		"Connected as",
 		"testuser",
-		"/join #general",
+		"✗", "API key not configured",
 		"/config api-key <value>",
-		"ctrl+d, ctrl+u, ctrl+o",
+		"✗", "No channels joined",
+		"/join #general",
+		"Set an API key first",
+		"^D, ^U, ^O",
 		"No channels",
 		">",
 	)
+}
+
+func TestChatScreen_checklist_api_key_set_no_channels(t *testing.T) {
+	cfgStore := newFakeConfigStore()
+	sess := newTestSessionWithConfigStore(t, cfgStore)
+	sess.SetAPIFactory(func(string, string) (api.Client, error) {
+		return &uitest.FakeAPI{}, nil
+	})
+
+	tm := newChatAppWithConfig(t, sess, cfgStore)
+	tm.WaitFor("API key not configured")
+
+	tm.Submit("/config api-key test-key")
+	tm.WaitFor("Models available")
+}
+
+func TestChatScreen_checklist_channels_exist_no_checklist(t *testing.T) {
+	sess := newTestSession(t)
+	uitest.SeedChannel(t, sess, "#general")
+
+	tm := newChatApp(t, sess)
+	tm.WaitFor("#general")
+
+	view := tm.CurrentView()
+	require.NotContains(t, view, "Welcome to modeloff",
+		"checklist should not appear when channels exist")
+}
+
+func TestChatScreen_checklist_part_last_channel_shows_checklist(t *testing.T) {
+	sess := newTestSession(t)
+	uitest.SeedChannel(t, sess, "#general")
+
+	tm := newChatApp(t, sess)
+	tm.WaitFor("#general")
+
+	tm.Submit("/part")
+	tm.WaitFor("Welcome to modeloff", "✗", "No channels joined")
+}
+
+func TestChatScreen_checklist_api_key_set_updates_live(t *testing.T) {
+	cfgStore := newFakeConfigStore()
+	sess := newTestSessionWithConfigStore(t, cfgStore)
+	sess.SetAPIFactory(func(string, string) (api.Client, error) {
+		return &uitest.FakeAPI{}, nil
+	})
+
+	tm := newChatAppWithConfig(t, sess, cfgStore)
+	tm.WaitFor("Set an API key first")
+
+	tm.Submit("/config api-key test-key")
+	tm.WaitFor("Models available")
 }
 
 func TestChatScreen_send_message(t *testing.T) {

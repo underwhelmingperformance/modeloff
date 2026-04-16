@@ -32,9 +32,11 @@ func (s ChatScreen) handleInitialLoad(msg domain.InitialLoadEvent) (ui.Model, te
 		Kind:    s.activeKind(),
 	}))
 
+	s.checklist.channelCount = s.channels.Len()
+
 	if s.channels.Len() == 0 {
 		cmds = append(cmds, msgCmd(components.SetPlaceholderMsg{
-			Text: welcomeText(s.sess.UserNick()),
+			Text: s.checklist.Render(),
 		}))
 	} else {
 		cmds = append(cmds, msgCmd(components.SetPlaceholderMsg{}))
@@ -175,6 +177,8 @@ func (s ChatScreen) handleJoinEvent(msg domain.JoinEvent) (ui.Model, tea.Cmd) {
 		return s, nil
 	}
 
+	s.checklist.channelCount = s.channels.Len()
+
 	// For user joins, update the sidebar and member list only. The
 	// ChannelFocusEvent from switchChannel is the authoritative
 	// source for active-channel switches, avoiding races when the
@@ -216,6 +220,7 @@ func (s ChatScreen) handlePartEvent(msg domain.PartEvent) (ui.Model, tea.Cmd) {
 	// If the user is leaving, remove the channel.
 	if msg.Nick == s.sess.UserNick() {
 		s.channels.Remove(domain.Channel{Name: msg.Channel})
+		s.checklist.channelCount = s.channels.Len()
 	}
 
 	var cmds []tea.Cmd
@@ -228,7 +233,7 @@ func (s ChatScreen) handlePartEvent(msg domain.PartEvent) (ui.Model, tea.Cmd) {
 		} else {
 			*s.active = ""
 			cmds = append(cmds, msgCmd(components.SetPlaceholderMsg{
-				Text: welcomeText(s.sess.UserNick()),
+				Text: s.checklist.Render(),
 			}))
 		}
 

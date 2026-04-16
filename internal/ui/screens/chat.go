@@ -65,6 +65,7 @@ type ChatScreen struct {
 	active     *domain.ChannelName
 	obs        *observability.Runtime
 	summary    components.MetricsSummaryModel
+	checklist  WelcomeChecklist
 }
 
 // NewChatScreen creates a chat screen backed by the given session.
@@ -93,6 +94,7 @@ func NewChatScreen(ctx context.Context, sess *session.Session, cfgStore config.S
 		liveModels: &liveModels,
 		layout:     layout,
 		keyMap:     components.DefaultChatScreenKeyMap,
+		checklist:  NewWelcomeChecklist(sess.UserNick(), sess.HasAPIKey()),
 	}
 
 	parser, err := chatcmd.NewParser()
@@ -262,6 +264,17 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		text := "OpenRouter API key saved and activated."
 		if msg.Reset {
 			text = "OpenRouter API key cleared."
+		}
+
+		s.checklist.hasAPIKey = !msg.Reset
+
+		if s.channels.Len() == 0 {
+			return s, tea.Batch(
+				s.loadLiveModels(),
+				msgCmd(components.SetPlaceholderMsg{
+					Text: s.checklist.Render(),
+				}),
+			)
 		}
 
 		return s, tea.Batch(

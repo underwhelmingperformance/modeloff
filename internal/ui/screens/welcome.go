@@ -1,30 +1,80 @@
 package screens
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/ui/components"
 	"github.com/laney/modeloff/internal/ui/theme"
 )
 
-// welcomeText returns the styled onboarding text shown in the chat
-// view content area before any channels exist.
-func welcomeText(nick domain.Nick) string {
+// WelcomeChecklist holds state for the reactive onboarding checklist
+// shown in the chat view content area before any channels exist.
+type WelcomeChecklist struct {
+	nick         domain.Nick
+	hasAPIKey    bool
+	channelCount int
+}
+
+// NewWelcomeChecklist creates a checklist with the given initial state.
+func NewWelcomeChecklist(nick domain.Nick, hasAPIKey bool) WelcomeChecklist {
+	return WelcomeChecklist{
+		nick:      nick,
+		hasAPIKey: hasAPIKey,
+	}
+}
+
+// Render produces the styled checklist text used as placeholder
+// content when no channels are open.
+func (w WelcomeChecklist) Render() string {
+	km := components.DefaultSidebarKeyMap
+
 	lines := []string{
 		theme.Info.Render("Welcome to modeloff"),
-		theme.Dim.Render("Connected as ") + theme.UserNick.Render(string(nick)),
+		theme.Dim.Render("Connected as ") + theme.UserNick.Render(string(w.nick)),
 		"",
-		"Start by creating a channel and configuring OpenRouter.",
-		"",
-		theme.Bold.Render("/join #general"),
-		theme.Dim.Render("Create your first channel."),
-		"",
-		theme.Bold.Render("/config api-key <value>"),
-		theme.Dim.Render("Set the API key needed to invite models."),
-		"",
-		theme.Bold.Render("ctrl+d, ctrl+u, ctrl+o"),
-		theme.Dim.Render("Move around the sidebar once you have channels."),
 	}
+
+	// API key status.
+	if w.hasAPIKey {
+		lines = append(lines, theme.Success.Render("✓")+" API key configured")
+	} else {
+		lines = append(lines,
+			theme.Error.Render("✗")+" API key not configured",
+			"  "+theme.Bold.Render("/config api-key <value>"),
+		)
+	}
+
+	lines = append(lines, "")
+
+	// First channel status.
+	if w.channelCount > 0 {
+		lines = append(lines, theme.Success.Render("✓")+fmt.Sprintf(" %d channel(s) joined", w.channelCount))
+	} else {
+		lines = append(lines,
+			theme.Error.Render("✗")+" No channels joined",
+			"  "+theme.Bold.Render("/join #general"),
+		)
+	}
+
+	lines = append(lines, "")
+
+	// Models available status.
+	if w.hasAPIKey {
+		lines = append(lines, theme.Success.Render("✓")+" Models available")
+	} else {
+		lines = append(lines, theme.Dim.Render("  Set an API key first to browse models."))
+	}
+
+	lines = append(lines, "")
+
+	// Sidebar keybinding hints derived from the key map.
+	keys := km.Down.Help().Key + ", " + km.Up.Help().Key + ", " + km.Select.Help().Key
+	lines = append(lines,
+		theme.Bold.Render(keys),
+		theme.Dim.Render("Move around the sidebar once you have channels."),
+	)
 
 	return strings.Join(lines, "\n")
 }
