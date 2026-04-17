@@ -13,13 +13,18 @@ import (
 	orderedmap "github.com/wk8/go-ordered-map/v2"
 )
 
+// InstanceID is a stable per-session identifier for an actor on the
+// server. The human user's instance has an empty InstanceID; every
+// model instance is assigned a unique one via GenerateInstanceID.
+type InstanceID string
+
 // GenerateInstanceID returns a random 8-byte hex string suitable for
 // use as a stable instance identifier.
-func GenerateInstanceID() string {
+func GenerateInstanceID() InstanceID {
 	var b [8]byte
 	_, _ = rand.Read(b[:])
 
-	return hex.EncodeToString(b[:])
+	return InstanceID(hex.EncodeToString(b[:]))
 }
 
 // PersonaOrigin distinguishes how a persona was created.
@@ -119,7 +124,7 @@ func (ch Channel) DisplayName() string {
 // user and model instances share this type. The human user has an
 // empty ModelID.
 type Instance struct {
-	InstanceID string
+	InstanceID InstanceID
 	Nick       Nick
 	ModelID    ModelID
 	Persona    string
@@ -174,80 +179,187 @@ func (m NickMode) IRCMode() string {
 }
 
 // Member pairs a nick with its channel mode for display in the nick
-// list.
+// list. InstanceID is the stable per-session identity that survives
+// nick changes; the human user carries an empty InstanceID.
 type Member struct {
-	Nick Nick
-	Mode NickMode
+	InstanceID InstanceID `json:"instance_id,omitempty"`
+	Nick       Nick       `json:"nick"`
+	Mode       NickMode   `json:"mode"`
 }
 
 func (m Member) String() string {
 	return m.Mode.String() + string(m.Nick)
 }
 
-// allModes lists every NickMode in the order they appear in the
-// tree (highest privilege first).
-var allModes = [...]NickMode{ModeOp, ModeVoice, ModeNone}
-
 // memberLess defines the display order for members: higher modes
 // first (op > voice > none), then alphabetically by nick within
-// each mode.
+// each mode, with InstanceID as a final tiebreaker so that distinct
+// instances that briefly share the same (mode, nick) key do not
+// collide inside the sorted set.
 func memberLess(a, b Member) bool {
 	if a.Mode != b.Mode {
 		return a.Mode > b.Mode
 	}
 
-	return a.Nick < b.Nick
+	if a.Nick != b.Nick {
+		return a.Nick < b.Nick
+	}
+
+	return a.InstanceID < b.InstanceID
 }
 
 // MemberList is a sorted set of channel members ordered by mode
 // then nick. The sort is maintained at insertion time so iteration
-// and positional access are always free of re-sorting.
+// and positional access are always free of re-sorting. A parallel
+// map keyed by InstanceID backs O(1) identity lookups.
 type MemberList struct {
 	members *set.Sorted[Member]
+	byID    map[InstanceID]Member
 }
 
 // NewMemberList creates an empty member list.
 func NewMemberList() MemberList {
-	return MemberList{members: set.NewSorted(memberLess)}
+	return MemberList{
+		members: set.NewSorted(memberLess),
+		byID:    make(map[InstanceID]Member),
+	}
 }
 
-// Add inserts a nick as a regular (unprivileged) member.
-func (ml *MemberList) Add(nick Nick) {
+// ensureInit lazily initialises the underlying storage so that the
+// zero value of MemberList remains usable.
+func (ml *MemberList) ensureInit() {
 	if ml.members == nil {
-		*ml = NewMemberList()
+		ml.members = set.NewSorted(memberLess)
 	}
 
-	ml.members.Insert(Member{Nick: nick, Mode: ModeNone})
+	if ml.byID == nil {
+		ml.byID = make(map[InstanceID]Member)
+	}
 }
 
-// Remove deletes the given member.
+// Add inserts a member identified by instanceID with the given nick
+// as a regular (unprivileged) member. The empty instanceID marks the
+// human user; because storage is keyed by instance id there can only
+// ever be one such entry. Adding with an existing instance id
+// updates the stored nick while preserving the current mode (so
+// add-with-rename is idempotent).
+func (ml *MemberList) Add(instanceID InstanceID, nick Nick) {
+	ml.ensureInit()
+
+	m := Member{InstanceID: instanceID, Nick: nick, Mode: ModeNone}
+
+	if cur, ok := ml.byID[instanceID]; ok {
+		ml.members.Remove(cur)
+		m.Mode = cur.Mode
+	}
+
+	ml.members.Insert(m)
+	ml.byID[instanceID] = m
+}
+
+// Remove deletes the given member. Identity is taken from
+// InstanceID; the Mode and Nick on the argument are ignored so that
+// callers holding a stale mode can still remove a member cleanly.
 func (ml *MemberList) Remove(m Member) {
 	if ml.members == nil {
 		return
 	}
 
-	ml.members.Remove(m)
+	cur, ok := ml.byID[m.InstanceID]
+	if !ok {
+		return
+	}
+
+	ml.members.Remove(cur)
+	delete(ml.byID, m.InstanceID)
 }
 
-// SetMode changes a member's privilege level. This removes and
-// re-inserts the member since mode is part of the sort key.
-func (ml *MemberList) SetMode(nick Nick, mode NickMode) {
+// SetMode changes a member's privilege level by instance id. This
+// removes and re-inserts the member since mode is part of the sort
+// key. Setting the mode of an unknown instance is a no-op.
+func (ml *MemberList) SetMode(instanceID InstanceID, mode NickMode) {
 	if ml.members == nil {
-		*ml = NewMemberList()
+		return
 	}
 
-	if cur, ok := ml.Get(nick); ok {
-		ml.members.Remove(cur)
+	cur, ok := ml.byID[instanceID]
+	if !ok {
+		return
 	}
 
-	ml.members.Insert(Member{Nick: nick, Mode: mode})
+	ml.members.Remove(cur)
+
+	updated := Member{InstanceID: instanceID, Nick: cur.Nick, Mode: mode}
+	ml.members.Insert(updated)
+	ml.byID[instanceID] = updated
 }
 
-// Get finds a member by nick, checking each mode. Returns the
-// member and true if found.
-func (ml MemberList) Get(nick Nick) (Member, bool) {
-	for _, mode := range allModes {
-		if m, ok := ml.members.Get(Member{Nick: nick, Mode: mode}); ok {
+// SetModeByNick is a display-layer convenience that forwards to
+// SetMode after resolving the nick to its instance id. Wire code
+// that only has a nick in hand (e.g. ChanServ-style commands) uses
+// this. It is a no-op if the nick is unknown.
+func (ml *MemberList) SetModeByNick(nick Nick, mode NickMode) {
+	if ml.members == nil {
+		return
+	}
+
+	m, ok := ml.GetByNick(nick)
+	if !ok {
+		return
+	}
+
+	ml.SetMode(m.InstanceID, mode)
+}
+
+// RenameTo updates the stored nick for the given instance id,
+// preserving the existing mode. The underlying sorted set is
+// re-keyed in place (remove + insert) because Nick participates in
+// the sort order. It is a no-op if the instance id is unknown.
+func (ml *MemberList) RenameTo(instanceID InstanceID, newNick Nick) {
+	if ml.members == nil {
+		return
+	}
+
+	cur, ok := ml.byID[instanceID]
+	if !ok {
+		return
+	}
+
+	ml.members.Remove(cur)
+
+	updated := Member{InstanceID: instanceID, Nick: newNick, Mode: cur.Mode}
+	ml.members.Insert(updated)
+	ml.byID[instanceID] = updated
+}
+
+// GetByID returns the member for the given instance id.
+func (ml MemberList) GetByID(instanceID InstanceID) (Member, bool) {
+	if ml.byID == nil {
+		return Member{}, false
+	}
+
+	m, ok := ml.byID[instanceID]
+
+	return m, ok
+}
+
+// HasID reports whether a member exists with the given instance id.
+func (ml MemberList) HasID(instanceID InstanceID) bool {
+	_, ok := ml.GetByID(instanceID)
+
+	return ok
+}
+
+// GetByNick finds a member by display nick. It is intended for
+// display-layer lookups (e.g. resolving a typed command argument);
+// identity-bearing code should prefer GetByID.
+func (ml MemberList) GetByNick(nick Nick) (Member, bool) {
+	if ml.members == nil {
+		return Member{}, false
+	}
+
+	for m := range ml.members.All() {
+		if m.Nick == nick {
 			return m, true
 		}
 	}
@@ -255,9 +367,10 @@ func (ml MemberList) Get(nick Nick) (Member, bool) {
 	return Member{}, false
 }
 
-// Has reports whether the nick is present at any mode.
-func (ml MemberList) Has(nick Nick) bool {
-	_, ok := ml.Get(nick)
+// HasNick reports whether any member currently displays the given
+// nick.
+func (ml MemberList) HasNick(nick Nick) bool {
+	_, ok := ml.GetByNick(nick)
 
 	return ok
 }
@@ -321,9 +434,10 @@ func (ml MemberList) MarshalJSON() ([]byte, error) {
 }
 
 // UnmarshalJSON decodes a JSON array of members into the list. An
-// empty or null array leaves the btree nil so that the zero value
-// round-trips cleanly under reflect.DeepEqual; mutating methods on
-// the resulting list lazily initialise the underlying set.
+// empty or null array leaves the backing storage nil so that the
+// zero value round-trips cleanly under reflect.DeepEqual; mutating
+// methods on the resulting list lazily initialise the underlying
+// storage.
 func (ml *MemberList) UnmarshalJSON(data []byte) error {
 	var members []Member
 	if err := json.Unmarshal(data, &members); err != nil {
@@ -339,6 +453,7 @@ func (ml *MemberList) UnmarshalJSON(data []byte) error {
 
 	for _, m := range members {
 		ml.members.Insert(m)
+		ml.byID[m.InstanceID] = m
 	}
 
 	return nil

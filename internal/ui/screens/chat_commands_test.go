@@ -23,7 +23,7 @@ func (stubAPI) ListModels(context.Context) ([]api.ModelInfo, error) { return nil
 func (stubAPI) SendEvents(
 	context.Context,
 	domain.ModelID,
-	string,
+	domain.InstanceID,
 	string,
 	[]protocol.IRCMessage,
 	[]protocol.IRCMessage,

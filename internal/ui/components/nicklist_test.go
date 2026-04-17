@@ -15,8 +15,13 @@ func members(ms ...domain.Member) domain.MemberList {
 	ml := domain.NewMemberList()
 
 	for _, m := range ms {
-		ml.Add(m.Nick)
-		ml.SetMode(m.Nick, m.Mode)
+		id := m.InstanceID
+		if id == "" {
+			id = domain.InstanceID("inst-" + string(m.Nick))
+		}
+
+		ml.Add(id, m.Nick)
+		ml.SetMode(id, m.Mode)
 	}
 
 	return ml
@@ -77,7 +82,8 @@ func TestNickList_Update_clears_on_empty(t *testing.T) {
 func TestNickList_View_overflow_fits_height(t *testing.T) {
 	ml := domain.NewMemberList()
 	for i := range 20 {
-		ml.Add(domain.Nick(fmt.Sprintf("user%02d", i)))
+		nick := domain.Nick(fmt.Sprintf("user%02d", i))
+		ml.Add(domain.InstanceID(fmt.Sprintf("inst-%02d", i)), nick)
 	}
 
 	nl := components.NewNickList(ml)

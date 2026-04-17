@@ -174,9 +174,10 @@ func TestChatScreen_ignores_join_for_unknown_channel(t *testing.T) {
 
 	// A model joins a channel the user isn't in.
 	tm.Send(domain.JoinEvent{
-		Channel: "#secret",
-		Nick:    "botty",
-		At:      time.Now(),
+		Channel:    "#secret",
+		InstanceID: "bot-1",
+		Nick:       "botty",
+		At:         time.Now(),
 	})
 
 	// Send a subsequent event to #general to ensure the join event
@@ -213,9 +214,10 @@ func TestChatScreen_model_join_does_not_switch_active(t *testing.T) {
 
 	// A model joins #random (which the user is in).
 	tm.Send(domain.JoinEvent{
-		Channel: "#random",
-		Nick:    "botty",
-		At:      time.Now(),
+		Channel:    "#random",
+		InstanceID: "bot-1",
+		Nick:       "botty",
+		At:         time.Now(),
 	})
 
 	// Send a subsequent event to ensure the join event has been processed.

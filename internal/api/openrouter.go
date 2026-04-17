@@ -203,7 +203,7 @@ func toolParams(definitions []ToolDefinition) []openai.ChatCompletionToolUnionPa
 func (c *OpenRouterClient) SendEvents(
 	ctx context.Context,
 	modelID domain.ModelID,
-	selfInstanceID string,
+	selfInstanceID domain.InstanceID,
 	systemPrompt string,
 	history []protocol.IRCMessage,
 	events []protocol.IRCMessage,
@@ -337,7 +337,7 @@ func (c *OpenRouterClient) ContinueWithToolResults(
 
 func buildMessages(
 	systemPrompt string,
-	selfInstanceID string,
+	selfInstanceID domain.InstanceID,
 	history []protocol.IRCMessage,
 	events []protocol.IRCMessage,
 ) []openai.ChatCompletionMessageParamUnion {

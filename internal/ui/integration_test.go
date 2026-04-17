@@ -351,7 +351,7 @@ func (f *integrationAPI) ListModels(context.Context) ([]api.ModelInfo, error) {
 func (f *integrationAPI) SendEvents(
 	ctx context.Context,
 	modelID domain.ModelID,
-	_ string,
+	_ domain.InstanceID,
 	system string,
 	history []protocol.IRCMessage,
 	events []protocol.IRCMessage,
@@ -463,6 +463,10 @@ func advanceConnection(tm *uitest.App, ticks int) {
 
 func seedInstance(t *testing.T, store *storemod.SQLiteStore, inst domain.Instance) {
 	t.Helper()
+
+	if inst.InstanceID == "" {
+		inst.InstanceID = domain.InstanceID("inst-" + string(inst.Nick))
+	}
 
 	require.NoError(t, store.SaveInstance(t.Context(), inst))
 }

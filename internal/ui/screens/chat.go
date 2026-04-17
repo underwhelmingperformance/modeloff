@@ -115,8 +115,11 @@ func NewChatScreen(ctx context.Context, sess *session.Session, cfgStore config.S
 		sess:     sess,
 		cfgStore: cfgStore,
 		channels: set.NewSorted(channelOrder),
+		// Keyed by InstanceID so renames (NickChangeEvent) don't
+		// orphan entries under the old nick. Consumers that want
+		// a nick-ordered presentation sort at the call site.
 		instances: set.NewSorted(func(a, b domain.Instance) bool {
-			return a.Nick < b.Nick
+			return a.InstanceID < b.InstanceID
 		}),
 		active:     &active,
 		liveModels: &liveModels,

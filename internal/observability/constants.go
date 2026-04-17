@@ -5,12 +5,13 @@ package observability
 // OpenTelemetry span attribute keys attached to API and session spans.
 const (
 	// Cross-cutting attributes:
-	AttrOperation = "modeloff.operation"
-	AttrResult    = "modeloff.result"
-	AttrErrorKind = "modeloff.error_kind"
-	AttrChannel   = "modeloff.channel"
-	AttrNick      = "modeloff.nick"
-	AttrModelID   = "modeloff.model_id"
+	AttrOperation  = "modeloff.operation"
+	AttrResult     = "modeloff.result"
+	AttrErrorKind  = "modeloff.error_kind"
+	AttrChannel    = "modeloff.channel"
+	AttrNick       = "modeloff.nick"
+	AttrInstanceID = "modeloff.instance_id"
+	AttrModelID    = "modeloff.model_id"
 
 	// LLM dispatch attributes (session-layer outcomes):
 	AttrChannelKind   = "modeloff.channel_kind"

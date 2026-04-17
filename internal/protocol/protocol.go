@@ -57,12 +57,12 @@ const (
 // originating model instance and is used internally for
 // self-message detection; it is omitted from JSON sent to models.
 type IRCMessage struct {
-	Kind       MessageKind `json:"kind"`
-	From       string      `json:"from"`
-	InstanceID string      `json:"instance_id,omitzero"`
-	Target     string      `json:"target"`
-	Body       string      `json:"body,omitempty"`
-	At         time.Time   `json:"at"`
+	Kind       MessageKind       `json:"kind"`
+	From       string            `json:"from"`
+	InstanceID domain.InstanceID `json:"instance_id,omitzero"`
+	Target     string            `json:"target"`
+	Body       string            `json:"body,omitempty"`
+	At         time.Time         `json:"at"`
 }
 
 // ResponseKind indicates whether the model chose to reply.

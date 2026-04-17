@@ -11,37 +11,46 @@ type MessageEvent struct {
 
 // JoinEvent is emitted when a user or model joins a channel. Created
 // is true when the channel was newly created by this join.
+// InstanceID identifies the joiner; it is empty for the human user.
 type JoinEvent struct {
-	Channel ChannelName
-	Nick    Nick
-	Created bool
-	Message string
-	At      time.Time
+	Channel    ChannelName
+	InstanceID InstanceID
+	Nick       Nick
+	Created    bool
+	Message    string
+	At         time.Time
 }
 
 // PartEvent is emitted when a user or model leaves a channel.
+// InstanceID identifies the leaver; it is empty for the human user.
 type PartEvent struct {
-	Channel ChannelName
-	Nick    Nick
-	Message string
-	At      time.Time
+	Channel    ChannelName
+	InstanceID InstanceID
+	Nick       Nick
+	Message    string
+	At         time.Time
 }
 
 // QuitEvent is emitted when a user or model quits the server,
-// leaving all channels.
+// leaving all channels. InstanceID identifies the quitter; it is
+// empty for the human user.
 type QuitEvent struct {
-	Nick    Nick
-	Message string
-	At      time.Time
+	InstanceID InstanceID
+	Nick       Nick
+	Message    string
+	At         time.Time
 }
 
 // NickChangeEvent is emitted when a user changes their nickname.
-// One event is emitted per channel the user is in.
+// One event is emitted per channel the user is in. InstanceID
+// identifies the renamed actor so membership can be re-keyed in
+// place without identity loss.
 type NickChangeEvent struct {
-	Channel ChannelName
-	OldNick Nick
-	NewNick Nick
-	At      time.Time
+	Channel    ChannelName
+	InstanceID InstanceID
+	OldNick    Nick
+	NewNick    Nick
+	At         time.Time
 }
 
 // TopicChangeEvent is emitted when a channel's topic is changed.
@@ -64,29 +73,33 @@ type ModelInvitedEvent struct {
 // ModelKickedEvent is emitted when a model instance is removed from a
 // channel.
 type ModelKickedEvent struct {
-	Channel ChannelName
-	Nick    Nick
-	By      Nick
-	At      time.Time
+	Channel    ChannelName
+	InstanceID InstanceID
+	Nick       Nick
+	By         Nick
+	At         time.Time
 }
 
 // ModelReplyEvent is emitted when a model instance responds to events
-// in a channel.
+// in a channel. InstanceID identifies the replying instance.
 type ModelReplyEvent struct {
-	Channel  ChannelName
-	Event    ChannelMessage
-	Instance Nick
-	At       time.Time
+	Channel    ChannelName
+	Event      ChannelMessage
+	InstanceID InstanceID
+	Instance   Nick
+	At         time.Time
 }
 
 // ModeChangeEvent is emitted when a member's privilege level changes
-// in a channel.
+// in a channel. InstanceID identifies the affected member; it is
+// empty for the human user.
 type ModeChangeEvent struct {
-	Channel ChannelName
-	Nick    Nick
-	Mode    NickMode
-	Actor   string
-	At      time.Time
+	Channel    ChannelName
+	InstanceID InstanceID
+	Nick       Nick
+	Mode       NickMode
+	Actor      string
+	At         time.Time
 }
 
 // DMOpenedEvent is emitted when a direct message conversation is

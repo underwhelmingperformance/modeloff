@@ -52,7 +52,7 @@ var (
 type ChannelMessage struct {
 	Channel    ChannelName `json:"channel"`
 	From       Nick        `json:"from"`
-	InstanceID string      `json:"instance_id,omitzero"`
+	InstanceID InstanceID  `json:"instance_id,omitzero"`
 	Body       string      `json:"body"`
 	Action     bool        `json:"action,omitempty"`
 	At         time.Time   `json:"at"`

@@ -24,26 +24,28 @@ func TestJoinAs_model_actor(t *testing.T) {
 
 	evt := drainEventSkipping[domain.JoinEvent](t, sess)
 	require.Equal(t, domain.JoinEvent{
-		Channel: "#dev",
-		Nick:    "botty",
-		Created: true,
-		At:      fixedTime,
+		Channel:    "#dev",
+		InstanceID: testMemberID("botty"),
+		Nick:       "botty",
+		Created:    true,
+		At:         fixedTime,
 	}, evt)
 
 	mode := drainEventSkipping[domain.ModeChangeEvent](t, sess)
 	require.Equal(t, domain.ModeChangeEvent{
-		Channel: "#dev",
-		Nick:    "botty",
-		Mode:    domain.ModeVoice,
-		Actor:   "ChanServ",
-		At:      fixedTime,
+		Channel:    "#dev",
+		InstanceID: testMemberID("botty"),
+		Nick:       "botty",
+		Mode:       domain.ModeVoice,
+		Actor:      "ChanServ",
+		At:         fixedTime,
 	}, mode)
 
 	ch, err := s.GetChannel(ctx, "#dev")
 	require.NoError(t, err)
 	modelOnlyMembers := domain.NewMemberList()
-	modelOnlyMembers.Add("botty")
-	modelOnlyMembers.SetMode("botty", domain.ModeVoice)
+	modelOnlyMembers.Add(testMemberID("botty"), "botty")
+	modelOnlyMembers.SetMode(testMemberID("botty"), domain.ModeVoice)
 	requireChannelEqual(t, domain.Channel{
 		Name:    "#dev",
 		Kind:    domain.KindChannel,
@@ -80,10 +82,11 @@ func TestPartAs_model_actor(t *testing.T) {
 
 	evt := drainEvent[domain.PartEvent](t, sess)
 	require.Equal(t, domain.PartEvent{
-		Channel: "#dev",
-		Nick:    "botty",
-		Message: "goodbye",
-		At:      fixedTime,
+		Channel:    "#dev",
+		InstanceID: testMemberID("botty"),
+		Nick:       "botty",
+		Message:    "goodbye",
+		At:         fixedTime,
 	}, evt)
 
 	ch, err := s.GetChannel(ctx, "#dev")
@@ -104,6 +107,35 @@ func TestPartAs_model_actor(t *testing.T) {
 	}, inst)
 }
 
+func TestPartAs_unknown_actor_is_noop(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := t.Context()
+
+	original := domain.Channel{
+		Name:    "#dev",
+		Kind:    domain.KindChannel,
+		Members: testMembers("testuser"),
+		Created: fixedTime,
+	}
+	require.NoError(t, s.SaveChannel(ctx, original))
+
+	// PartAs for a nick that resolves to no stored instance must be
+	// a no-op: no PartEvent emission (the empty-id fallback would
+	// otherwise ask the UI to drop the human's channel), no stored
+	// membership mutation, no instance-channels mutation.
+	require.NoError(t, sess.PartAs(ctx, "ghost", "#dev", "bye"))
+
+	select {
+	case evt := <-sess.Events():
+		t.Fatalf("unexpected event for unknown-actor part: %T %+v", evt, evt)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	updated, err := s.GetChannel(ctx, "#dev")
+	require.NoError(t, err)
+	require.Equal(t, testMembers("testuser").Slice(), updated.Members.Slice())
+}
+
 func TestQuitAs_model_actor(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
@@ -120,9 +152,10 @@ func TestQuitAs_model_actor(t *testing.T) {
 
 	evt := drainEvent[domain.QuitEvent](t, sess)
 	require.Equal(t, domain.QuitEvent{
-		Nick:    "botty",
-		Message: "farewell",
-		At:      fixedTime,
+		InstanceID: testMemberID("botty"),
+		Nick:       "botty",
+		Message:    "farewell",
+		At:         fixedTime,
 	}, evt)
 
 	// Instance should be deleted.
@@ -161,22 +194,27 @@ func TestSendMessageAs_model_actor(t *testing.T) {
 	ctx := t.Context()
 
 	seedChannelWithMembers(t, s, "#dev", "testuser", "botty")
+	seedInstance(t, s, domain.Instance{
+		Nick:    "botty",
+		ModelID: "test/model",
+	})
 
 	require.NoError(t, sess.SendMessageAs(ctx, "botty", "#dev", "hello world"))
 
 	evt := drainEvent[domain.MessageEvent](t, sess)
 	require.Equal(t, domain.MessageEvent{
 		Event: domain.ChannelMessage{
-			Channel: "#dev",
-			From:    "botty",
-			Body:    "hello world",
-			At:      fixedTime,
+			Channel:    "#dev",
+			From:       "botty",
+			InstanceID: testMemberID("botty"),
+			Body:       "hello world",
+			At:         fixedTime,
 		},
 	}, evt)
 
 	msgs := channelMessages(t, s, "#dev")
 	require.Equal(t, []domain.ChannelMessage{
-		{Channel: "#dev", From: "botty", Body: "hello world", At: fixedTime},
+		{Channel: "#dev", From: "botty", InstanceID: testMemberID("botty"), Body: "hello world", At: fixedTime},
 	}, msgs)
 }
 
@@ -224,10 +262,11 @@ func TestKickAs_model_actor(t *testing.T) {
 
 	evt := drainEvent[domain.ModelKickedEvent](t, sess)
 	require.Equal(t, domain.ModelKickedEvent{
-		Channel: "#dev",
-		Nick:    "helper",
-		By:      "botty",
-		At:      fixedTime,
+		Channel:    "#dev",
+		InstanceID: testMemberID("helper"),
+		Nick:       "helper",
+		By:         "botty",
+		At:         fixedTime,
 	}, evt)
 
 	ch, err := s.GetChannel(ctx, "#dev")
@@ -285,8 +324,8 @@ func TestOpenDM_members_have_no_mode(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Equal(t, []domain.Member{
-		{Nick: "botty", Mode: domain.ModeNone},
-		{Nick: "testuser", Mode: domain.ModeNone},
+		{InstanceID: testMemberID("botty"), Nick: "botty", Mode: domain.ModeNone},
+		{InstanceID: "", Nick: "testuser", Mode: domain.ModeNone},
 	}, ch.Members.Slice())
 }
 
@@ -309,8 +348,8 @@ func TestOpenDMAs_members_have_no_mode(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Equal(t, []domain.Member{
-		{Nick: "botty", Mode: domain.ModeNone},
-		{Nick: "helper", Mode: domain.ModeNone},
+		{InstanceID: testMemberID("botty"), Nick: "botty", Mode: domain.ModeNone},
+		{InstanceID: testMemberID("helper"), Nick: "helper", Mode: domain.ModeNone},
 	}, ch.Members.Slice())
 }
 
@@ -426,7 +465,7 @@ func TestJoinAs_DM_no_join_event(t *testing.T) {
 
 	// Seed a DM channel where the user is NOT yet a member.
 	members := domain.NewMemberList()
-	members.Add("botty")
+	members.Add(testMemberID("botty"), "botty")
 
 	require.NoError(t, s.SaveChannel(ctx, domain.Channel{
 		Name:    "botty",
@@ -463,8 +502,8 @@ func TestOpenDMAs_model_to_model(t *testing.T) {
 	require.Equal(t, domain.ChannelName("helper"), ch.Name)
 	require.Equal(t, domain.KindDM, ch.Kind)
 	require.Equal(t, []domain.Member{
-		{Nick: "botty", Mode: domain.ModeNone},
-		{Nick: "helper", Mode: domain.ModeNone},
+		{InstanceID: testMemberID("botty"), Nick: "botty", Mode: domain.ModeNone},
+		{InstanceID: testMemberID("helper"), Nick: "helper", Mode: domain.ModeNone},
 	}, ch.Members.Slice())
 
 	// Both instances should have the DM channel attached.
@@ -533,10 +572,11 @@ func TestOpenDMAs_model_to_model_message_dispatches(t *testing.T) {
 	evt := drainEvent[domain.MessageEvent](t, sess)
 	require.Equal(t, domain.MessageEvent{
 		Event: domain.ChannelMessage{
-			Channel: "helper",
-			From:    "botty",
-			Body:    "hey there",
-			At:      fixedTime,
+			Channel:    "helper",
+			From:       "botty",
+			InstanceID: testMemberID("botty"),
+			Body:       "hey there",
+			At:         fixedTime,
 		},
 	}, evt)
 
@@ -551,7 +591,7 @@ func TestOpenDMAs_model_to_model_message_dispatches(t *testing.T) {
 
 	msgs := channelMessages(t, s, "helper")
 	require.Equal(t, []domain.ChannelMessage{
-		{Channel: "helper", From: "botty", Body: "hey there", At: fixedTime},
+		{Channel: "helper", From: "botty", InstanceID: testMemberID("botty"), Body: "hey there", At: fixedTime},
 	}, msgs)
 }
 
@@ -574,7 +614,7 @@ func TestJoinAs_normalises_channel_prefix(t *testing.T) {
 	// Channel should exist with the normalised name.
 	ch, err := s.GetChannel(ctx, "#modeloff")
 	require.NoError(t, err)
-	require.True(t, ch.Members.Has("botty"))
+	require.True(t, ch.Members.HasNick("botty"))
 
 	// The bare name should not exist.
 	_, err = s.GetChannel(ctx, "modeloff")
@@ -609,18 +649,18 @@ func TestJoinAs_user_new_channel_emits_join_and_mode(t *testing.T) {
 
 	joinEvt := drainEvent[domain.JoinEvent](t, sess)
 	require.Equal(t, domain.JoinEvent{
-		Channel: "#dev", Nick: "testuser", Created: true, At: fixedTime,
+		Channel: "#dev", InstanceID: "", Nick: "testuser", Created: true, At: fixedTime,
 	}, joinEvt)
 
 	modeEvt := drainEventSkipping[domain.ModeChangeEvent](t, sess)
 	require.Equal(t, domain.ModeChangeEvent{
-		Channel: "#dev", Nick: "testuser", Mode: domain.ModeOp, Actor: "ChanServ", At: fixedTime,
+		Channel: "#dev", InstanceID: "", Nick: "testuser", Mode: domain.ModeOp, Actor: "ChanServ", At: fixedTime,
 	}, modeEvt)
 
 	ch, err := s.GetChannel(ctx, "#dev")
 	require.NoError(t, err)
 
-	m, ok := ch.Members.Get("testuser")
+	m, ok := ch.Members.GetByID("")
 	require.True(t, ok)
 	require.Equal(t, domain.ModeOp, m.Mode)
 }
@@ -643,12 +683,12 @@ func TestJoinAs_user_existing_channel_with_topic(t *testing.T) {
 
 	joinEvt := drainEvent[domain.JoinEvent](t, sess)
 	require.Equal(t, domain.JoinEvent{
-		Channel: "#dev", Nick: "testuser", Created: false, At: fixedTime,
+		Channel: "#dev", InstanceID: "", Nick: "testuser", Created: false, At: fixedTime,
 	}, joinEvt)
 
 	modeEvt := drainEventSkipping[domain.ModeChangeEvent](t, sess)
 	require.Equal(t, domain.ModeChangeEvent{
-		Channel: "#dev", Nick: "testuser", Mode: domain.ModeOp, Actor: "ChanServ", At: fixedTime,
+		Channel: "#dev", InstanceID: "", Nick: "testuser", Mode: domain.ModeOp, Actor: "ChanServ", At: fixedTime,
 	}, modeEvt)
 
 	topicEvt := drainEventSkipping[domain.TopicInfoEvent](t, sess)
@@ -710,11 +750,12 @@ func TestJoinAs_model_voice_only_no_topic(t *testing.T) {
 	// the user on user joins.
 	mode := drainEventSkipping[domain.ModeChangeEvent](t, sess)
 	require.Equal(t, domain.ModeChangeEvent{
-		Channel: "#dev",
-		Nick:    "botty",
-		Mode:    domain.ModeVoice,
-		Actor:   "ChanServ",
-		At:      fixedTime,
+		Channel:    "#dev",
+		InstanceID: testMemberID("botty"),
+		Nick:       "botty",
+		Mode:       domain.ModeVoice,
+		Actor:      "ChanServ",
+		At:         fixedTime,
 	}, mode)
 
 	// Drain remaining dispatch events triggered by the join.

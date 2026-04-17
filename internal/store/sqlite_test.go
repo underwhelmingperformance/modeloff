@@ -19,7 +19,7 @@ var testTime = time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC)
 func storeTestMembers(nicks ...domain.Nick) domain.MemberList {
 	ml := domain.NewMemberList()
 	for _, nick := range nicks {
-		ml.Add(nick)
+		ml.Add(domain.InstanceID("inst-"+string(nick)), nick)
 	}
 
 	return ml

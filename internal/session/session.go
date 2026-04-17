@@ -209,7 +209,7 @@ func (s *Session) openStatusChannel(ctx context.Context) error {
 	channel, err := s.store.GetChannel(ctx, domain.StatusChannelName)
 	if err != nil {
 		members := domain.NewMemberList()
-		members.Add(userNick)
+		members.Add("", userNick)
 
 		channel = domain.Channel{
 			Name:    domain.StatusChannelName,
@@ -217,11 +217,11 @@ func (s *Session) openStatusChannel(ctx context.Context) error {
 			Members: members,
 			Created: s.connectedAt,
 		}
-	} else if !channel.Members.Has(userNick) {
-		channel.Members.Add(userNick)
+	} else if !channel.Members.HasID("") {
+		channel.Members.Add("", userNick)
 	}
 
-	channel.Members.SetMode(userNick, domain.ModeOp)
+	channel.Members.SetMode("", domain.ModeOp)
 
 	if err := s.store.SaveChannel(ctx, channel); err != nil {
 		return fmt.Errorf("save status channel: %w", err)
@@ -232,16 +232,18 @@ func (s *Session) openStatusChannel(ctx context.Context) error {
 	})
 
 	s.emitUIOnly(domain.JoinEvent{
-		Channel: domain.StatusChannelName,
-		Nick:    userNick,
-		At:      s.connectedAt,
+		Channel:    domain.StatusChannelName,
+		InstanceID: "",
+		Nick:       userNick,
+		At:         s.connectedAt,
 	})
 	s.emitUIOnly(domain.ModeChangeEvent{
-		Channel: domain.StatusChannelName,
-		Nick:    userNick,
-		Mode:    domain.ModeOp,
-		Actor:   "ChanServ",
-		At:      s.connectedAt,
+		Channel:    domain.StatusChannelName,
+		InstanceID: "",
+		Nick:       userNick,
+		Mode:       domain.ModeOp,
+		Actor:      "ChanServ",
+		At:         s.connectedAt,
 	})
 
 	return nil
@@ -285,10 +287,8 @@ func (s *Session) cleanupUncleanShutdown(ctx context.Context) error {
 		return fmt.Errorf("list channels: %w", err)
 	}
 
-	userNick := s.userSnapshot().Nick
-
 	for _, ch := range channels {
-		member, ok := ch.Members.Get(userNick)
+		member, ok := ch.Members.GetByID("")
 		if !ok {
 			continue
 		}
@@ -347,6 +347,15 @@ func (s *Session) HasAPIKey() bool {
 // UserNick returns the current user nickname.
 func (s *Session) UserNick() domain.Nick {
 	return s.userSnapshot().Nick
+}
+
+// UserInstanceID returns the stable identity of the human user. For
+// the human user this is the zero InstanceID; event handlers that
+// compare against it still identify the user correctly because
+// JoinEvent, PartEvent and friends carry the same zero value for
+// user-origin events.
+func (s *Session) UserInstanceID() domain.InstanceID {
+	return s.userSnapshot().InstanceID
 }
 
 // UserJoinedAt returns the time the user joined the given channel,
@@ -421,7 +430,7 @@ func (s *Session) Quit(ctx context.Context, message string) (retErr error) {
 			continue
 		}
 
-		member, ok := channel.Members.Get(userNick)
+		member, ok := channel.Members.GetByID("")
 		if !ok {
 			continue
 		}
@@ -643,9 +652,9 @@ func (s *Session) attachInstanceToChannel(
 		return fmt.Errorf("save instance: %w", err)
 	}
 
-	isNew := !channel.Members.Has(inst.Nick)
+	isNew := !channel.Members.HasID(inst.InstanceID)
 	if isNew {
-		channel.Members.Add(inst.Nick)
+		channel.Members.Add(inst.InstanceID, inst.Nick)
 	}
 
 	if err := s.store.SaveChannel(ctx, channel); err != nil {
@@ -669,7 +678,7 @@ func (s *Session) attachInstanceToChannel(
 	})
 
 	if isNew {
-		channel.Members.SetMode(inst.Nick, domain.ModeVoice)
+		channel.Members.SetMode(inst.InstanceID, domain.ModeVoice)
 
 		if err := s.store.SaveChannel(ctx, channel); err != nil {
 			return fmt.Errorf("save channel after mode: %w", err)
@@ -684,11 +693,12 @@ func (s *Session) attachInstanceToChannel(
 		})
 
 		s.emit(ctx, domain.ModeChangeEvent{
-			Channel: ch,
-			Nick:    inst.Nick,
-			Mode:    domain.ModeVoice,
-			Actor:   "ChanServ",
-			At:      now,
+			Channel:    ch,
+			InstanceID: inst.InstanceID,
+			Nick:       inst.Nick,
+			Mode:       domain.ModeVoice,
+			Actor:      "ChanServ",
+			At:         now,
 		})
 	}
 
@@ -889,14 +899,16 @@ func (s *Session) OpenDM(ctx context.Context, nick domain.Nick) (domain.Channel,
 		return domain.Channel{}, false, fmt.Errorf("get instance: %w", err)
 	}
 
+	span.SetAttributes(attribute.String(observability.AttrInstanceID, string(inst.InstanceID)))
+
 	name := domain.ChannelName(nick)
 
 	ch, err := s.store.GetChannel(ctx, name)
 	created := false
 	if err != nil {
 		members := domain.NewMemberList()
-		members.Add(s.userSnapshot().Nick)
-		members.Add(nick)
+		members.Add("", s.userSnapshot().Nick)
+		members.Add(inst.InstanceID, nick)
 
 		ch = domain.Channel{
 			Name:    name,
@@ -1207,7 +1219,7 @@ func (s *Session) dispatchToInstances(
 	return replies, errors.Join(errs...)
 }
 
-func filterSelfEvents(events []protocol.IRCMessage, instanceID string) []protocol.IRCMessage {
+func filterSelfEvents(events []protocol.IRCMessage, instanceID domain.InstanceID) []protocol.IRCMessage {
 	if instanceID == "" {
 		return events
 	}
@@ -1235,6 +1247,8 @@ func (s *Session) dispatchToInstance(
 		"session.dispatch_to_instance",
 		attribute.String(observability.AttrOperation, "session.dispatch_to_instance"),
 		attribute.String(observability.AttrModelID, string(inst.ModelID)),
+		attribute.String(observability.AttrNick, string(inst.Nick)),
+		attribute.String(observability.AttrInstanceID, string(inst.InstanceID)),
 		attribute.String(observability.AttrChannelKind, channelKindName(channel.Kind)),
 	)
 	defer instanceSpan.End()
@@ -1369,7 +1383,7 @@ func (s *Session) buildReplies(
 	ctx context.Context,
 	channelName domain.ChannelName,
 	nick domain.Nick,
-	instanceID string,
+	instanceID domain.InstanceID,
 	parts []protocol.ReplyPart,
 ) []domain.ModelReplyEvent {
 	var replies []domain.ModelReplyEvent
@@ -1393,10 +1407,11 @@ func (s *Session) buildReplies(
 		s.appendEvent(ctx, channelName, cm)
 
 		replies = append(replies, domain.ModelReplyEvent{
-			Channel:  channelName,
-			Event:    cm,
-			Instance: nick,
-			At:       now,
+			Channel:    channelName,
+			Event:      cm,
+			InstanceID: instanceID,
+			Instance:   nick,
+			At:         now,
 		})
 	}
 
@@ -1406,31 +1421,40 @@ func (s *Session) buildReplies(
 // removeInstanceFromChannel removes a model instance from a single
 // channel's membership and updates the store. Used for model-initiated
 // part/quit.
-func (s *Session) removeInstanceFromChannel(ctx context.Context, nick domain.Nick, ch domain.ChannelName) {
+func (s *Session) removeInstanceFromChannel(ctx context.Context, instanceID domain.InstanceID, nick domain.Nick, ch domain.ChannelName) {
 	channel, err := s.store.GetChannel(ctx, ch)
 	if err != nil {
-		slog.Default().ErrorContext(ctx, "remove instance: get channel", "nick", nick, "channel", ch, "error", err)
+		slog.Default().ErrorContext(ctx, "remove instance: get channel",
+			"instance_id", string(instanceID), "nick", nick, "channel", ch, "error", err)
 		return
 	}
 
-	if m, ok := channel.Members.Get(nick); ok {
+	if m, ok := channel.Members.GetByID(instanceID); ok {
 		channel.Members.Remove(m)
 	}
 
 	if err := s.store.SaveChannel(ctx, channel); err != nil {
-		slog.Default().ErrorContext(ctx, "remove instance: save channel", "nick", nick, "channel", ch, "error", err)
+		slog.Default().ErrorContext(ctx, "remove instance: save channel",
+			"instance_id", string(instanceID), "nick", nick, "channel", ch, "error", err)
 	}
 
+	// The store indexes instances by nick today; rekeying it on
+	// InstanceID is deferred (Dispatch-C-shaped store-layer work), so
+	// the lookup here is intentionally by the display nick even
+	// though identity elsewhere in the session flows through
+	// instanceID.
 	inst, err := s.store.GetInstance(ctx, nick)
 	if err != nil {
-		slog.Default().ErrorContext(ctx, "remove instance: get instance", "nick", nick, "channel", ch, "error", err)
+		slog.Default().ErrorContext(ctx, "remove instance: get instance",
+			"instance_id", string(instanceID), "nick", nick, "channel", ch, "error", err)
 		return
 	}
 
 	inst.Channels.Delete(ch)
 
 	if err := s.store.SaveInstance(ctx, inst); err != nil {
-		slog.Default().ErrorContext(ctx, "remove instance: save instance", "nick", nick, "channel", ch, "error", err)
+		slog.Default().ErrorContext(ctx, "remove instance: save instance",
+			"instance_id", string(instanceID), "nick", nick, "channel", ch, "error", err)
 	}
 }
 
@@ -1675,6 +1699,8 @@ func (s *Session) dispatchToInstanceInBackground(
 			attribute.String(observability.AttrOperation, "session.dispatch_to_instance_background"),
 			attribute.String(observability.AttrChannel, string(ch)),
 			attribute.String(observability.AttrModelID, string(inst.ModelID)),
+			attribute.String(observability.AttrNick, string(inst.Nick)),
+			attribute.String(observability.AttrInstanceID, string(inst.InstanceID)),
 		)
 		defer span.End()
 		defer s.emitUIOnly(domain.DispatchDoneEvent{Channel: ch})

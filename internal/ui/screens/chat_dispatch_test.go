@@ -291,3 +291,63 @@ func msgsTypes(msgs []tea.Msg) []string {
 
 	return types
 }
+
+// TestChatScreen_NickChange_then_Quit_removes_instance guards the
+// invariant that renaming an instance (via NickChangeEvent) doesn't
+// orphan its entry in s.instances. The set is keyed by InstanceID, so
+// a later QuitEvent with only the new nick but the same InstanceID
+// still finds and removes the entry cleanly.
+func TestChatScreen_NickChange_then_Quit_removes_instance(t *testing.T) {
+	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil)
+	require.NoError(t, err)
+	*screen.active = "#general"
+
+	now := time.Now()
+
+	// Invite a model so s.instances has one entry.
+	_, _ = screen.handleModelInvitedEvent(domain.ModelInvitedEvent{
+		Channel: "#general",
+		Instance: domain.Instance{
+			InstanceID: "bot-1",
+			Nick:       "oldnick",
+			ModelID:    "test/model",
+		},
+		By: "testuser",
+		At: now,
+	})
+
+	require.Equal(t, []domain.Instance{{
+		InstanceID: "bot-1",
+		Nick:       "oldnick",
+		ModelID:    "test/model",
+	}}, screen.instances.Items())
+
+	// The bot renames to newnick. Per-channel event, InstanceID is
+	// the stable identity; the entry in s.instances should stay
+	// under its InstanceID, but its Nick should sync to newnick.
+	_, _ = screen.handleNickChangeEvent(domain.NickChangeEvent{
+		Channel:    "#general",
+		InstanceID: "bot-1",
+		OldNick:    "oldnick",
+		NewNick:    "newnick",
+		At:         now,
+	})
+
+	require.Equal(t, []domain.Instance{{
+		InstanceID: "bot-1",
+		Nick:       "newnick",
+		ModelID:    "test/model",
+	}}, screen.instances.Items(),
+		"nick change should sync the entry's Nick under its InstanceID")
+
+	// Quit under the new nick (but same InstanceID) cleanly removes
+	// the instance.
+	_, _ = screen.handleQuitEvent(domain.QuitEvent{
+		InstanceID: "bot-1",
+		Nick:       "newnick",
+		At:         now,
+	})
+
+	require.Empty(t, screen.instances.Items(),
+		"quit keyed by InstanceID should remove the instance regardless of the nick carried on the event")
+}

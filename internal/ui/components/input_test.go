@@ -484,7 +484,7 @@ func inputBarWithNicks(nicks []domain.Nick) ui.Model {
 	members := domain.NewMemberList()
 
 	for _, n := range nicks {
-		members.Add(n)
+		members.Add(domain.InstanceID("inst-"+string(n)), n)
 	}
 
 	var m ui.Model = components.NewInputBar("")
@@ -655,8 +655,8 @@ func TestInputBar_NickListUpdatedMsg_enables_nick_completion(t *testing.T) {
 	var m ui.Model = components.NewInputBar("")
 
 	members := domain.NewMemberList()
-	members.Add("alice")
-	members.Add("bob")
+	members.Add("inst-alice", "alice")
+	members.Add("inst-bob", "bob")
 
 	m, _ = m.Update(components.NickListUpdatedMsg{Members: members})
 	m = typeText(t, m, "al")
