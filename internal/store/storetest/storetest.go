@@ -23,7 +23,7 @@ func NewMemoryStore(t testing.TB) *store.SQLiteStore {
 
 	db.SetMaxOpenConns(1)
 
-	s, err := store.NewSQLiteStore(db)
+	s, err := store.NewSQLiteStore(t.Context(), db)
 	if err != nil {
 		_ = db.Close()
 		t.Fatal("create test store:", err)

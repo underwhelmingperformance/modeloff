@@ -15,13 +15,15 @@ func TestChatScreen_semantic_regions_expose_sidebar_and_chat_content(t *testing.
 	uitest.SeedChannel(t, sess, "#random")
 
 	tm := newChatApp(t, sess)
-	tm.WaitFor("#random")
+	// Wait for the startup focus-restore to settle so the rendered
+	// content column carries the banner from the active channel.
+	tm.WaitFor("Created channel #random")
 
 	body, status := splitBodyAndStatus(tm.CurrentView())
 	columns := uitest.VisibleColumns(body)
 	require.Equal(t, 3, len(columns))
 
-	require.Equal(t, []string{"Channels", "#general (2)", "▸#random (2)"}, uitest.NonEmptyColumn(columns[0]))
+	require.Equal(t, []string{"Channels", "#general", "▸#random"}, uitest.NonEmptyColumn(columns[0]))
 
 	content := make([]string, 0)
 	for _, line := range uitest.NonEmptyColumn(columns[1]) {

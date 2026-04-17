@@ -314,20 +314,18 @@ func TestApp_unread_counts_clear_when_visiting_channel_with_teatest(t *testing.T
 	uitest.SeedChannel(t, sess, "#random")
 
 	require.NoError(t, sess.SendMessage(t.Context(), "#general", "general unread"))
-	uitest.DrainEvents(sess)
 
 	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore)
 	require.NoError(t, err)
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen))
-	// Unread count includes all events: JoinEvent + ModeChangeEvent + ChannelMessage.
-	tm.WaitFor("#general (3)", "#random")
+	tm.WaitFor("#general", "#random")
 
 	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlU})
 	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlO})
 	tm.WaitFor("general", "unread")
 
-	require.Equal(t, []string{"Channels", "▸#general", "#random (2)"}, sidebarColumn(tm.CurrentView()))
+	require.Equal(t, []string{"Channels", "▸#general", "#random"}, sidebarColumn(tm.CurrentView()))
 }
 
 func TestApp_input_history_and_sidebar_shortcuts_with_teatest(t *testing.T) {
@@ -360,7 +358,7 @@ func TestApp_input_history_and_sidebar_shortcuts_with_teatest(t *testing.T) {
 	tm.WaitFor("general msg")
 
 	view := tm.CurrentView()
-	require.Equal(t, []string{"Channels", "▸#general", "#random (2)"}, sidebarColumn(view))
+	require.Equal(t, []string{"Channels", "▸#general", "#random"}, sidebarColumn(view))
 	// The typed-but-unsent draft must survive a sidebar-driven channel
 	// switch.
 	require.Contains(t, ansi.Strip(view), "draft-only",
@@ -388,7 +386,7 @@ func TestApp_ctrl_arrow_scroll_preserves_draft_with_teatest(t *testing.T) {
 
 	view := tm.CurrentView()
 	stripped := ansi.Strip(view)
-	require.Equal(t, []string{"Channels", "▸#general (32)"}, sidebarColumn(view))
+	require.Equal(t, []string{"Channels", "▸#general"}, sidebarColumn(view))
 	// The typed draft must survive a Ctrl+Up viewport scroll.
 	require.Contains(t, stripped, "draft-only",
 		"draft text should remain in the input bar after scrolling")

@@ -26,7 +26,7 @@ func TestChatScreen_PartEvent_leaving_active_switches_channel(t *testing.T) {
 	view := tm.CurrentView()
 	body, _ := splitBodyAndStatus(view)
 	columns := uitest.VisibleColumns(body)
-	require.Equal(t, []string{"Channels", "▸#general (2)"}, uitest.NonEmptyColumn(columns[0]))
+	require.Equal(t, []string{"Channels", "▸#general"}, uitest.NonEmptyColumn(columns[0]))
 	require.Equal(t, []string{
 		"*** Created channel #general",
 		"*** ChanServ sets mode +o testuser",
@@ -57,7 +57,11 @@ func TestChatScreen_PartEvent_leaving_non_active_keeps_active(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#random")
 
 	tm := newChatApp(t, sess)
-	tm.WaitFor("#random")
+	// Wait for the startup focus-restore (Init refocuses the last-seen
+	// channel asynchronously) to settle before driving a channel
+	// switch, so the test's explicit ChannelFocusEvent isn't raced by
+	// the session's own FocusChannelEvent replay.
+	tm.WaitFor("Created channel #random")
 
 	tm.Send(domain.ChannelFocusEvent{Channel: "#general"})
 	tm.WaitFor("Created channel #general")
@@ -71,7 +75,7 @@ func TestChatScreen_PartEvent_leaving_non_active_keeps_active(t *testing.T) {
 	// Active channel should remain #general since we parted #random.
 	view := tm.CurrentView()
 	body, _ := splitBodyAndStatus(view)
-	require.Equal(t, []string{"Channels", "▸#general", "#random (2)"}, uitest.NonEmptyColumn(uitest.VisibleColumns(body)[0]))
+	require.Equal(t, []string{"Channels", "▸#general", "#random"}, uitest.NonEmptyColumn(uitest.VisibleColumns(body)[0]))
 }
 
 func TestChatScreen_TopicChangeEvent_different_channel(t *testing.T) {
@@ -80,7 +84,10 @@ func TestChatScreen_TopicChangeEvent_different_channel(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#random")
 
 	tm := newChatApp(t, sess)
-	tm.WaitFor("#random")
+	// Wait for the startup focus-restore on the last-seeded channel
+	// before driving our own ChannelFocusEvent, otherwise the two
+	// focuses race.
+	tm.WaitFor("Created channel #random")
 
 	tm.Send(domain.ChannelFocusEvent{Channel: "#general"})
 	tm.WaitFor("Created channel #general")
@@ -109,7 +116,10 @@ func TestChatScreen_QuitEvent_shows_quit_message(t *testing.T) {
 	uitest.DrainEvents(sess)
 
 	tm := newChatApp(t, sess)
-	tm.WaitFor("#general")
+	// Wait for focus-restore to settle before driving the QuitEvent —
+	// handleQuitEvent only emits the quit banner when an active
+	// channel is set.
+	tm.WaitFor("Created channel #general")
 
 	tm.Send(domain.QuitEvent{
 		Nick:    "fakenick",
@@ -128,7 +138,9 @@ func TestChatScreen_QuitEvent_removes_instance_from_nick_list(t *testing.T) {
 	uitest.DrainEvents(sess)
 
 	tm := newChatApp(t, sess)
-	tm.WaitFor("#general", "fakenick")
+	// Wait for focus-restore to settle so handleQuitEvent has an
+	// active channel to render the quit banner against.
+	tm.WaitFor("Created channel #general", "fakenick")
 
 	tm.Send(domain.QuitEvent{
 		Nick:    "fakenick",
@@ -155,7 +167,10 @@ func TestChatScreen_ignores_join_for_unknown_channel(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#general")
 
 	tm := newChatApp(t, sess)
-	tm.WaitFor("#general")
+	// Wait for focus-restore to settle so subsequent MessageEvents for
+	// #general render in the active channel rather than accruing as
+	// unread.
+	tm.WaitFor("Created channel #general")
 
 	// A model joins a channel the user isn't in.
 	tm.Send(domain.JoinEvent{
@@ -179,7 +194,7 @@ func TestChatScreen_ignores_join_for_unknown_channel(t *testing.T) {
 	// The sidebar should NOT show #secret.
 	view := tm.CurrentView()
 	body, _ := splitBodyAndStatus(view)
-	require.Equal(t, []string{"Channels", "▸#general (2)"}, uitest.NonEmptyColumn(uitest.VisibleColumns(body)[0]))
+	require.Equal(t, []string{"Channels", "▸#general"}, uitest.NonEmptyColumn(uitest.VisibleColumns(body)[0]))
 }
 
 func TestChatScreen_model_join_does_not_switch_active(t *testing.T) {
@@ -188,7 +203,9 @@ func TestChatScreen_model_join_does_not_switch_active(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#random")
 
 	tm := newChatApp(t, sess)
-	tm.WaitFor("#random")
+	// Wait for startup focus-restore to settle before driving our own
+	// ChannelFocusEvent, otherwise the two focuses race.
+	tm.WaitFor("Created channel #random")
 
 	// Switch to #general so it's the active channel.
 	tm.Send(domain.ChannelFocusEvent{Channel: "#general"})
@@ -231,10 +248,11 @@ func TestChatScreen_rapid_switch_does_not_revert(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#chat")
 
 	tm := newChatApp(t, sess)
-	tm.WaitFor("#chat")
-
-	// Switch to #chat so it's the active channel.
-	tm.Send(domain.ChannelFocusEvent{Channel: "#chat"})
+	// Wait for startup focus-restore to settle: #chat was seeded last,
+	// so Init's LastChannel+FocusChannel path lands on #chat. The
+	// explicit focus below used to drive that transition in the old
+	// Init flow; now it would just replay against the already-active
+	// channel.
 	tm.WaitFor("Created channel #chat")
 
 	// Simulate rapid switch: JoinEvents from two switches arrive
@@ -282,7 +300,9 @@ func TestChatScreen_focus_new_channel_before_join_event(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#general")
 
 	tm := newChatApp(t, sess)
-	tm.WaitFor("#general")
+	// Wait for startup focus-restore to settle so the subsequent focus
+	// to #newchannel isn't raced by the session's own FocusChannelEvent.
+	tm.WaitFor("Created channel #general")
 
 	// ChannelFocusEvent for a channel that hasn't been joined yet.
 	// This can happen when /join triggers ChannelFocusEvent before
@@ -293,7 +313,7 @@ func TestChatScreen_focus_new_channel_before_join_event(t *testing.T) {
 	view := tm.CurrentView()
 	body, _ := splitBodyAndStatus(view)
 	columns := uitest.VisibleColumns(body)
-	require.Equal(t, []string{"Channels", "#general (2)", "▸#newchannel"}, uitest.NonEmptyColumn(columns[0]),
+	require.Equal(t, []string{"Channels", "#general", "▸#newchannel"}, uitest.NonEmptyColumn(columns[0]),
 		"new channel should appear in the sidebar")
 	require.Equal(t, []string{
 		"No messages yet",
@@ -308,7 +328,8 @@ func TestChatScreen_MessageEvent_inactive_channel(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#random")
 
 	tm := newChatApp(t, sess)
-	tm.WaitFor("#random")
+	// Wait for startup focus-restore to settle before switching.
+	tm.WaitFor("Created channel #random")
 
 	// Switch to #general via ChannelFocusEvent (the authoritative
 	// channel-switch mechanism).

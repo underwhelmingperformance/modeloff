@@ -13,6 +13,8 @@ import (
 	"log/slog"
 	"math/big"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -37,22 +39,39 @@ import (
 // be large enough that normal event bursts (join + mode change, message
 // + dispatch started/done) don't block callers. Anything that writes
 // to this channel without a consumer draining it risks deadlock.
-const eventBufSize = 64
+//
+// The autojoin burst is the dominant dimensioning case: for each
+// autojoined channel we emit a "Joining …" status notice, a JoinEvent,
+// a ModeChangeEvent, and sometimes a TopicInfoEvent. At 256 we have
+// headroom for roughly 60 channels of autojoin before the UI pump
+// needs to catch up, which is well beyond any realistic user's list.
+const eventBufSize = 256
 
 // Session is the backend coordinator. It bridges the UI layer and
 // the underlying stores and API client.
+//
+// Concurrency: the mutable per-user state (nick + joined-channels list)
+// is held behind an atomic.Pointer[domain.Instance]. Readers load the
+// current *Instance once and treat it as frozen; writers build a new
+// *Instance with the mutation applied and swap. Store I/O and event
+// emission happen without the pointer held, so the UI goroutine never
+// blocks on a mutation in flight.
 type Session struct {
 	store  store.Store
 	memory memory.Store
 	api    api.Client
 	tools  *ToolRegistry
 
-	user       *domain.Instance
+	user       atomic.Pointer[domain.Instance]
 	apiKey     string
 	smallModel domain.ModelID
 	factory    func(apiKey, baseURL string) (api.Client, error)
 	now        func() time.Time
 	events     chan domain.SessionEvent
+
+	connectedC    chan struct{}
+	connectedOnce sync.Once
+	connectedAt   time.Time
 
 	supportedModels      map[domain.ModelID]struct{}
 	supportedModelsReady bool
@@ -71,19 +90,23 @@ func New(
 		smallModel = config.DefaultSmallModel
 	}
 
-	return &Session{
+	sess := &Session{
 		store:      s,
 		memory:     m,
 		api:        a,
 		apiKey:     strings.TrimSpace(apiKey),
 		smallModel: smallModel,
-		user: &domain.Instance{
-			Nick:     userNick,
-			Channels: orderedmap.New[domain.ChannelName, time.Time](),
-		},
-		now:    time.Now,
-		events: make(chan domain.SessionEvent, eventBufSize),
+		now:        time.Now,
+		events:     make(chan domain.SessionEvent, eventBufSize),
+		connectedC: make(chan struct{}),
 	}
+
+	sess.user.Store(&domain.Instance{
+		Nick:     userNick,
+		Channels: orderedmap.New[domain.ChannelName, time.Time](),
+	})
+
+	return sess
 }
 
 // Events returns the channel on which background dispatch events are
@@ -92,6 +115,218 @@ func New(
 // ErrorEvent values.
 func (s *Session) Events() <-chan domain.SessionEvent {
 	return s.events
+}
+
+// Connected returns a channel that is closed once Connect has
+// completed successfully. Callers can select on it to be notified
+// when the backend is ready for the frontend to start issuing
+// commands (for example, JOIN for autojoin channels).
+func (s *Session) Connected() <-chan struct{} {
+	return s.connectedC
+}
+
+// ConnectedAt returns the time at which Connect ran. The status
+// channel's per-session view uses this as a cutoff so that messages
+// from previous sessions remain in the event log without being
+// rendered.
+func (s *Session) ConnectedAt() time.Time {
+	return s.connectedAt
+}
+
+// Connect performs the backend-side connection handshake. It must be
+// called once per session, at startup, before JoinAutojoinChannels.
+//
+// Behaviour:
+//
+//   - Reads the session_active marker from the store. A non-empty
+//     value means the previous session did not shut down cleanly; any
+//     channels that still list the user as a member are cleaned up so
+//     the client starts from a known-empty state, mirroring what a
+//     real IRC server would observe after a client disconnect.
+//   - Writes a fresh session_active marker so a later crash is
+//     detectable.
+//   - Creates the per-session status channel if it does not already
+//     exist, joins the user to it, and appends a "Connected" notice.
+//     If the previous session was unclean, an additional notice is
+//     appended.
+//   - Closes the channel returned by Connected so that UI layers
+//     waiting on readiness can advance.
+func (s *Session) Connect(ctx context.Context) (retErr error) {
+	if !s.connectedAt.IsZero() {
+		// No span is recorded for a no-op call: it is not a real
+		// connect attempt and would otherwise inflate
+		// session.connect operation counts.
+		return nil
+	}
+
+	ctx, span := startSpan(ctx, "session.connect",
+		attribute.String(observability.AttrOperation, "session.connect"),
+	)
+	defer endSpan(span, &retErr, observability.ErrorKindStore)
+
+	s.connectedAt = s.now()
+
+	prev, err := s.store.GetSessionActive(ctx)
+	if err != nil {
+		return fmt.Errorf("get session active: %w", err)
+	}
+
+	unclean := prev != ""
+	if unclean {
+		if err := s.cleanupUncleanShutdown(ctx); err != nil {
+			return fmt.Errorf("cleanup unclean shutdown: %w", err)
+		}
+	}
+
+	if err := s.store.SetSessionActive(ctx, s.connectedAt.UTC().Format(time.RFC3339Nano)); err != nil {
+		return fmt.Errorf("set session active: %w", err)
+	}
+
+	if err := s.openStatusChannel(ctx); err != nil {
+		return fmt.Errorf("open status channel: %w", err)
+	}
+
+	s.appendStatus(ctx, "Connected to modeloff")
+
+	if unclean {
+		s.appendStatus(ctx, "Reconnected after unclean shutdown")
+	}
+
+	s.connectedOnce.Do(func() { close(s.connectedC) })
+
+	return nil
+}
+
+// openStatusChannel ensures the status channel exists in the store,
+// joins the user to it with operator mode, and registers it on the
+// user snapshot's Channels map with the connected-at timestamp. The
+// status channel is not part of the autojoin list and not subject to
+// /part, but the user is its local owner so it carries +o just like
+// a regular join.
+func (s *Session) openStatusChannel(ctx context.Context) error {
+	userNick := s.userSnapshot().Nick
+
+	channel, err := s.store.GetChannel(ctx, domain.StatusChannelName)
+	if err != nil {
+		members := domain.NewMemberList()
+		members.Add(userNick)
+
+		channel = domain.Channel{
+			Name:    domain.StatusChannelName,
+			Kind:    domain.KindStatus,
+			Members: members,
+			Created: s.connectedAt,
+		}
+	} else if !channel.Members.Has(userNick) {
+		channel.Members.Add(userNick)
+	}
+
+	channel.Members.SetMode(userNick, domain.ModeOp)
+
+	if err := s.store.SaveChannel(ctx, channel); err != nil {
+		return fmt.Errorf("save status channel: %w", err)
+	}
+
+	s.mutateUser(func(u *domain.Instance) {
+		u.Channels.Set(domain.StatusChannelName, s.connectedAt)
+	})
+
+	s.emitUIOnly(domain.JoinEvent{
+		Channel: domain.StatusChannelName,
+		Nick:    userNick,
+		At:      s.connectedAt,
+	})
+	s.emitUIOnly(domain.ModeChangeEvent{
+		Channel: domain.StatusChannelName,
+		Nick:    userNick,
+		Mode:    domain.ModeOp,
+		Actor:   "ChanServ",
+		At:      s.connectedAt,
+	})
+
+	return nil
+}
+
+// appendStatus persists a system notice to the status channel and
+// emits a FocusChannelEvent-shaped live update so any active viewer
+// (ConnectionScreen pane, ChatScreen with status focused) sees it
+// without polling. Errors during persistence are logged and dropped:
+// the status log is best-effort.
+func (s *Session) appendStatus(ctx context.Context, text string) {
+	notice := domain.ChannelSystemNotice{
+		Channel: domain.StatusChannelName,
+		Text:    text,
+		At:      s.now(),
+	}
+
+	stored, err := s.LogEvent(ctx, domain.StatusChannelName, notice)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "append status notice", "error", err)
+		return
+	}
+
+	s.emitUIOnly(domain.SystemNoticeEvent{
+		Channel: domain.StatusChannelName,
+		Stored:  stored,
+	})
+}
+
+// cleanupUncleanShutdown removes the user from the member list of
+// every channel that still lists them. No ChannelQuit event is
+// appended because we have no accurate timestamp for the crash;
+// absence is just absence.
+//
+// Only memberships under the current nick are cleaned up. If the user
+// renamed between sessions, stale memberships under the prior nick are
+// left in place; prior-nick cleanup is out of scope for this pass.
+func (s *Session) cleanupUncleanShutdown(ctx context.Context) error {
+	channels, err := s.store.ListChannels(ctx)
+	if err != nil {
+		return fmt.Errorf("list channels: %w", err)
+	}
+
+	userNick := s.userSnapshot().Nick
+
+	for _, ch := range channels {
+		member, ok := ch.Members.Get(userNick)
+		if !ok {
+			continue
+		}
+
+		ch.Members.Remove(member)
+
+		if err := s.store.SaveChannel(ctx, ch); err != nil {
+			return fmt.Errorf("save channel %s: %w", ch.Name, err)
+		}
+	}
+
+	return nil
+}
+
+// FocusChannel records a channel as the active one and emits a
+// FocusChannelEvent so the UI can respond. If the user is not a
+// member of the channel, the call is a no-op. This is the
+// session-side twin of the UI's own channel-switch plumbing, used
+// mainly to restore the last-focused channel at the end of the
+// autojoin sequence.
+func (s *Session) FocusChannel(ctx context.Context, ch domain.ChannelName) (retErr error) {
+	ctx, span := startSpan(ctx, "session.focus_channel",
+		attribute.String(observability.AttrOperation, "session.focus_channel"),
+		attribute.String(observability.AttrChannel, string(ch)),
+	)
+	defer endSpan(span, &retErr, observability.ErrorKindStore)
+
+	if _, ok := s.userSnapshot().Channels.Get(ch); !ok {
+		return nil
+	}
+
+	if err := s.store.SetLastChannel(ctx, ch); err != nil {
+		return fmt.Errorf("set last channel: %w", err)
+	}
+
+	s.emitUIOnly(domain.FocusChannelEvent{Channel: ch, At: s.now()})
+
+	return nil
 }
 
 // SetAPIFactory configures how runtime API clients are created.
@@ -111,13 +346,13 @@ func (s *Session) HasAPIKey() bool {
 
 // UserNick returns the current user nickname.
 func (s *Session) UserNick() domain.Nick {
-	return s.user.Nick
+	return s.userSnapshot().Nick
 }
 
 // UserJoinedAt returns the time the user joined the given channel,
 // or the zero time if the user is not in the channel.
 func (s *Session) UserJoinedAt(ch domain.ChannelName) time.Time {
-	if t, ok := s.user.Channels.Get(ch); ok {
+	if t, ok := s.userSnapshot().Channels.Get(ch); ok {
 		return t
 	}
 
@@ -127,118 +362,154 @@ func (s *Session) UserJoinedAt(ch domain.ChannelName) time.Time {
 // Join creates or opens a channel. Events are emitted on the
 // session event channel.
 func (s *Session) Join(ctx context.Context, channelName string) error {
-	return s.JoinAs(ctx, s.user.Nick, domain.ChannelName(channelName))
+	return s.JoinAs(ctx, s.userSnapshot().Nick, domain.ChannelName(channelName))
 }
 
 // Part records the user leaving a channel. An optional farewell
 // message is included in the event. Events are emitted on the
 // session event channel.
 func (s *Session) Part(ctx context.Context, ch domain.ChannelName, message string) error {
-	return s.PartAs(ctx, s.user.Nick, ch, message)
+	return s.PartAs(ctx, s.userSnapshot().Nick, ch, message)
 }
 
-// Quit builds a PendingQuit from the user's current channels and
-// persists it. The caller is responsible for triggering tea.Quit
-// after calling this. The pending quit is replayed on next startup
-// via ProcessPendingQuit.
-func (s *Session) Quit(ctx context.Context, message string) error {
-	var channels []domain.ChannelName
+// Quit performs a clean client-side shutdown. For each channel the
+// user is in it appends a ChannelQuit event to the log (so models
+// see the quit the next time they are dispatched against in that
+// channel), removes the user from the channel members list, saves
+// the autojoin list so the channels can be rejoined on next startup,
+// clears in-memory channel state, and clears the session_active
+// marker so the next startup is classified as clean.
+//
+// No model dispatch is performed: a running process does not wait
+// for remote models to acknowledge the quit. The call is synchronous
+// but fast (local sqlite writes only); the UI wraps it in a tea.Cmd
+// to keep the event loop responsive.
+func (s *Session) Quit(ctx context.Context, message string) (retErr error) {
+	ctx, span := startSpan(ctx, "session.quit",
+		attribute.String(observability.AttrOperation, "session.quit"),
+	)
+	defer endSpan(span, &retErr, observability.ErrorKindStore)
 
-	for pair := s.user.Channels.Oldest(); pair != nil; pair = pair.Next() {
+	autojoin := s.persistableAutojoinChannels()
+
+	user := s.userSnapshot()
+	userNick := user.Nick
+
+	var channels []domain.ChannelName
+	for pair := user.Channels.Oldest(); pair != nil; pair = pair.Next() {
 		channels = append(channels, pair.Key)
 	}
 
-	if len(channels) == 0 {
-		return nil
+	now := s.now()
+
+	// Order matters for crash-resilience: append per-channel quit events
+	// and drop the user from the members list first, persist the
+	// autojoin list second, clear in-memory state third, and clear the
+	// session_active marker last. A crash between any of the earlier
+	// steps leaves the next startup classified as unclean, at which
+	// point cleanupUncleanShutdown handles any residual memberships.
+	for _, ch := range channels {
+		s.appendEvent(ctx, ch, domain.ChannelQuit{
+			Channel: ch,
+			Nick:    userNick,
+			Message: message,
+			At:      now,
+		})
+
+		channel, err := s.store.GetChannel(ctx, ch)
+		if err != nil {
+			continue
+		}
+
+		member, ok := channel.Members.Get(userNick)
+		if !ok {
+			continue
+		}
+
+		channel.Members.Remove(member)
+
+		if err := s.store.SaveChannel(ctx, channel); err != nil {
+			return fmt.Errorf("save channel %s: %w", ch, err)
+		}
 	}
 
-	if err := s.store.SetAutojoinChannels(ctx, channels); err != nil {
+	if err := s.store.SetAutojoinChannels(ctx, autojoin); err != nil {
 		return fmt.Errorf("save autojoin channels: %w", err)
 	}
 
-	pq := domain.PendingQuit{
-		Nick:     s.user.Nick,
-		Message:  message,
-		At:       s.now(),
-		Channels: channels,
+	s.mutateUser(func(u *domain.Instance) {
+		u.Channels = orderedmap.New[domain.ChannelName, time.Time]()
+	})
+
+	if err := s.store.ClearSessionActive(ctx); err != nil {
+		return fmt.Errorf("clear session active: %w", err)
 	}
 
-	return s.store.SavePendingQuit(ctx, pq)
+	return nil
 }
 
-// ProcessPendingQuit loads a pending quit from the store and dispatches
-// QUIT to models in each channel synchronously, saving their replies.
-// The pending quit is cleared after processing. A 30-second timeout
-// is applied.
-func (s *Session) ProcessPendingQuit(ctx context.Context) (retErr error) {
-	ctx, span := startSpan(ctx, "session.process_pending_quit",
-		attribute.String(observability.AttrOperation, "session.process_pending_quit"),
+// JoinAutojoinChannels loads the autojoin channel list and issues an
+// ordinary JOIN for each entry. It is intended to be called by the
+// UI immediately after Connect signals readiness; from the backend's
+// perspective the resulting JoinAs calls are indistinguishable from
+// the user typing /join manually.
+//
+// Pre-condition: Connect has been called, so any stale memberships
+// from the previous session have been cleaned up. Each JoinAs call
+// therefore takes the !alreadyMember path and emits the full IRC
+// join protocol (JoinEvent, ChanServ +o ModeChangeEvent, optional
+// TopicInfoEvent) plus stamps UserJoinedAt to the current time.
+//
+// Error contract: best-effort. The function only returns a non-nil
+// error if the autojoin list itself cannot be loaded. Per-channel
+// JoinAs failures are surfaced via two separate signals — a
+// "Failed to join …" notice on the status channel for the user, and
+// AttrAutojoinFailed plus an error-kind ErrorKindAutojoin on the
+// aggregate session.autojoin span for observability — and the
+// function still returns nil so that downstream startup steps
+// (FocusChannel, dispatch reactor) proceed.
+func (s *Session) JoinAutojoinChannels(ctx context.Context) error {
+	ctx, span := startSpan(ctx, "session.autojoin",
+		attribute.String(observability.AttrOperation, "session.autojoin"),
 	)
-	defer endSpan(span, &retErr)
+	defer span.End()
 
-	pq, err := s.store.GetPendingQuit(ctx)
-	if err != nil {
-		return fmt.Errorf("get pending quit: %w", err)
-	}
-
-	if pq == nil {
-		return nil
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	quitEvt := domain.QuitEvent{
-		Nick:    pq.Nick,
-		Message: pq.Message,
-		At:      pq.At,
-	}
-
-	quitMsg := protocol.FromQuitEvent(quitEvt)
-
-	for _, ch := range pq.Channels {
-		s.appendEvent(ctx, ch, domain.ChannelQuit{
-			Channel: ch,
-			Nick:    pq.Nick,
-			Message: pq.Message,
-			At:      pq.At,
-		})
-
-		if _, err := s.DispatchToChannel(ctx, ch, []protocol.IRCMessage{quitMsg}); err != nil {
-			slog.Default().ErrorContext(ctx, "process pending quit dispatch", "channel", ch, "error", err)
-		}
-
-		channel, err := s.store.GetChannel(ctx, ch)
-		if err == nil {
-			if m, ok := channel.Members.Get(pq.Nick); ok {
-				channel.Members.Remove(m)
-			}
-
-			if err := s.store.SaveChannel(ctx, channel); err != nil {
-				slog.Default().ErrorContext(ctx, "save channel after quit removal", "channel", ch, "error", err)
-			}
-		}
-	}
-
-	return s.store.ClearPendingQuit(ctx)
-}
-
-// RejoinChannels loads the autojoin channel list and calls JoinAs for
-// each. This should be called once on startup after ProcessPendingQuit
-// so that the user rejoins with the full IRC join protocol (join event,
-// ChanServ +o, topic info).
-func (s *Session) RejoinChannels(ctx context.Context) error {
 	channels, err := s.store.ListAutojoinChannels(ctx)
 	if err != nil {
+		setSpanError(span, err, observability.ErrorKindStore)
 		return fmt.Errorf("list autojoin channels: %w", err)
 	}
 
+	channelNames := make([]string, len(channels))
+	for i, ch := range channels {
+		channelNames[i] = string(ch)
+	}
+
+	userNick := s.userSnapshot().Nick
+
+	var failed int
 	for _, ch := range channels {
-		if err := s.JoinAs(ctx, s.user.Nick, ch); err != nil {
-			slog.Default().ErrorContext(ctx, "rejoin channel", "channel", ch, "error", err)
+		s.appendStatus(ctx, fmt.Sprintf("Joining %s", ch))
+
+		if err := s.JoinAs(ctx, userNick, ch); err != nil {
+			failed++
+			slog.Default().ErrorContext(ctx, "autojoin channel", "channel", ch, "error", err)
+			s.appendStatus(ctx, fmt.Sprintf("Failed to join %s: %s", ch, err))
 		}
 	}
 
+	span.SetAttributes(
+		attribute.Int(observability.AttrAutojoinCount, len(channels)),
+		attribute.Int(observability.AttrAutojoinFailed, failed),
+		attribute.StringSlice(observability.AttrAutojoinChannels, channelNames),
+	)
+
+	if failed > 0 {
+		setSpanError(span, fmt.Errorf("%d of %d autojoin channels failed", failed, len(channels)), observability.ErrorKindAutojoin)
+		return nil
+	}
+
+	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 	return nil
 }
 
@@ -270,12 +541,11 @@ func (s *Session) AddModel(
 		}
 
 		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-		return s.attachInstanceToChannel(ctx, ch, inst, s.user.Nick)
+		return s.attachInstanceToChannel(ctx, ch, inst, s.userSnapshot().Nick)
 	}
 
 	if err := s.ensureStructuredOutputModel(ctx, modelID); err != nil {
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		span.SetStatus(codes.Error, err.Error())
+		setSpanError(span, err, observability.ErrorKindDispatch)
 		return err
 	}
 
@@ -285,7 +555,7 @@ func (s *Session) AddModel(
 		}
 
 		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-		return s.attachInstanceToChannel(ctx, ch, inst, s.user.Nick)
+		return s.attachInstanceToChannel(ctx, ch, inst, s.userSnapshot().Nick)
 	}
 
 	generateCtx, generateSpan := startSpan(
@@ -298,10 +568,8 @@ func (s *Session) AddModel(
 
 	nickResult, err := s.api.GenerateNick(generateCtx, s.smallModel, modelID)
 	if err != nil {
-		generateSpan.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		generateSpan.SetStatus(codes.Error, err.Error())
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		span.SetStatus(codes.Error, err.Error())
+		setSpanError(generateSpan, err, observability.ErrorKindDispatch)
+		setSpanError(span, err, observability.ErrorKindDispatch)
 		logger.ErrorContext(ctx, "generate nick failed", "error", err)
 		return fmt.Errorf("generate nick: %w", err)
 	}
@@ -334,7 +602,7 @@ func (s *Session) AddModel(
 
 	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 
-	return s.attachInstanceToChannel(ctx, ch, inst, s.user.Nick)
+	return s.attachInstanceToChannel(ctx, ch, inst, s.userSnapshot().Nick)
 }
 
 func (s *Session) findInstanceByModelID(ctx context.Context, modelID domain.ModelID) (domain.Instance, error) {
@@ -436,21 +704,21 @@ func (s *Session) attachInstanceToChannel(
 
 // Kick removes a model instance from a channel.
 func (s *Session) Kick(ctx context.Context, ch domain.ChannelName, nick domain.Nick) error {
-	return s.KickAs(ctx, s.user.Nick, nick, ch)
+	return s.KickAs(ctx, s.userSnapshot().Nick, nick, ch)
 }
 
 // SendMessage saves a message to a channel and returns the message
 // event. It also spawns a background goroutine to dispatch the
 // message to model instances, emitting events on the Events channel.
 func (s *Session) SendMessage(ctx context.Context, ch domain.ChannelName, body string) error {
-	return s.SendMessageAs(ctx, s.user.Nick, ch, body)
+	return s.SendMessageAs(ctx, s.userSnapshot().Nick, ch, body)
 }
 
 // SendAction saves an action message (/me) to a channel and returns
 // the message event. It also spawns a background goroutine to
 // dispatch the action to model instances.
 func (s *Session) SendAction(ctx context.Context, ch domain.ChannelName, body string) error {
-	return s.SendActionAs(ctx, s.user.Nick, ch, body)
+	return s.SendActionAs(ctx, s.userSnapshot().Nick, ch, body)
 }
 
 // DispatchToChannel sends new events to all model instances in a channel
@@ -466,15 +734,13 @@ func (s *Session) DispatchToChannel(
 
 	historyEvents, err := s.store.EventsBefore(ctx, ch, nil, 500)
 	if err != nil {
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		span.SetStatus(codes.Error, err.Error())
+		setSpanError(span, err, observability.ErrorKindStore)
 		return nil, fmt.Errorf("list history: %w", err)
 	}
 
 	replies, err := s.dispatchToInstances(ctx, ch, historyEvents, newEvents)
 	if err != nil {
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		span.SetStatus(codes.Error, err.Error())
+		setSpanError(span, err, observability.ErrorKindDispatch)
 		return nil, err
 	}
 
@@ -485,13 +751,13 @@ func (s *Session) DispatchToChannel(
 
 // SetTopic sets the topic of a channel.
 func (s *Session) SetTopic(ctx context.Context, ch domain.ChannelName, topic string) error {
-	return s.SetTopicAs(ctx, s.user.Nick, ch, topic)
+	return s.SetTopicAs(ctx, s.userSnapshot().Nick, ch, topic)
 }
 
 // ChangeNick changes the user's nickname and updates all channel
 // memberships accordingly.
 func (s *Session) ChangeNick(ctx context.Context, newNick domain.Nick) error {
-	return s.ChangeNickAs(ctx, s.user.Nick, newNick)
+	return s.ChangeNickAs(ctx, s.userSnapshot().Nick, newNick)
 }
 
 // Whois returns metadata about a model instance.
@@ -557,15 +823,13 @@ func (s *Session) ListModels(ctx context.Context) ([]api.ModelInfo, error) {
 
 	if !s.HasAPIKey() || s.api == nil {
 		err := fmt.Errorf("api key not configured")
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		span.SetStatus(codes.Error, err.Error())
+		setSpanError(span, err, observability.ErrorKindValidation)
 		return nil, err
 	}
 
 	models, err := s.api.ListModels(ctx)
 	if err != nil {
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		span.SetStatus(codes.Error, err.Error())
+		setSpanError(span, err, observability.ErrorKindDispatch)
 		return nil, err
 	}
 
@@ -583,15 +847,13 @@ func (s *Session) Reset(ctx context.Context) error {
 	defer span.End()
 
 	if err := s.store.Reset(ctx); err != nil {
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		span.SetStatus(codes.Error, err.Error())
+		setSpanError(span, err, observability.ErrorKindStore)
 		return fmt.Errorf("reset store: %w", err)
 	}
 
 	if s.memory != nil {
 		if err := s.memory.Reset(ctx); err != nil {
-			span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-			span.SetStatus(codes.Error, err.Error())
+			setSpanError(span, err, observability.ErrorKindStore)
 			return fmt.Errorf("reset memories: %w", err)
 		}
 	}
@@ -612,10 +874,18 @@ func (s *Session) OpenDM(ctx context.Context, nick domain.Nick) (domain.Channel,
 	)
 	defer span.End()
 
+	if domain.ChannelName(nick) == domain.StatusChannelName {
+		err := domain.StatusChannelGuardError{
+			Command: "msg",
+			Hint:    "to message a model, use /msg <nick> with the model's name; &modeloff is a server channel.",
+		}
+		setSpanError(span, err, observability.ErrorKindValidation)
+		return domain.Channel{}, false, err
+	}
+
 	inst, err := s.store.GetInstance(ctx, nick)
 	if err != nil {
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		span.SetStatus(codes.Error, err.Error())
+		setSpanError(span, err, observability.ErrorKindStore)
 		return domain.Channel{}, false, fmt.Errorf("get instance: %w", err)
 	}
 
@@ -625,7 +895,7 @@ func (s *Session) OpenDM(ctx context.Context, nick domain.Nick) (domain.Channel,
 	created := false
 	if err != nil {
 		members := domain.NewMemberList()
-		members.Add(s.user.Nick)
+		members.Add(s.userSnapshot().Nick)
 		members.Add(nick)
 
 		ch = domain.Channel{
@@ -636,8 +906,7 @@ func (s *Session) OpenDM(ctx context.Context, nick domain.Nick) (domain.Channel,
 		}
 
 		if err := s.store.SaveChannel(ctx, ch); err != nil {
-			span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-			span.SetStatus(codes.Error, err.Error())
+			setSpanError(span, err, observability.ErrorKindStore)
 			return domain.Channel{}, false, fmt.Errorf("save dm channel: %w", err)
 		}
 
@@ -652,15 +921,13 @@ func (s *Session) OpenDM(ctx context.Context, nick domain.Nick) (domain.Channel,
 		inst.Channels.Set(name, s.now())
 
 		if err := s.store.SaveInstance(ctx, inst); err != nil {
-			span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-			span.SetStatus(codes.Error, err.Error())
+			setSpanError(span, err, observability.ErrorKindStore)
 			return domain.Channel{}, false, fmt.Errorf("save instance: %w", err)
 		}
 	}
 
 	if err := s.store.SetLastChannel(ctx, name); err != nil {
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		span.SetStatus(codes.Error, err.Error())
+		setSpanError(span, err, observability.ErrorKindStore)
 		return domain.Channel{}, false, fmt.Errorf("set last channel: %w", err)
 	}
 
@@ -682,8 +949,7 @@ func (s *Session) Poke(ctx context.Context) error {
 
 	channels, err := s.store.ListChannels(ctx)
 	if err != nil {
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		span.SetStatus(codes.Error, err.Error())
+		setSpanError(span, err, observability.ErrorKindStore)
 		return fmt.Errorf("list channels: %w", err)
 	}
 
@@ -714,8 +980,7 @@ func (s *Session) SetAPIKey(ctx context.Context, apiKey, baseURL string) error {
 		if s.factory != nil {
 			client, err := s.factory(apiKey, baseURL)
 			if err != nil {
-				span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-				span.SetStatus(codes.Error, err.Error())
+				setSpanError(span, err, observability.ErrorKindValidation)
 				return fmt.Errorf("build api client: %w", err)
 			}
 
@@ -753,7 +1018,7 @@ func (s *Session) EnsurePersonas(ctx context.Context) (retErr error) {
 	ctx, span := startSpan(ctx, "session.ensure_personas",
 		attribute.String(observability.AttrOperation, "session.ensure_personas"),
 	)
-	defer endSpan(span, &retErr)
+	defer endSpan(span, &retErr, observability.ErrorKindStore)
 
 	existing, err := s.store.ListPersonas(ctx)
 	if err != nil {
@@ -783,7 +1048,7 @@ func (s *Session) RandomPersona(ctx context.Context) (_ domain.Persona, retErr e
 	ctx, span := startSpan(ctx, "session.random_persona",
 		attribute.String(observability.AttrOperation, "session.random_persona"),
 	)
-	defer endSpan(span, &retErr)
+	defer endSpan(span, &retErr, observability.ErrorKindStore)
 
 	personas, err := s.store.ListPersonas(ctx)
 	if err != nil {
@@ -810,7 +1075,7 @@ func (s *Session) RegeneratePersonas(ctx context.Context) (_ []domain.Persona, r
 	ctx, span := startSpan(ctx, "session.regenerate_personas",
 		attribute.String(observability.AttrOperation, "session.regenerate_personas"),
 	)
-	defer endSpan(span, &retErr)
+	defer endSpan(span, &retErr, observability.ErrorKindStore)
 
 	personas, err := s.api.GeneratePersonas(ctx, s.smallModel)
 	if err != nil {
@@ -830,7 +1095,7 @@ func (s *Session) SetPersona(ctx context.Context, id string, description string)
 		attribute.String(observability.AttrOperation, "session.set_persona"),
 		attribute.String("persona.id", id),
 	)
-	defer endSpan(span, &retErr)
+	defer endSpan(span, &retErr, observability.ErrorKindStore)
 
 	p := domain.Persona{
 		ID:          id,
@@ -846,7 +1111,7 @@ func (s *Session) ListPersonas(ctx context.Context) (_ []domain.Persona, retErr 
 	ctx, span := startSpan(ctx, "session.list_personas",
 		attribute.String(observability.AttrOperation, "session.list_personas"),
 	)
-	defer endSpan(span, &retErr)
+	defer endSpan(span, &retErr, observability.ErrorKindStore)
 
 	return s.store.ListPersonas(ctx)
 }
@@ -858,7 +1123,7 @@ func (s *Session) ResetPersonas(ctx context.Context) (_ int, retErr error) {
 	ctx, span := startSpan(ctx, "session.reset_personas",
 		attribute.String(observability.AttrOperation, "session.reset_personas"),
 	)
-	defer endSpan(span, &retErr)
+	defer endSpan(span, &retErr, observability.ErrorKindStore)
 
 	personas, err := s.store.ListPersonas(ctx)
 	if err != nil {
@@ -890,8 +1155,7 @@ func (s *Session) SetBaseURL(ctx context.Context, baseURL string) error {
 	if s.factory != nil && s.apiKey != "" {
 		client, err := s.factory(s.apiKey, baseURL)
 		if err != nil {
-			span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-			span.SetStatus(codes.Error, err.Error())
+			setSpanError(span, err, observability.ErrorKindValidation)
 			return fmt.Errorf("build api client: %w", err)
 		}
 
@@ -1189,7 +1453,7 @@ func (s *Session) instancesForChannel(ctx context.Context, channel domain.Channe
 	var instances []domain.Instance
 
 	for nick := range channel.Members.Nicks() {
-		if nick == s.user.Nick {
+		if nick == s.userSnapshot().Nick {
 			continue
 		}
 
@@ -1202,6 +1466,30 @@ func (s *Session) instancesForChannel(ctx context.Context, channel domain.Channe
 	}
 
 	return instances, nil
+}
+
+// EventsAfter returns the channel's events whose timestamp is at or
+// after the given cutoff, in chronological order. The status pane
+// uses this to render the per-session view of the status channel
+// without showing previous sessions' entries.
+func (s *Session) EventsAfter(ctx context.Context, ch domain.ChannelName, after time.Time) ([]domain.StoredEvent, error) {
+	events, err := s.store.EventsBefore(ctx, ch, nil, 500)
+	if err != nil {
+		return nil, err
+	}
+
+	if after.IsZero() {
+		return events, nil
+	}
+
+	filtered := events[:0]
+	for _, evt := range events {
+		if !domain.ChannelEventTime(evt.Event).Before(after) {
+			filtered = append(filtered, evt)
+		}
+	}
+
+	return filtered, nil
 }
 
 // EventsBefore returns up to n events before the given ID (or the
@@ -1282,13 +1570,26 @@ func (s *Session) maybeDispatch(ctx context.Context, evt domain.SessionEvent) {
 // saveAutojoinList persists the current user channel list as the
 // autojoin set.
 func (s *Session) saveAutojoinList(ctx context.Context) error {
+	return s.store.SetAutojoinChannels(ctx, s.persistableAutojoinChannels())
+}
+
+// persistableAutojoinChannels returns the user's current channel set
+// minus the per-session status channel. The status channel is
+// re-created by Connect/openStatusChannel on every startup, so
+// persisting it would produce a spurious JoinAs("&modeloff") on the
+// next session.
+func (s *Session) persistableAutojoinChannels() []domain.ChannelName {
 	var channels []domain.ChannelName
 
-	for pair := s.user.Channels.Oldest(); pair != nil; pair = pair.Next() {
+	for pair := s.userSnapshot().Channels.Oldest(); pair != nil; pair = pair.Next() {
+		if pair.Key == domain.StatusChannelName {
+			continue
+		}
+
 		channels = append(channels, pair.Key)
 	}
 
-	return s.store.SetAutojoinChannels(ctx, channels)
+	return channels
 }
 
 func (s *Session) appendEvent(ctx context.Context, ch domain.ChannelName, event domain.ChannelEvent) {
@@ -1312,17 +1613,15 @@ func (s *Session) dispatchInBackground(ctx context.Context, ch domain.ChannelNam
 
 		channel, err := s.store.GetChannel(ctx, ch)
 		if err != nil {
-			span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-			span.SetStatus(codes.Error, err.Error())
-			s.emitUIOnly(domain.ErrorEvent{Operation: "dispatch", Err: err, At: s.now()})
+			setSpanError(span, err, observability.ErrorKindStore)
+			s.appendStatus(ctx, fmt.Sprintf("dispatch to %s: %s", ch, err))
 			return
 		}
 
 		instances, err := s.instancesForChannel(ctx, channel)
 		if err != nil {
-			span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-			span.SetStatus(codes.Error, err.Error())
-			s.emitUIOnly(domain.ErrorEvent{Operation: "dispatch", Err: err, At: s.now()})
+			setSpanError(span, err, observability.ErrorKindStore)
+			s.appendStatus(ctx, fmt.Sprintf("dispatch to %s: %s", ch, err))
 			return
 		}
 
@@ -1340,17 +1639,15 @@ func (s *Session) dispatchInBackground(ctx context.Context, ch domain.ChannelNam
 
 		historyEvents, err := s.store.EventsBefore(ctx, ch, nil, 500)
 		if err != nil {
-			span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-			span.SetStatus(codes.Error, err.Error())
-			s.emitUIOnly(domain.ErrorEvent{Operation: "dispatch", Err: err, At: s.now()})
+			setSpanError(span, err, observability.ErrorKindStore)
+			s.appendStatus(ctx, fmt.Sprintf("dispatch to %s: %s", ch, err))
 			return
 		}
 
 		replies, err := s.dispatchToInstances(ctx, ch, historyEvents, triggerEvents)
 		if err != nil {
-			span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-			span.SetStatus(codes.Error, err.Error())
-			s.emitUIOnly(domain.ErrorEvent{Operation: "dispatch", Err: err, At: s.now()})
+			setSpanError(span, err, observability.ErrorKindDispatch)
+			s.appendStatus(ctx, fmt.Sprintf("dispatch to %s: %s", ch, err))
 		}
 
 		for _, reply := range replies {
@@ -1384,17 +1681,15 @@ func (s *Session) dispatchToInstanceInBackground(
 
 		channel, err := s.store.GetChannel(ctx, ch)
 		if err != nil {
-			span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-			span.SetStatus(codes.Error, err.Error())
-			s.emitUIOnly(domain.ErrorEvent{Operation: "dispatch", Err: err, At: s.now()})
+			setSpanError(span, err, observability.ErrorKindStore)
+			s.appendStatus(ctx, fmt.Sprintf("dispatch to %s: %s", ch, err))
 			return
 		}
 
 		historyEvents, err := s.store.EventsBefore(ctx, ch, nil, 500)
 		if err != nil {
-			span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-			span.SetStatus(codes.Error, err.Error())
-			s.emitUIOnly(domain.ErrorEvent{Operation: "dispatch", Err: err, At: s.now()})
+			setSpanError(span, err, observability.ErrorKindStore)
+			s.appendStatus(ctx, fmt.Sprintf("dispatch to %s: %s", ch, err))
 			return
 		}
 
@@ -1402,9 +1697,8 @@ func (s *Session) dispatchToInstanceInBackground(
 
 		replies, err := s.dispatchToInstance(ctx, channel, inst, ch, historyEvents, triggerEvents)
 		if err != nil {
-			span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-			span.SetStatus(codes.Error, err.Error())
-			s.emitUIOnly(domain.ErrorEvent{Operation: "dispatch", Err: err, At: s.now()})
+			setSpanError(span, err, observability.ErrorKindDispatch)
+			s.appendStatus(ctx, fmt.Sprintf("dispatch to %s: %s", ch, err))
 			return
 		}
 
@@ -1835,24 +2129,128 @@ func startSpan(ctx context.Context, name string, attrs ...attribute.KeyValue) (c
 	return ctx, span
 }
 
-func endSpan(span trace.Span, errPtr *error) {
-	if *errPtr != nil {
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		span.SetStatus(codes.Error, (*errPtr).Error())
-	} else {
+// endSpan finalises the span with ok/error status. The fallback
+// errorKind is attached as AttrErrorKind when the deferred error is
+// non-nil and does not already carry a kind via *kindError (which
+// errWithKind produces and errors.As unwraps here). Pass an empty
+// string when no fallback is meaningful.
+func endSpan(span trace.Span, errPtr *error, errorKind string) {
+	err := *errPtr
+
+	if err == nil {
 		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
+		span.End()
+		return
 	}
 
+	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+
+	kind := errorKind
+	var ke *kindError
+	if errors.As(err, &ke) {
+		kind = ke.kind
+	}
+
+	if kind != "" {
+		span.SetAttributes(attribute.String(observability.AttrErrorKind, kind))
+	}
+
+	span.SetStatus(codes.Error, err.Error())
 	span.End()
+}
+
+// setSpanError records an error result on the span together with the
+// given error kind. Inline alternative to endSpan for sites where the
+// span is finalised outside a defer.
+func setSpanError(span trace.Span, err error, errorKind string) {
+	span.SetAttributes(
+		attribute.String(observability.AttrResult, observability.ResultError),
+		attribute.String(observability.AttrErrorKind, errorKind),
+	)
+	span.SetStatus(codes.Error, err.Error())
+}
+
+// kindError tags an error with an observability error kind so
+// endSpan can attach AttrErrorKind without every call site having to
+// pass the kind through an auxiliary return value.
+type kindError struct {
+	kind string
+	err  error
+}
+
+func (e *kindError) Error() string { return e.err.Error() }
+func (e *kindError) Unwrap() error { return e.err }
+
+// errWithKind annotates err with the given observability error kind.
+// Returns nil when err is nil so it can wrap the tail of a return.
+func errWithKind(err error, kind string) error {
+	if err == nil {
+		return nil
+	}
+	return &kindError{kind: kind, err: err}
 }
 
 func channelKindName(kind domain.ChannelKind) string {
 	switch kind {
 	case domain.KindDM:
 		return "dm"
+	case domain.KindStatus:
+		return "status"
 	default:
 		return "channel"
 	}
+}
+
+// userSnapshot returns the current *domain.Instance for the human
+// user. Callers must treat the returned value as read-only: the
+// embedded Channels map is shared with concurrent readers and must
+// not be mutated in place. Use mutateUser to swap in a new snapshot.
+func (s *Session) userSnapshot() *domain.Instance {
+	return s.user.Load()
+}
+
+// mutateUser applies fn to a fresh clone of the current user snapshot
+// and swaps the pointer, retrying on concurrent races so no
+// write-skew is possible. fn may read the current snapshot via its
+// argument but must not mutate it in place — the supplied *Instance
+// is the caller's to modify, with a freshly-cloned Channels map.
+func (s *Session) mutateUser(fn func(*domain.Instance)) {
+	for {
+		cur := s.user.Load()
+		next := cloneUser(cur)
+		fn(next)
+
+		if s.user.CompareAndSwap(cur, next) {
+			return
+		}
+	}
+}
+
+// cloneUser returns a shallow copy of the user snapshot, with a
+// freshly-cloned Channels map. Other fields of Instance (Nick,
+// ModelID, Persona, InstanceID) are immutable value types so a
+// plain struct copy suffices for them.
+func cloneUser(u *domain.Instance) *domain.Instance {
+	next := *u
+	next.Channels = cloneChannels(u.Channels)
+	return &next
+}
+
+// cloneChannels returns a shallow copy of the ordered channel/join-
+// time map. The new map is safe to mutate; the original must be
+// treated as frozen.
+func cloneChannels(src *orderedmap.OrderedMap[domain.ChannelName, time.Time]) *orderedmap.OrderedMap[domain.ChannelName, time.Time] {
+	clone := orderedmap.New[domain.ChannelName, time.Time]()
+
+	if src == nil {
+		return clone
+	}
+
+	for pair := src.Oldest(); pair != nil; pair = pair.Next() {
+		clone.Set(pair.Key, pair.Value)
+	}
+
+	return clone
 }
 
 func (s *Session) ensureStructuredOutputModel(ctx context.Context, modelID domain.ModelID) error {

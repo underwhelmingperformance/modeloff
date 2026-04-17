@@ -68,11 +68,25 @@ func TestConnectionScreen_with_api_key(t *testing.T) {
 		"✓ Connecting to modeloff",
 		"✓ Checking configuration",
 		"✓ Loading channels (3 found)",
+		"… Joining channels",
+	}, trimmedVisibleLines(v))
+	require.NotNil(t, cmd)
+
+	// Tick 4: "Joining channels" completes (animation-only mode
+	// short-circuits the autojoin gate).
+	m, cmd = tick(t, m)
+
+	v = view(m)
+	require.Equal(t, []string{
+		"✓ Connecting to modeloff",
+		"✓ Checking configuration",
+		"✓ Loading channels (3 found)",
+		"✓ Joining channels",
 		"… Welcome, alice",
 	}, trimmedVisibleLines(v))
 	require.NotNil(t, cmd)
 
-	// Tick 4: "Welcome" completes — transitions to the next screen.
+	// Tick 5: "Welcome" completes — transitions to the next screen.
 	_, cmd = tick(t, m)
 	require.NotNil(t, cmd)
 

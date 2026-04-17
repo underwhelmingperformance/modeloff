@@ -2,6 +2,7 @@ package chatcmd
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/laney/modeloff/internal/config"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/session"
+	"github.com/laney/modeloff/internal/ui"
 )
 
 // ChannelArg is a command-layer wrapper around domain.ChannelName
@@ -301,6 +303,11 @@ func (c MsgCommand) Run(rc Context) tea.Cmd {
 
 		ch, created, err := c.executeOpenDM(rc.Ctx, rc.Session, rc.Nick)
 		if err != nil {
+			var guard domain.StatusChannelGuardError
+			if errors.As(err, &guard) {
+				return errorEvent("msg", guard)
+			}
+
 			return errorEvent("msg", domain.UnknownNickError{Nick: nick})
 		}
 
@@ -567,12 +574,10 @@ type QuitCommand struct {
 
 // Run implements Command.
 func (c QuitCommand) Run(rc Context) tea.Cmd {
-	return func() tea.Msg {
-		if err := c.executeQuit(rc.Ctx, rc.Session, rc.Nick); err != nil {
-			return errorEvent("quit", err)
-		}
+	msg := c.quitMessage()
 
-		return tea.QuitMsg{}
+	return func() tea.Msg {
+		return ui.QuitRequestedMsg{Message: msg}
 	}
 }
 

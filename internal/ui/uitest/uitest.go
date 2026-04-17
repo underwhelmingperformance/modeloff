@@ -233,20 +233,44 @@ func (f *FakeAPI) GeneratePersonas(ctx context.Context, smallModel domain.ModelI
 	return nil, nil
 }
 
-// SeedChannel creates a channel via the session.
+// SeedChannel creates a channel by issuing a real /join on the
+// session. The resulting JoinEvent and friends remain on the
+// session's events channel so that a downstream ChatScreen drains
+// and renders them when it takes over. For integration tests that
+// drive the ConnectionScreen and want to simulate "previous session"
+// state, follow up with sess.Quit + DrainEvents to leave the channel
+// on the autojoin list without lingering membership.
+//
+// SeedChannel does not emit a FocusChannelEvent — no channel is
+// implicitly made active. Tests that need an active channel should
+// call SeedAndFocusChannel instead, or drive a ChannelFocusEvent
+// directly through the teatest harness.
 func SeedChannel(t testing.TB, sess *session.Session, name string) {
 	t.Helper()
 
 	require.NoError(t, sess.Join(t.Context(), name))
-	DrainEvents(sess)
 }
 
-// SeedMessage sends a message to a channel via the session.
+// SeedAndFocusChannel creates a channel and focuses it, mirroring
+// what the autojoin sequence does in production (JoinAutojoinChannels
+// issues joins and FocusChannel settles on the last-active channel at
+// the end). Use this when a test needs the ChatScreen to treat the
+// channel as active from startup without going through the
+// ConnectionScreen.
+func SeedAndFocusChannel(t testing.TB, sess *session.Session, name string) {
+	t.Helper()
+
+	require.NoError(t, sess.Join(t.Context(), name))
+	require.NoError(t, sess.FocusChannel(t.Context(), domain.ChannelName(name)))
+}
+
+// SeedMessage sends a message to a channel via the session. Like
+// SeedChannel, the resulting events remain on the channel for the
+// chat screen to consume.
 func SeedMessage(t testing.TB, sess *session.Session, channel, body string) {
 	t.Helper()
 
 	require.NoError(t, sess.SendMessage(t.Context(), domain.ChannelName(channel), body))
-	DrainEvents(sess)
 }
 
 // DrainEvents discards any buffered events on the session's events

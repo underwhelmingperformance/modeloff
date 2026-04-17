@@ -28,7 +28,26 @@ type ChannelSidebar struct {
 }
 
 func channelLess(a, b domain.Channel) bool {
+	if a.Kind != b.Kind {
+		return channelKindOrder(a.Kind) < channelKindOrder(b.Kind)
+	}
+
 	return a.Name < b.Name
+}
+
+// channelKindOrder defines sidebar grouping: status pinned at the
+// top, then regular channels, then DMs at the bottom.
+func channelKindOrder(kind domain.ChannelKind) int {
+	switch kind {
+	case domain.KindStatus:
+		return 0
+	case domain.KindChannel:
+		return 1
+	case domain.KindDM:
+		return 2
+	}
+
+	return 3
 }
 
 func channelView(unread map[domain.ChannelName]int, mentions map[domain.ChannelName]bool) func(domain.Channel, ViewState, int) string {

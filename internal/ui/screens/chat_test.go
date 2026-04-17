@@ -2,6 +2,7 @@ package screens_test
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -43,8 +44,6 @@ func newChatApp(t *testing.T, sess *session.Session) *uitest.App {
 func newChatAppWithConfig(t *testing.T, sess *session.Session, cfgStore config.Store) *uitest.App {
 	t.Helper()
 
-	uitest.DrainEvents(sess)
-
 	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore)
 	require.NoError(t, err)
 
@@ -59,7 +58,13 @@ func newChatAppInChannel(t *testing.T, channel domain.ChannelName) (*uitest.App,
 	uitest.SeedChannel(t, sess, string(channel))
 
 	tm := newChatApp(t, sess)
-	tm.WaitFor(string(channel))
+	// Wait for the startup focus-restore (Init asynchronously focuses
+	// the last channel) to settle: handleChannelFocus renders the
+	// "Created channel" banner and clears the welcome placeholder.
+	// Tests that subsequently capture FinalView need this so the final
+	// rendered frame is a fully-initialised chat screen with the
+	// status bar — not a transient welcome-state frame.
+	tm.WaitFor(fmt.Sprintf("Created channel %s", channel))
 
 	return tm, sess
 }
@@ -111,7 +116,10 @@ func TestChatScreen_checklist_channels_exist_no_checklist(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#general")
 
 	tm := newChatApp(t, sess)
-	tm.WaitFor("#general")
+	// Wait for the focus-restore handshake to finish (handleChannelFocus
+	// renders the "Created channel" banner and clears the checklist
+	// placeholder), not just for the sidebar to show the channel.
+	tm.WaitFor("Created channel #general")
 
 	view := tm.CurrentView()
 	require.NotContains(t, view, "Welcome to modeloff",
@@ -193,44 +201,83 @@ func TestChatScreen_rejoin_filters_old_events(t *testing.T) {
 	require.NoError(t, s.SetAutojoinChannels(ctx, []domain.ChannelName{"#general"}))
 	require.NoError(t, s.SetLastChannel(ctx, "#general"))
 
+	// A stale message from a previous session should still appear
+	// (regular history survives across reconnects).
 	_, err := s.AppendEvent(ctx, "#general", domain.ChannelMessage{
 		Channel: "#general",
 		From:    "oldnick",
-		Body:    "ancient history",
+		Body:    "previous session message",
+		At:      oldTime,
+	})
+	require.NoError(t, err)
+
+	// A stale command error from a previous session should NOT appear:
+	// these were transient UI feedback and are filtered on rejoin to
+	// avoid the original bug where dispatch errors flooded the view.
+	_, err = s.AppendEvent(ctx, "#general", domain.ChannelCommandError{
+		Channel: "#general",
+		Err:     "ancient dispatch failure",
 		At:      oldTime,
 	})
 	require.NoError(t, err)
 
 	sess := session.New(s, nil, &uitest.FakeAPI{}, "testuser", "", "")
-	require.NoError(t, sess.RejoinChannels(ctx))
+	require.NoError(t, sess.JoinAutojoinChannels(ctx))
 
 	tm := newChatApp(t, sess)
 
-	// The join protocol events emitted by RejoinChannels should
-	// appear: join, ChanServ +o, and topic info.
+	// The join protocol events emitted by JoinAutojoinChannels
+	// should appear: join, ChanServ +o, and topic info.
 	tm.WaitFor(
 		"has joined #general",
 		"ChanServ sets mode",
 		"welcome topic",
+		"previous session message",
 	)
 
 	// Send a new message which should appear.
 	tm.Submit("fresh message")
 	tm.WaitFor("fresh message")
 
-	// The old event seeded before RejoinChannels should not be
-	// visible in the current view.
 	view := tm.CurrentView()
 	body, _ := splitBodyAndStatus(view)
-	content := uitest.NonEmptyColumn(uitest.VisibleColumns(body)[1])
+	content := normaliseContent(uitest.NonEmptyColumn(uitest.VisibleColumns(body)[1]))
+
+	// Replace the topic-separator rule row with a stable placeholder
+	// so the assertion pins the column's overall shape without
+	// tracking the rule's width glyph.
+	shaped := replaceTopicSeparator(content)
 	require.Equal(t, []string{
+		"welcome topic",
+		"<topic-separator>",
+		"<oldnick> previous session message",
+		"*** testuser has joined #general",
+		"*** ChanServ sets mode +o testuser",
 		"<testuser> fresh message",
 		"testuser >",
-	}, []string{
-		withoutTimestampPrefix(content[len(content)-2]),
-		compactLine(content[len(content)-1]),
-	},
+	}, shaped,
 		"events from before the session start should be filtered out")
+	require.NotContains(t, view, "ancient dispatch failure",
+		"command errors from before the session start should be filtered out")
+}
+
+// replaceTopicSeparator substitutes the horizontal-rule row that the
+// topic header draws beneath itself with a stable placeholder, so
+// full-slice content assertions aren't coupled to the rule's exact
+// rendered width.
+func replaceTopicSeparator(lines []string) []string {
+	out := make([]string, len(lines))
+
+	for i, line := range lines {
+		if line != "" && strings.Trim(line, "─") == "" {
+			out[i] = "<topic-separator>"
+			continue
+		}
+
+		out[i] = line
+	}
+
+	return out
 }
 
 func TestChatScreen_part_command(t *testing.T) {

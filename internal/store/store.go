@@ -36,11 +36,11 @@ type Store interface {
 	GetLastChannel(ctx context.Context) (domain.ChannelName, error)
 	SetLastChannel(ctx context.Context, name domain.ChannelName) error
 
-	// Pending quit
+	// Session-active marker
 
-	SavePendingQuit(ctx context.Context, pq domain.PendingQuit) error
-	GetPendingQuit(ctx context.Context) (*domain.PendingQuit, error)
-	ClearPendingQuit(ctx context.Context) error
+	GetSessionActive(ctx context.Context) (string, error)
+	SetSessionActive(ctx context.Context, value string) error
+	ClearSessionActive(ctx context.Context) error
 
 	// Last-read tracking
 

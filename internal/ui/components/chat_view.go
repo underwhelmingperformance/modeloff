@@ -89,7 +89,7 @@ type chatViewLayout struct {
 func NewChatView(ch domain.ChannelName, userNick domain.Nick, topic string) ChatView {
 	keyMap := DefaultChatViewKeyMap
 
-	ml := NewMessageList(ch).SetKeyMap(keyMap)
+	ml := NewMessageList(ch, domain.KindChannel).SetKeyMap(keyMap)
 
 	return ChatView{
 		channel:  ch,

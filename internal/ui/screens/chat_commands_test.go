@@ -12,6 +12,7 @@ import (
 	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/session"
 	"github.com/laney/modeloff/internal/store/storetest"
+	uipkg "github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/chatcmd"
 )
 
@@ -138,13 +139,65 @@ func TestChatScreen_HelpCommand_emits_typed_event(t *testing.T) {
 	require.Equal(t, chatcmd.HelpResult{}, msg)
 }
 
-func TestChatScreen_QuitCommand_returns_quit(t *testing.T) {
+func TestChatScreen_QuitCommand_returns_quit_requested(t *testing.T) {
 	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil)
 	require.NoError(t, err)
 
-	cmd, err := screen.parser.Parse("/quit")
+	cmd, err := screen.parser.Parse("/quit goodnight")
 	require.NoError(t, err)
 
 	msg := cmd.Run(screen.runContext())()
-	require.Equal(t, tea.QuitMsg{}, msg)
+	require.Equal(t, uipkg.QuitRequestedMsg{Message: "goodnight"}, msg)
+}
+
+func TestChatScreen_StatusItems_omits_disconnecting_by_default(t *testing.T) {
+	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil)
+	require.NoError(t, err)
+
+	for _, item := range screen.StatusItems() {
+		require.NotEqual(t, "disconnecting", item.ID,
+			"disconnecting status item should only appear once a quit is in flight")
+	}
+}
+
+func TestChatScreen_StatusItems_surfaces_disconnecting_while_quit_in_flight(t *testing.T) {
+	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil)
+	require.NoError(t, err)
+
+	updated, _ := screen.Update(uipkg.QuitRequestedMsg{})
+	chat, ok := updated.(ChatScreen)
+	require.True(t, ok, "expected ChatScreen, got %T", updated)
+
+	require.Contains(t, chat.StatusItems(), uipkg.StatusItem{
+		ID:       "disconnecting",
+		Side:     uipkg.StatusSideRight,
+		Priority: 100,
+		Full:     "Disconnecting…",
+		Compact:  "off…",
+	}, "quit-in-flight must surface a Disconnecting… status item")
+}
+
+func TestChatScreen_second_quit_request_escalates_to_tea_quit(t *testing.T) {
+	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil)
+	require.NoError(t, err)
+
+	// First quit starts the disconnect flow.
+	updated, _ := screen.Update(uipkg.QuitRequestedMsg{})
+	chat, ok := updated.(ChatScreen)
+	require.True(t, ok)
+	require.True(t, chat.quitting)
+
+	// A second quit request while the first is in flight must return
+	// tea.Quit directly, so the user is never stuck waiting on
+	// Session.Quit.
+	updated, cmd := chat.Update(uipkg.QuitRequestedMsg{})
+	require.NotNil(t, cmd)
+
+	second, ok := updated.(ChatScreen)
+	require.True(t, ok)
+	require.True(t, second.quitting,
+		"quitting flag should remain set after the escalation")
+
+	require.Equal(t, tea.Quit(), cmd(),
+		"second QuitRequestedMsg should escalate to tea.Quit")
 }

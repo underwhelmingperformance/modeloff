@@ -17,10 +17,12 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	chromem "github.com/philippgille/chromem-go"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	orderedmap "github.com/wk8/go-ordered-map/v2"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -149,7 +151,9 @@ func drainEventSkipping[T domain.SessionEvent](t *testing.T, sess *Session) T {
 			}
 
 			switch evt.(type) {
-			case domain.DispatchStartedEvent, domain.DispatchDoneEvent:
+			case domain.DispatchStartedEvent,
+				domain.DispatchDoneEvent,
+				domain.SystemNoticeEvent:
 				continue
 			default:
 				t.Fatalf("expected %T, got %T", *new(T), evt)
@@ -312,7 +316,7 @@ func TestSession_JoinSwitchAndReturn_no_duplicate_event(t *testing.T) {
 	require.Equal(t, domain.ChannelName("#general"), last)
 }
 
-func TestSession_RejoinChannels_populates_user_join_times(t *testing.T) {
+func TestSession_JoinAutojoinChannels_populates_user_join_times(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
@@ -323,7 +327,7 @@ func TestSession_RejoinChannels_populates_user_join_times(t *testing.T) {
 	require.True(t, sess.UserJoinedAt("#general").IsZero())
 	require.True(t, sess.UserJoinedAt("#random").IsZero())
 
-	require.NoError(t, sess.RejoinChannels(ctx))
+	require.NoError(t, sess.JoinAutojoinChannels(ctx))
 
 	// Drain join + mode events for each channel, skipping dispatch events.
 	for range 2 {
@@ -335,14 +339,14 @@ func TestSession_RejoinChannels_populates_user_join_times(t *testing.T) {
 	require.Equal(t, fixedTime, sess.UserJoinedAt("#random"))
 }
 
-func TestSession_RejoinChannels_empty_autojoin_is_noop(t *testing.T) {
+func TestSession_JoinAutojoinChannels_empty_autojoin_is_noop(t *testing.T) {
 	sess, _ := newTestSession(t)
 
-	require.NoError(t, sess.RejoinChannels(t.Context()))
-	requireChannels(t, sess.user.Channels)
+	require.NoError(t, sess.JoinAutojoinChannels(t.Context()))
+	requireChannels(t, sess.userSnapshot().Channels)
 }
 
-func TestSession_RejoinChannels_emits_join_events(t *testing.T) {
+func TestSession_JoinAutojoinChannels_emits_join_events(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
@@ -350,7 +354,7 @@ func TestSession_RejoinChannels_emits_join_events(t *testing.T) {
 	seedChannelWithMembers(t, s, "#beta", "botty")
 	require.NoError(t, s.SetAutojoinChannels(ctx, []domain.ChannelName{"#alpha", "#beta"}))
 
-	require.NoError(t, sess.RejoinChannels(ctx))
+	require.NoError(t, sess.JoinAutojoinChannels(ctx))
 
 	joinA := drainEventSkipping[domain.JoinEvent](t, sess)
 	require.Equal(t, domain.ChannelName("#alpha"), joinA.Channel)
@@ -421,238 +425,406 @@ func TestSession_Part_carries_message(t *testing.T) {
 	}, evt)
 }
 
-func TestSession_Quit_saves_pending_quit(t *testing.T) {
+func TestSession_Connect_marks_session_active(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := t.Context()
+
+	require.NoError(t, sess.Connect(ctx))
+
+	got, err := s.GetSessionActive(ctx)
+	require.NoError(t, err)
+	require.NotEmpty(t, got)
+	require.Equal(t, fixedTime, sess.ConnectedAt())
+
+	select {
+	case <-sess.Connected():
+	default:
+		t.Fatal("Connected() channel should be closed after Connect")
+	}
+
+	statusEvents := channelEventTypes(t, s, domain.StatusChannelName)
+	require.Equal(t, []string{"system_notice"}, statusEvents,
+		"clean connect should append exactly one Connected notice")
+}
+
+func TestSession_Connect_clears_unclean_user_membership(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := t.Context()
+
+	require.NoError(t, s.SetSessionActive(ctx, "stale"))
+	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+	seedChannelWithMembers(t, s, "#random", "testuser")
+
+	require.NoError(t, sess.Connect(ctx))
+
+	general, err := s.GetChannel(ctx, "#general")
+	require.NoError(t, err)
+	requireChannelEqual(t, domain.Channel{
+		Name:    "#general",
+		Kind:    domain.KindChannel,
+		Members: testMembers("botty"),
+		Created: fixedTime,
+	}, general)
+
+	random, err := s.GetChannel(ctx, "#random")
+	require.NoError(t, err)
+	requireChannelEqual(t, domain.Channel{
+		Name:    "#random",
+		Kind:    domain.KindChannel,
+		Members: domain.NewMemberList(),
+		Created: fixedTime,
+	}, random)
+
+	statusEvents := channelEventTypes(t, s, domain.StatusChannelName)
+	require.Equal(t, []string{"system_notice", "system_notice"}, statusEvents,
+		"unclean connect should append a Connected notice and a Reconnected-after-unclean notice")
+}
+
+func TestSession_Connect_then_JoinAutojoin_stamps_UserJoinedAt(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := t.Context()
+
+	// Simulate the original bug's preconditions: stale membership left
+	// over from a prior session, plus a non-empty session_active marker.
+	require.NoError(t, s.SetSessionActive(ctx, "stale"))
+	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+	seedChannelWithMembers(t, s, "#random", "testuser")
+	require.NoError(t, s.SetAutojoinChannels(ctx, []domain.ChannelName{"#general", "#random"}))
+
+	require.NoError(t, sess.Connect(ctx))
+
+	// Connect on an unclean session emits: status-channel JoinEvent,
+	// status-channel ModeChangeEvent, "Connected to modeloff"
+	// SystemNoticeEvent, and "Reconnected after unclean shutdown"
+	// SystemNoticeEvent.
+	drainNEvents(t, sess, 4)
+
+	require.NoError(t, sess.JoinAutojoinChannels(ctx))
+
+	require.Equal(t, fixedTime, sess.UserJoinedAt("#general"))
+	require.Equal(t, fixedTime, sess.UserJoinedAt("#random"))
+
+	// Each channel should have produced a fresh JoinEvent + ModeChangeEvent.
+	for range 2 {
+		_ = drainEventSkipping[domain.JoinEvent](t, sess)
+		_ = drainEventSkipping[domain.ModeChangeEvent](t, sess)
+	}
+}
+
+func TestSession_FocusChannel_emits_event_and_persists_last_channel(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
 	require.NoError(t, sess.Join(ctx, "#general"))
-	drainNEvents(t, sess, 3) // JoinEvent + ModeChangeEvent + DispatchDoneEvent
+	drainNEvents(t, sess, 3)
+
+	require.NoError(t, sess.FocusChannel(ctx, "#general"))
+
+	evt := drainEvent[domain.FocusChannelEvent](t, sess)
+	require.Equal(t, domain.ChannelName("#general"), evt.Channel)
+	require.Equal(t, fixedTime, evt.At)
+
+	last, err := s.GetLastChannel(ctx)
+	require.NoError(t, err)
+	require.Equal(t, domain.ChannelName("#general"), last)
+}
+
+func TestSession_FocusChannel_nonmember_is_noop(t *testing.T) {
+	sess, _ := newTestSession(t)
+	ctx := t.Context()
+
+	require.NoError(t, sess.FocusChannel(ctx, "#nope"))
+
+	select {
+	case evt := <-sess.Events():
+		t.Fatalf("expected no event, got %T", evt)
+	default:
+	}
+}
+
+func TestSession_Connect_Quit_Reconnect_omits_status_channel_from_autojoin(t *testing.T) {
+	s := storetest.NewMemoryStore(t)
+
+	sess1 := New(s, nil, &fakeAPIClient{}, "testuser", "", "")
+	sess1.now = func() time.Time { return fixedTime }
+	ctx := t.Context()
+
+	require.NoError(t, sess1.Connect(ctx))
+	drainNEvents(t, sess1, 3) // JoinEvent + ModeChangeEvent + "Connected" SystemNoticeEvent.
+
+	require.NoError(t, sess1.Join(ctx, "#general"))
+	drainNEvents(t, sess1, 3)
+
+	require.NoError(t, sess1.Quit(ctx, "bye"))
+
+	autojoin, err := s.ListAutojoinChannels(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []domain.ChannelName{"#general"}, autojoin)
+
+	// Starting a fresh session over the same store must not replay the
+	// status channel into the autojoin loop.
+	sess2 := New(s, nil, &fakeAPIClient{}, "testuser", "", "")
+	sess2.now = func() time.Time { return fixedTime }
+	require.NoError(t, sess2.Connect(ctx))
+
+	autojoin, err = s.ListAutojoinChannels(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []domain.ChannelName{"#general"}, autojoin)
+}
+
+func TestSession_Connect_unclean_recovery_emits_status_notices(t *testing.T) {
+	s := storetest.NewMemoryStore(t)
+	sess := New(s, nil, &fakeAPIClient{}, "testuser", "", "")
+	sess.now = func() time.Time { return fixedTime }
+	ctx := t.Context()
+
+	require.NoError(t, s.SetSessionActive(ctx, "stale"))
+
+	require.NoError(t, sess.Connect(ctx))
+
+	// Persisted status-channel event log: Connected notice then
+	// Reconnected-after-unclean notice, in order.
+	require.Equal(t, []string{"system_notice", "system_notice"},
+		channelEventTypes(t, s, domain.StatusChannelName))
+
+	events, err := s.EventsBefore(ctx, domain.StatusChannelName, nil, 10)
+	require.NoError(t, err)
+
+	type storedNotice struct {
+		Channel domain.ChannelName
+		Text    string
+	}
+	got := make([]storedNotice, 0, len(events))
+	for _, e := range events {
+		notice, ok := e.Event.(domain.ChannelSystemNotice)
+		require.True(t, ok, "expected ChannelSystemNotice, got %T", e.Event)
+		got = append(got, storedNotice{Channel: notice.Channel, Text: notice.Text})
+	}
+	require.Equal(t, []storedNotice{
+		{Channel: domain.StatusChannelName, Text: "Connected to modeloff"},
+		{Channel: domain.StatusChannelName, Text: "Reconnected after unclean shutdown"},
+	}, got)
+}
+
+// TestSession_user_snapshot_race_free hammers JoinAs, PartAs, and
+// UserJoinedAt from concurrent goroutines. Run under -race it catches
+// any regression that reintroduces direct mutation of the shared
+// OrderedMap.
+func TestSession_user_snapshot_race_free(t *testing.T) {
+	sess, _ := newTestSession(t)
+	ctx := t.Context()
+
+	// Drain emitted events so the mutators don't block on a full buffer.
+	drainCtx, cancelDrain := context.WithCancel(ctx)
+	t.Cleanup(cancelDrain)
+
+	go func() {
+		for {
+			select {
+			case <-sess.Events():
+			case <-drainCtx.Done():
+				return
+			}
+		}
+	}()
+
+	const iters = 200
+	channels := []domain.ChannelName{"#alpha", "#beta", "#gamma", "#delta"}
+
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := range iters {
+			ch := channels[i%len(channels)]
+			_ = sess.Join(ctx, string(ch))
+			_ = sess.Part(ctx, ch, "")
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := range iters {
+			ch := channels[i%len(channels)]
+			_ = sess.UserJoinedAt(ch)
+			_ = sess.UserNick()
+		}
+	}()
+
+	wg.Wait()
+
+	// Final state: whichever of Join/Part ran last wins, but the
+	// invariant we care about is "no torn read, no panic".
+	// UserJoinedAt on any known channel returns either zero time or
+	// fixedTime, never garbage.
+	for _, ch := range channels {
+		got := sess.UserJoinedAt(ch)
+		if !got.IsZero() {
+			require.Equal(t, fixedTime, got, "UserJoinedAt must return a coherent snapshot value")
+		}
+	}
+}
+
+func TestSession_Connect_is_idempotent(t *testing.T) {
+	recorder := oteltest.InstallSpanRecorder(t)
+	sess, s := newTestSession(t)
+	ctx := t.Context()
+
+	require.NoError(t, sess.Connect(ctx))
+	require.NoError(t, sess.Connect(ctx))
+
+	// Second Connect is a no-op: no duplicate "Connected" notice, no
+	// panic from close-of-closed-channel.
+	require.Equal(t, []string{"system_notice"},
+		channelEventTypes(t, s, domain.StatusChannelName))
+
+	select {
+	case <-sess.Connected():
+	default:
+		t.Fatal("Connected() channel should be closed after Connect")
+	}
+
+	// The no-op second call records no span: it short-circuits before
+	// startSpan so session.connect counts reflect real attempts only.
+	var connectSpans int
+	for _, span := range recorder.Ended() {
+		if span.Name() == "session.connect" {
+			connectSpans++
+		}
+	}
+	require.Equal(t, 1, connectSpans)
+}
+
+func TestSession_FocusChannel_status_channel_is_valid(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := t.Context()
+
+	require.NoError(t, sess.Connect(ctx))
+	drainNEvents(t, sess, 3)
+
+	require.NoError(t, sess.FocusChannel(ctx, domain.StatusChannelName))
+
+	evt := drainEvent[domain.FocusChannelEvent](t, sess)
+	require.Equal(t, domain.FocusChannelEvent{
+		Channel: domain.StatusChannelName,
+		At:      fixedTime,
+	}, evt)
+
+	last, err := s.GetLastChannel(ctx)
+	require.NoError(t, err)
+	require.Equal(t, domain.StatusChannelName, last)
+}
+
+func TestSession_Quit_appends_channel_quit_events_and_saves_autojoin(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := t.Context()
+
+	require.NoError(t, sess.Join(ctx, "#general"))
+	drainNEvents(t, sess, 3)
 
 	require.NoError(t, sess.Join(ctx, "#random"))
 	drainNEvents(t, sess, 3)
 
 	require.NoError(t, sess.Quit(ctx, "goodnight"))
 
-	pq, err := s.GetPendingQuit(ctx)
-	require.NoError(t, err)
-	require.Equal(t, domain.Nick("testuser"), pq.Nick)
-	require.Equal(t, "goodnight", pq.Message)
-	require.Equal(t, []domain.ChannelName{"#general", "#random"}, pq.Channels)
-
 	autojoin, err := s.ListAutojoinChannels(ctx)
 	require.NoError(t, err)
 	require.Equal(t, []domain.ChannelName{"#general", "#random"}, autojoin)
+
+	for _, ch := range []domain.ChannelName{"#general", "#random"} {
+		require.Equal(t, []string{"join", "mode_change", "quit"}, channelEventTypes(t, s, ch))
+	}
 }
 
-func TestSession_Quit_no_channels_is_noop(t *testing.T) {
+func TestSession_Quit_removes_user_from_channel_members(t *testing.T) {
 	sess, s := newTestSession(t)
-
-	require.NoError(t, sess.Quit(t.Context(), "bye"))
-
-	pq, err := s.GetPendingQuit(t.Context())
-	require.NoError(t, err)
-	require.Nil(t, pq)
-}
-
-func TestSession_ProcessPendingQuit_dispatches_and_clears(t *testing.T) {
-	var dispatched []string
-
-	fake := &fakeAPIClient{
-		sendEventsFn: func(_ context.Context, _ domain.ModelID, _ string, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (protocol.ModelResponse, error) {
-			for _, ev := range events {
-				if ev.Kind == protocol.KindQuit {
-					dispatched = append(dispatched, ev.From)
-				}
-			}
-
-			return protocol.Reply("goodbye"), nil
-		},
-	}
-	sess, s := newTestSessionWithAPI(t, fake)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
-	seedInstance(t, s, domain.Instance{
-		Nick:     "botty",
-		ModelID:  "test/model",
-		Channels: testChannels("#general"),
-	})
+	require.NoError(t, sess.Join(ctx, "#general"))
+	drainNEvents(t, sess, 3)
 
-	pq := domain.PendingQuit{
-		Nick:     "testuser",
-		Message:  "goodnight",
-		At:       fixedTime,
-		Channels: []domain.ChannelName{"#general"},
-	}
-	require.NoError(t, s.SavePendingQuit(ctx, pq))
+	require.NoError(t, sess.Quit(ctx, ""))
 
-	require.NoError(t, sess.ProcessPendingQuit(ctx))
-
-	// Model should have been dispatched a QUIT event.
-	require.Equal(t, []string{"testuser"}, dispatched)
-
-	// Pending quit should be cleared.
-	got, err := s.GetPendingQuit(ctx)
-	require.NoError(t, err)
-	require.Nil(t, got)
-}
-
-func TestSession_ProcessPendingQuit_multi_channel(t *testing.T) {
-	var mu sync.Mutex
-	var dispatchedModels []string
-
-	fake := &fakeAPIClient{
-		sendEventsFn: func(_ context.Context, modelID domain.ModelID, _ string, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (protocol.ModelResponse, error) {
-			for _, ev := range events {
-				if ev.Kind == protocol.KindQuit {
-					mu.Lock()
-					dispatchedModels = append(dispatchedModels, string(modelID))
-					mu.Unlock()
-				}
-			}
-
-			return protocol.Reply("bye"), nil
-		},
-	}
-	sess, s := newTestSessionWithAPI(t, fake)
-	ctx := t.Context()
-
-	seedChannelWithMembers(t, s, "#general", "testuser", "alpha", "beta")
-	seedChannelWithMembers(t, s, "#random", "testuser", "gamma")
-
-	seedInstance(t, s, domain.Instance{
-		Nick:     "alpha",
-		ModelID:  "test/alpha",
-		Channels: testChannels("#general"),
-	})
-	seedInstance(t, s, domain.Instance{
-		Nick:     "beta",
-		ModelID:  "test/beta",
-		Channels: testChannels("#general"),
-	})
-	seedInstance(t, s, domain.Instance{
-		Nick:     "gamma",
-		ModelID:  "test/gamma",
-		Channels: testChannels("#random"),
-	})
-
-	pq := domain.PendingQuit{
-		Nick:     "testuser",
-		Message:  "goodnight all",
-		At:       fixedTime,
-		Channels: []domain.ChannelName{"#general", "#random"},
-	}
-	require.NoError(t, s.SavePendingQuit(ctx, pq))
-
-	require.NoError(t, sess.ProcessPendingQuit(ctx))
-
-	// Quit events should be appended to each channel.
-	generalEvents := channelEventTypes(t, s, "#general")
-	require.Equal(t, "quit", generalEvents[0])
-
-	randomEvents := channelEventTypes(t, s, "#random")
-	require.Equal(t, "quit", randomEvents[0])
-
-	// All models across both channels should have been dispatched.
-	mu.Lock()
-	defer mu.Unlock()
-
-	require.ElementsMatch(t, []string{"test/alpha", "test/beta", "test/gamma"}, dispatchedModels)
-
-	// Pending quit should be cleared.
-	got, err := s.GetPendingQuit(ctx)
-	require.NoError(t, err)
-	require.Nil(t, got)
-}
-
-func TestSession_ProcessPendingQuit_no_pending_is_noop(t *testing.T) {
-	sess, _ := newTestSession(t)
-
-	require.NoError(t, sess.ProcessPendingQuit(t.Context()))
-}
-
-func TestSession_ProcessPendingQuit_removes_user_from_members(t *testing.T) {
-	fake := &fakeAPIClient{
-		sendEventsFn: func(_ context.Context, _ domain.ModelID, _ string, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (protocol.ModelResponse, error) {
-			return protocol.Reply("bye"), nil
-		},
-	}
-	sess, s := newTestSessionWithAPI(t, fake)
-	ctx := t.Context()
-
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
-	seedChannelWithMembers(t, s, "#random", "testuser")
-	seedInstance(t, s, domain.Instance{
-		Nick:     "botty",
-		ModelID:  "test/model",
-		Channels: testChannels("#general"),
-	})
-
-	pq := domain.PendingQuit{
-		Nick:     "testuser",
-		Message:  "night",
-		At:       fixedTime,
-		Channels: []domain.ChannelName{"#general", "#random"},
-	}
-	require.NoError(t, s.SavePendingQuit(ctx, pq))
-	require.NoError(t, sess.ProcessPendingQuit(ctx))
-
-	ch1, err := s.GetChannel(ctx, "#general")
-	require.NoError(t, err)
-	require.False(t, ch1.Members.Has("testuser"), "user should be removed from #general")
-	require.True(t, ch1.Members.Has("botty"), "model should remain in #general")
-
-	ch2, err := s.GetChannel(ctx, "#random")
-	require.NoError(t, err)
-	require.False(t, ch2.Members.Has("testuser"), "user should be removed from #random")
-}
-
-func TestSession_ProcessPendingQuit_then_rejoin_restores_membership(t *testing.T) {
-	fake := &fakeAPIClient{
-		sendEventsFn: func(_ context.Context, _ domain.ModelID, _ string, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (protocol.ModelResponse, error) {
-			return protocol.Reply("bye"), nil
-		},
-	}
-	sess, s := newTestSessionWithAPI(t, fake)
-	ctx := t.Context()
-
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
-	seedInstance(t, s, domain.Instance{
-		Nick:     "botty",
-		ModelID:  "test/model",
-		Channels: testChannels("#general"),
-	})
-
-	require.NoError(t, s.SetAutojoinChannels(ctx, []domain.ChannelName{"#general"}))
-
-	pq := domain.PendingQuit{
-		Nick:     "testuser",
-		Message:  "night",
-		At:       fixedTime,
-		Channels: []domain.ChannelName{"#general"},
-	}
-	require.NoError(t, s.SavePendingQuit(ctx, pq))
-	require.NoError(t, sess.ProcessPendingQuit(ctx))
-
-	// User should be gone.
 	ch, err := s.GetChannel(ctx, "#general")
 	require.NoError(t, err)
-	require.False(t, ch.Members.Has("testuser"))
+	requireChannelEqual(t, domain.Channel{
+		Name:    "#general",
+		Kind:    domain.KindChannel,
+		Members: domain.NewMemberList(),
+		Created: fixedTime,
+	}, ch)
+}
 
-	// Rejoin should restore membership with +o.
-	require.NoError(t, sess.RejoinChannels(ctx))
+func TestSession_Quit_clears_in_memory_channels(t *testing.T) {
+	sess, _ := newTestSession(t)
+	ctx := t.Context()
 
-	// Drain the join + mode events.
-	drainEvent[domain.JoinEvent](t, sess)
-	drainEventSkipping[domain.ModeChangeEvent](t, sess)
+	require.NoError(t, sess.Join(ctx, "#general"))
+	drainNEvents(t, sess, 3)
 
-	ch, err = s.GetChannel(ctx, "#general")
+	require.NoError(t, sess.Quit(ctx, ""))
+
+	require.Equal(t, 0, sess.userSnapshot().Channels.Len())
+}
+
+func TestSession_Quit_clears_session_active_marker(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := t.Context()
+
+	require.NoError(t, s.SetSessionActive(ctx, fixedTime.Format(time.RFC3339Nano)))
+
+	require.NoError(t, sess.Quit(ctx, ""))
+
+	got, err := s.GetSessionActive(ctx)
 	require.NoError(t, err)
-	require.True(t, ch.Members.Has("testuser"))
+	require.Empty(t, got)
+}
 
-	m, ok := ch.Members.Get("testuser")
-	require.True(t, ok)
-	require.Equal(t, domain.ModeOp, m.Mode)
+func TestSession_Quit_no_channels_is_noop_but_clears_marker(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := t.Context()
+
+	require.NoError(t, s.SetSessionActive(ctx, fixedTime.Format(time.RFC3339Nano)))
+
+	require.NoError(t, sess.Quit(ctx, "bye"))
+
+	autojoin, err := s.ListAutojoinChannels(ctx)
+	require.NoError(t, err)
+	require.Empty(t, autojoin)
+
+	got, err := s.GetSessionActive(ctx)
+	require.NoError(t, err)
+	require.Empty(t, got)
+}
+
+func TestSession_Quit_does_not_dispatch_to_models(t *testing.T) {
+	var calls int32
+
+	fake := &fakeAPIClient{
+		sendEventsFn: func(context.Context, domain.ModelID, string, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			atomic.AddInt32(&calls, 1)
+			return protocol.Reply("bye"), nil
+		},
+	}
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+	seedInstance(t, s, domain.Instance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: testChannels("#general"),
+	})
+	sess.mutateUser(func(u *domain.Instance) {
+		u.Channels.Set("#general", fixedTime)
+	})
+
+	require.NoError(t, sess.Quit(ctx, "bye"))
+
+	require.Equal(t, int32(0), atomic.LoadInt32(&calls),
+		"Quit must not dispatch to models; models see the quit next time they are dispatched against")
 }
 
 func TestSession_AddModel(t *testing.T) {
@@ -768,12 +940,10 @@ func TestSession_mutationOperations_recordSpans(t *testing.T) {
 
 	require.NoError(t, sess.Reset(ctx))
 
-	ended := make(map[string]sdktrace.ReadOnlySpan)
-	for _, span := range recorder.Ended() {
-		ended[span.Name()] = span
-	}
-
-	require.ElementsMatch(t, []string{
+	// Background goroutines (Kick / Reset dispatch) end their spans
+	// asynchronously, so poll until the full expected set is present
+	// rather than snapshotting once.
+	expected := []string{
 		"session.change_nick",
 		"session.dispatch_background",
 		"session.join",
@@ -792,7 +962,81 @@ func TestSession_mutationOperations_recordSpans(t *testing.T) {
 		"store.sqlite.save_instance",
 		"store.sqlite.set_autojoin_channels",
 		"store.sqlite.set_last_channel",
-	}, slices.Collect(maps.Keys(ended)))
+	}
+
+	require.EventuallyWithT(t, func(collect *assert.CollectT) {
+		ended := make(map[string]sdktrace.ReadOnlySpan)
+		for _, span := range recorder.Ended() {
+			ended[span.Name()] = span
+		}
+		assert.ElementsMatch(collect, expected, slices.Collect(maps.Keys(ended)))
+	}, 2*time.Second, 10*time.Millisecond)
+}
+
+func TestSession_SendMessageAs_status_channel_records_validation_error_kind(t *testing.T) {
+	recorder := oteltest.InstallSpanRecorder(t)
+	sess, _ := newTestSession(t)
+
+	err := sess.SendMessageAs(t.Context(), "testuser", domain.StatusChannelName, "hello")
+	require.Error(t, err)
+
+	span := oteltest.FindSpan(t, recorder, "session.send_message")
+	require.Equal(t, observability.ResultError, oteltest.AttrValue(span.Attributes(), observability.AttrResult))
+	require.Equal(t, observability.ErrorKindValidation, oteltest.AttrValue(span.Attributes(), observability.AttrErrorKind))
+}
+
+func TestSession_OpenDM_missing_instance_records_store_error_kind(t *testing.T) {
+	recorder := oteltest.InstallSpanRecorder(t)
+	sess, _ := newTestSession(t)
+
+	_, _, err := sess.OpenDM(t.Context(), "ghost")
+	require.Error(t, err)
+
+	span := oteltest.FindSpan(t, recorder, "session.open_dm")
+	require.Equal(t, observability.ResultError, oteltest.AttrValue(span.Attributes(), observability.AttrResult))
+	require.Equal(t, observability.ErrorKindStore, oteltest.AttrValue(span.Attributes(), observability.AttrErrorKind))
+}
+
+func TestSession_DispatchToChannel_api_failure_records_dispatch_error_kind(t *testing.T) {
+	recorder := oteltest.InstallSpanRecorder(t)
+	fake := &fakeAPIClient{
+		sendEventsFn: func(context.Context, domain.ModelID, string, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			return protocol.ModelResponse{}, fmt.Errorf("upstream boom")
+		},
+	}
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+	seedInstance(t, s, domain.Instance{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: testChannels("#general"),
+	})
+	_, ircMsg := seedUserMessage(t, s, "#general", "hi")
+
+	_, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+	require.Error(t, err)
+
+	span := oteltest.FindSpan(t, recorder, "session.dispatch_to_channel")
+	require.Equal(t, observability.ResultError, oteltest.AttrValue(span.Attributes(), observability.AttrResult))
+	require.Equal(t, observability.ErrorKindDispatch, oteltest.AttrValue(span.Attributes(), observability.AttrErrorKind))
+}
+
+func TestSession_JoinAutojoinChannels_records_aggregate_span(t *testing.T) {
+	recorder := oteltest.InstallSpanRecorder(t)
+	sess, s := newTestSession(t)
+	ctx := t.Context()
+
+	require.NoError(t, s.SetAutojoinChannels(ctx, []domain.ChannelName{"#alpha", "#beta"}))
+
+	require.NoError(t, sess.JoinAutojoinChannels(ctx))
+
+	span := oteltest.FindSpan(t, recorder, "session.autojoin")
+	require.Equal(t, "2", oteltest.AttrValue(span.Attributes(), observability.AttrAutojoinCount))
+	require.Equal(t, "0", oteltest.AttrValue(span.Attributes(), observability.AttrAutojoinFailed))
+	require.Equal(t, `["#alpha","#beta"]`, oteltest.AttrValue(span.Attributes(), observability.AttrAutojoinChannels))
+	require.Equal(t, observability.ResultOK, oteltest.AttrValue(span.Attributes(), observability.AttrResult))
 }
 
 func TestSession_dispatchToInstance_recordsPassReasonAndToolTurns(t *testing.T) {
@@ -1466,19 +1710,21 @@ func TestSession_Poke_api_error_emits_error_event(t *testing.T) {
 	require.NoError(t, sess.Poke(ctx))
 	events := drainEvents(t, sess, 2)
 
-	var hasError bool
+	var hasStatusNotice bool
 	var hasReply bool
 
 	for _, evt := range events {
-		switch evt.(type) {
-		case domain.ErrorEvent:
-			hasError = true
+		switch e := evt.(type) {
+		case domain.SystemNoticeEvent:
+			if e.Channel == domain.StatusChannelName {
+				hasStatusNotice = true
+			}
 		case domain.ModelReplyEvent:
 			hasReply = true
 		}
 	}
 
-	require.True(t, hasError, "should emit an ErrorEvent for the failed channel")
+	require.True(t, hasStatusNotice, "dispatch failure should append a notice to the status channel")
 	require.True(t, hasReply, "should emit a ModelReplyEvent for the successful channel")
 
 	msgs := channelMessages(t, s, "#random")

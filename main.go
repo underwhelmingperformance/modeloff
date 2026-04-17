@@ -43,7 +43,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	dataStore, err := store.NewDefaultSQLiteStore()
+	dataStore, err := store.NewDefaultSQLiteStore(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error creating data store: %v\n", err)
 		os.Exit(1)
@@ -79,18 +79,12 @@ func main() {
 	sess.SetToolRegistry(toolRegistry)
 
 	appCtx, cancelApp := context.WithCancel(context.Background())
-
-	if err := sess.RejoinChannels(appCtx); err != nil {
-		fmt.Fprintf(os.Stderr, "error rejoining channels: %v\n", err)
-		os.Exit(1)
-	}
 	defer cancelApp()
 
 	channelCount := 0
 
-	channels, err := dataStore.ListChannels(appCtx)
-	if err == nil {
-		channelCount = len(channels)
+	if autojoin, err := dataStore.ListAutojoinChannels(appCtx); err == nil {
+		channelCount = len(autojoin)
 	}
 
 	chatScreen, err := screens.NewChatScreen(appCtx, sess, cfgStore)
@@ -106,6 +100,8 @@ func main() {
 		ChannelCount: channelCount,
 		Nick:         cfg.UserNick,
 		Next:         chatScreen,
+		Session:      sess,
+		Ctx:          appCtx,
 	})
 
 	p := tea.NewProgram(

@@ -42,6 +42,8 @@ func TestApp_startup_with_saved_channels(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#general")
 	uitest.SeedChannel(t, sess, "#random")
 	uitest.SeedMessage(t, sess, "#random", "hello from last time")
+	require.NoError(t, sess.Quit(t.Context(), ""))
+	uitest.DrainEvents(sess)
 
 	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore)
 	require.NoError(t, err)
@@ -51,10 +53,12 @@ func TestApp_startup_with_saved_channels(t *testing.T) {
 		ChannelCount: 2,
 		Nick:         string(sess.UserNick()),
 		Next:         chatScreen,
+		Session:      sess,
+		Ctx:          t.Context(),
 	}))
 	tm := uitest.New(t, root)
 
-	advanceConnection(tm, 4)
+	advanceConnection(tm, 6)
 	tm.WaitFor("#general", "#random", "hello from", "last time")
 
 	last, err := store.GetLastChannel(t.Context())
@@ -119,13 +123,6 @@ func TestApp_terminal_output_shows_full_model_nick_in_user_list(t *testing.T) {
 	sess, store, cfgStore := newIntegrationSession(t, &integrationAPI{})
 	uitest.SeedChannel(t, sess, "#general")
 
-	ch, err := store.GetChannel(t.Context(), "#general")
-	require.NoError(t, err)
-
-	ch.Members.Add("grok420_bot")
-	ch.Members.SetMode("grok420_bot", domain.ModeVoice)
-	require.NoError(t, store.SaveChannel(t.Context(), ch))
-
 	channels := orderedmap.New[domain.ChannelName, time.Time]()
 	channels.Set("#general", time.Now())
 
@@ -134,6 +131,8 @@ func TestApp_terminal_output_shows_full_model_nick_in_user_list(t *testing.T) {
 		ModelID:  "test/model",
 		Channels: channels,
 	})
+
+	require.NoError(t, sess.JoinAs(t.Context(), "grok420_bot", "#general"))
 
 	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore)
 	require.NoError(t, err)

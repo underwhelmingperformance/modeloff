@@ -22,7 +22,7 @@ func TestJoinAs_model_actor(t *testing.T) {
 
 	require.NoError(t, sess.JoinAs(ctx, "botty", "#dev"))
 
-	evt := drainEvent[domain.JoinEvent](t, sess)
+	evt := drainEventSkipping[domain.JoinEvent](t, sess)
 	require.Equal(t, domain.JoinEvent{
 		Channel: "#dev",
 		Nick:    "botty",
@@ -30,10 +30,20 @@ func TestJoinAs_model_actor(t *testing.T) {
 		At:      fixedTime,
 	}, evt)
 
+	mode := drainEventSkipping[domain.ModeChangeEvent](t, sess)
+	require.Equal(t, domain.ModeChangeEvent{
+		Channel: "#dev",
+		Nick:    "botty",
+		Mode:    domain.ModeVoice,
+		Actor:   "ChanServ",
+		At:      fixedTime,
+	}, mode)
+
 	ch, err := s.GetChannel(ctx, "#dev")
 	require.NoError(t, err)
 	modelOnlyMembers := domain.NewMemberList()
 	modelOnlyMembers.Add("botty")
+	modelOnlyMembers.SetMode("botty", domain.ModeVoice)
 	requireChannelEqual(t, domain.Channel{
 		Name:    "#dev",
 		Kind:    domain.KindChannel,
@@ -336,6 +346,80 @@ func TestKickAs_rejects_DM(t *testing.T) {
 	require.EqualError(t, err, "cannot kick from a direct message")
 }
 
+func TestSendMessageAs_rejects_status_channel(t *testing.T) {
+	sess, _ := newTestSession(t)
+	ctx := t.Context()
+
+	err := sess.SendMessageAs(ctx, "testuser", domain.StatusChannelName, "hello")
+
+	var guard domain.StatusChannelGuardError
+	require.ErrorAs(t, err, &guard)
+	require.Equal(t, domain.StatusChannelGuardError{
+		Command: "send",
+		Hint:    "the status channel doesn't take messages — try /msg <nick> for a model or /join <channel> for a channel",
+	}, guard)
+
+	select {
+	case evt := <-sess.Events():
+		t.Fatalf("expected no event, got %T", evt)
+	default:
+	}
+}
+
+func TestSendActionAs_rejects_status_channel(t *testing.T) {
+	sess, _ := newTestSession(t)
+	ctx := t.Context()
+
+	err := sess.SendActionAs(ctx, "testuser", domain.StatusChannelName, "waves")
+
+	var guard domain.StatusChannelGuardError
+	require.ErrorAs(t, err, &guard)
+	require.Equal(t, domain.StatusChannelGuardError{
+		Command: "me",
+		Hint:    "the status channel doesn't take messages — try /msg <nick> for a model or /join <channel> for a channel",
+	}, guard)
+
+	select {
+	case evt := <-sess.Events():
+		t.Fatalf("expected no event, got %T", evt)
+	default:
+	}
+}
+
+func TestOpenDM_rejects_status_channel_name(t *testing.T) {
+	sess, _ := newTestSession(t)
+
+	_, created, err := sess.OpenDM(t.Context(), domain.Nick(domain.StatusChannelName))
+
+	var guard domain.StatusChannelGuardError
+	require.ErrorAs(t, err, &guard)
+	require.Equal(t, domain.StatusChannelGuardError{
+		Command: "msg",
+		Hint:    "to message a model, use /msg <nick> with the model's name; &modeloff is a server channel.",
+	}, guard)
+	require.False(t, created)
+}
+
+func TestOpenDMAs_rejects_status_channel_name(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := t.Context()
+
+	seedInstance(t, s, domain.Instance{
+		Nick:    "botty",
+		ModelID: "test/model-a",
+	})
+
+	_, created, err := sess.OpenDMAs(ctx, "botty", domain.Nick(domain.StatusChannelName))
+
+	var guard domain.StatusChannelGuardError
+	require.ErrorAs(t, err, &guard)
+	require.Equal(t, domain.StatusChannelGuardError{
+		Command: "msg",
+		Hint:    "to message a model, use /msg <nick> with the model's name; &modeloff is a server channel.",
+	}, guard)
+	require.False(t, created)
+}
+
 func TestJoinAs_DM_no_join_event(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
@@ -602,7 +686,7 @@ func TestJoinAs_user_existing_channel_no_topic(t *testing.T) {
 	}
 }
 
-func TestJoinAs_model_no_mode_or_topic(t *testing.T) {
+func TestJoinAs_model_voice_only_no_topic(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
@@ -619,12 +703,24 @@ func TestJoinAs_model_no_mode_or_topic(t *testing.T) {
 
 	require.NoError(t, sess.JoinAs(ctx, "botty", "#dev"))
 
-	joinEvt := drainEvent[domain.JoinEvent](t, sess)
+	joinEvt := drainEventSkipping[domain.JoinEvent](t, sess)
 	require.Equal(t, domain.Nick("botty"), joinEvt.Nick)
 
-	// Drain dispatch events triggered by the join.
+	// A model join grants +v via ChanServ, mirroring the +o granted to
+	// the user on user joins.
+	mode := drainEventSkipping[domain.ModeChangeEvent](t, sess)
+	require.Equal(t, domain.ModeChangeEvent{
+		Channel: "#dev",
+		Nick:    "botty",
+		Mode:    domain.ModeVoice,
+		Actor:   "ChanServ",
+		At:      fixedTime,
+	}, mode)
+
+	// Drain remaining dispatch events triggered by the join.
 	drainDispatchEvents(t, sess)
 
+	// No TopicInfoEvent for a non-user joiner.
 	select {
 	case evt := <-sess.Events():
 		t.Fatalf("unexpected event after model join: %T %+v", evt, evt)

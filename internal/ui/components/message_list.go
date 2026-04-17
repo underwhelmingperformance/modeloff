@@ -63,13 +63,17 @@ type MessageList struct {
 	locale          language.Tag
 }
 
-// NewMessageList creates an empty message list.
-func NewMessageList(ch domain.ChannelName) MessageList {
+// NewMessageList creates an empty message list for the given
+// channel. Callers should pass the channel kind so renderers that
+// differentiate by kind (e.g. status channels suppressing nick
+// prefixes) have it available without a follow-up SetChannelMsg.
+func NewMessageList(ch domain.ChannelName, kind domain.ChannelKind) MessageList {
 	vp := viewport.New(0, 0)
 	vp.MouseWheelEnabled = true
 
 	return MessageList{
 		channel:  ch,
+		kind:     kind,
 		events:   NewRingBuffer[domain.StoredEvent](defaultBufferCap),
 		viewport: vp,
 		locale:   timestamp.CurrentLocale(),
@@ -252,6 +256,26 @@ func (m MessageList) loadHistory(events []domain.StoredEvent) MessageList {
 	m.viewport.GotoBottom()
 
 	return m.refreshContent(true)
+}
+
+// Replace replaces the event buffer with the given events and
+// re-renders the viewport. Used by callers that don't drive the list
+// via session events (for example, the ConnectionScreen status pane).
+func (m MessageList) Replace(events []domain.StoredEvent) MessageList {
+	return m.loadHistory(events)
+}
+
+// Append adds one or more events to the end of the buffer and
+// re-renders the viewport. Used by callers that incrementally
+// feed events into the list without owning the session-events
+// drain (for example, the ConnectionScreen status pane refreshing
+// itself on each tick).
+func (m MessageList) Append(events ...domain.StoredEvent) MessageList {
+	for _, evt := range events {
+		m = m.appendEvent(evt)
+	}
+
+	return m
 }
 
 func (m MessageList) appendEvent(event domain.StoredEvent) MessageList {

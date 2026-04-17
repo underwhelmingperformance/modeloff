@@ -75,7 +75,19 @@ const (
 	// KindDM is a private conversation between the user and a
 	// single model instance.
 	KindDM
+
+	// KindStatus is the per-session "server window" channel that
+	// holds connection events, autojoin progress, and dispatch
+	// errors. There is exactly one of these and it cannot be parted.
+	KindStatus
 )
+
+// StatusChannelName is the reserved channel name of the per-session
+// status channel. It uses an IRC-style local-channel prefix to make
+// it visually distinct from regular channels and impossible to
+// collide with a user-created name (`/join` normalises bare names to
+// `#`-prefixed).
+const StatusChannelName ChannelName = "&modeloff"
 
 // Channel represents a chat channel or direct message conversation.
 type Channel struct {
@@ -89,10 +101,15 @@ type Channel struct {
 }
 
 // DisplayName returns the channel name formatted for display. DM
-// channels are prefixed with @ instead of shown as bare names.
+// channels are prefixed with @ instead of shown as bare names. The
+// status channel renders as its reserved name so the sidebar keeps the
+// IRC-convention cue that it is not a user-created room.
 func (ch Channel) DisplayName() string {
-	if ch.Kind == KindDM {
+	switch ch.Kind {
+	case KindDM:
 		return "@" + string(ch.Name)
+	case KindStatus:
+		return string(StatusChannelName)
 	}
 
 	return string(ch.Name)
@@ -113,14 +130,6 @@ type Instance struct {
 // the human user).
 func (i Instance) IsModel() bool { return i.ModelID != "" }
 
-// PendingQuit records a quit that was initiated but not yet fully
-// processed. Models in the listed channels still need to be notified.
-type PendingQuit struct {
-	Nick     Nick          `json:"nick"`
-	Message  string        `json:"message,omitempty"`
-	At       time.Time     `json:"at"`
-	Channels []ChannelName `json:"channels"`
-}
 
 // NickMode represents a user's privilege level in a channel, following
 // IRC conventions.
@@ -203,18 +212,30 @@ func NewMemberList() MemberList {
 }
 
 // Add inserts a nick as a regular (unprivileged) member.
-func (ml MemberList) Add(nick Nick) {
+func (ml *MemberList) Add(nick Nick) {
+	if ml.members == nil {
+		*ml = NewMemberList()
+	}
+
 	ml.members.Insert(Member{Nick: nick, Mode: ModeNone})
 }
 
 // Remove deletes the given member.
-func (ml MemberList) Remove(m Member) {
+func (ml *MemberList) Remove(m Member) {
+	if ml.members == nil {
+		return
+	}
+
 	ml.members.Remove(m)
 }
 
 // SetMode changes a member's privilege level. This removes and
 // re-inserts the member since mode is part of the sort key.
-func (ml MemberList) SetMode(nick Nick, mode NickMode) {
+func (ml *MemberList) SetMode(nick Nick, mode NickMode) {
+	if ml.members == nil {
+		*ml = NewMemberList()
+	}
+
 	if cur, ok := ml.Get(nick); ok {
 		ml.members.Remove(cur)
 	}
@@ -301,7 +322,8 @@ func (ml MemberList) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON decodes a JSON array of members into the list. An
 // empty or null array leaves the btree nil so that the zero value
-// round-trips cleanly under reflect.DeepEqual.
+// round-trips cleanly under reflect.DeepEqual; mutating methods on
+// the resulting list lazily initialise the underlying set.
 func (ml *MemberList) UnmarshalJSON(data []byte) error {
 	var members []Member
 	if err := json.Unmarshal(data, &members); err != nil {

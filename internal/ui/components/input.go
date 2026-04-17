@@ -37,6 +37,14 @@ type CommandSubmitMsg struct {
 	Raw string
 }
 
+// InputLockedMsg toggles the input bar's locked state. While locked,
+// keyboard input and submissions are ignored. Used while the client
+// is shutting down to prevent the user typing into a UI that is
+// about to disappear.
+type InputLockedMsg struct {
+	Locked bool
+}
+
 // historySize is the maximum number of entries kept in the input
 // history ring buffer.
 const historySize = 50
@@ -68,6 +76,8 @@ type InputBar struct {
 
 	nicks    []domain.Nick
 	nickComp nickCompletion
+
+	locked bool
 }
 
 // NewInputBar creates an input bar with an optional user nick. When
@@ -102,6 +112,10 @@ func (b InputBar) Init() tea.Cmd {
 // Update implements ui.Model.
 func (b InputBar) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case InputLockedMsg:
+		b.locked = msg.Locked
+		return b, nil
+
 	case UserNickMsg:
 		b.userNick = msg.Nick
 		return b, nil
@@ -139,7 +153,15 @@ func (b InputBar) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		return b, nil
 
 	case tea.KeyMsg:
+		if b.locked {
+			return b, nil
+		}
+
 		return b.handleKey(msg)
+	}
+
+	if b.locked {
+		return b, nil
 	}
 
 	var cmd tea.Cmd

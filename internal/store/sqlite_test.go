@@ -95,7 +95,7 @@ func newTestStore(t *testing.T) *SQLiteStore {
 	require.NoError(t, err)
 	db.SetMaxOpenConns(1)
 
-	s, err := NewSQLiteStore(db)
+	s, err := NewSQLiteStore(t.Context(), db)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = s.Close() })
 
@@ -635,74 +635,74 @@ func TestSQLiteStore_Reset(t *testing.T) {
 	require.Empty(t, lastRead)
 }
 
-func TestSQLiteStore_PendingQuit_round_trip(t *testing.T) {
+func TestSQLiteStore_SessionActive_empty(t *testing.T) {
+	s := newTestStore(t)
+
+	got, err := s.GetSessionActive(t.Context())
+	require.NoError(t, err)
+	require.Empty(t, got)
+}
+
+func TestSQLiteStore_SessionActive_round_trip(t *testing.T) {
 	s := newTestStore(t)
 	ctx := t.Context()
 
-	pq := domain.PendingQuit{
-		Nick:     "testuser",
-		Message:  "see ya",
-		At:       time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
-		Channels: []domain.ChannelName{"#general", "#random"},
-	}
+	require.NoError(t, s.SetSessionActive(ctx, "2026-04-16T09:00:00Z"))
 
-	require.NoError(t, s.SavePendingQuit(ctx, pq))
-
-	got, err := s.GetPendingQuit(ctx)
+	got, err := s.GetSessionActive(ctx)
 	require.NoError(t, err)
-	require.Equal(t, &pq, got)
+	require.Equal(t, "2026-04-16T09:00:00Z", got)
 }
 
-func TestSQLiteStore_PendingQuit_get_when_none(t *testing.T) {
-	s := newTestStore(t)
-
-	got, err := s.GetPendingQuit(t.Context())
-	require.NoError(t, err)
-	require.Nil(t, got)
-}
-
-func TestSQLiteStore_PendingQuit_clear(t *testing.T) {
+func TestSQLiteStore_SessionActive_clear(t *testing.T) {
 	s := newTestStore(t)
 	ctx := t.Context()
 
-	pq := domain.PendingQuit{
-		Nick:     "testuser",
-		At:       time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
-		Channels: []domain.ChannelName{"#general"},
-	}
+	require.NoError(t, s.SetSessionActive(ctx, "2026-04-16T09:00:00Z"))
+	require.NoError(t, s.ClearSessionActive(ctx))
 
-	require.NoError(t, s.SavePendingQuit(ctx, pq))
-	require.NoError(t, s.ClearPendingQuit(ctx))
-
-	got, err := s.GetPendingQuit(ctx)
+	got, err := s.GetSessionActive(ctx)
 	require.NoError(t, err)
-	require.Nil(t, got)
+	require.Empty(t, got)
 }
 
-func TestSQLiteStore_PendingQuit_overwrite(t *testing.T) {
+func TestSQLiteStore_NewSQLiteStore_purges_legacy_pending_quit(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	db.SetMaxOpenConns(1)
+
+	// Pre-create the schema and seed a stale pending_quit row.
+	_, err = db.Exec(`CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT NOT NULL)`)
+	require.NoError(t, err)
+	_, err = db.Exec(`INSERT INTO state (key, value) VALUES ('pending_quit', 'stale-blob')`)
+	require.NoError(t, err)
+
+	s, err := NewSQLiteStore(t.Context(), db)
+	require.NoError(t, err)
+
+	var got string
+	err = db.QueryRow(`SELECT value FROM state WHERE key = 'pending_quit'`).Scan(&got)
+	require.ErrorIs(t, err, sql.ErrNoRows, "legacy pending_quit row should be purged on store open")
+
+	// Other state untouched.
+	require.NoError(t, s.SetSessionActive(t.Context(), "ok"))
+	v, err := s.GetSessionActive(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, "ok", v)
+}
+
+func TestSQLiteStore_SessionActive_overwrite(t *testing.T) {
 	s := newTestStore(t)
 	ctx := t.Context()
 
-	pq1 := domain.PendingQuit{
-		Nick:     "testuser",
-		Message:  "first",
-		At:       time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
-		Channels: []domain.ChannelName{"#general"},
-	}
+	require.NoError(t, s.SetSessionActive(ctx, "first"))
+	require.NoError(t, s.SetSessionActive(ctx, "second"))
 
-	pq2 := domain.PendingQuit{
-		Nick:     "testuser",
-		Message:  "second",
-		At:       time.Date(2025, 6, 15, 13, 0, 0, 0, time.UTC),
-		Channels: []domain.ChannelName{"#random"},
-	}
-
-	require.NoError(t, s.SavePendingQuit(ctx, pq1))
-	require.NoError(t, s.SavePendingQuit(ctx, pq2))
-
-	got, err := s.GetPendingQuit(ctx)
+	got, err := s.GetSessionActive(ctx)
 	require.NoError(t, err)
-	require.Equal(t, &pq2, got)
+	require.Equal(t, "second", got)
 }
 
 func TestSQLiteStore_Reset_empty_store(t *testing.T) {

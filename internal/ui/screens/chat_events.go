@@ -1,6 +1,7 @@
 package screens
 
 import (
+	"errors"
 	"fmt"
 	"iter"
 	"time"
@@ -10,59 +11,7 @@ import (
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/components"
-	uitimestamp "github.com/laney/modeloff/internal/ui/timestamp"
 )
-
-func (s ChatScreen) handleInitialLoad(msg domain.InitialLoadEvent) (ui.Model, tea.Cmd) {
-	for _, ch := range msg.Channels {
-		s.channels.Insert(ch)
-	}
-
-	for _, inst := range msg.Instances {
-		s.instances.Insert(inst)
-	}
-
-	*s.active = msg.Active
-
-	var cmds []tea.Cmd
-
-	cmds = append(cmds, msgCmd(components.SetChannelMsg{
-		Channel: msg.Active,
-		Topic:   s.activeTopic(),
-		Kind:    s.activeKind(),
-	}))
-
-	s.checklist.channelCount = s.channels.Len()
-
-	if s.channels.Len() == 0 {
-		cmds = append(cmds, msgCmd(components.SetPlaceholderMsg{
-			Text: s.checklist.Render(),
-		}))
-	} else {
-		cmds = append(cmds, msgCmd(components.SetPlaceholderMsg{}))
-	}
-
-	cmds = append(cmds, msgCmd(components.SetChannelsMsg{
-		Channels: msg.Channels,
-		Active:   msg.Active,
-		Unread:   msg.Unread,
-	}))
-	cmds = append(cmds, s.fetchHistoryAfter(msg.Active, s.sess.UserJoinedAt(msg.Active)))
-
-	cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: msg.Members}))
-	cmds = append(cmds, msgCmd(s.commandStateMsg()))
-	cfg, _ := s.loadConfig()
-	cmds = append(cmds, msgCmd(components.HighlightWordsMsg{
-		Words:    cfg.HighlightWords,
-		UserNick: s.sess.UserNick(),
-	}))
-	cmds = append(cmds, msgCmd(components.TimestampFormatMsg{
-		Format: cfg.TimestampFormat,
-		Locale: uitimestamp.CurrentLocale(),
-	}))
-
-	return s, tea.Sequence(cmds...)
-}
 
 func (s ChatScreen) handleSessionEvent(msg sessionEventMsg) (ui.Model, tea.Cmd) {
 	var (
@@ -103,6 +52,10 @@ func (s ChatScreen) handleSessionEvent(msg sessionEventMsg) (ui.Model, tea.Cmd) 
 		updated, cmd = s.handleDispatchDone(evt)
 	case domain.ErrorEvent:
 		updated, cmd = s.handleErrorEvent(evt)
+	case domain.FocusChannelEvent:
+		updated, cmd = s.handleFocusChannelEvent(evt)
+	case domain.SystemNoticeEvent:
+		updated, cmd = s.handleSystemNoticeEvent(evt)
 	}
 
 	if updated != nil {
@@ -110,6 +63,25 @@ func (s ChatScreen) handleSessionEvent(msg sessionEventMsg) (ui.Model, tea.Cmd) 
 	}
 
 	return s, tea.Batch(cmd, s.listenForEvents())
+}
+
+// handleFocusChannelEvent handles a session-driven focus change.
+// It delegates to the same path used for direct UI focus switches.
+func (s ChatScreen) handleFocusChannelEvent(msg domain.FocusChannelEvent) (ui.Model, tea.Cmd) {
+	return s.handleChannelFocus(domain.ChannelFocusEvent{Channel: msg.Channel})
+}
+
+// handleSystemNoticeEvent forwards a freshly-appended system notice
+// to the message list when the affected channel is the active one.
+// Off-channel notices update only the unread badge.
+func (s ChatScreen) handleSystemNoticeEvent(msg domain.SystemNoticeEvent) (ui.Model, tea.Cmd) {
+	if msg.Channel == *s.active {
+		return s, msgCmd(msg.Stored)
+	}
+
+	count, _ := s.sess.UnreadCount(s.ctx, msg.Channel)
+
+	return s, msgCmd(components.ChannelUnreadMsg{Channel: msg.Channel, Count: count})
 }
 
 func (s ChatScreen) handleChannelFocus(msg domain.ChannelFocusEvent) (ui.Model, tea.Cmd) {
@@ -328,11 +300,25 @@ func (s ChatScreen) handleTopicChangeEvent(msg domain.TopicChangeEvent) (ui.Mode
 }
 
 func (s ChatScreen) handleTopicInfoEvent(msg domain.TopicInfoEvent) (ui.Model, tea.Cmd) {
+	if ch, ok := s.channels.Get(domain.Channel{Name: msg.Channel}); ok {
+		ch.Topic = msg.Topic
+		ch.TopicSetBy = msg.TopicSetBy
+		ch.TopicSetAt = msg.TopicSetAt
+		s.channels.Insert(ch)
+	}
+
 	if *s.active != msg.Channel {
 		return s, nil
 	}
 
-	return s, s.logAndShow(domain.ChannelTopicInfo(msg))
+	return s, tea.Batch(
+		msgCmd(components.SetChannelMsg{
+			Channel: msg.Channel,
+			Topic:   msg.Topic,
+			Kind:    s.activeKind(),
+		}),
+		s.logAndShow(domain.ChannelTopicInfo(msg)),
+	)
 }
 
 func (s ChatScreen) handleNickChangeEvent(msg domain.NickChangeEvent) (ui.Model, tea.Cmd) {
@@ -510,11 +496,25 @@ func (s ChatScreen) handleConfigChangedEvent(msg domain.ConfigChangedEvent) (ui.
 func (s ChatScreen) handleErrorEvent(msg domain.ErrorEvent) (ui.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
-	cmds = append(cmds, s.logAndShow(domain.ChannelCommandError{
-		Channel: *s.active,
-		Err:     fmt.Sprintf("%s: %s", msg.Operation, msg.Err),
-		At:      msg.At,
-	}))
+	// Status-channel guard refusals are user-fixable contextual
+	// errors, not failures: render them as a hint with the
+	// command-tagged usage text rather than a red command-error.
+	var guard domain.StatusChannelGuardError
+	if errors.As(msg.Err, &guard) {
+		cmds = append(cmds, s.logAndShow(domain.ChannelUsageHint{
+			Channel: *s.active,
+			Command: guard.Command,
+			Usage:   guard.Hint,
+			At:      msg.At,
+		}))
+	} else {
+		cmds = append(cmds, s.logAndShow(domain.ChannelCommandError{
+			Channel: *s.active,
+			Err:     fmt.Sprintf("%s: %s", msg.Operation, msg.Err),
+			At:      msg.At,
+		}))
+	}
+
 	cmds = append(cmds, msgCmd(components.PendingResponseMsg{Pending: false}))
 	cmds = append(cmds, msgCmd(components.NickListThinkingMsg{}))
 

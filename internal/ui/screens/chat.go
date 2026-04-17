@@ -35,6 +35,31 @@ type sessionEventMsg struct {
 // deliverNextReplyMsg triggers delivery of the next queued reply.
 type deliverNextReplyMsg struct{}
 
+// channelOrder defines the sidebar/cache ordering: status channel
+// pinned to the top, then normal channels, then DMs, alphabetical
+// within each group. Mirrors components.channelLess so the sidebar
+// and the local cache agree.
+func channelOrder(a, b domain.Channel) bool {
+	if a.Kind != b.Kind {
+		return channelKindRank(a.Kind) < channelKindRank(b.Kind)
+	}
+
+	return a.Name < b.Name
+}
+
+func channelKindRank(kind domain.ChannelKind) int {
+	switch kind {
+	case domain.KindStatus:
+		return 0
+	case domain.KindChannel:
+		return 1
+	case domain.KindDM:
+		return 2
+	}
+
+	return 3
+}
+
 type liveModelsLoadedMsg struct {
 	models []chatcmd.ModelOption
 }
@@ -66,6 +91,11 @@ type ChatScreen struct {
 	obs        *observability.Runtime
 	summary    components.MetricsSummaryModel
 	checklist  WelcomeChecklist
+
+	// quitting is true between QuitRequestedMsg and QuitCompleteMsg
+	// so subsequent quit signals are ignored and input remains
+	// locked.
+	quitting bool
 }
 
 // NewChatScreen creates a chat screen backed by the given session.
@@ -84,9 +114,7 @@ func NewChatScreen(ctx context.Context, sess *session.Session, cfgStore config.S
 		ctx:      ctx,
 		sess:     sess,
 		cfgStore: cfgStore,
-		channels: set.NewSorted(func(a, b domain.Channel) bool {
-			return a.Name < b.Name
-		}),
+		channels: set.NewSorted(channelOrder),
 		instances: set.NewSorted(func(a, b domain.Instance) bool {
 			return a.Nick < b.Nick
 		}),
@@ -137,47 +165,58 @@ func (s ChatScreen) WithObservability(obs *observability.Runtime) ChatScreen {
 }
 
 // Init implements ui.Model.
+//
+// The chat screen does not load channel state from storage. Sidebar
+// entries, active channel, member lists, topics and scrollback all
+// arrive via ordinary session events: ConnectionScreen drives the
+// autojoin sequence, which produces JoinEvent / ModeChangeEvent /
+// TopicInfoEvent for each channel and a final FocusChannelEvent for
+// the saved last channel. Init only performs work that is independent
+// of channel state: starting the event drain, loading the model
+// instance roster (used for tab completion), and seeding local UI
+// configuration.
 func (s ChatScreen) Init() tea.Cmd {
-	loadInitial := func() tea.Msg {
-		ctx := s.ctx
-
-		channels, err := s.sess.ListChannels(ctx)
-		if err != nil {
-			channels = nil
-		}
-
-		instances, err := s.sess.ListInstances(ctx)
-		if err != nil {
-			instances = nil
-		}
-
-		active, err := s.sess.LastChannel(ctx)
-		if err != nil {
-			active = ""
-		}
-
-		var topic string
-		var members domain.MemberList
-
-		if active != "" {
-			if ch, err := s.sess.GetChannel(ctx, active); err == nil {
-				topic = ch.Topic
-				members = ch.Members
-			}
-		}
-
-		return domain.InitialLoadEvent{
-			Channels:  channels,
-			Instances: instances,
-			Active:    active,
-			Topic:     topic,
-			Unread:    s.unreadCounts(ctx, channels),
-			Members:   members,
-			At:        time.Now(),
+	if instances, err := s.sess.ListInstances(s.ctx); err == nil {
+		for _, inst := range instances {
+			s.instances.Insert(inst)
 		}
 	}
 
-	cmds := []tea.Cmd{loadInitial, s.processPendingQuit(), s.loadLiveModels(), s.listenForEvents()}
+	cfg, _ := s.loadConfig()
+
+	cmds := []tea.Cmd{
+		s.listenForEvents(),
+		s.loadLiveModels(),
+		msgCmd(s.commandStateMsg()),
+		msgCmd(components.HighlightWordsMsg{
+			Words:    cfg.HighlightWords,
+			UserNick: s.sess.UserNick(),
+		}),
+		msgCmd(components.TimestampFormatMsg{
+			Format: cfg.TimestampFormat,
+			Locale: uitimestamp.CurrentLocale(),
+		}),
+		msgCmd(components.SetPlaceholderMsg{Text: s.checklist.Render()}),
+	}
+
+	// Restore focus on the last-active channel as a safety net for
+	// callers that did not go through ConnectionScreen (which is the
+	// normal driver of FocusChannel during startup). LastChannel is
+	// re-read inside the cmd so that any focus applied by a preceding
+	// autojoin — which updates LastChannel when it calls
+	// sess.FocusChannel — is observed rather than the value captured
+	// at Init time, eliminating a race where this safety net would
+	// otherwise refocus on a stale channel.
+	cmds = append(cmds, func() tea.Msg {
+		last, err := s.sess.LastChannel(s.ctx)
+		if err != nil || last == "" {
+			return nil
+		}
+
+		_ = s.sess.FocusChannel(s.ctx, last)
+
+		return nil
+	})
 
 	if s.obs != nil {
 		cmds = append(cmds, s.summary.Init(), s.waitForLogUpdateCmd())
@@ -214,11 +253,14 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		s.height = msg.Height
 		forwardedMsg = tea.WindowSizeMsg{Width: msg.Width, Height: s.layoutHeight()}
 
-	case domain.InitialLoadEvent:
-		return s.handleInitialLoad(msg)
-
 	case sessionEventMsg:
 		return s.handleSessionEvent(msg)
+
+	case ui.QuitRequestedMsg:
+		return s.handleQuitRequested(msg)
+
+	case ui.QuitCompleteMsg:
+		return s, tea.Quit
 
 	case chatcmd.HelpResult:
 		return s, s.logAndShow(domain.ChannelHelp{Channel: *s.active, At: time.Now()})
@@ -580,6 +622,48 @@ func (s ChatScreen) logAndShow(event domain.ChannelEvent) tea.Cmd {
 	return msgCmd(stored)
 }
 
+// handleQuitRequested locks the UI, shows a "Disconnecting…"
+// indication, and runs the backend quit asynchronously. The result
+// arrives as a QuitCompleteMsg, which the screen turns into
+// tea.Quit.
+func (s ChatScreen) handleQuitRequested(msg ui.QuitRequestedMsg) (ui.Model, tea.Cmd) {
+	if s.quitting {
+		// A second quit request while the first is in flight is an
+		// escape hatch: the user pressed Ctrl+C again because the
+		// disconnect looks stuck. Bypass Session.Quit and exit now.
+		return s, tea.Quit
+	}
+
+	s.quitting = true
+
+	message := msg.Message
+
+	// The "Disconnecting…" feedback comes from the status item that
+	// StatusItems appends when s.quitting is true; the status bar is
+	// always rendered when the terminal is wide enough, so no
+	// placeholder fallback is needed.
+	cmds := []tea.Cmd{
+		msgCmd(components.InputLockedMsg{Locked: true}),
+		func() tea.Msg {
+			err := s.sess.Quit(s.ctx, message)
+			return ui.QuitCompleteMsg{Err: err}
+		},
+	}
+
+	return s, tea.Batch(cmds...)
+}
+
+// isStaleSessionError reports whether the event is a transient UI
+// error from before the current session and should be hidden when
+// re-displaying scrollback.
+func isStaleSessionError(e domain.ChannelEvent, sessionStart time.Time) bool {
+	if _, ok := e.(domain.ChannelCommandError); !ok {
+		return false
+	}
+
+	return domain.ChannelEventTime(e).Before(sessionStart)
+}
+
 func (s ChatScreen) fetchHistoryAfter(ch domain.ChannelName, after time.Time) tea.Cmd {
 	if ch == "" {
 		return nil
@@ -593,32 +677,23 @@ func (s ChatScreen) fetchHistoryAfter(ch domain.ChannelName, after time.Time) te
 			return nil
 		}
 
+		// Hide stale command errors from previous sessions: they
+		// were transient UI feedback and rarely make sense out of
+		// their original context. Regular messages, joins, parts,
+		// topic changes etc. survive across restarts.
 		if !after.IsZero() {
 			filtered := events[:0]
 			for _, evt := range events {
-				if !domain.ChannelEventTime(evt.Event).Before(after) {
-					filtered = append(filtered, evt)
+				if isStaleSessionError(evt.Event, after) {
+					continue
 				}
+				filtered = append(filtered, evt)
 			}
 
 			events = filtered
 		}
 
 		return components.HistoryLoadedMsg{Events: events}
-	}
-}
-
-func (s ChatScreen) processPendingQuit() tea.Cmd {
-	return func() tea.Msg {
-		if err := s.sess.ProcessPendingQuit(s.ctx); err != nil {
-			return domain.ErrorEvent{
-				Operation: "pending quit",
-				Err:       err,
-				At:        time.Now(),
-			}
-		}
-
-		return nil
 	}
 }
 
@@ -650,9 +725,26 @@ func (s ChatScreen) KeyBindings() []ui.KeyBinding {
 	return bindings
 }
 
+// disconnectingStatusItem is the always-visible feedback the chat and
+// connection screens emit while a quit is in flight, so the user
+// sees something happening even if Session.Quit takes a moment.
+var disconnectingStatusItem = ui.StatusItem{
+	ID:       "disconnecting",
+	Side:     ui.StatusSideRight,
+	Priority: 100,
+	Full:     "Disconnecting…",
+	Compact:  "off…",
+}
+
 // StatusItems implements ui.StatusProvider.
 func (s ChatScreen) StatusItems() []ui.StatusItem {
-	return ui.CollectStatusItems(s.layout, s.summary)
+	items := ui.CollectStatusItems(s.layout, s.summary)
+
+	if s.quitting {
+		items = append(items, disconnectingStatusItem)
+	}
+
+	return items
 }
 
 // View implements ui.Model.

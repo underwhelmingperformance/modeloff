@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -77,7 +78,7 @@ type SQLiteStore struct {
 
 // NewDefaultSQLiteStore creates a SQLiteStore using the XDG data
 // directory ($XDG_DATA_HOME/modeloff/modeloff.db).
-func NewDefaultSQLiteStore() (*SQLiteStore, error) {
+func NewDefaultSQLiteStore(ctx context.Context) (*SQLiteStore, error) {
 	dir := filepath.Join(xdg.DataHome, "modeloff")
 
 	if err := os.MkdirAll(dir, 0o750); err != nil {
@@ -89,19 +90,33 @@ func NewDefaultSQLiteStore() (*SQLiteStore, error) {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 
-	return NewSQLiteStore(db)
+	return NewSQLiteStore(ctx, db)
 }
 
 // NewSQLiteStore creates a store backed by the given database. The
 // caller owns the connection and its configuration (pool size, DSN,
-// etc.). The schema is created if it does not already exist.
-func NewSQLiteStore(db *sql.DB) (*SQLiteStore, error) {
+// etc.). The schema is created if it does not already exist. The
+// context is used for migration logging so that any surrounding trace
+// is correlated with the startup-time log line.
+func NewSQLiteStore(ctx context.Context, db *sql.DB) (*SQLiteStore, error) {
 	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
 		return nil, fmt.Errorf("enable foreign keys: %w", err)
 	}
 
 	if _, err := db.Exec(schema); err != nil {
 		return nil, fmt.Errorf("create schema: %w", err)
+	}
+
+	// One-off migration: pending_quit was the deferred-shutdown
+	// mechanism replaced by Session.Quit's synchronous path. Existing
+	// rows are stale.
+	result, err := db.Exec(`DELETE FROM state WHERE key = 'pending_quit'`)
+	if err != nil {
+		return nil, fmt.Errorf("purge legacy pending_quit row: %w", err)
+	}
+
+	if rows, err := result.RowsAffected(); err == nil && rows > 0 {
+		slog.Default().InfoContext(ctx, "purged legacy pending_quit row", "component", "store.sqlite", "rows", rows)
 	}
 
 	return &SQLiteStore{db: db}, nil
@@ -662,18 +677,27 @@ func (s *SQLiteStore) ResetMemories(ctx context.Context) error {
 	return nil
 }
 
-// SavePendingQuit implements Store.
-func (s *SQLiteStore) SavePendingQuit(ctx context.Context, pq domain.PendingQuit) error {
-	ctx, span := startSQLiteSpan(ctx, "store.sqlite.save_pending_quit")
+// GetSessionActive implements Store.
+func (s *SQLiteStore) GetSessionActive(ctx context.Context) (string, error) {
+	ctx, span := startSQLiteSpan(ctx, "store.sqlite.get_session_active")
 	defer span.End()
 
-	data, err := json.Marshal(pq)
+	value, err := getState[string](ctx, s.db, "session_active")
 	if err != nil {
 		recordSQLiteError(span, err)
-		return fmt.Errorf("marshal pending quit: %w", err)
+		return "", err
 	}
 
-	if err := setState(ctx, s.db, "pending_quit", string(data)); err != nil {
+	recordSQLiteSuccess(span)
+	return value, nil
+}
+
+// SetSessionActive implements Store.
+func (s *SQLiteStore) SetSessionActive(ctx context.Context, value string) error {
+	ctx, span := startSQLiteSpan(ctx, "store.sqlite.set_session_active")
+	defer span.End()
+
+	if err := setState(ctx, s.db, "session_active", value); err != nil {
 		recordSQLiteError(span, err)
 		return err
 	}
@@ -682,39 +706,12 @@ func (s *SQLiteStore) SavePendingQuit(ctx context.Context, pq domain.PendingQuit
 	return nil
 }
 
-// GetPendingQuit implements Store. Returns nil if no pending quit
-// exists.
-func (s *SQLiteStore) GetPendingQuit(ctx context.Context) (*domain.PendingQuit, error) {
-	ctx, span := startSQLiteSpan(ctx, "store.sqlite.get_pending_quit")
+// ClearSessionActive implements Store.
+func (s *SQLiteStore) ClearSessionActive(ctx context.Context) error {
+	ctx, span := startSQLiteSpan(ctx, "store.sqlite.clear_session_active")
 	defer span.End()
 
-	raw, err := getState[string](ctx, s.db, "pending_quit")
-	if err != nil {
-		recordSQLiteError(span, err)
-		return nil, err
-	}
-
-	if raw == "" {
-		recordSQLiteSuccess(span)
-		return nil, nil
-	}
-
-	var pq domain.PendingQuit
-	if err := json.Unmarshal([]byte(raw), &pq); err != nil {
-		recordSQLiteError(span, err)
-		return nil, fmt.Errorf("unmarshal pending quit: %w", err)
-	}
-
-	recordSQLiteSuccess(span)
-	return &pq, nil
-}
-
-// ClearPendingQuit implements Store.
-func (s *SQLiteStore) ClearPendingQuit(ctx context.Context) error {
-	ctx, span := startSQLiteSpan(ctx, "store.sqlite.clear_pending_quit")
-	defer span.End()
-
-	_, err := s.db.ExecContext(ctx, `DELETE FROM state WHERE key = ?`, "pending_quit")
+	_, err := s.db.ExecContext(ctx, `DELETE FROM state WHERE key = ?`, "session_active")
 	if err != nil {
 		recordSQLiteError(span, err)
 		return err

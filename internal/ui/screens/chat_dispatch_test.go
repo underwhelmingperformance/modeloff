@@ -251,6 +251,34 @@ func TestChatScreen_ErrorEvent_no_active_channel(t *testing.T) {
 	require.Equal(t, "startup failure: no api key", cmdErr.Err)
 }
 
+func TestChatScreen_ErrorEvent_status_channel_guard_renders_as_usage_hint(t *testing.T) {
+	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil)
+	require.NoError(t, err)
+
+	at := time.Now()
+	_, cmd := screen.handleErrorEvent(domain.ErrorEvent{
+		Operation: "send",
+		Err: domain.StatusChannelGuardError{
+			Command: "msg",
+			Hint:    "the status channel doesn't take messages — try /msg <nick> for a model or /join <channel> for a channel",
+		},
+		At: at,
+	})
+
+	require.NotNil(t, cmd)
+
+	msgs := collectMsgs(cmd)
+
+	stored, ok := containsMsg[domain.StoredEvent](msgs)
+	require.True(t, ok, "expected StoredEvent in batch")
+
+	require.Equal(t, domain.ChannelUsageHint{
+		Command: "msg",
+		Usage:   "the status channel doesn't take messages — try /msg <nick> for a model or /join <channel> for a channel",
+		At:      at,
+	}, stored.Event)
+}
+
 func sameType(a, b any) bool {
 	return fmt.Sprintf("%T", a) == fmt.Sprintf("%T", b)
 }
