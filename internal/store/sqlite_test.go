@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -114,15 +115,60 @@ func normaliseInstance(inst *domain.Instance) comparableInstance {
 func newTestStore(t *testing.T) *SQLiteStore {
 	t.Helper()
 
-	db, err := sql.Open("sqlite3", ":memory:")
+	db, err := sql.Open("sqlite3", SQLitePragmaDSN(":memory:"))
 	require.NoError(t, err)
-	db.SetMaxOpenConns(1)
 
 	s, err := NewSQLiteStore(t.Context(), db)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = s.Close() })
 
 	return s
+}
+
+// TestNewSQLiteStore_sets_pragmas exercises the connection-time
+// PRAGMAs against a file-backed database so the WAL switch is
+// observable. The DSN configures `busy_timeout`, `journal_mode`, and
+// `foreign_keys` on every connection the pool opens, so the
+// assertions hold regardless of pool size — verified by sampling two
+// distinct connections from the same `*sql.DB`. The shared
+// `:memory:` test store reports `journal_mode = "memory"` instead
+// because there is no on-disk file to journal.
+func TestNewSQLiteStore_sets_pragmas(t *testing.T) {
+	ctx := t.Context()
+
+	db, err := sql.Open("sqlite3", SQLitePragmaDSN(filepath.Join(t.TempDir(), "pragmas.db")))
+	require.NoError(t, err)
+
+	s, err := NewSQLiteStore(ctx, db)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close() })
+
+	type pragmas struct {
+		JournalMode string
+		BusyTimeout int
+		ForeignKeys int
+	}
+
+	readPragmas := func(t *testing.T, conn *sql.Conn) pragmas {
+		t.Helper()
+		var p pragmas
+		require.NoError(t, conn.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&p.JournalMode))
+		require.NoError(t, conn.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&p.BusyTimeout))
+		require.NoError(t, conn.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&p.ForeignKeys))
+		return p
+	}
+
+	c1, err := db.Conn(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c1.Close() })
+
+	c2, err := db.Conn(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c2.Close() })
+
+	want := pragmas{JournalMode: "wal", BusyTimeout: 5000, ForeignKeys: 1}
+	require.Equal(t, want, readPragmas(t, c1))
+	require.Equal(t, want, readPragmas(t, c2))
 }
 
 // --- Channels ---

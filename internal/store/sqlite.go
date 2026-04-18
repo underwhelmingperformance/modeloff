@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -89,6 +90,26 @@ type SQLiteStore struct {
 	instances   map[domain.InstanceID]*domain.Instance
 }
 
+// SQLitePragmaDSN appends the connection-time PRAGMAs that the store
+// requires (`busy_timeout`, `journal_mode`, `foreign_keys`) to the
+// given filename or `file:` URI. The `ncruces/go-sqlite3` driver
+// applies `_pragma=` parameters on every connection it opens, so any
+// pool size sees the same configuration. Order matters per the driver
+// docs: `busy_timeout` and the locking mode must come first.
+func SQLitePragmaDSN(path string) string {
+	dsn := path
+	if !strings.HasPrefix(dsn, "file:") {
+		dsn = "file:" + dsn
+	}
+
+	sep := "?"
+	if strings.Contains(dsn, "?") {
+		sep = "&"
+	}
+
+	return dsn + sep + "_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(on)"
+}
+
 // NewDefaultSQLiteStore creates a SQLiteStore using the XDG data
 // directory ($XDG_DATA_HOME/modeloff/modeloff.db).
 func NewDefaultSQLiteStore(ctx context.Context) (*SQLiteStore, error) {
@@ -98,7 +119,7 @@ func NewDefaultSQLiteStore(ctx context.Context) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("create data dir: %w", err)
 	}
 
-	db, err := sql.Open("sqlite3", filepath.Join(dir, "modeloff.db"))
+	db, err := sql.Open("sqlite3", SQLitePragmaDSN(filepath.Join(dir, "modeloff.db")))
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
@@ -107,14 +128,26 @@ func NewDefaultSQLiteStore(ctx context.Context) (*SQLiteStore, error) {
 }
 
 // NewSQLiteStore creates a store backed by the given database. The
-// caller owns the connection and its configuration (pool size, DSN,
-// etc.). The schema is created if it does not already exist. The
-// context is used for migration logging so that any surrounding trace
-// is correlated with the startup-time log line.
+// caller is responsible for opening the database with a DSN that
+// configures the required connection-time PRAGMAs (`busy_timeout`,
+// `journal_mode`, `foreign_keys`); `SQLitePragmaDSN` builds one. The
+// schema is created if it does not already exist. The context is used
+// for migration logging so that any surrounding trace is correlated
+// with the startup-time log line.
 func NewSQLiteStore(ctx context.Context, db *sql.DB) (*SQLiteStore, error) {
-	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
-		return nil, fmt.Errorf("enable foreign keys: %w", err)
+	// Read the resulting journal mode for operator visibility — an
+	// on-disk database normally reports `wal` here, but a `:memory:`
+	// database reports `memory` because there is no file to journal,
+	// and a filesystem that cannot host WAL falls back to `delete`.
+	var journalMode string
+	if err := db.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&journalMode); err != nil {
+		return nil, fmt.Errorf("read journal_mode: %w", err)
 	}
+
+	slog.Default().InfoContext(ctx, "sqlite journal mode",
+		"component", "store.sqlite",
+		"mode", journalMode,
+	)
 
 	// Pre-release schema v2 migration: the `instances` and `memories`
 	// tables used to be keyed by nick; they are now keyed by
