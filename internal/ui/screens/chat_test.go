@@ -235,11 +235,14 @@ func TestChatScreen_rejoin_filters_old_events(t *testing.T) {
 		"previous session message",
 	)
 
-	// Send a new message which should appear.
+	// Send a new message which should appear. Anchor the assertion
+	// to the snapshot returned by WaitForView (the exact view that
+	// satisfied the predicate) rather than calling RenderedView or
+	// FinalModel.View() afterwards: under -race the model state can
+	// drift between predicate success and a subsequent re-sample,
+	// so capturing atomically is what keeps the test deterministic.
 	tm.Submit("fresh message")
-	tm.WaitFor("fresh message")
-
-	view := tm.CurrentView()
+	view := tm.WaitForViewContains("<testuser> fresh message")
 	body, _ := uitest.SplitBodyAndStatus(view)
 	content := normaliseContent(uitest.NonEmptyColumn(uitest.VisibleColumns(body)[1]))
 

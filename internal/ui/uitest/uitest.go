@@ -7,7 +7,9 @@ package uitest
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -101,6 +103,89 @@ func (a *App) WaitForCondition(condition func([]byte) bool) {
 	teatest.WaitFor(a.t, a.output(), condition,
 		teatest.WithDuration(2*time.Second),
 		teatest.WithCheckInterval(10*time.Millisecond))
+}
+
+// RenderedView returns the currently visible screen state by
+// replaying the cumulative teatest output through a minimal terminal
+// emulator. Bubble Tea's standard renderer emits diff frames
+// (skipping unchanged lines), so a tail-of-buffer slice is not a
+// true snapshot; virtualScreen reconstructs one by applying cursor
+// and erase sequences into a row buffer.
+//
+// Unlike CurrentView, RenderedView is non-destructive: it does not
+// quit the program, so it can be called during polling. Use it in
+// combination with WaitForView when the assertion target is the
+// pixel state the user would see, rather than the model's View()
+// at quit time, which can race against subsequent state churn.
+func (a *App) RenderedView() string {
+	a.t.Helper()
+
+	if _, err := io.ReadAll(a.output()); err != nil {
+		a.t.Fatalf("RenderedView: read output: %s", err)
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	screen := newVirtualScreen()
+	screen.feed(a.buf.Bytes())
+	return screen.view()
+}
+
+// WaitForView polls the currently-rendered screen and returns the
+// first view that satisfies predicate. Unlike WaitFor, which matches
+// against the cumulative output stream and is satisfied by any
+// transient frame that ever contained the substring, WaitForView
+// reconstructs the terminal state from the diff frames bubbletea
+// emits and presents the predicate with what the user would see
+// right now.
+//
+// The returned view is the exact snapshot that satisfied the
+// predicate, captured atomically with the predicate check; subsequent
+// state churn cannot invalidate it. Use it as the assertion source
+// instead of calling RenderedView again, which would re-sample the
+// (possibly mutated) latest state.
+func (a *App) WaitForView(predicate func(view string) bool) string {
+	a.t.Helper()
+
+	const (
+		duration = 2 * time.Second
+		interval = 10 * time.Millisecond
+	)
+
+	deadline := time.Now().Add(duration)
+
+	for {
+		view := a.RenderedView()
+
+		if predicate(view) {
+			return view
+		}
+
+		if time.Now().After(deadline) {
+			a.t.Fatal(fmt.Errorf("WaitForView: predicate not met after %s. Current view:\n%s", duration, view))
+			return view
+		}
+
+		time.Sleep(interval)
+	}
+}
+
+// WaitForViewContains is a convenience wrapper around WaitForView
+// that waits until every part is present in the currently-rendered
+// view. Returns the snapshot at which the predicate was satisfied.
+func (a *App) WaitForViewContains(parts ...string) string {
+	a.t.Helper()
+
+	return a.WaitForView(func(view string) bool {
+		for _, part := range parts {
+			if !strings.Contains(view, part) {
+				return false
+			}
+		}
+
+		return true
+	})
 }
 
 // FinalView drains remaining output, quits the program, and returns

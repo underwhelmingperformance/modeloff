@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -319,13 +320,31 @@ func TestApp_unread_counts_clear_when_visiting_channel_with_teatest(t *testing.T
 	require.NoError(t, err)
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen))
-	tm.WaitFor("#general", "#random")
+	// Wait for the sidebar to settle (both channels rendered and the
+	// initial focus marker on #random) before issuing the Ctrl+U +
+	// Ctrl+O navigation. WaitFor on cumulative output can match a
+	// transient frame from before the focus marker is positioned,
+	// causing the navigation keys to be processed against a stale
+	// sidebar selection.
+	tm.WaitForView(func(view string) bool {
+		return strings.Contains(view, "#general") &&
+			strings.Contains(view, "▸#random")
+	})
 
 	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlU})
 	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlO})
-	tm.WaitFor("general", "unread")
 
-	require.Equal(t, []string{"Channels", "▸#general", "#random"}, sidebarColumn(tm.CurrentView()))
+	// Anchor the assertion to the snapshot returned by WaitForView
+	// (the exact view that satisfied the predicate). Polling the
+	// rendered view rather than the cumulative output stream avoids
+	// matching a transient frame that briefly contained "general
+	// unread" before the focus actually landed.
+	view := tm.WaitForView(func(view string) bool {
+		return strings.Contains(view, "general unread") &&
+			strings.Contains(view, "▸#general")
+	})
+
+	require.Equal(t, []string{"Channels", "▸#general", "#random"}, sidebarColumn(view))
 }
 
 func TestApp_input_history_and_sidebar_shortcuts_with_teatest(t *testing.T) {
@@ -379,20 +398,32 @@ func TestApp_ctrl_arrow_scroll_preserves_draft_with_teatest(t *testing.T) {
 	require.NoError(t, err)
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen))
-	tm.WaitFor("#general")
+	// Wait for history to finish loading so Ctrl+Up has content to
+	// scroll. A Ctrl+Up issued while the viewport still shows
+	// "No messages yet" is a no-op, leaving message 29 to appear in
+	// view once history finally lands and tripping the assertion.
+	tm.WaitForViewContains("#general", "message 29")
 
 	tm.Type("draft-only")
 	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlUp})
 
-	view := tm.CurrentView()
-	stripped := ansi.Strip(view)
+	// Both the typed draft and the Ctrl+Up scroll are async. Anchor
+	// the assertion to the snapshot returned by WaitForView (the
+	// exact view that satisfied the predicate); a re-sample via
+	// CurrentView/RenderedView could race against subsequent state
+	// churn before the assertion runs.
+	view := tm.WaitForView(func(view string) bool {
+		return strings.Contains(view, "draft-only") &&
+			!strings.Contains(view, "message 29")
+	})
+
 	require.Equal(t, []string{"Channels", "▸#general"}, sidebarColumn(view))
 	// The typed draft must survive a Ctrl+Up viewport scroll.
-	require.Contains(t, stripped, "draft-only",
+	require.Contains(t, view, "draft-only",
 		"draft text should remain in the input bar after scrolling")
 	// Ctrl+Up scrolls the viewport up by one line, pushing the most
 	// recent message off the bottom of the chat region.
-	require.NotContains(t, stripped, "message 29",
+	require.NotContains(t, view, "message 29",
 		"viewport should have scrolled the latest message out of view")
 }
 
@@ -410,23 +441,33 @@ func TestApp_new_messages_divider_with_teatest(t *testing.T) {
 	require.NoError(t, err)
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen))
-	tm.WaitFor("#general")
+	// Wait for history to finish loading before scrolling: a PgUp
+	// issued while the viewport is still showing "No messages yet"
+	// is a no-op and leaves us at the bottom.
+	tm.WaitForViewContains("#general", "message 29")
 
 	tm.Send(tea.KeyMsg{Type: tea.KeyPgUp})
-	tm.WaitFor("message 0")
+	tm.WaitForViewContains("message 0")
 
 	tm.Submit("fresh divider trigger 1")
 	tm.Submit("fresh divider trigger 2")
 	tm.Submit("fresh divider trigger 3")
 
-	// The messages are processed asynchronously — the session emits
-	// events that the UI picks up on a later render cycle. Scroll
-	// down one line at a time so events arrive while the viewport
-	// is still scrolled up (setting showDivider). Once the divider
-	// scrolls into view the condition matches.
-	tm.WaitForCondition(func(out []byte) bool {
+	// Events are processed asynchronously by the UI events
+	// goroutine. Scroll down one line at a time so the divider
+	// (rendered into the off-screen content buffer the moment a
+	// `StoredEvent` lands while the viewport is scrolled up)
+	// eventually scrolls into view. `WaitForView` reconstructs the
+	// current screen state from the rendered diff frames, so the
+	// predicate sees the divider exactly when it becomes visible to
+	// the user — unlike a substring match on the cumulative output
+	// stream, which can be satisfied by a transient earlier frame.
+	tm.WaitForView(func(view string) bool {
+		if strings.Contains(view, "new messages") {
+			return true
+		}
 		tm.Send(tea.KeyMsg{Type: tea.KeyCtrlDown})
-		return bytes.Contains(out, []byte("new messages"))
+		return false
 	})
 
 	divider := findDividerLine(contentColumn(tm.FinalView()))
