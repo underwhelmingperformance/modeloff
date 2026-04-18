@@ -64,6 +64,15 @@ type liveModelsLoadedMsg struct {
 	models []chatcmd.ModelOption
 }
 
+// liveModelsLoadFailedMsg is dispatched when `ListModels` fails. It
+// carries the underlying error; the handler empties `*s.liveModels`
+// to degrade tab-completion gracefully, treats `session.ErrNoAPIKey`
+// as a silent no-op, and surfaces other failures as a
+// `ChannelSystemNotice`.
+type liveModelsLoadFailedMsg struct {
+	err error
+}
+
 type logsUpdatedMsg struct{}
 
 // PokeTickMsg triggers a background poke cycle for model instances.
@@ -475,6 +484,9 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	case liveModelsLoadedMsg:
 		return s.handleLiveModelsLoaded(msg)
 
+	case liveModelsLoadFailedMsg:
+		return s.handleLiveModelsLoadFailed(msg)
+
 	case logsUpdatedMsg:
 		s = s.updateLogEntries()
 		return s, tea.Batch(summaryCmd, s.waitForLogUpdateCmd())
@@ -554,7 +566,7 @@ func (s ChatScreen) loadLiveModels() tea.Cmd {
 	return func() tea.Msg {
 		models, err := s.sess.ListModels(s.ctx)
 		if err != nil {
-			return liveModelsLoadedMsg{}
+			return liveModelsLoadFailedMsg{err: err}
 		}
 
 		options := make([]chatcmd.ModelOption, 0, len(models))
@@ -578,12 +590,22 @@ func (s ChatScreen) layoutHeight() int {
 	return max(s.height-lipgloss.Height(components.RenderStatusBar(s.width, s.KeyBindings(), s.StatusItems())), 0)
 }
 
-// logAndShow persists a channel event to the event log and returns
-// a command that sends the StoredEvent to the message list. When no
-// channel is active the event is still sent for rendering but is not
-// persisted to the store.
+// logAndShow persists a channel event under the active channel and
+// returns a command that sends the StoredEvent to the message list.
+// When no channel is active the event is still sent for rendering but
+// is not persisted to the store.
 func (s ChatScreen) logAndShow(event domain.ChannelEvent) tea.Cmd {
-	ch := *s.active
+	return s.logAndShowOn(*s.active, event)
+}
+
+// logAndShowOn persists a channel event under the explicit target
+// channel and returns a command that sends the StoredEvent to the
+// message list. Callers use this when the event's home is not the
+// currently-focused channel — for example, routing a notice to the
+// status channel when no user-visible channel is active. The caller
+// is responsible for setting event.Channel consistently with ch;
+// this helper does not rewrite it.
+func (s ChatScreen) logAndShowOn(ch domain.ChannelName, event domain.ChannelEvent) tea.Cmd {
 	if ch == "" {
 		return msgCmd(domain.StoredEvent{Event: event})
 	}

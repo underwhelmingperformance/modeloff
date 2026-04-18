@@ -20,6 +20,7 @@ type capturedRecord struct {
 }
 
 // recordHandler is a thread-safe slog.Handler that accumulates records.
+// Mirror of logSink in chat_live_models_test.go — keep in sync.
 type recordHandler struct {
 	mu      sync.Mutex
 	records []capturedRecord

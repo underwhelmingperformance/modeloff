@@ -47,6 +47,13 @@ import (
 // needs to catch up, which is well beyond any realistic user's list.
 const eventBufSize = 256
 
+// ErrNoAPIKey is returned by session operations that require an
+// OpenRouter API key when one has not yet been configured. Callers
+// can use `errors.Is(err, session.ErrNoAPIKey)` to distinguish this
+// validation outcome from an upstream failure, e.g. to suppress
+// user-facing notices while the user is still in onboarding.
+var ErrNoAPIKey = errors.New("api key not configured")
+
 // Session is the backend coordinator. It bridges the UI layer and
 // the underlying stores and API client.
 //
@@ -977,9 +984,8 @@ func (s *Session) ListModels(ctx context.Context) ([]api.ModelInfo, error) {
 	defer span.End()
 
 	if !s.HasAPIKey() || s.api == nil {
-		err := fmt.Errorf("api key not configured")
-		setSpanError(span, err, observability.ErrorKindValidation)
-		return nil, err
+		setSpanError(span, ErrNoAPIKey, observability.ErrorKindValidation)
+		return nil, ErrNoAPIKey
 	}
 
 	models, err := s.api.ListModels(ctx)

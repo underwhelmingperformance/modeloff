@@ -490,6 +490,25 @@ func TestChatScreen_config_set_api_key_updates_live_model_suggestions(t *testing
 	tm.WaitFor("anthropic/claude-3-haiku")
 }
 
+func TestChatScreen_config_set_api_key_surfaces_live_model_failure(t *testing.T) {
+	cfgStore := newFakeConfigStore()
+	sess := newTestSessionWithConfigStore(t, cfgStore)
+	sess.SetAPIFactory(func(string, string) (api.Client, error) {
+		return &uitest.FakeAPI{
+			ListModelsFn: func(context.Context) ([]api.ModelInfo, error) {
+				return nil, fmt.Errorf("upstream 503")
+			},
+		}, nil
+	})
+	uitest.SeedChannel(t, sess, "#general")
+
+	tm := newChatAppWithConfig(t, sess, cfgStore)
+	tm.WaitFor("#general")
+
+	tm.Submit("/config api-key test-key")
+	tm.WaitFor("Model list unavailable: upstream 503.")
+}
+
 func TestChatScreen_config_set_poke_interval(t *testing.T) {
 	cfgStore := newFakeConfigStore()
 	sess := newTestSessionWithConfigStore(t, cfgStore)

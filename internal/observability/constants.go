@@ -28,6 +28,7 @@ const (
 	AttrCacheWriteTokens = "modeloff.cache_write_tokens"
 	AttrCostCredits      = "modeloff.cost_credits"
 	AttrHTTPStatusCode   = "modeloff.http_status_code"
+	AttrHTTPResponseBody = "modeloff.http_response_body"
 	AttrRequestID        = "modeloff.request_id"
 
 	// Memory attributes:

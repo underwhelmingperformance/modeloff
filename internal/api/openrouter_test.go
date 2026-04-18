@@ -13,6 +13,7 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
+	"unicode/utf8"
 
 	openai "github.com/openai/openai-go/v3"
 	"github.com/stretchr/testify/require"
@@ -1387,4 +1388,44 @@ func TestOpenRouterClient_callerDeadlineWins(t *testing.T) {
 		// caller deadline confirms its `WithTimeout` shadowed ours.
 		require.WithinDuration(t, callerDeadlineTime, time.Now(), time.Millisecond)
 	})
+}
+
+func TestTruncateBody(t *testing.T) {
+	// The pound sign is a two-byte UTF-8 rune (0xC2 0xA3) that lets us
+	// exercise the rune-boundary rewind without depending on platform
+	// locale.
+	tests := map[string]struct {
+		body       []byte
+		limit      int
+		want       string
+		assertUTF8 bool
+	}{
+		"empty body":                {body: []byte{}, limit: 8, want: "", assertUTF8: true},
+		"shorter than limit":        {body: []byte("hello"), limit: 8, want: "hello", assertUTF8: true},
+		"equal to limit":            {body: []byte("abcdefgh"), limit: 8, want: "abcdefgh", assertUTF8: true},
+		"ascii over limit":          {body: []byte("abcdefghij"), limit: 8, want: "abcdefgh…[truncated]", assertUTF8: true},
+		"rune straddles cut point":  {body: []byte("abcdefg£hij"), limit: 8, want: "abcdefg…[truncated]", assertUTF8: true},
+		"rune ends on cut boundary": {body: []byte("ab£cdefgh"), limit: 4, want: "ab£…[truncated]", assertUTF8: true},
+
+		// Upstream already returned invalid UTF-8 and the body fits within
+		// limit, so the short-circuit passes it through unchanged. We do
+		// not repair upstream — only guarantee that truncation itself
+		// introduces no mojibake.
+		"all continuation bytes, under limit": {body: []byte{0xA3, 0xA3, 0xA3}, limit: 8, want: "\xA3\xA3\xA3"},
+
+		// Rewind runs to end=0 because no byte is a rune start; the
+		// returned string is just the truncation marker, which is valid
+		// UTF-8 despite the pathological input.
+		"continuation-only body over limit": {body: []byte{0xA3, 0xA3, 0xA3, 0xA3, 0xA3}, limit: 2, want: "…[truncated]", assertUTF8: true},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := truncateBody(tc.body, tc.limit)
+			require.Equal(t, tc.want, got)
+			if tc.assertUTF8 {
+				require.True(t, utf8.ValidString(got), "truncated output must be valid UTF-8")
+			}
+		})
+	}
 }

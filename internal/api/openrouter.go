@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -497,6 +498,31 @@ type modelsResponse struct {
 	} `json:"data"`
 }
 
+// responseBodyLogLimit caps how much of an upstream non-2xx body we
+// retain on spans and logs. Large JSON error payloads would otherwise
+// bloat both the trace and the log stream without adding diagnostic
+// value — the leading portion is almost always sufficient.
+const responseBodyLogLimit = 4096
+
+// truncateBody returns body as a string, capped at limit bytes and
+// suffixed with a marker when truncation occurred. The cut point
+// rewinds to the nearest UTF-8 rune boundary so the returned string
+// is always valid UTF-8 — otherwise a multi-byte rune straddling
+// the limit would produce mojibake that some log/trace exporters
+// will drop or replace with U+FFFD.
+func truncateBody(body []byte, limit int) string {
+	if len(body) <= limit {
+		return string(body)
+	}
+
+	end := limit
+	for end > 0 && !utf8.RuneStart(body[end]) {
+		end--
+	}
+
+	return string(body[:end]) + "…[truncated]"
+}
+
 // ListModels fetches available models from the OpenRouter API.
 func (c *OpenRouterClient) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	ctx, cancel := ensureDeadline(ctx, c.metaTimeout)
@@ -526,8 +552,21 @@ func (c *OpenRouterClient) ListModels(ctx context.Context) ([]ModelInfo, error) 
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		err := fmt.Errorf("list models: status %d: %s", resp.StatusCode, body)
+		body, readErr := io.ReadAll(resp.Body)
+		truncated := truncateBody(body, responseBodyLogLimit)
+
+		span.SetAttributes(attribute.String(observability.AttrHTTPResponseBody, truncated))
+
+		attrs := []any{
+			"status", resp.StatusCode,
+			"body", truncated,
+		}
+		if readErr != nil {
+			attrs = append(attrs, "body_read_error", readErr)
+		}
+		logger.ErrorContext(ctx, "openrouter list models non-2xx", attrs...)
+
+		err := fmt.Errorf("list models: status %d", resp.StatusCode)
 		markSpanError(span, observability.ErrorKindHTTPStatus, resp.StatusCode, err)
 		return nil, err
 	}

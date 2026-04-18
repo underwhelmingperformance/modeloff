@@ -4,11 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"log/slog"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/session"
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/components"
 )
@@ -611,6 +613,38 @@ func (s ChatScreen) handleLiveModelsLoaded(msg liveModelsLoadedMsg) (ui.Model, t
 	*s.liveModels = msg.models
 
 	return s, nil
+}
+
+// handleLiveModelsLoadFailed is the UI-policy home for live-model
+// load failures: empty the cached suggestions so tab completion
+// degrades to known nicks, then surface the reason to the user as a
+// channel system notice — routed to the status channel when no
+// user-visible channel is focused.
+func (s ChatScreen) handleLiveModelsLoadFailed(msg liveModelsLoadFailedMsg) (ui.Model, tea.Cmd) {
+	*s.liveModels = nil
+
+	// ErrNoAPIKey here is a TOCTOU between loadLiveModels' HasAPIKey
+	// short-circuit and Session.ListModels' check; treat as silent.
+	if errors.Is(msg.err, session.ErrNoAPIKey) {
+		return s, nil
+	}
+
+	channel := *s.active
+	if channel == "" {
+		channel = domain.StatusChannelName
+	}
+
+	slog.Default().WarnContext(s.ctx, "live models load failed",
+		"component", "ui",
+		"channel", string(channel),
+		"error", msg.err,
+	)
+
+	return s, s.logAndShowOn(channel, domain.ChannelSystemNotice{
+		Channel: channel,
+		Text:    fmt.Sprintf("Model list unavailable: %s.", msg.err),
+		At:      time.Now(),
+	})
 }
 
 func (s ChatScreen) activeTopic() string {
