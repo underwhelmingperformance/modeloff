@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -10,6 +11,8 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	openai "github.com/openai/openai-go/v3"
 	"github.com/stretchr/testify/require"
@@ -1269,4 +1272,119 @@ func TestModelResponseSchema_inlines_all_definitions(t *testing.T) {
 	}
 
 	require.Equal(t, want, modelResponseSchemaMap)
+}
+
+// hangingTransport is an http.RoundTripper that blocks every request
+// until its context is cancelled, then returns the context error.
+// Used inside a synctest bubble it lets us drive timeout tests off
+// virtual time without any real network or real wall-clock waiting.
+type hangingTransport struct{}
+
+func (hangingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	<-req.Context().Done()
+	return nil, req.Context().Err()
+}
+
+func newHangingClient(chat, meta time.Duration) *OpenRouterClient {
+	httpClient := &http.Client{Transport: hangingTransport{}}
+
+	return NewOpenRouterClient("test-key", "http://hang.invalid", httpClient).
+		WithTimeouts(chat, meta)
+}
+
+func TestOpenRouterClient_perCallTimeouts(t *testing.T) {
+	const (
+		clientChat = 60 * time.Second
+		clientMeta = 30 * time.Second
+	)
+
+	tests := []struct {
+		name string
+		call func(ctx context.Context, c *OpenRouterClient) error
+	}{
+		{
+			name: "ListModels",
+			call: func(ctx context.Context, c *OpenRouterClient) error {
+				_, err := c.ListModels(ctx)
+				return err
+			},
+		},
+		{
+			name: "GenerateNick",
+			call: func(ctx context.Context, c *OpenRouterClient) error {
+				_, err := c.GenerateNick(ctx, "anthropic/claude-haiku-4.5", "anthropic/claude-3-haiku")
+				return err
+			},
+		},
+		{
+			name: "GeneratePersonas",
+			call: func(ctx context.Context, c *OpenRouterClient) error {
+				_, err := c.GeneratePersonas(ctx, "anthropic/claude-haiku-4.5")
+				return err
+			},
+		},
+		{
+			name: "SendEvents",
+			call: func(ctx context.Context, c *OpenRouterClient) error {
+				_, err := c.SendEvents(
+					ctx,
+					"test/model",
+					"",
+					"prompt",
+					nil,
+					[]protocol.IRCMessage{{Kind: protocol.KindPrivMsg, From: "a", Target: "#t", Body: "x"}},
+				)
+				return err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				client := newHangingClient(clientChat, clientMeta)
+
+				err := tt.call(t.Context(), client)
+
+				require.Error(t, err)
+				require.ErrorIs(t, err, context.DeadlineExceeded)
+			})
+		})
+	}
+}
+
+func TestOpenRouterClient_callerDeadlineWins(t *testing.T) {
+	const (
+		callerDeadline = 25 * time.Millisecond
+		clientChat     = 60 * time.Second
+		clientMeta     = 60 * time.Second
+	)
+
+	synctest.Test(t, func(t *testing.T) {
+		client := newHangingClient(clientChat, clientMeta)
+
+		ctx, cancel := context.WithTimeout(t.Context(), callerDeadline)
+		t.Cleanup(cancel)
+
+		callerDeadlineTime, ok := ctx.Deadline()
+		require.True(t, ok)
+
+		_, err := client.SendEvents(
+			ctx,
+			"test/model",
+			"",
+			"prompt",
+			nil,
+			[]protocol.IRCMessage{{Kind: protocol.KindPrivMsg, From: "a", Target: "#t", Body: "x"}},
+		)
+
+		require.Error(t, err)
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+
+		// The caller's deadline must fire long before the 60 s
+		// client-side timeout would; under synctest the virtual clock
+		// only advances to the next pending timer, so observing the
+		// caller deadline confirms its `WithTimeout` shadowed ours.
+		require.WithinDuration(t, callerDeadlineTime, time.Now(), time.Millisecond)
+	})
 }

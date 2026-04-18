@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -25,17 +26,32 @@ import (
 	"github.com/openai/openai-go/v3/shared"
 )
 
+// Default per-call timeouts. The chat timeout bounds how long a model
+// may take to produce a completion; the meta timeout bounds the
+// smaller OpenRouter-specific endpoints (model listing, nickname and
+// persona generation). Both apply only when the caller has not
+// already set a deadline on the context.
+const (
+	defaultChatTimeout = 60 * time.Second
+	defaultMetaTimeout = 30 * time.Second
+)
+
 // OpenRouterClient implements Client using openai-go for chat
 // completions and direct HTTP for OpenRouter-specific endpoints.
 type OpenRouterClient struct {
-	oai     openai.Client
-	baseURL string
-	apiKey  string
-	http    *http.Client
+	oai         openai.Client
+	baseURL     string
+	apiKey      string
+	http        *http.Client
+	chatTimeout time.Duration
+	metaTimeout time.Duration
 }
 
 // NewOpenRouterClient creates a client configured to talk to an
-// OpenAI-compatible API at baseURL.
+// OpenAI-compatible API at baseURL. The client guards each call with
+// a default timeout so a hung model or stalled network cannot block
+// indefinitely; callers may still pass a context with a tighter
+// deadline, which always wins.
 func NewOpenRouterClient(apiKey, baseURL string, httpClient *http.Client) *OpenRouterClient {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
@@ -48,11 +64,36 @@ func NewOpenRouterClient(apiKey, baseURL string, httpClient *http.Client) *OpenR
 	)
 
 	return &OpenRouterClient{
-		oai:     oai,
-		baseURL: baseURL,
-		apiKey:  apiKey,
-		http:    httpClient,
+		oai:         oai,
+		baseURL:     baseURL,
+		apiKey:      apiKey,
+		http:        httpClient,
+		chatTimeout: defaultChatTimeout,
+		metaTimeout: defaultMetaTimeout,
 	}
+}
+
+// WithTimeouts overrides the per-call chat and meta timeouts on the
+// client. It is intended for tests that need shorter deadlines than
+// the defaults; production code should rely on the defaults. The
+// receiver is mutated in place; the return value is provided only
+// for chaining at construction time, not for builder-style cloning.
+func (c *OpenRouterClient) WithTimeouts(chat, meta time.Duration) *OpenRouterClient {
+	c.chatTimeout = chat
+	c.metaTimeout = meta
+
+	return c
+}
+
+// ensureDeadline wraps ctx with the given timeout if it has no
+// deadline of its own, otherwise it leaves the caller's deadline in
+// place. The returned cancel must always be deferred by the caller.
+func ensureDeadline(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+
+	return context.WithTimeout(ctx, timeout)
 }
 
 type openRouterUsageExtras struct {
@@ -458,6 +499,9 @@ type modelsResponse struct {
 
 // ListModels fetches available models from the OpenRouter API.
 func (c *OpenRouterClient) ListModels(ctx context.Context) ([]ModelInfo, error) {
+	ctx, cancel := ensureDeadline(ctx, c.metaTimeout)
+	defer cancel()
+
 	logger := slog.Default().With("component", "api.openrouter")
 	tracer := otel.Tracer("github.com/laney/modeloff/internal/api")
 
@@ -514,6 +558,9 @@ func (c *OpenRouterClient) ListModels(ctx context.Context) ([]ModelInfo, error) 
 // given model ID. The nickModel parameter selects which model
 // performs the generation.
 func (c *OpenRouterClient) GenerateNick(ctx context.Context, nickModel domain.ModelID, modelID domain.ModelID) (NicknameResult, error) {
+	ctx, cancel := ensureDeadline(ctx, c.metaTimeout)
+	defer cancel()
+
 	logger := slog.Default().With("component", "api.openrouter", "nick_model", nickModel, "model_id", modelID)
 	tracer := otel.Tracer("github.com/laney/modeloff/internal/api")
 
@@ -604,6 +651,9 @@ func personaResponseFormat() openai.ChatCompletionNewParamsResponseFormatUnion {
 // GeneratePersonas asks a model to generate a set of IRC user personas
 // using structured output, returning them with PersonaGenerated origin.
 func (c *OpenRouterClient) GeneratePersonas(ctx context.Context, smallModel domain.ModelID) ([]domain.Persona, error) {
+	ctx, cancel := ensureDeadline(ctx, c.metaTimeout)
+	defer cancel()
+
 	logger := slog.Default().With("component", "api.openrouter", "model_id", smallModel)
 	tracer := otel.Tracer("github.com/laney/modeloff/internal/api")
 
@@ -700,6 +750,9 @@ func (c *OpenRouterClient) chatCompletion(
 	modelID domain.ModelID,
 	payload openai.ChatCompletionNewParams,
 ) (*openai.ChatCompletion, *http.Response, error) {
+	ctx, cancel := ensureDeadline(ctx, c.chatTimeout)
+	defer cancel()
+
 	var rawResp *http.Response
 
 	opts := []option.RequestOption{
