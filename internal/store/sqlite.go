@@ -1194,6 +1194,14 @@ func (s *SQLiteStore) Reset(ctx context.Context) error {
 	ctx, span := startSQLiteSpan(ctx, "store.sqlite.reset")
 	defer span.End()
 
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		recordSQLiteError(span, err)
+		return fmt.Errorf("begin tx: %w", err)
+	}
+
+	defer func() { _ = tx.Rollback() }()
+
 	// Order: children before parents (last_read → channels, events).
 	for _, stmt := range []string{
 		`DELETE FROM last_read`,
@@ -1205,10 +1213,15 @@ func (s *SQLiteStore) Reset(ctx context.Context) error {
 		`DELETE FROM state`,
 		`DELETE FROM autojoin`,
 	} {
-		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
 			recordSQLiteError(span, err)
 			return fmt.Errorf("reset: %w", err)
 		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		recordSQLiteError(span, err)
+		return fmt.Errorf("commit: %w", err)
 	}
 
 	recordSQLiteSuccess(span)

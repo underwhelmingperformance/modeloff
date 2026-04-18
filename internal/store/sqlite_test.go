@@ -2,6 +2,9 @@ package store
 
 import (
 	"database/sql"
+	"fmt"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -1151,6 +1154,54 @@ func TestSQLiteStore_Reset_includes_autojoin(t *testing.T) {
 	require.Empty(t, got)
 }
 
+func TestSQLiteStore_Reset_rollback_on_partial_failure(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	require.NoError(t, s.SaveChannel(ctx, domain.Channel{
+		Name: "#general", Kind: domain.KindChannel, Created: testTime,
+	}))
+	eventID, err := s.AppendEvent(ctx, "#general", domain.ChannelJoin{
+		Channel: "#general", Nick: "alice", At: testTime,
+	})
+	require.NoError(t, err)
+	require.NoError(t, s.SaveInstance(ctx,
+		domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil),
+	))
+	require.NoError(t, s.SetLastChannel(ctx, "#general"))
+	require.NoError(t, s.SetLastRead(ctx, "#general", eventID))
+	require.NoError(t, s.SavePersona(ctx, domain.Persona{
+		ID:          "grumpy-sysadmin",
+		Description: "A grumpy sysadmin who has seen it all.",
+		Origin:      domain.PersonaGenerated,
+	}))
+	require.NoError(t, s.SetAutojoinChannels(ctx, []domain.ChannelName{"#general"}))
+
+	// `memories` is one of the tables Reset deletes from; dropping it
+	// after seeding the others guarantees the fifth DELETE in Reset
+	// fails with "no such table", which must roll back the prior four
+	// DELETEs in the same transaction.
+	before := snapshotPersistentTables(t, s.db)
+
+	_, err = s.db.ExecContext(ctx, `DROP TABLE memories`)
+	require.NoError(t, err)
+
+	require.Error(t, s.Reset(ctx))
+
+	// Re-run the production `schema` constant so the snapshot helper
+	// can read `memories` back to the same empty shape it had
+	// pre-Reset, without changing what we are asserting on. Re-using
+	// the production schema (rather than restating the table inline)
+	// means the test cannot silently drift from the real definition;
+	// the `IF NOT EXISTS` clauses make the re-exec a no-op for the
+	// other seven tables.
+	_, err = s.db.ExecContext(ctx, schema)
+	require.NoError(t, err)
+
+	after := snapshotPersistentTables(t, s.db)
+	require.Equal(t, before, after)
+}
+
 // --- Helpers ---
 
 func appendTestEvents(t *testing.T, s *SQLiteStore, ch domain.ChannelName, n int) []int64 {
@@ -1173,4 +1224,82 @@ func appendTestEvents(t *testing.T, s *SQLiteStore, ch domain.ChannelName, n int
 	}
 
 	return ids
+}
+
+// snapshotPersistentTables returns a deterministic dump of every row
+// in every table that `Reset` deletes from. The result is keyed by
+// table name, and rows within a table are sorted lexicographically by
+// their stringified column values so the comparison is stable across
+// SQLite's row order.
+func snapshotPersistentTables(t *testing.T, db *sql.DB) map[string][]string {
+	t.Helper()
+
+	queries := map[string]string{
+		"last_read": `SELECT * FROM last_read`,
+		"channels":  `SELECT * FROM channels`,
+		"events":    `SELECT * FROM events`,
+		"instances": `SELECT * FROM instances`,
+		"memories":  `SELECT * FROM memories`,
+		"personas":  `SELECT * FROM personas`,
+		"state":     `SELECT * FROM state`,
+		"autojoin":  `SELECT * FROM autojoin`,
+	}
+
+	out := make(map[string][]string, len(queries))
+
+	for table, query := range queries {
+		out[table] = dumpTable(t, db, query)
+	}
+
+	return out
+}
+
+func dumpTable(t *testing.T, db *sql.DB, query string) []string {
+	t.Helper()
+
+	rows, err := db.QueryContext(t.Context(), query)
+	require.NoError(t, err)
+	defer func() { _ = rows.Close() }()
+
+	cols, err := rows.Columns()
+	require.NoError(t, err)
+
+	var dump []string
+
+	for rows.Next() {
+		raw := make([]any, len(cols))
+		ptrs := make([]any, len(cols))
+
+		for i := range raw {
+			ptrs[i] = &raw[i]
+		}
+
+		require.NoError(t, rows.Scan(ptrs...))
+
+		parts := make([]string, len(cols))
+		for i, name := range cols {
+			parts[i] = name + "=" + stringify(raw[i])
+		}
+
+		dump = append(dump, strings.Join(parts, "|"))
+	}
+
+	require.NoError(t, rows.Err())
+
+	sort.Strings(dump)
+
+	return dump
+}
+
+// stringify assumes every column carries TEXT or INTEGER data; if the
+// schema gains a typed time/blob column, extend the switch.
+func stringify(v any) string {
+	switch x := v.(type) {
+	case nil:
+		return "<nil>"
+	case []byte:
+		return string(x)
+	default:
+		return fmt.Sprintf("%v", x)
+	}
 }
