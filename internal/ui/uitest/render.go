@@ -160,7 +160,7 @@ func NonBorderSegments(view string) []string {
 	out := make([]string, 0, len(lines))
 
 	for _, line := range lines {
-		for _, part := range strings.Split(line, "│") {
+		for part := range strings.SplitSeq(line, "│") {
 			cleaned := strings.TrimSpace(part)
 			if cleaned == "" {
 				continue

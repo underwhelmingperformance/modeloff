@@ -240,7 +240,7 @@ func TestChatScreen_rejoin_filters_old_events(t *testing.T) {
 	tm.WaitFor("fresh message")
 
 	view := tm.CurrentView()
-	body, _ := splitBodyAndStatus(view)
+	body, _ := uitest.SplitBodyAndStatus(view)
 	content := normaliseContent(uitest.NonEmptyColumn(uitest.VisibleColumns(body)[1]))
 
 	// Replace the topic-separator rule row with a stable placeholder
@@ -304,9 +304,9 @@ func TestChatScreen_nick_command_updates_input_bar(t *testing.T) {
 	tm.Submit("/nick newnick")
 	tm.WaitFor("testuser is now known as newnick")
 
-	body, _ := splitBodyAndStatus(tm.CurrentView())
+	body, _ := uitest.SplitBodyAndStatus(tm.CurrentView())
 	content := uitest.NonEmptyColumn(uitest.VisibleColumns(body)[1])
-	require.Equal(t, "newnick >", compactLine(content[len(content)-1]),
+	require.Equal(t, "newnick >", uitest.CompactLine(content[len(content)-1]),
 		"input bar should show the new nick after /nick command")
 }
 
@@ -715,11 +715,11 @@ func TestChatScreen_clear_command_removes_messages(t *testing.T) {
 	tm.Submit("/clear")
 	tm.WaitFor("No messages yet")
 
-	body, _ := splitBodyAndStatus(tm.CurrentView())
+	body, _ := uitest.SplitBodyAndStatus(tm.CurrentView())
 	content := uitest.NonEmptyColumn(uitest.VisibleColumns(body)[1])
 	require.Equal(t, []string{"No messages yet", "testuser >"}, []string{
 		content[0],
-		compactLine(content[1]),
+		uitest.CompactLine(content[1]),
 	})
 }
 
@@ -766,7 +766,7 @@ func TestChatScreen_View_responsive(t *testing.T) {
 func TestChatScreen_KeyBindings_collect_active_bindings(t *testing.T) {
 	tm, _ := newChatAppInChannel(t, "#general")
 
-	_, status := splitBodyAndStatus(tm.FinalView())
+	_, status := uitest.SplitBodyAndStatus(tm.FinalView())
 
 	tokens := strings.Fields(status)
 	require.Subset(t, tokens, []string{"^D/^U", "^O", "↵", "^W", "^C"},

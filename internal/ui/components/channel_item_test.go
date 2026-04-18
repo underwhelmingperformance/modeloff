@@ -345,7 +345,7 @@ func TestChannelSidebar_mention_renders_differently_from_normal_unread(t *testin
 func findLineContaining(t *testing.T, view, substr string) string {
 	t.Helper()
 
-	for _, line := range strings.Split(view, "\n") {
+	for line := range strings.SplitSeq(view, "\n") {
 		if strings.Contains(ansi.Strip(line), substr) {
 			return line
 		}

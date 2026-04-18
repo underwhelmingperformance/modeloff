@@ -58,34 +58,35 @@ func NewIndexedStoreFromDB(backing Store, db *chromem.DB, embeddingFunc chromem.
 	}
 }
 
-func (s *IndexedStore) collection(nick domain.Nick) (*chromem.Collection, error) {
-	return s.db.GetOrCreateCollection(string(nick), nil, s.embeddingFunc)
+func (s *IndexedStore) collection(id domain.InstanceID) (*chromem.Collection, error) {
+	return s.db.GetOrCreateCollection(string(id), nil, s.embeddingFunc)
 }
 
 // Read delegates to the underlying FileStore.
-func (s *IndexedStore) Read(ctx context.Context, nick domain.Nick) ([]Entry, error) {
-	return s.backing.Read(ctx, nick)
+func (s *IndexedStore) Read(ctx context.Context, id domain.InstanceID) ([]Entry, error) {
+	return s.backing.Read(ctx, id)
 }
 
 // Search finds memories semantically similar to the query, returning
 // up to limit results ordered by descending similarity. On the first
-// call for a nick, the index is rebuilt from the FileStore if needed.
-func (s *IndexedStore) Search(ctx context.Context, nick domain.Nick, query string, limit int) ([]SearchResult, error) {
+// call for an instance, the index is rebuilt from the FileStore if
+// needed.
+func (s *IndexedStore) Search(ctx context.Context, id domain.InstanceID, query string, limit int) ([]SearchResult, error) {
 	ctx, span := memoryTracer.Start(ctx, "memory.search")
 	span.SetAttributes(
 		attribute.String(observability.AttrOperation, "memory.search"),
-		attribute.String(observability.AttrMemoryNick, string(nick)),
+		attribute.String(observability.AttrInstanceID, string(id)),
 	)
 	defer span.End()
 
-	if err := s.ensureIndexed(ctx, nick); err != nil {
+	if err := s.ensureIndexed(ctx, id); err != nil {
 		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
 		span.SetStatus(codes.Error, err.Error())
 
 		return nil, fmt.Errorf("ensure indexed: %w", err)
 	}
 
-	col, err := s.collection(nick)
+	col, err := s.collection(id)
 	if err != nil {
 		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
 		span.SetStatus(codes.Error, err.Error())
@@ -155,24 +156,24 @@ func (s *IndexedStore) Search(ctx context.Context, nick domain.Nick, query strin
 // Write persists the entry to the FileStore, then indexes it in the
 // vector database. If indexing fails, the error is logged but not
 // returned — the entry is still saved.
-func (s *IndexedStore) Write(ctx context.Context, nick domain.Nick, entry Entry) error {
+func (s *IndexedStore) Write(ctx context.Context, id domain.InstanceID, entry Entry) error {
 	ctx, span := memoryTracer.Start(ctx, "memory.write")
 	span.SetAttributes(
 		attribute.String(observability.AttrOperation, "memory.write"),
-		attribute.String(observability.AttrMemoryNick, string(nick)),
+		attribute.String(observability.AttrInstanceID, string(id)),
 	)
 	defer span.End()
 
-	if err := s.backing.Write(ctx, nick, entry); err != nil {
+	if err := s.backing.Write(ctx, id, entry); err != nil {
 		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
 		span.SetStatus(codes.Error, err.Error())
 
 		return err
 	}
 
-	if err := s.index(ctx, nick, entry); err != nil {
+	if err := s.index(ctx, id, entry); err != nil {
 		slog.Default().WarnContext(ctx, "failed to index memory",
-			"nick", nick, "key", entry.Key, "error", err)
+			"instance_id", string(id), "key", entry.Key, "error", err)
 	}
 
 	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
@@ -180,8 +181,8 @@ func (s *IndexedStore) Write(ctx context.Context, nick domain.Nick, entry Entry)
 	return nil
 }
 
-func (s *IndexedStore) index(ctx context.Context, nick domain.Nick, entry Entry) error {
-	col, err := s.collection(nick)
+func (s *IndexedStore) index(ctx context.Context, id domain.InstanceID, entry Entry) error {
+	col, err := s.collection(id)
 	if err != nil {
 		return fmt.Errorf("get collection: %w", err)
 	}
@@ -204,26 +205,26 @@ func (s *IndexedStore) index(ctx context.Context, nick domain.Nick, entry Entry)
 // Delete removes the entry from the vector index, then from the
 // FileStore. If the vector delete fails, it is logged but the
 // FileStore delete still proceeds.
-func (s *IndexedStore) Delete(ctx context.Context, nick domain.Nick, key string) error {
+func (s *IndexedStore) Delete(ctx context.Context, id domain.InstanceID, key string) error {
 	ctx, span := memoryTracer.Start(ctx, "memory.delete")
 	span.SetAttributes(
 		attribute.String(observability.AttrOperation, "memory.delete"),
-		attribute.String(observability.AttrMemoryNick, string(nick)),
+		attribute.String(observability.AttrInstanceID, string(id)),
 	)
 	defer span.End()
 
-	col, err := s.collection(nick)
+	col, err := s.collection(id)
 	if err != nil {
 		slog.Default().WarnContext(ctx, "failed to get collection for delete",
-			"nick", nick, "key", key, "error", err)
+			"instance_id", string(id), "key", key, "error", err)
 	} else {
 		if err := col.Delete(ctx, nil, nil, key); err != nil {
 			slog.Default().WarnContext(ctx, "failed to remove memory from index",
-				"nick", nick, "key", key, "error", err)
+				"instance_id", string(id), "key", key, "error", err)
 		}
 	}
 
-	if err := s.backing.Delete(ctx, nick, key); err != nil {
+	if err := s.backing.Delete(ctx, id, key); err != nil {
 		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
 		span.SetStatus(codes.Error, err.Error())
 
@@ -245,49 +246,50 @@ func (s *IndexedStore) Reset(ctx context.Context) error {
 	return s.backing.Reset(ctx)
 }
 
-// reindexNick reads all entries for a nick from the FileStore and
-// indexes them. This handles migration from a plain FileStore and
-// recovery from a corrupted index.
-func (s *IndexedStore) reindexNick(ctx context.Context, nick domain.Nick) error {
-	entries, err := s.backing.Read(ctx, nick)
+// reindexInstance reads all entries for an instance from the
+// FileStore and indexes them. This handles migration from a plain
+// FileStore and recovery from a corrupted index.
+func (s *IndexedStore) reindexInstance(ctx context.Context, id domain.InstanceID) error {
+	entries, err := s.backing.Read(ctx, id)
 	if err != nil {
-		return fmt.Errorf("read entries for %s: %w", nick, err)
+		return fmt.Errorf("read entries for %s: %w", id, err)
 	}
 
 	for _, entry := range entries {
-		if err := s.index(ctx, nick, entry); err != nil {
-			return fmt.Errorf("index entry %s/%s: %w", nick, entry.Key, err)
+		if err := s.index(ctx, id, entry); err != nil {
+			return fmt.Errorf("index entry %s/%s: %w", id, entry.Key, err)
 		}
 	}
 
 	return nil
 }
 
-// ensureIndexed checks whether a nick's collection is empty and, if
-// the FileStore has entries, rebuilds the index. This is called
-// lazily on Search so callers never need to think about reindexing.
-func (s *IndexedStore) ensureIndexed(ctx context.Context, nick domain.Nick) error {
-	col, err := s.collection(nick)
+// ensureIndexed checks whether an instance's collection is empty
+// and, if the FileStore has entries, rebuilds the index. This is
+// called lazily on Search so callers never need to think about
+// reindexing.
+func (s *IndexedStore) ensureIndexed(ctx context.Context, id domain.InstanceID) error {
+	col, err := s.collection(id)
 	if err != nil {
-		return fmt.Errorf("get collection for %s: %w", nick, err)
+		return fmt.Errorf("get collection for %s: %w", id, err)
 	}
 
 	if col.Count() > 0 {
 		return nil
 	}
 
-	entries, err := s.backing.Read(ctx, nick)
+	entries, err := s.backing.Read(ctx, id)
 	if err != nil {
-		return fmt.Errorf("read entries for %s: %w", nick, err)
+		return fmt.Errorf("read entries for %s: %w", id, err)
 	}
 
 	if len(entries) == 0 {
 		return nil
 	}
 
-	slog.Default().InfoContext(ctx, "rebuilding memory index", "nick", nick)
+	slog.Default().InfoContext(ctx, "rebuilding memory index", "instance_id", string(id))
 
-	return s.reindexNick(ctx, nick)
+	return s.reindexInstance(ctx, id)
 }
 
 func instrumentEmbedding(inner chromem.EmbeddingFunc) chromem.EmbeddingFunc {

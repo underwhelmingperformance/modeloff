@@ -18,13 +18,12 @@ func testContext(kind domain.ChannelKind) CompletionContext {
 		{Name: "#general", Topic: "Welcome"},
 		{Name: "#random"},
 	}
-	instances := []domain.Instance{
-		{Nick: "haiku", ModelID: "anthropic/haiku", Channels: func() *orderedmap.OrderedMap[domain.ChannelName, time.Time] {
-			m := orderedmap.New[domain.ChannelName, time.Time]()
-			m.Set("#general", time.Time{})
-			return m
-		}()},
-		{Nick: "sonnet", ModelID: "anthropic/sonnet"},
+	haikuChannels := orderedmap.New[domain.ChannelName, time.Time]()
+	haikuChannels.Set("#general", time.Time{})
+
+	instances := []*domain.Instance{
+		domain.NewModelInstance("inst-haiku", "haiku", "anthropic/haiku", "", haikuChannels),
+		domain.NewModelInstance("inst-sonnet", "sonnet", "anthropic/sonnet", "", nil),
 	}
 	members := []domain.Nick{"testuser", "haiku"}
 	models := []ModelOption{
@@ -38,7 +37,7 @@ func testContext(kind domain.ChannelKind) CompletionContext {
 
 	return CompletionContext{
 		Channels:      func() iter.Seq[domain.Channel] { return slices.Values(channels) },
-		Instances:     func() iter.Seq[domain.Instance] { return slices.Values(instances) },
+		Instances:     func() iter.Seq[*domain.Instance] { return slices.Values(instances) },
 		ActiveMembers: func() iter.Seq[domain.Nick] { return slices.Values(members) },
 		ActiveChannel: func() domain.ChannelName { return "#general" },
 		UserNick:      func() domain.Nick { return "testuser" },

@@ -80,7 +80,6 @@ type ChatScreen struct {
 	keyMap   components.ChatScreenKeyMap
 
 	channels   *set.Sorted[domain.Channel]
-	instances  *set.Sorted[domain.Instance]
 	liveModels *[]chatcmd.ModelOption
 	parser     chatcmd.Parser
 	completer  command.Completable
@@ -111,16 +110,10 @@ func NewChatScreen(ctx context.Context, sess *session.Session, cfgStore config.S
 	liveModels := []chatcmd.ModelOption(nil)
 
 	cs := ChatScreen{
-		ctx:      ctx,
-		sess:     sess,
-		cfgStore: cfgStore,
-		channels: set.NewSorted(channelOrder),
-		// Keyed by InstanceID so renames (NickChangeEvent) don't
-		// orphan entries under the old nick. Consumers that want
-		// a nick-ordered presentation sort at the call site.
-		instances: set.NewSorted(func(a, b domain.Instance) bool {
-			return a.InstanceID < b.InstanceID
-		}),
+		ctx:        ctx,
+		sess:       sess,
+		cfgStore:   cfgStore,
+		channels:   set.NewSorted(channelOrder),
 		active:     &active,
 		liveModels: &liveModels,
 		layout:     layout,
@@ -179,12 +172,6 @@ func (s ChatScreen) WithObservability(obs *observability.Runtime) ChatScreen {
 // instance roster (used for tab completion), and seeding local UI
 // configuration.
 func (s ChatScreen) Init() tea.Cmd {
-	if instances, err := s.sess.ListInstances(s.ctx); err == nil {
-		for _, inst := range instances {
-			s.instances.Insert(inst)
-		}
-	}
-
 	cfg, _ := s.loadConfig()
 
 	cmds := []tea.Cmd{
@@ -541,11 +528,12 @@ func (s ChatScreen) completionSet() command.CompletionSet[chatcmd.CompletionCont
 	return command.CompletionSet[chatcmd.CompletionContext]{
 		Set: s.parser.Set(),
 		Ctx: chatcmd.CompletionContext{
-			Channels:      func() iter.Seq[domain.Channel] { return s.channels.All() },
-			Instances:     func() iter.Seq[domain.Instance] { return s.instances.All() },
-			ActiveMembers: func() iter.Seq[domain.Nick] { return s.activeMemberNicks() },
-			ActiveChannel: func() domain.ChannelName { return *s.active },
-			UserNick:      func() domain.Nick { return s.sess.UserNick() },
+			Channels:       func() iter.Seq[domain.Channel] { return s.channels.All() },
+			Instances:      func() iter.Seq[*domain.Instance] { return s.sess.Instances(s.ctx) },
+			ChannelMembers: s.activeChannelInstances,
+			ActiveMembers:  func() iter.Seq[domain.Nick] { return s.activeMemberNicks() },
+			ActiveChannel:  func() domain.ChannelName { return *s.active },
+			UserNick:       func() domain.Nick { return s.sess.UserNick() },
 			LiveModels: func() iter.Seq[chatcmd.ModelOption] {
 				return slices.Values(*s.liveModels)
 			},
@@ -556,23 +544,6 @@ func (s ChatScreen) completionSet() command.CompletionSet[chatcmd.CompletionCont
 			Kind: func() domain.ChannelKind { return s.activeKind() },
 		},
 	}
-}
-
-func (s ChatScreen) unreadCounts(ctx context.Context, channels []domain.Channel) map[domain.ChannelName]int {
-	counts := make(map[domain.ChannelName]int, len(channels))
-
-	for _, ch := range channels {
-		n, err := s.sess.UnreadCount(ctx, ch.Name)
-		if err != nil {
-			continue
-		}
-
-		if n > 0 {
-			counts[ch.Name] = n
-		}
-	}
-
-	return counts
 }
 
 func (s ChatScreen) loadLiveModels() tea.Cmd {

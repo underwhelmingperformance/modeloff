@@ -15,20 +15,24 @@ func members(ms ...domain.Member) domain.MemberList {
 	ml := domain.NewMemberList()
 
 	for _, m := range ms {
-		id := m.InstanceID
-		if id == "" {
-			id = domain.InstanceID("inst-" + string(m.Nick))
-		}
-
-		ml.Add(id, m.Nick)
-		ml.SetMode(id, m.Mode)
+		ml.Add(m.Instance)
+		ml.SetMode(m.Instance, m.Mode)
 	}
 
 	return ml
 }
 
+// member builds a test `domain.Member` with a synthetic `*Instance`
+// allocated under the conventional `inst-<nick>` id. Allocating the
+// instance here keeps `memberLess`'s InstanceID tiebreaker stable —
+// synthetic members must not share the empty ID, which they would
+// if the helper returned a bare nick-only struct.
 func member(nick string, mode domain.NickMode) domain.Member {
-	return domain.Member{Nick: domain.Nick(nick), Mode: mode}
+	inst := domain.NewModelInstance(
+		domain.InstanceID("inst-"+nick),
+		domain.Nick(nick), "", "", nil,
+	)
+	return domain.Member{Instance: inst, Nick: domain.Nick(nick), Mode: mode}
 }
 
 func TestNickList_View_shows_members(t *testing.T) {
@@ -83,7 +87,7 @@ func TestNickList_View_overflow_fits_height(t *testing.T) {
 	ml := domain.NewMemberList()
 	for i := range 20 {
 		nick := domain.Nick(fmt.Sprintf("user%02d", i))
-		ml.Add(domain.InstanceID(fmt.Sprintf("inst-%02d", i)), nick)
+		ml.Add(domain.NewModelInstance(domain.InstanceID(fmt.Sprintf("inst-%02d", i)), nick, "", "", nil))
 	}
 
 	nl := components.NewNickList(ml)

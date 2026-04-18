@@ -14,7 +14,7 @@ import (
 func TestStoreAdapter_ReadEmpty(t *testing.T) {
 	store := NewStoreAdapter(storetest.NewMemoryStore(t))
 
-	got, err := store.Read(t.Context(), "alice")
+	got, err := store.Read(t.Context(), "alice-id")
 	require.NoError(t, err)
 	require.Empty(t, got)
 }
@@ -22,7 +22,7 @@ func TestStoreAdapter_ReadEmpty(t *testing.T) {
 func TestStoreAdapter_WriteAndRead(t *testing.T) {
 	ctx := t.Context()
 	store := NewStoreAdapter(storetest.NewMemoryStore(t))
-	nick := domain.Nick("bob")
+	id := domain.InstanceID("inst-bob")
 
 	entries := []Entry{
 		{Key: "greeting", Content: "Hello, I like cats."},
@@ -30,10 +30,10 @@ func TestStoreAdapter_WriteAndRead(t *testing.T) {
 	}
 
 	for _, e := range entries {
-		require.NoError(t, store.Write(ctx, nick, e))
+		require.NoError(t, store.Write(ctx, id, e))
 	}
 
-	got, err := store.Read(ctx, nick)
+	got, err := store.Read(ctx, id)
 	require.NoError(t, err)
 	require.Equal(t, entries, got)
 }
@@ -42,23 +42,23 @@ func TestStoreAdapter_Write_recordsSpan(t *testing.T) {
 	recorder := oteltest.InstallSpanRecorder(t)
 	store := NewStoreAdapter(storetest.NewMemoryStore(t))
 
-	require.NoError(t, store.Write(t.Context(), "bob", Entry{Key: "greeting", Content: "hello"}))
+	require.NoError(t, store.Write(t.Context(), "inst-bob", Entry{Key: "greeting", Content: "hello"}))
 
 	span := oteltest.FindSpan(t, recorder, "memory.file.write")
 	require.Equal(t, "memory.file.write", oteltest.AttrValue(span.Attributes(), observability.AttrOperation))
-	require.Equal(t, "bob", oteltest.AttrValue(span.Attributes(), observability.AttrNick))
+	require.Equal(t, "inst-bob", oteltest.AttrValue(span.Attributes(), observability.AttrInstanceID))
 	require.Equal(t, observability.ResultOK, oteltest.AttrValue(span.Attributes(), observability.AttrResult))
 }
 
 func TestStoreAdapter_WriteOverwritesExistingKey(t *testing.T) {
 	ctx := t.Context()
 	store := NewStoreAdapter(storetest.NewMemoryStore(t))
-	nick := domain.Nick("charlie")
+	id := domain.InstanceID("inst-charlie")
 
-	require.NoError(t, store.Write(ctx, nick, Entry{Key: "mood", Content: "happy"}))
-	require.NoError(t, store.Write(ctx, nick, Entry{Key: "mood", Content: "excited"}))
+	require.NoError(t, store.Write(ctx, id, Entry{Key: "mood", Content: "happy"}))
+	require.NoError(t, store.Write(ctx, id, Entry{Key: "mood", Content: "excited"}))
 
-	got, err := store.Read(ctx, nick)
+	got, err := store.Read(ctx, id)
 	require.NoError(t, err)
 	require.Equal(t, []Entry{{Key: "mood", Content: "excited"}}, got)
 }
@@ -66,7 +66,7 @@ func TestStoreAdapter_WriteOverwritesExistingKey(t *testing.T) {
 func TestStoreAdapter_Delete(t *testing.T) {
 	ctx := t.Context()
 	store := NewStoreAdapter(storetest.NewMemoryStore(t))
-	nick := domain.Nick("dave")
+	id := domain.InstanceID("inst-dave")
 
 	entries := []Entry{
 		{Key: "first", Content: "one"},
@@ -75,12 +75,12 @@ func TestStoreAdapter_Delete(t *testing.T) {
 	}
 
 	for _, e := range entries {
-		require.NoError(t, store.Write(ctx, nick, e))
+		require.NoError(t, store.Write(ctx, id, e))
 	}
 
-	require.NoError(t, store.Delete(ctx, nick, "second"))
+	require.NoError(t, store.Delete(ctx, id, "second"))
 
-	got, err := store.Read(ctx, nick)
+	got, err := store.Read(ctx, id)
 	require.NoError(t, err)
 
 	want := []Entry{
@@ -95,21 +95,21 @@ func TestStoreAdapter_DeleteNonexistent(t *testing.T) {
 	ctx := t.Context()
 	store := NewStoreAdapter(storetest.NewMemoryStore(t))
 
-	require.NoError(t, store.Delete(ctx, "eve", "nonexistent"))
+	require.NoError(t, store.Delete(ctx, "inst-eve", "nonexistent"))
 }
 
-func TestStoreAdapter_IsolationBetweenNicks(t *testing.T) {
+func TestStoreAdapter_IsolationBetweenInstances(t *testing.T) {
 	ctx := t.Context()
 	store := NewStoreAdapter(storetest.NewMemoryStore(t))
 
-	require.NoError(t, store.Write(ctx, "nick-a", Entry{Key: "k", Content: "from-a"}))
-	require.NoError(t, store.Write(ctx, "nick-b", Entry{Key: "k", Content: "from-b"}))
+	require.NoError(t, store.Write(ctx, "inst-a", Entry{Key: "k", Content: "from-a"}))
+	require.NoError(t, store.Write(ctx, "inst-b", Entry{Key: "k", Content: "from-b"}))
 
-	gotA, err := store.Read(ctx, "nick-a")
+	gotA, err := store.Read(ctx, "inst-a")
 	require.NoError(t, err)
 	require.Equal(t, []Entry{{Key: "k", Content: "from-a"}}, gotA)
 
-	gotB, err := store.Read(ctx, "nick-b")
+	gotB, err := store.Read(ctx, "inst-b")
 	require.NoError(t, err)
 	require.Equal(t, []Entry{{Key: "k", Content: "from-b"}}, gotB)
 }
@@ -118,16 +118,16 @@ func TestStoreAdapter_Reset(t *testing.T) {
 	ctx := t.Context()
 	store := NewStoreAdapter(storetest.NewMemoryStore(t))
 
-	require.NoError(t, store.Write(ctx, "alice", Entry{Key: "k1", Content: "v1"}))
-	require.NoError(t, store.Write(ctx, "bob", Entry{Key: "k2", Content: "v2"}))
+	require.NoError(t, store.Write(ctx, "inst-alice", Entry{Key: "k1", Content: "v1"}))
+	require.NoError(t, store.Write(ctx, "inst-bob", Entry{Key: "k2", Content: "v2"}))
 
 	require.NoError(t, store.Reset(ctx))
 
-	gotA, err := store.Read(ctx, "alice")
+	gotA, err := store.Read(ctx, "inst-alice")
 	require.NoError(t, err)
 	require.Empty(t, gotA)
 
-	gotB, err := store.Read(ctx, "bob")
+	gotB, err := store.Read(ctx, "inst-bob")
 	require.NoError(t, err)
 	require.Empty(t, gotB)
 }

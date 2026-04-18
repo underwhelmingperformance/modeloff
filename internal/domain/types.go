@@ -5,8 +5,10 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"iter"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/laney/modeloff/internal/set"
@@ -16,6 +18,10 @@ import (
 // InstanceID is a stable per-session identifier for an actor on the
 // server. The human user's instance has an empty InstanceID; every
 // model instance is assigned a unique one via GenerateInstanceID.
+//
+// InstanceID is the serialised wire form of identity (store columns,
+// event-log records). Within the process the canonical handle is
+// `*Instance`; callers compare instances by pointer identity.
 type InstanceID string
 
 // GenerateInstanceID returns a random 8-byte hex string suitable for
@@ -123,18 +129,226 @@ func (ch Channel) DisplayName() string {
 // Instance represents an actor on the IRC server. Both the human
 // user and model instances share this type. The human user has an
 // empty ModelID.
+//
+// Instance is an opaque handle: callers hold a `*Instance`, compare
+// instances by pointer identity, and observe mutable attributes
+// (nick, persona, channels) via the getter methods. Mutable fields
+// are guarded by an internal RWMutex so concurrent readers see a
+// consistent snapshot; writes (rare: a rename, a persona update, a
+// join) take the write lock.
+//
+// Instance must be constructed via NewUserInstance or
+// NewModelInstance. Zero-value Instance is reserved for internal
+// wire-format stubs (see MemberList.UnmarshalJSON); do not use it
+// elsewhere.
 type Instance struct {
-	InstanceID InstanceID
-	Nick       Nick
-	ModelID    ModelID
-	Persona    string
-	Channels   *orderedmap.OrderedMap[ChannelName, time.Time]
+	instanceID InstanceID // immutable, set at construction
+	ModelID    ModelID    // immutable, set at construction
+
+	mu       sync.RWMutex
+	nick     Nick
+	persona  string
+	channels *orderedmap.OrderedMap[ChannelName, time.Time]
+}
+
+// NewUserInstance constructs the human user's Instance. The user
+// carries the empty InstanceID as its stable identity marker and no
+// ModelID. The channels map is initialised empty.
+func NewUserInstance(nick Nick) *Instance {
+	return newInstance("", "", nick, "", orderedmap.New[ChannelName, time.Time]())
+}
+
+// NewModelInstance constructs a model-backed Instance with the given
+// identity, nick, model id, persona, and channels. If channels is
+// nil, an empty ordered map is created.
+//
+// The caller must pass a non-empty InstanceID (use
+// GenerateInstanceID). Empty IDs are reserved for the user sentinel
+// constructed via NewUserInstance.
+func NewModelInstance(id InstanceID, nick Nick, modelID ModelID, persona string, channels *orderedmap.OrderedMap[ChannelName, time.Time]) *Instance {
+	if channels == nil {
+		channels = orderedmap.New[ChannelName, time.Time]()
+	}
+
+	return newInstance(id, modelID, nick, persona, channels)
+}
+
+func newInstance(id InstanceID, modelID ModelID, nick Nick, persona string, channels *orderedmap.OrderedMap[ChannelName, time.Time]) *Instance {
+	return &Instance{
+		instanceID: id,
+		ModelID:    modelID,
+		nick:       nick,
+		persona:    persona,
+		channels:   channels,
+	}
+}
+
+// ID returns the stable InstanceID. This is the serialisation form
+// of identity; within the process, callers should prefer pointer
+// identity. Used by the store, event-log, and observability layers.
+// Returns the empty InstanceID on a nil receiver, matching the
+// zero-value shape of Nick/Persona/Channels.
+func (i *Instance) ID() InstanceID {
+	if i == nil {
+		return ""
+	}
+
+	return i.instanceID
+}
+
+// Nick returns the instance's current display nick. The nick is
+// mutable (via SetNick) so multiple calls may return different
+// values after a rename.
+func (i *Instance) Nick() Nick {
+	if i == nil {
+		return ""
+	}
+
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+
+	return i.nick
+}
+
+// SetNick updates the display nick under the write lock. Backend-
+// only; the frontend observes renames through `NickChangeEvent`
+// rather than by mutating the handle directly.
+func (i *Instance) SetNick(nick Nick) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	i.nick = nick
+}
+
+// Persona returns the current persona description.
+func (i *Instance) Persona() string {
+	if i == nil {
+		return ""
+	}
+
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+
+	return i.persona
+}
+
+// SetPersona updates the persona description under the write lock.
+func (i *Instance) SetPersona(persona string) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	i.persona = persona
+}
+
+// Channels returns a read-only snapshot of the channels-joined-time
+// map. The returned map is a clone; callers may read or iterate it
+// without coordinating with writers. Mutations must go through
+// MutateChannels.
+func (i *Instance) Channels() *orderedmap.OrderedMap[ChannelName, time.Time] {
+	if i == nil {
+		return nil
+	}
+
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+
+	return cloneChannels(i.channels)
+}
+
+// MutateChannels applies fn to the channels map under the write
+// lock. fn sees the live map and is free to mutate it in place.
+// Readers that raced with the mutation observe either the pre- or
+// post-state, never a partial one.
+func (i *Instance) MutateChannels(fn func(*orderedmap.OrderedMap[ChannelName, time.Time])) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	if i.channels == nil {
+		i.channels = orderedmap.New[ChannelName, time.Time]()
+	}
+
+	fn(i.channels)
+}
+
+// cloneChannels returns a shallow copy of the ordered channel/join-
+// time map. The new map is safe to mutate; the original must be
+// treated as frozen.
+func cloneChannels(src *orderedmap.OrderedMap[ChannelName, time.Time]) *orderedmap.OrderedMap[ChannelName, time.Time] {
+	clone := orderedmap.New[ChannelName, time.Time]()
+
+	if src == nil {
+		return clone
+	}
+
+	for pair := src.Oldest(); pair != nil; pair = pair.Next() {
+		clone.Set(pair.Key, pair.Value)
+	}
+
+	return clone
 }
 
 // IsModel reports whether the instance is a model (as opposed to
 // the human user).
-func (i Instance) IsModel() bool { return i.ModelID != "" }
+func (i *Instance) IsModel() bool { return i.ModelID != "" }
 
+// instanceJSON is the wire format for `Instance`. It mirrors the
+// pre-handle struct so the store-column and existing test fixtures
+// continue to deserialise unchanged.
+type instanceJSON struct {
+	InstanceID InstanceID                                     `json:"InstanceID"`
+	Nick       Nick                                           `json:"Nick"`
+	ModelID    ModelID                                        `json:"ModelID"`
+	Persona    string                                         `json:"Persona"`
+	Channels   *orderedmap.OrderedMap[ChannelName, time.Time] `json:"Channels"`
+}
+
+// MarshalJSON implements json.Marshaler. The read-lock is held for
+// the duration of the snapshot build so concurrent mutations do not
+// produce a torn record.
+func (i *Instance) MarshalJSON() ([]byte, error) {
+	if i == nil {
+		return []byte("null"), nil
+	}
+
+	i.mu.RLock()
+	snapshot := instanceJSON{
+		InstanceID: i.instanceID,
+		Nick:       i.nick,
+		ModelID:    i.ModelID,
+		Persona:    i.persona,
+		Channels:   cloneChannels(i.channels),
+	}
+	i.mu.RUnlock()
+
+	return json.Marshal(snapshot)
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (i *Instance) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		return nil
+	}
+
+	var v instanceJSON
+	if err := json.Unmarshal(data, &v); err != nil {
+		return fmt.Errorf("unmarshal instance: %w", err)
+	}
+
+	channels := v.Channels
+	if channels == nil {
+		channels = orderedmap.New[ChannelName, time.Time]()
+	}
+
+	i.mu.Lock()
+	i.instanceID = v.InstanceID
+	i.ModelID = v.ModelID
+	i.nick = v.Nick
+	i.persona = v.Persona
+	i.channels = channels
+	i.mu.Unlock()
+
+	return nil
+}
 
 // NickMode represents a user's privilege level in a channel, following
 // IRC conventions.
@@ -178,13 +392,20 @@ func (m NickMode) IRCMode() string {
 	}
 }
 
-// Member pairs a nick with its channel mode for display in the nick
-// list. InstanceID is the stable per-session identity that survives
-// nick changes; the human user carries an empty InstanceID.
+// Member pairs an Instance with its channel mode for display in the
+// nick list.
+//
+// Nick is a snapshot of the instance's nick at the time of the last
+// Add/RenameTo; it stays consistent within a single render frame
+// even as the underlying instance renames. The snapshot is kept in
+// sync by MemberList.RenameTo, which is called from
+// handleNickChangeEvent. Any code path that mutates Instance.nick
+// without emitting NickChangeEvent for every channel the instance
+// is in will leave this field stale.
 type Member struct {
-	InstanceID InstanceID `json:"instance_id,omitempty"`
-	Nick       Nick       `json:"nick"`
-	Mode       NickMode   `json:"mode"`
+	Instance *Instance
+	Nick     Nick
+	Mode     NickMode
 }
 
 func (m Member) String() string {
@@ -193,9 +414,9 @@ func (m Member) String() string {
 
 // memberLess defines the display order for members: higher modes
 // first (op > voice > none), then alphabetically by nick within
-// each mode, with InstanceID as a final tiebreaker so that distinct
-// instances that briefly share the same (mode, nick) key do not
-// collide inside the sorted set.
+// each mode. The final tiebreaker on `Instance.ID()` keeps distinct
+// instances with the same mode-and-nick pair from colliding inside
+// the sorted set.
 func memberLess(a, b Member) bool {
 	if a.Mode != b.Mode {
 		return a.Mode > b.Mode
@@ -205,23 +426,23 @@ func memberLess(a, b Member) bool {
 		return a.Nick < b.Nick
 	}
 
-	return a.InstanceID < b.InstanceID
+	return a.Instance.ID() < b.Instance.ID()
 }
 
 // MemberList is a sorted set of channel members ordered by mode
 // then nick. The sort is maintained at insertion time so iteration
 // and positional access are always free of re-sorting. A parallel
-// map keyed by InstanceID backs O(1) identity lookups.
+// map keyed by `*Instance` pointer backs O(1) identity lookups.
 type MemberList struct {
-	members *set.Sorted[Member]
-	byID    map[InstanceID]Member
+	members    *set.Sorted[Member]
+	byInstance map[*Instance]Member
 }
 
 // NewMemberList creates an empty member list.
 func NewMemberList() MemberList {
 	return MemberList{
-		members: set.NewSorted(memberLess),
-		byID:    make(map[InstanceID]Member),
+		members:    set.NewSorted(memberLess),
+		byInstance: make(map[*Instance]Member),
 	}
 }
 
@@ -232,72 +453,79 @@ func (ml *MemberList) ensureInit() {
 		ml.members = set.NewSorted(memberLess)
 	}
 
-	if ml.byID == nil {
-		ml.byID = make(map[InstanceID]Member)
+	if ml.byInstance == nil {
+		ml.byInstance = make(map[*Instance]Member)
 	}
 }
 
-// Add inserts a member identified by instanceID with the given nick
-// as a regular (unprivileged) member. The empty instanceID marks the
-// human user; because storage is keyed by instance id there can only
-// ever be one such entry. Adding with an existing instance id
-// updates the stored nick while preserving the current mode (so
-// add-with-rename is idempotent).
-func (ml *MemberList) Add(instanceID InstanceID, nick Nick) {
+// Add inserts an instance as a regular (unprivileged) member. The
+// snapshot nick in the resulting Member is captured from the
+// instance at call time; subsequent renames propagate through
+// `RenameTo`. Adding an instance that is already a member updates
+// its snapshot nick while preserving the current mode.
+func (ml *MemberList) Add(inst *Instance) {
 	ml.ensureInit()
 
-	m := Member{InstanceID: instanceID, Nick: nick, Mode: ModeNone}
+	m := Member{Instance: inst, Nick: inst.Nick(), Mode: ModeNone}
 
-	if cur, ok := ml.byID[instanceID]; ok {
+	if cur, ok := ml.byInstance[inst]; ok {
 		ml.members.Remove(cur)
 		m.Mode = cur.Mode
 	}
 
 	ml.members.Insert(m)
-	ml.byID[instanceID] = m
+	ml.byInstance[inst] = m
 }
 
 // Remove deletes the given member. Identity is taken from
-// InstanceID; the Mode and Nick on the argument are ignored so that
-// callers holding a stale mode can still remove a member cleanly.
+// `m.Instance`; the Mode and Nick on the argument are ignored so
+// that callers holding a stale mode can still remove a member
+// cleanly.
 func (ml *MemberList) Remove(m Member) {
 	if ml.members == nil {
 		return
 	}
 
-	cur, ok := ml.byID[m.InstanceID]
+	cur, ok := ml.byInstance[m.Instance]
 	if !ok {
 		return
 	}
 
 	ml.members.Remove(cur)
-	delete(ml.byID, m.InstanceID)
+	delete(ml.byInstance, m.Instance)
 }
 
-// SetMode changes a member's privilege level by instance id. This
-// removes and re-inserts the member since mode is part of the sort
-// key. Setting the mode of an unknown instance is a no-op.
-func (ml *MemberList) SetMode(instanceID InstanceID, mode NickMode) {
+// RemoveInstance is a convenience for callers that hold the handle
+// but not a full Member. It is equivalent to `Remove(Member{Instance:
+// inst})`.
+func (ml *MemberList) RemoveInstance(inst *Instance) {
+	ml.Remove(Member{Instance: inst})
+}
+
+// SetMode changes a member's privilege level. This removes and
+// re-inserts the member since mode is part of the sort key. Setting
+// the mode of an unknown instance is a no-op.
+func (ml *MemberList) SetMode(inst *Instance, mode NickMode) {
 	if ml.members == nil {
 		return
 	}
 
-	cur, ok := ml.byID[instanceID]
+	cur, ok := ml.byInstance[inst]
 	if !ok {
 		return
 	}
 
 	ml.members.Remove(cur)
 
-	updated := Member{InstanceID: instanceID, Nick: cur.Nick, Mode: mode}
+	updated := Member{Instance: inst, Nick: cur.Nick, Mode: mode}
 	ml.members.Insert(updated)
-	ml.byID[instanceID] = updated
+	ml.byInstance[inst] = updated
 }
 
 // SetModeByNick is a display-layer convenience that forwards to
-// SetMode after resolving the nick to its instance id. Wire code
-// that only has a nick in hand (e.g. ChanServ-style commands) uses
-// this. It is a no-op if the nick is unknown.
+// SetMode after resolving the nick to its instance handle. Wire
+// code that only has a nick in hand (e.g. ChanServ-style commands)
+// uses this. It is a no-op if the nick is unknown.
 func (ml *MemberList) SetModeByNick(nick Nick, mode NickMode) {
 	if ml.members == nil {
 		return
@@ -308,51 +536,58 @@ func (ml *MemberList) SetModeByNick(nick Nick, mode NickMode) {
 		return
 	}
 
-	ml.SetMode(m.InstanceID, mode)
+	ml.SetMode(m.Instance, mode)
 }
 
-// RenameTo updates the stored nick for the given instance id,
+// RenameTo updates the snapshot nick for the given instance handle,
 // preserving the existing mode. The underlying sorted set is
 // re-keyed in place (remove + insert) because Nick participates in
-// the sort order. It is a no-op if the instance id is unknown.
-func (ml *MemberList) RenameTo(instanceID InstanceID, newNick Nick) {
+// the sort order. It is a no-op if the instance is not currently a
+// member.
+//
+// RenameTo only updates this MemberList's snapshot — the caller is
+// responsible for also calling `inst.SetNick(newNick)` and for
+// re-calling `RenameTo` on every other channel the instance is in.
+// `Session.ChangeNickAs` handles this fan-out.
+func (ml *MemberList) RenameTo(inst *Instance, newNick Nick) {
 	if ml.members == nil {
 		return
 	}
 
-	cur, ok := ml.byID[instanceID]
+	cur, ok := ml.byInstance[inst]
 	if !ok {
 		return
 	}
 
 	ml.members.Remove(cur)
 
-	updated := Member{InstanceID: instanceID, Nick: newNick, Mode: cur.Mode}
+	updated := Member{Instance: inst, Nick: newNick, Mode: cur.Mode}
 	ml.members.Insert(updated)
-	ml.byID[instanceID] = updated
+	ml.byInstance[inst] = updated
 }
 
-// GetByID returns the member for the given instance id.
-func (ml MemberList) GetByID(instanceID InstanceID) (Member, bool) {
-	if ml.byID == nil {
+// GetByInstance returns the member for the given instance handle.
+func (ml MemberList) GetByInstance(inst *Instance) (Member, bool) {
+	if ml.byInstance == nil {
 		return Member{}, false
 	}
 
-	m, ok := ml.byID[instanceID]
+	m, ok := ml.byInstance[inst]
 
 	return m, ok
 }
 
-// HasID reports whether a member exists with the given instance id.
-func (ml MemberList) HasID(instanceID InstanceID) bool {
-	_, ok := ml.GetByID(instanceID)
+// HasInstance reports whether the given instance handle is a
+// member.
+func (ml MemberList) HasInstance(inst *Instance) bool {
+	_, ok := ml.GetByInstance(inst)
 
 	return ok
 }
 
 // GetByNick finds a member by display nick. It is intended for
-// display-layer lookups (e.g. resolving a typed command argument);
-// identity-bearing code should prefer GetByID.
+// display-layer lookups (tab completion, resolving a typed command
+// argument); identity-bearing code should prefer GetByInstance.
 func (ml MemberList) GetByNick(nick Nick) (Member, bool) {
 	if ml.members == nil {
 		return Member{}, false
@@ -422,39 +657,102 @@ func (ml MemberList) Nicks() iter.Seq[Nick] {
 	}
 }
 
-// MarshalJSON encodes the member list as a JSON array of members.
-func (ml MemberList) MarshalJSON() ([]byte, error) {
-	members := make([]Member, 0, ml.Len())
-
-	for _, m := range ml.All() {
-		members = append(members, m)
-	}
-
-	return json.Marshal(members)
+// memberJSON is the wire format for a single Member. It records the
+// instance id on the wire so the channel can round-trip before the
+// store has resolved ids back to canonical `*Instance` handles; the
+// store layer provides an `InstanceResolver` when loading to rewrite
+// the id back to a pointer.
+type memberJSON struct {
+	InstanceID InstanceID `json:"instance_id,omitempty"`
+	Nick       Nick       `json:"nick"`
+	Mode       NickMode   `json:"mode"`
 }
 
-// UnmarshalJSON decodes a JSON array of members into the list. An
-// empty or null array leaves the backing storage nil so that the
-// zero value round-trips cleanly under reflect.DeepEqual; mutating
-// methods on the resulting list lazily initialise the underlying
-// storage.
+// MarshalJSON encodes the member list as a JSON array of members
+// keyed by InstanceID on the wire.
+func (ml MemberList) MarshalJSON() ([]byte, error) {
+	out := make([]memberJSON, 0, ml.Len())
+
+	for _, m := range ml.All() {
+		var id InstanceID
+		if m.Instance != nil {
+			id = m.Instance.ID()
+		}
+
+		out = append(out, memberJSON{InstanceID: id, Nick: m.Nick, Mode: m.Mode})
+	}
+
+	return json.Marshal(out)
+}
+
+// UnmarshalJSON decodes a JSON array of member records into the
+// list. Each record is stored as a stub `*Instance` carrying only
+// the serialised id; callers that need canonical handles (the
+// session on channel load) rewrite the stubs via
+// `MemberList.ResolveInstances`.
 func (ml *MemberList) UnmarshalJSON(data []byte) error {
-	var members []Member
-	if err := json.Unmarshal(data, &members); err != nil {
+	var records []memberJSON
+	if err := json.Unmarshal(data, &records); err != nil {
 		return err
 	}
 
-	if len(members) == 0 {
+	if len(records) == 0 {
 		*ml = MemberList{}
 		return nil
 	}
 
 	*ml = NewMemberList()
 
-	for _, m := range members {
+	for _, r := range records {
+		stub := &Instance{instanceID: r.InstanceID}
+		m := Member{Instance: stub, Nick: r.Nick, Mode: r.Mode}
+
 		ml.members.Insert(m)
-		ml.byID[m.InstanceID] = m
+		ml.byInstance[stub] = m
 	}
 
 	return nil
+}
+
+// InstanceResolver turns a serialised InstanceID back into the
+// canonical `*Instance` handle produced by the store. Returning nil
+// for a not-found id indicates "drop this member" — currently used
+// only by the store layer when a member row references an instance
+// row that has been deleted.
+type InstanceResolver func(InstanceID) *Instance
+
+// ResolveInstances rewrites each member's stub `*Instance` (set by
+// UnmarshalJSON to carry only the serialised id) to the canonical
+// handle returned by resolve. A stub whose id resolves to nil is
+// dropped from the list.
+//
+// This is intended for the store's channel-deserialisation path
+// only: the store reads a channel's member-list records from disk,
+// then calls ResolveInstances to rewrite the stubs to the canonical
+// pointers it owns. Session and UI code never call this directly —
+// by the time a Channel surfaces to session the MemberList already
+// carries canonical handles.
+func (ml *MemberList) ResolveInstances(resolve InstanceResolver) {
+	if ml.members == nil {
+		return
+	}
+
+	rebuilt := set.NewSorted(memberLess)
+	byInstance := make(map[*Instance]Member, ml.members.Len())
+
+	for _, m := range ml.All() {
+		id := m.Instance.ID()
+
+		canonical := resolve(id)
+		if canonical == nil {
+			continue
+		}
+
+		updated := Member{Instance: canonical, Nick: m.Nick, Mode: m.Mode}
+		rebuilt.Insert(updated)
+		byInstance[canonical] = updated
+	}
+
+	ml.members = rebuilt
+	ml.byInstance = byInstance
 }

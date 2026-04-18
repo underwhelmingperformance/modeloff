@@ -16,10 +16,26 @@ import (
 
 var testTime = time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC)
 
-func storeTestMembers(nicks ...domain.Nick) domain.MemberList {
+// storeTestMembers builds a MemberList for tests by constructing a
+// synthetic model Instance per nick and persisting it to the store.
+// Persisting is required because `GetChannel` resolves stub member
+// references against the `instances` table; a channel saved with
+// unpersisted members would have those members dropped as dead
+// references on the next load.
+func storeTestMembers(t *testing.T, s *SQLiteStore, nicks ...domain.Nick) domain.MemberList {
+	t.Helper()
+
 	ml := domain.NewMemberList()
 	for _, nick := range nicks {
-		ml.Add(domain.InstanceID("inst-"+string(nick)), nick)
+		inst := domain.NewModelInstance(
+			domain.InstanceID("inst-"+string(nick)),
+			nick,
+			"test/model",
+			"",
+			nil,
+		)
+		require.NoError(t, s.SaveInstance(t.Context(), inst))
+		ml.Add(inst)
 	}
 
 	return ml
@@ -71,19 +87,23 @@ type comparableInstance struct {
 	Channels []channelEntry
 }
 
-func normaliseInstance(inst domain.Instance) comparableInstance {
+func normaliseInstance(inst *domain.Instance) comparableInstance {
+	if inst == nil {
+		return comparableInstance{}
+	}
+
 	var channels []channelEntry
 
-	if inst.Channels != nil {
-		for pair := inst.Channels.Oldest(); pair != nil; pair = pair.Next() {
+	if ch := inst.Channels(); ch != nil {
+		for pair := ch.Oldest(); pair != nil; pair = pair.Next() {
 			channels = append(channels, channelEntry{Name: pair.Key, JoinedAt: pair.Value})
 		}
 	}
 
 	return comparableInstance{
-		Nick:     inst.Nick,
+		Nick:     inst.Nick(),
 		ModelID:  inst.ModelID,
-		Persona:  inst.Persona,
+		Persona:  inst.Persona(),
 		Channels: channels,
 	}
 }
@@ -120,7 +140,7 @@ func TestSQLiteStore_SaveAndGetChannel(t *testing.T) {
 		Name:    "#general",
 		Kind:    domain.KindChannel,
 		Topic:   "General chat",
-		Members: storeTestMembers("alice", "bob"),
+		Members: storeTestMembers(t, s, "alice", "bob"),
 		Created: testTime,
 	}
 
@@ -139,7 +159,7 @@ func TestSQLiteStore_SaveChannel_recordsSpan(t *testing.T) {
 	ch := domain.Channel{
 		Name:    "#observability",
 		Kind:    domain.KindChannel,
-		Members: storeTestMembers("alice"),
+		Members: storeTestMembers(t, s, "alice"),
 		Created: testTime,
 	}
 
@@ -214,7 +234,7 @@ func TestSQLiteStore_SaveChannelOverwrites(t *testing.T) {
 	require.NoError(t, s.SaveChannel(ctx, ch))
 
 	ch.Topic = "Updated topic"
-	ch.Members = storeTestMembers("charlie")
+	ch.Members = storeTestMembers(t, s, "charlie")
 	require.NoError(t, s.SaveChannel(ctx, ch))
 
 	got, err := s.GetChannel(ctx, "#evolving")
@@ -232,7 +252,7 @@ func TestSQLiteStore_SaveAndGetChannelWithTopicMetadata(t *testing.T) {
 		Topic:      "Go development",
 		TopicSetBy: "alice",
 		TopicSetAt: testTime,
-		Members:    storeTestMembers("alice"),
+		Members:    storeTestMembers(t, s, "alice"),
 		Created:    testTime,
 	}
 
@@ -437,46 +457,121 @@ func TestSQLiteStore_SaveAndGetInstance(t *testing.T) {
 	channels.Set("#general", testTime)
 	channels.Set("#dev", testTime)
 
-	inst := domain.Instance{
-		Nick:     "claude",
-		ModelID:  "anthropic/claude-3-haiku",
-		Persona:  "Helpful assistant",
-		Channels: channels,
-	}
+	inst := domain.NewModelInstance(
+		"inst-claude",
+		"claude",
+		"anthropic/claude-3-haiku",
+		"Helpful assistant",
+		channels,
+	)
 
 	require.NoError(t, s.SaveInstance(ctx, inst))
 
-	got, err := s.GetInstance(ctx, "claude")
+	byID, err := s.GetInstanceByID(ctx, "inst-claude")
 	require.NoError(t, err)
-	require.Equal(t, normaliseInstance(inst), normaliseInstance(got))
+	require.Equal(t, normaliseInstance(inst), normaliseInstance(byID))
+
+	// The store returns the canonical pointer — the saved handle
+	// itself — so later callers observe the same pointer identity.
+	require.Same(t, inst, byID)
+
+	viaNick, err := s.ResolveNick(ctx, "claude")
+	require.NoError(t, err)
+	require.Same(t, inst, viaNick)
 }
 
-func TestSQLiteStore_GetInstanceNotFound(t *testing.T) {
+func TestSQLiteStore_ResolveNick_not_found(t *testing.T) {
 	s := newTestStore(t)
 
-	_, err := s.GetInstance(t.Context(), "ghost")
+	_, err := s.ResolveNick(t.Context(), "ghost")
+	require.ErrorIs(t, err, ErrNoSuchNick)
+}
+
+func TestSQLiteStore_GetInstanceByIDNotFound(t *testing.T) {
+	s := newTestStore(t)
+
+	_, err := s.GetInstanceByID(t.Context(), "inst-ghost")
 	require.Error(t, err)
 }
 
-func TestSQLiteStore_DeleteInstance(t *testing.T) {
+func TestSQLiteStore_DeleteInstanceByID(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
 
-	inst := domain.Instance{Nick: "temp", ModelID: "test/model"}
+	inst := domain.NewModelInstance("inst-temp", "temp", "test/model", "", nil)
 	require.NoError(t, s.SaveInstance(ctx, inst))
-	require.NoError(t, s.DeleteInstance(ctx, "temp"))
+	require.NoError(t, s.DeleteInstanceByID(ctx, "inst-temp"))
 
-	_, err := s.GetInstance(ctx, "temp")
+	_, err := s.GetInstanceByID(ctx, "inst-temp")
 	require.Error(t, err)
+}
+
+func TestSQLiteStore_registry_canonical_pointer_across_reloads(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	inst := domain.NewModelInstance("inst-keep", "keep", "test/model", "original", nil)
+	require.NoError(t, s.SaveInstance(ctx, inst))
+
+	// A subsequent GetInstanceByID returns the same handle.
+	got, err := s.GetInstanceByID(ctx, "inst-keep")
+	require.NoError(t, err)
+	require.Same(t, inst, got)
+
+	// The session is authoritative for the live state of every
+	// registered instance; the store row is a save-time snapshot.
+	// A second SaveInstance from a shadow handle updates the row
+	// but does not touch the cached handle — reloading returns the
+	// original pointer with its original state.
+	shadow := domain.NewModelInstance("inst-keep", "renamed", "test/model", "updated", nil)
+	require.NoError(t, s.SaveInstance(ctx, shadow))
+
+	refreshed, err := s.GetInstanceByID(ctx, "inst-keep")
+	require.NoError(t, err)
+	require.Same(t, inst, refreshed)
+	require.Equal(t, domain.Nick("keep"), refreshed.Nick())
+	require.Equal(t, "original", refreshed.Persona())
+}
+
+func TestSQLiteStore_GetChannel_drops_dead_member_references(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	members := storeTestMembers(t, s, "alice", "bob")
+
+	ch := domain.Channel{
+		Name:    "#dev",
+		Kind:    domain.KindChannel,
+		Members: members,
+		Created: testTime,
+	}
+	require.NoError(t, s.SaveChannel(ctx, ch))
+
+	// Delete bob's backing instance. The channel membership record
+	// still references inst-bob but no instance row remains.
+	require.NoError(t, s.DeleteInstanceByID(ctx, "inst-bob"))
+
+	got, err := s.GetChannel(ctx, "#dev")
+	require.NoError(t, err)
+
+	// The surviving member is alice; bob's stub is dropped. Compare
+	// the nick snapshots so the assertion doesn't depend on pointer
+	// identity of the canonical handles.
+	gotNicks := make([]domain.Nick, 0, got.Members.Len())
+	for _, m := range got.Members.All() {
+		gotNicks = append(gotNicks, m.Nick)
+	}
+
+	require.Equal(t, []domain.Nick{"alice"}, gotNicks)
 }
 
 func TestSQLiteStore_ListInstances(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
 
-	instances := []domain.Instance{
-		{Nick: "a", ModelID: "model/a"},
-		{Nick: "b", ModelID: "model/b"},
+	instances := []*domain.Instance{
+		domain.NewModelInstance("inst-a", "a", "model/a", "", nil),
+		domain.NewModelInstance("inst-b", "b", "model/b", "", nil),
 	}
 
 	for _, inst := range instances {
@@ -485,7 +580,28 @@ func TestSQLiteStore_ListInstances(t *testing.T) {
 
 	got, err := s.ListInstances(ctx)
 	require.NoError(t, err)
-	require.Equal(t, instances, got)
+	// Normalise through the snapshot helper so the comparison
+	// operates on display fields rather than pointer internals.
+	wantNorm := make([]comparableInstance, len(instances))
+	for i, inst := range instances {
+		wantNorm[i] = normaliseInstance(inst)
+	}
+
+	gotNorm := make([]comparableInstance, len(got))
+	for i, inst := range got {
+		gotNorm[i] = normaliseInstance(inst)
+	}
+
+	require.Equal(t, wantNorm, gotNorm)
+
+	// Store guarantees canonical pointer identity across calls; the
+	// second invocation returns the same handles.
+	got2, err := s.ListInstances(ctx)
+	require.NoError(t, err)
+	require.Equal(t, len(got), len(got2))
+	for i := range got {
+		require.Same(t, got[i], got2[i])
+	}
 }
 
 // --- Last channel state ---
@@ -606,9 +722,9 @@ func TestSQLiteStore_Reset(t *testing.T) {
 		Channel: "#general", Nick: "alice", At: testTime,
 	})
 	require.NoError(t, err)
-	require.NoError(t, s.SaveInstance(ctx, domain.Instance{
-		Nick: "botty", ModelID: "test/model",
-	}))
+	require.NoError(t, s.SaveInstance(ctx,
+		domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil),
+	))
 	require.NoError(t, s.SetLastChannel(ctx, "#general"))
 	require.NoError(t, s.SetLastRead(ctx, "#general", eventID))
 
@@ -691,6 +807,108 @@ func TestSQLiteStore_NewSQLiteStore_purges_legacy_pending_quit(t *testing.T) {
 	v, err := s.GetSessionActive(t.Context())
 	require.NoError(t, err)
 	require.Equal(t, "ok", v)
+}
+
+func TestSQLiteStore_NewSQLiteStore_drops_legacy_instance_tables(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	db.SetMaxOpenConns(1)
+
+	// Seed the v1 nick-keyed shape of `instances` and `memories`
+	// plus one row in each so we can confirm that the drop happens
+	// rather than an in-place column rename or a failed CREATE.
+	_, err = db.Exec(`CREATE TABLE instances (
+	    nick TEXT PRIMARY KEY,
+	    data TEXT NOT NULL
+	)`)
+	require.NoError(t, err)
+
+	_, err = db.Exec(`INSERT INTO instances (nick, data) VALUES ('legacy', '{}')`)
+	require.NoError(t, err)
+
+	_, err = db.Exec(`CREATE TABLE memories (
+	    nick    TEXT NOT NULL,
+	    key     TEXT NOT NULL,
+	    content TEXT NOT NULL,
+	    PRIMARY KEY (nick, key)
+	)`)
+	require.NoError(t, err)
+
+	_, err = db.Exec(`INSERT INTO memories (nick, key, content) VALUES ('legacy', 'k', 'v')`)
+	require.NoError(t, err)
+
+	_, err = NewSQLiteStore(t.Context(), db)
+	require.NoError(t, err)
+
+	// The legacy row must be gone; schema v2 is identified by the
+	// presence of the `instance_id` column on `instances` and on
+	// `memories`.
+	assertColumnPresent(t, db, "instances", "instance_id")
+	assertColumnPresent(t, db, "memories", "instance_id")
+
+	var count int
+	err = db.QueryRow(`SELECT COUNT(*) FROM instances`).Scan(&count)
+	require.NoError(t, err)
+	require.Equal(t, 0, count, "legacy instances rows should be dropped")
+
+	err = db.QueryRow(`SELECT COUNT(*) FROM memories`).Scan(&count)
+	require.NoError(t, err)
+	require.Equal(t, 0, count, "legacy memories rows should be dropped")
+}
+
+func TestSQLiteStore_NewSQLiteStore_preserves_v2_instances(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	db.SetMaxOpenConns(1)
+
+	// Open once to create the v2 schema and seed a row.
+	s, err := NewSQLiteStore(t.Context(), db)
+	require.NoError(t, err)
+
+	seed := domain.NewModelInstance("inst-keep", "keep", "test/model", "", nil)
+	require.NoError(t, s.SaveInstance(t.Context(), seed))
+
+	// Reopen: the migration detector must see the v2 shape and leave
+	// data alone.
+	_, err = NewSQLiteStore(t.Context(), db)
+	require.NoError(t, err)
+
+	got, err := s.GetInstanceByID(t.Context(), "inst-keep")
+	require.NoError(t, err)
+	require.Equal(t, normaliseInstance(seed), normaliseInstance(got))
+}
+
+// assertColumnPresent checks that a given column exists on a table.
+func assertColumnPresent(t *testing.T, db *sql.DB, table, column string) {
+	t.Helper()
+
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = rows.Close() })
+
+	var found bool
+	for rows.Next() {
+		var (
+			cid     int
+			name    string
+			colType string
+			notNull int
+			dflt    sql.NullString
+			pk      int
+		)
+
+		require.NoError(t, rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk))
+		if name == column {
+			found = true
+		}
+	}
+
+	require.NoError(t, rows.Err())
+	require.True(t, found, "table %q is missing column %q", table, column)
 }
 
 func TestSQLiteStore_SessionActive_overwrite(t *testing.T) {

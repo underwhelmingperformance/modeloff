@@ -129,7 +129,7 @@ type ModelResponse struct {
 func FromJoinEvent(evt domain.JoinEvent) IRCMessage {
 	return IRCMessage{
 		Kind:   KindJoin,
-		From:   string(evt.Nick),
+		From:   string(evt.Instance.Nick()),
 		Target: string(evt.Channel),
 		Body:   evt.Message,
 		At:     evt.At,
@@ -141,7 +141,7 @@ func FromJoinEvent(evt domain.JoinEvent) IRCMessage {
 func FromPartEvent(evt domain.PartEvent) IRCMessage {
 	return IRCMessage{
 		Kind:   KindPart,
-		From:   string(evt.Nick),
+		From:   string(evt.Instance.Nick()),
 		Target: string(evt.Channel),
 		Body:   evt.Message,
 		At:     evt.At,
@@ -153,7 +153,7 @@ func FromPartEvent(evt domain.PartEvent) IRCMessage {
 func FromQuitEvent(evt domain.QuitEvent) IRCMessage {
 	return IRCMessage{
 		Kind: KindQuit,
-		From: string(evt.Nick),
+		From: string(evt.Instance.Nick()),
 		Body: evt.Message,
 		At:   evt.At,
 	}

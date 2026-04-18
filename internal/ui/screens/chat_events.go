@@ -118,7 +118,7 @@ func (s ChatScreen) handleChannelFocus(msg domain.ChannelFocusEvent) (ui.Model, 
 }
 
 func (s ChatScreen) handleJoinEvent(msg domain.JoinEvent) (ui.Model, tea.Cmd) {
-	isUser := msg.InstanceID == s.sess.UserInstanceID()
+	isUser := msg.Instance == s.sess.UserInstance()
 	_, channelKnown := s.channels.Get(domain.Channel{Name: msg.Channel})
 
 	if !isUser && !channelKnown {
@@ -135,8 +135,8 @@ func (s ChatScreen) handleJoinEvent(msg domain.JoinEvent) (ui.Model, tea.Cmd) {
 		}
 	}
 
-	if !ch.Members.HasID(msg.InstanceID) {
-		ch.Members.Add(msg.InstanceID, msg.Nick)
+	if !ch.Members.HasInstance(msg.Instance) {
+		ch.Members.Add(msg.Instance)
 	}
 
 	s.channels.Insert(ch)
@@ -167,7 +167,7 @@ func (s ChatScreen) handleModeChangeEvent(msg domain.ModeChangeEvent) (ui.Model,
 		return s, nil
 	}
 
-	ch.Members.SetMode(msg.InstanceID, msg.Mode)
+	ch.Members.SetMode(msg.Instance, msg.Mode)
 	s.channels.Insert(ch)
 
 	if msg.Channel != *s.active {
@@ -180,9 +180,9 @@ func (s ChatScreen) handleModeChangeEvent(msg domain.ModeChangeEvent) (ui.Model,
 func (s ChatScreen) handlePartEvent(msg domain.PartEvent) (ui.Model, tea.Cmd) {
 	leavingActive := *s.active == msg.Channel
 
-	// Remove the nick from the channel's member list.
+	// Remove the member from the channel's member list.
 	if ch, ok := s.channels.Get(domain.Channel{Name: msg.Channel}); ok {
-		if m, mOK := ch.Members.GetByID(msg.InstanceID); mOK {
+		if m, mOK := ch.Members.GetByInstance(msg.Instance); mOK {
 			ch.Members.Remove(m)
 		}
 
@@ -190,7 +190,7 @@ func (s ChatScreen) handlePartEvent(msg domain.PartEvent) (ui.Model, tea.Cmd) {
 	}
 
 	// If the user is leaving, remove the channel.
-	if msg.InstanceID == s.sess.UserInstanceID() {
+	if msg.Instance == s.sess.UserInstance() {
 		s.channels.Remove(domain.Channel{Name: msg.Channel})
 		s.checklist.channelCount = s.channels.Len()
 	}
@@ -234,7 +234,7 @@ func (s ChatScreen) handlePartEvent(msg domain.PartEvent) (ui.Model, tea.Cmd) {
 		cmds = append(cmds, msgCmd(domain.StoredEvent{
 			Event: domain.ChannelPart{
 				Channel: msg.Channel,
-				Nick:    msg.Nick,
+				Nick:    msg.Instance.Nick(),
 				Message: msg.Message,
 				At:      msg.At,
 			},
@@ -245,19 +245,14 @@ func (s ChatScreen) handlePartEvent(msg domain.PartEvent) (ui.Model, tea.Cmd) {
 }
 
 func (s ChatScreen) handleQuitEvent(msg domain.QuitEvent) (ui.Model, tea.Cmd) {
-	// Remove the nick from all channels' member lists.
+	// Remove the quitter from every channel's member list.
 	for ch := range s.channels.All() {
-		if m, ok := ch.Members.GetByID(msg.InstanceID); ok {
+		if m, ok := ch.Members.GetByInstance(msg.Instance); ok {
 			ch.Members.Remove(m)
 			// re-insert to preserve sort order; the Members
 			// mutation is already visible via the shared map.
 			s.channels.Insert(ch)
 		}
-	}
-
-	// Remove the instance.
-	if inst, ok := s.instances.Get(domain.Instance{InstanceID: msg.InstanceID}); ok {
-		s.instances.Remove(inst)
 	}
 
 	var cmds []tea.Cmd
@@ -277,7 +272,7 @@ func (s ChatScreen) handleQuitEvent(msg domain.QuitEvent) (ui.Model, tea.Cmd) {
 	if *s.active != "" {
 		cmds = append(cmds, s.logAndShow(domain.ChannelQuit{
 			Channel: *s.active,
-			Nick:    msg.Nick,
+			Nick:    msg.Instance.Nick(),
 			Message: msg.Message,
 			At:      msg.At,
 		}))
@@ -329,21 +324,14 @@ func (s ChatScreen) handleTopicInfoEvent(msg domain.TopicInfoEvent) (ui.Model, t
 }
 
 func (s ChatScreen) handleNickChangeEvent(msg domain.NickChangeEvent) (ui.Model, tea.Cmd) {
-	// Update the nick in this channel's local member list.
+	// Update the nick snapshot in this channel's local member list.
+	// The instance's own Nick() is already the new value — the
+	// session mutated it before emitting the event.
 	if ch, ok := s.channels.Get(domain.Channel{Name: msg.Channel}); ok {
-		if ch.Members.HasID(msg.InstanceID) {
-			ch.Members.RenameTo(msg.InstanceID, msg.NewNick)
+		if ch.Members.HasInstance(msg.Instance) {
+			ch.Members.RenameTo(msg.Instance, msg.NewNick)
 			s.channels.Insert(ch)
 		}
-	}
-
-	// Sync the instance's Nick so consumers iterating s.instances.All()
-	// see the current nick. The set is keyed by InstanceID, so the
-	// lookup is stable across renames; this update replaces the entry
-	// under the same key.
-	if inst, ok := s.instances.Get(domain.Instance{InstanceID: msg.InstanceID}); ok {
-		inst.Nick = msg.NewNick
-		s.instances.Insert(inst)
 	}
 
 	if msg.Channel != *s.active {
@@ -365,7 +353,7 @@ func (s ChatScreen) handleNickChangeEvent(msg domain.NickChangeEvent) (ui.Model,
 		},
 	}))
 
-	if msg.InstanceID == s.sess.UserInstanceID() {
+	if msg.Instance == s.sess.UserInstance() {
 		cmds = append(cmds, msgCmd(components.UserNickMsg{Nick: msg.NewNick}))
 	}
 
@@ -379,11 +367,9 @@ func (s ChatScreen) handleNickChangeEvent(msg domain.NickChangeEvent) (ui.Model,
 }
 
 func (s ChatScreen) handleModelInvitedEvent(msg domain.ModelInvitedEvent) (ui.Model, tea.Cmd) {
-	s.instances.Insert(msg.Instance)
-
 	if ch, ok := s.channels.Get(domain.Channel{Name: msg.Channel}); ok {
-		if !ch.Members.HasID(msg.Instance.InstanceID) {
-			ch.Members.Add(msg.Instance.InstanceID, msg.Instance.Nick)
+		if !ch.Members.HasInstance(msg.Instance) {
+			ch.Members.Add(msg.Instance)
 		}
 
 		s.channels.Insert(ch)
@@ -402,7 +388,7 @@ func (s ChatScreen) handleModelInvitedEvent(msg domain.ModelInvitedEvent) (ui.Mo
 		cmds = append(cmds, msgCmd(domain.StoredEvent{
 			Event: domain.ChannelModelInvited{
 				Channel: msg.Channel,
-				Nick:    msg.Instance.Nick,
+				Nick:    msg.Instance.Nick(),
 				By:      msg.By,
 				At:      msg.At,
 			},
@@ -413,19 +399,13 @@ func (s ChatScreen) handleModelInvitedEvent(msg domain.ModelInvitedEvent) (ui.Mo
 }
 
 func (s ChatScreen) handleModelKickedEvent(msg domain.ModelKickedEvent) (ui.Model, tea.Cmd) {
-	// Remove the nick from the channel's member list.
+	// Remove the kicked member from the channel's member list.
 	if ch, ok := s.channels.Get(domain.Channel{Name: msg.Channel}); ok {
-		if m, mOK := ch.Members.GetByID(msg.InstanceID); mOK {
+		if m, mOK := ch.Members.GetByInstance(msg.Instance); mOK {
 			ch.Members.Remove(m)
 		}
 
 		s.channels.Insert(ch)
-	}
-
-	// Update the instance's channel list.
-	if inst, ok := s.instances.Get(domain.Instance{InstanceID: msg.InstanceID}); ok {
-		inst.Channels.Delete(msg.Channel)
-		s.instances.Insert(inst)
 	}
 
 	var members domain.MemberList
@@ -441,7 +421,7 @@ func (s ChatScreen) handleModelKickedEvent(msg domain.ModelKickedEvent) (ui.Mode
 		cmds = append(cmds, msgCmd(domain.StoredEvent{
 			Event: domain.ChannelModelKicked{
 				Channel: msg.Channel,
-				Nick:    msg.Nick,
+				Nick:    msg.Instance.Nick(),
 				By:      msg.By,
 				At:      msg.At,
 			},
@@ -666,4 +646,23 @@ func (s ChatScreen) activeMemberNicks() iter.Seq[domain.Nick] {
 	}
 
 	return ch.Members.Nicks()
+}
+
+// activeChannelInstances iterates the `*Instance` handles for every
+// member of the currently-active channel. Tab completion sources this
+// iterator: the user only gets completions for nicks they can already
+// see in their nick list, matching IRC semantics.
+func (s ChatScreen) activeChannelInstances() iter.Seq[*domain.Instance] {
+	return func(yield func(*domain.Instance) bool) {
+		ch, ok := s.channels.Get(domain.Channel{Name: *s.active})
+		if !ok {
+			return
+		}
+
+		for _, m := range ch.Members.All() {
+			if !yield(m.Instance) {
+				return
+			}
+		}
+	}
 }

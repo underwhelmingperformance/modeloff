@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -88,7 +87,15 @@ func normaliseChannel(ch domain.Channel) comparableChannel {
 func loadGolden(t *testing.T, name string) string {
 	t.Helper()
 
-	data, err := os.ReadFile(filepath.Join("testdata", name))
+	root, err := os.OpenRoot("testdata")
+	require.NoError(t, err)
+	defer func() { _ = root.Close() }()
+
+	f, err := root.Open(name)
+	require.NoError(t, err)
+	defer func() { _ = f.Close() }()
+
+	data, err := io.ReadAll(f)
 	require.NoError(t, err)
 
 	return string(data)
@@ -106,19 +113,23 @@ type comparableInstance struct {
 	Channels []channelEntry
 }
 
-func normaliseInstance(inst domain.Instance) comparableInstance {
+func normaliseInstance(inst *domain.Instance) comparableInstance {
+	if inst == nil {
+		return comparableInstance{}
+	}
+
 	var channels []channelEntry
 
-	if inst.Channels != nil {
-		for pair := inst.Channels.Oldest(); pair != nil; pair = pair.Next() {
+	if ch := inst.Channels(); ch != nil {
+		for pair := ch.Oldest(); pair != nil; pair = pair.Next() {
 			channels = append(channels, channelEntry{Name: pair.Key, JoinedAt: pair.Value})
 		}
 	}
 
 	return comparableInstance{
-		Nick:     inst.Nick,
+		Nick:     inst.Nick(),
 		ModelID:  inst.ModelID,
-		Persona:  inst.Persona,
+		Persona:  inst.Persona(),
 		Channels: channels,
 	}
 }
@@ -186,15 +197,37 @@ func drainDispatchEvents(t *testing.T, sess *Session) {
 	}
 }
 
-func testMembers(nicks ...domain.Nick) domain.MemberList {
+// testMembers builds a MemberList using canonical `*Instance`
+// handles from the given session + store. The user is looked up via
+// `sess.UserInstance()`; every model nick is resolved from the store
+// via `ResolveNick`. If a model nick is not yet seeded, a placeholder
+// instance is created under the conventional `inst-<nick>` id so
+// tests can express channel membership without pre-seeding every
+// referenced instance. The `seedInstance` helper picks the same id
+// and updates fields in place, so the canonical pointer is stable
+// whether the test seeds before or after calling `testMembers`.
+func testMembers(t *testing.T, sess *Session, s *storemod.SQLiteStore, nicks ...domain.Nick) domain.MemberList {
+	t.Helper()
+
 	ml := domain.NewMemberList()
 	for _, nick := range nicks {
-		id := testMemberID(nick)
-		ml.Add(id, nick)
-		if nick == "testuser" {
-			ml.SetMode(id, domain.ModeOp)
+		var inst *domain.Instance
+
+		if nick == sess.UserNick() {
+			inst = sess.UserInstance()
 		} else {
-			ml.SetMode(id, domain.ModeVoice)
+			var err error
+			inst, err = s.ResolveNick(t.Context(), nick)
+			if err != nil {
+				inst = seedInstance(t, s, instanceSpec{Nick: nick, ModelID: "test/model"})
+			}
+		}
+
+		ml.Add(inst)
+		if nick == sess.UserNick() {
+			ml.SetMode(inst, domain.ModeOp)
+		} else {
+			ml.SetMode(inst, domain.ModeVoice)
 		}
 	}
 	return ml
@@ -218,7 +251,7 @@ func requireChannelEqual(t *testing.T, expected, actual domain.Channel) {
 	require.Equal(t, normaliseChannel(expected), normaliseChannel(actual))
 }
 
-func requireInstanceEqual(t *testing.T, expected, actual domain.Instance) {
+func requireInstanceEqual(t *testing.T, expected, actual *domain.Instance) {
 	t.Helper()
 
 	require.Equal(t, normaliseInstance(expected), normaliseInstance(actual))
@@ -248,19 +281,19 @@ func TestSession_Join(t *testing.T) {
 	require.NoError(t, sess.Join(ctx, "#general"))
 	evt := drainEvent[domain.JoinEvent](t, sess)
 	require.Equal(t, domain.JoinEvent{
-		Channel: "#general",
-		Nick:    "testuser",
-		Created: true,
-		At:      fixedTime,
+		Channel:  "#general",
+		Instance: sess.UserInstance(),
+		Created:  true,
+		At:       fixedTime,
 	}, evt)
 
 	// Channel should be persisted.
-	ch, err := s.GetChannel(ctx, "#general")
+	ch, err := sess.GetChannel(ctx, "#general")
 	require.NoError(t, err)
 	requireChannelEqual(t, domain.Channel{
 		Name:    "#general",
 		Kind:    domain.KindChannel,
-		Members: testMembers("testuser"),
+		Members: testMembers(t, sess, s, "testuser"),
 		Created: fixedTime,
 	}, ch)
 
@@ -278,15 +311,15 @@ func TestSession_JoinExistingChannel(t *testing.T) {
 		Name:    "#existing",
 		Kind:    domain.KindChannel,
 		Topic:   "Already here",
-		Members: testMembers("testuser"),
+		Members: testMembers(t, sess, s, "testuser"),
 		Created: fixedTime.Add(-time.Hour),
 	}
-	require.NoError(t, s.SaveChannel(ctx, existing))
+	saveTestChannel(t, sess, s, existing)
 
 	require.NoError(t, sess.Join(ctx, "#existing"))
 
 	// Channel should not be overwritten.
-	ch, err := s.GetChannel(ctx, "#existing")
+	ch, err := sess.GetChannel(ctx, "#existing")
 	require.NoError(t, err)
 	require.Equal(t, "Already here", ch.Topic)
 
@@ -333,8 +366,8 @@ func TestSession_JoinAutojoinChannels_populates_user_join_times(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "botty")
-	seedChannelWithMembers(t, s, "#random", "botty")
+	seedChannelWithMembers(t, sess, s, "#general", "botty")
+	seedChannelWithMembers(t, sess, s, "#random", "botty")
 	require.NoError(t, s.SetAutojoinChannels(ctx, []domain.ChannelName{"#general", "#random"}))
 
 	require.True(t, sess.UserJoinedAt("#general").IsZero())
@@ -356,15 +389,15 @@ func TestSession_JoinAutojoinChannels_empty_autojoin_is_noop(t *testing.T) {
 	sess, _ := newTestSession(t)
 
 	require.NoError(t, sess.JoinAutojoinChannels(t.Context()))
-	requireChannels(t, sess.userSnapshot().Channels)
+	requireChannels(t, sess.UserInstance().Channels())
 }
 
 func TestSession_JoinAutojoinChannels_emits_join_events(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#alpha", "botty")
-	seedChannelWithMembers(t, s, "#beta", "botty")
+	seedChannelWithMembers(t, sess, s, "#alpha", "botty")
+	seedChannelWithMembers(t, sess, s, "#beta", "botty")
 	require.NoError(t, s.SetAutojoinChannels(ctx, []domain.ChannelName{"#alpha", "#beta"}))
 
 	require.NoError(t, sess.JoinAutojoinChannels(ctx))
@@ -387,25 +420,25 @@ func TestSession_Leave(t *testing.T) {
 	ch := domain.Channel{
 		Name:    "#leaving",
 		Kind:    domain.KindChannel,
-		Members: testMembers("testuser", "botty"),
+		Members: testMembers(t, sess, s, "testuser", "botty"),
 		Created: fixedTime,
 	}
-	require.NoError(t, s.SaveChannel(ctx, ch))
+	saveTestChannel(t, sess, s, ch)
 
 	require.NoError(t, sess.Part(ctx, "#leaving", ""))
 	evt := drainEvent[domain.PartEvent](t, sess)
 	require.Equal(t, domain.PartEvent{
-		Channel: "#leaving",
-		Nick:    "testuser",
-		At:      fixedTime,
+		Channel:  "#leaving",
+		Instance: sess.UserInstance(),
+		At:       fixedTime,
 	}, evt)
 
-	updated, err := s.GetChannel(ctx, "#leaving")
+	updated, err := sess.GetChannel(ctx, "#leaving")
 	require.NoError(t, err)
 	requireChannelEqual(t, domain.Channel{
 		Name:    "#leaving",
 		Kind:    domain.KindChannel,
-		Members: testMembers("botty"),
+		Members: testMembers(t, sess, s, "botty"),
 		Created: fixedTime,
 	}, updated)
 }
@@ -423,18 +456,18 @@ func TestSession_Part_carries_message(t *testing.T) {
 	ch := domain.Channel{
 		Name:    "#farewell",
 		Kind:    domain.KindChannel,
-		Members: testMembers("testuser"),
+		Members: testMembers(t, sess, s, "testuser"),
 		Created: fixedTime,
 	}
-	require.NoError(t, s.SaveChannel(ctx, ch))
+	saveTestChannel(t, sess, s, ch)
 
 	require.NoError(t, sess.Part(ctx, "#farewell", "see ya later"))
 	evt := drainEvent[domain.PartEvent](t, sess)
 	require.Equal(t, domain.PartEvent{
-		Channel: "#farewell",
-		Nick:    "testuser",
-		Message: "see ya later",
-		At:      fixedTime,
+		Channel:  "#farewell",
+		Instance: sess.UserInstance(),
+		Message:  "see ya later",
+		At:       fixedTime,
 	}, evt)
 }
 
@@ -465,21 +498,21 @@ func TestSession_Connect_clears_unclean_user_membership(t *testing.T) {
 	ctx := t.Context()
 
 	require.NoError(t, s.SetSessionActive(ctx, "stale"))
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
-	seedChannelWithMembers(t, s, "#random", "testuser")
+	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
+	seedChannelWithMembers(t, sess, s, "#random", "testuser")
 
 	require.NoError(t, sess.Connect(ctx))
 
-	general, err := s.GetChannel(ctx, "#general")
+	general, err := sess.GetChannel(ctx, "#general")
 	require.NoError(t, err)
 	requireChannelEqual(t, domain.Channel{
 		Name:    "#general",
 		Kind:    domain.KindChannel,
-		Members: testMembers("botty"),
+		Members: testMembers(t, sess, s, "botty"),
 		Created: fixedTime,
 	}, general)
 
-	random, err := s.GetChannel(ctx, "#random")
+	random, err := sess.GetChannel(ctx, "#random")
 	require.NoError(t, err)
 	requireChannelEqual(t, domain.Channel{
 		Name:    "#random",
@@ -500,8 +533,8 @@ func TestSession_Connect_then_JoinAutojoin_stamps_UserJoinedAt(t *testing.T) {
 	// Simulate the original bug's preconditions: stale membership left
 	// over from a prior session, plus a non-empty session_active marker.
 	require.NoError(t, s.SetSessionActive(ctx, "stale"))
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
-	seedChannelWithMembers(t, s, "#random", "testuser")
+	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
+	seedChannelWithMembers(t, sess, s, "#random", "testuser")
 	require.NoError(t, s.SetAutojoinChannels(ctx, []domain.ChannelName{"#general", "#random"}))
 
 	require.NoError(t, sess.Connect(ctx))
@@ -646,25 +679,21 @@ func TestSession_user_snapshot_race_free(t *testing.T) {
 
 	var wg sync.WaitGroup
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for i := range iters {
 			ch := channels[i%len(channels)]
 			_ = sess.Join(ctx, string(ch))
 			_ = sess.Part(ctx, ch, "")
 		}
-	}()
+	})
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for i := range iters {
 			ch := channels[i%len(channels)]
 			_ = sess.UserJoinedAt(ch)
 			_ = sess.UserNick()
 		}
-	}()
+	})
 
 	wg.Wait()
 
@@ -752,7 +781,7 @@ func TestSession_Quit_appends_channel_quit_events_and_saves_autojoin(t *testing.
 }
 
 func TestSession_Quit_removes_user_from_channel_members(t *testing.T) {
-	sess, s := newTestSession(t)
+	sess, _ := newTestSession(t)
 	ctx := t.Context()
 
 	require.NoError(t, sess.Join(ctx, "#general"))
@@ -760,7 +789,7 @@ func TestSession_Quit_removes_user_from_channel_members(t *testing.T) {
 
 	require.NoError(t, sess.Quit(ctx, ""))
 
-	ch, err := s.GetChannel(ctx, "#general")
+	ch, err := sess.GetChannel(ctx, "#general")
 	require.NoError(t, err)
 	requireChannelEqual(t, domain.Channel{
 		Name:    "#general",
@@ -779,7 +808,77 @@ func TestSession_Quit_clears_in_memory_channels(t *testing.T) {
 
 	require.NoError(t, sess.Quit(ctx, ""))
 
-	require.Equal(t, 0, sess.userSnapshot().Channels.Len())
+	require.Equal(t, 0, sess.UserInstance().Channels().Len())
+}
+
+// TestSession_user_state_triple_stays_consistent verifies that the
+// three sources of user-membership state stay aligned through a
+// full command sequence (join, part, rejoin, nick change). The
+// invariant being pinned: userModes, user.Channels(), and the
+// stripped persisted Channel.Members agree at every step.
+func TestSession_user_state_triple_stays_consistent(t *testing.T) {
+	type userSnapshot struct {
+		Channels   []domain.ChannelName
+		Mode       domain.NickMode
+		OnDiskUser bool
+	}
+
+	snapshot := func(t *testing.T, sess *Session, s *storemod.SQLiteStore, ch domain.ChannelName) userSnapshot {
+		t.Helper()
+
+		var channels []domain.ChannelName
+		for pair := sess.UserInstance().Channels().Oldest(); pair != nil; pair = pair.Next() {
+			channels = append(channels, pair.Key)
+		}
+
+		stored, err := s.GetChannel(t.Context(), ch)
+		onDisk := err == nil && stored.Members.HasInstance(sess.UserInstance())
+
+		return userSnapshot{
+			Channels:   channels,
+			Mode:       sess.userModeFor(t.Context(), ch),
+			OnDiskUser: onDisk,
+		}
+	}
+
+	sess, s := newTestSession(t)
+	ctx := t.Context()
+
+	require.NoError(t, sess.Join(ctx, "#general"))
+	drainNEvents(t, sess, 3)
+
+	require.Equal(t, userSnapshot{
+		Channels:   []domain.ChannelName{"#general"},
+		Mode:       domain.ModeOp,
+		OnDiskUser: false,
+	}, snapshot(t, sess, s, "#general"))
+
+	require.NoError(t, sess.Part(ctx, "#general", ""))
+	drainNEvents(t, sess, 1)
+
+	require.Equal(t, userSnapshot{
+		Channels:   nil,
+		Mode:       domain.ModeNone,
+		OnDiskUser: false,
+	}, snapshot(t, sess, s, "#general"))
+
+	require.NoError(t, sess.Join(ctx, "#general"))
+	drainNEvents(t, sess, 2)
+
+	require.Equal(t, userSnapshot{
+		Channels:   []domain.ChannelName{"#general"},
+		Mode:       domain.ModeOp,
+		OnDiskUser: false,
+	}, snapshot(t, sess, s, "#general"))
+
+	require.NoError(t, sess.ChangeNick(ctx, "renamed"))
+	drainNEvents(t, sess, 1)
+
+	require.Equal(t, userSnapshot{
+		Channels:   []domain.ChannelName{"#general"},
+		Mode:       domain.ModeOp,
+		OnDiskUser: false,
+	}, snapshot(t, sess, s, "#general"))
 }
 
 func TestSession_Quit_clears_session_active_marker(t *testing.T) {
@@ -813,30 +912,30 @@ func TestSession_Quit_no_channels_is_noop_but_clears_marker(t *testing.T) {
 }
 
 func TestSession_Quit_does_not_dispatch_to_models(t *testing.T) {
-	var calls int32
+	var calls atomic.Int32
 
 	fake := &fakeAPIClient{
 		sendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
-			atomic.AddInt32(&calls, 1)
+			calls.Add(1)
 			return protocol.Reply("bye"), nil
 		},
 	}
 	sess, s := newTestSessionWithAPI(t, fake)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
-	seedInstance(t, s, domain.Instance{
+	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
+	seedInstance(t, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: testChannels("#general"),
 	})
-	sess.mutateUser(func(u *domain.Instance) {
-		u.Channels.Set("#general", fixedTime)
+	sess.UserInstance().MutateChannels(func(m *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
+		m.Set("#general", fixedTime)
 	})
 
 	require.NoError(t, sess.Quit(ctx, "bye"))
 
-	require.Equal(t, int32(0), atomic.LoadInt32(&calls),
+	require.Equal(t, int32(0), calls.Load(),
 		"Quit must not dispatch to models; models see the quit next time they are dispatched against")
 }
 
@@ -847,40 +946,38 @@ func TestSession_AddModel(t *testing.T) {
 	ch := domain.Channel{
 		Name:    "#dev",
 		Kind:    domain.KindChannel,
-		Members: testMembers("testuser"),
+		Members: testMembers(t, sess, s, "testuser"),
 		Created: fixedTime,
 	}
-	require.NoError(t, s.SaveChannel(ctx, ch))
+	saveTestChannel(t, sess, s, ch)
 
 	require.NoError(t, sess.AddModel(ctx, "#dev", "anthropic/claude-3-haiku", ""))
 	evt := drainEvent[domain.ModelInvitedEvent](t, sess)
-	require.NotEmpty(t, evt.Instance.InstanceID)
+	require.NotNil(t, evt.Instance)
+	require.NotEmpty(t, evt.Instance.ID())
 	require.Equal(t, domain.ModelInvitedEvent{
-		Channel: "#dev",
-		Instance: domain.Instance{
-			InstanceID: evt.Instance.InstanceID,
-			Nick:       "fakenick",
-			ModelID:    "anthropic/claude-3-haiku",
-			Channels:   testChannels("#dev")},
-		By: "testuser",
-		At: fixedTime,
+		Channel:  "#dev",
+		Instance: evt.Instance,
+		By:       "testuser",
+		At:       fixedTime,
 	}, evt)
+	requireInstanceEqual(t, domain.NewModelInstance(
+		evt.Instance.ID(), "fakenick", "anthropic/claude-3-haiku", "", testChannels("#dev"),
+	), evt.Instance)
 
 	// Instance should be persisted.
-	inst, err := s.GetInstance(ctx, "fakenick")
+	inst, err := s.ResolveNick(ctx, "fakenick")
 	require.NoError(t, err)
-	require.Equal(t, domain.Instance{
-		InstanceID: evt.Instance.InstanceID,
-		Nick:       "fakenick",
-		ModelID:    "anthropic/claude-3-haiku",
-		Channels:   testChannels("#dev")}, inst)
+	requireInstanceEqual(t, domain.NewModelInstance(
+		evt.Instance.ID(), "fakenick", "anthropic/claude-3-haiku", "", testChannels("#dev"),
+	), inst)
 
 	// Channel should have new member.
-	updated, err := s.GetChannel(ctx, "#dev")
+	updated, err := sess.GetChannel(ctx, "#dev")
 	require.NoError(t, err)
 	require.Equal(t, []domain.Member{
-		{InstanceID: "", Nick: "testuser", Mode: domain.ModeOp},
-		{InstanceID: evt.Instance.InstanceID, Nick: "fakenick", Mode: domain.ModeVoice},
+		{Instance: sess.UserInstance(), Nick: "testuser", Mode: domain.ModeOp},
+		{Instance: evt.Instance, Nick: "fakenick", Mode: domain.ModeVoice},
 	}, updated.Members.Slice())
 }
 
@@ -888,71 +985,70 @@ func TestSession_Kick(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	ch := domain.Channel{
-		Name:    "#dev",
-		Kind:    domain.KindChannel,
-		Members: testMembers("testuser", "botty"),
-		Created: fixedTime,
-	}
-	require.NoError(t, s.SaveChannel(ctx, ch))
-	seedInstance(t, s, domain.Instance{
+	botty := seedInstance(t, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: testChannels("#dev", "#random"),
 	})
+	ch := domain.Channel{
+		Name:    "#dev",
+		Kind:    domain.KindChannel,
+		Members: testMembers(t, sess, s, "testuser", "botty"),
+		Created: fixedTime,
+	}
+	saveTestChannel(t, sess, s, ch)
 
 	require.NoError(t, sess.Kick(ctx, "#dev", "botty"))
 	evt := drainEvent[domain.ModelKickedEvent](t, sess)
 	require.Equal(t, domain.ModelKickedEvent{
-		Channel:    "#dev",
-		InstanceID: testMemberID("botty"),
-		Nick:       "botty",
-		By:         "testuser",
-		At:         fixedTime,
+		Channel:  "#dev",
+		Instance: botty,
+		By:       "testuser",
+		At:       fixedTime,
 	}, evt)
 
 	// Channel should no longer have the kicked member.
-	updated, err := s.GetChannel(ctx, "#dev")
+	updated, err := sess.GetChannel(ctx, "#dev")
 	require.NoError(t, err)
-	require.Equal(t, testMembers("testuser").Slice(), updated.Members.Slice())
+	require.Equal(t, testMembers(t, sess, s, "testuser").Slice(), updated.Members.Slice())
 
-	inst, err := s.GetInstance(ctx, "botty")
+	inst, err := s.ResolveNick(ctx, "botty")
 	require.NoError(t, err)
-	requireChannels(t, inst.Channels, "#random")
+	requireChannels(t, inst.Channels(), "#random")
 }
 
 func TestSession_mutationOperations_recordSpans(t *testing.T) {
 	recorder := oteltest.InstallSpanRecorder(t)
-	store := storetest.NewMemoryStore(t)
-	sess := New(store, nil, &fakeAPIClient{}, "testuser", "", "")
+	s := storetest.NewMemoryStore(t)
+	sess := New(s, nil, &fakeAPIClient{}, "testuser", "", "")
 	sess.now = func() time.Time { return fixedTime }
 	ctx := t.Context()
 
 	require.NoError(t, sess.Join(ctx, "#general"))
 
-	seedChannelWithMembers(t, store, "#leave", "testuser")
+	seedChannelWithMembers(t, sess, s, "#leave", "testuser")
 	require.NoError(t, sess.Part(ctx, "#leave", ""))
 
-	seedInstance(t, store, domain.Instance{
+	botty := seedInstance(t, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: testChannels("#general"),
 	})
-	channel, err := store.GetChannel(ctx, "#general")
+	channel, err := sess.GetChannel(ctx, "#general")
 	require.NoError(t, err)
-	channel.Members.Add(testMemberID("botty"), "botty")
-	require.NoError(t, store.SaveChannel(ctx, channel))
+	channel.Members.Add(botty)
+	saveTestChannel(t, sess, s, channel)
 	require.NoError(t, sess.Kick(ctx, "#general", "botty"))
 
 	require.NoError(t, sess.SetTopic(ctx, "#general", "observability"))
 	require.NoError(t, sess.ChangeNick(ctx, "renamed"))
 
-	seedInstance(t, store, domain.Instance{
+	dmBot := seedInstance(t, s, instanceSpec{
 		Nick:     "dm-bot",
 		ModelID:  "test/dm-model",
 		Channels: testChannels(),
 	})
-	_, _, err = sess.OpenDM(ctx, "dm-bot")
+	_, _, err = sess.OpenDM(ctx, dmBot)
 	require.NoError(t, err)
 
 	require.NoError(t, sess.Reset(ctx))
@@ -972,9 +1068,11 @@ func TestSession_mutationOperations_recordSpans(t *testing.T) {
 		"store.sqlite.append_event",
 		"store.sqlite.events_before",
 		"store.sqlite.get_channel",
-		"store.sqlite.get_instance",
+		"store.sqlite.get_instance_by_id",
 		"store.sqlite.list_channels",
+		"store.sqlite.migrate_v2",
 		"store.sqlite.reset",
+		"store.sqlite.resolve_nick",
 		"store.sqlite.save_channel",
 		"store.sqlite.save_instance",
 		"store.sqlite.set_autojoin_channels",
@@ -994,7 +1092,7 @@ func TestSession_SendMessageAs_status_channel_records_validation_error_kind(t *t
 	recorder := oteltest.InstallSpanRecorder(t)
 	sess, _ := newTestSession(t)
 
-	err := sess.SendMessageAs(t.Context(), "testuser", domain.StatusChannelName, "hello")
+	err := sess.SendMessageAs(t.Context(), sess.UserInstance(), domain.StatusChannelName, "hello")
 	require.Error(t, err)
 
 	span := oteltest.FindSpan(t, recorder, "session.send_message")
@@ -1002,16 +1100,18 @@ func TestSession_SendMessageAs_status_channel_records_validation_error_kind(t *t
 	require.Equal(t, observability.ErrorKindValidation, oteltest.AttrValue(span.Attributes(), observability.AttrErrorKind))
 }
 
-func TestSession_OpenDM_missing_instance_records_store_error_kind(t *testing.T) {
+func TestSession_OpenDM_status_channel_records_validation_error_kind(t *testing.T) {
 	recorder := oteltest.InstallSpanRecorder(t)
 	sess, _ := newTestSession(t)
 
-	_, _, err := sess.OpenDM(t.Context(), "ghost")
+	ghost := domain.NewModelInstance("ghost-id", domain.Nick(domain.StatusChannelName), "test/model", "", nil)
+
+	_, _, err := sess.OpenDM(t.Context(), ghost)
 	require.Error(t, err)
 
 	span := oteltest.FindSpan(t, recorder, "session.open_dm")
 	require.Equal(t, observability.ResultError, oteltest.AttrValue(span.Attributes(), observability.AttrResult))
-	require.Equal(t, observability.ErrorKindStore, oteltest.AttrValue(span.Attributes(), observability.AttrErrorKind))
+	require.Equal(t, observability.ErrorKindValidation, oteltest.AttrValue(span.Attributes(), observability.AttrErrorKind))
 }
 
 func TestSession_spans_carry_AttrInstanceID(t *testing.T) {
@@ -1036,11 +1136,11 @@ func TestSession_spans_carry_AttrInstanceID(t *testing.T) {
 			spanName: "session.change_nick",
 			act: func(t *testing.T, sess *Session, s *storemod.SQLiteStore, ctx context.Context) {
 				t.Helper()
-				seedInstance(t, s, domain.Instance{
+				botty := seedInstance(t, s, instanceSpec{
 					Nick:    "botty",
 					ModelID: "test/model",
 				})
-				require.NoError(t, sess.ChangeNickAs(ctx, "botty", "botty2"))
+				require.NoError(t, sess.ChangeNickAs(ctx, botty, "botty2"))
 			},
 			wantInstID: testMemberID("botty"),
 		},
@@ -1058,12 +1158,12 @@ func TestSession_spans_carry_AttrInstanceID(t *testing.T) {
 			spanName: "session.join",
 			act: func(t *testing.T, sess *Session, s *storemod.SQLiteStore, ctx context.Context) {
 				t.Helper()
-				seedChannelWithMembers(t, s, "#dev", "testuser")
-				seedInstance(t, s, domain.Instance{
+				seedChannelWithMembers(t, sess, s, "#dev", "testuser")
+				botty := seedInstance(t, s, instanceSpec{
 					Nick:    "botty",
 					ModelID: "test/model",
 				})
-				require.NoError(t, sess.JoinAs(ctx, "botty", "#dev"))
+				require.NoError(t, sess.JoinAs(ctx, botty, "#dev"))
 			},
 			wantInstID: testMemberID("botty"),
 		},
@@ -1072,12 +1172,12 @@ func TestSession_spans_carry_AttrInstanceID(t *testing.T) {
 			spanName: "session.kick",
 			act: func(t *testing.T, sess *Session, s *storemod.SQLiteStore, ctx context.Context) {
 				t.Helper()
-				seedChannelWithMembers(t, s, "#dev", "testuser", "botty")
-				seedInstance(t, s, domain.Instance{
+				seedInstance(t, s, instanceSpec{
 					Nick:     "botty",
 					ModelID:  "test/model",
 					Channels: testChannels("#dev"),
 				})
+				seedChannelWithMembers(t, sess, s, "#dev", "testuser", "botty")
 				require.NoError(t, sess.Kick(ctx, "#dev", "botty"))
 			},
 			wantInstID: testMemberID("botty"),
@@ -1087,13 +1187,13 @@ func TestSession_spans_carry_AttrInstanceID(t *testing.T) {
 			spanName: "session.part",
 			act: func(t *testing.T, sess *Session, s *storemod.SQLiteStore, ctx context.Context) {
 				t.Helper()
-				seedChannelWithMembers(t, s, "#dev", "testuser", "botty")
-				seedInstance(t, s, domain.Instance{
+				botty := seedInstance(t, s, instanceSpec{
 					Nick:     "botty",
 					ModelID:  "test/model",
 					Channels: testChannels("#dev"),
 				})
-				require.NoError(t, sess.PartAs(ctx, "botty", "#dev", ""))
+				seedChannelWithMembers(t, sess, s, "#dev", "testuser", "botty")
+				require.NoError(t, sess.PartAs(ctx, botty, "#dev", ""))
 			},
 			wantInstID: testMemberID("botty"),
 		},
@@ -1102,12 +1202,12 @@ func TestSession_spans_carry_AttrInstanceID(t *testing.T) {
 			spanName: "session.dispatch_to_instance",
 			act: func(t *testing.T, sess *Session, s *storemod.SQLiteStore, ctx context.Context) {
 				t.Helper()
-				seedChannelWithMembers(t, s, "#general", "testuser", "botty")
-				seedInstance(t, s, domain.Instance{
+				seedInstance(t, s, instanceSpec{
 					Nick:     "botty",
 					ModelID:  "test/model",
 					Channels: testChannels("#general"),
 				})
+				seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
 				_, ircMsg := seedUserMessage(t, s, "#general", "hi")
 				_, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
 				require.NoError(t, err)
@@ -1142,8 +1242,8 @@ func TestSession_DispatchToChannel_api_failure_records_dispatch_error_kind(t *te
 	sess, s := newTestSessionWithAPI(t, fake)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
-	seedInstance(t, s, domain.Instance{
+	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
+	seedInstance(t, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: testChannels("#general"),
@@ -1201,16 +1301,16 @@ func TestSession_dispatchToInstance_recordsPassReasonAndToolTurns(t *testing.T) 
 	sess.now = func() time.Time { return fixedTime }
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, dataStore, "#general", "testuser", "botty")
-	channel, err := dataStore.GetChannel(ctx, "#general")
-	require.NoError(t, err)
-	inst := domain.Instance{
+	botty := seedInstance(t, dataStore, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: testChannels("#general"),
-	}
+	})
+	seedChannelWithMembers(t, sess, dataStore, "#general", "testuser", "botty")
+	channel, err := dataStore.GetChannel(ctx, "#general")
+	require.NoError(t, err)
 
-	replies, err := sess.dispatchToInstance(ctx, channel, inst, "#general", nil, nil)
+	replies, err := sess.dispatchToInstance(ctx, channel, botty, "#general", nil, nil)
 	require.NoError(t, err)
 	require.Empty(t, replies)
 
@@ -1226,7 +1326,7 @@ func TestSession_dispatchInBackground_recordsSpan(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser")
+	seedChannelWithMembers(t, sess, s, "#general", "testuser")
 	sess.dispatchInBackground(ctx, "#general", nil)
 
 	drainEvent[domain.DispatchDoneEvent](t, sess)
@@ -1240,7 +1340,7 @@ func TestSession_SendMessage(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser")
+	seedChannelWithMembers(t, sess, s, "#general", "testuser")
 
 	require.NoError(t, sess.SendMessage(ctx, "#general", "hello world"))
 	evt := drainEvent[domain.MessageEvent](t, sess)
@@ -1275,12 +1375,12 @@ func TestSession_SendMessage_emits_dispatch_events(t *testing.T) {
 	sess, s := newTestSessionWithAPI(t, fake)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
-	seedInstance(t, s, domain.Instance{
+	botty := seedInstance(t, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: testChannels("#general"),
 	})
+	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
 
 	require.NoError(t, sess.SendMessage(ctx, "#general", "hello"))
 
@@ -1291,9 +1391,8 @@ func TestSession_SendMessage_emits_dispatch_events(t *testing.T) {
 	require.Equal(t, []domain.SessionEvent{
 		domain.DispatchStartedEvent{Channel: "#general", Nicks: []domain.Nick{"botty"}},
 		domain.ModelReplyEvent{
-			Channel:    "#general",
-			InstanceID: testMemberID("botty"),
-			Instance:   "botty",
+			Channel:  "#general",
+			Instance: botty,
 			Event: domain.ChannelMessage{
 				Channel:    "#general",
 				From:       "botty",
@@ -1321,12 +1420,12 @@ func TestSession_JoinEvent_triggers_dispatch(t *testing.T) {
 
 	// Seed a channel with a model already present so join dispatch
 	// has someone to notify. The user is NOT yet a member.
-	seedChannelWithMembers(t, s, "#general", "botty")
-	seedInstance(t, s, domain.Instance{
+	botty := seedInstance(t, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: testChannels("#general"),
 	})
+	seedChannelWithMembers(t, sess, s, "#general", "botty")
 
 	// Join an existing channel — the reactive dispatch should fire.
 	require.NoError(t, sess.Join(ctx, "#general"))
@@ -1342,21 +1441,21 @@ func TestSession_JoinEvent_triggers_dispatch(t *testing.T) {
 	// ordering within the dispatch lifecycle.
 	require.IsType(t, domain.JoinEvent{}, events[0])
 	require.Equal(t,
-		domain.JoinEvent{Channel: "#general", Nick: "testuser", At: fixedTime},
+		domain.JoinEvent{Channel: "#general", Instance: sess.UserInstance(), At: fixedTime},
 		events[0],
 	)
 
 	wantMode := domain.ModeChangeEvent{
-		Channel: "#general", Nick: "testuser",
-		Mode: domain.ModeOp, Actor: "ChanServ", At: fixedTime,
+		Channel:  "#general",
+		Instance: sess.UserInstance(),
+		Mode:     domain.ModeOp, Actor: "ChanServ", At: fixedTime,
 	}
 	wantStarted := domain.DispatchStartedEvent{
 		Channel: "#general", Nicks: []domain.Nick{"botty"},
 	}
 	wantReply := domain.ModelReplyEvent{
-		Channel:    "#general",
-		InstanceID: testMemberID("botty"),
-		Instance:   "botty",
+		Channel:  "#general",
+		Instance: botty,
 		Event: domain.ChannelMessage{
 			Channel:    "#general",
 			From:       "botty",
@@ -1410,8 +1509,8 @@ func TestSession_model_reply_does_not_retrigger_dispatch(t *testing.T) {
 	sess, s := newTestSessionWithAPI(t, fake)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
-	seedInstance(t, s, domain.Instance{
+	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
+	seedInstance(t, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: testChannels("#general"),
@@ -1452,19 +1551,19 @@ func TestDispatchToInstance_excludes_own_events(t *testing.T) {
 	sess, s := newTestSessionWithAPI(t, fake)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty", "helper")
-	seedInstance(t, s, domain.Instance{
+	seedInstance(t, s, instanceSpec{
 		InstanceID: bottyID,
 		Nick:       "botty",
 		ModelID:    "test/model-a",
 		Channels:   testChannels("#general"),
 	})
-	seedInstance(t, s, domain.Instance{
+	seedInstance(t, s, instanceSpec{
 		InstanceID: helperID,
 		Nick:       "helper",
 		ModelID:    "test/model-b",
 		Channels:   testChannels("#general"),
 	})
+	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty", "helper")
 
 	// Trigger events include a message from botty itself.
 	triggerEvents := []protocol.IRCMessage{
@@ -1515,14 +1614,14 @@ func TestDispatchToInstances_model_does_not_reply_to_self(t *testing.T) {
 	sess, s := newTestSessionWithAPI(t, fake)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty", "helper")
-	seedInstance(t, s, domain.Instance{
+	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty", "helper")
+	seedInstance(t, s, instanceSpec{
 		InstanceID: bottyID,
 		Nick:       "botty",
 		ModelID:    "test/model-a",
 		Channels:   testChannels("#general"),
 	})
-	seedInstance(t, s, domain.Instance{
+	seedInstance(t, s, instanceSpec{
 		InstanceID: helperID,
 		Nick:       "helper",
 		ModelID:    "test/model-b",
@@ -1554,8 +1653,8 @@ func TestSession_DispatchToChannel_broadcasts_to_channel_instances(t *testing.T)
 	sess, s := newTestSessionWithAPI(t, fake)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
-	seedInstance(t, s, domain.Instance{
+	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
+	seedInstance(t, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: testChannels("#general"),
@@ -1582,7 +1681,7 @@ func TestSession_DispatchToChannel_does_not_broadcast_when_no_model_instances(t 
 	sess, s := newTestSessionWithAPI(t, fake)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser")
+	seedChannelWithMembers(t, sess, s, "#general", "testuser")
 
 	_, ircMsg := seedUserMessage(t, s, "#general", "hello world")
 
@@ -1607,8 +1706,8 @@ func TestSession_DispatchToChannel_pass_response_does_not_store_model_message(t 
 	sess, s := newTestSessionWithAPI(t, fake)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
-	seedInstance(t, s, domain.Instance{
+	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
+	seedInstance(t, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: testChannels("#general"),
@@ -1634,8 +1733,8 @@ func TestSession_DispatchToChannel_reply_response_stores_model_message(t *testin
 	sess, s := newTestSessionWithAPI(t, fake)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
-	seedInstance(t, s, domain.Instance{
+	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
+	seedInstance(t, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: testChannels("#general"),
@@ -1662,14 +1761,14 @@ func TestSession_DispatchToChannel_broadcasts_only_to_members_of_that_channel(t 
 	sess, s := newTestSessionWithAPI(t, fake)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
-	seedChannelWithMembers(t, s, "#random", "testuser", "otherbot")
-	seedInstance(t, s, domain.Instance{
+	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
+	seedChannelWithMembers(t, sess, s, "#random", "testuser", "otherbot")
+	seedInstance(t, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model-a",
 		Channels: testChannels("#general"),
 	})
-	seedInstance(t, s, domain.Instance{
+	seedInstance(t, s, instanceSpec{
 		Nick:     "otherbot",
 		ModelID:  "test/model-b",
 		Channels: testChannels("#random"),
@@ -1699,8 +1798,8 @@ func TestSession_DispatchToChannel_reply_is_not_rebroadcast_in_same_dispatch(t *
 	sess, s := newTestSessionWithAPI(t, fake)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
-	seedInstance(t, s, domain.Instance{
+	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
+	seedInstance(t, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: testChannels("#general"),
@@ -1727,13 +1826,13 @@ func TestSession_DispatchToChannel_multiple_instances_each_reply_once(t *testing
 	sess, s := newTestSessionWithAPI(t, fake)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser", "bot-a", "bot-b")
-	seedInstance(t, s, domain.Instance{
+	seedChannelWithMembers(t, sess, s, "#general", "testuser", "bot-a", "bot-b")
+	seedInstance(t, s, instanceSpec{
 		Nick:     "bot-a",
 		ModelID:  "test/model-a",
 		Channels: testChannels("#general"),
 	})
-	seedInstance(t, s, domain.Instance{
+	seedInstance(t, s, instanceSpec{
 		Nick:     "bot-b",
 		ModelID:  "test/model-b",
 		Channels: testChannels("#general"),
@@ -1764,8 +1863,8 @@ func TestSession_DispatchToChannel_ignores_empty_reply_body(t *testing.T) {
 	sess, s := newTestSessionWithAPI(t, fake)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
-	seedInstance(t, s, domain.Instance{
+	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
+	seedInstance(t, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: testChannels("#general"),
@@ -1795,13 +1894,13 @@ func TestSession_DispatchToChannel_api_error_continues_to_next_instance(t *testi
 	sess, s := newTestSessionWithAPI(t, fake)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser", "bot-a", "bot-b")
-	seedInstance(t, s, domain.Instance{
+	seedChannelWithMembers(t, sess, s, "#general", "testuser", "bot-a", "bot-b")
+	seedInstance(t, s, instanceSpec{
 		Nick:     "bot-a",
 		ModelID:  "test/model-a",
 		Channels: testChannels("#general"),
 	})
-	seedInstance(t, s, domain.Instance{
+	seedInstance(t, s, instanceSpec{
 		Nick:     "bot-b",
 		ModelID:  "test/model-b",
 		Channels: testChannels("#general"),
@@ -1833,14 +1932,14 @@ func TestSession_Poke_api_error_emits_error_event(t *testing.T) {
 	sess, s := newTestSessionWithAPI(t, fake)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser", "bot-a")
-	seedInstance(t, s, domain.Instance{
+	seedChannelWithMembers(t, sess, s, "#general", "testuser", "bot-a")
+	seedInstance(t, s, instanceSpec{
 		Nick:     "bot-a",
 		ModelID:  "test/model-a",
 		Channels: testChannels("#general"),
 	})
-	seedChannelWithMembers(t, s, "#random", "testuser", "bot-b")
-	seedInstance(t, s, domain.Instance{
+	seedChannelWithMembers(t, sess, s, "#random", "testuser", "bot-b")
+	seedInstance(t, s, instanceSpec{
 		Nick:     "bot-b",
 		ModelID:  "test/model-b",
 		Channels: testChannels("#random"),
@@ -1877,7 +1976,7 @@ func TestSession_SetTopic(t *testing.T) {
 	ctx := t.Context()
 
 	ch := domain.Channel{Name: "#dev", Kind: domain.KindChannel, Created: fixedTime}
-	require.NoError(t, s.SaveChannel(ctx, ch))
+	saveTestChannel(t, sess, s, ch)
 
 	require.NoError(t, sess.SetTopic(ctx, "#dev", "Development Chat"))
 	evt := drainEvent[domain.TopicChangeEvent](t, sess)
@@ -1889,7 +1988,7 @@ func TestSession_SetTopic(t *testing.T) {
 	}, evt)
 
 	// Channel topic and metadata should be updated.
-	updated, err := s.GetChannel(ctx, "#dev")
+	updated, err := sess.GetChannel(ctx, "#dev")
 	require.NoError(t, err)
 	requireChannelEqual(t, domain.Channel{
 		Name:       "#dev",
@@ -1916,10 +2015,11 @@ func TestSession_ChangeNick(t *testing.T) {
 	require.NoError(t, sess.ChangeNick(t.Context(), "newname"))
 	evt := drainEvent[domain.NickChangeEvent](t, sess)
 	require.Equal(t, domain.NickChangeEvent{
-		Channel: "#general",
-		OldNick: "testuser",
-		NewNick: "newname",
-		At:      fixedTime,
+		Channel:  "#general",
+		Instance: sess.UserInstance(),
+		OldNick:  "testuser",
+		NewNick:  "newname",
+		At:       fixedTime,
 	}, evt)
 
 	require.Equal(t, domain.Nick("newname"), sess.UserNick())
@@ -1929,17 +2029,16 @@ func TestSession_Whois(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	inst := domain.Instance{
+	inst := seedInstance(t, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Persona:  "A test bot",
 		Channels: testChannels("#dev"),
-	}
-	require.NoError(t, s.SaveInstance(ctx, inst))
+	})
 
 	got, err := sess.Whois(ctx, "botty")
 	require.NoError(t, err)
-	require.Equal(t, inst, got)
+	require.Same(t, inst, got)
 }
 
 func TestSession_WhoisNotFound(t *testing.T) {
@@ -1959,19 +2058,19 @@ func TestSession_InviteAs_existing_instance_to_nonexistent_channel_does_not_corr
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
-	seedInstance(t, s, domain.Instance{
+	seedInstance(t, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: testChannels("#general"),
 	})
+	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
 
-	require.Error(t, sess.InviteAs(ctx, sess.UserNick(), "botty", "#ghost"))
+	require.Error(t, sess.InviteAs(ctx, sess.UserInstance(), "botty", "#ghost"))
 
 	// Instance should not have the phantom channel in its set.
-	inst, err := s.GetInstance(ctx, "botty")
+	inst, err := s.ResolveNick(ctx, "botty")
 	require.NoError(t, err)
-	requireChannels(t, inst.Channels, "#general")
+	requireChannels(t, inst.Channels(), "#general")
 }
 
 func TestSession_AddModelGenerateNickError(t *testing.T) {
@@ -1987,10 +2086,10 @@ func TestSession_AddModelGenerateNickError(t *testing.T) {
 	ch := domain.Channel{
 		Name:    "#dev",
 		Kind:    domain.KindChannel,
-		Members: testMembers("testuser"),
+		Members: testMembers(t, sess, s, "testuser"),
 		Created: fixedTime,
 	}
-	require.NoError(t, s.SaveChannel(ctx, ch))
+	saveTestChannel(t, sess, s, ch)
 
 	require.Error(t, sess.AddModel(ctx, "#dev", "anthropic/claude-3-haiku", ""))
 }
@@ -1999,142 +2098,131 @@ func TestSession_AddModel_persists_persona(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser")
+	seedChannelWithMembers(t, sess, s, "#general", "testuser")
 
 	require.NoError(t, sess.AddModel(ctx, "#general", "anthropic/claude-3-haiku", "Helpful assistant"))
 	evt := drainEvent[domain.ModelInvitedEvent](t, sess)
-	require.Equal(t, "Helpful assistant", evt.Instance.Persona)
+	require.Equal(t, "Helpful assistant", evt.Instance.Persona())
 
-	inst, err := s.GetInstance(ctx, "fakenick")
+	inst, err := s.ResolveNick(ctx, "fakenick")
 	require.NoError(t, err)
-	require.Equal(t, "Helpful assistant", inst.Persona)
+	require.Equal(t, "Helpful assistant", inst.Persona())
 }
 
 func TestSession_InviteAs_reuses_existing_instance(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser")
-	seedChannelWithMembers(t, s, "#random", "testuser")
-	seedInstance(t, s, domain.Instance{
+	botty := seedInstance(t, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Persona:  "Helpful assistant",
 		Channels: testChannels("#general"),
 	})
+	seedChannelWithMembers(t, sess, s, "#general", "testuser")
+	seedChannelWithMembers(t, sess, s, "#random", "testuser")
 
-	require.NoError(t, sess.InviteAs(ctx, sess.UserNick(), "botty", "#random"))
+	require.NoError(t, sess.InviteAs(ctx, sess.UserInstance(), "botty", "#random"))
 	evt := drainEvent[domain.ModelInvitedEvent](t, sess)
 	require.Equal(t, domain.ModelInvitedEvent{
-		Channel: "#random",
-		Instance: domain.Instance{
-			InstanceID: testMemberID("botty"),
-			Nick:       "botty",
-			ModelID:    "test/model",
-			Persona:    "Helpful assistant",
-			Channels:   testChannels("#general", "#random")},
-		By: "testuser",
-		At: fixedTime,
+		Channel:  "#random",
+		Instance: botty,
+		By:       "testuser",
+		At:       fixedTime,
 	}, evt)
+	requireInstanceEqual(t, domain.NewModelInstance(
+		testMemberID("botty"), "botty", "test/model", "Helpful assistant",
+		testChannels("#general", "#random"),
+	), evt.Instance)
 
-	inst, err := s.GetInstance(ctx, "botty")
+	inst, err := s.ResolveNick(ctx, "botty")
 	require.NoError(t, err)
-	require.Equal(t, domain.Instance{
-		InstanceID: testMemberID("botty"),
-		Nick:       "botty",
-		ModelID:    "test/model",
-		Persona:    "Helpful assistant",
-		Channels:   testChannels("#general", "#random")}, inst)
+	requireInstanceEqual(t, domain.NewModelInstance(
+		testMemberID("botty"), "botty", "test/model", "Helpful assistant",
+		testChannels("#general", "#random"),
+	), inst)
 
-	channel, err := s.GetChannel(ctx, "#random")
+	channel, err := sess.GetChannel(ctx, "#random")
 	require.NoError(t, err)
-	require.Equal(t, testMembers("testuser", "botty").Slice(), channel.Members.Slice())
+	require.Equal(t, testMembers(t, sess, s, "testuser", "botty").Slice(), channel.Members.Slice())
 }
 
 func TestSession_InviteAs_existing_instance_is_idempotent(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
-	seedInstance(t, s, domain.Instance{
+	seedInstance(t, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: testChannels("#general"),
 	})
+	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
 
-	require.NoError(t, sess.InviteAs(ctx, sess.UserNick(), "botty", "#general"))
+	require.NoError(t, sess.InviteAs(ctx, sess.UserInstance(), "botty", "#general"))
 
-	inst, err := s.GetInstance(ctx, "botty")
+	inst, err := s.ResolveNick(ctx, "botty")
 	require.NoError(t, err)
-	requireChannels(t, inst.Channels, "#general")
+	requireChannels(t, inst.Channels(), "#general")
 
-	channel, err := s.GetChannel(ctx, "#general")
+	channel, err := sess.GetChannel(ctx, "#general")
 	require.NoError(t, err)
-	require.Equal(t, testMembers("testuser", "botty").Slice(), channel.Members.Slice())
+	require.Equal(t, testMembers(t, sess, s, "testuser", "botty").Slice(), channel.Members.Slice())
 }
 
 func TestSession_InviteAs_existing_instance_preserves_persona(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser")
-	seedChannelWithMembers(t, s, "#random", "testuser")
-	seedInstance(t, s, domain.Instance{
+	seedInstance(t, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Persona:  "Existing persona",
 		Channels: testChannels("#general"),
 	})
+	seedChannelWithMembers(t, sess, s, "#general", "testuser")
+	seedChannelWithMembers(t, sess, s, "#random", "testuser")
 
-	require.NoError(t, sess.InviteAs(ctx, sess.UserNick(), "botty", "#random"))
+	require.NoError(t, sess.InviteAs(ctx, sess.UserInstance(), "botty", "#random"))
 	evt := drainEvent[domain.ModelInvitedEvent](t, sess)
-	require.Equal(t, "Existing persona", evt.Instance.Persona)
+	require.Equal(t, "Existing persona", evt.Instance.Persona())
 
-	inst, err := s.GetInstance(ctx, "botty")
+	inst, err := s.ResolveNick(ctx, "botty")
 	require.NoError(t, err)
-	require.Equal(t, "Existing persona", inst.Persona)
+	require.Equal(t, "Existing persona", inst.Persona())
 }
 
-func TestSession_AddModel_same_model_id_reuses_instance(t *testing.T) {
+func TestSession_AddModel_creates_new_instance_per_invocation(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser")
-	seedChannelWithMembers(t, s, "#random", "testuser")
+	seedChannelWithMembers(t, sess, s, "#general", "testuser")
+	seedChannelWithMembers(t, sess, s, "#random", "testuser")
 
 	require.NoError(t, sess.AddModel(ctx, "#general", "test/model", "Helpful assistant"))
 	evt1 := drainEvent[domain.ModelInvitedEvent](t, sess)
-	require.Equal(t, domain.Nick("fakenick"), evt1.Instance.Nick)
-	require.NotEmpty(t, evt1.Instance.InstanceID)
-	instanceID := evt1.Instance.InstanceID
+	require.NotEmpty(t, evt1.Instance.ID())
 	drainEvent[domain.ModeChangeEvent](t, sess)
 	drainEvent[domain.DispatchStartedEvent](t, sess)
 	drainEvent[domain.DispatchDoneEvent](t, sess)
 
 	require.NoError(t, sess.AddModel(ctx, "#random", "test/model", ""))
 	evt2 := drainEvent[domain.ModelInvitedEvent](t, sess)
-	require.Equal(t, domain.ModelInvitedEvent{
-		Channel: "#random",
-		Instance: domain.Instance{
-			InstanceID: instanceID,
-			Nick:       "fakenick",
-			ModelID:    "test/model",
-			Persona:    "Helpful assistant",
-			Channels:   testChannels("#general", "#random")},
-		By: "testuser",
-		At: fixedTime,
-	}, evt2)
+
+	// Each invocation produces a fresh `*Instance` with its own id;
+	// `AddModel` no longer conflates backing model with instance
+	// identity.
+	require.NotEqual(t, evt1.Instance.ID(), evt2.Instance.ID())
+	require.NotSame(t, evt1.Instance, evt2.Instance)
 
 	instances, err := s.ListInstances(ctx)
 	require.NoError(t, err)
-	require.Equal(t, []domain.Instance{
-		{
-			InstanceID: instanceID,
-			Nick:       "fakenick",
-			ModelID:    "test/model",
-			Persona:    "Helpful assistant",
-			Channels:   testChannels("#general", "#random")},
-	}, instances)
+
+	ids := make([]domain.InstanceID, len(instances))
+	for i, inst := range instances {
+		ids[i] = inst.ID()
+	}
+
+	require.ElementsMatch(t, []domain.InstanceID{evt1.Instance.ID(), evt2.Instance.ID()}, ids)
 }
 
 func TestSession_KickNonexistentChannel(t *testing.T) {
@@ -2150,10 +2238,10 @@ func TestSession_KickNonMember(t *testing.T) {
 	original := domain.Channel{
 		Name:    "#dev",
 		Kind:    domain.KindChannel,
-		Members: testMembers("testuser"),
+		Members: testMembers(t, sess, s, "testuser"),
 		Created: fixedTime,
 	}
-	require.NoError(t, s.SaveChannel(ctx, original))
+	saveTestChannel(t, sess, s, original)
 
 	// Kicking an unresolved nick must be a no-op: no
 	// ModelKickedEvent emission (the empty-id fallback would
@@ -2167,9 +2255,9 @@ func TestSession_KickNonMember(t *testing.T) {
 	case <-time.After(50 * time.Millisecond):
 	}
 
-	updated, err := s.GetChannel(ctx, "#dev")
+	updated, err := sess.GetChannel(ctx, "#dev")
 	require.NoError(t, err)
-	require.Equal(t, testMembers("testuser").Slice(), updated.Members.Slice())
+	require.Equal(t, testMembers(t, sess, s, "testuser").Slice(), updated.Members.Slice())
 }
 
 func TestSession_SetTopicNonexistentChannel(t *testing.T) {
@@ -2180,7 +2268,7 @@ func TestSession_SetTopicNonexistentChannel(t *testing.T) {
 
 func TestSession_DispatchToChannel_includes_memory_in_prompt(t *testing.T) {
 	memStore := memory.NewStoreAdapter(storetest.NewMemoryStore(t))
-	require.NoError(t, memStore.Write(t.Context(), "botty", memory.Entry{
+	require.NoError(t, memStore.Write(t.Context(), testMemberID("botty"), memory.Entry{
 		Key:     "mood",
 		Content: "curious",
 	}))
@@ -2199,8 +2287,8 @@ func TestSession_DispatchToChannel_includes_memory_in_prompt(t *testing.T) {
 	sess := New(s, memStore, fake, "testuser", "", "")
 	sess.now = func() time.Time { return fixedTime }
 
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
-	seedInstance(t, s, domain.Instance{
+	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
+	seedInstance(t, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Persona:  "Helpful assistant",
@@ -2220,19 +2308,20 @@ func TestSession_DispatchToChannel_includes_memory_in_prompt(t *testing.T) {
 }
 
 func TestBuildSystemPrompt(t *testing.T) {
+	sess, s := newTestSession(t)
+	botty := seedInstance(t, s, instanceSpec{
+		Nick:    "botty",
+		ModelID: "test/model",
+		Persona: "grumpy sysadmin",
+	})
 	ch := domain.Channel{
 		Name:    "#dev",
 		Kind:    domain.KindChannel,
 		Topic:   "go stuff",
-		Members: testMembers("testuser", "botty"),
-	}
-	inst := domain.Instance{
-		Nick:    "botty",
-		ModelID: "test/model",
-		Persona: "grumpy sysadmin",
+		Members: testMembers(t, sess, s, "testuser", "botty"),
 	}
 
-	prompt := buildSystemPrompt(ch, inst, nil)
+	prompt := buildSystemPrompt(ch, botty, nil)
 
 	require.Equal(t, loadGolden(t, "system_prompt.golden.txt"), prompt)
 }
@@ -2242,10 +2331,7 @@ func TestBuildSystemPrompt_with_memories(t *testing.T) {
 		Name: "#dev",
 		Kind: domain.KindChannel,
 	}
-	inst := domain.Instance{
-		Nick:    "botty",
-		ModelID: "test/model",
-	}
+	inst := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
 	memories := []memory.Entry{
 		{Key: "mood", Content: "curious"},
 		{Key: "goal", Content: "learn go"},
@@ -2265,12 +2351,12 @@ func TestSession_Poke_emits_dispatch_events(t *testing.T) {
 	sess, s := newTestSessionWithAPI(t, fake)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
-	seedInstance(t, s, domain.Instance{
+	botty := seedInstance(t, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: testChannels("#general"),
 	})
+	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
 
 	require.NoError(t, sess.Poke(ctx))
 
@@ -2284,9 +2370,8 @@ func TestSession_Poke_emits_dispatch_events(t *testing.T) {
 	require.Equal(t, []domain.SessionEvent{
 		domain.DispatchStartedEvent{Channel: "#general", Nicks: []domain.Nick{"botty"}},
 		domain.ModelReplyEvent{
-			Channel:    "#general",
-			InstanceID: testMemberID("botty"),
-			Instance:   "botty",
+			Channel:  "#general",
+			Instance: botty,
 			Event: domain.ChannelMessage{
 				Channel:    "#general",
 				From:       "botty",
@@ -2309,17 +2394,17 @@ func TestSession_OpenDM_creates_dm_channel(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	seedInstance(t, s, domain.Instance{
+	botty := seedInstance(t, s, instanceSpec{
 		Nick:    "botty",
 		ModelID: "test/model",
 	})
 
-	ch, created, err := sess.OpenDM(ctx, "botty")
+	ch, created, err := sess.OpenDM(ctx, botty)
 	require.NoError(t, err)
 	require.True(t, created)
 	dmMembers := domain.NewMemberList()
-	dmMembers.Add("", "testuser")
-	dmMembers.Add(testMemberID("botty"), "botty")
+	dmMembers.Add(sess.UserInstance())
+	dmMembers.Add(botty)
 
 	requireChannelEqual(t, domain.Channel{
 		Name:    "botty",
@@ -2328,47 +2413,40 @@ func TestSession_OpenDM_creates_dm_channel(t *testing.T) {
 		Created: fixedTime,
 	}, ch)
 
-	got, err := s.GetChannel(ctx, "botty")
+	got, err := sess.GetChannel(ctx, "botty")
 	require.NoError(t, err)
 	requireChannelEqual(t, ch, got)
 
-	inst, err := s.GetInstance(ctx, "botty")
+	inst, err := s.ResolveNick(ctx, "botty")
 	require.NoError(t, err)
-	requireChannels(t, inst.Channels, "botty")
+	requireChannels(t, inst.Channels(), "botty")
 }
 
 func TestSession_OpenDM_reuses_existing_dm_channel(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	existing := domain.Channel{
-		Name:    "botty",
-		Kind:    domain.KindDM,
-		Members: testMembers("testuser", "botty"),
-		Created: fixedTime.Add(-time.Hour),
-	}
-	seedInstance(t, s, domain.Instance{
+	botty := seedInstance(t, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: testChannels("botty"),
 	})
-	require.NoError(t, s.SaveChannel(ctx, existing))
+	existing := domain.Channel{
+		Name:    "botty",
+		Kind:    domain.KindDM,
+		Members: testMembers(t, sess, s, "testuser", "botty"),
+		Created: fixedTime.Add(-time.Hour),
+	}
+	saveTestChannel(t, sess, s, existing)
 
-	ch, created, err := sess.OpenDM(ctx, "botty")
+	ch, created, err := sess.OpenDM(ctx, botty)
 	require.NoError(t, err)
 	require.False(t, created)
 	requireChannelEqual(t, existing, ch)
 
-	inst, err := s.GetInstance(ctx, "botty")
+	inst, err := s.ResolveNick(ctx, "botty")
 	require.NoError(t, err)
-	requireChannels(t, inst.Channels, "botty")
-}
-
-func TestSession_OpenDM_unknown_instance(t *testing.T) {
-	sess, _ := newTestSession(t)
-
-	_, _, err := sess.OpenDM(t.Context(), "ghost")
-	require.Error(t, err)
+	requireChannels(t, inst.Channels(), "botty")
 }
 
 func TestSession_DispatchToChannel_dm_only_targets_that_instance(t *testing.T) {
@@ -2380,17 +2458,17 @@ func TestSession_DispatchToChannel_dm_only_targets_that_instance(t *testing.T) {
 	sess, s := newTestSessionWithAPI(t, fake)
 	ctx := t.Context()
 
-	seedInstance(t, s, domain.Instance{
+	botty := seedInstance(t, s, instanceSpec{
 		Nick:    "botty",
 		ModelID: "test/model-a",
 	})
-	seedInstance(t, s, domain.Instance{
+	seedInstance(t, s, instanceSpec{
 		Nick:     "otherbot",
 		ModelID:  "test/model-b",
 		Channels: testChannels("#general"),
 	})
 
-	_, _, err := sess.OpenDM(ctx, "botty")
+	_, _, err := sess.OpenDM(ctx, botty)
 	require.NoError(t, err)
 
 	_, ircMsg := seedUserMessage(t, s, "botty", "hello in dm")
@@ -2409,7 +2487,7 @@ func TestSession_MarkRead_and_UnreadCount(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser")
+	seedChannelWithMembers(t, sess, s, "#general", "testuser")
 
 	_, err := s.AppendEvent(ctx, "#general", domain.ChannelMessage{
 		Channel: "#general", From: "testuser", Body: "first", At: fixedTime,
@@ -2435,7 +2513,7 @@ func TestSession_UnreadCount_after_new_messages(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser")
+	seedChannelWithMembers(t, sess, s, "#general", "testuser")
 
 	_, err := s.AppendEvent(ctx, "#general", domain.ChannelMessage{
 		Channel: "#general", From: "testuser", Body: "first", At: fixedTime,
@@ -2462,7 +2540,7 @@ func TestSession_Join_marks_channel_as_read(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser")
+	seedChannelWithMembers(t, sess, s, "#general", "testuser")
 	_, err := s.AppendEvent(ctx, "#general", domain.ChannelMessage{
 		Channel: "#general", From: "testuser", Body: "old", At: fixedTime,
 	})
@@ -2564,7 +2642,7 @@ func TestSession_DispatchToChannel_filters_history_before_join(t *testing.T) {
 	sess, s := newTestSessionWithAPI(t, fake)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
+	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
 
 	// Append a message event from before the model joined.
 	_, err := s.AppendEvent(ctx, "#general", domain.ChannelMessage{
@@ -2584,7 +2662,7 @@ func TestSession_DispatchToChannel_filters_history_before_join(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	seedInstance(t, s, domain.Instance{
+	seedInstance(t, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: testChannels("#general")})
@@ -2630,12 +2708,12 @@ func TestSession_DispatchToChannel_forwards_replies_to_subsequent_models(t *test
 	sess, s := newTestSessionWithAPI(t, fake)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser", "alpha", "beta")
-	seedInstance(t, s, domain.Instance{
+	seedChannelWithMembers(t, sess, s, "#general", "testuser", "alpha", "beta")
+	seedInstance(t, s, instanceSpec{
 		Nick:     "alpha",
 		ModelID:  "test/alpha",
 		Channels: testChannels("#general")})
-	seedInstance(t, s, domain.Instance{
+	seedInstance(t, s, instanceSpec{
 		Nick:     "beta",
 		ModelID:  "test/beta",
 		Channels: testChannels("#general")})
@@ -2786,15 +2864,15 @@ type failingMemoryStore struct {
 	deleteErr error
 }
 
-func (f *failingMemoryStore) Read(_ context.Context, _ domain.Nick) ([]memory.Entry, error) {
+func (f *failingMemoryStore) Read(_ context.Context, _ domain.InstanceID) ([]memory.Entry, error) {
 	return nil, nil
 }
 
-func (f *failingMemoryStore) Write(_ context.Context, _ domain.Nick, _ memory.Entry) error {
+func (f *failingMemoryStore) Write(_ context.Context, _ domain.InstanceID, _ memory.Entry) error {
 	return f.writeErr
 }
 
-func (f *failingMemoryStore) Delete(_ context.Context, _ domain.Nick, _ string) error {
+func (f *failingMemoryStore) Delete(_ context.Context, _ domain.InstanceID, _ string) error {
 	return f.deleteErr
 }
 
@@ -2809,8 +2887,8 @@ func TestSession_Reset(t *testing.T) {
 	sess.now = func() time.Time { return fixedTime }
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
-	seedInstance(t, s, domain.Instance{
+	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
+	seedInstance(t, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: testChannels("#general"),
@@ -2819,7 +2897,7 @@ func TestSession_Reset(t *testing.T) {
 		Channel: "#general", From: "testuser", Body: "hello", At: fixedTime,
 	})
 	require.NoError(t, err)
-	require.NoError(t, memStore.Write(ctx, "botty", memory.Entry{Key: "mood", Content: "happy"}))
+	require.NoError(t, memStore.Write(ctx, testMemberID("botty"), memory.Entry{Key: "mood", Content: "happy"}))
 
 	require.NoError(t, sess.Reset(ctx))
 
@@ -2834,7 +2912,7 @@ func TestSession_Reset(t *testing.T) {
 	msgs := channelMessages(t, s, "#general")
 	require.Empty(t, msgs)
 
-	memories, err := memStore.Read(ctx, "botty")
+	memories, err := memStore.Read(ctx, testMemberID("botty"))
 	require.NoError(t, err)
 	require.Empty(t, memories)
 }
@@ -2843,7 +2921,7 @@ func TestSession_Reset_nil_memory_store(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser")
+	seedChannelWithMembers(t, sess, s, "#general", "testuser")
 
 	require.NoError(t, sess.Reset(ctx))
 
@@ -2854,7 +2932,7 @@ func TestSession_Reset_nil_memory_store(t *testing.T) {
 
 func TestBuildSystemPrompt_instructs_single_line_messages(t *testing.T) {
 	ch := domain.Channel{Name: "#dev", Kind: domain.KindChannel}
-	inst := domain.Instance{Nick: "botty", ModelID: "test/model"}
+	inst := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
 
 	prompt := buildSystemPrompt(ch, inst, nil)
 
@@ -2877,12 +2955,12 @@ func TestSession_DispatchToChannel_retries_on_multiline_reply(t *testing.T) {
 	sess, s := newTestSessionWithAPI(t, fake)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
-	seedInstance(t, s, domain.Instance{
+	botty := seedInstance(t, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: testChannels("#general"),
 	})
+	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
 
 	_, ircMsg := seedUserMessage(t, s, "#general", "hello")
 
@@ -2892,15 +2970,14 @@ func TestSession_DispatchToChannel_retries_on_multiline_reply(t *testing.T) {
 	require.Equal(t, []string{"multiline", "clean"}, attempts)
 	require.Equal(t, []domain.ModelReplyEvent{
 		{
-			Channel:    "#general",
-			InstanceID: testMemberID("botty"),
-			Instance:   "botty",
+			Channel:  "#general",
+			Instance: botty,
 			Event: domain.ChannelMessage{
 				Channel:    "#general",
 				From:       "botty",
 				InstanceID: testMemberID("botty"),
-				Body:    "clean reply",
-				At:      fixedTime,
+				Body:       "clean reply",
+				At:         fixedTime,
 			},
 			At: fixedTime,
 		},
@@ -2918,8 +2995,8 @@ func TestSession_DispatchToChannel_drops_reply_after_max_retries(t *testing.T) {
 	sess, s := newTestSessionWithAPI(t, fake)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
-	seedInstance(t, s, domain.Instance{
+	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
+	seedInstance(t, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: testChannels("#general"),
@@ -2948,12 +3025,12 @@ func TestSession_DispatchToChannel_accepts_single_line_reply(t *testing.T) {
 	sess, s := newTestSessionWithAPI(t, fake)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
-	seedInstance(t, s, domain.Instance{
+	botty := seedInstance(t, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: testChannels("#general"),
 	})
+	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
 
 	_, ircMsg := seedUserMessage(t, s, "#general", "hello")
 
@@ -2962,15 +3039,14 @@ func TestSession_DispatchToChannel_accepts_single_line_reply(t *testing.T) {
 
 	require.Equal(t, []domain.ModelReplyEvent{
 		{
-			Channel:    "#general",
-			InstanceID: testMemberID("botty"),
-			Instance:   "botty",
+			Channel:  "#general",
+			Instance: botty,
 			Event: domain.ChannelMessage{
 				Channel:    "#general",
 				From:       "botty",
 				InstanceID: testMemberID("botty"),
-				Body:    "no newlines here",
-				At:      fixedTime,
+				Body:       "no newlines here",
+				At:         fixedTime,
 			},
 			At: fixedTime,
 		},
@@ -3026,12 +3102,12 @@ func TestSession_DispatchToChannel_write_memory_then_reply(t *testing.T) {
 	sess, s, memStore := newTestSessionWithMemory(t, fake)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
-	seedInstance(t, s, domain.Instance{
+	botty := seedInstance(t, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: testChannels("#general"),
 	})
+	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
 
 	_, ircMsg := seedUserMessage(t, s, "#general", "hello")
 
@@ -3044,21 +3120,20 @@ func TestSession_DispatchToChannel_write_memory_then_reply(t *testing.T) {
 
 	require.Equal(t, []domain.ModelReplyEvent{
 		{
-			Channel:    "#general",
-			InstanceID: testMemberID("botty"),
-			Instance:   "botty",
+			Channel:  "#general",
+			Instance: botty,
 			Event: domain.ChannelMessage{
 				Channel:    "#general",
 				From:       "botty",
 				InstanceID: testMemberID("botty"),
-				Body:    "noted!",
-				At:      fixedTime,
+				Body:       "noted!",
+				At:         fixedTime,
 			},
 			At: fixedTime,
 		},
 	}, replies)
 
-	memories, err := memStore.Read(ctx, "botty")
+	memories, err := memStore.Read(ctx, testMemberID("botty"))
 	require.NoError(t, err)
 	require.Equal(t, []memory.Entry{{Key: "mood", Content: "happy"}}, memories)
 }
@@ -3085,10 +3160,10 @@ func TestSession_DispatchToChannel_delete_memory_then_pass(t *testing.T) {
 	sess, s, memStore := newTestSessionWithMemory(t, fake)
 	ctx := t.Context()
 
-	require.NoError(t, memStore.Write(ctx, "botty", memory.Entry{Key: "old_stuff", Content: "remove me"}))
+	require.NoError(t, memStore.Write(ctx, testMemberID("botty"), memory.Entry{Key: "old_stuff", Content: "remove me"}))
 
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
-	seedInstance(t, s, domain.Instance{
+	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
+	seedInstance(t, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: testChannels("#general"),
@@ -3104,7 +3179,7 @@ func TestSession_DispatchToChannel_delete_memory_then_pass(t *testing.T) {
 		{ToolCallID: "call_1", Content: mustToolResultContent(t, ToolResultPayload{OK: true, Summary: `deleted memory "old_stuff"`})},
 	}, continueResults)
 
-	memories, err := memStore.Read(ctx, "botty")
+	memories, err := memStore.Read(ctx, testMemberID("botty"))
 	require.NoError(t, err)
 	require.Empty(t, memories)
 }
@@ -3134,12 +3209,12 @@ func TestSession_DispatchToChannel_memory_write_error_returns_error_to_model(t *
 	sess.now = func() time.Time { return fixedTime }
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
-	seedInstance(t, s, domain.Instance{
+	botty := seedInstance(t, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: testChannels("#general"),
 	})
+	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
 
 	_, ircMsg := seedUserMessage(t, s, "#general", "hello")
 
@@ -3152,15 +3227,14 @@ func TestSession_DispatchToChannel_memory_write_error_returns_error_to_model(t *
 
 	require.Equal(t, []domain.ModelReplyEvent{
 		{
-			Channel:    "#general",
-			InstanceID: testMemberID("botty"),
-			Instance:   "botty",
+			Channel:  "#general",
+			Instance: botty,
 			Event: domain.ChannelMessage{
 				Channel:    "#general",
 				From:       "botty",
 				InstanceID: testMemberID("botty"),
-				Body:    "ok anyway",
-				At:      fixedTime,
+				Body:       "ok anyway",
+				At:         fixedTime,
 			},
 			At: fixedTime,
 		},
@@ -3190,12 +3264,12 @@ func TestSession_DispatchToChannel_multiple_memory_calls_in_one_response(t *test
 	sess, s, memStore := newTestSessionWithMemory(t, fake)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
-	seedInstance(t, s, domain.Instance{
+	botty := seedInstance(t, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: testChannels("#general"),
 	})
+	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
 
 	_, ircMsg := seedUserMessage(t, s, "#general", "hello")
 
@@ -3209,21 +3283,20 @@ func TestSession_DispatchToChannel_multiple_memory_calls_in_one_response(t *test
 
 	require.Equal(t, []domain.ModelReplyEvent{
 		{
-			Channel:    "#general",
-			InstanceID: testMemberID("botty"),
-			Instance:   "botty",
+			Channel:  "#general",
+			Instance: botty,
 			Event: domain.ChannelMessage{
 				Channel:    "#general",
 				From:       "botty",
 				InstanceID: testMemberID("botty"),
-				Body:    "stored both",
-				At:      fixedTime,
+				Body:       "stored both",
+				At:         fixedTime,
 			},
 			At: fixedTime,
 		},
 	}, replies)
 
-	memories, err := memStore.Read(ctx, "botty")
+	memories, err := memStore.Read(ctx, testMemberID("botty"))
 	require.NoError(t, err)
 	require.Equal(t, []memory.Entry{
 		{Key: "mood", Content: "happy"},
@@ -3253,14 +3326,14 @@ func TestSession_DispatchToChannel_search_memory_then_reply(t *testing.T) {
 	sess, s, memStore := newTestSessionWithMemory(t, fake)
 	ctx := t.Context()
 
-	require.NoError(t, memStore.Write(ctx, "botty", memory.Entry{Key: "colour", Content: "blue"}))
+	require.NoError(t, memStore.Write(ctx, testMemberID("botty"), memory.Entry{Key: "colour", Content: "blue"}))
 
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
-	seedInstance(t, s, domain.Instance{
+	botty := seedInstance(t, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: testChannels("#general"),
 	})
+	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
 
 	_, ircMsg := seedUserMessage(t, s, "#general", "what is my favourite colour?")
 
@@ -3273,15 +3346,14 @@ func TestSession_DispatchToChannel_search_memory_then_reply(t *testing.T) {
 
 	require.Equal(t, []domain.ModelReplyEvent{
 		{
-			Channel:    "#general",
-			InstanceID: testMemberID("botty"),
-			Instance:   "botty",
+			Channel:  "#general",
+			Instance: botty,
 			Event: domain.ChannelMessage{
 				Channel:    "#general",
 				From:       "botty",
 				InstanceID: testMemberID("botty"),
-				Body:    "your favourite colour is blue",
-				At:      fixedTime,
+				Body:       "your favourite colour is blue",
+				At:         fixedTime,
 			},
 			At: fixedTime,
 		},
@@ -3394,16 +3466,16 @@ func TestSession_DispatchToChannel_search_memory_with_vector_store(t *testing.T)
 	sess, s, memStore := newTestSessionWithIndexedMemory(t, fake, embSrv.URL)
 	ctx := t.Context()
 
-	require.NoError(t, memStore.Write(ctx, "botty", memory.Entry{Key: "fav_pet", Content: "cats are great"}))
-	require.NoError(t, memStore.Write(ctx, "botty", memory.Entry{Key: "hobby", Content: "no keyword match here"}))
-	require.NoError(t, memStore.Write(ctx, "botty", memory.Entry{Key: "other_pet", Content: "dogs are loyal"}))
+	require.NoError(t, memStore.Write(ctx, testMemberID("botty"), memory.Entry{Key: "fav_pet", Content: "cats are great"}))
+	require.NoError(t, memStore.Write(ctx, testMemberID("botty"), memory.Entry{Key: "hobby", Content: "no keyword match here"}))
+	require.NoError(t, memStore.Write(ctx, testMemberID("botty"), memory.Entry{Key: "other_pet", Content: "dogs are loyal"}))
 
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
-	seedInstance(t, s, domain.Instance{
+	botty := seedInstance(t, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: testChannels("#general"),
 	})
+	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
 
 	_, ircMsg := seedUserMessage(t, s, "#general", "what is my favourite pet?")
 
@@ -3435,15 +3507,14 @@ func TestSession_DispatchToChannel_search_memory_with_vector_store(t *testing.T)
 
 	require.Equal(t, []domain.ModelReplyEvent{
 		{
-			Channel:    "#general",
-			InstanceID: testMemberID("botty"),
-			Instance:   "botty",
+			Channel:  "#general",
+			Instance: botty,
 			Event: domain.ChannelMessage{
 				Channel:    "#general",
 				From:       "botty",
 				InstanceID: testMemberID("botty"),
-				Body:    "your favourite is cats",
-				At:      fixedTime,
+				Body:       "your favourite is cats",
+				At:         fixedTime,
 			},
 			At: fixedTime,
 		},
@@ -3494,8 +3565,8 @@ func TestSession_DispatchToChannel_write_then_search_memory_with_vector_store(t 
 	sess, s, _ := newTestSessionWithIndexedMemory(t, fake, embSrv.URL)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
-	seedInstance(t, s, domain.Instance{
+	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
+	seedInstance(t, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: testChannels("#general"),
@@ -3564,8 +3635,8 @@ func TestSession_DispatchToChannel_memory_loop_respects_max_turns(t *testing.T) 
 	sess, s, _ := newTestSessionWithMemory(t, fake)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
-	seedInstance(t, s, domain.Instance{
+	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
+	seedInstance(t, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: testChannels("#general"),
@@ -3590,7 +3661,7 @@ func TestSession_DispatchToChannel_memory_loop_respects_max_turns(t *testing.T) 
 
 func TestBuildSystemPrompt_mentions_memory_tools(t *testing.T) {
 	ch := domain.Channel{Name: "#dev", Kind: domain.KindChannel}
-	inst := domain.Instance{Nick: "botty", ModelID: "test/model"}
+	inst := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
 
 	prompt := buildSystemPrompt(ch, inst, nil)
 
@@ -3601,7 +3672,7 @@ func TestBuildSystemPrompt_mentions_memory_tools(t *testing.T) {
 
 func TestBuildSystemPrompt_mentions_span_replies(t *testing.T) {
 	ch := domain.Channel{Name: "#dev", Kind: domain.KindChannel}
-	inst := domain.Instance{Nick: "botty", ModelID: "test/model"}
+	inst := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
 
 	prompt := buildSystemPrompt(ch, inst, nil)
 
@@ -3628,12 +3699,12 @@ func TestSession_DispatchToChannel_encodes_structured_reply_formatting(t *testin
 	sess, s := newTestSessionWithAPI(t, fake)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
-	seedInstance(t, s, domain.Instance{
+	botty := seedInstance(t, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: testChannels("#general"),
 	})
+	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
 
 	_, ircMsg := seedUserMessage(t, s, "#general", "hello")
 
@@ -3642,15 +3713,14 @@ func TestSession_DispatchToChannel_encodes_structured_reply_formatting(t *testin
 
 	require.Equal(t, []domain.ModelReplyEvent{
 		{
-			Channel:    "#general",
-			InstanceID: testMemberID("botty"),
-			Instance:   "botty",
+			Channel:  "#general",
+			Instance: botty,
 			Event: domain.ChannelMessage{
 				Channel:    "#general",
 				From:       "botty",
 				InstanceID: testMemberID("botty"),
-				Body:    "hello \x02\x0304world\x0f",
-				At:      fixedTime,
+				Body:       "hello \x02\x0304world\x0f",
+				At:         fixedTime,
 			},
 			At: fixedTime,
 		},
@@ -3681,12 +3751,12 @@ func TestSession_DispatchToChannel_retries_on_invalid_structured_formatting(t *t
 	sess, s := newTestSessionWithAPI(t, fake)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
-	seedInstance(t, s, domain.Instance{
+	botty := seedInstance(t, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: testChannels("#general"),
 	})
+	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
 
 	_, ircMsg := seedUserMessage(t, s, "#general", "hello")
 
@@ -3695,15 +3765,14 @@ func TestSession_DispatchToChannel_retries_on_invalid_structured_formatting(t *t
 	require.Equal(t, []string{"invalid", "clean"}, attempts)
 	require.Equal(t, []domain.ModelReplyEvent{
 		{
-			Channel:    "#general",
-			InstanceID: testMemberID("botty"),
-			Instance:   "botty",
+			Channel:  "#general",
+			Instance: botty,
 			Event: domain.ChannelMessage{
 				Channel:    "#general",
 				From:       "botty",
 				InstanceID: testMemberID("botty"),
-				Body:    "clean reply",
-				At:      fixedTime,
+				Body:       "clean reply",
+				At:         fixedTime,
 			},
 			At: fixedTime,
 		},
@@ -3730,8 +3799,8 @@ func TestSession_DispatchToChannel_format_retry_exhaustion(t *testing.T) {
 	sess, s := newTestSessionWithAPI(t, fake)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
-	seedInstance(t, s, domain.Instance{
+	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
+	seedInstance(t, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: testChannels("#general"),
@@ -3782,8 +3851,8 @@ func TestSession_DispatchToChannel_newline_retry_exhaustion(t *testing.T) {
 		sess, s := newTestSessionWithAPI(t, fake)
 		ctx := t.Context()
 
-		seedChannelWithMembers(t, s, "#general", "testuser", "botty")
-		seedInstance(t, s, domain.Instance{
+		seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
+		seedInstance(t, s, instanceSpec{
 			Nick:     "botty",
 			ModelID:  "test/model",
 			Channels: testChannels("#general"),
@@ -3809,25 +3878,150 @@ func TestSession_DispatchToChannel_newline_retry_exhaustion(t *testing.T) {
 	})
 }
 
-func seedChannelWithMembers(t *testing.T, s *storemod.SQLiteStore, name domain.ChannelName, members ...domain.Nick) {
+// seedChannelWithMembers persists a channel with the given members.
+// Each member nick must either be the session user or must have been
+// previously seeded via `seedInstance` so that its canonical handle
+// exists in the store. If the user is listed, the session's in-memory
+// `user.Channels()` and recorded user mode are updated to match, and
+// the user is stripped from the member list before persistence — the
+// user is an ephemeral actor that is never written to disk.
+func seedChannelWithMembers(t *testing.T, sess *Session, s *storemod.SQLiteStore, name domain.ChannelName, members ...domain.Nick) {
 	t.Helper()
 
-	require.NoError(t, s.SaveChannel(t.Context(), domain.Channel{
+	ch := domain.Channel{
 		Name:    name,
 		Kind:    domain.KindChannel,
-		Members: testMembers(members...),
+		Members: testMembers(t, sess, s, members...),
 		Created: fixedTime,
-	}))
-}
-
-func seedInstance(t *testing.T, s *storemod.SQLiteStore, inst domain.Instance) {
-	t.Helper()
-
-	if inst.InstanceID == "" {
-		inst.InstanceID = testMemberID(inst.Nick)
 	}
 
-	require.NoError(t, s.SaveInstance(t.Context(), inst))
+	registerUserMembership(t, sess, name, members)
+
+	ch.Members = cloneMembersWithout(ch.Members, sess.UserInstance())
+	require.NoError(t, s.SaveChannel(t.Context(), ch))
+}
+
+// saveTestChannel persists a pre-built `domain.Channel` literal in
+// the test-style, splitting ephemeral user membership from the on-
+// disk form. If the channel's Members lists the session user, the
+// session's `user.Channels()` + recorded user mode are updated to
+// match, and the user is stripped from `ch.Members` before
+// `s.SaveChannel` is called. Tests construct channel literals with
+// the user as a member for readability; the store never sees the
+// user.
+func saveTestChannel(t *testing.T, sess *Session, s *storemod.SQLiteStore, ch domain.Channel) {
+	t.Helper()
+
+	user := sess.UserInstance()
+	if m, ok := ch.Members.GetByInstance(user); ok {
+		sess.UserInstance().MutateChannels(func(mm *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
+			if _, exists := mm.Get(ch.Name); !exists {
+				mm.Set(ch.Name, fixedTime)
+			}
+		})
+
+		mode := m.Mode
+		if mode == domain.ModeNone && ch.Kind == domain.KindChannel {
+			mode = domain.ModeOp
+		}
+
+		if mode != domain.ModeNone {
+			sess.setUserMode(t.Context(), ch.Name, mode)
+		}
+
+		ch.Members = cloneMembersWithout(ch.Members, user)
+	}
+
+	require.NoError(t, s.SaveChannel(t.Context(), ch))
+}
+
+// registerUserMembership updates the session's in-memory user state
+// when a test seeds a channel that lists the user as a member. It
+// adds the channel to `user.Channels()` and records the
+// conventional ModeOp that `JoinAs` would have set on a real join.
+// Tests that want a different mode can override via the internal
+// `setUserMode` helper.
+func registerUserMembership(t *testing.T, sess *Session, name domain.ChannelName, members []domain.Nick) {
+	userNick := sess.UserNick()
+	for _, m := range members {
+		if m != userNick {
+			continue
+		}
+
+		sess.UserInstance().MutateChannels(func(mm *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
+			if _, ok := mm.Get(name); !ok {
+				mm.Set(name, fixedTime)
+			}
+		})
+		sess.setUserMode(t.Context(), name, domain.ModeOp)
+		return
+	}
+}
+
+// seedInstance is the legacy helper that matches the old test
+// vocabulary. It accepts an `instanceSpec` and returns the canonical
+// handle. If spec.InstanceID is
+// empty, the conventional `inst-<nick>` id is used instead. If the
+// store already has a canonical handle for the resolved id (a
+// previous seedInstance, or an auto-seed from testMembers), its
+// fields are updated in place and that canonical pointer is
+// returned — so a test can refer to the instance before or after
+// seeding and get the same pointer either way.
+func seedInstance(t *testing.T, s *storemod.SQLiteStore, spec instanceSpec) *domain.Instance {
+	t.Helper()
+
+	id := spec.InstanceID
+	if id == "" {
+		id = testMemberID(spec.Nick)
+	}
+
+	ctx := t.Context()
+
+	if existing, err := s.GetInstanceByID(ctx, id); err == nil && existing != nil {
+		// If the caller specified a ModelID that differs from the
+		// existing handle (typical when `testMembers` auto-seeded a
+		// placeholder under "test/model" first), drop and recreate so
+		// the handle carries the correct backing model. Tests that
+		// need the canonical-pointer invariant must seed before
+		// referencing.
+		if spec.ModelID == "" || spec.ModelID == existing.ModelID {
+			existing.SetNick(spec.Nick)
+			existing.SetPersona(spec.Persona)
+			existing.MutateChannels(func(m *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
+				for pair := m.Oldest(); pair != nil; {
+					next := pair.Next()
+					m.Delete(pair.Key)
+					pair = next
+				}
+				if spec.Channels != nil {
+					for pair := spec.Channels.Oldest(); pair != nil; pair = pair.Next() {
+						m.Set(pair.Key, pair.Value)
+					}
+				}
+			})
+			require.NoError(t, s.SaveInstance(ctx, existing))
+			return existing
+		}
+
+		require.NoError(t, s.DeleteInstanceByID(ctx, id))
+	}
+
+	inst := domain.NewModelInstance(id, spec.Nick, spec.ModelID, spec.Persona, spec.Channels)
+	require.NoError(t, s.SaveInstance(ctx, inst))
+
+	return inst
+}
+
+// instanceSpec bundles the fields a test cares about when describing
+// a model instance to seed. Replaces the inlined `domain.Instance{…}`
+// struct literals that were possible when Instance's fields were
+// exported.
+type instanceSpec struct {
+	InstanceID domain.InstanceID
+	Nick       domain.Nick
+	ModelID    domain.ModelID
+	Persona    string
+	Channels   *orderedmap.OrderedMap[domain.ChannelName, time.Time]
 }
 
 // seedUserMessage appends a user message as a ChannelMessage event and
@@ -3894,8 +4088,8 @@ func TestSession_DispatchToChannel_content_filtered_returns_silence(t *testing.T
 	sess, s := newTestSessionWithAPI(t, fake)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
-	seedInstance(t, s, domain.Instance{
+	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
+	seedInstance(t, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: testChannels("#general"),
@@ -3918,8 +4112,8 @@ func TestSession_DispatchToChannel_model_refused_returns_silence(t *testing.T) {
 	sess, s := newTestSessionWithAPI(t, fake)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
-	seedInstance(t, s, domain.Instance{
+	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
+	seedInstance(t, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: testChannels("#general"),
@@ -3942,8 +4136,8 @@ func TestSession_DispatchToChannel_truncated_returns_error(t *testing.T) {
 	sess, s := newTestSessionWithAPI(t, fake)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser", "botty")
-	seedInstance(t, s, domain.Instance{
+	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
+	seedInstance(t, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: testChannels("#general"),
@@ -4036,21 +4230,21 @@ func TestSession_Invite_without_persona_assigns_from_pool(t *testing.T) {
 	sess, s := newTestSessionWithAPI(t, fake)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#dev", "testuser")
+	seedChannelWithMembers(t, sess, s, "#dev", "testuser")
 
 	require.NoError(t, sess.AddModel(ctx, "#dev", "anthropic/claude-3-haiku", ""))
 	evt := drainEvent[domain.ModelInvitedEvent](t, sess)
 
 	// Should have been assigned a persona description from the pool.
-	require.NotEmpty(t, evt.Instance.Persona)
+	require.NotEmpty(t, evt.Instance.Persona())
 
 	descriptions := make(map[string]bool)
 	for _, p := range testPersonas() {
 		descriptions[p.Description] = true
 	}
 
-	require.True(t, descriptions[evt.Instance.Persona],
-		"assigned persona %q not in pool", evt.Instance.Persona)
+	require.True(t, descriptions[evt.Instance.Persona()],
+		"assigned persona %q not in pool", evt.Instance.Persona())
 }
 
 func TestSession_Invite_with_explicit_persona_skips_pool(t *testing.T) {
@@ -4064,11 +4258,11 @@ func TestSession_Invite_with_explicit_persona_skips_pool(t *testing.T) {
 	sess, s := newTestSessionWithAPI(t, fake)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#dev", "testuser")
+	seedChannelWithMembers(t, sess, s, "#dev", "testuser")
 
 	require.NoError(t, sess.AddModel(ctx, "#dev", "anthropic/claude-3-haiku", "Custom persona"))
 	evt := drainEvent[domain.ModelInvitedEvent](t, sess)
-	require.Equal(t, "Custom persona", evt.Instance.Persona)
+	require.Equal(t, "Custom persona", evt.Instance.Persona())
 }
 
 func TestSession_RandomPersona(t *testing.T) {
@@ -4184,8 +4378,8 @@ func TestDispatchToInstance_logs_dispatch_attributes(t *testing.T) {
 	sess, s := newTestSessionWithAPI(t, fake)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#dev", "testuser", "botty")
-	seedInstance(t, s, domain.Instance{
+	seedChannelWithMembers(t, sess, s, "#dev", "testuser", "botty")
+	seedInstance(t, s, instanceSpec{
 		InstanceID: "inst-botty",
 		Nick:       "botty",
 		ModelID:    "test/model-a",
@@ -4228,8 +4422,8 @@ func TestDispatchToInstance_logs_pass_reason(t *testing.T) {
 	sess, s := newTestSessionWithAPI(t, fake)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#dev", "testuser", "botty")
-	seedInstance(t, s, domain.Instance{
+	seedChannelWithMembers(t, sess, s, "#dev", "testuser", "botty")
+	seedInstance(t, s, instanceSpec{
 		InstanceID: "inst-botty",
 		Nick:       "botty",
 		ModelID:    "test/model-a",
@@ -4262,21 +4456,21 @@ func TestSendMessageAs_model_triggers_dispatch_to_other_models(t *testing.T) {
 	sess, s := newTestSessionWithAPI(t, fake)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#general", "testuser", "alpha", "beta")
-	seedInstance(t, s, domain.Instance{
+	alpha := seedInstance(t, s, instanceSpec{
 		InstanceID: "inst-alpha",
 		Nick:       "alpha",
 		ModelID:    "test/model-a",
 		Channels:   testChannels("#general"),
 	})
-	seedInstance(t, s, domain.Instance{
+	seedInstance(t, s, instanceSpec{
 		InstanceID: "inst-beta",
 		Nick:       "beta",
 		ModelID:    "test/model-b",
 		Channels:   testChannels("#general"),
 	})
+	seedChannelWithMembers(t, sess, s, "#general", "testuser", "alpha", "beta")
 
-	require.NoError(t, sess.SendMessageAs(ctx, "alpha", "#general", "hello from alpha"))
+	require.NoError(t, sess.SendMessageAs(ctx, alpha, "#general", "hello from alpha"))
 
 	// Wait for async dispatch to complete.
 	drainEvent[domain.MessageEvent](t, sess)
@@ -4312,7 +4506,7 @@ func TestAddModel_dispatches_invite_notification_to_model(t *testing.T) {
 	sess, s := newTestSessionWithAPI(t, fake)
 	ctx := t.Context()
 
-	seedChannelWithMembers(t, s, "#dev", "testuser")
+	seedChannelWithMembers(t, sess, s, "#dev", "testuser")
 
 	require.NoError(t, sess.AddModel(ctx, "#dev", "test/model", ""))
 

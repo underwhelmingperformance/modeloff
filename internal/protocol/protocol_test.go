@@ -11,11 +11,12 @@ import (
 
 func TestFromJoinEvent(t *testing.T) {
 	at := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
+	alice := domain.NewModelInstance("inst-alice", "alice", "test/model", "", nil)
 
 	got := FromJoinEvent(domain.JoinEvent{
-		Channel: "#general",
-		Nick:    "alice",
-		At:      at,
+		Channel:  "#general",
+		Instance: alice,
+		At:       at,
 	})
 
 	require.Equal(t, IRCMessage{
@@ -28,11 +29,12 @@ func TestFromJoinEvent(t *testing.T) {
 
 func TestFromPartEvent(t *testing.T) {
 	at := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
+	alice := domain.NewModelInstance("inst-alice", "alice", "test/model", "", nil)
 
 	got := FromPartEvent(domain.PartEvent{
-		Channel: "#general",
-		Nick:    "alice",
-		At:      at,
+		Channel:  "#general",
+		Instance: alice,
+		At:       at,
 	})
 
 	require.Equal(t, IRCMessage{
@@ -64,12 +66,13 @@ func TestFromTopicChangeEvent(t *testing.T) {
 
 func TestFromJoinEvent_with_message(t *testing.T) {
 	at := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
+	alice := domain.NewModelInstance("inst-alice", "alice", "test/model", "", nil)
 
 	got := FromJoinEvent(domain.JoinEvent{
-		Channel: "#general",
-		Nick:    "alice",
-		Message: "hello everyone",
-		At:      at,
+		Channel:  "#general",
+		Instance: alice,
+		Message:  "hello everyone",
+		At:       at,
 	})
 
 	require.Equal(t, IRCMessage{
@@ -83,12 +86,13 @@ func TestFromJoinEvent_with_message(t *testing.T) {
 
 func TestFromPartEvent_with_message(t *testing.T) {
 	at := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
+	alice := domain.NewModelInstance("inst-alice", "alice", "test/model", "", nil)
 
 	got := FromPartEvent(domain.PartEvent{
-		Channel: "#general",
-		Nick:    "alice",
-		Message: "goodbye",
-		At:      at,
+		Channel:  "#general",
+		Instance: alice,
+		Message:  "goodbye",
+		At:       at,
 	})
 
 	require.Equal(t, IRCMessage{
@@ -102,11 +106,12 @@ func TestFromPartEvent_with_message(t *testing.T) {
 
 func TestFromQuitEvent(t *testing.T) {
 	at := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
+	alice := domain.NewModelInstance("inst-alice", "alice", "test/model", "", nil)
 
 	got := FromQuitEvent(domain.QuitEvent{
-		Nick:    "alice",
-		Message: "gone fishing",
-		At:      at,
+		Instance: alice,
+		Message:  "gone fishing",
+		At:       at,
 	})
 
 	require.Equal(t, IRCMessage{

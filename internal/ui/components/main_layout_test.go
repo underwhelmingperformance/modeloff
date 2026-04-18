@@ -18,18 +18,18 @@ import (
 // (e.g. a wider sidebar, different nicklist width) update these
 // constants in one place rather than touching every test.
 const (
-	sidebarWidthAt80            = 16
-	sidebarWidthAt100           = 20
-	sidebarWidthAt120           = 24
-	contentWidthAt80            = 66
-	contentWidthAt100           = 86
-	contentWidthAt120TwoPane    = 106
-	contentWidthAt120WithNicks  = 94
-	nickListWidthAt80           = 12
-	nickListWidthAt120          = 18
-	obsDrawerHeight             = 8
-	obsDrawerColumnHeight       = 16
-	defaultTestHeight           = 24
+	sidebarWidthAt80           = 16
+	sidebarWidthAt100          = 20
+	sidebarWidthAt120          = 24
+	contentWidthAt80           = 66
+	contentWidthAt100          = 86
+	contentWidthAt120TwoPane   = 106
+	contentWidthAt120WithNicks = 94
+	nickListWidthAt80          = 12
+	nickListWidthAt120         = 18
+	obsDrawerHeight            = 8
+	obsDrawerColumnHeight      = 16
+	defaultTestHeight          = 24
 )
 
 // stubModel is a minimal ui.Model for testing layout behaviour.

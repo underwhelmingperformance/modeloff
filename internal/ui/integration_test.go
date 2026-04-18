@@ -104,7 +104,7 @@ func TestApp_open_dm_and_send_message(t *testing.T) {
 	apiClient := &integrationAPI{}
 	sess, store, cfgStore := newIntegrationSession(t, apiClient)
 	uitest.SeedChannel(t, sess, "#general")
-	seedInstance(t, store, domain.Instance{
+	seedInstance(t, store, instanceSpec{
 		Nick:    "botty",
 		ModelID: "test/model",
 	})
@@ -126,13 +126,13 @@ func TestApp_terminal_output_shows_full_model_nick_in_user_list(t *testing.T) {
 	channels := orderedmap.New[domain.ChannelName, time.Time]()
 	channels.Set("#general", time.Now())
 
-	seedInstance(t, store, domain.Instance{
+	grok := seedInstance(t, store, instanceSpec{
 		Nick:     "grok420_bot",
 		ModelID:  "test/model",
 		Channels: channels,
 	})
 
-	require.NoError(t, sess.JoinAs(t.Context(), "grok420_bot", "#general"))
+	require.NoError(t, sess.JoinAs(t.Context(), grok, "#general"))
 
 	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore)
 	require.NoError(t, err)
@@ -461,12 +461,23 @@ func advanceConnection(tm *uitest.App, ticks int) {
 	}
 }
 
-func seedInstance(t *testing.T, store *storemod.SQLiteStore, inst domain.Instance) {
+type instanceSpec struct {
+	Nick     domain.Nick
+	ModelID  domain.ModelID
+	Persona  string
+	Channels *orderedmap.OrderedMap[domain.ChannelName, time.Time]
+}
+
+func seedInstance(t *testing.T, store *storemod.SQLiteStore, spec instanceSpec) *domain.Instance {
 	t.Helper()
 
-	if inst.InstanceID == "" {
-		inst.InstanceID = domain.InstanceID("inst-" + string(inst.Nick))
-	}
-
+	inst := domain.NewModelInstance(
+		domain.InstanceID("inst-"+string(spec.Nick)),
+		spec.Nick,
+		spec.ModelID,
+		spec.Persona,
+		spec.Channels,
+	)
 	require.NoError(t, store.SaveInstance(t.Context(), inst))
+	return inst
 }

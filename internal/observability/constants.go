@@ -33,7 +33,6 @@ const (
 	// Memory attributes:
 	AttrMemoryOperation = "modeloff.memory.operation"
 	AttrMemoryToolKind  = "modeloff.memory.tool_kind"
-	AttrMemoryNick      = "modeloff.memory.nick"
 	AttrSearchResults   = "modeloff.memory.search_results"
 	AttrSearchTopScore  = "modeloff.memory.search_top_score"
 

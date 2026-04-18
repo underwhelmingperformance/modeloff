@@ -5,9 +5,15 @@ package store
 
 import (
 	"context"
+	"errors"
 
 	"github.com/laney/modeloff/internal/domain"
 )
+
+// ErrNoSuchNick is returned by `Store.ResolveNick` when the given
+// nick does not map to any stored instance. Callers detect missing
+// nicks with `errors.Is(err, store.ErrNoSuchNick)`.
+var ErrNoSuchNick = errors.New("no such nick")
 
 // Store defines the interface for all persistent data operations.
 type Store interface {
@@ -24,12 +30,24 @@ type Store interface {
 	EventsBefore(ctx context.Context, ch domain.ChannelName, before *int64, n int) ([]domain.StoredEvent, error)
 	EventsFrom(ctx context.Context, ch domain.ChannelName, from *int64, n int) ([]domain.StoredEvent, error)
 
-	// Model instances
+	// Model instances.
+	//
+	// The store is the sole authority for `*Instance` pointer
+	// identity: callers receive the same `*Instance` pointer for a
+	// given InstanceID on every load. `GetChannel` returns a Channel
+	// whose member list already carries canonical pointers —
+	// callers never resolve ids themselves.
 
-	ListInstances(ctx context.Context) ([]domain.Instance, error)
-	GetInstance(ctx context.Context, nick domain.Nick) (domain.Instance, error)
-	SaveInstance(ctx context.Context, inst domain.Instance) error
-	DeleteInstance(ctx context.Context, nick domain.Nick) error
+	ListInstances(ctx context.Context) ([]*domain.Instance, error)
+	GetInstanceByID(ctx context.Context, id domain.InstanceID) (*domain.Instance, error)
+	SaveInstance(ctx context.Context, inst *domain.Instance) error
+	DeleteInstanceByID(ctx context.Context, id domain.InstanceID) error
+
+	// ResolveNick returns the canonical `*Instance` handle whose
+	// current display nick matches the argument. This is the single
+	// boundary where nick-in-hand callers (the command parser) turn
+	// user input into an identity handle.
+	ResolveNick(ctx context.Context, nick domain.Nick) (*domain.Instance, error)
 
 	// State
 
@@ -49,9 +67,9 @@ type Store interface {
 
 	// Memories
 
-	ReadMemories(ctx context.Context, nick domain.Nick) ([]MemoryEntry, error)
-	WriteMemory(ctx context.Context, nick domain.Nick, key, content string) error
-	DeleteMemory(ctx context.Context, nick domain.Nick, key string) error
+	ReadMemories(ctx context.Context, id domain.InstanceID) ([]MemoryEntry, error)
+	WriteMemory(ctx context.Context, id domain.InstanceID, key, content string) error
+	DeleteMemory(ctx context.Context, id domain.InstanceID, key string) error
 
 	// Personas
 

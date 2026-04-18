@@ -11,6 +11,16 @@ import (
 // scrollback. They carry no state-change semantics — live domain
 // events (JoinEvent, PartEvent, etc.) are the signals that trigger
 // UI updates.
+//
+// Every stored-event type that carries a `Nick` field (e.g.
+// `ChannelJoin.Nick`, `ChannelPart.Nick`, `ChannelQuit.Nick`,
+// `ChannelTopicChange.By`, `ChannelModeChange.Nick` and `.By`,
+// `ChannelModelInvited.Nick`, `ChannelModelKicked.Nick`,
+// `ChannelNickChange.OldNick`/`.NewNick`) holds a snapshot of the
+// nick at event time. These values are point-in-time records and
+// may differ from the instance handle's current nick after a later
+// rename; renderers that want the live nick should resolve via
+// `InstanceID` where present.
 type ChannelEvent interface {
 	channelEvent()
 	channelEventTime() time.Time
@@ -212,7 +222,7 @@ func (ChannelHelp) ModelVisible() bool { return false }
 // ChannelWhois records /whois output.
 type ChannelWhois struct {
 	Channel  ChannelName `json:"channel"`
-	Instance Instance    `json:"instance"`
+	Instance *Instance   `json:"instance"`
 	At       time.Time   `json:"at"`
 }
 

@@ -24,12 +24,17 @@ func nickListView(thinking map[domain.Nick]bool) func(domain.Member, ViewState, 
 		prefix := m.Mode.String()
 		nick := string(m.Nick)
 
+		// Hash the colour by stable identity, not by the live nick
+		// snapshot. A rename changes the rendered text but keeps the
+		// colour consistent across the session.
+		colourSeed := string(m.Instance.ID())
+
 		var text string
 
 		if prefix != "" {
-			text = theme.Dim.Render(prefix) + theme.NickStyle(nick).Render(nick)
+			text = theme.Dim.Render(prefix) + theme.NickStyle(colourSeed).Render(nick)
 		} else {
-			text = " " + theme.NickStyle(nick).Render(nick)
+			text = " " + theme.NickStyle(colourSeed).Render(nick)
 		}
 
 		if thinking[m.Nick] {

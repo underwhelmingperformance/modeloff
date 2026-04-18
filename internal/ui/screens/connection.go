@@ -234,7 +234,7 @@ func (s ConnectionScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 			s.markCurrentStepError(msg.err.Error())
 		}
 
-		return s, statusRefreshCmd(s.cfg.Session, s.ctx())
+		return s, statusRefreshCmd(s.cfg.Session)
 
 	case joinAutojoinDoneMsg:
 		s.autojoinDone = true
@@ -243,7 +243,7 @@ func (s ConnectionScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 			s.markCurrentStepError(msg.err.Error())
 		}
 
-		return s, statusRefreshCmd(s.cfg.Session, s.ctx())
+		return s, statusRefreshCmd(s.cfg.Session)
 
 	case statusRefreshMsg:
 		s.refreshPane()
@@ -386,7 +386,7 @@ func (s *ConnectionScreen) refreshPane() {
 	s.paneCursor = fresh[len(fresh)-1].ID
 }
 
-func statusRefreshCmd(sess *session.Session, _ context.Context) tea.Cmd {
+func statusRefreshCmd(sess *session.Session) tea.Cmd {
 	if sess == nil {
 		return nil
 	}

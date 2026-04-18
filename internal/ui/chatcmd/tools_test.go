@@ -201,7 +201,7 @@ func TestRunTool_join_with_channel(t *testing.T) {
 	sess := newToolTestSession(t)
 	tc := session.ToolContext{
 		Session: sess,
-		Actor:   "testuser",
+		Actor:   sess.UserInstance(),
 		Channel: "#general",
 	}
 
@@ -220,7 +220,7 @@ func TestRunTool_join_with_channel(t *testing.T) {
 
 func TestRunTool_help_no_args(t *testing.T) {
 	tc := session.ToolContext{
-		Actor:   "testuser",
+		Actor:   domain.NewUserInstance("testuser"),
 		Channel: "#general",
 	}
 
@@ -239,7 +239,7 @@ func TestRunTool_help_no_args(t *testing.T) {
 
 func TestRunTool_part_no_channel_returns_error(t *testing.T) {
 	tc := session.ToolContext{
-		Actor: "testuser",
+		Actor: domain.NewUserInstance("testuser"),
 	}
 
 	v := toolValue(t, "part", `{}`)
@@ -257,7 +257,7 @@ func TestRunTool_part_no_channel_returns_error(t *testing.T) {
 
 func TestRunTool_kick_no_channel_returns_error(t *testing.T) {
 	tc := session.ToolContext{
-		Actor: "testuser",
+		Actor: domain.NewUserInstance("testuser"),
 	}
 
 	v := toolValue(t, "kick", `{"nick": "haiku"}`)
@@ -275,7 +275,7 @@ func TestRunTool_kick_no_channel_returns_error(t *testing.T) {
 
 func TestRunTool_invite_missing_nick_returns_error(t *testing.T) {
 	tc := session.ToolContext{
-		Actor:   "testuser",
+		Actor:   domain.NewUserInstance("testuser"),
 		Channel: "#general",
 	}
 
@@ -301,7 +301,7 @@ func TestRunTool_msg_opens_dm(t *testing.T) {
 
 	tc := session.ToolContext{
 		Session: sess,
-		Actor:   "testuser",
+		Actor:   sess.UserInstance(),
 	}
 
 	v := toolValue(t, "msg", `{"nick": "testbot"}`)
@@ -319,7 +319,7 @@ func TestRunTool_nick_changes_nick(t *testing.T) {
 	sess := newToolTestSession(t)
 	tc := session.ToolContext{
 		Session: sess,
-		Actor:   "testuser",
+		Actor:   sess.UserInstance(),
 		Channel: "#general",
 	}
 
@@ -338,7 +338,7 @@ func TestRunTool_nick_changes_nick(t *testing.T) {
 
 func TestRunTool_me_no_channel_returns_error(t *testing.T) {
 	tc := session.ToolContext{
-		Actor: "testuser",
+		Actor: domain.NewUserInstance("testuser"),
 	}
 
 	v := toolValue(t, "me", `{"action": ["waves"]}`)
@@ -358,7 +358,7 @@ func TestRunTool_quit_succeeds(t *testing.T) {
 	sess := newToolTestSession(t)
 	tc := session.ToolContext{
 		Session: sess,
-		Actor:   "testuser",
+		Actor:   sess.UserInstance(),
 	}
 
 	v := toolValue(t, "quit", `{}`)

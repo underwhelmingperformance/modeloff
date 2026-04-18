@@ -19,7 +19,7 @@ func TestChatScreen_semantic_regions_expose_sidebar_and_chat_content(t *testing.
 	// content column carries the banner from the active channel.
 	tm.WaitFor("Created channel #random")
 
-	body, status := splitBodyAndStatus(tm.CurrentView())
+	body, status := uitest.SplitBodyAndStatus(tm.CurrentView())
 	columns := uitest.VisibleColumns(body)
 	require.Equal(t, 3, len(columns))
 

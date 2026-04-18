@@ -23,12 +23,15 @@ type Command = command.Command[Context, tea.Cmd]
 type Parser = command.Parser[Context, tea.Cmd]
 
 // Context carries the dependencies a command needs to execute.
+// Actor is the `*domain.Instance` for the caller — the user's handle
+// for slash-command invocations. Actor is guaranteed non-nil at
+// construction in `runContext` (chat_commands.go).
 type Context struct {
 	Ctx        context.Context
 	Session    *session.Session
 	Config     config.Store
 	Active     domain.ChannelName
-	Nick       domain.Nick
+	Actor      *domain.Instance
 	Invocation command.Invocation
 }
 
@@ -56,8 +59,11 @@ type HelpResult struct{}
 type ClearResult struct{}
 
 // WhoisResult carries the instance metadata for a /whois reply.
+// Instance is guaranteed non-nil at construction; /whois produces a
+// `UnknownNickError` when the nick does not resolve rather than a
+// WhoisResult carrying a nil handle.
 type WhoisResult struct {
-	Instance domain.Instance
+	Instance *domain.Instance
 }
 
 // TopicInfoResult carries the current topic metadata for display.

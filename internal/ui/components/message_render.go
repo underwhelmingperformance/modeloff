@@ -165,16 +165,16 @@ func formatTimestampPrefix(at time.Time, format *string, locale language.Tag) st
 
 func renderWhoisEvent(w domain.ChannelWhois) string {
 	lines := []string{
-		fmt.Sprintf("%s is %s", w.Instance.Nick, w.Instance.ModelID),
+		fmt.Sprintf("%s is %s", w.Instance.Nick(), w.Instance.ModelID),
 	}
 
-	if w.Instance.Persona != "" {
-		lines = append(lines, fmt.Sprintf("  persona: %s", w.Instance.Persona))
+	if persona := w.Instance.Persona(); persona != "" {
+		lines = append(lines, fmt.Sprintf("  persona: %s", persona))
 	}
 
-	if w.Instance.Channels != nil && w.Instance.Channels.Len() > 0 {
+	if channels := w.Instance.Channels(); channels != nil && channels.Len() > 0 {
 		var chStrs []string
-		for pair := w.Instance.Channels.Oldest(); pair != nil; pair = pair.Next() {
+		for pair := channels.Oldest(); pair != nil; pair = pair.Next() {
 			chStrs = append(chStrs, string(pair.Key))
 		}
 

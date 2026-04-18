@@ -10,11 +10,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"iter"
 	"log/slog"
 	"math/big"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -50,19 +50,19 @@ const eventBufSize = 256
 // Session is the backend coordinator. It bridges the UI layer and
 // the underlying stores and API client.
 //
-// Concurrency: the mutable per-user state (nick + joined-channels list)
-// is held behind an atomic.Pointer[domain.Instance]. Readers load the
-// current *Instance once and treat it as frozen; writers build a new
-// *Instance with the mutation applied and swap. Store I/O and event
-// emission happen without the pointer held, so the UI goroutine never
-// blocks on a mutation in flight.
+// The user's `*domain.Instance` is constructed once at `New` time and
+// lives for the lifetime of the process: nick renames mutate it in
+// place via its own lock, so the pointer stays stable and every
+// caller keeps identity by comparing against `UserInstance()`.
 type Session struct {
 	store  store.Store
 	memory memory.Store
 	api    api.Client
 	tools  *ToolRegistry
 
-	user       atomic.Pointer[domain.Instance]
+	user       *domain.Instance
+	userModes  map[domain.ChannelName]domain.NickMode
+	userMu     sync.Mutex
 	apiKey     string
 	smallModel domain.ModelID
 	factory    func(apiKey, baseURL string) (api.Client, error)
@@ -77,7 +77,12 @@ type Session struct {
 	supportedModelsReady bool
 }
 
-// New creates a Session with the given dependencies.
+// New creates a Session with the given dependencies. The session
+// owns the user's `*domain.Instance` handle for its lifetime and
+// publishes it to the store straight away so that member-list
+// resolution on channel load can see the user's empty InstanceID.
+// The store never persists the user to disk; the handle is a
+// session-scoped identity.
 func New(
 	s store.Store,
 	m memory.Store,
@@ -90,23 +95,20 @@ func New(
 		smallModel = config.DefaultSmallModel
 	}
 
-	sess := &Session{
+	user := domain.NewUserInstance(userNick)
+
+	return &Session{
 		store:      s,
 		memory:     m,
 		api:        a,
+		user:       user,
+		userModes:  make(map[domain.ChannelName]domain.NickMode),
 		apiKey:     strings.TrimSpace(apiKey),
 		smallModel: smallModel,
 		now:        time.Now,
 		events:     make(chan domain.SessionEvent, eventBufSize),
 		connectedC: make(chan struct{}),
 	}
-
-	sess.user.Store(&domain.Instance{
-		Nick:     userNick,
-		Channels: orderedmap.New[domain.ChannelName, time.Time](),
-	})
-
-	return sess
 }
 
 // Events returns the channel on which background dispatch events are
@@ -199,51 +201,42 @@ func (s *Session) Connect(ctx context.Context) (retErr error) {
 
 // openStatusChannel ensures the status channel exists in the store,
 // joins the user to it with operator mode, and registers it on the
-// user snapshot's Channels map with the connected-at timestamp. The
-// status channel is not part of the autojoin list and not subject to
+// user's Channels map with the connected-at timestamp. The status
+// channel is not part of the autojoin list and not subject to
 // /part, but the user is its local owner so it carries +o just like
 // a regular join.
 func (s *Session) openStatusChannel(ctx context.Context) error {
-	userNick := s.userSnapshot().Nick
-
-	channel, err := s.store.GetChannel(ctx, domain.StatusChannelName)
+	channel, err := s.loadChannel(ctx, domain.StatusChannelName)
 	if err != nil {
-		members := domain.NewMemberList()
-		members.Add("", userNick)
-
 		channel = domain.Channel{
 			Name:    domain.StatusChannelName,
 			Kind:    domain.KindStatus,
-			Members: members,
+			Members: domain.NewMemberList(),
 			Created: s.connectedAt,
 		}
-	} else if !channel.Members.HasID("") {
-		channel.Members.Add("", userNick)
 	}
 
-	channel.Members.SetMode("", domain.ModeOp)
+	s.user.MutateChannels(func(m *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
+		m.Set(domain.StatusChannelName, s.connectedAt)
+	})
 
-	if err := s.store.SaveChannel(ctx, channel); err != nil {
+	s.setUserMode(ctx, domain.StatusChannelName, domain.ModeOp)
+
+	if err := s.persistChannel(ctx, channel); err != nil {
 		return fmt.Errorf("save status channel: %w", err)
 	}
 
-	s.mutateUser(func(u *domain.Instance) {
-		u.Channels.Set(domain.StatusChannelName, s.connectedAt)
-	})
-
 	s.emitUIOnly(domain.JoinEvent{
-		Channel:    domain.StatusChannelName,
-		InstanceID: "",
-		Nick:       userNick,
-		At:         s.connectedAt,
+		Channel:  domain.StatusChannelName,
+		Instance: s.user,
+		At:       s.connectedAt,
 	})
 	s.emitUIOnly(domain.ModeChangeEvent{
-		Channel:    domain.StatusChannelName,
-		InstanceID: "",
-		Nick:       userNick,
-		Mode:       domain.ModeOp,
-		Actor:      "ChanServ",
-		At:         s.connectedAt,
+		Channel:  domain.StatusChannelName,
+		Instance: s.user,
+		Mode:     domain.ModeOp,
+		Actor:    "ChanServ",
+		At:       s.connectedAt,
 	})
 
 	return nil
@@ -273,32 +266,178 @@ func (s *Session) appendStatus(ctx context.Context, text string) {
 	})
 }
 
-// cleanupUncleanShutdown removes the user from the member list of
-// every channel that still lists them. No ChannelQuit event is
-// appended because we have no accurate timestamp for the crash;
-// absence is just absence.
-//
-// Only memberships under the current nick are cleaned up. If the user
-// renamed between sessions, stale memberships under the prior nick are
-// left in place; prior-nick cleanup is out of scope for this pass.
-func (s *Session) cleanupUncleanShutdown(ctx context.Context) error {
-	channels, err := s.store.ListChannels(ctx)
-	if err != nil {
-		return fmt.Errorf("list channels: %w", err)
+// setUserMode records the user's mode for a channel. It is called
+// from JoinAs on a successful join and from SetMode when the user's
+// mode changes. The mode is used by loadChannel/loadChannels to
+// re-inject the user into channel member lists returned from the
+// store.
+func (s *Session) setUserMode(ctx context.Context, ch domain.ChannelName, mode domain.NickMode) {
+	s.userMu.Lock()
+	s.userModes[ch] = mode
+	s.userMu.Unlock()
+
+	slog.Default().DebugContext(ctx, "user mode changed",
+		"component", "session",
+		"channel", ch,
+		"mode", mode.String(),
+	)
+}
+
+// forgetUserMode drops the recorded mode for a channel when the
+// user parts or is kicked.
+func (s *Session) forgetUserMode(ctx context.Context, ch domain.ChannelName) {
+	s.userMu.Lock()
+	delete(s.userModes, ch)
+	s.userMu.Unlock()
+
+	slog.Default().DebugContext(ctx, "user mode cleared",
+		"component", "session",
+		"channel", ch,
+	)
+}
+
+// userModeFor reads the recorded mode for a channel. The zero value
+// (ModeNone) is returned when no mode has been recorded. Callers
+// that ask about a channel the user isn't in get a debug-level log
+// line as a diagnostic aid — the mode map is only meaningful for
+// channels the user is currently in, but legitimate callers
+// (assertions, tests) may probe non-member channels and ModeNone is
+// the right answer for them.
+func (s *Session) userModeFor(ctx context.Context, ch domain.ChannelName) domain.NickMode {
+	if !s.userInChannel(ch) {
+		slog.Default().DebugContext(ctx, "user mode requested for channel user is not in",
+			"component", "session",
+			"channel", ch,
+		)
 	}
 
-	for _, ch := range channels {
-		member, ok := ch.Members.GetByID("")
-		if !ok {
+	s.userMu.Lock()
+	defer s.userMu.Unlock()
+
+	return s.userModes[ch]
+}
+
+// userInChannel reports whether the user's in-memory Channels map
+// lists the given channel. The map is authoritative for session-
+// ephemeral membership: the user is never saved to the store, so
+// channels loaded from disk rely on this to know whether to
+// re-inject the user.
+func (s *Session) userInChannel(ch domain.ChannelName) bool {
+	channels := s.user.Channels()
+	if channels == nil {
+		return false
+	}
+
+	_, ok := channels.Get(ch)
+	return ok
+}
+
+// persistChannel writes a channel to the store with the user
+// stripped from the member list. The supplied channel is not
+// mutated: a shallow clone of the Members list is built without
+// the user entry. The user is an ephemeral session actor and is
+// never persisted; loadChannel injects them back on read.
+func (s *Session) persistChannel(ctx context.Context, ch domain.Channel) error {
+	clone := ch
+	clone.Members = cloneMembersWithout(ch.Members, s.user)
+	return s.store.SaveChannel(ctx, clone)
+}
+
+// loadChannel reads a channel from the store and re-injects the
+// user as a member when the session records the user as being in
+// that channel. The user's mode is read from userModes.
+func (s *Session) loadChannel(ctx context.Context, name domain.ChannelName) (domain.Channel, error) {
+	ch, err := s.store.GetChannel(ctx, name)
+	if err != nil {
+		return domain.Channel{}, err
+	}
+
+	s.injectUserIfMember(ctx, &ch)
+
+	return ch, nil
+}
+
+// loadChannels reads every channel from the store and re-injects
+// the user into each one the session records as containing the
+// user.
+func (s *Session) loadChannels(ctx context.Context) ([]domain.Channel, error) {
+	channels, err := s.store.ListChannels(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	for i := range channels {
+		s.injectUserIfMember(ctx, &channels[i])
+	}
+
+	return channels, nil
+}
+
+// injectUserIfMember adds the user to ch.Members when the session
+// records the user as being in ch. The recorded mode (or ModeNone
+// if unset) is applied.
+func (s *Session) injectUserIfMember(ctx context.Context, ch *domain.Channel) {
+	if !s.userInChannel(ch.Name) {
+		return
+	}
+
+	if ch.Members.HasInstance(s.user) {
+		return
+	}
+
+	ch.Members.Add(s.user)
+
+	mode := s.userModeFor(ctx, ch.Name)
+	if mode != domain.ModeNone {
+		ch.Members.SetMode(s.user, mode)
+	}
+}
+
+// cloneMembersWithout returns a new MemberList containing every
+// member of src except the one whose handle equals `excluded`.
+// Modes are preserved.
+func cloneMembersWithout(src domain.MemberList, excluded *domain.Instance) domain.MemberList {
+	dst := domain.NewMemberList()
+	for _, m := range src.All() {
+		if m.Instance == excluded {
 			continue
 		}
 
-		ch.Members.Remove(member)
-
-		if err := s.store.SaveChannel(ctx, ch); err != nil {
-			return fmt.Errorf("save channel %s: %w", ch.Name, err)
+		dst.Add(m.Instance)
+		if m.Mode != domain.ModeNone {
+			dst.SetMode(m.Instance, m.Mode)
 		}
 	}
+
+	return dst
+}
+
+// cleanupUncleanShutdown resets this Session's in-memory user
+// state so a post-connect view mirrors a fresh, clean start.
+//
+// The user is ephemeral — never persisted to the store — so
+// cleanup is purely an in-memory reset of the user handle's
+// channel map and the userModes map. There is no store-side
+// prior-nick residue to reconcile.
+func (s *Session) cleanupUncleanShutdown(ctx context.Context) error {
+	// The user is never persisted, so there is nothing to remove
+	// from the store. The only stale state is whatever this Session
+	// instance has accumulated in the in-memory user handle and
+	// userModes map — drop both so the post-connect view mirrors a
+	// fresh, clean start.
+	_ = ctx
+
+	s.user.MutateChannels(func(m *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
+		for pair := m.Oldest(); pair != nil; {
+			next := pair.Next()
+			m.Delete(pair.Key)
+			pair = next
+		}
+	})
+
+	s.userMu.Lock()
+	s.userModes = make(map[domain.ChannelName]domain.NickMode)
+	s.userMu.Unlock()
 
 	return nil
 }
@@ -316,7 +455,12 @@ func (s *Session) FocusChannel(ctx context.Context, ch domain.ChannelName) (retE
 	)
 	defer endSpan(span, &retErr, observability.ErrorKindStore)
 
-	if _, ok := s.userSnapshot().Channels.Get(ch); !ok {
+	channels := s.user.Channels()
+	if channels == nil {
+		return nil
+	}
+
+	if _, ok := channels.Get(ch); !ok {
 		return nil
 	}
 
@@ -344,25 +488,41 @@ func (s *Session) HasAPIKey() bool {
 	return strings.TrimSpace(s.apiKey) != ""
 }
 
-// UserNick returns the current user nickname.
-func (s *Session) UserNick() domain.Nick {
-	return s.userSnapshot().Nick
+// UserInstance returns the canonical `*domain.Instance` for the
+// human user. Identity checks against this pointer are the way
+// callers recognise user-origin events; the returned handle is
+// pointer-stable for the process lifetime.
+func (s *Session) UserInstance() *domain.Instance {
+	return s.user
 }
 
-// UserInstanceID returns the stable identity of the human user. For
-// the human user this is the zero InstanceID; event handlers that
-// compare against it still identify the user correctly because
-// JoinEvent, PartEvent and friends carry the same zero value for
-// user-origin events.
-func (s *Session) UserInstanceID() domain.InstanceID {
-	return s.userSnapshot().InstanceID
+// UserNick is a convenience that reads the current user nick from
+// the handle returned by UserInstance.
+func (s *Session) UserNick() domain.Nick {
+	return s.user.Nick()
+}
+
+// ResolveNick turns a user-supplied nick into the canonical
+// `*domain.Instance` for that nick. This is the single boundary
+// where nick strings become handles — callers hold the handle and
+// compare by pointer identity from there on. A nick matching the
+// user's current display nick resolves to the user's handle; any
+// other nick is looked up in the store.
+func (s *Session) ResolveNick(ctx context.Context, nick domain.Nick) (*domain.Instance, error) {
+	if nick == s.user.Nick() {
+		return s.user, nil
+	}
+
+	return s.store.ResolveNick(ctx, nick)
 }
 
 // UserJoinedAt returns the time the user joined the given channel,
 // or the zero time if the user is not in the channel.
 func (s *Session) UserJoinedAt(ch domain.ChannelName) time.Time {
-	if t, ok := s.userSnapshot().Channels.Get(ch); ok {
-		return t
+	if channels := s.user.Channels(); channels != nil {
+		if t, ok := channels.Get(ch); ok {
+			return t
+		}
 	}
 
 	return time.Time{}
@@ -371,14 +531,14 @@ func (s *Session) UserJoinedAt(ch domain.ChannelName) time.Time {
 // Join creates or opens a channel. Events are emitted on the
 // session event channel.
 func (s *Session) Join(ctx context.Context, channelName string) error {
-	return s.JoinAs(ctx, s.userSnapshot().Nick, domain.ChannelName(channelName))
+	return s.JoinAs(ctx, s.user, domain.ChannelName(channelName))
 }
 
 // Part records the user leaving a channel. An optional farewell
 // message is included in the event. Events are emitted on the
 // session event channel.
 func (s *Session) Part(ctx context.Context, ch domain.ChannelName, message string) error {
-	return s.PartAs(ctx, s.userSnapshot().Nick, ch, message)
+	return s.PartAs(ctx, s.user, ch, message)
 }
 
 // Quit performs a clean client-side shutdown. For each channel the
@@ -401,12 +561,13 @@ func (s *Session) Quit(ctx context.Context, message string) (retErr error) {
 
 	autojoin := s.persistableAutojoinChannels()
 
-	user := s.userSnapshot()
-	userNick := user.Nick
+	userNick := s.user.Nick()
 
 	var channels []domain.ChannelName
-	for pair := user.Channels.Oldest(); pair != nil; pair = pair.Next() {
-		channels = append(channels, pair.Key)
+	if userChannels := s.user.Channels(); userChannels != nil {
+		for pair := userChannels.Oldest(); pair != nil; pair = pair.Next() {
+			channels = append(channels, pair.Key)
+		}
 	}
 
 	now := s.now()
@@ -425,29 +586,17 @@ func (s *Session) Quit(ctx context.Context, message string) (retErr error) {
 			At:      now,
 		})
 
-		channel, err := s.store.GetChannel(ctx, ch)
-		if err != nil {
-			continue
-		}
-
-		member, ok := channel.Members.GetByID("")
-		if !ok {
-			continue
-		}
-
-		channel.Members.Remove(member)
-
-		if err := s.store.SaveChannel(ctx, channel); err != nil {
-			return fmt.Errorf("save channel %s: %w", ch, err)
-		}
+		s.forgetUserMode(ctx, ch)
 	}
 
 	if err := s.store.SetAutojoinChannels(ctx, autojoin); err != nil {
 		return fmt.Errorf("save autojoin channels: %w", err)
 	}
 
-	s.mutateUser(func(u *domain.Instance) {
-		u.Channels = orderedmap.New[domain.ChannelName, time.Time]()
+	s.user.MutateChannels(func(m *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
+		for _, ch := range channels {
+			m.Delete(ch)
+		}
 	})
 
 	if err := s.store.ClearSessionActive(ctx); err != nil {
@@ -494,13 +643,11 @@ func (s *Session) JoinAutojoinChannels(ctx context.Context) error {
 		channelNames[i] = string(ch)
 	}
 
-	userNick := s.userSnapshot().Nick
-
 	var failed int
 	for _, ch := range channels {
 		s.appendStatus(ctx, fmt.Sprintf("Joining %s", ch))
 
-		if err := s.JoinAs(ctx, userNick, ch); err != nil {
+		if err := s.JoinAs(ctx, s.user, ch); err != nil {
 			failed++
 			slog.Default().ErrorContext(ctx, "autojoin channel", "channel", ch, "error", err)
 			s.appendStatus(ctx, fmt.Sprintf("Failed to join %s: %s", ch, err))
@@ -524,12 +671,32 @@ func (s *Session) JoinAutojoinChannels(ctx context.Context) error {
 
 // ListChannels returns all persisted channels.
 func (s *Session) ListChannels(ctx context.Context) ([]domain.Channel, error) {
-	return s.store.ListChannels(ctx)
+	return s.loadChannels(ctx)
 }
 
-// ListInstances returns all persisted model instances.
-func (s *Session) ListInstances(ctx context.Context) ([]domain.Instance, error) {
-	return s.store.ListInstances(ctx)
+// Instances returns an iterator over every known model instance.
+// The UI's tab-completion sources call this to offer `/invite`,
+// `/msg`, `/whois`, and `/add-model` suggestions across the full
+// session — not just the active channel's members. The user
+// instance is not included; it's reachable via `UserInstance()`.
+//
+// The iterator materialises a snapshot at call time and is safe
+// to range after the session state changes; subsequent mutations
+// will not be visible on the same iterator.
+func (s *Session) Instances(ctx context.Context) iter.Seq[*domain.Instance] {
+	instances, err := s.store.ListInstances(ctx)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "list instances for completion", "component", "session", "error", err)
+		return func(func(*domain.Instance) bool) {}
+	}
+
+	return func(yield func(*domain.Instance) bool) {
+		for _, inst := range instances {
+			if !yield(inst) {
+				return
+			}
+		}
+	}
 }
 
 // AddModel adds a model instance to a channel. If the model has no nick
@@ -544,27 +711,9 @@ func (s *Session) AddModel(
 	ctx, span := startSpan(ctx, "session.invite", attribute.String(observability.AttrOperation, "session.invite"))
 	defer span.End()
 
-	if inst, err := s.store.GetInstance(ctx, domain.Nick(modelID)); err == nil {
-		if inst.Persona == "" && strings.TrimSpace(persona) != "" {
-			inst.Persona = strings.TrimSpace(persona)
-		}
-
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-		return s.attachInstanceToChannel(ctx, ch, inst, s.userSnapshot().Nick)
-	}
-
 	if err := s.ensureStructuredOutputModel(ctx, modelID); err != nil {
 		setSpanError(span, err, observability.ErrorKindDispatch)
 		return err
-	}
-
-	if inst, err := s.findInstanceByModelID(ctx, modelID); err == nil {
-		if inst.Persona == "" && strings.TrimSpace(persona) != "" {
-			inst.Persona = strings.TrimSpace(persona)
-		}
-
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-		return s.attachInstanceToChannel(ctx, ch, inst, s.userSnapshot().Nick)
 	}
 
 	generateCtx, generateSpan := startSpan(
@@ -601,110 +750,93 @@ func (s *Session) AddModel(
 	channels := orderedmap.New[domain.ChannelName, time.Time]()
 	channels.Set(ch, s.now())
 
-	inst := domain.Instance{
-		InstanceID: domain.GenerateInstanceID(),
-		Nick:       nickResult.Nick,
-		ModelID:    modelID,
-		Persona:    assignedPersona,
-		Channels:   channels,
-	}
+	inst := domain.NewModelInstance(
+		domain.GenerateInstanceID(),
+		nickResult.Nick,
+		modelID,
+		assignedPersona,
+		channels,
+	)
 
 	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 
-	return s.attachInstanceToChannel(ctx, ch, inst, s.userSnapshot().Nick)
-}
-
-func (s *Session) findInstanceByModelID(ctx context.Context, modelID domain.ModelID) (domain.Instance, error) {
-	instances, err := s.store.ListInstances(ctx)
-	if err != nil {
-		return domain.Instance{}, err
-	}
-
-	for _, inst := range instances {
-		if inst.ModelID == modelID {
-			return inst, nil
-		}
-	}
-
-	return domain.Instance{}, fmt.Errorf("no instance with model ID %s", modelID)
+	return s.attachInstanceToChannel(ctx, ch, inst, s.user)
 }
 
 func (s *Session) attachInstanceToChannel(
 	ctx context.Context,
 	ch domain.ChannelName,
-	inst domain.Instance,
-	by domain.Nick,
+	inst *domain.Instance,
+	by *domain.Instance,
 ) error {
-	channel, err := s.store.GetChannel(ctx, ch)
+	channel, err := s.loadChannel(ctx, ch)
 	if err != nil {
 		return fmt.Errorf("get channel: %w", err)
 	}
 
-	if inst.Channels == nil {
-		inst.Channels = orderedmap.New[domain.ChannelName, time.Time]()
-	}
-
-	if _, ok := inst.Channels.Get(ch); !ok {
-		inst.Channels.Set(ch, s.now())
-	}
+	inst.MutateChannels(func(m *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
+		if _, ok := m.Get(ch); !ok {
+			m.Set(ch, s.now())
+		}
+	})
 
 	if err := s.store.SaveInstance(ctx, inst); err != nil {
 		return fmt.Errorf("save instance: %w", err)
 	}
 
-	isNew := !channel.Members.HasID(inst.InstanceID)
+	isNew := !channel.Members.HasInstance(inst)
 	if isNew {
-		channel.Members.Add(inst.InstanceID, inst.Nick)
+		channel.Members.Add(inst)
 	}
 
-	if err := s.store.SaveChannel(ctx, channel); err != nil {
+	if err := s.persistChannel(ctx, channel); err != nil {
 		return fmt.Errorf("save channel: %w", err)
 	}
 
 	now := s.now()
+	byNick := by.Nick()
 
 	s.appendEvent(ctx, ch, domain.ChannelModelInvited{
 		Channel: ch,
-		Nick:    inst.Nick,
-		By:      by,
+		Nick:    inst.Nick(),
+		By:      byNick,
 		At:      now,
 	})
 
 	s.emit(ctx, domain.ModelInvitedEvent{
 		Channel:  ch,
 		Instance: inst,
-		By:       by,
+		By:       byNick,
 		At:       now,
 	})
 
 	if isNew {
-		channel.Members.SetMode(inst.InstanceID, domain.ModeVoice)
+		channel.Members.SetMode(inst, domain.ModeVoice)
 
-		if err := s.store.SaveChannel(ctx, channel); err != nil {
+		if err := s.persistChannel(ctx, channel); err != nil {
 			return fmt.Errorf("save channel after mode: %w", err)
 		}
 
 		s.appendEvent(ctx, ch, domain.ChannelModeChange{
 			Channel: ch,
-			Nick:    inst.Nick,
+			Nick:    inst.Nick(),
 			Mode:    domain.ModeVoice,
 			By:      "ChanServ",
 			At:      now,
 		})
 
 		s.emit(ctx, domain.ModeChangeEvent{
-			Channel:    ch,
-			InstanceID: inst.InstanceID,
-			Nick:       inst.Nick,
-			Mode:       domain.ModeVoice,
-			Actor:      "ChanServ",
-			At:         now,
+			Channel:  ch,
+			Instance: inst,
+			Mode:     domain.ModeVoice,
+			Actor:    "ChanServ",
+			At:       now,
 		})
 	}
 
 	s.dispatchToInstanceInBackground(ctx, ch, inst, []protocol.IRCMessage{{
 		Kind:   protocol.KindInvite,
-		From:   string(by),
+		From:   string(byNick),
 		Target: string(ch),
 		At:     now,
 	}})
@@ -714,21 +846,34 @@ func (s *Session) attachInstanceToChannel(
 
 // Kick removes a model instance from a channel.
 func (s *Session) Kick(ctx context.Context, ch domain.ChannelName, nick domain.Nick) error {
-	return s.KickAs(ctx, s.userSnapshot().Nick, nick, ch)
+	target, err := s.ResolveNick(ctx, nick)
+	if err != nil {
+		if errors.Is(err, store.ErrNoSuchNick) {
+			if _, chErr := s.loadChannel(ctx, ch); chErr != nil {
+				return fmt.Errorf("get channel: %w", chErr)
+			}
+
+			return nil
+		}
+
+		return fmt.Errorf("resolve nick: %w", err)
+	}
+
+	return s.KickAs(ctx, s.user, target, ch)
 }
 
 // SendMessage saves a message to a channel and returns the message
 // event. It also spawns a background goroutine to dispatch the
 // message to model instances, emitting events on the Events channel.
 func (s *Session) SendMessage(ctx context.Context, ch domain.ChannelName, body string) error {
-	return s.SendMessageAs(ctx, s.userSnapshot().Nick, ch, body)
+	return s.SendMessageAs(ctx, s.user, ch, body)
 }
 
 // SendAction saves an action message (/me) to a channel and returns
 // the message event. It also spawns a background goroutine to
 // dispatch the action to model instances.
 func (s *Session) SendAction(ctx context.Context, ch domain.ChannelName, body string) error {
-	return s.SendActionAs(ctx, s.userSnapshot().Nick, ch, body)
+	return s.SendActionAs(ctx, s.user, ch, body)
 }
 
 // DispatchToChannel sends new events to all model instances in a channel
@@ -761,23 +906,23 @@ func (s *Session) DispatchToChannel(
 
 // SetTopic sets the topic of a channel.
 func (s *Session) SetTopic(ctx context.Context, ch domain.ChannelName, topic string) error {
-	return s.SetTopicAs(ctx, s.userSnapshot().Nick, ch, topic)
+	return s.SetTopicAs(ctx, s.user, ch, topic)
 }
 
 // ChangeNick changes the user's nickname and updates all channel
 // memberships accordingly.
 func (s *Session) ChangeNick(ctx context.Context, newNick domain.Nick) error {
-	return s.ChangeNickAs(ctx, s.userSnapshot().Nick, newNick)
+	return s.ChangeNickAs(ctx, s.user, newNick)
 }
 
 // Whois returns metadata about a model instance.
-func (s *Session) Whois(ctx context.Context, nick domain.Nick) (domain.Instance, error) {
-	return s.store.GetInstance(ctx, nick)
+func (s *Session) Whois(ctx context.Context, nick domain.Nick) (*domain.Instance, error) {
+	return s.ResolveNick(ctx, nick)
 }
 
 // GetChannel retrieves a channel by name.
 func (s *Session) GetChannel(ctx context.Context, name domain.ChannelName) (domain.Channel, error) {
-	return s.store.GetChannel(ctx, name)
+	return s.loadChannel(ctx, name)
 }
 
 // LastChannel returns the channel that was last active.
@@ -875,7 +1020,9 @@ func (s *Session) Reset(ctx context.Context) error {
 
 // OpenDM opens or creates a direct-message conversation with a known
 // model instance and makes it the active conversation.
-func (s *Session) OpenDM(ctx context.Context, nick domain.Nick) (domain.Channel, bool, error) {
+func (s *Session) OpenDM(ctx context.Context, target *domain.Instance) (domain.Channel, bool, error) {
+	nick := target.Nick()
+
 	ctx, span := startSpan(
 		ctx,
 		"session.open_dm",
@@ -893,22 +1040,16 @@ func (s *Session) OpenDM(ctx context.Context, nick domain.Nick) (domain.Channel,
 		return domain.Channel{}, false, err
 	}
 
-	inst, err := s.store.GetInstance(ctx, nick)
-	if err != nil {
-		setSpanError(span, err, observability.ErrorKindStore)
-		return domain.Channel{}, false, fmt.Errorf("get instance: %w", err)
-	}
-
-	span.SetAttributes(attribute.String(observability.AttrInstanceID, string(inst.InstanceID)))
+	span.SetAttributes(attribute.String(observability.AttrInstanceID, string(target.ID())))
 
 	name := domain.ChannelName(nick)
 
-	ch, err := s.store.GetChannel(ctx, name)
+	ch, err := s.loadChannel(ctx, name)
 	created := false
 	if err != nil {
 		members := domain.NewMemberList()
-		members.Add("", s.userSnapshot().Nick)
-		members.Add(inst.InstanceID, nick)
+		members.Add(s.user)
+		members.Add(target)
 
 		ch = domain.Channel{
 			Name:    name,
@@ -917,7 +1058,7 @@ func (s *Session) OpenDM(ctx context.Context, nick domain.Nick) (domain.Channel,
 			Created: s.now(),
 		}
 
-		if err := s.store.SaveChannel(ctx, ch); err != nil {
+		if err := s.persistChannel(ctx, ch); err != nil {
 			setSpanError(span, err, observability.ErrorKindStore)
 			return domain.Channel{}, false, fmt.Errorf("save dm channel: %w", err)
 		}
@@ -925,17 +1066,23 @@ func (s *Session) OpenDM(ctx context.Context, nick domain.Nick) (domain.Channel,
 		created = true
 	}
 
-	if inst.Channels == nil {
-		inst.Channels = orderedmap.New[domain.ChannelName, time.Time]()
-	}
+	now := s.now()
 
-	if _, ok := inst.Channels.Get(name); !ok {
-		inst.Channels.Set(name, s.now())
-
-		if err := s.store.SaveInstance(ctx, inst); err != nil {
-			setSpanError(span, err, observability.ErrorKindStore)
-			return domain.Channel{}, false, fmt.Errorf("save instance: %w", err)
+	s.user.MutateChannels(func(m *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
+		if _, ok := m.Get(name); !ok {
+			m.Set(name, now)
 		}
+	})
+
+	target.MutateChannels(func(m *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
+		if _, ok := m.Get(name); !ok {
+			m.Set(name, now)
+		}
+	})
+
+	if err := s.store.SaveInstance(ctx, target); err != nil {
+		setSpanError(span, err, observability.ErrorKindStore)
+		return domain.Channel{}, false, fmt.Errorf("save instance: %w", err)
 	}
 
 	if err := s.store.SetLastChannel(ctx, name); err != nil {
@@ -959,7 +1106,7 @@ func (s *Session) Poke(ctx context.Context) error {
 	ctx, span := startSpan(ctx, "session.poke", attribute.String(observability.AttrOperation, "session.poke"))
 	defer span.End()
 
-	channels, err := s.store.ListChannels(ctx)
+	channels, err := s.loadChannels(ctx)
 	if err != nil {
 		setSpanError(span, err, observability.ErrorKindStore)
 		return fmt.Errorf("list channels: %w", err)
@@ -1184,7 +1331,7 @@ func (s *Session) dispatchToInstances(
 	historyEvents []domain.StoredEvent,
 	events []protocol.IRCMessage,
 ) ([]domain.ModelReplyEvent, error) {
-	channel, err := s.store.GetChannel(ctx, channelName)
+	channel, err := s.loadChannel(ctx, channelName)
 	if err != nil {
 		return nil, fmt.Errorf("get channel: %w", err)
 	}
@@ -1198,7 +1345,7 @@ func (s *Session) dispatchToInstances(
 	var replies []domain.ModelReplyEvent
 
 	for _, inst := range instances {
-		filtered := filterSelfEvents(events, inst.InstanceID)
+		filtered := filterSelfEvents(events, inst.ID())
 		if len(filtered) == 0 {
 			continue
 		}
@@ -1237,23 +1384,28 @@ func filterSelfEvents(events []protocol.IRCMessage, instanceID domain.InstanceID
 func (s *Session) dispatchToInstance(
 	ctx context.Context,
 	channel domain.Channel,
-	inst domain.Instance,
+	inst *domain.Instance,
 	channelName domain.ChannelName,
 	historyEvents []domain.StoredEvent,
 	events []protocol.IRCMessage,
 ) ([]domain.ModelReplyEvent, error) {
+	nick := inst.Nick()
+
 	ctx, instanceSpan := startSpan(
 		ctx,
 		"session.dispatch_to_instance",
 		attribute.String(observability.AttrOperation, "session.dispatch_to_instance"),
 		attribute.String(observability.AttrModelID, string(inst.ModelID)),
-		attribute.String(observability.AttrNick, string(inst.Nick)),
-		attribute.String(observability.AttrInstanceID, string(inst.InstanceID)),
+		attribute.String(observability.AttrNick, string(nick)),
+		attribute.String(observability.AttrInstanceID, string(inst.ID())),
 		attribute.String(observability.AttrChannelKind, channelKindName(channel.Kind)),
 	)
 	defer instanceSpan.End()
 
-	joinedAt, _ := inst.Channels.Get(channelName)
+	var joinedAt time.Time
+	if channels := inst.Channels(); channels != nil {
+		joinedAt, _ = channels.Get(channelName)
+	}
 
 	history := make([]protocol.IRCMessage, 0, len(historyEvents))
 	for _, se := range historyEvents {
@@ -1274,21 +1426,21 @@ func (s *Session) dispatchToInstance(
 	if err := s.ensureStructuredOutputModel(ctx, inst.ModelID); err != nil {
 		instanceSpan.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
 		instanceSpan.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("send events to %s: %w", inst.Nick, err)
+		return nil, fmt.Errorf("send events to %s: %w", nick, err)
 	}
 
-	memories, err := s.memoriesForInstance(ctx, inst.Nick)
+	memories, err := s.memoriesForInstance(ctx, inst.ID())
 	if err != nil {
 		instanceSpan.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
 		instanceSpan.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("read memories for %s: %w", inst.Nick, err)
+		return nil, fmt.Errorf("read memories for %s: %w", nick, err)
 	}
 
 	prompt := buildSystemPrompt(channel, inst, memories)
 
 	var mem MemoryExecutor
 	if s.memory != nil {
-		mem = &instanceMemory{nick: inst.Nick, store: s.memory}
+		mem = &instanceMemory{instanceID: inst.ID(), store: s.memory}
 	}
 
 	registry := MergeToolRegistries(
@@ -1300,7 +1452,7 @@ func (s *Session) dispatchToInstance(
 	if err != nil {
 		instanceSpan.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
 		instanceSpan.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("send events to %s: %w", inst.Nick, err)
+		return nil, fmt.Errorf("send events to %s: %w", nick, err)
 	}
 
 	result := outcome.result
@@ -1339,7 +1491,7 @@ func (s *Session) dispatchToInstance(
 	logger := slog.Default().With("component", "session")
 	logger.InfoContext(ctx, "dispatch to instance",
 		"channel", channelName,
-		"nick", inst.Nick,
+		"nick", nick,
 		"model_id", inst.ModelID,
 		"trigger_count", len(events),
 		"trigger_summary", triggerSummary(events),
@@ -1353,7 +1505,7 @@ func (s *Session) dispatchToInstance(
 			return nil, nil
 		}
 
-		return s.buildReplies(ctx, channelName, inst.Nick, inst.InstanceID, response.Messages), nil
+		return s.buildReplies(ctx, channelName, inst, response.Messages), nil
 
 	default:
 		return nil, nil
@@ -1382,11 +1534,13 @@ func triggerSummary(events []protocol.IRCMessage) string {
 func (s *Session) buildReplies(
 	ctx context.Context,
 	channelName domain.ChannelName,
-	nick domain.Nick,
-	instanceID domain.InstanceID,
+	inst *domain.Instance,
 	parts []protocol.ReplyPart,
 ) []domain.ModelReplyEvent {
 	var replies []domain.ModelReplyEvent
+
+	nick := inst.Nick()
+	instanceID := inst.ID()
 
 	for _, part := range parts {
 		body := strings.TrimSpace(renderReplyBody(part))
@@ -1407,11 +1561,10 @@ func (s *Session) buildReplies(
 		s.appendEvent(ctx, channelName, cm)
 
 		replies = append(replies, domain.ModelReplyEvent{
-			Channel:    channelName,
-			Event:      cm,
-			InstanceID: instanceID,
-			Instance:   nick,
-			At:         now,
+			Channel:  channelName,
+			Event:    cm,
+			Instance: inst,
+			At:       now,
 		})
 	}
 
@@ -1421,36 +1574,29 @@ func (s *Session) buildReplies(
 // removeInstanceFromChannel removes a model instance from a single
 // channel's membership and updates the store. Used for model-initiated
 // part/quit.
-func (s *Session) removeInstanceFromChannel(ctx context.Context, instanceID domain.InstanceID, nick domain.Nick, ch domain.ChannelName) {
-	channel, err := s.store.GetChannel(ctx, ch)
+func (s *Session) removeInstanceFromChannel(ctx context.Context, inst *domain.Instance, ch domain.ChannelName) {
+	instanceID := inst.ID()
+	nick := inst.Nick()
+
+	channel, err := s.loadChannel(ctx, ch)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "remove instance: get channel",
 			"instance_id", string(instanceID), "nick", nick, "channel", ch, "error", err)
 		return
 	}
 
-	if m, ok := channel.Members.GetByID(instanceID); ok {
+	if m, ok := channel.Members.GetByInstance(inst); ok {
 		channel.Members.Remove(m)
 	}
 
-	if err := s.store.SaveChannel(ctx, channel); err != nil {
+	if err := s.persistChannel(ctx, channel); err != nil {
 		slog.Default().ErrorContext(ctx, "remove instance: save channel",
 			"instance_id", string(instanceID), "nick", nick, "channel", ch, "error", err)
 	}
 
-	// The store indexes instances by nick today; rekeying it on
-	// InstanceID is deferred (Dispatch-C-shaped store-layer work), so
-	// the lookup here is intentionally by the display nick even
-	// though identity elsewhere in the session flows through
-	// instanceID.
-	inst, err := s.store.GetInstance(ctx, nick)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "remove instance: get instance",
-			"instance_id", string(instanceID), "nick", nick, "channel", ch, "error", err)
-		return
-	}
-
-	inst.Channels.Delete(ch)
+	inst.MutateChannels(func(m *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
+		m.Delete(ch)
+	})
 
 	if err := s.store.SaveInstance(ctx, inst); err != nil {
 		slog.Default().ErrorContext(ctx, "remove instance: save instance",
@@ -1459,34 +1605,31 @@ func (s *Session) removeInstanceFromChannel(ctx context.Context, instanceID doma
 }
 
 // instanceChannelNames returns the list of channels an instance is in.
-func (s *Session) instanceChannelNames(inst domain.Instance) []domain.ChannelName {
-	if inst.Channels == nil {
+func (s *Session) instanceChannelNames(inst *domain.Instance) []domain.ChannelName {
+	channels := inst.Channels()
+	if channels == nil {
 		return nil
 	}
 
 	var names []domain.ChannelName
 
-	for pair := inst.Channels.Oldest(); pair != nil; pair = pair.Next() {
+	for pair := channels.Oldest(); pair != nil; pair = pair.Next() {
 		names = append(names, pair.Key)
 	}
 
 	return names
 }
 
-func (s *Session) instancesForChannel(ctx context.Context, channel domain.Channel) ([]domain.Instance, error) {
-	var instances []domain.Instance
+func (s *Session) instancesForChannel(_ context.Context, channel domain.Channel) ([]*domain.Instance, error) {
+	var instances []*domain.Instance
 
-	for nick := range channel.Members.Nicks() {
-		if nick == s.userSnapshot().Nick {
+	for _, m := range channel.Members.All() {
+		// The human user has no ModelID and is never dispatched to.
+		if !m.Instance.IsModel() {
 			continue
 		}
 
-		inst, err := s.store.GetInstance(ctx, nick)
-		if err != nil {
-			continue
-		}
-
-		instances = append(instances, inst)
+		instances = append(instances, m.Instance)
 	}
 
 	return instances, nil
@@ -1605,7 +1748,12 @@ func (s *Session) saveAutojoinList(ctx context.Context) error {
 func (s *Session) persistableAutojoinChannels() []domain.ChannelName {
 	var channels []domain.ChannelName
 
-	for pair := s.userSnapshot().Channels.Oldest(); pair != nil; pair = pair.Next() {
+	userChannels := s.user.Channels()
+	if userChannels == nil {
+		return channels
+	}
+
+	for pair := userChannels.Oldest(); pair != nil; pair = pair.Next() {
 		if pair.Key == domain.StatusChannelName {
 			continue
 		}
@@ -1635,7 +1783,7 @@ func (s *Session) dispatchInBackground(ctx context.Context, ch domain.ChannelNam
 		defer span.End()
 		defer s.emitUIOnly(domain.DispatchDoneEvent{Channel: ch})
 
-		channel, err := s.store.GetChannel(ctx, ch)
+		channel, err := s.loadChannel(ctx, ch)
 		if err != nil {
 			setSpanError(span, err, observability.ErrorKindStore)
 			s.appendStatus(ctx, fmt.Sprintf("dispatch to %s: %s", ch, err))
@@ -1656,7 +1804,7 @@ func (s *Session) dispatchInBackground(ctx context.Context, ch domain.ChannelNam
 
 		nicks := make([]domain.Nick, len(instances))
 		for i, inst := range instances {
-			nicks[i] = inst.Nick
+			nicks[i] = inst.Nick()
 		}
 
 		s.emitUIOnly(domain.DispatchStartedEvent{Channel: ch, Nicks: nicks})
@@ -1689,23 +1837,25 @@ func (s *Session) dispatchInBackground(ctx context.Context, ch domain.ChannelNam
 func (s *Session) dispatchToInstanceInBackground(
 	ctx context.Context,
 	ch domain.ChannelName,
-	inst domain.Instance,
+	inst *domain.Instance,
 	triggerEvents []protocol.IRCMessage,
 ) {
 	go func() {
+		nick := inst.Nick()
+
 		ctx, span := startSpan(
 			ctx,
 			"session.dispatch_to_instance_background",
 			attribute.String(observability.AttrOperation, "session.dispatch_to_instance_background"),
 			attribute.String(observability.AttrChannel, string(ch)),
 			attribute.String(observability.AttrModelID, string(inst.ModelID)),
-			attribute.String(observability.AttrNick, string(inst.Nick)),
-			attribute.String(observability.AttrInstanceID, string(inst.InstanceID)),
+			attribute.String(observability.AttrNick, string(nick)),
+			attribute.String(observability.AttrInstanceID, string(inst.ID())),
 		)
 		defer span.End()
 		defer s.emitUIOnly(domain.DispatchDoneEvent{Channel: ch})
 
-		channel, err := s.store.GetChannel(ctx, ch)
+		channel, err := s.loadChannel(ctx, ch)
 		if err != nil {
 			setSpanError(span, err, observability.ErrorKindStore)
 			s.appendStatus(ctx, fmt.Sprintf("dispatch to %s: %s", ch, err))
@@ -1719,7 +1869,7 @@ func (s *Session) dispatchToInstanceInBackground(
 			return
 		}
 
-		s.emitUIOnly(domain.DispatchStartedEvent{Channel: ch, Nicks: []domain.Nick{inst.Nick}})
+		s.emitUIOnly(domain.DispatchStartedEvent{Channel: ch, Nicks: []domain.Nick{nick}})
 
 		replies, err := s.dispatchToInstance(ctx, channel, inst, ch, historyEvents, triggerEvents)
 		if err != nil {
@@ -1736,15 +1886,15 @@ func (s *Session) dispatchToInstanceInBackground(
 	}()
 }
 
-func (s *Session) memoriesForInstance(ctx context.Context, nick domain.Nick) ([]memory.Entry, error) {
+func (s *Session) memoriesForInstance(ctx context.Context, id domain.InstanceID) ([]memory.Entry, error) {
 	if s.memory == nil {
 		return nil, nil
 	}
 
-	return s.memory.Read(ctx, nick)
+	return s.memory.Read(ctx, id)
 }
 
-func buildSystemPrompt(ch domain.Channel, inst domain.Instance, memories []memory.Entry) string {
+func buildSystemPrompt(ch domain.Channel, inst *domain.Instance, memories []memory.Entry) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, `You are %s on %s. You are an IRC regular — you've been here a while and you fit in naturally.
@@ -1765,7 +1915,7 @@ How to behave:
 - Lurk most of the time. Use the pass tool unless you genuinely have something to say. Don't reply just to be polite or to acknowledge — silence is normal on IRC.
 - Respond to the channel vibe, not just direct questions. If the conversation is fun, join in. If it's quiet, stay quiet.
 - Never say things like "Great question!", "I'd be happy to help!", "Absolutely!", or "Let me know if you need anything." These are AI-isms and they break the illusion. Talk like a person, not an assistant.`,
-		inst.Nick,
+		inst.Nick(),
 		ch.Name,
 	)
 
@@ -1773,8 +1923,8 @@ How to behave:
 		fmt.Fprintf(&b, "\n\nChannel topic: %s", ch.Topic)
 	}
 
-	if inst.Persona != "" {
-		fmt.Fprintf(&b, "\n\nYour persona: %s", inst.Persona)
+	if persona := inst.Persona(); persona != "" {
+		fmt.Fprintf(&b, "\n\nYour persona: %s", persona)
 	}
 
 	b.WriteString(`
@@ -1886,19 +2036,20 @@ type MemoryExecutor interface {
 	SearchMemory(ctx context.Context, query string, limit int) ([]memory.SearchResult, error)
 }
 
-// instanceMemory closes over a nick and memory.Store to implement
-// MemoryExecutor.
+// instanceMemory closes over an InstanceID and memory.Store to
+// implement MemoryExecutor. Keying by identity (not nick) means
+// memories survive a model instance's `/nick` rename.
 type instanceMemory struct {
-	nick  domain.Nick
-	store memory.Store
+	instanceID domain.InstanceID
+	store      memory.Store
 }
 
 func (m *instanceMemory) WriteMemory(ctx context.Context, key, content string) error {
-	return m.store.Write(ctx, m.nick, memory.Entry{Key: key, Content: content})
+	return m.store.Write(ctx, m.instanceID, memory.Entry{Key: key, Content: content})
 }
 
 func (m *instanceMemory) DeleteMemory(ctx context.Context, key string) error {
-	return m.store.Delete(ctx, m.nick, key)
+	return m.store.Delete(ctx, m.instanceID, key)
 }
 
 func (m *instanceMemory) SearchMemory(ctx context.Context, query string, limit int) ([]memory.SearchResult, error) {
@@ -1907,7 +2058,7 @@ func (m *instanceMemory) SearchMemory(ctx context.Context, query string, limit i
 		return nil, fmt.Errorf("semantic search is not configured")
 	}
 
-	return searcher.Search(ctx, m.nick, query, limit)
+	return searcher.Search(ctx, m.instanceID, query, limit)
 }
 
 const (
@@ -1931,7 +2082,7 @@ type sendOutcome struct {
 
 func (s *Session) sendWithRetry(
 	ctx context.Context,
-	inst domain.Instance,
+	inst *domain.Instance,
 	channelName domain.ChannelName,
 	prompt string,
 	history []protocol.IRCMessage,
@@ -2017,7 +2168,7 @@ func (s *Session) sendWithRetry(
 // loop until the model replies, passes, or exceeds the tool turn limit.
 func (s *Session) sendWithToolLoop(
 	ctx context.Context,
-	inst domain.Instance,
+	inst *domain.Instance,
 	channelName domain.ChannelName,
 	prompt string,
 	history []protocol.IRCMessage,
@@ -2026,7 +2177,7 @@ func (s *Session) sendWithToolLoop(
 ) (api.CompletionResult, int, error) {
 	definitions := registry.Definitions()
 
-	result, err := s.api.SendEvents(ctx, inst.ModelID, inst.InstanceID, prompt, history, events, definitions...)
+	result, err := s.api.SendEvents(ctx, inst.ModelID, inst.ID(), prompt, history, events, definitions...)
 	if err != nil {
 		return api.CompletionResult{}, 0, err
 	}
@@ -2044,7 +2195,7 @@ func (s *Session) sendWithToolLoop(
 
 		toolResults := s.executeTools(ctx, ToolContext{
 			Session: s,
-			Actor:   inst.Nick,
+			Actor:   inst,
 			Channel: channelName,
 		}, registry, result.PendingToolCalls)
 		toolTurnCount++
@@ -2225,58 +2376,6 @@ func channelKindName(kind domain.ChannelKind) string {
 	default:
 		return "channel"
 	}
-}
-
-// userSnapshot returns the current *domain.Instance for the human
-// user. Callers must treat the returned value as read-only: the
-// embedded Channels map is shared with concurrent readers and must
-// not be mutated in place. Use mutateUser to swap in a new snapshot.
-func (s *Session) userSnapshot() *domain.Instance {
-	return s.user.Load()
-}
-
-// mutateUser applies fn to a fresh clone of the current user snapshot
-// and swaps the pointer, retrying on concurrent races so no
-// write-skew is possible. fn may read the current snapshot via its
-// argument but must not mutate it in place — the supplied *Instance
-// is the caller's to modify, with a freshly-cloned Channels map.
-func (s *Session) mutateUser(fn func(*domain.Instance)) {
-	for {
-		cur := s.user.Load()
-		next := cloneUser(cur)
-		fn(next)
-
-		if s.user.CompareAndSwap(cur, next) {
-			return
-		}
-	}
-}
-
-// cloneUser returns a shallow copy of the user snapshot, with a
-// freshly-cloned Channels map. Other fields of Instance (Nick,
-// ModelID, Persona, InstanceID) are immutable value types so a
-// plain struct copy suffices for them.
-func cloneUser(u *domain.Instance) *domain.Instance {
-	next := *u
-	next.Channels = cloneChannels(u.Channels)
-	return &next
-}
-
-// cloneChannels returns a shallow copy of the ordered channel/join-
-// time map. The new map is safe to mutate; the original must be
-// treated as frozen.
-func cloneChannels(src *orderedmap.OrderedMap[domain.ChannelName, time.Time]) *orderedmap.OrderedMap[domain.ChannelName, time.Time] {
-	clone := orderedmap.New[domain.ChannelName, time.Time]()
-
-	if src == nil {
-		return clone
-	}
-
-	for pair := src.Oldest(); pair != nil; pair = pair.Next() {
-		clone.Set(pair.Key, pair.Value)
-	}
-
-	return clone
 }
 
 func (s *Session) ensureStructuredOutputModel(ctx context.Context, modelID domain.ModelID) error {

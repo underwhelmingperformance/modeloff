@@ -91,7 +91,7 @@ func trimmedLines(view string) []string {
 	stripped := ansi.Strip(view)
 	out := make([]string, 0)
 
-	for _, line := range strings.Split(stripped, "\n") {
+	for line := range strings.SplitSeq(stripped, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" {
 			continue

@@ -21,7 +21,6 @@ func TestRuntime_snapshotMetrics_includes_memory_operations(t *testing.T) {
 		_, span := otel.Tracer("test").Start(t.Context(), op)
 		span.SetAttributes(
 			attribute.String(AttrOperation, op),
-			attribute.String(AttrMemoryNick, "claude"),
 			attribute.String(AttrResult, ResultOK),
 		)
 		span.End()

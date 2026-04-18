@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/adrg/xdg"
@@ -39,15 +40,19 @@ CREATE INDEX IF NOT EXISTS idx_events_channel_id
     ON events (channel, id);
 
 CREATE TABLE IF NOT EXISTS instances (
-    nick TEXT PRIMARY KEY,
-    data TEXT NOT NULL
+    instance_id TEXT PRIMARY KEY,
+    nick        TEXT NOT NULL,
+    data        TEXT NOT NULL
 );
 
+CREATE INDEX IF NOT EXISTS idx_instances_nick
+    ON instances (nick);
+
 CREATE TABLE IF NOT EXISTS memories (
-    nick    TEXT NOT NULL,
-    key     TEXT NOT NULL,
-    content TEXT NOT NULL,
-    PRIMARY KEY (nick, key)
+    instance_id TEXT NOT NULL,
+    key         TEXT NOT NULL,
+    content     TEXT NOT NULL,
+    PRIMARY KEY (instance_id, key)
 );
 
 CREATE TABLE IF NOT EXISTS personas (
@@ -71,9 +76,17 @@ CREATE TABLE IF NOT EXISTS last_read (
 );
 `
 
-// SQLiteStore implements Store using a single SQLite database.
+// SQLiteStore implements Store using a single SQLite database. It
+// also owns the canonical `*domain.Instance` handle per InstanceID:
+// the `instances` field caches every instance ever loaded or saved
+// through this store, so callers see pointer-stable handles across
+// calls. The registry is invalidated on `DeleteInstanceByID` and
+// `Reset`.
 type SQLiteStore struct {
 	db *sql.DB
+
+	instancesMu sync.RWMutex
+	instances   map[domain.InstanceID]*domain.Instance
 }
 
 // NewDefaultSQLiteStore creates a SQLiteStore using the XDG data
@@ -103,6 +116,20 @@ func NewSQLiteStore(ctx context.Context, db *sql.DB) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("enable foreign keys: %w", err)
 	}
 
+	// Pre-release schema v2 migration: the `instances` and `memories`
+	// tables used to be keyed by nick; they are now keyed by
+	// InstanceID. Nicks are display state that can drift during a
+	// session, so identity-keyed storage is the correct long-term
+	// shape. The project contract is that pre-release schema changes
+	// drop the affected rows rather than migrate them (same pattern as
+	// the `pending_quit` purge further down, and the membership rekey
+	// in the channels table). If the legacy `instances.nick` primary
+	// key is present, drop both tables so the fresh schema creation
+	// below produces the v2 shape.
+	if err := dropLegacyInstanceTables(ctx, db); err != nil {
+		return nil, fmt.Errorf("drop legacy instance tables: %w", err)
+	}
+
 	if _, err := db.Exec(schema); err != nil {
 		return nil, fmt.Errorf("create schema: %w", err)
 	}
@@ -119,7 +146,143 @@ func NewSQLiteStore(ctx context.Context, db *sql.DB) (*SQLiteStore, error) {
 		slog.Default().InfoContext(ctx, "purged legacy pending_quit row", "component", "store.sqlite", "rows", rows)
 	}
 
-	return &SQLiteStore{db: db}, nil
+	return &SQLiteStore{
+		db:        db,
+		instances: make(map[domain.InstanceID]*domain.Instance),
+	}, nil
+}
+
+// canonicaliseInstance returns the canonical `*domain.Instance` for
+// the given id. On cache miss the freshly-loaded handle is inserted
+// and returned. On cache hit the existing handle is returned
+// untouched — the session is authoritative for the live nick,
+// persona, and channels of every registered instance; the store row
+// is a save-time snapshot and refreshing the cached handle from it
+// would clobber unrelated in-flight mutations on the session side.
+//
+// Callers needing the on-disk row's display state must treat the
+// returned handle's getters as authoritative and accept that the
+// row may be staler.
+func (s *SQLiteStore) canonicaliseInstance(fresh *domain.Instance) *domain.Instance {
+	if fresh == nil {
+		return nil
+	}
+
+	s.instancesMu.Lock()
+	defer s.instancesMu.Unlock()
+
+	if existing, ok := s.instances[fresh.ID()]; ok {
+		return existing
+	}
+
+	s.instances[fresh.ID()] = fresh
+	return fresh
+}
+
+// forgetInstance evicts an instance from the canonical registry.
+// Subsequent loads that produce an Instance with the same id will
+// return a fresh pointer — callers that held the old pointer see
+// a stale handle, which is the correct semantic for a deleted
+// instance.
+func (s *SQLiteStore) forgetInstance(id domain.InstanceID) {
+	s.instancesMu.Lock()
+	delete(s.instances, id)
+	s.instancesMu.Unlock()
+}
+
+// resolveInstance looks up the canonical handle for an id without
+// touching the database. Returns nil if the id is not registered.
+// Used by channel deserialisation to rewrite member-list stubs.
+func (s *SQLiteStore) resolveInstance(id domain.InstanceID) *domain.Instance {
+	s.instancesMu.RLock()
+	defer s.instancesMu.RUnlock()
+
+	return s.instances[id]
+}
+
+// dropLegacyInstanceTables detects the nick-keyed v1 shape of the
+// `instances` table (no `instance_id` column) and, if found, drops
+// both `instances` and `memories` so the fresh v2 schema can be
+// created. The legacy rows are not migrated: this is a pre-release
+// reset, not a data-preserving migration.
+//
+// Detection is v1→v2 specific; any future schema change requires its
+// own detector.
+func dropLegacyInstanceTables(ctx context.Context, db *sql.DB) error {
+	ctx, span := startSQLiteSpan(ctx, "store.sqlite.migrate_v2")
+	defer span.End()
+
+	rows, err := db.QueryContext(ctx, `PRAGMA table_info(instances)`)
+	if err != nil {
+		recordSQLiteError(span, err)
+		return fmt.Errorf("inspect instances schema: %w", err)
+	}
+
+	var (
+		hasInstancesTable  bool
+		hasInstanceIDField bool
+	)
+
+	for rows.Next() {
+		hasInstancesTable = true
+
+		var (
+			cid     int
+			name    string
+			colType string
+			notNull int
+			dflt    sql.NullString
+			pk      int
+		)
+
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk); err != nil {
+			_ = rows.Close()
+			recordSQLiteError(span, err)
+			return fmt.Errorf("scan column info: %w", err)
+		}
+
+		if name == "instance_id" {
+			hasInstanceIDField = true
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		recordSQLiteError(span, err)
+		return fmt.Errorf("iterate column info: %w", err)
+	}
+
+	if err := rows.Close(); err != nil {
+		recordSQLiteError(span, err)
+		return fmt.Errorf("close column info: %w", err)
+	}
+
+	detected := hasInstancesTable && !hasInstanceIDField
+	span.SetAttributes(attribute.Bool("modeloff.migration.detected", detected))
+
+	if !detected {
+		recordSQLiteSuccess(span)
+		return nil
+	}
+
+	if _, err := db.ExecContext(ctx, `DROP TABLE IF EXISTS instances`); err != nil {
+		recordSQLiteError(span, err)
+		return fmt.Errorf("drop legacy instances: %w", err)
+	}
+
+	if _, err := db.ExecContext(ctx, `DROP TABLE IF EXISTS memories`); err != nil {
+		recordSQLiteError(span, err)
+		return fmt.Errorf("drop legacy memories: %w", err)
+	}
+
+	slog.Default().WarnContext(ctx,
+		"modeloff store schema v2 applied; legacy instances/memories tables dropped",
+		"component", "store.sqlite",
+		"reason", "legacy nick-keyed instances table detected",
+	)
+
+	recordSQLiteSuccess(span)
+	return nil
 }
 
 // Close closes the underlying database connection.
@@ -127,7 +290,9 @@ func (s *SQLiteStore) Close() error {
 	return s.db.Close()
 }
 
-// ListChannels implements Store.
+// ListChannels implements Store. Returned channels have member-lists
+// carrying canonical `*Instance` handles; stub references to deleted
+// instances are dropped and logged.
 func (s *SQLiteStore) ListChannels(ctx context.Context) ([]domain.Channel, error) {
 	ctx, span := startSQLiteSpan(ctx, "store.sqlite.list_channels")
 	defer span.End()
@@ -145,11 +310,20 @@ func (s *SQLiteStore) ListChannels(ctx context.Context) ([]domain.Channel, error
 		return nil, err
 	}
 
+	for i := range channels {
+		if err := s.resolveChannelMembers(ctx, &channels[i]); err != nil {
+			recordSQLiteError(span, err)
+			return nil, err
+		}
+	}
+
 	recordSQLiteSuccess(span)
 	return channels, nil
 }
 
-// GetChannel implements Store.
+// GetChannel implements Store. Returns a Channel whose member list
+// carries canonical `*Instance` handles; stub references to deleted
+// instances are dropped and logged.
 func (s *SQLiteStore) GetChannel(ctx context.Context, name domain.ChannelName) (domain.Channel, error) {
 	ctx, span := startSQLiteSpan(ctx, "store.sqlite.get_channel", attribute.String(observability.AttrChannel, string(name)))
 	defer span.End()
@@ -158,7 +332,11 @@ func (s *SQLiteStore) GetChannel(ctx context.Context, name domain.ChannelName) (
 
 	err := s.db.QueryRowContext(ctx, `SELECT data FROM channels WHERE name = ?`, name).Scan(&data)
 	if err != nil {
-		recordSQLiteError(span, err)
+		kind := observability.ErrorKindStore
+		if err == sql.ErrNoRows {
+			kind = observability.ErrorKindNotFound
+		}
+		recordSQLiteErrorKind(span, err, kind)
 		return domain.Channel{}, fmt.Errorf("channel %q: %w", name, err)
 	}
 
@@ -168,8 +346,132 @@ func (s *SQLiteStore) GetChannel(ctx context.Context, name domain.ChannelName) (
 		return domain.Channel{}, err
 	}
 
+	if err := s.resolveChannelMembers(ctx, &ch); err != nil {
+		recordSQLiteError(span, err)
+		return domain.Channel{}, err
+	}
+
 	recordSQLiteSuccess(span)
 	return ch, nil
+}
+
+// resolveChannelMembers rewrites the stub `*Instance` handles in
+// the channel's member list (set by MemberList.UnmarshalJSON) to
+// canonical pointers from the registry, loading any missing
+// instances from SQLite in a single batch. Member rows that refer
+// to an instance with no backing row are dropped from the list and
+// logged — a leftover from a previous session where the instance
+// was deleted but the channel's membership record still carried
+// the id.
+func (s *SQLiteStore) resolveChannelMembers(ctx context.Context, ch *domain.Channel) error {
+	if ch.Members.Len() == 0 {
+		return nil
+	}
+
+	// Gather the ids carried by stubs that aren't already in the
+	// registry. The human user's instance (empty id) is ignored
+	// because the session constructs it on its own at Connect time
+	// and seeds the registry before loading channels.
+	var missing []domain.InstanceID
+	seen := make(map[domain.InstanceID]struct{})
+
+	for _, m := range ch.Members.All() {
+		id := m.Instance.ID()
+
+		if _, ok := seen[id]; ok {
+			continue
+		}
+
+		seen[id] = struct{}{}
+
+		if id == "" {
+			continue
+		}
+
+		if s.resolveInstance(id) != nil {
+			continue
+		}
+
+		missing = append(missing, id)
+	}
+
+	if len(missing) > 0 {
+		if err := s.loadInstancesByID(ctx, missing); err != nil {
+			return fmt.Errorf("load channel members: %w", err)
+		}
+	}
+
+	// Rewrite stubs; any id that still resolves to nil references a
+	// deleted instance and is dropped.
+	dropped := make([]domain.InstanceID, 0)
+	ch.Members.ResolveInstances(func(id domain.InstanceID) *domain.Instance {
+		canonical := s.resolveInstance(id)
+		if canonical == nil {
+			dropped = append(dropped, id)
+		}
+
+		return canonical
+	})
+
+	if len(dropped) > 0 {
+		slog.Default().WarnContext(ctx,
+			"channel members have no backing instance; dropped",
+			"component", "store.sqlite",
+			"channel", ch.Name,
+			"dropped_ids", dropped,
+			"count", len(dropped),
+		)
+	}
+
+	return nil
+}
+
+// loadInstancesByID reads the given ids from the `instances` table
+// in a single query and registers them in the canonical registry.
+// Ids that don't resolve are silently ignored — the caller detects
+// the miss via a second `resolveInstance` lookup.
+func (s *SQLiteStore) loadInstancesByID(ctx context.Context, ids []domain.InstanceID) error {
+	if len(ids) == 0 {
+		return nil
+	}
+
+	// Pass the id list as a JSON array bound to a single parameter
+	// and let SQLite expand it via `json_each`. This avoids building
+	// an IN (?, ?, …) list at the string level while still binding
+	// the id values through a prepared-statement parameter.
+	idsJSON, err := json.Marshal(ids)
+	if err != nil {
+		return fmt.Errorf("marshal ids: %w", err)
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT data FROM instances
+		WHERE instance_id IN (SELECT value FROM json_each(?))
+	`, string(idsJSON))
+	if err != nil {
+		return fmt.Errorf("query instances: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var data string
+		if err := rows.Scan(&data); err != nil {
+			return fmt.Errorf("scan instance row: %w", err)
+		}
+
+		fresh := &domain.Instance{}
+		if err := json.Unmarshal([]byte(data), fresh); err != nil {
+			return fmt.Errorf("unmarshal instance: %w", err)
+		}
+
+		s.canonicaliseInstance(fresh)
+	}
+
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate instance rows: %w", err)
+	}
+
+	return nil
 }
 
 // SaveChannel implements Store.
@@ -314,8 +616,10 @@ func (s *SQLiteStore) EventsFrom(ctx context.Context, ch domain.ChannelName, fro
 	return events, nil
 }
 
-// ListInstances implements Store.
-func (s *SQLiteStore) ListInstances(ctx context.Context) ([]domain.Instance, error) {
+// ListInstances implements Store. Returns canonical `*Instance`
+// pointers from the registry; callers that called `GetInstanceByID`
+// previously observe the same pointers.
+func (s *SQLiteStore) ListInstances(ctx context.Context) ([]*domain.Instance, error) {
 	ctx, span := startSQLiteSpan(ctx, "store.sqlite.list_instances")
 	defer span.End()
 
@@ -326,8 +630,25 @@ func (s *SQLiteStore) ListInstances(ctx context.Context) ([]domain.Instance, err
 	}
 	defer func() { _ = rows.Close() }()
 
-	instances, err := scanJSON[domain.Instance](rows)
-	if err != nil {
+	var instances []*domain.Instance
+
+	for rows.Next() {
+		var data string
+		if err := rows.Scan(&data); err != nil {
+			recordSQLiteError(span, err)
+			return nil, err
+		}
+
+		fresh := &domain.Instance{}
+		if err := json.Unmarshal([]byte(data), fresh); err != nil {
+			recordSQLiteError(span, err)
+			return nil, err
+		}
+
+		instances = append(instances, s.canonicaliseInstance(fresh))
+	}
+
+	if err := rows.Err(); err != nil {
 		recordSQLiteError(span, err)
 		return nil, err
 	}
@@ -336,32 +657,94 @@ func (s *SQLiteStore) ListInstances(ctx context.Context) ([]domain.Instance, err
 	return instances, nil
 }
 
-// GetInstance implements Store.
-func (s *SQLiteStore) GetInstance(ctx context.Context, nick domain.Nick) (domain.Instance, error) {
-	ctx, span := startSQLiteSpan(ctx, "store.sqlite.get_instance", attribute.String(observability.AttrNick, string(nick)))
+// GetInstanceByID implements Store. Returns the canonical
+// `*Instance` pointer — two calls for the same id return the same
+// handle.
+func (s *SQLiteStore) GetInstanceByID(ctx context.Context, id domain.InstanceID) (*domain.Instance, error) {
+	ctx, span := startSQLiteSpan(ctx, "store.sqlite.get_instance_by_id", attribute.String(observability.AttrInstanceID, string(id)))
 	defer span.End()
 
 	var data string
 
-	err := s.db.QueryRowContext(ctx, `SELECT data FROM instances WHERE nick = ?`, nick).Scan(&data)
+	err := s.db.QueryRowContext(ctx, `SELECT data FROM instances WHERE instance_id = ?`, string(id)).Scan(&data)
 	if err != nil {
-		recordSQLiteError(span, err)
-		return domain.Instance{}, fmt.Errorf("instance %q: %w", nick, err)
+		kind := observability.ErrorKindStore
+		if err == sql.ErrNoRows {
+			kind = observability.ErrorKindNotFound
+		}
+		recordSQLiteErrorKind(span, err, kind)
+		return nil, fmt.Errorf("instance %q: %w", id, err)
 	}
 
-	var inst domain.Instance
-	if err := json.Unmarshal([]byte(data), &inst); err != nil {
+	fresh := &domain.Instance{}
+	if err := json.Unmarshal([]byte(data), fresh); err != nil {
 		recordSQLiteError(span, err)
-		return domain.Instance{}, err
+		return nil, err
 	}
 
 	recordSQLiteSuccess(span)
-	return inst, nil
+	return s.canonicaliseInstance(fresh), nil
 }
 
-// SaveInstance implements Store.
-func (s *SQLiteStore) SaveInstance(ctx context.Context, inst domain.Instance) error {
-	ctx, span := startSQLiteSpan(ctx, "store.sqlite.save_instance", attribute.String(observability.AttrNick, string(inst.Nick)))
+// ResolveNick returns the canonical `*Instance` whose current
+// display nick matches the argument. Identity is the stable anchor
+// in this system; nicks are mutable display state. The command
+// parser is the single intentional caller: it resolves user input
+// into a handle once at the boundary, and every downstream call
+// takes the handle.
+//
+// If multiple instances share the same display nick the store
+// returns one arbitrary matching row — the `idx_instances_nick`
+// index is non-unique because display nicks are expected to drift.
+// Callers are responsible for preventing collisions upstream (the
+// session refuses renames that would collide; see task #53).
+func (s *SQLiteStore) ResolveNick(ctx context.Context, nick domain.Nick) (*domain.Instance, error) {
+	ctx, span := startSQLiteSpan(ctx, "store.sqlite.resolve_nick", attribute.String(observability.AttrNick, string(nick)))
+	defer span.End()
+
+	var (
+		id   string
+		data string
+	)
+
+	err := s.db.QueryRowContext(ctx,
+		`SELECT instance_id, data FROM instances WHERE nick = ?`, nick).Scan(&id, &data)
+	if err == sql.ErrNoRows {
+		recordSQLiteErrorKind(span, err, observability.ErrorKindNotFound)
+		return nil, fmt.Errorf("resolve nick %q: %w", nick, ErrNoSuchNick)
+	}
+
+	if err != nil {
+		recordSQLiteError(span, err)
+		return nil, fmt.Errorf("resolve nick %q: %w", nick, err)
+	}
+
+	fresh := &domain.Instance{}
+	if err := json.Unmarshal([]byte(data), fresh); err != nil {
+		recordSQLiteError(span, err)
+		return nil, err
+	}
+
+	recordSQLiteSuccess(span)
+	return s.canonicaliseInstance(fresh), nil
+}
+
+// SaveInstance implements Store. The caller hands over the
+// canonical handle; the store reads its current fields under the
+// handle's read lock (via MarshalJSON) and writes them to the
+// `instances` row. Registering the handle in the canonical map
+// ensures a subsequent `GetInstanceByID` returns the same pointer.
+func (s *SQLiteStore) SaveInstance(ctx context.Context, inst *domain.Instance) error {
+	// Snapshot the nick once so the span attribute, the INSERT column
+	// value, and the marshaled data blob all agree. The data blob is
+	// already atomic with the marshal-time snapshot under the handle's
+	// read lock; pairing the column value and span attribute with a
+	// single nick read closes the divergence window.
+	nick := inst.Nick()
+
+	ctx, span := startSQLiteSpan(ctx, "store.sqlite.save_instance",
+		attribute.String(observability.AttrInstanceID, string(inst.ID())),
+		attribute.String(observability.AttrNick, string(nick)))
 	defer span.End()
 
 	data, err := json.Marshal(inst)
@@ -371,29 +754,42 @@ func (s *SQLiteStore) SaveInstance(ctx context.Context, inst domain.Instance) er
 	}
 
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO instances (nick, data) VALUES (?, ?)
-		 ON CONFLICT (nick) DO UPDATE SET data = excluded.data`,
-		inst.Nick, string(data))
+		`INSERT INTO instances (instance_id, nick, data) VALUES (?, ?, ?)
+		 ON CONFLICT (instance_id) DO UPDATE SET
+		     nick = excluded.nick,
+		     data = excluded.data`,
+		string(inst.ID()), string(nick), string(data))
 
 	if err != nil {
 		recordSQLiteError(span, err)
 		return err
 	}
+
+	// Register the saved handle as canonical if there isn't already
+	// a registered handle for this id.
+	s.instancesMu.Lock()
+	if _, ok := s.instances[inst.ID()]; !ok {
+		s.instances[inst.ID()] = inst
+	}
+	s.instancesMu.Unlock()
 
 	recordSQLiteSuccess(span)
 	return nil
 }
 
-// DeleteInstance implements Store.
-func (s *SQLiteStore) DeleteInstance(ctx context.Context, nick domain.Nick) error {
-	ctx, span := startSQLiteSpan(ctx, "store.sqlite.delete_instance", attribute.String(observability.AttrNick, string(nick)))
+// DeleteInstanceByID implements Store. Evicts the row from SQLite
+// and the handle from the canonical registry.
+func (s *SQLiteStore) DeleteInstanceByID(ctx context.Context, id domain.InstanceID) error {
+	ctx, span := startSQLiteSpan(ctx, "store.sqlite.delete_instance_by_id", attribute.String(observability.AttrInstanceID, string(id)))
 	defer span.End()
 
-	_, err := s.db.ExecContext(ctx, `DELETE FROM instances WHERE nick = ?`, nick)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM instances WHERE instance_id = ?`, string(id))
 	if err != nil {
 		recordSQLiteError(span, err)
 		return err
 	}
+
+	s.forgetInstance(id)
 
 	recordSQLiteSuccess(span)
 	return nil
@@ -470,12 +866,12 @@ func (s *SQLiteStore) SetLastRead(ctx context.Context, ch domain.ChannelName, ev
 }
 
 // ReadMemories implements Store.
-func (s *SQLiteStore) ReadMemories(ctx context.Context, nick domain.Nick) ([]MemoryEntry, error) {
-	ctx, span := startSQLiteSpan(ctx, "store.sqlite.read_memories", attribute.String(observability.AttrNick, string(nick)))
+func (s *SQLiteStore) ReadMemories(ctx context.Context, id domain.InstanceID) ([]MemoryEntry, error) {
+	ctx, span := startSQLiteSpan(ctx, "store.sqlite.read_memories", attribute.String(observability.AttrInstanceID, string(id)))
 	defer span.End()
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT key, content FROM memories WHERE nick = ? ORDER BY key`, nick)
+		`SELECT key, content FROM memories WHERE instance_id = ? ORDER BY key`, string(id))
 	if err != nil {
 		recordSQLiteError(span, err)
 		return nil, err
@@ -504,14 +900,14 @@ func (s *SQLiteStore) ReadMemories(ctx context.Context, nick domain.Nick) ([]Mem
 }
 
 // WriteMemory implements Store.
-func (s *SQLiteStore) WriteMemory(ctx context.Context, nick domain.Nick, key, content string) error {
-	ctx, span := startSQLiteSpan(ctx, "store.sqlite.write_memory", attribute.String(observability.AttrNick, string(nick)))
+func (s *SQLiteStore) WriteMemory(ctx context.Context, id domain.InstanceID, key, content string) error {
+	ctx, span := startSQLiteSpan(ctx, "store.sqlite.write_memory", attribute.String(observability.AttrInstanceID, string(id)))
 	defer span.End()
 
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO memories (nick, key, content) VALUES (?, ?, ?)
-		 ON CONFLICT (nick, key) DO UPDATE SET content = excluded.content`,
-		nick, key, content)
+		`INSERT INTO memories (instance_id, key, content) VALUES (?, ?, ?)
+		 ON CONFLICT (instance_id, key) DO UPDATE SET content = excluded.content`,
+		string(id), key, content)
 
 	if err != nil {
 		recordSQLiteError(span, err)
@@ -523,11 +919,11 @@ func (s *SQLiteStore) WriteMemory(ctx context.Context, nick domain.Nick, key, co
 }
 
 // DeleteMemory implements Store.
-func (s *SQLiteStore) DeleteMemory(ctx context.Context, nick domain.Nick, key string) error {
-	ctx, span := startSQLiteSpan(ctx, "store.sqlite.delete_memory", attribute.String(observability.AttrNick, string(nick)))
+func (s *SQLiteStore) DeleteMemory(ctx context.Context, id domain.InstanceID, key string) error {
+	ctx, span := startSQLiteSpan(ctx, "store.sqlite.delete_memory", attribute.String(observability.AttrInstanceID, string(id)))
 	defer span.End()
 
-	_, err := s.db.ExecContext(ctx, `DELETE FROM memories WHERE nick = ? AND key = ?`, nick, key)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM memories WHERE instance_id = ? AND key = ?`, string(id), key)
 	if err != nil {
 		recordSQLiteError(span, err)
 		return err
@@ -582,7 +978,11 @@ func (s *SQLiteStore) GetPersona(ctx context.Context, id string) (domain.Persona
 		`SELECT id, description, origin FROM personas WHERE id = ?`, id).
 		Scan(&p.ID, &p.Description, &p.Origin)
 	if err != nil {
-		recordSQLiteError(span, err)
+		kind := observability.ErrorKindStore
+		if err == sql.ErrNoRows {
+			kind = observability.ErrorKindNotFound
+		}
+		recordSQLiteErrorKind(span, err, kind)
 		return domain.Persona{}, fmt.Errorf("persona %q: %w", id, err)
 	}
 
@@ -816,6 +1216,7 @@ func (s *SQLiteStore) Reset(ctx context.Context) error {
 }
 
 func startSQLiteSpan(ctx context.Context, operation string, attrs ...attribute.KeyValue) (context.Context, trace.Span) {
+	// TODO(#34): DI tracer; remove otel.Tracer global read.
 	tracer := otel.Tracer("github.com/laney/modeloff/internal/store")
 	attrs = append(attrs, attribute.String(observability.AttrOperation, operation))
 	ctx, span := tracer.Start(ctx, operation)
@@ -829,7 +1230,19 @@ func recordSQLiteSuccess(span trace.Span) {
 }
 
 func recordSQLiteError(span trace.Span, err error) {
-	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
+	recordSQLiteErrorKind(span, err, observability.ErrorKindStore)
+}
+
+// recordSQLiteErrorKind records an error result with an explicit
+// error kind. Use this at call sites where the failure is not a
+// generic store error — currently only `sql.ErrNoRows`, which is
+// tagged as `ErrorKindNotFound` so dashboards can separate
+// missing-row outcomes from infrastructure failures.
+func recordSQLiteErrorKind(span trace.Span, err error, kind string) {
+	span.SetAttributes(
+		attribute.String(observability.AttrResult, observability.ResultError),
+		attribute.String(observability.AttrErrorKind, kind),
+	)
 	span.SetStatus(codes.Error, err.Error())
 }
 

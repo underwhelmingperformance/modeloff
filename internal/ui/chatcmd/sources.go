@@ -10,15 +10,23 @@ import (
 // CompletionContext provides live accessors for suggestion data.
 // Collection fields are iterator factories so that sources only
 // materialise the data they need, and always see the latest state.
+//
+// `Instances` iterates every known model instance across the whole
+// session — used by commands whose target is any model (/invite,
+// /msg, /whois, /add-model reuse). `ChannelMembers` iterates only
+// members of the currently-active channel — used by commands whose
+// target must already be present in the active channel (/kick,
+// inline @nick mentions).
 type CompletionContext struct {
-	Channels      func() iter.Seq[domain.Channel]
-	Instances     func() iter.Seq[domain.Instance]
-	ActiveMembers func() iter.Seq[domain.Nick]
-	ActiveChannel func() domain.ChannelName
-	UserNick      func() domain.Nick
-	LiveModels    func() iter.Seq[ModelOption]
-	Personas      func() iter.Seq[domain.Persona]
-	Kind          func() domain.ChannelKind
+	Channels       func() iter.Seq[domain.Channel]
+	Instances      func() iter.Seq[*domain.Instance]
+	ChannelMembers func() iter.Seq[*domain.Instance]
+	ActiveMembers  func() iter.Seq[domain.Nick]
+	ActiveChannel  func() domain.ChannelName
+	UserNick       func() domain.Nick
+	LiveModels     func() iter.Seq[ModelOption]
+	Personas       func() iter.Seq[domain.Persona]
+	Kind           func() domain.ChannelKind
 }
 
 // ChannelKind implements command.KindProvider.
@@ -74,8 +82,8 @@ func instancesSource(ctx CompletionContext, _ command.InvocationState) []command
 
 	for inst := range ctx.Instances() {
 		suggestions = append(suggestions, command.Suggestion{
-			Value:  string(inst.Nick),
-			Label:  string(inst.Nick),
+			Value:  string(inst.Nick()),
+			Label:  string(inst.Nick()),
 			Detail: string(inst.ModelID),
 		})
 	}
@@ -91,15 +99,15 @@ func reusableInstancesSource(ctx CompletionContext, _ command.InvocationState) [
 	var suggestions []command.Suggestion
 
 	for inst := range ctx.Instances() {
-		if inst.Channels != nil {
-			if _, ok := inst.Channels.Get(active); ok {
+		if channels := inst.Channels(); channels != nil {
+			if _, ok := channels.Get(active); ok {
 				continue
 			}
 		}
 
 		suggestions = append(suggestions, command.Suggestion{
-			Value:  string(inst.Nick),
-			Label:  string(inst.Nick),
+			Value:  string(inst.Nick()),
+			Label:  string(inst.Nick()),
 			Detail: string(inst.ModelID),
 		})
 	}

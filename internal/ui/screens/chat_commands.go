@@ -28,7 +28,7 @@ func (s ChatScreen) runContext() chatcmd.Context {
 		Session: s.sess,
 		Config:  s.cfgStore,
 		Active:  *s.active,
-		Nick:    s.sess.UserNick(),
+		Actor:   s.sess.UserInstance(),
 	}
 }
 

@@ -15,9 +15,12 @@ import (
 )
 
 // ToolContext carries the backend context for a model tool call.
+// Actor is the `*domain.Instance` for the caller — models dispatched
+// by the session receive their own handle, and the user's own
+// `/`-command tool invocations receive the user handle.
 type ToolContext struct {
 	Session *Session
-	Actor   domain.Nick
+	Actor   *domain.Instance
 	Channel domain.ChannelName
 }
 

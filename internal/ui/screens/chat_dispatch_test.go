@@ -10,7 +10,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/session"
+	"github.com/laney/modeloff/internal/store/storetest"
 	"github.com/laney/modeloff/internal/ui/components"
+	"github.com/laney/modeloff/internal/ui/uitest"
 )
 
 // collectMsgs executes a tea.Cmd and flattens any BatchMsg into a
@@ -109,10 +112,12 @@ func TestChatScreen_ModelReply_queues_and_paces(t *testing.T) {
 	require.NoError(t, err)
 	*screen.active = "#general"
 
+	botty := domain.NewModelInstance("bot-1", "botty", "test/model", "", nil)
+
 	// First reply is delivered immediately (via deliverNextReplyMsg).
 	first := domain.ModelReplyEvent{
 		Event:    domain.ChannelMessage{Channel: "#general", From: "botty", Body: "line one"},
-		Instance: "botty",
+		Instance: botty,
 	}
 	updated, cmd := screen.handleModelReplyEvent(first)
 	screen = updated.(ChatScreen)
@@ -126,7 +131,7 @@ func TestChatScreen_ModelReply_queues_and_paces(t *testing.T) {
 	// Second reply is only enqueued; no new delivery trigger.
 	second := domain.ModelReplyEvent{
 		Event:    domain.ChannelMessage{Channel: "#general", From: "botty", Body: "line two"},
-		Instance: "botty",
+		Instance: botty,
 	}
 	updated, cmd = screen.handleModelReplyEvent(second)
 	screen = updated.(ChatScreen)
@@ -177,7 +182,7 @@ func TestChatScreen_handleSessionEvent_routing(t *testing.T) {
 			name: "ModelReplyEvent routes to delivery",
 			event: domain.ModelReplyEvent{
 				Event:    domain.ChannelMessage{Channel: "#general", From: "botty", Body: "hi"},
-				Instance: "botty",
+				Instance: domain.NewModelInstance("bot-1", "botty", "test/model", "", nil),
 			},
 			wantType: deliverNextReplyMsg{},
 		},
@@ -294,60 +299,131 @@ func msgsTypes(msgs []tea.Msg) []string {
 
 // TestChatScreen_NickChange_then_Quit_removes_instance guards the
 // invariant that renaming an instance (via NickChangeEvent) doesn't
-// orphan its entry in s.instances. The set is keyed by InstanceID, so
-// a later QuitEvent with only the new nick but the same InstanceID
-// still finds and removes the entry cleanly.
+// orphan its entry in the channel's member list. Identity is keyed by
+// TestChatScreen_completion_all_instance_commands_see_instances_outside_active_channel
+// pins the invariant that `/invite`, `/msg`, `/whois`, and the
+// `/add-model` reusable-instance completion source all see model
+// instances that live in other channels, not just the active
+// channel's members. The original refactor wired `Instances:` to
+// the active channel's member list; the completion context now
+// separates `Instances` (session-wide, from `sess.Instances`) from
+// `ChannelMembers` (active-channel only).
+func TestChatScreen_completion_all_instance_commands_see_instances_outside_active_channel(t *testing.T) {
+	ctx := t.Context()
+	s := storetest.NewMemoryStore(t)
+
+	require.NoError(t, s.SaveInstance(ctx, domain.NewModelInstance(
+		"inst-outsider", "outsider", "test/model", "", nil,
+	)))
+
+	sess := session.New(s, nil, &uitest.FakeAPI{}, "testuser", "", "")
+
+	screen, err := NewChatScreen(ctx, sess, nil)
+	require.NoError(t, err)
+
+	// Seed an active channel whose membership does NOT include
+	// "outsider". The regression would have hidden the outsider
+	// from completion because the context wired `Instances:` to
+	// the active channel's members.
+	screen.channels.Insert(domain.Channel{
+		Name:    "#general",
+		Kind:    domain.KindChannel,
+		Members: domain.NewMemberList(),
+	})
+	*screen.active = "#general"
+
+	completer := screen.completionSet()
+
+	hasOutsider := func(t *testing.T, raw string) {
+		t.Helper()
+
+		c := completer.Complete(raw, len(raw))
+
+		for _, suggestion := range c.Suggestions {
+			if suggestion.Value == "outsider" {
+				return
+			}
+		}
+
+		t.Fatalf("%q: outsider not suggested: got %+v", raw, c.Suggestions)
+	}
+
+	for _, raw := range []string{
+		"/invite outsider",
+		"/msg outsider",
+		"/whois outsider",
+		"/add-model outsider",
+	} {
+		t.Run(raw, func(t *testing.T) { hasOutsider(t, raw) })
+	}
+}
+
+// the *Instance pointer, so a later QuitEvent carrying the same
+// handle still finds and removes the entry cleanly regardless of the
+// nick carried on the event.
 func TestChatScreen_NickChange_then_Quit_removes_instance(t *testing.T) {
 	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil)
 	require.NoError(t, err)
+
+	// Seed the channel so handleModelInvitedEvent finds it.
+	screen.channels.Insert(domain.Channel{
+		Name:    "#general",
+		Kind:    domain.KindChannel,
+		Members: domain.NewMemberList(),
+	})
 	*screen.active = "#general"
 
 	now := time.Now()
 
-	// Invite a model so s.instances has one entry.
+	bot := domain.NewModelInstance("bot-1", "oldnick", "test/model", "", nil)
+
 	_, _ = screen.handleModelInvitedEvent(domain.ModelInvitedEvent{
-		Channel: "#general",
-		Instance: domain.Instance{
-			InstanceID: "bot-1",
-			Nick:       "oldnick",
-			ModelID:    "test/model",
-		},
-		By: "testuser",
-		At: now,
+		Channel:  "#general",
+		Instance: bot,
+		By:       "testuser",
+		At:       now,
 	})
 
-	require.Equal(t, []domain.Instance{{
-		InstanceID: "bot-1",
-		Nick:       "oldnick",
-		ModelID:    "test/model",
-	}}, screen.instances.Items())
+	ch, ok := screen.channels.Get(domain.Channel{Name: "#general"})
+	require.True(t, ok)
+	require.Equal(t, []domain.Member{{
+		Instance: bot,
+		Nick:     "oldnick",
+		Mode:     domain.ModeNone,
+	}}, ch.Members.Slice())
 
-	// The bot renames to newnick. Per-channel event, InstanceID is
-	// the stable identity; the entry in s.instances should stay
-	// under its InstanceID, but its Nick should sync to newnick.
+	// Rename: the session mutates the instance's own nick before
+	// emitting the event, so the handle's Nick() is already the new
+	// value. The channel member list's snapshot must be updated in
+	// place via RenameTo so sort order stays correct.
+	bot.SetNick("newnick")
+
 	_, _ = screen.handleNickChangeEvent(domain.NickChangeEvent{
-		Channel:    "#general",
-		InstanceID: "bot-1",
-		OldNick:    "oldnick",
-		NewNick:    "newnick",
-		At:         now,
+		Channel:  "#general",
+		Instance: bot,
+		OldNick:  "oldnick",
+		NewNick:  "newnick",
+		At:       now,
 	})
 
-	require.Equal(t, []domain.Instance{{
-		InstanceID: "bot-1",
-		Nick:       "newnick",
-		ModelID:    "test/model",
-	}}, screen.instances.Items(),
-		"nick change should sync the entry's Nick under its InstanceID")
+	ch, ok = screen.channels.Get(domain.Channel{Name: "#general"})
+	require.True(t, ok)
+	require.Equal(t, []domain.Member{{
+		Instance: bot,
+		Nick:     "newnick",
+		Mode:     domain.ModeNone,
+	}}, ch.Members.Slice(),
+		"nick change should sync the member snapshot while preserving identity")
 
-	// Quit under the new nick (but same InstanceID) cleanly removes
-	// the instance.
+	// Quit keyed by the same *Instance pointer cleanly removes the
+	// member regardless of the nick carried on the event.
 	_, _ = screen.handleQuitEvent(domain.QuitEvent{
-		InstanceID: "bot-1",
-		Nick:       "newnick",
-		At:         now,
+		Instance: bot,
+		At:       now,
 	})
 
-	require.Empty(t, screen.instances.Items(),
-		"quit keyed by InstanceID should remove the instance regardless of the nick carried on the event")
+	ch, ok = screen.channels.Get(domain.Channel{Name: "#general"})
+	require.True(t, ok)
+	require.Empty(t, ch.Members.Slice(),
+		"quit keyed by *Instance should remove the member regardless of the nick carried on the event")
 }

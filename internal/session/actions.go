@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -11,120 +12,134 @@ import (
 
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/observability"
+	"github.com/laney/modeloff/internal/store"
 )
 
 // JoinAs joins the given actor to a channel.
-func (s *Session) JoinAs(ctx context.Context, actor domain.Nick, ch domain.ChannelName) (retErr error) {
+func (s *Session) JoinAs(ctx context.Context, actor *domain.Instance, ch domain.ChannelName) (retErr error) {
 	ch = domain.NormaliseChannelName(ch)
+
+	actorNick := actor.Nick()
 
 	ctx, span := startSpan(
 		ctx,
 		"session.join",
 		attribute.String(observability.AttrOperation, "session.join"),
 		attribute.String(observability.AttrChannel, string(ch)),
-		attribute.String(observability.AttrNick, string(actor)),
+		attribute.String(observability.AttrNick, string(actorNick)),
 	)
 	defer endSpan(span, &retErr, observability.ErrorKindStore)
 
+	span.SetAttributes(attribute.String(observability.AttrInstanceID, string(actor.ID())))
+
 	now := s.now()
-	isUser := actor == s.userSnapshot().Nick
+	isUser := actor == s.user
 
-	var actorID domain.InstanceID
-	if !isUser {
-		if inst, err := s.store.GetInstance(ctx, actor); err == nil {
-			actorID = inst.InstanceID
-		}
-	}
-
-	span.SetAttributes(attribute.String(observability.AttrInstanceID, string(actorID)))
-
-	channel, err := s.store.GetChannel(ctx, ch)
-	created := false
-
-	if err == nil && channel.Members.Len() == 0 {
-		channel.Members = domain.NewMemberList()
-	}
-
+	channel, created, err := s.ensureChannelWithActor(ctx, ch, actor, now)
 	if err != nil {
-		members := domain.NewMemberList()
-		members.Add(actorID, actor)
-
-		channel = domain.Channel{
-			Name:    ch,
-			Kind:    domain.KindChannel,
-			Members: members,
-			Created: now,
-		}
-
-		if saveErr := s.store.SaveChannel(ctx, channel); saveErr != nil {
-			return fmt.Errorf("save channel: %w", saveErr)
-		}
-
-		created = true
+		return err
 	}
 
-	alreadyMember := !created && channel.Members.HasID(actorID)
+	alreadyMember := !created && channel.Members.HasInstance(actor)
 
-	// The created branch already added the actor to the fresh member
-	// list when constructing the channel, so we only add (and save)
-	// here when joining an existing channel the actor isn't already a
-	// member of.
 	if !created && !alreadyMember {
-		channel.Members.Add(actorID, actor)
+		channel.Members.Add(actor)
 
-		if err := s.store.SaveChannel(ctx, channel); err != nil {
+		if err := s.persistChannel(ctx, channel); err != nil {
 			return fmt.Errorf("save channel: %w", err)
 		}
 	}
 
 	if isUser {
-		if err := s.store.SetLastChannel(ctx, ch); err != nil {
-			return fmt.Errorf("set last channel: %w", err)
-		}
-
-		if err := s.MarkRead(ctx, ch); err != nil {
-			return fmt.Errorf("mark read: %w", err)
-		}
-
-		if !alreadyMember {
-			s.mutateUser(func(u *domain.Instance) {
-				u.Channels.Set(ch, now)
-			})
-		}
-	} else {
-		inst, err := s.store.GetInstance(ctx, actor)
-		if err == nil {
-			if inst.Channels == nil {
-				inst.Channels = orderedmap.New[domain.ChannelName, time.Time]()
-			}
-
-			if _, ok := inst.Channels.Get(ch); !ok {
-				inst.Channels.Set(ch, now)
-			}
-
-			if err := s.store.SaveInstance(ctx, inst); err != nil {
-				return fmt.Errorf("save instance: %w", err)
-			}
+		if err := s.rememberActiveChannel(ctx, ch); err != nil {
+			return err
 		}
 	}
 
-	if !alreadyMember && channel.Kind != domain.KindDM {
-		s.appendEvent(ctx, ch, domain.ChannelJoin{Channel: ch, Nick: actor, Created: created, At: now})
-		s.emit(ctx, domain.JoinEvent{Channel: ch, InstanceID: actorID, Nick: actor, Created: created, At: now})
+	if !alreadyMember {
+		if err := s.recordActorMembership(ctx, actor, ch, now, isUser); err != nil {
+			return err
+		}
 	}
 
-	if !alreadyMember && channel.Kind != domain.KindDM {
-		channel, _ = s.store.GetChannel(ctx, ch)
+	if alreadyMember || channel.Kind == domain.KindDM {
+		return nil
+	}
 
-		if isUser {
-			if err := s.emitJoinProtocol(ctx, ch, channel, now); err != nil {
-				return err
-			}
-		} else {
-			if err := s.grantVoice(ctx, ch, channel, actorID, actor, now); err != nil {
-				return err
-			}
+	s.appendEvent(ctx, ch, domain.ChannelJoin{Channel: ch, Nick: actorNick, Created: created, At: now})
+	s.emit(ctx, domain.JoinEvent{Channel: ch, Instance: actor, Created: created, At: now})
+
+	channel, _ = s.loadChannel(ctx, ch)
+
+	if isUser {
+		return s.emitJoinProtocol(ctx, ch, channel, now)
+	}
+
+	return s.grantVoice(ctx, ch, channel, actor, actorNick, now)
+}
+
+// ensureChannelWithActor loads the channel or creates a fresh one
+// that already contains the actor. Returns the (possibly freshly-
+// saved) channel, whether it was newly created, and any persistence
+// error encountered along the way.
+func (s *Session) ensureChannelWithActor(ctx context.Context, ch domain.ChannelName, actor *domain.Instance, now time.Time) (domain.Channel, bool, error) {
+	channel, err := s.loadChannel(ctx, ch)
+	if err == nil {
+		if channel.Members.Len() == 0 {
+			channel.Members = domain.NewMemberList()
 		}
+
+		return channel, false, nil
+	}
+
+	members := domain.NewMemberList()
+	members.Add(actor)
+
+	channel = domain.Channel{
+		Name:    ch,
+		Kind:    domain.KindChannel,
+		Members: members,
+		Created: now,
+	}
+
+	if saveErr := s.persistChannel(ctx, channel); saveErr != nil {
+		return domain.Channel{}, false, fmt.Errorf("save channel: %w", saveErr)
+	}
+
+	return channel, true, nil
+}
+
+// rememberActiveChannel records that the user just joined `ch`:
+// their last-focused channel in the store (so a crash restores
+// them to the same spot) and the mark-as-read cursor.
+func (s *Session) rememberActiveChannel(ctx context.Context, ch domain.ChannelName) error {
+	if err := s.store.SetLastChannel(ctx, ch); err != nil {
+		return fmt.Errorf("set last channel: %w", err)
+	}
+
+	if err := s.MarkRead(ctx, ch); err != nil {
+		return fmt.Errorf("mark read: %w", err)
+	}
+
+	return nil
+}
+
+// recordActorMembership stamps the channel onto the actor's joined-
+// channels map and — for model actors — persists the updated
+// instance row.
+func (s *Session) recordActorMembership(ctx context.Context, actor *domain.Instance, ch domain.ChannelName, now time.Time, isUser bool) error {
+	actor.MutateChannels(func(m *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
+		if _, ok := m.Get(ch); !ok {
+			m.Set(ch, now)
+		}
+	})
+
+	if isUser {
+		return nil
+	}
+
+	if err := s.store.SaveInstance(ctx, actor); err != nil {
+		return fmt.Errorf("save instance: %w", err)
 	}
 
 	return nil
@@ -133,18 +148,18 @@ func (s *Session) JoinAs(ctx context.Context, actor domain.Nick, ch domain.Chann
 // emitJoinProtocol sets the user's mode to +o, emits topic info if
 // the channel has a topic, and saves the autojoin list.
 func (s *Session) emitJoinProtocol(ctx context.Context, ch domain.ChannelName, channel domain.Channel, now time.Time) error {
-	userNick := s.userSnapshot().Nick
-	channel.Members.SetMode("", domain.ModeOp)
+	s.setUserMode(ctx, ch, domain.ModeOp)
+	channel.Members.SetMode(s.user, domain.ModeOp)
 
-	if err := s.store.SaveChannel(ctx, channel); err != nil {
+	if err := s.persistChannel(ctx, channel); err != nil {
 		return fmt.Errorf("save channel after mode: %w", err)
 	}
 
 	s.appendEvent(ctx, ch, domain.ChannelModeChange{
-		Channel: ch, Nick: userNick, Mode: domain.ModeOp, By: "ChanServ", At: now,
+		Channel: ch, Nick: s.user.Nick(), Mode: domain.ModeOp, By: "ChanServ", At: now,
 	})
 	s.emitUIOnly(domain.ModeChangeEvent{
-		Channel: ch, Nick: userNick, InstanceID: "", Mode: domain.ModeOp, Actor: "ChanServ", At: now,
+		Channel: ch, Instance: s.user, Mode: domain.ModeOp, Actor: "ChanServ", At: now,
 	})
 
 	if channel.Topic != "" {
@@ -165,10 +180,14 @@ func (s *Session) emitJoinProtocol(ctx context.Context, ch domain.ChannelName, c
 // emitJoinProtocol so the nick list distinguishes models (+nick) from
 // the user (@nick) on every join, not only when the model was added
 // through the invite path.
-func (s *Session) grantVoice(ctx context.Context, ch domain.ChannelName, channel domain.Channel, instanceID domain.InstanceID, nick domain.Nick, now time.Time) error {
-	channel.Members.SetMode(instanceID, domain.ModeVoice)
+//
+// The caller passes its own nick snapshot so the `ChannelJoin` and
+// `ChannelModeChange` events emitted back-to-back for the same join
+// record the same nick, even if the actor renames between them.
+func (s *Session) grantVoice(ctx context.Context, ch domain.ChannelName, channel domain.Channel, inst *domain.Instance, nick domain.Nick, now time.Time) error {
+	channel.Members.SetMode(inst, domain.ModeVoice)
 
-	if err := s.store.SaveChannel(ctx, channel); err != nil {
+	if err := s.persistChannel(ctx, channel); err != nil {
 		return fmt.Errorf("save channel after voice: %w", err)
 	}
 
@@ -176,24 +195,26 @@ func (s *Session) grantVoice(ctx context.Context, ch domain.ChannelName, channel
 		Channel: ch, Nick: nick, Mode: domain.ModeVoice, By: "ChanServ", At: now,
 	})
 	s.emitUIOnly(domain.ModeChangeEvent{
-		Channel: ch, InstanceID: instanceID, Nick: nick, Mode: domain.ModeVoice, Actor: "ChanServ", At: now,
+		Channel: ch, Instance: inst, Mode: domain.ModeVoice, Actor: "ChanServ", At: now,
 	})
 
 	return nil
 }
 
 // PartAs parts the given actor from a channel.
-func (s *Session) PartAs(ctx context.Context, actor domain.Nick, ch domain.ChannelName, message string) (retErr error) {
+func (s *Session) PartAs(ctx context.Context, actor *domain.Instance, ch domain.ChannelName, message string) (retErr error) {
+	actorNick := actor.Nick()
+
 	ctx, span := startSpan(
 		ctx,
 		"session.part",
 		attribute.String(observability.AttrOperation, "session.part"),
 		attribute.String(observability.AttrChannel, string(ch)),
-		attribute.String(observability.AttrNick, string(actor)),
+		attribute.String(observability.AttrNick, string(actorNick)),
 	)
 	defer endSpan(span, &retErr, observability.ErrorKindStore)
 
-	channel, err := s.store.GetChannel(ctx, ch)
+	channel, err := s.loadChannel(ctx, ch)
 	if err != nil {
 		return fmt.Errorf("channel not found: %w", err)
 	}
@@ -202,168 +223,132 @@ func (s *Session) PartAs(ctx context.Context, actor domain.Nick, ch domain.Chann
 		return errWithKind(fmt.Errorf("cannot part status channel"), observability.ErrorKindValidation)
 	}
 
-	isUser := actor == s.userSnapshot().Nick
+	isUser := actor == s.user
 
-	var (
-		actorID      domain.InstanceID
-		actorIsKnown bool
-	)
+	span.SetAttributes(attribute.String(observability.AttrInstanceID, string(actor.ID())))
 
-	if isUser {
-		actorIsKnown = true
-	} else if inst, err := s.store.GetInstance(ctx, actor); err == nil {
-		actorID = inst.InstanceID
-		actorIsKnown = true
-	}
-
-	span.SetAttributes(attribute.String(observability.AttrInstanceID, string(actorID)))
-
-	// Refuse to act when a non-user actor cannot be resolved. Mirrors
-	// the same guard in `KickAs`: defaulting `actorID` to the
-	// empty-id human sentinel would make the human vanish from the
-	// channel via the subsequent `GetByID("")` lookup, so an unknown
-	// actor must be a no-op.
-	if !actorIsKnown {
+	m, ok := channel.Members.GetByInstance(actor)
+	if !ok {
 		return nil
 	}
 
-	if m, ok := channel.Members.GetByID(actorID); ok {
-		channel.Members.Remove(m)
-	}
+	channel.Members.Remove(m)
 
-	if err := s.store.SaveChannel(ctx, channel); err != nil {
+	if err := s.persistChannel(ctx, channel); err != nil {
 		return fmt.Errorf("save channel: %w", err)
 	}
 
-	if isUser {
-		s.mutateUser(func(u *domain.Instance) {
-			u.Channels.Delete(ch)
-		})
+	actor.MutateChannels(func(m *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
+		m.Delete(ch)
+	})
 
+	if isUser {
+		s.forgetUserMode(ctx, ch)
 		if err := s.saveAutojoinList(ctx); err != nil {
 			return fmt.Errorf("save autojoin: %w", err)
 		}
-	} else if inst, err := s.store.GetInstance(ctx, actor); err == nil {
-		inst.Channels.Delete(ch)
-
-		if err := s.store.SaveInstance(ctx, inst); err != nil {
-			return fmt.Errorf("save instance: %w", err)
-		}
+	} else if err := s.store.SaveInstance(ctx, actor); err != nil {
+		return fmt.Errorf("save instance: %w", err)
 	}
 
 	now := s.now()
-	s.appendEvent(ctx, ch, domain.ChannelPart{Channel: ch, Nick: actor, Message: message, At: now})
-	s.emit(ctx, domain.PartEvent{Channel: ch, InstanceID: actorID, Nick: actor, Message: message, At: now})
+	s.appendEvent(ctx, ch, domain.ChannelPart{Channel: ch, Nick: actorNick, Message: message, At: now})
+	s.emit(ctx, domain.PartEvent{Channel: ch, Instance: actor, Message: message, At: now})
 
 	return nil
 }
 
 // QuitAs quits the given actor from every joined channel.
-func (s *Session) QuitAs(ctx context.Context, actor domain.Nick, message string) (retErr error) {
-	if actor == s.userSnapshot().Nick {
+func (s *Session) QuitAs(ctx context.Context, actor *domain.Instance, message string) (retErr error) {
+	if actor == s.user {
 		return s.Quit(ctx, message)
 	}
+
+	actorID := actor.ID()
+	actorNick := actor.Nick()
 
 	ctx, span := startSpan(
 		ctx,
 		"session.quit",
 		attribute.String(observability.AttrOperation, "session.quit"),
-		attribute.String(observability.AttrNick, string(actor)),
+		attribute.String(observability.AttrNick, string(actorNick)),
 	)
 	defer endSpan(span, &retErr, observability.ErrorKindStore)
 
-	inst, err := s.store.GetInstance(ctx, actor)
-	if err != nil {
-		return fmt.Errorf("get instance: %w", err)
-	}
-
-	span.SetAttributes(attribute.String(observability.AttrInstanceID, string(inst.InstanceID)))
+	span.SetAttributes(attribute.String(observability.AttrInstanceID, string(actorID)))
 
 	now := s.now()
-	for _, ch := range s.instanceChannelNames(inst) {
-		s.removeInstanceFromChannel(ctx, inst.InstanceID, actor, ch)
-		s.appendEvent(ctx, ch, domain.ChannelQuit{Channel: ch, Nick: actor, Message: message, At: now})
+	for _, ch := range s.instanceChannelNames(actor) {
+		s.removeInstanceFromChannel(ctx, actor, ch)
+		s.appendEvent(ctx, ch, domain.ChannelQuit{Channel: ch, Nick: actorNick, Message: message, At: now})
 	}
 
-	if err := s.store.DeleteInstance(ctx, actor); err != nil {
+	if err := s.store.DeleteInstanceByID(ctx, actorID); err != nil {
 		return fmt.Errorf("delete instance: %w", err)
 	}
 
-	s.emitUIOnly(domain.QuitEvent{InstanceID: inst.InstanceID, Nick: actor, Message: message, At: now})
+	s.emitUIOnly(domain.QuitEvent{Instance: actor, Message: message, At: now})
 
 	return nil
 }
 
 // ChangeNickAs changes the given actor's nickname.
-func (s *Session) ChangeNickAs(ctx context.Context, actor domain.Nick, newNick domain.Nick) (retErr error) {
+func (s *Session) ChangeNickAs(ctx context.Context, actor *domain.Instance, newNick domain.Nick) (retErr error) {
+	oldNick := actor.Nick()
+
 	ctx, span := startSpan(
 		ctx,
 		"session.change_nick",
 		attribute.String(observability.AttrOperation, "session.change_nick"),
-		attribute.String(observability.AttrNick, string(actor)),
+		attribute.String(observability.AttrNick, string(oldNick)),
 		attribute.String("nick.new", string(newNick)),
 	)
 	defer endSpan(span, &retErr, observability.ErrorKindStore)
 
-	isUser := actor == s.userSnapshot().Nick
+	isUser := actor == s.user
 
-	var (
-		actorID      domain.InstanceID
-		channelNames []domain.ChannelName
-	)
+	actor.SetNick(newNick)
+
+	var channelNames []domain.ChannelName
 
 	if isUser {
-		s.mutateUser(func(u *domain.Instance) {
-			u.Nick = newNick
-		})
-
-		channels, _ := s.store.ListChannels(ctx)
+		channels, _ := s.loadChannels(ctx)
 		for _, ch := range channels {
-			if ch.Members.HasID("") {
+			if ch.Members.HasInstance(actor) {
 				channelNames = append(channelNames, ch.Name)
 			}
 		}
 	} else {
-		inst, err := s.store.GetInstance(ctx, actor)
-		if err != nil {
-			return fmt.Errorf("get instance: %w", err)
-		}
-
-		actorID = inst.InstanceID
-
-		if err := s.store.DeleteInstance(ctx, actor); err != nil {
-			return fmt.Errorf("delete old instance: %w", err)
-		}
-
-		inst.Nick = newNick
-
-		if err := s.store.SaveInstance(ctx, inst); err != nil {
+		// The instances table is keyed by InstanceID, so a rename is
+		// an in-place update of the `nick` column — no delete-then-
+		// reinsert needed as it was under the old nick-keyed schema.
+		if err := s.store.SaveInstance(ctx, actor); err != nil {
 			return fmt.Errorf("save instance: %w", err)
 		}
 
-		channelNames = s.instanceChannelNames(inst)
+		channelNames = s.instanceChannelNames(actor)
 	}
 
-	span.SetAttributes(attribute.String(observability.AttrInstanceID, string(actorID)))
+	span.SetAttributes(attribute.String(observability.AttrInstanceID, string(actor.ID())))
 
 	now := s.now()
 	for _, chName := range channelNames {
-		channel, err := s.store.GetChannel(ctx, chName)
+		channel, err := s.loadChannel(ctx, chName)
 		if err != nil {
 			continue
 		}
 
-		channel.Members.RenameTo(actorID, newNick)
+		channel.Members.RenameTo(actor, newNick)
 
-		if err := s.store.SaveChannel(ctx, channel); err != nil {
+		if err := s.persistChannel(ctx, channel); err != nil {
 			return fmt.Errorf("save channel: %w", err)
 		}
 
 		s.appendEvent(ctx, chName, domain.ChannelNickChange{
-			Channel: chName, OldNick: actor, NewNick: newNick, At: now,
+			Channel: chName, OldNick: oldNick, NewNick: newNick, At: now,
 		})
 		s.emit(ctx, domain.NickChangeEvent{
-			Channel: chName, InstanceID: actorID, OldNick: actor, NewNick: newNick, At: now,
+			Channel: chName, Instance: actor, OldNick: oldNick, NewNick: newNick, At: now,
 		})
 	}
 
@@ -371,13 +356,15 @@ func (s *Session) ChangeNickAs(ctx context.Context, actor domain.Nick, newNick d
 }
 
 // SendMessageAs records a message from the given actor.
-func (s *Session) SendMessageAs(ctx context.Context, actor domain.Nick, ch domain.ChannelName, body string) (retErr error) {
+func (s *Session) SendMessageAs(ctx context.Context, actor *domain.Instance, ch domain.ChannelName, body string) (retErr error) {
+	actorNick := actor.Nick()
+
 	ctx, span := startSpan(
 		ctx,
 		"session.send_message",
 		attribute.String(observability.AttrOperation, "session.send_message"),
 		attribute.String(observability.AttrChannel, string(ch)),
-		attribute.String(observability.AttrNick, string(actor)),
+		attribute.String(observability.AttrNick, string(actorNick)),
 	)
 	defer endSpan(span, &retErr, observability.ErrorKindStore)
 
@@ -388,16 +375,12 @@ func (s *Session) SendMessageAs(ctx context.Context, actor domain.Nick, ch domai
 		}, observability.ErrorKindValidation)
 	}
 
-	var instanceID domain.InstanceID
-	if inst, err := s.store.GetInstance(ctx, actor); err == nil {
-		instanceID = inst.InstanceID
-	}
-
+	instanceID := actor.ID()
 	span.SetAttributes(attribute.String(observability.AttrInstanceID, string(instanceID)))
 
 	cm := domain.ChannelMessage{
 		Channel:    ch,
-		From:       actor,
+		From:       actorNick,
 		InstanceID: instanceID,
 		Body:       body,
 		At:         s.now(),
@@ -410,13 +393,15 @@ func (s *Session) SendMessageAs(ctx context.Context, actor domain.Nick, ch domai
 }
 
 // SendActionAs records an action message from the given actor.
-func (s *Session) SendActionAs(ctx context.Context, actor domain.Nick, ch domain.ChannelName, body string) (retErr error) {
+func (s *Session) SendActionAs(ctx context.Context, actor *domain.Instance, ch domain.ChannelName, body string) (retErr error) {
+	actorNick := actor.Nick()
+
 	ctx, span := startSpan(
 		ctx,
 		"session.send_action",
 		attribute.String(observability.AttrOperation, "session.send_action"),
 		attribute.String(observability.AttrChannel, string(ch)),
-		attribute.String(observability.AttrNick, string(actor)),
+		attribute.String(observability.AttrNick, string(actorNick)),
 	)
 	defer endSpan(span, &retErr, observability.ErrorKindStore)
 
@@ -427,16 +412,12 @@ func (s *Session) SendActionAs(ctx context.Context, actor domain.Nick, ch domain
 		}, observability.ErrorKindValidation)
 	}
 
-	var instanceID domain.InstanceID
-	if inst, err := s.store.GetInstance(ctx, actor); err == nil {
-		instanceID = inst.InstanceID
-	}
-
+	instanceID := actor.ID()
 	span.SetAttributes(attribute.String(observability.AttrInstanceID, string(instanceID)))
 
 	cm := domain.ChannelMessage{
 		Channel:    ch,
-		From:       actor,
+		From:       actorNick,
 		InstanceID: instanceID,
 		Body:       body,
 		Action:     true,
@@ -450,28 +431,23 @@ func (s *Session) SendActionAs(ctx context.Context, actor domain.Nick, ch domain
 }
 
 // SetTopicAs sets the topic for a channel.
-func (s *Session) SetTopicAs(ctx context.Context, actor domain.Nick, ch domain.ChannelName, topic string) (retErr error) {
+func (s *Session) SetTopicAs(ctx context.Context, actor *domain.Instance, ch domain.ChannelName, topic string) (retErr error) {
+	actorNick := actor.Nick()
+
 	ctx, span := startSpan(
 		ctx,
 		"session.set_topic",
 		attribute.String(observability.AttrOperation, "session.set_topic"),
 		attribute.String(observability.AttrChannel, string(ch)),
-		attribute.String(observability.AttrNick, string(actor)),
+		attribute.String(observability.AttrNick, string(actorNick)),
 	)
 	defer endSpan(span, &retErr, observability.ErrorKindStore)
 
-	var actorID domain.InstanceID
-	if actor != s.userSnapshot().Nick {
-		if inst, err := s.store.GetInstance(ctx, actor); err == nil {
-			actorID = inst.InstanceID
-		}
-	}
-
-	span.SetAttributes(attribute.String(observability.AttrInstanceID, string(actorID)))
+	span.SetAttributes(attribute.String(observability.AttrInstanceID, string(actor.ID())))
 
 	now := s.now()
 
-	channel, err := s.store.GetChannel(ctx, ch)
+	channel, err := s.loadChannel(ctx, ch)
 	if err != nil {
 		return fmt.Errorf("get channel: %w", err)
 	}
@@ -481,31 +457,33 @@ func (s *Session) SetTopicAs(ctx context.Context, actor domain.Nick, ch domain.C
 	}
 
 	channel.Topic = topic
-	channel.TopicSetBy = actor
+	channel.TopicSetBy = actorNick
 	channel.TopicSetAt = now
 
-	if err := s.store.SaveChannel(ctx, channel); err != nil {
+	if err := s.persistChannel(ctx, channel); err != nil {
 		return fmt.Errorf("save channel: %w", err)
 	}
 
-	s.appendEvent(ctx, ch, domain.ChannelTopicChange{Channel: ch, Topic: topic, By: actor, At: now})
-	s.emit(ctx, domain.TopicChangeEvent{Channel: ch, Topic: topic, By: actor, At: now})
+	s.appendEvent(ctx, ch, domain.ChannelTopicChange{Channel: ch, Topic: topic, By: actorNick, At: now})
+	s.emit(ctx, domain.TopicChangeEvent{Channel: ch, Topic: topic, By: actorNick, At: now})
 
 	return nil
 }
 
-// KickAs removes a nick from a channel on behalf of the actor.
-func (s *Session) KickAs(ctx context.Context, actor domain.Nick, target domain.Nick, ch domain.ChannelName) (retErr error) {
+// KickAs removes a target from a channel on behalf of the actor.
+func (s *Session) KickAs(ctx context.Context, actor, target *domain.Instance, ch domain.ChannelName) (retErr error) {
+	targetNick := target.Nick()
+
 	ctx, span := startSpan(
 		ctx,
 		"session.kick",
 		attribute.String(observability.AttrOperation, "session.kick"),
 		attribute.String(observability.AttrChannel, string(ch)),
-		attribute.String(observability.AttrNick, string(target)),
+		attribute.String(observability.AttrNick, string(targetNick)),
 	)
 	defer endSpan(span, &retErr, observability.ErrorKindStore)
 
-	channel, err := s.store.GetChannel(ctx, ch)
+	channel, err := s.loadChannel(ctx, ch)
 	if err != nil {
 		return fmt.Errorf("get channel: %w", err)
 	}
@@ -514,116 +492,76 @@ func (s *Session) KickAs(ctx context.Context, actor domain.Nick, target domain.N
 		return errWithKind(fmt.Errorf("cannot kick from a direct message"), observability.ErrorKindValidation)
 	}
 
-	isUser := target == s.userSnapshot().Nick
+	span.SetAttributes(attribute.String(observability.AttrInstanceID, string(target.ID())))
 
-	var (
-		targetID      domain.InstanceID
-		targetIsKnown bool
-	)
-
-	if isUser {
-		targetIsKnown = true
-	} else if inst, err := s.store.GetInstance(ctx, target); err == nil {
-		targetID = inst.InstanceID
-		targetIsKnown = true
-	}
-
-	span.SetAttributes(attribute.String(observability.AttrInstanceID, string(targetID)))
-
-	// Refuse to act when the target nick cannot be resolved to a
-	// known identity. Defaulting `targetID` to the empty-id
-	// human-user sentinel would cause membership removals (and the
-	// ModelKickedEvent that follows) to point at the user, so a
-	// `/kick <typo>` must be a no-op — no stored mutation, no event
-	// emission.
-	if !targetIsKnown {
+	if !channel.Members.HasInstance(target) {
 		return nil
 	}
 
-	if m, ok := channel.Members.GetByID(targetID); ok {
+	if m, ok := channel.Members.GetByInstance(target); ok {
 		channel.Members.Remove(m)
 	}
 
-	if err := s.store.SaveChannel(ctx, channel); err != nil {
+	if err := s.persistChannel(ctx, channel); err != nil {
 		return fmt.Errorf("save channel: %w", err)
 	}
 
-	if isUser {
-		s.mutateUser(func(u *domain.Instance) {
-			u.Channels.Delete(ch)
-		})
-	} else if inst, err := s.store.GetInstance(ctx, target); err == nil {
-		inst.Channels.Delete(ch)
+	target.MutateChannels(func(m *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
+		m.Delete(ch)
+	})
 
-		if err := s.store.SaveInstance(ctx, inst); err != nil {
+	if target != s.user {
+		if err := s.store.SaveInstance(ctx, target); err != nil {
 			return fmt.Errorf("save instance: %w", err)
 		}
+	} else {
+		s.forgetUserMode(ctx, ch)
 	}
 
+	actorNick := actor.Nick()
+
 	now := s.now()
-	s.appendEvent(ctx, ch, domain.ChannelModelKicked{Channel: ch, Nick: target, By: actor, At: now})
-	s.emit(ctx, domain.ModelKickedEvent{Channel: ch, InstanceID: targetID, Nick: target, By: actor, At: now})
+	s.appendEvent(ctx, ch, domain.ChannelModelKicked{Channel: ch, Nick: targetNick, By: actorNick, At: now})
+	s.emit(ctx, domain.ModelKickedEvent{Channel: ch, Instance: target, By: actorNick, At: now})
 
 	return nil
 }
 
 // OpenDMAs opens or creates a DM for the acting actor and target.
-func (s *Session) OpenDMAs(ctx context.Context, actor domain.Nick, target domain.Nick) (_ domain.Channel, _ bool, retErr error) {
-	if actor == s.userSnapshot().Nick {
+func (s *Session) OpenDMAs(ctx context.Context, actor, target *domain.Instance) (_ domain.Channel, _ bool, retErr error) {
+	if actor == s.user {
 		return s.OpenDM(ctx, target)
 	}
+
+	actorNick := actor.Nick()
+	targetNick := target.Nick()
 
 	ctx, span := startSpan(
 		ctx,
 		"session.open_dm",
 		attribute.String(observability.AttrOperation, "session.open_dm"),
-		attribute.String(observability.AttrNick, string(actor)),
-		attribute.String("nick.target", string(target)),
+		attribute.String(observability.AttrNick, string(actorNick)),
+		attribute.String("nick.target", string(targetNick)),
 	)
 	defer endSpan(span, &retErr, observability.ErrorKindStore)
 
-	if domain.ChannelName(target) == domain.StatusChannelName {
+	if domain.ChannelName(targetNick) == domain.StatusChannelName {
 		return domain.Channel{}, false, errWithKind(domain.StatusChannelGuardError{
 			Command: "msg",
 			Hint:    "to message a model, use /msg <nick> with the model's name; &modeloff is a server channel.",
 		}, observability.ErrorKindValidation)
 	}
 
-	userNick := s.userSnapshot().Nick
+	span.SetAttributes(attribute.String(observability.AttrInstanceID, string(actor.ID())))
 
-	// Resolve the actor's identity up-front so the span carries it;
-	// the human is always keyed with the empty instance id.
-	var actorID domain.InstanceID
-	if actor != userNick {
-		if inst, err := s.store.GetInstance(ctx, actor); err == nil {
-			actorID = inst.InstanceID
-		}
-	}
-
-	span.SetAttributes(attribute.String(observability.AttrInstanceID, string(actorID)))
-
-	name := domain.ChannelName(target)
-	ch, err := s.store.GetChannel(ctx, name)
+	name := domain.ChannelName(targetNick)
+	ch, err := s.loadChannel(ctx, name)
 	created := false
 
 	if err != nil {
 		members := domain.NewMemberList()
-
-		var targetID domain.InstanceID
-
-		if target != userNick {
-			if inst, err := s.store.GetInstance(ctx, target); err == nil {
-				targetID = inst.InstanceID
-			}
-		}
-
-		if target == userNick {
-			members.Add("", userNick)
-			members.Add(actorID, actor)
-		} else {
-			members.Add(actorID, actor)
-			members.Add(targetID, target)
-		}
+		members.Add(actor)
+		members.Add(target)
 
 		ch = domain.Channel{
 			Name:    name,
@@ -632,7 +570,7 @@ func (s *Session) OpenDMAs(ctx context.Context, actor domain.Nick, target domain
 			Created: s.now(),
 		}
 
-		if err := s.store.SaveChannel(ctx, ch); err != nil {
+		if err := s.persistChannel(ctx, ch); err != nil {
 			return domain.Channel{}, false, fmt.Errorf("save dm channel: %w", err)
 		}
 
@@ -641,33 +579,27 @@ func (s *Session) OpenDMAs(ctx context.Context, actor domain.Nick, target domain
 
 	now := s.now()
 
-	if inst, err := s.store.GetInstance(ctx, actor); err == nil {
-		if inst.Channels == nil {
-			inst.Channels = orderedmap.New[domain.ChannelName, time.Time]()
+	actor.MutateChannels(func(m *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
+		if _, ok := m.Get(name); !ok {
+			m.Set(name, now)
 		}
+	})
 
-		if _, ok := inst.Channels.Get(name); !ok {
-			inst.Channels.Set(name, now)
-
-			if err := s.store.SaveInstance(ctx, inst); err != nil {
-				return domain.Channel{}, false, fmt.Errorf("save actor instance: %w", err)
-			}
+	if actor != s.user {
+		if err := s.store.SaveInstance(ctx, actor); err != nil {
+			return domain.Channel{}, false, fmt.Errorf("save actor instance: %w", err)
 		}
 	}
 
-	if target != s.userSnapshot().Nick {
-		if inst, err := s.store.GetInstance(ctx, target); err == nil {
-			if inst.Channels == nil {
-				inst.Channels = orderedmap.New[domain.ChannelName, time.Time]()
-			}
+	target.MutateChannels(func(m *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
+		if _, ok := m.Get(name); !ok {
+			m.Set(name, now)
+		}
+	})
 
-			if _, ok := inst.Channels.Get(name); !ok {
-				inst.Channels.Set(name, now)
-
-				if err := s.store.SaveInstance(ctx, inst); err != nil {
-					return domain.Channel{}, false, fmt.Errorf("save target instance: %w", err)
-				}
-			}
+	if target != s.user {
+		if err := s.store.SaveInstance(ctx, target); err != nil {
+			return domain.Channel{}, false, fmt.Errorf("save target instance: %w", err)
 		}
 	}
 
@@ -675,17 +607,15 @@ func (s *Session) OpenDMAs(ctx context.Context, actor domain.Nick, target domain
 }
 
 // InviteAs sends a real IRC-style invite.
-func (s *Session) InviteAs(ctx context.Context, actor domain.Nick, target domain.Nick, ch domain.ChannelName) error {
-	return s.inviteActor(ctx, actor, target, ch)
-}
+func (s *Session) InviteAs(ctx context.Context, actor *domain.Instance, target domain.Nick, ch domain.ChannelName) (retErr error) {
+	actorNick := actor.Nick()
 
-func (s *Session) inviteActor(ctx context.Context, actor domain.Nick, target domain.Nick, ch domain.ChannelName) (retErr error) {
 	ctx, span := startSpan(
 		ctx,
 		"session.invite",
 		attribute.String(observability.AttrOperation, "session.invite"),
 		attribute.String(observability.AttrChannel, string(ch)),
-		attribute.String(observability.AttrNick, string(actor)),
+		attribute.String(observability.AttrNick, string(actorNick)),
 		attribute.String("nick.target", string(target)),
 	)
 	defer endSpan(span, &retErr, observability.ErrorKindStore)
@@ -695,15 +625,20 @@ func (s *Session) inviteActor(ctx context.Context, actor domain.Nick, target dom
 		return fmt.Errorf("target nick is required")
 	}
 
-	if actor == s.userSnapshot().Nick {
-		if inst, err := s.store.GetInstance(ctx, target); err == nil {
-			span.SetAttributes(attribute.String(observability.AttrInstanceID, string(inst.InstanceID)))
+	if actor == s.user {
+		inst, err := s.store.ResolveNick(ctx, target)
+		if err == nil {
+			span.SetAttributes(attribute.String(observability.AttrInstanceID, string(inst.ID())))
 			return s.attachInstanceToChannel(ctx, ch, inst, actor)
+		}
+
+		if !errors.Is(err, store.ErrNoSuchNick) {
+			return fmt.Errorf("resolve nick: %w", err)
 		}
 	}
 
 	now := s.now()
-	notice := fmt.Sprintf("%s invited %s to %s", actor, target, ch)
+	notice := fmt.Sprintf("%s invited %s to %s", actorNick, target, ch)
 	s.appendEvent(ctx, ch, domain.ChannelSystemNotice{Channel: ch, Text: notice, At: now})
 
 	return nil

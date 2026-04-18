@@ -84,7 +84,7 @@ func TestIndexedStore_ReadEmpty(t *testing.T) {
 func TestIndexedStore_WriteAndRead(t *testing.T) {
 	ctx := t.Context()
 	store := newTestIndexedStore(t, trivialEmbedder())
-	nick := domain.Nick("bob")
+	id := domain.InstanceID("bob")
 
 	entries := []Entry{
 		{Key: "greeting", Content: "Hello, I like cats."},
@@ -92,10 +92,10 @@ func TestIndexedStore_WriteAndRead(t *testing.T) {
 	}
 
 	for _, e := range entries {
-		require.NoError(t, store.Write(ctx, nick, e))
+		require.NoError(t, store.Write(ctx, id, e))
 	}
 
-	got, err := store.Read(ctx, nick)
+	got, err := store.Read(ctx, id)
 	require.NoError(t, err)
 	require.Equal(t, entries, got)
 }
@@ -103,12 +103,12 @@ func TestIndexedStore_WriteAndRead(t *testing.T) {
 func TestIndexedStore_WriteOverwritesExistingKey(t *testing.T) {
 	ctx := t.Context()
 	store := newTestIndexedStore(t, trivialEmbedder())
-	nick := domain.Nick("charlie")
+	id := domain.InstanceID("charlie")
 
-	require.NoError(t, store.Write(ctx, nick, Entry{Key: "mood", Content: "happy"}))
-	require.NoError(t, store.Write(ctx, nick, Entry{Key: "mood", Content: "excited"}))
+	require.NoError(t, store.Write(ctx, id, Entry{Key: "mood", Content: "happy"}))
+	require.NoError(t, store.Write(ctx, id, Entry{Key: "mood", Content: "excited"}))
 
-	got, err := store.Read(ctx, nick)
+	got, err := store.Read(ctx, id)
 	require.NoError(t, err)
 	require.Equal(t, []Entry{{Key: "mood", Content: "excited"}}, got)
 }
@@ -116,7 +116,7 @@ func TestIndexedStore_WriteOverwritesExistingKey(t *testing.T) {
 func TestIndexedStore_Delete(t *testing.T) {
 	ctx := t.Context()
 	store := newTestIndexedStore(t, trivialEmbedder())
-	nick := domain.Nick("dave")
+	id := domain.InstanceID("dave")
 
 	entries := []Entry{
 		{Key: "first", Content: "one"},
@@ -125,12 +125,12 @@ func TestIndexedStore_Delete(t *testing.T) {
 	}
 
 	for _, e := range entries {
-		require.NoError(t, store.Write(ctx, nick, e))
+		require.NoError(t, store.Write(ctx, id, e))
 	}
 
-	require.NoError(t, store.Delete(ctx, nick, "second"))
+	require.NoError(t, store.Delete(ctx, id, "second"))
 
-	got, err := store.Read(ctx, nick)
+	got, err := store.Read(ctx, id)
 	require.NoError(t, err)
 	require.Equal(t, []Entry{
 		{Key: "first", Content: "one"},
@@ -199,13 +199,13 @@ func TestIndexedStore_Search_returns_relevant_entries(t *testing.T) {
 	ctx := t.Context()
 	topics := map[string]int{"cats": 0, "dogs": 1, "fish": 2}
 	store := newTestIndexedStore(t, fakeEmbedder(3, topics))
-	nick := domain.Nick("searcher")
+	id := domain.InstanceID("searcher")
 
-	require.NoError(t, store.Write(ctx, nick, Entry{Key: "cat_fact", Content: "cats sleep 16 hours a day"}))
-	require.NoError(t, store.Write(ctx, nick, Entry{Key: "dog_fact", Content: "dogs are loyal companions"}))
-	require.NoError(t, store.Write(ctx, nick, Entry{Key: "fish_fact", Content: "fish breathe through gills"}))
+	require.NoError(t, store.Write(ctx, id, Entry{Key: "cat_fact", Content: "cats sleep 16 hours a day"}))
+	require.NoError(t, store.Write(ctx, id, Entry{Key: "dog_fact", Content: "dogs are loyal companions"}))
+	require.NoError(t, store.Write(ctx, id, Entry{Key: "fish_fact", Content: "fish breathe through gills"}))
 
-	results, err := store.Search(ctx, nick, "cats are great", 3)
+	results, err := store.Search(ctx, id, "cats are great", 3)
 	require.NoError(t, err)
 
 	// The top result is deterministic (exact topic match). The
@@ -223,13 +223,13 @@ func TestIndexedStore_Search_returns_relevant_entries(t *testing.T) {
 func TestIndexedStore_Search_respects_limit(t *testing.T) {
 	ctx := t.Context()
 	store := newTestIndexedStore(t, fakeEmbedder(3, map[string]int{"a": 0, "b": 1, "c": 2}))
-	nick := domain.Nick("limited")
+	id := domain.InstanceID("limited")
 
-	require.NoError(t, store.Write(ctx, nick, Entry{Key: "one", Content: "a first entry"}))
-	require.NoError(t, store.Write(ctx, nick, Entry{Key: "two", Content: "b second entry"}))
-	require.NoError(t, store.Write(ctx, nick, Entry{Key: "three", Content: "c third entry"}))
+	require.NoError(t, store.Write(ctx, id, Entry{Key: "one", Content: "a first entry"}))
+	require.NoError(t, store.Write(ctx, id, Entry{Key: "two", Content: "b second entry"}))
+	require.NoError(t, store.Write(ctx, id, Entry{Key: "three", Content: "c third entry"}))
 
-	results, err := store.Search(ctx, nick, "a query", 1)
+	results, err := store.Search(ctx, id, "a query", 1)
 	require.NoError(t, err)
 	require.Equal(t, []SearchResult{
 		{Entry: Entry{Key: "one", Content: "a first entry"}, Similarity: 1.0},
@@ -239,13 +239,13 @@ func TestIndexedStore_Search_respects_limit(t *testing.T) {
 func TestIndexedStore_Search_zero_limit_returns_all(t *testing.T) {
 	ctx := t.Context()
 	store := newTestIndexedStore(t, trivialEmbedder())
-	nick := domain.Nick("zerolimit")
+	id := domain.InstanceID("zerolimit")
 
-	require.NoError(t, store.Write(ctx, nick, Entry{Key: "one", Content: "first"}))
-	require.NoError(t, store.Write(ctx, nick, Entry{Key: "two", Content: "second"}))
-	require.NoError(t, store.Write(ctx, nick, Entry{Key: "three", Content: "third"}))
+	require.NoError(t, store.Write(ctx, id, Entry{Key: "one", Content: "first"}))
+	require.NoError(t, store.Write(ctx, id, Entry{Key: "two", Content: "second"}))
+	require.NoError(t, store.Write(ctx, id, Entry{Key: "three", Content: "third"}))
 
-	results, err := store.Search(ctx, nick, "query", 0)
+	results, err := store.Search(ctx, id, "query", 0)
 	require.NoError(t, err)
 	require.ElementsMatch(t, []SearchResult{
 		{Entry: Entry{Key: "one", Content: "first"}, Similarity: 1.0},
@@ -257,12 +257,12 @@ func TestIndexedStore_Search_zero_limit_returns_all(t *testing.T) {
 func TestIndexedStore_Search_negative_limit_returns_all(t *testing.T) {
 	ctx := t.Context()
 	store := newTestIndexedStore(t, trivialEmbedder())
-	nick := domain.Nick("neglimit")
+	id := domain.InstanceID("neglimit")
 
-	require.NoError(t, store.Write(ctx, nick, Entry{Key: "one", Content: "first"}))
-	require.NoError(t, store.Write(ctx, nick, Entry{Key: "two", Content: "second"}))
+	require.NoError(t, store.Write(ctx, id, Entry{Key: "one", Content: "first"}))
+	require.NoError(t, store.Write(ctx, id, Entry{Key: "two", Content: "second"}))
 
-	results, err := store.Search(ctx, nick, "query", -1)
+	results, err := store.Search(ctx, id, "query", -1)
 	require.NoError(t, err)
 	require.ElementsMatch(t, []SearchResult{
 		{Entry: Entry{Key: "one", Content: "first"}, Similarity: 1.0},
@@ -297,14 +297,14 @@ func TestIndexedStore_Search_after_delete(t *testing.T) {
 	ctx := t.Context()
 	topics := map[string]int{"cats": 0, "dogs": 1}
 	store := newTestIndexedStore(t, fakeEmbedder(2, topics))
-	nick := domain.Nick("deleter")
+	id := domain.InstanceID("deleter")
 
-	require.NoError(t, store.Write(ctx, nick, Entry{Key: "cat_fact", Content: "cats sleep a lot"}))
-	require.NoError(t, store.Write(ctx, nick, Entry{Key: "dog_fact", Content: "dogs are loyal"}))
+	require.NoError(t, store.Write(ctx, id, Entry{Key: "cat_fact", Content: "cats sleep a lot"}))
+	require.NoError(t, store.Write(ctx, id, Entry{Key: "dog_fact", Content: "dogs are loyal"}))
 
-	require.NoError(t, store.Delete(ctx, nick, "cat_fact"))
+	require.NoError(t, store.Delete(ctx, id, "cat_fact"))
 
-	results, err := store.Search(ctx, nick, "cats", 5)
+	results, err := store.Search(ctx, id, "cats", 5)
 	require.NoError(t, err)
 	require.Equal(t, []SearchResult{
 		{Entry: Entry{Key: "dog_fact", Content: "dogs are loyal"}, Similarity: 0},
@@ -315,12 +315,12 @@ func TestIndexedStore_Search_after_overwrite(t *testing.T) {
 	ctx := t.Context()
 	topics := map[string]int{"cats": 0, "dogs": 1}
 	store := newTestIndexedStore(t, fakeEmbedder(2, topics))
-	nick := domain.Nick("overwriter")
+	id := domain.InstanceID("overwriter")
 
-	require.NoError(t, store.Write(ctx, nick, Entry{Key: "fact", Content: "cats are great"}))
-	require.NoError(t, store.Write(ctx, nick, Entry{Key: "fact", Content: "dogs are great"}))
+	require.NoError(t, store.Write(ctx, id, Entry{Key: "fact", Content: "cats are great"}))
+	require.NoError(t, store.Write(ctx, id, Entry{Key: "fact", Content: "dogs are great"}))
 
-	results, err := store.Search(ctx, nick, "dogs", 5)
+	results, err := store.Search(ctx, id, "dogs", 5)
 	require.NoError(t, err)
 	require.Equal(t, []SearchResult{
 		{Entry: Entry{Key: "fact", Content: "dogs are great"}, Similarity: 1.0},
@@ -332,23 +332,23 @@ func TestIndexedStore_Search_after_overwrite(t *testing.T) {
 func TestIndexedStore_Write_indexing_failure_still_persists(t *testing.T) {
 	ctx := t.Context()
 	store := newTestIndexedStore(t, failingEmbedder())
-	nick := domain.Nick("embedfail")
+	id := domain.InstanceID("embedfail")
 
-	require.NoError(t, store.Write(ctx, nick, Entry{Key: "k", Content: "v"}))
+	require.NoError(t, store.Write(ctx, id, Entry{Key: "k", Content: "v"}))
 
-	got, err := store.Read(ctx, nick)
+	got, err := store.Read(ctx, id)
 	require.NoError(t, err)
 	require.Equal(t, []Entry{{Key: "k", Content: "v"}}, got)
 }
 
 func TestIndexedStore_Search_embedding_failure_on_query(t *testing.T) {
 	ctx := t.Context()
-	nick := domain.Nick("searchfail")
+	id := domain.InstanceID("searchfail")
 	db := chromem.NewDB()
 
 	// Seed the collection with a document using pre-computed embeddings
 	// so the collection is non-empty.
-	col, err := db.GetOrCreateCollection(string(nick), nil, failingEmbedder())
+	col, err := db.GetOrCreateCollection(string(id), nil, failingEmbedder())
 	require.NoError(t, err)
 	require.NoError(t, col.Add(ctx,
 		[]string{"k"},
@@ -360,7 +360,7 @@ func TestIndexedStore_Search_embedding_failure_on_query(t *testing.T) {
 	backing := NewStoreAdapter(storetest.NewMemoryStore(t))
 	store := NewIndexedStoreFromDB(backing, db, failingEmbedder())
 
-	_, err = store.Search(ctx, nick, "query", 5)
+	_, err = store.Search(ctx, id, "query", 5)
 	require.Error(t, err)
 }
 
@@ -369,7 +369,7 @@ func TestIndexedStore_Search_embedding_failure_on_query(t *testing.T) {
 func TestIndexedStore_persistence(t *testing.T) {
 	ctx := t.Context()
 	indexDir := t.TempDir()
-	nick := domain.Nick("persist")
+	id := domain.InstanceID("persist")
 
 	embedder := fakeEmbedder(3, map[string]int{"cats": 0, "dogs": 1, "fish": 2})
 
@@ -380,22 +380,22 @@ func TestIndexedStore_persistence(t *testing.T) {
 	store1, err := NewIndexedStore(backing1, indexDir, embedder)
 	require.NoError(t, err)
 
-	require.NoError(t, store1.Write(ctx, nick, Entry{Key: "cat", Content: "cats are great"}))
-	require.NoError(t, store1.Write(ctx, nick, Entry{Key: "dog", Content: "dogs are loyal"}))
+	require.NoError(t, store1.Write(ctx, id, Entry{Key: "cat", Content: "cats are great"}))
+	require.NoError(t, store1.Write(ctx, id, Entry{Key: "dog", Content: "dogs are loyal"}))
 
 	// Reopen: new adapter and index on the same backing store and directory.
 	backing2 := NewStoreAdapter(sqlStore)
 	store2, err := NewIndexedStore(backing2, indexDir, embedder)
 	require.NoError(t, err)
 
-	got, err := store2.Read(ctx, nick)
+	got, err := store2.Read(ctx, id)
 	require.NoError(t, err)
 	require.Equal(t, []Entry{
 		{Key: "cat", Content: "cats are great"},
 		{Key: "dog", Content: "dogs are loyal"},
 	}, got)
 
-	results, err := store2.Search(ctx, nick, "cats", 1)
+	results, err := store2.Search(ctx, id, "cats", 1)
 	require.NoError(t, err)
 	require.Equal(t, []SearchResult{
 		{Entry: Entry{Key: "cat", Content: "cats are great"}, Similarity: 1.0},
@@ -407,18 +407,18 @@ func TestIndexedStore_persistence(t *testing.T) {
 func TestIndexedStore_Search_reindexes_from_backing_store(t *testing.T) {
 	ctx := t.Context()
 	embedder := fakeEmbedder(2, map[string]int{"cats": 0, "dogs": 1})
-	nick := domain.Nick("reindex")
+	id := domain.InstanceID("reindex")
 
 	// Write entries directly to the backing store (simulating migration
 	// from a plain store with no vector index).
 	backing := NewStoreAdapter(storetest.NewMemoryStore(t))
-	require.NoError(t, backing.Write(ctx, nick, Entry{Key: "cat", Content: "cats are great"}))
-	require.NoError(t, backing.Write(ctx, nick, Entry{Key: "dog", Content: "dogs are loyal"}))
+	require.NoError(t, backing.Write(ctx, id, Entry{Key: "cat", Content: "cats are great"}))
+	require.NoError(t, backing.Write(ctx, id, Entry{Key: "dog", Content: "dogs are loyal"}))
 
 	store := NewIndexedStoreFromDB(backing, chromem.NewDB(), embedder)
 
 	// Search should trigger a lazy reindex and return results.
-	results, err := store.Search(ctx, nick, "cats", 1)
+	results, err := store.Search(ctx, id, "cats", 1)
 	require.NoError(t, err)
 	require.Equal(t, []SearchResult{
 		{Entry: Entry{Key: "cat", Content: "cats are great"}, Similarity: 1.0},

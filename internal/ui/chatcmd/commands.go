@@ -3,6 +3,7 @@ package chatcmd
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/laney/modeloff/internal/config"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/session"
+	"github.com/laney/modeloff/internal/store"
 	"github.com/laney/modeloff/internal/ui"
 )
 
@@ -45,7 +47,7 @@ func (JoinCommand) Sources() map[string]command.SuggestionSource {
 // Run implements Command.
 func (c JoinCommand) Run(rc Context) tea.Cmd {
 	return func() tea.Msg {
-		if err := c.executeJoin(rc.Ctx, rc.Session, rc.Nick); err != nil {
+		if err := c.executeJoin(rc.Ctx, rc.Session, rc.Actor); err != nil {
 			return errorEvent("join", err)
 		}
 
@@ -53,7 +55,7 @@ func (c JoinCommand) Run(rc Context) tea.Cmd {
 	}
 }
 
-func (c JoinCommand) executeJoin(ctx context.Context, sess *session.Session, actor domain.Nick) error {
+func (c JoinCommand) executeJoin(ctx context.Context, sess *session.Session, actor *domain.Instance) error {
 	return sess.JoinAs(ctx, actor, domain.ChannelName(c.Channel.String()))
 }
 
@@ -81,7 +83,7 @@ func (c PartCommand) Run(rc Context) tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		if err := c.executePart(rc.Ctx, rc.Session, rc.Nick, rc.Active); err != nil {
+		if err := c.executePart(rc.Ctx, rc.Session, rc.Actor, rc.Active); err != nil {
 			return errorEvent("part", err)
 		}
 
@@ -89,7 +91,7 @@ func (c PartCommand) Run(rc Context) tea.Cmd {
 	}
 }
 
-func (c PartCommand) executePart(ctx context.Context, sess *session.Session, actor domain.Nick, ch domain.ChannelName) error {
+func (c PartCommand) executePart(ctx context.Context, sess *session.Session, actor *domain.Instance, ch domain.ChannelName) error {
 	return sess.PartAs(ctx, actor, ch, strings.TrimSpace(strings.Join(c.Message, " ")))
 }
 
@@ -193,7 +195,7 @@ func (c InviteCommand) Run(rc Context) tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		if err := c.executeInvite(rc.Ctx, rc.Session, rc.Nick, rc.Active); err != nil {
+		if err := c.executeInvite(rc.Ctx, rc.Session, rc.Actor, rc.Active); err != nil {
 			return errorEvent("invite", err)
 		}
 
@@ -204,7 +206,7 @@ func (c InviteCommand) Run(rc Context) tea.Cmd {
 func (c InviteCommand) executeInvite(
 	ctx context.Context,
 	sess *session.Session,
-	actor domain.Nick,
+	actor *domain.Instance,
 	active domain.ChannelName,
 ) error {
 	ch := active
@@ -257,7 +259,7 @@ func (c KickCommand) Run(rc Context) tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		if err := c.executeKick(rc.Ctx, rc.Session, rc.Nick, rc.Active); err != nil {
+		if err := c.executeKick(rc.Ctx, rc.Session, rc.Actor, rc.Active); err != nil {
 			return errorEvent("kick", err)
 		}
 
@@ -265,8 +267,17 @@ func (c KickCommand) Run(rc Context) tea.Cmd {
 	}
 }
 
-func (c KickCommand) executeKick(ctx context.Context, sess *session.Session, actor domain.Nick, ch domain.ChannelName) error {
-	return sess.KickAs(ctx, actor, domain.Nick(c.Nick), ch)
+func (c KickCommand) executeKick(ctx context.Context, sess *session.Session, actor *domain.Instance, ch domain.ChannelName) error {
+	target, err := sess.ResolveNick(ctx, domain.Nick(c.Nick))
+	if err != nil {
+		if errors.Is(err, store.ErrNoSuchNick) {
+			return domain.UnknownNickError{Nick: domain.Nick(c.Nick)}
+		}
+
+		return fmt.Errorf("resolve nick: %w", err)
+	}
+
+	return sess.KickAs(ctx, actor, target, ch)
 }
 
 // RunTool implements ToolCommand.
@@ -301,7 +312,7 @@ func (c MsgCommand) Run(rc Context) tea.Cmd {
 	return func() tea.Msg {
 		nick := domain.Nick(c.Nick)
 
-		ch, created, err := c.executeOpenDM(rc.Ctx, rc.Session, rc.Nick)
+		ch, created, err := c.executeOpenDM(rc.Ctx, rc.Session, rc.Actor)
 		if err != nil {
 			var guard domain.StatusChannelGuardError
 			if errors.As(err, &guard) {
@@ -311,7 +322,7 @@ func (c MsgCommand) Run(rc Context) tea.Cmd {
 			return errorEvent("msg", domain.UnknownNickError{Nick: nick})
 		}
 
-		if err := c.sendDMBody(rc.Ctx, rc.Session, rc.Nick, ch.Name); err != nil {
+		if err := c.sendDMBody(rc.Ctx, rc.Session, rc.Actor, ch.Name); err != nil {
 			return errorEvent("msg", err)
 		}
 
@@ -324,11 +335,20 @@ func (c MsgCommand) Run(rc Context) tea.Cmd {
 	}
 }
 
-func (c MsgCommand) executeOpenDM(ctx context.Context, sess *session.Session, actor domain.Nick) (domain.Channel, bool, error) {
-	return sess.OpenDMAs(ctx, actor, domain.Nick(c.Nick))
+func (c MsgCommand) executeOpenDM(ctx context.Context, sess *session.Session, actor *domain.Instance) (domain.Channel, bool, error) {
+	target, err := sess.ResolveNick(ctx, domain.Nick(c.Nick))
+	if err != nil {
+		if errors.Is(err, store.ErrNoSuchNick) {
+			return domain.Channel{}, false, domain.UnknownNickError{Nick: domain.Nick(c.Nick)}
+		}
+
+		return domain.Channel{}, false, fmt.Errorf("resolve nick: %w", err)
+	}
+
+	return sess.OpenDMAs(ctx, actor, target)
 }
 
-func (c MsgCommand) sendDMBody(ctx context.Context, sess *session.Session, actor domain.Nick, ch domain.ChannelName) error {
+func (c MsgCommand) sendDMBody(ctx context.Context, sess *session.Session, actor *domain.Instance, ch domain.ChannelName) error {
 	body := strings.TrimSpace(strings.Join(c.Body, " "))
 	if body == "" {
 		return nil
@@ -421,7 +441,7 @@ func (c TopicCommand) Run(rc Context) tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		if err := c.executeSetTopic(rc.Ctx, rc.Session, rc.Nick, rc.Active); err != nil {
+		if err := c.executeSetTopic(rc.Ctx, rc.Session, rc.Actor, rc.Active); err != nil {
 			return errorEvent("topic", err)
 		}
 
@@ -429,7 +449,7 @@ func (c TopicCommand) Run(rc Context) tea.Cmd {
 	}
 }
 
-func (c TopicCommand) executeSetTopic(ctx context.Context, sess *session.Session, actor domain.Nick, ch domain.ChannelName) error {
+func (c TopicCommand) executeSetTopic(ctx context.Context, sess *session.Session, actor *domain.Instance, ch domain.ChannelName) error {
 	return sess.SetTopicAs(ctx, actor, ch, strings.Join(c.Topic, " "))
 }
 
@@ -479,7 +499,7 @@ func (c MeCommand) Run(rc Context) tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		if err := c.executeAction(rc.Ctx, rc.Session, rc.Nick, rc.Active); err != nil {
+		if err := c.executeAction(rc.Ctx, rc.Session, rc.Actor, rc.Active); err != nil {
 			return errorEvent("me", err)
 		}
 
@@ -487,7 +507,7 @@ func (c MeCommand) Run(rc Context) tea.Cmd {
 	}
 }
 
-func (c MeCommand) executeAction(ctx context.Context, sess *session.Session, actor domain.Nick, ch domain.ChannelName) error {
+func (c MeCommand) executeAction(ctx context.Context, sess *session.Session, actor *domain.Instance, ch domain.ChannelName) error {
 	return sess.SendActionAs(ctx, actor, ch, strings.TrimSpace(strings.Join(c.Action, " ")))
 }
 
@@ -573,7 +593,7 @@ type QuitCommand struct {
 }
 
 // Run implements Command.
-func (c QuitCommand) Run(rc Context) tea.Cmd {
+func (c QuitCommand) Run(_ Context) tea.Cmd {
 	msg := c.quitMessage()
 
 	return func() tea.Msg {
@@ -594,7 +614,7 @@ func (c QuitCommand) quitMessage() string {
 	return msg
 }
 
-func (c QuitCommand) executeQuit(ctx context.Context, sess *session.Session, actor domain.Nick) error {
+func (c QuitCommand) executeQuit(ctx context.Context, sess *session.Session, actor *domain.Instance) error {
 	return sess.QuitAs(ctx, actor, c.quitMessage())
 }
 

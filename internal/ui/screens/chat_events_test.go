@@ -24,7 +24,7 @@ func TestChatScreen_PartEvent_leaving_active_switches_channel(t *testing.T) {
 	tm.WaitFor("Created channel #general")
 
 	view := tm.CurrentView()
-	body, _ := splitBodyAndStatus(view)
+	body, _ := uitest.SplitBodyAndStatus(view)
 	columns := uitest.VisibleColumns(body)
 	require.Equal(t, []string{"Channels", "▸#general"}, uitest.NonEmptyColumn(columns[0]))
 	require.Equal(t, []string{
@@ -67,14 +67,14 @@ func TestChatScreen_PartEvent_leaving_non_active_keeps_active(t *testing.T) {
 	tm.WaitFor("Created channel #general")
 
 	tm.Send(domain.PartEvent{
-		Channel: "#random",
-		Nick:    "testuser",
-		At:      time.Now(),
+		Channel:  "#random",
+		Instance: sess.UserInstance(),
+		At:       time.Now(),
 	})
 
 	// Active channel should remain #general since we parted #random.
 	view := tm.CurrentView()
-	body, _ := splitBodyAndStatus(view)
+	body, _ := uitest.SplitBodyAndStatus(view)
 	require.Equal(t, []string{"Channels", "▸#general", "#random"}, uitest.NonEmptyColumn(uitest.VisibleColumns(body)[0]))
 }
 
@@ -100,7 +100,7 @@ func TestChatScreen_TopicChangeEvent_different_channel(t *testing.T) {
 	})
 
 	view := tm.CurrentView()
-	body, _ := splitBodyAndStatus(view)
+	body, _ := uitest.SplitBodyAndStatus(view)
 	require.Equal(t, []string{
 		"*** Created channel #general",
 		"*** ChanServ sets mode +o testuser",
@@ -115,6 +115,9 @@ func TestChatScreen_QuitEvent_shows_quit_message(t *testing.T) {
 	require.NoError(t, sess.AddModel(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
 	uitest.DrainEvents(sess)
 
+	inst, err := sess.ResolveNick(t.Context(), "fakenick")
+	require.NoError(t, err)
+
 	tm := newChatApp(t, sess)
 	// Wait for focus-restore to settle before driving the QuitEvent —
 	// handleQuitEvent only emits the quit banner when an active
@@ -122,9 +125,9 @@ func TestChatScreen_QuitEvent_shows_quit_message(t *testing.T) {
 	tm.WaitFor("Created channel #general")
 
 	tm.Send(domain.QuitEvent{
-		Nick:    "fakenick",
-		Message: "shutting down",
-		At:      time.Now(),
+		Instance: inst,
+		Message:  "shutting down",
+		At:       time.Now(),
 	})
 
 	tm.WaitFor("fakenick has quit (shutting down)")
@@ -137,21 +140,24 @@ func TestChatScreen_QuitEvent_removes_instance_from_nick_list(t *testing.T) {
 	require.NoError(t, sess.AddModel(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
 	uitest.DrainEvents(sess)
 
+	inst, err := sess.ResolveNick(t.Context(), "fakenick")
+	require.NoError(t, err)
+
 	tm := newChatApp(t, sess)
 	// Wait for focus-restore to settle so handleQuitEvent has an
 	// active channel to render the quit banner against.
 	tm.WaitFor("Created channel #general", "fakenick")
 
 	tm.Send(domain.QuitEvent{
-		Nick:    "fakenick",
-		Message: "",
-		At:      time.Now(),
+		Instance: inst,
+		Message:  "",
+		At:       time.Now(),
 	})
 
 	tm.WaitFor("fakenick has quit")
 
 	view := tm.CurrentView()
-	body, _ := splitBodyAndStatus(view)
+	body, _ := uitest.SplitBodyAndStatus(view)
 	require.Equal(t, []string{
 		"*** Created channel #general",
 		"*** ChanServ sets mode +o testuser",
@@ -174,10 +180,9 @@ func TestChatScreen_ignores_join_for_unknown_channel(t *testing.T) {
 
 	// A model joins a channel the user isn't in.
 	tm.Send(domain.JoinEvent{
-		Channel:    "#secret",
-		InstanceID: "bot-1",
-		Nick:       "botty",
-		At:         time.Now(),
+		Channel:  "#secret",
+		Instance: domain.NewModelInstance("bot-1", "botty", "test/model", "", nil),
+		At:       time.Now(),
 	})
 
 	// Send a subsequent event to #general to ensure the join event
@@ -194,7 +199,7 @@ func TestChatScreen_ignores_join_for_unknown_channel(t *testing.T) {
 
 	// The sidebar should NOT show #secret.
 	view := tm.CurrentView()
-	body, _ := splitBodyAndStatus(view)
+	body, _ := uitest.SplitBodyAndStatus(view)
 	require.Equal(t, []string{"Channels", "▸#general"}, uitest.NonEmptyColumn(uitest.VisibleColumns(body)[0]))
 }
 
@@ -214,10 +219,9 @@ func TestChatScreen_model_join_does_not_switch_active(t *testing.T) {
 
 	// A model joins #random (which the user is in).
 	tm.Send(domain.JoinEvent{
-		Channel:    "#random",
-		InstanceID: "bot-1",
-		Nick:       "botty",
-		At:         time.Now(),
+		Channel:  "#random",
+		Instance: domain.NewModelInstance("bot-1", "botty", "test/model", "", nil),
+		At:       time.Now(),
 	})
 
 	// Send a subsequent event to ensure the join event has been processed.
@@ -234,7 +238,7 @@ func TestChatScreen_model_join_does_not_switch_active(t *testing.T) {
 	// Active channel should remain #general — the view should show
 	// #general's content, not #random's.
 	view := tm.CurrentView()
-	body, _ := splitBodyAndStatus(view)
+	body, _ := uitest.SplitBodyAndStatus(view)
 	require.Equal(t, []string{
 		"*** Created channel #general",
 		"*** ChanServ sets mode +o testuser",
@@ -261,14 +265,14 @@ func TestChatScreen_rapid_switch_does_not_revert(t *testing.T) {
 	// back to back. With the fix, these no longer change the active
 	// channel — they only update the sidebar.
 	tm.Send(domain.JoinEvent{
-		Channel: "#random",
-		Nick:    "testuser",
-		At:      time.Now(),
+		Channel:  "#random",
+		Instance: sess.UserInstance(),
+		At:       time.Now(),
 	})
 	tm.Send(domain.JoinEvent{
-		Channel: "#general",
-		Nick:    "testuser",
-		At:      time.Now(),
+		Channel:  "#general",
+		Instance: sess.UserInstance(),
+		At:       time.Now(),
 	})
 
 	// Send a sync marker to #chat to ensure the JoinEvents have
@@ -287,7 +291,7 @@ func TestChatScreen_rapid_switch_does_not_revert(t *testing.T) {
 	// user should not have switched the active channel. The sync
 	// marker was sent to #chat so it should be in the final view.
 	view := tm.CurrentView()
-	body, _ := splitBodyAndStatus(view)
+	body, _ := uitest.SplitBodyAndStatus(view)
 	require.Equal(t, []string{
 		"*** Created channel #chat",
 		"*** ChanServ sets mode +o testuser",
@@ -313,7 +317,7 @@ func TestChatScreen_focus_new_channel_before_join_event(t *testing.T) {
 	tm.WaitFor("#newchannel")
 
 	view := tm.CurrentView()
-	body, _ := splitBodyAndStatus(view)
+	body, _ := uitest.SplitBodyAndStatus(view)
 	columns := uitest.VisibleColumns(body)
 	require.Equal(t, []string{"Channels", "#general", "▸#newchannel"}, uitest.NonEmptyColumn(columns[0]),
 		"new channel should appear in the sidebar")
@@ -359,7 +363,7 @@ func TestChatScreen_MessageEvent_inactive_channel(t *testing.T) {
 	tm.WaitFor("sync marker")
 
 	view := tm.CurrentView()
-	body, _ := splitBodyAndStatus(view)
+	body, _ := uitest.SplitBodyAndStatus(view)
 	columns := uitest.VisibleColumns(body)
 	require.Equal(t, []string{"Channels", "▸#general", "#random (2)"}, uitest.NonEmptyColumn(columns[0]))
 	require.Equal(t, []string{
