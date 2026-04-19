@@ -13,23 +13,25 @@ const (
 	AttrInstanceID = "modeloff.instance_id"
 	AttrModelID    = "modeloff.model_id"
 
+	// Cross-cutting channel attribute (applies beyond LLM dispatch):
+	AttrChannelKind = "modeloff.channel_kind"
+
 	// LLM dispatch attributes (session-layer outcomes):
-	AttrChannelKind   = "modeloff.channel_kind"
-	AttrPassReason    = "modeloff.pass_reason"
-	AttrRetryCount    = "modeloff.retry_count"
-	AttrToolTurnCount = "modeloff.tool_turn_count"
+	AttrPassReason    = "modeloff.llm.pass.reason"
+	AttrRetryCount    = "modeloff.llm.retry.count"
+	AttrToolTurnCount = "modeloff.llm.tool.turn_count"
 
 	// LLM dispatch attributes (API transport):
-	AttrPromptTokens     = "modeloff.prompt_tokens"
-	AttrCompletionTokens = "modeloff.completion_tokens"
-	AttrTotalTokens      = "modeloff.total_tokens"
-	AttrReasoningTokens  = "modeloff.reasoning_tokens"
-	AttrCachedTokens     = "modeloff.cached_tokens"
-	AttrCacheWriteTokens = "modeloff.cache_write_tokens"
-	AttrCostCredits      = "modeloff.cost_credits"
+	AttrPromptTokens     = "modeloff.llm.tokens.prompt"
+	AttrCompletionTokens = "modeloff.llm.tokens.completion"
+	AttrTotalTokens      = "modeloff.llm.tokens.total"
+	AttrReasoningTokens  = "modeloff.llm.tokens.reasoning"
+	AttrCachedTokens     = "modeloff.llm.tokens.cached"
+	AttrCacheWriteTokens = "modeloff.llm.tokens.cache_write"
+	AttrCostCredits      = "modeloff.llm.cost.credits"
 	AttrHTTPStatusCode   = "modeloff.http_status_code"
 	AttrHTTPResponseBody = "modeloff.http_response_body"
-	AttrRequestID        = "modeloff.request_id"
+	AttrRequestID        = "modeloff.llm.request.id"
 
 	// Memory attributes:
 	AttrMemoryOperation = "modeloff.memory.operation"
