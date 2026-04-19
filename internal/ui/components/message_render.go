@@ -16,9 +16,12 @@ import (
 )
 
 // renderChannelEvent renders a domain.ChannelEvent into a styled
-// string at the given width.
+// string at the given width. kind discriminates channel/DM from
+// status rendering — see the ChannelSystemNotice case for the
+// status-channel variant.
 func renderChannelEvent(
 	event domain.ChannelEvent,
+	kind domain.ChannelKind,
 	width int,
 	highlightWords []string,
 	userNick domain.Nick,
@@ -147,6 +150,18 @@ func renderChannelEvent(
 		return wrap.Render(theme.Warning.Render("⚠ " + e.Usage))
 
 	case domain.ChannelSystemNotice:
+		// The status channel carries operational noise (connection
+		// events, config confirmations as background chatter). Rendering
+		// every line in success-green misrepresents the tone — a dimmed
+		// server-style arrow reads as an IRC-idiomatic server notice.
+		// Regular channels and DMs keep the success tick because there
+		// the same notice is a direct confirmation of a user action.
+		// System notices are always server-authored, so no kind needs a
+		// nick prefix.
+		if kind == domain.KindStatus {
+			return wrap.Render(theme.Dim.Render("→ " + e.Text))
+		}
+
 		return wrap.Render(theme.Success.Render("✓ " + e.Text))
 
 	default:

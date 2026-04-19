@@ -111,7 +111,11 @@ type ChatScreen struct {
 // them to be cancelled on shutdown.
 func NewChatScreen(ctx context.Context, sess *session.Session, cfgStore config.Store) (ChatScreen, error) {
 	sidebar := components.NewChannelSidebar()
-	chatView := components.NewChatView("", sess.UserNick(), "")
+	// The real channel kind is supplied via SetChannelMsg once the
+	// user focuses a channel; until then KindChannel is a neutral
+	// placeholder — nothing is rendered through this view before the
+	// first SetChannelMsg arrives.
+	chatView := components.NewChatView("", domain.KindChannel, sess.UserNick(), "")
 	layout := components.NewMainLayout(sidebar, chatView)
 	layout.NickList = components.NewNickList(domain.NewMemberList())
 

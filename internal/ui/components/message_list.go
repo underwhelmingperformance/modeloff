@@ -350,6 +350,7 @@ func (m MessageList) renderedContent(width int) string {
 
 		rendered = append(rendered, renderChannelEvent(
 			event.Event,
+			m.kind,
 			width,
 			m.highlightWords,
 			m.userNick,

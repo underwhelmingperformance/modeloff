@@ -85,14 +85,20 @@ type chatViewLayout struct {
 	MessageRect ui.Rect
 }
 
-// NewChatView creates a chat view for the given channel.
-func NewChatView(ch domain.ChannelName, userNick domain.Nick, topic string) ChatView {
+// NewChatView creates a chat view for the given channel. Kind
+// governs kind-sensitive rendering decisions (e.g. the glyph/style
+// used for system notices in the status channel); callers that do
+// not yet know the target channel's kind should pass
+// domain.KindChannel as a neutral default — SetChannelMsg overrides
+// it once the channel identity is known.
+func NewChatView(ch domain.ChannelName, kind domain.ChannelKind, userNick domain.Nick, topic string) ChatView {
 	keyMap := DefaultChatViewKeyMap
 
-	ml := NewMessageList(ch, domain.KindChannel).SetKeyMap(keyMap)
+	ml := NewMessageList(ch, kind).SetKeyMap(keyMap)
 
 	return ChatView{
 		channel:  ch,
+		kind:     kind,
 		topic:    topic,
 		userNick: userNick,
 		messages: ml,

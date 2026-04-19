@@ -6,6 +6,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/stretchr/testify/require"
 
+	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/observability"
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/uitest"
@@ -124,7 +125,7 @@ func TestMetricsPane_view_renders_snapshot(t *testing.T) {
 
 func TestChatWorkspace_statusItems_follow_observability_state(t *testing.T) {
 	workspace := NewChatWorkspace(
-		NewChatView("#general", "testuser", ""),
+		NewChatView("#general", domain.KindChannel, "testuser", ""),
 	).WithMetrics(NewMetricsPane(t.Context(), nil))
 
 	require.Empty(t, workspace.StatusItems())
@@ -167,7 +168,7 @@ func TestChatWorkspace_statusItems_follow_observability_state(t *testing.T) {
 
 func TestChatWorkspace_fullscreen_observability_renders_logs_and_metrics(t *testing.T) {
 	workspace := NewChatWorkspace(
-		NewChatView("#general", "testuser", ""),
+		NewChatView("#general", domain.KindChannel, "testuser", ""),
 	).WithMetrics(NewMetricsPane(t.Context(), nil))
 
 	updated, _ := workspace.Update(ui.BoundsMsg{
