@@ -9,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/session"
 	"github.com/laney/modeloff/internal/ui"
@@ -645,6 +646,7 @@ func (s ChatScreen) isHighlight(body string) bool {
 
 func (s ChatScreen) handleLiveModelsLoaded(msg liveModelsLoadedMsg) (ui.Model, tea.Cmd) {
 	*s.liveModels = msg.models
+	*s.liveModelsState = command.SuggestionStateReady
 
 	return s, nil
 }
@@ -660,8 +662,11 @@ func (s ChatScreen) handleLiveModelsLoadFailed(msg liveModelsLoadFailedMsg) (ui.
 	// ErrNoAPIKey here is a TOCTOU between loadLiveModels' HasAPIKey
 	// short-circuit and Session.ListModels' check; treat as silent.
 	if errors.Is(msg.err, session.ErrNoAPIKey) {
+		*s.liveModelsState = command.SuggestionStateReady
 		return s, nil
 	}
+
+	*s.liveModelsState = command.SuggestionStateError
 
 	channel := *s.active
 	if channel == "" {

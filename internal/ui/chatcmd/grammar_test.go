@@ -36,14 +36,15 @@ func testContext(kind domain.ChannelKind) CompletionContext {
 	}
 
 	return CompletionContext{
-		Channels:      func() iter.Seq[domain.Channel] { return slices.Values(channels) },
-		Instances:     func() iter.Seq[*domain.Instance] { return slices.Values(instances) },
-		ActiveMembers: func() iter.Seq[domain.Nick] { return slices.Values(members) },
-		ActiveChannel: func() domain.ChannelName { return "#general" },
-		UserNick:      func() domain.Nick { return "testuser" },
-		LiveModels:    func() iter.Seq[ModelOption] { return slices.Values(models) },
-		Personas:      func() iter.Seq[domain.Persona] { return slices.Values(personas) },
-		Kind:          func() domain.ChannelKind { return kind },
+		Channels:        func() iter.Seq[domain.Channel] { return slices.Values(channels) },
+		Instances:       func() iter.Seq[*domain.Instance] { return slices.Values(instances) },
+		ActiveMembers:   func() iter.Seq[domain.Nick] { return slices.Values(members) },
+		ActiveChannel:   func() domain.ChannelName { return "#general" },
+		UserNick:        func() domain.Nick { return "testuser" },
+		LiveModels:      func() iter.Seq[ModelOption] { return slices.Values(models) },
+		LiveModelsState: func() command.SuggestionState { return command.SuggestionStateReady },
+		Personas:        func() iter.Seq[domain.Persona] { return slices.Values(personas) },
+		Kind:            func() domain.ChannelKind { return kind },
 	}
 }
 
@@ -210,6 +211,15 @@ func TestComplete_add_model_persona_suggests_personas(t *testing.T) {
 
 	require.True(t, c.Visible)
 	require.Equal(t, []string{"bard", "sage"}, suggestionValues(c))
+}
+
+func TestComplete_add_model_hides_completion_when_live_models_failed(t *testing.T) {
+	ctx := testContext(domain.KindChannel)
+	ctx.LiveModelsState = func() command.SuggestionState { return command.SuggestionStateError }
+
+	c := testSet(ctx).Complete("/add-model ", len("/add-model "))
+
+	require.Equal(t, command.Completion{}, c)
 }
 
 func TestComplete_invite_suggests_instance_nicks(t *testing.T) {

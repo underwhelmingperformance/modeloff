@@ -93,10 +93,11 @@ type ChatScreen struct {
 	layout   components.MainLayout
 	keyMap   components.ChatScreenKeyMap
 
-	channels   *set.Sorted[domain.Channel]
-	liveModels *[]chatcmd.ModelOption
-	parser     chatcmd.Parser
-	completer  command.Completable
+	channels        *set.Sorted[domain.Channel]
+	liveModels      *[]chatcmd.ModelOption
+	liveModelsState *command.SuggestionState
+	parser          chatcmd.Parser
+	completer       command.Completable
 	// replyQueue holds queued model replies keyed by channel. Each
 	// channel drains at its own paced cadence (replyPaceInterval)
 	// independently, so a burst of replies in one channel does not
@@ -137,18 +138,20 @@ func NewChatScreen(ctx context.Context, sess *session.Session, cfgStore config.S
 
 	active := domain.ChannelName("")
 	liveModels := []chatcmd.ModelOption(nil)
+	liveModelsState := command.SuggestionStateReady
 
 	cs := ChatScreen{
-		ctx:        ctx,
-		sess:       sess,
-		cfgStore:   cfgStore,
-		channels:   set.NewSorted(channelOrder),
-		active:     &active,
-		liveModels: &liveModels,
-		layout:     layout,
-		keyMap:     components.DefaultChatScreenKeyMap,
-		checklist:  NewWelcomeChecklist(sess.UserNick(), sess.HasAPIKey()),
-		replyQueue: map[domain.ChannelName][]domain.ModelReplyEvent{},
+		ctx:             ctx,
+		sess:            sess,
+		cfgStore:        cfgStore,
+		channels:        set.NewSorted(channelOrder),
+		active:          &active,
+		liveModels:      &liveModels,
+		liveModelsState: &liveModelsState,
+		layout:          layout,
+		keyMap:          components.DefaultChatScreenKeyMap,
+		checklist:       NewWelcomeChecklist(sess.UserNick(), sess.HasAPIKey()),
+		replyQueue:      map[domain.ChannelName][]domain.ModelReplyEvent{},
 	}
 
 	parser, err := chatcmd.NewParser()
@@ -329,6 +332,8 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		}
 
 		s.checklist.hasAPIKey = !msg.Reset
+		*s.liveModels = nil
+		*s.liveModelsState = command.SuggestionStateReady
 
 		if s.channels.Len() == 0 {
 			return s, tea.Batch(
@@ -569,6 +574,9 @@ func (s ChatScreen) completionSet() command.CompletionSet[chatcmd.CompletionCont
 			UserNick:       func() domain.Nick { return s.sess.UserNick() },
 			LiveModels: func() iter.Seq[chatcmd.ModelOption] {
 				return slices.Values(*s.liveModels)
+			},
+			LiveModelsState: func() command.SuggestionState {
+				return *s.liveModelsState
 			},
 			Personas: func() iter.Seq[domain.Persona] {
 				personas, _ := s.sess.ListPersonas(s.ctx)

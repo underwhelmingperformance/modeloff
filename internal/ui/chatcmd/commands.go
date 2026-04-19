@@ -149,7 +149,7 @@ type AddModelCommand struct {
 // Sources implements command.Completer.
 func (AddModelCommand) Sources() map[string]command.SuggestionSource {
 	return map[string]command.SuggestionSource{
-		"model":   source(liveModelsSource),
+		"model":   resultSource(liveModelsSource),
 		"persona": source(personasSource),
 	}
 }

@@ -18,15 +18,16 @@ import (
 // target must already be present in the active channel (/kick,
 // inline @nick mentions).
 type CompletionContext struct {
-	Channels       func() iter.Seq[domain.Channel]
-	Instances      func() iter.Seq[*domain.Instance]
-	ChannelMembers func() iter.Seq[*domain.Instance]
-	ActiveMembers  func() iter.Seq[domain.Nick]
-	ActiveChannel  func() domain.ChannelName
-	UserNick       func() domain.Nick
-	LiveModels     func() iter.Seq[ModelOption]
-	Personas       func() iter.Seq[domain.Persona]
-	Kind           func() domain.ChannelKind
+	Channels        func() iter.Seq[domain.Channel]
+	Instances       func() iter.Seq[*domain.Instance]
+	ChannelMembers  func() iter.Seq[*domain.Instance]
+	ActiveMembers   func() iter.Seq[domain.Nick]
+	ActiveChannel   func() domain.ChannelName
+	UserNick        func() domain.Nick
+	LiveModels      func() iter.Seq[ModelOption]
+	LiveModelsState func() command.SuggestionState
+	Personas        func() iter.Seq[domain.Persona]
+	Kind            func() domain.ChannelKind
 }
 
 // ChannelKind implements command.KindProvider.
@@ -38,6 +39,10 @@ func (ctx CompletionContext) ChannelKind() domain.ChannelKind {
 // mentions the any type directly.
 func source(fn func(CompletionContext, command.InvocationState) []command.Suggestion) command.SuggestionSource {
 	return command.TypedSource(fn)
+}
+
+func resultSource(fn func(CompletionContext, command.InvocationState) command.SuggestionResult) command.SuggestionSource {
+	return command.TypedResultSource(fn)
 }
 
 // channelsSource suggests known channels.
@@ -107,7 +112,11 @@ func personasSource(ctx CompletionContext, _ command.InvocationState) []command.
 }
 
 // liveModelsSource suggests live model identifiers.
-func liveModelsSource(ctx CompletionContext, _ command.InvocationState) []command.Suggestion {
+func liveModelsSource(ctx CompletionContext, _ command.InvocationState) command.SuggestionResult {
+	if ctx.LiveModelsState != nil && ctx.LiveModelsState() == command.SuggestionStateError {
+		return command.SuggestionResult{State: command.SuggestionStateError}
+	}
+
 	var suggestions []command.Suggestion
 
 	for model := range ctx.LiveModels() {
@@ -123,7 +132,7 @@ func liveModelsSource(ctx CompletionContext, _ command.InvocationState) []comman
 		})
 	}
 
-	return suggestions
+	return command.SuggestionResult{Suggestions: suggestions}
 }
 
 // ModelOption describes a live model for completion suggestions.

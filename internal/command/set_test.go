@@ -10,6 +10,12 @@ import (
 	"github.com/laney/modeloff/internal/domain"
 )
 
+// anyCtx is a stand-in completion context for engine-level tests whose
+// sources take C = any. Production call sites thread a concrete
+// CompletionContext; these tests only need a non-nil any value so the
+// type-assertion in TypedSource / TypedResultSource succeeds.
+var anyCtx any = struct{}{}
+
 func TestMerge(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -139,7 +145,7 @@ func TestComplete_command_suggestions_carry_usage(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, complete(cmds, nil, tt.raw, len([]rune(tt.raw)), domain.KindChannel))
+			require.Equal(t, tt.want, complete(cmds, anyCtx, tt.raw, len([]rune(tt.raw)), domain.KindChannel))
 		})
 	}
 }
@@ -175,7 +181,7 @@ func TestComplete_filters_commands_by_channel_kind(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			completion := complete(cmds, nil, "/", 1, tt.kind)
+			completion := complete(cmds, anyCtx, "/", 1, tt.kind)
 
 			var names []string
 			for _, s := range completion.Suggestions {
@@ -188,12 +194,12 @@ func TestComplete_filters_commands_by_channel_kind(t *testing.T) {
 }
 
 func TestComplete_argument_sources_are_contextual(t *testing.T) {
-	nickSource := func(_ any, _ InvocationState) []Suggestion {
+	nickSource := TypedSource(func(_ any, _ InvocationState) []Suggestion {
 		return []Suggestion{
 			{Value: "botty", Label: "botty"},
 			{Value: "helper", Label: "helper"},
 		}
-	}
+	})
 
 	cmds := Set{
 		Commands: []*Node{
@@ -210,13 +216,13 @@ func TestComplete_argument_sources_are_contextual(t *testing.T) {
 	require.Equal(t, Completion{
 		Visible: true, ReplaceStart: 6, ReplaceEnd: 7, AppendSpace: false,
 		Suggestions: []Suggestion{{Value: "helper", Label: "helper"}},
-	}, complete(cmds, nil, "/kick h", 7, domain.KindChannel))
+	}, complete(cmds, anyCtx, "/kick h", 7, domain.KindChannel))
 }
 
 func TestComplete_free_form_arguments_have_no_suggestions(t *testing.T) {
-	nickSource := func(_ any, _ InvocationState) []Suggestion {
+	nickSource := TypedSource(func(_ any, _ InvocationState) []Suggestion {
 		return []Suggestion{{Value: "botty", Label: "botty"}}
-	}
+	})
 
 	cmds := Set{
 		Commands: []*Node{
@@ -233,17 +239,17 @@ func TestComplete_free_form_arguments_have_no_suggestions(t *testing.T) {
 
 	require.Equal(t, Completion{
 		Visible: true, ReplaceStart: 11, ReplaceEnd: 16,
-	}, complete(cmds, nil, "/msg botty hello", 16, domain.KindChannel))
+	}, complete(cmds, anyCtx, "/msg botty hello", 16, domain.KindChannel))
 }
 
 func TestComplete_composes_sources(t *testing.T) {
-	localSource := func(_ any, _ InvocationState) []Suggestion {
+	localSource := TypedSource(func(_ any, _ InvocationState) []Suggestion {
 		return []Suggestion{{Value: "botty", Label: "botty", Detail: "test/model-a"}}
-	}
+	})
 
-	liveSource := func(_ any, _ InvocationState) []Suggestion {
+	liveSource := TypedSource(func(_ any, _ InvocationState) []Suggestion {
 		return []Suggestion{{Value: "anthropic/claude-3-haiku", Label: "anthropic/claude-3-haiku", Detail: "Claude Haiku"}}
-	}
+	})
 
 	cmds := Set{
 		Commands: []*Node{
@@ -273,7 +279,58 @@ func TestComplete_composes_sources(t *testing.T) {
 			{Value: "botty", Label: "botty", Detail: "test/model-a"},
 			{Value: "anthropic/claude-3-haiku", Label: "anthropic/claude-3-haiku", Detail: "Claude Haiku"},
 		},
-	}, complete(cmds, nil, "/invite ", 8, domain.KindChannel))
+	}, complete(cmds, anyCtx, "/invite ", 8, domain.KindChannel))
+}
+
+func TestComplete_hides_completion_when_source_errors(t *testing.T) {
+	cmds := Set{
+		Commands: []*Node{
+			{
+				Name: "add-model",
+				Help: "Add a model",
+				Positionals: []Positional{
+					{
+						Name: "model",
+						Source: TypedResultSource(func(_ any, _ InvocationState) SuggestionResult {
+							return SuggestionResult{State: SuggestionStateError}
+						}),
+					},
+				},
+			},
+		},
+	}
+
+	require.Equal(t, Completion{}, complete(cmds, anyCtx, "/add-model ", 11, domain.KindChannel))
+}
+
+func TestComplete_composed_sources_hide_completion_only_when_all_sources_error(t *testing.T) {
+	errored := TypedResultSource(func(_ any, _ InvocationState) SuggestionResult {
+		return SuggestionResult{State: SuggestionStateError}
+	})
+	healthy := TypedSource(func(_ any, _ InvocationState) []Suggestion {
+		return []Suggestion{{Value: "botty", Label: "botty"}}
+	})
+
+	cmds := Set{
+		Commands: []*Node{
+			{
+				Name: "invite",
+				Help: "Invite a model",
+				Positionals: []Positional{
+					{Name: "model", Source: ComposeSources(errored, healthy)},
+				},
+			},
+		},
+	}
+
+	require.Equal(t, Completion{
+		Visible: true, ReplaceStart: 8, ReplaceEnd: 8, AppendSpace: false,
+		Suggestions: []Suggestion{{Value: "botty", Label: "botty"}},
+	}, complete(cmds, anyCtx, "/invite ", 8, domain.KindChannel))
+
+	cmds.Commands[0].Positionals[0].Source = ComposeSources(errored, errored)
+
+	require.Equal(t, Completion{}, complete(cmds, anyCtx, "/invite ", 8, domain.KindChannel))
 }
 
 func TestNode_Usage(t *testing.T) {
@@ -366,12 +423,12 @@ func TestNode_Usage(t *testing.T) {
 }
 
 func TestComplete_token_boundaries(t *testing.T) {
-	nickSource := func(_ any, _ InvocationState) []Suggestion {
+	nickSource := TypedSource(func(_ any, _ InvocationState) []Suggestion {
 		return []Suggestion{
 			{Value: "alice", Label: "alice"},
 			{Value: "bob", Label: "bob"},
 		}
-	}
+	})
 
 	cmds := Set{
 		Commands: []*Node{
@@ -433,7 +490,7 @@ func TestComplete_token_boundaries(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, complete(cmds, nil, tt.raw, tt.cursor, domain.KindChannel))
+			require.Equal(t, tt.want, complete(cmds, anyCtx, tt.raw, tt.cursor, domain.KindChannel))
 		})
 	}
 }
@@ -445,7 +502,7 @@ func TestComplete_unknown_command_has_no_suggestions(t *testing.T) {
 
 	require.Equal(t, Completion{
 		Visible: true, ReplaceStart: 9, ReplaceEnd: 12,
-	}, complete(cmds, nil, "/unknown arg", 12, domain.KindChannel))
+	}, complete(cmds, anyCtx, "/unknown arg", 12, domain.KindChannel))
 }
 
 func TestComplete_contains_match(t *testing.T) {
@@ -461,7 +518,7 @@ func TestComplete_contains_match(t *testing.T) {
 		Suggestions: []Suggestion{
 			{Value: "claude-3-haiku", Label: "/claude-3-haiku", Detail: "Haiku model", Usage: "/claude-3-haiku"},
 		},
-	}, complete(cmds, nil, "/aiku", 5, domain.KindChannel))
+	}, complete(cmds, anyCtx, "/aiku", 5, domain.KindChannel))
 }
 
 func TestNode_Find(t *testing.T) {
@@ -542,7 +599,7 @@ func TestComplete_whitespace_after_slash(t *testing.T) {
 	require.Equal(t, Completion{
 		Visible: true, ReplaceStart: 1, ReplaceEnd: 2, AppendSpace: true,
 		Suggestions: []Suggestion{},
-	}, complete(cmds, nil, "/ ", 2, domain.KindChannel))
+	}, complete(cmds, anyCtx, "/ ", 2, domain.KindChannel))
 }
 
 func TestComplete_cursor_mid_command_name(t *testing.T) {
@@ -558,7 +615,7 @@ func TestComplete_cursor_mid_command_name(t *testing.T) {
 		Suggestions: []Suggestion{
 			{Value: "quit", Label: "/quit", Detail: "Exit.", Usage: "/quit"},
 		},
-	}, complete(cmds, nil, "/quit", 3, domain.KindChannel))
+	}, complete(cmds, anyCtx, "/quit", 3, domain.KindChannel))
 }
 
 func TestComplete_multiple_prefix_matches(t *testing.T) {
@@ -577,7 +634,7 @@ func TestComplete_multiple_prefix_matches(t *testing.T) {
 			{Value: "query", Label: "/query", Detail: "Query.", Usage: "/query"},
 			{Value: "queue", Label: "/queue", Detail: "Queue.", Usage: "/queue"},
 		},
-	}, complete(cmds, nil, "/qu", 3, domain.KindChannel))
+	}, complete(cmds, anyCtx, "/qu", 3, domain.KindChannel))
 }
 
 func TestComplete_flag_name_after_positionals(t *testing.T) {
@@ -599,7 +656,7 @@ func TestComplete_flag_name_after_positionals(t *testing.T) {
 		Suggestions: []Suggestion{
 			{Value: "--reason", Label: "--reason", Detail: "Kick reason"},
 		},
-	}, complete(cmds, nil, "/kick botty ", 12, domain.KindChannel))
+	}, complete(cmds, anyCtx, "/kick botty ", 12, domain.KindChannel))
 }
 
 func TestComplete_flag_name_prefix_filters(t *testing.T) {
@@ -624,7 +681,7 @@ func TestComplete_flag_name_prefix_filters(t *testing.T) {
 		Suggestions: []Suggestion{
 			{Value: "--persona", Label: "--persona", Detail: "Persona text"},
 		},
-	}, complete(cmds, nil, "/invite model-a --per", 21, domain.KindChannel))
+	}, complete(cmds, anyCtx, "/invite model-a --per", 21, domain.KindChannel))
 }
 
 func TestComplete_flag_value_uses_source(t *testing.T) {
@@ -660,7 +717,7 @@ func TestComplete_flag_value_uses_source(t *testing.T) {
 			{Value: "json", Label: "json"},
 			{Value: "yaml", Label: "yaml"},
 		},
-	}, complete(cmds, nil, "/config api-key --format ", 25, domain.KindChannel))
+	}, complete(cmds, anyCtx, "/config api-key --format ", 25, domain.KindChannel))
 }
 
 func TestComplete_flag_value_filters_by_prefix(t *testing.T) {
@@ -686,7 +743,7 @@ func TestComplete_flag_value_filters_by_prefix(t *testing.T) {
 	require.Equal(t, Completion{
 		Visible: true, ReplaceStart: 17, ReplaceEnd: 18, AppendSpace: true,
 		Suggestions: []Suggestion{{Value: "json", Label: "json"}},
-	}, complete(cmds, nil, "/config --format j", 18, domain.KindChannel))
+	}, complete(cmds, anyCtx, "/config --format j", 18, domain.KindChannel))
 }
 
 func TestComplete_flags_interleaved_with_positionals(t *testing.T) {
@@ -710,7 +767,7 @@ func TestComplete_flags_interleaved_with_positionals(t *testing.T) {
 	require.Equal(t, Completion{
 		Visible: true, ReplaceStart: 27, ReplaceEnd: 27, AppendSpace: true,
 		Suggestions: []Suggestion{{Value: "claude", Label: "claude"}},
-	}, complete(cmds, nil, "/invite --persona friendly ", 27, domain.KindChannel))
+	}, complete(cmds, anyCtx, "/invite --persona friendly ", 27, domain.KindChannel))
 }
 
 func TestComplete_subcommand_names(t *testing.T) {
@@ -755,7 +812,7 @@ func TestComplete_subcommand_names(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, complete(cmds, nil, tt.raw, len([]rune(tt.raw)), domain.KindChannel))
+			require.Equal(t, tt.want, complete(cmds, anyCtx, tt.raw, len([]rune(tt.raw)), domain.KindChannel))
 		})
 	}
 }
@@ -800,7 +857,7 @@ func TestComplete_flag_only_command(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, complete(cmds, nil, tt.raw, len([]rune(tt.raw)), domain.KindChannel))
+			require.Equal(t, tt.want, complete(cmds, anyCtx, tt.raw, len([]rune(tt.raw)), domain.KindChannel))
 		})
 	}
 }
@@ -879,7 +936,7 @@ func TestComplete_subcommand_recurses_into_child(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, complete(cmds, nil, tt.raw, len([]rune(tt.raw)), domain.KindChannel))
+			require.Equal(t, tt.want, complete(cmds, anyCtx, tt.raw, len([]rune(tt.raw)), domain.KindChannel))
 		})
 	}
 }
@@ -907,7 +964,7 @@ func TestComplete_group_node_combines_child_and_flag_suggestions(t *testing.T) {
 			{Value: "get", Label: "get", Detail: "Get a value", Usage: "get [--format]"},
 			{Value: "--format", Label: "--format", Detail: "Output format"},
 		},
-	}, complete(cmds, nil, "/config ", 8, domain.KindChannel))
+	}, complete(cmds, anyCtx, "/config ", 8, domain.KindChannel))
 }
 
 func TestComplete_ancestor_flag_value_uses_source(t *testing.T) {
@@ -943,7 +1000,7 @@ func TestComplete_ancestor_flag_value_uses_source(t *testing.T) {
 			{Value: "json", Label: "json"},
 			{Value: "yaml", Label: "yaml"},
 		},
-	}, complete(cmds, nil, "/config set --format ", 21, domain.KindChannel))
+	}, complete(cmds, anyCtx, "/config set --format ", 21, domain.KindChannel))
 }
 
 func TestComplete_used_ancestor_flags_are_excluded(t *testing.T) {
@@ -964,7 +1021,7 @@ func TestComplete_used_ancestor_flags_are_excluded(t *testing.T) {
 	require.Equal(t, Completion{
 		Visible: true, ReplaceStart: 26, ReplaceEnd: 28, AppendSpace: true,
 		Suggestions: []Suggestion{},
-	}, complete(cmds, nil, "/config set --format json --", 28, domain.KindChannel))
+	}, complete(cmds, anyCtx, "/config set --format json --", 28, domain.KindChannel))
 }
 
 func TestComplete_bool_flag_does_not_expect_a_value(t *testing.T) {
@@ -989,7 +1046,7 @@ func TestComplete_bool_flag_does_not_expect_a_value(t *testing.T) {
 			{Value: "api-key", Label: "api-key", Detail: "API key", Usage: "api-key [--reset]"},
 			{Value: "poke-interval", Label: "poke-interval", Detail: "Poke interval", Usage: "poke-interval [--reset]"},
 		},
-	}, complete(cmds, nil, "/config --reset ", 16, domain.KindChannel))
+	}, complete(cmds, anyCtx, "/config --reset ", 16, domain.KindChannel))
 }
 
 func TestComplete_deep_nesting_walks_into_grandchildren(t *testing.T) {
@@ -1068,7 +1125,7 @@ func TestComplete_deep_nesting_walks_into_grandchildren(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, complete(cmds, nil, tt.raw, len([]rune(tt.raw)), domain.KindChannel))
+			require.Equal(t, tt.want, complete(cmds, anyCtx, tt.raw, len([]rune(tt.raw)), domain.KindChannel))
 		})
 	}
 }
@@ -1099,7 +1156,7 @@ func TestComplete_optional_positional_with_source(t *testing.T) {
 			{Value: "claude", Label: "claude"},
 			{Value: "gemini", Label: "gemini"},
 		},
-	}, complete(cmds, nil, "/invite ", 8, domain.KindChannel))
+	}, complete(cmds, anyCtx, "/invite ", 8, domain.KindChannel))
 }
 
 func TestComplete_command_suggestions_include_aliases(t *testing.T) {
@@ -1168,7 +1225,7 @@ func TestComplete_command_suggestions_include_aliases(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, complete(cmds, nil, tt.raw, len([]rune(tt.raw)), domain.KindChannel))
+			require.Equal(t, tt.want, complete(cmds, anyCtx, tt.raw, len([]rune(tt.raw)), domain.KindChannel))
 		})
 	}
 }
@@ -1197,7 +1254,7 @@ func TestComplete_child_suggestions_include_aliases(t *testing.T) {
 			{Value: "set", Label: "set (s)", Detail: "Set a value", Usage: "set (s)", Aliases: []string{"s"}},
 			{Value: "get", Label: "get", Detail: "Get a value", Usage: "get"},
 		},
-	}, complete(cmds, nil, raw, len([]rune(raw)), domain.KindChannel))
+	}, complete(cmds, anyCtx, raw, len([]rune(raw)), domain.KindChannel))
 }
 
 func TestComplete_child_suggestion_usage_includes_args(t *testing.T) {
@@ -1236,7 +1293,7 @@ func TestComplete_child_suggestion_usage_includes_args(t *testing.T) {
 				Aliases: []string{"s"},
 			},
 		},
-	}, complete(cmds, nil, raw, len([]rune(raw)), domain.KindChannel))
+	}, complete(cmds, anyCtx, raw, len([]rune(raw)), domain.KindChannel))
 }
 
 func TestComplete_alias_resolves_to_positional_suggestions(t *testing.T) {
@@ -1268,7 +1325,7 @@ func TestComplete_alias_resolves_to_positional_suggestions(t *testing.T) {
 			{Value: "#general", Label: "#general"},
 			{Value: "#random", Label: "#random"},
 		},
-	}, complete(cmds, nil, raw, len([]rune(raw)), domain.KindChannel))
+	}, complete(cmds, anyCtx, raw, len([]rune(raw)), domain.KindChannel))
 }
 
 // --- Tool schema tests ---

@@ -12,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/stretchr/testify/require"
 
+	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/session"
 	"github.com/laney/modeloff/internal/ui/chatcmd"
@@ -126,10 +127,13 @@ func TestChatScreen_handleLiveModelsLoadFailed(t *testing.T) {
 			require.NoError(t, err)
 			*screen.active = tc.active
 			*screen.liveModels = placeholderModels()
+			*screen.liveModelsState = command.SuggestionStateReady
 
 			_, cmd := screen.handleLiveModelsLoadFailed(liveModelsLoadFailedMsg{err: upstreamErr})
 
 			require.Nil(t, *screen.liveModels, "liveModels should be emptied")
+			require.Equal(t, command.SuggestionStateError, *screen.liveModelsState,
+				"real upstream failure must flip completer state to Error so the popover is suppressed")
 			require.NotNil(t, cmd)
 
 			msgs := collectMsgs(cmd)
@@ -183,10 +187,13 @@ func TestChatScreen_handleLiveModelsLoadFailed_silent_on_no_api_key(t *testing.T
 			screen, newErr := NewChatScreen(t.Context(), newTestSession(t), nil, domain.KindStatus)
 			require.NoError(t, newErr)
 			*screen.liveModels = placeholderModels()
+			*screen.liveModelsState = command.SuggestionStateReady
 
 			_, cmd := screen.handleLiveModelsLoadFailed(liveModelsLoadFailedMsg{err: err})
 
 			require.Nil(t, *screen.liveModels)
+			require.Equal(t, command.SuggestionStateReady, *screen.liveModelsState,
+				"ErrNoAPIKey must leave the completer in Ready: the popover suppression is reserved for genuine upstream failures")
 			require.Nil(t, cmd, "ErrNoAPIKey is a validation race and must not surface")
 
 			_, found := logs.find("live models load failed")
@@ -197,6 +204,33 @@ func TestChatScreen_handleLiveModelsLoadFailed_silent_on_no_api_key(t *testing.T
 
 func placeholderModels() []chatcmd.ModelOption {
 	return []chatcmd.ModelOption{{ID: "test/model"}}
+}
+
+func TestChatScreen_APIKeySetResult_clears_live_models_and_resets_state(t *testing.T) {
+	tests := map[string]chatcmd.APIKeySetResult{
+		"set":   {Reset: false},
+		"reset": {Reset: true},
+	}
+
+	for name, msg := range tests {
+		t.Run(name, func(t *testing.T) {
+			sess := newTestSession(t)
+			require.NoError(t, sess.Join(t.Context(), "#general"))
+
+			screen, err := NewChatScreen(t.Context(), sess, nil, domain.KindStatus)
+			require.NoError(t, err)
+			*screen.active = "#general"
+			*screen.liveModels = placeholderModels()
+			*screen.liveModelsState = command.SuggestionStateError
+
+			_, _ = screen.Update(msg)
+
+			require.Nil(t, *screen.liveModels,
+				"APIKeySetResult must clear the stale cache so the next loadLiveModels tick repopulates it")
+			require.Equal(t, command.SuggestionStateReady, *screen.liveModelsState,
+				"APIKeySetResult must reset completer state so the popover reappears once the reload lands")
+		})
+	}
 }
 
 func filterSystemNotices(events []domain.StoredEvent) []domain.ChannelSystemNotice {

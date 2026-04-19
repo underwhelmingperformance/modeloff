@@ -25,11 +25,27 @@ type Suggestion struct {
 	Aliases []string
 }
 
+// SuggestionState describes whether a suggestion source completed
+// normally or is in an explicit error state.
+type SuggestionState uint8
+
+const (
+	SuggestionStateReady SuggestionState = iota
+	SuggestionStateError
+)
+
+// SuggestionResult is the completion-layer result from a source.
+// An error state is distinct from a healthy empty suggestion list.
+type SuggestionResult struct {
+	Suggestions []Suggestion
+	State       SuggestionState
+}
+
 // SuggestionSource returns suggestions for the current argument.
 // The first parameter is a caller-defined completion context (passed
 // through from Completable.Complete); sources type-assert it to the
 // concrete context type they expect.
-type SuggestionSource func(ctx any, state InvocationState) []Suggestion
+type SuggestionSource func(ctx any, state InvocationState) SuggestionResult
 
 // Positional describes a positional command argument.
 type Positional struct {
@@ -579,7 +595,12 @@ func complete(set Set, ctx any, raw string, cursor int, kind domain.ChannelKind)
 		flag := cctx.expectingFlagValue
 
 		if flag.Source != nil {
-			completion.Suggestions = filterSuggestions(flag.Source(ctx, state), prefix)
+			result := flag.Source(ctx, state)
+			if result.State == SuggestionStateError {
+				return Completion{}
+			}
+
+			completion.Suggestions = filterSuggestions(result.Suggestions, prefix)
 		}
 
 		return completion
@@ -599,7 +620,12 @@ func complete(set Set, ctx any, raw string, cursor int, kind domain.ChannelKind)
 	// Positional completion.
 	pos := resolvePositional(cctx.node.Positionals, cctx.positionalIndex)
 	if pos != nil && pos.Source != nil {
-		completion.Suggestions = filterSuggestions(pos.Source(ctx, state), prefix)
+		result := pos.Source(ctx, state)
+		if result.State == SuggestionStateError {
+			return Completion{}
+		}
+
+		completion.Suggestions = filterSuggestions(result.Suggestions, prefix)
 		completion.AppendSpace = hasContinuation(cctx.node, cctx.positionalIndex)
 		return completion
 	}
@@ -1031,24 +1057,41 @@ func dedupeSuggestions(all []Suggestion) []Suggestion {
 func LiteralSource(values ...Suggestion) SuggestionSource {
 	literals := append([]Suggestion(nil), values...)
 
-	return func(_ any, _ InvocationState) []Suggestion {
-		return slices.Clone(literals)
+	return func(_ any, _ InvocationState) SuggestionResult {
+		return SuggestionResult{Suggestions: slices.Clone(literals)}
 	}
 }
 
 // ComposeSources concatenates multiple sources in declaration order.
+// The aggregate state is SuggestionStateError only when every
+// contributing source reports SuggestionStateError; a healthy source
+// masks error-state peers so their partial suggestions still reach the
+// caller.
 func ComposeSources(sources ...SuggestionSource) SuggestionSource {
-	return func(ctx any, state InvocationState) []Suggestion {
+	return func(ctx any, state InvocationState) SuggestionResult {
 		var suggestions []Suggestion
+		hadSource := false
+		allError := true
+
 		for _, source := range sources {
 			if source == nil {
 				continue
 			}
 
-			suggestions = append(suggestions, source(ctx, state)...)
+			hadSource = true
+			result := source(ctx, state)
+			suggestions = append(suggestions, result.Suggestions...)
+
+			if result.State != SuggestionStateError {
+				allError = false
+			}
 		}
 
-		return suggestions
+		if hadSource && allError {
+			return SuggestionResult{State: SuggestionStateError}
+		}
+
+		return SuggestionResult{Suggestions: suggestions}
 	}
 }
 
@@ -1056,7 +1099,15 @@ func ComposeSources(sources ...SuggestionSource) SuggestionSource {
 // This keeps the any type-assertion internal to the command package
 // so that callers work with concrete context types.
 func TypedSource[C any](fn func(C, InvocationState) []Suggestion) SuggestionSource {
-	return func(ctx any, state InvocationState) []Suggestion {
+	return func(ctx any, state InvocationState) SuggestionResult {
+		return SuggestionResult{Suggestions: fn(ctx.(C), state)}
+	}
+}
+
+// TypedResultSource wraps a typed source function that needs to
+// return explicit completion state alongside its suggestions.
+func TypedResultSource[C any](fn func(C, InvocationState) SuggestionResult) SuggestionSource {
+	return func(ctx any, state InvocationState) SuggestionResult {
 		return fn(ctx.(C), state)
 	}
 }
