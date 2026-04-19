@@ -26,14 +26,15 @@ func (e *UnknownCommandError) Error() string {
 }
 
 // UnknownSubcommandError is returned when a token does not match any
-// child command of the current node.
+// child command of the current node. The node's `Path()` is captured
+// verbatim at construction time; see the call site in `command.go`.
 type UnknownSubcommandError struct {
 	Name string
-	Node *Node
+	Path string
 }
 
 func (e *UnknownSubcommandError) Error() string {
-	return fmt.Sprintf("unknown subcommand %q for /%s", e.Name, e.Node.Path())
+	return fmt.Sprintf("unknown subcommand %q for /%s", e.Name, e.Path)
 }
 
 // AliasCollisionError is returned at build time when an alias
@@ -62,11 +63,11 @@ func (e *DuplicateCommandError) Error() string {
 // NoFactoryError is returned when a leaf node has no factory function
 // to produce its command struct.
 type NoFactoryError struct {
-	Node *Node
+	Path string
 }
 
 func (e *NoFactoryError) Error() string {
-	return fmt.Sprintf("command /%s has no factory", e.Node.Path())
+	return fmt.Sprintf("command /%s has no factory", e.Path)
 }
 
 // FieldError wraps an error with the struct field name that caused
@@ -95,21 +96,17 @@ func (e *InterfaceError) Error() string {
 }
 
 // SubcommandError is returned when a group node is invoked without
-// specifying a subcommand.
+// specifying a subcommand. The group's path and available children
+// are captured as strings so the error surface doesn't need a type
+// parameter.
 type SubcommandError struct {
-	Node *Node
+	Path     string
+	Children []string
 }
 
 func (e *SubcommandError) Error() string {
-	var names []string
-	for _, child := range e.Node.Children {
-		for name := range child.Names() {
-			names = append(names, name)
-		}
-	}
-
 	return fmt.Sprintf(
 		"/%s requires a subcommand: %s",
-		e.Node.Path(), strings.Join(names, ", "),
+		e.Path, strings.Join(e.Children, ", "),
 	)
 }

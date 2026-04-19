@@ -35,18 +35,8 @@ func (ctx CompletionContext) ChannelKind() domain.ChannelKind {
 	return ctx.Kind()
 }
 
-// source wraps a typed source function so that chatcmd code never
-// mentions the any type directly.
-func source(fn func(CompletionContext, command.InvocationState) []command.Suggestion) command.SuggestionSource {
-	return command.TypedSource(fn)
-}
-
-func resultSource(fn func(CompletionContext, command.InvocationState) command.SuggestionResult) command.SuggestionSource {
-	return command.TypedResultSource(fn)
-}
-
 // channelsSource suggests known channels.
-func channelsSource(ctx CompletionContext, _ command.InvocationState) []command.Suggestion {
+func channelsSource(ctx CompletionContext, _ command.InvocationState[CompletionContext]) command.SuggestionResult {
 	var suggestions []command.Suggestion
 
 	for ch := range ctx.Channels() {
@@ -57,12 +47,12 @@ func channelsSource(ctx CompletionContext, _ command.InvocationState) []command.
 		})
 	}
 
-	return suggestions
+	return command.SuggestionResult{Suggestions: suggestions}
 }
 
 // activeMembersSource suggests members of the active channel,
 // excluding the user's own nick.
-func activeMembersSource(ctx CompletionContext, _ command.InvocationState) []command.Suggestion {
+func activeMembersSource(ctx CompletionContext, _ command.InvocationState[CompletionContext]) command.SuggestionResult {
 	userNick := ctx.UserNick()
 
 	var suggestions []command.Suggestion
@@ -78,11 +68,11 @@ func activeMembersSource(ctx CompletionContext, _ command.InvocationState) []com
 		})
 	}
 
-	return suggestions
+	return command.SuggestionResult{Suggestions: suggestions}
 }
 
 // instancesSource suggests known instance nicks.
-func instancesSource(ctx CompletionContext, _ command.InvocationState) []command.Suggestion {
+func instancesSource(ctx CompletionContext, _ command.InvocationState[CompletionContext]) command.SuggestionResult {
 	var suggestions []command.Suggestion
 
 	for inst := range ctx.Instances() {
@@ -93,11 +83,11 @@ func instancesSource(ctx CompletionContext, _ command.InvocationState) []command
 		})
 	}
 
-	return suggestions
+	return command.SuggestionResult{Suggestions: suggestions}
 }
 
 // personasSource suggests known persona identifiers.
-func personasSource(ctx CompletionContext, _ command.InvocationState) []command.Suggestion {
+func personasSource(ctx CompletionContext, _ command.InvocationState[CompletionContext]) command.SuggestionResult {
 	var suggestions []command.Suggestion
 
 	for p := range ctx.Personas() {
@@ -108,11 +98,11 @@ func personasSource(ctx CompletionContext, _ command.InvocationState) []command.
 		})
 	}
 
-	return suggestions
+	return command.SuggestionResult{Suggestions: suggestions}
 }
 
 // liveModelsSource suggests live model identifiers.
-func liveModelsSource(ctx CompletionContext, _ command.InvocationState) command.SuggestionResult {
+func liveModelsSource(ctx CompletionContext, _ command.InvocationState[CompletionContext]) command.SuggestionResult {
 	if ctx.LiveModelsState != nil && ctx.LiveModelsState() == command.SuggestionStateError {
 		return command.SuggestionResult{State: command.SuggestionStateError}
 	}

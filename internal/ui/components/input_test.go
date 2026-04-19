@@ -672,12 +672,11 @@ func (k inputBarKind) ChannelKind() domain.ChannelKind { return domain.ChannelKi
 
 const inputBarKindChannel = inputBarKind(domain.KindChannel)
 
-func inputBarWithPopover(nodes []*command.Node) ui.Model {
+func inputBarWithPopover(nodes []*command.Node[inputBarKind]) ui.Model {
 	var m ui.Model = components.NewInputBar("testuser")
 
-	m, _ = m.Update(components.CommandStateMsg{
-		Commands:  nodes,
-		Completer: command.CompletionSet[inputBarKind]{Set: command.Set{Commands: nodes}, Ctx: inputBarKindChannel},
+	m, _ = m.Update(components.CompleterMsg{
+		Completer: command.CompletionSet[inputBarKind]{Set: command.Set[inputBarKind]{Commands: nodes}, Ctx: inputBarKindChannel},
 	})
 	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 0, Y: 0, Width: 60, Height: 24}})
 
@@ -685,7 +684,7 @@ func inputBarWithPopover(nodes []*command.Node) ui.Model {
 }
 
 func TestInputBar_popover_shows_completions(t *testing.T) {
-	nodes := []*command.Node{
+	nodes := []*command.Node[inputBarKind]{
 		{Name: "join", Help: "Join a channel"},
 		{Name: "part", Help: "Leave a channel"},
 	}
@@ -701,7 +700,7 @@ func TestInputBar_popover_shows_completions(t *testing.T) {
 }
 
 func TestInputBar_popover_tab_accepts(t *testing.T) {
-	nodes := []*command.Node{
+	nodes := []*command.Node[inputBarKind]{
 		{Name: "join", Help: "Join a channel"},
 	}
 	m := inputBarWithPopover(nodes)
@@ -723,7 +722,7 @@ func TestInputBar_popover_tab_accepts(t *testing.T) {
 }
 
 func TestInputBar_popover_dismiss_on_esc(t *testing.T) {
-	nodes := []*command.Node{
+	nodes := []*command.Node[inputBarKind]{
 		{Name: "join", Help: "Join a channel"},
 		{Name: "part", Help: "Leave a channel"},
 	}
@@ -745,7 +744,7 @@ func TestInputBar_popover_dismiss_on_esc(t *testing.T) {
 }
 
 func TestInputBar_keybindings_include_popover_when_visible(t *testing.T) {
-	nodes := []*command.Node{
+	nodes := []*command.Node[inputBarKind]{
 		{Name: "join", Help: "Join a channel"},
 	}
 	m := inputBarWithPopover(nodes)

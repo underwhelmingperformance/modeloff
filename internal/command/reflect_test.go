@@ -19,7 +19,7 @@ type positionalMeta struct {
 	Nargs    *int
 }
 
-func toPositionalMeta(positionals []Positional) []positionalMeta {
+func toPositionalMeta(positionals []Positional[testCtx]) []positionalMeta {
 	if len(positionals) == 0 {
 		return nil
 	}
@@ -48,7 +48,7 @@ type flagMeta struct {
 	Variadic bool
 }
 
-func toFlagMeta(flags []Flag) []flagMeta {
+func toFlagMeta(flags []Flag[testCtx]) []flagMeta {
 	if len(flags) == 0 {
 		return nil
 	}
@@ -80,7 +80,7 @@ type nodeMeta struct {
 	Children    []nodeMeta
 }
 
-func toNodeMetas(nodes []*Node) []nodeMeta {
+func toNodeMetas(nodes []*Node[testCtx]) []nodeMeta {
 	metas := make([]nodeMeta, len(nodes))
 	for i, n := range nodes {
 		metas[i] = toNodeMeta(n)
@@ -89,7 +89,7 @@ func toNodeMetas(nodes []*Node) []nodeMeta {
 	return metas
 }
 
-func toNodeMeta(n *Node) nodeMeta {
+func toNodeMeta(n *Node[testCtx]) nodeMeta {
 	var children []nodeMeta
 	for _, child := range n.Children {
 		children = append(children, toNodeMeta(child))
@@ -208,13 +208,13 @@ func TestBuildPositionals(t *testing.T) {
 		{name: "channel", help: "Channel to join", index: 0},
 	}
 
-	stubSource := LiteralSource(Suggestion{Value: "a", Label: "a"})
+	stubSource := LiteralSource[testCtx](Suggestion{Value: "a", Label: "a"})
 
-	sources := map[string]SuggestionSource{
+	sources := map[string]SuggestionSource[testCtx]{
 		"channel": stubSource,
 	}
 
-	positionals := buildPositionals(fields, sources)
+	positionals := buildPositionals[testCtx](fields, sources)
 
 	require.Equal(t, []positionalMeta{
 		{Name: "channel", Help: "Channel to join"},
@@ -227,11 +227,11 @@ func TestBuildPositionals_unknown_source_ignored(t *testing.T) {
 		{name: "nick", help: "Nick", index: 0},
 	}
 
-	sources := map[string]SuggestionSource{
-		"nonexistent": LiteralSource(Suggestion{Value: "x", Label: "x"}),
+	sources := map[string]SuggestionSource[testCtx]{
+		"nonexistent": LiteralSource[testCtx](Suggestion{Value: "x", Label: "x"}),
 	}
 
-	positionals := buildPositionals(fields, sources)
+	positionals := buildPositionals[testCtx](fields, sources)
 
 	require.Equal(t, []positionalMeta{
 		{Name: "nick", Help: "Nick"},
@@ -245,7 +245,7 @@ func TestBuildPositionals_skips_flags(t *testing.T) {
 		{name: "persona", help: "Persona", isFlag: true, flagName: "--persona", variadic: true, index: 1},
 	}
 
-	positionals := buildPositionals(fields, nil)
+	positionals := buildPositionals[testCtx](fields, nil)
 
 	require.Equal(t, []positionalMeta{
 		{Name: "model", Help: "Model"},
@@ -257,7 +257,7 @@ func TestBuildFlags(t *testing.T) {
 		{name: "persona", help: "Persona", isFlag: true, flagName: "--persona", variadic: true, index: 0},
 	}
 
-	flags := buildFlags(fields, nil)
+	flags := buildFlags[testCtx](fields, nil)
 
 	require.Equal(t, []flagMeta{
 		{Name: "--persona", Help: "Persona", Variadic: true},
@@ -269,7 +269,7 @@ func TestBuildFlags_marks_bool_flags(t *testing.T) {
 		{name: "reset", help: "Reset", isFlag: true, boolFlag: true, flagName: "--reset", index: 0},
 	}
 
-	flags := buildFlags(fields, nil)
+	flags := buildFlags[testCtx](fields, nil)
 
 	require.Equal(t, []flagMeta{
 		{Name: "--reset", Help: "Reset", Boolean: true},
@@ -282,7 +282,7 @@ func TestBuildFlags_skips_positionals(t *testing.T) {
 		{name: "persona", help: "Persona", isFlag: true, flagName: "--persona", variadic: true, index: 1},
 	}
 
-	flags := buildFlags(fields, nil)
+	flags := buildFlags[testCtx](fields, nil)
 
 	require.Equal(t, []flagMeta{
 		{Name: "--persona", Help: "Persona", Variadic: true},
@@ -320,7 +320,7 @@ type buildGrammar struct {
 }
 
 func TestBuild_produces_nodes_from_grammar(t *testing.T) {
-	nodes, err := build(&buildGrammar{})
+	nodes, err := build[testCtx](&buildGrammar{})
 	require.NoError(t, err)
 
 	require.Equal(t, []nodeMeta{
@@ -345,7 +345,7 @@ func TestBuild_name_tag_overrides_field_name(t *testing.T) {
 		Foo renameCommand `cmd:"" name:"bar" help:"A renamed command."`
 	}{}
 
-	nodes, err := build(grammar)
+	nodes, err := build[testCtx](grammar)
 	require.NoError(t, err)
 
 	require.Equal(t, []nodeMeta{
@@ -360,7 +360,7 @@ func TestBuild_skips_non_cmd_fields(t *testing.T) {
 		NotCmd string
 	}{}
 
-	nodes, err := build(grammar)
+	nodes, err := build[testCtx](grammar)
 	require.NoError(t, err)
 
 	require.Equal(t, []nodeMeta{
@@ -369,19 +369,19 @@ func TestBuild_skips_non_cmd_fields(t *testing.T) {
 }
 
 func TestBuild_rejects_non_pointer(t *testing.T) {
-	_, err := build(buildGrammar{})
+	_, err := build[testCtx](buildGrammar{})
 	require.Error(t, err)
 }
 
 func TestBuild_rejects_non_struct(t *testing.T) {
 	s := "not a struct"
 
-	_, err := build(&s)
+	_, err := build[testCtx](&s)
 	require.Error(t, err)
 }
 
 func TestBuild_factory_creates_pointer(t *testing.T) {
-	nodes, err := build(&buildGrammar{})
+	nodes, err := build[testCtx](&buildGrammar{})
 	require.NoError(t, err)
 
 	require.Equal(t, []nodeMeta{
@@ -408,7 +408,7 @@ func TestBuild_unexported_fields_are_skipped(t *testing.T) {
 		prv someCommand `cmd:"" help:"Private."`
 	}{}
 
-	nodes, err := build(grammar)
+	nodes, err := build[testCtx](grammar)
 	require.NoError(t, err)
 
 	require.Equal(t, []nodeMeta{
@@ -419,7 +419,7 @@ func TestBuild_unexported_fields_are_skipped(t *testing.T) {
 func TestBuild_empty_grammar(t *testing.T) {
 	grammar := &struct{}{}
 
-	nodes, err := build(grammar)
+	nodes, err := build[testCtx](grammar)
 	require.NoError(t, err)
 
 	require.Nil(t, nodes)
@@ -429,9 +429,9 @@ type completerCommand struct {
 	Target string `arg:"" help:"Target"`
 }
 
-func (completerCommand) Sources() map[string]SuggestionSource {
-	return map[string]SuggestionSource{
-		"target": LiteralSource(Suggestion{Value: "a", Label: "a"}),
+func (completerCommand) Sources() map[string]SuggestionSource[testCtx] {
+	return map[string]SuggestionSource[testCtx]{
+		"target": LiteralSource[testCtx](Suggestion{Value: "a", Label: "a"}),
 	}
 }
 
@@ -440,7 +440,7 @@ func TestBuild_picks_up_completer_sources(t *testing.T) {
 		Do completerCommand `cmd:"" help:"Do something."`
 	}{}
 
-	nodes, err := build(grammar)
+	nodes, err := build[testCtx](grammar)
 	require.NoError(t, err)
 
 	require.Equal(t, []nodeMeta{
@@ -458,7 +458,7 @@ func TestBuild_undecodable_field_returns_field_error(t *testing.T) {
 		Bad badCommand `cmd:"" help:"Bad."`
 	}{}
 
-	_, err := build(grammar)
+	_, err := build[testCtx](grammar)
 
 	var fieldErr *FieldError
 	require.ErrorAs(t, err, &fieldErr)
@@ -493,7 +493,7 @@ type buildSubcommandGrammar struct {
 }
 
 func TestBuild_recursive_subcommands(t *testing.T) {
-	nodes, err := build(&buildSubcommandGrammar{})
+	nodes, err := build[testCtx](&buildSubcommandGrammar{})
 	require.NoError(t, err)
 
 	require.Equal(t, []nodeMeta{
@@ -531,7 +531,7 @@ func TestBuild_recursive_subcommands(t *testing.T) {
 }
 
 func TestBuild_group_nodes_have_factories_and_parent_links(t *testing.T) {
-	nodes, err := build(&buildSubcommandGrammar{})
+	nodes, err := build[testCtx](&buildSubcommandGrammar{})
 	require.NoError(t, err)
 
 	require.Equal(t, []nodeMeta{
@@ -580,7 +580,7 @@ func TestBuild_group_nodes_have_factories_and_parent_links(t *testing.T) {
 }
 
 func TestNode_AllFlags_includes_ancestor_flags(t *testing.T) {
-	nodes, err := build(&buildDeepGrammar{})
+	nodes, err := build[testCtx](&buildDeepGrammar{})
 	require.NoError(t, err)
 
 	require.Equal(t, []nodeMeta{
@@ -604,13 +604,13 @@ func TestNode_AllFlags_includes_ancestor_flags(t *testing.T) {
 	}, toNodeMetas(nodes))
 
 	top := nodes[0]
-	top.Flags = []Flag{{Name: "--top-flag", Help: "Top", Optional: true}}
+	top.Flags = []Flag[testCtx]{{Name: "--top-flag", Help: "Top", Optional: true}}
 
 	mid := top.Children[0]
-	mid.Flags = []Flag{{Name: "--mid-flag", Help: "Mid", Optional: true}}
+	mid.Flags = []Flag[testCtx]{{Name: "--mid-flag", Help: "Mid", Optional: true}}
 
 	leaf := mid.Children[0]
-	leaf.Flags = []Flag{{Name: "--leaf-flag", Help: "Leaf", Optional: true}}
+	leaf.Flags = []Flag[testCtx]{{Name: "--leaf-flag", Help: "Leaf", Optional: true}}
 
 	require.Equal(t, []flagMeta{
 		{Name: "--top-flag", Help: "Top", Optional: true},
@@ -636,7 +636,7 @@ type buildDeepGrammar struct {
 }
 
 func TestBuild_three_level_nesting(t *testing.T) {
-	nodes, err := build(&buildDeepGrammar{})
+	nodes, err := build[testCtx](&buildDeepGrammar{})
 	require.NoError(t, err)
 
 	require.Equal(t, []nodeMeta{

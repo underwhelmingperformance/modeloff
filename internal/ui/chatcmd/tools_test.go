@@ -123,7 +123,7 @@ func TestBuildToolRegistry_tool_tag_overrides_help(t *testing.T) {
 func toolParams(t *testing.T, name string) map[string]any {
 	t.Helper()
 
-	set, err := command.Build(&Grammar{})
+	set, err := command.Build[CompletionContext](&Grammar{})
 	require.NoError(t, err)
 
 	for _, node := range set.ToolNodes() {
@@ -182,7 +182,7 @@ func newToolTestSession(t *testing.T) *session.Session {
 func toolValue(t *testing.T, name string, rawJSON string) any {
 	t.Helper()
 
-	set, err := command.Build(&Grammar{})
+	set, err := command.Build[CompletionContext](&Grammar{})
 	require.NoError(t, err)
 
 	for _, node := range set.ToolNodes() {

@@ -132,7 +132,7 @@ type ChatScreen struct {
 // focus event.
 func NewChatScreen(ctx context.Context, sess *session.Session, cfgStore config.Store, initialKind domain.ChannelKind) (ChatScreen, error) {
 	sidebar := components.NewChannelSidebar()
-	chatView := components.NewChatView("", initialKind, sess.UserNick(), "")
+	chatView := components.NewChatView[chatcmd.CompletionContext]("", initialKind, sess.UserNick(), "")
 	layout := components.NewMainLayout(sidebar, chatView)
 	layout.NickList = components.NewNickList(domain.NewMemberList())
 
@@ -180,7 +180,7 @@ func (s ChatScreen) WithObservability(obs *observability.Runtime) ChatScreen {
 	s.obs = obs
 	s.summary = components.NewMetricsSummaryModel(s.ctx, obs)
 
-	chatView, ok := s.layout.Content.(components.ChatView)
+	chatView, ok := s.layout.Content.(components.ChatView[chatcmd.CompletionContext])
 	if !ok {
 		return s
 	}
@@ -210,7 +210,10 @@ func (s ChatScreen) Init() tea.Cmd {
 	cmds := []tea.Cmd{
 		s.listenForEvents(),
 		s.loadLiveModels(),
-		msgCmd(s.commandStateMsg()),
+		msgCmd(components.CommandsMsg[chatcmd.CompletionContext]{
+			Commands: s.parser.Set().Commands,
+		}),
+		msgCmd(components.CompleterMsg{Completer: s.completer}),
 		msgCmd(components.HighlightWordsMsg{
 			Words:    cfg.HighlightWords,
 			UserNick: s.sess.UserNick(),
@@ -810,7 +813,7 @@ func (s ChatScreen) updateLogEntries() ChatScreen {
 		return s
 	}
 
-	workspace, ok := s.layout.Content.(components.ChatWorkspace)
+	workspace, ok := s.layout.Content.(components.ChatWorkspace[chatcmd.CompletionContext])
 	if !ok {
 		return s
 	}

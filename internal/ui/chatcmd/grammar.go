@@ -30,5 +30,5 @@ type Grammar struct {
 // NewParser builds the command parser. The grammar is static; all
 // completion data flows through CompletionContext at suggestion time.
 func NewParser() (Parser, error) {
-	return command.BuildParser[Context, tea.Cmd](&Grammar{})
+	return command.BuildParser[CompletionContext, Context, tea.Cmd](&Grammar{})
 }

@@ -46,14 +46,14 @@ func messagesToEvents(msgs []domain.ChannelMessage) []domain.StoredEvent {
 }
 
 // newChatViewWithEvents creates a ChatView and loads events via HistoryLoadedMsg.
-func newChatViewWithEvents(ch domain.ChannelName, userNick domain.Nick, topic string, events []domain.StoredEvent) components.ChatView {
-	cv := components.NewChatView(ch, domain.KindChannel, userNick, topic)
+func newChatViewWithEvents(ch domain.ChannelName, userNick domain.Nick, topic string, events []domain.StoredEvent) components.ChatView[testKind] {
+	cv := components.NewChatView[testKind](ch, domain.KindChannel, userNick, topic)
 	legacyFormat := "[15:04:05]"
 	updated, _ := cv.Update(components.TimestampFormatMsg{
 		Format: &legacyFormat,
 		Locale: language.BritishEnglish,
 	})
-	cv = updated.(components.ChatView)
+	cv = updated.(components.ChatView[testKind])
 
 	if len(events) == 0 {
 		return cv
@@ -61,7 +61,7 @@ func newChatViewWithEvents(ch domain.ChannelName, userNick domain.Nick, topic st
 
 	m, _ := cv.Update(components.HistoryLoadedMsg{Events: events})
 
-	return m.(components.ChatView)
+	return m.(components.ChatView[testKind])
 }
 
 // chatRegionLines returns the chat region's visible lines with the
@@ -263,7 +263,7 @@ func TestChatView_View_shows_messages(t *testing.T) {
 func TestChatView_clear_messages_removes_visible_messages(t *testing.T) {
 	cv := newChatViewWithEvents("#general", "testuser", "", testEvents)
 	updated, _ := cv.Update(components.ClearMessagesMsg{})
-	cv = updated.(components.ChatView)
+	cv = updated.(components.ChatView[testKind])
 
 	v := cv.View(80, 24)
 	require.Equal(t, []string{"No messages yet"}, chatRegionLines(v))
@@ -292,7 +292,7 @@ func TestChatView_View_shows_timestamps(t *testing.T) {
 }
 
 func TestChatView_View_disables_timestamps(t *testing.T) {
-	cv := components.NewChatView("#general", domain.KindChannel, "testuser", "")
+	cv := components.NewChatView[testKind]("#general", domain.KindChannel, "testuser", "")
 	disabled := ""
 	var m ui.Model = cv
 
@@ -312,7 +312,7 @@ func TestChatView_View_disables_timestamps(t *testing.T) {
 }
 
 func TestChatView_View_uses_strftime_timestamp_format(t *testing.T) {
-	cv := components.NewChatView("#general", domain.KindChannel, "testuser", "")
+	cv := components.NewChatView[testKind]("#general", domain.KindChannel, "testuser", "")
 	format := "%X"
 	var m ui.Model = cv
 
@@ -350,7 +350,7 @@ func TestChatView_View_wraps_long_messages(t *testing.T) {
 }
 
 func TestChatView_View_empty_messages(t *testing.T) {
-	cv := components.NewChatView("#general", domain.KindChannel, "testuser", "")
+	cv := components.NewChatView[testKind]("#general", domain.KindChannel, "testuser", "")
 	v := cv.View(80, 24)
 
 	require.Equal(t, []string{"No messages yet"}, chatRegionLines(v))
@@ -364,7 +364,7 @@ func TestChatView_View_has_input_prompt(t *testing.T) {
 }
 
 func TestChatView_typing_goes_to_input(t *testing.T) {
-	cv := components.NewChatView("#general", domain.KindChannel, "testuser", "")
+	cv := components.NewChatView[testKind]("#general", domain.KindChannel, "testuser", "")
 	var m ui.Model = cv
 
 	m = typeText(t, m, "test message")
@@ -379,7 +379,7 @@ func TestChatView_typing_goes_to_input(t *testing.T) {
 }
 
 func TestChatView_command_from_input(t *testing.T) {
-	cv := components.NewChatView("#general", domain.KindChannel, "testuser", "")
+	cv := components.NewChatView[testKind]("#general", domain.KindChannel, "testuser", "")
 	var m ui.Model = cv
 
 	m = typeText(t, m, "/join #random")
@@ -666,7 +666,7 @@ func TestChatView_dm_hides_topic_bar(t *testing.T) {
 		Topic:   "should not appear",
 		Kind:    domain.KindDM,
 	})
-	cv = m.(components.ChatView)
+	cv = m.(components.ChatView[testKind])
 
 	v := cv.View(80, 24)
 
@@ -683,15 +683,15 @@ func TestChatView_dm_suppresses_join_part_events(t *testing.T) {
 		{Event: domain.ChannelMessage{Channel: "botname", From: "bot", Body: "hello human", At: now}},
 	}
 
-	cv := components.NewChatView("botname", domain.KindChannel, "testuser", "")
+	cv := components.NewChatView[testKind]("botname", domain.KindChannel, "testuser", "")
 	m, _ := cv.Update(components.SetChannelMsg{
 		Channel: "botname",
 		Kind:    domain.KindDM,
 	})
-	cv = m.(components.ChatView)
+	cv = m.(components.ChatView[testKind])
 
 	m, _ = cv.Update(components.HistoryLoadedMsg{Events: events})
-	cv = m.(components.ChatView)
+	cv = m.(components.ChatView[testKind])
 
 	v := ansi.Strip(cv.View(80, 24))
 
@@ -704,15 +704,15 @@ func TestChatView_dm_shows_quit_messages(t *testing.T) {
 		{Event: domain.ChannelQuit{Nick: "bot", Message: "goodbye", At: now}},
 	}
 
-	cv := components.NewChatView("botname", domain.KindChannel, "testuser", "")
+	cv := components.NewChatView[testKind]("botname", domain.KindChannel, "testuser", "")
 	m, _ := cv.Update(components.SetChannelMsg{
 		Channel: "botname",
 		Kind:    domain.KindDM,
 	})
-	cv = m.(components.ChatView)
+	cv = m.(components.ChatView[testKind])
 
 	m, _ = cv.Update(components.HistoryLoadedMsg{Events: events})
-	cv = m.(components.ChatView)
+	cv = m.(components.ChatView[testKind])
 
 	v := ansi.Strip(cv.View(80, 24))
 
@@ -864,14 +864,14 @@ func renderSingleEvent(event domain.StoredEvent) string {
 }
 
 func renderSingleEventWithHighlight(event domain.StoredEvent, words []string, nick domain.Nick) string {
-	cv := components.NewChatView("#test", domain.KindChannel, nick, "")
+	cv := components.NewChatView[testKind]("#test", domain.KindChannel, nick, "")
 	var m ui.Model = cv
 	topicFormat := "2006-01-02 15:04"
 
 	m, _ = m.Update(components.HistoryLoadedMsg{Events: []domain.StoredEvent{event}})
-	m, _ = m.Update(components.CommandStateMsg{
-		Commands: []*command.Node{
-			{Name: "join", Help: "Join or create a channel", Positionals: []command.Positional{{Name: "channel"}}},
+	m, _ = m.Update(components.CommandsMsg[testKind]{
+		Commands: []*command.Node[testKind]{
+			{Name: "join", Help: "Join or create a channel", Positionals: []command.Positional[testKind]{{Name: "channel"}}},
 			{Name: "help", Help: "Show available commands."},
 		},
 	})
@@ -1001,7 +1001,7 @@ func TestRenderLine_IRC_events(t *testing.T) {
 }
 
 func TestRenderLine_topic_info_omits_timestamp_when_disabled(t *testing.T) {
-	cv := components.NewChatView("#test", domain.KindChannel, "testuser", "")
+	cv := components.NewChatView[testKind]("#test", domain.KindChannel, "testuser", "")
 	var m ui.Model = cv
 	disabled := ""
 
@@ -1161,22 +1161,22 @@ func TestNewMessagesDivider_fills_width(t *testing.T) {
 }
 
 func TestChatView_command_popover_renders_and_completes(t *testing.T) {
-	var m ui.Model = components.NewChatView("#general", domain.KindChannel, "testuser", "")
-	nodes := []*command.Node{
+	var m ui.Model = components.NewChatView[testKind]("#general", domain.KindChannel, "testuser", "")
+	nodes := []*command.Node[testKind]{
 		{
 			Name: "join",
 			Help: "Join a channel",
-			Positionals: []command.Positional{
-				{Name: "channel", Source: command.LiteralSource(
+			Positionals: []command.Positional[testKind]{
+				{Name: "channel", Source: command.LiteralSource[testKind](
 					command.Suggestion{Value: "#general", Label: "#general"},
 					command.Suggestion{Value: "#random", Label: "#random"},
 				)},
 			},
 		},
 	}
-	m, _ = m.Update(components.CommandStateMsg{
-		Commands:  nodes,
-		Completer: command.CompletionSet[testKind]{Set: command.Set{Commands: nodes}, Ctx: testKindChannel},
+	m, _ = m.Update(components.CommandsMsg[testKind]{Commands: nodes})
+	m, _ = m.Update(components.CompleterMsg{
+		Completer: command.CompletionSet[testKind]{Set: command.Set[testKind]{Commands: nodes}, Ctx: testKindChannel},
 	})
 
 	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 20, Y: 0, Width: 60, Height: 24}})
@@ -1201,15 +1201,15 @@ func TestChatView_command_popover_renders_and_completes(t *testing.T) {
 }
 
 func TestChatView_popover_arrow_keys_do_not_fall_through(t *testing.T) {
-	var m ui.Model = components.NewChatView("#general", domain.KindChannel, "testuser", "")
-	nodes := []*command.Node{
+	var m ui.Model = components.NewChatView[testKind]("#general", domain.KindChannel, "testuser", "")
+	nodes := []*command.Node[testKind]{
 		{Name: "join", Help: "Join a channel"},
 		{Name: "part", Help: "Part from the current channel"},
 		{Name: "quit", Help: "Exit modeloff"},
 	}
-	m, _ = m.Update(components.CommandStateMsg{
-		Commands:  nodes,
-		Completer: command.CompletionSet[testKind]{Set: command.Set{Commands: nodes}, Ctx: testKindChannel},
+	m, _ = m.Update(components.CommandsMsg[testKind]{Commands: nodes})
+	m, _ = m.Update(components.CompleterMsg{
+		Completer: command.CompletionSet[testKind]{Set: command.Set[testKind]{Commands: nodes}, Ctx: testKindChannel},
 	})
 
 	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 0, Y: 0, Width: 60, Height: 24}})
@@ -1243,15 +1243,15 @@ func TestChatView_popover_arrow_keys_do_not_fall_through(t *testing.T) {
 }
 
 func TestChatView_popover_renders_usage_in_suggestions(t *testing.T) {
-	var m ui.Model = components.NewChatView("#general", domain.KindChannel, "testuser", "")
-	nodes := []*command.Node{
-		{Name: "join", Help: "Join a channel", Positionals: []command.Positional{{Name: "channel"}}},
+	var m ui.Model = components.NewChatView[testKind]("#general", domain.KindChannel, "testuser", "")
+	nodes := []*command.Node[testKind]{
+		{Name: "join", Help: "Join a channel", Positionals: []command.Positional[testKind]{{Name: "channel"}}},
 		{Name: "part", Help: "Part from the current channel"},
 		{Name: "quit", Help: "Exit modeloff"},
 	}
-	m, _ = m.Update(components.CommandStateMsg{
-		Commands:  nodes,
-		Completer: command.CompletionSet[testKind]{Set: command.Set{Commands: nodes}, Ctx: testKindChannel},
+	m, _ = m.Update(components.CommandsMsg[testKind]{Commands: nodes})
+	m, _ = m.Update(components.CompleterMsg{
+		Completer: command.CompletionSet[testKind]{Set: command.Set[testKind]{Commands: nodes}, Ctx: testKindChannel},
 	})
 
 	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 0, Y: 0, Width: 60, Height: 24}})
@@ -1274,19 +1274,19 @@ func TestChatView_popover_collapses_aliases_onto_single_row(t *testing.T) {
 	// with its Label trimmed against the canonical Usage. Aliases
 	// must be collapsed into the single parenthesised group after the
 	// canonical name, followed by positional args and the help text.
-	var m ui.Model = components.NewChatView("#general", domain.KindChannel, "testuser", "")
-	nodes := []*command.Node{
+	var m ui.Model = components.NewChatView[testKind]("#general", domain.KindChannel, "testuser", "")
+	nodes := []*command.Node[testKind]{
 		{
 			Name:        "join",
 			Aliases:     []string{"j", "jo"},
 			Help:        "Join a channel",
-			Positionals: []command.Positional{{Name: "channel"}},
+			Positionals: []command.Positional[testKind]{{Name: "channel"}},
 		},
 		{Name: "quit", Aliases: []string{"q"}, Help: "Exit modeloff"},
 	}
-	m, _ = m.Update(components.CommandStateMsg{
-		Commands:  nodes,
-		Completer: command.CompletionSet[testKind]{Set: command.Set{Commands: nodes}, Ctx: testKindChannel},
+	m, _ = m.Update(components.CommandsMsg[testKind]{Commands: nodes})
+	m, _ = m.Update(components.CompleterMsg{
+		Completer: command.CompletionSet[testKind]{Set: command.Set[testKind]{Commands: nodes}, Ctx: testKindChannel},
 	})
 
 	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 0, Y: 0, Width: 80, Height: 24}})
@@ -1303,7 +1303,7 @@ func TestChatView_popover_collapses_aliases_onto_single_row(t *testing.T) {
 }
 
 func TestChatView_mouse_click_positions_input_cursor(t *testing.T) {
-	cv := components.NewChatView("#general", domain.KindChannel, "testuser", "")
+	cv := components.NewChatView[testKind]("#general", domain.KindChannel, "testuser", "")
 	var m ui.Model = cv
 
 	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 20, Y: 0, Width: 60, Height: 24}})
@@ -1578,22 +1578,22 @@ func TestChatView_mouse_wheel_scrolls_messages(t *testing.T) {
 }
 
 func TestChatView_mouse_click_accepts_popover_suggestion(t *testing.T) {
-	var m ui.Model = components.NewChatView("#general", domain.KindChannel, "testuser", "")
-	nodes := []*command.Node{
+	var m ui.Model = components.NewChatView[testKind]("#general", domain.KindChannel, "testuser", "")
+	nodes := []*command.Node[testKind]{
 		{
 			Name: "join",
 			Help: "Join a channel",
-			Positionals: []command.Positional{
-				{Name: "channel", Source: command.LiteralSource(
+			Positionals: []command.Positional[testKind]{
+				{Name: "channel", Source: command.LiteralSource[testKind](
 					command.Suggestion{Value: "#general", Label: "#general"},
 					command.Suggestion{Value: "#random", Label: "#random"},
 				)},
 			},
 		},
 	}
-	m, _ = m.Update(components.CommandStateMsg{
-		Commands:  nodes,
-		Completer: command.CompletionSet[testKind]{Set: command.Set{Commands: nodes}, Ctx: testKindChannel},
+	m, _ = m.Update(components.CommandsMsg[testKind]{Commands: nodes})
+	m, _ = m.Update(components.CompleterMsg{
+		Completer: command.CompletionSet[testKind]{Set: command.Set[testKind]{Commands: nodes}, Ctx: testKindChannel},
 	})
 
 	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 20, Y: 0, Width: 60, Height: 24}})

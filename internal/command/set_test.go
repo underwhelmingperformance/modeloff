@@ -10,23 +10,27 @@ import (
 	"github.com/laney/modeloff/internal/domain"
 )
 
-// anyCtx is a stand-in completion context for engine-level tests whose
-// sources take C = any. Production call sites thread a concrete
-// CompletionContext; these tests only need a non-nil any value so the
-// type-assertion in TypedSource / TypedResultSource succeeds.
-var anyCtx any = struct{}{}
+// testCtx is a minimal [KindProvider] for engine-level tests. It
+// returns `KindChannel` so kind-filtered commands are visible by
+// default; tests that need to exercise kind filtering pass a real
+// `domain.ChannelKind` to `complete` directly.
+type testCtx struct{}
+
+func (testCtx) ChannelKind() domain.ChannelKind { return domain.KindChannel }
+
+var testCtxValue = testCtx{}
 
 func TestMerge(t *testing.T) {
 	tests := []struct {
 		name  string
-		sets  []Set
+		sets  []Set[testCtx]
 		wants []string
 	}{
 		{
 			name: "nearest wins on duplicate name",
-			sets: []Set{
-				{Commands: []*Node{{Name: "join", Help: "child"}}},
-				{Commands: []*Node{{Name: "join", Help: "parent"}, {Name: "list", Help: "list"}}},
+			sets: []Set[testCtx]{
+				{Commands: []*Node[testCtx]{{Name: "join", Help: "child"}}},
+				{Commands: []*Node[testCtx]{{Name: "join", Help: "parent"}, {Name: "list", Help: "list"}}},
 			},
 			wants: []string{"join", "list"},
 		},
@@ -37,34 +41,34 @@ func TestMerge(t *testing.T) {
 		},
 		{
 			name:  "single empty set",
-			sets:  []Set{{}},
+			sets:  []Set[testCtx]{{}},
 			wants: nil,
 		},
 		{
 			name: "single non-empty set",
-			sets: []Set{
-				{Commands: []*Node{{Name: "quit"}}},
+			sets: []Set[testCtx]{
+				{Commands: []*Node[testCtx]{{Name: "quit"}}},
 			},
 			wants: []string{"quit"},
 		},
 		{
 			name:  "two empty sets",
-			sets:  []Set{{}, {}},
+			sets:  []Set[testCtx]{{}, {}},
 			wants: nil,
 		},
 		{
 			name: "alias in higher-priority set shadows name in lower-priority set",
-			sets: []Set{
-				{Commands: []*Node{{Name: "join", Aliases: []string{"j"}}}},
-				{Commands: []*Node{{Name: "j", Help: "bare j"}}},
+			sets: []Set[testCtx]{
+				{Commands: []*Node[testCtx]{{Name: "join", Aliases: []string{"j"}}}},
+				{Commands: []*Node[testCtx]{{Name: "j", Help: "bare j"}}},
 			},
 			wants: []string{"join"},
 		},
 		{
 			name: "name in higher-priority set shadows alias in lower-priority set",
-			sets: []Set{
-				{Commands: []*Node{{Name: "j"}}},
-				{Commands: []*Node{{Name: "join", Aliases: []string{"j"}}}},
+			sets: []Set[testCtx]{
+				{Commands: []*Node[testCtx]{{Name: "j"}}},
+				{Commands: []*Node[testCtx]{{Name: "join", Aliases: []string{"j"}}}},
 			},
 			wants: []string{"j"},
 		},
@@ -84,8 +88,8 @@ func TestMerge(t *testing.T) {
 	}
 
 	t.Run("nearest wins preserves help from child", func(t *testing.T) {
-		child := Set{Commands: []*Node{{Name: "join", Help: "child"}}}
-		parent := Set{Commands: []*Node{{Name: "join", Help: "parent"}}}
+		child := Set[testCtx]{Commands: []*Node[testCtx]{{Name: "join", Help: "child"}}}
+		parent := Set[testCtx]{Commands: []*Node[testCtx]{{Name: "join", Help: "parent"}}}
 
 		merged := Merge(child, parent)
 
@@ -96,9 +100,9 @@ func TestMerge(t *testing.T) {
 }
 
 func TestComplete_command_suggestions_carry_usage(t *testing.T) {
-	cmds := Set{
-		Commands: []*Node{
-			{Name: "join", Help: "Join channels", Positionals: []Positional{{Name: "channel"}}},
+	cmds := Set[testCtx]{
+		Commands: []*Node[testCtx]{
+			{Name: "join", Help: "Join channels", Positionals: []Positional[testCtx]{{Name: "channel"}}},
 			{Name: "list", Help: "List channels"},
 			{Name: "quit", Help: "Exit."},
 		},
@@ -145,7 +149,7 @@ func TestComplete_command_suggestions_carry_usage(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, complete(cmds, anyCtx, tt.raw, len([]rune(tt.raw)), domain.KindChannel))
+			require.Equal(t, tt.want, complete(cmds, testCtxValue, tt.raw, len([]rune(tt.raw)), domain.KindChannel))
 		})
 	}
 }
@@ -153,8 +157,8 @@ func TestComplete_command_suggestions_carry_usage(t *testing.T) {
 func TestComplete_filters_commands_by_channel_kind(t *testing.T) {
 	channelOnly := domain.KindChannel
 
-	cmds := Set{
-		Commands: []*Node{
+	cmds := Set[testCtx]{
+		Commands: []*Node[testCtx]{
 			{Name: "join", Help: "Join channels"},
 			{Name: "topic", Help: "Set topic", RequiredKind: &channelOnly},
 			{Name: "kick", Help: "Kick a nick", RequiredKind: &channelOnly},
@@ -181,7 +185,7 @@ func TestComplete_filters_commands_by_channel_kind(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			completion := complete(cmds, anyCtx, "/", 1, tt.kind)
+			completion := complete(cmds, testCtxValue, "/", 1, tt.kind)
 
 			var names []string
 			for _, s := range completion.Suggestions {
@@ -194,19 +198,19 @@ func TestComplete_filters_commands_by_channel_kind(t *testing.T) {
 }
 
 func TestComplete_argument_sources_are_contextual(t *testing.T) {
-	nickSource := TypedSource(func(_ any, _ InvocationState) []Suggestion {
-		return []Suggestion{
+	nickSource := SuggestionSource[testCtx](func(_ testCtx, _ InvocationState[testCtx]) SuggestionResult {
+		return SuggestionResult{Suggestions: []Suggestion{
 			{Value: "botty", Label: "botty"},
 			{Value: "helper", Label: "helper"},
-		}
+		}}
 	})
 
-	cmds := Set{
-		Commands: []*Node{
+	cmds := Set[testCtx]{
+		Commands: []*Node[testCtx]{
 			{
 				Name: "kick",
 				Help: "Kick a nick",
-				Positionals: []Positional{
+				Positionals: []Positional[testCtx]{
 					{Name: "nick", Source: nickSource},
 				},
 			},
@@ -216,20 +220,20 @@ func TestComplete_argument_sources_are_contextual(t *testing.T) {
 	require.Equal(t, Completion{
 		Visible: true, ReplaceStart: 6, ReplaceEnd: 7, AppendSpace: false,
 		Suggestions: []Suggestion{{Value: "helper", Label: "helper"}},
-	}, complete(cmds, anyCtx, "/kick h", 7, domain.KindChannel))
+	}, complete(cmds, testCtxValue, "/kick h", 7, domain.KindChannel))
 }
 
 func TestComplete_free_form_arguments_have_no_suggestions(t *testing.T) {
-	nickSource := TypedSource(func(_ any, _ InvocationState) []Suggestion {
-		return []Suggestion{{Value: "botty", Label: "botty"}}
+	nickSource := SuggestionSource[testCtx](func(_ testCtx, _ InvocationState[testCtx]) SuggestionResult {
+		return SuggestionResult{Suggestions: []Suggestion{{Value: "botty", Label: "botty"}}}
 	})
 
-	cmds := Set{
-		Commands: []*Node{
+	cmds := Set[testCtx]{
+		Commands: []*Node[testCtx]{
 			{
 				Name: "msg",
 				Help: "Direct message",
-				Positionals: []Positional{
+				Positionals: []Positional[testCtx]{
 					{Name: "nick", Source: nickSource},
 					{Name: "message", Variadic: true, Optional: true, Help: "Message body"},
 				},
@@ -239,34 +243,34 @@ func TestComplete_free_form_arguments_have_no_suggestions(t *testing.T) {
 
 	require.Equal(t, Completion{
 		Visible: true, ReplaceStart: 11, ReplaceEnd: 16,
-	}, complete(cmds, anyCtx, "/msg botty hello", 16, domain.KindChannel))
+	}, complete(cmds, testCtxValue, "/msg botty hello", 16, domain.KindChannel))
 }
 
 func TestComplete_composes_sources(t *testing.T) {
-	localSource := TypedSource(func(_ any, _ InvocationState) []Suggestion {
-		return []Suggestion{{Value: "botty", Label: "botty", Detail: "test/model-a"}}
+	localSource := SuggestionSource[testCtx](func(_ testCtx, _ InvocationState[testCtx]) SuggestionResult {
+		return SuggestionResult{Suggestions: []Suggestion{{Value: "botty", Label: "botty", Detail: "test/model-a"}}}
 	})
 
-	liveSource := TypedSource(func(_ any, _ InvocationState) []Suggestion {
-		return []Suggestion{{Value: "anthropic/claude-3-haiku", Label: "anthropic/claude-3-haiku", Detail: "Claude Haiku"}}
+	liveSource := SuggestionSource[testCtx](func(_ testCtx, _ InvocationState[testCtx]) SuggestionResult {
+		return SuggestionResult{Suggestions: []Suggestion{{Value: "anthropic/claude-3-haiku", Label: "anthropic/claude-3-haiku", Detail: "Claude Haiku"}}}
 	})
 
-	cmds := Set{
-		Commands: []*Node{
+	cmds := Set[testCtx]{
+		Commands: []*Node[testCtx]{
 			{
 				Name: "invite",
 				Help: "Invite a model",
-				Positionals: []Positional{
+				Positionals: []Positional[testCtx]{
 					{
 						Name:   "model",
 						Source: ComposeSources(localSource, liveSource),
 					},
 				},
-				Flags: []Flag{
+				Flags: []Flag[testCtx]{
 					{
 						Name:     "--persona",
 						Optional: true,
-						Source:   LiteralSource(Suggestion{Value: "--persona", Label: "--persona"}),
+						Source:   LiteralSource[testCtx](Suggestion{Value: "--persona", Label: "--persona"}),
 					},
 				},
 			},
@@ -279,44 +283,44 @@ func TestComplete_composes_sources(t *testing.T) {
 			{Value: "botty", Label: "botty", Detail: "test/model-a"},
 			{Value: "anthropic/claude-3-haiku", Label: "anthropic/claude-3-haiku", Detail: "Claude Haiku"},
 		},
-	}, complete(cmds, anyCtx, "/invite ", 8, domain.KindChannel))
+	}, complete(cmds, testCtxValue, "/invite ", 8, domain.KindChannel))
 }
 
 func TestComplete_hides_completion_when_source_errors(t *testing.T) {
-	cmds := Set{
-		Commands: []*Node{
+	cmds := Set[testCtx]{
+		Commands: []*Node[testCtx]{
 			{
 				Name: "add-model",
 				Help: "Add a model",
-				Positionals: []Positional{
+				Positionals: []Positional[testCtx]{
 					{
 						Name: "model",
-						Source: TypedResultSource(func(_ any, _ InvocationState) SuggestionResult {
+						Source: func(_ testCtx, _ InvocationState[testCtx]) SuggestionResult {
 							return SuggestionResult{State: SuggestionStateError}
-						}),
+						},
 					},
 				},
 			},
 		},
 	}
 
-	require.Equal(t, Completion{}, complete(cmds, anyCtx, "/add-model ", 11, domain.KindChannel))
+	require.Equal(t, Completion{}, complete(cmds, testCtxValue, "/add-model ", 11, domain.KindChannel))
 }
 
 func TestComplete_composed_sources_hide_completion_only_when_all_sources_error(t *testing.T) {
-	errored := TypedResultSource(func(_ any, _ InvocationState) SuggestionResult {
+	errored := SuggestionSource[testCtx](func(_ testCtx, _ InvocationState[testCtx]) SuggestionResult {
 		return SuggestionResult{State: SuggestionStateError}
 	})
-	healthy := TypedSource(func(_ any, _ InvocationState) []Suggestion {
-		return []Suggestion{{Value: "botty", Label: "botty"}}
+	healthy := SuggestionSource[testCtx](func(_ testCtx, _ InvocationState[testCtx]) SuggestionResult {
+		return SuggestionResult{Suggestions: []Suggestion{{Value: "botty", Label: "botty"}}}
 	})
 
-	cmds := Set{
-		Commands: []*Node{
+	cmds := Set[testCtx]{
+		Commands: []*Node[testCtx]{
 			{
 				Name: "invite",
 				Help: "Invite a model",
-				Positionals: []Positional{
+				Positionals: []Positional[testCtx]{
 					{Name: "model", Source: ComposeSources(errored, healthy)},
 				},
 			},
@@ -326,45 +330,45 @@ func TestComplete_composed_sources_hide_completion_only_when_all_sources_error(t
 	require.Equal(t, Completion{
 		Visible: true, ReplaceStart: 8, ReplaceEnd: 8, AppendSpace: false,
 		Suggestions: []Suggestion{{Value: "botty", Label: "botty"}},
-	}, complete(cmds, anyCtx, "/invite ", 8, domain.KindChannel))
+	}, complete(cmds, testCtxValue, "/invite ", 8, domain.KindChannel))
 
 	cmds.Commands[0].Positionals[0].Source = ComposeSources(errored, errored)
 
-	require.Equal(t, Completion{}, complete(cmds, anyCtx, "/invite ", 8, domain.KindChannel))
+	require.Equal(t, Completion{}, complete(cmds, testCtxValue, "/invite ", 8, domain.KindChannel))
 }
 
 func TestNode_Usage(t *testing.T) {
 	tests := []struct {
 		name string
-		node Node
+		node Node[testCtx]
 		want string
 	}{
 		{
 			name: "no args",
-			node: Node{Name: "quit"},
+			node: Node[testCtx]{Name: "quit"},
 			want: "",
 		},
 		{
 			name: "required positional",
-			node: Node{
+			node: Node[testCtx]{
 				Name:        "join",
-				Positionals: []Positional{{Name: "channel"}},
+				Positionals: []Positional[testCtx]{{Name: "channel"}},
 			},
 			want: "<channel>",
 		},
 		{
 			name: "optional positional",
-			node: Node{
+			node: Node[testCtx]{
 				Name:        "topic",
-				Positionals: []Positional{{Name: "text", Optional: true}},
+				Positionals: []Positional[testCtx]{{Name: "text", Optional: true}},
 			},
 			want: "[text]",
 		},
 		{
 			name: "mixed positionals",
-			node: Node{
+			node: Node[testCtx]{
 				Name: "msg",
-				Positionals: []Positional{
+				Positionals: []Positional[testCtx]{
 					{Name: "nick"},
 					{Name: "message", Optional: true},
 				},
@@ -373,33 +377,33 @@ func TestNode_Usage(t *testing.T) {
 		},
 		{
 			name: "with flag",
-			node: Node{
+			node: Node[testCtx]{
 				Name:        "invite",
-				Positionals: []Positional{{Name: "model", Optional: true}},
-				Flags:       []Flag{{Name: "--persona", Variadic: true}},
+				Positionals: []Positional[testCtx]{{Name: "model", Optional: true}},
+				Flags:       []Flag[testCtx]{{Name: "--persona", Variadic: true}},
 			},
 			want: "[model] [--persona <persona>]",
 		},
 		{
 			name: "with children",
-			node: Node{
+			node: Node[testCtx]{
 				Name:     "admin",
-				Children: []*Node{{Name: "ban"}},
+				Children: []*Node[testCtx]{{Name: "ban"}},
 			},
 			want: "<command>",
 		},
 		{
 			name: "inherits ancestor flags",
-			node: func() Node {
-				parent := &Node{
+			node: func() Node[testCtx] {
+				parent := &Node[testCtx]{
 					Name:  "config",
-					Flags: []Flag{{Name: "--format", Variadic: true}},
+					Flags: []Flag[testCtx]{{Name: "--format", Variadic: true}},
 				}
 
-				child := &Node{
+				child := &Node[testCtx]{
 					Parent:      parent,
 					Name:        "set",
-					Positionals: []Positional{{Name: "key"}},
+					Positionals: []Positional[testCtx]{{Name: "key"}},
 				}
 
 				return *child
@@ -408,7 +412,7 @@ func TestNode_Usage(t *testing.T) {
 		},
 		{
 			name: "no positionals or flags",
-			node: Node{
+			node: Node[testCtx]{
 				Name: "help",
 			},
 			want: "",
@@ -423,19 +427,19 @@ func TestNode_Usage(t *testing.T) {
 }
 
 func TestComplete_token_boundaries(t *testing.T) {
-	nickSource := TypedSource(func(_ any, _ InvocationState) []Suggestion {
-		return []Suggestion{
+	nickSource := SuggestionSource[testCtx](func(_ testCtx, _ InvocationState[testCtx]) SuggestionResult {
+		return SuggestionResult{Suggestions: []Suggestion{
 			{Value: "alice", Label: "alice"},
 			{Value: "bob", Label: "bob"},
-		}
+		}}
 	})
 
-	cmds := Set{
-		Commands: []*Node{
+	cmds := Set[testCtx]{
+		Commands: []*Node[testCtx]{
 			{
 				Name: "kick",
 				Help: "Kick a nick",
-				Positionals: []Positional{
+				Positionals: []Positional[testCtx]{
 					{Name: "nick", Source: nickSource},
 				},
 			},
@@ -490,24 +494,24 @@ func TestComplete_token_boundaries(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, complete(cmds, anyCtx, tt.raw, tt.cursor, domain.KindChannel))
+			require.Equal(t, tt.want, complete(cmds, testCtxValue, tt.raw, tt.cursor, domain.KindChannel))
 		})
 	}
 }
 
 func TestComplete_unknown_command_has_no_suggestions(t *testing.T) {
-	cmds := Set{
-		Commands: []*Node{{Name: "quit", Help: "Exit."}},
+	cmds := Set[testCtx]{
+		Commands: []*Node[testCtx]{{Name: "quit", Help: "Exit."}},
 	}
 
 	require.Equal(t, Completion{
 		Visible: true, ReplaceStart: 9, ReplaceEnd: 12,
-	}, complete(cmds, anyCtx, "/unknown arg", 12, domain.KindChannel))
+	}, complete(cmds, testCtxValue, "/unknown arg", 12, domain.KindChannel))
 }
 
 func TestComplete_contains_match(t *testing.T) {
-	cmds := Set{
-		Commands: []*Node{
+	cmds := Set[testCtx]{
+		Commands: []*Node[testCtx]{
 			{Name: "claude-3-haiku", Help: "Haiku model"},
 			{Name: "quit", Help: "Exit."},
 		},
@@ -518,36 +522,36 @@ func TestComplete_contains_match(t *testing.T) {
 		Suggestions: []Suggestion{
 			{Value: "claude-3-haiku", Label: "/claude-3-haiku", Detail: "Haiku model", Usage: "/claude-3-haiku"},
 		},
-	}, complete(cmds, anyCtx, "/aiku", 5, domain.KindChannel))
+	}, complete(cmds, testCtxValue, "/aiku", 5, domain.KindChannel))
 }
 
 func TestNode_Find(t *testing.T) {
-	child := &Node{Name: "ban"}
-	parent := &Node{
+	child := &Node[testCtx]{Name: "ban"}
+	parent := &Node[testCtx]{
 		Name:     "admin",
-		Children: []*Node{child, {Name: "unban"}},
+		Children: []*Node[testCtx]{child, {Name: "unban"}},
 	}
 
 	require.Equal(t, child, parent.Find("ban"))
 	require.Nil(t, parent.Find("nonexistent"))
-	require.Nil(t, (&Node{Name: "empty"}).Find("anything"))
+	require.Nil(t, (&Node[testCtx]{Name: "empty"}).Find("anything"))
 }
 
 func TestNode_Leaf(t *testing.T) {
-	require.True(t, (&Node{Name: "quit"}).Leaf())
-	require.False(t, (&Node{Name: "admin", Children: []*Node{{Name: "ban"}}}).Leaf())
+	require.True(t, (&Node[testCtx]{Name: "quit"}).Leaf())
+	require.False(t, (&Node[testCtx]{Name: "admin", Children: []*Node[testCtx]{{Name: "ban"}}}).Leaf())
 }
 
 func TestParseValue_no_factory(t *testing.T) {
-	cmds := Set{
-		Commands: []*Node{{Name: "broken"}},
+	cmds := Set[testCtx]{
+		Commands: []*Node[testCtx]{{Name: "broken"}},
 	}
 
 	_, err := cmds.ParseValue("/broken")
 
 	var noFactory *NoFactoryError
 	require.ErrorAs(t, err, &noFactory)
-	require.Equal(t, &NoFactoryError{Node: cmds.Commands[0]}, noFactory)
+	require.Equal(t, &NoFactoryError{Path: cmds.Commands[0].Path()}, noFactory)
 }
 
 func TestParseValue_after_merge(t *testing.T) {
@@ -565,10 +569,10 @@ func TestParseValue_after_merge(t *testing.T) {
 		Quit mergeQuitCmd `cmd:"" help:"Quit."`
 	}
 
-	child, err := Build(&childGrammar{})
+	child, err := Build[testCtx](&childGrammar{})
 	require.NoError(t, err)
 
-	parent, err := Build(&parentGrammar{})
+	parent, err := Build[testCtx](&parentGrammar{})
 	require.NoError(t, err)
 
 	merged := Merge(child, parent)
@@ -592,19 +596,19 @@ func TestParseValue_after_merge(t *testing.T) {
 }
 
 func TestComplete_whitespace_after_slash(t *testing.T) {
-	cmds := Set{
-		Commands: []*Node{{Name: "quit", Help: "Exit."}},
+	cmds := Set[testCtx]{
+		Commands: []*Node[testCtx]{{Name: "quit", Help: "Exit."}},
 	}
 
 	require.Equal(t, Completion{
 		Visible: true, ReplaceStart: 1, ReplaceEnd: 2, AppendSpace: true,
 		Suggestions: []Suggestion{},
-	}, complete(cmds, anyCtx, "/ ", 2, domain.KindChannel))
+	}, complete(cmds, testCtxValue, "/ ", 2, domain.KindChannel))
 }
 
 func TestComplete_cursor_mid_command_name(t *testing.T) {
-	cmds := Set{
-		Commands: []*Node{
+	cmds := Set[testCtx]{
+		Commands: []*Node[testCtx]{
 			{Name: "quit", Help: "Exit."},
 			{Name: "query", Help: "Query."},
 		},
@@ -615,12 +619,12 @@ func TestComplete_cursor_mid_command_name(t *testing.T) {
 		Suggestions: []Suggestion{
 			{Value: "quit", Label: "/quit", Detail: "Exit.", Usage: "/quit"},
 		},
-	}, complete(cmds, anyCtx, "/quit", 3, domain.KindChannel))
+	}, complete(cmds, testCtxValue, "/quit", 3, domain.KindChannel))
 }
 
 func TestComplete_multiple_prefix_matches(t *testing.T) {
-	cmds := Set{
-		Commands: []*Node{
+	cmds := Set[testCtx]{
+		Commands: []*Node[testCtx]{
 			{Name: "quit", Help: "Exit."},
 			{Name: "query", Help: "Query."},
 			{Name: "queue", Help: "Queue."},
@@ -634,17 +638,17 @@ func TestComplete_multiple_prefix_matches(t *testing.T) {
 			{Value: "query", Label: "/query", Detail: "Query.", Usage: "/query"},
 			{Value: "queue", Label: "/queue", Detail: "Queue.", Usage: "/queue"},
 		},
-	}, complete(cmds, anyCtx, "/qu", 3, domain.KindChannel))
+	}, complete(cmds, testCtxValue, "/qu", 3, domain.KindChannel))
 }
 
 func TestComplete_flag_name_after_positionals(t *testing.T) {
-	cmds := Set{
-		Commands: []*Node{
+	cmds := Set[testCtx]{
+		Commands: []*Node[testCtx]{
 			{
 				Name:        "kick",
 				Help:        "Kick a nick",
-				Positionals: []Positional{{Name: "nick"}},
-				Flags: []Flag{
+				Positionals: []Positional[testCtx]{{Name: "nick"}},
+				Flags: []Flag[testCtx]{
 					{Name: "--reason", Optional: true, Help: "Kick reason"},
 				},
 			},
@@ -656,19 +660,19 @@ func TestComplete_flag_name_after_positionals(t *testing.T) {
 		Suggestions: []Suggestion{
 			{Value: "--reason", Label: "--reason", Detail: "Kick reason"},
 		},
-	}, complete(cmds, anyCtx, "/kick botty ", 12, domain.KindChannel))
+	}, complete(cmds, testCtxValue, "/kick botty ", 12, domain.KindChannel))
 }
 
 func TestComplete_flag_name_prefix_filters(t *testing.T) {
-	cmds := Set{
-		Commands: []*Node{
+	cmds := Set[testCtx]{
+		Commands: []*Node[testCtx]{
 			{
 				Name: "invite",
 				Help: "Invite a model",
-				Positionals: []Positional{
+				Positionals: []Positional[testCtx]{
 					{Name: "model", Optional: true},
 				},
-				Flags: []Flag{
+				Flags: []Flag[testCtx]{
 					{Name: "--persona", Optional: true, Help: "Persona text"},
 					{Name: "--priority", Optional: true, Help: "Priority level"},
 				},
@@ -681,27 +685,27 @@ func TestComplete_flag_name_prefix_filters(t *testing.T) {
 		Suggestions: []Suggestion{
 			{Value: "--persona", Label: "--persona", Detail: "Persona text"},
 		},
-	}, complete(cmds, anyCtx, "/invite model-a --per", 21, domain.KindChannel))
+	}, complete(cmds, testCtxValue, "/invite model-a --per", 21, domain.KindChannel))
 }
 
 func TestComplete_flag_value_uses_source(t *testing.T) {
-	cmds := Set{
-		Commands: []*Node{
+	cmds := Set[testCtx]{
+		Commands: []*Node[testCtx]{
 			{
 				Name: "config",
 				Help: "Configure",
-				Positionals: []Positional{
-					{Name: "key", Source: LiteralSource(
+				Positionals: []Positional[testCtx]{
+					{Name: "key", Source: LiteralSource[testCtx](
 						Suggestion{Value: "api-key", Label: "api-key"},
 						Suggestion{Value: "theme", Label: "theme"},
 					)},
 				},
-				Flags: []Flag{
+				Flags: []Flag[testCtx]{
 					{
 						Name:     "--format",
 						Optional: true,
 						Help:     "Output format",
-						Source: LiteralSource(
+						Source: LiteralSource[testCtx](
 							Suggestion{Value: "json", Label: "json"},
 							Suggestion{Value: "yaml", Label: "yaml"},
 						),
@@ -717,20 +721,20 @@ func TestComplete_flag_value_uses_source(t *testing.T) {
 			{Value: "json", Label: "json"},
 			{Value: "yaml", Label: "yaml"},
 		},
-	}, complete(cmds, anyCtx, "/config api-key --format ", 25, domain.KindChannel))
+	}, complete(cmds, testCtxValue, "/config api-key --format ", 25, domain.KindChannel))
 }
 
 func TestComplete_flag_value_filters_by_prefix(t *testing.T) {
-	cmds := Set{
-		Commands: []*Node{
+	cmds := Set[testCtx]{
+		Commands: []*Node[testCtx]{
 			{
 				Name: "config",
 				Help: "Configure",
-				Flags: []Flag{
+				Flags: []Flag[testCtx]{
 					{
 						Name:     "--format",
 						Optional: true,
-						Source: LiteralSource(
+						Source: LiteralSource[testCtx](
 							Suggestion{Value: "json", Label: "json"},
 							Suggestion{Value: "yaml", Label: "yaml"},
 						),
@@ -743,21 +747,21 @@ func TestComplete_flag_value_filters_by_prefix(t *testing.T) {
 	require.Equal(t, Completion{
 		Visible: true, ReplaceStart: 17, ReplaceEnd: 18, AppendSpace: true,
 		Suggestions: []Suggestion{{Value: "json", Label: "json"}},
-	}, complete(cmds, anyCtx, "/config --format j", 18, domain.KindChannel))
+	}, complete(cmds, testCtxValue, "/config --format j", 18, domain.KindChannel))
 }
 
 func TestComplete_flags_interleaved_with_positionals(t *testing.T) {
-	cmds := Set{
-		Commands: []*Node{
+	cmds := Set[testCtx]{
+		Commands: []*Node[testCtx]{
 			{
 				Name: "invite",
 				Help: "Invite a model",
-				Positionals: []Positional{
-					{Name: "model", Optional: true, Source: LiteralSource(
+				Positionals: []Positional[testCtx]{
+					{Name: "model", Optional: true, Source: LiteralSource[testCtx](
 						Suggestion{Value: "claude", Label: "claude"},
 					)},
 				},
-				Flags: []Flag{
+				Flags: []Flag[testCtx]{
 					{Name: "--persona", Optional: true, Help: "Persona"},
 				},
 			},
@@ -767,16 +771,16 @@ func TestComplete_flags_interleaved_with_positionals(t *testing.T) {
 	require.Equal(t, Completion{
 		Visible: true, ReplaceStart: 27, ReplaceEnd: 27, AppendSpace: true,
 		Suggestions: []Suggestion{{Value: "claude", Label: "claude"}},
-	}, complete(cmds, anyCtx, "/invite --persona friendly ", 27, domain.KindChannel))
+	}, complete(cmds, testCtxValue, "/invite --persona friendly ", 27, domain.KindChannel))
 }
 
 func TestComplete_subcommand_names(t *testing.T) {
-	cmds := Set{
-		Commands: []*Node{
+	cmds := Set[testCtx]{
+		Commands: []*Node[testCtx]{
 			{
 				Name: "admin",
 				Help: "Admin commands",
-				Children: []*Node{
+				Children: []*Node[testCtx]{
 					{Name: "ban", Help: "Ban a user"},
 					{Name: "unban", Help: "Unban a user"},
 					{Name: "mute", Help: "Mute a user"},
@@ -812,18 +816,18 @@ func TestComplete_subcommand_names(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, complete(cmds, anyCtx, tt.raw, len([]rune(tt.raw)), domain.KindChannel))
+			require.Equal(t, tt.want, complete(cmds, testCtxValue, tt.raw, len([]rune(tt.raw)), domain.KindChannel))
 		})
 	}
 }
 
 func TestComplete_flag_only_command(t *testing.T) {
-	cmds := Set{
-		Commands: []*Node{
+	cmds := Set[testCtx]{
+		Commands: []*Node[testCtx]{
 			{
 				Name: "config",
 				Help: "Configure",
-				Flags: []Flag{
+				Flags: []Flag[testCtx]{
 					{Name: "--api-key", Optional: true, Help: "API key"},
 					{Name: "--theme", Optional: true, Help: "Theme"},
 				},
@@ -857,28 +861,28 @@ func TestComplete_flag_only_command(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, complete(cmds, anyCtx, tt.raw, len([]rune(tt.raw)), domain.KindChannel))
+			require.Equal(t, tt.want, complete(cmds, testCtxValue, tt.raw, len([]rune(tt.raw)), domain.KindChannel))
 		})
 	}
 }
 
 func TestComplete_subcommand_recurses_into_child(t *testing.T) {
-	cmds := Set{
-		Commands: []*Node{
+	cmds := Set[testCtx]{
+		Commands: []*Node[testCtx]{
 			{
 				Name: "config",
 				Help: "Configuration",
-				Flags: []Flag{
+				Flags: []Flag[testCtx]{
 					{Name: "--format", Optional: true, Help: "Output format"},
 				},
-				Children: []*Node{
+				Children: []*Node[testCtx]{
 					{
 						Name: "set",
 						Help: "Set a value",
-						Positionals: []Positional{
+						Positionals: []Positional[testCtx]{
 							{
 								Name: "key",
-								Source: LiteralSource(
+								Source: LiteralSource[testCtx](
 									Suggestion{Value: "api-key", Label: "api-key"},
 									Suggestion{Value: "theme", Label: "theme"},
 								),
@@ -936,20 +940,20 @@ func TestComplete_subcommand_recurses_into_child(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, complete(cmds, anyCtx, tt.raw, len([]rune(tt.raw)), domain.KindChannel))
+			require.Equal(t, tt.want, complete(cmds, testCtxValue, tt.raw, len([]rune(tt.raw)), domain.KindChannel))
 		})
 	}
 }
 
 func TestComplete_group_node_combines_child_and_flag_suggestions(t *testing.T) {
-	cmds := Set{
-		Commands: []*Node{
+	cmds := Set[testCtx]{
+		Commands: []*Node[testCtx]{
 			{
 				Name: "config",
-				Flags: []Flag{
+				Flags: []Flag[testCtx]{
 					{Name: "--format", Optional: true, Help: "Output format"},
 				},
-				Children: []*Node{
+				Children: []*Node[testCtx]{
 					{Name: "set", Help: "Set a value"},
 					{Name: "get", Help: "Get a value"},
 				},
@@ -964,28 +968,28 @@ func TestComplete_group_node_combines_child_and_flag_suggestions(t *testing.T) {
 			{Value: "get", Label: "get", Detail: "Get a value", Usage: "get [--format]"},
 			{Value: "--format", Label: "--format", Detail: "Output format"},
 		},
-	}, complete(cmds, anyCtx, "/config ", 8, domain.KindChannel))
+	}, complete(cmds, testCtxValue, "/config ", 8, domain.KindChannel))
 }
 
 func TestComplete_ancestor_flag_value_uses_source(t *testing.T) {
-	cmds := Set{
-		Commands: []*Node{
+	cmds := Set[testCtx]{
+		Commands: []*Node[testCtx]{
 			{
 				Name: "config",
-				Flags: []Flag{
+				Flags: []Flag[testCtx]{
 					{
 						Name:     "--format",
 						Optional: true,
-						Source: LiteralSource(
+						Source: LiteralSource[testCtx](
 							Suggestion{Value: "json", Label: "json"},
 							Suggestion{Value: "yaml", Label: "yaml"},
 						),
 					},
 				},
-				Children: []*Node{
+				Children: []*Node[testCtx]{
 					{
 						Name: "set",
-						Positionals: []Positional{
+						Positionals: []Positional[testCtx]{
 							{Name: "key"},
 						},
 					},
@@ -1000,18 +1004,18 @@ func TestComplete_ancestor_flag_value_uses_source(t *testing.T) {
 			{Value: "json", Label: "json"},
 			{Value: "yaml", Label: "yaml"},
 		},
-	}, complete(cmds, anyCtx, "/config set --format ", 21, domain.KindChannel))
+	}, complete(cmds, testCtxValue, "/config set --format ", 21, domain.KindChannel))
 }
 
 func TestComplete_used_ancestor_flags_are_excluded(t *testing.T) {
-	cmds := Set{
-		Commands: []*Node{
+	cmds := Set[testCtx]{
+		Commands: []*Node[testCtx]{
 			{
 				Name: "config",
-				Flags: []Flag{
+				Flags: []Flag[testCtx]{
 					{Name: "--format", Optional: true, Help: "Output format"},
 				},
-				Children: []*Node{
+				Children: []*Node[testCtx]{
 					{Name: "set", Help: "Set"},
 				},
 			},
@@ -1021,18 +1025,18 @@ func TestComplete_used_ancestor_flags_are_excluded(t *testing.T) {
 	require.Equal(t, Completion{
 		Visible: true, ReplaceStart: 26, ReplaceEnd: 28, AppendSpace: true,
 		Suggestions: []Suggestion{},
-	}, complete(cmds, anyCtx, "/config set --format json --", 28, domain.KindChannel))
+	}, complete(cmds, testCtxValue, "/config set --format json --", 28, domain.KindChannel))
 }
 
 func TestComplete_bool_flag_does_not_expect_a_value(t *testing.T) {
-	cmds := Set{
-		Commands: []*Node{
+	cmds := Set[testCtx]{
+		Commands: []*Node[testCtx]{
 			{
 				Name: "config",
-				Flags: []Flag{
+				Flags: []Flag[testCtx]{
 					{Name: "--reset", Boolean: true, Optional: true, Help: "Reset"},
 				},
-				Children: []*Node{
+				Children: []*Node[testCtx]{
 					{Name: "api-key", Help: "API key"},
 					{Name: "poke-interval", Help: "Poke interval"},
 				},
@@ -1046,27 +1050,27 @@ func TestComplete_bool_flag_does_not_expect_a_value(t *testing.T) {
 			{Value: "api-key", Label: "api-key", Detail: "API key", Usage: "api-key [--reset]"},
 			{Value: "poke-interval", Label: "poke-interval", Detail: "Poke interval", Usage: "poke-interval [--reset]"},
 		},
-	}, complete(cmds, anyCtx, "/config --reset ", 16, domain.KindChannel))
+	}, complete(cmds, testCtxValue, "/config --reset ", 16, domain.KindChannel))
 }
 
 func TestComplete_deep_nesting_walks_into_grandchildren(t *testing.T) {
-	cmds := Set{
-		Commands: []*Node{
+	cmds := Set[testCtx]{
+		Commands: []*Node[testCtx]{
 			{
 				Name: "admin",
 				Help: "Admin commands",
-				Children: []*Node{
+				Children: []*Node[testCtx]{
 					{
 						Name: "user",
 						Help: "User management",
-						Children: []*Node{
+						Children: []*Node[testCtx]{
 							{
 								Name: "ban",
 								Help: "Ban a user",
-								Positionals: []Positional{
+								Positionals: []Positional[testCtx]{
 									{
 										Name: "nick",
-										Source: LiteralSource(
+										Source: LiteralSource[testCtx](
 											Suggestion{Value: "alice", Label: "alice"},
 											Suggestion{Value: "bob", Label: "bob"},
 										),
@@ -1125,22 +1129,22 @@ func TestComplete_deep_nesting_walks_into_grandchildren(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, complete(cmds, anyCtx, tt.raw, len([]rune(tt.raw)), domain.KindChannel))
+			require.Equal(t, tt.want, complete(cmds, testCtxValue, tt.raw, len([]rune(tt.raw)), domain.KindChannel))
 		})
 	}
 }
 
 func TestComplete_optional_positional_with_source(t *testing.T) {
-	cmds := Set{
-		Commands: []*Node{
+	cmds := Set[testCtx]{
+		Commands: []*Node[testCtx]{
 			{
 				Name: "invite",
 				Help: "Invite a model",
-				Positionals: []Positional{
+				Positionals: []Positional[testCtx]{
 					{
 						Name:     "model",
 						Optional: true,
-						Source: LiteralSource(
+						Source: LiteralSource[testCtx](
 							Suggestion{Value: "claude", Label: "claude"},
 							Suggestion{Value: "gemini", Label: "gemini"},
 						),
@@ -1156,13 +1160,13 @@ func TestComplete_optional_positional_with_source(t *testing.T) {
 			{Value: "claude", Label: "claude"},
 			{Value: "gemini", Label: "gemini"},
 		},
-	}, complete(cmds, anyCtx, "/invite ", 8, domain.KindChannel))
+	}, complete(cmds, testCtxValue, "/invite ", 8, domain.KindChannel))
 }
 
 func TestComplete_command_suggestions_include_aliases(t *testing.T) {
-	cmds := Set{
-		Commands: []*Node{
-			{Name: "join", Help: "Join a channel", Aliases: []string{"j", "jo"}, Positionals: []Positional{{Name: "channel"}}},
+	cmds := Set[testCtx]{
+		Commands: []*Node[testCtx]{
+			{Name: "join", Help: "Join a channel", Aliases: []string{"j", "jo"}, Positionals: []Positional[testCtx]{{Name: "channel"}}},
 			{Name: "quit", Help: "Exit.", Aliases: []string{"q"}},
 		},
 	}
@@ -1225,18 +1229,18 @@ func TestComplete_command_suggestions_include_aliases(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, complete(cmds, anyCtx, tt.raw, len([]rune(tt.raw)), domain.KindChannel))
+			require.Equal(t, tt.want, complete(cmds, testCtxValue, tt.raw, len([]rune(tt.raw)), domain.KindChannel))
 		})
 	}
 }
 
 func TestComplete_child_suggestions_include_aliases(t *testing.T) {
-	cmds := Set{
-		Commands: []*Node{
+	cmds := Set[testCtx]{
+		Commands: []*Node[testCtx]{
 			{
 				Name: "config",
 				Help: "Configuration",
-				Children: []*Node{
+				Children: []*Node[testCtx]{
 					{Name: "set", Help: "Set a value", Aliases: []string{"s"}},
 					{Name: "get", Help: "Get a value"},
 				},
@@ -1254,21 +1258,21 @@ func TestComplete_child_suggestions_include_aliases(t *testing.T) {
 			{Value: "set", Label: "set (s)", Detail: "Set a value", Usage: "set (s)", Aliases: []string{"s"}},
 			{Value: "get", Label: "get", Detail: "Get a value", Usage: "get"},
 		},
-	}, complete(cmds, anyCtx, raw, len([]rune(raw)), domain.KindChannel))
+	}, complete(cmds, testCtxValue, raw, len([]rune(raw)), domain.KindChannel))
 }
 
 func TestComplete_child_suggestion_usage_includes_args(t *testing.T) {
-	cmds := Set{
-		Commands: []*Node{
+	cmds := Set[testCtx]{
+		Commands: []*Node[testCtx]{
 			{
 				Name: "config",
 				Help: "Configuration",
-				Children: []*Node{
+				Children: []*Node[testCtx]{
 					{
 						Name:    "set",
 						Help:    "Set a value",
 						Aliases: []string{"s"},
-						Positionals: []Positional{
+						Positionals: []Positional[testCtx]{
 							{Name: "key"},
 							{Name: "value"},
 						},
@@ -1293,22 +1297,22 @@ func TestComplete_child_suggestion_usage_includes_args(t *testing.T) {
 				Aliases: []string{"s"},
 			},
 		},
-	}, complete(cmds, anyCtx, raw, len([]rune(raw)), domain.KindChannel))
+	}, complete(cmds, testCtxValue, raw, len([]rune(raw)), domain.KindChannel))
 }
 
 func TestComplete_alias_resolves_to_positional_suggestions(t *testing.T) {
-	channels := LiteralSource(
+	channels := LiteralSource[testCtx](
 		Suggestion{Value: "#general", Label: "#general"},
 		Suggestion{Value: "#random", Label: "#random"},
 	)
 
-	cmds := Set{
-		Commands: []*Node{
+	cmds := Set[testCtx]{
+		Commands: []*Node[testCtx]{
 			{
 				Name:    "join",
 				Help:    "Join a channel",
 				Aliases: []string{"j"},
-				Positionals: []Positional{
+				Positionals: []Positional[testCtx]{
 					{Name: "channel", Source: channels},
 				},
 			},
@@ -1325,7 +1329,7 @@ func TestComplete_alias_resolves_to_positional_suggestions(t *testing.T) {
 			{Value: "#general", Label: "#general"},
 			{Value: "#random", Label: "#random"},
 		},
-	}, complete(cmds, anyCtx, raw, len([]rune(raw)), domain.KindChannel))
+	}, complete(cmds, testCtxValue, raw, len([]rune(raw)), domain.KindChannel))
 }
 
 // --- Tool schema tests ---
@@ -1370,10 +1374,10 @@ type toolGrammar struct {
 	Quit   toolDescriberCmd `cmd:"" tool:"Exit the application." help:"Quit."`
 }
 
-func toolSet(t *testing.T) Set {
+func toolSet(t *testing.T) Set[testCtx] {
 	t.Helper()
 
-	set, err := Build(&toolGrammar{})
+	set, err := Build[testCtx](&toolGrammar{})
 	require.NoError(t, err)
 
 	return set
@@ -1394,13 +1398,13 @@ func TestToolNodes_returns_only_tool_tagged_leaves(t *testing.T) {
 func TestToolName(t *testing.T) {
 	tests := []struct {
 		name string
-		node Node
+		node Node[testCtx]
 		want string
 	}{
-		{name: "simple", node: Node{Name: "join"}, want: "join"},
-		{name: "with parent", node: func() Node {
-			parent := &Node{Name: "config"}
-			child := &Node{Name: "set", Parent: parent}
+		{name: "simple", node: Node[testCtx]{Name: "join"}, want: "join"},
+		{name: "with parent", node: func() Node[testCtx] {
+			parent := &Node[testCtx]{Name: "config"}
+			child := &Node[testCtx]{Name: "set", Parent: parent}
 			return *child
 		}(), want: "config set"},
 	}
@@ -1524,14 +1528,14 @@ func TestToolValue(t *testing.T) {
 	})
 
 	t.Run("no factory", func(t *testing.T) {
-		node := &Node{Name: "broken"}
+		node := &Node[testCtx]{Name: "broken"}
 
 		_, err := node.ToolValue(json.RawMessage(`{}`))
 		require.ErrorContains(t, err, "no factory")
 	})
 
 	t.Run("non-leaf", func(t *testing.T) {
-		node := &Node{Name: "parent", Children: []*Node{{Name: "child"}}}
+		node := &Node[testCtx]{Name: "parent", Children: []*Node[testCtx]{{Name: "child"}}}
 
 		_, err := node.ToolValue(json.RawMessage(`{}`))
 		require.ErrorContains(t, err, "not a tool leaf")
@@ -1568,19 +1572,19 @@ func TestToolSchemaForType(t *testing.T) {
 
 func TestToolDescription_three_tiers(t *testing.T) {
 	t.Run("tier 3: falls back to help", func(t *testing.T) {
-		node := &Node{Help: "Join a channel.", ToolDesc: ""}
+		node := &Node[testCtx]{Help: "Join a channel.", ToolDesc: ""}
 
 		require.Equal(t, "Join a channel.", node.ToolDescription(struct{}{}))
 	})
 
 	t.Run("tier 2: non-empty tool tag", func(t *testing.T) {
-		node := &Node{Help: "Exit modeloff.", ToolDesc: "Shut down your instance."}
+		node := &Node[testCtx]{Help: "Exit modeloff.", ToolDesc: "Shut down your instance."}
 
 		require.Equal(t, "Shut down your instance.", node.ToolDescription(struct{}{}))
 	})
 
 	t.Run("tier 1: ToolDescriber interface", func(t *testing.T) {
-		node := &Node{Help: "Quit.", ToolDesc: "Should be overridden."}
+		node := &Node[testCtx]{Help: "Quit.", ToolDesc: "Should be overridden."}
 
 		require.Equal(t, "rich multi-line description from method", node.ToolDescription(toolDescriberCmd{}))
 	})
@@ -1614,7 +1618,7 @@ func TestNewZero(t *testing.T) {
 	})
 
 	t.Run("nil factory returns nil", func(t *testing.T) {
-		node := &Node{Name: "broken"}
+		node := &Node[testCtx]{Name: "broken"}
 		require.Nil(t, node.NewZero())
 	})
 }

@@ -125,14 +125,14 @@ func TestMetricsPane_view_renders_snapshot(t *testing.T) {
 
 func TestChatWorkspace_statusItems_follow_observability_state(t *testing.T) {
 	workspace := NewChatWorkspace(
-		NewChatView("#general", domain.KindChannel, "testuser", ""),
+		NewChatView[testKind]("#general", domain.KindChannel, "testuser", ""),
 	).WithMetrics(NewMetricsPane(t.Context(), nil))
 
 	require.Empty(t, workspace.StatusItems())
 	require.False(t, workspace.WantsNickListHidden())
 
 	updated, _ := workspace.Update(tea.KeyMsg{Type: tea.KeyCtrlL})
-	workspace = updated.(ChatWorkspace)
+	workspace = updated.(ChatWorkspace[testKind])
 
 	require.Equal(t, []ui.StatusItem{{
 		ID:       "observability-mode",
@@ -143,7 +143,7 @@ func TestChatWorkspace_statusItems_follow_observability_state(t *testing.T) {
 	}}, workspace.StatusItems())
 
 	updated, _ = workspace.Update(tea.KeyMsg{Type: tea.KeyCtrlF})
-	workspace = updated.(ChatWorkspace)
+	workspace = updated.(ChatWorkspace[testKind])
 
 	require.True(t, workspace.WantsNickListHidden())
 	require.Equal(t, []ui.StatusItem{{
@@ -155,7 +155,7 @@ func TestChatWorkspace_statusItems_follow_observability_state(t *testing.T) {
 	}}, workspace.StatusItems())
 
 	updated, _ = workspace.Update(tea.KeyMsg{Type: tea.KeyTab})
-	workspace = updated.(ChatWorkspace)
+	workspace = updated.(ChatWorkspace[testKind])
 
 	require.Equal(t, []ui.StatusItem{{
 		ID:       "observability-mode",
@@ -168,19 +168,19 @@ func TestChatWorkspace_statusItems_follow_observability_state(t *testing.T) {
 
 func TestChatWorkspace_fullscreen_observability_renders_logs_and_metrics(t *testing.T) {
 	workspace := NewChatWorkspace(
-		NewChatView("#general", domain.KindChannel, "testuser", ""),
+		NewChatView[testKind]("#general", domain.KindChannel, "testuser", ""),
 	).WithMetrics(NewMetricsPane(t.Context(), nil))
 
 	updated, _ := workspace.Update(ui.BoundsMsg{
 		Rect: ui.Rect{Width: 140, Height: 30},
 	})
-	workspace = updated.(ChatWorkspace)
+	workspace = updated.(ChatWorkspace[testKind])
 
 	updated, _ = workspace.Update(tea.KeyMsg{Type: tea.KeyCtrlL})
-	workspace = updated.(ChatWorkspace)
+	workspace = updated.(ChatWorkspace[testKind])
 
 	updated, _ = workspace.Update(tea.KeyMsg{Type: tea.KeyCtrlF})
-	workspace = updated.(ChatWorkspace)
+	workspace = updated.(ChatWorkspace[testKind])
 
 	view := workspace.View(140, 30)
 	require.Equal(t, []string{

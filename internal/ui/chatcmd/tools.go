@@ -18,7 +18,7 @@ type ToolCommand interface {
 
 // BuildToolRegistry derives tool specs from the command grammar.
 func BuildToolRegistry() (*session.ToolRegistry, error) {
-	set, err := command.Build(&Grammar{})
+	set, err := command.Build[CompletionContext](&Grammar{})
 	if err != nil {
 		return nil, err
 	}

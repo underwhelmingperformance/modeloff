@@ -20,7 +20,7 @@ import (
 type Command = command.Command[Context, tea.Cmd]
 
 // Parser is the typed parser for the chat screen.
-type Parser = command.Parser[Context, tea.Cmd]
+type Parser = command.Parser[CompletionContext, Context, tea.Cmd]
 
 // Context carries the dependencies a command needs to execute.
 // Actor is the `*domain.Instance` for the caller — the user's handle
@@ -32,7 +32,7 @@ type Context struct {
 	Config     config.Store
 	Active     domain.ChannelName
 	Actor      *domain.Instance
-	Invocation command.Invocation
+	Invocation command.Invocation[CompletionContext]
 }
 
 // updateConfig loads the current configuration, applies fn, and saves

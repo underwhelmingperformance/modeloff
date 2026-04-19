@@ -12,6 +12,13 @@ import (
 	"github.com/laney/modeloff/internal/domain"
 )
 
+// testKind is a minimal [command.KindProvider] for tests in the
+// internal components package. The black-box components_test package
+// defines its own identically-named type.
+type testKind domain.ChannelKind
+
+func (k testKind) ChannelKind() domain.ChannelKind { return domain.ChannelKind(k) }
+
 // noTimestamp disables the timestamp prefix so rendered-line assertions
 // focus on the body shape, not on locale-dependent date formatting.
 func noTimestamp() *string {
@@ -48,7 +55,7 @@ func TestRenderChannelEvent_by_kind(t *testing.T) {
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			got := renderChannelEvent(
+			got := renderChannelEvent[testKind](
 				tc.event,
 				tc.kind,
 				80,
@@ -72,7 +79,7 @@ func TestRenderChannelEvent_system_notice_style_changes_by_kind(t *testing.T) {
 	}
 
 	render := func(kind domain.ChannelKind) string {
-		return renderChannelEvent(
+		return renderChannelEvent[testKind](
 			notice,
 			kind,
 			80,

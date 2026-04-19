@@ -64,7 +64,7 @@ func TestChatScreen_Commands_specs_are_complete(t *testing.T) {
 	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil, domain.KindStatus)
 	require.NoError(t, err)
 
-	msg := screen.commandStateMsg()
+	commands := screen.parser.Set().Commands
 
 	type spec struct {
 		Name string
@@ -72,7 +72,7 @@ func TestChatScreen_Commands_specs_are_complete(t *testing.T) {
 	}
 
 	var specs []spec
-	for _, node := range msg.Commands {
+	for _, node := range commands {
 		specs = append(specs, spec{Name: node.Name, Help: node.Help})
 	}
 
@@ -101,9 +101,9 @@ func TestChatScreen_Commands_exposes_chat_commands(t *testing.T) {
 	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil, domain.KindStatus)
 	require.NoError(t, err)
 
-	msg := screen.commandStateMsg()
-	names := make([]string, 0, len(msg.Commands))
-	for _, spec := range msg.Commands {
+	commands := screen.parser.Set().Commands
+	names := make([]string, 0, len(commands))
+	for _, spec := range commands {
 		names = append(names, spec.Name)
 	}
 

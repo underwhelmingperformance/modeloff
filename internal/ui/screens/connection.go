@@ -12,6 +12,7 @@ import (
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/session"
 	"github.com/laney/modeloff/internal/ui"
+	"github.com/laney/modeloff/internal/ui/chatcmd"
 	"github.com/laney/modeloff/internal/ui/components"
 	"github.com/laney/modeloff/internal/ui/theme"
 )
@@ -110,7 +111,7 @@ type ConnectionScreen struct {
 	// the status bar can surface "Disconnecting…" feedback.
 	quitting bool
 
-	pane components.MessageList
+	pane components.MessageList[chatcmd.CompletionContext]
 }
 
 // NewConnectionScreen creates a connection screen with the given
@@ -137,7 +138,7 @@ func NewConnectionScreen(cfg ConnectionConfig) ConnectionScreen {
 	s := ConnectionScreen{
 		cfg:   cfg,
 		steps: steps,
-		pane:  components.NewMessageList(domain.StatusChannelName, domain.KindStatus),
+		pane:  components.NewMessageList[chatcmd.CompletionContext](domain.StatusChannelName, domain.KindStatus),
 	}
 
 	// Animation-only mode (no Session): pretend the async signals

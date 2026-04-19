@@ -36,8 +36,10 @@ const defaultBufferCap = 100
 
 // MessageList displays channel events in a scrollable viewport with
 // support for a new-messages divider, a pending-response spinner,
-// and an empty-state placeholder.
-type MessageList struct {
+// and an empty-state placeholder. C is the grammar's completion-
+// context type; it is carried so the `/help` renderer can walk the
+// typed command tree supplied by [CommandsMsg].
+type MessageList[C command.KindProvider] struct {
 	channel     domain.ChannelName
 	kind        domain.ChannelKind
 	events      *RingBuffer[domain.StoredEvent]
@@ -56,7 +58,7 @@ type MessageList struct {
 	// events have arrived since.
 	showDivider bool
 
-	commands        []*command.Node
+	commands        []*command.Node[C]
 	highlightWords  []string
 	userNick        domain.Nick
 	timestampFormat *string
@@ -67,11 +69,11 @@ type MessageList struct {
 // channel. Callers should pass the channel kind so renderers that
 // differentiate by kind (e.g. status channels suppressing nick
 // prefixes) have it available without a follow-up SetChannelMsg.
-func NewMessageList(ch domain.ChannelName, kind domain.ChannelKind) MessageList {
+func NewMessageList[C command.KindProvider](ch domain.ChannelName, kind domain.ChannelKind) MessageList[C] {
 	vp := viewport.New(0, 0)
 	vp.MouseWheelEnabled = true
 
-	return MessageList{
+	return MessageList[C]{
 		channel:  ch,
 		kind:     kind,
 		events:   NewRingBuffer[domain.StoredEvent](defaultBufferCap),
@@ -85,17 +87,17 @@ func NewMessageList(ch domain.ChannelName, kind domain.ChannelKind) MessageList 
 }
 
 // Len returns the number of events in the buffer.
-func (m MessageList) Len() int {
+func (m MessageList[C]) Len() int {
 	return m.events.Len()
 }
 
 // Pending returns whether the pending indicator is active.
-func (m MessageList) Pending() bool {
+func (m MessageList[C]) Pending() bool {
 	return m.pending
 }
 
 // SetKeyMap applies viewport key bindings from the ChatView key map.
-func (m MessageList) SetKeyMap(km ChatViewKeyMap) MessageList {
+func (m MessageList[C]) SetKeyMap(km ChatViewKeyMap) MessageList[C] {
 	m.viewport.KeyMap = viewport.KeyMap{
 		PageDown: km.PageDown.Binding,
 		PageUp:   km.PageUp.Binding,
@@ -107,12 +109,12 @@ func (m MessageList) SetKeyMap(km ChatViewKeyMap) MessageList {
 }
 
 // Init implements ui.Model.
-func (m MessageList) Init() tea.Cmd {
+func (m MessageList[C]) Init() tea.Cmd {
 	return nil
 }
 
 // Update implements ui.Model.
-func (m MessageList) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
+func (m MessageList[C]) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case SetChannelMsg:
 		m = m.setChannel(msg.Channel)
@@ -145,7 +147,7 @@ func (m MessageList) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		m.locale = msg.Locale
 		return m, nil
 
-	case CommandStateMsg:
+	case CommandsMsg[C]:
 		m.commands = msg.Commands
 		return m, nil
 
@@ -189,7 +191,7 @@ func (m MessageList) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 }
 
 // View implements ui.Model.
-func (m MessageList) View(width, height int) string {
+func (m MessageList[C]) View(width, height int) string {
 	var pendingView string
 	pendingHeight := 0
 
@@ -229,11 +231,11 @@ func (m MessageList) View(width, height int) string {
 
 // ScrollInfo returns whether the viewport is scrolled up and the
 // current scroll percentage.
-func (m MessageList) ScrollInfo() (scrolled bool, pct float64) {
+func (m MessageList[C]) ScrollInfo() (scrolled bool, pct float64) {
 	return !m.viewport.AtBottom(), m.viewport.ScrollPercent()
 }
 
-func (m MessageList) setChannel(ch domain.ChannelName) MessageList {
+func (m MessageList[C]) setChannel(ch domain.ChannelName) MessageList[C] {
 	m.channel = ch
 	m.events.Clear()
 	m.seenCount = 0
@@ -244,7 +246,7 @@ func (m MessageList) setChannel(ch domain.ChannelName) MessageList {
 	return m
 }
 
-func (m MessageList) loadHistory(events []domain.StoredEvent) MessageList {
+func (m MessageList[C]) loadHistory(events []domain.StoredEvent) MessageList[C] {
 	m.events.Clear()
 
 	for _, e := range events {
@@ -261,7 +263,7 @@ func (m MessageList) loadHistory(events []domain.StoredEvent) MessageList {
 // Replace replaces the event buffer with the given events and
 // re-renders the viewport. Used by callers that don't drive the list
 // via session events (for example, the ConnectionScreen status pane).
-func (m MessageList) Replace(events []domain.StoredEvent) MessageList {
+func (m MessageList[C]) Replace(events []domain.StoredEvent) MessageList[C] {
 	return m.loadHistory(events)
 }
 
@@ -270,7 +272,7 @@ func (m MessageList) Replace(events []domain.StoredEvent) MessageList {
 // feed events into the list without owning the session-events
 // drain (for example, the ConnectionScreen status pane refreshing
 // itself on each tick).
-func (m MessageList) Append(events ...domain.StoredEvent) MessageList {
+func (m MessageList[C]) Append(events ...domain.StoredEvent) MessageList[C] {
 	for _, evt := range events {
 		m = m.appendEvent(evt)
 	}
@@ -278,7 +280,7 @@ func (m MessageList) Append(events ...domain.StoredEvent) MessageList {
 	return m
 }
 
-func (m MessageList) appendEvent(event domain.StoredEvent) MessageList {
+func (m MessageList[C]) appendEvent(event domain.StoredEvent) MessageList[C] {
 	wasAtBottom := m.viewport.AtBottom() || m.viewport.TotalLineCount() == 0
 	scrolledUp := !wasAtBottom && m.viewport.TotalLineCount() > 0
 
@@ -296,7 +298,7 @@ func (m MessageList) appendEvent(event domain.StoredEvent) MessageList {
 	return m.refreshContent(wasAtBottom)
 }
 
-func (m MessageList) refreshContent(wasAtBottom bool) MessageList {
+func (m MessageList[C]) refreshContent(wasAtBottom bool) MessageList[C] {
 	if m.viewport.Width == 0 {
 		return m
 	}
@@ -310,7 +312,7 @@ func (m MessageList) refreshContent(wasAtBottom bool) MessageList {
 	return m
 }
 
-func (m MessageList) renderMessages(width, height int) (view string, scrolled bool, scrollPct float64) {
+func (m MessageList[C]) renderMessages(width, height int) (view string, scrolled bool, scrollPct float64) {
 	if m.events.Len() == 0 {
 		text := theme.Dim.Render("No messages yet")
 		if m.placeholder != "" {
@@ -335,7 +337,7 @@ func (m MessageList) renderMessages(width, height int) (view string, scrolled bo
 	return rendered, !m.viewport.AtBottom(), m.viewport.ScrollPercent()
 }
 
-func (m MessageList) renderedContent(width int) string {
+func (m MessageList[C]) renderedContent(width int) string {
 	rendered := make([]string, 0, m.events.Len()+1)
 
 	for i := range m.events.Len() {

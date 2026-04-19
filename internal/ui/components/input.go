@@ -124,7 +124,7 @@ func (b InputBar) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		b.nicks = slices.Collect(msg.Members.Nicks())
 		return b, nil
 
-	case CommandStateMsg:
+	case CompleterMsg:
 		b = b.refreshPopover(PopoverApplyMsg{
 			Completer: msg.Completer,
 			Raw:       b.input.Value(),

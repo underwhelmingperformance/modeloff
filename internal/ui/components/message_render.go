@@ -19,13 +19,13 @@ import (
 // string at the given width. kind discriminates channel/DM from
 // status rendering — see the ChannelSystemNotice case for the
 // status-channel variant.
-func renderChannelEvent(
+func renderChannelEvent[C command.KindProvider](
 	event domain.ChannelEvent,
 	kind domain.ChannelKind,
 	width int,
 	highlightWords []string,
 	userNick domain.Nick,
-	commands []*command.Node,
+	commands []*command.Node[C],
 	timestampFormat *string,
 	locale language.Tag,
 ) string {
@@ -240,7 +240,7 @@ func renderPersonasListEvent(pl domain.ChannelPersonasList) string {
 	return strings.Join(parts, "\n")
 }
 
-func renderHelp(commands []*command.Node) string {
+func renderHelp[C command.KindProvider](commands []*command.Node[C]) string {
 	lines := make([]string, 0, len(commands))
 	for _, node := range commands {
 		full := node.FullUsage()

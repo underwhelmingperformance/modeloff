@@ -48,12 +48,14 @@ type TopicUpdatedMsg struct {
 	Topic string
 }
 
-// CommandStateMsg updates the available commands for completion and
-// help rendering. Completer is used by the popover; Commands is used
-// by the message list for /help output.
-type CommandStateMsg struct {
+// CompleterMsg sets the completer used by the input bar's popover.
+type CompleterMsg struct {
 	Completer command.Completable
-	Commands  []*command.Node
+}
+
+// CommandsMsg sets the command tree walked by `/help` rendering.
+type CommandsMsg[C command.KindProvider] struct {
+	Commands []*command.Node[C]
 }
 
 // ClearMessagesMsg clears the visible messages in the current channel
@@ -66,8 +68,10 @@ type UserNickMsg struct {
 }
 
 // ChatView displays messages for a single channel with an input bar
-// at the bottom.
-type ChatView struct {
+// at the bottom. C is the grammar's completion-context type; the
+// view carries it so its MessageList stores a typed command tree for
+// `/help` rendering and its popover dispatches typed completions.
+type ChatView[C command.KindProvider] struct {
 	channel domain.ChannelName
 	// kind governs kind-sensitive decisions: the glyph/style used for
 	// system notices in the message list, and the topic-bar
@@ -75,7 +79,7 @@ type ChatView struct {
 	kind     domain.ChannelKind
 	topic    string
 	userNick domain.Nick
-	messages MessageList
+	messages MessageList[C]
 	input    InputBar
 	keyMap   ChatViewKeyMap
 
@@ -94,12 +98,12 @@ type chatViewLayout struct {
 // for a later SetChannelMsg to correct it. Subsequent SetChannelMsg
 // messages update the kind atomically when the user switches
 // channels.
-func NewChatView(ch domain.ChannelName, kind domain.ChannelKind, userNick domain.Nick, topic string) ChatView {
+func NewChatView[C command.KindProvider](ch domain.ChannelName, kind domain.ChannelKind, userNick domain.Nick, topic string) ChatView[C] {
 	keyMap := DefaultChatViewKeyMap
 
-	ml := NewMessageList(ch, kind).SetKeyMap(keyMap)
+	ml := NewMessageList[C](ch, kind).SetKeyMap(keyMap)
 
-	return ChatView{
+	return ChatView[C]{
 		channel:  ch,
 		kind:     kind,
 		topic:    topic,
@@ -111,12 +115,12 @@ func NewChatView(ch domain.ChannelName, kind domain.ChannelKind, userNick domain
 }
 
 // Init implements ui.Model.
-func (c ChatView) Init() tea.Cmd {
+func (c ChatView[C]) Init() tea.Cmd {
 	return c.input.Init()
 }
 
 // KeyBindings implements ui.Keybinding.
-func (c ChatView) KeyBindings() []ui.KeyBinding {
+func (c ChatView[C]) KeyBindings() []ui.KeyBinding {
 	bindings := []ui.KeyBinding{
 		ui.WithBindingEnabled(
 			ui.Bind(key.NewBinding(
@@ -140,7 +144,7 @@ func (c ChatView) KeyBindings() []ui.KeyBinding {
 }
 
 // Update implements ui.Model.
-func (c ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
+func (c ChatView[C]) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case ui.BoundsMsg:
 		c.bounds = msg.Rect
@@ -183,10 +187,14 @@ func (c ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 		return c, cmd
 
-	case CommandStateMsg:
+	case CommandsMsg[C]:
 		c, _ = c.updateMessages(msg)
-		c = c.updateInput(msg)
 		c = c.syncMessageViewport()
+
+		return c, nil
+
+	case CompleterMsg:
+		c = c.updateInput(msg)
 
 		return c, nil
 
@@ -207,7 +215,7 @@ func (c ChatView) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	return c, tea.Batch(mlCmd, inputCmd)
 }
 
-func (c ChatView) handleMouse(msg tea.MouseMsg) (ChatView, bool, tea.Cmd) {
+func (c ChatView[C]) handleMouse(msg tea.MouseMsg) (ChatView[C], bool, tea.Cmd) {
 	if c.bounds.Width == 0 || c.bounds.Height == 0 {
 		return c, false, nil
 	}
@@ -252,7 +260,7 @@ func (c ChatView) handleMouse(msg tea.MouseMsg) (ChatView, bool, tea.Cmd) {
 }
 
 // View implements ui.Model.
-func (c ChatView) View(width, height int) string {
+func (c ChatView[C]) View(width, height int) string {
 	inputView := c.input.View(width, 1)
 	inputHeight := lipgloss.Height(inputView)
 
@@ -294,7 +302,7 @@ func (c ChatView) View(width, height int) string {
 	return lipgloss.Place(width, height, lipgloss.Left, lipgloss.Bottom, view)
 }
 
-func (c ChatView) layoutRects() chatViewLayout {
+func (c ChatView[C]) layoutRects() chatViewLayout {
 	width := c.bounds.Width
 	if width <= 0 {
 		return chatViewLayout{}
@@ -345,30 +353,30 @@ func (c ChatView) layoutRects() chatViewLayout {
 	}
 }
 
-func (c ChatView) updateMessages(msg tea.Msg) (ChatView, tea.Cmd) {
+func (c ChatView[C]) updateMessages(msg tea.Msg) (ChatView[C], tea.Cmd) {
 	updated, cmd := c.messages.Update(msg)
-	c.messages = updated.(MessageList)
+	c.messages = updated.(MessageList[C])
 
 	return c, cmd
 }
 
-func (c ChatView) syncMessageViewport() ChatView {
+func (c ChatView[C]) syncMessageViewport() ChatView[C] {
 	layout := c.layoutRects()
 
 	updated, _ := c.messages.Update(ui.BoundsMsg{Rect: layout.MessageRect})
-	c.messages = updated.(MessageList)
+	c.messages = updated.(MessageList[C])
 
 	return c
 }
 
-func (c ChatView) updateInput(msg tea.Msg) ChatView {
+func (c ChatView[C]) updateInput(msg tea.Msg) ChatView[C] {
 	updated, _ := c.input.Update(msg)
 	c.input = updated.(InputBar)
 
 	return c
 }
 
-func (c ChatView) renderTopic(width int) string {
+func (c ChatView[C]) renderTopic(width int) string {
 	text := theme.ChannelTitle.Render(c.topic)
 
 	style := lipgloss.NewStyle().

@@ -79,15 +79,15 @@ func resolveFieldMetas(cmd any) ([]fieldMeta, error) {
 
 // buildPositionals converts positional fieldMetas into Positional
 // values for the completion system.
-func buildPositionals(fields []fieldMeta, sources map[string]SuggestionSource) []Positional {
-	var positionals []Positional
+func buildPositionals[C KindProvider](fields []fieldMeta, sources map[string]SuggestionSource[C]) []Positional[C] {
+	var positionals []Positional[C]
 
 	for _, f := range fields {
 		if f.isFlag {
 			continue
 		}
 
-		p := Positional{
+		p := Positional[C]{
 			Name:     f.name,
 			Help:     f.help,
 			Optional: f.optional,
@@ -109,15 +109,15 @@ func buildPositionals(fields []fieldMeta, sources map[string]SuggestionSource) [
 
 // buildFlags converts flag fieldMetas into Flag values for the
 // completion system.
-func buildFlags(fields []fieldMeta, sources map[string]SuggestionSource) []Flag {
-	var flags []Flag
+func buildFlags[C KindProvider](fields []fieldMeta, sources map[string]SuggestionSource[C]) []Flag[C] {
+	var flags []Flag[C]
 
 	for _, f := range fields {
 		if !f.isFlag {
 			continue
 		}
 
-		fl := Flag{
+		fl := Flag[C]{
 			Name:     f.flagName,
 			Help:     f.help,
 			Boolean:  f.boolFlag,
@@ -172,7 +172,7 @@ func hasCmdChildren(t reflect.Type) bool {
 // `cmd` tags, the field becomes a branch node that can have both its
 // own args/flags and child commands. This recursion works at any
 // depth.
-func buildNode(ft reflect.StructField, fieldVal reflect.Value) (*Node, error) {
+func buildNode[C KindProvider](ft reflect.StructField, fieldVal reflect.Value) (*Node[C], error) {
 	name := ft.Tag.Get("name")
 	if name == "" {
 		name = toKebabCase(ft.Name)
@@ -192,21 +192,21 @@ func buildNode(ft reflect.StructField, fieldVal reflect.Value) (*Node, error) {
 		return nil, err
 	}
 
-	var sources map[string]SuggestionSource
+	var sources map[string]SuggestionSource[C]
 
-	if c, ok := fieldVal.Interface().(Completer); ok {
+	if c, ok := fieldVal.Interface().(Completer[C]); ok {
 		sources = c.Sources()
 	}
 
-	node := &Node{
+	node := &Node[C]{
 		Name:         name,
 		Aliases:      aliases,
 		Help:         help,
 		RequiredKind: parseRequiredKind(ft.Tag.Get("kind")),
 		Tool:         hasToolTag(ft),
 		ToolDesc:     toolDescFromTag(ft),
-		Positionals:  buildPositionals(fields, sources),
-		Flags:        buildFlags(fields, sources),
+		Positionals:  buildPositionals[C](fields, sources),
+		Flags:        buildFlags[C](fields, sources),
 		fields:       fields,
 		factory: func() any {
 			return reflect.New(fieldType).Interface()
@@ -216,7 +216,7 @@ func buildNode(ft reflect.StructField, fieldVal reflect.Value) (*Node, error) {
 	if hasCmdChildren(fieldType) {
 		childPtr := reflect.New(fieldType).Interface()
 
-		children, err := build(childPtr)
+		children, err := build[C](childPtr)
 		if err != nil {
 			return nil, err
 		}
@@ -231,7 +231,7 @@ func buildNode(ft reflect.StructField, fieldVal reflect.Value) (*Node, error) {
 	return node, nil
 }
 
-func build(grammar any) ([]*Node, error) {
+func build[C KindProvider](grammar any) ([]*Node[C], error) {
 	v := reflect.ValueOf(grammar)
 	if v.Kind() != reflect.Ptr {
 		return nil, fmt.Errorf("grammar must be a pointer to a struct, got %T", grammar)
@@ -243,7 +243,7 @@ func build(grammar any) ([]*Node, error) {
 	}
 
 	t := v.Type()
-	var nodes []*Node
+	var nodes []*Node[C]
 	seenNames := map[string]string{}
 
 	for i := 0; i < t.NumField(); i++ {
@@ -257,7 +257,7 @@ func build(grammar any) ([]*Node, error) {
 			continue
 		}
 
-		node, err := buildNode(ft, v.Field(i))
+		node, err := buildNode[C](ft, v.Field(i))
 		if err != nil {
 			return nil, &FieldError{Field: ft.Name, Err: err}
 		}

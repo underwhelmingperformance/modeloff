@@ -12,16 +12,6 @@ import (
 	"github.com/laney/modeloff/internal/ui/components"
 )
 
-// commandStateMsg builds a CommandStateMsg from the current state,
-// providing both the node list for help rendering and the live
-// completer for the popover.
-func (s ChatScreen) commandStateMsg() components.CommandStateMsg {
-	return components.CommandStateMsg{
-		Commands:  s.parser.Set().Commands,
-		Completer: s.completer,
-	}
-}
-
 func (s ChatScreen) runContext() chatcmd.Context {
 	return chatcmd.Context{
 		Ctx:     s.ctx,

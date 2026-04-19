@@ -40,8 +40,8 @@ type JoinCommand struct {
 }
 
 // Sources implements command.Completer.
-func (JoinCommand) Sources() map[string]command.SuggestionSource {
-	return map[string]command.SuggestionSource{"channel": source(channelsSource)}
+func (JoinCommand) Sources() map[string]command.SuggestionSource[CompletionContext] {
+	return map[string]command.SuggestionSource[CompletionContext]{"channel": channelsSource}
 }
 
 // Run implements Command.
@@ -147,10 +147,10 @@ type AddModelCommand struct {
 }
 
 // Sources implements command.Completer.
-func (AddModelCommand) Sources() map[string]command.SuggestionSource {
-	return map[string]command.SuggestionSource{
-		"model":   resultSource(liveModelsSource),
-		"persona": source(personasSource),
+func (AddModelCommand) Sources() map[string]command.SuggestionSource[CompletionContext] {
+	return map[string]command.SuggestionSource[CompletionContext]{
+		"model":   liveModelsSource,
+		"persona": personasSource,
 	}
 }
 
@@ -180,8 +180,8 @@ type InviteCommand struct {
 }
 
 // Sources implements command.Completer.
-func (InviteCommand) Sources() map[string]command.SuggestionSource {
-	return map[string]command.SuggestionSource{"nick": source(instancesSource)}
+func (InviteCommand) Sources() map[string]command.SuggestionSource[CompletionContext] {
+	return map[string]command.SuggestionSource[CompletionContext]{"nick": instancesSource}
 }
 
 // Run implements Command.
@@ -248,8 +248,8 @@ type KickCommand struct {
 }
 
 // Sources implements command.Completer.
-func (KickCommand) Sources() map[string]command.SuggestionSource {
-	return map[string]command.SuggestionSource{"nick": source(activeMembersSource)}
+func (KickCommand) Sources() map[string]command.SuggestionSource[CompletionContext] {
+	return map[string]command.SuggestionSource[CompletionContext]{"nick": activeMembersSource}
 }
 
 // Run implements Command.
@@ -303,8 +303,8 @@ type MsgCommand struct {
 }
 
 // Sources implements command.Completer.
-func (MsgCommand) Sources() map[string]command.SuggestionSource {
-	return map[string]command.SuggestionSource{"nick": source(instancesSource)}
+func (MsgCommand) Sources() map[string]command.SuggestionSource[CompletionContext] {
+	return map[string]command.SuggestionSource[CompletionContext]{"nick": instancesSource}
 }
 
 // Run implements Command.
@@ -533,8 +533,8 @@ type WhoisCommand struct {
 }
 
 // Sources implements command.Completer.
-func (WhoisCommand) Sources() map[string]command.SuggestionSource {
-	return map[string]command.SuggestionSource{"nick": source(instancesSource)}
+func (WhoisCommand) Sources() map[string]command.SuggestionSource[CompletionContext] {
+	return map[string]command.SuggestionSource[CompletionContext]{"nick": instancesSource}
 }
 
 // Run implements Command.
@@ -769,9 +769,9 @@ type PokeIntervalConfig struct {
 }
 
 // Sources implements command.Completer.
-func (PokeIntervalConfig) Sources() map[string]command.SuggestionSource {
-	return map[string]command.SuggestionSource{
-		"duration": command.LiteralSource(
+func (PokeIntervalConfig) Sources() map[string]command.SuggestionSource[CompletionContext] {
+	return map[string]command.SuggestionSource[CompletionContext]{
+		"duration": command.LiteralSource[CompletionContext](
 			command.Suggestion{Value: "5m", Label: "5m", Detail: "Fast poke cadence"},
 			command.Suggestion{Value: "10m", Label: "10m", Detail: "Balanced poke cadence"},
 			command.Suggestion{Value: "30m", Label: "30m", Detail: "Quiet channels"},

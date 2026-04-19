@@ -68,10 +68,10 @@ type testGrammar struct {
 	Quit     testQuitCommand     `cmd:"" aliases:"q" help:"Quit."`
 }
 
-func allCommands(t *testing.T) Set {
+func allCommands(t *testing.T) Set[testCtx] {
 	t.Helper()
 
-	set, err := Build(&testGrammar{})
+	set, err := Build[testCtx](&testGrammar{})
 	require.NoError(t, err)
 
 	return set
@@ -267,7 +267,7 @@ type runnableGrammar struct {
 }
 
 func TestParser_Parse_returns_typed_command(t *testing.T) {
-	parser, err := BuildParser[testContext, testResult](&runnableGrammar{})
+	parser, err := BuildParser[testCtx, testContext, testResult](&runnableGrammar{})
 	require.NoError(t, err)
 
 	cmd, err := parser.Parse("/do hello")
@@ -282,7 +282,7 @@ func TestParser_Parse_rejects_non_command(t *testing.T) {
 		Join testJoinCommand `cmd:"" help:"Join."`
 	}
 
-	parser, err := BuildParser[testContext, testResult](&nonRunnableGrammar{})
+	parser, err := BuildParser[testCtx, testContext, testResult](&nonRunnableGrammar{})
 	require.NoError(t, err)
 
 	_, err = parser.Parse("/join foo")
@@ -293,7 +293,7 @@ func TestParser_Parse_rejects_non_command(t *testing.T) {
 }
 
 func TestParser_Set_returns_underlying_set(t *testing.T) {
-	parser, err := BuildParser[testContext, testResult](&runnableGrammar{})
+	parser, err := BuildParser[testCtx, testContext, testResult](&runnableGrammar{})
 	require.NoError(t, err)
 
 	set := parser.Set()
@@ -335,7 +335,7 @@ type subcommandGrammar struct {
 }
 
 func TestParseValue_subcommands(t *testing.T) {
-	cmds, err := Build(&subcommandGrammar{})
+	cmds, err := Build[testCtx](&subcommandGrammar{})
 	require.NoError(t, err)
 
 	tests := []struct {
@@ -361,7 +361,7 @@ func TestParseValue_subcommands(t *testing.T) {
 }
 
 func TestParseValue_subcommand_errors(t *testing.T) {
-	cmds, err := Build(&subcommandGrammar{})
+	cmds, err := Build[testCtx](&subcommandGrammar{})
 	require.NoError(t, err)
 
 	tests := []struct {
@@ -404,7 +404,7 @@ type deepGrammar struct {
 }
 
 func TestParseValue_deeply_nested_subcommands(t *testing.T) {
-	cmds, err := Build(&deepGrammar{})
+	cmds, err := Build[testCtx](&deepGrammar{})
 	require.NoError(t, err)
 
 	tests := []struct {
@@ -426,7 +426,7 @@ func TestParseValue_deeply_nested_subcommands(t *testing.T) {
 }
 
 func TestParseValue_deeply_nested_subcommand_errors(t *testing.T) {
-	cmds, err := Build(&deepGrammar{})
+	cmds, err := Build[testCtx](&deepGrammar{})
 	require.NoError(t, err)
 
 	tests := []struct {
@@ -447,7 +447,7 @@ func TestParseValue_deeply_nested_subcommand_errors(t *testing.T) {
 }
 
 func TestParseInvocation_returns_branch_values(t *testing.T) {
-	cmds, err := Build(&subcommandGrammar{})
+	cmds, err := Build[testCtx](&subcommandGrammar{})
 	require.NoError(t, err)
 
 	invocation, err := cmds.ParseInvocation("/config set --format json api-key sk-1234")
@@ -470,7 +470,7 @@ func TestParseInvocation_returns_branch_values(t *testing.T) {
 }
 
 func TestParseInvocation_unknown_flag_checks_active_ancestors(t *testing.T) {
-	cmds, err := Build(&subcommandGrammar{})
+	cmds, err := Build[testCtx](&subcommandGrammar{})
 	require.NoError(t, err)
 
 	_, err = cmds.ParseInvocation("/config set --unknown value api-key sk-1234")
@@ -506,7 +506,7 @@ func TestBuild_rejects_alias_collisions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := build(tt.grammar)
+			_, err := build[testCtx](tt.grammar)
 			require.Equal(t, tt.wantErr, err)
 		})
 	}
@@ -550,7 +550,7 @@ func TestNode_Find_resolves_child_alias(t *testing.T) {
 		Parent parentCmd `cmd:"" help:"Parent."`
 	}
 
-	cmds, err := Build(&grammar{})
+	cmds, err := Build[testCtx](&grammar{})
 	require.NoError(t, err)
 
 	child := cmds.Find("parent").Find("s")
@@ -594,7 +594,7 @@ func TestParseValue_subcommand_alias(t *testing.T) {
 		Config parentCmd `cmd:"" help:"Config."`
 	}
 
-	cmds, err := Build(&grammar{})
+	cmds, err := Build[testCtx](&grammar{})
 	require.NoError(t, err)
 	parsed, err := cmds.ParseValue("/config g my-key")
 
@@ -612,7 +612,7 @@ func TestNode_DisplayName_subcommand(t *testing.T) {
 		Config parentCmd `cmd:"" help:"Config."`
 	}
 
-	cmds, err := Build(&grammar{})
+	cmds, err := Build[testCtx](&grammar{})
 	require.NoError(t, err)
 	config := cmds.Find("config")
 
@@ -633,12 +633,14 @@ func TestSubcommandError_includes_aliases(t *testing.T) {
 		Config parentCmd `cmd:"" help:"Config."`
 	}
 
-	cmds, err := Build(&grammar{})
+	cmds, err := Build[testCtx](&grammar{})
 	require.NoError(t, err)
 	_, err = cmds.ParseValue("/config")
 
 	var subErr *SubcommandError
 	require.ErrorAs(t, err, &subErr)
-	require.Equal(t, "config", subErr.Node.Name)
-	require.Equal(t, "/config requires a subcommand: get, g, set", subErr.Error())
+	require.Equal(t, &SubcommandError{
+		Path:     "config",
+		Children: []string{"get", "g", "set"},
+	}, subErr)
 }

@@ -41,30 +41,35 @@ type SuggestionResult struct {
 	State       SuggestionState
 }
 
-// SuggestionSource returns suggestions for the current argument.
-// The first parameter is a caller-defined completion context (passed
-// through from Completable.Complete); sources type-assert it to the
-// concrete context type they expect.
-type SuggestionSource func(ctx any, state InvocationState) SuggestionResult
+// KindProvider is implemented by completion contexts that know the
+// current channel kind. [CompletionSet] uses this to filter commands.
+type KindProvider interface {
+	ChannelKind() domain.ChannelKind
+}
+
+// SuggestionSource returns suggestions for the current argument. The
+// first parameter is the caller-defined completion context the
+// grammar is parameterised on; sources receive it typed.
+type SuggestionSource[C KindProvider] func(ctx C, state InvocationState[C]) SuggestionResult
 
 // Positional describes a positional command argument.
-type Positional struct {
+type Positional[C KindProvider] struct {
 	Name     string
 	Help     string
 	Optional bool
 	Variadic bool
 	Nargs    *int
-	Source   SuggestionSource
+	Source   SuggestionSource[C]
 }
 
 // Flag describes a named flag argument (e.g. --persona).
-type Flag struct {
+type Flag[C KindProvider] struct {
 	Name     string
 	Help     string
 	Boolean  bool
 	Optional bool
 	Variadic bool
-	Source   SuggestionSource
+	Source   SuggestionSource[C]
 }
 
 // ToolDescriber is implemented by commands that need rich,
@@ -89,17 +94,17 @@ func parseRequiredKind(tag string) *domain.ChannelKind {
 // Node is a command in the command tree. Leaf nodes (no children)
 // are executable commands. Non-leaf nodes are command groups whose
 // children are subcommands.
-type Node struct {
-	Parent       *Node
+type Node[C KindProvider] struct {
+	Parent       *Node[C]
 	Name         string
 	Aliases      []string
 	Help         string
 	RequiredKind *domain.ChannelKind
 	Tool         bool
 	ToolDesc     string
-	Positionals  []Positional
-	Flags        []Flag
-	Children     []*Node
+	Positionals  []Positional[C]
+	Flags        []Flag[C]
+	Children     []*Node[C]
 
 	// factory creates a zero-valued pointer to the command struct for
 	// parsing. Nil for group nodes that have no struct of their own.
@@ -108,7 +113,7 @@ type Node struct {
 }
 
 // Names yields the canonical name followed by any aliases.
-func (n *Node) Names() iter.Seq[string] {
+func (n *Node[C]) Names() iter.Seq[string] {
 	return func(yield func(string) bool) {
 		if !yield(n.Name) {
 			return
@@ -126,7 +131,7 @@ func (n *Node) Names() iter.Seq[string] {
 // aliases in parentheses, e.g. "/join (/j, /jo)". For subcommand
 // nodes this returns only the local name, not the full ancestor
 // path.
-func (n *Node) DisplayName() string {
+func (n *Node[C]) DisplayName() string {
 	var b strings.Builder
 
 	b.WriteString("/")
@@ -154,7 +159,7 @@ func (n *Node) DisplayName() string {
 // Usage returns the argument synopsis for this node, e.g.
 // "<channel>", "[--persona <persona>]". It does not include the
 // command name or aliases — use DisplayName for that.
-func (n *Node) Usage() string {
+func (n *Node[C]) Usage() string {
 	var b strings.Builder
 
 	for _, p := range n.Positionals {
@@ -203,7 +208,7 @@ func (n *Node) Usage() string {
 
 // FullUsage returns DisplayName and Usage joined together, e.g.
 // "/join (/j, /jo) <channel>".
-func (n *Node) FullUsage() string {
+func (n *Node[C]) FullUsage() string {
 	usage := n.Usage()
 	if usage == "" {
 		return n.DisplayName()
@@ -213,7 +218,7 @@ func (n *Node) FullUsage() string {
 }
 
 // Path returns the node's command path relative to the set root.
-func (n *Node) Path() string {
+func (n *Node[C]) Path() string {
 	if n == nil {
 		return ""
 	}
@@ -231,7 +236,7 @@ func (n *Node) Path() string {
 }
 
 // Leaf returns true if this node has no children.
-func (n *Node) Leaf() bool {
+func (n *Node[C]) Leaf() bool {
 	return len(n.Children) == 0
 }
 
@@ -239,7 +244,7 @@ func (n *Node) Leaf() bool {
 //  1. If value implements ToolDescriber, use its ToolDescription().
 //  2. Else if the tool:"..." tag has a non-empty value, use that.
 //  3. Else fall back to the help:"" tag text.
-func (n *Node) ToolDescription(value any) string {
+func (n *Node[C]) ToolDescription(value any) string {
 	if d, ok := value.(ToolDescriber); ok {
 		return d.ToolDescription()
 	}
@@ -254,7 +259,7 @@ func (n *Node) ToolDescription(value any) string {
 // NewZero returns a zero-valued pointer to the command struct
 // for this node. This is useful for type assertions without
 // needing parsed arguments.
-func (n *Node) NewZero() any {
+func (n *Node[C]) NewZero() any {
 	if n.factory == nil {
 		return nil
 	}
@@ -263,13 +268,13 @@ func (n *Node) NewZero() any {
 }
 
 // ToolName returns the canonical model-tool name for this node.
-func (n *Node) ToolName() string {
+func (n *Node[C]) ToolName() string {
 	return toSnakeCase(n.Path())
 }
 
 // ToolParameters returns the JSON-schema-like parameter object for a
 // tool-capable leaf node.
-func (n *Node) ToolParameters() map[string]any {
+func (n *Node[C]) ToolParameters() map[string]any {
 	properties := map[string]any{}
 	required := make([]string, 0, len(n.fields))
 
@@ -298,7 +303,7 @@ func (n *Node) ToolParameters() map[string]any {
 }
 
 // ToolValue decodes structured tool arguments into the leaf value.
-func (n *Node) ToolValue(rawArgs json.RawMessage) (any, error) {
+func (n *Node[C]) ToolValue(rawArgs json.RawMessage) (any, error) {
 	if !n.Leaf() {
 		return nil, fmt.Errorf("node /%s is not a tool leaf", n.Path())
 	}
@@ -341,9 +346,9 @@ func (n *Node) ToolValue(rawArgs json.RawMessage) (any, error) {
 
 // AllFlags returns flags visible at this node, starting with
 // ancestors and ending with the node's own flags.
-func (n *Node) AllFlags() []Flag {
+func (n *Node[C]) AllFlags() []Flag[C] {
 	bindings := allFlagBindings(n)
-	flags := make([]Flag, 0, len(bindings))
+	flags := make([]Flag[C], 0, len(bindings))
 
 	for _, binding := range bindings {
 		flags = append(flags, *binding.Flag)
@@ -354,7 +359,7 @@ func (n *Node) AllFlags() []Flag {
 
 // Find looks up a direct child node by name, falling back to
 // aliases if no exact name match is found.
-func (n *Node) Find(name string) *Node {
+func (n *Node[C]) Find(name string) *Node[C] {
 	for _, child := range n.Children {
 		if child.Name == name {
 			return child
@@ -372,8 +377,8 @@ func (n *Node) Find(name string) *Node {
 
 // Set is the set of commands available in a given context. It acts
 // as the root of the command tree.
-type Set struct {
-	Commands []*Node
+type Set[C KindProvider] struct {
+	Commands []*Node[C]
 }
 
 // Completable computes completions for a raw input string at the
@@ -383,21 +388,21 @@ type Completable interface {
 	Complete(raw string, cursor int) Completion
 }
 
-type flagBinding struct {
-	Owner *Node
-	Flag  *Flag
+type flagBinding[C KindProvider] struct {
+	Owner *Node[C]
+	Flag  *Flag[C]
 }
 
 // Completer is implemented by command structs that provide their own
 // suggestion sources. The returned map keys are positional or flag
 // names.
-type Completer interface {
-	Sources() map[string]SuggestionSource
+type Completer[C KindProvider] interface {
+	Sources() map[string]SuggestionSource[C]
 }
 
 // Find looks up a top-level node by name, falling back to aliases
 // if no exact name match is found.
-func (s Set) Find(name string) *Node {
+func (s Set[C]) Find(name string) *Node[C] {
 	for _, node := range s.Commands {
 		if node.Name == name {
 			return node
@@ -414,11 +419,11 @@ func (s Set) Find(name string) *Node {
 }
 
 // ToolNodes returns every tool-capable leaf node in the set.
-func (s Set) ToolNodes() []*Node {
-	var nodes []*Node
+func (s Set[C]) ToolNodes() []*Node[C] {
+	var nodes []*Node[C]
 
-	var walk func(node *Node)
-	walk = func(node *Node) {
+	var walk func(node *Node[C])
+	walk = func(node *Node[C]) {
 		if node == nil {
 			return
 		}
@@ -439,13 +444,13 @@ func (s Set) ToolNodes() []*Node {
 	return nodes
 }
 
-func (s Set) linkParents() {
+func (s Set[C]) linkParents() {
 	for _, node := range s.Commands {
 		linkNode(node, nil)
 	}
 }
 
-func linkNode(node, parent *Node) {
+func linkNode[C KindProvider](node, parent *Node[C]) {
 	if node == nil {
 		return
 	}
@@ -458,11 +463,11 @@ func linkNode(node, parent *Node) {
 }
 
 // InvocationState describes the current parse state for completion.
-type InvocationState struct {
+type InvocationState[C KindProvider] struct {
 	Raw          string
 	Name         string
 	Args         []string
-	Command      *Node
+	Command      *Node[C]
 	CurrentIndex int
 	CurrentToken string
 }
@@ -485,8 +490,8 @@ type token struct {
 // Merge combines command sets from most-local to least-local precedence.
 // A command is skipped if its name or any of its aliases collide with a
 // name or alias already claimed by a higher-priority set.
-func Merge(sets ...Set) Set {
-	merged := Set{}
+func Merge[C KindProvider](sets ...Set[C]) Set[C] {
+	merged := Set[C]{}
 	seen := map[string]struct{}{}
 
 	for _, set := range sets {
@@ -516,7 +521,7 @@ func Merge(sets ...Set) Set {
 
 // complete resolves the completion state for the current buffer.
 // ctx is forwarded to SuggestionSources.
-func complete(set Set, ctx any, raw string, cursor int, kind domain.ChannelKind) Completion {
+func complete[C KindProvider](set Set[C], ctx C, raw string, cursor int, kind domain.ChannelKind) Completion {
 	set.linkParents()
 
 	raw = clampRaw(raw)
@@ -574,7 +579,7 @@ func complete(set Set, ctx any, raw string, cursor int, kind domain.ChannelKind)
 		}
 	}
 
-	state := InvocationState{
+	state := InvocationState[C]{
 		Raw:          raw,
 		Name:         name,
 		Args:         args,
@@ -700,7 +705,7 @@ func clampCursor(cursor, length int) int {
 	return cursor
 }
 
-func commandSuggestions(set Set, kind domain.ChannelKind) []Suggestion {
+func commandSuggestions[C KindProvider](set Set[C], kind domain.ChannelKind) []Suggestion {
 	suggestions := make([]Suggestion, 0, len(set.Commands))
 
 	for _, node := range set.Commands {
@@ -722,10 +727,10 @@ func commandSuggestions(set Set, kind domain.ChannelKind) []Suggestion {
 
 // completionClassification holds the result of classifying the tokens
 // preceding the cursor into flags and positionals.
-type completionClassification struct {
-	node               *Node
+type completionClassification[C KindProvider] struct {
+	node               *Node[C]
 	positionalIndex    int
-	expectingFlagValue *Flag
+	expectingFlagValue *Flag[C]
 	usedFlags          map[string]bool
 	invalid            bool
 }
@@ -752,8 +757,8 @@ func argTokensFrom(tokens []token, startIndex, currentIndex int) []string {
 // classifyForCompletion walks the preceding argument tokens and
 // determines the current positional index, whether we're expecting a
 // flag value, and which flags have already been used.
-func classifyForCompletion(node *Node, preceding []string) completionClassification {
-	cc := completionClassification{
+func classifyForCompletion[C KindProvider](node *Node[C], preceding []string) completionClassification[C] {
+	cc := completionClassification[C]{
 		node:      node,
 		usedFlags: map[string]bool{},
 	}
@@ -817,7 +822,7 @@ func classifyForCompletion(node *Node, preceding []string) completionClassificat
 	return cc
 }
 
-func flagSuggestions(node *Node, used map[string]bool) []Suggestion {
+func flagSuggestions[C KindProvider](node *Node[C], used map[string]bool) []Suggestion {
 	var suggestions []Suggestion
 
 	for _, binding := range allFlagBindings(node) {
@@ -835,13 +840,13 @@ func flagSuggestions(node *Node, used map[string]bool) []Suggestion {
 	return suggestions
 }
 
-func groupSuggestions(node *Node, used map[string]bool) []Suggestion {
+func groupSuggestions[C KindProvider](node *Node[C], used map[string]bool) []Suggestion {
 	suggestions := childSuggestions(node)
 	suggestions = append(suggestions, flagSuggestions(node, used)...)
 	return suggestions
 }
 
-func childSuggestions(node *Node) []Suggestion {
+func childSuggestions[C KindProvider](node *Node[C]) []Suggestion {
 	suggestions := make([]Suggestion, 0, len(node.Children))
 
 	for _, child := range node.Children {
@@ -861,7 +866,7 @@ func childSuggestions(node *Node) []Suggestion {
 // aliases appended in parentheses, e.g. "set (s)". Children do not
 // carry a leading slash because they are subcommands, not top-level
 // commands.
-func childDisplayLabel(child *Node) string {
+func childDisplayLabel[C KindProvider](child *Node[C]) string {
 	if len(child.Aliases) == 0 {
 		return child.Name
 	}
@@ -872,7 +877,7 @@ func childDisplayLabel(child *Node) string {
 // childFullUsage mirrors Node.FullUsage for subcommand nodes using the
 // slashless child label, e.g. "set (s) <key> <value>". If the child
 // takes no arguments the result degrades to just the label.
-func childFullUsage(child *Node) string {
+func childFullUsage[C KindProvider](child *Node[C]) string {
 	label := childDisplayLabel(child)
 
 	args := child.Usage()
@@ -943,7 +948,7 @@ func currentToken(tokens []token, runes []rune, cursor int) (int, int, int) {
 	return len(tokens), cursor, cursor
 }
 
-func resolvePositional(positionals []Positional, index int) *Positional {
+func resolvePositional[C KindProvider](positionals []Positional[C], index int) *Positional[C] {
 	if index < 0 {
 		return nil
 	}
@@ -964,7 +969,7 @@ func resolvePositional(positionals []Positional, index int) *Positional {
 	return &last
 }
 
-func hasContinuation(node *Node, index int) bool {
+func hasContinuation[C KindProvider](node *Node[C], index int) bool {
 	if index < 0 {
 		return len(node.Positionals) > 0 || len(node.Children) > 0 || len(node.AllFlags()) > 0
 	}
@@ -1054,10 +1059,10 @@ func dedupeSuggestions(all []Suggestion) []Suggestion {
 
 // LiteralSource suggests a fixed set of values in the declared order.
 // The context parameter is ignored since the values are static.
-func LiteralSource(values ...Suggestion) SuggestionSource {
+func LiteralSource[C KindProvider](values ...Suggestion) SuggestionSource[C] {
 	literals := append([]Suggestion(nil), values...)
 
-	return func(_ any, _ InvocationState) SuggestionResult {
+	return func(_ C, _ InvocationState[C]) SuggestionResult {
 		return SuggestionResult{Suggestions: slices.Clone(literals)}
 	}
 }
@@ -1067,8 +1072,8 @@ func LiteralSource(values ...Suggestion) SuggestionSource {
 // contributing source reports SuggestionStateError; a healthy source
 // masks error-state peers so their partial suggestions still reach the
 // caller.
-func ComposeSources(sources ...SuggestionSource) SuggestionSource {
-	return func(ctx any, state InvocationState) SuggestionResult {
+func ComposeSources[C KindProvider](sources ...SuggestionSource[C]) SuggestionSource[C] {
+	return func(ctx C, state InvocationState[C]) SuggestionResult {
 		var suggestions []Suggestion
 		hadSource := false
 		allError := true
@@ -1095,33 +1100,10 @@ func ComposeSources(sources ...SuggestionSource) SuggestionSource {
 	}
 }
 
-// TypedSource wraps a typed source function into a SuggestionSource.
-// This keeps the any type-assertion internal to the command package
-// so that callers work with concrete context types.
-func TypedSource[C any](fn func(C, InvocationState) []Suggestion) SuggestionSource {
-	return func(ctx any, state InvocationState) SuggestionResult {
-		return SuggestionResult{Suggestions: fn(ctx.(C), state)}
-	}
-}
-
-// TypedResultSource wraps a typed source function that needs to
-// return explicit completion state alongside its suggestions.
-func TypedResultSource[C any](fn func(C, InvocationState) SuggestionResult) SuggestionSource {
-	return func(ctx any, state InvocationState) SuggestionResult {
-		return fn(ctx.(C), state)
-	}
-}
-
-// KindProvider is implemented by completion contexts that know the
-// current channel kind. CompletionSet uses this to filter commands.
-type KindProvider interface {
-	ChannelKind() domain.ChannelKind
-}
-
 // CompletionSet binds a command Set with a typed completion context.
 // C must implement KindProvider so that command filtering works.
 type CompletionSet[C KindProvider] struct {
-	Set
+	Set[C]
 
 	Ctx C
 }
@@ -1131,19 +1113,19 @@ func (cs CompletionSet[C]) Complete(raw string, cursor int) Completion {
 	return complete(cs.Set, cs.Ctx, raw, cursor, cs.Ctx.ChannelKind())
 }
 
-func allFlagBindings(node *Node) []flagBinding {
+func allFlagBindings[C KindProvider](node *Node[C]) []flagBinding[C] {
 	if node == nil {
 		return nil
 	}
 
-	var bindings []flagBinding
+	var bindings []flagBinding[C]
 
 	if node.Parent != nil {
 		bindings = append(bindings, allFlagBindings(node.Parent)...)
 	}
 
 	for i := range node.Flags {
-		bindings = append(bindings, flagBinding{
+		bindings = append(bindings, flagBinding[C]{
 			Owner: node,
 			Flag:  &node.Flags[i],
 		})
@@ -1152,7 +1134,7 @@ func allFlagBindings(node *Node) []flagBinding {
 	return dedupeFlagBindings(bindings)
 }
 
-func dedupeFlagBindings(bindings []flagBinding) []flagBinding {
+func dedupeFlagBindings[C KindProvider](bindings []flagBinding[C]) []flagBinding[C] {
 	if len(bindings) == 0 {
 		return nil
 	}
@@ -1162,7 +1144,7 @@ func dedupeFlagBindings(bindings []flagBinding) []flagBinding {
 		latest[binding.Flag.Name] = i
 	}
 
-	deduped := make([]flagBinding, 0, len(latest))
+	deduped := make([]flagBinding[C], 0, len(latest))
 	for i, binding := range bindings {
 		if latest[binding.Flag.Name] != i {
 			continue
@@ -1174,12 +1156,12 @@ func dedupeFlagBindings(bindings []flagBinding) []flagBinding {
 	return deduped
 }
 
-func findFlagBinding(node *Node, name string) (flagBinding, bool) {
+func findFlagBinding[C KindProvider](node *Node[C], name string) (flagBinding[C], bool) {
 	for _, binding := range allFlagBindings(node) {
 		if binding.Flag.Name == name {
 			return binding, true
 		}
 	}
 
-	return flagBinding{}, false
+	return flagBinding[C]{}, false
 }

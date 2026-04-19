@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"golang.org/x/text/language"
 
+	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/observability"
 	"github.com/laney/modeloff/internal/ptr"
 	"github.com/laney/modeloff/internal/ui"
@@ -32,8 +33,8 @@ type workspaceLayout struct {
 }
 
 // ChatWorkspace renders chat alongside the observability panes.
-type ChatWorkspace struct {
-	Chat       ChatView
+type ChatWorkspace[C command.KindProvider] struct {
+	Chat       ChatView[C]
 	Logs       FeedView
 	Metrics    MetricsPane
 	HasMetrics bool
@@ -49,8 +50,8 @@ type ChatWorkspace struct {
 }
 
 // NewChatWorkspace creates the chat content workspace.
-func NewChatWorkspace(chat ChatView) ChatWorkspace {
-	return ChatWorkspace{
+func NewChatWorkspace[C command.KindProvider](chat ChatView[C]) ChatWorkspace[C] {
+	return ChatWorkspace[C]{
 		Chat:   chat,
 		Logs:   NewFeedView("No logs yet", "new logs"),
 		keyMap: DefaultWorkspaceKeyMap,
@@ -60,7 +61,7 @@ func NewChatWorkspace(chat ChatView) ChatWorkspace {
 }
 
 // WithMetrics attaches a metrics pane to the workspace.
-func (w ChatWorkspace) WithMetrics(metrics MetricsPane) ChatWorkspace {
+func (w ChatWorkspace[C]) WithMetrics(metrics MetricsPane) ChatWorkspace[C] {
 	w.Metrics = metrics
 	w.HasMetrics = true
 
@@ -68,7 +69,7 @@ func (w ChatWorkspace) WithMetrics(metrics MetricsPane) ChatWorkspace {
 }
 
 // Init implements ui.Model.
-func (w ChatWorkspace) Init() tea.Cmd {
+func (w ChatWorkspace[C]) Init() tea.Cmd {
 	cmds := []tea.Cmd{w.Chat.Init()}
 	if w.HasMetrics {
 		cmds = append(cmds, w.Metrics.Init())
@@ -78,7 +79,7 @@ func (w ChatWorkspace) Init() tea.Cmd {
 }
 
 // Update implements ui.Model.
-func (w ChatWorkspace) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
+func (w ChatWorkspace[C]) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case ui.BoundsMsg:
 		w.bounds = msg.Rect
@@ -129,7 +130,7 @@ func (w ChatWorkspace) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	return w.updateSplit(msg)
 }
 
-func (w ChatWorkspace) updateFullscreen(msg tea.Msg) (ui.Model, tea.Cmd) {
+func (w ChatWorkspace[C]) updateFullscreen(msg tea.Msg) (ui.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	if _, ok := msg.(tea.KeyMsg); ok {
@@ -161,11 +162,11 @@ func (w ChatWorkspace) updateFullscreen(msg tea.Msg) (ui.Model, tea.Cmd) {
 	return w, tea.Batch(cmds...)
 }
 
-func (w ChatWorkspace) updateSplit(msg tea.Msg) (ui.Model, tea.Cmd) {
+func (w ChatWorkspace[C]) updateSplit(msg tea.Msg) (ui.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	updatedChat, cmd := w.Chat.Update(msg)
-	w.Chat = updatedChat.(ChatView)
+	w.Chat = updatedChat.(ChatView[C])
 	cmds = append(cmds, cmd)
 
 	if !w.Open {
@@ -186,7 +187,7 @@ func (w ChatWorkspace) updateSplit(msg tea.Msg) (ui.Model, tea.Cmd) {
 }
 
 // KeyBindings implements ui.Keybinding.
-func (w ChatWorkspace) KeyBindings() []ui.KeyBinding {
+func (w ChatWorkspace[C]) KeyBindings() []ui.KeyBinding {
 	bindings := []ui.KeyBinding{w.keyMap.ToggleObservability}
 
 	if w.Open {
@@ -214,7 +215,7 @@ func (w ChatWorkspace) KeyBindings() []ui.KeyBinding {
 // reserve below the three-column area. In fullscreen or closed
 // mode it returns 0 because the drawer is handled entirely within
 // View.
-func (w ChatWorkspace) ObsHeight(totalHeight int) int {
+func (w ChatWorkspace[C]) ObsHeight(totalHeight int) int {
 	if !w.Open || w.Fullscreen {
 		return 0
 	}
@@ -233,7 +234,7 @@ func (w ChatWorkspace) ObsHeight(totalHeight int) int {
 // ObsView renders the observability panes at the given dimensions.
 // MainLayout calls this to render the drawer spanning the full
 // terminal width below the three-column area.
-func (w ChatWorkspace) ObsView(width, height int) string {
+func (w ChatWorkspace[C]) ObsView(width, height int) string {
 	if !w.Open || w.Fullscreen || height <= 0 {
 		return ""
 	}
@@ -244,7 +245,7 @@ func (w ChatWorkspace) ObsView(width, height int) string {
 }
 
 // View implements ui.Model.
-func (w ChatWorkspace) View(width, height int) string {
+func (w ChatWorkspace[C]) View(width, height int) string {
 	if !w.Open {
 		return w.Chat.View(width, height)
 	}
@@ -258,19 +259,19 @@ func (w ChatWorkspace) View(width, height int) string {
 }
 
 // SetLogEntries updates the log pane content.
-func (w ChatWorkspace) SetLogEntries(entries []observability.PanelEntry) ChatWorkspace {
+func (w ChatWorkspace[C]) SetLogEntries(entries []observability.PanelEntry) ChatWorkspace[C] {
 	w.logEntries = entries
 
 	return w.refreshLogs()
 }
 
 // WantsNickListHidden hides the nick list while fullscreen observability is active.
-func (w ChatWorkspace) WantsNickListHidden() bool {
+func (w ChatWorkspace[C]) WantsNickListHidden() bool {
 	return w.Open && w.Fullscreen
 }
 
 // StatusItems implements ui.StatusProvider.
-func (w ChatWorkspace) StatusItems() []ui.StatusItem {
+func (w ChatWorkspace[C]) StatusItems() []ui.StatusItem {
 	if !w.Open {
 		return nil
 	}
@@ -295,7 +296,7 @@ func (w ChatWorkspace) StatusItems() []ui.StatusItem {
 	}}
 }
 
-func (w ChatWorkspace) updateChildBounds() (ui.Model, tea.Cmd) {
+func (w ChatWorkspace[C]) updateChildBounds() (ui.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	if w.Fullscreen {
@@ -320,7 +321,7 @@ func (w ChatWorkspace) updateChildBounds() (ui.Model, tea.Cmd) {
 
 	chatRect := ui.Rect{X: w.bounds.X, Y: w.bounds.Y, Width: w.bounds.Width, Height: chatHeight}
 	updatedChat, cmd := w.Chat.Update(ui.BoundsMsg{Rect: chatRect})
-	w.Chat = updatedChat.(ChatView)
+	w.Chat = updatedChat.(ChatView[C])
 	cmds = append(cmds, cmd)
 
 	if w.Open {
@@ -341,7 +342,7 @@ func (w ChatWorkspace) updateChildBounds() (ui.Model, tea.Cmd) {
 	return w, tea.Batch(cmds...)
 }
 
-func (w ChatWorkspace) refreshLogs() ChatWorkspace {
+func (w ChatWorkspace[C]) refreshLogs() ChatWorkspace[C] {
 	var logsWidth int
 
 	if w.Fullscreen {
@@ -357,7 +358,7 @@ func (w ChatWorkspace) refreshLogs() ChatWorkspace {
 	return w
 }
 
-func (w ChatWorkspace) layout(width, height int) workspaceLayout {
+func (w ChatWorkspace[C]) layout(width, height int) workspaceLayout {
 	layout := workspaceLayout{
 		ChatRect: ui.Rect{X: w.bounds.X, Y: w.bounds.Y, Width: width, Height: height},
 	}
@@ -405,7 +406,7 @@ func (w ChatWorkspace) layout(width, height int) workspaceLayout {
 	return layout
 }
 
-func (w ChatWorkspace) obsLayout(width, height int) workspaceLayout {
+func (w ChatWorkspace[C]) obsLayout(width, height int) workspaceLayout {
 	layout := workspaceLayout{
 		ObsRect: ui.Rect{Width: width, Height: height},
 	}
@@ -421,7 +422,7 @@ func (w ChatWorkspace) obsLayout(width, height int) workspaceLayout {
 	return layout
 }
 
-func (w ChatWorkspace) renderObservabilityLayout(layout workspaceLayout, width, height int) string {
+func (w ChatWorkspace[C]) renderObservabilityLayout(layout workspaceLayout, width, height int) string {
 	if height <= 0 {
 		return ""
 	}
@@ -439,14 +440,14 @@ func (w ChatWorkspace) renderObservabilityLayout(layout workspaceLayout, width, 
 	return lipgloss.JoinVertical(lipgloss.Left, logs, metrics)
 }
 
-func (w ChatWorkspace) renderLogsPane(width, height int) string {
+func (w ChatWorkspace[C]) renderLogsPane(width, height int) string {
 	innerWidth, innerHeight := borderedInnerSize(width, height)
 	logs, _, _ := w.Logs.View(innerWidth, innerHeight)
 
 	return logs
 }
 
-func (w ChatWorkspace) renderMetricsPane(width, height int) string {
+func (w ChatWorkspace[C]) renderMetricsPane(width, height int) string {
 	innerWidth, innerHeight := borderedInnerSize(width, height)
 	if !w.HasMetrics {
 		return lipgloss.Place(innerWidth, innerHeight, lipgloss.Center, lipgloss.Center, "No metrics yet")
