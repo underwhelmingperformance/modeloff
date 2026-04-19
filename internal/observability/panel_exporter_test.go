@@ -15,15 +15,23 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// emitRecord builds an [sdklog.Record] by routing an [otellog.Record] through
-// a real [sdklog.LoggerProvider], so the SDK attribute-count and value-length
-// limits are populated. A bare `sdklog.Record{}` has zero-valued limits, which
-// truncates string attributes to the empty string and does not reflect how
-// records reach an [Exporter] in production.
+// emitRecord routes an [otellog.Record] through a real
+// [sdklog.LoggerProvider] and returns every [sdklog.Record] the SDK
+// produced for the emit. Going through a provider populates the SDK
+// attribute-count and value-length limits on the record; a bare
+// `sdklog.Record{}` has zero-valued limits, which truncates string
+// attributes to the empty string and does not reflect how records
+// reach an [Exporter] in production.
 //
-// The provider is created per call and torn down via t.Cleanup; do not share a
-// provider across emits or retain captured records past the next call.
-func emitRecord(t *testing.T, ctx context.Context, apply func(r *otellog.Record)) sdklog.Record {
+// Callers receive the full captured slice rather than a single
+// element so the export contract — exactly what the SDK produced —
+// is exposed at the call site, where downstream structural
+// assertions on the resulting `PanelEntry` pin the shape end-to-end.
+//
+// The provider is created per call and torn down via t.Cleanup; do
+// not share a provider across emits or retain captured records past
+// the next call.
+func emitRecord(t *testing.T, ctx context.Context, apply func(r *otellog.Record)) []sdklog.Record {
 	t.Helper()
 
 	var captured []sdklog.Record
@@ -42,9 +50,7 @@ func emitRecord(t *testing.T, ctx context.Context, apply func(r *otellog.Record)
 	apply(&record)
 	logger.Emit(ctx, record)
 
-	require.Len(t, captured, 1, "emitRecord expects exactly one exported record per emit")
-
-	return captured[0]
+	return captured
 }
 
 // recordCaptureExporter appends every exported record to target so callers can
@@ -74,14 +80,14 @@ func TestPanelExporter_exports_records_to_entries(t *testing.T) {
 	}))
 
 	timestamp := time.Date(2026, 4, 4, 12, 0, 0, 0, time.UTC)
-	record := emitRecord(t, ctx, func(r *otellog.Record) {
+	records := emitRecord(t, ctx, func(r *otellog.Record) {
 		r.SetTimestamp(timestamp)
 		r.SetSeverityText("INFO")
 		r.SetBody(otellog.StringValue("hello"))
 		r.AddAttributes(otellog.KeyValueFromAttribute(attribute.String("component", "session")))
 	})
 
-	require.NoError(t, exporter.Export(ctx, []sdklog.Record{record}))
+	require.NoError(t, exporter.Export(ctx, records))
 
 	entry := <-ingest
 
@@ -110,12 +116,12 @@ func TestPanelExporter_records_dropped_logs_on_backpressure(t *testing.T) {
 	ingest := make(chan PanelEntry)
 	exporter := NewPanelExporter(ingest, counter)
 
-	record := emitRecord(t, t.Context(), func(r *otellog.Record) {
+	records := emitRecord(t, t.Context(), func(r *otellog.Record) {
 		r.SetObservedTimestamp(time.Now())
 		r.SetBody(otellog.StringValue("dropped"))
 	})
 
-	require.NoError(t, exporter.Export(t.Context(), []sdklog.Record{record}))
+	require.NoError(t, exporter.Export(t.Context(), records))
 
 	var metrics metricdata.ResourceMetrics
 	require.NoError(t, reader.Collect(t.Context(), &metrics))
@@ -145,16 +151,19 @@ func sumValueForMetric(metrics metricdata.ResourceMetrics, name string) int64 {
 func TestPanelEntryFromRecord_uses_observed_timestamp_when_timestamp_missing(t *testing.T) {
 	observed := time.Date(2026, 4, 4, 13, 0, 0, 0, time.UTC)
 
-	record := emitRecord(t, t.Context(), func(r *otellog.Record) {
+	records := emitRecord(t, t.Context(), func(r *otellog.Record) {
 		r.SetObservedTimestamp(observed)
 		r.SetBody(otellog.StringValue("hello"))
 		r.AddAttributes(otellog.KeyValueFromAttribute(attribute.String("model_id", "anthropic/claude-3-haiku")))
 		r.SetSeverity(otellog.SeverityInfo)
 	})
 
-	entry := panelEntryFromRecord(record)
+	entries := make([]PanelEntry, 0, len(records))
+	for _, record := range records {
+		entries = append(entries, panelEntryFromRecord(record))
+	}
 
-	expected := PanelEntry{
+	expected := []PanelEntry{{
 		Timestamp: observed,
 		Level:     "INFO",
 		Message:   "hello",
@@ -162,8 +171,8 @@ func TestPanelEntryFromRecord_uses_observed_timestamp_when_timestamp_missing(t *
 		TraceID:   trace.TraceID{}.String(),
 		SpanID:    trace.SpanID{}.String(),
 		Fields:    []PanelField{{Key: "model_id", Value: "anthropic/claude-3-haiku"}},
-	}
-	require.Equal(t, expected, entry)
+	}}
+	require.Equal(t, expected, entries)
 }
 
 func TestValueString_formats_string_values(t *testing.T) {
