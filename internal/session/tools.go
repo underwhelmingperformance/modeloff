@@ -118,7 +118,7 @@ func memoryToolRegistry(mem MemoryExecutor, searchEnabled bool) *ToolRegistry {
 		{
 			Definition: api.ToolDefinition{
 				Name:        "write_memory",
-				Description: "Create or update a durable personal memory by key. Prefer updating an existing key over creating near-duplicates. Use short, stable keys that describe the fact clearly (e.g. user_name, preferred_editor). Only store stable facts that may matter in future conversations, not temporary chat context.",
+				Description: "Create or update a durable personal memory by key. Prefer updating an existing key over creating near-duplicates. Use short, stable keys that describe the fact clearly (e.g. user_name, preferred_editor). Only store stable facts that may matter in future conversations, not temporary chat context or obvious details already visible in the current prompt. Use this to overwrite a stale or incorrect memory by writing the corrected value to the same key. Do not call repeatedly without clear reason.",
 				Parameters: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
@@ -157,7 +157,7 @@ func memoryToolRegistry(mem MemoryExecutor, searchEnabled bool) *ToolRegistry {
 		{
 			Definition: api.ToolDefinition{
 				Name:        "delete_memory",
-				Description: "Delete a stored memory by key when it is outdated, incorrect, or no longer useful.",
+				Description: "Delete a stored memory by key when it is outdated, incorrect, stale, or no longer useful. Do not call repeatedly without clear reason.",
 				Parameters: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
@@ -194,7 +194,7 @@ func memoryToolRegistry(mem MemoryExecutor, searchEnabled bool) *ToolRegistry {
 		specs = append(specs, ToolSpec{
 			Definition: api.ToolDefinition{
 				Name:        "search_memory",
-				Description: "Search stored memories semantically. Use before guessing or writing duplicate memories. Do not call repeatedly without clear reason. Query when you need prior context that is not visible in the current prompt, or when you suspect a relevant memory already exists.",
+				Description: "Search stored memories semantically. Use before guessing or writing duplicate memories. Query when you need prior context that is not visible in the current prompt, or when you suspect a relevant memory already exists. Do not call repeatedly without clear reason.",
 				Parameters: map[string]any{
 					"type": "object",
 					"properties": map[string]any{

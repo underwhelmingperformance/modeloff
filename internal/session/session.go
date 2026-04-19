@@ -1996,23 +1996,8 @@ How to use memory:
 
 If there are no relevant memories, continue normally without using memory.`)
 
-	b.WriteString(`
-
-Available memory tools:
-- write_memory: create or update a durable memory by key
-- delete_memory: remove a memory that is outdated, incorrect, or no longer useful
-- search_memory: if available, search for relevant memories when useful context may exist but is not visible here
-
-Memory tool guidance:
-- Prefer updating an existing key over creating near-duplicate keys.
-- Use short, stable keys that describe the fact clearly.
-- Before writing a new memory, consider whether the fact already exists under another key.
-- Use search_memory when you need prior context that is not shown below, or when you think a relevant memory may already exist.
-- If a memory becomes wrong or stale, delete or replace it.
-- Do not call memory tools repeatedly without a clear reason.`)
-
 	if len(memories) == 0 {
-		b.WriteString("\n\nYou have no memories yet.")
+		b.WriteString("\n\nYou have no memories yet.\n")
 		return b.String()
 	}
 
@@ -2020,6 +2005,8 @@ Memory tool guidance:
 	for _, entry := range memories {
 		fmt.Fprintf(&b, " [%s=%s]", entry.Key, entry.Content)
 	}
+
+	b.WriteByte('\n')
 
 	return b.String()
 }

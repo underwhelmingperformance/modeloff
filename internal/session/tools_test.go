@@ -3,6 +3,8 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -169,6 +171,18 @@ func TestMemoryToolRegistry_without_search(t *testing.T) {
 	}
 
 	require.Equal(t, []string{"write_memory", "delete_memory"}, names)
+}
+
+func TestMemoryToolRegistry_descriptions_hold_memory_guidance(t *testing.T) {
+	mem := newFakeMemoryExecutor()
+	registry := memoryToolRegistry(mem, true)
+
+	var b strings.Builder
+	for _, def := range registry.Definitions() {
+		fmt.Fprintf(&b, "=== %s ===\n%s\n", def.Name, def.Description)
+	}
+
+	require.Equal(t, loadGolden(t, "memory_tool_descriptions.golden.txt"), b.String())
 }
 
 func TestMemoryToolRegistry_nil_executor(t *testing.T) {

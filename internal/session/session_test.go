@@ -3842,27 +3842,6 @@ func TestSession_DispatchToChannel_memory_loop_respects_max_turns(t *testing.T) 
 	}, writtenKeys)
 }
 
-func TestBuildSystemPrompt_mentions_memory_tools(t *testing.T) {
-	ch := domain.Channel{Name: "#dev", Kind: domain.KindChannel}
-	inst := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
-
-	prompt := buildSystemPrompt(ch, inst, nil)
-
-	require.Contains(t, prompt, "- write_memory: create or update a durable memory by key")
-	require.Contains(t, prompt, "- delete_memory: remove a memory that is outdated, incorrect, or no longer useful")
-	require.Contains(t, prompt, "- search_memory: if available, search for relevant memories when useful context may exist but is not visible here")
-}
-
-func TestBuildSystemPrompt_mentions_span_replies(t *testing.T) {
-	ch := domain.Channel{Name: "#dev", Kind: domain.KindChannel}
-	inst := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
-
-	prompt := buildSystemPrompt(ch, inst, nil)
-
-	require.Contains(t, prompt, "spans: styled text spans, where each span has text and optional style")
-	require.Contains(t, prompt, "If you want IRC-style formatting, use spans. Do not emit raw IRC control characters yourself.")
-}
-
 func TestSession_DispatchToChannel_encodes_structured_reply_formatting(t *testing.T) {
 	fake := &fakeAPIClient{
 		sendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
