@@ -197,6 +197,116 @@ func drainDispatchEvents(t *testing.T, sess *Session) {
 	}
 }
 
+// sessionEventMatcher pairs a human-readable name (used in
+// timeout messages) with a predicate over [domain.SessionEvent].
+// Build matchers via [matchEvent].
+type sessionEventMatcher struct {
+	name  string
+	match func(domain.SessionEvent) bool
+}
+
+// matchEvent returns a [sessionEventMatcher] that accepts any event
+// whose dynamic type is `T`.
+func matchEvent[T domain.SessionEvent]() sessionEventMatcher {
+	var zero T
+
+	return sessionEventMatcher{
+		name: reflect.TypeOf(zero).String(),
+		match: func(evt domain.SessionEvent) bool {
+			_, ok := evt.(T)
+			return ok
+		},
+	}
+}
+
+// drainUntilMatched is the most general of the session-test drain
+// helpers (`drainEvent`, `drainEventSkipping`, `drainNEvents`,
+// `drainEvents`, `drainUntilMatched`) and the default choice when a
+// test wants to decouple from the current implementation's exact
+// event count.
+//
+// It reads from the session events channel until every member of
+// `expected` has been matched at least once, returning two slices in
+// arrival order: `matched` holds the events that satisfied a matcher;
+// `extras` holds everything else seen along the way. Callers that
+// want to assert no surprises can `require.Empty(t, extras)`; callers
+// that only care about the wanted events can ignore it.
+//
+// Matchers are matched left-to-right, first-un-seen-wins: passing the
+// same matcher twice (e.g. two `matchEvent[domain.SystemNoticeEvent]`)
+// consumes two distinct events of that type.
+//
+// Picking between the helpers:
+//   - `drainNEvents` is appropriate when the test is asserting on the
+//     exact event count (e.g. pinning a no-extra-emit invariant). Most
+//     setup-clearing call sites should prefer `drainUntilMatched`.
+//   - `drainEventSkipping` is appropriate when the test expects only
+//     dispatch-lifecycle noise between events of interest and wants
+//     any other event type to fail loudly. `drainUntilMatched` is the
+//     permissive counterpart that tolerates any unrelated event.
+func drainUntilMatched(t *testing.T, sess *Session, expected ...sessionEventMatcher) (matched, extras []domain.SessionEvent) {
+	t.Helper()
+
+	matched = make([]domain.SessionEvent, 0, len(expected))
+	extras = make([]domain.SessionEvent, 0)
+	seen := make([]bool, len(expected))
+	matchedCount := 0
+
+	unmatchedNames := func() []string {
+		names := make([]string, 0, len(expected))
+		for i, matcher := range expected {
+			if !seen[i] {
+				names = append(names, matcher.name)
+			}
+		}
+		return names
+	}
+
+	eventTypes := func(events []domain.SessionEvent) []string {
+		types := make([]string, 0, len(events))
+		for _, evt := range events {
+			types = append(types, reflect.TypeOf(evt).String())
+		}
+		return types
+	}
+
+	for matchedCount < len(expected) {
+		select {
+		case evt := <-sess.Events():
+			matchedIndex := -1
+
+			for i, matcher := range expected {
+				if seen[i] {
+					continue
+				}
+
+				if matcher.match(evt) {
+					matchedIndex = i
+					break
+				}
+			}
+
+			if matchedIndex >= 0 {
+				seen[matchedIndex] = true
+				matched = append(matched, evt)
+				matchedCount++
+				continue
+			}
+
+			extras = append(extras, evt)
+		case <-time.After(time.Second):
+			t.Fatalf(
+				"timed out waiting for events %v; matched=%v extras=%v",
+				unmatchedNames(),
+				eventTypes(matched),
+				eventTypes(extras),
+			)
+		}
+	}
+
+	return matched, extras
+}
+
 // testMembers builds a MemberList using canonical `*Instance`
 // handles from the given session + store. The user is looked up via
 // `sess.UserInstance()`; every model nick is resolved from the store
@@ -543,7 +653,13 @@ func TestSession_Connect_then_JoinAutojoin_stamps_UserJoinedAt(t *testing.T) {
 	// status-channel ModeChangeEvent, "Connected to modeloff"
 	// SystemNoticeEvent, and "Reconnected after unclean shutdown"
 	// SystemNoticeEvent.
-	drainNEvents(t, sess, 4)
+	_, extras := drainUntilMatched(t, sess,
+		matchEvent[domain.JoinEvent](),
+		matchEvent[domain.ModeChangeEvent](),
+		matchEvent[domain.SystemNoticeEvent](),
+		matchEvent[domain.SystemNoticeEvent](),
+	)
+	require.Empty(t, extras)
 
 	require.NoError(t, sess.JoinAutojoinChannels(ctx))
 
@@ -562,7 +678,12 @@ func TestSession_FocusChannel_emits_event_and_persists_last_channel(t *testing.T
 	ctx := t.Context()
 
 	require.NoError(t, sess.Join(ctx, "#general"))
-	drainNEvents(t, sess, 3)
+	_, extras := drainUntilMatched(t, sess,
+		matchEvent[domain.JoinEvent](),
+		matchEvent[domain.ModeChangeEvent](),
+		matchEvent[domain.DispatchDoneEvent](),
+	)
+	require.Empty(t, extras)
 
 	require.NoError(t, sess.FocusChannel(ctx, "#general"))
 
@@ -596,10 +717,20 @@ func TestSession_Connect_Quit_Reconnect_omits_status_channel_from_autojoin(t *te
 	ctx := t.Context()
 
 	require.NoError(t, sess1.Connect(ctx))
-	drainNEvents(t, sess1, 3) // JoinEvent + ModeChangeEvent + "Connected" SystemNoticeEvent.
+	_, extras := drainUntilMatched(t, sess1,
+		matchEvent[domain.JoinEvent](),
+		matchEvent[domain.ModeChangeEvent](),
+		matchEvent[domain.SystemNoticeEvent](),
+	)
+	require.Empty(t, extras)
 
 	require.NoError(t, sess1.Join(ctx, "#general"))
-	drainNEvents(t, sess1, 3)
+	_, extras = drainUntilMatched(t, sess1,
+		matchEvent[domain.JoinEvent](),
+		matchEvent[domain.ModeChangeEvent](),
+		matchEvent[domain.DispatchDoneEvent](),
+	)
+	require.Empty(t, extras)
 
 	require.NoError(t, sess1.Quit(ctx, "bye"))
 
@@ -744,7 +875,12 @@ func TestSession_FocusChannel_status_channel_is_valid(t *testing.T) {
 	ctx := t.Context()
 
 	require.NoError(t, sess.Connect(ctx))
-	drainNEvents(t, sess, 3)
+	_, extras := drainUntilMatched(t, sess,
+		matchEvent[domain.JoinEvent](),
+		matchEvent[domain.ModeChangeEvent](),
+		matchEvent[domain.SystemNoticeEvent](),
+	)
+	require.Empty(t, extras)
 
 	require.NoError(t, sess.FocusChannel(ctx, domain.StatusChannelName))
 
@@ -764,10 +900,20 @@ func TestSession_Quit_appends_channel_quit_events_and_saves_autojoin(t *testing.
 	ctx := t.Context()
 
 	require.NoError(t, sess.Join(ctx, "#general"))
-	drainNEvents(t, sess, 3)
+	_, extras := drainUntilMatched(t, sess,
+		matchEvent[domain.JoinEvent](),
+		matchEvent[domain.ModeChangeEvent](),
+		matchEvent[domain.DispatchDoneEvent](),
+	)
+	require.Empty(t, extras)
 
 	require.NoError(t, sess.Join(ctx, "#random"))
-	drainNEvents(t, sess, 3)
+	_, extras = drainUntilMatched(t, sess,
+		matchEvent[domain.JoinEvent](),
+		matchEvent[domain.ModeChangeEvent](),
+		matchEvent[domain.DispatchDoneEvent](),
+	)
+	require.Empty(t, extras)
 
 	require.NoError(t, sess.Quit(ctx, "goodnight"))
 
@@ -785,7 +931,12 @@ func TestSession_Quit_removes_user_from_channel_members(t *testing.T) {
 	ctx := t.Context()
 
 	require.NoError(t, sess.Join(ctx, "#general"))
-	drainNEvents(t, sess, 3)
+	_, extras := drainUntilMatched(t, sess,
+		matchEvent[domain.JoinEvent](),
+		matchEvent[domain.ModeChangeEvent](),
+		matchEvent[domain.DispatchDoneEvent](),
+	)
+	require.Empty(t, extras)
 
 	require.NoError(t, sess.Quit(ctx, ""))
 
@@ -804,7 +955,12 @@ func TestSession_Quit_clears_in_memory_channels(t *testing.T) {
 	ctx := t.Context()
 
 	require.NoError(t, sess.Join(ctx, "#general"))
-	drainNEvents(t, sess, 3)
+	_, extras := drainUntilMatched(t, sess,
+		matchEvent[domain.JoinEvent](),
+		matchEvent[domain.ModeChangeEvent](),
+		matchEvent[domain.DispatchDoneEvent](),
+	)
+	require.Empty(t, extras)
 
 	require.NoError(t, sess.Quit(ctx, ""))
 
@@ -845,7 +1001,12 @@ func TestSession_user_state_triple_stays_consistent(t *testing.T) {
 	ctx := t.Context()
 
 	require.NoError(t, sess.Join(ctx, "#general"))
-	drainNEvents(t, sess, 3)
+	_, extras := drainUntilMatched(t, sess,
+		matchEvent[domain.JoinEvent](),
+		matchEvent[domain.ModeChangeEvent](),
+		matchEvent[domain.DispatchDoneEvent](),
+	)
+	require.Empty(t, extras)
 
 	require.Equal(t, userSnapshot{
 		Channels:   []domain.ChannelName{"#general"},
@@ -854,7 +1015,11 @@ func TestSession_user_state_triple_stays_consistent(t *testing.T) {
 	}, snapshot(t, sess, s, "#general"))
 
 	require.NoError(t, sess.Part(ctx, "#general", ""))
-	drainNEvents(t, sess, 1)
+	_, extras = drainUntilMatched(t, sess,
+		matchEvent[domain.PartEvent](),
+		matchEvent[domain.DispatchDoneEvent](),
+	)
+	require.Empty(t, extras)
 
 	require.Equal(t, userSnapshot{
 		Channels:   nil,
@@ -863,7 +1028,12 @@ func TestSession_user_state_triple_stays_consistent(t *testing.T) {
 	}, snapshot(t, sess, s, "#general"))
 
 	require.NoError(t, sess.Join(ctx, "#general"))
-	drainNEvents(t, sess, 2)
+	_, extras = drainUntilMatched(t, sess,
+		matchEvent[domain.JoinEvent](),
+		matchEvent[domain.ModeChangeEvent](),
+		matchEvent[domain.DispatchDoneEvent](),
+	)
+	require.Empty(t, extras)
 
 	require.Equal(t, userSnapshot{
 		Channels:   []domain.ChannelName{"#general"},
@@ -872,7 +1042,8 @@ func TestSession_user_state_triple_stays_consistent(t *testing.T) {
 	}, snapshot(t, sess, s, "#general"))
 
 	require.NoError(t, sess.ChangeNick(ctx, "renamed"))
-	drainNEvents(t, sess, 1)
+	_, extras = drainUntilMatched(t, sess, matchEvent[domain.NickChangeEvent]())
+	require.Empty(t, extras)
 
 	require.Equal(t, userSnapshot{
 		Channels:   []domain.ChannelName{"#general"},
@@ -2017,7 +2188,12 @@ func TestSession_ChangeNick(t *testing.T) {
 	// DispatchDoneEvent from reactive dispatch (no models → immediate
 	// done). The ModeChangeEvent and DispatchDoneEvent race.
 	require.NoError(t, sess.Join(t.Context(), "#general"))
-	drainNEvents(t, sess, 3)
+	_, extras := drainUntilMatched(t, sess,
+		matchEvent[domain.JoinEvent](),
+		matchEvent[domain.ModeChangeEvent](),
+		matchEvent[domain.DispatchDoneEvent](),
+	)
+	require.Empty(t, extras)
 
 	require.NoError(t, sess.ChangeNick(t.Context(), "newname"))
 	evt := drainEvent[domain.NickChangeEvent](t, sess)
@@ -4159,7 +4335,11 @@ func TestSession_DispatchToChannel_truncated_returns_error(t *testing.T) {
 // drainNEvents reads exactly n events from the session events channel
 // and returns them in arrival order.
 //
-// Use this when the test knows the exact number of events it expects.
+// Use this only when the test is asserting on the exact event count
+// or arrival ordering. For setup-style drains, prefer
+// `drainUntilMatched` so tests describe the semantic events they are
+// clearing without over-coupling to the full stream shape.
+//
 // `drainEvents` is marker-based — it stops at the Nth
 // `DispatchDoneEvent` — which is the right shape for tests that just
 // need to wait for dispatch to finish, but unsafe for tests that
