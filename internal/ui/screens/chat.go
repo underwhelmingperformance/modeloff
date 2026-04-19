@@ -32,8 +32,13 @@ type sessionEventMsg struct {
 	event domain.SessionEvent
 }
 
-// deliverNextReplyMsg triggers delivery of the next queued reply.
-type deliverNextReplyMsg struct{}
+// deliverNextReplyMsg triggers delivery of the next queued reply
+// for a specific channel. Per-channel scheduling means a burst of
+// replies on one channel cannot block another channel's replies
+// behind its pacing delay.
+type deliverNextReplyMsg struct {
+	Channel domain.ChannelName
+}
 
 // channelOrder defines the sidebar/cache ordering: status channel
 // pinned to the top, then normal channels, then DMs, alphabetical
@@ -92,7 +97,14 @@ type ChatScreen struct {
 	liveModels *[]chatcmd.ModelOption
 	parser     chatcmd.Parser
 	completer  command.Completable
-	replyQueue []domain.ModelReplyEvent
+	// replyQueue holds queued model replies keyed by channel. Each
+	// channel drains at its own paced cadence (replyPaceInterval)
+	// independently, so a burst of replies in one channel does not
+	// delay a reply in another. A map value is never stored empty —
+	// deliverNextReply deletes the key when the last entry is
+	// popped — so len(replyQueue) is the count of channels with
+	// pending work.
+	replyQueue map[domain.ChannelName][]domain.ModelReplyEvent
 	width      int
 	height     int
 	active     *domain.ChannelName
@@ -136,6 +148,7 @@ func NewChatScreen(ctx context.Context, sess *session.Session, cfgStore config.S
 		layout:     layout,
 		keyMap:     components.DefaultChatScreenKeyMap,
 		checklist:  NewWelcomeChecklist(sess.UserNick(), sess.HasAPIKey()),
+		replyQueue: map[domain.ChannelName][]domain.ModelReplyEvent{},
 	}
 
 	parser, err := chatcmd.NewParser()
@@ -500,7 +513,7 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		return s, tea.Batch(summaryCmd, s.waitForLogUpdateCmd())
 
 	case deliverNextReplyMsg:
-		return s.deliverNextReply()
+		return s.deliverNextReply(msg)
 
 	case PokeTickMsg:
 		return s, s.handlePoke()

@@ -191,9 +191,13 @@ func (s ChatScreen) handlePartEvent(msg domain.PartEvent) (ui.Model, tea.Cmd) {
 		s.channels.Insert(ch)
 	}
 
-	// If the user is leaving, remove the channel.
+	// If the user is leaving, remove the channel and purge any
+	// pending replies queued for it. Already-scheduled ticks for the
+	// parted channel's queue will no-op via deliverNextReply's
+	// empty-queue branch when they fire.
 	if msg.Instance == s.sess.UserInstance() {
 		s.channels.Remove(domain.Channel{Name: msg.Channel})
+		delete(s.replyQueue, msg.Channel)
 		s.checklist.channelCount = s.channels.Len()
 	}
 
@@ -447,11 +451,15 @@ func (s ChatScreen) handleMessageEvent(msg domain.MessageEvent) (ui.Model, tea.C
 }
 
 func (s ChatScreen) handleModelReplyEvent(msg domain.ModelReplyEvent) (ui.Model, tea.Cmd) {
-	s.replyQueue = append(s.replyQueue, msg)
+	ch := msg.Channel
+	wasEmpty := len(s.replyQueue[ch]) == 0
+	s.replyQueue[ch] = append(s.replyQueue[ch], msg)
 
-	// If this is the only queued reply, deliver it immediately.
-	if len(s.replyQueue) == 1 {
-		return s, s.deliverNextReplyCmd()
+	// If this channel had no pending replies, deliver immediately;
+	// pacing is per-channel, so unrelated channels keep their own
+	// schedules.
+	if wasEmpty {
+		return s, s.deliverNextReplyCmd(ch)
 	}
 
 	return s, nil
@@ -540,7 +548,7 @@ func (s ChatScreen) handleDispatchStarted(msg domain.DispatchStartedEvent) (ui.M
 }
 
 func (s ChatScreen) handleDispatchDone(_ domain.DispatchDoneEvent) (ui.Model, tea.Cmd) {
-	if len(s.replyQueue) > 0 {
+	if s.hasQueuedReplies() {
 		return s, nil
 	}
 
@@ -552,35 +560,61 @@ func (s ChatScreen) handleDispatchDone(_ domain.DispatchDoneEvent) (ui.Model, te
 
 const replyPaceInterval = 400 * time.Millisecond
 
-func (s ChatScreen) scheduleNextReply() tea.Cmd {
+// hasQueuedReplies reports whether any channel has pending replies.
+// The pending/thinking indicators are application-wide, so they
+// clear only when every channel's queue has drained. The field's
+// pruning invariant (drained channels are deleted from the map)
+// makes this an O(1) length check.
+func (s ChatScreen) hasQueuedReplies() bool {
+	return len(s.replyQueue) > 0
+}
+
+func (s ChatScreen) scheduleNextReply(ch domain.ChannelName) tea.Cmd {
 	return tea.Tick(replyPaceInterval, func(time.Time) tea.Msg {
-		return deliverNextReplyMsg{}
+		return deliverNextReplyMsg{Channel: ch}
 	})
 }
 
 // deliverNextReplyCmd returns a tea.Cmd that delivers the next reply
-// from the queue immediately (without pacing delay).
-func (s ChatScreen) deliverNextReplyCmd() tea.Cmd {
-	return func() tea.Msg { return deliverNextReplyMsg{} }
+// from the given channel's queue immediately (without pacing delay).
+func (s ChatScreen) deliverNextReplyCmd(ch domain.ChannelName) tea.Cmd {
+	return func() tea.Msg { return deliverNextReplyMsg{Channel: ch} }
 }
 
-func (s ChatScreen) deliverNextReply() (ui.Model, tea.Cmd) {
-	if len(s.replyQueue) == 0 {
-		return s, tea.Batch(
-			msgCmd(components.NickListThinkingMsg{}),
-			msgCmd(components.PendingResponseMsg{Pending: false}),
-		)
+func (s ChatScreen) deliverNextReply(msg deliverNextReplyMsg) (ui.Model, tea.Cmd) {
+	queue := s.replyQueue[msg.Channel]
+	if len(queue) == 0 {
+		// The channel's queue has drained. If no other channel has
+		// pending replies either, clear the application-wide
+		// pending/thinking indicators.
+		if !s.hasQueuedReplies() {
+			return s, tea.Batch(
+				msgCmd(components.NickListThinkingMsg{}),
+				msgCmd(components.PendingResponseMsg{Pending: false}),
+			)
+		}
+
+		return s, nil
 	}
 
-	next := s.replyQueue[0]
-	s.replyQueue = s.replyQueue[1:]
+	next := queue[0]
+	queue = queue[1:]
+
+	if len(queue) == 0 {
+		delete(s.replyQueue, msg.Channel)
+	} else {
+		s.replyQueue[msg.Channel] = queue
+	}
 
 	updated, cmd := s.showReply(next)
 	s = updated.(ChatScreen)
 
-	if len(s.replyQueue) > 0 {
-		cmd = tea.Batch(cmd, s.scheduleNextReply())
-	} else {
+	// Schedule the next delivery for this channel if more remain
+	// here; otherwise, if every channel has drained, clear the
+	// application-wide pending indicators.
+	if len(s.replyQueue[msg.Channel]) > 0 {
+		cmd = tea.Batch(cmd, s.scheduleNextReply(msg.Channel))
+	} else if !s.hasQueuedReplies() {
 		cmd = tea.Batch(cmd,
 			msgCmd(components.NickListThinkingMsg{}),
 			msgCmd(components.PendingResponseMsg{Pending: false}),
