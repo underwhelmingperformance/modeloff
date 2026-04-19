@@ -68,7 +68,10 @@ type UserNickMsg struct {
 // ChatView displays messages for a single channel with an input bar
 // at the bottom.
 type ChatView struct {
-	channel  domain.ChannelName
+	channel domain.ChannelName
+	// kind governs kind-sensitive decisions: the glyph/style used for
+	// system notices in the message list, and the topic-bar
+	// suppression that hides DM topics (KindDM never has a topic).
 	kind     domain.ChannelKind
 	topic    string
 	userNick domain.Nick
@@ -85,12 +88,12 @@ type chatViewLayout struct {
 	MessageRect ui.Rect
 }
 
-// NewChatView creates a chat view for the given channel. Kind
-// governs kind-sensitive rendering decisions (e.g. the glyph/style
-// used for system notices in the status channel); callers that do
-// not yet know the target channel's kind should pass
-// domain.KindChannel as a neutral default — SetChannelMsg overrides
-// it once the channel identity is known.
+// NewChatView creates a chat view for the given channel. The
+// caller passes the real initial kind — the view renders against it
+// from the first frame, rather than accepting a default and waiting
+// for a later SetChannelMsg to correct it. Subsequent SetChannelMsg
+// messages update the kind atomically when the user switches
+// channels.
 func NewChatView(ch domain.ChannelName, kind domain.ChannelKind, userNick domain.Nick, topic string) ChatView {
 	keyMap := DefaultChatViewKeyMap
 

@@ -40,7 +40,7 @@ func TestRenderChannelEvent_by_kind(t *testing.T) {
 		"status message":          {kind: domain.KindStatus, event: message, want: "<alice> hello"},
 		"channel system notice":   {kind: domain.KindChannel, event: notice, want: "✓ OpenRouter API key saved."},
 		"dm system notice":        {kind: domain.KindDM, event: notice, want: "✓ OpenRouter API key saved."},
-		"status system notice":    {kind: domain.KindStatus, event: notice, want: "→ OpenRouter API key saved."},
+		"status system notice":    {kind: domain.KindStatus, event: notice, want: "*** OpenRouter API key saved."},
 		"channel join on channel": {kind: domain.KindChannel, event: join, want: "*** alice has joined #test"},
 		"channel join on dm":      {kind: domain.KindDM, event: join, want: "*** alice has joined #test"},
 		"channel join on status":  {kind: domain.KindStatus, event: join, want: "*** alice has joined #test"},
@@ -85,10 +85,13 @@ func TestRenderChannelEvent_system_notice_style_changes_by_kind(t *testing.T) {
 	}
 
 	channelRendered := render(domain.KindChannel)
+	dmRendered := render(domain.KindDM)
 	statusRendered := render(domain.KindStatus)
 
 	require.NotEqual(t, channelRendered, statusRendered,
 		"system notice rendering must differ between KindChannel and KindStatus")
+	require.Equal(t, channelRendered, dmRendered,
+		"DM must render system notices identically to a regular channel")
 	require.Contains(t, stripLine(channelRendered), "✓")
-	require.Contains(t, stripLine(statusRendered), "→")
+	require.Contains(t, stripLine(statusRendered), "***")
 }

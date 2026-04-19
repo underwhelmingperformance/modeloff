@@ -45,7 +45,7 @@ func TestApp_startup_with_saved_channels(t *testing.T) {
 	require.NoError(t, sess.Quit(t.Context(), ""))
 	uitest.DrainEvents(sess)
 
-	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore)
+	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore, domain.KindStatus)
 	require.NoError(t, err)
 
 	root := uipkg.NewRoot(screens.NewConnectionScreen(screens.ConnectionConfig{
@@ -87,7 +87,7 @@ func TestApp_add_model_and_receive_reply(t *testing.T) {
 	sess, _, cfgStore := newIntegrationSession(t, apiClient)
 	uitest.SeedChannel(t, sess, "#general")
 
-	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore)
+	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore, domain.KindStatus)
 	require.NoError(t, err)
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen))
@@ -109,7 +109,7 @@ func TestApp_open_dm_and_send_message(t *testing.T) {
 		ModelID: "test/model",
 	})
 
-	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore)
+	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore, domain.KindStatus)
 	require.NoError(t, err)
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen))
@@ -134,7 +134,7 @@ func TestApp_terminal_output_shows_full_model_nick_in_user_list(t *testing.T) {
 
 	require.NoError(t, sess.JoinAs(t.Context(), grok, "#general"))
 
-	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore)
+	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore, domain.KindStatus)
 	require.NoError(t, err)
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen),
@@ -169,7 +169,7 @@ func TestApp_periodic_poke_generates_message(t *testing.T) {
 	require.NoError(t, sess.AddModel(t.Context(), "#general", "test/model", ""))
 	uitest.DrainEvents(sess)
 
-	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore)
+	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore, domain.KindStatus)
 	require.NoError(t, err)
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen))
@@ -197,7 +197,7 @@ func TestApp_reuse_existing_instance(t *testing.T) {
 	require.NoError(t, sess.AddModel(t.Context(), "#general", "test/model", "Helpful assistant"))
 	uitest.DrainEvents(sess)
 
-	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore)
+	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore, domain.KindStatus)
 	require.NoError(t, err)
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen))
@@ -322,7 +322,7 @@ func TestApp_vector_memory_write_and_search(t *testing.T) {
 
 	uitest.SeedChannel(t, sess, "#lab")
 
-	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore)
+	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore, domain.KindStatus)
 	require.NoError(t, err)
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen),

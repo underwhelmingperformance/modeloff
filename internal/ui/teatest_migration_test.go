@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/x/exp/teatest"
 	"github.com/stretchr/testify/require"
 
+	"github.com/laney/modeloff/internal/domain"
 	uipkg "github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/screens"
 	"github.com/laney/modeloff/internal/ui/uitest"
@@ -15,7 +16,7 @@ import (
 
 func TestRoot_quits_on_ctrl_c_with_teatest(t *testing.T) {
 	sess, _, cfgStore := newIntegrationSession(t, &integrationAPI{})
-	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore)
+	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore, domain.KindStatus)
 	require.NoError(t, err)
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen))
@@ -29,7 +30,7 @@ func TestRoot_quits_on_ctrl_c_with_teatest(t *testing.T) {
 
 func TestChatScreen_join_flow_with_teatest(t *testing.T) {
 	sess, _, cfgStore := newIntegrationSession(t, &integrationAPI{})
-	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore)
+	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore, domain.KindStatus)
 	require.NoError(t, err)
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen))
@@ -53,7 +54,7 @@ func TestChatScreen_leave_flow_with_teatest(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#random")
 	uitest.SeedMessage(t, sess, "#random", "random msg")
 
-	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore)
+	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore, domain.KindStatus)
 	require.NoError(t, err)
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen))
@@ -71,7 +72,7 @@ func TestChatScreen_sidebar_navigation_with_teatest(t *testing.T) {
 	uitest.SeedMessage(t, sess, "#random", "random msg")
 	require.NoError(t, store.SetLastChannel(t.Context(), "#general"))
 
-	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore)
+	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore, domain.KindStatus)
 	require.NoError(t, err)
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen))
@@ -90,7 +91,7 @@ func TestChatScreen_command_errors_with_teatest(t *testing.T) {
 	sess, _, cfgStore := newIntegrationSession(t, &integrationAPI{})
 	uitest.SeedChannel(t, sess, "#general")
 
-	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore)
+	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore, domain.KindStatus)
 	require.NoError(t, err)
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen))
@@ -106,7 +107,7 @@ func TestChatScreen_command_errors_with_teatest(t *testing.T) {
 func TestConnectionScreen_progression_with_teatest(t *testing.T) {
 	sess, _, cfgStore := newIntegrationSession(t, &integrationAPI{})
 
-	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore)
+	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore, domain.KindStatus)
 	require.NoError(t, err)
 
 	root := uipkg.NewRoot(screens.NewConnectionScreen(screens.ConnectionConfig{

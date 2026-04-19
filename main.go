@@ -87,7 +87,7 @@ func main() {
 		channelCount = len(autojoin)
 	}
 
-	chatScreen, err := screens.NewChatScreen(appCtx, sess, cfgStore)
+	chatScreen, err := screens.NewChatScreen(appCtx, sess, cfgStore, domain.KindStatus)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error building command grammar: %v\n", err)
 		os.Exit(1)

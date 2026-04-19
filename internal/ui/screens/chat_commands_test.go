@@ -61,7 +61,7 @@ func newTestSession(t *testing.T) *session.Session {
 }
 
 func TestChatScreen_Commands_specs_are_complete(t *testing.T) {
-	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil)
+	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil, domain.KindStatus)
 	require.NoError(t, err)
 
 	msg := screen.commandStateMsg()
@@ -98,7 +98,7 @@ func TestChatScreen_Commands_specs_are_complete(t *testing.T) {
 }
 
 func TestChatScreen_Commands_exposes_chat_commands(t *testing.T) {
-	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil)
+	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil, domain.KindStatus)
 	require.NoError(t, err)
 
 	msg := screen.commandStateMsg()
@@ -129,7 +129,7 @@ func TestChatScreen_Commands_exposes_chat_commands(t *testing.T) {
 }
 
 func TestChatScreen_HelpCommand_emits_typed_event(t *testing.T) {
-	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil)
+	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil, domain.KindStatus)
 	require.NoError(t, err)
 
 	cmd, err := screen.parser.Parse("/help")
@@ -140,7 +140,7 @@ func TestChatScreen_HelpCommand_emits_typed_event(t *testing.T) {
 }
 
 func TestChatScreen_QuitCommand_returns_quit_requested(t *testing.T) {
-	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil)
+	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil, domain.KindStatus)
 	require.NoError(t, err)
 
 	cmd, err := screen.parser.Parse("/quit goodnight")
@@ -151,7 +151,7 @@ func TestChatScreen_QuitCommand_returns_quit_requested(t *testing.T) {
 }
 
 func TestChatScreen_StatusItems_omits_disconnecting_by_default(t *testing.T) {
-	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil)
+	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil, domain.KindStatus)
 	require.NoError(t, err)
 
 	for _, item := range screen.StatusItems() {
@@ -161,7 +161,7 @@ func TestChatScreen_StatusItems_omits_disconnecting_by_default(t *testing.T) {
 }
 
 func TestChatScreen_StatusItems_surfaces_disconnecting_while_quit_in_flight(t *testing.T) {
-	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil)
+	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil, domain.KindStatus)
 	require.NoError(t, err)
 
 	updated, _ := screen.Update(uipkg.QuitRequestedMsg{})
@@ -178,7 +178,7 @@ func TestChatScreen_StatusItems_surfaces_disconnecting_while_quit_in_flight(t *t
 }
 
 func TestChatScreen_second_quit_request_escalates_to_tea_quit(t *testing.T) {
-	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil)
+	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil, domain.KindStatus)
 	require.NoError(t, err)
 
 	// First quit starts the disconnect flow.

@@ -109,13 +109,17 @@ type ChatScreen struct {
 // NewChatScreen creates a chat screen backed by the given session.
 // The provided context is used for all backend operations, allowing
 // them to be cancelled on shutdown.
-func NewChatScreen(ctx context.Context, sess *session.Session, cfgStore config.Store) (ChatScreen, error) {
+//
+// initialKind is the channel kind the chat view renders against
+// until the first channel is focused. `&modeloff` is the default
+// first view at app boot, so `domain.KindStatus` is the right value
+// for application startup. Tests that immediately focus a real
+// channel before the first frame pass `domain.KindStatus` too —
+// `SetChannelMsg` supplies the real kind atomically on the first
+// focus event.
+func NewChatScreen(ctx context.Context, sess *session.Session, cfgStore config.Store, initialKind domain.ChannelKind) (ChatScreen, error) {
 	sidebar := components.NewChannelSidebar()
-	// The real channel kind is supplied via SetChannelMsg once the
-	// user focuses a channel; until then KindChannel is a neutral
-	// placeholder — nothing is rendered through this view before the
-	// first SetChannelMsg arrives.
-	chatView := components.NewChatView("", domain.KindChannel, sess.UserNick(), "")
+	chatView := components.NewChatView("", initialKind, sess.UserNick(), "")
 	layout := components.NewMainLayout(sidebar, chatView)
 	layout.NickList = components.NewNickList(domain.NewMemberList())
 

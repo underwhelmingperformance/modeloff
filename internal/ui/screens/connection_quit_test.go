@@ -134,9 +134,9 @@ func TestConnectionScreen_refreshPane_is_idempotent_across_ticks(t *testing.T) {
 	s.refreshPane()
 
 	require.Equal(t, []string{
-		"→ Connected to modeloff",
-		"→ Joining #general",
-		"→ Joining #random",
+		"*** Connected to modeloff",
+		"*** Joining #general",
+		"*** Joining #random",
 	}, afterFirst,
 		"pane must hold one entry per status notice in emission order")
 	require.Equal(t, afterFirst, trimmedLines(s.pane.View(80, 16)),

@@ -44,7 +44,7 @@ func newChatApp(t *testing.T, sess *session.Session) *uitest.App {
 func newChatAppWithConfig(t *testing.T, sess *session.Session, cfgStore config.Store) *uitest.App {
 	t.Helper()
 
-	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore)
+	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore, domain.KindStatus)
 	require.NoError(t, err)
 
 	root := uipkg.NewRoot(chatScreen)

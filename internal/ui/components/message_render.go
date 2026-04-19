@@ -150,19 +150,23 @@ func renderChannelEvent(
 		return wrap.Render(theme.Warning.Render("⚠ " + e.Usage))
 
 	case domain.ChannelSystemNotice:
-		// The status channel carries operational noise (connection
-		// events, config confirmations as background chatter). Rendering
-		// every line in success-green misrepresents the tone — a dimmed
-		// server-style arrow reads as an IRC-idiomatic server notice.
-		// Regular channels and DMs keep the success tick because there
-		// the same notice is a direct confirmation of a user action.
-		// System notices are always server-authored, so no kind needs a
-		// nick prefix.
-		if kind == domain.KindStatus {
-			return wrap.Render(theme.Dim.Render("→ " + e.Text))
+		// On the status channel, system notices are operational
+		// narration (connection events, config confirmations as
+		// background chatter). They render in the shared server-event
+		// class — the same "*** <text>" shape join/part/quit/mode/topic
+		// use — so every line the server narrates reads as one visual
+		// class, with no directional arrows or per-variant glyphs. On
+		// regular channels and DMs the same notice is a direct
+		// confirmation of a user action, so it keeps the ✓ tick; that
+		// green glyph is reserved exclusively for user-action feedback.
+		// System notices are always server-authored, so no kind carries
+		// a nick prefix.
+		switch kind {
+		case domain.KindStatus:
+			return wrap.Render(theme.SystemEvent.Render("*** " + e.Text))
+		default:
+			return wrap.Render(theme.Success.Render("✓ " + e.Text))
 		}
-
-		return wrap.Render(theme.Success.Render("✓ " + e.Text))
 
 	default:
 		return ""

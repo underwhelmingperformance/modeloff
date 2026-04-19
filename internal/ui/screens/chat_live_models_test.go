@@ -122,7 +122,7 @@ func TestChatScreen_handleLiveModelsLoadFailed(t *testing.T) {
 				require.NoError(t, sess.Join(t.Context(), string(tc.active)))
 			}
 
-			screen, err := NewChatScreen(t.Context(), sess, nil)
+			screen, err := NewChatScreen(t.Context(), sess, nil, domain.KindStatus)
 			require.NoError(t, err)
 			*screen.active = tc.active
 			*screen.liveModels = placeholderModels()
@@ -180,7 +180,7 @@ func TestChatScreen_handleLiveModelsLoadFailed_silent_on_no_api_key(t *testing.T
 		t.Run(name, func(t *testing.T) {
 			logs := installLogSink(t)
 
-			screen, newErr := NewChatScreen(t.Context(), newTestSession(t), nil)
+			screen, newErr := NewChatScreen(t.Context(), newTestSession(t), nil, domain.KindStatus)
 			require.NoError(t, newErr)
 			*screen.liveModels = placeholderModels()
 
