@@ -1430,7 +1430,14 @@ func TestSession_JoinEvent_triggers_dispatch(t *testing.T) {
 	// Join an existing channel — the reactive dispatch should fire.
 	require.NoError(t, sess.Join(ctx, "#general"))
 
-	events := drainEvents(t, sess, 1)
+	// Five events are expected: the synchronous JoinEvent, the
+	// synchronous ModeChangeEvent emitted by emitJoinProtocol, and the
+	// async DispatchStartedEvent / ModelReplyEvent / DispatchDoneEvent
+	// from the dispatch goroutine triggered by the JoinEvent. Drain a
+	// fixed count so we cannot return early when DispatchDoneEvent
+	// arrives before emitJoinProtocol has finished emitting
+	// ModeChangeEvent — that race is the bug this test pinned.
+	events := drainNEvents(t, sess, 5)
 
 	// JoinEvent is always first — it is emitted synchronously before
 	// the dispatch goroutine starts. The remaining events include both
@@ -4150,18 +4157,38 @@ func TestSession_DispatchToChannel_truncated_returns_error(t *testing.T) {
 }
 
 // drainNEvents reads exactly n events from the session events channel
-// and discards them. Use when you need to clear events without
-// inspecting them.
-func drainNEvents(t *testing.T, sess *Session, n int) {
+// and returns them in arrival order.
+//
+// Use this when the test knows the exact number of events it expects.
+// `drainEvents` is marker-based — it stops at the Nth
+// `DispatchDoneEvent` — which is the right shape for tests that just
+// need to wait for dispatch to finish, but unsafe for tests that
+// combine a synchronous emit from the caller with asynchronous
+// events from a dispatch goroutine triggered by an earlier emit:
+// the dispatch goroutine can race ahead and emit `DispatchDoneEvent`
+// before the caller has emitted its post-trigger synchronous events
+// (e.g. `emitJoinProtocol`'s `ModeChangeEvent` after a
+// `JoinEvent`-triggered dispatch). The marker fires, drain returns,
+// and the synchronous event is queued but unobserved. A count-based
+// drain blocks until the expected total arrives.
+//
+// Callers that want only the side-effect of clearing the channel may
+// discard the return value with `_ = drainNEvents(...)`.
+func drainNEvents(t *testing.T, sess *Session, n int) []domain.SessionEvent {
 	t.Helper()
+
+	events := make([]domain.SessionEvent, 0, n)
 
 	for range n {
 		select {
-		case <-sess.Events():
+		case evt := <-sess.Events():
+			events = append(events, evt)
 		case <-time.After(time.Second):
-			t.Fatal("timed out draining events")
+			t.Fatalf("timed out draining events at %d/%d", len(events), n)
 		}
 	}
+
+	return events
 }
 
 // drainEvents reads from the session events channel until n
