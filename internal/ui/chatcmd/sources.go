@@ -91,30 +91,6 @@ func instancesSource(ctx CompletionContext, _ command.InvocationState) []command
 	return suggestions
 }
 
-// reusableInstancesSource suggests instance nicks not already in the
-// active channel.
-func reusableInstancesSource(ctx CompletionContext, _ command.InvocationState) []command.Suggestion {
-	active := ctx.ActiveChannel()
-
-	var suggestions []command.Suggestion
-
-	for inst := range ctx.Instances() {
-		if channels := inst.Channels(); channels != nil {
-			if _, ok := channels.Get(active); ok {
-				continue
-			}
-		}
-
-		suggestions = append(suggestions, command.Suggestion{
-			Value:  string(inst.Nick()),
-			Label:  string(inst.Nick()),
-			Detail: string(inst.ModelID),
-		})
-	}
-
-	return suggestions
-}
-
 // personasSource suggests known persona identifiers.
 func personasSource(ctx CompletionContext, _ command.InvocationState) []command.Suggestion {
 	var suggestions []command.Suggestion

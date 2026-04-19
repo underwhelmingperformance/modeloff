@@ -4526,3 +4526,211 @@ func TestAddModel_dispatches_invite_notification_to_model(t *testing.T) {
 		},
 	}, dispatched)
 }
+
+// listModelsCountingClient records the number of `ListModels` calls so
+// short-circuit tests can assert the upstream is not re-hit after a
+// known failure.
+type listModelsCountingClient struct {
+	fakeAPIClient
+
+	calls atomic.Int32
+	err   error
+	infos []api.ModelInfo
+}
+
+func (c *listModelsCountingClient) ListModels(context.Context) ([]api.ModelInfo, error) {
+	c.calls.Add(1)
+
+	if c.err != nil {
+		return nil, c.err
+	}
+
+	return c.infos, nil
+}
+
+func TestSession_AddModel_short_circuits_after_ListModels_failure(t *testing.T) {
+	logs := installSessionLogCapture(t)
+
+	upstreamErr := fmt.Errorf("upstream unreachable")
+	client := &listModelsCountingClient{err: upstreamErr}
+
+	s := storetest.NewMemoryStore(t)
+	sess := New(s, nil, client, "testuser", "test-key", "")
+	sess.now = func() time.Time { return fixedTime }
+
+	seedChannelWithMembers(t, sess, s, "#dev", "testuser")
+
+	_, err := sess.ListModels(t.Context())
+	require.ErrorIs(t, err, upstreamErr)
+	require.Equal(t, listModelsFailed, listModelsState(sess.listModelsState.Load()))
+
+	addErr := sess.AddModel(t.Context(), "#dev", "anthropic/claude-3-haiku", "")
+	require.ErrorIs(t, addErr, ErrModelListUnavailable)
+
+	require.Equal(t, int32(1), client.calls.Load(),
+		"AddModel must short-circuit on the cached failed state and not re-hit ListModels")
+
+	transition := logs.find("model list state transitioned")
+	require.NotNil(t, transition, "expected transition log record")
+	require.Equal(t, "WARN", transition["level"])
+	require.Equal(t, "session", transition["component"])
+	require.Equal(t, "none", transition["from"])
+	require.Equal(t, "failed", transition["to"])
+	require.Equal(t, upstreamErr.Error(), transition["error"])
+
+	shortCircuit := logs.find("add-model short-circuited: model list unavailable")
+	require.NotNil(t, shortCircuit, "expected short-circuit log record")
+	require.Equal(t, "INFO", shortCircuit["level"])
+	require.Equal(t, "session", shortCircuit["component"])
+	require.Equal(t, "anthropic/claude-3-haiku", shortCircuit["model_id"])
+}
+
+// installSessionLogCapture redirects `slog.Default()` to a JSON
+// `logBuffer` for the duration of the test, restoring a discard
+// handler on cleanup. Mirrors the inline pattern used by
+// `TestDispatchToInstance_logs_dispatch_attributes` so log assertions
+// can read structured fields out of the captured records.
+func installSessionLogCapture(t *testing.T) *logBuffer {
+	t.Helper()
+
+	buf := &logBuffer{}
+	handler := slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelInfo})
+	slog.SetDefault(slog.New(handler))
+	t.Cleanup(func() { slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil))) })
+
+	return buf
+}
+
+func TestClassifyEnsureModelError(t *testing.T) {
+	tests := map[string]struct {
+		err  error
+		want string
+	}{
+		"ErrModelListUnavailable": {
+			err:  ErrModelListUnavailable,
+			want: observability.ErrorKindClientState,
+		},
+		"wrapped ErrModelListUnavailable": {
+			err:  fmt.Errorf("wrap: %w", ErrModelListUnavailable),
+			want: observability.ErrorKindClientState,
+		},
+		"ErrNoAPIKey": {
+			err:  ErrNoAPIKey,
+			want: observability.ErrorKindClientState,
+		},
+		"UnsupportedModelError": {
+			err:  domain.UnsupportedModelError{ModelID: "foo"},
+			want: observability.ErrorKindValidation,
+		},
+		"wrapped UnsupportedModelError": {
+			err:  fmt.Errorf("wrap: %w", domain.UnsupportedModelError{ModelID: "foo"}),
+			want: observability.ErrorKindValidation,
+		},
+		"upstream wrapped as list models": {
+			err:  fmt.Errorf("list models: %w", fmt.Errorf("transport")),
+			want: observability.ErrorKindDispatch,
+		},
+		"unrelated error": {
+			err:  fmt.Errorf("anything else"),
+			want: observability.ErrorKindDispatch,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			require.Equal(t, tc.want, classifyEnsureModelError(tc.err))
+		})
+	}
+}
+
+func TestSession_AddModel_lazy_loads_when_state_none(t *testing.T) {
+	client := &listModelsCountingClient{infos: []api.ModelInfo{{ID: "anthropic/claude-3-haiku"}}}
+
+	s := storetest.NewMemoryStore(t)
+	sess := New(s, nil, client, "testuser", "test-key", "")
+	sess.now = func() time.Time { return fixedTime }
+
+	seedChannelWithMembers(t, sess, s, "#dev", "testuser")
+
+	require.Equal(t, listModelsNone, listModelsState(sess.listModelsState.Load()))
+	require.NoError(t, sess.AddModel(t.Context(), "#dev", "anthropic/claude-3-haiku", ""))
+	require.Equal(t, listModelsOK, listModelsState(sess.listModelsState.Load()))
+	require.Equal(t, int32(1), client.calls.Load())
+}
+
+func TestSession_AddModel_returns_unsupported_when_model_missing_from_cache(t *testing.T) {
+	client := &listModelsCountingClient{infos: []api.ModelInfo{{ID: "openai/gpt-5"}}}
+
+	s := storetest.NewMemoryStore(t)
+	sess := New(s, nil, client, "testuser", "test-key", "")
+	sess.now = func() time.Time { return fixedTime }
+
+	seedChannelWithMembers(t, sess, s, "#dev", "testuser")
+
+	_, err := sess.ListModels(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, listModelsOK, listModelsState(sess.listModelsState.Load()))
+
+	addErr := sess.AddModel(t.Context(), "#dev", "anthropic/claude-3-haiku", "")
+	var unsupported domain.UnsupportedModelError
+	require.ErrorAs(t, addErr, &unsupported)
+	require.Equal(t, domain.ModelID("anthropic/claude-3-haiku"), unsupported.ModelID)
+}
+
+func TestSession_AddModel_short_circuits_when_lazy_load_fails(t *testing.T) {
+	upstreamErr := fmt.Errorf("upstream unreachable")
+	client := &listModelsCountingClient{err: upstreamErr}
+
+	s := storetest.NewMemoryStore(t)
+	sess := New(s, nil, client, "testuser", "test-key", "")
+	sess.now = func() time.Time { return fixedTime }
+
+	seedChannelWithMembers(t, sess, s, "#dev", "testuser")
+
+	first := sess.AddModel(t.Context(), "#dev", "anthropic/claude-3-haiku", "")
+	require.ErrorIs(t, first, upstreamErr,
+		"first AddModel should surface the underlying upstream error from the lazy load")
+	require.Equal(t, listModelsFailed, listModelsState(sess.listModelsState.Load()))
+
+	second := sess.AddModel(t.Context(), "#dev", "anthropic/claude-3-haiku", "")
+	require.ErrorIs(t, second, ErrModelListUnavailable)
+	require.Equal(t, int32(1), client.calls.Load(),
+		"second AddModel must short-circuit and not re-hit ListModels")
+}
+
+func TestSession_SetAPIKey_resets_listModelsState(t *testing.T) {
+	client := &listModelsCountingClient{err: fmt.Errorf("upstream unreachable")}
+
+	s := storetest.NewMemoryStore(t)
+	sess := New(s, nil, client, "testuser", "initial-key", "")
+	sess.now = func() time.Time { return fixedTime }
+	sess.SetAPIFactory(func(string, string) (api.Client, error) {
+		return &fakeAPIClient{}, nil
+	})
+
+	_, err := sess.ListModels(t.Context())
+	require.Error(t, err)
+	require.Equal(t, listModelsFailed, listModelsState(sess.listModelsState.Load()))
+
+	require.NoError(t, sess.SetAPIKey(t.Context(), "next-key", ""))
+	require.Equal(t, listModelsNone, listModelsState(sess.listModelsState.Load()))
+	require.False(t, sess.supportedModelsReady)
+	require.Nil(t, sess.supportedModels)
+}
+
+func TestSession_Reset_clears_listModelsState(t *testing.T) {
+	client := &listModelsCountingClient{err: fmt.Errorf("upstream unreachable")}
+
+	s := storetest.NewMemoryStore(t)
+	sess := New(s, nil, client, "testuser", "test-key", "")
+	sess.now = func() time.Time { return fixedTime }
+
+	_, err := sess.ListModels(t.Context())
+	require.Error(t, err)
+	require.Equal(t, listModelsFailed, listModelsState(sess.listModelsState.Load()))
+
+	require.NoError(t, sess.Reset(t.Context()))
+	require.Equal(t, listModelsNone, listModelsState(sess.listModelsState.Load()))
+	require.False(t, sess.supportedModelsReady)
+	require.Nil(t, sess.supportedModels)
+}

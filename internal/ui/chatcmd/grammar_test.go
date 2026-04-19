@@ -195,15 +195,14 @@ func TestComplete_kick_suggests_active_members_excluding_self(t *testing.T) {
 	require.Equal(t, []string{"haiku"}, suggestionValues(c))
 }
 
-func TestComplete_add_model_suggests_reusable_then_live(t *testing.T) {
+func TestComplete_add_model_suggests_only_live_models(t *testing.T) {
 	c := complete(t, "/add-model ")
 
 	require.True(t, c.Visible)
 
-	values := suggestionValues(c)
-	// sonnet is reusable (not in #general), haiku is excluded (already in #general)
-	// then live models follow
-	require.Equal(t, []string{"sonnet", "anthropic/haiku", "anthropic/sonnet"}, values)
+	// `/add-model` always creates a fresh instance, so existing instance
+	// nicks are not valid inputs; only live OpenRouter model IDs are.
+	require.Equal(t, []string{"anthropic/haiku", "anthropic/sonnet"}, suggestionValues(c))
 }
 
 func TestComplete_add_model_persona_suggests_personas(t *testing.T) {

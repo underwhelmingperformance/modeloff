@@ -301,13 +301,14 @@ func msgsTypes(msgs []tea.Msg) []string {
 // invariant that renaming an instance (via NickChangeEvent) doesn't
 // orphan its entry in the channel's member list. Identity is keyed by
 // TestChatScreen_completion_all_instance_commands_see_instances_outside_active_channel
-// pins the invariant that `/invite`, `/msg`, `/whois`, and the
-// `/add-model` reusable-instance completion source all see model
-// instances that live in other channels, not just the active
-// channel's members. The original refactor wired `Instances:` to
-// the active channel's member list; the completion context now
-// separates `Instances` (session-wide, from `sess.Instances`) from
-// `ChannelMembers` (active-channel only).
+// pins the invariant that `/invite`, `/msg`, and `/whois` all see
+// model instances that live in other channels, not just the active
+// channel's members. The original refactor wired `Instances:` to the
+// active channel's member list; the completion context now separates
+// `Instances` (session-wide, from `sess.Instances`) from
+// `ChannelMembers` (active-channel only). `/add-model` is intentionally
+// excluded — its argument is a fresh OpenRouter model ID, not an
+// existing instance nick.
 func TestChatScreen_completion_all_instance_commands_see_instances_outside_active_channel(t *testing.T) {
 	ctx := t.Context()
 	s := storetest.NewMemoryStore(t)
@@ -352,7 +353,6 @@ func TestChatScreen_completion_all_instance_commands_see_instances_outside_activ
 		"/invite outsider",
 		"/msg outsider",
 		"/whois outsider",
-		"/add-model outsider",
 	} {
 		t.Run(raw, func(t *testing.T) { hasOutsider(t, raw) })
 	}

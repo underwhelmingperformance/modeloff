@@ -119,6 +119,15 @@ const (
 	// finer-grained transport/response_parse/etc. kind.
 	ErrorKindDispatch = "dispatch"
 
+	// ErrorKindClientState indicates a session-layer cached state
+	// forbids the operation without an upstream call — e.g. the model
+	// list is known-stale from a prior failure, or the API key is not
+	// configured. Distinct from `ErrorKindDispatch` (the upstream WAS
+	// called) and `ErrorKindValidation` (user-fixable input).
+	// Alerting that excludes upstream noise can filter on
+	// `AttrErrorKind != ErrorKindClientState`.
+	ErrorKindClientState = "client_state"
+
 	// ErrorKindAutojoin indicates one or more channels in the
 	// autojoin sequence failed to join. The aggregate
 	// session.autojoin span carries this kind; the per-channel

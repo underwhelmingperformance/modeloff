@@ -15,6 +15,7 @@ import (
 	"math/big"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -54,6 +55,37 @@ const eventBufSize = 256
 // user-facing notices while the user is still in onboarding.
 var ErrNoAPIKey = errors.New("api key not configured")
 
+// ErrModelListUnavailable is returned when the OpenRouter model
+// catalogue could not be fetched on the most recent attempt and the
+// session has no fresh list to validate against. `/add-model` and
+// other operations that need an authoritative model list short-circuit
+// with this sentinel rather than re-attempting the failing call on
+// every request. Callers can use `errors.Is(err,
+// session.ErrModelListUnavailable)` to surface a dedicated user
+// notice.
+var ErrModelListUnavailable = errors.New("model list unavailable")
+
+// listModelsState tracks whether the cached model catalogue reflects a
+// successful `ListModels` round-trip. It lets `ensureStructuredOutputModel`
+// distinguish "never attempted" (fall through to the lazy load) from
+// "last attempt failed" (short-circuit with `ErrModelListUnavailable`).
+//
+// Reads from `tea.Cmd` goroutines (e.g. `ensureStructuredOutputModel`)
+// and writes from sibling sites (`ListModels`, `SetAPIKey`, `Reset`)
+// run under the same single-writer serialisation as the existing
+// `supportedModels` field. Concrete writer goroutines today:
+// `loadLiveModels` (refresh) and `ensureStructuredOutputModel` (lazy
+// load from `AddModel`). The field is held as an `atomic.Uint32` so
+// that `tea.Cmd` reads cannot race with concurrent writes; task #25
+// will codify the broader serialisation across `Session` mutations.
+type listModelsState uint32
+
+const (
+	listModelsNone   listModelsState = iota // never attempted
+	listModelsOK                            // last attempt succeeded
+	listModelsFailed                        // last attempt failed
+)
+
 // Session is the backend coordinator. It bridges the UI layer and
 // the underlying stores and API client.
 //
@@ -82,6 +114,7 @@ type Session struct {
 
 	supportedModels      map[domain.ModelID]struct{}
 	supportedModelsReady bool
+	listModelsState      atomic.Uint32
 }
 
 // New creates a Session with the given dependencies. The session
@@ -719,7 +752,7 @@ func (s *Session) AddModel(
 	defer span.End()
 
 	if err := s.ensureStructuredOutputModel(ctx, modelID); err != nil {
-		setSpanError(span, err, observability.ErrorKindDispatch)
+		setSpanError(span, err, classifyEnsureModelError(err))
 		return err
 	}
 
@@ -990,11 +1023,12 @@ func (s *Session) ListModels(ctx context.Context) ([]api.ModelInfo, error) {
 
 	models, err := s.api.ListModels(ctx)
 	if err != nil {
+		s.transitionListModelsState(ctx, listModelsFailed, err)
 		setSpanError(span, err, observability.ErrorKindDispatch)
 		return nil, err
 	}
 
-	s.cacheSupportedModels(models)
+	s.cacheSupportedModels(ctx, models)
 
 	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 
@@ -1018,6 +1052,10 @@ func (s *Session) Reset(ctx context.Context) error {
 			return fmt.Errorf("reset memories: %w", err)
 		}
 	}
+
+	s.supportedModels = nil
+	s.supportedModelsReady = false
+	s.transitionListModelsState(ctx, listModelsNone, nil)
 
 	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 
@@ -1159,6 +1197,7 @@ func (s *Session) SetAPIKey(ctx context.Context, apiKey, baseURL string) error {
 	s.apiKey = apiKey
 	s.supportedModels = nil
 	s.supportedModelsReady = false
+	s.transitionListModelsState(ctx, listModelsNone, nil)
 
 	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 	return nil
@@ -1430,8 +1469,7 @@ func (s *Session) dispatchToInstance(
 	}
 
 	if err := s.ensureStructuredOutputModel(ctx, inst.ModelID); err != nil {
-		instanceSpan.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		instanceSpan.SetStatus(codes.Error, err.Error())
+		setSpanError(instanceSpan, err, classifyEnsureModelError(err))
 		return nil, fmt.Errorf("send events to %s: %w", nick, err)
 	}
 
@@ -2384,18 +2422,54 @@ func channelKindName(kind domain.ChannelKind) string {
 	}
 }
 
+// classifyEnsureModelError maps the errors produced by
+// `ensureStructuredOutputModel` to the appropriate observability error
+// kind. The cached short-circuit sentinels (`ErrModelListUnavailable`,
+// `ErrNoAPIKey`) reflect session-layer state that forbade the call
+// before any upstream attempt. `domain.UnsupportedModelError` reflects
+// a user-supplied model ID the catalogue does not include — fixable
+// by the user, not infrastructure. Everything else is wrapped around
+// a real upstream attempt and stays as `ErrorKindDispatch`.
+func classifyEnsureModelError(err error) string {
+	if errors.Is(err, ErrModelListUnavailable) || errors.Is(err, ErrNoAPIKey) {
+		return observability.ErrorKindClientState
+	}
+
+	var unsupported domain.UnsupportedModelError
+	if errors.As(err, &unsupported) {
+		return observability.ErrorKindValidation
+	}
+
+	return observability.ErrorKindDispatch
+}
+
 func (s *Session) ensureStructuredOutputModel(ctx context.Context, modelID domain.ModelID) error {
 	if !s.HasAPIKey() || s.api == nil {
 		return nil
 	}
 
+	if listModelsState(s.listModelsState.Load()) == listModelsFailed {
+		// Info, not Warn: the transition-to-failed event is the
+		// alerting-worthy signal (logged once by
+		// transitionListModelsState); subsequent short-circuits are
+		// the expected symptom of that state and would otherwise
+		// produce one Warn per `/add-model` attempt.
+		slog.Default().InfoContext(ctx, "add-model short-circuited: model list unavailable",
+			"component", "session",
+			"model_id", string(modelID),
+		)
+
+		return ErrModelListUnavailable
+	}
+
 	if !s.supportedModelsReady {
 		models, err := s.api.ListModels(ctx)
 		if err != nil {
+			s.transitionListModelsState(ctx, listModelsFailed, err)
 			return fmt.Errorf("list models: %w", err)
 		}
 
-		s.cacheSupportedModels(models)
+		s.cacheSupportedModels(ctx, models)
 	}
 
 	if _, ok := s.supportedModels[modelID]; !ok {
@@ -2405,11 +2479,55 @@ func (s *Session) ensureStructuredOutputModel(ctx context.Context, modelID domai
 	return nil
 }
 
-func (s *Session) cacheSupportedModels(models []api.ModelInfo) {
+func (s *Session) cacheSupportedModels(ctx context.Context, models []api.ModelInfo) {
 	s.supportedModels = make(map[domain.ModelID]struct{}, len(models))
 	for _, model := range models {
 		s.supportedModels[model.ID] = struct{}{}
 	}
 
 	s.supportedModelsReady = true
+	s.transitionListModelsState(ctx, listModelsOK, nil)
+}
+
+// transitionListModelsState atomically updates listModelsState and logs
+// the transition so operators can correlate `/add-model` short-circuits
+// with the upstream failure that put the catalogue into a known-stale
+// state.
+func (s *Session) transitionListModelsState(ctx context.Context, to listModelsState, err error) {
+	from := listModelsState(s.listModelsState.Swap(uint32(to)))
+
+	if from == to {
+		return
+	}
+
+	attrs := []any{
+		"component", "session",
+		"from", listModelsStateName(from),
+		"to", listModelsStateName(to),
+	}
+
+	if err != nil {
+		attrs = append(attrs, "error", err)
+	}
+
+	if to == listModelsFailed {
+		slog.Default().WarnContext(ctx, "model list state transitioned", attrs...)
+
+		return
+	}
+
+	slog.Default().InfoContext(ctx, "model list state transitioned", attrs...)
+}
+
+func listModelsStateName(s listModelsState) string {
+	switch s {
+	case listModelsNone:
+		return "none"
+	case listModelsOK:
+		return "ok"
+	case listModelsFailed:
+		return "failed"
+	default:
+		return "unknown"
+	}
 }

@@ -907,3 +907,26 @@ func (f *fakeConfigStore) Save(_ context.Context, cfg config.Config) error {
 	f.cfg = cfg
 	return nil
 }
+
+func TestChatScreen_add_model_short_circuits_when_model_list_unavailable(t *testing.T) {
+	cfgStore := newFakeConfigStore()
+	cfgStore.cfg.APIKey = "test-key"
+
+	api := &uitest.FakeAPI{
+		ListModelsFn: func(context.Context) ([]api.ModelInfo, error) {
+			return nil, fmt.Errorf("upstream 503")
+		},
+	}
+
+	s := storetest.NewMemoryStore(t)
+	sess := session.New(s, nil, api, "testuser", cfgStore.cfg.APIKey, cfgStore.cfg.SmallModel)
+	uitest.SeedChannel(t, sess, "#general")
+
+	tm := newChatAppWithConfig(t, sess, cfgStore)
+	// Wait for the failed `loadLiveModels` to surface and flip
+	// `listModelsState` to `failed` before issuing `/add-model`.
+	tm.WaitFor("Model list unavailable: upstream 503.")
+
+	tm.Submit("/add-model anthropic/claude-3-haiku")
+	tm.WaitFor("add-model: model list unavailable")
+}
