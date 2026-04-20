@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"iter"
 	"log/slog"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -88,13 +89,9 @@ func (s ChatScreen) handleSystemNoticeEvent(msg domain.SystemNoticeEvent) (ui.Mo
 }
 
 func (s ChatScreen) handleChannelFocus(msg domain.ChannelFocusEvent) (ui.Model, tea.Cmd) {
-	ch, exists := s.channels.Get(domain.Channel{Name: msg.Channel})
+	ch, exists := s.channelByName(msg.Channel)
 	if !exists {
-		ch = domain.Channel{
-			Name:    msg.Channel,
-			Kind:    domain.KindChannel,
-			Members: domain.NewMemberList(),
-		}
+		ch = s.syntheticChannel(msg.Channel)
 		s.channels.Insert(ch)
 	}
 
@@ -122,20 +119,16 @@ func (s ChatScreen) handleChannelFocus(msg domain.ChannelFocusEvent) (ui.Model, 
 
 func (s ChatScreen) handleJoinEvent(msg domain.JoinEvent) (ui.Model, tea.Cmd) {
 	isUser := msg.Instance == s.sess.UserInstance()
-	_, channelKnown := s.channels.Get(domain.Channel{Name: msg.Channel})
+	_, channelKnown := s.channelByName(msg.Channel)
 
 	if !isUser && !channelKnown {
 		return s, nil
 	}
 
-	ch, exists := s.channels.Get(domain.Channel{Name: msg.Channel})
+	ch, exists := s.channelByName(msg.Channel)
 	if !exists {
-		ch = domain.Channel{
-			Name:    msg.Channel,
-			Kind:    domain.KindChannel,
-			Members: domain.NewMemberList(),
-			Created: msg.At,
-		}
+		ch = s.syntheticChannel(msg.Channel)
+		ch.Created = msg.At
 	}
 
 	if !ch.Members.HasInstance(msg.Instance) {
@@ -165,7 +158,7 @@ func (s ChatScreen) handleJoinEvent(msg domain.JoinEvent) (ui.Model, tea.Cmd) {
 }
 
 func (s ChatScreen) handleModeChangeEvent(msg domain.ModeChangeEvent) (ui.Model, tea.Cmd) {
-	ch, ok := s.channels.Get(domain.Channel{Name: msg.Channel})
+	ch, ok := s.channelByName(msg.Channel)
 	if !ok {
 		return s, nil
 	}
@@ -184,7 +177,7 @@ func (s ChatScreen) handlePartEvent(msg domain.PartEvent) (ui.Model, tea.Cmd) {
 	leavingActive := *s.active == msg.Channel
 
 	// Remove the member from the channel's member list.
-	if ch, ok := s.channels.Get(domain.Channel{Name: msg.Channel}); ok {
+	if ch, ok := s.channelByName(msg.Channel); ok {
 		if m, mOK := ch.Members.GetByInstance(msg.Instance); mOK {
 			ch.Members.Remove(m)
 		}
@@ -197,7 +190,7 @@ func (s ChatScreen) handlePartEvent(msg domain.PartEvent) (ui.Model, tea.Cmd) {
 	// parted channel's queue will no-op via deliverNextReply's
 	// empty-queue branch when they fire.
 	if msg.Instance == s.sess.UserInstance() {
-		s.channels.Remove(domain.Channel{Name: msg.Channel})
+		s.channels.Remove(s.channelKey(msg.Channel))
 		delete(s.replyQueue, msg.Channel)
 		s.checklist.channelCount = s.channels.Len()
 	}
@@ -227,7 +220,7 @@ func (s ChatScreen) handlePartEvent(msg domain.PartEvent) (ui.Model, tea.Cmd) {
 	var members domain.MemberList
 
 	if *s.active != "" {
-		if ch, ok := s.channels.Get(domain.Channel{Name: *s.active}); ok {
+		if ch, ok := s.channelByName(*s.active); ok {
 			members = ch.Members
 		}
 	}
@@ -268,7 +261,7 @@ func (s ChatScreen) handleQuitEvent(msg domain.QuitEvent) (ui.Model, tea.Cmd) {
 	var members domain.MemberList
 
 	if *s.active != "" {
-		if ch, ok := s.channels.Get(domain.Channel{Name: *s.active}); ok {
+		if ch, ok := s.channelByName(*s.active); ok {
 			members = ch.Members
 		}
 	}
@@ -289,7 +282,7 @@ func (s ChatScreen) handleQuitEvent(msg domain.QuitEvent) (ui.Model, tea.Cmd) {
 }
 
 func (s ChatScreen) handleTopicChangeEvent(msg domain.TopicChangeEvent) (ui.Model, tea.Cmd) {
-	if ch, ok := s.channels.Get(domain.Channel{Name: msg.Channel}); ok {
+	if ch, ok := s.channelByName(msg.Channel); ok {
 		ch.Topic = msg.Topic
 		ch.TopicSetBy = msg.By
 		ch.TopicSetAt = msg.At
@@ -309,7 +302,7 @@ func (s ChatScreen) handleTopicChangeEvent(msg domain.TopicChangeEvent) (ui.Mode
 }
 
 func (s ChatScreen) handleTopicInfoEvent(msg domain.TopicInfoEvent) (ui.Model, tea.Cmd) {
-	if ch, ok := s.channels.Get(domain.Channel{Name: msg.Channel}); ok {
+	if ch, ok := s.channelByName(msg.Channel); ok {
 		ch.Topic = msg.Topic
 		ch.TopicSetBy = msg.TopicSetBy
 		ch.TopicSetAt = msg.TopicSetAt
@@ -334,7 +327,7 @@ func (s ChatScreen) handleNickChangeEvent(msg domain.NickChangeEvent) (ui.Model,
 	// Update the nick snapshot in this channel's local member list.
 	// The instance's own Nick() is already the new value — the
 	// session mutated it before emitting the event.
-	if ch, ok := s.channels.Get(domain.Channel{Name: msg.Channel}); ok {
+	if ch, ok := s.channelByName(msg.Channel); ok {
 		if ch.Members.HasInstance(msg.Instance) {
 			ch.Members.RenameTo(msg.Instance, msg.NewNick)
 			s.channels.Insert(ch)
@@ -347,7 +340,7 @@ func (s ChatScreen) handleNickChangeEvent(msg domain.NickChangeEvent) (ui.Model,
 
 	var cmds []tea.Cmd
 
-	if ch, ok := s.channels.Get(domain.Channel{Name: *s.active}); ok {
+	if ch, ok := s.channelByName(*s.active); ok {
 		cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: ch.Members}))
 	}
 
@@ -374,7 +367,7 @@ func (s ChatScreen) handleNickChangeEvent(msg domain.NickChangeEvent) (ui.Model,
 }
 
 func (s ChatScreen) handleModelInvitedEvent(msg domain.ModelInvitedEvent) (ui.Model, tea.Cmd) {
-	if ch, ok := s.channels.Get(domain.Channel{Name: msg.Channel}); ok {
+	if ch, ok := s.channelByName(msg.Channel); ok {
 		if !ch.Members.HasInstance(msg.Instance) {
 			ch.Members.Add(msg.Instance)
 		}
@@ -384,7 +377,7 @@ func (s ChatScreen) handleModelInvitedEvent(msg domain.ModelInvitedEvent) (ui.Mo
 
 	var members domain.MemberList
 
-	if ch, ok := s.channels.Get(domain.Channel{Name: *s.active}); ok {
+	if ch, ok := s.channelByName(*s.active); ok {
 		members = ch.Members
 	}
 
@@ -407,7 +400,7 @@ func (s ChatScreen) handleModelInvitedEvent(msg domain.ModelInvitedEvent) (ui.Mo
 
 func (s ChatScreen) handleModelKickedEvent(msg domain.ModelKickedEvent) (ui.Model, tea.Cmd) {
 	// Remove the kicked member from the channel's member list.
-	if ch, ok := s.channels.Get(domain.Channel{Name: msg.Channel}); ok {
+	if ch, ok := s.channelByName(msg.Channel); ok {
 		if m, mOK := ch.Members.GetByInstance(msg.Instance); mOK {
 			ch.Members.Remove(m)
 		}
@@ -417,7 +410,7 @@ func (s ChatScreen) handleModelKickedEvent(msg domain.ModelKickedEvent) (ui.Mode
 
 	var members domain.MemberList
 
-	if ch, ok := s.channels.Get(domain.Channel{Name: *s.active}); ok {
+	if ch, ok := s.channelByName(*s.active); ok {
 		members = ch.Members
 	}
 
@@ -472,7 +465,7 @@ func (s ChatScreen) handleDMOpenedEvent(msg domain.DMOpenedEvent) (ui.Model, tea
 
 	var members domain.MemberList
 
-	if ch, ok := s.channels.Get(domain.Channel{Name: msg.Channel.Name}); ok {
+	if ch, ok := s.channelByName(msg.Channel.Name); ok {
 		members = ch.Members
 	}
 
@@ -691,7 +684,7 @@ func (s ChatScreen) activeTopic() string {
 		return ""
 	}
 
-	ch, ok := s.channels.Get(domain.Channel{Name: *s.active})
+	ch, ok := s.channelByName(*s.active)
 	if !ok {
 		return ""
 	}
@@ -704,16 +697,16 @@ func (s ChatScreen) activeKind() domain.ChannelKind {
 		return domain.KindChannel
 	}
 
-	ch, ok := s.channels.Get(domain.Channel{Name: *s.active})
+	ch, ok := s.channelByName(*s.active)
 	if !ok {
-		return domain.KindChannel
+		return channelKindForName(*s.active)
 	}
 
 	return ch.Kind
 }
 
 func (s ChatScreen) activeMemberNicks() iter.Seq[domain.Nick] {
-	ch, ok := s.channels.Get(domain.Channel{Name: *s.active})
+	ch, ok := s.channelByName(*s.active)
 	if !ok {
 		return func(func(domain.Nick) bool) {}
 	}
@@ -727,7 +720,7 @@ func (s ChatScreen) activeMemberNicks() iter.Seq[domain.Nick] {
 // see in their nick list, matching IRC semantics.
 func (s ChatScreen) activeChannelInstances() iter.Seq[*domain.Instance] {
 	return func(yield func(*domain.Instance) bool) {
-		ch, ok := s.channels.Get(domain.Channel{Name: *s.active})
+		ch, ok := s.channelByName(*s.active)
 		if !ok {
 			return
 		}
@@ -737,5 +730,35 @@ func (s ChatScreen) activeChannelInstances() iter.Seq[*domain.Instance] {
 				return
 			}
 		}
+	}
+}
+
+func (s ChatScreen) channelByName(name domain.ChannelName) (domain.Channel, bool) {
+	return s.channels.Get(s.channelKey(name))
+}
+
+func (s ChatScreen) channelKey(name domain.ChannelName) domain.Channel {
+	return domain.Channel{
+		Name: name,
+		Kind: channelKindForName(name),
+	}
+}
+
+func (s ChatScreen) syntheticChannel(name domain.ChannelName) domain.Channel {
+	return domain.Channel{
+		Name:    name,
+		Kind:    channelKindForName(name),
+		Members: domain.NewMemberList(),
+	}
+}
+
+func channelKindForName(name domain.ChannelName) domain.ChannelKind {
+	switch {
+	case name == domain.StatusChannelName:
+		return domain.KindStatus
+	case strings.HasPrefix(string(name), domain.ChannelPrefix):
+		return domain.KindChannel
+	default:
+		return domain.KindDM
 	}
 }

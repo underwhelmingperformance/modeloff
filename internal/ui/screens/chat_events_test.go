@@ -328,6 +328,29 @@ func TestChatScreen_focus_new_channel_before_join_event(t *testing.T) {
 		"#general content should not be shown — #newchannel is active")
 }
 
+func TestChatScreen_focus_status_channel_keeps_status_identity(t *testing.T) {
+	sess := newTestSession(t)
+	require.NoError(t, sess.Connect(t.Context()))
+	uitest.SeedChannel(t, sess, "#general")
+
+	tm := newChatApp(t, sess)
+	tm.WaitFor("&modeloff", "Created channel #general")
+
+	tm.Send(domain.ChannelFocusEvent{Channel: domain.StatusChannelName})
+	tm.WaitFor("Connected to modeloff")
+
+	view := tm.CurrentView()
+	body, _ := uitest.SplitBodyAndStatus(view)
+	columns := uitest.VisibleColumns(body)
+
+	require.Equal(t, []string{"Channels", "▸&modeloff", "#general"}, uitest.NonEmptyColumn(columns[0]))
+	require.Equal(t, []string{
+		"*** Connected to modeloff",
+		"testuser >",
+	}, normaliseContent(uitest.NonEmptyColumn(columns[1])))
+	require.NotContains(t, view, "#&modeloff")
+}
+
 func TestChatScreen_MessageEvent_inactive_channel(t *testing.T) {
 	sess := newTestSession(t)
 	uitest.SeedChannel(t, sess, "#general")

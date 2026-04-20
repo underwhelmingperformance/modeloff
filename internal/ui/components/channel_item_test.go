@@ -86,6 +86,20 @@ func TestChannelSidebar_View_active_channel_highlighted(t *testing.T) {
 	require.Equal(t, []string{"Channels", "#dev", "#general", "▸#random"}, visibleLines(v))
 }
 
+func TestChannelSidebar_status_channel_stays_pinned_and_unprefixed(t *testing.T) {
+	channels := []domain.Channel{
+		{Name: "#general", Kind: domain.KindChannel},
+		{Name: domain.StatusChannelName, Kind: domain.KindStatus},
+		{Name: "botty", Kind: domain.KindDM},
+	}
+
+	m := newTestChannelSidebar(channels, "#general", nil)
+	v := m.View(30, 10)
+
+	require.Equal(t, []string{"Channels", "&modeloff", "▸#general", "@botty"}, visibleLines(v))
+	require.NotContains(t, v, "#&modeloff")
+}
+
 func TestChannelSidebar_keyboard_navigation(t *testing.T) {
 	// Sorted order: #dev, #general, #random. Active #general = index 1.
 	m := newTestChannelSidebar(testChannels, "#general", nil)
