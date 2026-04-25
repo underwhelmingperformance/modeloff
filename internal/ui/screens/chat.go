@@ -304,7 +304,28 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		})
 
 	case chatcmd.WhoisResult:
-		return s, s.logAndShow(snapshotWhois(*s.active, msg.Instance, time.Now()))
+		now := time.Now()
+
+		// When the active window is the status channel, a single
+		// persisted entry there serves both roles. Otherwise show the
+		// response ephemerally on the active window and persist a
+		// matching copy to `&modeloff` so the IRC-style server log
+		// records every /whois the user ran.
+		if *s.active == domain.StatusChannelName {
+			return s, s.logAndShow(snapshotWhois(*s.active, msg.Instance, now))
+		}
+
+		var cmds []tea.Cmd
+		cmds = append(cmds, msgCmd(domain.StoredEvent{
+			Event: snapshotWhois(*s.active, msg.Instance, now),
+		}))
+
+		statusEvent := snapshotWhois(domain.StatusChannelName, msg.Instance, now)
+		if _, err := s.sess.LogEvent(s.ctx, domain.StatusChannelName, statusEvent); err != nil {
+			slog.Default().ErrorContext(s.ctx, "persist whois to status channel", "error", err)
+		}
+
+		return s, tea.Batch(cmds...)
 
 	case chatcmd.ListResult:
 		return s, s.logAndShow(domain.ChannelListOutput{

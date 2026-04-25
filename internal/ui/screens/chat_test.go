@@ -365,6 +365,45 @@ func TestChatScreen_whois_command(t *testing.T) {
 	tm.WaitFor("fakenick is anthropic/claude-3-haiku")
 }
 
+func TestChatScreen_whois_persists_to_status_channel(t *testing.T) {
+	sess := newTestSession(t)
+	uitest.SeedChannel(t, sess, "#general")
+	require.NoError(t, sess.AddModel(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
+
+	tm := newChatApp(t, sess)
+	tm.WaitFor("#general")
+
+	tm.Submit("/whois fakenick")
+	tm.WaitFor("fakenick is anthropic/claude-3-haiku")
+
+	// Status channel must carry a persisted copy so the IRC-style
+	// server log shows every /whois the user ran, regardless of
+	// where they typed it.
+	statusEvents, err := sess.EventsBefore(t.Context(), domain.StatusChannelName, nil, 100)
+	require.NoError(t, err)
+
+	var whois []domain.ChannelWhois
+	for _, ev := range statusEvents {
+		if w, ok := ev.Event.(domain.ChannelWhois); ok {
+			whois = append(whois, w)
+		}
+	}
+	require.Len(t, whois, 1, "expected one ChannelWhois persisted on &modeloff")
+	require.Equal(t, domain.StatusChannelName, whois[0].Channel)
+	require.Equal(t, domain.Nick("fakenick"), whois[0].Nick)
+
+	// Active channel display is ephemeral: the #general event log
+	// should NOT carry the whois entry.
+	generalEvents, err := sess.EventsBefore(t.Context(), "#general", nil, 100)
+	require.NoError(t, err)
+
+	for _, ev := range generalEvents {
+		if _, ok := ev.Event.(domain.ChannelWhois); ok {
+			t.Fatal("expected no ChannelWhois persisted on #general; whois should only land on &modeloff")
+		}
+	}
+}
+
 func TestChatScreen_whois_unknown_nick(t *testing.T) {
 	tm, _ := newChatAppInChannel(t, "#general")
 
