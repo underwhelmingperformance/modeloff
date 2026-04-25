@@ -479,6 +479,14 @@ type Completion struct {
 	ReplaceStart int
 	ReplaceEnd   int
 	AppendSpace  bool
+
+	// TypedPrefix is the literal text the user has typed in the
+	// replacement region. The popover's Tab-accept consults it to
+	// decide whether the user is committing an alias they typed
+	// deliberately (in which case the replacement preserves the
+	// typed text) or expanding a partial form to its canonical
+	// `Value`.
+	TypedPrefix string
 }
 
 type token struct {
@@ -546,6 +554,7 @@ func complete[C KindProvider](set Set[C], ctx C, raw string, cursor int, kind do
 			ReplaceStart: start,
 			ReplaceEnd:   end,
 			AppendSpace:  true,
+			TypedPrefix:  prefix,
 		}
 	}
 
@@ -560,6 +569,7 @@ func complete[C KindProvider](set Set[C], ctx C, raw string, cursor int, kind do
 			Visible:      true,
 			ReplaceStart: start,
 			ReplaceEnd:   end,
+			TypedPrefix:  prefix,
 		}
 	}
 
@@ -576,6 +586,7 @@ func complete[C KindProvider](set Set[C], ctx C, raw string, cursor int, kind do
 			Visible:      true,
 			ReplaceStart: start,
 			ReplaceEnd:   end,
+			TypedPrefix:  prefix,
 		}
 	}
 
@@ -593,6 +604,7 @@ func complete[C KindProvider](set Set[C], ctx C, raw string, cursor int, kind do
 		ReplaceStart: start,
 		ReplaceEnd:   end,
 		AppendSpace:  true,
+		TypedPrefix:  prefix,
 	}
 
 	// Flag value completion: previous token was a flag name.

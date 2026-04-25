@@ -117,7 +117,7 @@ func TestComplete_command_suggestions_carry_usage(t *testing.T) {
 			name: "partial match",
 			raw:  "/j",
 			want: Completion{
-				Visible: true, ReplaceStart: 1, ReplaceEnd: 2, AppendSpace: true,
+				Visible: true, ReplaceStart: 1, ReplaceEnd: 2, AppendSpace: true, TypedPrefix: "j",
 				Suggestions: []Suggestion{
 					{Value: "join", Label: "/join", Detail: "Join channels", Usage: "/join <channel>"},
 				},
@@ -127,7 +127,7 @@ func TestComplete_command_suggestions_carry_usage(t *testing.T) {
 			name: "exact match is still a suggestion",
 			raw:  "/quit",
 			want: Completion{
-				Visible: true, ReplaceStart: 1, ReplaceEnd: 5, AppendSpace: true,
+				Visible: true, ReplaceStart: 1, ReplaceEnd: 5, AppendSpace: true, TypedPrefix: "quit",
 				Suggestions: []Suggestion{
 					{Value: "quit", Label: "/quit", Detail: "Exit.", Usage: "/quit"},
 				},
@@ -218,7 +218,7 @@ func TestComplete_argument_sources_are_contextual(t *testing.T) {
 	}
 
 	require.Equal(t, Completion{
-		Visible: true, ReplaceStart: 6, ReplaceEnd: 7, AppendSpace: false,
+		Visible: true, ReplaceStart: 6, ReplaceEnd: 7, AppendSpace: false, TypedPrefix: "h",
 		Suggestions: []Suggestion{{Value: "helper", Label: "helper"}},
 	}, complete(cmds, testCtxValue, "/kick h", 7, domain.KindChannel))
 }
@@ -242,7 +242,7 @@ func TestComplete_free_form_arguments_have_no_suggestions(t *testing.T) {
 	}
 
 	require.Equal(t, Completion{
-		Visible: true, ReplaceStart: 11, ReplaceEnd: 16,
+		Visible: true, ReplaceStart: 11, ReplaceEnd: 16, TypedPrefix: "hello",
 	}, complete(cmds, testCtxValue, "/msg botty hello", 16, domain.KindChannel))
 }
 
@@ -460,13 +460,13 @@ func TestComplete_token_boundaries(t *testing.T) {
 	}{
 		{
 			name: "cursor at zero shows command suggestions", raw: "/k", cursor: 0,
-			want: Completion{Visible: true, ReplaceStart: 1, ReplaceEnd: 2, AppendSpace: true, Suggestions: []Suggestion{
+			want: Completion{Visible: true, ReplaceStart: 1, ReplaceEnd: 2, AppendSpace: true, TypedPrefix: "k", Suggestions: []Suggestion{
 				{Value: "kick", Label: "/kick", Detail: "Kick a nick", Usage: "/kick <nick>"},
 			}},
 		},
 		{
 			name: "cursor at 1 shows command suggestions", raw: "/kick alice", cursor: 1,
-			want: Completion{Visible: true, ReplaceStart: 1, ReplaceEnd: 5, AppendSpace: true, Suggestions: []Suggestion{
+			want: Completion{Visible: true, ReplaceStart: 1, ReplaceEnd: 5, AppendSpace: true, TypedPrefix: "kick", Suggestions: []Suggestion{
 				{Value: "kick", Label: "/kick", Detail: "Kick a nick", Usage: "/kick <nick>"},
 			}},
 		},
@@ -476,7 +476,7 @@ func TestComplete_token_boundaries(t *testing.T) {
 		},
 		{
 			name: "cursor mid-argument filters", raw: "/kick al", cursor: 8,
-			want: Completion{Visible: true, ReplaceStart: 6, ReplaceEnd: 8, Suggestions: []Suggestion{{Value: "alice", Label: "alice"}}},
+			want: Completion{Visible: true, ReplaceStart: 6, ReplaceEnd: 8, TypedPrefix: "al", Suggestions: []Suggestion{{Value: "alice", Label: "alice"}}},
 		},
 		{
 			name: "cursor beyond length is clamped", raw: "/kick ", cursor: 100,
@@ -488,7 +488,7 @@ func TestComplete_token_boundaries(t *testing.T) {
 		},
 		{
 			name: "multiple spaces between tokens", raw: "/kick   a", cursor: 9,
-			want: Completion{Visible: true, ReplaceStart: 8, ReplaceEnd: 9, Suggestions: []Suggestion{{Value: "alice", Label: "alice"}}},
+			want: Completion{Visible: true, ReplaceStart: 8, ReplaceEnd: 9, TypedPrefix: "a", Suggestions: []Suggestion{{Value: "alice", Label: "alice"}}},
 		},
 	}
 
@@ -505,7 +505,7 @@ func TestComplete_unknown_command_has_no_suggestions(t *testing.T) {
 	}
 
 	require.Equal(t, Completion{
-		Visible: true, ReplaceStart: 9, ReplaceEnd: 12,
+		Visible: true, ReplaceStart: 9, ReplaceEnd: 12, TypedPrefix: "arg",
 	}, complete(cmds, testCtxValue, "/unknown arg", 12, domain.KindChannel))
 }
 
@@ -518,7 +518,7 @@ func TestComplete_contains_match(t *testing.T) {
 	}
 
 	require.Equal(t, Completion{
-		Visible: true, ReplaceStart: 1, ReplaceEnd: 5, AppendSpace: true,
+		Visible: true, ReplaceStart: 1, ReplaceEnd: 5, AppendSpace: true, TypedPrefix: "aiku",
 		Suggestions: []Suggestion{
 			{Value: "claude-3-haiku", Label: "/claude-3-haiku", Detail: "Haiku model", Usage: "/claude-3-haiku"},
 		},
@@ -601,7 +601,7 @@ func TestComplete_whitespace_after_slash(t *testing.T) {
 	}
 
 	require.Equal(t, Completion{
-		Visible: true, ReplaceStart: 1, ReplaceEnd: 2, AppendSpace: true,
+		Visible: true, ReplaceStart: 1, ReplaceEnd: 2, AppendSpace: true, TypedPrefix: " ",
 		Suggestions: []Suggestion{},
 	}, complete(cmds, testCtxValue, "/ ", 2, domain.KindChannel))
 }
@@ -615,7 +615,7 @@ func TestComplete_cursor_mid_command_name(t *testing.T) {
 	}
 
 	require.Equal(t, Completion{
-		Visible: true, ReplaceStart: 1, ReplaceEnd: 5, AppendSpace: true,
+		Visible: true, ReplaceStart: 1, ReplaceEnd: 5, AppendSpace: true, TypedPrefix: "quit",
 		Suggestions: []Suggestion{
 			{Value: "quit", Label: "/quit", Detail: "Exit.", Usage: "/quit"},
 		},
@@ -632,7 +632,7 @@ func TestComplete_multiple_prefix_matches(t *testing.T) {
 	}
 
 	require.Equal(t, Completion{
-		Visible: true, ReplaceStart: 1, ReplaceEnd: 3, AppendSpace: true,
+		Visible: true, ReplaceStart: 1, ReplaceEnd: 3, AppendSpace: true, TypedPrefix: "qu",
 		Suggestions: []Suggestion{
 			{Value: "quit", Label: "/quit", Detail: "Exit.", Usage: "/quit"},
 			{Value: "query", Label: "/query", Detail: "Query.", Usage: "/query"},
@@ -681,7 +681,7 @@ func TestComplete_flag_name_prefix_filters(t *testing.T) {
 	}
 
 	require.Equal(t, Completion{
-		Visible: true, ReplaceStart: 16, ReplaceEnd: 21, AppendSpace: true,
+		Visible: true, ReplaceStart: 16, ReplaceEnd: 21, AppendSpace: true, TypedPrefix: "--per",
 		Suggestions: []Suggestion{
 			{Value: "--persona", Label: "--persona", Detail: "Persona text"},
 		},
@@ -745,7 +745,7 @@ func TestComplete_flag_value_filters_by_prefix(t *testing.T) {
 	}
 
 	require.Equal(t, Completion{
-		Visible: true, ReplaceStart: 17, ReplaceEnd: 18, AppendSpace: true,
+		Visible: true, ReplaceStart: 17, ReplaceEnd: 18, AppendSpace: true, TypedPrefix: "j",
 		Suggestions: []Suggestion{{Value: "json", Label: "json"}},
 	}, complete(cmds, testCtxValue, "/config --format j", 18, domain.KindChannel))
 }
@@ -804,13 +804,13 @@ func TestComplete_subcommand_names(t *testing.T) {
 		},
 		{
 			name: "filtered by prefix", raw: "/admin mu",
-			want: Completion{Visible: true, ReplaceStart: 7, ReplaceEnd: 9, AppendSpace: true, Suggestions: []Suggestion{
+			want: Completion{Visible: true, ReplaceStart: 7, ReplaceEnd: 9, AppendSpace: true, TypedPrefix: "mu", Suggestions: []Suggestion{
 				{Value: "mute", Label: "mute", Detail: "Mute a user", Usage: "mute"},
 			}},
 		},
 		{
 			name: "no match", raw: "/admin x",
-			want: Completion{Visible: true, ReplaceStart: 7, ReplaceEnd: 8, AppendSpace: true, Suggestions: []Suggestion{}},
+			want: Completion{Visible: true, ReplaceStart: 7, ReplaceEnd: 8, AppendSpace: true, TypedPrefix: "x", Suggestions: []Suggestion{}},
 		},
 	}
 
@@ -912,7 +912,7 @@ func TestComplete_subcommand_recurses_into_child(t *testing.T) {
 		},
 		{
 			name: "subcommand names filtered", raw: "/config s",
-			want: Completion{Visible: true, ReplaceStart: 8, ReplaceEnd: 9, AppendSpace: true, Suggestions: []Suggestion{
+			want: Completion{Visible: true, ReplaceStart: 8, ReplaceEnd: 9, AppendSpace: true, TypedPrefix: "s", Suggestions: []Suggestion{
 				{Value: "set", Label: "set", Detail: "Set a value", Usage: "set <key> [--format]"},
 				{Value: "reset", Label: "reset", Detail: "Reset config", Usage: "reset [--format]"},
 			}},
@@ -926,13 +926,13 @@ func TestComplete_subcommand_recurses_into_child(t *testing.T) {
 		},
 		{
 			name: "ancestor flag suggested on child", raw: "/config set --",
-			want: Completion{Visible: true, ReplaceStart: 12, ReplaceEnd: 14, AppendSpace: true, Suggestions: []Suggestion{
+			want: Completion{Visible: true, ReplaceStart: 12, ReplaceEnd: 14, AppendSpace: true, TypedPrefix: "--", Suggestions: []Suggestion{
 				{Value: "--format", Label: "--format", Detail: "Output format"},
 			}},
 		},
 		{
 			name: "child positional filtered", raw: "/config set th",
-			want: Completion{Visible: true, ReplaceStart: 12, ReplaceEnd: 14, AppendSpace: true, Suggestions: []Suggestion{
+			want: Completion{Visible: true, ReplaceStart: 12, ReplaceEnd: 14, AppendSpace: true, TypedPrefix: "th", Suggestions: []Suggestion{
 				{Value: "theme", Label: "theme"},
 			}},
 		},
@@ -1023,7 +1023,7 @@ func TestComplete_used_ancestor_flags_are_excluded(t *testing.T) {
 	}
 
 	require.Equal(t, Completion{
-		Visible: true, ReplaceStart: 26, ReplaceEnd: 28, AppendSpace: true,
+		Visible: true, ReplaceStart: 26, ReplaceEnd: 28, AppendSpace: true, TypedPrefix: "--",
 		Suggestions: []Suggestion{},
 	}, complete(cmds, testCtxValue, "/config set --format json --", 28, domain.KindChannel))
 }
@@ -1107,7 +1107,7 @@ func TestComplete_deep_nesting_walks_into_grandchildren(t *testing.T) {
 		},
 		{
 			name: "level 2: filtered grandchildren", raw: "/admin user b",
-			want: Completion{Visible: true, ReplaceStart: 12, ReplaceEnd: 13, AppendSpace: true, Suggestions: []Suggestion{
+			want: Completion{Visible: true, ReplaceStart: 12, ReplaceEnd: 13, AppendSpace: true, TypedPrefix: "b", Suggestions: []Suggestion{
 				{Value: "ban", Label: "ban", Detail: "Ban a user", Usage: "ban <nick>"},
 				{Value: "unban", Label: "unban", Detail: "Unban a user", Usage: "unban"},
 			}},
@@ -1121,7 +1121,7 @@ func TestComplete_deep_nesting_walks_into_grandchildren(t *testing.T) {
 		},
 		{
 			name: "level 3: leaf positional filtered", raw: "/admin user ban a",
-			want: Completion{Visible: true, ReplaceStart: 16, ReplaceEnd: 17, Suggestions: []Suggestion{
+			want: Completion{Visible: true, ReplaceStart: 16, ReplaceEnd: 17, TypedPrefix: "a", Suggestions: []Suggestion{
 				{Value: "alice", Label: "alice"},
 			}},
 		},
@@ -1211,6 +1211,7 @@ func TestComplete_command_suggestions_include_aliases(t *testing.T) {
 				ReplaceStart: 1,
 				ReplaceEnd:   2,
 				AppendSpace:  true,
+				TypedPrefix:  "j",
 				Suggestions:  []Suggestion{joinSuggestion},
 			},
 		},
@@ -1222,6 +1223,7 @@ func TestComplete_command_suggestions_include_aliases(t *testing.T) {
 				ReplaceStart: 1,
 				ReplaceEnd:   2,
 				AppendSpace:  true,
+				TypedPrefix:  "q",
 				Suggestions:  []Suggestion{quitSuggestion},
 			},
 		},

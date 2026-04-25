@@ -721,6 +721,41 @@ func TestInputBar_popover_tab_accepts(t *testing.T) {
 	require.Equal(t, "/join #general", sub.Raw)
 }
 
+func TestInputBar_popover_tab_preserves_typed_alias(t *testing.T) {
+	tests := []struct {
+		name    string
+		typed   string
+		wantRaw string
+	}{
+		{name: "alias-exact preserves typed alias", typed: "/j", wantRaw: "/j #general"},
+		{name: "value-exact preserves typed canonical", typed: "/join", wantRaw: "/join #general"},
+		{name: "ambiguous prefix expands to canonical", typed: "/jo", wantRaw: "/join #general"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			nodes := []*command.Node[inputBarKind]{
+				{Name: "join", Help: "Join a channel", Aliases: []string{"j"}},
+			}
+			m := inputBarWithPopover(nodes)
+
+			m = typeText(t, m, tt.typed)
+
+			var cmd tea.Cmd
+			m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+			require.NotNil(t, cmd, "Tab should produce a cmd")
+			m, _ = m.Update(cmd())
+
+			m = typeText(t, m, "#general")
+			_, cmd = enter(t, m)
+			require.NotNil(t, cmd)
+
+			sub := cmd().(components.CommandSubmitMsg)
+			require.Equal(t, tt.wantRaw, sub.Raw)
+		})
+	}
+}
+
 func TestInputBar_popover_dismiss_on_esc(t *testing.T) {
 	nodes := []*command.Node[inputBarKind]{
 		{Name: "join", Help: "Join a channel"},

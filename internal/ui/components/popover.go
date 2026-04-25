@@ -2,6 +2,7 @@ package components
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -269,7 +270,7 @@ func (p Popover) acceptCmd(index int) tea.Cmd {
 	}
 
 	suggestion := p.completion.Suggestions[index]
-	replacement := suggestion.Value
+	replacement := acceptedReplacement(p.completion.TypedPrefix, suggestion)
 	if p.completion.AppendSpace {
 		replacement += " "
 	}
@@ -281,6 +282,20 @@ func (p Popover) acceptCmd(index int) tea.Cmd {
 			Replacement:  replacement,
 		}
 	}
+}
+
+// acceptedReplacement returns the literal text to substitute when the
+// user Tab-accepts a suggestion. If the typed prefix already matches
+// the canonical value or one of its aliases exactly, the typed text
+// stands — Tab on `/j` (alias) keeps `/j`, Tab on `/help` (canonical)
+// keeps `/help`. Any other prefix expands to the canonical value as
+// before.
+func acceptedReplacement(typed string, suggestion command.Suggestion) string {
+	if typed == suggestion.Value || slices.Contains(suggestion.Aliases, typed) {
+		return typed
+	}
+
+	return suggestion.Value
 }
 
 func (p Popover) moveSelection(delta int) Popover {
