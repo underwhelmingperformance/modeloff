@@ -141,6 +141,73 @@ func TestOpenRouterClient_ListModels(t *testing.T) {
 	}
 }
 
+func TestOpenRouterClient_ListModels_error_branches(t *testing.T) {
+	tests := []struct {
+		name         string
+		serverHandle func() (url string, cleanup func())
+		wantErrMsg   string
+		wantLogMsg   string
+	}{
+		{
+			name: "transport failure returns single-line error",
+			serverHandle: func() (string, func()) {
+				srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+				url := srv.URL
+				srv.Close()
+				return url, func() {}
+			},
+			wantErrMsg: "list models: network error",
+			wantLogMsg: "openrouter list models transport failure",
+		},
+		{
+			name: "non-2xx returns shaped status error",
+			serverHandle: func() (string, func()) {
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					_, _ = w.Write([]byte(`{"error":"upstream"}`))
+				}))
+				return srv.URL, srv.Close
+			},
+			wantErrMsg: "list models: status 503",
+			wantLogMsg: "openrouter list models non-2xx",
+		},
+		{
+			name: "decode failure returns single-line error",
+			serverHandle: func() (string, func()) {
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(`not actually json`))
+				}))
+				return srv.URL, srv.Close
+			},
+			wantErrMsg: "list models: invalid response",
+			wantLogMsg: "openrouter list models decode failed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf apiLogBuffer
+			handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})
+			slog.SetDefault(slog.New(handler))
+			t.Cleanup(func() { slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil))) })
+
+			url, cleanup := tt.serverHandle()
+			t.Cleanup(cleanup)
+
+			client := NewOpenRouterClient("test-key", url, &http.Client{Timeout: time.Second})
+
+			_, err := client.ListModels(t.Context())
+			require.Error(t, err)
+			require.Equal(t, tt.wantErrMsg, err.Error())
+			require.NotContains(t, err.Error(), "\n", "user-facing error must be single line")
+
+			record := buf.find(tt.wantLogMsg)
+			require.NotNil(t, record, "expected %q log entry", tt.wantLogMsg)
+		})
+	}
+}
+
 func TestOpenRouterClient_SendEvents(t *testing.T) {
 	tests := []struct {
 		name    string

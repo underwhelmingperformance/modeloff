@@ -504,6 +504,18 @@ type modelsResponse struct {
 // value — the leading portion is almost always sufficient.
 const responseBodyLogLimit = 4096
 
+// shapedError carries a user-safe single-line message while preserving
+// the original error in the chain so `errors.Is`/`errors.As` callers
+// (timeouts, cancellation) keep working. Error renders only msg —
+// callers that want the underlying detail must Unwrap.
+type shapedError struct {
+	msg   string
+	cause error
+}
+
+func (e *shapedError) Error() string { return e.msg }
+func (e *shapedError) Unwrap() error { return e.cause }
+
 // truncateBody returns body as a string, capped at limit bytes and
 // suffixed with a marker when truncation occurred. The cut point
 // rewinds to the nearest UTF-8 rune boundary so the returned string
@@ -545,36 +557,48 @@ func (c *OpenRouterClient) ListModels(ctx context.Context) ([]ModelInfo, error) 
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		markSpanError(span, observability.ErrorKindTransport, 0, err)
-		logger.ErrorContext(ctx, "openrouter list models failed", "error", err)
-		return nil, fmt.Errorf("list models: %w", err)
+		shaped := &shapedError{msg: "list models: network error", cause: err}
+		markSpanError(span, observability.ErrorKindTransport, 0, shaped)
+		logger.ErrorContext(ctx, "openrouter list models transport failure", "error", err)
+		return nil, shaped
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode != http.StatusOK {
-		body, readErr := io.ReadAll(resp.Body)
-		truncated := truncateBody(body, responseBodyLogLimit)
+	body, readErr := io.ReadAll(resp.Body)
+	truncated := truncateBody(body, responseBodyLogLimit)
 
+	if readErr != nil {
+		shaped := &shapedError{msg: "list models: response read failed", cause: readErr}
 		span.SetAttributes(attribute.String(observability.AttrHTTPResponseBody, truncated))
-
-		attrs := []any{
+		markSpanError(span, observability.ErrorKindTransport, resp.StatusCode, shaped)
+		logger.ErrorContext(ctx, "openrouter list models read failed",
 			"status", resp.StatusCode,
-			"body", truncated,
-		}
-		if readErr != nil {
-			attrs = append(attrs, "body_read_error", readErr)
-		}
-		logger.ErrorContext(ctx, "openrouter list models non-2xx", attrs...)
+			"body_read_error", readErr,
+		)
+		return nil, shaped
+	}
 
-		err := fmt.Errorf("list models: status %d", resp.StatusCode)
-		markSpanError(span, observability.ErrorKindHTTPStatus, resp.StatusCode, err)
-		return nil, err
+	if resp.StatusCode != http.StatusOK {
+		span.SetAttributes(attribute.String(observability.AttrHTTPResponseBody, truncated))
+		shaped := fmt.Errorf("list models: status %d", resp.StatusCode)
+		markSpanError(span, observability.ErrorKindHTTPStatus, resp.StatusCode, shaped)
+		logger.ErrorContext(ctx, "openrouter list models non-2xx",
+			"status", resp.StatusCode,
+			observability.AttrHTTPResponseBody, truncated,
+		)
+		return nil, shaped
 	}
 
 	var mr modelsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&mr); err != nil {
-		markSpanError(span, observability.ErrorKindResponseParse, 0, err)
-		return nil, fmt.Errorf("list models: %w", err)
+	if err := json.Unmarshal(body, &mr); err != nil {
+		shaped := &shapedError{msg: "list models: invalid response", cause: err}
+		span.SetAttributes(attribute.String(observability.AttrHTTPResponseBody, truncated))
+		markSpanError(span, observability.ErrorKindResponseParse, 0, shaped)
+		logger.ErrorContext(ctx, "openrouter list models decode failed",
+			"decode_error", err,
+			observability.AttrHTTPResponseBody, truncated,
+		)
+		return nil, shaped
 	}
 
 	models := make([]ModelInfo, len(mr.Data))
