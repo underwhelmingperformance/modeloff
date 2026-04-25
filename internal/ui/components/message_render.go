@@ -185,21 +185,23 @@ func formatTimestampPrefix(at time.Time, format *string, locale language.Tag) st
 }
 
 func renderWhoisEvent(w domain.ChannelWhois) string {
+	nick, modelID, persona, channels := whoisFields(w)
+
 	lines := []string{
-		fmt.Sprintf("%s is %s", w.Instance.Nick(), w.Instance.ModelID),
+		fmt.Sprintf("%s is %s", nick, modelID),
 	}
 
-	if persona := w.Instance.Persona(); persona != "" {
+	if persona != "" {
 		lines = append(lines, fmt.Sprintf("  persona: %s", persona))
 	}
 
-	if channels := w.Instance.Channels(); channels != nil && channels.Len() > 0 {
-		var chStrs []string
-		for pair := channels.Oldest(); pair != nil; pair = pair.Next() {
-			chStrs = append(chStrs, string(pair.Key))
+	if len(channels) > 0 {
+		strs := make([]string, len(channels))
+		for i, ch := range channels {
+			strs[i] = string(ch)
 		}
 
-		lines = append(lines, fmt.Sprintf("  channels: %s", strings.Join(chStrs, ", ")))
+		lines = append(lines, fmt.Sprintf("  channels: %s", strings.Join(strs, ", ")))
 	}
 
 	var parts []string
@@ -208,6 +210,34 @@ func renderWhoisEvent(w domain.ChannelWhois) string {
 	}
 
 	return strings.Join(parts, "\n")
+}
+
+// whoisFields returns the identity fields a whois render needs,
+// preferring the immutable snapshot recorded at emission time. For
+// legacy events written before the snapshot fields existed, the
+// stored `*Instance` is the only carrier — its values were frozen at
+// JSON marshal time, so dereferencing on a fresh-from-store handle
+// is still IRC-faithful. The live-pointer hazard only exists between
+// emission and the first persistence round-trip; the new snapshot
+// path closes that window.
+func whoisFields(w domain.ChannelWhois) (domain.Nick, domain.ModelID, string, []domain.ChannelName) {
+	if w.Nick != "" || w.ModelID != "" || w.Persona != "" || len(w.Channels) > 0 {
+		return w.Nick, w.ModelID, w.Persona, w.Channels
+	}
+
+	if w.Instance == nil {
+		return "", "", "", nil
+	}
+
+	var legacyChannels []domain.ChannelName
+	if c := w.Instance.Channels(); c != nil && c.Len() > 0 {
+		legacyChannels = make([]domain.ChannelName, 0, c.Len())
+		for pair := c.Oldest(); pair != nil; pair = pair.Next() {
+			legacyChannels = append(legacyChannels, pair.Key)
+		}
+	}
+
+	return w.Instance.Nick(), w.Instance.ModelID, w.Instance.Persona(), legacyChannels
 }
 
 func renderChannelListEvent(cl domain.ChannelListOutput) string {

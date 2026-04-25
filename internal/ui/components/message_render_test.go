@@ -90,6 +90,75 @@ func TestNickColourSeed_prefers_instance_id(t *testing.T) {
 	}
 }
 
+func TestRenderWhoisEvent_uses_stored_snapshot(t *testing.T) {
+	at := time.Date(2026, 4, 19, 10, 0, 0, 0, time.UTC)
+
+	whois := domain.ChannelWhois{
+		Channel:  "#dev",
+		Nick:     "alice",
+		ModelID:  "anthropic/claude-3-haiku",
+		Persona:  "a cheerful pirate",
+		Channels: []domain.ChannelName{"#dev", "#help"},
+		At:       at,
+	}
+
+	rendered := stripLine(renderWhoisEvent(whois))
+	require.Contains(t, rendered, "alice is anthropic/claude-3-haiku")
+	require.Contains(t, rendered, "persona: a cheerful pirate")
+	require.Contains(t, rendered, "channels: #dev, #help")
+}
+
+func TestRenderWhoisEvent_snapshot_takes_precedence_over_live_instance(t *testing.T) {
+	at := time.Date(2026, 4, 19, 10, 0, 0, 0, time.UTC)
+
+	// A mutable instance whose live state will diverge from the
+	// snapshot. The renderer must ignore it when snapshot fields are
+	// populated, exactly to keep historical /whois lines immutable.
+	live := domain.NewModelInstance("inst-1", "bob", "anthropic/claude-3-haiku", "a grumpy parrot", nil)
+
+	whois := domain.ChannelWhois{
+		Channel:  "#dev",
+		Nick:     "alice",
+		ModelID:  "anthropic/claude-3-haiku",
+		Persona:  "a cheerful pirate",
+		Channels: []domain.ChannelName{"#dev"},
+		Instance: live,
+		At:       at,
+	}
+
+	rendered := stripLine(renderWhoisEvent(whois))
+	require.Contains(t, rendered, "alice is anthropic/claude-3-haiku",
+		"snapshot Nick must beat the live Instance.Nick()")
+	require.Contains(t, rendered, "persona: a cheerful pirate",
+		"snapshot Persona must beat the live Instance.Persona()")
+	require.NotContains(t, rendered, "bob")
+	require.NotContains(t, rendered, "grumpy parrot")
+
+	// Renaming after emission must not retroactively rewrite the
+	// rendered line — the snapshot is frozen.
+	live.SetNick("carol")
+	live.SetPersona("a relentlessly chatty bot")
+
+	require.Equal(t, rendered, stripLine(renderWhoisEvent(whois)),
+		"snapshot whois render must not change when the underlying Instance mutates")
+}
+
+func TestRenderWhoisEvent_legacy_instance_fallback(t *testing.T) {
+	at := time.Date(2026, 4, 19, 10, 0, 0, 0, time.UTC)
+
+	inst := domain.NewModelInstance("inst-1", "alice", "anthropic/claude-3-haiku", "a cheerful pirate", nil)
+
+	whois := domain.ChannelWhois{
+		Channel:  "#dev",
+		Instance: inst,
+		At:       at,
+	}
+
+	rendered := stripLine(renderWhoisEvent(whois))
+	require.Contains(t, rendered, "alice is anthropic/claude-3-haiku")
+	require.Contains(t, rendered, "persona: a cheerful pirate")
+}
+
 func TestRenderChannelEvent_system_notice_style_changes_by_kind(t *testing.T) {
 	notice := domain.ChannelSystemNotice{
 		Channel: "#test",

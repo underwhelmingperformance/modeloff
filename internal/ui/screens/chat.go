@@ -304,9 +304,7 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		})
 
 	case chatcmd.WhoisResult:
-		return s, s.logAndShow(domain.ChannelWhois{
-			Channel: *s.active, Instance: msg.Instance, At: time.Now(),
-		})
+		return s, s.logAndShow(snapshotWhois(*s.active, msg.Instance, time.Now()))
 
 	case chatcmd.ListResult:
 		return s, s.logAndShow(domain.ChannelListOutput{
@@ -821,4 +819,31 @@ func (s ChatScreen) updateLogEntries() ChatScreen {
 	s.layout.Content = workspace.SetLogEntries(s.obs.LogBuffer().Entries())
 
 	return s
+}
+
+// snapshotWhois freezes an instance's mutable identity surface
+// (`Nick`, `Persona`, `Channels`) into a `ChannelWhois` event at the
+// moment `/whois` is issued. The renderer reads from these fields,
+// not the live pointer, so subsequent renames or channel changes do
+// not retro-edit the historical line. `ModelID` is captured even
+// though it is immutable so that future commits can drop the
+// `Instance` pointer entirely once legacy stored events have aged
+// out.
+func snapshotWhois(channel domain.ChannelName, inst *domain.Instance, at time.Time) domain.ChannelWhois {
+	whois := domain.ChannelWhois{
+		Channel: channel,
+		Nick:    inst.Nick(),
+		ModelID: inst.ModelID,
+		Persona: inst.Persona(),
+		At:      at,
+	}
+
+	if channels := inst.Channels(); channels != nil {
+		whois.Channels = make([]domain.ChannelName, 0, channels.Len())
+		for pair := channels.Oldest(); pair != nil; pair = pair.Next() {
+			whois.Channels = append(whois.Channels, pair.Key)
+		}
+	}
+
+	return whois
 }
