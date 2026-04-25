@@ -22,7 +22,7 @@ type Grammar struct {
 	Config             ConfigCommand             `cmd:"" help:"Update runtime configuration."`
 	Personas           PersonasCommand           `cmd:"" help:"List all defined personas."`
 	RegeneratePersonas RegeneratePersonasCommand `cmd:"" name:"regenerate-personas" help:"Regenerate AI-created personas."`
-	Help               HelpCommand               `cmd:"" tool:"" help:"Show available commands."`
+	Help               HelpCommand               `cmd:"" aliases:"?" tool:"" help:"Show available commands."`
 	Clear              ClearCommand              `cmd:"" help:"Clear the current window."`
 	Quit               QuitCommand               `cmd:"" aliases:"q" tool:"Shut down your instance and leave all channels." help:"Exit modeloff."`
 }

@@ -127,12 +127,27 @@ func TestNewParser_produces_all_commands(t *testing.T) {
 
 	quit := set.Find("quit")
 	require.Equal(t, []string{"q"}, quit.Aliases)
+
+	help := set.Find("help")
+	require.Equal(t, []string{"?"}, help.Aliases)
 }
 
 func TestNewParser_parse_returns_typed_command(t *testing.T) {
-	cmd, err := testParser.Parse("/help")
-	require.NoError(t, err)
-	require.Equal(t, HelpCommand{}, cmd)
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{name: "canonical", raw: "/help"},
+		{name: "alias", raw: "/?"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd, err := testParser.Parse(tt.raw)
+			require.NoError(t, err)
+			require.Equal(t, HelpCommand{}, cmd)
+		})
+	}
 }
 
 func TestQuitCommand_quitMessage_defaults_to_leaving(t *testing.T) {
