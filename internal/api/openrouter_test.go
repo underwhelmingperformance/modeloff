@@ -555,80 +555,113 @@ func TestOpenRouterClient_SendEvents_preservesOpenRouterUsageMetadata(t *testing
 }
 
 func TestOpenRouterClient_GenerateNick(t *testing.T) {
-	tests := []struct {
-		name     string
-		content  string
-		wantNick domain.Nick
-	}{
-		{name: "clean response", content: "claud3", wantNick: "claud3"},
-		{name: "response with surrounding whitespace", content: "  sparky\n", wantNick: "sparky"},
-		{name: "response with quotes", content: `"zenbot"`, wantNick: "zenbot"},
-		{name: "response with mixed case", content: "ZenBot", wantNick: "zenbot"},
-		{name: "response longer than 12 chars truncated", content: "superlongnicknamehere", wantNick: "superlongnic"},
-		{name: "response with spaces replaced by underscores", content: "zen bot", wantNick: "zen_bot"},
-		{name: "response with non-IRC characters stripped", content: "zen!@#bot", wantNick: "zenbot"},
-	}
+	const persona = "Idle bot operator with a dozen scripts running."
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				require.Equal(t, http.MethodPost, r.Method)
-				require.Equal(t, "Bearer test-key", r.Header.Get("Authorization"))
+	t.Run("structured response is parsed verbatim", func(t *testing.T) {
+		var requestBody map[string]any
 
-				w.Header().Set("Content-Type", "application/json")
-				_ = json.NewEncoder(w).Encode(map[string]any{
-					"id": "chatcmpl_nick",
-					"choices": []map[string]any{
-						{
-							"message": map[string]any{
-								"role":    "assistant",
-								"content": tt.content,
-							},
-							"finish_reason": "stop",
-							"index":         0,
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			require.Equal(t, http.MethodPost, r.Method)
+			require.Equal(t, "Bearer test-key", r.Header.Get("Authorization"))
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&requestBody))
+
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": "chatcmpl_nick",
+				"choices": []map[string]any{
+					{
+						"message": map[string]any{
+							"role":    "assistant",
+							"content": `{"nick":"logkeeper"}`,
 						},
+						"finish_reason": "stop",
+						"index":         0,
 					},
-				})
-			}))
-			t.Cleanup(srv.Close)
+				},
+			})
+		}))
+		t.Cleanup(srv.Close)
 
-			client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
+		client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
 
-			got, err := client.GenerateNick(t.Context(), "anthropic/claude-haiku-4.5", "anthropic/claude-3-haiku")
-			require.NoError(t, err)
-			require.Equal(t, tt.wantNick, got.Nick)
-		})
-	}
-}
+		got, err := client.GenerateNick(t.Context(), "anthropic/claude-haiku-4.5", persona, nil)
+		require.NoError(t, err)
+		require.Equal(t, domain.Nick("logkeeper"), got.Nick)
 
-func TestSanitizeNick(t *testing.T) {
-	tests := []struct {
-		name string
-		raw  string
-		want string
-	}{
-		{name: "clean", raw: "sparky", want: "sparky"},
-		{name: "trim whitespace", raw: "  sparky\n\t", want: "sparky"},
-		{name: "strip quotes", raw: `"sparky"`, want: "sparky"},
-		{name: "strip single quotes", raw: "'sparky'", want: "sparky"},
-		{name: "strip backticks", raw: "`sparky`", want: "sparky"},
-		{name: "lowercase", raw: "SPARKY", want: "sparky"},
-		{name: "spaces to underscores", raw: "zen bot", want: "zen_bot"},
-		{name: "strip unsafe chars", raw: "zen!@#$%^&*()bot", want: "zenbot"},
-		{name: "allow underscores", raw: "zen_bot", want: "zen_bot"},
-		{name: "allow hyphens", raw: "zen-bot", want: "zen-bot"},
-		{name: "allow digits", raw: "bot42", want: "bot42"},
-		{name: "truncate to 12", raw: "abcdefghijklmnop", want: "abcdefghijkl"},
-		{name: "empty after sanitize", raw: "!@#$%^", want: ""},
-		{name: "mixed problems", raw: `  "Zen Bot 3000!"  `, want: "zen_bot_3000"},
-	}
+		require.Equal(t, "json_schema",
+			requestBody["response_format"].(map[string]any)["type"],
+			"request must declare a json_schema response format")
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := sanitizeNick(tt.raw)
-			require.Equal(t, tt.want, got)
-		})
-	}
+		messages := requestBody["messages"].([]any)
+		require.Len(t, messages, 1)
+		require.Contains(t, messages[0].(map[string]any)["content"], persona,
+			"prompt must carry the assigned persona verbatim")
+	})
+
+	t.Run("rejected suggestions become follow-up turns", func(t *testing.T) {
+		var requestBody map[string]any
+
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&requestBody))
+
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": "chatcmpl_nick_retry",
+				"choices": []map[string]any{
+					{
+						"message": map[string]any{
+							"role":    "assistant",
+							"content": `{"nick":"dustbench"}`,
+						},
+						"finish_reason": "stop",
+						"index":         0,
+					},
+				},
+			})
+		}))
+		t.Cleanup(srv.Close)
+
+		client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
+
+		got, err := client.GenerateNick(t.Context(), "anthropic/claude-haiku-4.5", persona, []domain.Nick{"dustbunny"})
+		require.NoError(t, err)
+		require.Equal(t, domain.Nick("dustbench"), got.Nick)
+
+		messages := requestBody["messages"].([]any)
+		require.Len(t, messages, 3, "rejection must produce a 3-turn conversation: initial, prior assistant reply, follow-up user")
+		require.Equal(t, "assistant", messages[1].(map[string]any)["role"])
+		require.Contains(t, messages[1].(map[string]any)["content"], "dustbunny")
+		require.Equal(t, "user", messages[2].(map[string]any)["role"])
+		require.Contains(t, messages[2].(map[string]any)["content"], "dustbunny")
+	})
+
+	t.Run("malformed json is reported as a parse error", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": "chatcmpl_nick_bad",
+				"choices": []map[string]any{
+					{
+						"message": map[string]any{
+							"role":    "assistant",
+							"content": `not json`,
+						},
+						"finish_reason": "stop",
+						"index":         0,
+					},
+				},
+			})
+		}))
+		t.Cleanup(srv.Close)
+
+		client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
+
+		_, err := client.GenerateNick(t.Context(), "anthropic/claude-haiku-4.5", persona, nil)
+		require.Error(t, err)
+
+		var parseErr *completionParseError
+		require.ErrorAs(t, err, &parseErr)
+	})
 }
 
 func TestOpenRouterClient_SendEvents_write_memory(t *testing.T) {
@@ -1380,7 +1413,7 @@ func TestOpenRouterClient_perCallTimeouts(t *testing.T) {
 		{
 			name: "GenerateNick",
 			call: func(ctx context.Context, c *OpenRouterClient) error {
-				_, err := c.GenerateNick(ctx, "anthropic/claude-haiku-4.5", "anthropic/claude-3-haiku")
+				_, err := c.GenerateNick(ctx, "anthropic/claude-haiku-4.5", "an idle bot operator", nil)
 				return err
 			},
 		},

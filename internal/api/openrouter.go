@@ -617,34 +617,90 @@ func (c *OpenRouterClient) ListModels(ctx context.Context) ([]ModelInfo, error) 
 	return models, nil
 }
 
-// GenerateNick asks a model to generate an IRC-style nickname for a
-// given model ID. The nickModel parameter selects which model
-// performs the generation.
-func (c *OpenRouterClient) GenerateNick(ctx context.Context, nickModel domain.ModelID, modelID domain.ModelID) (NicknameResult, error) {
+// nicknameResponse is the structured output the model returns. The
+// schema enforces shape (length and allowed characters) so callers do
+// not need to sanitise free-form text.
+type nicknameResponse struct {
+	Nick string `json:"nick" jsonschema:"minLength=1,maxLength=12,pattern=^[a-z0-9_-]{1,12}$" jsonschema_description:"Exactly one IRC nickname suggestion."`
+}
+
+var nicknameSchemaMap = generateSchema[nicknameResponse]()
+
+func nicknameResponseFormat() openai.ChatCompletionNewParamsResponseFormatUnion {
+	return openai.ChatCompletionNewParamsResponseFormatUnion{
+		OfJSONSchema: &shared.ResponseFormatJSONSchemaParam{
+			JSONSchema: shared.ResponseFormatJSONSchemaJSONSchemaParam{
+				Name:   "nickname_response",
+				Schema: nicknameSchemaMap,
+				Strict: openai.Bool(true),
+			},
+		},
+	}
+}
+
+const nicknamePrompt = `Generate exactly one short, fun IRC-style nickname for an IRC regular.
+
+Constraints:
+- return JSON only and match the schema exactly
+- do not explain the choice
+- produce one nickname, not a list
+- do not use words based on assistant names, model names, or generic AI terms unless the persona strongly implies them
+- prefer something that sounds like a handle a human would pick on IRC
+- do not treat the persona as the person's whole identity
+- avoid simply turning the persona description into a literal label
+- prefer something a real user might have chosen years ago: suggest habits, interests, in-jokes, tone, or history rather than job-title summaries
+- a slightly indirect or playful nick is better than an obvious descriptor
+- prefer nicks that feel personally chosen and lived-in
+- avoid obviously symbolic or overly neat compositions
+
+Persona: %s`
+
+// GenerateNick asks a model to suggest one IRC-style nickname guided
+// by the persona description. Rejected suggestions from prior calls
+// are folded into the conversation as a follow-up turn so the model
+// avoids repeating them; the caller's authoritative nick list is
+// never sent.
+func (c *OpenRouterClient) GenerateNick(
+	ctx context.Context,
+	smallModel domain.ModelID,
+	persona string,
+	excludePreviousSuggestions []domain.Nick,
+) (NicknameResult, error) {
 	ctx, cancel := ensureDeadline(ctx, c.metaTimeout)
 	defer cancel()
 
-	logger := slog.Default().With("component", "api.openrouter", "nick_model", nickModel, "model_id", modelID)
+	logger := slog.Default().With(
+		"component", "api.openrouter",
+		"small_model", smallModel,
+		"attempt", len(excludePreviousSuggestions)+1,
+	)
 	tracer := otel.Tracer("github.com/laney/modeloff/internal/api")
 
 	ctx, span := tracer.Start(ctx, "api.openrouter.generate_nick")
 	span.SetAttributes(
 		attribute.String(observability.AttrOperation, "api.openrouter.generate_nick"),
-		attribute.String(observability.AttrModelID, string(modelID)),
+		attribute.String(observability.AttrModelID, string(smallModel)),
 	)
 	defer span.End()
 
-	prompt := fmt.Sprintf(
-		"Generate a short, fun IRC-style nickname (lowercase, no spaces, max 12 chars) for an AI model called %q. "+
-			"Reply with ONLY the nickname, nothing else.",
-		string(modelID),
-	)
+	messages := []openai.ChatCompletionMessageParamUnion{
+		openai.UserMessage(fmt.Sprintf(nicknamePrompt, persona)),
+	}
 
-	resp, rawResp, err := c.chatCompletion(ctx, nickModel, openai.ChatCompletionNewParams{ //nolint:bodyclose // SDK reads and closes the body.
-		Model: shared.ChatModel(string(nickModel)),
-		Messages: []openai.ChatCompletionMessageParamUnion{
-			openai.UserMessage(prompt),
-		},
+	for _, rejected := range excludePreviousSuggestions {
+		messages = append(messages,
+			openai.AssistantMessage(fmt.Sprintf(`{"nick":%q}`, string(rejected))),
+			openai.UserMessage(fmt.Sprintf(
+				"That nick is already taken. Suggest a different one. Avoid: %s",
+				string(rejected),
+			)),
+		)
+	}
+
+	resp, rawResp, err := c.chatCompletion(ctx, smallModel, openai.ChatCompletionNewParams{ //nolint:bodyclose // SDK reads and closes the body.
+		Model:          shared.ChatModel(string(smallModel)),
+		Messages:       messages,
+		ResponseFormat: nicknameResponseFormat(),
 	})
 	if err != nil {
 		markSpanError(span, observability.ErrorKindTransport, 0, err)
@@ -665,15 +721,20 @@ func (c *OpenRouterClient) GenerateNick(ctx context.Context, nickModel domain.Mo
 		return NicknameResult{}, err
 	}
 
-	nick := sanitizeNick(choice.Message.Content)
-	if nick == "" {
-		err := fmt.Errorf("generate nick: model returned empty or unsalvageable response")
+	var parsed nicknameResponse
+	if err := json.Unmarshal([]byte(choice.Message.Content), &parsed); err != nil {
+		markSpanError(span, observability.ErrorKindResponseParse, 0, err)
+		return NicknameResult{}, &completionParseError{target: "nickname", err: err}
+	}
+
+	if parsed.Nick == "" {
+		err := fmt.Errorf("generate nick: schema-valid response carried an empty nick")
 		markSpanError(span, observability.ErrorKindInvalidResponse, 0, err)
 		return NicknameResult{}, err
 	}
 
 	result := NicknameResult{
-		Nick:      domain.Nick(nick),
+		Nick:      domain.Nick(parsed.Nick),
 		RequestID: requestIDFromChatCompletion(resp, rawResp),
 		Usage:     usageFromResponse(resp.Usage),
 	}
@@ -681,7 +742,10 @@ func (c *OpenRouterClient) GenerateNick(ctx context.Context, nickModel domain.Mo
 	result.Usage.SetSpanAttributes(span, result.RequestID)
 	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 
-	logger.InfoContext(ctx, "openrouter generate nick completed", "request_id", result.RequestID, "nick", nick)
+	logger.InfoContext(ctx, "openrouter generate nick completed",
+		"request_id", result.RequestID,
+		"nick", parsed.Nick,
+	)
 
 	return result, nil
 }
@@ -782,30 +846,6 @@ func (c *OpenRouterClient) GeneratePersonas(ctx context.Context, smallModel doma
 	)
 
 	return personas, nil
-}
-
-const maxNickLen = 12
-
-func sanitizeNick(raw string) string {
-	s := strings.TrimSpace(raw)
-	s = strings.Trim(s, `"'`+"`")
-	s = strings.ToLower(s)
-	s = strings.ReplaceAll(s, " ", "_")
-
-	var b strings.Builder
-
-	for _, r := range s {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
-			b.WriteRune(r)
-		}
-	}
-
-	result := b.String()
-	if len(result) > maxNickLen {
-		result = result[:maxNickLen]
-	}
-
-	return result
 }
 
 func (c *OpenRouterClient) chatCompletion(

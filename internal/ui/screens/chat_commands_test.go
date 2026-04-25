@@ -45,7 +45,7 @@ func (stubAPI) ContinueWithToolResults(
 	}, nil
 }
 
-func (stubAPI) GenerateNick(context.Context, domain.ModelID, domain.ModelID) (api.NicknameResult, error) {
+func (stubAPI) GenerateNick(context.Context, domain.ModelID, string, []domain.Nick) (api.NicknameResult, error) {
 	return api.NicknameResult{Nick: "testbot"}, nil
 }
 

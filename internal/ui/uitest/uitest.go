@@ -242,7 +242,7 @@ type FakeAPI struct {
 	mu                 sync.Mutex
 	ListModelsFn       func(context.Context) ([]api.ModelInfo, error)
 	SendEventsFn       func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error)
-	GenerateNickFn     func(context.Context, domain.ModelID, domain.ModelID) (domain.Nick, error)
+	GenerateNickFn     func(context.Context, domain.ModelID, string, []domain.Nick) (domain.Nick, error)
 	GeneratePersonasFn func(context.Context, domain.ModelID) ([]domain.Persona, error)
 }
 
@@ -294,12 +294,12 @@ func (f *FakeAPI) ContinueWithToolResults(
 }
 
 // GenerateNick delegates to GenerateNickFn or returns "fakenick".
-func (f *FakeAPI) GenerateNick(ctx context.Context, nickModel domain.ModelID, modelID domain.ModelID) (api.NicknameResult, error) {
+func (f *FakeAPI) GenerateNick(ctx context.Context, smallModel domain.ModelID, persona string, exclude []domain.Nick) (api.NicknameResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	if f.GenerateNickFn != nil {
-		nick, err := f.GenerateNickFn(ctx, nickModel, modelID)
+		nick, err := f.GenerateNickFn(ctx, smallModel, persona, exclude)
 		return api.NicknameResult{Nick: nick}, err
 	}
 

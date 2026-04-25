@@ -164,7 +164,7 @@ func (toolTestAPI) ContinueWithToolResults(
 	}, nil
 }
 
-func (toolTestAPI) GenerateNick(context.Context, domain.ModelID, domain.ModelID) (api.NicknameResult, error) {
+func (toolTestAPI) GenerateNick(context.Context, domain.ModelID, string, []domain.Nick) (api.NicknameResult, error) {
 	return api.NicknameResult{Nick: "testbot"}, nil
 }
 

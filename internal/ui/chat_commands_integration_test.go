@@ -24,7 +24,7 @@ import (
 func TestApp_send_message_shows_pending_indicator(t *testing.T) {
 	release := make(chan struct{})
 	apiClient := &integrationAPI{
-		generateNickFn: func(context.Context, domain.ModelID, domain.ModelID) (domain.Nick, error) {
+		generateNickFn: func(context.Context, domain.ModelID, string, []domain.Nick) (domain.Nick, error) {
 			return "fakenick", nil
 		},
 		sendEventsFn: func(
@@ -135,7 +135,7 @@ func TestApp_title_list_and_help_commands_with_teatest(t *testing.T) {
 
 func TestApp_invite_whois_and_kick_commands_with_teatest(t *testing.T) {
 	apiClient := &integrationAPI{
-		generateNickFn: func(context.Context, domain.ModelID, domain.ModelID) (domain.Nick, error) {
+		generateNickFn: func(context.Context, domain.ModelID, string, []domain.Nick) (domain.Nick, error) {
 			return "fakenick", nil
 		},
 	}

@@ -68,7 +68,7 @@ func TestApp_startup_with_saved_channels(t *testing.T) {
 
 func TestApp_add_model_and_receive_reply(t *testing.T) {
 	apiClient := &integrationAPI{
-		generateNickFn: func(context.Context, domain.ModelID, domain.ModelID) (domain.Nick, error) {
+		generateNickFn: func(context.Context, domain.ModelID, string, []domain.Nick) (domain.Nick, error) {
 			return "botty", nil
 		},
 		sendEventsFn: func(
@@ -216,7 +216,7 @@ func TestApp_vector_memory_write_and_search(t *testing.T) {
 	var toolTurn int
 
 	apiClient := &integrationAPI{
-		generateNickFn: func(context.Context, domain.ModelID, domain.ModelID) (domain.Nick, error) {
+		generateNickFn: func(context.Context, domain.ModelID, string, []domain.Nick) (domain.Nick, error) {
 			return "membot", nil
 		},
 
@@ -341,7 +341,7 @@ type integrationAPI struct {
 	sendEventsFn              func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error)
 	sendEventsFullFn          func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error)
 	continueWithToolResultsFn func(context.Context, *api.Conversation, []api.ToolResult) (api.CompletionResult, error)
-	generateNickFn            func(context.Context, domain.ModelID, domain.ModelID) (domain.Nick, error)
+	generateNickFn            func(context.Context, domain.ModelID, string, []domain.Nick) (domain.Nick, error)
 }
 
 func (f *integrationAPI) ListModels(context.Context) ([]api.ModelInfo, error) {
@@ -392,9 +392,9 @@ func (f *integrationAPI) ContinueWithToolResults(
 	}, nil
 }
 
-func (f *integrationAPI) GenerateNick(ctx context.Context, nickModel domain.ModelID, modelID domain.ModelID) (api.NicknameResult, error) {
+func (f *integrationAPI) GenerateNick(ctx context.Context, smallModel domain.ModelID, persona string, exclude []domain.Nick) (api.NicknameResult, error) {
 	if f.generateNickFn != nil {
-		nick, err := f.generateNickFn(ctx, nickModel, modelID)
+		nick, err := f.generateNickFn(ctx, smallModel, persona, exclude)
 		return api.NicknameResult{Nick: nick}, err
 	}
 

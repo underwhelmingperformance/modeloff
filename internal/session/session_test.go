@@ -2208,6 +2208,59 @@ func TestSession_ChangeNick(t *testing.T) {
 	require.Equal(t, domain.Nick("newname"), sess.UserNick())
 }
 
+func TestSession_AddModel_retries_on_nick_collision(t *testing.T) {
+	suggestions := []domain.Nick{"taken", "alsotaken", "fresh"}
+	var seenExclusions [][]domain.Nick
+
+	fake := &fakeAPIClient{
+		generateNickFn: func(_ context.Context, _ domain.ModelID, _ string, exclude []domain.Nick) (domain.Nick, error) {
+			seenExclusions = append(seenExclusions, slices.Clone(exclude))
+
+			return suggestions[len(exclude)], nil
+		},
+	}
+
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := t.Context()
+
+	// Pre-seed two instances with the colliding nicks so the first two
+	// suggestions get rejected by the session-side uniqueness guard.
+	_ = seedInstance(t, s, instanceSpec{Nick: "taken", ModelID: "test/model"})
+	_ = seedInstance(t, s, instanceSpec{Nick: "alsotaken", ModelID: "test/model"})
+
+	seedChannelWithMembers(t, sess, s, "#dev", "testuser")
+
+	require.NoError(t, sess.AddModel(ctx, "#dev", "test/model", "Helpful assistant"))
+	evt := drainEvent[domain.ModelInvitedEvent](t, sess)
+
+	require.Equal(t, domain.Nick("fresh"), evt.Instance.Nick(),
+		"AddModel should keep retrying until it finds a fresh nick")
+	require.Equal(t, [][]domain.Nick{
+		nil,
+		{"taken"},
+		{"taken", "alsotaken"},
+	}, seenExclusions,
+		"each retry must pass the previously rejected suggestions to the model")
+}
+
+func TestSession_AddModel_gives_up_after_max_attempts(t *testing.T) {
+	fake := &fakeAPIClient{
+		generateNickFn: func(_ context.Context, _ domain.ModelID, _ string, _ []domain.Nick) (domain.Nick, error) {
+			return "taken", nil
+		},
+	}
+
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := t.Context()
+
+	_ = seedInstance(t, s, instanceSpec{Nick: "taken", ModelID: "test/model"})
+	seedChannelWithMembers(t, sess, s, "#dev", "testuser")
+
+	err := sess.AddModel(ctx, "#dev", "test/model", "Helpful assistant")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "attempts exhausted")
+}
+
 func TestSession_ChangeNickAs_collisions(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -2332,7 +2385,7 @@ func TestSession_InviteAs_existing_instance_to_nonexistent_channel_does_not_corr
 
 func TestSession_AddModelGenerateNickError(t *testing.T) {
 	fake := &fakeAPIClient{
-		generateNickFn: func(_ context.Context, _, _ domain.ModelID) (domain.Nick, error) {
+		generateNickFn: func(_ context.Context, _ domain.ModelID, _ string, _ []domain.Nick) (domain.Nick, error) {
 			return "", fmt.Errorf("API unavailable")
 		},
 	}
@@ -3049,7 +3102,7 @@ type fakeAPIClient struct {
 	sendEventsFn              func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error)
 	sendEventsFullFn          func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error)
 	continueWithToolResultsFn func(context.Context, *api.Conversation, []api.ToolResult) (api.CompletionResult, error)
-	generateNickFn            func(context.Context, domain.ModelID, domain.ModelID) (domain.Nick, error)
+	generateNickFn            func(context.Context, domain.ModelID, string, []domain.Nick) (domain.Nick, error)
 	generatePersonasFn        func(context.Context, domain.ModelID) ([]domain.Persona, error)
 }
 
@@ -3099,13 +3152,22 @@ func (f *fakeAPIClient) ContinueWithToolResults(
 	}, nil
 }
 
-func (f *fakeAPIClient) GenerateNick(ctx context.Context, nickModel domain.ModelID, modelID domain.ModelID) (api.NicknameResult, error) {
+func (f *fakeAPIClient) GenerateNick(ctx context.Context, smallModel domain.ModelID, persona string, exclude []domain.Nick) (api.NicknameResult, error) {
 	if f.generateNickFn != nil {
-		nick, err := f.generateNickFn(ctx, nickModel, modelID)
+		nick, err := f.generateNickFn(ctx, smallModel, persona, exclude)
 		return api.NicknameResult{Nick: nick}, err
 	}
 
-	return api.NicknameResult{Nick: "fakenick"}, nil
+	// Default fake returns "fakenick" on the first try and a numbered
+	// variant on each retry so AddModel test paths that invoke
+	// `GenerateNick` multiple times (or hit a collision) produce
+	// distinct nicks without each test wiring its own counter.
+	nick := domain.Nick("fakenick")
+	if len(exclude) > 0 {
+		nick = domain.Nick(fmt.Sprintf("fakenick%d", len(exclude)))
+	}
+
+	return api.NicknameResult{Nick: nick}, nil
 }
 
 func (f *fakeAPIClient) GeneratePersonas(ctx context.Context, smallModel domain.ModelID) ([]domain.Persona, error) {
@@ -4759,7 +4821,7 @@ func TestAddModel_dispatches_invite_notification_to_model(t *testing.T) {
 			dispatched[modelID] = append(dispatched[modelID], events...)
 			return protocol.ModelResponse{Kind: protocol.ResponseSilence, Reason: "ok"}, nil
 		},
-		generateNickFn: func(_ context.Context, _ domain.ModelID, _ domain.ModelID) (domain.Nick, error) {
+		generateNickFn: func(_ context.Context, _ domain.ModelID, _ string, _ []domain.Nick) (domain.Nick, error) {
 			return "botty", nil
 		},
 	}

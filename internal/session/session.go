@@ -763,25 +763,6 @@ func (s *Session) AddModel(
 		return err
 	}
 
-	generateCtx, generateSpan := startSpan(
-		ctx,
-		"session.generate_nick",
-		attribute.String(observability.AttrOperation, "session.generate_nick"),
-		attribute.String(observability.AttrModelID, string(modelID)),
-	)
-	defer generateSpan.End()
-
-	nickResult, err := s.api.GenerateNick(generateCtx, s.smallModel, modelID)
-	if err != nil {
-		setSpanError(generateSpan, err, observability.ErrorKindDispatch)
-		setSpanError(span, err, observability.ErrorKindDispatch)
-		logger.ErrorContext(ctx, "generate nick failed", "error", err)
-		return fmt.Errorf("generate nick: %w", err)
-	}
-
-	nickResult.Usage.SetSpanAttributes(generateSpan, nickResult.RequestID)
-	generateSpan.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-
 	assignedPersona := strings.TrimSpace(persona)
 
 	if assignedPersona == "" {
@@ -794,12 +775,18 @@ func (s *Session) AddModel(
 		}
 	}
 
+	nick, err := s.generateUniqueNick(ctx, modelID, assignedPersona, logger)
+	if err != nil {
+		setSpanError(span, err, observability.ErrorKindDispatch)
+		return err
+	}
+
 	channels := orderedmap.New[domain.ChannelName, time.Time]()
 	channels.Set(ch, s.now())
 
 	inst := domain.NewModelInstance(
 		domain.GenerateInstanceID(),
-		nickResult.Nick,
+		nick,
 		modelID,
 		assignedPersona,
 		channels,
@@ -808,6 +795,73 @@ func (s *Session) AddModel(
 	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 
 	return s.attachInstanceToChannel(ctx, ch, inst, s.user)
+}
+
+// maxNickGenerationAttempts caps the number of times the model is
+// asked for a nickname before the caller gives up. Each attempt after
+// the first carries the previously rejected suggestion as a follow-up
+// turn so the model picks something different — the user's full nick
+// list is intentionally never sent to the model.
+const maxNickGenerationAttempts = 3
+
+// generateUniqueNick asks the small model for a nickname guided by
+// the assigned persona and retries up to `maxNickGenerationAttempts`
+// times if the suggested nick is already in use by another instance
+// or the user.
+func (s *Session) generateUniqueNick(
+	ctx context.Context,
+	modelID domain.ModelID,
+	persona string,
+	logger *slog.Logger,
+) (domain.Nick, error) {
+	generateCtx, generateSpan := startSpan(
+		ctx,
+		"session.generate_nick",
+		attribute.String(observability.AttrOperation, "session.generate_nick"),
+		attribute.String(observability.AttrModelID, string(modelID)),
+	)
+	defer generateSpan.End()
+
+	var rejected []domain.Nick
+
+	for attempt := 1; attempt <= maxNickGenerationAttempts; attempt++ {
+		result, err := s.api.GenerateNick(generateCtx, s.smallModel, persona, rejected)
+		if err != nil {
+			setSpanError(generateSpan, err, observability.ErrorKindDispatch)
+			logger.ErrorContext(ctx, "generate nick failed",
+				"error", err,
+				"attempt", attempt,
+			)
+			return "", fmt.Errorf("generate nick: %w", err)
+		}
+
+		result.Usage.SetSpanAttributes(generateSpan, result.RequestID)
+
+		if !s.nickIsTaken(ctx, result.Nick) {
+			generateSpan.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
+			return result.Nick, nil
+		}
+
+		logger.InfoContext(ctx, "generated nick already in use",
+			"nick", result.Nick,
+			"attempt", attempt,
+		)
+		rejected = append(rejected, result.Nick)
+	}
+
+	err := fmt.Errorf("generate nick: %d attempts exhausted, all suggestions collided", maxNickGenerationAttempts)
+	setSpanError(generateSpan, err, observability.ErrorKindDispatch)
+
+	return "", err
+}
+
+// nickIsTaken reports whether `nick` is already held by the user or
+// any registered model instance. Resolution flows through
+// `Session.ResolveNick` so the user-vs-store dispatch matches every
+// other nick-keyed code path.
+func (s *Session) nickIsTaken(ctx context.Context, nick domain.Nick) bool {
+	_, err := s.ResolveNick(ctx, nick)
+	return err == nil
 }
 
 func (s *Session) attachInstanceToChannel(

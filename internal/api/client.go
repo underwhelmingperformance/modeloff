@@ -152,10 +152,14 @@ type Client interface {
 		tools ...ToolDefinition,
 	) (CompletionResult, error)
 
-	// GenerateNick asks a model to generate a nickname for the given
-	// model ID, returning the suggested nick. The nickModel parameter
-	// selects which model performs the generation.
-	GenerateNick(ctx context.Context, nickModel domain.ModelID, modelID domain.ModelID) (NicknameResult, error)
+	// GenerateNick asks a model to suggest one IRC-style nickname
+	// guided by `persona` (used as taste guidance, not a literal
+	// label). `excludePreviousSuggestions` carries nicks the caller
+	// has previously rejected — typically because of a session-side
+	// uniqueness collision; the prompt mentions them verbatim and
+	// asks for a different one. The caller's authoritative nick list
+	// is intentionally never revealed to the model.
+	GenerateNick(ctx context.Context, smallModel domain.ModelID, persona string, excludePreviousSuggestions []domain.Nick) (NicknameResult, error)
 
 	// GeneratePersonas asks a model to generate a set of IRC user
 	// personas. Each returned persona has Origin set to
