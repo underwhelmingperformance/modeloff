@@ -37,8 +37,10 @@ func renderChannelEvent[C command.KindProvider](
 		highlighted := ContainsHighlightWord(e.Body, highlightWords, userNick)
 		body := renderIRCBody(e.Body)
 
+		seed := nickColourSeed(e.InstanceID, e.From)
+
 		if e.Action {
-			nick := theme.NickStyle(string(e.From)).Render(string(e.From))
+			nick := theme.NickStyle(seed).Render(string(e.From))
 			prefix := fmt.Sprintf("%s* %s", ts, nick)
 			if highlighted {
 				prefix = theme.Highlight.Render(strings.TrimSpace(prefix))
@@ -47,7 +49,7 @@ func renderChannelEvent[C command.KindProvider](
 			return wrap.Render(strings.TrimSpace(fmt.Sprintf("%s %s", prefix, body)))
 		}
 
-		nick := theme.NickStyle(string(e.From)).
+		nick := theme.NickStyle(seed).
 			Render(fmt.Sprintf("<%s>", string(e.From)))
 		prefix := ts + nick
 		if highlighted {
@@ -324,4 +326,18 @@ func renderIRCBody(body string) string {
 	}
 
 	return strings.TrimSuffix(builder.String(), "\n")
+}
+
+// nickColourSeed returns the value to hash into a nick colour. The
+// immutable InstanceID is preferred so a `/nick` rename keeps an
+// author's historical messages on the same colour. The nick is the
+// fallback for legacy stored events written before InstanceID was
+// threaded onto ChannelMessage; those rows hash on the snapshotted
+// nick at storage time, which is stable in its own right.
+func nickColourSeed(id domain.InstanceID, nick domain.Nick) string {
+	if id != "" {
+		return string(id)
+	}
+
+	return string(nick)
 }

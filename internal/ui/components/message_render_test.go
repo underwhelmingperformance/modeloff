@@ -71,6 +71,25 @@ func TestRenderChannelEvent_by_kind(t *testing.T) {
 	}
 }
 
+func TestNickColourSeed_prefers_instance_id(t *testing.T) {
+	tests := []struct {
+		name string
+		id   domain.InstanceID
+		nick domain.Nick
+		want string
+	}{
+		{name: "id present uses id", id: "abc123", nick: "alice", want: "abc123"},
+		{name: "rename keeps id-derived seed", id: "abc123", nick: "bob", want: "abc123"},
+		{name: "empty id falls back to nick", id: "", nick: "alice", want: "alice"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, nickColourSeed(tt.id, tt.nick))
+		})
+	}
+}
+
 func TestRenderChannelEvent_system_notice_style_changes_by_kind(t *testing.T) {
 	notice := domain.ChannelSystemNotice{
 		Channel: "#test",
