@@ -2208,6 +2208,80 @@ func TestSession_ChangeNick(t *testing.T) {
 	require.Equal(t, domain.Nick("newname"), sess.UserNick())
 }
 
+func TestSession_ChangeNickAs_collisions(t *testing.T) {
+	tests := []struct {
+		name      string
+		setup     func(t *testing.T, sess *Session, store *storemod.SQLiteStore) (actor *domain.Instance, target domain.Nick)
+		wantError bool
+	}{
+		{
+			name: "model collides with another model",
+			setup: func(t *testing.T, _ *Session, store *storemod.SQLiteStore) (*domain.Instance, domain.Nick) {
+				_ = seedInstance(t, store, instanceSpec{Nick: "alice", ModelID: "test/model"})
+				bob := seedInstance(t, store, instanceSpec{Nick: "bob", ModelID: "test/model"})
+
+				return bob, "alice"
+			},
+			wantError: true,
+		},
+		{
+			name: "model collides with user",
+			setup: func(t *testing.T, sess *Session, store *storemod.SQLiteStore) (*domain.Instance, domain.Nick) {
+				bob := seedInstance(t, store, instanceSpec{Nick: "bob", ModelID: "test/model"})
+
+				return bob, sess.UserNick()
+			},
+			wantError: true,
+		},
+		{
+			name: "user collides with model",
+			setup: func(t *testing.T, sess *Session, store *storemod.SQLiteStore) (*domain.Instance, domain.Nick) {
+				_ = seedInstance(t, store, instanceSpec{Nick: "alice", ModelID: "test/model"})
+
+				return sess.UserInstance(), "alice"
+			},
+			wantError: true,
+		},
+		{
+			name: "rename to same nick is a no-op",
+			setup: func(t *testing.T, _ *Session, store *storemod.SQLiteStore) (*domain.Instance, domain.Nick) {
+				bob := seedInstance(t, store, instanceSpec{Nick: "bob", ModelID: "test/model"})
+
+				return bob, "bob"
+			},
+			wantError: false,
+		},
+		{
+			name: "fresh nick is accepted",
+			setup: func(t *testing.T, _ *Session, store *storemod.SQLiteStore) (*domain.Instance, domain.Nick) {
+				bob := seedInstance(t, store, instanceSpec{Nick: "bob", ModelID: "test/model"})
+
+				return bob, "carol"
+			},
+			wantError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sess, store := newTestSession(t)
+			actor, target := tt.setup(t, sess, store)
+
+			err := sess.ChangeNickAs(t.Context(), actor, target)
+
+			if tt.wantError {
+				var nickInUse domain.NickInUseError
+				require.ErrorAs(t, err, &nickInUse)
+				require.Equal(t, target, nickInUse.Nick)
+				return
+			}
+
+			require.NoError(t, err)
+			require.Equal(t, target, actor.Nick())
+		})
+	}
+}
+
 func TestSession_Whois(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()

@@ -305,6 +305,14 @@ func (s *Session) ChangeNickAs(ctx context.Context, actor *domain.Instance, newN
 	)
 	defer endSpan(span, &retErr, observability.ErrorKindStore)
 
+	if newNick == oldNick {
+		return nil
+	}
+
+	if existing, err := s.ResolveNick(ctx, newNick); err == nil && existing != actor {
+		return errWithKind(domain.NickInUseError{Nick: newNick}, observability.ErrorKindValidation)
+	}
+
 	isUser := actor == s.user
 
 	actor.SetNick(newNick)

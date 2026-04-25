@@ -63,3 +63,15 @@ type StatusChannelGuardError struct {
 func (e StatusChannelGuardError) Error() string {
 	return e.Hint
 }
+
+// NickInUseError indicates a nickname change was refused because the
+// target nick is already held by another instance (a model or the
+// user). Carries the conflicting nick so the UI can surface it
+// without re-parsing the error string.
+type NickInUseError struct {
+	Nick Nick
+}
+
+func (e NickInUseError) Error() string {
+	return fmt.Sprintf("nick %q is already in use", string(e.Nick))
+}
