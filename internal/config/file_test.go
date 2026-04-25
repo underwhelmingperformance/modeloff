@@ -173,7 +173,7 @@ func TestFileStore_LoadMigratesNickModel_ignoredWhenSmallModelMatchesDefault(t *
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
 
-	data := []byte(`{"small_model": "anthropic/claude-haiku-4.5", "nick_model": "other/model"}`)
+	data := []byte(`{"small_model": "openai/gpt-5.4-mini", "nick_model": "other/model"}`)
 	require.NoError(t, os.WriteFile(path, data, 0o600))
 
 	store := NewFileStore(dir)

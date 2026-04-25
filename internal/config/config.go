@@ -18,8 +18,8 @@ const DefaultBaseURL = "https://openrouter.ai/api/v1"
 const DefaultPokeInterval = 5 * time.Minute
 
 // DefaultSmallModel is the model used for lightweight tasks such as
-// nick generation when no override has been configured.
-const DefaultSmallModel = domain.ModelID("anthropic/claude-haiku-4.5")
+// nick and persona generation when no override has been configured.
+const DefaultSmallModel = domain.ModelID("openai/gpt-5.4-mini")
 
 // DefaultHighlightWords is the default set of words that trigger
 // visual highlighting. The $nick placeholder is expanded to the

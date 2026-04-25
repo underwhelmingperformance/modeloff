@@ -678,7 +678,7 @@ func TestChatScreen_config_reset_small_model(t *testing.T) {
 	tm.WaitFor("#general")
 
 	tm.Submit("/config --reset small-model")
-	tm.WaitFor("Small model reset to anthropic/claude-haiku-4.5.")
+	tm.WaitFor("Small model reset to " + string(config.DefaultSmallModel) + ".")
 
 	require.Equal(t, config.DefaultSmallModel, cfgStore.cfg.SmallModel)
 }
