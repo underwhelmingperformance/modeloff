@@ -4920,3 +4920,70 @@ func TestSession_Reset_clears_listModelsState(t *testing.T) {
 	require.False(t, sess.supportedModelsReady)
 	require.Nil(t, sess.supportedModels)
 }
+
+// failingAppendStore wraps a Store and forces AppendEvent to return
+// errFailedAppend for any channel listed in failChannels. All other
+// methods pass through to the embedded interface unchanged.
+type failingAppendStore struct {
+	storemod.Store
+
+	failChannels    map[domain.ChannelName]struct{}
+	errFailedAppend error
+}
+
+func (f *failingAppendStore) AppendEvent(ctx context.Context, ch domain.ChannelName, event domain.ChannelEvent) (int64, error) {
+	if _, ok := f.failChannels[ch]; ok {
+		return 0, f.errFailedAppend
+	}
+
+	return f.Store.AppendEvent(ctx, ch, event)
+}
+
+func TestSession_appendEvent_persistence_failure_emits_status_notice(t *testing.T) {
+	store := &failingAppendStore{
+		Store:           storetest.NewMemoryStore(t),
+		failChannels:    map[domain.ChannelName]struct{}{"#general": {}},
+		errFailedAppend: fmt.Errorf("disk full"),
+	}
+
+	sess := New(store, nil, &fakeAPIClient{}, "testuser", "", "")
+	sess.now = func() time.Time { return fixedTime }
+
+	sess.appendEvent(t.Context(), "#general", domain.ChannelMessage{
+		Channel: "#general",
+		From:    "testuser",
+		Body:    "hello",
+		At:      fixedTime,
+	})
+
+	notice := drainEvent[domain.SystemNoticeEvent](t, sess)
+	require.Equal(t, domain.StatusChannelName, notice.Channel)
+
+	sysNotice, ok := notice.Stored.Event.(domain.ChannelSystemNotice)
+	require.True(t, ok, "expected ChannelSystemNotice, got %T", notice.Stored.Event)
+	require.Contains(t, sysNotice.Text, "#general")
+	require.Contains(t, sysNotice.Text, "disk full")
+}
+
+func TestSession_appendEvent_persistence_failure_on_status_channel_skips_notice(t *testing.T) {
+	store := &failingAppendStore{
+		Store:           storetest.NewMemoryStore(t),
+		failChannels:    map[domain.ChannelName]struct{}{domain.StatusChannelName: {}},
+		errFailedAppend: fmt.Errorf("disk full"),
+	}
+
+	sess := New(store, nil, &fakeAPIClient{}, "testuser", "", "")
+	sess.now = func() time.Time { return fixedTime }
+
+	sess.appendEvent(t.Context(), domain.StatusChannelName, domain.ChannelSystemNotice{
+		Channel: domain.StatusChannelName,
+		Text:    "boot notice",
+		At:      fixedTime,
+	})
+
+	select {
+	case evt := <-sess.Events():
+		t.Fatalf("expected no event after status-channel append failure, got %T", evt)
+	default:
+	}
+}

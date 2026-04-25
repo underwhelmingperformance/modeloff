@@ -70,7 +70,8 @@ const (
 	MetricEmbeddingDurationMs  = "modeloff.memory.embedding.duration.ms"
 
 	// Runtime health:
-	MetricDroppedLogs = "modeloff.logs.dropped"
+	MetricDroppedLogs         = "modeloff.logs.dropped"
+	MetricPersistenceFailures = "modeloff.persistence.failures"
 )
 
 // Values for the AttrResult span attribute, indicating how the

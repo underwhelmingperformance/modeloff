@@ -21,6 +21,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
 	orderedmap "github.com/wk8/go-ordered-map/v2"
@@ -115,6 +116,8 @@ type Session struct {
 	supportedModels      map[domain.ModelID]struct{}
 	supportedModelsReady bool
 	listModelsState      atomic.Uint32
+
+	persistenceFailures metric.Int64Counter
 }
 
 // New creates a Session with the given dependencies. The session
@@ -137,17 +140,21 @@ func New(
 
 	user := domain.NewUserInstance(userNick)
 
+	persistenceFailures, _ := otel.Meter("github.com/laney/modeloff/internal/session").
+		Int64Counter(observability.MetricPersistenceFailures)
+
 	return &Session{
-		store:      s,
-		memory:     m,
-		api:        a,
-		user:       user,
-		userModes:  make(map[domain.ChannelName]domain.NickMode),
-		apiKey:     strings.TrimSpace(apiKey),
-		smallModel: smallModel,
-		now:        time.Now,
-		events:     make(chan domain.SessionEvent, eventBufSize),
-		connectedC: make(chan struct{}),
+		store:               s,
+		memory:              m,
+		api:                 a,
+		user:                user,
+		userModes:           make(map[domain.ChannelName]domain.NickMode),
+		apiKey:              strings.TrimSpace(apiKey),
+		smallModel:          smallModel,
+		now:                 time.Now,
+		events:              make(chan domain.SessionEvent, eventBufSize),
+		connectedC:          make(chan struct{}),
+		persistenceFailures: persistenceFailures,
 	}
 }
 
@@ -1811,7 +1818,28 @@ func (s *Session) persistableAutojoinChannels() []domain.ChannelName {
 func (s *Session) appendEvent(ctx context.Context, ch domain.ChannelName, event domain.ChannelEvent) {
 	if _, err := s.store.AppendEvent(ctx, ch, event); err != nil {
 		slog.Default().ErrorContext(ctx, "append event", "channel", ch, "error", err)
+		s.recordPersistenceFailure(ctx, ch, err)
 	}
+}
+
+// recordPersistenceFailure increments the persistence-failures counter
+// and surfaces the failure to the user via a status notice. The notice
+// path is suppressed when the failed channel is the status channel
+// itself: appendStatus would call back into appendEvent and a flapping
+// store would loop indefinitely. The counter increment is unconditional
+// so an operator watching metrics still sees recursion-suppressed
+// failures.
+func (s *Session) recordPersistenceFailure(ctx context.Context, ch domain.ChannelName, cause error) {
+	if s.persistenceFailures != nil {
+		s.persistenceFailures.Add(ctx, 1,
+			metric.WithAttributes(attribute.String(observability.AttrChannel, string(ch))))
+	}
+
+	if ch == domain.StatusChannelName {
+		return
+	}
+
+	s.appendStatus(ctx, fmt.Sprintf("event log unavailable for %s: %s", ch, cause))
 }
 
 // dispatchInBackground runs dispatch for a channel in the background,
