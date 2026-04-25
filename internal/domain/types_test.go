@@ -24,6 +24,24 @@ func TestNormaliseChannelName(t *testing.T) {
 	}
 }
 
+func TestInferChannelKind(t *testing.T) {
+	tests := []struct {
+		name string
+		in   ChannelName
+		want ChannelKind
+	}{
+		{name: "status reserved name", in: StatusChannelName, want: KindStatus},
+		{name: "hash-prefixed is a channel", in: "#general", want: KindChannel},
+		{name: "bare name is a dm", in: "botty", want: KindDM},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, InferChannelKind(tt.in))
+		})
+	}
+}
+
 func TestChannel_DisplayName(t *testing.T) {
 	tests := []struct {
 		name    string

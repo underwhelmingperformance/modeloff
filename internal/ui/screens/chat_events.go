@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"iter"
 	"log/slog"
-	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -699,7 +698,7 @@ func (s ChatScreen) activeKind() domain.ChannelKind {
 
 	ch, ok := s.channelByName(*s.active)
 	if !ok {
-		return channelKindForName(*s.active)
+		return domain.InferChannelKind(*s.active)
 	}
 
 	return ch.Kind
@@ -740,25 +739,14 @@ func (s ChatScreen) channelByName(name domain.ChannelName) (domain.Channel, bool
 func (s ChatScreen) channelKey(name domain.ChannelName) domain.Channel {
 	return domain.Channel{
 		Name: name,
-		Kind: channelKindForName(name),
+		Kind: domain.InferChannelKind(name),
 	}
 }
 
 func (s ChatScreen) syntheticChannel(name domain.ChannelName) domain.Channel {
 	return domain.Channel{
 		Name:    name,
-		Kind:    channelKindForName(name),
+		Kind:    domain.InferChannelKind(name),
 		Members: domain.NewMemberList(),
-	}
-}
-
-func channelKindForName(name domain.ChannelName) domain.ChannelKind {
-	switch {
-	case name == domain.StatusChannelName:
-		return domain.KindStatus
-	case strings.HasPrefix(string(name), domain.ChannelPrefix):
-		return domain.KindChannel
-	default:
-		return domain.KindDM
 	}
 }

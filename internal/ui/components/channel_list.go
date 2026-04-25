@@ -140,7 +140,10 @@ func (cl ChannelSidebar) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		return cl, nil
 
 	case ChannelRemovedMsg:
-		cl.panel.items.Remove(domain.Channel{Name: msg.Channel})
+		cl.panel.items.Remove(domain.Channel{
+			Name: msg.Channel,
+			Kind: domain.InferChannelKind(msg.Channel),
+		})
 		delete(cl.unread, msg.Channel)
 		delete(cl.mentions, msg.Channel)
 

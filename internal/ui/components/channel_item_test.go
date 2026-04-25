@@ -100,6 +100,25 @@ func TestChannelSidebar_status_channel_stays_pinned_and_unprefixed(t *testing.T)
 	require.NotContains(t, v, "#&modeloff")
 }
 
+func TestChannelSidebar_ChannelRemovedMsg_drops_dm(t *testing.T) {
+	channels := []domain.Channel{
+		{Name: "#general", Kind: domain.KindChannel},
+		{Name: "botty", Kind: domain.KindDM},
+	}
+
+	m := newTestChannelSidebar(channels, "#general", nil)
+
+	require.Equal(t,
+		[]string{"Channels", "▸#general", "@botty"},
+		visibleLines(m.View(30, 10)))
+
+	m, _ = m.Update(components.ChannelRemovedMsg{Channel: "botty"})
+
+	require.Equal(t,
+		[]string{"Channels", "▸#general"},
+		visibleLines(m.View(30, 10)))
+}
+
 func TestChannelSidebar_keyboard_navigation(t *testing.T) {
 	// Sorted order: #dev, #general, #random. Active #general = index 1.
 	m := newTestChannelSidebar(testChannels, "#general", nil)

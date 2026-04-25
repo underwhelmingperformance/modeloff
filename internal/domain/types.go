@@ -100,6 +100,22 @@ const (
 // `#`-prefixed).
 const StatusChannelName ChannelName = "&modeloff"
 
+// InferChannelKind derives a channel's kind from its name alone. It
+// is the single source of truth for callers that need to look up a
+// channel in a sorted set keyed by `(Kind, Name)` but only have the
+// name to hand: the reserved status name is `KindStatus`,
+// `#`-prefixed names are `KindChannel`, and bare names are `KindDM`.
+func InferChannelKind(name ChannelName) ChannelKind {
+	switch {
+	case name == StatusChannelName:
+		return KindStatus
+	case strings.HasPrefix(string(name), ChannelPrefix):
+		return KindChannel
+	default:
+		return KindDM
+	}
+}
+
 // Channel represents a chat channel or direct message conversation.
 type Channel struct {
 	Name       ChannelName
