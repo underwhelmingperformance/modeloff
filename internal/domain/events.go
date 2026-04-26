@@ -15,11 +15,15 @@ type ModelReplyEvent struct {
 	At       time.Time
 }
 
-// DMOpenedEvent is emitted when a direct message conversation is
-// opened or created.
+// DMOpenedEvent is emitted when the user opens a direct-message
+// window. `DM` is the typed `*DMWindow` the chat screen registers
+// in its sidebar; the `Counterpart` carried on the window is the
+// non-user instance, resolved at open time. There is no event
+// equivalent for models — DMs are stateless from the server's
+// point of view, so a model "opening" a conversation isn't an
+// observable thing.
 type DMOpenedEvent struct {
-	Channel Channel
-	Nick    Nick
+	DM      *DMWindow
 	Created bool
 	At      time.Time
 }

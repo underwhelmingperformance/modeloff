@@ -612,30 +612,34 @@ func (s ChatScreen) handleModelReplyEvent(msg domain.ModelReplyEvent) (ui.Model,
 }
 
 func (s ChatScreen) handleDMOpenedEvent(msg domain.DMOpenedEvent) (ui.Model, tea.Cmd) {
-	*s.active = msg.Channel.Name
-	s.channels.Insert(msg.Channel)
+	name := msg.DM.Name()
+	*s.active = name
 
-	var members domain.MemberList
-
-	if ch, ok := s.channelByName(msg.Channel.Name); ok {
-		members = ch.Members
-	}
+	// The chat-screen's channel cache is still keyed by the
+	// `domain.Channel` projection while the rest of the UI is on
+	// the legacy shape. Insert the projection here so the sidebar
+	// finds the DM by name; the projection's `Members` is empty
+	// (DMs carry their counterpart by handle, not via the member
+	// list) and that's fine — the nick-list pane is a no-op for
+	// DM windows.
+	ch := domain.ChannelFromWindow(msg.DM)
+	s.channels.Insert(ch)
 
 	var cmds []tea.Cmd
 	cmds = append(cmds, msgCmd(components.SetPlaceholderMsg{}))
 	cmds = append(cmds, msgCmd(components.SetChannelMsg{
-		Channel: msg.Channel.Name,
+		Channel: name,
 		Topic:   s.activeTopic(),
-		Kind:    msg.Channel.Kind,
+		Kind:    domain.KindDM,
 	}))
-	cmds = append(cmds, msgCmd(components.ChannelAddedMsg{Channel: msg.Channel}))
-	cmds = append(cmds, msgCmd(components.ChannelActiveMsg{Channel: msg.Channel.Name}))
-	cmds = append(cmds, s.persistLastChannel(msg.Channel.Name))
-	cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: members}))
-	cmds = append(cmds, s.scrollbackCmd(msg.Channel.Name))
+	cmds = append(cmds, msgCmd(components.ChannelAddedMsg{Channel: ch}))
+	cmds = append(cmds, msgCmd(components.ChannelActiveMsg{Channel: name}))
+	cmds = append(cmds, s.persistLastChannel(name))
+	cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: domain.MemberList{}}))
+	cmds = append(cmds, s.scrollbackCmd(name))
 	cmds = append(cmds, s.logAndShow(domain.SystemNotice{
-		Target: msg.Channel.Name,
-		Text:   fmt.Sprintf("Opened direct message with %s", msg.Nick),
+		Target: name,
+		Text:   fmt.Sprintf("Opened direct message with %s", msg.DM.Counterpart.Nick()),
 		At:     msg.At,
 	}))
 

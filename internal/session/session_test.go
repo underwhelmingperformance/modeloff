@@ -2748,7 +2748,7 @@ func TestSession_Poke_emits_dispatch_events(t *testing.T) {
 	}, msgs)
 }
 
-func TestSession_OpenDM_creates_dm_channel(t *testing.T) {
+func TestSession_OpenDM_creates_dm_window(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
@@ -2757,30 +2757,26 @@ func TestSession_OpenDM_creates_dm_channel(t *testing.T) {
 		ModelID: "test/model",
 	})
 
-	ch, created, err := sess.OpenDM(ctx, botty)
+	dm, created, err := sess.OpenDM(ctx, botty)
 	require.NoError(t, err)
 	require.True(t, created)
-	dmMembers := domain.NewMemberList()
-	dmMembers.Add(sess.UserInstance())
-	dmMembers.Add(botty)
+	require.Equal(t, domain.ChannelName("botty"), dm.Name())
+	require.Equal(t, fixedTime, dm.Created())
+	require.Same(t, botty, dm.Counterpart)
 
-	requireChannelEqual(t, domain.Channel{
-		Name:    "botty",
-		Kind:    domain.KindDM,
-		Members: dmMembers,
-		Created: fixedTime,
-	}, ch)
-
-	got, err := sess.GetChannel(ctx, "botty")
+	got, err := s.GetWindow(ctx, "botty")
 	require.NoError(t, err)
-	requireChannelEqual(t, ch, got)
+	gotDM, ok := got.(*domain.DMWindow)
+	require.True(t, ok)
+	require.Equal(t, domain.ChannelName("botty"), gotDM.Name())
+	require.Same(t, botty, gotDM.Counterpart)
 
 	inst, err := s.ResolveNick(ctx, "botty")
 	require.NoError(t, err)
 	requireChannels(t, inst.Channels(), "botty")
 }
 
-func TestSession_OpenDM_reuses_existing_dm_channel(t *testing.T) {
+func TestSession_OpenDM_reuses_existing_dm_window(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
@@ -2789,18 +2785,16 @@ func TestSession_OpenDM_reuses_existing_dm_channel(t *testing.T) {
 		ModelID:  "test/model",
 		Channels: testChannels("botty"),
 	})
-	existing := domain.Channel{
-		Name:    "botty",
-		Kind:    domain.KindDM,
-		Members: testMembers(t, sess, s, "testuser", "botty"),
-		Created: fixedTime.Add(-time.Hour),
-	}
-	saveTestChannel(t, sess, s, existing)
 
-	ch, created, err := sess.OpenDM(ctx, botty)
+	existing := domain.NewDMWindow(botty, fixedTime.Add(-time.Hour))
+	require.NoError(t, s.SaveWindow(ctx, existing))
+
+	dm, created, err := sess.OpenDM(ctx, botty)
 	require.NoError(t, err)
 	require.False(t, created)
-	requireChannelEqual(t, existing, ch)
+	require.Equal(t, existing.Name(), dm.Name())
+	require.Equal(t, existing.Created(), dm.Created())
+	require.Same(t, botty, dm.Counterpart)
 
 	inst, err := s.ResolveNick(ctx, "botty")
 	require.NoError(t, err)

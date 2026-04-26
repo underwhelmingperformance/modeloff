@@ -316,7 +316,7 @@ func TestInviteAs_model_actor(t *testing.T) {
 	}, notices)
 }
 
-func TestOpenDM_members_have_no_mode(t *testing.T) {
+func TestOpenDM_returns_dm_with_counterpart(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
@@ -325,13 +325,11 @@ func TestOpenDM_members_have_no_mode(t *testing.T) {
 		ModelID: "test/model",
 	})
 
-	ch, _, err := sess.OpenDM(ctx, botty)
+	dm, created, err := sess.OpenDM(ctx, botty)
 	require.NoError(t, err)
-
-	require.Equal(t, []domain.Member{
-		{Instance: botty, Nick: "botty", Mode: domain.ModeNone},
-		{Instance: sess.UserInstance(), Nick: "testuser", Mode: domain.ModeNone},
-	}, ch.Members.Slice())
+	require.True(t, created)
+	require.Equal(t, domain.ChannelName("botty"), dm.Name())
+	require.Same(t, botty, dm.Counterpart)
 }
 
 func TestSetTopicAs_rejects_DM(t *testing.T) {

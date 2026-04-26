@@ -352,7 +352,7 @@ func (c MsgCommand) Run(rc Context) tea.Cmd {
 			return errorEvent("msg", fmt.Errorf("resolve nick: %w", err))
 		}
 
-		ch, created, err := rc.Session.OpenDM(rc.Ctx, resolved)
+		dm, created, err := rc.Session.OpenDM(rc.Ctx, resolved)
 		if err != nil {
 			var guard domain.StatusChannelGuardError
 			if errors.As(err, &guard) {
@@ -362,13 +362,12 @@ func (c MsgCommand) Run(rc Context) tea.Cmd {
 			return errorEvent("msg", err)
 		}
 
-		if err := c.sendBody(rc.Ctx, rc.Session, rc.Actor, ch.Name); err != nil {
+		if err := c.sendBody(rc.Ctx, rc.Session, rc.Actor, dm.Name()); err != nil {
 			return errorEvent("msg", err)
 		}
 
 		return domain.DMOpenedEvent{
-			Channel: ch,
-			Nick:    nick,
+			DM:      dm,
 			Created: created,
 			At:      time.Now(),
 		}

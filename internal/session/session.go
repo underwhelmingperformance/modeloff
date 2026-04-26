@@ -1170,9 +1170,16 @@ func (s *Session) Reset(ctx context.Context) error {
 	return nil
 }
 
-// OpenDM opens or creates a direct-message conversation with a known
-// model instance and makes it the active conversation.
-func (s *Session) OpenDM(ctx context.Context, target *domain.Instance) (domain.Channel, bool, error) {
+// OpenDM opens (or returns) the user's direct-message window
+// with the target instance. The DM window is the user's UI
+// handle for the conversation — there is no equivalent on the
+// model side, because DMs are stateless from the server's point
+// of view: the message stream is the events log, addressed by
+// nick. Opening just creates the user's window row and stamps
+// the DM addressing into both parties' `Channels()` maps so
+// that actor-scoped events (quit, nick-change) propagate to the
+// DM under the IRC intersection rule.
+func (s *Session) OpenDM(ctx context.Context, target *domain.Instance) (*domain.DMWindow, bool, error) {
 	nick := target.Nick()
 
 	ctx, span := s.startSpan(
@@ -1189,36 +1196,19 @@ func (s *Session) OpenDM(ctx context.Context, target *domain.Instance) (domain.C
 			Hint:    "&modeloff is the per-session status window and does not accept messages. Use /msg <nick-or-#channel> instead.",
 		}
 		setSpanError(span, err, observability.ErrorKindValidation)
-		return domain.Channel{}, false, err
+		return nil, false, err
 	}
 
 	span.SetAttributes(attribute.String(observability.AttrInstanceID, string(target.ID())))
 
 	name := domain.ChannelName(nick)
-
-	ch, err := s.loadChannel(ctx, name)
-	created := false
-	if err != nil {
-		members := domain.NewMemberList()
-		members.Add(s.user)
-		members.Add(target)
-
-		ch = domain.Channel{
-			Name:    name,
-			Kind:    domain.KindDM,
-			Members: members,
-			Created: s.now(),
-		}
-
-		if err := s.persistChannel(ctx, ch); err != nil {
-			setSpanError(span, err, observability.ErrorKindStore)
-			return domain.Channel{}, false, fmt.Errorf("save dm channel: %w", err)
-		}
-
-		created = true
-	}
-
 	now := s.now()
+
+	dm, created, err := s.loadOrCreateDMWindow(ctx, name, target, now)
+	if err != nil {
+		setSpanError(span, err, observability.ErrorKindStore)
+		return nil, false, err
+	}
 
 	s.user.MutateChannels(func(m *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
 		if _, ok := m.Get(name); !ok {
@@ -1234,7 +1224,7 @@ func (s *Session) OpenDM(ctx context.Context, target *domain.Instance) (domain.C
 
 	if err := s.store.SaveInstance(ctx, target); err != nil {
 		setSpanError(span, err, observability.ErrorKindStore)
-		return domain.Channel{}, false, fmt.Errorf("save instance: %w", err)
+		return nil, false, fmt.Errorf("save instance: %w", err)
 	}
 
 	span.SetAttributes(
@@ -1242,7 +1232,33 @@ func (s *Session) OpenDM(ctx context.Context, target *domain.Instance) (domain.C
 		attribute.String(observability.AttrResult, observability.ResultOK),
 	)
 
-	return ch, created, nil
+	return dm, created, nil
+}
+
+// loadOrCreateDMWindow returns the existing `*DMWindow` for the
+// given counterpart name, or constructs and persists a fresh one
+// if no row exists. The store does not own counterpart resolution
+// for unsaved rows, so the typed `*DMWindow` is built directly
+// from the resolved `target` on first creation rather than going
+// through `Store.GetWindow` (which would re-resolve the nick on
+// every load).
+func (s *Session) loadOrCreateDMWindow(ctx context.Context, name domain.ChannelName, target *domain.Instance, now time.Time) (*domain.DMWindow, bool, error) {
+	if existing, err := s.store.GetWindow(ctx, name); err == nil {
+		dm, ok := existing.(*domain.DMWindow)
+		if !ok {
+			return nil, false, fmt.Errorf("expected dm window for %q, got %T", name, existing)
+		}
+
+		return dm, false, nil
+	}
+
+	dm := domain.NewDMWindow(target, now)
+
+	if err := s.store.SaveWindow(ctx, dm); err != nil {
+		return nil, false, fmt.Errorf("save dm window: %w", err)
+	}
+
+	return dm, true, nil
 }
 
 // Poke sends a periodic prompt to model instances in every channel,
