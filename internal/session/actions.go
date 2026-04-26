@@ -299,16 +299,32 @@ func (s *Session) QuitAs(ctx context.Context, actor *domain.Instance, message st
 	now := s.now()
 	channels := s.instanceChannelNames(actor)
 
-	for _, ch := range channels {
-		s.removeInstanceFromChannel(ctx, actor, ch)
-		s.persistAndEmit(ctx, ch, domain.Quit{
-			Target:     ch,
-			Nick:       actorNick,
-			InstanceID: actorID,
-			Message:    message,
-			At:         now,
-			Instance:   actor,
-		})
+	s.propagateActorEvent(ctx, actor, actorEventConfig{
+		mutate: func(channel *domain.Channel) {
+			if m, ok := channel.Members.GetByInstance(actor); ok {
+				channel.Members.Remove(m)
+			}
+		},
+		build: func(ch domain.ChannelName) domain.PersistableEvent {
+			return domain.Quit{
+				Target:     ch,
+				Nick:       actorNick,
+				InstanceID: actorID,
+				Message:    message,
+				At:         now,
+				Instance:   actor,
+			}
+		},
+	})
+
+	actor.MutateChannels(func(m *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
+		for _, ch := range channels {
+			m.Delete(ch)
+		}
+	})
+
+	if err := s.store.SaveInstance(ctx, actor); err != nil {
+		return fmt.Errorf("save instance: %w", err)
 	}
 
 	if err := s.store.DeleteInstanceByID(ctx, actorID); err != nil {
@@ -343,50 +359,35 @@ func (s *Session) ChangeNickAs(ctx context.Context, actor *domain.Instance, newN
 
 	actor.SetNick(newNick)
 
-	var channelNames []domain.ChannelName
-
-	if isUser {
-		channels, _ := s.loadChannels(ctx)
-		for _, ch := range channels {
-			if ch.Members.HasInstance(actor) {
-				channelNames = append(channelNames, ch.Name)
-			}
-		}
-	} else {
+	if !isUser {
 		// The instances table is keyed by InstanceID, so a rename is
 		// an in-place update of the `nick` column — no delete-then-
 		// reinsert needed as it was under the old nick-keyed schema.
 		if err := s.store.SaveInstance(ctx, actor); err != nil {
 			return fmt.Errorf("save instance: %w", err)
 		}
-
-		channelNames = s.instanceChannelNames(actor)
 	}
 
 	span.SetAttributes(attribute.String(observability.AttrInstanceID, string(actor.ID())))
 
 	now := s.now()
-	for _, chName := range channelNames {
-		channel, err := s.loadChannel(ctx, chName)
-		if err != nil {
-			continue
-		}
+	actorID := actor.ID()
 
-		channel.Members.RenameTo(actor, newNick)
-
-		if err := s.persistChannel(ctx, channel); err != nil {
-			return fmt.Errorf("save channel: %w", err)
-		}
-
-		s.persistAndEmit(ctx, chName, domain.NickChange{
-			Target:     chName,
-			OldNick:    oldNick,
-			NewNick:    newNick,
-			InstanceID: actor.ID(),
-			At:         now,
-			Instance:   actor,
-		})
-	}
+	s.propagateActorEvent(ctx, actor, actorEventConfig{
+		mutate: func(channel *domain.Channel) {
+			channel.Members.RenameTo(actor, newNick)
+		},
+		build: func(ch domain.ChannelName) domain.PersistableEvent {
+			return domain.NickChange{
+				Target:     ch,
+				OldNick:    oldNick,
+				NewNick:    newNick,
+				InstanceID: actorID,
+				At:         now,
+				Instance:   actor,
+			}
+		},
+	})
 
 	return nil
 }

@@ -624,14 +624,7 @@ func (s *Session) Quit(ctx context.Context, message string) (retErr error) {
 	autojoin := s.persistableAutojoinChannels()
 
 	userNick := s.user.Nick()
-
-	var channels []domain.ChannelName
-	if userChannels := s.user.Channels(); userChannels != nil {
-		for pair := userChannels.Oldest(); pair != nil; pair = pair.Next() {
-			channels = append(channels, pair.Key)
-		}
-	}
-
+	channels := s.instanceChannelNames(s.user)
 	now := s.now()
 
 	// Order matters for crash-resilience: append per-channel quit events
@@ -640,16 +633,20 @@ func (s *Session) Quit(ctx context.Context, message string) (retErr error) {
 	// session_active marker last. A crash between any of the earlier
 	// steps leaves the next startup classified as unclean, at which
 	// point cleanupUncleanShutdown handles any residual memberships.
-	for _, ch := range channels {
-		s.appendEvent(ctx, ch, domain.Quit{
-			Target:  ch,
-			Nick:    userNick,
-			Message: message,
-			At:      now,
-		})
-
-		s.forgetUserMode(ctx, ch)
-	}
+	s.propagateActorEvent(ctx, s.user, actorEventConfig{
+		storeOnly: true,
+		build: func(ch domain.ChannelName) domain.PersistableEvent {
+			return domain.Quit{
+				Target:  ch,
+				Nick:    userNick,
+				Message: message,
+				At:      now,
+			}
+		},
+		afterEach: func(ctx context.Context, ch domain.ChannelName) {
+			s.forgetUserMode(ctx, ch)
+		},
+	})
 
 	if err := s.store.SetAutojoinChannels(ctx, autojoin); err != nil {
 		return fmt.Errorf("save autojoin channels: %w", err)
@@ -1685,39 +1682,6 @@ func (s *Session) buildReplies(
 	return replies
 }
 
-// removeInstanceFromChannel removes a model instance from a single
-// channel's membership and updates the store. Used for model-initiated
-// part/quit.
-func (s *Session) removeInstanceFromChannel(ctx context.Context, inst *domain.Instance, ch domain.ChannelName) {
-	instanceID := inst.ID()
-	nick := inst.Nick()
-
-	channel, err := s.loadChannel(ctx, ch)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "remove instance: get channel",
-			"instance_id", string(instanceID), "nick", nick, "channel", ch, "error", err)
-		return
-	}
-
-	if m, ok := channel.Members.GetByInstance(inst); ok {
-		channel.Members.Remove(m)
-	}
-
-	if err := s.persistChannel(ctx, channel); err != nil {
-		slog.Default().ErrorContext(ctx, "remove instance: save channel",
-			"instance_id", string(instanceID), "nick", nick, "channel", ch, "error", err)
-	}
-
-	inst.MutateChannels(func(m *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
-		m.Delete(ch)
-	})
-
-	if err := s.store.SaveInstance(ctx, inst); err != nil {
-		slog.Default().ErrorContext(ctx, "remove instance: save instance",
-			"instance_id", string(instanceID), "nick", nick, "channel", ch, "error", err)
-	}
-}
-
 // instanceChannelNames returns the list of channels an instance is in.
 func (s *Session) instanceChannelNames(inst *domain.Instance) []domain.ChannelName {
 	channels := inst.Channels()
@@ -1838,6 +1802,79 @@ func (s *Session) persistAndEmit(ctx context.Context, ch domain.ChannelName, evt
 func (s *Session) persistAndEmitUIOnly(ctx context.Context, ch domain.ChannelName, evt domain.PersistableEvent) {
 	s.appendEvent(ctx, ch, evt)
 	s.emitUIOnly(evt)
+}
+
+// actorEventConfig configures a single call to propagateActorEvent.
+//
+// `build` produces the per-channel event. `mutate`, when non-nil,
+// is applied to the loaded channel before persistence — used for
+// quit (remove the actor from `Members`) and nick change (rename
+// the snapshot in `Members`). When `mutate` is nil the channel is
+// not loaded; this fits the user's `Quit` path, which intentionally
+// leaves channel members alone for `cleanupUncleanShutdown` to
+// reconcile on the next start. `storeOnly` skips UI emission and
+// is used by the user's `Quit` because the application is exiting
+// and no UI is listening. `afterEach` is run per channel after the
+// event is recorded, for caller-specific side effects (e.g.
+// `forgetUserMode` for the user's quit).
+type actorEventConfig struct {
+	storeOnly bool
+	mutate    func(*domain.Channel)
+	build     func(domain.ChannelName) domain.PersistableEvent
+	afterEach func(ctx context.Context, ch domain.ChannelName)
+}
+
+// propagateActorEvent fans out an actor-scoped event into every
+// channel the actor is in, expressing the IRC "intersection rule"
+// (a server delivers QUIT/NICK to peers who share at least one
+// channel with the actor) as a single named function. Modeloff's
+// per-channel persistence keeps the rule structurally true: the
+// channel iteration is the only emission surface, so a model in
+// `#foo` only ever sees events whose actor was in `#foo` at
+// emission.
+//
+// The helper consolidates three previously hand-rolled sites
+// (`Session.Quit`, `QuitAs`, `ChangeNickAs`); future actor-scoped
+// events drop in by passing a different `build`/`mutate` pair.
+// `instanceChannelNames(actor)` is the single source of truth for
+// the iteration set; the channel list is snapshotted up front so
+// post-loop work that mutates `actor.Channels()` does not race.
+func (s *Session) propagateActorEvent(ctx context.Context, actor *domain.Instance, cfg actorEventConfig) {
+	for _, name := range s.instanceChannelNames(actor) {
+		if cfg.mutate != nil {
+			channel, err := s.loadChannel(ctx, name)
+			if err != nil {
+				slog.Default().ErrorContext(ctx, "propagate actor event: load channel",
+					"instance_id", string(actor.ID()),
+					"channel", name,
+					"error", err,
+				)
+
+				continue
+			}
+
+			cfg.mutate(&channel)
+
+			if err := s.persistChannel(ctx, channel); err != nil {
+				slog.Default().ErrorContext(ctx, "propagate actor event: save channel",
+					"instance_id", string(actor.ID()),
+					"channel", name,
+					"error", err,
+				)
+			}
+		}
+
+		evt := cfg.build(name)
+		if cfg.storeOnly {
+			s.appendEvent(ctx, name, evt)
+		} else {
+			s.persistAndEmit(ctx, name, evt)
+		}
+
+		if cfg.afterEach != nil {
+			cfg.afterEach(ctx, name)
+		}
+	}
 }
 
 // maybeDispatch checks whether an event is dispatchable and, if so,

@@ -1263,7 +1263,6 @@ func TestSession_mutationOperations_recordSpans(t *testing.T) {
 		"store.sqlite.events_before",
 		"store.sqlite.get_channel",
 		"store.sqlite.get_instance_by_id",
-		"store.sqlite.list_channels",
 		"store.sqlite.reset",
 		"store.sqlite.resolve_nick",
 		"store.sqlite.save_channel",
