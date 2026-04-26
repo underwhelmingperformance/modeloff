@@ -2,35 +2,46 @@ package observability
 
 import (
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/require"
 )
 
 func TestLogBuffer_keeps_latest_entries_within_capacity(t *testing.T) {
-	buffer := NewLogBuffer(2)
-	t.Cleanup(buffer.Close)
+	synctest.Test(t, func(t *testing.T) {
+		buffer := NewLogBuffer(2)
+		t.Cleanup(buffer.Close)
 
-	now := time.Now()
-	buffer.Ingest() <- PanelEntry{Message: "first", Timestamp: now}
-	buffer.Ingest() <- PanelEntry{Message: "second", Timestamp: now}
-	buffer.Ingest() <- PanelEntry{Message: "third", Timestamp: now}
+		now := time.Now()
+		buffer.Ingest() <- PanelEntry{Message: "first", Timestamp: now}
+		buffer.Ingest() <- PanelEntry{Message: "second", Timestamp: now}
+		buffer.Ingest() <- PanelEntry{Message: "third", Timestamp: now}
 
-	require.Eventually(t, func() bool {
+		// The forwarder goroutine processes ingested entries. Wait
+		// for it to durably block, which means it has consumed every
+		// pending message and is waiting on the next one — at which
+		// point the ring buffer's contents are deterministic.
+		synctest.Wait()
+
 		entries := buffer.Entries()
-		return len(entries) == 2 && entries[0].Message == "second" && entries[1].Message == "third"
-	}, time.Second, 10*time.Millisecond)
+		require.Len(t, entries, 2)
+		require.Equal(t, "second", entries[0].Message)
+		require.Equal(t, "third", entries[1].Message)
+	})
 }
 
 func TestLogBuffer_emits_update_notifications(t *testing.T) {
-	buffer := NewLogBuffer(1)
-	t.Cleanup(buffer.Close)
+	synctest.Test(t, func(t *testing.T) {
+		buffer := NewLogBuffer(1)
+		t.Cleanup(buffer.Close)
 
-	buffer.Ingest() <- PanelEntry{Message: "entry", Timestamp: time.Now()}
+		buffer.Ingest() <- PanelEntry{Message: "entry", Timestamp: time.Now()}
 
-	select {
-	case <-buffer.Updates():
-	case <-time.After(time.Second):
-		t.Fatal("expected log buffer update notification")
-	}
+		select {
+		case <-buffer.Updates():
+		case <-time.After(time.Second):
+			t.Fatal("expected log buffer update notification")
+		}
+	})
 }
