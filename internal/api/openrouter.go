@@ -104,6 +104,27 @@ func (c *OpenRouterClient) tracer() trace.Tracer {
 	return c.tracerProvider.Tracer("github.com/laney/modeloff/internal/api")
 }
 
+// inSpan brackets fn with a span on the client's tracer provider.
+// `ManualResult` is on because the OpenRouter call paths do not fit
+// the flat `ok`/`error` shape: the chat completions stamp result as
+// `silence`/`reply`/`tool`, and the meta endpoints select between
+// `transport`/`http_status`/`response_parse` error kinds depending
+// on which step failed. The runner still sets `codes.Error` status
+// on a non-nil error; everything else is the closure's job, via
+// `markSpanError` for the error path and explicit `SetAttributes`
+// for the success path.
+func (c *OpenRouterClient) inSpan(
+	ctx context.Context,
+	op string,
+	attrs []attribute.KeyValue,
+	fn func(ctx context.Context, span trace.Span) error,
+) error {
+	return observability.SpanRunner{
+		Tracer:       c.tracer(),
+		ManualResult: true,
+	}.Run(ctx, op, attrs, fn)
+}
+
 // ensureDeadline wraps ctx with the given timeout if it has no
 // deadline of its own, otherwise it leaves the caller's deadline in
 // place. The returned cancel must always be deferred by the caller.
@@ -270,56 +291,59 @@ func (c *OpenRouterClient) SendEvents(
 	tools ...ToolDefinition,
 ) (CompletionResult, error) {
 	logger := slog.Default().With("component", "api.openrouter", "model_id", modelID)
-	tracer := c.tracer()
 
-	ctx, span := tracer.Start(ctx, "api.openrouter.send_events")
-	span.SetAttributes(
-		attribute.String(observability.AttrOperation, "api.openrouter.send_events"),
-		attribute.String(observability.AttrModelID, string(modelID)),
-	)
-	defer span.End()
+	var result CompletionResult
+	err := c.inSpan(ctx, "api.openrouter.send_events",
+		[]attribute.KeyValue{attribute.String(observability.AttrModelID, string(modelID))},
+		func(ctx context.Context, span trace.Span) error {
+			msgs := buildMessages(systemPrompt, selfInstanceID, history, events)
+			resp, rawResp, err := c.chatCompletion(ctx, modelID, openai.ChatCompletionNewParams{ //nolint:bodyclose // SDK reads and closes the body.
+				Model:          shared.ChatModel(string(modelID)),
+				Messages:       msgs,
+				Tools:          toolParams(tools),
+				ResponseFormat: responseFormat(),
+			})
+			if err != nil {
+				markSpanError(span, observability.ErrorKindTransport, 0, err)
+				logger.ErrorContext(ctx, "openrouter send events failed", "error", err)
+				return err
+			}
 
-	msgs := buildMessages(systemPrompt, selfInstanceID, history, events)
-	resp, rawResp, err := c.chatCompletion(ctx, modelID, openai.ChatCompletionNewParams{ //nolint:bodyclose // SDK reads and closes the body.
-		Model:          shared.ChatModel(string(modelID)),
-		Messages:       msgs,
-		Tools:          toolParams(tools),
-		ResponseFormat: responseFormat(),
-	})
+			parsed, assistantMsg, err := parseCompletionResponse(resp, rawResp)
+			if err != nil {
+				markSpanError(span, completionParseErrorKind(err), 0, err)
+				logger.ErrorContext(ctx, "openrouter response parse failed", "error", err)
+				return err
+			}
+
+			if len(parsed.PendingToolCalls) > 0 {
+				parsed.Conversation = &Conversation{
+					modelID:  modelID,
+					messages: append(msgs, assistantMsg),
+				}
+			}
+
+			parsed.Usage.SetSpanAttributes(span, parsed.RequestID)
+			span.SetAttributes(attribute.String(observability.AttrResult, ResponseResultKind(parsed.Response)))
+
+			logger.InfoContext(
+				ctx,
+				"openrouter send events completed",
+				"request_id", parsed.RequestID,
+				"result", ResponseResultKind(parsed.Response),
+				"prompt_tokens", parsed.Usage.PromptTokens,
+				"completion_tokens", parsed.Usage.CompletionTokens,
+				"cost_credits", parsed.Usage.CostCredits,
+				"event_count", len(events),
+				"history_count", len(history),
+			)
+
+			result = parsed
+			return nil
+		})
 	if err != nil {
-		markSpanError(span, observability.ErrorKindTransport, 0, err)
-		logger.ErrorContext(ctx, "openrouter send events failed", "error", err)
 		return CompletionResult{}, err
 	}
-
-	result, assistantMsg, err := parseCompletionResponse(resp, rawResp)
-	if err != nil {
-		markSpanError(span, completionParseErrorKind(err), 0, err)
-		logger.ErrorContext(ctx, "openrouter response parse failed", "error", err)
-		return CompletionResult{}, err
-	}
-
-	if len(result.PendingToolCalls) > 0 {
-		result.Conversation = &Conversation{
-			modelID:  modelID,
-			messages: append(msgs, assistantMsg),
-		}
-	}
-
-	result.Usage.SetSpanAttributes(span, result.RequestID)
-	span.SetAttributes(attribute.String(observability.AttrResult, ResponseResultKind(result.Response)))
-
-	logger.InfoContext(
-		ctx,
-		"openrouter send events completed",
-		"request_id", result.RequestID,
-		"result", ResponseResultKind(result.Response),
-		"prompt_tokens", result.Usage.PromptTokens,
-		"completion_tokens", result.Usage.CompletionTokens,
-		"cost_credits", result.Usage.CostCredits,
-		"event_count", len(events),
-		"history_count", len(history),
-	)
 
 	return result, nil
 }
@@ -333,64 +357,67 @@ func (c *OpenRouterClient) ContinueWithToolResults(
 	tools ...ToolDefinition,
 ) (CompletionResult, error) {
 	logger := slog.Default().With("component", "api.openrouter", "model_id", conv.modelID)
-	tracer := c.tracer()
 
-	ctx, span := tracer.Start(ctx, "api.openrouter.continue_with_tool_results")
-	span.SetAttributes(
-		attribute.String(observability.AttrOperation, "api.openrouter.continue_with_tool_results"),
-		attribute.String(observability.AttrModelID, string(conv.modelID)),
-	)
-	defer span.End()
+	var result CompletionResult
+	err := c.inSpan(ctx, "api.openrouter.continue_with_tool_results",
+		[]attribute.KeyValue{attribute.String(observability.AttrModelID, string(conv.modelID))},
+		func(ctx context.Context, span trace.Span) error {
+			msgs := conv.messages
+			for _, r := range results {
+				msgs = append(msgs, openai.ToolMessage(r.Content, r.ToolCallID))
+			}
 
-	msgs := conv.messages
-	for _, r := range results {
-		msgs = append(msgs, openai.ToolMessage(r.Content, r.ToolCallID))
-	}
+			resp, rawResp, err := c.chatCompletion(ctx, conv.modelID, openai.ChatCompletionNewParams{ //nolint:bodyclose // SDK reads and closes the body.
+				Model:          shared.ChatModel(string(conv.modelID)),
+				Messages:       msgs,
+				Tools:          toolParams(tools),
+				ResponseFormat: responseFormat(),
+			})
+			if err != nil {
+				markSpanError(span, observability.ErrorKindTransport, 0, err)
+				logger.ErrorContext(ctx, "openrouter continue failed", "error", err)
+				return err
+			}
 
-	resp, rawResp, err := c.chatCompletion(ctx, conv.modelID, openai.ChatCompletionNewParams{ //nolint:bodyclose // SDK reads and closes the body.
-		Model:          shared.ChatModel(string(conv.modelID)),
-		Messages:       msgs,
-		Tools:          toolParams(tools),
-		ResponseFormat: responseFormat(),
-	})
+			parsed, assistantMsg, err := parseCompletionResponse(resp, rawResp)
+			if err != nil {
+				markSpanError(span, completionParseErrorKind(err), 0, err)
+				logger.ErrorContext(ctx, "openrouter continue parse failed", "error", err)
+				return err
+			}
+
+			if len(parsed.PendingToolCalls) > 0 {
+				// Append tool results and the new assistant message for
+				// the next iteration.
+				nextMsgs := make([]openai.ChatCompletionMessageParamUnion, len(msgs), len(msgs)+1)
+				copy(nextMsgs, msgs)
+				nextMsgs = append(nextMsgs, assistantMsg)
+
+				parsed.Conversation = &Conversation{
+					modelID:  conv.modelID,
+					messages: nextMsgs,
+				}
+			}
+
+			parsed.Usage.SetSpanAttributes(span, parsed.RequestID)
+			span.SetAttributes(attribute.String(observability.AttrResult, ResponseResultKind(parsed.Response)))
+
+			logger.InfoContext(
+				ctx,
+				"openrouter continue completed",
+				"request_id", parsed.RequestID,
+				"result", ResponseResultKind(parsed.Response),
+				"prompt_tokens", parsed.Usage.PromptTokens,
+				"completion_tokens", parsed.Usage.CompletionTokens,
+				"cost_credits", parsed.Usage.CostCredits,
+			)
+
+			result = parsed
+			return nil
+		})
 	if err != nil {
-		markSpanError(span, observability.ErrorKindTransport, 0, err)
-		logger.ErrorContext(ctx, "openrouter continue failed", "error", err)
 		return CompletionResult{}, err
 	}
-
-	result, assistantMsg, err := parseCompletionResponse(resp, rawResp)
-	if err != nil {
-		markSpanError(span, completionParseErrorKind(err), 0, err)
-		logger.ErrorContext(ctx, "openrouter continue parse failed", "error", err)
-		return CompletionResult{}, err
-	}
-
-	if len(result.PendingToolCalls) > 0 {
-		// Append tool results and the new assistant message for the
-		// next iteration.
-		nextMsgs := make([]openai.ChatCompletionMessageParamUnion, len(msgs), len(msgs)+1)
-		copy(nextMsgs, msgs)
-		nextMsgs = append(nextMsgs, assistantMsg)
-
-		result.Conversation = &Conversation{
-			modelID:  conv.modelID,
-			messages: nextMsgs,
-		}
-	}
-
-	result.Usage.SetSpanAttributes(span, result.RequestID)
-	span.SetAttributes(attribute.String(observability.AttrResult, ResponseResultKind(result.Response)))
-
-	logger.InfoContext(
-		ctx,
-		"openrouter continue completed",
-		"request_id", result.RequestID,
-		"result", ResponseResultKind(result.Response),
-		"prompt_tokens", result.Usage.PromptTokens,
-		"completion_tokens", result.Usage.CompletionTokens,
-		"cost_credits", result.Usage.CostCredits,
-	)
 
 	return result, nil
 }
@@ -559,80 +586,80 @@ func (c *OpenRouterClient) ListModels(ctx context.Context) ([]ModelInfo, error) 
 	defer cancel()
 
 	logger := slog.Default().With("component", "api.openrouter")
-	tracer := c.tracer()
 
-	ctx, span := tracer.Start(ctx, "api.openrouter.list_models")
-	span.SetAttributes(attribute.String(observability.AttrOperation, "api.openrouter.list_models"))
-	defer span.End()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/models", nil)
-	if err != nil {
-		markSpanError(span, observability.ErrorKindTransport, 0, err)
-		return nil, err
-	}
-
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		shaped := &shapedError{msg: "list models: network error", cause: err}
-		markSpanError(span, observability.ErrorKindTransport, 0, shaped)
-		logger.ErrorContext(ctx, "openrouter list models transport failure", "error", err)
-		return nil, shaped
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	body, readErr := io.ReadAll(resp.Body)
-	truncated := truncateBody(body, responseBodyLogLimit)
-
-	if readErr != nil {
-		shaped := &shapedError{msg: "list models: response read failed", cause: readErr}
-		span.SetAttributes(attribute.String(observability.AttrHTTPResponseBody, truncated))
-		markSpanError(span, observability.ErrorKindTransport, resp.StatusCode, shaped)
-		logger.ErrorContext(ctx, "openrouter list models read failed",
-			"status", resp.StatusCode,
-			"body_read_error", readErr,
-		)
-		return nil, shaped
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		span.SetAttributes(attribute.String(observability.AttrHTTPResponseBody, truncated))
-		shaped := fmt.Errorf("list models: status %d", resp.StatusCode)
-		markSpanError(span, observability.ErrorKindHTTPStatus, resp.StatusCode, shaped)
-		logger.ErrorContext(ctx, "openrouter list models non-2xx",
-			"status", resp.StatusCode,
-			observability.AttrHTTPResponseBody, truncated,
-		)
-		return nil, shaped
-	}
-
-	var mr modelsResponse
-	if err := json.Unmarshal(body, &mr); err != nil {
-		shaped := &shapedError{msg: "list models: invalid response", cause: err}
-		span.SetAttributes(attribute.String(observability.AttrHTTPResponseBody, truncated))
-		markSpanError(span, observability.ErrorKindResponseParse, 0, shaped)
-		logger.ErrorContext(ctx, "openrouter list models decode failed",
-			"decode_error", err,
-			observability.AttrHTTPResponseBody, truncated,
-		)
-		return nil, shaped
-	}
-
-	models := make([]ModelInfo, len(mr.Data))
-	for i, model := range mr.Data {
-		models[i] = ModelInfo{
-			ID:          domain.ModelID(model.ID),
-			Name:        model.Name,
-			Description: model.Description,
-			ContextLen:  model.ContextLength,
+	var models []ModelInfo
+	err := c.inSpan(ctx, "api.openrouter.list_models", nil, func(ctx context.Context, span trace.Span) error {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/models", nil)
+		if err != nil {
+			markSpanError(span, observability.ErrorKindTransport, 0, err)
+			return err
 		}
-	}
 
-	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-	logger.DebugContext(ctx, "openrouter list models completed", "count", len(models))
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
 
-	return models, nil
+		resp, err := c.http.Do(req)
+		if err != nil {
+			shaped := &shapedError{msg: "list models: network error", cause: err}
+			markSpanError(span, observability.ErrorKindTransport, 0, shaped)
+			logger.ErrorContext(ctx, "openrouter list models transport failure", "error", err)
+			return shaped
+		}
+		defer func() { _ = resp.Body.Close() }()
+
+		body, readErr := io.ReadAll(resp.Body)
+		truncated := truncateBody(body, responseBodyLogLimit)
+
+		if readErr != nil {
+			shaped := &shapedError{msg: "list models: response read failed", cause: readErr}
+			span.SetAttributes(attribute.String(observability.AttrHTTPResponseBody, truncated))
+			markSpanError(span, observability.ErrorKindTransport, resp.StatusCode, shaped)
+			logger.ErrorContext(ctx, "openrouter list models read failed",
+				"status", resp.StatusCode,
+				"body_read_error", readErr,
+			)
+			return shaped
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			span.SetAttributes(attribute.String(observability.AttrHTTPResponseBody, truncated))
+			shaped := fmt.Errorf("list models: status %d", resp.StatusCode)
+			markSpanError(span, observability.ErrorKindHTTPStatus, resp.StatusCode, shaped)
+			logger.ErrorContext(ctx, "openrouter list models non-2xx",
+				"status", resp.StatusCode,
+				observability.AttrHTTPResponseBody, truncated,
+			)
+			return shaped
+		}
+
+		var mr modelsResponse
+		if err := json.Unmarshal(body, &mr); err != nil {
+			shaped := &shapedError{msg: "list models: invalid response", cause: err}
+			span.SetAttributes(attribute.String(observability.AttrHTTPResponseBody, truncated))
+			markSpanError(span, observability.ErrorKindResponseParse, 0, shaped)
+			logger.ErrorContext(ctx, "openrouter list models decode failed",
+				"decode_error", err,
+				observability.AttrHTTPResponseBody, truncated,
+			)
+			return shaped
+		}
+
+		models = make([]ModelInfo, len(mr.Data))
+		for i, model := range mr.Data {
+			models[i] = ModelInfo{
+				ID:          domain.ModelID(model.ID),
+				Name:        model.Name,
+				Description: model.Description,
+				ContextLen:  model.ContextLength,
+			}
+		}
+
+		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
+		logger.DebugContext(ctx, "openrouter list models completed", "count", len(models))
+
+		return nil
+	})
+
+	return models, err
 }
 
 // nicknameResponse is the structured output the model returns. The
@@ -692,78 +719,80 @@ func (c *OpenRouterClient) GenerateNick(
 		"small_model", smallModel,
 		"attempt", len(excludePreviousSuggestions)+1,
 	)
-	tracer := c.tracer()
 
-	ctx, span := tracer.Start(ctx, "api.openrouter.generate_nick")
-	span.SetAttributes(
-		attribute.String(observability.AttrOperation, "api.openrouter.generate_nick"),
-		attribute.String(observability.AttrModelID, string(smallModel)),
-	)
-	defer span.End()
+	var result NicknameResult
+	err := c.inSpan(ctx, "api.openrouter.generate_nick",
+		[]attribute.KeyValue{attribute.String(observability.AttrModelID, string(smallModel))},
+		func(ctx context.Context, span trace.Span) error {
+			messages := []openai.ChatCompletionMessageParamUnion{
+				openai.UserMessage(fmt.Sprintf(nicknamePrompt, persona)),
+			}
 
-	messages := []openai.ChatCompletionMessageParamUnion{
-		openai.UserMessage(fmt.Sprintf(nicknamePrompt, persona)),
-	}
+			for _, rejected := range excludePreviousSuggestions {
+				messages = append(messages,
+					openai.AssistantMessage(fmt.Sprintf(`{"nick":%q}`, string(rejected))),
+					openai.UserMessage(fmt.Sprintf(
+						"That nick is already taken. Suggest a different one. Avoid: %s",
+						string(rejected),
+					)),
+				)
+			}
 
-	for _, rejected := range excludePreviousSuggestions {
-		messages = append(messages,
-			openai.AssistantMessage(fmt.Sprintf(`{"nick":%q}`, string(rejected))),
-			openai.UserMessage(fmt.Sprintf(
-				"That nick is already taken. Suggest a different one. Avoid: %s",
-				string(rejected),
-			)),
-		)
-	}
+			resp, rawResp, err := c.chatCompletion(ctx, smallModel, openai.ChatCompletionNewParams{ //nolint:bodyclose // SDK reads and closes the body.
+				Model:          shared.ChatModel(string(smallModel)),
+				Messages:       messages,
+				ResponseFormat: nicknameResponseFormat(),
+			})
+			if err != nil {
+				markSpanError(span, observability.ErrorKindTransport, 0, err)
+				logger.ErrorContext(ctx, "openrouter generate nick failed", "error", err)
+				return err
+			}
 
-	resp, rawResp, err := c.chatCompletion(ctx, smallModel, openai.ChatCompletionNewParams{ //nolint:bodyclose // SDK reads and closes the body.
-		Model:          shared.ChatModel(string(smallModel)),
-		Messages:       messages,
-		ResponseFormat: nicknameResponseFormat(),
-	})
+			if len(resp.Choices) == 0 {
+				err := fmt.Errorf("generate nick: no choices in response")
+				markSpanError(span, observability.ErrorKindInvalidResponse, 0, err)
+				return err
+			}
+
+			choice := resp.Choices[0]
+
+			if err := validateChoice(choice); err != nil {
+				markSpanError(span, observability.ErrorKindInvalidResponse, 0, err)
+				return err
+			}
+
+			var parsed nicknameResponse
+			if err := json.Unmarshal([]byte(choice.Message.Content), &parsed); err != nil {
+				markSpanError(span, observability.ErrorKindResponseParse, 0, err)
+				return &completionParseError{target: "nickname", err: err}
+			}
+
+			if parsed.Nick == "" {
+				err := fmt.Errorf("generate nick: schema-valid response carried an empty nick")
+				markSpanError(span, observability.ErrorKindInvalidResponse, 0, err)
+				return err
+			}
+
+			result = NicknameResult{
+				Nick:      domain.Nick(parsed.Nick),
+				RequestID: requestIDFromChatCompletion(resp, rawResp),
+				Usage:     usageFromResponse(resp.Usage),
+			}
+
+			result.Usage.SetSpanAttributes(span, result.RequestID)
+			span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
+
+			logger.InfoContext(ctx, "openrouter generate nick completed",
+				"request_id", result.RequestID,
+				"nick", parsed.Nick,
+			)
+
+			return nil
+		})
 	if err != nil {
-		markSpanError(span, observability.ErrorKindTransport, 0, err)
-		logger.ErrorContext(ctx, "openrouter generate nick failed", "error", err)
 		return NicknameResult{}, err
 	}
-
-	if len(resp.Choices) == 0 {
-		err := fmt.Errorf("generate nick: no choices in response")
-		markSpanError(span, observability.ErrorKindInvalidResponse, 0, err)
-		return NicknameResult{}, err
-	}
-
-	choice := resp.Choices[0]
-
-	if err := validateChoice(choice); err != nil {
-		markSpanError(span, observability.ErrorKindInvalidResponse, 0, err)
-		return NicknameResult{}, err
-	}
-
-	var parsed nicknameResponse
-	if err := json.Unmarshal([]byte(choice.Message.Content), &parsed); err != nil {
-		markSpanError(span, observability.ErrorKindResponseParse, 0, err)
-		return NicknameResult{}, &completionParseError{target: "nickname", err: err}
-	}
-
-	if parsed.Nick == "" {
-		err := fmt.Errorf("generate nick: schema-valid response carried an empty nick")
-		markSpanError(span, observability.ErrorKindInvalidResponse, 0, err)
-		return NicknameResult{}, err
-	}
-
-	result := NicknameResult{
-		Nick:      domain.Nick(parsed.Nick),
-		RequestID: requestIDFromChatCompletion(resp, rawResp),
-		Usage:     usageFromResponse(resp.Usage),
-	}
-
-	result.Usage.SetSpanAttributes(span, result.RequestID)
-	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-
-	logger.InfoContext(ctx, "openrouter generate nick completed",
-		"request_id", result.RequestID,
-		"nick", parsed.Nick,
-	)
 
 	return result, nil
 }
@@ -800,68 +829,70 @@ func (c *OpenRouterClient) GeneratePersonas(ctx context.Context, smallModel doma
 	defer cancel()
 
 	logger := slog.Default().With("component", "api.openrouter", "model_id", smallModel)
-	tracer := c.tracer()
 
-	ctx, span := tracer.Start(ctx, "api.openrouter.generate_personas")
-	span.SetAttributes(
-		attribute.String(observability.AttrOperation, "api.openrouter.generate_personas"),
-		attribute.String(observability.AttrModelID, string(smallModel)),
-	)
-	defer span.End()
+	var personas []domain.Persona
+	err := c.inSpan(ctx, "api.openrouter.generate_personas",
+		[]attribute.KeyValue{attribute.String(observability.AttrModelID, string(smallModel))},
+		func(ctx context.Context, span trace.Span) error {
+			prompt := "Generate 10 distinct IRC user personas. Each should have a short kebab-case ID " +
+				"and a one-line description. Make them varied. No AI-isms. These are IRC regulars."
 
-	prompt := "Generate 10 distinct IRC user personas. Each should have a short kebab-case ID " +
-		"and a one-line description. Make them varied. No AI-isms. These are IRC regulars."
+			resp, rawResp, err := c.chatCompletion(ctx, smallModel, openai.ChatCompletionNewParams{ //nolint:bodyclose // SDK reads and closes the body.
+				Model: shared.ChatModel(string(smallModel)),
+				Messages: []openai.ChatCompletionMessageParamUnion{
+					openai.UserMessage(prompt),
+				},
+				ResponseFormat: personaResponseFormat(),
+			})
+			if err != nil {
+				markSpanError(span, observability.ErrorKindTransport, 0, err)
+				logger.ErrorContext(ctx, "openrouter generate personas failed", "error", err)
+				return err
+			}
 
-	resp, rawResp, err := c.chatCompletion(ctx, smallModel, openai.ChatCompletionNewParams{ //nolint:bodyclose // SDK reads and closes the body.
-		Model: shared.ChatModel(string(smallModel)),
-		Messages: []openai.ChatCompletionMessageParamUnion{
-			openai.UserMessage(prompt),
-		},
-		ResponseFormat: personaResponseFormat(),
-	})
+			if len(resp.Choices) == 0 {
+				err := fmt.Errorf("generate personas: no choices in response")
+				markSpanError(span, observability.ErrorKindInvalidResponse, 0, err)
+				return err
+			}
+
+			choice := resp.Choices[0]
+
+			if err := validateChoice(choice); err != nil {
+				markSpanError(span, observability.ErrorKindInvalidResponse, 0, err)
+				return err
+			}
+
+			var wrapper personaListWrapper
+			if err := json.Unmarshal([]byte(choice.Message.Content), &wrapper); err != nil {
+				markSpanError(span, observability.ErrorKindResponseParse, 0, err)
+				return &completionParseError{target: "persona list", err: err}
+			}
+
+			personas = make([]domain.Persona, len(wrapper.Personas))
+			for i, p := range wrapper.Personas {
+				personas[i] = domain.Persona{
+					ID:          p.ID,
+					Description: p.Description,
+					Origin:      domain.PersonaGenerated,
+				}
+			}
+
+			usage := usageFromResponse(resp.Usage)
+			requestID := requestIDFromChatCompletion(resp, rawResp)
+			usage.SetSpanAttributes(span, requestID)
+			span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
+
+			logger.InfoContext(ctx, "openrouter generate personas completed",
+				"request_id", requestID,
+				"count", len(personas),
+			)
+
+			return nil
+		})
 	if err != nil {
-		markSpanError(span, observability.ErrorKindTransport, 0, err)
-		logger.ErrorContext(ctx, "openrouter generate personas failed", "error", err)
 		return nil, err
 	}
-
-	if len(resp.Choices) == 0 {
-		err := fmt.Errorf("generate personas: no choices in response")
-		markSpanError(span, observability.ErrorKindInvalidResponse, 0, err)
-		return nil, err
-	}
-
-	choice := resp.Choices[0]
-
-	if err := validateChoice(choice); err != nil {
-		markSpanError(span, observability.ErrorKindInvalidResponse, 0, err)
-		return nil, err
-	}
-
-	var wrapper personaListWrapper
-	if err := json.Unmarshal([]byte(choice.Message.Content), &wrapper); err != nil {
-		markSpanError(span, observability.ErrorKindResponseParse, 0, err)
-		return nil, &completionParseError{target: "persona list", err: err}
-	}
-
-	personas := make([]domain.Persona, len(wrapper.Personas))
-	for i, p := range wrapper.Personas {
-		personas[i] = domain.Persona{
-			ID:          p.ID,
-			Description: p.Description,
-			Origin:      domain.PersonaGenerated,
-		}
-	}
-
-	usage := usageFromResponse(resp.Usage)
-	requestID := requestIDFromChatCompletion(resp, rawResp)
-	usage.SetSpanAttributes(span, requestID)
-	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-
-	logger.InfoContext(ctx, "openrouter generate personas completed",
-		"request_id", requestID,
-		"count", len(personas),
-	)
 
 	return personas, nil
 }

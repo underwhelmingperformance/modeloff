@@ -36,6 +36,18 @@ type SpanRunner struct {
 	// nil disables classification. Useful for cases like
 	// `sql.ErrNoRows` -> `ErrorKindNotFound`.
 	ClassifyError func(error) string
+
+	// ManualResult turns off the runner's automatic
+	// `AttrResult` and `AttrErrorKind` stamping. When true, the
+	// inner function is fully responsible for setting those
+	// attributes via the span handle (the runner still sets
+	// `codes.Error` status on a non-nil error so the OTel-level
+	// status remains consistent). Use when the result is not the
+	// flat `ok`/`error` axis — for example, the OpenRouter chat
+	// path whose result is one of `silence`/`reply`/`tool`, or
+	// the `ListModels` path that picks between several distinct
+	// error kinds depending on which step failed.
+	ManualResult bool
 }
 
 // Run starts a span named op with the given attrs (plus an
@@ -65,23 +77,28 @@ func (r SpanRunner) Run(
 	span.SetAttributes(startAttrs...)
 
 	if err := fn(ctx, span); err != nil {
-		kind := r.DefaultErrKind
-		if r.ClassifyError != nil {
-			if k := r.ClassifyError(err); k != "" {
-				kind = k
-			}
-		}
-
-		span.SetAttributes(
-			attribute.String(AttrResult, ResultError),
-			attribute.String(AttrErrorKind, kind),
-		)
 		span.SetStatus(codes.Error, err.Error())
+
+		if !r.ManualResult {
+			kind := r.DefaultErrKind
+			if r.ClassifyError != nil {
+				if k := r.ClassifyError(err); k != "" {
+					kind = k
+				}
+			}
+
+			span.SetAttributes(
+				attribute.String(AttrResult, ResultError),
+				attribute.String(AttrErrorKind, kind),
+			)
+		}
 
 		return err
 	}
 
-	span.SetAttributes(attribute.String(AttrResult, ResultOK))
+	if !r.ManualResult {
+		span.SetAttributes(attribute.String(AttrResult, ResultOK))
+	}
 
 	return nil
 }
