@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -16,7 +17,6 @@ import (
 	_ "github.com/ncruces/go-sqlite3/driver" // SQLite driver.
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/laney/modeloff/internal/domain"
@@ -262,80 +262,71 @@ func (s *SQLiteStore) resolveInstance(id domain.InstanceID) *domain.Instance {
 // Detection is v1→v2 specific; any future schema change requires its
 // own detector.
 func (s *SQLiteStore) dropLegacyInstanceTables(ctx context.Context) error {
-	ctx, span := s.startSpan(ctx, "store.sqlite.migrate_v2")
-	defer span.End()
-
-	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(instances)`)
-	if err != nil {
-		recordSQLiteError(span, err)
-		return fmt.Errorf("inspect instances schema: %w", err)
-	}
-
-	var (
-		hasInstancesTable  bool
-		hasInstanceIDField bool
-	)
-
-	for rows.Next() {
-		hasInstancesTable = true
+	return s.inSpan(ctx, "store.sqlite.migrate_v2", nil, func(ctx context.Context, span trace.Span) error {
+		rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(instances)`)
+		if err != nil {
+			return fmt.Errorf("inspect instances schema: %w", err)
+		}
 
 		var (
-			cid     int
-			name    string
-			colType string
-			notNull int
-			dflt    sql.NullString
-			pk      int
+			hasInstancesTable  bool
+			hasInstanceIDField bool
 		)
 
-		if err := rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk); err != nil {
+		for rows.Next() {
+			hasInstancesTable = true
+
+			var (
+				cid     int
+				name    string
+				colType string
+				notNull int
+				dflt    sql.NullString
+				pk      int
+			)
+
+			if err := rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk); err != nil {
+				_ = rows.Close()
+				return fmt.Errorf("scan column info: %w", err)
+			}
+
+			if name == "instance_id" {
+				hasInstanceIDField = true
+			}
+		}
+
+		if err := rows.Err(); err != nil {
 			_ = rows.Close()
-			recordSQLiteError(span, err)
-			return fmt.Errorf("scan column info: %w", err)
+			return fmt.Errorf("iterate column info: %w", err)
 		}
 
-		if name == "instance_id" {
-			hasInstanceIDField = true
+		if err := rows.Close(); err != nil {
+			return fmt.Errorf("close column info: %w", err)
 		}
-	}
 
-	if err := rows.Err(); err != nil {
-		_ = rows.Close()
-		recordSQLiteError(span, err)
-		return fmt.Errorf("iterate column info: %w", err)
-	}
+		detected := hasInstancesTable && !hasInstanceIDField
+		span.SetAttributes(attribute.Bool("modeloff.migration.detected", detected))
 
-	if err := rows.Close(); err != nil {
-		recordSQLiteError(span, err)
-		return fmt.Errorf("close column info: %w", err)
-	}
+		if !detected {
+			return nil
+		}
 
-	detected := hasInstancesTable && !hasInstanceIDField
-	span.SetAttributes(attribute.Bool("modeloff.migration.detected", detected))
+		if _, err := s.db.ExecContext(ctx, `DROP TABLE IF EXISTS instances`); err != nil {
+			return fmt.Errorf("drop legacy instances: %w", err)
+		}
 
-	if !detected {
-		recordSQLiteSuccess(span)
+		if _, err := s.db.ExecContext(ctx, `DROP TABLE IF EXISTS memories`); err != nil {
+			return fmt.Errorf("drop legacy memories: %w", err)
+		}
+
+		slog.Default().WarnContext(ctx,
+			"modeloff store schema v2 applied; legacy instances/memories tables dropped",
+			"component", "store.sqlite",
+			"reason", "legacy nick-keyed instances table detected",
+		)
+
 		return nil
-	}
-
-	if _, err := s.db.ExecContext(ctx, `DROP TABLE IF EXISTS instances`); err != nil {
-		recordSQLiteError(span, err)
-		return fmt.Errorf("drop legacy instances: %w", err)
-	}
-
-	if _, err := s.db.ExecContext(ctx, `DROP TABLE IF EXISTS memories`); err != nil {
-		recordSQLiteError(span, err)
-		return fmt.Errorf("drop legacy memories: %w", err)
-	}
-
-	slog.Default().WarnContext(ctx,
-		"modeloff store schema v2 applied; legacy instances/memories tables dropped",
-		"component", "store.sqlite",
-		"reason", "legacy nick-keyed instances table detected",
-	)
-
-	recordSQLiteSuccess(span)
-	return nil
+	})
 }
 
 // Close closes the underlying database connection.
@@ -347,65 +338,53 @@ func (s *SQLiteStore) Close() error {
 // carrying canonical `*Instance` handles; stub references to deleted
 // instances are dropped and logged.
 func (s *SQLiteStore) ListChannels(ctx context.Context) ([]domain.Channel, error) {
-	ctx, span := s.startSpan(ctx, "store.sqlite.list_channels")
-	defer span.End()
-
-	rows, err := s.db.QueryContext(ctx, `SELECT data FROM channels ORDER BY name`)
-	if err != nil {
-		recordSQLiteError(span, err)
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-
-	channels, err := scanJSON[domain.Channel](rows)
-	if err != nil {
-		recordSQLiteError(span, err)
-		return nil, err
-	}
-
-	for i := range channels {
-		if err := s.resolveChannelMembers(ctx, &channels[i]); err != nil {
-			recordSQLiteError(span, err)
-			return nil, err
+	var channels []domain.Channel
+	err := s.inSpan(ctx, "store.sqlite.list_channels", nil, func(ctx context.Context, _ trace.Span) error {
+		rows, err := s.db.QueryContext(ctx, `SELECT data FROM channels ORDER BY name`)
+		if err != nil {
+			return err
 		}
-	}
+		defer func() { _ = rows.Close() }()
 
-	recordSQLiteSuccess(span)
-	return channels, nil
+		channels, err = scanJSON[domain.Channel](rows)
+		if err != nil {
+			return err
+		}
+
+		for i := range channels {
+			if err := s.resolveChannelMembers(ctx, &channels[i]); err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+
+	return channels, err
 }
 
 // GetChannel implements Store. Returns a Channel whose member list
 // carries canonical `*Instance` handles; stub references to deleted
 // instances are dropped and logged.
 func (s *SQLiteStore) GetChannel(ctx context.Context, name domain.ChannelName) (domain.Channel, error) {
-	ctx, span := s.startSpan(ctx, "store.sqlite.get_channel", attribute.String(observability.AttrChannel, string(name)))
-	defer span.End()
-
-	var data string
-
-	err := s.db.QueryRowContext(ctx, `SELECT data FROM channels WHERE name = ?`, name).Scan(&data)
-	if err != nil {
-		kind := observability.ErrorKindStore
-		if err == sql.ErrNoRows {
-			kind = observability.ErrorKindNotFound
-		}
-		recordSQLiteErrorKind(span, err, kind)
-		return domain.Channel{}, fmt.Errorf("channel %q: %w", name, err)
-	}
-
 	var ch domain.Channel
-	if err := json.Unmarshal([]byte(data), &ch); err != nil {
-		recordSQLiteError(span, err)
-		return domain.Channel{}, err
-	}
+	err := s.inSpan(ctx, "store.sqlite.get_channel",
+		[]attribute.KeyValue{attribute.String(observability.AttrChannel, string(name))},
+		func(ctx context.Context, _ trace.Span) error {
+			var data string
 
-	if err := s.resolveChannelMembers(ctx, &ch); err != nil {
-		recordSQLiteError(span, err)
-		return domain.Channel{}, err
-	}
+			if err := s.db.QueryRowContext(ctx, `SELECT data FROM channels WHERE name = ?`, name).Scan(&data); err != nil {
+				return fmt.Errorf("channel %q: %w", name, err)
+			}
 
-	recordSQLiteSuccess(span)
-	return ch, nil
+			if err := json.Unmarshal([]byte(data), &ch); err != nil {
+				return err
+			}
+
+			return s.resolveChannelMembers(ctx, &ch)
+		})
+
+	return ch, err
 }
 
 // resolveChannelMembers rewrites the stub `*Instance` handles in
@@ -529,214 +508,187 @@ func (s *SQLiteStore) loadInstancesByID(ctx context.Context, ids []domain.Instan
 
 // SaveChannel implements Store.
 func (s *SQLiteStore) SaveChannel(ctx context.Context, ch domain.Channel) error {
-	ctx, span := s.startSpan(ctx, "store.sqlite.save_channel", attribute.String(observability.AttrChannel, string(ch.Name)))
-	defer span.End()
+	return s.inSpan(ctx, "store.sqlite.save_channel",
+		[]attribute.KeyValue{attribute.String(observability.AttrChannel, string(ch.Name))},
+		func(ctx context.Context, _ trace.Span) error {
+			data, err := json.Marshal(ch)
+			if err != nil {
+				return err
+			}
 
-	data, err := json.Marshal(ch)
-	if err != nil {
-		recordSQLiteError(span, err)
-		return err
-	}
+			_, err = s.db.ExecContext(ctx,
+				`INSERT INTO channels (name, data) VALUES (?, ?)
+				 ON CONFLICT (name) DO UPDATE SET data = excluded.data`,
+				ch.Name, string(data))
 
-	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO channels (name, data) VALUES (?, ?)
-		 ON CONFLICT (name) DO UPDATE SET data = excluded.data`,
-		ch.Name, string(data))
-
-	if err != nil {
-		recordSQLiteError(span, err)
-		return err
-	}
-
-	recordSQLiteSuccess(span)
-	return nil
+			return err
+		})
 }
 
 // DeleteChannel implements Store.
 func (s *SQLiteStore) DeleteChannel(ctx context.Context, name domain.ChannelName) error {
-	ctx, span := s.startSpan(ctx, "store.sqlite.delete_channel", attribute.String(observability.AttrChannel, string(name)))
-	defer span.End()
-
-	_, err := s.db.ExecContext(ctx, `DELETE FROM channels WHERE name = ?`, name)
-	if err != nil {
-		recordSQLiteError(span, err)
-		return err
-	}
-
-	recordSQLiteSuccess(span)
-	return nil
+	return s.inSpan(ctx, "store.sqlite.delete_channel",
+		[]attribute.KeyValue{attribute.String(observability.AttrChannel, string(name))},
+		func(ctx context.Context, _ trace.Span) error {
+			_, err := s.db.ExecContext(ctx, `DELETE FROM channels WHERE name = ?`, name)
+			return err
+		})
 }
 
 // AppendEvent implements Store.
 func (s *SQLiteStore) AppendEvent(ctx context.Context, ch domain.ChannelName, event domain.ChannelEvent) (int64, error) {
-	ctx, span := s.startSpan(ctx, "store.sqlite.append_event", attribute.String(observability.AttrChannel, string(ch)))
-	defer span.End()
+	var id int64
+	err := s.inSpan(ctx, "store.sqlite.append_event",
+		[]attribute.KeyValue{attribute.String(observability.AttrChannel, string(ch))},
+		func(ctx context.Context, _ trace.Span) error {
+			data, err := domain.MarshalChannelEvent(event)
+			if err != nil {
+				return fmt.Errorf("marshal event: %w", err)
+			}
 
-	data, err := domain.MarshalChannelEvent(event)
-	if err != nil {
-		recordSQLiteError(span, err)
-		return 0, fmt.Errorf("marshal event: %w", err)
-	}
+			result, err := s.db.ExecContext(ctx,
+				`INSERT INTO events (channel, type, data, at) VALUES (?, ?, ?, ?)`,
+				ch, domain.ChannelEventType(event), string(data), domain.ChannelEventTime(event).Format(time.RFC3339Nano))
+			if err != nil {
+				return err
+			}
 
-	result, err := s.db.ExecContext(ctx,
-		`INSERT INTO events (channel, type, data, at) VALUES (?, ?, ?, ?)`,
-		ch, domain.ChannelEventType(event), string(data), domain.ChannelEventTime(event).Format(time.RFC3339Nano))
-	if err != nil {
-		recordSQLiteError(span, err)
-		return 0, err
-	}
+			id, err = result.LastInsertId()
+			return err
+		})
 
-	id, err := result.LastInsertId()
-	if err != nil {
-		recordSQLiteError(span, err)
-		return 0, err
-	}
-
-	recordSQLiteSuccess(span)
-	return id, nil
+	return id, err
 }
 
 // EventsBefore implements Store.
 func (s *SQLiteStore) EventsBefore(ctx context.Context, ch domain.ChannelName, before *int64, n int) ([]domain.StoredEvent, error) {
-	ctx, span := s.startSpan(ctx, "store.sqlite.events_before", attribute.String(observability.AttrChannel, string(ch)))
-	defer span.End()
+	var events []domain.StoredEvent
+	err := s.inSpan(ctx, "store.sqlite.events_before",
+		[]attribute.KeyValue{attribute.String(observability.AttrChannel, string(ch))},
+		func(ctx context.Context, _ trace.Span) error {
+			var (
+				rows *sql.Rows
+				err  error
+			)
 
-	var rows *sql.Rows
-	var err error
+			if before == nil {
+				rows, err = s.db.QueryContext(ctx,
+					`SELECT id, data FROM events WHERE channel = ?
+					 ORDER BY id DESC LIMIT ?`, ch, n)
+			} else {
+				rows, err = s.db.QueryContext(ctx,
+					`SELECT id, data FROM events WHERE channel = ? AND id < ?
+					 ORDER BY id DESC LIMIT ?`, ch, *before, n)
+			}
+			if err != nil {
+				return err
+			}
+			defer func() { _ = rows.Close() }()
 
-	if before == nil {
-		rows, err = s.db.QueryContext(ctx,
-			`SELECT id, data FROM events WHERE channel = ?
-			 ORDER BY id DESC LIMIT ?`, ch, n)
-	} else {
-		rows, err = s.db.QueryContext(ctx,
-			`SELECT id, data FROM events WHERE channel = ? AND id < ?
-			 ORDER BY id DESC LIMIT ?`, ch, *before, n)
-	}
+			events, err = scanStoredEvents(rows)
+			if err != nil {
+				return err
+			}
 
-	if err != nil {
-		recordSQLiteError(span, err)
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
+			// Reverse to chronological order.
+			for i, j := 0, len(events)-1; i < j; i, j = i+1, j-1 {
+				events[i], events[j] = events[j], events[i]
+			}
 
-	events, err := scanStoredEvents(rows)
-	if err != nil {
-		recordSQLiteError(span, err)
-		return nil, err
-	}
+			return nil
+		})
 
-	// Reverse to chronological order.
-	for i, j := 0, len(events)-1; i < j; i, j = i+1, j-1 {
-		events[i], events[j] = events[j], events[i]
-	}
-
-	recordSQLiteSuccess(span)
-	return events, nil
+	return events, err
 }
 
 // EventsFrom implements Store.
 func (s *SQLiteStore) EventsFrom(ctx context.Context, ch domain.ChannelName, from *int64, n int) ([]domain.StoredEvent, error) {
-	ctx, span := s.startSpan(ctx, "store.sqlite.events_from", attribute.String(observability.AttrChannel, string(ch)))
-	defer span.End()
+	var events []domain.StoredEvent
+	err := s.inSpan(ctx, "store.sqlite.events_from",
+		[]attribute.KeyValue{attribute.String(observability.AttrChannel, string(ch))},
+		func(ctx context.Context, _ trace.Span) error {
+			var (
+				rows *sql.Rows
+				err  error
+			)
 
-	var rows *sql.Rows
-	var err error
+			if from == nil {
+				rows, err = s.db.QueryContext(ctx,
+					`SELECT id, data FROM events WHERE channel = ?
+					 ORDER BY id ASC LIMIT ?`, ch, n)
+			} else {
+				rows, err = s.db.QueryContext(ctx,
+					`SELECT id, data FROM events WHERE channel = ? AND id >= ?
+					 ORDER BY id ASC LIMIT ?`, ch, *from, n)
+			}
+			if err != nil {
+				return err
+			}
+			defer func() { _ = rows.Close() }()
 
-	if from == nil {
-		rows, err = s.db.QueryContext(ctx,
-			`SELECT id, data FROM events WHERE channel = ?
-			 ORDER BY id ASC LIMIT ?`, ch, n)
-	} else {
-		rows, err = s.db.QueryContext(ctx,
-			`SELECT id, data FROM events WHERE channel = ? AND id >= ?
-			 ORDER BY id ASC LIMIT ?`, ch, *from, n)
-	}
+			events, err = scanStoredEvents(rows)
+			return err
+		})
 
-	if err != nil {
-		recordSQLiteError(span, err)
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-
-	events, err := scanStoredEvents(rows)
-	if err != nil {
-		recordSQLiteError(span, err)
-		return nil, err
-	}
-
-	recordSQLiteSuccess(span)
-	return events, nil
+	return events, err
 }
 
 // ListInstances implements Store. Returns canonical `*Instance`
 // pointers from the registry; callers that called `GetInstanceByID`
 // previously observe the same pointers.
 func (s *SQLiteStore) ListInstances(ctx context.Context) ([]*domain.Instance, error) {
-	ctx, span := s.startSpan(ctx, "store.sqlite.list_instances")
-	defer span.End()
-
-	rows, err := s.db.QueryContext(ctx, `SELECT data FROM instances ORDER BY nick`)
-	if err != nil {
-		recordSQLiteError(span, err)
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-
 	var instances []*domain.Instance
+	err := s.inSpan(ctx, "store.sqlite.list_instances", nil, func(ctx context.Context, _ trace.Span) error {
+		rows, err := s.db.QueryContext(ctx, `SELECT data FROM instances ORDER BY nick`)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = rows.Close() }()
 
-	for rows.Next() {
-		var data string
-		if err := rows.Scan(&data); err != nil {
-			recordSQLiteError(span, err)
-			return nil, err
+		for rows.Next() {
+			var data string
+			if err := rows.Scan(&data); err != nil {
+				return err
+			}
+
+			fresh := &domain.Instance{}
+			if err := json.Unmarshal([]byte(data), fresh); err != nil {
+				return err
+			}
+
+			instances = append(instances, s.canonicaliseInstance(fresh))
 		}
 
-		fresh := &domain.Instance{}
-		if err := json.Unmarshal([]byte(data), fresh); err != nil {
-			recordSQLiteError(span, err)
-			return nil, err
-		}
+		return rows.Err()
+	})
 
-		instances = append(instances, s.canonicaliseInstance(fresh))
-	}
-
-	if err := rows.Err(); err != nil {
-		recordSQLiteError(span, err)
-		return nil, err
-	}
-
-	recordSQLiteSuccess(span)
-	return instances, nil
+	return instances, err
 }
 
 // GetInstanceByID implements Store. Returns the canonical
 // `*Instance` pointer — two calls for the same id return the same
 // handle.
 func (s *SQLiteStore) GetInstanceByID(ctx context.Context, id domain.InstanceID) (*domain.Instance, error) {
-	ctx, span := s.startSpan(ctx, "store.sqlite.get_instance_by_id", attribute.String(observability.AttrInstanceID, string(id)))
-	defer span.End()
+	var inst *domain.Instance
+	err := s.inSpan(ctx, "store.sqlite.get_instance_by_id",
+		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
+		func(ctx context.Context, _ trace.Span) error {
+			var data string
 
-	var data string
+			if err := s.db.QueryRowContext(ctx, `SELECT data FROM instances WHERE instance_id = ?`, string(id)).Scan(&data); err != nil {
+				return fmt.Errorf("instance %q: %w", id, err)
+			}
 
-	err := s.db.QueryRowContext(ctx, `SELECT data FROM instances WHERE instance_id = ?`, string(id)).Scan(&data)
-	if err != nil {
-		kind := observability.ErrorKindStore
-		if err == sql.ErrNoRows {
-			kind = observability.ErrorKindNotFound
-		}
-		recordSQLiteErrorKind(span, err, kind)
-		return nil, fmt.Errorf("instance %q: %w", id, err)
-	}
+			fresh := &domain.Instance{}
+			if err := json.Unmarshal([]byte(data), fresh); err != nil {
+				return err
+			}
 
-	fresh := &domain.Instance{}
-	if err := json.Unmarshal([]byte(data), fresh); err != nil {
-		recordSQLiteError(span, err)
-		return nil, err
-	}
+			inst = s.canonicaliseInstance(fresh)
+			return nil
+		})
 
-	recordSQLiteSuccess(span)
-	return s.canonicaliseInstance(fresh), nil
+	return inst, err
 }
 
 // ResolveNick returns the canonical `*Instance` whose current
@@ -752,34 +704,34 @@ func (s *SQLiteStore) GetInstanceByID(ctx context.Context, id domain.InstanceID)
 // Callers are responsible for preventing collisions upstream (the
 // session refuses renames that would collide; see task #53).
 func (s *SQLiteStore) ResolveNick(ctx context.Context, nick domain.Nick) (*domain.Instance, error) {
-	ctx, span := s.startSpan(ctx, "store.sqlite.resolve_nick", attribute.String(observability.AttrNick, string(nick)))
-	defer span.End()
+	var inst *domain.Instance
+	err := s.inSpan(ctx, "store.sqlite.resolve_nick",
+		[]attribute.KeyValue{attribute.String(observability.AttrNick, string(nick))},
+		func(ctx context.Context, _ trace.Span) error {
+			var (
+				id   string
+				data string
+			)
 
-	var (
-		id   string
-		data string
-	)
+			err := s.db.QueryRowContext(ctx,
+				`SELECT instance_id, data FROM instances WHERE nick = ?`, nick).Scan(&id, &data)
+			if errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("resolve nick %q: %w", nick, ErrNoSuchNick)
+			}
+			if err != nil {
+				return fmt.Errorf("resolve nick %q: %w", nick, err)
+			}
 
-	err := s.db.QueryRowContext(ctx,
-		`SELECT instance_id, data FROM instances WHERE nick = ?`, nick).Scan(&id, &data)
-	if err == sql.ErrNoRows {
-		recordSQLiteErrorKind(span, err, observability.ErrorKindNotFound)
-		return nil, fmt.Errorf("resolve nick %q: %w", nick, ErrNoSuchNick)
-	}
+			fresh := &domain.Instance{}
+			if err := json.Unmarshal([]byte(data), fresh); err != nil {
+				return err
+			}
 
-	if err != nil {
-		recordSQLiteError(span, err)
-		return nil, fmt.Errorf("resolve nick %q: %w", nick, err)
-	}
+			inst = s.canonicaliseInstance(fresh)
+			return nil
+		})
 
-	fresh := &domain.Instance{}
-	if err := json.Unmarshal([]byte(data), fresh); err != nil {
-		recordSQLiteError(span, err)
-		return nil, err
-	}
-
-	recordSQLiteSuccess(span)
-	return s.canonicaliseInstance(fresh), nil
+	return inst, err
 }
 
 // SaveInstance implements Store. The caller hands over the
@@ -795,520 +747,407 @@ func (s *SQLiteStore) SaveInstance(ctx context.Context, inst *domain.Instance) e
 	// single nick read closes the divergence window.
 	nick := inst.Nick()
 
-	ctx, span := s.startSpan(ctx, "store.sqlite.save_instance",
-		attribute.String(observability.AttrInstanceID, string(inst.ID())),
-		attribute.String(observability.AttrNick, string(nick)))
-	defer span.End()
+	return s.inSpan(ctx, "store.sqlite.save_instance",
+		[]attribute.KeyValue{
+			attribute.String(observability.AttrInstanceID, string(inst.ID())),
+			attribute.String(observability.AttrNick, string(nick)),
+		},
+		func(ctx context.Context, _ trace.Span) error {
+			data, err := json.Marshal(inst)
+			if err != nil {
+				return err
+			}
 
-	data, err := json.Marshal(inst)
-	if err != nil {
-		recordSQLiteError(span, err)
-		return err
-	}
+			_, err = s.db.ExecContext(ctx,
+				`INSERT INTO instances (instance_id, nick, data) VALUES (?, ?, ?)
+				 ON CONFLICT (instance_id) DO UPDATE SET
+				     nick = excluded.nick,
+				     data = excluded.data`,
+				string(inst.ID()), string(nick), string(data))
+			if err != nil {
+				return err
+			}
 
-	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO instances (instance_id, nick, data) VALUES (?, ?, ?)
-		 ON CONFLICT (instance_id) DO UPDATE SET
-		     nick = excluded.nick,
-		     data = excluded.data`,
-		string(inst.ID()), string(nick), string(data))
+			// Register the saved handle as canonical if there isn't
+			// already a registered handle for this id.
+			s.instancesMu.Lock()
+			if _, ok := s.instances[inst.ID()]; !ok {
+				s.instances[inst.ID()] = inst
+			}
+			s.instancesMu.Unlock()
 
-	if err != nil {
-		recordSQLiteError(span, err)
-		return err
-	}
-
-	// Register the saved handle as canonical if there isn't already
-	// a registered handle for this id.
-	s.instancesMu.Lock()
-	if _, ok := s.instances[inst.ID()]; !ok {
-		s.instances[inst.ID()] = inst
-	}
-	s.instancesMu.Unlock()
-
-	recordSQLiteSuccess(span)
-	return nil
+			return nil
+		})
 }
 
 // DeleteInstanceByID implements Store. Evicts the row from SQLite
 // and the handle from the canonical registry.
 func (s *SQLiteStore) DeleteInstanceByID(ctx context.Context, id domain.InstanceID) error {
-	ctx, span := s.startSpan(ctx, "store.sqlite.delete_instance_by_id", attribute.String(observability.AttrInstanceID, string(id)))
-	defer span.End()
+	return s.inSpan(ctx, "store.sqlite.delete_instance_by_id",
+		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
+		func(ctx context.Context, _ trace.Span) error {
+			if _, err := s.db.ExecContext(ctx, `DELETE FROM instances WHERE instance_id = ?`, string(id)); err != nil {
+				return err
+			}
 
-	_, err := s.db.ExecContext(ctx, `DELETE FROM instances WHERE instance_id = ?`, string(id))
-	if err != nil {
-		recordSQLiteError(span, err)
-		return err
-	}
-
-	s.forgetInstance(id)
-
-	recordSQLiteSuccess(span)
-	return nil
+			s.forgetInstance(id)
+			return nil
+		})
 }
 
 // GetLastChannel implements Store.
 func (s *SQLiteStore) GetLastChannel(ctx context.Context) (domain.ChannelName, error) {
-	ctx, span := s.startSpan(ctx, "store.sqlite.get_last_channel")
-	defer span.End()
+	var value domain.ChannelName
+	err := s.inSpan(ctx, "store.sqlite.get_last_channel", nil, func(ctx context.Context, _ trace.Span) error {
+		var inErr error
+		value, inErr = getState[domain.ChannelName](ctx, s.db, "last_channel")
+		return inErr
+	})
 
-	value, err := getState[domain.ChannelName](ctx, s.db, "last_channel")
-	if err != nil {
-		recordSQLiteError(span, err)
-		return "", err
-	}
-
-	recordSQLiteSuccess(span)
-	return value, nil
+	return value, err
 }
 
 // SetLastChannel implements Store.
 func (s *SQLiteStore) SetLastChannel(ctx context.Context, name domain.ChannelName) error {
-	ctx, span := s.startSpan(ctx, "store.sqlite.set_last_channel", attribute.String(observability.AttrChannel, string(name)))
-	defer span.End()
-
-	if err := setState(ctx, s.db, "last_channel", string(name)); err != nil {
-		recordSQLiteError(span, err)
-		return err
-	}
-
-	recordSQLiteSuccess(span)
-	return nil
+	return s.inSpan(ctx, "store.sqlite.set_last_channel",
+		[]attribute.KeyValue{attribute.String(observability.AttrChannel, string(name))},
+		func(ctx context.Context, _ trace.Span) error {
+			return setState(ctx, s.db, "last_channel", string(name))
+		})
 }
 
 // GetLastRead implements Store.
 func (s *SQLiteStore) GetLastRead(ctx context.Context, ch domain.ChannelName) (int64, error) {
-	ctx, span := s.startSpan(ctx, "store.sqlite.get_last_read", attribute.String(observability.AttrChannel, string(ch)))
-	defer span.End()
-
 	var eventID int64
+	err := s.inSpan(ctx, "store.sqlite.get_last_read",
+		[]attribute.KeyValue{attribute.String(observability.AttrChannel, string(ch))},
+		func(ctx context.Context, _ trace.Span) error {
+			err := s.db.QueryRowContext(ctx,
+				`SELECT event_id FROM last_read WHERE channel = ?`, ch).Scan(&eventID)
+			if errors.Is(err, sql.ErrNoRows) {
+				eventID = 0
+				return nil
+			}
 
-	err := s.db.QueryRowContext(ctx,
-		`SELECT event_id FROM last_read WHERE channel = ?`, ch).Scan(&eventID)
-	if err == sql.ErrNoRows {
-		recordSQLiteSuccess(span)
-		return 0, nil
-	}
+			return err
+		})
 
-	if err != nil {
-		recordSQLiteError(span, err)
-		return 0, err
-	}
-
-	recordSQLiteSuccess(span)
-	return eventID, nil
+	return eventID, err
 }
 
 // SetLastRead implements Store.
 func (s *SQLiteStore) SetLastRead(ctx context.Context, ch domain.ChannelName, eventID int64) error {
-	ctx, span := s.startSpan(ctx, "store.sqlite.set_last_read", attribute.String(observability.AttrChannel, string(ch)))
-	defer span.End()
-
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO last_read (channel, event_id) VALUES (?, ?)
-		 ON CONFLICT (channel) DO UPDATE SET event_id = excluded.event_id`,
-		ch, eventID)
-	if err != nil {
-		recordSQLiteError(span, err)
-		return err
-	}
-
-	recordSQLiteSuccess(span)
-	return nil
+	return s.inSpan(ctx, "store.sqlite.set_last_read",
+		[]attribute.KeyValue{attribute.String(observability.AttrChannel, string(ch))},
+		func(ctx context.Context, _ trace.Span) error {
+			_, err := s.db.ExecContext(ctx,
+				`INSERT INTO last_read (channel, event_id) VALUES (?, ?)
+				 ON CONFLICT (channel) DO UPDATE SET event_id = excluded.event_id`,
+				ch, eventID)
+			return err
+		})
 }
 
 // ReadMemories implements Store.
 func (s *SQLiteStore) ReadMemories(ctx context.Context, id domain.InstanceID) ([]MemoryEntry, error) {
-	ctx, span := s.startSpan(ctx, "store.sqlite.read_memories", attribute.String(observability.AttrInstanceID, string(id)))
-	defer span.End()
-
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT key, content FROM memories WHERE instance_id = ? ORDER BY key`, string(id))
-	if err != nil {
-		recordSQLiteError(span, err)
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-
 	var entries []MemoryEntry
+	err := s.inSpan(ctx, "store.sqlite.read_memories",
+		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
+		func(ctx context.Context, _ trace.Span) error {
+			rows, err := s.db.QueryContext(ctx,
+				`SELECT key, content FROM memories WHERE instance_id = ? ORDER BY key`, string(id))
+			if err != nil {
+				return err
+			}
+			defer func() { _ = rows.Close() }()
 
-	for rows.Next() {
-		var e MemoryEntry
-		if err := rows.Scan(&e.Key, &e.Content); err != nil {
-			recordSQLiteError(span, err)
-			return nil, err
-		}
+			for rows.Next() {
+				var e MemoryEntry
+				if err := rows.Scan(&e.Key, &e.Content); err != nil {
+					return err
+				}
 
-		entries = append(entries, e)
-	}
+				entries = append(entries, e)
+			}
 
-	if err := rows.Err(); err != nil {
-		recordSQLiteError(span, err)
-		return nil, err
-	}
+			return rows.Err()
+		})
 
-	recordSQLiteSuccess(span)
-	return entries, nil
+	return entries, err
 }
 
 // WriteMemory implements Store.
 func (s *SQLiteStore) WriteMemory(ctx context.Context, id domain.InstanceID, key, content string) error {
-	ctx, span := s.startSpan(ctx, "store.sqlite.write_memory", attribute.String(observability.AttrInstanceID, string(id)))
-	defer span.End()
-
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO memories (instance_id, key, content) VALUES (?, ?, ?)
-		 ON CONFLICT (instance_id, key) DO UPDATE SET content = excluded.content`,
-		string(id), key, content)
-
-	if err != nil {
-		recordSQLiteError(span, err)
-		return err
-	}
-
-	recordSQLiteSuccess(span)
-	return nil
+	return s.inSpan(ctx, "store.sqlite.write_memory",
+		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
+		func(ctx context.Context, _ trace.Span) error {
+			_, err := s.db.ExecContext(ctx,
+				`INSERT INTO memories (instance_id, key, content) VALUES (?, ?, ?)
+				 ON CONFLICT (instance_id, key) DO UPDATE SET content = excluded.content`,
+				string(id), key, content)
+			return err
+		})
 }
 
 // DeleteMemory implements Store.
 func (s *SQLiteStore) DeleteMemory(ctx context.Context, id domain.InstanceID, key string) error {
-	ctx, span := s.startSpan(ctx, "store.sqlite.delete_memory", attribute.String(observability.AttrInstanceID, string(id)))
-	defer span.End()
-
-	_, err := s.db.ExecContext(ctx, `DELETE FROM memories WHERE instance_id = ? AND key = ?`, string(id), key)
-	if err != nil {
-		recordSQLiteError(span, err)
-		return err
-	}
-
-	recordSQLiteSuccess(span)
-	return nil
+	return s.inSpan(ctx, "store.sqlite.delete_memory",
+		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
+		func(ctx context.Context, _ trace.Span) error {
+			_, err := s.db.ExecContext(ctx, `DELETE FROM memories WHERE instance_id = ? AND key = ?`, string(id), key)
+			return err
+		})
 }
 
 // ListPersonas implements Store.
 func (s *SQLiteStore) ListPersonas(ctx context.Context) ([]domain.Persona, error) {
-	ctx, span := s.startSpan(ctx, "store.sqlite.list_personas")
-	defer span.End()
-
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, description, origin FROM personas ORDER BY id`)
-	if err != nil {
-		recordSQLiteError(span, err)
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-
 	var personas []domain.Persona
+	err := s.inSpan(ctx, "store.sqlite.list_personas", nil, func(ctx context.Context, _ trace.Span) error {
+		rows, err := s.db.QueryContext(ctx,
+			`SELECT id, description, origin FROM personas ORDER BY id`)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = rows.Close() }()
 
-	for rows.Next() {
-		var p domain.Persona
-		if err := rows.Scan(&p.ID, &p.Description, &p.Origin); err != nil {
-			recordSQLiteError(span, err)
-			return nil, err
+		for rows.Next() {
+			var p domain.Persona
+			if err := rows.Scan(&p.ID, &p.Description, &p.Origin); err != nil {
+				return err
+			}
+
+			personas = append(personas, p)
 		}
 
-		personas = append(personas, p)
-	}
+		return rows.Err()
+	})
 
-	if err := rows.Err(); err != nil {
-		recordSQLiteError(span, err)
-		return nil, err
-	}
-
-	recordSQLiteSuccess(span)
-	return personas, nil
+	return personas, err
 }
 
 // GetPersona implements Store.
 func (s *SQLiteStore) GetPersona(ctx context.Context, id string) (domain.Persona, error) {
-	ctx, span := s.startSpan(ctx, "store.sqlite.get_persona", attribute.String("persona.id", id))
-	defer span.End()
-
 	var p domain.Persona
+	err := s.inSpan(ctx, "store.sqlite.get_persona",
+		[]attribute.KeyValue{attribute.String("persona.id", id)},
+		func(ctx context.Context, _ trace.Span) error {
+			err := s.db.QueryRowContext(ctx,
+				`SELECT id, description, origin FROM personas WHERE id = ?`, id).
+				Scan(&p.ID, &p.Description, &p.Origin)
+			if err != nil {
+				return fmt.Errorf("persona %q: %w", id, err)
+			}
 
-	err := s.db.QueryRowContext(ctx,
-		`SELECT id, description, origin FROM personas WHERE id = ?`, id).
-		Scan(&p.ID, &p.Description, &p.Origin)
-	if err != nil {
-		kind := observability.ErrorKindStore
-		if err == sql.ErrNoRows {
-			kind = observability.ErrorKindNotFound
-		}
-		recordSQLiteErrorKind(span, err, kind)
-		return domain.Persona{}, fmt.Errorf("persona %q: %w", id, err)
-	}
+			return nil
+		})
 
-	recordSQLiteSuccess(span)
-	return p, nil
+	return p, err
 }
 
 // SavePersona implements Store.
 func (s *SQLiteStore) SavePersona(ctx context.Context, p domain.Persona) error {
-	ctx, span := s.startSpan(ctx, "store.sqlite.save_persona", attribute.String("persona.id", p.ID))
-	defer span.End()
-
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO personas (id, description, origin) VALUES (?, ?, ?)
-		 ON CONFLICT (id) DO UPDATE SET description = excluded.description, origin = excluded.origin`,
-		p.ID, p.Description, p.Origin)
-	if err != nil {
-		recordSQLiteError(span, err)
-		return err
-	}
-
-	recordSQLiteSuccess(span)
-	return nil
+	return s.inSpan(ctx, "store.sqlite.save_persona",
+		[]attribute.KeyValue{attribute.String("persona.id", p.ID)},
+		func(ctx context.Context, _ trace.Span) error {
+			_, err := s.db.ExecContext(ctx,
+				`INSERT INTO personas (id, description, origin) VALUES (?, ?, ?)
+				 ON CONFLICT (id) DO UPDATE SET description = excluded.description, origin = excluded.origin`,
+				p.ID, p.Description, p.Origin)
+			return err
+		})
 }
 
 // DeletePersonasByOrigin implements Store.
 func (s *SQLiteStore) DeletePersonasByOrigin(ctx context.Context, origin domain.PersonaOrigin) error {
-	ctx, span := s.startSpan(ctx, "store.sqlite.delete_personas_by_origin", attribute.String("persona.origin", string(origin)))
-	defer span.End()
-
-	_, err := s.db.ExecContext(ctx, `DELETE FROM personas WHERE origin = ?`, origin)
-	if err != nil {
-		recordSQLiteError(span, err)
-		return err
-	}
-
-	recordSQLiteSuccess(span)
-	return nil
+	return s.inSpan(ctx, "store.sqlite.delete_personas_by_origin",
+		[]attribute.KeyValue{attribute.String("persona.origin", string(origin))},
+		func(ctx context.Context, _ trace.Span) error {
+			_, err := s.db.ExecContext(ctx, `DELETE FROM personas WHERE origin = ?`, origin)
+			return err
+		})
 }
 
 // ReplaceGeneratedPersonas implements Store. It atomically deletes all
 // generated personas and inserts the given replacements in a single
 // transaction.
 func (s *SQLiteStore) ReplaceGeneratedPersonas(ctx context.Context, personas []domain.Persona) error {
-	ctx, span := s.startSpan(ctx, "store.sqlite.replace_generated_personas")
-	defer span.End()
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		recordSQLiteError(span, err)
-		return fmt.Errorf("begin tx: %w", err)
-	}
-
-	defer func() { _ = tx.Rollback() }()
-
-	if _, err := tx.ExecContext(ctx, `DELETE FROM personas WHERE origin = ?`, domain.PersonaGenerated); err != nil {
-		recordSQLiteError(span, err)
-		return fmt.Errorf("delete generated: %w", err)
-	}
-
-	for _, p := range personas {
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO personas (id, description, origin) VALUES (?, ?, ?)
-			 ON CONFLICT (id) DO UPDATE SET description = excluded.description, origin = excluded.origin`,
-			p.ID, p.Description, p.Origin); err != nil {
-			recordSQLiteError(span, err)
-			return fmt.Errorf("insert persona %q: %w", p.ID, err)
+	return s.inSpan(ctx, "store.sqlite.replace_generated_personas", nil, func(ctx context.Context, _ trace.Span) error {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin tx: %w", err)
 		}
-	}
 
-	if err := tx.Commit(); err != nil {
-		recordSQLiteError(span, err)
-		return fmt.Errorf("commit: %w", err)
-	}
+		defer func() { _ = tx.Rollback() }()
 
-	recordSQLiteSuccess(span)
-	return nil
+		if _, err := tx.ExecContext(ctx, `DELETE FROM personas WHERE origin = ?`, domain.PersonaGenerated); err != nil {
+			return fmt.Errorf("delete generated: %w", err)
+		}
+
+		for _, p := range personas {
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO personas (id, description, origin) VALUES (?, ?, ?)
+				 ON CONFLICT (id) DO UPDATE SET description = excluded.description, origin = excluded.origin`,
+				p.ID, p.Description, p.Origin); err != nil {
+				return fmt.Errorf("insert persona %q: %w", p.ID, err)
+			}
+		}
+
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit: %w", err)
+		}
+
+		return nil
+	})
 }
 
 // ResetMemories implements Store.
 func (s *SQLiteStore) ResetMemories(ctx context.Context) error {
-	ctx, span := s.startSpan(ctx, "store.sqlite.reset_memories")
-	defer span.End()
-
-	_, err := s.db.ExecContext(ctx, `DELETE FROM memories`)
-	if err != nil {
-		recordSQLiteError(span, err)
+	return s.inSpan(ctx, "store.sqlite.reset_memories", nil, func(ctx context.Context, _ trace.Span) error {
+		_, err := s.db.ExecContext(ctx, `DELETE FROM memories`)
 		return err
-	}
-
-	recordSQLiteSuccess(span)
-	return nil
+	})
 }
 
 // GetSessionActive implements Store.
 func (s *SQLiteStore) GetSessionActive(ctx context.Context) (string, error) {
-	ctx, span := s.startSpan(ctx, "store.sqlite.get_session_active")
-	defer span.End()
+	var value string
+	err := s.inSpan(ctx, "store.sqlite.get_session_active", nil, func(ctx context.Context, _ trace.Span) error {
+		var inErr error
+		value, inErr = getState[string](ctx, s.db, "session_active")
+		return inErr
+	})
 
-	value, err := getState[string](ctx, s.db, "session_active")
-	if err != nil {
-		recordSQLiteError(span, err)
-		return "", err
-	}
-
-	recordSQLiteSuccess(span)
-	return value, nil
+	return value, err
 }
 
 // SetSessionActive implements Store.
 func (s *SQLiteStore) SetSessionActive(ctx context.Context, value string) error {
-	ctx, span := s.startSpan(ctx, "store.sqlite.set_session_active")
-	defer span.End()
-
-	if err := setState(ctx, s.db, "session_active", value); err != nil {
-		recordSQLiteError(span, err)
-		return err
-	}
-
-	recordSQLiteSuccess(span)
-	return nil
+	return s.inSpan(ctx, "store.sqlite.set_session_active", nil, func(ctx context.Context, _ trace.Span) error {
+		return setState(ctx, s.db, "session_active", value)
+	})
 }
 
 // ClearSessionActive implements Store.
 func (s *SQLiteStore) ClearSessionActive(ctx context.Context) error {
-	ctx, span := s.startSpan(ctx, "store.sqlite.clear_session_active")
-	defer span.End()
-
-	_, err := s.db.ExecContext(ctx, `DELETE FROM state WHERE key = ?`, "session_active")
-	if err != nil {
-		recordSQLiteError(span, err)
+	return s.inSpan(ctx, "store.sqlite.clear_session_active", nil, func(ctx context.Context, _ trace.Span) error {
+		_, err := s.db.ExecContext(ctx, `DELETE FROM state WHERE key = ?`, "session_active")
 		return err
-	}
-
-	recordSQLiteSuccess(span)
-	return nil
+	})
 }
 
 // ListAutojoinChannels implements Store.
 func (s *SQLiteStore) ListAutojoinChannels(ctx context.Context) ([]domain.ChannelName, error) {
-	ctx, span := s.startSpan(ctx, "store.sqlite.list_autojoin_channels")
-	defer span.End()
-
-	rows, err := s.db.QueryContext(ctx, `SELECT name FROM autojoin ORDER BY name`)
-	if err != nil {
-		recordSQLiteError(span, err)
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-
 	var channels []domain.ChannelName
+	err := s.inSpan(ctx, "store.sqlite.list_autojoin_channels", nil, func(ctx context.Context, _ trace.Span) error {
+		rows, err := s.db.QueryContext(ctx, `SELECT name FROM autojoin ORDER BY name`)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = rows.Close() }()
 
-	for rows.Next() {
-		var name domain.ChannelName
-		if err := rows.Scan(&name); err != nil {
-			recordSQLiteError(span, err)
-			return nil, err
+		for rows.Next() {
+			var name domain.ChannelName
+			if err := rows.Scan(&name); err != nil {
+				return err
+			}
+
+			channels = append(channels, name)
 		}
 
-		channels = append(channels, name)
-	}
+		return rows.Err()
+	})
 
-	if err := rows.Err(); err != nil {
-		recordSQLiteError(span, err)
-		return nil, err
-	}
-
-	recordSQLiteSuccess(span)
-	return channels, nil
+	return channels, err
 }
 
 // SetAutojoinChannels implements Store.
 func (s *SQLiteStore) SetAutojoinChannels(ctx context.Context, channels []domain.ChannelName) error {
-	ctx, span := s.startSpan(ctx, "store.sqlite.set_autojoin_channels")
-	defer span.End()
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		recordSQLiteError(span, err)
-		return fmt.Errorf("begin tx: %w", err)
-	}
-
-	defer func() { _ = tx.Rollback() }()
-
-	if _, err := tx.ExecContext(ctx, `DELETE FROM autojoin`); err != nil {
-		recordSQLiteError(span, err)
-		return fmt.Errorf("clear autojoin: %w", err)
-	}
-
-	for _, ch := range channels {
-		if _, err := tx.ExecContext(ctx,
-			`INSERT OR IGNORE INTO autojoin (name) VALUES (?)`, ch); err != nil {
-			recordSQLiteError(span, err)
-			return fmt.Errorf("insert autojoin %q: %w", ch, err)
+	return s.inSpan(ctx, "store.sqlite.set_autojoin_channels", nil, func(ctx context.Context, _ trace.Span) error {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin tx: %w", err)
 		}
-	}
 
-	if err := tx.Commit(); err != nil {
-		recordSQLiteError(span, err)
-		return fmt.Errorf("commit: %w", err)
-	}
+		defer func() { _ = tx.Rollback() }()
 
-	recordSQLiteSuccess(span)
-	return nil
+		if _, err := tx.ExecContext(ctx, `DELETE FROM autojoin`); err != nil {
+			return fmt.Errorf("clear autojoin: %w", err)
+		}
+
+		for _, ch := range channels {
+			if _, err := tx.ExecContext(ctx,
+				`INSERT OR IGNORE INTO autojoin (name) VALUES (?)`, ch); err != nil {
+				return fmt.Errorf("insert autojoin %q: %w", ch, err)
+			}
+		}
+
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit: %w", err)
+		}
+
+		return nil
+	})
 }
 
 // Reset implements Store.
 func (s *SQLiteStore) Reset(ctx context.Context) error {
-	ctx, span := s.startSpan(ctx, "store.sqlite.reset")
-	defer span.End()
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		recordSQLiteError(span, err)
-		return fmt.Errorf("begin tx: %w", err)
-	}
-
-	defer func() { _ = tx.Rollback() }()
-
-	// Order: children before parents (last_read → channels, events).
-	for _, stmt := range []string{
-		`DELETE FROM last_read`,
-		`DELETE FROM channels`,
-		`DELETE FROM events`,
-		`DELETE FROM instances`,
-		`DELETE FROM memories`,
-		`DELETE FROM personas`,
-		`DELETE FROM state`,
-		`DELETE FROM autojoin`,
-	} {
-		if _, err := tx.ExecContext(ctx, stmt); err != nil {
-			recordSQLiteError(span, err)
-			return fmt.Errorf("reset: %w", err)
+	return s.inSpan(ctx, "store.sqlite.reset", nil, func(ctx context.Context, _ trace.Span) error {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin tx: %w", err)
 		}
+
+		defer func() { _ = tx.Rollback() }()
+
+		// Order: children before parents (last_read → channels, events).
+		for _, stmt := range []string{
+			`DELETE FROM last_read`,
+			`DELETE FROM channels`,
+			`DELETE FROM events`,
+			`DELETE FROM instances`,
+			`DELETE FROM memories`,
+			`DELETE FROM personas`,
+			`DELETE FROM state`,
+			`DELETE FROM autojoin`,
+		} {
+			if _, err := tx.ExecContext(ctx, stmt); err != nil {
+				return fmt.Errorf("reset: %w", err)
+			}
+		}
+
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit: %w", err)
+		}
+
+		return nil
+	})
+}
+
+// inSpan brackets fn with a span and result-recording on the store's
+// tracer provider. See `observability.SpanRunner` for the wrapper's
+// shape; `sql.ErrNoRows` (anywhere in the returned error's chain) is
+// classified as `ErrorKindNotFound` so dashboards can separate
+// missing-row outcomes from infrastructure failures, and every other
+// error falls back to `ErrorKindStore`.
+func (s *SQLiteStore) inSpan(
+	ctx context.Context,
+	op string,
+	attrs []attribute.KeyValue,
+	fn func(ctx context.Context, span trace.Span) error,
+) error {
+	return observability.SpanRunner{
+		Tracer:         s.tracerProvider.Tracer("github.com/laney/modeloff/internal/store"),
+		DefaultErrKind: observability.ErrorKindStore,
+		ClassifyError:  classifyStoreError,
+	}.Run(ctx, op, attrs, fn)
+}
+
+func classifyStoreError(err error) string {
+	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, ErrNoSuchNick) {
+		return observability.ErrorKindNotFound
 	}
 
-	if err := tx.Commit(); err != nil {
-		recordSQLiteError(span, err)
-		return fmt.Errorf("commit: %w", err)
-	}
-
-	recordSQLiteSuccess(span)
-	return nil
-}
-
-func (s *SQLiteStore) startSpan(ctx context.Context, operation string, attrs ...attribute.KeyValue) (context.Context, trace.Span) {
-	tracer := s.tracerProvider.Tracer("github.com/laney/modeloff/internal/store")
-	attrs = append(attrs, attribute.String(observability.AttrOperation, operation))
-	ctx, span := tracer.Start(ctx, operation)
-	span.SetAttributes(attrs...)
-
-	return ctx, span
-}
-
-func recordSQLiteSuccess(span trace.Span) {
-	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-}
-
-func recordSQLiteError(span trace.Span, err error) {
-	recordSQLiteErrorKind(span, err, observability.ErrorKindStore)
-}
-
-// recordSQLiteErrorKind records an error result with an explicit
-// error kind. Use this at call sites where the failure is not a
-// generic store error — currently only `sql.ErrNoRows`, which is
-// tagged as `ErrorKindNotFound` so dashboards can separate
-// missing-row outcomes from infrastructure failures.
-func recordSQLiteErrorKind(span trace.Span, err error, kind string) {
-	span.SetAttributes(
-		attribute.String(observability.AttrResult, observability.ResultError),
-		attribute.String(observability.AttrErrorKind, kind),
-	)
-	span.SetStatus(codes.Error, err.Error())
+	return ""
 }
 
 func getState[T ~string](ctx context.Context, db *sql.DB, key string) (T, error) {

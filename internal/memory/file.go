@@ -5,7 +5,6 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/laney/modeloff/internal/domain"
@@ -43,86 +42,74 @@ func (a *StoreAdapter) WithTracerProvider(tp trace.TracerProvider) *StoreAdapter
 	return a
 }
 
+// inSpan brackets fn with a span and result-recording on the adapter's
+// tracer provider. See `observability.SpanRunner` for the wrapper's
+// shape; underlying failures are tagged `ErrorKindStore` since the
+// adapter is a thin facade over the data store.
+func (a *StoreAdapter) inSpan(
+	ctx context.Context,
+	op string,
+	attrs []attribute.KeyValue,
+	fn func(ctx context.Context, span trace.Span) error,
+) error {
+	return observability.SpanRunner{
+		Tracer:         a.tracerProvider.Tracer("github.com/laney/modeloff/internal/memory"),
+		DefaultErrKind: observability.ErrorKindStore,
+	}.Run(ctx, op, attrs, fn)
+}
+
 // Read retrieves all memories for a given model instance.
 func (a *StoreAdapter) Read(ctx context.Context, id domain.InstanceID) ([]Entry, error) {
-	ctx, span := a.startSpan(ctx, "memory.file.read", attribute.String(observability.AttrInstanceID, string(id)))
-	defer span.End()
+	var result []Entry
+	err := a.inSpan(ctx, "memory.file.read",
+		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
+		func(ctx context.Context, _ trace.Span) error {
+			entries, err := a.store.ReadMemories(ctx, id)
+			if err != nil {
+				return err
+			}
 
-	entries, err := a.store.ReadMemories(ctx, id)
-	if err != nil {
-		recordMemoryFileError(span, err)
-		return nil, err
-	}
+			result = make([]Entry, len(entries))
+			for i, e := range entries {
+				result[i] = Entry{Key: e.Key, Content: e.Content}
+			}
 
-	result := make([]Entry, len(entries))
-	for i, e := range entries {
-		result[i] = Entry{Key: e.Key, Content: e.Content}
-	}
+			return nil
+		})
 
-	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-	return result, nil
+	return result, err
 }
 
 // Write stores a memory entry for a given model instance.
 func (a *StoreAdapter) Write(ctx context.Context, id domain.InstanceID, entry Entry) error {
-	ctx, span := a.startSpan(ctx, "memory.file.write", attribute.String(observability.AttrInstanceID, string(id)))
-	defer span.End()
-
-	if err := a.store.WriteMemory(ctx, id, entry.Key, entry.Content); err != nil {
-		recordMemoryFileError(span, err)
-		return err
-	}
-
-	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-	return nil
+	return a.inSpan(ctx, "memory.file.write",
+		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
+		func(ctx context.Context, _ trace.Span) error {
+			return a.store.WriteMemory(ctx, id, entry.Key, entry.Content)
+		})
 }
 
 // Delete removes a specific memory entry by key.
 func (a *StoreAdapter) Delete(ctx context.Context, id domain.InstanceID, key string) error {
-	ctx, span := a.startSpan(ctx, "memory.file.delete", attribute.String(observability.AttrInstanceID, string(id)))
-	defer span.End()
-
-	if err := a.store.DeleteMemory(ctx, id, key); err != nil {
-		recordMemoryFileError(span, err)
-		return err
-	}
-
-	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-	return nil
+	return a.inSpan(ctx, "memory.file.delete",
+		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
+		func(ctx context.Context, _ trace.Span) error {
+			return a.store.DeleteMemory(ctx, id, key)
+		})
 }
 
 // Reset removes all memories. This delegates to ResetMemories on the
 // store if available, otherwise it's a no-op.
 func (a *StoreAdapter) Reset(ctx context.Context) error {
-	ctx, span := a.startSpan(ctx, "memory.file.reset")
-	defer span.End()
+	return a.inSpan(ctx, "memory.file.reset", nil,
+		func(ctx context.Context, _ trace.Span) error {
+			r, ok := a.store.(interface {
+				ResetMemories(context.Context) error
+			})
+			if !ok {
+				return nil
+			}
 
-	if r, ok := a.store.(interface {
-		ResetMemories(context.Context) error
-	}); ok {
-		if err := r.ResetMemories(ctx); err != nil {
-			recordMemoryFileError(span, err)
-			return err
-		}
-
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-		return nil
-	}
-
-	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-	return nil
-}
-
-func (a *StoreAdapter) startSpan(ctx context.Context, operation string, attrs ...attribute.KeyValue) (context.Context, trace.Span) {
-	tracer := a.tracerProvider.Tracer("github.com/laney/modeloff/internal/memory")
-	attrs = append(attrs, attribute.String(observability.AttrOperation, operation))
-	ctx, span := tracer.Start(ctx, operation)
-	span.SetAttributes(attrs...)
-
-	return ctx, span
-}
-
-func recordMemoryFileError(span trace.Span, err error) {
-	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-	span.SetStatus(codes.Error, err.Error())
+			return r.ResetMemories(ctx)
+		})
 }

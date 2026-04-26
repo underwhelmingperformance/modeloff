@@ -8,7 +8,6 @@ import (
 	chromem "github.com/philippgille/chromem-go"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/laney/modeloff/internal/domain"
@@ -84,6 +83,22 @@ func (s *IndexedStore) tracer() trace.Tracer {
 	return s.tracerProvider.Tracer("github.com/laney/modeloff/internal/memory")
 }
 
+// inSpan brackets fn with a span and result-recording on the store's
+// tracer provider. See `observability.SpanRunner`. Underlying
+// failures are tagged `ErrorKindStore` since the indexed store is a
+// thin facade over the file store and the chromem index.
+func (s *IndexedStore) inSpan(
+	ctx context.Context,
+	op string,
+	attrs []attribute.KeyValue,
+	fn func(ctx context.Context, span trace.Span) error,
+) error {
+	return observability.SpanRunner{
+		Tracer:         s.tracer(),
+		DefaultErrKind: observability.ErrorKindStore,
+	}.Run(ctx, op, attrs, fn)
+}
+
 func (s *IndexedStore) collection(id domain.InstanceID) (*chromem.Collection, error) {
 	return s.db.GetOrCreateCollection(string(id), nil, s.embeddingFunc)
 }
@@ -98,83 +113,69 @@ func (s *IndexedStore) Read(ctx context.Context, id domain.InstanceID) ([]Entry,
 // call for an instance, the index is rebuilt from the FileStore if
 // needed.
 func (s *IndexedStore) Search(ctx context.Context, id domain.InstanceID, query string, limit int) ([]SearchResult, error) {
-	ctx, span := s.tracer().Start(ctx, "memory.search")
-	span.SetAttributes(
-		attribute.String(observability.AttrOperation, "memory.search"),
-		attribute.String(observability.AttrInstanceID, string(id)),
-	)
-	defer span.End()
+	var searchResults []SearchResult
+	err := s.inSpan(ctx, "memory.search",
+		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
+		func(ctx context.Context, span trace.Span) error {
+			if err := s.ensureIndexed(ctx, id); err != nil {
+				return fmt.Errorf("ensure indexed: %w", err)
+			}
 
-	if err := s.ensureIndexed(ctx, id); err != nil {
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		span.SetStatus(codes.Error, err.Error())
+			col, err := s.collection(id)
+			if err != nil {
+				return fmt.Errorf("get collection: %w", err)
+			}
 
-		return nil, fmt.Errorf("ensure indexed: %w", err)
-	}
+			count := col.Count()
+			if count == 0 {
+				observability.RecordMemorySearchResults(ctx, 0)
+				span.SetAttributes(attribute.Int(observability.AttrSearchResults, 0))
+				searchResults = []SearchResult{}
+				return nil
+			}
 
-	col, err := s.collection(id)
-	if err != nil {
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		span.SetStatus(codes.Error, err.Error())
+			if limit <= 0 || limit > count {
+				limit = count
+			}
 
-		return nil, fmt.Errorf("get collection: %w", err)
-	}
+			results, err := col.Query(ctx, query, limit, nil, nil)
+			if err != nil {
+				return fmt.Errorf("search: %w", err)
+			}
 
-	count := col.Count()
-	if count == 0 {
-		observability.RecordMemorySearchResults(ctx, 0)
-		span.SetAttributes(
-			attribute.String(observability.AttrResult, observability.ResultOK),
-			attribute.Int(observability.AttrSearchResults, 0),
-		)
+			searchResults = make([]SearchResult, 0, len(results))
+			for _, r := range results {
+				key, ok := r.Metadata["key"]
+				if !ok {
+					continue
+				}
 
-		return []SearchResult{}, nil
-	}
+				content, ok := r.Metadata["content"]
+				if !ok {
+					continue
+				}
 
-	if limit <= 0 || limit > count {
-		limit = count
-	}
+				searchResults = append(searchResults, SearchResult{
+					Entry:      Entry{Key: key, Content: content},
+					Similarity: r.Similarity,
+				})
+			}
 
-	results, err := col.Query(ctx, query, limit, nil, nil)
-	if err != nil {
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		span.SetStatus(codes.Error, err.Error())
+			observability.RecordMemorySearchResults(ctx, len(searchResults))
+			span.SetAttributes(attribute.Int(observability.AttrSearchResults, len(searchResults)))
 
-		return nil, fmt.Errorf("search: %w", err)
-	}
+			if len(searchResults) > 0 {
+				observability.RecordMemorySearchTopScore(ctx, float64(searchResults[0].Similarity))
+				span.SetAttributes(
+					attribute.Float64(observability.AttrSearchTopScore, float64(searchResults[0].Similarity)),
+				)
+			}
 
-	searchResults := make([]SearchResult, 0, len(results))
-	for _, r := range results {
-		key, ok := r.Metadata["key"]
-		if !ok {
-			continue
-		}
-
-		content, ok := r.Metadata["content"]
-		if !ok {
-			continue
-		}
-
-		searchResults = append(searchResults, SearchResult{
-			Entry:      Entry{Key: key, Content: content},
-			Similarity: r.Similarity,
+			return nil
 		})
+	if err != nil {
+		return nil, err
 	}
-
-	searchAttrs := []attribute.KeyValue{
-		attribute.String(observability.AttrResult, observability.ResultOK),
-		attribute.Int(observability.AttrSearchResults, len(searchResults)),
-	}
-
-	observability.RecordMemorySearchResults(ctx, len(searchResults))
-
-	if len(searchResults) > 0 {
-		observability.RecordMemorySearchTopScore(ctx, float64(searchResults[0].Similarity))
-		searchAttrs = append(searchAttrs,
-			attribute.Float64(observability.AttrSearchTopScore, float64(searchResults[0].Similarity)))
-	}
-
-	span.SetAttributes(searchAttrs...)
 
 	return searchResults, nil
 }
@@ -183,28 +184,20 @@ func (s *IndexedStore) Search(ctx context.Context, id domain.InstanceID, query s
 // vector database. If indexing fails, the error is logged but not
 // returned — the entry is still saved.
 func (s *IndexedStore) Write(ctx context.Context, id domain.InstanceID, entry Entry) error {
-	ctx, span := s.tracer().Start(ctx, "memory.write")
-	span.SetAttributes(
-		attribute.String(observability.AttrOperation, "memory.write"),
-		attribute.String(observability.AttrInstanceID, string(id)),
-	)
-	defer span.End()
+	return s.inSpan(ctx, "memory.write",
+		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
+		func(ctx context.Context, _ trace.Span) error {
+			if err := s.backing.Write(ctx, id, entry); err != nil {
+				return err
+			}
 
-	if err := s.backing.Write(ctx, id, entry); err != nil {
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		span.SetStatus(codes.Error, err.Error())
+			if err := s.index(ctx, id, entry); err != nil {
+				slog.Default().WarnContext(ctx, "failed to index memory",
+					"instance_id", string(id), "key", entry.Key, "error", err)
+			}
 
-		return err
-	}
-
-	if err := s.index(ctx, id, entry); err != nil {
-		slog.Default().WarnContext(ctx, "failed to index memory",
-			"instance_id", string(id), "key", entry.Key, "error", err)
-	}
-
-	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-
-	return nil
+			return nil
+		})
 }
 
 func (s *IndexedStore) index(ctx context.Context, id domain.InstanceID, entry Entry) error {
@@ -232,34 +225,20 @@ func (s *IndexedStore) index(ctx context.Context, id domain.InstanceID, entry En
 // FileStore. If the vector delete fails, it is logged but the
 // FileStore delete still proceeds.
 func (s *IndexedStore) Delete(ctx context.Context, id domain.InstanceID, key string) error {
-	ctx, span := s.tracer().Start(ctx, "memory.delete")
-	span.SetAttributes(
-		attribute.String(observability.AttrOperation, "memory.delete"),
-		attribute.String(observability.AttrInstanceID, string(id)),
-	)
-	defer span.End()
+	return s.inSpan(ctx, "memory.delete",
+		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
+		func(ctx context.Context, _ trace.Span) error {
+			col, err := s.collection(id)
+			if err != nil {
+				slog.Default().WarnContext(ctx, "failed to get collection for delete",
+					"instance_id", string(id), "key", key, "error", err)
+			} else if err := col.Delete(ctx, nil, nil, key); err != nil {
+				slog.Default().WarnContext(ctx, "failed to remove memory from index",
+					"instance_id", string(id), "key", key, "error", err)
+			}
 
-	col, err := s.collection(id)
-	if err != nil {
-		slog.Default().WarnContext(ctx, "failed to get collection for delete",
-			"instance_id", string(id), "key", key, "error", err)
-	} else {
-		if err := col.Delete(ctx, nil, nil, key); err != nil {
-			slog.Default().WarnContext(ctx, "failed to remove memory from index",
-				"instance_id", string(id), "key", key, "error", err)
-		}
-	}
-
-	if err := s.backing.Delete(ctx, id, key); err != nil {
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		span.SetStatus(codes.Error, err.Error())
-
-		return err
-	}
-
-	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-
-	return nil
+			return s.backing.Delete(ctx, id, key)
+		})
 }
 
 // Reset removes all memories from both the vector index and the
@@ -320,19 +299,16 @@ func (s *IndexedStore) ensureIndexed(ctx context.Context, id domain.InstanceID) 
 
 func (s *IndexedStore) instrumentEmbedding(inner chromem.EmbeddingFunc) chromem.EmbeddingFunc {
 	return func(ctx context.Context, text string) ([]float32, error) {
-		ctx, span := s.tracer().Start(ctx, "memory.embed")
-		span.SetAttributes(attribute.String(observability.AttrOperation, "memory.embed"))
-		defer span.End()
+		var embedding []float32
+		err := s.inSpan(ctx, "memory.embed", nil, func(ctx context.Context, _ trace.Span) error {
+			var inErr error
+			embedding, inErr = inner(ctx, text)
 
-		embedding, err := inner(ctx, text)
+			return inErr
+		})
 		if err != nil {
-			span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-			span.SetStatus(codes.Error, err.Error())
-
 			return nil, err
 		}
-
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 
 		return embedding, nil
 	}
