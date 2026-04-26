@@ -15,12 +15,12 @@ import (
 	"github.com/laney/modeloff/internal/ui/timestamp"
 )
 
-// renderChannelEvent renders a domain.ChannelEvent into a styled
+// renderChannelEvent renders a domain.PersistableEvent into a styled
 // string at the given width. kind discriminates channel/DM from
-// status rendering — see the ChannelSystemNotice case for the
+// status rendering — see the SystemNotice case for the
 // status-channel variant.
 func renderChannelEvent[C command.KindProvider](
-	event domain.ChannelEvent,
+	event domain.PersistableEvent,
 	kind domain.ChannelKind,
 	width int,
 	highlightWords []string,
@@ -32,7 +32,7 @@ func renderChannelEvent[C command.KindProvider](
 	wrap := lipgloss.NewStyle().Width(width)
 
 	switch e := event.(type) {
-	case domain.ChannelMessage:
+	case domain.Message:
 		ts := formatTimestampPrefix(e.At, timestampFormat, locale)
 		highlighted := ContainsHighlightWord(e.Body, highlightWords, userNick)
 		body := renderIRCBody(e.Body)
@@ -58,23 +58,23 @@ func renderChannelEvent[C command.KindProvider](
 
 		return wrap.Render(strings.TrimSpace(fmt.Sprintf("%s %s", prefix, body)))
 
-	case domain.ChannelJoin:
-		text := fmt.Sprintf("%s has joined %s", e.Nick, e.Channel)
+	case domain.Join:
+		text := fmt.Sprintf("%s has joined %s", e.Nick, e.Target)
 		if e.Created {
-			text = fmt.Sprintf("Created channel %s", e.Channel)
+			text = fmt.Sprintf("Created channel %s", e.Target)
 		}
 
 		return wrap.Render(theme.SystemEvent.Render("*** " + text))
 
-	case domain.ChannelPart:
-		text := fmt.Sprintf("%s has left %s", e.Nick, e.Channel)
+	case domain.Part:
+		text := fmt.Sprintf("%s has left %s", e.Nick, e.Target)
 		if e.Message != "" {
 			text += fmt.Sprintf(" (%s)", e.Message)
 		}
 
 		return wrap.Render(theme.SystemEvent.Render("*** " + text))
 
-	case domain.ChannelQuit:
+	case domain.Quit:
 		text := fmt.Sprintf("%s has quit", e.Nick)
 		if e.Message != "" {
 			text += fmt.Sprintf(" (%s)", e.Message)
@@ -82,42 +82,42 @@ func renderChannelEvent[C command.KindProvider](
 
 		return wrap.Render(theme.SystemEvent.Render("*** " + text))
 
-	case domain.ChannelTopicChange:
+	case domain.TopicChange:
 		var text string
 
 		if e.Topic == "" {
-			text = fmt.Sprintf("topic for %s cleared by %s", e.Channel, e.By)
+			text = fmt.Sprintf("topic for %s cleared by %s", e.Target, e.By)
 		} else if e.By != "" {
-			text = fmt.Sprintf("topic for %s set by %s: %s", e.Channel, e.By, e.Topic)
+			text = fmt.Sprintf("topic for %s set by %s: %s", e.Target, e.By, e.Topic)
 		} else {
-			text = fmt.Sprintf("topic for %s set to: %s", e.Channel, e.Topic)
+			text = fmt.Sprintf("topic for %s set to: %s", e.Target, e.Topic)
 		}
 
 		return wrap.Render(theme.SystemEvent.Render("*** " + text))
 
-	case domain.ChannelModeChange:
+	case domain.ModeChange:
 		return wrap.Render(theme.SystemEvent.Render(
 			fmt.Sprintf("*** %s sets mode %s %s", e.By, e.Mode.IRCMode(), e.Nick)))
 
-	case domain.ChannelModelInvited:
+	case domain.ModelInvited:
 		return wrap.Render(theme.SystemEvent.Render(
-			fmt.Sprintf("*** %s has joined %s", e.Nick, e.Channel)))
+			fmt.Sprintf("*** %s has joined %s", e.Nick, e.Target)))
 
-	case domain.ChannelModelKicked:
+	case domain.ModelKicked:
 		return wrap.Render(theme.SystemEvent.Render(
-			fmt.Sprintf("*** %s was kicked from %s by %s", e.Nick, e.Channel, e.By)))
+			fmt.Sprintf("*** %s was kicked from %s by %s", e.Nick, e.Target, e.By)))
 
-	case domain.ChannelNickChange:
+	case domain.NickChange:
 		return wrap.Render(theme.SystemEvent.Render(
 			fmt.Sprintf("*** %s is now known as %s", e.OldNick, e.NewNick)))
 
-	case domain.ChannelTopicInfo:
+	case domain.TopicInfo:
 		if e.Topic == "" {
 			return wrap.Render(theme.SystemEvent.Render(
-				fmt.Sprintf("*** No topic set for %s", e.Channel)))
+				fmt.Sprintf("*** No topic set for %s", e.Target)))
 		}
 
-		text := fmt.Sprintf("topic for %s: %s", e.Channel, e.Topic)
+		text := fmt.Sprintf("topic for %s: %s", e.Target, e.Topic)
 		if e.TopicSetBy != "" {
 			topicTime := timestamp.Format(e.TopicSetAt, timestampFormat, locale)
 			if topicTime == "" {
@@ -129,29 +129,29 @@ func renderChannelEvent[C command.KindProvider](
 
 		return wrap.Render(theme.SystemEvent.Render("*** " + text))
 
-	case domain.ChannelHelp:
+	case domain.Help:
 		return wrap.Render(renderHelp(commands))
 
-	case domain.ChannelWhois:
+	case domain.Whois:
 		return wrap.Render(renderWhoisEvent(e))
 
-	case domain.ChannelListOutput:
+	case domain.ChannelList:
 		return wrap.Render(renderChannelListEvent(e))
 
-	case domain.ChannelPersonasList:
+	case domain.PersonasList:
 		return wrap.Render(renderPersonasListEvent(e))
 
-	case domain.ChannelCommandError:
+	case domain.CommandError:
 		return wrap.Render(theme.Error.Render("✗ " + e.Err))
 
-	case domain.ChannelUsageHint:
+	case domain.UsageHint:
 		if e.Command != "" {
 			return wrap.Render(theme.Warning.Render("⚠ usage: " + e.Usage))
 		}
 
 		return wrap.Render(theme.Warning.Render("⚠ " + e.Usage))
 
-	case domain.ChannelSystemNotice:
+	case domain.SystemNotice:
 		// On the status channel, system notices are operational
 		// narration (connection events, config confirmations as
 		// background chatter). They render in the shared server-event
@@ -184,7 +184,7 @@ func formatTimestampPrefix(at time.Time, format *string, locale language.Tag) st
 	return theme.Dim.Render(rendered + " ")
 }
 
-func renderWhoisEvent(w domain.ChannelWhois) string {
+func renderWhoisEvent(w domain.Whois) string {
 	nick, modelID, persona, channels := whoisFields(w)
 
 	lines := []string{
@@ -220,7 +220,7 @@ func renderWhoisEvent(w domain.ChannelWhois) string {
 // is still IRC-faithful. The live-pointer hazard only exists between
 // emission and the first persistence round-trip; the new snapshot
 // path closes that window.
-func whoisFields(w domain.ChannelWhois) (domain.Nick, domain.ModelID, string, []domain.ChannelName) {
+func whoisFields(w domain.Whois) (domain.Nick, domain.ModelID, string, []domain.ChannelName) {
 	if w.Nick != "" || w.ModelID != "" || w.Persona != "" || len(w.Channels) > 0 {
 		return w.Nick, w.ModelID, w.Persona, w.Channels
 	}
@@ -240,7 +240,7 @@ func whoisFields(w domain.ChannelWhois) (domain.Nick, domain.ModelID, string, []
 	return w.Instance.Nick(), w.Instance.ModelID, w.Instance.Persona(), legacyChannels
 }
 
-func renderChannelListEvent(cl domain.ChannelListOutput) string {
+func renderChannelListEvent(cl domain.ChannelList) string {
 	if len(cl.Channels) == 0 {
 		return theme.SystemEvent.Render("*** no channels")
 	}
@@ -258,7 +258,7 @@ func renderChannelListEvent(cl domain.ChannelListOutput) string {
 	return strings.Join(parts, "\n")
 }
 
-func renderPersonasListEvent(pl domain.ChannelPersonasList) string {
+func renderPersonasListEvent(pl domain.PersonasList) string {
 	if len(pl.Personas) == 0 {
 		return theme.SystemEvent.Render("*** No personas defined.")
 	}
@@ -362,7 +362,7 @@ func renderIRCBody(body string) string {
 // immutable InstanceID is preferred so a `/nick` rename keeps an
 // author's historical messages on the same colour. The nick is the
 // fallback for legacy stored events written before InstanceID was
-// threaded onto ChannelMessage; those rows hash on the snapshotted
+// threaded onto Message; those rows hash on the snapshotted
 // nick at storage time, which is stable in its own right.
 func nickColourSeed(id domain.InstanceID, nick domain.Nick) string {
 	if id != "" {

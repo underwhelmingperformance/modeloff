@@ -73,7 +73,7 @@ type liveModelsLoadedMsg struct {
 // carries the underlying error; the handler empties `*s.liveModels`
 // to degrade tab-completion gracefully, treats `session.ErrNoAPIKey`
 // as a silent no-op, and surfaces other failures as a
-// `ChannelSystemNotice`.
+// `SystemNotice`.
 type liveModelsLoadFailedMsg struct {
 	err error
 }
@@ -303,14 +303,14 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		return s, tea.Quit
 
 	case chatcmd.HelpResult:
-		return s, s.logAndShow(domain.ChannelHelp{Channel: *s.active, At: time.Now()})
+		return s, s.logAndShow(domain.Help{Target: *s.active, At: time.Now()})
 
 	case chatcmd.ClearResult:
 		return s, func() tea.Msg { return components.ClearMessagesMsg{} }
 
 	case chatcmd.TopicInfoResult:
-		return s, s.logAndShow(domain.ChannelTopicInfo{
-			Channel:    msg.Channel.Name,
+		return s, s.logAndShow(domain.TopicInfo{
+			Target:     msg.Channel.Name,
 			Topic:      msg.Channel.Topic,
 			TopicSetBy: msg.Channel.TopicSetBy,
 			TopicSetAt: msg.Channel.TopicSetAt,
@@ -339,13 +339,13 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		)
 
 	case chatcmd.ListResult:
-		return s, s.logAndShow(domain.ChannelListOutput{
+		return s, s.logAndShow(domain.ChannelList{
 			Channels: msg.Channels, At: time.Now(),
 		})
 
 	case chatcmd.UsageError:
-		return s, s.logAndShow(domain.ChannelUsageHint{
-			Channel: *s.active, Command: msg.Command, Usage: msg.Usage, At: time.Now(),
+		return s, s.logAndShow(domain.UsageHint{
+			Target: *s.active, Command: msg.Command, Usage: msg.Usage, At: time.Now(),
 		})
 
 	case chatcmd.NoChannelError:
@@ -354,7 +354,7 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 			usage = "no channel to part from"
 		}
 
-		return s, s.logAndShow(domain.ChannelUsageHint{
+		return s, s.logAndShow(domain.UsageHint{
 			Command: msg.Command, Usage: usage, At: time.Now(),
 		})
 
@@ -378,8 +378,8 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		}
 
 		return s, tea.Batch(
-			s.logAndShow(domain.ChannelSystemNotice{
-				Channel: *s.active, Text: text, At: time.Now(),
+			s.logAndShow(domain.SystemNotice{
+				Target: *s.active, Text: text, At: time.Now(),
 			}),
 			s.loadLiveModels(),
 		)
@@ -390,10 +390,10 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 			text = fmt.Sprintf("Poke interval reset to %s.", msg.Interval)
 		}
 
-		return s, s.logAndShow(domain.ChannelSystemNotice{
-			Channel: *s.active,
-			Text:    text,
-			At:      time.Now(),
+		return s, s.logAndShow(domain.SystemNotice{
+			Target: *s.active,
+			Text:   text,
+			At:     time.Now(),
 		})
 
 	case chatcmd.SmallModelSetResult:
@@ -402,10 +402,10 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 			text = fmt.Sprintf("Small model reset to %s.", msg.ModelID)
 		}
 
-		return s, s.logAndShow(domain.ChannelSystemNotice{
-			Channel: *s.active,
-			Text:    text,
-			At:      time.Now(),
+		return s, s.logAndShow(domain.SystemNotice{
+			Target: *s.active,
+			Text:   text,
+			At:     time.Now(),
 		})
 
 	case chatcmd.HighlightWordsSetResult:
@@ -415,10 +415,10 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		}
 
 		return s, tea.Batch(
-			s.logAndShow(domain.ChannelSystemNotice{
-				Channel: *s.active,
-				Text:    text,
-				At:      time.Now(),
+			s.logAndShow(domain.SystemNotice{
+				Target: *s.active,
+				Text:   text,
+				At:     time.Now(),
 			}),
 			msgCmd(components.HighlightWordsMsg{
 				Words:    msg.Words,
@@ -432,10 +432,10 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 			text = fmt.Sprintf("base URL reset to %s", msg.URL)
 		}
 
-		return s, s.logAndShow(domain.ChannelSystemNotice{
-			Channel: *s.active,
-			Text:    text,
-			At:      time.Now(),
+		return s, s.logAndShow(domain.SystemNotice{
+			Target: *s.active,
+			Text:   text,
+			At:     time.Now(),
 		})
 
 	case chatcmd.EmbeddingModelSetResult:
@@ -444,37 +444,37 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 			text = fmt.Sprintf("embedding model reset to %s", msg.ModelID)
 		}
 
-		return s, s.logAndShow(domain.ChannelSystemNotice{
-			Channel: *s.active,
-			Text:    text,
-			At:      time.Now(),
+		return s, s.logAndShow(domain.SystemNotice{
+			Target: *s.active,
+			Text:   text,
+			At:     time.Now(),
 		})
 
 	case chatcmd.PersonasListResult:
-		return s, s.logAndShow(domain.ChannelPersonasList{
+		return s, s.logAndShow(domain.PersonasList{
 			Personas: msg.Personas,
 			At:       time.Now(),
 		})
 
 	case chatcmd.PersonasRegeneratedResult:
-		return s, s.logAndShow(domain.ChannelSystemNotice{
-			Channel: *s.active,
-			Text:    fmt.Sprintf("Generated %d personas.", msg.Count),
-			At:      time.Now(),
+		return s, s.logAndShow(domain.SystemNotice{
+			Target: *s.active,
+			Text:   fmt.Sprintf("Generated %d personas.", msg.Count),
+			At:     time.Now(),
 		})
 
 	case chatcmd.PersonaSetResult:
-		return s, s.logAndShow(domain.ChannelSystemNotice{
-			Channel: *s.active,
-			Text:    fmt.Sprintf("Persona %s saved.", msg.ID),
-			At:      time.Now(),
+		return s, s.logAndShow(domain.SystemNotice{
+			Target: *s.active,
+			Text:   fmt.Sprintf("Persona %s saved.", msg.ID),
+			At:     time.Now(),
 		})
 
 	case chatcmd.PersonaResetResult:
-		return s, s.logAndShow(domain.ChannelSystemNotice{
-			Channel: *s.active,
-			Text:    fmt.Sprintf("Removed %d user-defined persona(s).", msg.Count),
-			At:      time.Now(),
+		return s, s.logAndShow(domain.SystemNotice{
+			Target: *s.active,
+			Text:   fmt.Sprintf("Removed %d user-defined persona(s).", msg.Count),
+			At:     time.Now(),
 		})
 
 	case chatcmd.TimestampFormatSetResult:
@@ -490,10 +490,10 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		}
 
 		return s, tea.Batch(
-			s.logAndShow(domain.ChannelSystemNotice{
-				Channel: *s.active,
-				Text:    text,
-				At:      time.Now(),
+			s.logAndShow(domain.SystemNotice{
+				Target: *s.active,
+				Text:   text,
+				At:     time.Now(),
 			}),
 			msgCmd(components.TimestampFormatMsg{
 				Format: msg.Format,
@@ -501,28 +501,28 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 			}),
 		)
 
-	case domain.ChannelJoin:
+	case domain.Join:
 		return s.handleJoinEvent(msg)
 
-	case domain.ChannelPart:
+	case domain.Part:
 		return s.handlePartEvent(msg)
 
-	case domain.ChannelQuit:
+	case domain.Quit:
 		return s.handleQuitEvent(msg)
 
-	case domain.ChannelTopicChange:
+	case domain.TopicChange:
 		return s.handleTopicChangeEvent(msg)
 
-	case domain.ChannelNickChange:
+	case domain.NickChange:
 		return s.handleNickChangeEvent(msg)
 
-	case domain.ChannelModelInvited:
+	case domain.ModelInvited:
 		return s.handleModelInvitedEvent(msg)
 
-	case domain.ChannelModelKicked:
+	case domain.ModelKicked:
 		return s.handleModelKickedEvent(msg)
 
-	case domain.ChannelMessage:
+	case domain.Message:
 		return s.handleMessageEvent(msg)
 
 	case domain.ModelReplyEvent:
@@ -561,7 +561,7 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 	case components.MessageSubmitMsg:
 		if *s.active == "" {
-			return s, s.logAndShow(domain.ChannelUsageHint{
+			return s, s.logAndShow(domain.UsageHint{
 				Usage: "join a channel first", At: time.Now(),
 			})
 		}
@@ -656,7 +656,7 @@ func (s ChatScreen) layoutHeight() int {
 // returns a command that sends the StoredEvent to the message list.
 // When no channel is active the event is still sent for rendering but
 // is not persisted to the store.
-func (s ChatScreen) logAndShow(event domain.ChannelEvent) tea.Cmd {
+func (s ChatScreen) logAndShow(event domain.PersistableEvent) tea.Cmd {
 	return s.logAndShowOn(*s.active, event)
 }
 
@@ -667,7 +667,7 @@ func (s ChatScreen) logAndShow(event domain.ChannelEvent) tea.Cmd {
 // can fire-and-forget. Returns nil if the persistence step fails to
 // schedule, since dropping the trailing message is acceptable for
 // an audit-trail copy.
-func (s ChatScreen) persistOnStatus(event domain.ChannelEvent) tea.Cmd {
+func (s ChatScreen) persistOnStatus(event domain.PersistableEvent) tea.Cmd {
 	return func() tea.Msg {
 		if _, err := s.sess.LogEvent(s.ctx, domain.StatusChannelName, event); err != nil {
 			slog.Default().ErrorContext(s.ctx, "persist on status channel", "error", err)
@@ -689,7 +689,7 @@ func (s ChatScreen) persistOnStatus(event domain.ChannelEvent) tea.Cmd {
 // caller's goroutine, so Update remains the single writer of
 // chat-screen state — the session mutation is fenced off the Tea
 // program's main loop until its result lands as a tea.Msg.
-func (s ChatScreen) logAndShowOn(ch domain.ChannelName, event domain.ChannelEvent) tea.Cmd {
+func (s ChatScreen) logAndShowOn(ch domain.ChannelName, event domain.PersistableEvent) tea.Cmd {
 	if ch == "" {
 		return msgCmd(domain.StoredEvent{Event: event})
 	}
@@ -842,16 +842,16 @@ func (s ChatScreen) updateLogEntries() ChatScreen {
 }
 
 // snapshotWhois freezes an instance's mutable identity surface
-// (`Nick`, `Persona`, `Channels`) into a `ChannelWhois` event at the
+// (`Nick`, `Persona`, `Channels`) into a `Whois` event at the
 // moment `/whois` is issued. The renderer reads from these fields,
 // not the live pointer, so subsequent renames or channel changes do
 // not retro-edit the historical line. `ModelID` is captured even
 // though it is immutable so that future commits can drop the
 // `Instance` pointer entirely once legacy stored events have aged
 // out.
-func snapshotWhois(channel domain.ChannelName, inst *domain.Instance, at time.Time) domain.ChannelWhois {
-	whois := domain.ChannelWhois{
-		Channel: channel,
+func snapshotWhois(channel domain.ChannelName, inst *domain.Instance, at time.Time) domain.Whois {
+	whois := domain.Whois{
+		Target:  channel,
 		Nick:    inst.Nick(),
 		ModelID: inst.ModelID,
 		Persona: inst.Persona(),

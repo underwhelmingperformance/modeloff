@@ -313,10 +313,10 @@ func (s *Session) openStatusChannel(ctx context.Context) error {
 // session's `&modeloff` view shows only the notices that landed
 // during that session.
 func (s *Session) appendStatus(ctx context.Context, text string) {
-	notice := domain.ChannelSystemNotice{
-		Channel: domain.StatusChannelName,
-		Text:    text,
-		At:      s.now(),
+	notice := domain.SystemNotice{
+		Target: domain.StatusChannelName,
+		Text:   text,
+		At:     s.now(),
 	}
 
 	stored, err := s.LogEvent(ctx, domain.StatusChannelName, notice)
@@ -604,7 +604,7 @@ func (s *Session) Part(ctx context.Context, ch domain.ChannelName, message strin
 }
 
 // Quit performs a clean client-side shutdown. For each channel the
-// user is in it appends a ChannelQuit event to the log (so models
+// user is in it appends a Quit event to the log (so models
 // see the quit the next time they are dispatched against in that
 // channel), removes the user from the channel members list, saves
 // the autojoin list so the channels can be rejoined on next startup,
@@ -641,8 +641,8 @@ func (s *Session) Quit(ctx context.Context, message string) (retErr error) {
 	// steps leaves the next startup classified as unclean, at which
 	// point cleanupUncleanShutdown handles any residual memberships.
 	for _, ch := range channels {
-		s.appendEvent(ctx, ch, domain.ChannelQuit{
-			Channel: ch,
+		s.appendEvent(ctx, ch, domain.Quit{
+			Target:  ch,
 			Nick:    userNick,
 			Message: message,
 			At:      now,
@@ -912,8 +912,8 @@ func (s *Session) attachInstanceToChannel(
 	now := s.now()
 	byNick := by.Nick()
 
-	s.persistAndEmit(ctx, ch, domain.ChannelModelInvited{
-		Channel:    ch,
+	s.persistAndEmit(ctx, ch, domain.ModelInvited{
+		Target:     ch,
 		Nick:       inst.Nick(),
 		InstanceID: inst.ID(),
 		By:         byNick,
@@ -928,8 +928,8 @@ func (s *Session) attachInstanceToChannel(
 			return fmt.Errorf("save channel after mode: %w", err)
 		}
 
-		s.persistAndEmit(ctx, ch, domain.ChannelModeChange{
-			Channel:    ch,
+		s.persistAndEmit(ctx, ch, domain.ModeChange{
+			Target:     ch,
 			Nick:       inst.Nick(),
 			InstanceID: inst.ID(),
 			Mode:       domain.ModeVoice,
@@ -1528,7 +1528,7 @@ func (s *Session) dispatchToInstance(
 			continue
 		}
 
-		eventTime := domain.ChannelEventTime(se.Event)
+		eventTime := domain.EventTime(se.Event)
 		if !joinedAt.IsZero() && eventTime.Before(joinedAt) {
 			continue
 		}
@@ -1663,8 +1663,8 @@ func (s *Session) buildReplies(
 		}
 
 		now := s.now()
-		cm := domain.ChannelMessage{
-			Channel:    channelName,
+		cm := domain.Message{
+			Target:     channelName,
 			From:       nick,
 			InstanceID: instanceID,
 			Body:       body,
@@ -1765,7 +1765,7 @@ func (s *Session) EventsAfter(ctx context.Context, ch domain.ChannelName, after 
 
 	filtered := events[:0]
 	for _, evt := range events {
-		if !domain.ChannelEventTime(evt.Event).Before(after) {
+		if !domain.EventTime(evt.Event).Before(after) {
 			filtered = append(filtered, evt)
 		}
 	}
@@ -1793,7 +1793,7 @@ func (s *Session) EventsBefore(ctx context.Context, ch domain.ChannelName, befor
 // the stored event with its assigned ID. This is used by the UI to
 // persist client-local events (help output, errors, etc.) that
 // don't originate from session operations.
-func (s *Session) LogEvent(ctx context.Context, ch domain.ChannelName, event domain.ChannelEvent) (domain.StoredEvent, error) {
+func (s *Session) LogEvent(ctx context.Context, ch domain.ChannelName, event domain.PersistableEvent) (domain.StoredEvent, error) {
 	id, err := s.store.AppendEvent(ctx, ch, event)
 	if err != nil {
 		return domain.StoredEvent{}, err
@@ -1824,7 +1824,7 @@ func (s *Session) emitUIOnly(evt domain.Event) {
 // destinations — the live `*Instance` and `Actor` fields are
 // `json:"-"` so the persisted shape is the snapshot, while live
 // consumers see the populated handle.
-func (s *Session) persistAndEmit(ctx context.Context, ch domain.ChannelName, evt domain.ChannelEvent) {
+func (s *Session) persistAndEmit(ctx context.Context, ch domain.ChannelName, evt domain.PersistableEvent) {
 	s.appendEvent(ctx, ch, evt)
 	s.emit(ctx, evt)
 }
@@ -1835,7 +1835,7 @@ func (s *Session) persistAndEmit(ctx context.Context, ch domain.ChannelName, evt
 // the session records a fact for replay (mode changes that follow an
 // already-in-flight dispatch) but does not want to retrigger model
 // reactions to it.
-func (s *Session) persistAndEmitUIOnly(ctx context.Context, ch domain.ChannelName, evt domain.ChannelEvent) {
+func (s *Session) persistAndEmitUIOnly(ctx context.Context, ch domain.ChannelName, evt domain.PersistableEvent) {
 	s.appendEvent(ctx, ch, evt)
 	s.emitUIOnly(evt)
 }
@@ -1844,27 +1844,27 @@ func (s *Session) persistAndEmitUIOnly(ctx context.Context, ch domain.ChannelNam
 // starts a background dispatch for the relevant channel.
 func (s *Session) maybeDispatch(ctx context.Context, evt domain.Event) {
 	switch e := evt.(type) {
-	case domain.ChannelMessage:
+	case domain.Message:
 		ircMsg, _ := protocol.FromChannelEvent(e)
 		s.dispatchInBackground(
 			ctx,
-			e.Channel,
+			e.Target,
 			[]protocol.IRCMessage{ircMsg},
 		)
 
-	case domain.ChannelJoin:
+	case domain.Join:
 		ircMsg, _ := protocol.FromChannelEvent(e)
 		s.dispatchInBackground(
 			ctx,
-			e.Channel,
+			e.Target,
 			[]protocol.IRCMessage{ircMsg},
 		)
 
-	case domain.ChannelPart:
+	case domain.Part:
 		ircMsg, _ := protocol.FromChannelEvent(e)
 		s.dispatchInBackground(
 			ctx,
-			e.Channel,
+			e.Target,
 			[]protocol.IRCMessage{ircMsg},
 		)
 
@@ -1914,7 +1914,7 @@ func (s *Session) persistableAutojoinChannels() []domain.ChannelName {
 	return channels
 }
 
-func (s *Session) appendEvent(ctx context.Context, ch domain.ChannelName, event domain.ChannelEvent) {
+func (s *Session) appendEvent(ctx context.Context, ch domain.ChannelName, event domain.PersistableEvent) {
 	if _, err := s.store.AppendEvent(ctx, ch, event); err != nil {
 		slog.Default().ErrorContext(ctx, "append event", "channel", ch, "error", err)
 		s.recordPersistenceFailure(ctx, ch, err)

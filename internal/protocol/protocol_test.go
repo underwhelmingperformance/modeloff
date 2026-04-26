@@ -12,10 +12,10 @@ import (
 func TestFromChannelEvent_join(t *testing.T) {
 	at := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
 
-	got, ok := FromChannelEvent(domain.ChannelJoin{
-		Channel: "#general",
-		Nick:    "alice",
-		At:      at,
+	got, ok := FromChannelEvent(domain.Join{
+		Target: "#general",
+		Nick:   "alice",
+		At:     at,
 	})
 
 	require.True(t, ok)
@@ -30,10 +30,10 @@ func TestFromChannelEvent_join(t *testing.T) {
 func TestFromChannelEvent_part(t *testing.T) {
 	at := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
 
-	got, ok := FromChannelEvent(domain.ChannelPart{
-		Channel: "#general",
-		Nick:    "alice",
-		At:      at,
+	got, ok := FromChannelEvent(domain.Part{
+		Target: "#general",
+		Nick:   "alice",
+		At:     at,
 	})
 
 	require.True(t, ok)
@@ -48,11 +48,11 @@ func TestFromChannelEvent_part(t *testing.T) {
 func TestFromChannelEvent_topic_change(t *testing.T) {
 	at := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
 
-	got, ok := FromChannelEvent(domain.ChannelTopicChange{
-		Channel: "#general",
-		Topic:   "Discussion",
-		By:      "alice",
-		At:      at,
+	got, ok := FromChannelEvent(domain.TopicChange{
+		Target: "#general",
+		Topic:  "Discussion",
+		By:     "alice",
+		At:     at,
 	})
 
 	require.True(t, ok)
@@ -68,8 +68,8 @@ func TestFromChannelEvent_topic_change(t *testing.T) {
 func TestFromChannelEvent_join_with_message(t *testing.T) {
 	at := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
 
-	got, ok := FromChannelEvent(domain.ChannelJoin{
-		Channel: "#general",
+	got, ok := FromChannelEvent(domain.Join{
+		Target:  "#general",
 		Nick:    "alice",
 		Message: "hello everyone",
 		At:      at,
@@ -88,8 +88,8 @@ func TestFromChannelEvent_join_with_message(t *testing.T) {
 func TestFromChannelEvent_part_with_message(t *testing.T) {
 	at := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
 
-	got, ok := FromChannelEvent(domain.ChannelPart{
-		Channel: "#general",
+	got, ok := FromChannelEvent(domain.Part{
+		Target:  "#general",
 		Nick:    "alice",
 		Message: "goodbye",
 		At:      at,
@@ -108,8 +108,8 @@ func TestFromChannelEvent_part_with_message(t *testing.T) {
 func TestFromChannelEvent_quit(t *testing.T) {
 	at := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
 
-	got, ok := FromChannelEvent(domain.ChannelQuit{
-		Channel: "#general",
+	got, ok := FromChannelEvent(domain.Quit{
+		Target:  "#general",
 		Nick:    "alice",
 		Message: "gone fishing",
 		At:      at,
@@ -128,7 +128,7 @@ func TestFromChannelEvent_quit(t *testing.T) {
 func TestFromChannelEvent_nick_change(t *testing.T) {
 	at := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
 
-	got, ok := FromChannelEvent(domain.ChannelNickChange{
+	got, ok := FromChannelEvent(domain.NickChange{
 		OldNick: "alice",
 		NewNick: "ally",
 		At:      at,

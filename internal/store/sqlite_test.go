@@ -318,10 +318,10 @@ func TestSQLiteStore_AppendAndReadEvent(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
 
-	event := domain.ChannelJoin{
-		Channel: "#general",
-		Nick:    "alice",
-		At:      testTime,
+	event := domain.Join{
+		Target: "#general",
+		Nick:   "alice",
+		At:     testTime,
 	}
 
 	id, err := s.AppendEvent(ctx, "#general", event)
@@ -461,15 +461,15 @@ func TestSQLiteStore_Events_type_discriminator_round_trip(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
 
-	events := []domain.ChannelEvent{
-		domain.ChannelMessage{Channel: "#general", From: "alice", Body: "hello", At: testTime},
-		domain.ChannelJoin{Channel: "#general", Nick: "bob", At: testTime},
-		domain.ChannelPart{Channel: "#general", Nick: "bob", At: testTime},
-		domain.ChannelTopicChange{Channel: "#general", Topic: "new", By: "alice", At: testTime},
-		domain.ChannelModeChange{Channel: "#general", Nick: "bob", Mode: domain.ModeVoice, By: "ChanServ", At: testTime},
-		domain.ChannelModelInvited{Channel: "#general", Nick: "botty", By: "alice", At: testTime},
-		domain.ChannelModelKicked{Channel: "#general", Nick: "botty", By: "alice", At: testTime},
-		domain.ChannelNickChange{Channel: "#general", OldNick: "bob", NewNick: "robert", At: testTime},
+	events := []domain.PersistableEvent{
+		domain.Message{Target: "#general", From: "alice", Body: "hello", At: testTime},
+		domain.Join{Target: "#general", Nick: "bob", At: testTime},
+		domain.Part{Target: "#general", Nick: "bob", At: testTime},
+		domain.TopicChange{Target: "#general", Topic: "new", By: "alice", At: testTime},
+		domain.ModeChange{Target: "#general", Nick: "bob", Mode: domain.ModeVoice, By: "ChanServ", At: testTime},
+		domain.ModelInvited{Target: "#general", Nick: "botty", By: "alice", At: testTime},
+		domain.ModelKicked{Target: "#general", Nick: "botty", By: "alice", At: testTime},
+		domain.NickChange{Target: "#general", OldNick: "bob", NewNick: "robert", At: testTime},
 	}
 
 	for _, e := range events {
@@ -480,7 +480,7 @@ func TestSQLiteStore_Events_type_discriminator_round_trip(t *testing.T) {
 	got, err := s.EventsFrom(ctx, "#general", nil, 100)
 	require.NoError(t, err)
 
-	gotEvents := make([]domain.ChannelEvent, len(got))
+	gotEvents := make([]domain.PersistableEvent, len(got))
 	for i, se := range got {
 		gotEvents[i] = se.Event
 	}
@@ -700,8 +700,8 @@ func seedChannelWithEvent(t *testing.T, s *SQLiteStore, ch domain.ChannelName) i
 
 	require.NoError(t, s.SaveChannel(ctx, domain.Channel{Name: ch, Created: testTime}))
 
-	id, err := s.AppendEvent(ctx, ch, domain.ChannelJoin{
-		Channel: ch, Nick: "testuser", At: testTime,
+	id, err := s.AppendEvent(ctx, ch, domain.Join{
+		Target: ch, Nick: "testuser", At: testTime,
 	})
 	require.NoError(t, err)
 
@@ -745,8 +745,8 @@ func TestSQLiteStore_SetLastRead_overwrites(t *testing.T) {
 
 	seedChannelWithEvent(t, s, "#general")
 	// Append a second event to get a different ID.
-	id2, err := s.AppendEvent(ctx, "#general", domain.ChannelMessage{
-		Channel: "#general", From: "alice", Body: "hello", At: testTime,
+	id2, err := s.AppendEvent(ctx, "#general", domain.Message{
+		Target: "#general", From: "alice", Body: "hello", At: testTime,
 	})
 	require.NoError(t, err)
 
@@ -767,8 +767,8 @@ func TestSQLiteStore_Reset(t *testing.T) {
 	require.NoError(t, s.SaveChannel(ctx, domain.Channel{
 		Name: "#general", Kind: domain.KindChannel, Created: testTime,
 	}))
-	eventID, err := s.AppendEvent(ctx, "#general", domain.ChannelJoin{
-		Channel: "#general", Nick: "alice", At: testTime,
+	eventID, err := s.AppendEvent(ctx, "#general", domain.Join{
+		Target: "#general", Nick: "alice", At: testTime,
 	})
 	require.NoError(t, err)
 	require.NoError(t, s.SaveInstance(ctx,
@@ -1207,8 +1207,8 @@ func TestSQLiteStore_Reset_rollback_on_partial_failure(t *testing.T) {
 	require.NoError(t, s.SaveChannel(ctx, domain.Channel{
 		Name: "#general", Kind: domain.KindChannel, Created: testTime,
 	}))
-	eventID, err := s.AppendEvent(ctx, "#general", domain.ChannelJoin{
-		Channel: "#general", Nick: "alice", At: testTime,
+	eventID, err := s.AppendEvent(ctx, "#general", domain.Join{
+		Target: "#general", Nick: "alice", At: testTime,
 	})
 	require.NoError(t, err)
 	require.NoError(t, s.SaveInstance(ctx,
@@ -1256,11 +1256,11 @@ func appendTestEvents(t *testing.T, s *SQLiteStore, ch domain.ChannelName, n int
 	ids := make([]int64, n)
 
 	for i := range n {
-		event := domain.ChannelMessage{
-			Channel: ch,
-			From:    "alice",
-			Body:    "message",
-			At:      testTime.Add(time.Duration(i) * time.Second),
+		event := domain.Message{
+			Target: ch,
+			From:   "alice",
+			Body:   "message",
+			At:     testTime.Add(time.Duration(i) * time.Second),
 		}
 
 		id, err := s.AppendEvent(t.Context(), ch, event)

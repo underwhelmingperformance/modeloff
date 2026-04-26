@@ -95,7 +95,7 @@ func TestChatScreen_DispatchDone_deferred_while_replies_queued(t *testing.T) {
 	require.NoError(t, err)
 	*screen.active = "#general"
 	screen.replyQueue["#general"] = []domain.ModelReplyEvent{
-		{Channel: "#general", Event: domain.ChannelMessage{Channel: "#general", From: "botty", Body: "queued"}},
+		{Channel: "#general", Event: domain.Message{Target: "#general", From: "botty", Body: "queued"}},
 	}
 
 	// With replies still queued, DispatchDone should not clear the
@@ -117,7 +117,7 @@ func TestChatScreen_ModelReply_queues_and_paces(t *testing.T) {
 	// First reply is delivered immediately (via deliverNextReplyMsg).
 	first := domain.ModelReplyEvent{
 		Channel:  "#general",
-		Event:    domain.ChannelMessage{Channel: "#general", From: "botty", Body: "line one"},
+		Event:    domain.Message{Target: "#general", From: "botty", Body: "line one"},
 		Instance: botty,
 	}
 	updated, cmd := screen.handleModelReplyEvent(first)
@@ -136,7 +136,7 @@ func TestChatScreen_ModelReply_queues_and_paces(t *testing.T) {
 	// Second reply is only enqueued; no new delivery trigger.
 	second := domain.ModelReplyEvent{
 		Channel:  "#general",
-		Event:    domain.ChannelMessage{Channel: "#general", From: "botty", Body: "line two"},
+		Event:    domain.Message{Target: "#general", From: "botty", Body: "line two"},
 		Instance: botty,
 	}
 	updated, cmd = screen.handleModelReplyEvent(second)
@@ -188,12 +188,12 @@ func TestChatScreen_ModelReply_paces_per_channel_independently(t *testing.T) {
 	// second is paced behind it.
 	aFirst := domain.ModelReplyEvent{
 		Channel:  "#channel-a",
-		Event:    domain.ChannelMessage{Channel: "#channel-a", From: "botty", Body: "a1"},
+		Event:    domain.Message{Target: "#channel-a", From: "botty", Body: "a1"},
 		Instance: botty,
 	}
 	aSecond := domain.ModelReplyEvent{
 		Channel:  "#channel-a",
-		Event:    domain.ChannelMessage{Channel: "#channel-a", From: "botty", Body: "a2"},
+		Event:    domain.Message{Target: "#channel-a", From: "botty", Body: "a2"},
 		Instance: botty,
 	}
 
@@ -208,7 +208,7 @@ func TestChatScreen_ModelReply_paces_per_channel_independently(t *testing.T) {
 	// delivery — #channel-a's queue does not hold it up.
 	bFirst := domain.ModelReplyEvent{
 		Channel:  "#channel-b",
-		Event:    domain.ChannelMessage{Channel: "#channel-b", From: "botty", Body: "b1"},
+		Event:    domain.Message{Target: "#channel-b", From: "botty", Body: "b1"},
 		Instance: botty,
 	}
 	updated, cmd := screen.handleModelReplyEvent(bFirst)
@@ -274,15 +274,15 @@ func TestChatScreen_parting_channel_purges_reply_queue(t *testing.T) {
 
 	botty := domain.NewModelInstance("bot-1", "botty", "test/model", "", nil)
 	queued := []domain.ModelReplyEvent{
-		{Channel: "#x", Event: domain.ChannelMessage{Channel: "#x", From: "botty", Body: "one"}, Instance: botty},
-		{Channel: "#x", Event: domain.ChannelMessage{Channel: "#x", From: "botty", Body: "two"}, Instance: botty},
+		{Channel: "#x", Event: domain.Message{Target: "#x", From: "botty", Body: "one"}, Instance: botty},
+		{Channel: "#x", Event: domain.Message{Target: "#x", From: "botty", Body: "two"}, Instance: botty},
 	}
 	screen.replyQueue["#x"] = queued
 
 	// User parts #x — the handler drops both the channel and its
 	// pending-reply queue entry.
-	updated, _ := screen.handlePartEvent(domain.ChannelPart{
-		Channel:  "#x",
+	updated, _ := screen.handlePartEvent(domain.Part{
+		Target:   "#x",
 		Instance: sess.UserInstance(),
 	})
 	screen = updated.(ChatScreen)
@@ -331,7 +331,7 @@ func TestChatScreen_handleSessionEvent_routing(t *testing.T) {
 		{
 			name: "ModelReplyEvent routes to delivery",
 			event: domain.ModelReplyEvent{
-				Event:    domain.ChannelMessage{Channel: "#general", From: "botty", Body: "hi"},
+				Event:    domain.Message{Target: "#general", From: "botty", Body: "hi"},
 				Instance: domain.NewModelInstance("bot-1", "botty", "test/model", "", nil),
 			},
 			wantType: deliverNextReplyMsg{},
@@ -401,8 +401,8 @@ func TestChatScreen_ErrorEvent_no_active_channel(t *testing.T) {
 	stored, ok := containsMsg[domain.StoredEvent](msgs)
 	require.True(t, ok, "expected StoredEvent in batch")
 
-	cmdErr, ok := stored.Event.(domain.ChannelCommandError)
-	require.True(t, ok, "expected ChannelCommandError inside StoredEvent, got %T", stored.Event)
+	cmdErr, ok := stored.Event.(domain.CommandError)
+	require.True(t, ok, "expected CommandError inside StoredEvent, got %T", stored.Event)
 	require.Equal(t, "startup failure: no api key", cmdErr.Err)
 }
 
@@ -427,7 +427,7 @@ func TestChatScreen_ErrorEvent_status_channel_guard_renders_as_usage_hint(t *tes
 	stored, ok := containsMsg[domain.StoredEvent](msgs)
 	require.True(t, ok, "expected StoredEvent in batch")
 
-	require.Equal(t, domain.ChannelUsageHint{
+	require.Equal(t, domain.UsageHint{
 		Command: "msg",
 		Usage:   "the status channel doesn't take messages — try /msg <nick> for a model or /join <channel> for a channel",
 		At:      at,
@@ -527,8 +527,8 @@ func TestChatScreen_NickChange_then_Quit_removes_instance(t *testing.T) {
 
 	bot := domain.NewModelInstance("bot-1", "oldnick", "test/model", "", nil)
 
-	_, _ = screen.handleModelInvitedEvent(domain.ChannelModelInvited{
-		Channel:  "#general",
+	_, _ = screen.handleModelInvitedEvent(domain.ModelInvited{
+		Target:   "#general",
 		Instance: bot,
 		By:       "testuser",
 		At:       now,
@@ -548,8 +548,8 @@ func TestChatScreen_NickChange_then_Quit_removes_instance(t *testing.T) {
 	// place via RenameTo so sort order stays correct.
 	bot.SetNick("newnick")
 
-	_, _ = screen.handleNickChangeEvent(domain.ChannelNickChange{
-		Channel:  "#general",
+	_, _ = screen.handleNickChangeEvent(domain.NickChange{
+		Target:   "#general",
 		Instance: bot,
 		OldNick:  "oldnick",
 		NewNick:  "newnick",
@@ -567,7 +567,7 @@ func TestChatScreen_NickChange_then_Quit_removes_instance(t *testing.T) {
 
 	// Quit keyed by the same *Instance pointer cleanly removes the
 	// member regardless of the nick carried on the event.
-	_, _ = screen.handleQuitEvent(domain.ChannelQuit{
+	_, _ = screen.handleQuitEvent(domain.Quit{
 		Instance: bot,
 		At:       now,
 	})

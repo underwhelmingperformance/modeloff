@@ -514,19 +514,19 @@ func (s *SQLiteStore) DeleteChannel(ctx context.Context, name domain.ChannelName
 }
 
 // AppendEvent implements Store.
-func (s *SQLiteStore) AppendEvent(ctx context.Context, ch domain.ChannelName, event domain.ChannelEvent) (int64, error) {
+func (s *SQLiteStore) AppendEvent(ctx context.Context, ch domain.ChannelName, event domain.PersistableEvent) (int64, error) {
 	var id int64
 	err := s.inSpan(ctx, "store.sqlite.append_event",
 		[]attribute.KeyValue{attribute.String(observability.AttrChannel, string(ch))},
 		func(ctx context.Context, _ trace.Span) error {
-			data, err := domain.MarshalChannelEvent(event)
+			data, err := domain.MarshalPersistableEvent(event)
 			if err != nil {
 				return fmt.Errorf("marshal event: %w", err)
 			}
 
 			id, err = execInsert(ctx, s.db,
 				`INSERT INTO events (channel, type, data, at) VALUES (?, ?, ?, ?)`,
-				ch, domain.ChannelEventType(event), string(data), domain.ChannelEventTime(event).Format(time.RFC3339Nano))
+				ch, domain.EventType(event), string(data), domain.EventTime(event).Format(time.RFC3339Nano))
 			return err
 		})
 
@@ -1107,7 +1107,7 @@ func storedEventRow(r rowScanner) (domain.StoredEvent, error) {
 		return domain.StoredEvent{}, err
 	}
 
-	event, err := domain.UnmarshalChannelEvent([]byte(data))
+	event, err := domain.UnmarshalPersistableEvent([]byte(data))
 	if err != nil {
 		return domain.StoredEvent{}, err
 	}

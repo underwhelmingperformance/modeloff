@@ -371,14 +371,14 @@ func (m MessageList[C]) renderedContent(width int) string {
 	return strings.Join(rendered, "\n")
 }
 
-func isDMSuppressedEvent(event domain.ChannelEvent) bool {
+func isDMSuppressedEvent(event domain.PersistableEvent) bool {
 	switch event.(type) {
-	case domain.ChannelJoin,
-		domain.ChannelPart,
-		domain.ChannelModeChange,
-		domain.ChannelTopicChange,
-		domain.ChannelModelInvited,
-		domain.ChannelModelKicked:
+	case domain.Join,
+		domain.Part,
+		domain.ModeChange,
+		domain.TopicChange,
+		domain.ModelInvited,
+		domain.ModelKicked:
 		return true
 	}
 

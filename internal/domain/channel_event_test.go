@@ -14,39 +14,39 @@ func TestChannelEvent_JSON_round_trip(t *testing.T) {
 
 	tests := []struct {
 		name  string
-		event domain.ChannelEvent
+		event domain.PersistableEvent
 	}{
 		{
 			name: "message",
-			event: domain.ChannelMessage{
-				Channel: "#general",
-				From:    "alice",
-				Body:    "hello world",
-				At:      ts,
+			event: domain.Message{
+				Target: "#general",
+				From:   "alice",
+				Body:   "hello world",
+				At:     ts,
 			},
 		},
 		{
 			name: "action message",
-			event: domain.ChannelMessage{
-				Channel: "#general",
-				From:    "alice",
-				Body:    "waves",
-				Action:  true,
-				At:      ts,
+			event: domain.Message{
+				Target: "#general",
+				From:   "alice",
+				Body:   "waves",
+				Action: true,
+				At:     ts,
 			},
 		},
 		{
 			name: "join",
-			event: domain.ChannelJoin{
-				Channel: "#general",
-				Nick:    "bob",
-				At:      ts,
+			event: domain.Join{
+				Target: "#general",
+				Nick:   "bob",
+				At:     ts,
 			},
 		},
 		{
 			name: "join with created",
-			event: domain.ChannelJoin{
-				Channel: "#new",
+			event: domain.Join{
+				Target:  "#new",
 				Nick:    "bob",
 				Created: true,
 				At:      ts,
@@ -54,8 +54,8 @@ func TestChannelEvent_JSON_round_trip(t *testing.T) {
 		},
 		{
 			name: "join with message",
-			event: domain.ChannelJoin{
-				Channel: "#general",
+			event: domain.Join{
+				Target:  "#general",
 				Nick:    "bob",
 				Message: "hello everyone",
 				At:      ts,
@@ -63,16 +63,16 @@ func TestChannelEvent_JSON_round_trip(t *testing.T) {
 		},
 		{
 			name: "part",
-			event: domain.ChannelPart{
-				Channel: "#general",
-				Nick:    "bob",
-				At:      ts,
+			event: domain.Part{
+				Target: "#general",
+				Nick:   "bob",
+				At:     ts,
 			},
 		},
 		{
 			name: "part with message",
-			event: domain.ChannelPart{
-				Channel: "#general",
+			event: domain.Part{
+				Target:  "#general",
 				Nick:    "bob",
 				Message: "see ya later",
 				At:      ts,
@@ -80,8 +80,8 @@ func TestChannelEvent_JSON_round_trip(t *testing.T) {
 		},
 		{
 			name: "quit",
-			event: domain.ChannelQuit{
-				Channel: "#general",
+			event: domain.Quit{
+				Target:  "#general",
 				Nick:    "bob",
 				Message: "gone fishing",
 				At:      ts,
@@ -89,53 +89,53 @@ func TestChannelEvent_JSON_round_trip(t *testing.T) {
 		},
 		{
 			name: "quit without message",
-			event: domain.ChannelQuit{
-				Channel: "#general",
-				Nick:    "bob",
-				At:      ts,
+			event: domain.Quit{
+				Target: "#general",
+				Nick:   "bob",
+				At:     ts,
 			},
 		},
 		{
 			name: "topic change",
-			event: domain.ChannelTopicChange{
-				Channel: "#general",
-				Topic:   "new topic",
-				By:      "alice",
-				At:      ts,
+			event: domain.TopicChange{
+				Target: "#general",
+				Topic:  "new topic",
+				By:     "alice",
+				At:     ts,
 			},
 		},
 		{
 			name: "mode change",
-			event: domain.ChannelModeChange{
-				Channel: "#general",
-				Nick:    "bob",
-				Mode:    domain.ModeVoice,
-				By:      "ChanServ",
-				At:      ts,
+			event: domain.ModeChange{
+				Target: "#general",
+				Nick:   "bob",
+				Mode:   domain.ModeVoice,
+				By:     "ChanServ",
+				At:     ts,
 			},
 		},
 		{
 			name: "model invited",
-			event: domain.ChannelModelInvited{
-				Channel: "#general",
-				Nick:    "botty",
-				By:      "alice",
-				At:      ts,
+			event: domain.ModelInvited{
+				Target: "#general",
+				Nick:   "botty",
+				By:     "alice",
+				At:     ts,
 			},
 		},
 		{
 			name: "model kicked",
-			event: domain.ChannelModelKicked{
-				Channel: "#general",
-				Nick:    "botty",
-				By:      "alice",
-				At:      ts,
+			event: domain.ModelKicked{
+				Target: "#general",
+				Nick:   "botty",
+				By:     "alice",
+				At:     ts,
 			},
 		},
 		{
 			name: "nick change",
-			event: domain.ChannelNickChange{
-				Channel: "#general",
+			event: domain.NickChange{
+				Target:  "#general",
 				OldNick: "bob",
 				NewNick: "robert",
 				At:      ts,
@@ -143,38 +143,38 @@ func TestChannelEvent_JSON_round_trip(t *testing.T) {
 		},
 		{
 			name: "help",
-			event: domain.ChannelHelp{
-				Channel: "#general",
-				At:      ts,
+			event: domain.Help{
+				Target: "#general",
+				At:     ts,
 			},
 		},
 		{
 			name: "whois",
-			event: domain.ChannelWhois{
-				Channel:  "#general",
+			event: domain.Whois{
+				Target:   "#general",
 				Instance: domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil),
 				At:       ts,
 			},
 		},
 		{
 			name: "list output",
-			event: domain.ChannelListOutput{
+			event: domain.ChannelList{
 				Channels: []domain.Channel{{Name: "#general"}, {Name: "#random"}},
 				At:       ts,
 			},
 		},
 		{
 			name: "command error",
-			event: domain.ChannelCommandError{
-				Channel: "#general",
-				Err:     "something went wrong",
-				At:      ts,
+			event: domain.CommandError{
+				Target: "#general",
+				Err:    "something went wrong",
+				At:     ts,
 			},
 		},
 		{
 			name: "usage hint",
-			event: domain.ChannelUsageHint{
-				Channel: "#general",
+			event: domain.UsageHint{
+				Target:  "#general",
 				Command: "invite",
 				Usage:   "/add-model <model-id> [--persona <text>]",
 				At:      ts,
@@ -182,15 +182,15 @@ func TestChannelEvent_JSON_round_trip(t *testing.T) {
 		},
 		{
 			name: "system notice",
-			event: domain.ChannelSystemNotice{
-				Channel: "#general",
-				Text:    "API key saved",
-				At:      ts,
+			event: domain.SystemNotice{
+				Target: "#general",
+				Text:   "API key saved",
+				At:     ts,
 			},
 		},
 		{
 			name: "personas list",
-			event: domain.ChannelPersonasList{
+			event: domain.PersonasList{
 				Personas: []domain.Persona{
 					{ID: "pirate", Description: "A salty sea dog", Origin: domain.PersonaUser},
 					{ID: "wizard", Description: "A wise old mage", Origin: domain.PersonaGenerated},
@@ -202,10 +202,10 @@ func TestChannelEvent_JSON_round_trip(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			data, err := domain.MarshalChannelEvent(tt.event)
+			data, err := domain.MarshalPersistableEvent(tt.event)
 			require.NoError(t, err)
 
-			got, err := domain.UnmarshalChannelEvent(data)
+			got, err := domain.UnmarshalPersistableEvent(data)
 			require.NoError(t, err)
 
 			require.Equal(t, tt.event, got)
@@ -214,12 +214,12 @@ func TestChannelEvent_JSON_round_trip(t *testing.T) {
 }
 
 func TestUnmarshalChannelEvent_unknown_type(t *testing.T) {
-	_, err := domain.UnmarshalChannelEvent([]byte(`{"type":"unknown","data":{}}`))
+	_, err := domain.UnmarshalPersistableEvent([]byte(`{"type":"unknown","data":{}}`))
 	require.Error(t, err)
 	require.EqualError(t, err, `unknown channel event type: "unknown"`)
 }
 
 func TestUnmarshalChannelEvent_invalid_json(t *testing.T) {
-	_, err := domain.UnmarshalChannelEvent([]byte(`not json`))
+	_, err := domain.UnmarshalPersistableEvent([]byte(`not json`))
 	require.Error(t, err)
 }

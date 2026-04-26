@@ -23,8 +23,8 @@ func TestMainLayout_semantic_regions_expose_rendered_sidebar_chat_and_nicklist(t
 	})
 
 	chat := newChatViewWithEvents("#random", "testuser", "", []domain.StoredEvent{
-		{Event: domain.ChannelMessage{Channel: "#random", From: "alice", Body: "hello", At: time.Date(2025, 1, 1, 10, 0, 0, 0, time.UTC)}},
-		{Event: domain.ChannelMessage{Channel: "#random", From: "botty", Body: "hi there", At: time.Date(2025, 1, 1, 10, 1, 0, 0, time.UTC)}},
+		{Event: domain.Message{Target: "#random", From: "alice", Body: "hello", At: time.Date(2025, 1, 1, 10, 0, 0, 0, time.UTC)}},
+		{Event: domain.Message{Target: "#random", From: "botty", Body: "hi there", At: time.Date(2025, 1, 1, 10, 1, 0, 0, time.UTC)}},
 	})
 
 	nicklist := components.NewNickList(members(

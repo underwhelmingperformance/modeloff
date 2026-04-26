@@ -6,11 +6,11 @@ import (
 
 // ModelReplyEvent is emitted when a model instance responds to events
 // in a channel. Instance is the replying instance's handle. The
-// embedded `ChannelMessage` is the prepared message the chat screen
+// embedded `Message` is the prepared message the chat screen
 // will commit to the channel's event log if the user does not abort.
 type ModelReplyEvent struct {
 	Channel  ChannelName
-	Event    ChannelMessage
+	Event    Message
 	Instance *Instance
 	At       time.Time
 }
@@ -76,7 +76,7 @@ type SystemNoticeEvent struct {
 // `chan Event`, so every concrete domain event (persistable
 // `Channel*` types and pure-live types alike) flows through one
 // pipe. Persistability is a per-handler concern: the store accepts
-// only `ChannelEvent` (a subset of `Event` that adds the methods
+// only `PersistableEvent` (a subset of `Event` that adds the methods
 // needed for marshalling and replay), and consumers that handle
 // derived/transient state (dispatch lifecycle, focus changes, etc.)
 // just type-switch on the variants they care about.
@@ -125,7 +125,7 @@ type StatusOpenedEvent struct {
 
 // Pure-live (non-persistable) event types implement Event so they
 // flow through the session's unified event channel without
-// satisfying ChannelEvent. The persistable Channel* types implement
+// satisfying PersistableEvent. The persistable Channel* types implement
 // Event via channel_event.go.
 
 func (ModelReplyEvent) domainEvent()      {}

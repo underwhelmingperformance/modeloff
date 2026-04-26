@@ -26,7 +26,7 @@ type Store interface {
 
 	// Event log
 
-	AppendEvent(ctx context.Context, ch domain.ChannelName, event domain.ChannelEvent) (int64, error)
+	AppendEvent(ctx context.Context, ch domain.ChannelName, event domain.PersistableEvent) (int64, error)
 	EventsBefore(ctx context.Context, ch domain.ChannelName, before *int64, n int) ([]domain.StoredEvent, error)
 	EventsFrom(ctx context.Context, ch domain.ChannelName, from *int64, n int) ([]domain.StoredEvent, error)
 

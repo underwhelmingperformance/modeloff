@@ -33,13 +33,13 @@ func stripLine(s string) string {
 func TestRenderChannelEvent_by_kind(t *testing.T) {
 	at := time.Date(2026, 4, 19, 10, 0, 0, 0, time.UTC)
 
-	message := domain.ChannelMessage{Channel: "#test", From: "alice", Body: "hello", At: at}
-	notice := domain.ChannelSystemNotice{Channel: "#test", Text: "OpenRouter API key saved.", At: at}
-	join := domain.ChannelJoin{Channel: "#test", Nick: "alice", At: at}
+	message := domain.Message{Target: "#test", From: "alice", Body: "hello", At: at}
+	notice := domain.SystemNotice{Target: "#test", Text: "OpenRouter API key saved.", At: at}
+	join := domain.Join{Target: "#test", Nick: "alice", At: at}
 
 	tests := map[string]struct {
 		kind  domain.ChannelKind
-		event domain.ChannelEvent
+		event domain.PersistableEvent
 		want  string
 	}{
 		"channel message":         {kind: domain.KindChannel, event: message, want: "<alice> hello"},
@@ -93,8 +93,8 @@ func TestNickColourSeed_prefers_instance_id(t *testing.T) {
 func TestRenderWhoisEvent_uses_stored_snapshot(t *testing.T) {
 	at := time.Date(2026, 4, 19, 10, 0, 0, 0, time.UTC)
 
-	whois := domain.ChannelWhois{
-		Channel:  "#dev",
+	whois := domain.Whois{
+		Target:   "#dev",
 		Nick:     "alice",
 		ModelID:  "anthropic/claude-3-haiku",
 		Persona:  "a cheerful pirate",
@@ -116,8 +116,8 @@ func TestRenderWhoisEvent_snapshot_takes_precedence_over_live_instance(t *testin
 	// populated, exactly to keep historical /whois lines immutable.
 	live := domain.NewModelInstance("inst-1", "bob", "anthropic/claude-3-haiku", "a grumpy parrot", nil)
 
-	whois := domain.ChannelWhois{
-		Channel:  "#dev",
+	whois := domain.Whois{
+		Target:   "#dev",
 		Nick:     "alice",
 		ModelID:  "anthropic/claude-3-haiku",
 		Persona:  "a cheerful pirate",
@@ -148,8 +148,8 @@ func TestRenderWhoisEvent_legacy_instance_fallback(t *testing.T) {
 
 	inst := domain.NewModelInstance("inst-1", "alice", "anthropic/claude-3-haiku", "a cheerful pirate", nil)
 
-	whois := domain.ChannelWhois{
-		Channel:  "#dev",
+	whois := domain.Whois{
+		Target:   "#dev",
 		Instance: inst,
 		At:       at,
 	}
@@ -160,10 +160,10 @@ func TestRenderWhoisEvent_legacy_instance_fallback(t *testing.T) {
 }
 
 func TestRenderChannelEvent_system_notice_style_changes_by_kind(t *testing.T) {
-	notice := domain.ChannelSystemNotice{
-		Channel: "#test",
-		Text:    "OpenRouter API key saved.",
-		At:      time.Date(2026, 4, 19, 10, 0, 0, 0, time.UTC),
+	notice := domain.SystemNotice{
+		Target: "#test",
+		Text:   "OpenRouter API key saved.",
+		At:     time.Date(2026, 4, 19, 10, 0, 0, 0, time.UTC),
 	}
 
 	render := func(kind domain.ChannelKind) string {

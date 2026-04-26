@@ -30,25 +30,25 @@ func (s ChatScreen) handleSessionEvent(msg sessionEventMsg) (ui.Model, tea.Cmd) 
 	s.bufferEvent(msg.event)
 
 	switch evt := msg.event.(type) {
-	case domain.ChannelJoin:
+	case domain.Join:
 		updated, cmd = s.handleJoinEvent(evt)
-	case domain.ChannelPart:
+	case domain.Part:
 		updated, cmd = s.handlePartEvent(evt)
-	case domain.ChannelQuit:
+	case domain.Quit:
 		updated, cmd = s.handleQuitEvent(evt)
-	case domain.ChannelModeChange:
+	case domain.ModeChange:
 		updated, cmd = s.handleModeChangeEvent(evt)
-	case domain.ChannelMessage:
+	case domain.Message:
 		updated, cmd = s.handleMessageEvent(evt)
-	case domain.ChannelTopicChange:
+	case domain.TopicChange:
 		updated, cmd = s.handleTopicChangeEvent(evt)
-	case domain.ChannelNickChange:
+	case domain.NickChange:
 		updated, cmd = s.handleNickChangeEvent(evt)
-	case domain.ChannelModelInvited:
+	case domain.ModelInvited:
 		updated, cmd = s.handleModelInvitedEvent(evt)
-	case domain.ChannelModelKicked:
+	case domain.ModelKicked:
 		updated, cmd = s.handleModelKickedEvent(evt)
-	case domain.ChannelTopicInfo:
+	case domain.TopicInfo:
 		updated, cmd = s.handleTopicInfoEvent(evt)
 	case domain.ConfigChangedEvent:
 		updated, cmd = s.handleConfigChangedEvent(evt)
@@ -89,14 +89,14 @@ func (s ChatScreen) handleSessionEvent(msg sessionEventMsg) (ui.Model, tea.Cmd) 
 // "you don't see what happened before you joined" rule.
 //
 // SystemNoticeEvent is special-cased because it is a UI carrier
-// for an already-persisted ChannelSystemNotice; the wrapped
+// for an already-persisted SystemNotice; the wrapped
 // Stored.Event lands in the buffer.
 func (s ChatScreen) bufferEvent(evt domain.Event) {
 	switch e := evt.(type) {
 	case domain.SystemNoticeEvent:
 		s.appendToScrollback(e.Channel, e.Stored)
-	case domain.ChannelEvent:
-		ch := domain.ChannelEventTarget(e)
+	case domain.PersistableEvent:
+		ch := domain.EventTarget(e)
 		if ch == "" {
 			return
 		}
@@ -248,17 +248,17 @@ func (s ChatScreen) handleNamesReply(msg domain.NamesReplyEvent) (ui.Model, tea.
 	return s, msgCmd(components.NickListUpdatedMsg{Members: ch.Members})
 }
 
-func (s ChatScreen) handleJoinEvent(msg domain.ChannelJoin) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleJoinEvent(msg domain.Join) (ui.Model, tea.Cmd) {
 	isUser := msg.Instance == s.sess.UserInstance()
-	_, channelKnown := s.channelByName(msg.Channel)
+	_, channelKnown := s.channelByName(msg.Target)
 
 	if !isUser && !channelKnown {
 		return s, nil
 	}
 
-	ch, exists := s.channelByName(msg.Channel)
+	ch, exists := s.channelByName(msg.Target)
 	if !exists {
-		ch = s.syntheticChannel(msg.Channel)
+		ch = s.syntheticChannel(msg.Target)
 		ch.Created = msg.At
 	}
 
@@ -270,7 +270,7 @@ func (s ChatScreen) handleJoinEvent(msg domain.ChannelJoin) (ui.Model, tea.Cmd) 
 
 	if !isUser {
 		var cmds []tea.Cmd
-		if msg.Channel == *s.active {
+		if msg.Target == *s.active {
 			cmds = append(cmds,
 				msgCmd(components.NickListUpdatedMsg{Members: ch.Members}),
 				msgCmd(domain.StoredEvent{Event: msg}),
@@ -291,18 +291,18 @@ func (s ChatScreen) handleJoinEvent(msg domain.ChannelJoin) (ui.Model, tea.Cmd) 
 	// it (the live `bufferEvent` append already happened upstream).
 	cmds := []tea.Cmd{
 		msgCmd(components.ChannelAddedMsg{Channel: ch}),
-		msgCmd(components.ChannelUnreadMsg{Channel: msg.Channel, Count: 0}),
+		msgCmd(components.ChannelUnreadMsg{Channel: msg.Target, Count: 0}),
 	}
 
-	if msg.Channel == *s.active {
+	if msg.Target == *s.active {
 		cmds = append(cmds, msgCmd(domain.StoredEvent{Event: msg}))
 	}
 
 	return s, tea.Batch(cmds...)
 }
 
-func (s ChatScreen) handleModeChangeEvent(msg domain.ChannelModeChange) (ui.Model, tea.Cmd) {
-	ch, ok := s.channelByName(msg.Channel)
+func (s ChatScreen) handleModeChangeEvent(msg domain.ModeChange) (ui.Model, tea.Cmd) {
+	ch, ok := s.channelByName(msg.Target)
 	if !ok {
 		return s, nil
 	}
@@ -310,7 +310,7 @@ func (s ChatScreen) handleModeChangeEvent(msg domain.ChannelModeChange) (ui.Mode
 	ch.Members.SetMode(msg.Instance, msg.Mode)
 	s.channels.Insert(ch)
 
-	if msg.Channel != *s.active {
+	if msg.Target != *s.active {
 		return s, nil
 	}
 
@@ -320,11 +320,11 @@ func (s ChatScreen) handleModeChangeEvent(msg domain.ChannelModeChange) (ui.Mode
 	)
 }
 
-func (s ChatScreen) handlePartEvent(msg domain.ChannelPart) (ui.Model, tea.Cmd) {
-	leavingActive := *s.active == msg.Channel
+func (s ChatScreen) handlePartEvent(msg domain.Part) (ui.Model, tea.Cmd) {
+	leavingActive := *s.active == msg.Target
 
 	// Remove the member from the channel's member list.
-	if ch, ok := s.channelByName(msg.Channel); ok {
+	if ch, ok := s.channelByName(msg.Target); ok {
 		if m, mOK := ch.Members.GetByInstance(msg.Instance); mOK {
 			ch.Members.Remove(m)
 		}
@@ -337,13 +337,13 @@ func (s ChatScreen) handlePartEvent(msg domain.ChannelPart) (ui.Model, tea.Cmd) 
 	// parted channel's queue will no-op via deliverNextReply's
 	// empty-queue branch when they fire.
 	if msg.Instance == s.sess.UserInstance() {
-		s.channels.Remove(s.channelKey(msg.Channel))
-		delete(s.replyQueue, msg.Channel)
+		s.channels.Remove(s.channelKey(msg.Target))
+		delete(s.replyQueue, msg.Target)
 		s.checklist.channelCount = s.channels.Len()
 	}
 
 	var cmds []tea.Cmd
-	cmds = append(cmds, msgCmd(components.ChannelRemovedMsg{Channel: msg.Channel}))
+	cmds = append(cmds, msgCmd(components.ChannelRemovedMsg{Channel: msg.Target}))
 
 	if leavingActive {
 		if s.channels.Len() > 0 {
@@ -378,10 +378,10 @@ func (s ChatScreen) handlePartEvent(msg domain.ChannelPart) (ui.Model, tea.Cmd) 
 		cmds = append(cmds, s.scrollbackCmd(*s.active))
 	}
 
-	if !leavingActive && *s.active == msg.Channel {
+	if !leavingActive && *s.active == msg.Target {
 		cmds = append(cmds, msgCmd(domain.StoredEvent{
-			Event: domain.ChannelPart{
-				Channel: msg.Channel,
+			Event: domain.Part{
+				Target:  msg.Target,
 				Nick:    msg.Instance.Nick(),
 				Message: msg.Message,
 				At:      msg.At,
@@ -392,7 +392,7 @@ func (s ChatScreen) handlePartEvent(msg domain.ChannelPart) (ui.Model, tea.Cmd) 
 	return s, tea.Sequence(cmds...)
 }
 
-func (s ChatScreen) handleQuitEvent(msg domain.ChannelQuit) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleQuitEvent(msg domain.Quit) (ui.Model, tea.Cmd) {
 	// Remove the quitter from every channel's member list.
 	for ch := range s.channels.All() {
 		if m, ok := ch.Members.GetByInstance(msg.Instance); ok {
@@ -418,8 +418,8 @@ func (s ChatScreen) handleQuitEvent(msg domain.ChannelQuit) (ui.Model, tea.Cmd) 
 
 	// Show the quit event in the active channel.
 	if *s.active != "" {
-		cmds = append(cmds, s.logAndShow(domain.ChannelQuit{
-			Channel: *s.active,
+		cmds = append(cmds, s.logAndShow(domain.Quit{
+			Target:  *s.active,
 			Nick:    msg.Instance.Nick(),
 			Message: msg.Message,
 			At:      msg.At,
@@ -429,60 +429,60 @@ func (s ChatScreen) handleQuitEvent(msg domain.ChannelQuit) (ui.Model, tea.Cmd) 
 	return s, tea.Batch(cmds...)
 }
 
-func (s ChatScreen) handleTopicChangeEvent(msg domain.ChannelTopicChange) (ui.Model, tea.Cmd) {
-	if ch, ok := s.channelByName(msg.Channel); ok {
+func (s ChatScreen) handleTopicChangeEvent(msg domain.TopicChange) (ui.Model, tea.Cmd) {
+	if ch, ok := s.channelByName(msg.Target); ok {
 		ch.Topic = msg.Topic
 		ch.TopicSetBy = msg.By
 		ch.TopicSetAt = msg.At
 		s.channels.Insert(ch)
 	}
 
-	if *s.active != msg.Channel {
+	if *s.active != msg.Target {
 		return s, nil
 	}
 
 	return s, tea.Batch(
 		msgCmd(components.TopicUpdatedMsg{Topic: msg.Topic}),
 		msgCmd(domain.StoredEvent{
-			Event: domain.ChannelTopicChange(msg),
+			Event: domain.TopicChange(msg),
 		}),
 	)
 }
 
-func (s ChatScreen) handleTopicInfoEvent(msg domain.ChannelTopicInfo) (ui.Model, tea.Cmd) {
-	if ch, ok := s.channelByName(msg.Channel); ok {
+func (s ChatScreen) handleTopicInfoEvent(msg domain.TopicInfo) (ui.Model, tea.Cmd) {
+	if ch, ok := s.channelByName(msg.Target); ok {
 		ch.Topic = msg.Topic
 		ch.TopicSetBy = msg.TopicSetBy
 		ch.TopicSetAt = msg.TopicSetAt
 		s.channels.Insert(ch)
 	}
 
-	if *s.active != msg.Channel {
+	if *s.active != msg.Target {
 		return s, nil
 	}
 
 	return s, tea.Batch(
 		msgCmd(components.SetChannelMsg{
-			Channel: msg.Channel,
+			Channel: msg.Target,
 			Topic:   msg.Topic,
 			Kind:    s.activeKind(),
 		}),
-		s.logAndShow(domain.ChannelTopicInfo(msg)),
+		s.logAndShow(domain.TopicInfo(msg)),
 	)
 }
 
-func (s ChatScreen) handleNickChangeEvent(msg domain.ChannelNickChange) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleNickChangeEvent(msg domain.NickChange) (ui.Model, tea.Cmd) {
 	// Update the nick snapshot in this channel's local member list.
 	// The instance's own Nick() is already the new value — the
 	// session mutated it before emitting the event.
-	if ch, ok := s.channelByName(msg.Channel); ok {
+	if ch, ok := s.channelByName(msg.Target); ok {
 		if ch.Members.HasInstance(msg.Instance) {
 			ch.Members.RenameTo(msg.Instance, msg.NewNick)
 			s.channels.Insert(ch)
 		}
 	}
 
-	if msg.Channel != *s.active {
+	if msg.Target != *s.active {
 		return s, nil
 	}
 
@@ -493,8 +493,8 @@ func (s ChatScreen) handleNickChangeEvent(msg domain.ChannelNickChange) (ui.Mode
 	}
 
 	cmds = append(cmds, msgCmd(domain.StoredEvent{
-		Event: domain.ChannelNickChange{
-			Channel: msg.Channel,
+		Event: domain.NickChange{
+			Target:  msg.Target,
 			OldNick: msg.OldNick,
 			NewNick: msg.NewNick,
 			At:      msg.At,
@@ -514,8 +514,8 @@ func (s ChatScreen) handleNickChangeEvent(msg domain.ChannelNickChange) (ui.Mode
 	return s, tea.Batch(cmds...)
 }
 
-func (s ChatScreen) handleModelInvitedEvent(msg domain.ChannelModelInvited) (ui.Model, tea.Cmd) {
-	if ch, ok := s.channelByName(msg.Channel); ok {
+func (s ChatScreen) handleModelInvitedEvent(msg domain.ModelInvited) (ui.Model, tea.Cmd) {
+	if ch, ok := s.channelByName(msg.Target); ok {
 		if !ch.Members.HasInstance(msg.Instance) {
 			ch.Members.Add(msg.Instance)
 		}
@@ -532,13 +532,13 @@ func (s ChatScreen) handleModelInvitedEvent(msg domain.ChannelModelInvited) (ui.
 	var cmds []tea.Cmd
 	cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: members}))
 
-	if *s.active == msg.Channel {
+	if *s.active == msg.Target {
 		cmds = append(cmds, msgCmd(domain.StoredEvent{
-			Event: domain.ChannelModelInvited{
-				Channel: msg.Channel,
-				Nick:    msg.Instance.Nick(),
-				By:      msg.By,
-				At:      msg.At,
+			Event: domain.ModelInvited{
+				Target: msg.Target,
+				Nick:   msg.Instance.Nick(),
+				By:     msg.By,
+				At:     msg.At,
 			},
 		}))
 	}
@@ -546,9 +546,9 @@ func (s ChatScreen) handleModelInvitedEvent(msg domain.ChannelModelInvited) (ui.
 	return s, tea.Batch(cmds...)
 }
 
-func (s ChatScreen) handleModelKickedEvent(msg domain.ChannelModelKicked) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleModelKickedEvent(msg domain.ModelKicked) (ui.Model, tea.Cmd) {
 	// Remove the kicked member from the channel's member list.
-	if ch, ok := s.channelByName(msg.Channel); ok {
+	if ch, ok := s.channelByName(msg.Target); ok {
 		if m, mOK := ch.Members.GetByInstance(msg.Instance); mOK {
 			ch.Members.Remove(m)
 		}
@@ -565,13 +565,13 @@ func (s ChatScreen) handleModelKickedEvent(msg domain.ChannelModelKicked) (ui.Mo
 	var cmds []tea.Cmd
 	cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: members}))
 
-	if *s.active == msg.Channel {
+	if *s.active == msg.Target {
 		cmds = append(cmds, msgCmd(domain.StoredEvent{
-			Event: domain.ChannelModelKicked{
-				Channel: msg.Channel,
-				Nick:    msg.Instance.Nick(),
-				By:      msg.By,
-				At:      msg.At,
+			Event: domain.ModelKicked{
+				Target: msg.Target,
+				Nick:   msg.Instance.Nick(),
+				By:     msg.By,
+				At:     msg.At,
 			},
 		}))
 	}
@@ -579,17 +579,17 @@ func (s ChatScreen) handleModelKickedEvent(msg domain.ChannelModelKicked) (ui.Mo
 	return s, tea.Batch(cmds...)
 }
 
-func (s ChatScreen) handleMessageEvent(msg domain.ChannelMessage) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleMessageEvent(msg domain.Message) (ui.Model, tea.Cmd) {
 	event := domain.StoredEvent{Event: msg}
 
-	if msg.Channel == *s.active {
+	if msg.Target == *s.active {
 		return s, msgCmd(event)
 	}
 
-	count, _ := s.sess.UnreadCount(s.ctx, msg.Channel)
+	count, _ := s.sess.UnreadCount(s.ctx, msg.Target)
 	mention := s.isHighlight(msg.Body)
 
-	return s, msgCmd(components.ChannelUnreadMsg{Channel: msg.Channel, Count: count, Mention: mention})
+	return s, msgCmd(components.ChannelUnreadMsg{Channel: msg.Target, Count: count, Mention: mention})
 }
 
 func (s ChatScreen) handleModelReplyEvent(msg domain.ModelReplyEvent) (ui.Model, tea.Cmd) {
@@ -629,10 +629,10 @@ func (s ChatScreen) handleDMOpenedEvent(msg domain.DMOpenedEvent) (ui.Model, tea
 	cmds = append(cmds, s.persistLastChannel(msg.Channel.Name))
 	cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: members}))
 	cmds = append(cmds, s.scrollbackCmd(msg.Channel.Name))
-	cmds = append(cmds, s.logAndShow(domain.ChannelSystemNotice{
-		Channel: msg.Channel.Name,
-		Text:    fmt.Sprintf("Opened direct message with %s", msg.Nick),
-		At:      msg.At,
+	cmds = append(cmds, s.logAndShow(domain.SystemNotice{
+		Target: msg.Channel.Name,
+		Text:   fmt.Sprintf("Opened direct message with %s", msg.Nick),
+		At:     msg.At,
 	}))
 
 	return s, tea.Sequence(cmds...)
@@ -643,10 +643,10 @@ func (s ChatScreen) handleConfigChangedEvent(msg domain.ConfigChangedEvent) (ui.
 		return s, nil
 	}
 
-	return s, s.logAndShow(domain.ChannelSystemNotice{
-		Channel: *s.active,
-		Text:    msg.Operation,
-		At:      msg.At,
+	return s, s.logAndShow(domain.SystemNotice{
+		Target: *s.active,
+		Text:   msg.Operation,
+		At:     msg.At,
 	})
 }
 
@@ -658,17 +658,17 @@ func (s ChatScreen) handleErrorEvent(msg domain.ErrorEvent) (ui.Model, tea.Cmd) 
 	// command-tagged usage text rather than a red command-error.
 	var guard domain.StatusChannelGuardError
 	if errors.As(msg.Err, &guard) {
-		cmds = append(cmds, s.logAndShow(domain.ChannelUsageHint{
-			Channel: *s.active,
+		cmds = append(cmds, s.logAndShow(domain.UsageHint{
+			Target:  *s.active,
 			Command: guard.Command,
 			Usage:   guard.Hint,
 			At:      msg.At,
 		}))
 	} else {
-		cmds = append(cmds, s.logAndShow(domain.ChannelCommandError{
-			Channel: *s.active,
-			Err:     fmt.Sprintf("%s: %s", msg.Operation, msg.Err),
-			At:      msg.At,
+		cmds = append(cmds, s.logAndShow(domain.CommandError{
+			Target: *s.active,
+			Err:    fmt.Sprintf("%s: %s", msg.Operation, msg.Err),
+			At:     msg.At,
 		}))
 	}
 
@@ -821,10 +821,10 @@ func (s ChatScreen) handleLiveModelsLoadFailed(msg liveModelsLoadFailedMsg) (ui.
 		"error", msg.err,
 	)
 
-	return s, s.logAndShowOn(channel, domain.ChannelSystemNotice{
-		Channel: channel,
-		Text:    fmt.Sprintf("Model list unavailable: %s.", msg.err),
-		At:      time.Now(),
+	return s, s.logAndShowOn(channel, domain.SystemNotice{
+		Target: channel,
+		Text:   fmt.Sprintf("Model list unavailable: %s.", msg.err),
+		At:     time.Now(),
 	})
 }
 

@@ -92,7 +92,7 @@ const liveModelsUnavailableNotice = "Model list unavailable: upstream 503."
 // withAt returns a copy of n with its `At` field replaced by at,
 // letting callers write one structural equality check without
 // threading time.Now() through the test.
-func withAt(n domain.ChannelSystemNotice, at time.Time) domain.ChannelSystemNotice {
+func withAt(n domain.SystemNotice, at time.Time) domain.SystemNotice {
 	n.At = at
 	return n
 }
@@ -141,12 +141,12 @@ func TestChatScreen_handleLiveModelsLoadFailed(t *testing.T) {
 			stored, ok := containsMsg[domain.StoredEvent](msgs)
 			require.True(t, ok, "expected StoredEvent in batch, got %v", msgs)
 
-			notice, ok := stored.Event.(domain.ChannelSystemNotice)
-			require.True(t, ok, "expected ChannelSystemNotice, got %T", stored.Event)
+			notice, ok := stored.Event.(domain.SystemNotice)
+			require.True(t, ok, "expected SystemNotice, got %T", stored.Event)
 
-			want := domain.ChannelSystemNotice{
-				Channel: tc.expectedChannel,
-				Text:    liveModelsUnavailableNotice,
+			want := domain.SystemNotice{
+				Target: tc.expectedChannel,
+				Text:   liveModelsUnavailableNotice,
 			}
 			require.Equal(t, withAt(want, notice.At), notice)
 			require.WithinDuration(t, time.Now(), notice.At, time.Second)
@@ -162,7 +162,7 @@ func TestChatScreen_handleLiveModelsLoadFailed(t *testing.T) {
 					got[i].At = notice.At
 				}
 			}
-			require.Equal(t, []domain.ChannelSystemNotice{withAt(want, notice.At)}, got)
+			require.Equal(t, []domain.SystemNotice{withAt(want, notice.At)}, got)
 
 			rec, found := logs.find("live models load failed")
 			require.True(t, found, "expected slog record, got %v", logs.all())
@@ -233,10 +233,10 @@ func TestChatScreen_APIKeySetResult_clears_live_models_and_resets_state(t *testi
 	}
 }
 
-func filterSystemNotices(events []domain.StoredEvent) []domain.ChannelSystemNotice {
-	var notices []domain.ChannelSystemNotice
+func filterSystemNotices(events []domain.StoredEvent) []domain.SystemNotice {
+	var notices []domain.SystemNotice
 	for _, evt := range events {
-		if n, ok := evt.Event.(domain.ChannelSystemNotice); ok {
+		if n, ok := evt.Event.(domain.SystemNotice); ok {
 			notices = append(notices, n)
 		}
 	}

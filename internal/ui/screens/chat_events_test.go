@@ -66,8 +66,8 @@ func TestChatScreen_PartEvent_leaving_non_active_keeps_active(t *testing.T) {
 	tm.Send(domain.ChannelFocusEvent{Channel: "#general"})
 	tm.WaitFor("Created channel #general")
 
-	tm.Send(domain.ChannelPart{
-		Channel:  "#random",
+	tm.Send(domain.Part{
+		Target:   "#random",
 		Instance: sess.UserInstance(),
 		At:       time.Now(),
 	})
@@ -92,11 +92,11 @@ func TestChatScreen_TopicChangeEvent_different_channel(t *testing.T) {
 	tm.Send(domain.ChannelFocusEvent{Channel: "#general"})
 	tm.WaitFor("Created channel #general")
 
-	tm.Send(domain.ChannelTopicChange{
-		Channel: "#random",
-		Topic:   "Random topic",
-		By:      "someone",
-		At:      time.Now(),
+	tm.Send(domain.TopicChange{
+		Target: "#random",
+		Topic:  "Random topic",
+		By:     "someone",
+		At:     time.Now(),
 	})
 
 	view := tm.CurrentView()
@@ -123,7 +123,7 @@ func TestChatScreen_QuitEvent_shows_quit_message(t *testing.T) {
 	// context to render against.
 	tm.WaitFor("Created channel #general", "fakenick has joined #general")
 
-	tm.Send(domain.ChannelQuit{
+	tm.Send(domain.Quit{
 		Instance: inst,
 		Message:  "shutting down",
 		At:       time.Now(),
@@ -147,7 +147,7 @@ func TestChatScreen_QuitEvent_removes_instance_from_nick_list(t *testing.T) {
 	// context to render against.
 	tm.WaitFor("Created channel #general", "fakenick has joined #general")
 
-	tm.Send(domain.ChannelQuit{
+	tm.Send(domain.Quit{
 		Instance: inst,
 		Message:  "",
 		At:       time.Now(),
@@ -178,19 +178,19 @@ func TestChatScreen_ignores_join_for_unknown_channel(t *testing.T) {
 	tm.WaitFor("Created channel #general")
 
 	// A model joins a channel the user isn't in.
-	tm.Send(domain.ChannelJoin{
-		Channel:  "#secret",
+	tm.Send(domain.Join{
+		Target:   "#secret",
 		Instance: domain.NewModelInstance("bot-1", "botty", "test/model", "", nil),
 		At:       time.Now(),
 	})
 
 	// Send a subsequent event to #general to ensure the join event
 	// has been fully processed before we inspect the view.
-	tm.Send(domain.ChannelMessage{
-		Channel: "#general",
-		From:    "alice",
-		Body:    "sync marker",
-		At:      time.Now(),
+	tm.Send(domain.Message{
+		Target: "#general",
+		From:   "alice",
+		Body:   "sync marker",
+		At:     time.Now(),
 	})
 	tm.WaitFor("sync marker")
 
@@ -215,18 +215,18 @@ func TestChatScreen_model_join_does_not_switch_active(t *testing.T) {
 	tm.WaitFor("Created channel #general")
 
 	// A model joins #random (which the user is in).
-	tm.Send(domain.ChannelJoin{
-		Channel:  "#random",
+	tm.Send(domain.Join{
+		Target:   "#random",
 		Instance: domain.NewModelInstance("bot-1", "botty", "test/model", "", nil),
 		At:       time.Now(),
 	})
 
 	// Send a subsequent event to ensure the join event has been processed.
-	tm.Send(domain.ChannelMessage{
-		Channel: "#general",
-		From:    "alice",
-		Body:    "sync marker",
-		At:      time.Now(),
+	tm.Send(domain.Message{
+		Target: "#general",
+		From:   "alice",
+		Body:   "sync marker",
+		At:     time.Now(),
 	})
 	tm.WaitFor("sync marker")
 
@@ -259,24 +259,24 @@ func TestChatScreen_rapid_switch_does_not_revert(t *testing.T) {
 	// Simulate rapid switch: JoinEvents from two switches arrive
 	// back to back. With the fix, these no longer change the active
 	// channel — they only update the sidebar.
-	tm.Send(domain.ChannelJoin{
-		Channel:  "#random",
+	tm.Send(domain.Join{
+		Target:   "#random",
 		Instance: sess.UserInstance(),
 		At:       time.Now(),
 	})
-	tm.Send(domain.ChannelJoin{
-		Channel:  "#general",
+	tm.Send(domain.Join{
+		Target:   "#general",
 		Instance: sess.UserInstance(),
 		At:       time.Now(),
 	})
 
 	// Send a sync marker to #chat to ensure the JoinEvents have
 	// been fully processed.
-	tm.Send(domain.ChannelMessage{
-		Channel: "#chat",
-		From:    "alice",
-		Body:    "sync marker",
-		At:      time.Now(),
+	tm.Send(domain.Message{
+		Target: "#chat",
+		From:   "alice",
+		Body:   "sync marker",
+		At:     time.Now(),
 	})
 	tm.WaitFor("sync marker")
 
@@ -362,19 +362,19 @@ func TestChatScreen_MessageEvent_inactive_channel(t *testing.T) {
 	tm.Send(domain.ChannelFocusEvent{Channel: "#general"})
 	tm.WaitFor("Created channel #general")
 
-	tm.Send(domain.ChannelMessage{
-		Channel: "#random",
-		From:    "bob",
-		Body:    "hello from random",
+	tm.Send(domain.Message{
+		Target: "#random",
+		From:   "bob",
+		Body:   "hello from random",
 	})
 
 	// Send a sync marker to #general to ensure the MessageEvent
 	// for #random has been fully processed.
-	tm.Send(domain.ChannelMessage{
-		Channel: "#general",
-		From:    "alice",
-		Body:    "sync marker",
-		At:      time.Now(),
+	tm.Send(domain.Message{
+		Target: "#general",
+		From:   "alice",
+		Body:   "sync marker",
+		At:     time.Now(),
 	})
 	tm.WaitFor("sync marker")
 

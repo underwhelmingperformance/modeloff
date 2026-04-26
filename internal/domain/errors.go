@@ -54,7 +54,7 @@ func (e UnsupportedModelError) Error() string {
 // StatusChannelGuardError indicates a request was refused because it
 // targeted the per-session status channel (`&modeloff`). It carries a
 // command tag and a human-friendly hint that the UI surfaces as a
-// ChannelUsageHint rather than a hard error.
+// UsageHint rather than a hard error.
 type StatusChannelGuardError struct {
 	Command string
 	Hint    string

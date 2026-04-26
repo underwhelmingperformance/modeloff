@@ -29,13 +29,13 @@ func (k testKind) ChannelKind() domain.ChannelKind { return domain.ChannelKind(k
 const testKindChannel = testKind(domain.KindChannel)
 
 var testEvents = []domain.StoredEvent{
-	{Event: domain.ChannelMessage{Channel: "#general", From: "alice", Body: "hello", At: time.Date(2025, 1, 1, 10, 0, 0, 0, time.UTC)}},
-	{Event: domain.ChannelMessage{Channel: "#general", From: "bob", Body: "hi there", At: time.Date(2025, 1, 1, 10, 1, 0, 0, time.UTC)}},
-	{Event: domain.ChannelMessage{Channel: "#general", From: "alice", Body: "how are you?", At: time.Date(2025, 1, 1, 10, 2, 0, 0, time.UTC)}},
+	{Event: domain.Message{Target: "#general", From: "alice", Body: "hello", At: time.Date(2025, 1, 1, 10, 0, 0, 0, time.UTC)}},
+	{Event: domain.Message{Target: "#general", From: "bob", Body: "hi there", At: time.Date(2025, 1, 1, 10, 1, 0, 0, time.UTC)}},
+	{Event: domain.Message{Target: "#general", From: "alice", Body: "how are you?", At: time.Date(2025, 1, 1, 10, 2, 0, 0, time.UTC)}},
 }
 
 // messagesToEvents converts channel messages into stored events.
-func messagesToEvents(msgs []domain.ChannelMessage) []domain.StoredEvent {
+func messagesToEvents(msgs []domain.Message) []domain.StoredEvent {
 	events := make([]domain.StoredEvent, len(msgs))
 
 	for i, m := range msgs {
@@ -272,7 +272,7 @@ func TestChatView_clear_messages_removes_visible_messages(t *testing.T) {
 
 func TestChatView_View_fits_available_width_with_input_prefix(t *testing.T) {
 	cv := newChatViewWithEvents("#general", "testuser", "", []domain.StoredEvent{
-		{Event: domain.ChannelJoin{Channel: "#general", Nick: "testuser"}},
+		{Event: domain.Join{Target: "#general", Nick: "testuser"}},
 	})
 
 	v := cv.View(40, 10)
@@ -330,7 +330,7 @@ func TestChatView_View_uses_strftime_timestamp_format(t *testing.T) {
 func TestChatView_View_wraps_long_messages(t *testing.T) {
 	longBody := strings.Repeat("word ", 30)
 	events := []domain.StoredEvent{
-		{Event: domain.ChannelMessage{Channel: "#general", From: "alice", Body: longBody, At: time.Date(2025, 1, 1, 10, 0, 0, 0, time.UTC)}},
+		{Event: domain.Message{Target: "#general", From: "alice", Body: longBody, At: time.Date(2025, 1, 1, 10, 0, 0, 0, time.UTC)}},
 	}
 
 	cv := newChatViewWithEvents("#general", "testuser", "", events)
@@ -394,7 +394,7 @@ func TestChatView_command_from_input(t *testing.T) {
 func TestChatView_messages_updated(t *testing.T) {
 	updatedAt := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
 	cv := newChatViewWithEvents("#general", "testuser", "", []domain.StoredEvent{
-		{Event: domain.ChannelMessage{Channel: "#general", From: "charlie", Body: "new message", At: updatedAt}},
+		{Event: domain.Message{Target: "#general", From: "charlie", Body: "new message", At: updatedAt}},
 	})
 
 	v := cv.View(80, 24)
@@ -408,7 +408,7 @@ func TestChatView_original_messages_persist(t *testing.T) {
 
 	// Append a new event — original messages should still be present.
 	m, _ = m.Update(domain.StoredEvent{
-		Event: domain.ChannelMessage{Channel: "#general", From: "charlie", Body: "extra", At: appendAt},
+		Event: domain.Message{Target: "#general", From: "charlie", Body: "extra", At: appendAt},
 	})
 
 	v := m.View(80, 24)
@@ -426,7 +426,7 @@ func TestChatView_append_event(t *testing.T) {
 	appendAt := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
 
 	m, _ = m.Update(domain.StoredEvent{
-		Event: domain.ChannelMessage{Channel: "#general", From: "dave", Body: "appended message", At: appendAt},
+		Event: domain.Message{Target: "#general", From: "dave", Body: "appended message", At: appendAt},
 	})
 
 	v := m.View(80, 24)
@@ -440,12 +440,12 @@ func TestChatView_append_event(t *testing.T) {
 
 func TestChatView_scroll(t *testing.T) {
 	// Create many messages to fill the view.
-	msgs := make([]domain.ChannelMessage, 30)
+	msgs := make([]domain.Message, 30)
 	for i := range msgs {
-		msgs[i] = domain.ChannelMessage{
-			Channel: "#general",
-			From:    "user",
-			Body:    fmt.Sprintf("message %d", i),
+		msgs[i] = domain.Message{
+			Target: "#general",
+			From:   "user",
+			Body:   fmt.Sprintf("message %d", i),
 		}
 	}
 
@@ -470,12 +470,12 @@ func TestChatView_scroll(t *testing.T) {
 }
 
 func TestChatView_scroll_indicator(t *testing.T) {
-	msgs := make([]domain.ChannelMessage, 30)
+	msgs := make([]domain.Message, 30)
 	for i := range msgs {
-		msgs[i] = domain.ChannelMessage{
-			Channel: "#general",
-			From:    "user",
-			Body:    fmt.Sprintf("message %d", i),
+		msgs[i] = domain.Message{
+			Target: "#general",
+			From:   "user",
+			Body:   fmt.Sprintf("message %d", i),
 		}
 	}
 
@@ -504,12 +504,12 @@ func TestChatView_scroll_indicator(t *testing.T) {
 }
 
 func TestChatView_ctrl_arrow_scroll(t *testing.T) {
-	msgs := make([]domain.ChannelMessage, 30)
+	msgs := make([]domain.Message, 30)
 	for i := range msgs {
-		msgs[i] = domain.ChannelMessage{
-			Channel: "#general",
-			From:    "user",
-			Body:    fmt.Sprintf("message %d", i),
+		msgs[i] = domain.Message{
+			Target: "#general",
+			From:   "user",
+			Body:   fmt.Sprintf("message %d", i),
 		}
 	}
 
@@ -547,12 +547,12 @@ func TestChatView_scroll_does_not_go_negative(t *testing.T) {
 }
 
 func TestChatView_arrow_keys_stay_with_input(t *testing.T) {
-	msgs := make([]domain.ChannelMessage, 30)
+	msgs := make([]domain.Message, 30)
 	for i := range msgs {
-		msgs[i] = domain.ChannelMessage{
-			Channel: "#general",
-			From:    "user",
-			Body:    fmt.Sprintf("message %d", i),
+		msgs[i] = domain.Message{
+			Target: "#general",
+			From:   "user",
+			Body:   fmt.Sprintf("message %d", i),
 		}
 	}
 
@@ -611,8 +611,8 @@ func TestChatView_nicks_use_hashed_colours(t *testing.T) {
 func renderNick(t *testing.T, nick, body string) string {
 	t.Helper()
 
-	cv := newChatViewWithEvents("#general", "user", "", messagesToEvents([]domain.ChannelMessage{
-		{Channel: "#general", From: domain.Nick(nick), Body: body},
+	cv := newChatViewWithEvents("#general", "user", "", messagesToEvents([]domain.Message{
+		{Target: "#general", From: domain.Nick(nick), Body: body},
 	}))
 
 	lines := rawRenderedLines(cv.View(80, 24))
@@ -676,11 +676,11 @@ func TestChatView_dm_hides_topic_bar(t *testing.T) {
 func TestChatView_dm_suppresses_join_part_events(t *testing.T) {
 	now := time.Date(2025, 1, 1, 10, 0, 0, 0, time.UTC)
 	events := []domain.StoredEvent{
-		{Event: domain.ChannelJoin{Channel: "botname", Nick: "testuser", At: now}},
-		{Event: domain.ChannelPart{Channel: "botname", Nick: "testuser", At: now}},
-		{Event: domain.ChannelModeChange{Channel: "botname", Nick: "testuser", Mode: domain.ModeOp, By: "ChanServ", At: now}},
-		{Event: domain.ChannelTopicChange{Channel: "botname", Topic: "x", By: "testuser", At: now}},
-		{Event: domain.ChannelMessage{Channel: "botname", From: "bot", Body: "hello human", At: now}},
+		{Event: domain.Join{Target: "botname", Nick: "testuser", At: now}},
+		{Event: domain.Part{Target: "botname", Nick: "testuser", At: now}},
+		{Event: domain.ModeChange{Target: "botname", Nick: "testuser", Mode: domain.ModeOp, By: "ChanServ", At: now}},
+		{Event: domain.TopicChange{Target: "botname", Topic: "x", By: "testuser", At: now}},
+		{Event: domain.Message{Target: "botname", From: "bot", Body: "hello human", At: now}},
 	}
 
 	cv := components.NewChatView[testKind]("botname", domain.KindChannel, "testuser", "")
@@ -701,7 +701,7 @@ func TestChatView_dm_suppresses_join_part_events(t *testing.T) {
 func TestChatView_dm_shows_quit_messages(t *testing.T) {
 	now := time.Date(2025, 1, 1, 10, 0, 0, 0, time.UTC)
 	events := []domain.StoredEvent{
-		{Event: domain.ChannelQuit{Nick: "bot", Message: "goodbye", At: now}},
+		{Event: domain.Quit{Nick: "bot", Message: "goodbye", At: now}},
 	}
 
 	cv := components.NewChatView[testKind]("botname", domain.KindChannel, "testuser", "")
@@ -752,12 +752,12 @@ func TestChatView_no_topic_bar_when_empty(t *testing.T) {
 }
 
 func TestChatView_topic_bar_reduces_message_area(t *testing.T) {
-	msgs := make([]domain.ChannelMessage, 30)
+	msgs := make([]domain.Message, 30)
 	for i := range msgs {
-		msgs[i] = domain.ChannelMessage{
-			Channel: "#general",
-			From:    "user",
-			Body:    fmt.Sprintf("msg %d", i),
+		msgs[i] = domain.Message{
+			Target: "#general",
+			From:   "user",
+			Body:   fmt.Sprintf("msg %d", i),
 		}
 	}
 
@@ -836,12 +836,12 @@ func TestChatView_pending_indicator(t *testing.T) {
 }
 
 func TestChatView_pending_indicator_reduces_message_area(t *testing.T) {
-	msgs := make([]domain.ChannelMessage, 30)
+	msgs := make([]domain.Message, 30)
 	for i := range msgs {
-		msgs[i] = domain.ChannelMessage{
-			Channel: "#general",
-			From:    "user",
-			Body:    fmt.Sprintf("msg %d", i),
+		msgs[i] = domain.Message{
+			Target: "#general",
+			From:   "user",
+			Body:   fmt.Sprintf("msg %d", i),
 		}
 	}
 
@@ -899,58 +899,58 @@ func TestRenderLine_IRC_events(t *testing.T) {
 	}{
 		{
 			"join",
-			domain.StoredEvent{Event: domain.ChannelJoin{Channel: "#general", Nick: "alice", At: now}},
+			domain.StoredEvent{Event: domain.Join{Target: "#general", Nick: "alice", At: now}},
 			"*** alice has joined #general",
 		},
 		{
 			"join_created",
-			domain.StoredEvent{Event: domain.ChannelJoin{Channel: "#general", Nick: "alice", Created: true, At: now}},
+			domain.StoredEvent{Event: domain.Join{Target: "#general", Nick: "alice", Created: true, At: now}},
 			"*** Created channel #general",
 		},
 		{
 			"part",
-			domain.StoredEvent{Event: domain.ChannelPart{Channel: "#general", Nick: "alice", At: now}},
+			domain.StoredEvent{Event: domain.Part{Target: "#general", Nick: "alice", At: now}},
 			"*** alice has left #general",
 		},
 		{
 			"part_with_message",
-			domain.StoredEvent{Event: domain.ChannelPart{Channel: "#general", Nick: "alice", Message: "see you later", At: now}},
+			domain.StoredEvent{Event: domain.Part{Target: "#general", Nick: "alice", Message: "see you later", At: now}},
 			"*** alice has left #general (see you later)",
 		},
 		{
 			"quit",
-			domain.StoredEvent{Event: domain.ChannelQuit{Channel: "#general", Nick: "alice", At: now}},
+			domain.StoredEvent{Event: domain.Quit{Target: "#general", Nick: "alice", At: now}},
 			"*** alice has quit",
 		},
 		{
 			"quit_with_message",
-			domain.StoredEvent{Event: domain.ChannelQuit{Channel: "#general", Nick: "alice", Message: "shutting down", At: now}},
+			domain.StoredEvent{Event: domain.Quit{Target: "#general", Nick: "alice", Message: "shutting down", At: now}},
 			"*** alice has quit (shutting down)",
 		},
 		{
 			"nick_change",
-			domain.StoredEvent{Event: domain.ChannelNickChange{Channel: "#test", OldNick: "alice", NewNick: "bob", At: now}},
+			domain.StoredEvent{Event: domain.NickChange{Target: "#test", OldNick: "alice", NewNick: "bob", At: now}},
 			"*** alice is now known as bob",
 		},
 		{
 			"topic_set_with_author",
-			domain.StoredEvent{Event: domain.ChannelTopicChange{Channel: "#general", Topic: "cool topic", By: "alice", At: now}},
+			domain.StoredEvent{Event: domain.TopicChange{Target: "#general", Topic: "cool topic", By: "alice", At: now}},
 			"*** topic for #general set by alice: cool topic",
 		},
 		{
 			"topic_set_no_author",
-			domain.StoredEvent{Event: domain.ChannelTopicChange{Channel: "#general", Topic: "cool topic", At: now}},
+			domain.StoredEvent{Event: domain.TopicChange{Target: "#general", Topic: "cool topic", At: now}},
 			"*** topic for #general set to: cool topic",
 		},
 		{
 			"topic_cleared",
-			domain.StoredEvent{Event: domain.ChannelTopicChange{Channel: "#general", Topic: "", By: "alice", At: now}},
+			domain.StoredEvent{Event: domain.TopicChange{Target: "#general", Topic: "", By: "alice", At: now}},
 			"*** topic for #general cleared by alice",
 		},
 		{
 			"topic_info_with_metadata",
-			domain.StoredEvent{Event: domain.ChannelTopicInfo{
-				Channel: "#general", Topic: "cool topic",
+			domain.StoredEvent{Event: domain.TopicInfo{
+				Target: "#general", Topic: "cool topic",
 				TopicSetBy: "alice", TopicSetAt: time.Date(2026, 4, 4, 23, 30, 0, 0, time.UTC),
 				At: now,
 			}},
@@ -958,31 +958,31 @@ func TestRenderLine_IRC_events(t *testing.T) {
 		},
 		{
 			"topic_info_no_topic",
-			domain.StoredEvent{Event: domain.ChannelTopicInfo{Channel: "#general", At: now}},
+			domain.StoredEvent{Event: domain.TopicInfo{Target: "#general", At: now}},
 			"*** No topic set for #general",
 		},
 		{
 			"mode_change",
-			domain.StoredEvent{Event: domain.ChannelModeChange{
-				Channel: "#general", Nick: "botty", Mode: domain.ModeVoice, By: "ChanServ", At: now,
+			domain.StoredEvent{Event: domain.ModeChange{
+				Target: "#general", Nick: "botty", Mode: domain.ModeVoice, By: "ChanServ", At: now,
 			}},
 			"*** ChanServ sets mode +v botty",
 		},
 		{
 			"model_invited",
-			domain.StoredEvent{Event: domain.ChannelModelInvited{
-				Channel: "#general", Nick: "botty", By: "alice", At: now,
+			domain.StoredEvent{Event: domain.ModelInvited{
+				Target: "#general", Nick: "botty", By: "alice", At: now,
 			}},
 			"*** botty has joined #general",
 		},
 		{
 			"model_kicked",
-			domain.StoredEvent{Event: domain.ChannelModelKicked{Channel: "#general", Nick: "botty", By: "someone", At: now}},
+			domain.StoredEvent{Event: domain.ModelKicked{Target: "#general", Nick: "botty", By: "someone", At: now}},
 			"*** botty was kicked from #general by someone",
 		},
 		{
 			"action_message",
-			domain.StoredEvent{Event: domain.ChannelMessage{Channel: "#test", From: "alice", Body: "waves", Action: true, At: now}},
+			domain.StoredEvent{Event: domain.Message{Target: "#test", From: "alice", Body: "waves", Action: true, At: now}},
 			"* alice waves",
 		},
 	}
@@ -991,7 +991,7 @@ func TestRenderLine_IRC_events(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got := renderSingleEvent(tt.event)
 			want := tt.want
-			if event, ok := tt.event.Event.(domain.ChannelMessage); ok && event.Action {
+			if event, ok := tt.event.Event.(domain.Message); ok && event.Action {
 				want = fmt.Sprintf("%s * alice waves", event.At.Format("2006-01-02 15:04"))
 			}
 
@@ -1010,8 +1010,8 @@ func TestRenderLine_topic_info_omits_timestamp_when_disabled(t *testing.T) {
 		Locale: language.BritishEnglish,
 	})
 	m, _ = m.Update(components.HistoryLoadedMsg{Events: []domain.StoredEvent{{
-		Event: domain.ChannelTopicInfo{
-			Channel:    "#general",
+		Event: domain.TopicInfo{
+			Target:     "#general",
 			Topic:      "cool topic",
 			TopicSetBy: "alice",
 			TopicSetAt: time.Date(2026, 4, 4, 23, 30, 0, 0, time.UTC),
@@ -1034,7 +1034,7 @@ func TestRenderLine_application_feedback(t *testing.T) {
 	}{
 		{
 			"help",
-			domain.StoredEvent{Event: domain.ChannelHelp{Channel: "#test", At: now}},
+			domain.StoredEvent{Event: domain.Help{Target: "#test", At: now}},
 			[]string{
 				"*** /join <channel>                  Join or create a channel",
 				"*** /help                            Show available commands.",
@@ -1044,7 +1044,7 @@ func TestRenderLine_application_feedback(t *testing.T) {
 		},
 		{
 			"channel_list",
-			domain.StoredEvent{Event: domain.ChannelListOutput{Channels: []domain.Channel{
+			domain.StoredEvent{Event: domain.ChannelList{Channels: []domain.Channel{
 				{Name: "#general"},
 				{Name: "#random", Topic: "cool"},
 			}, At: now}},
@@ -1052,23 +1052,23 @@ func TestRenderLine_application_feedback(t *testing.T) {
 		},
 		{
 			"channel_list_empty",
-			domain.StoredEvent{Event: domain.ChannelListOutput{At: now}},
+			domain.StoredEvent{Event: domain.ChannelList{At: now}},
 			[]string{"*** no channels"},
 		},
 		{
 			"api_key_saved",
-			domain.StoredEvent{Event: domain.ChannelSystemNotice{Channel: "#test", Text: "OpenRouter API key saved and activated.", At: now}},
+			domain.StoredEvent{Event: domain.SystemNotice{Target: "#test", Text: "OpenRouter API key saved and activated.", At: now}},
 			[]string{"✓ OpenRouter API key saved and activated."},
 		},
 		{
 			"poke_interval_set",
-			domain.StoredEvent{Event: domain.ChannelSystemNotice{Channel: "#test", Text: "Poke interval set to 10m0s.", At: now}},
+			domain.StoredEvent{Event: domain.SystemNotice{Target: "#test", Text: "Poke interval set to 10m0s.", At: now}},
 			[]string{"✓ Poke interval set to 10m0s."},
 		},
 		{
 			"usage_hint_config",
-			domain.StoredEvent{Event: domain.ChannelUsageHint{
-				Channel: "#test",
+			domain.StoredEvent{Event: domain.UsageHint{
+				Target:  "#test",
 				Command: "config",
 				Usage:   "/config api-key <value> | /config small-model <model-id> | /config poke-interval <duration>",
 				At:      now,
@@ -1077,8 +1077,8 @@ func TestRenderLine_application_feedback(t *testing.T) {
 		},
 		{
 			"usage_hint_invite",
-			domain.StoredEvent{Event: domain.ChannelUsageHint{
-				Channel: "#test",
+			domain.StoredEvent{Event: domain.UsageHint{
+				Target:  "#test",
 				Command: "add-model",
 				Usage:   "/add-model <model-id> [--persona <text>]",
 				At:      now,
@@ -1087,27 +1087,27 @@ func TestRenderLine_application_feedback(t *testing.T) {
 		},
 		{
 			"no_channel",
-			domain.StoredEvent{Event: domain.ChannelUsageHint{Usage: "join a channel first", At: now}},
+			domain.StoredEvent{Event: domain.UsageHint{Usage: "join a channel first", At: now}},
 			[]string{"⚠ join a channel first"},
 		},
 		{
 			"command_error",
-			domain.StoredEvent{Event: domain.ChannelCommandError{Channel: "#test", Err: "unknown command: /foo", At: now}},
+			domain.StoredEvent{Event: domain.CommandError{Target: "#test", Err: "unknown command: /foo", At: now}},
 			[]string{"✗ unknown command: /foo"},
 		},
 		{
 			"unknown_nick_error",
-			domain.StoredEvent{Event: domain.ChannelCommandError{Channel: "#test", Err: "no such nick: ghost", At: now}},
+			domain.StoredEvent{Event: domain.CommandError{Target: "#test", Err: "no such nick: ghost", At: now}},
 			[]string{"✗ no such nick: ghost"},
 		},
 		{
 			"config_changed",
-			domain.StoredEvent{Event: domain.ChannelSystemNotice{Channel: "#test", Text: "API key saved", At: now}},
+			domain.StoredEvent{Event: domain.SystemNotice{Target: "#test", Text: "API key saved", At: now}},
 			[]string{"✓ API key saved"},
 		},
 		{
 			"backend_error",
-			domain.StoredEvent{Event: domain.ChannelCommandError{Channel: "#test", Err: "model invocation: connection refused", At: now}},
+			domain.StoredEvent{Event: domain.CommandError{Target: "#test", Err: "model invocation: connection refused", At: now}},
 			[]string{"✗ model invocation: connection refused"},
 		},
 	}
@@ -1126,11 +1126,11 @@ func TestNewMessagesDivider_fills_width(t *testing.T) {
 	events := make([]domain.StoredEvent, 30)
 	for i := range events {
 		events[i] = domain.StoredEvent{
-			Event: domain.ChannelMessage{
-				Channel: "#test",
-				From:    "user",
-				Body:    fmt.Sprintf("message %d", i),
-				At:      time.Now(),
+			Event: domain.Message{
+				Target: "#test",
+				From:   "user",
+				Body:   fmt.Sprintf("message %d", i),
+				At:     time.Now(),
 			},
 		}
 	}
@@ -1142,7 +1142,7 @@ func TestNewMessagesDivider_fills_width(t *testing.T) {
 	// Scroll up, then add a new event to trigger the divider.
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
 	m, _ = m.Update(domain.StoredEvent{
-		Event: domain.ChannelMessage{Channel: "#test", From: "other", Body: "new arrival", At: time.Now()},
+		Event: domain.Message{Target: "#test", From: "other", Body: "new arrival", At: time.Now()},
 	})
 
 	// Scroll back to bottom to see the divider.
@@ -1328,11 +1328,11 @@ func TestChatView_divider_inserted_when_scrolled_up(t *testing.T) {
 	events := make([]domain.StoredEvent, 30)
 	for i := range events {
 		events[i] = domain.StoredEvent{
-			Event: domain.ChannelMessage{
-				Channel: "#general",
-				From:    "user",
-				Body:    fmt.Sprintf("message %d", i),
-				At:      time.Now(),
+			Event: domain.Message{
+				Target: "#general",
+				From:   "user",
+				Body:   fmt.Sprintf("message %d", i),
+				At:     time.Now(),
 			},
 		}
 	}
@@ -1350,11 +1350,11 @@ func TestChatView_divider_inserted_when_scrolled_up(t *testing.T) {
 	// Append new events while scrolled up.
 	for i := 30; i < 33; i++ {
 		m, _ = m.Update(domain.StoredEvent{
-			Event: domain.ChannelMessage{
-				Channel: "#general",
-				From:    "other",
-				Body:    fmt.Sprintf("new message %d", i),
-				At:      time.Now(),
+			Event: domain.Message{
+				Target: "#general",
+				From:   "other",
+				Body:   fmt.Sprintf("new message %d", i),
+				At:     time.Now(),
 			},
 		})
 	}
@@ -1381,11 +1381,11 @@ func TestChatView_no_divider_when_at_bottom(t *testing.T) {
 	events := make([]domain.StoredEvent, 5)
 	for i := range events {
 		events[i] = domain.StoredEvent{
-			Event: domain.ChannelMessage{
-				Channel: "#general",
-				From:    "user",
-				Body:    fmt.Sprintf("message %d", i),
-				At:      time.Now(),
+			Event: domain.Message{
+				Target: "#general",
+				From:   "user",
+				Body:   fmt.Sprintf("message %d", i),
+				At:     time.Now(),
 			},
 		}
 	}
@@ -1397,11 +1397,11 @@ func TestChatView_no_divider_when_at_bottom(t *testing.T) {
 	// Add more events while at bottom.
 	for i := 5; i < 8; i++ {
 		m, _ = m.Update(domain.StoredEvent{
-			Event: domain.ChannelMessage{
-				Channel: "#general",
-				From:    "other",
-				Body:    fmt.Sprintf("new message %d", i),
-				At:      time.Now(),
+			Event: domain.Message{
+				Target: "#general",
+				From:   "other",
+				Body:   fmt.Sprintf("new message %d", i),
+				At:     time.Now(),
 			},
 		})
 	}
@@ -1416,10 +1416,10 @@ func TestChatView_stored_events_insert_divider_when_scrolled_up(t *testing.T) {
 	events := make([]domain.StoredEvent, 30)
 	for i := range 30 {
 		events[i] = domain.StoredEvent{
-			Event: domain.ChannelMessage{
-				Channel: "#general",
-				From:    "user",
-				Body:    fmt.Sprintf("message %d", i),
+			Event: domain.Message{
+				Target: "#general",
+				From:   "user",
+				Body:   fmt.Sprintf("message %d", i),
 			},
 		}
 	}
@@ -1432,10 +1432,10 @@ func TestChatView_stored_events_insert_divider_when_scrolled_up(t *testing.T) {
 
 	for i := 30; i < 33; i++ {
 		m, _ = m.Update(domain.StoredEvent{
-			Event: domain.ChannelMessage{
-				Channel: "#general",
-				From:    "user",
-				Body:    fmt.Sprintf("new message %d", i),
+			Event: domain.Message{
+				Target: "#general",
+				From:   "user",
+				Body:   fmt.Sprintf("new message %d", i),
 			},
 		})
 	}
@@ -1481,10 +1481,10 @@ func TestChatView_stored_events_keep_divider_when_more_arrive_during_catch_up(t 
 	events := make([]domain.StoredEvent, 30)
 	for i := range 30 {
 		events[i] = domain.StoredEvent{
-			Event: domain.ChannelMessage{
-				Channel: "#general",
-				From:    "user",
-				Body:    fmt.Sprintf("message %d", i),
+			Event: domain.Message{
+				Target: "#general",
+				From:   "user",
+				Body:   fmt.Sprintf("message %d", i),
 			},
 		}
 	}
@@ -1497,19 +1497,19 @@ func TestChatView_stored_events_keep_divider_when_more_arrive_during_catch_up(t 
 
 	// First new event while scrolled up — divider is armed.
 	m, _ = m.Update(domain.StoredEvent{
-		Event: domain.ChannelMessage{
-			Channel: "#general",
-			From:    "user",
-			Body:    "new message 30",
+		Event: domain.Message{
+			Target: "#general",
+			From:   "user",
+			Body:   "new message 30",
 		},
 	})
 
 	// Second new event while still scrolled up — divider stays.
 	m, _ = m.Update(domain.StoredEvent{
-		Event: domain.ChannelMessage{
-			Channel: "#general",
-			From:    "user",
-			Body:    "new message 31",
+		Event: domain.Message{
+			Target: "#general",
+			From:   "user",
+			Body:   "new message 31",
 		},
 	})
 
@@ -1552,12 +1552,12 @@ func TestChatView_stored_events_keep_divider_when_more_arrive_during_catch_up(t 
 }
 
 func TestChatView_mouse_wheel_scrolls_messages(t *testing.T) {
-	msgs := make([]domain.ChannelMessage, 30)
+	msgs := make([]domain.Message, 30)
 	for i := range msgs {
-		msgs[i] = domain.ChannelMessage{
-			Channel: "#general",
-			From:    "user",
-			Body:    fmt.Sprintf("message %d", i),
+		msgs[i] = domain.Message{
+			Target: "#general",
+			From:   "user",
+			Body:   fmt.Sprintf("message %d", i),
 		}
 	}
 
@@ -1694,11 +1694,11 @@ func TestContainsHighlightWord(t *testing.T) {
 
 func TestRenderLine_preserves_irc_formatting_in_plain_output(t *testing.T) {
 	rendered := renderSingleEvent(domain.StoredEvent{
-		Event: domain.ChannelMessage{
-			Channel: "#test",
-			From:    "alice",
-			Body:    "hello \x02bold\x02 \x1funder\x1f \x1estrike\x1e",
-			At:      time.Date(2026, 4, 12, 11, 0, 0, 0, time.UTC),
+		Event: domain.Message{
+			Target: "#test",
+			From:   "alice",
+			Body:   "hello \x02bold\x02 \x1funder\x1f \x1estrike\x1e",
+			At:     time.Date(2026, 4, 12, 11, 0, 0, 0, time.UTC),
 		},
 	})
 

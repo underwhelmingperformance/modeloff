@@ -127,9 +127,9 @@ type ModelResponse struct {
 // FromChannelEvent converts a model-visible channel event into an
 // IRC-style protocol message. Returns the message and true if the
 // event type is supported, or a zero message and false otherwise.
-func FromChannelEvent(evt domain.ChannelEvent) (IRCMessage, bool) {
+func FromChannelEvent(evt domain.PersistableEvent) (IRCMessage, bool) {
 	switch e := evt.(type) {
-	case domain.ChannelMessage:
+	case domain.Message:
 		kind := KindPrivMsg
 		if e.Action {
 			kind = KindAction
@@ -139,48 +139,48 @@ func FromChannelEvent(evt domain.ChannelEvent) (IRCMessage, bool) {
 			Kind:       kind,
 			From:       string(e.From),
 			InstanceID: e.InstanceID,
-			Target:     string(e.Channel),
+			Target:     string(e.Target),
 			Body:       e.Body,
 			At:         e.At,
 		}, true
 
-	case domain.ChannelJoin:
+	case domain.Join:
 		return IRCMessage{
 			Kind:   KindJoin,
 			From:   string(e.Nick),
-			Target: string(e.Channel),
+			Target: string(e.Target),
 			Body:   e.Message,
 			At:     e.At,
 		}, true
 
-	case domain.ChannelPart:
+	case domain.Part:
 		return IRCMessage{
 			Kind:   KindPart,
 			From:   string(e.Nick),
-			Target: string(e.Channel),
+			Target: string(e.Target),
 			Body:   e.Message,
 			At:     e.At,
 		}, true
 
-	case domain.ChannelQuit:
+	case domain.Quit:
 		return IRCMessage{
 			Kind:   KindQuit,
 			From:   string(e.Nick),
-			Target: string(e.Channel),
+			Target: string(e.Target),
 			Body:   e.Message,
 			At:     e.At,
 		}, true
 
-	case domain.ChannelTopicChange:
+	case domain.TopicChange:
 		return IRCMessage{
 			Kind:   KindTopic,
 			From:   string(e.By),
-			Target: string(e.Channel),
+			Target: string(e.Target),
 			Body:   e.Topic,
 			At:     e.At,
 		}, true
 
-	case domain.ChannelNickChange:
+	case domain.NickChange:
 		return IRCMessage{
 			Kind:   KindNick,
 			From:   string(e.OldNick),
@@ -188,19 +188,19 @@ func FromChannelEvent(evt domain.ChannelEvent) (IRCMessage, bool) {
 			At:     e.At,
 		}, true
 
-	case domain.ChannelModelInvited:
+	case domain.ModelInvited:
 		return IRCMessage{
 			Kind:   KindInvite,
 			From:   string(e.Nick),
-			Target: string(e.Channel),
+			Target: string(e.Target),
 			At:     e.At,
 		}, true
 
-	case domain.ChannelModelKicked:
+	case domain.ModelKicked:
 		return IRCMessage{
 			Kind:   KindKick,
 			From:   string(e.Nick),
-			Target: string(e.Channel),
+			Target: string(e.Target),
 			At:     e.At,
 		}, true
 

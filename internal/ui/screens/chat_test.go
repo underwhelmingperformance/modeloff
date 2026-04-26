@@ -206,20 +206,20 @@ func TestChatScreen_rejoin_hides_pre_session_history(t *testing.T) {
 	// memory of channel activity while the user was offline, not the
 	// user's scrollback. Mirrors IRC's "you don't see what happened
 	// before you joined" rule.
-	_, err := s.AppendEvent(ctx, "#general", domain.ChannelMessage{
-		Channel: "#general",
-		From:    "oldnick",
-		Body:    "previous session message",
-		At:      oldTime,
+	_, err := s.AppendEvent(ctx, "#general", domain.Message{
+		Target: "#general",
+		From:   "oldnick",
+		Body:   "previous session message",
+		At:     oldTime,
 	})
 	require.NoError(t, err)
 
 	// A persisted command error from a previous session likewise
 	// stays out of the user's view.
-	_, err = s.AppendEvent(ctx, "#general", domain.ChannelCommandError{
-		Channel: "#general",
-		Err:     "ancient dispatch failure",
-		At:      oldTime,
+	_, err = s.AppendEvent(ctx, "#general", domain.CommandError{
+		Target: "#general",
+		Err:    "ancient dispatch failure",
+		At:     oldTime,
 	})
 	require.NoError(t, err)
 
@@ -407,14 +407,14 @@ func TestChatScreen_whois_persists_to_status_channel(t *testing.T) {
 	statusEvents, err := sess.EventsBefore(t.Context(), domain.StatusChannelName, nil, 100)
 	require.NoError(t, err)
 
-	var whois []domain.ChannelWhois
+	var whois []domain.Whois
 	for _, ev := range statusEvents {
-		if w, ok := ev.Event.(domain.ChannelWhois); ok {
+		if w, ok := ev.Event.(domain.Whois); ok {
 			whois = append(whois, w)
 		}
 	}
-	require.Len(t, whois, 1, "expected one ChannelWhois persisted on &modeloff")
-	require.Equal(t, domain.StatusChannelName, whois[0].Channel)
+	require.Len(t, whois, 1, "expected one Whois persisted on &modeloff")
+	require.Equal(t, domain.StatusChannelName, whois[0].Target)
 	require.Equal(t, domain.Nick("fakenick"), whois[0].Nick)
 
 	// Active channel display is ephemeral: the #general event log
@@ -423,8 +423,8 @@ func TestChatScreen_whois_persists_to_status_channel(t *testing.T) {
 	require.NoError(t, err)
 
 	for _, ev := range generalEvents {
-		if _, ok := ev.Event.(domain.ChannelWhois); ok {
-			t.Fatal("expected no ChannelWhois persisted on #general; whois should only land on &modeloff")
+		if _, ok := ev.Event.(domain.Whois); ok {
+			t.Fatal("expected no Whois persisted on #general; whois should only land on &modeloff")
 		}
 	}
 }

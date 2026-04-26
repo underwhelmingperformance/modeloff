@@ -70,8 +70,8 @@ func (s *Session) JoinAs(ctx context.Context, actor *domain.Instance, ch domain.
 		return nil
 	}
 
-	s.persistAndEmit(ctx, ch, domain.ChannelJoin{
-		Channel:    ch,
+	s.persistAndEmit(ctx, ch, domain.Join{
+		Target:     ch,
 		Nick:       actorNick,
 		InstanceID: actor.ID(),
 		Created:    created,
@@ -160,8 +160,8 @@ func (s *Session) emitJoinProtocol(ctx context.Context, ch domain.ChannelName, c
 		return fmt.Errorf("save channel after mode: %w", err)
 	}
 
-	s.persistAndEmitUIOnly(ctx, ch, domain.ChannelModeChange{
-		Channel:    ch,
+	s.persistAndEmitUIOnly(ctx, ch, domain.ModeChange{
+		Target:     ch,
 		Nick:       s.user.Nick(),
 		InstanceID: s.user.ID(),
 		Mode:       domain.ModeOp,
@@ -172,8 +172,8 @@ func (s *Session) emitJoinProtocol(ctx context.Context, ch domain.ChannelName, c
 	})
 
 	if channel.Topic != "" {
-		s.emitUIOnly(domain.ChannelTopicInfo{
-			Channel:    ch,
+		s.emitUIOnly(domain.TopicInfo{
+			Target:     ch,
 			Topic:      channel.Topic,
 			TopicSetBy: channel.TopicSetBy,
 			TopicSetAt: channel.TopicSetAt,
@@ -190,8 +190,8 @@ func (s *Session) emitJoinProtocol(ctx context.Context, ch domain.ChannelName, c
 // the user (@nick) on every join, not only when the model was added
 // through the invite path.
 //
-// The caller passes its own nick snapshot so the `ChannelJoin` and
-// `ChannelModeChange` events emitted back-to-back for the same join
+// The caller passes its own nick snapshot so the `Join` and
+// `ModeChange` events emitted back-to-back for the same join
 // record the same nick, even if the actor renames between them.
 func (s *Session) grantVoice(ctx context.Context, ch domain.ChannelName, channel domain.Channel, inst *domain.Instance, nick domain.Nick, now time.Time) error {
 	channel.Members.SetMode(inst, domain.ModeVoice)
@@ -200,8 +200,8 @@ func (s *Session) grantVoice(ctx context.Context, ch domain.ChannelName, channel
 		return fmt.Errorf("save channel after voice: %w", err)
 	}
 
-	s.persistAndEmitUIOnly(ctx, ch, domain.ChannelModeChange{
-		Channel:    ch,
+	s.persistAndEmitUIOnly(ctx, ch, domain.ModeChange{
+		Target:     ch,
 		Nick:       nick,
 		InstanceID: inst.ID(),
 		Mode:       domain.ModeVoice,
@@ -265,8 +265,8 @@ func (s *Session) PartAs(ctx context.Context, actor *domain.Instance, ch domain.
 	}
 
 	now := s.now()
-	s.persistAndEmit(ctx, ch, domain.ChannelPart{
-		Channel:    ch,
+	s.persistAndEmit(ctx, ch, domain.Part{
+		Target:     ch,
 		Nick:       actorNick,
 		InstanceID: actor.ID(),
 		Message:    message,
@@ -301,8 +301,8 @@ func (s *Session) QuitAs(ctx context.Context, actor *domain.Instance, message st
 
 	for _, ch := range channels {
 		s.removeInstanceFromChannel(ctx, actor, ch)
-		s.persistAndEmit(ctx, ch, domain.ChannelQuit{
-			Channel:    ch,
+		s.persistAndEmit(ctx, ch, domain.Quit{
+			Target:     ch,
 			Nick:       actorNick,
 			InstanceID: actorID,
 			Message:    message,
@@ -378,8 +378,8 @@ func (s *Session) ChangeNickAs(ctx context.Context, actor *domain.Instance, newN
 			return fmt.Errorf("save channel: %w", err)
 		}
 
-		s.persistAndEmit(ctx, chName, domain.ChannelNickChange{
-			Channel:    chName,
+		s.persistAndEmit(ctx, chName, domain.NickChange{
+			Target:     chName,
 			OldNick:    oldNick,
 			NewNick:    newNick,
 			InstanceID: actor.ID(),
@@ -414,8 +414,8 @@ func (s *Session) SendMessageAs(ctx context.Context, actor *domain.Instance, ch 
 	instanceID := actor.ID()
 	span.SetAttributes(attribute.String(observability.AttrInstanceID, string(instanceID)))
 
-	cm := domain.ChannelMessage{
-		Channel:    ch,
+	cm := domain.Message{
+		Target:     ch,
 		From:       actorNick,
 		InstanceID: instanceID,
 		Body:       body,
@@ -450,8 +450,8 @@ func (s *Session) SendActionAs(ctx context.Context, actor *domain.Instance, ch d
 	instanceID := actor.ID()
 	span.SetAttributes(attribute.String(observability.AttrInstanceID, string(instanceID)))
 
-	cm := domain.ChannelMessage{
-		Channel:    ch,
+	cm := domain.Message{
+		Target:     ch,
 		From:       actorNick,
 		InstanceID: instanceID,
 		Body:       body,
@@ -498,8 +498,8 @@ func (s *Session) SetTopicAs(ctx context.Context, actor *domain.Instance, ch dom
 		return fmt.Errorf("save channel: %w", err)
 	}
 
-	s.persistAndEmit(ctx, ch, domain.ChannelTopicChange{
-		Channel:    ch,
+	s.persistAndEmit(ctx, ch, domain.TopicChange{
+		Target:     ch,
 		Topic:      topic,
 		By:         actorNick,
 		At:         now,
@@ -560,8 +560,8 @@ func (s *Session) KickAs(ctx context.Context, actor, target *domain.Instance, ch
 	actorNick := actor.Nick()
 
 	now := s.now()
-	s.persistAndEmit(ctx, ch, domain.ChannelModelKicked{
-		Channel:    ch,
+	s.persistAndEmit(ctx, ch, domain.ModelKicked{
+		Target:     ch,
 		Nick:       targetNick,
 		InstanceID: target.ID(),
 		By:         actorNick,
@@ -684,7 +684,7 @@ func (s *Session) InviteAs(ctx context.Context, actor *domain.Instance, target d
 
 	now := s.now()
 	notice := fmt.Sprintf("%s invited %s to %s", actorNick, target, ch)
-	s.appendEvent(ctx, ch, domain.ChannelSystemNotice{Channel: ch, Text: notice, At: now})
+	s.appendEvent(ctx, ch, domain.SystemNotice{Target: ch, Text: notice, At: now})
 
 	return nil
 }
