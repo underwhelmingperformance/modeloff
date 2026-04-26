@@ -1059,9 +1059,20 @@ func (s *Session) Whois(ctx context.Context, nick domain.Nick) (*domain.Instance
 	return s.ResolveNick(ctx, nick)
 }
 
-// GetChannel retrieves a channel by name.
+// GetChannel retrieves a channel by name as the legacy
+// `domain.Channel` projection. Kept while UI consumers migrate
+// to the typed `Window` surface; new callers should use
+// `GetWindow`.
 func (s *Session) GetChannel(ctx context.Context, name domain.ChannelName) (domain.Channel, error) {
 	return s.loadChannel(ctx, name)
+}
+
+// GetWindow retrieves an addressable window by name as its typed
+// concrete `Window` (`*StatusWindow`, `*ChannelWindow`, or
+// `*DMWindow`). DM rows resolve their counterpart through the
+// store's nick→instance registry.
+func (s *Session) GetWindow(ctx context.Context, name domain.ChannelName) (domain.Window, error) {
+	return s.store.GetWindow(ctx, name)
 }
 
 // LastChannel returns the channel that was last active.

@@ -503,12 +503,17 @@ func (c TopicCommand) Run(rc Context) tea.Cmd {
 
 	if len(c.Topic) == 0 {
 		return func() tea.Msg {
-			ch, err := rc.Session.GetChannel(rc.Ctx, rc.Active)
+			w, err := rc.Session.GetWindow(rc.Ctx, rc.Active)
 			if err != nil {
 				return errorEvent("topic", err)
 			}
 
-			return TopicInfoResult{Channel: ch}
+			cw, ok := w.(*domain.ChannelWindow)
+			if !ok {
+				return errorEvent("topic", fmt.Errorf("%s is not a channel", rc.Active))
+			}
+
+			return TopicInfoResult{Channel: domain.ChannelFromWindow(cw)}
 		}
 	}
 
@@ -532,15 +537,20 @@ func (c TopicCommand) RunTool(ctx context.Context, tc session.ToolContext) sessi
 	}
 
 	if len(c.Topic) == 0 {
-		ch, err := tc.Session.GetChannel(ctx, tc.Channel)
+		w, err := tc.Session.GetWindow(ctx, tc.Channel)
 		if err != nil {
 			return session.ToolResultPayload{OK: false, Error: err.Error()}
+		}
+
+		cw, ok := w.(*domain.ChannelWindow)
+		if !ok {
+			return session.ToolResultPayload{OK: false, Error: fmt.Errorf("%s is not a channel", tc.Channel).Error()}
 		}
 
 		return session.ToolResultPayload{
 			OK:      true,
 			Summary: "returned current topic",
-			Data:    ch,
+			Data:    cw,
 		}
 	}
 
