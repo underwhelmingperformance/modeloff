@@ -287,6 +287,27 @@ func replaceTopicSeparator(lines []string) []string {
 	return out
 }
 
+func TestChatScreen_persists_last_channel_on_focus(t *testing.T) {
+	sess := newTestSession(t)
+	uitest.SeedChannel(t, sess, "#general")
+	uitest.SeedChannel(t, sess, "#random")
+
+	tm := newChatApp(t, sess)
+	// `SeedChannel`'s last call (#random) is what the chat screen's
+	// startup focus-restore lands on; wait for the resulting banner
+	// before driving the channel switch.
+	tm.WaitFor("Created channel #random")
+
+	tm.Send(domain.ChannelFocusEvent{Channel: "#general"})
+	tm.WaitFor("Created channel #general")
+
+	require.Eventually(t, func() bool {
+		last, err := sess.LastChannel(t.Context())
+		return err == nil && last == "#general"
+	}, time.Second, 10*time.Millisecond,
+		"chat screen should have persisted #general as last_channel after focus")
+}
+
 func TestChatScreen_part_command(t *testing.T) {
 	sess := newTestSession(t)
 	uitest.SeedChannel(t, sess, "#general")

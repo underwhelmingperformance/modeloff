@@ -62,7 +62,8 @@ func TestJoinAs_model_actor(t *testing.T) {
 		testMemberID("botty"), "botty", "test/model", "", testChannels("#dev"),
 	), inst)
 
-	// Model join should not set last channel.
+	// `last_channel` is a UI-owned write — neither user nor model
+	// joins touch it from the session.
 	last, err := s.GetLastChannel(ctx)
 	require.NoError(t, err)
 	require.Equal(t, domain.ChannelName(""), last)

@@ -51,8 +51,12 @@ func (s *Session) JoinAs(ctx context.Context, actor *domain.Instance, ch domain.
 	}
 
 	if isUser {
-		if err := s.rememberActiveChannel(ctx, ch); err != nil {
-			return err
+		// Stamp the user's mark-as-read cursor at the current head so
+		// the join itself does not leave the channel showing as unread.
+		// `last_channel` persistence is the UI's concern and lands when
+		// the chat screen receives a `ChannelActiveMsg`.
+		if err := s.MarkRead(ctx, ch); err != nil {
+			return fmt.Errorf("mark read: %w", err)
 		}
 	}
 
@@ -123,21 +127,6 @@ func (s *Session) ensureChannelWithActor(ctx context.Context, ch domain.ChannelN
 	}
 
 	return channel, true, nil
-}
-
-// rememberActiveChannel records that the user just joined `ch`:
-// their last-focused channel in the store (so a crash restores
-// them to the same spot) and the mark-as-read cursor.
-func (s *Session) rememberActiveChannel(ctx context.Context, ch domain.ChannelName) error {
-	if err := s.store.SetLastChannel(ctx, ch); err != nil {
-		return fmt.Errorf("set last channel: %w", err)
-	}
-
-	if err := s.MarkRead(ctx, ch); err != nil {
-		return fmt.Errorf("mark read: %w", err)
-	}
-
-	return nil
 }
 
 // recordActorMembership stamps the channel onto the actor's joined-

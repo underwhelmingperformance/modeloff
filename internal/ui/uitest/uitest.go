@@ -319,33 +319,39 @@ func (f *FakeAPI) GeneratePersonas(ctx context.Context, smallModel domain.ModelI
 }
 
 // SeedChannel creates a channel by issuing a real /join on the
-// session. The resulting JoinEvent and friends remain on the
-// session's events channel so that a downstream ChatScreen drains
-// and renders them when it takes over. For integration tests that
-// drive the ConnectionScreen and want to simulate "previous session"
-// state, follow up with sess.Quit + DrainEvents to leave the channel
-// on the autojoin list without lingering membership.
+// session and pins it as the user's last-focused channel in the
+// store, mirroring the state a returning user lands in: joined the
+// channel and the chat screen treats it as last-active on startup.
+// The resulting JoinEvent and friends remain on the session's events
+// channel so that a downstream ChatScreen drains and renders them
+// when it takes over.
 //
-// SeedChannel does not emit a FocusChannelEvent — no channel is
-// implicitly made active. Tests that need an active channel should
-// call SeedAndFocusChannel instead, or drive a ChannelFocusEvent
-// directly through the teatest harness.
+// `last_channel` is a UI-owned write in production (the chat screen
+// persists it on `ChannelActiveMsg`), but tests that bypass the chat
+// screen still need the entry there for the screen's autojoin
+// restore to land on the seeded channel; writing through the store
+// matches what the previous session's UI would have left behind. The
+// last `SeedChannel` call wins.
+//
+// For integration tests that drive the ConnectionScreen and want to
+// simulate "previous session" state, follow up with sess.Quit +
+// DrainEvents to leave the channel on the autojoin list without
+// lingering membership.
 func SeedChannel(t testing.TB, sess *session.Session, name string) {
 	t.Helper()
 
 	require.NoError(t, sess.Join(t.Context(), name))
+	require.NoError(t, sess.SetLastChannel(t.Context(), domain.ChannelName(name)))
 }
 
-// SeedAndFocusChannel creates a channel and focuses it, mirroring
-// what the autojoin sequence does in production (JoinAutojoinChannels
-// issues joins and FocusChannel settles on the last-active channel at
-// the end). Use this when a test needs the ChatScreen to treat the
-// channel as active from startup without going through the
-// ConnectionScreen.
+// SeedAndFocusChannel creates a channel and emits a session-side
+// focus event so the ChatScreen sees the focus signal during this
+// run. `last_channel` is already written by `SeedChannel`'s store
+// pin, so callers do not need to set it separately.
 func SeedAndFocusChannel(t testing.TB, sess *session.Session, name string) {
 	t.Helper()
 
-	require.NoError(t, sess.Join(t.Context(), name))
+	SeedChannel(t, sess, name)
 	require.NoError(t, sess.FocusChannel(t.Context(), domain.ChannelName(name)))
 }
 

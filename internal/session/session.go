@@ -507,14 +507,15 @@ func (s *Session) cleanupUncleanShutdown(ctx context.Context) error {
 	return nil
 }
 
-// FocusChannel records a channel as the active one and emits a
-// FocusChannelEvent so the UI can respond. If the user is not a
-// member of the channel, the call is a no-op. This is the
-// session-side twin of the UI's own channel-switch plumbing, used
-// mainly to restore the last-focused channel at the end of the
-// autojoin sequence.
+// FocusChannel emits a FocusChannelEvent so the UI can switch into
+// the named channel. If the user is not a member of the channel, the
+// call is a no-op. The session is the authoritative driver of focus
+// only at autojoin restore; live channel switches go straight through
+// the UI's own plumbing. The persistent `last_channel` store entry is
+// the UI's responsibility (the chat screen writes it when
+// `ChannelActiveMsg` lands), so this method emits and nothing else.
 func (s *Session) FocusChannel(ctx context.Context, ch domain.ChannelName) (retErr error) {
-	ctx, span := s.startSpan(ctx, "session.focus_channel",
+	_, span := s.startSpan(ctx, "session.focus_channel",
 		attribute.String(observability.AttrOperation, "session.focus_channel"),
 		attribute.String(observability.AttrChannel, string(ch)),
 	)
@@ -527,10 +528,6 @@ func (s *Session) FocusChannel(ctx context.Context, ch domain.ChannelName) (retE
 
 	if _, ok := channels.Get(ch); !ok {
 		return nil
-	}
-
-	if err := s.store.SetLastChannel(ctx, ch); err != nil {
-		return fmt.Errorf("set last channel: %w", err)
 	}
 
 	s.emitUIOnly(domain.FocusChannelEvent{Channel: ch, At: s.now()})
@@ -1039,6 +1036,15 @@ func (s *Session) LastChannel(ctx context.Context) (domain.ChannelName, error) {
 	return s.store.GetLastChannel(ctx)
 }
 
+// SetLastChannel persists the user's last-focused channel so a
+// subsequent restart restores them to the same view. The chat screen
+// is the single writer: it calls this when its `ChannelActiveMsg`
+// signal lands, which keeps `last_channel` consistent with what the
+// user sees rather than relying on session-internal join coordination.
+func (s *Session) SetLastChannel(ctx context.Context, ch domain.ChannelName) error {
+	return s.store.SetLastChannel(ctx, ch)
+}
+
 // MarkRead records that the user has seen all current events in a
 // channel by storing the rowid of the last event.
 func (s *Session) MarkRead(ctx context.Context, ch domain.ChannelName) error {
@@ -1196,11 +1202,6 @@ func (s *Session) OpenDM(ctx context.Context, target *domain.Instance) (domain.C
 	if err := s.store.SaveInstance(ctx, target); err != nil {
 		setSpanError(span, err, observability.ErrorKindStore)
 		return domain.Channel{}, false, fmt.Errorf("save instance: %w", err)
-	}
-
-	if err := s.store.SetLastChannel(ctx, name); err != nil {
-		setSpanError(span, err, observability.ErrorKindStore)
-		return domain.Channel{}, false, fmt.Errorf("set last channel: %w", err)
 	}
 
 	span.SetAttributes(

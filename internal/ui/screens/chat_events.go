@@ -150,6 +150,7 @@ func (s ChatScreen) handleChannelFocus(msg domain.ChannelFocusEvent) (ui.Model, 
 	}
 
 	cmds = append(cmds, msgCmd(components.ChannelActiveMsg{Channel: msg.Channel}))
+	cmds = append(cmds, s.persistLastChannel(msg.Channel))
 	cmds = append(cmds, msgCmd(components.ChannelUnreadMsg{Channel: msg.Channel, Count: 0}))
 	cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: ch.Members}))
 	cmds = append(cmds, s.scrollbackCmd(msg.Channel))
@@ -179,6 +180,28 @@ func (s ChatScreen) scrollbackCmd(ch domain.ChannelName) tea.Cmd {
 
 	return func() tea.Msg {
 		return components.HistoryLoadedMsg{Events: s.scrollback[ch]}
+	}
+}
+
+// persistLastChannel writes the user's currently-active channel to
+// the store so a subsequent restart restores them to the same view.
+// The chat screen owns this side-effect: the session no longer
+// writes `last_channel` itself, keeping the persistent record
+// consistent with what the user is actually looking at rather than
+// with session-internal join coordination. An empty channel name
+// (no active window) is a no-op so a /part that drops the user out
+// of every channel does not race against the store.
+func (s ChatScreen) persistLastChannel(ch domain.ChannelName) tea.Cmd {
+	if ch == "" {
+		return nil
+	}
+
+	return func() tea.Msg {
+		if err := s.sess.SetLastChannel(s.ctx, ch); err != nil {
+			slog.Default().ErrorContext(s.ctx, "persist last channel", "channel", ch, "error", err)
+		}
+
+		return nil
 	}
 }
 
@@ -339,6 +362,7 @@ func (s ChatScreen) handlePartEvent(msg domain.ChannelPart) (ui.Model, tea.Cmd) 
 			Kind:    s.activeKind(),
 		}))
 		cmds = append(cmds, msgCmd(components.ChannelActiveMsg{Channel: *s.active}))
+		cmds = append(cmds, s.persistLastChannel(*s.active))
 	}
 
 	var members domain.MemberList
@@ -602,6 +626,7 @@ func (s ChatScreen) handleDMOpenedEvent(msg domain.DMOpenedEvent) (ui.Model, tea
 	}))
 	cmds = append(cmds, msgCmd(components.ChannelAddedMsg{Channel: msg.Channel}))
 	cmds = append(cmds, msgCmd(components.ChannelActiveMsg{Channel: msg.Channel.Name}))
+	cmds = append(cmds, s.persistLastChannel(msg.Channel.Name))
 	cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: members}))
 	cmds = append(cmds, s.scrollbackCmd(msg.Channel.Name))
 	cmds = append(cmds, s.logAndShow(domain.ChannelSystemNotice{

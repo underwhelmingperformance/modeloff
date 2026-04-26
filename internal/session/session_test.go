@@ -409,10 +409,12 @@ func TestSession_Join(t *testing.T) {
 		Created: fixedTime,
 	}, ch)
 
-	// Last channel should be set.
+	// `last_channel` is a UI-owned write; a session-side join no
+	// longer touches it. The store stays empty until the chat
+	// screen persists it on a `ChannelActiveMsg`.
 	last, err := s.GetLastChannel(ctx)
 	require.NoError(t, err)
-	require.Equal(t, domain.ChannelName("#general"), last)
+	require.Equal(t, domain.ChannelName(""), last)
 }
 
 func TestSession_JoinExistingChannel(t *testing.T) {
@@ -467,11 +469,6 @@ func TestSession_JoinSwitchAndReturn_no_duplicate_event(t *testing.T) {
 
 	types := channelEventTypes(t, s, "#general")
 	require.Equal(t, []string{"join", "mode_change"}, types)
-
-	// SetLastChannel should still be updated.
-	last, err := s.GetLastChannel(ctx)
-	require.NoError(t, err)
-	require.Equal(t, domain.ChannelName("#general"), last)
 }
 
 func TestSession_JoinAutojoinChannels_populates_user_join_times(t *testing.T) {
@@ -677,7 +674,7 @@ func TestSession_Connect_then_JoinAutojoin_stamps_UserJoinedAt(t *testing.T) {
 	}
 }
 
-func TestSession_FocusChannel_emits_event_and_persists_last_channel(t *testing.T) {
+func TestSession_FocusChannel_emits_event(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
@@ -696,9 +693,13 @@ func TestSession_FocusChannel_emits_event_and_persists_last_channel(t *testing.T
 	require.Equal(t, domain.ChannelName("#general"), evt.Channel)
 	require.Equal(t, fixedTime, evt.At)
 
+	// `last_channel` is a UI-owned write — the chat screen lands it
+	// when its `ChannelActiveMsg` signal fires. The session-side
+	// FocusChannel only emits the event, so the store stays empty
+	// until the UI persists it.
 	last, err := s.GetLastChannel(ctx)
 	require.NoError(t, err)
-	require.Equal(t, domain.ChannelName("#general"), last)
+	require.Equal(t, domain.ChannelName(""), last)
 }
 
 func TestSession_FocusChannel_nonmember_is_noop(t *testing.T) {
@@ -894,9 +895,11 @@ func TestSession_FocusChannel_status_channel_is_valid(t *testing.T) {
 		At:      fixedTime,
 	}, evt)
 
+	// `last_channel` is a UI-owned write — see the
+	// `TestSession_FocusChannel_emits_event` comment.
 	last, err := s.GetLastChannel(ctx)
 	require.NoError(t, err)
-	require.Equal(t, domain.StatusChannelName, last)
+	require.Equal(t, domain.ChannelName(""), last)
 }
 
 func TestSession_Quit_appends_channel_quit_events_and_saves_autojoin(t *testing.T) {
@@ -1261,7 +1264,6 @@ func TestSession_mutationOperations_recordSpans(t *testing.T) {
 		"store.sqlite.save_channel",
 		"store.sqlite.save_instance",
 		"store.sqlite.set_autojoin_channels",
-		"store.sqlite.set_last_channel",
 	}
 
 	require.EventuallyWithT(t, func(collect *assert.CollectT) {
