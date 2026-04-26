@@ -393,38 +393,32 @@ func (s ChatScreen) handlePartEvent(msg domain.Part) (ui.Model, tea.Cmd) {
 }
 
 func (s ChatScreen) handleQuitEvent(msg domain.Quit) (ui.Model, tea.Cmd) {
-	// Remove the quitter from every channel's member list.
-	for ch := range s.channels.All() {
-		if m, ok := ch.Members.GetByInstance(msg.Instance); ok {
+	// The session emits one quit event per channel the actor was
+	// in (the IRC intersection rule, denormalised per-channel for
+	// modeloff's persistence shape). `bufferEvent` has already
+	// appended this event to its target's scrollback. The
+	// handler's job is the in-memory Members update for that
+	// target, plus the live nick-list and message-list refresh
+	// when the target is the active window.
+
+	if ch, ok := s.channelByName(msg.Target); ok {
+		if m, mOK := ch.Members.GetByInstance(msg.Instance); mOK {
 			ch.Members.Remove(m)
-			// re-insert to preserve sort order; the Members
-			// mutation is already visible via the shared map.
 			s.channels.Insert(ch)
 		}
 	}
 
+	if msg.Target != *s.active {
+		return s, nil
+	}
+
 	var cmds []tea.Cmd
 
-	// Update nick list for the active channel.
-	var members domain.MemberList
-
-	if *s.active != "" {
-		if ch, ok := s.channelByName(*s.active); ok {
-			members = ch.Members
-		}
+	if ch, ok := s.channelByName(*s.active); ok {
+		cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: ch.Members}))
 	}
 
-	cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: members}))
-
-	// Show the quit event in the active channel.
-	if *s.active != "" {
-		cmds = append(cmds, s.logAndShow(domain.Quit{
-			Target:  *s.active,
-			Nick:    msg.Instance.Nick(),
-			Message: msg.Message,
-			At:      msg.At,
-		}))
-	}
+	cmds = append(cmds, msgCmd(domain.StoredEvent{Event: msg}))
 
 	return s, tea.Batch(cmds...)
 }
@@ -474,7 +468,10 @@ func (s ChatScreen) handleTopicInfoEvent(msg domain.TopicInfo) (ui.Model, tea.Cm
 func (s ChatScreen) handleNickChangeEvent(msg domain.NickChange) (ui.Model, tea.Cmd) {
 	// Update the nick snapshot in this channel's local member list.
 	// The instance's own Nick() is already the new value — the
-	// session mutated it before emitting the event.
+	// session mutated it before emitting the event. The session
+	// emits one nick-change per channel the actor was in (the IRC
+	// intersection rule), so the handler only needs to update the
+	// target window's snapshot, not iterate.
 	if ch, ok := s.channelByName(msg.Target); ok {
 		if ch.Members.HasInstance(msg.Instance) {
 			ch.Members.RenameTo(msg.Instance, msg.NewNick)
@@ -482,11 +479,18 @@ func (s ChatScreen) handleNickChangeEvent(msg domain.NickChange) (ui.Model, tea.
 		}
 	}
 
+	var cmds []tea.Cmd
+
+	// The active-window UI updates (nick list, message list,
+	// user-nick banner, highlight words) only need to fire once
+	// even though the session emits one event per channel the
+	// actor was in. Gate them on the target being the active
+	// window so they fire exactly once per rename — for the
+	// active-targeted event in the per-channel iteration —
+	// regardless of how many channels the actor was in.
 	if msg.Target != *s.active {
 		return s, nil
 	}
-
-	var cmds []tea.Cmd
 
 	if ch, ok := s.channelByName(*s.active); ok {
 		cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: ch.Members}))

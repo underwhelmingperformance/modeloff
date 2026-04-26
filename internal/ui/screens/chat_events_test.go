@@ -124,6 +124,8 @@ func TestChatScreen_QuitEvent_shows_quit_message(t *testing.T) {
 	tm.WaitFor("Created channel #general", "fakenick has joined #general")
 
 	tm.Send(domain.Quit{
+		Target:   "#general",
+		Nick:     inst.Nick(),
 		Instance: inst,
 		Message:  "shutting down",
 		At:       time.Now(),
@@ -148,6 +150,8 @@ func TestChatScreen_QuitEvent_removes_instance_from_nick_list(t *testing.T) {
 	tm.WaitFor("Created channel #general", "fakenick has joined #general")
 
 	tm.Send(domain.Quit{
+		Target:   "#general",
+		Nick:     inst.Nick(),
 		Instance: inst,
 		Message:  "",
 		At:       time.Now(),
