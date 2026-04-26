@@ -7,39 +7,17 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
-
-// InstallSpanRecorder sets up an in-memory span recorder as the global
-// tracer provider for the duration of the test.
-//
-// Prefer NewSpanRecorder for components that accept an injected
-// `TracerProvider` via `WithTracerProvider`; the global swap
-// performed here can leak spans across tests when a goroutine
-// outlives the test that spawned it.
-func InstallSpanRecorder(t *testing.T) *tracetest.SpanRecorder {
-	t.Helper()
-
-	prev := otel.GetTracerProvider()
-	recorder, provider := NewSpanRecorder(t)
-	otel.SetTracerProvider(provider)
-
-	t.Cleanup(func() {
-		otel.SetTracerProvider(prev)
-	})
-
-	return recorder
-}
 
 // NewSpanRecorder returns an in-memory span recorder paired with a
 // `TracerProvider` that feeds it. The provider is shut down when
 // the test ends. Tests pass the provider into the component-under-
 // test via its `WithTracerProvider` builder so span recordings stay
 // scoped to a single test even when background goroutines outlive
-// it.
+// it; nothing is installed on the global `otel` provider.
 func NewSpanRecorder(t *testing.T) (*tracetest.SpanRecorder, *sdktrace.TracerProvider) {
 	t.Helper()
 

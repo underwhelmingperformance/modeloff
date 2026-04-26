@@ -847,8 +847,9 @@ func TestSession_user_snapshot_race_free(t *testing.T) {
 }
 
 func TestSession_Connect_is_idempotent(t *testing.T) {
-	recorder := oteltest.InstallSpanRecorder(t)
+	recorder, provider := oteltest.NewSpanRecorder(t)
 	sess, s := newTestSession(t)
+	sess.WithTracerProvider(provider)
 	ctx := t.Context()
 
 	require.NoError(t, sess.Connect(ctx))
@@ -1206,9 +1207,9 @@ func TestSession_Kick(t *testing.T) {
 }
 
 func TestSession_mutationOperations_recordSpans(t *testing.T) {
-	recorder := oteltest.InstallSpanRecorder(t)
-	s := storetest.NewMemoryStore(t)
-	sess := New(s, nil, &fakeAPIClient{}, "testuser", "", "")
+	recorder, provider := oteltest.NewSpanRecorder(t)
+	s := storetest.NewMemoryStore(t).WithTracerProvider(provider)
+	sess := New(s, nil, &fakeAPIClient{}, "testuser", "", "").WithTracerProvider(provider)
 	sess.now = func() time.Time { return fixedTime }
 	ctx := t.Context()
 
@@ -1243,7 +1244,12 @@ func TestSession_mutationOperations_recordSpans(t *testing.T) {
 
 	// Background goroutines (Kick / Reset dispatch) end their spans
 	// asynchronously, so poll until the full expected set is present
-	// rather than snapshotting once.
+	// rather than snapshotting once. The construction-time
+	// `store.sqlite.migrate_v2` span is not included: the store is
+	// built before `WithTracerProvider` is chained on, so its
+	// migration scan lands on the default provider, not the test
+	// recorder. This test pins the session/store operation spans
+	// emitted during the act phase, which is what we care about.
 	expected := []string{
 		"session.change_nick",
 		"session.dispatch_background",
@@ -1258,7 +1264,6 @@ func TestSession_mutationOperations_recordSpans(t *testing.T) {
 		"store.sqlite.get_channel",
 		"store.sqlite.get_instance_by_id",
 		"store.sqlite.list_channels",
-		"store.sqlite.migrate_v2",
 		"store.sqlite.reset",
 		"store.sqlite.resolve_nick",
 		"store.sqlite.save_channel",
@@ -1276,8 +1281,9 @@ func TestSession_mutationOperations_recordSpans(t *testing.T) {
 }
 
 func TestSession_SendMessageAs_status_channel_records_validation_error_kind(t *testing.T) {
-	recorder := oteltest.InstallSpanRecorder(t)
+	recorder, provider := oteltest.NewSpanRecorder(t)
 	sess, _ := newTestSession(t)
+	sess.WithTracerProvider(provider)
 
 	err := sess.SendMessageAs(t.Context(), sess.UserInstance(), domain.StatusChannelName, "hello")
 	require.Error(t, err)
@@ -1288,8 +1294,9 @@ func TestSession_SendMessageAs_status_channel_records_validation_error_kind(t *t
 }
 
 func TestSession_OpenDM_status_channel_records_validation_error_kind(t *testing.T) {
-	recorder := oteltest.InstallSpanRecorder(t)
+	recorder, provider := oteltest.NewSpanRecorder(t)
 	sess, _ := newTestSession(t)
+	sess.WithTracerProvider(provider)
 
 	ghost := domain.NewModelInstance("ghost-id", domain.Nick(domain.StatusChannelName), "test/model", "", nil)
 
@@ -1405,8 +1412,9 @@ func TestSession_spans_carry_AttrInstanceID(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			recorder := oteltest.InstallSpanRecorder(t)
+			recorder, provider := oteltest.NewSpanRecorder(t)
 			sess, s := newTestSession(t)
+			sess.WithTracerProvider(provider)
 
 			tt.act(t, sess, s, t.Context())
 
@@ -1420,13 +1428,14 @@ func TestSession_spans_carry_AttrInstanceID(t *testing.T) {
 }
 
 func TestSession_DispatchToChannel_api_failure_records_dispatch_error_kind(t *testing.T) {
-	recorder := oteltest.InstallSpanRecorder(t)
+	recorder, provider := oteltest.NewSpanRecorder(t)
 	fake := &fakeAPIClient{
 		sendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
 			return protocol.ModelResponse{}, fmt.Errorf("upstream boom")
 		},
 	}
 	sess, s := newTestSessionWithAPI(t, fake)
+	sess.WithTracerProvider(provider)
 	ctx := t.Context()
 
 	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
@@ -1446,8 +1455,9 @@ func TestSession_DispatchToChannel_api_failure_records_dispatch_error_kind(t *te
 }
 
 func TestSession_JoinAutojoinChannels_records_aggregate_span(t *testing.T) {
-	recorder := oteltest.InstallSpanRecorder(t)
+	recorder, provider := oteltest.NewSpanRecorder(t)
 	sess, s := newTestSession(t)
+	sess.WithTracerProvider(provider)
 	ctx := t.Context()
 
 	require.NoError(t, s.SetAutojoinChannels(ctx, []domain.ChannelName{"#alpha", "#beta"}))
@@ -1462,7 +1472,7 @@ func TestSession_JoinAutojoinChannels_records_aggregate_span(t *testing.T) {
 }
 
 func TestSession_dispatchToInstance_recordsPassReasonAndToolTurns(t *testing.T) {
-	recorder := oteltest.InstallSpanRecorder(t)
+	recorder, provider := oteltest.NewSpanRecorder(t)
 	dataStore := storetest.NewMemoryStore(t)
 	memStore := memory.NewStoreAdapter(storetest.NewMemoryStore(t))
 	fake := &fakeAPIClient{
@@ -1484,7 +1494,7 @@ func TestSession_dispatchToInstance_recordsPassReasonAndToolTurns(t *testing.T) 
 			}, nil
 		},
 	}
-	sess := New(dataStore, memStore, fake, "testuser", "", "")
+	sess := New(dataStore, memStore, fake, "testuser", "", "").WithTracerProvider(provider)
 	sess.now = func() time.Time { return fixedTime }
 	ctx := t.Context()
 
@@ -1509,8 +1519,9 @@ func TestSession_dispatchToInstance_recordsPassReasonAndToolTurns(t *testing.T) 
 }
 
 func TestSession_dispatchInBackground_recordsSpan(t *testing.T) {
-	recorder := oteltest.InstallSpanRecorder(t)
+	recorder, provider := oteltest.NewSpanRecorder(t)
 	sess, s := newTestSession(t)
+	sess.WithTracerProvider(provider)
 	ctx := t.Context()
 
 	seedChannelWithMembers(t, sess, s, "#general", "testuser")
@@ -2958,9 +2969,9 @@ func TestSession_SetBaseURL(t *testing.T) {
 }
 
 func TestSession_runtimeConfigOperations_recordSpans(t *testing.T) {
-	recorder := oteltest.InstallSpanRecorder(t)
-	s := storetest.NewMemoryStore(t)
-	sess := New(s, nil, &fakeAPIClient{}, "testuser", "test-key", "")
+	recorder, provider := oteltest.NewSpanRecorder(t)
+	s := storetest.NewMemoryStore(t).WithTracerProvider(provider)
+	sess := New(s, nil, &fakeAPIClient{}, "testuser", "test-key", "").WithTracerProvider(provider)
 	sess.SetAPIFactory(func(_, _ string) (api.Client, error) {
 		return &fakeAPIClient{}, nil
 	})
@@ -4122,7 +4133,7 @@ func TestSession_DispatchToChannel_retries_on_invalid_structured_formatting(t *t
 }
 
 func TestSession_DispatchToChannel_format_retry_exhaustion(t *testing.T) {
-	recorder := oteltest.InstallSpanRecorder(t)
+	recorder, provider := oteltest.NewSpanRecorder(t)
 	calls := 0
 	fake := &fakeAPIClient{
 		sendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
@@ -4139,6 +4150,7 @@ func TestSession_DispatchToChannel_format_retry_exhaustion(t *testing.T) {
 		},
 	}
 	sess, s := newTestSessionWithAPI(t, fake)
+	sess.WithTracerProvider(provider)
 	ctx := t.Context()
 
 	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
@@ -4182,7 +4194,7 @@ func TestSession_DispatchToChannel_newline_retry_exhaustion(t *testing.T) {
 	})
 
 	t.Run("dispatch with multiline body exhausts retries", func(t *testing.T) {
-		recorder := oteltest.InstallSpanRecorder(t)
+		recorder, provider := oteltest.NewSpanRecorder(t)
 		calls := 0
 		fake := &fakeAPIClient{
 			sendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
@@ -4191,6 +4203,7 @@ func TestSession_DispatchToChannel_newline_retry_exhaustion(t *testing.T) {
 			},
 		}
 		sess, s := newTestSessionWithAPI(t, fake)
+		sess.WithTracerProvider(provider)
 		ctx := t.Context()
 
 		seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
