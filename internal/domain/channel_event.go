@@ -6,14 +6,15 @@ import (
 	"time"
 )
 
-// ChannelEvent is a historical record of something that happened in a
-// channel. These are persisted in the event log and displayed in the
-// scrollback. They carry no state-change semantics — live domain
-// events (JoinEvent, PartEvent, etc.) are the signals that trigger
-// UI updates.
+// ChannelEvent is the persistable subset of `Event`: any event that
+// can be written to a channel's event log and replayed from the
+// store satisfies this interface. The umbrella `Event` interface
+// covers both persistable types and pure-live types (dispatch
+// lifecycle, focus changes, model replies); the store accepts only
+// `ChannelEvent`.
 //
-// Every stored-event type that carries a `Nick` field (e.g.
-// `ChannelJoin.Nick`, `ChannelPart.Nick`, `ChannelQuit.Nick`,
+// Every persistable type that carries a `Nick` field
+// (`ChannelJoin.Nick`, `ChannelPart.Nick`, `ChannelQuit.Nick`,
 // `ChannelTopicChange.By`, `ChannelModeChange.Nick` and `.By`,
 // `ChannelModelInvited.Nick`, `ChannelModelKicked.Nick`,
 // `ChannelNickChange.OldNick`/`.NewNick`) holds a snapshot of the
@@ -21,7 +22,16 @@ import (
 // may differ from the instance handle's current nick after a later
 // rename; renderers that want the live nick should resolve via
 // `InstanceID` where present.
+//
+// The same struct flows through both persistence and live emission:
+// a `ChannelJoin` is appended to the channel event log AND emitted
+// on the session's event channel. Live consumers populate the
+// `Instance *Instance` field (excluded from JSON via `json:"-"`) so
+// they can mutate state by pointer identity; replay paths leave
+// `Instance` nil and rely on the snapshot fields plus a registry
+// lookup if a live handle is later needed.
 type ChannelEvent interface {
+	Event
 	channelEvent()
 	channelEventTime() time.Time
 	// ModelVisible reports whether this event should be included in
@@ -75,12 +85,21 @@ func (e ChannelMessage) channelEventTime() time.Time { return e.At }
 func (ChannelMessage) ModelVisible() bool { return true }
 
 // ChannelJoin records a user or model joining a channel.
+//
+// `Instance` is the live actor handle, populated when the session
+// emits the event so live consumers can mutate state by pointer
+// identity (member-list ops, "is this me?" checks). It is excluded
+// from JSON; replay from store leaves it nil. Renderers consult the
+// snapshot fields (`Nick`) which are persistent.
 type ChannelJoin struct {
-	Channel ChannelName `json:"channel"`
-	Nick    Nick        `json:"nick"`
-	Created bool        `json:"created,omitempty"`
-	Message string      `json:"message,omitempty"`
-	At      time.Time   `json:"at"`
+	Channel    ChannelName `json:"channel"`
+	Nick       Nick        `json:"nick"`
+	InstanceID InstanceID  `json:"instance_id,omitzero"`
+	Created    bool        `json:"created,omitempty"`
+	Message    string      `json:"message,omitempty"`
+	At         time.Time   `json:"at"`
+
+	Instance *Instance `json:"-"`
 }
 
 func (ChannelJoin) channelEvent()                 {}
@@ -89,12 +108,16 @@ func (e ChannelJoin) channelEventTime() time.Time { return e.At }
 // ModelVisible implements ChannelEvent.
 func (ChannelJoin) ModelVisible() bool { return true }
 
-// ChannelPart records a user or model leaving a channel.
+// ChannelPart records a user or model leaving a channel. See
+// `ChannelJoin` for the `Instance` / `InstanceID` contract.
 type ChannelPart struct {
-	Channel ChannelName `json:"channel"`
-	Nick    Nick        `json:"nick"`
-	Message string      `json:"message,omitempty"`
-	At      time.Time   `json:"at"`
+	Channel    ChannelName `json:"channel"`
+	Nick       Nick        `json:"nick"`
+	InstanceID InstanceID  `json:"instance_id,omitzero"`
+	Message    string      `json:"message,omitempty"`
+	At         time.Time   `json:"at"`
+
+	Instance *Instance `json:"-"`
 }
 
 func (ChannelPart) channelEvent()                 {}
@@ -104,12 +127,16 @@ func (e ChannelPart) channelEventTime() time.Time { return e.At }
 func (ChannelPart) ModelVisible() bool { return true }
 
 // ChannelQuit records a user or model quitting the server. One event
-// is recorded per channel the actor was in.
+// is recorded per channel the actor was in. See `ChannelJoin` for
+// the `Instance` / `InstanceID` contract.
 type ChannelQuit struct {
-	Channel ChannelName `json:"channel"`
-	Nick    Nick        `json:"nick"`
-	Message string      `json:"message,omitempty"`
-	At      time.Time   `json:"at"`
+	Channel    ChannelName `json:"channel"`
+	Nick       Nick        `json:"nick"`
+	InstanceID InstanceID  `json:"instance_id,omitzero"`
+	Message    string      `json:"message,omitempty"`
+	At         time.Time   `json:"at"`
+
+	Instance *Instance `json:"-"`
 }
 
 func (ChannelQuit) channelEvent()                 {}
@@ -118,12 +145,16 @@ func (e ChannelQuit) channelEventTime() time.Time { return e.At }
 // ModelVisible implements ChannelEvent.
 func (ChannelQuit) ModelVisible() bool { return true }
 
-// ChannelTopicChange records a topic change.
+// ChannelTopicChange records a topic change. `By` is the actor's
+// nick at the time of the change; `ByInstance` is the live handle,
+// populated on emission and ignored by JSON.
 type ChannelTopicChange struct {
 	Channel ChannelName `json:"channel"`
 	Topic   string      `json:"topic"`
 	By      Nick        `json:"by"`
 	At      time.Time   `json:"at"`
+
+	ByInstance *Instance `json:"-"`
 }
 
 func (ChannelTopicChange) channelEvent()                 {}
@@ -133,12 +164,20 @@ func (e ChannelTopicChange) channelEventTime() time.Time { return e.At }
 func (ChannelTopicChange) ModelVisible() bool { return true }
 
 // ChannelModeChange records a privilege change for a member.
+// `Instance` is the live affected member, populated on emission and
+// ignored by JSON; `Actor` is a free-form actor name (often
+// "ChanServ" for synthetic mode changes) and not snapshotted into
+// the typed handle.
 type ChannelModeChange struct {
-	Channel ChannelName `json:"channel"`
-	Nick    Nick        `json:"nick"`
-	Mode    NickMode    `json:"mode"`
-	By      Nick        `json:"by"`
-	At      time.Time   `json:"at"`
+	Channel    ChannelName `json:"channel"`
+	Nick       Nick        `json:"nick"`
+	InstanceID InstanceID  `json:"instance_id,omitzero"`
+	Mode       NickMode    `json:"mode"`
+	By         Nick        `json:"by"`
+	At         time.Time   `json:"at"`
+
+	Instance *Instance `json:"-"`
+	Actor    string    `json:"-"`
 }
 
 func (ChannelModeChange) channelEvent()                 {}
@@ -148,12 +187,16 @@ func (e ChannelModeChange) channelEventTime() time.Time { return e.At }
 func (ChannelModeChange) ModelVisible() bool { return true }
 
 // ChannelModelInvited records a model instance being added to a
-// channel.
+// channel. `Instance` is the live invitee handle, populated on
+// emission and ignored by JSON.
 type ChannelModelInvited struct {
-	Channel ChannelName `json:"channel"`
-	Nick    Nick        `json:"nick"`
-	By      Nick        `json:"by"`
-	At      time.Time   `json:"at"`
+	Channel    ChannelName `json:"channel"`
+	Nick       Nick        `json:"nick"`
+	InstanceID InstanceID  `json:"instance_id,omitzero"`
+	By         Nick        `json:"by"`
+	At         time.Time   `json:"at"`
+
+	Instance *Instance `json:"-"`
 }
 
 func (ChannelModelInvited) channelEvent()                 {}
@@ -163,12 +206,16 @@ func (e ChannelModelInvited) channelEventTime() time.Time { return e.At }
 func (ChannelModelInvited) ModelVisible() bool { return true }
 
 // ChannelModelKicked records a model instance being removed from a
-// channel.
+// channel. `Instance` is the live kicked-target handle, populated on
+// emission and ignored by JSON.
 type ChannelModelKicked struct {
-	Channel ChannelName `json:"channel"`
-	Nick    Nick        `json:"nick"`
-	By      Nick        `json:"by"`
-	At      time.Time   `json:"at"`
+	Channel    ChannelName `json:"channel"`
+	Nick       Nick        `json:"nick"`
+	InstanceID InstanceID  `json:"instance_id,omitzero"`
+	By         Nick        `json:"by"`
+	At         time.Time   `json:"at"`
+
+	Instance *Instance `json:"-"`
 }
 
 func (ChannelModelKicked) channelEvent()                 {}
@@ -178,11 +225,16 @@ func (e ChannelModelKicked) channelEventTime() time.Time { return e.At }
 func (ChannelModelKicked) ModelVisible() bool { return true }
 
 // ChannelNickChange records a nick change visible in a channel.
+// `Instance` is the live renamed handle, populated on emission and
+// ignored by JSON.
 type ChannelNickChange struct {
-	Channel ChannelName `json:"channel"`
-	OldNick Nick        `json:"old_nick"`
-	NewNick Nick        `json:"new_nick"`
-	At      time.Time   `json:"at"`
+	Channel    ChannelName `json:"channel"`
+	OldNick    Nick        `json:"old_nick"`
+	NewNick    Nick        `json:"new_nick"`
+	InstanceID InstanceID  `json:"instance_id,omitzero"`
+	At         time.Time   `json:"at"`
+
+	Instance *Instance `json:"-"`
 }
 
 func (ChannelNickChange) channelEvent()                 {}
@@ -445,3 +497,24 @@ func UnmarshalChannelEvent(b []byte) (ChannelEvent, error) {
 		return nil, fmt.Errorf("unknown channel event type: %q", env.Type)
 	}
 }
+
+// All ChannelEvent types also implement Event so they flow through
+// the session's unified event channel.
+
+func (ChannelMessage) domainEvent()      {}
+func (ChannelJoin) domainEvent()         {}
+func (ChannelPart) domainEvent()         {}
+func (ChannelQuit) domainEvent()         {}
+func (ChannelTopicChange) domainEvent()  {}
+func (ChannelModeChange) domainEvent()   {}
+func (ChannelModelInvited) domainEvent() {}
+func (ChannelModelKicked) domainEvent()  {}
+func (ChannelNickChange) domainEvent()   {}
+func (ChannelTopicInfo) domainEvent()    {}
+func (ChannelHelp) domainEvent()         {}
+func (ChannelWhois) domainEvent()        {}
+func (ChannelListOutput) domainEvent()   {}
+func (ChannelCommandError) domainEvent() {}
+func (ChannelUsageHint) domainEvent()    {}
+func (ChannelSystemNotice) domainEvent() {}
+func (ChannelPersonasList) domainEvent() {}

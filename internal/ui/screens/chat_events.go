@@ -23,25 +23,25 @@ func (s ChatScreen) handleSessionEvent(msg sessionEventMsg) (ui.Model, tea.Cmd) 
 	)
 
 	switch evt := msg.event.(type) {
-	case domain.JoinEvent:
+	case domain.ChannelJoin:
 		updated, cmd = s.handleJoinEvent(evt)
-	case domain.PartEvent:
+	case domain.ChannelPart:
 		updated, cmd = s.handlePartEvent(evt)
-	case domain.QuitEvent:
+	case domain.ChannelQuit:
 		updated, cmd = s.handleQuitEvent(evt)
-	case domain.ModeChangeEvent:
+	case domain.ChannelModeChange:
 		updated, cmd = s.handleModeChangeEvent(evt)
-	case domain.MessageEvent:
+	case domain.ChannelMessage:
 		updated, cmd = s.handleMessageEvent(evt)
-	case domain.TopicChangeEvent:
+	case domain.ChannelTopicChange:
 		updated, cmd = s.handleTopicChangeEvent(evt)
-	case domain.NickChangeEvent:
+	case domain.ChannelNickChange:
 		updated, cmd = s.handleNickChangeEvent(evt)
-	case domain.ModelInvitedEvent:
+	case domain.ChannelModelInvited:
 		updated, cmd = s.handleModelInvitedEvent(evt)
-	case domain.ModelKickedEvent:
+	case domain.ChannelModelKicked:
 		updated, cmd = s.handleModelKickedEvent(evt)
-	case domain.TopicInfoEvent:
+	case domain.ChannelTopicInfo:
 		updated, cmd = s.handleTopicInfoEvent(evt)
 	case domain.ConfigChangedEvent:
 		updated, cmd = s.handleConfigChangedEvent(evt)
@@ -116,7 +116,7 @@ func (s ChatScreen) handleChannelFocus(msg domain.ChannelFocusEvent) (ui.Model, 
 	return s, tea.Sequence(cmds...)
 }
 
-func (s ChatScreen) handleJoinEvent(msg domain.JoinEvent) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleJoinEvent(msg domain.ChannelJoin) (ui.Model, tea.Cmd) {
 	isUser := msg.Instance == s.sess.UserInstance()
 	_, channelKnown := s.channelByName(msg.Channel)
 
@@ -156,7 +156,7 @@ func (s ChatScreen) handleJoinEvent(msg domain.JoinEvent) (ui.Model, tea.Cmd) {
 	)
 }
 
-func (s ChatScreen) handleModeChangeEvent(msg domain.ModeChangeEvent) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleModeChangeEvent(msg domain.ChannelModeChange) (ui.Model, tea.Cmd) {
 	ch, ok := s.channelByName(msg.Channel)
 	if !ok {
 		return s, nil
@@ -172,7 +172,7 @@ func (s ChatScreen) handleModeChangeEvent(msg domain.ModeChangeEvent) (ui.Model,
 	return s, msgCmd(components.NickListUpdatedMsg{Members: ch.Members})
 }
 
-func (s ChatScreen) handlePartEvent(msg domain.PartEvent) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handlePartEvent(msg domain.ChannelPart) (ui.Model, tea.Cmd) {
 	leavingActive := *s.active == msg.Channel
 
 	// Remove the member from the channel's member list.
@@ -243,7 +243,7 @@ func (s ChatScreen) handlePartEvent(msg domain.PartEvent) (ui.Model, tea.Cmd) {
 	return s, tea.Sequence(cmds...)
 }
 
-func (s ChatScreen) handleQuitEvent(msg domain.QuitEvent) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleQuitEvent(msg domain.ChannelQuit) (ui.Model, tea.Cmd) {
 	// Remove the quitter from every channel's member list.
 	for ch := range s.channels.All() {
 		if m, ok := ch.Members.GetByInstance(msg.Instance); ok {
@@ -280,7 +280,7 @@ func (s ChatScreen) handleQuitEvent(msg domain.QuitEvent) (ui.Model, tea.Cmd) {
 	return s, tea.Batch(cmds...)
 }
 
-func (s ChatScreen) handleTopicChangeEvent(msg domain.TopicChangeEvent) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleTopicChangeEvent(msg domain.ChannelTopicChange) (ui.Model, tea.Cmd) {
 	if ch, ok := s.channelByName(msg.Channel); ok {
 		ch.Topic = msg.Topic
 		ch.TopicSetBy = msg.By
@@ -300,7 +300,7 @@ func (s ChatScreen) handleTopicChangeEvent(msg domain.TopicChangeEvent) (ui.Mode
 	)
 }
 
-func (s ChatScreen) handleTopicInfoEvent(msg domain.TopicInfoEvent) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleTopicInfoEvent(msg domain.ChannelTopicInfo) (ui.Model, tea.Cmd) {
 	if ch, ok := s.channelByName(msg.Channel); ok {
 		ch.Topic = msg.Topic
 		ch.TopicSetBy = msg.TopicSetBy
@@ -322,7 +322,7 @@ func (s ChatScreen) handleTopicInfoEvent(msg domain.TopicInfoEvent) (ui.Model, t
 	)
 }
 
-func (s ChatScreen) handleNickChangeEvent(msg domain.NickChangeEvent) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleNickChangeEvent(msg domain.ChannelNickChange) (ui.Model, tea.Cmd) {
 	// Update the nick snapshot in this channel's local member list.
 	// The instance's own Nick() is already the new value — the
 	// session mutated it before emitting the event.
@@ -365,7 +365,7 @@ func (s ChatScreen) handleNickChangeEvent(msg domain.NickChangeEvent) (ui.Model,
 	return s, tea.Batch(cmds...)
 }
 
-func (s ChatScreen) handleModelInvitedEvent(msg domain.ModelInvitedEvent) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleModelInvitedEvent(msg domain.ChannelModelInvited) (ui.Model, tea.Cmd) {
 	if ch, ok := s.channelByName(msg.Channel); ok {
 		if !ch.Members.HasInstance(msg.Instance) {
 			ch.Members.Add(msg.Instance)
@@ -397,7 +397,7 @@ func (s ChatScreen) handleModelInvitedEvent(msg domain.ModelInvitedEvent) (ui.Mo
 	return s, tea.Batch(cmds...)
 }
 
-func (s ChatScreen) handleModelKickedEvent(msg domain.ModelKickedEvent) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleModelKickedEvent(msg domain.ChannelModelKicked) (ui.Model, tea.Cmd) {
 	// Remove the kicked member from the channel's member list.
 	if ch, ok := s.channelByName(msg.Channel); ok {
 		if m, mOK := ch.Members.GetByInstance(msg.Instance); mOK {
@@ -430,17 +430,17 @@ func (s ChatScreen) handleModelKickedEvent(msg domain.ModelKickedEvent) (ui.Mode
 	return s, tea.Batch(cmds...)
 }
 
-func (s ChatScreen) handleMessageEvent(msg domain.MessageEvent) (ui.Model, tea.Cmd) {
-	event := domain.StoredEvent{Event: msg.Event}
+func (s ChatScreen) handleMessageEvent(msg domain.ChannelMessage) (ui.Model, tea.Cmd) {
+	event := domain.StoredEvent{Event: msg}
 
-	if msg.Event.Channel == *s.active {
+	if msg.Channel == *s.active {
 		return s, msgCmd(event)
 	}
 
-	count, _ := s.sess.UnreadCount(s.ctx, msg.Event.Channel)
-	mention := s.isHighlight(msg.Event.Body)
+	count, _ := s.sess.UnreadCount(s.ctx, msg.Channel)
+	mention := s.isHighlight(msg.Body)
 
-	return s, msgCmd(components.ChannelUnreadMsg{Channel: msg.Event.Channel, Count: count, Mention: mention})
+	return s, msgCmd(components.ChannelUnreadMsg{Channel: msg.Channel, Count: count, Mention: mention})
 }
 
 func (s ChatScreen) handleModelReplyEvent(msg domain.ModelReplyEvent) (ui.Model, tea.Cmd) {

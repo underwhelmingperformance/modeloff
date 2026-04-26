@@ -281,7 +281,7 @@ func TestChatScreen_parting_channel_purges_reply_queue(t *testing.T) {
 
 	// User parts #x — the handler drops both the channel and its
 	// pending-reply queue entry.
-	updated, _ := screen.handlePartEvent(domain.PartEvent{
+	updated, _ := screen.handlePartEvent(domain.ChannelPart{
 		Channel:  "#x",
 		Instance: sess.UserInstance(),
 	})
@@ -312,7 +312,7 @@ func TestChatScreen_parting_channel_purges_reply_queue(t *testing.T) {
 func TestChatScreen_handleSessionEvent_routing(t *testing.T) {
 	tests := []struct {
 		name     string
-		event    domain.SessionEvent
+		event    domain.Event
 		wantType any
 	}{
 		{
@@ -527,7 +527,7 @@ func TestChatScreen_NickChange_then_Quit_removes_instance(t *testing.T) {
 
 	bot := domain.NewModelInstance("bot-1", "oldnick", "test/model", "", nil)
 
-	_, _ = screen.handleModelInvitedEvent(domain.ModelInvitedEvent{
+	_, _ = screen.handleModelInvitedEvent(domain.ChannelModelInvited{
 		Channel:  "#general",
 		Instance: bot,
 		By:       "testuser",
@@ -548,7 +548,7 @@ func TestChatScreen_NickChange_then_Quit_removes_instance(t *testing.T) {
 	// place via RenameTo so sort order stays correct.
 	bot.SetNick("newnick")
 
-	_, _ = screen.handleNickChangeEvent(domain.NickChangeEvent{
+	_, _ = screen.handleNickChangeEvent(domain.ChannelNickChange{
 		Channel:  "#general",
 		Instance: bot,
 		OldNick:  "oldnick",
@@ -567,7 +567,7 @@ func TestChatScreen_NickChange_then_Quit_removes_instance(t *testing.T) {
 
 	// Quit keyed by the same *Instance pointer cleanly removes the
 	// member regardless of the nick carried on the event.
-	_, _ = screen.handleQuitEvent(domain.QuitEvent{
+	_, _ = screen.handleQuitEvent(domain.ChannelQuit{
 		Instance: bot,
 		At:       now,
 	})

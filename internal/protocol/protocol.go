@@ -124,64 +124,6 @@ type ModelResponse struct {
 	Reason   string       `json:"reason,omitempty"`
 }
 
-// FromJoinEvent converts a join event into an IRC-style protocol
-// message.
-func FromJoinEvent(evt domain.JoinEvent) IRCMessage {
-	return IRCMessage{
-		Kind:   KindJoin,
-		From:   string(evt.Instance.Nick()),
-		Target: string(evt.Channel),
-		Body:   evt.Message,
-		At:     evt.At,
-	}
-}
-
-// FromPartEvent converts a part event into an IRC-style protocol
-// message.
-func FromPartEvent(evt domain.PartEvent) IRCMessage {
-	return IRCMessage{
-		Kind:   KindPart,
-		From:   string(evt.Instance.Nick()),
-		Target: string(evt.Channel),
-		Body:   evt.Message,
-		At:     evt.At,
-	}
-}
-
-// FromQuitEvent converts a quit event into an IRC-style protocol
-// message.
-func FromQuitEvent(evt domain.QuitEvent) IRCMessage {
-	return IRCMessage{
-		Kind: KindQuit,
-		From: string(evt.Instance.Nick()),
-		Body: evt.Message,
-		At:   evt.At,
-	}
-}
-
-// FromTopicChangeEvent converts a topic change event into an IRC-style
-// protocol message.
-func FromTopicChangeEvent(evt domain.TopicChangeEvent) IRCMessage {
-	return IRCMessage{
-		Kind:   KindTopic,
-		From:   string(evt.By),
-		Target: string(evt.Channel),
-		Body:   evt.Topic,
-		At:     evt.At,
-	}
-}
-
-// FromNickChangeEvent converts a nick change event into an IRC-style
-// protocol message.
-func FromNickChangeEvent(evt domain.NickChangeEvent) IRCMessage {
-	return IRCMessage{
-		Kind:   KindNick,
-		From:   string(evt.OldNick),
-		Target: string(evt.NewNick),
-		At:     evt.At,
-	}
-}
-
 // FromChannelEvent converts a model-visible channel event into an
 // IRC-style protocol message. Returns the message and true if the
 // event type is supported, or a zero message and false otherwise.

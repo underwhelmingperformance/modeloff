@@ -107,7 +107,7 @@ type Session struct {
 	smallModel domain.ModelID
 	factory    func(apiKey, baseURL string) (api.Client, error)
 	now        func() time.Time
-	events     chan domain.SessionEvent
+	events     chan domain.Event
 
 	connectedC    chan struct{}
 	connectedOnce sync.Once
@@ -152,7 +152,7 @@ func New(
 		apiKey:              strings.TrimSpace(apiKey),
 		smallModel:          smallModel,
 		now:                 time.Now,
-		events:              make(chan domain.SessionEvent, eventBufSize),
+		events:              make(chan domain.Event, eventBufSize),
 		connectedC:          make(chan struct{}),
 		persistenceFailures: persistenceFailures,
 	}
@@ -162,7 +162,7 @@ func New(
 // emitted. The caller should drain this channel to receive
 // DispatchStartedEvent, ModelReplyEvent, DispatchDoneEvent, and
 // ErrorEvent values.
-func (s *Session) Events() <-chan domain.SessionEvent {
+func (s *Session) Events() <-chan domain.Event {
 	return s.events
 }
 
@@ -273,17 +273,22 @@ func (s *Session) openStatusChannel(ctx context.Context) error {
 		return fmt.Errorf("save status channel: %w", err)
 	}
 
-	s.emitUIOnly(domain.JoinEvent{
-		Channel:  domain.StatusChannelName,
-		Instance: s.user,
-		At:       s.connectedAt,
+	s.emitUIOnly(domain.ChannelJoin{
+		Channel:    domain.StatusChannelName,
+		Nick:       s.user.Nick(),
+		InstanceID: s.user.ID(),
+		At:         s.connectedAt,
+		Instance:   s.user,
 	})
-	s.emitUIOnly(domain.ModeChangeEvent{
-		Channel:  domain.StatusChannelName,
-		Instance: s.user,
-		Mode:     domain.ModeOp,
-		Actor:    "ChanServ",
-		At:       s.connectedAt,
+	s.emitUIOnly(domain.ChannelModeChange{
+		Channel:    domain.StatusChannelName,
+		Nick:       s.user.Nick(),
+		InstanceID: s.user.ID(),
+		Mode:       domain.ModeOp,
+		By:         "ChanServ",
+		At:         s.connectedAt,
+		Instance:   s.user,
+		Actor:      "ChanServ",
 	})
 
 	return nil
@@ -897,18 +902,13 @@ func (s *Session) attachInstanceToChannel(
 	now := s.now()
 	byNick := by.Nick()
 
-	s.appendEvent(ctx, ch, domain.ChannelModelInvited{
-		Channel: ch,
-		Nick:    inst.Nick(),
-		By:      byNick,
-		At:      now,
-	})
-
-	s.emit(ctx, domain.ModelInvitedEvent{
-		Channel:  ch,
-		Instance: inst,
-		By:       byNick,
-		At:       now,
+	s.persistAndEmit(ctx, ch, domain.ChannelModelInvited{
+		Channel:    ch,
+		Nick:       inst.Nick(),
+		InstanceID: inst.ID(),
+		By:         byNick,
+		At:         now,
+		Instance:   inst,
 	})
 
 	if isNew {
@@ -918,20 +918,15 @@ func (s *Session) attachInstanceToChannel(
 			return fmt.Errorf("save channel after mode: %w", err)
 		}
 
-		s.appendEvent(ctx, ch, domain.ChannelModeChange{
-			Channel: ch,
-			Nick:    inst.Nick(),
-			Mode:    domain.ModeVoice,
-			By:      "ChanServ",
-			At:      now,
-		})
-
-		s.emit(ctx, domain.ModeChangeEvent{
-			Channel:  ch,
-			Instance: inst,
-			Mode:     domain.ModeVoice,
-			Actor:    "ChanServ",
-			At:       now,
+		s.persistAndEmit(ctx, ch, domain.ChannelModeChange{
+			Channel:    ch,
+			Nick:       inst.Nick(),
+			InstanceID: inst.ID(),
+			Mode:       domain.ModeVoice,
+			By:         "ChanServ",
+			At:         now,
+			Instance:   inst,
+			Actor:      "ChanServ",
 		})
 	}
 
@@ -1786,41 +1781,67 @@ func (s *Session) LogEvent(ctx context.Context, ch domain.ChannelName, event dom
 // emit sends an event to the UI channel and, for dispatchable event
 // types, triggers background model dispatch for the relevant channel.
 // The context is threaded through to preserve OTel trace parenting.
-func (s *Session) emit(ctx context.Context, evt domain.SessionEvent) {
+func (s *Session) emit(ctx context.Context, evt domain.Event) {
 	s.events <- evt
 	s.maybeDispatch(ctx, evt)
 }
 
 // emitUIOnly sends an event to the UI channel without triggering model
 // dispatch. Use this for model-initiated events to prevent loops.
-func (s *Session) emitUIOnly(evt domain.SessionEvent) {
+func (s *Session) emitUIOnly(evt domain.Event) {
 	s.events <- evt
+}
+
+// persistAndEmit appends `evt` to the channel event log and emits it
+// on the UI channel, in that order. Persistence completing before
+// emission is a session-wide invariant: any UI observer that learns
+// about an event must always be able to find the same event in the
+// store. Since the unification (`#36`), the same value flows to both
+// destinations — the live `*Instance` and `Actor` fields are
+// `json:"-"` so the persisted shape is the snapshot, while live
+// consumers see the populated handle.
+func (s *Session) persistAndEmit(ctx context.Context, ch domain.ChannelName, evt domain.ChannelEvent) {
+	s.appendEvent(ctx, ch, evt)
+	s.emit(ctx, evt)
+}
+
+// persistAndEmitUIOnly is the dispatch-suppressed sibling of
+// persistAndEmit: it persists `evt` to the channel event log but
+// emits it without fanning out to background dispatch. Used where
+// the session records a fact for replay (mode changes that follow an
+// already-in-flight dispatch) but does not want to retrigger model
+// reactions to it.
+func (s *Session) persistAndEmitUIOnly(ctx context.Context, ch domain.ChannelName, evt domain.ChannelEvent) {
+	s.appendEvent(ctx, ch, evt)
+	s.emitUIOnly(evt)
 }
 
 // maybeDispatch checks whether an event is dispatchable and, if so,
 // starts a background dispatch for the relevant channel.
-func (s *Session) maybeDispatch(ctx context.Context, evt domain.SessionEvent) {
+func (s *Session) maybeDispatch(ctx context.Context, evt domain.Event) {
 	switch e := evt.(type) {
-	case domain.MessageEvent:
-		ircMsg, _ := protocol.FromChannelEvent(e.Event)
+	case domain.ChannelMessage:
+		ircMsg, _ := protocol.FromChannelEvent(e)
 		s.dispatchInBackground(
 			ctx,
-			e.Event.Channel,
+			e.Channel,
 			[]protocol.IRCMessage{ircMsg},
 		)
 
-	case domain.JoinEvent:
+	case domain.ChannelJoin:
+		ircMsg, _ := protocol.FromChannelEvent(e)
 		s.dispatchInBackground(
 			ctx,
 			e.Channel,
-			[]protocol.IRCMessage{protocol.FromJoinEvent(e)},
+			[]protocol.IRCMessage{ircMsg},
 		)
 
-	case domain.PartEvent:
+	case domain.ChannelPart:
+		ircMsg, _ := protocol.FromChannelEvent(e)
 		s.dispatchInBackground(
 			ctx,
 			e.Channel,
-			[]protocol.IRCMessage{protocol.FromPartEvent(e)},
+			[]protocol.IRCMessage{ircMsg},
 		)
 
 	case domain.PokeEvent:

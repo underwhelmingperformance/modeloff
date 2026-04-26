@@ -24,12 +24,12 @@ import (
 	uitimestamp "github.com/laney/modeloff/internal/ui/timestamp"
 )
 
-// sessionEventMsg wraps a domain.SessionEvent received from the
+// sessionEventMsg wraps a domain.Event received from the
 // session's background event channel. Using a dedicated wrapper
 // prevents the events channel listener from being re-invoked when
 // the same underlying types are sent directly as tea.Msg.
 type sessionEventMsg struct {
-	event domain.SessionEvent
+	event domain.Event
 }
 
 // deliverNextReplyMsg triggers delivery of the next queued reply
@@ -490,28 +490,28 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 			}),
 		)
 
-	case domain.JoinEvent:
+	case domain.ChannelJoin:
 		return s.handleJoinEvent(msg)
 
-	case domain.PartEvent:
+	case domain.ChannelPart:
 		return s.handlePartEvent(msg)
 
-	case domain.QuitEvent:
+	case domain.ChannelQuit:
 		return s.handleQuitEvent(msg)
 
-	case domain.TopicChangeEvent:
+	case domain.ChannelTopicChange:
 		return s.handleTopicChangeEvent(msg)
 
-	case domain.NickChangeEvent:
+	case domain.ChannelNickChange:
 		return s.handleNickChangeEvent(msg)
 
-	case domain.ModelInvitedEvent:
+	case domain.ChannelModelInvited:
 		return s.handleModelInvitedEvent(msg)
 
-	case domain.ModelKickedEvent:
+	case domain.ChannelModelKicked:
 		return s.handleModelKickedEvent(msg)
 
-	case domain.MessageEvent:
+	case domain.ChannelMessage:
 		return s.handleMessageEvent(msg)
 
 	case domain.ModelReplyEvent:

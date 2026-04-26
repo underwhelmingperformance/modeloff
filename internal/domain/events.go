@@ -4,94 +4,14 @@ import (
 	"time"
 )
 
-// MessageEvent is emitted when a new message is sent in a channel.
-type MessageEvent struct {
-	Event ChannelMessage
-}
-
-// JoinEvent is emitted when a user or model joins a channel. Created
-// is true when the channel was newly created by this join. Instance
-// carries the joiner's handle; callers read `.Nick()` for display.
-type JoinEvent struct {
-	Channel  ChannelName
-	Instance *Instance
-	Created  bool
-	Message  string
-	At       time.Time
-}
-
-// PartEvent is emitted when a user or model leaves a channel.
-type PartEvent struct {
-	Channel  ChannelName
-	Instance *Instance
-	Message  string
-	At       time.Time
-}
-
-// QuitEvent is emitted when a user or model quits the server,
-// leaving all channels.
-type QuitEvent struct {
-	Instance *Instance
-	Message  string
-	At       time.Time
-}
-
-// NickChangeEvent is emitted when a user changes their nickname.
-// One event is emitted per channel the user is in. Instance is the
-// renamed actor's handle. OldNick captures the nick as it appeared
-// in the channel before the rename (read from the member-list
-// snapshot); NewNick is also the handle's current Nick() after the
-// rename has propagated.
-type NickChangeEvent struct {
-	Channel  ChannelName
-	Instance *Instance
-	OldNick  Nick
-	NewNick  Nick
-	At       time.Time
-}
-
-// TopicChangeEvent is emitted when a channel's topic is changed.
-type TopicChangeEvent struct {
-	Channel ChannelName
-	Topic   string
-	By      Nick
-	At      time.Time
-}
-
-// ModelInvitedEvent is emitted when a model instance is added to a
-// channel.
-type ModelInvitedEvent struct {
-	Channel  ChannelName
-	Instance *Instance
-	By       Nick
-	At       time.Time
-}
-
-// ModelKickedEvent is emitted when a model instance is removed from a
-// channel.
-type ModelKickedEvent struct {
-	Channel  ChannelName
-	Instance *Instance
-	By       Nick
-	At       time.Time
-}
-
 // ModelReplyEvent is emitted when a model instance responds to events
-// in a channel. Instance is the replying instance's handle.
+// in a channel. Instance is the replying instance's handle. The
+// embedded `ChannelMessage` is the prepared message the chat screen
+// will commit to the channel's event log if the user does not abort.
 type ModelReplyEvent struct {
 	Channel  ChannelName
 	Event    ChannelMessage
 	Instance *Instance
-	At       time.Time
-}
-
-// ModeChangeEvent is emitted when a member's privilege level changes
-// in a channel. Instance identifies the affected member.
-type ModeChangeEvent struct {
-	Channel  ChannelName
-	Instance *Instance
-	Mode     NickMode
-	Actor    string
 	At       time.Time
 }
 
@@ -102,16 +22,6 @@ type DMOpenedEvent struct {
 	Nick    Nick
 	Created bool
 	At      time.Time
-}
-
-// TopicInfoEvent is emitted during the join protocol when a channel
-// has a topic. It is display-only and not persisted.
-type TopicInfoEvent struct {
-	Channel    ChannelName
-	Topic      string
-	TopicSetBy Nick
-	TopicSetAt time.Time
-	At         time.Time
 }
 
 // ConfigChangedEvent is emitted when a runtime configuration value is
@@ -161,10 +71,17 @@ type SystemNoticeEvent struct {
 	Stored  StoredEvent
 }
 
-// SessionEvent is the interface for events emitted on the session's
-// background event channel.
-type SessionEvent interface {
-	sessionEvent()
+// Event is the sealed top-level interface every domain event
+// implements. The session's background event channel is typed as
+// `chan Event`, so every concrete domain event (persistable
+// `Channel*` types and pure-live types alike) flows through one
+// pipe. Persistability is a per-handler concern: the store accepts
+// only `ChannelEvent` (a subset of `Event` that adds the methods
+// needed for marshalling and replay), and consumers that handle
+// derived/transient state (dispatch lifecycle, focus changes, etc.)
+// just type-switch on the variants they care about.
+type Event interface {
+	domainEvent()
 }
 
 // DispatchStartedEvent is emitted when the session begins dispatching
@@ -180,25 +97,17 @@ type DispatchDoneEvent struct {
 	Channel ChannelName
 }
 
-// All event types implement SessionEvent so they can flow through the
-// session's unified event channel.
+// Pure-live (non-persistable) event types implement Event so they
+// flow through the session's unified event channel without
+// satisfying ChannelEvent. The persistable Channel* types implement
+// Event via channel_event.go.
 
-func (MessageEvent) sessionEvent()         {}
-func (JoinEvent) sessionEvent()            {}
-func (PartEvent) sessionEvent()            {}
-func (QuitEvent) sessionEvent()            {}
-func (NickChangeEvent) sessionEvent()      {}
-func (TopicChangeEvent) sessionEvent()     {}
-func (ModelInvitedEvent) sessionEvent()    {}
-func (ModelKickedEvent) sessionEvent()     {}
-func (ModelReplyEvent) sessionEvent()      {}
-func (ModeChangeEvent) sessionEvent()      {}
-func (DMOpenedEvent) sessionEvent()        {}
-func (TopicInfoEvent) sessionEvent()       {}
-func (ConfigChangedEvent) sessionEvent()   {}
-func (PokeEvent) sessionEvent()            {}
-func (ErrorEvent) sessionEvent()           {}
-func (DispatchStartedEvent) sessionEvent() {}
-func (DispatchDoneEvent) sessionEvent()    {}
-func (FocusChannelEvent) sessionEvent()    {}
-func (SystemNoticeEvent) sessionEvent()    {}
+func (ModelReplyEvent) domainEvent()      {}
+func (DMOpenedEvent) domainEvent()        {}
+func (ConfigChangedEvent) domainEvent()   {}
+func (PokeEvent) domainEvent()            {}
+func (ErrorEvent) domainEvent()           {}
+func (DispatchStartedEvent) domainEvent() {}
+func (DispatchDoneEvent) domainEvent()    {}
+func (FocusChannelEvent) domainEvent()    {}
+func (SystemNoticeEvent) domainEvent()    {}

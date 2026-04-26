@@ -9,16 +9,16 @@ import (
 	"github.com/laney/modeloff/internal/domain"
 )
 
-func TestFromJoinEvent(t *testing.T) {
+func TestFromChannelEvent_join(t *testing.T) {
 	at := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
-	alice := domain.NewModelInstance("inst-alice", "alice", "test/model", "", nil)
 
-	got := FromJoinEvent(domain.JoinEvent{
-		Channel:  "#general",
-		Instance: alice,
-		At:       at,
+	got, ok := FromChannelEvent(domain.ChannelJoin{
+		Channel: "#general",
+		Nick:    "alice",
+		At:      at,
 	})
 
+	require.True(t, ok)
 	require.Equal(t, IRCMessage{
 		Kind:   KindJoin,
 		From:   "alice",
@@ -27,16 +27,16 @@ func TestFromJoinEvent(t *testing.T) {
 	}, got)
 }
 
-func TestFromPartEvent(t *testing.T) {
+func TestFromChannelEvent_part(t *testing.T) {
 	at := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
-	alice := domain.NewModelInstance("inst-alice", "alice", "test/model", "", nil)
 
-	got := FromPartEvent(domain.PartEvent{
-		Channel:  "#general",
-		Instance: alice,
-		At:       at,
+	got, ok := FromChannelEvent(domain.ChannelPart{
+		Channel: "#general",
+		Nick:    "alice",
+		At:      at,
 	})
 
+	require.True(t, ok)
 	require.Equal(t, IRCMessage{
 		Kind:   KindPart,
 		From:   "alice",
@@ -45,16 +45,17 @@ func TestFromPartEvent(t *testing.T) {
 	}, got)
 }
 
-func TestFromTopicChangeEvent(t *testing.T) {
+func TestFromChannelEvent_topic_change(t *testing.T) {
 	at := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
 
-	got := FromTopicChangeEvent(domain.TopicChangeEvent{
+	got, ok := FromChannelEvent(domain.ChannelTopicChange{
 		Channel: "#general",
 		Topic:   "Discussion",
 		By:      "alice",
 		At:      at,
 	})
 
+	require.True(t, ok)
 	require.Equal(t, IRCMessage{
 		Kind:   KindTopic,
 		From:   "alice",
@@ -64,17 +65,17 @@ func TestFromTopicChangeEvent(t *testing.T) {
 	}, got)
 }
 
-func TestFromJoinEvent_with_message(t *testing.T) {
+func TestFromChannelEvent_join_with_message(t *testing.T) {
 	at := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
-	alice := domain.NewModelInstance("inst-alice", "alice", "test/model", "", nil)
 
-	got := FromJoinEvent(domain.JoinEvent{
-		Channel:  "#general",
-		Instance: alice,
-		Message:  "hello everyone",
-		At:       at,
+	got, ok := FromChannelEvent(domain.ChannelJoin{
+		Channel: "#general",
+		Nick:    "alice",
+		Message: "hello everyone",
+		At:      at,
 	})
 
+	require.True(t, ok)
 	require.Equal(t, IRCMessage{
 		Kind:   KindJoin,
 		From:   "alice",
@@ -84,17 +85,17 @@ func TestFromJoinEvent_with_message(t *testing.T) {
 	}, got)
 }
 
-func TestFromPartEvent_with_message(t *testing.T) {
+func TestFromChannelEvent_part_with_message(t *testing.T) {
 	at := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
-	alice := domain.NewModelInstance("inst-alice", "alice", "test/model", "", nil)
 
-	got := FromPartEvent(domain.PartEvent{
-		Channel:  "#general",
-		Instance: alice,
-		Message:  "goodbye",
-		At:       at,
+	got, ok := FromChannelEvent(domain.ChannelPart{
+		Channel: "#general",
+		Nick:    "alice",
+		Message: "goodbye",
+		At:      at,
 	})
 
+	require.True(t, ok)
 	require.Equal(t, IRCMessage{
 		Kind:   KindPart,
 		From:   "alice",
@@ -104,33 +105,36 @@ func TestFromPartEvent_with_message(t *testing.T) {
 	}, got)
 }
 
-func TestFromQuitEvent(t *testing.T) {
+func TestFromChannelEvent_quit(t *testing.T) {
 	at := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
-	alice := domain.NewModelInstance("inst-alice", "alice", "test/model", "", nil)
 
-	got := FromQuitEvent(domain.QuitEvent{
-		Instance: alice,
-		Message:  "gone fishing",
-		At:       at,
+	got, ok := FromChannelEvent(domain.ChannelQuit{
+		Channel: "#general",
+		Nick:    "alice",
+		Message: "gone fishing",
+		At:      at,
 	})
 
+	require.True(t, ok)
 	require.Equal(t, IRCMessage{
-		Kind: KindQuit,
-		From: "alice",
-		Body: "gone fishing",
-		At:   at,
+		Kind:   KindQuit,
+		From:   "alice",
+		Target: "#general",
+		Body:   "gone fishing",
+		At:     at,
 	}, got)
 }
 
-func TestFromNickChangeEvent(t *testing.T) {
+func TestFromChannelEvent_nick_change(t *testing.T) {
 	at := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
 
-	got := FromNickChangeEvent(domain.NickChangeEvent{
+	got, ok := FromChannelEvent(domain.ChannelNickChange{
 		OldNick: "alice",
 		NewNick: "ally",
 		At:      at,
 	})
 
+	require.True(t, ok)
 	require.Equal(t, IRCMessage{
 		Kind:   KindNick,
 		From:   "alice",
