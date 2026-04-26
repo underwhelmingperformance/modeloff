@@ -2678,30 +2678,24 @@ func TestBuildSystemPrompt(t *testing.T) {
 		ModelID: "test/model",
 		Persona: "grumpy sysadmin",
 	})
-	ch := domain.Channel{
-		Name:    "#dev",
-		Kind:    domain.KindChannel,
-		Topic:   "go stuff",
-		Members: testMembers(t, sess, s, "testuser", "botty"),
-	}
+	cw := domain.NewChannelWindow("#dev", time.Time{})
+	cw.Topic = "go stuff"
+	cw.Members = testMembers(t, sess, s, "testuser", "botty")
 
-	prompt := buildSystemPrompt(ch, botty, nil)
+	prompt := buildSystemPrompt(cw, botty, nil)
 
 	require.Equal(t, loadGolden(t, "system_prompt.golden.txt"), prompt)
 }
 
 func TestBuildSystemPrompt_with_memories(t *testing.T) {
-	ch := domain.Channel{
-		Name: "#dev",
-		Kind: domain.KindChannel,
-	}
+	cw := domain.NewChannelWindow("#dev", time.Time{})
 	inst := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
 	memories := []memory.Entry{
 		{Key: "mood", Content: "curious"},
 		{Key: "goal", Content: "learn go"},
 	}
 
-	prompt := buildSystemPrompt(ch, inst, memories)
+	prompt := buildSystemPrompt(cw, inst, memories)
 
 	require.Equal(t, loadGolden(t, "system_prompt_with_memories.golden.txt"), prompt)
 }
@@ -3304,10 +3298,10 @@ func TestSession_Reset_nil_memory_store(t *testing.T) {
 }
 
 func TestBuildSystemPrompt_instructs_single_line_messages(t *testing.T) {
-	ch := domain.Channel{Name: "#dev", Kind: domain.KindChannel}
+	cw := domain.NewChannelWindow("#dev", time.Time{})
 	inst := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
 
-	prompt := buildSystemPrompt(ch, inst, nil)
+	prompt := buildSystemPrompt(cw, inst, nil)
 
 	require.Contains(t, prompt, "Each message must be a single line with no newline characters.")
 }

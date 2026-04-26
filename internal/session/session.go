@@ -274,22 +274,21 @@ func (s *Session) Connect(ctx context.Context) (retErr error) {
 // The only events that land here are server-narrated notices the
 // session itself records via appendStatus.
 func (s *Session) openStatusChannel(ctx context.Context) error {
-	channel, err := s.loadChannel(ctx, domain.StatusChannelName)
+	// The status window has no per-row state — it's defined entirely
+	// by its reserved name and the connected-at timestamp — so the
+	// load/persist round-trip is structural and any GetWindow miss
+	// just means "first start, construct it fresh".
+	window, err := s.store.GetWindow(ctx, domain.StatusChannelName)
 	if err != nil {
-		channel = domain.Channel{
-			Name:    domain.StatusChannelName,
-			Kind:    domain.KindStatus,
-			Members: domain.NewMemberList(),
-			Created: s.connectedAt,
-		}
+		window = domain.NewStatusWindow(s.connectedAt)
 	}
 
 	s.user.MutateChannels(func(m *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
 		m.Set(domain.StatusChannelName, s.connectedAt)
 	})
 
-	if err := s.persistChannel(ctx, channel); err != nil {
-		return fmt.Errorf("save status channel: %w", err)
+	if err := s.store.SaveWindow(ctx, window); err != nil {
+		return fmt.Errorf("save status window: %w", err)
 	}
 
 	s.emitUIOnly(domain.StatusOpenedEvent{
@@ -1547,7 +1546,20 @@ func (s *Session) dispatchToInstance(
 		return nil, fmt.Errorf("read memories for %s: %w", nick, err)
 	}
 
-	prompt := buildSystemPrompt(channel, inst, memories)
+	window, err := domain.WindowFromChannel(channel, func(nick domain.Nick) *domain.Instance {
+		resolved, err := s.ResolveNick(ctx, nick)
+		if err != nil {
+			return nil
+		}
+
+		return resolved
+	})
+	if err != nil {
+		setSpanError(instanceSpan, err, observability.ErrorKindStore)
+		return nil, fmt.Errorf("project channel %q to window: %w", channelName, err)
+	}
+
+	prompt := buildSystemPrompt(window, inst, memories)
 
 	var mem MemoryExecutor
 	if s.memory != nil {
@@ -2102,7 +2114,14 @@ func (s *Session) memoriesForInstance(ctx context.Context, id domain.InstanceID)
 	return s.memory.Read(ctx, id)
 }
 
-func buildSystemPrompt(ch domain.Channel, inst *domain.Instance, memories []memory.Entry) string {
+// buildSystemPrompt assembles the per-turn system prompt for a
+// model instance speaking on `window`. The function is only ever
+// called from the dispatch path, which never fires for the status
+// window — `window` is therefore expected to be a `*ChannelWindow`
+// or `*DMWindow`. The topic line is suppressed for DMs because
+// only channels carry a topic; the addressing line uses the
+// window's `Name()` either way.
+func buildSystemPrompt(window domain.Window, inst *domain.Instance, memories []memory.Entry) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, `You are %s on %s. You are an IRC regular — you've been here a while and you fit in naturally.
@@ -2124,11 +2143,11 @@ How to behave:
 - Respond to the channel vibe, not just direct questions. If the conversation is fun, join in. If it's quiet, stay quiet.
 - Never say things like "Great question!", "I'd be happy to help!", "Absolutely!", or "Let me know if you need anything." These are AI-isms and they break the illusion. Talk like a person, not an assistant.`,
 		inst.Nick(),
-		ch.Name,
+		window.Name(),
 	)
 
-	if ch.Topic != "" {
-		fmt.Fprintf(&b, "\n\nChannel topic: %s", ch.Topic)
+	if cw, ok := window.(*domain.ChannelWindow); ok && cw.Topic != "" {
+		fmt.Fprintf(&b, "\n\nChannel topic: %s", cw.Topic)
 	}
 
 	if persona := inst.Persona(); persona != "" {
