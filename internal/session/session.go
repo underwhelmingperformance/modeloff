@@ -1186,7 +1186,7 @@ func (s *Session) OpenDM(ctx context.Context, target *domain.Instance) (domain.C
 	if domain.ChannelName(nick) == domain.StatusChannelName {
 		err := domain.StatusChannelGuardError{
 			Command: "msg",
-			Hint:    "to message a model, use /msg <nick> with the model's name; &modeloff is a server channel.",
+			Hint:    "&modeloff is the per-session status window and does not accept messages. Use /msg <nick-or-#channel> instead.",
 		}
 		setSpanError(span, err, observability.ErrorKindValidation)
 		return domain.Channel{}, false, err
@@ -1484,11 +1484,6 @@ func (s *Session) dispatchToInstances(
 		return nil, fmt.Errorf("resolve dispatch recipients: %w", err)
 	}
 
-	channel, err := s.loadChannel(ctx, channelName)
-	if err != nil {
-		return nil, fmt.Errorf("get channel: %w", err)
-	}
-
 	var errs []error
 	var replies []domain.ModelReplyEvent
 
@@ -1498,7 +1493,14 @@ func (s *Session) dispatchToInstances(
 			continue
 		}
 
-		instReplies, instErr := s.dispatchToInstance(ctx, channel, inst, channelName, historyEvents, filtered)
+		window, err := s.dispatchWindowFor(ctx, channelName, inst)
+		if err != nil {
+			errs = append(errs, err)
+
+			continue
+		}
+
+		instReplies, instErr := s.dispatchToInstance(ctx, window, inst, channelName, historyEvents, filtered)
 		if instErr != nil {
 			errs = append(errs, instErr)
 		}
@@ -1512,6 +1514,20 @@ func (s *Session) dispatchToInstances(
 	}
 
 	return replies, errors.Join(errs...)
+}
+
+// dispatchWindowFor produces the `Window` that the recipient
+// model is "in" for the purposes of system-prompt construction
+// and span tagging. For a `#`-channel target it loads the
+// `*ChannelWindow` from storage. For a bare-nick target it
+// synthesises a `*DMWindow` keyed by the message's addressing
+// (no row is required — DMs are stateless on the server side).
+func (s *Session) dispatchWindowFor(ctx context.Context, target domain.ChannelName, inst *domain.Instance) (domain.Window, error) {
+	if domain.InferChannelKind(target) == domain.KindDM {
+		return domain.NewDMWindow(inst, s.now()), nil
+	}
+
+	return s.loadChannelWindow(ctx, target)
 }
 
 func filterSelfEvents(events []protocol.IRCMessage, instanceID domain.InstanceID) []protocol.IRCMessage {
@@ -1531,7 +1547,7 @@ func filterSelfEvents(events []protocol.IRCMessage, instanceID domain.InstanceID
 
 func (s *Session) dispatchToInstance(
 	ctx context.Context,
-	channel domain.Channel,
+	window domain.Window,
 	inst *domain.Instance,
 	channelName domain.ChannelName,
 	historyEvents []domain.StoredEvent,
@@ -1546,7 +1562,7 @@ func (s *Session) dispatchToInstance(
 		attribute.String(observability.AttrModelID, string(inst.ModelID)),
 		attribute.String(observability.AttrNick, string(nick)),
 		attribute.String(observability.AttrInstanceID, string(inst.ID())),
-		attribute.String(observability.AttrChannelKind, channelKindName(channel.Kind)),
+		attribute.String(observability.AttrChannelKind, channelKindName(window.Kind())),
 	)
 	defer instanceSpan.End()
 
@@ -1581,19 +1597,6 @@ func (s *Session) dispatchToInstance(
 		instanceSpan.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
 		instanceSpan.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("read memories for %s: %w", nick, err)
-	}
-
-	window, err := domain.WindowFromChannel(channel, func(nick domain.Nick) *domain.Instance {
-		resolved, err := s.ResolveNick(ctx, nick)
-		if err != nil {
-			return nil
-		}
-
-		return resolved
-	})
-	if err != nil {
-		setSpanError(instanceSpan, err, observability.ErrorKindStore)
-		return nil, fmt.Errorf("project channel %q to window: %w", channelName, err)
 	}
 
 	prompt := buildSystemPrompt(window, inst, memories)
@@ -2163,7 +2166,7 @@ func (s *Session) dispatchToInstanceInBackground(
 		defer span.End()
 		defer s.emitUIOnly(domain.DispatchDoneEvent{Channel: ch})
 
-		channel, err := s.loadChannel(ctx, ch)
+		window, err := s.dispatchWindowFor(ctx, ch, inst)
 		if err != nil {
 			setSpanError(span, err, observability.ErrorKindStore)
 			s.appendStatus(ctx, fmt.Sprintf("dispatch to %s: %s", ch, err))
@@ -2179,7 +2182,7 @@ func (s *Session) dispatchToInstanceInBackground(
 
 		s.emitUIOnly(domain.DispatchStartedEvent{Channel: ch, Nicks: []domain.Nick{nick}})
 
-		replies, err := s.dispatchToInstance(ctx, channel, inst, ch, historyEvents, triggerEvents)
+		replies, err := s.dispatchToInstance(ctx, window, inst, ch, historyEvents, triggerEvents)
 		if err != nil {
 			setSpanError(span, err, observability.ErrorKindDispatch)
 			s.appendStatus(ctx, fmt.Sprintf("dispatch to %s: %s", ch, err))

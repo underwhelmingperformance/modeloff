@@ -52,7 +52,7 @@ func TestBuildToolRegistry_returns_expected_tools(t *testing.T) {
 		},
 		{
 			Name:        "msg",
-			Description: "Open a direct message and optionally send text.",
+			Description: "Send a message addressed to either a #channel you are in, or a user (by nick). The recipient sees the message and may reply.",
 			Parameters:  toolParams(t, "msg"),
 		},
 		{
@@ -292,7 +292,7 @@ func TestRunTool_invite_missing_nick_returns_error(t *testing.T) {
 	}, result)
 }
 
-func TestRunTool_msg_opens_dm(t *testing.T) {
+func TestRunTool_msg_sends_to_nick(t *testing.T) {
 	sess := newToolTestSession(t)
 
 	// Join a channel and add a model so the nick resolves.
@@ -304,7 +304,7 @@ func TestRunTool_msg_opens_dm(t *testing.T) {
 		Actor:   sess.UserInstance(),
 	}
 
-	v := toolValue(t, "msg", `{"nick": "testbot"}`)
+	v := toolValue(t, "msg", `{"target": "testbot", "body": ["hello"]}`)
 
 	tool, ok := v.(ToolCommand)
 	require.True(t, ok, "MsgCommand should implement ToolCommand")
@@ -312,7 +312,29 @@ func TestRunTool_msg_opens_dm(t *testing.T) {
 	result := tool.RunTool(t.Context(), tc)
 
 	require.True(t, result.OK)
-	require.Equal(t, "created direct message with testbot", result.Summary)
+	require.Equal(t, "messaged testbot", result.Summary)
+}
+
+func TestRunTool_msg_rejects_empty_body(t *testing.T) {
+	sess := newToolTestSession(t)
+
+	require.NoError(t, sess.Join(t.Context(), "#lobby"))
+	require.NoError(t, sess.AddModel(t.Context(), "#lobby", "anthropic/haiku", ""))
+
+	tc := session.ToolContext{
+		Session: sess,
+		Actor:   sess.UserInstance(),
+	}
+
+	v := toolValue(t, "msg", `{"target": "testbot"}`)
+
+	tool, ok := v.(ToolCommand)
+	require.True(t, ok)
+
+	require.Equal(t, session.ToolResultPayload{
+		OK:    false,
+		Error: "message body is required",
+	}, tool.RunTool(t.Context(), tc))
 }
 
 func TestRunTool_nick_changes_nick(t *testing.T) {

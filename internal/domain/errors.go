@@ -63,16 +63,21 @@ func (e UnsupportedModelError) Error() string {
 }
 
 // StatusChannelGuardError indicates a request was refused because it
-// targeted the per-session status channel (`&modeloff`). It carries a
-// command tag and a human-friendly hint that the UI surfaces as a
-// UsageHint rather than a hard error.
+// targeted the per-session status channel (`&modeloff`). The status
+// channel is server-narrated only — it accepts no chat messages,
+// invites, kicks, or topic changes. `Hint` is a *user-facing*
+// suggestion the chat screen renders as a `UsageHint` (it can name
+// slash-command alternatives like `/msg` or `/join`); it is not
+// included in `Error()` because that string is also what surfaces
+// to model tool callers, who reason in tool-call terms and have no
+// notion of slash syntax.
 type StatusChannelGuardError struct {
 	Command string
 	Hint    string
 }
 
 func (e StatusChannelGuardError) Error() string {
-	return e.Hint
+	return fmt.Sprintf("the status window does not accept %s requests", e.Command)
 }
 
 // NickInUseError indicates a nickname change was refused because the

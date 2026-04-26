@@ -244,11 +244,11 @@ func TestComplete_invite_suggests_instance_nicks(t *testing.T) {
 	require.Equal(t, []string{"haiku", "sonnet"}, suggestionValues(c))
 }
 
-func TestComplete_msg_suggests_all_instances(t *testing.T) {
+func TestComplete_msg_suggests_channels_and_instances(t *testing.T) {
 	c := complete(t, "/msg ")
 
 	require.True(t, c.Visible)
-	require.Equal(t, []string{"haiku", "sonnet"}, suggestionValues(c))
+	require.Equal(t, []string{"#general", "#random", "haiku", "sonnet"}, suggestionValues(c))
 }
 
 func TestComplete_whois_suggests_all_instances(t *testing.T) {

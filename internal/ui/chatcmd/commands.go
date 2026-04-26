@@ -296,33 +296,73 @@ func (c KickCommand) RunTool(ctx context.Context, tc session.ToolContext) sessio
 	}
 }
 
-// MsgCommand represents `/msg <nick> [message]`.
+// MsgCommand represents `/msg <target> [message]` where `target`
+// is either a `#`-prefixed channel name or a bare nick. For a
+// channel target, the actor must already be a member of the
+// channel; for a nick target, the message goes to that user
+// directly.
 type MsgCommand struct {
-	Nick string   `arg:"" help:"Nick to message"`
-	Body []string `arg:"" optional:"" nargs:"1" help:"Message text"`
+	Target string   `arg:"" help:"#channel or nick to message"`
+	Body   []string `arg:"" optional:"" nargs:"1" help:"Message text"`
 }
 
 // Sources implements command.Completer.
 func (MsgCommand) Sources() map[string]command.SuggestionSource[CompletionContext] {
-	return map[string]command.SuggestionSource[CompletionContext]{"nick": instancesSource}
+	return map[string]command.SuggestionSource[CompletionContext]{"target": msgTargetSource}
 }
 
-// Run implements Command.
+// msgTargetSource suggests both #channels and known nicks for
+// the `/msg` target arg. Channel suggestions sort first; nicks
+// follow.
+func msgTargetSource(ctx CompletionContext, st command.InvocationState[CompletionContext]) command.SuggestionResult {
+	chRes := channelsSource(ctx, st)
+	nickRes := instancesSource(ctx, st)
+
+	merged := make([]command.Suggestion, 0, len(chRes.Suggestions)+len(nickRes.Suggestions))
+	merged = append(merged, chRes.Suggestions...)
+	merged = append(merged, nickRes.Suggestions...)
+
+	return command.SuggestionResult{Suggestions: merged}
+}
+
+// Run implements Command. For a channel target the user just
+// sends the body and focus switches to that channel; for a nick
+// target the user's DM window is opened (if not already) and the
+// body is sent.
 func (c MsgCommand) Run(rc Context) tea.Cmd {
 	return func() tea.Msg {
-		nick := domain.Nick(c.Nick)
+		target := domain.ChannelName(c.Target)
 
-		ch, created, err := c.executeOpenDM(rc.Ctx, rc.Session, rc.Actor)
+		if domain.InferChannelKind(target) == domain.KindChannel {
+			if err := c.sendToChannel(rc.Ctx, rc.Session, rc.Actor, target); err != nil {
+				return errorEvent("msg", err)
+			}
+
+			return domain.ChannelFocusEvent{Channel: target}
+		}
+
+		nick := domain.Nick(c.Target)
+
+		resolved, err := rc.Session.ResolveNick(rc.Ctx, nick)
+		if err != nil {
+			if errors.Is(err, store.ErrNoSuchNick) {
+				return errorEvent("msg", domain.UnknownNickError{Nick: nick})
+			}
+
+			return errorEvent("msg", fmt.Errorf("resolve nick: %w", err))
+		}
+
+		ch, created, err := rc.Session.OpenDM(rc.Ctx, resolved)
 		if err != nil {
 			var guard domain.StatusChannelGuardError
 			if errors.As(err, &guard) {
 				return errorEvent("msg", guard)
 			}
 
-			return errorEvent("msg", domain.UnknownNickError{Nick: nick})
+			return errorEvent("msg", err)
 		}
 
-		if err := c.sendDMBody(rc.Ctx, rc.Session, rc.Actor, ch.Name); err != nil {
+		if err := c.sendBody(rc.Ctx, rc.Session, rc.Actor, ch.Name); err != nil {
 			return errorEvent("msg", err)
 		}
 
@@ -335,48 +375,81 @@ func (c MsgCommand) Run(rc Context) tea.Cmd {
 	}
 }
 
-func (c MsgCommand) executeOpenDM(ctx context.Context, sess *session.Session, actor *domain.Instance) (domain.Channel, bool, error) {
-	target, err := sess.ResolveNick(ctx, domain.Nick(c.Nick))
-	if err != nil {
-		if errors.Is(err, store.ErrNoSuchNick) {
-			return domain.Channel{}, false, domain.UnknownNickError{Nick: domain.Nick(c.Nick)}
-		}
-
-		return domain.Channel{}, false, fmt.Errorf("resolve nick: %w", err)
-	}
-
-	return sess.OpenDMAs(ctx, actor, target)
-}
-
-func (c MsgCommand) sendDMBody(ctx context.Context, sess *session.Session, actor *domain.Instance, ch domain.ChannelName) error {
+// sendBody sends the trimmed-and-joined body to the target. An
+// empty body is a no-op so `/msg <target>` with no text just
+// switches focus to the target without sending.
+func (c MsgCommand) sendBody(ctx context.Context, sess *session.Session, actor *domain.Instance, target domain.ChannelName) error {
 	body := strings.TrimSpace(strings.Join(c.Body, " "))
 	if body == "" {
 		return nil
 	}
 
-	return sess.SendMessageAs(ctx, actor, ch, body)
+	return sess.SendMessageAs(ctx, actor, target, body)
 }
 
-// RunTool implements ToolCommand.
+// sendToChannel validates that `actor` is a member of `target`
+// and then sends the body. Channel-targeted `/msg` is rejected
+// for non-members because the message would persist into a
+// channel the actor cannot see — the chat screen has no window
+// for it and the events log would carry an orphan record.
+func (c MsgCommand) sendToChannel(ctx context.Context, sess *session.Session, actor *domain.Instance, target domain.ChannelName) error {
+	target = domain.NormaliseChannelName(target)
+
+	channels := actor.Channels()
+	if channels == nil {
+		return notInChannelError(target)
+	}
+
+	if _, ok := channels.Get(target); !ok {
+		return notInChannelError(target)
+	}
+
+	return c.sendBody(ctx, sess, actor, target)
+}
+
+// notInChannelError formats the not-a-member rejection. Kept as
+// a helper so the user-side and model-side paths surface the
+// same wording.
+func notInChannelError(target domain.ChannelName) error {
+	return fmt.Errorf("not a member of %s", target)
+}
+
+// RunTool implements ToolCommand. Models call this as the `msg`
+// tool to send a message addressed to either a `#`-channel they
+// are in or to a peer's nick. There is no UI window involved
+// and no "open DM" step — DMs are stateless on the server side,
+// and the conversation lives in the events log.
 func (c MsgCommand) RunTool(ctx context.Context, tc session.ToolContext) session.ToolResultPayload {
-	ch, created, err := c.executeOpenDM(ctx, tc.Session, tc.Actor)
-	if err != nil {
-		return session.ToolResultPayload{OK: false, Error: err.Error()}
+	body := strings.TrimSpace(strings.Join(c.Body, " "))
+	if body == "" {
+		return session.ToolResultPayload{OK: false, Error: "message body is required"}
 	}
 
-	if err := c.sendDMBody(ctx, tc.Session, tc.Actor, ch.Name); err != nil {
-		return session.ToolResultPayload{OK: false, Error: err.Error()}
+	target := domain.ChannelName(c.Target)
+
+	if domain.InferChannelKind(target) == domain.KindChannel {
+		if err := c.sendToChannel(ctx, tc.Session, tc.Actor, target); err != nil {
+			return session.ToolResultPayload{OK: false, Error: err.Error()}
+		}
+
+		return session.ToolResultPayload{OK: true, Summary: "messaged " + c.Target}
 	}
 
-	summary := "opened direct message with " + c.Nick
-	if created {
-		summary = "created direct message with " + c.Nick
+	if _, err := tc.Session.ResolveNick(ctx, domain.Nick(c.Target)); err != nil {
+		if errors.Is(err, store.ErrNoSuchNick) {
+			return session.ToolResultPayload{OK: false, Error: domain.UnknownNickError{Nick: domain.Nick(c.Target)}.Error()}
+		}
+
+		return session.ToolResultPayload{OK: false, Error: fmt.Errorf("resolve nick: %w", err).Error()}
+	}
+
+	if err := tc.Session.SendMessageAs(ctx, tc.Actor, target, body); err != nil {
+		return session.ToolResultPayload{OK: false, Error: err.Error()}
 	}
 
 	return session.ToolResultPayload{
 		OK:      true,
-		Summary: summary,
-		Data:    ch,
+		Summary: "messaged " + c.Target,
 	}
 }
 

@@ -1503,10 +1503,10 @@ func TestSession_dispatchToInstance_recordsPassReasonAndToolTurns(t *testing.T) 
 		Channels: testChannels("#general"),
 	})
 	seedChannelWithMembers(t, sess, dataStore, "#general", "testuser", "botty")
-	channel, err := dataStore.GetChannel(ctx, "#general")
+	window, err := sess.loadChannelWindow(ctx, "#general")
 	require.NoError(t, err)
 
-	replies, err := sess.dispatchToInstance(ctx, channel, botty, "#general", nil, nil)
+	replies, err := sess.dispatchToInstance(ctx, window, botty, "#general", nil, nil)
 	require.NoError(t, err)
 	require.Empty(t, replies)
 

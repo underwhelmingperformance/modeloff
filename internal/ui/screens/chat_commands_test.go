@@ -83,7 +83,7 @@ func TestChatScreen_Commands_specs_are_complete(t *testing.T) {
 		{Name: "add-model", Help: "Add a model or reusable instance into the current channel."},
 		{Name: "invite", Help: "Invite a nick to a channel."},
 		{Name: "kick", Help: "Remove a nick from the current channel."},
-		{Name: "msg", Help: "Open a direct message and optionally send text."},
+		{Name: "msg", Help: "Send a message to a #channel or to a user by nick."},
 		{Name: "nick", Help: "Change your nickname."},
 		{Name: "topic", Help: "Set or clear the current channel topic."},
 		{Name: "me", Help: "Send an action message (e.g. /me waves)."},

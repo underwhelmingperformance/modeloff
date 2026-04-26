@@ -334,30 +334,6 @@ func TestOpenDM_members_have_no_mode(t *testing.T) {
 	}, ch.Members.Slice())
 }
 
-func TestOpenDMAs_members_have_no_mode(t *testing.T) {
-	sess, s := newTestSession(t)
-	ctx := t.Context()
-
-	botty := seedInstance(t, s, instanceSpec{
-		Nick:     "botty",
-		ModelID:  "test/model-a",
-		Channels: orderedmap.New[domain.ChannelName, time.Time](),
-	})
-	helper := seedInstance(t, s, instanceSpec{
-		Nick:     "helper",
-		ModelID:  "test/model-b",
-		Channels: orderedmap.New[domain.ChannelName, time.Time](),
-	})
-
-	ch, _, err := sess.OpenDMAs(ctx, botty, helper)
-	require.NoError(t, err)
-
-	require.Equal(t, []domain.Member{
-		{Instance: botty, Nick: "botty", Mode: domain.ModeNone},
-		{Instance: helper, Nick: "helper", Mode: domain.ModeNone},
-	}, ch.Members.Slice())
-}
-
 func TestSetTopicAs_rejects_DM(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
@@ -400,7 +376,7 @@ func TestSendMessageAs_rejects_status_channel(t *testing.T) {
 	require.ErrorAs(t, err, &guard)
 	require.Equal(t, domain.StatusChannelGuardError{
 		Command: "send",
-		Hint:    "the status channel doesn't take messages — try /msg <nick> for a model or /join <channel> for a channel",
+		Hint:    "the status channel doesn't take messages — try /msg <nick-or-#channel> instead",
 	}, guard)
 
 	select {
@@ -420,7 +396,7 @@ func TestSendActionAs_rejects_status_channel(t *testing.T) {
 	require.ErrorAs(t, err, &guard)
 	require.Equal(t, domain.StatusChannelGuardError{
 		Command: "me",
-		Hint:    "the status channel doesn't take messages — try /msg <nick> for a model or /join <channel> for a channel",
+		Hint:    "the status channel doesn't take messages — try /msg <nick-or-#channel> instead",
 	}, guard)
 
 	select {
@@ -440,28 +416,7 @@ func TestOpenDM_rejects_status_channel_name(t *testing.T) {
 	require.ErrorAs(t, err, &guard)
 	require.Equal(t, domain.StatusChannelGuardError{
 		Command: "msg",
-		Hint:    "to message a model, use /msg <nick> with the model's name; &modeloff is a server channel.",
-	}, guard)
-	require.False(t, created)
-}
-
-func TestOpenDMAs_rejects_status_channel_name(t *testing.T) {
-	sess, s := newTestSession(t)
-	ctx := t.Context()
-
-	botty := seedInstance(t, s, instanceSpec{
-		Nick:    "botty",
-		ModelID: "test/model-a",
-	})
-
-	bad := domain.NewModelInstance("bad-id", domain.Nick(domain.StatusChannelName), "test/model-b", "", nil)
-	_, created, err := sess.OpenDMAs(ctx, botty, bad)
-
-	var guard domain.StatusChannelGuardError
-	require.ErrorAs(t, err, &guard)
-	require.Equal(t, domain.StatusChannelGuardError{
-		Command: "msg",
-		Hint:    "to message a model, use /msg <nick> with the model's name; &modeloff is a server channel.",
+		Hint:    "&modeloff is the per-session status window and does not accept messages. Use /msg <nick-or-#channel> instead.",
 	}, guard)
 	require.False(t, created)
 }
@@ -490,7 +445,15 @@ func TestJoinAs_DM_no_join_event(t *testing.T) {
 	require.Equal(t, []string{}, types)
 }
 
-func TestOpenDMAs_model_to_model(t *testing.T) {
+// TestSendMessageAs_model_to_model_dispatches verifies that the
+// nick-targeted dispatch path fires when one model `/msg`s
+// another. Modeloff has no "open DM" operation for models — DMs
+// are stateless from the server's point of view — so the model
+// just sends a message addressed to the peer's nick. The
+// recipient resolution in `dispatchInBackground` picks up the
+// nick-shaped target and dispatches a turn to the addressed
+// model directly, without iterating any "channel members".
+func TestSendMessageAs_model_to_model_dispatches(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
@@ -499,82 +462,11 @@ func TestOpenDMAs_model_to_model(t *testing.T) {
 		ModelID:  "test/model-a",
 		Channels: orderedmap.New[domain.ChannelName, time.Time](),
 	})
-	helper := seedInstance(t, s, instanceSpec{
+	seedInstance(t, s, instanceSpec{
 		Nick:     "helper",
 		ModelID:  "test/model-b",
 		Channels: orderedmap.New[domain.ChannelName, time.Time](),
 	})
-
-	ch, created, err := sess.OpenDMAs(ctx, botty, helper)
-	require.NoError(t, err)
-	require.True(t, created)
-	require.Equal(t, domain.ChannelName("helper"), ch.Name)
-	require.Equal(t, domain.KindDM, ch.Kind)
-	require.Equal(t, []domain.Member{
-		{Instance: botty, Nick: "botty", Mode: domain.ModeNone},
-		{Instance: helper, Nick: "helper", Mode: domain.ModeNone},
-	}, ch.Members.Slice())
-
-	// Both instances should have the DM channel attached.
-	actorInst, err := s.ResolveNick(ctx, "botty")
-	require.NoError(t, err)
-
-	_, ok := actorInst.Channels().Get("helper")
-	require.True(t, ok)
-
-	targetInst, err := s.ResolveNick(ctx, "helper")
-	require.NoError(t, err)
-
-	_, ok = targetInst.Channels().Get("helper")
-	require.True(t, ok)
-}
-
-func TestOpenDMAs_model_to_model_appears_in_channel_list(t *testing.T) {
-	sess, s := newTestSession(t)
-	ctx := t.Context()
-
-	botty := seedInstance(t, s, instanceSpec{
-		Nick:     "botty",
-		ModelID:  "test/model-a",
-		Channels: orderedmap.New[domain.ChannelName, time.Time](),
-	})
-	helper := seedInstance(t, s, instanceSpec{
-		Nick:     "helper",
-		ModelID:  "test/model-b",
-		Channels: orderedmap.New[domain.ChannelName, time.Time](),
-	})
-
-	_, _, err := sess.OpenDMAs(ctx, botty, helper)
-	require.NoError(t, err)
-
-	channels, err := s.ListChannels(ctx)
-	require.NoError(t, err)
-
-	var names []domain.ChannelName
-	for _, ch := range channels {
-		names = append(names, ch.Name)
-	}
-
-	require.Equal(t, []domain.ChannelName{"helper"}, names)
-}
-
-func TestOpenDMAs_model_to_model_message_dispatches(t *testing.T) {
-	sess, s := newTestSession(t)
-	ctx := t.Context()
-
-	botty := seedInstance(t, s, instanceSpec{
-		Nick:     "botty",
-		ModelID:  "test/model-a",
-		Channels: orderedmap.New[domain.ChannelName, time.Time](),
-	})
-	helper := seedInstance(t, s, instanceSpec{
-		Nick:     "helper",
-		ModelID:  "test/model-b",
-		Channels: orderedmap.New[domain.ChannelName, time.Time](),
-	})
-
-	_, _, err := sess.OpenDMAs(ctx, botty, helper)
-	require.NoError(t, err)
 
 	require.NoError(t, sess.SendMessageAs(ctx, botty, "helper", "hey there"))
 
@@ -587,11 +479,9 @@ func TestOpenDMAs_model_to_model_message_dispatches(t *testing.T) {
 		At:         fixedTime,
 	}, evt)
 
-	// Verify dispatch was triggered (emit, not emitUIOnly) by
-	// waiting for DispatchStartedEvent and DispatchDoneEvent that
-	// dispatchInBackground emits.
 	started := drainEvent[domain.DispatchStartedEvent](t, sess)
 	require.Equal(t, domain.ChannelName("helper"), started.Channel)
+	require.Equal(t, []domain.Nick{"helper"}, started.Nicks)
 
 	done := drainEvent[domain.DispatchDoneEvent](t, sess)
 	require.Equal(t, domain.ChannelName("helper"), done.Channel)

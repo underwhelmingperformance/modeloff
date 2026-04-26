@@ -404,7 +404,7 @@ func (s *Session) SendMessageAs(ctx context.Context, actor *domain.Instance, ch 
 	if ch == domain.StatusChannelName {
 		return errWithKind(domain.StatusChannelGuardError{
 			Command: "send",
-			Hint:    "the status channel doesn't take messages — try /msg <nick> for a model or /join <channel> for a channel",
+			Hint:    "the status channel doesn't take messages — try /msg <nick-or-#channel> instead",
 		}, observability.ErrorKindValidation)
 	}
 
@@ -440,7 +440,7 @@ func (s *Session) SendActionAs(ctx context.Context, actor *domain.Instance, ch d
 	if ch == domain.StatusChannelName {
 		return errWithKind(domain.StatusChannelGuardError{
 			Command: "me",
-			Hint:    "the status channel doesn't take messages — try /msg <nick> for a model or /join <channel> for a channel",
+			Hint:    "the status channel doesn't take messages — try /msg <nick-or-#channel> instead",
 		}, observability.ErrorKindValidation)
 	}
 
@@ -567,85 +567,6 @@ func (s *Session) KickAs(ctx context.Context, actor, target *domain.Instance, ch
 	})
 
 	return nil
-}
-
-// OpenDMAs opens or creates a DM for the acting actor and target.
-func (s *Session) OpenDMAs(ctx context.Context, actor, target *domain.Instance) (_ domain.Channel, _ bool, retErr error) {
-	if actor == s.user {
-		return s.OpenDM(ctx, target)
-	}
-
-	actorNick := actor.Nick()
-	targetNick := target.Nick()
-
-	ctx, span := s.startSpan(
-		ctx,
-		"session.open_dm",
-		attribute.String(observability.AttrOperation, "session.open_dm"),
-		attribute.String(observability.AttrNick, string(actorNick)),
-		attribute.String("nick.target", string(targetNick)),
-	)
-	defer endSpan(span, &retErr, observability.ErrorKindStore)
-
-	if domain.ChannelName(targetNick) == domain.StatusChannelName {
-		return domain.Channel{}, false, errWithKind(domain.StatusChannelGuardError{
-			Command: "msg",
-			Hint:    "to message a model, use /msg <nick> with the model's name; &modeloff is a server channel.",
-		}, observability.ErrorKindValidation)
-	}
-
-	span.SetAttributes(attribute.String(observability.AttrInstanceID, string(actor.ID())))
-
-	name := domain.ChannelName(targetNick)
-	ch, err := s.loadChannel(ctx, name)
-	created := false
-
-	if err != nil {
-		members := domain.NewMemberList()
-		members.Add(actor)
-		members.Add(target)
-
-		ch = domain.Channel{
-			Name:    name,
-			Kind:    domain.KindDM,
-			Members: members,
-			Created: s.now(),
-		}
-
-		if err := s.persistChannel(ctx, ch); err != nil {
-			return domain.Channel{}, false, fmt.Errorf("save dm channel: %w", err)
-		}
-
-		created = true
-	}
-
-	now := s.now()
-
-	actor.MutateChannels(func(m *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
-		if _, ok := m.Get(name); !ok {
-			m.Set(name, now)
-		}
-	})
-
-	if actor != s.user {
-		if err := s.store.SaveInstance(ctx, actor); err != nil {
-			return domain.Channel{}, false, fmt.Errorf("save actor instance: %w", err)
-		}
-	}
-
-	target.MutateChannels(func(m *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
-		if _, ok := m.Get(name); !ok {
-			m.Set(name, now)
-		}
-	})
-
-	if target != s.user {
-		if err := s.store.SaveInstance(ctx, target); err != nil {
-			return domain.Channel{}, false, fmt.Errorf("save target instance: %w", err)
-		}
-	}
-
-	return ch, created, nil
 }
 
 // InviteAs sends a real IRC-style invite.
