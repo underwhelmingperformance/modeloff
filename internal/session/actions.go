@@ -21,7 +21,7 @@ func (s *Session) JoinAs(ctx context.Context, actor *domain.Instance, ch domain.
 
 	actorNick := actor.Nick()
 
-	ctx, span := startSpan(
+	ctx, span := s.startSpan(
 		ctx,
 		"session.join",
 		attribute.String(observability.AttrOperation, "session.join"),
@@ -229,7 +229,7 @@ func (s *Session) grantVoice(ctx context.Context, ch domain.ChannelName, channel
 func (s *Session) PartAs(ctx context.Context, actor *domain.Instance, ch domain.ChannelName, message string) (retErr error) {
 	actorNick := actor.Nick()
 
-	ctx, span := startSpan(
+	ctx, span := s.startSpan(
 		ctx,
 		"session.part",
 		attribute.String(observability.AttrOperation, "session.part"),
@@ -297,7 +297,7 @@ func (s *Session) QuitAs(ctx context.Context, actor *domain.Instance, message st
 	actorID := actor.ID()
 	actorNick := actor.Nick()
 
-	ctx, span := startSpan(
+	ctx, span := s.startSpan(
 		ctx,
 		"session.quit",
 		attribute.String(observability.AttrOperation, "session.quit"),
@@ -333,7 +333,7 @@ func (s *Session) QuitAs(ctx context.Context, actor *domain.Instance, message st
 func (s *Session) ChangeNickAs(ctx context.Context, actor *domain.Instance, newNick domain.Nick) (retErr error) {
 	oldNick := actor.Nick()
 
-	ctx, span := startSpan(
+	ctx, span := s.startSpan(
 		ctx,
 		"session.change_nick",
 		attribute.String(observability.AttrOperation, "session.change_nick"),
@@ -406,7 +406,7 @@ func (s *Session) ChangeNickAs(ctx context.Context, actor *domain.Instance, newN
 func (s *Session) SendMessageAs(ctx context.Context, actor *domain.Instance, ch domain.ChannelName, body string) (retErr error) {
 	actorNick := actor.Nick()
 
-	ctx, span := startSpan(
+	ctx, span := s.startSpan(
 		ctx,
 		"session.send_message",
 		attribute.String(observability.AttrOperation, "session.send_message"),
@@ -442,7 +442,7 @@ func (s *Session) SendMessageAs(ctx context.Context, actor *domain.Instance, ch 
 func (s *Session) SendActionAs(ctx context.Context, actor *domain.Instance, ch domain.ChannelName, body string) (retErr error) {
 	actorNick := actor.Nick()
 
-	ctx, span := startSpan(
+	ctx, span := s.startSpan(
 		ctx,
 		"session.send_action",
 		attribute.String(observability.AttrOperation, "session.send_action"),
@@ -479,7 +479,7 @@ func (s *Session) SendActionAs(ctx context.Context, actor *domain.Instance, ch d
 func (s *Session) SetTopicAs(ctx context.Context, actor *domain.Instance, ch domain.ChannelName, topic string) (retErr error) {
 	actorNick := actor.Nick()
 
-	ctx, span := startSpan(
+	ctx, span := s.startSpan(
 		ctx,
 		"session.set_topic",
 		attribute.String(observability.AttrOperation, "session.set_topic"),
@@ -524,7 +524,7 @@ func (s *Session) SetTopicAs(ctx context.Context, actor *domain.Instance, ch dom
 func (s *Session) KickAs(ctx context.Context, actor, target *domain.Instance, ch domain.ChannelName) (retErr error) {
 	targetNick := target.Nick()
 
-	ctx, span := startSpan(
+	ctx, span := s.startSpan(
 		ctx,
 		"session.kick",
 		attribute.String(observability.AttrOperation, "session.kick"),
@@ -592,7 +592,7 @@ func (s *Session) OpenDMAs(ctx context.Context, actor, target *domain.Instance) 
 	actorNick := actor.Nick()
 	targetNick := target.Nick()
 
-	ctx, span := startSpan(
+	ctx, span := s.startSpan(
 		ctx,
 		"session.open_dm",
 		attribute.String(observability.AttrOperation, "session.open_dm"),
@@ -666,7 +666,7 @@ func (s *Session) OpenDMAs(ctx context.Context, actor, target *domain.Instance) 
 func (s *Session) InviteAs(ctx context.Context, actor *domain.Instance, target domain.Nick, ch domain.ChannelName) (retErr error) {
 	actorNick := actor.Nick()
 
-	ctx, span := startSpan(
+	ctx, span := s.startSpan(
 		ctx,
 		"session.invite",
 		attribute.String(observability.AttrOperation, "session.invite"),

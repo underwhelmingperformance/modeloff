@@ -118,6 +118,14 @@ type Session struct {
 	listModelsState      atomic.Uint32
 
 	persistenceFailures metric.Int64Counter
+
+	// tracerProvider is the OTel `TracerProvider` the session uses
+	// for its spans. Defaults to `otel.GetTracerProvider()` at
+	// construction time so production callers see the global
+	// provider; tests inject their own via `WithTracerProvider` so
+	// span recordings stay scoped to a single test even when
+	// dispatch goroutines outlive the test that spawned them.
+	tracerProvider trace.TracerProvider
 }
 
 // New creates a Session with the given dependencies. The session
@@ -155,7 +163,20 @@ func New(
 		events:              make(chan domain.Event, eventBufSize),
 		connectedC:          make(chan struct{}),
 		persistenceFailures: persistenceFailures,
+		tracerProvider:      otel.GetTracerProvider(),
 	}
+}
+
+// WithTracerProvider overrides the OTel `TracerProvider` the session
+// uses for its spans. Tests inject a per-test recorder so that
+// background dispatch goroutines recording spans after a test
+// finishes do not bleed into a sibling test's recorder. Production
+// code does not need to call this — the default global provider is
+// already correct.
+func (s *Session) WithTracerProvider(tp trace.TracerProvider) *Session {
+	s.tracerProvider = tp
+
+	return s
 }
 
 // Events returns the channel on which background dispatch events are
@@ -208,7 +229,7 @@ func (s *Session) Connect(ctx context.Context) (retErr error) {
 		return nil
 	}
 
-	ctx, span := startSpan(ctx, "session.connect",
+	ctx, span := s.startSpan(ctx, "session.connect",
 		attribute.String(observability.AttrOperation, "session.connect"),
 	)
 	defer endSpan(span, &retErr, observability.ErrorKindStore)
@@ -506,7 +527,7 @@ func (s *Session) cleanupUncleanShutdown(ctx context.Context) error {
 // mainly to restore the last-focused channel at the end of the
 // autojoin sequence.
 func (s *Session) FocusChannel(ctx context.Context, ch domain.ChannelName) (retErr error) {
-	ctx, span := startSpan(ctx, "session.focus_channel",
+	ctx, span := s.startSpan(ctx, "session.focus_channel",
 		attribute.String(observability.AttrOperation, "session.focus_channel"),
 		attribute.String(observability.AttrChannel, string(ch)),
 	)
@@ -611,7 +632,7 @@ func (s *Session) Part(ctx context.Context, ch domain.ChannelName, message strin
 // but fast (local sqlite writes only); the UI wraps it in a tea.Cmd
 // to keep the event loop responsive.
 func (s *Session) Quit(ctx context.Context, message string) (retErr error) {
-	ctx, span := startSpan(ctx, "session.quit",
+	ctx, span := s.startSpan(ctx, "session.quit",
 		attribute.String(observability.AttrOperation, "session.quit"),
 	)
 	defer endSpan(span, &retErr, observability.ErrorKindStore)
@@ -684,7 +705,7 @@ func (s *Session) Quit(ctx context.Context, message string) (retErr error) {
 // function still returns nil so that downstream startup steps
 // (FocusChannel, dispatch reactor) proceed.
 func (s *Session) JoinAutojoinChannels(ctx context.Context) error {
-	ctx, span := startSpan(ctx, "session.autojoin",
+	ctx, span := s.startSpan(ctx, "session.autojoin",
 		attribute.String(observability.AttrOperation, "session.autojoin"),
 	)
 	defer span.End()
@@ -765,7 +786,7 @@ func (s *Session) AddModel(
 	persona string,
 ) error {
 	logger := slog.Default().With("component", "session", "channel", ch, "model_id", modelID)
-	ctx, span := startSpan(ctx, "session.invite", attribute.String(observability.AttrOperation, "session.invite"))
+	ctx, span := s.startSpan(ctx, "session.invite", attribute.String(observability.AttrOperation, "session.invite"))
 	defer span.End()
 
 	if err := s.ensureStructuredOutputModel(ctx, modelID); err != nil {
@@ -824,7 +845,7 @@ func (s *Session) generateUniqueNick(
 	persona string,
 	logger *slog.Logger,
 ) (domain.Nick, error) {
-	generateCtx, generateSpan := startSpan(
+	generateCtx, generateSpan := s.startSpan(
 		ctx,
 		"session.generate_nick",
 		attribute.String(observability.AttrOperation, "session.generate_nick"),
@@ -985,7 +1006,7 @@ func (s *Session) DispatchToChannel(
 	ch domain.ChannelName,
 	newEvents []protocol.IRCMessage,
 ) ([]domain.ModelReplyEvent, error) {
-	ctx, span := startSpan(ctx, "session.dispatch_to_channel", attribute.String(observability.AttrOperation, "session.dispatch_to_channel"))
+	ctx, span := s.startSpan(ctx, "session.dispatch_to_channel", attribute.String(observability.AttrOperation, "session.dispatch_to_channel"))
 	defer span.End()
 
 	historyEvents, err := s.store.EventsBefore(ctx, ch, nil, 500)
@@ -1074,7 +1095,7 @@ func (s *Session) UnreadCount(ctx context.Context, ch domain.ChannelName) (int, 
 
 // ListModels fetches live model metadata using the current API client.
 func (s *Session) ListModels(ctx context.Context) ([]api.ModelInfo, error) {
-	ctx, span := startSpan(ctx, "session.list_models", attribute.String(observability.AttrOperation, "session.list_models"))
+	ctx, span := s.startSpan(ctx, "session.list_models", attribute.String(observability.AttrOperation, "session.list_models"))
 	defer span.End()
 
 	if !s.HasAPIKey() || s.api == nil {
@@ -1099,7 +1120,7 @@ func (s *Session) ListModels(ctx context.Context) ([]api.ModelInfo, error) {
 // Reset clears all channels, messages, model instances, and memories,
 // returning the application to a fresh state. Config is preserved.
 func (s *Session) Reset(ctx context.Context) error {
-	ctx, span := startSpan(ctx, "session.reset", attribute.String(observability.AttrOperation, "session.reset"))
+	ctx, span := s.startSpan(ctx, "session.reset", attribute.String(observability.AttrOperation, "session.reset"))
 	defer span.End()
 
 	if err := s.store.Reset(ctx); err != nil {
@@ -1128,7 +1149,7 @@ func (s *Session) Reset(ctx context.Context) error {
 func (s *Session) OpenDM(ctx context.Context, target *domain.Instance) (domain.Channel, bool, error) {
 	nick := target.Nick()
 
-	ctx, span := startSpan(
+	ctx, span := s.startSpan(
 		ctx,
 		"session.open_dm",
 		attribute.String(observability.AttrOperation, "session.open_dm"),
@@ -1208,7 +1229,7 @@ func (s *Session) OpenDM(ctx context.Context, target *domain.Instance) (domain.C
 // channel.
 func (s *Session) Poke(ctx context.Context) error {
 	logger := slog.Default().With("component", "session")
-	ctx, span := startSpan(ctx, "session.poke", attribute.String(observability.AttrOperation, "session.poke"))
+	ctx, span := s.startSpan(ctx, "session.poke", attribute.String(observability.AttrOperation, "session.poke"))
 	defer span.End()
 
 	channels, err := s.loadChannels(ctx)
@@ -1234,7 +1255,7 @@ func (s *Session) Poke(ctx context.Context) error {
 
 // SetAPIKey updates the active API key and rebuilds the API client.
 func (s *Session) SetAPIKey(ctx context.Context, apiKey, baseURL string) error {
-	_, span := startSpan(ctx, "session.set_api_key",
+	_, span := s.startSpan(ctx, "session.set_api_key",
 		attribute.String(observability.AttrOperation, "session.set_api_key"))
 	defer span.End()
 	apiKey = strings.TrimSpace(apiKey)
@@ -1267,7 +1288,7 @@ func (s *Session) SetAPIKey(ctx context.Context, apiKey, baseURL string) error {
 // SetSmallModel updates the model used for lightweight tasks such as
 // nick generation.
 func (s *Session) SetSmallModel(ctx context.Context, modelID domain.ModelID) {
-	_, span := startSpan(ctx, "session.set_small_model",
+	_, span := s.startSpan(ctx, "session.set_small_model",
 		attribute.String(observability.AttrOperation, "session.set_small_model"),
 		attribute.String(observability.AttrModelID, string(modelID)))
 	defer span.End()
@@ -1280,7 +1301,7 @@ func (s *Session) SetSmallModel(ctx context.Context, modelID domain.ModelID) {
 // EnsurePersonas populates the persona pool if it is empty. It calls
 // the API to generate personas and saves each to the store.
 func (s *Session) EnsurePersonas(ctx context.Context) (retErr error) {
-	ctx, span := startSpan(ctx, "session.ensure_personas",
+	ctx, span := s.startSpan(ctx, "session.ensure_personas",
 		attribute.String(observability.AttrOperation, "session.ensure_personas"),
 	)
 	defer endSpan(span, &retErr, observability.ErrorKindStore)
@@ -1310,7 +1331,7 @@ func (s *Session) EnsurePersonas(ctx context.Context) (retErr error) {
 
 // RandomPersona picks a random persona from the store pool.
 func (s *Session) RandomPersona(ctx context.Context) (_ domain.Persona, retErr error) {
-	ctx, span := startSpan(ctx, "session.random_persona",
+	ctx, span := s.startSpan(ctx, "session.random_persona",
 		attribute.String(observability.AttrOperation, "session.random_persona"),
 	)
 	defer endSpan(span, &retErr, observability.ErrorKindStore)
@@ -1337,7 +1358,7 @@ func (s *Session) RandomPersona(ctx context.Context) (_ domain.Persona, retErr e
 // happens first so that the existing pool is preserved if generation
 // fails. User-defined personas are never touched.
 func (s *Session) RegeneratePersonas(ctx context.Context) (_ []domain.Persona, retErr error) {
-	ctx, span := startSpan(ctx, "session.regenerate_personas",
+	ctx, span := s.startSpan(ctx, "session.regenerate_personas",
 		attribute.String(observability.AttrOperation, "session.regenerate_personas"),
 	)
 	defer endSpan(span, &retErr, observability.ErrorKindStore)
@@ -1356,7 +1377,7 @@ func (s *Session) RegeneratePersonas(ctx context.Context) (_ []domain.Persona, r
 
 // SetPersona saves a user-defined persona to the store.
 func (s *Session) SetPersona(ctx context.Context, id string, description string) (retErr error) {
-	ctx, span := startSpan(ctx, "session.set_persona",
+	ctx, span := s.startSpan(ctx, "session.set_persona",
 		attribute.String(observability.AttrOperation, "session.set_persona"),
 		attribute.String("persona.id", id),
 	)
@@ -1373,7 +1394,7 @@ func (s *Session) SetPersona(ctx context.Context, id string, description string)
 
 // ListPersonas returns all personas from the store.
 func (s *Session) ListPersonas(ctx context.Context) (_ []domain.Persona, retErr error) {
-	ctx, span := startSpan(ctx, "session.list_personas",
+	ctx, span := s.startSpan(ctx, "session.list_personas",
 		attribute.String(observability.AttrOperation, "session.list_personas"),
 	)
 	defer endSpan(span, &retErr, observability.ErrorKindStore)
@@ -1385,7 +1406,7 @@ func (s *Session) ListPersonas(ctx context.Context) (_ []domain.Persona, retErr 
 // leaving only generated ones. It returns the number of personas
 // that were removed.
 func (s *Session) ResetPersonas(ctx context.Context) (_ int, retErr error) {
-	ctx, span := startSpan(ctx, "session.reset_personas",
+	ctx, span := s.startSpan(ctx, "session.reset_personas",
 		attribute.String(observability.AttrOperation, "session.reset_personas"),
 	)
 	defer endSpan(span, &retErr, observability.ErrorKindStore)
@@ -1411,7 +1432,7 @@ func (s *Session) ResetPersonas(ctx context.Context) (_ int, retErr error) {
 
 // SetBaseURL rebuilds the API client with the given base URL.
 func (s *Session) SetBaseURL(ctx context.Context, baseURL string) error {
-	_, span := startSpan(ctx, "session.set_base_url",
+	_, span := s.startSpan(ctx, "session.set_base_url",
 		attribute.String(observability.AttrOperation, "session.set_base_url"))
 	defer span.End()
 
@@ -1497,7 +1518,7 @@ func (s *Session) dispatchToInstance(
 ) ([]domain.ModelReplyEvent, error) {
 	nick := inst.Nick()
 
-	ctx, instanceSpan := startSpan(
+	ctx, instanceSpan := s.startSpan(
 		ctx,
 		"session.dispatch_to_instance",
 		attribute.String(observability.AttrOperation, "session.dispatch_to_instance"),
@@ -1926,7 +1947,7 @@ func (s *Session) recordPersistenceFailure(ctx context.Context, ch domain.Channe
 // emitting events via emitUIOnly to avoid re-triggering the reactor.
 func (s *Session) dispatchInBackground(ctx context.Context, ch domain.ChannelName, triggerEvents []protocol.IRCMessage) {
 	go func() {
-		ctx, span := startSpan(
+		ctx, span := s.startSpan(
 			ctx,
 			"session.dispatch_background",
 			attribute.String(observability.AttrOperation, "session.dispatch_background"),
@@ -1995,7 +2016,7 @@ func (s *Session) dispatchToInstanceInBackground(
 	go func() {
 		nick := inst.Nick()
 
-		ctx, span := startSpan(
+		ctx, span := s.startSpan(
 			ctx,
 			"session.dispatch_to_instance_background",
 			attribute.String(observability.AttrOperation, "session.dispatch_to_instance_background"),
@@ -2361,7 +2382,7 @@ func (s *Session) executeTools(
 	for _, call := range calls {
 		toolName := call.Name
 
-		callCtx, callSpan := startSpan(
+		callCtx, callSpan := s.startSpan(
 			ctx,
 			"session.execute_tool",
 			attribute.String(observability.AttrOperation, "session.execute_tool"),
@@ -2437,8 +2458,13 @@ func containsInvalidFormatting(resp protocol.ModelResponse) bool {
 	return false
 }
 
-func startSpan(ctx context.Context, name string, attrs ...attribute.KeyValue) (context.Context, trace.Span) {
-	tracer := otel.Tracer("github.com/laney/modeloff/internal/session")
+// startSpan opens an OTel span on the session's configured tracer
+// provider. Using the per-session provider — rather than the global
+// — lets tests scope span recordings to their own
+// `tracetest.SpanRecorder` even when dispatch goroutines outlive
+// the test that spawned them.
+func (s *Session) startSpan(ctx context.Context, name string, attrs ...attribute.KeyValue) (context.Context, trace.Span) {
+	tracer := s.tracerProvider.Tracer("github.com/laney/modeloff/internal/session")
 	ctx, span := tracer.Start(ctx, name)
 	span.SetAttributes(attrs...)
 
