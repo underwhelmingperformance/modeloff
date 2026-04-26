@@ -75,3 +75,29 @@ type NickInUseError struct {
 func (e NickInUseError) Error() string {
 	return fmt.Sprintf("nick %q is already in use", string(e.Nick))
 }
+
+// MissingDMCounterpartError indicates a stored DM row references a
+// counterpart nick that no longer resolves to an instance — the
+// counterpart's row was deleted but the DM row outlived it. The
+// `Nick` field carries the dangling counterpart so the store can
+// drop the row and log it.
+type MissingDMCounterpartError struct {
+	Nick Nick
+}
+
+func (e MissingDMCounterpartError) Error() string {
+	return fmt.Sprintf("dm window %q: counterpart nick has no backing instance", string(e.Nick))
+}
+
+// UnknownChannelKindError indicates a stored row carries a
+// `ChannelKind` outside the known set (status / channel / dm).
+// This is unexpected on a healthy database — the only way to hit
+// it is a forward-incompatible row from a newer schema or a
+// corrupted on-disk value.
+type UnknownChannelKindError struct {
+	Kind ChannelKind
+}
+
+func (e UnknownChannelKindError) Error() string {
+	return fmt.Sprintf("unknown channel kind: %d", int(e.Kind))
+}

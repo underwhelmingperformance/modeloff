@@ -224,7 +224,7 @@ func TestSQLiteStore_GetChannelNotFound(t *testing.T) {
 	s := newTestStore(t)
 
 	_, err := s.GetChannel(t.Context(), "#nonexistent")
-	require.Error(t, err)
+	require.ErrorIs(t, err, ErrNoSuchChannel)
 }
 
 func TestSQLiteStore_ListChannels(t *testing.T) {
@@ -261,6 +261,89 @@ func TestSQLiteStore_ListChannels_includes_dms(t *testing.T) {
 	got, err := s.ListChannels(ctx)
 	require.NoError(t, err)
 	requireChannelsEqual(t, channels, got)
+}
+
+func TestSQLiteStore_SaveAndGetWindow_status(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	want := domain.NewStatusWindow(testTime)
+	require.NoError(t, s.SaveWindow(ctx, want))
+
+	got, err := s.GetWindow(ctx, domain.StatusChannelName)
+	require.NoError(t, err)
+	require.Equal(t, want, got)
+}
+
+func TestSQLiteStore_SaveAndGetWindow_channel(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	want := domain.NewChannelWindow("#general", testTime)
+	want.Topic = "welcome"
+	want.TopicSetBy = "alice"
+	want.TopicSetAt = testTime
+
+	require.NoError(t, s.SaveWindow(ctx, want))
+
+	got, err := s.GetWindow(ctx, "#general")
+	require.NoError(t, err)
+	cw, ok := got.(*domain.ChannelWindow)
+	require.True(t, ok)
+	require.Equal(t, want.Name(), cw.Name())
+	require.Equal(t, want.Topic, cw.Topic)
+	require.Equal(t, want.TopicSetBy, cw.TopicSetBy)
+	require.Equal(t, want.TopicSetAt, cw.TopicSetAt)
+}
+
+func TestSQLiteStore_SaveAndGetWindow_dm(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	bot := domain.NewModelInstance("id-1", "botty", "anthropic/claude-3-haiku", "", nil)
+	require.NoError(t, s.SaveInstance(ctx, bot))
+
+	want := domain.NewDMWindow(bot, testTime)
+	require.NoError(t, s.SaveWindow(ctx, want))
+
+	got, err := s.GetWindow(ctx, "botty")
+	require.NoError(t, err)
+	dm, ok := got.(*domain.DMWindow)
+	require.True(t, ok)
+	require.Equal(t, domain.ChannelName("botty"), dm.Name())
+	require.Same(t, bot, dm.Counterpart)
+}
+
+func TestSQLiteStore_ListWindows_mixed(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	bot := domain.NewModelInstance("id-1", "botty", "anthropic/claude-3-haiku", "", nil)
+	require.NoError(t, s.SaveInstance(ctx, bot))
+
+	require.NoError(t, s.SaveWindow(ctx, domain.NewStatusWindow(testTime)))
+	require.NoError(t, s.SaveWindow(ctx, domain.NewChannelWindow("#general", testTime.Add(time.Hour))))
+	require.NoError(t, s.SaveWindow(ctx, domain.NewDMWindow(bot, testTime.Add(2*time.Hour))))
+
+	got, err := s.ListWindows(ctx)
+	require.NoError(t, err)
+
+	kinds := make([]domain.ChannelKind, 0, len(got))
+	for _, w := range got {
+		kinds = append(kinds, w.Kind())
+	}
+	require.ElementsMatch(t, []domain.ChannelKind{domain.KindStatus, domain.KindChannel, domain.KindDM}, kinds)
+}
+
+func TestSQLiteStore_DeleteWindow(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	require.NoError(t, s.SaveWindow(ctx, domain.NewChannelWindow("#general", testTime)))
+	require.NoError(t, s.DeleteWindow(ctx, "#general"))
+
+	_, err := s.GetWindow(ctx, "#general")
+	require.ErrorIs(t, err, ErrNoSuchChannel)
 }
 
 func TestSQLiteStore_DeleteChannel(t *testing.T) {

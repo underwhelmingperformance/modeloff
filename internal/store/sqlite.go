@@ -370,7 +370,7 @@ func (s *SQLiteStore) GetChannel(ctx context.Context, name domain.ChannelName) (
 		func(ctx context.Context, _ trace.Span) error {
 			got, err := queryRow(ctx, s.db,
 				`SELECT data FROM channels WHERE name = ?`,
-				[]any{name}, nil,
+				[]any{name}, ErrNoSuchChannel,
 				jsonColumn[domain.Channel])
 			if err != nil {
 				return fmt.Errorf("channel %q: %w", name, err)
@@ -511,6 +511,99 @@ func (s *SQLiteStore) DeleteChannel(ctx context.Context, name domain.ChannelName
 		func(ctx context.Context, _ trace.Span) error {
 			return execMutation(ctx, s.db, `DELETE FROM channels WHERE name = ?`, name)
 		})
+}
+
+// resolveDMCounterpart resolves a DM window's counterpart nick to
+// the canonical `*Instance` handle. The DM's addressable name is
+// the counterpart's nick at open time; this lookup goes through
+// the store's existing nick → instance resolver and the canonical
+// registry, so the returned handle is the same one held by
+// `instances`/`Members` views and pointer comparison stays valid.
+//
+// Returns nil for unknown nicks; `domain.WindowFromChannel`
+// promotes nil into a typed error so the caller can drop the row
+// and log.
+func (s *SQLiteStore) resolveDMCounterpart(ctx context.Context, nick domain.Nick) *domain.Instance {
+	inst, err := s.ResolveNick(ctx, nick)
+	if err != nil {
+		return nil
+	}
+
+	return inst
+}
+
+// ListWindows implements Store. The returned slice carries one
+// concrete `Window` per row in `channels`, projected via
+// `domain.WindowFromChannel`. Rows whose DM counterpart no longer
+// resolves are dropped from the result and logged.
+func (s *SQLiteStore) ListWindows(ctx context.Context) ([]domain.Window, error) {
+	channels, err := s.ListChannels(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	windows := make([]domain.Window, 0, len(channels))
+
+	for _, ch := range channels {
+		w, err := domain.WindowFromChannel(ch, func(nick domain.Nick) *domain.Instance {
+			return s.resolveDMCounterpart(ctx, nick)
+		})
+		if err != nil {
+			// `MissingDMCounterpartError` is the expected race
+			// (instance row deleted before the DM row); log as a
+			// warning. Anything else (an unknown kind, say) is a
+			// data-integrity break and propagates so the caller
+			// can decide how to react.
+			var missing domain.MissingDMCounterpartError
+			if !errors.As(err, &missing) {
+				return nil, err
+			}
+
+			slog.Default().WarnContext(ctx,
+				"window from channel; dropped",
+				"component", "store.sqlite",
+				"channel", ch.Name,
+				"kind", ch.Kind,
+				"error", err,
+			)
+
+			continue
+		}
+
+		windows = append(windows, w)
+	}
+
+	return windows, nil
+}
+
+// GetWindow implements Store. Returns the typed concrete `Window`
+// for the given name. DMs come back with their `Counterpart`
+// resolved through the canonical registry; a missing counterpart
+// surfaces as an error so the caller can decide whether to recover
+// or surface to the user.
+func (s *SQLiteStore) GetWindow(ctx context.Context, name domain.ChannelName) (domain.Window, error) {
+	ch, err := s.GetChannel(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+
+	return domain.WindowFromChannel(ch, func(nick domain.Nick) *domain.Instance {
+		return s.resolveDMCounterpart(ctx, nick)
+	})
+}
+
+// SaveWindow implements Store. The window is projected back to a
+// `Channel` via `domain.ChannelFromWindow` and persisted through
+// the existing `SaveChannel` path so the legacy and Window APIs
+// share a single write surface.
+func (s *SQLiteStore) SaveWindow(ctx context.Context, w domain.Window) error {
+	return s.SaveChannel(ctx, domain.ChannelFromWindow(w))
+}
+
+// DeleteWindow implements Store. Forwards to `DeleteChannel`
+// because the table is shared.
+func (s *SQLiteStore) DeleteWindow(ctx context.Context, name domain.ChannelName) error {
+	return s.DeleteChannel(ctx, name)
 }
 
 // AppendEvent implements Store.
@@ -1066,7 +1159,7 @@ func (s *SQLiteStore) inSpan(
 }
 
 func classifyStoreError(err error) string {
-	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, ErrNoSuchNick) {
+	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, ErrNoSuchNick) || errors.Is(err, ErrNoSuchChannel) {
 		return observability.ErrorKindNotFound
 	}
 
