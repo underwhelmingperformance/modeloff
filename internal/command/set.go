@@ -30,7 +30,16 @@ type Suggestion struct {
 type SuggestionState uint8
 
 const (
+	// SuggestionStateReady is the default state: the source has
+	// produced its suggestion list (which may legitimately be empty)
+	// and the popover should render the result as-is.
 	SuggestionStateReady SuggestionState = iota
+
+	// SuggestionStateError signals that the source could not produce
+	// suggestions for an underlying reason — typically an upstream
+	// API failure such as `loadLiveModels` not yet recovering. The
+	// popover suppresses itself in this state so the user does not
+	// see an empty error-state shell.
 	SuggestionStateError
 )
 

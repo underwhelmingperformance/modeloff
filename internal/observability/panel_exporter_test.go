@@ -31,7 +31,12 @@ import (
 // The provider is created per call and torn down via t.Cleanup; do
 // not share a provider across emits or retain captured records past
 // the next call.
-func emitRecord(t *testing.T, ctx context.Context, apply func(r *otellog.Record)) []sdklog.Record {
+//
+// `ctx` is exposed as a parameter so the trace-propagation test can
+// pass a `SpanContext`-wrapped context through `logger.Emit` and
+// assert the span and trace ids reach the exported `PanelEntry`.
+// Other callers pass `t.Context()` directly.
+func emitRecord(ctx context.Context, t *testing.T, apply func(r *otellog.Record)) []sdklog.Record {
 	t.Helper()
 
 	var captured []sdklog.Record
@@ -80,7 +85,7 @@ func TestPanelExporter_exports_records_to_entries(t *testing.T) {
 	}))
 
 	timestamp := time.Date(2026, 4, 4, 12, 0, 0, 0, time.UTC)
-	records := emitRecord(t, ctx, func(r *otellog.Record) {
+	records := emitRecord(ctx, t, func(r *otellog.Record) {
 		r.SetTimestamp(timestamp)
 		r.SetSeverityText("INFO")
 		r.SetBody(otellog.StringValue("hello"))
@@ -116,7 +121,7 @@ func TestPanelExporter_records_dropped_logs_on_backpressure(t *testing.T) {
 	ingest := make(chan PanelEntry)
 	exporter := NewPanelExporter(ingest, counter)
 
-	records := emitRecord(t, t.Context(), func(r *otellog.Record) {
+	records := emitRecord(t.Context(), t, func(r *otellog.Record) {
 		r.SetObservedTimestamp(time.Now())
 		r.SetBody(otellog.StringValue("dropped"))
 	})
@@ -151,7 +156,7 @@ func sumValueForMetric(metrics metricdata.ResourceMetrics, name string) int64 {
 func TestPanelEntryFromRecord_uses_observed_timestamp_when_timestamp_missing(t *testing.T) {
 	observed := time.Date(2026, 4, 4, 13, 0, 0, 0, time.UTC)
 
-	records := emitRecord(t, t.Context(), func(r *otellog.Record) {
+	records := emitRecord(t.Context(), t, func(r *otellog.Record) {
 		r.SetObservedTimestamp(observed)
 		r.SetBody(otellog.StringValue("hello"))
 		r.AddAttributes(otellog.KeyValueFromAttribute(attribute.String("model_id", "anthropic/claude-3-haiku")))
