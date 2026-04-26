@@ -78,6 +78,16 @@ func (s *Session) JoinAs(ctx context.Context, actor *domain.Instance, ch domain.
 	channel, _ = s.loadChannel(ctx, ch)
 
 	if isUser {
+		// Send the joiner the channel's current member list (IRC's
+		// RPL_NAMREPLY). The chat-screen handler uses this to
+		// populate its local member-list cache with pre-existing
+		// members; without it, the cache would see only the joiner.
+		s.emitUIOnly(domain.NamesReplyEvent{
+			Channel: ch,
+			Members: channel.Members,
+			At:      now,
+		})
+
 		return s.emitJoinProtocol(ctx, ch, channel, now)
 	}
 

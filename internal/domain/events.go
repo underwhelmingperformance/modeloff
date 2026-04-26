@@ -97,6 +97,21 @@ type DispatchDoneEvent struct {
 	Channel ChannelName
 }
 
+// NamesReplyEvent is emitted UI-only at user-join time to broadcast
+// the current member list of a channel the user has just joined,
+// matching IRC's RPL_NAMREPLY. The joiner's UI uses it to populate
+// its local member-list cache with members that pre-existed the
+// join — without it, the cache would only see the joiner themselves
+// and miss any models or other users already in the channel. Models
+// already in the channel see their own future events through the
+// usual emission paths; this is a joiner-targeted snapshot, not a
+// broadcast to everyone.
+type NamesReplyEvent struct {
+	Channel ChannelName
+	Members MemberList
+	At      time.Time
+}
+
 // Pure-live (non-persistable) event types implement Event so they
 // flow through the session's unified event channel without
 // satisfying ChannelEvent. The persistable Channel* types implement
@@ -111,3 +126,4 @@ func (DispatchStartedEvent) domainEvent() {}
 func (DispatchDoneEvent) domainEvent()    {}
 func (FocusChannelEvent) domainEvent()    {}
 func (SystemNoticeEvent) domainEvent()    {}
+func (NamesReplyEvent) domainEvent()      {}

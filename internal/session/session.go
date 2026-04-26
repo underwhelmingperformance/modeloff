@@ -280,6 +280,11 @@ func (s *Session) openStatusChannel(ctx context.Context) error {
 		At:         s.connectedAt,
 		Instance:   s.user,
 	})
+	s.emitUIOnly(domain.NamesReplyEvent{
+		Channel: domain.StatusChannelName,
+		Members: channel.Members,
+		At:      s.connectedAt,
+	})
 	s.emitUIOnly(domain.ChannelModeChange{
 		Channel:    domain.StatusChannelName,
 		Nick:       s.user.Nick(),

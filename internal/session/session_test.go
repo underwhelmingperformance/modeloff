@@ -164,7 +164,8 @@ func drainEventSkipping[T domain.Event](t *testing.T, sess *Session) T {
 			switch evt.(type) {
 			case domain.DispatchStartedEvent,
 				domain.DispatchDoneEvent,
-				domain.SystemNoticeEvent:
+				domain.SystemNoticeEvent,
+				domain.NamesReplyEvent:
 				continue
 			default:
 				t.Fatalf("expected %T, got %T", *new(T), evt)
@@ -658,6 +659,7 @@ func TestSession_Connect_then_JoinAutojoin_stamps_UserJoinedAt(t *testing.T) {
 	// SystemNoticeEvent.
 	_, extras := drainUntilMatched(t, sess,
 		matchEvent[domain.ChannelJoin](),
+		matchEvent[domain.NamesReplyEvent](),
 		matchEvent[domain.ChannelModeChange](),
 		matchEvent[domain.SystemNoticeEvent](),
 		matchEvent[domain.SystemNoticeEvent](),
@@ -683,6 +685,7 @@ func TestSession_FocusChannel_emits_event_and_persists_last_channel(t *testing.T
 	require.NoError(t, sess.Join(ctx, "#general"))
 	_, extras := drainUntilMatched(t, sess,
 		matchEvent[domain.ChannelJoin](),
+		matchEvent[domain.NamesReplyEvent](),
 		matchEvent[domain.ChannelModeChange](),
 		matchEvent[domain.DispatchDoneEvent](),
 	)
@@ -722,6 +725,7 @@ func TestSession_Connect_Quit_Reconnect_omits_status_channel_from_autojoin(t *te
 	require.NoError(t, sess1.Connect(ctx))
 	_, extras := drainUntilMatched(t, sess1,
 		matchEvent[domain.ChannelJoin](),
+		matchEvent[domain.NamesReplyEvent](),
 		matchEvent[domain.ChannelModeChange](),
 		matchEvent[domain.SystemNoticeEvent](),
 	)
@@ -730,6 +734,7 @@ func TestSession_Connect_Quit_Reconnect_omits_status_channel_from_autojoin(t *te
 	require.NoError(t, sess1.Join(ctx, "#general"))
 	_, extras = drainUntilMatched(t, sess1,
 		matchEvent[domain.ChannelJoin](),
+		matchEvent[domain.NamesReplyEvent](),
 		matchEvent[domain.ChannelModeChange](),
 		matchEvent[domain.DispatchDoneEvent](),
 	)
@@ -880,6 +885,7 @@ func TestSession_FocusChannel_status_channel_is_valid(t *testing.T) {
 	require.NoError(t, sess.Connect(ctx))
 	_, extras := drainUntilMatched(t, sess,
 		matchEvent[domain.ChannelJoin](),
+		matchEvent[domain.NamesReplyEvent](),
 		matchEvent[domain.ChannelModeChange](),
 		matchEvent[domain.SystemNoticeEvent](),
 	)
@@ -905,6 +911,7 @@ func TestSession_Quit_appends_channel_quit_events_and_saves_autojoin(t *testing.
 	require.NoError(t, sess.Join(ctx, "#general"))
 	_, extras := drainUntilMatched(t, sess,
 		matchEvent[domain.ChannelJoin](),
+		matchEvent[domain.NamesReplyEvent](),
 		matchEvent[domain.ChannelModeChange](),
 		matchEvent[domain.DispatchDoneEvent](),
 	)
@@ -913,6 +920,7 @@ func TestSession_Quit_appends_channel_quit_events_and_saves_autojoin(t *testing.
 	require.NoError(t, sess.Join(ctx, "#random"))
 	_, extras = drainUntilMatched(t, sess,
 		matchEvent[domain.ChannelJoin](),
+		matchEvent[domain.NamesReplyEvent](),
 		matchEvent[domain.ChannelModeChange](),
 		matchEvent[domain.DispatchDoneEvent](),
 	)
@@ -936,6 +944,7 @@ func TestSession_Quit_removes_user_from_channel_members(t *testing.T) {
 	require.NoError(t, sess.Join(ctx, "#general"))
 	_, extras := drainUntilMatched(t, sess,
 		matchEvent[domain.ChannelJoin](),
+		matchEvent[domain.NamesReplyEvent](),
 		matchEvent[domain.ChannelModeChange](),
 		matchEvent[domain.DispatchDoneEvent](),
 	)
@@ -960,6 +969,7 @@ func TestSession_Quit_clears_in_memory_channels(t *testing.T) {
 	require.NoError(t, sess.Join(ctx, "#general"))
 	_, extras := drainUntilMatched(t, sess,
 		matchEvent[domain.ChannelJoin](),
+		matchEvent[domain.NamesReplyEvent](),
 		matchEvent[domain.ChannelModeChange](),
 		matchEvent[domain.DispatchDoneEvent](),
 	)
@@ -1006,6 +1016,7 @@ func TestSession_user_state_triple_stays_consistent(t *testing.T) {
 	require.NoError(t, sess.Join(ctx, "#general"))
 	_, extras := drainUntilMatched(t, sess,
 		matchEvent[domain.ChannelJoin](),
+		matchEvent[domain.NamesReplyEvent](),
 		matchEvent[domain.ChannelModeChange](),
 		matchEvent[domain.DispatchDoneEvent](),
 	)
@@ -1033,6 +1044,7 @@ func TestSession_user_state_triple_stays_consistent(t *testing.T) {
 	require.NoError(t, sess.Join(ctx, "#general"))
 	_, extras = drainUntilMatched(t, sess,
 		matchEvent[domain.ChannelJoin](),
+		matchEvent[domain.NamesReplyEvent](),
 		matchEvent[domain.ChannelModeChange](),
 		matchEvent[domain.DispatchDoneEvent](),
 	)
@@ -1606,14 +1618,16 @@ func TestSession_JoinEvent_triggers_dispatch(t *testing.T) {
 	// Join an existing channel — the reactive dispatch should fire.
 	require.NoError(t, sess.Join(ctx, "#general"))
 
-	// Five events are expected: the synchronous JoinEvent, the
-	// synchronous ModeChangeEvent emitted by emitJoinProtocol, and the
-	// async DispatchStartedEvent / ModelReplyEvent / DispatchDoneEvent
-	// from the dispatch goroutine triggered by the JoinEvent. Drain a
-	// fixed count so we cannot return early when DispatchDoneEvent
+	// Six events are expected: the synchronous JoinEvent, the
+	// joiner-targeted NamesReplyEvent carrying the channel's
+	// member list at join time, the synchronous ModeChangeEvent
+	// emitted by emitJoinProtocol, and the async
+	// DispatchStartedEvent / ModelReplyEvent / DispatchDoneEvent
+	// from the dispatch goroutine triggered by the JoinEvent. Drain
+	// a fixed count so we cannot return early when DispatchDoneEvent
 	// arrives before emitJoinProtocol has finished emitting
 	// ModeChangeEvent — that race is the bug this test pinned.
-	events := drainNEvents(t, sess, 5)
+	events := drainNEvents(t, sess, 6)
 
 	// JoinEvent is always first — it is emitted synchronously before
 	// the dispatch goroutine starts. The remaining events include both
@@ -1655,7 +1669,25 @@ func TestSession_JoinEvent_triggers_dispatch(t *testing.T) {
 	}
 	wantDone := domain.DispatchDoneEvent{Channel: "#general"}
 
-	rest := events[1:]
+	// The NamesReply carrier carries the channel's MemberList at join
+	// time. Extracting the exact MemberList for an equality match
+	// would couple to its internals, so confirm one is present
+	// addressing the right channel and time, then assert the rest.
+	var sawNames bool
+	rest := []domain.Event{}
+	for _, e := range events[1:] {
+		if n, ok := e.(domain.NamesReplyEvent); ok {
+			require.Equal(t, domain.ChannelName("#general"), n.Channel)
+			require.Equal(t, fixedTime, n.At)
+			sawNames = true
+
+			continue
+		}
+
+		rest = append(rest, e)
+	}
+	require.True(t, sawNames, "expected a NamesReplyEvent in the join burst")
+
 	require.ElementsMatch(t,
 		[]domain.Event{wantMode, wantStarted, wantReply, wantDone},
 		rest,
@@ -2201,6 +2233,7 @@ func TestSession_ChangeNick(t *testing.T) {
 	require.NoError(t, sess.Join(t.Context(), "#general"))
 	_, extras := drainUntilMatched(t, sess,
 		matchEvent[domain.ChannelJoin](),
+		matchEvent[domain.NamesReplyEvent](),
 		matchEvent[domain.ChannelModeChange](),
 		matchEvent[domain.DispatchDoneEvent](),
 	)
@@ -2209,11 +2242,12 @@ func TestSession_ChangeNick(t *testing.T) {
 	require.NoError(t, sess.ChangeNick(t.Context(), "newname"))
 	evt := drainEvent[domain.ChannelNickChange](t, sess)
 	require.Equal(t, domain.ChannelNickChange{
-		Channel:  "#general",
-		Instance: sess.UserInstance(),
-		OldNick:  "testuser",
-		NewNick:  "newname",
-		At:       fixedTime,
+		Channel:    "#general",
+		InstanceID: sess.UserInstance().ID(),
+		OldNick:    "testuser",
+		NewNick:    "newname",
+		Instance:   sess.UserInstance(),
+		At:         fixedTime,
 	}, evt)
 
 	require.Equal(t, domain.Nick("newname"), sess.UserNick())

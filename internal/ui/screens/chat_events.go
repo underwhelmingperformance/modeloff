@@ -59,6 +59,8 @@ func (s ChatScreen) handleSessionEvent(msg sessionEventMsg) (ui.Model, tea.Cmd) 
 		updated, cmd = s.handleFocusChannelEvent(evt)
 	case domain.SystemNoticeEvent:
 		updated, cmd = s.handleSystemNoticeEvent(evt)
+	case domain.NamesReplyEvent:
+		updated, cmd = s.handleNamesReply(evt)
 	}
 
 	if updated != nil {
@@ -114,6 +116,28 @@ func (s ChatScreen) handleChannelFocus(msg domain.ChannelFocusEvent) (ui.Model, 
 	cmds = append(cmds, s.fetchHistoryAfter(msg.Channel, s.sess.UserJoinedAt(msg.Channel)))
 
 	return s, tea.Sequence(cmds...)
+}
+
+// handleNamesReply applies the joiner-targeted member-list snapshot
+// to the local channel cache and refreshes the nick list when the
+// affected channel is the active one. Pre-existing members of the
+// channel — models, other users — are otherwise invisible to the
+// chat screen's cache; without this handler, switching to a freshly-
+// joined channel would show only the user's own name.
+func (s ChatScreen) handleNamesReply(msg domain.NamesReplyEvent) (ui.Model, tea.Cmd) {
+	ch, exists := s.channelByName(msg.Channel)
+	if !exists {
+		ch = s.syntheticChannel(msg.Channel)
+	}
+
+	ch.Members = msg.Members
+	s.channels.Insert(ch)
+
+	if msg.Channel != *s.active {
+		return s, nil
+	}
+
+	return s, msgCmd(components.NickListUpdatedMsg{Members: ch.Members})
 }
 
 func (s ChatScreen) handleJoinEvent(msg domain.ChannelJoin) (ui.Model, tea.Cmd) {
