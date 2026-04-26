@@ -39,6 +39,27 @@ type Window interface {
 	DisplayName() string
 }
 
+// WindowKey builds a placeholder `Window` suitable only for
+// keyed lookup in a sorted set whose comparator reads
+// `Name()` and `Kind()`. The returned value carries no per-kind
+// state — it must not be used as a real window. The DM case
+// returns a `*DMWindow` whose `Counterpart` is nil; that is safe
+// for lookup because the comparator does not touch it, and a
+// caller that mistakes a key for a stored value will fail fast
+// when it tries to read the counterpart.
+func WindowKey(name ChannelName) Window {
+	switch InferChannelKind(name) {
+	case KindStatus:
+		return &StatusWindow{}
+	case KindChannel:
+		return &ChannelWindow{name: name}
+	case KindDM:
+		return &DMWindow{name: name}
+	}
+
+	return nil
+}
+
 // WindowFromChannel projects a `Channel` to the matching concrete
 // `Window` based on its `Kind`. The DM case requires a resolver
 // that turns the bare nick (the DM's addressable name) into the

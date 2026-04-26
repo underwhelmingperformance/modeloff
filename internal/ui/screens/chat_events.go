@@ -132,7 +132,7 @@ func (s ChatScreen) handleChannelFocus(msg domain.ChannelFocusEvent) (ui.Model, 
 	ch, exists := s.channelByName(msg.Channel)
 	if !exists {
 		ch = s.syntheticChannel(msg.Channel)
-		s.channels.Insert(ch)
+		s.insertChannelCache(ch)
 	}
 
 	*s.active = msg.Channel
@@ -221,7 +221,7 @@ func (s ChatScreen) handleStatusOpened(msg domain.StatusOpenedEvent) (ui.Model, 
 		Members: domain.NewMemberList(),
 		Created: msg.At,
 	}
-	s.channels.Insert(ch)
+	s.insertChannelCache(ch)
 
 	return s, msgCmd(components.ChannelAddedMsg{Channel: ch})
 }
@@ -239,7 +239,7 @@ func (s ChatScreen) handleNamesReply(msg domain.NamesReplyEvent) (ui.Model, tea.
 	}
 
 	ch.Members = msg.Members
-	s.channels.Insert(ch)
+	s.insertChannelCache(ch)
 
 	if msg.Channel != *s.active {
 		return s, nil
@@ -266,7 +266,7 @@ func (s ChatScreen) handleJoinEvent(msg domain.Join) (ui.Model, tea.Cmd) {
 		ch.Members.Add(msg.Instance)
 	}
 
-	s.channels.Insert(ch)
+	s.insertChannelCache(ch)
 
 	if !isUser {
 		var cmds []tea.Cmd
@@ -308,7 +308,7 @@ func (s ChatScreen) handleModeChangeEvent(msg domain.ModeChange) (ui.Model, tea.
 	}
 
 	ch.Members.SetMode(msg.Instance, msg.Mode)
-	s.channels.Insert(ch)
+	s.insertChannelCache(ch)
 
 	if msg.Target != *s.active {
 		return s, nil
@@ -329,7 +329,7 @@ func (s ChatScreen) handlePartEvent(msg domain.Part) (ui.Model, tea.Cmd) {
 			ch.Members.Remove(m)
 		}
 
-		s.channels.Insert(ch)
+		s.insertChannelCache(ch)
 	}
 
 	// If the user is leaving, remove the channel and purge any
@@ -348,7 +348,7 @@ func (s ChatScreen) handlePartEvent(msg domain.Part) (ui.Model, tea.Cmd) {
 	if leavingActive {
 		if s.channels.Len() > 0 {
 			first, _ := s.channels.GetAt(0)
-			*s.active = first.Name
+			*s.active = first.Name()
 		} else {
 			*s.active = ""
 			cmds = append(cmds, msgCmd(components.SetPlaceholderMsg{
@@ -404,7 +404,7 @@ func (s ChatScreen) handleQuitEvent(msg domain.Quit) (ui.Model, tea.Cmd) {
 	if ch, ok := s.channelByName(msg.Target); ok {
 		if m, mOK := ch.Members.GetByInstance(msg.Instance); mOK {
 			ch.Members.Remove(m)
-			s.channels.Insert(ch)
+			s.insertChannelCache(ch)
 		}
 	}
 
@@ -428,7 +428,7 @@ func (s ChatScreen) handleTopicChangeEvent(msg domain.TopicChange) (ui.Model, te
 		ch.Topic = msg.Topic
 		ch.TopicSetBy = msg.By
 		ch.TopicSetAt = msg.At
-		s.channels.Insert(ch)
+		s.insertChannelCache(ch)
 	}
 
 	if *s.active != msg.Target {
@@ -448,7 +448,7 @@ func (s ChatScreen) handleTopicInfoEvent(msg domain.TopicInfo) (ui.Model, tea.Cm
 		ch.Topic = msg.Topic
 		ch.TopicSetBy = msg.TopicSetBy
 		ch.TopicSetAt = msg.TopicSetAt
-		s.channels.Insert(ch)
+		s.insertChannelCache(ch)
 	}
 
 	if *s.active != msg.Target {
@@ -475,7 +475,7 @@ func (s ChatScreen) handleNickChangeEvent(msg domain.NickChange) (ui.Model, tea.
 	if ch, ok := s.channelByName(msg.Target); ok {
 		if ch.Members.HasInstance(msg.Instance) {
 			ch.Members.RenameTo(msg.Instance, msg.NewNick)
-			s.channels.Insert(ch)
+			s.insertChannelCache(ch)
 		}
 	}
 
@@ -524,7 +524,7 @@ func (s ChatScreen) handleModelInvitedEvent(msg domain.ModelInvited) (ui.Model, 
 			ch.Members.Add(msg.Instance)
 		}
 
-		s.channels.Insert(ch)
+		s.insertChannelCache(ch)
 	}
 
 	var members domain.MemberList
@@ -557,7 +557,7 @@ func (s ChatScreen) handleModelKickedEvent(msg domain.ModelKicked) (ui.Model, te
 			ch.Members.Remove(m)
 		}
 
-		s.channels.Insert(ch)
+		s.insertChannelCache(ch)
 	}
 
 	var members domain.MemberList
@@ -623,7 +623,7 @@ func (s ChatScreen) handleDMOpenedEvent(msg domain.DMOpenedEvent) (ui.Model, tea
 	// list) and that's fine — the nick-list pane is a no-op for
 	// DM windows.
 	ch := domain.ChannelFromWindow(msg.DM)
-	s.channels.Insert(ch)
+	s.insertChannelCache(ch)
 
 	var cmds []tea.Cmd
 	cmds = append(cmds, msgCmd(components.SetPlaceholderMsg{}))
@@ -890,15 +890,25 @@ func (s ChatScreen) activeChannelInstances() iter.Seq[*domain.Instance] {
 	}
 }
 
+// windowByName returns the cached `Window` for the given name,
+// projected back to a `Channel` for the legacy callers in this
+// file that still read `Members` / `Topic` off the struct shape.
+// During the in-flight migration the chat screen's storage is
+// `Window`-typed but the per-handler logic still mutates a
+// `Channel` projection; the caller writes the mutated projection
+// back via `s.channels.Insert(...)`, which adapts via
+// `domain.WindowFromChannel`.
 func (s ChatScreen) channelByName(name domain.ChannelName) (domain.Channel, bool) {
-	return s.channels.Get(s.channelKey(name))
+	w, ok := s.channels.Get(domain.WindowKey(name))
+	if !ok {
+		return domain.Channel{}, false
+	}
+
+	return domain.ChannelFromWindow(w), true
 }
 
-func (s ChatScreen) channelKey(name domain.ChannelName) domain.Channel {
-	return domain.Channel{
-		Name: name,
-		Kind: domain.InferChannelKind(name),
-	}
+func (s ChatScreen) channelKey(name domain.ChannelName) domain.Window {
+	return domain.WindowKey(name)
 }
 
 func (s ChatScreen) syntheticChannel(name domain.ChannelName) domain.Channel {
@@ -907,4 +917,27 @@ func (s ChatScreen) syntheticChannel(name domain.ChannelName) domain.Channel {
 		Kind:    domain.InferChannelKind(name),
 		Members: domain.NewMemberList(),
 	}
+}
+
+// insertChannelCache projects a `domain.Channel` back to a typed
+// `Window` and inserts it into the chat-screen's cache. The
+// chat-screen handlers still operate on `Channel` projections
+// for legacy reasons; this is the single bridge so callers don't
+// have to repeat the projection at every site.
+func (s ChatScreen) insertChannelCache(ch domain.Channel) {
+	w, err := domain.WindowFromChannel(ch, func(nick domain.Nick) *domain.Instance {
+		resolved, err := s.sess.ResolveNick(s.ctx, nick)
+		if err != nil {
+			return nil
+		}
+
+		return resolved
+	})
+	if err != nil {
+		// Fall back to a key window — the cache still works for
+		// lookup-by-name even if the per-kind state is empty.
+		w = domain.WindowKey(ch.Name)
+	}
+
+	s.channels.Insert(w)
 }

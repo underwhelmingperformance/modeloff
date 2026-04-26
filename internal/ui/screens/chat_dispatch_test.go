@@ -476,11 +476,7 @@ func TestChatScreen_completion_all_instance_commands_see_instances_outside_activ
 	// "outsider". The regression would have hidden the outsider
 	// from completion because the context wired `Instances:` to
 	// the active channel's members.
-	screen.channels.Insert(domain.Channel{
-		Name:    "#general",
-		Kind:    domain.KindChannel,
-		Members: domain.NewMemberList(),
-	})
+	screen.channels.Insert(domain.NewChannelWindow("#general", time.Time{}))
 	*screen.active = "#general"
 
 	completer := screen.completionSet()
@@ -516,11 +512,7 @@ func TestChatScreen_NickChange_then_Quit_removes_instance(t *testing.T) {
 	require.NoError(t, err)
 
 	// Seed the channel so handleModelInvitedEvent finds it.
-	screen.channels.Insert(domain.Channel{
-		Name:    "#general",
-		Kind:    domain.KindChannel,
-		Members: domain.NewMemberList(),
-	})
+	screen.channels.Insert(domain.NewChannelWindow("#general", time.Time{}))
 	*screen.active = "#general"
 
 	now := time.Now()
@@ -534,13 +526,12 @@ func TestChatScreen_NickChange_then_Quit_removes_instance(t *testing.T) {
 		At:       now,
 	})
 
-	ch, ok := screen.channels.Get(domain.Channel{Name: "#general"})
-	require.True(t, ok)
+	cw := requireChannelWindow(t, screen, "#general")
 	require.Equal(t, []domain.Member{{
 		Instance: bot,
 		Nick:     "oldnick",
 		Mode:     domain.ModeNone,
-	}}, ch.Members.Slice())
+	}}, cw.Members.Slice())
 
 	// Rename: the session mutates the instance's own nick before
 	// emitting the event, so the handle's Nick() is already the new
@@ -556,13 +547,12 @@ func TestChatScreen_NickChange_then_Quit_removes_instance(t *testing.T) {
 		At:       now,
 	})
 
-	ch, ok = screen.channels.Get(domain.Channel{Name: "#general"})
-	require.True(t, ok)
+	cw = requireChannelWindow(t, screen, "#general")
 	require.Equal(t, []domain.Member{{
 		Instance: bot,
 		Nick:     "newnick",
 		Mode:     domain.ModeNone,
-	}}, ch.Members.Slice(),
+	}}, cw.Members.Slice(),
 		"nick change should sync the member snapshot while preserving identity")
 
 	// Quit keyed by the same *Instance pointer cleanly removes the
@@ -573,8 +563,21 @@ func TestChatScreen_NickChange_then_Quit_removes_instance(t *testing.T) {
 		At:       now,
 	})
 
-	ch, ok = screen.channels.Get(domain.Channel{Name: "#general"})
-	require.True(t, ok)
-	require.Empty(t, ch.Members.Slice(),
+	cw = requireChannelWindow(t, screen, "#general")
+	require.Empty(t, cw.Members.Slice(),
 		"quit keyed by *Instance should remove the member regardless of the nick carried on the event")
+}
+
+// requireChannelWindow looks the named channel up in the chat
+// screen's cache and asserts it materialised as a `*ChannelWindow`.
+func requireChannelWindow(t *testing.T, screen ChatScreen, name domain.ChannelName) *domain.ChannelWindow {
+	t.Helper()
+
+	w, ok := screen.channels.Get(domain.WindowKey(name))
+	require.True(t, ok, "expected channel %q in cache", name)
+
+	cw, ok := w.(*domain.ChannelWindow)
+	require.True(t, ok, "expected *ChannelWindow for %q, got %T", name, w)
+
+	return cw
 }

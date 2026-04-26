@@ -40,16 +40,16 @@ type deliverNextReplyMsg struct {
 	Channel domain.ChannelName
 }
 
-// channelOrder defines the sidebar/cache ordering: status channel
+// windowOrder defines the sidebar/cache ordering: status window
 // pinned to the top, then normal channels, then DMs, alphabetical
 // within each group. Mirrors components.channelLess so the sidebar
 // and the local cache agree.
-func channelOrder(a, b domain.Channel) bool {
-	if a.Kind != b.Kind {
-		return channelKindRank(a.Kind) < channelKindRank(b.Kind)
+func windowOrder(a, b domain.Window) bool {
+	if a.Kind() != b.Kind() {
+		return channelKindRank(a.Kind()) < channelKindRank(b.Kind())
 	}
 
-	return a.Name < b.Name
+	return a.Name() < b.Name()
 }
 
 func channelKindRank(kind domain.ChannelKind) int {
@@ -93,7 +93,7 @@ type ChatScreen struct {
 	layout   components.MainLayout
 	keyMap   components.ChatScreenKeyMap
 
-	channels        *set.Sorted[domain.Channel]
+	channels        *set.Sorted[domain.Window]
 	liveModels      *[]chatcmd.ModelOption
 	liveModelsState *command.SuggestionState
 	parser          chatcmd.Parser
@@ -157,7 +157,7 @@ func NewChatScreen(ctx context.Context, sess *session.Session, cfgStore config.S
 		ctx:             ctx,
 		sess:            sess,
 		cfgStore:        cfgStore,
-		channels:        set.NewSorted(channelOrder),
+		channels:        set.NewSorted(windowOrder),
 		active:          &active,
 		liveModels:      &liveModels,
 		liveModelsState: &liveModelsState,
@@ -599,7 +599,15 @@ func (s ChatScreen) completionSet() command.CompletionSet[chatcmd.CompletionCont
 	return command.CompletionSet[chatcmd.CompletionContext]{
 		Set: s.parser.Set(),
 		Ctx: chatcmd.CompletionContext{
-			Channels:       func() iter.Seq[domain.Channel] { return s.channels.All() },
+			Channels: func() iter.Seq[domain.Channel] {
+				return func(yield func(domain.Channel) bool) {
+					for w := range s.channels.All() {
+						if !yield(domain.ChannelFromWindow(w)) {
+							return
+						}
+					}
+				}
+			},
 			Instances:      func() iter.Seq[*domain.Instance] { return s.sess.Instances(s.ctx) },
 			ChannelMembers: s.activeChannelInstances,
 			ActiveMembers:  func() iter.Seq[domain.Nick] { return s.activeMemberNicks() },
