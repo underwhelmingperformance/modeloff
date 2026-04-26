@@ -235,7 +235,7 @@ func TestApp_welcome_join_command_with_teatest(t *testing.T) {
 	tm.WaitFor("Welcome to modeloff")
 
 	tm.Submit("/join #general")
-	tm.WaitFor("Created channel #general")
+	tm.WaitFor("Created channel #general", "ChanServ sets mode +o testuser")
 
 	view := tm.CurrentView()
 	require.Equal(t, []string{"Channels", "▸#general"}, sidebarColumn(view))
@@ -392,8 +392,6 @@ func TestApp_ctrl_arrow_scroll_preserves_draft_with_teatest(t *testing.T) {
 		require.NoError(t, sess.SendMessage(t.Context(), "#general", fmt.Sprintf("message %d", i)))
 	}
 
-	uitest.DrainEvents(sess)
-
 	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore, domain.KindStatus)
 	require.NoError(t, err)
 
@@ -434,8 +432,6 @@ func TestApp_new_messages_divider_with_teatest(t *testing.T) {
 	for i := range 30 {
 		require.NoError(t, sess.SendMessage(t.Context(), "#general", fmt.Sprintf("message %d", i)))
 	}
-
-	uitest.DrainEvents(sess)
 
 	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore, domain.KindStatus)
 	require.NoError(t, err)

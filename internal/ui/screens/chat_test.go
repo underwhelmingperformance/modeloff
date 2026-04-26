@@ -181,7 +181,7 @@ func TestChatScreen_join_existing_channel(t *testing.T) {
 	tm.WaitFor("#general", "general msg")
 }
 
-func TestChatScreen_rejoin_filters_old_events(t *testing.T) {
+func TestChatScreen_rejoin_hides_pre_session_history(t *testing.T) {
 	ctx := t.Context()
 	s := storetest.NewMemoryStore(t)
 
@@ -201,8 +201,11 @@ func TestChatScreen_rejoin_filters_old_events(t *testing.T) {
 	require.NoError(t, s.SetAutojoinChannels(ctx, []domain.ChannelName{"#general"}))
 	require.NoError(t, s.SetLastChannel(ctx, "#general"))
 
-	// A stale message from a previous session should still appear
-	// (regular history survives across reconnects).
+	// Persist a message from a previous session. The user must NOT
+	// see this on rejoin: the stored event log is the models' shared
+	// memory of channel activity while the user was offline, not the
+	// user's scrollback. Mirrors IRC's "you don't see what happened
+	// before you joined" rule.
 	_, err := s.AppendEvent(ctx, "#general", domain.ChannelMessage{
 		Channel: "#general",
 		From:    "oldnick",
@@ -211,9 +214,8 @@ func TestChatScreen_rejoin_filters_old_events(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// A stale command error from a previous session should NOT appear:
-	// these were transient UI feedback and are filtered on rejoin to
-	// avoid the original bug where dispatch errors flooded the view.
+	// A persisted command error from a previous session likewise
+	// stays out of the user's view.
 	_, err = s.AppendEvent(ctx, "#general", domain.ChannelCommandError{
 		Channel: "#general",
 		Err:     "ancient dispatch failure",
@@ -232,15 +234,15 @@ func TestChatScreen_rejoin_filters_old_events(t *testing.T) {
 		"has joined #general",
 		"ChanServ sets mode",
 		"welcome topic",
-		"previous session message",
 	)
 
-	// Send a new message which should appear. Anchor the assertion
-	// to the snapshot returned by WaitForView (the exact view that
-	// satisfied the predicate) rather than calling RenderedView or
-	// FinalModel.View() afterwards: under -race the model state can
-	// drift between predicate success and a subsequent re-sample,
-	// so capturing atomically is what keeps the test deterministic.
+	// Send a new message and pin the full visible content. Anchor the
+	// assertion to the snapshot returned by WaitForView (the exact
+	// view that satisfied the predicate) rather than calling
+	// RenderedView or FinalModel.View() afterwards: under -race the
+	// model state can drift between predicate success and a
+	// subsequent re-sample, so capturing atomically is what keeps the
+	// test deterministic.
 	tm.Submit("fresh message")
 	view := tm.WaitForViewContains("<testuser> fresh message")
 	body, _ := uitest.SplitBodyAndStatus(view)
@@ -253,15 +255,17 @@ func TestChatScreen_rejoin_filters_old_events(t *testing.T) {
 	require.Equal(t, []string{
 		"welcome topic",
 		"<topic-separator>",
-		"<oldnick> previous session message",
 		"*** testuser has joined #general",
 		"*** ChanServ sets mode +o testuser",
+		"*** topic for #general: welcome topic (set by admin on Wed 01 Jan 2020 00:00:00 UTC)",
 		"<testuser> fresh message",
 		"testuser >",
 	}, shaped,
-		"events from before the session start should be filtered out")
+		"events from before the session start must not appear in the user's scrollback")
+	require.NotContains(t, view, "previous session message",
+		"messages from before the session start must not appear in the user's scrollback")
 	require.NotContains(t, view, "ancient dispatch failure",
-		"command errors from before the session start should be filtered out")
+		"command errors from before the session start must not appear in the user's scrollback")
 }
 
 // replaceTopicSeparator substitutes the horizontal-rule row that the

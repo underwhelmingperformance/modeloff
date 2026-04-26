@@ -113,16 +113,15 @@ func TestChatScreen_QuitEvent_shows_quit_message(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#general")
 
 	require.NoError(t, sess.AddModel(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
-	uitest.DrainEvents(sess)
 
 	inst, err := sess.ResolveNick(t.Context(), "fakenick")
 	require.NoError(t, err)
 
 	tm := newChatApp(t, sess)
-	// Wait for focus-restore to settle before driving the QuitEvent —
-	// handleQuitEvent only emits the quit banner when an active
-	// channel is set.
-	tm.WaitFor("Created channel #general")
+	// Wait for focus-restore to settle and the seed events to drain
+	// into the chat screen's buffer so the quit banner has stable
+	// context to render against.
+	tm.WaitFor("Created channel #general", "fakenick has joined #general")
 
 	tm.Send(domain.ChannelQuit{
 		Instance: inst,
@@ -138,15 +137,15 @@ func TestChatScreen_QuitEvent_removes_instance_from_nick_list(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#general")
 
 	require.NoError(t, sess.AddModel(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
-	uitest.DrainEvents(sess)
 
 	inst, err := sess.ResolveNick(t.Context(), "fakenick")
 	require.NoError(t, err)
 
 	tm := newChatApp(t, sess)
-	// Wait for focus-restore to settle so handleQuitEvent has an
-	// active channel to render the quit banner against.
-	tm.WaitFor("Created channel #general", "fakenick")
+	// Wait for focus-restore to settle and the seed events to drain
+	// into the chat screen's buffer so the quit banner has stable
+	// context to render against.
+	tm.WaitFor("Created channel #general", "fakenick has joined #general")
 
 	tm.Send(domain.ChannelQuit{
 		Instance: inst,
@@ -338,6 +337,10 @@ func TestChatScreen_focus_status_channel_keeps_status_identity(t *testing.T) {
 	columns := uitest.VisibleColumns(body)
 
 	require.Equal(t, []string{"Channels", "▸&modeloff", "#general"}, uitest.NonEmptyColumn(columns[0]))
+	// `&modeloff` is a virtual server window, not a channel: no
+	// members, no modes, no join/part lifecycle. The only entries
+	// that land here are the server-narrated notices the session
+	// records via `appendStatus`.
 	require.Equal(t, []string{
 		"*** Connected to modeloff",
 		"testuser >",

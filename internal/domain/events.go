@@ -112,6 +112,17 @@ type NamesReplyEvent struct {
 	At      time.Time
 }
 
+// StatusOpenedEvent is emitted UI-only when the session opens its
+// status window (`&modeloff`) on connect. The status window is a
+// virtual server view, not a channel: it has no members, no modes,
+// and no join/part lifecycle. Consumers use this signal to register
+// the window in their sidebar without faking the channel-join
+// scaffolding that would otherwise be required.
+type StatusOpenedEvent struct {
+	Channel ChannelName
+	At      time.Time
+}
+
 // Pure-live (non-persistable) event types implement Event so they
 // flow through the session's unified event channel without
 // satisfying ChannelEvent. The persistable Channel* types implement
@@ -127,3 +138,4 @@ func (DispatchDoneEvent) domainEvent()    {}
 func (FocusChannelEvent) domainEvent()    {}
 func (SystemNoticeEvent) domainEvent()    {}
 func (NamesReplyEvent) domainEvent()      {}
+func (StatusOpenedEvent) domainEvent()    {}

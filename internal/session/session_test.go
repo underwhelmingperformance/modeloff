@@ -653,14 +653,13 @@ func TestSession_Connect_then_JoinAutojoin_stamps_UserJoinedAt(t *testing.T) {
 
 	require.NoError(t, sess.Connect(ctx))
 
-	// Connect on an unclean session emits: status-channel JoinEvent,
-	// status-channel ModeChangeEvent, "Connected to modeloff"
-	// SystemNoticeEvent, and "Reconnected after unclean shutdown"
-	// SystemNoticeEvent.
+	// Connect on an unclean session emits: a StatusOpenedEvent for the
+	// virtual server window, then the "Connected to modeloff" and
+	// "Reconnected after unclean shutdown" SystemNoticeEvents. The
+	// status window is not a channel, so there is no JoinEvent or
+	// ModeChange against it.
 	_, extras := drainUntilMatched(t, sess,
-		matchEvent[domain.ChannelJoin](),
-		matchEvent[domain.NamesReplyEvent](),
-		matchEvent[domain.ChannelModeChange](),
+		matchEvent[domain.StatusOpenedEvent](),
 		matchEvent[domain.SystemNoticeEvent](),
 		matchEvent[domain.SystemNoticeEvent](),
 	)
@@ -724,9 +723,7 @@ func TestSession_Connect_Quit_Reconnect_omits_status_channel_from_autojoin(t *te
 
 	require.NoError(t, sess1.Connect(ctx))
 	_, extras := drainUntilMatched(t, sess1,
-		matchEvent[domain.ChannelJoin](),
-		matchEvent[domain.NamesReplyEvent](),
-		matchEvent[domain.ChannelModeChange](),
+		matchEvent[domain.StatusOpenedEvent](),
 		matchEvent[domain.SystemNoticeEvent](),
 	)
 	require.Empty(t, extras)
@@ -884,9 +881,7 @@ func TestSession_FocusChannel_status_channel_is_valid(t *testing.T) {
 
 	require.NoError(t, sess.Connect(ctx))
 	_, extras := drainUntilMatched(t, sess,
-		matchEvent[domain.ChannelJoin](),
-		matchEvent[domain.NamesReplyEvent](),
-		matchEvent[domain.ChannelModeChange](),
+		matchEvent[domain.StatusOpenedEvent](),
 		matchEvent[domain.SystemNoticeEvent](),
 	)
 	require.Empty(t, extras)

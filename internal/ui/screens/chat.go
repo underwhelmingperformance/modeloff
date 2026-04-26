@@ -109,15 +109,15 @@ type ChatScreen struct {
 
 	// scrollback holds per-channel event history in memory. The chat
 	// screen owns its view state: focus changes are pure buffer
-	// swaps, not store round-trips. The store is consulted exactly
-	// once per channel per session — on the first focus, when the
-	// channel's `ready` flag is false — and subsequent switches
-	// render the cached buffer directly. New events arriving on the
-	// session's event channel append to the buffer for their target
-	// channel regardless of which channel is active, so switching
-	// to a previously-focused channel never drops a message.
-	scrollback      map[domain.ChannelName][]domain.StoredEvent
-	scrollbackReady map[domain.ChannelName]bool
+	// swaps, not store round-trips. The buffer is purely
+	// live-event-driven — every persistable event arriving on the
+	// session's event channel appends here, regardless of which
+	// channel is active — and reflects only what the user has seen
+	// happen during this session. The persisted event log is the
+	// models' shared memory of channel history and is never read into
+	// this buffer, mirroring IRC's "you don't see what happened
+	// before you joined" semantic.
+	scrollback map[domain.ChannelName][]domain.StoredEvent
 
 	width     int
 	height    int
@@ -166,7 +166,6 @@ func NewChatScreen(ctx context.Context, sess *session.Session, cfgStore config.S
 		checklist:       NewWelcomeChecklist(sess.UserNick(), sess.HasAPIKey()),
 		replyQueue:      map[domain.ChannelName][]domain.ModelReplyEvent{},
 		scrollback:      map[domain.ChannelName][]domain.StoredEvent{},
-		scrollbackReady: map[domain.ChannelName]bool{},
 	}
 
 	parser, err := chatcmd.NewParser()
@@ -296,9 +295,6 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 	case sessionEventMsg:
 		return s.handleSessionEvent(msg)
-
-	case historyHydratedMsg:
-		return s.handleHistoryHydrated(msg)
 
 	case ui.QuitRequestedMsg:
 		return s.handleQuitRequested(msg)
@@ -737,59 +733,6 @@ func (s ChatScreen) handleQuitRequested(msg ui.QuitRequestedMsg) (ui.Model, tea.
 	}
 
 	return s, tea.Batch(cmds...)
-}
-
-// isStaleSessionError reports whether the event is a transient UI
-// error from before the current session and should be hidden when
-// re-displaying scrollback.
-func isStaleSessionError(e domain.ChannelEvent, sessionStart time.Time) bool {
-	if _, ok := e.(domain.ChannelCommandError); !ok {
-		return false
-	}
-
-	return domain.ChannelEventTime(e).Before(sessionStart)
-}
-
-// historyHydratedMsg carries the result of a one-shot store fetch
-// that populates `ChatScreen.scrollback` for a channel on its first
-// focus. Subsequent focus events for the same channel never hit the
-// store — `scrollbackReady[ch]` flips to true on receipt.
-type historyHydratedMsg struct {
-	Channel domain.ChannelName
-	Events  []domain.StoredEvent
-}
-
-func (s ChatScreen) fetchHistoryAfter(ch domain.ChannelName, after time.Time) tea.Cmd {
-	if ch == "" {
-		return nil
-	}
-
-	n := max(s.height, 50)
-
-	return func() tea.Msg {
-		events, err := s.sess.EventsBefore(s.ctx, ch, nil, n)
-		if err != nil {
-			return historyHydratedMsg{Channel: ch}
-		}
-
-		// Hide stale command errors from previous sessions: they
-		// were transient UI feedback and rarely make sense out of
-		// their original context. Regular messages, joins, parts,
-		// topic changes etc. survive across restarts.
-		if !after.IsZero() {
-			filtered := events[:0]
-			for _, evt := range events {
-				if isStaleSessionError(evt.Event, after) {
-					continue
-				}
-				filtered = append(filtered, evt)
-			}
-
-			events = filtered
-		}
-
-		return historyHydratedMsg{Channel: ch, Events: events}
-	}
 }
 
 func (s ChatScreen) switchChannel(ch domain.ChannelName) tea.Cmd {

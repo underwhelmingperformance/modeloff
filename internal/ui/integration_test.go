@@ -59,7 +59,14 @@ func TestApp_startup_with_saved_channels(t *testing.T) {
 	tm := uitest.New(t, root)
 
 	advanceConnection(tm, 6)
-	tm.WaitFor("#general", "#random", "hello from", "last time")
+	tm.WaitFor("#general", "#random")
+
+	// Messages from before this session must not appear in the
+	// user's scrollback. The persisted event log is the models'
+	// shared memory of channel activity while the user was offline,
+	// not the user's view; the chat screen rebuilds its scrollback
+	// purely from live events seen on this connection.
+	require.NotContains(t, tm.CurrentView(), "hello from last time")
 
 	last, err := store.GetLastChannel(t.Context())
 	require.NoError(t, err)

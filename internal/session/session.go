@@ -267,12 +267,12 @@ func (s *Session) Connect(ctx context.Context) (retErr error) {
 	return nil
 }
 
-// openStatusChannel ensures the status channel exists in the store,
-// joins the user to it with operator mode, and registers it on the
-// user's Channels map with the connected-at timestamp. The status
-// channel is not part of the autojoin list and not subject to
-// /part, but the user is its local owner so it carries +o just like
-// a regular join.
+// openStatusChannel ensures the status channel exists in the store
+// and registers it on the user's Channels map with the connected-at
+// timestamp. The status channel is a virtual server window, not a
+// channel: it has no members, no modes, and no join/part lifecycle.
+// The only events that land here are server-narrated notices the
+// session itself records via appendStatus.
 func (s *Session) openStatusChannel(ctx context.Context) error {
 	channel, err := s.loadChannel(ctx, domain.StatusChannelName)
 	if err != nil {
@@ -288,33 +288,13 @@ func (s *Session) openStatusChannel(ctx context.Context) error {
 		m.Set(domain.StatusChannelName, s.connectedAt)
 	})
 
-	s.setUserMode(ctx, domain.StatusChannelName, domain.ModeOp)
-
 	if err := s.persistChannel(ctx, channel); err != nil {
 		return fmt.Errorf("save status channel: %w", err)
 	}
 
-	s.emitUIOnly(domain.ChannelJoin{
-		Channel:    domain.StatusChannelName,
-		Nick:       s.user.Nick(),
-		InstanceID: s.user.ID(),
-		At:         s.connectedAt,
-		Instance:   s.user,
-	})
-	s.emitUIOnly(domain.NamesReplyEvent{
+	s.emitUIOnly(domain.StatusOpenedEvent{
 		Channel: domain.StatusChannelName,
-		Members: channel.Members,
 		At:      s.connectedAt,
-	})
-	s.emitUIOnly(domain.ChannelModeChange{
-		Channel:    domain.StatusChannelName,
-		Nick:       s.user.Nick(),
-		InstanceID: s.user.ID(),
-		Mode:       domain.ModeOp,
-		By:         "ChanServ",
-		At:         s.connectedAt,
-		Instance:   s.user,
-		Actor:      "ChanServ",
 	})
 
 	return nil
@@ -325,6 +305,13 @@ func (s *Session) openStatusChannel(ctx context.Context) error {
 // (ConnectionScreen pane, ChatScreen with status focused) sees it
 // without polling. Errors during persistence are logged and dropped:
 // the status log is best-effort.
+//
+// The persisted entries form the server-window audit trail the
+// session keeps for itself; they are not replayed into the user's
+// status-channel scrollback on a fresh run, mirroring the same
+// "no pre-join history" rule documented on `EventsBefore`. Each
+// session's `&modeloff` view shows only the notices that landed
+// during that session.
 func (s *Session) appendStatus(ctx context.Context, text string) {
 	notice := domain.ChannelSystemNotice{
 		Channel: domain.StatusChannelName,
@@ -1787,6 +1774,16 @@ func (s *Session) EventsAfter(ctx context.Context, ch domain.ChannelName, after 
 
 // EventsBefore returns up to n events before the given ID (or the
 // latest if before is nil) in chronological order.
+//
+// The persisted event log is the models' shared memory of channel
+// activity — what their conversational view of the channel looked
+// like while the user was offline — and is consumed exclusively by
+// model-dispatch and context-building paths inside the session.
+// It is not the user's scrollback: the chat screen owns that
+// in-memory buffer (`ChatScreen.scrollback`), populates it purely
+// from live session events, and never reads from this log. Mirrors
+// IRC's rule that a user does not see channel activity from before
+// they joined.
 func (s *Session) EventsBefore(ctx context.Context, ch domain.ChannelName, before *int64, n int) ([]domain.StoredEvent, error) {
 	return s.store.EventsBefore(ctx, ch, before, n)
 }
