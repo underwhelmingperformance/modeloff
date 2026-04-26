@@ -37,6 +37,17 @@ func (w *DMWindow) Created() time.Time { return w.created }
 // Kind reports [KindDM].
 func (*DMWindow) Kind() ChannelKind { return KindDM }
 
-// DisplayName prefixes the counterpart nick with `@` to mark the
-// window as a DM rather than a channel in the sidebar.
-func (w *DMWindow) DisplayName() string { return "@" + string(w.name) }
+// DisplayName prefixes the counterpart's *current* nick with
+// `@` to mark the window as a DM rather than a channel in the
+// sidebar. The label is derived live from `Counterpart.Nick()`
+// so a counterpart rename redraws the sidebar entry without a
+// separate update path. The fallback to the stored `name` is
+// only for placeholder windows produced by [WindowKey] (used as
+// sorted-set lookup keys), which carry no counterpart.
+func (w *DMWindow) DisplayName() string {
+	if w.Counterpart != nil {
+		return "@" + string(w.Counterpart.Nick())
+	}
+
+	return "@" + string(w.name)
+}

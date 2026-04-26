@@ -156,7 +156,7 @@ func (s ChatScreen) handleChannelFocus(msg domain.ChannelFocusEvent) (ui.Model, 
 	}))
 
 	if !exists {
-		cmds = append(cmds, msgCmd(components.ChannelAddedMsg{Channel: domain.ChannelFromWindow(w)}))
+		cmds = append(cmds, msgCmd(components.ChannelAddedMsg{Channel: w}))
 	}
 
 	cmds = append(cmds, msgCmd(components.ChannelActiveMsg{Channel: msg.Channel}))
@@ -228,7 +228,7 @@ func (s ChatScreen) handleStatusOpened(msg domain.StatusOpenedEvent) (ui.Model, 
 	w := domain.NewStatusWindow(msg.At)
 	s.channels.Insert(w)
 
-	return s, msgCmd(components.ChannelAddedMsg{Channel: domain.ChannelFromWindow(w)})
+	return s, msgCmd(components.ChannelAddedMsg{Channel: w})
 }
 
 // handleNamesReply applies the joiner-targeted member-list snapshot
@@ -307,7 +307,7 @@ func (s ChatScreen) handleJoinEvent(msg domain.Join) (ui.Model, tea.Cmd) {
 	// scrollbackCmd's buffer-flush isn't the only path that surfaces
 	// it (the live `bufferEvent` append already happened upstream).
 	cmds := []tea.Cmd{
-		msgCmd(components.ChannelAddedMsg{Channel: domain.ChannelFromWindow(cw)}),
+		msgCmd(components.ChannelAddedMsg{Channel: cw}),
 		msgCmd(components.ChannelUnreadMsg{Channel: msg.Target, Count: 0}),
 	}
 
@@ -648,7 +648,7 @@ func (s ChatScreen) handleDMOpenedEvent(msg domain.DMOpenedEvent) (ui.Model, tea
 		Topic:   s.activeTopic(),
 		Kind:    domain.KindDM,
 	}))
-	cmds = append(cmds, msgCmd(components.ChannelAddedMsg{Channel: domain.ChannelFromWindow(msg.DM)}))
+	cmds = append(cmds, msgCmd(components.ChannelAddedMsg{Channel: msg.DM}))
 	cmds = append(cmds, msgCmd(components.ChannelActiveMsg{Channel: name}))
 	cmds = append(cmds, s.persistLastChannel(name))
 	cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: domain.MemberList{}}))

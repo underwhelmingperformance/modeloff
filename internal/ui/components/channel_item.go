@@ -13,10 +13,13 @@ type ChannelSelectedMsg struct {
 // Incremental sidebar messages. The chat screen sends these to
 // update the channel list.
 type (
-	// ChannelAddedMsg tells the sidebar a new channel has been
-	// opened.
+	// ChannelAddedMsg tells the sidebar a new window has been
+	// opened. The carried `Window` is the typed entry the
+	// sidebar's sorted list stores; the sidebar reads
+	// `DisplayName()` (which lives off the typed handle, so DM
+	// renames redraw automatically) for rendering.
 	ChannelAddedMsg struct {
-		Channel domain.Channel
+		Channel domain.Window
 		Unread  int
 	}
 

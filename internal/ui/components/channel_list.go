@@ -14,7 +14,7 @@ import (
 // SetChannelsMsg replaces the entire channel list in the sidebar.
 // Used for initial load where the full state is needed.
 type SetChannelsMsg struct {
-	Channels []domain.Channel
+	Channels []domain.Window
 	Active   domain.ChannelName
 	Unread   map[domain.ChannelName]int
 }
@@ -22,17 +22,17 @@ type SetChannelsMsg struct {
 // ChannelSidebar is a ui.Model that wraps Sidebar with
 // channel-specific keybindings, header, and unread tracking.
 type ChannelSidebar struct {
-	panel    Sidebar[domain.Channel, domain.ChannelName]
+	panel    Sidebar[domain.Window, domain.ChannelName]
 	unread   map[domain.ChannelName]int
 	mentions map[domain.ChannelName]bool
 }
 
-func channelLess(a, b domain.Channel) bool {
-	if a.Kind != b.Kind {
-		return channelKindOrder(a.Kind) < channelKindOrder(b.Kind)
+func windowLess(a, b domain.Window) bool {
+	if a.Kind() != b.Kind() {
+		return channelKindOrder(a.Kind()) < channelKindOrder(b.Kind())
 	}
 
-	return a.Name < b.Name
+	return a.Name() < b.Name()
 }
 
 // channelKindOrder defines sidebar grouping: status pinned at the
@@ -50,17 +50,17 @@ func channelKindOrder(kind domain.ChannelKind) int {
 	return 3
 }
 
-func channelView(unread map[domain.ChannelName]int, mentions map[domain.ChannelName]bool) func(domain.Channel, ViewState, int) string {
-	return func(ch domain.Channel, state ViewState, _ int) string {
-		name := ch.DisplayName()
+func windowView(unread map[domain.ChannelName]int, mentions map[domain.ChannelName]bool) func(domain.Window, ViewState, int) string {
+	return func(w domain.Window, state ViewState, _ int) string {
+		name := w.DisplayName()
 
-		count := unread[ch.Name]
+		count := unread[w.Name()]
 		if count > 0 {
 			name += fmt.Sprintf(" (%d)", count)
 		}
 
 		highlighted := count > 0
-		mention := mentions[ch.Name]
+		mention := mentions[w.Name()]
 
 		style := theme.SidebarInactive
 
@@ -97,13 +97,13 @@ func NewChannelSidebar() ChannelSidebar {
 
 	return ChannelSidebar{
 		panel: NewSidebar(
-			set.NewSorted(channelLess),
-			SidebarConfig[domain.Channel, domain.ChannelName]{
-				Key:  func(ch domain.Channel) domain.ChannelName { return ch.Name },
-				View: channelView(unread, mentions),
-				OnActivate: func(ch domain.Channel) tea.Cmd {
+			set.NewSorted(windowLess),
+			SidebarConfig[domain.Window, domain.ChannelName]{
+				Key:  func(w domain.Window) domain.ChannelName { return w.Name() },
+				View: windowView(unread, mentions),
+				OnActivate: func(w domain.Window) tea.Cmd {
 					return func() tea.Msg {
-						return ChannelSelectedMsg{Channel: ch.Name}
+						return ChannelSelectedMsg{Channel: w.Name()}
 					}
 				},
 			},
@@ -134,16 +134,13 @@ func (cl ChannelSidebar) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		cl.panel.items.Insert(msg.Channel)
 
 		if msg.Unread > 0 {
-			cl.unread[msg.Channel.Name] = msg.Unread
+			cl.unread[msg.Channel.Name()] = msg.Unread
 		}
 
 		return cl, nil
 
 	case ChannelRemovedMsg:
-		cl.panel.items.Remove(domain.Channel{
-			Name: msg.Channel,
-			Kind: domain.InferChannelKind(msg.Channel),
-		})
+		cl.panel.items.Remove(domain.WindowKey(msg.Channel))
 		delete(cl.unread, msg.Channel)
 		delete(cl.mentions, msg.Channel)
 
@@ -171,14 +168,14 @@ func (cl ChannelSidebar) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 	default:
 		updated, cmd := cl.panel.Update(msg)
-		cl.panel = updated.(Sidebar[domain.Channel, domain.ChannelName])
+		cl.panel = updated.(Sidebar[domain.Window, domain.ChannelName])
 
 		return cl, cmd
 	}
 }
 
 func (cl ChannelSidebar) setChannels(msg SetChannelsMsg) ChannelSidebar {
-	items := set.NewSorted(channelLess)
+	items := set.NewSorted(windowLess)
 
 	for _, ch := range msg.Channels {
 		items.Insert(ch)
@@ -195,7 +192,7 @@ func (cl ChannelSidebar) setChannels(msg SetChannelsMsg) ChannelSidebar {
 		}
 	}
 
-	cl.panel.cfg.View = channelView(cl.unread, cl.mentions)
+	cl.panel.cfg.View = windowView(cl.unread, cl.mentions)
 	cl.panel = cl.panel.SetItems(items)
 
 	if msg.Active != "" {

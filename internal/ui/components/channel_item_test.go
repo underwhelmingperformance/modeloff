@@ -40,14 +40,38 @@ func ctrlKey(k string) tea.KeyMsg {
 }
 
 func newTestChannelSidebar(channels []domain.Channel, active domain.ChannelName, unread map[domain.ChannelName]int) ui.Model {
+	windows := channelsToWindows(channels)
+
 	cl := components.NewChannelSidebar()
 	m, _ := cl.Update(components.SetChannelsMsg{
-		Channels: channels,
+		Channels: windows,
 		Active:   active,
 		Unread:   unread,
 	})
 
 	return m
+}
+
+// channelsToWindows projects a slice of legacy `Channel` test
+// fixtures to their typed `Window` equivalents for the
+// sidebar's `SetChannelsMsg`. DMs in test fixtures don't carry
+// a real counterpart, so a stub `*Instance` with the matching
+// nick is constructed on the fly so the sidebar can render the
+// `@nick` label live from `Counterpart.Nick()`.
+func channelsToWindows(channels []domain.Channel) []domain.Window {
+	resolve := func(nick domain.Nick) *domain.Instance {
+		return domain.NewModelInstance(domain.InstanceID("stub-"+string(nick)), nick, "test/model", "", nil)
+	}
+
+	windows := make([]domain.Window, 0, len(channels))
+	for _, ch := range channels {
+		w, err := domain.WindowFromChannel(ch, resolve)
+		if err != nil {
+			continue
+		}
+		windows = append(windows, w)
+	}
+	return windows
 }
 
 // activateAndGetChannel sends a key and extracts the ChannelSelectedMsg
@@ -207,10 +231,10 @@ func TestChannelSidebar_set_channels_msg(t *testing.T) {
 	m := newTestChannelSidebar(testChannels, "#general", nil)
 
 	m, _ = m.Update(components.SetChannelsMsg{
-		Channels: []domain.Channel{
+		Channels: channelsToWindows([]domain.Channel{
 			{Name: "#alpha", Kind: domain.KindChannel},
 			{Name: "#beta", Kind: domain.KindChannel},
-		},
+		}),
 		Active: "#beta",
 		Unread: map[domain.ChannelName]int{"#alpha": 5},
 	})
@@ -283,7 +307,7 @@ func TestChannelSidebar_cursor_follows_active_on_set_channels(t *testing.T) {
 	m, _ = m.Update(ctrlKey("ctrl+d"))
 
 	m, _ = m.Update(components.SetChannelsMsg{
-		Channels: testChannels,
+		Channels: channelsToWindows(testChannels),
 		Active:   "#random",
 	})
 
@@ -298,9 +322,9 @@ func TestChannelSidebar_cursor_clamps_when_active_not_in_list(t *testing.T) {
 	m, _ = m.Update(ctrlKey("ctrl+d"))
 
 	m, _ = m.Update(components.SetChannelsMsg{
-		Channels: []domain.Channel{
+		Channels: channelsToWindows([]domain.Channel{
 			{Name: "#alpha", Kind: domain.KindChannel},
-		},
+		}),
 		Active: "#gone",
 	})
 

@@ -14,9 +14,9 @@ import (
 func TestMainLayout_semantic_regions_expose_rendered_sidebar_chat_and_nicklist(t *testing.T) {
 	sidebar := components.NewChannelSidebar()
 	sidebarModel, _ := sidebar.Update(components.SetChannelsMsg{
-		Channels: []domain.Channel{
-			{Name: "#general", Kind: domain.KindChannel},
-			{Name: "#random", Kind: domain.KindChannel},
+		Channels: []domain.Window{
+			domain.NewChannelWindow("#general", time.Time{}),
+			domain.NewChannelWindow("#random", time.Time{}),
 		},
 		Active: "#random",
 		Unread: map[domain.ChannelName]int{"#general": 2},
