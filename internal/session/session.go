@@ -404,34 +404,56 @@ func (s *Session) userInChannel(ch domain.ChannelName) bool {
 func (s *Session) persistChannel(ctx context.Context, ch domain.Channel) error {
 	clone := ch
 	clone.Members = cloneMembersWithout(ch.Members, s.user)
-	return s.store.SaveChannel(ctx, clone)
+
+	w, err := domain.WindowFromChannel(clone, func(nick domain.Nick) *domain.Instance {
+		resolved, rErr := s.ResolveNick(ctx, nick)
+		if rErr != nil {
+			return nil
+		}
+
+		return resolved
+	})
+	if err != nil {
+		return fmt.Errorf("project channel %q to window: %w", clone.Name, err)
+	}
+
+	return s.store.SaveWindow(ctx, w)
 }
 
-// loadChannel reads a channel from the store and re-injects the
-// user as a member when the session records the user as being in
-// that channel. The user's mode is read from userModes.
+// loadChannel reads a window from the store as the legacy
+// `domain.Channel` projection and re-injects the user as a
+// member when the session records the user as being in that
+// channel. Session-internal callers that need typed
+// per-kind state (members, topic) should prefer
+// `loadChannelWindow`; this remains for the few callers that
+// still operate on the projection.
 func (s *Session) loadChannel(ctx context.Context, name domain.ChannelName) (domain.Channel, error) {
-	ch, err := s.store.GetChannel(ctx, name)
+	w, err := s.store.GetWindow(ctx, name)
 	if err != nil {
 		return domain.Channel{}, err
 	}
 
+	ch := domain.ChannelFromWindow(w)
 	s.injectUserIfMember(ctx, &ch)
 
 	return ch, nil
 }
 
-// loadChannels reads every channel from the store and re-injects
-// the user into each one the session records as containing the
-// user.
+// loadChannels reads every window from the store as legacy
+// `domain.Channel` projections and re-injects the user where
+// recorded. Session-internal callers that want typed per-kind
+// state should prefer `s.store.ListWindows` directly.
 func (s *Session) loadChannels(ctx context.Context) ([]domain.Channel, error) {
-	channels, err := s.store.ListChannels(ctx)
+	windows, err := s.store.ListWindows(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	for i := range channels {
-		s.injectUserIfMember(ctx, &channels[i])
+	channels := make([]domain.Channel, 0, len(windows))
+	for _, w := range windows {
+		ch := domain.ChannelFromWindow(w)
+		s.injectUserIfMember(ctx, &ch)
+		channels = append(channels, ch)
 	}
 
 	return channels, nil
