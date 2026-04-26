@@ -333,17 +333,14 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 			return s, s.logAndShow(snapshotWhois(*s.active, msg.Instance, now))
 		}
 
-		var cmds []tea.Cmd
-		cmds = append(cmds, msgCmd(domain.StoredEvent{
-			Event: snapshotWhois(*s.active, msg.Instance, now),
-		}))
-
 		statusEvent := snapshotWhois(domain.StatusChannelName, msg.Instance, now)
-		if _, err := s.sess.LogEvent(s.ctx, domain.StatusChannelName, statusEvent); err != nil {
-			slog.Default().ErrorContext(s.ctx, "persist whois to status channel", "error", err)
-		}
 
-		return s, tea.Batch(cmds...)
+		return s, tea.Batch(
+			msgCmd(domain.StoredEvent{
+				Event: snapshotWhois(*s.active, msg.Instance, now),
+			}),
+			s.persistOnStatus(statusEvent),
+		)
 
 	case chatcmd.ListResult:
 		return s, s.logAndShow(domain.ChannelListOutput{
@@ -667,6 +664,23 @@ func (s ChatScreen) logAndShow(event domain.ChannelEvent) tea.Cmd {
 	return s.logAndShowOn(*s.active, event)
 }
 
+// persistOnStatus records a channel event on the per-session status
+// channel without forwarding it to the active window. The store
+// call runs inside the returned Cmd; failures log via slog and the
+// `#10` persistence-failure path inside the session, so callers
+// can fire-and-forget. Returns nil if the persistence step fails to
+// schedule, since dropping the trailing message is acceptable for
+// an audit-trail copy.
+func (s ChatScreen) persistOnStatus(event domain.ChannelEvent) tea.Cmd {
+	return func() tea.Msg {
+		if _, err := s.sess.LogEvent(s.ctx, domain.StatusChannelName, event); err != nil {
+			slog.Default().ErrorContext(s.ctx, "persist on status channel", "error", err)
+		}
+
+		return nil
+	}
+}
+
 // logAndShowOn persists a channel event under the explicit target
 // channel and returns a command that sends the StoredEvent to the
 // message list. Callers use this when the event's home is not the
@@ -674,17 +688,24 @@ func (s ChatScreen) logAndShow(event domain.ChannelEvent) tea.Cmd {
 // status channel when no user-visible channel is active. The caller
 // is responsible for setting event.Channel consistently with ch;
 // this helper does not rewrite it.
+//
+// The store call happens inside the returned Cmd, not in the
+// caller's goroutine, so Update remains the single writer of
+// chat-screen state — the session mutation is fenced off the Tea
+// program's main loop until its result lands as a tea.Msg.
 func (s ChatScreen) logAndShowOn(ch domain.ChannelName, event domain.ChannelEvent) tea.Cmd {
 	if ch == "" {
 		return msgCmd(domain.StoredEvent{Event: event})
 	}
 
-	stored, err := s.sess.LogEvent(s.ctx, ch, event)
-	if err != nil {
-		return nil
-	}
+	return func() tea.Msg {
+		stored, err := s.sess.LogEvent(s.ctx, ch, event)
+		if err != nil {
+			return nil
+		}
 
-	return msgCmd(stored)
+		return stored
+	}
 }
 
 // handleQuitRequested locks the UI, shows a "Disconnecting…"
