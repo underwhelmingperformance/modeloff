@@ -35,17 +35,17 @@ func (s *Session) JoinAs(ctx context.Context, actor *domain.Instance, ch domain.
 	now := s.now()
 	isUser := actor == s.user
 
-	channel, created, err := s.ensureChannelWithActor(ctx, ch, actor, now)
+	window, created, err := s.ensureChannelWindowWithActor(ctx, ch, actor, now)
 	if err != nil {
 		return err
 	}
 
-	alreadyMember := !created && channel.Members.HasInstance(actor)
+	alreadyMember := !created && window.Members.HasInstance(actor)
 
 	if !created && !alreadyMember {
-		channel.Members.Add(actor)
+		window.Members.Add(actor)
 
-		if err := s.persistChannel(ctx, channel); err != nil {
+		if err := s.persistChannelWindow(ctx, window); err != nil {
 			return fmt.Errorf("save channel: %w", err)
 		}
 	}
@@ -66,7 +66,7 @@ func (s *Session) JoinAs(ctx context.Context, actor *domain.Instance, ch domain.
 		}
 	}
 
-	if alreadyMember || channel.Kind == domain.KindDM {
+	if alreadyMember {
 		return nil
 	}
 
@@ -79,7 +79,10 @@ func (s *Session) JoinAs(ctx context.Context, actor *domain.Instance, ch domain.
 		Instance:   actor,
 	})
 
-	channel, _ = s.loadChannel(ctx, ch)
+	window, err = s.loadChannelWindow(ctx, ch)
+	if err != nil {
+		return fmt.Errorf("reload channel after join: %w", err)
+	}
 
 	if isUser {
 		// Send the joiner the channel's current member list (IRC's
@@ -88,45 +91,38 @@ func (s *Session) JoinAs(ctx context.Context, actor *domain.Instance, ch domain.
 		// members; without it, the cache would see only the joiner.
 		s.emitUIOnly(domain.NamesReplyEvent{
 			Channel: ch,
-			Members: channel.Members,
+			Members: window.Members,
 			At:      now,
 		})
 
-		return s.emitJoinProtocol(ctx, ch, channel, now)
+		return s.emitJoinProtocol(ctx, ch, window, now)
 	}
 
-	return s.grantVoice(ctx, ch, channel, actor, actorNick, now)
+	return s.grantVoice(ctx, ch, window, actor, actorNick, now)
 }
 
-// ensureChannelWithActor loads the channel or creates a fresh one
-// that already contains the actor. Returns the (possibly freshly-
-// saved) channel, whether it was newly created, and any persistence
-// error encountered along the way.
-func (s *Session) ensureChannelWithActor(ctx context.Context, ch domain.ChannelName, actor *domain.Instance, now time.Time) (domain.Channel, bool, error) {
-	channel, err := s.loadChannel(ctx, ch)
+// ensureChannelWindowWithActor loads the channel-window or creates
+// a fresh one that already contains the actor. Returns the
+// (possibly freshly-saved) `*ChannelWindow`, whether it was newly
+// created, and any persistence error encountered along the way.
+// JoinAs is the only caller and is gated on `#`-prefixed names by
+// `NormaliseChannelName`, so a load that returns a non-channel
+// row indicates a programming error in the upstream guard rather
+// than a user-reachable state.
+func (s *Session) ensureChannelWindowWithActor(ctx context.Context, ch domain.ChannelName, actor *domain.Instance, now time.Time) (*domain.ChannelWindow, bool, error) {
+	window, err := s.loadChannelWindow(ctx, ch)
 	if err == nil {
-		if channel.Members.Len() == 0 {
-			channel.Members = domain.NewMemberList()
-		}
-
-		return channel, false, nil
+		return window, false, nil
 	}
 
-	members := domain.NewMemberList()
-	members.Add(actor)
+	window = domain.NewChannelWindow(ch, now)
+	window.Members.Add(actor)
 
-	channel = domain.Channel{
-		Name:    ch,
-		Kind:    domain.KindChannel,
-		Members: members,
-		Created: now,
+	if saveErr := s.persistChannelWindow(ctx, window); saveErr != nil {
+		return nil, false, fmt.Errorf("save channel: %w", saveErr)
 	}
 
-	if saveErr := s.persistChannel(ctx, channel); saveErr != nil {
-		return domain.Channel{}, false, fmt.Errorf("save channel: %w", saveErr)
-	}
-
-	return channel, true, nil
+	return window, true, nil
 }
 
 // recordActorMembership stamps the channel onto the actor's joined-
@@ -152,11 +148,11 @@ func (s *Session) recordActorMembership(ctx context.Context, actor *domain.Insta
 
 // emitJoinProtocol sets the user's mode to +o, emits topic info if
 // the channel has a topic, and saves the autojoin list.
-func (s *Session) emitJoinProtocol(ctx context.Context, ch domain.ChannelName, channel domain.Channel, now time.Time) error {
+func (s *Session) emitJoinProtocol(ctx context.Context, ch domain.ChannelName, window *domain.ChannelWindow, now time.Time) error {
 	s.setUserMode(ctx, ch, domain.ModeOp)
-	channel.Members.SetMode(s.user, domain.ModeOp)
+	window.Members.SetMode(s.user, domain.ModeOp)
 
-	if err := s.persistChannel(ctx, channel); err != nil {
+	if err := s.persistChannelWindow(ctx, window); err != nil {
 		return fmt.Errorf("save channel after mode: %w", err)
 	}
 
@@ -171,12 +167,12 @@ func (s *Session) emitJoinProtocol(ctx context.Context, ch domain.ChannelName, c
 		Actor:      "ChanServ",
 	})
 
-	if channel.Topic != "" {
+	if window.Topic != "" {
 		s.emitUIOnly(domain.TopicInfo{
 			Target:     ch,
-			Topic:      channel.Topic,
-			TopicSetBy: channel.TopicSetBy,
-			TopicSetAt: channel.TopicSetAt,
+			Topic:      window.Topic,
+			TopicSetBy: window.TopicSetBy,
+			TopicSetAt: window.TopicSetAt,
 			At:         now,
 		})
 	}
@@ -193,10 +189,10 @@ func (s *Session) emitJoinProtocol(ctx context.Context, ch domain.ChannelName, c
 // The caller passes its own nick snapshot so the `Join` and
 // `ModeChange` events emitted back-to-back for the same join
 // record the same nick, even if the actor renames between them.
-func (s *Session) grantVoice(ctx context.Context, ch domain.ChannelName, channel domain.Channel, inst *domain.Instance, nick domain.Nick, now time.Time) error {
-	channel.Members.SetMode(inst, domain.ModeVoice)
+func (s *Session) grantVoice(ctx context.Context, ch domain.ChannelName, window *domain.ChannelWindow, inst *domain.Instance, nick domain.Nick, now time.Time) error {
+	window.Members.SetMode(inst, domain.ModeVoice)
 
-	if err := s.persistChannel(ctx, channel); err != nil {
+	if err := s.persistChannelWindow(ctx, window); err != nil {
 		return fmt.Errorf("save channel after voice: %w", err)
 	}
 

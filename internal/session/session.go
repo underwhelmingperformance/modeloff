@@ -437,6 +437,43 @@ func (s *Session) loadChannels(ctx context.Context) ([]domain.Channel, error) {
 	return channels, nil
 }
 
+// loadChannelWindow reads an addressable `#`-channel as its typed
+// `*ChannelWindow`. The user is injected as a member when the
+// session records them as being in the channel, mirroring
+// `loadChannel`. Returns an error if the row exists but is not a
+// channel (status / DM) — JoinAs and the other channel-only paths
+// rely on this being a typed guard.
+func (s *Session) loadChannelWindow(ctx context.Context, name domain.ChannelName) (*domain.ChannelWindow, error) {
+	channel, err := s.loadChannel(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+
+	if channel.Kind != domain.KindChannel {
+		return nil, fmt.Errorf("expected channel, got kind %d for %q", channel.Kind, name)
+	}
+
+	cw := domain.NewChannelWindow(channel.Name, channel.Created)
+	cw.Topic = channel.Topic
+	cw.TopicSetBy = channel.TopicSetBy
+	cw.TopicSetAt = channel.TopicSetAt
+	cw.Members = channel.Members
+
+	return cw, nil
+}
+
+// persistChannelWindow saves a `*ChannelWindow` through the
+// store's typed `SaveWindow` surface, with the user stripped from
+// the member list — same contract as `persistChannel`. The user
+// is an ephemeral session actor and is never persisted; the
+// equivalent load path injects them back via
+// `injectUserIfMember`.
+func (s *Session) persistChannelWindow(ctx context.Context, w *domain.ChannelWindow) error {
+	clone := *w
+	clone.Members = cloneMembersWithout(w.Members, s.user)
+	return s.store.SaveWindow(ctx, &clone)
+}
+
 // injectUserIfMember adds the user to ch.Members when the session
 // records the user as being in ch. The recorded mode (or ModeNone
 // if unset) is applied.
