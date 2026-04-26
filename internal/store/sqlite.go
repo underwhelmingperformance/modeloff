@@ -340,23 +340,20 @@ func (s *SQLiteStore) Close() error {
 func (s *SQLiteStore) ListChannels(ctx context.Context) ([]domain.Channel, error) {
 	var channels []domain.Channel
 	err := s.inSpan(ctx, "store.sqlite.list_channels", nil, func(ctx context.Context, _ trace.Span) error {
-		rows, err := s.db.QueryContext(ctx, `SELECT data FROM channels ORDER BY name`)
-		if err != nil {
-			return err
-		}
-		defer func() { _ = rows.Close() }()
-
-		channels, err = scanJSON[domain.Channel](rows)
+		got, err := queryRows(ctx, s.db,
+			`SELECT data FROM channels ORDER BY name`, nil,
+			jsonColumn[domain.Channel])
 		if err != nil {
 			return err
 		}
 
-		for i := range channels {
-			if err := s.resolveChannelMembers(ctx, &channels[i]); err != nil {
+		for i := range got {
+			if err := s.resolveChannelMembers(ctx, &got[i]); err != nil {
 				return err
 			}
 		}
 
+		channels = got
 		return nil
 	})
 
@@ -371,16 +368,15 @@ func (s *SQLiteStore) GetChannel(ctx context.Context, name domain.ChannelName) (
 	err := s.inSpan(ctx, "store.sqlite.get_channel",
 		[]attribute.KeyValue{attribute.String(observability.AttrChannel, string(name))},
 		func(ctx context.Context, _ trace.Span) error {
-			var data string
-
-			if err := s.db.QueryRowContext(ctx, `SELECT data FROM channels WHERE name = ?`, name).Scan(&data); err != nil {
+			got, err := queryRow(ctx, s.db,
+				`SELECT data FROM channels WHERE name = ?`,
+				[]any{name}, nil,
+				jsonColumn[domain.Channel])
+			if err != nil {
 				return fmt.Errorf("channel %q: %w", name, err)
 			}
 
-			if err := json.Unmarshal([]byte(data), &ch); err != nil {
-				return err
-			}
-
+			ch = got
 			return s.resolveChannelMembers(ctx, &ch)
 		})
 
@@ -476,31 +472,16 @@ func (s *SQLiteStore) loadInstancesByID(ctx context.Context, ids []domain.Instan
 		return fmt.Errorf("marshal ids: %w", err)
 	}
 
-	rows, err := s.db.QueryContext(ctx, `
+	fresh, err := queryRows(ctx, s.db, `
 		SELECT data FROM instances
 		WHERE instance_id IN (SELECT value FROM json_each(?))
-	`, string(idsJSON))
+	`, []any{string(idsJSON)}, jsonColumn[domain.Instance])
 	if err != nil {
-		return fmt.Errorf("query instances: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	for rows.Next() {
-		var data string
-		if err := rows.Scan(&data); err != nil {
-			return fmt.Errorf("scan instance row: %w", err)
-		}
-
-		fresh := &domain.Instance{}
-		if err := json.Unmarshal([]byte(data), fresh); err != nil {
-			return fmt.Errorf("unmarshal instance: %w", err)
-		}
-
-		s.canonicaliseInstance(fresh)
+		return fmt.Errorf("load instances: %w", err)
 	}
 
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate instance rows: %w", err)
+	for i := range fresh {
+		s.canonicaliseInstance(&fresh[i])
 	}
 
 	return nil
@@ -516,12 +497,10 @@ func (s *SQLiteStore) SaveChannel(ctx context.Context, ch domain.Channel) error 
 				return err
 			}
 
-			_, err = s.db.ExecContext(ctx,
+			return execMutation(ctx, s.db,
 				`INSERT INTO channels (name, data) VALUES (?, ?)
 				 ON CONFLICT (name) DO UPDATE SET data = excluded.data`,
 				ch.Name, string(data))
-
-			return err
 		})
 }
 
@@ -530,8 +509,7 @@ func (s *SQLiteStore) DeleteChannel(ctx context.Context, name domain.ChannelName
 	return s.inSpan(ctx, "store.sqlite.delete_channel",
 		[]attribute.KeyValue{attribute.String(observability.AttrChannel, string(name))},
 		func(ctx context.Context, _ trace.Span) error {
-			_, err := s.db.ExecContext(ctx, `DELETE FROM channels WHERE name = ?`, name)
-			return err
+			return execMutation(ctx, s.db, `DELETE FROM channels WHERE name = ?`, name)
 		})
 }
 
@@ -546,14 +524,9 @@ func (s *SQLiteStore) AppendEvent(ctx context.Context, ch domain.ChannelName, ev
 				return fmt.Errorf("marshal event: %w", err)
 			}
 
-			result, err := s.db.ExecContext(ctx,
+			id, err = execInsert(ctx, s.db,
 				`INSERT INTO events (channel, type, data, at) VALUES (?, ?, ?, ?)`,
 				ch, domain.ChannelEventType(event), string(data), domain.ChannelEventTime(event).Format(time.RFC3339Nano))
-			if err != nil {
-				return err
-			}
-
-			id, err = result.LastInsertId()
 			return err
 		})
 
@@ -566,35 +539,24 @@ func (s *SQLiteStore) EventsBefore(ctx context.Context, ch domain.ChannelName, b
 	err := s.inSpan(ctx, "store.sqlite.events_before",
 		[]attribute.KeyValue{attribute.String(observability.AttrChannel, string(ch))},
 		func(ctx context.Context, _ trace.Span) error {
-			var (
-				rows *sql.Rows
-				err  error
-			)
-
-			if before == nil {
-				rows, err = s.db.QueryContext(ctx,
-					`SELECT id, data FROM events WHERE channel = ?
-					 ORDER BY id DESC LIMIT ?`, ch, n)
-			} else {
-				rows, err = s.db.QueryContext(ctx,
-					`SELECT id, data FROM events WHERE channel = ? AND id < ?
-					 ORDER BY id DESC LIMIT ?`, ch, *before, n)
+			query, args := `SELECT id, data FROM events WHERE channel = ?
+				 ORDER BY id DESC LIMIT ?`, []any{ch, n}
+			if before != nil {
+				query, args = `SELECT id, data FROM events WHERE channel = ? AND id < ?
+					 ORDER BY id DESC LIMIT ?`, []any{ch, *before, n}
 			}
-			if err != nil {
-				return err
-			}
-			defer func() { _ = rows.Close() }()
 
-			events, err = scanStoredEvents(rows)
+			got, err := queryRows(ctx, s.db, query, args, storedEventRow)
 			if err != nil {
 				return err
 			}
 
 			// Reverse to chronological order.
-			for i, j := 0, len(events)-1; i < j; i, j = i+1, j-1 {
-				events[i], events[j] = events[j], events[i]
+			for i, j := 0, len(got)-1; i < j; i, j = i+1, j-1 {
+				got[i], got[j] = got[j], got[i]
 			}
 
+			events = got
 			return nil
 		})
 
@@ -607,27 +569,20 @@ func (s *SQLiteStore) EventsFrom(ctx context.Context, ch domain.ChannelName, fro
 	err := s.inSpan(ctx, "store.sqlite.events_from",
 		[]attribute.KeyValue{attribute.String(observability.AttrChannel, string(ch))},
 		func(ctx context.Context, _ trace.Span) error {
-			var (
-				rows *sql.Rows
-				err  error
-			)
-
-			if from == nil {
-				rows, err = s.db.QueryContext(ctx,
-					`SELECT id, data FROM events WHERE channel = ?
-					 ORDER BY id ASC LIMIT ?`, ch, n)
-			} else {
-				rows, err = s.db.QueryContext(ctx,
-					`SELECT id, data FROM events WHERE channel = ? AND id >= ?
-					 ORDER BY id ASC LIMIT ?`, ch, *from, n)
+			query, args := `SELECT id, data FROM events WHERE channel = ?
+				 ORDER BY id ASC LIMIT ?`, []any{ch, n}
+			if from != nil {
+				query, args = `SELECT id, data FROM events WHERE channel = ? AND id >= ?
+					 ORDER BY id ASC LIMIT ?`, []any{ch, *from, n}
 			}
+
+			got, err := queryRows(ctx, s.db, query, args, storedEventRow)
 			if err != nil {
 				return err
 			}
-			defer func() { _ = rows.Close() }()
 
-			events, err = scanStoredEvents(rows)
-			return err
+			events = got
+			return nil
 		})
 
 	return events, err
@@ -639,27 +594,19 @@ func (s *SQLiteStore) EventsFrom(ctx context.Context, ch domain.ChannelName, fro
 func (s *SQLiteStore) ListInstances(ctx context.Context) ([]*domain.Instance, error) {
 	var instances []*domain.Instance
 	err := s.inSpan(ctx, "store.sqlite.list_instances", nil, func(ctx context.Context, _ trace.Span) error {
-		rows, err := s.db.QueryContext(ctx, `SELECT data FROM instances ORDER BY nick`)
+		fresh, err := queryRows(ctx, s.db,
+			`SELECT data FROM instances ORDER BY nick`, nil,
+			jsonColumn[domain.Instance])
 		if err != nil {
 			return err
 		}
-		defer func() { _ = rows.Close() }()
 
-		for rows.Next() {
-			var data string
-			if err := rows.Scan(&data); err != nil {
-				return err
-			}
-
-			fresh := &domain.Instance{}
-			if err := json.Unmarshal([]byte(data), fresh); err != nil {
-				return err
-			}
-
-			instances = append(instances, s.canonicaliseInstance(fresh))
+		instances = make([]*domain.Instance, 0, len(fresh))
+		for i := range fresh {
+			instances = append(instances, s.canonicaliseInstance(&fresh[i]))
 		}
 
-		return rows.Err()
+		return nil
 	})
 
 	return instances, err
@@ -673,18 +620,15 @@ func (s *SQLiteStore) GetInstanceByID(ctx context.Context, id domain.InstanceID)
 	err := s.inSpan(ctx, "store.sqlite.get_instance_by_id",
 		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
 		func(ctx context.Context, _ trace.Span) error {
-			var data string
-
-			if err := s.db.QueryRowContext(ctx, `SELECT data FROM instances WHERE instance_id = ?`, string(id)).Scan(&data); err != nil {
+			fresh, err := queryRow(ctx, s.db,
+				`SELECT data FROM instances WHERE instance_id = ?`,
+				[]any{string(id)}, nil,
+				jsonColumn[domain.Instance])
+			if err != nil {
 				return fmt.Errorf("instance %q: %w", id, err)
 			}
 
-			fresh := &domain.Instance{}
-			if err := json.Unmarshal([]byte(data), fresh); err != nil {
-				return err
-			}
-
-			inst = s.canonicaliseInstance(fresh)
+			inst = s.canonicaliseInstance(&fresh)
 			return nil
 		})
 
@@ -708,26 +652,19 @@ func (s *SQLiteStore) ResolveNick(ctx context.Context, nick domain.Nick) (*domai
 	err := s.inSpan(ctx, "store.sqlite.resolve_nick",
 		[]attribute.KeyValue{attribute.String(observability.AttrNick, string(nick))},
 		func(ctx context.Context, _ trace.Span) error {
-			var (
-				id   string
-				data string
-			)
-
-			err := s.db.QueryRowContext(ctx,
-				`SELECT instance_id, data FROM instances WHERE nick = ?`, nick).Scan(&id, &data)
-			if errors.Is(err, sql.ErrNoRows) {
-				return fmt.Errorf("resolve nick %q: %w", nick, ErrNoSuchNick)
-			}
+			fresh, err := queryRow(ctx, s.db,
+				`SELECT data FROM instances WHERE nick = ?`,
+				[]any{nick},
+				fmt.Errorf("resolve nick %q: %w", nick, ErrNoSuchNick),
+				jsonColumn[domain.Instance])
 			if err != nil {
+				if errors.Is(err, ErrNoSuchNick) {
+					return err
+				}
 				return fmt.Errorf("resolve nick %q: %w", nick, err)
 			}
 
-			fresh := &domain.Instance{}
-			if err := json.Unmarshal([]byte(data), fresh); err != nil {
-				return err
-			}
-
-			inst = s.canonicaliseInstance(fresh)
+			inst = s.canonicaliseInstance(&fresh)
 			return nil
 		})
 
@@ -758,13 +695,12 @@ func (s *SQLiteStore) SaveInstance(ctx context.Context, inst *domain.Instance) e
 				return err
 			}
 
-			_, err = s.db.ExecContext(ctx,
+			if err := execMutation(ctx, s.db,
 				`INSERT INTO instances (instance_id, nick, data) VALUES (?, ?, ?)
 				 ON CONFLICT (instance_id) DO UPDATE SET
 				     nick = excluded.nick,
 				     data = excluded.data`,
-				string(inst.ID()), string(nick), string(data))
-			if err != nil {
+				string(inst.ID()), string(nick), string(data)); err != nil {
 				return err
 			}
 
@@ -786,7 +722,7 @@ func (s *SQLiteStore) DeleteInstanceByID(ctx context.Context, id domain.Instance
 	return s.inSpan(ctx, "store.sqlite.delete_instance_by_id",
 		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
 		func(ctx context.Context, _ trace.Span) error {
-			if _, err := s.db.ExecContext(ctx, `DELETE FROM instances WHERE instance_id = ?`, string(id)); err != nil {
+			if err := execMutation(ctx, s.db, `DELETE FROM instances WHERE instance_id = ?`, string(id)); err != nil {
 				return err
 			}
 
@@ -822,14 +758,19 @@ func (s *SQLiteStore) GetLastRead(ctx context.Context, ch domain.ChannelName) (i
 	err := s.inSpan(ctx, "store.sqlite.get_last_read",
 		[]attribute.KeyValue{attribute.String(observability.AttrChannel, string(ch))},
 		func(ctx context.Context, _ trace.Span) error {
-			err := s.db.QueryRowContext(ctx,
-				`SELECT event_id FROM last_read WHERE channel = ?`, ch).Scan(&eventID)
+			id, err := queryRow(ctx, s.db,
+				`SELECT event_id FROM last_read WHERE channel = ?`,
+				[]any{ch}, nil, scalarColumn[int64]())
 			if errors.Is(err, sql.ErrNoRows) {
 				eventID = 0
 				return nil
 			}
+			if err != nil {
+				return err
+			}
 
-			return err
+			eventID = id
+			return nil
 		})
 
 	return eventID, err
@@ -840,11 +781,10 @@ func (s *SQLiteStore) SetLastRead(ctx context.Context, ch domain.ChannelName, ev
 	return s.inSpan(ctx, "store.sqlite.set_last_read",
 		[]attribute.KeyValue{attribute.String(observability.AttrChannel, string(ch))},
 		func(ctx context.Context, _ trace.Span) error {
-			_, err := s.db.ExecContext(ctx,
+			return execMutation(ctx, s.db,
 				`INSERT INTO last_read (channel, event_id) VALUES (?, ?)
 				 ON CONFLICT (channel) DO UPDATE SET event_id = excluded.event_id`,
 				ch, eventID)
-			return err
 		})
 }
 
@@ -854,23 +794,19 @@ func (s *SQLiteStore) ReadMemories(ctx context.Context, id domain.InstanceID) ([
 	err := s.inSpan(ctx, "store.sqlite.read_memories",
 		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
 		func(ctx context.Context, _ trace.Span) error {
-			rows, err := s.db.QueryContext(ctx,
-				`SELECT key, content FROM memories WHERE instance_id = ? ORDER BY key`, string(id))
+			got, err := queryRows(ctx, s.db,
+				`SELECT key, content FROM memories WHERE instance_id = ? ORDER BY key`,
+				[]any{string(id)},
+				func(r rowScanner) (MemoryEntry, error) {
+					var e MemoryEntry
+					return e, r.Scan(&e.Key, &e.Content)
+				})
 			if err != nil {
 				return err
 			}
-			defer func() { _ = rows.Close() }()
 
-			for rows.Next() {
-				var e MemoryEntry
-				if err := rows.Scan(&e.Key, &e.Content); err != nil {
-					return err
-				}
-
-				entries = append(entries, e)
-			}
-
-			return rows.Err()
+			entries = got
+			return nil
 		})
 
 	return entries, err
@@ -881,11 +817,10 @@ func (s *SQLiteStore) WriteMemory(ctx context.Context, id domain.InstanceID, key
 	return s.inSpan(ctx, "store.sqlite.write_memory",
 		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
 		func(ctx context.Context, _ trace.Span) error {
-			_, err := s.db.ExecContext(ctx,
+			return execMutation(ctx, s.db,
 				`INSERT INTO memories (instance_id, key, content) VALUES (?, ?, ?)
 				 ON CONFLICT (instance_id, key) DO UPDATE SET content = excluded.content`,
 				string(id), key, content)
-			return err
 		})
 }
 
@@ -894,8 +829,7 @@ func (s *SQLiteStore) DeleteMemory(ctx context.Context, id domain.InstanceID, ke
 	return s.inSpan(ctx, "store.sqlite.delete_memory",
 		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
 		func(ctx context.Context, _ trace.Span) error {
-			_, err := s.db.ExecContext(ctx, `DELETE FROM memories WHERE instance_id = ? AND key = ?`, string(id), key)
-			return err
+			return execMutation(ctx, s.db, `DELETE FROM memories WHERE instance_id = ? AND key = ?`, string(id), key)
 		})
 }
 
@@ -903,23 +837,15 @@ func (s *SQLiteStore) DeleteMemory(ctx context.Context, id domain.InstanceID, ke
 func (s *SQLiteStore) ListPersonas(ctx context.Context) ([]domain.Persona, error) {
 	var personas []domain.Persona
 	err := s.inSpan(ctx, "store.sqlite.list_personas", nil, func(ctx context.Context, _ trace.Span) error {
-		rows, err := s.db.QueryContext(ctx,
-			`SELECT id, description, origin FROM personas ORDER BY id`)
+		got, err := queryRows(ctx, s.db,
+			`SELECT id, description, origin FROM personas ORDER BY id`, nil,
+			personaRow)
 		if err != nil {
 			return err
 		}
-		defer func() { _ = rows.Close() }()
 
-		for rows.Next() {
-			var p domain.Persona
-			if err := rows.Scan(&p.ID, &p.Description, &p.Origin); err != nil {
-				return err
-			}
-
-			personas = append(personas, p)
-		}
-
-		return rows.Err()
+		personas = got
+		return nil
 	})
 
 	return personas, err
@@ -931,13 +857,14 @@ func (s *SQLiteStore) GetPersona(ctx context.Context, id string) (domain.Persona
 	err := s.inSpan(ctx, "store.sqlite.get_persona",
 		[]attribute.KeyValue{attribute.String("persona.id", id)},
 		func(ctx context.Context, _ trace.Span) error {
-			err := s.db.QueryRowContext(ctx,
-				`SELECT id, description, origin FROM personas WHERE id = ?`, id).
-				Scan(&p.ID, &p.Description, &p.Origin)
+			got, err := queryRow(ctx, s.db,
+				`SELECT id, description, origin FROM personas WHERE id = ?`,
+				[]any{id}, nil, personaRow)
 			if err != nil {
 				return fmt.Errorf("persona %q: %w", id, err)
 			}
 
+			p = got
 			return nil
 		})
 
@@ -949,11 +876,10 @@ func (s *SQLiteStore) SavePersona(ctx context.Context, p domain.Persona) error {
 	return s.inSpan(ctx, "store.sqlite.save_persona",
 		[]attribute.KeyValue{attribute.String("persona.id", p.ID)},
 		func(ctx context.Context, _ trace.Span) error {
-			_, err := s.db.ExecContext(ctx,
+			return execMutation(ctx, s.db,
 				`INSERT INTO personas (id, description, origin) VALUES (?, ?, ?)
 				 ON CONFLICT (id) DO UPDATE SET description = excluded.description, origin = excluded.origin`,
 				p.ID, p.Description, p.Origin)
-			return err
 		})
 }
 
@@ -962,9 +888,15 @@ func (s *SQLiteStore) DeletePersonasByOrigin(ctx context.Context, origin domain.
 	return s.inSpan(ctx, "store.sqlite.delete_personas_by_origin",
 		[]attribute.KeyValue{attribute.String("persona.origin", string(origin))},
 		func(ctx context.Context, _ trace.Span) error {
-			_, err := s.db.ExecContext(ctx, `DELETE FROM personas WHERE origin = ?`, origin)
-			return err
+			return execMutation(ctx, s.db, `DELETE FROM personas WHERE origin = ?`, origin)
 		})
+}
+
+// personaRow decodes the (id, description, origin) shape used by
+// every personas-table query.
+func personaRow(r rowScanner) (domain.Persona, error) {
+	var p domain.Persona
+	return p, r.Scan(&p.ID, &p.Description, &p.Origin)
 }
 
 // ReplaceGeneratedPersonas implements Store. It atomically deletes all
@@ -1003,8 +935,7 @@ func (s *SQLiteStore) ReplaceGeneratedPersonas(ctx context.Context, personas []d
 // ResetMemories implements Store.
 func (s *SQLiteStore) ResetMemories(ctx context.Context) error {
 	return s.inSpan(ctx, "store.sqlite.reset_memories", nil, func(ctx context.Context, _ trace.Span) error {
-		_, err := s.db.ExecContext(ctx, `DELETE FROM memories`)
-		return err
+		return execMutation(ctx, s.db, `DELETE FROM memories`)
 	})
 }
 
@@ -1030,8 +961,7 @@ func (s *SQLiteStore) SetSessionActive(ctx context.Context, value string) error 
 // ClearSessionActive implements Store.
 func (s *SQLiteStore) ClearSessionActive(ctx context.Context) error {
 	return s.inSpan(ctx, "store.sqlite.clear_session_active", nil, func(ctx context.Context, _ trace.Span) error {
-		_, err := s.db.ExecContext(ctx, `DELETE FROM state WHERE key = ?`, "session_active")
-		return err
+		return execMutation(ctx, s.db, `DELETE FROM state WHERE key = ?`, "session_active")
 	})
 }
 
@@ -1039,22 +969,15 @@ func (s *SQLiteStore) ClearSessionActive(ctx context.Context) error {
 func (s *SQLiteStore) ListAutojoinChannels(ctx context.Context) ([]domain.ChannelName, error) {
 	var channels []domain.ChannelName
 	err := s.inSpan(ctx, "store.sqlite.list_autojoin_channels", nil, func(ctx context.Context, _ trace.Span) error {
-		rows, err := s.db.QueryContext(ctx, `SELECT name FROM autojoin ORDER BY name`)
+		got, err := queryRows(ctx, s.db,
+			`SELECT name FROM autojoin ORDER BY name`, nil,
+			scalarColumn[domain.ChannelName]())
 		if err != nil {
 			return err
 		}
-		defer func() { _ = rows.Close() }()
 
-		for rows.Next() {
-			var name domain.ChannelName
-			if err := rows.Scan(&name); err != nil {
-				return err
-			}
-
-			channels = append(channels, name)
-		}
-
-		return rows.Err()
+		channels = got
+		return nil
 	})
 
 	return channels, err
@@ -1151,10 +1074,10 @@ func classifyStoreError(err error) string {
 }
 
 func getState[T ~string](ctx context.Context, db *sql.DB, key string) (T, error) {
-	var value string
-
-	err := db.QueryRowContext(ctx, `SELECT value FROM state WHERE key = ?`, key).Scan(&value)
-	if err == sql.ErrNoRows {
+	value, err := queryRow(ctx, db,
+		`SELECT value FROM state WHERE key = ?`,
+		[]any{key}, nil, scalarColumn[string]())
+	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
 	if err != nil {
@@ -1165,54 +1088,44 @@ func getState[T ~string](ctx context.Context, db *sql.DB, key string) (T, error)
 }
 
 func setState(ctx context.Context, db *sql.DB, key, value string) error {
-	_, err := db.ExecContext(ctx,
+	return execMutation(ctx, db,
 		`INSERT INTO state (key, value) VALUES (?, ?)
 		 ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
 		key, value)
-
-	return err
 }
 
-func scanJSON[T any](rows *sql.Rows) ([]T, error) {
-	var result []T
+// storedEventRow decodes the (id, data) shape used by every event-log
+// query. Returns a `domain.StoredEvent` with the unmarshalled
+// payload.
+func storedEventRow(r rowScanner) (domain.StoredEvent, error) {
+	var (
+		id   int64
+		data string
+	)
 
-	for rows.Next() {
-		var data string
-		if err := rows.Scan(&data); err != nil {
-			return nil, err
-		}
+	if err := r.Scan(&id, &data); err != nil {
+		return domain.StoredEvent{}, err
+	}
 
+	event, err := domain.UnmarshalChannelEvent([]byte(data))
+	if err != nil {
+		return domain.StoredEvent{}, err
+	}
+
+	return domain.StoredEvent{ID: id, Event: event}, nil
+}
+
+// scalarColumn returns a decoder that scans a single value into a
+// caller-supplied destination type. Use for the bare-column queries
+// that don't fit `jsonColumn` — autojoin names, last-read event
+// ids, single-row scalar lookups.
+func scalarColumn[T any]() func(rowScanner) (T, error) {
+	return func(r rowScanner) (T, error) {
 		var v T
-		if err := json.Unmarshal([]byte(data), &v); err != nil {
-			return nil, err
+		if err := r.Scan(&v); err != nil {
+			return v, err
 		}
 
-		result = append(result, v)
+		return v, nil
 	}
-
-	return result, rows.Err()
-}
-
-func scanStoredEvents(rows *sql.Rows) ([]domain.StoredEvent, error) {
-	var result []domain.StoredEvent
-
-	for rows.Next() {
-		var (
-			id   int64
-			data string
-		)
-
-		if err := rows.Scan(&id, &data); err != nil {
-			return nil, err
-		}
-
-		event, err := domain.UnmarshalChannelEvent([]byte(data))
-		if err != nil {
-			return nil, err
-		}
-
-		result = append(result, domain.StoredEvent{ID: id, Event: event})
-	}
-
-	return result, rows.Err()
 }
