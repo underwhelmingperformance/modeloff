@@ -1479,14 +1479,14 @@ func (s *Session) dispatchToInstances(
 	historyEvents []domain.StoredEvent,
 	events []protocol.IRCMessage,
 ) ([]domain.ModelReplyEvent, error) {
+	instances, err := s.resolveDispatchRecipients(ctx, channelName)
+	if err != nil {
+		return nil, fmt.Errorf("resolve dispatch recipients: %w", err)
+	}
+
 	channel, err := s.loadChannel(ctx, channelName)
 	if err != nil {
 		return nil, fmt.Errorf("get channel: %w", err)
-	}
-
-	instances, err := s.instancesForChannel(ctx, channel)
-	if err != nil {
-		return nil, fmt.Errorf("list instances for channel: %w", err)
 	}
 
 	var errs []error
@@ -1760,6 +1760,54 @@ func (s *Session) instancesForChannel(_ context.Context, channel domain.Channel)
 	}
 
 	return instances, nil
+}
+
+// resolveDispatchRecipients picks the model instances that should
+// take a dispatch turn for the given target. It is the single
+// place the dispatch path branches on the shape of the target:
+//
+//   - A `#`-prefixed channel name fans out to every model member
+//     of that channel (the existing channel-Members iteration).
+//   - A bare nick is a DM-style address — resolve the nick to its
+//     `*Instance` and return it as a single recipient. The user
+//     is not a dispatch target (the user reads via the UI), so a
+//     nick that resolves to the user's instance is filtered out.
+//   - The status window has no recipients; it carries server-
+//     narrated notices, not dispatchable messages.
+//
+// The DM path deliberately does not go through `loadChannel +
+// instancesForChannel`. Modeloff's DMs don't have a member-list
+// concept on the server side: the nick of the target *is* the
+// recipient, full stop. Dispatching by nick keeps that model
+// honest and works regardless of whether a `*DMWindow` row
+// exists in the user's windows table for the conversation.
+func (s *Session) resolveDispatchRecipients(ctx context.Context, target domain.ChannelName) ([]*domain.Instance, error) {
+	switch domain.InferChannelKind(target) {
+	case domain.KindStatus:
+		return nil, nil
+
+	case domain.KindDM:
+		inst, err := s.store.ResolveNick(ctx, domain.Nick(target))
+		if err != nil {
+			return nil, err
+		}
+
+		if !inst.IsModel() {
+			return nil, nil
+		}
+
+		return []*domain.Instance{inst}, nil
+
+	case domain.KindChannel:
+		channel, err := s.loadChannel(ctx, target)
+		if err != nil {
+			return nil, err
+		}
+
+		return s.instancesForChannel(ctx, channel)
+	}
+
+	return nil, nil
 }
 
 // EventsAfter returns the channel's events whose timestamp is at or
@@ -2050,14 +2098,7 @@ func (s *Session) dispatchInBackground(ctx context.Context, ch domain.ChannelNam
 		defer span.End()
 		defer s.emitUIOnly(domain.DispatchDoneEvent{Channel: ch})
 
-		channel, err := s.loadChannel(ctx, ch)
-		if err != nil {
-			setSpanError(span, err, observability.ErrorKindStore)
-			s.appendStatus(ctx, fmt.Sprintf("dispatch to %s: %s", ch, err))
-			return
-		}
-
-		instances, err := s.instancesForChannel(ctx, channel)
+		instances, err := s.resolveDispatchRecipients(ctx, ch)
 		if err != nil {
 			setSpanError(span, err, observability.ErrorKindStore)
 			s.appendStatus(ctx, fmt.Sprintf("dispatch to %s: %s", ch, err))
