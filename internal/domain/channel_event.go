@@ -365,6 +365,52 @@ func ChannelEventTime(e ChannelEvent) time.Time {
 	return e.channelEventTime()
 }
 
+// ChannelEventTarget returns the channel name a persistable event
+// targets. Every `Channel*` type carries a `Channel` field; the
+// helper centralises the type-switch so consumers (the UI's
+// per-channel scrollback, observers that need to route events) do
+// not duplicate it.
+func ChannelEventTarget(e ChannelEvent) ChannelName {
+	switch v := e.(type) {
+	case ChannelMessage:
+		return v.Channel
+	case ChannelJoin:
+		return v.Channel
+	case ChannelPart:
+		return v.Channel
+	case ChannelQuit:
+		return v.Channel
+	case ChannelTopicChange:
+		return v.Channel
+	case ChannelModeChange:
+		return v.Channel
+	case ChannelModelInvited:
+		return v.Channel
+	case ChannelModelKicked:
+		return v.Channel
+	case ChannelNickChange:
+		return v.Channel
+	case ChannelTopicInfo:
+		return v.Channel
+	case ChannelHelp:
+		return v.Channel
+	case ChannelWhois:
+		return v.Channel
+	case ChannelListOutput:
+		return ""
+	case ChannelCommandError:
+		return v.Channel
+	case ChannelUsageHint:
+		return v.Channel
+	case ChannelSystemNotice:
+		return v.Channel
+	case ChannelPersonasList:
+		return ""
+	}
+
+	return ""
+}
+
 // ChannelEventType returns the discriminator string for a channel
 // event.
 func ChannelEventType(e ChannelEvent) string {

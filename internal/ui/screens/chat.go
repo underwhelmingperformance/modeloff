@@ -106,12 +106,25 @@ type ChatScreen struct {
 	// popped — so len(replyQueue) is the count of channels with
 	// pending work.
 	replyQueue map[domain.ChannelName][]domain.ModelReplyEvent
-	width      int
-	height     int
-	active     *domain.ChannelName
-	obs        *observability.Runtime
-	summary    components.MetricsSummaryModel
-	checklist  WelcomeChecklist
+
+	// scrollback holds per-channel event history in memory. The chat
+	// screen owns its view state: focus changes are pure buffer
+	// swaps, not store round-trips. The store is consulted exactly
+	// once per channel per session — on the first focus, when the
+	// channel's `ready` flag is false — and subsequent switches
+	// render the cached buffer directly. New events arriving on the
+	// session's event channel append to the buffer for their target
+	// channel regardless of which channel is active, so switching
+	// to a previously-focused channel never drops a message.
+	scrollback      map[domain.ChannelName][]domain.StoredEvent
+	scrollbackReady map[domain.ChannelName]bool
+
+	width     int
+	height    int
+	active    *domain.ChannelName
+	obs       *observability.Runtime
+	summary   components.MetricsSummaryModel
+	checklist WelcomeChecklist
 
 	// quitting is true between QuitRequestedMsg and QuitCompleteMsg
 	// so subsequent quit signals are ignored and input remains
@@ -152,6 +165,8 @@ func NewChatScreen(ctx context.Context, sess *session.Session, cfgStore config.S
 		keyMap:          components.DefaultChatScreenKeyMap,
 		checklist:       NewWelcomeChecklist(sess.UserNick(), sess.HasAPIKey()),
 		replyQueue:      map[domain.ChannelName][]domain.ModelReplyEvent{},
+		scrollback:      map[domain.ChannelName][]domain.StoredEvent{},
+		scrollbackReady: map[domain.ChannelName]bool{},
 	}
 
 	parser, err := chatcmd.NewParser()
@@ -281,6 +296,9 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 	case sessionEventMsg:
 		return s.handleSessionEvent(msg)
+
+	case historyHydratedMsg:
+		return s.handleHistoryHydrated(msg)
 
 	case ui.QuitRequestedMsg:
 		return s.handleQuitRequested(msg)
@@ -711,6 +729,15 @@ func isStaleSessionError(e domain.ChannelEvent, sessionStart time.Time) bool {
 	return domain.ChannelEventTime(e).Before(sessionStart)
 }
 
+// historyHydratedMsg carries the result of a one-shot store fetch
+// that populates `ChatScreen.scrollback` for a channel on its first
+// focus. Subsequent focus events for the same channel never hit the
+// store — `scrollbackReady[ch]` flips to true on receipt.
+type historyHydratedMsg struct {
+	Channel domain.ChannelName
+	Events  []domain.StoredEvent
+}
+
 func (s ChatScreen) fetchHistoryAfter(ch domain.ChannelName, after time.Time) tea.Cmd {
 	if ch == "" {
 		return nil
@@ -721,7 +748,7 @@ func (s ChatScreen) fetchHistoryAfter(ch domain.ChannelName, after time.Time) te
 	return func() tea.Msg {
 		events, err := s.sess.EventsBefore(s.ctx, ch, nil, n)
 		if err != nil {
-			return nil
+			return historyHydratedMsg{Channel: ch}
 		}
 
 		// Hide stale command errors from previous sessions: they
@@ -740,14 +767,22 @@ func (s ChatScreen) fetchHistoryAfter(ch domain.ChannelName, after time.Time) te
 			events = filtered
 		}
 
-		return components.HistoryLoadedMsg{Events: events}
+		return historyHydratedMsg{Channel: ch, Events: events}
 	}
 }
 
 func (s ChatScreen) switchChannel(ch domain.ChannelName) tea.Cmd {
+	_, exists := s.channelByName(ch)
+
 	return func() tea.Msg {
-		if err := s.sess.Join(s.ctx, string(ch)); err != nil {
-			return domain.ErrorEvent{Operation: "switch", Err: err, At: time.Now()}
+		// Existing channels: pure frontend state transition. The
+		// session call is needed only to create/join a brand-new
+		// channel; for ones already in our local cache, switching
+		// view is a buffer swap, not a backend round-trip.
+		if !exists {
+			if err := s.sess.Join(s.ctx, string(ch)); err != nil {
+				return domain.ErrorEvent{Operation: "switch", Err: err, At: time.Now()}
+			}
 		}
 
 		return domain.ChannelFocusEvent{Channel: ch}
