@@ -26,6 +26,11 @@ type FileStore struct {
 	mu        sync.Mutex
 	callbacks map[int64]ChangeFunc
 	nextID    atomic.Int64
+
+	// tracerProvider is the OTel `TracerProvider` the store uses for
+	// its spans. Defaults to `otel.GetTracerProvider()`; tests inject
+	// a per-test recorder via `WithTracerProvider`.
+	tracerProvider trace.TracerProvider
 }
 
 // NewFileStore creates a FileStore that persists configuration to the
@@ -33,9 +38,20 @@ type FileStore struct {
 // config.json within that directory.
 func NewFileStore(dir string) *FileStore {
 	return &FileStore{
-		path:      filepath.Join(dir, "config.json"),
-		callbacks: make(map[int64]ChangeFunc),
+		path:           filepath.Join(dir, "config.json"),
+		callbacks:      make(map[int64]ChangeFunc),
+		tracerProvider: otel.GetTracerProvider(),
 	}
+}
+
+// WithTracerProvider overrides the OTel `TracerProvider` the store
+// uses for its spans. Tests inject a per-test recorder so span
+// recordings stay scoped to a single test rather than relying on the
+// global provider's swap-and-restore.
+func (s *FileStore) WithTracerProvider(tp trace.TracerProvider) *FileStore {
+	s.tracerProvider = tp
+
+	return s
 }
 
 // NewDefaultFileStore creates a FileStore using the system's default
@@ -69,7 +85,7 @@ func defaults() Config {
 // Load reads the configuration from disk, returning defaults if the
 // file does not yet exist.
 func (s *FileStore) Load(ctx context.Context) (Config, error) {
-	_, span := startConfigSpan(ctx, "config.file.load")
+	_, span := s.startSpan(ctx, "config.file.load")
 	defer span.End()
 
 	data, err := os.ReadFile(s.path)
@@ -109,7 +125,7 @@ func (s *FileStore) Load(ctx context.Context) (Config, error) {
 // necessary. Registered change callbacks are fired after a
 // successful write with the old and new values.
 func (s *FileStore) Save(ctx context.Context, cfg Config) error {
-	_, span := startConfigSpan(ctx, "config.file.save")
+	_, span := s.startSpan(ctx, "config.file.save")
 	defer span.End()
 
 	old, _ := s.Load(ctx)
@@ -147,8 +163,8 @@ func (s *FileStore) Save(ctx context.Context, cfg Config) error {
 	return nil
 }
 
-func startConfigSpan(ctx context.Context, operation string) (context.Context, trace.Span) {
-	tracer := otel.Tracer("github.com/laney/modeloff/internal/config")
+func (s *FileStore) startSpan(ctx context.Context, operation string) (context.Context, trace.Span) {
+	tracer := s.tracerProvider.Tracer("github.com/laney/modeloff/internal/config")
 	ctx, span := tracer.Start(ctx, operation)
 	span.SetAttributes(attribute.String(observability.AttrOperation, operation))
 

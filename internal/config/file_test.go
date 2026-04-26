@@ -65,8 +65,8 @@ func TestFileStore_SaveAndLoad(t *testing.T) {
 }
 
 func TestFileStore_Save_recordsSpan(t *testing.T) {
-	recorder := oteltest.InstallSpanRecorder(t)
-	store := NewFileStore(t.TempDir())
+	recorder, provider := oteltest.NewSpanRecorder(t)
+	store := NewFileStore(t.TempDir()).WithTracerProvider(provider)
 
 	require.NoError(t, store.Save(t.Context(), Config{UserNick: "laney", PokeInterval: time.Minute}))
 

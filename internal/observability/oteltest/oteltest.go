@@ -15,21 +15,43 @@ import (
 
 // InstallSpanRecorder sets up an in-memory span recorder as the global
 // tracer provider for the duration of the test.
+//
+// Prefer NewSpanRecorder for components that accept an injected
+// `TracerProvider` via `WithTracerProvider`; the global swap
+// performed here can leak spans across tests when a goroutine
+// outlives the test that spawned it.
 func InstallSpanRecorder(t *testing.T) *tracetest.SpanRecorder {
 	t.Helper()
 
 	prev := otel.GetTracerProvider()
-	recorder := tracetest.NewSpanRecorder()
-	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	recorder, provider := NewSpanRecorder(t)
 	otel.SetTracerProvider(provider)
 
 	t.Cleanup(func() {
-		shutdownCtx := context.WithoutCancel(t.Context())
-		require.NoError(t, provider.Shutdown(shutdownCtx))
 		otel.SetTracerProvider(prev)
 	})
 
 	return recorder
+}
+
+// NewSpanRecorder returns an in-memory span recorder paired with a
+// `TracerProvider` that feeds it. The provider is shut down when
+// the test ends. Tests pass the provider into the component-under-
+// test via its `WithTracerProvider` builder so span recordings stay
+// scoped to a single test even when background goroutines outlive
+// it.
+func NewSpanRecorder(t *testing.T) (*tracetest.SpanRecorder, *sdktrace.TracerProvider) {
+	t.Helper()
+
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+
+	t.Cleanup(func() {
+		shutdownCtx := context.WithoutCancel(t.Context())
+		require.NoError(t, provider.Shutdown(shutdownCtx))
+	})
+
+	return recorder, provider
 }
 
 // FindSpan returns the first completed span with the given name, or

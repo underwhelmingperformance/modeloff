@@ -9,6 +9,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/observability"
@@ -17,8 +18,6 @@ import (
 var (
 	_ Store    = (*IndexedStore)(nil)
 	_ Searcher = (*IndexedStore)(nil)
-
-	memoryTracer = otel.Tracer("github.com/laney/modeloff/internal/memory")
 )
 
 // IndexedStore wraps a FileStore with a chromem-go vector index to
@@ -30,6 +29,11 @@ type IndexedStore struct {
 	backing       Store
 	db            *chromem.DB
 	embeddingFunc chromem.EmbeddingFunc
+
+	// tracerProvider is the OTel `TracerProvider` the store uses for
+	// its spans. Defaults to `otel.GetTracerProvider()`; tests inject
+	// a per-test recorder via `WithTracerProvider`.
+	tracerProvider trace.TracerProvider
 }
 
 // NewIndexedStore creates an IndexedStore backed by the given memory
@@ -40,22 +44,44 @@ func NewIndexedStore(backing Store, indexDir string, embeddingFunc chromem.Embed
 		return nil, fmt.Errorf("open vector index: %w", err)
 	}
 
-	return &IndexedStore{
-		backing:       backing,
-		db:            db,
-		embeddingFunc: instrumentEmbedding(embeddingFunc),
-	}, nil
+	s := &IndexedStore{
+		backing:        backing,
+		db:             db,
+		tracerProvider: otel.GetTracerProvider(),
+	}
+	s.embeddingFunc = s.instrumentEmbedding(embeddingFunc)
+
+	return s, nil
 }
 
 // NewIndexedStoreFromDB creates an IndexedStore from an existing
 // chromem-go DB. This allows callers to provide an in-memory database
 // for testing while using a persistent one in production.
 func NewIndexedStoreFromDB(backing Store, db *chromem.DB, embeddingFunc chromem.EmbeddingFunc) *IndexedStore {
-	return &IndexedStore{
-		backing:       backing,
-		db:            db,
-		embeddingFunc: instrumentEmbedding(embeddingFunc),
+	s := &IndexedStore{
+		backing:        backing,
+		db:             db,
+		tracerProvider: otel.GetTracerProvider(),
 	}
+	s.embeddingFunc = s.instrumentEmbedding(embeddingFunc)
+
+	return s
+}
+
+// WithTracerProvider overrides the OTel `TracerProvider` the store
+// uses for its spans. Tests inject a per-test recorder so span
+// recordings stay scoped to a single test rather than relying on the
+// global provider's swap-and-restore. The instrumented embedding
+// closure captures `s` by pointer, so changes made via this method
+// are visible on subsequent embed calls.
+func (s *IndexedStore) WithTracerProvider(tp trace.TracerProvider) *IndexedStore {
+	s.tracerProvider = tp
+
+	return s
+}
+
+func (s *IndexedStore) tracer() trace.Tracer {
+	return s.tracerProvider.Tracer("github.com/laney/modeloff/internal/memory")
 }
 
 func (s *IndexedStore) collection(id domain.InstanceID) (*chromem.Collection, error) {
@@ -72,7 +98,7 @@ func (s *IndexedStore) Read(ctx context.Context, id domain.InstanceID) ([]Entry,
 // call for an instance, the index is rebuilt from the FileStore if
 // needed.
 func (s *IndexedStore) Search(ctx context.Context, id domain.InstanceID, query string, limit int) ([]SearchResult, error) {
-	ctx, span := memoryTracer.Start(ctx, "memory.search")
+	ctx, span := s.tracer().Start(ctx, "memory.search")
 	span.SetAttributes(
 		attribute.String(observability.AttrOperation, "memory.search"),
 		attribute.String(observability.AttrInstanceID, string(id)),
@@ -157,7 +183,7 @@ func (s *IndexedStore) Search(ctx context.Context, id domain.InstanceID, query s
 // vector database. If indexing fails, the error is logged but not
 // returned — the entry is still saved.
 func (s *IndexedStore) Write(ctx context.Context, id domain.InstanceID, entry Entry) error {
-	ctx, span := memoryTracer.Start(ctx, "memory.write")
+	ctx, span := s.tracer().Start(ctx, "memory.write")
 	span.SetAttributes(
 		attribute.String(observability.AttrOperation, "memory.write"),
 		attribute.String(observability.AttrInstanceID, string(id)),
@@ -206,7 +232,7 @@ func (s *IndexedStore) index(ctx context.Context, id domain.InstanceID, entry En
 // FileStore. If the vector delete fails, it is logged but the
 // FileStore delete still proceeds.
 func (s *IndexedStore) Delete(ctx context.Context, id domain.InstanceID, key string) error {
-	ctx, span := memoryTracer.Start(ctx, "memory.delete")
+	ctx, span := s.tracer().Start(ctx, "memory.delete")
 	span.SetAttributes(
 		attribute.String(observability.AttrOperation, "memory.delete"),
 		attribute.String(observability.AttrInstanceID, string(id)),
@@ -292,9 +318,9 @@ func (s *IndexedStore) ensureIndexed(ctx context.Context, id domain.InstanceID) 
 	return s.reindexInstance(ctx, id)
 }
 
-func instrumentEmbedding(inner chromem.EmbeddingFunc) chromem.EmbeddingFunc {
+func (s *IndexedStore) instrumentEmbedding(inner chromem.EmbeddingFunc) chromem.EmbeddingFunc {
 	return func(ctx context.Context, text string) ([]float32, error) {
-		ctx, span := memoryTracer.Start(ctx, "memory.embed")
+		ctx, span := s.tracer().Start(ctx, "memory.embed")
 		span.SetAttributes(attribute.String(observability.AttrOperation, "memory.embed"))
 		defer span.End()
 

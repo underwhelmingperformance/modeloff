@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/invopop/jsonschema"
 	orderedmap "github.com/wk8/go-ordered-map/v2"
@@ -40,12 +41,13 @@ const (
 // OpenRouterClient implements Client using openai-go for chat
 // completions and direct HTTP for OpenRouter-specific endpoints.
 type OpenRouterClient struct {
-	oai         openai.Client
-	baseURL     string
-	apiKey      string
-	http        *http.Client
-	chatTimeout time.Duration
-	metaTimeout time.Duration
+	oai            openai.Client
+	baseURL        string
+	apiKey         string
+	http           *http.Client
+	chatTimeout    time.Duration
+	metaTimeout    time.Duration
+	tracerProvider trace.TracerProvider
 }
 
 // NewOpenRouterClient creates a client configured to talk to an
@@ -65,12 +67,13 @@ func NewOpenRouterClient(apiKey, baseURL string, httpClient *http.Client) *OpenR
 	)
 
 	return &OpenRouterClient{
-		oai:         oai,
-		baseURL:     baseURL,
-		apiKey:      apiKey,
-		http:        httpClient,
-		chatTimeout: defaultChatTimeout,
-		metaTimeout: defaultMetaTimeout,
+		oai:            oai,
+		baseURL:        baseURL,
+		apiKey:         apiKey,
+		http:           httpClient,
+		chatTimeout:    defaultChatTimeout,
+		metaTimeout:    defaultMetaTimeout,
+		tracerProvider: otel.GetTracerProvider(),
 	}
 }
 
@@ -84,6 +87,21 @@ func (c *OpenRouterClient) WithTimeouts(chat, meta time.Duration) *OpenRouterCli
 	c.metaTimeout = meta
 
 	return c
+}
+
+// WithTracerProvider overrides the OTel `TracerProvider` the client
+// uses for its spans. Tests inject a per-test recorder so span
+// recordings stay scoped to a single test rather than relying on the
+// global provider's swap-and-restore. Production code does not need
+// to call this — the default global provider is already correct.
+func (c *OpenRouterClient) WithTracerProvider(tp trace.TracerProvider) *OpenRouterClient {
+	c.tracerProvider = tp
+
+	return c
+}
+
+func (c *OpenRouterClient) tracer() trace.Tracer {
+	return c.tracerProvider.Tracer("github.com/laney/modeloff/internal/api")
 }
 
 // ensureDeadline wraps ctx with the given timeout if it has no
@@ -252,7 +270,7 @@ func (c *OpenRouterClient) SendEvents(
 	tools ...ToolDefinition,
 ) (CompletionResult, error) {
 	logger := slog.Default().With("component", "api.openrouter", "model_id", modelID)
-	tracer := otel.Tracer("github.com/laney/modeloff/internal/api")
+	tracer := c.tracer()
 
 	ctx, span := tracer.Start(ctx, "api.openrouter.send_events")
 	span.SetAttributes(
@@ -315,7 +333,7 @@ func (c *OpenRouterClient) ContinueWithToolResults(
 	tools ...ToolDefinition,
 ) (CompletionResult, error) {
 	logger := slog.Default().With("component", "api.openrouter", "model_id", conv.modelID)
-	tracer := otel.Tracer("github.com/laney/modeloff/internal/api")
+	tracer := c.tracer()
 
 	ctx, span := tracer.Start(ctx, "api.openrouter.continue_with_tool_results")
 	span.SetAttributes(
@@ -541,7 +559,7 @@ func (c *OpenRouterClient) ListModels(ctx context.Context) ([]ModelInfo, error) 
 	defer cancel()
 
 	logger := slog.Default().With("component", "api.openrouter")
-	tracer := otel.Tracer("github.com/laney/modeloff/internal/api")
+	tracer := c.tracer()
 
 	ctx, span := tracer.Start(ctx, "api.openrouter.list_models")
 	span.SetAttributes(attribute.String(observability.AttrOperation, "api.openrouter.list_models"))
@@ -674,7 +692,7 @@ func (c *OpenRouterClient) GenerateNick(
 		"small_model", smallModel,
 		"attempt", len(excludePreviousSuggestions)+1,
 	)
-	tracer := otel.Tracer("github.com/laney/modeloff/internal/api")
+	tracer := c.tracer()
 
 	ctx, span := tracer.Start(ctx, "api.openrouter.generate_nick")
 	span.SetAttributes(
@@ -782,7 +800,7 @@ func (c *OpenRouterClient) GeneratePersonas(ctx context.Context, smallModel doma
 	defer cancel()
 
 	logger := slog.Default().With("component", "api.openrouter", "model_id", smallModel)
-	tracer := otel.Tracer("github.com/laney/modeloff/internal/api")
+	tracer := c.tracer()
 
 	ctx, span := tracer.Start(ctx, "api.openrouter.generate_personas")
 	span.SetAttributes(

@@ -39,8 +39,8 @@ func TestStoreAdapter_WriteAndRead(t *testing.T) {
 }
 
 func TestStoreAdapter_Write_recordsSpan(t *testing.T) {
-	recorder := oteltest.InstallSpanRecorder(t)
-	store := NewStoreAdapter(storetest.NewMemoryStore(t))
+	recorder, provider := oteltest.NewSpanRecorder(t)
+	store := NewStoreAdapter(storetest.NewMemoryStore(t)).WithTracerProvider(provider)
 
 	require.NoError(t, store.Write(t.Context(), "inst-bob", Entry{Key: "greeting", Content: "hello"}))
 

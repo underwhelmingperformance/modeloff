@@ -88,6 +88,12 @@ type SQLiteStore struct {
 
 	instancesMu sync.RWMutex
 	instances   map[domain.InstanceID]*domain.Instance
+
+	// tracerProvider is the OTel `TracerProvider` the store uses for
+	// its spans. Defaults to `otel.GetTracerProvider()`; tests inject
+	// a per-test recorder via `WithTracerProvider` so span recordings
+	// stay scoped to a single test.
+	tracerProvider trace.TracerProvider
 }
 
 // SQLitePragmaDSN appends the connection-time PRAGMAs that the store
@@ -149,6 +155,12 @@ func NewSQLiteStore(ctx context.Context, db *sql.DB) (*SQLiteStore, error) {
 		"mode", journalMode,
 	)
 
+	s := &SQLiteStore{
+		db:             db,
+		instances:      make(map[domain.InstanceID]*domain.Instance),
+		tracerProvider: otel.GetTracerProvider(),
+	}
+
 	// Pre-release schema v2 migration: the `instances` and `memories`
 	// tables used to be keyed by nick; they are now keyed by
 	// InstanceID. Nicks are display state that can drift during a
@@ -159,7 +171,7 @@ func NewSQLiteStore(ctx context.Context, db *sql.DB) (*SQLiteStore, error) {
 	// in the channels table). If the legacy `instances.nick` primary
 	// key is present, drop both tables so the fresh schema creation
 	// below produces the v2 shape.
-	if err := dropLegacyInstanceTables(ctx, db); err != nil {
+	if err := s.dropLegacyInstanceTables(ctx); err != nil {
 		return nil, fmt.Errorf("drop legacy instance tables: %w", err)
 	}
 
@@ -179,10 +191,18 @@ func NewSQLiteStore(ctx context.Context, db *sql.DB) (*SQLiteStore, error) {
 		slog.Default().InfoContext(ctx, "purged legacy pending_quit row", "component", "store.sqlite", "rows", rows)
 	}
 
-	return &SQLiteStore{
-		db:        db,
-		instances: make(map[domain.InstanceID]*domain.Instance),
-	}, nil
+	return s, nil
+}
+
+// WithTracerProvider overrides the OTel `TracerProvider` the store
+// uses for its spans. Tests inject a per-test recorder so span
+// recordings stay scoped to a single test rather than relying on the
+// global provider's swap-and-restore. Production code does not need
+// to call this — the default global provider is already correct.
+func (s *SQLiteStore) WithTracerProvider(tp trace.TracerProvider) *SQLiteStore {
+	s.tracerProvider = tp
+
+	return s
 }
 
 // canonicaliseInstance returns the canonical `*domain.Instance` for
@@ -241,11 +261,11 @@ func (s *SQLiteStore) resolveInstance(id domain.InstanceID) *domain.Instance {
 //
 // Detection is v1→v2 specific; any future schema change requires its
 // own detector.
-func dropLegacyInstanceTables(ctx context.Context, db *sql.DB) error {
-	ctx, span := startSQLiteSpan(ctx, "store.sqlite.migrate_v2")
+func (s *SQLiteStore) dropLegacyInstanceTables(ctx context.Context) error {
+	ctx, span := s.startSpan(ctx, "store.sqlite.migrate_v2")
 	defer span.End()
 
-	rows, err := db.QueryContext(ctx, `PRAGMA table_info(instances)`)
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(instances)`)
 	if err != nil {
 		recordSQLiteError(span, err)
 		return fmt.Errorf("inspect instances schema: %w", err)
@@ -298,12 +318,12 @@ func dropLegacyInstanceTables(ctx context.Context, db *sql.DB) error {
 		return nil
 	}
 
-	if _, err := db.ExecContext(ctx, `DROP TABLE IF EXISTS instances`); err != nil {
+	if _, err := s.db.ExecContext(ctx, `DROP TABLE IF EXISTS instances`); err != nil {
 		recordSQLiteError(span, err)
 		return fmt.Errorf("drop legacy instances: %w", err)
 	}
 
-	if _, err := db.ExecContext(ctx, `DROP TABLE IF EXISTS memories`); err != nil {
+	if _, err := s.db.ExecContext(ctx, `DROP TABLE IF EXISTS memories`); err != nil {
 		recordSQLiteError(span, err)
 		return fmt.Errorf("drop legacy memories: %w", err)
 	}
@@ -327,7 +347,7 @@ func (s *SQLiteStore) Close() error {
 // carrying canonical `*Instance` handles; stub references to deleted
 // instances are dropped and logged.
 func (s *SQLiteStore) ListChannels(ctx context.Context) ([]domain.Channel, error) {
-	ctx, span := startSQLiteSpan(ctx, "store.sqlite.list_channels")
+	ctx, span := s.startSpan(ctx, "store.sqlite.list_channels")
 	defer span.End()
 
 	rows, err := s.db.QueryContext(ctx, `SELECT data FROM channels ORDER BY name`)
@@ -358,7 +378,7 @@ func (s *SQLiteStore) ListChannels(ctx context.Context) ([]domain.Channel, error
 // carries canonical `*Instance` handles; stub references to deleted
 // instances are dropped and logged.
 func (s *SQLiteStore) GetChannel(ctx context.Context, name domain.ChannelName) (domain.Channel, error) {
-	ctx, span := startSQLiteSpan(ctx, "store.sqlite.get_channel", attribute.String(observability.AttrChannel, string(name)))
+	ctx, span := s.startSpan(ctx, "store.sqlite.get_channel", attribute.String(observability.AttrChannel, string(name)))
 	defer span.End()
 
 	var data string
@@ -509,7 +529,7 @@ func (s *SQLiteStore) loadInstancesByID(ctx context.Context, ids []domain.Instan
 
 // SaveChannel implements Store.
 func (s *SQLiteStore) SaveChannel(ctx context.Context, ch domain.Channel) error {
-	ctx, span := startSQLiteSpan(ctx, "store.sqlite.save_channel", attribute.String(observability.AttrChannel, string(ch.Name)))
+	ctx, span := s.startSpan(ctx, "store.sqlite.save_channel", attribute.String(observability.AttrChannel, string(ch.Name)))
 	defer span.End()
 
 	data, err := json.Marshal(ch)
@@ -534,7 +554,7 @@ func (s *SQLiteStore) SaveChannel(ctx context.Context, ch domain.Channel) error 
 
 // DeleteChannel implements Store.
 func (s *SQLiteStore) DeleteChannel(ctx context.Context, name domain.ChannelName) error {
-	ctx, span := startSQLiteSpan(ctx, "store.sqlite.delete_channel", attribute.String(observability.AttrChannel, string(name)))
+	ctx, span := s.startSpan(ctx, "store.sqlite.delete_channel", attribute.String(observability.AttrChannel, string(name)))
 	defer span.End()
 
 	_, err := s.db.ExecContext(ctx, `DELETE FROM channels WHERE name = ?`, name)
@@ -549,7 +569,7 @@ func (s *SQLiteStore) DeleteChannel(ctx context.Context, name domain.ChannelName
 
 // AppendEvent implements Store.
 func (s *SQLiteStore) AppendEvent(ctx context.Context, ch domain.ChannelName, event domain.ChannelEvent) (int64, error) {
-	ctx, span := startSQLiteSpan(ctx, "store.sqlite.append_event", attribute.String(observability.AttrChannel, string(ch)))
+	ctx, span := s.startSpan(ctx, "store.sqlite.append_event", attribute.String(observability.AttrChannel, string(ch)))
 	defer span.End()
 
 	data, err := domain.MarshalChannelEvent(event)
@@ -578,7 +598,7 @@ func (s *SQLiteStore) AppendEvent(ctx context.Context, ch domain.ChannelName, ev
 
 // EventsBefore implements Store.
 func (s *SQLiteStore) EventsBefore(ctx context.Context, ch domain.ChannelName, before *int64, n int) ([]domain.StoredEvent, error) {
-	ctx, span := startSQLiteSpan(ctx, "store.sqlite.events_before", attribute.String(observability.AttrChannel, string(ch)))
+	ctx, span := s.startSpan(ctx, "store.sqlite.events_before", attribute.String(observability.AttrChannel, string(ch)))
 	defer span.End()
 
 	var rows *sql.Rows
@@ -617,7 +637,7 @@ func (s *SQLiteStore) EventsBefore(ctx context.Context, ch domain.ChannelName, b
 
 // EventsFrom implements Store.
 func (s *SQLiteStore) EventsFrom(ctx context.Context, ch domain.ChannelName, from *int64, n int) ([]domain.StoredEvent, error) {
-	ctx, span := startSQLiteSpan(ctx, "store.sqlite.events_from", attribute.String(observability.AttrChannel, string(ch)))
+	ctx, span := s.startSpan(ctx, "store.sqlite.events_from", attribute.String(observability.AttrChannel, string(ch)))
 	defer span.End()
 
 	var rows *sql.Rows
@@ -653,7 +673,7 @@ func (s *SQLiteStore) EventsFrom(ctx context.Context, ch domain.ChannelName, fro
 // pointers from the registry; callers that called `GetInstanceByID`
 // previously observe the same pointers.
 func (s *SQLiteStore) ListInstances(ctx context.Context) ([]*domain.Instance, error) {
-	ctx, span := startSQLiteSpan(ctx, "store.sqlite.list_instances")
+	ctx, span := s.startSpan(ctx, "store.sqlite.list_instances")
 	defer span.End()
 
 	rows, err := s.db.QueryContext(ctx, `SELECT data FROM instances ORDER BY nick`)
@@ -694,7 +714,7 @@ func (s *SQLiteStore) ListInstances(ctx context.Context) ([]*domain.Instance, er
 // `*Instance` pointer — two calls for the same id return the same
 // handle.
 func (s *SQLiteStore) GetInstanceByID(ctx context.Context, id domain.InstanceID) (*domain.Instance, error) {
-	ctx, span := startSQLiteSpan(ctx, "store.sqlite.get_instance_by_id", attribute.String(observability.AttrInstanceID, string(id)))
+	ctx, span := s.startSpan(ctx, "store.sqlite.get_instance_by_id", attribute.String(observability.AttrInstanceID, string(id)))
 	defer span.End()
 
 	var data string
@@ -732,7 +752,7 @@ func (s *SQLiteStore) GetInstanceByID(ctx context.Context, id domain.InstanceID)
 // Callers are responsible for preventing collisions upstream (the
 // session refuses renames that would collide; see task #53).
 func (s *SQLiteStore) ResolveNick(ctx context.Context, nick domain.Nick) (*domain.Instance, error) {
-	ctx, span := startSQLiteSpan(ctx, "store.sqlite.resolve_nick", attribute.String(observability.AttrNick, string(nick)))
+	ctx, span := s.startSpan(ctx, "store.sqlite.resolve_nick", attribute.String(observability.AttrNick, string(nick)))
 	defer span.End()
 
 	var (
@@ -775,7 +795,7 @@ func (s *SQLiteStore) SaveInstance(ctx context.Context, inst *domain.Instance) e
 	// single nick read closes the divergence window.
 	nick := inst.Nick()
 
-	ctx, span := startSQLiteSpan(ctx, "store.sqlite.save_instance",
+	ctx, span := s.startSpan(ctx, "store.sqlite.save_instance",
 		attribute.String(observability.AttrInstanceID, string(inst.ID())),
 		attribute.String(observability.AttrNick, string(nick)))
 	defer span.End()
@@ -813,7 +833,7 @@ func (s *SQLiteStore) SaveInstance(ctx context.Context, inst *domain.Instance) e
 // DeleteInstanceByID implements Store. Evicts the row from SQLite
 // and the handle from the canonical registry.
 func (s *SQLiteStore) DeleteInstanceByID(ctx context.Context, id domain.InstanceID) error {
-	ctx, span := startSQLiteSpan(ctx, "store.sqlite.delete_instance_by_id", attribute.String(observability.AttrInstanceID, string(id)))
+	ctx, span := s.startSpan(ctx, "store.sqlite.delete_instance_by_id", attribute.String(observability.AttrInstanceID, string(id)))
 	defer span.End()
 
 	_, err := s.db.ExecContext(ctx, `DELETE FROM instances WHERE instance_id = ?`, string(id))
@@ -830,7 +850,7 @@ func (s *SQLiteStore) DeleteInstanceByID(ctx context.Context, id domain.Instance
 
 // GetLastChannel implements Store.
 func (s *SQLiteStore) GetLastChannel(ctx context.Context) (domain.ChannelName, error) {
-	ctx, span := startSQLiteSpan(ctx, "store.sqlite.get_last_channel")
+	ctx, span := s.startSpan(ctx, "store.sqlite.get_last_channel")
 	defer span.End()
 
 	value, err := getState[domain.ChannelName](ctx, s.db, "last_channel")
@@ -845,7 +865,7 @@ func (s *SQLiteStore) GetLastChannel(ctx context.Context) (domain.ChannelName, e
 
 // SetLastChannel implements Store.
 func (s *SQLiteStore) SetLastChannel(ctx context.Context, name domain.ChannelName) error {
-	ctx, span := startSQLiteSpan(ctx, "store.sqlite.set_last_channel", attribute.String(observability.AttrChannel, string(name)))
+	ctx, span := s.startSpan(ctx, "store.sqlite.set_last_channel", attribute.String(observability.AttrChannel, string(name)))
 	defer span.End()
 
 	if err := setState(ctx, s.db, "last_channel", string(name)); err != nil {
@@ -859,7 +879,7 @@ func (s *SQLiteStore) SetLastChannel(ctx context.Context, name domain.ChannelNam
 
 // GetLastRead implements Store.
 func (s *SQLiteStore) GetLastRead(ctx context.Context, ch domain.ChannelName) (int64, error) {
-	ctx, span := startSQLiteSpan(ctx, "store.sqlite.get_last_read", attribute.String(observability.AttrChannel, string(ch)))
+	ctx, span := s.startSpan(ctx, "store.sqlite.get_last_read", attribute.String(observability.AttrChannel, string(ch)))
 	defer span.End()
 
 	var eventID int64
@@ -882,7 +902,7 @@ func (s *SQLiteStore) GetLastRead(ctx context.Context, ch domain.ChannelName) (i
 
 // SetLastRead implements Store.
 func (s *SQLiteStore) SetLastRead(ctx context.Context, ch domain.ChannelName, eventID int64) error {
-	ctx, span := startSQLiteSpan(ctx, "store.sqlite.set_last_read", attribute.String(observability.AttrChannel, string(ch)))
+	ctx, span := s.startSpan(ctx, "store.sqlite.set_last_read", attribute.String(observability.AttrChannel, string(ch)))
 	defer span.End()
 
 	_, err := s.db.ExecContext(ctx,
@@ -900,7 +920,7 @@ func (s *SQLiteStore) SetLastRead(ctx context.Context, ch domain.ChannelName, ev
 
 // ReadMemories implements Store.
 func (s *SQLiteStore) ReadMemories(ctx context.Context, id domain.InstanceID) ([]MemoryEntry, error) {
-	ctx, span := startSQLiteSpan(ctx, "store.sqlite.read_memories", attribute.String(observability.AttrInstanceID, string(id)))
+	ctx, span := s.startSpan(ctx, "store.sqlite.read_memories", attribute.String(observability.AttrInstanceID, string(id)))
 	defer span.End()
 
 	rows, err := s.db.QueryContext(ctx,
@@ -934,7 +954,7 @@ func (s *SQLiteStore) ReadMemories(ctx context.Context, id domain.InstanceID) ([
 
 // WriteMemory implements Store.
 func (s *SQLiteStore) WriteMemory(ctx context.Context, id domain.InstanceID, key, content string) error {
-	ctx, span := startSQLiteSpan(ctx, "store.sqlite.write_memory", attribute.String(observability.AttrInstanceID, string(id)))
+	ctx, span := s.startSpan(ctx, "store.sqlite.write_memory", attribute.String(observability.AttrInstanceID, string(id)))
 	defer span.End()
 
 	_, err := s.db.ExecContext(ctx,
@@ -953,7 +973,7 @@ func (s *SQLiteStore) WriteMemory(ctx context.Context, id domain.InstanceID, key
 
 // DeleteMemory implements Store.
 func (s *SQLiteStore) DeleteMemory(ctx context.Context, id domain.InstanceID, key string) error {
-	ctx, span := startSQLiteSpan(ctx, "store.sqlite.delete_memory", attribute.String(observability.AttrInstanceID, string(id)))
+	ctx, span := s.startSpan(ctx, "store.sqlite.delete_memory", attribute.String(observability.AttrInstanceID, string(id)))
 	defer span.End()
 
 	_, err := s.db.ExecContext(ctx, `DELETE FROM memories WHERE instance_id = ? AND key = ?`, string(id), key)
@@ -968,7 +988,7 @@ func (s *SQLiteStore) DeleteMemory(ctx context.Context, id domain.InstanceID, ke
 
 // ListPersonas implements Store.
 func (s *SQLiteStore) ListPersonas(ctx context.Context) ([]domain.Persona, error) {
-	ctx, span := startSQLiteSpan(ctx, "store.sqlite.list_personas")
+	ctx, span := s.startSpan(ctx, "store.sqlite.list_personas")
 	defer span.End()
 
 	rows, err := s.db.QueryContext(ctx,
@@ -1002,7 +1022,7 @@ func (s *SQLiteStore) ListPersonas(ctx context.Context) ([]domain.Persona, error
 
 // GetPersona implements Store.
 func (s *SQLiteStore) GetPersona(ctx context.Context, id string) (domain.Persona, error) {
-	ctx, span := startSQLiteSpan(ctx, "store.sqlite.get_persona", attribute.String("persona.id", id))
+	ctx, span := s.startSpan(ctx, "store.sqlite.get_persona", attribute.String("persona.id", id))
 	defer span.End()
 
 	var p domain.Persona
@@ -1025,7 +1045,7 @@ func (s *SQLiteStore) GetPersona(ctx context.Context, id string) (domain.Persona
 
 // SavePersona implements Store.
 func (s *SQLiteStore) SavePersona(ctx context.Context, p domain.Persona) error {
-	ctx, span := startSQLiteSpan(ctx, "store.sqlite.save_persona", attribute.String("persona.id", p.ID))
+	ctx, span := s.startSpan(ctx, "store.sqlite.save_persona", attribute.String("persona.id", p.ID))
 	defer span.End()
 
 	_, err := s.db.ExecContext(ctx,
@@ -1043,7 +1063,7 @@ func (s *SQLiteStore) SavePersona(ctx context.Context, p domain.Persona) error {
 
 // DeletePersonasByOrigin implements Store.
 func (s *SQLiteStore) DeletePersonasByOrigin(ctx context.Context, origin domain.PersonaOrigin) error {
-	ctx, span := startSQLiteSpan(ctx, "store.sqlite.delete_personas_by_origin", attribute.String("persona.origin", string(origin)))
+	ctx, span := s.startSpan(ctx, "store.sqlite.delete_personas_by_origin", attribute.String("persona.origin", string(origin)))
 	defer span.End()
 
 	_, err := s.db.ExecContext(ctx, `DELETE FROM personas WHERE origin = ?`, origin)
@@ -1060,7 +1080,7 @@ func (s *SQLiteStore) DeletePersonasByOrigin(ctx context.Context, origin domain.
 // generated personas and inserts the given replacements in a single
 // transaction.
 func (s *SQLiteStore) ReplaceGeneratedPersonas(ctx context.Context, personas []domain.Persona) error {
-	ctx, span := startSQLiteSpan(ctx, "store.sqlite.replace_generated_personas")
+	ctx, span := s.startSpan(ctx, "store.sqlite.replace_generated_personas")
 	defer span.End()
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -1097,7 +1117,7 @@ func (s *SQLiteStore) ReplaceGeneratedPersonas(ctx context.Context, personas []d
 
 // ResetMemories implements Store.
 func (s *SQLiteStore) ResetMemories(ctx context.Context) error {
-	ctx, span := startSQLiteSpan(ctx, "store.sqlite.reset_memories")
+	ctx, span := s.startSpan(ctx, "store.sqlite.reset_memories")
 	defer span.End()
 
 	_, err := s.db.ExecContext(ctx, `DELETE FROM memories`)
@@ -1112,7 +1132,7 @@ func (s *SQLiteStore) ResetMemories(ctx context.Context) error {
 
 // GetSessionActive implements Store.
 func (s *SQLiteStore) GetSessionActive(ctx context.Context) (string, error) {
-	ctx, span := startSQLiteSpan(ctx, "store.sqlite.get_session_active")
+	ctx, span := s.startSpan(ctx, "store.sqlite.get_session_active")
 	defer span.End()
 
 	value, err := getState[string](ctx, s.db, "session_active")
@@ -1127,7 +1147,7 @@ func (s *SQLiteStore) GetSessionActive(ctx context.Context) (string, error) {
 
 // SetSessionActive implements Store.
 func (s *SQLiteStore) SetSessionActive(ctx context.Context, value string) error {
-	ctx, span := startSQLiteSpan(ctx, "store.sqlite.set_session_active")
+	ctx, span := s.startSpan(ctx, "store.sqlite.set_session_active")
 	defer span.End()
 
 	if err := setState(ctx, s.db, "session_active", value); err != nil {
@@ -1141,7 +1161,7 @@ func (s *SQLiteStore) SetSessionActive(ctx context.Context, value string) error 
 
 // ClearSessionActive implements Store.
 func (s *SQLiteStore) ClearSessionActive(ctx context.Context) error {
-	ctx, span := startSQLiteSpan(ctx, "store.sqlite.clear_session_active")
+	ctx, span := s.startSpan(ctx, "store.sqlite.clear_session_active")
 	defer span.End()
 
 	_, err := s.db.ExecContext(ctx, `DELETE FROM state WHERE key = ?`, "session_active")
@@ -1156,7 +1176,7 @@ func (s *SQLiteStore) ClearSessionActive(ctx context.Context) error {
 
 // ListAutojoinChannels implements Store.
 func (s *SQLiteStore) ListAutojoinChannels(ctx context.Context) ([]domain.ChannelName, error) {
-	ctx, span := startSQLiteSpan(ctx, "store.sqlite.list_autojoin_channels")
+	ctx, span := s.startSpan(ctx, "store.sqlite.list_autojoin_channels")
 	defer span.End()
 
 	rows, err := s.db.QueryContext(ctx, `SELECT name FROM autojoin ORDER BY name`)
@@ -1189,7 +1209,7 @@ func (s *SQLiteStore) ListAutojoinChannels(ctx context.Context) ([]domain.Channe
 
 // SetAutojoinChannels implements Store.
 func (s *SQLiteStore) SetAutojoinChannels(ctx context.Context, channels []domain.ChannelName) error {
-	ctx, span := startSQLiteSpan(ctx, "store.sqlite.set_autojoin_channels")
+	ctx, span := s.startSpan(ctx, "store.sqlite.set_autojoin_channels")
 	defer span.End()
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -1224,7 +1244,7 @@ func (s *SQLiteStore) SetAutojoinChannels(ctx context.Context, channels []domain
 
 // Reset implements Store.
 func (s *SQLiteStore) Reset(ctx context.Context) error {
-	ctx, span := startSQLiteSpan(ctx, "store.sqlite.reset")
+	ctx, span := s.startSpan(ctx, "store.sqlite.reset")
 	defer span.End()
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -1261,9 +1281,8 @@ func (s *SQLiteStore) Reset(ctx context.Context) error {
 	return nil
 }
 
-func startSQLiteSpan(ctx context.Context, operation string, attrs ...attribute.KeyValue) (context.Context, trace.Span) {
-	// TODO(#34): DI tracer; remove otel.Tracer global read.
-	tracer := otel.Tracer("github.com/laney/modeloff/internal/store")
+func (s *SQLiteStore) startSpan(ctx context.Context, operation string, attrs ...attribute.KeyValue) (context.Context, trace.Span) {
+	tracer := s.tracerProvider.Tracer("github.com/laney/modeloff/internal/store")
 	attrs = append(attrs, attribute.String(observability.AttrOperation, operation))
 	ctx, span := tracer.Start(ctx, operation)
 	span.SetAttributes(attrs...)

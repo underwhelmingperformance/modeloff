@@ -201,9 +201,9 @@ func TestSQLiteStore_SaveAndGetChannel(t *testing.T) {
 }
 
 func TestSQLiteStore_SaveChannel_recordsSpan(t *testing.T) {
-	recorder := oteltest.InstallSpanRecorder(t)
+	recorder, provider := oteltest.NewSpanRecorder(t)
 	ctx := t.Context()
-	s := newTestStore(t)
+	s := newTestStore(t).WithTracerProvider(provider)
 
 	ch := domain.Channel{
 		Name:    "#observability",
