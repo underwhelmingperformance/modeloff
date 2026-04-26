@@ -744,7 +744,7 @@ func (s ChatScreen) handleQuitRequested(msg ui.QuitRequestedMsg) (ui.Model, tea.
 }
 
 func (s ChatScreen) switchChannel(ch domain.ChannelName) tea.Cmd {
-	_, exists := s.channelByName(ch)
+	_, exists := s.windowByName(ch)
 
 	return func() tea.Msg {
 		// Existing channels: pure frontend state transition. The
