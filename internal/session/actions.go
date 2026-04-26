@@ -296,9 +296,9 @@ func (s *Session) QuitAs(ctx context.Context, actor *domain.Instance, message st
 	channels := s.instanceChannelNames(actor)
 
 	s.propagateActorEvent(ctx, actor, actorEventConfig{
-		mutate: func(channel *domain.Channel) {
-			if m, ok := channel.Members.GetByInstance(actor); ok {
-				channel.Members.Remove(m)
+		mutate: func(window *domain.ChannelWindow) {
+			if m, ok := window.Members.GetByInstance(actor); ok {
+				window.Members.Remove(m)
 			}
 		},
 		build: func(ch domain.ChannelName) domain.PersistableEvent {
@@ -370,8 +370,8 @@ func (s *Session) ChangeNickAs(ctx context.Context, actor *domain.Instance, newN
 	actorID := actor.ID()
 
 	s.propagateActorEvent(ctx, actor, actorEventConfig{
-		mutate: func(channel *domain.Channel) {
-			channel.Members.RenameTo(actor, newNick)
+		mutate: func(window *domain.ChannelWindow) {
+			window.Members.RenameTo(actor, newNick)
 		},
 		build: func(ch domain.ChannelName) domain.PersistableEvent {
 			return domain.NickChange{

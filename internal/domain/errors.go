@@ -1,6 +1,17 @@
 package domain
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
+
+// ErrNotChannelWindow is returned by callers that expected a
+// `*ChannelWindow` but received a different concrete `Window`
+// kind (status or DM). It is a sentinel rather than a typed
+// struct because the carrying error already names the offending
+// row; this just lets callers branch on the "wrong kind" axis
+// with `errors.Is`.
+var ErrNotChannelWindow = errors.New("not a channel window")
 
 // UnknownCommandError indicates the user entered an unrecognised
 // slash command.

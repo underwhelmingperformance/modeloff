@@ -450,7 +450,7 @@ func (s *Session) loadChannelWindow(ctx context.Context, name domain.ChannelName
 	}
 
 	if channel.Kind != domain.KindChannel {
-		return nil, fmt.Errorf("expected channel, got kind %d for %q", channel.Kind, name)
+		return nil, fmt.Errorf("%w: kind %d for %q", domain.ErrNotChannelWindow, channel.Kind, name)
 	}
 
 	cw := domain.NewChannelWindow(channel.Name, channel.Created)
@@ -1856,19 +1856,23 @@ func (s *Session) persistAndEmitUIOnly(ctx context.Context, ch domain.ChannelNam
 // actorEventConfig configures a single call to propagateActorEvent.
 //
 // `build` produces the per-channel event. `mutate`, when non-nil,
-// is applied to the loaded channel before persistence — used for
-// quit (remove the actor from `Members`) and nick change (rename
-// the snapshot in `Members`). When `mutate` is nil the channel is
-// not loaded; this fits the user's `Quit` path, which intentionally
-// leaves channel members alone for `cleanupUncleanShutdown` to
-// reconcile on the next start. `storeOnly` skips UI emission and
-// is used by the user's `Quit` because the application is exiting
-// and no UI is listening. `afterEach` is run per channel after the
-// event is recorded, for caller-specific side effects (e.g.
+// is applied to the loaded `*ChannelWindow` before persistence —
+// used for quit (remove the actor from `Members`) and nick change
+// (rename the snapshot in `Members`). DM and status windows in
+// the iteration set are skipped by `mutate` because those kinds
+// don't carry a `Members` list; the per-target event is still
+// emitted so the per-channel intersection rule reaches them. When
+// `mutate` is nil the window is not loaded at all; this fits the
+// user's `Quit` path, which intentionally leaves channel members
+// alone for `cleanupUncleanShutdown` to reconcile on the next
+// start. `storeOnly` skips UI emission and is used by the user's
+// `Quit` because the application is exiting and no UI is
+// listening. `afterEach` is run per channel after the event is
+// recorded, for caller-specific side effects (e.g.
 // `forgetUserMode` for the user's quit).
 type actorEventConfig struct {
 	storeOnly bool
-	mutate    func(*domain.Channel)
+	mutate    func(*domain.ChannelWindow)
 	build     func(domain.ChannelName) domain.PersistableEvent
 	afterEach func(ctx context.Context, ch domain.ChannelName)
 }
@@ -1891,25 +1895,31 @@ type actorEventConfig struct {
 func (s *Session) propagateActorEvent(ctx context.Context, actor *domain.Instance, cfg actorEventConfig) {
 	for _, name := range s.instanceChannelNames(actor) {
 		if cfg.mutate != nil {
-			channel, err := s.loadChannel(ctx, name)
+			window, err := s.loadChannelWindow(ctx, name)
 			if err != nil {
-				slog.Default().ErrorContext(ctx, "propagate actor event: load channel",
-					"instance_id", string(actor.ID()),
-					"channel", name,
-					"error", err,
-				)
+				// Status and DM rows surface as a typed "expected
+				// channel, got kind" error from `loadChannelWindow`.
+				// They have no `Members` to mutate, so skip the
+				// state update for those kinds and let the event
+				// emission below carry the intersection-rule
+				// delivery on its own.
+				if !errors.Is(err, domain.ErrNotChannelWindow) {
+					slog.Default().ErrorContext(ctx, "propagate actor event: load channel",
+						"instance_id", string(actor.ID()),
+						"channel", name,
+						"error", err,
+					)
+				}
+			} else {
+				cfg.mutate(window)
 
-				continue
-			}
-
-			cfg.mutate(&channel)
-
-			if err := s.persistChannel(ctx, channel); err != nil {
-				slog.Default().ErrorContext(ctx, "propagate actor event: save channel",
-					"instance_id", string(actor.ID()),
-					"channel", name,
-					"error", err,
-				)
+				if err := s.persistChannelWindow(ctx, window); err != nil {
+					slog.Default().ErrorContext(ctx, "propagate actor event: save channel",
+						"instance_id", string(actor.ID()),
+						"channel", name,
+						"error", err,
+					)
+				}
 			}
 		}
 
