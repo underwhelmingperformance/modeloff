@@ -2115,11 +2115,14 @@ func (s *Session) saveAutojoinList(ctx context.Context) error {
 	return s.store.SetAutojoinChannels(ctx, s.persistableAutojoinChannels())
 }
 
-// persistableAutojoinChannels returns the user's current channel set
-// minus the per-session status channel. The status channel is
+// persistableAutojoinChannels returns the user's current channel
+// set restricted to `KindChannel` entries. The status channel is
 // re-created by Connect/openStatusChannel on every startup, so
-// persisting it would produce a spurious JoinAs("&modeloff") on the
-// next session.
+// persisting it would produce a spurious JoinAs("&modeloff") on
+// the next session. DM windows are pure UI affordances — they
+// hold no shared state to rejoin and would resolve to a fake
+// `#`-channel if `JoinAutojoinChannels` ever called `JoinAs`
+// with their `InstanceID`-shaped name.
 func (s *Session) persistableAutojoinChannels() []domain.ChannelName {
 	var channels []domain.ChannelName
 
@@ -2129,7 +2132,7 @@ func (s *Session) persistableAutojoinChannels() []domain.ChannelName {
 	}
 
 	for pair := userChannels.Oldest(); pair != nil; pair = pair.Next() {
-		if pair.Key == domain.StatusChannelName {
+		if domain.InferChannelKind(pair.Key) != domain.KindChannel {
 			continue
 		}
 

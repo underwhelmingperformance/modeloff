@@ -487,6 +487,38 @@ func TestSession_JoinAutojoinChannels_emits_join_events(t *testing.T) {
 	_ = drainEventSkipping[domain.ModeChange](t, sess)
 }
 
+// TestSession_persistableAutojoinChannels_excludes_dms guards the
+// invariant that DMs never reach the autojoin set. DMs are
+// addressed by `InstanceID` and have no channel-shaped name; if
+// one slipped through, `JoinAutojoinChannels` would call
+// `JoinAs("inst-...")` on startup and create a fake `#`-channel.
+func TestSession_persistableAutojoinChannels_excludes_dms(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := t.Context()
+
+	botty := seedInstance(t, s, instanceSpec{Nick: "botty", ModelID: "test/model"})
+
+	require.NoError(t, sess.Join(ctx, "#general"))
+	_, extras := drainUntilMatched(t, sess,
+		matchEvent[domain.Join](),
+		matchEvent[domain.NamesReplyEvent](),
+		matchEvent[domain.ModeChange](),
+		matchEvent[domain.DispatchDoneEvent](),
+	)
+	require.Empty(t, extras)
+
+	_, _, err := sess.OpenDM(ctx, botty)
+	require.NoError(t, err)
+
+	// Trigger another autojoin save so any DM leakage in the
+	// user's `Channels()` map would be persisted.
+	require.NoError(t, sess.Join(ctx, "#dev"))
+
+	got, err := s.ListAutojoinChannels(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []domain.ChannelName{"#dev", "#general"}, got)
+}
+
 func TestSession_Leave(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
