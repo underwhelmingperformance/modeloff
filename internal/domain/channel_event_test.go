@@ -157,10 +157,18 @@ func TestChannelEvent_JSON_round_trip(t *testing.T) {
 			},
 		},
 		{
-			name: "list output",
-			event: domain.ChannelList{
-				Channels: []domain.Channel{{Name: "#general"}, {Name: "#random"}},
-				At:       ts,
+			name: "list reply",
+			event: domain.ListReply{
+				Channel: "#general",
+				Members: 3,
+				Topic:   "welcome",
+				At:      ts,
+			},
+		},
+		{
+			name: "list end",
+			event: domain.ListEnd{
+				At: ts,
 			},
 		},
 		{

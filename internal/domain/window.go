@@ -39,6 +39,16 @@ type Window interface {
 	DisplayName() string
 }
 
+// ChannelDirectoryEntry is one row in the result of `/list`. It
+// holds just the fields a `ListReply` needs to be assembled
+// from; clients construct the persistable event around their
+// own `At` timestamp.
+type ChannelDirectoryEntry struct {
+	Channel ChannelName
+	Members int
+	Topic   string
+}
+
 // WindowKey builds a placeholder `Window` suitable only for
 // keyed lookup in a sorted set whose comparator reads
 // `Name()` and `Kind()`. The returned value carries no per-kind

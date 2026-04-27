@@ -135,8 +135,11 @@ func renderChannelEvent[C command.KindProvider](
 	case domain.Whois:
 		return wrap.Render(renderWhoisEvent(e))
 
-	case domain.ChannelList:
-		return wrap.Render(renderChannelListEvent(e))
+	case domain.ListReply:
+		return wrap.Render(renderListReplyEvent(e))
+
+	case domain.ListEnd:
+		return wrap.Render(theme.SystemEvent.Render("*** End of /list"))
 
 	case domain.PersonasList:
 		return wrap.Render(renderPersonasListEvent(e))
@@ -240,22 +243,13 @@ func whoisFields(w domain.Whois) (domain.Nick, domain.ModelID, string, []domain.
 	return w.Instance.Nick(), w.Instance.ModelID, w.Instance.Persona(), legacyChannels
 }
 
-func renderChannelListEvent(cl domain.ChannelList) string {
-	if len(cl.Channels) == 0 {
-		return theme.SystemEvent.Render("*** no channels")
+func renderListReplyEvent(r domain.ListReply) string {
+	line := fmt.Sprintf("%s (%d)", r.Channel, r.Members)
+	if r.Topic != "" {
+		line += " — " + r.Topic
 	}
 
-	var parts []string
-	for _, ch := range cl.Channels {
-		line := string(ch.Name)
-		if ch.Topic != "" {
-			line += " — " + ch.Topic
-		}
-
-		parts = append(parts, theme.SystemEvent.Render("*** "+line))
-	}
-
-	return strings.Join(parts, "\n")
+	return theme.SystemEvent.Render("*** " + line)
 }
 
 func renderPersonasListEvent(pl domain.PersonasList) string {

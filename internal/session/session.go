@@ -785,6 +785,34 @@ func (s *Session) ListChannels(ctx context.Context) ([]domain.Channel, error) {
 	return s.loadChannels(ctx)
 }
 
+// DirectoryChannels returns the public channel directory for
+// `/list`. Filters to `*ChannelWindow` only — DMs and the
+// status window are not in the directory. The returned entries
+// are snapshots of name, member count, and topic; callers turn
+// them into per-row `domain.ListReply` events themselves.
+func (s *Session) DirectoryChannels(ctx context.Context) ([]domain.ChannelDirectoryEntry, error) {
+	windows, err := s.store.ListWindows(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list windows: %w", err)
+	}
+
+	entries := make([]domain.ChannelDirectoryEntry, 0, len(windows))
+	for _, w := range windows {
+		cw, ok := w.(*domain.ChannelWindow)
+		if !ok {
+			continue
+		}
+
+		entries = append(entries, domain.ChannelDirectoryEntry{
+			Channel: cw.Name(),
+			Members: cw.Members.Len(),
+			Topic:   cw.Topic,
+		})
+	}
+
+	return entries, nil
+}
+
 // Instances returns an iterator over every known model instance.
 // The UI's tab-completion sources call this to offer `/invite`,
 // `/msg`, `/whois`, and `/add-model` suggestions across the full

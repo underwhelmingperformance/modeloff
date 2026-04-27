@@ -114,29 +114,56 @@ func (c PartCommand) RunTool(ctx context.Context, tc session.ToolContext) sessio
 // ListCommand represents `/list`.
 type ListCommand struct{}
 
-// Run implements Command.
+// Run implements Command. The user-side `/list` queries the
+// session for the channel directory and returns the entries to
+// the chat-screen handler, which builds and persists one
+// `domain.ListReply` per entry plus a closing `ListEnd`.
 func (ListCommand) Run(rc Context) tea.Cmd {
 	return func() tea.Msg {
-		channels, err := rc.Session.ListChannels(rc.Ctx)
+		entries, err := rc.Session.DirectoryChannels(rc.Ctx)
 		if err != nil {
 			return errorEvent("list", err)
 		}
 
-		return ListResult{Channels: channels}
+		return ListResult{Entries: entries}
 	}
 }
 
-// RunTool implements ToolCommand.
+// RunTool implements ToolCommand. Models invoke `/list` as a
+// tool to enumerate the public channel directory. The reply
+// shape mirrors the user-side path: per-entry `domain.ListReply`
+// events are persisted into the model's invocation channel so
+// the result is durable in the events log, and the same data
+// is returned via `ToolResultPayload` for the immediate-next-
+// turn context.
 func (ListCommand) RunTool(ctx context.Context, tc session.ToolContext) session.ToolResultPayload {
-	channels, err := tc.Session.ListChannels(ctx)
+	entries, err := tc.Session.DirectoryChannels(ctx)
 	if err != nil {
 		return session.ToolResultPayload{OK: false, Error: err.Error()}
+	}
+
+	now := time.Now()
+	for _, e := range entries {
+		reply := domain.ListReply{
+			Channel: e.Channel,
+			Members: e.Members,
+			Topic:   e.Topic,
+			At:      now,
+		}
+
+		if _, logErr := tc.Session.LogEvent(ctx, tc.Channel, reply); logErr != nil {
+			return session.ToolResultPayload{OK: false, Error: logErr.Error()}
+		}
+	}
+
+	if _, logErr := tc.Session.LogEvent(ctx, tc.Channel, domain.ListEnd{At: now}); logErr != nil {
+		return session.ToolResultPayload{OK: false, Error: logErr.Error()}
 	}
 
 	return session.ToolResultPayload{
 		OK:      true,
 		Summary: "listed known channels",
-		Data:    channels,
+		Data:    entries,
 	}
 }
 

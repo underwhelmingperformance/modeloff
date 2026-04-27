@@ -339,9 +339,21 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		)
 
 	case chatcmd.ListResult:
-		return s, s.logAndShow(domain.ChannelList{
-			Channels: msg.Channels, At: time.Now(),
-		})
+		now := time.Now()
+		cmds := make([]tea.Cmd, 0, len(msg.Entries)+1)
+
+		for _, entry := range msg.Entries {
+			cmds = append(cmds, s.logAndShow(domain.ListReply{
+				Channel: entry.Channel,
+				Members: entry.Members,
+				Topic:   entry.Topic,
+				At:      now,
+			}))
+		}
+
+		cmds = append(cmds, s.logAndShow(domain.ListEnd{At: now}))
+
+		return s, tea.Sequence(cmds...)
 
 	case chatcmd.UsageError:
 		return s, s.logAndShow(domain.UsageHint{

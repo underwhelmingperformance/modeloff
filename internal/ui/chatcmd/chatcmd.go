@@ -76,9 +76,11 @@ type TopicInfoResult struct {
 	Window *domain.ChannelWindow
 }
 
-// ListResult carries the channel list for a /list reply.
+// ListResult carries the channel directory for a `/list` reply.
+// The chat-screen handler iterates the entries and builds one
+// `domain.ListReply` per row plus a closing `ListEnd`.
 type ListResult struct {
-	Channels []domain.Channel
+	Entries []domain.ChannelDirectoryEntry
 }
 
 // UsageError indicates a command was invoked incorrectly. Usage

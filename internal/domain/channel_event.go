@@ -61,7 +61,8 @@ var (
 	_ PersistableEvent = TopicInfo{}
 	_ PersistableEvent = Help{}
 	_ PersistableEvent = Whois{}
-	_ PersistableEvent = ChannelList{}
+	_ PersistableEvent = ListReply{}
+	_ PersistableEvent = ListEnd{}
 	_ PersistableEvent = CommandError{}
 	_ PersistableEvent = UsageHint{}
 	_ PersistableEvent = SystemNotice{}
@@ -295,17 +296,36 @@ func (e Whois) persistableEventTime() time.Time { return e.At }
 // ModelVisible implements PersistableEvent.
 func (Whois) ModelVisible() bool { return false }
 
-// ChannelList records /list output.
-type ChannelList struct {
-	Channels []Channel `json:"channels"`
-	At       time.Time `json:"at"`
+// ListReply records a single per-channel entry in a `/list`
+// response, shaped after IRC's RPL_LIST numeric. There is no
+// `Target` field — RPL_LIST is a server-to-client reply that
+// carries no addressable target on the wire; the persisting
+// client picks where to log each reply.
+type ListReply struct {
+	Channel ChannelName `json:"channel"`
+	Members int         `json:"members"`
+	Topic   string      `json:"topic,omitempty"`
+	At      time.Time   `json:"at"`
 }
 
-func (ChannelList) persistableEvent()                 {}
-func (e ChannelList) persistableEventTime() time.Time { return e.At }
+func (ListReply) persistableEvent()                 {}
+func (e ListReply) persistableEventTime() time.Time { return e.At }
 
 // ModelVisible implements PersistableEvent.
-func (ChannelList) ModelVisible() bool { return false }
+func (ListReply) ModelVisible() bool { return false }
+
+// ListEnd marks the close of a `/list` response, shaped after
+// IRC's end-of-list numeric (323). Carries no fields beyond the
+// timestamp — the wire numeric has none either.
+type ListEnd struct {
+	At time.Time `json:"at"`
+}
+
+func (ListEnd) persistableEvent()                 {}
+func (e ListEnd) persistableEventTime() time.Time { return e.At }
+
+// ModelVisible implements PersistableEvent.
+func (ListEnd) ModelVisible() bool { return false }
 
 // CommandError records a command error.
 type CommandError struct {
@@ -398,7 +418,9 @@ func EventTarget(e PersistableEvent) ChannelName {
 		return v.Target
 	case Whois:
 		return v.Target
-	case ChannelList:
+	case ListReply:
+		return ""
+	case ListEnd:
 		return ""
 	case CommandError:
 		return v.Target
@@ -441,8 +463,10 @@ func EventType(e PersistableEvent) string {
 		return "help"
 	case Whois:
 		return "whois"
-	case ChannelList:
-		return "list"
+	case ListReply:
+		return "list_reply"
+	case ListEnd:
+		return "list_end"
 	case CommandError:
 		return "command_error"
 	case UsageHint:
@@ -526,8 +550,11 @@ func UnmarshalPersistableEvent(b []byte) (PersistableEvent, error) {
 	case "whois":
 		var e Whois
 		return e, unmarshal(&e)
-	case "list":
-		var e ChannelList
+	case "list_reply":
+		var e ListReply
+		return e, unmarshal(&e)
+	case "list_end":
+		var e ListEnd
 		return e, unmarshal(&e)
 	case "command_error":
 		var e CommandError
@@ -561,7 +588,8 @@ func (NickChange) domainEvent()   {}
 func (TopicInfo) domainEvent()    {}
 func (Help) domainEvent()         {}
 func (Whois) domainEvent()        {}
-func (ChannelList) domainEvent()  {}
+func (ListReply) domainEvent()    {}
+func (ListEnd) domainEvent()      {}
 func (CommandError) domainEvent() {}
 func (UsageHint) domainEvent()    {}
 func (SystemNotice) domainEvent() {}

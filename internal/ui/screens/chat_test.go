@@ -455,7 +455,7 @@ func TestChatScreen_list_empty(t *testing.T) {
 	tm.WaitFor("Welcome to modeloff")
 
 	tm.Submit("/list")
-	tm.WaitFor("no channels")
+	tm.WaitFor("End of /list")
 }
 
 func TestChatScreen_add_model_command(t *testing.T) {

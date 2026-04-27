@@ -1043,17 +1043,19 @@ func TestRenderLine_application_feedback(t *testing.T) {
 			},
 		},
 		{
-			"channel_list",
-			domain.StoredEvent{Event: domain.ChannelList{Channels: []domain.Channel{
-				{Name: "#general"},
-				{Name: "#random", Topic: "cool"},
-			}, At: now}},
-			[]string{"*** #general", "*** #random — cool"},
+			"list_reply",
+			domain.StoredEvent{Event: domain.ListReply{Channel: "#general", Members: 3, At: now}},
+			[]string{"*** #general (3)"},
 		},
 		{
-			"channel_list_empty",
-			domain.StoredEvent{Event: domain.ChannelList{At: now}},
-			[]string{"*** no channels"},
+			"list_reply_with_topic",
+			domain.StoredEvent{Event: domain.ListReply{Channel: "#random", Members: 5, Topic: "cool", At: now}},
+			[]string{"*** #random (5) — cool"},
+		},
+		{
+			"list_end",
+			domain.StoredEvent{Event: domain.ListEnd{At: now}},
+			[]string{"*** End of /list"},
 		},
 		{
 			"api_key_saved",

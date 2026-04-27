@@ -175,6 +175,10 @@ func NewSQLiteStore(ctx context.Context, db *sql.DB) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("drop legacy instance tables: %w", err)
 	}
 
+	if err := s.dropLegacyEventTypes(ctx); err != nil {
+		return nil, fmt.Errorf("drop legacy event types: %w", err)
+	}
+
 	if _, err := db.Exec(schema); err != nil {
 		return nil, fmt.Errorf("create schema: %w", err)
 	}
@@ -251,6 +255,46 @@ func (s *SQLiteStore) resolveInstance(id domain.InstanceID) *domain.Instance {
 	defer s.instancesMu.RUnlock()
 
 	return s.instances[id]
+}
+
+// dropLegacyEventTypes detects the legacy `list` discriminator
+// in the `events` table (the pre-`ListReply`/`ListEnd` shape)
+// and drops the events table when found. Pre-release reset, not
+// a data-preserving migration.
+func (s *SQLiteStore) dropLegacyEventTypes(ctx context.Context) error {
+	return s.inSpan(ctx, "store.sqlite.migrate_events_v2", nil, func(ctx context.Context, span trace.Span) error {
+		var detected bool
+		err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM events WHERE type = 'list' LIMIT 1)`).Scan(&detected)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil
+			}
+
+			// Table absent on first start.
+			if strings.Contains(err.Error(), "no such table") {
+				return nil
+			}
+
+			return fmt.Errorf("probe legacy events: %w", err)
+		}
+
+		span.SetAttributes(attribute.Bool("modeloff.migration.detected", detected))
+
+		if !detected {
+			return nil
+		}
+
+		if _, err := s.db.ExecContext(ctx, `DROP TABLE IF EXISTS events`); err != nil {
+			return fmt.Errorf("drop legacy events: %w", err)
+		}
+
+		slog.Default().WarnContext(ctx,
+			"modeloff events table dropped; legacy `list` event rows present",
+			"component", "store.sqlite",
+		)
+
+		return nil
+	})
 }
 
 // dropLegacyInstanceTables detects the nick-keyed v1 shape of the
