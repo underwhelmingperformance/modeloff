@@ -396,30 +396,6 @@ func (s *Session) userInChannel(ch domain.ChannelName) bool {
 	return ok
 }
 
-// persistChannel writes a channel to the store with the user
-// stripped from the member list. The supplied channel is not
-// mutated: a shallow clone of the Members list is built without
-// the user entry. The user is an ephemeral session actor and is
-// never persisted; loadChannel injects them back on read.
-func (s *Session) persistChannel(ctx context.Context, ch domain.Channel) error {
-	clone := ch
-	clone.Members = cloneMembersWithout(ch.Members, s.user)
-
-	w, err := domain.WindowFromChannel(clone, func(id domain.InstanceID) *domain.Instance {
-		resolved, rErr := s.store.GetInstanceByID(ctx, id)
-		if rErr != nil {
-			return nil
-		}
-
-		return resolved
-	})
-	if err != nil {
-		return fmt.Errorf("project channel %q to window: %w", clone.Name, err)
-	}
-
-	return s.store.SaveWindow(ctx, w)
-}
-
 // loadChannel reads a window from the store as the legacy
 // `domain.Channel` projection and re-injects the user as a
 // member when the session records the user as being in that
@@ -460,28 +436,46 @@ func (s *Session) loadChannels(ctx context.Context) ([]domain.Channel, error) {
 }
 
 // loadChannelWindow reads an addressable `#`-channel as its typed
-// `*ChannelWindow`. The user is injected as a member when the
-// session records them as being in the channel, mirroring
-// `loadChannel`. Returns an error if the row exists but is not a
-// channel (status / DM) — JoinAs and the other channel-only paths
-// rely on this being a typed guard.
+// `*ChannelWindow`, with the user re-injected as a member when
+// the session records them as being in the channel. Returns
+// `domain.ErrNotChannelWindow` if the row exists but is not a
+// channel (status / DM) — channel-only callers rely on this as
+// a typed guard.
 func (s *Session) loadChannelWindow(ctx context.Context, name domain.ChannelName) (*domain.ChannelWindow, error) {
-	channel, err := s.loadChannel(ctx, name)
+	w, err := s.store.GetWindow(ctx, name)
 	if err != nil {
 		return nil, err
 	}
 
-	if channel.Kind != domain.KindChannel {
-		return nil, fmt.Errorf("%w: kind %d for %q", domain.ErrNotChannelWindow, channel.Kind, name)
+	cw, ok := w.(*domain.ChannelWindow)
+	if !ok {
+		return nil, fmt.Errorf("%w: kind %d for %q", domain.ErrNotChannelWindow, w.Kind(), name)
 	}
 
-	cw := domain.NewChannelWindow(channel.Name, channel.Created)
-	cw.Topic = channel.Topic
-	cw.TopicSetBy = channel.TopicSetBy
-	cw.TopicSetAt = channel.TopicSetAt
-	cw.Members = channel.Members
+	s.injectUserIfChannelMember(ctx, cw)
 
 	return cw, nil
+}
+
+// injectUserIfChannelMember adds the user to a `*ChannelWindow`'s
+// member list when the session records them as in that channel.
+// The user is an ephemeral session actor and is never persisted;
+// `persistChannelWindow` strips them on save and this helper
+// adds them back on load.
+func (s *Session) injectUserIfChannelMember(_ context.Context, cw *domain.ChannelWindow) {
+	if !s.userInChannel(cw.Name()) {
+		return
+	}
+
+	if cw.Members.HasInstance(s.user) {
+		return
+	}
+
+	cw.Members.Add(s.user)
+
+	if mode, ok := s.userModes[cw.Name()]; ok && mode != domain.ModeNone {
+		cw.Members.SetMode(s.user, mode)
+	}
 }
 
 // persistChannelWindow saves a `*ChannelWindow` through the
@@ -940,7 +934,7 @@ func (s *Session) attachInstanceToChannel(
 	inst *domain.Instance,
 	by *domain.Instance,
 ) error {
-	channel, err := s.loadChannel(ctx, ch)
+	window, err := s.loadChannelWindow(ctx, ch)
 	if err != nil {
 		return fmt.Errorf("get channel: %w", err)
 	}
@@ -955,12 +949,12 @@ func (s *Session) attachInstanceToChannel(
 		return fmt.Errorf("save instance: %w", err)
 	}
 
-	isNew := !channel.Members.HasInstance(inst)
+	isNew := !window.Members.HasInstance(inst)
 	if isNew {
-		channel.Members.Add(inst)
+		window.Members.Add(inst)
 	}
 
-	if err := s.persistChannel(ctx, channel); err != nil {
+	if err := s.persistChannelWindow(ctx, window); err != nil {
 		return fmt.Errorf("save channel: %w", err)
 	}
 
@@ -977,9 +971,9 @@ func (s *Session) attachInstanceToChannel(
 	})
 
 	if isNew {
-		channel.Members.SetMode(inst, domain.ModeVoice)
+		window.Members.SetMode(inst, domain.ModeVoice)
 
-		if err := s.persistChannel(ctx, channel); err != nil {
+		if err := s.persistChannelWindow(ctx, window); err != nil {
 			return fmt.Errorf("save channel after mode: %w", err)
 		}
 
@@ -1010,7 +1004,7 @@ func (s *Session) Kick(ctx context.Context, ch domain.ChannelName, nick domain.N
 	target, err := s.ResolveNick(ctx, nick)
 	if err != nil {
 		if errors.Is(err, store.ErrNoSuchNick) {
-			if _, chErr := s.loadChannel(ctx, ch); chErr != nil {
+			if _, chErr := s.loadChannelWindow(ctx, ch); chErr != nil {
 				return fmt.Errorf("get channel: %w", chErr)
 			}
 
@@ -1302,23 +1296,30 @@ func (s *Session) Poke(ctx context.Context) error {
 	ctx, span := s.startSpan(ctx, "session.poke", attribute.String(observability.AttrOperation, "session.poke"))
 	defer span.End()
 
-	channels, err := s.loadChannels(ctx)
+	windows, err := s.store.ListWindows(ctx)
 	if err != nil {
 		setSpanError(span, err, observability.ErrorKindStore)
-		return fmt.Errorf("list channels: %w", err)
+		return fmt.Errorf("list windows: %w", err)
 	}
 
 	now := s.now()
 
-	for _, ch := range channels {
+	channelCount := 0
+	for _, w := range windows {
+		if _, ok := w.(*domain.ChannelWindow); !ok {
+			continue
+		}
+
 		s.emit(ctx, domain.PokeEvent{
-			Channel: ch.Name,
+			Channel: w.Name(),
 			At:      now,
 		})
+
+		channelCount++
 	}
 
 	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-	logger.DebugContext(ctx, "scheduled poke dispatch", "channels", len(channels))
+	logger.DebugContext(ctx, "scheduled poke dispatch", "channels", channelCount)
 
 	return nil
 }
@@ -1799,10 +1800,10 @@ func (s *Session) instanceChannelNames(inst *domain.Instance) []domain.ChannelNa
 	return names
 }
 
-func (s *Session) instancesForChannel(_ context.Context, channel domain.Channel) ([]*domain.Instance, error) {
+func (s *Session) instancesForChannelWindow(window *domain.ChannelWindow) []*domain.Instance {
 	var instances []*domain.Instance
 
-	for _, m := range channel.Members.All() {
+	for _, m := range window.Members.All() {
 		// The human user has no ModelID and is never dispatched to.
 		if !m.Instance.IsModel() {
 			continue
@@ -1811,7 +1812,7 @@ func (s *Session) instancesForChannel(_ context.Context, channel domain.Channel)
 		instances = append(instances, m.Instance)
 	}
 
-	return instances, nil
+	return instances
 }
 
 // resolveDispatchRecipients picks the model instances that should
@@ -1851,12 +1852,12 @@ func (s *Session) resolveDispatchRecipients(ctx context.Context, target domain.C
 		return []*domain.Instance{inst}, nil
 
 	case domain.KindChannel:
-		channel, err := s.loadChannel(ctx, target)
+		window, err := s.loadChannelWindow(ctx, target)
 		if err != nil {
 			return nil, err
 		}
 
-		return s.instancesForChannel(ctx, channel)
+		return s.instancesForChannelWindow(window), nil
 	}
 
 	return nil, nil

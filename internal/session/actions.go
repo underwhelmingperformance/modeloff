@@ -223,27 +223,27 @@ func (s *Session) PartAs(ctx context.Context, actor *domain.Instance, ch domain.
 	)
 	defer endSpan(span, &retErr, observability.ErrorKindStore)
 
-	channel, err := s.loadChannel(ctx, ch)
+	window, err := s.loadChannelWindow(ctx, ch)
 	if err != nil {
-		return fmt.Errorf("channel not found: %w", err)
-	}
+		if errors.Is(err, domain.ErrNotChannelWindow) {
+			return errWithKind(fmt.Errorf("cannot part %s", ch), observability.ErrorKindValidation)
+		}
 
-	if channel.Kind == domain.KindStatus {
-		return errWithKind(fmt.Errorf("cannot part status channel"), observability.ErrorKindValidation)
+		return fmt.Errorf("channel not found: %w", err)
 	}
 
 	isUser := actor == s.user
 
 	span.SetAttributes(attribute.String(observability.AttrInstanceID, string(actor.ID())))
 
-	m, ok := channel.Members.GetByInstance(actor)
+	m, ok := window.Members.GetByInstance(actor)
 	if !ok {
 		return nil
 	}
 
-	channel.Members.Remove(m)
+	window.Members.Remove(m)
 
-	if err := s.persistChannel(ctx, channel); err != nil {
+	if err := s.persistChannelWindow(ctx, window); err != nil {
 		return fmt.Errorf("save channel: %w", err)
 	}
 
@@ -478,20 +478,20 @@ func (s *Session) SetTopicAs(ctx context.Context, actor *domain.Instance, ch dom
 
 	now := s.now()
 
-	channel, err := s.loadChannel(ctx, ch)
+	window, err := s.loadChannelWindow(ctx, ch)
 	if err != nil {
+		if errors.Is(err, domain.ErrNotChannelWindow) {
+			return errWithKind(fmt.Errorf("cannot set topic on a direct message"), observability.ErrorKindValidation)
+		}
+
 		return fmt.Errorf("get channel: %w", err)
 	}
 
-	if channel.Kind == domain.KindDM {
-		return errWithKind(fmt.Errorf("cannot set topic on a direct message"), observability.ErrorKindValidation)
-	}
+	window.Topic = topic
+	window.TopicSetBy = actorNick
+	window.TopicSetAt = now
 
-	channel.Topic = topic
-	channel.TopicSetBy = actorNick
-	channel.TopicSetAt = now
-
-	if err := s.persistChannel(ctx, channel); err != nil {
+	if err := s.persistChannelWindow(ctx, window); err != nil {
 		return fmt.Errorf("save channel: %w", err)
 	}
 
@@ -519,26 +519,26 @@ func (s *Session) KickAs(ctx context.Context, actor, target *domain.Instance, ch
 	)
 	defer endSpan(span, &retErr, observability.ErrorKindStore)
 
-	channel, err := s.loadChannel(ctx, ch)
+	window, err := s.loadChannelWindow(ctx, ch)
 	if err != nil {
-		return fmt.Errorf("get channel: %w", err)
-	}
+		if errors.Is(err, domain.ErrNotChannelWindow) {
+			return errWithKind(fmt.Errorf("cannot kick from a direct message"), observability.ErrorKindValidation)
+		}
 
-	if channel.Kind == domain.KindDM {
-		return errWithKind(fmt.Errorf("cannot kick from a direct message"), observability.ErrorKindValidation)
+		return fmt.Errorf("get channel: %w", err)
 	}
 
 	span.SetAttributes(attribute.String(observability.AttrInstanceID, string(target.ID())))
 
-	if !channel.Members.HasInstance(target) {
+	if !window.Members.HasInstance(target) {
 		return nil
 	}
 
-	if m, ok := channel.Members.GetByInstance(target); ok {
-		channel.Members.Remove(m)
+	if m, ok := window.Members.GetByInstance(target); ok {
+		window.Members.Remove(m)
 	}
 
-	if err := s.persistChannel(ctx, channel); err != nil {
+	if err := s.persistChannelWindow(ctx, window); err != nil {
 		return fmt.Errorf("save channel: %w", err)
 	}
 
