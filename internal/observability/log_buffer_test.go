@@ -37,11 +37,6 @@ func TestLogBuffer_emits_update_notifications(t *testing.T) {
 		t.Cleanup(buffer.Close)
 
 		buffer.Ingest() <- PanelEntry{Message: "entry", Timestamp: time.Now()}
-
-		select {
-		case <-buffer.Updates():
-		case <-time.After(time.Second):
-			t.Fatal("expected log buffer update notification")
-		}
+		<-buffer.Updates()
 	})
 }

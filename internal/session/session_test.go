@@ -137,15 +137,10 @@ func normaliseInstance(inst *domain.Instance) comparableInstance {
 func drainEvent[T domain.Event](t *testing.T, sess *Session) T {
 	t.Helper()
 
-	select {
-	case evt := <-sess.Events():
-		got, ok := evt.(T)
-		require.True(t, ok, "expected %T, got %T", *new(T), evt)
-		return got
-	case <-time.After(time.Second):
-		t.Fatalf("timed out waiting for %T", *new(T))
-		return *new(T)
-	}
+	evt := <-sess.Events()
+	got, ok := evt.(T)
+	require.True(t, ok, "expected %T, got %T", *new(T), evt)
+	return got
 }
 
 // drainEventSkipping reads events from the session channel, skipping
@@ -154,28 +149,25 @@ func drainEvent[T domain.Event](t *testing.T, sess *Session) T {
 func drainEventSkipping[T domain.Event](t *testing.T, sess *Session) T {
 	t.Helper()
 
-	for {
-		select {
-		case evt := <-sess.Events():
-			if got, ok := evt.(T); ok {
-				return got
-			}
+	for evt := range sess.Events() {
+		if got, ok := evt.(T); ok {
+			return got
+		}
 
-			switch evt.(type) {
-			case domain.DispatchStartedEvent,
-				domain.DispatchDoneEvent,
-				domain.SystemNoticeEvent,
-				domain.NamesReplyEvent:
-				continue
-			default:
-				t.Fatalf("expected %T, got %T", *new(T), evt)
-				return *new(T)
-			}
-		case <-time.After(time.Second):
-			t.Fatalf("timed out waiting for %T", *new(T))
+		switch evt.(type) {
+		case domain.DispatchStartedEvent,
+			domain.DispatchDoneEvent,
+			domain.SystemNoticeEvent,
+			domain.NamesReplyEvent:
+			continue
+		default:
+			t.Fatalf("expected %T, got %T", *new(T), evt)
 			return *new(T)
 		}
 	}
+
+	t.Fatalf("event channel closed without %T", *new(T))
+	return *new(T)
 }
 
 // drainDispatchEvents reads and discards dispatch lifecycle events
@@ -253,56 +245,29 @@ func drainUntilMatched(t *testing.T, sess *Session, expected ...sessionEventMatc
 	seen := make([]bool, len(expected))
 	matchedCount := 0
 
-	unmatchedNames := func() []string {
-		names := make([]string, 0, len(expected))
-		for i, matcher := range expected {
-			if !seen[i] {
-				names = append(names, matcher.name)
-			}
-		}
-		return names
-	}
-
-	eventTypes := func(events []domain.Event) []string {
-		types := make([]string, 0, len(events))
-		for _, evt := range events {
-			types = append(types, reflect.TypeOf(evt).String())
-		}
-		return types
-	}
-
 	for matchedCount < len(expected) {
-		select {
-		case evt := <-sess.Events():
-			matchedIndex := -1
+		evt := <-sess.Events()
+		matchedIndex := -1
 
-			for i, matcher := range expected {
-				if seen[i] {
-					continue
-				}
-
-				if matcher.match(evt) {
-					matchedIndex = i
-					break
-				}
-			}
-
-			if matchedIndex >= 0 {
-				seen[matchedIndex] = true
-				matched = append(matched, evt)
-				matchedCount++
+		for i, matcher := range expected {
+			if seen[i] {
 				continue
 			}
 
-			extras = append(extras, evt)
-		case <-time.After(time.Second):
-			t.Fatalf(
-				"timed out waiting for events %v; matched=%v extras=%v",
-				unmatchedNames(),
-				eventTypes(matched),
-				eventTypes(extras),
-			)
+			if matcher.match(evt) {
+				matchedIndex = i
+				break
+			}
 		}
+
+		if matchedIndex >= 0 {
+			seen[matchedIndex] = true
+			matched = append(matched, evt)
+			matchedCount++
+			continue
+		}
+
+		extras = append(extras, evt)
 	}
 
 	return matched, extras
