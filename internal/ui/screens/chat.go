@@ -599,15 +599,7 @@ func (s ChatScreen) completionSet() command.CompletionSet[chatcmd.CompletionCont
 	return command.CompletionSet[chatcmd.CompletionContext]{
 		Set: s.parser.Set(),
 		Ctx: chatcmd.CompletionContext{
-			Channels: func() iter.Seq[domain.Channel] {
-				return func(yield func(domain.Channel) bool) {
-					for w := range s.channels.All() {
-						if !yield(domain.ChannelFromWindow(w)) {
-							return
-						}
-					}
-				}
-			},
+			Channels:       func() iter.Seq[domain.Window] { return s.channels.All() },
 			Instances:      func() iter.Seq[*domain.Instance] { return s.sess.Instances(s.ctx) },
 			ChannelMembers: s.activeChannelInstances,
 			ActiveMembers:  func() iter.Seq[domain.Nick] { return s.activeMemberNicks() },

@@ -18,7 +18,7 @@ import (
 // target must already be present in the active channel (/kick,
 // inline @nick mentions).
 type CompletionContext struct {
-	Channels        func() iter.Seq[domain.Channel]
+	Channels        func() iter.Seq[domain.Window]
 	Instances       func() iter.Seq[*domain.Instance]
 	ChannelMembers  func() iter.Seq[*domain.Instance]
 	ActiveMembers   func() iter.Seq[domain.Nick]
@@ -39,11 +39,11 @@ func (ctx CompletionContext) ChannelKind() domain.ChannelKind {
 func channelsSource(ctx CompletionContext, _ command.InvocationState[CompletionContext]) command.SuggestionResult {
 	var suggestions []command.Suggestion
 
-	for ch := range ctx.Channels() {
+	for w := range ctx.Channels() {
 		suggestions = append(suggestions, command.Suggestion{
-			Value:  string(ch.Name),
-			Label:  string(ch.Name),
-			Detail: channelDetail(ch),
+			Value:  string(w.Name()),
+			Label:  string(w.Name()),
+			Detail: channelDetail(w),
 		})
 	}
 
@@ -132,12 +132,12 @@ type ModelOption struct {
 	Description string
 }
 
-func channelDetail(ch domain.Channel) string {
-	if ch.Topic != "" {
-		return ch.Topic
+func channelDetail(w domain.Window) string {
+	if cw, ok := w.(*domain.ChannelWindow); ok && cw.Topic != "" {
+		return cw.Topic
 	}
 
-	if ch.Kind == domain.KindDM {
+	if w.Kind() == domain.KindDM {
 		return "direct message"
 	}
 

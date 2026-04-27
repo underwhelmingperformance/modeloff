@@ -14,9 +14,12 @@ import (
 )
 
 func testContext(kind domain.ChannelKind) CompletionContext {
-	channels := []domain.Channel{
-		{Name: "#general", Topic: "Welcome"},
-		{Name: "#random"},
+	general := domain.NewChannelWindow("#general", time.Time{})
+	general.Topic = "Welcome"
+
+	channels := []domain.Window{
+		general,
+		domain.NewChannelWindow("#random", time.Time{}),
 	}
 	haikuChannels := orderedmap.New[domain.ChannelName, time.Time]()
 	haikuChannels.Set("#general", time.Time{})
@@ -36,7 +39,7 @@ func testContext(kind domain.ChannelKind) CompletionContext {
 	}
 
 	return CompletionContext{
-		Channels:        func() iter.Seq[domain.Channel] { return slices.Values(channels) },
+		Channels:        func() iter.Seq[domain.Window] { return slices.Values(channels) },
 		Instances:       func() iter.Seq[*domain.Instance] { return slices.Values(instances) },
 		ActiveMembers:   func() iter.Seq[domain.Nick] { return slices.Values(members) },
 		ActiveChannel:   func() domain.ChannelName { return "#general" },
@@ -338,10 +341,10 @@ func TestComplete_config_persona_no_value_suggestions(t *testing.T) {
 }
 
 func TestComplete_live_data_reflects_changes(t *testing.T) {
-	var channels []domain.Channel
+	var channels []domain.Window
 
 	ctx := CompletionContext{
-		Channels: func() iter.Seq[domain.Channel] { return slices.Values(channels) },
+		Channels: func() iter.Seq[domain.Window] { return slices.Values(channels) },
 		UserNick: func() domain.Nick { return "u" },
 		Kind:     func() domain.ChannelKind { return domain.KindChannel },
 	}
@@ -357,7 +360,7 @@ func TestComplete_live_data_reflects_changes(t *testing.T) {
 	}, before)
 
 	// Mutate the underlying data — the live context sees the change.
-	channels = []domain.Channel{{Name: "#new"}}
+	channels = []domain.Window{domain.NewChannelWindow("#new", time.Time{})}
 
 	after := cs.Complete("/join ", 6)
 	require.Equal(t, command.Completion{
