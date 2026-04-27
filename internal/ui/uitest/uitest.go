@@ -355,13 +355,28 @@ func SeedAndFocusChannel(t testing.TB, sess *session.Session, name string) {
 	require.NoError(t, sess.FocusChannel(t.Context(), domain.ChannelName(name)))
 }
 
-// SeedMessage sends a message to a channel via the session. Like
-// SeedChannel, the resulting events remain on the channel for the
-// chat screen to consume.
+// SeedMessage seeds a channel with a message from a synthetic
+// model "seedbot". The session does not echo the user's own
+// outgoing messages on its events channel (per RFC 2812
+// §3.3.1), so a SendMessage from `s.user` would not flow into a
+// downstream chat screen's render path; routing the seed
+// through a model actor matches the realistic shape (channel
+// activity from someone other than the user) and keeps the
+// events channel stream populated.
 func SeedMessage(t testing.TB, sess *session.Session, channel, body string) {
 	t.Helper()
 
-	require.NoError(t, sess.SendMessage(t.Context(), domain.ChannelName(channel), body))
+	const seederNick domain.Nick = "seedbot"
+	const seederID domain.InstanceID = "inst-seedbot"
+
+	bot, err := sess.ResolveNick(t.Context(), seederNick)
+	if err != nil {
+		bot = domain.NewModelInstance(seederID, seederNick, "test/model", "", nil)
+		require.NoError(t, sess.SaveInstance(t.Context(), bot))
+	}
+
+	_, err = sess.SendMessageAs(t.Context(), bot, domain.ChannelName(channel), body)
+	require.NoError(t, err)
 }
 
 // DrainEvents discards any buffered events on the session's events

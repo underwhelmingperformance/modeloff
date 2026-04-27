@@ -395,11 +395,16 @@ func (c MsgCommand) Run(rc Context) tea.Cmd {
 		target := domain.ChannelName(c.Target)
 
 		if domain.InferChannelKind(target) == domain.KindChannel {
-			if err := c.sendToChannel(rc.Ctx, rc.Session, rc.Actor, target, body); err != nil {
+			msg, err := c.sendToChannel(rc.Ctx, rc.Session, rc.Actor, target, body)
+			if err != nil {
 				return errorEvent("msg", err)
 			}
 
-			return nil
+			// Return the persisted [domain.Message] so the chat
+			// screen renders the user's own outgoing line — the
+			// session does not echo user-sent messages on its
+			// events channel.
+			return msg
 		}
 
 		nick := domain.Nick(c.Target)
@@ -433,16 +438,16 @@ func (c MsgCommand) Run(rc Context) tea.Cmd {
 // for non-members because the message would persist into a
 // channel the actor cannot see — the chat screen has no window
 // for it and the events log would carry an orphan record.
-func (c MsgCommand) sendToChannel(ctx context.Context, sess *session.Session, actor *domain.Instance, target domain.ChannelName, body string) error {
+func (c MsgCommand) sendToChannel(ctx context.Context, sess *session.Session, actor *domain.Instance, target domain.ChannelName, body string) (domain.Message, error) {
 	target = domain.NormaliseChannelName(target)
 
 	channels := actor.Channels()
 	if channels == nil {
-		return notInChannelError(target)
+		return domain.Message{}, notInChannelError(target)
 	}
 
 	if _, ok := channels.Get(target); !ok {
-		return notInChannelError(target)
+		return domain.Message{}, notInChannelError(target)
 	}
 
 	return sess.SendMessageAs(ctx, actor, target, body)
@@ -513,7 +518,7 @@ func (c MsgCommand) RunTool(ctx context.Context, tc session.ToolContext) session
 	target := domain.ChannelName(c.Target)
 
 	if domain.InferChannelKind(target) == domain.KindChannel {
-		if err := c.sendToChannel(ctx, tc.Session, tc.Actor, target, body); err != nil {
+		if _, err := c.sendToChannel(ctx, tc.Session, tc.Actor, target, body); err != nil {
 			return session.ToolResultPayload{OK: false, Error: err.Error()}
 		}
 
@@ -529,7 +534,7 @@ func (c MsgCommand) RunTool(ctx context.Context, tc session.ToolContext) session
 		return session.ToolResultPayload{OK: false, Error: fmt.Errorf("resolve nick: %w", err).Error()}
 	}
 
-	if err := tc.Session.SendMessageAs(ctx, tc.Actor, domain.ChannelName(resolved.ID()), body); err != nil {
+	if _, err := tc.Session.SendMessageAs(ctx, tc.Actor, domain.ChannelName(resolved.ID()), body); err != nil {
 		return session.ToolResultPayload{OK: false, Error: err.Error()}
 	}
 
@@ -677,7 +682,8 @@ func (c MeCommand) Run(rc Context) tea.Cmd {
 }
 
 func (c MeCommand) executeAction(ctx context.Context, sess *session.Session, actor *domain.Instance, ch domain.ChannelName) error {
-	return sess.SendActionAs(ctx, actor, ch, strings.TrimSpace(strings.Join(c.Action, " ")))
+	_, err := sess.SendActionAs(ctx, actor, ch, strings.TrimSpace(strings.Join(c.Action, " ")))
+	return err
 }
 
 // RunTool implements ToolCommand.

@@ -388,8 +388,17 @@ func (s *Session) ChangeNickAs(ctx context.Context, actor *domain.Instance, newN
 	return nil
 }
 
-// SendMessageAs records a message from the given actor.
-func (s *Session) SendMessageAs(ctx context.Context, actor *domain.Instance, ch domain.ChannelName, body string) (retErr error) {
+// SendMessageAs records a message from the given actor and
+// returns the persisted [domain.Message]. The session does not
+// echo the user's own outgoing messages on its events channel —
+// per RFC 2812 §3.3.1 a server forwards PRIVMSG to other
+// clients on the channel and to the addressed nick, not back
+// to the sender. Standard IRC clients render their own
+// outgoing line locally; the chat screen does the same by
+// consuming the returned [domain.Message] from the command-
+// result tea.Msg path. Messages from model actors continue to
+// emit so the user's chat screen can render replies.
+func (s *Session) SendMessageAs(ctx context.Context, actor *domain.Instance, ch domain.ChannelName, body string) (msg domain.Message, retErr error) {
 	actorNick := actor.Nick()
 
 	ctx, span := s.startSpan(
@@ -402,7 +411,7 @@ func (s *Session) SendMessageAs(ctx context.Context, actor *domain.Instance, ch 
 	defer endSpan(span, &retErr, observability.ErrorKindStore)
 
 	if ch == domain.StatusChannelName {
-		return errWithKind(domain.StatusChannelGuardError{
+		return domain.Message{}, errWithKind(domain.StatusChannelGuardError{
 			Command: "send",
 			Hint:    "the status channel doesn't take messages — try /msg <nick-or-#channel> instead",
 		}, observability.ErrorKindValidation)
@@ -419,13 +428,24 @@ func (s *Session) SendMessageAs(ctx context.Context, actor *domain.Instance, ch 
 		At:         s.now(),
 	}
 
-	s.persistAndEmit(ctx, ch, cm)
+	s.appendEvent(ctx, ch, cm)
 
-	return nil
+	if actor == s.user {
+		// Don't echo on the events channel: the chat screen
+		// renders its own outgoing line locally from the
+		// command-result path. Still trigger model dispatch so
+		// channel members react to the user's message.
+		s.maybeDispatch(ctx, cm)
+	} else {
+		s.emit(ctx, cm)
+	}
+
+	return cm, nil
 }
 
 // SendActionAs records an action message from the given actor.
-func (s *Session) SendActionAs(ctx context.Context, actor *domain.Instance, ch domain.ChannelName, body string) (retErr error) {
+// See [Session.SendMessageAs] for echo semantics.
+func (s *Session) SendActionAs(ctx context.Context, actor *domain.Instance, ch domain.ChannelName, body string) (msg domain.Message, retErr error) {
 	actorNick := actor.Nick()
 
 	ctx, span := s.startSpan(
@@ -438,7 +458,7 @@ func (s *Session) SendActionAs(ctx context.Context, actor *domain.Instance, ch d
 	defer endSpan(span, &retErr, observability.ErrorKindStore)
 
 	if ch == domain.StatusChannelName {
-		return errWithKind(domain.StatusChannelGuardError{
+		return domain.Message{}, errWithKind(domain.StatusChannelGuardError{
 			Command: "me",
 			Hint:    "the status channel doesn't take messages — try /msg <nick-or-#channel> instead",
 		}, observability.ErrorKindValidation)
@@ -456,9 +476,15 @@ func (s *Session) SendActionAs(ctx context.Context, actor *domain.Instance, ch d
 		At:         s.now(),
 	}
 
-	s.persistAndEmit(ctx, ch, cm)
+	s.appendEvent(ctx, ch, cm)
 
-	return nil
+	if actor == s.user {
+		s.maybeDispatch(ctx, cm)
+	} else {
+		s.emit(ctx, cm)
+	}
+
+	return cm, nil
 }
 
 // SetTopicAs sets the topic for a channel.

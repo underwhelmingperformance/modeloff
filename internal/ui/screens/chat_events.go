@@ -685,17 +685,19 @@ func (s ChatScreen) handleDMOpenedMsg(msg chatcmd.DMOpenedMsg) (ui.Model, tea.Cm
 	return s, tea.Sequence(cmds...)
 }
 
-// sendMessageCmd fires a `SendMessageAs` for the user against the
-// given target and returns no follow-up event — the resulting
-// `Message` event flows back through the session events channel
-// and the chat-screen's existing handler routes it.
+// sendMessageCmd fires a `SendMessage` for the user against the
+// given target and returns the persisted [domain.Message] as a
+// tea.Msg so the chat-screen can render its own outgoing line
+// locally — the session does not echo user-sent messages on
+// its events channel.
 func (s ChatScreen) sendMessageCmd(target domain.ChannelName, body string) tea.Cmd {
 	return func() tea.Msg {
-		if err := s.sess.SendMessage(s.ctx, target, body); err != nil {
+		msg, err := s.sess.SendMessage(s.ctx, target, body)
+		if err != nil {
 			return domain.ErrorEvent{Operation: "msg", Err: err, At: time.Now()}
 		}
 
-		return nil
+		return msg
 	}
 }
 

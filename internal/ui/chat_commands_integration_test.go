@@ -314,7 +314,7 @@ func TestApp_unread_counts_clear_when_visiting_channel_with_teatest(t *testing.T
 	uitest.SeedChannel(t, sess, "#general")
 	uitest.SeedChannel(t, sess, "#random")
 
-	require.NoError(t, sess.SendMessage(t.Context(), "#general", "general unread"))
+	uitest.SeedMessage(t, sess, "#general", "general unread")
 
 	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore, domain.KindStatus)
 	require.NoError(t, err)
@@ -389,7 +389,7 @@ func TestApp_ctrl_arrow_scroll_preserves_draft_with_teatest(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#general")
 
 	for i := range 30 {
-		require.NoError(t, sess.SendMessage(t.Context(), "#general", fmt.Sprintf("message %d", i)))
+		uitest.SeedMessage(t, sess, "#general", fmt.Sprintf("message %d", i))
 	}
 
 	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore, domain.KindStatus)
@@ -430,7 +430,7 @@ func TestApp_new_messages_divider_with_teatest(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#general")
 
 	for i := range 30 {
-		require.NoError(t, sess.SendMessage(t.Context(), "#general", fmt.Sprintf("message %d", i)))
+		uitest.SeedMessage(t, sess, "#general", fmt.Sprintf("message %d", i))
 	}
 
 	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore, domain.KindStatus)

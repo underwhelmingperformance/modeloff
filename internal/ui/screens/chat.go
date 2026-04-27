@@ -535,6 +535,15 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		return s.handleModelKickedEvent(msg)
 
 	case domain.Message:
+		// Outgoing user messages reach `Update` as a bare
+		// [domain.Message] tea.Msg from the send-cmd path
+		// (`sendMessage` / `sendMessageCmd`); incoming session
+		// events arrive wrapped in `sessionEventMsg` and are
+		// dispatched by `handleSessionEvent`, which buffers
+		// before delegating to `handleMessageEvent`. Mirror that
+		// pre-buffer step here so outgoing lines also land in
+		// per-window scrollback.
+		s.bufferEvent(msg)
 		return s.handleMessageEvent(msg)
 
 	case domain.ModelReplyEvent:
@@ -767,11 +776,20 @@ func (s ChatScreen) switchChannel(ch domain.ChannelName) tea.Cmd {
 
 func (s ChatScreen) sendMessage(text string) tea.Cmd {
 	return func() tea.Msg {
-		if err := s.sess.SendMessage(s.ctx, *s.active, text); err != nil {
+		msg, err := s.sess.SendMessage(s.ctx, *s.active, text)
+		if err != nil {
 			return domain.ErrorEvent{Operation: "send", Err: err, At: time.Now()}
 		}
 
-		return nil
+		// The session does not echo the user's own outgoing
+		// messages on its events channel — per RFC 2812 §3.3.1
+		// servers don't reflect PRIVMSG back to the sender — so
+		// the chat screen renders its own outgoing line by
+		// returning the persisted [domain.Message] as a tea.Msg
+		// here. The chat-screen `Update` switch routes it
+		// through `handleMessageEvent` exactly like an incoming
+		// model reply.
+		return msg
 	}
 }
 

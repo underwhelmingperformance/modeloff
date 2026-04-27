@@ -1195,7 +1195,7 @@ func TestSession_SendMessageAs_status_channel_records_validation_error_kind(t *t
 	sess, _ := newTestSession(t)
 	sess.WithTracerProvider(provider)
 
-	err := sess.SendMessageAs(t.Context(), sess.UserInstance(), domain.StatusChannelName, "hello")
+	_, err := sess.SendMessageAs(t.Context(), sess.UserInstance(), domain.StatusChannelName, "hello")
 	require.Error(t, err)
 
 	span := oteltest.FindSpan(t, recorder, "session.send_message")
@@ -1435,14 +1435,14 @@ func TestSession_SendMessage(t *testing.T) {
 
 	seedChannelWithMembers(t, sess, s, "#general", "testuser")
 
-	require.NoError(t, sess.SendMessage(ctx, "#general", "hello world"))
-	evt := drainEvent[domain.Message](t, sess)
+	persisted, err := sess.SendMessage(ctx, "#general", "hello world")
+	require.NoError(t, err)
 	require.Equal(t, domain.Message{
 		Target: "#general",
 		From:   "testuser",
 		Body:   "hello world",
 		At:     fixedTime,
-	}, evt)
+	}, persisted)
 
 	// Message should be persisted as a Message event.
 	msgs := channelMessages(t, s, "#general")
@@ -1450,7 +1450,8 @@ func TestSession_SendMessage(t *testing.T) {
 		{Target: "#general", From: "testuser", Body: "hello world", At: fixedTime},
 	}, msgs)
 
-	// No instances, so dispatch completes immediately.
+	// The session does not echo the user's own message on its
+	// events channel — only the dispatch lifecycle does.
 	events := drainEvents(t, sess, 1)
 	require.Equal(t, []domain.Event{
 		domain.DispatchDoneEvent{Channel: "#general"},
@@ -1473,10 +1474,13 @@ func TestSession_SendMessage_emits_dispatch_events(t *testing.T) {
 	})
 	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
 
-	require.NoError(t, sess.SendMessage(ctx, "#general", "hello"))
+	_, err := sess.SendMessage(ctx, "#general", "hello")
+	require.NoError(t, err)
 
-	// Drain the MessageEvent first, then the dispatch events.
-	drainEvent[domain.Message](t, sess)
+	// The session does not echo the user's own outgoing
+	// messages on its events channel (per RFC 2812 §3.3.1) but
+	// still triggers model dispatch on send. Drain the
+	// dispatch lifecycle and the model's reply.
 	events := drainEvents(t, sess, 1)
 
 	require.Equal(t, []domain.Event{
@@ -1639,10 +1643,11 @@ func TestSession_model_reply_does_not_retrigger_dispatch(t *testing.T) {
 		Channels: testChannels("#general"),
 	})
 
-	require.NoError(t, sess.SendMessage(ctx, "#general", "hello"))
+	_, err := sess.SendMessage(ctx, "#general", "hello")
+	require.NoError(t, err)
 
-	// Drain the MessageEvent and all dispatch events.
-	drainEvent[domain.Message](t, sess)
+	// The user's own outgoing message is not echoed on the
+	// events channel; drain the dispatch lifecycle only.
 	drainEvents(t, sess, 1)
 
 	// Only one dispatch should have occurred — the ModelReplyEvent
@@ -2655,7 +2660,8 @@ func TestSession_DM_routing_survives_counterpart_rename(t *testing.T) {
 
 	require.NoError(t, sess.ChangeNickAs(ctx, botty, "foobar"))
 
-	require.NoError(t, sess.SendMessageAs(ctx, sess.UserInstance(), dm.Name(), "hi"))
+	_, err := sess.SendMessageAs(ctx, sess.UserInstance(), dm.Name(), "hi")
+	require.NoError(t, err)
 
 	require.Equal(t, domain.Nick(dm.Name()), <-delivered)
 	require.Equal(t, "foobar", dm.DisplayName())
@@ -4690,7 +4696,8 @@ func TestSendMessageAs_model_triggers_dispatch_to_other_models(t *testing.T) {
 	})
 	seedChannelWithMembers(t, sess, s, "#general", "testuser", "alpha", "beta")
 
-	require.NoError(t, sess.SendMessageAs(ctx, alpha, "#general", "hello from alpha"))
+	_, err := sess.SendMessageAs(ctx, alpha, "#general", "hello from alpha")
+	require.NoError(t, err)
 
 	// Wait for async dispatch to complete.
 	drainEvent[domain.Message](t, sess)

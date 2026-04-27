@@ -981,17 +981,19 @@ func (s *Session) Kick(ctx context.Context, ch domain.ChannelName, nick domain.N
 	return s.KickAs(ctx, s.user, target, ch)
 }
 
-// SendMessage saves a message to a channel and returns the message
-// event. It also spawns a background goroutine to dispatch the
-// message to model instances, emitting events on the Events channel.
-func (s *Session) SendMessage(ctx context.Context, ch domain.ChannelName, body string) error {
+// SendMessage saves a message from the user to a channel or DM
+// and returns the persisted [domain.Message]. See
+// [Session.SendMessageAs] for echo semantics: user-sent
+// messages are not echoed on the events channel, and callers
+// render the returned value locally.
+func (s *Session) SendMessage(ctx context.Context, ch domain.ChannelName, body string) (domain.Message, error) {
 	return s.SendMessageAs(ctx, s.user, ch, body)
 }
 
-// SendAction saves an action message (/me) to a channel and returns
-// the message event. It also spawns a background goroutine to
-// dispatch the action to model instances.
-func (s *Session) SendAction(ctx context.Context, ch domain.ChannelName, body string) error {
+// SendAction saves an action message (`/me`) from the user and
+// returns the persisted [domain.Message]. See
+// [Session.SendMessageAs] for echo semantics.
+func (s *Session) SendAction(ctx context.Context, ch domain.ChannelName, body string) (domain.Message, error) {
 	return s.SendActionAs(ctx, s.user, ch, body)
 }
 
@@ -1037,6 +1039,16 @@ func (s *Session) ChangeNick(ctx context.Context, newNick domain.Nick) error {
 // Whois returns metadata about a model instance.
 func (s *Session) Whois(ctx context.Context, nick domain.Nick) (*domain.Instance, error) {
 	return s.ResolveNick(ctx, nick)
+}
+
+// SaveInstance persists a model instance through the store. It
+// is a thin wrapper used by integration-test seed helpers
+// (`uitest`) to pre-populate the canonical-instance registry
+// with a synthetic actor before driving session APIs that need
+// to resolve it; production paths register instances via the
+// invite/add-model flows on `Session` directly.
+func (s *Session) SaveInstance(ctx context.Context, inst *domain.Instance) error {
+	return s.store.SaveInstance(ctx, inst)
 }
 
 // GetWindow retrieves an addressable window by name as its typed

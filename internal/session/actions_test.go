@@ -178,7 +178,8 @@ func TestSendMessageAs_model_actor(t *testing.T) {
 	})
 	seedChannelWithMembers(t, sess, s, "#dev", "testuser", "botty")
 
-	require.NoError(t, sess.SendMessageAs(ctx, botty, "#dev", "hello world"))
+	_, err := sess.SendMessageAs(ctx, botty, "#dev", "hello world")
+	require.NoError(t, err)
 
 	evt := drainEvent[domain.Message](t, sess)
 	require.Equal(t, domain.Message{
@@ -313,7 +314,7 @@ func TestSendMessageAs_rejects_status_channel(t *testing.T) {
 	sess, _ := newTestSession(t)
 	ctx := t.Context()
 
-	err := sess.SendMessageAs(ctx, sess.UserInstance(), domain.StatusChannelName, "hello")
+	_, err := sess.SendMessageAs(ctx, sess.UserInstance(), domain.StatusChannelName, "hello")
 
 	var guard domain.StatusChannelGuardError
 	require.ErrorAs(t, err, &guard)
@@ -333,7 +334,7 @@ func TestSendActionAs_rejects_status_channel(t *testing.T) {
 	sess, _ := newTestSession(t)
 	ctx := t.Context()
 
-	err := sess.SendActionAs(ctx, sess.UserInstance(), domain.StatusChannelName, "waves")
+	_, err := sess.SendActionAs(ctx, sess.UserInstance(), domain.StatusChannelName, "waves")
 
 	var guard domain.StatusChannelGuardError
 	require.ErrorAs(t, err, &guard)
@@ -372,7 +373,8 @@ func TestSendMessageAs_model_to_model_dispatches(t *testing.T) {
 
 	target := domain.ChannelName(helper.ID())
 
-	require.NoError(t, sess.SendMessageAs(ctx, botty, target, "hey there"))
+	_, err := sess.SendMessageAs(ctx, botty, target, "hey there")
+	require.NoError(t, err)
 
 	evt := drainEvent[domain.Message](t, sess)
 	require.Equal(t, domain.Message{
