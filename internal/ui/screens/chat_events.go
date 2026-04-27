@@ -13,6 +13,7 @@ import (
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/session"
 	"github.com/laney/modeloff/internal/ui"
+	"github.com/laney/modeloff/internal/ui/chatcmd"
 	"github.com/laney/modeloff/internal/ui/components"
 )
 
@@ -52,8 +53,6 @@ func (s ChatScreen) handleSessionEvent(msg sessionEventMsg) (ui.Model, tea.Cmd) 
 		updated, cmd = s.handleTopicInfoEvent(evt)
 	case domain.ConfigChangedEvent:
 		updated, cmd = s.handleConfigChangedEvent(evt)
-	case domain.DMOpenedEvent:
-		updated, cmd = s.handleDMOpenedEvent(evt)
 	case domain.DispatchStartedEvent:
 		updated, cmd = s.handleDispatchStarted(evt)
 	case domain.ModelReplyEvent:
@@ -628,34 +627,59 @@ func (s ChatScreen) handleModelReplyEvent(msg domain.ModelReplyEvent) (ui.Model,
 	return s, nil
 }
 
-func (s ChatScreen) handleDMOpenedEvent(msg domain.DMOpenedEvent) (ui.Model, tea.Cmd) {
-	name := msg.DM.Name()
-	*s.active = name
+// handleDMOpenedMsg handles the `/msg <nick> <body>` and
+// `/query <nick> [<body>]` paths. It materialises the DM window
+// in the sidebar (insert is a no-op when one already exists),
+// optionally focus-switches (`/query` does, `/msg` doesn't), and
+// optionally sends a trailing body via `SendMessageAs`. The
+// session is unaware of DM windows; this handler is the only
+// owner of DM-window lifecycle on the user side.
+func (s ChatScreen) handleDMOpenedMsg(msg chatcmd.DMOpenedMsg) (ui.Model, tea.Cmd) {
+	dm := domain.NewDMWindow(msg.Counterpart, msg.At)
+	name := dm.Name()
 
-	// Insert the DM into the chat-screen's window cache so the
-	// sidebar finds it by name. The nick-list pane is a no-op for
-	// DM windows.
-	s.channels.Insert(msg.DM)
+	_, alreadyOpen := s.channels.Get(domain.WindowKey(name))
+	s.channels.Insert(dm)
 
 	var cmds []tea.Cmd
-	cmds = append(cmds, msgCmd(components.SetPlaceholderMsg{}))
-	cmds = append(cmds, msgCmd(components.SetChannelMsg{
-		Channel: name,
-		Topic:   s.activeTopic(),
-		Kind:    domain.KindDM,
-	}))
-	cmds = append(cmds, msgCmd(components.ChannelAddedMsg{Channel: msg.DM}))
-	cmds = append(cmds, msgCmd(components.ChannelActiveMsg{Channel: name}))
-	cmds = append(cmds, s.persistLastChannel(name))
-	cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: domain.MemberList{}}))
-	cmds = append(cmds, s.scrollbackCmd(name))
-	cmds = append(cmds, s.logAndShow(domain.SystemNotice{
-		Target: name,
-		Text:   fmt.Sprintf("Opened direct message with %s", msg.DM.Counterpart.Nick()),
-		At:     msg.At,
-	}))
+
+	if !alreadyOpen {
+		cmds = append(cmds, msgCmd(components.ChannelAddedMsg{Channel: dm}))
+	}
+
+	if msg.Focus {
+		*s.active = name
+		cmds = append(cmds, msgCmd(components.SetPlaceholderMsg{}))
+		cmds = append(cmds, msgCmd(components.SetChannelMsg{
+			Channel: name,
+			Topic:   s.activeTopic(),
+			Kind:    domain.KindDM,
+		}))
+		cmds = append(cmds, msgCmd(components.ChannelActiveMsg{Channel: name}))
+		cmds = append(cmds, s.persistLastChannel(name))
+		cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: domain.MemberList{}}))
+		cmds = append(cmds, s.scrollbackCmd(name))
+	}
+
+	if msg.Body != "" {
+		cmds = append(cmds, s.sendMessageCmd(name, msg.Body))
+	}
 
 	return s, tea.Sequence(cmds...)
+}
+
+// sendMessageCmd fires a `SendMessageAs` for the user against the
+// given target and returns no follow-up event — the resulting
+// `Message` event flows back through the session events channel
+// and the chat-screen's existing handler routes it.
+func (s ChatScreen) sendMessageCmd(target domain.ChannelName, body string) tea.Cmd {
+	return func() tea.Msg {
+		if err := s.sess.SendMessage(s.ctx, target, body); err != nil {
+			return domain.ErrorEvent{Operation: "msg", Err: err, At: time.Now()}
+		}
+
+		return nil
+	}
 }
 
 func (s ChatScreen) handleConfigChangedEvent(msg domain.ConfigChangedEvent) (ui.Model, tea.Cmd) {

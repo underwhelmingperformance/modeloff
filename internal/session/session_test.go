@@ -481,38 +481,6 @@ func TestSession_JoinAutojoinChannels_emits_join_events(t *testing.T) {
 	_ = drainEventSkipping[domain.ModeChange](t, sess)
 }
 
-// TestSession_persistableAutojoinChannels_excludes_dms guards the
-// invariant that DMs never reach the autojoin set. DMs are
-// addressed by `InstanceID` and have no channel-shaped name; if
-// one slipped through, `JoinAutojoinChannels` would call
-// `JoinAs("inst-...")` on startup and create a fake `#`-channel.
-func TestSession_persistableAutojoinChannels_excludes_dms(t *testing.T) {
-	sess, s := newTestSession(t)
-	ctx := t.Context()
-
-	botty := seedInstance(t, s, instanceSpec{Nick: "botty", ModelID: "test/model"})
-
-	require.NoError(t, sess.Join(ctx, "#general"))
-	_, extras := drainUntilMatched(t, sess,
-		matchEvent[domain.Join](),
-		matchEvent[domain.NamesReplyEvent](),
-		matchEvent[domain.ModeChange](),
-		matchEvent[domain.DispatchDoneEvent](),
-	)
-	require.Empty(t, extras)
-
-	_, _, err := sess.OpenDM(ctx, botty)
-	require.NoError(t, err)
-
-	// Trigger another autojoin save so any DM leakage in the
-	// user's `Channels()` map would be persisted.
-	require.NoError(t, sess.Join(ctx, "#dev"))
-
-	got, err := s.ListAutojoinChannels(ctx)
-	require.NoError(t, err)
-	require.Equal(t, []domain.ChannelName{"#dev", "#general"}, got)
-}
-
 func TestSession_Leave(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
@@ -1184,14 +1152,6 @@ func TestSession_mutationOperations_recordSpans(t *testing.T) {
 	require.NoError(t, sess.SetTopic(ctx, "#general", "observability"))
 	require.NoError(t, sess.ChangeNick(ctx, "renamed"))
 
-	dmBot := seedInstance(t, s, instanceSpec{
-		Nick:     "dm-bot",
-		ModelID:  "test/dm-model",
-		Channels: testChannels(),
-	})
-	_, _, err = sess.OpenDM(ctx, dmBot)
-	require.NoError(t, err)
-
 	require.NoError(t, sess.Reset(ctx))
 
 	// Background goroutines (Kick / Reset dispatch) end their spans
@@ -1207,7 +1167,6 @@ func TestSession_mutationOperations_recordSpans(t *testing.T) {
 		"session.dispatch_background",
 		"session.join",
 		"session.kick",
-		"session.open_dm",
 		"session.part",
 		"session.reset",
 		"session.set_topic",
@@ -1240,21 +1199,6 @@ func TestSession_SendMessageAs_status_channel_records_validation_error_kind(t *t
 	require.Error(t, err)
 
 	span := oteltest.FindSpan(t, recorder, "session.send_message")
-	require.Equal(t, observability.ResultError, oteltest.AttrValue(span.Attributes(), observability.AttrResult))
-	require.Equal(t, observability.ErrorKindValidation, oteltest.AttrValue(span.Attributes(), observability.AttrErrorKind))
-}
-
-func TestSession_OpenDM_status_channel_records_validation_error_kind(t *testing.T) {
-	recorder, provider := oteltest.NewSpanRecorder(t)
-	sess, _ := newTestSession(t)
-	sess.WithTracerProvider(provider)
-
-	ghost := domain.NewModelInstance("ghost-id", domain.Nick(domain.StatusChannelName), "test/model", "", nil)
-
-	_, _, err := sess.OpenDM(t.Context(), ghost)
-	require.Error(t, err)
-
-	span := oteltest.FindSpan(t, recorder, "session.open_dm")
 	require.Equal(t, observability.ResultError, oteltest.AttrValue(span.Attributes(), observability.AttrResult))
 	require.Equal(t, observability.ErrorKindValidation, oteltest.AttrValue(span.Attributes(), observability.AttrErrorKind))
 }
@@ -2684,63 +2628,13 @@ func TestSession_Poke_emits_dispatch_events(t *testing.T) {
 	}, msgs)
 }
 
-func TestSession_OpenDM_creates_dm_window(t *testing.T) {
-	sess, s := newTestSession(t)
-	ctx := t.Context()
-
-	botty := seedInstance(t, s, instanceSpec{
-		Nick:    "botty",
-		ModelID: "test/model",
-	})
-
-	dm, created, err := sess.OpenDM(ctx, botty)
-	require.NoError(t, err)
-	require.True(t, created)
-	require.Equal(t, domain.ChannelName(botty.ID()), dm.Name())
-	require.Equal(t, fixedTime, dm.Created())
-	require.Same(t, botty, dm.Counterpart)
-
-	got, err := s.GetWindow(ctx, domain.ChannelName(botty.ID()))
-	require.NoError(t, err)
-	gotDM, ok := got.(*domain.DMWindow)
-	require.True(t, ok)
-	require.Equal(t, domain.ChannelName(botty.ID()), gotDM.Name())
-	require.Same(t, botty, gotDM.Counterpart)
-
-	inst, err := s.ResolveNick(ctx, "botty")
-	require.NoError(t, err)
-	requireChannels(t, inst.Channels(), domain.ChannelName(botty.ID()))
-}
-
-func TestSession_OpenDM_reuses_existing_dm_window(t *testing.T) {
-	sess, s := newTestSession(t)
-	ctx := t.Context()
-
-	botty := seedInstance(t, s, instanceSpec{
-		Nick:    "botty",
-		ModelID: "test/model",
-	})
-
-	existing := domain.NewDMWindow(botty, fixedTime.Add(-time.Hour))
-	require.NoError(t, s.SaveWindow(ctx, existing))
-
-	dm, created, err := sess.OpenDM(ctx, botty)
-	require.NoError(t, err)
-	require.False(t, created)
-	require.Equal(t, existing.Name(), dm.Name())
-	require.Equal(t, existing.Created(), dm.Created())
-	require.Same(t, botty, dm.Counterpart)
-
-	inst, err := s.ResolveNick(ctx, "botty")
-	require.NoError(t, err)
-	requireChannels(t, inst.Channels(), domain.ChannelName(botty.ID()))
-}
-
-// TestSession_OpenDM_routing_survives_counterpart_rename
-// verifies that a message addressed into a DM after the
-// counterpart has renamed reaches the renamed instance, and
-// that the sidebar's DisplayName follows the new nick.
-func TestSession_OpenDM_routing_survives_counterpart_rename(t *testing.T) {
+// TestSession_DM_routing_survives_counterpart_rename verifies
+// that a message addressed into a DM after the counterpart has
+// renamed reaches the renamed instance. DMs are addressed by
+// the counterpart's `InstanceID`, which is stable across nick
+// changes; the sidebar's `DisplayName` reads the live nick from
+// the canonical `*Instance` so it follows the rename too.
+func TestSession_DM_routing_survives_counterpart_rename(t *testing.T) {
 	delivered := make(chan domain.Nick, 1)
 	fake := &fakeAPIClient{
 		sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, trigger []protocol.IRCMessage) (protocol.ModelResponse, error) {
@@ -2757,9 +2651,7 @@ func TestSession_OpenDM_routing_survives_counterpart_rename(t *testing.T) {
 	ctx := t.Context()
 
 	botty := seedInstance(t, s, instanceSpec{Nick: "botty", ModelID: "test/model"})
-
-	dm, _, err := sess.OpenDM(ctx, botty)
-	require.NoError(t, err)
+	dm := domain.NewDMWindow(botty, fixedTime)
 
 	require.NoError(t, sess.ChangeNickAs(ctx, botty, "foobar"))
 
@@ -2788,14 +2680,11 @@ func TestSession_DispatchToChannel_dm_only_targets_that_instance(t *testing.T) {
 		Channels: testChannels("#general"),
 	})
 
-	_, _, err := sess.OpenDM(ctx, botty)
-	require.NoError(t, err)
-
 	target := domain.ChannelName(botty.ID())
 
 	_, ircMsg := seedUserMessage(t, s, target, "hello in dm")
 
-	_, err = sess.DispatchToChannel(ctx, target, []protocol.IRCMessage{ircMsg})
+	_, err := sess.DispatchToChannel(ctx, target, []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 
 	msgs := channelMessages(t, s, target)

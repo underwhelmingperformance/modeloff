@@ -748,7 +748,11 @@ func TestChatScreen_config_invalid_duration(t *testing.T) {
 	tm.WaitFor("invalid duration")
 }
 
-func TestChatScreen_msg_command_opens_dm(t *testing.T) {
+// TestChatScreen_msg_command_requires_body verifies that
+// `/msg <nick>` without a trailing body is rejected — `/msg` is
+// a send command, and the sister `/query` is the open-and-focus
+// affordance.
+func TestChatScreen_msg_command_requires_body(t *testing.T) {
 	sess := newTestSession(t)
 	uitest.SeedChannel(t, sess, "#general")
 	require.NoError(t, sess.AddModel(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
@@ -757,10 +761,12 @@ func TestChatScreen_msg_command_opens_dm(t *testing.T) {
 	tm.WaitFor("#general")
 
 	tm.Submit("/msg fakenick")
-	tm.WaitFor("Opened direct message with fakenick")
+	tm.WaitFor("message body is required")
 }
 
-func TestChatScreen_msg_command_opens_dm_and_sends_message(t *testing.T) {
+// TestChatScreen_query_command_opens_dm exercises the
+// `/query <nick>` blank-window-and-focus path.
+func TestChatScreen_query_command_opens_dm(t *testing.T) {
 	sess := newTestSession(t)
 	uitest.SeedChannel(t, sess, "#general")
 	require.NoError(t, sess.AddModel(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
@@ -768,7 +774,22 @@ func TestChatScreen_msg_command_opens_dm_and_sends_message(t *testing.T) {
 	tm := newChatApp(t, sess)
 	tm.WaitFor("#general")
 
-	tm.Submit("/msg fakenick hello there")
+	tm.Submit("/query fakenick")
+	tm.WaitFor("fakenick")
+}
+
+// TestChatScreen_query_command_opens_dm_and_sends_message
+// exercises `/query <nick> <body>`: window opens, focus
+// switches, body sends.
+func TestChatScreen_query_command_opens_dm_and_sends_message(t *testing.T) {
+	sess := newTestSession(t)
+	uitest.SeedChannel(t, sess, "#general")
+	require.NoError(t, sess.AddModel(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
+
+	tm := newChatApp(t, sess)
+	tm.WaitFor("#general")
+
+	tm.Submit("/query fakenick hello there")
 	tm.WaitFor("hello there", "fakenick")
 }
 

@@ -17,6 +17,27 @@ import (
 	"github.com/laney/modeloff/internal/ui"
 )
 
+// DMOpenedMsg is the tea.Msg fired by `/msg <nick> <body>` and
+// `/query <nick> [<body>]`. It tells the chat screen to
+// materialise the DM window in its sidebar (insert is a no-op
+// when the window already exists), optionally switch focus, and
+// optionally send a trailing body. The session has no notion of
+// DM-window state and is uninvolved; this is a pure UI signal
+// that owns the chat-screen-side DM lifecycle.
+//
+// `Counterpart` is the resolved non-user `*domain.Instance`. The
+// DM is addressed by `Counterpart.ID()` on the wire. `Body` is
+// optional — when non-empty, it is sent via `SendMessageAs` from
+// the chat-screen handler so the order (window opened, then
+// message rendered) is deterministic. `Focus` distinguishes
+// `/query` (focus-switch) from `/msg` (background open).
+type DMOpenedMsg struct {
+	Counterpart *domain.Instance
+	Body        string
+	Focus       bool
+	At          time.Time
+}
+
 // ChannelArg is a command-layer wrapper around domain.ChannelName
 // that implements FieldDecoder to ensure the # prefix is present.
 type ChannelArg string
@@ -323,11 +344,16 @@ func (c KickCommand) RunTool(ctx context.Context, tc session.ToolContext) sessio
 	}
 }
 
-// MsgCommand represents `/msg <target> [message]` where `target`
+// MsgCommand represents `/msg <target> <message>` where `target`
 // is either a `#`-prefixed channel name or a bare nick. For a
 // channel target, the actor must already be a member of the
-// channel; for a nick target, the message goes to that user
-// directly.
+// channel; for a nick target, the message is sent to that user
+// directly. The message body is required — `/msg` is a send
+// command, not a window-opening one. Use `/query <nick>` to open
+// a blank DM window without sending. `/msg` does not focus-switch;
+// the chat screen auto-creates a DM window in the sidebar (without
+// focusing) when a send goes to a nick the user has no open
+// window for.
 type MsgCommand struct {
 	Target string   `arg:"" help:"#channel or nick to message"`
 	Body   []string `arg:"" optional:"" nargs:"1" help:"Message text"`
@@ -352,20 +378,28 @@ func msgTargetSource(ctx CompletionContext, st command.InvocationState[Completio
 	return command.SuggestionResult{Suggestions: merged}
 }
 
-// Run implements Command. For a channel target the user just
-// sends the body and focus switches to that channel; for a nick
-// target the user's DM window is opened (if not already) and the
-// body is sent.
+// Run implements Command. For a channel target, the actor must
+// already be a member; for a nick target, the nick is resolved
+// to its `*Instance` and the message is sent to the
+// counterpart's `InstanceID`. The chat screen observes the
+// resulting `domain.Message` event and auto-creates a DM window
+// in the sidebar if one does not already exist for that target.
+// No focus switch in either case.
 func (c MsgCommand) Run(rc Context) tea.Cmd {
 	return func() tea.Msg {
+		body := strings.TrimSpace(strings.Join(c.Body, " "))
+		if body == "" {
+			return errorEvent("msg", fmt.Errorf("message body is required"))
+		}
+
 		target := domain.ChannelName(c.Target)
 
 		if domain.InferChannelKind(target) == domain.KindChannel {
-			if err := c.sendToChannel(rc.Ctx, rc.Session, rc.Actor, target); err != nil {
+			if err := c.sendToChannel(rc.Ctx, rc.Session, rc.Actor, target, body); err != nil {
 				return errorEvent("msg", err)
 			}
 
-			return domain.ChannelFocusEvent{Channel: target}
+			return nil
 		}
 
 		nick := domain.Nick(c.Target)
@@ -379,38 +413,19 @@ func (c MsgCommand) Run(rc Context) tea.Cmd {
 			return errorEvent("msg", fmt.Errorf("resolve nick: %w", err))
 		}
 
-		dm, created, err := rc.Session.OpenDM(rc.Ctx, resolved)
-		if err != nil {
-			var guard domain.StatusChannelGuardError
-			if errors.As(err, &guard) {
-				return errorEvent("msg", guard)
-			}
-
-			return errorEvent("msg", err)
-		}
-
-		if err := c.sendBody(rc.Ctx, rc.Session, rc.Actor, dm.Name()); err != nil {
-			return errorEvent("msg", err)
-		}
-
-		return domain.DMOpenedEvent{
-			DM:      dm,
-			Created: created,
-			At:      time.Now(),
+		// The chat screen handler materialises the DM window
+		// (creating it if missing) and routes the body through
+		// `SendMessageAs`, in that order, so the rendered message
+		// always lands in an existing sidebar entry. Focus stays
+		// where the user had it — `/msg` is a send command, not a
+		// window-opening one.
+		return DMOpenedMsg{
+			Counterpart: resolved,
+			Body:        body,
+			Focus:       false,
+			At:          time.Now(),
 		}
 	}
-}
-
-// sendBody sends the trimmed-and-joined body to the target. An
-// empty body is a no-op so `/msg <target>` with no text just
-// switches focus to the target without sending.
-func (c MsgCommand) sendBody(ctx context.Context, sess *session.Session, actor *domain.Instance, target domain.ChannelName) error {
-	body := strings.TrimSpace(strings.Join(c.Body, " "))
-	if body == "" {
-		return nil
-	}
-
-	return sess.SendMessageAs(ctx, actor, target, body)
 }
 
 // sendToChannel validates that `actor` is a member of `target`
@@ -418,7 +433,7 @@ func (c MsgCommand) sendBody(ctx context.Context, sess *session.Session, actor *
 // for non-members because the message would persist into a
 // channel the actor cannot see — the chat screen has no window
 // for it and the events log would carry an orphan record.
-func (c MsgCommand) sendToChannel(ctx context.Context, sess *session.Session, actor *domain.Instance, target domain.ChannelName) error {
+func (c MsgCommand) sendToChannel(ctx context.Context, sess *session.Session, actor *domain.Instance, target domain.ChannelName, body string) error {
 	target = domain.NormaliseChannelName(target)
 
 	channels := actor.Channels()
@@ -430,7 +445,7 @@ func (c MsgCommand) sendToChannel(ctx context.Context, sess *session.Session, ac
 		return notInChannelError(target)
 	}
 
-	return c.sendBody(ctx, sess, actor, target)
+	return sess.SendMessageAs(ctx, actor, target, body)
 }
 
 // notInChannelError formats the not-a-member rejection. Kept as
@@ -438,6 +453,50 @@ func (c MsgCommand) sendToChannel(ctx context.Context, sess *session.Session, ac
 // same wording.
 func notInChannelError(target domain.ChannelName) error {
 	return fmt.Errorf("not a member of %s", target)
+}
+
+// QueryCommand represents `/query <nick> [<body>]`. It opens (or
+// re-focuses) a direct-message window with the resolved nick and
+// optionally sends a trailing body. Mirrors irssi's behaviour:
+// `/query mike` opens a blank query window and switches focus to
+// it; `/query mike hello` does the same and additionally sends
+// `hello`.
+//
+// `/query` is purely a UI affordance — the session has no notion
+// of "opening" a DM. The chat screen handles `QueryOpenedEvent`
+// by inserting the DM into its sidebar cache, focus-switching,
+// and (when `Body` is non-empty) routing through `SendMessageAs`.
+type QueryCommand struct {
+	Nick string   `arg:"" help:"Nick to open a direct message with"`
+	Body []string `arg:"" optional:"" nargs:"-1" help:"Optional message text"`
+}
+
+// Sources implements command.Completer.
+func (QueryCommand) Sources() map[string]command.SuggestionSource[CompletionContext] {
+	return map[string]command.SuggestionSource[CompletionContext]{"nick": instancesSource}
+}
+
+// Run implements Command.
+func (c QueryCommand) Run(rc Context) tea.Cmd {
+	return func() tea.Msg {
+		nick := domain.Nick(c.Nick)
+
+		resolved, err := rc.Session.ResolveNick(rc.Ctx, nick)
+		if err != nil {
+			if errors.Is(err, store.ErrNoSuchNick) {
+				return errorEvent("query", domain.UnknownNickError{Nick: nick})
+			}
+
+			return errorEvent("query", fmt.Errorf("resolve nick: %w", err))
+		}
+
+		return DMOpenedMsg{
+			Counterpart: resolved,
+			Body:        strings.TrimSpace(strings.Join(c.Body, " ")),
+			Focus:       true,
+			At:          time.Now(),
+		}
+	}
 }
 
 // RunTool implements ToolCommand. Models call this as the `msg`
@@ -454,7 +513,7 @@ func (c MsgCommand) RunTool(ctx context.Context, tc session.ToolContext) session
 	target := domain.ChannelName(c.Target)
 
 	if domain.InferChannelKind(target) == domain.KindChannel {
-		if err := c.sendToChannel(ctx, tc.Session, tc.Actor, target); err != nil {
+		if err := c.sendToChannel(ctx, tc.Session, tc.Actor, target, body); err != nil {
 			return session.ToolResultPayload{OK: false, Error: err.Error()}
 		}
 

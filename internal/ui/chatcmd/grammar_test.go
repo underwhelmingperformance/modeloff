@@ -93,7 +93,7 @@ func TestComplete_dm_excludes_channel_only_commands(t *testing.T) {
 
 	require.Equal(t, []string{
 		"join", "part", "list",
-		"msg", "nick", "me", "whois", "config",
+		"msg", "query", "nick", "me", "whois", "config",
 		"personas", "regenerate-personas",
 		"help", "clear", "quit",
 	}, suggestionValues(c))
@@ -104,7 +104,7 @@ func TestComplete_channel_includes_all_commands(t *testing.T) {
 
 	require.Equal(t, []string{
 		"join", "part", "list", "add-model", "invite", "kick",
-		"msg", "nick", "topic", "me", "whois", "config",
+		"msg", "query", "nick", "topic", "me", "whois", "config",
 		"personas", "regenerate-personas",
 		"help", "clear", "quit",
 	}, suggestionValues(c))
@@ -120,7 +120,7 @@ func TestNewParser_produces_all_commands(t *testing.T) {
 
 	require.Equal(t, []string{
 		"join", "part", "list", "add-model", "invite", "kick",
-		"msg", "nick", "topic", "me", "whois", "config",
+		"msg", "query", "nick", "topic", "me", "whois", "config",
 		"personas", "regenerate-personas",
 		"help", "clear", "quit",
 	}, names)

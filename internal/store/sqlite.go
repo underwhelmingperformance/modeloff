@@ -179,6 +179,10 @@ func NewSQLiteStore(ctx context.Context, db *sql.DB) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("drop legacy event types: %w", err)
 	}
 
+	if err := s.dropLegacyDMWindows(ctx); err != nil {
+		return nil, fmt.Errorf("drop legacy dm windows: %w", err)
+	}
+
 	if _, err := db.Exec(schema); err != nil {
 		return nil, fmt.Errorf("create schema: %w", err)
 	}
@@ -292,6 +296,45 @@ func (s *SQLiteStore) dropLegacyEventTypes(ctx context.Context) error {
 			"modeloff events table dropped; legacy `list` event rows present",
 			"component", "store.sqlite",
 		)
+
+		return nil
+	})
+}
+
+// dropLegacyDMWindows deletes any rows in the `channels` table
+// whose JSON `Kind` discriminator marks them as a DM. DMs were
+// previously persisted by `OpenDM`; the new policy treats them
+// as pure in-memory UI state owned by the chat-screen sidebar
+// cache, so any persisted row is a leftover from an older
+// session and is dropped on startup.
+func (s *SQLiteStore) dropLegacyDMWindows(ctx context.Context) error {
+	return s.inSpan(ctx, "store.sqlite.drop_legacy_dm_windows", nil, func(ctx context.Context, span trace.Span) error {
+		result, err := s.db.ExecContext(ctx,
+			`DELETE FROM channels WHERE json_extract(data, '$.Kind') = ?`,
+			int(domain.KindDM),
+		)
+		if err != nil {
+			if strings.Contains(err.Error(), "no such table") {
+				return nil
+			}
+
+			return fmt.Errorf("delete legacy dm windows: %w", err)
+		}
+
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("rows affected: %w", err)
+		}
+
+		span.SetAttributes(attribute.Int64("modeloff.migration.rows_dropped", rows))
+
+		if rows > 0 {
+			slog.Default().InfoContext(ctx,
+				"dropped legacy DM window rows",
+				"component", "store.sqlite",
+				"rows", rows,
+			)
+		}
 
 		return nil
 	})
@@ -657,8 +700,14 @@ func (s *SQLiteStore) GetWindow(ctx context.Context, name domain.ChannelName) (d
 
 // SaveWindow implements Store. The window is projected to a
 // private `channelRow` and persisted as JSON in the `channels`
-// table.
+// table. DM windows are rejected — DMs are pure in-memory UI
+// state owned by the chat-screen sidebar cache, so calling
+// `SaveWindow` with one is a programming error.
 func (s *SQLiteStore) SaveWindow(ctx context.Context, w domain.Window) error {
+	if w.Kind() == domain.KindDM {
+		return fmt.Errorf("store: refusing to persist a DM window for %q; DMs are in-memory UI state", w.Name())
+	}
+
 	return s.inSpan(ctx, "store.sqlite.save_window",
 		[]attribute.KeyValue{attribute.String(observability.AttrChannel, string(w.Name()))},
 		func(ctx context.Context, _ trace.Span) error {

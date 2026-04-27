@@ -283,22 +283,6 @@ func TestInviteAs_model_actor(t *testing.T) {
 	}, notices)
 }
 
-func TestOpenDM_returns_dm_with_counterpart(t *testing.T) {
-	sess, s := newTestSession(t)
-	ctx := t.Context()
-
-	botty := seedInstance(t, s, instanceSpec{
-		Nick:    "botty",
-		ModelID: "test/model",
-	})
-
-	dm, created, err := sess.OpenDM(ctx, botty)
-	require.NoError(t, err)
-	require.True(t, created)
-	require.Equal(t, domain.ChannelName(botty.ID()), dm.Name())
-	require.Same(t, botty, dm.Counterpart)
-}
-
 func TestSetTopicAs_rejects_DM(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
@@ -308,10 +292,7 @@ func TestSetTopicAs_rejects_DM(t *testing.T) {
 		ModelID: "test/model",
 	})
 
-	_, _, err := sess.OpenDM(ctx, botty)
-	require.NoError(t, err)
-
-	err = sess.SetTopic(ctx, domain.ChannelName(botty.ID()), "some topic")
+	err := sess.SetTopic(ctx, domain.ChannelName(botty.ID()), "some topic")
 	require.EqualError(t, err, "cannot set topic on a direct message")
 }
 
@@ -324,10 +305,7 @@ func TestKickAs_rejects_DM(t *testing.T) {
 		ModelID: "test/model",
 	})
 
-	_, _, err := sess.OpenDM(ctx, botty)
-	require.NoError(t, err)
-
-	err = sess.Kick(ctx, domain.ChannelName(botty.ID()), "botty")
+	err := sess.Kick(ctx, domain.ChannelName(botty.ID()), "botty")
 	require.EqualError(t, err, "cannot kick from a direct message")
 }
 
@@ -369,38 +347,6 @@ func TestSendActionAs_rejects_status_channel(t *testing.T) {
 		t.Fatalf("expected no event, got %T", evt)
 	default:
 	}
-}
-
-func TestOpenDM_rejects_status_channel_name(t *testing.T) {
-	sess, _ := newTestSession(t)
-
-	bad := domain.NewModelInstance("bad-id", domain.Nick(domain.StatusChannelName), "test/model", "", nil)
-	_, created, err := sess.OpenDM(t.Context(), bad)
-
-	var guard domain.StatusChannelGuardError
-	require.ErrorAs(t, err, &guard)
-	require.Equal(t, domain.StatusChannelGuardError{
-		Command: "msg",
-		Hint:    "&modeloff is the per-session status window and does not accept messages. Use /msg <nick-or-#channel> instead.",
-	}, guard)
-	require.False(t, created)
-}
-
-func TestJoinAs_DM_no_join_event(t *testing.T) {
-	sess, s := newTestSession(t)
-	ctx := t.Context()
-
-	botty := seedInstance(t, s, instanceSpec{Nick: "botty", ModelID: "test/model"})
-
-	// Seed a DM addressed by the counterpart's instance id.
-	dmName := domain.ChannelName(botty.ID())
-	saveTestChannel(t, sess, s, domain.NewDMWindow(botty, fixedTime))
-
-	// Join the DM — should not emit join events.
-	require.NoError(t, sess.Join(ctx, string(dmName)))
-
-	types := channelEventTypes(t, s, dmName)
-	require.Equal(t, []string{}, types)
 }
 
 // TestSendMessageAs_model_to_model_dispatches verifies that the

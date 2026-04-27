@@ -270,34 +270,27 @@ func TestSQLiteStore_SaveAndGetWindow_channel(t *testing.T) {
 	require.Equal(t, want.TopicSetAt, cw.TopicSetAt)
 }
 
-func TestSQLiteStore_SaveAndGetWindow_dm(t *testing.T) {
+// TestSQLiteStore_SaveWindow_rejects_dm pins the policy that DM
+// windows are not persisted: they are pure in-memory UI state
+// owned by the chat-screen sidebar cache, and `SaveWindow` is a
+// programming error if called with one.
+func TestSQLiteStore_SaveWindow_rejects_dm(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
 
 	bot := domain.NewModelInstance("id-1", "botty", "anthropic/claude-3-haiku", "", nil)
 	require.NoError(t, s.SaveInstance(ctx, bot))
 
-	want := domain.NewDMWindow(bot, testTime)
-	require.NoError(t, s.SaveWindow(ctx, want))
-
-	got, err := s.GetWindow(ctx, domain.ChannelName(bot.ID()))
-	require.NoError(t, err)
-	dm, ok := got.(*domain.DMWindow)
-	require.True(t, ok)
-	require.Equal(t, domain.ChannelName("id-1"), dm.Name())
-	require.Same(t, bot, dm.Counterpart)
+	err := s.SaveWindow(ctx, domain.NewDMWindow(bot, testTime))
+	require.Error(t, err)
 }
 
 func TestSQLiteStore_ListWindows_mixed(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
 
-	bot := domain.NewModelInstance("id-1", "botty", "anthropic/claude-3-haiku", "", nil)
-	require.NoError(t, s.SaveInstance(ctx, bot))
-
 	require.NoError(t, s.SaveWindow(ctx, domain.NewStatusWindow(testTime)))
 	require.NoError(t, s.SaveWindow(ctx, domain.NewChannelWindow("#general", testTime.Add(time.Hour))))
-	require.NoError(t, s.SaveWindow(ctx, domain.NewDMWindow(bot, testTime.Add(2*time.Hour))))
 
 	got, err := s.ListWindows(ctx)
 	require.NoError(t, err)
@@ -306,7 +299,7 @@ func TestSQLiteStore_ListWindows_mixed(t *testing.T) {
 	for _, w := range got {
 		kinds = append(kinds, w.Kind())
 	}
-	require.ElementsMatch(t, []domain.ChannelKind{domain.KindStatus, domain.KindChannel, domain.KindDM}, kinds)
+	require.ElementsMatch(t, []domain.ChannelKind{domain.KindStatus, domain.KindChannel}, kinds)
 }
 
 func TestSQLiteStore_DeleteWindow(t *testing.T) {

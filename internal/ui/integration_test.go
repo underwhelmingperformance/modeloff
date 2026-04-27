@@ -122,8 +122,10 @@ func TestApp_open_dm_and_send_message(t *testing.T) {
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen))
 	tm.WaitFor("#general")
 
-	tm.Submit("/msg botty hello there")
-	tm.WaitFor("Opened direct message with botty", "hello there")
+	// `/query` opens the DM window and switches focus, so the
+	// outgoing message body lands in the visible scrollback.
+	tm.Submit("/query botty hello there")
+	tm.WaitFor("hello there", "botty")
 }
 
 func TestApp_terminal_output_shows_full_model_nick_in_user_list(t *testing.T) {

@@ -15,6 +15,7 @@ type Grammar struct {
 	Invite             InviteCommand             `cmd:"" tool:"" kind:"channel" help:"Invite a nick to a channel."`
 	Kick               KickCommand               `cmd:"" tool:"" kind:"channel" help:"Remove a nick from the current channel."`
 	Msg                MsgCommand                `cmd:"" tool:"Send a message addressed to either a #channel you are in, or a user (by nick). The recipient sees the message and may reply." help:"Send a message to a #channel or to a user by nick."`
+	Query              QueryCommand              `cmd:"" help:"Open (or focus) a direct-message window with a nick. Optional trailing body is sent as the first message."`
 	Nick               NickCommand               `cmd:"" tool:"" help:"Change your nickname."`
 	Topic              TopicCommand              `cmd:"" tool:"" kind:"channel" help:"Set or clear the current channel topic."`
 	Me                 MeCommand                 `cmd:"" tool:"" help:"Send an action message (e.g. /me waves)."`

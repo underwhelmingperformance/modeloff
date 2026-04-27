@@ -223,12 +223,12 @@ func (s *Session) PartAs(ctx context.Context, actor *domain.Instance, ch domain.
 	)
 	defer endSpan(span, &retErr, observability.ErrorKindStore)
 
+	if domain.InferChannelKind(ch) != domain.KindChannel {
+		return errWithKind(fmt.Errorf("cannot part %s", ch), observability.ErrorKindValidation)
+	}
+
 	window, err := s.loadChannelWindow(ctx, ch)
 	if err != nil {
-		if errors.Is(err, domain.ErrNotChannelWindow) {
-			return errWithKind(fmt.Errorf("cannot part %s", ch), observability.ErrorKindValidation)
-		}
-
 		return fmt.Errorf("channel not found: %w", err)
 	}
 
@@ -476,14 +476,14 @@ func (s *Session) SetTopicAs(ctx context.Context, actor *domain.Instance, ch dom
 
 	span.SetAttributes(attribute.String(observability.AttrInstanceID, string(actor.ID())))
 
+	if domain.InferChannelKind(ch) != domain.KindChannel {
+		return errWithKind(fmt.Errorf("cannot set topic on a direct message"), observability.ErrorKindValidation)
+	}
+
 	now := s.now()
 
 	window, err := s.loadChannelWindow(ctx, ch)
 	if err != nil {
-		if errors.Is(err, domain.ErrNotChannelWindow) {
-			return errWithKind(fmt.Errorf("cannot set topic on a direct message"), observability.ErrorKindValidation)
-		}
-
 		return fmt.Errorf("get channel: %w", err)
 	}
 
@@ -519,12 +519,12 @@ func (s *Session) KickAs(ctx context.Context, actor, target *domain.Instance, ch
 	)
 	defer endSpan(span, &retErr, observability.ErrorKindStore)
 
+	if domain.InferChannelKind(ch) != domain.KindChannel {
+		return errWithKind(fmt.Errorf("cannot kick from a direct message"), observability.ErrorKindValidation)
+	}
+
 	window, err := s.loadChannelWindow(ctx, ch)
 	if err != nil {
-		if errors.Is(err, domain.ErrNotChannelWindow) {
-			return errWithKind(fmt.Errorf("cannot kick from a direct message"), observability.ErrorKindValidation)
-		}
-
 		return fmt.Errorf("get channel: %w", err)
 	}
 

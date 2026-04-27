@@ -540,8 +540,8 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	case domain.ModelReplyEvent:
 		return s.handleModelReplyEvent(msg)
 
-	case domain.DMOpenedEvent:
-		return s.handleDMOpenedEvent(msg)
+	case chatcmd.DMOpenedMsg:
+		return s.handleDMOpenedMsg(msg)
 
 	case domain.ConfigChangedEvent:
 		return s.handleConfigChangedEvent(msg)
