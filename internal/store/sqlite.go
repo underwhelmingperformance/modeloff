@@ -417,7 +417,7 @@ func (s *SQLiteStore) resolveChannelMembers(ctx context.Context, row *channelRow
 	var missing []domain.InstanceID
 	seen := make(map[domain.InstanceID]struct{})
 
-	for _, m := range row.Members.All() {
+	for m := range row.Members.All() {
 		id := m.Instance.ID()
 
 		if _, ok := seen[id]; ok {

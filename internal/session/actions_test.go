@@ -1,6 +1,7 @@
 package session
 
 import (
+	"slices"
 	"testing"
 	"time"
 
@@ -119,7 +120,7 @@ func TestPartAs_unknown_actor_is_noop(t *testing.T) {
 
 	updated, err := sess.loadChannelWindow(ctx, "#dev")
 	require.NoError(t, err)
-	require.Equal(t, testMembers(t, sess, s, "testuser").Slice(), updated.Members.Slice())
+	require.Equal(t, slices.Collect(testMembers(t, sess, s, "testuser").All()), slices.Collect(updated.Members.All()))
 }
 
 func TestQuitAs_model_actor(t *testing.T) {

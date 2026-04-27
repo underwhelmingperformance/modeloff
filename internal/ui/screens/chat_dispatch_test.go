@@ -3,6 +3,7 @@ package screens
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -531,7 +532,7 @@ func TestChatScreen_NickChange_then_Quit_removes_instance(t *testing.T) {
 		Instance: bot,
 		Nick:     "oldnick",
 		Mode:     domain.ModeNone,
-	}}, cw.Members.Slice())
+	}}, slices.Collect(cw.Members.All()))
 
 	// Rename: the session mutates the instance's own nick before
 	// emitting the event, so the handle's Nick() is already the new
@@ -552,7 +553,7 @@ func TestChatScreen_NickChange_then_Quit_removes_instance(t *testing.T) {
 		Instance: bot,
 		Nick:     "newnick",
 		Mode:     domain.ModeNone,
-	}}, cw.Members.Slice(),
+	}}, slices.Collect(cw.Members.All()),
 		"nick change should sync the member snapshot while preserving identity")
 
 	// Quit keyed by the same *Instance pointer cleanly removes the
@@ -564,7 +565,7 @@ func TestChatScreen_NickChange_then_Quit_removes_instance(t *testing.T) {
 	})
 
 	cw = requireChannelWindow(t, screen, "#general")
-	require.Empty(t, cw.Members.Slice(),
+	require.Empty(t, slices.Collect(cw.Members.All()),
 		"quit keyed by *Instance should remove the member regardless of the nick carried on the event")
 }
 

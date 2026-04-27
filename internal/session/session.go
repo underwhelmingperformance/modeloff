@@ -456,7 +456,7 @@ func (s *Session) persistChannelWindow(ctx context.Context, w *domain.ChannelWin
 // Modes are preserved.
 func cloneMembersWithout(src domain.MemberList, excluded *domain.Instance) domain.MemberList {
 	dst := domain.NewMemberList()
-	for _, m := range src.All() {
+	for m := range src.All() {
 		if m.Instance == excluded {
 			continue
 		}
@@ -1759,7 +1759,7 @@ func (s *Session) instanceChannelNames(inst *domain.Instance) []domain.ChannelNa
 func (s *Session) instancesForChannelWindow(window *domain.ChannelWindow) []*domain.Instance {
 	var instances []*domain.Instance
 
-	for _, m := range window.Members.All() {
+	for m := range window.Members.All() {
 		// The human user has no ModelID and is never dispatched to.
 		if !m.Instance.IsModel() {
 			continue

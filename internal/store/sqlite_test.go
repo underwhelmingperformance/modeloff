@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -45,37 +46,28 @@ func storeTestMembers(t *testing.T, s *SQLiteStore, nicks ...domain.Nick) domain
 	return ml
 }
 
-// normaliseWindow projects a window to a value-equality form
-// suitable for `require.Equal`. Members live on a sorted set
-// whose comparator function pointer breaks `reflect.DeepEqual`
-// across independently constructed lists, so per-kind state is
-// flattened into an anonymous shape that holds the member list
-// as a slice.
-func normaliseWindow(w domain.Window) any {
-	type projection struct {
-		Name       domain.ChannelName
-		Kind       domain.ChannelKind
-		Topic      string
-		TopicSetBy domain.Nick
-		TopicSetAt time.Time
-		Members    []domain.Member
-		Created    time.Time
-	}
+// requireWindowEqual asserts that two windows have the same
+// addressable identity (name, kind, creation time) and the same
+// per-kind state. It walks the fields by hand because
+// `*set.Sorted[Member]` stores its comparator as a function
+// pointer that always trips `reflect.DeepEqual`, so a single
+// `require.Equal` over the windows would never pass for two
+// independently-built channel-kind windows.
+func requireWindowEqual(t *testing.T, expected, actual domain.Window) {
+	t.Helper()
 
-	out := projection{
-		Name:    w.Name(),
-		Kind:    w.Kind(),
-		Created: w.Created(),
-	}
+	require.Equal(t, expected.Name(), actual.Name())
+	require.Equal(t, expected.Kind(), actual.Kind())
+	require.Equal(t, expected.Created(), actual.Created())
 
-	if cw, ok := w.(*domain.ChannelWindow); ok {
-		out.Topic = cw.Topic
-		out.TopicSetBy = cw.TopicSetBy
-		out.TopicSetAt = cw.TopicSetAt
-		out.Members = cw.Members.Slice()
+	if cwExpected, ok := expected.(*domain.ChannelWindow); ok {
+		cwActual, ok := actual.(*domain.ChannelWindow)
+		require.True(t, ok, "actual is not a *ChannelWindow")
+		require.Equal(t, cwExpected.Topic, cwActual.Topic)
+		require.Equal(t, cwExpected.TopicSetBy, cwActual.TopicSetBy)
+		require.Equal(t, cwExpected.TopicSetAt, cwActual.TopicSetAt)
+		require.Equal(t, slices.Collect(cwExpected.Members.All()), slices.Collect(cwActual.Members.All()))
 	}
-
-	return out
 }
 
 func requireWindowsEqual(t *testing.T, expected, actual []domain.Window) {
@@ -83,14 +75,8 @@ func requireWindowsEqual(t *testing.T, expected, actual []domain.Window) {
 
 	require.Equal(t, len(expected), len(actual))
 	for i := range expected {
-		require.Equal(t, normaliseWindow(expected[i]), normaliseWindow(actual[i]))
+		requireWindowEqual(t, expected[i], actual[i])
 	}
-}
-
-func requireWindowEqual(t *testing.T, expected, actual domain.Window) {
-	t.Helper()
-
-	require.Equal(t, normaliseWindow(expected), normaliseWindow(actual))
 }
 
 type channelEntry struct {
@@ -659,7 +645,7 @@ func TestSQLiteStore_GetWindow_drops_dead_member_references(t *testing.T) {
 	require.True(t, ok)
 
 	gotNicks := make([]domain.Nick, 0, gotChannel.Members.Len())
-	for _, m := range gotChannel.Members.All() {
+	for m := range gotChannel.Members.All() {
 		gotNicks = append(gotNicks, m.Nick)
 	}
 

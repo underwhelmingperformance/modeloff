@@ -1,3 +1,4 @@
+// Package set provides unordered and sorted set helpers.
 package set
 
 import (

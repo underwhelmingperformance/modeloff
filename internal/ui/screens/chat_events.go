@@ -894,7 +894,7 @@ func (s ChatScreen) activeChannelInstances() iter.Seq[*domain.Instance] {
 			return
 		}
 
-		for _, m := range cw.Members.All() {
+		for m := range cw.Members.All() {
 			if !yield(m.Instance) {
 				return
 			}

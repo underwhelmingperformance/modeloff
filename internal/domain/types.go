@@ -617,29 +617,14 @@ func (ml MemberList) SortedSet() *set.Sorted[Member] {
 }
 
 // All yields every member in display order.
-func (ml MemberList) All() iter.Seq2[int, Member] {
-	return ml.members.Indexed()
-}
-
-// Slice returns all members as a plain slice in display order.
-func (ml MemberList) Slice() []Member {
-	if ml.Len() == 0 {
-		return nil
-	}
-
-	out := make([]Member, 0, ml.Len())
-
-	for _, m := range ml.All() {
-		out = append(out, m)
-	}
-
-	return out
+func (ml MemberList) All() iter.Seq[Member] {
+	return ml.members.All()
 }
 
 // Nicks returns an iterator over just the nicks in display order.
 func (ml MemberList) Nicks() iter.Seq[Nick] {
 	return func(yield func(Nick) bool) {
-		for _, m := range ml.All() {
+		for m := range ml.All() {
 			if !yield(m.Nick) {
 				return
 			}
@@ -663,7 +648,7 @@ type memberJSON struct {
 func (ml MemberList) MarshalJSON() ([]byte, error) {
 	out := make([]memberJSON, 0, ml.Len())
 
-	for _, m := range ml.All() {
+	for m := range ml.All() {
 		var id InstanceID
 		if m.Instance != nil {
 			id = m.Instance.ID()
@@ -730,7 +715,7 @@ func (ml *MemberList) ResolveInstances(resolve InstanceResolver) {
 	rebuilt := set.NewSorted(memberLess)
 	byInstance := make(map[*Instance]Member, ml.members.Len())
 
-	for _, m := range ml.All() {
+	for m := range ml.All() {
 		id := m.Instance.ID()
 
 		canonical := resolve(id)

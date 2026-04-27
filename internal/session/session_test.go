@@ -62,35 +62,6 @@ func requireChannels(t *testing.T, channels *orderedmap.OrderedMap[domain.Channe
 	require.Equal(t, []domain.ChannelName(expected), got)
 }
 
-// normaliseChannelWindow projects a channel window to a value-
-// equality form suitable for `require.Equal`. Members live on a
-// sorted set whose comparator function pointer breaks
-// `reflect.DeepEqual` across independently constructed lists, so
-// the member list is flattened into a slice on both sides.
-func normaliseChannelWindow(cw *domain.ChannelWindow) any {
-	type projection struct {
-		Name       domain.ChannelName
-		Topic      string
-		TopicSetBy domain.Nick
-		TopicSetAt time.Time
-		Members    []domain.Member
-		Created    time.Time
-	}
-
-	if cw == nil {
-		return projection{}
-	}
-
-	return projection{
-		Name:       cw.Name(),
-		Topic:      cw.Topic,
-		TopicSetBy: cw.TopicSetBy,
-		TopicSetAt: cw.TopicSetAt,
-		Members:    cw.Members.Slice(),
-		Created:    cw.Created(),
-	}
-}
-
 func loadGolden(t *testing.T, name string) string {
 	t.Helper()
 
@@ -328,10 +299,22 @@ func testMemberID(nick domain.Nick) domain.InstanceID {
 	return domain.InstanceID("inst-" + string(nick))
 }
 
+// requireChannelEqual asserts that two channel windows have the
+// same addressable name, creation time, topic metadata, and
+// members in display order. It walks the fields by hand because
+// `*set.Sorted[Member]` stores its comparator as a function
+// pointer that always trips `reflect.DeepEqual`, so a single
+// `require.Equal` over the windows would never pass for two
+// independently-built lists with identical contents.
 func requireChannelEqual(t *testing.T, expected, actual *domain.ChannelWindow) {
 	t.Helper()
 
-	require.Equal(t, normaliseChannelWindow(expected), normaliseChannelWindow(actual))
+	require.Equal(t, expected.Name(), actual.Name())
+	require.Equal(t, expected.Created(), actual.Created())
+	require.Equal(t, expected.Topic, actual.Topic)
+	require.Equal(t, expected.TopicSetBy, actual.TopicSetBy)
+	require.Equal(t, expected.TopicSetAt, actual.TopicSetAt)
+	require.Equal(t, slices.Collect(expected.Members.All()), slices.Collect(actual.Members.All()))
 }
 
 // newTestChannelWindow constructs a `*domain.ChannelWindow` for use
@@ -1140,7 +1123,7 @@ func TestSession_AddModel(t *testing.T) {
 	require.Equal(t, []domain.Member{
 		{Instance: sess.UserInstance(), Nick: "testuser", Mode: domain.ModeOp},
 		{Instance: evt.Instance, Nick: "fakenick", Mode: domain.ModeVoice},
-	}, updated.Members.Slice())
+	}, slices.Collect(updated.Members.All()))
 }
 
 func TestSession_Kick(t *testing.T) {
@@ -1168,7 +1151,7 @@ func TestSession_Kick(t *testing.T) {
 	// Channel should no longer have the kicked member.
 	updated, err := sess.loadChannelWindow(ctx, "#dev")
 	require.NoError(t, err)
-	require.Equal(t, testMembers(t, sess, s, "testuser").Slice(), updated.Members.Slice())
+	require.Equal(t, slices.Collect(testMembers(t, sess, s, "testuser").All()), slices.Collect(updated.Members.All()))
 
 	inst, err := s.ResolveNick(ctx, "botty")
 	require.NoError(t, err)
@@ -2467,7 +2450,7 @@ func TestSession_InviteAs_reuses_existing_instance(t *testing.T) {
 
 	channel, err := sess.loadChannelWindow(ctx, "#random")
 	require.NoError(t, err)
-	require.Equal(t, testMembers(t, sess, s, "testuser", "botty").Slice(), channel.Members.Slice())
+	require.Equal(t, slices.Collect(testMembers(t, sess, s, "testuser", "botty").All()), slices.Collect(channel.Members.All()))
 }
 
 func TestSession_InviteAs_existing_instance_is_idempotent(t *testing.T) {
@@ -2489,7 +2472,7 @@ func TestSession_InviteAs_existing_instance_is_idempotent(t *testing.T) {
 
 	channel, err := sess.loadChannelWindow(ctx, "#general")
 	require.NoError(t, err)
-	require.Equal(t, testMembers(t, sess, s, "testuser", "botty").Slice(), channel.Members.Slice())
+	require.Equal(t, slices.Collect(testMembers(t, sess, s, "testuser", "botty").All()), slices.Collect(channel.Members.All()))
 }
 
 func TestSession_InviteAs_existing_instance_preserves_persona(t *testing.T) {
@@ -2574,7 +2557,7 @@ func TestSession_KickNonMember(t *testing.T) {
 
 	updated, err := sess.loadChannelWindow(ctx, "#dev")
 	require.NoError(t, err)
-	require.Equal(t, testMembers(t, sess, s, "testuser").Slice(), updated.Members.Slice())
+	require.Equal(t, slices.Collect(testMembers(t, sess, s, "testuser").All()), slices.Collect(updated.Members.All()))
 }
 
 func TestSession_SetTopicNonexistentChannel(t *testing.T) {

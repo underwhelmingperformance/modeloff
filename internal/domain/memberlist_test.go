@@ -2,6 +2,7 @@ package domain_test
 
 import (
 	"encoding/json"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -63,7 +64,7 @@ func TestMemberList_sort_order_by_mode_then_nick(t *testing.T) {
 		{Instance: bob, Nick: "bob", Mode: domain.ModeNone},
 	}
 
-	require.Equal(t, expected, ml.Slice())
+	require.Equal(t, expected, slices.Collect(ml.All()))
 }
 
 func TestMemberList_SetMode_by_instance(t *testing.T) {
@@ -81,7 +82,7 @@ func TestMemberList_SetMode_by_instance(t *testing.T) {
 		{Instance: alice, Nick: "alice", Mode: domain.ModeNone},
 	}
 
-	require.Equal(t, expected, ml.Slice())
+	require.Equal(t, expected, slices.Collect(ml.All()))
 }
 
 func TestMemberList_SetMode_unknown_instance_is_noop(t *testing.T) {
@@ -95,7 +96,7 @@ func TestMemberList_SetMode_unknown_instance_is_noop(t *testing.T) {
 
 	require.Equal(t, []domain.Member{
 		{Instance: alice, Nick: "alice", Mode: domain.ModeNone},
-	}, ml.Slice())
+	}, slices.Collect(ml.All()))
 }
 
 func TestMemberList_SetModeByNick_forwards_to_handle(t *testing.T) {
@@ -118,7 +119,7 @@ func TestMemberList_SetModeByNick_forwards_to_handle(t *testing.T) {
 	require.Equal(t, []domain.Member{
 		{Instance: bob, Nick: "bob", Mode: domain.ModeOp},
 		{Instance: alice, Nick: "alice", Mode: domain.ModeNone},
-	}, ml.Slice())
+	}, slices.Collect(ml.All()))
 }
 
 func TestMemberList_RenameTo_preserves_identity_and_mode(t *testing.T) {
@@ -139,7 +140,7 @@ func TestMemberList_RenameTo_preserves_identity_and_mode(t *testing.T) {
 
 	require.Equal(t, []domain.Member{
 		{Instance: alice, Nick: "alice2", Mode: domain.ModeOp},
-	}, ml.Slice())
+	}, slices.Collect(ml.All()))
 }
 
 func TestMemberList_RenameTo_unknown_instance_is_noop(t *testing.T) {
@@ -153,7 +154,7 @@ func TestMemberList_RenameTo_unknown_instance_is_noop(t *testing.T) {
 
 	require.Equal(t, []domain.Member{
 		{Instance: alice, Nick: "alice", Mode: domain.ModeNone},
-	}, ml.Slice())
+	}, slices.Collect(ml.All()))
 }
 
 func TestMemberList_Remove_by_instance(t *testing.T) {
@@ -170,7 +171,7 @@ func TestMemberList_Remove_by_instance(t *testing.T) {
 	require.True(t, ml.HasInstance(bob))
 	require.Equal(t, []domain.Member{
 		{Instance: bob, Nick: "bob", Mode: domain.ModeNone},
-	}, ml.Slice())
+	}, slices.Collect(ml.All()))
 }
 
 func TestMemberList_Add_existing_instance_updates_snapshot_nick(t *testing.T) {
@@ -200,7 +201,7 @@ func TestMemberList_user_instance_is_a_regular_member(t *testing.T) {
 	require.True(t, ml.HasInstance(user))
 	require.Equal(t, []domain.Member{
 		{Instance: user, Nick: "testuser", Mode: domain.ModeOp},
-	}, ml.Slice())
+	}, slices.Collect(ml.All()))
 
 	// The user's handle supports rename in place, just like any
 	// other member.
@@ -243,7 +244,7 @@ func TestMemberList_JSON_round_trip_requires_resolver(t *testing.T) {
 		return canonical[id]
 	})
 
-	require.Equal(t, ml.Slice(), ml2.Slice())
+	require.Equal(t, slices.Collect(ml.All()), slices.Collect(ml2.All()))
 }
 
 func TestMemberList_ResolveInstances_drops_nil_resolved(t *testing.T) {
@@ -272,7 +273,7 @@ func TestMemberList_ResolveInstances_drops_nil_resolved(t *testing.T) {
 
 	require.Equal(t, []domain.Member{
 		{Instance: alice, Nick: "alice", Mode: domain.ModeNone},
-	}, ml2.Slice())
+	}, slices.Collect(ml2.All()))
 }
 
 func TestMemberList_zero_value_is_safe(t *testing.T) {
@@ -283,7 +284,7 @@ func TestMemberList_zero_value_is_safe(t *testing.T) {
 	require.Equal(t, 0, ml.Len())
 	require.False(t, ml.HasInstance(alice))
 	require.False(t, ml.HasNick("alice"))
-	require.Empty(t, ml.Slice())
+	require.Empty(t, slices.Collect(ml.All()))
 
 	_, ok := ml.GetByInstance(alice)
 	require.False(t, ok)
