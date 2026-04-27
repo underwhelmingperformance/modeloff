@@ -513,7 +513,7 @@ func (c TopicCommand) Run(rc Context) tea.Cmd {
 				return errorEvent("topic", fmt.Errorf("%s is not a channel", rc.Active))
 			}
 
-			return TopicInfoResult{Channel: domain.ChannelFromWindow(cw)}
+			return TopicInfoResult{Window: cw}
 		}
 	}
 

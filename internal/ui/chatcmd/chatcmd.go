@@ -66,9 +66,14 @@ type WhoisResult struct {
 	Instance *domain.Instance
 }
 
-// TopicInfoResult carries the current topic metadata for display.
+// TopicInfoResult carries the current topic metadata for
+// display. `Window` is the typed `*ChannelWindow` so the UI
+// can read `Topic` / `TopicSetBy` / `TopicSetAt` directly off
+// the handle. DM and status windows never produce a
+// `TopicInfoResult` — `/topic` rejects non-channel targets at
+// the command layer.
 type TopicInfoResult struct {
-	Channel domain.Channel
+	Window *domain.ChannelWindow
 }
 
 // ListResult carries the channel list for a /list reply.

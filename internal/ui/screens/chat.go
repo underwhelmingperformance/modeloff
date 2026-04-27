@@ -310,10 +310,10 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 	case chatcmd.TopicInfoResult:
 		return s, s.logAndShow(domain.TopicInfo{
-			Target:     msg.Channel.Name,
-			Topic:      msg.Channel.Topic,
-			TopicSetBy: msg.Channel.TopicSetBy,
-			TopicSetAt: msg.Channel.TopicSetAt,
+			Target:     msg.Window.Name(),
+			Topic:      msg.Window.Topic,
+			TopicSetBy: msg.Window.TopicSetBy,
+			TopicSetAt: msg.Window.TopicSetAt,
 			At:         time.Now(),
 		})
 
