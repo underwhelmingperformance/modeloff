@@ -79,21 +79,31 @@ func (s ChatScreen) handleSessionEvent(msg sessionEventMsg) (ui.Model, tea.Cmd) 
 }
 
 // bufferEvent appends a persistable event to the scrollback for its
-// target channel. The buffer is purely live-event-driven: every
+// target window. The buffer is purely live-event-driven: every
 // persistable event the user's session sees during this run lands
-// here, regardless of which channel is active, so a later focus
+// here, regardless of which window is active, so a later focus
 // change is a pure swap. The persisted event log is the models'
 // shared memory and is never read into this buffer — the user only
 // sees events from this session's join onward, mirroring IRC's
 // "you don't see what happened before you joined" rule.
 //
-// SystemNoticeEvent is special-cased because it is a UI carrier
-// for an already-persisted SystemNotice; the wrapped
-// Stored.Event lands in the buffer.
+// `Message` events route via [domain.Message.RoutingKey] so DM
+// traffic in either direction lands in the same per-peer
+// scrollback. Other persistable events are channel-keyed by
+// their `Target`. SystemNoticeEvent is special-cased because it
+// is a UI carrier for an already-persisted SystemNotice; the
+// wrapped Stored.Event lands in the buffer.
 func (s ChatScreen) bufferEvent(evt domain.Event) {
 	switch e := evt.(type) {
 	case domain.SystemNoticeEvent:
 		s.appendToScrollback(e.Channel, e.Stored)
+	case domain.Message:
+		key, ok := e.RoutingKey(s.sess.UserInstance().ID())
+		if !ok || key == "" {
+			return
+		}
+
+		s.appendToScrollback(key, domain.StoredEvent{Event: e})
 	case domain.PersistableEvent:
 		ch := domain.EventTarget(e)
 		if ch == "" {
@@ -600,16 +610,23 @@ func (s ChatScreen) handleModelKickedEvent(msg domain.ModelKicked) (ui.Model, te
 }
 
 func (s ChatScreen) handleMessageEvent(msg domain.Message) (ui.Model, tea.Cmd) {
+	key, ok := msg.RoutingKey(s.sess.UserInstance().ID())
+	if !ok {
+		// Foreign DM (model-to-model traffic the user is not a
+		// party to). Not surfaced in the user's UI.
+		return s, nil
+	}
+
 	event := domain.StoredEvent{Event: msg}
 
-	if msg.Target == *s.active {
+	if key == *s.active {
 		return s, msgCmd(event)
 	}
 
-	count, _ := s.sess.UnreadCount(s.ctx, msg.Target)
+	count, _ := s.sess.UnreadCount(s.ctx, key)
 	mention := s.isHighlight(msg.Body)
 
-	return s, msgCmd(components.ChannelUnreadMsg{Channel: msg.Target, Count: count, Mention: mention})
+	return s, msgCmd(components.ChannelUnreadMsg{Channel: key, Count: count, Mention: mention})
 }
 
 func (s ChatScreen) handleModelReplyEvent(msg domain.ModelReplyEvent) (ui.Model, tea.Cmd) {

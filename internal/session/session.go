@@ -1686,25 +1686,32 @@ func (s *Session) instancesForChannelWindow(window *domain.ChannelWindow) []*dom
 //
 //   - A `#`-prefixed channel name fans out to every model member
 //     of that channel (the existing channel-Members iteration).
-//   - A bare nick is a DM-style address — resolve the nick to its
-//     `*Instance` and return it as a single recipient. The user
-//     is not a dispatch target (the user reads via the UI), so a
-//     nick that resolves to the user's instance is filtered out.
+//   - A non-empty `InstanceID`-shaped target is a DM addressed
+//     at that specific instance — resolve it through the store
+//     and return as a single recipient if it's a model.
+//   - An empty target is a DM addressed at the user. The user
+//     is not a dispatch target (they read via the UI), so this
+//     resolves to no recipients.
 //   - The status window has no recipients; it carries server-
 //     narrated notices, not dispatchable messages.
 //
 // The DM path deliberately does not go through `loadChannel +
 // instancesForChannel`. Modeloff's DMs don't have a member-list
-// concept on the server side: the nick of the target *is* the
-// recipient, full stop. Dispatching by nick keeps that model
-// honest and works regardless of whether a `*DMWindow` row
-// exists in the user's windows table for the conversation.
+// concept on the server side: the recipient is encoded directly
+// in the target. Dispatching by id keeps that model honest and
+// works without any `*DMWindow` state on the server.
 func (s *Session) resolveDispatchRecipients(ctx context.Context, target domain.ChannelName) ([]*domain.Instance, error) {
 	switch domain.InferChannelKind(target) {
 	case domain.KindStatus:
 		return nil, nil
 
 	case domain.KindDM:
+		if target == "" {
+			// Empty target identifies the user as recipient. The
+			// user is read by the UI, not dispatched.
+			return nil, nil
+		}
+
 		inst, err := s.store.GetInstanceByID(ctx, domain.InstanceID(target))
 		if err != nil {
 			return nil, err
@@ -1726,6 +1733,28 @@ func (s *Session) resolveDispatchRecipients(ctx context.Context, target domain.C
 	}
 
 	return nil, nil
+}
+
+// dispatchHistoryFor fetches the conversation history a
+// dispatched recipient should see as context. For channel
+// targets that is the channel's own event log; for DM targets
+// it is the bidirectional union of events between the
+// recipient and the trigger sender (the peer), since either
+// direction is part of the same DM thread.
+func (s *Session) dispatchHistoryFor(ctx context.Context, target domain.ChannelName, recipient *domain.Instance, triggerEvents []protocol.IRCMessage) ([]domain.StoredEvent, error) {
+	if domain.InferChannelKind(target) != domain.KindDM {
+		return s.store.EventsBefore(ctx, target, nil, 500)
+	}
+
+	// In a DM, the dispatched recipient is one party and the
+	// trigger sender is the other. Either party may be the user,
+	// whose `InstanceID` is empty by convention.
+	var peer domain.InstanceID
+	if len(triggerEvents) > 0 {
+		peer = triggerEvents[0].InstanceID
+	}
+
+	return s.store.DMEventsBefore(ctx, recipient.ID(), peer, nil, 500)
 }
 
 // EventsAfter returns the channel's events whose timestamp is at or
@@ -2038,7 +2067,7 @@ func (s *Session) dispatchInBackground(ctx context.Context, ch domain.ChannelNam
 
 		s.emitUIOnly(domain.DispatchStartedEvent{Channel: ch, Nicks: nicks})
 
-		historyEvents, err := s.store.EventsBefore(ctx, ch, nil, 500)
+		historyEvents, err := s.dispatchHistoryFor(ctx, ch, instances[0], triggerEvents)
 		if err != nil {
 			setSpanError(span, err, observability.ErrorKindStore)
 			s.appendStatus(ctx, fmt.Sprintf("dispatch to %s: %s", ch, err))

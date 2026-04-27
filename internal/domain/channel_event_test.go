@@ -221,6 +221,86 @@ func TestChannelEvent_JSON_round_trip(t *testing.T) {
 	}
 }
 
+func TestMessage_RoutingKey(t *testing.T) {
+	const userID domain.InstanceID = ""
+	const bottyID domain.InstanceID = "inst-botty"
+	const helperID domain.InstanceID = "inst-helper"
+
+	tests := []struct {
+		name     string
+		msg      domain.Message
+		self     domain.InstanceID
+		wantKey  domain.ChannelName
+		wantOK   bool
+		whatItIs string
+	}{
+		{
+			name:     "channel target routes to channel",
+			msg:      domain.Message{Target: "#general", InstanceID: bottyID, From: "botty"},
+			self:     userID,
+			wantKey:  "#general",
+			wantOK:   true,
+			whatItIs: "channel events route by target regardless of self",
+		},
+		{
+			name:     "user-to-model dm routes to model peer",
+			msg:      domain.Message{Target: domain.ChannelName(bottyID), InstanceID: userID, From: "iain"},
+			self:     userID,
+			wantKey:  domain.ChannelName(bottyID),
+			wantOK:   true,
+			whatItIs: "user is the sender, peer is the recipient",
+		},
+		{
+			name:     "model-to-user dm routes to model peer",
+			msg:      domain.Message{Target: domain.ChannelName(userID), InstanceID: bottyID, From: "botty"},
+			self:     userID,
+			wantKey:  domain.ChannelName(bottyID),
+			wantOK:   true,
+			whatItIs: "user is the recipient, peer is the sender",
+		},
+		{
+			name:     "model-to-model dm visible to one party",
+			msg:      domain.Message{Target: domain.ChannelName(helperID), InstanceID: bottyID, From: "botty"},
+			self:     bottyID,
+			wantKey:  domain.ChannelName(helperID),
+			wantOK:   true,
+			whatItIs: "for the model that sent it, peer is the recipient",
+		},
+		{
+			name:     "model-to-model dm visible to other party",
+			msg:      domain.Message{Target: domain.ChannelName(helperID), InstanceID: bottyID, From: "botty"},
+			self:     helperID,
+			wantKey:  domain.ChannelName(bottyID),
+			wantOK:   true,
+			whatItIs: "for the model that received it, peer is the sender",
+		},
+		{
+			name:     "foreign model-to-model dm hides from user",
+			msg:      domain.Message{Target: domain.ChannelName(helperID), InstanceID: bottyID, From: "botty"},
+			self:     userID,
+			wantKey:  "",
+			wantOK:   false,
+			whatItIs: "user is not a party; routing returns ok=false so the chat screen ignores it",
+		},
+		{
+			name:     "status target routes to status",
+			msg:      domain.Message{Target: domain.StatusChannelName, InstanceID: userID, From: "iain"},
+			self:     userID,
+			wantKey:  domain.StatusChannelName,
+			wantOK:   true,
+			whatItIs: "status events route by target like channels",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotKey, gotOK := tt.msg.RoutingKey(tt.self)
+			require.Equal(t, tt.wantOK, gotOK, tt.whatItIs)
+			require.Equal(t, tt.wantKey, gotKey, tt.whatItIs)
+		})
+	}
+}
+
 func TestUnmarshalChannelEvent_unknown_type(t *testing.T) {
 	_, err := domain.UnmarshalPersistableEvent([]byte(`{"type":"unknown","data":{}}`))
 	require.Error(t, err)

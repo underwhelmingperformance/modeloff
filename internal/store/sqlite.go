@@ -752,17 +752,25 @@ func (s *SQLiteStore) AppendEvent(ctx context.Context, ch domain.ChannelName, ev
 	return id, err
 }
 
-// EventsBefore implements Store.
+// EventsBefore implements Store. The query takes the last `n`
+// events strictly before `before` (or the most recent when
+// `before` is nil) by selecting them descending in an inner
+// query and re-ordering ascending in the outer one — the driver
+// then yields rows already in chronological order.
 func (s *SQLiteStore) EventsBefore(ctx context.Context, ch domain.ChannelName, before *int64, n int) ([]domain.StoredEvent, error) {
 	var events []domain.StoredEvent
 	err := s.inSpan(ctx, "store.sqlite.events_before",
 		[]attribute.KeyValue{attribute.String(observability.AttrChannel, string(ch))},
 		func(ctx context.Context, _ trace.Span) error {
-			query, args := `SELECT id, data FROM events WHERE channel = ?
-				 ORDER BY id DESC LIMIT ?`, []any{ch, n}
+			query, args := `SELECT id, data FROM (
+					SELECT id, data FROM events WHERE channel = ?
+					ORDER BY id DESC LIMIT ?
+				) ORDER BY id ASC`, []any{ch, n}
 			if before != nil {
-				query, args = `SELECT id, data FROM events WHERE channel = ? AND id < ?
-					 ORDER BY id DESC LIMIT ?`, []any{ch, *before, n}
+				query, args = `SELECT id, data FROM (
+						SELECT id, data FROM events WHERE channel = ? AND id < ?
+						ORDER BY id DESC LIMIT ?
+					) ORDER BY id ASC`, []any{ch, *before, n}
 			}
 
 			got, err := queryRows(ctx, s.db, query, args, storedEventRow)
@@ -770,9 +778,52 @@ func (s *SQLiteStore) EventsBefore(ctx context.Context, ch domain.ChannelName, b
 				return err
 			}
 
-			// Reverse to chronological order.
-			for i, j := 0, len(got)-1; i < j; i, j = i+1, j-1 {
-				got[i], got[j] = got[j], got[i]
+			events = got
+			return nil
+		})
+
+	return events, err
+}
+
+// DMEventsBefore implements Store. The DM thread is the union of
+// both directions between `self` and `peer`: rows whose
+// `channel` column matches one party and whose JSON `instance_id`
+// matches the other. Either id may be the empty string (the
+// user's `InstanceID`); JSON `omitzero` means an empty sender id
+// is absent from the JSON entirely, so the predicate compares
+// against `coalesce(json_extract(...), ”)` to match both
+// shapes uniformly. Rows come back in chronological order via
+// the inner-desc / outer-asc subquery pattern.
+func (s *SQLiteStore) DMEventsBefore(ctx context.Context, self, peer domain.InstanceID, before *int64, n int) ([]domain.StoredEvent, error) {
+	var events []domain.StoredEvent
+	err := s.inSpan(ctx, "store.sqlite.dm_events_before",
+		[]attribute.KeyValue{
+			attribute.String(observability.AttrInstanceID, string(self)),
+			attribute.String("modeloff.dm.peer_id", string(peer)),
+		},
+		func(ctx context.Context, _ trace.Span) error {
+			const predicate = `(
+				(channel = ? AND coalesce(json_extract(data, '$.data.instance_id'), '') = ?)
+				OR
+				(channel = ? AND coalesce(json_extract(data, '$.data.instance_id'), '') = ?)
+			)`
+
+			query, args := `SELECT id, data FROM (
+					SELECT id, data FROM events WHERE `+predicate+`
+					ORDER BY id DESC LIMIT ?
+				) ORDER BY id ASC`,
+				[]any{string(peer), string(self), string(self), string(peer), n}
+			if before != nil {
+				query, args = `SELECT id, data FROM (
+						SELECT id, data FROM events WHERE `+predicate+` AND id < ?
+						ORDER BY id DESC LIMIT ?
+					) ORDER BY id ASC`,
+					[]any{string(peer), string(self), string(self), string(peer), *before, n}
+			}
+
+			got, err := queryRows(ctx, s.db, query, args, storedEventRow)
+			if err != nil {
+				return err
 			}
 
 			events = got

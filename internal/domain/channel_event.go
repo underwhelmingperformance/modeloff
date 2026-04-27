@@ -85,6 +85,41 @@ func (e Message) persistableEventTime() time.Time { return e.At }
 // ModelVisible implements PersistableEvent.
 func (Message) ModelVisible() bool { return true }
 
+// RoutingKey returns the conversation key this message belongs
+// to from `self`'s point of view. For channel- and status-shaped
+// targets it is the target itself. For DMs it is the *peer* —
+// the non-self party — derived from `Target` and `InstanceID`:
+//
+//   - if `self` is the sender (`e.InstanceID == self`), the
+//     peer is the recipient (`e.Target`);
+//   - if `self` is the recipient (`ChannelName(self) ==
+//     e.Target`), the peer is the sender (`e.InstanceID`);
+//   - otherwise the message belongs to a foreign DM that does
+//     not involve `self`, and the second return is false.
+//
+// `self` is the empty `InstanceID` for the human user, the
+// model's id for a model. The returned key is what the chat
+// screen and the model dispatch context-builder use to decide
+// which window/thread the event lands in.
+func (e Message) RoutingKey(self InstanceID) (ChannelName, bool) {
+	switch InferChannelKind(e.Target) {
+	case KindChannel, KindStatus:
+		return e.Target, true
+	case KindDM:
+		if e.InstanceID == self {
+			return e.Target, true
+		}
+
+		if ChannelName(self) == e.Target {
+			return ChannelName(e.InstanceID), true
+		}
+
+		return "", false
+	}
+
+	return "", false
+}
+
 // Join records a user or model joining a channel.
 //
 // `Instance` is the live actor handle, populated when the session

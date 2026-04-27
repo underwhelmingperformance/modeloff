@@ -44,6 +44,16 @@ type Store interface {
 	EventsBefore(ctx context.Context, ch domain.ChannelName, before *int64, n int) ([]domain.StoredEvent, error)
 	EventsFrom(ctx context.Context, ch domain.ChannelName, from *int64, n int) ([]domain.StoredEvent, error)
 
+	// DMEventsBefore returns up to `n` events from the DM thread
+	// between `self` and `peer` strictly before `before` (or the
+	// most recent if `before` is nil), in chronological order.
+	// The thread is the union of both directions: events whose
+	// `channel` column is `peer` and whose sender is `self`, plus
+	// events whose `channel` column is `self` and whose sender is
+	// `peer`. Either side of the pair may be empty (the user's
+	// `InstanceID` is empty by convention).
+	DMEventsBefore(ctx context.Context, self, peer domain.InstanceID, before *int64, n int) ([]domain.StoredEvent, error)
+
 	// Model instances.
 	//
 	// The store is the sole authority for `*Instance` pointer

@@ -403,6 +403,58 @@ func TestSQLiteStore_EventsBefore_with_cursor(t *testing.T) {
 	require.Equal(t, []int64{ids[1], ids[2]}, gotIDs)
 }
 
+// TestSQLiteStore_DMEventsBefore_unions_both_directions pins
+// the bidirectional fetch: events the user sent into the DM
+// (channel = peer.ID(), instance_id = "") and events the model
+// sent back (channel = "", instance_id = peer.ID()) both come
+// back, ordered chronologically. Foreign DM traffic between
+// two other parties does not appear in either party's view.
+func TestSQLiteStore_DMEventsBefore_unions_both_directions(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	const userID domain.InstanceID = ""
+	const bottyID domain.InstanceID = "inst-botty"
+	const helperID domain.InstanceID = "inst-helper"
+
+	mustAppend := func(channel domain.ChannelName, evt domain.Message) int64 {
+		t.Helper()
+		id, err := s.AppendEvent(ctx, channel, evt)
+		require.NoError(t, err)
+		return id
+	}
+
+	// User → botty.
+	id1 := mustAppend(domain.ChannelName(bottyID), domain.Message{
+		Target: domain.ChannelName(bottyID), From: "iain", Body: "hi", At: testTime,
+	})
+
+	// Botty → user.
+	id2 := mustAppend("", domain.Message{
+		Target: "", From: "botty", InstanceID: bottyID, Body: "hello", At: testTime.Add(time.Second),
+	})
+
+	// User → botty again.
+	id3 := mustAppend(domain.ChannelName(bottyID), domain.Message{
+		Target: domain.ChannelName(bottyID), From: "iain", Body: "still here", At: testTime.Add(2 * time.Second),
+	})
+
+	// Foreign DM: helper → botty. Should not appear in the
+	// user↔botty view.
+	mustAppend(domain.ChannelName(bottyID), domain.Message{
+		Target: domain.ChannelName(bottyID), From: "helper", InstanceID: helperID, Body: "side chat", At: testTime.Add(3 * time.Second),
+	})
+
+	got, err := s.DMEventsBefore(ctx, userID, bottyID, nil, 10)
+	require.NoError(t, err)
+
+	gotIDs := make([]int64, len(got))
+	for i, e := range got {
+		gotIDs[i] = e.ID
+	}
+	require.Equal(t, []int64{id1, id2, id3}, gotIDs)
+}
+
 func TestSQLiteStore_EventsFrom_nil_returns_earliest(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
