@@ -92,17 +92,17 @@ func (e NickInUseError) Error() string {
 	return fmt.Sprintf("nick %q is already in use", string(e.Nick))
 }
 
-// MissingDMCounterpartError indicates a stored DM row references a
-// counterpart nick that no longer resolves to an instance — the
+// MissingDMCounterpartError indicates a stored DM row references
+// an `InstanceID` that no longer resolves to an instance — the
 // counterpart's row was deleted but the DM row outlived it. The
-// `Nick` field carries the dangling counterpart so the store can
-// drop the row and log it.
+// `InstanceID` field carries the dangling reference so the
+// store can drop the row and log it.
 type MissingDMCounterpartError struct {
-	Nick Nick
+	InstanceID InstanceID
 }
 
 func (e MissingDMCounterpartError) Error() string {
-	return fmt.Sprintf("dm window %q: counterpart nick has no backing instance", string(e.Nick))
+	return fmt.Sprintf("dm window %q: counterpart instance has no backing row", string(e.InstanceID))
 }
 
 // UnknownChannelKindError indicates a stored row carries a

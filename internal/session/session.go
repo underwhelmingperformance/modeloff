@@ -405,8 +405,8 @@ func (s *Session) persistChannel(ctx context.Context, ch domain.Channel) error {
 	clone := ch
 	clone.Members = cloneMembersWithout(ch.Members, s.user)
 
-	w, err := domain.WindowFromChannel(clone, func(nick domain.Nick) *domain.Instance {
-		resolved, rErr := s.ResolveNick(ctx, nick)
+	w, err := domain.WindowFromChannel(clone, func(id domain.InstanceID) *domain.Instance {
+		resolved, rErr := s.store.GetInstanceByID(ctx, id)
 		if rErr != nil {
 			return nil
 		}
@@ -1234,7 +1234,7 @@ func (s *Session) OpenDM(ctx context.Context, target *domain.Instance) (*domain.
 
 	span.SetAttributes(attribute.String(observability.AttrInstanceID, string(target.ID())))
 
-	name := domain.ChannelName(nick)
+	name := domain.ChannelName(target.ID())
 	now := s.now()
 
 	dm, created, err := s.loadOrCreateDMWindow(ctx, name, target, now)
@@ -1839,7 +1839,7 @@ func (s *Session) resolveDispatchRecipients(ctx context.Context, target domain.C
 		return nil, nil
 
 	case domain.KindDM:
-		inst, err := s.store.ResolveNick(ctx, domain.Nick(target))
+		inst, err := s.store.GetInstanceByID(ctx, domain.InstanceID(target))
 		if err != nil {
 			return nil, err
 		}

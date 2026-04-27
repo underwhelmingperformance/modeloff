@@ -62,7 +62,8 @@ func WindowKey(name ChannelName) Window {
 
 // WindowFromChannel projects a `Channel` to the matching concrete
 // `Window` based on its `Kind`. The DM case requires a resolver
-// that turns the bare nick (the DM's addressable name) into the
+// that turns the stored `InstanceID` (a DM row's `Name` is the
+// counterpart's stable InstanceID, not their nick) into the
 // canonical counterpart `*Instance`; pass nil when DMs are not
 // expected (e.g. status / channel-only paths). Returns an error
 // for unknown kinds or when the resolver returns nil for a DM.
@@ -70,7 +71,7 @@ func WindowKey(name ChannelName) Window {
 // This is the single bridge from the legacy `Channel` storage
 // shape to the new `Window` types and lives here so the store
 // and the session see the same projection rules.
-func WindowFromChannel(ch Channel, resolveCounterpart func(Nick) *Instance) (Window, error) {
+func WindowFromChannel(ch Channel, resolveCounterpart func(InstanceID) *Instance) (Window, error) {
 	switch ch.Kind {
 	case KindStatus:
 		return &StatusWindow{created: ch.Created}, nil
@@ -88,11 +89,11 @@ func WindowFromChannel(ch Channel, resolveCounterpart func(Nick) *Instance) (Win
 	case KindDM:
 		var counterpart *Instance
 		if resolveCounterpart != nil {
-			counterpart = resolveCounterpart(Nick(ch.Name))
+			counterpart = resolveCounterpart(InstanceID(ch.Name))
 		}
 
 		if counterpart == nil {
-			return nil, MissingDMCounterpartError{Nick: Nick(ch.Name)}
+			return nil, MissingDMCounterpartError{InstanceID: InstanceID(ch.Name)}
 		}
 
 		return &DMWindow{

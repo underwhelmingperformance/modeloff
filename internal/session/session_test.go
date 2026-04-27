@@ -2760,20 +2760,20 @@ func TestSession_OpenDM_creates_dm_window(t *testing.T) {
 	dm, created, err := sess.OpenDM(ctx, botty)
 	require.NoError(t, err)
 	require.True(t, created)
-	require.Equal(t, domain.ChannelName("botty"), dm.Name())
+	require.Equal(t, domain.ChannelName(botty.ID()), dm.Name())
 	require.Equal(t, fixedTime, dm.Created())
 	require.Same(t, botty, dm.Counterpart)
 
-	got, err := s.GetWindow(ctx, "botty")
+	got, err := s.GetWindow(ctx, domain.ChannelName(botty.ID()))
 	require.NoError(t, err)
 	gotDM, ok := got.(*domain.DMWindow)
 	require.True(t, ok)
-	require.Equal(t, domain.ChannelName("botty"), gotDM.Name())
+	require.Equal(t, domain.ChannelName(botty.ID()), gotDM.Name())
 	require.Same(t, botty, gotDM.Counterpart)
 
 	inst, err := s.ResolveNick(ctx, "botty")
 	require.NoError(t, err)
-	requireChannels(t, inst.Channels(), "botty")
+	requireChannels(t, inst.Channels(), domain.ChannelName(botty.ID()))
 }
 
 func TestSession_OpenDM_reuses_existing_dm_window(t *testing.T) {
@@ -2781,9 +2781,8 @@ func TestSession_OpenDM_reuses_existing_dm_window(t *testing.T) {
 	ctx := t.Context()
 
 	botty := seedInstance(t, s, instanceSpec{
-		Nick:     "botty",
-		ModelID:  "test/model",
-		Channels: testChannels("botty"),
+		Nick:    "botty",
+		ModelID: "test/model",
 	})
 
 	existing := domain.NewDMWindow(botty, fixedTime.Add(-time.Hour))
@@ -2798,7 +2797,40 @@ func TestSession_OpenDM_reuses_existing_dm_window(t *testing.T) {
 
 	inst, err := s.ResolveNick(ctx, "botty")
 	require.NoError(t, err)
-	requireChannels(t, inst.Channels(), "botty")
+	requireChannels(t, inst.Channels(), domain.ChannelName(botty.ID()))
+}
+
+// TestSession_OpenDM_routing_survives_counterpart_rename
+// verifies that a message addressed into a DM after the
+// counterpart has renamed reaches the renamed instance, and
+// that the sidebar's DisplayName follows the new nick.
+func TestSession_OpenDM_routing_survives_counterpart_rename(t *testing.T) {
+	delivered := make(chan domain.Nick, 1)
+	fake := &fakeAPIClient{
+		sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, trigger []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			if len(trigger) == 0 {
+				return protocol.ModelResponse{Kind: protocol.ResponseSilence}, nil
+			}
+
+			delivered <- domain.Nick(trigger[0].Target)
+			return protocol.ModelResponse{Kind: protocol.ResponseSilence}, nil
+		},
+	}
+
+	sess, s := newTestSessionWithAPI(t, fake)
+	ctx := t.Context()
+
+	botty := seedInstance(t, s, instanceSpec{Nick: "botty", ModelID: "test/model"})
+
+	dm, _, err := sess.OpenDM(ctx, botty)
+	require.NoError(t, err)
+
+	require.NoError(t, sess.ChangeNickAs(ctx, botty, "foobar"))
+
+	require.NoError(t, sess.SendMessageAs(ctx, sess.UserInstance(), dm.Name(), "hi"))
+
+	require.Equal(t, domain.Nick(dm.Name()), <-delivered)
+	require.Equal(t, "foobar", dm.DisplayName())
 }
 
 func TestSession_DispatchToChannel_dm_only_targets_that_instance(t *testing.T) {
@@ -2823,15 +2855,17 @@ func TestSession_DispatchToChannel_dm_only_targets_that_instance(t *testing.T) {
 	_, _, err := sess.OpenDM(ctx, botty)
 	require.NoError(t, err)
 
-	_, ircMsg := seedUserMessage(t, s, "botty", "hello in dm")
+	target := domain.ChannelName(botty.ID())
 
-	_, err = sess.DispatchToChannel(ctx, "botty", []protocol.IRCMessage{ircMsg})
+	_, ircMsg := seedUserMessage(t, s, target, "hello in dm")
+
+	_, err = sess.DispatchToChannel(ctx, target, []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 
-	msgs := channelMessages(t, s, "botty")
+	msgs := channelMessages(t, s, target)
 	require.Equal(t, []domain.Message{
-		{Target: "botty", From: "testuser", Body: "hello in dm", At: fixedTime},
-		{Target: "botty", From: "botty", InstanceID: testMemberID("botty"), Body: "dm reply", At: fixedTime},
+		{Target: target, From: "testuser", Body: "hello in dm", At: fixedTime},
+		{Target: target, From: "botty", InstanceID: testMemberID("botty"), Body: "dm reply", At: fixedTime},
 	}, msgs)
 }
 

@@ -513,18 +513,18 @@ func (s *SQLiteStore) DeleteChannel(ctx context.Context, name domain.ChannelName
 		})
 }
 
-// resolveDMCounterpart resolves a DM window's counterpart nick to
-// the canonical `*Instance` handle. The DM's addressable name is
-// the counterpart's nick at open time; this lookup goes through
-// the store's existing nick → instance resolver and the canonical
-// registry, so the returned handle is the same one held by
-// `instances`/`Members` views and pointer comparison stays valid.
-//
-// Returns nil for unknown nicks; `domain.WindowFromChannel`
-// promotes nil into a typed error so the caller can drop the row
-// and log.
-func (s *SQLiteStore) resolveDMCounterpart(ctx context.Context, nick domain.Nick) *domain.Instance {
-	inst, err := s.ResolveNick(ctx, nick)
+// resolveDMCounterpart resolves a DM window's stored
+// `InstanceID` to the canonical `*Instance` handle through the
+// store's registry, so pointer comparison against handles held
+// by other paths stays valid. Returns nil for unknown ids;
+// `domain.WindowFromChannel` promotes nil into a typed error
+// so the caller can drop the row and log.
+func (s *SQLiteStore) resolveDMCounterpart(ctx context.Context, id domain.InstanceID) *domain.Instance {
+	if cached := s.resolveInstance(id); cached != nil {
+		return cached
+	}
+
+	inst, err := s.GetInstanceByID(ctx, id)
 	if err != nil {
 		return nil
 	}
@@ -545,8 +545,8 @@ func (s *SQLiteStore) ListWindows(ctx context.Context) ([]domain.Window, error) 
 	windows := make([]domain.Window, 0, len(channels))
 
 	for _, ch := range channels {
-		w, err := domain.WindowFromChannel(ch, func(nick domain.Nick) *domain.Instance {
-			return s.resolveDMCounterpart(ctx, nick)
+		w, err := domain.WindowFromChannel(ch, func(id domain.InstanceID) *domain.Instance {
+			return s.resolveDMCounterpart(ctx, id)
 		})
 		if err != nil {
 			// `MissingDMCounterpartError` is the expected race
@@ -587,8 +587,8 @@ func (s *SQLiteStore) GetWindow(ctx context.Context, name domain.ChannelName) (d
 		return nil, err
 	}
 
-	return domain.WindowFromChannel(ch, func(nick domain.Nick) *domain.Instance {
-		return s.resolveDMCounterpart(ctx, nick)
+	return domain.WindowFromChannel(ch, func(id domain.InstanceID) *domain.Instance {
+		return s.resolveDMCounterpart(ctx, id)
 	})
 }
 

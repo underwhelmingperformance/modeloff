@@ -306,11 +306,11 @@ func TestSQLiteStore_SaveAndGetWindow_dm(t *testing.T) {
 	want := domain.NewDMWindow(bot, testTime)
 	require.NoError(t, s.SaveWindow(ctx, want))
 
-	got, err := s.GetWindow(ctx, "botty")
+	got, err := s.GetWindow(ctx, domain.ChannelName(bot.ID()))
 	require.NoError(t, err)
 	dm, ok := got.(*domain.DMWindow)
 	require.True(t, ok)
-	require.Equal(t, domain.ChannelName("botty"), dm.Name())
+	require.Equal(t, domain.ChannelName("id-1"), dm.Name())
 	require.Same(t, bot, dm.Counterpart)
 }
 

@@ -434,7 +434,8 @@ func (c MsgCommand) RunTool(ctx context.Context, tc session.ToolContext) session
 		return session.ToolResultPayload{OK: true, Summary: "messaged " + c.Target}
 	}
 
-	if _, err := tc.Session.ResolveNick(ctx, domain.Nick(c.Target)); err != nil {
+	resolved, err := tc.Session.ResolveNick(ctx, domain.Nick(c.Target))
+	if err != nil {
 		if errors.Is(err, store.ErrNoSuchNick) {
 			return session.ToolResultPayload{OK: false, Error: domain.UnknownNickError{Nick: domain.Nick(c.Target)}.Error()}
 		}
@@ -442,7 +443,7 @@ func (c MsgCommand) RunTool(ctx context.Context, tc session.ToolContext) session
 		return session.ToolResultPayload{OK: false, Error: fmt.Errorf("resolve nick: %w", err).Error()}
 	}
 
-	if err := tc.Session.SendMessageAs(ctx, tc.Actor, target, body); err != nil {
+	if err := tc.Session.SendMessageAs(ctx, tc.Actor, domain.ChannelName(resolved.ID()), body); err != nil {
 		return session.ToolResultPayload{OK: false, Error: err.Error()}
 	}
 

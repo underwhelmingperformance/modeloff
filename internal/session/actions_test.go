@@ -328,7 +328,7 @@ func TestOpenDM_returns_dm_with_counterpart(t *testing.T) {
 	dm, created, err := sess.OpenDM(ctx, botty)
 	require.NoError(t, err)
 	require.True(t, created)
-	require.Equal(t, domain.ChannelName("botty"), dm.Name())
+	require.Equal(t, domain.ChannelName(botty.ID()), dm.Name())
 	require.Same(t, botty, dm.Counterpart)
 }
 
@@ -344,7 +344,7 @@ func TestSetTopicAs_rejects_DM(t *testing.T) {
 	_, _, err := sess.OpenDM(ctx, botty)
 	require.NoError(t, err)
 
-	err = sess.SetTopic(ctx, "botty", "some topic")
+	err = sess.SetTopic(ctx, domain.ChannelName(botty.ID()), "some topic")
 	require.EqualError(t, err, "cannot set topic on a direct message")
 }
 
@@ -360,7 +360,7 @@ func TestKickAs_rejects_DM(t *testing.T) {
 	_, _, err := sess.OpenDM(ctx, botty)
 	require.NoError(t, err)
 
-	err = sess.Kick(ctx, "botty", "botty")
+	err = sess.Kick(ctx, domain.ChannelName(botty.ID()), "botty")
 	require.EqualError(t, err, "cannot kick from a direct message")
 }
 
@@ -444,13 +444,11 @@ func TestJoinAs_DM_no_join_event(t *testing.T) {
 }
 
 // TestSendMessageAs_model_to_model_dispatches verifies that the
-// nick-targeted dispatch path fires when one model `/msg`s
-// another. Modeloff has no "open DM" operation for models — DMs
-// are stateless from the server's point of view — so the model
-// just sends a message addressed to the peer's nick. The
-// recipient resolution in `dispatchInBackground` picks up the
-// nick-shaped target and dispatches a turn to the addressed
-// model directly, without iterating any "channel members".
+// nick-targeted dispatch path fires when one model messages
+// another. The wire-form target is the recipient's
+// `InstanceID`; the recipient resolution in
+// `dispatchInBackground` picks up the DM-shaped target and
+// dispatches a turn to that addressed model directly.
 func TestSendMessageAs_model_to_model_dispatches(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
@@ -460,17 +458,19 @@ func TestSendMessageAs_model_to_model_dispatches(t *testing.T) {
 		ModelID:  "test/model-a",
 		Channels: orderedmap.New[domain.ChannelName, time.Time](),
 	})
-	seedInstance(t, s, instanceSpec{
+	helper := seedInstance(t, s, instanceSpec{
 		Nick:     "helper",
 		ModelID:  "test/model-b",
 		Channels: orderedmap.New[domain.ChannelName, time.Time](),
 	})
 
-	require.NoError(t, sess.SendMessageAs(ctx, botty, "helper", "hey there"))
+	target := domain.ChannelName(helper.ID())
+
+	require.NoError(t, sess.SendMessageAs(ctx, botty, target, "hey there"))
 
 	evt := drainEvent[domain.Message](t, sess)
 	require.Equal(t, domain.Message{
-		Target:     "helper",
+		Target:     target,
 		From:       "botty",
 		InstanceID: testMemberID("botty"),
 		Body:       "hey there",
@@ -478,15 +478,15 @@ func TestSendMessageAs_model_to_model_dispatches(t *testing.T) {
 	}, evt)
 
 	started := drainEvent[domain.DispatchStartedEvent](t, sess)
-	require.Equal(t, domain.ChannelName("helper"), started.Channel)
+	require.Equal(t, target, started.Channel)
 	require.Equal(t, []domain.Nick{"helper"}, started.Nicks)
 
 	done := drainEvent[domain.DispatchDoneEvent](t, sess)
-	require.Equal(t, domain.ChannelName("helper"), done.Channel)
+	require.Equal(t, target, done.Channel)
 
-	msgs := channelMessages(t, s, "helper")
+	msgs := channelMessages(t, s, target)
 	require.Equal(t, []domain.Message{
-		{Target: "helper", From: "botty", InstanceID: testMemberID("botty"), Body: "hey there", At: fixedTime},
+		{Target: target, From: "botty", InstanceID: testMemberID("botty"), Body: "hey there", At: fixedTime},
 	}, msgs)
 }
 

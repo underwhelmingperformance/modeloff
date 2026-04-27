@@ -54,22 +54,34 @@ func newTestChannelSidebar(channels []domain.Channel, active domain.ChannelName,
 
 // channelsToWindows projects a slice of legacy `Channel` test
 // fixtures to their typed `Window` equivalents for the
-// sidebar's `SetChannelsMsg`. DMs in test fixtures don't carry
-// a real counterpart, so a stub `*Instance` with the matching
-// nick is constructed on the fly so the sidebar can render the
-// `@nick` label live from `Counterpart.Nick()`.
+// sidebar's `SetChannelsMsg`. For `KindDM` fixtures the legacy
+// `Name` field is treated as the counterpart's nick (the
+// pre-migration shape); a fresh `*Instance` with that nick is
+// minted on the fly so the sidebar's `Counterpart.Nick()` -
+// derived label has something to read.
 func channelsToWindows(channels []domain.Channel) []domain.Window {
-	resolve := func(nick domain.Nick) *domain.Instance {
-		return domain.NewModelInstance(domain.InstanceID("stub-"+string(nick)), nick, "test/model", "", nil)
-	}
-
 	windows := make([]domain.Window, 0, len(channels))
 	for _, ch := range channels {
-		w, err := domain.WindowFromChannel(ch, resolve)
-		if err != nil {
-			continue
+		switch ch.Kind {
+		case domain.KindStatus:
+			windows = append(windows, domain.NewStatusWindow(ch.Created))
+		case domain.KindChannel:
+			cw := domain.NewChannelWindow(ch.Name, ch.Created)
+			cw.Topic = ch.Topic
+			cw.TopicSetBy = ch.TopicSetBy
+			cw.TopicSetAt = ch.TopicSetAt
+			cw.Members = ch.Members
+			windows = append(windows, cw)
+		case domain.KindDM:
+			counterpart := domain.NewModelInstance(
+				domain.InstanceID("stub-"+string(ch.Name)),
+				domain.Nick(ch.Name),
+				"test/model",
+				"",
+				nil,
+			)
+			windows = append(windows, domain.NewDMWindow(counterpart, ch.Created))
 		}
-		windows = append(windows, w)
 	}
 	return windows
 }
@@ -120,7 +132,7 @@ func TestChannelSidebar_status_channel_stays_pinned_and_unprefixed(t *testing.T)
 	m := newTestChannelSidebar(channels, "#general", nil)
 	v := m.View(30, 10)
 
-	require.Equal(t, []string{"Channels", "&modeloff", "▸#general", "@botty"}, visibleLines(v))
+	require.Equal(t, []string{"Channels", "&modeloff", "▸#general", "botty"}, visibleLines(v))
 	require.NotContains(t, v, "#&modeloff")
 }
 
@@ -133,10 +145,13 @@ func TestChannelSidebar_ChannelRemovedMsg_drops_dm(t *testing.T) {
 	m := newTestChannelSidebar(channels, "#general", nil)
 
 	require.Equal(t,
-		[]string{"Channels", "▸#general", "@botty"},
+		[]string{"Channels", "▸#general", "botty"},
 		visibleLines(m.View(30, 10)))
 
-	m, _ = m.Update(components.ChannelRemovedMsg{Channel: "botty"})
+	// DMs are addressed by the counterpart's InstanceID; the
+	// `channelsToWindows` test helper mints stubs as
+	// `stub-<nick>`, so removal is keyed by `stub-botty`.
+	m, _ = m.Update(components.ChannelRemovedMsg{Channel: "stub-botty"})
 
 	require.Equal(t,
 		[]string{"Channels", "▸#general"},
@@ -284,7 +299,7 @@ func TestChannelSidebar_dm_shows_at_prefix(t *testing.T) {
 	m := newTestChannelSidebar(channels, "#general", nil)
 	v := m.View(30, 10)
 
-	require.Equal(t, []string{"Channels", "▸#general", "@botty"}, visibleLines(v))
+	require.Equal(t, []string{"Channels", "▸#general", "botty"}, visibleLines(v))
 }
 
 func TestChannelSidebar_dm_cursor_uses_dm_style(t *testing.T) {
@@ -297,7 +312,7 @@ func TestChannelSidebar_dm_cursor_uses_dm_style(t *testing.T) {
 	m, _ = m.Update(ctrlKey("ctrl+d"))
 
 	v := m.View(30, 10)
-	require.Equal(t, []string{"Channels", "#general", "▸@botty"}, visibleLines(v))
+	require.Equal(t, []string{"Channels", "#general", "▸botty"}, visibleLines(v))
 }
 
 func TestChannelSidebar_cursor_follows_active_on_set_channels(t *testing.T) {
