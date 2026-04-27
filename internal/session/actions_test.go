@@ -44,17 +44,12 @@ func TestJoinAs_model_actor(t *testing.T) {
 		Actor:      "ChanServ",
 	}, mode)
 
-	ch, err := sess.GetChannel(ctx, "#dev")
+	ch, err := sess.loadChannelWindow(ctx, "#dev")
 	require.NoError(t, err)
 	modelOnlyMembers := domain.NewMemberList()
 	modelOnlyMembers.Add(botty)
 	modelOnlyMembers.SetMode(botty, domain.ModeVoice)
-	requireChannelEqual(t, domain.Channel{
-		Name:    "#dev",
-		Kind:    domain.KindChannel,
-		Members: modelOnlyMembers,
-		Created: fixedTime,
-	}, ch)
+	requireChannelEqual(t, newTestChannelWindow("#dev", fixedTime, modelOnlyMembers), ch)
 
 	inst, err := s.ResolveNick(ctx, "botty")
 	require.NoError(t, err)
@@ -92,14 +87,9 @@ func TestPartAs_model_actor(t *testing.T) {
 		Instance:   botty,
 	}, evt)
 
-	ch, err := sess.GetChannel(ctx, "#dev")
+	ch, err := sess.loadChannelWindow(ctx, "#dev")
 	require.NoError(t, err)
-	requireChannelEqual(t, domain.Channel{
-		Name:    "#dev",
-		Kind:    domain.KindChannel,
-		Members: testMembers(t, sess, s, "testuser"),
-		Created: fixedTime,
-	}, ch)
+	requireChannelEqual(t, newTestChannelWindow("#dev", fixedTime, testMembers(t, sess, s, "testuser")), ch)
 
 	inst, err := s.ResolveNick(ctx, "botty")
 	require.NoError(t, err)
@@ -112,13 +102,7 @@ func TestPartAs_unknown_actor_is_noop(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	original := domain.Channel{
-		Name:    "#dev",
-		Kind:    domain.KindChannel,
-		Members: testMembers(t, sess, s, "testuser"),
-		Created: fixedTime,
-	}
-	saveTestChannel(t, sess, s, original)
+	saveTestChannel(t, sess, s, newTestChannelWindow("#dev", fixedTime, testMembers(t, sess, s, "testuser")))
 
 	// PartAs for an instance that isn't in the channel must be a
 	// no-op: no PartEvent emission (the empty-id fallback would
@@ -133,7 +117,7 @@ func TestPartAs_unknown_actor_is_noop(t *testing.T) {
 	case <-time.After(50 * time.Millisecond):
 	}
 
-	updated, err := sess.GetChannel(ctx, "#dev")
+	updated, err := sess.loadChannelWindow(ctx, "#dev")
 	require.NoError(t, err)
 	require.Equal(t, testMembers(t, sess, s, "testuser").Slice(), updated.Members.Slice())
 }
@@ -167,23 +151,13 @@ func TestQuitAs_model_actor(t *testing.T) {
 	require.Error(t, err)
 
 	// Model should be removed from both channels.
-	ch1, err := sess.GetChannel(ctx, "#dev")
+	ch1, err := sess.loadChannelWindow(ctx, "#dev")
 	require.NoError(t, err)
-	requireChannelEqual(t, domain.Channel{
-		Name:    "#dev",
-		Kind:    domain.KindChannel,
-		Members: testMembers(t, sess, s, "testuser"),
-		Created: fixedTime,
-	}, ch1)
+	requireChannelEqual(t, newTestChannelWindow("#dev", fixedTime, testMembers(t, sess, s, "testuser")), ch1)
 
-	ch2, err := sess.GetChannel(ctx, "#general")
+	ch2, err := sess.loadChannelWindow(ctx, "#general")
 	require.NoError(t, err)
-	requireChannelEqual(t, domain.Channel{
-		Name:    "#general",
-		Kind:    domain.KindChannel,
-		Members: testMembers(t, sess, s, "testuser"),
-		Created: fixedTime,
-	}, ch2)
+	requireChannelEqual(t, newTestChannelWindow("#general", fixedTime, testMembers(t, sess, s, "testuser")), ch2)
 
 	// Quit events should be appended to both channels.
 	types1 := channelEventTypes(t, s, "#dev")
@@ -238,17 +212,14 @@ func TestSetTopicAs_model_actor(t *testing.T) {
 		ByInstance: botty,
 	}, evt)
 
-	ch, err := sess.GetChannel(ctx, "#dev")
+	ch, err := sess.loadChannelWindow(ctx, "#dev")
 	require.NoError(t, err)
-	requireChannelEqual(t, domain.Channel{
-		Name:       "#dev",
-		Kind:       domain.KindChannel,
-		Topic:      "new topic",
-		TopicSetBy: "botty",
-		TopicSetAt: fixedTime,
-		Members:    testMembers(t, sess, s, "testuser", "botty"),
-		Created:    fixedTime,
-	}, ch)
+
+	expected := newTestChannelWindow("#dev", fixedTime, testMembers(t, sess, s, "testuser", "botty"))
+	expected.Topic = "new topic"
+	expected.TopicSetBy = "botty"
+	expected.TopicSetAt = fixedTime
+	requireChannelEqual(t, expected, ch)
 }
 
 func TestKickAs_model_actor(t *testing.T) {
@@ -275,14 +246,9 @@ func TestKickAs_model_actor(t *testing.T) {
 		Instance:   helper,
 	}, evt)
 
-	ch, err := sess.GetChannel(ctx, "#dev")
+	ch, err := sess.loadChannelWindow(ctx, "#dev")
 	require.NoError(t, err)
-	requireChannelEqual(t, domain.Channel{
-		Name:    "#dev",
-		Kind:    domain.KindChannel,
-		Members: testMembers(t, sess, s, "testuser", "botty"),
-		Created: fixedTime,
-	}, ch)
+	requireChannelEqual(t, newTestChannelWindow("#dev", fixedTime, testMembers(t, sess, s, "testuser", "botty")), ch)
 
 	inst, err := s.ResolveNick(ctx, "helper")
 	require.NoError(t, err)
@@ -425,21 +391,14 @@ func TestJoinAs_DM_no_join_event(t *testing.T) {
 
 	botty := seedInstance(t, s, instanceSpec{Nick: "botty", ModelID: "test/model"})
 
-	// Seed a DM channel where the user is NOT yet a member.
-	members := domain.NewMemberList()
-	members.Add(botty)
+	// Seed a DM addressed by the counterpart's instance id.
+	dmName := domain.ChannelName(botty.ID())
+	saveTestChannel(t, sess, s, domain.NewDMWindow(botty, fixedTime))
 
-	saveTestChannel(t, sess, s, domain.Channel{
-		Name:    "botty",
-		Kind:    domain.KindDM,
-		Members: members,
-		Created: fixedTime,
-	})
+	// Join the DM — should not emit join events.
+	require.NoError(t, sess.Join(ctx, string(dmName)))
 
-	// Join the DM channel — should not emit join events.
-	require.NoError(t, sess.Join(ctx, "botty"))
-
-	types := channelEventTypes(t, s, "botty")
+	types := channelEventTypes(t, s, dmName)
 	require.Equal(t, []string{}, types)
 }
 
@@ -507,12 +466,12 @@ func TestJoinAs_normalises_channel_prefix(t *testing.T) {
 	require.Equal(t, domain.ChannelName("#modeloff"), evt.Target)
 
 	// Channel should exist with the normalised name.
-	ch, err := sess.GetChannel(ctx, "#modeloff")
+	ch, err := sess.loadChannelWindow(ctx, "#modeloff")
 	require.NoError(t, err)
 	require.True(t, ch.Members.HasNick("botty"))
 
 	// The bare name should not exist.
-	_, err = sess.GetChannel(ctx, "modeloff")
+	_, err = sess.loadChannelWindow(ctx, "modeloff")
 	require.Error(t, err)
 }
 
@@ -554,7 +513,7 @@ func TestJoinAs_user_new_channel_emits_join_and_mode(t *testing.T) {
 		Instance: sess.UserInstance(), Mode: domain.ModeOp, By: "ChanServ", Actor: "ChanServ", At: fixedTime,
 	}, modeEvt)
 
-	ch, err := sess.GetChannel(ctx, "#dev")
+	ch, err := sess.loadChannelWindow(ctx, "#dev")
 	require.NoError(t, err)
 
 	m, ok := ch.Members.GetByInstance(sess.UserInstance())
@@ -568,15 +527,11 @@ func TestJoinAs_user_existing_channel_with_topic(t *testing.T) {
 
 	seedInstance(t, s, instanceSpec{Nick: "alice", ModelID: "test/model"})
 
-	saveTestChannel(t, sess, s, domain.Channel{
-		Name:       "#dev",
-		Kind:       domain.KindChannel,
-		Topic:      "Go development",
-		TopicSetBy: "alice",
-		TopicSetAt: fixedTime.Add(-time.Hour),
-		Members:    testMembers(t, sess, s, "alice"),
-		Created:    fixedTime.Add(-time.Hour),
-	})
+	withAlice := newTestChannelWindow("#dev", fixedTime.Add(-time.Hour), testMembers(t, sess, s, "alice"))
+	withAlice.Topic = "Go development"
+	withAlice.TopicSetBy = "alice"
+	withAlice.TopicSetAt = fixedTime.Add(-time.Hour)
+	saveTestChannel(t, sess, s, withAlice)
 
 	require.NoError(t, sess.JoinAs(ctx, sess.UserInstance(), "#dev"))
 
@@ -608,12 +563,7 @@ func TestJoinAs_user_existing_channel_no_topic(t *testing.T) {
 
 	seedInstance(t, s, instanceSpec{Nick: "alice", ModelID: "test/model"})
 
-	saveTestChannel(t, sess, s, domain.Channel{
-		Name:    "#dev",
-		Kind:    domain.KindChannel,
-		Members: testMembers(t, sess, s, "alice"),
-		Created: fixedTime.Add(-time.Hour),
-	})
+	saveTestChannel(t, sess, s, newTestChannelWindow("#dev", fixedTime.Add(-time.Hour), testMembers(t, sess, s, "alice")))
 
 	require.NoError(t, sess.JoinAs(ctx, sess.UserInstance(), "#dev"))
 
@@ -640,7 +590,7 @@ func TestJoinAs_model_voice_only_no_topic(t *testing.T) {
 		Channels: orderedmap.New[domain.ChannelName, time.Time](),
 	})
 
-	ch, _ := sess.GetChannel(ctx, "#dev")
+	ch, _ := sess.loadChannelWindow(ctx, "#dev")
 	ch.Topic = "some topic"
 	saveTestChannel(t, sess, s, ch)
 

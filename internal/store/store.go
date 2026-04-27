@@ -15,36 +15,23 @@ import (
 // nicks with `errors.Is(err, store.ErrNoSuchNick)`.
 var ErrNoSuchNick = errors.New("no such nick")
 
-// ErrNoSuchChannel is returned by `Store.GetChannel` and
-// `Store.GetWindow` when the lookup name does not match any row
-// in the channels table. Callers detect missing addressable
-// windows with `errors.Is(err, store.ErrNoSuchChannel)`.
+// ErrNoSuchChannel is returned by `Store.GetWindow` when the lookup
+// name does not match any row in the channels table. Callers detect
+// missing addressable windows with `errors.Is(err,
+// store.ErrNoSuchChannel)`.
 var ErrNoSuchChannel = errors.New("no such channel")
 
 // Store defines the interface for all persistent data operations.
 type Store interface {
-	// Channels (legacy)
-	//
-	// The Channel-shaped methods predate the type split and remain
-	// while the session and UI layers migrate. New callers should
-	// use the `Window` family below; the two surfaces share the
-	// underlying `channels` table so a write through either is
-	// visible to the other.
-
-	ListChannels(ctx context.Context) ([]domain.Channel, error)
-	GetChannel(ctx context.Context, name domain.ChannelName) (domain.Channel, error)
-	SaveChannel(ctx context.Context, ch domain.Channel) error
-	DeleteChannel(ctx context.Context, name domain.ChannelName) error
-
 	// Windows
 	//
-	// The Window methods address the same persistence surface as
-	// the legacy Channel methods but return the typed concrete
-	// `Window` (`*StatusWindow` / `*ChannelWindow` / `*DMWindow`)
-	// so callers can downcast where per-kind state matters. DM
-	// windows resolve their counterpart `*Instance` through the
-	// store's instance registry; a DM whose counterpart row has
-	// been deleted is dropped at load time and logged.
+	// Addressable-by-name windows live in the `channels` table.
+	// Loads return the typed concrete `Window` (`*StatusWindow` /
+	// `*ChannelWindow` / `*DMWindow`) so callers can downcast where
+	// per-kind state matters. DM windows resolve their counterpart
+	// `*Instance` through the store's instance registry; a DM whose
+	// counterpart row has been deleted is dropped at load time and
+	// logged.
 
 	ListWindows(ctx context.Context) ([]domain.Window, error)
 	GetWindow(ctx context.Context, name domain.ChannelName) (domain.Window, error)
@@ -61,9 +48,9 @@ type Store interface {
 	//
 	// The store is the sole authority for `*Instance` pointer
 	// identity: callers receive the same `*Instance` pointer for a
-	// given InstanceID on every load. `GetChannel` returns a Channel
-	// whose member list already carries canonical pointers —
-	// callers never resolve ids themselves.
+	// given InstanceID on every load. `GetWindow` returns a
+	// `*ChannelWindow` whose member list already carries canonical
+	// pointers — callers never resolve ids themselves.
 
 	ListInstances(ctx context.Context) ([]*domain.Instance, error)
 	GetInstanceByID(ctx context.Context, id domain.InstanceID) (*domain.Instance, error)

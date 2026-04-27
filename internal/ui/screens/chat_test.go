@@ -188,15 +188,11 @@ func TestChatScreen_rejoin_hides_pre_session_history(t *testing.T) {
 	oldTime := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	// Simulate post-quit state: channel exists but user is not a member.
-	require.NoError(t, s.SaveChannel(ctx, domain.Channel{
-		Name:       "#general",
-		Kind:       domain.KindChannel,
-		Members:    domain.NewMemberList(),
-		Created:    oldTime,
-		Topic:      "welcome topic",
-		TopicSetBy: "admin",
-		TopicSetAt: oldTime,
-	}))
+	general := domain.NewChannelWindow("#general", oldTime)
+	general.Topic = "welcome topic"
+	general.TopicSetBy = "admin"
+	general.TopicSetAt = oldTime
+	require.NoError(t, s.SaveWindow(ctx, general))
 
 	require.NoError(t, s.SetAutojoinChannels(ctx, []domain.ChannelName{"#general"}))
 	require.NoError(t, s.SetLastChannel(ctx, "#general"))

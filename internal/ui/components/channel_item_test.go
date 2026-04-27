@@ -16,10 +16,25 @@ import (
 	"github.com/laney/modeloff/internal/ui/components"
 )
 
-var testChannels = []domain.Channel{
-	{Name: "#general", Kind: domain.KindChannel, Created: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)},
-	{Name: "#random", Kind: domain.KindChannel, Created: time.Date(2025, 1, 2, 0, 0, 0, 0, time.UTC)},
-	{Name: "#dev", Kind: domain.KindChannel, Created: time.Date(2025, 1, 3, 0, 0, 0, 0, time.UTC)},
+var testChannels = []domain.Window{
+	domain.NewChannelWindow("#general", time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)),
+	domain.NewChannelWindow("#random", time.Date(2025, 1, 2, 0, 0, 0, 0, time.UTC)),
+	domain.NewChannelWindow("#dev", time.Date(2025, 1, 3, 0, 0, 0, 0, time.UTC)),
+}
+
+// dmStub builds a DM window addressed by a synthetic instance id
+// derived from the counterpart nick. Test fixtures need a stable
+// id-shaped name and a counterpart whose `Nick()` matches what
+// the sidebar renders.
+func dmStub(nick domain.Nick, created time.Time) *domain.DMWindow {
+	counterpart := domain.NewModelInstance(
+		domain.InstanceID("stub-"+string(nick)),
+		nick,
+		"test/model",
+		"",
+		nil,
+	)
+	return domain.NewDMWindow(counterpart, created)
 }
 
 func key(k string) tea.KeyMsg {
@@ -39,51 +54,15 @@ func ctrlKey(k string) tea.KeyMsg {
 	}
 }
 
-func newTestChannelSidebar(channels []domain.Channel, active domain.ChannelName, unread map[domain.ChannelName]int) ui.Model {
-	windows := channelsToWindows(channels)
-
+func newTestChannelSidebar(channels []domain.Window, active domain.ChannelName, unread map[domain.ChannelName]int) ui.Model {
 	cl := components.NewChannelSidebar()
 	m, _ := cl.Update(components.SetChannelsMsg{
-		Channels: windows,
+		Channels: channels,
 		Active:   active,
 		Unread:   unread,
 	})
 
 	return m
-}
-
-// channelsToWindows projects a slice of legacy `Channel` test
-// fixtures to their typed `Window` equivalents for the
-// sidebar's `SetChannelsMsg`. For `KindDM` fixtures the legacy
-// `Name` field is treated as the counterpart's nick (the
-// pre-migration shape); a fresh `*Instance` with that nick is
-// minted on the fly so the sidebar's `Counterpart.Nick()` -
-// derived label has something to read.
-func channelsToWindows(channels []domain.Channel) []domain.Window {
-	windows := make([]domain.Window, 0, len(channels))
-	for _, ch := range channels {
-		switch ch.Kind {
-		case domain.KindStatus:
-			windows = append(windows, domain.NewStatusWindow(ch.Created))
-		case domain.KindChannel:
-			cw := domain.NewChannelWindow(ch.Name, ch.Created)
-			cw.Topic = ch.Topic
-			cw.TopicSetBy = ch.TopicSetBy
-			cw.TopicSetAt = ch.TopicSetAt
-			cw.Members = ch.Members
-			windows = append(windows, cw)
-		case domain.KindDM:
-			counterpart := domain.NewModelInstance(
-				domain.InstanceID("stub-"+string(ch.Name)),
-				domain.Nick(ch.Name),
-				"test/model",
-				"",
-				nil,
-			)
-			windows = append(windows, domain.NewDMWindow(counterpart, ch.Created))
-		}
-	}
-	return windows
 }
 
 // activateAndGetChannel sends a key and extracts the ChannelSelectedMsg
@@ -123,10 +102,10 @@ func TestChannelSidebar_View_active_channel_highlighted(t *testing.T) {
 }
 
 func TestChannelSidebar_status_channel_stays_pinned_and_unprefixed(t *testing.T) {
-	channels := []domain.Channel{
-		{Name: "#general", Kind: domain.KindChannel},
-		{Name: domain.StatusChannelName, Kind: domain.KindStatus},
-		{Name: "botty", Kind: domain.KindDM},
+	channels := []domain.Window{
+		domain.NewChannelWindow("#general", time.Time{}),
+		domain.NewStatusWindow(time.Time{}),
+		dmStub("botty", time.Time{}),
 	}
 
 	m := newTestChannelSidebar(channels, "#general", nil)
@@ -137,9 +116,9 @@ func TestChannelSidebar_status_channel_stays_pinned_and_unprefixed(t *testing.T)
 }
 
 func TestChannelSidebar_ChannelRemovedMsg_drops_dm(t *testing.T) {
-	channels := []domain.Channel{
-		{Name: "#general", Kind: domain.KindChannel},
-		{Name: "botty", Kind: domain.KindDM},
+	channels := []domain.Window{
+		domain.NewChannelWindow("#general", time.Time{}),
+		dmStub("botty", time.Time{}),
 	}
 
 	m := newTestChannelSidebar(channels, "#general", nil)
@@ -149,8 +128,8 @@ func TestChannelSidebar_ChannelRemovedMsg_drops_dm(t *testing.T) {
 		visibleLines(m.View(30, 10)))
 
 	// DMs are addressed by the counterpart's InstanceID; the
-	// `channelsToWindows` test helper mints stubs as
-	// `stub-<nick>`, so removal is keyed by `stub-botty`.
+	// `dmStub` test helper mints ids as `stub-<nick>`, so
+	// removal is keyed by `stub-botty`.
 	m, _ = m.Update(components.ChannelRemovedMsg{Channel: "stub-botty"})
 
 	require.Equal(t,
@@ -246,10 +225,10 @@ func TestChannelSidebar_set_channels_msg(t *testing.T) {
 	m := newTestChannelSidebar(testChannels, "#general", nil)
 
 	m, _ = m.Update(components.SetChannelsMsg{
-		Channels: channelsToWindows([]domain.Channel{
-			{Name: "#alpha", Kind: domain.KindChannel},
-			{Name: "#beta", Kind: domain.KindChannel},
-		}),
+		Channels: []domain.Window{
+			domain.NewChannelWindow("#alpha", time.Time{}),
+			domain.NewChannelWindow("#beta", time.Time{}),
+		},
 		Active: "#beta",
 		Unread: map[domain.ChannelName]int{"#alpha": 5},
 	})
@@ -291,9 +270,9 @@ func TestChannelSidebar_no_unread_indicator_when_nil(t *testing.T) {
 }
 
 func TestChannelSidebar_dm_shows_at_prefix(t *testing.T) {
-	channels := []domain.Channel{
-		{Name: "#general", Kind: domain.KindChannel},
-		{Name: "botty", Kind: domain.KindDM},
+	channels := []domain.Window{
+		domain.NewChannelWindow("#general", time.Time{}),
+		dmStub("botty", time.Time{}),
 	}
 
 	m := newTestChannelSidebar(channels, "#general", nil)
@@ -303,9 +282,9 @@ func TestChannelSidebar_dm_shows_at_prefix(t *testing.T) {
 }
 
 func TestChannelSidebar_dm_cursor_uses_dm_style(t *testing.T) {
-	channels := []domain.Channel{
-		{Name: "#general", Kind: domain.KindChannel},
-		{Name: "botty", Kind: domain.KindDM},
+	channels := []domain.Window{
+		domain.NewChannelWindow("#general", time.Time{}),
+		dmStub("botty", time.Time{}),
 	}
 
 	m := newTestChannelSidebar(channels, "#general", nil)
@@ -322,7 +301,7 @@ func TestChannelSidebar_cursor_follows_active_on_set_channels(t *testing.T) {
 	m, _ = m.Update(ctrlKey("ctrl+d"))
 
 	m, _ = m.Update(components.SetChannelsMsg{
-		Channels: channelsToWindows(testChannels),
+		Channels: testChannels,
 		Active:   "#random",
 	})
 
@@ -337,9 +316,9 @@ func TestChannelSidebar_cursor_clamps_when_active_not_in_list(t *testing.T) {
 	m, _ = m.Update(ctrlKey("ctrl+d"))
 
 	m, _ = m.Update(components.SetChannelsMsg{
-		Channels: channelsToWindows([]domain.Channel{
-			{Name: "#alpha", Kind: domain.KindChannel},
-		}),
+		Channels: []domain.Window{
+			domain.NewChannelWindow("#alpha", time.Time{}),
+		},
 		Active: "#gone",
 	})
 

@@ -378,65 +378,35 @@ func (s *SQLiteStore) Close() error {
 	return s.db.Close()
 }
 
-// ListChannels implements Store. Returned channels have member-lists
-// carrying canonical `*Instance` handles; stub references to deleted
-// instances are dropped and logged.
-func (s *SQLiteStore) ListChannels(ctx context.Context) ([]domain.Channel, error) {
-	var channels []domain.Channel
-	err := s.inSpan(ctx, "store.sqlite.list_channels", nil, func(ctx context.Context, _ trace.Span) error {
-		got, err := queryRows(ctx, s.db,
-			`SELECT data FROM channels ORDER BY name`, nil,
-			jsonColumn[domain.Channel])
-		if err != nil {
-			return err
-		}
-
-		for i := range got {
-			if err := s.resolveChannelMembers(ctx, &got[i]); err != nil {
-				return err
-			}
-		}
-
-		channels = got
-		return nil
-	})
-
-	return channels, err
-}
-
-// GetChannel implements Store. Returns a Channel whose member list
-// carries canonical `*Instance` handles; stub references to deleted
-// instances are dropped and logged.
-func (s *SQLiteStore) GetChannel(ctx context.Context, name domain.ChannelName) (domain.Channel, error) {
-	var ch domain.Channel
-	err := s.inSpan(ctx, "store.sqlite.get_channel",
-		[]attribute.KeyValue{attribute.String(observability.AttrChannel, string(name))},
-		func(ctx context.Context, _ trace.Span) error {
-			got, err := queryRow(ctx, s.db,
-				`SELECT data FROM channels WHERE name = ?`,
-				[]any{name}, ErrNoSuchChannel,
-				jsonColumn[domain.Channel])
-			if err != nil {
-				return fmt.Errorf("channel %q: %w", name, err)
-			}
-
-			ch = got
-			return s.resolveChannelMembers(ctx, &ch)
-		})
-
-	return ch, err
+// channelRow is the on-disk JSON shape of a row in the `channels`
+// table. It is a persistence detail of the SQLite store and never
+// leaves the package: callers receive the typed concrete
+// `*StatusWindow` / `*ChannelWindow` / `*DMWindow` constructed from
+// the row by `rowToWindow`. Per-kind state that doesn't apply to a
+// given row is left zero (a status row carries no members or
+// topic; a DM row's member list is empty and `Name` is the
+// counterpart's `InstanceID`).
+type channelRow struct {
+	Name       domain.ChannelName
+	Kind       domain.ChannelKind
+	Topic      string
+	TopicSetBy domain.Nick
+	TopicSetAt time.Time
+	Members    domain.MemberList
+	Created    time.Time
 }
 
 // resolveChannelMembers rewrites the stub `*Instance` handles in
-// the channel's member list (set by MemberList.UnmarshalJSON) to
+// the row's member list (set by MemberList.UnmarshalJSON) to
 // canonical pointers from the registry, loading any missing
 // instances from SQLite in a single batch. Member rows that refer
 // to an instance with no backing row are dropped from the list and
 // logged — a leftover from a previous session where the instance
 // was deleted but the channel's membership record still carried
-// the id.
-func (s *SQLiteStore) resolveChannelMembers(ctx context.Context, ch *domain.Channel) error {
-	if ch.Members.Len() == 0 {
+// the id. Only channel-kind rows carry members; status and DM rows
+// short-circuit at the empty-list check.
+func (s *SQLiteStore) resolveChannelMembers(ctx context.Context, row *channelRow) error {
+	if row.Members.Len() == 0 {
 		return nil
 	}
 
@@ -447,7 +417,7 @@ func (s *SQLiteStore) resolveChannelMembers(ctx context.Context, ch *domain.Chan
 	var missing []domain.InstanceID
 	seen := make(map[domain.InstanceID]struct{})
 
-	for _, m := range ch.Members.All() {
+	for _, m := range row.Members.All() {
 		id := m.Instance.ID()
 
 		if _, ok := seen[id]; ok {
@@ -476,7 +446,7 @@ func (s *SQLiteStore) resolveChannelMembers(ctx context.Context, ch *domain.Chan
 	// Rewrite stubs; any id that still resolves to nil references a
 	// deleted instance and is dropped.
 	dropped := make([]domain.InstanceID, 0)
-	ch.Members.ResolveInstances(func(id domain.InstanceID) *domain.Instance {
+	row.Members.ResolveInstances(func(id domain.InstanceID) *domain.Instance {
 		canonical := s.resolveInstance(id)
 		if canonical == nil {
 			dropped = append(dropped, id)
@@ -489,7 +459,7 @@ func (s *SQLiteStore) resolveChannelMembers(ctx context.Context, ch *domain.Chan
 		slog.Default().WarnContext(ctx,
 			"channel members have no backing instance; dropped",
 			"component", "store.sqlite",
-			"channel", ch.Name,
+			"channel", row.Name,
 			"dropped_ids", dropped,
 			"count", len(dropped),
 		)
@@ -531,38 +501,12 @@ func (s *SQLiteStore) loadInstancesByID(ctx context.Context, ids []domain.Instan
 	return nil
 }
 
-// SaveChannel implements Store.
-func (s *SQLiteStore) SaveChannel(ctx context.Context, ch domain.Channel) error {
-	return s.inSpan(ctx, "store.sqlite.save_channel",
-		[]attribute.KeyValue{attribute.String(observability.AttrChannel, string(ch.Name))},
-		func(ctx context.Context, _ trace.Span) error {
-			data, err := json.Marshal(ch)
-			if err != nil {
-				return err
-			}
-
-			return execMutation(ctx, s.db,
-				`INSERT INTO channels (name, data) VALUES (?, ?)
-				 ON CONFLICT (name) DO UPDATE SET data = excluded.data`,
-				ch.Name, string(data))
-		})
-}
-
-// DeleteChannel implements Store.
-func (s *SQLiteStore) DeleteChannel(ctx context.Context, name domain.ChannelName) error {
-	return s.inSpan(ctx, "store.sqlite.delete_channel",
-		[]attribute.KeyValue{attribute.String(observability.AttrChannel, string(name))},
-		func(ctx context.Context, _ trace.Span) error {
-			return execMutation(ctx, s.db, `DELETE FROM channels WHERE name = ?`, name)
-		})
-}
-
 // resolveDMCounterpart resolves a DM window's stored
 // `InstanceID` to the canonical `*Instance` handle through the
 // store's registry, so pointer comparison against handles held
 // by other paths stays valid. Returns nil for unknown ids;
-// `domain.WindowFromChannel` promotes nil into a typed error
-// so the caller can drop the row and log.
+// `rowToWindow` promotes nil into a typed error so the caller
+// can drop the row and log.
 func (s *SQLiteStore) resolveDMCounterpart(ctx context.Context, id domain.InstanceID) *domain.Instance {
 	if cached := s.resolveInstance(id); cached != nil {
 		return cached
@@ -576,48 +520,110 @@ func (s *SQLiteStore) resolveDMCounterpart(ctx context.Context, id domain.Instan
 	return inst
 }
 
-// ListWindows implements Store. The returned slice carries one
-// concrete `Window` per row in `channels`, projected via
-// `domain.WindowFromChannel`. Rows whose DM counterpart no longer
-// resolves are dropped from the result and logged.
-func (s *SQLiteStore) ListWindows(ctx context.Context) ([]domain.Window, error) {
-	channels, err := s.ListChannels(ctx)
-	if err != nil {
-		return nil, err
-	}
+// rowToWindow projects a decoded on-disk row to its matching
+// concrete `Window`. DMs resolve their counterpart `*Instance`
+// through the registry; an unresolved counterpart returns
+// `domain.MissingDMCounterpartError` so the caller can drop the
+// row and log.
+func (s *SQLiteStore) rowToWindow(ctx context.Context, row channelRow) (domain.Window, error) {
+	switch row.Kind {
+	case domain.KindStatus:
+		return domain.NewStatusWindow(row.Created), nil
 
-	windows := make([]domain.Window, 0, len(channels))
+	case domain.KindChannel:
+		cw := domain.NewChannelWindow(row.Name, row.Created)
+		cw.Topic = row.Topic
+		cw.TopicSetBy = row.TopicSetBy
+		cw.TopicSetAt = row.TopicSetAt
+		cw.Members = row.Members
+		return cw, nil
 
-	for _, ch := range channels {
-		w, err := domain.WindowFromChannel(ch, func(id domain.InstanceID) *domain.Instance {
-			return s.resolveDMCounterpart(ctx, id)
-		})
-		if err != nil {
-			// `MissingDMCounterpartError` is the expected race
-			// (instance row deleted before the DM row); log as a
-			// warning. Anything else (an unknown kind, say) is a
-			// data-integrity break and propagates so the caller
-			// can decide how to react.
-			var missing domain.MissingDMCounterpartError
-			if !errors.As(err, &missing) {
-				return nil, err
-			}
-
-			slog.Default().WarnContext(ctx,
-				"window from channel; dropped",
-				"component", "store.sqlite",
-				"channel", ch.Name,
-				"kind", ch.Kind,
-				"error", err,
-			)
-
-			continue
+	case domain.KindDM:
+		counterpart := s.resolveDMCounterpart(ctx, domain.InstanceID(row.Name))
+		if counterpart == nil {
+			return nil, domain.MissingDMCounterpartError{InstanceID: domain.InstanceID(row.Name)}
 		}
 
-		windows = append(windows, w)
+		dm := domain.NewDMWindow(counterpart, row.Created)
+		return dm, nil
+
+	default:
+		return nil, domain.UnknownChannelKindError{Kind: row.Kind}
+	}
+}
+
+// rowFromWindow projects a window to its on-disk row form. Per-kind
+// state that doesn't apply to the source kind is left zero: a status
+// row carries no members or topic; a DM row's `Name` is the
+// counterpart's `InstanceID` and the member list is empty.
+func rowFromWindow(w domain.Window) channelRow {
+	row := channelRow{
+		Name:    w.Name(),
+		Kind:    w.Kind(),
+		Created: w.Created(),
 	}
 
-	return windows, nil
+	if cw, ok := w.(*domain.ChannelWindow); ok {
+		row.Topic = cw.Topic
+		row.TopicSetBy = cw.TopicSetBy
+		row.TopicSetAt = cw.TopicSetAt
+		row.Members = cw.Members
+	}
+
+	return row
+}
+
+// ListWindows implements Store. The returned slice carries one
+// concrete `Window` per row in `channels`. Rows whose DM
+// counterpart no longer resolves are dropped from the result and
+// logged.
+func (s *SQLiteStore) ListWindows(ctx context.Context) ([]domain.Window, error) {
+	var windows []domain.Window
+	err := s.inSpan(ctx, "store.sqlite.list_windows", nil, func(ctx context.Context, _ trace.Span) error {
+		rows, err := queryRows(ctx, s.db,
+			`SELECT data FROM channels ORDER BY name`, nil,
+			jsonColumn[channelRow])
+		if err != nil {
+			return err
+		}
+
+		windows = make([]domain.Window, 0, len(rows))
+
+		for i := range rows {
+			if err := s.resolveChannelMembers(ctx, &rows[i]); err != nil {
+				return err
+			}
+
+			w, err := s.rowToWindow(ctx, rows[i])
+			if err != nil {
+				// `MissingDMCounterpartError` is the expected race
+				// (instance row deleted before the DM row); log as
+				// a warning. Anything else (an unknown kind, say)
+				// is a data-integrity break and propagates so the
+				// caller can decide how to react.
+				var missing domain.MissingDMCounterpartError
+				if !errors.As(err, &missing) {
+					return err
+				}
+
+				slog.Default().WarnContext(ctx,
+					"window from row; dropped",
+					"component", "store.sqlite",
+					"channel", rows[i].Name,
+					"kind", rows[i].Kind,
+					"error", err,
+				)
+
+				continue
+			}
+
+			windows = append(windows, w)
+		}
+
+		return nil
+	})
+
+	return windows, err
 }
 
 // GetWindow implements Store. Returns the typed concrete `Window`
@@ -626,28 +632,55 @@ func (s *SQLiteStore) ListWindows(ctx context.Context) ([]domain.Window, error) 
 // surfaces as an error so the caller can decide whether to recover
 // or surface to the user.
 func (s *SQLiteStore) GetWindow(ctx context.Context, name domain.ChannelName) (domain.Window, error) {
-	ch, err := s.GetChannel(ctx, name)
-	if err != nil {
-		return nil, err
-	}
+	var w domain.Window
+	err := s.inSpan(ctx, "store.sqlite.get_window",
+		[]attribute.KeyValue{attribute.String(observability.AttrChannel, string(name))},
+		func(ctx context.Context, _ trace.Span) error {
+			row, err := queryRow(ctx, s.db,
+				`SELECT data FROM channels WHERE name = ?`,
+				[]any{name}, ErrNoSuchChannel,
+				jsonColumn[channelRow])
+			if err != nil {
+				return fmt.Errorf("channel %q: %w", name, err)
+			}
 
-	return domain.WindowFromChannel(ch, func(id domain.InstanceID) *domain.Instance {
-		return s.resolveDMCounterpart(ctx, id)
-	})
+			if err := s.resolveChannelMembers(ctx, &row); err != nil {
+				return err
+			}
+
+			w, err = s.rowToWindow(ctx, row)
+			return err
+		})
+
+	return w, err
 }
 
-// SaveWindow implements Store. The window is projected back to a
-// `Channel` via `domain.ChannelFromWindow` and persisted through
-// the existing `SaveChannel` path so the legacy and Window APIs
-// share a single write surface.
+// SaveWindow implements Store. The window is projected to a
+// private `channelRow` and persisted as JSON in the `channels`
+// table.
 func (s *SQLiteStore) SaveWindow(ctx context.Context, w domain.Window) error {
-	return s.SaveChannel(ctx, domain.ChannelFromWindow(w))
+	return s.inSpan(ctx, "store.sqlite.save_window",
+		[]attribute.KeyValue{attribute.String(observability.AttrChannel, string(w.Name()))},
+		func(ctx context.Context, _ trace.Span) error {
+			data, err := json.Marshal(rowFromWindow(w))
+			if err != nil {
+				return err
+			}
+
+			return execMutation(ctx, s.db,
+				`INSERT INTO channels (name, data) VALUES (?, ?)
+				 ON CONFLICT (name) DO UPDATE SET data = excluded.data`,
+				w.Name(), string(data))
+		})
 }
 
-// DeleteWindow implements Store. Forwards to `DeleteChannel`
-// because the table is shared.
+// DeleteWindow implements Store.
 func (s *SQLiteStore) DeleteWindow(ctx context.Context, name domain.ChannelName) error {
-	return s.DeleteChannel(ctx, name)
+	return s.inSpan(ctx, "store.sqlite.delete_window",
+		[]attribute.KeyValue{attribute.String(observability.AttrChannel, string(name))},
+		func(ctx context.Context, _ trace.Span) error {
+			return execMutation(ctx, s.db, `DELETE FROM channels WHERE name = ?`, name)
+		})
 }
 
 // AppendEvent implements Store.

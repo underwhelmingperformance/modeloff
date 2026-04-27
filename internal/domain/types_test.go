@@ -41,33 +41,3 @@ func TestInferChannelKind(t *testing.T) {
 		})
 	}
 }
-
-func TestChannel_DisplayName(t *testing.T) {
-	tests := []struct {
-		name    string
-		channel Channel
-		want    string
-	}{
-		{
-			name:    "channel keeps the hash prefix",
-			channel: Channel{Name: "#general", Kind: KindChannel},
-			want:    "#general",
-		},
-		{
-			name:    "dm prefixes the nick with @",
-			channel: Channel{Name: "botty", Kind: KindDM},
-			want:    "@botty",
-		},
-		{
-			name:    "status channel renders the reserved name",
-			channel: Channel{Name: StatusChannelName, Kind: KindStatus},
-			want:    string(StatusChannelName),
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, tt.channel.DisplayName())
-		})
-	}
-}

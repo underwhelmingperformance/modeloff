@@ -396,45 +396,6 @@ func (s *Session) userInChannel(ch domain.ChannelName) bool {
 	return ok
 }
 
-// loadChannel reads a window from the store as the legacy
-// `domain.Channel` projection and re-injects the user as a
-// member when the session records the user as being in that
-// channel. Session-internal callers that need typed
-// per-kind state (members, topic) should prefer
-// `loadChannelWindow`; this remains for the few callers that
-// still operate on the projection.
-func (s *Session) loadChannel(ctx context.Context, name domain.ChannelName) (domain.Channel, error) {
-	w, err := s.store.GetWindow(ctx, name)
-	if err != nil {
-		return domain.Channel{}, err
-	}
-
-	ch := domain.ChannelFromWindow(w)
-	s.injectUserIfMember(ctx, &ch)
-
-	return ch, nil
-}
-
-// loadChannels reads every window from the store as legacy
-// `domain.Channel` projections and re-injects the user where
-// recorded. Session-internal callers that want typed per-kind
-// state should prefer `s.store.ListWindows` directly.
-func (s *Session) loadChannels(ctx context.Context) ([]domain.Channel, error) {
-	windows, err := s.store.ListWindows(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	channels := make([]domain.Channel, 0, len(windows))
-	for _, w := range windows {
-		ch := domain.ChannelFromWindow(w)
-		s.injectUserIfMember(ctx, &ch)
-		channels = append(channels, ch)
-	}
-
-	return channels, nil
-}
-
 // loadChannelWindow reads an addressable `#`-channel as its typed
 // `*ChannelWindow`, with the user re-injected as a member when
 // the session records them as being in the channel. Returns
@@ -488,26 +449,6 @@ func (s *Session) persistChannelWindow(ctx context.Context, w *domain.ChannelWin
 	clone := *w
 	clone.Members = cloneMembersWithout(w.Members, s.user)
 	return s.store.SaveWindow(ctx, &clone)
-}
-
-// injectUserIfMember adds the user to ch.Members when the session
-// records the user as being in ch. The recorded mode (or ModeNone
-// if unset) is applied.
-func (s *Session) injectUserIfMember(ctx context.Context, ch *domain.Channel) {
-	if !s.userInChannel(ch.Name) {
-		return
-	}
-
-	if ch.Members.HasInstance(s.user) {
-		return
-	}
-
-	ch.Members.Add(s.user)
-
-	mode := s.userModeFor(ctx, ch.Name)
-	if mode != domain.ModeNone {
-		ch.Members.SetMode(s.user, mode)
-	}
 }
 
 // cloneMembersWithout returns a new MemberList containing every
@@ -778,11 +719,6 @@ func (s *Session) JoinAutojoinChannels(ctx context.Context) error {
 
 	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 	return nil
-}
-
-// ListChannels returns all persisted channels.
-func (s *Session) ListChannels(ctx context.Context) ([]domain.Channel, error) {
-	return s.loadChannels(ctx)
 }
 
 // DirectoryChannels returns the public channel directory for
@@ -1101,14 +1037,6 @@ func (s *Session) ChangeNick(ctx context.Context, newNick domain.Nick) error {
 // Whois returns metadata about a model instance.
 func (s *Session) Whois(ctx context.Context, nick domain.Nick) (*domain.Instance, error) {
 	return s.ResolveNick(ctx, nick)
-}
-
-// GetChannel retrieves a channel by name as the legacy
-// `domain.Channel` projection. Kept while UI consumers migrate
-// to the typed `Window` surface; new callers should use
-// `GetWindow`.
-func (s *Session) GetChannel(ctx context.Context, name domain.ChannelName) (domain.Channel, error) {
-	return s.loadChannel(ctx, name)
 }
 
 // GetWindow retrieves an addressable window by name as its typed

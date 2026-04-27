@@ -116,32 +116,6 @@ func InferChannelKind(name ChannelName) ChannelKind {
 	}
 }
 
-// Channel represents a chat channel or direct message conversation.
-type Channel struct {
-	Name       ChannelName
-	Kind       ChannelKind
-	Topic      string
-	TopicSetBy Nick
-	TopicSetAt time.Time
-	Members    MemberList
-	Created    time.Time
-}
-
-// DisplayName returns the channel name formatted for display. DM
-// channels are prefixed with @ instead of shown as bare names. The
-// status channel renders as its reserved name so the sidebar keeps the
-// IRC-convention cue that it is not a user-created room.
-func (ch Channel) DisplayName() string {
-	switch ch.Kind {
-	case KindDM:
-		return "@" + string(ch.Name)
-	case KindStatus:
-		return string(StatusChannelName)
-	}
-
-	return string(ch.Name)
-}
-
 // Instance represents an actor on the IRC server. Both the human
 // user and model instances share this type. The human user has an
 // empty ModelID.

@@ -22,7 +22,7 @@ var testTime = time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC)
 
 // storeTestMembers builds a MemberList for tests by constructing a
 // synthetic model Instance per nick and persisting it to the store.
-// Persisting is required because `GetChannel` resolves stub member
+// Persisting is required because `GetWindow` resolves stub member
 // references against the `instances` table; a channel saved with
 // unpersisted members would have those members dropped as dead
 // references on the next load.
@@ -45,38 +45,52 @@ func storeTestMembers(t *testing.T, s *SQLiteStore, nicks ...domain.Nick) domain
 	return ml
 }
 
-type comparableChannel struct {
-	Name       domain.ChannelName
-	Kind       domain.ChannelKind
-	Topic      string
-	TopicSetBy domain.Nick
-	TopicSetAt time.Time
-	Members    []domain.Member
-	Created    time.Time
-}
+// normaliseWindow projects a window to a value-equality form
+// suitable for `require.Equal`. Members live on a sorted set
+// whose comparator function pointer breaks `reflect.DeepEqual`
+// across independently constructed lists, so per-kind state is
+// flattened into an anonymous shape that holds the member list
+// as a slice.
+func normaliseWindow(w domain.Window) any {
+	type projection struct {
+		Name       domain.ChannelName
+		Kind       domain.ChannelKind
+		Topic      string
+		TopicSetBy domain.Nick
+		TopicSetAt time.Time
+		Members    []domain.Member
+		Created    time.Time
+	}
 
-func normaliseChannels(channels []domain.Channel) []comparableChannel {
-	out := make([]comparableChannel, len(channels))
+	out := projection{
+		Name:    w.Name(),
+		Kind:    w.Kind(),
+		Created: w.Created(),
+	}
 
-	for i, ch := range channels {
-		out[i] = comparableChannel{
-			Name:       ch.Name,
-			Kind:       ch.Kind,
-			Topic:      ch.Topic,
-			TopicSetBy: ch.TopicSetBy,
-			TopicSetAt: ch.TopicSetAt,
-			Members:    ch.Members.Slice(),
-			Created:    ch.Created,
-		}
+	if cw, ok := w.(*domain.ChannelWindow); ok {
+		out.Topic = cw.Topic
+		out.TopicSetBy = cw.TopicSetBy
+		out.TopicSetAt = cw.TopicSetAt
+		out.Members = cw.Members.Slice()
 	}
 
 	return out
 }
 
-func requireChannelsEqual(t *testing.T, expected, actual []domain.Channel) {
+func requireWindowsEqual(t *testing.T, expected, actual []domain.Window) {
 	t.Helper()
 
-	require.Equal(t, normaliseChannels(expected), normaliseChannels(actual))
+	require.Equal(t, len(expected), len(actual))
+	for i := range expected {
+		require.Equal(t, normaliseWindow(expected[i]), normaliseWindow(actual[i]))
+	}
+}
+
+func requireWindowEqual(t *testing.T, expected, actual domain.Window) {
+	t.Helper()
+
+	require.Equal(t, normaliseWindow(expected), normaliseWindow(actual))
 }
 
 type channelEntry struct {
@@ -171,96 +185,70 @@ func TestNewSQLiteStore_sets_pragmas(t *testing.T) {
 	require.Equal(t, want, readPragmas(t, c2))
 }
 
-// --- Channels ---
+// --- Windows ---
 
-func TestSQLiteStore_ListChannelsEmpty(t *testing.T) {
+func TestSQLiteStore_ListWindowsEmpty(t *testing.T) {
 	s := newTestStore(t)
 
-	got, err := s.ListChannels(t.Context())
+	got, err := s.ListWindows(t.Context())
 	require.NoError(t, err)
 	require.Empty(t, got)
 }
 
-func TestSQLiteStore_SaveAndGetChannel(t *testing.T) {
+func TestSQLiteStore_SaveAndGetWindow_channel_with_members(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
 
-	ch := domain.Channel{
-		Name:    "#general",
-		Kind:    domain.KindChannel,
-		Topic:   "General chat",
-		Members: storeTestMembers(t, s, "alice", "bob"),
-		Created: testTime,
-	}
+	want := domain.NewChannelWindow("#general", testTime)
+	want.Topic = "General chat"
+	want.Members = storeTestMembers(t, s, "alice", "bob")
 
-	require.NoError(t, s.SaveChannel(ctx, ch))
+	require.NoError(t, s.SaveWindow(ctx, want))
 
-	got, err := s.GetChannel(ctx, "#general")
+	got, err := s.GetWindow(ctx, "#general")
 	require.NoError(t, err)
-	requireChannelsEqual(t, []domain.Channel{ch}, []domain.Channel{got})
+	requireWindowEqual(t, want, got)
 }
 
-func TestSQLiteStore_SaveChannel_recordsSpan(t *testing.T) {
+func TestSQLiteStore_SaveWindow_recordsSpan(t *testing.T) {
 	recorder, provider := oteltest.NewSpanRecorder(t)
 	ctx := t.Context()
 	s := newTestStore(t).WithTracerProvider(provider)
 
-	ch := domain.Channel{
-		Name:    "#observability",
-		Kind:    domain.KindChannel,
-		Members: storeTestMembers(t, s, "alice"),
-		Created: testTime,
-	}
+	cw := domain.NewChannelWindow("#observability", testTime)
+	cw.Members = storeTestMembers(t, s, "alice")
 
-	require.NoError(t, s.SaveChannel(ctx, ch))
+	require.NoError(t, s.SaveWindow(ctx, cw))
 
-	span := oteltest.FindSpan(t, recorder, "store.sqlite.save_channel")
-	require.Equal(t, "store.sqlite.save_channel", oteltest.AttrValue(span.Attributes(), observability.AttrOperation))
+	span := oteltest.FindSpan(t, recorder, "store.sqlite.save_window")
+	require.Equal(t, "store.sqlite.save_window", oteltest.AttrValue(span.Attributes(), observability.AttrOperation))
 	require.Equal(t, "#observability", oteltest.AttrValue(span.Attributes(), observability.AttrChannel))
 	require.Equal(t, observability.ResultOK, oteltest.AttrValue(span.Attributes(), observability.AttrResult))
 }
 
-func TestSQLiteStore_GetChannelNotFound(t *testing.T) {
+func TestSQLiteStore_GetWindowNotFound(t *testing.T) {
 	s := newTestStore(t)
 
-	_, err := s.GetChannel(t.Context(), "#nonexistent")
+	_, err := s.GetWindow(t.Context(), "#nonexistent")
 	require.ErrorIs(t, err, ErrNoSuchChannel)
 }
 
-func TestSQLiteStore_ListChannels(t *testing.T) {
+func TestSQLiteStore_ListWindows(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
 
-	channels := []domain.Channel{
-		{Name: "#alpha", Kind: domain.KindChannel, Created: testTime},
-		{Name: "#beta", Kind: domain.KindChannel, Created: testTime.Add(time.Hour)},
+	windows := []domain.Window{
+		domain.NewChannelWindow("#alpha", testTime),
+		domain.NewChannelWindow("#beta", testTime.Add(time.Hour)),
 	}
 
-	for _, ch := range channels {
-		require.NoError(t, s.SaveChannel(ctx, ch))
+	for _, w := range windows {
+		require.NoError(t, s.SaveWindow(ctx, w))
 	}
 
-	got, err := s.ListChannels(ctx)
+	got, err := s.ListWindows(ctx)
 	require.NoError(t, err)
-	requireChannelsEqual(t, channels, got)
-}
-
-func TestSQLiteStore_ListChannels_includes_dms(t *testing.T) {
-	ctx := t.Context()
-	s := newTestStore(t)
-
-	channels := []domain.Channel{
-		{Name: "#alpha", Kind: domain.KindChannel, Created: testTime},
-		{Name: "botty", Kind: domain.KindDM, Created: testTime.Add(time.Hour)},
-	}
-
-	for _, ch := range channels {
-		require.NoError(t, s.SaveChannel(ctx, ch))
-	}
-
-	got, err := s.ListChannels(ctx)
-	require.NoError(t, err)
-	requireChannelsEqual(t, channels, got)
+	requireWindowsEqual(t, windows, got)
 }
 
 func TestSQLiteStore_SaveAndGetWindow_status(t *testing.T) {
@@ -346,53 +334,37 @@ func TestSQLiteStore_DeleteWindow(t *testing.T) {
 	require.ErrorIs(t, err, ErrNoSuchChannel)
 }
 
-func TestSQLiteStore_DeleteChannel(t *testing.T) {
+func TestSQLiteStore_SaveWindowOverwrites(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
 
-	ch := domain.Channel{Name: "#deleteme", Kind: domain.KindChannel, Created: testTime}
-	require.NoError(t, s.SaveChannel(ctx, ch))
-	require.NoError(t, s.DeleteChannel(ctx, "#deleteme"))
+	cw := domain.NewChannelWindow("#evolving", testTime)
+	require.NoError(t, s.SaveWindow(ctx, cw))
 
-	_, err := s.GetChannel(ctx, "#deleteme")
-	require.Error(t, err)
+	cw.Topic = "Updated topic"
+	cw.Members = storeTestMembers(t, s, "charlie")
+	require.NoError(t, s.SaveWindow(ctx, cw))
+
+	got, err := s.GetWindow(ctx, "#evolving")
+	require.NoError(t, err)
+	requireWindowEqual(t, cw, got)
 }
 
-func TestSQLiteStore_SaveChannelOverwrites(t *testing.T) {
+func TestSQLiteStore_SaveAndGetWindow_withTopicMetadata(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
 
-	ch := domain.Channel{Name: "#evolving", Kind: domain.KindChannel, Created: testTime}
-	require.NoError(t, s.SaveChannel(ctx, ch))
+	cw := domain.NewChannelWindow("#dev", testTime)
+	cw.Topic = "Go development"
+	cw.TopicSetBy = "alice"
+	cw.TopicSetAt = testTime
+	cw.Members = storeTestMembers(t, s, "alice")
 
-	ch.Topic = "Updated topic"
-	ch.Members = storeTestMembers(t, s, "charlie")
-	require.NoError(t, s.SaveChannel(ctx, ch))
+	require.NoError(t, s.SaveWindow(ctx, cw))
 
-	got, err := s.GetChannel(ctx, "#evolving")
+	got, err := s.GetWindow(ctx, "#dev")
 	require.NoError(t, err)
-	requireChannelsEqual(t, []domain.Channel{ch}, []domain.Channel{got})
-}
-
-func TestSQLiteStore_SaveAndGetChannelWithTopicMetadata(t *testing.T) {
-	ctx := t.Context()
-	s := newTestStore(t)
-
-	ch := domain.Channel{
-		Name:       "#dev",
-		Kind:       domain.KindChannel,
-		Topic:      "Go development",
-		TopicSetBy: "alice",
-		TopicSetAt: testTime,
-		Members:    storeTestMembers(t, s, "alice"),
-		Created:    testTime,
-	}
-
-	require.NoError(t, s.SaveChannel(ctx, ch))
-
-	got, err := s.GetChannel(ctx, "#dev")
-	require.NoError(t, err)
-	requireChannelsEqual(t, []domain.Channel{ch}, []domain.Channel{got})
+	requireWindowEqual(t, cw, got)
 }
 
 // --- Event log ---
@@ -665,32 +637,29 @@ func TestSQLiteStore_registry_canonical_pointer_across_reloads(t *testing.T) {
 	require.Equal(t, "original", refreshed.Persona())
 }
 
-func TestSQLiteStore_GetChannel_drops_dead_member_references(t *testing.T) {
+func TestSQLiteStore_GetWindow_drops_dead_member_references(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
 
-	members := storeTestMembers(t, s, "alice", "bob")
-
-	ch := domain.Channel{
-		Name:    "#dev",
-		Kind:    domain.KindChannel,
-		Members: members,
-		Created: testTime,
-	}
-	require.NoError(t, s.SaveChannel(ctx, ch))
+	cw := domain.NewChannelWindow("#dev", testTime)
+	cw.Members = storeTestMembers(t, s, "alice", "bob")
+	require.NoError(t, s.SaveWindow(ctx, cw))
 
 	// Delete bob's backing instance. The channel membership record
 	// still references inst-bob but no instance row remains.
 	require.NoError(t, s.DeleteInstanceByID(ctx, "inst-bob"))
 
-	got, err := s.GetChannel(ctx, "#dev")
+	got, err := s.GetWindow(ctx, "#dev")
 	require.NoError(t, err)
 
 	// The surviving member is alice; bob's stub is dropped. Compare
 	// the nick snapshots so the assertion doesn't depend on pointer
 	// identity of the canonical handles.
-	gotNicks := make([]domain.Nick, 0, got.Members.Len())
-	for _, m := range got.Members.All() {
+	gotChannel, ok := got.(*domain.ChannelWindow)
+	require.True(t, ok)
+
+	gotNicks := make([]domain.Nick, 0, gotChannel.Members.Len())
+	for _, m := range gotChannel.Members.All() {
 		gotNicks = append(gotNicks, m.Nick)
 	}
 
@@ -781,7 +750,7 @@ func seedChannelWithEvent(t *testing.T, s *SQLiteStore, ch domain.ChannelName) i
 	t.Helper()
 	ctx := t.Context()
 
-	require.NoError(t, s.SaveChannel(ctx, domain.Channel{Name: ch, Created: testTime}))
+	require.NoError(t, s.SaveWindow(ctx, domain.NewChannelWindow(ch, testTime)))
 
 	id, err := s.AppendEvent(ctx, ch, domain.Join{
 		Target: ch, Nick: "testuser", At: testTime,
@@ -847,9 +816,7 @@ func TestSQLiteStore_Reset(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
 
-	require.NoError(t, s.SaveChannel(ctx, domain.Channel{
-		Name: "#general", Kind: domain.KindChannel, Created: testTime,
-	}))
+	require.NoError(t, s.SaveWindow(ctx, domain.NewChannelWindow("#general", testTime)))
 	eventID, err := s.AppendEvent(ctx, "#general", domain.Join{
 		Target: "#general", Nick: "alice", At: testTime,
 	})
@@ -862,9 +829,9 @@ func TestSQLiteStore_Reset(t *testing.T) {
 
 	require.NoError(t, s.Reset(ctx))
 
-	channels, err := s.ListChannels(ctx)
+	windows, err := s.ListWindows(ctx)
 	require.NoError(t, err)
-	require.Empty(t, channels)
+	require.Empty(t, windows)
 
 	events, err := s.EventsBefore(ctx, "#general", nil, 10)
 	require.NoError(t, err)
@@ -1287,9 +1254,7 @@ func TestSQLiteStore_Reset_rollback_on_partial_failure(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
 
-	require.NoError(t, s.SaveChannel(ctx, domain.Channel{
-		Name: "#general", Kind: domain.KindChannel, Created: testTime,
-	}))
+	require.NoError(t, s.SaveWindow(ctx, domain.NewChannelWindow("#general", testTime)))
 	eventID, err := s.AppendEvent(ctx, "#general", domain.Join{
 		Target: "#general", Nick: "alice", At: testTime,
 	})

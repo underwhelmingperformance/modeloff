@@ -632,12 +632,8 @@ func (s ChatScreen) handleDMOpenedEvent(msg domain.DMOpenedEvent) (ui.Model, tea
 	name := msg.DM.Name()
 	*s.active = name
 
-	// The chat-screen's channel cache is still keyed by the
-	// `domain.Channel` projection while the rest of the UI is on
-	// the legacy shape. Insert the projection here so the sidebar
-	// finds the DM by name; the projection's `Members` is empty
-	// (DMs carry their counterpart by handle, not via the member
-	// list) and that's fine — the nick-list pane is a no-op for
+	// Insert the DM into the chat-screen's window cache so the
+	// sidebar finds it by name. The nick-list pane is a no-op for
 	// DM windows.
 	s.channels.Insert(msg.DM)
 

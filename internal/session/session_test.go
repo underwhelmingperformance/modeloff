@@ -62,25 +62,32 @@ func requireChannels(t *testing.T, channels *orderedmap.OrderedMap[domain.Channe
 	require.Equal(t, []domain.ChannelName(expected), got)
 }
 
-type comparableChannel struct {
-	Name       domain.ChannelName
-	Kind       domain.ChannelKind
-	Topic      string
-	TopicSetBy domain.Nick
-	TopicSetAt time.Time
-	Members    []domain.Member
-	Created    time.Time
-}
+// normaliseChannelWindow projects a channel window to a value-
+// equality form suitable for `require.Equal`. Members live on a
+// sorted set whose comparator function pointer breaks
+// `reflect.DeepEqual` across independently constructed lists, so
+// the member list is flattened into a slice on both sides.
+func normaliseChannelWindow(cw *domain.ChannelWindow) any {
+	type projection struct {
+		Name       domain.ChannelName
+		Topic      string
+		TopicSetBy domain.Nick
+		TopicSetAt time.Time
+		Members    []domain.Member
+		Created    time.Time
+	}
 
-func normaliseChannel(ch domain.Channel) comparableChannel {
-	return comparableChannel{
-		Name:       ch.Name,
-		Kind:       ch.Kind,
-		Topic:      ch.Topic,
-		TopicSetBy: ch.TopicSetBy,
-		TopicSetAt: ch.TopicSetAt,
-		Members:    ch.Members.Slice(),
-		Created:    ch.Created,
+	if cw == nil {
+		return projection{}
+	}
+
+	return projection{
+		Name:       cw.Name(),
+		Topic:      cw.Topic,
+		TopicSetBy: cw.TopicSetBy,
+		TopicSetAt: cw.TopicSetAt,
+		Members:    cw.Members.Slice(),
+		Created:    cw.Created(),
 	}
 }
 
@@ -321,10 +328,24 @@ func testMemberID(nick domain.Nick) domain.InstanceID {
 	return domain.InstanceID("inst-" + string(nick))
 }
 
-func requireChannelEqual(t *testing.T, expected, actual domain.Channel) {
+func requireChannelEqual(t *testing.T, expected, actual *domain.ChannelWindow) {
 	t.Helper()
 
-	require.Equal(t, normaliseChannel(expected), normaliseChannel(actual))
+	require.Equal(t, normaliseChannelWindow(expected), normaliseChannelWindow(actual))
+}
+
+// newTestChannelWindow constructs a `*domain.ChannelWindow` for use
+// in test fixtures and assertions. The returned window has its
+// `Members` field set to the supplied list (or an empty member
+// list when none is given) so callers don't have to reach for the
+// constructor's default and overwrite afterward.
+func newTestChannelWindow(name domain.ChannelName, created time.Time, members domain.MemberList) *domain.ChannelWindow {
+	cw := domain.NewChannelWindow(name, created)
+	if members.Len() > 0 {
+		cw.Members = members
+	}
+
+	return cw
 }
 
 func requireInstanceEqual(t *testing.T, expected, actual *domain.Instance) {
@@ -365,14 +386,9 @@ func TestSession_Join(t *testing.T) {
 	}, evt)
 
 	// Channel should be persisted.
-	ch, err := sess.GetChannel(ctx, "#general")
+	ch, err := sess.loadChannelWindow(ctx, "#general")
 	require.NoError(t, err)
-	requireChannelEqual(t, domain.Channel{
-		Name:    "#general",
-		Kind:    domain.KindChannel,
-		Members: testMembers(t, sess, s, "testuser"),
-		Created: fixedTime,
-	}, ch)
+	requireChannelEqual(t, newTestChannelWindow("#general", fixedTime, testMembers(t, sess, s, "testuser")), ch)
 
 	// `last_channel` is a UI-owned write; a session-side join no
 	// longer touches it. The store stays empty until the chat
@@ -386,19 +402,14 @@ func TestSession_JoinExistingChannel(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	existing := domain.Channel{
-		Name:    "#existing",
-		Kind:    domain.KindChannel,
-		Topic:   "Already here",
-		Members: testMembers(t, sess, s, "testuser"),
-		Created: fixedTime.Add(-time.Hour),
-	}
+	existing := newTestChannelWindow("#existing", fixedTime.Add(-time.Hour), testMembers(t, sess, s, "testuser"))
+	existing.Topic = "Already here"
 	saveTestChannel(t, sess, s, existing)
 
 	require.NoError(t, sess.Join(ctx, "#existing"))
 
 	// Channel should not be overwritten.
-	ch, err := sess.GetChannel(ctx, "#existing")
+	ch, err := sess.loadChannelWindow(ctx, "#existing")
 	require.NoError(t, err)
 	require.Equal(t, "Already here", ch.Topic)
 
@@ -523,13 +534,7 @@ func TestSession_Leave(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	ch := domain.Channel{
-		Name:    "#leaving",
-		Kind:    domain.KindChannel,
-		Members: testMembers(t, sess, s, "testuser", "botty"),
-		Created: fixedTime,
-	}
-	saveTestChannel(t, sess, s, ch)
+	saveTestChannel(t, sess, s, newTestChannelWindow("#leaving", fixedTime, testMembers(t, sess, s, "testuser", "botty")))
 
 	require.NoError(t, sess.Part(ctx, "#leaving", ""))
 	evt := drainEvent[domain.Part](t, sess)
@@ -540,14 +545,9 @@ func TestSession_Leave(t *testing.T) {
 		At:       fixedTime,
 	}, evt)
 
-	updated, err := sess.GetChannel(ctx, "#leaving")
+	updated, err := sess.loadChannelWindow(ctx, "#leaving")
 	require.NoError(t, err)
-	requireChannelEqual(t, domain.Channel{
-		Name:    "#leaving",
-		Kind:    domain.KindChannel,
-		Members: testMembers(t, sess, s, "botty"),
-		Created: fixedTime,
-	}, updated)
+	requireChannelEqual(t, newTestChannelWindow("#leaving", fixedTime, testMembers(t, sess, s, "botty")), updated)
 }
 
 func TestSession_LeaveNonexistent(t *testing.T) {
@@ -560,13 +560,7 @@ func TestSession_Part_carries_message(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	ch := domain.Channel{
-		Name:    "#farewell",
-		Kind:    domain.KindChannel,
-		Members: testMembers(t, sess, s, "testuser"),
-		Created: fixedTime,
-	}
-	saveTestChannel(t, sess, s, ch)
+	saveTestChannel(t, sess, s, newTestChannelWindow("#farewell", fixedTime, testMembers(t, sess, s, "testuser")))
 
 	require.NoError(t, sess.Part(ctx, "#farewell", "see ya later"))
 	evt := drainEvent[domain.Part](t, sess)
@@ -611,23 +605,13 @@ func TestSession_Connect_clears_unclean_user_membership(t *testing.T) {
 
 	require.NoError(t, sess.Connect(ctx))
 
-	general, err := sess.GetChannel(ctx, "#general")
+	general, err := sess.loadChannelWindow(ctx, "#general")
 	require.NoError(t, err)
-	requireChannelEqual(t, domain.Channel{
-		Name:    "#general",
-		Kind:    domain.KindChannel,
-		Members: testMembers(t, sess, s, "botty"),
-		Created: fixedTime,
-	}, general)
+	requireChannelEqual(t, newTestChannelWindow("#general", fixedTime, testMembers(t, sess, s, "botty")), general)
 
-	random, err := sess.GetChannel(ctx, "#random")
+	random, err := sess.loadChannelWindow(ctx, "#random")
 	require.NoError(t, err)
-	requireChannelEqual(t, domain.Channel{
-		Name:    "#random",
-		Kind:    domain.KindChannel,
-		Members: domain.NewMemberList(),
-		Created: fixedTime,
-	}, random)
+	requireChannelEqual(t, newTestChannelWindow("#random", fixedTime, domain.NewMemberList()), random)
 
 	statusEvents := channelEventTypes(t, s, domain.StatusChannelName)
 	require.Equal(t, []string{"system_notice", "system_notice"}, statusEvents,
@@ -948,14 +932,9 @@ func TestSession_Quit_removes_user_from_channel_members(t *testing.T) {
 
 	require.NoError(t, sess.Quit(ctx, ""))
 
-	ch, err := sess.GetChannel(ctx, "#general")
+	ch, err := sess.loadChannelWindow(ctx, "#general")
 	require.NoError(t, err)
-	requireChannelEqual(t, domain.Channel{
-		Name:    "#general",
-		Kind:    domain.KindChannel,
-		Members: domain.NewMemberList(),
-		Created: fixedTime,
-	}, ch)
+	requireChannelEqual(t, newTestChannelWindow("#general", fixedTime, domain.NewMemberList()), ch)
 }
 
 func TestSession_Quit_clears_in_memory_channels(t *testing.T) {
@@ -996,8 +975,13 @@ func TestSession_user_state_triple_stays_consistent(t *testing.T) {
 			channels = append(channels, pair.Key)
 		}
 
-		stored, err := s.GetChannel(t.Context(), ch)
-		onDisk := err == nil && stored.Members.HasInstance(sess.UserInstance())
+		w, err := s.GetWindow(t.Context(), ch)
+		var onDisk bool
+		if err == nil {
+			if cw, ok := w.(*domain.ChannelWindow); ok {
+				onDisk = cw.Members.HasInstance(sess.UserInstance())
+			}
+		}
 
 		return userSnapshot{
 			Channels:   channels,
@@ -1125,13 +1109,7 @@ func TestSession_AddModel(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	ch := domain.Channel{
-		Name:    "#dev",
-		Kind:    domain.KindChannel,
-		Members: testMembers(t, sess, s, "testuser"),
-		Created: fixedTime,
-	}
-	saveTestChannel(t, sess, s, ch)
+	saveTestChannel(t, sess, s, newTestChannelWindow("#dev", fixedTime, testMembers(t, sess, s, "testuser")))
 
 	require.NoError(t, sess.AddModel(ctx, "#dev", "anthropic/claude-3-haiku", ""))
 	evt := drainEvent[domain.ModelInvited](t, sess)
@@ -1157,7 +1135,7 @@ func TestSession_AddModel(t *testing.T) {
 	), inst)
 
 	// Channel should have new member.
-	updated, err := sess.GetChannel(ctx, "#dev")
+	updated, err := sess.loadChannelWindow(ctx, "#dev")
 	require.NoError(t, err)
 	require.Equal(t, []domain.Member{
 		{Instance: sess.UserInstance(), Nick: "testuser", Mode: domain.ModeOp},
@@ -1174,13 +1152,7 @@ func TestSession_Kick(t *testing.T) {
 		ModelID:  "test/model",
 		Channels: testChannels("#dev", "#random"),
 	})
-	ch := domain.Channel{
-		Name:    "#dev",
-		Kind:    domain.KindChannel,
-		Members: testMembers(t, sess, s, "testuser", "botty"),
-		Created: fixedTime,
-	}
-	saveTestChannel(t, sess, s, ch)
+	saveTestChannel(t, sess, s, newTestChannelWindow("#dev", fixedTime, testMembers(t, sess, s, "testuser", "botty")))
 
 	require.NoError(t, sess.Kick(ctx, "#dev", "botty"))
 	evt := drainEvent[domain.ModelKicked](t, sess)
@@ -1194,7 +1166,7 @@ func TestSession_Kick(t *testing.T) {
 	}, evt)
 
 	// Channel should no longer have the kicked member.
-	updated, err := sess.GetChannel(ctx, "#dev")
+	updated, err := sess.loadChannelWindow(ctx, "#dev")
 	require.NoError(t, err)
 	require.Equal(t, testMembers(t, sess, s, "testuser").Slice(), updated.Members.Slice())
 
@@ -1220,7 +1192,7 @@ func TestSession_mutationOperations_recordSpans(t *testing.T) {
 		ModelID:  "test/model",
 		Channels: testChannels("#general"),
 	})
-	channel, err := sess.GetChannel(ctx, "#general")
+	channel, err := sess.loadChannelWindow(ctx, "#general")
 	require.NoError(t, err)
 	channel.Members.Add(botty)
 	saveTestChannel(t, sess, s, channel)
@@ -1258,12 +1230,12 @@ func TestSession_mutationOperations_recordSpans(t *testing.T) {
 		"session.set_topic",
 		"store.sqlite.append_event",
 		"store.sqlite.events_before",
-		"store.sqlite.get_channel",
 		"store.sqlite.get_instance_by_id",
+		"store.sqlite.get_window",
 		"store.sqlite.reset",
 		"store.sqlite.resolve_nick",
-		"store.sqlite.save_channel",
 		"store.sqlite.save_instance",
+		"store.sqlite.save_window",
 		"store.sqlite.set_autojoin_channels",
 	}
 
@@ -2199,8 +2171,7 @@ func TestSession_SetTopic(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	ch := domain.Channel{Name: "#dev", Kind: domain.KindChannel, Created: fixedTime}
-	saveTestChannel(t, sess, s, ch)
+	saveTestChannel(t, sess, s, domain.NewChannelWindow("#dev", fixedTime))
 
 	require.NoError(t, sess.SetTopic(ctx, "#dev", "Development Chat"))
 	evt := drainEvent[domain.TopicChange](t, sess)
@@ -2213,16 +2184,13 @@ func TestSession_SetTopic(t *testing.T) {
 	}, evt)
 
 	// Channel topic and metadata should be updated.
-	updated, err := sess.GetChannel(ctx, "#dev")
+	updated, err := sess.loadChannelWindow(ctx, "#dev")
 	require.NoError(t, err)
-	requireChannelEqual(t, domain.Channel{
-		Name:       "#dev",
-		Kind:       domain.KindChannel,
-		Topic:      "Development Chat",
-		TopicSetBy: "testuser",
-		TopicSetAt: fixedTime,
-		Created:    fixedTime,
-	}, updated)
+	expected := domain.NewChannelWindow("#dev", fixedTime)
+	expected.Topic = "Development Chat"
+	expected.TopicSetBy = "testuser"
+	expected.TopicSetAt = fixedTime
+	requireChannelEqual(t, expected, updated)
 }
 
 func TestSession_ChangeNick(t *testing.T) {
@@ -2442,13 +2410,7 @@ func TestSession_AddModelGenerateNickError(t *testing.T) {
 	sess, s := newTestSessionWithAPI(t, fake)
 	ctx := t.Context()
 
-	ch := domain.Channel{
-		Name:    "#dev",
-		Kind:    domain.KindChannel,
-		Members: testMembers(t, sess, s, "testuser"),
-		Created: fixedTime,
-	}
-	saveTestChannel(t, sess, s, ch)
+	saveTestChannel(t, sess, s, newTestChannelWindow("#dev", fixedTime, testMembers(t, sess, s, "testuser")))
 
 	require.Error(t, sess.AddModel(ctx, "#dev", "anthropic/claude-3-haiku", ""))
 }
@@ -2503,7 +2465,7 @@ func TestSession_InviteAs_reuses_existing_instance(t *testing.T) {
 		testChannels("#general", "#random"),
 	), inst)
 
-	channel, err := sess.GetChannel(ctx, "#random")
+	channel, err := sess.loadChannelWindow(ctx, "#random")
 	require.NoError(t, err)
 	require.Equal(t, testMembers(t, sess, s, "testuser", "botty").Slice(), channel.Members.Slice())
 }
@@ -2525,7 +2487,7 @@ func TestSession_InviteAs_existing_instance_is_idempotent(t *testing.T) {
 	require.NoError(t, err)
 	requireChannels(t, inst.Channels(), "#general")
 
-	channel, err := sess.GetChannel(ctx, "#general")
+	channel, err := sess.loadChannelWindow(ctx, "#general")
 	require.NoError(t, err)
 	require.Equal(t, testMembers(t, sess, s, "testuser", "botty").Slice(), channel.Members.Slice())
 }
@@ -2596,13 +2558,7 @@ func TestSession_KickNonMember(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	original := domain.Channel{
-		Name:    "#dev",
-		Kind:    domain.KindChannel,
-		Members: testMembers(t, sess, s, "testuser"),
-		Created: fixedTime,
-	}
-	saveTestChannel(t, sess, s, original)
+	saveTestChannel(t, sess, s, newTestChannelWindow("#dev", fixedTime, testMembers(t, sess, s, "testuser")))
 
 	// Kicking an unresolved nick must be a no-op: no
 	// ModelKickedEvent emission (the empty-id fallback would
@@ -2616,7 +2572,7 @@ func TestSession_KickNonMember(t *testing.T) {
 	case <-time.After(50 * time.Millisecond):
 	}
 
-	updated, err := sess.GetChannel(ctx, "#dev")
+	updated, err := sess.loadChannelWindow(ctx, "#dev")
 	require.NoError(t, err)
 	require.Equal(t, testMembers(t, sess, s, "testuser").Slice(), updated.Members.Slice())
 }
@@ -3293,9 +3249,9 @@ func TestSession_Reset(t *testing.T) {
 
 	require.NoError(t, sess.Reset(ctx))
 
-	channels, err := s.ListChannels(ctx)
+	windows, err := s.ListWindows(ctx)
 	require.NoError(t, err)
-	require.Empty(t, channels)
+	require.Empty(t, windows)
 
 	instances, err := s.ListInstances(ctx)
 	require.NoError(t, err)
@@ -3317,9 +3273,9 @@ func TestSession_Reset_nil_memory_store(t *testing.T) {
 
 	require.NoError(t, sess.Reset(ctx))
 
-	channels, err := s.ListChannels(ctx)
+	windows, err := s.ListWindows(ctx)
 	require.NoError(t, err)
-	require.Empty(t, channels)
+	require.Empty(t, windows)
 }
 
 func TestBuildSystemPrompt_instructs_single_line_messages(t *testing.T) {
@@ -4261,51 +4217,46 @@ func TestSession_DispatchToChannel_newline_retry_exhaustion(t *testing.T) {
 func seedChannelWithMembers(t *testing.T, sess *Session, s *storemod.SQLiteStore, name domain.ChannelName, members ...domain.Nick) {
 	t.Helper()
 
-	ch := domain.Channel{
-		Name:    name,
-		Kind:    domain.KindChannel,
-		Members: testMembers(t, sess, s, members...),
-		Created: fixedTime,
-	}
+	cw := newTestChannelWindow(name, fixedTime, testMembers(t, sess, s, members...))
 
 	registerUserMembership(t, sess, name, members)
 
-	ch.Members = cloneMembersWithout(ch.Members, sess.UserInstance())
-	require.NoError(t, s.SaveChannel(t.Context(), ch))
+	cw.Members = cloneMembersWithout(cw.Members, sess.UserInstance())
+	require.NoError(t, s.SaveWindow(t.Context(), cw))
 }
 
-// saveTestChannel persists a pre-built `domain.Channel` literal in
-// the test-style, splitting ephemeral user membership from the on-
-// disk form. If the channel's Members lists the session user, the
-// session's `user.Channels()` + recorded user mode are updated to
-// match, and the user is stripped from `ch.Members` before
-// `s.SaveChannel` is called. Tests construct channel literals with
-// the user as a member for readability; the store never sees the
-// user.
-func saveTestChannel(t *testing.T, sess *Session, s *storemod.SQLiteStore, ch domain.Channel) {
+// saveTestChannel persists a pre-built window fixture. For
+// `*domain.ChannelWindow` it splits ephemeral user membership
+// from the on-disk form: if the channel's member list lists the
+// session user, the session's `user.Channels()` + recorded user
+// mode are updated to match, and the user is stripped from the
+// saved member list before persistence. Tests construct channel
+// windows with the user as a member for readability; the store
+// never sees the user. DM and status windows are persisted as-is.
+func saveTestChannel(t *testing.T, sess *Session, s *storemod.SQLiteStore, w domain.Window) {
 	t.Helper()
 
-	user := sess.UserInstance()
-	if m, ok := ch.Members.GetByInstance(user); ok {
-		sess.UserInstance().MutateChannels(func(mm *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
-			if _, exists := mm.Get(ch.Name); !exists {
-				mm.Set(ch.Name, fixedTime)
+	if cw, ok := w.(*domain.ChannelWindow); ok {
+		user := sess.UserInstance()
+		if m, ok := cw.Members.GetByInstance(user); ok {
+			sess.UserInstance().MutateChannels(func(mm *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
+				if _, exists := mm.Get(cw.Name()); !exists {
+					mm.Set(cw.Name(), fixedTime)
+				}
+			})
+
+			mode := m.Mode
+			if mode == domain.ModeNone {
+				mode = domain.ModeOp
 			}
-		})
 
-		mode := m.Mode
-		if mode == domain.ModeNone && ch.Kind == domain.KindChannel {
-			mode = domain.ModeOp
+			sess.setUserMode(t.Context(), cw.Name(), mode)
+
+			cw.Members = cloneMembersWithout(cw.Members, user)
 		}
-
-		if mode != domain.ModeNone {
-			sess.setUserMode(t.Context(), ch.Name, mode)
-		}
-
-		ch.Members = cloneMembersWithout(ch.Members, user)
 	}
 
-	require.NoError(t, s.SaveChannel(t.Context(), ch))
+	require.NoError(t, s.SaveWindow(t.Context(), w))
 }
 
 // registerUserMembership updates the session's in-memory user state
