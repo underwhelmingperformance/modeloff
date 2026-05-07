@@ -139,7 +139,7 @@ func TestQuitAs_model_actor(t *testing.T) {
 
 	evt := drainEvent[domain.Quit](t, sess)
 	require.Equal(t, domain.Quit{
-		Target:     "#dev",
+		Channels:   []domain.ChannelName{"#dev", "#general"},
 		Nick:       "botty",
 		InstanceID: botty.ID(),
 		Message:    "farewell",

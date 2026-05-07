@@ -2146,7 +2146,7 @@ func TestSession_ChangeNick(t *testing.T) {
 	require.NoError(t, sess.ChangeNick(t.Context(), "newname"))
 	evt := drainEvent[domain.NickChange](t, sess)
 	require.Equal(t, domain.NickChange{
-		Target:     "#general",
+		Channels:   []domain.ChannelName{"#general"},
 		InstanceID: sess.UserInstance().ID(),
 		OldNick:    "testuser",
 		NewNick:    "newname",

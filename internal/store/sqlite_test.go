@@ -455,6 +455,59 @@ func TestSQLiteStore_DMEventsBefore_unions_both_directions(t *testing.T) {
 	require.Equal(t, []int64{id1, id2, id3}, gotIDs)
 }
 
+// TestSQLiteStore_DMEventsBefore_includes_peer_actor_events
+// pins that peer's actor-scoped events (`quit`, `nick_change`)
+// surface in the DM thread between `self` and `peer`, and that
+// per-channel persistence (one row per channel the actor was in
+// at event time) is collapsed back to a single row by
+// `(instance_id, type, at)`.
+func TestSQLiteStore_DMEventsBefore_includes_peer_actor_events(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	const userID domain.InstanceID = ""
+	const bottyID domain.InstanceID = "inst-botty"
+
+	mustAppend := func(channel domain.ChannelName, evt domain.PersistableEvent) int64 {
+		t.Helper()
+		id, err := s.AppendEvent(ctx, channel, evt)
+		require.NoError(t, err)
+		return id
+	}
+
+	// User → botty.
+	id1 := mustAppend(domain.ChannelName(bottyID), domain.Message{
+		Target: domain.ChannelName(bottyID), From: "iain", Body: "hi", At: testTime,
+	})
+
+	// Botty's quit fanned out per-channel (in real life, one row
+	// per channel botty was in). Persisted under different
+	// `channel` columns but carrying the same Quit payload.
+	quit := domain.Quit{
+		Channels:   []domain.ChannelName{"#general", "#dev"},
+		Nick:       "botty",
+		InstanceID: bottyID,
+		Message:    "shutting down",
+		At:         testTime.Add(time.Second),
+	}
+	idGeneral := mustAppend("#general", quit)
+	mustAppend("#dev", quit)
+
+	got, err := s.DMEventsBefore(ctx, userID, bottyID, nil, 10)
+	require.NoError(t, err)
+
+	gotIDs := make([]int64, len(got))
+	for i, e := range got {
+		gotIDs[i] = e.ID
+	}
+
+	// Expect the message and exactly one quit row (the earliest
+	// id, picked by MIN(id) in the dedupe), in chronological
+	// order.
+	require.Equal(t, []int64{id1, idGeneral}, gotIDs)
+	require.IsType(t, domain.Quit{}, got[1].Event)
+}
+
 func TestSQLiteStore_EventsFrom_nil_returns_earliest(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
@@ -555,7 +608,7 @@ func TestSQLiteStore_Events_type_discriminator_round_trip(t *testing.T) {
 		domain.ModeChange{Target: "#general", Nick: "bob", Mode: domain.ModeVoice, By: "ChanServ", At: testTime},
 		domain.ModelInvited{Target: "#general", Nick: "botty", By: "alice", At: testTime},
 		domain.ModelKicked{Target: "#general", Nick: "botty", By: "alice", At: testTime},
-		domain.NickChange{Target: "#general", OldNick: "bob", NewNick: "robert", At: testTime},
+		domain.NickChange{Channels: []domain.ChannelName{"#general"}, OldNick: "bob", NewNick: "robert", At: testTime},
 	}
 
 	for _, e := range events {

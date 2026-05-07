@@ -802,23 +802,39 @@ func (s *SQLiteStore) DMEventsBefore(ctx context.Context, self, peer domain.Inst
 			attribute.String("modeloff.dm.peer_id", string(peer)),
 		},
 		func(ctx context.Context, _ trace.Span) error {
-			const predicate = `(
+			// Bidirectional message rows: peer→self and self→peer.
+			const messageRows = `SELECT id, data FROM events WHERE
 				(channel = ? AND coalesce(json_extract(data, '$.data.instance_id'), '') = ?)
 				OR
 				(channel = ? AND coalesce(json_extract(data, '$.data.instance_id'), '') = ?)
-			)`
+			`
+
+			// Peer's actor-scoped events anywhere, deduped by
+			// (instance_id, type, at). Per-channel persistence
+			// (one row per channel the actor was in at event
+			// time) collapses to one representative row via
+			// MIN(id).
+			const actorEventRows = `SELECT MIN(id) AS id, data FROM events
+				WHERE coalesce(json_extract(data, '$.data.instance_id'), '') = ?
+					AND json_extract(data, '$.type') IN ('quit', 'nick_change')
+				GROUP BY json_extract(data, '$.data.instance_id'),
+					json_extract(data, '$.type'),
+					json_extract(data, '$.data.at')
+			`
+
+			union := `(` + messageRows + ` UNION ` + actorEventRows + `)`
 
 			query, args := `SELECT id, data FROM (
-					SELECT id, data FROM events WHERE `+predicate+`
+					SELECT id, data FROM `+union+` AS thread
 					ORDER BY id DESC LIMIT ?
 				) ORDER BY id ASC`,
-				[]any{string(peer), string(self), string(self), string(peer), n}
+				[]any{string(peer), string(self), string(self), string(peer), string(peer), n}
 			if before != nil {
 				query, args = `SELECT id, data FROM (
-						SELECT id, data FROM events WHERE `+predicate+` AND id < ?
+						SELECT id, data FROM `+union+` AS thread WHERE id < ?
 						ORDER BY id DESC LIMIT ?
 					) ORDER BY id ASC`,
-					[]any{string(peer), string(self), string(self), string(peer), *before, n}
+					[]any{string(peer), string(self), string(self), string(peer), string(peer), *before, n}
 			}
 
 			got, err := queryRows(ctx, s.db, query, args, storedEventRow)

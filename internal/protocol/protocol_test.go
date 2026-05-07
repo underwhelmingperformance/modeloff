@@ -109,19 +109,18 @@ func TestFromChannelEvent_quit(t *testing.T) {
 	at := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
 
 	got, ok := FromChannelEvent(domain.Quit{
-		Target:  "#general",
-		Nick:    "alice",
-		Message: "gone fishing",
-		At:      at,
+		Channels: []domain.ChannelName{"#general"},
+		Nick:     "alice",
+		Message:  "gone fishing",
+		At:       at,
 	})
 
 	require.True(t, ok)
 	require.Equal(t, IRCMessage{
-		Kind:   KindQuit,
-		From:   "alice",
-		Target: "#general",
-		Body:   "gone fishing",
-		At:     at,
+		Kind: KindQuit,
+		From: "alice",
+		Body: "gone fishing",
+		At:   at,
 	}, got)
 }
 

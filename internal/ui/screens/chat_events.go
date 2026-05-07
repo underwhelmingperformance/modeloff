@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"iter"
 	"log/slog"
+	"slices"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -89,10 +90,14 @@ func (s ChatScreen) handleSessionEvent(msg sessionEventMsg) (ui.Model, tea.Cmd) 
 //
 // `Message` events route via [domain.Message.RoutingKey] so DM
 // traffic in either direction lands in the same per-peer
-// scrollback. Other persistable events are channel-keyed by
-// their `Target`. SystemNoticeEvent is special-cased because it
-// is a UI carrier for an already-persisted SystemNotice; the
-// wrapped Stored.Event lands in the buffer.
+// scrollback. Actor-scoped `Quit` and `NickChange` events carry
+// the actor's channel snapshot on the event itself (RFC-aligned
+// shape) and fan out into each window the chat screen knows the
+// actor was in, plus any open DM with the actor. Other
+// persistable events are channel-keyed by their `Target`.
+// SystemNoticeEvent is special-cased because it is a UI carrier
+// for an already-persisted SystemNotice; the wrapped
+// Stored.Event lands in the buffer.
 func (s ChatScreen) bufferEvent(evt domain.Event) {
 	switch e := evt.(type) {
 	case domain.SystemNoticeEvent:
@@ -104,6 +109,10 @@ func (s ChatScreen) bufferEvent(evt domain.Event) {
 		}
 
 		s.appendToScrollback(key, domain.StoredEvent{Event: e})
+	case domain.Quit:
+		s.bufferActorEvent(e.Channels, e.Instance, domain.StoredEvent{Event: e})
+	case domain.NickChange:
+		s.bufferActorEvent(e.Channels, e.Instance, domain.StoredEvent{Event: e})
 	case domain.PersistableEvent:
 		ch := domain.EventTarget(e)
 		if ch == "" {
@@ -111,6 +120,31 @@ func (s ChatScreen) bufferEvent(evt domain.Event) {
 		}
 
 		s.appendToScrollback(ch, domain.StoredEvent{Event: e})
+	}
+}
+
+// bufferActorEvent fans an actor-scoped event into the chat
+// screen's per-window scrollback: every channel in `channels`
+// the chat screen has a window for, plus any open DM whose
+// counterpart is `actor`.
+func (s ChatScreen) bufferActorEvent(channels []domain.ChannelName, actor *domain.Instance, stored domain.StoredEvent) {
+	for _, ch := range channels {
+		s.appendToScrollback(ch, stored)
+	}
+
+	if actor == nil {
+		return
+	}
+
+	for w := range s.channels.All() {
+		dm, ok := w.(*domain.DMWindow)
+		if !ok {
+			continue
+		}
+
+		if dm.Counterpart == actor {
+			s.appendToScrollback(dm.Name(), stored)
+		}
 	}
 }
 
@@ -419,32 +453,46 @@ func (s ChatScreen) handlePartEvent(msg domain.Part) (ui.Model, tea.Cmd) {
 }
 
 func (s ChatScreen) handleQuitEvent(msg domain.Quit) (ui.Model, tea.Cmd) {
-	// The session emits one quit event per channel the actor was
-	// in (the IRC intersection rule, denormalised per-channel for
-	// modeloff's persistence shape). `bufferEvent` has already
-	// appended this event to its target's scrollback. The
-	// handler's job is the in-memory Members update for that
-	// target, plus the live nick-list and message-list refresh
-	// when the target is the active window.
+	// The session emits one Quit per actor-event (RFC 2812
+	// §3.1.7) carrying the channels the actor was in.
+	// `bufferEvent` has already fanned the line into every
+	// affected channel's scrollback and into open DMs with the
+	// actor. The handler's job is the in-memory Members update
+	// for each affected channel plus the live nick-list /
+	// message-list refresh when one of those channels is the
+	// active window.
 
-	if cw, ok := s.channelWindowByName(msg.Target); ok {
+	for _, ch := range msg.Channels {
+		cw, ok := s.channelWindowByName(ch)
+		if !ok {
+			continue
+		}
+
 		if m, mOK := cw.Members.GetByInstance(msg.Instance); mOK {
 			cw.Members.Remove(m)
 			s.channels.Insert(cw)
 		}
 	}
 
-	if msg.Target != *s.active {
-		return s, nil
-	}
-
 	var cmds []tea.Cmd
 
-	if cw, ok := s.channelWindowByName(*s.active); ok {
-		cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: cw.Members}))
+	for _, ch := range msg.Channels {
+		if ch != *s.active {
+			continue
+		}
+
+		if cw, ok := s.channelWindowByName(*s.active); ok {
+			cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: cw.Members}))
+		}
+
+		cmds = append(cmds, msgCmd(domain.StoredEvent{Event: msg}))
 	}
 
-	cmds = append(cmds, msgCmd(domain.StoredEvent{Event: msg}))
+	// Also surface into the active window if it's an open DM
+	// with the quitter.
+	if dm, ok := s.activeDMWith(msg.Instance); ok && dm.Name() == *s.active {
+		cmds = append(cmds, msgCmd(domain.StoredEvent{Event: msg}))
+	}
 
 	return s, tea.Batch(cmds...)
 }
@@ -492,13 +540,17 @@ func (s ChatScreen) handleTopicInfoEvent(msg domain.TopicInfo) (ui.Model, tea.Cm
 }
 
 func (s ChatScreen) handleNickChangeEvent(msg domain.NickChange) (ui.Model, tea.Cmd) {
-	// Update the nick snapshot in this channel's local member list.
-	// The instance's own Nick() is already the new value — the
-	// session mutated it before emitting the event. The session
-	// emits one nick-change per channel the actor was in (the IRC
-	// intersection rule), so the handler only needs to update the
-	// target window's snapshot, not iterate.
-	if cw, ok := s.channelWindowByName(msg.Target); ok {
+	// One NickChange per actor-rename (RFC 2812 §3.1.2). The
+	// instance's own Nick() is already the new value — the
+	// session mutated it before emitting. Update the snapshot
+	// in each affected channel's member list, then fire the
+	// active-window-only UI side-effects exactly once.
+	for _, ch := range msg.Channels {
+		cw, ok := s.channelWindowByName(ch)
+		if !ok {
+			continue
+		}
+
 		if cw.Members.HasInstance(msg.Instance) {
 			cw.Members.RenameTo(msg.Instance, msg.NewNick)
 			s.channels.Insert(cw)
@@ -507,41 +559,54 @@ func (s ChatScreen) handleNickChangeEvent(msg domain.NickChange) (ui.Model, tea.
 
 	var cmds []tea.Cmd
 
-	// The active-window UI updates (nick list, message list,
-	// user-nick banner, highlight words) only need to fire once
-	// even though the session emits one event per channel the
-	// actor was in. Gate them on the target being the active
-	// window so they fire exactly once per rename — for the
-	// active-targeted event in the per-channel iteration —
-	// regardless of how many channels the actor was in.
-	if msg.Target != *s.active {
-		return s, nil
+	activeIsChannel := slices.Contains(msg.Channels, *s.active)
+
+	activeDM, activeIsDM := s.activeDMWith(msg.Instance)
+	activeDMVisible := activeIsDM && activeDM.Name() == *s.active
+
+	if activeIsChannel || activeDMVisible {
+		if activeIsChannel {
+			if cw, ok := s.channelWindowByName(*s.active); ok {
+				cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: cw.Members}))
+			}
+		}
+
+		cmds = append(cmds, msgCmd(domain.StoredEvent{Event: msg}))
+
+		if msg.Instance == s.sess.UserInstance() {
+			cmds = append(cmds, msgCmd(components.UserNickMsg{Nick: msg.NewNick}))
+		}
+
+		nickCfg, _ := s.loadConfig()
+		cmds = append(cmds, msgCmd(components.HighlightWordsMsg{
+			Words:    nickCfg.HighlightWords,
+			UserNick: s.sess.UserNick(),
+		}))
 	}
-
-	if cw, ok := s.channelWindowByName(*s.active); ok {
-		cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: cw.Members}))
-	}
-
-	cmds = append(cmds, msgCmd(domain.StoredEvent{
-		Event: domain.NickChange{
-			Target:  msg.Target,
-			OldNick: msg.OldNick,
-			NewNick: msg.NewNick,
-			At:      msg.At,
-		},
-	}))
-
-	if msg.Instance == s.sess.UserInstance() {
-		cmds = append(cmds, msgCmd(components.UserNickMsg{Nick: msg.NewNick}))
-	}
-
-	nickCfg, _ := s.loadConfig()
-	cmds = append(cmds, msgCmd(components.HighlightWordsMsg{
-		Words:    nickCfg.HighlightWords,
-		UserNick: s.sess.UserNick(),
-	}))
 
 	return s, tea.Batch(cmds...)
+}
+
+// activeDMWith returns the chat-screen's open DM with the given
+// counterpart instance, if any. Used by actor-event handlers to
+// surface QUIT / NICK lines into a DM with the actor.
+func (s ChatScreen) activeDMWith(actor *domain.Instance) (*domain.DMWindow, bool) {
+	if actor == nil {
+		return nil, false
+	}
+
+	for w := range s.channels.All() {
+		dm, ok := w.(*domain.DMWindow)
+		if !ok {
+			continue
+		}
+
+		if dm.Counterpart == actor {
+			return dm, true
+		}
+	}
+
+	return nil, false
 }
 
 func (s ChatScreen) handleModelInvitedEvent(msg domain.ModelInvited) (ui.Model, tea.Cmd) {

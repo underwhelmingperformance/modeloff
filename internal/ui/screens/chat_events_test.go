@@ -1,6 +1,7 @@
 package screens_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -124,7 +125,7 @@ func TestChatScreen_QuitEvent_shows_quit_message(t *testing.T) {
 	tm.WaitFor("Created channel #general", "fakenick has joined #general")
 
 	tm.Send(domain.Quit{
-		Target:   "#general",
+		Channels: []domain.ChannelName{"#general"},
 		Nick:     inst.Nick(),
 		Instance: inst,
 		Message:  "shutting down",
@@ -150,10 +151,9 @@ func TestChatScreen_QuitEvent_removes_instance_from_nick_list(t *testing.T) {
 	tm.WaitFor("Created channel #general", "fakenick has joined #general")
 
 	tm.Send(domain.Quit{
-		Target:   "#general",
+		Channels: []domain.ChannelName{"#general"},
 		Nick:     inst.Nick(),
 		Instance: inst,
-		Message:  "",
 		At:       time.Now(),
 	})
 
@@ -169,6 +169,48 @@ func TestChatScreen_QuitEvent_removes_instance_from_nick_list(t *testing.T) {
 		"*** fakenick has quit",
 		"testuser >",
 	}, normaliseContent(uitest.NonEmptyColumn(uitest.VisibleColumns(body)[1])))
+}
+
+// TestChatScreen_QuitEvent_surfaces_in_open_DM exercises the
+// frontend policy that a channel-scoped QUIT for an actor the
+// user has an open DM with is also rendered in that DM's
+// scrollback. The session emits one Quit (RFC-aligned) and the
+// chat screen surfaces it into both the channel and the DM,
+// without duplication when multiple channels are listed.
+func TestChatScreen_QuitEvent_surfaces_in_open_DM(t *testing.T) {
+	sess := newTestSession(t)
+	uitest.SeedChannel(t, sess, "#general")
+	require.NoError(t, sess.AddModel(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
+
+	inst, err := sess.ResolveNick(t.Context(), "fakenick")
+	require.NoError(t, err)
+
+	tm := newChatApp(t, sess)
+	tm.WaitFor("Created channel #general", "fakenick has joined #general")
+
+	// Open a DM with fakenick and switch focus to it. /query
+	// returns a chatcmd.DMOpenedMsg that the chat screen handles
+	// by inserting the DM into its sidebar cache and focusing;
+	// wait for the sidebar focus marker on the DM to confirm
+	// the focus has actually landed before sending the QUIT.
+	tm.Submit("/query fakenick")
+	tm.WaitForView(func(view string) bool {
+		return strings.Contains(view, "▸fakenick")
+	})
+
+	tm.Send(domain.Quit{
+		Channels: []domain.ChannelName{"#general"},
+		Nick:     inst.Nick(),
+		Instance: inst,
+		Message:  "shutting down",
+		At:       time.Now(),
+	})
+
+	// The active window is the DM. The QUIT line should land
+	// here as a frontend policy choice — the user wants to see
+	// "fakenick has quit" in the DM they had open, not just in
+	// the channel scrollback.
+	tm.WaitFor("fakenick has quit (shutting down)")
 }
 
 func TestChatScreen_ignores_join_for_unknown_channel(t *testing.T) {

@@ -628,12 +628,12 @@ func (s *Session) Quit(ctx context.Context, message string) (retErr error) {
 	// point cleanupUncleanShutdown handles any residual memberships.
 	s.propagateActorEvent(ctx, s.user, actorEventConfig{
 		storeOnly: true,
-		build: func(ch domain.ChannelName) domain.PersistableEvent {
+		build: func(channels []domain.ChannelName) domain.PersistableEvent {
 			return domain.Quit{
-				Target:  ch,
-				Nick:    userNick,
-				Message: message,
-				At:      now,
+				Channels: channels,
+				Nick:     userNick,
+				Message:  message,
+				At:       now,
 			}
 		},
 		afterEach: func(ctx context.Context, ch domain.ChannelName) {
@@ -1862,61 +1862,59 @@ func (s *Session) persistAndEmitUIOnly(ctx context.Context, ch domain.ChannelNam
 
 // actorEventConfig configures a single call to propagateActorEvent.
 //
-// `build` produces the per-channel event. `mutate`, when non-nil,
-// is applied to the loaded `*ChannelWindow` before persistence —
+// `build` produces the wire-level event from the snapshot list of
+// channels the actor was in at event time. `mutate`, when non-nil,
+// is applied to each loaded `*ChannelWindow` before persistence —
 // used for quit (remove the actor from `Members`) and nick change
-// (rename the snapshot in `Members`). DM and status windows in
-// the iteration set are skipped by `mutate` because those kinds
-// don't carry a `Members` list; the per-target event is still
-// emitted so the per-channel intersection rule reaches them. When
-// `mutate` is nil the window is not loaded at all; this fits the
-// user's `Quit` path, which intentionally leaves channel members
-// alone for `cleanupUncleanShutdown` to reconcile on the next
-// start. `storeOnly` skips UI emission and is used by the user's
-// `Quit` because the application is exiting and no UI is
-// listening. `afterEach` is run per channel after the event is
-// recorded, for caller-specific side effects (e.g.
+// (rename the snapshot in `Members`). When `mutate` is nil the
+// channel windows are not loaded; this fits the user's `Quit`
+// path, which intentionally leaves channel members alone for
+// `cleanupUncleanShutdown` to reconcile on the next start.
+// `storeOnly` skips the UI emission and is used by the user's
+// `Quit` because the application is exiting and no UI is listening.
+// `afterEach` is run per channel after the per-channel
+// state-update step, for caller-specific side effects (e.g.
 // `forgetUserMode` for the user's quit).
 type actorEventConfig struct {
 	storeOnly bool
 	mutate    func(*domain.ChannelWindow)
-	build     func(domain.ChannelName) domain.PersistableEvent
+	build     func(channels []domain.ChannelName) domain.PersistableEvent
 	afterEach func(ctx context.Context, ch domain.ChannelName)
 }
 
-// propagateActorEvent fans out an actor-scoped event into every
-// channel the actor is in, expressing the IRC "intersection rule"
-// (a server delivers QUIT/NICK to peers who share at least one
-// channel with the actor) as a single named function. Modeloff's
-// per-channel persistence keeps the rule structurally true: the
-// channel iteration is the only emission surface, so a model in
-// `#foo` only ever sees events whose actor was in `#foo` at
-// emission.
+// propagateActorEvent expresses the IRC actor-event delivery rule
+// as a single named function: per RFC 2812 §3.1.7 / §3.1.2, a
+// QUIT or NICK is one wire message per recipient, addressed at
+// no channel, with each receiving client routing locally into
+// every window it knows the actor was in. The session emits one
+// event on `s.events`; receivers walk the carried `Channels`
+// list to render into each affected window.
 //
-// The helper consolidates three previously hand-rolled sites
-// (`Session.Quit`, `QuitAs`, `ChangeNickAs`); future actor-scoped
-// events drop in by passing a different `build`/`mutate` pair.
-// `instanceChannelNames(actor)` is the single source of truth for
-// the iteration set; the channel list is snapshotted up front so
-// post-loop work that mutates `actor.Channels()` does not race.
+// Persistence stays per-channel: each channel's event log is the
+// model dispatch context for that channel, so the helper appends
+// one row per channel the actor was in. Each row carries the
+// same consolidated event payload (the full `Channels` snapshot
+// is on every row), so a per-channel context-builder reads its
+// own log and finds the event without needing to project across
+// channels.
+//
+// `instanceChannelNames(actor)` is the single source of truth
+// for the iteration set; the channel list is snapshotted up
+// front so post-loop work that mutates `actor.Channels()` does
+// not race.
 func (s *Session) propagateActorEvent(ctx context.Context, actor *domain.Instance, cfg actorEventConfig) {
-	for _, name := range s.instanceChannelNames(actor) {
+	channels := s.instanceChannelNames(actor)
+	evt := cfg.build(channels)
+
+	for _, name := range channels {
 		if cfg.mutate != nil {
 			window, err := s.loadChannelWindow(ctx, name)
 			if err != nil {
-				// Status and DM rows surface as a typed "expected
-				// channel, got kind" error from `loadChannelWindow`.
-				// They have no `Members` to mutate, so skip the
-				// state update for those kinds and let the event
-				// emission below carry the intersection-rule
-				// delivery on its own.
-				if !errors.Is(err, domain.ErrNotChannelWindow) {
-					slog.Default().ErrorContext(ctx, "propagate actor event: load channel",
-						"instance_id", string(actor.ID()),
-						"channel", name,
-						"error", err,
-					)
-				}
+				slog.Default().ErrorContext(ctx, "propagate actor event: load channel",
+					"instance_id", string(actor.ID()),
+					"channel", name,
+					"error", err,
+				)
 			} else {
 				cfg.mutate(window)
 
@@ -1930,16 +1928,15 @@ func (s *Session) propagateActorEvent(ctx context.Context, actor *domain.Instanc
 			}
 		}
 
-		evt := cfg.build(name)
-		if cfg.storeOnly {
-			s.appendEvent(ctx, name, evt)
-		} else {
-			s.persistAndEmit(ctx, name, evt)
-		}
+		s.appendEvent(ctx, name, evt)
 
 		if cfg.afterEach != nil {
 			cfg.afterEach(ctx, name)
 		}
+	}
+
+	if !cfg.storeOnly && len(channels) > 0 {
+		s.emit(ctx, evt)
 	}
 }
 

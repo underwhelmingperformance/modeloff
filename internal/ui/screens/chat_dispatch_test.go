@@ -541,7 +541,7 @@ func TestChatScreen_NickChange_then_Quit_removes_instance(t *testing.T) {
 	bot.SetNick("newnick")
 
 	_, _ = screen.handleNickChangeEvent(domain.NickChange{
-		Target:   "#general",
+		Channels: []domain.ChannelName{"#general"},
 		Instance: bot,
 		OldNick:  "oldnick",
 		NewNick:  "newnick",
@@ -559,7 +559,7 @@ func TestChatScreen_NickChange_then_Quit_removes_instance(t *testing.T) {
 	// Quit keyed by the same *Instance pointer cleanly removes the
 	// member regardless of the nick carried on the event.
 	_, _ = screen.handleQuitEvent(domain.Quit{
-		Target:   "#general",
+		Channels: []domain.ChannelName{"#general"},
 		Instance: bot,
 		At:       now,
 	})

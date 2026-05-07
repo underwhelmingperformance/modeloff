@@ -163,12 +163,15 @@ func FromChannelEvent(evt domain.PersistableEvent) (IRCMessage, bool) {
 		}, true
 
 	case domain.Quit:
+		// QUIT carries no target on the wire (RFC 2812 §3.1.7);
+		// the dispatch context is already per-channel, so the
+		// model knows which window the line belongs to without
+		// a target field on the protocol message.
 		return IRCMessage{
-			Kind:   KindQuit,
-			From:   string(e.Nick),
-			Target: string(e.Target),
-			Body:   e.Message,
-			At:     e.At,
+			Kind: KindQuit,
+			From: string(e.Nick),
+			Body: e.Message,
+			At:   e.At,
 		}, true
 
 	case domain.TopicChange:
