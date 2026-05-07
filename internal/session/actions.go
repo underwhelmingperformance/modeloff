@@ -389,15 +389,9 @@ func (s *Session) ChangeNickAs(ctx context.Context, actor *domain.Instance, newN
 }
 
 // SendMessageAs records a message from the given actor and
-// returns the persisted [domain.Message]. The session does not
-// echo the user's own outgoing messages on its events channel —
-// per RFC 2812 §3.3.1 a server forwards PRIVMSG to other
-// clients on the channel and to the addressed nick, not back
-// to the sender. Standard IRC clients render their own
-// outgoing line locally; the chat screen does the same by
-// consuming the returned [domain.Message] from the command-
-// result tea.Msg path. Messages from model actors continue to
-// emit so the user's chat screen can render replies.
+// returns the persisted [domain.Message]. User-sent messages
+// are not echoed on the events channel — callers render the
+// returned message locally; model-sent messages emit normally.
 func (s *Session) SendMessageAs(ctx context.Context, actor *domain.Instance, ch domain.ChannelName, body string) (msg domain.Message, retErr error) {
 	actorNick := actor.Nick()
 

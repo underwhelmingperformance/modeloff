@@ -981,18 +981,12 @@ func (s *Session) Kick(ctx context.Context, ch domain.ChannelName, nick domain.N
 	return s.KickAs(ctx, s.user, target, ch)
 }
 
-// SendMessage saves a message from the user to a channel or DM
-// and returns the persisted [domain.Message]. See
-// [Session.SendMessageAs] for echo semantics: user-sent
-// messages are not echoed on the events channel, and callers
-// render the returned value locally.
+// SendMessage is the user shorthand for [Session.SendMessageAs].
 func (s *Session) SendMessage(ctx context.Context, ch domain.ChannelName, body string) (domain.Message, error) {
 	return s.SendMessageAs(ctx, s.user, ch, body)
 }
 
-// SendAction saves an action message (`/me`) from the user and
-// returns the persisted [domain.Message]. See
-// [Session.SendMessageAs] for echo semantics.
+// SendAction is the user shorthand for [Session.SendActionAs].
 func (s *Session) SendAction(ctx context.Context, ch domain.ChannelName, body string) (domain.Message, error) {
 	return s.SendActionAs(ctx, s.user, ch, body)
 }
@@ -1041,12 +1035,9 @@ func (s *Session) Whois(ctx context.Context, nick domain.Nick) (*domain.Instance
 	return s.ResolveNick(ctx, nick)
 }
 
-// SaveInstance persists a model instance through the store. It
-// is a thin wrapper used by integration-test seed helpers
-// (`uitest`) to pre-populate the canonical-instance registry
-// with a synthetic actor before driving session APIs that need
-// to resolve it; production paths register instances via the
-// invite/add-model flows on `Session` directly.
+// SaveInstance persists a model instance. Used by integration-
+// test seed helpers; production paths register instances via
+// the invite / add-model flows.
 func (s *Session) SaveInstance(ctx context.Context, inst *domain.Instance) error {
 	return s.store.SaveInstance(ctx, inst)
 }
@@ -1862,19 +1853,15 @@ func (s *Session) persistAndEmitUIOnly(ctx context.Context, ch domain.ChannelNam
 
 // actorEventConfig configures a single call to propagateActorEvent.
 //
-// `build` produces the wire-level event from the snapshot list of
-// channels the actor was in at event time. `mutate`, when non-nil,
-// is applied to each loaded `*ChannelWindow` before persistence —
-// used for quit (remove the actor from `Members`) and nick change
-// (rename the snapshot in `Members`). When `mutate` is nil the
-// channel windows are not loaded; this fits the user's `Quit`
-// path, which intentionally leaves channel members alone for
-// `cleanupUncleanShutdown` to reconcile on the next start.
-// `storeOnly` skips the UI emission and is used by the user's
-// `Quit` because the application is exiting and no UI is listening.
-// `afterEach` is run per channel after the per-channel
-// state-update step, for caller-specific side effects (e.g.
-// `forgetUserMode` for the user's quit).
+//   - `build` produces the event from the channel snapshot.
+//   - `mutate` runs per channel before persistence (quit removes
+//     the actor from `Members`; nick change renames the snapshot).
+//     Nil for the user's `Quit`, where membership is reconciled by
+//     `cleanupUncleanShutdown` on the next start.
+//   - `storeOnly` persists without the UI emission; used by the
+//     user's `Quit` since the app is exiting.
+//   - `afterEach` runs per channel after the state update for
+//     caller-specific side effects (e.g. `forgetUserMode`).
 type actorEventConfig struct {
 	storeOnly bool
 	mutate    func(*domain.ChannelWindow)
@@ -1882,26 +1869,12 @@ type actorEventConfig struct {
 	afterEach func(ctx context.Context, ch domain.ChannelName)
 }
 
-// propagateActorEvent expresses the IRC actor-event delivery rule
-// as a single named function: per RFC 2812 §3.1.7 / §3.1.2, a
-// QUIT or NICK is one wire message per recipient, addressed at
-// no channel, with each receiving client routing locally into
-// every window it knows the actor was in. The session emits one
-// event on `s.events`; receivers walk the carried `Channels`
-// list to render into each affected window.
-//
-// Persistence stays per-channel: each channel's event log is the
-// model dispatch context for that channel, so the helper appends
-// one row per channel the actor was in. Each row carries the
-// same consolidated event payload (the full `Channels` snapshot
-// is on every row), so a per-channel context-builder reads its
-// own log and finds the event without needing to project across
-// channels.
-//
-// `instanceChannelNames(actor)` is the single source of truth
-// for the iteration set; the channel list is snapshotted up
-// front so post-loop work that mutates `actor.Channels()` does
-// not race.
+// propagateActorEvent fans an actor-scoped event into the per-
+// channel event log (one row per channel the actor was in, all
+// carrying the same consolidated payload) and emits the event
+// once on `s.events`. The channel list is snapshotted up front
+// so post-loop work that mutates `actor.Channels()` does not
+// race.
 func (s *Session) propagateActorEvent(ctx context.Context, actor *domain.Instance, cfg actorEventConfig) {
 	channels := s.instanceChannelNames(actor)
 	evt := cfg.build(channels)

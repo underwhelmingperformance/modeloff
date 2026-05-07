@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/ui/chatcmd"
 	"github.com/laney/modeloff/internal/ui/uitest"
 )
 
@@ -64,7 +65,7 @@ func TestChatScreen_PartEvent_leaving_non_active_keeps_active(t *testing.T) {
 	// the session's own FocusChannelEvent replay.
 	tm.WaitFor("Created channel #random")
 
-	tm.Send(domain.ChannelFocusEvent{Channel: "#general"})
+	tm.Send(chatcmd.ChannelFocusMsg{Channel: "#general"})
 	tm.WaitFor("Created channel #general")
 
 	tm.Send(domain.Part{
@@ -90,7 +91,7 @@ func TestChatScreen_TopicChangeEvent_different_channel(t *testing.T) {
 	// focuses race.
 	tm.WaitFor("Created channel #random")
 
-	tm.Send(domain.ChannelFocusEvent{Channel: "#general"})
+	tm.Send(chatcmd.ChannelFocusMsg{Channel: "#general"})
 	tm.WaitFor("Created channel #general")
 
 	tm.Send(domain.TopicChange{
@@ -257,7 +258,7 @@ func TestChatScreen_model_join_does_not_switch_active(t *testing.T) {
 	tm.WaitFor("Created channel #random")
 
 	// Switch to #general so it's the active channel.
-	tm.Send(domain.ChannelFocusEvent{Channel: "#general"})
+	tm.Send(chatcmd.ChannelFocusMsg{Channel: "#general"})
 	tm.WaitFor("Created channel #general")
 
 	// A model joins #random (which the user is in).
@@ -352,7 +353,7 @@ func TestChatScreen_focus_new_channel_before_join_event(t *testing.T) {
 	// ChannelFocusEvent for a channel that hasn't been joined yet.
 	// This can happen when /join triggers ChannelFocusEvent before
 	// the backend JoinEvent arrives.
-	tm.Send(domain.ChannelFocusEvent{Channel: "#newchannel"})
+	tm.Send(chatcmd.ChannelFocusMsg{Channel: "#newchannel"})
 	tm.WaitFor("#newchannel")
 
 	view := tm.CurrentView()
@@ -375,7 +376,7 @@ func TestChatScreen_focus_status_channel_keeps_status_identity(t *testing.T) {
 	tm := newChatApp(t, sess)
 	tm.WaitFor("&modeloff", "Created channel #general")
 
-	tm.Send(domain.ChannelFocusEvent{Channel: domain.StatusChannelName})
+	tm.Send(chatcmd.ChannelFocusMsg{Channel: domain.StatusChannelName})
 	tm.WaitFor("Connected to modeloff")
 
 	view := tm.CurrentView()
@@ -405,7 +406,7 @@ func TestChatScreen_MessageEvent_inactive_channel(t *testing.T) {
 
 	// Switch to #general via ChannelFocusEvent (the authoritative
 	// channel-switch mechanism).
-	tm.Send(domain.ChannelFocusEvent{Channel: "#general"})
+	tm.Send(chatcmd.ChannelFocusMsg{Channel: "#general"})
 	tm.WaitFor("Created channel #general")
 
 	tm.Send(domain.Message{

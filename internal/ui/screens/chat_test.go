@@ -16,6 +16,7 @@ import (
 	"github.com/laney/modeloff/internal/session"
 	"github.com/laney/modeloff/internal/store/storetest"
 	uipkg "github.com/laney/modeloff/internal/ui"
+	"github.com/laney/modeloff/internal/ui/chatcmd"
 	"github.com/laney/modeloff/internal/ui/screens"
 	"github.com/laney/modeloff/internal/ui/uitest"
 )
@@ -294,7 +295,7 @@ func TestChatScreen_persists_last_channel_on_focus(t *testing.T) {
 	// before driving the channel switch.
 	tm.WaitFor("Created channel #random")
 
-	tm.Send(domain.ChannelFocusEvent{Channel: "#general"})
+	tm.Send(chatcmd.ChannelFocusMsg{Channel: "#general"})
 	tm.WaitFor("Created channel #general")
 
 	require.Eventually(t, func() bool {

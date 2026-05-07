@@ -79,25 +79,14 @@ func (s ChatScreen) handleSessionEvent(msg sessionEventMsg) (ui.Model, tea.Cmd) 
 	return s, tea.Batch(cmd, s.listenForEvents())
 }
 
-// bufferEvent appends a persistable event to the scrollback for its
-// target window. The buffer is purely live-event-driven: every
-// persistable event the user's session sees during this run lands
-// here, regardless of which window is active, so a later focus
-// change is a pure swap. The persisted event log is the models'
-// shared memory and is never read into this buffer — the user only
-// sees events from this session's join onward, mirroring IRC's
-// "you don't see what happened before you joined" rule.
-//
-// `Message` events route via [domain.Message.RoutingKey] so DM
-// traffic in either direction lands in the same per-peer
-// scrollback. Actor-scoped `Quit` and `NickChange` events carry
-// the actor's channel snapshot on the event itself (RFC-aligned
-// shape) and fan out into each window the chat screen knows the
-// actor was in, plus any open DM with the actor. Other
-// persistable events are channel-keyed by their `Target`.
-// SystemNoticeEvent is special-cased because it is a UI carrier
-// for an already-persisted SystemNotice; the wrapped
-// Stored.Event lands in the buffer.
+// bufferEvent appends a persistable event to the scrollback of
+// the window(s) it belongs to. Live-event-driven: a focus change
+// later is a pure buffer swap. `Message` routes via
+// [domain.Message.RoutingKey] so DM traffic in either direction
+// lands in the per-peer scrollback. `Quit` and `NickChange` fan
+// into each channel in `Channels` plus any open DM with the
+// actor. Other events are channel-keyed by their `Target`.
+// SystemNoticeEvent unwraps its already-persisted inner event.
 func (s ChatScreen) bufferEvent(evt domain.Event) {
 	switch e := evt.(type) {
 	case domain.SystemNoticeEvent:
@@ -123,10 +112,8 @@ func (s ChatScreen) bufferEvent(evt domain.Event) {
 	}
 }
 
-// bufferActorEvent fans an actor-scoped event into the chat
-// screen's per-window scrollback: every channel in `channels`
-// the chat screen has a window for, plus any open DM whose
-// counterpart is `actor`.
+// bufferActorEvent appends `stored` to each channel scrollback
+// in `channels` plus any open DM whose counterpart is `actor`.
 func (s ChatScreen) bufferActorEvent(channels []domain.ChannelName, actor *domain.Instance, stored domain.StoredEvent) {
 	for _, ch := range channels {
 		s.appendToScrollback(ch, stored)
@@ -155,7 +142,7 @@ func (s ChatScreen) appendToScrollback(ch domain.ChannelName, evt domain.StoredE
 // handleFocusChannelEvent handles a session-driven focus change.
 // It delegates to the same path used for direct UI focus switches.
 func (s ChatScreen) handleFocusChannelEvent(msg domain.FocusChannelEvent) (ui.Model, tea.Cmd) {
-	return s.handleChannelFocus(domain.ChannelFocusEvent{Channel: msg.Channel})
+	return s.handleChannelFocus(chatcmd.ChannelFocusMsg{Channel: msg.Channel})
 }
 
 // handleSystemNoticeEvent forwards a freshly-appended system notice
@@ -171,7 +158,7 @@ func (s ChatScreen) handleSystemNoticeEvent(msg domain.SystemNoticeEvent) (ui.Mo
 	return s, msgCmd(components.ChannelUnreadMsg{Channel: msg.Channel, Count: count})
 }
 
-func (s ChatScreen) handleChannelFocus(msg domain.ChannelFocusEvent) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleChannelFocus(msg chatcmd.ChannelFocusMsg) (ui.Model, tea.Cmd) {
 	w, exists := s.windowByName(msg.Channel)
 	if !exists {
 		// First focus into a window the chat screen hasn't seen
@@ -453,14 +440,10 @@ func (s ChatScreen) handlePartEvent(msg domain.Part) (ui.Model, tea.Cmd) {
 }
 
 func (s ChatScreen) handleQuitEvent(msg domain.Quit) (ui.Model, tea.Cmd) {
-	// The session emits one Quit per actor-event (RFC 2812
-	// §3.1.7) carrying the channels the actor was in.
 	// `bufferEvent` has already fanned the line into every
-	// affected channel's scrollback and into open DMs with the
-	// actor. The handler's job is the in-memory Members update
-	// for each affected channel plus the live nick-list /
-	// message-list refresh when one of those channels is the
-	// active window.
+	// affected channel and any open DM with the actor. The
+	// handler updates the in-memory `Members` snapshot for each
+	// affected channel and fires the active-window UI refresh.
 
 	for _, ch := range msg.Channels {
 		cw, ok := s.channelWindowByName(ch)
@@ -540,11 +523,10 @@ func (s ChatScreen) handleTopicInfoEvent(msg domain.TopicInfo) (ui.Model, tea.Cm
 }
 
 func (s ChatScreen) handleNickChangeEvent(msg domain.NickChange) (ui.Model, tea.Cmd) {
-	// One NickChange per actor-rename (RFC 2812 §3.1.2). The
-	// instance's own Nick() is already the new value — the
-	// session mutated it before emitting. Update the snapshot
-	// in each affected channel's member list, then fire the
-	// active-window-only UI side-effects exactly once.
+	// `msg.Instance.Nick()` is already the new value — the
+	// session renames before emitting. Update the snapshot in
+	// each affected channel's member list, then fire the
+	// active-window UI side-effects exactly once.
 	for _, ch := range msg.Channels {
 		cw, ok := s.channelWindowByName(ch)
 		if !ok {
@@ -587,9 +569,8 @@ func (s ChatScreen) handleNickChangeEvent(msg domain.NickChange) (ui.Model, tea.
 	return s, tea.Batch(cmds...)
 }
 
-// activeDMWith returns the chat-screen's open DM with the given
-// counterpart instance, if any. Used by actor-event handlers to
-// surface QUIT / NICK lines into a DM with the actor.
+// activeDMWith returns the open DM whose counterpart is `actor`,
+// if any.
 func (s ChatScreen) activeDMWith(actor *domain.Instance) (*domain.DMWindow, bool) {
 	if actor == nil {
 		return nil, false
@@ -709,13 +690,10 @@ func (s ChatScreen) handleModelReplyEvent(msg domain.ModelReplyEvent) (ui.Model,
 	return s, nil
 }
 
-// handleDMOpenedMsg handles the `/msg <nick> <body>` and
-// `/query <nick> [<body>]` paths. It materialises the DM window
-// in the sidebar (insert is a no-op when one already exists),
-// optionally focus-switches (`/query` does, `/msg` doesn't), and
-// optionally sends a trailing body via `SendMessageAs`. The
-// session is unaware of DM windows; this handler is the only
-// owner of DM-window lifecycle on the user side.
+// handleDMOpenedMsg materialises the DM window in the sidebar
+// (insert is idempotent), optionally focus-switches, and
+// optionally sends a trailing body. `/query` sets `Focus`;
+// `/msg` does not.
 func (s ChatScreen) handleDMOpenedMsg(msg chatcmd.DMOpenedMsg) (ui.Model, tea.Cmd) {
 	dm := domain.NewDMWindow(msg.Counterpart, msg.At)
 	name := dm.Name()
@@ -750,11 +728,8 @@ func (s ChatScreen) handleDMOpenedMsg(msg chatcmd.DMOpenedMsg) (ui.Model, tea.Cm
 	return s, tea.Sequence(cmds...)
 }
 
-// sendMessageCmd fires a `SendMessage` for the user against the
-// given target and returns the persisted [domain.Message] as a
-// tea.Msg so the chat-screen can render its own outgoing line
-// locally — the session does not echo user-sent messages on
-// its events channel.
+// sendMessageCmd fires a user `SendMessage` and returns the
+// persisted [domain.Message] as a tea.Msg for local render.
 func (s ChatScreen) sendMessageCmd(target domain.ChannelName, body string) tea.Cmd {
 	return func() tea.Msg {
 		msg, err := s.sess.SendMessage(s.ctx, target, body)

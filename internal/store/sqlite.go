@@ -305,15 +305,11 @@ func (s *SQLiteStore) dropLegacyEventTypes(ctx context.Context) error {
 	})
 }
 
-// dropLegacyActorEvents detects the pre-RFC-aligned shape of
-// `quit` and `nick_change` rows in the `events` table — the
-// shape that carried a single `channel` string field instead
-// of the new `channels` array — and drops the events table
-// when found. Pre-release reset, not a data-preserving
-// migration. The new shape mirrors RFC 2812 §3.1.7 / §3.1.2:
-// one wire event per actor-event with the actor's channel
-// snapshot carried as a list, not per-channel emissions with
-// a single target.
+// dropLegacyActorEvents detects `quit` / `nick_change` rows
+// whose data carries a single `channel` string field (the old
+// per-channel-targeted shape) instead of the new `channels`
+// array, and drops the events table on match. Pre-release
+// reset, not a data-preserving migration.
 func (s *SQLiteStore) dropLegacyActorEvents(ctx context.Context) error {
 	return s.inSpan(ctx, "store.sqlite.migrate_events_v3", nil, func(ctx context.Context, span trace.Span) error {
 		var detected bool
@@ -751,11 +747,8 @@ func (s *SQLiteStore) GetWindow(ctx context.Context, name domain.ChannelName) (d
 	return w, err
 }
 
-// SaveWindow implements Store. The window is projected to a
-// private `channelRow` and persisted as JSON in the `channels`
-// table. DM windows are rejected — DMs are pure in-memory UI
-// state owned by the chat-screen sidebar cache, so calling
-// `SaveWindow` with one is a programming error.
+// SaveWindow implements Store. DM windows are rejected; DMs
+// are not persisted.
 func (s *SQLiteStore) SaveWindow(ctx context.Context, w domain.Window) error {
 	if w.Kind() == domain.KindDM {
 		return fmt.Errorf("store: refusing to persist a DM window for %q; DMs are in-memory UI state", w.Name())
@@ -838,15 +831,14 @@ func (s *SQLiteStore) EventsBefore(ctx context.Context, ch domain.ChannelName, b
 	return events, err
 }
 
-// DMEventsBefore implements Store. The DM thread is the union of
-// both directions between `self` and `peer`: rows whose
-// `channel` column matches one party and whose JSON `instance_id`
-// matches the other. Either id may be the empty string (the
-// user's `InstanceID`); JSON `omitzero` means an empty sender id
-// is absent from the JSON entirely, so the predicate compares
-// against `coalesce(json_extract(...), ”)` to match both
-// shapes uniformly. Rows come back in chronological order via
-// the inner-desc / outer-asc subquery pattern.
+// DMEventsBefore implements Store. Returns the DM thread
+// between `self` and `peer`: bidirectional message rows plus
+// peer's actor-scoped events from any channel, deduped by
+// `(instance_id, type, at)`. Either id may be the empty string
+// (the user). The `coalesce` over the JSON `instance_id` path
+// reads an absent field (the `omitzero` shape for empty ids)
+// the same as a present empty string. Rows come back
+// chronological via inner-desc / outer-asc.
 func (s *SQLiteStore) DMEventsBefore(ctx context.Context, self, peer domain.InstanceID, before *int64, n int) ([]domain.StoredEvent, error) {
 	var events []domain.StoredEvent
 	err := s.inSpan(ctx, "store.sqlite.dm_events_before",

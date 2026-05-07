@@ -535,14 +535,9 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		return s.handleModelKickedEvent(msg)
 
 	case domain.Message:
-		// Outgoing user messages reach `Update` as a bare
-		// [domain.Message] tea.Msg from the send-cmd path
-		// (`sendMessage` / `sendMessageCmd`); incoming session
-		// events arrive wrapped in `sessionEventMsg` and are
-		// dispatched by `handleSessionEvent`, which buffers
-		// before delegating to `handleMessageEvent`. Mirror that
-		// pre-buffer step here so outgoing lines also land in
-		// per-window scrollback.
+		// User-side outgoing arrives here directly from the
+		// send-cmd path; incoming model traffic comes via
+		// `sessionEventMsg` and is buffered there.
 		s.bufferEvent(msg)
 		return s.handleMessageEvent(msg)
 
@@ -558,7 +553,7 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	case domain.ErrorEvent:
 		return s.handleErrorEvent(msg)
 
-	case domain.ChannelFocusEvent:
+	case chatcmd.ChannelFocusMsg:
 		return s.handleChannelFocus(msg)
 
 	case liveModelsLoadedMsg:
@@ -770,7 +765,7 @@ func (s ChatScreen) switchChannel(ch domain.ChannelName) tea.Cmd {
 			}
 		}
 
-		return domain.ChannelFocusEvent{Channel: ch}
+		return chatcmd.ChannelFocusMsg{Channel: ch}
 	}
 }
 
@@ -781,14 +776,6 @@ func (s ChatScreen) sendMessage(text string) tea.Cmd {
 			return domain.ErrorEvent{Operation: "send", Err: err, At: time.Now()}
 		}
 
-		// The session does not echo the user's own outgoing
-		// messages on its events channel — per RFC 2812 §3.3.1
-		// servers don't reflect PRIVMSG back to the sender — so
-		// the chat screen renders its own outgoing line by
-		// returning the persisted [domain.Message] as a tea.Msg
-		// here. The chat-screen `Update` switch routes it
-		// through `handleMessageEvent` exactly like an incoming
-		// model reply.
 		return msg
 	}
 }

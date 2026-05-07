@@ -162,13 +162,10 @@ func (e Part) persistableEventTime() time.Time { return e.At }
 // ModelVisible implements PersistableEvent.
 func (Part) ModelVisible() bool { return true }
 
-// Quit records a user or model quitting the server. The wire
-// shape mirrors RFC 2812 §3.1.7: one event per actor-quit, no
-// channel target. `Channels` lists every channel the actor was a
-// member of at quit time so receivers can route the line into
-// each affected window without re-querying membership state
-// (which the session has already mutated by the time the event
-// is delivered). See `Join` for the `Instance` / `InstanceID`
+// Quit records a user or model quitting the server. `Channels`
+// is the actor's membership snapshot at quit time so receivers
+// route the line into each affected window without re-querying
+// membership. See `Join` for the `Instance` / `InstanceID`
 // contract.
 type Quit struct {
 	Channels   []ChannelName `json:"channels"`
@@ -265,13 +262,11 @@ func (e ModelKicked) persistableEventTime() time.Time { return e.At }
 // ModelVisible implements PersistableEvent.
 func (ModelKicked) ModelVisible() bool { return true }
 
-// NickChange records a nick change visible to peers who share at
-// least one channel with the renamer. The wire shape mirrors RFC
-// 2812 §3.1.2: one event per actor-rename, no channel target.
-// `Channels` lists every channel the actor was a member of at
-// rename time so receivers can route the line into each affected
-// window without re-querying membership. `Instance` is the live
-// renamed handle, populated on emission and ignored by JSON.
+// NickChange records a nick change. `Channels` is the actor's
+// membership snapshot at rename time so receivers route the
+// line into each affected window without re-querying membership.
+// `Instance` is the live renamed handle, populated on emission
+// and ignored by JSON.
 type NickChange struct {
 	Channels   []ChannelName `json:"channels"`
 	OldNick    Nick          `json:"old_nick"`
@@ -446,11 +441,7 @@ func EventTarget(e PersistableEvent) ChannelName {
 		return v.Target
 	case Quit:
 		_ = v
-		// Quit is actor-scoped: per RFC 2812 §3.1.7 a single
-		// QUIT is delivered to peers who share at least one
-		// channel with the actor, with no channel target on
-		// the wire. Receivers route via `Channels` rather than
-		// a single target.
+		// Actor-scoped; receivers route via `Channels`.
 		return ""
 	case TopicChange:
 		return v.Target
@@ -462,8 +453,7 @@ func EventTarget(e PersistableEvent) ChannelName {
 		return v.Target
 	case NickChange:
 		_ = v
-		// NickChange is actor-scoped (RFC 2812 §3.1.2): one
-		// NICK per recipient, no channel target on the wire.
+		// Actor-scoped; receivers route via `Channels`.
 		return ""
 	case TopicInfo:
 		return v.Target

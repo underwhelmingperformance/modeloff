@@ -17,20 +17,17 @@ import (
 	"github.com/laney/modeloff/internal/ui"
 )
 
-// DMOpenedMsg is the tea.Msg fired by `/msg <nick> <body>` and
-// `/query <nick> [<body>]`. It tells the chat screen to
-// materialise the DM window in its sidebar (insert is a no-op
-// when the window already exists), optionally switch focus, and
-// optionally send a trailing body. The session has no notion of
-// DM-window state and is uninvolved; this is a pure UI signal
-// that owns the chat-screen-side DM lifecycle.
-//
-// `Counterpart` is the resolved non-user `*domain.Instance`. The
-// DM is addressed by `Counterpart.ID()` on the wire. `Body` is
-// optional — when non-empty, it is sent via `SendMessageAs` from
-// the chat-screen handler so the order (window opened, then
-// message rendered) is deterministic. `Focus` distinguishes
-// `/query` (focus-switch) from `/msg` (background open).
+// ChannelFocusMsg requests a focus switch to a channel the user
+// is already in.
+type ChannelFocusMsg struct {
+	Channel domain.ChannelName
+}
+
+// DMOpenedMsg is fired by `/msg <nick> <body>` and `/query <nick>
+// [<body>]`. The chat screen materialises a DM window for
+// `Counterpart`, optionally focus-switches, and optionally sends
+// `Body` via `SendMessageAs`. `/query` sets `Focus`; `/msg`
+// leaves it false.
 type DMOpenedMsg struct {
 	Counterpart *domain.Instance
 	Body        string
@@ -72,7 +69,7 @@ func (c JoinCommand) Run(rc Context) tea.Cmd {
 			return errorEvent("join", err)
 		}
 
-		return domain.ChannelFocusEvent{Channel: domain.ChannelName(c.Channel.String())}
+		return ChannelFocusMsg{Channel: domain.ChannelName(c.Channel.String())}
 	}
 }
 
