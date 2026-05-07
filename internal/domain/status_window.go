@@ -31,3 +31,6 @@ func (*StatusWindow) Kind() ChannelKind { return KindStatus }
 // DisplayName renders the reserved name as-is so the sidebar keeps
 // the IRC-convention cue that this is not a user-created room.
 func (*StatusWindow) DisplayName() string { return string(StatusChannelName) }
+
+// Less implements [Window].
+func (w *StatusWindow) Less(other Window) bool { return windowLess(w, other) }

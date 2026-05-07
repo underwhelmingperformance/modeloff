@@ -18,7 +18,6 @@ require (
 	github.com/philippgille/chromem-go v0.7.0
 	github.com/rivo/uniseg v0.4.7
 	github.com/stretchr/testify v1.11.1
-	github.com/tidwall/btree v1.8.1
 	github.com/wk8/go-ordered-map/v2 v2.1.8
 	go.opentelemetry.io/contrib/bridges/otelslog v0.13.0
 	go.opentelemetry.io/otel v1.43.0

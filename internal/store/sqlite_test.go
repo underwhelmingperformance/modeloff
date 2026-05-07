@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"fmt"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -46,37 +45,16 @@ func storeTestMembers(t *testing.T, s *SQLiteStore, nicks ...domain.Nick) domain
 	return ml
 }
 
-// requireWindowEqual asserts that two windows have the same
-// addressable identity (name, kind, creation time) and the same
-// per-kind state. It walks the fields by hand because
-// `*set.Sorted[Member]` stores its comparator as a function
-// pointer that always trips `reflect.DeepEqual`, so a single
-// `require.Equal` over the windows would never pass for two
-// independently-built channel-kind windows.
 func requireWindowEqual(t *testing.T, expected, actual domain.Window) {
 	t.Helper()
 
-	require.Equal(t, expected.Name(), actual.Name())
-	require.Equal(t, expected.Kind(), actual.Kind())
-	require.Equal(t, expected.Created(), actual.Created())
-
-	if cwExpected, ok := expected.(*domain.ChannelWindow); ok {
-		cwActual, ok := actual.(*domain.ChannelWindow)
-		require.True(t, ok, "actual is not a *ChannelWindow")
-		require.Equal(t, cwExpected.Topic, cwActual.Topic)
-		require.Equal(t, cwExpected.TopicSetBy, cwActual.TopicSetBy)
-		require.Equal(t, cwExpected.TopicSetAt, cwActual.TopicSetAt)
-		require.Equal(t, slices.Collect(cwExpected.Members.All()), slices.Collect(cwActual.Members.All()))
-	}
+	require.Equal(t, expected, actual)
 }
 
 func requireWindowsEqual(t *testing.T, expected, actual []domain.Window) {
 	t.Helper()
 
-	require.Equal(t, len(expected), len(actual))
-	for i := range expected {
-		requireWindowEqual(t, expected[i], actual[i])
-	}
+	require.Equal(t, expected, actual)
 }
 
 type channelEntry struct {

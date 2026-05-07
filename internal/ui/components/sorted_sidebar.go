@@ -41,7 +41,7 @@ type SidebarConfig[T any, K comparable] struct {
 // Sidebar renders a scrollable, sorted list of items with
 // cursor and active tracking by identity key. It is backed by a
 // *set.Sorted[T] and never copies or rebuilds the item list.
-type Sidebar[T any, K comparable] struct {
+type Sidebar[T set.Lesser[T], K comparable] struct {
 	items     *set.Sorted[T]
 	cfg       SidebarConfig[T, K]
 	cursor    K
@@ -59,7 +59,7 @@ type Sidebar[T any, K comparable] struct {
 }
 
 // NewSidebar creates a sidebar backed by the given sorted set.
-func NewSidebar[T any, K comparable](
+func NewSidebar[T set.Lesser[T], K comparable](
 	items *set.Sorted[T],
 	cfg SidebarConfig[T, K],
 ) Sidebar[T, K] {

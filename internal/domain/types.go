@@ -402,21 +402,21 @@ func (m Member) String() string {
 	return m.Mode.String() + string(m.Nick)
 }
 
-// memberLess defines the display order for members: higher modes
+// Less defines the display order for members: higher modes
 // first (op > voice > none), then alphabetically by nick within
-// each mode. The final tiebreaker on `Instance.ID()` keeps distinct
-// instances with the same mode-and-nick pair from colliding inside
-// the sorted set.
-func memberLess(a, b Member) bool {
-	if a.Mode != b.Mode {
-		return a.Mode > b.Mode
+// each mode. The final tiebreaker on `Instance.ID()` keeps
+// distinct instances with the same mode-and-nick pair from
+// colliding inside the sorted set.
+func (m Member) Less(other Member) bool {
+	if m.Mode != other.Mode {
+		return m.Mode > other.Mode
 	}
 
-	if a.Nick != b.Nick {
-		return a.Nick < b.Nick
+	if m.Nick != other.Nick {
+		return m.Nick < other.Nick
 	}
 
-	return a.Instance.ID() < b.Instance.ID()
+	return m.Instance.ID() < other.Instance.ID()
 }
 
 // MemberList is a sorted set of channel members ordered by mode
@@ -431,7 +431,7 @@ type MemberList struct {
 // NewMemberList creates an empty member list.
 func NewMemberList() MemberList {
 	return MemberList{
-		members:    set.NewSorted(memberLess),
+		members:    set.NewSorted[Member](),
 		byInstance: make(map[*Instance]Member),
 	}
 }
@@ -440,7 +440,7 @@ func NewMemberList() MemberList {
 // zero value of MemberList remains usable.
 func (ml *MemberList) ensureInit() {
 	if ml.members == nil {
-		ml.members = set.NewSorted(memberLess)
+		ml.members = set.NewSorted[Member]()
 	}
 
 	if ml.byInstance == nil {
@@ -671,12 +671,11 @@ func (ml *MemberList) UnmarshalJSON(data []byte) error {
 		return err
 	}
 
+	*ml = NewMemberList()
+
 	if len(records) == 0 {
-		*ml = MemberList{}
 		return nil
 	}
-
-	*ml = NewMemberList()
 
 	for _, r := range records {
 		stub := &Instance{instanceID: r.InstanceID}
@@ -712,7 +711,7 @@ func (ml *MemberList) ResolveInstances(resolve InstanceResolver) {
 		return
 	}
 
-	rebuilt := set.NewSorted(memberLess)
+	rebuilt := set.NewSorted[Member]()
 	byInstance := make(map[*Instance]Member, ml.members.Len())
 
 	for m := range ml.All() {

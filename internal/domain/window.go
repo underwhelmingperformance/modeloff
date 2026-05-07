@@ -37,6 +37,37 @@ type Window interface {
 	// Channels keep their `#` prefix; DMs prefix the nick with
 	// `@`; the status window renders as its reserved name.
 	DisplayName() string
+
+	// Less defines the sidebar / sorted-set ordering: status
+	// pinned at the top, then channels, then DMs, alphabetical
+	// within each group.
+	Less(other Window) bool
+}
+
+// windowKindRank maps a [ChannelKind] to its sort position for
+// sidebar ordering — status pinned at the top, then channels,
+// then DMs.
+func windowKindRank(kind ChannelKind) int {
+	switch kind {
+	case KindStatus:
+		return 0
+	case KindChannel:
+		return 1
+	case KindDM:
+		return 2
+	}
+
+	return 3
+}
+
+// windowLess is the shared `Window.Less` body used by every
+// concrete implementer.
+func windowLess(a, b Window) bool {
+	if a.Kind() != b.Kind() {
+		return windowKindRank(a.Kind()) < windowKindRank(b.Kind())
+	}
+
+	return a.Name() < b.Name()
 }
 
 // ChannelDirectoryEntry is one row in the result of `/list`. It

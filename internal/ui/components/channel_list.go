@@ -27,29 +27,6 @@ type ChannelSidebar struct {
 	mentions map[domain.ChannelName]bool
 }
 
-func windowLess(a, b domain.Window) bool {
-	if a.Kind() != b.Kind() {
-		return channelKindOrder(a.Kind()) < channelKindOrder(b.Kind())
-	}
-
-	return a.Name() < b.Name()
-}
-
-// channelKindOrder defines sidebar grouping: status pinned at the
-// top, then regular channels, then DMs at the bottom.
-func channelKindOrder(kind domain.ChannelKind) int {
-	switch kind {
-	case domain.KindStatus:
-		return 0
-	case domain.KindChannel:
-		return 1
-	case domain.KindDM:
-		return 2
-	}
-
-	return 3
-}
-
 func windowView(unread map[domain.ChannelName]int, mentions map[domain.ChannelName]bool) func(domain.Window, ViewState, int) string {
 	return func(w domain.Window, state ViewState, _ int) string {
 		name := w.DisplayName()
@@ -97,7 +74,7 @@ func NewChannelSidebar() ChannelSidebar {
 
 	return ChannelSidebar{
 		panel: NewSidebar(
-			set.NewSorted(windowLess),
+			set.NewSorted[domain.Window](),
 			SidebarConfig[domain.Window, domain.ChannelName]{
 				Key:  func(w domain.Window) domain.ChannelName { return w.Name() },
 				View: windowView(unread, mentions),
@@ -175,7 +152,7 @@ func (cl ChannelSidebar) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 }
 
 func (cl ChannelSidebar) setChannels(msg SetChannelsMsg) ChannelSidebar {
-	items := set.NewSorted(windowLess)
+	items := set.NewSorted[domain.Window]()
 
 	for _, ch := range msg.Channels {
 		items.Insert(ch)

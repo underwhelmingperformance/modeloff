@@ -45,3 +45,6 @@ func (w *DMWindow) DisplayName() string {
 
 	return string(w.name)
 }
+
+// Less implements [Window].
+func (w *DMWindow) Less(other Window) bool { return windowLess(w, other) }

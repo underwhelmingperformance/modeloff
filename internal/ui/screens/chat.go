@@ -40,31 +40,6 @@ type deliverNextReplyMsg struct {
 	Channel domain.ChannelName
 }
 
-// windowOrder defines the sidebar/cache ordering: status window
-// pinned to the top, then normal channels, then DMs, alphabetical
-// within each group. Mirrors components.channelLess so the sidebar
-// and the local cache agree.
-func windowOrder(a, b domain.Window) bool {
-	if a.Kind() != b.Kind() {
-		return channelKindRank(a.Kind()) < channelKindRank(b.Kind())
-	}
-
-	return a.Name() < b.Name()
-}
-
-func channelKindRank(kind domain.ChannelKind) int {
-	switch kind {
-	case domain.KindStatus:
-		return 0
-	case domain.KindChannel:
-		return 1
-	case domain.KindDM:
-		return 2
-	}
-
-	return 3
-}
-
 type liveModelsLoadedMsg struct {
 	models []chatcmd.ModelOption
 }
@@ -157,7 +132,7 @@ func NewChatScreen(ctx context.Context, sess *session.Session, cfgStore config.S
 		ctx:             ctx,
 		sess:            sess,
 		cfgStore:        cfgStore,
-		channels:        set.NewSorted(windowOrder),
+		channels:        set.NewSorted[domain.Window](),
 		active:          &active,
 		liveModels:      &liveModels,
 		liveModelsState: &liveModelsState,

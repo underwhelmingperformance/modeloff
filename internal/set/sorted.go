@@ -2,50 +2,86 @@ package set
 
 import (
 	"iter"
-
-	"github.com/tidwall/btree"
+	"slices"
 )
 
-// Sorted is an ordered set backed by a B-tree. Elements are kept in
-// the order defined by the less function provided at construction
-// time. Insert, remove, and positional access are all O(log n).
-type Sorted[T any] struct {
-	tree *btree.BTreeG[T]
+// Lesser is the constraint for elements of a [Sorted]. Putting
+// the comparator on the element type rather than storing it as a
+// closure on the set keeps `reflect.DeepEqual` honest on
+// [Sorted] values: Go treats two non-nil function values as
+// never deeply equal, so a stored less-func would defeat
+// structural comparison even when contents match.
+type Lesser[T any] interface {
+	Less(other T) bool
 }
 
-// NewSorted creates a sorted set using the given comparison function.
-func NewSorted[T any](less func(a, b T) bool) *Sorted[T] {
-	return &Sorted[T]{
-		tree: btree.NewBTreeGOptions(less, btree.Options{
-			NoLocks: true,
-		}),
+// Sorted is an ordered set whose elements are kept in the order
+// defined by `T.Less`. Backed by a sorted slice; all operations
+// are O(log n) lookup with O(n) shift on mutation.
+type Sorted[T Lesser[T]] struct {
+	items []T
+}
+
+// NewSorted creates an empty sorted set.
+func NewSorted[T Lesser[T]]() *Sorted[T] {
+	return &Sorted[T]{}
+}
+
+// find returns the index where `item` belongs and whether an
+// equal element is already present.
+func (s *Sorted[T]) find(item T) (int, bool) {
+	return slices.BinarySearchFunc(s.items, item, cmp[T])
+}
+
+func cmp[T Lesser[T]](a, b T) int {
+	if a.Less(b) {
+		return -1
 	}
+
+	if b.Less(a) {
+		return 1
+	}
+
+	return 0
 }
 
-// Insert adds an element to the set. If an equal element already
-// exists it is replaced. Returns true if the element was new.
+// Insert adds an element to the set, replacing any equal
+// element already present. Returns true if the element was new.
 func (s *Sorted[T]) Insert(item T) bool {
-	_, replaced := s.tree.Set(item)
+	i, found := s.find(item)
+	if found {
+		s.items[i] = item
+		return false
+	}
 
-	return !replaced
+	s.items = slices.Insert(s.items, i, item)
+	return true
 }
 
-// Remove deletes the element equal to item. Returns true if it was
-// present.
+// Remove deletes the element equal to `item`. Returns true if
+// it was present.
 func (s *Sorted[T]) Remove(item T) bool {
-	_, removed := s.tree.Delete(item)
+	i, found := s.find(item)
+	if !found {
+		return false
+	}
 
-	return removed
+	s.items = slices.Delete(s.items, i, i+1)
+	return true
 }
 
-// Has reports whether the set contains an element equal to item.
+// Has reports whether the set contains an element equal to
+// `item`.
 func (s *Sorted[T]) Has(item T) bool {
-	_, ok := s.tree.Get(item)
+	if s == nil {
+		return false
+	}
 
-	return ok
+	_, found := s.find(item)
+	return found
 }
 
-// Get retrieves the element equal to item according to the
+// Get retrieves the element equal to `item` according to the
 // comparator. Returns the stored element and true if found.
 func (s *Sorted[T]) Get(item T) (T, bool) {
 	if s == nil {
@@ -53,7 +89,13 @@ func (s *Sorted[T]) Get(item T) (T, bool) {
 		return zero, false
 	}
 
-	return s.tree.Get(item)
+	i, found := s.find(item)
+	if !found {
+		var zero T
+		return zero, false
+	}
+
+	return s.items[i], true
 }
 
 // Len returns the number of elements.
@@ -62,17 +104,18 @@ func (s *Sorted[T]) Len() int {
 		return 0
 	}
 
-	return s.tree.Len()
+	return len(s.items)
 }
 
-// GetAt returns the element at the given position in sorted order.
+// GetAt returns the element at the given position in sorted
+// order.
 func (s *Sorted[T]) GetAt(index int) (T, bool) {
-	if s == nil {
+	if s == nil || index < 0 || index >= len(s.items) {
 		var zero T
 		return zero, false
 	}
 
-	return s.tree.GetAt(index)
+	return s.items[index], true
 }
 
 // All iterates over every element in sorted order.
@@ -82,9 +125,11 @@ func (s *Sorted[T]) All() iter.Seq[T] {
 			return
 		}
 
-		s.tree.Scan(func(item T) bool {
-			return yield(item)
-		})
+		for _, item := range s.items {
+			if !yield(item) {
+				return
+			}
+		}
 	}
 }
 
@@ -96,17 +141,11 @@ func (s *Sorted[T]) Indexed() iter.Seq2[int, T] {
 			return
 		}
 
-		idx := 0
-
-		s.tree.Scan(func(item T) bool {
-			if !yield(idx, item) {
-				return false
+		for i, item := range s.items {
+			if !yield(i, item) {
+				return
 			}
-
-			idx++
-
-			return true
-		})
+		}
 	}
 }
 
@@ -116,5 +155,5 @@ func (s *Sorted[T]) Items() []T {
 		return nil
 	}
 
-	return s.tree.Items()
+	return slices.Clone(s.items)
 }

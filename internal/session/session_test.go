@@ -299,22 +299,10 @@ func testMemberID(nick domain.Nick) domain.InstanceID {
 	return domain.InstanceID("inst-" + string(nick))
 }
 
-// requireChannelEqual asserts that two channel windows have the
-// same addressable name, creation time, topic metadata, and
-// members in display order. It walks the fields by hand because
-// `*set.Sorted[Member]` stores its comparator as a function
-// pointer that always trips `reflect.DeepEqual`, so a single
-// `require.Equal` over the windows would never pass for two
-// independently-built lists with identical contents.
 func requireChannelEqual(t *testing.T, expected, actual *domain.ChannelWindow) {
 	t.Helper()
 
-	require.Equal(t, expected.Name(), actual.Name())
-	require.Equal(t, expected.Created(), actual.Created())
-	require.Equal(t, expected.Topic, actual.Topic)
-	require.Equal(t, expected.TopicSetBy, actual.TopicSetBy)
-	require.Equal(t, expected.TopicSetAt, actual.TopicSetAt)
-	require.Equal(t, slices.Collect(expected.Members.All()), slices.Collect(actual.Members.All()))
+	require.Equal(t, expected, actual)
 }
 
 // newTestChannelWindow constructs a `*domain.ChannelWindow` for use

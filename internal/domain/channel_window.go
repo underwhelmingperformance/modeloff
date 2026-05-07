@@ -40,3 +40,6 @@ func (*ChannelWindow) Kind() ChannelKind { return KindChannel }
 // DisplayName returns the `#`-prefixed channel name as displayed
 // in the sidebar and chat header.
 func (w *ChannelWindow) DisplayName() string { return string(w.name) }
+
+// Less implements [Window].
+func (w *ChannelWindow) Less(other Window) bool { return windowLess(w, other) }
