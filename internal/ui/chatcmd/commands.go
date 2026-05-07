@@ -728,6 +728,14 @@ func (c WhoisCommand) RunTool(ctx context.Context, tc session.ToolContext) sessi
 		return session.ToolResultPayload{OK: false, Error: err.Error()}
 	}
 
+	if _, err := tc.Session.LogEvent(ctx, tc.Channel, domain.Whois{
+		Target:   tc.Channel,
+		Instance: inst,
+		At:       time.Now(),
+	}); err != nil {
+		return session.ToolResultPayload{OK: false, Error: err.Error()}
+	}
+
 	return session.ToolResultPayload{
 		OK:      true,
 		Summary: "returned details for " + c.Nick,
@@ -744,7 +752,14 @@ func (HelpCommand) Run(_ Context) tea.Cmd {
 }
 
 // RunTool implements ToolCommand.
-func (HelpCommand) RunTool(_ context.Context, _ session.ToolContext) session.ToolResultPayload {
+func (HelpCommand) RunTool(ctx context.Context, tc session.ToolContext) session.ToolResultPayload {
+	if _, err := tc.Session.LogEvent(ctx, tc.Channel, domain.Help{
+		Target: tc.Channel,
+		At:     time.Now(),
+	}); err != nil {
+		return session.ToolResultPayload{OK: false, Error: err.Error()}
+	}
+
 	return session.ToolResultPayload{
 		OK:      true,
 		Summary: "available command tools include join, part, list, invite, kick, msg, nick, topic, me, whois, help, and quit",

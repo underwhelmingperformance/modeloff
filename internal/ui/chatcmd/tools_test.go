@@ -219,8 +219,10 @@ func TestRunTool_join_with_channel(t *testing.T) {
 }
 
 func TestRunTool_help_no_args(t *testing.T) {
+	sess := newToolTestSession(t)
 	tc := session.ToolContext{
-		Actor:   domain.NewUserInstance("testuser"),
+		Session: sess,
+		Actor:   sess.UserInstance(),
 		Channel: "#general",
 	}
 
