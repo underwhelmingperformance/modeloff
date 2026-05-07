@@ -179,6 +179,10 @@ func NewSQLiteStore(ctx context.Context, db *sql.DB) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("drop legacy event types: %w", err)
 	}
 
+	if err := s.dropLegacyActorEvents(ctx); err != nil {
+		return nil, fmt.Errorf("drop legacy actor events: %w", err)
+	}
+
 	if err := s.dropLegacyDMWindows(ctx); err != nil {
 		return nil, fmt.Errorf("drop legacy dm windows: %w", err)
 	}
@@ -294,6 +298,55 @@ func (s *SQLiteStore) dropLegacyEventTypes(ctx context.Context) error {
 
 		slog.Default().WarnContext(ctx,
 			"modeloff events table dropped; legacy `list` event rows present",
+			"component", "store.sqlite",
+		)
+
+		return nil
+	})
+}
+
+// dropLegacyActorEvents detects the pre-RFC-aligned shape of
+// `quit` and `nick_change` rows in the `events` table — the
+// shape that carried a single `channel` string field instead
+// of the new `channels` array — and drops the events table
+// when found. Pre-release reset, not a data-preserving
+// migration. The new shape mirrors RFC 2812 §3.1.7 / §3.1.2:
+// one wire event per actor-event with the actor's channel
+// snapshot carried as a list, not per-channel emissions with
+// a single target.
+func (s *SQLiteStore) dropLegacyActorEvents(ctx context.Context) error {
+	return s.inSpan(ctx, "store.sqlite.migrate_events_v3", nil, func(ctx context.Context, span trace.Span) error {
+		var detected bool
+		err := s.db.QueryRowContext(ctx, `SELECT EXISTS(
+			SELECT 1 FROM events
+			WHERE type IN ('quit', 'nick_change')
+			  AND json_extract(data, '$.data.channel') IS NOT NULL
+			LIMIT 1
+		)`).Scan(&detected)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil
+			}
+
+			if strings.Contains(err.Error(), "no such table") {
+				return nil
+			}
+
+			return fmt.Errorf("probe legacy actor events: %w", err)
+		}
+
+		span.SetAttributes(attribute.Bool("modeloff.migration.detected", detected))
+
+		if !detected {
+			return nil
+		}
+
+		if _, err := s.db.ExecContext(ctx, `DROP TABLE IF EXISTS events`); err != nil {
+			return fmt.Errorf("drop legacy events: %w", err)
+		}
+
+		slog.Default().WarnContext(ctx,
+			"modeloff events table dropped; legacy per-channel quit/nick_change rows present",
 			"component", "store.sqlite",
 		)
 

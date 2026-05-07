@@ -508,6 +508,47 @@ func TestSQLiteStore_DMEventsBefore_includes_peer_actor_events(t *testing.T) {
 	require.IsType(t, domain.Quit{}, got[1].Event)
 }
 
+// TestSQLiteStore_drops_legacy_actor_event_rows pins the
+// pre-release migration that drops the `events` table when it
+// finds per-channel `quit` / `nick_change` rows from before the
+// RFC-aligned shape (one event with `Channels` array). Detection
+// looks for the legacy `channel` field inside the event data
+// JSON; a fresh start with the new array-shaped payload is left
+// alone.
+func TestSQLiteStore_drops_legacy_actor_event_rows(t *testing.T) {
+	ctx := t.Context()
+	dbPath := filepath.Join(t.TempDir(), "legacy.db")
+	db, err := sql.Open("sqlite3", SQLitePragmaDSN(dbPath))
+	require.NoError(t, err)
+
+	// Bring up a fresh store so the `events` table exists, then
+	// hand-craft a row in the legacy shape by writing the JSON
+	// envelope directly.
+	s, err := NewSQLiteStore(ctx, db)
+	require.NoError(t, err)
+
+	const legacy = `{"type":"quit","data":{"channel":"#general","nick":"botty","at":"2025-01-01T00:00:00Z"}}`
+	_, err = db.ExecContext(ctx,
+		`INSERT INTO events (channel, type, data, at) VALUES (?, ?, ?, ?)`,
+		"#general", "quit", legacy, "2025-01-01T00:00:00Z",
+	)
+	require.NoError(t, err)
+	require.NoError(t, s.Close())
+
+	// Re-open. The migration should detect the legacy row, drop
+	// the events table, and recreate it empty.
+	db2, err := sql.Open("sqlite3", SQLitePragmaDSN(dbPath))
+	require.NoError(t, err)
+
+	s2, err := NewSQLiteStore(ctx, db2)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s2.Close() })
+
+	got, err := s2.EventsBefore(ctx, "#general", nil, 100)
+	require.NoError(t, err)
+	require.Empty(t, got)
+}
+
 func TestSQLiteStore_EventsFrom_nil_returns_earliest(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
