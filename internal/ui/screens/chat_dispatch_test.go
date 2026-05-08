@@ -96,12 +96,12 @@ func TestChatScreen_DispatchDone_deferred_while_replies_queued(t *testing.T) {
 	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil, domain.KindStatus)
 	require.NoError(t, err)
 	*screen.active = "#general"
-	screen.replyQueue["#general"] = []domain.ModelReplyEvent{
-		{Channel: "#general", Event: domain.Message{Target: "#general", From: "botty", Body: "queued"}},
+	screen.pacedQueue["#general"] = []domain.Message{
+		{Target: "#general", From: "botty", InstanceID: "inst-botty", Body: "queued"},
 	}
 
-	// With replies still queued, DispatchDone should not clear the
-	// pending indicator — the queue drainer handles that.
+	// With paced messages still queued, DispatchDone should not
+	// clear the pending indicator — the queue drainer handles that.
 	_, cmd := screen.handleDispatchDone(domain.DispatchDoneEvent{Channel: "#general"})
 	require.Nil(t, cmd)
 }
@@ -114,55 +114,55 @@ func TestChatScreen_ModelReply_queues_and_paces(t *testing.T) {
 	require.NoError(t, err)
 	*screen.active = "#general"
 
-	botty := domain.NewModelInstance("bot-1", "botty", "test/model", "", nil)
-
-	// First reply is delivered immediately (via deliverNextReplyMsg).
-	first := domain.ModelReplyEvent{
-		Channel:  "#general",
-		Event:    domain.Message{Target: "#general", From: "botty", Body: "line one"},
-		Instance: botty,
+	// First reply is delivered immediately (via deliverNextPacedMsg).
+	first := domain.Message{
+		Target:     "#general",
+		From:       "botty",
+		InstanceID: "inst-botty",
+		Body:       "line one",
 	}
-	updated, cmd := screen.handleModelReplyEvent(first)
+	updated, cmd := screen.handleMessageEvent(first)
 	screen = updated.(ChatScreen)
 
-	require.Equal(t, map[domain.ChannelName][]domain.ModelReplyEvent{
+	require.Equal(t, map[domain.ChannelName][]domain.Message{
 		"#general": {first},
-	}, screen.replyQueue)
+	}, screen.pacedQueue)
 
 	msgs := collectMsgs(cmd)
-	deliver, hasDeliver := containsMsg[deliverNextReplyMsg](msgs)
-	require.True(t, hasDeliver, "first reply should trigger immediate delivery")
-	require.Equal(t, deliverNextReplyMsg{Channel: "#general"}, deliver,
-		"delivery message must carry the reply's channel")
+	deliver, hasDeliver := containsMsg[deliverNextPacedMsg](msgs)
+	require.True(t, hasDeliver, "first paced message should trigger immediate delivery")
+	require.Equal(t, deliverNextPacedMsg{Channel: "#general"}, deliver,
+		"delivery message must carry the routing key")
 
 	// Second reply is only enqueued; no new delivery trigger.
-	second := domain.ModelReplyEvent{
-		Channel:  "#general",
-		Event:    domain.Message{Target: "#general", From: "botty", Body: "line two"},
-		Instance: botty,
+	second := domain.Message{
+		Target:     "#general",
+		From:       "botty",
+		InstanceID: "inst-botty",
+		Body:       "line two",
 	}
-	updated, cmd = screen.handleModelReplyEvent(second)
+	updated, cmd = screen.handleMessageEvent(second)
 	screen = updated.(ChatScreen)
 
-	require.Equal(t, map[domain.ChannelName][]domain.ModelReplyEvent{
+	require.Equal(t, map[domain.ChannelName][]domain.Message{
 		"#general": {first, second},
-	}, screen.replyQueue)
-	require.Nil(t, cmd, "second reply should not trigger delivery while first is pending")
+	}, screen.pacedQueue)
+	require.Nil(t, cmd, "second paced message should not trigger delivery while first is pending")
 
-	// Delivering the first reply should schedule the next after a tick.
-	updated, cmd = screen.deliverNextReply(deliverNextReplyMsg{Channel: "#general"})
+	// Delivering the first message should schedule the next after a tick.
+	updated, cmd = screen.deliverNextPaced(deliverNextPacedMsg{Channel: "#general"})
 	screen = updated.(ChatScreen)
 
-	require.Equal(t, map[domain.ChannelName][]domain.ModelReplyEvent{
+	require.Equal(t, map[domain.ChannelName][]domain.Message{
 		"#general": {second},
-	}, screen.replyQueue)
-	require.NotNil(t, cmd, "should schedule next reply delivery")
+	}, screen.pacedQueue)
+	require.NotNil(t, cmd, "should schedule next paced delivery")
 
-	// Delivering the last reply clears the pending indicator.
-	updated, cmd = screen.deliverNextReply(deliverNextReplyMsg{Channel: "#general"})
+	// Delivering the last message clears the pending indicator.
+	updated, cmd = screen.deliverNextPaced(deliverNextPacedMsg{Channel: "#general"})
 	screen = updated.(ChatScreen)
 
-	require.Equal(t, map[domain.ChannelName][]domain.ModelReplyEvent{}, screen.replyQueue)
+	require.Equal(t, map[domain.ChannelName][]domain.Message{}, screen.pacedQueue)
 
 	msgs = collectMsgs(cmd)
 
@@ -172,9 +172,9 @@ func TestChatScreen_ModelReply_queues_and_paces(t *testing.T) {
 }
 
 // TestChatScreen_ModelReply_paces_per_channel_independently pins the
-// #14 invariant: a burst of replies in one channel must not delay a
-// reply in another channel. Each channel drains at its own pacing
-// cadence.
+// invariant: a burst of paced messages in one channel must not delay
+// a message in another channel. Each channel drains at its own
+// pacing cadence.
 func TestChatScreen_ModelReply_paces_per_channel_independently(t *testing.T) {
 	sess := newTestSession(t)
 	require.NoError(t, sess.Join(t.Context(), "#channel-a"))
@@ -184,74 +184,75 @@ func TestChatScreen_ModelReply_paces_per_channel_independently(t *testing.T) {
 	require.NoError(t, err)
 	*screen.active = "#channel-a"
 
-	botty := domain.NewModelInstance("bot-1", "botty", "test/model", "", nil)
-
 	// Two replies queued for #channel-a: first delivers immediately,
 	// second is paced behind it.
-	aFirst := domain.ModelReplyEvent{
-		Channel:  "#channel-a",
-		Event:    domain.Message{Target: "#channel-a", From: "botty", Body: "a1"},
-		Instance: botty,
+	aFirst := domain.Message{
+		Target:     "#channel-a",
+		From:       "botty",
+		InstanceID: "inst-botty",
+		Body:       "a1",
 	}
-	aSecond := domain.ModelReplyEvent{
-		Channel:  "#channel-a",
-		Event:    domain.Message{Target: "#channel-a", From: "botty", Body: "a2"},
-		Instance: botty,
+	aSecond := domain.Message{
+		Target:     "#channel-a",
+		From:       "botty",
+		InstanceID: "inst-botty",
+		Body:       "a2",
 	}
 
-	updated, _ := screen.handleModelReplyEvent(aFirst)
+	updated, _ := screen.handleMessageEvent(aFirst)
 	screen = updated.(ChatScreen)
-	updated, _ = screen.handleModelReplyEvent(aSecond)
+	updated, _ = screen.handleMessageEvent(aSecond)
 	screen = updated.(ChatScreen)
 
-	require.Equal(t, []domain.ModelReplyEvent{aFirst, aSecond}, screen.replyQueue["#channel-a"])
+	require.Equal(t, []domain.Message{aFirst, aSecond}, screen.pacedQueue["#channel-a"])
 
 	// A reply arriving for #channel-b should ALSO trigger immediate
 	// delivery — #channel-a's queue does not hold it up.
-	bFirst := domain.ModelReplyEvent{
-		Channel:  "#channel-b",
-		Event:    domain.Message{Target: "#channel-b", From: "botty", Body: "b1"},
-		Instance: botty,
+	bFirst := domain.Message{
+		Target:     "#channel-b",
+		From:       "botty",
+		InstanceID: "inst-botty",
+		Body:       "b1",
 	}
-	updated, cmd := screen.handleModelReplyEvent(bFirst)
+	updated, cmd := screen.handleMessageEvent(bFirst)
 	screen = updated.(ChatScreen)
 
 	msgs := collectMsgs(cmd)
-	deliver, hasDeliver := containsMsg[deliverNextReplyMsg](msgs)
+	deliver, hasDeliver := containsMsg[deliverNextPacedMsg](msgs)
 	require.True(t, hasDeliver,
-		"first reply on #channel-b must deliver immediately, not wait for #channel-a")
-	require.Equal(t, deliverNextReplyMsg{Channel: "#channel-b"}, deliver,
+		"first paced message on #channel-b must deliver immediately, not wait for #channel-a")
+	require.Equal(t, deliverNextPacedMsg{Channel: "#channel-b"}, deliver,
 		"delivery message must target #channel-b, not the channel at the head of #channel-a's queue")
 
-	require.Equal(t, map[domain.ChannelName][]domain.ModelReplyEvent{
+	require.Equal(t, map[domain.ChannelName][]domain.Message{
 		"#channel-a": {aFirst, aSecond},
 		"#channel-b": {bFirst},
-	}, screen.replyQueue)
+	}, screen.pacedQueue)
 
-	// Delivering #channel-b's single reply empties its queue. The
+	// Delivering #channel-b's single message empties its queue. The
 	// application-wide pending indicator must stay on because
-	// #channel-a still has queued replies.
-	updated, cmd = screen.deliverNextReply(deliverNextReplyMsg{Channel: "#channel-b"})
+	// #channel-a still has queued messages.
+	updated, cmd = screen.deliverNextPaced(deliverNextPacedMsg{Channel: "#channel-b"})
 	screen = updated.(ChatScreen)
 
-	require.Equal(t, map[domain.ChannelName][]domain.ModelReplyEvent{
+	require.Equal(t, map[domain.ChannelName][]domain.Message{
 		"#channel-a": {aFirst, aSecond},
-	}, screen.replyQueue)
+	}, screen.pacedQueue)
 
 	msgs = collectMsgs(cmd)
 	_, hasPending := containsMsg[components.PendingResponseMsg](msgs)
 	require.False(t, hasPending,
-		"draining one channel must not clear pending while another channel still has replies")
+		"draining one channel must not clear pending while another channel still has messages")
 
 	// Drain #channel-a fully. Only the final delivery — when no
-	// channel has queued replies — clears the pending indicator.
-	updated, _ = screen.deliverNextReply(deliverNextReplyMsg{Channel: "#channel-a"})
+	// channel has queued messages — clears the pending indicator.
+	updated, _ = screen.deliverNextPaced(deliverNextPacedMsg{Channel: "#channel-a"})
 	screen = updated.(ChatScreen)
 
-	updated, cmd = screen.deliverNextReply(deliverNextReplyMsg{Channel: "#channel-a"})
+	updated, cmd = screen.deliverNextPaced(deliverNextPacedMsg{Channel: "#channel-a"})
 	screen = updated.(ChatScreen)
 
-	require.Equal(t, map[domain.ChannelName][]domain.ModelReplyEvent{}, screen.replyQueue)
+	require.Equal(t, map[domain.ChannelName][]domain.Message{}, screen.pacedQueue)
 
 	msgs = collectMsgs(cmd)
 	pending, ok := containsMsg[components.PendingResponseMsg](msgs)
@@ -259,14 +260,14 @@ func TestChatScreen_ModelReply_paces_per_channel_independently(t *testing.T) {
 	require.False(t, pending.Pending)
 }
 
-// TestChatScreen_parting_channel_purges_reply_queue pins the F4
-// invariant: when the user parts a channel with pending replies, the
-// queue entry is dropped and any stale tick that fires afterwards
-// no-ops cleanly through deliverNextReply's empty-queue branch.
-// Dropped replies remain in the session store, so re-joining the
-// channel restores history — this purge only affects the in-flight
-// pacing queue.
-func TestChatScreen_parting_channel_purges_reply_queue(t *testing.T) {
+// TestChatScreen_parting_channel_purges_paced_queue pins the F4
+// invariant: when the user parts a channel with pending paced
+// messages, the queue entry is dropped and any stale tick that
+// fires afterwards no-ops cleanly through deliverNextPaced's
+// empty-queue branch. Dropped messages remain in the session
+// store, so re-joining the channel restores history — this purge
+// only affects the in-flight pacing queue.
+func TestChatScreen_parting_channel_purges_paced_queue(t *testing.T) {
 	sess := newTestSession(t)
 	require.NoError(t, sess.Join(t.Context(), "#x"))
 
@@ -274,34 +275,33 @@ func TestChatScreen_parting_channel_purges_reply_queue(t *testing.T) {
 	require.NoError(t, err)
 	*screen.active = "#x"
 
-	botty := domain.NewModelInstance("bot-1", "botty", "test/model", "", nil)
-	queued := []domain.ModelReplyEvent{
-		{Channel: "#x", Event: domain.Message{Target: "#x", From: "botty", Body: "one"}, Instance: botty},
-		{Channel: "#x", Event: domain.Message{Target: "#x", From: "botty", Body: "two"}, Instance: botty},
+	queued := []domain.Message{
+		{Target: "#x", From: "botty", InstanceID: "inst-botty", Body: "one"},
+		{Target: "#x", From: "botty", InstanceID: "inst-botty", Body: "two"},
 	}
-	screen.replyQueue["#x"] = queued
+	screen.pacedQueue["#x"] = queued
 
 	// User parts #x — the handler drops both the channel and its
-	// pending-reply queue entry.
+	// pending-paced queue entry.
 	updated, _ := screen.handlePartEvent(domain.Part{
 		Target:   "#x",
 		Instance: sess.UserInstance(),
 	})
 	screen = updated.(ChatScreen)
 
-	_, stillQueued := screen.replyQueue["#x"]
-	require.False(t, stillQueued, "reply queue for parted channel must be dropped")
+	_, stillQueued := screen.pacedQueue["#x"]
+	require.False(t, stillQueued, "paced queue for parted channel must be dropped")
 
-	// A stale tick for the parted channel fires. deliverNextReply's
+	// A stale tick for the parted channel fires. deliverNextPaced's
 	// empty-queue branch no-ops for render, and clears the
 	// application-wide pending indicator because no other channel
 	// has pending work.
-	_, cmd := screen.deliverNextReply(deliverNextReplyMsg{Channel: "#x"})
+	_, cmd := screen.deliverNextPaced(deliverNextPacedMsg{Channel: "#x"})
 
 	msgs := collectMsgs(cmd)
 
 	_, hasStored := containsMsg[domain.StoredEvent](msgs)
-	require.False(t, hasStored, "stale tick must not render a queued reply for the parted channel")
+	require.False(t, hasStored, "stale tick must not render a queued message for the parted channel")
 
 	_, hasUnread := containsMsg[components.ChannelUnreadMsg](msgs)
 	require.False(t, hasUnread, "stale tick must not mark the parted channel as unread")
@@ -341,13 +341,15 @@ func TestChatScreen_handleSessionEvent_routing(t *testing.T) {
 			wantType: components.PendingResponseMsg{},
 		},
 		{
-			name: "ModelReplyEvent routes to delivery",
-			event: domain.ModelReplyEvent{
-				Event:    domain.Message{Target: "#general", From: "botty", Body: "hi"},
-				Instance: domain.NewModelInstance("bot-1", "botty", "test/model", "", nil),
+			name: "Message from model routes to paced delivery",
+			event: domain.Message{
+				Target:     "#general",
+				From:       "botty",
+				InstanceID: "inst-botty",
+				Body:       "hi",
 			},
-			dispatch: dispatchSession,
-			wantType: deliverNextReplyMsg{},
+			dispatch: dispatchProtocol,
+			wantType: deliverNextPacedMsg{},
 		},
 		{
 			name: "ErrorEvent routes to stored event",

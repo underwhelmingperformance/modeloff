@@ -44,11 +44,11 @@ type protocolEventMsg struct {
 	event protocol.Event
 }
 
-// deliverNextReplyMsg triggers delivery of the next queued reply
-// for a specific channel. Per-channel scheduling means a burst of
-// replies on one channel cannot block another channel's replies
-// behind its pacing delay.
-type deliverNextReplyMsg struct {
+// deliverNextPacedMsg triggers delivery of the next queued paced
+// message for a specific channel. Per-channel scheduling means a
+// burst of incoming messages on one channel cannot block another
+// channel's messages behind its pacing delay.
+type deliverNextPacedMsg struct {
 	Channel domain.ChannelName
 }
 
@@ -86,14 +86,14 @@ type ChatScreen struct {
 	liveModelsState *command.SuggestionState
 	parser          chatcmd.Parser
 	completer       command.Completable
-	// replyQueue holds queued model replies keyed by channel. Each
-	// channel drains at its own paced cadence (replyPaceInterval)
-	// independently, so a burst of replies in one channel does not
-	// delay a reply in another. A map value is never stored empty —
-	// deliverNextReply deletes the key when the last entry is
-	// popped — so len(replyQueue) is the count of channels with
-	// pending work.
-	replyQueue map[domain.ChannelName][]domain.ModelReplyEvent
+	// pacedQueue holds queued non-user incoming messages keyed by
+	// channel. Each channel drains at its own paced cadence
+	// (pacedInterval) independently, so a burst of messages in one
+	// channel does not delay a message in another. A map value is
+	// never stored empty — deliverNextPaced deletes the key when
+	// the last entry is popped — so len(pacedQueue) is the count
+	// of channels with pending work.
+	pacedQueue map[domain.ChannelName][]domain.Message
 
 	// scrollback holds per-channel event history in memory. The chat
 	// screen owns its view state: focus changes are pure buffer
@@ -153,7 +153,7 @@ func NewChatScreen(ctx context.Context, sess *session.Session, cfgStore config.S
 		layout:          layout,
 		keyMap:          components.DefaultChatScreenKeyMap,
 		checklist:       NewWelcomeChecklist(sess.UserNick(), sess.HasAPIKey()),
-		replyQueue:      map[domain.ChannelName][]domain.ModelReplyEvent{},
+		pacedQueue:      map[domain.ChannelName][]domain.Message{},
 		scrollback:      map[domain.ChannelName][]domain.StoredEvent{},
 	}
 
@@ -548,12 +548,9 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	case domain.Message:
 		// User-side outgoing arrives here directly from the
 		// send-cmd path; incoming model traffic comes via
-		// `sessionEventMsg` and is buffered there.
+		// `protocolEventMsg` and is buffered there.
 		s.bufferEvent(msg)
 		return s.handleMessageEvent(msg)
-
-	case domain.ModelReplyEvent:
-		return s.handleModelReplyEvent(msg)
 
 	case chatcmd.DMOpenedMsg:
 		return s.handleDMOpenedMsg(msg)
@@ -577,8 +574,8 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		s = s.updateLogEntries()
 		return s, tea.Batch(summaryCmd, s.waitForLogUpdateCmd())
 
-	case deliverNextReplyMsg:
-		return s.deliverNextReply(msg)
+	case deliverNextPacedMsg:
+		return s.deliverNextPaced(msg)
 
 	case PokeTickMsg:
 		return s, s.handlePoke()

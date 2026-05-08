@@ -12,6 +12,7 @@ import (
 
 	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/session"
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/chatcmd"
@@ -19,11 +20,10 @@ import (
 )
 
 // handleSessionEvent dispatches non-protocol UI events that flow
-// on `Session.Events()`: error events, model-reply rendering,
-// system-notice wrappers, and config changes. The protocol bus
-// carries every session-emitted event whose relative order
-// matters to the chat-screen; those are dispatched by
-// [ChatScreen.handleProtocolEvent].
+// on `Session.Events()`: error events, system-notice wrappers, and
+// config changes. The protocol bus carries every session-emitted
+// event whose relative order matters to the chat-screen; those
+// are dispatched by [ChatScreen.handleProtocolEvent].
 func (s ChatScreen) handleSessionEvent(msg sessionEventMsg) (ui.Model, tea.Cmd) {
 	var (
 		updated ui.Model
@@ -37,8 +37,6 @@ func (s ChatScreen) handleSessionEvent(msg sessionEventMsg) (ui.Model, tea.Cmd) 
 	switch evt := msg.event.(type) {
 	case domain.ConfigChangedEvent:
 		updated, cmd = s.handleConfigChangedEvent(evt)
-	case domain.ModelReplyEvent:
-		updated, cmd = s.handleModelReplyEvent(evt)
 	case domain.ErrorEvent:
 		updated, cmd = s.handleErrorEvent(evt)
 	case domain.SystemNoticeEvent:
@@ -406,12 +404,12 @@ func (s ChatScreen) handlePartEvent(msg domain.Part) (ui.Model, tea.Cmd) {
 	}
 
 	// If the user is leaving, remove the channel and purge any
-	// pending replies queued for it. Already-scheduled ticks for the
-	// parted channel's queue will no-op via deliverNextReply's
-	// empty-queue branch when they fire.
+	// pending paced messages queued for it. Already-scheduled ticks
+	// for the parted channel's queue will no-op via
+	// deliverNextPaced's empty-queue branch when they fire.
 	if msg.Instance == s.sess.UserInstance() {
 		s.channels.Remove(domain.WindowKey(msg.Target))
-		delete(s.replyQueue, msg.Target)
+		delete(s.pacedQueue, msg.Target)
 		s.checklist.channelCount = s.channels.Len()
 	}
 
@@ -681,6 +679,12 @@ func (s ChatScreen) handleModelKickedEvent(msg domain.ModelKicked) (ui.Model, te
 	return s, tea.Batch(cmds...)
 }
 
+// handleMessageEvent renders an incoming Message. User-originated
+// Messages (the synthesised echo from the send-cmd path, identified
+// by an empty InstanceID matching [protocol.UserClientID]) render
+// inline. Model-originated Messages enter the per-channel paced
+// queue: the first message in an empty queue delivers immediately,
+// subsequent messages drain at [pacedInterval] cadence.
 func (s ChatScreen) handleMessageEvent(msg domain.Message) (ui.Model, tea.Cmd) {
 	key, ok := msg.RoutingKey(s.sess.UserInstance().ID())
 	if !ok {
@@ -689,31 +693,34 @@ func (s ChatScreen) handleMessageEvent(msg domain.Message) (ui.Model, tea.Cmd) {
 		return s, nil
 	}
 
-	event := domain.StoredEvent{Event: msg}
+	if msg.InstanceID == protocol.UserClientID {
+		return s, s.renderMessage(msg, key)
+	}
 
+	wasEmpty := len(s.pacedQueue[key]) == 0
+	s.pacedQueue[key] = append(s.pacedQueue[key], msg)
+
+	// If this channel had no pending messages, deliver immediately;
+	// pacing is per-channel, so unrelated channels keep their own
+	// schedules.
+	if wasEmpty {
+		return s, s.deliverNextPacedCmd(key)
+	}
+
+	return s, nil
+}
+
+// renderMessage produces the tea.Cmd that surfaces a Message in the
+// active view (or as an unread badge for an off-channel target).
+func (s ChatScreen) renderMessage(msg domain.Message, key domain.ChannelName) tea.Cmd {
 	if key == *s.active {
-		return s, msgCmd(event)
+		return msgCmd(domain.StoredEvent{Event: msg})
 	}
 
 	count, _ := s.sess.UnreadCount(s.ctx, key)
 	mention := s.isHighlight(msg.Body)
 
-	return s, msgCmd(components.ChannelUnreadMsg{Channel: key, Count: count, Mention: mention})
-}
-
-func (s ChatScreen) handleModelReplyEvent(msg domain.ModelReplyEvent) (ui.Model, tea.Cmd) {
-	ch := msg.Channel
-	wasEmpty := len(s.replyQueue[ch]) == 0
-	s.replyQueue[ch] = append(s.replyQueue[ch], msg)
-
-	// If this channel had no pending replies, deliver immediately;
-	// pacing is per-channel, so unrelated channels keep their own
-	// schedules.
-	if wasEmpty {
-		return s, s.deliverNextReplyCmd(ch)
-	}
-
-	return s, nil
+	return msgCmd(components.ChannelUnreadMsg{Channel: key, Count: count, Mention: mention})
 }
 
 // handleDMOpenedMsg materialises the DM window in the sidebar
@@ -820,7 +827,7 @@ func (s ChatScreen) handleDispatchStarted(msg domain.DispatchStartedEvent) (ui.M
 }
 
 func (s ChatScreen) handleDispatchDone(_ domain.DispatchDoneEvent) (ui.Model, tea.Cmd) {
-	if s.hasQueuedReplies() {
+	if s.hasQueuedPaced() {
 		return s, nil
 	}
 
@@ -830,36 +837,37 @@ func (s ChatScreen) handleDispatchDone(_ domain.DispatchDoneEvent) (ui.Model, te
 	)
 }
 
-const replyPaceInterval = 400 * time.Millisecond
+const pacedInterval = 400 * time.Millisecond
 
-// hasQueuedReplies reports whether any channel has pending replies.
-// The pending/thinking indicators are application-wide, so they
-// clear only when every channel's queue has drained. The field's
-// pruning invariant (drained channels are deleted from the map)
-// makes this an O(1) length check.
-func (s ChatScreen) hasQueuedReplies() bool {
-	return len(s.replyQueue) > 0
+// hasQueuedPaced reports whether any channel has pending paced
+// messages. The pending/thinking indicators are application-wide,
+// so they clear only when every channel's queue has drained. The
+// field's pruning invariant (drained channels are deleted from the
+// map) makes this an O(1) length check.
+func (s ChatScreen) hasQueuedPaced() bool {
+	return len(s.pacedQueue) > 0
 }
 
-func (s ChatScreen) scheduleNextReply(ch domain.ChannelName) tea.Cmd {
-	return tea.Tick(replyPaceInterval, func(time.Time) tea.Msg {
-		return deliverNextReplyMsg{Channel: ch}
+func (s ChatScreen) scheduleNextPaced(ch domain.ChannelName) tea.Cmd {
+	return tea.Tick(pacedInterval, func(time.Time) tea.Msg {
+		return deliverNextPacedMsg{Channel: ch}
 	})
 }
 
-// deliverNextReplyCmd returns a tea.Cmd that delivers the next reply
-// from the given channel's queue immediately (without pacing delay).
-func (s ChatScreen) deliverNextReplyCmd(ch domain.ChannelName) tea.Cmd {
-	return func() tea.Msg { return deliverNextReplyMsg{Channel: ch} }
+// deliverNextPacedCmd returns a tea.Cmd that delivers the next
+// paced message from the given channel's queue immediately (without
+// pacing delay).
+func (s ChatScreen) deliverNextPacedCmd(ch domain.ChannelName) tea.Cmd {
+	return func() tea.Msg { return deliverNextPacedMsg{Channel: ch} }
 }
 
-func (s ChatScreen) deliverNextReply(msg deliverNextReplyMsg) (ui.Model, tea.Cmd) {
-	queue := s.replyQueue[msg.Channel]
+func (s ChatScreen) deliverNextPaced(msg deliverNextPacedMsg) (ui.Model, tea.Cmd) {
+	queue := s.pacedQueue[msg.Channel]
 	if len(queue) == 0 {
 		// The channel's queue has drained. If no other channel has
-		// pending replies either, clear the application-wide
+		// pending messages either, clear the application-wide
 		// pending/thinking indicators.
-		if !s.hasQueuedReplies() {
+		if !s.hasQueuedPaced() {
 			return s, tea.Batch(
 				msgCmd(components.NickListThinkingMsg{}),
 				msgCmd(components.PendingResponseMsg{Pending: false}),
@@ -873,20 +881,19 @@ func (s ChatScreen) deliverNextReply(msg deliverNextReplyMsg) (ui.Model, tea.Cmd
 	queue = queue[1:]
 
 	if len(queue) == 0 {
-		delete(s.replyQueue, msg.Channel)
+		delete(s.pacedQueue, msg.Channel)
 	} else {
-		s.replyQueue[msg.Channel] = queue
+		s.pacedQueue[msg.Channel] = queue
 	}
 
-	updated, cmd := s.showReply(next)
-	s = updated.(ChatScreen)
+	cmd := s.renderMessage(next, msg.Channel)
 
 	// Schedule the next delivery for this channel if more remain
 	// here; otherwise, if every channel has drained, clear the
 	// application-wide pending indicators.
-	if len(s.replyQueue[msg.Channel]) > 0 {
-		cmd = tea.Batch(cmd, s.scheduleNextReply(msg.Channel))
-	} else if !s.hasQueuedReplies() {
+	if len(s.pacedQueue[msg.Channel]) > 0 {
+		cmd = tea.Batch(cmd, s.scheduleNextPaced(msg.Channel))
+	} else if !s.hasQueuedPaced() {
 		cmd = tea.Batch(cmd,
 			msgCmd(components.NickListThinkingMsg{}),
 			msgCmd(components.PendingResponseMsg{Pending: false}),
@@ -894,19 +901,6 @@ func (s ChatScreen) deliverNextReply(msg deliverNextReplyMsg) (ui.Model, tea.Cmd
 	}
 
 	return s, cmd
-}
-
-func (s ChatScreen) showReply(msg domain.ModelReplyEvent) (ui.Model, tea.Cmd) {
-	event := domain.StoredEvent{Event: msg.Event}
-
-	if msg.Channel == *s.active {
-		return s, msgCmd(event)
-	}
-
-	count, _ := s.sess.UnreadCount(s.ctx, msg.Channel)
-	mention := s.isHighlight(msg.Event.Body)
-
-	return s, msgCmd(components.ChannelUnreadMsg{Channel: msg.Channel, Count: count, Mention: mention})
 }
 
 func (s ChatScreen) isHighlight(body string) bool {
