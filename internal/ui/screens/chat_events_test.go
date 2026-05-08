@@ -214,6 +214,48 @@ func TestChatScreen_QuitEvent_surfaces_in_open_DM(t *testing.T) {
 	tm.WaitFor("fakenick has quit (shutting down)")
 }
 
+// TestChatScreen_NickChangeEvent_surfaces_in_open_DM mirrors the
+// Quit-in-DM coverage for nick changes. Under the protocol
+// framing, `NickChange.Channels` only lists real channels —
+// DMs are not channels at the wire layer. The chat-screen layers
+// in DM-window rendering on top of the wire's actor-scoped event:
+// when an instance the user has an open DM with renames, the
+// "is now known as" line appears in that DM alongside the
+// channel scrollback.
+func TestChatScreen_NickChangeEvent_surfaces_in_open_DM(t *testing.T) {
+	sess := newTestSession(t)
+	uitest.SeedChannel(t, sess, "#general")
+	require.NoError(t, sess.AddModel(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
+
+	inst, err := sess.ResolveNick(t.Context(), "fakenick")
+	require.NoError(t, err)
+
+	tm := newChatApp(t, sess)
+	tm.WaitFor("Created channel #general", "fakenick has joined #general")
+
+	// Open a DM with fakenick and switch focus to it.
+	tm.Submit("/query fakenick")
+	tm.WaitForView(func(view string) bool {
+		return strings.Contains(view, "▸fakenick")
+	})
+
+	// `Instance.Nick()` is already the new value by the time the
+	// event reaches the chat-screen — the session renames before
+	// emitting. Mirror that by setting the live nick on the
+	// canonical handle before dispatch.
+	inst.SetNick("renamedbot")
+
+	tm.Send(domain.NickChange{
+		Channels: []domain.ChannelName{"#general"},
+		OldNick:  "fakenick",
+		NewNick:  "renamedbot",
+		Instance: inst,
+		At:       time.Now(),
+	})
+
+	tm.WaitFor("fakenick is now known as renamedbot")
+}
+
 func TestChatScreen_ignores_join_for_unknown_channel(t *testing.T) {
 	sess := newTestSession(t)
 	uitest.SeedChannel(t, sess, "#general")
