@@ -6,6 +6,7 @@ import (
 	"iter"
 	"log/slog"
 	"slices"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -105,7 +106,15 @@ type ChatScreen struct {
 	// models' shared memory of channel history and is never read into
 	// this buffer, mirroring IRC's "you don't see what happened
 	// before you joined" semantic.
-	scrollback map[domain.ChannelName][]domain.StoredEvent
+	//
+	// Reads and writes are guarded by `scrollbackMu`. Writes happen
+	// on Bubble Tea's Update goroutine via `appendToScrollback`;
+	// reads happen on a separate worker goroutine inside the
+	// `scrollbackCmd` closure that `tea.Sequence` schedules
+	// independently of Update. The pointer is shared across value-
+	// receiver copies of `ChatScreen`.
+	scrollback   map[domain.ChannelName][]domain.StoredEvent
+	scrollbackMu *sync.RWMutex
 
 	width     int
 	height    int
@@ -155,6 +164,7 @@ func NewChatScreen(ctx context.Context, sess *session.Session, cfgStore config.S
 		checklist:       NewWelcomeChecklist(sess.UserNick(), sess.HasAPIKey()),
 		pacedQueue:      map[domain.ChannelName][]domain.Message{},
 		scrollback:      map[domain.ChannelName][]domain.StoredEvent{},
+		scrollbackMu:    &sync.RWMutex{},
 	}
 
 	parser, err := chatcmd.NewParser()

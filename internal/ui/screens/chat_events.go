@@ -160,6 +160,9 @@ func (s ChatScreen) bufferActorEvent(channels []domain.ChannelName, actor *domai
 }
 
 func (s ChatScreen) appendToScrollback(ch domain.ChannelName, evt domain.StoredEvent) {
+	s.scrollbackMu.Lock()
+	defer s.scrollbackMu.Unlock()
+
 	s.scrollback[ch] = append(s.scrollback[ch], evt)
 }
 
@@ -243,6 +246,9 @@ func (s ChatScreen) scrollbackCmd(ch domain.ChannelName) tea.Cmd {
 	}
 
 	return func() tea.Msg {
+		s.scrollbackMu.RLock()
+		defer s.scrollbackMu.RUnlock()
+
 		return components.HistoryLoadedMsg{Events: s.scrollback[ch]}
 	}
 }
