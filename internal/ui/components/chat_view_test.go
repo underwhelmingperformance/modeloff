@@ -166,6 +166,24 @@ func dividerLine(view string) string {
 	return ""
 }
 
+// expectedDivider returns the exact "new messages" divider line as
+// rendered into a viewport of the given width: a left-padded run of
+// box-drawing dashes, the literal " new messages " label, and a
+// right-padded run of dashes that fills the rest of the line.
+func expectedDivider(width int) string {
+	const label = " new messages "
+
+	if width <= len(label) {
+		return label
+	}
+
+	pad := width - len([]rune(label))
+	left := pad / 2
+	right := pad - left
+
+	return strings.Repeat("─", left) + label + strings.Repeat("─", right)
+}
+
 func rawRenderedLines(view string) []string {
 	lines := strings.Split(strings.ReplaceAll(view, "\r\n", "\n"), "\n")
 
@@ -591,10 +609,12 @@ func TestChatView_nicks_use_hashed_colours(t *testing.T) {
 	aliceToken := extractStyledNickToken(t, renderNick(t, "alice", "from user"), "alice")
 	botToken := extractStyledNickToken(t, renderNick(t, "bot", "from model"), "bot")
 
-	// Both tokens carry ANSI styling — rules out NickStyle returning the
-	// bare string.
-	require.Contains(t, aliceToken, "\x1b[")
-	require.Contains(t, botToken, "\x1b[")
+	// Each token must consist of an SGR introducer, the literal
+	// `<nick>`, and an SGR reset. Anything matching that shape proves
+	// the nick is wrapped in ANSI styling rather than rendered bare.
+	const styledNickShape = `^\x1b\[[0-9;]+m<[a-z]+>\x1b\[[0-9;]*m$`
+	require.Regexp(t, styledNickShape, aliceToken)
+	require.Regexp(t, styledNickShape, botToken)
 
 	// Distinct nicks produce distinct styled tokens (they must differ in
 	// at least the escape codes or the visible text).
@@ -1372,11 +1392,7 @@ func TestChatView_divider_inserted_when_scrolled_up(t *testing.T) {
 	v = m.View(80, 24)
 	stripped := ansi.Strip(v)
 
-	divider := dividerLine(stripped)
-	require.NotEmpty(t, divider)
-	require.Contains(t, divider, "new messages")
-	require.GreaterOrEqual(t, len([]rune(divider)), 40,
-		"divider should span a significant portion of the width")
+	require.Equal(t, expectedDivider(80), dividerLine(stripped))
 }
 
 func TestChatView_no_divider_when_at_bottom(t *testing.T) {
@@ -1448,11 +1464,7 @@ func TestChatView_stored_events_insert_divider_when_scrolled_up(t *testing.T) {
 
 	v := ansi.Strip(m.View(80, 24))
 
-	divider := dividerLine(v)
-	require.NotEmpty(t, divider)
-	require.Contains(t, divider, "new messages")
-	require.GreaterOrEqual(t, len([]rune(divider)), 40,
-		"divider should span a significant portion of the width")
+	require.Equal(t, expectedDivider(80), dividerLine(v))
 	require.Equal(t, []string{
 		"[00:00:00] <user> message 11",
 		"[00:00:00] <user> message 12",
@@ -1522,11 +1534,7 @@ func TestChatView_stored_events_keep_divider_when_more_arrive_during_catch_up(t 
 
 	v := ansi.Strip(m.View(80, 24))
 
-	divider := dividerLine(v)
-	require.NotEmpty(t, divider)
-	require.Contains(t, divider, "new messages")
-	require.GreaterOrEqual(t, len([]rune(divider)), 40,
-		"divider should span a significant portion of the width")
+	require.Equal(t, expectedDivider(80), dividerLine(v))
 	require.Equal(t, []string{
 		"[00:00:00] <user> message 10",
 		"[00:00:00] <user> message 11",

@@ -1,8 +1,18 @@
 package ui_test
 
 import (
+	"strings"
+
 	"github.com/laney/modeloff/internal/ui/uitest"
 )
+
+// inputLine extracts the visible text of the input bar from a chat
+// screen render, with surrounding box borders and padding removed.
+func inputLine(view string) string {
+	_, status := uitest.SplitBodyAndStatus(view)
+
+	return strings.TrimSpace(strings.Trim(status, "│"))
+}
 
 func visibleBodySegments(view string) []string {
 	body, _ := uitest.SplitBodyAndStatus(view)

@@ -9,7 +9,6 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/exp/teatest"
 	"github.com/stretchr/testify/require"
 
@@ -380,7 +379,7 @@ func TestApp_input_history_and_sidebar_shortcuts_with_teatest(t *testing.T) {
 	require.Equal(t, []string{"Channels", "▸#general", "#random"}, sidebarColumn(view))
 	// The typed-but-unsent draft must survive a sidebar-driven channel
 	// switch.
-	require.Contains(t, ansi.Strip(view), "draft-only",
+	require.Equal(t, "testuser > draft-only", inputLine(view),
 		"draft text should remain in the input bar after switching channel")
 }
 
@@ -417,11 +416,12 @@ func TestApp_ctrl_arrow_scroll_preserves_draft_with_teatest(t *testing.T) {
 
 	require.Equal(t, []string{"Channels", "▸#general"}, sidebarColumn(view))
 	// The typed draft must survive a Ctrl+Up viewport scroll.
-	require.Contains(t, view, "draft-only",
+	require.Equal(t, "testuser > draft-only", inputLine(view),
 		"draft text should remain in the input bar after scrolling")
 	// Ctrl+Up scrolls the viewport up by one line, pushing the most
 	// recent message off the bottom of the chat region.
-	require.NotContains(t, view, "message 29",
+	require.NotContains(t, normaliseContent(contentColumn(view)),
+		"<testuser> message 29",
 		"viewport should have scrolled the latest message out of view")
 }
 
@@ -466,11 +466,34 @@ func TestApp_new_messages_divider_with_teatest(t *testing.T) {
 		return false
 	})
 
-	divider := findDividerLine(contentColumn(tm.FinalView()))
-	require.NotEmpty(t, divider)
-	require.Contains(t, divider, "new messages")
-	require.GreaterOrEqual(t, len([]rune(divider)), 40,
-		"divider should span a significant portion of the width")
+	require.Equal(t, expectedContentDivider(contentColumn(tm.FinalView())),
+		findDividerLine(contentColumn(tm.FinalView())),
+		"the new-messages divider must span the chat content column")
+}
+
+// expectedContentDivider returns the canonical "new messages" divider
+// for the content-column width inferred from a rendered chat column.
+// The divider is a centred " new messages " label flanked by `─`
+// runes that fill the column.
+func expectedContentDivider(lines []string) string {
+	const label = " new messages "
+
+	width := 0
+	for _, line := range lines {
+		if w := len([]rune(line)); w > width {
+			width = w
+		}
+	}
+
+	if width <= len([]rune(label)) {
+		return label
+	}
+
+	pad := width - len([]rune(label))
+	left := pad / 2
+	right := pad - left
+
+	return strings.Repeat("─", left) + label + strings.Repeat("─", right)
 }
 
 // findDividerLine returns the first "new messages" divider row from a

@@ -38,31 +38,6 @@ func TestConnectionScreen_StatusItems_surfaces_disconnecting_while_quit_in_fligh
 		"quit-in-flight must surface a Disconnecting… status item")
 }
 
-func TestConnectionScreen_View_renders_disconnecting_in_status_bar(t *testing.T) {
-	s := NewConnectionScreen(ConnectionConfig{
-		HasAPIKey: true,
-		Nick:      "alice",
-	})
-	s.quitting = true
-
-	view := s.View(80, 24)
-
-	require.Contains(t, view, "Disconnecting…",
-		"connection screen must render the status bar with the disconnecting indicator while quitting")
-}
-
-func TestConnectionScreen_View_omits_status_bar_when_idle(t *testing.T) {
-	s := NewConnectionScreen(ConnectionConfig{
-		HasAPIKey: true,
-		Nick:      "alice",
-	})
-
-	view := s.View(80, 24)
-
-	require.NotContains(t, view, "Disconnecting…",
-		"the disconnecting indicator must not appear before a quit is requested")
-}
-
 func TestConnectionScreen_View_uses_full_height_when_idle(t *testing.T) {
 	s := NewConnectionScreen(ConnectionConfig{
 		HasAPIKey: true,

@@ -22,6 +22,7 @@ const (
 	sidebarWidthAt100          = 20
 	sidebarWidthAt120          = 24
 	contentWidthAt80           = 66
+	contentWidthAt80WithNicks  = 54
 	contentWidthAt100          = 86
 	contentWidthAt120TwoPane   = 106
 	contentWidthAt120WithNicks = 94
@@ -51,6 +52,18 @@ func (s stubModel) View(width, height int) string {
 // so tests can express expectations in terms of the layout constants.
 func dims(label string, width, height int) string {
 	return fmt.Sprintf("%s:%dx%d", label, width, height)
+}
+
+// columnContents reduces a [][]string from visibleColumns to its
+// nonEmptyColumn projection, so full-slice assertions can compare the
+// number of columns and their content in one structural check.
+func columnContents(columns [][]string) [][]string {
+	out := make([][]string, len(columns))
+	for i, col := range columns {
+		out[i] = nonEmptyColumn(col)
+	}
+
+	return out
 }
 
 type keybindingStubModel struct {
@@ -172,12 +185,19 @@ func TestMainLayout_View_hides_nicklist_when_main_too_narrow(t *testing.T) {
 
 	// At 80 columns with small stubs everything fits.
 	got := layout.View(80, defaultTestHeight)
-	require.Equal(t, []string{dims("nicks", nickListWidthAt80, defaultTestHeight)}, nonEmptyColumn(visibleColumns(got)[2]))
+	require.Equal(t, [][]string{
+		{dims("sidebar", sidebarWidthAt80, defaultTestHeight)},
+		{dims("content", contentWidthAt80WithNicks, defaultTestHeight)},
+		{dims("nicks", nickListWidthAt80, defaultTestHeight)},
+	}, columnContents(visibleColumns(got)))
 
-	// Toggle it off — should disappear.
+	// Toggle it off — the nick list column must disappear.
 	toggled, _ := layout.Update(components.NickListToggleMsg{})
 	got = toggled.View(80, 24)
-	require.Equal(t, 2, len(visibleColumns(got)))
+	require.Equal(t, [][]string{
+		{dims("sidebar", sidebarWidthAt80, defaultTestHeight)},
+		{dims("content", contentWidthAt80, defaultTestHeight)},
+	}, columnContents(visibleColumns(got)))
 }
 
 func TestMainLayout_View_nicklist_toggle(t *testing.T) {
@@ -188,23 +208,30 @@ func TestMainLayout_View_nicklist_toggle(t *testing.T) {
 	layout := components.NewMainLayout(sidebar, content)
 	layout.NickList = nicklist
 
+	withNicks := [][]string{
+		{dims("sidebar", sidebarWidthAt120, defaultTestHeight)},
+		{dims("content", contentWidthAt120WithNicks, defaultTestHeight)},
+		{dims("nicks", nickListWidthAt120, defaultTestHeight)},
+	}
+	withoutNicks := [][]string{
+		{dims("sidebar", sidebarWidthAt120, defaultTestHeight)},
+		{dims("content", contentWidthAt120TwoPane, defaultTestHeight)},
+	}
+
 	// Initially visible at wide width.
-	got := layout.View(120, defaultTestHeight)
-	require.Equal(t, []string{dims("nicks", nickListWidthAt120, defaultTestHeight)}, nonEmptyColumn(visibleColumns(got)[2]))
+	require.Equal(t, withNicks, columnContents(visibleColumns(layout.View(120, defaultTestHeight))))
 
 	// Toggle off.
 	updated, _ := layout.Update(components.NickListToggleMsg{})
 	layout = updated.(components.MainLayout)
 
-	got = layout.View(120, defaultTestHeight)
-	require.Equal(t, 2, len(visibleColumns(got)))
+	require.Equal(t, withoutNicks, columnContents(visibleColumns(layout.View(120, defaultTestHeight))))
 
 	// Toggle back on.
 	updated, _ = layout.Update(components.NickListToggleMsg{})
 	layout = updated.(components.MainLayout)
 
-	got = layout.View(120, defaultTestHeight)
-	require.Equal(t, []string{dims("nicks", nickListWidthAt120, defaultTestHeight)}, nonEmptyColumn(visibleColumns(got)[2]))
+	require.Equal(t, withNicks, columnContents(visibleColumns(layout.View(120, defaultTestHeight))))
 }
 
 func TestMainLayout_View_no_nicklist_without_set(t *testing.T) {

@@ -24,10 +24,10 @@ func TestLogBuffer_keeps_latest_entries_within_capacity(t *testing.T) {
 		// point the ring buffer's contents are deterministic.
 		synctest.Wait()
 
-		entries := buffer.Entries()
-		require.Len(t, entries, 2)
-		require.Equal(t, "second", entries[0].Message)
-		require.Equal(t, "third", entries[1].Message)
+		require.Equal(t, []PanelEntry{
+			{Message: "second", Timestamp: now},
+			{Message: "third", Timestamp: now},
+		}, buffer.Entries())
 	})
 }
 

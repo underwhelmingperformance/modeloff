@@ -258,11 +258,7 @@ func TestChatScreen_rejoin_hides_pre_session_history(t *testing.T) {
 		"<testuser> fresh message",
 		"testuser >",
 	}, shaped,
-		"events from before the session start must not appear in the user's scrollback")
-	require.NotContains(t, view, "previous session message",
-		"messages from before the session start must not appear in the user's scrollback")
-	require.NotContains(t, view, "ancient dispatch failure",
-		"command errors from before the session start must not appear in the user's scrollback")
+		"events from before the session start must not appear in the user's scrollback (covers both 'previous session message' and 'ancient dispatch failure')")
 }
 
 // replaceTopicSeparator substitutes the horizontal-rule row that the
@@ -404,26 +400,34 @@ func TestChatScreen_whois_persists_to_status_channel(t *testing.T) {
 	statusEvents, err := sess.EventsBefore(t.Context(), domain.StatusChannelName, nil, 100)
 	require.NoError(t, err)
 
-	var whois []domain.Whois
-	for _, ev := range statusEvents {
-		if w, ok := ev.Event.(domain.Whois); ok {
-			whois = append(whois, w)
-		}
+	type whoisKey struct {
+		Target domain.ChannelName
+		Nick   domain.Nick
 	}
-	require.Len(t, whois, 1, "expected one Whois persisted on &modeloff")
-	require.Equal(t, domain.StatusChannelName, whois[0].Target)
-	require.Equal(t, domain.Nick("fakenick"), whois[0].Nick)
+
+	whoisKeys := func(events []domain.StoredEvent) []whoisKey {
+		out := []whoisKey{}
+		for _, ev := range events {
+			if w, ok := ev.Event.(domain.Whois); ok {
+				out = append(out, whoisKey{Target: w.Target, Nick: w.Nick})
+			}
+		}
+
+		return out
+	}
+
+	require.Equal(t, []whoisKey{
+		{Target: domain.StatusChannelName, Nick: "fakenick"},
+	}, whoisKeys(statusEvents),
+		"&modeloff must carry exactly one Whois for fakenick")
 
 	// Active channel display is ephemeral: the #general event log
-	// should NOT carry the whois entry.
+	// should NOT carry any Whois entries.
 	generalEvents, err := sess.EventsBefore(t.Context(), "#general", nil, 100)
 	require.NoError(t, err)
 
-	for _, ev := range generalEvents {
-		if _, ok := ev.Event.(domain.Whois); ok {
-			t.Fatal("expected no Whois persisted on #general; whois should only land on &modeloff")
-		}
-	}
+	require.Equal(t, []whoisKey{}, whoisKeys(generalEvents),
+		"whois should only land on &modeloff, never on the active channel")
 }
 
 func TestChatScreen_whois_unknown_nick(t *testing.T) {

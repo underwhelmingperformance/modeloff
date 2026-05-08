@@ -21,21 +21,25 @@ func TestChatScreen_semantic_regions_expose_sidebar_and_chat_content(t *testing.
 
 	body, status := uitest.SplitBodyAndStatus(tm.CurrentView())
 	columns := uitest.VisibleColumns(body)
-	require.Equal(t, 3, len(columns))
 
-	require.Equal(t, []string{"Channels", "#general", "▸#random"}, uitest.NonEmptyColumn(columns[0]))
-
-	content := make([]string, 0)
-	for _, line := range uitest.NonEmptyColumn(columns[1]) {
-		content = append(content, uitest.CompactLine(line))
+	got := make([][]string, len(columns))
+	for i, col := range columns {
+		col = uitest.NonEmptyColumn(col)
+		got[i] = make([]string, len(col))
+		for j, line := range col {
+			got[i][j] = uitest.CompactLine(line)
+		}
 	}
-	require.Equal(t, []string{
-		"*** Created channel #random",
-		"*** ChanServ sets mode +o testuser",
-		"testuser >",
-	}, content)
 
-	require.Equal(t, []string{"Nicks", "@testuser"}, uitest.NonEmptyColumn(columns[2]))
+	require.Equal(t, [][]string{
+		{"Channels", "#general", "▸#random"},
+		{
+			"*** Created channel #random",
+			"*** ChanServ sets mode +o testuser",
+			"testuser >",
+		},
+		{"Nicks", "@testuser"},
+	}, got, "the chat layout must expose three semantic columns: sidebar, chat content, nicks")
 
 	tokens := strings.Fields(status)
 	require.Subset(t, tokens, []string{"^D/^U", "^O", "↵", "^W", "^C"},

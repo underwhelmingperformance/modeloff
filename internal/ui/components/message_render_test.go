@@ -102,10 +102,23 @@ func TestRenderWhoisEvent_uses_stored_snapshot(t *testing.T) {
 		At:       at,
 	}
 
-	rendered := stripLine(renderWhoisEvent(whois))
-	require.Contains(t, rendered, "alice is anthropic/claude-3-haiku")
-	require.Contains(t, rendered, "persona: a cheerful pirate")
-	require.Contains(t, rendered, "channels: #dev, #help")
+	want := strings.Join([]string{
+		"*** alice is anthropic/claude-3-haiku",
+		"***   persona: a cheerful pirate",
+		"***   channels: #dev, #help",
+	}, "\n")
+	require.Equal(t, want, stripWhois(renderWhoisEvent(whois)))
+}
+
+// stripWhois strips ANSI from a multi-line whois render and trims
+// trailing whitespace from each line, since lipgloss may pad lines.
+func stripWhois(s string) string {
+	lines := strings.Split(ansi.Strip(s), "\n")
+	for i, line := range lines {
+		lines[i] = strings.TrimRight(line, " ")
+	}
+
+	return strings.Join(lines, "\n")
 }
 
 func TestRenderWhoisEvent_snapshot_takes_precedence_over_live_instance(t *testing.T) {
@@ -126,20 +139,21 @@ func TestRenderWhoisEvent_snapshot_takes_precedence_over_live_instance(t *testin
 		At:       at,
 	}
 
-	rendered := stripLine(renderWhoisEvent(whois))
-	require.Contains(t, rendered, "alice is anthropic/claude-3-haiku",
-		"snapshot Nick must beat the live Instance.Nick()")
-	require.Contains(t, rendered, "persona: a cheerful pirate",
-		"snapshot Persona must beat the live Instance.Persona()")
-	require.NotContains(t, rendered, "bob")
-	require.NotContains(t, rendered, "grumpy parrot")
+	want := strings.Join([]string{
+		"*** alice is anthropic/claude-3-haiku",
+		"***   persona: a cheerful pirate",
+		"***   channels: #dev",
+	}, "\n")
+	rendered := stripWhois(renderWhoisEvent(whois))
+	require.Equal(t, want, rendered,
+		"snapshot fields must beat the live Instance fields")
 
 	// Renaming after emission must not retroactively rewrite the
 	// rendered line — the snapshot is frozen.
 	live.SetNick("carol")
 	live.SetPersona("a relentlessly chatty bot")
 
-	require.Equal(t, rendered, stripLine(renderWhoisEvent(whois)),
+	require.Equal(t, want, stripWhois(renderWhoisEvent(whois)),
 		"snapshot whois render must not change when the underlying Instance mutates")
 }
 
@@ -154,9 +168,11 @@ func TestRenderWhoisEvent_legacy_instance_fallback(t *testing.T) {
 		At:       at,
 	}
 
-	rendered := stripLine(renderWhoisEvent(whois))
-	require.Contains(t, rendered, "alice is anthropic/claude-3-haiku")
-	require.Contains(t, rendered, "persona: a cheerful pirate")
+	want := strings.Join([]string{
+		"*** alice is anthropic/claude-3-haiku",
+		"***   persona: a cheerful pirate",
+	}, "\n")
+	require.Equal(t, want, stripWhois(renderWhoisEvent(whois)))
 }
 
 func TestRenderChannelEvent_system_notice_style_changes_by_kind(t *testing.T) {
@@ -179,14 +195,7 @@ func TestRenderChannelEvent_system_notice_style_changes_by_kind(t *testing.T) {
 		)
 	}
 
-	channelRendered := render(domain.KindChannel)
-	dmRendered := render(domain.KindDM)
-	statusRendered := render(domain.KindStatus)
-
-	require.NotEqual(t, channelRendered, statusRendered,
-		"system notice rendering must differ between KindChannel and KindStatus")
-	require.Equal(t, channelRendered, dmRendered,
-		"DM must render system notices identically to a regular channel")
-	require.Contains(t, stripLine(channelRendered), "✓")
-	require.Contains(t, stripLine(statusRendered), "***")
+	require.Equal(t, "✓ OpenRouter API key saved.", stripLine(render(domain.KindChannel)))
+	require.Equal(t, "✓ OpenRouter API key saved.", stripLine(render(domain.KindDM)))
+	require.Equal(t, "*** OpenRouter API key saved.", stripLine(render(domain.KindStatus)))
 }

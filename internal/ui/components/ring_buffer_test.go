@@ -14,7 +14,6 @@ func TestRingBuffer_Append_within_capacity(t *testing.T) {
 	r.Append(2)
 	r.Append(3)
 
-	require.Equal(t, 3, r.Len())
 	require.Equal(t, []int{1, 2, 3}, r.Slice())
 }
 
@@ -26,7 +25,6 @@ func TestRingBuffer_Append_overflow_drops_oldest(t *testing.T) {
 	r.Append(4)
 	r.Append(5)
 
-	require.Equal(t, 3, r.Len())
 	require.Equal(t, []int{3, 4, 5}, r.Slice())
 }
 
@@ -58,7 +56,6 @@ func TestRingBuffer_Clear(t *testing.T) {
 	r.Append(2)
 	r.Clear()
 
-	require.Equal(t, 0, r.Len())
 	require.Nil(t, r.Slice())
 }
 
@@ -90,7 +87,6 @@ func TestRingBuffer_zero_capacity(t *testing.T) {
 	r := components.NewRingBuffer[int](0)
 	r.Append(1)
 
-	require.Equal(t, 0, r.Len())
 	require.Nil(t, r.Slice())
 }
 

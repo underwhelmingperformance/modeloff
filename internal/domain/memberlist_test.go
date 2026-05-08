@@ -2,6 +2,7 @@ package domain_test
 
 import (
 	"encoding/json"
+	"iter"
 	"slices"
 	"testing"
 
@@ -230,9 +231,23 @@ func TestMemberList_JSON_round_trip_requires_resolver(t *testing.T) {
 	require.NoError(t, err)
 
 	// Before ResolveInstances is called, the unmarshal produces stub
-	// Instance handles — the slice content is consistent but the
-	// handles are not the canonical ones.
-	require.Equal(t, ml.Len(), ml2.Len())
+	// Instance handles — the (nick, mode) pairs survive the round-trip
+	// even though the handles themselves are not yet canonical.
+	type nickMode struct {
+		Nick domain.Nick
+		Mode domain.NickMode
+	}
+
+	pairs := func(members iter.Seq[domain.Member]) []nickMode {
+		var out []nickMode
+		for m := range members {
+			out = append(out, nickMode{Nick: m.Nick, Mode: m.Mode})
+		}
+
+		return out
+	}
+
+	require.Equal(t, pairs(ml.All()), pairs(ml2.All()))
 
 	// Rewriting the stubs via a resolver that returns the original
 	// handles reproduces the input exactly.

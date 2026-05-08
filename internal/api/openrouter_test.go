@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -592,10 +593,12 @@ func TestOpenRouterClient_GenerateNick(t *testing.T) {
 			requestBody["response_format"].(map[string]any)["type"],
 			"request must declare a json_schema response format")
 
-		messages := requestBody["messages"].([]any)
-		require.Len(t, messages, 1)
-		require.Contains(t, messages[0].(map[string]any)["content"], persona,
-			"prompt must carry the assigned persona verbatim")
+		require.Equal(t, []any{
+			map[string]any{
+				"role":    "user",
+				"content": fmt.Sprintf(nicknamePrompt, persona),
+			},
+		}, requestBody["messages"])
 	})
 
 	t.Run("rejected suggestions become follow-up turns", func(t *testing.T) {
@@ -627,12 +630,20 @@ func TestOpenRouterClient_GenerateNick(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, domain.Nick("dustbench"), got.Nick)
 
-		messages := requestBody["messages"].([]any)
-		require.Len(t, messages, 3, "rejection must produce a 3-turn conversation: initial, prior assistant reply, follow-up user")
-		require.Equal(t, "assistant", messages[1].(map[string]any)["role"])
-		require.Contains(t, messages[1].(map[string]any)["content"], "dustbunny")
-		require.Equal(t, "user", messages[2].(map[string]any)["role"])
-		require.Contains(t, messages[2].(map[string]any)["content"], "dustbunny")
+		require.Equal(t, []any{
+			map[string]any{
+				"role":    "user",
+				"content": fmt.Sprintf(nicknamePrompt, persona),
+			},
+			map[string]any{
+				"role":    "assistant",
+				"content": `{"nick":"dustbunny"}`,
+			},
+			map[string]any{
+				"role":    "user",
+				"content": "That nick is already taken. Suggest a different one. Avoid: dustbunny",
+			},
+		}, requestBody["messages"])
 	})
 
 	t.Run("malformed json is reported as a parse error", func(t *testing.T) {

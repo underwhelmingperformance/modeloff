@@ -36,20 +36,23 @@ func TestMainLayout_semantic_regions_expose_rendered_sidebar_chat_and_nicklist(t
 	layout.NickList = nicklist
 
 	columns := visibleColumns(layout.View(120, 10))
-	require.Equal(t, 3, len(columns))
 
-	require.Equal(t, []string{"Channels", "#general (2)", "▸#random"}, nonEmptyColumn(columns[0]))
-
-	content := make([]string, 0, len(nonEmptyColumn(columns[1])))
-	for _, line := range nonEmptyColumn(columns[1]) {
-		content = append(content, uitest.CompactLine(line))
+	got := make([][]string, len(columns))
+	for i, col := range columns {
+		col = nonEmptyColumn(col)
+		got[i] = make([]string, len(col))
+		for j, line := range col {
+			got[i][j] = uitest.CompactLine(line)
+		}
 	}
 
-	require.Equal(t, []string{
-		"[10:00:00] <alice> hello",
-		"[10:01:00] <botty> hi there",
-		"testuser >",
-	}, content)
-
-	require.Equal(t, []string{"Nicks", "@alice", "+botty"}, nonEmptyColumn(columns[2]))
+	require.Equal(t, [][]string{
+		{"Channels", "#general (2)", "▸#random"},
+		{
+			"[10:00:00] <alice> hello",
+			"[10:01:00] <botty> hi there",
+			"testuser >",
+		},
+		{"Nicks", "@alice", "+botty"},
+	}, got, "MainLayout must expose three semantic columns: sidebar, chat content, nick list")
 }

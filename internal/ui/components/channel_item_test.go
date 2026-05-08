@@ -378,9 +378,10 @@ func TestChannelSidebar_mention_renders_differently_from_normal_unread(t *testin
 	normalLine := findLineContaining(t, vNormal, "#random")
 	mentionLine := findLineContaining(t, vMention, "#random")
 
-	// Both lines carry ANSI styling.
-	require.Contains(t, normalLine, "\x1b[")
-	require.Contains(t, mentionLine, "\x1b[")
+	// Each line must contain at least one SGR introducer — rules out
+	// the renderer returning the bare string.
+	require.Regexp(t, `\x1b\[[0-9;]+m`, normalLine)
+	require.Regexp(t, `\x1b\[[0-9;]+m`, mentionLine)
 
 	// The visible text is identical — rules out whitespace-only drift.
 	require.Equal(t, ansi.Strip(normalLine), ansi.Strip(mentionLine))

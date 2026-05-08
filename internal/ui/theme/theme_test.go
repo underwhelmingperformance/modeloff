@@ -30,14 +30,19 @@ func TestNickStyle_different_nicks_can_differ(t *testing.T) {
 }
 
 func TestNickStyle_uses_all_colours(t *testing.T) {
-	colours := make(map[lipgloss.ANSIColor]bool)
+	got := make(map[lipgloss.ANSIColor]bool)
 
 	for i := range 100 {
 		nick := fmt.Sprintf("nick%d", i)
 		fg := NickStyle(nick).GetForeground().(lipgloss.ANSIColor)
-		colours[fg] = true
+		got[fg] = true
 	}
 
-	require.Equal(t, len(nickColours), len(colours),
-		"expected all %d nick colours to be used", len(nickColours))
+	want := make(map[lipgloss.ANSIColor]bool, len(nickColours))
+	for _, c := range nickColours {
+		want[c] = true
+	}
+
+	require.Equal(t, want, got,
+		"every entry in nickColours must be reachable through NickStyle's hash")
 }

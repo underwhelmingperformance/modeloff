@@ -238,22 +238,22 @@ func TestInputBar_history_up_down(t *testing.T) {
 	// is a user-visible change and not just an internal-state one.
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 	require.Equal(t, "third", inputValue(t, m))
-	require.Contains(t, viewTokens(m), "third")
+	require.Equal(t, []string{">", "third"}, viewTokens(m))
 
 	// Up again = previous.
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 	require.Equal(t, "second", inputValue(t, m))
-	require.Contains(t, viewTokens(m), "second")
+	require.Equal(t, []string{">", "second"}, viewTokens(m))
 
 	// Down = back to most recent.
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	require.Equal(t, "third", inputValue(t, m))
-	require.Contains(t, viewTokens(m), "third")
+	require.Equal(t, []string{">", "third"}, viewTokens(m))
 
 	// Down again = back to empty draft.
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	require.Equal(t, "", inputValue(t, m))
-	require.NotContains(t, viewTokens(m), "third")
+	require.Equal(t, []string{">"}, viewTokens(m))
 }
 
 func TestInputBar_history_preserves_draft(t *testing.T) {
@@ -268,12 +268,12 @@ func TestInputBar_history_preserves_draft(t *testing.T) {
 	// Up enters history, saving the draft.
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 	require.Equal(t, "old message", inputValue(t, m))
-	require.Contains(t, viewText(m), "old message")
+	require.Equal(t, []string{">", "old", "message"}, viewTokens(m))
 
 	// Down restores the draft.
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	require.Equal(t, "draft", inputValue(t, m))
-	require.Contains(t, viewTokens(m), "draft")
+	require.Equal(t, []string{">", "draft"}, viewTokens(m))
 }
 
 func TestInputBar_history_no_duplicate_consecutive(t *testing.T) {
@@ -835,9 +835,8 @@ func TestInputBar_keybindings_include_history_when_popover_hidden(t *testing.T) 
 
 func TestInputBar_view_does_not_show_plain_indicator(t *testing.T) {
 	b := components.NewInputBar("user")
-	v := viewText(b)
 
-	require.NotContains(t, v, "[plain]")
+	require.Equal(t, []string{"user", ">"}, viewTokens(b))
 }
 
 func TestInputBar_active_formats(t *testing.T) {
@@ -914,12 +913,49 @@ func TestInputBar_status_bar_renders_active_format_bold(t *testing.T) {
 	bar := m.(components.InputBar)
 	bindings := bar.KeyBindings()
 
-	// The status bar should render without [plain] and with the
-	// bold binding rendered in bold (ANSI bold escape).
 	rendered := components.RenderStatusBar(200, bindings, nil)
 
-	// The bold binding should be rendered with ANSI bold (SGR 1)
-	// applied directly to "M-B" and its description.
-	require.Contains(t, rendered, "\x1b[1;90mM-B")
-	require.Contains(t, rendered, "\x1b[1;90mbold")
+	// Extract the literal content of every ANSI-bold (SGR 1)
+	// segment. The bold-format binding must contribute "M-B" and
+	// "bold" so the user sees that the active format is highlighted;
+	// "M-O reset fmt" is also rendered bold because pressing it
+	// would clear bold — the styling reflects current state.
+	require.Equal(t, []string{"M-B", "bold", "M-O", "reset fmt"}, boldSegments(rendered))
+}
+
+// boldSegments returns the literal content of every `\x1b[1;…m…\x1b[m`
+// run in the rendered string, in order. A segment ends at the first
+// SGR escape after the styled content.
+func boldSegments(rendered string) []string {
+	const boldPrefix = "\x1b[1"
+
+	var out []string
+
+	for {
+		idx := strings.Index(rendered, boldPrefix)
+		if idx < 0 {
+			return out
+		}
+
+		rendered = rendered[idx+len(boldPrefix):]
+
+		// Skip the rest of the SGR introducer up to `m`.
+		end := strings.IndexByte(rendered, 'm')
+		if end < 0 {
+			return out
+		}
+
+		rendered = rendered[end+1:]
+
+		// The literal content runs up to the next ANSI escape.
+		stop := strings.IndexByte(rendered, '\x1b')
+		if stop < 0 {
+			out = append(out, rendered)
+
+			return out
+		}
+
+		out = append(out, rendered[:stop])
+		rendered = rendered[stop:]
+	}
 }

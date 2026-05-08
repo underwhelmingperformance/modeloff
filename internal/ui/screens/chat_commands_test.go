@@ -152,31 +152,28 @@ func TestChatScreen_QuitCommand_returns_quit_requested(t *testing.T) {
 	require.Equal(t, uipkg.QuitRequestedMsg{Message: "goodnight"}, msg)
 }
 
-func TestChatScreen_StatusItems_omits_disconnecting_by_default(t *testing.T) {
+func TestChatScreen_StatusItems_disconnecting_lifecycle(t *testing.T) {
 	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil, domain.KindStatus)
 	require.NoError(t, err)
 
-	for _, item := range screen.StatusItems() {
-		require.NotEqual(t, "disconnecting", item.ID,
-			"disconnecting status item should only appear once a quit is in flight")
-	}
-}
-
-func TestChatScreen_StatusItems_surfaces_disconnecting_while_quit_in_flight(t *testing.T) {
-	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil, domain.KindStatus)
-	require.NoError(t, err)
-
-	updated, _ := screen.Update(uipkg.QuitRequestedMsg{})
-	chat, ok := updated.(ChatScreen)
-	require.True(t, ok, "expected ChatScreen, got %T", updated)
-
-	require.Contains(t, chat.StatusItems(), uipkg.StatusItem{
+	disconnecting := uipkg.StatusItem{
 		ID:       "disconnecting",
 		Side:     uipkg.StatusSideRight,
 		Priority: 100,
 		Full:     "Disconnecting…",
 		Compact:  "off…",
-	}, "quit-in-flight must surface a Disconnecting… status item")
+	}
+
+	baseline := screen.StatusItems()
+
+	updated, _ := screen.Update(uipkg.QuitRequestedMsg{})
+	chat, ok := updated.(ChatScreen)
+	require.True(t, ok, "expected ChatScreen, got %T", updated)
+
+	require.Equal(t, baseline, screen.StatusItems(),
+		"baseline status items must not include the disconnecting marker")
+	require.Equal(t, append(append([]uipkg.StatusItem(nil), baseline...), disconnecting), chat.StatusItems(),
+		"quit-in-flight must append the Disconnecting… status item")
 }
 
 func TestChatScreen_second_quit_request_escalates_to_tea_quit(t *testing.T) {

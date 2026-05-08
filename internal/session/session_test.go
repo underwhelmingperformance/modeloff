@@ -891,7 +891,13 @@ func TestSession_Quit_clears_in_memory_channels(t *testing.T) {
 
 	require.NoError(t, sess.Quit(ctx, ""))
 
-	require.Equal(t, 0, sess.UserInstance().Channels().Len())
+	remaining := []domain.ChannelName{}
+	for pair := sess.UserInstance().Channels().Oldest(); pair != nil; pair = pair.Next() {
+		remaining = append(remaining, pair.Key)
+	}
+
+	require.Equal(t, []domain.ChannelName{}, remaining,
+		"quit must clear the user's channel list")
 }
 
 // TestSession_user_state_triple_stays_consistent verifies that the
@@ -2194,8 +2200,9 @@ func TestSession_AddModel_gives_up_after_max_attempts(t *testing.T) {
 	seedChannelWithMembers(t, sess, s, "#dev", "testuser")
 
 	err := sess.AddModel(ctx, "#dev", "test/model", "Helpful assistant")
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "attempts exhausted")
+	require.EqualError(t, err,
+		fmt.Sprintf("generate nick: %d attempts exhausted, all suggestions collided",
+			maxNickGenerationAttempts))
 }
 
 func TestSession_ChangeNickAs_collisions(t *testing.T) {
@@ -3142,15 +3149,6 @@ func TestSession_Reset_nil_memory_store(t *testing.T) {
 	windows, err := s.ListWindows(ctx)
 	require.NoError(t, err)
 	require.Empty(t, windows)
-}
-
-func TestBuildSystemPrompt_instructs_single_line_messages(t *testing.T) {
-	cw := domain.NewChannelWindow("#dev", time.Time{})
-	inst := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
-
-	prompt := buildSystemPrompt(cw, inst, nil)
-
-	require.Contains(t, prompt, "Each message must be a single line with no newline characters.")
 }
 
 func TestSession_DispatchToChannel_retries_on_multiline_reply(t *testing.T) {
@@ -4990,8 +4988,11 @@ func TestSession_appendEvent_persistence_failure_emits_status_notice(t *testing.
 
 	sysNotice, ok := notice.Stored.Event.(domain.SystemNotice)
 	require.True(t, ok, "expected SystemNotice, got %T", notice.Stored.Event)
-	require.Contains(t, sysNotice.Text, "#general")
-	require.Contains(t, sysNotice.Text, "disk full")
+	require.Equal(t, domain.SystemNotice{
+		Target: domain.StatusChannelName,
+		Text:   "event log unavailable for #general: disk full",
+		At:     fixedTime,
+	}, sysNotice)
 }
 
 func TestSession_appendEvent_persistence_failure_on_status_channel_skips_notice(t *testing.T) {

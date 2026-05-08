@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -802,10 +803,18 @@ func TestSQLiteStore_ListInstances(t *testing.T) {
 	// second invocation returns the same handles.
 	got2, err := s.ListInstances(ctx)
 	require.NoError(t, err)
-	require.Equal(t, len(got), len(got2))
-	for i := range got {
-		require.Same(t, got[i], got2[i])
+
+	addresses := func(insts []*domain.Instance) []uintptr {
+		out := make([]uintptr, len(insts))
+		for i, inst := range insts {
+			out[i] = reflect.ValueOf(inst).Pointer()
+		}
+
+		return out
 	}
+
+	require.Equal(t, addresses(got), addresses(got2),
+		"ListInstances must return the same canonical pointer for each instance across calls")
 }
 
 // --- Last channel state ---
