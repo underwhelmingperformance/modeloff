@@ -95,7 +95,18 @@ func TestChatScreen_command_errors_with_teatest(t *testing.T) {
 	require.NoError(t, err)
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen))
-	tm.WaitFor("#general")
+	// Pin every seed-emitted scrollback line — the channel
+	// creation and the mode grant fanned out by `SeedChannel`'s
+	// `sess.Join` call — before submitting `/nick`. The
+	// user-client protocol bus drains one tea.Msg at a time, so
+	// a `WaitFor("#general")` that only pins the title bar can
+	// return while seed events are still queued; the late events
+	// then race the command-error append into scrollback. Pinning
+	// both seed lines drains the seed phase in full.
+	tm.WaitFor(
+		"Created channel #general",
+		"ChanServ sets mode +o testuser",
+	)
 
 	tm.Submit("/nick")
 	tm.WaitFor("missing required argument <new-nick>")
