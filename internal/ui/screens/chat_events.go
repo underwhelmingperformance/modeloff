@@ -159,6 +159,47 @@ func (s ChatScreen) bufferActorEvent(channels []domain.ChannelName, actor *domai
 	}
 }
 
+// lifecycleBumps returns the sidebar messages flagging unseen
+// actor-scoped lifecycle activity for every off-active window
+// that received `stored` via [bufferActorEvent]. Iteration shape
+// mirrors `bufferActorEvent`: channels in `channels` plus any
+// open DM whose counterpart is `actor`. The active window is
+// skipped — the user is already looking at it.
+func (s ChatScreen) lifecycleBumps(channels []domain.ChannelName, actor *domain.Instance) []tea.Cmd {
+	var cmds []tea.Cmd
+
+	for _, ch := range channels {
+		if ch == *s.active {
+			continue
+		}
+
+		cmds = append(cmds, msgCmd(components.ChannelHasLifecycleMsg{Channel: ch}))
+	}
+
+	if actor == nil {
+		return cmds
+	}
+
+	for w := range s.channels.All() {
+		dm, ok := w.(*domain.DMWindow)
+		if !ok {
+			continue
+		}
+
+		if dm.Counterpart != actor {
+			continue
+		}
+
+		if dm.Name() == *s.active {
+			continue
+		}
+
+		cmds = append(cmds, msgCmd(components.ChannelHasLifecycleMsg{Channel: dm.Name()}))
+	}
+
+	return cmds
+}
+
 func (s ChatScreen) appendToScrollback(ch domain.ChannelName, evt domain.StoredEvent) {
 	s.scrollbackMu.Lock()
 	defer s.scrollbackMu.Unlock()
@@ -507,6 +548,8 @@ func (s ChatScreen) handleQuitEvent(msg domain.Quit) (ui.Model, tea.Cmd) {
 		cmds = append(cmds, msgCmd(domain.StoredEvent{Event: msg}))
 	}
 
+	cmds = append(cmds, s.lifecycleBumps(msg.Channels, msg.Instance)...)
+
 	return s, tea.Batch(cmds...)
 }
 
@@ -595,6 +638,8 @@ func (s ChatScreen) handleNickChangeEvent(msg domain.NickChange) (ui.Model, tea.
 			UserNick: s.sess.UserNick(),
 		}))
 	}
+
+	cmds = append(cmds, s.lifecycleBumps(msg.Channels, msg.Instance)...)
 
 	return s, tea.Batch(cmds...)
 }

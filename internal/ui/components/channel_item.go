@@ -43,4 +43,17 @@ type (
 		Count   int
 		Mention bool
 	}
+
+	// ChannelHasLifecycleMsg flags a window as having unseen
+	// actor-scoped lifecycle activity (a peer's QUIT, a peer's
+	// NICK rename) since it was last focused. The sidebar surfaces
+	// this with a quieter style than unread messages — italic-dim
+	// rather than bold-with-count — because the activity is
+	// background context, not addressed at the user.
+	//
+	// The flag is set-only; it clears via [ChannelActiveMsg] when
+	// the user focuses the window, alongside the mention sweep.
+	ChannelHasLifecycleMsg struct {
+		Channel domain.ChannelName
+	}
 )

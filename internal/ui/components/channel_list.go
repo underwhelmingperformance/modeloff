@@ -20,14 +20,33 @@ type SetChannelsMsg struct {
 }
 
 // ChannelSidebar is a ui.Model that wraps Sidebar with
-// channel-specific keybindings, header, and unread tracking.
+// channel-specific keybindings, header, and per-window
+// notification state. It tracks three independent indicators per
+// window:
+//
+//   - `unread`: count of unread messages addressed at the window;
+//     surfaces as bold-with-count.
+//   - `mentions`: at least one unread message contains a highlight
+//     word; surfaces as bold-magenta (overrides plain bold).
+//   - `lifecycle`: at least one unseen actor-scoped event (a
+//     peer's QUIT, a peer's NICK rename) has appended to the
+//     window's scrollback; surfaces as italic-dim, only when the
+//     other two are clear.
+//
+// `ChannelActiveMsg` clears all three for the focused window:
+// focus is the natural sweep point.
 type ChannelSidebar struct {
-	panel    Sidebar[domain.Window, domain.ChannelName]
-	unread   map[domain.ChannelName]int
-	mentions map[domain.ChannelName]bool
+	panel     Sidebar[domain.Window, domain.ChannelName]
+	unread    map[domain.ChannelName]int
+	mentions  map[domain.ChannelName]bool
+	lifecycle map[domain.ChannelName]bool
 }
 
-func windowView(unread map[domain.ChannelName]int, mentions map[domain.ChannelName]bool) func(domain.Window, ViewState, int) string {
+func windowView(
+	unread map[domain.ChannelName]int,
+	mentions map[domain.ChannelName]bool,
+	lifecycle map[domain.ChannelName]bool,
+) func(domain.Window, ViewState, int) string {
 	return func(w domain.Window, state ViewState, _ int) string {
 		name := w.DisplayName()
 
@@ -38,6 +57,7 @@ func windowView(unread map[domain.ChannelName]int, mentions map[domain.ChannelNa
 
 		highlighted := count > 0
 		mention := mentions[w.Name()]
+		hasLifecycle := lifecycle[w.Name()]
 
 		style := theme.SidebarInactive
 
@@ -50,12 +70,16 @@ func windowView(unread map[domain.ChannelName]int, mentions map[domain.ChannelNa
 			style = theme.SidebarMentionSelected
 		case state == StateSelected && highlighted:
 			style = theme.SidebarHighlightedSelected
+		case state == StateSelected && hasLifecycle:
+			style = theme.SidebarLifecycleSelected
 		case state == StateSelected:
 			style = theme.SidebarSelected
 		case mention:
 			style = theme.SidebarMention
 		case highlighted:
 			style = theme.SidebarHighlighted
+		case hasLifecycle:
+			style = theme.SidebarLifecycle
 		}
 
 		prefix := " "
@@ -71,13 +95,14 @@ func windowView(unread map[domain.ChannelName]int, mentions map[domain.ChannelNa
 func NewChannelSidebar() ChannelSidebar {
 	unread := make(map[domain.ChannelName]int)
 	mentions := make(map[domain.ChannelName]bool)
+	lifecycle := make(map[domain.ChannelName]bool)
 
 	return ChannelSidebar{
 		panel: NewSidebar(
 			set.NewSorted[domain.Window](),
 			SidebarConfig[domain.Window, domain.ChannelName]{
 				Key:  func(w domain.Window) domain.ChannelName { return w.Name() },
-				View: windowView(unread, mentions),
+				View: windowView(unread, mentions, lifecycle),
 				OnActivate: func(w domain.Window) tea.Cmd {
 					return func() tea.Msg {
 						return ChannelSelectedMsg{Channel: w.Name()}
@@ -91,8 +116,9 @@ func NewChannelSidebar() ChannelSidebar {
 				WithHelp(SidebarDown, "channels").
 				WithHelp(SidebarUp, "channels").
 				WithHelp(SidebarSelect, "switch channel")),
-		unread:   unread,
-		mentions: mentions,
+		unread:    unread,
+		mentions:  mentions,
+		lifecycle: lifecycle,
 	}
 }
 
@@ -120,12 +146,14 @@ func (cl ChannelSidebar) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		cl.panel.items.Remove(domain.WindowKey(msg.Channel))
 		delete(cl.unread, msg.Channel)
 		delete(cl.mentions, msg.Channel)
+		delete(cl.lifecycle, msg.Channel)
 
 		return cl, nil
 
 	case ChannelActiveMsg:
 		cl.panel = cl.panel.SetActiveKey(msg.Channel)
 		delete(cl.mentions, msg.Channel)
+		delete(cl.lifecycle, msg.Channel)
 
 		return cl, nil
 
@@ -140,6 +168,11 @@ func (cl ChannelSidebar) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 			delete(cl.unread, msg.Channel)
 			delete(cl.mentions, msg.Channel)
 		}
+
+		return cl, nil
+
+	case ChannelHasLifecycleMsg:
+		cl.lifecycle[msg.Channel] = true
 
 		return cl, nil
 
@@ -160,6 +193,7 @@ func (cl ChannelSidebar) setChannels(msg SetChannelsMsg) ChannelSidebar {
 
 	cl.unread = make(map[domain.ChannelName]int)
 	cl.mentions = make(map[domain.ChannelName]bool)
+	cl.lifecycle = make(map[domain.ChannelName]bool)
 
 	if msg.Unread != nil {
 		for k, v := range msg.Unread {
@@ -169,7 +203,7 @@ func (cl ChannelSidebar) setChannels(msg SetChannelsMsg) ChannelSidebar {
 		}
 	}
 
-	cl.panel.cfg.View = windowView(cl.unread, cl.mentions)
+	cl.panel.cfg.View = windowView(cl.unread, cl.mentions, cl.lifecycle)
 	cl.panel = cl.panel.SetItems(items)
 
 	if msg.Active != "" {

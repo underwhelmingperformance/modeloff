@@ -11,7 +11,6 @@ import (
 
 // ANSI colour indices used throughout the application.
 const (
-	colourBlack   = lipgloss.ANSIColor(0)
 	colourRed     = lipgloss.ANSIColor(1)
 	colourGreen   = lipgloss.ANSIColor(2)
 	colourYellow  = lipgloss.ANSIColor(3)
@@ -92,6 +91,8 @@ var (
 	SidebarHighlightedSelected = lipgloss.NewStyle().Foreground(colourWhite).Bold(true).Background(colourBrightBlack)
 	SidebarMention             = lipgloss.NewStyle().Foreground(colourMagenta).Bold(true)
 	SidebarMentionSelected     = lipgloss.NewStyle().Foreground(colourMagenta).Bold(true).Background(colourBrightBlack)
+	SidebarLifecycle           = lipgloss.NewStyle().Foreground(colourBrightBlack).Italic(true)
+	SidebarLifecycleSelected   = lipgloss.NewStyle().Foreground(colourCyan).Italic(true).Background(colourBrightBlack)
 )
 
 // System message styles — for join/part/topic events.

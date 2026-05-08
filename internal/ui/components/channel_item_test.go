@@ -469,3 +469,84 @@ func TestChannelSidebar_ignores_other_messages(t *testing.T) {
 	v := m.View(20, 10)
 	require.Equal(t, []string{"Channels", "#dev", "▸#general", "#random"}, visibleLines(v))
 }
+
+// TestChannelSidebar_lifecycle_renders_italic pins the styling
+// rule: a window flagged as having unseen actor-scoped lifecycle
+// events (a peer's QUIT, a peer's NICK rename) renders with the
+// italic-dim style, distinct from the inactive default. The
+// sidebar should not show a count — lifecycle is yes/no, not
+// numeric.
+func TestChannelSidebar_lifecycle_renders_italic(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	mIdle := newTestChannelSidebar(testChannels, "#general", nil)
+	mLifecycle := newTestChannelSidebar(testChannels, "#general", nil)
+	mLifecycle, _ = mLifecycle.Update(components.ChannelHasLifecycleMsg{Channel: "#random"})
+
+	vIdle := mIdle.View(30, 10)
+	vLifecycle := mLifecycle.View(30, 10)
+
+	// No count appears either way — lifecycle is yes/no.
+	require.Equal(t, []string{"Channels", "#dev", "▸#general", "#random"}, visibleLines(vIdle))
+	require.Equal(t, []string{"Channels", "#dev", "▸#general", "#random"}, visibleLines(vLifecycle))
+
+	idleLine := findLineContaining(t, vIdle, "#random")
+	lifecycleLine := findLineContaining(t, vLifecycle, "#random")
+
+	require.Equal(t, ansi.Strip(idleLine), ansi.Strip(lifecycleLine))
+	require.NotEqual(t, idleLine, lifecycleLine,
+		"a window with unseen lifecycle activity should render distinctly from inactive")
+
+	// SGR code 3 is italic; the lifecycle style applies it and the
+	// inactive default does not.
+	require.Contains(t, lifecycleLine, "\x1b[3", "lifecycle style should set italic")
+	require.NotContains(t, idleLine, "\x1b[3", "inactive style should not set italic")
+}
+
+// TestChannelSidebar_unread_overrides_lifecycle pins precedence:
+// if a window has both unread messages and unseen lifecycle
+// activity, the bold-with-count unread style wins. Lifecycle is
+// the quietest indicator and never displaces a louder one.
+func TestChannelSidebar_unread_overrides_lifecycle(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	m := newTestChannelSidebar(testChannels, "#general", nil)
+	m, _ = m.Update(components.ChannelHasLifecycleMsg{Channel: "#random"})
+	m, _ = m.Update(components.ChannelUnreadMsg{Channel: "#random", Count: 2})
+
+	v := m.View(30, 10)
+	require.Equal(t, []string{"Channels", "#dev", "▸#general", "#random (2)"}, visibleLines(v))
+
+	line := findLineContaining(t, v, "#random")
+	require.Contains(t, line, "\x1b[1", "unread style should set bold even when lifecycle is also flagged")
+}
+
+// TestChannelSidebar_lifecycle_clears_on_activation pins the
+// sweep semantic: focusing a window clears its lifecycle flag
+// alongside mentions. Reactivation of a previously-flagged window
+// should leave it indistinguishable from a never-flagged one.
+func TestChannelSidebar_lifecycle_clears_on_activation(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	m := newTestChannelSidebar(testChannels, "#general", nil)
+	m, _ = m.Update(components.ChannelHasLifecycleMsg{Channel: "#random"})
+
+	flagged := findLineContaining(t, m.View(30, 10), "#random")
+
+	m, _ = m.Update(components.ChannelActiveMsg{Channel: "#random"})
+	// Re-set active back to #general so #random is rendered as
+	// non-active again — that's the case we're checking the style
+	// of after the lifecycle clear.
+	m, _ = m.Update(components.ChannelActiveMsg{Channel: "#general"})
+
+	cleared := findLineContaining(t, m.View(30, 10), "#random")
+
+	require.NotEqual(t, flagged, cleared, "lifecycle styling should clear after activation")
+	require.NotContains(t, cleared, "\x1b[3", "post-clear style should not be italic")
+}
