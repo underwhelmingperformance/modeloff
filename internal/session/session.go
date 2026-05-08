@@ -109,6 +109,8 @@ type Session struct {
 	now        func() time.Time
 	events     chan domain.Event
 
+	userClient *serverClient
+
 	connectedC    chan struct{}
 	connectedOnce sync.Once
 	connectedAt   time.Time
@@ -151,7 +153,7 @@ func New(
 	persistenceFailures, _ := otel.Meter("github.com/laney/modeloff/internal/session").
 		Int64Counter(observability.MetricPersistenceFailures)
 
-	return &Session{
+	sess := &Session{
 		store:               s,
 		memory:              m,
 		api:                 a,
@@ -165,6 +167,10 @@ func New(
 		persistenceFailures: persistenceFailures,
 		tracerProvider:      otel.GetTracerProvider(),
 	}
+
+	sess.userClient = newServerClient(sess, protocol.UserClientID, protocol.ModeOperator)
+
+	return sess
 }
 
 // WithTracerProvider overrides the OTel `TracerProvider` the session
@@ -185,6 +191,15 @@ func (s *Session) WithTracerProvider(tp trace.TracerProvider) *Session {
 // ErrorEvent values.
 func (s *Session) Events() <-chan domain.Event {
 	return s.events
+}
+
+// User returns the user-client subscription, created at session
+// bootstrap and live for the whole session lifetime. The returned
+// handle satisfies [protocol.Client]: it carries the user's
+// identity ([protocol.UserClientID]) and grants
+// [protocol.ModeOperator].
+func (s *Session) User() protocol.Client {
+	return s.userClient
 }
 
 // Connected returns a channel that is closed once Connect has
