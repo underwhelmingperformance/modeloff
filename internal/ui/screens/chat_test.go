@@ -70,6 +70,36 @@ func newChatAppInChannel(t *testing.T, channel domain.ChannelName) (*uitest.App,
 	return tm, sess
 }
 
+// waitForChannelSeedDrain pins every scrollback line emitted by
+// `SeedChannel("#general")` so the user-client protocol bus is
+// fully drained before the test submits its trigger. The bus
+// delivers one tea.Msg per event-loop iteration, so a
+// `WaitFor("#general")` that only matches the title bar can
+// return while seed events are still queued; the late events
+// then race the assertion. Pinning both seed-emitted scrollback
+// markers means a draining seed phase is the only legal
+// observation when the test proceeds.
+func waitForChannelSeedDrain(tm *uitest.App) {
+	tm.WaitFor(
+		"Created channel #general",
+		"ChanServ sets mode +o testuser",
+	)
+}
+
+// waitForChannelAndModelSeedDrain extends [waitForChannelSeedDrain]
+// for tests that follow `SeedChannel` with
+// `AddModel(..., "anthropic/claude-3-haiku", ...)` — the model
+// joins as `fakenick` and is granted voice, both scrollback
+// lines that need pinning before the trigger submits.
+func waitForChannelAndModelSeedDrain(tm *uitest.App) {
+	tm.WaitFor(
+		"Created channel #general",
+		"ChanServ sets mode +o testuser",
+		"fakenick has joined #general",
+		"ChanServ sets mode +v fakenick",
+	)
+}
+
 func TestChatScreen_Init_loads_channels(t *testing.T) {
 	sess := newTestSession(t)
 	uitest.SeedChannel(t, sess, "#general")
@@ -378,7 +408,7 @@ func TestChatScreen_whois_command(t *testing.T) {
 	require.NoError(t, sess.AddModel(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
 
 	tm := newChatApp(t, sess)
-	tm.WaitFor("#general")
+	waitForChannelAndModelSeedDrain(tm)
 
 	tm.Submit("/whois fakenick")
 	tm.WaitFor("fakenick is anthropic/claude-3-haiku")
@@ -390,7 +420,7 @@ func TestChatScreen_whois_persists_to_status_channel(t *testing.T) {
 	require.NoError(t, sess.AddModel(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
 
 	tm := newChatApp(t, sess)
-	tm.WaitFor("#general")
+	waitForChannelAndModelSeedDrain(tm)
 
 	tm.Submit("/whois fakenick")
 	tm.WaitFor("fakenick is anthropic/claude-3-haiku")
@@ -764,7 +794,7 @@ func TestChatScreen_msg_command_requires_body(t *testing.T) {
 	require.NoError(t, sess.AddModel(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
 
 	tm := newChatApp(t, sess)
-	tm.WaitFor("#general")
+	waitForChannelAndModelSeedDrain(tm)
 
 	tm.Submit("/msg fakenick")
 	tm.WaitFor("message body is required")
@@ -921,7 +951,7 @@ func TestChatScreen_personas_command(t *testing.T) {
 	require.NoError(t, sess.SetPersona(t.Context(), "wizard", "A wise old mage"))
 
 	tm := newChatApp(t, sess)
-	tm.WaitFor("#general")
+	waitForChannelSeedDrain(tm)
 
 	tm.Submit("/personas")
 	tm.WaitFor("pirate (user): A salty sea dog", "wizard (user): A wise old mage")
