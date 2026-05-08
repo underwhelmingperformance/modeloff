@@ -577,7 +577,7 @@ func (s *Session) loadChannelWindow(ctx context.Context, name domain.ChannelName
 // The user is an ephemeral session actor and is never persisted;
 // `persistChannelWindow` strips them on save and this helper
 // adds them back on load.
-func (s *Session) injectUserIfChannelMember(_ context.Context, cw *domain.ChannelWindow) {
+func (s *Session) injectUserIfChannelMember(ctx context.Context, cw *domain.ChannelWindow) {
 	if !s.userInChannel(cw.Name()) {
 		return
 	}
@@ -588,7 +588,7 @@ func (s *Session) injectUserIfChannelMember(_ context.Context, cw *domain.Channe
 
 	cw.Members.Add(s.user)
 
-	if mode, ok := s.userModes[cw.Name()]; ok && mode != domain.ModeNone {
+	if mode := s.userModeFor(ctx, cw.Name()); mode != domain.ModeNone {
 		cw.Members.SetMode(s.user, mode)
 	}
 }
