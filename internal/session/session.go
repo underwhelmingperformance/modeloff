@@ -2481,8 +2481,7 @@ func (s *Session) sendWithRetry(
 	for attempt := range maxNewlineRetries + 1 {
 		result, toolTurnCount, err := s.sendWithToolLoop(ctx, inst, channelName, prompt, history, events, registry)
 		if err != nil {
-			var refused *api.ErrModelRefused
-			if errors.As(err, &refused) {
+			if refused, ok := errors.AsType[*api.ErrModelRefused](err); ok {
 				return sendOutcome{
 					result: api.CompletionResult{
 						Response: protocol.ModelResponse{
@@ -2716,8 +2715,7 @@ func endSpan(span trace.Span, errPtr *error, errorKind string) {
 	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
 
 	kind := errorKind
-	var ke *kindError
-	if errors.As(err, &ke) {
+	if ke, ok := errors.AsType[*kindError](err); ok {
 		kind = ke.kind
 	}
 
@@ -2784,8 +2782,7 @@ func classifyEnsureModelError(err error) string {
 		return observability.ErrorKindClientState
 	}
 
-	var unsupported domain.UnsupportedModelError
-	if errors.As(err, &unsupported) {
+	if _, ok := errors.AsType[domain.UnsupportedModelError](err); ok {
 		return observability.ErrorKindValidation
 	}
 
