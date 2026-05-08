@@ -313,6 +313,23 @@ func drainUntilMatched(t *testing.T, sess *Session, expected ...sessionEventMatc
 	return matched, extras
 }
 
+// findEvent picks the first event of type `T` out of a slice of
+// matched events (typically the result of [drainUntilMatched]).
+// Fails the test if no such event is present.
+func findEvent[T domain.Event](t *testing.T, events []domain.Event) T {
+	t.Helper()
+
+	for _, evt := range events {
+		if got, ok := evt.(T); ok {
+			return got
+		}
+	}
+
+	var zero T
+	t.Fatalf("no %T in event slice", zero)
+	return zero
+}
+
 // testMembers builds a MemberList using canonical `*Instance`
 // handles from the given session + store. The user is looked up via
 // `sess.UserInstance()`; every model nick is resolved from the store
@@ -2496,14 +2513,20 @@ func TestSession_AddModel_creates_new_instance_per_invocation(t *testing.T) {
 	seedChannelWithMembers(t, sess, s, "#random", "testuser")
 
 	require.NoError(t, sess.AddModel(ctx, "#general", "test/model", "Helpful assistant"))
-	evt1 := drainEvent[domain.ModelInvited](t, sess)
+	matched, extras := drainUntilMatched(t, sess,
+		matchEvent[domain.ModelInvited](),
+		matchEvent[domain.ModeChange](),
+		matchEvent[domain.DispatchStartedEvent](),
+		matchEvent[domain.DispatchDoneEvent](),
+	)
+	require.Empty(t, extras)
+	evt1 := findEvent[domain.ModelInvited](t, matched)
 	require.NotEmpty(t, evt1.Instance.ID())
-	drainEvent[domain.ModeChange](t, sess)
-	drainEvent[domain.DispatchStartedEvent](t, sess)
-	drainEvent[domain.DispatchDoneEvent](t, sess)
 
 	require.NoError(t, sess.AddModel(ctx, "#random", "test/model", ""))
-	evt2 := drainEvent[domain.ModelInvited](t, sess)
+	matched, extras = drainUntilMatched(t, sess, matchEvent[domain.ModelInvited]())
+	require.Empty(t, extras)
+	evt2 := findEvent[domain.ModelInvited](t, matched)
 
 	// Each invocation produces a fresh `*Instance` with its own id;
 	// `AddModel` no longer conflates backing model with instance
@@ -4773,10 +4796,18 @@ func TestAddModel_dispatches_invite_notification_to_model(t *testing.T) {
 
 	require.NoError(t, sess.AddModel(ctx, "#dev", "test/model", ""))
 
-	drainEvent[domain.ModelInvited](t, sess)
-	drainEvent[domain.ModeChange](t, sess)
-	drainEvent[domain.DispatchStartedEvent](t, sess)
-	drainEvent[domain.DispatchDoneEvent](t, sess)
+	// Draining `DispatchDoneEvent` from the bus provides the
+	// happens-before edge that lets the test read `dispatched`
+	// without a lock: the dispatch goroutine's write to `dispatched`
+	// happens before its `emit(DispatchDoneEvent)`, and the channel
+	// receive in the drain happens after that send.
+	_, extras := drainUntilMatched(t, sess,
+		matchEvent[domain.ModelInvited](),
+		matchEvent[domain.ModeChange](),
+		matchEvent[domain.DispatchStartedEvent](),
+		matchEvent[domain.DispatchDoneEvent](),
+	)
+	require.Empty(t, extras)
 
 	require.Equal(t, map[domain.ModelID][]protocol.IRCMessage{
 		"test/model": {
