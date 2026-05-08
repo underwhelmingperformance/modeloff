@@ -115,6 +115,8 @@ func TestPartAs_unknown_actor_is_noop(t *testing.T) {
 	select {
 	case evt := <-sess.Events():
 		t.Fatalf("unexpected event for unknown-actor part: %T %+v", evt, evt)
+	case evt := <-sess.User().Events():
+		t.Fatalf("unexpected event for unknown-actor part: %T %+v", evt, evt)
 	case <-time.After(50 * time.Millisecond):
 	}
 
@@ -323,10 +325,8 @@ func TestSendMessageAs_rejects_status_channel(t *testing.T) {
 		Hint:    "the status channel doesn't take messages — try /msg <nick-or-#channel> instead",
 	}, guard)
 
-	select {
-	case evt := <-sess.Events():
+	if evt, ok := peekEvent(sess); ok {
 		t.Fatalf("expected no event, got %T", evt)
-	default:
 	}
 }
 
@@ -343,10 +343,8 @@ func TestSendActionAs_rejects_status_channel(t *testing.T) {
 		Hint:    "the status channel doesn't take messages — try /msg <nick-or-#channel> instead",
 	}, guard)
 
-	select {
-	case evt := <-sess.Events():
+	if evt, ok := peekEvent(sess); ok {
 		t.Fatalf("expected no event, got %T", evt)
-	default:
 	}
 }
 
@@ -524,6 +522,8 @@ func TestJoinAs_user_existing_channel_no_topic(t *testing.T) {
 	select {
 	case evt := <-sess.Events():
 		t.Fatalf("unexpected event: %T %+v", evt, evt)
+	case evt := <-sess.User().Events():
+		t.Fatalf("unexpected event: %T %+v", evt, evt)
 	case <-time.After(50 * time.Millisecond):
 	}
 }
@@ -568,6 +568,8 @@ func TestJoinAs_model_voice_only_no_topic(t *testing.T) {
 	// No TopicInfoEvent for a non-user joiner.
 	select {
 	case evt := <-sess.Events():
+		t.Fatalf("unexpected event after model join: %T %+v", evt, evt)
+	case evt := <-sess.User().Events():
 		t.Fatalf("unexpected event after model join: %T %+v", evt, evt)
 	case <-time.After(50 * time.Millisecond):
 	}

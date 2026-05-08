@@ -249,6 +249,7 @@ func TestChatScreen_rejoin_hides_pre_session_history(t *testing.T) {
 	// so the assertion pins the column's overall shape without
 	// tracking the rule's width glyph.
 	shaped := replaceTopicSeparator(content)
+
 	require.Equal(t, []string{
 		"welcome topic",
 		"<topic-separator>",

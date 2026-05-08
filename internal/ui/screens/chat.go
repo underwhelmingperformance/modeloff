@@ -15,6 +15,7 @@ import (
 	"github.com/laney/modeloff/internal/config"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/observability"
+	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/session"
 	"github.com/laney/modeloff/internal/set"
 	"github.com/laney/modeloff/internal/ui"
@@ -25,11 +26,22 @@ import (
 )
 
 // sessionEventMsg wraps a domain.Event received from the
-// session's background event channel. Using a dedicated wrapper
-// prevents the events channel listener from being re-invoked when
-// the same underlying types are sent directly as tea.Msg.
+// session's non-protocol UI bus (`Session.Events()`): config
+// changes, focus changes, model-reply rendering, error events,
+// system notices, and other live-only events that don't satisfy
+// [domain.ProtocolEvent]. Using a dedicated wrapper prevents the
+// events channel listener from being re-invoked when the same
+// underlying types are sent directly as tea.Msg.
 type sessionEventMsg struct {
 	event domain.Event
+}
+
+// protocolEventMsg wraps a [protocol.Event] received from the
+// user-client subscription's `Events()` channel. The protocol bus
+// carries the wire-shaped events the chat-screen renders as IRC
+// scrollback (joins, parts, messages, mode changes, etc.).
+type protocolEventMsg struct {
+	event protocol.Event
 }
 
 // deliverNextReplyMsg triggers delivery of the next queued reply
@@ -64,6 +76,7 @@ type PokeTickMsg struct{}
 type ChatScreen struct {
 	ctx      context.Context
 	sess     *session.Session
+	client   protocol.Client
 	cfgStore config.Store
 	layout   components.MainLayout
 	keyMap   components.ChatScreenKeyMap
@@ -131,6 +144,7 @@ func NewChatScreen(ctx context.Context, sess *session.Session, cfgStore config.S
 	cs := ChatScreen{
 		ctx:             ctx,
 		sess:            sess,
+		client:          sess.User(),
 		cfgStore:        cfgStore,
 		channels:        set.NewSorted[domain.Window](),
 		active:          &active,
@@ -198,6 +212,7 @@ func (s ChatScreen) Init() tea.Cmd {
 
 	cmds := []tea.Cmd{
 		s.listenForEvents(),
+		s.listenForProtocolEvents(),
 		s.loadLiveModels(),
 		msgCmd(components.CommandsMsg[chatcmd.CompletionContext]{
 			Commands: s.parser.Set().Commands,
@@ -240,9 +255,10 @@ func (s ChatScreen) Init() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-// listenForEvents reads the next event from the session's background
-// event channel and wraps it in a sessionEventMsg. After each event,
-// it should be re-invoked so the channel is continuously drained.
+// listenForEvents reads the next event from the session's
+// non-protocol UI channel and wraps it in a sessionEventMsg. After
+// each event, it should be re-invoked so the channel is
+// continuously drained.
 func (s ChatScreen) listenForEvents() tea.Cmd {
 	ch := s.sess.Events()
 
@@ -253,6 +269,23 @@ func (s ChatScreen) listenForEvents() tea.Cmd {
 		}
 
 		return sessionEventMsg{event: evt}
+	}
+}
+
+// listenForProtocolEvents reads the next event from the
+// user-client subscription's protocol channel and wraps it in a
+// protocolEventMsg. After each event, it should be re-invoked so
+// the channel is continuously drained.
+func (s ChatScreen) listenForProtocolEvents() tea.Cmd {
+	ch := s.client.Events()
+
+	return func() tea.Msg {
+		evt, ok := <-ch
+		if !ok {
+			return nil
+		}
+
+		return protocolEventMsg{event: evt}
 	}
 }
 
@@ -270,6 +303,9 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 	case sessionEventMsg:
 		return s.handleSessionEvent(msg)
+
+	case protocolEventMsg:
+		return s.handleProtocolEvent(msg)
 
 	case ui.QuitRequestedMsg:
 		return s.handleQuitRequested(msg)

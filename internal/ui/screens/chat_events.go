@@ -18,17 +18,51 @@ import (
 	"github.com/laney/modeloff/internal/ui/components"
 )
 
+// handleSessionEvent dispatches non-protocol UI events that flow
+// on `Session.Events()`: error events, model-reply rendering,
+// system-notice wrappers, and config changes. The protocol bus
+// carries every session-emitted event whose relative order
+// matters to the chat-screen; those are dispatched by
+// [ChatScreen.handleProtocolEvent].
 func (s ChatScreen) handleSessionEvent(msg sessionEventMsg) (ui.Model, tea.Cmd) {
 	var (
 		updated ui.Model
 		cmd     tea.Cmd
 	)
 
-	// Persist persistable events into the per-channel scrollback
-	// before the type-specific handler runs. The handler may emit a
-	// `domain.StoredEvent` for the active channel; the buffer
-	// captures the same payload regardless of focus, so a switch to
-	// a non-active channel later renders the events in order.
+	// `bufferEvent` is called from both event-bus dispatchers; the
+	// body's PersistableEvent switch handles disjoint subsets.
+	s.bufferEvent(msg.event)
+
+	switch evt := msg.event.(type) {
+	case domain.ConfigChangedEvent:
+		updated, cmd = s.handleConfigChangedEvent(evt)
+	case domain.ModelReplyEvent:
+		updated, cmd = s.handleModelReplyEvent(evt)
+	case domain.ErrorEvent:
+		updated, cmd = s.handleErrorEvent(evt)
+	case domain.SystemNoticeEvent:
+		updated, cmd = s.handleSystemNoticeEvent(evt)
+	}
+
+	if updated != nil {
+		s = updated.(ChatScreen)
+	}
+
+	return s, tea.Batch(cmd, s.listenForEvents())
+}
+
+// handleProtocolEvent dispatches wire-shaped events plus the
+// session-emitted events whose ordering relative to the wire
+// sequence matters: joins, parts, messages, mode changes, topic
+// info, dispatch lifecycle, names replies, the status-window
+// signal, and focus changes.
+func (s ChatScreen) handleProtocolEvent(msg protocolEventMsg) (ui.Model, tea.Cmd) {
+	var (
+		updated ui.Model
+		cmd     tea.Cmd
+	)
+
 	s.bufferEvent(msg.event)
 
 	switch evt := msg.event.(type) {
@@ -52,20 +86,12 @@ func (s ChatScreen) handleSessionEvent(msg sessionEventMsg) (ui.Model, tea.Cmd) 
 		updated, cmd = s.handleModelKickedEvent(evt)
 	case domain.TopicInfo:
 		updated, cmd = s.handleTopicInfoEvent(evt)
-	case domain.ConfigChangedEvent:
-		updated, cmd = s.handleConfigChangedEvent(evt)
 	case domain.DispatchStartedEvent:
 		updated, cmd = s.handleDispatchStarted(evt)
-	case domain.ModelReplyEvent:
-		updated, cmd = s.handleModelReplyEvent(evt)
 	case domain.DispatchDoneEvent:
 		updated, cmd = s.handleDispatchDone(evt)
-	case domain.ErrorEvent:
-		updated, cmd = s.handleErrorEvent(evt)
 	case domain.FocusChannelEvent:
 		updated, cmd = s.handleFocusChannelEvent(evt)
-	case domain.SystemNoticeEvent:
-		updated, cmd = s.handleSystemNoticeEvent(evt)
 	case domain.NamesReplyEvent:
 		updated, cmd = s.handleNamesReply(evt)
 	case domain.StatusOpenedEvent:
@@ -76,7 +102,7 @@ func (s ChatScreen) handleSessionEvent(msg sessionEventMsg) (ui.Model, tea.Cmd) 
 		s = updated.(ChatScreen)
 	}
 
-	return s, tea.Batch(cmd, s.listenForEvents())
+	return s, tea.Batch(cmd, s.listenForProtocolEvents())
 }
 
 // bufferEvent appends a persistable event to the scrollback of

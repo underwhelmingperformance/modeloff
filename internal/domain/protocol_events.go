@@ -31,15 +31,20 @@ func (ModeChange) isProtocolEvent()   {}
 func (ModelInvited) isProtocolEvent() {}
 func (ModelKicked) isProtocolEvent()  {}
 func (NickChange) isProtocolEvent()   {}
+func (TopicInfo) isProtocolEvent()    {}
 func (Help) isProtocolEvent()         {}
 func (Whois) isProtocolEvent()        {}
 func (ListReply) isProtocolEvent()    {}
 func (ListEnd) isProtocolEvent()      {}
+func (CommandError) isProtocolEvent() {}
+func (UsageHint) isProtocolEvent()    {}
 func (SystemNotice) isProtocolEvent() {}
+func (PersonasList) isProtocolEvent() {}
 
 // Pure-live events. Order matches the seal block in `events.go`.
 func (DispatchStartedEvent) isProtocolEvent() {}
 func (DispatchDoneEvent) isProtocolEvent()    {}
+func (FocusChannelEvent) isProtocolEvent()    {}
 func (NamesReplyEvent) isProtocolEvent()      {}
 func (StatusOpenedEvent) isProtocolEvent()    {}
 

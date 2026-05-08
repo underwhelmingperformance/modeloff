@@ -19,6 +19,7 @@ func (s ChatScreen) runContext() chatcmd.Context {
 		Config:  s.cfgStore,
 		Active:  *s.active,
 		Actor:   s.sess.UserInstance(),
+		Client:  s.client,
 	}
 }
 

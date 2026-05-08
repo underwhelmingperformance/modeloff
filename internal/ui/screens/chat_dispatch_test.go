@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/session"
 	"github.com/laney/modeloff/internal/store/storetest"
 	"github.com/laney/modeloff/internal/ui/components"
@@ -311,9 +312,17 @@ func TestChatScreen_parting_channel_purges_reply_queue(t *testing.T) {
 }
 
 func TestChatScreen_handleSessionEvent_routing(t *testing.T) {
+	type dispatchKind int
+
+	const (
+		dispatchSession dispatchKind = iota
+		dispatchProtocol
+	)
+
 	tests := []struct {
 		name     string
 		event    domain.Event
+		dispatch dispatchKind
 		wantType any
 	}{
 		{
@@ -322,11 +331,13 @@ func TestChatScreen_handleSessionEvent_routing(t *testing.T) {
 				Channel: "#general",
 				Nicks:   []domain.Nick{"botty"},
 			},
+			dispatch: dispatchProtocol,
 			wantType: components.PendingResponseMsg{},
 		},
 		{
 			name:     "DispatchDoneEvent routes to pending clear",
 			event:    domain.DispatchDoneEvent{Channel: "#general"},
+			dispatch: dispatchProtocol,
 			wantType: components.PendingResponseMsg{},
 		},
 		{
@@ -335,6 +346,7 @@ func TestChatScreen_handleSessionEvent_routing(t *testing.T) {
 				Event:    domain.Message{Target: "#general", From: "botty", Body: "hi"},
 				Instance: domain.NewModelInstance("bot-1", "botty", "test/model", "", nil),
 			},
+			dispatch: dispatchSession,
 			wantType: deliverNextReplyMsg{},
 		},
 		{
@@ -344,6 +356,7 @@ func TestChatScreen_handleSessionEvent_routing(t *testing.T) {
 				Err:       errors.New("boom"),
 				At:        time.Now(),
 			},
+			dispatch: dispatchSession,
 			wantType: domain.StoredEvent{},
 		},
 	}
@@ -354,17 +367,24 @@ func TestChatScreen_handleSessionEvent_routing(t *testing.T) {
 			require.NoError(t, err)
 			*screen.active = "#general"
 
-			// handleSessionEvent returns tea.Batch(innerCmd,
-			// listenForEvents). We only inspect the inner command
-			// (first element of the batch) to avoid blocking on the
-			// events channel.
-			_, cmd := screen.handleSessionEvent(sessionEventMsg{event: tt.event})
+			// The handler returns tea.Batch(innerCmd, re-arm-listener).
+			// Inspect only the inner command to avoid blocking on the
+			// re-arm pump.
+			var cmd tea.Cmd
+			switch tt.dispatch {
+			case dispatchSession:
+				_, cmd = screen.handleSessionEvent(sessionEventMsg{event: tt.event})
+			case dispatchProtocol:
+				pe, ok := tt.event.(protocol.Event)
+				require.True(t, ok, "%T is not a protocol.Event", tt.event)
+				_, cmd = screen.handleProtocolEvent(protocolEventMsg{event: pe})
+			}
 			require.NotNil(t, cmd)
 
 			batchMsg := cmd()
 			batch, ok := batchMsg.(tea.BatchMsg)
-			require.True(t, ok, "expected BatchMsg from handleSessionEvent")
-			require.GreaterOrEqual(t, len(batch), 2, "expected at least inner cmd + listenForEvents")
+			require.True(t, ok, "expected BatchMsg")
+			require.GreaterOrEqual(t, len(batch), 2, "expected at least inner cmd + re-arm cmd")
 
 			// The first cmd in the batch is the inner handler's result.
 			innerMsgs := collectMsgs(batch[0])

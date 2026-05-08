@@ -13,6 +13,7 @@ import (
 	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/config"
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/session"
 )
 
@@ -24,7 +25,9 @@ type Parser = command.Parser[CompletionContext, Context, tea.Cmd]
 
 // Context carries the dependencies a command needs to execute.
 // Actor is the `*domain.Instance` for the caller — the user's handle
-// for slash-command invocations. Actor is guaranteed non-nil at
+// for slash-command invocations. Client is the protocol-side client
+// handle the caller dispatches commands through (the user-client
+// for chat-screen invocations). Both are guaranteed non-nil at
 // construction in `runContext` (chat_commands.go).
 type Context struct {
 	Ctx        context.Context
@@ -32,6 +35,7 @@ type Context struct {
 	Config     config.Store
 	Active     domain.ChannelName
 	Actor      *domain.Instance
+	Client     protocol.Client
 	Invocation command.Invocation[CompletionContext]
 }
 
@@ -162,6 +166,37 @@ type PersonaResetResult struct {
 
 func errorEvent(operation string, err error) domain.ErrorEvent {
 	return domain.ErrorEvent{Operation: operation, Err: err, At: time.Now()}
+}
+
+// protocolCommand is the migrated-command interface: any chatcmd
+// that has translated to the wire protocol exposes it via
+// `ToCommand`. UI-only commands (help, clear, …) and commands
+// whose protocol counterpart is still a stub do not implement it.
+type protocolCommand interface {
+	ToCommand(rc Context) (protocol.Command, error)
+}
+
+// sendCommand routes a migrated command through the protocol
+// client and returns a [domain.ErrorEvent] if either the command
+// translation, the wire dispatch, or the dispatcher's handler
+// failed. Returns nil on success so callers can return their own
+// post-success [tea.Msg] for local rendering.
+func sendCommand(rc Context, c protocolCommand, operation string) tea.Msg {
+	cmd, err := c.ToCommand(rc)
+	if err != nil {
+		return errorEvent(operation, err)
+	}
+
+	resp, err := rc.Client.Send(rc.Ctx, cmd)
+	if err != nil {
+		return errorEvent(operation, err)
+	}
+
+	if resp.Err != nil {
+		return errorEvent(operation, resp.Err)
+	}
+
+	return nil
 }
 
 func usageCmd(cmd, usage string) tea.Cmd {

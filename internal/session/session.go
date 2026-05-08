@@ -109,7 +109,9 @@ type Session struct {
 	now        func() time.Time
 	events     chan domain.Event
 
-	userClient *serverClient
+	subsMu      sync.RWMutex
+	subscribers map[protocol.ClientID]*serverClient
+	userClient  *serverClient
 
 	connectedC    chan struct{}
 	connectedOnce sync.Once
@@ -166,9 +168,11 @@ func New(
 		connectedC:          make(chan struct{}),
 		persistenceFailures: persistenceFailures,
 		tracerProvider:      otel.GetTracerProvider(),
+		subscribers:         make(map[protocol.ClientID]*serverClient),
 	}
 
 	sess.userClient = newServerClient(sess, protocol.UserClientID, protocol.ModeOperator)
+	sess.subscribers[sess.userClient.id] = sess.userClient
 
 	return sess
 }
@@ -200,6 +204,40 @@ func (s *Session) Events() <-chan domain.Event {
 // [protocol.ModeOperator].
 func (s *Session) User() protocol.Client {
 	return s.userClient
+}
+
+// subscriberSnapshot returns a stable copy of the subscriber set
+// under the read lock so callers iterating it cannot race with a
+// concurrent registration or deregistration. The returned slice's
+// `*serverClient` pointers are shared with the registry.
+func (s *Session) subscriberSnapshot() []*serverClient {
+	s.subsMu.RLock()
+	defer s.subsMu.RUnlock()
+
+	snap := make([]*serverClient, 0, len(s.subscribers))
+	for _, sub := range s.subscribers {
+		snap = append(snap, sub)
+	}
+
+	return snap
+}
+
+// fanOutProtocol delivers a protocol event to every active
+// subscription. Sends are blocking, matching the back-pressure
+// discipline of `s.events`: a stuck consumer surfaces as a wedged
+// producer rather than silent data loss. Each subscription's
+// events channel is buffered to [eventBufSize]; callers should
+// attach a consumer before bootstrap-time emission exceeds that
+// capacity. Membership routing and the echo gate land in commit 6;
+// for now every subscriber sees every protocol event.
+func (s *Session) fanOutProtocol(ctx context.Context, pe domain.ProtocolEvent) {
+	for _, sub := range s.subscriberSnapshot() {
+		select {
+		case sub.events <- pe:
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 // Connected returns a channel that is closed once Connect has
@@ -1828,17 +1866,31 @@ func (s *Session) LogEvent(ctx context.Context, ch domain.ChannelName, event dom
 	return domain.StoredEvent{ID: id, Event: event}, nil
 }
 
-// emit sends an event to the UI channel and, for dispatchable event
-// types, triggers background model dispatch for the relevant channel.
-// The context is threaded through to preserve OTel trace parenting.
+// emit routes an event to its bus and, for dispatchable types,
+// triggers background model dispatch. Protocol events fan out to
+// the subscriber registry; non-protocol UI events go to `s.events`
+// for the chat-screen's legacy bus. The context is threaded
+// through to preserve OTel trace parenting and to honour
+// cancellation during fan-out.
 func (s *Session) emit(ctx context.Context, evt domain.Event) {
-	s.events <- evt
+	if pe, ok := evt.(domain.ProtocolEvent); ok {
+		s.fanOutProtocol(ctx, pe)
+	} else {
+		s.events <- evt
+	}
+
 	s.maybeDispatch(ctx, evt)
 }
 
-// emitUIOnly sends an event to the UI channel without triggering model
-// dispatch. Use this for model-initiated events to prevent loops.
+// emitUIOnly is the dispatch-suppressed sibling of [emit]. Used
+// where the session records a fact for the UI without re-triggering
+// model reactions to it.
 func (s *Session) emitUIOnly(evt domain.Event) {
+	if pe, ok := evt.(domain.ProtocolEvent); ok {
+		s.fanOutProtocol(context.Background(), pe)
+		return
+	}
+
 	s.events <- evt
 }
 

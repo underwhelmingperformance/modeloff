@@ -12,6 +12,7 @@ import (
 	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/config"
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/session"
 	"github.com/laney/modeloff/internal/store"
 	"github.com/laney/modeloff/internal/ui"
@@ -62,11 +63,16 @@ func (JoinCommand) Sources() map[string]command.SuggestionSource[CompletionConte
 	return map[string]command.SuggestionSource[CompletionContext]{"channel": channelsSource}
 }
 
+// ToCommand builds the wire-protocol command for `/join`.
+func (c JoinCommand) ToCommand(_ Context) (protocol.Command, error) {
+	return protocol.Join{Channel: domain.ChannelName(c.Channel.String())}, nil
+}
+
 // Run implements Command.
 func (c JoinCommand) Run(rc Context) tea.Cmd {
 	return func() tea.Msg {
-		if err := c.executeJoin(rc.Ctx, rc.Session, rc.Actor); err != nil {
-			return errorEvent("join", err)
+		if msg := sendCommand(rc, c, "join"); msg != nil {
+			return msg
 		}
 
 		return ChannelFocusMsg{Channel: domain.ChannelName(c.Channel.String())}
@@ -94,6 +100,14 @@ type PartCommand struct {
 	Message []string `arg:"" optional:"" nargs:"1" help:"Optional farewell message"`
 }
 
+// ToCommand builds the wire-protocol command for `/part`.
+func (c PartCommand) ToCommand(rc Context) (protocol.Command, error) {
+	return protocol.Part{
+		Channel: rc.Active,
+		Reason:  strings.TrimSpace(strings.Join(c.Message, " ")),
+	}, nil
+}
+
 // Run implements Command.
 func (c PartCommand) Run(rc Context) tea.Cmd {
 	if rc.Active == "" {
@@ -101,11 +115,7 @@ func (c PartCommand) Run(rc Context) tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		if err := c.executePart(rc.Ctx, rc.Session, rc.Actor, rc.Active); err != nil {
-			return errorEvent("part", err)
-		}
-
-		return nil
+		return sendCommand(rc, c, "part")
 	}
 }
 
@@ -229,6 +239,16 @@ func (InviteCommand) Sources() map[string]command.SuggestionSource[CompletionCon
 	return map[string]command.SuggestionSource[CompletionContext]{"nick": instancesSource}
 }
 
+// ToCommand builds the wire-protocol command for `/invite`.
+func (c InviteCommand) ToCommand(rc Context) (protocol.Command, error) {
+	ch := rc.Active
+	if c.Channel != "" {
+		ch = domain.ChannelName(c.Channel.String())
+	}
+
+	return protocol.Invite{Nick: domain.Nick(c.Nick), Channel: ch}, nil
+}
+
 // Run implements Command.
 func (c InviteCommand) Run(rc Context) tea.Cmd {
 	if rc.Active == "" && c.Channel == "" {
@@ -240,11 +260,7 @@ func (c InviteCommand) Run(rc Context) tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		if err := c.executeInvite(rc.Ctx, rc.Session, rc.Actor, rc.Active); err != nil {
-			return errorEvent("invite", err)
-		}
-
-		return nil
+		return sendCommand(rc, c, "invite")
 	}
 }
 
@@ -297,6 +313,11 @@ func (KickCommand) Sources() map[string]command.SuggestionSource[CompletionConte
 	return map[string]command.SuggestionSource[CompletionContext]{"nick": activeMembersSource}
 }
 
+// ToCommand builds the wire-protocol command for `/kick`.
+func (c KickCommand) ToCommand(rc Context) (protocol.Command, error) {
+	return protocol.Kick{Nick: domain.Nick(c.Nick), Channel: rc.Active}, nil
+}
+
 // Run implements Command.
 func (c KickCommand) Run(rc Context) tea.Cmd {
 	if rc.Active == "" {
@@ -304,11 +325,7 @@ func (c KickCommand) Run(rc Context) tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		if err := c.executeKick(rc.Ctx, rc.Session, rc.Actor, rc.Active); err != nil {
-			return errorEvent("kick", err)
-		}
-
-		return nil
+		return sendCommand(rc, c, "kick")
 	}
 }
 
@@ -375,6 +392,26 @@ func msgTargetSource(ctx CompletionContext, st command.InvocationState[Completio
 	return command.SuggestionResult{Suggestions: merged}
 }
 
+// ToCommand builds the wire-protocol command for `/msg` against a
+// channel target. The nick-target branch of `/msg` does not have a
+// protocol counterpart yet (DM materialisation is still
+// chat-screen-side); callers must pre-check the target shape
+// before invoking.
+func (c MsgCommand) ToCommand(rc Context) (protocol.Command, error) {
+	body := strings.TrimSpace(strings.Join(c.Body, " "))
+	target := domain.ChannelName(c.Target)
+
+	if domain.InferChannelKind(target) != domain.KindChannel {
+		return nil, fmt.Errorf("/msg nick-target is not a wire-protocol command")
+	}
+
+	if !c.actorInChannel(rc.Actor, target) {
+		return nil, notInChannelError(target)
+	}
+
+	return protocol.PrivMsg{Target: target, Body: body}, nil
+}
+
 // Run implements Command. For a channel target, the actor must
 // already be a member; for a nick target, the nick is resolved
 // to its `*Instance` and the message is sent to the
@@ -392,16 +429,20 @@ func (c MsgCommand) Run(rc Context) tea.Cmd {
 		target := domain.ChannelName(c.Target)
 
 		if domain.InferChannelKind(target) == domain.KindChannel {
-			msg, err := c.sendToChannel(rc.Ctx, rc.Session, rc.Actor, target, body)
-			if err != nil {
-				return errorEvent("msg", err)
+			if msg := sendCommand(rc, c, "msg"); msg != nil {
+				return msg
 			}
 
-			// Return the persisted [domain.Message] so the chat
-			// screen renders the user's own outgoing line — the
-			// session does not echo user-sent messages on its
-			// events channel.
-			return msg
+			// Synthesise the user's outgoing message for local
+			// rendering: the session's echo gate suppresses the
+			// user-actor copy on the wire.
+			return domain.Message{
+				Target:     domain.NormaliseChannelName(target),
+				From:       rc.Actor.Nick(),
+				InstanceID: rc.Actor.ID(),
+				Body:       body,
+				At:         time.Now(),
+			}
 		}
 
 		nick := domain.Nick(c.Target)
@@ -428,6 +469,24 @@ func (c MsgCommand) Run(rc Context) tea.Cmd {
 			At:          time.Now(),
 		}
 	}
+}
+
+// actorInChannel reports whether `actor` is a member of `target`.
+// The membership snapshot is read from the actor's joined-channel
+// map; the same precondition is enforced server-side in
+// [session.Session.SendMessageAs], but pre-checking lets the
+// chat-screen surface a typed "not a member" error before going
+// over the wire.
+func (MsgCommand) actorInChannel(actor *domain.Instance, target domain.ChannelName) bool {
+	target = domain.NormaliseChannelName(target)
+
+	channels := actor.Channels()
+	if channels == nil {
+		return false
+	}
+
+	_, ok := channels.Get(target)
+	return ok
 }
 
 // sendToChannel validates that `actor` is a member of `target`
@@ -546,7 +605,14 @@ type NickCommand struct {
 	Nick string `arg:"new-nick" help:"New nickname"`
 }
 
-// Run implements Command.
+// ToCommand builds the wire-protocol command for `/nick`.
+func (c NickCommand) ToCommand(_ Context) (protocol.Command, error) {
+	return protocol.Nick{New: domain.Nick(c.Nick)}, nil
+}
+
+// Run implements Command. Persisting the chosen nick to config so
+// it survives a restart is a chat-screen-side concern; the wire
+// nick change goes via the protocol client.
 func (c NickCommand) Run(rc Context) tea.Cmd {
 	return func() tea.Msg {
 		nick := domain.Nick(c.Nick)
@@ -557,11 +623,7 @@ func (c NickCommand) Run(rc Context) tea.Cmd {
 			return errorEvent("nick", err)
 		}
 
-		if err := rc.Session.ChangeNick(rc.Ctx, nick); err != nil {
-			return errorEvent("nick", err)
-		}
-
-		return nil
+		return sendCommand(rc, c, "nick")
 	}
 }
 
@@ -582,6 +644,14 @@ func (c NickCommand) RunTool(ctx context.Context, tc session.ToolContext) sessio
 // TopicCommand represents `/topic [text]`. An empty topic clears it.
 type TopicCommand struct {
 	Topic []string `arg:"" optional:"" help:"Topic text"`
+}
+
+// ToCommand builds the wire-protocol command for `/topic <body>`.
+// The bare `/topic` (display) variant is not a wire command; the
+// branch in [TopicCommand.Run] reads it locally and returns a
+// [TopicInfoResult].
+func (c TopicCommand) ToCommand(rc Context) (protocol.Command, error) {
+	return protocol.Topic{Channel: rc.Active, Body: strings.Join(c.Topic, " ")}, nil
 }
 
 // Run implements Command.
@@ -607,11 +677,7 @@ func (c TopicCommand) Run(rc Context) tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		if err := c.executeSetTopic(rc.Ctx, rc.Session, rc.Actor, rc.Active); err != nil {
-			return errorEvent("topic", err)
-		}
-
-		return nil
+		return sendCommand(rc, c, "topic")
 	}
 }
 
@@ -658,6 +724,14 @@ type MeCommand struct {
 	Action []string `arg:"" nargs:"1" help:"Action text"`
 }
 
+// ToCommand builds the wire-protocol command for `/me`.
+func (c MeCommand) ToCommand(rc Context) (protocol.Command, error) {
+	return protocol.Action{
+		Target: rc.Active,
+		Body:   strings.TrimSpace(strings.Join(c.Action, " ")),
+	}, nil
+}
+
 // Run implements Command.
 func (c MeCommand) Run(rc Context) tea.Cmd {
 	if rc.Active == "" {
@@ -670,11 +744,21 @@ func (c MeCommand) Run(rc Context) tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		if err := c.executeAction(rc.Ctx, rc.Session, rc.Actor, rc.Active); err != nil {
-			return errorEvent("me", err)
+		if msg := sendCommand(rc, c, "me"); msg != nil {
+			return msg
 		}
 
-		return nil
+		// Synthesise the user's outgoing /me action for local
+		// rendering: the session's echo gate suppresses the
+		// user-actor copy on the wire.
+		return domain.Message{
+			Target:     rc.Active,
+			From:       rc.Actor.Nick(),
+			InstanceID: rc.Actor.ID(),
+			Body:       body,
+			Action:     true,
+			At:         time.Now(),
+		}
 	}
 }
 

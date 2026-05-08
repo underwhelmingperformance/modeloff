@@ -112,22 +112,76 @@ func normaliseInstance(inst *domain.Instance) comparableInstance {
 	}
 }
 
+// readNextOnBusFor reads the next event from the bus a given type
+// flows on: protocol events on `User().Events()`, non-protocol UI
+// events on `Events()`. The `var zero T` is for ergonomic type
+// inspection — `any(zero).(domain.ProtocolEvent)` reports whether
+// `T` satisfies the interface, which Go generics do not let us
+// check on the constraint directly. Returns the event and `true`
+// if a value arrived, or the zero value and `false` if the
+// channel closed.
+func readNextOnBusFor[T domain.Event](sess *Session) (domain.Event, bool) {
+	var zero T
+	if _, ok := any(zero).(domain.ProtocolEvent); ok {
+		evt, ok := <-sess.User().Events()
+		return evt, ok
+	}
+
+	evt, ok := <-sess.Events()
+	return evt, ok
+}
+
+// nextEvent reads the next event from whichever bus delivers
+// first. Used by helpers that don't know in advance which bus
+// will produce the value (general-purpose drains and
+// matcher-based collectors).
+func nextEvent(sess *Session) (domain.Event, bool) {
+	select {
+	case evt, ok := <-sess.Events():
+		return evt, ok
+	case evt, ok := <-sess.User().Events():
+		return evt, ok
+	}
+}
+
+// peekEvent returns the next event from either bus if one is
+// available immediately, or `(nil, false)` if both are empty. Use
+// in negative-path tests that assert no event was emitted.
+func peekEvent(sess *Session) (domain.Event, bool) {
+	select {
+	case evt := <-sess.Events():
+		return evt, true
+	case evt := <-sess.User().Events():
+		return evt, true
+	default:
+		return nil, false
+	}
+}
+
 func drainEvent[T domain.Event](t *testing.T, sess *Session) T {
 	t.Helper()
 
-	evt := <-sess.Events()
+	evt, ok := readNextOnBusFor[T](sess)
+	require.True(t, ok, "session events channel closed before %T arrived", *new(T))
+
 	got, ok := evt.(T)
 	require.True(t, ok, "expected %T, got %T", *new(T), evt)
 	return got
 }
 
-// drainEventSkipping reads events from the session channel, skipping
-// dispatch lifecycle events (DispatchStartedEvent, DispatchDoneEvent),
-// until it finds one matching T.
+// drainEventSkipping reads from the bus T flows on, skipping
+// dispatch lifecycle and other noise types, until it finds an
+// event matching T.
 func drainEventSkipping[T domain.Event](t *testing.T, sess *Session) T {
 	t.Helper()
 
-	for evt := range sess.Events() {
+	for {
+		evt, ok := readNextOnBusFor[T](sess)
+		if !ok {
+			t.Fatalf("event channel closed without %T", *new(T))
+			return *new(T)
+		}
+
 		if got, ok := evt.(T); ok {
 			return got
 		}
@@ -143,19 +197,23 @@ func drainEventSkipping[T domain.Event](t *testing.T, sess *Session) T {
 			return *new(T)
 		}
 	}
-
-	t.Fatalf("event channel closed without %T", *new(T))
-	return *new(T)
 }
 
 // drainDispatchEvents reads and discards dispatch lifecycle events
-// until the channel is quiet.
+// until both buses are quiet.
 func drainDispatchEvents(t *testing.T, sess *Session) {
 	t.Helper()
 
 	for {
 		select {
 		case evt := <-sess.Events():
+			switch evt.(type) {
+			case domain.DispatchStartedEvent, domain.DispatchDoneEvent:
+				continue
+			default:
+				t.Fatalf("expected dispatch event, got %T", evt)
+			}
+		case evt := <-sess.User().Events():
 			switch evt.(type) {
 			case domain.DispatchStartedEvent, domain.DispatchDoneEvent:
 				continue
@@ -224,7 +282,11 @@ func drainUntilMatched(t *testing.T, sess *Session, expected ...sessionEventMatc
 	matchedCount := 0
 
 	for matchedCount < len(expected) {
-		evt := <-sess.Events()
+		evt, ok := nextEvent(sess)
+		if !ok {
+			t.Fatalf("event channels closed before all expected matchers were satisfied")
+			return matched, extras
+		}
 		matchedIndex := -1
 
 		for i, matcher := range expected {
@@ -628,10 +690,8 @@ func TestSession_FocusChannel_nonmember_is_noop(t *testing.T) {
 
 	require.NoError(t, sess.FocusChannel(ctx, "#nope"))
 
-	select {
-	case evt := <-sess.Events():
+	if evt, ok := peekEvent(sess); ok {
 		t.Fatalf("expected no event, got %T", evt)
-	default:
 	}
 }
 
@@ -725,6 +785,7 @@ func TestSession_user_snapshot_race_free(t *testing.T) {
 		for {
 			select {
 			case <-sess.Events():
+			case <-sess.User().Events():
 			case <-drainCtx.Done():
 				return
 			}
@@ -2493,10 +2554,13 @@ func TestSession_KickNonMember(t *testing.T) {
 	// membership mutation, no instance-channels mutation.
 	require.NoError(t, sess.Kick(ctx, "#dev", "nobody"))
 
+	deadline := time.After(50 * time.Millisecond)
 	select {
 	case evt := <-sess.Events():
 		t.Fatalf("unexpected event for unknown-nick kick: %T %+v", evt, evt)
-	case <-time.After(50 * time.Millisecond):
+	case evt := <-sess.User().Events():
+		t.Fatalf("unexpected event for unknown-nick kick: %T %+v", evt, evt)
+	case <-deadline:
 	}
 
 	updated, err := sess.loadChannelWindow(ctx, "#dev")
@@ -4368,6 +4432,8 @@ func drainNEvents(t *testing.T, sess *Session, n int) []domain.Event {
 		select {
 		case evt := <-sess.Events():
 			events = append(events, evt)
+		case evt := <-sess.User().Events():
+			events = append(events, evt)
 		case <-time.After(time.Second):
 			t.Fatalf("timed out draining events at %d/%d", len(events), n)
 		}
@@ -4376,16 +4442,21 @@ func drainNEvents(t *testing.T, sess *Session, n int) []domain.Event {
 	return events
 }
 
-// drainEvents reads from the session events channel until n
-// DispatchDoneEvent values have been received, and returns all
-// events in order.
+// drainEvents reads from both event buses until n DispatchDoneEvent
+// values have been received, and returns all events in order.
 func drainEvents(t *testing.T, sess *Session, doneCount int) []domain.Event {
 	t.Helper()
 
 	var events []domain.Event
 	done := 0
 
-	for evt := range sess.Events() {
+	for {
+		evt, ok := nextEvent(sess)
+		if !ok {
+			t.Fatal("events channels closed before receiving all DispatchDoneEvents")
+			return nil
+		}
+
 		events = append(events, evt)
 		if _, ok := evt.(domain.DispatchDoneEvent); ok {
 			done++
@@ -4394,10 +4465,6 @@ func drainEvents(t *testing.T, sess *Session, doneCount int) []domain.Event {
 			}
 		}
 	}
-
-	t.Fatal("events channel closed before receiving all DispatchDoneEvents")
-
-	return nil
 }
 
 func testPersonas() []domain.Persona {
@@ -5011,9 +5078,7 @@ func TestSession_appendEvent_persistence_failure_on_status_channel_skips_notice(
 		At:     fixedTime,
 	})
 
-	select {
-	case evt := <-sess.Events():
+	if evt, ok := peekEvent(sess); ok {
 		t.Fatalf("expected no event after status-channel append failure, got %T", evt)
-	default:
 	}
 }
