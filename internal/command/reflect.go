@@ -13,7 +13,7 @@ import (
 // without `arg` (but with other recognised tags) are flags.
 func resolveFieldMetas(cmd any) ([]fieldMeta, error) {
 	t := reflect.TypeOf(cmd)
-	if t.Kind() == reflect.Ptr {
+	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 
@@ -141,7 +141,7 @@ func buildFlags[C KindProvider](fields []fieldMeta, sources map[string]Suggestio
 // fields tagged with `cmd:""`, indicating it is a group node whose
 // fields are subcommands rather than arguments.
 func hasCmdChildren(t reflect.Type) bool {
-	if t.Kind() == reflect.Ptr {
+	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 
@@ -233,7 +233,7 @@ func buildNode[C KindProvider](ft reflect.StructField, fieldVal reflect.Value) (
 
 func build[C KindProvider](grammar any) ([]*Node[C], error) {
 	v := reflect.ValueOf(grammar)
-	if v.Kind() != reflect.Ptr {
+	if v.Kind() != reflect.Pointer {
 		return nil, fmt.Errorf("grammar must be a pointer to a struct, got %T", grammar)
 	}
 

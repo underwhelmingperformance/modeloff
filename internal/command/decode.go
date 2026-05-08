@@ -115,7 +115,7 @@ func (r *Registry) ForType(typ reflect.Type) Decoder {
 		return r.sliceDecoder(typ)
 	case reflect.Map:
 		return r.mapDecoder(typ)
-	case reflect.Ptr:
+	case reflect.Pointer:
 		return r.ptrDecoder(typ)
 	}
 

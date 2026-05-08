@@ -684,7 +684,7 @@ func toolSchemaForField(field fieldMeta) map[string]any {
 }
 
 func toolSchemaForType(typ reflect.Type) map[string]any {
-	for typ.Kind() == reflect.Ptr {
+	for typ.Kind() == reflect.Pointer {
 		typ = typ.Elem()
 	}
 

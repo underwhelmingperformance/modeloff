@@ -2,6 +2,7 @@
 package richtext
 
 import (
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -495,8 +496,7 @@ func (d *Document) MoveWordLeft(pos Position) Position {
 	for {
 		cache := d.lineCache(pos.Line)
 		segments := wordSegments(cache.graphemes)
-		for index := len(segments) - 1; index >= 0; index-- {
-			segment := segments[index]
+		for _, segment := range slices.Backward(segments) {
 			if segment.start >= pos.Cluster {
 				continue
 			}
