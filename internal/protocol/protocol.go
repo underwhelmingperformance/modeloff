@@ -1,7 +1,28 @@
-// Package protocol defines the typed IRC-like protocol used to
-// communicate with model instances. Models receive events as
-// structured messages and respond with a typed response that can
-// include a reply or an explicit "no reply" signal.
+// Package protocol defines the wire contract between the modeloff
+// session (the IRC-like server) and its clients.
+//
+// There are two client kinds — the chat-screen (one user-client per
+// running TUI) and each model instance (one model-client per
+// `*domain.Instance`) — and they speak the same protocol. The
+// dispatcher does not know which kind it is talking to: capability
+// parity is enforced at the type level.
+//
+// Two sum types form the contract:
+//
+//   - [Command] — anything a client sends to the server. The sum is
+//     sealed via an unexported `isCommand` method on each member.
+//
+//   - [Event] — anything the server emits to a subscribed client.
+//     Aliased to [domain.ProtocolEvent]; the sum is sealed via an
+//     unexported method declared on each member in the `domain`
+//     package.
+//
+// A [Client] handle carries identity and a small surface for sending
+// commands and receiving events. Each client also carries a set of
+// RFC 2812 §3.1.5 [UserMode] flags; capabilities such as `AddModel`
+// and `Kill` are gated on the issuing client's modes, not on its
+// kind. The user-client is granted [ModeOperator] at session
+// bootstrap.
 package protocol
 
 import (
@@ -11,6 +32,30 @@ import (
 
 	"github.com/laney/modeloff/internal/domain"
 )
+
+// ClientID identifies a connected client. The user-client uses
+// [UserClientID] as its sentinel; each model-client uses its
+// instance's id.
+type ClientID = domain.InstanceID
+
+// UserClientID is the sentinel identifying the user-client. It is
+// the empty [ClientID] — every model-client carries a non-empty
+// instance id, so an empty id uniquely names the user.
+const UserClientID ClientID = ""
+
+// Response is the synchronous reply to a [Command].
+type Response struct {
+	// Events are confirmation events the dispatcher synthesised in
+	// response to the command (e.g. [domain.ListReply] /
+	// [domain.ListEnd] for [List], [domain.Whois] for [Whois]).
+	Events []Event
+
+	// Err is the typed command failure, or nil on success. The
+	// dispatcher returns concrete `domain` error types
+	// (e.g. [domain.UnknownNickError], [domain.NotOperatorError])
+	// so callers can branch on them with `errors.As`.
+	Err error
+}
 
 // MessageKind identifies the type of IRC-like message sent to or
 // received from a model.
