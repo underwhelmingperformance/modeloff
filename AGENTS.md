@@ -57,6 +57,158 @@ There is no server component. This uses the OpenRouter API.
    model can remember what's happened to it. This should be exposed as a tool so
    that it can decide when to read and write memories.
 
+## Server-client protocol
+
+The session in `internal/session` is an in-process IRC-like server. The
+chat-screen (one per running TUI) and each model instance are uniform clients
+on the same bus. The contract is the [`internal/protocol`][protocol-pkg]
+package; the dispatcher does not branch on which kind of client it is talking
+to, and capability parity is enforced at the type level.
+
+[protocol-pkg]: ./internal/protocol/protocol.go
+
+### Contract
+
+`protocol.Command` is a closed sum, sealed via an unexported `isCommand()`
+method on each member. `protocol.Event` is an alias for `domain.ProtocolEvent`,
+also sealed via an unexported method declared on each event type in the
+`domain` package. Adding a new command type makes every dispatcher arm fail
+to build until it is handled — the migration path is mechanical.
+
+Clients implement the small `Client` interface — `Identity()`, `Send(ctx,
+Command) (Response, error)`, `Events() <-chan Event`, `HasMode(UserMode) bool`.
+A `Send` returns a `Response` whose `Err` field carries any typed command
+failure (e.g. `domain.NotOperatorError`, `domain.UnknownNickError`); callers
+branch on it via `errors.As`. The `Response.Events` slot is reserved for
+synchronous numeric-reply payloads but is currently unused — see Out of scope.
+Broadcast side effects flow asynchronously over `Client.Events()` to peers.
+
+### Two client kinds
+
+- The user-client is a singleton with the same lifetime as the session.
+  It is constructed in `Session.New`, granted operator mode at
+  construction, and exposed via `Session.User()`. Its `Identity()` is
+  the sentinel `protocol.UserClientID` (the empty `ClientID`).
+- A model-client is allocated when an instance attaches to its first
+  channel, or on first `Session.Model(ctx, id)` lookup for store-loaded
+  instances that haven't yet attached. Either path returns the canonical
+  pointer-stable handle, registered into the subscriber set with a
+  long-lived dispatch goroutine consuming its `Client.Events()` channel.
+  The goroutine decides via `dispatchTrigger` whether each inbound event
+  should make the model take an LLM turn (a message in a window it
+  shares, a join/part/invite that addresses it, a poke).
+
+### Dispatcher
+
+`Session.Handle(client, cmd)` is the single entry point for any model
+action. The dispatcher's exhaustive switch over `protocol.Command` resolves
+the issuing actor via `resolveClientActor`, runs an operator-mode check
+where required, then delegates to a per-command implementation in the
+`session` package. The actor surface (`joinAs`, `partAs`, `sendMessageAs`,
+…) is unexported: outside the package, the only way to reach it is
+through `Send → Handle`.
+
+`OpenDM`, `AddModel`, `Quit`, and `Kill` currently return
+`errNotYetImplemented` from the dispatcher. The chatcmd entry points for
+`AddModel` and `Quit` still call into legacy public methods on the session
+(`Session.AddModel`, `Session.QuitAs`) and retire alongside the dispatcher
+fills.
+
+### Bus partitioning
+
+There are two event channels with distinct purposes.
+
+- The protocol bus is per-client: each subscription's `Client.Events()`
+  channel. The session fans out wire-shaped events (PRIVMSG, JOIN, PART,
+  TOPIC, MODE, NICK, INVITE, KICK, QUIT) plus session-emitted events whose
+  ordering relative to the wire stream matters (`FocusChannelEvent`,
+  `TopicInfo`, `NamesReplyEvent`, `PokeEvent`, `DispatchStartedEvent`,
+  `DispatchDoneEvent`, `CommandError`, `UsageHint`, `PersonasList`, `Help`,
+  `Whois`, `ListReply`, `ListEnd`, `SystemNotice`). Sealed via
+  `isProtocolEvent()`.
+- The non-protocol bus is `Session.Events()`, a single channel carrying
+  chat-screen-internal control signals — `ConfigChangedEvent`, `ErrorEvent`,
+  `SystemNoticeEvent`. Order relative to the wire stream is not a
+  correctness concern for these.
+
+The rule is one-line: if a session-emitted event's relative ordering
+matters to a consumer, it goes on the protocol bus.
+
+### Echo gate and membership filter
+
+`fanOutProtocol` skips the originator for `domain.Message` events
+(PRIVMSG and `/me` actions), per RFC 2812 §3.3.1: chat traffic is
+delivered to every member of the target window except the sender.
+Other event types — JOIN, PART, MODE, TOPIC, NICK, etc. — are
+delivered to every member-subscriber including the originator.
+
+Each model-client carries a membership filter via `serverClient.canReceive`:
+it only sees events for windows it is in — channel: target-channel
+membership; DM: counterpart match; actor-scoped (`Quit`, `NickChange`):
+any-channel-in-common with the actor. The user-client receives every
+protocol event; the chat-screen renders the entire session and needs
+the full feed.
+
+### Operator capability
+
+User-mode `+o` is granted to the user-client at construction. The
+operator-gated commands today are `protocol.Kill` and `protocol.AddModel`;
+non-operator clients receive `domain.NotOperatorError` from the
+dispatcher (RFC 2812 numeric 481, ERR_NOPRIVILEGES). There is no wire
+`OPER` command:
+modeloff is a single-user app, and operator mode is set at construction
+rather than acquired through a credential exchange. A future revision
+that introduces credentialed operator promotion would extend the command
+sum without changing the dispatcher's mode-check shape.
+
+### Slash commands and tool schemas
+
+`/`-commands and model-callable tools share a single source of truth.
+The `internal/ui/chatcmd` grammar declares each command as a Go struct
+with `arg:`/`help:`/`tool:` tags; the `internal/command` package walks
+the grammar at registration time and derives the OpenAI tool schema
+(name, description, JSON-schema parameters) by reflection. When a
+chatcmd struct implements `ToCommand(Context) (protocol.Command, error)`,
+the same wire command flows whether the user typed `/foo` or a model
+called the `foo` tool. Some `/`-commands (`/help`, `/clear`, `/list`,
+`/whois`) are UI-side or session-side without a wire counterpart, and
+do not implement `ToCommand`.
+
+The three memory tools (`write_memory`, `delete_memory`, `search_memory`)
+are in-process operations rather than wire commands, and stay
+hand-rolled in `internal/session/tools.go`.
+
+### Persistence
+
+The channel-keyed event log (`store.AppendEvent` /
+`store.EventsBefore` / `store.DMEventsBefore`) is the server-side
+record of channel history. Each model dispatch turn reads from it via
+`dispatchHistoryFor` to assemble the LLM prompt. The chat-screen does
+not read this log on focus changes — the in-memory scrollback buffer
+captures only events the user has seen this session, mirroring IRC's
+"you don't see what happened before you joined" rule. Models see up
+to 500 most-recent events from the channel log on each dispatch turn;
+today this includes events that pre-date the instance's join.
+
+### Out of scope, design accommodates
+
+- Synchronous numeric-reply payloads (e.g. `RPL_LIST` / `RPL_LISTEND`
+  for `protocol.List`, `RPL_WHOISUSER` for `protocol.Whois`) populating
+  `Response.Events`. Today the dispatcher's `List`/`Whois` handlers
+  discard these and the chatcmd-side path emits the events directly;
+  the dispatcher fill collapses both into a single `Response.Events`
+  flow.
+- Opt-in user-side log replay (mirroring how models read pre-join
+  history) is a future toggle, not a current behaviour.
+- `KILL` implementation will need the dispatcher's handler plus
+  permanent removal from the subscriber set.
+- `OpenDM`, `AddModel`, `Quit` dispatcher fills retire the legacy
+  chatcmd-direct paths.
+- Bootstrap-time replay of recent events into newly-allocated
+  subscriptions, replacing the per-dispatch store read, is tracked
+  separately — and `joined_at` scoping for that replay if it becomes
+  the desired shape.
+
 ## External libraries
 
 - [Bubble Tea] for the TUI framework.
