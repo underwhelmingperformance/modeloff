@@ -819,7 +819,21 @@ func TestChatScreen_clear_command_removes_messages(t *testing.T) {
 	uitest.SeedMessage(t, sess, "#general", "visible text")
 
 	tm := newChatApp(t, sess)
-	tm.WaitFor("#general", "visible text")
+	// Wait until every seed event has rendered into scrollback —
+	// channel creation, mode grant, and the seedbot message — before
+	// running `/clear`. Bubble Tea's protocol-event listener drains
+	// the user-client bus one tea.Msg at a time; under race-load
+	// the channel-creation lines can still be in flight when only
+	// "#general" + "visible text" have reached the cumulative
+	// output, and the post-/clear scrollback would then receive
+	// the late events. Pinning all four strings here means a clean
+	// scrollback is the only legal observation when the assertion
+	// runs.
+	tm.WaitFor(
+		"Created channel #general",
+		"ChanServ sets mode +o testuser",
+		"visible text",
+	)
 
 	tm.Submit("/clear")
 	tm.WaitFor("No messages yet")
