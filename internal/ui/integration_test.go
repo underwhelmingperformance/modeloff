@@ -111,7 +111,7 @@ func TestApp_open_dm_and_send_message(t *testing.T) {
 	apiClient := &integrationAPI{}
 	sess, store, cfgStore := newIntegrationSession(t, apiClient)
 	uitest.SeedChannel(t, sess, "#general")
-	seedInstance(t, store, instanceSpec{
+	seedInstance(t, sess, store, instanceSpec{
 		Nick:    "botty",
 		ModelID: "test/model",
 	})
@@ -135,7 +135,7 @@ func TestApp_terminal_output_shows_full_model_nick_in_user_list(t *testing.T) {
 	channels := orderedmap.New[domain.ChannelName, time.Time]()
 	channels.Set("#general", time.Now())
 
-	grok := seedInstance(t, store, instanceSpec{
+	grok := seedInstance(t, sess, store, instanceSpec{
 		Nick:     "grok420_bot",
 		ModelID:  "test/model",
 		Channels: channels,
@@ -477,7 +477,7 @@ type instanceSpec struct {
 	Channels *orderedmap.OrderedMap[domain.ChannelName, time.Time]
 }
 
-func seedInstance(t *testing.T, store *storemod.SQLiteStore, spec instanceSpec) *domain.Instance {
+func seedInstance(t *testing.T, sess *session.Session, store *storemod.SQLiteStore, spec instanceSpec) *domain.Instance {
 	t.Helper()
 
 	inst := domain.NewModelInstance(
@@ -488,5 +488,13 @@ func seedInstance(t *testing.T, store *storemod.SQLiteStore, spec instanceSpec) 
 		spec.Channels,
 	)
 	require.NoError(t, store.SaveInstance(t.Context(), inst))
+
+	// Pair the persistent write with a `Session.Model` lookup so
+	// the model-client subscription is registered and its dispatch
+	// goroutine running before any test fans out an event to it.
+	// This mirrors the production lifecycle, where
+	// `attachInstanceToChannel` ensures the same invariant.
+	sess.Model(t.Context(), protocol.ClientID(inst.ID()))
+
 	return inst
 }

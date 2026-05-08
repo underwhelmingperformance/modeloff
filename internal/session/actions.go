@@ -89,7 +89,7 @@ func (s *Session) JoinAs(ctx context.Context, actor *domain.Instance, ch domain.
 		// RPL_NAMREPLY). The chat-screen handler uses this to
 		// populate its local member-list cache with pre-existing
 		// members; without it, the cache would see only the joiner.
-		s.emitUIOnly(domain.NamesReplyEvent{
+		s.emit(ctx, domain.NamesReplyEvent{
 			Channel: ch,
 			Members: window.Members,
 			At:      now,
@@ -156,7 +156,7 @@ func (s *Session) emitJoinProtocol(ctx context.Context, ch domain.ChannelName, w
 		return fmt.Errorf("save channel after mode: %w", err)
 	}
 
-	s.persistAndEmitUIOnly(ctx, ch, domain.ModeChange{
+	s.persistAndEmit(ctx, ch, domain.ModeChange{
 		Target:     ch,
 		Nick:       s.user.Nick(),
 		InstanceID: s.user.ID(),
@@ -168,7 +168,7 @@ func (s *Session) emitJoinProtocol(ctx context.Context, ch domain.ChannelName, w
 	})
 
 	if window.Topic != "" {
-		s.emitUIOnly(domain.TopicInfo{
+		s.emit(ctx, domain.TopicInfo{
 			Target:     ch,
 			Topic:      window.Topic,
 			TopicSetBy: window.TopicSetBy,
@@ -196,7 +196,7 @@ func (s *Session) grantVoice(ctx context.Context, ch domain.ChannelName, window 
 		return fmt.Errorf("save channel after voice: %w", err)
 	}
 
-	s.persistAndEmitUIOnly(ctx, ch, domain.ModeChange{
+	s.persistAndEmit(ctx, ch, domain.ModeChange{
 		Target:     ch,
 		Nick:       nick,
 		InstanceID: inst.ID(),

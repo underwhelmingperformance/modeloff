@@ -15,7 +15,7 @@ func TestJoinAs_model_actor(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	botty := seedInstance(t, s, instanceSpec{
+	botty := seedInstance(t, sess, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: orderedmap.New[domain.ChannelName, time.Time](),
@@ -69,7 +69,7 @@ func TestPartAs_model_actor(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	botty := seedInstance(t, s, instanceSpec{
+	botty := seedInstance(t, sess, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: testChannels("#dev"),
@@ -129,7 +129,7 @@ func TestQuitAs_model_actor(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	botty := seedInstance(t, s, instanceSpec{
+	botty := seedInstance(t, sess, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: testChannels("#dev", "#general"),
@@ -174,7 +174,7 @@ func TestSendMessageAs_model_actor(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	botty := seedInstance(t, s, instanceSpec{
+	botty := seedInstance(t, sess, s, instanceSpec{
 		Nick:    "botty",
 		ModelID: "test/model",
 	})
@@ -227,7 +227,7 @@ func TestSetTopicAs_model_actor(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	botty := seedInstance(t, s, instanceSpec{Nick: "botty", ModelID: "test/model"})
+	botty := seedInstance(t, sess, s, instanceSpec{Nick: "botty", ModelID: "test/model"})
 	seedChannelWithMembers(t, sess, s, "#dev", "testuser", "botty")
 
 	require.NoError(t, sess.SetTopicAs(ctx, botty, "#dev", "new topic"))
@@ -255,8 +255,8 @@ func TestKickAs_model_actor(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	botty := seedInstance(t, s, instanceSpec{Nick: "botty", ModelID: "test/model"})
-	helper := seedInstance(t, s, instanceSpec{
+	botty := seedInstance(t, sess, s, instanceSpec{Nick: "botty", ModelID: "test/model"})
+	helper := seedInstance(t, sess, s, instanceSpec{
 		Nick:     "helper",
 		ModelID:  "test/model-b",
 		Channels: testChannels("#dev"),
@@ -290,7 +290,7 @@ func TestInviteAs_model_actor(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	botty := seedInstance(t, s, instanceSpec{Nick: "botty", ModelID: "test/model"})
+	botty := seedInstance(t, sess, s, instanceSpec{Nick: "botty", ModelID: "test/model"})
 	seedChannelWithMembers(t, sess, s, "#dev", "testuser", "botty")
 
 	require.NoError(t, sess.InviteAs(ctx, botty, "helper", "#dev"))
@@ -315,7 +315,7 @@ func TestSetTopicAs_rejects_DM(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	botty := seedInstance(t, s, instanceSpec{
+	botty := seedInstance(t, sess, s, instanceSpec{
 		Nick:    "botty",
 		ModelID: "test/model",
 	})
@@ -328,7 +328,7 @@ func TestKickAs_rejects_DM(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	botty := seedInstance(t, s, instanceSpec{
+	botty := seedInstance(t, sess, s, instanceSpec{
 		Nick:    "botty",
 		ModelID: "test/model",
 	})
@@ -376,23 +376,25 @@ func TestSendActionAs_rejects_status_channel(t *testing.T) {
 // TestSendMessageAs_model_to_model_dispatches verifies that the
 // nick-targeted dispatch path fires when one model messages
 // another. The wire-form target is the recipient's
-// `InstanceID`; the recipient resolution in
-// `dispatchInBackground` picks up the DM-shaped target and
-// dispatches a turn to that addressed model directly.
+// `InstanceID`; the addressed model's dispatch goroutine
+// receives the resulting [domain.Message] and runs an LLM turn.
 func TestSendMessageAs_model_to_model_dispatches(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	botty := seedInstance(t, s, instanceSpec{
+	botty := seedInstance(t, sess, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model-a",
 		Channels: orderedmap.New[domain.ChannelName, time.Time](),
 	})
-	helper := seedInstance(t, s, instanceSpec{
+	helper := seedInstance(t, sess, s, instanceSpec{
 		Nick:     "helper",
 		ModelID:  "test/model-b",
 		Channels: orderedmap.New[domain.ChannelName, time.Time](),
 	})
+
+	sess.ensureModelClient(botty)
+	sess.ensureModelClient(helper)
 
 	target := domain.ChannelName(helper.ID())
 
@@ -425,7 +427,7 @@ func TestJoinAs_normalises_channel_prefix(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	botty := seedInstance(t, s, instanceSpec{
+	botty := seedInstance(t, sess, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: orderedmap.New[domain.ChannelName, time.Time](),
@@ -497,7 +499,7 @@ func TestJoinAs_user_existing_channel_with_topic(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	seedInstance(t, s, instanceSpec{Nick: "alice", ModelID: "test/model"})
+	seedInstance(t, sess, s, instanceSpec{Nick: "alice", ModelID: "test/model"})
 
 	withAlice := newTestChannelWindow("#dev", fixedTime.Add(-time.Hour), testMembers(t, sess, s, "alice"))
 	withAlice.Topic = "Go development"
@@ -533,7 +535,7 @@ func TestJoinAs_user_existing_channel_no_topic(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	seedInstance(t, s, instanceSpec{Nick: "alice", ModelID: "test/model"})
+	seedInstance(t, sess, s, instanceSpec{Nick: "alice", ModelID: "test/model"})
 
 	saveTestChannel(t, sess, s, newTestChannelWindow("#dev", fixedTime.Add(-time.Hour), testMembers(t, sess, s, "alice")))
 
@@ -558,7 +560,7 @@ func TestJoinAs_model_voice_only_no_topic(t *testing.T) {
 	ctx := t.Context()
 
 	seedChannelWithMembers(t, sess, s, "#dev", "testuser")
-	botty := seedInstance(t, s, instanceSpec{
+	botty := seedInstance(t, sess, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: orderedmap.New[domain.ChannelName, time.Time](),

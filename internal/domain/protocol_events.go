@@ -42,6 +42,7 @@ func (SystemNotice) isProtocolEvent() {}
 func (PersonasList) isProtocolEvent() {}
 
 // Pure-live events. Order matches the seal block in `events.go`.
+func (PokeEvent) isProtocolEvent()            {}
 func (DispatchStartedEvent) isProtocolEvent() {}
 func (DispatchDoneEvent) isProtocolEvent()    {}
 func (FocusChannelEvent) isProtocolEvent()    {}

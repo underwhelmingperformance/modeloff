@@ -173,7 +173,7 @@ func New(
 		clientHandles:       make(map[protocol.ClientID]*serverClient),
 	}
 
-	sess.userClient = newServerClient(sess, protocol.UserClientID, protocol.ModeOperator)
+	sess.userClient = newServerClient(sess, protocol.UserClientID, nil, protocol.ModeOperator)
 	sess.subscribers[sess.userClient.id] = sess.userClient
 
 	return sess
@@ -191,10 +191,11 @@ func (s *Session) WithTracerProvider(tp trace.TracerProvider) *Session {
 	return s
 }
 
-// Events returns the channel on which background dispatch events are
-// emitted. The caller should drain this channel to receive
-// DispatchStartedEvent, ModelReplyEvent, DispatchDoneEvent, and
-// ErrorEvent values.
+// Events returns the legacy non-protocol bus carrying chat-screen-
+// internal control signals: ConfigChangedEvent, ErrorEvent,
+// SystemNoticeEvent. Protocol events — including dispatch lifecycle
+// — flow through the user-client subscription's events channel; see
+// [Session.User].
 func (s *Session) Events() <-chan domain.Event {
 	return s.events
 }
@@ -245,7 +246,11 @@ func (s *Session) lookupClientHandle(id protocol.ClientID) *serverClient {
 
 // ensureModelClient registers a model-client handle for `inst` if
 // one does not already exist, and returns the canonical handle
-// either way. Model clients carry no user modes.
+// either way. Model clients carry no user modes; they join the
+// subscriber set so [fanOutProtocol] delivers to them, and a
+// long-lived dispatch goroutine starts under the same lock so the
+// channel has a consumer attached before any caller can fan out
+// to it.
 func (s *Session) ensureModelClient(inst *domain.Instance) *serverClient {
 	id := inst.ID()
 
@@ -256,8 +261,11 @@ func (s *Session) ensureModelClient(inst *domain.Instance) *serverClient {
 		return existing
 	}
 
-	client := newServerClient(s, id)
+	client := newServerClient(s, id, inst)
 	s.clientHandles[id] = client
+	s.subscribers[id] = client
+
+	go s.runModelDispatch(client)
 
 	return client
 }
@@ -279,24 +287,33 @@ func (s *Session) subscriberSnapshot() []*serverClient {
 }
 
 // fanOutProtocol delivers a protocol event to every active
-// subscription. Sends are blocking, matching the back-pressure
-// discipline of `s.events`: a stuck consumer surfaces as a wedged
-// producer rather than silent data loss. Each subscription's
-// events channel is buffered to [eventBufSize]; callers should
-// attach a consumer before bootstrap-time emission exceeds that
-// capacity.
+// subscription that should receive it. Sends are blocking,
+// matching the back-pressure discipline of `s.events`: a stuck
+// consumer surfaces as a wedged producer rather than silent data
+// loss. Each subscription's events channel is buffered to
+// [eventBufSize]; callers should attach a consumer before
+// bootstrap-time emission exceeds that capacity.
 //
 // PRIVMSG/Action events do not echo back to their originator
 // (RFC 2812 §3.3.1: chat traffic is delivered to every member of
 // the target window except the sender). Other event types — JOIN,
 // PART, MODE, TOPIC, NICK, etc. — are delivered to every
-// subscriber including the originator, matching IRC's behaviour
-// for those signals.
+// member-subscriber including the originator, matching IRC's
+// behaviour for those signals.
+//
+// Membership filtering keeps model-clients from receiving events
+// for channels they are not in. The user-client is treated as
+// connected to every window: the chat-screen renders the entire
+// session and needs the full feed.
 func (s *Session) fanOutProtocol(ctx context.Context, pe domain.ProtocolEvent) {
 	suppressOriginator, sender := chatTrafficSender(pe)
 
 	for _, sub := range s.subscriberSnapshot() {
 		if suppressOriginator && sub.Identity() == sender {
+			continue
+		}
+
+		if !sub.canReceive(pe) {
 			continue
 		}
 
@@ -428,7 +445,7 @@ func (s *Session) openStatusChannel(ctx context.Context) error {
 		return fmt.Errorf("save status window: %w", err)
 	}
 
-	s.emitUIOnly(domain.StatusOpenedEvent{
+	s.emit(ctx, domain.StatusOpenedEvent{
 		Channel: domain.StatusChannelName,
 		At:      s.connectedAt,
 	})
@@ -461,7 +478,7 @@ func (s *Session) appendStatus(ctx context.Context, text string) {
 		return
 	}
 
-	s.emitUIOnly(domain.SystemNoticeEvent{
+	s.emit(ctx, domain.SystemNoticeEvent{
 		Channel: domain.StatusChannelName,
 		Stored:  stored,
 	})
@@ -660,7 +677,7 @@ func (s *Session) FocusChannel(ctx context.Context, ch domain.ChannelName) (retE
 		return nil
 	}
 
-	s.emitUIOnly(domain.FocusChannelEvent{Channel: ch, At: s.now()})
+	s.emit(ctx, domain.FocusChannelEvent{Channel: ch, At: s.now()})
 
 	return nil
 }
@@ -1092,13 +1109,6 @@ func (s *Session) attachInstanceToChannel(
 		})
 	}
 
-	s.dispatchToInstanceInBackground(ctx, ch, inst, []protocol.IRCMessage{{
-		Kind:   protocol.KindInvite,
-		From:   string(byNick),
-		Target: string(ch),
-		At:     now,
-	}})
-
 	return nil
 }
 
@@ -1133,6 +1143,9 @@ func (s *Session) SendAction(ctx context.Context, ch domain.ChannelName, body st
 // DispatchToChannel sends new events to all model instances in a channel
 // and collects their replies. The caller provides the new IRC-formatted
 // events to broadcast; history is loaded from the store.
+//
+// Callers must not include events whose `InstanceID` matches a target
+// model — the wire-layer suppression is at fan-out, not at this driver.
 func (s *Session) DispatchToChannel(
 	ctx context.Context,
 	ch domain.ChannelName,
@@ -1545,8 +1558,7 @@ func (s *Session) dispatchToInstances(
 	var replies []domain.ModelReplyEvent
 
 	for _, inst := range instances {
-		filtered := filterSelfEvents(events, inst.ID())
-		if len(filtered) == 0 {
+		if len(events) == 0 {
 			continue
 		}
 
@@ -1557,7 +1569,7 @@ func (s *Session) dispatchToInstances(
 			continue
 		}
 
-		instReplies, instErr := s.dispatchToInstance(ctx, window, inst, channelName, historyEvents, filtered)
+		instReplies, instErr := s.dispatchToInstance(ctx, window, inst, channelName, historyEvents, events)
 		if instErr != nil {
 			errs = append(errs, instErr)
 		}
@@ -1585,21 +1597,6 @@ func (s *Session) dispatchWindowFor(ctx context.Context, target domain.ChannelNa
 	}
 
 	return s.loadChannelWindow(ctx, target)
-}
-
-func filterSelfEvents(events []protocol.IRCMessage, instanceID domain.InstanceID) []protocol.IRCMessage {
-	if instanceID == "" {
-		return events
-	}
-
-	out := make([]protocol.IRCMessage, 0, len(events))
-	for _, e := range events {
-		if e.InstanceID != instanceID {
-			out = append(out, e)
-		}
-	}
-
-	return out
 }
 
 func (s *Session) dispatchToInstance(
@@ -1749,8 +1746,12 @@ func triggerSummary(events []protocol.IRCMessage) string {
 	return s
 }
 
-// buildReplies converts model reply parts into domain events, persisting
-// each message to the event log.
+// buildReplies converts model reply parts into domain events and
+// persists each message. Returns the per-reply envelopes; the
+// goroutine driver in [Session.modelDispatchTurn] emits each
+// reply's `Event` on the wire, while the synchronous
+// [Session.dispatchToInstances] driver returns replies to its
+// caller without emitting.
 func (s *Session) buildReplies(
 	ctx context.Context,
 	channelName domain.ChannelName,
@@ -1952,28 +1953,15 @@ func (s *Session) LogEvent(ctx context.Context, ch domain.ChannelName, event dom
 	return domain.StoredEvent{ID: id, Event: event}, nil
 }
 
-// emit routes an event to its bus and, for dispatchable types,
-// triggers background model dispatch. Protocol events fan out to
-// the subscriber registry; non-protocol UI events go to `s.events`
+// emit routes an event to its bus. Protocol events fan out to
+// the subscriber registry — model-clients pick up dispatch
+// triggers from there; non-protocol UI events go to `s.events`
 // for the chat-screen's legacy bus. The context is threaded
 // through to preserve OTel trace parenting and to honour
 // cancellation during fan-out.
 func (s *Session) emit(ctx context.Context, evt domain.Event) {
 	if pe, ok := evt.(domain.ProtocolEvent); ok {
 		s.fanOutProtocol(ctx, pe)
-	} else {
-		s.events <- evt
-	}
-
-	s.maybeDispatch(ctx, evt)
-}
-
-// emitUIOnly is the dispatch-suppressed sibling of [emit]. Used
-// where the session records a fact for the UI without re-triggering
-// model reactions to it.
-func (s *Session) emitUIOnly(evt domain.Event) {
-	if pe, ok := evt.(domain.ProtocolEvent); ok {
-		s.fanOutProtocol(context.Background(), pe)
 		return
 	}
 
@@ -1991,17 +1979,6 @@ func (s *Session) emitUIOnly(evt domain.Event) {
 func (s *Session) persistAndEmit(ctx context.Context, ch domain.ChannelName, evt domain.PersistableEvent) {
 	s.appendEvent(ctx, ch, evt)
 	s.emit(ctx, evt)
-}
-
-// persistAndEmitUIOnly is the dispatch-suppressed sibling of
-// persistAndEmit: it persists `evt` to the channel event log but
-// emits it without fanning out to background dispatch. Used where
-// the session records a fact for replay (mode changes that follow an
-// already-in-flight dispatch) but does not want to retrigger model
-// reactions to it.
-func (s *Session) persistAndEmitUIOnly(ctx context.Context, ch domain.ChannelName, evt domain.PersistableEvent) {
-	s.appendEvent(ctx, ch, evt)
-	s.emitUIOnly(evt)
 }
 
 // actorEventConfig configures a single call to propagateActorEvent.
@@ -2066,50 +2043,6 @@ func (s *Session) propagateActorEvent(ctx context.Context, actor *domain.Instanc
 	}
 }
 
-// maybeDispatch checks whether an event is dispatchable and, if so,
-// starts a background dispatch for the relevant channel.
-func (s *Session) maybeDispatch(ctx context.Context, evt domain.Event) {
-	switch e := evt.(type) {
-	case domain.Message:
-		ircMsg, _ := protocol.FromChannelEvent(e)
-		s.dispatchInBackground(
-			ctx,
-			e.Target,
-			[]protocol.IRCMessage{ircMsg},
-		)
-
-	case domain.Join:
-		ircMsg, _ := protocol.FromChannelEvent(e)
-		s.dispatchInBackground(
-			ctx,
-			e.Target,
-			[]protocol.IRCMessage{ircMsg},
-		)
-
-	case domain.Part:
-		ircMsg, _ := protocol.FromChannelEvent(e)
-		s.dispatchInBackground(
-			ctx,
-			e.Target,
-			[]protocol.IRCMessage{ircMsg},
-		)
-
-	case domain.PokeEvent:
-		s.dispatchInBackground(
-			ctx,
-			e.Channel,
-			[]protocol.IRCMessage{{
-				Kind:   protocol.KindPoke,
-				From:   "modeloff",
-				Target: string(e.Channel),
-				Body:   "the channel is quiet. if something comes to mind, say it — otherwise just lurk. don't force it.",
-				At:     e.At,
-			}},
-		)
-
-	}
-}
-
 // saveAutojoinList persists the current user channel list as the
 // autojoin set.
 func (s *Session) saveAutojoinList(ctx context.Context) error {
@@ -2170,113 +2103,138 @@ func (s *Session) recordPersistenceFailure(ctx context.Context, ch domain.Channe
 	s.appendStatus(ctx, fmt.Sprintf("event log unavailable for %s: %s", ch, cause))
 }
 
-// dispatchInBackground runs dispatch for a channel in the background,
-// emitting events via emitUIOnly to avoid re-triggering the reactor.
-func (s *Session) dispatchInBackground(ctx context.Context, ch domain.ChannelName, triggerEvents []protocol.IRCMessage) {
-	go func() {
-		ctx, span := s.startSpan(
-			ctx,
-			"session.dispatch_background",
-			attribute.String(observability.AttrOperation, "session.dispatch_background"),
-			attribute.String(observability.AttrChannel, string(ch)),
-		)
-		defer span.End()
-		defer s.emitUIOnly(domain.DispatchDoneEvent{Channel: ch})
+// runModelDispatch is the long-lived dispatch goroutine for a
+// model-client. It reads protocol events from the subscription's
+// events channel and triggers an LLM turn for each event the
+// model should react to (a message in a channel/DM the model is
+// in, a JOIN/PART/MODE in a channel it shares, an INVITE
+// addressed at it, or a poke). Replies emit on the bus so peers'
+// goroutines pick them up; the chat-screen renders them via its
+// pacing queue.
+//
+// The goroutine exits when the events channel closes; the session
+// owns the producer side and is responsible for that close.
+//
+// Spans are not parented under the originating handler — channel-
+// based event delivery has no per-element ctx slot.
+func (s *Session) runModelDispatch(c *serverClient) {
+	if c.instance == nil {
+		return
+	}
 
-		instances, err := s.resolveDispatchRecipients(ctx, ch)
-		if err != nil {
-			setSpanError(span, err, observability.ErrorKindStore)
-			s.appendStatus(ctx, fmt.Sprintf("dispatch to %s: %s", ch, err))
-			return
-		}
+	ctx := context.Background()
 
-		if len(instances) == 0 {
-			span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-			return
-		}
-
-		nicks := make([]domain.Nick, len(instances))
-		for i, inst := range instances {
-			nicks[i] = inst.Nick()
-		}
-
-		s.emitUIOnly(domain.DispatchStartedEvent{Channel: ch, Nicks: nicks})
-
-		historyEvents, err := s.dispatchHistoryFor(ctx, ch, instances[0], triggerEvents)
-		if err != nil {
-			setSpanError(span, err, observability.ErrorKindStore)
-			s.appendStatus(ctx, fmt.Sprintf("dispatch to %s: %s", ch, err))
-			return
-		}
-
-		replies, err := s.dispatchToInstances(ctx, ch, historyEvents, triggerEvents)
-		if err != nil {
-			setSpanError(span, err, observability.ErrorKindDispatch)
-			s.appendStatus(ctx, fmt.Sprintf("dispatch to %s: %s", ch, err))
-		}
-
-		for _, reply := range replies {
-			s.emitUIOnly(reply)
-		}
-
-		if err == nil {
-			span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
+	defer func() {
+		if r := recover(); r != nil {
+			slog.ErrorContext(ctx, "dispatch goroutine panicked", "instance_id", c.id, "panic", r)
 		}
 	}()
+
+	for ev := range c.events {
+		ch, irc, ok := dispatchTrigger(c, ev)
+		if !ok {
+			continue
+		}
+
+		s.modelDispatchTurn(ctx, c, ch, irc)
+	}
 }
 
-// dispatchToInstanceInBackground sends trigger events to a single
-// instance in the background, emitting replies via emitUIOnly.
-func (s *Session) dispatchToInstanceInBackground(
-	ctx context.Context,
-	ch domain.ChannelName,
-	inst *domain.Instance,
-	triggerEvents []protocol.IRCMessage,
-) {
-	go func() {
-		nick := inst.Nick()
+// modelDispatchTurn runs a single LLM turn for `c.instance` in
+// response to `trigger`, emitting `DispatchStartedEvent` /
+// `DispatchDoneEvent` around the call so the chat-screen's
+// pending-response indicator stays accurate. The reply Messages
+// are persisted and emitted by [Session.buildReplies] via
+// [Session.dispatchToInstance].
+func (s *Session) modelDispatchTurn(ctx context.Context, c *serverClient, ch domain.ChannelName, trigger protocol.IRCMessage) {
+	inst := c.instance
+	nick := inst.Nick()
 
-		ctx, span := s.startSpan(
-			ctx,
-			"session.dispatch_to_instance_background",
-			attribute.String(observability.AttrOperation, "session.dispatch_to_instance_background"),
-			attribute.String(observability.AttrChannel, string(ch)),
-			attribute.String(observability.AttrModelID, string(inst.ModelID)),
-			attribute.String(observability.AttrNick, string(nick)),
-			attribute.String(observability.AttrInstanceID, string(inst.ID())),
-		)
-		defer span.End()
-		defer s.emitUIOnly(domain.DispatchDoneEvent{Channel: ch})
+	ctx, span := s.startSpan(
+		ctx,
+		"session.dispatch_model_turn",
+		attribute.String(observability.AttrOperation, "session.dispatch_model_turn"),
+		attribute.String(observability.AttrChannel, string(ch)),
+		attribute.String(observability.AttrModelID, string(inst.ModelID)),
+		attribute.String(observability.AttrNick, string(nick)),
+		attribute.String(observability.AttrInstanceID, string(inst.ID())),
+	)
+	defer span.End()
+	defer s.emit(ctx, domain.DispatchDoneEvent{Channel: ch})
 
-		window, err := s.dispatchWindowFor(ctx, ch, inst)
-		if err != nil {
-			setSpanError(span, err, observability.ErrorKindStore)
-			s.appendStatus(ctx, fmt.Sprintf("dispatch to %s: %s", ch, err))
-			return
+	window, err := s.dispatchWindowFor(ctx, ch, inst)
+	if err != nil {
+		setSpanError(span, err, observability.ErrorKindStore)
+		s.appendStatus(ctx, fmt.Sprintf("dispatch to %s: %s", ch, err))
+		return
+	}
+
+	historyEvents, err := s.dispatchHistoryFor(ctx, ch, inst, []protocol.IRCMessage{trigger})
+	if err != nil {
+		setSpanError(span, err, observability.ErrorKindStore)
+		s.appendStatus(ctx, fmt.Sprintf("dispatch to %s: %s", ch, err))
+		return
+	}
+
+	s.emit(ctx, domain.DispatchStartedEvent{Channel: ch, Nicks: []domain.Nick{nick}})
+
+	replies, err := s.dispatchToInstance(ctx, window, inst, ch, historyEvents, []protocol.IRCMessage{trigger})
+	if err != nil {
+		setSpanError(span, err, observability.ErrorKindDispatch)
+		s.appendStatus(ctx, fmt.Sprintf("dispatch to %s: %s", ch, err))
+		return
+	}
+
+	for _, r := range replies {
+		s.emit(ctx, r.Event)
+	}
+
+	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
+}
+
+// dispatchTrigger reports whether `ev` should make `c` take a
+// dispatch turn, and if so returns the target channel and the
+// wire-shaped trigger message the LLM call uses as context. The
+// criteria mirror the pre-7a behaviour of [maybeDispatch] plus
+// the freshly-invited case (a model takes its first turn in a
+// channel after [domain.ModelInvited] addresses it).
+func dispatchTrigger(c *serverClient, ev domain.ProtocolEvent) (domain.ChannelName, protocol.IRCMessage, bool) {
+	switch e := ev.(type) {
+	case domain.Message:
+		irc, _ := protocol.FromChannelEvent(e)
+		return e.Target, irc, true
+
+	case domain.Join:
+		irc, _ := protocol.FromChannelEvent(e)
+		return e.Target, irc, true
+
+	case domain.Part:
+		irc, _ := protocol.FromChannelEvent(e)
+		return e.Target, irc, true
+
+	case domain.ModelInvited:
+		if e.InstanceID != c.id {
+			return "", protocol.IRCMessage{}, false
 		}
 
-		historyEvents, err := s.store.EventsBefore(ctx, ch, nil, 500)
-		if err != nil {
-			setSpanError(span, err, observability.ErrorKindStore)
-			s.appendStatus(ctx, fmt.Sprintf("dispatch to %s: %s", ch, err))
-			return
-		}
+		return e.Target, protocol.IRCMessage{
+			Kind:   protocol.KindInvite,
+			From:   string(e.By),
+			Target: string(e.Target),
+			At:     e.At,
+		}, true
 
-		s.emitUIOnly(domain.DispatchStartedEvent{Channel: ch, Nicks: []domain.Nick{nick}})
+	case domain.PokeEvent:
+		return e.Channel, protocol.IRCMessage{
+			Kind:   protocol.KindPoke,
+			From:   "modeloff",
+			Target: string(e.Channel),
+			Body:   "the channel is quiet. if something comes to mind, say it — otherwise just lurk. don't force it.",
+			At:     e.At,
+		}, true
+	}
 
-		replies, err := s.dispatchToInstance(ctx, window, inst, ch, historyEvents, triggerEvents)
-		if err != nil {
-			setSpanError(span, err, observability.ErrorKindDispatch)
-			s.appendStatus(ctx, fmt.Sprintf("dispatch to %s: %s", ch, err))
-			return
-		}
-
-		for _, reply := range replies {
-			s.emitUIOnly(reply)
-		}
-
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-	}()
+	return "", protocol.IRCMessage{}, false
 }
 
 func (s *Session) memoriesForInstance(ctx context.Context, id domain.InstanceID) ([]memory.Entry, error) {

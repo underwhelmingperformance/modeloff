@@ -41,7 +41,7 @@ func TestSession_Model_returns_handle_for_known_instance(t *testing.T) {
 	sess, store := newTestSession(t)
 	ctx := t.Context()
 
-	inst := seedInstance(t, store, instanceSpec{
+	inst := seedInstance(t, sess, store, instanceSpec{
 		Nick:    "botty",
 		ModelID: "test/model",
 	})
@@ -71,7 +71,7 @@ func TestSession_Model_returns_same_pointer_on_repeat_lookup(t *testing.T) {
 	sess, store := newTestSession(t)
 	ctx := t.Context()
 
-	inst := seedInstance(t, store, instanceSpec{
+	inst := seedInstance(t, sess, store, instanceSpec{
 		Nick:    "botty",
 		ModelID: "test/model",
 	})

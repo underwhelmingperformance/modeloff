@@ -138,7 +138,7 @@ func TestSession_Handle_delegates(t *testing.T) {
 			name: "invite adds known nick to channel",
 			setup: func(t *testing.T, sess *Session, s *storemod.SQLiteStore) {
 				require.NoError(t, sess.JoinAs(t.Context(), sess.user, "#general"))
-				seedInstance(t, s, instanceSpec{Nick: "botty", ModelID: "test/model"})
+				seedInstance(t, sess, s, instanceSpec{Nick: "botty", ModelID: "test/model"})
 			},
 			client: userClient,
 			cmd:    protocol.Invite{Nick: "botty", Channel: "#general"},
@@ -154,7 +154,7 @@ func TestSession_Handle_delegates(t *testing.T) {
 			name: "kick removes nick from channel",
 			setup: func(t *testing.T, sess *Session, s *storemod.SQLiteStore) {
 				require.NoError(t, sess.JoinAs(t.Context(), sess.user, "#general"))
-				inst := seedInstance(t, s, instanceSpec{
+				inst := seedInstance(t, sess, s, instanceSpec{
 					Nick:     "botty",
 					ModelID:  "test/model",
 					Channels: testChannels("#general"),
@@ -182,8 +182,8 @@ func TestSession_Handle_delegates(t *testing.T) {
 		},
 		{
 			name: "whois delegates to session.Whois",
-			setup: func(t *testing.T, _ *Session, s *storemod.SQLiteStore) {
-				seedInstance(t, s, instanceSpec{Nick: "botty", ModelID: "test/model"})
+			setup: func(t *testing.T, sess *Session, s *storemod.SQLiteStore) {
+				seedInstance(t, sess, s, instanceSpec{Nick: "botty", ModelID: "test/model"})
 			},
 			client: userClient,
 			cmd:    protocol.Whois{Nick: "botty"},
