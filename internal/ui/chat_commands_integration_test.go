@@ -21,19 +21,32 @@ import (
 )
 
 func TestApp_send_message_shows_pending_indicator(t *testing.T) {
+	// The test exercises the user-`/msg`-triggered pending
+	// indicator. Block the dispatch turn that handles the user's
+	// PRIVMSG so the indicator stays on long enough for the
+	// assertion; let unrelated turns (the INVITE-driven turn
+	// AddModel triggers, the model-clients' first-attach turn,
+	// etc.) return silence immediately. Without this guard the
+	// model's dispatch goroutine is still parked in the INVITE
+	// turn when the user submits, queues the new Message behind
+	// it, and never emits the `DispatchStartedEvent` the pending
+	// indicator depends on.
 	release := make(chan struct{})
+
 	apiClient := &integrationAPI{
 		generateNickFn: func(context.Context, domain.ModelID, string, []domain.Nick) (domain.Nick, error) {
 			return "fakenick", nil
 		},
 		sendEventsFn: func(
-			context.Context,
-			domain.ModelID,
-			string,
-			[]protocol.IRCMessage,
-			[]protocol.IRCMessage,
+			_ context.Context,
+			_ domain.ModelID,
+			_ string,
+			_ []protocol.IRCMessage,
+			events []protocol.IRCMessage,
 		) (protocol.ModelResponse, error) {
-			<-release
+			if len(events) > 0 && events[0].Kind == protocol.KindPrivMsg {
+				<-release
+			}
 
 			return protocol.ModelResponse{Kind: protocol.ResponseSilence}, nil
 		},
