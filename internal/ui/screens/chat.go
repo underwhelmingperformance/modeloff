@@ -282,20 +282,23 @@ func (s ChatScreen) listenForEvents() tea.Cmd {
 	}
 }
 
-// listenForProtocolEvents reads the next event from the
-// user-client subscription's protocol channel and wraps it in a
-// protocolEventMsg. After each event, it should be re-invoked so
-// the channel is continuously drained.
+// listenForProtocolEvents reads the next delivery from the
+// user-client subscription's protocol channel and wraps its event
+// in a protocolEventMsg. The chat-screen does not consume the
+// span context the delivery carries — that is for model-client
+// dispatch goroutines to link their turn spans to the originating
+// handler. After each delivery, this should be re-invoked so the
+// channel is continuously drained.
 func (s ChatScreen) listenForProtocolEvents() tea.Cmd {
 	ch := s.client.Events()
 
 	return func() tea.Msg {
-		evt, ok := <-ch
+		delivery, ok := <-ch
 		if !ok {
 			return nil
 		}
 
-		return protocolEventMsg{event: evt}
+		return protocolEventMsg{event: delivery.Event}
 	}
 }
 

@@ -24,11 +24,13 @@ type Client interface {
 	// [Client.Events].
 	Send(ctx context.Context, cmd Command) (Response, error)
 
-	// Events returns the read end of the per-client event stream.
+	// Events returns the read end of the per-client delivery
+	// stream. Each [Delivery] wraps an [Event] alongside the
+	// originating handler's span context for OTel trace continuity.
 	// The server is the sole writer and owns the channel's
 	// lifecycle: it closes the channel on [Quit] / [Kill] / session
 	// shutdown.
-	Events() <-chan Event
+	Events() <-chan Delivery
 
 	// HasMode reports whether the client carries the given user
 	// mode. Operator-gated handlers consult this with [ModeOperator]

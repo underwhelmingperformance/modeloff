@@ -25,6 +25,7 @@ import (
 	"github.com/stretchr/testify/require"
 	orderedmap "github.com/wk8/go-ordered-map/v2"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/laney/modeloff/internal/api"
 	"github.com/laney/modeloff/internal/domain"
@@ -123,8 +124,8 @@ func normaliseInstance(inst *domain.Instance) comparableInstance {
 func readNextOnBusFor[T domain.Event](sess *Session) (domain.Event, bool) {
 	var zero T
 	if _, ok := any(zero).(domain.ProtocolEvent); ok {
-		evt, ok := <-sess.User().Events()
-		return evt, ok
+		delivery, ok := <-sess.User().Events()
+		return delivery.Event, ok
 	}
 
 	evt, ok := <-sess.Events()
@@ -139,8 +140,8 @@ func nextEvent(sess *Session) (domain.Event, bool) {
 	select {
 	case evt, ok := <-sess.Events():
 		return evt, ok
-	case evt, ok := <-sess.User().Events():
-		return evt, ok
+	case delivery, ok := <-sess.User().Events():
+		return delivery.Event, ok
 	}
 }
 
@@ -151,8 +152,8 @@ func peekEvent(sess *Session) (domain.Event, bool) {
 	select {
 	case evt := <-sess.Events():
 		return evt, true
-	case evt := <-sess.User().Events():
-		return evt, true
+	case delivery := <-sess.User().Events():
+		return delivery.Event, true
 	default:
 		return nil, false
 	}
@@ -213,12 +214,12 @@ func drainDispatchEvents(t *testing.T, sess *Session) {
 			default:
 				t.Fatalf("expected dispatch event, got %T", evt)
 			}
-		case evt := <-sess.User().Events():
-			switch evt.(type) {
+		case delivery := <-sess.User().Events():
+			switch delivery.Event.(type) {
 			case domain.DispatchStartedEvent, domain.DispatchDoneEvent:
 				continue
 			default:
-				t.Fatalf("expected dispatch event, got %T", evt)
+				t.Fatalf("expected dispatch event, got %T", delivery.Event)
 			}
 		case <-time.After(100 * time.Millisecond):
 			return
@@ -1494,7 +1495,7 @@ func TestSession_modelDispatchTurn_recordsSpan(t *testing.T) {
 		From:   "modeloff",
 		Target: "#general",
 	}
-	sess.modelDispatchTurn(ctx, client, "#general", trigger)
+	sess.modelDispatchTurn(ctx, client, "#general", trigger, trace.SpanContext{})
 
 	drainEvent[domain.DispatchStartedEvent](t, sess)
 	drainEvent[domain.DispatchDoneEvent](t, sess)
@@ -4438,8 +4439,8 @@ func drainNEvents(t *testing.T, sess *Session, n int) []domain.Event {
 		select {
 		case evt := <-sess.Events():
 			events = append(events, evt)
-		case evt := <-sess.User().Events():
-			events = append(events, evt)
+		case delivery := <-sess.User().Events():
+			events = append(events, delivery.Event)
 		case <-time.After(time.Second):
 			t.Fatalf("timed out draining events at %d/%d", len(events), n)
 		}

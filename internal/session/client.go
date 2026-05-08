@@ -30,7 +30,7 @@ type serverClient struct {
 	sess     *Session
 	id       protocol.ClientID
 	instance *domain.Instance
-	events   chan protocol.Event
+	events   chan protocol.Delivery
 	modes    map[protocol.UserMode]struct{}
 }
 
@@ -47,7 +47,7 @@ func newServerClient(sess *Session, id protocol.ClientID, inst *domain.Instance,
 		sess:     sess,
 		id:       id,
 		instance: inst,
-		events:   make(chan protocol.Event, eventBufSize),
+		events:   make(chan protocol.Delivery, eventBufSize),
 		modes:    modeSet,
 	}
 }
@@ -58,7 +58,7 @@ func (c *serverClient) Send(ctx context.Context, cmd protocol.Command) (protocol
 	return c.sess.Handle(ctx, c, cmd)
 }
 
-func (c *serverClient) Events() <-chan protocol.Event { return c.events }
+func (c *serverClient) Events() <-chan protocol.Delivery { return c.events }
 
 func (c *serverClient) HasMode(m protocol.UserMode) bool {
 	_, ok := c.modes[m]

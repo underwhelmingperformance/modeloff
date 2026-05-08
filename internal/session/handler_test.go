@@ -14,8 +14,8 @@ import (
 // closedProtocolEvents is a shared closed channel used as the
 // inert `Events()` return value for every [fakeClient]. Reusing
 // one channel avoids per-call allocation across test rows.
-var closedProtocolEvents = func() <-chan protocol.Event {
-	ch := make(chan protocol.Event)
+var closedProtocolEvents = func() <-chan protocol.Delivery {
+	ch := make(chan protocol.Delivery)
 	close(ch)
 	return ch
 }()
@@ -45,7 +45,7 @@ func (c *fakeClient) Send(_ context.Context, _ protocol.Command) (protocol.Respo
 	return protocol.Response{}, nil
 }
 
-func (c *fakeClient) Events() <-chan protocol.Event { return closedProtocolEvents }
+func (c *fakeClient) Events() <-chan protocol.Delivery { return closedProtocolEvents }
 
 func (c *fakeClient) HasMode(m protocol.UserMode) bool {
 	_, ok := c.modes[m]

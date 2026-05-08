@@ -308,6 +308,11 @@ func (s *Session) subscriberSnapshot() []*serverClient {
 func (s *Session) fanOutProtocol(ctx context.Context, pe domain.ProtocolEvent) {
 	suppressOriginator, sender := chatTrafficSender(pe)
 
+	delivery := protocol.Delivery{
+		Event:   pe,
+		SpanCtx: trace.SpanContextFromContext(ctx),
+	}
+
 	for _, sub := range s.subscriberSnapshot() {
 		if suppressOriginator && sub.Identity() == sender {
 			continue
@@ -318,7 +323,7 @@ func (s *Session) fanOutProtocol(ctx context.Context, pe domain.ProtocolEvent) {
 		}
 
 		select {
-		case sub.events <- pe:
+		case sub.events <- delivery:
 		case <-ctx.Done():
 			return
 		}
@@ -2104,19 +2109,22 @@ func (s *Session) recordPersistenceFailure(ctx context.Context, ch domain.Channe
 }
 
 // runModelDispatch is the long-lived dispatch goroutine for a
-// model-client. It reads protocol events from the subscription's
-// events channel and triggers an LLM turn for each event the
-// model should react to (a message in a channel/DM the model is
-// in, a JOIN/PART/MODE in a channel it shares, an INVITE
+// model-client. It reads [protocol.Delivery] envelopes from the
+// subscription's events channel and triggers an LLM turn for each
+// event the model should react to (a message in a channel/DM the
+// model is in, a JOIN/PART/MODE in a channel it shares, an INVITE
 // addressed at it, or a poke). Replies emit on the bus so peers'
 // goroutines pick them up; the chat-screen renders them via its
 // pacing queue.
 //
+// Each turn's span is linked to the originating handler's span via
+// the [trace.SpanContext] the producer captured at emit time. The
+// turn is not a child of the originator: fan-out is one-to-many
+// and each turn is its own operation. OTel links express that
+// "related but separate" relationship.
+//
 // The goroutine exits when the events channel closes; the session
 // owns the producer side and is responsible for that close.
-//
-// Spans are not parented under the originating handler — channel-
-// based event delivery has no per-element ctx slot.
 func (s *Session) runModelDispatch(c *serverClient) {
 	if c.instance == nil {
 		return
@@ -2130,13 +2138,13 @@ func (s *Session) runModelDispatch(c *serverClient) {
 		}
 	}()
 
-	for ev := range c.events {
-		ch, irc, ok := dispatchTrigger(c, ev)
+	for delivery := range c.events {
+		ch, irc, ok := dispatchTrigger(c, delivery.Event)
 		if !ok {
 			continue
 		}
 
-		s.modelDispatchTurn(ctx, c, ch, irc)
+		s.modelDispatchTurn(ctx, c, ch, irc, delivery.SpanCtx)
 	}
 }
 
@@ -2146,19 +2154,31 @@ func (s *Session) runModelDispatch(c *serverClient) {
 // pending-response indicator stays accurate. The reply Messages
 // are persisted and emitted by [Session.buildReplies] via
 // [Session.dispatchToInstance].
-func (s *Session) modelDispatchTurn(ctx context.Context, c *serverClient, ch domain.ChannelName, trigger protocol.IRCMessage) {
+//
+// `causeCtx` is the span context the producer captured at emit
+// time (see [protocol.Delivery]). When valid, the turn's span
+// carries an OTel link to it so traces stay connected across the
+// channel-based delivery boundary.
+func (s *Session) modelDispatchTurn(ctx context.Context, c *serverClient, ch domain.ChannelName, trigger protocol.IRCMessage, causeCtx trace.SpanContext) {
 	inst := c.instance
 	nick := inst.Nick()
 
-	ctx, span := s.startSpan(
-		ctx,
-		"session.dispatch_model_turn",
-		attribute.String(observability.AttrOperation, "session.dispatch_model_turn"),
-		attribute.String(observability.AttrChannel, string(ch)),
-		attribute.String(observability.AttrModelID, string(inst.ModelID)),
-		attribute.String(observability.AttrNick, string(nick)),
-		attribute.String(observability.AttrInstanceID, string(inst.ID())),
-	)
+	tracer := s.tracerProvider.Tracer("github.com/laney/modeloff/internal/session")
+
+	startOpts := []trace.SpanStartOption{
+		trace.WithAttributes(
+			attribute.String(observability.AttrOperation, "session.dispatch_model_turn"),
+			attribute.String(observability.AttrChannel, string(ch)),
+			attribute.String(observability.AttrModelID, string(inst.ModelID)),
+			attribute.String(observability.AttrNick, string(nick)),
+			attribute.String(observability.AttrInstanceID, string(inst.ID())),
+		),
+	}
+	if causeCtx.IsValid() {
+		startOpts = append(startOpts, trace.WithLinks(trace.Link{SpanContext: causeCtx}))
+	}
+
+	ctx, span := tracer.Start(ctx, "session.dispatch_model_turn", startOpts...)
 	defer span.End()
 	defer s.emit(ctx, domain.DispatchDoneEvent{Channel: ch})
 
