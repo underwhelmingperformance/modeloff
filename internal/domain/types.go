@@ -538,7 +538,7 @@ func (ml *MemberList) SetModeByNick(nick Nick, mode NickMode) {
 // RenameTo only updates this MemberList's snapshot — the caller is
 // responsible for also calling `inst.SetNick(newNick)` and for
 // re-calling `RenameTo` on every other channel the instance is in.
-// `Session.ChangeNickAs` handles this fan-out.
+// The session's nick-change path handles this fan-out.
 func (ml *MemberList) RenameTo(inst *Instance, newNick Nick) {
 	if ml.members == nil {
 		return

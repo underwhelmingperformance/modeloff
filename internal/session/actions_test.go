@@ -21,7 +21,7 @@ func TestJoinAs_model_actor(t *testing.T) {
 		Channels: orderedmap.New[domain.ChannelName, time.Time](),
 	})
 
-	require.NoError(t, sess.JoinAs(ctx, botty, "#dev"))
+	require.NoError(t, sess.joinAs(ctx, botty, "#dev"))
 
 	evt := drainEventSkipping[domain.Join](t, sess)
 	require.Equal(t, domain.Join{
@@ -76,7 +76,7 @@ func TestPartAs_model_actor(t *testing.T) {
 	})
 	seedChannelWithMembers(t, sess, s, "#dev", "testuser", "botty")
 
-	require.NoError(t, sess.PartAs(ctx, botty, "#dev", "goodbye"))
+	require.NoError(t, sess.partAs(ctx, botty, "#dev", "goodbye"))
 
 	evt := drainEvent[domain.Part](t, sess)
 	require.Equal(t, domain.Part{
@@ -105,12 +105,12 @@ func TestPartAs_unknown_actor_is_noop(t *testing.T) {
 
 	saveTestChannel(t, sess, s, newTestChannelWindow("#dev", fixedTime, testMembers(t, sess, s, "testuser")))
 
-	// PartAs for an instance that isn't in the channel must be a
+	// partAs for an instance that isn't in the channel must be a
 	// no-op: no PartEvent emission (the empty-id fallback would
 	// otherwise ask the UI to drop the human's channel), no stored
 	// membership mutation, no instance-channels mutation.
 	ghost := domain.NewModelInstance("ghost-id", "ghost", "test/model", "", nil)
-	require.NoError(t, sess.PartAs(ctx, ghost, "#dev", "bye"))
+	require.NoError(t, sess.partAs(ctx, ghost, "#dev", "bye"))
 
 	select {
 	case evt := <-sess.Events():
@@ -180,7 +180,7 @@ func TestSendMessageAs_model_actor(t *testing.T) {
 	})
 	seedChannelWithMembers(t, sess, s, "#dev", "testuser", "botty")
 
-	_, err := sess.SendMessageAs(ctx, botty, "#dev", "hello world")
+	_, err := sess.sendMessageAs(ctx, botty, "#dev", "hello world")
 	require.NoError(t, err)
 
 	evt := drainEvent[domain.Message](t, sess)
@@ -203,17 +203,17 @@ func TestSendMessageAs_model_actor(t *testing.T) {
 // channel they're in does not arrive on their own subscription's
 // events channel. The session's chat-traffic suppression rule is
 // applied uniformly at fan-out (RFC 2812 §3.3.1); the user-actor
-// branch in [Session.SendMessageAs] no longer carries it.
+// branch in [Session.sendMessageAs] no longer carries it.
 func TestSendMessageAs_user_actor_does_not_echo_to_originator(t *testing.T) {
 	sess, _ := newTestSession(t)
 	ctx := t.Context()
 
-	require.NoError(t, sess.JoinAs(ctx, sess.user, "#dev"))
+	require.NoError(t, sess.joinAs(ctx, sess.user, "#dev"))
 	drainEvent[domain.Join](t, sess)
 	drainEventSkipping[domain.ModeChange](t, sess)
 	drainDispatchEvents(t, sess)
 
-	_, err := sess.SendMessageAs(ctx, sess.user, "#dev", "hello")
+	_, err := sess.sendMessageAs(ctx, sess.user, "#dev", "hello")
 	require.NoError(t, err)
 
 	drainDispatchEvents(t, sess)
@@ -230,7 +230,7 @@ func TestSetTopicAs_model_actor(t *testing.T) {
 	botty := seedInstance(t, sess, s, instanceSpec{Nick: "botty", ModelID: "test/model"})
 	seedChannelWithMembers(t, sess, s, "#dev", "testuser", "botty")
 
-	require.NoError(t, sess.SetTopicAs(ctx, botty, "#dev", "new topic"))
+	require.NoError(t, sess.setTopicAs(ctx, botty, "#dev", "new topic"))
 
 	evt := drainEvent[domain.TopicChange](t, sess)
 	require.Equal(t, domain.TopicChange{
@@ -263,7 +263,7 @@ func TestKickAs_model_actor(t *testing.T) {
 	})
 	seedChannelWithMembers(t, sess, s, "#dev", "testuser", "botty", "helper")
 
-	require.NoError(t, sess.KickAs(ctx, botty, helper, "#dev"))
+	require.NoError(t, sess.kickAs(ctx, botty, helper, "#dev"))
 
 	evt := drainEvent[domain.ModelKicked](t, sess)
 	require.Equal(t, domain.ModelKicked{
@@ -293,7 +293,7 @@ func TestInviteAs_model_actor(t *testing.T) {
 	botty := seedInstance(t, sess, s, instanceSpec{Nick: "botty", ModelID: "test/model"})
 	seedChannelWithMembers(t, sess, s, "#dev", "testuser", "botty")
 
-	require.NoError(t, sess.InviteAs(ctx, botty, "helper", "#dev"))
+	require.NoError(t, sess.inviteAs(ctx, botty, "helper", "#dev"))
 
 	// Model invites produce a system notice, not a real invite.
 	events, err := s.EventsBefore(ctx, "#dev", nil, 100)
@@ -341,7 +341,7 @@ func TestSendMessageAs_rejects_status_channel(t *testing.T) {
 	sess, _ := newTestSession(t)
 	ctx := t.Context()
 
-	_, err := sess.SendMessageAs(ctx, sess.UserInstance(), domain.StatusChannelName, "hello")
+	_, err := sess.sendMessageAs(ctx, sess.UserInstance(), domain.StatusChannelName, "hello")
 
 	var guard domain.StatusChannelGuardError
 	require.ErrorAs(t, err, &guard)
@@ -359,7 +359,7 @@ func TestSendActionAs_rejects_status_channel(t *testing.T) {
 	sess, _ := newTestSession(t)
 	ctx := t.Context()
 
-	_, err := sess.SendActionAs(ctx, sess.UserInstance(), domain.StatusChannelName, "waves")
+	_, err := sess.sendActionAs(ctx, sess.UserInstance(), domain.StatusChannelName, "waves")
 
 	var guard domain.StatusChannelGuardError
 	require.ErrorAs(t, err, &guard)
@@ -398,7 +398,7 @@ func TestSendMessageAs_model_to_model_dispatches(t *testing.T) {
 
 	target := domain.ChannelName(helper.ID())
 
-	_, err := sess.SendMessageAs(ctx, botty, target, "hey there")
+	_, err := sess.sendMessageAs(ctx, botty, target, "hey there")
 	require.NoError(t, err)
 
 	evt := drainEvent[domain.Message](t, sess)
@@ -434,7 +434,7 @@ func TestJoinAs_normalises_channel_prefix(t *testing.T) {
 	})
 
 	// Model joins with bare name (no # prefix).
-	require.NoError(t, sess.JoinAs(ctx, botty, "modeloff"))
+	require.NoError(t, sess.joinAs(ctx, botty, "modeloff"))
 
 	evt := drainEvent[domain.Join](t, sess)
 	require.Equal(t, domain.ChannelName("#modeloff"), evt.Target)
@@ -473,7 +473,7 @@ func TestJoinAs_user_new_channel_emits_join_and_mode(t *testing.T) {
 	sess, _ := newTestSession(t)
 	ctx := t.Context()
 
-	require.NoError(t, sess.JoinAs(ctx, sess.UserInstance(), "#dev"))
+	require.NoError(t, sess.joinAs(ctx, sess.UserInstance(), "#dev"))
 
 	joinEvt := drainEvent[domain.Join](t, sess)
 	require.Equal(t, domain.Join{
@@ -507,7 +507,7 @@ func TestJoinAs_user_existing_channel_with_topic(t *testing.T) {
 	withAlice.TopicSetAt = fixedTime.Add(-time.Hour)
 	saveTestChannel(t, sess, s, withAlice)
 
-	require.NoError(t, sess.JoinAs(ctx, sess.UserInstance(), "#dev"))
+	require.NoError(t, sess.joinAs(ctx, sess.UserInstance(), "#dev"))
 
 	joinEvt := drainEvent[domain.Join](t, sess)
 	require.Equal(t, domain.Join{
@@ -539,7 +539,7 @@ func TestJoinAs_user_existing_channel_no_topic(t *testing.T) {
 
 	saveTestChannel(t, sess, s, newTestChannelWindow("#dev", fixedTime.Add(-time.Hour), testMembers(t, sess, s, "alice")))
 
-	require.NoError(t, sess.JoinAs(ctx, sess.UserInstance(), "#dev"))
+	require.NoError(t, sess.joinAs(ctx, sess.UserInstance(), "#dev"))
 
 	_ = drainEvent[domain.Join](t, sess)
 	_ = drainEventSkipping[domain.ModeChange](t, sess)
@@ -570,7 +570,7 @@ func TestJoinAs_model_voice_only_no_topic(t *testing.T) {
 	ch.Topic = "some topic"
 	saveTestChannel(t, sess, s, ch)
 
-	require.NoError(t, sess.JoinAs(ctx, botty, "#dev"))
+	require.NoError(t, sess.joinAs(ctx, botty, "#dev"))
 
 	joinEvt := drainEventSkipping[domain.Join](t, sess)
 	require.Equal(t, domain.Nick("botty"), joinEvt.Instance.Nick())
@@ -606,11 +606,11 @@ func TestJoinAs_user_updates_autojoin(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	require.NoError(t, sess.JoinAs(ctx, sess.UserInstance(), "#general"))
+	require.NoError(t, sess.joinAs(ctx, sess.UserInstance(), "#general"))
 	drainEventSkipping[domain.Join](t, sess)
 	drainEventSkipping[domain.ModeChange](t, sess)
 
-	require.NoError(t, sess.JoinAs(ctx, sess.UserInstance(), "#dev"))
+	require.NoError(t, sess.joinAs(ctx, sess.UserInstance(), "#dev"))
 	drainEventSkipping[domain.Join](t, sess)
 	drainEventSkipping[domain.ModeChange](t, sess)
 
@@ -623,15 +623,15 @@ func TestPartAs_user_updates_autojoin(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	require.NoError(t, sess.JoinAs(ctx, sess.UserInstance(), "#general"))
+	require.NoError(t, sess.joinAs(ctx, sess.UserInstance(), "#general"))
 	drainEventSkipping[domain.Join](t, sess)
 	drainEventSkipping[domain.ModeChange](t, sess)
 
-	require.NoError(t, sess.JoinAs(ctx, sess.UserInstance(), "#dev"))
+	require.NoError(t, sess.joinAs(ctx, sess.UserInstance(), "#dev"))
 	drainEventSkipping[domain.Join](t, sess)
 	drainEventSkipping[domain.ModeChange](t, sess)
 
-	require.NoError(t, sess.PartAs(ctx, sess.UserInstance(), "#general", "bye"))
+	require.NoError(t, sess.partAs(ctx, sess.UserInstance(), "#general", "bye"))
 	drainEventSkipping[domain.Part](t, sess)
 
 	got, err := s.ListAutojoinChannels(ctx)

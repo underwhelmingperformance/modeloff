@@ -485,7 +485,7 @@ func (s *Session) appendStatus(ctx context.Context, text string) {
 }
 
 // setUserMode records the user's mode for a channel. It is called
-// from JoinAs on a successful join and from SetMode when the user's
+// from joinAs on a successful join and from SetMode when the user's
 // mode changes. The mode is used by loadChannel/loadChannels to
 // re-inject the user into channel member lists returned from the
 // store.
@@ -740,14 +740,14 @@ func (s *Session) UserJoinedAt(ch domain.ChannelName) time.Time {
 // Join creates or opens a channel. Events are emitted on the
 // session event channel.
 func (s *Session) Join(ctx context.Context, channelName string) error {
-	return s.JoinAs(ctx, s.user, domain.ChannelName(channelName))
+	return s.joinAs(ctx, s.user, domain.ChannelName(channelName))
 }
 
 // Part records the user leaving a channel. An optional farewell
 // message is included in the event. Events are emitted on the
 // session event channel.
 func (s *Session) Part(ctx context.Context, ch domain.ChannelName, message string) error {
-	return s.PartAs(ctx, s.user, ch, message)
+	return s.partAs(ctx, s.user, ch, message)
 }
 
 // Quit performs a clean client-side shutdown. For each channel the
@@ -815,18 +815,18 @@ func (s *Session) Quit(ctx context.Context, message string) (retErr error) {
 // JoinAutojoinChannels loads the autojoin channel list and issues an
 // ordinary JOIN for each entry. It is intended to be called by the
 // UI immediately after Connect signals readiness; from the backend's
-// perspective the resulting JoinAs calls are indistinguishable from
+// perspective the resulting joinAs calls are indistinguishable from
 // the user typing /join manually.
 //
 // Pre-condition: Connect has been called, so any stale memberships
-// from the previous session have been cleaned up. Each JoinAs call
+// from the previous session have been cleaned up. Each joinAs call
 // therefore takes the !alreadyMember path and emits the full IRC
 // join protocol (JoinEvent, ChanServ +o ModeChangeEvent, optional
 // TopicInfoEvent) plus stamps UserJoinedAt to the current time.
 //
 // Error contract: best-effort. The function only returns a non-nil
 // error if the autojoin list itself cannot be loaded. Per-channel
-// JoinAs failures are surfaced via two separate signals — a
+// joinAs failures are surfaced via two separate signals — a
 // "Failed to join …" notice on the status channel for the user, and
 // AttrAutojoinFailed plus an error-kind ErrorKindAutojoin on the
 // aggregate session.autojoin span for observability — and the
@@ -853,7 +853,7 @@ func (s *Session) JoinAutojoinChannels(ctx context.Context) error {
 	for _, ch := range channels {
 		s.appendStatus(ctx, fmt.Sprintf("Joining %s", ch))
 
-		if err := s.JoinAs(ctx, s.user, ch); err != nil {
+		if err := s.joinAs(ctx, s.user, ch); err != nil {
 			failed++
 			slog.Default().ErrorContext(ctx, "autojoin channel", "channel", ch, "error", err)
 			s.appendStatus(ctx, fmt.Sprintf("Failed to join %s: %s", ch, err))
@@ -1127,17 +1127,17 @@ func (s *Session) Kick(ctx context.Context, ch domain.ChannelName, nick domain.N
 		return fmt.Errorf("resolve nick: %w", err)
 	}
 
-	return s.KickAs(ctx, s.user, target, ch)
+	return s.kickAs(ctx, s.user, target, ch)
 }
 
-// SendMessage is the user shorthand for [Session.SendMessageAs].
+// SendMessage is the user shorthand for [Session.sendMessageAs].
 func (s *Session) SendMessage(ctx context.Context, ch domain.ChannelName, body string) (domain.Message, error) {
-	return s.SendMessageAs(ctx, s.user, ch, body)
+	return s.sendMessageAs(ctx, s.user, ch, body)
 }
 
-// SendAction is the user shorthand for [Session.SendActionAs].
+// SendAction is the user shorthand for [Session.sendActionAs].
 func (s *Session) SendAction(ctx context.Context, ch domain.ChannelName, body string) (domain.Message, error) {
-	return s.SendActionAs(ctx, s.user, ch, body)
+	return s.sendActionAs(ctx, s.user, ch, body)
 }
 
 // DispatchToChannel sends new events to all model instances in a channel
@@ -1173,13 +1173,13 @@ func (s *Session) DispatchToChannel(
 
 // SetTopic sets the topic of a channel.
 func (s *Session) SetTopic(ctx context.Context, ch domain.ChannelName, topic string) error {
-	return s.SetTopicAs(ctx, s.user, ch, topic)
+	return s.setTopicAs(ctx, s.user, ch, topic)
 }
 
 // ChangeNick changes the user's nickname and updates all channel
 // memberships accordingly.
 func (s *Session) ChangeNick(ctx context.Context, newNick domain.Nick) error {
-	return s.ChangeNickAs(ctx, s.user, newNick)
+	return s.changeNickAs(ctx, s.user, newNick)
 }
 
 // Whois returns metadata about a model instance.
@@ -2052,10 +2052,10 @@ func (s *Session) saveAutojoinList(ctx context.Context) error {
 // persistableAutojoinChannels returns the user's current channel
 // set restricted to `KindChannel` entries. The status channel is
 // re-created by Connect/openStatusChannel on every startup, so
-// persisting it would produce a spurious JoinAs("&modeloff") on
+// persisting it would produce a spurious joinAs("&modeloff") on
 // the next session. DM windows are pure UI affordances — they
 // hold no shared state to rejoin and would resolve to a fake
-// `#`-channel if `JoinAutojoinChannels` ever called `JoinAs`
+// `#`-channel if `JoinAutojoinChannels` ever called `joinAs`
 // with their `InstanceID`-shaped name.
 func (s *Session) persistableAutojoinChannels() []domain.ChannelName {
 	var channels []domain.ChannelName

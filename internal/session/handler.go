@@ -18,7 +18,7 @@ var errHandlerNotYetImplemented = errors.New("not yet implemented")
 // [protocol.Client] sends commands to the session. Each
 // [protocol.Command] case looks up the actor implied by the
 // client's identity and forwards to the existing `*As` session
-// method (`JoinAs`, `PartAs`, …) where one exists.
+// method (`joinAs`, `partAs`, …) where one exists.
 //
 // `OpenDM`, `AddModel`, `Quit`, and `Kill` currently return
 // [errHandlerNotYetImplemented].
@@ -66,7 +66,7 @@ func (s *Session) handleJoin(ctx context.Context, c protocol.Client, cmd protoco
 		return protocol.Response{}, err
 	}
 
-	return commandResult(s.JoinAs(ctx, actor, cmd.Channel))
+	return commandResult(s.joinAs(ctx, actor, cmd.Channel))
 }
 
 func (s *Session) handlePart(ctx context.Context, c protocol.Client, cmd protocol.Part) (protocol.Response, error) {
@@ -75,7 +75,7 @@ func (s *Session) handlePart(ctx context.Context, c protocol.Client, cmd protoco
 		return protocol.Response{}, err
 	}
 
-	return commandResult(s.PartAs(ctx, actor, cmd.Channel, cmd.Reason))
+	return commandResult(s.partAs(ctx, actor, cmd.Channel, cmd.Reason))
 }
 
 func (s *Session) handlePrivMsg(ctx context.Context, c protocol.Client, cmd protocol.PrivMsg) (protocol.Response, error) {
@@ -84,7 +84,7 @@ func (s *Session) handlePrivMsg(ctx context.Context, c protocol.Client, cmd prot
 		return protocol.Response{}, err
 	}
 
-	_, sendErr := s.SendMessageAs(ctx, actor, cmd.Target, cmd.Body)
+	_, sendErr := s.sendMessageAs(ctx, actor, cmd.Target, cmd.Body)
 
 	return commandResult(sendErr)
 }
@@ -95,7 +95,7 @@ func (s *Session) handleAction(ctx context.Context, c protocol.Client, cmd proto
 		return protocol.Response{}, err
 	}
 
-	_, sendErr := s.SendActionAs(ctx, actor, cmd.Target, cmd.Body)
+	_, sendErr := s.sendActionAs(ctx, actor, cmd.Target, cmd.Body)
 
 	return commandResult(sendErr)
 }
@@ -106,7 +106,7 @@ func (s *Session) handleTopic(ctx context.Context, c protocol.Client, cmd protoc
 		return protocol.Response{}, err
 	}
 
-	return commandResult(s.SetTopicAs(ctx, actor, cmd.Channel, cmd.Body))
+	return commandResult(s.setTopicAs(ctx, actor, cmd.Channel, cmd.Body))
 }
 
 func (s *Session) handleInvite(ctx context.Context, c protocol.Client, cmd protocol.Invite) (protocol.Response, error) {
@@ -115,7 +115,7 @@ func (s *Session) handleInvite(ctx context.Context, c protocol.Client, cmd proto
 		return protocol.Response{}, err
 	}
 
-	return commandResult(s.InviteAs(ctx, actor, cmd.Nick, cmd.Channel))
+	return commandResult(s.inviteAs(ctx, actor, cmd.Nick, cmd.Channel))
 }
 
 func (s *Session) handleKick(ctx context.Context, c protocol.Client, cmd protocol.Kick) (protocol.Response, error) {
@@ -129,7 +129,7 @@ func (s *Session) handleKick(ctx context.Context, c protocol.Client, cmd protoco
 		return commandResult(err)
 	}
 
-	return commandResult(s.KickAs(ctx, actor, target, cmd.Channel))
+	return commandResult(s.kickAs(ctx, actor, target, cmd.Channel))
 }
 
 func (s *Session) handleNick(ctx context.Context, c protocol.Client, cmd protocol.Nick) (protocol.Response, error) {
@@ -138,7 +138,7 @@ func (s *Session) handleNick(ctx context.Context, c protocol.Client, cmd protoco
 		return protocol.Response{}, err
 	}
 
-	return commandResult(s.ChangeNickAs(ctx, actor, cmd.New))
+	return commandResult(s.changeNickAs(ctx, actor, cmd.New))
 }
 
 func (s *Session) handleWhois(ctx context.Context, cmd protocol.Whois) (protocol.Response, error) {

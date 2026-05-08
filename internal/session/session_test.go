@@ -767,7 +767,7 @@ func TestSession_Connect_unclean_recovery_emits_status_notices(t *testing.T) {
 	}, got)
 }
 
-// TestSession_user_snapshot_race_free hammers JoinAs, PartAs, and
+// TestSession_user_snapshot_race_free hammers joinAs, partAs, and
 // UserJoinedAt from concurrent goroutines. Run under -race it catches
 // any regression that reintroduces direct mutation of the shared
 // OrderedMap.
@@ -1240,7 +1240,7 @@ func TestSession_SendMessageAs_status_channel_records_validation_error_kind(t *t
 	sess, _ := newTestSession(t)
 	sess.WithTracerProvider(provider)
 
-	_, err := sess.SendMessageAs(t.Context(), sess.UserInstance(), domain.StatusChannelName, "hello")
+	_, err := sess.sendMessageAs(t.Context(), sess.UserInstance(), domain.StatusChannelName, "hello")
 	require.Error(t, err)
 
 	span := oteltest.FindSpan(t, recorder, "session.send_message")
@@ -1274,7 +1274,7 @@ func TestSession_spans_carry_AttrInstanceID(t *testing.T) {
 					Nick:    "botty",
 					ModelID: "test/model",
 				})
-				require.NoError(t, sess.ChangeNickAs(ctx, botty, "botty2"))
+				require.NoError(t, sess.changeNickAs(ctx, botty, "botty2"))
 			},
 			wantInstID: testMemberID("botty"),
 		},
@@ -1297,7 +1297,7 @@ func TestSession_spans_carry_AttrInstanceID(t *testing.T) {
 					Nick:    "botty",
 					ModelID: "test/model",
 				})
-				require.NoError(t, sess.JoinAs(ctx, botty, "#dev"))
+				require.NoError(t, sess.joinAs(ctx, botty, "#dev"))
 			},
 			wantInstID: testMemberID("botty"),
 		},
@@ -1327,7 +1327,7 @@ func TestSession_spans_carry_AttrInstanceID(t *testing.T) {
 					Channels: testChannels("#dev"),
 				})
 				seedChannelWithMembers(t, sess, s, "#dev", "testuser", "botty")
-				require.NoError(t, sess.PartAs(ctx, botty, "#dev", ""))
+				require.NoError(t, sess.partAs(ctx, botty, "#dev", ""))
 			},
 			wantInstID: testMemberID("botty"),
 		},
@@ -2311,7 +2311,7 @@ func TestSession_ChangeNickAs_collisions(t *testing.T) {
 			sess, store := newTestSession(t)
 			actor, target := tt.setup(t, sess, store)
 
-			err := sess.ChangeNickAs(t.Context(), actor, target)
+			err := sess.changeNickAs(t.Context(), actor, target)
 
 			if tt.wantError {
 				var nickInUse domain.NickInUseError
@@ -2366,7 +2366,7 @@ func TestSession_InviteAs_existing_instance_to_nonexistent_channel_does_not_corr
 	})
 	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
 
-	require.Error(t, sess.InviteAs(ctx, sess.UserInstance(), "botty", "#ghost"))
+	require.Error(t, sess.inviteAs(ctx, sess.UserInstance(), "botty", "#ghost"))
 
 	// Instance should not have the phantom channel in its set.
 	inst, err := s.ResolveNick(ctx, "botty")
@@ -2417,7 +2417,7 @@ func TestSession_InviteAs_reuses_existing_instance(t *testing.T) {
 	seedChannelWithMembers(t, sess, s, "#general", "testuser")
 	seedChannelWithMembers(t, sess, s, "#random", "testuser")
 
-	require.NoError(t, sess.InviteAs(ctx, sess.UserInstance(), "botty", "#random"))
+	require.NoError(t, sess.inviteAs(ctx, sess.UserInstance(), "botty", "#random"))
 	evt := drainEvent[domain.ModelInvited](t, sess)
 	require.Equal(t, domain.ModelInvited{
 		Target:     "#random",
@@ -2455,7 +2455,7 @@ func TestSession_InviteAs_existing_instance_is_idempotent(t *testing.T) {
 	})
 	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
 
-	require.NoError(t, sess.InviteAs(ctx, sess.UserInstance(), "botty", "#general"))
+	require.NoError(t, sess.inviteAs(ctx, sess.UserInstance(), "botty", "#general"))
 
 	inst, err := s.ResolveNick(ctx, "botty")
 	require.NoError(t, err)
@@ -2479,7 +2479,7 @@ func TestSession_InviteAs_existing_instance_preserves_persona(t *testing.T) {
 	seedChannelWithMembers(t, sess, s, "#general", "testuser")
 	seedChannelWithMembers(t, sess, s, "#random", "testuser")
 
-	require.NoError(t, sess.InviteAs(ctx, sess.UserInstance(), "botty", "#random"))
+	require.NoError(t, sess.inviteAs(ctx, sess.UserInstance(), "botty", "#random"))
 	evt := drainEvent[domain.ModelInvited](t, sess)
 	require.Equal(t, "Existing persona", evt.Instance.Persona())
 
@@ -2698,9 +2698,9 @@ func TestSession_DM_routing_survives_counterpart_rename(t *testing.T) {
 	botty := seedInstance(t, sess, s, instanceSpec{Nick: "botty", ModelID: "test/model"})
 	dm := domain.NewDMWindow(botty, fixedTime)
 
-	require.NoError(t, sess.ChangeNickAs(ctx, botty, "foobar"))
+	require.NoError(t, sess.changeNickAs(ctx, botty, "foobar"))
 
-	_, err := sess.SendMessageAs(ctx, sess.UserInstance(), dm.Name(), "hi")
+	_, err := sess.sendMessageAs(ctx, sess.UserInstance(), dm.Name(), "hi")
 	require.NoError(t, err)
 
 	require.Equal(t, domain.Nick(dm.Name()), <-delivered)
@@ -4171,7 +4171,7 @@ func saveTestChannel(t *testing.T, sess *Session, s *storemod.SQLiteStore, w dom
 // registerUserMembership updates the session's in-memory user state
 // when a test seeds a channel that lists the user as a member. It
 // adds the channel to `user.Channels()` and records the
-// conventional ModeOp that `JoinAs` would have set on a real join.
+// conventional ModeOp that `joinAs` would have set on a real join.
 // Tests that want a different mode can override via the internal
 // `setUserMode` helper.
 func registerUserMembership(t *testing.T, sess *Session, name domain.ChannelName, members []domain.Nick) {
@@ -4732,7 +4732,7 @@ func TestSendMessageAs_model_triggers_dispatch_to_other_models(t *testing.T) {
 	})
 	seedChannelWithMembers(t, sess, s, "#general", "testuser", "alpha", "beta")
 
-	_, err := sess.SendMessageAs(ctx, alpha, "#general", "hello from alpha")
+	_, err := sess.sendMessageAs(ctx, alpha, "#general", "hello from alpha")
 	require.NoError(t, err)
 
 	// Wait for async dispatch to complete.

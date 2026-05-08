@@ -375,8 +375,14 @@ func SeedMessage(t testing.TB, sess *session.Session, channel, body string) {
 		require.NoError(t, sess.SaveInstance(t.Context(), bot))
 	}
 
-	_, err = sess.SendMessageAs(t.Context(), bot, domain.ChannelName(channel), body)
+	client := sess.Model(t.Context(), protocol.ClientID(bot.ID()))
+	require.NotNil(t, client, "model client for seedbot must exist")
+	resp, err := client.Send(t.Context(), protocol.PrivMsg{
+		Target: domain.ChannelName(channel),
+		Body:   body,
+	})
 	require.NoError(t, err)
+	require.NoError(t, resp.Err)
 }
 
 // DrainEvents discards any buffered events on both session event

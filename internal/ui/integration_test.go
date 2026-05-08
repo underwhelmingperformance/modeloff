@@ -141,7 +141,11 @@ func TestApp_terminal_output_shows_full_model_nick_in_user_list(t *testing.T) {
 		Channels: channels,
 	})
 
-	require.NoError(t, sess.JoinAs(t.Context(), grok, "#general"))
+	client := sess.Model(t.Context(), protocol.ClientID(grok.ID()))
+	require.NotNil(t, client, "model client for seeded grok must exist")
+	resp, err := client.Send(t.Context(), protocol.Join{Channel: "#general"})
+	require.NoError(t, err)
+	require.NoError(t, resp.Err)
 
 	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore, domain.KindStatus)
 	require.NoError(t, err)

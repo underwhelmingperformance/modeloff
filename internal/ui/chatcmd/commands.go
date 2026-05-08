@@ -27,8 +27,7 @@ type ChannelFocusMsg struct {
 // DMOpenedMsg is fired by `/msg <nick> <body>` and `/query <nick>
 // [<body>]`. The chat screen materialises a DM window for
 // `Counterpart`, optionally focus-switches, and optionally sends
-// `Body` via `SendMessageAs`. `/query` sets `Focus`; `/msg`
-// leaves it false.
+// `Body` to it. `/query` sets `Focus`; `/msg` leaves it false.
 type DMOpenedMsg struct {
 	Counterpart *domain.Instance
 	Body        string
@@ -394,11 +393,11 @@ func (c MsgCommand) Run(rc Context) tea.Cmd {
 		}
 
 		// The chat screen handler materialises the DM window
-		// (creating it if missing) and routes the body through
-		// `SendMessageAs`, in that order, so the rendered message
-		// always lands in an existing sidebar entry. Focus stays
-		// where the user had it — `/msg` is a send command, not a
-		// window-opening one.
+		// (creating it if missing) and then sends the body to it,
+		// in that order, so the rendered message always lands in
+		// an existing sidebar entry. Focus stays where the user
+		// had it — `/msg` is a send command, not a window-opening
+		// one.
 		return DMOpenedMsg{
 			Counterpart: resolved,
 			Body:        body,
@@ -410,10 +409,9 @@ func (c MsgCommand) Run(rc Context) tea.Cmd {
 
 // actorInChannel reports whether `actor` is a member of `target`.
 // The membership snapshot is read from the actor's joined-channel
-// map; the same precondition is enforced server-side in
-// [session.Session.SendMessageAs], but pre-checking lets the
-// chat-screen surface a typed "not a member" error before going
-// over the wire.
+// map; the same precondition is enforced server-side, but pre-
+// checking lets the chat-screen surface a typed "not a member"
+// error before going over the wire.
 func (MsgCommand) actorInChannel(actor *domain.Instance, target domain.ChannelName) bool {
 	target = domain.NormaliseChannelName(target)
 
@@ -443,7 +441,7 @@ func notInChannelError(target domain.ChannelName) error {
 // `/query` is purely a UI affordance — the session has no notion
 // of "opening" a DM. The chat screen handles `QueryOpenedEvent`
 // by inserting the DM into its sidebar cache, focus-switching,
-// and (when `Body` is non-empty) routing through `SendMessageAs`.
+// and (when `Body` is non-empty) sending the body to it.
 type QueryCommand struct {
 	Nick string   `arg:"" help:"Nick to open a direct message with"`
 	Body []string `arg:"" optional:"" nargs:"-1" help:"Optional message text"`
@@ -503,8 +501,16 @@ func (c MsgCommand) RunTool(ctx context.Context, tc session.ToolContext) session
 		return session.ToolResultPayload{OK: false, Error: fmt.Errorf("resolve nick: %w", err).Error()}
 	}
 
-	if _, err := tc.Session.SendMessageAs(ctx, tc.Actor, domain.ChannelName(resolved.ID()), body); err != nil {
+	resp, err := tc.Client.Send(ctx, protocol.PrivMsg{
+		Target: domain.ChannelName(resolved.ID()),
+		Body:   body,
+	})
+	if err != nil {
 		return session.ToolResultPayload{OK: false, Error: err.Error()}
+	}
+
+	if resp.Err != nil {
+		return session.ToolResultPayload{OK: false, Error: resp.Err.Error()}
 	}
 
 	return session.ToolResultPayload{

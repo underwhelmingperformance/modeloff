@@ -15,8 +15,8 @@ import (
 	"github.com/laney/modeloff/internal/store"
 )
 
-// JoinAs joins the given actor to a channel.
-func (s *Session) JoinAs(ctx context.Context, actor *domain.Instance, ch domain.ChannelName) (retErr error) {
+// joinAs joins the given actor to a channel.
+func (s *Session) joinAs(ctx context.Context, actor *domain.Instance, ch domain.ChannelName) (retErr error) {
 	ch = domain.NormaliseChannelName(ch)
 
 	actorNick := actor.Nick()
@@ -105,7 +105,7 @@ func (s *Session) JoinAs(ctx context.Context, actor *domain.Instance, ch domain.
 // a fresh one that already contains the actor. Returns the
 // (possibly freshly-saved) `*ChannelWindow`, whether it was newly
 // created, and any persistence error encountered along the way.
-// JoinAs is the only caller and is gated on `#`-prefixed names by
+// joinAs is the only caller and is gated on `#`-prefixed names by
 // `NormaliseChannelName`, so a load that returns a non-channel
 // row indicates a programming error in the upstream guard rather
 // than a user-reachable state.
@@ -210,8 +210,8 @@ func (s *Session) grantVoice(ctx context.Context, ch domain.ChannelName, window 
 	return nil
 }
 
-// PartAs parts the given actor from a channel.
-func (s *Session) PartAs(ctx context.Context, actor *domain.Instance, ch domain.ChannelName, message string) (retErr error) {
+// partAs parts the given actor from a channel.
+func (s *Session) partAs(ctx context.Context, actor *domain.Instance, ch domain.ChannelName, message string) (retErr error) {
 	actorNick := actor.Nick()
 
 	ctx, span := s.startSpan(
@@ -330,8 +330,8 @@ func (s *Session) QuitAs(ctx context.Context, actor *domain.Instance, message st
 	return nil
 }
 
-// ChangeNickAs changes the given actor's nickname.
-func (s *Session) ChangeNickAs(ctx context.Context, actor *domain.Instance, newNick domain.Nick) (retErr error) {
+// changeNickAs changes the given actor's nickname.
+func (s *Session) changeNickAs(ctx context.Context, actor *domain.Instance, newNick domain.Nick) (retErr error) {
 	oldNick := actor.Nick()
 
 	ctx, span := s.startSpan(
@@ -388,13 +388,13 @@ func (s *Session) ChangeNickAs(ctx context.Context, actor *domain.Instance, newN
 	return nil
 }
 
-// SendMessageAs records a message from the given actor and
+// sendMessageAs records a message from the given actor and
 // returns the persisted [domain.Message]. The message is emitted
 // via [Session.emit]; the broadcast helper applies the
 // originator-suppression rule (RFC 2812 §3.3.1) so the sender
 // does not see their own line on its [protocol.Client.Events]
 // channel.
-func (s *Session) SendMessageAs(ctx context.Context, actor *domain.Instance, ch domain.ChannelName, body string) (msg domain.Message, retErr error) {
+func (s *Session) sendMessageAs(ctx context.Context, actor *domain.Instance, ch domain.ChannelName, body string) (msg domain.Message, retErr error) {
 	actorNick := actor.Nick()
 
 	ctx, span := s.startSpan(
@@ -430,9 +430,9 @@ func (s *Session) SendMessageAs(ctx context.Context, actor *domain.Instance, ch 
 	return cm, nil
 }
 
-// SendActionAs records an action message from the given actor.
-// See [Session.SendMessageAs] for echo semantics.
-func (s *Session) SendActionAs(ctx context.Context, actor *domain.Instance, ch domain.ChannelName, body string) (msg domain.Message, retErr error) {
+// sendActionAs records an action message from the given actor.
+// See [Session.sendMessageAs] for echo semantics.
+func (s *Session) sendActionAs(ctx context.Context, actor *domain.Instance, ch domain.ChannelName, body string) (msg domain.Message, retErr error) {
 	actorNick := actor.Nick()
 
 	ctx, span := s.startSpan(
@@ -469,8 +469,8 @@ func (s *Session) SendActionAs(ctx context.Context, actor *domain.Instance, ch d
 	return cm, nil
 }
 
-// SetTopicAs sets the topic for a channel.
-func (s *Session) SetTopicAs(ctx context.Context, actor *domain.Instance, ch domain.ChannelName, topic string) (retErr error) {
+// setTopicAs sets the topic for a channel.
+func (s *Session) setTopicAs(ctx context.Context, actor *domain.Instance, ch domain.ChannelName, topic string) (retErr error) {
 	actorNick := actor.Nick()
 
 	ctx, span := s.startSpan(
@@ -514,8 +514,8 @@ func (s *Session) SetTopicAs(ctx context.Context, actor *domain.Instance, ch dom
 	return nil
 }
 
-// KickAs removes a target from a channel on behalf of the actor.
-func (s *Session) KickAs(ctx context.Context, actor, target *domain.Instance, ch domain.ChannelName) (retErr error) {
+// kickAs removes a target from a channel on behalf of the actor.
+func (s *Session) kickAs(ctx context.Context, actor, target *domain.Instance, ch domain.ChannelName) (retErr error) {
 	targetNick := target.Nick()
 
 	ctx, span := s.startSpan(
@@ -577,8 +577,8 @@ func (s *Session) KickAs(ctx context.Context, actor, target *domain.Instance, ch
 	return nil
 }
 
-// InviteAs sends a real IRC-style invite.
-func (s *Session) InviteAs(ctx context.Context, actor *domain.Instance, target domain.Nick, ch domain.ChannelName) (retErr error) {
+// inviteAs sends a real IRC-style invite.
+func (s *Session) inviteAs(ctx context.Context, actor *domain.Instance, target domain.Nick, ch domain.ChannelName) (retErr error) {
 	actorNick := actor.Nick()
 
 	ctx, span := s.startSpan(
