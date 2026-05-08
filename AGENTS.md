@@ -108,11 +108,17 @@ where required, then delegates to a per-command implementation in the
 …) is unexported: outside the package, the only way to reach it is
 through `Send → Handle`.
 
-`OpenDM`, `AddModel`, `Quit`, and `Kill` currently return
-`errNotYetImplemented` from the dispatcher. The chatcmd entry points for
-`AddModel` and `Quit` still call into legacy public methods on the session
+`AddModel`, `Quit`, and `Kill` currently return `errNotYetImplemented`
+from the dispatcher. The chatcmd entry points for `AddModel` and `Quit`
+still call into legacy public methods on the session
 (`Session.AddModel`, `Session.QuitAs`) and retire alongside the dispatcher
 fills.
+
+DMs have no wire-level "open" command. A direct message is just a
+`PrivMsg` whose target is the counterpart's `InstanceID`; either party
+can send and the events log carries the conversation under that key.
+The chat-screen's `/query` is a UI affordance only — the session
+never sees it.
 
 ### Bus partitioning
 
@@ -202,7 +208,7 @@ today this includes events that pre-date the instance's join.
   history) is a future toggle, not a current behaviour.
 - `KILL` implementation will need the dispatcher's handler plus
   permanent removal from the subscriber set.
-- `OpenDM`, `AddModel`, `Quit` dispatcher fills retire the legacy
+- `AddModel` and `Quit` dispatcher fills retire the legacy
   chatcmd-direct paths.
 - Bootstrap-time replay of recent events into newly-allocated
   subscriptions, replacing the per-dispatch store read, is tracked

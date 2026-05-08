@@ -196,12 +196,6 @@ func TestSession_Handle_delegates(t *testing.T) {
 			want:   protocol.Response{},
 		},
 		{
-			name:    "opendm is not yet implemented",
-			client:  userClient,
-			cmd:     protocol.OpenDM{Counterpart: "botty"},
-			wantErr: errHandlerNotYetImplemented,
-		},
-		{
 			name:    "addmodel is not yet implemented for operators",
 			client:  userClient,
 			cmd:     protocol.AddModel{Model: "anthropic/claude", Persona: "p"},

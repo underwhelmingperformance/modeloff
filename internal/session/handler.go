@@ -20,7 +20,7 @@ var errHandlerNotYetImplemented = errors.New("not yet implemented")
 // client's identity and forwards to the existing `*As` session
 // method (`joinAs`, `partAs`, …) where one exists.
 //
-// `OpenDM`, `AddModel`, `Quit`, and `Kill` currently return
+// `AddModel`, `Quit`, and `Kill` currently return
 // [errHandlerNotYetImplemented].
 //
 // The `default` branch is unreachable; the [protocol.Command] sum
@@ -47,8 +47,6 @@ func (s *Session) Handle(ctx context.Context, c protocol.Client, cmd protocol.Co
 		return s.handleWhois(ctx, cmd)
 	case protocol.List:
 		return s.handleList(ctx)
-	case protocol.OpenDM:
-		return protocol.Response{}, errNotYetImplemented(cmd)
 	case protocol.AddModel:
 		return s.handleAddModel(c, cmd)
 	case protocol.Quit:

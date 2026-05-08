@@ -352,9 +352,9 @@ func (s *SQLiteStore) dropLegacyActorEvents(ctx context.Context) error {
 
 // dropLegacyDMWindows deletes any rows in the `channels` table
 // whose JSON `Kind` discriminator marks them as a DM. DMs were
-// previously persisted by `OpenDM`; the new policy treats them
-// as pure in-memory UI state owned by the chat-screen sidebar
-// cache, so any persisted row is a leftover from an older
+// previously persisted as their own channel rows; the new policy
+// treats them as pure in-memory UI state owned by the chat-screen
+// sidebar cache, so any persisted row is a leftover from an older
 // session and is dropped on startup.
 func (s *SQLiteStore) dropLegacyDMWindows(ctx context.Context) error {
 	return s.inSpan(ctx, "store.sqlite.drop_legacy_dm_windows", nil, func(ctx context.Context, span trace.Span) error {

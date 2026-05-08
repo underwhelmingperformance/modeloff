@@ -64,12 +64,6 @@ type Kick struct {
 	Channel domain.ChannelName
 }
 
-// OpenDM ensures a DM window exists between the issuing client and
-// the named counterpart, creating it on first use.
-type OpenDM struct {
-	Counterpart domain.Nick
-}
-
 // Nick changes the issuing client's display nick. The server is
 // authoritative on uniqueness and rejects collisions with
 // [domain.NickInUseError].
@@ -123,7 +117,6 @@ func (Action) isCommand()   {}
 func (Topic) isCommand()    {}
 func (Invite) isCommand()   {}
 func (Kick) isCommand()     {}
-func (OpenDM) isCommand()   {}
 func (Nick) isCommand()     {}
 func (Whois) isCommand()    {}
 func (List) isCommand()     {}
