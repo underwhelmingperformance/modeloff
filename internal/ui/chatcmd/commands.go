@@ -79,20 +79,9 @@ func (c JoinCommand) Run(rc Context) tea.Cmd {
 	}
 }
 
-func (c JoinCommand) executeJoin(ctx context.Context, sess *session.Session, actor *domain.Instance) error {
-	return sess.JoinAs(ctx, actor, domain.ChannelName(c.Channel.String()))
-}
-
 // RunTool implements ToolCommand.
 func (c JoinCommand) RunTool(ctx context.Context, tc session.ToolContext) session.ToolResultPayload {
-	if err := c.executeJoin(ctx, tc.Session, tc.Actor); err != nil {
-		return session.ToolResultPayload{OK: false, Error: err.Error()}
-	}
-
-	return session.ToolResultPayload{
-		OK:      true,
-		Summary: "joined " + c.Channel.String(),
-	}
+	return sendToolCommand(ctx, tc, c, "joined "+c.Channel.String())
 }
 
 // PartCommand represents `/part [message]`.
@@ -119,24 +108,13 @@ func (c PartCommand) Run(rc Context) tea.Cmd {
 	}
 }
 
-func (c PartCommand) executePart(ctx context.Context, sess *session.Session, actor *domain.Instance, ch domain.ChannelName) error {
-	return sess.PartAs(ctx, actor, ch, strings.TrimSpace(strings.Join(c.Message, " ")))
-}
-
 // RunTool implements ToolCommand.
 func (c PartCommand) RunTool(ctx context.Context, tc session.ToolContext) session.ToolResultPayload {
 	if tc.Channel == "" {
 		return session.ToolResultPayload{OK: false, Error: "no active channel"}
 	}
 
-	if err := c.executePart(ctx, tc.Session, tc.Actor, tc.Channel); err != nil {
-		return session.ToolResultPayload{OK: false, Error: err.Error()}
-	}
-
-	return session.ToolResultPayload{
-		OK:      true,
-		Summary: "parted " + string(tc.Channel),
-	}
+	return sendToolCommand(ctx, tc, c, "parted "+string(tc.Channel))
 }
 
 // ListCommand represents `/list`.
@@ -264,20 +242,6 @@ func (c InviteCommand) Run(rc Context) tea.Cmd {
 	}
 }
 
-func (c InviteCommand) executeInvite(
-	ctx context.Context,
-	sess *session.Session,
-	actor *domain.Instance,
-	active domain.ChannelName,
-) error {
-	ch := active
-	if c.Channel != "" {
-		ch = domain.ChannelName(c.Channel.String())
-	}
-
-	return sess.InviteAs(ctx, actor, domain.Nick(c.Nick), ch)
-}
-
 // RunTool implements ToolCommand.
 func (c InviteCommand) RunTool(ctx context.Context, tc session.ToolContext) session.ToolResultPayload {
 	if tc.Channel == "" && c.Channel == "" {
@@ -288,19 +252,12 @@ func (c InviteCommand) RunTool(ctx context.Context, tc session.ToolContext) sess
 		return session.ToolResultPayload{OK: false, Error: "target nick is required"}
 	}
 
-	if err := c.executeInvite(ctx, tc.Session, tc.Actor, tc.Channel); err != nil {
-		return session.ToolResultPayload{OK: false, Error: err.Error()}
-	}
-
 	ch := tc.Channel
 	if c.Channel != "" {
 		ch = domain.ChannelName(c.Channel.String())
 	}
 
-	return session.ToolResultPayload{
-		OK:      true,
-		Summary: "invited " + c.Nick + " to " + string(ch),
-	}
+	return sendToolCommand(ctx, tc, c, "invited "+c.Nick+" to "+string(ch))
 }
 
 // KickCommand represents `/kick <nick>`.
@@ -329,33 +286,13 @@ func (c KickCommand) Run(rc Context) tea.Cmd {
 	}
 }
 
-func (c KickCommand) executeKick(ctx context.Context, sess *session.Session, actor *domain.Instance, ch domain.ChannelName) error {
-	target, err := sess.ResolveNick(ctx, domain.Nick(c.Nick))
-	if err != nil {
-		if errors.Is(err, store.ErrNoSuchNick) {
-			return domain.UnknownNickError{Nick: domain.Nick(c.Nick)}
-		}
-
-		return fmt.Errorf("resolve nick: %w", err)
-	}
-
-	return sess.KickAs(ctx, actor, target, ch)
-}
-
 // RunTool implements ToolCommand.
 func (c KickCommand) RunTool(ctx context.Context, tc session.ToolContext) session.ToolResultPayload {
 	if tc.Channel == "" {
 		return session.ToolResultPayload{OK: false, Error: "no active channel"}
 	}
 
-	if err := c.executeKick(ctx, tc.Session, tc.Actor, tc.Channel); err != nil {
-		return session.ToolResultPayload{OK: false, Error: err.Error()}
-	}
-
-	return session.ToolResultPayload{
-		OK:      true,
-		Summary: "kicked " + c.Nick + " from " + string(tc.Channel),
-	}
+	return sendToolCommand(ctx, tc, c, "kicked "+c.Nick+" from "+string(tc.Channel))
 }
 
 // MsgCommand represents `/msg <target> <message>` where `target`
@@ -489,26 +426,6 @@ func (MsgCommand) actorInChannel(actor *domain.Instance, target domain.ChannelNa
 	return ok
 }
 
-// sendToChannel validates that `actor` is a member of `target`
-// and then sends the body. Channel-targeted `/msg` is rejected
-// for non-members because the message would persist into a
-// channel the actor cannot see — the chat screen has no window
-// for it and the events log would carry an orphan record.
-func (c MsgCommand) sendToChannel(ctx context.Context, sess *session.Session, actor *domain.Instance, target domain.ChannelName, body string) (domain.Message, error) {
-	target = domain.NormaliseChannelName(target)
-
-	channels := actor.Channels()
-	if channels == nil {
-		return domain.Message{}, notInChannelError(target)
-	}
-
-	if _, ok := channels.Get(target); !ok {
-		return domain.Message{}, notInChannelError(target)
-	}
-
-	return sess.SendMessageAs(ctx, actor, target, body)
-}
-
 // notInChannelError formats the not-a-member rejection. Kept as
 // a helper so the user-side and model-side paths surface the
 // same wording.
@@ -574,11 +491,7 @@ func (c MsgCommand) RunTool(ctx context.Context, tc session.ToolContext) session
 	target := domain.ChannelName(c.Target)
 
 	if domain.InferChannelKind(target) == domain.KindChannel {
-		if _, err := c.sendToChannel(ctx, tc.Session, tc.Actor, target, body); err != nil {
-			return session.ToolResultPayload{OK: false, Error: err.Error()}
-		}
-
-		return session.ToolResultPayload{OK: true, Summary: "messaged " + c.Target}
+		return sendToolCommand(ctx, tc, c, "messaged "+c.Target)
 	}
 
 	resolved, err := tc.Session.ResolveNick(ctx, domain.Nick(c.Target))
@@ -629,16 +542,7 @@ func (c NickCommand) Run(rc Context) tea.Cmd {
 
 // RunTool implements ToolCommand.
 func (c NickCommand) RunTool(ctx context.Context, tc session.ToolContext) session.ToolResultPayload {
-	nick := domain.Nick(c.Nick)
-
-	if err := tc.Session.ChangeNickAs(ctx, tc.Actor, nick); err != nil {
-		return session.ToolResultPayload{OK: false, Error: err.Error()}
-	}
-
-	return session.ToolResultPayload{
-		OK:      true,
-		Summary: "changed nick to " + string(nick),
-	}
+	return sendToolCommand(ctx, tc, c, "changed nick to "+c.Nick)
 }
 
 // TopicCommand represents `/topic [text]`. An empty topic clears it.
@@ -681,10 +585,6 @@ func (c TopicCommand) Run(rc Context) tea.Cmd {
 	}
 }
 
-func (c TopicCommand) executeSetTopic(ctx context.Context, sess *session.Session, actor *domain.Instance, ch domain.ChannelName) error {
-	return sess.SetTopicAs(ctx, actor, ch, strings.Join(c.Topic, " "))
-}
-
 // RunTool implements ToolCommand.
 func (c TopicCommand) RunTool(ctx context.Context, tc session.ToolContext) session.ToolResultPayload {
 	if tc.Channel == "" {
@@ -709,14 +609,7 @@ func (c TopicCommand) RunTool(ctx context.Context, tc session.ToolContext) sessi
 		}
 	}
 
-	if err := c.executeSetTopic(ctx, tc.Session, tc.Actor, tc.Channel); err != nil {
-		return session.ToolResultPayload{OK: false, Error: err.Error()}
-	}
-
-	return session.ToolResultPayload{
-		OK:      true,
-		Summary: "updated topic for " + string(tc.Channel),
-	}
+	return sendToolCommand(ctx, tc, c, "updated topic for "+string(tc.Channel))
 }
 
 // MeCommand represents `/me <action>`.
@@ -762,25 +655,13 @@ func (c MeCommand) Run(rc Context) tea.Cmd {
 	}
 }
 
-func (c MeCommand) executeAction(ctx context.Context, sess *session.Session, actor *domain.Instance, ch domain.ChannelName) error {
-	_, err := sess.SendActionAs(ctx, actor, ch, strings.TrimSpace(strings.Join(c.Action, " ")))
-	return err
-}
-
 // RunTool implements ToolCommand.
 func (c MeCommand) RunTool(ctx context.Context, tc session.ToolContext) session.ToolResultPayload {
 	if tc.Channel == "" {
 		return session.ToolResultPayload{OK: false, Error: "no active channel"}
 	}
 
-	if err := c.executeAction(ctx, tc.Session, tc.Actor, tc.Channel); err != nil {
-		return session.ToolResultPayload{OK: false, Error: err.Error()}
-	}
-
-	return session.ToolResultPayload{
-		OK:      true,
-		Summary: "sent action to " + string(tc.Channel),
-	}
+	return sendToolCommand(ctx, tc, c, "sent action to "+string(tc.Channel))
 }
 
 // WhoisCommand represents `/whois <nick>`.

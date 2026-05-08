@@ -12,16 +12,25 @@ import (
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/memory"
 	"github.com/laney/modeloff/internal/observability"
+	"github.com/laney/modeloff/internal/protocol"
 )
 
 // ToolContext carries the backend context for a model tool call.
 // Actor is the `*domain.Instance` for the caller — models dispatched
 // by the session receive their own handle, and the user's own
-// `/`-command tool invocations receive the user handle.
+// `/`-command tool invocations receive the user handle. Client is
+// the protocol-side handle the tool dispatches commands through;
+// it is the model-client handle for model invocations and the
+// user-client for user-driven tool calls.
+//
+// Callers must populate Client before invoking any tool whose
+// `RunTool` routes through the wire protocol; a nil Client crashes
+// with a nil-pointer dereference at `tc.Client.Send`.
 type ToolContext struct {
 	Session *Session
 	Actor   *domain.Instance
 	Channel domain.ChannelName
+	Client  protocol.Client
 }
 
 // ToolResultPayload is the common tool result envelope returned to models.

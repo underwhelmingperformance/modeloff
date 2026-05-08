@@ -179,6 +179,19 @@ func newToolTestSession(t *testing.T) *session.Session {
 	return session.New(s, nil, toolTestAPI{}, "testuser", "", "")
 }
 
+// userToolContext returns the [session.ToolContext] tests use when
+// invoking `RunTool` as the user. The user-client handle is the
+// active actor so dispatched commands route through the same
+// [protocol.Client.Send] path the chat-screen exercises.
+func userToolContext(sess *session.Session, channel domain.ChannelName) session.ToolContext {
+	return session.ToolContext{
+		Session: sess,
+		Actor:   sess.UserInstance(),
+		Channel: channel,
+		Client:  sess.User(),
+	}
+}
+
 func toolValue(t *testing.T, name string, rawJSON string) any {
 	t.Helper()
 
@@ -199,11 +212,7 @@ func toolValue(t *testing.T, name string, rawJSON string) any {
 
 func TestRunTool_join_with_channel(t *testing.T) {
 	sess := newToolTestSession(t)
-	tc := session.ToolContext{
-		Session: sess,
-		Actor:   sess.UserInstance(),
-		Channel: "#general",
-	}
+	tc := userToolContext(sess, "#general")
 
 	v := toolValue(t, "join", `{"channel": "#testing"}`)
 
@@ -220,11 +229,7 @@ func TestRunTool_join_with_channel(t *testing.T) {
 
 func TestRunTool_help_no_args(t *testing.T) {
 	sess := newToolTestSession(t)
-	tc := session.ToolContext{
-		Session: sess,
-		Actor:   sess.UserInstance(),
-		Channel: "#general",
-	}
+	tc := userToolContext(sess, "#general")
 
 	v := toolValue(t, "help", `{}`)
 
@@ -240,9 +245,8 @@ func TestRunTool_help_no_args(t *testing.T) {
 }
 
 func TestRunTool_part_no_channel_returns_error(t *testing.T) {
-	tc := session.ToolContext{
-		Actor: domain.NewUserInstance("testuser"),
-	}
+	sess := newToolTestSession(t)
+	tc := userToolContext(sess, "")
 
 	v := toolValue(t, "part", `{}`)
 
@@ -258,9 +262,8 @@ func TestRunTool_part_no_channel_returns_error(t *testing.T) {
 }
 
 func TestRunTool_kick_no_channel_returns_error(t *testing.T) {
-	tc := session.ToolContext{
-		Actor: domain.NewUserInstance("testuser"),
-	}
+	sess := newToolTestSession(t)
+	tc := userToolContext(sess, "")
 
 	v := toolValue(t, "kick", `{"nick": "haiku"}`)
 
@@ -276,10 +279,8 @@ func TestRunTool_kick_no_channel_returns_error(t *testing.T) {
 }
 
 func TestRunTool_invite_missing_nick_returns_error(t *testing.T) {
-	tc := session.ToolContext{
-		Actor:   domain.NewUserInstance("testuser"),
-		Channel: "#general",
-	}
+	sess := newToolTestSession(t)
+	tc := userToolContext(sess, "#general")
 
 	v := toolValue(t, "invite", `{}`)
 
@@ -301,10 +302,7 @@ func TestRunTool_msg_sends_to_nick(t *testing.T) {
 	require.NoError(t, sess.Join(t.Context(), "#lobby"))
 	require.NoError(t, sess.AddModel(t.Context(), "#lobby", "anthropic/haiku", ""))
 
-	tc := session.ToolContext{
-		Session: sess,
-		Actor:   sess.UserInstance(),
-	}
+	tc := userToolContext(sess, "")
 
 	v := toolValue(t, "msg", `{"target": "testbot", "body": ["hello"]}`)
 
@@ -323,10 +321,7 @@ func TestRunTool_msg_rejects_empty_body(t *testing.T) {
 	require.NoError(t, sess.Join(t.Context(), "#lobby"))
 	require.NoError(t, sess.AddModel(t.Context(), "#lobby", "anthropic/haiku", ""))
 
-	tc := session.ToolContext{
-		Session: sess,
-		Actor:   sess.UserInstance(),
-	}
+	tc := userToolContext(sess, "")
 
 	v := toolValue(t, "msg", `{"target": "testbot"}`)
 
@@ -341,11 +336,7 @@ func TestRunTool_msg_rejects_empty_body(t *testing.T) {
 
 func TestRunTool_nick_changes_nick(t *testing.T) {
 	sess := newToolTestSession(t)
-	tc := session.ToolContext{
-		Session: sess,
-		Actor:   sess.UserInstance(),
-		Channel: "#general",
-	}
+	tc := userToolContext(sess, "#general")
 
 	v := toolValue(t, "nick", `{"new_nick": "newname"}`)
 
@@ -361,9 +352,8 @@ func TestRunTool_nick_changes_nick(t *testing.T) {
 }
 
 func TestRunTool_me_no_channel_returns_error(t *testing.T) {
-	tc := session.ToolContext{
-		Actor: domain.NewUserInstance("testuser"),
-	}
+	sess := newToolTestSession(t)
+	tc := userToolContext(sess, "")
 
 	v := toolValue(t, "me", `{"action": ["waves"]}`)
 
@@ -380,10 +370,7 @@ func TestRunTool_me_no_channel_returns_error(t *testing.T) {
 
 func TestRunTool_quit_succeeds(t *testing.T) {
 	sess := newToolTestSession(t)
-	tc := session.ToolContext{
-		Session: sess,
-		Actor:   sess.UserInstance(),
-	}
+	tc := userToolContext(sess, "")
 
 	v := toolValue(t, "quit", `{}`)
 

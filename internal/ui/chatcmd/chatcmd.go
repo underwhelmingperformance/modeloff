@@ -199,6 +199,51 @@ func sendCommand(rc Context, c protocolCommand, operation string) tea.Msg {
 	return nil
 }
 
+// toolContext adapts a [session.ToolContext] to the [Context] that
+// `ToCommand` reads from, so the same translation method serves
+// both `Run` (chat-screen) and `RunTool` (model). The returned
+// context carries the actor, the active channel, the protocol
+// client, and the call-site context — every field `ToCommand`
+// implementations consult.
+func toolContext(ctx context.Context, tc session.ToolContext) Context {
+	return Context{
+		Ctx:     ctx,
+		Session: tc.Session,
+		Active:  tc.Channel,
+		Actor:   tc.Actor,
+		Client:  tc.Client,
+	}
+}
+
+// sendToolCommand routes a migrated command through the model's
+// protocol client and assembles the [session.ToolResultPayload] the
+// LLM tool-result protocol expects. Errors at any of the three
+// failure points (translation, transport, dispatcher) collapse to
+// `OK: false` with the error string. Success returns `OK: true`
+// with the caller-supplied summary so the model sees a stable
+// confirmation line.
+//
+// Typed errors are flattened to strings; the LLM tool-result
+// protocol carries strings only, so callers cannot `errors.As` over
+// the result.
+func sendToolCommand(ctx context.Context, tc session.ToolContext, c protocolCommand, summary string) session.ToolResultPayload {
+	cmd, err := c.ToCommand(toolContext(ctx, tc))
+	if err != nil {
+		return session.ToolResultPayload{OK: false, Error: err.Error()}
+	}
+
+	resp, err := tc.Client.Send(ctx, cmd)
+	if err != nil {
+		return session.ToolResultPayload{OK: false, Error: err.Error()}
+	}
+
+	if resp.Err != nil {
+		return session.ToolResultPayload{OK: false, Error: resp.Err.Error()}
+	}
+
+	return session.ToolResultPayload{OK: true, Summary: summary}
+}
+
 func usageCmd(cmd, usage string) tea.Cmd {
 	return func() tea.Msg { return UsageError{Command: cmd, Usage: usage} }
 }

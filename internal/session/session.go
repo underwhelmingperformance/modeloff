@@ -109,9 +109,10 @@ type Session struct {
 	now        func() time.Time
 	events     chan domain.Event
 
-	subsMu      sync.RWMutex
-	subscribers map[protocol.ClientID]*serverClient
-	userClient  *serverClient
+	subsMu        sync.RWMutex
+	subscribers   map[protocol.ClientID]*serverClient
+	clientHandles map[protocol.ClientID]*serverClient
+	userClient    *serverClient
 
 	connectedC    chan struct{}
 	connectedOnce sync.Once
@@ -169,6 +170,7 @@ func New(
 		persistenceFailures: persistenceFailures,
 		tracerProvider:      otel.GetTracerProvider(),
 		subscribers:         make(map[protocol.ClientID]*serverClient),
+		clientHandles:       make(map[protocol.ClientID]*serverClient),
 	}
 
 	sess.userClient = newServerClient(sess, protocol.UserClientID, protocol.ModeOperator)
@@ -204,6 +206,60 @@ func (s *Session) Events() <-chan domain.Event {
 // [protocol.ModeOperator].
 func (s *Session) User() protocol.Client {
 	return s.userClient
+}
+
+// Model returns the [protocol.Client] handle for the model instance
+// identified by `id`. Handles are pointer-stable: two calls for the
+// same id return the same `*serverClient`. The handle is
+// lazy-allocated on first access for any id whose row exists in the
+// store. Returns nil if the id is empty (the user-client lives at
+// [Session.User]) or if no instance row matches.
+//
+// The handle is currently `Send`-only; its `Events()` channel is
+// allocated but unused by the dispatcher.
+func (s *Session) Model(ctx context.Context, id protocol.ClientID) protocol.Client {
+	if id == protocol.UserClientID {
+		return nil
+	}
+
+	if c := s.lookupClientHandle(id); c != nil {
+		return c
+	}
+
+	inst, err := s.store.GetInstanceByID(ctx, id)
+	if err != nil || inst == nil {
+		return nil
+	}
+
+	return s.ensureModelClient(inst)
+}
+
+// lookupClientHandle returns the cached handle for `id` under the
+// read lock, or nil if none has been allocated yet.
+func (s *Session) lookupClientHandle(id protocol.ClientID) *serverClient {
+	s.subsMu.RLock()
+	defer s.subsMu.RUnlock()
+
+	return s.clientHandles[id]
+}
+
+// ensureModelClient registers a model-client handle for `inst` if
+// one does not already exist, and returns the canonical handle
+// either way. Model clients carry no user modes.
+func (s *Session) ensureModelClient(inst *domain.Instance) *serverClient {
+	id := inst.ID()
+
+	s.subsMu.Lock()
+	defer s.subsMu.Unlock()
+
+	if existing, ok := s.clientHandles[id]; ok {
+		return existing
+	}
+
+	client := newServerClient(s, id)
+	s.clientHandles[id] = client
+
+	return client
 }
 
 // subscriberSnapshot returns a stable copy of the subscriber set
@@ -965,6 +1021,8 @@ func (s *Session) attachInstanceToChannel(
 	if err := s.store.SaveInstance(ctx, inst); err != nil {
 		return fmt.Errorf("save instance: %w", err)
 	}
+
+	s.ensureModelClient(inst)
 
 	isNew := !window.Members.HasInstance(inst)
 	if isNew {
@@ -2498,6 +2556,7 @@ func (s *Session) sendWithToolLoop(
 			Session: s,
 			Actor:   inst,
 			Channel: channelName,
+			Client:  s.ensureModelClient(inst),
 		}, registry, result.PendingToolCalls)
 		toolTurnCount++
 
