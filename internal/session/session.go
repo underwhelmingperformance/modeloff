@@ -284,16 +284,44 @@ func (s *Session) subscriberSnapshot() []*serverClient {
 // producer rather than silent data loss. Each subscription's
 // events channel is buffered to [eventBufSize]; callers should
 // attach a consumer before bootstrap-time emission exceeds that
-// capacity. Membership routing and the echo gate land in commit 6;
-// for now every subscriber sees every protocol event.
+// capacity.
+//
+// PRIVMSG/Action events do not echo back to their originator
+// (RFC 2812 §3.3.1: chat traffic is delivered to every member of
+// the target window except the sender). Other event types — JOIN,
+// PART, MODE, TOPIC, NICK, etc. — are delivered to every
+// subscriber including the originator, matching IRC's behaviour
+// for those signals.
 func (s *Session) fanOutProtocol(ctx context.Context, pe domain.ProtocolEvent) {
+	suppressOriginator, sender := chatTrafficSender(pe)
+
 	for _, sub := range s.subscriberSnapshot() {
+		if suppressOriginator && sub.Identity() == sender {
+			continue
+		}
+
 		select {
 		case sub.events <- pe:
 		case <-ctx.Done():
 			return
 		}
 	}
+}
+
+// chatTrafficSender reports whether `ev` carries the
+// originator-suppression rule (PRIVMSG/Action), and returns the
+// sender's [protocol.ClientID] when it does. The empty client id
+// returned alongside `false` is unused and never compared.
+//
+// Today only [domain.Message] (covering both PRIVMSG and `/me`
+// via [domain.Message.Action]) qualifies. Future event types
+// needing the same rule add a switch arm here.
+func chatTrafficSender(ev domain.ProtocolEvent) (suppress bool, sender protocol.ClientID) {
+	if msg, ok := ev.(domain.Message); ok {
+		return true, protocol.ClientID(msg.InstanceID)
+	}
+
+	return false, ""
 }
 
 // Connected returns a channel that is closed once Connect has

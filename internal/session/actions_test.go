@@ -198,6 +198,31 @@ func TestSendMessageAs_model_actor(t *testing.T) {
 	}, msgs)
 }
 
+// TestSendMessageAs_user_actor_does_not_echo_to_originator pins the
+// echo gate's structural property: a PRIVMSG sent by the user to a
+// channel they're in does not arrive on their own subscription's
+// events channel. The session's chat-traffic suppression rule is
+// applied uniformly at fan-out (RFC 2812 §3.3.1); the user-actor
+// branch in [Session.SendMessageAs] no longer carries it.
+func TestSendMessageAs_user_actor_does_not_echo_to_originator(t *testing.T) {
+	sess, _ := newTestSession(t)
+	ctx := t.Context()
+
+	require.NoError(t, sess.JoinAs(ctx, sess.user, "#dev"))
+	drainEvent[domain.Join](t, sess)
+	drainEventSkipping[domain.ModeChange](t, sess)
+	drainDispatchEvents(t, sess)
+
+	_, err := sess.SendMessageAs(ctx, sess.user, "#dev", "hello")
+	require.NoError(t, err)
+
+	drainDispatchEvents(t, sess)
+
+	if evt, ok := peekEvent(sess); ok {
+		t.Fatalf("expected the user's own message to be suppressed, got %T %+v", evt, evt)
+	}
+}
+
 func TestSetTopicAs_model_actor(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()

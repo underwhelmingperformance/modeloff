@@ -389,9 +389,11 @@ func (s *Session) ChangeNickAs(ctx context.Context, actor *domain.Instance, newN
 }
 
 // SendMessageAs records a message from the given actor and
-// returns the persisted [domain.Message]. User-sent messages
-// are not echoed on the events channel — callers render the
-// returned message locally; model-sent messages emit normally.
+// returns the persisted [domain.Message]. The message is emitted
+// via [Session.emit]; the broadcast helper applies the
+// originator-suppression rule (RFC 2812 §3.3.1) so the sender
+// does not see their own line on its [protocol.Client.Events]
+// channel.
 func (s *Session) SendMessageAs(ctx context.Context, actor *domain.Instance, ch domain.ChannelName, body string) (msg domain.Message, retErr error) {
 	actorNick := actor.Nick()
 
@@ -423,16 +425,7 @@ func (s *Session) SendMessageAs(ctx context.Context, actor *domain.Instance, ch 
 	}
 
 	s.appendEvent(ctx, ch, cm)
-
-	if actor == s.user {
-		// Don't echo on the events channel: the chat screen
-		// renders its own outgoing line locally from the
-		// command-result path. Still trigger model dispatch so
-		// channel members react to the user's message.
-		s.maybeDispatch(ctx, cm)
-	} else {
-		s.emit(ctx, cm)
-	}
+	s.emit(ctx, cm)
 
 	return cm, nil
 }
@@ -471,12 +464,7 @@ func (s *Session) SendActionAs(ctx context.Context, actor *domain.Instance, ch d
 	}
 
 	s.appendEvent(ctx, ch, cm)
-
-	if actor == s.user {
-		s.maybeDispatch(ctx, cm)
-	} else {
-		s.emit(ctx, cm)
-	}
+	s.emit(ctx, cm)
 
 	return cm, nil
 }
