@@ -177,10 +177,16 @@ type protocolCommand interface {
 }
 
 // sendCommand routes a migrated command through the protocol
-// client and returns a [domain.ErrorEvent] if either the command
-// translation, the wire dispatch, or the dispatcher's handler
-// failed. Returns nil on success so callers can return their own
-// post-success [tea.Msg] for local rendering.
+// client. On any failure (translation, transport, or the
+// dispatcher's typed `Response.Err`) it returns a
+// [domain.ErrorEvent] for the chat-screen to render. On success
+// it returns the first event the dispatcher synthesised in
+// `Response.Events` — for `PrivMsg` and `Action` that is the
+// canonical [domain.Message] the session persisted, which the
+// chat-screen renders inline. Commands whose handler does not
+// populate `Response.Events` (Topic, Invite, Kick, Nick, …)
+// return `nil`, leaving the caller to follow up with whatever
+// post-success `tea.Msg` it wants.
 func sendCommand(rc Context, c protocolCommand, operation string) tea.Msg {
 	cmd, err := c.ToCommand(rc)
 	if err != nil {
@@ -194,6 +200,10 @@ func sendCommand(rc Context, c protocolCommand, operation string) tea.Msg {
 
 	if resp.Err != nil {
 		return errorEvent(operation, resp.Err)
+	}
+
+	if len(resp.Events) > 0 {
+		return resp.Events[0]
 	}
 
 	return nil

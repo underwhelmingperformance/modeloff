@@ -365,20 +365,7 @@ func (c MsgCommand) Run(rc Context) tea.Cmd {
 		target := domain.ChannelName(c.Target)
 
 		if domain.InferChannelKind(target) == domain.KindChannel {
-			if msg := sendCommand(rc, c, "msg"); msg != nil {
-				return msg
-			}
-
-			// Synthesise the user's outgoing message for local
-			// rendering: the session's echo gate suppresses the
-			// user-actor copy on the wire.
-			return domain.Message{
-				Target:     domain.NormaliseChannelName(target),
-				From:       rc.Actor.Nick(),
-				InstanceID: rc.Actor.ID(),
-				Body:       body,
-				At:         time.Now(),
-			}
+			return sendCommand(rc, c, "msg")
 		}
 
 		nick := domain.Nick(c.Target)
@@ -643,21 +630,7 @@ func (c MeCommand) Run(rc Context) tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		if msg := sendCommand(rc, c, "me"); msg != nil {
-			return msg
-		}
-
-		// Synthesise the user's outgoing /me action for local
-		// rendering: the session's echo gate suppresses the
-		// user-actor copy on the wire.
-		return domain.Message{
-			Target:     rc.Active,
-			From:       rc.Actor.Nick(),
-			InstanceID: rc.Actor.ID(),
-			Body:       body,
-			Action:     true,
-			At:         time.Now(),
-		}
+		return sendCommand(rc, c, "me")
 	}
 }
 

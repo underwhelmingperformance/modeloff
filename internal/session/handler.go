@@ -82,9 +82,12 @@ func (s *Session) handlePrivMsg(ctx context.Context, c protocol.Client, cmd prot
 		return protocol.Response{}, err
 	}
 
-	_, sendErr := s.sendMessageAs(ctx, actor, cmd.Target, cmd.Body)
+	msg, sendErr := s.sendMessageAs(ctx, actor, cmd.Target, cmd.Body)
+	if sendErr != nil {
+		return commandResult(sendErr)
+	}
 
-	return commandResult(sendErr)
+	return protocol.Response{Events: []protocol.Event{msg}}, nil
 }
 
 func (s *Session) handleAction(ctx context.Context, c protocol.Client, cmd protocol.Action) (protocol.Response, error) {
@@ -93,9 +96,12 @@ func (s *Session) handleAction(ctx context.Context, c protocol.Client, cmd proto
 		return protocol.Response{}, err
 	}
 
-	_, sendErr := s.sendActionAs(ctx, actor, cmd.Target, cmd.Body)
+	msg, sendErr := s.sendActionAs(ctx, actor, cmd.Target, cmd.Body)
+	if sendErr != nil {
+		return commandResult(sendErr)
+	}
 
-	return commandResult(sendErr)
+	return protocol.Response{Events: []protocol.Event{msg}}, nil
 }
 
 func (s *Session) handleTopic(ctx context.Context, c protocol.Client, cmd protocol.Topic) (protocol.Response, error) {

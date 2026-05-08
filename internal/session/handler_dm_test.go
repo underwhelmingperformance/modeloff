@@ -63,6 +63,17 @@ func TestSession_PrivMsg_to_model_routes_DM_to_counterpart_only(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, resp.Err)
 
+	// Response.Events carries the canonical persisted message back
+	// to the issuing client so the chat-screen renders against the
+	// session's clock rather than its own.
+	require.Equal(t, []protocol.Event{domain.Message{
+		Target:     domain.ChannelName(b.ID()),
+		From:       "alpha",
+		InstanceID: a.ID(),
+		Body:       "private to beta",
+		At:         fixedTime,
+	}}, resp.Events)
+
 	// Drain through `DispatchDoneEvent` so B's dispatch goroutine
 	// has returned before we read `calls`. The channel-send chain
 	// from the goroutine to this drain provides the happens-before

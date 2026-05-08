@@ -103,7 +103,12 @@ func TestSession_Handle_delegates(t *testing.T) {
 			},
 			client: userClient,
 			cmd:    protocol.PrivMsg{Target: "#general", Body: "hello"},
-			want:   protocol.Response{},
+			want: protocol.Response{Events: []protocol.Event{domain.Message{
+				Target: "#general",
+				From:   "testuser",
+				Body:   "hello",
+				At:     fixedTime,
+			}}},
 			verify: func(t *testing.T, _ *Session, s *storemod.SQLiteStore) {
 				require.Equal(t, []string{"join", "mode_change", "message"}, channelEventTypes(t, s, "#general"))
 			},
@@ -115,7 +120,13 @@ func TestSession_Handle_delegates(t *testing.T) {
 			},
 			client: userClient,
 			cmd:    protocol.Action{Target: "#general", Body: "waves"},
-			want:   protocol.Response{},
+			want: protocol.Response{Events: []protocol.Event{domain.Message{
+				Target: "#general",
+				From:   "testuser",
+				Body:   "waves",
+				Action: true,
+				At:     fixedTime,
+			}}},
 			verify: func(t *testing.T, _ *Session, s *storemod.SQLiteStore) {
 				require.Equal(t, []string{"join", "mode_change", "message"}, channelEventTypes(t, s, "#general"))
 			},
