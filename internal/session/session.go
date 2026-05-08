@@ -232,7 +232,7 @@ func (s *Session) Model(ctx context.Context, id protocol.ClientID) protocol.Clie
 		return nil
 	}
 
-	return s.ensureModelClient(inst)
+	return s.ensureModelClient(ctx, inst)
 }
 
 // lookupClientHandle returns the cached handle for `id` under the
@@ -251,7 +251,7 @@ func (s *Session) lookupClientHandle(id protocol.ClientID) *serverClient {
 // long-lived dispatch goroutine starts under the same lock so the
 // channel has a consumer attached before any caller can fan out
 // to it.
-func (s *Session) ensureModelClient(inst *domain.Instance) *serverClient {
+func (s *Session) ensureModelClient(ctx context.Context, inst *domain.Instance) *serverClient {
 	id := inst.ID()
 
 	s.subsMu.Lock()
@@ -262,12 +262,69 @@ func (s *Session) ensureModelClient(inst *domain.Instance) *serverClient {
 	}
 
 	client := newServerClient(s, id, inst)
+	s.seedModelClientHistory(ctx, client)
+
 	s.clientHandles[id] = client
 	s.subscribers[id] = client
 
-	go s.runModelDispatch(client)
+	s.startModelDispatch(client)
 
 	return client
+}
+
+// startModelDispatch spawns the long-lived dispatch goroutine for
+// `client`. The goroutine outlives any single request's context
+// by design — it ends only when the events channel closes — so
+// it does not derive its context from the request that happened
+// to register the client; [Session.runModelDispatch] constructs a
+// fresh background context internally. Splitting the spawn out of
+// [Session.ensureModelClient] keeps the request-scoped `ctx` from
+// being a tempting (and incorrect) parent for the goroutine.
+func (s *Session) startModelDispatch(client *serverClient) {
+	go s.runModelDispatch(client)
+}
+
+// seedModelClientHistory eager-seeds the model-client's per-channel
+// history buffer from the events log for every channel the
+// instance is in. DM targets are not eager-seeded — the wire layer
+// has no notion of "open DMs" — they lazy-seed in
+// [serverClient.appendHistory] on first event arrival.
+//
+// Runs under `subsMu.Lock()` so the seed completes before any
+// fan-out can deliver to this client; the dispatch goroutine
+// has not started yet either. Sqlite reads are sequential and
+// total time scales with the instance's channel count, which is
+// bounded by user behaviour. If this becomes a measurable
+// bootstrap-latency cost, the lock can be released around the
+// store reads with a sequence-number dedupe on subsequent live
+// appends; for now the simpler pattern reads cleanly.
+func (s *Session) seedModelClientHistory(ctx context.Context, client *serverClient) {
+	if client.history == nil {
+		return
+	}
+
+	channels := client.instance.Channels()
+	if channels == nil {
+		return
+	}
+
+	logger := slog.Default()
+
+	for pair := channels.Oldest(); pair != nil; pair = pair.Next() {
+		ch := pair.Key
+		seed, err := s.store.EventsBefore(ctx, ch, nil, modelHistorySize)
+		if err != nil {
+			logger.ErrorContext(ctx, "seed model history",
+				"component", "session",
+				"instance_id", client.id,
+				"channel", ch,
+				"error", err,
+			)
+			continue
+		}
+
+		client.history[ch] = seed
+	}
 }
 
 // subscriberSnapshot returns a stable copy of the subscriber set
@@ -1072,7 +1129,7 @@ func (s *Session) attachInstanceToChannel(
 		return fmt.Errorf("save instance: %w", err)
 	}
 
-	s.ensureModelClient(inst)
+	s.ensureModelClient(ctx, inst)
 
 	isNew := !window.Members.HasInstance(inst)
 	if isNew {
@@ -1883,28 +1940,6 @@ func (s *Session) resolveDispatchRecipients(ctx context.Context, target domain.C
 	return nil, nil
 }
 
-// dispatchHistoryFor fetches the conversation history a
-// dispatched recipient should see as context. For channel
-// targets that is the channel's own event log; for DM targets
-// it is the bidirectional union of events between the
-// recipient and the trigger sender (the peer), since either
-// direction is part of the same DM thread.
-func (s *Session) dispatchHistoryFor(ctx context.Context, target domain.ChannelName, recipient *domain.Instance, triggerEvents []protocol.IRCMessage) ([]domain.StoredEvent, error) {
-	if domain.InferChannelKind(target) != domain.KindDM {
-		return s.store.EventsBefore(ctx, target, nil, 500)
-	}
-
-	// In a DM, the dispatched recipient is one party and the
-	// trigger sender is the other. Either party may be the user,
-	// whose `InstanceID` is empty by convention.
-	var peer domain.InstanceID
-	if len(triggerEvents) > 0 {
-		peer = triggerEvents[0].InstanceID
-	}
-
-	return s.store.DMEventsBefore(ctx, recipient.ID(), peer, nil, 500)
-}
-
 // EventsAfter returns the channel's events whose timestamp is at or
 // after the given cutoff, in chronological order. The status pane
 // uses this to render the per-session view of the status channel
@@ -2110,12 +2145,20 @@ func (s *Session) recordPersistenceFailure(ctx context.Context, ch domain.Channe
 
 // runModelDispatch is the long-lived dispatch goroutine for a
 // model-client. It reads [protocol.Delivery] envelopes from the
-// subscription's events channel and triggers an LLM turn for each
-// event the model should react to (a message in a channel/DM the
-// model is in, a JOIN/PART/MODE in a channel it shares, an INVITE
-// addressed at it, or a poke). Replies emit on the bus so peers'
-// goroutines pick them up; the chat-screen renders them via its
-// pacing queue.
+// subscription's events channel and, for each delivery, files
+// the event into the model's per-channel rolling history buffer
+// before deciding whether to take an LLM turn (a message in a
+// channel/DM the model is in, a JOIN/PART/MODE in a channel it
+// shares, an INVITE addressed at it, or a poke). Replies emit on
+// the bus so peers' goroutines pick them up; the chat-screen
+// renders them via its pacing queue.
+//
+// The history buffer feeds [Session.modelDispatchTurn]'s prompt
+// construction. Eager-seeded for known channels at registration
+// (see [Session.seedModelClientHistory]) and lazy-seeded for DM
+// targets in [serverClient.appendHistory], the buffer is the
+// only path the dispatch hot path reads conversation history
+// from; the events log is consulted exclusively at seed time.
 //
 // Each turn's span is linked to the originating handler's span via
 // the [trace.SpanContext] the producer captured at emit time. The
@@ -2139,6 +2182,20 @@ func (s *Session) runModelDispatch(c *serverClient) {
 	}()
 
 	for delivery := range c.events {
+		// Record persistable events into the per-channel rolling
+		// buffer the next dispatch turn's prompt is built from.
+		// Each event is filed under the buffer slot(s) it belongs
+		// to — per-target for window-scoped events; per-shared-
+		// channel for actor-scoped events (QUIT, NICK). Non-
+		// persistable events (DispatchStartedEvent, etc.) carry
+		// no LLM-prompt content and are skipped here.
+		if pe, ok := delivery.Event.(domain.PersistableEvent); ok {
+			stored := domain.StoredEvent{Event: pe}
+			for _, target := range historyTargets(delivery.Event) {
+				c.appendHistory(ctx, stored, target)
+			}
+		}
+
 		ch, irc, ok := dispatchTrigger(c, delivery.Event)
 		if !ok {
 			continue
@@ -2146,6 +2203,45 @@ func (s *Session) runModelDispatch(c *serverClient) {
 
 		s.modelDispatchTurn(ctx, c, ch, irc, delivery.SpanCtx)
 	}
+}
+
+// historyTargets returns the buffer slot(s) `ev` should be filed
+// under for a model-client's dispatch-turn history. Most events
+// belong to a single target window — the channel they happened
+// in or the DM they addressed. Actor-scoped events ([domain.Quit]
+// and [domain.NickChange]) are filed under every channel the
+// actor was in at emission time, mirroring the wire-side fan-out
+// shape: a peer's QUIT line shows up in each channel the receiver
+// shared with them.
+//
+// Events with no target (DispatchStartedEvent, DispatchDoneEvent,
+// FocusChannelEvent, …) return nil and are skipped — they are
+// not LLM-prompt material.
+func historyTargets(ev domain.Event) []domain.ChannelName {
+	switch e := ev.(type) {
+	case domain.Message:
+		return []domain.ChannelName{e.Target}
+	case domain.Join:
+		return []domain.ChannelName{e.Target}
+	case domain.Part:
+		return []domain.ChannelName{e.Target}
+	case domain.TopicChange:
+		return []domain.ChannelName{e.Target}
+	case domain.TopicInfo:
+		return []domain.ChannelName{e.Target}
+	case domain.ModeChange:
+		return []domain.ChannelName{e.Target}
+	case domain.ModelInvited:
+		return []domain.ChannelName{e.Target}
+	case domain.ModelKicked:
+		return []domain.ChannelName{e.Target}
+	case domain.Quit:
+		return e.Channels
+	case domain.NickChange:
+		return e.Channels
+	}
+
+	return nil
 }
 
 // modelDispatchTurn runs a single LLM turn for `c.instance` in
@@ -2189,12 +2285,7 @@ func (s *Session) modelDispatchTurn(ctx context.Context, c *serverClient, ch dom
 		return
 	}
 
-	historyEvents, err := s.dispatchHistoryFor(ctx, ch, inst, []protocol.IRCMessage{trigger})
-	if err != nil {
-		setSpanError(span, err, observability.ErrorKindStore)
-		s.appendStatus(ctx, fmt.Sprintf("dispatch to %s: %s", ch, err))
-		return
-	}
+	historyEvents := c.snapshotHistory(ch)
 
 	s.emit(ctx, domain.DispatchStartedEvent{Channel: ch, Nicks: []domain.Nick{nick}})
 
@@ -2561,7 +2652,7 @@ func (s *Session) sendWithToolLoop(
 			Session: s,
 			Actor:   inst,
 			Channel: channelName,
-			Client:  s.ensureModelClient(inst),
+			Client:  s.ensureModelClient(ctx, inst),
 		}, registry, result.PendingToolCalls)
 		toolTurnCount++
 

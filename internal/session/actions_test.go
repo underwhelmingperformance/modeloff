@@ -393,8 +393,8 @@ func TestSendMessageAs_model_to_model_dispatches(t *testing.T) {
 		Channels: orderedmap.New[domain.ChannelName, time.Time](),
 	})
 
-	sess.ensureModelClient(botty)
-	sess.ensureModelClient(helper)
+	sess.ensureModelClient(ctx, botty)
+	sess.ensureModelClient(ctx, helper)
 
 	target := domain.ChannelName(helper.ID())
 

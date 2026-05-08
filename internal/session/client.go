@@ -2,6 +2,9 @@ package session
 
 import (
 	"context"
+	"log/slog"
+	"reflect"
+	"sync"
 	"time"
 
 	orderedmap "github.com/wk8/go-ordered-map/v2"
@@ -9,6 +12,11 @@ import (
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/protocol"
 )
+
+// modelHistorySize caps the per-(model-client, channel) rolling
+// history buffer at 500 events. The LLM's context window dictates
+// this bound regardless of where the events come from.
+const modelHistorySize = 500
 
 // channelMembership is the ordered channel-set carried by a model
 // instance. It mirrors [domain.Instance.Channels]'s return type and
@@ -32,6 +40,16 @@ type serverClient struct {
 	instance *domain.Instance
 	events   chan protocol.Delivery
 	modes    map[protocol.UserMode]struct{}
+
+	// history holds the per-channel rolling buffer this model
+	// uses to construct each dispatch turn's prompt. Channels are
+	// eager-seeded at registration ([Session.ensureModelClient]);
+	// DM targets are lazy-seeded on first event arrival, both
+	// under `historyMu` so no concurrent appender can interleave
+	// with a seed. The user-client allocates a nil map — it never
+	// dispatches, so it never reads or writes here.
+	historyMu sync.Mutex
+	history   map[domain.ChannelName][]domain.StoredEvent
 }
 
 // newServerClient constructs a subscription with the given identity
@@ -43,13 +61,22 @@ func newServerClient(sess *Session, id protocol.ClientID, inst *domain.Instance,
 		modeSet[m] = struct{}{}
 	}
 
-	return &serverClient{
+	c := &serverClient{
 		sess:     sess,
 		id:       id,
 		instance: inst,
 		events:   make(chan protocol.Delivery, eventBufSize),
 		modes:    modeSet,
 	}
+
+	// Only model-clients run a dispatch loop, so only model-clients
+	// need a history buffer. The user-client has no instance and
+	// never reads from `history`.
+	if inst != nil {
+		c.history = make(map[domain.ChannelName][]domain.StoredEvent)
+	}
+
+	return c
 }
 
 func (c *serverClient) Identity() protocol.ClientID { return c.id }
@@ -153,4 +180,107 @@ func anyChannelInCommon(membership channelMembership, candidates []domain.Channe
 	}
 
 	return false
+}
+
+// appendHistory records `ev` against `target` in the model-client's
+// rolling buffer. Events the LLM never sees in its prompt
+// (`!ModelVisible`) are skipped so the buffer's trim cap reflects
+// turns of conversation rather than wire chatter.
+//
+// On first sight of a DM target — `target` is a counterpart
+// `InstanceID` and the buffer has no entry for it yet — the
+// method lazy-seeds from the store under the same lock the live
+// append takes, so no concurrent appender can interleave between
+// seed and append. Channel targets are eager-seeded at
+// registration time; the lazy-seed branch is DM-only.
+//
+// Skips a duplicate if the incoming event matches the buffer's
+// most-recent entry by concrete type and timestamp; protects
+// against the seed-then-live-emit race where a producer persists
+// and is mid-fan-out while a concurrent registration's seed reads
+// the event from the store and then receives the same event again
+// via fan-out.
+//
+// The buffer trims to [modelHistorySize] from the older end on
+// every append so a chatty target cannot grow it without bound.
+func (c *serverClient) appendHistory(ctx context.Context, ev domain.StoredEvent, target domain.ChannelName) {
+	if c.history == nil {
+		return
+	}
+
+	if !ev.Event.ModelVisible() {
+		return
+	}
+
+	c.historyMu.Lock()
+	defer c.historyMu.Unlock()
+
+	if _, ok := c.history[target]; !ok && domain.InferChannelKind(target) == domain.KindDM {
+		seed, err := c.sess.store.DMEventsBefore(ctx, c.id, domain.InstanceID(target), nil, modelHistorySize)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "lazy-seed DM history",
+				"component", "session",
+				"instance_id", c.id,
+				"peer", target,
+				"error", err,
+			)
+			c.history[target] = nil
+		} else {
+			c.history[target] = seed
+		}
+	}
+
+	if buf := c.history[target]; len(buf) > 0 && sameStoredEvent(buf[len(buf)-1], ev) {
+		return
+	}
+
+	c.history[target] = append(c.history[target], ev)
+	if len(c.history[target]) > modelHistorySize {
+		c.history[target] = c.history[target][len(c.history[target])-modelHistorySize:]
+	}
+}
+
+// sameStoredEvent reports whether `a` and `b` represent the same
+// persisted event. The store-loaded form (from `EventsBefore` /
+// `DMEventsBefore`) carries the row's ID; the fan-out form is
+// constructed without the ID since the wire layer does not
+// propagate it. Compare on the (type, timestamp) tuple instead:
+// two events of the same concrete type at the same nanosecond
+// timestamp are not realistically distinct, and a storeload-then-
+// fanout duplicate has both attributes identical by construction.
+func sameStoredEvent(a, b domain.StoredEvent) bool {
+	if a.ID != 0 && b.ID != 0 {
+		return a.ID == b.ID
+	}
+
+	if a.Event == nil || b.Event == nil {
+		return false
+	}
+
+	if reflect.TypeOf(a.Event) != reflect.TypeOf(b.Event) {
+		return false
+	}
+
+	return domain.EventTime(a.Event).Equal(domain.EventTime(b.Event))
+}
+
+// snapshotHistory returns a defensive copy of the buffer for
+// `target`. The dispatch turn iterates the slice without holding
+// the lock, so the snapshot must not alias the live backing array.
+func (c *serverClient) snapshotHistory(target domain.ChannelName) []domain.StoredEvent {
+	if c.history == nil {
+		return nil
+	}
+
+	c.historyMu.Lock()
+	defer c.historyMu.Unlock()
+
+	src := c.history[target]
+	if len(src) == 0 {
+		return nil
+	}
+
+	dst := make([]domain.StoredEvent, len(src))
+	copy(dst, src)
+	return dst
 }

@@ -1489,7 +1489,7 @@ func TestSession_modelDispatchTurn_recordsSpan(t *testing.T) {
 	})
 	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
 
-	client := sess.ensureModelClient(botty)
+	client := sess.ensureModelClient(ctx, botty)
 	trigger := protocol.IRCMessage{
 		Kind:   protocol.KindPoke,
 		From:   "modeloff",
@@ -4260,13 +4260,13 @@ func seedInstance(t *testing.T, sess *Session, s *storemod.SQLiteStore, spec ins
 			}
 		})
 		require.NoError(t, s.SaveInstance(ctx, existing))
-		sess.ensureModelClient(existing)
+		sess.ensureModelClient(ctx, existing)
 		return existing
 	}
 
 	inst := domain.NewModelInstance(id, spec.Nick, spec.ModelID, spec.Persona, spec.Channels)
 	require.NoError(t, s.SaveInstance(ctx, inst))
-	sess.ensureModelClient(inst)
+	sess.ensureModelClient(ctx, inst)
 
 	return inst
 }
