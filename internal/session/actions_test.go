@@ -3,6 +3,7 @@ package session
 import (
 	"slices"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/require"
@@ -100,29 +101,33 @@ func TestPartAs_model_actor(t *testing.T) {
 }
 
 func TestPartAs_unknown_actor_is_noop(t *testing.T) {
-	sess, s := newTestSession(t)
-	ctx := t.Context()
+	synctest.Test(t, func(t *testing.T) {
+		sess, s := newTestSession(t)
+		defer shutdownTestSession(sess)
+		ctx := t.Context()
 
-	saveTestChannel(t, sess, s, newTestChannelWindow("#dev", fixedTime, testMembers(t, sess, s, "testuser")))
+		saveTestChannel(t, sess, s, newTestChannelWindow("#dev", fixedTime, testMembers(t, sess, s, "testuser")))
 
-	// partAs for an instance that isn't in the channel must be a
-	// no-op: no PartEvent emission (the empty-id fallback would
-	// otherwise ask the UI to drop the human's channel), no stored
-	// membership mutation, no instance-channels mutation.
-	ghost := domain.NewModelInstance("ghost-id", "ghost", "test/model", "", nil)
-	require.NoError(t, sess.partAs(ctx, ghost, "#dev", "bye"))
+		// partAs for an instance that isn't in the channel must be a
+		// no-op: no PartEvent emission (the empty-id fallback would
+		// otherwise ask the UI to drop the human's channel), no stored
+		// membership mutation, no instance-channels mutation.
+		ghost := domain.NewModelInstance("ghost-id", "ghost", "test/model", "", nil)
+		require.NoError(t, sess.partAs(ctx, ghost, "#dev", "bye"))
 
-	select {
-	case evt := <-sess.Events():
-		t.Fatalf("unexpected event for unknown-actor part: %T %+v", evt, evt)
-	case evt := <-sess.User().Events():
-		t.Fatalf("unexpected event for unknown-actor part: %T %+v", evt, evt)
-	case <-time.After(50 * time.Millisecond):
-	}
+		synctest.Wait()
+		select {
+		case evt := <-sess.Events():
+			t.Fatalf("unexpected event for unknown-actor part: %T %+v", evt, evt)
+		case evt := <-sess.User().Events():
+			t.Fatalf("unexpected event for unknown-actor part: %T %+v", evt, evt)
+		default:
+		}
 
-	updated, err := sess.loadChannelWindow(ctx, "#dev")
-	require.NoError(t, err)
-	require.Equal(t, slices.Collect(testMembers(t, sess, s, "testuser").All()), slices.Collect(updated.Members.All()))
+		updated, err := sess.loadChannelWindow(ctx, "#dev")
+		require.NoError(t, err)
+		require.Equal(t, slices.Collect(testMembers(t, sess, s, "testuser").All()), slices.Collect(updated.Members.All()))
+	})
 }
 
 func TestQuitAs_model_actor(t *testing.T) {
@@ -205,22 +210,25 @@ func TestSendMessageAs_model_actor(t *testing.T) {
 // applied uniformly at fan-out (RFC 2812 §3.3.1); the user-actor
 // branch in [Session.sendMessageAs] no longer carries it.
 func TestSendMessageAs_user_actor_does_not_echo_to_originator(t *testing.T) {
-	sess, _ := newTestSession(t)
-	ctx := t.Context()
+	synctest.Test(t, func(t *testing.T) {
+		sess, _ := newTestSession(t)
+		defer shutdownTestSession(sess)
+		ctx := t.Context()
 
-	require.NoError(t, sess.joinAs(ctx, sess.user, "#dev"))
-	drainEvent[domain.Join](t, sess)
-	drainEventSkipping[domain.ModeChange](t, sess)
-	drainDispatchEvents(t, sess)
+		require.NoError(t, sess.joinAs(ctx, sess.user, "#dev"))
+		drainEvent[domain.Join](t, sess)
+		drainEventSkipping[domain.ModeChange](t, sess)
+		drainDispatchEvents(t, sess)
 
-	_, err := sess.sendMessageAs(ctx, sess.user, "#dev", "hello")
-	require.NoError(t, err)
+		_, err := sess.sendMessageAs(ctx, sess.user, "#dev", "hello")
+		require.NoError(t, err)
 
-	drainDispatchEvents(t, sess)
+		drainDispatchEvents(t, sess)
 
-	if evt, ok := peekEvent(sess); ok {
-		t.Fatalf("expected the user's own message to be suppressed, got %T %+v", evt, evt)
-	}
+		if evt, ok := peekEvent(sess); ok {
+			t.Fatalf("expected the user's own message to be suppressed, got %T %+v", evt, evt)
+		}
+	})
 }
 
 func TestSetTopicAs_model_actor(t *testing.T) {
@@ -532,74 +540,82 @@ func TestJoinAs_user_existing_channel_with_topic(t *testing.T) {
 }
 
 func TestJoinAs_user_existing_channel_no_topic(t *testing.T) {
-	sess, s := newTestSession(t)
-	ctx := t.Context()
+	synctest.Test(t, func(t *testing.T) {
+		sess, s := newTestSession(t)
+		defer shutdownTestSession(sess)
+		ctx := t.Context()
 
-	seedInstance(t, sess, s, instanceSpec{Nick: "alice", ModelID: "test/model"})
+		seedInstance(t, sess, s, instanceSpec{Nick: "alice", ModelID: "test/model"})
 
-	saveTestChannel(t, sess, s, newTestChannelWindow("#dev", fixedTime.Add(-time.Hour), testMembers(t, sess, s, "alice")))
+		saveTestChannel(t, sess, s, newTestChannelWindow("#dev", fixedTime.Add(-time.Hour), testMembers(t, sess, s, "alice")))
 
-	require.NoError(t, sess.joinAs(ctx, sess.UserInstance(), "#dev"))
+		require.NoError(t, sess.joinAs(ctx, sess.UserInstance(), "#dev"))
 
-	_ = drainEvent[domain.Join](t, sess)
-	_ = drainEventSkipping[domain.ModeChange](t, sess)
+		_ = drainEvent[domain.Join](t, sess)
+		_ = drainEventSkipping[domain.ModeChange](t, sess)
 
-	// No topic event should be emitted. Drain dispatch events, then verify.
-	drainDispatchEvents(t, sess)
-	select {
-	case evt := <-sess.Events():
-		t.Fatalf("unexpected event: %T %+v", evt, evt)
-	case evt := <-sess.User().Events():
-		t.Fatalf("unexpected event: %T %+v", evt, evt)
-	case <-time.After(50 * time.Millisecond):
-	}
+		// No topic event should be emitted. Drain dispatch events, then verify.
+		drainDispatchEvents(t, sess)
+		synctest.Wait()
+		select {
+		case evt := <-sess.Events():
+			t.Fatalf("unexpected event: %T %+v", evt, evt)
+		case evt := <-sess.User().Events():
+			t.Fatalf("unexpected event: %T %+v", evt, evt)
+		default:
+		}
+	})
 }
 
 func TestJoinAs_model_voice_only_no_topic(t *testing.T) {
-	sess, s := newTestSession(t)
-	ctx := t.Context()
+	synctest.Test(t, func(t *testing.T) {
+		sess, s := newTestSession(t)
+		defer shutdownTestSession(sess)
+		ctx := t.Context()
 
-	seedChannelWithMembers(t, sess, s, "#dev", "testuser")
-	botty := seedInstance(t, sess, s, instanceSpec{
-		Nick:     "botty",
-		ModelID:  "test/model",
-		Channels: orderedmap.New[domain.ChannelName, time.Time](),
+		seedChannelWithMembers(t, sess, s, "#dev", "testuser")
+		botty := seedInstance(t, sess, s, instanceSpec{
+			Nick:     "botty",
+			ModelID:  "test/model",
+			Channels: orderedmap.New[domain.ChannelName, time.Time](),
+		})
+
+		ch, _ := sess.loadChannelWindow(ctx, "#dev")
+		ch.Topic = "some topic"
+		saveTestChannel(t, sess, s, ch)
+
+		require.NoError(t, sess.joinAs(ctx, botty, "#dev"))
+
+		joinEvt := drainEventSkipping[domain.Join](t, sess)
+		require.Equal(t, domain.Nick("botty"), joinEvt.Instance.Nick())
+
+		// A model join grants +v via ChanServ, mirroring the +o granted to
+		// the user on user joins.
+		mode := drainEventSkipping[domain.ModeChange](t, sess)
+		require.Equal(t, domain.ModeChange{
+			Target:     "#dev",
+			Nick:       "botty",
+			InstanceID: botty.ID(),
+			Mode:       domain.ModeVoice,
+			By:         "ChanServ",
+			At:         fixedTime,
+			Instance:   botty,
+			Actor:      "ChanServ",
+		}, mode)
+
+		// Drain remaining dispatch events triggered by the join.
+		drainDispatchEvents(t, sess)
+
+		// No TopicInfoEvent for a non-user joiner.
+		synctest.Wait()
+		select {
+		case evt := <-sess.Events():
+			t.Fatalf("unexpected event after model join: %T %+v", evt, evt)
+		case evt := <-sess.User().Events():
+			t.Fatalf("unexpected event after model join: %T %+v", evt, evt)
+		default:
+		}
 	})
-
-	ch, _ := sess.loadChannelWindow(ctx, "#dev")
-	ch.Topic = "some topic"
-	saveTestChannel(t, sess, s, ch)
-
-	require.NoError(t, sess.joinAs(ctx, botty, "#dev"))
-
-	joinEvt := drainEventSkipping[domain.Join](t, sess)
-	require.Equal(t, domain.Nick("botty"), joinEvt.Instance.Nick())
-
-	// A model join grants +v via ChanServ, mirroring the +o granted to
-	// the user on user joins.
-	mode := drainEventSkipping[domain.ModeChange](t, sess)
-	require.Equal(t, domain.ModeChange{
-		Target:     "#dev",
-		Nick:       "botty",
-		InstanceID: botty.ID(),
-		Mode:       domain.ModeVoice,
-		By:         "ChanServ",
-		At:         fixedTime,
-		Instance:   botty,
-		Actor:      "ChanServ",
-	}, mode)
-
-	// Drain remaining dispatch events triggered by the join.
-	drainDispatchEvents(t, sess)
-
-	// No TopicInfoEvent for a non-user joiner.
-	select {
-	case evt := <-sess.Events():
-		t.Fatalf("unexpected event after model join: %T %+v", evt, evt)
-	case evt := <-sess.User().Events():
-		t.Fatalf("unexpected event after model join: %T %+v", evt, evt)
-	case <-time.After(50 * time.Millisecond):
-	}
 }
 
 func TestJoinAs_user_updates_autojoin(t *testing.T) {

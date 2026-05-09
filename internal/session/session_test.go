@@ -18,10 +18,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	chromem "github.com/philippgille/chromem-go"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	orderedmap "github.com/wk8/go-ordered-map/v2"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -201,11 +201,16 @@ func drainEventSkipping[T domain.Event](t *testing.T, sess *Session) T {
 }
 
 // drainDispatchEvents reads and discards dispatch lifecycle events
-// until both buses are quiet.
+// until both buses are quiet. Must run inside a [synctest.Test]
+// bubble: [synctest.Wait] is what defines "quiet" — the system has
+// fully settled, so a non-blocking select that finds both channels
+// empty proves no further dispatch event will arrive.
 func drainDispatchEvents(t *testing.T, sess *Session) {
 	t.Helper()
 
 	for {
+		synctest.Wait()
+
 		select {
 		case evt := <-sess.Events():
 			switch evt.(type) {
@@ -221,7 +226,7 @@ func drainDispatchEvents(t *testing.T, sess *Session) {
 			default:
 				t.Fatalf("expected dispatch event, got %T", delivery.Event)
 			}
-		case <-time.After(100 * time.Millisecond):
+		default:
 			return
 		}
 	}
@@ -420,6 +425,34 @@ func newTestSessionWithAPI(t *testing.T, apiClient api.Client) (*Session, *store
 	sess.now = func() time.Time { return fixedTime }
 
 	return sess, s
+}
+
+// shutdownTestSession releases the dispatch goroutines spawned per
+// model-client by [Session.startModelDispatch] so a [synctest.Test]
+// bubble can exit without `deadlock: blocked goroutines remain`.
+//
+// `runModelDispatch` exits when its `serverClient.events` channel
+// closes. Only model-clients (`instance != nil`) run a dispatch loop;
+// the user-client has no consumer goroutine. Production code never
+// closes these channels — the binary's shutdown today is process
+// exit — so this helper is test-only.
+//
+// Must run inside the bubble. The leading [synctest.Wait] proves
+// every producer (a fan-out send into `events`) has finished, so
+// closing the channel cannot race with a concurrent send.
+func shutdownTestSession(sess *Session) {
+	synctest.Wait()
+
+	sess.subsMu.Lock()
+	defer sess.subsMu.Unlock()
+
+	for _, sub := range sess.subscribers {
+		if sub.instance == nil {
+			continue
+		}
+
+		close(sub.events)
+	}
 }
 
 func TestSession_Join(t *testing.T) {
@@ -1191,66 +1224,70 @@ func TestSession_Kick(t *testing.T) {
 }
 
 func TestSession_mutationOperations_recordSpans(t *testing.T) {
-	recorder, provider := oteltest.NewSpanRecorder(t)
-	s := storetest.NewMemoryStore(t).WithTracerProvider(provider)
-	sess := New(s, nil, &fakeAPIClient{}, "testuser", "", "").WithTracerProvider(provider)
-	sess.now = func() time.Time { return fixedTime }
-	ctx := t.Context()
+	synctest.Test(t, func(t *testing.T) {
+		recorder, provider := oteltest.NewSpanRecorder(t)
+		s := storetest.NewMemoryStore(t).WithTracerProvider(provider)
+		sess := New(s, nil, &fakeAPIClient{}, "testuser", "", "").WithTracerProvider(provider)
+		sess.now = func() time.Time { return fixedTime }
+		defer shutdownTestSession(sess)
+		ctx := t.Context()
 
-	require.NoError(t, sess.Join(ctx, "#general"))
+		require.NoError(t, sess.Join(ctx, "#general"))
 
-	seedChannelWithMembers(t, sess, s, "#leave", "testuser")
-	require.NoError(t, sess.Part(ctx, "#leave", ""))
+		seedChannelWithMembers(t, sess, s, "#leave", "testuser")
+		require.NoError(t, sess.Part(ctx, "#leave", ""))
 
-	botty := seedInstance(t, sess, s, instanceSpec{
-		Nick:     "botty",
-		ModelID:  "test/model",
-		Channels: testChannels("#general"),
-	})
-	channel, err := sess.loadChannelWindow(ctx, "#general")
-	require.NoError(t, err)
-	channel.Members.Add(botty)
-	saveTestChannel(t, sess, s, channel)
-	require.NoError(t, sess.Kick(ctx, "#general", "botty"))
+		botty := seedInstance(t, sess, s, instanceSpec{
+			Nick:     "botty",
+			ModelID:  "test/model",
+			Channels: testChannels("#general"),
+		})
+		channel, err := sess.loadChannelWindow(ctx, "#general")
+		require.NoError(t, err)
+		channel.Members.Add(botty)
+		saveTestChannel(t, sess, s, channel)
+		require.NoError(t, sess.Kick(ctx, "#general", "botty"))
 
-	require.NoError(t, sess.SetTopic(ctx, "#general", "observability"))
-	require.NoError(t, sess.ChangeNick(ctx, "renamed"))
+		require.NoError(t, sess.SetTopic(ctx, "#general", "observability"))
+		require.NoError(t, sess.ChangeNick(ctx, "renamed"))
 
-	require.NoError(t, sess.Reset(ctx))
+		require.NoError(t, sess.Reset(ctx))
 
-	// Background goroutines (Kick / Reset dispatch) end their spans
-	// asynchronously, so poll until the full expected set is present
-	// rather than snapshotting once. The construction-time
-	// `store.sqlite.migrate_v2` span is not included: the store is
-	// built before `WithTracerProvider` is chained on, so its
-	// migration scan lands on the default provider, not the test
-	// recorder. This test pins the session/store operation spans
-	// emitted during the act phase, which is what we care about.
-	expected := []string{
-		"session.change_nick",
-		"session.join",
-		"session.kick",
-		"session.part",
-		"session.reset",
-		"session.set_topic",
-		"store.sqlite.append_event",
-		"store.sqlite.events_before",
-		"store.sqlite.get_instance_by_id",
-		"store.sqlite.get_window",
-		"store.sqlite.reset",
-		"store.sqlite.resolve_nick",
-		"store.sqlite.save_instance",
-		"store.sqlite.save_window",
-		"store.sqlite.set_autojoin_channels",
-	}
+		// Background goroutines (Kick / Reset dispatch) end their spans
+		// asynchronously. [synctest.Wait] settles every bubbled
+		// goroutine before the assertion, so a single snapshot is
+		// authoritative. The construction-time `store.sqlite.migrate_v2`
+		// span is not included: the store is built before
+		// `WithTracerProvider` is chained on, so its migration scan
+		// lands on the default provider, not the test recorder. This
+		// test pins the session/store operation spans emitted during
+		// the act phase, which is what we care about.
+		expected := []string{
+			"session.change_nick",
+			"session.join",
+			"session.kick",
+			"session.part",
+			"session.reset",
+			"session.set_topic",
+			"store.sqlite.append_event",
+			"store.sqlite.events_before",
+			"store.sqlite.get_instance_by_id",
+			"store.sqlite.get_window",
+			"store.sqlite.reset",
+			"store.sqlite.resolve_nick",
+			"store.sqlite.save_instance",
+			"store.sqlite.save_window",
+			"store.sqlite.set_autojoin_channels",
+		}
 
-	require.EventuallyWithT(t, func(collect *assert.CollectT) {
+		synctest.Wait()
+
 		ended := make(map[string]sdktrace.ReadOnlySpan)
 		for _, span := range recorder.Ended() {
 			ended[span.Name()] = span
 		}
-		assert.ElementsMatch(collect, expected, slices.Collect(maps.Keys(ended)))
-	}, 2*time.Second, 10*time.Millisecond)
+		require.ElementsMatch(t, expected, slices.Collect(maps.Keys(ended)))
+	})
 }
 
 func TestSession_SendMessageAs_status_channel_records_validation_error_kind(t *testing.T) {
@@ -1573,114 +1610,117 @@ func TestSession_SendMessage_emits_dispatch_events(t *testing.T) {
 }
 
 func TestSession_JoinEvent_triggers_dispatch(t *testing.T) {
-	var receivedEvents []protocol.IRCMessage
+	synctest.Test(t, func(t *testing.T) {
+		var receivedEvents []protocol.IRCMessage
 
-	fake := &fakeAPIClient{
-		sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (protocol.ModelResponse, error) {
-			receivedEvents = events
-			return protocol.Reply("welcome"), nil
-		},
-	}
-	sess, s := newTestSessionWithAPI(t, fake)
-	ctx := t.Context()
-
-	// Seed a channel with a model already present so join dispatch
-	// has someone to notify. The user is NOT yet a member.
-	seedInstance(t, sess, s, instanceSpec{
-		Nick:     "botty",
-		ModelID:  "test/model",
-		Channels: testChannels("#general"),
-	})
-	seedChannelWithMembers(t, sess, s, "#general", "botty")
-
-	// Join an existing channel — the reactive dispatch should fire.
-	require.NoError(t, sess.Join(ctx, "#general"))
-
-	// Six events are expected: the synchronous Join, the
-	// joiner-targeted NamesReply carrying the channel's member list
-	// at join time, the synchronous ModeChange emitted by
-	// emitJoinProtocol, and the async DispatchStartedEvent /
-	// reply Message / DispatchDoneEvent from botty's dispatch
-	// goroutine. Cross-goroutine ordering between ModeChange and
-	// the dispatch lifecycle is not guaranteed, so drain a fixed
-	// count and assert by set membership plus the lifecycle's
-	// internal order.
-	events := drainNEvents(t, sess, 6)
-
-	require.IsType(t, domain.Join{}, events[0])
-	require.Equal(t,
-		domain.Join{
-			Target: "#general", Nick: "testuser", InstanceID: sess.UserInstance().ID(),
-			Instance: sess.UserInstance(), At: fixedTime,
-		},
-		events[0],
-	)
-
-	wantMode := domain.ModeChange{
-		Target:     "#general",
-		Nick:       "testuser",
-		InstanceID: sess.UserInstance().ID(),
-		Instance:   sess.UserInstance(),
-		Mode:       domain.ModeOp, By: "ChanServ", Actor: "ChanServ", At: fixedTime,
-	}
-	wantStarted := domain.DispatchStartedEvent{
-		Channel: "#general", Nicks: []domain.Nick{"botty"},
-	}
-	wantReply := domain.Message{
-		Target:     "#general",
-		From:       "botty",
-		InstanceID: testMemberID("botty"),
-		Body:       "welcome",
-		At:         fixedTime,
-	}
-	wantDone := domain.DispatchDoneEvent{Channel: "#general"}
-
-	// The NamesReply carries the channel's MemberList at join
-	// time. Extracting the exact MemberList for an equality match
-	// would couple to its internals, so confirm one is present
-	// addressing the right channel and time, then assert the rest.
-	var sawNames bool
-	rest := []domain.Event{}
-	for _, e := range events[1:] {
-		if n, ok := e.(domain.NamesReplyEvent); ok {
-			require.Equal(t, domain.ChannelName("#general"), n.Channel)
-			require.Equal(t, fixedTime, n.At)
-			sawNames = true
-
-			continue
+		fake := &fakeAPIClient{
+			sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (protocol.ModelResponse, error) {
+				receivedEvents = events
+				return protocol.Reply("welcome"), nil
+			},
 		}
+		sess, s := newTestSessionWithAPI(t, fake)
+		defer shutdownTestSession(sess)
+		ctx := t.Context()
 
-		rest = append(rest, e)
-	}
-	require.True(t, sawNames, "expected a NamesReplyEvent in the join burst")
+		// Seed a channel with a model already present so join dispatch
+		// has someone to notify. The user is NOT yet a member.
+		seedInstance(t, sess, s, instanceSpec{
+			Nick:     "botty",
+			ModelID:  "test/model",
+			Channels: testChannels("#general"),
+		})
+		seedChannelWithMembers(t, sess, s, "#general", "botty")
 
-	require.ElementsMatch(t,
-		[]domain.Event{wantMode, wantStarted, wantReply, wantDone},
-		rest,
-	)
+		// Join an existing channel — the reactive dispatch should fire.
+		require.NoError(t, sess.Join(ctx, "#general"))
 
-	// Dispatch lifecycle ordering: Started before reply Message before Done.
-	idxOf := func(target domain.Event) int {
-		for i, e := range rest {
-			if reflect.DeepEqual(target, e) {
-				return i
+		// Six events are expected: the synchronous Join, the
+		// joiner-targeted NamesReply carrying the channel's member list
+		// at join time, the synchronous ModeChange emitted by
+		// emitJoinProtocol, and the async DispatchStartedEvent /
+		// reply Message / DispatchDoneEvent from botty's dispatch
+		// goroutine. Cross-goroutine ordering between ModeChange and
+		// the dispatch lifecycle is not guaranteed, so drain a fixed
+		// count and assert by set membership plus the lifecycle's
+		// internal order.
+		events := drainNEvents(t, sess, 6)
+
+		require.IsType(t, domain.Join{}, events[0])
+		require.Equal(t,
+			domain.Join{
+				Target: "#general", Nick: "testuser", InstanceID: sess.UserInstance().ID(),
+				Instance: sess.UserInstance(), At: fixedTime,
+			},
+			events[0],
+		)
+
+		wantMode := domain.ModeChange{
+			Target:     "#general",
+			Nick:       "testuser",
+			InstanceID: sess.UserInstance().ID(),
+			Instance:   sess.UserInstance(),
+			Mode:       domain.ModeOp, By: "ChanServ", Actor: "ChanServ", At: fixedTime,
+		}
+		wantStarted := domain.DispatchStartedEvent{
+			Channel: "#general", Nicks: []domain.Nick{"botty"},
+		}
+		wantReply := domain.Message{
+			Target:     "#general",
+			From:       "botty",
+			InstanceID: testMemberID("botty"),
+			Body:       "welcome",
+			At:         fixedTime,
+		}
+		wantDone := domain.DispatchDoneEvent{Channel: "#general"}
+
+		// The NamesReply carries the channel's MemberList at join
+		// time. Extracting the exact MemberList for an equality match
+		// would couple to its internals, so confirm one is present
+		// addressing the right channel and time, then assert the rest.
+		var sawNames bool
+		rest := []domain.Event{}
+		for _, e := range events[1:] {
+			if n, ok := e.(domain.NamesReplyEvent); ok {
+				require.Equal(t, domain.ChannelName("#general"), n.Channel)
+				require.Equal(t, fixedTime, n.At)
+				sawNames = true
+
+				continue
 			}
+
+			rest = append(rest, e)
+		}
+		require.True(t, sawNames, "expected a NamesReplyEvent in the join burst")
+
+		require.ElementsMatch(t,
+			[]domain.Event{wantMode, wantStarted, wantReply, wantDone},
+			rest,
+		)
+
+		// Dispatch lifecycle ordering: Started before reply Message before Done.
+		idxOf := func(target domain.Event) int {
+			for i, e := range rest {
+				if reflect.DeepEqual(target, e) {
+					return i
+				}
+			}
+
+			t.Fatalf("event %T not found", target)
+			return -1
 		}
 
-		t.Fatalf("event %T not found", target)
-		return -1
-	}
+		require.Less(t, idxOf(wantStarted), idxOf(wantReply), "DispatchStartedEvent must precede reply Message")
+		require.Less(t, idxOf(wantReply), idxOf(wantDone), "reply Message must precede DispatchDoneEvent")
 
-	require.Less(t, idxOf(wantStarted), idxOf(wantReply), "DispatchStartedEvent must precede reply Message")
-	require.Less(t, idxOf(wantReply), idxOf(wantDone), "reply Message must precede DispatchDoneEvent")
-
-	// The trigger event sent to the model should be a JOIN message.
-	require.Equal(t, []protocol.IRCMessage{{
-		Kind:   protocol.KindJoin,
-		From:   "testuser",
-		Target: "#general",
-		At:     fixedTime,
-	}}, receivedEvents)
+		// The trigger event sent to the model should be a JOIN message.
+		require.Equal(t, []protocol.IRCMessage{{
+			Kind:   protocol.KindJoin,
+			From:   "testuser",
+			Target: "#general",
+			At:     fixedTime,
+		}}, receivedEvents)
+	})
 }
 
 func TestSession_model_reply_does_not_retrigger_dispatch(t *testing.T) {
@@ -2553,29 +2593,32 @@ func TestSession_KickNonexistentChannel(t *testing.T) {
 }
 
 func TestSession_KickNonMember(t *testing.T) {
-	sess, s := newTestSession(t)
-	ctx := t.Context()
+	synctest.Test(t, func(t *testing.T) {
+		sess, s := newTestSession(t)
+		defer shutdownTestSession(sess)
+		ctx := t.Context()
 
-	saveTestChannel(t, sess, s, newTestChannelWindow("#dev", fixedTime, testMembers(t, sess, s, "testuser")))
+		saveTestChannel(t, sess, s, newTestChannelWindow("#dev", fixedTime, testMembers(t, sess, s, "testuser")))
 
-	// Kicking an unresolved nick must be a no-op: no
-	// ModelKickedEvent emission (the empty-id fallback would
-	// otherwise point the UI at the human user), no stored
-	// membership mutation, no instance-channels mutation.
-	require.NoError(t, sess.Kick(ctx, "#dev", "nobody"))
+		// Kicking an unresolved nick must be a no-op: no
+		// ModelKickedEvent emission (the empty-id fallback would
+		// otherwise point the UI at the human user), no stored
+		// membership mutation, no instance-channels mutation.
+		require.NoError(t, sess.Kick(ctx, "#dev", "nobody"))
 
-	deadline := time.After(50 * time.Millisecond)
-	select {
-	case evt := <-sess.Events():
-		t.Fatalf("unexpected event for unknown-nick kick: %T %+v", evt, evt)
-	case evt := <-sess.User().Events():
-		t.Fatalf("unexpected event for unknown-nick kick: %T %+v", evt, evt)
-	case <-deadline:
-	}
+		synctest.Wait()
+		select {
+		case evt := <-sess.Events():
+			t.Fatalf("unexpected event for unknown-nick kick: %T %+v", evt, evt)
+		case evt := <-sess.User().Events():
+			t.Fatalf("unexpected event for unknown-nick kick: %T %+v", evt, evt)
+		default:
+		}
 
-	updated, err := sess.loadChannelWindow(ctx, "#dev")
-	require.NoError(t, err)
-	require.Equal(t, slices.Collect(testMembers(t, sess, s, "testuser").All()), slices.Collect(updated.Members.All()))
+		updated, err := sess.loadChannelWindow(ctx, "#dev")
+		require.NoError(t, err)
+		require.Equal(t, slices.Collect(testMembers(t, sess, s, "testuser").All()), slices.Collect(updated.Members.All()))
+	})
 }
 
 func TestSession_SetTopicNonexistentChannel(t *testing.T) {
@@ -4430,19 +4473,26 @@ func TestSession_DispatchToChannel_truncated_returns_error(t *testing.T) {
 //
 // Callers that want only the side-effect of clearing the channel may
 // discard the return value with `_ = drainNEvents(...)`.
+//
+// Must run inside a [synctest.Test] bubble: [synctest.Wait] gates each
+// iteration on full quiescence, so a non-blocking select that finds
+// both channels empty proves the producer has stalled and the
+// expected count will never arrive.
 func drainNEvents(t *testing.T, sess *Session, n int) []domain.Event {
 	t.Helper()
 
 	events := make([]domain.Event, 0, n)
 
 	for range n {
+		synctest.Wait()
+
 		select {
 		case evt := <-sess.Events():
 			events = append(events, evt)
 		case delivery := <-sess.User().Events():
 			events = append(events, delivery.Event)
-		case <-time.After(time.Second):
-			t.Fatalf("timed out draining events at %d/%d", len(events), n)
+		default:
+			t.Fatalf("producer stalled draining events at %d/%d", len(events), n)
 		}
 	}
 
