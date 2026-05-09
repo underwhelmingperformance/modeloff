@@ -162,7 +162,7 @@ func TestChatScreen_checklist_part_last_channel_shows_checklist(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#general")
 
 	tm := newChatApp(t, sess)
-	tm.WaitFor("#general")
+	waitForChannelSeedDrain(tm)
 
 	tm.Submit("/part")
 	tm.WaitFor("Welcome to modeloff", "✗", "No channels joined")
@@ -369,7 +369,7 @@ func TestChatScreen_nick_command_reports_persist_error(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#general")
 
 	tm := newChatAppWithConfig(t, sess, cfgStore)
-	tm.WaitFor("#general")
+	waitForChannelSeedDrain(tm)
 
 	tm.Submit("/nick newnick")
 	tm.WaitFor("save config", "context deadline exceeded")
@@ -532,7 +532,7 @@ func TestChatScreen_kick_command(t *testing.T) {
 	require.NoError(t, sess.AddModel(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
 
 	tm := newChatApp(t, sess)
-	tm.WaitFor("#general")
+	waitForChannelAndModelSeedDrain(tm)
 
 	tm.Submit("/kick fakenick")
 	tm.WaitFor("fakenick was kicked from #general by testuser")
@@ -554,7 +554,7 @@ func TestChatScreen_config_set_api_key(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#general")
 
 	tm := newChatAppWithConfig(t, sess, cfgStore)
-	tm.WaitFor("#general")
+	waitForChannelSeedDrain(tm)
 
 	tm.Submit("/config api-key test-key")
 	tm.WaitFor("OpenRouter API key saved and activated.")
@@ -577,7 +577,7 @@ func TestChatScreen_config_set_api_key_updates_live_model_suggestions(t *testing
 	uitest.SeedChannel(t, sess, "#general")
 
 	tm := newChatAppWithConfig(t, sess, cfgStore)
-	tm.WaitFor("#general")
+	waitForChannelSeedDrain(tm)
 
 	tm.Submit("/config api-key test-key")
 	tm.WaitFor("OpenRouter API key saved and activated.")
@@ -599,7 +599,7 @@ func TestChatScreen_config_set_api_key_surfaces_live_model_failure(t *testing.T)
 	uitest.SeedChannel(t, sess, "#general")
 
 	tm := newChatAppWithConfig(t, sess, cfgStore)
-	tm.WaitFor("#general")
+	waitForChannelSeedDrain(tm)
 
 	tm.Submit("/config api-key test-key")
 	tm.WaitFor("Model list unavailable: upstream 503.")
@@ -611,7 +611,7 @@ func TestChatScreen_config_set_poke_interval(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#general")
 
 	tm := newChatAppWithConfig(t, sess, cfgStore)
-	tm.WaitFor("#general")
+	waitForChannelSeedDrain(tm)
 
 	tm.Submit("/config poke-interval 10m")
 	tm.WaitFor("Poke interval set to 10m0s.")
@@ -625,7 +625,7 @@ func TestChatScreen_config_set_timestamp_format(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#general")
 
 	tm := newChatAppWithConfig(t, sess, cfgStore)
-	tm.WaitFor("#general")
+	waitForChannelSeedDrain(tm)
 
 	tm.Submit("/config timestamp-format 02/01 15:04:05")
 	tm.WaitFor("timestamp format set to 02/01 15:04:05")
@@ -640,7 +640,7 @@ func TestChatScreen_config_disable_timestamp_format(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#general")
 
 	tm := newChatAppWithConfig(t, sess, cfgStore)
-	tm.WaitFor("#general")
+	waitForChannelSeedDrain(tm)
 
 	tm.Submit("/config timestamp-format")
 	tm.WaitFor("timestamps disabled")
@@ -655,7 +655,7 @@ func TestChatScreen_config_disable_timestamp_format_with_empty_quotes(t *testing
 	uitest.SeedChannel(t, sess, "#general")
 
 	tm := newChatAppWithConfig(t, sess, cfgStore)
-	tm.WaitFor("#general")
+	waitForChannelSeedDrain(tm)
 
 	tm.Submit(`/config timestamp-format ""`)
 	tm.WaitFor("timestamps disabled")
@@ -671,7 +671,7 @@ func TestChatScreen_config_reset_poke_interval_from_parent_flag(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#general")
 
 	tm := newChatAppWithConfig(t, sess, cfgStore)
-	tm.WaitFor("#general")
+	waitForChannelSeedDrain(tm)
 
 	tm.Submit("/config --reset poke-interval")
 	tm.WaitFor("Poke interval reset to 5m0s.")
@@ -686,7 +686,7 @@ func TestChatScreen_config_reset_api_key_from_child_flag(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#general")
 
 	tm := newChatAppWithConfig(t, sess, cfgStore)
-	tm.WaitFor("#general")
+	waitForChannelSeedDrain(tm)
 
 	tm.Submit("/config api-key --reset")
 	tm.WaitFor("OpenRouter API key cleared.")
@@ -702,7 +702,7 @@ func TestChatScreen_config_reset_timestamp_format(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#general")
 
 	tm := newChatAppWithConfig(t, sess, cfgStore)
-	tm.WaitFor("#general")
+	waitForChannelSeedDrain(tm)
 
 	tm.Submit("/config --reset timestamp-format")
 	tm.WaitFor("Timestamp format reset to locale default.")
@@ -717,7 +717,7 @@ func TestChatScreen_config_reset_base_url(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#general")
 
 	tm := newChatAppWithConfig(t, sess, cfgStore)
-	tm.WaitFor("#general")
+	waitForChannelSeedDrain(tm)
 
 	tm.Submit("/config --reset base-url")
 	tm.WaitFor("base URL reset to https://openrouter.ai/api/v1")
@@ -732,7 +732,7 @@ func TestChatScreen_config_reset_small_model(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#general")
 
 	tm := newChatAppWithConfig(t, sess, cfgStore)
-	tm.WaitFor("#general")
+	waitForChannelSeedDrain(tm)
 
 	tm.Submit("/config --reset small-model")
 	tm.WaitFor("Small model reset to " + string(config.DefaultSmallModel) + ".")
@@ -747,7 +747,7 @@ func TestChatScreen_config_reset_embedding_model(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#general")
 
 	tm := newChatAppWithConfig(t, sess, cfgStore)
-	tm.WaitFor("#general")
+	waitForChannelSeedDrain(tm)
 
 	tm.Submit("/config --reset embedding-model")
 	tm.WaitFor("embedding model reset to openai/text-embedding-3-small")
@@ -762,7 +762,7 @@ func TestChatScreen_config_reset_highlight(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#general")
 
 	tm := newChatAppWithConfig(t, sess, cfgStore)
-	tm.WaitFor("#general")
+	waitForChannelSeedDrain(tm)
 
 	tm.Submit("/config --reset highlight")
 	tm.WaitFor("highlight words reset to: [$nick]")
@@ -808,7 +808,7 @@ func TestChatScreen_query_command_opens_dm(t *testing.T) {
 	require.NoError(t, sess.AddModel(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
 
 	tm := newChatApp(t, sess)
-	tm.WaitFor("#general")
+	waitForChannelAndModelSeedDrain(tm)
 
 	tm.Submit("/query fakenick")
 	tm.WaitFor("fakenick")
@@ -823,7 +823,7 @@ func TestChatScreen_query_command_opens_dm_and_sends_message(t *testing.T) {
 	require.NoError(t, sess.AddModel(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
 
 	tm := newChatApp(t, sess)
-	tm.WaitFor("#general")
+	waitForChannelAndModelSeedDrain(tm)
 
 	tm.Submit("/query fakenick hello there")
 	tm.WaitFor("hello there", "fakenick")
@@ -906,7 +906,7 @@ func TestChatScreen_quit_command_with_message(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#general")
 
 	tm := newChatApp(t, sess)
-	tm.WaitFor("#general")
+	waitForChannelSeedDrain(tm)
 
 	tm.Submit("/quit goodbye world")
 	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
@@ -969,7 +969,7 @@ func TestChatScreen_regenerate_personas_command(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#general")
 
 	tm := newChatAppWithConfig(t, sess, newFakeConfigStore())
-	tm.WaitFor("#general")
+	waitForChannelSeedDrain(tm)
 
 	tm.Submit("/regenerate-personas")
 	tm.WaitFor("Generated")
@@ -1004,7 +1004,7 @@ func TestChatScreen_config_persona_reset(t *testing.T) {
 	require.NoError(t, sess.SetPersona(t.Context(), "wizard", "A wise old mage"))
 
 	tm := newChatApp(t, sess)
-	tm.WaitFor("#general")
+	waitForChannelSeedDrain(tm)
 
 	tm.Submit("/config --reset persona")
 	tm.WaitFor("Removed 2 user-defined persona(s).")
