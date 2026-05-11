@@ -96,9 +96,14 @@ func (c *serverClient) HasMode(m protocol.UserMode) bool {
 // `ev`. The user-client (no backing instance) sees every event so
 // the chat-screen renders the full session view. A model-client
 // receives only events whose target window it is a member of, or
-// actor-scoped events (Quit, NickChange) that touch a channel it
-// shares with the actor.
-func (c *serverClient) canReceive(ev domain.ProtocolEvent) bool {
+// actor-scoped events (Quit, NickChange) where the recipient
+// shares any channel with the actor — RFC 2812 §3.3.1's
+// intersection rule. `actorTargets` is the per-recipient
+// intersection that [Session.fanOutProtocol] computed for this
+// fan-out; it is non-empty exactly when the actor and `c` share
+// at least one channel, so the test for actor-scoped delivery is
+// just a length check.
+func (c *serverClient) canReceive(ev domain.ProtocolEvent, actorTargets []domain.ChannelName) bool {
 	if c.instance == nil {
 		return true
 	}
@@ -128,10 +133,9 @@ func (c *serverClient) canReceive(ev domain.ProtocolEvent) bool {
 		return e.InstanceID == c.id || channelsContains(channels, e.Target)
 	case domain.ModelKicked:
 		return channelsContains(channels, e.Target)
-	case domain.Quit:
-		return anyChannelInCommon(channels, e.Channels)
-	case domain.NickChange:
-		return anyChannelInCommon(channels, e.Channels)
+	case domain.Quit, domain.NickChange:
+		_ = e
+		return len(actorTargets) > 0
 	case domain.PokeEvent:
 		return channelsContains(channels, e.Channel)
 	case domain.NamesReplyEvent:
@@ -170,16 +174,6 @@ func channelsContains(channels channelMembership, target domain.ChannelName) boo
 
 	_, ok := channels.Get(target)
 	return ok
-}
-
-func anyChannelInCommon(membership channelMembership, candidates []domain.ChannelName) bool {
-	for _, ch := range candidates {
-		if _, ok := membership.Get(ch); ok {
-			return true
-		}
-	}
-
-	return false
 }
 
 // appendHistory records `ev` against `target` in the model-client's

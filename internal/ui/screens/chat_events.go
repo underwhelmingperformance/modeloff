@@ -61,7 +61,7 @@ func (s ChatScreen) handleProtocolEvent(msg protocolEventMsg) (ui.Model, tea.Cmd
 		cmd     tea.Cmd
 	)
 
-	s.bufferEvent(msg.event)
+	s.bufferProtocolEvent(msg.event, msg.targets)
 
 	switch evt := msg.event.(type) {
 	case domain.Join:
@@ -69,7 +69,7 @@ func (s ChatScreen) handleProtocolEvent(msg protocolEventMsg) (ui.Model, tea.Cmd
 	case domain.Part:
 		updated, cmd = s.handlePartEvent(evt)
 	case domain.Quit:
-		updated, cmd = s.handleQuitEvent(evt)
+		updated, cmd = s.handleQuitEvent(evt, msg.targets)
 	case domain.ModeChange:
 		updated, cmd = s.handleModeChangeEvent(evt)
 	case domain.Message:
@@ -77,7 +77,7 @@ func (s ChatScreen) handleProtocolEvent(msg protocolEventMsg) (ui.Model, tea.Cmd
 	case domain.TopicChange:
 		updated, cmd = s.handleTopicChangeEvent(evt)
 	case domain.NickChange:
-		updated, cmd = s.handleNickChangeEvent(evt)
+		updated, cmd = s.handleNickChangeEvent(evt, msg.targets)
 	case domain.ModelInvited:
 		updated, cmd = s.handleModelInvitedEvent(evt)
 	case domain.ModelKicked:
@@ -103,14 +103,17 @@ func (s ChatScreen) handleProtocolEvent(msg protocolEventMsg) (ui.Model, tea.Cmd
 	return s, tea.Batch(cmd, s.listenForProtocolEvents())
 }
 
-// bufferEvent appends a persistable event to the scrollback of
-// the window(s) it belongs to. Live-event-driven: a focus change
-// later is a pure buffer swap. `Message` routes via
-// [domain.Message.RoutingKey] so DM traffic in either direction
-// lands in the per-peer scrollback. `Quit` and `NickChange` fan
-// into each channel in `Channels` plus any open DM with the
-// actor. Other events are channel-keyed by their `Target`.
-// SystemNoticeEvent unwraps its already-persisted inner event.
+// bufferEvent appends a session-bus persistable event to the
+// scrollback of the window(s) it belongs to. Live-event-driven:
+// a focus change later is a pure buffer swap. `Message` routes
+// via [domain.Message.RoutingKey] so DM traffic in either
+// direction lands in the per-peer scrollback. Other events are
+// channel-keyed by their `Target`. SystemNoticeEvent unwraps its
+// already-persisted inner event. Actor-scoped events (Quit,
+// NickChange) only flow on the protocol bus and are buffered by
+// [ChatScreen.bufferProtocolEvent], which has access to the
+// per-recipient `Targets` carried on the [protocol.Delivery]
+// envelope.
 func (s ChatScreen) bufferEvent(evt domain.Event) {
 	switch e := evt.(type) {
 	case domain.SystemNoticeEvent:
@@ -122,10 +125,6 @@ func (s ChatScreen) bufferEvent(evt domain.Event) {
 		}
 
 		s.appendToScrollback(key, domain.StoredEvent{Event: e})
-	case domain.Quit:
-		s.bufferActorEvent(e.Channels, e.Instance, domain.StoredEvent{Event: e})
-	case domain.NickChange:
-		s.bufferActorEvent(e.Channels, e.Instance, domain.StoredEvent{Event: e})
 	case domain.PersistableEvent:
 		ch := domain.EventTarget(e)
 		if ch == "" {
@@ -136,10 +135,32 @@ func (s ChatScreen) bufferEvent(evt domain.Event) {
 	}
 }
 
+// bufferProtocolEvent buffers an event delivered on the protocol
+// bus. For actor-scoped events (Quit, NickChange) it consumes
+// `targets` — the per-recipient channel list on the
+// [protocol.Delivery] — to fan the line into each affected
+// channel scrollback plus any open DM whose counterpart is the
+// actor; window-scoped events fall through to the shared
+// [ChatScreen.bufferEvent] path.
+func (s ChatScreen) bufferProtocolEvent(evt domain.Event, targets []domain.ChannelName) {
+	switch e := evt.(type) {
+	case domain.Quit:
+		s.bufferActorEvent(targets, e.Instance, domain.StoredEvent{Event: e})
+	case domain.NickChange:
+		s.bufferActorEvent(targets, e.Instance, domain.StoredEvent{Event: e})
+	default:
+		s.bufferEvent(evt)
+	}
+}
+
 // bufferActorEvent appends `stored` to each channel scrollback
-// in `channels` plus any open DM whose counterpart is `actor`.
-func (s ChatScreen) bufferActorEvent(channels []domain.ChannelName, actor *domain.Instance, stored domain.StoredEvent) {
-	for _, ch := range channels {
+// in `targets` plus any open DM whose counterpart is `actor`.
+// `targets` comes from [protocol.Delivery.Targets] — the
+// per-recipient intersection the session computed at fan-out
+// time, so the chat-screen never reads a channels list off the
+// wire payload.
+func (s ChatScreen) bufferActorEvent(targets []domain.ChannelName, actor *domain.Instance, stored domain.StoredEvent) {
+	for _, ch := range targets {
 		s.appendToScrollback(ch, stored)
 	}
 
@@ -162,9 +183,10 @@ func (s ChatScreen) bufferActorEvent(channels []domain.ChannelName, actor *domai
 // lifecycleBumps returns the sidebar messages flagging unseen
 // actor-scoped lifecycle activity for every off-active window
 // that received `stored` via [bufferActorEvent]. Iteration shape
-// mirrors `bufferActorEvent`: channels in `channels` plus any
-// open DM whose counterpart is `actor`. The active window is
-// skipped — the user is already looking at it.
+// mirrors `bufferActorEvent`: every channel in `channels` (the
+// per-recipient [protocol.Delivery.Targets]) plus any open DM
+// whose counterpart is `actor`. The active window is skipped —
+// the user is already looking at it.
 func (s ChatScreen) lifecycleBumps(channels []domain.ChannelName, actor *domain.Instance) []tea.Cmd {
 	var cmds []tea.Cmd
 
@@ -510,13 +532,16 @@ func (s ChatScreen) handlePartEvent(msg domain.Part) (ui.Model, tea.Cmd) {
 	return s, tea.Sequence(cmds...)
 }
 
-func (s ChatScreen) handleQuitEvent(msg domain.Quit) (ui.Model, tea.Cmd) {
-	// `bufferEvent` has already fanned the line into every
-	// affected channel and any open DM with the actor. The
-	// handler updates the in-memory `Members` snapshot for each
-	// affected channel and fires the active-window UI refresh.
+func (s ChatScreen) handleQuitEvent(msg domain.Quit, targets []domain.ChannelName) (ui.Model, tea.Cmd) {
+	// `bufferProtocolEvent` has already fanned the line into
+	// every channel in `targets` and any open DM with the actor.
+	// The handler updates the in-memory `Members` snapshot for
+	// each affected channel and fires the active-window UI
+	// refresh. `targets` comes from the per-recipient
+	// [protocol.Delivery.Targets] computed by the session at
+	// fan-out time.
 
-	for _, ch := range msg.Channels {
+	for _, ch := range targets {
 		cw, ok := s.channelWindowByName(ch)
 		if !ok {
 			continue
@@ -530,7 +555,7 @@ func (s ChatScreen) handleQuitEvent(msg domain.Quit) (ui.Model, tea.Cmd) {
 
 	var cmds []tea.Cmd
 
-	for _, ch := range msg.Channels {
+	for _, ch := range targets {
 		if ch != *s.active {
 			continue
 		}
@@ -548,7 +573,7 @@ func (s ChatScreen) handleQuitEvent(msg domain.Quit) (ui.Model, tea.Cmd) {
 		cmds = append(cmds, msgCmd(domain.StoredEvent{Event: msg}))
 	}
 
-	cmds = append(cmds, s.lifecycleBumps(msg.Channels, msg.Instance)...)
+	cmds = append(cmds, s.lifecycleBumps(targets, msg.Instance)...)
 
 	return s, tea.Batch(cmds...)
 }
@@ -595,12 +620,14 @@ func (s ChatScreen) handleTopicInfoEvent(msg domain.TopicInfo) (ui.Model, tea.Cm
 	)
 }
 
-func (s ChatScreen) handleNickChangeEvent(msg domain.NickChange) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleNickChangeEvent(msg domain.NickChange, targets []domain.ChannelName) (ui.Model, tea.Cmd) {
 	// `msg.Instance.Nick()` is already the new value — the
 	// session renames before emitting. Update the snapshot in
 	// each affected channel's member list, then fire the
-	// active-window UI side-effects exactly once.
-	for _, ch := range msg.Channels {
+	// active-window UI side-effects exactly once. `targets`
+	// comes from the per-recipient [protocol.Delivery.Targets]
+	// computed by the session at fan-out time.
+	for _, ch := range targets {
 		cw, ok := s.channelWindowByName(ch)
 		if !ok {
 			continue
@@ -614,7 +641,7 @@ func (s ChatScreen) handleNickChangeEvent(msg domain.NickChange) (ui.Model, tea.
 
 	var cmds []tea.Cmd
 
-	activeIsChannel := slices.Contains(msg.Channels, *s.active)
+	activeIsChannel := slices.Contains(targets, *s.active)
 
 	activeDM, activeIsDM := s.activeDMWith(msg.Instance)
 	activeDMVisible := activeIsDM && activeDM.Name() == *s.active
@@ -639,7 +666,7 @@ func (s ChatScreen) handleNickChangeEvent(msg domain.NickChange) (ui.Model, tea.
 		}))
 	}
 
-	cmds = append(cmds, s.lifecycleBumps(msg.Channels, msg.Instance)...)
+	cmds = append(cmds, s.lifecycleBumps(targets, msg.Instance)...)
 
 	return s, tea.Batch(cmds...)
 }

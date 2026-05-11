@@ -41,8 +41,44 @@ type sessionEventMsg struct {
 // user-client subscription's `Events()` channel. The protocol bus
 // carries the wire-shaped events the chat-screen renders as IRC
 // scrollback (joins, parts, messages, mode changes, etc.).
+//
+// `targets` carries the per-recipient channel list for
+// actor-scoped events (Quit, NickChange) — the intersection
+// [Session.fanOutProtocol] computed for this delivery, copied
+// off the [protocol.Delivery] envelope so the handler can route
+// the line into the user-client's open windows without consulting
+// the wire payload. Nil for window-scoped events.
 type protocolEventMsg struct {
-	event protocol.Event
+	event   protocol.Event
+	targets []domain.ChannelName
+}
+
+// actorChannelsForDirectSend returns the actor's full channel
+// list as a stand-in for the per-recipient
+// [protocol.Delivery.Targets] envelope when an actor-scoped
+// event reaches the chat-screen's [tea.Model.Update] without
+// having gone through [Session.fanOutProtocol] — the test
+// `tm.Send(domain.Quit{...})` shortcut. The user-client always
+// receives the actor's full channel list anyway (no intersection
+// is applied for it; see `intersectActorTargets`), so this
+// matches the production-shaped envelope that path would
+// produce.
+func actorChannelsForDirectSend(actor *domain.Instance) []domain.ChannelName {
+	if actor == nil {
+		return nil
+	}
+
+	channels := actor.Channels()
+	if channels == nil {
+		return nil
+	}
+
+	out := make([]domain.ChannelName, 0, channels.Len())
+	for pair := channels.Oldest(); pair != nil; pair = pair.Next() {
+		out = append(out, pair.Key)
+	}
+
+	return out
 }
 
 // deliverNextPacedMsg triggers delivery of the next queued paced
@@ -300,7 +336,7 @@ func (s ChatScreen) listenForProtocolEvents() tea.Cmd {
 			return nil
 		}
 
-		return protocolEventMsg{event: delivery.Event}
+		return protocolEventMsg{event: delivery.Event, targets: delivery.Targets}
 	}
 }
 
@@ -558,13 +594,13 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		return s.handlePartEvent(msg)
 
 	case domain.Quit:
-		return s.handleQuitEvent(msg)
+		return s.handleQuitEvent(msg, actorChannelsForDirectSend(msg.Instance))
 
 	case domain.TopicChange:
 		return s.handleTopicChangeEvent(msg)
 
 	case domain.NickChange:
-		return s.handleNickChangeEvent(msg)
+		return s.handleNickChangeEvent(msg, actorChannelsForDirectSend(msg.Instance))
 
 	case domain.ModelInvited:
 		return s.handleModelInvitedEvent(msg)

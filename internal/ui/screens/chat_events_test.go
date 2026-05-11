@@ -126,7 +126,6 @@ func TestChatScreen_QuitEvent_shows_quit_message(t *testing.T) {
 	tm.WaitFor("Created channel #general", "fakenick has joined #general")
 
 	tm.Send(domain.Quit{
-		Channels: []domain.ChannelName{"#general"},
 		Nick:     inst.Nick(),
 		Instance: inst,
 		Message:  "shutting down",
@@ -152,7 +151,6 @@ func TestChatScreen_QuitEvent_removes_instance_from_nick_list(t *testing.T) {
 	tm.WaitFor("Created channel #general", "fakenick has joined #general")
 
 	tm.Send(domain.Quit{
-		Channels: []domain.ChannelName{"#general"},
 		Nick:     inst.Nick(),
 		Instance: inst,
 		At:       time.Now(),
@@ -200,7 +198,6 @@ func TestChatScreen_QuitEvent_surfaces_in_open_DM(t *testing.T) {
 	})
 
 	tm.Send(domain.Quit{
-		Channels: []domain.ChannelName{"#general"},
 		Nick:     inst.Nick(),
 		Instance: inst,
 		Message:  "shutting down",
@@ -215,13 +212,13 @@ func TestChatScreen_QuitEvent_surfaces_in_open_DM(t *testing.T) {
 }
 
 // TestChatScreen_NickChangeEvent_surfaces_in_open_DM mirrors the
-// Quit-in-DM coverage for nick changes. Under the protocol
-// framing, `NickChange.Channels` only lists real channels —
-// DMs are not channels at the wire layer. The chat-screen layers
-// in DM-window rendering on top of the wire's actor-scoped event:
-// when an instance the user has an open DM with renames, the
-// "is now known as" line appears in that DM alongside the
-// channel scrollback.
+// Quit-in-DM coverage for nick changes. The wire payload carries
+// no target — NICK is actor-scoped. The chat-screen routes the
+// line into every channel where it knows the actor was a member
+// and into any open DM whose counterpart is the actor: when an
+// instance the user has an open DM with renames, the "is now
+// known as" line appears in that DM alongside the channel
+// scrollback.
 func TestChatScreen_NickChangeEvent_surfaces_in_open_DM(t *testing.T) {
 	sess := newTestSession(t)
 	uitest.SeedChannel(t, sess, "#general")
@@ -246,7 +243,6 @@ func TestChatScreen_NickChangeEvent_surfaces_in_open_DM(t *testing.T) {
 	inst.SetNick("renamedbot")
 
 	tm.Send(domain.NickChange{
-		Channels: []domain.ChannelName{"#general"},
 		OldNick:  "fakenick",
 		NewNick:  "renamedbot",
 		Instance: inst,

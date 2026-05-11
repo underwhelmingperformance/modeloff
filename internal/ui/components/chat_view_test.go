@@ -939,17 +939,17 @@ func TestRenderLine_IRC_events(t *testing.T) {
 		},
 		{
 			"quit",
-			domain.StoredEvent{Event: domain.Quit{Channels: []domain.ChannelName{"#general"}, Nick: "alice", At: now}},
+			domain.StoredEvent{Event: domain.Quit{Nick: "alice", At: now}},
 			"*** alice has quit",
 		},
 		{
 			"quit_with_message",
-			domain.StoredEvent{Event: domain.Quit{Channels: []domain.ChannelName{"#general"}, Nick: "alice", Message: "shutting down", At: now}},
+			domain.StoredEvent{Event: domain.Quit{Nick: "alice", Message: "shutting down", At: now}},
 			"*** alice has quit (shutting down)",
 		},
 		{
 			"nick_change",
-			domain.StoredEvent{Event: domain.NickChange{Channels: []domain.ChannelName{"#test"}, OldNick: "alice", NewNick: "bob", At: now}},
+			domain.StoredEvent{Event: domain.NickChange{OldNick: "alice", NewNick: "bob", At: now}},
 			"*** alice is now known as bob",
 		},
 		{

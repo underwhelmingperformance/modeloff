@@ -565,12 +565,11 @@ func TestChatScreen_NickChange_then_Quit_removes_instance(t *testing.T) {
 	bot.SetNick("newnick")
 
 	_, _ = screen.handleNickChangeEvent(domain.NickChange{
-		Channels: []domain.ChannelName{"#general"},
 		Instance: bot,
 		OldNick:  "oldnick",
 		NewNick:  "newnick",
 		At:       now,
-	})
+	}, []domain.ChannelName{"#general"})
 
 	cw = requireChannelWindow(t, screen, "#general")
 	require.Equal(t, []domain.Member{{
@@ -583,14 +582,75 @@ func TestChatScreen_NickChange_then_Quit_removes_instance(t *testing.T) {
 	// Quit keyed by the same *Instance pointer cleanly removes the
 	// member regardless of the nick carried on the event.
 	_, _ = screen.handleQuitEvent(domain.Quit{
-		Channels: []domain.ChannelName{"#general"},
 		Instance: bot,
 		At:       now,
-	})
+	}, []domain.ChannelName{"#general"})
 
 	cw = requireChannelWindow(t, screen, "#general")
 	require.Empty(t, slices.Collect(cw.Members.All()),
 		"quit keyed by *Instance should remove the member regardless of the nick carried on the event")
+}
+
+// TestChatScreen_QuitEvent_routes_to_targets_only pins the
+// chat-screen-side intersection rule: a QUIT for an actor in
+// channels #x and #y is filed into #x and #y scrollbacks but not
+// #z, even though #z is a known window. The chat-screen consumes
+// the per-recipient `Targets` from the [protocol.Delivery]
+// envelope rather than reading any wire-side channel list off the
+// event itself.
+func TestChatScreen_QuitEvent_routes_to_targets_only(t *testing.T) {
+	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil, domain.KindStatus)
+	require.NoError(t, err)
+
+	for _, name := range []domain.ChannelName{"#x", "#y", "#z"} {
+		screen.channels.Insert(domain.NewChannelWindow(name, time.Time{}))
+	}
+	*screen.active = "#x"
+
+	bot := domain.NewModelInstance("bot-1", "botty", "test/model", "", nil)
+	now := time.Now()
+	quit := domain.Quit{Nick: "botty", Instance: bot, At: now}
+
+	screen.bufferProtocolEvent(quit, []domain.ChannelName{"#x", "#y"})
+
+	expected := domain.StoredEvent{Event: quit}
+
+	require.Equal(t, []domain.StoredEvent{expected}, screen.scrollback["#x"])
+	require.Equal(t, []domain.StoredEvent{expected}, screen.scrollback["#y"])
+	require.Empty(t, screen.scrollback["#z"],
+		"a QUIT for {#x, #y} must not surface in #z's scrollback")
+}
+
+// TestChatScreen_NickChangeEvent_routes_to_targets_only mirrors
+// the QUIT routing test for nick changes: the chat-screen files
+// the line into the per-recipient `Targets` only, leaving
+// unrelated windows untouched.
+func TestChatScreen_NickChangeEvent_routes_to_targets_only(t *testing.T) {
+	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil, domain.KindStatus)
+	require.NoError(t, err)
+
+	for _, name := range []domain.ChannelName{"#x", "#y", "#z"} {
+		screen.channels.Insert(domain.NewChannelWindow(name, time.Time{}))
+	}
+	*screen.active = "#x"
+
+	bot := domain.NewModelInstance("bot-1", "newnick", "test/model", "", nil)
+	now := time.Now()
+	nick := domain.NickChange{
+		OldNick:  "oldnick",
+		NewNick:  "newnick",
+		Instance: bot,
+		At:       now,
+	}
+
+	screen.bufferProtocolEvent(nick, []domain.ChannelName{"#x", "#y"})
+
+	expected := domain.StoredEvent{Event: nick}
+
+	require.Equal(t, []domain.StoredEvent{expected}, screen.scrollback["#x"])
+	require.Equal(t, []domain.StoredEvent{expected}, screen.scrollback["#y"])
+	require.Empty(t, screen.scrollback["#z"],
+		"a NICK for {#x, #y} must not surface in #z's scrollback")
 }
 
 // requireChannelWindow looks the named channel up in the chat

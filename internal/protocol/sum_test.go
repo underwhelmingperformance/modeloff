@@ -75,7 +75,7 @@ func TestEvent_sum_membership(t *testing.T) {
 		{"message", domain.Message{Target: channel, From: nick, Body: "hi", At: at}},
 		{"join", domain.Join{Target: channel, Nick: nick, At: at}},
 		{"part", domain.Part{Target: channel, Nick: nick, At: at}},
-		{"quit", domain.Quit{Channels: []domain.ChannelName{channel}, Nick: nick, At: at}},
+		{"quit", domain.Quit{Nick: nick, At: at}},
 		{"topic_change", domain.TopicChange{Target: channel, Topic: "t", By: nick, At: at}},
 		{"mode_change", domain.ModeChange{Target: channel, Nick: nick, Mode: domain.ModeOp, By: nick, At: at}},
 		{"model_invited", domain.ModelInvited{Target: channel, Nick: nick, By: nick, At: at}},

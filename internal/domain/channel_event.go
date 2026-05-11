@@ -162,17 +162,18 @@ func (e Part) persistableEventTime() time.Time { return e.At }
 // ModelVisible implements PersistableEvent.
 func (Part) ModelVisible() bool { return true }
 
-// Quit records a user or model quitting the server. `Channels`
-// is the actor's membership snapshot at quit time so receivers
-// route the line into each affected window without re-querying
-// membership. See `Join` for the `Instance` / `InstanceID`
-// contract.
+// Quit records a user or model quitting the server. The wire
+// payload carries no channel list — RFC 2812 §3.1.7 QUIT is an
+// actor-scoped notice with no target. Server-side fan-out applies
+// the intersection rule (deliver to peers that share any channel
+// with the actor) and each receiving client decides which of its
+// own windows to update from local state. See `Join` for the
+// `Instance` / `InstanceID` contract.
 type Quit struct {
-	Channels   []ChannelName `json:"channels"`
-	Nick       Nick          `json:"nick"`
-	InstanceID InstanceID    `json:"instance_id,omitzero"`
-	Message    string        `json:"message,omitempty"`
-	At         time.Time     `json:"at"`
+	Nick       Nick       `json:"nick"`
+	InstanceID InstanceID `json:"instance_id,omitzero"`
+	Message    string     `json:"message,omitempty"`
+	At         time.Time  `json:"at"`
 
 	Instance *Instance `json:"-"`
 }
@@ -262,17 +263,18 @@ func (e ModelKicked) persistableEventTime() time.Time { return e.At }
 // ModelVisible implements PersistableEvent.
 func (ModelKicked) ModelVisible() bool { return true }
 
-// NickChange records a nick change. `Channels` is the actor's
-// membership snapshot at rename time so receivers route the
-// line into each affected window without re-querying membership.
-// `Instance` is the live renamed handle, populated on emission
-// and ignored by JSON.
+// NickChange records a nick change. The wire payload carries no
+// channel list — RFC 2812 §3.1.2 NICK is an actor-scoped notice
+// with no target. Server-side fan-out applies the intersection
+// rule (deliver to peers that share any channel with the actor)
+// and each receiving client decides which of its own windows to
+// update from local state. `Instance` is the live renamed handle,
+// populated on emission and ignored by JSON.
 type NickChange struct {
-	Channels   []ChannelName `json:"channels"`
-	OldNick    Nick          `json:"old_nick"`
-	NewNick    Nick          `json:"new_nick"`
-	InstanceID InstanceID    `json:"instance_id,omitzero"`
-	At         time.Time     `json:"at"`
+	OldNick    Nick       `json:"old_nick"`
+	NewNick    Nick       `json:"new_nick"`
+	InstanceID InstanceID `json:"instance_id,omitzero"`
+	At         time.Time  `json:"at"`
 
 	Instance *Instance `json:"-"`
 }
@@ -439,9 +441,8 @@ func EventTarget(e PersistableEvent) ChannelName {
 		return v.Target
 	case Part:
 		return v.Target
-	case Quit:
-		_ = v
-		// Actor-scoped; receivers route via `Channels`.
+	case Quit, NickChange:
+		// Actor-scoped; receivers route via local membership state.
 		return ""
 	case TopicChange:
 		return v.Target
@@ -451,10 +452,6 @@ func EventTarget(e PersistableEvent) ChannelName {
 		return v.Target
 	case ModelKicked:
 		return v.Target
-	case NickChange:
-		_ = v
-		// Actor-scoped; receivers route via `Channels`.
-		return ""
 	case TopicInfo:
 		return v.Target
 	case Help:

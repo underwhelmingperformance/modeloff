@@ -81,18 +81,16 @@ func TestChannelEvent_JSON_round_trip(t *testing.T) {
 		{
 			name: "quit",
 			event: domain.Quit{
-				Channels: []domain.ChannelName{"#general"},
-				Nick:     "bob",
-				Message:  "gone fishing",
-				At:       ts,
+				Nick:    "bob",
+				Message: "gone fishing",
+				At:      ts,
 			},
 		},
 		{
 			name: "quit without message",
 			event: domain.Quit{
-				Channels: []domain.ChannelName{"#general"},
-				Nick:     "bob",
-				At:       ts,
+				Nick: "bob",
+				At:   ts,
 			},
 		},
 		{
@@ -135,10 +133,9 @@ func TestChannelEvent_JSON_round_trip(t *testing.T) {
 		{
 			name: "nick change",
 			event: domain.NickChange{
-				Channels: []domain.ChannelName{"#general"},
-				OldNick:  "bob",
-				NewNick:  "robert",
-				At:       ts,
+				OldNick: "bob",
+				NewNick: "robert",
+				At:      ts,
 			},
 		},
 		{

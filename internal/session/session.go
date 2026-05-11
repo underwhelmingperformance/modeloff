@@ -421,27 +421,107 @@ func (s *Session) subscriberSnapshot() []*serverClient {
 // dispatch goroutine has already exited.
 func (s *Session) fanOutProtocol(ctx context.Context, pe domain.ProtocolEvent) {
 	suppressOriginator, sender := chatTrafficSender(pe)
+	spanCtx := trace.SpanContextFromContext(ctx)
 
-	delivery := protocol.Delivery{
-		Event:   pe,
-		SpanCtx: trace.SpanContextFromContext(ctx),
-	}
+	// Actor-scoped events ([domain.Quit] and [domain.NickChange])
+	// carry no target on the wire; the per-recipient channel list
+	// is computed at fan-out time as the intersection of the
+	// actor's live membership and each recipient's. Snapshot the
+	// actor's channels once so the per-sub loop does not re-walk
+	// the ordered map.
+	actorChannels := actorChannelSnapshot(pe)
 
 	for _, sub := range s.subscriberSnapshot() {
 		if suppressOriginator && sub.Identity() == sender {
 			continue
 		}
 
-		if !sub.canReceive(pe) {
+		targets := intersectActorTargets(sub, actorChannels)
+		if !sub.canReceive(pe, targets) {
 			continue
 		}
 
 		select {
-		case sub.events <- delivery:
+		case sub.events <- protocol.Delivery{
+			Event:   pe,
+			Targets: targets,
+			SpanCtx: spanCtx,
+		}:
 		case <-ctx.Done():
 			return
 		}
 	}
+}
+
+// actorChannelSnapshot returns the actor's channel set if `pe` is
+// an actor-scoped event, or nil otherwise. The snapshot is read
+// once per fan-out under the assumption that
+// [Session.propagateActorEvent] has not yet run its post-emit
+// `MutateChannels`; per-sub callers iterate the slice instead of
+// re-walking the ordered map.
+func actorChannelSnapshot(pe domain.ProtocolEvent) []domain.ChannelName {
+	var actor *domain.Instance
+
+	switch e := pe.(type) {
+	case domain.Quit:
+		actor = e.Instance
+	case domain.NickChange:
+		actor = e.Instance
+	default:
+		return nil
+	}
+
+	if actor == nil {
+		return nil
+	}
+
+	channels := actor.Channels()
+	if channels == nil {
+		return nil
+	}
+
+	names := make([]domain.ChannelName, 0, channels.Len())
+	for pair := channels.Oldest(); pair != nil; pair = pair.Next() {
+		names = append(names, pair.Key)
+	}
+
+	return names
+}
+
+// intersectActorTargets returns the recipient-visible channel
+// list for an actor-scoped event: those channels in
+// `actorChannels` that `sub` is also a member of. The user-client
+// (no backing instance) sees the actor's full channel list — the
+// chat-screen needs the complete picture to route the line into
+// every open window where the actor was a known member.
+// Window-scoped events pass `actorChannels == nil` and receive a
+// nil result.
+func intersectActorTargets(sub *serverClient, actorChannels []domain.ChannelName) []domain.ChannelName {
+	if len(actorChannels) == 0 {
+		return nil
+	}
+
+	if sub.instance == nil {
+		// User-client: the chat-screen is the operator window for
+		// every channel; expose the full actor list for routing.
+		out := make([]domain.ChannelName, len(actorChannels))
+		copy(out, actorChannels)
+		return out
+	}
+
+	subChannels := sub.instance.Channels()
+	if subChannels == nil {
+		return nil
+	}
+
+	var out []domain.ChannelName
+	for _, ch := range actorChannels {
+		if _, ok := subChannels.Get(ch); ok {
+			out = append(out, ch)
+		}
+	}
+
+	return out
 }
 
 // chatTrafficSender reports whether `ev` carries the
@@ -951,12 +1031,11 @@ func (s *Session) Quit(ctx context.Context, message string) (retErr error) {
 	// point cleanupUncleanShutdown handles any residual memberships.
 	s.propagateActorEvent(ctx, s.user, actorEventConfig{
 		storeOnly: true,
-		build: func(channels []domain.ChannelName) domain.PersistableEvent {
+		build: func() domain.PersistableEvent {
 			return domain.Quit{
-				Channels: channels,
-				Nick:     userNick,
-				Message:  message,
-				At:       now,
+				Nick:    userNick,
+				Message: message,
+				At:      now,
 			}
 		},
 		afterEach: func(ctx context.Context, ch domain.ChannelName) {
@@ -2130,7 +2209,9 @@ func (s *Session) persistAndEmit(ctx context.Context, ch domain.ChannelName, evt
 
 // actorEventConfig configures a single call to propagateActorEvent.
 //
-//   - `build` produces the event from the channel snapshot.
+//   - `build` produces the actor-scoped event. The wire payload
+//     carries no channel list; per-channel persistence still
+//     happens because the event log is keyed by channel.
 //   - `mutate` runs per channel before persistence (quit removes
 //     the actor from `Members`; nick change renames the snapshot).
 //     Nil for the user's `Quit`, where membership is reconciled by
@@ -2142,7 +2223,7 @@ func (s *Session) persistAndEmit(ctx context.Context, ch domain.ChannelName, evt
 type actorEventConfig struct {
 	storeOnly bool
 	mutate    func(*domain.ChannelWindow)
-	build     func(channels []domain.ChannelName) domain.PersistableEvent
+	build     func() domain.PersistableEvent
 	afterEach func(ctx context.Context, ch domain.ChannelName)
 }
 
@@ -2154,7 +2235,7 @@ type actorEventConfig struct {
 // race.
 func (s *Session) propagateActorEvent(ctx context.Context, actor *domain.Instance, cfg actorEventConfig) {
 	channels := s.instanceChannelNames(actor)
-	evt := cfg.build(channels)
+	evt := cfg.build()
 
 	for _, name := range channels {
 		if cfg.mutate != nil {
@@ -2297,7 +2378,7 @@ func (s *Session) runModelDispatch(ctx context.Context, c *serverClient) {
 
 		if pe, ok := delivery.Event.(domain.PersistableEvent); ok {
 			stored := domain.StoredEvent{Event: pe}
-			for _, target := range historyTargets(delivery.Event) {
+			for _, target := range historyTargets(delivery) {
 				c.appendHistory(ctx, stored, target)
 			}
 		}
@@ -2311,20 +2392,21 @@ func (s *Session) runModelDispatch(ctx context.Context, c *serverClient) {
 	}
 }
 
-// historyTargets returns the buffer slot(s) `ev` should be filed
-// under for a model-client's dispatch-turn history. Most events
-// belong to a single target window — the channel they happened
-// in or the DM they addressed. Actor-scoped events ([domain.Quit]
-// and [domain.NickChange]) are filed under every channel the
-// actor was in at emission time, mirroring the wire-side fan-out
-// shape: a peer's QUIT line shows up in each channel the receiver
-// shared with them.
+// historyTargets returns the buffer slot(s) the delivery's event
+// should be filed under for the receiving model-client's
+// dispatch-turn history. Most events belong to a single target
+// window — the channel they happened in or the DM they addressed.
+// Actor-scoped events ([domain.Quit] and [domain.NickChange])
+// carry no target on the wire (RFC 2812 §3.1.7 and §3.1.2); the
+// per-recipient channel list is on `delivery.Targets`,
+// pre-computed by [Session.fanOutProtocol] as the intersection of
+// the actor's channel set with the recipient's.
 //
 // Events with no target (DispatchStartedEvent, DispatchDoneEvent,
 // FocusChannelEvent, …) return nil and are skipped — they are
 // not LLM-prompt material.
-func historyTargets(ev domain.Event) []domain.ChannelName {
-	switch e := ev.(type) {
+func historyTargets(delivery protocol.Delivery) []domain.ChannelName {
+	switch e := delivery.Event.(type) {
 	case domain.Message:
 		return []domain.ChannelName{e.Target}
 	case domain.Join:
@@ -2341,10 +2423,9 @@ func historyTargets(ev domain.Event) []domain.ChannelName {
 		return []domain.ChannelName{e.Target}
 	case domain.ModelKicked:
 		return []domain.ChannelName{e.Target}
-	case domain.Quit:
-		return e.Channels
-	case domain.NickChange:
-		return e.Channels
+	case domain.Quit, domain.NickChange:
+		_ = e
+		return delivery.Targets
 	}
 
 	return nil

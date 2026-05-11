@@ -145,7 +145,6 @@ func TestQuitAs_model_actor(t *testing.T) {
 
 	evt := drainEvent[domain.Quit](t, sess)
 	require.Equal(t, domain.Quit{
-		Channels:   []domain.ChannelName{"#dev", "#general"},
 		Nick:       "botty",
 		InstanceID: botty.ID(),
 		Message:    "farewell",
@@ -172,6 +171,109 @@ func TestQuitAs_model_actor(t *testing.T) {
 
 	types2 := channelEventTypes(t, s, "#general")
 	require.Equal(t, []string{"quit"}, types2)
+}
+
+// TestQuitAs_delivery_targets_intersect_per_recipient pins the
+// privacy property of the actor-scoped fan-out. Actor `alpha` is
+// in #shared and #private; recipient `beta` is in #shared and
+// nowhere else. When alpha quits, the [protocol.Delivery] beta
+// receives lists only #shared in `Targets` — the wire payload
+// never reveals #private, which beta has no business knowing
+// about.
+//
+// The user-client by contrast sees the full intersection (its own
+// projection of "every channel" makes the intersection equal to
+// the actor's whole channel set), which is what the chat-screen
+// renders against. The two recipients in a single fan-out test
+// pin both behaviours simultaneously.
+func TestQuitAs_delivery_targets_intersect_per_recipient(t *testing.T) {
+	alphaChannels := testChannels("#shared", "#private")
+	betaChannels := testChannels("#shared")
+
+	gotAlpha := intersectActorTargets(
+		fakeServerClient(t, &domain.Instance{}, alphaChannels),
+		channelNames(alphaChannels),
+	)
+	require.Equal(t, []domain.ChannelName{"#shared", "#private"}, gotAlpha,
+		"alpha is the actor; alpha sees the full set as receiver")
+
+	gotBeta := intersectActorTargets(
+		fakeServerClient(t, &domain.Instance{}, betaChannels),
+		channelNames(alphaChannels),
+	)
+	require.Equal(t, []domain.ChannelName{"#shared"}, gotBeta,
+		"beta receives only the channel it shares with alpha; #private is not on the wire")
+
+	gotUser := intersectActorTargets(
+		fakeServerClient(t, nil, nil),
+		channelNames(alphaChannels),
+	)
+	require.Equal(t, []domain.ChannelName{"#shared", "#private"}, gotUser,
+		"user-client (no backing instance) receives the full actor channel list")
+}
+
+// TestActorChannelSnapshot_only_for_actor_scoped pins the
+// helper's gating: window-scoped events return nil so the
+// per-sub loop in [Session.fanOutProtocol] does not produce a
+// `Targets` slice for them.
+func TestActorChannelSnapshot_only_for_actor_scoped(t *testing.T) {
+	actor := domain.NewModelInstance("inst-a", "alpha", "test/model", "", testChannels("#one"))
+
+	cases := []struct {
+		name string
+		ev   domain.ProtocolEvent
+		want []domain.ChannelName
+	}{
+		{"quit returns actor channels", domain.Quit{Instance: actor}, []domain.ChannelName{"#one"}},
+		{"nick_change returns actor channels", domain.NickChange{Instance: actor}, []domain.ChannelName{"#one"}},
+		{"join returns nil", domain.Join{Target: "#one"}, nil},
+		{"part returns nil", domain.Part{Target: "#one"}, nil},
+		{"message returns nil", domain.Message{Target: "#one"}, nil},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, actorChannelSnapshot(tc.ev))
+		})
+	}
+}
+
+// fakeServerClient builds a minimal serverClient for unit-testing
+// the per-recipient intersection helpers. The dispatch goroutine
+// is not started — the helpers under test are pure functions over
+// the client's channel membership.
+func fakeServerClient(t *testing.T, inst *domain.Instance, channels *orderedmap.OrderedMap[domain.ChannelName, time.Time]) *serverClient {
+	t.Helper()
+
+	c := &serverClient{}
+	if inst != nil {
+		inst.MutateChannels(func(m *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
+			if channels == nil {
+				return
+			}
+			for pair := channels.Oldest(); pair != nil; pair = pair.Next() {
+				m.Set(pair.Key, pair.Value)
+			}
+		})
+		c.instance = inst
+	}
+
+	return c
+}
+
+// channelNames flattens an ordered channel map into a slice in
+// insertion order.
+func channelNames(m *orderedmap.OrderedMap[domain.ChannelName, time.Time]) []domain.ChannelName {
+	if m == nil {
+		return nil
+	}
+
+	out := make([]domain.ChannelName, 0, m.Len())
+	for pair := m.Oldest(); pair != nil; pair = pair.Next() {
+		out = append(out, pair.Key)
+	}
+
+	return out
 }
 
 func TestSendMessageAs_model_actor(t *testing.T) {

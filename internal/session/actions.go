@@ -301,9 +301,8 @@ func (s *Session) QuitAs(ctx context.Context, actor *domain.Instance, message st
 				window.Members.Remove(m)
 			}
 		},
-		build: func(channels []domain.ChannelName) domain.PersistableEvent {
+		build: func() domain.PersistableEvent {
 			return domain.Quit{
-				Channels:   channels,
 				Nick:       actorNick,
 				InstanceID: actorID,
 				Message:    message,
@@ -373,9 +372,8 @@ func (s *Session) changeNickAs(ctx context.Context, actor *domain.Instance, newN
 		mutate: func(window *domain.ChannelWindow) {
 			window.Members.RenameTo(actor, newNick)
 		},
-		build: func(channels []domain.ChannelName) domain.PersistableEvent {
+		build: func() domain.PersistableEvent {
 			return domain.NickChange{
-				Channels:   channels,
 				OldNick:    oldNick,
 				NewNick:    newNick,
 				InstanceID: actorID,

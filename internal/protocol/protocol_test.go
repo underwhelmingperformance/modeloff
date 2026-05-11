@@ -109,10 +109,9 @@ func TestFromChannelEvent_quit(t *testing.T) {
 	at := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
 
 	got, ok := FromChannelEvent(domain.Quit{
-		Channels: []domain.ChannelName{"#general"},
-		Nick:     "alice",
-		Message:  "gone fishing",
-		At:       at,
+		Nick:    "alice",
+		Message: "gone fishing",
+		At:      at,
 	})
 
 	require.True(t, ok)

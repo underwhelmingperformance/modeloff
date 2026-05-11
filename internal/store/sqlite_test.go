@@ -463,7 +463,6 @@ func TestSQLiteStore_DMEventsBefore_includes_peer_actor_events(t *testing.T) {
 	// per channel botty was in). Persisted under different
 	// `channel` columns but carrying the same Quit payload.
 	quit := domain.Quit{
-		Channels:   []domain.ChannelName{"#general", "#dev"},
 		Nick:       "botty",
 		InstanceID: bottyID,
 		Message:    "shutting down",
@@ -628,7 +627,7 @@ func TestSQLiteStore_Events_type_discriminator_round_trip(t *testing.T) {
 		domain.ModeChange{Target: "#general", Nick: "bob", Mode: domain.ModeVoice, By: "ChanServ", At: testTime},
 		domain.ModelInvited{Target: "#general", Nick: "botty", By: "alice", At: testTime},
 		domain.ModelKicked{Target: "#general", Nick: "botty", By: "alice", At: testTime},
-		domain.NickChange{Channels: []domain.ChannelName{"#general"}, OldNick: "bob", NewNick: "robert", At: testTime},
+		domain.NickChange{OldNick: "bob", NewNick: "robert", At: testTime},
 	}
 
 	for _, e := range events {
