@@ -843,8 +843,7 @@ func (s ChatScreen) handleErrorEvent(msg domain.ErrorEvent) (ui.Model, tea.Cmd) 
 	// Status-channel guard refusals are user-fixable contextual
 	// errors, not failures: render them as a hint with the
 	// command-tagged usage text rather than a red command-error.
-	var guard domain.StatusChannelGuardError
-	if errors.As(msg.Err, &guard) {
+	if guard, ok := errors.AsType[domain.StatusChannelGuardError](msg.Err); ok {
 		cmds = append(cmds, s.logAndShow(domain.UsageHint{
 			Target:  *s.active,
 			Command: guard.Command,
@@ -969,9 +968,15 @@ func (s ChatScreen) handleLiveModelsLoaded(msg liveModelsLoadedMsg) (ui.Model, t
 
 // handleLiveModelsLoadFailed is the UI-policy home for live-model
 // load failures: empty the cached suggestions so tab completion
-// degrades to known nicks, then surface the reason to the user as a
-// channel system notice — routed to the status channel when no
-// user-visible channel is focused.
+// degrades to known nicks, then surface the reason to the user as
+// a channel system notice. When `*s.active` is empty — Init's
+// `loadLiveModels` Cmd can land in Update before the focus-restore
+// Cmd's `FocusChannelEvent` does, since both run in parallel under
+// `tea.Batch` — the destination falls back to the persisted
+// `LastChannel` rather than `&modeloff`, so the notice always
+// reaches the channel the user is about to be focused on instead
+// of getting stranded in `&modeloff` and never rendered into the
+// active view.
 func (s ChatScreen) handleLiveModelsLoadFailed(msg liveModelsLoadFailedMsg) (ui.Model, tea.Cmd) {
 	*s.liveModels = nil
 
@@ -985,15 +990,30 @@ func (s ChatScreen) handleLiveModelsLoadFailed(msg liveModelsLoadFailedMsg) (ui.
 	*s.liveModelsState = command.SuggestionStateError
 
 	channel := *s.active
+	var lastChannelErr error
 	if channel == "" {
-		channel = domain.StatusChannelName
+		last, err := s.sess.LastChannel(s.ctx)
+		switch {
+		case err == nil && last != "":
+			channel = last
+		case err != nil:
+			lastChannelErr = err
+			channel = domain.StatusChannelName
+		default:
+			channel = domain.StatusChannelName
+		}
 	}
 
-	slog.Default().WarnContext(s.ctx, "live models load failed",
+	logAttrs := []any{
 		"component", "ui",
 		"channel", string(channel),
 		"error", msg.err,
-	)
+	}
+	if lastChannelErr != nil {
+		logAttrs = append(logAttrs, "last_channel_err", lastChannelErr)
+	}
+
+	slog.Default().WarnContext(s.ctx, "live models load failed", logAttrs...)
 
 	return s, s.logAndShowOn(channel, domain.SystemNotice{
 		Target: channel,

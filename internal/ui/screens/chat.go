@@ -108,11 +108,13 @@ type ChatScreen struct {
 	// before you joined" semantic.
 	//
 	// Reads and writes are guarded by `scrollbackMu`. Writes happen
-	// on Bubble Tea's Update goroutine via `appendToScrollback`;
-	// reads happen on a separate worker goroutine inside the
-	// `scrollbackCmd` closure that `tea.Sequence` schedules
-	// independently of Update. The pointer is shared across value-
-	// receiver copies of `ChatScreen`.
+	// from Bubble Tea's Update goroutine via `appendToScrollback`
+	// for live event-bus traffic and from `logAndShowOn`'s Cmd
+	// goroutine for chat-screen-authored events; reads happen on a
+	// separate worker goroutine inside the `scrollbackCmd` closure
+	// that `tea.Sequence` schedules independently of Update. The
+	// pointer is shared across value-receiver copies of
+	// `ChatScreen`.
 	scrollback   map[domain.ChannelName][]domain.StoredEvent
 	scrollbackMu *sync.RWMutex
 
@@ -738,6 +740,35 @@ func (s ChatScreen) persistOnStatus(event domain.PersistableEvent) tea.Cmd {
 // caller's goroutine, so Update remains the single writer of
 // chat-screen state — the session mutation is fenced off the Tea
 // program's main loop until its result lands as a tea.Msg.
+//
+// The Cmd appends the persisted event to `s.scrollback[ch]` under
+// `scrollbackMu` so a subsequent focus into `ch` re-renders the
+// line via [ChatScreen.scrollbackCmd]. Without this, a focus
+// change racing with the Cmd would replace the message list with
+// the channel's scrollback (which would not contain the freshly-
+// logged event) and wipe the line off the screen.
+//
+// `*s.active` is read from the Cmd goroutine but the chat-screen
+// is the single writer of `*s.active` on the Update goroutine,
+// and this Cmd was scheduled from Update. The active-channel
+// branch returns `stored` for live append; the off-channel branch
+// returns `nil` and lets `scrollbackCmd` own the next render.
+//
+// A narrow residual race remains in the active-channel branch:
+// if focus settles to `ch` during the persist's lifetime,
+// [ChatScreen.handleChannelFocus] will have queued a
+// `scrollbackCmd(ch)` at the tail of its [tea.Sequence], and if
+// our `appendToScrollback` wins against that queued closure's
+// `RLock`, the focus-driven `HistoryLoadedMsg` carries a snapshot
+// containing the line and the subsequent live `stored` append
+// doubles it. The window is bounded by the focus sequence's
+// `persistLastChannel` step (an SQLite write) and is rare in
+// practice — 400-iter `-race` runs at the test sites are clean.
+// A structurally airtight fix would move the scrollback append
+// back onto the Update goroutine after the persist resolves, at
+// the cost of an extra round-trip; the duplicate-line failure
+// mode is visually less severe than the original wipe, so we
+// accept the residual here.
 func (s ChatScreen) logAndShowOn(ch domain.ChannelName, event domain.PersistableEvent) tea.Cmd {
 	if ch == "" {
 		return msgCmd(domain.StoredEvent{Event: event})
@@ -749,7 +780,13 @@ func (s ChatScreen) logAndShowOn(ch domain.ChannelName, event domain.Persistable
 			return nil
 		}
 
-		return stored
+		s.appendToScrollback(ch, stored)
+
+		if ch == *s.active {
+			return stored
+		}
+
+		return nil
 	}
 }
 

@@ -102,15 +102,31 @@ func TestChatScreen_handleLiveModelsLoadFailed(t *testing.T) {
 
 	tests := map[string]struct {
 		active          domain.ChannelName
+		lastChannel     domain.ChannelName
 		expectedChannel domain.ChannelName
+		// liveStored pins whether the returned Cmd surfaces the
+		// StoredEvent for live append. The handler returns it only
+		// when the routing target equals `*s.active`; off-channel
+		// notices flow exclusively through the scrollback append
+		// so a focus-driven re-render finds them in `s.scrollback`
+		// without doubling them on a focus-back.
+		liveStored bool
 	}{
 		"active channel focused": {
 			active:          "#general",
 			expectedChannel: "#general",
+			liveStored:      true,
 		},
-		"no active channel routes to status": {
+		"no active channel falls back to last channel": {
+			active:          "",
+			lastChannel:     "#previous",
+			expectedChannel: "#previous",
+			liveStored:      false,
+		},
+		"no active channel and no last channel routes to status": {
 			active:          "",
 			expectedChannel: domain.StatusChannelName,
+			liveStored:      false,
 		},
 	}
 
@@ -121,6 +137,10 @@ func TestChatScreen_handleLiveModelsLoadFailed(t *testing.T) {
 			sess := newTestSession(t)
 			if tc.active != "" {
 				require.NoError(t, sess.Join(t.Context(), string(tc.active)))
+			}
+			if tc.lastChannel != "" {
+				require.NoError(t, sess.Join(t.Context(), string(tc.lastChannel)))
+				require.NoError(t, sess.SetLastChannel(t.Context(), tc.lastChannel))
 			}
 
 			screen, err := NewChatScreen(t.Context(), sess, nil, domain.KindStatus)
@@ -138,31 +158,66 @@ func TestChatScreen_handleLiveModelsLoadFailed(t *testing.T) {
 
 			msgs := collectMsgs(cmd)
 
-			stored, ok := containsMsg[domain.StoredEvent](msgs)
-			require.True(t, ok, "expected StoredEvent in batch, got %v", msgs)
-
-			notice, ok := stored.Event.(domain.SystemNotice)
-			require.True(t, ok, "expected SystemNotice, got %T", stored.Event)
-
 			want := domain.SystemNotice{
 				Target: tc.expectedChannel,
 				Text:   liveModelsUnavailableNotice,
 			}
-			require.Equal(t, withAt(want, notice.At), notice)
-			require.WithinDuration(t, time.Now(), notice.At, time.Second)
+
+			if tc.liveStored {
+				stored, ok := containsMsg[domain.StoredEvent](msgs)
+				require.True(t, ok, "expected StoredEvent in batch, got %v", msgs)
+
+				notice, ok := stored.Event.(domain.SystemNotice)
+				require.True(t, ok, "expected SystemNotice, got %T", stored.Event)
+
+				require.Equal(t, withAt(want, notice.At), notice)
+				require.WithinDuration(t, time.Now(), notice.At, time.Second)
+			} else {
+				_, ok := containsMsg[domain.StoredEvent](msgs)
+				require.False(t, ok,
+					"off-channel notice must not return a live StoredEvent — scrollback owns the next render")
+			}
 
 			persisted, err := sess.EventsBefore(t.Context(), tc.expectedChannel, nil, 10)
 			require.NoError(t, err)
 
-			// SQLite roundtrip drops time.Time's monotonic clock;
-			// normalise to compare structurally.
 			got := filterSystemNotices(persisted)
-			for i := range got {
-				if got[i].At.Equal(notice.At) {
-					got[i].At = notice.At
-				}
+			// SQLite roundtrip drops time.Time's monotonic clock;
+			// normalise the persisted timestamp to the literal we
+			// compare against, so the structural assertion holds.
+			normalised := make([]domain.SystemNotice, len(got))
+			for i, n := range got {
+				require.WithinDuration(t, time.Now(), n.At, time.Second)
+				n.At = want.At
+				normalised[i] = n
 			}
-			require.Equal(t, []domain.SystemNotice{withAt(want, notice.At)}, got)
+			require.Equal(t, []domain.SystemNotice{want}, normalised)
+
+			// `logAndShowOn`'s Cmd appends the persisted event to
+			// `s.scrollback[ch]` so a subsequent focus-driven
+			// `HistoryLoadedMsg(ch)` finds the line in scrollback
+			// rather than wiping it. Pin the in-memory contract
+			// for every sub-case (live and off-channel) — for
+			// the off-channel branches this is the load-bearing
+			// side-effect, since the Cmd returns nil and the
+			// persisted-events check alone would not catch a
+			// regression that dropped the scrollback append.
+			//
+			// Compare against the same `[]domain.SystemNotice`
+			// projection the persisted-events check uses: the
+			// scrollback must surface exactly the notices the
+			// store recorded, in the same order, with no extras.
+			scrollbackNotices := make([]domain.SystemNotice, 0, len(screen.scrollback[tc.expectedChannel]))
+			for _, ev := range screen.scrollback[tc.expectedChannel] {
+				notice, ok := ev.Event.(domain.SystemNotice)
+				require.True(t, ok,
+					"unexpected scrollback event %T on %s; only the notice should be present",
+					ev.Event, tc.expectedChannel)
+				notice.At = want.At
+				scrollbackNotices = append(scrollbackNotices, notice)
+			}
+			require.Equal(t, []domain.SystemNotice{want}, scrollbackNotices,
+				"scrollback for %s must hold exactly the persisted notice", tc.expectedChannel)
 
 			rec, found := logs.find("live models load failed")
 			require.True(t, found, "expected slog record, got %v", logs.all())
