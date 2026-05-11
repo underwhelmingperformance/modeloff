@@ -74,6 +74,7 @@ func defaults() Config {
 		BaseURL:        DefaultBaseURL,
 		UserNick:       nick,
 		PokeInterval:   DefaultPokeInterval,
+		DrainTimeout:   DefaultDrainTimeout,
 		SmallModel:     DefaultSmallModel,
 		EmbeddingModel: DefaultEmbeddingModel,
 		HighlightWords: append([]string(nil), DefaultHighlightWords...),

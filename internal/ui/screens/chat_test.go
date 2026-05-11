@@ -25,7 +25,10 @@ func newTestSession(t *testing.T) *session.Session {
 	t.Helper()
 
 	s := storetest.NewMemoryStore(t)
-	return session.New(s, nil, &uitest.FakeAPI{}, "testuser", "", "")
+	sess := session.New(t.Context, s, nil, &uitest.FakeAPI{}, "testuser", "", "")
+	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
+
+	return sess
 }
 
 func newTestSessionWithConfigStore(t *testing.T, cfgStore config.Store) *session.Session {
@@ -33,7 +36,10 @@ func newTestSessionWithConfigStore(t *testing.T, cfgStore config.Store) *session
 
 	s := storetest.NewMemoryStore(t)
 	cfg, _ := cfgStore.Load(t.Context())
-	return session.New(s, nil, &uitest.FakeAPI{}, "testuser", cfg.APIKey, cfg.SmallModel)
+	sess := session.New(t.Context, s, nil, &uitest.FakeAPI{}, "testuser", cfg.APIKey, cfg.SmallModel)
+	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
+
+	return sess
 }
 
 func newChatApp(t *testing.T, sess *session.Session) *uitest.App {
@@ -250,7 +256,8 @@ func TestChatScreen_rejoin_hides_pre_session_history(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	sess := session.New(s, nil, &uitest.FakeAPI{}, "testuser", "", "")
+	sess := session.New(t.Context, s, nil, &uitest.FakeAPI{}, "testuser", "", "")
+	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	require.NoError(t, sess.JoinAutojoinChannels(ctx))
 
 	tm := newChatApp(t, sess)
@@ -619,6 +626,20 @@ func TestChatScreen_config_set_poke_interval(t *testing.T) {
 	require.Equal(t, 10*time.Minute, cfgStore.cfg.PokeInterval)
 }
 
+func TestChatScreen_config_set_drain_timeout(t *testing.T) {
+	cfgStore := newFakeConfigStore()
+	sess := newTestSessionWithConfigStore(t, cfgStore)
+	uitest.SeedChannel(t, sess, "#general")
+
+	tm := newChatAppWithConfig(t, sess, cfgStore)
+	waitForChannelSeedDrain(tm)
+
+	tm.Submit("/config drain-timeout 30s")
+	tm.WaitFor("Drain timeout set to 30s.")
+
+	require.Equal(t, 30*time.Second, cfgStore.cfg.DrainTimeout)
+}
+
 func TestChatScreen_config_set_timestamp_format(t *testing.T) {
 	cfgStore := newFakeConfigStore()
 	sess := newTestSessionWithConfigStore(t, cfgStore)
@@ -677,6 +698,21 @@ func TestChatScreen_config_reset_poke_interval_from_parent_flag(t *testing.T) {
 	tm.WaitFor("Poke interval reset to 5m0s.")
 
 	require.Equal(t, config.DefaultPokeInterval, cfgStore.cfg.PokeInterval)
+}
+
+func TestChatScreen_config_reset_drain_timeout_from_parent_flag(t *testing.T) {
+	cfgStore := newFakeConfigStore()
+	cfgStore.cfg.DrainTimeout = 30 * time.Second
+	sess := newTestSessionWithConfigStore(t, cfgStore)
+	uitest.SeedChannel(t, sess, "#general")
+
+	tm := newChatAppWithConfig(t, sess, cfgStore)
+	waitForChannelSeedDrain(tm)
+
+	tm.Submit("/config --reset drain-timeout")
+	tm.WaitFor("Drain timeout reset to 10s.")
+
+	require.Equal(t, config.DefaultDrainTimeout, cfgStore.cfg.DrainTimeout)
 }
 
 func TestChatScreen_config_reset_api_key_from_child_flag(t *testing.T) {
@@ -919,7 +955,11 @@ func TestChatScreen_View_responsive(t *testing.T) {
 func TestChatScreen_KeyBindings_collect_active_bindings(t *testing.T) {
 	tm, _ := newChatAppInChannel(t, "#general")
 
-	_, status := uitest.SplitBodyAndStatus(tm.FinalView())
+	// `CurrentView` returns the model's settled `View()` rather than
+	// the cumulative frame buffer; this avoids picking up an
+	// intermediate pre-status-bar frame when the channel-focus
+	// asynchrony lands a final render after `Quit`.
+	_, status := uitest.SplitBodyAndStatus(tm.CurrentView())
 
 	tokens := strings.Fields(status)
 	require.Subset(t, tokens, []string{"^D/^U", "^O", "↵", "^W", "^C"},
@@ -1020,6 +1060,7 @@ func newFakeConfigStore() *fakeConfigStore {
 		cfg: config.Config{
 			UserNick:     "testuser",
 			PokeInterval: 5 * time.Minute,
+			DrainTimeout: config.DefaultDrainTimeout,
 		},
 	}
 }
@@ -1050,7 +1091,8 @@ func TestChatScreen_add_model_short_circuits_when_model_list_unavailable(t *test
 	}
 
 	s := storetest.NewMemoryStore(t)
-	sess := session.New(s, nil, api, "testuser", cfgStore.cfg.APIKey, cfgStore.cfg.SmallModel)
+	sess := session.New(t.Context, s, nil, api, "testuser", cfgStore.cfg.APIKey, cfgStore.cfg.SmallModel)
+	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	uitest.SeedChannel(t, sess, "#general")
 
 	tm := newChatAppWithConfig(t, sess, cfgStore)
@@ -1073,7 +1115,8 @@ func TestChatScreen_add_model_completion_hides_popover_when_model_list_unavailab
 	}
 
 	s := storetest.NewMemoryStore(t)
-	sess := session.New(s, nil, api, "testuser", cfgStore.cfg.APIKey, cfgStore.cfg.SmallModel)
+	sess := session.New(t.Context, s, nil, api, "testuser", cfgStore.cfg.APIKey, cfgStore.cfg.SmallModel)
+	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	uitest.SeedChannel(t, sess, "#general")
 
 	tm := newChatAppWithConfig(t, sess, cfgStore)

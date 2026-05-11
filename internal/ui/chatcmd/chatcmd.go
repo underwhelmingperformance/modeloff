@@ -111,6 +111,13 @@ type PokeIntervalSetResult struct {
 	Reset    bool
 }
 
+// DrainTimeoutSetResult signals that the shutdown drain timeout was
+// updated.
+type DrainTimeoutSetResult struct {
+	Timeout time.Duration
+	Reset   bool
+}
+
 // SmallModelSetResult signals that the small model was updated.
 type SmallModelSetResult struct {
 	ModelID domain.ModelID

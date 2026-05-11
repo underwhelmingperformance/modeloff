@@ -421,38 +421,19 @@ func newTestSessionWithAPI(t *testing.T, apiClient api.Client) (*Session, *store
 
 	s := storetest.NewMemoryStore(t)
 
-	sess := New(s, nil, apiClient, "testuser", "", "")
+	sess := New(t.Context, s, nil, apiClient, "testuser", "", "")
+	// Cleanup uses `context.Background()` rather than `t.Context()`
+	// so [Session.Shutdown] actually waits for the dispatch
+	// goroutines to drain. `t.Context()` is cancelled BEFORE
+	// `t.Cleanup` callbacks run, so passing it would short-circuit
+	// `Shutdown`'s deadline arm and leave the goroutines bleeding
+	// into the next test under the race detector. The outer
+	// `go test -timeout` is the principled bound for runaway
+	// cleanups.
+	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	sess.now = func() time.Time { return fixedTime }
 
 	return sess, s
-}
-
-// shutdownTestSession releases the dispatch goroutines spawned per
-// model-client by [Session.startModelDispatch] so a [synctest.Test]
-// bubble can exit without `deadlock: blocked goroutines remain`.
-//
-// `runModelDispatch` exits when its `serverClient.events` channel
-// closes. Only model-clients (`instance != nil`) run a dispatch loop;
-// the user-client has no consumer goroutine. Production code never
-// closes these channels — the binary's shutdown today is process
-// exit — so this helper is test-only.
-//
-// Must run inside the bubble. The leading [synctest.Wait] proves
-// every producer (a fan-out send into `events`) has finished, so
-// closing the channel cannot race with a concurrent send.
-func shutdownTestSession(sess *Session) {
-	synctest.Wait()
-
-	sess.subsMu.Lock()
-	defer sess.subsMu.Unlock()
-
-	for _, sub := range sess.subscribers {
-		if sub.instance == nil {
-			continue
-		}
-
-		close(sub.events)
-	}
 }
 
 func TestSession_Join(t *testing.T) {
@@ -748,7 +729,8 @@ func TestSession_FocusChannel_nonmember_is_noop(t *testing.T) {
 func TestSession_Connect_Quit_Reconnect_omits_status_channel_from_autojoin(t *testing.T) {
 	s := storetest.NewMemoryStore(t)
 
-	sess1 := New(s, nil, &fakeAPIClient{}, "testuser", "", "")
+	sess1 := New(t.Context, s, nil, &fakeAPIClient{}, "testuser", "", "")
+	t.Cleanup(func() { _ = sess1.Shutdown(context.Background()) })
 	sess1.now = func() time.Time { return fixedTime }
 	ctx := t.Context()
 
@@ -775,7 +757,8 @@ func TestSession_Connect_Quit_Reconnect_omits_status_channel_from_autojoin(t *te
 
 	// Starting a fresh session over the same store must not replay the
 	// status channel into the autojoin loop.
-	sess2 := New(s, nil, &fakeAPIClient{}, "testuser", "", "")
+	sess2 := New(t.Context, s, nil, &fakeAPIClient{}, "testuser", "", "")
+	t.Cleanup(func() { _ = sess2.Shutdown(context.Background()) })
 	sess2.now = func() time.Time { return fixedTime }
 	require.NoError(t, sess2.Connect(ctx))
 
@@ -786,7 +769,8 @@ func TestSession_Connect_Quit_Reconnect_omits_status_channel_from_autojoin(t *te
 
 func TestSession_Connect_unclean_recovery_emits_status_notices(t *testing.T) {
 	s := storetest.NewMemoryStore(t)
-	sess := New(s, nil, &fakeAPIClient{}, "testuser", "", "")
+	sess := New(t.Context, s, nil, &fakeAPIClient{}, "testuser", "", "")
+	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	sess.now = func() time.Time { return fixedTime }
 	ctx := t.Context()
 
@@ -1227,9 +1211,9 @@ func TestSession_mutationOperations_recordSpans(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		recorder, provider := oteltest.NewSpanRecorder(t)
 		s := storetest.NewMemoryStore(t).WithTracerProvider(provider)
-		sess := New(s, nil, &fakeAPIClient{}, "testuser", "", "").WithTracerProvider(provider)
+		sess := New(t.Context, s, nil, &fakeAPIClient{}, "testuser", "", "").WithTracerProvider(provider)
+		t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 		sess.now = func() time.Time { return fixedTime }
-		defer shutdownTestSession(sess)
 		ctx := t.Context()
 
 		require.NoError(t, sess.Join(ctx, "#general"))
@@ -1489,7 +1473,8 @@ func TestSession_dispatchToInstance_recordsPassReasonAndToolTurns(t *testing.T) 
 			}, nil
 		},
 	}
-	sess := New(dataStore, memStore, fake, "testuser", "", "").WithTracerProvider(provider)
+	sess := New(t.Context, dataStore, memStore, fake, "testuser", "", "").WithTracerProvider(provider)
+	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	sess.now = func() time.Time { return fixedTime }
 	ctx := t.Context()
 
@@ -1620,7 +1605,6 @@ func TestSession_JoinEvent_triggers_dispatch(t *testing.T) {
 			},
 		}
 		sess, s := newTestSessionWithAPI(t, fake)
-		defer shutdownTestSession(sess)
 		ctx := t.Context()
 
 		// Seed a channel with a model already present so join dispatch
@@ -2228,7 +2212,8 @@ func TestSession_SetTopic(t *testing.T) {
 
 func TestSession_ChangeNick(t *testing.T) {
 	s := storetest.NewMemoryStore(t)
-	sess := New(s, nil, &fakeAPIClient{}, "testuser", "", "")
+	sess := New(t.Context, s, nil, &fakeAPIClient{}, "testuser", "", "")
+	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	sess.now = func() time.Time { return fixedTime }
 
 	// Join a channel so the nick change emits per-channel events.
@@ -2595,7 +2580,6 @@ func TestSession_KickNonexistentChannel(t *testing.T) {
 func TestSession_KickNonMember(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		sess, s := newTestSession(t)
-		defer shutdownTestSession(sess)
 		ctx := t.Context()
 
 		saveTestChannel(t, sess, s, newTestChannelWindow("#dev", fixedTime, testMembers(t, sess, s, "testuser")))
@@ -2645,7 +2629,8 @@ func TestSession_DispatchToChannel_includes_memory_in_prompt(t *testing.T) {
 		},
 	}
 	s := storetest.NewMemoryStore(t)
-	sess := New(s, memStore, fake, "testuser", "", "")
+	sess := New(t.Context, s, memStore, fake, "testuser", "", "")
+	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	sess.now = func() time.Time { return fixedTime }
 
 	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
@@ -2883,7 +2868,8 @@ func TestSession_SetAPIKey(t *testing.T) {
 	s := storetest.NewMemoryStore(t)
 	initial := &fakeAPIClient{}
 	replacement := &fakeAPIClient{}
-	sess := New(s, nil, initial, "testuser", "", "")
+	sess := New(t.Context, s, nil, initial, "testuser", "", "")
+	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	sess.SetAPIFactory(func(apiKey, _ string) (api.Client, error) {
 		require.Equal(t, "test-key", apiKey)
 		return replacement, nil
@@ -2897,7 +2883,8 @@ func TestSession_SetAPIKey(t *testing.T) {
 func TestSession_SetAPIKey_factory_failure_keeps_existing_client(t *testing.T) {
 	s := storetest.NewMemoryStore(t)
 	initial := &fakeAPIClient{}
-	sess := New(s, nil, initial, "testuser", "", "")
+	sess := New(t.Context, s, nil, initial, "testuser", "", "")
+	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	sess.SetAPIFactory(func(string, string) (api.Client, error) {
 		return nil, fmt.Errorf("boom")
 	})
@@ -2915,7 +2902,8 @@ func TestSession_SetBaseURL(t *testing.T) {
 	factoryCalls := 0
 	newClient := &fakeAPIClient{}
 
-	sess := New(s, nil, &fakeAPIClient{}, "testuser", "test-key", "")
+	sess := New(t.Context, s, nil, &fakeAPIClient{}, "testuser", "test-key", "")
+	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	sess.SetAPIFactory(func(_, baseURL string) (api.Client, error) {
 		factoryCalls++
 		factoryBaseURL = baseURL
@@ -2930,7 +2918,8 @@ func TestSession_SetBaseURL(t *testing.T) {
 func TestSession_runtimeConfigOperations_recordSpans(t *testing.T) {
 	recorder, provider := oteltest.NewSpanRecorder(t)
 	s := storetest.NewMemoryStore(t).WithTracerProvider(provider)
-	sess := New(s, nil, &fakeAPIClient{}, "testuser", "test-key", "").WithTracerProvider(provider)
+	sess := New(t.Context, s, nil, &fakeAPIClient{}, "testuser", "test-key", "").WithTracerProvider(provider)
+	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	sess.SetAPIFactory(func(_, _ string) (api.Client, error) {
 		return &fakeAPIClient{}, nil
 	})
@@ -3216,7 +3205,8 @@ func (f *failingMemoryStore) Reset(_ context.Context) error {
 func TestSession_Reset(t *testing.T) {
 	s := storetest.NewMemoryStore(t)
 	memStore := memory.NewStoreAdapter(storetest.NewMemoryStore(t))
-	sess := New(s, memStore, &fakeAPIClient{}, "testuser", "", "")
+	sess := New(t.Context, s, memStore, &fakeAPIClient{}, "testuser", "", "")
+	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	sess.now = func() time.Time { return fixedTime }
 	ctx := t.Context()
 
@@ -3383,7 +3373,8 @@ func newTestSessionWithMemory(t *testing.T, apiClient api.Client) (*Session, *st
 	s := storetest.NewMemoryStore(t)
 
 	m := memory.NewStoreAdapter(storetest.NewMemoryStore(t))
-	sess := New(s, m, apiClient, "testuser", "", "")
+	sess := New(t.Context, s, m, apiClient, "testuser", "", "")
+	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	sess.now = func() time.Time { return fixedTime }
 
 	return sess, s, m
@@ -3529,7 +3520,8 @@ func TestSession_DispatchToChannel_memory_write_error_returns_error_to_model(t *
 
 	s := storetest.NewMemoryStore(t)
 	memStore := &failingMemoryStore{writeErr: fmt.Errorf("disk full")}
-	sess := New(s, memStore, fake, "testuser", "", "")
+	sess := New(t.Context, s, memStore, fake, "testuser", "", "")
+	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	sess.now = func() time.Time { return fixedTime }
 	ctx := t.Context()
 
@@ -3749,7 +3741,8 @@ func newTestSessionWithIndexedMemory(
 	)
 
 	m := memory.NewIndexedStoreFromDB(backing, chromem.NewDB(), embeddingFunc)
-	sess := New(s, m, apiClient, "testuser", "", "")
+	sess := New(t.Context, s, m, apiClient, "testuser", "", "")
+	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	sess.now = func() time.Time { return fixedTime }
 
 	return sess, s, m
@@ -4900,7 +4893,8 @@ func TestSession_AddModel_short_circuits_after_ListModels_failure(t *testing.T) 
 	client := &listModelsCountingClient{err: upstreamErr}
 
 	s := storetest.NewMemoryStore(t)
-	sess := New(s, nil, client, "testuser", "test-key", "")
+	sess := New(t.Context, s, nil, client, "testuser", "test-key", "")
+	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	sess.now = func() time.Time { return fixedTime }
 
 	seedChannelWithMembers(t, sess, s, "#dev", "testuser")
@@ -4992,7 +4986,8 @@ func TestSession_AddModel_lazy_loads_when_state_none(t *testing.T) {
 	client := &listModelsCountingClient{infos: []api.ModelInfo{{ID: "anthropic/claude-3-haiku"}}}
 
 	s := storetest.NewMemoryStore(t)
-	sess := New(s, nil, client, "testuser", "test-key", "")
+	sess := New(t.Context, s, nil, client, "testuser", "test-key", "")
+	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	sess.now = func() time.Time { return fixedTime }
 
 	seedChannelWithMembers(t, sess, s, "#dev", "testuser")
@@ -5007,7 +5002,8 @@ func TestSession_AddModel_returns_unsupported_when_model_missing_from_cache(t *t
 	client := &listModelsCountingClient{infos: []api.ModelInfo{{ID: "openai/gpt-5"}}}
 
 	s := storetest.NewMemoryStore(t)
-	sess := New(s, nil, client, "testuser", "test-key", "")
+	sess := New(t.Context, s, nil, client, "testuser", "test-key", "")
+	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	sess.now = func() time.Time { return fixedTime }
 
 	seedChannelWithMembers(t, sess, s, "#dev", "testuser")
@@ -5027,7 +5023,8 @@ func TestSession_AddModel_short_circuits_when_lazy_load_fails(t *testing.T) {
 	client := &listModelsCountingClient{err: upstreamErr}
 
 	s := storetest.NewMemoryStore(t)
-	sess := New(s, nil, client, "testuser", "test-key", "")
+	sess := New(t.Context, s, nil, client, "testuser", "test-key", "")
+	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	sess.now = func() time.Time { return fixedTime }
 
 	seedChannelWithMembers(t, sess, s, "#dev", "testuser")
@@ -5047,7 +5044,8 @@ func TestSession_SetAPIKey_resets_listModelsState(t *testing.T) {
 	client := &listModelsCountingClient{err: fmt.Errorf("upstream unreachable")}
 
 	s := storetest.NewMemoryStore(t)
-	sess := New(s, nil, client, "testuser", "initial-key", "")
+	sess := New(t.Context, s, nil, client, "testuser", "initial-key", "")
+	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	sess.now = func() time.Time { return fixedTime }
 	sess.SetAPIFactory(func(string, string) (api.Client, error) {
 		return &fakeAPIClient{}, nil
@@ -5067,7 +5065,8 @@ func TestSession_Reset_clears_listModelsState(t *testing.T) {
 	client := &listModelsCountingClient{err: fmt.Errorf("upstream unreachable")}
 
 	s := storetest.NewMemoryStore(t)
-	sess := New(s, nil, client, "testuser", "test-key", "")
+	sess := New(t.Context, s, nil, client, "testuser", "test-key", "")
+	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	sess.now = func() time.Time { return fixedTime }
 
 	_, err := sess.ListModels(t.Context())
@@ -5105,7 +5104,8 @@ func TestSession_appendEvent_persistence_failure_emits_status_notice(t *testing.
 		errFailedAppend: fmt.Errorf("disk full"),
 	}
 
-	sess := New(store, nil, &fakeAPIClient{}, "testuser", "", "")
+	sess := New(t.Context, store, nil, &fakeAPIClient{}, "testuser", "", "")
+	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	sess.now = func() time.Time { return fixedTime }
 
 	sess.appendEvent(t.Context(), "#general", domain.Message{
@@ -5134,7 +5134,8 @@ func TestSession_appendEvent_persistence_failure_on_status_channel_skips_notice(
 		errFailedAppend: fmt.Errorf("disk full"),
 	}
 
-	sess := New(store, nil, &fakeAPIClient{}, "testuser", "", "")
+	sess := New(t.Context, store, nil, &fakeAPIClient{}, "testuser", "", "")
+	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	sess.now = func() time.Time { return fixedTime }
 
 	sess.appendEvent(t.Context(), domain.StatusChannelName, domain.SystemNotice{
@@ -5146,4 +5147,81 @@ func TestSession_appendEvent_persistence_failure_on_status_channel_skips_notice(
 	if evt, ok := peekEvent(sess); ok {
 		t.Fatalf("expected no event after status-channel append failure, got %T", evt)
 	}
+}
+
+// TestSession_Shutdown_waits_for_dispatch_drain pins the
+// [Session.Shutdown] contract: it does not cancel anything itself,
+// it joins the dispatch goroutines that the caller's cancellation
+// eventually wakes. The test spawns a session with a cancellable
+// supplier ctx, registers a model-client to ensure at least one
+// dispatch goroutine is running, cancels the supplier ctx, and
+// asserts that `Shutdown` returns nil under a generous bound.
+func TestSession_Shutdown_waits_for_dispatch_drain(t *testing.T) {
+	supplyCtx, cancelSupply := context.WithCancel(t.Context())
+	t.Cleanup(cancelSupply)
+
+	s := storetest.NewMemoryStore(t)
+	sess := New(func() context.Context { return supplyCtx }, s, nil, &fakeAPIClient{}, "testuser", "", "")
+	sess.now = func() time.Time { return fixedTime }
+
+	seedInstance(t, sess, s, instanceSpec{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: testChannels("#general"),
+	})
+
+	cancelSupply()
+
+	require.NoError(t, sess.Shutdown(t.Context()),
+		"Shutdown must drain after the supplier ctx is cancelled")
+}
+
+// TestSession_Shutdown_returns_deadline_err_when_drain_exceeds_bound
+// pins the deadline arm: if the caller's ctx expires before the
+// dispatch goroutines exit, `Shutdown` returns `ctx.Err()`. We
+// keep the supplier ctx alive (so the dispatch goroutine remains
+// blocked on its events channel forever) and pass a ctx with an
+// already-elapsed deadline to `Shutdown`.
+func TestSession_Shutdown_returns_deadline_err_when_drain_exceeds_bound(t *testing.T) {
+	s := storetest.NewMemoryStore(t)
+	sess := New(t.Context, s, nil, &fakeAPIClient{}, "testuser", "", "")
+	sess.now = func() time.Time { return fixedTime }
+	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
+
+	seedInstance(t, sess, s, instanceSpec{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: testChannels("#general"),
+	})
+
+	expired, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	require.ErrorIs(t, sess.Shutdown(expired), context.Canceled,
+		"Shutdown must surface the caller ctx error when drain exceeds the bound")
+}
+
+// TestSession_ensureModelClient_refused_after_shutdown pins the
+// shutdown gate: a late JOIN whose handler reaches
+// [Session.ensureModelClient] after [Session.Shutdown] has begun
+// must not spawn a fresh dispatch goroutine. Returning nil at
+// the gate is what makes `dispatchWG.Wait()` safe — without it
+// a concurrent `dispatchWG.Go(...)` would race the Wait and trip
+// the wait-group reuse panic.
+func TestSession_ensureModelClient_refused_after_shutdown(t *testing.T) {
+	supplyCtx, cancelSupply := context.WithCancel(t.Context())
+	t.Cleanup(cancelSupply)
+
+	s := storetest.NewMemoryStore(t)
+	sess := New(func() context.Context { return supplyCtx }, s, nil, &fakeAPIClient{}, "testuser", "", "")
+	sess.now = func() time.Time { return fixedTime }
+
+	cancelSupply()
+	require.NoError(t, sess.Shutdown(t.Context()))
+
+	inst := domain.NewModelInstance("late-inst", "latebot", "test/model", "", nil)
+	require.NoError(t, s.SaveInstance(t.Context(), inst))
+
+	client := sess.ensureModelClient(t.Context(), inst)
+	require.Nil(t, client, "ensureModelClient must refuse new registration after Shutdown")
 }

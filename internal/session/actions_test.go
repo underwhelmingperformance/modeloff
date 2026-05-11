@@ -103,7 +103,6 @@ func TestPartAs_model_actor(t *testing.T) {
 func TestPartAs_unknown_actor_is_noop(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		sess, s := newTestSession(t)
-		defer shutdownTestSession(sess)
 		ctx := t.Context()
 
 		saveTestChannel(t, sess, s, newTestChannelWindow("#dev", fixedTime, testMembers(t, sess, s, "testuser")))
@@ -212,7 +211,6 @@ func TestSendMessageAs_model_actor(t *testing.T) {
 func TestSendMessageAs_user_actor_does_not_echo_to_originator(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		sess, _ := newTestSession(t)
-		defer shutdownTestSession(sess)
 		ctx := t.Context()
 
 		require.NoError(t, sess.joinAs(ctx, sess.user, "#dev"))
@@ -542,7 +540,6 @@ func TestJoinAs_user_existing_channel_with_topic(t *testing.T) {
 func TestJoinAs_user_existing_channel_no_topic(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		sess, s := newTestSession(t)
-		defer shutdownTestSession(sess)
 		ctx := t.Context()
 
 		seedInstance(t, sess, s, instanceSpec{Nick: "alice", ModelID: "test/model"})
@@ -570,7 +567,6 @@ func TestJoinAs_user_existing_channel_no_topic(t *testing.T) {
 func TestJoinAs_model_voice_only_no_topic(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		sess, s := newTestSession(t)
-		defer shutdownTestSession(sess)
 		ctx := t.Context()
 
 		seedChannelWithMembers(t, sess, s, "#dev", "testuser")

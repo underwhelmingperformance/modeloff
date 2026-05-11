@@ -5,8 +5,11 @@ import (
 	"context"
 	cryptorand "crypto/rand"
 	"fmt"
+	"log/slog"
 	"math/big"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -24,26 +27,22 @@ import (
 )
 
 func main() {
-	ctx := context.Background()
+	appCtx, cancelApp := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancelApp()
 
 	obs, err := observability.NewRuntime()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error initialising observability: %v\n", err)
 		os.Exit(1)
 	}
-	defer func() {
-		if shutdownErr := obs.Shutdown(context.Background()); shutdownErr != nil {
-			fmt.Fprintf(os.Stderr, "error shutting down observability: %v\n", shutdownErr)
-		}
-	}()
 
-	cfg, cfgStore, err := loadConfig(ctx)
+	cfg, cfgStore, err := loadConfig(appCtx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error loading config: %v\n", err)
 		os.Exit(1)
 	}
 
-	dataStore, err := store.NewDefaultSQLiteStore(ctx)
+	dataStore, err := store.NewDefaultSQLiteStore(appCtx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error creating data store: %v\n", err)
 		os.Exit(1)
@@ -59,6 +58,7 @@ func main() {
 	apiClient := api.NewOpenRouterClient(cfg.APIKey, cfg.BaseURL, nil)
 
 	sess := session.New(
+		func() context.Context { return appCtx },
 		dataStore,
 		memStore,
 		apiClient,
@@ -77,9 +77,6 @@ func main() {
 	}
 
 	sess.SetToolRegistry(toolRegistry)
-
-	appCtx, cancelApp := context.WithCancel(context.Background())
-	defer cancelApp()
 
 	channelCount := 0
 
@@ -108,12 +105,27 @@ func main() {
 		ui.NewRoot(connScreen),
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),
+		tea.WithContext(appCtx),
 	)
 
 	go runPokeLoop(appCtx, p, cfgStore)
 
-	if _, err := p.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+	_, runErr := p.Run()
+
+	cancelApp()
+
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), cfg.DrainTimeout)
+	if err := sess.Shutdown(drainCtx); err != nil {
+		slog.Warn("session shutdown timed out", "error", err)
+	}
+	drainCancel()
+
+	if shutdownErr := obs.Shutdown(context.Background()); shutdownErr != nil {
+		fmt.Fprintf(os.Stderr, "error shutting down observability: %v\n", shutdownErr)
+	}
+
+	if runErr != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", runErr)
 		os.Exit(1)
 	}
 }

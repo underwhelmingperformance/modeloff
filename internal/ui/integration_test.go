@@ -202,7 +202,8 @@ func TestApp_reuse_existing_instance(t *testing.T) {
 	}))
 
 	cfgStore := &integrationConfigStore{}
-	sess := session.New(store, memStore, apiClient, "testuser", cfgStore.cfg.APIKey, cfgStore.cfg.SmallModel)
+	sess := session.New(t.Context, store, memStore, apiClient, "testuser", cfgStore.cfg.APIKey, cfgStore.cfg.SmallModel)
+	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 
 	uitest.SeedChannel(t, sess, "#general")
 	uitest.SeedChannel(t, sess, "#random")
@@ -331,7 +332,8 @@ func TestApp_vector_memory_write_and_search(t *testing.T) {
 			PokeInterval: 5 * time.Minute,
 		},
 	}
-	sess := session.New(store, memStore, apiClient, "testuser", cfgStore.cfg.APIKey, cfgStore.cfg.SmallModel)
+	sess := session.New(t.Context, store, memStore, apiClient, "testuser", cfgStore.cfg.APIKey, cfgStore.cfg.SmallModel)
+	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 
 	uitest.SeedChannel(t, sess, "#lab")
 
@@ -463,7 +465,8 @@ func newIntegrationSessionWithConfigStore(
 
 	store := storetest.NewMemoryStore(t)
 	memStore := memory.NewStoreAdapter(storetest.NewMemoryStore(t))
-	sess := session.New(store, memStore, apiClient, "testuser", cfgStore.cfg.APIKey, cfgStore.cfg.SmallModel)
+	sess := session.New(t.Context, store, memStore, apiClient, "testuser", cfgStore.cfg.APIKey, cfgStore.cfg.SmallModel)
+	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 
 	return sess, store
 }

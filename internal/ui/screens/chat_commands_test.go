@@ -57,7 +57,10 @@ func newTestSession(t *testing.T) *session.Session {
 	t.Helper()
 
 	s := storetest.NewMemoryStore(t)
-	return session.New(s, nil, stubAPI{}, "testuser", "", "")
+	sess := session.New(t.Context, s, nil, stubAPI{}, "testuser", "", "")
+	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
+
+	return sess
 }
 
 func TestChatScreen_Commands_specs_are_complete(t *testing.T) {

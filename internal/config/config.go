@@ -17,6 +17,14 @@ const DefaultBaseURL = "https://openrouter.ai/api/v1"
 // no override has been configured.
 const DefaultPokeInterval = 5 * time.Minute
 
+// DefaultDrainTimeout is the deadline `main` allows
+// [github.com/laney/modeloff/internal/session.Session.Shutdown] to
+// drain in-flight dispatch goroutines before logging a warning.
+// Mirrors the http.Server.Shutdown bound: long enough for typical
+// LLM round-trips to finish, short enough that a wedged client
+// does not hold the binary on exit.
+const DefaultDrainTimeout = 10 * time.Second
+
 // DefaultSmallModel is the model used for lightweight tasks such as
 // nick and persona generation when no override has been configured.
 const DefaultSmallModel = domain.ModelID("openai/gpt-5.4-mini")
@@ -36,6 +44,7 @@ type Config struct {
 	BaseURL         string         `json:"base_url,omitempty"`
 	UserNick        string         `json:"user_nick"`
 	PokeInterval    time.Duration  `json:"poke_interval"`
+	DrainTimeout    time.Duration  `json:"drain_timeout"`
 	SmallModel      domain.ModelID `json:"small_model"`
 	EmbeddingModel  domain.ModelID `json:"embedding_model"`
 	HighlightWords  []string       `json:"highlight_words"`

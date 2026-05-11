@@ -176,7 +176,10 @@ func newToolTestSession(t *testing.T) *session.Session {
 	t.Helper()
 
 	s := storetest.NewMemoryStore(t)
-	return session.New(s, nil, toolTestAPI{}, "testuser", "", "")
+	sess := session.New(t.Context, s, nil, toolTestAPI{}, "testuser", "", "")
+	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
+
+	return sess
 }
 
 // userToolContext returns the [session.ToolContext] tests use when

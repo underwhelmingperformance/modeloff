@@ -798,6 +798,7 @@ type ConfigCommand struct {
 	APIKey          APIKeyConfig          `cmd:"" name:"api-key" help:"Activate OpenRouter immediately."`
 	BaseURL         BaseURLConfig         `cmd:"" name:"base-url" help:"Set the API base URL."`
 	PokeInterval    PokeIntervalConfig    `cmd:"" name:"poke-interval" help:"Set the background poke cadence."`
+	DrainTimeout    DrainTimeoutConfig    `cmd:"" name:"drain-timeout" help:"Bound the time /quit waits for in-flight LLM dispatches to drain on exit."`
 	SmallModel      SmallModelConfig      `cmd:"" name:"small-model" help:"Set the model used for lightweight tasks."`
 	EmbeddingModel  EmbeddingModelConfig  `cmd:"" name:"embedding-model" help:"Set the embedding model."`
 	Highlight       HighlightConfig       `cmd:"" help:"Set words that trigger visual highlighting."`
@@ -945,6 +946,63 @@ func (c PokeIntervalConfig) Run(rc Context) tea.Cmd {
 		}
 
 		return PokeIntervalSetResult{Interval: interval}
+	}
+}
+
+// DrainTimeoutConfig represents `/config drain-timeout <duration>`.
+// The configured value bounds [session.Session.Shutdown] in `main`'s
+// teardown sequence: how long the binary waits for in-flight LLM
+// dispatches to drain before logging a warning and exiting anyway.
+type DrainTimeoutConfig struct {
+	Duration string `arg:"" optional:"" help:"Drain timeout (e.g. 5s, 10s, 30s)"`
+}
+
+// Sources implements command.Completer.
+func (DrainTimeoutConfig) Sources() map[string]command.SuggestionSource[CompletionContext] {
+	return map[string]command.SuggestionSource[CompletionContext]{
+		"duration": command.LiteralSource[CompletionContext](
+			command.Suggestion{Value: "5s", Label: "5s", Detail: "Quick drain"},
+			command.Suggestion{Value: "10s", Label: "10s", Detail: "Default drain bound"},
+			command.Suggestion{Value: "30s", Label: "30s", Detail: "Patient drain"},
+			command.Suggestion{Value: "1m", Label: "1m", Detail: "Long-running dispatches"},
+		),
+	}
+}
+
+// Run implements Command.
+func (c DrainTimeoutConfig) Run(rc Context) tea.Cmd {
+	if rc.configResetRequested() {
+		return func() tea.Msg {
+			if _, err := rc.updateConfig(func(cfg *config.Config) {
+				cfg.DrainTimeout = config.DefaultDrainTimeout
+			}); err != nil {
+				return errorEvent("config drain-timeout", err)
+			}
+
+			return DrainTimeoutSetResult{Timeout: config.DefaultDrainTimeout, Reset: true}
+		}
+	}
+
+	if strings.TrimSpace(c.Duration) == "" {
+		return usageCmd("config", "/config drain-timeout <duration>")
+	}
+
+	return func() tea.Msg {
+		timeout, err := time.ParseDuration(c.Duration)
+		if err != nil {
+			return errorEvent("config drain-timeout", domain.InvalidDurationError{
+				Input: c.Duration,
+				Err:   err,
+			})
+		}
+
+		if _, err := rc.updateConfig(func(cfg *config.Config) {
+			cfg.DrainTimeout = timeout
+		}); err != nil {
+			return errorEvent("config drain-timeout", err)
+		}
+
+		return DrainTimeoutSetResult{Timeout: timeout}
 	}
 }
 

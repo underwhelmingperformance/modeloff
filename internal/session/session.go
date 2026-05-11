@@ -100,14 +100,28 @@ type Session struct {
 	api    api.Client
 	tools  *ToolRegistry
 
-	user       *domain.Instance
-	userModes  map[domain.ChannelName]domain.NickMode
-	userMu     sync.Mutex
-	apiKey     string
-	smallModel domain.ModelID
-	factory    func(apiKey, baseURL string) (api.Client, error)
-	now        func() time.Time
-	events     chan domain.Event
+	baseContext func() context.Context
+	user        *domain.Instance
+	userModes   map[domain.ChannelName]domain.NickMode
+	userMu      sync.Mutex
+	apiKey      string
+	smallModel  domain.ModelID
+	factory     func(apiKey, baseURL string) (api.Client, error)
+	now         func() time.Time
+	events      chan domain.Event
+
+	dispatchWG sync.WaitGroup
+
+	// shuttingDown is closed by [Session.Shutdown] before it joins
+	// the dispatch waitgroup. [Session.ensureModelClient] checks
+	// it under `subsMu` and declines to spawn a fresh dispatch
+	// goroutine once closed, so a late JOIN cannot race
+	// `dispatchWG.Wait()` and trip the wait-group reuse panic.
+	// The shape mirrors [net/http.Server]'s `inShutdown` flag —
+	// new work is rejected at the registration point, not
+	// documented away.
+	shuttingDown     chan struct{}
+	shuttingDownOnce sync.Once
 
 	subsMu        sync.RWMutex
 	subscribers   map[protocol.ClientID]*serverClient
@@ -133,13 +147,36 @@ type Session struct {
 	tracerProvider trace.TracerProvider
 }
 
-// New creates a Session with the given dependencies. The session
-// owns the user's `*domain.Instance` handle for its lifetime and
-// publishes it to the store straight away so that member-list
-// resolution on channel load can see the user's empty InstanceID.
-// The store never persists the user to disk; the handle is a
-// session-scoped identity.
+// New creates a Session whose dispatch goroutines derive their
+// lifetime context from `baseContext`. Each goroutine that needs
+// a long-lived ctx calls `baseContext()` to obtain one; the
+// supplier shape mirrors [net/http.Server.BaseContext]. Production
+// wires `baseContext` to a closure over the
+// [signal.NotifyContext]-derived ctx in `main`; tests pass
+// `t.Context` as the supplier, so each goroutine sees the same
+// per-test ctx the testing package cancels just before cleanups
+// run.
+//
+// Cancellation of the ctx the supplier returns wakes dispatch
+// goroutines; they exit and [Session.Shutdown] joins them. The
+// session itself never cancels anything internally — the cancel
+// call sits with the caller that owns the supplier's ctx.
+//
+// Load-bearing invariant: every ctx `baseContext` returns must
+// share a cancellation source. Cancelling that source is what
+// wakes the dispatch goroutines and lets [Session.Shutdown]
+// complete; a supplier that returned uncorrelated ctxs (e.g.
+// a fresh [context.Background] on each call) would leave dispatch
+// goroutines blocked forever and `Shutdown` would only return
+// once its own deadline elapses.
+//
+// The session owns the user's `*domain.Instance` handle for its
+// lifetime and publishes it to the store straight away so that
+// member-list resolution on channel load can see the user's
+// empty InstanceID. The store never persists the user to disk;
+// the handle is a session-scoped identity.
 func New(
+	baseContext func() context.Context,
 	s store.Store,
 	m memory.Store,
 	a api.Client,
@@ -157,6 +194,7 @@ func New(
 		Int64Counter(observability.MetricPersistenceFailures)
 
 	sess := &Session{
+		baseContext:         baseContext,
 		store:               s,
 		memory:              m,
 		api:                 a,
@@ -171,6 +209,7 @@ func New(
 		tracerProvider:      otel.GetTracerProvider(),
 		subscribers:         make(map[protocol.ClientID]*serverClient),
 		clientHandles:       make(map[protocol.ClientID]*serverClient),
+		shuttingDown:        make(chan struct{}),
 	}
 
 	sess.userClient = newServerClient(sess, protocol.UserClientID, nil, protocol.ModeOperator)
@@ -251,6 +290,14 @@ func (s *Session) lookupClientHandle(id protocol.ClientID) *serverClient {
 // long-lived dispatch goroutine starts under the same lock so the
 // channel has a consumer attached before any caller can fan out
 // to it.
+//
+// If [Session.Shutdown] has begun, registration is refused: an
+// existing handle is still returned, but a fresh `inst` produces
+// no new subscription and no new dispatch goroutine. Returning
+// nil at the shutdown gate keeps `dispatchWG.Go` from racing
+// `dispatchWG.Wait`. Callers must tolerate a nil return after
+// shutdown — in practice the only post-shutdown caller is a late
+// JOIN that loses to the binary exiting anyway.
 func (s *Session) ensureModelClient(ctx context.Context, inst *domain.Instance) *serverClient {
 	id := inst.ID()
 
@@ -259,6 +306,12 @@ func (s *Session) ensureModelClient(ctx context.Context, inst *domain.Instance) 
 
 	if existing, ok := s.clientHandles[id]; ok {
 		return existing
+	}
+
+	select {
+	case <-s.shuttingDown:
+		return nil
+	default:
 	}
 
 	client := newServerClient(s, id, inst)
@@ -273,15 +326,14 @@ func (s *Session) ensureModelClient(ctx context.Context, inst *domain.Instance) 
 }
 
 // startModelDispatch spawns the long-lived dispatch goroutine for
-// `client`. The goroutine outlives any single request's context
-// by design — it ends only when the events channel closes — so
-// it does not derive its context from the request that happened
-// to register the client; [Session.runModelDispatch] constructs a
-// fresh background context internally. Splitting the spawn out of
-// [Session.ensureModelClient] keeps the request-scoped `ctx` from
-// being a tempting (and incorrect) parent for the goroutine.
+// `client`. The goroutine takes its lifetime ctx from the
+// `baseContext` supplier passed to [New]; cancelling that ctx
+// (production: the `signal.NotifyContext` cancel; tests: test
+// completion) wakes the goroutine on its select and ends the
+// loop. [Session.Shutdown] joins.
 func (s *Session) startModelDispatch(client *serverClient) {
-	go s.runModelDispatch(client)
+	ctx := s.baseContext()
+	s.dispatchWG.Go(func() { s.runModelDispatch(ctx, client) })
 }
 
 // seedModelClientHistory eager-seeds the model-client's per-channel
@@ -362,6 +414,11 @@ func (s *Session) subscriberSnapshot() []*serverClient {
 // for channels they are not in. The user-client is treated as
 // connected to every window: the chat-screen renders the entire
 // session and needs the full feed.
+//
+// The send-side select gates only on `ctx.Done()`: cancelling the
+// supplier ctx propagates to every in-flight handler's ctx, so a
+// blocked send aborts when shutdown begins, even if its target
+// dispatch goroutine has already exited.
 func (s *Session) fanOutProtocol(ctx context.Context, pe domain.ProtocolEvent) {
 	suppressOriginator, sender := chatTrafficSender(pe)
 
@@ -417,6 +474,56 @@ func (s *Session) Connected() <-chan struct{} {
 // rendered.
 func (s *Session) ConnectedAt() time.Time {
 	return s.connectedAt
+}
+
+// Shutdown closes the session's shutdown gate so that any
+// further [Session.ensureModelClient] call declines to register
+// a fresh dispatch goroutine, then waits for the goroutines
+// already spawned to return. It does not itself cancel anything;
+// the caller is expected to have already cancelled the ctx the
+// `baseContext` supplier returns (in production, the
+// `signal.NotifyContext` cancel func; in tests, `t.Context()`
+// cancellation handled by the testing package). The shape
+// mirrors [net/http.Server.Shutdown]: cancellation lives with
+// the caller, new work is refused at the registration point, and
+// the method's only job is to wait until in-flight work has
+// drained.
+//
+// The returned error is `ctx.Err()` if `ctx`'s deadline expires
+// or it is cancelled before drainage completes. A `nil` return
+// means every goroutine has exited.
+//
+// Shutdown is safe to call more than once; the gate is closed
+// via `sync.Once`. Subsequent calls re-wait on the same
+// waitgroup against the new caller's `ctx`.
+func (s *Session) Shutdown(ctx context.Context) error {
+	// Close the shutdown gate under `subsMu` so the close is
+	// serialised with [Session.ensureModelClient]'s gate-check,
+	// which runs under the same lock. Either ensureModelClient
+	// holds the lock when Shutdown wants it (Shutdown waits;
+	// ensureModelClient's `dispatchWG.Go` completes against the
+	// gate it observed open), or Shutdown holds it first (any
+	// subsequent ensureModelClient acquires after release and
+	// observes the closed gate). No `dispatchWG.Go` can
+	// happen-after a close that the goroutine observed as open,
+	// so the join below is safe by construction.
+	s.subsMu.Lock()
+	s.shuttingDownOnce.Do(func() { close(s.shuttingDown) })
+	s.subsMu.Unlock()
+
+	done := make(chan struct{})
+
+	go func() {
+		s.dispatchWG.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Connect performs the backend-side connection handshake. It must be
@@ -2166,14 +2273,13 @@ func (s *Session) recordPersistenceFailure(ctx context.Context, ch domain.Channe
 // and each turn is its own operation. OTel links express that
 // "related but separate" relationship.
 //
-// The goroutine exits when the events channel closes; the session
-// owns the producer side and is responsible for that close.
-func (s *Session) runModelDispatch(c *serverClient) {
+// The goroutine exits when `ctx` (the supplier-derived lifetime
+// ctx passed at spawn) is cancelled. [Session.Shutdown] joins it
+// after the cancellation propagates.
+func (s *Session) runModelDispatch(ctx context.Context, c *serverClient) {
 	if c.instance == nil {
 		return
 	}
-
-	ctx := context.Background()
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -2181,14 +2287,14 @@ func (s *Session) runModelDispatch(c *serverClient) {
 		}
 	}()
 
-	for delivery := range c.events {
-		// Record persistable events into the per-channel rolling
-		// buffer the next dispatch turn's prompt is built from.
-		// Each event is filed under the buffer slot(s) it belongs
-		// to — per-target for window-scoped events; per-shared-
-		// channel for actor-scoped events (QUIT, NICK). Non-
-		// persistable events (DispatchStartedEvent, etc.) carry
-		// no LLM-prompt content and are skipped here.
+	for {
+		var delivery protocol.Delivery
+		select {
+		case <-ctx.Done():
+			return
+		case delivery = <-c.events:
+		}
+
 		if pe, ok := delivery.Event.(domain.PersistableEvent); ok {
 			stored := domain.StoredEvent{Event: pe}
 			for _, target := range historyTargets(delivery.Event) {

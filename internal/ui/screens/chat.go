@@ -432,6 +432,18 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 			At:     time.Now(),
 		})
 
+	case chatcmd.DrainTimeoutSetResult:
+		text := fmt.Sprintf("Drain timeout set to %s.", msg.Timeout)
+		if msg.Reset {
+			text = fmt.Sprintf("Drain timeout reset to %s.", msg.Timeout)
+		}
+
+		return s, s.logAndShow(domain.SystemNotice{
+			Target: *s.active,
+			Text:   text,
+			At:     time.Now(),
+		})
+
 	case chatcmd.SmallModelSetResult:
 		text := fmt.Sprintf("Small model set to %s.", msg.ModelID)
 		if msg.Reset {

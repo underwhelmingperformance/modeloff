@@ -1,6 +1,7 @@
 package screens
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -490,7 +491,8 @@ func TestChatScreen_completion_all_instance_commands_see_instances_outside_activ
 		"inst-outsider", "outsider", "test/model", "", nil,
 	)))
 
-	sess := session.New(s, nil, &uitest.FakeAPI{}, "testuser", "", "")
+	sess := session.New(t.Context, s, nil, &uitest.FakeAPI{}, "testuser", "", "")
+	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 
 	screen, err := NewChatScreen(ctx, sess, nil, domain.KindStatus)
 	require.NoError(t, err)
