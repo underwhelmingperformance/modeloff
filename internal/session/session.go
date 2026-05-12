@@ -87,6 +87,100 @@ const (
 	listModelsFailed                        // last attempt failed
 )
 
+// sessionStore is the persistence surface [Session] depends on.
+// The concrete [github.com/laney/modeloff/internal/store.SQLiteStore]
+// satisfies it implicitly. The session does not call any other
+// store methods; consumers with different needs (the memory
+// adapter, the chat-screen) declare their own.
+type sessionStore interface {
+	// Windows.
+	//
+	// Addressable-by-name windows live in the `channels` table.
+	// Loads return the typed concrete [domain.Window]
+	// (`*StatusWindow` / `*ChannelWindow` / `*DMWindow`) so
+	// callers can downcast where per-kind state matters. DM
+	// windows resolve their counterpart `*domain.Instance`
+	// through the store's instance registry; a DM whose
+	// counterpart row has been deleted is dropped at load time
+	// and logged.
+	ListWindows(ctx context.Context) ([]domain.Window, error)
+	GetWindow(ctx context.Context, name domain.ChannelName) (domain.Window, error)
+	SaveWindow(ctx context.Context, w domain.Window) error
+
+	// Event log.
+
+	AppendEvent(ctx context.Context, ch domain.ChannelName, event domain.PersistableEvent) (int64, error)
+	EventsBefore(ctx context.Context, ch domain.ChannelName, before *int64, n int) ([]domain.StoredEvent, error)
+	EventsFrom(ctx context.Context, ch domain.ChannelName, from *int64, n int) ([]domain.StoredEvent, error)
+
+	// DMEventsBefore returns up to `n` events from the DM thread
+	// between `self` and `peer` strictly before `before` (or the
+	// most recent if `before` is nil), in chronological order.
+	// The thread is the union of both directions: events whose
+	// `channel` column is `peer` and whose sender is `self`,
+	// plus events whose `channel` column is `self` and whose
+	// sender is `peer`. Either side of the pair may be empty
+	// (the user's [domain.InstanceID] is empty by convention).
+	DMEventsBefore(ctx context.Context, self, peer domain.InstanceID, before *int64, n int) ([]domain.StoredEvent, error)
+
+	// Model instances.
+	//
+	// The store is the sole authority for `*domain.Instance`
+	// pointer identity: callers receive the same pointer for a
+	// given [domain.InstanceID] on every load. `GetWindow`
+	// returns a `*ChannelWindow` whose member list already
+	// carries canonical pointers — callers never resolve ids
+	// themselves.
+	ListInstances(ctx context.Context) ([]*domain.Instance, error)
+	GetInstanceByID(ctx context.Context, id domain.InstanceID) (*domain.Instance, error)
+	SaveInstance(ctx context.Context, inst *domain.Instance) error
+	DeleteInstanceByID(ctx context.Context, id domain.InstanceID) error
+
+	// ResolveNick returns the canonical `*domain.Instance` whose
+	// current display nick matches the argument. This is the
+	// single boundary where nick-in-hand callers (the command
+	// parser) turn user input into an identity handle. Returns
+	// [store.ErrNoSuchNick] when no instance matches.
+	ResolveNick(ctx context.Context, nick domain.Nick) (*domain.Instance, error)
+
+	// Last-focused channel. The chat-screen owns the write side
+	// in production (focus is a client UX concept); the session
+	// reads it at autojoin restoration time only.
+	GetLastChannel(ctx context.Context) (domain.ChannelName, error)
+	SetLastChannel(ctx context.Context, name domain.ChannelName) error
+
+	// Session-active marker. Set on `Connect`, cleared on a
+	// clean `Quit`; a non-empty value on the next `Connect`
+	// signals an unclean prior shutdown so the user's stale
+	// membership state can be reconciled.
+	GetSessionActive(ctx context.Context) (string, error)
+	SetSessionActive(ctx context.Context, value string) error
+	ClearSessionActive(ctx context.Context) error
+
+	// Last-read tracking. The event id high-watermark per
+	// channel that the chat-screen has rendered; the session
+	// reads it to compute unread badges.
+	GetLastRead(ctx context.Context, ch domain.ChannelName) (int64, error)
+	SetLastRead(ctx context.Context, ch domain.ChannelName, eventID int64) error
+
+	// Personas.
+
+	ListPersonas(ctx context.Context) ([]domain.Persona, error)
+	SavePersona(ctx context.Context, p domain.Persona) error
+	DeletePersonasByOrigin(ctx context.Context, origin domain.PersonaOrigin) error
+	ReplaceGeneratedPersonas(ctx context.Context, personas []domain.Persona) error
+
+	// Autojoin list. The set of channels rejoined at next
+	// `Connect`; rewritten on every successful `Quit`.
+	ListAutojoinChannels(ctx context.Context) ([]domain.ChannelName, error)
+	SetAutojoinChannels(ctx context.Context, channels []domain.ChannelName) error
+
+	// Reset truncates every table the session reads or writes.
+	// Used by `/config --reset` and by the unclean-shutdown
+	// recovery path.
+	Reset(ctx context.Context) error
+}
+
 // Session is the backend coordinator. It bridges the UI layer and
 // the underlying stores and API client.
 //
@@ -95,7 +189,7 @@ const (
 // place via its own lock, so the pointer stays stable and every
 // caller keeps identity by comparing against `UserInstance()`.
 type Session struct {
-	store  store.Store
+	store  sessionStore
 	memory memory.Store
 	api    api.Client
 	tools  *ToolRegistry
@@ -177,7 +271,7 @@ type Session struct {
 // the handle is a session-scoped identity.
 func New(
 	baseContext func() context.Context,
-	s store.Store,
+	s sessionStore,
 	m memory.Store,
 	a api.Client,
 	userNick domain.Nick,

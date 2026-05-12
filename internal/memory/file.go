@@ -12,10 +12,30 @@ import (
 	"github.com/laney/modeloff/internal/store"
 )
 
+// DataStore is the narrow surface [StoreAdapter] needs from the
+// underlying persistence layer: the three per-instance memory
+// methods. The concrete
+// [github.com/laney/modeloff/internal/store.SQLiteStore] satisfies
+// this interface implicitly.
+type DataStore interface {
+	ReadMemories(ctx context.Context, id domain.InstanceID) ([]store.MemoryEntry, error)
+	WriteMemory(ctx context.Context, id domain.InstanceID, key, content string) error
+	DeleteMemory(ctx context.Context, id domain.InstanceID, key string) error
+}
+
+// MemoryResetter is the optional capability [StoreAdapter.Reset]
+// looks for via runtime type assertion. Stores that can wipe every
+// instance's memories implement it; stores that can't (e.g. a
+// read-only fake in tests) simply omit the method and the reset
+// becomes a no-op.
+type MemoryResetter interface {
+	ResetMemories(ctx context.Context) error
+}
+
 // StoreAdapter implements the memory Store interface by delegating
-// to a store.Store's memory methods.
+// to a [DataStore]'s memory methods.
 type StoreAdapter struct {
-	store store.Store
+	store DataStore
 
 	// tracerProvider is the OTel `TracerProvider` the adapter uses
 	// for its spans. Defaults to `otel.GetTracerProvider()`; tests
@@ -25,7 +45,7 @@ type StoreAdapter struct {
 
 // NewStoreAdapter creates a memory store backed by the given data
 // store.
-func NewStoreAdapter(s store.Store) *StoreAdapter {
+func NewStoreAdapter(s DataStore) *StoreAdapter {
 	return &StoreAdapter{
 		store:          s,
 		tracerProvider: otel.GetTracerProvider(),
@@ -98,14 +118,12 @@ func (a *StoreAdapter) Delete(ctx context.Context, id domain.InstanceID, key str
 		})
 }
 
-// Reset removes all memories. This delegates to ResetMemories on the
-// store if available, otherwise it's a no-op.
+// Reset removes all memories. Delegates to [MemoryResetter] on the
+// underlying store when available; otherwise a no-op.
 func (a *StoreAdapter) Reset(ctx context.Context) error {
 	return a.inSpan(ctx, "memory.file.reset", nil,
 		func(ctx context.Context, _ trace.Span) error {
-			r, ok := a.store.(interface {
-				ResetMemories(context.Context) error
-			})
+			r, ok := a.store.(MemoryResetter)
 			if !ok {
 				return nil
 			}

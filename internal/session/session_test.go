@@ -5078,11 +5078,12 @@ func TestSession_Reset_clears_listModelsState(t *testing.T) {
 	require.Nil(t, sess.supportedModels)
 }
 
-// failingAppendStore wraps a Store and forces AppendEvent to return
-// errFailedAppend for any channel listed in failChannels. All other
-// methods pass through to the embedded interface unchanged.
+// failingAppendStore wraps a [sessionStore] and forces AppendEvent
+// to return errFailedAppend for any channel listed in failChannels.
+// All other methods pass through to the embedded interface
+// unchanged.
 type failingAppendStore struct {
-	storemod.Store
+	sessionStore
 
 	failChannels    map[domain.ChannelName]struct{}
 	errFailedAppend error
@@ -5093,12 +5094,12 @@ func (f *failingAppendStore) AppendEvent(ctx context.Context, ch domain.ChannelN
 		return 0, f.errFailedAppend
 	}
 
-	return f.Store.AppendEvent(ctx, ch, event)
+	return f.sessionStore.AppendEvent(ctx, ch, event)
 }
 
 func TestSession_appendEvent_persistence_failure_emits_status_notice(t *testing.T) {
 	store := &failingAppendStore{
-		Store:           storetest.NewMemoryStore(t),
+		sessionStore:    storetest.NewMemoryStore(t),
 		failChannels:    map[domain.ChannelName]struct{}{"#general": {}},
 		errFailedAppend: fmt.Errorf("disk full"),
 	}
@@ -5128,7 +5129,7 @@ func TestSession_appendEvent_persistence_failure_emits_status_notice(t *testing.
 
 func TestSession_appendEvent_persistence_failure_on_status_channel_skips_notice(t *testing.T) {
 	store := &failingAppendStore{
-		Store:           storetest.NewMemoryStore(t),
+		sessionStore:    storetest.NewMemoryStore(t),
 		failChannels:    map[domain.ChannelName]struct{}{domain.StatusChannelName: {}},
 		errFailedAppend: fmt.Errorf("disk full"),
 	}

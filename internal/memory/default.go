@@ -11,13 +11,12 @@ import (
 	chromem "github.com/philippgille/chromem-go"
 
 	"github.com/laney/modeloff/internal/config"
-	"github.com/laney/modeloff/internal/store"
 )
 
 // NewDefaultStore creates a memory Store using the given data store
 // for persistence and chromem-go for vector search. If the vector
 // index cannot be created, it falls back to a plain store adapter.
-func NewDefaultStore(dataStore store.Store, cfg config.Config, cfgStore config.Store) (Store, error) {
+func NewDefaultStore(dataStore DataStore, cfg config.Config, cfgStore config.Store) (Store, error) {
 	adapter := NewStoreAdapter(dataStore)
 
 	indexDir := filepath.Join(xdg.DataHome, "modeloff", "memory_index")
