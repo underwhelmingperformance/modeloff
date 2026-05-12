@@ -23,12 +23,12 @@ type DataStore interface {
 	DeleteMemory(ctx context.Context, id domain.InstanceID, key string) error
 }
 
-// MemoryResetter is the optional capability [StoreAdapter.Reset]
-// looks for via runtime type assertion. Stores that can wipe every
+// Resetter is the optional capability [StoreAdapter.Reset] looks
+// for via runtime type assertion. Stores that can wipe every
 // instance's memories implement it; stores that can't (e.g. a
 // read-only fake in tests) simply omit the method and the reset
 // becomes a no-op.
-type MemoryResetter interface {
+type Resetter interface {
 	ResetMemories(ctx context.Context) error
 }
 
@@ -118,12 +118,12 @@ func (a *StoreAdapter) Delete(ctx context.Context, id domain.InstanceID, key str
 		})
 }
 
-// Reset removes all memories. Delegates to [MemoryResetter] on the
+// Reset removes all memories. Delegates to [Resetter] on the
 // underlying store when available; otherwise a no-op.
 func (a *StoreAdapter) Reset(ctx context.Context) error {
 	return a.inSpan(ctx, "memory.file.reset", nil,
 		func(ctx context.Context, _ trace.Span) error {
-			r, ok := a.store.(MemoryResetter)
+			r, ok := a.store.(Resetter)
 			if !ok {
 				return nil
 			}
