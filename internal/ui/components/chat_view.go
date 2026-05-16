@@ -26,8 +26,8 @@ type SetChannelMsg struct {
 	Kind    domain.ChannelKind
 }
 
-// HistoryLoadedMsg populates the message list with events loaded from
-// the event log (e.g. on channel switch or scroll-back).
+// HistoryLoadedMsg populates the message list with events loaded
+// from the event log (e.g. on channel switch or scroll-back).
 type HistoryLoadedMsg struct {
 	Events []domain.StoredEvent
 }

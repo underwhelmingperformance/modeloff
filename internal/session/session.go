@@ -143,12 +143,6 @@ type sessionStore interface {
 	// [store.ErrNoSuchNick] when no instance matches.
 	ResolveNick(ctx context.Context, nick domain.Nick) (*domain.Instance, error)
 
-	// Last-focused channel. The chat-screen owns the write side
-	// in production (focus is a client UX concept); the session
-	// reads it at autojoin restoration time only.
-	GetLastChannel(ctx context.Context) (domain.ChannelName, error)
-	SetLastChannel(ctx context.Context, name domain.ChannelName) error
-
 	// Session-active marker. Set on `Connect`, cleared on a
 	// clean `Quit`; a non-empty value on the next `Connect`
 	// signals an unclean prior shutdown so the user's stale
@@ -938,34 +932,6 @@ func (s *Session) cleanupUncleanShutdown(ctx context.Context) error {
 	return nil
 }
 
-// FocusChannel emits a FocusChannelEvent so the UI can switch into
-// the named channel. If the user is not a member of the channel, the
-// call is a no-op. The session is the authoritative driver of focus
-// only at autojoin restore; live channel switches go straight through
-// the UI's own plumbing. The persistent `last_channel` store entry is
-// the UI's responsibility (the chat screen writes it when
-// `ChannelActiveMsg` lands), so this method emits and nothing else.
-func (s *Session) FocusChannel(ctx context.Context, ch domain.ChannelName) (retErr error) {
-	_, span := s.startSpan(ctx, "session.focus_channel",
-		attribute.String(observability.AttrOperation, "session.focus_channel"),
-		attribute.String(observability.AttrChannel, string(ch)),
-	)
-	defer endSpan(span, &retErr, observability.ErrorKindStore)
-
-	channels := s.user.Channels()
-	if channels == nil {
-		return nil
-	}
-
-	if _, ok := channels.Get(ch); !ok {
-		return nil
-	}
-
-	s.emit(ctx, domain.FocusChannelEvent{Channel: ch, At: s.now()})
-
-	return nil
-}
-
 // SetAPIFactory configures how runtime API clients are created.
 func (s *Session) SetAPIFactory(factory func(apiKey, baseURL string) (api.Client, error)) {
 	s.factory = factory
@@ -1480,20 +1446,6 @@ func (s *Session) SaveInstance(ctx context.Context, inst *domain.Instance) error
 // store's nick→instance registry.
 func (s *Session) GetWindow(ctx context.Context, name domain.ChannelName) (domain.Window, error) {
 	return s.store.GetWindow(ctx, name)
-}
-
-// LastChannel returns the channel that was last active.
-func (s *Session) LastChannel(ctx context.Context) (domain.ChannelName, error) {
-	return s.store.GetLastChannel(ctx)
-}
-
-// SetLastChannel persists the user's last-focused channel so a
-// subsequent restart restores them to the same view. The chat screen
-// is the single writer: it calls this when its `ChannelActiveMsg`
-// signal lands, which keeps `last_channel` consistent with what the
-// user sees rather than relying on session-internal join coordination.
-func (s *Session) SetLastChannel(ctx context.Context, ch domain.ChannelName) error {
-	return s.store.SetLastChannel(ctx, ch)
 }
 
 // MarkRead records that the user has seen all current events in a
@@ -2429,8 +2381,8 @@ func (s *Session) runModelDispatch(ctx context.Context, c *serverClient) {
 // the actor's channel set with the recipient's.
 //
 // Events with no target (DispatchStartedEvent, DispatchDoneEvent,
-// FocusChannelEvent, …) return nil and are skipped — they are
-// not LLM-prompt material.
+// PokeEvent, NamesReplyEvent, …) return nil and are skipped:
+// they are not LLM-prompt material.
 func historyTargets(delivery protocol.Delivery) []domain.ChannelName {
 	switch e := delivery.Event.(type) {
 	case domain.Message:

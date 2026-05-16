@@ -88,8 +88,6 @@ func (s ChatScreen) handleProtocolEvent(msg protocolEventMsg) (ui.Model, tea.Cmd
 		updated, cmd = s.handleDispatchStarted(evt)
 	case domain.DispatchDoneEvent:
 		updated, cmd = s.handleDispatchDone(evt)
-	case domain.FocusChannelEvent:
-		updated, cmd = s.handleFocusChannelEvent(evt)
 	case domain.NamesReplyEvent:
 		updated, cmd = s.handleNamesReply(evt)
 	}
@@ -257,12 +255,6 @@ func (s ChatScreen) appendStatusNotice(at time.Time, text string) {
 	})
 }
 
-// handleFocusChannelEvent handles a session-driven focus change.
-// It delegates to the same path used for direct UI focus switches.
-func (s ChatScreen) handleFocusChannelEvent(msg domain.FocusChannelEvent) (ui.Model, tea.Cmd) {
-	return s.handleChannelFocus(chatcmd.ChannelFocusMsg{Channel: msg.Channel})
-}
-
 // handleSystemNoticeEvent forwards a freshly-appended system notice
 // to the message list when the affected channel is the active one.
 // Off-channel notices update only the unread badge.
@@ -316,21 +308,20 @@ func (s ChatScreen) handleChannelFocus(msg chatcmd.ChannelFocusMsg) (ui.Model, t
 	return s, tea.Sequence(cmds...)
 }
 
-// scrollbackCmd returns a command that hands the focused channel's
+// scrollbackCmd returns a command that hands the channel's
 // in-memory buffer to the message list. The buffer is built up
-// purely from live session events — the persisted event log is the
-// models' shared memory and is never read here, so a freshly
+// purely from live session events — the persisted event log is
+// the models' shared memory and is never read here, so a freshly
 // focused channel with no events seen this session shows nothing,
 // matching IRC's "you don't see what happened before you joined"
 // rule.
 //
 // The snapshot is taken at execution time (inside the returned
-// closure) rather than when the command is constructed, because
-// `tea.Sequence` interleaves the focus cmds with `sessionEventMsg`
-// arrivals. By the time the message list receives the
-// `HistoryLoadedMsg`, more events for `ch` may have landed in the
-// buffer; we want to flush the latest contents so the list does
-// not lose those late arrivals to the subsequent reset.
+// closure) so late events that arrive after `scrollbackCmd` is
+// queued but before its goroutine runs are included. Snapshots
+// from successive calls can land in either order at the message
+// list; the receiver discards mismatched-channel and shorter-
+// than-current snapshots to keep the displayed history monotonic.
 func (s ChatScreen) scrollbackCmd(ch domain.ChannelName) tea.Cmd {
 	if ch == "" {
 		return nil
@@ -344,21 +335,16 @@ func (s ChatScreen) scrollbackCmd(ch domain.ChannelName) tea.Cmd {
 	}
 }
 
-// persistLastChannel writes the user's currently-active channel to
-// the store so a subsequent restart restores them to the same view.
-// The chat screen owns this side-effect: the session no longer
-// writes `last_channel` itself, keeping the persistent record
-// consistent with what the user is actually looking at rather than
-// with session-internal join coordination. An empty channel name
-// (no active window) is a no-op so a /part that drops the user out
-// of every channel does not race against the store.
+// persistLastChannel writes the user's currently-active channel
+// to the store so a subsequent restart restores them to the same
+// view. An empty channel name and a nil store are no-ops.
 func (s ChatScreen) persistLastChannel(ch domain.ChannelName) tea.Cmd {
-	if ch == "" {
+	if ch == "" || s.uiState == nil {
 		return nil
 	}
 
 	return func() tea.Msg {
-		if err := s.sess.SetLastChannel(s.ctx, ch); err != nil {
+		if err := s.uiState.SetLastChannel(s.ctx, ch); err != nil {
 			slog.Default().ErrorContext(s.ctx, "persist last channel", "channel", ch, "error", err)
 		}
 
@@ -514,6 +500,9 @@ func (s ChatScreen) handlePartEvent(msg domain.Part) (ui.Model, tea.Cmd) {
 		}))
 		cmds = append(cmds, msgCmd(components.ChannelActiveMsg{Channel: *s.active}))
 		cmds = append(cmds, s.persistLastChannel(*s.active))
+		if *s.active != "" {
+			cmds = append(cmds, s.scrollbackCmd(*s.active))
+		}
 	}
 
 	var members domain.MemberList
@@ -525,9 +514,6 @@ func (s ChatScreen) handlePartEvent(msg domain.Part) (ui.Model, tea.Cmd) {
 	}
 
 	cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: members}))
-	if leavingActive {
-		cmds = append(cmds, s.scrollbackCmd(*s.active))
-	}
 
 	if !leavingActive && *s.active == msg.Target {
 		cmds = append(cmds, msgCmd(domain.StoredEvent{
@@ -603,9 +589,7 @@ func (s ChatScreen) handleTopicChangeEvent(msg domain.TopicChange) (ui.Model, te
 
 	return s, tea.Batch(
 		msgCmd(components.TopicUpdatedMsg{Topic: msg.Topic}),
-		msgCmd(domain.StoredEvent{
-			Event: domain.TopicChange(msg),
-		}),
+		msgCmd(domain.StoredEvent{Event: domain.TopicChange(msg)}),
 	)
 }
 
@@ -627,7 +611,7 @@ func (s ChatScreen) handleTopicInfoEvent(msg domain.TopicInfo) (ui.Model, tea.Cm
 			Topic:   msg.Topic,
 			Kind:    s.activeKind(),
 		}),
-		s.logAndShow(domain.TopicInfo(msg)),
+		msgCmd(domain.StoredEvent{Event: msg}),
 	)
 }
 
@@ -722,14 +706,7 @@ func (s ChatScreen) handleModelInvitedEvent(msg domain.ModelInvited) (ui.Model, 
 	cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: members}))
 
 	if *s.active == msg.Target {
-		cmds = append(cmds, msgCmd(domain.StoredEvent{
-			Event: domain.ModelInvited{
-				Target: msg.Target,
-				Nick:   msg.Instance.Nick(),
-				By:     msg.By,
-				At:     msg.At,
-			},
-		}))
+		cmds = append(cmds, msgCmd(domain.StoredEvent{Event: msg}))
 	}
 
 	return s, tea.Batch(cmds...)
@@ -755,14 +732,7 @@ func (s ChatScreen) handleModelKickedEvent(msg domain.ModelKicked) (ui.Model, te
 	cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: members}))
 
 	if *s.active == msg.Target {
-		cmds = append(cmds, msgCmd(domain.StoredEvent{
-			Event: domain.ModelKicked{
-				Target: msg.Target,
-				Nick:   msg.Instance.Nick(),
-				By:     msg.By,
-				At:     msg.At,
-			},
-		}))
+		cmds = append(cmds, msgCmd(domain.StoredEvent{Event: msg}))
 	}
 
 	return s, tea.Batch(cmds...)
@@ -799,8 +769,10 @@ func (s ChatScreen) handleMessageEvent(msg domain.Message) (ui.Model, tea.Cmd) {
 	return s, nil
 }
 
-// renderMessage produces the tea.Cmd that surfaces a Message in the
-// active view (or as an unread badge for an off-channel target).
+// renderMessage produces the tea.Cmd that surfaces a Message in
+// the active view (or as an unread badge for an off-channel
+// target). The live `StoredEvent` append also drives the
+// "new messages" divider via `MessageList.appendEvent`.
 func (s ChatScreen) renderMessage(msg domain.Message, key domain.ChannelName) tea.Cmd {
 	if key == *s.active {
 		return msgCmd(domain.StoredEvent{Event: msg})
@@ -1005,13 +977,9 @@ func (s ChatScreen) handleLiveModelsLoaded(msg liveModelsLoadedMsg) (ui.Model, t
 }
 
 // handleLiveModelsLoadFailed is the UI-policy home for live-model
-// load failures. The connect-time load runs in the connection
-// screen now, ahead of the autojoin's [domain.FocusChannelEvent],
-// so the chat screen only sees failures from the user-initiated
-// refresh callsites in the `/config api-key` path. When `*s.active`
-// is empty — no real channel joined yet — the notice is routed
-// directly to `&modeloff`: it is the chat-screen-owned default
-// landing window and is always present in the sidebar.
+// load failures. When `*s.active` is empty — no real channel
+// joined yet — the notice is routed to `&modeloff`, the
+// chat-screen-owned default landing window.
 func (s ChatScreen) handleLiveModelsLoadFailed(msg liveModelsLoadFailedMsg) (ui.Model, tea.Cmd) {
 	*s.liveModels = nil
 

@@ -37,17 +37,6 @@ type ErrorEvent struct {
 	At        time.Time
 }
 
-// FocusChannelEvent is emitted by the session when a channel should
-// become active in the UI. Unlike ChannelFocusEvent (which is a
-// UI-only message used by direct channel switches), this flows
-// through the session event channel so the chat screen can react to
-// session-driven focus changes such as last-channel restoration at
-// the end of autojoin.
-type FocusChannelEvent struct {
-	Channel ChannelName
-	At      time.Time
-}
-
 // SystemNoticeEvent is emitted when a system notice has been
 // appended to a channel's event log. UI consumers can use it to
 // refresh the affected channel's view in real time without polling.
@@ -150,7 +139,6 @@ func (PokeEvent) domainEvent()             {}
 func (ErrorEvent) domainEvent()            {}
 func (DispatchStartedEvent) domainEvent()  {}
 func (DispatchDoneEvent) domainEvent()     {}
-func (FocusChannelEvent) domainEvent()     {}
 func (SystemNoticeEvent) domainEvent()     {}
 func (NamesReplyEvent) domainEvent()       {}
 func (Welcome) domainEvent()               {}

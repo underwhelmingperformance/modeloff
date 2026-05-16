@@ -45,7 +45,6 @@ func (PersonasList) isProtocolEvent() {}
 func (PokeEvent) isProtocolEvent()             {}
 func (DispatchStartedEvent) isProtocolEvent()  {}
 func (DispatchDoneEvent) isProtocolEvent()     {}
-func (FocusChannelEvent) isProtocolEvent()     {}
 func (NamesReplyEvent) isProtocolEvent()       {}
 func (Welcome) isProtocolEvent()               {}
 func (Reconnected) isProtocolEvent()           {}

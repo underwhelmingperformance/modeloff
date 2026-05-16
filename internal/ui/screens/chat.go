@@ -102,6 +102,15 @@ type liveModelsLoadFailedMsg struct {
 	err error
 }
 
+// UIStateStore persists client-side UX state across restarts. The
+// chat screen depends only on this narrow surface so a test or
+// embedded harness can pass `nil` to opt out of persistence
+// without faking the whole store interface.
+type UIStateStore interface {
+	GetLastChannel(ctx context.Context) (domain.ChannelName, error)
+	SetLastChannel(ctx context.Context, name domain.ChannelName) error
+}
+
 type logsUpdatedMsg struct{}
 
 // PokeTickMsg triggers a background poke cycle for model instances.
@@ -115,6 +124,7 @@ type ChatScreen struct {
 	sess     *session.Session
 	client   protocol.Client
 	cfgStore config.Store
+	uiState  UIStateStore
 	layout   components.MainLayout
 	keyMap   components.ChatScreenKeyMap
 
@@ -178,7 +188,7 @@ type ChatScreen struct {
 // channel before the first frame pass `domain.KindStatus` too —
 // `SetChannelMsg` supplies the real kind atomically on the first
 // focus event.
-func NewChatScreen(ctx context.Context, sess *session.Session, cfgStore config.Store, initialKind domain.ChannelKind) (ChatScreen, error) {
+func NewChatScreen(ctx context.Context, sess *session.Session, cfgStore config.Store, uiState UIStateStore, initialKind domain.ChannelKind) (ChatScreen, error) {
 	sidebar := components.NewChannelSidebar()
 	chatView := components.NewChatView[chatcmd.CompletionContext]("", initialKind, sess.UserNick(), "")
 	layout := components.NewMainLayout(sidebar, chatView)
@@ -193,6 +203,7 @@ func NewChatScreen(ctx context.Context, sess *session.Session, cfgStore config.S
 		sess:            sess,
 		client:          sess.User(),
 		cfgStore:        cfgStore,
+		uiState:         uiState,
 		channels:        set.NewSorted[domain.Window](),
 		active:          &active,
 		liveModels:      &liveModels,
@@ -281,16 +292,11 @@ func (s ChatScreen) WithObservability(obs *observability.Runtime) ChatScreen {
 
 // Init implements ui.Model.
 //
-// The chat screen does not load channel state from storage. Sidebar
-// entries, active channel, member lists, topics and scrollback all
-// arrive via ordinary session events: ConnectionScreen drives the
-// connect-time sequence (model load, then autojoin), which produces
-// JoinEvent / ModeChangeEvent / TopicInfoEvent for each channel,
-// a final FocusChannelEvent for the saved last channel, and a
-// `liveModelsLoadedMsg` (or `liveModelsLoadFailedMsg`) carrying
-// the tab-completion model roster — all before transitioning here.
-// Init only performs work that is independent of channel state:
-// starting the event drain and seeding local UI configuration.
+// The chat screen does not load channel state from storage.
+// Sidebar entries, active channel, member lists, topics and
+// scrollback all arrive via ordinary session events. Init starts
+// the event drain, inserts the local `&modeloff` server view,
+// and restores focus to the user's prior landing channel.
 func (s ChatScreen) Init() tea.Cmd {
 	cfg, _ := s.loadConfig()
 
@@ -316,24 +322,7 @@ func (s ChatScreen) Init() tea.Cmd {
 		msgCmd(components.SetPlaceholderMsg{Text: s.checklist.Render()}),
 	}
 
-	// Restore focus on the last-active channel as a safety net for
-	// callers that did not go through ConnectionScreen (which is the
-	// normal driver of FocusChannel during startup). LastChannel is
-	// re-read inside the cmd so that any focus applied by a preceding
-	// autojoin — which updates LastChannel when it calls
-	// sess.FocusChannel — is observed rather than the value captured
-	// at Init time, eliminating a race where this safety net would
-	// otherwise refocus on a stale channel.
-	cmds = append(cmds, func() tea.Msg {
-		last, err := s.sess.LastChannel(s.ctx)
-		if err != nil || last == "" {
-			return nil
-		}
-
-		_ = s.sess.FocusChannel(s.ctx, last)
-
-		return nil
-	})
+	cmds = append(cmds, s.restoreFocus())
 
 	if s.obs != nil {
 		cmds = append(cmds, s.summary.Init(), s.waitForLogUpdateCmd())
@@ -627,24 +616,33 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		)
 
 	case domain.Join:
+		s.bufferEvent(msg)
 		return s.handleJoinEvent(msg)
 
 	case domain.Part:
+		s.bufferEvent(msg)
 		return s.handlePartEvent(msg)
 
 	case domain.Quit:
-		return s.handleQuitEvent(msg, actorChannelsForDirectSend(msg.Instance))
+		targets := actorChannelsForDirectSend(msg.Instance)
+		s.bufferActorEvent(targets, msg.Instance, domain.StoredEvent{Event: msg})
+		return s.handleQuitEvent(msg, targets)
 
 	case domain.TopicChange:
+		s.bufferEvent(msg)
 		return s.handleTopicChangeEvent(msg)
 
 	case domain.NickChange:
-		return s.handleNickChangeEvent(msg, actorChannelsForDirectSend(msg.Instance))
+		targets := actorChannelsForDirectSend(msg.Instance)
+		s.bufferActorEvent(targets, msg.Instance, domain.StoredEvent{Event: msg})
+		return s.handleNickChangeEvent(msg, targets)
 
 	case domain.ModelInvited:
+		s.bufferEvent(msg)
 		return s.handleModelInvitedEvent(msg)
 
 	case domain.ModelKicked:
+		s.bufferEvent(msg)
 		return s.handleModelKickedEvent(msg)
 
 	case domain.Message:
@@ -743,6 +741,42 @@ func (s ChatScreen) completionSet() command.CompletionSet[chatcmd.CompletionCont
 			},
 			Kind: func() domain.ChannelKind { return s.activeKind() },
 		},
+	}
+}
+
+// restoreFocus picks an Init-time landing channel. It prefers the
+// persisted `last_channel` entry when it matches a current
+// membership; otherwise it falls back to the most-recently-joined
+// channel. Membership is read from the session's in-memory
+// snapshot so the cmd does not depend on bus events. There is a
+// race between this `ChannelFocusMsg` and the bus-event drain;
+// fixing it properly is γ.2's pure-view MessageList redesign.
+func (s ChatScreen) restoreFocus() tea.Cmd {
+	return func() tea.Msg {
+		channels := s.sess.UserInstance().Channels()
+		if channels == nil || channels.Len() == 0 {
+			return nil
+		}
+
+		var target domain.ChannelName
+
+		if s.uiState != nil {
+			if last, err := s.uiState.GetLastChannel(s.ctx); err == nil && last != "" {
+				if _, ok := channels.Get(last); ok {
+					target = last
+				}
+			}
+		}
+
+		if target == "" {
+			newest := channels.Newest()
+			if newest == nil {
+				return nil
+			}
+			target = newest.Key
+		}
+
+		return chatcmd.ChannelFocusMsg{Channel: target}
 	}
 }
 

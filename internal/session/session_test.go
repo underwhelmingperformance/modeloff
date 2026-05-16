@@ -697,44 +697,6 @@ func TestSession_Connect_then_JoinAutojoin_stamps_UserJoinedAt(t *testing.T) {
 	}
 }
 
-func TestSession_FocusChannel_emits_event(t *testing.T) {
-	sess, s := newTestSession(t)
-	ctx := t.Context()
-
-	require.NoError(t, sess.Join(ctx, "#general"))
-	_, extras := drainUntilMatched(t, sess,
-		matchEvent[domain.Join](),
-		matchEvent[domain.NamesReplyEvent](),
-		matchEvent[domain.ModeChange](),
-	)
-	require.Empty(t, extras)
-
-	require.NoError(t, sess.FocusChannel(ctx, "#general"))
-
-	evt := drainEvent[domain.FocusChannelEvent](t, sess)
-	require.Equal(t, domain.ChannelName("#general"), evt.Channel)
-	require.Equal(t, fixedTime, evt.At)
-
-	// `last_channel` is a UI-owned write — the chat screen lands it
-	// when its `ChannelActiveMsg` signal fires. The session-side
-	// FocusChannel only emits the event, so the store stays empty
-	// until the UI persists it.
-	last, err := s.GetLastChannel(ctx)
-	require.NoError(t, err)
-	require.Equal(t, domain.ChannelName(""), last)
-}
-
-func TestSession_FocusChannel_nonmember_is_noop(t *testing.T) {
-	sess, _ := newTestSession(t)
-	ctx := t.Context()
-
-	require.NoError(t, sess.FocusChannel(ctx, "#nope"))
-
-	if evt, ok := peekEvent(sess); ok {
-		t.Fatalf("expected no event, got %T", evt)
-	}
-}
-
 func TestSession_Connect_Quit_Reconnect_omits_status_channel_from_autojoin(t *testing.T) {
 	s := storetest.NewMemoryStore(t)
 
@@ -896,35 +858,6 @@ func TestSession_Connect_is_idempotent(t *testing.T) {
 		}
 	}
 	require.Equal(t, 1, connectSpans)
-}
-
-func TestSession_FocusChannel_status_channel_is_session_side_noop(t *testing.T) {
-	sess, s := newTestSession(t)
-	ctx := t.Context()
-
-	require.NoError(t, sess.Connect(ctx))
-	_, extras := drainUntilMatched(t, sess,
-		matchEvent[domain.Welcome](),
-	)
-	require.Empty(t, extras)
-
-	// `&modeloff` is a chat-screen-owned virtual window with no
-	// session-side membership. `FocusChannel` on it is a deliberate
-	// no-op — it returns nil without emitting a `FocusChannelEvent`
-	// — because there is no shared state for the session to signal
-	// about. The chat-screen handles focus to its server view
-	// locally.
-	require.NoError(t, sess.FocusChannel(ctx, domain.StatusChannelName))
-
-	select {
-	case ev := <-sess.User().Events():
-		t.Fatalf("FocusChannel(&modeloff) must not emit, got %T", ev)
-	default:
-	}
-
-	last, err := s.GetLastChannel(ctx)
-	require.NoError(t, err)
-	require.Equal(t, domain.ChannelName(""), last)
 }
 
 func TestSession_Quit_appends_channel_quit_events_and_saves_autojoin(t *testing.T) {

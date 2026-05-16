@@ -50,11 +50,8 @@ type connectionReadyMsg struct{ err error }
 type joinAutojoinDoneMsg struct{ err error }
 
 // loadModelsDoneMsg carries the result of the connect-time
-// `sess.ListModels` call. The connection screen runs the load as
-// Phase 1 of the handshake, ahead of autojoin, so the chat screen
-// no longer races a parallel model load against the autojoin's
-// focus event. `models` is nil when no API key is configured
-// (signalled as a silent no-op rather than an error).
+// `sess.ListModels` call. `models` is nil when no API key is
+// configured (a silent no-op rather than an error).
 type loadModelsDoneMsg struct {
 	models []chatcmd.ModelOption
 	err    error
@@ -221,13 +218,9 @@ func (s ConnectionScreen) waitForConnected() tea.Cmd {
 }
 
 // runLoadModels calls [session.Session.ListModels] and packages
-// the result as a `loadModelsDoneMsg`. It is the connect-time
-// owner of live-model loading: by running here, ahead of the
-// autojoin Cmd, the chat screen no longer needs a parallel
-// `loadLiveModels` Cmd in its `Init` whose result would race the
-// autojoin's [domain.FocusChannelEvent]. When no API key is
-// configured the load is a silent no-op — the chat screen's
-// suggestion state stays at its zero value (ready, empty).
+// the result as a `loadModelsDoneMsg`. With no API key configured
+// the load is a silent no-op, leaving the chat screen's
+// suggestion state at its zero value (ready, empty).
 func (s ConnectionScreen) runLoadModels() tea.Cmd {
 	sess := s.cfg.Session
 
@@ -254,26 +247,14 @@ func (s ConnectionScreen) runLoadModels() tea.Cmd {
 	}
 }
 
-// runAutojoin issues JoinAutojoinChannels followed by FocusChannel
-// for the saved last channel (or the status channel as a fallback).
+// runAutojoin issues `JoinAutojoinChannels`. Focus restoration
+// is the chat screen's concern; the connection screen just kicks
+// off the joins and reports completion.
 func (s ConnectionScreen) runAutojoin() tea.Cmd {
 	sess := s.cfg.Session
 
 	return func() tea.Msg {
-		if err := sess.JoinAutojoinChannels(s.ctx()); err != nil {
-			return joinAutojoinDoneMsg{err: err}
-		}
-
-		focus, err := sess.LastChannel(s.ctx())
-		if err != nil || focus == "" {
-			focus = domain.StatusChannelName
-		}
-
-		if err := sess.FocusChannel(s.ctx(), focus); err != nil {
-			return joinAutojoinDoneMsg{err: err}
-		}
-
-		return joinAutojoinDoneMsg{}
+		return joinAutojoinDoneMsg{err: sess.JoinAutojoinChannels(s.ctx())}
 	}
 }
 
@@ -344,11 +325,6 @@ func (s ConnectionScreen) advanceTick() (ui.Model, tea.Cmd) {
 		}
 
 	case "Loading models":
-		// Mirrors the autojoin gate: kick the Cmd on first arrival,
-		// hold the step pending until `loadModelsDone` flips. A
-		// load failure is recorded into the step label rather than
-		// surfaced to the chat screen separately — the user has
-		// already seen the animation step turn red.
 		if !s.loadModelsDone {
 			if !s.loadModelsKicked {
 				return s.kickLoadModels()
@@ -431,11 +407,9 @@ func (s ConnectionScreen) tickCmd() tea.Cmd {
 
 // transitionCmd hands control to the chat screen and, in the
 // session-backed case, delivers the connect-time live-model load
-// result so the chat screen can populate its tab-completion cache
-// without a parallel `loadLiveModels` Cmd. The screen change has
-// to land first (otherwise the loaded-models message would reach
-// the still-active connection screen, which doesn't handle it),
-// so the cmds are sequenced rather than batched.
+// result so the chat screen can populate its tab-completion cache.
+// The screen change must land first; the loaded-models message
+// reaches the new screen via sequencing.
 func (s ConnectionScreen) transitionCmd() tea.Cmd {
 	if s.cfg.Next == nil {
 		return nil
