@@ -14,7 +14,8 @@ import (
 var ErrNotChannelWindow = errors.New("not a channel window")
 
 // UnknownCommandError indicates the user entered an unrecognised
-// slash command.
+// slash command. Wire-shape equivalent of RFC 2812 numeric 421
+// (ERR_UNKNOWNCOMMAND).
 type UnknownCommandError struct {
 	Name string
 }

@@ -1,6 +1,7 @@
 package protocol_test
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -96,6 +97,10 @@ func TestEvent_sum_membership(t *testing.T) {
 		{"no_such_channel_error", domain.NoSuchChannelError{Channel: channel}},
 		{"nick_in_use_error", domain.NickInUseError{Nick: nick}},
 		{"not_operator_error", domain.NotOperatorError{Command: "ADDMODEL"}},
+		{"unknown_command_error", domain.UnknownCommandError{Name: "typo"}},
+		{"unknown_config_key_error", domain.UnknownConfigKeyError{Key: "bogus"}},
+		{"invalid_duration_error", domain.InvalidDurationError{Input: "5xq", Err: fmt.Errorf("bad")}},
+		{"unsupported_model_error", domain.UnsupportedModelError{ModelID: "test/model"}},
 		{"killed", protocol.Killed{By: nick, Reason: "spam", At: at}},
 	}
 
@@ -128,6 +133,10 @@ func TestEvent_sum_membership(t *testing.T) {
 				domain.NoSuchChannelError,
 				domain.NickInUseError,
 				domain.NotOperatorError,
+				domain.UnknownCommandError,
+				domain.UnknownConfigKeyError,
+				domain.InvalidDurationError,
+				domain.UnsupportedModelError,
 				protocol.Killed:
 				// member of the sum
 			default:

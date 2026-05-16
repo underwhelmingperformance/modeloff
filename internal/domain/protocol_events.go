@@ -54,15 +54,23 @@ func (ModelUnavailableError) isProtocolEvent() {}
 // the `error` interface (for `errors.As` extraction at the
 // emission boundary) and the protocol-event seal (so the session
 // can `emit` them like any other wire event).
-func (UnknownNickError) isProtocolEvent()   {}
-func (NoSuchChannelError) isProtocolEvent() {}
-func (NickInUseError) isProtocolEvent()     {}
-func (NotOperatorError) isProtocolEvent()   {}
+func (UnknownNickError) isProtocolEvent()      {}
+func (NoSuchChannelError) isProtocolEvent()    {}
+func (NickInUseError) isProtocolEvent()        {}
+func (NotOperatorError) isProtocolEvent()      {}
+func (UnknownCommandError) isProtocolEvent()   {}
+func (UnknownConfigKeyError) isProtocolEvent() {}
+func (InvalidDurationError) isProtocolEvent()  {}
+func (UnsupportedModelError) isProtocolEvent() {}
 
-func (UnknownNickError) domainEvent()   {}
-func (NoSuchChannelError) domainEvent() {}
-func (NickInUseError) domainEvent()     {}
-func (NotOperatorError) domainEvent()   {}
+func (UnknownNickError) domainEvent()      {}
+func (NoSuchChannelError) domainEvent()    {}
+func (NickInUseError) domainEvent()        {}
+func (NotOperatorError) domainEvent()      {}
+func (UnknownCommandError) domainEvent()   {}
+func (UnknownConfigKeyError) domainEvent() {}
+func (InvalidDurationError) domainEvent()  {}
+func (UnsupportedModelError) domainEvent() {}
 
 // `Killed` is a protocol-only event (no domain-side persistence).
 func (Killed) isProtocolEvent() {}
