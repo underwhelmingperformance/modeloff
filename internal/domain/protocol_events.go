@@ -100,6 +100,7 @@ type NotOperatorError struct {
 	// renderers and tool-result formatters can identify which call
 	// was rejected without reparsing the error string.
 	Command string
+	At      time.Time
 }
 
 // Error makes [NotOperatorError] satisfy the `error` interface.

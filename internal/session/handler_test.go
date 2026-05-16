@@ -216,7 +216,7 @@ func TestSession_Handle_delegates(t *testing.T) {
 			name:   "addmodel rejects non-operator with NotOperatorError",
 			client: func() protocol.Client { return newPlainClient("inst-1") },
 			cmd:    protocol.AddModel{Model: "anthropic/claude", Persona: "p"},
-			want:   protocol.Response{Err: protocol.NotOperatorError{Command: "ADDMODEL"}},
+			want:   protocol.Response{Err: protocol.NotOperatorError{Command: "ADDMODEL", At: fixedTime}},
 		},
 		{
 			name:    "quit is not yet implemented",
@@ -234,7 +234,7 @@ func TestSession_Handle_delegates(t *testing.T) {
 			name:   "kill rejects non-operator with NotOperatorError",
 			client: func() protocol.Client { return newPlainClient("inst-1") },
 			cmd:    protocol.Kill{Nick: "botty", Reason: "spam"},
-			want:   protocol.Response{Err: protocol.NotOperatorError{Command: "KILL"}},
+			want:   protocol.Response{Err: protocol.NotOperatorError{Command: "KILL", At: fixedTime}},
 		},
 	}
 

@@ -373,7 +373,7 @@ func (c MsgCommand) Run(rc Context) tea.Cmd {
 		resolved, err := rc.Session.ResolveNick(rc.Ctx, nick)
 		if err != nil {
 			if errors.Is(err, store.ErrNoSuchNick) {
-				return errorEvent("msg", domain.UnknownNickError{Nick: nick})
+				return errorEvent("msg", domain.UnknownNickError{Nick: nick, At: time.Now()})
 			}
 
 			return errorEvent("msg", fmt.Errorf("resolve nick: %w", err))
@@ -447,7 +447,7 @@ func (c QueryCommand) Run(rc Context) tea.Cmd {
 		resolved, err := rc.Session.ResolveNick(rc.Ctx, nick)
 		if err != nil {
 			if errors.Is(err, store.ErrNoSuchNick) {
-				return errorEvent("query", domain.UnknownNickError{Nick: nick})
+				return errorEvent("query", domain.UnknownNickError{Nick: nick, At: time.Now()})
 			}
 
 			return errorEvent("query", fmt.Errorf("resolve nick: %w", err))
@@ -482,7 +482,7 @@ func (c MsgCommand) RunTool(ctx context.Context, tc session.ToolContext) session
 	resolved, err := tc.Session.ResolveNick(ctx, domain.Nick(c.Target))
 	if err != nil {
 		if errors.Is(err, store.ErrNoSuchNick) {
-			return session.ToolResultPayload{OK: false, Error: domain.UnknownNickError{Nick: domain.Nick(c.Target)}.Error()}
+			return session.ToolResultPayload{OK: false, Error: domain.UnknownNickError{Nick: domain.Nick(c.Target), At: time.Now()}.Error()}
 		}
 
 		return session.ToolResultPayload{OK: false, Error: fmt.Errorf("resolve nick: %w", err).Error()}
@@ -658,7 +658,7 @@ func (c WhoisCommand) Run(rc Context) tea.Cmd {
 	return func() tea.Msg {
 		inst, err := rc.Session.Whois(rc.Ctx, domain.Nick(c.Nick))
 		if err != nil {
-			return errorEvent("whois", domain.UnknownNickError{Nick: domain.Nick(c.Nick)})
+			return errorEvent("whois", domain.UnknownNickError{Nick: domain.Nick(c.Nick), At: time.Now()})
 		}
 
 		return WhoisResult{Instance: inst}
@@ -936,6 +936,7 @@ func (c PokeIntervalConfig) Run(rc Context) tea.Cmd {
 			return errorEvent("config poke-interval", domain.InvalidDurationError{
 				Input: c.Duration,
 				Err:   err,
+				At:    time.Now(),
 			})
 		}
 
@@ -993,6 +994,7 @@ func (c DrainTimeoutConfig) Run(rc Context) tea.Cmd {
 			return errorEvent("config drain-timeout", domain.InvalidDurationError{
 				Input: c.Duration,
 				Err:   err,
+				At:    time.Now(),
 			})
 		}
 

@@ -3053,7 +3053,7 @@ func (s *Session) ensureStructuredOutputModel(ctx context.Context, modelID domai
 	}
 
 	if _, ok := s.supportedModels[modelID]; !ok {
-		return domain.UnsupportedModelError{ModelID: modelID}
+		return domain.UnsupportedModelError{ModelID: modelID, At: s.now()}
 	}
 
 	return nil

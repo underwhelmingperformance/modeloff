@@ -159,7 +159,7 @@ func (s *Session) handleList(ctx context.Context) (protocol.Response, error) {
 
 func (s *Session) handleAddModel(c protocol.Client, cmd protocol.AddModel) (protocol.Response, error) {
 	if !c.HasMode(protocol.ModeOperator) {
-		return protocol.Response{Err: domain.NotOperatorError{Command: "ADDMODEL"}}, nil
+		return protocol.Response{Err: domain.NotOperatorError{Command: "ADDMODEL", At: s.now()}}, nil
 	}
 
 	return protocol.Response{}, errNotYetImplemented(cmd)
@@ -167,7 +167,7 @@ func (s *Session) handleAddModel(c protocol.Client, cmd protocol.AddModel) (prot
 
 func (s *Session) handleKill(c protocol.Client, cmd protocol.Kill) (protocol.Response, error) {
 	if !c.HasMode(protocol.ModeOperator) {
-		return protocol.Response{Err: domain.NotOperatorError{Command: "KILL"}}, nil
+		return protocol.Response{Err: domain.NotOperatorError{Command: "KILL", At: s.now()}}, nil
 	}
 
 	return protocol.Response{}, errNotYetImplemented(cmd)

@@ -3,6 +3,7 @@ package domain
 import (
 	"errors"
 	"fmt"
+	"time"
 )
 
 // ErrNotChannelWindow is returned by callers that expected a
@@ -18,6 +19,7 @@ var ErrNotChannelWindow = errors.New("not a channel window")
 // (ERR_UNKNOWNCOMMAND).
 type UnknownCommandError struct {
 	Name string
+	At   time.Time
 }
 
 func (e UnknownCommandError) Error() string {
@@ -28,6 +30,7 @@ func (e UnknownCommandError) Error() string {
 // equivalent of RFC 2812 numeric 401 (ERR_NOSUCHNICK).
 type UnknownNickError struct {
 	Nick Nick
+	At   time.Time
 }
 
 func (e UnknownNickError) Error() string {
@@ -39,6 +42,7 @@ func (e UnknownNickError) Error() string {
 // (ERR_NOSUCHCHANNEL).
 type NoSuchChannelError struct {
 	Channel ChannelName
+	At      time.Time
 }
 
 func (e NoSuchChannelError) Error() string {
@@ -48,6 +52,7 @@ func (e NoSuchChannelError) Error() string {
 // UnknownConfigKeyError indicates an unrecognised configuration key.
 type UnknownConfigKeyError struct {
 	Key string
+	At  time.Time
 }
 
 func (e UnknownConfigKeyError) Error() string {
@@ -59,6 +64,7 @@ func (e UnknownConfigKeyError) Error() string {
 type InvalidDurationError struct {
 	Input string
 	Err   error
+	At    time.Time
 }
 
 func (e InvalidDurationError) Error() string {
@@ -69,6 +75,7 @@ func (e InvalidDurationError) Error() string {
 // strict response contract.
 type UnsupportedModelError struct {
 	ModelID ModelID
+	At      time.Time
 }
 
 func (e UnsupportedModelError) Error() string {
@@ -100,6 +107,7 @@ func (e StatusChannelGuardError) Error() string {
 // can surface it without re-parsing the error string.
 type NickInUseError struct {
 	Nick Nick
+	At   time.Time
 }
 
 func (e NickInUseError) Error() string {
