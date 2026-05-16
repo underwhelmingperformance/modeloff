@@ -216,6 +216,41 @@ func NewChatScreen(ctx context.Context, sess *session.Session, cfgStore config.S
 	return cs, nil
 }
 
+// realChannelCount returns the number of sidebar entries that are
+// not the local `&modeloff` server view. The chat-screen owns
+// `&modeloff` for the whole session, so it does not count against
+// the "the user has joined nothing yet" check that drives the
+// welcome checklist.
+func (s ChatScreen) realChannelCount() int {
+	n := s.channels.Len()
+	if _, ok := s.windowByName(domain.StatusChannelName); ok {
+		n--
+	}
+
+	return n
+}
+
+// firstRealChannel returns the first non-`&modeloff` window in
+// sidebar order, used by post-part focus fallback. When no real
+// channel remains, the caller falls through to the "no channels"
+// branch which renders the welcome checklist.
+func (s ChatScreen) firstRealChannel() (domain.Window, bool) {
+	for i := range s.channels.Len() {
+		w, ok := s.channels.GetAt(i)
+		if !ok {
+			continue
+		}
+
+		if w.Name() == domain.StatusChannelName {
+			continue
+		}
+
+		return w, true
+	}
+
+	return nil, false
+}
+
 func (s ChatScreen) loadConfig() (config.Config, error) {
 	if s.cfgStore == nil {
 		return config.Config{
@@ -258,10 +293,14 @@ func (s ChatScreen) WithObservability(obs *observability.Runtime) ChatScreen {
 func (s ChatScreen) Init() tea.Cmd {
 	cfg, _ := s.loadConfig()
 
+	statusWindow := domain.NewStatusWindow(s.sess.ConnectedAt())
+	s.channels.Insert(statusWindow)
+
 	cmds := []tea.Cmd{
 		s.listenForEvents(),
 		s.listenForProtocolEvents(),
 		s.loadLiveModels(),
+		msgCmd(components.ChannelAddedMsg{Channel: statusWindow}),
 		msgCmd(components.CommandsMsg[chatcmd.CompletionContext]{
 			Commands: s.parser.Set().Commands,
 		}),
@@ -442,7 +481,7 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		*s.liveModels = nil
 		*s.liveModelsState = command.SuggestionStateReady
 
-		if s.channels.Len() == 0 {
+		if s.realChannelCount() == 0 {
 			return s, tea.Batch(
 				s.loadLiveModels(),
 				msgCmd(components.SetPlaceholderMsg{

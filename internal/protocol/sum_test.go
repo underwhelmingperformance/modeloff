@@ -89,7 +89,13 @@ func TestEvent_sum_membership(t *testing.T) {
 		{"dispatch_started", domain.DispatchStartedEvent{Channel: channel}},
 		{"dispatch_done", domain.DispatchDoneEvent{Channel: channel}},
 		{"names_reply", domain.NamesReplyEvent{Channel: channel, At: at}},
-		{"status_opened", domain.StatusOpenedEvent{Channel: channel, At: at}},
+		{"welcome", domain.Welcome{ServerName: "modeloff", Nick: nick, At: at}},
+		{"reconnected", domain.Reconnected{At: at}},
+		{"model_unavailable_error", domain.ModelUnavailableError{Channel: channel, Nick: nick, At: at}},
+		{"unknown_nick_error", domain.UnknownNickError{Nick: nick}},
+		{"no_such_channel_error", domain.NoSuchChannelError{Channel: channel}},
+		{"nick_in_use_error", domain.NickInUseError{Nick: nick}},
+		{"not_operator_error", domain.NotOperatorError{Command: "ADDMODEL"}},
 		{"killed", protocol.Killed{By: nick, Reason: "spam", At: at}},
 	}
 
@@ -115,7 +121,13 @@ func TestEvent_sum_membership(t *testing.T) {
 				domain.DispatchStartedEvent,
 				domain.DispatchDoneEvent,
 				domain.NamesReplyEvent,
-				domain.StatusOpenedEvent,
+				domain.Welcome,
+				domain.Reconnected,
+				domain.ModelUnavailableError,
+				domain.UnknownNickError,
+				domain.NoSuchChannelError,
+				domain.NickInUseError,
+				domain.NotOperatorError,
 				protocol.Killed:
 				// member of the sum
 			default:

@@ -623,9 +623,13 @@ func TestSession_Connect_marks_session_active(t *testing.T) {
 		t.Fatal("Connected() channel should be closed after Connect")
 	}
 
-	statusEvents := channelEventTypes(t, s, domain.StatusChannelName)
-	require.Equal(t, []string{"system_notice"}, statusEvents,
-		"clean connect should append exactly one Connected notice")
+	// Clean connect emits exactly one Welcome on the bus and persists
+	// nothing to the `&modeloff` event log (the chat-screen owns its
+	// local server-window view).
+	_, extras := drainUntilMatched(t, sess, matchEvent[domain.Welcome]())
+	require.Empty(t, extras)
+	require.Empty(t, channelEventTypes(t, s, domain.StatusChannelName),
+		"session must not persist server-narrated events on &modeloff")
 }
 
 func TestSession_Connect_clears_unclean_user_membership(t *testing.T) {
@@ -646,9 +650,15 @@ func TestSession_Connect_clears_unclean_user_membership(t *testing.T) {
 	require.NoError(t, err)
 	requireChannelEqual(t, newTestChannelWindow("#random", fixedTime, domain.NewMemberList()), random)
 
-	statusEvents := channelEventTypes(t, s, domain.StatusChannelName)
-	require.Equal(t, []string{"system_notice", "system_notice"}, statusEvents,
-		"unclean connect should append a Connected notice and a Reconnected-after-unclean notice")
+	// Unclean connect emits Welcome then Reconnected on the bus and
+	// persists nothing to the `&modeloff` event log.
+	_, extras := drainUntilMatched(t, sess,
+		matchEvent[domain.Welcome](),
+		matchEvent[domain.Reconnected](),
+	)
+	require.Empty(t, extras)
+	require.Empty(t, channelEventTypes(t, s, domain.StatusChannelName),
+		"session must not persist server-narrated events on &modeloff")
 }
 
 func TestSession_Connect_then_JoinAutojoin_stamps_UserJoinedAt(t *testing.T) {
@@ -664,15 +674,14 @@ func TestSession_Connect_then_JoinAutojoin_stamps_UserJoinedAt(t *testing.T) {
 
 	require.NoError(t, sess.Connect(ctx))
 
-	// Connect on an unclean session emits: a StatusOpenedEvent for the
-	// virtual server window, then the "Connected to modeloff" and
-	// "Reconnected after unclean shutdown" SystemNoticeEvents. The
-	// status window is not a channel, so there is no JoinEvent or
-	// ModeChange against it.
+	// Connect on an unclean session emits the RPL_WELCOME-shaped
+	// [domain.Welcome] event, followed by [domain.Reconnected] to
+	// announce that the recovery path reconciled stale state. The
+	// chat-screen owns its `&modeloff` window locally, so the
+	// session itself does not emit a status-window-opened signal.
 	_, extras := drainUntilMatched(t, sess,
-		matchEvent[domain.StatusOpenedEvent](),
-		matchEvent[domain.SystemNoticeEvent](),
-		matchEvent[domain.SystemNoticeEvent](),
+		matchEvent[domain.Welcome](),
+		matchEvent[domain.Reconnected](),
 	)
 	require.Empty(t, extras)
 
@@ -736,8 +745,7 @@ func TestSession_Connect_Quit_Reconnect_omits_status_channel_from_autojoin(t *te
 
 	require.NoError(t, sess1.Connect(ctx))
 	_, extras := drainUntilMatched(t, sess1,
-		matchEvent[domain.StatusOpenedEvent](),
-		matchEvent[domain.SystemNoticeEvent](),
+		matchEvent[domain.Welcome](),
 	)
 	require.Empty(t, extras)
 
@@ -767,7 +775,7 @@ func TestSession_Connect_Quit_Reconnect_omits_status_channel_from_autojoin(t *te
 	require.Equal(t, []domain.ChannelName{"#general"}, autojoin)
 }
 
-func TestSession_Connect_unclean_recovery_emits_status_notices(t *testing.T) {
+func TestSession_Connect_unclean_recovery_emits_welcome_and_reconnected(t *testing.T) {
 	s := storetest.NewMemoryStore(t)
 	sess := New(t.Context, s, nil, &fakeAPIClient{}, "testuser", "", "")
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
@@ -778,28 +786,24 @@ func TestSession_Connect_unclean_recovery_emits_status_notices(t *testing.T) {
 
 	require.NoError(t, sess.Connect(ctx))
 
-	// Persisted status-channel event log: Connected notice then
-	// Reconnected-after-unclean notice, in order.
-	require.Equal(t, []string{"system_notice", "system_notice"},
-		channelEventTypes(t, s, domain.StatusChannelName))
-
-	events, err := s.EventsBefore(ctx, domain.StatusChannelName, nil, 10)
-	require.NoError(t, err)
-
-	type storedNotice struct {
-		Channel domain.ChannelName
-		Text    string
-	}
-	got := make([]storedNotice, 0, len(events))
-	for _, e := range events {
-		notice, ok := e.Event.(domain.SystemNotice)
-		require.True(t, ok, "expected SystemNotice, got %T", e.Event)
-		got = append(got, storedNotice{Channel: notice.Target, Text: notice.Text})
-	}
-	require.Equal(t, []storedNotice{
-		{Channel: domain.StatusChannelName, Text: "Connected to modeloff"},
-		{Channel: domain.StatusChannelName, Text: "Reconnected after unclean shutdown"},
-	}, got)
+	// Unclean Connect emits Welcome then Reconnected on the bus, in
+	// that order. The session does not persist either event — the
+	// chat-screen owns its `&modeloff` view locally.
+	matched, extras := drainUntilMatched(t, sess,
+		matchEvent[domain.Welcome](),
+		matchEvent[domain.Reconnected](),
+	)
+	require.Empty(t, extras)
+	require.Equal(t, []domain.Event{
+		domain.Welcome{
+			ServerName: domain.StatusServerName,
+			Nick:       sess.UserNick(),
+			At:         fixedTime,
+		},
+		domain.Reconnected{At: fixedTime},
+	}, matched)
+	require.Empty(t, channelEventTypes(t, s, domain.StatusChannelName),
+		"session must not persist server-narrated events on &modeloff")
 }
 
 // TestSession_user_snapshot_race_free hammers joinAs, partAs, and
@@ -869,10 +873,13 @@ func TestSession_Connect_is_idempotent(t *testing.T) {
 	require.NoError(t, sess.Connect(ctx))
 	require.NoError(t, sess.Connect(ctx))
 
-	// Second Connect is a no-op: no duplicate "Connected" notice, no
-	// panic from close-of-closed-channel.
-	require.Equal(t, []string{"system_notice"},
-		channelEventTypes(t, s, domain.StatusChannelName))
+	// Second Connect is a no-op: exactly one Welcome on the bus, no
+	// panic from close-of-closed-channel, nothing persisted to
+	// `&modeloff`.
+	_, extras := drainUntilMatched(t, sess, matchEvent[domain.Welcome]())
+	require.Empty(t, extras)
+	require.Empty(t, channelEventTypes(t, s, domain.StatusChannelName),
+		"session must not persist server-narrated events on &modeloff")
 
 	select {
 	case <-sess.Connected():
@@ -891,27 +898,30 @@ func TestSession_Connect_is_idempotent(t *testing.T) {
 	require.Equal(t, 1, connectSpans)
 }
 
-func TestSession_FocusChannel_status_channel_is_valid(t *testing.T) {
+func TestSession_FocusChannel_status_channel_is_session_side_noop(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
 	require.NoError(t, sess.Connect(ctx))
 	_, extras := drainUntilMatched(t, sess,
-		matchEvent[domain.StatusOpenedEvent](),
-		matchEvent[domain.SystemNoticeEvent](),
+		matchEvent[domain.Welcome](),
 	)
 	require.Empty(t, extras)
 
+	// `&modeloff` is a chat-screen-owned virtual window with no
+	// session-side membership. `FocusChannel` on it is a deliberate
+	// no-op — it returns nil without emitting a `FocusChannelEvent`
+	// — because there is no shared state for the session to signal
+	// about. The chat-screen handles focus to its server view
+	// locally.
 	require.NoError(t, sess.FocusChannel(ctx, domain.StatusChannelName))
 
-	evt := drainEvent[domain.FocusChannelEvent](t, sess)
-	require.Equal(t, domain.FocusChannelEvent{
-		Channel: domain.StatusChannelName,
-		At:      fixedTime,
-	}, evt)
+	select {
+	case ev := <-sess.User().Events():
+		t.Fatalf("FocusChannel(&modeloff) must not emit, got %T", ev)
+	default:
+	}
 
-	// `last_channel` is a UI-owned write — see the
-	// `TestSession_FocusChannel_emits_event` comment.
 	last, err := s.GetLastChannel(ctx)
 	require.NoError(t, err)
 	require.Equal(t, domain.ChannelName(""), last)
@@ -2159,15 +2169,14 @@ func TestSession_Poke_api_error_emits_error_event(t *testing.T) {
 	require.NoError(t, sess.Poke(ctx))
 	events := drainEvents(t, sess, 2)
 
-	var hasStatusNotice bool
+	var failure *domain.ModelUnavailableError
 	var hasReply bool
 
 	for _, evt := range events {
 		switch e := evt.(type) {
-		case domain.SystemNoticeEvent:
-			if e.Channel == domain.StatusChannelName {
-				hasStatusNotice = true
-			}
+		case domain.ModelUnavailableError:
+			ev := e
+			failure = &ev
 		case domain.Message:
 			if e.From == "bot-b" {
 				hasReply = true
@@ -2175,7 +2184,11 @@ func TestSession_Poke_api_error_emits_error_event(t *testing.T) {
 		}
 	}
 
-	require.True(t, hasStatusNotice, "dispatch failure should append a notice to the status channel")
+	require.NotNil(t, failure,
+		"dispatch failure should emit a ModelUnavailableError on the bus")
+	require.Equal(t, domain.ModelUnavailableError{
+		Channel: "#general", Nick: "bot-a", At: fixedTime,
+	}, *failure)
 	require.True(t, hasReply, "successful model dispatch should emit its reply Message on the wire")
 
 	msgs := channelMessages(t, s, "#random")
@@ -5097,55 +5110,55 @@ func (f *failingAppendStore) AppendEvent(ctx context.Context, ch domain.ChannelN
 	return f.sessionStore.AppendEvent(ctx, ch, event)
 }
 
-func TestSession_appendEvent_persistence_failure_emits_status_notice(t *testing.T) {
-	store := &failingAppendStore{
-		sessionStore:    storetest.NewMemoryStore(t),
-		failChannels:    map[domain.ChannelName]struct{}{"#general": {}},
-		errFailedAppend: fmt.Errorf("disk full"),
+// TestSession_appendEvent_persistence_failure_is_silent pins the
+// post-α0 contract for store-side append failures: they increment
+// the `persistence_failures` counter and log via slog, but do not
+// surface a chat-window notice. The IRC protocol has no numeric
+// for "your server's database is broken"; the operator-facing
+// signal is metrics and logs. The check covers both a regular
+// channel and the chat-screen-owned `&modeloff` to confirm the
+// behaviour is uniform.
+func TestSession_appendEvent_persistence_failure_is_silent(t *testing.T) {
+	cases := []struct {
+		name    string
+		channel domain.ChannelName
+		event   domain.PersistableEvent
+	}{
+		{
+			name:    "regular channel",
+			channel: "#general",
+			event: domain.Message{
+				Target: "#general", From: "testuser", Body: "hello", At: fixedTime,
+			},
+		},
+		{
+			name:    "status channel",
+			channel: domain.StatusChannelName,
+			event: domain.SystemNotice{
+				Target: domain.StatusChannelName, Text: "boot notice", At: fixedTime,
+			},
+		},
 	}
 
-	sess := New(t.Context, store, nil, &fakeAPIClient{}, "testuser", "", "")
-	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
-	sess.now = func() time.Time { return fixedTime }
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &failingAppendStore{
+				sessionStore:    storetest.NewMemoryStore(t),
+				failChannels:    map[domain.ChannelName]struct{}{tc.channel: {}},
+				errFailedAppend: fmt.Errorf("disk full"),
+			}
 
-	sess.appendEvent(t.Context(), "#general", domain.Message{
-		Target: "#general",
-		From:   "testuser",
-		Body:   "hello",
-		At:     fixedTime,
-	})
+			sess := New(t.Context, store, nil, &fakeAPIClient{}, "testuser", "", "")
+			t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
+			sess.now = func() time.Time { return fixedTime }
 
-	notice := drainEvent[domain.SystemNoticeEvent](t, sess)
-	require.Equal(t, domain.StatusChannelName, notice.Channel)
+			sess.appendEvent(t.Context(), tc.channel, tc.event)
 
-	sysNotice, ok := notice.Stored.Event.(domain.SystemNotice)
-	require.True(t, ok, "expected SystemNotice, got %T", notice.Stored.Event)
-	require.Equal(t, domain.SystemNotice{
-		Target: domain.StatusChannelName,
-		Text:   "event log unavailable for #general: disk full",
-		At:     fixedTime,
-	}, sysNotice)
-}
-
-func TestSession_appendEvent_persistence_failure_on_status_channel_skips_notice(t *testing.T) {
-	store := &failingAppendStore{
-		sessionStore:    storetest.NewMemoryStore(t),
-		failChannels:    map[domain.ChannelName]struct{}{domain.StatusChannelName: {}},
-		errFailedAppend: fmt.Errorf("disk full"),
-	}
-
-	sess := New(t.Context, store, nil, &fakeAPIClient{}, "testuser", "", "")
-	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
-	sess.now = func() time.Time { return fixedTime }
-
-	sess.appendEvent(t.Context(), domain.StatusChannelName, domain.SystemNotice{
-		Target: domain.StatusChannelName,
-		Text:   "boot notice",
-		At:     fixedTime,
-	})
-
-	if evt, ok := peekEvent(sess); ok {
-		t.Fatalf("expected no event after status-channel append failure, got %T", evt)
+			if evt, ok := peekEvent(sess); ok {
+				t.Fatalf("expected no event after persistence failure on %s, got %T",
+					tc.channel, evt)
+			}
+		})
 	}
 }
 

@@ -34,7 +34,7 @@ func TestChatScreen_semantic_regions_expose_sidebar_and_chat_content(t *testing.
 	}
 
 	require.Equal(t, [][]string{
-		{"Channels", "#general", "▸#random"},
+		{"Channels", "&modeloff", "#general", "▸#random"},
 		{
 			"*** Created channel #random",
 			"*** ChanServ sets mode +o testuser",

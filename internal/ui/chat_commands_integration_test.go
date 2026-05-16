@@ -231,7 +231,8 @@ func TestApp_unknown_command_on_welcome_screen_with_teatest(t *testing.T) {
 	tm.WaitFor("unknown command: /foo")
 
 	require.Equal(t, []string{
-		"No channels",
+		"Channels",
+		"&modeloff",
 		"No members",
 		"✗ command: unknown command: /foo",
 	}, visibleBodySegments(tm.CurrentView()))
@@ -250,7 +251,7 @@ func TestApp_welcome_join_command_with_teatest(t *testing.T) {
 	tm.WaitFor("Created channel #general", "ChanServ sets mode +o testuser")
 
 	view := tm.CurrentView()
-	require.Equal(t, []string{"Channels", "▸#general"}, sidebarColumn(view))
+	require.Equal(t, []string{"Channels", "&modeloff", "▸#general"}, sidebarColumn(view))
 	require.Equal(t, []string{
 		"*** Created channel #general",
 		"*** ChanServ sets mode +o testuser",
@@ -270,7 +271,8 @@ func TestApp_message_on_welcome_screen_rejected_with_teatest(t *testing.T) {
 	tm.WaitFor("join a channel first")
 
 	require.Equal(t, []string{
-		"No channels",
+		"Channels",
+		"&modeloff",
 		"No members",
 		"⚠ join a channel first",
 	}, visibleBodySegments(tm.CurrentView()))
@@ -356,7 +358,7 @@ func TestApp_unread_counts_clear_when_visiting_channel_with_teatest(t *testing.T
 			strings.Contains(view, "▸#general")
 	})
 
-	require.Equal(t, []string{"Channels", "▸#general", "#random"}, sidebarColumn(view))
+	require.Equal(t, []string{"Channels", "&modeloff", "▸#general", "#random"}, sidebarColumn(view))
 }
 
 func TestApp_input_history_and_sidebar_shortcuts_with_teatest(t *testing.T) {
@@ -389,7 +391,7 @@ func TestApp_input_history_and_sidebar_shortcuts_with_teatest(t *testing.T) {
 	tm.WaitFor("general msg")
 
 	view := tm.CurrentView()
-	require.Equal(t, []string{"Channels", "▸#general", "#random"}, sidebarColumn(view))
+	require.Equal(t, []string{"Channels", "&modeloff", "▸#general", "#random"}, sidebarColumn(view))
 	// The typed-but-unsent draft must survive a sidebar-driven channel
 	// switch.
 	require.Equal(t, "testuser > draft-only", inputLine(view),
@@ -427,7 +429,7 @@ func TestApp_ctrl_arrow_scroll_preserves_draft_with_teatest(t *testing.T) {
 			!strings.Contains(view, "message 29")
 	})
 
-	require.Equal(t, []string{"Channels", "▸#general"}, sidebarColumn(view))
+	require.Equal(t, []string{"Channels", "&modeloff", "▸#general"}, sidebarColumn(view))
 	// The typed draft must survive a Ctrl+Up viewport scroll.
 	require.Equal(t, "testuser > draft-only", inputLine(view),
 		"draft text should remain in the input bar after scrolling")

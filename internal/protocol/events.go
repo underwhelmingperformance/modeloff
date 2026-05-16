@@ -14,6 +14,7 @@ type Killed = domain.Killed
 
 // NotOperatorError is the protocol-shaped form of ERR_NOPRIVILEGES
 // (RFC 2812 numeric 481). Returned in [Response.Err] when an
-// operator-gated command was rejected for lack of [ModeOperator]; it
-// is not part of the [Event] sum.
+// operator-gated command was rejected for lack of [ModeOperator],
+// and also a member of the [Event] sum so future paths can emit
+// it on the bus.
 type NotOperatorError = domain.NotOperatorError

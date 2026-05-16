@@ -712,12 +712,16 @@ func (s *Session) Shutdown(ctx context.Context) error {
 //     real IRC server would observe after a client disconnect.
 //   - Writes a fresh session_active marker so a later crash is
 //     detectable.
-//   - Creates the per-session status channel if it does not already
-//     exist, joins the user to it, and appends a "Connected" notice.
-//     If the previous session was unclean, an additional notice is
-//     appended.
+//   - Emits a [domain.Welcome] on the protocol bus, mirroring RFC
+//     2812 RPL_WELCOME (001). If the prior session shut down
+//     uncleanly, a [domain.Reconnected] follows.
 //   - Closes the channel returned by Connected so that UI layers
 //     waiting on readiness can advance.
+//
+// The session does not own a `&modeloff` window. The chat-screen
+// constructs its own local view of the server window and renders
+// the emitted events into it; the connection screen subscribes to
+// the same bus during its boot-time pane.
 func (s *Session) Connect(ctx context.Context) (retErr error) {
 	if !s.connectedAt.IsZero() {
 		// No span is recorded for a no-op call: it is not a real
@@ -749,82 +753,19 @@ func (s *Session) Connect(ctx context.Context) (retErr error) {
 		return fmt.Errorf("set session active: %w", err)
 	}
 
-	if err := s.openStatusChannel(ctx); err != nil {
-		return fmt.Errorf("open status channel: %w", err)
-	}
-
-	s.appendStatus(ctx, "Connected to modeloff")
+	s.emit(ctx, domain.Welcome{
+		ServerName: domain.StatusServerName,
+		Nick:       s.user.Nick(),
+		At:         s.connectedAt,
+	})
 
 	if unclean {
-		s.appendStatus(ctx, "Reconnected after unclean shutdown")
+		s.emit(ctx, domain.Reconnected{At: s.connectedAt})
 	}
 
 	s.connectedOnce.Do(func() { close(s.connectedC) })
 
 	return nil
-}
-
-// openStatusChannel ensures the status channel exists in the store
-// and registers it on the user's Channels map with the connected-at
-// timestamp. The status channel is a virtual server window, not a
-// channel: it has no members, no modes, and no join/part lifecycle.
-// The only events that land here are server-narrated notices the
-// session itself records via appendStatus.
-func (s *Session) openStatusChannel(ctx context.Context) error {
-	// The status window has no per-row state — it's defined entirely
-	// by its reserved name and the connected-at timestamp — so the
-	// load/persist round-trip is structural and any GetWindow miss
-	// just means "first start, construct it fresh".
-	window, err := s.store.GetWindow(ctx, domain.StatusChannelName)
-	if err != nil {
-		window = domain.NewStatusWindow(s.connectedAt)
-	}
-
-	s.user.MutateChannels(func(m *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
-		m.Set(domain.StatusChannelName, s.connectedAt)
-	})
-
-	if err := s.store.SaveWindow(ctx, window); err != nil {
-		return fmt.Errorf("save status window: %w", err)
-	}
-
-	s.emit(ctx, domain.StatusOpenedEvent{
-		Channel: domain.StatusChannelName,
-		At:      s.connectedAt,
-	})
-
-	return nil
-}
-
-// appendStatus persists a system notice to the status channel and
-// emits a FocusChannelEvent-shaped live update so any active viewer
-// (ConnectionScreen pane, ChatScreen with status focused) sees it
-// without polling. Errors during persistence are logged and dropped:
-// the status log is best-effort.
-//
-// The persisted entries form the server-window audit trail the
-// session keeps for itself; they are not replayed into the user's
-// status-channel scrollback on a fresh run, mirroring the same
-// "no pre-join history" rule documented on `EventsBefore`. Each
-// session's `&modeloff` view shows only the notices that landed
-// during that session.
-func (s *Session) appendStatus(ctx context.Context, text string) {
-	notice := domain.SystemNotice{
-		Target: domain.StatusChannelName,
-		Text:   text,
-		At:     s.now(),
-	}
-
-	stored, err := s.LogEvent(ctx, domain.StatusChannelName, notice)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "append status notice", "error", err)
-		return
-	}
-
-	s.emit(ctx, domain.SystemNoticeEvent{
-		Channel: domain.StatusChannelName,
-		Stored:  stored,
-	})
 }
 
 // setUserMode records the user's mode for a channel. It is called
@@ -1193,12 +1134,9 @@ func (s *Session) JoinAutojoinChannels(ctx context.Context) error {
 
 	var failed int
 	for _, ch := range channels {
-		s.appendStatus(ctx, fmt.Sprintf("Joining %s", ch))
-
 		if err := s.joinAs(ctx, s.user, ch); err != nil {
 			failed++
 			slog.Default().ErrorContext(ctx, "autojoin channel", "channel", ch, "error", err)
-			s.appendStatus(ctx, fmt.Sprintf("Failed to join %s: %s", ch, err))
 		}
 	}
 
@@ -2372,11 +2310,10 @@ func (s *Session) saveAutojoinList(ctx context.Context) error {
 }
 
 // persistableAutojoinChannels returns the user's current channel
-// set restricted to `KindChannel` entries. The status channel is
-// re-created by Connect/openStatusChannel on every startup, so
-// persisting it would produce a spurious joinAs("&modeloff") on
-// the next session. DM windows are pure UI affordances — they
-// hold no shared state to rejoin and would resolve to a fake
+// set restricted to `KindChannel` entries. The status window is a
+// chat-screen-only concept (no session-side membership) and would
+// not appear here regardless; DM windows are pure UI affordances —
+// they hold no shared state to rejoin and would resolve to a fake
 // `#`-channel if `JoinAutojoinChannels` ever called `joinAs`
 // with their `InstanceID`-shaped name.
 func (s *Session) persistableAutojoinChannels() []domain.ChannelName {
@@ -2401,28 +2338,23 @@ func (s *Session) persistableAutojoinChannels() []domain.ChannelName {
 func (s *Session) appendEvent(ctx context.Context, ch domain.ChannelName, event domain.PersistableEvent) {
 	if _, err := s.store.AppendEvent(ctx, ch, event); err != nil {
 		slog.Default().ErrorContext(ctx, "append event", "channel", ch, "error", err)
-		s.recordPersistenceFailure(ctx, ch, err)
+		s.recordPersistenceFailure(ctx, ch)
 	}
 }
 
-// recordPersistenceFailure increments the persistence-failures counter
-// and surfaces the failure to the user via a status notice. The notice
-// path is suppressed when the failed channel is the status channel
-// itself: appendStatus would call back into appendEvent and a flapping
-// store would loop indefinitely. The counter increment is unconditional
-// so an operator watching metrics still sees recursion-suppressed
-// failures.
-func (s *Session) recordPersistenceFailure(ctx context.Context, ch domain.ChannelName, cause error) {
+// recordPersistenceFailure increments the persistence-failures
+// counter and lets the surrounding slog at the [appendEvent]
+// call-site narrate the cause for operators. The user-facing
+// surface for a wedged event log lives in metrics / logs rather
+// than an out-of-band notice: there is no IRC numeric for "your
+// server's database is broken", and synthesising a chat-window
+// message for it would conflate operator concerns with the
+// client UX.
+func (s *Session) recordPersistenceFailure(ctx context.Context, ch domain.ChannelName) {
 	if s.persistenceFailures != nil {
 		s.persistenceFailures.Add(ctx, 1,
 			metric.WithAttributes(attribute.String(observability.AttrChannel, string(ch))))
 	}
-
-	if ch == domain.StatusChannelName {
-		return
-	}
-
-	s.appendStatus(ctx, fmt.Sprintf("event log unavailable for %s: %s", ch, cause))
 }
 
 // runModelDispatch is the long-lived dispatch goroutine for a
@@ -2562,7 +2494,7 @@ func (s *Session) modelDispatchTurn(ctx context.Context, c *serverClient, ch dom
 	window, err := s.dispatchWindowFor(ctx, ch, inst)
 	if err != nil {
 		setSpanError(span, err, observability.ErrorKindStore)
-		s.appendStatus(ctx, fmt.Sprintf("dispatch to %s: %s", ch, err))
+		s.emit(ctx, domain.ModelUnavailableError{Channel: ch, Nick: nick, At: s.now()})
 		return
 	}
 
@@ -2573,7 +2505,7 @@ func (s *Session) modelDispatchTurn(ctx context.Context, c *serverClient, ch dom
 	replies, err := s.dispatchToInstance(ctx, window, inst, ch, historyEvents, []protocol.IRCMessage{trigger})
 	if err != nil {
 		setSpanError(span, err, observability.ErrorKindDispatch)
-		s.appendStatus(ctx, fmt.Sprintf("dispatch to %s: %s", ch, err))
+		s.emit(ctx, domain.ModelUnavailableError{Channel: ch, Nick: nick, At: s.now()})
 		return
 	}
 

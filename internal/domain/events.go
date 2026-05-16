@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"fmt"
 	"time"
 )
 
@@ -96,15 +97,46 @@ type NamesReplyEvent struct {
 	At      time.Time
 }
 
-// StatusOpenedEvent is emitted UI-only when the session opens its
-// status window (`&modeloff`) on connect. The status window is a
-// virtual server view, not a channel: it has no members, no modes,
-// and no join/part lifecycle. Consumers use this signal to register
-// the window in their sidebar without faking the channel-join
-// scaffolding that would otherwise be required.
-type StatusOpenedEvent struct {
+// Welcome announces successful connection registration, mirroring
+// RFC 2812 numeric 001 (RPL_WELCOME). The session emits it once
+// per [Session.Connect] so listening clients render the equivalent
+// of "Welcome to <server>, <nick>" without inferring it from
+// out-of-band state. The chat-screen renders it in its local
+// `&modeloff` view; the connection screen surfaces it in the
+// boot-time pane.
+type Welcome struct {
+	ServerName Nick
+	Nick       Nick
+	At         time.Time
+}
+
+// Reconnected announces that the prior session shut down
+// uncleanly and the current [Session.Connect] reconciled the
+// stale in-memory state. No direct RFC analogue; modeloff-defined
+// RPL-style. The chat-screen surfaces it in `&modeloff` so the
+// user can see the recovery happened.
+type Reconnected struct {
+	At time.Time
+}
+
+// ModelUnavailableError announces that a per-channel dispatch turn
+// could not produce a reply from a model — the store backing the
+// dispatch context was unreachable, the model returned an error,
+// or the dispatch path itself faulted. No RFC analogue; the IRC
+// dispatcher protocol does not model server-side LLM failures.
+// `Channel` and `Nick` identify the failed turn so the chat-screen
+// can surface the reason in `&modeloff`.
+type ModelUnavailableError struct {
 	Channel ChannelName
+	Nick    Nick
 	At      time.Time
+}
+
+// Error makes [ModelUnavailableError] satisfy `error` for the
+// emission boundary's `errors.As` extraction. The string is also
+// what surfaces to operators reading logs.
+func (e ModelUnavailableError) Error() string {
+	return fmt.Sprintf("model %q unavailable for dispatch in %s", e.Nick, e.Channel)
 }
 
 // Pure-live (non-persistable) event types implement Event so they
@@ -112,13 +144,15 @@ type StatusOpenedEvent struct {
 // satisfying PersistableEvent. The persistable Channel* types implement
 // Event via channel_event.go.
 
-func (ModelReplyEvent) domainEvent()      {}
-func (ConfigChangedEvent) domainEvent()   {}
-func (PokeEvent) domainEvent()            {}
-func (ErrorEvent) domainEvent()           {}
-func (DispatchStartedEvent) domainEvent() {}
-func (DispatchDoneEvent) domainEvent()    {}
-func (FocusChannelEvent) domainEvent()    {}
-func (SystemNoticeEvent) domainEvent()    {}
-func (NamesReplyEvent) domainEvent()      {}
-func (StatusOpenedEvent) domainEvent()    {}
+func (ModelReplyEvent) domainEvent()       {}
+func (ConfigChangedEvent) domainEvent()    {}
+func (PokeEvent) domainEvent()             {}
+func (ErrorEvent) domainEvent()            {}
+func (DispatchStartedEvent) domainEvent()  {}
+func (DispatchDoneEvent) domainEvent()     {}
+func (FocusChannelEvent) domainEvent()     {}
+func (SystemNoticeEvent) domainEvent()     {}
+func (NamesReplyEvent) domainEvent()       {}
+func (Welcome) domainEvent()               {}
+func (Reconnected) domainEvent()           {}
+func (ModelUnavailableError) domainEvent() {}

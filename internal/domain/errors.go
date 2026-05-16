@@ -23,13 +23,25 @@ func (e UnknownCommandError) Error() string {
 	return fmt.Sprintf("unknown command: /%s", e.Name)
 }
 
-// UnknownNickError indicates a nick could not be found.
+// UnknownNickError indicates a nick could not be found. Wire-shape
+// equivalent of RFC 2812 numeric 401 (ERR_NOSUCHNICK).
 type UnknownNickError struct {
 	Nick Nick
 }
 
 func (e UnknownNickError) Error() string {
 	return fmt.Sprintf("no such nick: %s", e.Nick)
+}
+
+// NoSuchChannelError indicates a channel name could not be
+// resolved. Wire-shape equivalent of RFC 2812 numeric 403
+// (ERR_NOSUCHCHANNEL).
+type NoSuchChannelError struct {
+	Channel ChannelName
+}
+
+func (e NoSuchChannelError) Error() string {
+	return fmt.Sprintf("no such channel: %s", e.Channel)
 }
 
 // UnknownConfigKeyError indicates an unrecognised configuration key.
@@ -80,10 +92,11 @@ func (e StatusChannelGuardError) Error() string {
 	return fmt.Sprintf("the status window does not accept %s requests", e.Command)
 }
 
-// NickInUseError indicates a nickname change was refused because the
-// target nick is already held by another instance (a model or the
-// user). Carries the conflicting nick so the UI can surface it
-// without re-parsing the error string.
+// NickInUseError indicates a nickname change was refused because
+// the target nick is already held by another instance (a model
+// or the user). Wire-shape equivalent of RFC 2812 numeric 433
+// (ERR_NICKNAMEINUSE). Carries the conflicting nick so the UI
+// can surface it without re-parsing the error string.
 type NickInUseError struct {
 	Nick Nick
 }

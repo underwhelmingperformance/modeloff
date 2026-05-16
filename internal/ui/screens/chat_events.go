@@ -92,8 +92,6 @@ func (s ChatScreen) handleProtocolEvent(msg protocolEventMsg) (ui.Model, tea.Cmd
 		updated, cmd = s.handleFocusChannelEvent(evt)
 	case domain.NamesReplyEvent:
 		updated, cmd = s.handleNamesReply(evt)
-	case domain.StatusOpenedEvent:
-		updated, cmd = s.handleStatusOpened(evt)
 	}
 
 	if updated != nil {
@@ -125,6 +123,20 @@ func (s ChatScreen) bufferEvent(evt domain.Event) {
 		}
 
 		s.appendToScrollback(key, domain.StoredEvent{Event: e})
+	case domain.Welcome:
+		s.appendStatusNotice(e.At, fmt.Sprintf("Welcome to %s, %s", e.ServerName, e.Nick))
+	case domain.Reconnected:
+		s.appendStatusNotice(e.At, "Reconnected after unclean shutdown")
+	case domain.ModelUnavailableError:
+		s.appendStatusNotice(e.At, e.Error())
+	case domain.UnknownNickError:
+		s.appendStatusNotice(time.Now(), e.Error())
+	case domain.NoSuchChannelError:
+		s.appendStatusNotice(time.Now(), e.Error())
+	case domain.NickInUseError:
+		s.appendStatusNotice(time.Now(), e.Error())
+	case domain.NotOperatorError:
+		s.appendStatusNotice(time.Now(), e.Error())
 	case domain.PersistableEvent:
 		ch := domain.EventTarget(e)
 		if ch == "" {
@@ -227,6 +239,22 @@ func (s ChatScreen) appendToScrollback(ch domain.ChannelName, evt domain.StoredE
 	defer s.scrollbackMu.Unlock()
 
 	s.scrollback[ch] = append(s.scrollback[ch], evt)
+}
+
+// appendStatusNotice records a server-narrated line in the local
+// `&modeloff` scrollback. New protocol events that have no
+// channel target (welcome, reconnect notices, error replies)
+// reach the chat-screen as wire events; wrapping them in a
+// [domain.SystemNotice] lets the existing renderer style them
+// as `*** <text>` without growing the event-render switch.
+func (s ChatScreen) appendStatusNotice(at time.Time, text string) {
+	s.appendToScrollback(domain.StatusChannelName, domain.StoredEvent{
+		Event: domain.SystemNotice{
+			Target: domain.StatusChannelName,
+			Text:   text,
+			At:     at,
+		},
+	})
 }
 
 // handleFocusChannelEvent handles a session-driven focus change.
@@ -338,22 +366,6 @@ func (s ChatScreen) persistLastChannel(ch domain.ChannelName) tea.Cmd {
 	}
 }
 
-// handleStatusOpened registers `&modeloff` in the sidebar without
-// faking a channel-join lifecycle. The status window is a virtual
-// server view: no members, no modes, no join/part. The chat screen
-// only needs an addressable entry so the user can switch into it and
-// see the server-narrated notices the session records there.
-func (s ChatScreen) handleStatusOpened(msg domain.StatusOpenedEvent) (ui.Model, tea.Cmd) {
-	if _, exists := s.windowByName(msg.Channel); exists {
-		return s, nil
-	}
-
-	w := domain.NewStatusWindow(msg.At)
-	s.channels.Insert(w)
-
-	return s, msgCmd(components.ChannelAddedMsg{Channel: w})
-}
-
 // handleNamesReply applies the joiner-targeted member-list snapshot
 // to the local channel cache and refreshes the nick list when the
 // affected channel is the active one. Pre-existing members of the
@@ -420,7 +432,7 @@ func (s ChatScreen) handleJoinEvent(msg domain.Join) (ui.Model, tea.Cmd) {
 		return s, tea.Batch(cmds...)
 	}
 
-	s.checklist.channelCount = s.channels.Len()
+	s.checklist.channelCount = s.realChannelCount()
 
 	// For user joins, update the sidebar and member list. The
 	// ChannelFocusEvent from switchChannel is the authoritative
@@ -479,15 +491,14 @@ func (s ChatScreen) handlePartEvent(msg domain.Part) (ui.Model, tea.Cmd) {
 	if msg.Instance == s.sess.UserInstance() {
 		s.channels.Remove(domain.WindowKey(msg.Target))
 		delete(s.pacedQueue, msg.Target)
-		s.checklist.channelCount = s.channels.Len()
+		s.checklist.channelCount = s.realChannelCount()
 	}
 
 	var cmds []tea.Cmd
 	cmds = append(cmds, msgCmd(components.ChannelRemovedMsg{Channel: msg.Target}))
 
 	if leavingActive {
-		if s.channels.Len() > 0 {
-			first, _ := s.channels.GetAt(0)
+		if first, ok := s.firstRealChannel(); ok {
 			*s.active = first.Name()
 		} else {
 			*s.active = ""

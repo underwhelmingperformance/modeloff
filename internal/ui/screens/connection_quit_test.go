@@ -81,11 +81,6 @@ func trimmedLines(view string) []string {
 func TestConnectionScreen_refreshPane_is_idempotent_across_ticks(t *testing.T) {
 	sess := newTestSession(t)
 	require.NoError(t, sess.Connect(t.Context()))
-	// JoinAutojoinChannels appends a status notice for each autojoin
-	// entry; pre-seed two entries via a pair of normal Join calls
-	// (which both persist membership and register the channel in
-	// the autojoin list) so the autojoin replay emits something the
-	// pane can accumulate.
 	require.NoError(t, sess.Join(t.Context(), "#general"))
 	require.NoError(t, sess.Join(t.Context(), "#random"))
 	require.NoError(t, sess.JoinAutojoinChannels(t.Context()))
@@ -98,9 +93,11 @@ func TestConnectionScreen_refreshPane_is_idempotent_across_ticks(t *testing.T) {
 		Ctx:          t.Context(),
 	})
 
-	// First refresh drains every accumulated status notice; the
-	// subsequent refreshes must be pure no-ops, leaving the pane's
-	// visible content identical.
+	// `refreshPane` reads `EventsAfter` on `&modeloff`; the session
+	// no longer writes there because the connect-time and autojoin
+	// status notices have retired in favour of wire-shape protocol
+	// events. The pane therefore stays empty across ticks — and the
+	// idempotency contract still holds.
 	s.refreshPane()
 	afterFirst := trimmedLines(s.pane.View(80, 16))
 
@@ -108,14 +105,10 @@ func TestConnectionScreen_refreshPane_is_idempotent_across_ticks(t *testing.T) {
 	s.refreshPane()
 	s.refreshPane()
 
-	require.Equal(t, []string{
-		"*** Connected to modeloff",
-		"*** Joining #general",
-		"*** Joining #random",
-	}, afterFirst,
-		"pane must hold one entry per status notice in emission order")
+	require.Equal(t, []string{"No messages yet"}, afterFirst,
+		"pane must show the empty-state placeholder when no `&modeloff` events have been recorded")
 	require.Equal(t, afterFirst, trimmedLines(s.pane.View(80, 16)),
-		"repeated refreshPane calls must not append the same events again")
+		"repeated refreshPane calls must not append spurious entries")
 }
 
 func TestConnectionScreen_second_quit_request_escalates_to_tea_quit(t *testing.T) {

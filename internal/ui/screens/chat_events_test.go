@@ -28,7 +28,7 @@ func TestChatScreen_PartEvent_leaving_active_switches_channel(t *testing.T) {
 	view := tm.CurrentView()
 	body, _ := uitest.SplitBodyAndStatus(view)
 	columns := uitest.VisibleColumns(body)
-	require.Equal(t, []string{"Channels", "▸#general"}, uitest.NonEmptyColumn(columns[0]))
+	require.Equal(t, []string{"Channels", "&modeloff", "▸#general"}, uitest.NonEmptyColumn(columns[0]))
 	require.Equal(t, []string{
 		"*** Created channel #general",
 		"*** ChanServ sets mode +o testuser",
@@ -77,7 +77,7 @@ func TestChatScreen_PartEvent_leaving_non_active_keeps_active(t *testing.T) {
 	// Active channel should remain #general since we parted #random.
 	view := tm.CurrentView()
 	body, _ := uitest.SplitBodyAndStatus(view)
-	require.Equal(t, []string{"Channels", "▸#general", "#random"}, uitest.NonEmptyColumn(uitest.VisibleColumns(body)[0]))
+	require.Equal(t, []string{"Channels", "&modeloff", "▸#general", "#random"}, uitest.NonEmptyColumn(uitest.VisibleColumns(body)[0]))
 }
 
 func TestChatScreen_TopicChangeEvent_different_channel(t *testing.T) {
@@ -282,7 +282,7 @@ func TestChatScreen_ignores_join_for_unknown_channel(t *testing.T) {
 	// The sidebar should NOT show #secret.
 	view := tm.CurrentView()
 	body, _ := uitest.SplitBodyAndStatus(view)
-	require.Equal(t, []string{"Channels", "▸#general"}, uitest.NonEmptyColumn(uitest.VisibleColumns(body)[0]))
+	require.Equal(t, []string{"Channels", "&modeloff", "▸#general"}, uitest.NonEmptyColumn(uitest.VisibleColumns(body)[0]))
 }
 
 func TestChatScreen_model_join_does_not_switch_active(t *testing.T) {
@@ -397,7 +397,7 @@ func TestChatScreen_focus_new_channel_before_join_event(t *testing.T) {
 	view := tm.CurrentView()
 	body, _ := uitest.SplitBodyAndStatus(view)
 	columns := uitest.VisibleColumns(body)
-	require.Equal(t, []string{"Channels", "#general", "▸#newchannel"}, uitest.NonEmptyColumn(columns[0]),
+	require.Equal(t, []string{"Channels", "&modeloff", "#general", "▸#newchannel"}, uitest.NonEmptyColumn(columns[0]),
 		"new channel should appear in the sidebar")
 	require.Equal(t, []string{
 		"No messages yet",
@@ -415,7 +415,7 @@ func TestChatScreen_focus_status_channel_keeps_status_identity(t *testing.T) {
 	tm.WaitFor("&modeloff", "Created channel #general")
 
 	tm.Send(chatcmd.ChannelFocusMsg{Channel: domain.StatusChannelName})
-	tm.WaitFor("Connected to modeloff")
+	tm.WaitFor("Welcome to modeloff")
 
 	view := tm.CurrentView()
 	body, _ := uitest.SplitBodyAndStatus(view)
@@ -424,10 +424,10 @@ func TestChatScreen_focus_status_channel_keeps_status_identity(t *testing.T) {
 	require.Equal(t, []string{"Channels", "▸&modeloff", "#general"}, uitest.NonEmptyColumn(columns[0]))
 	// `&modeloff` is a virtual server window, not a channel: no
 	// members, no modes, no join/part lifecycle. The only entries
-	// that land here are the server-narrated notices the session
-	// records via `appendStatus`.
+	// that land here are server-narrated wire events the chat-screen
+	// wraps as system notices on the local scrollback.
 	require.Equal(t, []string{
-		"*** Connected to modeloff",
+		"*** Welcome to modeloff, testuser",
 		"testuser >",
 	}, normaliseContent(uitest.NonEmptyColumn(columns[1])))
 	require.NotContains(t, view, "#&modeloff")
@@ -466,7 +466,7 @@ func TestChatScreen_MessageEvent_inactive_channel(t *testing.T) {
 	view := tm.CurrentView()
 	body, _ := uitest.SplitBodyAndStatus(view)
 	columns := uitest.VisibleColumns(body)
-	require.Equal(t, []string{"Channels", "▸#general", "#random (2)"}, uitest.NonEmptyColumn(columns[0]))
+	require.Equal(t, []string{"Channels", "&modeloff", "▸#general", "#random (2)"}, uitest.NonEmptyColumn(columns[0]))
 	require.Equal(t, []string{
 		"*** Created channel #general",
 		"*** ChanServ sets mode +o testuser",

@@ -93,12 +93,22 @@ const (
 	KindStatus
 )
 
-// StatusChannelName is the reserved channel name of the per-session
-// status channel. It uses an IRC-style local-channel prefix to make
-// it visually distinct from regular channels and impossible to
-// collide with a user-created name (`/join` normalises bare names to
-// `#`-prefixed).
+// StatusChannelName is the reserved name the chat-screen uses for
+// its local server-window view. It uses an IRC-style local-channel
+// prefix to make it visually distinct from regular channels and
+// impossible to collide with a user-created name (`/join`
+// normalises bare names to `#`-prefixed). The session itself does
+// not own a window under this name — it is purely a chat-screen
+// rendering target for server-emitted events ([Welcome],
+// [Reconnected], [ModelUnavailableError], …).
 const StatusChannelName ChannelName = "&modeloff"
+
+// StatusServerName is the server identity emitted on the wire as
+// the source of server-originated events (RPL_WELCOME and similar
+// numerics, NOTICE-shaped messages). It is the canonical "who is
+// the server speaking" string clients render alongside a server
+// message.
+const StatusServerName Nick = "modeloff"
 
 // InferChannelKind derives a channel's kind from its name alone. It
 // is the single source of truth for callers that need to look up a
