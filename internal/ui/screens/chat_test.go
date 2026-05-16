@@ -1096,8 +1096,15 @@ func TestChatScreen_add_model_short_circuits_when_model_list_unavailable(t *test
 	uitest.SeedChannel(t, sess, "#general")
 
 	tm := newChatAppWithConfig(t, sess, cfgStore)
-	// Wait for the failed `loadLiveModels` to surface and flip
-	// `listModelsState` to `failed` before issuing `/add-model`.
+	// After α, the connect-time live-model load runs in the
+	// connection screen — bypassing it (as this test does) skips
+	// the load entirely. Wait for #general's focus to settle, then
+	// send an APIKeySetResult to drive the chat-screen's refresh
+	// path, which calls `loadLiveModels` against the failing fake;
+	// the resulting failure flips `liveModelsState` to error so
+	// `/add-model` short-circuits.
+	tm.WaitFor("#general")
+	tm.Send(chatcmd.APIKeySetResult{})
 	tm.WaitFor("Model list unavailable: upstream 503.")
 
 	tm.Submit("/add-model anthropic/claude-3-haiku")
@@ -1120,6 +1127,8 @@ func TestChatScreen_add_model_completion_hides_popover_when_model_list_unavailab
 	uitest.SeedChannel(t, sess, "#general")
 
 	tm := newChatAppWithConfig(t, sess, cfgStore)
+	tm.WaitFor("#general")
+	tm.Send(chatcmd.APIKeySetResult{})
 	tm.WaitFor("Model list unavailable: upstream 503.")
 
 	tm.Type("/add-model ")

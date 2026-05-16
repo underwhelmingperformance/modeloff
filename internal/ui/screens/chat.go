@@ -284,12 +284,13 @@ func (s ChatScreen) WithObservability(obs *observability.Runtime) ChatScreen {
 // The chat screen does not load channel state from storage. Sidebar
 // entries, active channel, member lists, topics and scrollback all
 // arrive via ordinary session events: ConnectionScreen drives the
-// autojoin sequence, which produces JoinEvent / ModeChangeEvent /
-// TopicInfoEvent for each channel and a final FocusChannelEvent for
-// the saved last channel. Init only performs work that is independent
-// of channel state: starting the event drain, loading the model
-// instance roster (used for tab completion), and seeding local UI
-// configuration.
+// connect-time sequence (model load, then autojoin), which produces
+// JoinEvent / ModeChangeEvent / TopicInfoEvent for each channel,
+// a final FocusChannelEvent for the saved last channel, and a
+// `liveModelsLoadedMsg` (or `liveModelsLoadFailedMsg`) carrying
+// the tab-completion model roster — all before transitioning here.
+// Init only performs work that is independent of channel state:
+// starting the event drain and seeding local UI configuration.
 func (s ChatScreen) Init() tea.Cmd {
 	cfg, _ := s.loadConfig()
 
@@ -299,7 +300,6 @@ func (s ChatScreen) Init() tea.Cmd {
 	cmds := []tea.Cmd{
 		s.listenForEvents(),
 		s.listenForProtocolEvents(),
-		s.loadLiveModels(),
 		msgCmd(components.ChannelAddedMsg{Channel: statusWindow}),
 		msgCmd(components.CommandsMsg[chatcmd.CompletionContext]{
 			Commands: s.parser.Set().Commands,

@@ -69,11 +69,25 @@ func TestConnectionScreen_with_api_key(t *testing.T) {
 		"✓ Connecting to modeloff",
 		"✓ Checking configuration",
 		"✓ Loading channels (3 found)",
+		"… Loading models",
+	}, uitest.TrimmedVisibleLines(v))
+	require.NotNil(t, cmd)
+
+	// Tick 4: "Loading models" completes (animation-only mode
+	// short-circuits the load gate).
+	m, cmd = tick(t, m)
+
+	v = view(m)
+	require.Equal(t, []string{
+		"✓ Connecting to modeloff",
+		"✓ Checking configuration",
+		"✓ Loading channels (3 found)",
+		"✓ Loading models",
 		"… Joining channels",
 	}, uitest.TrimmedVisibleLines(v))
 	require.NotNil(t, cmd)
 
-	// Tick 4: "Joining channels" completes (animation-only mode
+	// Tick 5: "Joining channels" completes (animation-only mode
 	// short-circuits the autojoin gate).
 	m, cmd = tick(t, m)
 
@@ -82,15 +96,18 @@ func TestConnectionScreen_with_api_key(t *testing.T) {
 		"✓ Connecting to modeloff",
 		"✓ Checking configuration",
 		"✓ Loading channels (3 found)",
+		"✓ Loading models",
 		"✓ Joining channels",
 		"… Welcome, alice",
 	}, uitest.TrimmedVisibleLines(v))
 	require.NotNil(t, cmd)
 
-	// Tick 5: "Welcome" completes — transitions to the next screen.
+	// Tick 6: "Welcome" completes — transitions to the next screen.
 	_, cmd = tick(t, m)
 	require.NotNil(t, cmd)
 
+	// Animation-only mode emits a bare ScreenMsg (no live-models
+	// payload to deliver since no session was attached).
 	msg := cmd()
 	require.Equal(t, ui.ScreenMsg{Screen: next}, msg)
 }

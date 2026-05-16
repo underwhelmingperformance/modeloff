@@ -129,6 +129,6 @@ func TestConnectionScreen_progression_with_teatest(t *testing.T) {
 	}))
 	tm := uitest.New(t, root)
 
-	advanceConnection(tm, 4)
+	advanceConnection(tm, 5)
 	tm.WaitFor("Welcome to modeloff")
 }

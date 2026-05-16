@@ -117,14 +117,17 @@ func TestChatScreen_handleLiveModelsLoadFailed(t *testing.T) {
 			expectedChannel: "#general",
 			liveStored:      true,
 		},
-		"no active channel falls back to last channel": {
+		"no active channel routes to status window": {
+			// After α, connect-time live-model loads run in the
+			// connection screen ahead of autojoin's focus event, so
+			// the chat-screen failure handler only fires from the
+			// `/config api-key` refresh callsites. When no real
+			// channel is joined yet the routing target falls back
+			// directly to `&modeloff` — the chat-screen-owned
+			// default landing window — rather than consulting
+			// LastChannel for an intermediate hop.
 			active:          "",
 			lastChannel:     "#previous",
-			expectedChannel: "#previous",
-			liveStored:      false,
-		},
-		"no active channel and no last channel routes to status": {
-			active:          "",
 			expectedChannel: domain.StatusChannelName,
 			liveStored:      false,
 		},

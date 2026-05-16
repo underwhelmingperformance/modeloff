@@ -1005,16 +1005,13 @@ func (s ChatScreen) handleLiveModelsLoaded(msg liveModelsLoadedMsg) (ui.Model, t
 }
 
 // handleLiveModelsLoadFailed is the UI-policy home for live-model
-// load failures: empty the cached suggestions so tab completion
-// degrades to known nicks, then surface the reason to the user as
-// a channel system notice. When `*s.active` is empty — Init's
-// `loadLiveModels` Cmd can land in Update before the focus-restore
-// Cmd's `FocusChannelEvent` does, since both run in parallel under
-// `tea.Batch` — the destination falls back to the persisted
-// `LastChannel` rather than `&modeloff`, so the notice always
-// reaches the channel the user is about to be focused on instead
-// of getting stranded in `&modeloff` and never rendered into the
-// active view.
+// load failures. The connect-time load runs in the connection
+// screen now, ahead of the autojoin's [domain.FocusChannelEvent],
+// so the chat screen only sees failures from the user-initiated
+// refresh callsites in the `/config api-key` path. When `*s.active`
+// is empty — no real channel joined yet — the notice is routed
+// directly to `&modeloff`: it is the chat-screen-owned default
+// landing window and is always present in the sidebar.
 func (s ChatScreen) handleLiveModelsLoadFailed(msg liveModelsLoadFailedMsg) (ui.Model, tea.Cmd) {
 	*s.liveModels = nil
 
@@ -1028,30 +1025,15 @@ func (s ChatScreen) handleLiveModelsLoadFailed(msg liveModelsLoadFailedMsg) (ui.
 	*s.liveModelsState = command.SuggestionStateError
 
 	channel := *s.active
-	var lastChannelErr error
 	if channel == "" {
-		last, err := s.sess.LastChannel(s.ctx)
-		switch {
-		case err == nil && last != "":
-			channel = last
-		case err != nil:
-			lastChannelErr = err
-			channel = domain.StatusChannelName
-		default:
-			channel = domain.StatusChannelName
-		}
+		channel = domain.StatusChannelName
 	}
 
-	logAttrs := []any{
+	slog.Default().WarnContext(s.ctx, "live models load failed",
 		"component", "ui",
 		"channel", string(channel),
 		"error", msg.err,
-	}
-	if lastChannelErr != nil {
-		logAttrs = append(logAttrs, "last_channel_err", lastChannelErr)
-	}
-
-	slog.Default().WarnContext(s.ctx, "live models load failed", logAttrs...)
+	)
 
 	return s, s.logAndShowOn(channel, domain.SystemNotice{
 		Target: channel,

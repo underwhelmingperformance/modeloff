@@ -58,7 +58,7 @@ func TestApp_startup_with_saved_channels(t *testing.T) {
 	}))
 	tm := uitest.New(t, root)
 
-	advanceConnection(tm, 6)
+	advanceConnection(tm, 7)
 	tm.WaitFor("#general", "#random")
 
 	// Messages from before this session must not appear in the
