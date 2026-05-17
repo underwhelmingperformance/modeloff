@@ -1,6 +1,11 @@
 package protocol
 
-import "context"
+import (
+	"context"
+
+	"github.com/laney/modeloff/internal/command"
+	"github.com/laney/modeloff/internal/domain"
+)
 
 // Client is a connected participant on the wire. The dispatcher does
 // not know whether it is talking to a chat-screen client or a model
@@ -32,24 +37,24 @@ type Client interface {
 	// shutdown.
 	Events() <-chan Delivery
 
-	// HasMode reports whether the client carries the given user
-	// mode. Operator-gated handlers consult this with [ModeOperator]
-	// and return [NotOperatorError] on failure.
-	HasMode(m UserMode) bool
+	// HasMode reports whether the client carries the given mode
+	// flag. Operator-gated handlers consult this with
+	// [domain.ModeOperator] and return [NotOperatorError] on
+	// failure.
+	HasMode(m domain.Mode) bool
+
+	// Caps exposes the client's modes (and any future runtime
+	// state) as a [command.CapabilityHolder] so the chatcmd
+	// grammar's `caps:` filter can hide commands the client cannot
+	// use. The returned holder is bound to live state — each
+	// consultation reads the current mode set, so a mode change is
+	// reflected on the next read.
+	Caps() command.CapabilityHolder
 }
 
-// UserMode is a single RFC 2812 §3.1.5 user-mode flag. Today only
-// [ModeOperator] is meaningful; the type is kept open so future
-// modes (`+i`, `+a`, `+w`, …) can be added without churn.
-//
-// `rune` is the natural carrier — IRC mode flags are single ASCII
-// letters.
-type UserMode rune
-
-// ModeOperator is `+o` (RFC 2812 §3.1.5). Today only the
-// user-client carries it; it is granted at session bootstrap.
-// Operator-gated commands ([AddModel], [Kill]) consult
-// [Client.HasMode] in their handler and return [NotOperatorError]
-// on failure. The gate is on the *capability*, not on the client
-// kind, so any future client granted `+o` would pass it.
-const ModeOperator UserMode = 'o'
+// CapOperator is the visibility capability backed by
+// [domain.ModeOperator] (+o). Chatcmd grammar entries declaring
+// `caps:"operator"` are filtered out of completion suggestions,
+// `/help` output, and the model tool registry for clients whose
+// [Client.Caps] holder does not hold +o.
+const CapOperator command.Capability = "operator"

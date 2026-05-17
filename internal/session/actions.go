@@ -9,9 +9,11 @@ import (
 
 	orderedmap "github.com/wk8/go-ordered-map/v2"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/observability"
+	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/store"
 )
 
@@ -160,11 +162,11 @@ func (s *Session) emitJoinProtocol(ctx context.Context, ch domain.ChannelName, w
 		Target:     ch,
 		Nick:       s.user.Nick(),
 		InstanceID: s.user.ID(),
-		Mode:       domain.ModeOp,
+		Flag:       domain.ModeOperator,
+		Add:        true,
 		By:         "ChanServ",
 		At:         now,
 		Instance:   s.user,
-		Actor:      "ChanServ",
 	})
 
 	if window.Topic != "" {
@@ -200,11 +202,11 @@ func (s *Session) grantVoice(ctx context.Context, ch domain.ChannelName, window 
 		Target:     ch,
 		Nick:       nick,
 		InstanceID: inst.ID(),
-		Mode:       domain.ModeVoice,
+		Flag:       domain.ModeChannelVoice,
+		Add:        true,
 		By:         "ChanServ",
 		At:         now,
 		Instance:   inst,
-		Actor:      "ChanServ",
 	})
 
 	return nil
@@ -597,4 +599,47 @@ func (s *Session) inviteAs(ctx context.Context, actor *domain.Instance, target d
 	s.appendEvent(ctx, ch, domain.SystemNotice{Target: ch, Text: notice, At: now})
 
 	return nil
+}
+
+// setUserModeAs mutates a single user-mode flag on `target` and
+// announces the change via a [domain.ModeChange] with empty
+// `Target` (the user-mode form). Delivered only to the affected
+// client — RFC 2812 §3.1.5 scopes user-mode replies to the
+// requester — so this bypasses [Session.fanOutProtocol] and
+// writes directly to the target's events channel.
+//
+// Empty `by` signals server-originated (the canonical OPER MODE
+// response shape per RFC §3.1.4): the chat-screen renderer prints
+// `*** server sets mode +o nick` rather than attributing to a
+// peer nick.
+//
+// Idempotent: a grant for an already-held mode (or a clear for an
+// unheld mode) is a no-op and emits nothing.
+func (s *Session) setUserModeAs(ctx context.Context, by domain.Nick, target *serverClient, mode domain.Mode, add bool) {
+	if !target.setMode(mode, add) {
+		return
+	}
+
+	targetInst := target.instance
+	if targetInst == nil {
+		targetInst = s.user
+	}
+
+	evt := domain.ModeChange{
+		Nick:       targetInst.Nick(),
+		InstanceID: targetInst.ID(),
+		Flag:       mode,
+		Add:        add,
+		By:         by,
+		At:         s.now(),
+		Instance:   targetInst,
+	}
+
+	select {
+	case target.events <- protocol.Delivery{
+		Event:   evt,
+		SpanCtx: trace.SpanContextFromContext(ctx),
+	}:
+	case <-ctx.Done():
+	}
 }

@@ -13,6 +13,7 @@ import (
 	"iter"
 	"log/slog"
 	"math/big"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -216,6 +217,13 @@ type Session struct {
 	clientHandles map[protocol.ClientID]*serverClient
 	userClient    *serverClient
 
+	// operAuth gates [protocol.Oper]. The default rejects every
+	// client; the user-client is promoted by [Session.New]'s
+	// bootstrap call to `setUserModeAs`, not by a client-initiated
+	// OPER. Tests and future credential mechanisms swap the
+	// authenticator via [Session.SetOperAuthenticator].
+	operAuth OperAuthenticator
+
 	connectedC    chan struct{}
 	connectedOnce sync.Once
 	connectedAt   time.Time
@@ -300,10 +308,45 @@ func New(
 		shuttingDown:        make(chan struct{}),
 	}
 
-	sess.userClient = newServerClient(sess, protocol.UserClientID, nil, protocol.ModeOperator)
+	sess.operAuth = DefaultOperAuthenticator
+	// The user-client starts with no modes; the server promotes it
+	// directly via setUserModeAs immediately after construction.
+	// This is server-initiated (empty `by`), not a client-issued
+	// OPER request — the local user IS the operator, so there is
+	// no credential exchange to perform. The wire-visible shape
+	// is the same [domain.ModeChange] event any later mode change
+	// would produce; consumers (chat-screen, tests reading the
+	// user-client's events channel) see it as the first event of
+	// the session.
+	sess.userClient = newServerClient(sess, protocol.UserClientID, nil)
 	sess.subscribers[sess.userClient.id] = sess.userClient
+	sess.clientHandles[sess.userClient.id] = sess.userClient
+	sess.setUserModeAs(baseContext(), "", sess.userClient, domain.ModeOperator, true)
 
 	return sess
+}
+
+// OperAuthenticator validates a [protocol.Oper] attempt. Returning
+// true grants `+o` to the issuing client; returning false yields
+// [domain.OperFailedError] on `Response.Err`.
+type OperAuthenticator func(c protocol.Client, name, password string) bool
+
+// DefaultOperAuthenticator rejects every caller. The only path to
+// +o today is the server's bootstrap promotion of the user-client;
+// client-initiated OPER is reserved for future credentialed
+// mechanisms swapped in via [Session.SetOperAuthenticator].
+func DefaultOperAuthenticator(protocol.Client, string, string) bool {
+	return false
+}
+
+// SetOperAuthenticator replaces the [OperAuthenticator] consulted
+// by the `OPER` dispatcher arm. Tests use this to exercise the
+// success path; future credential mechanisms swap in a real check.
+func (s *Session) SetOperAuthenticator(auth OperAuthenticator) {
+	if auth == nil {
+		auth = DefaultOperAuthenticator
+	}
+	s.operAuth = auth
 }
 
 // WithTracerProvider overrides the OTel `TracerProvider` the session
@@ -331,7 +374,7 @@ func (s *Session) Events() <-chan domain.Event {
 // bootstrap and live for the whole session lifetime. The returned
 // handle satisfies [protocol.Client]: it carries the user's
 // identity ([protocol.UserClientID]) and grants
-// [protocol.ModeOperator].
+// [domain.ModeOperator].
 func (s *Session) User() protocol.Client {
 	return s.userClient
 }
@@ -479,6 +522,19 @@ func (s *Session) subscriberSnapshot() []*serverClient {
 	for _, sub := range s.subscribers {
 		snap = append(snap, sub)
 	}
+
+	// Go map iteration is randomised per process, which leaks into
+	// per-fan-out delivery order: model-client dispatch goroutines
+	// wake in different orders across runs, and the lifecycle
+	// events they emit then interleave with the main goroutine's
+	// emits in a non-deterministic order on the user-client's
+	// buffered events channel. Sort by ClientID so fan-out
+	// iteration is stable; the user-client (sentinel empty id)
+	// always sorts first, then model-clients lexicographically by
+	// instance id.
+	slices.SortFunc(snap, func(a, b *serverClient) int {
+		return strings.Compare(string(a.id), string(b.id))
+	})
 
 	return snap
 }
@@ -1351,11 +1407,11 @@ func (s *Session) attachInstanceToChannel(
 			Target:     ch,
 			Nick:       inst.Nick(),
 			InstanceID: inst.ID(),
-			Mode:       domain.ModeVoice,
+			Flag:       domain.ModeChannelVoice,
+			Add:        true,
 			By:         "ChanServ",
 			At:         now,
 			Instance:   inst,
-			Actor:      "ChanServ",
 		})
 	}
 

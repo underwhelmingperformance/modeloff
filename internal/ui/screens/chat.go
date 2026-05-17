@@ -321,7 +321,7 @@ func (s ChatScreen) Init() tea.Cmd {
 		s.listenForProtocolEvents(),
 		msgCmd(components.ChannelAddedMsg{Channel: statusWindow.Window}),
 		msgCmd(components.CommandsMsg[chatcmd.CompletionContext]{
-			Commands: s.parser.Set().Commands,
+			Commands: command.VisibleCommands(s.parser.Set(), s.client.Caps()),
 		}),
 		msgCmd(components.CompleterMsg{Completer: s.completer}),
 		msgCmd(components.HighlightWordsMsg{
@@ -764,7 +764,8 @@ func msgCmd(msg tea.Msg) tea.Cmd {
 
 func (s ChatScreen) completionSet() command.CompletionSet[chatcmd.CompletionContext] {
 	return command.CompletionSet[chatcmd.CompletionContext]{
-		Set: s.parser.Set(),
+		Set:  s.parser.Set(),
+		Caps: s.client.Caps(),
 		Ctx: chatcmd.CompletionContext{
 			Channels: func() iter.Seq[domain.Window] {
 				return func(yield func(domain.Window) bool) {

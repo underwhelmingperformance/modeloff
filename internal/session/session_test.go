@@ -113,25 +113,6 @@ func normaliseInstance(inst *domain.Instance) comparableInstance {
 	}
 }
 
-// readNextOnBusFor reads the next event from the bus a given type
-// flows on: protocol events on `User().Events()`, non-protocol UI
-// events on `Events()`. The `var zero T` is for ergonomic type
-// inspection — `any(zero).(domain.ProtocolEvent)` reports whether
-// `T` satisfies the interface, which Go generics do not let us
-// check on the constraint directly. Returns the event and `true`
-// if a value arrived, or the zero value and `false` if the
-// channel closed.
-func readNextOnBusFor[T domain.Event](sess *Session) (domain.Event, bool) {
-	var zero T
-	if _, ok := any(zero).(domain.ProtocolEvent); ok {
-		delivery, ok := <-sess.User().Events()
-		return delivery.Event, ok
-	}
-
-	evt, ok := <-sess.Events()
-	return evt, ok
-}
-
 // nextEvent reads the next event from whichever bus delivers
 // first. Used by helpers that don't know in advance which bus
 // will produce the value (general-purpose drains and
@@ -145,195 +126,60 @@ func nextEvent(sess *Session) (domain.Event, bool) {
 	}
 }
 
-// peekEvent returns the next event from either bus if one is
-// available immediately, or `(nil, false)` if both are empty. Use
-// in negative-path tests that assert no event was emitted.
-func peekEvent(sess *Session) (domain.Event, bool) {
-	select {
-	case evt := <-sess.Events():
-		return evt, true
-	case delivery := <-sess.User().Events():
-		return delivery.Event, true
-	default:
-		return nil, false
-	}
-}
-
-func drainEvent[T domain.Event](t *testing.T, sess *Session) T {
+// collectEmittedEvents returns every event currently queued on
+// either bus, in arrival order across the two. The drain is
+// non-blocking: it returns whatever is in the buffers at call
+// time. Tests with in-goroutine producers (join, part, topic,
+// nick, mode — the synchronous actor methods) call this directly
+// after the action; tests with goroutine producers (model
+// dispatch) `synctest.Wait()` first, then call.
+//
+// Use this in place of cherry-picking single events by type:
+// the test asserts structurally on the full slice rather than
+// skipping past intervening events. The assertion is robust to
+// any future emission added between the test's action and its
+// check — the test fails until the expected slice updates,
+// which is the right pressure.
+func collectEmittedEvents(t *testing.T, sess *Session) []domain.Event {
 	t.Helper()
 
-	evt, ok := readNextOnBusFor[T](sess)
-	require.True(t, ok, "session events channel closed before %T arrived", *new(T))
-
-	got, ok := evt.(T)
-	require.True(t, ok, "expected %T, got %T", *new(T), evt)
-	return got
-}
-
-// drainEventSkipping reads from the bus T flows on, skipping
-// dispatch lifecycle and other noise types, until it finds an
-// event matching T.
-func drainEventSkipping[T domain.Event](t *testing.T, sess *Session) T {
-	t.Helper()
+	var events []domain.Event
 
 	for {
-		evt, ok := readNextOnBusFor[T](sess)
-		if !ok {
-			t.Fatalf("event channel closed without %T", *new(T))
-			return *new(T)
-		}
-
-		if got, ok := evt.(T); ok {
-			return got
-		}
-
-		switch evt.(type) {
-		case domain.ModelDispatchStarted,
-			domain.ModelDispatchDone,
-			domain.SystemNoticeEvent,
-			domain.NamesReplyEvent:
-			continue
-		default:
-			t.Fatalf("expected %T, got %T", *new(T), evt)
-			return *new(T)
-		}
-	}
-}
-
-// drainDispatchEvents reads and discards dispatch lifecycle events
-// until both buses are quiet. Must run inside a [synctest.Test]
-// bubble: [synctest.Wait] is what defines "quiet" — the system has
-// fully settled, so a non-blocking select that finds both channels
-// empty proves no further dispatch event will arrive.
-func drainDispatchEvents(t *testing.T, sess *Session) {
-	t.Helper()
-
-	for {
-		synctest.Wait()
-
 		select {
 		case evt := <-sess.Events():
-			switch evt.(type) {
-			case domain.ModelDispatchStarted, domain.ModelDispatchDone:
-				continue
-			default:
-				t.Fatalf("expected dispatch event, got %T", evt)
-			}
+			events = append(events, evt)
 		case delivery := <-sess.User().Events():
-			switch delivery.Event.(type) {
-			case domain.ModelDispatchStarted, domain.ModelDispatchDone:
-				continue
-			default:
-				t.Fatalf("expected dispatch event, got %T", delivery.Event)
-			}
+			events = append(events, delivery.Event)
 		default:
-			return
+			return events
 		}
 	}
 }
 
-// sessionEventMatcher pairs a human-readable name (used in
-// timeout messages) with a predicate over [domain.Event].
-// Build matchers via [matchEvent].
-type sessionEventMatcher struct {
-	name  string
-	match func(domain.Event) bool
-}
-
-// matchEvent returns a [sessionEventMatcher] that accepts any event
-// whose dynamic type is `T`.
-func matchEvent[T domain.Event]() sessionEventMatcher {
-	var zero T
-
-	return sessionEventMatcher{
-		name: reflect.TypeOf(zero).String(),
-		match: func(evt domain.Event) bool {
-			_, ok := evt.(T)
-			return ok
-		},
-	}
-}
-
-// drainUntilMatched is the most general of the session-test drain
-// helpers (`drainEvent`, `drainEventSkipping`, `drainNEvents`,
-// `drainEvents`, `drainUntilMatched`) and the default choice when a
-// test wants to decouple from the current implementation's exact
-// event count.
+// bootstrapModeChange returns the user-mode ModeChange every test
+// session emits at construction: the server promotes the user-
+// client to +o via a wire MODE response. Tests prepend it to
+// their expected event slice when asserting on the full stream
+// from session start.
 //
-// It reads from the session events channel until every member of
-// `expected` has been matched at least once, returning two slices in
-// arrival order: `matched` holds the events that satisfied a matcher;
-// `extras` holds everything else seen along the way. Callers that
-// want to assert no surprises can `require.Empty(t, extras)`; callers
-// that only care about the wanted events can ignore it.
-//
-// Matchers are matched left-to-right, first-un-seen-wins: passing the
-// same matcher twice (e.g. two `matchEvent[domain.SystemNoticeEvent]`)
-// consumes two distinct events of that type.
-//
-// Picking between the helpers:
-//   - `drainNEvents` is appropriate when the test is asserting on the
-//     exact event count (e.g. pinning a no-extra-emit invariant). Most
-//     setup-clearing call sites should prefer `drainUntilMatched`.
-//   - `drainEventSkipping` is appropriate when the test expects only
-//     dispatch-lifecycle noise between events of interest and wants
-//     any other event type to fail loudly. `drainUntilMatched` is the
-//     permissive counterpart that tolerates any unrelated event.
-func drainUntilMatched(t *testing.T, sess *Session, expected ...sessionEventMatcher) (matched, extras []domain.Event) {
-	t.Helper()
-
-	matched = make([]domain.Event, 0, len(expected))
-	extras = make([]domain.Event, 0)
-	seen := make([]bool, len(expected))
-	matchedCount := 0
-
-	for matchedCount < len(expected) {
-		evt, ok := nextEvent(sess)
-		if !ok {
-			t.Fatalf("event channels closed before all expected matchers were satisfied")
-			return matched, extras
-		}
-		matchedIndex := -1
-
-		for i, matcher := range expected {
-			if seen[i] {
-				continue
-			}
-
-			if matcher.match(evt) {
-				matchedIndex = i
-				break
-			}
-		}
-
-		if matchedIndex >= 0 {
-			seen[matchedIndex] = true
-			matched = append(matched, evt)
-			matchedCount++
-			continue
-		}
-
-		extras = append(extras, evt)
+// `at` is the time recorded on the bootstrap event. Tests capture
+// it with `time.Now()` before calling [newTestSession] so the
+// comparison is symmetric with how the session itself stamped the
+// event — `time.Now()` at construction. Inside a [synctest.Test]
+// bubble both reads return the same bubble clock value as long as
+// no goroutine yields between them, which is the case for
+// `New`'s synchronous construction.
+func bootstrapModeChange(sess *Session, at time.Time) domain.ModeChange {
+	user := sess.UserInstance()
+	return domain.ModeChange{
+		Nick:       user.Nick(),
+		InstanceID: user.ID(),
+		Flag:       domain.ModeOperator,
+		Add:        true,
+		At:         at,
+		Instance:   user,
 	}
-
-	return matched, extras
-}
-
-// findEvent picks the first event of type `T` out of a slice of
-// matched events (typically the result of [drainUntilMatched]).
-// Fails the test if no such event is present.
-func findEvent[T domain.Event](t *testing.T, events []domain.Event) T {
-	t.Helper()
-
-	for _, evt := range events {
-		if got, ok := evt.(T); ok {
-			return got
-		}
-	}
-
-	var zero T
-	t.Fatalf("no %T in event slice", zero)
-	return zero
 }
 
 // testMembers builds a MemberList using canonical `*Instance`
@@ -437,30 +283,53 @@ func newTestSessionWithAPI(t *testing.T, apiClient api.Client) (*Session, *store
 }
 
 func TestSession_Join(t *testing.T) {
-	sess, s := newTestSession(t)
-	ctx := t.Context()
+	synctest.Test(t, func(t *testing.T) {
+		bootAt := time.Now()
+		sess, s := newTestSession(t)
+		ctx := t.Context()
 
-	require.NoError(t, sess.Join(ctx, "#general"))
-	evt := drainEvent[domain.Join](t, sess)
-	require.Equal(t, domain.Join{
-		Target:   "#general",
-		Nick:     "testuser",
-		Instance: sess.UserInstance(),
-		Created:  true,
-		At:       fixedTime,
-	}, evt)
+		require.NoError(t, sess.Join(ctx, "#general"))
+		synctest.Wait()
 
-	// Channel should be persisted.
-	ch, err := sess.loadChannelWindow(ctx, "#general")
-	require.NoError(t, err)
-	requireChannelEqual(t, newTestChannelWindow("#general", fixedTime, testMembers(t, sess, s, "testuser")), ch)
+		user := sess.UserInstance()
+		members := domain.NewMemberList()
+		members.Add(user)
+		members.SetMode(user, domain.ModeOp)
 
-	// `last_channel` is a UI-owned write; a session-side join no
-	// longer touches it. The store stays empty until the chat
-	// screen persists it on a `ChannelActiveMsg`.
-	last, err := s.GetLastChannel(ctx)
-	require.NoError(t, err)
-	require.Equal(t, domain.ChannelName(""), last)
+		require.ElementsMatch(t, []domain.Event{
+			bootstrapModeChange(sess, bootAt),
+			domain.Join{
+				Target:   "#general",
+				Nick:     "testuser",
+				Instance: user,
+				Created:  true,
+				At:       fixedTime,
+			},
+			domain.NamesReplyEvent{
+				Channel: "#general",
+				Members: members,
+				At:      fixedTime,
+			},
+			domain.ModeChange{
+				Target:     "#general",
+				Nick:       "testuser",
+				InstanceID: user.ID(),
+				Flag:       domain.ModeOperator,
+				Add:        true,
+				By:         "ChanServ",
+				At:         fixedTime,
+				Instance:   user,
+			},
+		}, collectEmittedEvents(t, sess))
+
+		ch, err := sess.loadChannelWindow(ctx, "#general")
+		require.NoError(t, err)
+		requireChannelEqual(t, newTestChannelWindow("#general", fixedTime, testMembers(t, sess, s, "testuser")), ch)
+
+		last, err := s.GetLastChannel(ctx)
+		require.NoError(t, err)
+		require.Equal(t, domain.ChannelName(""), last)
+	})
 }
 
 func TestSession_JoinExistingChannel(t *testing.T) {
@@ -513,26 +382,61 @@ func TestSession_JoinSwitchAndReturn_no_duplicate_event(t *testing.T) {
 }
 
 func TestSession_JoinAutojoinChannels_populates_user_join_times(t *testing.T) {
-	sess, s := newTestSession(t)
-	ctx := t.Context()
+	synctest.Test(t, func(t *testing.T) {
+		bootAt := time.Now()
+		sess, s := newTestSession(t)
+		ctx := t.Context()
 
-	seedChannelWithMembers(t, sess, s, "#general", "botty")
-	seedChannelWithMembers(t, sess, s, "#random", "botty")
-	require.NoError(t, s.SetAutojoinChannels(ctx, []domain.ChannelName{"#general", "#random"}))
+		seedChannelWithMembers(t, sess, s, "#general", "botty")
+		seedChannelWithMembers(t, sess, s, "#random", "botty")
+		require.NoError(t, s.SetAutojoinChannels(ctx, []domain.ChannelName{"#general", "#random"}))
 
-	require.True(t, sess.UserJoinedAt("#general").IsZero())
-	require.True(t, sess.UserJoinedAt("#random").IsZero())
+		require.True(t, sess.UserJoinedAt("#general").IsZero())
+		require.True(t, sess.UserJoinedAt("#random").IsZero())
 
-	require.NoError(t, sess.JoinAutojoinChannels(ctx))
+		require.NoError(t, sess.JoinAutojoinChannels(ctx))
+		synctest.Wait()
 
-	// Drain join + mode events for each channel, skipping dispatch events.
-	for range 2 {
-		drainEventSkipping[domain.Join](t, sess)
-		drainEventSkipping[domain.ModeChange](t, sess)
-	}
+		user := sess.UserInstance()
+		members := func(ch domain.ChannelName) domain.MemberList {
+			cw, err := sess.loadChannelWindow(ctx, ch)
+			require.NoError(t, err)
+			return cw.Members
+		}
 
-	require.Equal(t, fixedTime, sess.UserJoinedAt("#general"))
-	require.Equal(t, fixedTime, sess.UserJoinedAt("#random"))
+		var expected []domain.Event
+		expected = append(expected, bootstrapModeChange(sess, bootAt))
+		for _, ch := range []domain.ChannelName{"#general", "#random"} {
+			expected = append(expected,
+				domain.Join{
+					Target:   ch,
+					Nick:     "testuser",
+					Instance: user,
+					At:       fixedTime,
+				},
+				domain.NamesReplyEvent{
+					Channel: ch,
+					Members: members(ch),
+					At:      fixedTime,
+				},
+				domain.ModeChange{
+					Target:     ch,
+					Nick:       "testuser",
+					InstanceID: user.ID(),
+					Flag:       domain.ModeOperator,
+					Add:        true,
+					By:         "ChanServ",
+					At:         fixedTime,
+					Instance:   user,
+				},
+			)
+		}
+
+		require.Equal(t, expected, collectEmittedEvents(t, sess))
+
+		require.Equal(t, fixedTime, sess.UserJoinedAt("#general"))
+		require.Equal(t, fixedTime, sess.UserJoinedAt("#random"))
+	})
 }
 
 func TestSession_JoinAutojoinChannels_empty_autojoin_is_noop(t *testing.T) {
@@ -543,44 +447,83 @@ func TestSession_JoinAutojoinChannels_empty_autojoin_is_noop(t *testing.T) {
 }
 
 func TestSession_JoinAutojoinChannels_emits_join_events(t *testing.T) {
-	sess, s := newTestSession(t)
-	ctx := t.Context()
+	synctest.Test(t, func(t *testing.T) {
+		bootAt := time.Now()
+		sess, s := newTestSession(t)
+		ctx := t.Context()
 
-	seedChannelWithMembers(t, sess, s, "#alpha", "botty")
-	seedChannelWithMembers(t, sess, s, "#beta", "botty")
-	require.NoError(t, s.SetAutojoinChannels(ctx, []domain.ChannelName{"#alpha", "#beta"}))
+		seedChannelWithMembers(t, sess, s, "#alpha", "botty")
+		seedChannelWithMembers(t, sess, s, "#beta", "botty")
+		require.NoError(t, s.SetAutojoinChannels(ctx, []domain.ChannelName{"#alpha", "#beta"}))
 
-	require.NoError(t, sess.JoinAutojoinChannels(ctx))
+		require.NoError(t, sess.JoinAutojoinChannels(ctx))
+		synctest.Wait()
 
-	joinA := drainEventSkipping[domain.Join](t, sess)
-	require.Equal(t, domain.ChannelName("#alpha"), joinA.Target)
+		user := sess.UserInstance()
+		members := func(ch domain.ChannelName) domain.MemberList {
+			cw, err := sess.loadChannelWindow(ctx, ch)
+			require.NoError(t, err)
+			return cw.Members
+		}
 
-	_ = drainEventSkipping[domain.ModeChange](t, sess)
+		var expected []domain.Event
+		expected = append(expected, bootstrapModeChange(sess, bootAt))
+		for _, ch := range []domain.ChannelName{"#alpha", "#beta"} {
+			expected = append(expected,
+				domain.Join{
+					Target:   ch,
+					Nick:     "testuser",
+					Instance: user,
+					At:       fixedTime,
+				},
+				domain.NamesReplyEvent{
+					Channel: ch,
+					Members: members(ch),
+					At:      fixedTime,
+				},
+				domain.ModeChange{
+					Target:     ch,
+					Nick:       "testuser",
+					InstanceID: user.ID(),
+					Flag:       domain.ModeOperator,
+					Add:        true,
+					By:         "ChanServ",
+					At:         fixedTime,
+					Instance:   user,
+				},
+			)
+		}
 
-	joinB := drainEventSkipping[domain.Join](t, sess)
-	require.Equal(t, domain.ChannelName("#beta"), joinB.Target)
-
-	_ = drainEventSkipping[domain.ModeChange](t, sess)
+		require.Equal(t, expected, collectEmittedEvents(t, sess))
+	})
 }
 
 func TestSession_Leave(t *testing.T) {
-	sess, s := newTestSession(t)
-	ctx := t.Context()
+	synctest.Test(t, func(t *testing.T) {
+		bootAt := time.Now()
+		sess, s := newTestSession(t)
+		ctx := t.Context()
 
-	saveTestChannel(t, sess, s, newTestChannelWindow("#leaving", fixedTime, testMembers(t, sess, s, "testuser", "botty")))
+		saveTestChannel(t, sess, s, newTestChannelWindow("#leaving", fixedTime, testMembers(t, sess, s, "testuser", "botty")))
 
-	require.NoError(t, sess.Part(ctx, "#leaving", ""))
-	evt := drainEvent[domain.Part](t, sess)
-	require.Equal(t, domain.Part{
-		Target:   "#leaving",
-		Nick:     "testuser",
-		Instance: sess.UserInstance(),
-		At:       fixedTime,
-	}, evt)
+		require.NoError(t, sess.Part(ctx, "#leaving", ""))
+		synctest.Wait()
 
-	updated, err := sess.loadChannelWindow(ctx, "#leaving")
-	require.NoError(t, err)
-	requireChannelEqual(t, newTestChannelWindow("#leaving", fixedTime, testMembers(t, sess, s, "botty")), updated)
+		user := sess.UserInstance()
+		require.ElementsMatch(t, []domain.Event{
+			bootstrapModeChange(sess, bootAt),
+			domain.Part{
+				Target:   "#leaving",
+				Nick:     "testuser",
+				Instance: user,
+				At:       fixedTime,
+			},
+		}, collectEmittedEvents(t, sess))
+
+		updated, err := sess.loadChannelWindow(ctx, "#leaving")
+		require.NoError(t, err)
+		requireChannelEqual(t, newTestChannelWindow("#leaving", fixedTime, testMembers(t, sess, s, "botty")), updated)
+	})
 }
 
 func TestSession_LeaveNonexistent(t *testing.T) {
@@ -590,182 +533,271 @@ func TestSession_LeaveNonexistent(t *testing.T) {
 }
 
 func TestSession_Part_carries_message(t *testing.T) {
-	sess, s := newTestSession(t)
-	ctx := t.Context()
+	synctest.Test(t, func(t *testing.T) {
+		bootAt := time.Now()
+		sess, s := newTestSession(t)
+		ctx := t.Context()
 
-	saveTestChannel(t, sess, s, newTestChannelWindow("#farewell", fixedTime, testMembers(t, sess, s, "testuser")))
+		saveTestChannel(t, sess, s, newTestChannelWindow("#farewell", fixedTime, testMembers(t, sess, s, "testuser")))
 
-	require.NoError(t, sess.Part(ctx, "#farewell", "see ya later"))
-	evt := drainEvent[domain.Part](t, sess)
-	require.Equal(t, domain.Part{
-		Target:   "#farewell",
-		Nick:     "testuser",
-		Instance: sess.UserInstance(),
-		Message:  "see ya later",
-		At:       fixedTime,
-	}, evt)
+		require.NoError(t, sess.Part(ctx, "#farewell", "see ya later"))
+		synctest.Wait()
+
+		require.ElementsMatch(t, []domain.Event{
+			bootstrapModeChange(sess, bootAt),
+			domain.Part{
+				Target:   "#farewell",
+				Nick:     "testuser",
+				Instance: sess.UserInstance(),
+				Message:  "see ya later",
+				At:       fixedTime,
+			},
+		}, collectEmittedEvents(t, sess))
+	})
 }
 
 func TestSession_Connect_marks_session_active(t *testing.T) {
-	sess, s := newTestSession(t)
-	ctx := t.Context()
+	synctest.Test(t, func(t *testing.T) {
+		bootAt := time.Now()
+		sess, s := newTestSession(t)
+		ctx := t.Context()
 
-	require.NoError(t, sess.Connect(ctx))
+		require.NoError(t, sess.Connect(ctx))
+		synctest.Wait()
 
-	got, err := s.GetSessionActive(ctx)
-	require.NoError(t, err)
-	require.NotEmpty(t, got)
-	require.Equal(t, fixedTime, sess.ConnectedAt())
+		got, err := s.GetSessionActive(ctx)
+		require.NoError(t, err)
+		require.NotEmpty(t, got)
+		require.Equal(t, fixedTime, sess.ConnectedAt())
 
-	select {
-	case <-sess.Connected():
-	default:
-		t.Fatal("Connected() channel should be closed after Connect")
-	}
+		select {
+		case <-sess.Connected():
+		default:
+			t.Fatal("Connected() channel should be closed after Connect")
+		}
 
-	// Clean connect emits exactly one Welcome on the bus and persists
-	// nothing to the `&modeloff` event log (the chat-screen owns its
-	// local server-window view).
-	_, extras := drainUntilMatched(t, sess, matchEvent[domain.Welcome]())
-	require.Empty(t, extras)
-	require.Empty(t, channelEventTypes(t, s, domain.StatusChannelName),
-		"session must not persist server-narrated events on &modeloff")
+		require.ElementsMatch(t, []domain.Event{
+			bootstrapModeChange(sess, bootAt),
+			domain.Welcome{
+				ServerName: domain.StatusServerName,
+				Nick:       sess.UserNick(),
+				At:         fixedTime,
+			},
+		}, collectEmittedEvents(t, sess))
+		require.Empty(t, channelEventTypes(t, s, domain.StatusChannelName),
+			"session must not persist server-narrated events on &modeloff")
+	})
 }
 
 func TestSession_Connect_clears_unclean_user_membership(t *testing.T) {
-	sess, s := newTestSession(t)
-	ctx := t.Context()
+	synctest.Test(t, func(t *testing.T) {
+		bootAt := time.Now()
+		sess, s := newTestSession(t)
+		ctx := t.Context()
 
-	require.NoError(t, s.SetSessionActive(ctx, "stale"))
-	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
-	seedChannelWithMembers(t, sess, s, "#random", "testuser")
+		require.NoError(t, s.SetSessionActive(ctx, "stale"))
+		seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
+		seedChannelWithMembers(t, sess, s, "#random", "testuser")
 
-	require.NoError(t, sess.Connect(ctx))
+		require.NoError(t, sess.Connect(ctx))
+		synctest.Wait()
 
-	general, err := sess.loadChannelWindow(ctx, "#general")
-	require.NoError(t, err)
-	requireChannelEqual(t, newTestChannelWindow("#general", fixedTime, testMembers(t, sess, s, "botty")), general)
+		general, err := sess.loadChannelWindow(ctx, "#general")
+		require.NoError(t, err)
+		requireChannelEqual(t, newTestChannelWindow("#general", fixedTime, testMembers(t, sess, s, "botty")), general)
 
-	random, err := sess.loadChannelWindow(ctx, "#random")
-	require.NoError(t, err)
-	requireChannelEqual(t, newTestChannelWindow("#random", fixedTime, domain.NewMemberList()), random)
+		random, err := sess.loadChannelWindow(ctx, "#random")
+		require.NoError(t, err)
+		requireChannelEqual(t, newTestChannelWindow("#random", fixedTime, domain.NewMemberList()), random)
 
-	// Unclean connect emits Welcome then Reconnected on the bus and
-	// persists nothing to the `&modeloff` event log.
-	_, extras := drainUntilMatched(t, sess,
-		matchEvent[domain.Welcome](),
-		matchEvent[domain.Reconnected](),
-	)
-	require.Empty(t, extras)
-	require.Empty(t, channelEventTypes(t, s, domain.StatusChannelName),
-		"session must not persist server-narrated events on &modeloff")
+		require.ElementsMatch(t, []domain.Event{
+			bootstrapModeChange(sess, bootAt),
+			domain.Welcome{
+				ServerName: domain.StatusServerName,
+				Nick:       sess.UserNick(),
+				At:         fixedTime,
+			},
+			domain.Reconnected{At: fixedTime},
+		}, collectEmittedEvents(t, sess))
+		require.Empty(t, channelEventTypes(t, s, domain.StatusChannelName),
+			"session must not persist server-narrated events on &modeloff")
+	})
 }
 
 func TestSession_Connect_then_JoinAutojoin_stamps_UserJoinedAt(t *testing.T) {
-	sess, s := newTestSession(t)
-	ctx := t.Context()
+	synctest.Test(t, func(t *testing.T) {
+		bootAt := time.Now()
+		sess, s := newTestSession(t)
+		ctx := t.Context()
 
-	// Simulate the original bug's preconditions: stale membership left
-	// over from a prior session, plus a non-empty session_active marker.
-	require.NoError(t, s.SetSessionActive(ctx, "stale"))
-	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
-	seedChannelWithMembers(t, sess, s, "#random", "testuser")
-	require.NoError(t, s.SetAutojoinChannels(ctx, []domain.ChannelName{"#general", "#random"}))
+		// Simulate the original bug's preconditions: stale membership left
+		// over from a prior session, plus a non-empty session_active marker.
+		require.NoError(t, s.SetSessionActive(ctx, "stale"))
+		seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
+		seedChannelWithMembers(t, sess, s, "#random", "testuser")
+		require.NoError(t, s.SetAutojoinChannels(ctx, []domain.ChannelName{"#general", "#random"}))
 
-	require.NoError(t, sess.Connect(ctx))
+		require.NoError(t, sess.Connect(ctx))
+		require.NoError(t, sess.JoinAutojoinChannels(ctx))
+		synctest.Wait()
 
-	// Connect on an unclean session emits the RPL_WELCOME-shaped
-	// [domain.Welcome] event, followed by [domain.Reconnected] to
-	// announce that the recovery path reconciled stale state. The
-	// chat-screen owns its `&modeloff` window locally, so the
-	// session itself does not emit a status-window-opened signal.
-	_, extras := drainUntilMatched(t, sess,
-		matchEvent[domain.Welcome](),
-		matchEvent[domain.Reconnected](),
-	)
-	require.Empty(t, extras)
+		require.Equal(t, fixedTime, sess.UserJoinedAt("#general"))
+		require.Equal(t, fixedTime, sess.UserJoinedAt("#random"))
 
-	require.NoError(t, sess.JoinAutojoinChannels(ctx))
+		user := sess.UserInstance()
+		members := func(ch domain.ChannelName) domain.MemberList {
+			cw, err := sess.loadChannelWindow(ctx, ch)
+			require.NoError(t, err)
+			return cw.Members
+		}
 
-	require.Equal(t, fixedTime, sess.UserJoinedAt("#general"))
-	require.Equal(t, fixedTime, sess.UserJoinedAt("#random"))
+		expected := []domain.Event{
+			bootstrapModeChange(sess, bootAt),
+			domain.Welcome{
+				ServerName: domain.StatusServerName,
+				Nick:       sess.UserNick(),
+				At:         fixedTime,
+			},
+			domain.Reconnected{At: fixedTime},
+		}
+		for _, ch := range []domain.ChannelName{"#general", "#random"} {
+			expected = append(expected,
+				domain.Join{
+					Target:   ch,
+					Nick:     "testuser",
+					Instance: user,
+					At:       fixedTime,
+				},
+				domain.NamesReplyEvent{
+					Channel: ch,
+					Members: members(ch),
+					At:      fixedTime,
+				},
+				domain.ModeChange{
+					Target:     ch,
+					Nick:       "testuser",
+					InstanceID: user.ID(),
+					Flag:       domain.ModeOperator,
+					Add:        true,
+					By:         "ChanServ",
+					At:         fixedTime,
+					Instance:   user,
+				},
+			)
+		}
 
-	// Each channel should have produced a fresh JoinEvent + ModeChangeEvent.
-	for range 2 {
-		_ = drainEventSkipping[domain.Join](t, sess)
-		_ = drainEventSkipping[domain.ModeChange](t, sess)
-	}
+		require.Equal(t, expected, collectEmittedEvents(t, sess))
+	})
 }
 
 func TestSession_Connect_Quit_Reconnect_omits_status_channel_from_autojoin(t *testing.T) {
-	s := storetest.NewMemoryStore(t)
+	synctest.Test(t, func(t *testing.T) {
+		s := storetest.NewMemoryStore(t)
 
-	sess1 := New(t.Context, s, nil, &fakeAPIClient{}, "testuser", "", "")
-	t.Cleanup(func() { _ = sess1.Shutdown(context.Background()) })
-	sess1.now = func() time.Time { return fixedTime }
-	ctx := t.Context()
+		bootAt1 := time.Now()
+		sess1 := New(t.Context, s, nil, &fakeAPIClient{}, "testuser", "", "")
+		t.Cleanup(func() { _ = sess1.Shutdown(context.Background()) })
+		sess1.now = func() time.Time { return fixedTime }
+		ctx := t.Context()
 
-	require.NoError(t, sess1.Connect(ctx))
-	_, extras := drainUntilMatched(t, sess1,
-		matchEvent[domain.Welcome](),
-	)
-	require.Empty(t, extras)
+		require.NoError(t, sess1.Connect(ctx))
+		require.NoError(t, sess1.Join(ctx, "#general"))
+		// Snapshot the channel membership before Quit clears the user
+		// from it; the NamesReplyEvent emitted at join time carries
+		// the live MemberList by reference.
+		general1, err := sess1.loadChannelWindow(ctx, "#general")
+		require.NoError(t, err)
+		generalMembers := general1.Members
 
-	require.NoError(t, sess1.Join(ctx, "#general"))
-	_, extras = drainUntilMatched(t, sess1,
-		matchEvent[domain.Join](),
-		matchEvent[domain.NamesReplyEvent](),
-		matchEvent[domain.ModeChange](),
-	)
-	require.Empty(t, extras)
+		require.NoError(t, sess1.Quit(ctx, "bye"))
+		synctest.Wait()
 
-	require.NoError(t, sess1.Quit(ctx, "bye"))
+		user1 := sess1.UserInstance()
+		require.Equal(t, []domain.Event{
+			bootstrapModeChange(sess1, bootAt1),
+			domain.Welcome{
+				ServerName: domain.StatusServerName,
+				Nick:       sess1.UserNick(),
+				At:         fixedTime,
+			},
+			domain.Join{
+				Target:   "#general",
+				Nick:     "testuser",
+				Instance: user1,
+				Created:  true,
+				At:       fixedTime,
+			},
+			domain.NamesReplyEvent{
+				Channel: "#general",
+				Members: generalMembers,
+				At:      fixedTime,
+			},
+			domain.ModeChange{
+				Target:     "#general",
+				Nick:       "testuser",
+				InstanceID: user1.ID(),
+				Flag:       domain.ModeOperator,
+				Add:        true,
+				By:         "ChanServ",
+				At:         fixedTime,
+				Instance:   user1,
+			},
+		}, collectEmittedEvents(t, sess1))
 
-	autojoin, err := s.ListAutojoinChannels(ctx)
-	require.NoError(t, err)
-	require.Equal(t, []domain.ChannelName{"#general"}, autojoin)
+		autojoin, err := s.ListAutojoinChannels(ctx)
+		require.NoError(t, err)
+		require.Equal(t, []domain.ChannelName{"#general"}, autojoin)
 
-	// Starting a fresh session over the same store must not replay the
-	// status channel into the autojoin loop.
-	sess2 := New(t.Context, s, nil, &fakeAPIClient{}, "testuser", "", "")
-	t.Cleanup(func() { _ = sess2.Shutdown(context.Background()) })
-	sess2.now = func() time.Time { return fixedTime }
-	require.NoError(t, sess2.Connect(ctx))
+		// Starting a fresh session over the same store must not replay the
+		// status channel into the autojoin loop.
+		bootAt2 := time.Now()
+		sess2 := New(t.Context, s, nil, &fakeAPIClient{}, "testuser", "", "")
+		t.Cleanup(func() { _ = sess2.Shutdown(context.Background()) })
+		sess2.now = func() time.Time { return fixedTime }
+		require.NoError(t, sess2.Connect(ctx))
+		synctest.Wait()
 
-	autojoin, err = s.ListAutojoinChannels(ctx)
-	require.NoError(t, err)
-	require.Equal(t, []domain.ChannelName{"#general"}, autojoin)
+		require.Equal(t, []domain.Event{
+			bootstrapModeChange(sess2, bootAt2),
+			domain.Welcome{
+				ServerName: domain.StatusServerName,
+				Nick:       sess2.UserNick(),
+				At:         fixedTime,
+			},
+		}, collectEmittedEvents(t, sess2))
+
+		autojoin, err = s.ListAutojoinChannels(ctx)
+		require.NoError(t, err)
+		require.Equal(t, []domain.ChannelName{"#general"}, autojoin)
+	})
 }
 
 func TestSession_Connect_unclean_recovery_emits_welcome_and_reconnected(t *testing.T) {
-	s := storetest.NewMemoryStore(t)
-	sess := New(t.Context, s, nil, &fakeAPIClient{}, "testuser", "", "")
-	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
-	sess.now = func() time.Time { return fixedTime }
-	ctx := t.Context()
+	synctest.Test(t, func(t *testing.T) {
+		bootAt := time.Now()
+		s := storetest.NewMemoryStore(t)
+		sess := New(t.Context, s, nil, &fakeAPIClient{}, "testuser", "", "")
+		t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
+		sess.now = func() time.Time { return fixedTime }
+		ctx := t.Context()
 
-	require.NoError(t, s.SetSessionActive(ctx, "stale"))
+		require.NoError(t, s.SetSessionActive(ctx, "stale"))
 
-	require.NoError(t, sess.Connect(ctx))
+		require.NoError(t, sess.Connect(ctx))
+		synctest.Wait()
 
-	// Unclean Connect emits Welcome then Reconnected on the bus, in
-	// that order. The session does not persist either event — the
-	// chat-screen owns its `&modeloff` view locally.
-	matched, extras := drainUntilMatched(t, sess,
-		matchEvent[domain.Welcome](),
-		matchEvent[domain.Reconnected](),
-	)
-	require.Empty(t, extras)
-	require.Equal(t, []domain.Event{
-		domain.Welcome{
-			ServerName: domain.StatusServerName,
-			Nick:       sess.UserNick(),
-			At:         fixedTime,
-		},
-		domain.Reconnected{At: fixedTime},
-	}, matched)
-	require.Empty(t, channelEventTypes(t, s, domain.StatusChannelName),
-		"session must not persist server-narrated events on &modeloff")
+		require.ElementsMatch(t, []domain.Event{
+			bootstrapModeChange(sess, bootAt),
+			domain.Welcome{
+				ServerName: domain.StatusServerName,
+				Nick:       sess.UserNick(),
+				At:         fixedTime,
+			},
+			domain.Reconnected{At: fixedTime},
+		}, collectEmittedEvents(t, sess))
+		require.Empty(t, channelEventTypes(t, s, domain.StatusChannelName),
+			"session must not persist server-narrated events on &modeloff")
+	})
 }
 
 // TestSession_user_snapshot_race_free hammers joinAs, partAs, and
@@ -827,110 +859,207 @@ func TestSession_user_snapshot_race_free(t *testing.T) {
 }
 
 func TestSession_Connect_is_idempotent(t *testing.T) {
-	recorder, provider := oteltest.NewSpanRecorder(t)
-	sess, s := newTestSession(t)
-	sess.WithTracerProvider(provider)
-	ctx := t.Context()
+	synctest.Test(t, func(t *testing.T) {
+		bootAt := time.Now()
+		recorder, provider := oteltest.NewSpanRecorder(t)
+		sess, s := newTestSession(t)
+		sess.WithTracerProvider(provider)
+		ctx := t.Context()
 
-	require.NoError(t, sess.Connect(ctx))
-	require.NoError(t, sess.Connect(ctx))
+		require.NoError(t, sess.Connect(ctx))
+		require.NoError(t, sess.Connect(ctx))
+		synctest.Wait()
 
-	// Second Connect is a no-op: exactly one Welcome on the bus, no
-	// panic from close-of-closed-channel, nothing persisted to
-	// `&modeloff`.
-	_, extras := drainUntilMatched(t, sess, matchEvent[domain.Welcome]())
-	require.Empty(t, extras)
-	require.Empty(t, channelEventTypes(t, s, domain.StatusChannelName),
-		"session must not persist server-narrated events on &modeloff")
+		require.ElementsMatch(t, []domain.Event{
+			bootstrapModeChange(sess, bootAt),
+			domain.Welcome{
+				ServerName: domain.StatusServerName,
+				Nick:       sess.UserNick(),
+				At:         fixedTime,
+			},
+		}, collectEmittedEvents(t, sess))
+		require.Empty(t, channelEventTypes(t, s, domain.StatusChannelName),
+			"session must not persist server-narrated events on &modeloff")
 
-	select {
-	case <-sess.Connected():
-	default:
-		t.Fatal("Connected() channel should be closed after Connect")
-	}
-
-	// The no-op second call records no span: it short-circuits before
-	// startSpan so session.connect counts reflect real attempts only.
-	var connectSpans int
-	for _, span := range recorder.Ended() {
-		if span.Name() == "session.connect" {
-			connectSpans++
+		select {
+		case <-sess.Connected():
+		default:
+			t.Fatal("Connected() channel should be closed after Connect")
 		}
-	}
-	require.Equal(t, 1, connectSpans)
+
+		// The no-op second call records no span: it short-circuits before
+		// startSpan so session.connect counts reflect real attempts only.
+		var connectSpans int
+		for _, span := range recorder.Ended() {
+			if span.Name() == "session.connect" {
+				connectSpans++
+			}
+		}
+		require.Equal(t, 1, connectSpans)
+	})
 }
 
 func TestSession_Quit_appends_channel_quit_events_and_saves_autojoin(t *testing.T) {
-	sess, s := newTestSession(t)
-	ctx := t.Context()
+	synctest.Test(t, func(t *testing.T) {
+		bootAt := time.Now()
+		sess, s := newTestSession(t)
+		ctx := t.Context()
 
-	require.NoError(t, sess.Join(ctx, "#general"))
-	_, extras := drainUntilMatched(t, sess,
-		matchEvent[domain.Join](),
-		matchEvent[domain.NamesReplyEvent](),
-		matchEvent[domain.ModeChange](),
-	)
-	require.Empty(t, extras)
+		require.NoError(t, sess.Join(ctx, "#general"))
+		require.NoError(t, sess.Join(ctx, "#random"))
 
-	require.NoError(t, sess.Join(ctx, "#random"))
-	_, extras = drainUntilMatched(t, sess,
-		matchEvent[domain.Join](),
-		matchEvent[domain.NamesReplyEvent](),
-		matchEvent[domain.ModeChange](),
-	)
-	require.Empty(t, extras)
+		general, err := sess.loadChannelWindow(ctx, "#general")
+		require.NoError(t, err)
+		generalMembers := general.Members
+		random, err := sess.loadChannelWindow(ctx, "#random")
+		require.NoError(t, err)
+		randomMembers := random.Members
 
-	require.NoError(t, sess.Quit(ctx, "goodnight"))
+		require.NoError(t, sess.Quit(ctx, "goodnight"))
+		synctest.Wait()
 
-	autojoin, err := s.ListAutojoinChannels(ctx)
-	require.NoError(t, err)
-	require.Equal(t, []domain.ChannelName{"#general", "#random"}, autojoin)
+		user := sess.UserInstance()
+		expected := []domain.Event{bootstrapModeChange(sess, bootAt)}
+		for _, entry := range []struct {
+			ch      domain.ChannelName
+			members domain.MemberList
+		}{
+			{"#general", generalMembers},
+			{"#random", randomMembers},
+		} {
+			expected = append(expected,
+				domain.Join{
+					Target:   entry.ch,
+					Nick:     "testuser",
+					Instance: user,
+					Created:  true,
+					At:       fixedTime,
+				},
+				domain.NamesReplyEvent{
+					Channel: entry.ch,
+					Members: entry.members,
+					At:      fixedTime,
+				},
+				domain.ModeChange{
+					Target:     entry.ch,
+					Nick:       "testuser",
+					InstanceID: user.ID(),
+					Flag:       domain.ModeOperator,
+					Add:        true,
+					By:         "ChanServ",
+					At:         fixedTime,
+					Instance:   user,
+				},
+			)
+		}
+		require.Equal(t, expected, collectEmittedEvents(t, sess))
 
-	for _, ch := range []domain.ChannelName{"#general", "#random"} {
-		require.Equal(t, []string{"join", "mode_change", "quit"}, channelEventTypes(t, s, ch))
-	}
+		autojoin, err := s.ListAutojoinChannels(ctx)
+		require.NoError(t, err)
+		require.Equal(t, []domain.ChannelName{"#general", "#random"}, autojoin)
+
+		for _, ch := range []domain.ChannelName{"#general", "#random"} {
+			require.Equal(t, []string{"join", "mode_change", "quit"}, channelEventTypes(t, s, ch))
+		}
+	})
 }
 
 func TestSession_Quit_removes_user_from_channel_members(t *testing.T) {
-	sess, _ := newTestSession(t)
-	ctx := t.Context()
+	synctest.Test(t, func(t *testing.T) {
+		bootAt := time.Now()
+		sess, _ := newTestSession(t)
+		ctx := t.Context()
 
-	require.NoError(t, sess.Join(ctx, "#general"))
-	_, extras := drainUntilMatched(t, sess,
-		matchEvent[domain.Join](),
-		matchEvent[domain.NamesReplyEvent](),
-		matchEvent[domain.ModeChange](),
-	)
-	require.Empty(t, extras)
+		require.NoError(t, sess.Join(ctx, "#general"))
+		general, err := sess.loadChannelWindow(ctx, "#general")
+		require.NoError(t, err)
+		generalMembers := general.Members
 
-	require.NoError(t, sess.Quit(ctx, ""))
+		require.NoError(t, sess.Quit(ctx, ""))
+		synctest.Wait()
 
-	ch, err := sess.loadChannelWindow(ctx, "#general")
-	require.NoError(t, err)
-	requireChannelEqual(t, newTestChannelWindow("#general", fixedTime, domain.NewMemberList()), ch)
+		user := sess.UserInstance()
+		require.ElementsMatch(t, []domain.Event{
+			bootstrapModeChange(sess, bootAt),
+			domain.Join{
+				Target:   "#general",
+				Nick:     "testuser",
+				Instance: user,
+				Created:  true,
+				At:       fixedTime,
+			},
+			domain.NamesReplyEvent{
+				Channel: "#general",
+				Members: generalMembers,
+				At:      fixedTime,
+			},
+			domain.ModeChange{
+				Target:     "#general",
+				Nick:       "testuser",
+				InstanceID: user.ID(),
+				Flag:       domain.ModeOperator,
+				Add:        true,
+				By:         "ChanServ",
+				At:         fixedTime,
+				Instance:   user,
+			},
+		}, collectEmittedEvents(t, sess))
+
+		ch, err := sess.loadChannelWindow(ctx, "#general")
+		require.NoError(t, err)
+		requireChannelEqual(t, newTestChannelWindow("#general", fixedTime, domain.NewMemberList()), ch)
+	})
 }
 
 func TestSession_Quit_clears_in_memory_channels(t *testing.T) {
-	sess, _ := newTestSession(t)
-	ctx := t.Context()
+	synctest.Test(t, func(t *testing.T) {
+		bootAt := time.Now()
+		sess, _ := newTestSession(t)
+		ctx := t.Context()
 
-	require.NoError(t, sess.Join(ctx, "#general"))
-	_, extras := drainUntilMatched(t, sess,
-		matchEvent[domain.Join](),
-		matchEvent[domain.NamesReplyEvent](),
-		matchEvent[domain.ModeChange](),
-	)
-	require.Empty(t, extras)
+		require.NoError(t, sess.Join(ctx, "#general"))
+		general, err := sess.loadChannelWindow(ctx, "#general")
+		require.NoError(t, err)
+		generalMembers := general.Members
 
-	require.NoError(t, sess.Quit(ctx, ""))
+		require.NoError(t, sess.Quit(ctx, ""))
+		synctest.Wait()
 
-	remaining := []domain.ChannelName{}
-	for pair := sess.UserInstance().Channels().Oldest(); pair != nil; pair = pair.Next() {
-		remaining = append(remaining, pair.Key)
-	}
+		user := sess.UserInstance()
+		require.ElementsMatch(t, []domain.Event{
+			bootstrapModeChange(sess, bootAt),
+			domain.Join{
+				Target:   "#general",
+				Nick:     "testuser",
+				Instance: user,
+				Created:  true,
+				At:       fixedTime,
+			},
+			domain.NamesReplyEvent{
+				Channel: "#general",
+				Members: generalMembers,
+				At:      fixedTime,
+			},
+			domain.ModeChange{
+				Target:     "#general",
+				Nick:       "testuser",
+				InstanceID: user.ID(),
+				Flag:       domain.ModeOperator,
+				Add:        true,
+				By:         "ChanServ",
+				At:         fixedTime,
+				Instance:   user,
+			},
+		}, collectEmittedEvents(t, sess))
 
-	require.Equal(t, []domain.ChannelName{}, remaining,
-		"quit must clear the user's channel list")
+		remaining := []domain.ChannelName{}
+		for pair := sess.UserInstance().Channels().Oldest(); pair != nil; pair = pair.Next() {
+			remaining = append(remaining, pair.Key)
+		}
+
+		require.Equal(t, []domain.ChannelName{}, remaining,
+			"quit must clear the user's channel list")
+	})
 }
 
 // TestSession_user_state_triple_stays_consistent verifies that the
@@ -968,58 +1097,118 @@ func TestSession_user_state_triple_stays_consistent(t *testing.T) {
 		}
 	}
 
-	sess, s := newTestSession(t)
-	ctx := t.Context()
+	synctest.Test(t, func(t *testing.T) {
+		bootAt := time.Now()
+		sess, s := newTestSession(t)
+		ctx := t.Context()
 
-	require.NoError(t, sess.Join(ctx, "#general"))
-	_, extras := drainUntilMatched(t, sess,
-		matchEvent[domain.Join](),
-		matchEvent[domain.NamesReplyEvent](),
-		matchEvent[domain.ModeChange](),
-	)
-	require.Empty(t, extras)
+		require.NoError(t, sess.Join(ctx, "#general"))
+		require.Equal(t, userSnapshot{
+			Channels:   []domain.ChannelName{"#general"},
+			Mode:       domain.ModeOp,
+			OnDiskUser: false,
+		}, snapshot(t, sess, s, "#general"))
 
-	require.Equal(t, userSnapshot{
-		Channels:   []domain.ChannelName{"#general"},
-		Mode:       domain.ModeOp,
-		OnDiskUser: false,
-	}, snapshot(t, sess, s, "#general"))
+		general1, err := sess.loadChannelWindow(ctx, "#general")
+		require.NoError(t, err)
+		generalMembers1 := general1.Members
 
-	require.NoError(t, sess.Part(ctx, "#general", ""))
-	_, extras = drainUntilMatched(t, sess,
-		matchEvent[domain.Part](),
-	)
-	require.Empty(t, extras)
+		require.NoError(t, sess.Part(ctx, "#general", ""))
+		require.Equal(t, userSnapshot{
+			Channels:   nil,
+			Mode:       domain.ModeNone,
+			OnDiskUser: false,
+		}, snapshot(t, sess, s, "#general"))
 
-	require.Equal(t, userSnapshot{
-		Channels:   nil,
-		Mode:       domain.ModeNone,
-		OnDiskUser: false,
-	}, snapshot(t, sess, s, "#general"))
+		require.NoError(t, sess.Join(ctx, "#general"))
+		require.Equal(t, userSnapshot{
+			Channels:   []domain.ChannelName{"#general"},
+			Mode:       domain.ModeOp,
+			OnDiskUser: false,
+		}, snapshot(t, sess, s, "#general"))
 
-	require.NoError(t, sess.Join(ctx, "#general"))
-	_, extras = drainUntilMatched(t, sess,
-		matchEvent[domain.Join](),
-		matchEvent[domain.NamesReplyEvent](),
-		matchEvent[domain.ModeChange](),
-	)
-	require.Empty(t, extras)
+		general2, err := sess.loadChannelWindow(ctx, "#general")
+		require.NoError(t, err)
+		generalMembers2 := general2.Members
 
-	require.Equal(t, userSnapshot{
-		Channels:   []domain.ChannelName{"#general"},
-		Mode:       domain.ModeOp,
-		OnDiskUser: false,
-	}, snapshot(t, sess, s, "#general"))
+		require.NoError(t, sess.ChangeNick(ctx, "renamed"))
+		synctest.Wait()
 
-	require.NoError(t, sess.ChangeNick(ctx, "renamed"))
-	_, extras = drainUntilMatched(t, sess, matchEvent[domain.NickChange]())
-	require.Empty(t, extras)
+		user := sess.UserInstance()
+		require.ElementsMatch(t, []domain.Event{
+			domain.ModeChange{
+				Nick:       "testuser",
+				InstanceID: user.ID(),
+				Flag:       domain.ModeOperator,
+				Add:        true,
+				At:         bootAt,
+				Instance:   user,
+			},
+			domain.Join{
+				Target:   "#general",
+				Nick:     "testuser",
+				Instance: user,
+				Created:  true,
+				At:       fixedTime,
+			},
+			domain.NamesReplyEvent{
+				Channel: "#general",
+				Members: generalMembers1,
+				At:      fixedTime,
+			},
+			domain.ModeChange{
+				Target:     "#general",
+				Nick:       "testuser",
+				InstanceID: user.ID(),
+				Flag:       domain.ModeOperator,
+				Add:        true,
+				By:         "ChanServ",
+				At:         fixedTime,
+				Instance:   user,
+			},
+			domain.Part{
+				Target:   "#general",
+				Nick:     "testuser",
+				Instance: user,
+				At:       fixedTime,
+			},
+			domain.Join{
+				Target:   "#general",
+				Nick:     "testuser",
+				Instance: user,
+				Created:  false,
+				At:       fixedTime,
+			},
+			domain.NamesReplyEvent{
+				Channel: "#general",
+				Members: generalMembers2,
+				At:      fixedTime,
+			},
+			domain.ModeChange{
+				Target:     "#general",
+				Nick:       "testuser",
+				InstanceID: user.ID(),
+				Flag:       domain.ModeOperator,
+				Add:        true,
+				By:         "ChanServ",
+				At:         fixedTime,
+				Instance:   user,
+			},
+			domain.NickChange{
+				InstanceID: user.ID(),
+				OldNick:    "testuser",
+				NewNick:    "renamed",
+				Instance:   user,
+				At:         fixedTime,
+			},
+		}, collectEmittedEvents(t, sess))
 
-	require.Equal(t, userSnapshot{
-		Channels:   []domain.ChannelName{"#general"},
-		Mode:       domain.ModeOp,
-		OnDiskUser: false,
-	}, snapshot(t, sess, s, "#general"))
+		require.Equal(t, userSnapshot{
+			Channels:   []domain.ChannelName{"#general"},
+			Mode:       domain.ModeOp,
+			OnDiskUser: false,
+		}, snapshot(t, sess, s, "#general"))
+	})
 }
 
 func TestSession_Quit_clears_session_active_marker(t *testing.T) {
@@ -1081,73 +1270,93 @@ func TestSession_Quit_does_not_dispatch_to_models(t *testing.T) {
 }
 
 func TestSession_AddModel(t *testing.T) {
-	sess, s := newTestSession(t)
-	ctx := t.Context()
+	synctest.Test(t, func(t *testing.T) {
+		bootAt := time.Now()
+		sess, s := newTestSession(t)
+		ctx := t.Context()
 
-	saveTestChannel(t, sess, s, newTestChannelWindow("#dev", fixedTime, testMembers(t, sess, s, "testuser")))
+		saveTestChannel(t, sess, s, newTestChannelWindow("#dev", fixedTime, testMembers(t, sess, s, "testuser")))
 
-	require.NoError(t, sess.AddModel(ctx, "#dev", "anthropic/claude-3-haiku", ""))
-	evt := drainEvent[domain.ModelInvited](t, sess)
-	require.NotNil(t, evt.Instance)
-	require.NotEmpty(t, evt.Instance.ID())
-	require.Equal(t, domain.ModelInvited{
-		Target:     "#dev",
-		Nick:       "fakenick",
-		InstanceID: evt.Instance.ID(),
-		By:         "testuser",
-		At:         fixedTime,
-		Instance:   evt.Instance,
-	}, evt)
-	requireInstanceEqual(t, domain.NewModelInstance(
-		evt.Instance.ID(), "fakenick", "anthropic/claude-3-haiku", "", testChannels("#dev"),
-	), evt.Instance)
+		require.NoError(t, sess.AddModel(ctx, "#dev", "anthropic/claude-3-haiku", ""))
+		synctest.Wait()
 
-	// Instance should be persisted.
-	inst, err := s.ResolveNick(ctx, "fakenick")
-	require.NoError(t, err)
-	requireInstanceEqual(t, domain.NewModelInstance(
-		evt.Instance.ID(), "fakenick", "anthropic/claude-3-haiku", "", testChannels("#dev"),
-	), inst)
+		inst, err := s.ResolveNick(ctx, "fakenick")
+		require.NoError(t, err)
+		require.NotEmpty(t, inst.ID())
 
-	// Channel should have new member.
-	updated, err := sess.loadChannelWindow(ctx, "#dev")
-	require.NoError(t, err)
-	require.Equal(t, []domain.Member{
-		{Instance: sess.UserInstance(), Nick: "testuser", Mode: domain.ModeOp},
-		{Instance: evt.Instance, Nick: "fakenick", Mode: domain.ModeVoice},
-	}, slices.Collect(updated.Members.All()))
+		require.ElementsMatch(t, []domain.Event{
+			bootstrapModeChange(sess, bootAt),
+			domain.ModelInvited{
+				Target:     "#dev",
+				Nick:       "fakenick",
+				InstanceID: inst.ID(),
+				By:         "testuser",
+				At:         fixedTime,
+				Instance:   inst,
+			},
+			domain.ModeChange{
+				Target:     "#dev",
+				Nick:       "fakenick",
+				InstanceID: inst.ID(),
+				Flag:       domain.ModeChannelVoice,
+				Add:        true,
+				By:         "ChanServ",
+				At:         fixedTime,
+				Instance:   inst,
+			},
+			domain.ModelDispatchStarted{Instance: inst, At: fixedTime},
+			domain.ModelDispatchDone{Instance: inst, At: fixedTime},
+		}, collectEmittedEvents(t, sess))
+
+		requireInstanceEqual(t, domain.NewModelInstance(
+			inst.ID(), "fakenick", "anthropic/claude-3-haiku", "", testChannels("#dev"),
+		), inst)
+
+		updated, err := sess.loadChannelWindow(ctx, "#dev")
+		require.NoError(t, err)
+		require.Equal(t, []domain.Member{
+			{Instance: sess.UserInstance(), Nick: "testuser", Mode: domain.ModeOp},
+			{Instance: inst, Nick: "fakenick", Mode: domain.ModeVoice},
+		}, slices.Collect(updated.Members.All()))
+	})
 }
 
 func TestSession_Kick(t *testing.T) {
-	sess, s := newTestSession(t)
-	ctx := t.Context()
+	synctest.Test(t, func(t *testing.T) {
+		bootAt := time.Now()
+		sess, s := newTestSession(t)
+		ctx := t.Context()
 
-	botty := seedInstance(t, sess, s, instanceSpec{
-		Nick:     "botty",
-		ModelID:  "test/model",
-		Channels: testChannels("#dev", "#random"),
+		botty := seedInstance(t, sess, s, instanceSpec{
+			Nick:     "botty",
+			ModelID:  "test/model",
+			Channels: testChannels("#dev", "#random"),
+		})
+		saveTestChannel(t, sess, s, newTestChannelWindow("#dev", fixedTime, testMembers(t, sess, s, "testuser", "botty")))
+
+		require.NoError(t, sess.Kick(ctx, "#dev", "botty"))
+		synctest.Wait()
+
+		require.ElementsMatch(t, []domain.Event{
+			bootstrapModeChange(sess, bootAt),
+			domain.ModelKicked{
+				Target:     "#dev",
+				Nick:       "botty",
+				InstanceID: botty.ID(),
+				By:         "testuser",
+				At:         fixedTime,
+				Instance:   botty,
+			},
+		}, collectEmittedEvents(t, sess))
+
+		updated, err := sess.loadChannelWindow(ctx, "#dev")
+		require.NoError(t, err)
+		require.Equal(t, slices.Collect(testMembers(t, sess, s, "testuser").All()), slices.Collect(updated.Members.All()))
+
+		inst, err := s.ResolveNick(ctx, "botty")
+		require.NoError(t, err)
+		requireChannels(t, inst.Channels(), "#random")
 	})
-	saveTestChannel(t, sess, s, newTestChannelWindow("#dev", fixedTime, testMembers(t, sess, s, "testuser", "botty")))
-
-	require.NoError(t, sess.Kick(ctx, "#dev", "botty"))
-	evt := drainEvent[domain.ModelKicked](t, sess)
-	require.Equal(t, domain.ModelKicked{
-		Target:     "#dev",
-		Nick:       "botty",
-		InstanceID: botty.ID(),
-		By:         "testuser",
-		At:         fixedTime,
-		Instance:   botty,
-	}, evt)
-
-	// Channel should no longer have the kicked member.
-	updated, err := sess.loadChannelWindow(ctx, "#dev")
-	require.NoError(t, err)
-	require.Equal(t, slices.Collect(testMembers(t, sess, s, "testuser").All()), slices.Collect(updated.Members.All()))
-
-	inst, err := s.ResolveNick(ctx, "botty")
-	require.NoError(t, err)
-	requireChannels(t, inst.Channels(), "#random")
 }
 
 func TestSession_mutationOperations_recordSpans(t *testing.T) {
@@ -1429,103 +1638,120 @@ func TestSession_dispatchToInstance_recordsPassReasonAndToolTurns(t *testing.T) 
 }
 
 func TestSession_modelDispatchTurn_recordsSpan(t *testing.T) {
-	recorder, provider := oteltest.NewSpanRecorder(t)
-	sess, s := newTestSession(t)
-	sess.WithTracerProvider(provider)
-	ctx := t.Context()
+	synctest.Test(t, func(t *testing.T) {
+		bootAt := time.Now()
+		recorder, provider := oteltest.NewSpanRecorder(t)
+		sess, s := newTestSession(t)
+		sess.WithTracerProvider(provider)
+		ctx := t.Context()
 
-	botty := seedInstance(t, sess, s, instanceSpec{
-		Nick:     "botty",
-		ModelID:  "test/model",
-		Channels: testChannels("#general"),
+		botty := seedInstance(t, sess, s, instanceSpec{
+			Nick:     "botty",
+			ModelID:  "test/model",
+			Channels: testChannels("#general"),
+		})
+		seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
+
+		client := sess.ensureModelClient(ctx, botty)
+		trigger := protocol.IRCMessage{
+			Kind:   protocol.KindPoke,
+			From:   "modeloff",
+			Target: "#general",
+		}
+		sess.modelDispatchTurn(ctx, client, "#general", trigger, trace.SpanContext{})
+		synctest.Wait()
+
+		require.ElementsMatch(t, []domain.Event{
+			bootstrapModeChange(sess, bootAt),
+			domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
+			domain.ModelDispatchDone{Instance: botty, At: fixedTime},
+		}, collectEmittedEvents(t, sess))
+
+		span := oteltest.FindSpan(t, recorder, "session.dispatch_model_turn")
+		require.Equal(t, "#general", oteltest.AttrValue(span.Attributes(), observability.AttrChannel))
+		require.Equal(t, observability.ResultOK, oteltest.AttrValue(span.Attributes(), observability.AttrResult))
 	})
-	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
-
-	client := sess.ensureModelClient(ctx, botty)
-	trigger := protocol.IRCMessage{
-		Kind:   protocol.KindPoke,
-		From:   "modeloff",
-		Target: "#general",
-	}
-	sess.modelDispatchTurn(ctx, client, "#general", trigger, trace.SpanContext{})
-
-	drainEvent[domain.ModelDispatchStarted](t, sess)
-	drainEvent[domain.ModelDispatchDone](t, sess)
-
-	span := oteltest.FindSpan(t, recorder, "session.dispatch_model_turn")
-	require.Equal(t, "#general", oteltest.AttrValue(span.Attributes(), observability.AttrChannel))
-	require.Equal(t, observability.ResultOK, oteltest.AttrValue(span.Attributes(), observability.AttrResult))
 }
 
 func TestSession_SendMessage(t *testing.T) {
-	sess, s := newTestSession(t)
-	ctx := t.Context()
+	synctest.Test(t, func(t *testing.T) {
+		bootAt := time.Now()
+		sess, s := newTestSession(t)
+		ctx := t.Context()
 
-	seedChannelWithMembers(t, sess, s, "#general", "testuser")
+		seedChannelWithMembers(t, sess, s, "#general", "testuser")
 
-	persisted, err := sess.SendMessage(ctx, "#general", "hello world")
-	require.NoError(t, err)
-	require.Equal(t, domain.Message{
-		Target: "#general",
-		From:   "testuser",
-		Body:   "hello world",
-		At:     fixedTime,
-	}, persisted)
+		persisted, err := sess.SendMessage(ctx, "#general", "hello world")
+		require.NoError(t, err)
+		require.Equal(t, domain.Message{
+			Target: "#general",
+			From:   "testuser",
+			Body:   "hello world",
+			At:     fixedTime,
+		}, persisted)
 
-	// Message should be persisted as a Message event.
-	msgs := channelMessages(t, s, "#general")
-	require.Equal(t, []domain.Message{
-		{Target: "#general", From: "testuser", Body: "hello world", At: fixedTime},
-	}, msgs)
+		synctest.Wait()
 
-	// The session does not echo the user's own message on its
-	// events channel, and a channel without models produces no
-	// dispatch lifecycle.
-	if evt, ok := peekEvent(sess); ok {
-		t.Fatalf("expected no event, got %T %+v", evt, evt)
-	}
+		msgs := channelMessages(t, s, "#general")
+		require.Equal(t, []domain.Message{
+			{Target: "#general", From: "testuser", Body: "hello world", At: fixedTime},
+		}, msgs)
+
+		// The session does not echo the user's own message on its
+		// events channel, and a channel without models produces no
+		// dispatch lifecycle, so only the bootstrap mode-change is
+		// queued on the bus.
+		require.ElementsMatch(t, []domain.Event{
+			bootstrapModeChange(sess, bootAt),
+		}, collectEmittedEvents(t, sess))
+	})
 }
 
 func TestSession_SendMessage_emits_dispatch_events(t *testing.T) {
-	fake := &fakeAPIClient{
-		sendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
-			return protocol.Reply("got it"), nil
-		},
-	}
-	sess, s := newTestSessionWithAPI(t, fake)
-	ctx := t.Context()
+	synctest.Test(t, func(t *testing.T) {
+		bootAt := time.Now()
 
-	botty := seedInstance(t, sess, s, instanceSpec{
-		Nick:     "botty",
-		ModelID:  "test/model",
-		Channels: testChannels("#general"),
+		fake := &fakeAPIClient{
+			sendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
+				return protocol.Reply("got it"), nil
+			},
+		}
+		sess, s := newTestSessionWithAPI(t, fake)
+		ctx := t.Context()
+
+		botty := seedInstance(t, sess, s, instanceSpec{
+			Nick:     "botty",
+			ModelID:  "test/model",
+			Channels: testChannels("#general"),
+		})
+		seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
+
+		_, err := sess.SendMessage(ctx, "#general", "hello")
+		require.NoError(t, err)
+		synctest.Wait()
+
+		// The session does not echo the user's own outgoing message
+		// (RFC 2812 §3.3.1) but botty's dispatch goroutine triggers on
+		// it and emits its reply Message on the wire.
+		require.ElementsMatch(t, []domain.Event{
+			bootstrapModeChange(sess, bootAt),
+			domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
+			domain.Message{
+				Target:     "#general",
+				From:       "botty",
+				InstanceID: testMemberID("botty"),
+				Body:       "got it",
+				At:         fixedTime,
+			},
+			domain.ModelDispatchDone{Instance: botty, At: fixedTime},
+		}, collectEmittedEvents(t, sess))
 	})
-	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
-
-	_, err := sess.SendMessage(ctx, "#general", "hello")
-	require.NoError(t, err)
-
-	// The session does not echo the user's own outgoing message
-	// (RFC 2812 §3.3.1) but botty's dispatch goroutine triggers on
-	// it and emits its reply Message on the wire. Drain the
-	// dispatch lifecycle plus the reply Message.
-	events := drainEvents(t, sess, 1)
-
-	require.Equal(t, []domain.Event{
-		domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
-		domain.Message{
-			Target:     "#general",
-			From:       "botty",
-			InstanceID: testMemberID("botty"),
-			Body:       "got it",
-			At:         fixedTime,
-		},
-		domain.ModelDispatchDone{Instance: botty, At: fixedTime},
-	}, events)
 }
 
 func TestSession_JoinEvent_triggers_dispatch(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
+		bootAt := time.Now()
+
 		var receivedEvents []protocol.IRCMessage
 
 		fake := &fakeAPIClient{
@@ -1548,51 +1774,18 @@ func TestSession_JoinEvent_triggers_dispatch(t *testing.T) {
 
 		// Join an existing channel — the reactive dispatch should fire.
 		require.NoError(t, sess.Join(ctx, "#general"))
+		synctest.Wait()
 
-		// Six events are expected: the synchronous Join, the
-		// joiner-targeted NamesReply carrying the channel's member list
-		// at join time, the synchronous ModeChange emitted by
-		// emitJoinProtocol, and the async ModelDispatchStarted /
-		// reply Message / ModelDispatchDone from botty's dispatch
-		// goroutine. Cross-goroutine ordering between ModeChange and
-		// the dispatch lifecycle is not guaranteed, so drain a fixed
-		// count and assert by set membership plus the lifecycle's
-		// internal order.
-		events := drainNEvents(t, sess, 6)
-
-		require.IsType(t, domain.Join{}, events[0])
-		require.Equal(t,
-			domain.Join{
-				Target: "#general", Nick: "testuser", InstanceID: sess.UserInstance().ID(),
-				Instance: sess.UserInstance(), At: fixedTime,
-			},
-			events[0],
-		)
-
-		wantMode := domain.ModeChange{
-			Target:     "#general",
-			Nick:       "testuser",
-			InstanceID: sess.UserInstance().ID(),
-			Instance:   sess.UserInstance(),
-			Mode:       domain.ModeOp, By: "ChanServ", Actor: "ChanServ", At: fixedTime,
-		}
-		wantStarted := domain.ModelDispatchStarted{Instance: botty, At: fixedTime}
-		wantReply := domain.Message{
-			Target:     "#general",
-			From:       "botty",
-			InstanceID: testMemberID("botty"),
-			Body:       "welcome",
-			At:         fixedTime,
-		}
-		wantDone := domain.ModelDispatchDone{Instance: botty, At: fixedTime}
+		userInst := sess.UserInstance()
+		events := collectEmittedEvents(t, sess)
 
 		// The NamesReply carries the channel's MemberList at join
 		// time. Extracting the exact MemberList for an equality match
 		// would couple to its internals, so confirm one is present
 		// addressing the right channel and time, then assert the rest.
 		var sawNames bool
-		rest := []domain.Event{}
-		for _, e := range events[1:] {
+		rest := make([]domain.Event, 0, len(events))
+		for _, e := range events {
 			if n, ok := e.(domain.NamesReplyEvent); ok {
 				require.Equal(t, domain.ChannelName("#general"), n.Channel)
 				require.Equal(t, fixedTime, n.At)
@@ -1605,10 +1798,39 @@ func TestSession_JoinEvent_triggers_dispatch(t *testing.T) {
 		}
 		require.True(t, sawNames, "expected a NamesReplyEvent in the join burst")
 
-		require.ElementsMatch(t,
-			[]domain.Event{wantMode, wantStarted, wantReply, wantDone},
-			rest,
-		)
+		wantStarted := domain.ModelDispatchStarted{Instance: botty, At: fixedTime}
+		wantReply := domain.Message{
+			Target:     "#general",
+			From:       "botty",
+			InstanceID: testMemberID("botty"),
+			Body:       "welcome",
+			At:         fixedTime,
+		}
+		wantDone := domain.ModelDispatchDone{Instance: botty, At: fixedTime}
+
+		require.ElementsMatch(t, []domain.Event{
+			bootstrapModeChange(sess, bootAt),
+			domain.Join{
+				Target:     "#general",
+				Nick:       "testuser",
+				InstanceID: userInst.ID(),
+				Instance:   userInst,
+				At:         fixedTime,
+			},
+			domain.ModeChange{
+				Target:     "#general",
+				Nick:       "testuser",
+				InstanceID: userInst.ID(),
+				Instance:   userInst,
+				Flag:       domain.ModeOperator,
+				Add:        true,
+				By:         "ChanServ",
+				At:         fixedTime,
+			},
+			wantStarted,
+			wantReply,
+			wantDone,
+		}, rest)
 
 		// Dispatch lifecycle ordering: Started before reply Message before Done.
 		idxOf := func(target domain.Event) int {
@@ -2116,94 +2338,160 @@ func TestSession_Poke_api_error_emits_error_event(t *testing.T) {
 }
 
 func TestSession_SetTopic(t *testing.T) {
-	sess, s := newTestSession(t)
-	ctx := t.Context()
+	synctest.Test(t, func(t *testing.T) {
+		bootAt := time.Now()
+		sess, s := newTestSession(t)
+		ctx := t.Context()
 
-	saveTestChannel(t, sess, s, domain.NewChannelWindow("#dev", fixedTime))
+		saveTestChannel(t, sess, s, domain.NewChannelWindow("#dev", fixedTime))
 
-	require.NoError(t, sess.SetTopic(ctx, "#dev", "Development Chat"))
-	evt := drainEvent[domain.TopicChange](t, sess)
-	require.Equal(t, domain.TopicChange{
-		Target:     "#dev",
-		Topic:      "Development Chat",
-		By:         "testuser",
-		At:         fixedTime,
-		ByInstance: sess.UserInstance(),
-	}, evt)
+		require.NoError(t, sess.SetTopic(ctx, "#dev", "Development Chat"))
+		synctest.Wait()
 
-	// Channel topic and metadata should be updated.
-	updated, err := sess.loadChannelWindow(ctx, "#dev")
-	require.NoError(t, err)
-	expected := domain.NewChannelWindow("#dev", fixedTime)
-	expected.Topic = "Development Chat"
-	expected.TopicSetBy = "testuser"
-	expected.TopicSetAt = fixedTime
-	requireChannelEqual(t, expected, updated)
+		require.ElementsMatch(t, []domain.Event{
+			bootstrapModeChange(sess, bootAt),
+			domain.TopicChange{
+				Target:     "#dev",
+				Topic:      "Development Chat",
+				By:         "testuser",
+				At:         fixedTime,
+				ByInstance: sess.UserInstance(),
+			},
+		}, collectEmittedEvents(t, sess))
+
+		updated, err := sess.loadChannelWindow(ctx, "#dev")
+		require.NoError(t, err)
+		expected := domain.NewChannelWindow("#dev", fixedTime)
+		expected.Topic = "Development Chat"
+		expected.TopicSetBy = "testuser"
+		expected.TopicSetAt = fixedTime
+		requireChannelEqual(t, expected, updated)
+	})
 }
 
 func TestSession_ChangeNick(t *testing.T) {
-	s := storetest.NewMemoryStore(t)
-	sess := New(t.Context, s, nil, &fakeAPIClient{}, "testuser", "", "")
-	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
-	sess.now = func() time.Time { return fixedTime }
+	synctest.Test(t, func(t *testing.T) {
+		bootAt := time.Now()
+		s := storetest.NewMemoryStore(t)
+		sess := New(t.Context, s, nil, &fakeAPIClient{}, "testuser", "", "")
+		t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
+		sess.now = func() time.Time { return fixedTime }
 
-	// Join a channel so the nick change emits per-channel events.
-	// Creating a channel emits JoinEvent, NamesReplyEvent and
-	// ModeChangeEvent.
-	require.NoError(t, sess.Join(t.Context(), "#general"))
-	_, extras := drainUntilMatched(t, sess,
-		matchEvent[domain.Join](),
-		matchEvent[domain.NamesReplyEvent](),
-		matchEvent[domain.ModeChange](),
-	)
-	require.Empty(t, extras)
+		// Join a channel so the nick change emits per-channel events.
+		require.NoError(t, sess.Join(t.Context(), "#general"))
+		general, err := sess.loadChannelWindow(t.Context(), "#general")
+		require.NoError(t, err)
+		generalMembers := general.Members
 
-	require.NoError(t, sess.ChangeNick(t.Context(), "newname"))
-	evt := drainEvent[domain.NickChange](t, sess)
-	require.Equal(t, domain.NickChange{
-		InstanceID: sess.UserInstance().ID(),
-		OldNick:    "testuser",
-		NewNick:    "newname",
-		Instance:   sess.UserInstance(),
-		At:         fixedTime,
-	}, evt)
+		require.NoError(t, sess.ChangeNick(t.Context(), "newname"))
+		synctest.Wait()
 
-	require.Equal(t, domain.Nick("newname"), sess.UserNick())
+		user := sess.UserInstance()
+		require.ElementsMatch(t, []domain.Event{
+			domain.ModeChange{
+				Nick:       "testuser",
+				InstanceID: user.ID(),
+				Flag:       domain.ModeOperator,
+				Add:        true,
+				At:         bootAt,
+				Instance:   user,
+			},
+			domain.Join{
+				Target:   "#general",
+				Nick:     "testuser",
+				Instance: user,
+				Created:  true,
+				At:       fixedTime,
+			},
+			domain.NamesReplyEvent{
+				Channel: "#general",
+				Members: generalMembers,
+				At:      fixedTime,
+			},
+			domain.ModeChange{
+				Target:     "#general",
+				Nick:       "testuser",
+				InstanceID: user.ID(),
+				Flag:       domain.ModeOperator,
+				Add:        true,
+				By:         "ChanServ",
+				At:         fixedTime,
+				Instance:   user,
+			},
+			domain.NickChange{
+				InstanceID: user.ID(),
+				OldNick:    "testuser",
+				NewNick:    "newname",
+				Instance:   user,
+				At:         fixedTime,
+			},
+		}, collectEmittedEvents(t, sess))
+
+		require.Equal(t, domain.Nick("newname"), sess.UserNick())
+	})
 }
 
 func TestSession_AddModel_retries_on_nick_collision(t *testing.T) {
-	suggestions := []domain.Nick{"taken", "alsotaken", "fresh"}
-	var seenExclusions [][]domain.Nick
+	synctest.Test(t, func(t *testing.T) {
+		bootAt := time.Now()
+		suggestions := []domain.Nick{"taken", "alsotaken", "fresh"}
+		var seenExclusions [][]domain.Nick
 
-	fake := &fakeAPIClient{
-		generateNickFn: func(_ context.Context, _ domain.ModelID, _ string, exclude []domain.Nick) (domain.Nick, error) {
-			seenExclusions = append(seenExclusions, slices.Clone(exclude))
+		fake := &fakeAPIClient{
+			generateNickFn: func(_ context.Context, _ domain.ModelID, _ string, exclude []domain.Nick) (domain.Nick, error) {
+				seenExclusions = append(seenExclusions, slices.Clone(exclude))
 
-			return suggestions[len(exclude)], nil
-		},
-	}
+				return suggestions[len(exclude)], nil
+			},
+		}
 
-	sess, s := newTestSessionWithAPI(t, fake)
-	ctx := t.Context()
+		sess, s := newTestSessionWithAPI(t, fake)
+		ctx := t.Context()
 
-	// Pre-seed two instances with the colliding nicks so the first two
-	// suggestions get rejected by the session-side uniqueness guard.
-	_ = seedInstance(t, sess, s, instanceSpec{Nick: "taken", ModelID: "test/model"})
-	_ = seedInstance(t, sess, s, instanceSpec{Nick: "alsotaken", ModelID: "test/model"})
+		// Pre-seed two instances with the colliding nicks so the first two
+		// suggestions get rejected by the session-side uniqueness guard.
+		_ = seedInstance(t, sess, s, instanceSpec{Nick: "taken", ModelID: "test/model"})
+		_ = seedInstance(t, sess, s, instanceSpec{Nick: "alsotaken", ModelID: "test/model"})
 
-	seedChannelWithMembers(t, sess, s, "#dev", "testuser")
+		seedChannelWithMembers(t, sess, s, "#dev", "testuser")
 
-	require.NoError(t, sess.AddModel(ctx, "#dev", "test/model", "Helpful assistant"))
-	evt := drainEvent[domain.ModelInvited](t, sess)
+		require.NoError(t, sess.AddModel(ctx, "#dev", "test/model", "Helpful assistant"))
+		synctest.Wait()
 
-	require.Equal(t, domain.Nick("fresh"), evt.Instance.Nick(),
-		"AddModel should keep retrying until it finds a fresh nick")
-	require.Equal(t, [][]domain.Nick{
-		nil,
-		{"taken"},
-		{"taken", "alsotaken"},
-	}, seenExclusions,
-		"each retry must pass the previously rejected suggestions to the model")
+		fresh, err := s.ResolveNick(ctx, "fresh")
+		require.NoError(t, err)
+
+		require.ElementsMatch(t, []domain.Event{
+			bootstrapModeChange(sess, bootAt),
+			domain.ModelInvited{
+				Target:     "#dev",
+				Nick:       "fresh",
+				InstanceID: fresh.ID(),
+				By:         "testuser",
+				At:         fixedTime,
+				Instance:   fresh,
+			},
+			domain.ModeChange{
+				Target:     "#dev",
+				Nick:       "fresh",
+				InstanceID: fresh.ID(),
+				Flag:       domain.ModeChannelVoice,
+				Add:        true,
+				By:         "ChanServ",
+				At:         fixedTime,
+				Instance:   fresh,
+			},
+			domain.ModelDispatchStarted{Instance: fresh, At: fixedTime},
+			domain.ModelDispatchDone{Instance: fresh, At: fixedTime},
+		}, collectEmittedEvents(t, sess))
+
+		require.Equal(t, [][]domain.Nick{
+			nil,
+			{"taken"},
+			{"taken", "alsotaken"},
+		}, seenExclusions,
+			"each retry must pass the previously rejected suggestions to the model")
+	})
 }
 
 func TestSession_AddModel_gives_up_after_max_attempts(t *testing.T) {
@@ -2363,58 +2651,105 @@ func TestSession_AddModelGenerateNickError(t *testing.T) {
 }
 
 func TestSession_AddModel_persists_persona(t *testing.T) {
-	sess, s := newTestSession(t)
-	ctx := t.Context()
+	synctest.Test(t, func(t *testing.T) {
+		bootAt := time.Now()
+		sess, s := newTestSession(t)
+		ctx := t.Context()
 
-	seedChannelWithMembers(t, sess, s, "#general", "testuser")
+		seedChannelWithMembers(t, sess, s, "#general", "testuser")
 
-	require.NoError(t, sess.AddModel(ctx, "#general", "anthropic/claude-3-haiku", "Helpful assistant"))
-	evt := drainEvent[domain.ModelInvited](t, sess)
-	require.Equal(t, "Helpful assistant", evt.Instance.Persona())
+		require.NoError(t, sess.AddModel(ctx, "#general", "anthropic/claude-3-haiku", "Helpful assistant"))
+		synctest.Wait()
 
-	inst, err := s.ResolveNick(ctx, "fakenick")
-	require.NoError(t, err)
-	require.Equal(t, "Helpful assistant", inst.Persona())
+		inst, err := s.ResolveNick(ctx, "fakenick")
+		require.NoError(t, err)
+
+		require.ElementsMatch(t, []domain.Event{
+			bootstrapModeChange(sess, bootAt),
+			domain.ModelInvited{
+				Target:     "#general",
+				Nick:       "fakenick",
+				InstanceID: inst.ID(),
+				By:         "testuser",
+				At:         fixedTime,
+				Instance:   inst,
+			},
+			domain.ModeChange{
+				Target:     "#general",
+				Nick:       "fakenick",
+				InstanceID: inst.ID(),
+				Flag:       domain.ModeChannelVoice,
+				Add:        true,
+				By:         "ChanServ",
+				At:         fixedTime,
+				Instance:   inst,
+			},
+			domain.ModelDispatchStarted{Instance: inst, At: fixedTime},
+			domain.ModelDispatchDone{Instance: inst, At: fixedTime},
+		}, collectEmittedEvents(t, sess))
+
+		require.Equal(t, "Helpful assistant", inst.Persona())
+	})
 }
 
 func TestSession_InviteAs_reuses_existing_instance(t *testing.T) {
-	sess, s := newTestSession(t)
-	ctx := t.Context()
+	synctest.Test(t, func(t *testing.T) {
+		bootAt := time.Now()
+		sess, s := newTestSession(t)
+		ctx := t.Context()
 
-	botty := seedInstance(t, sess, s, instanceSpec{
-		Nick:     "botty",
-		ModelID:  "test/model",
-		Persona:  "Helpful assistant",
-		Channels: testChannels("#general"),
+		botty := seedInstance(t, sess, s, instanceSpec{
+			Nick:     "botty",
+			ModelID:  "test/model",
+			Persona:  "Helpful assistant",
+			Channels: testChannels("#general"),
+		})
+		seedChannelWithMembers(t, sess, s, "#general", "testuser")
+		seedChannelWithMembers(t, sess, s, "#random", "testuser")
+
+		require.NoError(t, sess.inviteAs(ctx, sess.UserInstance(), "botty", "#random"))
+		synctest.Wait()
+
+		require.ElementsMatch(t, []domain.Event{
+			bootstrapModeChange(sess, bootAt),
+			domain.ModelInvited{
+				Target:     "#random",
+				Nick:       "botty",
+				InstanceID: botty.ID(),
+				By:         "testuser",
+				At:         fixedTime,
+				Instance:   botty,
+			},
+			domain.ModeChange{
+				Target:     "#random",
+				Nick:       "botty",
+				InstanceID: botty.ID(),
+				Flag:       domain.ModeChannelVoice,
+				Add:        true,
+				By:         "ChanServ",
+				At:         fixedTime,
+				Instance:   botty,
+			},
+			domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
+			domain.ModelDispatchDone{Instance: botty, At: fixedTime},
+		}, collectEmittedEvents(t, sess))
+
+		requireInstanceEqual(t, domain.NewModelInstance(
+			testMemberID("botty"), "botty", "test/model", "Helpful assistant",
+			testChannels("#general", "#random"),
+		), botty)
+
+		inst, err := s.ResolveNick(ctx, "botty")
+		require.NoError(t, err)
+		requireInstanceEqual(t, domain.NewModelInstance(
+			testMemberID("botty"), "botty", "test/model", "Helpful assistant",
+			testChannels("#general", "#random"),
+		), inst)
+
+		channel, err := sess.loadChannelWindow(ctx, "#random")
+		require.NoError(t, err)
+		require.Equal(t, slices.Collect(testMembers(t, sess, s, "testuser", "botty").All()), slices.Collect(channel.Members.All()))
 	})
-	seedChannelWithMembers(t, sess, s, "#general", "testuser")
-	seedChannelWithMembers(t, sess, s, "#random", "testuser")
-
-	require.NoError(t, sess.inviteAs(ctx, sess.UserInstance(), "botty", "#random"))
-	evt := drainEvent[domain.ModelInvited](t, sess)
-	require.Equal(t, domain.ModelInvited{
-		Target:     "#random",
-		Nick:       "botty",
-		InstanceID: botty.ID(),
-		By:         "testuser",
-		At:         fixedTime,
-		Instance:   botty,
-	}, evt)
-	requireInstanceEqual(t, domain.NewModelInstance(
-		testMemberID("botty"), "botty", "test/model", "Helpful assistant",
-		testChannels("#general", "#random"),
-	), evt.Instance)
-
-	inst, err := s.ResolveNick(ctx, "botty")
-	require.NoError(t, err)
-	requireInstanceEqual(t, domain.NewModelInstance(
-		testMemberID("botty"), "botty", "test/model", "Helpful assistant",
-		testChannels("#general", "#random"),
-	), inst)
-
-	channel, err := sess.loadChannelWindow(ctx, "#random")
-	require.NoError(t, err)
-	require.Equal(t, slices.Collect(testMembers(t, sess, s, "testuser", "botty").All()), slices.Collect(channel.Members.All()))
 }
 
 func TestSession_InviteAs_existing_instance_is_idempotent(t *testing.T) {
@@ -2440,65 +2775,136 @@ func TestSession_InviteAs_existing_instance_is_idempotent(t *testing.T) {
 }
 
 func TestSession_InviteAs_existing_instance_preserves_persona(t *testing.T) {
-	sess, s := newTestSession(t)
-	ctx := t.Context()
+	synctest.Test(t, func(t *testing.T) {
+		bootAt := time.Now()
+		sess, s := newTestSession(t)
+		ctx := t.Context()
 
-	seedInstance(t, sess, s, instanceSpec{
-		Nick:     "botty",
-		ModelID:  "test/model",
-		Persona:  "Existing persona",
-		Channels: testChannels("#general"),
+		botty := seedInstance(t, sess, s, instanceSpec{
+			Nick:     "botty",
+			ModelID:  "test/model",
+			Persona:  "Existing persona",
+			Channels: testChannels("#general"),
+		})
+		seedChannelWithMembers(t, sess, s, "#general", "testuser")
+		seedChannelWithMembers(t, sess, s, "#random", "testuser")
+
+		require.NoError(t, sess.inviteAs(ctx, sess.UserInstance(), "botty", "#random"))
+		synctest.Wait()
+
+		require.ElementsMatch(t, []domain.Event{
+			bootstrapModeChange(sess, bootAt),
+			domain.ModelInvited{
+				Target:     "#random",
+				Nick:       "botty",
+				InstanceID: botty.ID(),
+				By:         "testuser",
+				At:         fixedTime,
+				Instance:   botty,
+			},
+			domain.ModeChange{
+				Target:     "#random",
+				Nick:       "botty",
+				InstanceID: botty.ID(),
+				Flag:       domain.ModeChannelVoice,
+				Add:        true,
+				By:         "ChanServ",
+				At:         fixedTime,
+				Instance:   botty,
+			},
+			domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
+			domain.ModelDispatchDone{Instance: botty, At: fixedTime},
+		}, collectEmittedEvents(t, sess))
+
+		require.Equal(t, "Existing persona", botty.Persona())
+
+		inst, err := s.ResolveNick(ctx, "botty")
+		require.NoError(t, err)
+		require.Equal(t, "Existing persona", inst.Persona())
 	})
-	seedChannelWithMembers(t, sess, s, "#general", "testuser")
-	seedChannelWithMembers(t, sess, s, "#random", "testuser")
-
-	require.NoError(t, sess.inviteAs(ctx, sess.UserInstance(), "botty", "#random"))
-	evt := drainEvent[domain.ModelInvited](t, sess)
-	require.Equal(t, "Existing persona", evt.Instance.Persona())
-
-	inst, err := s.ResolveNick(ctx, "botty")
-	require.NoError(t, err)
-	require.Equal(t, "Existing persona", inst.Persona())
 }
 
 func TestSession_AddModel_creates_new_instance_per_invocation(t *testing.T) {
-	sess, s := newTestSession(t)
-	ctx := t.Context()
+	synctest.Test(t, func(t *testing.T) {
+		bootAt := time.Now()
+		sess, s := newTestSession(t)
+		ctx := t.Context()
 
-	seedChannelWithMembers(t, sess, s, "#general", "testuser")
-	seedChannelWithMembers(t, sess, s, "#random", "testuser")
+		seedChannelWithMembers(t, sess, s, "#general", "testuser")
+		seedChannelWithMembers(t, sess, s, "#random", "testuser")
 
-	require.NoError(t, sess.AddModel(ctx, "#general", "test/model", "Helpful assistant"))
-	matched, extras := drainUntilMatched(t, sess,
-		matchEvent[domain.ModelInvited](),
-		matchEvent[domain.ModeChange](),
-		matchEvent[domain.ModelDispatchStarted](),
-		matchEvent[domain.ModelDispatchDone](),
-	)
-	require.Empty(t, extras)
-	evt1 := findEvent[domain.ModelInvited](t, matched)
-	require.NotEmpty(t, evt1.Instance.ID())
+		require.NoError(t, sess.AddModel(ctx, "#general", "test/model", "Helpful assistant"))
+		synctest.Wait()
+		require.NoError(t, sess.AddModel(ctx, "#random", "test/model", ""))
+		synctest.Wait()
 
-	require.NoError(t, sess.AddModel(ctx, "#random", "test/model", ""))
-	matched, extras = drainUntilMatched(t, sess, matchEvent[domain.ModelInvited]())
-	require.Empty(t, extras)
-	evt2 := findEvent[domain.ModelInvited](t, matched)
+		// The default fake `GenerateNick` returns "fakenick" first and
+		// then "fakenick1" on the second invocation (numbered by
+		// exclusion-list length); both names resolve to distinct
+		// instances.
+		first, err := s.ResolveNick(ctx, "fakenick")
+		require.NoError(t, err)
+		second, err := s.ResolveNick(ctx, "fakenick1")
+		require.NoError(t, err)
 
-	// Each invocation produces a fresh `*Instance` with its own id;
-	// `AddModel` no longer conflates backing model with instance
-	// identity.
-	require.NotEqual(t, evt1.Instance.ID(), evt2.Instance.ID())
-	require.NotSame(t, evt1.Instance, evt2.Instance)
+		require.ElementsMatch(t, []domain.Event{
+			bootstrapModeChange(sess, bootAt),
+			domain.ModelInvited{
+				Target:     "#general",
+				Nick:       "fakenick",
+				InstanceID: first.ID(),
+				By:         "testuser",
+				At:         fixedTime,
+				Instance:   first,
+			},
+			domain.ModeChange{
+				Target:     "#general",
+				Nick:       "fakenick",
+				InstanceID: first.ID(),
+				Flag:       domain.ModeChannelVoice,
+				Add:        true,
+				By:         "ChanServ",
+				At:         fixedTime,
+				Instance:   first,
+			},
+			domain.ModelDispatchStarted{Instance: first, At: fixedTime},
+			domain.ModelDispatchDone{Instance: first, At: fixedTime},
+			domain.ModelInvited{
+				Target:     "#random",
+				Nick:       "fakenick1",
+				InstanceID: second.ID(),
+				By:         "testuser",
+				At:         fixedTime,
+				Instance:   second,
+			},
+			domain.ModeChange{
+				Target:     "#random",
+				Nick:       "fakenick1",
+				InstanceID: second.ID(),
+				Flag:       domain.ModeChannelVoice,
+				Add:        true,
+				By:         "ChanServ",
+				At:         fixedTime,
+				Instance:   second,
+			},
+			domain.ModelDispatchStarted{Instance: second, At: fixedTime},
+			domain.ModelDispatchDone{Instance: second, At: fixedTime},
+		}, collectEmittedEvents(t, sess))
 
-	instances, err := s.ListInstances(ctx)
-	require.NoError(t, err)
+		// Each invocation produces a fresh `*Instance` with its own id.
+		require.NotEqual(t, first.ID(), second.ID())
+		require.NotSame(t, first, second)
 
-	ids := make([]domain.InstanceID, len(instances))
-	for i, inst := range instances {
-		ids[i] = inst.ID()
-	}
+		instances, err := s.ListInstances(ctx)
+		require.NoError(t, err)
 
-	require.ElementsMatch(t, []domain.InstanceID{evt1.Instance.ID(), evt2.Instance.ID()}, ids)
+		ids := make([]domain.InstanceID, len(instances))
+		for i, inst := range instances {
+			ids[i] = inst.ID()
+		}
+
+		require.ElementsMatch(t, []domain.InstanceID{first.ID(), second.ID()}, ids)
+	})
 }
 
 func TestSession_KickNonexistentChannel(t *testing.T) {
@@ -2509,6 +2915,7 @@ func TestSession_KickNonexistentChannel(t *testing.T) {
 
 func TestSession_KickNonMember(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
+		bootAt := time.Now()
 		sess, s := newTestSession(t)
 		ctx := t.Context()
 
@@ -2519,15 +2926,11 @@ func TestSession_KickNonMember(t *testing.T) {
 		// otherwise point the UI at the human user), no stored
 		// membership mutation, no instance-channels mutation.
 		require.NoError(t, sess.Kick(ctx, "#dev", "nobody"))
-
 		synctest.Wait()
-		select {
-		case evt := <-sess.Events():
-			t.Fatalf("unexpected event for unknown-nick kick: %T %+v", evt, evt)
-		case evt := <-sess.User().Events():
-			t.Fatalf("unexpected event for unknown-nick kick: %T %+v", evt, evt)
-		default:
-		}
+
+		require.ElementsMatch(t, []domain.Event{
+			bootstrapModeChange(sess, bootAt),
+		}, collectEmittedEvents(t, sess))
 
 		updated, err := sess.loadChannelWindow(ctx, "#dev")
 		require.NoError(t, err)
@@ -2613,46 +3016,45 @@ func TestBuildSystemPrompt_with_memories(t *testing.T) {
 }
 
 func TestSession_Poke_emits_dispatch_events(t *testing.T) {
-	fake := &fakeAPIClient{
-		sendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
-			return protocol.Reply("poke received"), nil
-		},
-	}
-	sess, s := newTestSessionWithAPI(t, fake)
-	ctx := t.Context()
+	synctest.Test(t, func(t *testing.T) {
+		bootAt := time.Now()
+		fake := &fakeAPIClient{
+			sendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
+				return protocol.Reply("poke received"), nil
+			},
+		}
+		sess, s := newTestSessionWithAPI(t, fake)
+		ctx := t.Context()
 
-	botty := seedInstance(t, sess, s, instanceSpec{
-		Nick:     "botty",
-		ModelID:  "test/model",
-		Channels: testChannels("#general"),
+		botty := seedInstance(t, sess, s, instanceSpec{
+			Nick:     "botty",
+			ModelID:  "test/model",
+			Channels: testChannels("#general"),
+		})
+		seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
+
+		require.NoError(t, sess.Poke(ctx))
+		synctest.Wait()
+
+		require.ElementsMatch(t, []domain.Event{
+			bootstrapModeChange(sess, bootAt),
+			domain.PokeEvent{Channel: "#general", At: fixedTime},
+			domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
+			domain.Message{
+				Target:     "#general",
+				From:       "botty",
+				InstanceID: testMemberID("botty"),
+				Body:       "poke received",
+				At:         fixedTime,
+			},
+			domain.ModelDispatchDone{Instance: botty, At: fixedTime},
+		}, collectEmittedEvents(t, sess))
+
+		msgs := channelMessages(t, s, "#general")
+		require.Equal(t, []domain.Message{
+			{Target: "#general", From: "botty", InstanceID: testMemberID("botty"), Body: "poke received", At: fixedTime},
+		}, msgs)
 	})
-	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
-
-	require.NoError(t, sess.Poke(ctx))
-
-	// PokeEvent is emitted via emit(), then the reactive dispatch
-	// runs in the background.
-	pokeEvt := drainEvent[domain.PokeEvent](t, sess)
-	require.Equal(t, domain.PokeEvent{Channel: "#general", At: fixedTime}, pokeEvt)
-
-	events := drainEvents(t, sess, 1)
-
-	require.Equal(t, []domain.Event{
-		domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
-		domain.Message{
-			Target:     "#general",
-			From:       "botty",
-			InstanceID: testMemberID("botty"),
-			Body:       "poke received",
-			At:         fixedTime,
-		},
-		domain.ModelDispatchDone{Instance: botty, At: fixedTime},
-	}, events)
-
-	msgs := channelMessages(t, s, "#general")
-	require.Equal(t, []domain.Message{
-		{Target: "#general", From: "botty", InstanceID: testMemberID("botty"), Body: "poke received", At: fixedTime},
-	}, msgs)
 }
 
 // TestSession_DM_routing_survives_counterpart_rename verifies
@@ -4480,48 +4882,108 @@ func TestSession_EnsurePersonas_lazy_generation(t *testing.T) {
 }
 
 func TestSession_Invite_without_persona_assigns_from_pool(t *testing.T) {
-	fake := &fakeAPIClient{
-		generatePersonasFn: func(_ context.Context, _ domain.ModelID) ([]domain.Persona, error) {
-			return testPersonas(), nil
-		},
-	}
+	synctest.Test(t, func(t *testing.T) {
+		bootAt := time.Now()
+		fake := &fakeAPIClient{
+			generatePersonasFn: func(_ context.Context, _ domain.ModelID) ([]domain.Persona, error) {
+				return testPersonas(), nil
+			},
+		}
 
-	sess, s := newTestSessionWithAPI(t, fake)
-	ctx := t.Context()
+		sess, s := newTestSessionWithAPI(t, fake)
+		ctx := t.Context()
 
-	seedChannelWithMembers(t, sess, s, "#dev", "testuser")
+		seedChannelWithMembers(t, sess, s, "#dev", "testuser")
 
-	require.NoError(t, sess.AddModel(ctx, "#dev", "anthropic/claude-3-haiku", ""))
-	evt := drainEvent[domain.ModelInvited](t, sess)
+		require.NoError(t, sess.AddModel(ctx, "#dev", "anthropic/claude-3-haiku", ""))
+		synctest.Wait()
 
-	// Should have been assigned a persona description from the pool.
-	require.NotEmpty(t, evt.Instance.Persona())
+		inst, err := s.ResolveNick(ctx, "fakenick")
+		require.NoError(t, err)
 
-	descriptions := make(map[string]bool)
-	for _, p := range testPersonas() {
-		descriptions[p.Description] = true
-	}
+		require.ElementsMatch(t, []domain.Event{
+			bootstrapModeChange(sess, bootAt),
+			domain.ModelInvited{
+				Target:     "#dev",
+				Nick:       "fakenick",
+				InstanceID: inst.ID(),
+				By:         "testuser",
+				At:         fixedTime,
+				Instance:   inst,
+			},
+			domain.ModeChange{
+				Target:     "#dev",
+				Nick:       "fakenick",
+				InstanceID: inst.ID(),
+				Flag:       domain.ModeChannelVoice,
+				Add:        true,
+				By:         "ChanServ",
+				At:         fixedTime,
+				Instance:   inst,
+			},
+			domain.ModelDispatchStarted{Instance: inst, At: fixedTime},
+			domain.ModelDispatchDone{Instance: inst, At: fixedTime},
+		}, collectEmittedEvents(t, sess))
 
-	require.True(t, descriptions[evt.Instance.Persona()],
-		"assigned persona %q not in pool", evt.Instance.Persona())
+		require.NotEmpty(t, inst.Persona())
+
+		descriptions := make(map[string]bool)
+		for _, p := range testPersonas() {
+			descriptions[p.Description] = true
+		}
+
+		require.True(t, descriptions[inst.Persona()],
+			"assigned persona %q not in pool", inst.Persona())
+	})
 }
 
 func TestSession_Invite_with_explicit_persona_skips_pool(t *testing.T) {
-	fake := &fakeAPIClient{
-		generatePersonasFn: func(_ context.Context, _ domain.ModelID) ([]domain.Persona, error) {
-			t.Fatal("GeneratePersonas should not be called when persona is explicit")
-			return nil, nil
-		},
-	}
+	synctest.Test(t, func(t *testing.T) {
+		bootAt := time.Now()
+		fake := &fakeAPIClient{
+			generatePersonasFn: func(_ context.Context, _ domain.ModelID) ([]domain.Persona, error) {
+				t.Fatal("GeneratePersonas should not be called when persona is explicit")
+				return nil, nil
+			},
+		}
 
-	sess, s := newTestSessionWithAPI(t, fake)
-	ctx := t.Context()
+		sess, s := newTestSessionWithAPI(t, fake)
+		ctx := t.Context()
 
-	seedChannelWithMembers(t, sess, s, "#dev", "testuser")
+		seedChannelWithMembers(t, sess, s, "#dev", "testuser")
 
-	require.NoError(t, sess.AddModel(ctx, "#dev", "anthropic/claude-3-haiku", "Custom persona"))
-	evt := drainEvent[domain.ModelInvited](t, sess)
-	require.Equal(t, "Custom persona", evt.Instance.Persona())
+		require.NoError(t, sess.AddModel(ctx, "#dev", "anthropic/claude-3-haiku", "Custom persona"))
+		synctest.Wait()
+
+		inst, err := s.ResolveNick(ctx, "fakenick")
+		require.NoError(t, err)
+
+		require.ElementsMatch(t, []domain.Event{
+			bootstrapModeChange(sess, bootAt),
+			domain.ModelInvited{
+				Target:     "#dev",
+				Nick:       "fakenick",
+				InstanceID: inst.ID(),
+				By:         "testuser",
+				At:         fixedTime,
+				Instance:   inst,
+			},
+			domain.ModeChange{
+				Target:     "#dev",
+				Nick:       "fakenick",
+				InstanceID: inst.ID(),
+				Flag:       domain.ModeChannelVoice,
+				Add:        true,
+				By:         "ChanServ",
+				At:         fixedTime,
+				Instance:   inst,
+			},
+			domain.ModelDispatchStarted{Instance: inst, At: fixedTime},
+			domain.ModelDispatchDone{Instance: inst, At: fixedTime},
+		}, collectEmittedEvents(t, sess))
+
+		require.Equal(t, "Custom persona", inst.Persona())
+	})
 }
 
 func TestSession_RandomPersona(t *testing.T) {
@@ -4704,95 +5166,125 @@ func TestDispatchToInstance_logs_pass_reason(t *testing.T) {
 }
 
 func TestSendMessageAs_model_triggers_dispatch_to_other_models(t *testing.T) {
-	dispatched := make(map[domain.ModelID][]protocol.IRCMessage)
+	synctest.Test(t, func(t *testing.T) {
+		bootAt := time.Now()
+		dispatched := make(map[domain.ModelID][]protocol.IRCMessage)
 
-	fake := &fakeAPIClient{
-		sendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (protocol.ModelResponse, error) {
-			dispatched[modelID] = append(dispatched[modelID], events...)
-			return protocol.ModelResponse{Kind: protocol.ResponseSilence, Reason: "ok"}, nil
-		},
-	}
-	sess, s := newTestSessionWithAPI(t, fake)
-	ctx := t.Context()
+		fake := &fakeAPIClient{
+			sendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (protocol.ModelResponse, error) {
+				dispatched[modelID] = append(dispatched[modelID], events...)
+				return protocol.ModelResponse{Kind: protocol.ResponseSilence, Reason: "ok"}, nil
+			},
+		}
+		sess, s := newTestSessionWithAPI(t, fake)
+		ctx := t.Context()
 
-	alpha := seedInstance(t, sess, s, instanceSpec{
-		InstanceID: "inst-alpha",
-		Nick:       "alpha",
-		ModelID:    "test/model-a",
-		Channels:   testChannels("#general"),
+		alpha := seedInstance(t, sess, s, instanceSpec{
+			InstanceID: "inst-alpha",
+			Nick:       "alpha",
+			ModelID:    "test/model-a",
+			Channels:   testChannels("#general"),
+		})
+		beta := seedInstance(t, sess, s, instanceSpec{
+			InstanceID: "inst-beta",
+			Nick:       "beta",
+			ModelID:    "test/model-b",
+			Channels:   testChannels("#general"),
+		})
+		seedChannelWithMembers(t, sess, s, "#general", "testuser", "alpha", "beta")
+
+		_, err := sess.sendMessageAs(ctx, alpha, "#general", "hello from alpha")
+		require.NoError(t, err)
+		synctest.Wait()
+
+		require.ElementsMatch(t, []domain.Event{
+			bootstrapModeChange(sess, bootAt),
+			domain.Message{
+				Target:     "#general",
+				From:       "alpha",
+				InstanceID: alpha.ID(),
+				Body:       "hello from alpha",
+				At:         fixedTime,
+			},
+			domain.ModelDispatchStarted{Instance: beta, At: fixedTime},
+			domain.ModelDispatchDone{Instance: beta, At: fixedTime},
+		}, collectEmittedEvents(t, sess))
+
+		wantMsg := protocol.IRCMessage{
+			Kind:       protocol.KindPrivMsg,
+			From:       "alpha",
+			InstanceID: "inst-alpha",
+			Target:     "#general",
+			Body:       "hello from alpha",
+			At:         fixedTime,
+		}
+
+		require.Equal(t, map[domain.ModelID][]protocol.IRCMessage{
+			"test/model-b": {wantMsg},
+		}, dispatched)
 	})
-	seedInstance(t, sess, s, instanceSpec{
-		InstanceID: "inst-beta",
-		Nick:       "beta",
-		ModelID:    "test/model-b",
-		Channels:   testChannels("#general"),
-	})
-	seedChannelWithMembers(t, sess, s, "#general", "testuser", "alpha", "beta")
-
-	_, err := sess.sendMessageAs(ctx, alpha, "#general", "hello from alpha")
-	require.NoError(t, err)
-
-	// Wait for async dispatch to complete.
-	drainEvent[domain.Message](t, sess)
-	drainEvent[domain.ModelDispatchStarted](t, sess)
-	drainEvent[domain.ModelDispatchDone](t, sess)
-
-	wantMsg := protocol.IRCMessage{
-		Kind:       protocol.KindPrivMsg,
-		From:       "alpha",
-		InstanceID: "inst-alpha",
-		Target:     "#general",
-		Body:       "hello from alpha",
-		At:         fixedTime,
-	}
-
-	require.Equal(t, map[domain.ModelID][]protocol.IRCMessage{
-		"test/model-b": {wantMsg},
-	}, dispatched)
 }
 
 func TestAddModel_dispatches_invite_notification_to_model(t *testing.T) {
-	dispatched := make(map[domain.ModelID][]protocol.IRCMessage)
+	synctest.Test(t, func(t *testing.T) {
+		bootAt := time.Now()
+		dispatched := make(map[domain.ModelID][]protocol.IRCMessage)
 
-	fake := &fakeAPIClient{
-		sendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (protocol.ModelResponse, error) {
-			dispatched[modelID] = append(dispatched[modelID], events...)
-			return protocol.ModelResponse{Kind: protocol.ResponseSilence, Reason: "ok"}, nil
-		},
-		generateNickFn: func(_ context.Context, _ domain.ModelID, _ string, _ []domain.Nick) (domain.Nick, error) {
-			return "botty", nil
-		},
-	}
-	sess, s := newTestSessionWithAPI(t, fake)
-	ctx := t.Context()
-
-	seedChannelWithMembers(t, sess, s, "#dev", "testuser")
-
-	require.NoError(t, sess.AddModel(ctx, "#dev", "test/model", ""))
-
-	// Draining `ModelDispatchDone` from the bus provides the
-	// happens-before edge that lets the test read `dispatched`
-	// without a lock: the dispatch goroutine's write to `dispatched`
-	// happens before its `emit(ModelDispatchDone)`, and the channel
-	// receive in the drain happens after that send.
-	_, extras := drainUntilMatched(t, sess,
-		matchEvent[domain.ModelInvited](),
-		matchEvent[domain.ModeChange](),
-		matchEvent[domain.ModelDispatchStarted](),
-		matchEvent[domain.ModelDispatchDone](),
-	)
-	require.Empty(t, extras)
-
-	require.Equal(t, map[domain.ModelID][]protocol.IRCMessage{
-		"test/model": {
-			{
-				Kind:   protocol.KindInvite,
-				From:   "testuser",
-				Target: "#dev",
-				At:     fixedTime,
+		fake := &fakeAPIClient{
+			sendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (protocol.ModelResponse, error) {
+				dispatched[modelID] = append(dispatched[modelID], events...)
+				return protocol.ModelResponse{Kind: protocol.ResponseSilence, Reason: "ok"}, nil
 			},
-		},
-	}, dispatched)
+			generateNickFn: func(_ context.Context, _ domain.ModelID, _ string, _ []domain.Nick) (domain.Nick, error) {
+				return "botty", nil
+			},
+		}
+		sess, s := newTestSessionWithAPI(t, fake)
+		ctx := t.Context()
+
+		seedChannelWithMembers(t, sess, s, "#dev", "testuser")
+
+		require.NoError(t, sess.AddModel(ctx, "#dev", "test/model", ""))
+		synctest.Wait()
+
+		botty, err := s.ResolveNick(ctx, "botty")
+		require.NoError(t, err)
+
+		require.ElementsMatch(t, []domain.Event{
+			bootstrapModeChange(sess, bootAt),
+			domain.ModelInvited{
+				Target:     "#dev",
+				Nick:       "botty",
+				InstanceID: botty.ID(),
+				By:         "testuser",
+				At:         fixedTime,
+				Instance:   botty,
+			},
+			domain.ModeChange{
+				Target:     "#dev",
+				Nick:       "botty",
+				InstanceID: botty.ID(),
+				Flag:       domain.ModeChannelVoice,
+				Add:        true,
+				By:         "ChanServ",
+				At:         fixedTime,
+				Instance:   botty,
+			},
+			domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
+			domain.ModelDispatchDone{Instance: botty, At: fixedTime},
+		}, collectEmittedEvents(t, sess))
+
+		require.Equal(t, map[domain.ModelID][]protocol.IRCMessage{
+			"test/model": {
+				{
+					Kind:   protocol.KindInvite,
+					From:   "testuser",
+					Target: "#dev",
+					At:     fixedTime,
+				},
+			},
+		}, dispatched)
+	})
 }
 
 // listModelsCountingClient records the number of `ListModels` calls so
@@ -5060,22 +5552,25 @@ func TestSession_appendEvent_persistence_failure_is_silent(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			store := &failingAppendStore{
-				sessionStore:    storetest.NewMemoryStore(t),
-				failChannels:    map[domain.ChannelName]struct{}{tc.channel: {}},
-				errFailedAppend: fmt.Errorf("disk full"),
-			}
+			synctest.Test(t, func(t *testing.T) {
+				bootAt := time.Now()
+				store := &failingAppendStore{
+					sessionStore:    storetest.NewMemoryStore(t),
+					failChannels:    map[domain.ChannelName]struct{}{tc.channel: {}},
+					errFailedAppend: fmt.Errorf("disk full"),
+				}
 
-			sess := New(t.Context, store, nil, &fakeAPIClient{}, "testuser", "", "")
-			t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
-			sess.now = func() time.Time { return fixedTime }
+				sess := New(t.Context, store, nil, &fakeAPIClient{}, "testuser", "", "")
+				t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
+				sess.now = func() time.Time { return fixedTime }
 
-			sess.appendEvent(t.Context(), tc.channel, tc.event)
+				sess.appendEvent(t.Context(), tc.channel, tc.event)
+				synctest.Wait()
 
-			if evt, ok := peekEvent(sess); ok {
-				t.Fatalf("expected no event after persistence failure on %s, got %T",
-					tc.channel, evt)
-			}
+				require.ElementsMatch(t, []domain.Event{
+					bootstrapModeChange(sess, bootAt),
+				}, collectEmittedEvents(t, sess))
+			})
 		})
 	}
 }

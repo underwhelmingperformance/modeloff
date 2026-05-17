@@ -485,18 +485,37 @@ func (s ChatScreen) handleJoinEvent(msg domain.Join) (ui.Model, tea.Cmd) {
 }
 
 func (s ChatScreen) handleModeChangeEvent(msg domain.ModeChange) (ui.Model, tea.Cmd) {
+	if !msg.ChannelMode() {
+		return s.handleUserModeChangeEvent(msg)
+	}
+
 	cw, ok := s.channelWindowByName(msg.Target)
 	if !ok {
 		return s, nil
 	}
 
-	cw.Members.SetMode(msg.Instance, msg.Mode)
+	cw.Members.SetMode(msg.Instance, domain.NickModeFor(msg.Flag, msg.Add))
 
 	if msg.Target != *s.active {
 		return s, nil
 	}
 
 	return s, msgCmd(components.NickListUpdatedMsg{Members: cw.Members})
+}
+
+// handleUserModeChangeEvent reacts to a user-mode ModeChange (empty
+// Target). When the change targets the user-client's own instance,
+// the visible command set may have flipped — re-emit CommandsMsg
+// from VisibleCommands so the /help slice and the completion
+// popover both reflect the new capability state on next render.
+func (s ChatScreen) handleUserModeChangeEvent(msg domain.ModeChange) (ui.Model, tea.Cmd) {
+	if msg.InstanceID != s.sess.UserInstance().ID() {
+		return s, nil
+	}
+
+	return s, msgCmd(components.CommandsMsg[chatcmd.CompletionContext]{
+		Commands: command.VisibleCommands(s.parser.Set(), s.client.Caps()),
+	})
 }
 
 func (s ChatScreen) handlePartEvent(msg domain.Part) (ui.Model, tea.Cmd) {

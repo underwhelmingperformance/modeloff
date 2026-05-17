@@ -5,6 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/protocol"
 )
 
@@ -17,8 +18,8 @@ func TestSession_User_returns_user_client_with_operator_mode(t *testing.T) {
 
 	require.NotNil(t, user)
 	require.Equal(t, protocol.UserClientID, user.Identity())
-	require.True(t, user.HasMode(protocol.ModeOperator))
-	require.False(t, user.HasMode(protocol.UserMode('w')))
+	require.True(t, user.HasMode(domain.ModeOperator))
+	require.False(t, user.HasMode(domain.Mode('w')))
 }
 
 func TestSession_User_Send_routes_through_Handle(t *testing.T) {
@@ -56,7 +57,7 @@ func TestSession_Model_returns_handle_for_known_instance(t *testing.T) {
 
 	got := clientShape{
 		identity: client.Identity(),
-		operator: client.HasMode(protocol.ModeOperator),
+		operator: client.HasMode(domain.ModeOperator),
 	}
 
 	require.Equal(t, clientShape{

@@ -3,6 +3,8 @@ package session
 import (
 	"context"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -32,92 +34,97 @@ import (
 // message addressable by the counterpart's instance id, which is
 // the DM's channel name on the wire.
 func TestSession_PrivMsg_to_model_routes_DM_to_counterpart_only(t *testing.T) {
-	type call struct {
-		modelID domain.ModelID
-		trigger []protocol.IRCMessage
-	}
+	synctest.Test(t, func(t *testing.T) {
+		bootAt := time.Now()
 
-	var calls []call
+		type call struct {
+			modelID domain.ModelID
+			trigger []protocol.IRCMessage
+		}
 
-	fake := &fakeAPIClient{
-		sendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (protocol.ModelResponse, error) {
-			calls = append(calls, call{modelID: modelID, trigger: append([]protocol.IRCMessage(nil), events...)})
-			return protocol.ModelResponse{Kind: protocol.ResponseSilence, Reason: "test"}, nil
-		},
-	}
+		var calls []call
 
-	sess, s := newTestSessionWithAPI(t, fake)
-	ctx := t.Context()
+		fake := &fakeAPIClient{
+			sendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (protocol.ModelResponse, error) {
+				calls = append(calls, call{modelID: modelID, trigger: append([]protocol.IRCMessage(nil), events...)})
+				return protocol.ModelResponse{Kind: protocol.ResponseSilence, Reason: "test"}, nil
+			},
+		}
 
-	a := seedInstance(t, sess, s, instanceSpec{Nick: "alpha", ModelID: "test/model-a"})
-	b := seedInstance(t, sess, s, instanceSpec{Nick: "beta", ModelID: "test/model-b"})
-	seedInstance(t, sess, s, instanceSpec{Nick: "gamma", ModelID: "test/model-c"})
+		sess, s := newTestSessionWithAPI(t, fake)
+		ctx := t.Context()
 
-	aClient := sess.Model(ctx, protocol.ClientID(a.ID()))
-	require.NotNil(t, aClient, "model client for alpha must exist")
+		a := seedInstance(t, sess, s, instanceSpec{Nick: "alpha", ModelID: "test/model-a"})
+		b := seedInstance(t, sess, s, instanceSpec{Nick: "beta", ModelID: "test/model-b"})
+		seedInstance(t, sess, s, instanceSpec{Nick: "gamma", ModelID: "test/model-c"})
 
-	resp, err := aClient.Send(ctx, protocol.PrivMsg{
-		Target: domain.ChannelName(b.ID()),
-		Body:   "private to beta",
+		aClient := sess.Model(ctx, protocol.ClientID(a.ID()))
+		require.NotNil(t, aClient, "model client for alpha must exist")
+
+		resp, err := aClient.Send(ctx, protocol.PrivMsg{
+			Target: domain.ChannelName(b.ID()),
+			Body:   "private to beta",
+		})
+		require.NoError(t, err)
+		require.NoError(t, resp.Err)
+
+		// Response.Events carries the canonical persisted message back
+		// to the issuing client so the chat-screen renders against the
+		// session's clock rather than its own.
+		require.Equal(t, []protocol.Event{domain.Message{
+			Target:     domain.ChannelName(b.ID()),
+			From:       "alpha",
+			InstanceID: a.ID(),
+			Body:       "private to beta",
+			At:         fixedTime,
+		}}, resp.Events)
+
+		synctest.Wait()
+
+		// Full event stream on the user-client's bus: the bootstrap
+		// OPER promotion, then the DM round — Message + B's dispatch
+		// lifecycle. A's dispatch turn never fires (echo gate); C's
+		// never fires (membership filter).
+		require.ElementsMatch(t, []domain.Event{
+			bootstrapModeChange(sess, bootAt),
+			domain.Message{
+				Target:     domain.ChannelName(b.ID()),
+				From:       "alpha",
+				InstanceID: a.ID(),
+				Body:       "private to beta",
+				At:         fixedTime,
+			},
+			domain.ModelDispatchStarted{Instance: b, At: fixedTime},
+			domain.ModelDispatchDone{Instance: b, At: fixedTime},
+		}, collectEmittedEvents(t, sess))
+
+		expectedTrigger := protocol.IRCMessage{
+			Kind:       protocol.KindPrivMsg,
+			From:       "alpha",
+			InstanceID: a.ID(),
+			Target:     string(b.ID()),
+			Body:       "private to beta",
+			At:         fixedTime,
+		}
+
+		require.Equal(t, []call{{
+			modelID: "test/model-b",
+			trigger: []protocol.IRCMessage{expectedTrigger},
+		}}, calls,
+			"only B's dispatch turn should fire; A is suppressed by the echo gate, "+
+				"C by the membership filter (no channel overlap with A or B, and "+
+				"the DM target is B's id, not C's)")
+
+		// The events log carries the message under the DM's channel name
+		// (B's instance id). Either party can read the conversation back
+		// from this single key — DMs are stateless on the server side.
+		persisted := channelMessages(t, s, domain.ChannelName(b.ID()))
+		require.Equal(t, []domain.Message{{
+			Target:     domain.ChannelName(b.ID()),
+			From:       "alpha",
+			InstanceID: a.ID(),
+			Body:       "private to beta",
+			At:         fixedTime,
+		}}, persisted)
 	})
-	require.NoError(t, err)
-	require.NoError(t, resp.Err)
-
-	// Response.Events carries the canonical persisted message back
-	// to the issuing client so the chat-screen renders against the
-	// session's clock rather than its own.
-	require.Equal(t, []protocol.Event{domain.Message{
-		Target:     domain.ChannelName(b.ID()),
-		From:       "alpha",
-		InstanceID: a.ID(),
-		Body:       "private to beta",
-		At:         fixedTime,
-	}}, resp.Events)
-
-	// Drain through `ModelDispatchDone` so B's dispatch goroutine
-	// has returned before we read `calls`. The channel-send chain
-	// from the goroutine to this drain provides the happens-before
-	// edge: the closure's append to `calls` completes before
-	// `ModelDispatchDone` is emitted.
-	//
-	// Three events on the user-client's bus complete the round:
-	// the original `Message` (the user-client sees every protocol
-	// event), then `ModelDispatchStarted`, then `ModelDispatchDone`.
-	// `extras` empty pins the no-other-events invariant — A and C
-	// never run a turn for this message.
-	_, extras := drainUntilMatched(t, sess,
-		matchEvent[domain.Message](),
-		matchEvent[domain.ModelDispatchStarted](),
-		matchEvent[domain.ModelDispatchDone](),
-	)
-	require.Empty(t, extras, "no other events should fire during a single PrivMsg→DM round")
-
-	expectedTrigger := protocol.IRCMessage{
-		Kind:       protocol.KindPrivMsg,
-		From:       "alpha",
-		InstanceID: a.ID(),
-		Target:     string(b.ID()),
-		Body:       "private to beta",
-		At:         fixedTime,
-	}
-
-	require.Equal(t, []call{{
-		modelID: "test/model-b",
-		trigger: []protocol.IRCMessage{expectedTrigger},
-	}}, calls,
-		"only B's dispatch turn should fire; A is suppressed by the echo gate, "+
-			"C by the membership filter (no channel overlap with A or B, and "+
-			"the DM target is B's id, not C's)")
-
-	// The events log carries the message under the DM's channel name
-	// (B's instance id). Either party can read the conversation back
-	// from this single key — DMs are stateless on the server side.
-	persisted := channelMessages(t, s, domain.ChannelName(b.ID()))
-	require.Equal(t, []domain.Message{{
-		Target:     domain.ChannelName(b.ID()),
-		From:       "alpha",
-		InstanceID: a.ID(),
-		Body:       "private to beta",
-		At:         fixedTime,
-	}}, persisted)
 }

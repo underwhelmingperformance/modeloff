@@ -78,7 +78,7 @@ func TestEvent_sum_membership(t *testing.T) {
 		{"part", domain.Part{Target: channel, Nick: nick, At: at}},
 		{"quit", domain.Quit{Nick: nick, At: at}},
 		{"topic_change", domain.TopicChange{Target: channel, Topic: "t", By: nick, At: at}},
-		{"mode_change", domain.ModeChange{Target: channel, Nick: nick, Mode: domain.ModeOp, By: nick, At: at}},
+		{"mode_change", domain.ModeChange{Target: channel, Nick: nick, Flag: domain.ModeOperator, Add: true, By: nick, At: at}},
 		{"model_invited", domain.ModelInvited{Target: channel, Nick: nick, By: nick, At: at}},
 		{"model_kicked", domain.ModelKicked{Target: channel, Nick: nick, By: nick, At: at}},
 		{"nick_change", domain.NickChange{OldNick: nick, NewNick: "ally", At: at}},
@@ -178,5 +178,5 @@ func TestNotOperatorError_implements_error(t *testing.T) {
 func TestModeOperator_value(t *testing.T) {
 	t.Parallel()
 
-	require.Equal(t, protocol.UserMode('o'), protocol.ModeOperator)
+	require.Equal(t, domain.Mode('o'), domain.ModeOperator)
 }

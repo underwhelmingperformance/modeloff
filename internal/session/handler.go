@@ -53,9 +53,31 @@ func (s *Session) Handle(ctx context.Context, c protocol.Client, cmd protocol.Co
 		return protocol.Response{}, errNotYetImplemented(cmd)
 	case protocol.Kill:
 		return s.handleKill(c, cmd)
+	case protocol.Oper:
+		return s.handleOper(ctx, c, cmd)
 	default:
 		return protocol.Response{}, fmt.Errorf("unknown command %T", cmd)
 	}
+}
+
+// handleOper validates the issuing client's credentials via the
+// session's authenticator. On success the server issues the
+// canonical MODE response: server-actor (empty `by`), target is
+// the requesting client, flag is [domain.ModeOperator]. The
+// emission shape matches the bootstrap path's promotion of the
+// user-client.
+func (s *Session) handleOper(ctx context.Context, c protocol.Client, cmd protocol.Oper) (protocol.Response, error) {
+	if !s.operAuth(c, cmd.Name, cmd.Password) {
+		return protocol.Response{Err: domain.OperFailedError{At: s.now()}}, nil
+	}
+
+	sc := s.lookupClientHandle(c.Identity())
+	if sc == nil {
+		return protocol.Response{}, fmt.Errorf("oper: client %q not registered", c.Identity())
+	}
+
+	s.setUserModeAs(ctx, "", sc, domain.ModeOperator, true)
+	return protocol.Response{}, nil
 }
 
 func (s *Session) handleJoin(ctx context.Context, c protocol.Client, cmd protocol.Join) (protocol.Response, error) {
@@ -158,7 +180,7 @@ func (s *Session) handleList(ctx context.Context) (protocol.Response, error) {
 }
 
 func (s *Session) handleAddModel(c protocol.Client, cmd protocol.AddModel) (protocol.Response, error) {
-	if !c.HasMode(protocol.ModeOperator) {
+	if !c.HasMode(domain.ModeOperator) {
 		return protocol.Response{Err: domain.NotOperatorError{Command: "ADDMODEL", At: s.now()}}, nil
 	}
 
@@ -166,7 +188,7 @@ func (s *Session) handleAddModel(c protocol.Client, cmd protocol.AddModel) (prot
 }
 
 func (s *Session) handleKill(c protocol.Client, cmd protocol.Kill) (protocol.Response, error) {
-	if !c.HasMode(protocol.ModeOperator) {
+	if !c.HasMode(domain.ModeOperator) {
 		return protocol.Response{Err: domain.NotOperatorError{Command: "KILL", At: s.now()}}, nil
 	}
 

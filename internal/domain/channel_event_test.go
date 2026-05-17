@@ -107,9 +107,9 @@ func TestChannelEvent_JSON_round_trip(t *testing.T) {
 			event: domain.ModeChange{
 				Target: "#general",
 				Nick:   "bob",
-				Mode:   domain.ModeVoice,
-				By:     "ChanServ",
-				At:     ts,
+				Flag:   domain.ModeChannelVoice, Add: true,
+				By: "ChanServ",
+				At: ts,
 			},
 		},
 		{

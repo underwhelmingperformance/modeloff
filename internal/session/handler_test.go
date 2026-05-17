@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/protocol"
 	storemod "github.com/laney/modeloff/internal/store"
@@ -25,13 +26,13 @@ var closedProtocolEvents = func() <-chan protocol.Delivery {
 // `Send` and `Events` are inert satisfiers of the interface.
 type fakeClient struct {
 	id    protocol.ClientID
-	modes map[protocol.UserMode]struct{}
+	modes map[domain.Mode]struct{}
 }
 
 func newOperatorClient(id protocol.ClientID) *fakeClient {
 	return &fakeClient{
 		id:    id,
-		modes: map[protocol.UserMode]struct{}{protocol.ModeOperator: {}},
+		modes: map[domain.Mode]struct{}{domain.ModeOperator: {}},
 	}
 }
 
@@ -47,9 +48,18 @@ func (c *fakeClient) Send(_ context.Context, _ protocol.Command) (protocol.Respo
 
 func (c *fakeClient) Events() <-chan protocol.Delivery { return closedProtocolEvents }
 
-func (c *fakeClient) HasMode(m protocol.UserMode) bool {
+func (c *fakeClient) HasMode(m domain.Mode) bool {
 	_, ok := c.modes[m]
 	return ok
+}
+
+func (c *fakeClient) Caps() command.CapabilityHolder { return c }
+
+func (c *fakeClient) Has(cap command.Capability) bool {
+	if cap == protocol.CapOperator {
+		return c.HasMode(domain.ModeOperator)
+	}
+	return false
 }
 
 // TestSession_Handle_delegates exercises every concrete

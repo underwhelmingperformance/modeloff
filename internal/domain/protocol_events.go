@@ -58,6 +58,7 @@ func (UnknownNickError) isProtocolEvent()      {}
 func (NoSuchChannelError) isProtocolEvent()    {}
 func (NickInUseError) isProtocolEvent()        {}
 func (NotOperatorError) isProtocolEvent()      {}
+func (OperFailedError) isProtocolEvent()       {}
 func (UnknownCommandError) isProtocolEvent()   {}
 func (UnknownConfigKeyError) isProtocolEvent() {}
 func (InvalidDurationError) isProtocolEvent()  {}
@@ -67,6 +68,7 @@ func (UnknownNickError) domainEvent()      {}
 func (NoSuchChannelError) domainEvent()    {}
 func (NickInUseError) domainEvent()        {}
 func (NotOperatorError) domainEvent()      {}
+func (OperFailedError) domainEvent()       {}
 func (UnknownCommandError) domainEvent()   {}
 func (UnknownConfigKeyError) domainEvent() {}
 func (InvalidDurationError) domainEvent()  {}
@@ -111,4 +113,17 @@ func (e NotOperatorError) Error() string {
 	}
 
 	return fmt.Sprintf("permission denied: %s requires operator privileges", e.Command)
+}
+
+// OperFailedError reports that an `OPER` attempt failed the
+// session's authenticator (RFC 2812 numeric 464 ERR_PASSWDMISMATCH).
+// The authenticator decides what counts as a match; this type
+// carries no detail beyond the rejection itself.
+type OperFailedError struct {
+	At time.Time
+}
+
+// Error makes [OperFailedError] satisfy the `error` interface.
+func (OperFailedError) Error() string {
+	return "OPER rejected: invalid credentials"
 }

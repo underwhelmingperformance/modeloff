@@ -9,6 +9,7 @@ import (
 
 	orderedmap "github.com/wk8/go-ordered-map/v2"
 
+	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/protocol"
 )
@@ -29,17 +30,19 @@ type channelMembership = *orderedmap.OrderedMap[domain.ChannelName, time.Time]
 // is created at session bootstrap. The struct keeps a back-reference
 // to its owning session so `Send` can route through [Session.Handle].
 //
-// The mode set is constructed once and never mutated; reads need no
-// synchronisation. The `instance` pointer is set at construction
-// for model-clients (nil for the user-client) and is used by
-// [Session.subscriberCanReceive] to consult channel membership
-// without a per-event store lookup.
+// The mode set is guarded by `modesMu`: `HasMode` and `Has` take
+// the read lock, `setMode` takes the write lock. The `instance`
+// pointer is set at construction for model-clients (nil for the
+// user-client) and is used by [Session.subscriberCanReceive] to
+// consult channel membership without a per-event store lookup.
 type serverClient struct {
 	sess     *Session
 	id       protocol.ClientID
 	instance *domain.Instance
 	events   chan protocol.Delivery
-	modes    map[protocol.UserMode]struct{}
+
+	modesMu sync.RWMutex
+	modes   map[domain.Mode]struct{}
 
 	// history holds the per-channel rolling buffer this model
 	// uses to construct each dispatch turn's prompt. Channels are
@@ -52,21 +55,19 @@ type serverClient struct {
 	history   map[domain.ChannelName][]domain.StoredEvent
 }
 
-// newServerClient constructs a subscription with the given identity
-// and modes. `inst` may be nil for the user-client; model-clients
-// hold the canonical handle so membership lookups stay in-process.
-func newServerClient(sess *Session, id protocol.ClientID, inst *domain.Instance, modes ...protocol.UserMode) *serverClient {
-	modeSet := make(map[protocol.UserMode]struct{}, len(modes))
-	for _, m := range modes {
-		modeSet[m] = struct{}{}
-	}
-
+// newServerClient constructs a subscription with the given identity.
+// `inst` may be nil for the user-client; model-clients hold the
+// canonical handle so membership lookups stay in-process. Modes
+// start empty — the user-client is promoted via [Session.New]'s
+// bootstrap call to `setUserModeAs`; future model elevation flows
+// through [protocol.Oper] via the dispatcher.
+func newServerClient(sess *Session, id protocol.ClientID, inst *domain.Instance) *serverClient {
 	c := &serverClient{
 		sess:     sess,
 		id:       id,
 		instance: inst,
 		events:   make(chan protocol.Delivery, eventBufSize),
-		modes:    modeSet,
+		modes:    make(map[domain.Mode]struct{}),
 	}
 
 	// Only model-clients run a dispatch loop, so only model-clients
@@ -87,9 +88,56 @@ func (c *serverClient) Send(ctx context.Context, cmd protocol.Command) (protocol
 
 func (c *serverClient) Events() <-chan protocol.Delivery { return c.events }
 
-func (c *serverClient) HasMode(m protocol.UserMode) bool {
+func (c *serverClient) HasMode(m domain.Mode) bool {
+	c.modesMu.RLock()
+	defer c.modesMu.RUnlock()
+
 	_, ok := c.modes[m]
 	return ok
+}
+
+// setMode adds or clears a single mode flag under the write lock.
+// Idempotent: a grant for an already-held mode (or a clear for an
+// unheld mode) is a no-op. Returns true if the call mutated state —
+// actor methods use it to decide whether to emit a
+// [domain.ModeChange].
+func (c *serverClient) setMode(m domain.Mode, add bool) bool {
+	c.modesMu.Lock()
+	defer c.modesMu.Unlock()
+
+	_, present := c.modes[m]
+
+	if add {
+		if present {
+			return false
+		}
+		c.modes[m] = struct{}{}
+		return true
+	}
+
+	if !present {
+		return false
+	}
+	delete(c.modes, m)
+	return true
+}
+
+// Caps returns the client as a [command.CapabilityHolder] bound to
+// live state. Each call to [command.CapabilityHolder.Has] re-reads
+// the current mode set, so a mode mutation is reflected on the
+// next consultation by the suggestion filter or the tool registry.
+func (c *serverClient) Caps() command.CapabilityHolder { return c }
+
+// Has implements [command.CapabilityHolder]. Adding a new capability
+// that maps to a mode requires both a [protocol] constant and a
+// new case here.
+func (c *serverClient) Has(cap command.Capability) bool {
+	switch cap {
+	case protocol.CapOperator:
+		return c.HasMode(domain.ModeOperator)
+	default:
+		return false
+	}
 }
 
 // canReceive reports whether this subscription should receive

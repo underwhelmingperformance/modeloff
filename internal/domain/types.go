@@ -352,6 +352,48 @@ func (i *Instance) UnmarshalJSON(data []byte) error {
 
 // NickMode represents a user's privilege level in a channel, following
 // IRC conventions.
+// Mode is a single RFC 2812 mode flag letter. The same letter
+// carries different semantics depending on the target type of the
+// carrying [ModeChange]: 'o' on a channel target is channel-op;
+// 'o' with no channel target is server-OPER (a user mode).
+// `rune` is the natural carrier — IRC mode flags are single ASCII
+// letters.
+type Mode rune
+
+const (
+	// ModeOperator is RFC 2812 §3.1.5 user-mode `+o` (server
+	// operator). The same wire letter also names channel-op
+	// (channel mode `+o`, RFC §3.2.3); context comes from the
+	// carrying event's target.
+	ModeOperator Mode = 'o'
+
+	// ModeChannelVoice is RFC 2812 §3.2.3 channel mode `+v`.
+	// Distinct from [NickMode.ModeVoice] which is the display
+	// sort-ordering enum.
+	ModeChannelVoice Mode = 'v'
+)
+
+// IRCString renders a mode flag in the conventional `+x` / `-x`
+// shape per the `add` direction. The empty Mode renders as the
+// empty string.
+func (m Mode) IRCString(add bool) string {
+	if m == 0 {
+		return ""
+	}
+
+	if add {
+		return "+" + string(rune(m))
+	}
+
+	return "-" + string(rune(m))
+}
+
+// NickMode is a per-member display rank used by the nick-list
+// renderer for sort ordering and the `@`/`+` prefix. It is a
+// display concern distinct from the wire-flag [Mode]; the two
+// coexist because the chat-screen sorts members by privilege
+// while the wire carries single-letter flags. Use [WireFlag]
+// to convert.
 type NickMode int
 
 const (
@@ -389,6 +431,39 @@ func (m NickMode) IRCMode() string {
 		return "+v"
 	default:
 		return ""
+	}
+}
+
+// WireFlag returns the wire-protocol [Mode] letter for this rank,
+// suitable for populating [ModeChange.Flag]. The zero value
+// [ModeNone] returns the zero [Mode].
+func (m NickMode) WireFlag() Mode {
+	switch m {
+	case ModeOp:
+		return ModeOperator
+	case ModeVoice:
+		return ModeChannelVoice
+	default:
+		return 0
+	}
+}
+
+// NickModeFor inverts [NickMode.WireFlag]: it maps a channel-scoped
+// wire flag back to its display rank. The zero value is returned
+// for any flag that is not a channel-member mode, or when `add` is
+// false (the member loses the rank).
+func NickModeFor(flag Mode, add bool) NickMode {
+	if !add {
+		return ModeNone
+	}
+
+	switch flag {
+	case ModeOperator:
+		return ModeOp
+	case ModeChannelVoice:
+		return ModeVoice
+	default:
+		return ModeNone
 	}
 }
 

@@ -96,8 +96,27 @@ func renderChannelEvent[C command.KindProvider](
 		return wrap.Render(theme.SystemEvent.Render("*** " + text))
 
 	case domain.ModeChange:
+		issuer := string(e.By)
+		if e.ServerIssued() {
+			issuer = "server"
+		}
+
+		target := string(e.Nick)
+		if e.ChannelMode() && e.Param == "" {
+			// Member-mode change (+o/+v on a nick in a channel) — the
+			// nick is the target; channel context is implicit.
+			target = string(e.Nick)
+		} else if e.ChannelMode() {
+			// Parametric attribute mode (+l 10, +k key) — the param
+			// is the value, channel is the context.
+			target = e.Param + " " + string(e.Target)
+		} else if !e.ChannelMode() {
+			// User-mode change — nick is the target.
+			target = string(e.Nick)
+		}
+
 		return wrap.Render(theme.SystemEvent.Render(
-			fmt.Sprintf("*** %s sets mode %s %s", e.By, e.Mode.IRCMode(), e.Nick)))
+			fmt.Sprintf("*** %s sets mode %s %s", issuer, e.Flag.IRCString(e.Add), target)))
 
 	case domain.ModelInvited:
 		return wrap.Render(theme.SystemEvent.Render(

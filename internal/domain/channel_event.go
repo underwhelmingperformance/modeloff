@@ -202,28 +202,50 @@ func (e TopicChange) persistableEventTime() time.Time { return e.At }
 // ModelVisible implements PersistableEvent.
 func (TopicChange) ModelVisible() bool { return true }
 
-// ModeChange records a privilege change for a member.
-// `Instance` is the live affected member, populated on emission and
-// ignored by JSON; `Actor` is a free-form actor name (often
-// "ChanServ" for synthetic mode changes) and not snapshotted into
-// the typed handle.
+// ModeChange records an RFC 2812 MODE mutation. The same shape
+// carries both forms of MODE: a channel-scoped event has a non-
+// empty `Target`; a user-mode event leaves `Target` empty.
+// `ChannelMode` and `ServerIssued` encapsulate the sentinel
+// fields behind named predicates rather than open-coding them at
+// every call site.
+//
+// `Param` carries the argument for parametric attribute modes
+// (`+l <int>`, `+k <key>`); it is empty for member-mode and
+// boolean-attribute events.
+//
+// `Instance` is the live affected member, populated on emission
+// and ignored by JSON.
 type ModeChange struct {
-	Target     ChannelName `json:"channel"`
+	Target     ChannelName `json:"channel,omitempty"`
 	Nick       Nick        `json:"nick"`
 	InstanceID InstanceID  `json:"instance_id,omitzero"`
-	Mode       NickMode    `json:"mode"`
-	By         Nick        `json:"by"`
+	Flag       Mode        `json:"flag"`
+	Add        bool        `json:"add"`
+	Param      string      `json:"param,omitempty"`
+	By         Nick        `json:"by,omitempty"`
 	At         time.Time   `json:"at"`
 
 	Instance *Instance `json:"-"`
-	Actor    string    `json:"-"`
 }
+
+// ChannelMode reports whether this event mutates a channel-scoped
+// mode (the wire MODE form with a channel target). The inverse is
+// a user-mode change.
+func (e ModeChange) ChannelMode() bool { return e.Target != "" }
+
+// ServerIssued reports whether the change was originated by the
+// server rather than by a client actor — the RFC convention is an
+// absent nick prefix on the wire, mirrored here as an empty `By`.
+func (e ModeChange) ServerIssued() bool { return e.By == "" }
 
 func (ModeChange) persistableEvent()                 {}
 func (e ModeChange) persistableEventTime() time.Time { return e.At }
 
-// ModelVisible implements PersistableEvent.
-func (ModeChange) ModelVisible() bool { return true }
+// ModelVisible reports whether this event reaches model dispatch
+// history. Channel-mode events do; user-mode events do not — RFC
+// 2812 §3.1.5 scopes user-mode replies to the requester rather
+// than broadcasting to channel peers.
+func (e ModeChange) ModelVisible() bool { return e.ChannelMode() }
 
 // ModelInvited records a model instance being added to a
 // channel. `Instance` is the live invitee handle, populated on

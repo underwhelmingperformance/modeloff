@@ -101,13 +101,29 @@ type Quit struct {
 
 // Kill is a server-initiated disconnect of another client per
 // RFC 2812 §3.7.1. Operator-gated: the issuing client must carry
-// [ModeOperator]. On success the dispatcher emits a [domain.Killed]
-// event on the killed client's Events channel, broadcasts QUIT to
-// peers with the conventional "Killed by <oper> (<reason>)" reason,
-// and reaps the subscription.
+// [domain.ModeOperator]. On success the dispatcher emits a
+// [domain.Killed] event on the killed client's Events channel,
+// broadcasts QUIT to peers with the conventional "Killed by
+// <oper> (<reason>)" reason, and reaps the subscription.
 type Kill struct {
 	Nick   domain.Nick
 	Reason string
+}
+
+// Oper is RFC 2812 §3.1.4 self-elevation. The dispatcher delegates
+// credential validation to a configurable authenticator on the
+// session; on success the server issues the canonical MODE
+// response (a [domain.ModeChange] with empty Target) to the
+// requesting client. On failure it returns [domain.OperFailedError].
+//
+// The default authenticator rejects every caller — there is no
+// client-side path to +o today. The local user (the user-client)
+// gets +o via server-initiated bootstrap, not via this command;
+// future credentialed model elevation slots in by swapping the
+// authenticator.
+type Oper struct {
+	Name     string
+	Password string
 }
 
 func (Join) isCommand()     {}
@@ -123,3 +139,4 @@ func (List) isCommand()     {}
 func (AddModel) isCommand() {}
 func (Quit) isCommand()     {}
 func (Kill) isCommand()     {}
+func (Oper) isCommand()     {}
