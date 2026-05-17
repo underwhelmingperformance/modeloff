@@ -19,9 +19,18 @@ import (
 )
 
 // ChannelFocusMsg requests a focus switch to a channel the user
-// is already in.
+// is already in. `At` stamps the user-intent moment; the chat-
+// screen's arbiter compares it against the target window's
+// `UserTime` to decide whether the switch takes the visible area
+// (newer than the current focus) or just flags activity on the
+// sidebar (older). Sources that represent a deliberate user
+// action — slash commands, sidebar selection — stamp `time.Now()`;
+// derived sources (e.g. a join-time landing event) stamp the
+// triggering event's time so a freshly-arrived window can't
+// out-bid one the user has already moved past.
 type ChannelFocusMsg struct {
 	Channel domain.ChannelName
+	At      time.Time
 }
 
 // DMOpenedMsg is fired by `/msg <nick> <body>` and `/query <nick>
@@ -74,7 +83,7 @@ func (c JoinCommand) Run(rc Context) tea.Cmd {
 			return msg
 		}
 
-		return ChannelFocusMsg{Channel: domain.ChannelName(c.Channel.String())}
+		return ChannelFocusMsg{Channel: domain.ChannelName(c.Channel.String()), At: time.Now()}
 	}
 }
 

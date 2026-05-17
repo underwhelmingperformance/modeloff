@@ -1,6 +1,8 @@
 package screens
 
 import (
+	"time"
+
 	"github.com/laney/modeloff/internal/domain"
 )
 
@@ -36,6 +38,16 @@ type Window struct {
 	// — the lowest-priority indicator, only shown when `Unread`
 	// and `Mentions` are clear. Cleared on focus.
 	Activity bool
+
+	// UserTime stamps the user's most recent deliberate
+	// interaction with the window: the join that opened it, a
+	// focus-changing keystroke, a typed message, a scroll. Focus
+	// arbitration uses it to decide whether an incoming
+	// [FocusMsg] should take over the visible area or merely
+	// flag activity on the sidebar — newer beats older. Without
+	// it, late events from autojoin races could yank the user
+	// away from a channel they just navigated to.
+	UserTime time.Time
 }
 
 // newWindow wraps the given domain window. The returned `*Window`

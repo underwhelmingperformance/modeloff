@@ -315,7 +315,18 @@ func (s ChatScreen) handleChannelFocus(msg chatcmd.ChannelFocusMsg) (ui.Model, t
 		s.channels.Insert(w)
 	}
 
+	if !s.focusWins(msg.At) {
+		// A staler focus event than the user's current
+		// interaction. Flag the target as having activity for
+		// the sidebar to surface; leave the visible area where
+		// the user put it.
+		w.Activity = true
+
+		return s, msgCmd(components.ChannelHasLifecycleMsg{Channel: msg.Channel})
+	}
+
 	*s.active = msg.Channel
+	w.UserTime = msg.At
 
 	var members domain.MemberList
 	if cw, ok := w.Window.(*domain.ChannelWindow); ok {
@@ -342,6 +353,26 @@ func (s ChatScreen) handleChannelFocus(msg chatcmd.ChannelFocusMsg) (ui.Model, t
 	return s, tea.Batch(cmds...)
 }
 
+// focusWins decides whether an incoming focus event should take
+// over the visible area. The arbiter compares the event's
+// timestamp against the active window's `UserTime`: a strictly
+// newer event wins, anything stamped at or before the user's last
+// interaction with the current active is treated as background
+// activity and surfaces on the sidebar instead. An empty active —
+// the startup case — accepts any event.
+func (s ChatScreen) focusWins(at time.Time) bool {
+	if s.active == nil || *s.active == "" {
+		return true
+	}
+
+	active, ok := s.windowByName(*s.active)
+	if !ok {
+		return true
+	}
+
+	return at.After(active.UserTime)
+}
+
 // persistLastChannel writes the user's currently-active channel
 // to the store so a subsequent restart restores them to the same
 // view. An empty channel name and a nil store are no-ops.
@@ -360,13 +391,19 @@ func (s ChatScreen) persistLastChannel(ch domain.ChannelName) tea.Cmd {
 }
 
 // handleNamesReply applies the joiner-targeted member-list snapshot
-// to the local channel cache and refreshes the nick list when the
-// affected channel is the active one. Pre-existing members of the
-// channel — models, other users — are otherwise invisible to the
-// chat screen's cache; without this handler, switching to a freshly-
+// to the local channel cache and proposes the freshly-joined
+// channel as the focus target. Pre-existing members of the channel
+// — models, other users — are otherwise invisible to the chat
+// screen's cache; without this handler, switching to a freshly-
 // joined channel would show only the user's own name.
+//
+// The focus proposal carries the window's `UserTime` (the
+// join-event timestamp), so the arbiter in `handleChannelFocus`
+// keeps the user where they are if they've already navigated past
+// this join, and lands them on the freshest autojoin channel
+// otherwise.
 func (s ChatScreen) handleNamesReply(msg domain.NamesReplyEvent) (ui.Model, tea.Cmd) {
-	cw, ok := s.channelWindowByName(msg.Channel)
+	w, ok := s.windowByName(msg.Channel)
 	if !ok {
 		// `NamesReplyEvent` only follows a real user-join; the
 		// join handler should have populated the cache already.
@@ -380,13 +417,20 @@ func (s ChatScreen) handleNamesReply(msg domain.NamesReplyEvent) (ui.Model, tea.
 		return s, nil
 	}
 
-	cw.Members = msg.Members
-
-	if msg.Channel != *s.active {
-		return s, nil
+	cw, isChannel := w.Window.(*domain.ChannelWindow)
+	if isChannel {
+		cw.Members = msg.Members
 	}
 
-	return s, msgCmd(components.NickListUpdatedMsg{Members: cw.Members})
+	cmds := []tea.Cmd{
+		msgCmd(chatcmd.ChannelFocusMsg{Channel: msg.Channel, At: w.UserTime}),
+	}
+
+	if isChannel && msg.Channel == *s.active {
+		cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: cw.Members}))
+	}
+
+	return s, tea.Batch(cmds...)
 }
 
 func (s ChatScreen) handleJoinEvent(msg domain.Join) (ui.Model, tea.Cmd) {
@@ -402,10 +446,9 @@ func (s ChatScreen) handleJoinEvent(msg domain.Join) (ui.Model, tea.Cmd) {
 	if channelKnown {
 		cw, _ = w.Window.(*domain.ChannelWindow)
 	} else {
-		// First user-join into this channel — populate the
-		// chat-screen cache as the authoritative side, since the
-		// session-emitted Join is what the chat screen learns
-		// about the channel from.
+		// First sighting of this channel. The chat-screen learns
+		// about it from the join, so it owns the cache
+		// population.
 		cw = domain.NewChannelWindow(msg.Target, msg.At)
 		w = newWindow(cw)
 		s.channels.Insert(w)
@@ -423,27 +466,22 @@ func (s ChatScreen) handleJoinEvent(msg domain.Join) (ui.Model, tea.Cmd) {
 		return s, nil
 	}
 
+	// `UserTime` stamps the user's deliberate moment with this
+	// window. The user-join is the earliest such moment; later
+	// keystrokes and focus events bump it. The window may have
+	// been pre-created by `bufferProtocolEvent`'s auto-stamping
+	// with a zero `UserTime`, so guard on `IsZero` rather than
+	// `!channelKnown` to catch that path.
+	if w.UserTime.IsZero() {
+		w.UserTime = msg.At
+	}
+
 	s.checklist.channelCount = s.realChannelCount()
 
-	cmds := []tea.Cmd{
+	return s, tea.Batch(
 		msgCmd(components.ChannelAddedMsg{Channel: w.Window}),
 		msgCmd(components.ChannelUnreadMsg{Channel: msg.Target, Count: 0}),
-	}
-
-	// `restoreFocus` may have dispatched `ChannelActiveMsg` for
-	// this very channel before its `ChannelAddedMsg` reached the
-	// sidebar; the sidebar's `SetActiveKey` would have no-op'd
-	// because the item wasn't there yet. Re-dispatch the marker
-	// from the join handler when we're processing the first-ever
-	// join for this channel so the marker lands as soon as the
-	// item exists. Gating on `!channelKnown` keeps subsequent
-	// joins (re-joins after a part) from clobbering a focus the
-	// user moved elsewhere in the meantime.
-	if !channelKnown && msg.Target == *s.active {
-		cmds = append(cmds, msgCmd(components.ChannelActiveMsg{Channel: msg.Target}))
-	}
-
-	return s, tea.Batch(cmds...)
+	)
 }
 
 func (s ChatScreen) handleModeChangeEvent(msg domain.ModeChange) (ui.Model, tea.Cmd) {

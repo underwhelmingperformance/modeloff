@@ -345,7 +345,7 @@ func TestChatScreen_persists_last_channel_on_focus(t *testing.T) {
 	// `Created channel` banner before driving the focus switch.
 	tm.WaitFor("Created channel ")
 
-	tm.Send(chatcmd.ChannelFocusMsg{Channel: "#general"})
+	tm.Send(chatcmd.ChannelFocusMsg{Channel: "#general", At: time.Now()})
 	tm.WaitFor("Created channel #general")
 
 	require.Eventually(t, func() bool {

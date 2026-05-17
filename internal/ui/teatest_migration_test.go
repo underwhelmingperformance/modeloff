@@ -70,25 +70,24 @@ func TestChatScreen_sidebar_navigation_with_teatest(t *testing.T) {
 	uitest.SeedMessage(t, sess, "#general", "general msg")
 	uitest.SeedChannel(t, sess, "#random")
 	uitest.SeedMessage(t, sess, "#random", "random msg")
-	require.NoError(t, store.SetLastChannel(t.Context(), "#general"))
 
-	// Pass the integration store as the chat-screen's UIStateStore
-	// so `restoreFocus` honours the `last_channel` preference (the
-	// fallback would land on the most-recently-joined channel,
-	// #random, not the seeded preference, #general).
 	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore, store, domain.KindStatus)
 	require.NoError(t, err)
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen))
+	// Bootstrap lands on the most-recently-joined channel
+	// (`#random`) — its `UserTime` is the freshest join.
+	tm.WaitFor("random msg")
+
+	// Ctrl-U navigates up the sidebar (&modeloff, #general,
+	// #random) from #random to #general; Ctrl-O activates.
+	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlU})
+	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlO})
 	tm.WaitFor("general msg")
 
 	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlD})
 	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlO})
 	tm.WaitFor("random msg")
-
-	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlU})
-	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlO})
-	tm.WaitFor("general msg")
 }
 
 func TestChatScreen_command_errors_with_teatest(t *testing.T) {

@@ -335,27 +335,62 @@ func (s ChatScreen) Init() tea.Cmd {
 		msgCmd(components.SetPlaceholderMsg{Text: s.checklist.Render()}),
 	}
 
-	// Seed the sidebar with the user's already-joined channels
-	// (from session state) before `restoreFocus` fires, so that
-	// `ChannelFocusMsg`'s sidebar marker lands on a sidebar that
-	// already knows about the target. The Join events arriving on
-	// the protocol bus shortly afterwards become idempotent
-	// re-inserts into the sorted set.
-	if channels := s.sess.UserInstance().Channels(); channels != nil {
-		for pair := channels.Oldest(); pair != nil; pair = pair.Next() {
-			cw := domain.NewChannelWindow(pair.Key, time.Time{})
-			s.channels.Insert(newWindow(cw))
-			cmds = append(cmds, msgCmd(components.ChannelAddedMsg{Channel: cw}))
-		}
-	}
-
-	cmds = append(cmds, s.restoreFocus())
+	// Bootstrap from session state. Direct constructions
+	// (chat-screen as Root's initial screen, in tests) start
+	// with the user already a member of any seeded channels;
+	// the chat-screen pre-creates the matching `*Window`s here
+	// stamped with their session-recorded join times, so the
+	// arbiter in `handleChannelFocus` has somewhere to compare
+	// against before the protocol bus has caught up with the
+	// listener.
+	cmds = append(cmds, s.bootstrapFromSession()...)
 
 	if s.obs != nil {
 		cmds = append(cmds, s.summary.Init(), s.waitForLogUpdateCmd())
 	}
 
 	return tea.Batch(cmds...)
+}
+
+// bootstrapFromSession pre-seeds the channel cache and emits a
+// focus event for the most-recently-joined channel. The Window's
+// `UserTime` is the session's recorded join time, so a focus
+// event arriving later from the protocol bus with the same
+// timestamp neither steals the focus nor loses it — the user's
+// most recent deliberate channel wins.
+func (s ChatScreen) bootstrapFromSession() []tea.Cmd {
+	channels := s.sess.UserInstance().Channels()
+	if channels == nil || channels.Len() == 0 {
+		return nil
+	}
+
+	var (
+		cmds       []tea.Cmd
+		newestName domain.ChannelName
+		newestTime time.Time
+	)
+
+	for pair := channels.Oldest(); pair != nil; pair = pair.Next() {
+		cw := domain.NewChannelWindow(pair.Key, pair.Value)
+		w := newWindow(cw)
+		w.UserTime = pair.Value
+		s.channels.Insert(w)
+		cmds = append(cmds, msgCmd(components.ChannelAddedMsg{Channel: cw}))
+
+		if pair.Value.After(newestTime) {
+			newestTime = pair.Value
+			newestName = pair.Key
+		}
+	}
+
+	if newestName != "" {
+		cmds = append(cmds, msgCmd(chatcmd.ChannelFocusMsg{
+			Channel: newestName,
+			At:      newestTime,
+		}))
+	}
+
+	return cmds
 }
 
 // listenForEvents reads the next event from the session's
@@ -412,14 +447,6 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 	case protocolEventMsg:
 		return s.handleProtocolEvent(msg)
-
-	case joinAutojoinDoneMsg:
-		// Forwarded from the connection screen once autojoin
-		// settles. The chat-screen's initial `restoreFocus`
-		// returns a no-op when no channels are joined yet (the
-		// common case at decorator-Init time), so re-run it now
-		// that membership is populated.
-		return s, s.restoreFocus()
 
 	case ui.QuitRequestedMsg:
 		return s.handleQuitRequested(msg)
@@ -768,42 +795,6 @@ func (s ChatScreen) completionSet() command.CompletionSet[chatcmd.CompletionCont
 	}
 }
 
-// restoreFocus picks an Init-time landing channel. It prefers the
-// persisted `last_channel` entry when it matches a current
-// membership; otherwise it falls back to the most-recently-joined
-// channel. Membership is read from the session's in-memory
-// snapshot so the cmd does not depend on bus events. There is a
-// race between this `ChannelFocusMsg` and the bus-event drain;
-// fixing it properly is γ.2's pure-view MessageList redesign.
-func (s ChatScreen) restoreFocus() tea.Cmd {
-	return func() tea.Msg {
-		channels := s.sess.UserInstance().Channels()
-		if channels == nil || channels.Len() == 0 {
-			return nil
-		}
-
-		var target domain.ChannelName
-
-		if s.uiState != nil {
-			if last, err := s.uiState.GetLastChannel(s.ctx); err == nil && last != "" {
-				if _, ok := channels.Get(last); ok {
-					target = last
-				}
-			}
-		}
-
-		if target == "" {
-			newest := channels.Newest()
-			if newest == nil {
-				return nil
-			}
-			target = newest.Key
-		}
-
-		return chatcmd.ChannelFocusMsg{Channel: target}
-	}
-}
-
 func (s ChatScreen) loadLiveModels() tea.Cmd {
 	if !s.sess.HasAPIKey() {
 		return nil
@@ -858,7 +849,7 @@ func (s ChatScreen) logAndShow(event domain.PersistableEvent) tea.Cmd {
 		return tea.Batch(
 			s.logAndStoreCmd(domain.StatusChannelName, event),
 			func() tea.Msg {
-				return chatcmd.ChannelFocusMsg{Channel: domain.StatusChannelName}
+				return chatcmd.ChannelFocusMsg{Channel: domain.StatusChannelName, At: time.Now()}
 			},
 		)
 	}
@@ -1009,7 +1000,7 @@ func (s ChatScreen) switchChannel(ch domain.ChannelName) tea.Cmd {
 			}
 		}
 
-		return chatcmd.ChannelFocusMsg{Channel: ch}
+		return chatcmd.ChannelFocusMsg{Channel: ch, At: time.Now()}
 	}
 }
 
