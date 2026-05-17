@@ -501,7 +501,7 @@ func TestChatScreen_completion_all_instance_commands_see_instances_outside_activ
 	// "outsider". The regression would have hidden the outsider
 	// from completion because the context wired `Instances:` to
 	// the active channel's members.
-	screen.channels.Insert(domain.NewChannelWindow("#general", time.Time{}))
+	screen.channels.Insert(newWindow(domain.NewChannelWindow("#general", time.Time{})))
 	*screen.active = "#general"
 
 	completer := screen.completionSet()
@@ -537,7 +537,7 @@ func TestChatScreen_NickChange_then_Quit_removes_instance(t *testing.T) {
 	require.NoError(t, err)
 
 	// Seed the channel so handleModelInvitedEvent finds it.
-	screen.channels.Insert(domain.NewChannelWindow("#general", time.Time{}))
+	screen.channels.Insert(newWindow(domain.NewChannelWindow("#general", time.Time{})))
 	*screen.active = "#general"
 
 	now := time.Now()
@@ -603,7 +603,7 @@ func TestChatScreen_QuitEvent_routes_to_targets_only(t *testing.T) {
 	require.NoError(t, err)
 
 	for _, name := range []domain.ChannelName{"#x", "#y", "#z"} {
-		screen.channels.Insert(domain.NewChannelWindow(name, time.Time{}))
+		screen.channels.Insert(newWindow(domain.NewChannelWindow(name, time.Time{})))
 	}
 	*screen.active = "#x"
 
@@ -615,9 +615,9 @@ func TestChatScreen_QuitEvent_routes_to_targets_only(t *testing.T) {
 
 	expected := domain.StoredEvent{Event: quit}
 
-	require.Equal(t, []domain.StoredEvent{expected}, screen.scrollback["#x"])
-	require.Equal(t, []domain.StoredEvent{expected}, screen.scrollback["#y"])
-	require.Empty(t, screen.scrollback["#z"],
+	require.Equal(t, []domain.StoredEvent{expected}, screen.scrollbackOf("#x"))
+	require.Equal(t, []domain.StoredEvent{expected}, screen.scrollbackOf("#y"))
+	require.Empty(t, screen.scrollbackOf("#z"),
 		"a QUIT for {#x, #y} must not surface in #z's scrollback")
 }
 
@@ -630,7 +630,7 @@ func TestChatScreen_NickChangeEvent_routes_to_targets_only(t *testing.T) {
 	require.NoError(t, err)
 
 	for _, name := range []domain.ChannelName{"#x", "#y", "#z"} {
-		screen.channels.Insert(domain.NewChannelWindow(name, time.Time{}))
+		screen.channels.Insert(newWindow(domain.NewChannelWindow(name, time.Time{})))
 	}
 	*screen.active = "#x"
 
@@ -647,9 +647,9 @@ func TestChatScreen_NickChangeEvent_routes_to_targets_only(t *testing.T) {
 
 	expected := domain.StoredEvent{Event: nick}
 
-	require.Equal(t, []domain.StoredEvent{expected}, screen.scrollback["#x"])
-	require.Equal(t, []domain.StoredEvent{expected}, screen.scrollback["#y"])
-	require.Empty(t, screen.scrollback["#z"],
+	require.Equal(t, []domain.StoredEvent{expected}, screen.scrollbackOf("#x"))
+	require.Equal(t, []domain.StoredEvent{expected}, screen.scrollbackOf("#y"))
+	require.Empty(t, screen.scrollbackOf("#z"),
 		"a NICK for {#x, #y} must not surface in #z's scrollback")
 }
 
@@ -658,11 +658,11 @@ func TestChatScreen_NickChangeEvent_routes_to_targets_only(t *testing.T) {
 func requireChannelWindow(t *testing.T, screen ChatScreen, name domain.ChannelName) *domain.ChannelWindow {
 	t.Helper()
 
-	w, ok := screen.channels.Get(domain.WindowKey(name))
+	w, ok := screen.channels.Get(windowKey(name))
 	require.True(t, ok, "expected channel %q in cache", name)
 
-	cw, ok := w.(*domain.ChannelWindow)
-	require.True(t, ok, "expected *ChannelWindow for %q, got %T", name, w)
+	cw, ok := w.Window.(*domain.ChannelWindow)
+	require.True(t, ok, "expected *ChannelWindow for %q, got %T", name, w.Window)
 
 	return cw
 }

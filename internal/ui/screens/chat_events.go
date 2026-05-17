@@ -179,7 +179,7 @@ func (s ChatScreen) bufferActorEvent(targets []domain.ChannelName, actor *domain
 	}
 
 	for w := range s.channels.All() {
-		dm, ok := w.(*domain.DMWindow)
+		dm, ok := w.Window.(*domain.DMWindow)
 		if !ok {
 			continue
 		}
@@ -213,7 +213,7 @@ func (s ChatScreen) lifecycleBumps(channels []domain.ChannelName, actor *domain.
 	}
 
 	for w := range s.channels.All() {
-		dm, ok := w.(*domain.DMWindow)
+		dm, ok := w.Window.(*domain.DMWindow)
 		if !ok {
 			continue
 		}
@@ -233,10 +233,31 @@ func (s ChatScreen) lifecycleBumps(channels []domain.ChannelName, actor *domain.
 }
 
 func (s ChatScreen) appendToScrollback(ch domain.ChannelName, evt domain.StoredEvent) {
+	w, ok := s.windowByName(ch)
+	if !ok {
+		// Channels for events that arrive before the chat-screen
+		// has seen a join for the target are placeholder-created
+		// here so scrollback never drops live traffic: the user
+		// may focus this channel later and expect to see what
+		// happened during their absence. DM windows can only be
+		// constructed with a counterpart instance, so DM events
+		// for unknown windows are dropped.
+		switch domain.InferChannelKind(ch) {
+		case domain.KindChannel:
+			w = newWindow(domain.NewChannelWindow(ch, time.Time{}))
+		case domain.KindStatus:
+			w = newWindow(domain.NewStatusWindow(time.Time{}))
+		default:
+			return
+		}
+
+		s.channels.Insert(w)
+	}
+
 	s.scrollbackMu.Lock()
 	defer s.scrollbackMu.Unlock()
 
-	s.scrollback[ch] = append(s.scrollback[ch], evt)
+	w.Scrollback = append(w.Scrollback, evt)
 }
 
 // appendStatusNotice records a server-narrated line in the local
@@ -272,18 +293,18 @@ func (s ChatScreen) handleChannelFocus(msg chatcmd.ChannelFocusMsg) (ui.Model, t
 	w, exists := s.windowByName(msg.Channel)
 	if !exists {
 		// First focus into a window the chat screen hasn't seen
-		// before — populate the cache with a fresh
-		// `*ChannelWindow`. Status and DM windows arrive via
-		// their own dedicated events and shouldn't hit this path.
-		cw := domain.NewChannelWindow(msg.Channel, time.Time{})
-		s.channels.Insert(cw)
-		w = cw
+		// before — populate the cache with a fresh `*Window`
+		// wrapping a fresh [domain.ChannelWindow]. Status and DM
+		// windows arrive via their own dedicated events and
+		// shouldn't hit this path.
+		w = newWindow(domain.NewChannelWindow(msg.Channel, time.Time{}))
+		s.channels.Insert(w)
 	}
 
 	*s.active = msg.Channel
 
 	var members domain.MemberList
-	if cw, ok := w.(*domain.ChannelWindow); ok {
+	if cw, ok := w.Window.(*domain.ChannelWindow); ok {
 		members = cw.Members
 	}
 
@@ -296,7 +317,7 @@ func (s ChatScreen) handleChannelFocus(msg chatcmd.ChannelFocusMsg) (ui.Model, t
 	}))
 
 	if !exists {
-		cmds = append(cmds, msgCmd(components.ChannelAddedMsg{Channel: w}))
+		cmds = append(cmds, msgCmd(components.ChannelAddedMsg{Channel: w.Window}))
 	}
 
 	cmds = append(cmds, msgCmd(components.ChannelActiveMsg{Channel: msg.Channel}))
@@ -331,7 +352,12 @@ func (s ChatScreen) scrollbackCmd(ch domain.ChannelName) tea.Cmd {
 		s.scrollbackMu.RLock()
 		defer s.scrollbackMu.RUnlock()
 
-		return components.HistoryLoadedMsg{Events: s.scrollback[ch]}
+		w, ok := s.windowByName(ch)
+		if !ok {
+			return components.HistoryLoadedMsg{Events: nil}
+		}
+
+		return components.HistoryLoadedMsg{Events: w.Scrollback}
 	}
 }
 
@@ -374,7 +400,6 @@ func (s ChatScreen) handleNamesReply(msg domain.NamesReplyEvent) (ui.Model, tea.
 	}
 
 	cw.Members = msg.Members
-	s.channels.Insert(cw)
 
 	if msg.Channel != *s.active {
 		return s, nil
@@ -398,13 +423,12 @@ func (s ChatScreen) handleJoinEvent(msg domain.Join) (ui.Model, tea.Cmd) {
 		// the session-emitted Join is what the chat screen
 		// learns about the channel from.
 		cw = domain.NewChannelWindow(msg.Target, msg.At)
+		s.channels.Insert(newWindow(cw))
 	}
 
 	if !cw.Members.HasInstance(msg.Instance) {
 		cw.Members.Add(msg.Instance)
 	}
-
-	s.channels.Insert(cw)
 
 	if !isUser {
 		var cmds []tea.Cmd
@@ -446,7 +470,6 @@ func (s ChatScreen) handleModeChangeEvent(msg domain.ModeChange) (ui.Model, tea.
 	}
 
 	cw.Members.SetMode(msg.Instance, msg.Mode)
-	s.channels.Insert(cw)
 
 	if msg.Target != *s.active {
 		return s, nil
@@ -466,8 +489,6 @@ func (s ChatScreen) handlePartEvent(msg domain.Part) (ui.Model, tea.Cmd) {
 		if m, mOK := cw.Members.GetByInstance(msg.Instance); mOK {
 			cw.Members.Remove(m)
 		}
-
-		s.channels.Insert(cw)
 	}
 
 	// If the user is leaving, remove the channel and purge any
@@ -475,7 +496,7 @@ func (s ChatScreen) handlePartEvent(msg domain.Part) (ui.Model, tea.Cmd) {
 	// for the parted channel's queue will no-op via
 	// deliverNextPaced's empty-queue branch when they fire.
 	if msg.Instance == s.sess.UserInstance() {
-		s.channels.Remove(domain.WindowKey(msg.Target))
+		s.channels.Remove(windowKey(msg.Target))
 		delete(s.pacedQueue, msg.Target)
 		s.checklist.channelCount = s.realChannelCount()
 	}
@@ -546,7 +567,6 @@ func (s ChatScreen) handleQuitEvent(msg domain.Quit, targets []domain.ChannelNam
 
 		if m, mOK := cw.Members.GetByInstance(msg.Instance); mOK {
 			cw.Members.Remove(m)
-			s.channels.Insert(cw)
 		}
 	}
 
@@ -580,7 +600,6 @@ func (s ChatScreen) handleTopicChangeEvent(msg domain.TopicChange) (ui.Model, te
 		cw.Topic = msg.Topic
 		cw.TopicSetBy = msg.By
 		cw.TopicSetAt = msg.At
-		s.channels.Insert(cw)
 	}
 
 	if *s.active != msg.Target {
@@ -598,7 +617,6 @@ func (s ChatScreen) handleTopicInfoEvent(msg domain.TopicInfo) (ui.Model, tea.Cm
 		cw.Topic = msg.Topic
 		cw.TopicSetBy = msg.TopicSetBy
 		cw.TopicSetAt = msg.TopicSetAt
-		s.channels.Insert(cw)
 	}
 
 	if *s.active != msg.Target {
@@ -630,7 +648,6 @@ func (s ChatScreen) handleNickChangeEvent(msg domain.NickChange, targets []domai
 
 		if cw.Members.HasInstance(msg.Instance) {
 			cw.Members.RenameTo(msg.Instance, msg.NewNick)
-			s.channels.Insert(cw)
 		}
 	}
 
@@ -674,7 +691,7 @@ func (s ChatScreen) activeDMWith(actor *domain.Instance) (*domain.DMWindow, bool
 	}
 
 	for w := range s.channels.All() {
-		dm, ok := w.(*domain.DMWindow)
+		dm, ok := w.Window.(*domain.DMWindow)
 		if !ok {
 			continue
 		}
@@ -692,8 +709,6 @@ func (s ChatScreen) handleModelInvitedEvent(msg domain.ModelInvited) (ui.Model, 
 		if !cw.Members.HasInstance(msg.Instance) {
 			cw.Members.Add(msg.Instance)
 		}
-
-		s.channels.Insert(cw)
 	}
 
 	var members domain.MemberList
@@ -718,8 +733,6 @@ func (s ChatScreen) handleModelKickedEvent(msg domain.ModelKicked) (ui.Model, te
 		if m, mOK := cw.Members.GetByInstance(msg.Instance); mOK {
 			cw.Members.Remove(m)
 		}
-
-		s.channels.Insert(cw)
 	}
 
 	var members domain.MemberList
@@ -792,8 +805,8 @@ func (s ChatScreen) handleDMOpenedMsg(msg chatcmd.DMOpenedMsg) (ui.Model, tea.Cm
 	dm := domain.NewDMWindow(msg.Counterpart, msg.At)
 	name := dm.Name()
 
-	_, alreadyOpen := s.channels.Get(domain.WindowKey(name))
-	s.channels.Insert(dm)
+	_, alreadyOpen := s.channels.Get(windowKey(name))
+	s.channels.Insert(newWindow(dm))
 
 	var cmds []tea.Cmd
 
@@ -1064,23 +1077,37 @@ func (s ChatScreen) activeChannelInstances() iter.Seq[*domain.Instance] {
 	}
 }
 
-// windowByName returns the cached `Window` for the given name.
-func (s ChatScreen) windowByName(name domain.ChannelName) (domain.Window, bool) {
-	return s.channels.Get(domain.WindowKey(name))
+// windowByName returns the cached `*Window` for the given name.
+func (s ChatScreen) windowByName(name domain.ChannelName) (*Window, bool) {
+	return s.channels.Get(windowKey(name))
 }
 
-// channelWindowByName looks up the cached entry and asserts it
-// is a `*ChannelWindow`. Returns false either way for non-
-// channel kinds (status / DM) or absent entries; the channel-
-// only handlers (`handleJoinEvent`, `handleModeChangeEvent`,
-// etc.) use this to read and mutate `Members` / `Topic`
-// without going through the legacy `Channel` projection.
+// scrollbackOf returns the in-memory scrollback for the named
+// window, or nil if the chat-screen has no entry for it. Test-only
+// helper; production reads go through the message-list's getter
+// closure.
+func (s ChatScreen) scrollbackOf(name domain.ChannelName) []domain.StoredEvent {
+	w, ok := s.windowByName(name)
+	if !ok {
+		return nil
+	}
+
+	return w.Scrollback
+}
+
+// channelWindowByName looks up the cached entry and asserts its
+// embedded [domain.Window] is a `*ChannelWindow`. Returns false
+// either way for non-channel kinds (status / DM) or absent entries;
+// the channel-only handlers (`handleJoinEvent`,
+// `handleModeChangeEvent`, etc.) use this to read and mutate
+// `Members` / `Topic` without going through the legacy `Channel`
+// projection.
 func (s ChatScreen) channelWindowByName(name domain.ChannelName) (*domain.ChannelWindow, bool) {
 	w, ok := s.windowByName(name)
 	if !ok {
 		return nil, false
 	}
 
-	cw, ok := w.(*domain.ChannelWindow)
+	cw, ok := w.Window.(*domain.ChannelWindow)
 	return cw, ok
 }

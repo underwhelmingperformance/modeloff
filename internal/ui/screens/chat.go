@@ -128,7 +128,7 @@ type ChatScreen struct {
 	layout   components.MainLayout
 	keyMap   components.ChatScreenKeyMap
 
-	channels        *set.Sorted[domain.Window]
+	channels        *set.Sorted[*Window]
 	liveModels      *[]chatcmd.ModelOption
 	liveModelsState *command.SuggestionState
 	parser          chatcmd.Parser
@@ -142,26 +142,14 @@ type ChatScreen struct {
 	// of channels with pending work.
 	pacedQueue map[domain.ChannelName][]domain.Message
 
-	// scrollback holds per-channel event history in memory. The chat
-	// screen owns its view state: focus changes are pure buffer
-	// swaps, not store round-trips. The buffer is purely
-	// live-event-driven — every persistable event arriving on the
-	// session's event channel appends here, regardless of which
-	// channel is active — and reflects only what the user has seen
-	// happen during this session. The persisted event log is the
-	// models' shared memory of channel history and is never read into
-	// this buffer, mirroring IRC's "you don't see what happened
-	// before you joined" semantic.
-	//
-	// Reads and writes are guarded by `scrollbackMu`. Writes happen
-	// from Bubble Tea's Update goroutine via `appendToScrollback`
-	// for live event-bus traffic and from `logAndShowOn`'s Cmd
-	// goroutine for chat-screen-authored events; reads happen on a
-	// separate worker goroutine inside the `scrollbackCmd` closure
-	// that `tea.Sequence` schedules independently of Update. The
-	// pointer is shared across value-receiver copies of
-	// `ChatScreen`.
-	scrollback   map[domain.ChannelName][]domain.StoredEvent
+	// scrollbackMu guards reads of [Window.Scrollback] from any
+	// goroutine other than the Update goroutine. Writes happen
+	// from Update via [appendToScrollback] (live event-bus traffic)
+	// and from the `logAndShowOn` Cmd goroutine (chat-screen-
+	// authored events); reads happen on a separate worker goroutine
+	// inside the `scrollbackCmd` closure that `tea.Sequence`
+	// schedules independently of Update. The mutex pointer is
+	// shared across value-receiver copies of `ChatScreen`.
 	scrollbackMu *sync.RWMutex
 
 	width     int
@@ -204,7 +192,7 @@ func NewChatScreen(ctx context.Context, sess *session.Session, cfgStore config.S
 		client:          sess.User(),
 		cfgStore:        cfgStore,
 		uiState:         uiState,
-		channels:        set.NewSorted[domain.Window](),
+		channels:        set.NewSorted[*Window](),
 		active:          &active,
 		liveModels:      &liveModels,
 		liveModelsState: &liveModelsState,
@@ -212,7 +200,6 @@ func NewChatScreen(ctx context.Context, sess *session.Session, cfgStore config.S
 		keyMap:          components.DefaultChatScreenKeyMap,
 		checklist:       NewWelcomeChecklist(sess.UserNick(), sess.HasAPIKey()),
 		pacedQueue:      map[domain.ChannelName][]domain.Message{},
-		scrollback:      map[domain.ChannelName][]domain.StoredEvent{},
 		scrollbackMu:    &sync.RWMutex{},
 	}
 
@@ -245,7 +232,7 @@ func (s ChatScreen) realChannelCount() int {
 // sidebar order, used by post-part focus fallback. When no real
 // channel remains, the caller falls through to the "no channels"
 // branch which renders the welcome checklist.
-func (s ChatScreen) firstRealChannel() (domain.Window, bool) {
+func (s ChatScreen) firstRealChannel() (*Window, bool) {
 	for i := range s.channels.Len() {
 		w, ok := s.channels.GetAt(i)
 		if !ok {
@@ -300,13 +287,13 @@ func (s ChatScreen) WithObservability(obs *observability.Runtime) ChatScreen {
 func (s ChatScreen) Init() tea.Cmd {
 	cfg, _ := s.loadConfig()
 
-	statusWindow := domain.NewStatusWindow(s.sess.ConnectedAt())
+	statusWindow := newWindow(domain.NewStatusWindow(s.sess.ConnectedAt()))
 	s.channels.Insert(statusWindow)
 
 	cmds := []tea.Cmd{
 		s.listenForEvents(),
 		s.listenForProtocolEvents(),
-		msgCmd(components.ChannelAddedMsg{Channel: statusWindow}),
+		msgCmd(components.ChannelAddedMsg{Channel: statusWindow.Window}),
 		msgCmd(components.CommandsMsg[chatcmd.CompletionContext]{
 			Commands: s.parser.Set().Commands,
 		}),
@@ -723,7 +710,15 @@ func (s ChatScreen) completionSet() command.CompletionSet[chatcmd.CompletionCont
 	return command.CompletionSet[chatcmd.CompletionContext]{
 		Set: s.parser.Set(),
 		Ctx: chatcmd.CompletionContext{
-			Channels:       func() iter.Seq[domain.Window] { return s.channels.All() },
+			Channels: func() iter.Seq[domain.Window] {
+				return func(yield func(domain.Window) bool) {
+					for w := range s.channels.All() {
+						if !yield(w.Window) {
+							return
+						}
+					}
+				}
+			},
 			Instances:      func() iter.Seq[*domain.Instance] { return s.sess.Instances(s.ctx) },
 			ChannelMembers: s.activeChannelInstances,
 			ActiveMembers:  func() iter.Seq[domain.Nick] { return s.activeMemberNicks() },
