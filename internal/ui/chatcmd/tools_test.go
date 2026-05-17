@@ -66,6 +66,11 @@ func TestBuildToolRegistry_returns_expected_tools(t *testing.T) {
 			Parameters:  toolParams(t, "topic"),
 		},
 		{
+			Name:        "mode",
+			Description: "Set or clear one or more channel modes. Syntax: <modes> [args]. Examples: +o nick, +tn, -i+l 10, +k secret, +ov-i alice bob.",
+			Parameters:  toolParams(t, "mode"),
+		},
+		{
 			Name:        "me",
 			Description: "Send an action message (e.g. /me waves).",
 			Parameters:  toolParams(t, "me"),

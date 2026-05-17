@@ -18,6 +18,7 @@ type Grammar struct {
 	Query              QueryCommand              `cmd:"" help:"Open (or focus) a direct-message window with a nick. Optional trailing body is sent as the first message."`
 	Nick               NickCommand               `cmd:"" tool:"" help:"Change your nickname."`
 	Topic              TopicCommand              `cmd:"" tool:"" kind:"channel" help:"Set or clear the current channel topic."`
+	Mode               ModeCommand               `cmd:"" kind:"channel" tool:"Set or clear one or more channel modes. Syntax: <modes> [args]. Examples: +o nick, +tn, -i+l 10, +k secret, +ov-i alice bob." help:"Set or clear channel modes."`
 	Me                 MeCommand                 `cmd:"" tool:"" help:"Send an action message (e.g. /me waves)."`
 	Whois              WhoisCommand              `cmd:"" tool:"" help:"Show details about a model instance."`
 	Config             ConfigCommand             `cmd:"" help:"Update runtime configuration."`

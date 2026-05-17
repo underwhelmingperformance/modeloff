@@ -55,9 +55,20 @@ func (s *Session) Handle(ctx context.Context, c protocol.Client, cmd protocol.Co
 		return s.handleKill(c, cmd)
 	case protocol.Oper:
 		return s.handleOper(ctx, c, cmd)
+	case protocol.ChannelMode:
+		return s.handleChannelMode(ctx, c, cmd)
 	default:
 		return protocol.Response{}, fmt.Errorf("unknown command %T", cmd)
 	}
+}
+
+func (s *Session) handleChannelMode(ctx context.Context, c protocol.Client, cmd protocol.ChannelMode) (protocol.Response, error) {
+	actor, err := s.resolveClientActor(ctx, c)
+	if err != nil {
+		return protocol.Response{}, err
+	}
+
+	return commandResult(s.applyChannelModeChangesAs(ctx, actor, cmd.Channel, cmd.Changes))
 }
 
 // handleOper validates the issuing client's credentials via the

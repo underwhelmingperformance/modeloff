@@ -547,6 +547,129 @@ func (c NickCommand) RunTool(ctx context.Context, tc session.ToolContext) sessio
 	return sendToolCommand(ctx, tc, c, "changed nick to "+c.Nick)
 }
 
+// ModeCommand represents `/mode <flags> [args...]`. Carries one
+// or more channel-mode changes in RFC 2812 §3.2.3 compound form;
+// flags toggle direction with `+` / `-` prefixes and parametric
+// flags consume their argument from the args list left-to-right.
+type ModeCommand struct {
+	Flags string   `arg:"" help:"Mode flag string, e.g. +ov-i or +k"`
+	Args  []string `arg:"" optional:"" help:"Parameters for parametric flags, in flag-string order"`
+}
+
+// ToCommand builds the wire-protocol command for `/mode`, parsing
+// the compound flag string into a sequence of changes. Shape
+// errors (unknown flag, missing parameter, surplus parameter)
+// reject before any wire send so the dispatcher and the chatcmd
+// surface agree on what's well-formed.
+func (c ModeCommand) ToCommand(rc Context) (protocol.Command, error) {
+	changes, err := parseChannelModeString(c.Flags, c.Args)
+	if err != nil {
+		return nil, err
+	}
+
+	return protocol.ChannelMode{Channel: rc.Active, Changes: changes}, nil
+}
+
+// Run implements Command.
+func (c ModeCommand) Run(rc Context) tea.Cmd {
+	if rc.Active == "" {
+		return noChannelCmd("mode")
+	}
+
+	return func() tea.Msg {
+		return sendCommand(rc, c, "mode")
+	}
+}
+
+// RunTool implements ToolCommand.
+func (c ModeCommand) RunTool(ctx context.Context, tc session.ToolContext) session.ToolResultPayload {
+	if tc.Channel == "" {
+		return session.ToolResultPayload{OK: false, Error: "no active channel"}
+	}
+
+	return sendToolCommand(ctx, tc, c, "mode change on "+string(tc.Channel))
+}
+
+// parseChannelModeString walks `flags` left-to-right, tracking
+// sign, and emits one [protocol.ChannelModeChange] per flag rune.
+// Parametric flags (`+o`, `+v`, `+l` on add, `+k` on add) consume
+// their argument from `args` in order. The function rejects
+// unknown flags, missing arguments, and surplus arguments — RFC
+// 2812 doesn't pin behaviour on extra trailing args, but the
+// stricter rejection makes a typo surface immediately rather than
+// silently dropping a half-meant change.
+func parseChannelModeString(flags string, args []string) ([]protocol.ChannelModeChange, error) {
+	if flags == "" {
+		return nil, fmt.Errorf("mode: empty flag string")
+	}
+
+	add := true
+	argIdx := 0
+
+	var changes []protocol.ChannelModeChange
+
+	for _, r := range flags {
+		switch r {
+		case '+':
+			add = true
+			continue
+		case '-':
+			add = false
+			continue
+		}
+
+		flag := domain.Mode(r)
+		change := protocol.ChannelModeChange{Flag: flag, Add: add}
+
+		needsParam, paramKind := channelModeParamShape(flag, add)
+		if needsParam {
+			if argIdx >= len(args) {
+				return nil, domain.MissingModeParamError{Flag: flag}
+			}
+
+			switch paramKind {
+			case modeParamTarget:
+				change.Target = domain.Nick(args[argIdx])
+			case modeParamValue:
+				change.Param = args[argIdx]
+			}
+			argIdx++
+		}
+
+		changes = append(changes, change)
+	}
+
+	if argIdx < len(args) {
+		return nil, fmt.Errorf("mode: %d surplus argument(s)", len(args)-argIdx)
+	}
+
+	return changes, nil
+}
+
+type modeParamKind int
+
+const (
+	modeParamNone modeParamKind = iota
+	modeParamTarget
+	modeParamValue
+)
+
+// channelModeParamShape reports whether a flag in the given
+// direction consumes an argument and, if so, whether the argument
+// is a nick (member-mode `+o`/`+v`) or a free value (`+l` int /
+// `+k` string).
+func channelModeParamShape(flag domain.Mode, add bool) (bool, modeParamKind) {
+	switch flag {
+	case domain.ModeOperator, domain.ModeChannelVoice:
+		return true, modeParamTarget
+	case domain.ModeUserLimit, domain.ModeKey:
+		if add {
+			return true, modeParamValue
+		}
+	}
+	return false, modeParamNone
+}
+
 // TopicCommand represents `/topic [text]`. An empty topic clears it.
 type TopicCommand struct {
 	Topic []string `arg:"" optional:"" help:"Topic text"`

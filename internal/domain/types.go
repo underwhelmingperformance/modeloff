@@ -361,17 +361,36 @@ func (i *Instance) UnmarshalJSON(data []byte) error {
 type Mode rune
 
 const (
-	// ModeOperator is RFC 2812 §3.1.5 user-mode `+o` (server
-	// operator). The same wire letter also names channel-op
-	// (channel mode `+o`, RFC §3.2.3); context comes from the
-	// carrying event's target.
-	ModeOperator Mode = 'o'
-
-	// ModeChannelVoice is RFC 2812 §3.2.3 channel mode `+v`.
-	// Distinct from [NickMode.ModeVoice] which is the display
-	// sort-ordering enum.
+	// Member modes (RFC 2812 §3.2.3 channel-scoped per-member
+	// privileges; also serve as user-mode `+o` per §3.1.5 when
+	// the carrying event has no channel target).
+	ModeOperator     Mode = 'o'
 	ModeChannelVoice Mode = 'v'
+
+	// Channel-attribute modes (RFC 2811 §4.2 / RFC 2812 §3.2.3).
+	// Each scopes a behaviour on the channel as a whole: the
+	// boolean ones toggle a flag; `+l` and `+k` take a parameter
+	// (user-limit, channel key).
+	ModeAnonymous  Mode = 'a'
+	ModeInviteOnly Mode = 'i'
+	ModeModerated  Mode = 'm'
+	ModeNoExternal Mode = 'n'
+	ModePrivate    Mode = 'p'
+	ModeQuiet      Mode = 'q'
+	ModeSecret     Mode = 's'
+	ModeTopicLock  Mode = 't'
+	ModeUserLimit  Mode = 'l'
+	ModeKey        Mode = 'k'
 )
+
+// MemberMode reports whether the flag is one of the per-member
+// modes ([ModeOperator], [ModeChannelVoice]) — the ones whose
+// `MODE` form takes a nick target inside a channel. The remaining
+// flags are channel attributes whose `MODE` form takes either no
+// parameter or a single value.
+func (m Mode) MemberMode() bool {
+	return m == ModeOperator || m == ModeChannelVoice
+}
 
 // IRCString renders a mode flag in the conventional `+x` / `-x`
 // shape per the `add` direction. The empty Mode renders as the

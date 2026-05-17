@@ -59,6 +59,9 @@ func (NoSuchChannelError) isProtocolEvent()    {}
 func (NickInUseError) isProtocolEvent()        {}
 func (NotOperatorError) isProtocolEvent()      {}
 func (OperFailedError) isProtocolEvent()       {}
+func (ChanOpRequiredError) isProtocolEvent()   {}
+func (UnknownModeFlagError) isProtocolEvent()  {}
+func (MissingModeParamError) isProtocolEvent() {}
 func (UnknownCommandError) isProtocolEvent()   {}
 func (UnknownConfigKeyError) isProtocolEvent() {}
 func (InvalidDurationError) isProtocolEvent()  {}
@@ -69,6 +72,9 @@ func (NoSuchChannelError) domainEvent()    {}
 func (NickInUseError) domainEvent()        {}
 func (NotOperatorError) domainEvent()      {}
 func (OperFailedError) domainEvent()       {}
+func (ChanOpRequiredError) domainEvent()   {}
+func (UnknownModeFlagError) domainEvent()  {}
+func (MissingModeParamError) domainEvent() {}
 func (UnknownCommandError) domainEvent()   {}
 func (UnknownConfigKeyError) domainEvent() {}
 func (InvalidDurationError) domainEvent()  {}
@@ -126,4 +132,42 @@ type OperFailedError struct {
 // Error makes [OperFailedError] satisfy the `error` interface.
 func (OperFailedError) Error() string {
 	return "OPER rejected: invalid credentials"
+}
+
+// ChanOpRequiredError refuses a channel-op-gated command when the
+// issuing client lacks `@` in the target channel (RFC 2812 numeric
+// 482 ERR_CHANOPRIVSNEEDED).
+type ChanOpRequiredError struct {
+	Command string
+	Channel ChannelName
+	At      time.Time
+}
+
+func (e ChanOpRequiredError) Error() string {
+	return fmt.Sprintf("%s requires channel operator in %s", e.Command, e.Channel)
+}
+
+// UnknownModeFlagError reports a `MODE` flag the dispatcher does
+// not recognise (RFC 2812 numeric 472 ERR_UNKNOWNMODE).
+type UnknownModeFlagError struct {
+	Flag Mode
+	At   time.Time
+}
+
+func (e UnknownModeFlagError) Error() string {
+	return fmt.Sprintf("unknown mode flag %q", rune(e.Flag))
+}
+
+// MissingModeParamError reports a parametric `MODE` change without
+// its required argument: `+o` / `+v` without a target nick, `+l`
+// on add without a positive integer, `+k` on add without a key
+// (analogue of RFC 2812 numeric 461 ERR_NEEDMOREPARAMS for the
+// MODE form).
+type MissingModeParamError struct {
+	Flag Mode
+	At   time.Time
+}
+
+func (e MissingModeParamError) Error() string {
+	return fmt.Sprintf("mode %q is missing its parameter", rune(e.Flag))
 }

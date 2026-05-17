@@ -104,7 +104,7 @@ func TestComplete_channel_includes_all_commands(t *testing.T) {
 
 	require.Equal(t, []string{
 		"join", "part", "list", "add-model", "invite", "kick",
-		"msg", "query", "nick", "topic", "me", "whois", "config",
+		"msg", "query", "nick", "topic", "mode", "me", "whois", "config",
 		"personas", "regenerate-personas",
 		"help", "clear", "quit",
 	}, suggestionValues(c))
@@ -120,7 +120,7 @@ func TestNewParser_produces_all_commands(t *testing.T) {
 
 	require.Equal(t, []string{
 		"join", "part", "list", "add-model", "invite", "kick",
-		"msg", "query", "nick", "topic", "me", "whois", "config",
+		"msg", "query", "nick", "topic", "mode", "me", "whois", "config",
 		"personas", "regenerate-personas",
 		"help", "clear", "quit",
 	}, names)

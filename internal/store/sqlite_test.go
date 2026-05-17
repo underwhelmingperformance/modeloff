@@ -175,6 +175,56 @@ func TestSQLiteStore_SaveAndGetWindow_channel_with_members(t *testing.T) {
 	requireWindowEqual(t, want, got)
 }
 
+func TestSQLiteStore_ChannelRoundtripPersistsModes(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	want := domain.NewChannelWindow("#chan", testTime)
+	want.Modes = domain.ChannelModes{
+		TopicLock:  true,
+		NoExternal: true,
+		Moderated:  true,
+		UserLimit:  10,
+		Key:        "secret",
+	}
+	want.InvitedNicks.Add("alice")
+	want.InvitedNicks.Add("bravo")
+	want.Members = storeTestMembers(t, s, "alice", "bob")
+
+	require.NoError(t, s.SaveWindow(ctx, want))
+
+	got, err := s.GetWindow(ctx, "#chan")
+	require.NoError(t, err)
+
+	cw, ok := got.(*domain.ChannelWindow)
+	require.True(t, ok)
+	require.Equal(t, want.Modes, cw.Modes)
+	require.True(t, cw.InvitedNicks.Contains("alice"))
+	require.True(t, cw.InvitedNicks.Contains("bravo"))
+	require.Equal(t, 2, len(cw.InvitedNicks))
+}
+
+func TestSQLiteStore_ChannelLegacyRowHydratesZeroModes(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	// A row saved before the modes field existed has no `modes`
+	// or `invited_nicks` keys. Persist a channel without setting
+	// them; the round-trip hydrates with the Go zero value.
+	want := domain.NewChannelWindow("#legacy", testTime)
+	want.Members = storeTestMembers(t, s, "alice")
+
+	require.NoError(t, s.SaveWindow(ctx, want))
+
+	got, err := s.GetWindow(ctx, "#legacy")
+	require.NoError(t, err)
+
+	cw, ok := got.(*domain.ChannelWindow)
+	require.True(t, ok)
+	require.Equal(t, domain.ChannelModes{}, cw.Modes)
+	require.Equal(t, 0, len(cw.InvitedNicks))
+}
+
 func TestSQLiteStore_SaveWindow_recordsSpan(t *testing.T) {
 	recorder, provider := oteltest.NewSpanRecorder(t)
 	ctx := t.Context()

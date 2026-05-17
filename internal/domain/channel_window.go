@@ -8,12 +8,14 @@ import "time"
 // names-reply, mode change, topic change, model invite/kick) on
 // top of the addressable-window behaviour shared via [Window].
 type ChannelWindow struct {
-	name       ChannelName
-	created    time.Time
-	Topic      string
-	TopicSetBy Nick
-	TopicSetAt time.Time
-	Members    MemberList
+	name         ChannelName
+	created      time.Time
+	Topic        string
+	TopicSetBy   Nick
+	TopicSetAt   time.Time
+	Members      MemberList
+	Modes        ChannelModes
+	InvitedNicks InvitedNicks
 }
 
 // NewChannelWindow constructs a `#`-prefixed channel window with

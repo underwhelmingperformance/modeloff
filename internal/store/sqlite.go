@@ -479,13 +479,15 @@ func (s *SQLiteStore) Close() error {
 // topic; a DM row's member list is empty and `Name` is the
 // counterpart's `InstanceID`).
 type channelRow struct {
-	Name       domain.ChannelName
-	Kind       domain.ChannelKind
-	Topic      string
-	TopicSetBy domain.Nick
-	TopicSetAt time.Time
-	Members    domain.MemberList
-	Created    time.Time
+	Name         domain.ChannelName
+	Kind         domain.ChannelKind
+	Topic        string
+	TopicSetBy   domain.Nick
+	TopicSetAt   time.Time
+	Members      domain.MemberList
+	Modes        domain.ChannelModes
+	InvitedNicks domain.InvitedNicks
+	Created      time.Time
 }
 
 // resolveChannelMembers rewrites the stub `*Instance` handles in
@@ -628,6 +630,8 @@ func (s *SQLiteStore) rowToWindow(ctx context.Context, row channelRow) (domain.W
 		cw.TopicSetBy = row.TopicSetBy
 		cw.TopicSetAt = row.TopicSetAt
 		cw.Members = row.Members
+		cw.Modes = row.Modes
+		cw.InvitedNicks = row.InvitedNicks
 		return cw, nil
 
 	case domain.KindDM:
@@ -660,6 +664,8 @@ func rowFromWindow(w domain.Window) channelRow {
 		row.TopicSetBy = cw.TopicSetBy
 		row.TopicSetAt = cw.TopicSetAt
 		row.Members = cw.Members
+		row.Modes = cw.Modes
+		row.InvitedNicks = cw.InvitedNicks
 	}
 
 	return row

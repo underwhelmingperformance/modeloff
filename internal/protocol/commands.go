@@ -126,17 +126,43 @@ type Oper struct {
 	Password string
 }
 
-func (Join) isCommand()     {}
-func (Part) isCommand()     {}
-func (PrivMsg) isCommand()  {}
-func (Action) isCommand()   {}
-func (Topic) isCommand()    {}
-func (Invite) isCommand()   {}
-func (Kick) isCommand()     {}
-func (Nick) isCommand()     {}
-func (Whois) isCommand()    {}
-func (List) isCommand()     {}
-func (AddModel) isCommand() {}
-func (Quit) isCommand()     {}
-func (Kill) isCommand()     {}
-func (Oper) isCommand()     {}
+// ChannelMode is RFC 2812 §3.2.3 channel-mode mutation. A single
+// `MODE` carries a sequence of changes that the dispatcher
+// applies atomically: the channel-op precondition runs once
+// against the whole batch, and the shape of every change is
+// validated up front so a malformed entry rejects the batch
+// before any side effect runs. The first runtime failure
+// (e.g. unknown nick on `+o`) stops the loop; already-applied
+// changes remain, matching typical ircd behaviour.
+type ChannelMode struct {
+	Channel domain.ChannelName
+	Changes []ChannelModeChange
+}
+
+// ChannelModeChange is one `+X` / `-X` mutation inside a
+// [ChannelMode] batch. The dispatcher's validator enforces
+// shape: member modes (`+o` / `+v`) require `Target`; parametric
+// attribute modes (`+l` on add, `+k` on add) require `Param`;
+// boolean attribute modes accept neither.
+type ChannelModeChange struct {
+	Flag   domain.Mode
+	Add    bool
+	Target domain.Nick
+	Param  string
+}
+
+func (Join) isCommand()        {}
+func (Part) isCommand()        {}
+func (PrivMsg) isCommand()     {}
+func (Action) isCommand()      {}
+func (Topic) isCommand()       {}
+func (Invite) isCommand()      {}
+func (Kick) isCommand()        {}
+func (Nick) isCommand()        {}
+func (Whois) isCommand()       {}
+func (List) isCommand()        {}
+func (AddModel) isCommand()    {}
+func (Quit) isCommand()        {}
+func (Kill) isCommand()        {}
+func (Oper) isCommand()        {}
+func (ChannelMode) isCommand() {}

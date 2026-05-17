@@ -34,6 +34,10 @@ func TestCommand_sum_membership(t *testing.T) {
 		{"addmodel", protocol.AddModel{Model: "anthropic/claude", Persona: "p"}},
 		{"quit", protocol.Quit{Reason: "gone"}},
 		{"kill", protocol.Kill{Nick: nick, Reason: "spam"}},
+		{"oper", protocol.Oper{Name: "name", Password: "pw"}},
+		{"channelmode", protocol.ChannelMode{Channel: channel, Changes: []protocol.ChannelModeChange{
+			{Flag: domain.ModeOperator, Add: true, Target: nick},
+		}}},
 	}
 
 	for _, tc := range cases {
@@ -53,7 +57,9 @@ func TestCommand_sum_membership(t *testing.T) {
 				protocol.List,
 				protocol.AddModel,
 				protocol.Quit,
-				protocol.Kill:
+				protocol.Kill,
+				protocol.Oper,
+				protocol.ChannelMode:
 				// member of the sum
 			default:
 				t.Fatalf("command %T is not a member of the protocol Command sum", tc.cmd)
