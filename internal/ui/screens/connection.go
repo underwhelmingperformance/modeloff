@@ -31,10 +31,9 @@ const (
 )
 
 // connectionStep describes one line in the connection sequence.
-// `gate` is the data-driven version of what used to be a
-// label-matched switch inside `advanceTick`: adding a fourth
-// gated phase is now a new `stepGate` value plus a step entry,
-// no control-flow change.
+// `gate` keeps the step's async dependency data-driven: adding a
+// new gated phase is a `stepGate` value plus a step entry, no
+// branch in the orchestrator.
 type connectionStep struct {
 	label  string
 	status stepStatus

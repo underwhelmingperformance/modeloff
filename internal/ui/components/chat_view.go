@@ -61,15 +61,6 @@ type CommandsMsg[C command.KindProvider] struct {
 	Commands []*command.Node[C]
 }
 
-// ClearMessagesMsg used to clear the message list's internal
-// events buffer. With the pure-view design the message list does
-// not own storage, so the chat screen now handles the `/clear`
-// command by emptying the active window's scrollback directly.
-// The type is retained for compatibility with any callers that
-// still construct it; the message list treats it as a no-op.
-// without affecting the persistent event log.
-type ClearMessagesMsg struct{}
-
 // UserNickMsg updates the user's nick in the chat view and input bar.
 type UserNickMsg struct {
 	Nick domain.Nick

@@ -404,13 +404,6 @@ func (s *Session) sendMessageAs(ctx context.Context, actor *domain.Instance, ch 
 	)
 	defer endSpan(span, &retErr, observability.ErrorKindStore)
 
-	if ch == domain.StatusChannelName {
-		return domain.Message{}, errWithKind(domain.StatusChannelGuardError{
-			Command: "send",
-			Hint:    "the status channel doesn't take messages — try /msg <nick-or-#channel> instead",
-		}, observability.ErrorKindValidation)
-	}
-
 	instanceID := actor.ID()
 	span.SetAttributes(attribute.String(observability.AttrInstanceID, string(instanceID)))
 
@@ -441,13 +434,6 @@ func (s *Session) sendActionAs(ctx context.Context, actor *domain.Instance, ch d
 		attribute.String(observability.AttrNick, string(actorNick)),
 	)
 	defer endSpan(span, &retErr, observability.ErrorKindStore)
-
-	if ch == domain.StatusChannelName {
-		return domain.Message{}, errWithKind(domain.StatusChannelGuardError{
-			Command: "me",
-			Hint:    "the status channel doesn't take messages — try /msg <nick-or-#channel> instead",
-		}, observability.ErrorKindValidation)
-	}
 
 	instanceID := actor.ID()
 	span.SetAttributes(attribute.String(observability.AttrInstanceID, string(instanceID)))

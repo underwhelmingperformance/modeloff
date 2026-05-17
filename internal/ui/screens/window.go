@@ -6,11 +6,11 @@ import (
 
 // Window is the chat-screen's per-window state container. It wraps
 // a [domain.Window] (the addressable identity — status, channel,
-// or DM) and adds the chat-screen-side fields that used to live
-// in parallel `map[ChannelName]X` slots on `ChatScreen`. Sidebar
-// indicators (`Unread`, `Mentions`, `Activity`) and the scrollback
-// history live here so a window's view of itself is a single
-// value, not a fan-out across maps that have to be kept in sync.
+// or DM) and carries the chat-screen-side fields beside it:
+// sidebar indicators (`Unread`, `Mentions`, `Activity`) and the
+// scrollback history. A window's view of itself is a single value
+// the sidebar, message list, and event handlers all read through
+// the same pointer.
 type Window struct {
 	domain.Window
 

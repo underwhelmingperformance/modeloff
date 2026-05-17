@@ -471,32 +471,30 @@ func TestChatScreen_ErrorEvent_no_active_channel(t *testing.T) {
 	require.Equal(t, "startup failure: no api key", cmdErr.Err)
 }
 
-func TestChatScreen_ErrorEvent_status_channel_guard_renders_as_usage_hint(t *testing.T) {
+// TestChatScreen_MessageSubmit_on_status_channel_renders_usage_hint
+// pins the chat-screen-side status-channel guard: with `&modeloff`
+// active, a `MessageSubmitMsg` short-circuits to a `UsageHint`
+// rather than sending. `&modeloff` is a chat-screen-owned window
+// the session has no concept of, so the validation lives here.
+func TestChatScreen_MessageSubmit_on_status_channel_renders_usage_hint(t *testing.T) {
 	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil, nil, domain.KindStatus)
 	require.NoError(t, err)
+	*screen.active = domain.StatusChannelName
 
-	at := time.Now()
-	_, cmd := screen.handleErrorEvent(domain.ErrorEvent{
-		Operation: "send",
-		Err: domain.StatusChannelGuardError{
-			Command: "msg",
-			Hint:    "the status channel doesn't take messages — try /msg <nick> for a model or /join <channel> for a channel",
-		},
-		At: at,
-	})
+	_, cmd := screen.Update(components.MessageSubmitMsg{Text: "hello"})
 
 	require.NotNil(t, cmd)
 
 	msgs := collectMsgs(cmd)
-
 	stored, ok := containsMsg[domain.StoredEvent](msgs)
-	require.True(t, ok, "expected StoredEvent in batch")
+	require.True(t, ok, "expected StoredEvent in batch, got %v", msgsTypes(msgs))
 
-	require.Equal(t, domain.UsageHint{
-		Command: "msg",
-		Usage:   "the status channel doesn't take messages — try /msg <nick> for a model or /join <channel> for a channel",
-		At:      at,
-	}, stored.Event)
+	hint, ok := stored.Event.(domain.UsageHint)
+	require.True(t, ok, "expected UsageHint, got %T", stored.Event)
+	require.Equal(t, "send", hint.Command)
+	require.Equal(t,
+		"the status channel doesn't take messages — try /msg <nick-or-#channel> instead",
+		hint.Usage)
 }
 
 func sameType(a, b any) bool {

@@ -445,42 +445,6 @@ func TestKickAs_rejects_DM(t *testing.T) {
 	require.EqualError(t, err, "cannot kick from a direct message")
 }
 
-func TestSendMessageAs_rejects_status_channel(t *testing.T) {
-	sess, _ := newTestSession(t)
-	ctx := t.Context()
-
-	_, err := sess.sendMessageAs(ctx, sess.UserInstance(), domain.StatusChannelName, "hello")
-
-	var guard domain.StatusChannelGuardError
-	require.ErrorAs(t, err, &guard)
-	require.Equal(t, domain.StatusChannelGuardError{
-		Command: "send",
-		Hint:    "the status channel doesn't take messages — try /msg <nick-or-#channel> instead",
-	}, guard)
-
-	if evt, ok := peekEvent(sess); ok {
-		t.Fatalf("expected no event, got %T", evt)
-	}
-}
-
-func TestSendActionAs_rejects_status_channel(t *testing.T) {
-	sess, _ := newTestSession(t)
-	ctx := t.Context()
-
-	_, err := sess.sendActionAs(ctx, sess.UserInstance(), domain.StatusChannelName, "waves")
-
-	var guard domain.StatusChannelGuardError
-	require.ErrorAs(t, err, &guard)
-	require.Equal(t, domain.StatusChannelGuardError{
-		Command: "me",
-		Hint:    "the status channel doesn't take messages — try /msg <nick-or-#channel> instead",
-	}, guard)
-
-	if evt, ok := peekEvent(sess); ok {
-		t.Fatalf("expected no event, got %T", evt)
-	}
-}
-
 // TestSendMessageAs_model_to_model_dispatches verifies that the
 // nick-targeted dispatch path fires when one model messages
 // another. The wire-form target is the recipient's

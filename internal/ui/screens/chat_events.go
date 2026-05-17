@@ -801,23 +801,11 @@ func (s ChatScreen) handleConfigChangedEvent(msg domain.ConfigChangedEvent) (ui.
 func (s ChatScreen) handleErrorEvent(msg domain.ErrorEvent) (ui.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
-	// Status-channel guard refusals are user-fixable contextual
-	// errors, not failures: render them as a hint with the
-	// command-tagged usage text rather than a red command-error.
-	if guard, ok := errors.AsType[domain.StatusChannelGuardError](msg.Err); ok {
-		cmds = append(cmds, s.logAndShow(domain.UsageHint{
-			Target:  *s.active,
-			Command: guard.Command,
-			Usage:   guard.Hint,
-			At:      msg.At,
-		}))
-	} else {
-		cmds = append(cmds, s.logAndShow(domain.CommandError{
-			Target: *s.active,
-			Err:    fmt.Sprintf("%s: %s", msg.Operation, msg.Err),
-			At:     msg.At,
-		}))
-	}
+	cmds = append(cmds, s.logAndShow(domain.CommandError{
+		Target: *s.active,
+		Err:    fmt.Sprintf("%s: %s", msg.Operation, msg.Err),
+		At:     msg.At,
+	}))
 
 	cmds = append(cmds, msgCmd(components.PendingResponseMsg{Pending: false}))
 	cmds = append(cmds, msgCmd(components.NickListThinkingMsg{}))

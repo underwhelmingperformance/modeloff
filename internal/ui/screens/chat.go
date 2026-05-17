@@ -706,13 +706,7 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		return s, s.switchChannel(msg.Channel)
 
 	case components.MessageSubmitMsg:
-		if *s.active == "" {
-			return s, s.logAndShow(domain.UsageHint{
-				Usage: "join a channel first", At: time.Now(),
-			})
-		}
-
-		return s, s.sendMessage(msg.Text)
+		return s.handleMessageSubmit(msg)
 
 	case components.CommandSubmitMsg:
 		return s, s.handleCommand(msg)
@@ -1017,6 +1011,29 @@ func (s ChatScreen) switchChannel(ch domain.ChannelName) tea.Cmd {
 
 		return chatcmd.ChannelFocusMsg{Channel: ch}
 	}
+}
+
+// handleMessageSubmit dispatches a user-typed chat line. With no
+// active channel the user is on the welcome screen; the hint
+// directs them to join one. `&modeloff` is server-narrated only
+// and refuses chat with a hint that points at the right command.
+// Everything else flows through to `sess.SendMessage`.
+func (s ChatScreen) handleMessageSubmit(msg components.MessageSubmitMsg) (ui.Model, tea.Cmd) {
+	if *s.active == "" {
+		return s, s.logAndShow(domain.UsageHint{
+			Usage: "join a channel first", At: time.Now(),
+		})
+	}
+
+	if *s.active == domain.StatusChannelName {
+		return s, s.logAndShow(domain.UsageHint{
+			Command: "send",
+			Usage:   "the status channel doesn't take messages — try /msg <nick-or-#channel> instead",
+			At:      time.Now(),
+		})
+	}
+
+	return s, s.sendMessage(msg.Text)
 }
 
 func (s ChatScreen) sendMessage(text string) tea.Cmd {

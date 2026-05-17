@@ -1217,19 +1217,6 @@ func TestSession_mutationOperations_recordSpans(t *testing.T) {
 	})
 }
 
-func TestSession_SendMessageAs_status_channel_records_validation_error_kind(t *testing.T) {
-	recorder, provider := oteltest.NewSpanRecorder(t)
-	sess, _ := newTestSession(t)
-	sess.WithTracerProvider(provider)
-
-	_, err := sess.sendMessageAs(t.Context(), sess.UserInstance(), domain.StatusChannelName, "hello")
-	require.Error(t, err)
-
-	span := oteltest.FindSpan(t, recorder, "session.send_message")
-	require.Equal(t, observability.ResultError, oteltest.AttrValue(span.Attributes(), observability.AttrResult))
-	require.Equal(t, observability.ErrorKindValidation, oteltest.AttrValue(span.Attributes(), observability.AttrErrorKind))
-}
-
 func TestSession_spans_carry_AttrInstanceID(t *testing.T) {
 	tests := []struct {
 		name       string
