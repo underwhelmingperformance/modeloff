@@ -199,15 +199,16 @@ func buildNode[C KindProvider](ft reflect.StructField, fieldVal reflect.Value) (
 	}
 
 	node := &Node[C]{
-		Name:         name,
-		Aliases:      aliases,
-		Help:         help,
-		RequiredKind: parseRequiredKind(ft.Tag.Get("kind")),
-		Tool:         hasToolTag(ft),
-		ToolDesc:     toolDescFromTag(ft),
-		Positionals:  buildPositionals[C](fields, sources),
-		Flags:        buildFlags[C](fields, sources),
-		fields:       fields,
+		Name:                 name,
+		Aliases:              aliases,
+		Help:                 help,
+		RequiredKind:         parseRequiredKind(ft.Tag.Get("kind")),
+		RequiredCapabilities: parseRequiredCapabilities(ft.Tag.Get("caps")),
+		Tool:                 hasToolTag(ft),
+		ToolDesc:             toolDescFromTag(ft),
+		Positionals:          buildPositionals[C](fields, sources),
+		Flags:                buildFlags[C](fields, sources),
+		fields:               fields,
 		factory: func() any {
 			return reflect.New(fieldType).Interface()
 		},

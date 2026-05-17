@@ -100,20 +100,50 @@ func parseRequiredKind(tag string) *domain.ChannelKind {
 	}
 }
 
+// parseRequiredCapabilities splits a `caps:"a,b,c"` struct tag value
+// into the corresponding [Capability] slice. Whitespace around each
+// entry is trimmed; empty entries are skipped. An empty or missing
+// tag yields a nil slice (the command has no capability requirements
+// and is universally visible).
+func parseRequiredCapabilities(tag string) []Capability {
+	if tag == "" {
+		return nil
+	}
+
+	parts := strings.Split(tag, ",")
+	caps := make([]Capability, 0, len(parts))
+
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed == "" {
+			continue
+		}
+
+		caps = append(caps, Capability(trimmed))
+	}
+
+	if len(caps) == 0 {
+		return nil
+	}
+
+	return caps
+}
+
 // Node is a command in the command tree. Leaf nodes (no children)
 // are executable commands. Non-leaf nodes are command groups whose
 // children are subcommands.
 type Node[C KindProvider] struct {
-	Parent       *Node[C]
-	Name         string
-	Aliases      []string
-	Help         string
-	RequiredKind *domain.ChannelKind
-	Tool         bool
-	ToolDesc     string
-	Positionals  []Positional[C]
-	Flags        []Flag[C]
-	Children     []*Node[C]
+	Parent               *Node[C]
+	Name                 string
+	Aliases              []string
+	Help                 string
+	RequiredKind         *domain.ChannelKind
+	RequiredCapabilities []Capability
+	Tool                 bool
+	ToolDesc             string
+	Positionals          []Positional[C]
+	Flags                []Flag[C]
+	Children             []*Node[C]
 
 	// factory creates a zero-valued pointer to the command struct for
 	// parsing. Nil for group nodes that have no struct of their own.
@@ -538,7 +568,7 @@ func Merge[C KindProvider](sets ...Set[C]) Set[C] {
 
 // complete resolves the completion state for the current buffer.
 // ctx is forwarded to SuggestionSources.
-func complete[C KindProvider](set Set[C], ctx C, raw string, cursor int, kind domain.ChannelKind) Completion {
+func complete[C KindProvider](set Set[C], ctx C, raw string, cursor int, kind domain.ChannelKind, caps CapabilityHolder) Completion {
 	set.linkParents()
 
 	raw = clampRaw(raw)
@@ -559,7 +589,7 @@ func complete[C KindProvider](set Set[C], ctx C, raw string, cursor int, kind do
 	if index == 0 {
 		return Completion{
 			Visible:      true,
-			Suggestions:  filterSuggestions(commandSuggestions(set, kind), prefix),
+			Suggestions:  filterSuggestions(commandSuggestions(set, kind, caps), prefix),
 			ReplaceStart: start,
 			ReplaceEnd:   end,
 			AppendSpace:  true,
@@ -726,11 +756,15 @@ func clampCursor(cursor, length int) int {
 	return cursor
 }
 
-func commandSuggestions[C KindProvider](set Set[C], kind domain.ChannelKind) []Suggestion {
+func commandSuggestions[C KindProvider](set Set[C], kind domain.ChannelKind, caps CapabilityHolder) []Suggestion {
 	suggestions := make([]Suggestion, 0, len(set.Commands))
 
 	for _, node := range set.Commands {
 		if node.RequiredKind != nil && *node.RequiredKind != kind {
+			continue
+		}
+
+		if !holds(caps, node.RequiredCapabilities) {
 			continue
 		}
 
@@ -744,6 +778,30 @@ func commandSuggestions[C KindProvider](set Set[C], kind domain.ChannelKind) []S
 	}
 
 	return suggestions
+}
+
+// VisibleCommands returns the subset of set.Commands that the holder
+// permits, after applying the same [Capability] filter as the
+// completion path. The result is a freshly allocated slice in the
+// original Commands order; the underlying [*Node] pointers are
+// shared. Callers (`/help` rendering, tool-registry enumeration)
+// use this when they need the filtered node list outside the
+// completion flow.
+//
+// A nil holder is treated as holding no capabilities — commands
+// with non-empty [Node.RequiredCapabilities] are filtered out.
+func VisibleCommands[C KindProvider](set Set[C], caps CapabilityHolder) []*Node[C] {
+	visible := make([]*Node[C], 0, len(set.Commands))
+
+	for _, node := range set.Commands {
+		if !holds(caps, node.RequiredCapabilities) {
+			continue
+		}
+
+		visible = append(visible, node)
+	}
+
+	return visible
 }
 
 // completionClassification holds the result of classifying the tokens
@@ -1123,15 +1181,24 @@ func ComposeSources[C KindProvider](sources ...SuggestionSource[C]) SuggestionSo
 
 // CompletionSet binds a command Set with a typed completion context.
 // C must implement KindProvider so that command filtering works.
+//
+// Caps optionally restricts the visible command set: commands whose
+// [Node.RequiredCapabilities] are not all held are filtered out of
+// both the popover suggestion list and the parse-time name
+// resolution. A nil holder is treated as holding nothing — set it
+// explicitly via [NoCapabilities] for unfiltered display, or supply
+// a real holder bridged to runtime state (the user-client's modes,
+// the calling model-client's modes, etc.).
 type CompletionSet[C KindProvider] struct {
 	Set[C]
 
-	Ctx C
+	Ctx  C
+	Caps CapabilityHolder
 }
 
 // Complete resolves the completion state for the current buffer.
 func (cs CompletionSet[C]) Complete(raw string, cursor int) Completion {
-	return complete(cs.Set, cs.Ctx, raw, cursor, cs.Ctx.ChannelKind())
+	return complete(cs.Set, cs.Ctx, raw, cursor, cs.Ctx.ChannelKind(), cs.Caps)
 }
 
 func allFlagBindings[C KindProvider](node *Node[C]) []flagBinding[C] {

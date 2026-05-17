@@ -149,7 +149,7 @@ func TestComplete_command_suggestions_carry_usage(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, complete(cmds, testCtxValue, tt.raw, len([]rune(tt.raw)), domain.KindChannel))
+			require.Equal(t, tt.want, complete(cmds, testCtxValue, tt.raw, len([]rune(tt.raw)), domain.KindChannel, nil))
 		})
 	}
 }
@@ -185,7 +185,7 @@ func TestComplete_filters_commands_by_channel_kind(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			completion := complete(cmds, testCtxValue, "/", 1, tt.kind)
+			completion := complete(cmds, testCtxValue, "/", 1, tt.kind, nil)
 
 			var names []string
 			for _, s := range completion.Suggestions {
@@ -220,7 +220,7 @@ func TestComplete_argument_sources_are_contextual(t *testing.T) {
 	require.Equal(t, Completion{
 		Visible: true, ReplaceStart: 6, ReplaceEnd: 7, AppendSpace: false, TypedPrefix: "h",
 		Suggestions: []Suggestion{{Value: "helper", Label: "helper"}},
-	}, complete(cmds, testCtxValue, "/kick h", 7, domain.KindChannel))
+	}, complete(cmds, testCtxValue, "/kick h", 7, domain.KindChannel, nil))
 }
 
 func TestComplete_free_form_arguments_have_no_suggestions(t *testing.T) {
@@ -243,7 +243,7 @@ func TestComplete_free_form_arguments_have_no_suggestions(t *testing.T) {
 
 	require.Equal(t, Completion{
 		Visible: true, ReplaceStart: 11, ReplaceEnd: 16, TypedPrefix: "hello",
-	}, complete(cmds, testCtxValue, "/msg botty hello", 16, domain.KindChannel))
+	}, complete(cmds, testCtxValue, "/msg botty hello", 16, domain.KindChannel, nil))
 }
 
 func TestComplete_composes_sources(t *testing.T) {
@@ -283,7 +283,7 @@ func TestComplete_composes_sources(t *testing.T) {
 			{Value: "botty", Label: "botty", Detail: "test/model-a"},
 			{Value: "anthropic/claude-3-haiku", Label: "anthropic/claude-3-haiku", Detail: "Claude Haiku"},
 		},
-	}, complete(cmds, testCtxValue, "/invite ", 8, domain.KindChannel))
+	}, complete(cmds, testCtxValue, "/invite ", 8, domain.KindChannel, nil))
 }
 
 func TestComplete_hides_completion_when_source_errors(t *testing.T) {
@@ -304,7 +304,7 @@ func TestComplete_hides_completion_when_source_errors(t *testing.T) {
 		},
 	}
 
-	require.Equal(t, Completion{}, complete(cmds, testCtxValue, "/add-model ", 11, domain.KindChannel))
+	require.Equal(t, Completion{}, complete(cmds, testCtxValue, "/add-model ", 11, domain.KindChannel, nil))
 }
 
 func TestComplete_composed_sources_hide_completion_only_when_all_sources_error(t *testing.T) {
@@ -330,11 +330,11 @@ func TestComplete_composed_sources_hide_completion_only_when_all_sources_error(t
 	require.Equal(t, Completion{
 		Visible: true, ReplaceStart: 8, ReplaceEnd: 8, AppendSpace: false,
 		Suggestions: []Suggestion{{Value: "botty", Label: "botty"}},
-	}, complete(cmds, testCtxValue, "/invite ", 8, domain.KindChannel))
+	}, complete(cmds, testCtxValue, "/invite ", 8, domain.KindChannel, nil))
 
 	cmds.Commands[0].Positionals[0].Source = ComposeSources(errored, errored)
 
-	require.Equal(t, Completion{}, complete(cmds, testCtxValue, "/invite ", 8, domain.KindChannel))
+	require.Equal(t, Completion{}, complete(cmds, testCtxValue, "/invite ", 8, domain.KindChannel, nil))
 }
 
 func TestNode_Usage(t *testing.T) {
@@ -494,7 +494,7 @@ func TestComplete_token_boundaries(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, complete(cmds, testCtxValue, tt.raw, tt.cursor, domain.KindChannel))
+			require.Equal(t, tt.want, complete(cmds, testCtxValue, tt.raw, tt.cursor, domain.KindChannel, nil))
 		})
 	}
 }
@@ -506,7 +506,7 @@ func TestComplete_unknown_command_has_no_suggestions(t *testing.T) {
 
 	require.Equal(t, Completion{
 		Visible: true, ReplaceStart: 9, ReplaceEnd: 12, TypedPrefix: "arg",
-	}, complete(cmds, testCtxValue, "/unknown arg", 12, domain.KindChannel))
+	}, complete(cmds, testCtxValue, "/unknown arg", 12, domain.KindChannel, nil))
 }
 
 func TestComplete_contains_match(t *testing.T) {
@@ -522,7 +522,7 @@ func TestComplete_contains_match(t *testing.T) {
 		Suggestions: []Suggestion{
 			{Value: "claude-3-haiku", Label: "/claude-3-haiku", Detail: "Haiku model", Usage: "/claude-3-haiku"},
 		},
-	}, complete(cmds, testCtxValue, "/aiku", 5, domain.KindChannel))
+	}, complete(cmds, testCtxValue, "/aiku", 5, domain.KindChannel, nil))
 }
 
 func TestNode_Find(t *testing.T) {
@@ -603,7 +603,7 @@ func TestComplete_whitespace_after_slash(t *testing.T) {
 	require.Equal(t, Completion{
 		Visible: true, ReplaceStart: 1, ReplaceEnd: 2, AppendSpace: true, TypedPrefix: " ",
 		Suggestions: []Suggestion{},
-	}, complete(cmds, testCtxValue, "/ ", 2, domain.KindChannel))
+	}, complete(cmds, testCtxValue, "/ ", 2, domain.KindChannel, nil))
 }
 
 func TestComplete_cursor_mid_command_name(t *testing.T) {
@@ -619,7 +619,7 @@ func TestComplete_cursor_mid_command_name(t *testing.T) {
 		Suggestions: []Suggestion{
 			{Value: "quit", Label: "/quit", Detail: "Exit.", Usage: "/quit"},
 		},
-	}, complete(cmds, testCtxValue, "/quit", 3, domain.KindChannel))
+	}, complete(cmds, testCtxValue, "/quit", 3, domain.KindChannel, nil))
 }
 
 func TestComplete_multiple_prefix_matches(t *testing.T) {
@@ -638,7 +638,7 @@ func TestComplete_multiple_prefix_matches(t *testing.T) {
 			{Value: "query", Label: "/query", Detail: "Query.", Usage: "/query"},
 			{Value: "queue", Label: "/queue", Detail: "Queue.", Usage: "/queue"},
 		},
-	}, complete(cmds, testCtxValue, "/qu", 3, domain.KindChannel))
+	}, complete(cmds, testCtxValue, "/qu", 3, domain.KindChannel, nil))
 }
 
 func TestComplete_flag_name_after_positionals(t *testing.T) {
@@ -660,7 +660,7 @@ func TestComplete_flag_name_after_positionals(t *testing.T) {
 		Suggestions: []Suggestion{
 			{Value: "--reason", Label: "--reason", Detail: "Kick reason"},
 		},
-	}, complete(cmds, testCtxValue, "/kick botty ", 12, domain.KindChannel))
+	}, complete(cmds, testCtxValue, "/kick botty ", 12, domain.KindChannel, nil))
 }
 
 func TestComplete_flag_name_prefix_filters(t *testing.T) {
@@ -685,7 +685,7 @@ func TestComplete_flag_name_prefix_filters(t *testing.T) {
 		Suggestions: []Suggestion{
 			{Value: "--persona", Label: "--persona", Detail: "Persona text"},
 		},
-	}, complete(cmds, testCtxValue, "/invite model-a --per", 21, domain.KindChannel))
+	}, complete(cmds, testCtxValue, "/invite model-a --per", 21, domain.KindChannel, nil))
 }
 
 func TestComplete_flag_value_uses_source(t *testing.T) {
@@ -721,7 +721,7 @@ func TestComplete_flag_value_uses_source(t *testing.T) {
 			{Value: "json", Label: "json"},
 			{Value: "yaml", Label: "yaml"},
 		},
-	}, complete(cmds, testCtxValue, "/config api-key --format ", 25, domain.KindChannel))
+	}, complete(cmds, testCtxValue, "/config api-key --format ", 25, domain.KindChannel, nil))
 }
 
 func TestComplete_flag_value_filters_by_prefix(t *testing.T) {
@@ -747,7 +747,7 @@ func TestComplete_flag_value_filters_by_prefix(t *testing.T) {
 	require.Equal(t, Completion{
 		Visible: true, ReplaceStart: 17, ReplaceEnd: 18, AppendSpace: true, TypedPrefix: "j",
 		Suggestions: []Suggestion{{Value: "json", Label: "json"}},
-	}, complete(cmds, testCtxValue, "/config --format j", 18, domain.KindChannel))
+	}, complete(cmds, testCtxValue, "/config --format j", 18, domain.KindChannel, nil))
 }
 
 func TestComplete_flags_interleaved_with_positionals(t *testing.T) {
@@ -771,7 +771,7 @@ func TestComplete_flags_interleaved_with_positionals(t *testing.T) {
 	require.Equal(t, Completion{
 		Visible: true, ReplaceStart: 27, ReplaceEnd: 27, AppendSpace: true,
 		Suggestions: []Suggestion{{Value: "claude", Label: "claude"}},
-	}, complete(cmds, testCtxValue, "/invite --persona friendly ", 27, domain.KindChannel))
+	}, complete(cmds, testCtxValue, "/invite --persona friendly ", 27, domain.KindChannel, nil))
 }
 
 func TestComplete_subcommand_names(t *testing.T) {
@@ -816,7 +816,7 @@ func TestComplete_subcommand_names(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, complete(cmds, testCtxValue, tt.raw, len([]rune(tt.raw)), domain.KindChannel))
+			require.Equal(t, tt.want, complete(cmds, testCtxValue, tt.raw, len([]rune(tt.raw)), domain.KindChannel, nil))
 		})
 	}
 }
@@ -861,7 +861,7 @@ func TestComplete_flag_only_command(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, complete(cmds, testCtxValue, tt.raw, len([]rune(tt.raw)), domain.KindChannel))
+			require.Equal(t, tt.want, complete(cmds, testCtxValue, tt.raw, len([]rune(tt.raw)), domain.KindChannel, nil))
 		})
 	}
 }
@@ -940,7 +940,7 @@ func TestComplete_subcommand_recurses_into_child(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, complete(cmds, testCtxValue, tt.raw, len([]rune(tt.raw)), domain.KindChannel))
+			require.Equal(t, tt.want, complete(cmds, testCtxValue, tt.raw, len([]rune(tt.raw)), domain.KindChannel, nil))
 		})
 	}
 }
@@ -968,7 +968,7 @@ func TestComplete_group_node_combines_child_and_flag_suggestions(t *testing.T) {
 			{Value: "get", Label: "get", Detail: "Get a value", Usage: "get [--format]"},
 			{Value: "--format", Label: "--format", Detail: "Output format"},
 		},
-	}, complete(cmds, testCtxValue, "/config ", 8, domain.KindChannel))
+	}, complete(cmds, testCtxValue, "/config ", 8, domain.KindChannel, nil))
 }
 
 func TestComplete_ancestor_flag_value_uses_source(t *testing.T) {
@@ -1004,7 +1004,7 @@ func TestComplete_ancestor_flag_value_uses_source(t *testing.T) {
 			{Value: "json", Label: "json"},
 			{Value: "yaml", Label: "yaml"},
 		},
-	}, complete(cmds, testCtxValue, "/config set --format ", 21, domain.KindChannel))
+	}, complete(cmds, testCtxValue, "/config set --format ", 21, domain.KindChannel, nil))
 }
 
 func TestComplete_used_ancestor_flags_are_excluded(t *testing.T) {
@@ -1025,7 +1025,7 @@ func TestComplete_used_ancestor_flags_are_excluded(t *testing.T) {
 	require.Equal(t, Completion{
 		Visible: true, ReplaceStart: 26, ReplaceEnd: 28, AppendSpace: true, TypedPrefix: "--",
 		Suggestions: []Suggestion{},
-	}, complete(cmds, testCtxValue, "/config set --format json --", 28, domain.KindChannel))
+	}, complete(cmds, testCtxValue, "/config set --format json --", 28, domain.KindChannel, nil))
 }
 
 func TestComplete_bool_flag_does_not_expect_a_value(t *testing.T) {
@@ -1050,7 +1050,7 @@ func TestComplete_bool_flag_does_not_expect_a_value(t *testing.T) {
 			{Value: "api-key", Label: "api-key", Detail: "API key", Usage: "api-key [--reset]"},
 			{Value: "poke-interval", Label: "poke-interval", Detail: "Poke interval", Usage: "poke-interval [--reset]"},
 		},
-	}, complete(cmds, testCtxValue, "/config --reset ", 16, domain.KindChannel))
+	}, complete(cmds, testCtxValue, "/config --reset ", 16, domain.KindChannel, nil))
 }
 
 func TestComplete_deep_nesting_walks_into_grandchildren(t *testing.T) {
@@ -1129,7 +1129,7 @@ func TestComplete_deep_nesting_walks_into_grandchildren(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, complete(cmds, testCtxValue, tt.raw, len([]rune(tt.raw)), domain.KindChannel))
+			require.Equal(t, tt.want, complete(cmds, testCtxValue, tt.raw, len([]rune(tt.raw)), domain.KindChannel, nil))
 		})
 	}
 }
@@ -1160,7 +1160,7 @@ func TestComplete_optional_positional_with_source(t *testing.T) {
 			{Value: "claude", Label: "claude"},
 			{Value: "gemini", Label: "gemini"},
 		},
-	}, complete(cmds, testCtxValue, "/invite ", 8, domain.KindChannel))
+	}, complete(cmds, testCtxValue, "/invite ", 8, domain.KindChannel, nil))
 }
 
 func TestComplete_command_suggestions_include_aliases(t *testing.T) {
@@ -1231,7 +1231,7 @@ func TestComplete_command_suggestions_include_aliases(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, complete(cmds, testCtxValue, tt.raw, len([]rune(tt.raw)), domain.KindChannel))
+			require.Equal(t, tt.want, complete(cmds, testCtxValue, tt.raw, len([]rune(tt.raw)), domain.KindChannel, nil))
 		})
 	}
 }
@@ -1260,7 +1260,7 @@ func TestComplete_child_suggestions_include_aliases(t *testing.T) {
 			{Value: "set", Label: "set (s)", Detail: "Set a value", Usage: "set (s)", Aliases: []string{"s"}},
 			{Value: "get", Label: "get", Detail: "Get a value", Usage: "get"},
 		},
-	}, complete(cmds, testCtxValue, raw, len([]rune(raw)), domain.KindChannel))
+	}, complete(cmds, testCtxValue, raw, len([]rune(raw)), domain.KindChannel, nil))
 }
 
 func TestComplete_child_suggestion_usage_includes_args(t *testing.T) {
@@ -1299,7 +1299,7 @@ func TestComplete_child_suggestion_usage_includes_args(t *testing.T) {
 				Aliases: []string{"s"},
 			},
 		},
-	}, complete(cmds, testCtxValue, raw, len([]rune(raw)), domain.KindChannel))
+	}, complete(cmds, testCtxValue, raw, len([]rune(raw)), domain.KindChannel, nil))
 }
 
 func TestComplete_alias_resolves_to_positional_suggestions(t *testing.T) {
@@ -1331,7 +1331,92 @@ func TestComplete_alias_resolves_to_positional_suggestions(t *testing.T) {
 			{Value: "#general", Label: "#general"},
 			{Value: "#random", Label: "#random"},
 		},
-	}, complete(cmds, testCtxValue, raw, len([]rune(raw)), domain.KindChannel))
+	}, complete(cmds, testCtxValue, raw, len([]rune(raw)), domain.KindChannel, nil))
+}
+
+// --- Capability filter tests ---
+
+// capGrammar exercises `caps:` filtering in suggestions and parsing.
+// Three commands with three different requirement shapes; held
+// capabilities are varied per test case.
+type capGrammar struct {
+	Open     capOpenCmd     `cmd:"" help:"Always visible."`
+	OperOnly capOperOnlyCmd `cmd:"" caps:"alpha" help:"Visible when alpha held."`
+	Both     capBothCmd     `cmd:"" caps:"alpha,beta" help:"Visible when alpha+beta held."`
+}
+
+type capOpenCmd struct{}
+type capOperOnlyCmd struct{}
+type capBothCmd struct{}
+
+func TestCommandSuggestions_FiltersByCapabilities(t *testing.T) {
+	set, err := Build[testCtx](&capGrammar{})
+	require.NoError(t, err)
+
+	tests := []struct {
+		name   string
+		holder CapabilityHolder
+		want   []string
+	}{
+		{name: "nil holder shows only unrestricted", holder: nil, want: []string{"open"}},
+		{name: "empty holder shows only unrestricted", holder: held(), want: []string{"open"}},
+		{name: "alpha shows alpha-gated", holder: held("alpha"), want: []string{"open", "oper-only"}},
+		{name: "alpha+beta shows all", holder: held("alpha", "beta"), want: []string{"open", "oper-only", "both"}},
+		{name: "beta only excludes alpha-gated", holder: held("beta"), want: []string{"open"}},
+		{name: "unrelated cap shows only unrestricted", holder: held("gamma"), want: []string{"open"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := commandSuggestions(set, domain.KindChannel, tt.holder)
+			names := make([]string, 0, len(got))
+			for _, s := range got {
+				names = append(names, s.Value)
+			}
+			require.Equal(t, tt.want, names)
+		})
+	}
+}
+
+func TestVisibleCommands_FiltersByCapabilities(t *testing.T) {
+	set, err := Build[testCtx](&capGrammar{})
+	require.NoError(t, err)
+
+	tests := []struct {
+		name   string
+		holder CapabilityHolder
+		want   []string
+	}{
+		{name: "nil holder shows only unrestricted", holder: nil, want: []string{"open"}},
+		{name: "alpha shows alpha-gated", holder: held("alpha"), want: []string{"open", "oper-only"}},
+		{name: "alpha+beta shows all", holder: held("alpha", "beta"), want: []string{"open", "oper-only", "both"}},
+		{name: "no-capabilities holder shows only unrestricted", holder: NoCapabilities(), want: []string{"open"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := VisibleCommands(set, tt.holder)
+			names := make([]string, 0, len(got))
+			for _, n := range got {
+				names = append(names, n.Name)
+			}
+			require.Equal(t, tt.want, names)
+		})
+	}
+}
+
+func TestReflect_ParsesCapsTag_OnGrammar(t *testing.T) {
+	set, err := Build[testCtx](&capGrammar{})
+	require.NoError(t, err)
+
+	byName := map[string][]Capability{}
+	for _, n := range set.Commands {
+		byName[n.Name] = n.RequiredCapabilities
+	}
+
+	require.Nil(t, byName["open"], "open command has no required caps")
+	require.Equal(t, []Capability{"alpha"}, byName["oper-only"])
+	require.Equal(t, []Capability{"alpha", "beta"}, byName["both"])
 }
 
 // --- Tool schema tests ---
