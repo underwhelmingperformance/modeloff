@@ -125,7 +125,7 @@ func TestMetricsPane_view_renders_snapshot(t *testing.T) {
 
 func TestChatWorkspace_statusItems_follow_observability_state(t *testing.T) {
 	workspace := NewChatWorkspace(
-		NewChatView[testKind]("#general", domain.KindChannel, "testuser", ""),
+		NewChatView[testKind](func() []domain.StoredEvent { return nil }, "#general", domain.KindChannel, "testuser", ""),
 	).WithMetrics(NewMetricsPane(t.Context(), nil))
 
 	require.Empty(t, workspace.StatusItems())
@@ -168,7 +168,7 @@ func TestChatWorkspace_statusItems_follow_observability_state(t *testing.T) {
 
 func TestChatWorkspace_fullscreen_observability_renders_logs_and_metrics(t *testing.T) {
 	workspace := NewChatWorkspace(
-		NewChatView[testKind]("#general", domain.KindChannel, "testuser", ""),
+		NewChatView[testKind](func() []domain.StoredEvent { return nil }, "#general", domain.KindChannel, "testuser", ""),
 	).WithMetrics(NewMetricsPane(t.Context(), nil))
 
 	updated, _ := workspace.Update(ui.BoundsMsg{

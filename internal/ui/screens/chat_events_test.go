@@ -432,9 +432,13 @@ func TestChatScreen_focus_status_channel_keeps_status_identity(t *testing.T) {
 	tm.WaitFor("&modeloff", "Created channel #general")
 
 	tm.Send(chatcmd.ChannelFocusMsg{Channel: domain.StatusChannelName})
-	tm.WaitFor("Welcome to modeloff")
-
-	view := tm.CurrentView()
+	// Wait for both the sidebar marker AND the Welcome system
+	// notice — matching on either alone races against either the
+	// sidebar update or the Welcome-event buffer-append.
+	view := tm.WaitForView(func(view string) bool {
+		return strings.Contains(view, "▸&modeloff") &&
+			strings.Contains(view, "*** Welcome to modeloff")
+	})
 	body, _ := uitest.SplitBodyAndStatus(view)
 	columns := uitest.VisibleColumns(body)
 

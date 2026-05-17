@@ -209,9 +209,9 @@ func TestChatScreen_handleLiveModelsLoadFailed(t *testing.T) {
 			// projection the persisted-events check uses: the
 			// scrollback must surface exactly the notices the
 			// store recorded, in the same order, with no extras.
-			storedEvents := screen.scrollbackOf(tc.expectedChannel)
-			scrollbackNotices := make([]domain.SystemNotice, 0, len(storedEvents))
-			for _, ev := range storedEvents {
+			scrollback := screen.scrollbackOf(tc.expectedChannel)
+			scrollbackNotices := make([]domain.SystemNotice, 0, len(scrollback))
+			for _, ev := range scrollback {
 				notice, ok := ev.Event.(domain.SystemNotice)
 				require.True(t, ok,
 					"unexpected scrollback event %T on %s; only the notice should be present",

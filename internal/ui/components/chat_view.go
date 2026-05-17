@@ -18,18 +18,21 @@ type PendingResponseMsg struct {
 }
 
 // SetChannelMsg updates the channel identity and topic for a channel
-// switch. The message list is cleared; history arrives separately via
-// HistoryLoadedMsg.
+// switch. The message list re-reads its events through the injected
+// getter; no explicit history payload is carried.
 type SetChannelMsg struct {
 	Channel domain.ChannelName
 	Topic   string
 	Kind    domain.ChannelKind
 }
 
-// HistoryLoadedMsg populates the message list with events loaded
-// from the event log (e.g. on channel switch or scroll-back).
-type HistoryLoadedMsg struct {
-	Events []domain.StoredEvent
+// ScrollbackUpdatedMsg signals that the scrollback for the named
+// channel has been appended to and the active view should re-evaluate
+// — picking up new content for the active window and arming the
+// new-messages divider if the user is scrolled up. The chat-screen
+// emits it after every event it commits to a window's scrollback.
+type ScrollbackUpdatedMsg struct {
+	Channel domain.ChannelName
 }
 
 // SetLinesMsg replaces the displayed lines, preserving divider logic.
@@ -58,7 +61,12 @@ type CommandsMsg[C command.KindProvider] struct {
 	Commands []*command.Node[C]
 }
 
-// ClearMessagesMsg clears the visible messages in the current channel
+// ClearMessagesMsg used to clear the message list's internal
+// events buffer. With the pure-view design the message list does
+// not own storage, so the chat screen now handles the `/clear`
+// command by emptying the active window's scrollback directly.
+// The type is retained for compatibility with any callers that
+// still construct it; the message list treats it as a no-op.
 // without affecting the persistent event log.
 type ClearMessagesMsg struct{}
 
@@ -98,10 +106,20 @@ type chatViewLayout struct {
 // for a later SetChannelMsg to correct it. Subsequent SetChannelMsg
 // messages update the kind atomically when the user switches
 // channels.
-func NewChatView[C command.KindProvider](ch domain.ChannelName, kind domain.ChannelKind, userNick domain.Nick, topic string) ChatView[C] {
+//
+// `events` is the closure the embedded [MessageList] consults on
+// every `View` for the active window's scrollback. The chat
+// screen owns the storage; this view is a pure read over it.
+func NewChatView[C command.KindProvider](
+	events func() []domain.StoredEvent,
+	ch domain.ChannelName,
+	kind domain.ChannelKind,
+	userNick domain.Nick,
+	topic string,
+) ChatView[C] {
 	keyMap := DefaultChatViewKeyMap
 
-	ml := NewMessageList[C](ch, kind).SetKeyMap(keyMap)
+	ml := NewMessageList[C](events, ch, kind).SetKeyMap(keyMap)
 
 	return ChatView[C]{
 		channel:  ch,
@@ -179,8 +197,7 @@ func (c ChatView[C]) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 		return c, nil
 
-	case SetPlaceholderMsg, PendingResponseMsg, HighlightWordsMsg, TimestampFormatMsg,
-		HistoryLoadedMsg, ClearMessagesMsg, domain.StoredEvent:
+	case SetPlaceholderMsg, PendingResponseMsg, HighlightWordsMsg, TimestampFormatMsg:
 		var cmd tea.Cmd
 		c, cmd = c.updateMessages(msg)
 		c = c.syncMessageViewport()

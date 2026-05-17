@@ -47,7 +47,7 @@ func (s ChatScreen) handleSessionEvent(msg sessionEventMsg) (ui.Model, tea.Cmd) 
 		s = updated.(ChatScreen)
 	}
 
-	return s, tea.Batch(cmd, s.listenForEvents())
+	return s, tea.Batch(cmd, s.scrollbackUpdatedCmd(), s.listenForEvents())
 }
 
 // handleProtocolEvent dispatches wire-shaped events plus the
@@ -96,7 +96,21 @@ func (s ChatScreen) handleProtocolEvent(msg protocolEventMsg) (ui.Model, tea.Cmd
 		s = updated.(ChatScreen)
 	}
 
-	return s, tea.Batch(cmd, s.listenForProtocolEvents())
+	return s, tea.Batch(cmd, s.scrollbackUpdatedCmd(), s.listenForProtocolEvents())
+}
+
+// scrollbackUpdatedCmd nudges the message list to re-evaluate the
+// active window's scrollback after an event was buffered. Without
+// the nudge the new content would still render on the next View
+// because the message list reads through a getter, but the divider
+// latch would miss the per-tick growth signal and an off-bottom user
+// would never see the "new messages" line.
+func (s ChatScreen) scrollbackUpdatedCmd() tea.Cmd {
+	if s.active == nil || *s.active == "" {
+		return nil
+	}
+
+	return msgCmd(components.ScrollbackUpdatedMsg{Channel: *s.active})
 }
 
 // bufferEvent appends a session-bus persistable event to the
@@ -324,41 +338,8 @@ func (s ChatScreen) handleChannelFocus(msg chatcmd.ChannelFocusMsg) (ui.Model, t
 	cmds = append(cmds, s.persistLastChannel(msg.Channel))
 	cmds = append(cmds, msgCmd(components.ChannelUnreadMsg{Channel: msg.Channel, Count: 0}))
 	cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: members}))
-	cmds = append(cmds, s.scrollbackCmd(msg.Channel))
 
-	return s, tea.Sequence(cmds...)
-}
-
-// scrollbackCmd returns a command that hands the channel's
-// in-memory buffer to the message list. The buffer is built up
-// purely from live session events — the persisted event log is
-// the models' shared memory and is never read here, so a freshly
-// focused channel with no events seen this session shows nothing,
-// matching IRC's "you don't see what happened before you joined"
-// rule.
-//
-// The snapshot is taken at execution time (inside the returned
-// closure) so late events that arrive after `scrollbackCmd` is
-// queued but before its goroutine runs are included. Snapshots
-// from successive calls can land in either order at the message
-// list; the receiver discards mismatched-channel and shorter-
-// than-current snapshots to keep the displayed history monotonic.
-func (s ChatScreen) scrollbackCmd(ch domain.ChannelName) tea.Cmd {
-	if ch == "" {
-		return nil
-	}
-
-	return func() tea.Msg {
-		s.scrollbackMu.RLock()
-		defer s.scrollbackMu.RUnlock()
-
-		w, ok := s.windowByName(ch)
-		if !ok {
-			return components.HistoryLoadedMsg{Events: nil}
-		}
-
-		return components.HistoryLoadedMsg{Events: w.Scrollback}
-	}
+	return s, tea.Batch(cmds...)
 }
 
 // persistLastChannel writes the user's currently-active channel
@@ -411,53 +392,55 @@ func (s ChatScreen) handleNamesReply(msg domain.NamesReplyEvent) (ui.Model, tea.
 func (s ChatScreen) handleJoinEvent(msg domain.Join) (ui.Model, tea.Cmd) {
 	isUser := msg.Instance == s.sess.UserInstance()
 
-	cw, channelKnown := s.channelWindowByName(msg.Target)
+	w, channelKnown := s.windowByName(msg.Target)
 
 	if !isUser && !channelKnown {
 		return s, nil
 	}
 
-	if !channelKnown {
+	var cw *domain.ChannelWindow
+	if channelKnown {
+		cw, _ = w.Window.(*domain.ChannelWindow)
+	} else {
 		// First user-join into this channel — populate the
-		// chat-screen cache as the authoritative side, since
-		// the session-emitted Join is what the chat screen
-		// learns about the channel from.
+		// chat-screen cache as the authoritative side, since the
+		// session-emitted Join is what the chat screen learns
+		// about the channel from.
 		cw = domain.NewChannelWindow(msg.Target, msg.At)
-		s.channels.Insert(newWindow(cw))
+		w = newWindow(cw)
+		s.channels.Insert(w)
 	}
 
-	if !cw.Members.HasInstance(msg.Instance) {
+	if cw != nil && !cw.Members.HasInstance(msg.Instance) {
 		cw.Members.Add(msg.Instance)
 	}
 
 	if !isUser {
-		var cmds []tea.Cmd
-		if msg.Target == *s.active {
-			cmds = append(cmds,
-				msgCmd(components.NickListUpdatedMsg{Members: cw.Members}),
-				msgCmd(domain.StoredEvent{Event: msg}),
-			)
+		if msg.Target == *s.active && cw != nil {
+			return s, msgCmd(components.NickListUpdatedMsg{Members: cw.Members})
 		}
 
-		return s, tea.Batch(cmds...)
+		return s, nil
 	}
 
 	s.checklist.channelCount = s.realChannelCount()
 
-	// For user joins, update the sidebar and member list. The
-	// ChannelFocusEvent from switchChannel is the authoritative
-	// source for active-channel switches, avoiding races when the
-	// user switches channels rapidly. When the user joins their
-	// already-active channel, also render the join inline so
-	// scrollbackCmd's buffer-flush isn't the only path that surfaces
-	// it (the live `bufferEvent` append already happened upstream).
 	cmds := []tea.Cmd{
-		msgCmd(components.ChannelAddedMsg{Channel: cw}),
+		msgCmd(components.ChannelAddedMsg{Channel: w.Window}),
 		msgCmd(components.ChannelUnreadMsg{Channel: msg.Target, Count: 0}),
 	}
 
-	if msg.Target == *s.active {
-		cmds = append(cmds, msgCmd(domain.StoredEvent{Event: msg}))
+	// `restoreFocus` may have dispatched `ChannelActiveMsg` for
+	// this very channel before its `ChannelAddedMsg` reached the
+	// sidebar; the sidebar's `SetActiveKey` would have no-op'd
+	// because the item wasn't there yet. Re-dispatch the marker
+	// from the join handler when we're processing the first-ever
+	// join for this channel so the marker lands as soon as the
+	// item exists. Gating on `!channelKnown` keeps subsequent
+	// joins (re-joins after a part) from clobbering a focus the
+	// user moved elsewhere in the meantime.
+	if !channelKnown && msg.Target == *s.active {
+		cmds = append(cmds, msgCmd(components.ChannelActiveMsg{Channel: msg.Target}))
 	}
 
 	return s, tea.Batch(cmds...)
@@ -475,10 +458,7 @@ func (s ChatScreen) handleModeChangeEvent(msg domain.ModeChange) (ui.Model, tea.
 		return s, nil
 	}
 
-	return s, tea.Batch(
-		msgCmd(components.NickListUpdatedMsg{Members: cw.Members}),
-		msgCmd(domain.StoredEvent{Event: msg}),
-	)
+	return s, msgCmd(components.NickListUpdatedMsg{Members: cw.Members})
 }
 
 func (s ChatScreen) handlePartEvent(msg domain.Part) (ui.Model, tea.Cmd) {
@@ -521,9 +501,6 @@ func (s ChatScreen) handlePartEvent(msg domain.Part) (ui.Model, tea.Cmd) {
 		}))
 		cmds = append(cmds, msgCmd(components.ChannelActiveMsg{Channel: *s.active}))
 		cmds = append(cmds, s.persistLastChannel(*s.active))
-		if *s.active != "" {
-			cmds = append(cmds, s.scrollbackCmd(*s.active))
-		}
 	}
 
 	var members domain.MemberList
@@ -536,18 +513,7 @@ func (s ChatScreen) handlePartEvent(msg domain.Part) (ui.Model, tea.Cmd) {
 
 	cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: members}))
 
-	if !leavingActive && *s.active == msg.Target {
-		cmds = append(cmds, msgCmd(domain.StoredEvent{
-			Event: domain.Part{
-				Target:  msg.Target,
-				Nick:    msg.Instance.Nick(),
-				Message: msg.Message,
-				At:      msg.At,
-			},
-		}))
-	}
-
-	return s, tea.Sequence(cmds...)
+	return s, tea.Batch(cmds...)
 }
 
 func (s ChatScreen) handleQuitEvent(msg domain.Quit, targets []domain.ChannelName) (ui.Model, tea.Cmd) {
@@ -580,14 +546,6 @@ func (s ChatScreen) handleQuitEvent(msg domain.Quit, targets []domain.ChannelNam
 		if cw, ok := s.channelWindowByName(*s.active); ok {
 			cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: cw.Members}))
 		}
-
-		cmds = append(cmds, msgCmd(domain.StoredEvent{Event: msg}))
-	}
-
-	// Also surface into the active window if it's an open DM
-	// with the quitter.
-	if dm, ok := s.activeDMWith(msg.Instance); ok && dm.Name() == *s.active {
-		cmds = append(cmds, msgCmd(domain.StoredEvent{Event: msg}))
 	}
 
 	cmds = append(cmds, s.lifecycleBumps(targets, msg.Instance)...)
@@ -606,10 +564,7 @@ func (s ChatScreen) handleTopicChangeEvent(msg domain.TopicChange) (ui.Model, te
 		return s, nil
 	}
 
-	return s, tea.Batch(
-		msgCmd(components.TopicUpdatedMsg{Topic: msg.Topic}),
-		msgCmd(domain.StoredEvent{Event: domain.TopicChange(msg)}),
-	)
+	return s, msgCmd(components.TopicUpdatedMsg{Topic: msg.Topic})
 }
 
 func (s ChatScreen) handleTopicInfoEvent(msg domain.TopicInfo) (ui.Model, tea.Cmd) {
@@ -623,14 +578,11 @@ func (s ChatScreen) handleTopicInfoEvent(msg domain.TopicInfo) (ui.Model, tea.Cm
 		return s, nil
 	}
 
-	return s, tea.Batch(
-		msgCmd(components.SetChannelMsg{
-			Channel: msg.Target,
-			Topic:   msg.Topic,
-			Kind:    s.activeKind(),
-		}),
-		msgCmd(domain.StoredEvent{Event: msg}),
-	)
+	return s, msgCmd(components.SetChannelMsg{
+		Channel: msg.Target,
+		Topic:   msg.Topic,
+		Kind:    s.activeKind(),
+	})
 }
 
 func (s ChatScreen) handleNickChangeEvent(msg domain.NickChange, targets []domain.ChannelName) (ui.Model, tea.Cmd) {
@@ -664,8 +616,6 @@ func (s ChatScreen) handleNickChangeEvent(msg domain.NickChange, targets []domai
 				cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: cw.Members}))
 			}
 		}
-
-		cmds = append(cmds, msgCmd(domain.StoredEvent{Event: msg}))
 
 		if msg.Instance == s.sess.UserInstance() {
 			cmds = append(cmds, msgCmd(components.UserNickMsg{Nick: msg.NewNick}))
@@ -717,18 +667,10 @@ func (s ChatScreen) handleModelInvitedEvent(msg domain.ModelInvited) (ui.Model, 
 		members = cw.Members
 	}
 
-	var cmds []tea.Cmd
-	cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: members}))
-
-	if *s.active == msg.Target {
-		cmds = append(cmds, msgCmd(domain.StoredEvent{Event: msg}))
-	}
-
-	return s, tea.Batch(cmds...)
+	return s, msgCmd(components.NickListUpdatedMsg{Members: members})
 }
 
 func (s ChatScreen) handleModelKickedEvent(msg domain.ModelKicked) (ui.Model, tea.Cmd) {
-	// Remove the kicked member from the channel's member list.
 	if cw, ok := s.channelWindowByName(msg.Target); ok {
 		if m, mOK := cw.Members.GetByInstance(msg.Instance); mOK {
 			cw.Members.Remove(m)
@@ -741,14 +683,7 @@ func (s ChatScreen) handleModelKickedEvent(msg domain.ModelKicked) (ui.Model, te
 		members = cw.Members
 	}
 
-	var cmds []tea.Cmd
-	cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: members}))
-
-	if *s.active == msg.Target {
-		cmds = append(cmds, msgCmd(domain.StoredEvent{Event: msg}))
-	}
-
-	return s, tea.Batch(cmds...)
+	return s, msgCmd(components.NickListUpdatedMsg{Members: members})
 }
 
 // handleMessageEvent renders an incoming Message. User-originated
@@ -782,13 +717,14 @@ func (s ChatScreen) handleMessageEvent(msg domain.Message) (ui.Model, tea.Cmd) {
 	return s, nil
 }
 
-// renderMessage produces the tea.Cmd that surfaces a Message in
-// the active view (or as an unread badge for an off-channel
-// target). The live `StoredEvent` append also drives the
-// "new messages" divider via `MessageList.appendEvent`.
+// renderMessage emits the off-channel unread bump for a Message
+// not targeting the active window. Active-channel messages render
+// on the next frame because the message list reads scrollback
+// through a getter and `bufferEvent` has already appended the
+// message; no live `StoredEvent` is needed.
 func (s ChatScreen) renderMessage(msg domain.Message, key domain.ChannelName) tea.Cmd {
 	if key == *s.active {
-		return msgCmd(domain.StoredEvent{Event: msg})
+		return nil
 	}
 
 	count, _ := s.sess.UnreadCount(s.ctx, key)
@@ -806,7 +742,10 @@ func (s ChatScreen) handleDMOpenedMsg(msg chatcmd.DMOpenedMsg) (ui.Model, tea.Cm
 	name := dm.Name()
 
 	_, alreadyOpen := s.channels.Get(windowKey(name))
-	s.channels.Insert(newWindow(dm))
+
+	if !alreadyOpen {
+		s.channels.Insert(newWindow(dm))
+	}
 
 	var cmds []tea.Cmd
 
@@ -825,7 +764,6 @@ func (s ChatScreen) handleDMOpenedMsg(msg chatcmd.DMOpenedMsg) (ui.Model, tea.Cm
 		cmds = append(cmds, msgCmd(components.ChannelActiveMsg{Channel: name}))
 		cmds = append(cmds, s.persistLastChannel(name))
 		cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: domain.MemberList{}}))
-		cmds = append(cmds, s.scrollbackCmd(name))
 	}
 
 	if msg.Body != "" {

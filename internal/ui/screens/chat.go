@@ -142,14 +142,14 @@ type ChatScreen struct {
 	// of channels with pending work.
 	pacedQueue map[domain.ChannelName][]domain.Message
 
-	// scrollbackMu guards reads of [Window.Scrollback] from any
-	// goroutine other than the Update goroutine. Writes happen
-	// from Update via [appendToScrollback] (live event-bus traffic)
-	// and from the `logAndShowOn` Cmd goroutine (chat-screen-
-	// authored events); reads happen on a separate worker goroutine
-	// inside the `scrollbackCmd` closure that `tea.Sequence`
-	// schedules independently of Update. The mutex pointer is
-	// shared across value-receiver copies of `ChatScreen`.
+	// scrollbackMu guards reads of [Window.Scrollback] from
+	// goroutines other than Update — message-list rendering on a
+	// teardown frame may overlap with a final append from a
+	// background Cmd. Writes happen from the Update goroutine
+	// via [appendToScrollback] (live event-bus traffic) and from
+	// the `logAndShowOn` Cmd goroutine (chat-screen-authored
+	// events). The mutex pointer is shared across value-receiver
+	// copies of `ChatScreen`.
 	scrollbackMu *sync.RWMutex
 
 	width     int
@@ -177,12 +177,27 @@ type ChatScreen struct {
 // `SetChannelMsg` supplies the real kind atomically on the first
 // focus event.
 func NewChatScreen(ctx context.Context, sess *session.Session, cfgStore config.Store, uiState UIStateStore, initialKind domain.ChannelKind) (ChatScreen, error) {
+	active := domain.ChannelName("")
+	channels := set.NewSorted[*Window]()
+	scrollbackMu := &sync.RWMutex{}
+
+	events := func() []domain.StoredEvent {
+		scrollbackMu.RLock()
+		defer scrollbackMu.RUnlock()
+
+		w, ok := channels.Get(windowKey(active))
+		if !ok {
+			return nil
+		}
+
+		return w.Scrollback
+	}
+
 	sidebar := components.NewChannelSidebar()
-	chatView := components.NewChatView[chatcmd.CompletionContext]("", initialKind, sess.UserNick(), "")
+	chatView := components.NewChatView[chatcmd.CompletionContext](events, "", initialKind, sess.UserNick(), "")
 	layout := components.NewMainLayout(sidebar, chatView)
 	layout.NickList = components.NewNickList(domain.NewMemberList())
 
-	active := domain.ChannelName("")
 	liveModels := []chatcmd.ModelOption(nil)
 	liveModelsState := command.SuggestionStateReady
 
@@ -192,7 +207,7 @@ func NewChatScreen(ctx context.Context, sess *session.Session, cfgStore config.S
 		client:          sess.User(),
 		cfgStore:        cfgStore,
 		uiState:         uiState,
-		channels:        set.NewSorted[*Window](),
+		channels:        channels,
 		active:          &active,
 		liveModels:      &liveModels,
 		liveModelsState: &liveModelsState,
@@ -200,7 +215,7 @@ func NewChatScreen(ctx context.Context, sess *session.Session, cfgStore config.S
 		keyMap:          components.DefaultChatScreenKeyMap,
 		checklist:       NewWelcomeChecklist(sess.UserNick(), sess.HasAPIKey()),
 		pacedQueue:      map[domain.ChannelName][]domain.Message{},
-		scrollbackMu:    &sync.RWMutex{},
+		scrollbackMu:    scrollbackMu,
 	}
 
 	parser, err := chatcmd.NewParser()
@@ -309,6 +324,20 @@ func (s ChatScreen) Init() tea.Cmd {
 		msgCmd(components.SetPlaceholderMsg{Text: s.checklist.Render()}),
 	}
 
+	// Seed the sidebar with the user's already-joined channels
+	// (from session state) before `restoreFocus` fires, so that
+	// `ChannelFocusMsg`'s sidebar marker lands on a sidebar that
+	// already knows about the target. The Join events arriving on
+	// the protocol bus shortly afterwards become idempotent
+	// re-inserts into the sorted set.
+	if channels := s.sess.UserInstance().Channels(); channels != nil {
+		for pair := channels.Oldest(); pair != nil; pair = pair.Next() {
+			cw := domain.NewChannelWindow(pair.Key, time.Time{})
+			s.channels.Insert(newWindow(cw))
+			cmds = append(cmds, msgCmd(components.ChannelAddedMsg{Channel: cw}))
+		}
+	}
+
 	cmds = append(cmds, s.restoreFocus())
 
 	if s.obs != nil {
@@ -383,7 +412,12 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		return s, s.logAndShow(domain.Help{Target: *s.active, At: time.Now()})
 
 	case chatcmd.ClearResult:
-		return s, func() tea.Msg { return components.ClearMessagesMsg{} }
+		if w, ok := s.windowByName(*s.active); ok {
+			s.scrollbackMu.Lock()
+			w.Scrollback = nil
+			s.scrollbackMu.Unlock()
+		}
+		return s, nil
 
 	case chatcmd.TopicInfoResult:
 		return s, s.logAndShow(domain.TopicInfo{
@@ -395,25 +429,7 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		})
 
 	case chatcmd.WhoisResult:
-		now := time.Now()
-
-		// When the active window is the status channel, a single
-		// persisted entry there serves both roles. Otherwise show the
-		// response ephemerally on the active window and persist a
-		// matching copy to `&modeloff` so the IRC-style server log
-		// records every /whois the user ran.
-		if *s.active == domain.StatusChannelName {
-			return s, s.logAndShow(snapshotWhois(*s.active, msg.Instance, now))
-		}
-
-		statusEvent := snapshotWhois(domain.StatusChannelName, msg.Instance, now)
-
-		return s, tea.Batch(
-			msgCmd(domain.StoredEvent{
-				Event: snapshotWhois(*s.active, msg.Instance, now),
-			}),
-			s.persistOnStatus(statusEvent),
-		)
+		return s.handleWhoisResult(msg)
 
 	case chatcmd.ListResult:
 		now := time.Now()
@@ -812,7 +828,48 @@ func (s ChatScreen) layoutHeight() int {
 // When no channel is active the event is still sent for rendering but
 // is not persisted to the store.
 func (s ChatScreen) logAndShow(event domain.PersistableEvent) tea.Cmd {
+	// Empty active means the user is on the welcome screen with no
+	// channels. Route transient output to `&modeloff` and bring it
+	// into focus so the user sees the response. The active pointer
+	// is set inline (the call site is inside Update, which owns
+	// the writer side of `*s.active`) so the `logAndShowOn`
+	// closure observes the new target and returns its StoredEvent
+	// — necessary for the message-list render trigger and for
+	// callers that inspect the returned cmd. A trailing
+	// `ChannelFocusMsg` runs the rest of the focus pipeline
+	// (sidebar marker, placeholder clear, last-channel persist)
+	// without re-touching `*s.active`.
+	if *s.active == "" {
+		*s.active = domain.StatusChannelName
+
+		return tea.Batch(
+			s.logAndStoreCmd(domain.StatusChannelName, event),
+			func() tea.Msg {
+				return chatcmd.ChannelFocusMsg{Channel: domain.StatusChannelName}
+			},
+		)
+	}
+
 	return s.logAndShowOn(*s.active, event)
+}
+
+// logAndStoreCmd persists `event` under `ch` and appends to the
+// matching scrollback, returning the StoredEvent unconditionally so
+// it can act as the message-list render trigger for the freshly-
+// focused window. Unlike [ChatScreen.logAndShowOn] it does not read
+// `*s.active` from the Cmd goroutine, which would race against an
+// in-flight focus mutation on the Update goroutine.
+func (s ChatScreen) logAndStoreCmd(ch domain.ChannelName, event domain.PersistableEvent) tea.Cmd {
+	return func() tea.Msg {
+		stored, err := s.sess.LogEvent(s.ctx, ch, event)
+		if err != nil {
+			return nil
+		}
+
+		s.appendToScrollback(ch, stored)
+
+		return stored
+	}
 }
 
 // persistOnStatus records a channel event on the per-session status
@@ -1030,6 +1087,31 @@ func (s ChatScreen) updateLogEntries() ChatScreen {
 	s.layout.Content = workspace.SetLogEntries(s.obs.LogBuffer().Entries())
 
 	return s
+}
+
+// handleWhoisResult routes a `/whois` response. When the active
+// window already is `&modeloff`, a single persisted entry serves both
+// roles; otherwise the response shows ephemerally on the active
+// window (in-memory scrollback append, no persistence) and an audit
+// copy is persisted under `&modeloff` so the IRC-style server log
+// records every `/whois` the user ran.
+func (s ChatScreen) handleWhoisResult(msg chatcmd.WhoisResult) (ui.Model, tea.Cmd) {
+	now := time.Now()
+
+	if *s.active == domain.StatusChannelName {
+		return s, s.logAndShow(snapshotWhois(*s.active, msg.Instance, now))
+	}
+
+	statusEvent := snapshotWhois(domain.StatusChannelName, msg.Instance, now)
+
+	s.appendToScrollback(*s.active, domain.StoredEvent{
+		Event: snapshotWhois(*s.active, msg.Instance, now),
+	})
+
+	return s, tea.Batch(
+		msgCmd(components.ScrollbackUpdatedMsg{Channel: *s.active}),
+		s.persistOnStatus(statusEvent),
+	)
 }
 
 // snapshotWhois freezes an instance's mutable identity surface

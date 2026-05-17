@@ -34,6 +34,15 @@ var testEvents = []domain.StoredEvent{
 	{Event: domain.Message{Target: "#general", From: "alice", Body: "how are you?", At: time.Date(2025, 1, 1, 10, 2, 0, 0, time.UTC)}},
 }
 
+// nilEvents is the message-list events getter for tests that
+// construct a chat view without any pre-loaded scrollback.
+func nilEvents() []domain.StoredEvent { return nil }
+
+// staticEvents returns an events getter that always reports `evs`.
+func staticEvents(evs []domain.StoredEvent) func() []domain.StoredEvent {
+	return func() []domain.StoredEvent { return evs }
+}
+
 // messagesToEvents converts channel messages into stored events.
 func messagesToEvents(msgs []domain.Message) []domain.StoredEvent {
 	events := make([]domain.StoredEvent, len(msgs))
@@ -45,23 +54,20 @@ func messagesToEvents(msgs []domain.Message) []domain.StoredEvent {
 	return events
 }
 
-// newChatViewWithEvents creates a ChatView and loads events via HistoryLoadedMsg.
+// newChatViewWithEvents creates a ChatView that reads the given
+// events through its message-list getter.
 func newChatViewWithEvents(ch domain.ChannelName, userNick domain.Nick, topic string, events []domain.StoredEvent) components.ChatView[testKind] {
-	cv := components.NewChatView[testKind](ch, domain.KindChannel, userNick, topic)
-	legacyFormat := "[15:04:05]"
+	cv := components.NewChatView[testKind](
+		func() []domain.StoredEvent { return events },
+		ch, domain.KindChannel, userNick, topic,
+	)
+	timestampFmt := "[15:04:05]"
 	updated, _ := cv.Update(components.TimestampFormatMsg{
-		Format: &legacyFormat,
+		Format: &timestampFmt,
 		Locale: language.BritishEnglish,
 	})
-	cv = updated.(components.ChatView[testKind])
 
-	if len(events) == 0 {
-		return cv
-	}
-
-	m, _ := cv.Update(components.HistoryLoadedMsg{Events: events})
-
-	return m.(components.ChatView[testKind])
+	return updated.(components.ChatView[testKind])
 }
 
 // chatRegionLines returns the chat region's visible lines with the
@@ -279,9 +285,22 @@ func TestChatView_View_shows_messages(t *testing.T) {
 }
 
 func TestChatView_clear_messages_removes_visible_messages(t *testing.T) {
-	cv := newChatViewWithEvents("#general", "testuser", "", testEvents)
-	updated, _ := cv.Update(components.ClearMessagesMsg{})
+	// The pure-view chat view shows the empty-state placeholder
+	// when its events closure returns nothing; clearing is the
+	// caller's responsibility (it owns the underlying slice).
+	events := append([]domain.StoredEvent(nil), testEvents...)
+	cv := components.NewChatView[testKind](
+		func() []domain.StoredEvent { return events },
+		"#general", domain.KindChannel, "testuser", "",
+	)
+	timestampFmt := "[15:04:05]"
+	updated, _ := cv.Update(components.TimestampFormatMsg{
+		Format: &timestampFmt,
+		Locale: language.BritishEnglish,
+	})
 	cv = updated.(components.ChatView[testKind])
+
+	events = nil
 
 	v := cv.View(80, 24)
 	require.Equal(t, []string{"No messages yet"}, chatRegionLines(v))
@@ -310,7 +329,11 @@ func TestChatView_View_shows_timestamps(t *testing.T) {
 }
 
 func TestChatView_View_disables_timestamps(t *testing.T) {
-	cv := components.NewChatView[testKind]("#general", domain.KindChannel, "testuser", "")
+	events := testEvents
+	cv := components.NewChatView[testKind](
+		func() []domain.StoredEvent { return events },
+		"#general", domain.KindChannel, "testuser", "",
+	)
 	disabled := ""
 	var m ui.Model = cv
 
@@ -318,7 +341,6 @@ func TestChatView_View_disables_timestamps(t *testing.T) {
 		Format: &disabled,
 		Locale: language.BritishEnglish,
 	})
-	m, _ = m.Update(components.HistoryLoadedMsg{Events: testEvents})
 
 	v := m.View(80, 24)
 
@@ -330,7 +352,11 @@ func TestChatView_View_disables_timestamps(t *testing.T) {
 }
 
 func TestChatView_View_uses_strftime_timestamp_format(t *testing.T) {
-	cv := components.NewChatView[testKind]("#general", domain.KindChannel, "testuser", "")
+	events := testEvents[:1]
+	cv := components.NewChatView[testKind](
+		func() []domain.StoredEvent { return events },
+		"#general", domain.KindChannel, "testuser", "",
+	)
 	format := "%X"
 	var m ui.Model = cv
 
@@ -338,7 +364,6 @@ func TestChatView_View_uses_strftime_timestamp_format(t *testing.T) {
 		Format: &format,
 		Locale: language.BritishEnglish,
 	})
-	m, _ = m.Update(components.HistoryLoadedMsg{Events: testEvents[:1]})
 
 	v := ansi.Strip(m.View(80, 24))
 
@@ -368,7 +393,7 @@ func TestChatView_View_wraps_long_messages(t *testing.T) {
 }
 
 func TestChatView_View_empty_messages(t *testing.T) {
-	cv := components.NewChatView[testKind]("#general", domain.KindChannel, "testuser", "")
+	cv := components.NewChatView[testKind](nilEvents, "#general", domain.KindChannel, "testuser", "")
 	v := cv.View(80, 24)
 
 	require.Equal(t, []string{"No messages yet"}, chatRegionLines(v))
@@ -382,7 +407,7 @@ func TestChatView_View_has_input_prompt(t *testing.T) {
 }
 
 func TestChatView_typing_goes_to_input(t *testing.T) {
-	cv := components.NewChatView[testKind]("#general", domain.KindChannel, "testuser", "")
+	cv := components.NewChatView[testKind](nilEvents, "#general", domain.KindChannel, "testuser", "")
 	var m ui.Model = cv
 
 	m = typeText(t, m, "test message")
@@ -397,7 +422,7 @@ func TestChatView_typing_goes_to_input(t *testing.T) {
 }
 
 func TestChatView_command_from_input(t *testing.T) {
-	cv := components.NewChatView[testKind]("#general", domain.KindChannel, "testuser", "")
+	cv := components.NewChatView[testKind](nilEvents, "#general", domain.KindChannel, "testuser", "")
 	var m ui.Model = cv
 
 	m = typeText(t, m, "/join #random")
@@ -420,16 +445,23 @@ func TestChatView_messages_updated(t *testing.T) {
 }
 
 func TestChatView_original_messages_persist(t *testing.T) {
-	cv := newChatViewWithEvents("#general", "testuser", "", testEvents)
-	var m ui.Model = cv
-	appendAt := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
+	events := append([]domain.StoredEvent(nil), testEvents...)
+	cv := components.NewChatView[testKind](
+		func() []domain.StoredEvent { return events },
+		"#general", domain.KindChannel, "testuser", "",
+	)
+	timestampFmt := "[15:04:05]"
+	updated, _ := cv.Update(components.TimestampFormatMsg{
+		Format: &timestampFmt,
+		Locale: language.BritishEnglish,
+	})
 
-	// Append a new event — original messages should still be present.
-	m, _ = m.Update(domain.StoredEvent{
+	appendAt := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
+	events = append(events, domain.StoredEvent{
 		Event: domain.Message{Target: "#general", From: "charlie", Body: "extra", At: appendAt},
 	})
 
-	v := m.View(80, 24)
+	v := updated.View(80, 24)
 	require.Equal(t, []string{
 		"[10:00:00] <alice> hello",
 		"[10:01:00] <bob> hi there",
@@ -439,15 +471,23 @@ func TestChatView_original_messages_persist(t *testing.T) {
 }
 
 func TestChatView_append_event(t *testing.T) {
-	cv := newChatViewWithEvents("#general", "testuser", "", testEvents)
-	var m ui.Model = cv
-	appendAt := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
+	events := append([]domain.StoredEvent(nil), testEvents...)
+	cv := components.NewChatView[testKind](
+		func() []domain.StoredEvent { return events },
+		"#general", domain.KindChannel, "testuser", "",
+	)
+	timestampFmt := "[15:04:05]"
+	updated, _ := cv.Update(components.TimestampFormatMsg{
+		Format: &timestampFmt,
+		Locale: language.BritishEnglish,
+	})
 
-	m, _ = m.Update(domain.StoredEvent{
+	appendAt := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
+	events = append(events, domain.StoredEvent{
 		Event: domain.Message{Target: "#general", From: "dave", Body: "appended message", At: appendAt},
 	})
 
-	v := m.View(80, 24)
+	v := updated.View(80, 24)
 	require.Equal(t, []string{
 		"[10:00:00] <alice> hello",
 		"[10:01:00] <bob> hi there",
@@ -679,7 +719,7 @@ func TestChatView_nick_updates_after_change(t *testing.T) {
 }
 
 func TestChatView_dm_hides_topic_bar(t *testing.T) {
-	cv := newChatViewWithEvents("botname", "testuser", "", testEvents)
+	cv := components.NewChatView[testKind](nilEvents, "botname", domain.KindChannel, "testuser", "")
 
 	m, _ := cv.Update(components.SetChannelMsg{
 		Channel: "botname",
@@ -690,6 +730,8 @@ func TestChatView_dm_hides_topic_bar(t *testing.T) {
 
 	v := cv.View(80, 24)
 
+	// With no events and DM kind, the topic bar must not render
+	// even though a topic was supplied with `SetChannelMsg`.
 	require.Equal(t, []string{"No messages yet"}, chatSegments(ansi.Strip(v)))
 }
 
@@ -703,14 +745,11 @@ func TestChatView_dm_suppresses_join_part_events(t *testing.T) {
 		{Event: domain.Message{Target: "botname", From: "bot", Body: "hello human", At: now}},
 	}
 
-	cv := components.NewChatView[testKind]("botname", domain.KindChannel, "testuser", "")
+	cv := components.NewChatView[testKind](staticEvents(events), "botname", domain.KindChannel, "testuser", "")
 	m, _ := cv.Update(components.SetChannelMsg{
 		Channel: "botname",
 		Kind:    domain.KindDM,
 	})
-	cv = m.(components.ChatView[testKind])
-
-	m, _ = cv.Update(components.HistoryLoadedMsg{Events: events})
 	cv = m.(components.ChatView[testKind])
 
 	v := ansi.Strip(cv.View(80, 24))
@@ -724,14 +763,11 @@ func TestChatView_dm_shows_quit_messages(t *testing.T) {
 		{Event: domain.Quit{Nick: "bot", Message: "goodbye", At: now}},
 	}
 
-	cv := components.NewChatView[testKind]("botname", domain.KindChannel, "testuser", "")
+	cv := components.NewChatView[testKind](staticEvents(events), "botname", domain.KindChannel, "testuser", "")
 	m, _ := cv.Update(components.SetChannelMsg{
 		Channel: "botname",
 		Kind:    domain.KindDM,
 	})
-	cv = m.(components.ChatView[testKind])
-
-	m, _ = cv.Update(components.HistoryLoadedMsg{Events: events})
 	cv = m.(components.ChatView[testKind])
 
 	v := ansi.Strip(cv.View(80, 24))
@@ -873,9 +909,11 @@ func TestChatView_pending_indicator_reduces_message_area(t *testing.T) {
 	v := m.View(80, 24)
 	withLines := lipgloss.Height(v)
 
-	// Total height should stay the same.
+	// Total height stays the same; the pending indicator pushes
+	// the visible window up by one line, so the most-recent 22
+	// messages (8..29) remain in view.
 	require.Equal(t, 24, withLines)
-	require.Equal(t, numberedUserMessages("msg", 0, 22), visibleEventsWithoutTimestamps(v))
+	require.Equal(t, numberedUserMessages("msg", 8, 22), visibleEventsWithoutTimestamps(v))
 	require.NotEmpty(t, pendingIndicatorLine(v))
 }
 
@@ -884,11 +922,13 @@ func renderSingleEvent(event domain.StoredEvent) string {
 }
 
 func renderSingleEventWithHighlight(event domain.StoredEvent, words []string, nick domain.Nick) string {
-	cv := components.NewChatView[testKind]("#test", domain.KindChannel, nick, "")
+	cv := components.NewChatView[testKind](
+		staticEvents([]domain.StoredEvent{event}),
+		"#test", domain.KindChannel, nick, "",
+	)
 	var m ui.Model = cv
 	topicFormat := "2006-01-02 15:04"
 
-	m, _ = m.Update(components.HistoryLoadedMsg{Events: []domain.StoredEvent{event}})
 	m, _ = m.Update(components.CommandsMsg[testKind]{
 		Commands: []*command.Node[testKind]{
 			{Name: "join", Help: "Join or create a channel", Positionals: []command.Positional[testKind]{{Name: "channel"}}},
@@ -1021,15 +1061,7 @@ func TestRenderLine_IRC_events(t *testing.T) {
 }
 
 func TestRenderLine_topic_info_omits_timestamp_when_disabled(t *testing.T) {
-	cv := components.NewChatView[testKind]("#test", domain.KindChannel, "testuser", "")
-	var m ui.Model = cv
-	disabled := ""
-
-	m, _ = m.Update(components.TimestampFormatMsg{
-		Format: &disabled,
-		Locale: language.BritishEnglish,
-	})
-	m, _ = m.Update(components.HistoryLoadedMsg{Events: []domain.StoredEvent{{
+	events := []domain.StoredEvent{{
 		Event: domain.TopicInfo{
 			Target:     "#general",
 			Topic:      "cool topic",
@@ -1037,7 +1069,16 @@ func TestRenderLine_topic_info_omits_timestamp_when_disabled(t *testing.T) {
 			TopicSetAt: time.Date(2026, 4, 4, 23, 30, 0, 0, time.UTC),
 			At:         time.Now(),
 		},
-	}}})
+	}}
+
+	cv := components.NewChatView[testKind](staticEvents(events), "#test", domain.KindChannel, "testuser", "")
+	var m ui.Model = cv
+	disabled := ""
+
+	m, _ = m.Update(components.TimestampFormatMsg{
+		Format: &disabled,
+		Locale: language.BritishEnglish,
+	})
 
 	v := ansi.Strip(m.View(200, 24))
 
@@ -1144,7 +1185,6 @@ func TestRenderLine_application_feedback(t *testing.T) {
 }
 
 func TestNewMessagesDivider_fills_width(t *testing.T) {
-	// Create enough events to overflow the viewport so we can scroll.
 	events := make([]domain.StoredEvent, 30)
 	for i := range events {
 		events[i] = domain.StoredEvent{
@@ -1157,17 +1197,20 @@ func TestNewMessagesDivider_fills_width(t *testing.T) {
 		}
 	}
 
-	cv := newChatViewWithEvents("#test", "testuser", "", events)
+	cv := components.NewChatView[testKind](
+		func() []domain.StoredEvent { return events },
+		"#test", domain.KindChannel, "testuser", "",
+	)
 	var m ui.Model = cv
 	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{Width: 80, Height: 24}})
 
-	// Scroll up, then add a new event to trigger the divider.
+	// Scroll up, then grow the events slice to trigger the divider.
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
-	m, _ = m.Update(domain.StoredEvent{
+	events = append(events, domain.StoredEvent{
 		Event: domain.Message{Target: "#test", From: "other", Body: "new arrival", At: time.Now()},
 	})
 
-	// Scroll back to bottom to see the divider.
+	// Scroll back towards the bottom to bring the divider into view.
 	for range 5 {
 		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
 	}
@@ -1183,7 +1226,7 @@ func TestNewMessagesDivider_fills_width(t *testing.T) {
 }
 
 func TestChatView_command_popover_renders_and_completes(t *testing.T) {
-	var m ui.Model = components.NewChatView[testKind]("#general", domain.KindChannel, "testuser", "")
+	var m ui.Model = components.NewChatView[testKind](nilEvents, "#general", domain.KindChannel, "testuser", "")
 	nodes := []*command.Node[testKind]{
 		{
 			Name: "join",
@@ -1223,7 +1266,7 @@ func TestChatView_command_popover_renders_and_completes(t *testing.T) {
 }
 
 func TestChatView_popover_arrow_keys_do_not_fall_through(t *testing.T) {
-	var m ui.Model = components.NewChatView[testKind]("#general", domain.KindChannel, "testuser", "")
+	var m ui.Model = components.NewChatView[testKind](nilEvents, "#general", domain.KindChannel, "testuser", "")
 	nodes := []*command.Node[testKind]{
 		{Name: "join", Help: "Join a channel"},
 		{Name: "part", Help: "Part from the current channel"},
@@ -1265,7 +1308,7 @@ func TestChatView_popover_arrow_keys_do_not_fall_through(t *testing.T) {
 }
 
 func TestChatView_popover_renders_usage_in_suggestions(t *testing.T) {
-	var m ui.Model = components.NewChatView[testKind]("#general", domain.KindChannel, "testuser", "")
+	var m ui.Model = components.NewChatView[testKind](nilEvents, "#general", domain.KindChannel, "testuser", "")
 	nodes := []*command.Node[testKind]{
 		{Name: "join", Help: "Join a channel", Positionals: []command.Positional[testKind]{{Name: "channel"}}},
 		{Name: "part", Help: "Part from the current channel"},
@@ -1296,7 +1339,7 @@ func TestChatView_popover_collapses_aliases_onto_single_row(t *testing.T) {
 	// with its Label trimmed against the canonical Usage. Aliases
 	// must be collapsed into the single parenthesised group after the
 	// canonical name, followed by positional args and the help text.
-	var m ui.Model = components.NewChatView[testKind]("#general", domain.KindChannel, "testuser", "")
+	var m ui.Model = components.NewChatView[testKind](nilEvents, "#general", domain.KindChannel, "testuser", "")
 	nodes := []*command.Node[testKind]{
 		{
 			Name:        "join",
@@ -1325,7 +1368,7 @@ func TestChatView_popover_collapses_aliases_onto_single_row(t *testing.T) {
 }
 
 func TestChatView_mouse_click_positions_input_cursor(t *testing.T) {
-	cv := components.NewChatView[testKind]("#general", domain.KindChannel, "testuser", "")
+	cv := components.NewChatView[testKind](nilEvents, "#general", domain.KindChannel, "testuser", "")
 	var m ui.Model = cv
 
 	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 20, Y: 0, Width: 60, Height: 24}})
@@ -1359,8 +1402,16 @@ func TestChatView_divider_inserted_when_scrolled_up(t *testing.T) {
 		}
 	}
 
-	cv := newChatViewWithEvents("#general", "testuser", "", events)
-	var m ui.Model = cv
+	cv := components.NewChatView[testKind](
+		func() []domain.StoredEvent { return events },
+		"#general", domain.KindChannel, "testuser", "",
+	)
+	timestampFmt := "[15:04:05]"
+	updated, _ := cv.Update(components.TimestampFormatMsg{
+		Format: &timestampFmt,
+		Locale: language.BritishEnglish,
+	})
+	var m ui.Model = updated.(components.ChatView[testKind])
 	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{Width: 80, Height: 24}})
 
 	// Scroll up so we're no longer at the bottom.
@@ -1369,9 +1420,12 @@ func TestChatView_divider_inserted_when_scrolled_up(t *testing.T) {
 	v := m.View(80, 24)
 	require.Equal(t, numberedUserMessages("message", 0, 22), visibleEventsWithoutTimestamps(v))
 
-	// Append new events while scrolled up.
+	// Append new events to the closure-backed slice while scrolled
+	// up. A ScrollbackUpdatedMsg after each append signals the
+	// message list to re-read the getter — the divider arms on
+	// growth observed while not at the bottom.
 	for i := 30; i < 33; i++ {
-		m, _ = m.Update(domain.StoredEvent{
+		events = append(events, domain.StoredEvent{
 			Event: domain.Message{
 				Target: "#general",
 				From:   "other",
@@ -1379,6 +1433,7 @@ func TestChatView_divider_inserted_when_scrolled_up(t *testing.T) {
 				At:     time.Now(),
 			},
 		})
+		m, _ = m.Update(components.ScrollbackUpdatedMsg{Channel: "#general"})
 	}
 
 	vScrolledUp := ansi.Strip(m.View(80, 24))
@@ -1442,20 +1497,29 @@ func TestChatView_stored_events_insert_divider_when_scrolled_up(t *testing.T) {
 		}
 	}
 
-	cv := newChatViewWithEvents("#general", "testuser", "", events)
-	var m ui.Model = cv
+	cv := components.NewChatView[testKind](
+		func() []domain.StoredEvent { return events },
+		"#general", domain.KindChannel, "testuser", "",
+	)
+	timestampFmt := "[15:04:05]"
+	updated, _ := cv.Update(components.TimestampFormatMsg{
+		Format: &timestampFmt,
+		Locale: language.BritishEnglish,
+	})
+	var m ui.Model = updated.(components.ChatView[testKind])
 	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{Width: 80, Height: 24}})
 
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
 
 	for i := 30; i < 33; i++ {
-		m, _ = m.Update(domain.StoredEvent{
+		events = append(events, domain.StoredEvent{
 			Event: domain.Message{
 				Target: "#general",
 				From:   "user",
 				Body:   fmt.Sprintf("new message %d", i),
 			},
 		})
+		m, _ = m.Update(components.ScrollbackUpdatedMsg{Channel: "#general"})
 	}
 
 	for range 5 {
@@ -1503,29 +1567,39 @@ func TestChatView_stored_events_keep_divider_when_more_arrive_during_catch_up(t 
 		}
 	}
 
-	cv := newChatViewWithEvents("#general", "testuser", "", events)
-	var m ui.Model = cv
+	cv := components.NewChatView[testKind](
+		func() []domain.StoredEvent { return events },
+		"#general", domain.KindChannel, "testuser", "",
+	)
+	timestampFmt := "[15:04:05]"
+	updated, _ := cv.Update(components.TimestampFormatMsg{
+		Format: &timestampFmt,
+		Locale: language.BritishEnglish,
+	})
+	var m ui.Model = updated.(components.ChatView[testKind])
 	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{Width: 80, Height: 24}})
 
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
 
 	// First new event while scrolled up — divider is armed.
-	m, _ = m.Update(domain.StoredEvent{
+	events = append(events, domain.StoredEvent{
 		Event: domain.Message{
 			Target: "#general",
 			From:   "user",
 			Body:   "new message 30",
 		},
 	})
+	m, _ = m.Update(components.ScrollbackUpdatedMsg{Channel: "#general"})
 
 	// Second new event while still scrolled up — divider stays.
-	m, _ = m.Update(domain.StoredEvent{
+	events = append(events, domain.StoredEvent{
 		Event: domain.Message{
 			Target: "#general",
 			From:   "user",
 			Body:   "new message 31",
 		},
 	})
+	m, _ = m.Update(components.ScrollbackUpdatedMsg{Channel: "#general"})
 
 	// Scroll to bottom to see both new events and the divider.
 	for range 5 {
@@ -1588,7 +1662,7 @@ func TestChatView_mouse_wheel_scrolls_messages(t *testing.T) {
 }
 
 func TestChatView_mouse_click_accepts_popover_suggestion(t *testing.T) {
-	var m ui.Model = components.NewChatView[testKind]("#general", domain.KindChannel, "testuser", "")
+	var m ui.Model = components.NewChatView[testKind](nilEvents, "#general", domain.KindChannel, "testuser", "")
 	nodes := []*command.Node[testKind]{
 		{
 			Name: "join",

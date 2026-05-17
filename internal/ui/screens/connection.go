@@ -111,16 +111,18 @@ type ConnectionScreen struct {
 	loadedModels     []chatcmd.ModelOption
 	loadModelsErr    error
 
-	// paneCursor tracks the highest StoredEvent.ID appended to the
-	// pane. refreshPane appends only events with a strictly greater
-	// ID, so periodic refreshes do not replay the whole log and
-	// accumulate duplicates. The ID-gap check relies on store IDs
-	// being strictly increasing by insertion order — guaranteed by
-	// SQLite's INTEGER PRIMARY KEY on the events table (see
-	// store/sqlite.go). Each per-channel read is therefore
-	// monotonic by insertion order regardless of how many writers
-	// target the channel.
+	// paneCursor tracks the highest StoredEvent.ID appended to
+	// [paneEvents]. refreshPane appends only events with a
+	// strictly greater ID, so periodic refreshes do not replay
+	// the whole log and accumulate duplicates.
 	paneCursor int64
+
+	// paneEvents is the per-tick accumulator the status pane
+	// renders. A pointer keeps the slice header stable across
+	// the value-copy `tea.Model.Update` returns, so the closure
+	// the message list captures continues to read the latest
+	// append.
+	paneEvents *[]domain.StoredEvent
 
 	// quitting is true between QuitRequestedMsg and QuitCompleteMsg
 	// so a second Ctrl-C can short-circuit a stuck Session.Quit and
@@ -152,10 +154,17 @@ func NewConnectionScreen(cfg ConnectionConfig) ConnectionScreen {
 		)
 	}
 
+	paneEvents := &[]domain.StoredEvent{}
+
 	s := ConnectionScreen{
-		cfg:   cfg,
-		steps: steps,
-		pane:  components.NewMessageList[chatcmd.CompletionContext](domain.StatusChannelName, domain.KindStatus),
+		cfg:        cfg,
+		steps:      steps,
+		paneEvents: paneEvents,
+		pane: components.NewMessageList[chatcmd.CompletionContext](
+			func() []domain.StoredEvent { return *paneEvents },
+			domain.StatusChannelName,
+			domain.KindStatus,
+		),
 	}
 
 	// Animation-only mode (no Session): pretend the async signals
@@ -470,7 +479,7 @@ func (s *ConnectionScreen) refreshPane() {
 		return
 	}
 
-	s.pane = s.pane.Append(fresh...)
+	*s.paneEvents = append(*s.paneEvents, fresh...)
 	s.paneCursor = fresh[len(fresh)-1].ID
 }
 

@@ -232,7 +232,7 @@ func TestApp_unknown_command_on_welcome_screen_with_teatest(t *testing.T) {
 
 	require.Equal(t, []string{
 		"Channels",
-		"&modeloff",
+		"▸&modeloff",
 		"No members",
 		"✗ command: unknown command: /foo",
 	}, visibleBodySegments(tm.CurrentView()))
@@ -272,7 +272,7 @@ func TestApp_message_on_welcome_screen_rejected_with_teatest(t *testing.T) {
 
 	require.Equal(t, []string{
 		"Channels",
-		"&modeloff",
+		"▸&modeloff",
 		"No members",
 		"⚠ join a channel first",
 	}, visibleBodySegments(tm.CurrentView()))
