@@ -84,10 +84,10 @@ func (s ChatScreen) handleProtocolEvent(msg protocolEventMsg) (ui.Model, tea.Cmd
 		updated, cmd = s.handleModelKickedEvent(evt)
 	case domain.TopicInfo:
 		updated, cmd = s.handleTopicInfoEvent(evt)
-	case domain.DispatchStartedEvent:
-		updated, cmd = s.handleDispatchStarted(evt)
-	case domain.DispatchDoneEvent:
-		updated, cmd = s.handleDispatchDone(evt)
+	case domain.ModelDispatchStarted:
+		updated, cmd = s.handleModelDispatchStarted(evt)
+	case domain.ModelDispatchDone:
+		updated, cmd = s.handleModelDispatchDone(evt)
 	case domain.NamesReplyEvent:
 		updated, cmd = s.handleNamesReply(evt)
 	}
@@ -825,27 +825,71 @@ func (s ChatScreen) handleErrorEvent(msg domain.ErrorEvent) (ui.Model, tea.Cmd) 
 	return s, tea.Batch(cmds...)
 }
 
-func (s ChatScreen) handleDispatchStarted(msg domain.DispatchStartedEvent) (ui.Model, tea.Cmd) {
-	thinking := make(map[domain.Nick]bool, len(msg.Nicks))
-	for _, nick := range msg.Nicks {
-		thinking[nick] = true
-	}
-
-	return s, tea.Batch(
-		msgCmd(components.PendingResponseMsg{Pending: true}),
-		msgCmd(components.NickListThinkingMsg{Nicks: thinking}),
-	)
-}
-
-func (s ChatScreen) handleDispatchDone(_ domain.DispatchDoneEvent) (ui.Model, tea.Cmd) {
-	if s.hasQueuedPaced() {
+// handleModelDispatchStarted marks `msg.Instance` as currently
+// dispatching and updates the pending/thinking indicators. The
+// pending spinner is on whenever any tracked instance is in a
+// turn (concurrent dispatches from different models in the same
+// window survive each other's Done events), and the thinking
+// nick list for the active channel surfaces every dispatching
+// instance whose membership the active window can see.
+func (s ChatScreen) handleModelDispatchStarted(msg domain.ModelDispatchStarted) (ui.Model, tea.Cmd) {
+	if msg.Instance == nil {
 		return s, nil
 	}
 
+	s.dispatching[msg.Instance] = true
+
 	return s, tea.Batch(
-		msgCmd(components.NickListThinkingMsg{}),
-		msgCmd(components.PendingResponseMsg{Pending: false}),
+		msgCmd(components.PendingResponseMsg{Pending: true}),
+		msgCmd(components.NickListThinkingMsg{Nicks: s.thinkingNicks()}),
 	)
+}
+
+// handleModelDispatchDone clears the dispatching mark for
+// `msg.Instance` and re-derives the indicators. Paced model
+// replies still in the per-channel queue keep the spinner on:
+// the user sees a single continuous "responding…" line across
+// dispatch turn and paced reply drain.
+func (s ChatScreen) handleModelDispatchDone(msg domain.ModelDispatchDone) (ui.Model, tea.Cmd) {
+	if msg.Instance != nil {
+		delete(s.dispatching, msg.Instance)
+	}
+
+	cmds := []tea.Cmd{
+		msgCmd(components.NickListThinkingMsg{Nicks: s.thinkingNicks()}),
+	}
+
+	if len(s.dispatching) == 0 && !s.hasQueuedPaced() {
+		cmds = append(cmds, msgCmd(components.PendingResponseMsg{Pending: false}))
+	}
+
+	return s, tea.Batch(cmds...)
+}
+
+// thinkingNicks returns the nicks of every dispatching instance
+// that is also a member of the active channel. Models running in
+// channels the user is not in stay invisible — RFC 2812 §3.3.1's
+// intersection rule applied to the local view.
+func (s ChatScreen) thinkingNicks() map[domain.Nick]bool {
+	if s.active == nil || *s.active == "" || len(s.dispatching) == 0 {
+		return nil
+	}
+
+	cw, ok := s.channelWindowByName(*s.active)
+	if !ok {
+		return nil
+	}
+
+	thinking := make(map[domain.Nick]bool, len(s.dispatching))
+	for inst := range s.dispatching {
+		if !cw.Members.HasInstance(inst) {
+			continue
+		}
+
+		thinking[inst.Nick()] = true
+	}
+
+	return thinking
 }
 
 const pacedInterval = 400 * time.Millisecond

@@ -518,12 +518,13 @@ func TestSendMessageAs_model_to_model_dispatches(t *testing.T) {
 		At:         fixedTime,
 	}, evt)
 
-	started := drainEvent[domain.DispatchStartedEvent](t, sess)
-	require.Equal(t, target, started.Channel)
-	require.Equal(t, []domain.Nick{"helper"}, started.Nicks)
+	started := drainEvent[domain.ModelDispatchStarted](t, sess)
+	require.Equal(t, helper, started.Instance)
+	require.Equal(t, fixedTime, started.At)
 
-	done := drainEvent[domain.DispatchDoneEvent](t, sess)
-	require.Equal(t, target, done.Channel)
+	done := drainEvent[domain.ModelDispatchDone](t, sess)
+	require.Equal(t, helper, done.Instance)
+	require.Equal(t, fixedTime, done.At)
 
 	msgs := channelMessages(t, s, target)
 	require.Equal(t, []domain.Message{

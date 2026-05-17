@@ -54,15 +54,18 @@ func containsMsg[T any](msgs []tea.Msg) (T, bool) {
 	return zero, false
 }
 
-func TestChatScreen_DispatchStarted_shows_pending(t *testing.T) {
+func TestChatScreen_ModelDispatchStarted_shows_pending(t *testing.T) {
 	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil, nil, domain.KindStatus)
 	require.NoError(t, err)
 	*screen.active = "#general"
 
-	_, cmd := screen.handleDispatchStarted(domain.DispatchStartedEvent{
-		Channel: "#general",
-		Nicks:   []domain.Nick{"botty"},
-	})
+	botty := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
+
+	cw := domain.NewChannelWindow("#general", time.Time{})
+	cw.Members.Add(botty)
+	screen.channels.Insert(newWindow(cw))
+
+	_, cmd := screen.handleModelDispatchStarted(domain.ModelDispatchStarted{Instance: botty})
 
 	require.NotNil(t, cmd)
 
@@ -74,15 +77,18 @@ func TestChatScreen_DispatchStarted_shows_pending(t *testing.T) {
 
 	thinking, ok := containsMsg[components.NickListThinkingMsg](msgs)
 	require.True(t, ok, "expected NickListThinkingMsg in batch")
-	require.True(t, thinking.Nicks["botty"])
+	require.True(t, thinking.Nicks["botty"], "active-channel member should be listed as thinking")
 }
 
-func TestChatScreen_DispatchDone_clears_pending(t *testing.T) {
+func TestChatScreen_ModelDispatchDone_clears_pending(t *testing.T) {
 	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil, nil, domain.KindStatus)
 	require.NoError(t, err)
 	*screen.active = "#general"
 
-	_, cmd := screen.handleDispatchDone(domain.DispatchDoneEvent{Channel: "#general"})
+	botty := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
+	screen.dispatching[botty] = true
+
+	_, cmd := screen.handleModelDispatchDone(domain.ModelDispatchDone{Instance: botty})
 
 	require.NotNil(t, cmd)
 
@@ -91,20 +97,54 @@ func TestChatScreen_DispatchDone_clears_pending(t *testing.T) {
 	pending, ok := containsMsg[components.PendingResponseMsg](msgs)
 	require.True(t, ok, "expected PendingResponseMsg in batch")
 	require.False(t, pending.Pending)
+
+	require.Empty(t, screen.dispatching, "Done must remove the instance from the dispatching set")
 }
 
-func TestChatScreen_DispatchDone_deferred_while_replies_queued(t *testing.T) {
+// TestChatScreen_ModelDispatchDone_keeps_pending_with_concurrent_dispatch
+// pins the per-instance contract: a Done for one model does not clear
+// the spinner while another model is still in its turn. The old
+// channel-keyed event would have flipped the global flag off here.
+func TestChatScreen_ModelDispatchDone_keeps_pending_with_concurrent_dispatch(t *testing.T) {
 	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil, nil, domain.KindStatus)
 	require.NoError(t, err)
 	*screen.active = "#general"
+
+	botty := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
+	other := domain.NewModelInstance("inst-other", "other", "test/model", "", nil)
+	screen.dispatching[botty] = true
+	screen.dispatching[other] = true
+
+	_, cmd := screen.handleModelDispatchDone(domain.ModelDispatchDone{Instance: botty})
+
+	require.NotNil(t, cmd)
+
+	msgs := collectMsgs(cmd)
+
+	_, ok := containsMsg[components.PendingResponseMsg](msgs)
+	require.False(t, ok,
+		"Done for one instance must not flip PendingResponseMsg while another is still dispatching")
+}
+
+func TestChatScreen_ModelDispatchDone_deferred_while_replies_queued(t *testing.T) {
+	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil, nil, domain.KindStatus)
+	require.NoError(t, err)
+	*screen.active = "#general"
+
+	botty := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
+	screen.dispatching[botty] = true
 	screen.pacedQueue["#general"] = []domain.Message{
 		{Target: "#general", From: "botty", InstanceID: "inst-botty", Body: "queued"},
 	}
 
-	// With paced messages still queued, DispatchDone should not
-	// clear the pending indicator — the queue drainer handles that.
-	_, cmd := screen.handleDispatchDone(domain.DispatchDoneEvent{Channel: "#general"})
-	require.Nil(t, cmd)
+	// With paced messages still queued, Done must not clear the
+	// pending indicator — the queue drainer handles that.
+	_, cmd := screen.handleModelDispatchDone(domain.ModelDispatchDone{Instance: botty})
+	require.NotNil(t, cmd)
+
+	msgs := collectMsgs(cmd)
+	_, ok := containsMsg[components.PendingResponseMsg](msgs)
+	require.False(t, ok, "Done must not emit PendingResponseMsg while paced replies remain")
 }
 
 func TestChatScreen_ModelReply_queues_and_paces(t *testing.T) {
@@ -327,17 +367,18 @@ func TestChatScreen_handleSessionEvent_routing(t *testing.T) {
 		wantType any
 	}{
 		{
-			name: "DispatchStartedEvent routes to pending indicator",
-			event: domain.DispatchStartedEvent{
-				Channel: "#general",
-				Nicks:   []domain.Nick{"botty"},
+			name: "ModelDispatchStarted routes to pending indicator",
+			event: domain.ModelDispatchStarted{
+				Instance: domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil),
 			},
 			dispatch: dispatchProtocol,
 			wantType: components.PendingResponseMsg{},
 		},
 		{
-			name:     "DispatchDoneEvent routes to pending clear",
-			event:    domain.DispatchDoneEvent{Channel: "#general"},
+			name: "ModelDispatchDone routes to pending clear",
+			event: domain.ModelDispatchDone{
+				Instance: domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil),
+			},
 			dispatch: dispatchProtocol,
 			wantType: components.PendingResponseMsg{},
 		},

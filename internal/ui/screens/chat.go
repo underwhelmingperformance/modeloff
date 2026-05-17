@@ -142,6 +142,16 @@ type ChatScreen struct {
 	// of channels with pending work.
 	pacedQueue map[domain.ChannelName][]domain.Message
 
+	// dispatching tracks the model instances currently in a turn.
+	// Membership is per-instance rather than per-channel so two
+	// models running concurrently in the same window survive each
+	// other's `ModelDispatchDone` — the pending spinner stays on
+	// until the last instance completes. The map's lifetime
+	// matches `ChatScreen`'s; mutations from value-receiver Update
+	// handlers are visible to subsequent calls because maps are
+	// reference types.
+	dispatching map[*domain.Instance]bool
+
 	// scrollbackMu guards reads of [Window.Scrollback] from
 	// goroutines other than Update — message-list rendering on a
 	// teardown frame may overlap with a final append from a
@@ -215,6 +225,7 @@ func NewChatScreen(ctx context.Context, sess *session.Session, cfgStore config.S
 		keyMap:          components.DefaultChatScreenKeyMap,
 		checklist:       NewWelcomeChecklist(sess.UserNick(), sess.HasAPIKey()),
 		pacedQueue:      map[domain.ChannelName][]domain.Message{},
+		dispatching:     map[*domain.Instance]bool{},
 		scrollbackMu:    scrollbackMu,
 	}
 

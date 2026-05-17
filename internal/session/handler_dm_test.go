@@ -74,21 +74,21 @@ func TestSession_PrivMsg_to_model_routes_DM_to_counterpart_only(t *testing.T) {
 		At:         fixedTime,
 	}}, resp.Events)
 
-	// Drain through `DispatchDoneEvent` so B's dispatch goroutine
+	// Drain through `ModelDispatchDone` so B's dispatch goroutine
 	// has returned before we read `calls`. The channel-send chain
 	// from the goroutine to this drain provides the happens-before
 	// edge: the closure's append to `calls` completes before
-	// `DispatchDoneEvent` is emitted.
+	// `ModelDispatchDone` is emitted.
 	//
 	// Three events on the user-client's bus complete the round:
 	// the original `Message` (the user-client sees every protocol
-	// event), then `DispatchStartedEvent`, then `DispatchDoneEvent`.
+	// event), then `ModelDispatchStarted`, then `ModelDispatchDone`.
 	// `extras` empty pins the no-other-events invariant — A and C
 	// never run a turn for this message.
 	_, extras := drainUntilMatched(t, sess,
 		matchEvent[domain.Message](),
-		matchEvent[domain.DispatchStartedEvent](),
-		matchEvent[domain.DispatchDoneEvent](),
+		matchEvent[domain.ModelDispatchStarted](),
+		matchEvent[domain.ModelDispatchDone](),
 	)
 	require.Empty(t, extras, "no other events should fire during a single PrivMsg→DM round")
 

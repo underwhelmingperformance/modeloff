@@ -555,6 +555,10 @@ func actorChannelSnapshot(pe domain.ProtocolEvent) []domain.ChannelName {
 		actor = e.Instance
 	case domain.NickChange:
 		actor = e.Instance
+	case domain.ModelDispatchStarted:
+		actor = e.Instance
+	case domain.ModelDispatchDone:
+		actor = e.Instance
 	default:
 		return nil
 	}
@@ -2380,9 +2384,8 @@ func (s *Session) runModelDispatch(ctx context.Context, c *serverClient) {
 // pre-computed by [Session.fanOutProtocol] as the intersection of
 // the actor's channel set with the recipient's.
 //
-// Events with no target (DispatchStartedEvent, DispatchDoneEvent,
-// PokeEvent, NamesReplyEvent, …) return nil and are skipped:
-// they are not LLM-prompt material.
+// Events with no target (PokeEvent, NamesReplyEvent, …) return
+// nil and are skipped: they are not LLM-prompt material.
 func historyTargets(delivery protocol.Delivery) []domain.ChannelName {
 	switch e := delivery.Event.(type) {
 	case domain.Message:
@@ -2410,8 +2413,8 @@ func historyTargets(delivery protocol.Delivery) []domain.ChannelName {
 }
 
 // modelDispatchTurn runs a single LLM turn for `c.instance` in
-// response to `trigger`, emitting `DispatchStartedEvent` /
-// `DispatchDoneEvent` around the call so the chat-screen's
+// response to `trigger`, emitting `ModelDispatchStarted` /
+// `ModelDispatchDone` around the call so the chat-screen's
 // pending-response indicator stays accurate. The reply Messages
 // are persisted and emitted by [Session.buildReplies] via
 // [Session.dispatchToInstance].
@@ -2441,7 +2444,7 @@ func (s *Session) modelDispatchTurn(ctx context.Context, c *serverClient, ch dom
 
 	ctx, span := tracer.Start(ctx, "session.dispatch_model_turn", startOpts...)
 	defer span.End()
-	defer s.emit(ctx, domain.DispatchDoneEvent{Channel: ch})
+	defer s.emit(ctx, domain.ModelDispatchDone{Instance: inst, At: s.now()})
 
 	window, err := s.dispatchWindowFor(ctx, ch, inst)
 	if err != nil {
@@ -2452,7 +2455,7 @@ func (s *Session) modelDispatchTurn(ctx context.Context, c *serverClient, ch dom
 
 	historyEvents := c.snapshotHistory(ch)
 
-	s.emit(ctx, domain.DispatchStartedEvent{Channel: ch, Nicks: []domain.Nick{nick}})
+	s.emit(ctx, domain.ModelDispatchStarted{Instance: inst, At: s.now()})
 
 	replies, err := s.dispatchToInstance(ctx, window, inst, ch, historyEvents, []protocol.IRCMessage{trigger})
 	if err != nil {

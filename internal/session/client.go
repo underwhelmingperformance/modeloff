@@ -133,7 +133,7 @@ func (c *serverClient) canReceive(ev domain.ProtocolEvent, actorTargets []domain
 		return e.InstanceID == c.id || channelsContains(channels, e.Target)
 	case domain.ModelKicked:
 		return channelsContains(channels, e.Target)
-	case domain.Quit, domain.NickChange:
+	case domain.Quit, domain.NickChange, domain.ModelDispatchStarted, domain.ModelDispatchDone:
 		_ = e
 		return len(actorTargets) > 0
 	case domain.PokeEvent:
@@ -142,11 +142,10 @@ func (c *serverClient) canReceive(ev domain.ProtocolEvent, actorTargets []domain
 		return channelsContains(channels, e.Channel)
 	}
 
-	// Server-narrated and lifecycle events (DispatchStartedEvent,
-	// DispatchDoneEvent, FocusChannelEvent, Help, Whois, ListReply,
-	// ListEnd, SystemNotice, CommandError, UsageHint, PersonasList,
-	// Killed) have no model-side rendering; they belong to the
-	// chat-screen.
+	// Server-narrated and lifecycle events (FocusChannelEvent,
+	// Help, Whois, ListReply, ListEnd, SystemNotice, CommandError,
+	// UsageHint, PersonasList, Killed) have no model-side
+	// rendering; they belong to the chat-screen.
 	return false
 }
 

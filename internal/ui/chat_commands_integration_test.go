@@ -29,7 +29,7 @@ func TestApp_send_message_shows_pending_indicator(t *testing.T) {
 	// etc.) return silence immediately. Without this guard the
 	// model's dispatch goroutine is still parked in the INVITE
 	// turn when the user submits, queues the new Message behind
-	// it, and never emits the `DispatchStartedEvent` the pending
+	// it, and never emits the `ModelDispatchStarted` the pending
 	// indicator depends on.
 	release := make(chan struct{})
 

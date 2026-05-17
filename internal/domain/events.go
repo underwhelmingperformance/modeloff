@@ -58,17 +58,27 @@ type Event interface {
 	domainEvent()
 }
 
-// DispatchStartedEvent is emitted when the session begins dispatching
-// events to model instances in a channel.
-type DispatchStartedEvent struct {
-	Channel ChannelName
-	Nicks   []Nick
+// ModelDispatchStarted is emitted at the start of a single model
+// instance's dispatch turn. The event is actor-scoped — it routes
+// to every subscriber that shares at least one channel with
+// `Instance`, mirroring RFC 2812 §3.3.1's intersection rule for
+// peer-state signals like `Quit` and `NickChange`. No channel
+// field: the dispatch's window is observability metadata only,
+// and recipients track "this instance is busy" without caring
+// which specific window the turn is running in.
+type ModelDispatchStarted struct {
+	Instance *Instance
+	At       time.Time
 }
 
-// DispatchDoneEvent is emitted when dispatch to all model instances
-// in a channel has completed.
-type DispatchDoneEvent struct {
-	Channel ChannelName
+// ModelDispatchDone is the pair to [ModelDispatchStarted], emitted
+// when the turn completes (whether or not it produced replies).
+// Routing matches `ModelDispatchStarted`; the recipient clears
+// the per-instance "thinking" mark and recomputes the aggregate
+// pending state from the union of still-dispatching instances.
+type ModelDispatchDone struct {
+	Instance *Instance
+	At       time.Time
 }
 
 // NamesReplyEvent is emitted UI-only at user-join time to broadcast
@@ -137,8 +147,8 @@ func (ModelReplyEvent) domainEvent()       {}
 func (ConfigChangedEvent) domainEvent()    {}
 func (PokeEvent) domainEvent()             {}
 func (ErrorEvent) domainEvent()            {}
-func (DispatchStartedEvent) domainEvent()  {}
-func (DispatchDoneEvent) domainEvent()     {}
+func (ModelDispatchStarted) domainEvent()  {}
+func (ModelDispatchDone) domainEvent()     {}
 func (SystemNoticeEvent) domainEvent()     {}
 func (NamesReplyEvent) domainEvent()       {}
 func (Welcome) domainEvent()               {}

@@ -188,8 +188,8 @@ func drainEventSkipping[T domain.Event](t *testing.T, sess *Session) T {
 		}
 
 		switch evt.(type) {
-		case domain.DispatchStartedEvent,
-			domain.DispatchDoneEvent,
+		case domain.ModelDispatchStarted,
+			domain.ModelDispatchDone,
 			domain.SystemNoticeEvent,
 			domain.NamesReplyEvent:
 			continue
@@ -214,14 +214,14 @@ func drainDispatchEvents(t *testing.T, sess *Session) {
 		select {
 		case evt := <-sess.Events():
 			switch evt.(type) {
-			case domain.DispatchStartedEvent, domain.DispatchDoneEvent:
+			case domain.ModelDispatchStarted, domain.ModelDispatchDone:
 				continue
 			default:
 				t.Fatalf("expected dispatch event, got %T", evt)
 			}
 		case delivery := <-sess.User().Events():
 			switch delivery.Event.(type) {
-			case domain.DispatchStartedEvent, domain.DispatchDoneEvent:
+			case domain.ModelDispatchStarted, domain.ModelDispatchDone:
 				continue
 			default:
 				t.Fatalf("expected dispatch event, got %T", delivery.Event)
@@ -1462,8 +1462,8 @@ func TestSession_modelDispatchTurn_recordsSpan(t *testing.T) {
 	}
 	sess.modelDispatchTurn(ctx, client, "#general", trigger, trace.SpanContext{})
 
-	drainEvent[domain.DispatchStartedEvent](t, sess)
-	drainEvent[domain.DispatchDoneEvent](t, sess)
+	drainEvent[domain.ModelDispatchStarted](t, sess)
+	drainEvent[domain.ModelDispatchDone](t, sess)
 
 	span := oteltest.FindSpan(t, recorder, "session.dispatch_model_turn")
 	require.Equal(t, "#general", oteltest.AttrValue(span.Attributes(), observability.AttrChannel))
@@ -1508,7 +1508,7 @@ func TestSession_SendMessage_emits_dispatch_events(t *testing.T) {
 	sess, s := newTestSessionWithAPI(t, fake)
 	ctx := t.Context()
 
-	seedInstance(t, sess, s, instanceSpec{
+	botty := seedInstance(t, sess, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: testChannels("#general"),
@@ -1525,7 +1525,7 @@ func TestSession_SendMessage_emits_dispatch_events(t *testing.T) {
 	events := drainEvents(t, sess, 1)
 
 	require.Equal(t, []domain.Event{
-		domain.DispatchStartedEvent{Channel: "#general", Nicks: []domain.Nick{"botty"}},
+		domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
 		domain.Message{
 			Target:     "#general",
 			From:       "botty",
@@ -1533,7 +1533,7 @@ func TestSession_SendMessage_emits_dispatch_events(t *testing.T) {
 			Body:       "got it",
 			At:         fixedTime,
 		},
-		domain.DispatchDoneEvent{Channel: "#general"},
+		domain.ModelDispatchDone{Instance: botty, At: fixedTime},
 	}, events)
 }
 
@@ -1552,7 +1552,7 @@ func TestSession_JoinEvent_triggers_dispatch(t *testing.T) {
 
 		// Seed a channel with a model already present so join dispatch
 		// has someone to notify. The user is NOT yet a member.
-		seedInstance(t, sess, s, instanceSpec{
+		botty := seedInstance(t, sess, s, instanceSpec{
 			Nick:     "botty",
 			ModelID:  "test/model",
 			Channels: testChannels("#general"),
@@ -1565,8 +1565,8 @@ func TestSession_JoinEvent_triggers_dispatch(t *testing.T) {
 		// Six events are expected: the synchronous Join, the
 		// joiner-targeted NamesReply carrying the channel's member list
 		// at join time, the synchronous ModeChange emitted by
-		// emitJoinProtocol, and the async DispatchStartedEvent /
-		// reply Message / DispatchDoneEvent from botty's dispatch
+		// emitJoinProtocol, and the async ModelDispatchStarted /
+		// reply Message / ModelDispatchDone from botty's dispatch
 		// goroutine. Cross-goroutine ordering between ModeChange and
 		// the dispatch lifecycle is not guaranteed, so drain a fixed
 		// count and assert by set membership plus the lifecycle's
@@ -1589,9 +1589,7 @@ func TestSession_JoinEvent_triggers_dispatch(t *testing.T) {
 			Instance:   sess.UserInstance(),
 			Mode:       domain.ModeOp, By: "ChanServ", Actor: "ChanServ", At: fixedTime,
 		}
-		wantStarted := domain.DispatchStartedEvent{
-			Channel: "#general", Nicks: []domain.Nick{"botty"},
-		}
+		wantStarted := domain.ModelDispatchStarted{Instance: botty, At: fixedTime}
 		wantReply := domain.Message{
 			Target:     "#general",
 			From:       "botty",
@@ -1599,7 +1597,7 @@ func TestSession_JoinEvent_triggers_dispatch(t *testing.T) {
 			Body:       "welcome",
 			At:         fixedTime,
 		}
-		wantDone := domain.DispatchDoneEvent{Channel: "#general"}
+		wantDone := domain.ModelDispatchDone{Instance: botty, At: fixedTime}
 
 		// The NamesReply carries the channel's MemberList at join
 		// time. Extracting the exact MemberList for an equality match
@@ -1637,8 +1635,8 @@ func TestSession_JoinEvent_triggers_dispatch(t *testing.T) {
 			return -1
 		}
 
-		require.Less(t, idxOf(wantStarted), idxOf(wantReply), "DispatchStartedEvent must precede reply Message")
-		require.Less(t, idxOf(wantReply), idxOf(wantDone), "reply Message must precede DispatchDoneEvent")
+		require.Less(t, idxOf(wantStarted), idxOf(wantReply), "ModelDispatchStarted must precede reply Message")
+		require.Less(t, idxOf(wantReply), idxOf(wantDone), "reply Message must precede ModelDispatchDone")
 
 		// The trigger event sent to the model should be a JOIN message.
 		require.Equal(t, []protocol.IRCMessage{{
@@ -2487,8 +2485,8 @@ func TestSession_AddModel_creates_new_instance_per_invocation(t *testing.T) {
 	matched, extras := drainUntilMatched(t, sess,
 		matchEvent[domain.ModelInvited](),
 		matchEvent[domain.ModeChange](),
-		matchEvent[domain.DispatchStartedEvent](),
-		matchEvent[domain.DispatchDoneEvent](),
+		matchEvent[domain.ModelDispatchStarted](),
+		matchEvent[domain.ModelDispatchDone](),
 	)
 	require.Empty(t, extras)
 	evt1 := findEvent[domain.ModelInvited](t, matched)
@@ -2636,7 +2634,7 @@ func TestSession_Poke_emits_dispatch_events(t *testing.T) {
 	sess, s := newTestSessionWithAPI(t, fake)
 	ctx := t.Context()
 
-	seedInstance(t, sess, s, instanceSpec{
+	botty := seedInstance(t, sess, s, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: testChannels("#general"),
@@ -2653,7 +2651,7 @@ func TestSession_Poke_emits_dispatch_events(t *testing.T) {
 	events := drainEvents(t, sess, 1)
 
 	require.Equal(t, []domain.Event{
-		domain.DispatchStartedEvent{Channel: "#general", Nicks: []domain.Nick{"botty"}},
+		domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
 		domain.Message{
 			Target:     "#general",
 			From:       "botty",
@@ -2661,7 +2659,7 @@ func TestSession_Poke_emits_dispatch_events(t *testing.T) {
 			Body:       "poke received",
 			At:         fixedTime,
 		},
-		domain.DispatchDoneEvent{Channel: "#general"},
+		domain.ModelDispatchDone{Instance: botty, At: fixedTime},
 	}, events)
 
 	msgs := channelMessages(t, s, "#general")
@@ -4398,11 +4396,11 @@ func TestSession_DispatchToChannel_truncated_returns_error(t *testing.T) {
 // clearing without over-coupling to the full stream shape.
 //
 // `drainEvents` is marker-based — it stops at the Nth
-// `DispatchDoneEvent` — which is the right shape for tests that just
+// `ModelDispatchDone` — which is the right shape for tests that just
 // need to wait for dispatch to finish, but unsafe for tests that
 // combine a synchronous emit from the caller with asynchronous
 // events from a dispatch goroutine triggered by an earlier emit:
-// the dispatch goroutine can race ahead and emit `DispatchDoneEvent`
+// the dispatch goroutine can race ahead and emit `ModelDispatchDone`
 // before the caller has emitted its post-trigger synchronous events
 // (e.g. `emitJoinProtocol`'s `ModeChangeEvent` after a
 // `JoinEvent`-triggered dispatch). The marker fires, drain returns,
@@ -4437,7 +4435,7 @@ func drainNEvents(t *testing.T, sess *Session, n int) []domain.Event {
 	return events
 }
 
-// drainEvents reads from both event buses until n DispatchDoneEvent
+// drainEvents reads from both event buses until n ModelDispatchDone
 // values have been received, and returns all events in order.
 func drainEvents(t *testing.T, sess *Session, doneCount int) []domain.Event {
 	t.Helper()
@@ -4448,12 +4446,12 @@ func drainEvents(t *testing.T, sess *Session, doneCount int) []domain.Event {
 	for {
 		evt, ok := nextEvent(sess)
 		if !ok {
-			t.Fatal("events channels closed before receiving all DispatchDoneEvents")
+			t.Fatal("events channels closed before receiving all ModelDispatchDones")
 			return nil
 		}
 
 		events = append(events, evt)
-		if _, ok := evt.(domain.DispatchDoneEvent); ok {
+		if _, ok := evt.(domain.ModelDispatchDone); ok {
 			done++
 			if done >= doneCount {
 				return events
@@ -4749,8 +4747,8 @@ func TestSendMessageAs_model_triggers_dispatch_to_other_models(t *testing.T) {
 
 	// Wait for async dispatch to complete.
 	drainEvent[domain.Message](t, sess)
-	drainEvent[domain.DispatchStartedEvent](t, sess)
-	drainEvent[domain.DispatchDoneEvent](t, sess)
+	drainEvent[domain.ModelDispatchStarted](t, sess)
+	drainEvent[domain.ModelDispatchDone](t, sess)
 
 	wantMsg := protocol.IRCMessage{
 		Kind:       protocol.KindPrivMsg,
@@ -4785,16 +4783,16 @@ func TestAddModel_dispatches_invite_notification_to_model(t *testing.T) {
 
 	require.NoError(t, sess.AddModel(ctx, "#dev", "test/model", ""))
 
-	// Draining `DispatchDoneEvent` from the bus provides the
+	// Draining `ModelDispatchDone` from the bus provides the
 	// happens-before edge that lets the test read `dispatched`
 	// without a lock: the dispatch goroutine's write to `dispatched`
-	// happens before its `emit(DispatchDoneEvent)`, and the channel
+	// happens before its `emit(ModelDispatchDone)`, and the channel
 	// receive in the drain happens after that send.
 	_, extras := drainUntilMatched(t, sess,
 		matchEvent[domain.ModelInvited](),
 		matchEvent[domain.ModeChange](),
-		matchEvent[domain.DispatchStartedEvent](),
-		matchEvent[domain.DispatchDoneEvent](),
+		matchEvent[domain.ModelDispatchStarted](),
+		matchEvent[domain.ModelDispatchDone](),
 	)
 	require.Empty(t, extras)
 
