@@ -22,11 +22,9 @@ func TestChatScreen_semantic_regions_expose_sidebar_and_chat_content(t *testing.
 	uitest.SeedChannel(t, sess, "#random")
 
 	tm := newChatApp(t, sess)
-	// Wait for the ChanServ-mode line too — that's the last
-	// protocol-bus event in the user-join sequence, so its presence
-	// guarantees the join → mode-change pair has fully rendered
-	// before the snapshot is taken.
-	tm.WaitFor("Created channel #random", "ChanServ sets mode +o testuser")
+	// Wait for the channel-creation scrollback line so the join's
+	// initial render has fully landed before the snapshot is taken.
+	tm.WaitFor("Created channel #random")
 
 	body, status := uitest.SplitBodyAndStatus(tm.CurrentView())
 	columns := uitest.VisibleColumns(body)
@@ -44,7 +42,6 @@ func TestChatScreen_semantic_regions_expose_sidebar_and_chat_content(t *testing.
 		{"Channels", "&modeloff", "#general", "▸#random"},
 		{
 			"*** Created channel #random",
-			"*** ChanServ sets mode +o testuser",
 			"testuser >",
 		},
 		{"Nicks", "@testuser"},

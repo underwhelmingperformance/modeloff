@@ -24,7 +24,7 @@ func TestJoinAs_model_actor(t *testing.T) {
 			Channels: orderedmap.New[domain.ChannelName, time.Time](),
 		})
 
-		require.NoError(t, sess.joinAs(ctx, botty, "#dev"))
+		require.NoError(t, sess.joinAs(ctx, botty, "#dev", ""))
 		synctest.Wait()
 
 		require.ElementsMatch(t, []domain.Event{
@@ -37,16 +37,6 @@ func TestJoinAs_model_actor(t *testing.T) {
 				At:         fixedTime,
 				Instance:   botty,
 			},
-			domain.ModeChange{
-				Target:     "#dev",
-				Nick:       "botty",
-				InstanceID: botty.ID(),
-				Flag:       domain.ModeChannelVoice,
-				Add:        true,
-				By:         "ChanServ",
-				At:         fixedTime,
-				Instance:   botty,
-			},
 			domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
 			domain.ModelDispatchDone{Instance: botty, At: fixedTime},
 		}, collectEmittedEvents(t, sess))
@@ -55,7 +45,7 @@ func TestJoinAs_model_actor(t *testing.T) {
 		require.NoError(t, err)
 		modelOnlyMembers := domain.NewMemberList()
 		modelOnlyMembers.Add(botty)
-		modelOnlyMembers.SetMode(botty, domain.ModeVoice)
+		modelOnlyMembers.SetMode(botty, domain.ModeOp)
 		requireChannelEqual(t, newTestChannelWindow("#dev", fixedTime, modelOnlyMembers), ch)
 
 		inst, err := s.ResolveNick(ctx, "botty")
@@ -334,7 +324,7 @@ func TestSendMessageAs_user_actor_does_not_echo_to_originator(t *testing.T) {
 		sess, s := newTestSession(t)
 		ctx := t.Context()
 
-		require.NoError(t, sess.joinAs(ctx, sess.user, "#dev"))
+		require.NoError(t, sess.joinAs(ctx, sess.user, "#dev", ""))
 		synctest.Wait()
 
 		_, err := sess.sendMessageAs(ctx, sess.user, "#dev", "hello")
@@ -356,16 +346,6 @@ func TestSendMessageAs_user_actor_does_not_echo_to_originator(t *testing.T) {
 				Channel: "#dev",
 				Members: testMembers(t, sess, s, "testuser"),
 				At:      fixedTime,
-			},
-			domain.ModeChange{
-				Target:     "#dev",
-				Nick:       "testuser",
-				InstanceID: user.ID(),
-				Flag:       domain.ModeOperator,
-				Add:        true,
-				By:         "ChanServ",
-				At:         fixedTime,
-				Instance:   user,
 			},
 		}, collectEmittedEvents(t, sess))
 	})
@@ -419,6 +399,13 @@ func TestKickAs_model_actor(t *testing.T) {
 		})
 		seedChannelWithMembers(t, sess, s, "#dev", "testuser", "botty", "helper")
 
+		// KICK is channel-op gated (RFC 2812 §3.2.8); give botty `@`
+		// before exercising the kick path.
+		w, err := sess.loadChannelWindow(ctx, "#dev")
+		require.NoError(t, err)
+		w.Members.SetMode(botty, domain.ModeOp)
+		require.NoError(t, sess.persistChannelWindow(ctx, w))
+
 		require.NoError(t, sess.kickAs(ctx, botty, helper, "#dev"))
 		synctest.Wait()
 
@@ -436,7 +423,9 @@ func TestKickAs_model_actor(t *testing.T) {
 
 		ch, err := sess.loadChannelWindow(ctx, "#dev")
 		require.NoError(t, err)
-		requireChannelEqual(t, newTestChannelWindow("#dev", fixedTime, testMembers(t, sess, s, "testuser", "botty")), ch)
+		expectedMembers := testMembers(t, sess, s, "testuser", "botty")
+		expectedMembers.SetMode(botty, domain.ModeOp)
+		requireChannelEqual(t, newTestChannelWindow("#dev", fixedTime, expectedMembers), ch)
 
 		inst, err := s.ResolveNick(ctx, "helper")
 		require.NoError(t, err)
@@ -560,7 +549,7 @@ func TestJoinAs_normalises_channel_prefix(t *testing.T) {
 			Channels: orderedmap.New[domain.ChannelName, time.Time](),
 		})
 
-		require.NoError(t, sess.joinAs(ctx, botty, "modeloff"))
+		require.NoError(t, sess.joinAs(ctx, botty, "modeloff", ""))
 		synctest.Wait()
 
 		require.ElementsMatch(t, []domain.Event{
@@ -574,16 +563,6 @@ func TestJoinAs_normalises_channel_prefix(t *testing.T) {
 				Instance:   botty,
 			},
 			domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
-			domain.ModeChange{
-				Target:     "#modeloff",
-				Nick:       "botty",
-				InstanceID: botty.ID(),
-				Flag:       domain.ModeChannelVoice,
-				Add:        true,
-				By:         "ChanServ",
-				At:         fixedTime,
-				Instance:   botty,
-			},
 			domain.ModelDispatchDone{Instance: botty, At: fixedTime},
 		}, collectEmittedEvents(t, sess))
 
@@ -621,16 +600,6 @@ func TestJoinAs_user_rejoin_preserves_join_time(t *testing.T) {
 				Members: testMembers(t, sess, s, "testuser"),
 				At:      fixedTime,
 			},
-			domain.ModeChange{
-				Target:     "#general",
-				Nick:       "testuser",
-				InstanceID: user.ID(),
-				Flag:       domain.ModeOperator,
-				Add:        true,
-				By:         "ChanServ",
-				At:         fixedTime,
-				Instance:   user,
-			},
 		}, collectEmittedEvents(t, sess))
 
 		originalJoinTime := sess.UserJoinedAt("#general")
@@ -652,7 +621,7 @@ func TestJoinAs_user_new_channel_emits_join_and_mode(t *testing.T) {
 		sess, s := newTestSession(t)
 		ctx := t.Context()
 
-		require.NoError(t, sess.joinAs(ctx, sess.UserInstance(), "#dev"))
+		require.NoError(t, sess.joinAs(ctx, sess.UserInstance(), "#dev", ""))
 		synctest.Wait()
 
 		user := sess.UserInstance()
@@ -670,16 +639,6 @@ func TestJoinAs_user_new_channel_emits_join_and_mode(t *testing.T) {
 				Channel: "#dev",
 				Members: testMembers(t, sess, s, "testuser"),
 				At:      fixedTime,
-			},
-			domain.ModeChange{
-				Target:     "#dev",
-				Nick:       "testuser",
-				InstanceID: user.ID(),
-				Instance:   user,
-				Flag:       domain.ModeOperator,
-				Add:        true,
-				By:         "ChanServ",
-				At:         fixedTime,
 			},
 		}, collectEmittedEvents(t, sess))
 
@@ -706,10 +665,12 @@ func TestJoinAs_user_existing_channel_with_topic(t *testing.T) {
 		withAlice.TopicSetAt = fixedTime.Add(-time.Hour)
 		saveTestChannel(t, sess, s, withAlice)
 
-		require.NoError(t, sess.joinAs(ctx, sess.UserInstance(), "#dev"))
+		require.NoError(t, sess.joinAs(ctx, sess.UserInstance(), "#dev", ""))
 		synctest.Wait()
 
 		user := sess.UserInstance()
+		expectedMembers := testMembers(t, sess, s, "testuser", "alice")
+		expectedMembers.SetMode(user, domain.ModeNone)
 		require.ElementsMatch(t, []domain.Event{
 			bootstrapModeChange(sess, bootAt),
 			domain.Join{
@@ -722,18 +683,8 @@ func TestJoinAs_user_existing_channel_with_topic(t *testing.T) {
 			},
 			domain.NamesReplyEvent{
 				Channel: "#dev",
-				Members: testMembers(t, sess, s, "testuser", "alice"),
+				Members: expectedMembers,
 				At:      fixedTime,
-			},
-			domain.ModeChange{
-				Target:     "#dev",
-				Nick:       "testuser",
-				InstanceID: user.ID(),
-				Instance:   user,
-				Flag:       domain.ModeOperator,
-				Add:        true,
-				By:         "ChanServ",
-				At:         fixedTime,
 			},
 			domain.TopicInfo{
 				Target:     "#dev",
@@ -756,10 +707,12 @@ func TestJoinAs_user_existing_channel_no_topic(t *testing.T) {
 
 		saveTestChannel(t, sess, s, newTestChannelWindow("#dev", fixedTime.Add(-time.Hour), testMembers(t, sess, s, "alice")))
 
-		require.NoError(t, sess.joinAs(ctx, sess.UserInstance(), "#dev"))
+		require.NoError(t, sess.joinAs(ctx, sess.UserInstance(), "#dev", ""))
 		synctest.Wait()
 
 		user := sess.UserInstance()
+		expectedMembers := testMembers(t, sess, s, "testuser", "alice")
+		expectedMembers.SetMode(user, domain.ModeNone)
 		require.ElementsMatch(t, []domain.Event{
 			bootstrapModeChange(sess, bootAt),
 			domain.Join{
@@ -772,18 +725,8 @@ func TestJoinAs_user_existing_channel_no_topic(t *testing.T) {
 			},
 			domain.NamesReplyEvent{
 				Channel: "#dev",
-				Members: testMembers(t, sess, s, "testuser", "alice"),
+				Members: expectedMembers,
 				At:      fixedTime,
-			},
-			domain.ModeChange{
-				Target:     "#dev",
-				Nick:       "testuser",
-				InstanceID: user.ID(),
-				Instance:   user,
-				Flag:       domain.ModeOperator,
-				Add:        true,
-				By:         "ChanServ",
-				At:         fixedTime,
 			},
 		}, collectEmittedEvents(t, sess))
 	})
@@ -806,7 +749,7 @@ func TestJoinAs_model_voice_only_no_topic(t *testing.T) {
 		ch.Topic = "some topic"
 		saveTestChannel(t, sess, s, ch)
 
-		require.NoError(t, sess.joinAs(ctx, botty, "#dev"))
+		require.NoError(t, sess.joinAs(ctx, botty, "#dev", ""))
 		synctest.Wait()
 
 		require.ElementsMatch(t, []domain.Event{
@@ -816,16 +759,6 @@ func TestJoinAs_model_voice_only_no_topic(t *testing.T) {
 				Nick:       "botty",
 				InstanceID: botty.ID(),
 				Created:    false,
-				At:         fixedTime,
-				Instance:   botty,
-			},
-			domain.ModeChange{
-				Target:     "#dev",
-				Nick:       "botty",
-				InstanceID: botty.ID(),
-				Flag:       domain.ModeChannelVoice,
-				Add:        true,
-				By:         "ChanServ",
 				At:         fixedTime,
 				Instance:   botty,
 			},
@@ -841,8 +774,8 @@ func TestJoinAs_user_updates_autojoin(t *testing.T) {
 		sess, s := newTestSession(t)
 		ctx := t.Context()
 
-		require.NoError(t, sess.joinAs(ctx, sess.UserInstance(), "#general"))
-		require.NoError(t, sess.joinAs(ctx, sess.UserInstance(), "#dev"))
+		require.NoError(t, sess.joinAs(ctx, sess.UserInstance(), "#general", ""))
+		require.NoError(t, sess.joinAs(ctx, sess.UserInstance(), "#dev", ""))
 		synctest.Wait()
 
 		user := sess.UserInstance()
@@ -861,16 +794,6 @@ func TestJoinAs_user_updates_autojoin(t *testing.T) {
 				Members: testMembers(t, sess, s, "testuser"),
 				At:      fixedTime,
 			},
-			domain.ModeChange{
-				Target:     "#general",
-				Nick:       "testuser",
-				InstanceID: user.ID(),
-				Instance:   user,
-				Flag:       domain.ModeOperator,
-				Add:        true,
-				By:         "ChanServ",
-				At:         fixedTime,
-			},
 			domain.Join{
 				Target:     "#dev",
 				Nick:       "testuser",
@@ -883,16 +806,6 @@ func TestJoinAs_user_updates_autojoin(t *testing.T) {
 				Channel: "#dev",
 				Members: testMembers(t, sess, s, "testuser"),
 				At:      fixedTime,
-			},
-			domain.ModeChange{
-				Target:     "#dev",
-				Nick:       "testuser",
-				InstanceID: user.ID(),
-				Instance:   user,
-				Flag:       domain.ModeOperator,
-				Add:        true,
-				By:         "ChanServ",
-				At:         fixedTime,
 			},
 		}, collectEmittedEvents(t, sess))
 
@@ -908,8 +821,8 @@ func TestPartAs_user_updates_autojoin(t *testing.T) {
 		sess, s := newTestSession(t)
 		ctx := t.Context()
 
-		require.NoError(t, sess.joinAs(ctx, sess.UserInstance(), "#general"))
-		require.NoError(t, sess.joinAs(ctx, sess.UserInstance(), "#dev"))
+		require.NoError(t, sess.joinAs(ctx, sess.UserInstance(), "#general", ""))
+		require.NoError(t, sess.joinAs(ctx, sess.UserInstance(), "#dev", ""))
 		require.NoError(t, sess.partAs(ctx, sess.UserInstance(), "#general", "bye"))
 		synctest.Wait()
 
@@ -929,16 +842,6 @@ func TestPartAs_user_updates_autojoin(t *testing.T) {
 				Members: testMembers(t, sess, s, "testuser"),
 				At:      fixedTime,
 			},
-			domain.ModeChange{
-				Target:     "#general",
-				Nick:       "testuser",
-				InstanceID: user.ID(),
-				Instance:   user,
-				Flag:       domain.ModeOperator,
-				Add:        true,
-				By:         "ChanServ",
-				At:         fixedTime,
-			},
 			domain.Join{
 				Target:     "#dev",
 				Nick:       "testuser",
@@ -951,16 +854,6 @@ func TestPartAs_user_updates_autojoin(t *testing.T) {
 				Channel: "#dev",
 				Members: testMembers(t, sess, s, "testuser"),
 				At:      fixedTime,
-			},
-			domain.ModeChange{
-				Target:     "#dev",
-				Nick:       "testuser",
-				InstanceID: user.ID(),
-				Instance:   user,
-				Flag:       domain.ModeOperator,
-				Add:        true,
-				By:         "ChanServ",
-				At:         fixedTime,
 			},
 			domain.Part{
 				Target:     "#general",

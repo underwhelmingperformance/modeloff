@@ -211,8 +211,6 @@ func testMembers(t *testing.T, sess *Session, s *storemod.SQLiteStore, nicks ...
 		ml.Add(inst)
 		if nick == sess.UserNick() {
 			ml.SetMode(inst, domain.ModeOp)
-		} else {
-			ml.SetMode(inst, domain.ModeVoice)
 		}
 	}
 	return ml
@@ -310,16 +308,6 @@ func TestSession_Join(t *testing.T) {
 				Members: members,
 				At:      fixedTime,
 			},
-			domain.ModeChange{
-				Target:     "#general",
-				Nick:       "testuser",
-				InstanceID: user.ID(),
-				Flag:       domain.ModeOperator,
-				Add:        true,
-				By:         "ChanServ",
-				At:         fixedTime,
-				Instance:   user,
-			},
 		}, collectEmittedEvents(t, sess))
 
 		ch, err := sess.loadChannelWindow(ctx, "#general")
@@ -361,10 +349,10 @@ func TestSession_JoinAlreadyMember_no_duplicate_event(t *testing.T) {
 	// Join again — should not emit a second join event.
 	require.NoError(t, sess.Join(ctx, "#general"))
 
-	// First join creates the channel, so we get join + mode_change.
+	// First join creates the channel, so we get a join event.
 	// Second join should add nothing.
 	types := channelEventTypes(t, s, "#general")
-	require.Equal(t, []string{"join", "mode_change"}, types)
+	require.Equal(t, []string{"join"}, types)
 }
 
 func TestSession_JoinSwitchAndReturn_no_duplicate_event(t *testing.T) {
@@ -378,7 +366,7 @@ func TestSession_JoinSwitchAndReturn_no_duplicate_event(t *testing.T) {
 	require.NoError(t, sess.Join(ctx, "#general"))
 
 	types := channelEventTypes(t, s, "#general")
-	require.Equal(t, []string{"join", "mode_change"}, types)
+	require.Equal(t, []string{"join"}, types)
 }
 
 func TestSession_JoinAutojoinChannels_populates_user_join_times(t *testing.T) {
@@ -418,16 +406,6 @@ func TestSession_JoinAutojoinChannels_populates_user_join_times(t *testing.T) {
 					Channel: ch,
 					Members: members(ch),
 					At:      fixedTime,
-				},
-				domain.ModeChange{
-					Target:     ch,
-					Nick:       "testuser",
-					InstanceID: user.ID(),
-					Flag:       domain.ModeOperator,
-					Add:        true,
-					By:         "ChanServ",
-					At:         fixedTime,
-					Instance:   user,
 				},
 			)
 		}
@@ -480,16 +458,6 @@ func TestSession_JoinAutojoinChannels_emits_join_events(t *testing.T) {
 					Channel: ch,
 					Members: members(ch),
 					At:      fixedTime,
-				},
-				domain.ModeChange{
-					Target:     ch,
-					Nick:       "testuser",
-					InstanceID: user.ID(),
-					Flag:       domain.ModeOperator,
-					Add:        true,
-					By:         "ChanServ",
-					At:         fixedTime,
-					Instance:   user,
 				},
 			)
 		}
@@ -673,16 +641,6 @@ func TestSession_Connect_then_JoinAutojoin_stamps_UserJoinedAt(t *testing.T) {
 					Members: members(ch),
 					At:      fixedTime,
 				},
-				domain.ModeChange{
-					Target:     ch,
-					Nick:       "testuser",
-					InstanceID: user.ID(),
-					Flag:       domain.ModeOperator,
-					Add:        true,
-					By:         "ChanServ",
-					At:         fixedTime,
-					Instance:   user,
-				},
 			)
 		}
 
@@ -731,16 +689,6 @@ func TestSession_Connect_Quit_Reconnect_omits_status_channel_from_autojoin(t *te
 				Channel: "#general",
 				Members: generalMembers,
 				At:      fixedTime,
-			},
-			domain.ModeChange{
-				Target:     "#general",
-				Nick:       "testuser",
-				InstanceID: user1.ID(),
-				Flag:       domain.ModeOperator,
-				Add:        true,
-				By:         "ChanServ",
-				At:         fixedTime,
-				Instance:   user1,
 			},
 		}, collectEmittedEvents(t, sess1))
 
@@ -940,16 +888,6 @@ func TestSession_Quit_appends_channel_quit_events_and_saves_autojoin(t *testing.
 					Members: entry.members,
 					At:      fixedTime,
 				},
-				domain.ModeChange{
-					Target:     entry.ch,
-					Nick:       "testuser",
-					InstanceID: user.ID(),
-					Flag:       domain.ModeOperator,
-					Add:        true,
-					By:         "ChanServ",
-					At:         fixedTime,
-					Instance:   user,
-				},
 			)
 		}
 		require.Equal(t, expected, collectEmittedEvents(t, sess))
@@ -959,7 +897,7 @@ func TestSession_Quit_appends_channel_quit_events_and_saves_autojoin(t *testing.
 		require.Equal(t, []domain.ChannelName{"#general", "#random"}, autojoin)
 
 		for _, ch := range []domain.ChannelName{"#general", "#random"} {
-			require.Equal(t, []string{"join", "mode_change", "quit"}, channelEventTypes(t, s, ch))
+			require.Equal(t, []string{"join", "quit"}, channelEventTypes(t, s, ch))
 		}
 	})
 }
@@ -992,16 +930,6 @@ func TestSession_Quit_removes_user_from_channel_members(t *testing.T) {
 				Channel: "#general",
 				Members: generalMembers,
 				At:      fixedTime,
-			},
-			domain.ModeChange{
-				Target:     "#general",
-				Nick:       "testuser",
-				InstanceID: user.ID(),
-				Flag:       domain.ModeOperator,
-				Add:        true,
-				By:         "ChanServ",
-				At:         fixedTime,
-				Instance:   user,
 			},
 		}, collectEmittedEvents(t, sess))
 
@@ -1039,16 +967,6 @@ func TestSession_Quit_clears_in_memory_channels(t *testing.T) {
 				Channel: "#general",
 				Members: generalMembers,
 				At:      fixedTime,
-			},
-			domain.ModeChange{
-				Target:     "#general",
-				Nick:       "testuser",
-				InstanceID: user.ID(),
-				Flag:       domain.ModeOperator,
-				Add:        true,
-				By:         "ChanServ",
-				At:         fixedTime,
-				Instance:   user,
 			},
 		}, collectEmittedEvents(t, sess))
 
@@ -1123,7 +1041,7 @@ func TestSession_user_state_triple_stays_consistent(t *testing.T) {
 		require.NoError(t, sess.Join(ctx, "#general"))
 		require.Equal(t, userSnapshot{
 			Channels:   []domain.ChannelName{"#general"},
-			Mode:       domain.ModeOp,
+			Mode:       domain.ModeNone,
 			OnDiskUser: false,
 		}, snapshot(t, sess, s, "#general"))
 
@@ -1156,16 +1074,6 @@ func TestSession_user_state_triple_stays_consistent(t *testing.T) {
 				Members: generalMembers1,
 				At:      fixedTime,
 			},
-			domain.ModeChange{
-				Target:     "#general",
-				Nick:       "testuser",
-				InstanceID: user.ID(),
-				Flag:       domain.ModeOperator,
-				Add:        true,
-				By:         "ChanServ",
-				At:         fixedTime,
-				Instance:   user,
-			},
 			domain.Part{
 				Target:   "#general",
 				Nick:     "testuser",
@@ -1184,16 +1092,6 @@ func TestSession_user_state_triple_stays_consistent(t *testing.T) {
 				Members: generalMembers2,
 				At:      fixedTime,
 			},
-			domain.ModeChange{
-				Target:     "#general",
-				Nick:       "testuser",
-				InstanceID: user.ID(),
-				Flag:       domain.ModeOperator,
-				Add:        true,
-				By:         "ChanServ",
-				At:         fixedTime,
-				Instance:   user,
-			},
 			domain.NickChange{
 				InstanceID: user.ID(),
 				OldNick:    "testuser",
@@ -1205,7 +1103,7 @@ func TestSession_user_state_triple_stays_consistent(t *testing.T) {
 
 		require.Equal(t, userSnapshot{
 			Channels:   []domain.ChannelName{"#general"},
-			Mode:       domain.ModeOp,
+			Mode:       domain.ModeNone,
 			OnDiskUser: false,
 		}, snapshot(t, sess, s, "#general"))
 	})
@@ -1294,16 +1192,6 @@ func TestSession_AddModel(t *testing.T) {
 				At:         fixedTime,
 				Instance:   inst,
 			},
-			domain.ModeChange{
-				Target:     "#dev",
-				Nick:       "fakenick",
-				InstanceID: inst.ID(),
-				Flag:       domain.ModeChannelVoice,
-				Add:        true,
-				By:         "ChanServ",
-				At:         fixedTime,
-				Instance:   inst,
-			},
 			domain.ModelDispatchStarted{Instance: inst, At: fixedTime},
 			domain.ModelDispatchDone{Instance: inst, At: fixedTime},
 		}, collectEmittedEvents(t, sess))
@@ -1316,7 +1204,7 @@ func TestSession_AddModel(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, []domain.Member{
 			{Instance: sess.UserInstance(), Nick: "testuser", Mode: domain.ModeOp},
-			{Instance: inst, Nick: "fakenick", Mode: domain.ModeVoice},
+			{Instance: inst, Nick: "fakenick", Mode: domain.ModeNone},
 		}, slices.Collect(updated.Members.All()))
 	})
 }
@@ -1475,7 +1363,7 @@ func TestSession_spans_carry_AttrInstanceID(t *testing.T) {
 					Nick:    "botty",
 					ModelID: "test/model",
 				})
-				require.NoError(t, sess.joinAs(ctx, botty, "#dev"))
+				require.NoError(t, sess.joinAs(ctx, botty, "#dev", ""))
 			},
 			wantInstID: testMemberID("botty"),
 		},
@@ -1815,16 +1703,6 @@ func TestSession_JoinEvent_triggers_dispatch(t *testing.T) {
 				Nick:       "testuser",
 				InstanceID: userInst.ID(),
 				Instance:   userInst,
-				At:         fixedTime,
-			},
-			domain.ModeChange{
-				Target:     "#general",
-				Nick:       "testuser",
-				InstanceID: userInst.ID(),
-				Instance:   userInst,
-				Flag:       domain.ModeOperator,
-				Add:        true,
-				By:         "ChanServ",
 				At:         fixedTime,
 			},
 			wantStarted,
@@ -2408,16 +2286,6 @@ func TestSession_ChangeNick(t *testing.T) {
 				Members: generalMembers,
 				At:      fixedTime,
 			},
-			domain.ModeChange{
-				Target:     "#general",
-				Nick:       "testuser",
-				InstanceID: user.ID(),
-				Flag:       domain.ModeOperator,
-				Add:        true,
-				By:         "ChanServ",
-				At:         fixedTime,
-				Instance:   user,
-			},
 			domain.NickChange{
 				InstanceID: user.ID(),
 				OldNick:    "testuser",
@@ -2468,16 +2336,6 @@ func TestSession_AddModel_retries_on_nick_collision(t *testing.T) {
 				Nick:       "fresh",
 				InstanceID: fresh.ID(),
 				By:         "testuser",
-				At:         fixedTime,
-				Instance:   fresh,
-			},
-			domain.ModeChange{
-				Target:     "#dev",
-				Nick:       "fresh",
-				InstanceID: fresh.ID(),
-				Flag:       domain.ModeChannelVoice,
-				Add:        true,
-				By:         "ChanServ",
 				At:         fixedTime,
 				Instance:   fresh,
 			},
@@ -2674,16 +2532,6 @@ func TestSession_AddModel_persists_persona(t *testing.T) {
 				At:         fixedTime,
 				Instance:   inst,
 			},
-			domain.ModeChange{
-				Target:     "#general",
-				Nick:       "fakenick",
-				InstanceID: inst.ID(),
-				Flag:       domain.ModeChannelVoice,
-				Add:        true,
-				By:         "ChanServ",
-				At:         fixedTime,
-				Instance:   inst,
-			},
 			domain.ModelDispatchStarted{Instance: inst, At: fixedTime},
 			domain.ModelDispatchDone{Instance: inst, At: fixedTime},
 		}, collectEmittedEvents(t, sess))
@@ -2717,16 +2565,6 @@ func TestSession_InviteAs_reuses_existing_instance(t *testing.T) {
 				Nick:       "botty",
 				InstanceID: botty.ID(),
 				By:         "testuser",
-				At:         fixedTime,
-				Instance:   botty,
-			},
-			domain.ModeChange{
-				Target:     "#random",
-				Nick:       "botty",
-				InstanceID: botty.ID(),
-				Flag:       domain.ModeChannelVoice,
-				Add:        true,
-				By:         "ChanServ",
 				At:         fixedTime,
 				Instance:   botty,
 			},
@@ -2802,16 +2640,6 @@ func TestSession_InviteAs_existing_instance_preserves_persona(t *testing.T) {
 				At:         fixedTime,
 				Instance:   botty,
 			},
-			domain.ModeChange{
-				Target:     "#random",
-				Nick:       "botty",
-				InstanceID: botty.ID(),
-				Flag:       domain.ModeChannelVoice,
-				Add:        true,
-				By:         "ChanServ",
-				At:         fixedTime,
-				Instance:   botty,
-			},
 			domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
 			domain.ModelDispatchDone{Instance: botty, At: fixedTime},
 		}, collectEmittedEvents(t, sess))
@@ -2857,16 +2685,6 @@ func TestSession_AddModel_creates_new_instance_per_invocation(t *testing.T) {
 				At:         fixedTime,
 				Instance:   first,
 			},
-			domain.ModeChange{
-				Target:     "#general",
-				Nick:       "fakenick",
-				InstanceID: first.ID(),
-				Flag:       domain.ModeChannelVoice,
-				Add:        true,
-				By:         "ChanServ",
-				At:         fixedTime,
-				Instance:   first,
-			},
 			domain.ModelDispatchStarted{Instance: first, At: fixedTime},
 			domain.ModelDispatchDone{Instance: first, At: fixedTime},
 			domain.ModelInvited{
@@ -2874,16 +2692,6 @@ func TestSession_AddModel_creates_new_instance_per_invocation(t *testing.T) {
 				Nick:       "fakenick1",
 				InstanceID: second.ID(),
 				By:         "testuser",
-				At:         fixedTime,
-				Instance:   second,
-			},
-			domain.ModeChange{
-				Target:     "#random",
-				Nick:       "fakenick1",
-				InstanceID: second.ID(),
-				Flag:       domain.ModeChannelVoice,
-				Add:        true,
-				By:         "ChanServ",
 				At:         fixedTime,
 				Instance:   second,
 			},
@@ -4776,54 +4584,6 @@ func TestSession_DispatchToChannel_truncated_returns_error(t *testing.T) {
 	require.ErrorIs(t, err, api.ErrResponseTruncated)
 }
 
-// drainNEvents reads exactly n events from the session events channel
-// and returns them in arrival order.
-//
-// Use this only when the test is asserting on the exact event count
-// or arrival ordering. For setup-style drains, prefer
-// `drainUntilMatched` so tests describe the semantic events they are
-// clearing without over-coupling to the full stream shape.
-//
-// `drainEvents` is marker-based — it stops at the Nth
-// `ModelDispatchDone` — which is the right shape for tests that just
-// need to wait for dispatch to finish, but unsafe for tests that
-// combine a synchronous emit from the caller with asynchronous
-// events from a dispatch goroutine triggered by an earlier emit:
-// the dispatch goroutine can race ahead and emit `ModelDispatchDone`
-// before the caller has emitted its post-trigger synchronous events
-// (e.g. `emitJoinProtocol`'s `ModeChangeEvent` after a
-// `JoinEvent`-triggered dispatch). The marker fires, drain returns,
-// and the synchronous event is queued but unobserved. A count-based
-// drain blocks until the expected total arrives.
-//
-// Callers that want only the side-effect of clearing the channel may
-// discard the return value with `_ = drainNEvents(...)`.
-//
-// Must run inside a [synctest.Test] bubble: [synctest.Wait] gates each
-// iteration on full quiescence, so a non-blocking select that finds
-// both channels empty proves the producer has stalled and the
-// expected count will never arrive.
-func drainNEvents(t *testing.T, sess *Session, n int) []domain.Event {
-	t.Helper()
-
-	events := make([]domain.Event, 0, n)
-
-	for range n {
-		synctest.Wait()
-
-		select {
-		case evt := <-sess.Events():
-			events = append(events, evt)
-		case delivery := <-sess.User().Events():
-			events = append(events, delivery.Event)
-		default:
-			t.Fatalf("producer stalled draining events at %d/%d", len(events), n)
-		}
-	}
-
-	return events
-}
-
 // drainEvents reads from both event buses until n ModelDispatchDone
 // values have been received, and returns all events in order.
 func drainEvents(t *testing.T, sess *Session, doneCount int) []domain.Event {
@@ -4911,16 +4671,6 @@ func TestSession_Invite_without_persona_assigns_from_pool(t *testing.T) {
 				At:         fixedTime,
 				Instance:   inst,
 			},
-			domain.ModeChange{
-				Target:     "#dev",
-				Nick:       "fakenick",
-				InstanceID: inst.ID(),
-				Flag:       domain.ModeChannelVoice,
-				Add:        true,
-				By:         "ChanServ",
-				At:         fixedTime,
-				Instance:   inst,
-			},
 			domain.ModelDispatchStarted{Instance: inst, At: fixedTime},
 			domain.ModelDispatchDone{Instance: inst, At: fixedTime},
 		}, collectEmittedEvents(t, sess))
@@ -4965,16 +4715,6 @@ func TestSession_Invite_with_explicit_persona_skips_pool(t *testing.T) {
 				Nick:       "fakenick",
 				InstanceID: inst.ID(),
 				By:         "testuser",
-				At:         fixedTime,
-				Instance:   inst,
-			},
-			domain.ModeChange{
-				Target:     "#dev",
-				Nick:       "fakenick",
-				InstanceID: inst.ID(),
-				Flag:       domain.ModeChannelVoice,
-				Add:        true,
-				By:         "ChanServ",
 				At:         fixedTime,
 				Instance:   inst,
 			},
@@ -5257,16 +4997,6 @@ func TestAddModel_dispatches_invite_notification_to_model(t *testing.T) {
 				Nick:       "botty",
 				InstanceID: botty.ID(),
 				By:         "testuser",
-				At:         fixedTime,
-				Instance:   botty,
-			},
-			domain.ModeChange{
-				Target:     "#dev",
-				Nick:       "botty",
-				InstanceID: botty.ID(),
-				Flag:       domain.ModeChannelVoice,
-				Add:        true,
-				By:         "ChanServ",
 				At:         fixedTime,
 				Instance:   botty,
 			},

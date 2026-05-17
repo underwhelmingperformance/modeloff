@@ -17,9 +17,12 @@ type Command interface {
 }
 
 // Join asks the server to add the issuing client to the named
-// channel, creating it if it does not yet exist.
+// channel, creating it if it does not yet exist. `Key` carries the
+// channel password for keyed (`+k`) channels per RFC 2812 §3.2.1;
+// empty for unkeyed channels.
 type Join struct {
 	Channel domain.ChannelName
+	Key     string
 }
 
 // Part asks the server to remove the issuing client from the named

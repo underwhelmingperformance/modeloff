@@ -97,7 +97,7 @@ func (s *Session) handleJoin(ctx context.Context, c protocol.Client, cmd protoco
 		return protocol.Response{}, err
 	}
 
-	return commandResult(s.joinAs(ctx, actor, cmd.Channel))
+	return commandResult(s.joinAs(ctx, actor, cmd.Channel, cmd.Key))
 }
 
 func (s *Session) handlePart(ctx context.Context, c protocol.Client, cmd protocol.Part) (protocol.Response, error) {

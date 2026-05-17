@@ -46,16 +46,6 @@ func joinSetupEventsT(t *testing.T, sess *Session, bootAt time.Time, ch domain.C
 			Members: w.Members,
 			At:      fixedTime,
 		},
-		domain.ModeChange{
-			Target:     ch,
-			Nick:       user.Nick(),
-			InstanceID: user.ID(),
-			Flag:       domain.ModeOperator,
-			Add:        true,
-			By:         "ChanServ",
-			At:         fixedTime,
-			Instance:   user,
-		},
 	}
 }
 

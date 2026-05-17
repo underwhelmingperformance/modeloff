@@ -106,10 +106,7 @@ func TestChatScreen_command_errors_with_teatest(t *testing.T) {
 	// return while seed events are still queued; the late events
 	// then race the command-error append into scrollback. Pinning
 	// both seed lines drains the seed phase in full.
-	tm.WaitFor(
-		"Created channel #general",
-		"ChanServ sets mode +o testuser",
-	)
+	tm.WaitFor("Created channel #general")
 
 	tm.Submit("/nick")
 	tm.WaitFor("missing required argument <new-nick>")

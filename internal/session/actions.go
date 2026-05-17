@@ -18,8 +18,12 @@ import (
 	"github.com/laney/modeloff/internal/store"
 )
 
-// joinAs joins the given actor to a channel.
-func (s *Session) joinAs(ctx context.Context, actor *domain.Instance, ch domain.ChannelName) (retErr error) {
+// joinAs joins the given actor to a channel. `key` carries the
+// channel password for keyed (`+k`) channels — empty for unkeyed
+// joins. `+i`, `+l`, and `+k` gate the add against an existing
+// channel; a fresh channel (this call creates it) has no modes
+// and so no gate applies.
+func (s *Session) joinAs(ctx context.Context, actor *domain.Instance, ch domain.ChannelName, key string) (retErr error) {
 	ch = domain.NormaliseChannelName(ch)
 
 	actorNick := actor.Nick()
@@ -46,10 +50,34 @@ func (s *Session) joinAs(ctx context.Context, actor *domain.Instance, ch domain.
 	alreadyMember := !created && window.Members.HasInstance(actor)
 
 	if !created && !alreadyMember {
+		if err := s.checkJoinGates(window, actorNick, key); err != nil {
+			return err
+		}
+
 		window.Members.Add(actor)
 
 		if err := s.persistChannelWindow(ctx, window); err != nil {
 			return fmt.Errorf("save channel: %w", err)
+		}
+	}
+
+	// RFC 2811 §4.3: the JOIN that creates the channel auto-grants
+	// the joiner `+o`. That is the only automatic `+o` grant the
+	// server ever performs — the original creator parting and
+	// rejoining gets nothing back; subsequent ops are granted only
+	// by an existing op via wire `MODE +o`. The grant happens
+	// here, before any wire event, so the Join echo and the
+	// `RPL_NAMREPLY` that follow see the `+o` in the member list
+	// (the `@` prefix in NAMES is how RFC 2812 §3.2.1 conveys the
+	// new op's rank — there is no separate MODE message).
+	if created {
+		window.Members.SetMode(actor, domain.ModeOp)
+		if isUser {
+			s.setUserMode(ctx, ch, domain.ModeOp)
+		}
+
+		if err := s.persistChannelWindow(ctx, window); err != nil {
+			return fmt.Errorf("save channel after mode: %w", err)
 		}
 	}
 
@@ -98,10 +126,20 @@ func (s *Session) joinAs(ctx context.Context, actor *domain.Instance, ch domain.
 			At:      now,
 		})
 
-		return s.emitJoinProtocol(ctx, ch, window, now)
+		if window.Topic != "" {
+			s.emit(ctx, domain.TopicInfo{
+				Target:     ch,
+				Topic:      window.Topic,
+				TopicSetBy: window.TopicSetBy,
+				TopicSetAt: window.TopicSetAt,
+				At:         now,
+			})
+		}
+
+		return s.saveAutojoinList(ctx)
 	}
 
-	return s.grantVoice(ctx, ch, window, actor, actorNick, now)
+	return nil
 }
 
 // ensureChannelWindowWithActor loads the channel-window or creates
@@ -145,70 +183,6 @@ func (s *Session) recordActorMembership(ctx context.Context, actor *domain.Insta
 	if err := s.store.SaveInstance(ctx, actor); err != nil {
 		return fmt.Errorf("save instance: %w", err)
 	}
-
-	return nil
-}
-
-// emitJoinProtocol sets the user's mode to +o, emits topic info if
-// the channel has a topic, and saves the autojoin list.
-func (s *Session) emitJoinProtocol(ctx context.Context, ch domain.ChannelName, window *domain.ChannelWindow, now time.Time) error {
-	s.setUserMode(ctx, ch, domain.ModeOp)
-	window.Members.SetMode(s.user, domain.ModeOp)
-
-	if err := s.persistChannelWindow(ctx, window); err != nil {
-		return fmt.Errorf("save channel after mode: %w", err)
-	}
-
-	s.persistAndEmit(ctx, ch, domain.ModeChange{
-		Target:     ch,
-		Nick:       s.user.Nick(),
-		InstanceID: s.user.ID(),
-		Flag:       domain.ModeOperator,
-		Add:        true,
-		By:         "ChanServ",
-		At:         now,
-		Instance:   s.user,
-	})
-
-	if window.Topic != "" {
-		s.emit(ctx, domain.TopicInfo{
-			Target:     ch,
-			Topic:      window.Topic,
-			TopicSetBy: window.TopicSetBy,
-			TopicSetAt: window.TopicSetAt,
-			At:         now,
-		})
-	}
-
-	return s.saveAutojoinList(ctx)
-}
-
-// grantVoice gives a non-user joiner (a model instance) +v via
-// ChanServ. This mirrors the +o granted to the user by
-// emitJoinProtocol so the nick list distinguishes models (+nick) from
-// the user (@nick) on every join, not only when the model was added
-// through the invite path.
-//
-// The caller passes its own nick snapshot so the `Join` and
-// `ModeChange` events emitted back-to-back for the same join
-// record the same nick, even if the actor renames between them.
-func (s *Session) grantVoice(ctx context.Context, ch domain.ChannelName, window *domain.ChannelWindow, inst *domain.Instance, nick domain.Nick, now time.Time) error {
-	window.Members.SetMode(inst, domain.ModeVoice)
-
-	if err := s.persistChannelWindow(ctx, window); err != nil {
-		return fmt.Errorf("save channel after voice: %w", err)
-	}
-
-	s.persistAndEmit(ctx, ch, domain.ModeChange{
-		Target:     ch,
-		Nick:       nick,
-		InstanceID: inst.ID(),
-		Flag:       domain.ModeChannelVoice,
-		Add:        true,
-		By:         "ChanServ",
-		At:         now,
-		Instance:   inst,
-	})
 
 	return nil
 }
@@ -410,6 +384,10 @@ func (s *Session) sendMessageAs(ctx context.Context, actor *domain.Instance, ch 
 	instanceID := actor.ID()
 	span.SetAttributes(attribute.String(observability.AttrInstanceID, string(instanceID)))
 
+	if err := s.checkSendGates(ctx, actor, ch); err != nil {
+		return domain.Message{}, err
+	}
+
 	cm := domain.Message{
 		Target:     ch,
 		From:       actorNick,
@@ -440,6 +418,10 @@ func (s *Session) sendActionAs(ctx context.Context, actor *domain.Instance, ch d
 
 	instanceID := actor.ID()
 	span.SetAttributes(attribute.String(observability.AttrInstanceID, string(instanceID)))
+
+	if err := s.checkSendGates(ctx, actor, ch); err != nil {
+		return domain.Message{}, err
+	}
 
 	cm := domain.Message{
 		Target:     ch,
@@ -480,6 +462,14 @@ func (s *Session) setTopicAs(ctx context.Context, actor *domain.Instance, ch dom
 	window, err := s.loadChannelWindow(ctx, ch)
 	if err != nil {
 		return fmt.Errorf("get channel: %w", err)
+	}
+
+	// `+t` restricts TOPIC to ops (RFC 2811 §4.2.7). When the
+	// channel doesn't carry `+t`, any member can change topic.
+	if window.Modes.TopicLock {
+		if err := s.requireChannelOp(actor, window, "TOPIC", ch); err != nil {
+			return err
+		}
 	}
 
 	window.Topic = topic
@@ -524,6 +514,10 @@ func (s *Session) kickAs(ctx context.Context, actor, target *domain.Instance, ch
 	}
 
 	span.SetAttributes(attribute.String(observability.AttrInstanceID, string(target.ID())))
+
+	if err := s.requireChannelOp(actor, window, "KICK", ch); err != nil {
+		return err
+	}
 
 	if !window.Members.HasInstance(target) {
 		return nil
@@ -581,6 +575,25 @@ func (s *Session) inviteAs(ctx context.Context, actor *domain.Instance, target d
 	target = domain.Nick(strings.TrimSpace(string(target)))
 	if target == "" {
 		return fmt.Errorf("target nick is required")
+	}
+
+	window, err := s.loadChannelWindow(ctx, ch)
+	if err != nil {
+		return fmt.Errorf("get channel: %w", err)
+	}
+
+	// INVITE is op-gated only when the target channel carries
+	// `+i` (RFC 2812 §3.2.7). On `-i` channels any member can
+	// invite.
+	if window.Modes.InviteOnly {
+		if err := s.requireChannelOp(actor, window, "INVITE", ch); err != nil {
+			return err
+		}
+	}
+
+	window.InvitedNicks.Add(target)
+	if err := s.persistChannelWindow(ctx, window); err != nil {
+		return fmt.Errorf("save channel: %w", err)
 	}
 
 	if actor == s.user {
@@ -645,16 +658,112 @@ func (s *Session) setUserModeAs(ctx context.Context, by domain.Nick, target *ser
 	}
 }
 
+// checkSendGates enforces the per-channel PRIVMSG / Action
+// preconditions tied to channel modes: `+n` requires the sender
+// to be a channel member; `+m` requires the sender to hold voice
+// or op; `+q` silences everyone except ops. DMs (non-channel
+// targets) skip the check — they have no member list and no
+// channel modes.
+//
+// Each rejection carries a typed [domain.SendBlockReason] so
+// renderers can format the right message without parsing a
+// free-form error string.
+func (s *Session) checkSendGates(ctx context.Context, actor *domain.Instance, ch domain.ChannelName) error {
+	if domain.InferChannelKind(ch) != domain.KindChannel {
+		return nil
+	}
+
+	window, err := s.loadChannelWindow(ctx, ch)
+	if err != nil {
+		// A missing channel falls through to the existing
+		// append/emit path; the caller decides how to react.
+		return nil
+	}
+
+	member, isMember := window.Members.GetByInstance(actor)
+
+	if window.Modes.NoExternal && !isMember {
+		return domain.CannotSendToChannelError{Channel: ch, Reason: domain.SendBlockNoExternal, At: s.now()}
+	}
+
+	if window.Modes.Quiet && (!isMember || member.Mode != domain.ModeOp) {
+		return domain.CannotSendToChannelError{Channel: ch, Reason: domain.SendBlockQuiet, At: s.now()}
+	}
+
+	if window.Modes.Moderated {
+		if !isMember || (member.Mode != domain.ModeOp && member.Mode != domain.ModeVoice) {
+			return domain.CannotSendToChannelError{Channel: ch, Reason: domain.SendBlockModerated, At: s.now()}
+		}
+	}
+
+	return nil
+}
+
+// checkJoinGates enforces the per-channel JOIN preconditions
+// every existing channel imposes via its mode set: `+i` admits
+// only previously-invited nicks (and consumes the invitation on
+// success); `+l` rejects when the member count reaches the
+// limit; `+k` rejects on key mismatch.
+//
+// Returns nil for a channel with no gates active. On `+i` the
+// consume happens on success — the next attempt by the same
+// nick fails unless re-invited.
+func (s *Session) checkJoinGates(window *domain.ChannelWindow, actorNick domain.Nick, key string) error {
+	if window.Modes.Key != "" && key != window.Modes.Key {
+		return domain.ChannelKeyMismatchError{Channel: window.Name(), At: s.now()}
+	}
+
+	if window.Modes.UserLimit > 0 && window.Members.Len() >= window.Modes.UserLimit {
+		return domain.ChannelFullError{Channel: window.Name(), At: s.now()}
+	}
+
+	if window.Modes.InviteOnly {
+		if !window.InvitedNicks.Contains(actorNick) {
+			return domain.ChannelInviteOnlyError{Channel: window.Name(), At: s.now()}
+		}
+		window.InvitedNicks.Remove(actorNick)
+	}
+
+	return nil
+}
+
 // requireChannelOp returns [domain.ChanOpRequiredError] when the
 // actor lacks `@` in `window`. Used by channel-op-gated commands
-// (`MODE`, future `KICK`, future op-required `TOPIC`/`INVITE`) to
-// short-circuit before mutation.
+// (`MODE`, `KICK`, `+t`-conditional `TOPIC`, `+i`-conditional
+// `INVITE`) to short-circuit before mutation.
+//
+// Server operators (`+o` user-mode) override the channel-op
+// requirement — RFC 2812 §3.7 and common ircd practice: a
+// network operator can act on any channel regardless of channel-
+// op status. In modeloff the user-client is the only server-OPER
+// today; this is what lets the user `/kick` or `/topic` on
+// channels where they joined without picking up `@`.
 func (s *Session) requireChannelOp(actor *domain.Instance, window *domain.ChannelWindow, cmd string, ch domain.ChannelName) error {
+	if s.actorHasServerOper(actor) {
+		return nil
+	}
+
 	member, ok := window.Members.GetByInstance(actor)
 	if !ok || member.Mode != domain.ModeOp {
 		return domain.ChanOpRequiredError{Command: cmd, Channel: ch, At: s.now()}
 	}
 	return nil
+}
+
+// actorHasServerOper reports whether the actor's wire client
+// carries `+o` user-mode. Used by [requireChannelOp] to honour
+// the server-operator override on channel-op-gated commands.
+func (s *Session) actorHasServerOper(actor *domain.Instance) bool {
+	var sc *serverClient
+	if actor == s.user {
+		sc = s.userClient
+	} else {
+		sc = s.lookupClientHandle(actor.ID())
+	}
+	if sc == nil {
+		return false
+	}
+	return sc.HasMode(domain.ModeOperator)
 }
 
 // applyChannelModeChangesAs is the entry for [protocol.ChannelMode].

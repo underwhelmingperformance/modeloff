@@ -61,9 +61,11 @@ func (c *ChannelArg) Decode(raw string) error {
 // String returns the channel name as a plain string.
 func (c ChannelArg) String() string { return string(c) }
 
-// JoinCommand represents `/join <channel>`.
+// JoinCommand represents `/join <channel> [key]`. The optional
+// key is required when the channel carries `+k`.
 type JoinCommand struct {
 	Channel ChannelArg `arg:"channel" help:"Channel to join or create"`
+	Key     string     `arg:"" optional:"" help:"Channel key, if the channel has +k"`
 }
 
 // Sources implements command.Completer.
@@ -73,7 +75,7 @@ func (JoinCommand) Sources() map[string]command.SuggestionSource[CompletionConte
 
 // ToCommand builds the wire-protocol command for `/join`.
 func (c JoinCommand) ToCommand(_ Context) (protocol.Command, error) {
-	return protocol.Join{Channel: domain.ChannelName(c.Channel.String())}, nil
+	return protocol.Join{Channel: domain.ChannelName(c.Channel.String()), Key: c.Key}, nil
 }
 
 // Run implements Command.

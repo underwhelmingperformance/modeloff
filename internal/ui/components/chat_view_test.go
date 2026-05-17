@@ -1024,9 +1024,9 @@ func TestRenderLine_IRC_events(t *testing.T) {
 		{
 			"mode_change",
 			domain.StoredEvent{Event: domain.ModeChange{
-				Target: "#general", Nick: "botty", Flag: domain.ModeChannelVoice, Add: true, By: "ChanServ", At: now,
+				Target: "#general", Nick: "botty", Flag: domain.ModeChannelVoice, Add: true, By: "alice", At: now,
 			}},
-			"*** ChanServ sets mode +v botty",
+			"*** alice sets mode +v botty",
 		},
 		{
 			"model_invited",

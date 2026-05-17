@@ -86,23 +86,18 @@ func newChatAppInChannel(t *testing.T, channel domain.ChannelName) (*uitest.App,
 // markers means a draining seed phase is the only legal
 // observation when the test proceeds.
 func waitForChannelSeedDrain(tm *uitest.App) {
-	tm.WaitFor(
-		"Created channel #general",
-		"ChanServ sets mode +o testuser",
-	)
+	tm.WaitFor("Created channel #general")
 }
 
 // waitForChannelAndModelSeedDrain extends [waitForChannelSeedDrain]
-// for tests that follow `SeedChannel` with
-// `AddModel(..., "anthropic/claude-3-haiku", ...)` — the model
-// joins as `fakenick` and is granted voice, both scrollback
-// lines that need pinning before the trigger submits.
+// for tests that follow `SeedChannel` with `AddModel(...,
+// "anthropic/claude-3-haiku", ...)` — the model joins as
+// `fakenick`, the line that needs pinning before the trigger
+// submits.
 func waitForChannelAndModelSeedDrain(tm *uitest.App) {
 	tm.WaitFor(
 		"Created channel #general",
-		"ChanServ sets mode +o testuser",
 		"fakenick has joined #general",
-		"ChanServ sets mode +v fakenick",
 	)
 }
 
@@ -271,10 +266,10 @@ func TestChatScreen_rejoin_hides_pre_session_history(t *testing.T) {
 	tm := newChatApp(t, sess)
 
 	// The join protocol events emitted by JoinAutojoinChannels
-	// should appear: join, ChanServ +o, and topic info.
+	// should appear: join echo and topic info. Rejoining a stored
+	// channel is not a creation, so no creator-op event fires.
 	tm.WaitFor(
 		"has joined #general",
-		"ChanServ sets mode",
 		"welcome topic",
 	)
 
@@ -299,7 +294,6 @@ func TestChatScreen_rejoin_hides_pre_session_history(t *testing.T) {
 		"welcome topic",
 		"<topic-separator>",
 		"*** testuser has joined #general",
-		"*** ChanServ sets mode +o testuser",
 		"*** topic for #general: welcome topic (set by admin on Wed 01 Jan 2020 00:00:00 UTC)",
 		"<testuser> fresh message",
 		"testuser >",
@@ -913,7 +907,6 @@ func TestChatScreen_clear_command_removes_messages(t *testing.T) {
 	// runs.
 	tm.WaitFor(
 		"Created channel #general",
-		"ChanServ sets mode +o testuser",
 		"visible text",
 	)
 

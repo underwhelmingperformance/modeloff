@@ -306,13 +306,15 @@ func (s ChatScreen) handleSystemNoticeEvent(msg domain.SystemNoticeEvent) (ui.Mo
 func (s ChatScreen) handleChannelFocus(msg chatcmd.ChannelFocusMsg) (ui.Model, tea.Cmd) {
 	w, exists := s.windowByName(msg.Channel)
 	if !exists {
-		// First focus into a window the chat screen hasn't seen
-		// before — populate the cache with a fresh `*Window`
-		// wrapping a fresh [domain.ChannelWindow]. Status and DM
-		// windows arrive via their own dedicated events and
-		// shouldn't hit this path.
-		w = newWindow(domain.NewChannelWindow(msg.Channel, time.Time{}))
-		s.channels.Insert(w)
+		// A focus event for a window the chat screen doesn't
+		// track is either a startup race (cache not yet populated
+		// by `bootstrapFromSession` or by a JOIN handler) or a
+		// stale event for a channel the user has just parted.
+		// The latter must not resurrect the parted channel as
+		// the new active, so we don't auto-create here — the
+		// JOIN/bootstrap paths own cache population and the
+		// focus path defers to whatever they install.
+		return s, nil
 	}
 
 	if !s.focusWins(msg.At) {
@@ -340,10 +342,6 @@ func (s ChatScreen) handleChannelFocus(msg chatcmd.ChannelFocusMsg) (ui.Model, t
 		Topic:   s.activeTopic(),
 		Kind:    w.Kind(),
 	}))
-
-	if !exists {
-		cmds = append(cmds, msgCmd(components.ChannelAddedMsg{Channel: w.Window}))
-	}
 
 	cmds = append(cmds, msgCmd(components.ChannelActiveMsg{Channel: msg.Channel}))
 	cmds = append(cmds, s.persistLastChannel(msg.Channel))
@@ -544,6 +542,13 @@ func (s ChatScreen) handlePartEvent(msg domain.Part) (ui.Model, tea.Cmd) {
 	if leavingActive {
 		if first, ok := s.firstRealChannel(); ok {
 			*s.active = first.Name()
+			// Bump the new active's `UserTime` to the Part moment.
+			// The Part is the user's freshest deliberate action,
+			// so any still-in-flight focus event from before the
+			// Part (e.g. a buffered `NamesReply` for the channel
+			// we just left) must lose the next [focusWins]
+			// comparison and not steal the visible area back.
+			first.UserTime = msg.At
 		} else {
 			*s.active = ""
 			cmds = append(cmds, msgCmd(components.SetPlaceholderMsg{

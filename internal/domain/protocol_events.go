@@ -54,31 +54,39 @@ func (ModelUnavailableError) isProtocolEvent() {}
 // the `error` interface (for `errors.As` extraction at the
 // emission boundary) and the protocol-event seal (so the session
 // can `emit` them like any other wire event).
-func (UnknownNickError) isProtocolEvent()      {}
-func (NoSuchChannelError) isProtocolEvent()    {}
-func (NickInUseError) isProtocolEvent()        {}
-func (NotOperatorError) isProtocolEvent()      {}
-func (OperFailedError) isProtocolEvent()       {}
-func (ChanOpRequiredError) isProtocolEvent()   {}
-func (UnknownModeFlagError) isProtocolEvent()  {}
-func (MissingModeParamError) isProtocolEvent() {}
-func (UnknownCommandError) isProtocolEvent()   {}
-func (UnknownConfigKeyError) isProtocolEvent() {}
-func (InvalidDurationError) isProtocolEvent()  {}
-func (UnsupportedModelError) isProtocolEvent() {}
+func (UnknownNickError) isProtocolEvent()         {}
+func (NoSuchChannelError) isProtocolEvent()       {}
+func (NickInUseError) isProtocolEvent()           {}
+func (NotOperatorError) isProtocolEvent()         {}
+func (OperFailedError) isProtocolEvent()          {}
+func (ChanOpRequiredError) isProtocolEvent()      {}
+func (UnknownModeFlagError) isProtocolEvent()     {}
+func (MissingModeParamError) isProtocolEvent()    {}
+func (ChannelKeyMismatchError) isProtocolEvent()  {}
+func (ChannelInviteOnlyError) isProtocolEvent()   {}
+func (ChannelFullError) isProtocolEvent()         {}
+func (CannotSendToChannelError) isProtocolEvent() {}
+func (UnknownCommandError) isProtocolEvent()      {}
+func (UnknownConfigKeyError) isProtocolEvent()    {}
+func (InvalidDurationError) isProtocolEvent()     {}
+func (UnsupportedModelError) isProtocolEvent()    {}
 
-func (UnknownNickError) domainEvent()      {}
-func (NoSuchChannelError) domainEvent()    {}
-func (NickInUseError) domainEvent()        {}
-func (NotOperatorError) domainEvent()      {}
-func (OperFailedError) domainEvent()       {}
-func (ChanOpRequiredError) domainEvent()   {}
-func (UnknownModeFlagError) domainEvent()  {}
-func (MissingModeParamError) domainEvent() {}
-func (UnknownCommandError) domainEvent()   {}
-func (UnknownConfigKeyError) domainEvent() {}
-func (InvalidDurationError) domainEvent()  {}
-func (UnsupportedModelError) domainEvent() {}
+func (UnknownNickError) domainEvent()         {}
+func (NoSuchChannelError) domainEvent()       {}
+func (NickInUseError) domainEvent()           {}
+func (NotOperatorError) domainEvent()         {}
+func (OperFailedError) domainEvent()          {}
+func (ChanOpRequiredError) domainEvent()      {}
+func (UnknownModeFlagError) domainEvent()     {}
+func (MissingModeParamError) domainEvent()    {}
+func (ChannelKeyMismatchError) domainEvent()  {}
+func (ChannelInviteOnlyError) domainEvent()   {}
+func (ChannelFullError) domainEvent()         {}
+func (CannotSendToChannelError) domainEvent() {}
+func (UnknownCommandError) domainEvent()      {}
+func (UnknownConfigKeyError) domainEvent()    {}
+func (InvalidDurationError) domainEvent()     {}
+func (UnsupportedModelError) domainEvent()    {}
 
 // `Killed` is a protocol-only event (no domain-side persistence).
 func (Killed) isProtocolEvent() {}
@@ -170,4 +178,81 @@ type MissingModeParamError struct {
 
 func (e MissingModeParamError) Error() string {
 	return fmt.Sprintf("mode %q is missing its parameter", rune(e.Flag))
+}
+
+// ChannelKeyMismatchError refuses a JOIN against a `+k` channel
+// when the supplied key doesn't match (RFC 2812 numeric 475
+// ERR_BADCHANNELKEY).
+type ChannelKeyMismatchError struct {
+	Channel ChannelName
+	At      time.Time
+}
+
+func (e ChannelKeyMismatchError) Error() string {
+	return fmt.Sprintf("cannot join %s: bad channel key", e.Channel)
+}
+
+// ChannelInviteOnlyError refuses a JOIN against a `+i` channel
+// when the joiner's nick isn't in the channel's pending invite
+// list (RFC 2812 numeric 473 ERR_INVITEONLYCHAN).
+type ChannelInviteOnlyError struct {
+	Channel ChannelName
+	At      time.Time
+}
+
+func (e ChannelInviteOnlyError) Error() string {
+	return fmt.Sprintf("cannot join %s: invite-only channel", e.Channel)
+}
+
+// ChannelFullError refuses a JOIN against a `+l` channel when the
+// member count is already at the limit (RFC 2812 numeric 471
+// ERR_CHANNELISFULL).
+type ChannelFullError struct {
+	Channel ChannelName
+	At      time.Time
+}
+
+func (e ChannelFullError) Error() string {
+	return fmt.Sprintf("cannot join %s: channel is full", e.Channel)
+}
+
+// CannotSendToChannelError refuses a PRIVMSG / Action against a
+// channel mode that forbids it (RFC 2812 numeric 404
+// ERR_CANNOTSENDTOCHAN). `Reason` distinguishes which mode
+// triggered the refusal — moderated (`+m`), no-external (`+n`),
+// or quiet (`+q`).
+type CannotSendToChannelError struct {
+	Channel ChannelName
+	Reason  SendBlockReason
+	At      time.Time
+}
+
+func (e CannotSendToChannelError) Error() string {
+	return fmt.Sprintf("cannot send to %s: %s", e.Channel, e.Reason)
+}
+
+// SendBlockReason names the channel mode that caused
+// [CannotSendToChannelError]. The renderer reads this rather than
+// parsing a free-form string out of the error message.
+type SendBlockReason int
+
+const (
+	// SendBlockModerated names `+m`: only voice/op may speak.
+	SendBlockModerated SendBlockReason = iota + 1
+	// SendBlockNoExternal names `+n`: sender must be a member.
+	SendBlockNoExternal
+	// SendBlockQuiet names `+q`: only op may speak.
+	SendBlockQuiet
+)
+
+func (r SendBlockReason) String() string {
+	switch r {
+	case SendBlockModerated:
+		return "channel is moderated (+m)"
+	case SendBlockNoExternal:
+		return "no external messages (+n)"
+	case SendBlockQuiet:
+		return "channel is quiet (+q)"
+	}
+	return "blocked"
 }

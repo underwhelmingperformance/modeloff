@@ -248,13 +248,12 @@ func TestApp_welcome_join_command_with_teatest(t *testing.T) {
 	tm.WaitFor("Welcome to modeloff")
 
 	tm.Submit("/join #general")
-	tm.WaitFor("Created channel #general", "ChanServ sets mode +o testuser")
+	tm.WaitFor("Created channel #general")
 
 	view := tm.CurrentView()
 	require.Equal(t, []string{"Channels", "&modeloff", "▸#general"}, sidebarColumn(view))
 	require.Equal(t, []string{
 		"*** Created channel #general",
-		"*** ChanServ sets mode +o testuser",
 	}, normaliseContent(contentColumn(view)))
 }
 

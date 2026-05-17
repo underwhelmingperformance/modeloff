@@ -567,6 +567,12 @@ func (s *Session) fanOutProtocol(ctx context.Context, pe domain.ProtocolEvent) {
 	suppressOriginator, sender := chatTrafficSender(pe)
 	spanCtx := trace.SpanContextFromContext(ctx)
 
+	// `+a` rewrites the visible nick on chat-traffic events to the
+	// `"anonymous"` sentinel (RFC 2811 §4.2.1) before delivery, so
+	// even the channel's own members can't see who sent what. The
+	// stored event retains the real From for audit.
+	pe = anonymiseIfNeeded(s, ctx, pe)
+
 	// Actor-scoped events ([domain.Quit] and [domain.NickChange])
 	// carry no target on the wire; the per-recipient channel list
 	// is computed at fan-out time as the intersection of the
@@ -595,6 +601,29 @@ func (s *Session) fanOutProtocol(ctx context.Context, pe domain.ProtocolEvent) {
 			return
 		}
 	}
+}
+
+// anonymiseIfNeeded rewrites a chat-traffic event's `From` field
+// to `"anonymous"` when the target channel carries `+a`. Returns
+// the event unchanged when the channel is not anonymous or when
+// the event is not chat traffic.
+func anonymiseIfNeeded(s *Session, ctx context.Context, pe domain.ProtocolEvent) domain.ProtocolEvent {
+	msg, ok := pe.(domain.Message)
+	if !ok {
+		return pe
+	}
+
+	if domain.InferChannelKind(msg.Target) != domain.KindChannel {
+		return pe
+	}
+
+	window, err := s.loadChannelWindow(ctx, msg.Target)
+	if err != nil || !window.Modes.Anonymous {
+		return pe
+	}
+
+	msg.From = "anonymous"
+	return msg
 }
 
 // actorChannelSnapshot returns the actor's channel set if `pe` is
@@ -1050,7 +1079,7 @@ func (s *Session) UserJoinedAt(ch domain.ChannelName) time.Time {
 // Join creates or opens a channel. Events are emitted on the
 // session event channel.
 func (s *Session) Join(ctx context.Context, channelName string) error {
-	return s.joinAs(ctx, s.user, domain.ChannelName(channelName))
+	return s.joinAs(ctx, s.user, domain.ChannelName(channelName), "")
 }
 
 // Part records the user leaving a channel. An optional farewell
@@ -1160,7 +1189,7 @@ func (s *Session) JoinAutojoinChannels(ctx context.Context) error {
 
 	var failed int
 	for _, ch := range channels {
-		if err := s.joinAs(ctx, s.user, ch); err != nil {
+		if err := s.joinAs(ctx, s.user, ch, ""); err != nil {
 			failed++
 			slog.Default().ErrorContext(ctx, "autojoin channel", "channel", ch, "error", err)
 		}
@@ -1199,10 +1228,23 @@ func (s *Session) DirectoryChannels(ctx context.Context) ([]domain.ChannelDirect
 			continue
 		}
 
+		// `+s` channels are hidden from the directory entirely
+		// (RFC 2811 §4.2.7). `+p` channels appear but with their
+		// topic suppressed (§4.2.6) — the channel name itself
+		// stays visible.
+		if cw.Modes.Secret {
+			continue
+		}
+
+		topic := cw.Topic
+		if cw.Modes.Private {
+			topic = ""
+		}
+
 		entries = append(entries, domain.ChannelDirectoryEntry{
 			Channel: cw.Name(),
 			Members: cw.Members.Len(),
-			Topic:   cw.Topic,
+			Topic:   topic,
 		})
 	}
 
@@ -1395,25 +1437,6 @@ func (s *Session) attachInstanceToChannel(
 		At:         now,
 		Instance:   inst,
 	})
-
-	if isNew {
-		window.Members.SetMode(inst, domain.ModeVoice)
-
-		if err := s.persistChannelWindow(ctx, window); err != nil {
-			return fmt.Errorf("save channel after mode: %w", err)
-		}
-
-		s.persistAndEmit(ctx, ch, domain.ModeChange{
-			Target:     ch,
-			Nick:       inst.Nick(),
-			InstanceID: inst.ID(),
-			Flag:       domain.ModeChannelVoice,
-			Add:        true,
-			By:         "ChanServ",
-			At:         now,
-			Instance:   inst,
-		})
-	}
 
 	return nil
 }
