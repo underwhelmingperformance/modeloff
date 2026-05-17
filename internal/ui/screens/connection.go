@@ -24,10 +24,27 @@ const stepDelay = 400 * time.Millisecond
 // welcome animation.
 const statusPaneMaxRows = 8
 
+// stepGate identifies the async signal a step waits on before the
+// animation tick allows it to advance. Steps with [gateNone] are
+// pure visual placeholders that progress on every tick.
+type stepGate int
+
+const (
+	gateNone stepGate = iota
+	gateConnect
+	gateLoadModels
+	gateAutojoin
+)
+
 // connectionStep describes one line in the connection sequence.
+// `gate` is the data-driven version of what used to be a
+// label-matched switch inside `advanceTick`: adding a fourth
+// gated phase is now a new `stepGate` value plus a step entry,
+// no control-flow change.
 type connectionStep struct {
 	label  string
 	status stepStatus
+	gate   stepGate
 }
 
 type stepStatus int
@@ -41,12 +58,11 @@ const (
 // ConnectionTickMsg advances the connection sequence by one step.
 type ConnectionTickMsg struct{}
 
-// connectionReadyMsg is sent when Session.Connected() closes,
-// indicating the backend handshake is complete.
+// connectionReadyMsg is sent when `Session.Connect` returns.
 type connectionReadyMsg struct{ err error }
 
-// joinAutojoinDoneMsg is sent when JoinAutojoinChannels (and the
-// follow-up FocusChannel) returns.
+// joinAutojoinDoneMsg is sent when `Session.JoinAutojoinChannels`
+// returns.
 type joinAutojoinDoneMsg struct{ err error }
 
 // loadModelsDoneMsg carries the result of the connect-time
@@ -81,35 +97,31 @@ type ConnectionConfig struct {
 }
 
 // ConnectionScreen shows the IRC-style startup animation and a
-// scrolling status pane below it. The screen orchestrates the
-// backend handshake (Session.Connect) and the autojoin sequence
-// (Session.JoinAutojoinChannels followed by Session.FocusChannel),
-// transitioning to the chat screen when both have completed.
+// scrolling status pane below it. Two concerns ran tangled in the
+// previous shape: the visual cinematic and the backend handshake
+// orchestration. They are now separate.
+//
+// The async pipeline runs at its natural pace: `Init` fires
+// `Session.Connect` and `Session.ListModels` in parallel; the
+// `connectedMsg` handler arms `JoinAutojoinChannels` (the only
+// sequenced edge in the graph, since unclean-recovery must clear
+// stale memberships before autojoin re-adds them). The animation
+// walks `s.steps` at `stepDelay` cadence, and each step that
+// carries a [stepGate] holds the cur cursor until the matching
+// async signal has arrived. The screen transitions to `cfg.Next`
+// once the animation has reached the end of `s.steps` — which by
+// construction means every gated signal has landed.
 type ConnectionScreen struct {
 	cfg   ConnectionConfig
 	steps []connectionStep
 	cur   int
 	done  bool
 
-	connected bool
-
-	// autojoinKicked is true once runAutojoin has been started.
-	// Subsequent ticks on the "Joining channels" step must not
-	// re-launch the autojoin Cmd while the first invocation is
-	// still in flight, otherwise JoinAutojoinChannels runs multiple
-	// times in parallel, emits duplicate status notices, and
-	// produces a LastChannel race that leaves the wrong channel
-	// focused when the screen transitions.
-	autojoinKicked bool
+	connected      bool
 	autojoinDone   bool
-
-	// loadModelsKicked guards `runLoadModels` against parallel
-	// launches in the same way `autojoinKicked` guards the autojoin
-	// Cmd.
-	loadModelsKicked bool
-	loadModelsDone   bool
-	loadedModels     []chatcmd.ModelOption
-	loadModelsErr    error
+	loadModelsDone bool
+	loadedModels   []chatcmd.ModelOption
+	loadModelsErr  error
 
 	// paneCursor tracks the highest StoredEvent.ID appended to
 	// [paneEvents]. refreshPane appends only events with a
@@ -136,7 +148,7 @@ type ConnectionScreen struct {
 // configuration.
 func NewConnectionScreen(cfg ConnectionConfig) ConnectionScreen {
 	steps := []connectionStep{
-		{label: "Connecting to modeloff"},
+		{label: "Connecting to modeloff", gate: gateConnect},
 		{label: "Checking configuration"},
 	}
 
@@ -148,8 +160,8 @@ func NewConnectionScreen(cfg ConnectionConfig) ConnectionScreen {
 	} else {
 		steps = append(steps,
 			connectionStep{label: fmt.Sprintf("Loading channels (%d found)", cfg.ChannelCount)},
-			connectionStep{label: "Loading models"},
-			connectionStep{label: "Joining channels"},
+			connectionStep{label: "Loading models", gate: gateLoadModels},
+			connectionStep{label: "Joining channels", gate: gateAutojoin},
 			connectionStep{label: fmt.Sprintf("Welcome, %s", cfg.Nick)},
 		)
 	}
@@ -168,8 +180,7 @@ func NewConnectionScreen(cfg ConnectionConfig) ConnectionScreen {
 	}
 
 	// Animation-only mode (no Session): pretend the async signals
-	// have already arrived so the tick advances every step without
-	// gating.
+	// have already arrived so each gated step advances on its tick.
 	if cfg.Session == nil {
 		s.connected = true
 		s.autojoinDone = true
@@ -187,14 +198,14 @@ func (s ConnectionScreen) ctx() context.Context {
 	return context.Background()
 }
 
-// Init implements ui.Model.
+// Init implements ui.Model. The async pipeline fires immediately
+// and runs at its natural pace; the animation tick paces the
+// visual sequence independently.
 func (s ConnectionScreen) Init() tea.Cmd {
-	cmds := []tea.Cmd{
-		tea.Tick(stepDelay, func(time.Time) tea.Msg { return ConnectionTickMsg{} }),
-	}
+	cmds := []tea.Cmd{s.tickCmd()}
 
 	if s.cfg.Session != nil {
-		cmds = append(cmds, s.runConnect(), s.waitForConnected())
+		cmds = append(cmds, s.runConnect(), s.runLoadModels())
 	}
 
 	return tea.Batch(cmds...)
@@ -209,20 +220,6 @@ func (s ConnectionScreen) runConnect() tea.Cmd {
 
 	return func() tea.Msg {
 		return connectionReadyMsg{err: sess.Connect(s.ctx())}
-	}
-}
-
-// waitForConnected blocks on Session.Connected() and is the redundant
-// signal-from-the-other-side. runConnect produces connectionReadyMsg
-// directly; this exists so the screen can also notice readiness when
-// Connect was kicked off elsewhere (e.g. tests). In normal flow
-// runConnect's return arrives first and this is a no-op.
-func (s ConnectionScreen) waitForConnected() tea.Cmd {
-	sess := s.cfg.Session
-
-	return func() tea.Msg {
-		<-sess.Connected()
-		return statusRefreshMsg{}
 	}
 }
 
@@ -278,9 +275,15 @@ func (s ConnectionScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 		if msg.err != nil {
 			s.markCurrentStepError(msg.err.Error())
+			return s, statusRefreshCmd(s.cfg.Session)
 		}
 
-		return s, statusRefreshCmd(s.cfg.Session)
+		// Connect → autojoin is the only sequenced edge in the
+		// async graph: unclean-recovery clears stale memberships
+		// from a prior session before autojoin re-adds them. Arm
+		// the autojoin Cmd here rather than gating it on the
+		// animation reaching the corresponding step.
+		return s, tea.Batch(s.runAutojoin(), statusRefreshCmd(s.cfg.Session))
 
 	case joinAutojoinDoneMsg:
 		s.autojoinDone = true
@@ -316,10 +319,11 @@ func (s ConnectionScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	return s, nil
 }
 
-// advanceTick moves the visible animation forward, gating the
-// "Connecting" and "Joining" steps on their corresponding async
-// signals. When a gate is not yet satisfied, the tick re-arms
-// without advancing.
+// advanceTick moves the visible animation forward one step. When
+// the current step carries a gate that hasn't closed yet, the tick
+// re-arms without advancing. Once `cur` reaches the end the screen
+// transitions — which by construction means every gated signal has
+// already landed.
 func (s ConnectionScreen) advanceTick() (ui.Model, tea.Cmd) {
 	if s.cur >= len(s.steps) {
 		return s, s.transitionCmd()
@@ -327,39 +331,8 @@ func (s ConnectionScreen) advanceTick() (ui.Model, tea.Cmd) {
 
 	current := s.steps[s.cur]
 
-	switch current.label {
-	case "Connecting to modeloff":
-		if !s.connected && s.cfg.Session != nil {
-			return s, s.tickCmd()
-		}
-
-	case "Loading models":
-		if !s.loadModelsDone {
-			if !s.loadModelsKicked {
-				return s.kickLoadModels()
-			}
-
-			return s, s.tickCmd()
-		}
-
-	case "Joining channels":
-		// If autojoinDone has already fired by the time the
-		// animation reaches this step, we fall through to the
-		// ordinary pending→done transition below: the step still
-		// holds for at least one stepDelay because tickCmd() paces
-		// the next ConnectionTickMsg. The animation does not stutter.
-		if !s.autojoinDone {
-			if !s.autojoinKicked {
-				// Kick off the autojoin once we reach this step,
-				// then keep ticking until it completes. The
-				// autojoinKicked guard prevents subsequent ticks
-				// from launching parallel runAutojoin goroutines
-				// while the first one is still in flight.
-				return s.kickAutojoin()
-			}
-
-			return s, s.tickCmd()
-		}
+	if !s.gateSatisfied(current.gate) {
+		return s, s.tickCmd()
 	}
 
 	if current.status == stepPending {
@@ -380,34 +353,19 @@ func (s ConnectionScreen) advanceTick() (ui.Model, tea.Cmd) {
 	return s, s.tickCmd()
 }
 
-// kickAutojoin starts the autojoin Cmd and re-arms the animation
-// tick. Callers are expected to gate on s.autojoinKicked so this is
-// only invoked once per session; kickAutojoin itself flips the flag
-// so the gate stays correct even if a caller forgets.
-func (s ConnectionScreen) kickAutojoin() (ui.Model, tea.Cmd) {
-	if s.cfg.Session == nil {
-		s.autojoinDone = true
-		s.autojoinKicked = true
-		return s, s.tickCmd()
+// gateSatisfied reports whether the async signal a step waits on
+// has arrived. Steps with [gateNone] always advance.
+func (s ConnectionScreen) gateSatisfied(g stepGate) bool {
+	switch g {
+	case gateConnect:
+		return s.connected
+	case gateLoadModels:
+		return s.loadModelsDone
+	case gateAutojoin:
+		return s.autojoinDone
 	}
 
-	s.autojoinKicked = true
-
-	return s, tea.Batch(s.runAutojoin(), s.tickCmd())
-}
-
-// kickLoadModels starts the live-model load and re-arms the
-// animation tick, mirroring [kickAutojoin]'s shape.
-func (s ConnectionScreen) kickLoadModels() (ui.Model, tea.Cmd) {
-	if s.cfg.Session == nil {
-		s.loadModelsDone = true
-		s.loadModelsKicked = true
-		return s, s.tickCmd()
-	}
-
-	s.loadModelsKicked = true
-
-	return s, tea.Batch(s.runLoadModels(), s.tickCmd())
+	return true
 }
 
 func (s ConnectionScreen) tickCmd() tea.Cmd {
