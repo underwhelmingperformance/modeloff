@@ -29,7 +29,7 @@ func TestApp_startup_without_api_key(t *testing.T) {
 	root := uipkg.NewRoot(screens.NewConnectionScreen(screens.ConnectionConfig{
 		HasAPIKey: false,
 		Nick:      "alice",
-	}))
+	}, nil))
 	tm := uitest.New(t, root)
 
 	advanceConnection(tm, 2)
@@ -56,10 +56,9 @@ func TestApp_startup_with_saved_channels(t *testing.T) {
 		HasAPIKey:    true,
 		ChannelCount: 2,
 		Nick:         string(sess.UserNick()),
-		Next:         chatScreen,
 		Session:      sess,
 		Ctx:          t.Context(),
-	}))
+	}, chatScreen))
 	tm := uitest.New(t, root)
 
 	advanceConnection(tm, 7)

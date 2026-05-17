@@ -5,7 +5,13 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// ScreenMsg tells Root to switch to a different screen.
+// ScreenMsg tells Root to switch the active screen. Root only
+// holds the pointer and routes future messages to whoever it
+// points at; whoever sends this is responsible for the screen
+// already being in a usable state. Initialisation is a separate
+// concern handled by the sender (typically because the screen has
+// been forwarded messages throughout its predecessor's lifetime
+// and is already running).
 type ScreenMsg struct {
 	Screen Model
 }
@@ -84,7 +90,7 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ScreenMsg:
 		r.screen = msg.Screen
-		return r, r.screen.Init()
+		return r, nil
 	}
 
 	if r.screen == nil {

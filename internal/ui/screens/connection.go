@@ -9,20 +9,14 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/session"
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/chatcmd"
-	"github.com/laney/modeloff/internal/ui/components"
 	"github.com/laney/modeloff/internal/ui/theme"
 )
 
 // stepDelay is the time between each connection step appearing.
 const stepDelay = 400 * time.Millisecond
-
-// statusPaneMaxRows caps the height of the status pane below the
-// welcome animation.
-const statusPaneMaxRows = 8
 
 // stepGate identifies the async signal a step waits on before the
 // animation tick allows it to advance. Steps with [gateNone] are
@@ -73,17 +67,12 @@ type loadModelsDoneMsg struct {
 	err    error
 }
 
-// statusRefreshMsg refreshes the status pane from the persisted
-// status log.
-type statusRefreshMsg struct{}
-
 // ConnectionConfig holds the inputs the connection screen needs to
 // determine what to show.
 type ConnectionConfig struct {
 	HasAPIKey    bool
 	ChannelCount int
 	Nick         string
-	Next         ui.Model
 
 	// Session is the backend handle the screen drives during the
 	// connection handshake. When nil the screen runs in animation-only
@@ -96,57 +85,44 @@ type ConnectionConfig struct {
 	Ctx context.Context
 }
 
-// ConnectionScreen shows the IRC-style startup animation and a
-// scrolling status pane below it. Two concerns ran tangled in the
-// previous shape: the visual cinematic and the backend handshake
-// orchestration. They are now separate.
+// ConnectionScreen runs the IRC-style startup animation while the
+// real chat-screen quietly accumulates state behind it. Every
+// framework message is forwarded to `chatScreen` unconditionally
+// — its protocol-bus and session-bus listeners subscribe from the
+// start, so by the time the animation finishes and the connection
+// screen emits [ui.ScreenMsg] to swap itself out, the chat-screen
+// already holds the full handshake result (sidebar populated,
+// `&modeloff` carrying the Welcome notice and any typed errors,
+// paced replies queued, and so on).
 //
 // The async pipeline runs at its natural pace: `Init` fires
 // `Session.Connect` and `Session.ListModels` in parallel; the
-// `connectedMsg` handler arms `JoinAutojoinChannels` (the only
-// sequenced edge in the graph, since unclean-recovery must clear
-// stale memberships before autojoin re-adds them). The animation
-// walks `s.steps` at `stepDelay` cadence, and each step that
-// carries a [stepGate] holds the cur cursor until the matching
-// async signal has arrived. The screen transitions to `cfg.Next`
-// once the animation has reached the end of `s.steps` — which by
-// construction means every gated signal has landed.
+// `connectionReadyMsg` handler arms `JoinAutojoinChannels` (the
+// only sequenced edge in the graph, since unclean-recovery must
+// clear stale memberships before autojoin re-adds them). The
+// animation walks `s.steps` at `stepDelay` cadence, and each step
+// that carries a [stepGate] holds the cur cursor until the matching
+// async signal has arrived.
 type ConnectionScreen struct {
-	cfg   ConnectionConfig
-	steps []connectionStep
-	cur   int
-	done  bool
+	cfg        ConnectionConfig
+	chatScreen ui.Model
+	steps      []connectionStep
+	cur        int
+	done       bool
 
 	connected      bool
 	autojoinDone   bool
 	loadModelsDone bool
 	loadedModels   []chatcmd.ModelOption
 	loadModelsErr  error
-
-	// paneCursor tracks the highest StoredEvent.ID appended to
-	// [paneEvents]. refreshPane appends only events with a
-	// strictly greater ID, so periodic refreshes do not replay
-	// the whole log and accumulate duplicates.
-	paneCursor int64
-
-	// paneEvents is the per-tick accumulator the status pane
-	// renders. A pointer keeps the slice header stable across
-	// the value-copy `tea.Model.Update` returns, so the closure
-	// the message list captures continues to read the latest
-	// append.
-	paneEvents *[]domain.StoredEvent
-
-	// quitting is true between QuitRequestedMsg and QuitCompleteMsg
-	// so a second Ctrl-C can short-circuit a stuck Session.Quit and
-	// the status bar can surface "Disconnecting…" feedback.
-	quitting bool
-
-	pane components.MessageList[chatcmd.CompletionContext]
 }
 
-// NewConnectionScreen creates a connection screen with the given
-// configuration.
-func NewConnectionScreen(cfg ConnectionConfig) ConnectionScreen {
+// NewConnectionScreen creates a connection screen that wraps the
+// supplied chat-screen during the handshake animation. The
+// chat-screen is initialised alongside the connection screen and
+// receives every message until the animation completes, at which
+// point Root swaps it in as the active screen.
+func NewConnectionScreen(cfg ConnectionConfig, chatScreen ui.Model) ConnectionScreen {
 	steps := []connectionStep{
 		{label: "Connecting to modeloff", gate: gateConnect},
 		{label: "Checking configuration"},
@@ -166,17 +142,10 @@ func NewConnectionScreen(cfg ConnectionConfig) ConnectionScreen {
 		)
 	}
 
-	paneEvents := &[]domain.StoredEvent{}
-
 	s := ConnectionScreen{
 		cfg:        cfg,
+		chatScreen: chatScreen,
 		steps:      steps,
-		paneEvents: paneEvents,
-		pane: components.NewMessageList[chatcmd.CompletionContext](
-			func() []domain.StoredEvent { return *paneEvents },
-			domain.StatusChannelName,
-			domain.KindStatus,
-		),
 	}
 
 	// Animation-only mode (no Session): pretend the async signals
@@ -198,14 +167,20 @@ func (s ConnectionScreen) ctx() context.Context {
 	return context.Background()
 }
 
-// Init implements ui.Model. The async pipeline fires immediately
-// and runs at its natural pace; the animation tick paces the
-// visual sequence independently.
+// Init implements ui.Model. The connection screen's own async
+// pipeline fires immediately, alongside the chat-screen's `Init`.
+// The chat-screen subscribes to the session and protocol buses
+// here, so the events the handshake produces accumulate into its
+// state instead of piling up unconsumed.
 func (s ConnectionScreen) Init() tea.Cmd {
 	cmds := []tea.Cmd{s.tickCmd()}
 
 	if s.cfg.Session != nil {
 		cmds = append(cmds, s.runConnect(), s.runLoadModels())
+	}
+
+	if s.chatScreen != nil {
+		cmds = append(cmds, s.chatScreen.Init())
 	}
 
 	return tea.Batch(cmds...)
@@ -264,59 +239,58 @@ func (s ConnectionScreen) runAutojoin() tea.Cmd {
 	}
 }
 
-// Update implements ui.Model.
+// Update implements ui.Model. Every message is forwarded to the
+// chat-screen unconditionally — the connection screen has no
+// opinion on what the chat-screen wants to see, and the chat-
+// screen is the one that decides how to react to wire-shape
+// events, app-wide signals, framework messages, and anything
+// else. The connection-screen-internal messages (ticks and the
+// handshake-completion signals) also drive the animation state
+// here, in parallel.
 func (s ConnectionScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
-	switch msg := msg.(type) {
+	var ownCmd tea.Cmd
+
+	switch m := msg.(type) {
 	case ConnectionTickMsg:
-		return s.advanceTick()
+		s, ownCmd = s.advanceTick(m)
 
 	case connectionReadyMsg:
 		s.connected = true
-
-		if msg.err != nil {
-			s.markCurrentStepError(msg.err.Error())
-			return s, statusRefreshCmd(s.cfg.Session)
+		if m.err != nil {
+			s.markCurrentStepError(m.err.Error())
+		} else if s.cfg.Session != nil {
+			// Connect → autojoin is the only sequenced edge in
+			// the async graph: unclean-recovery clears stale
+			// memberships from a prior session before autojoin
+			// re-adds them. Arm the autojoin Cmd here rather than
+			// gating it on the animation reaching the
+			// corresponding step.
+			ownCmd = s.runAutojoin()
 		}
-
-		// Connect → autojoin is the only sequenced edge in the
-		// async graph: unclean-recovery clears stale memberships
-		// from a prior session before autojoin re-adds them. Arm
-		// the autojoin Cmd here rather than gating it on the
-		// animation reaching the corresponding step.
-		return s, tea.Batch(s.runAutojoin(), statusRefreshCmd(s.cfg.Session))
 
 	case joinAutojoinDoneMsg:
 		s.autojoinDone = true
-
-		if msg.err != nil {
-			s.markCurrentStepError(msg.err.Error())
+		if m.err != nil {
+			s.markCurrentStepError(m.err.Error())
 		}
-
-		return s, statusRefreshCmd(s.cfg.Session)
 
 	case loadModelsDoneMsg:
 		s.loadModelsDone = true
-		s.loadedModels = msg.models
-		s.loadModelsErr = msg.err
-
-		if msg.err != nil {
-			s.markCurrentStepError(fmt.Sprintf("Loading models: %s", msg.err))
+		s.loadedModels = m.models
+		s.loadModelsErr = m.err
+		if m.err != nil {
+			s.markCurrentStepError(fmt.Sprintf("Loading models: %s", m.err))
 		}
-
-		return s, nil
-
-	case statusRefreshMsg:
-		s.refreshPane()
-		return s, nil
-
-	case ui.QuitRequestedMsg:
-		return s.handleQuitRequested(msg)
-
-	case ui.QuitCompleteMsg:
-		return s, tea.Quit
 	}
 
-	return s, nil
+	if s.chatScreen != nil {
+		child, childCmd := s.chatScreen.Update(msg)
+		s.chatScreen = child
+
+		return s, tea.Batch(ownCmd, childCmd)
+	}
+
+	return s, ownCmd
 }
 
 // advanceTick moves the visible animation forward one step. When
@@ -324,7 +298,7 @@ func (s ConnectionScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 // re-arms without advancing. Once `cur` reaches the end the screen
 // transitions — which by construction means every gated signal has
 // already landed.
-func (s ConnectionScreen) advanceTick() (ui.Model, tea.Cmd) {
+func (s ConnectionScreen) advanceTick(_ ConnectionTickMsg) (ConnectionScreen, tea.Cmd) {
 	if s.cur >= len(s.steps) {
 		return s, s.transitionCmd()
 	}
@@ -343,12 +317,9 @@ func (s ConnectionScreen) advanceTick() (ui.Model, tea.Cmd) {
 
 	if s.cur >= len(s.steps) {
 		s.done = true
-		s.refreshPane()
 
 		return s, s.transitionCmd()
 	}
-
-	s.refreshPane()
 
 	return s, s.tickCmd()
 }
@@ -372,17 +343,18 @@ func (s ConnectionScreen) tickCmd() tea.Cmd {
 	return tea.Tick(stepDelay, func(time.Time) tea.Msg { return ConnectionTickMsg{} })
 }
 
-// transitionCmd hands control to the chat screen and, in the
-// session-backed case, delivers the connect-time live-model load
-// result so the chat screen can populate its tab-completion cache.
-// The screen change must land first; the loaded-models message
-// reaches the new screen via sequencing.
+// transitionCmd hands control to the chat-screen. The chat-screen
+// has been receiving forwarded messages throughout the animation
+// and holds the full handshake state already; Root just swaps
+// which model owns the visible area. The live-model load result
+// is delivered after the transition so the chat screen can
+// populate its tab-completion cache from the welcomed state.
 func (s ConnectionScreen) transitionCmd() tea.Cmd {
-	if s.cfg.Next == nil {
+	if s.chatScreen == nil {
 		return nil
 	}
 
-	next := s.cfg.Next
+	next := s.chatScreen
 	screenCmd := func() tea.Msg { return ui.ScreenMsg{Screen: next} }
 
 	if s.cfg.Session == nil {
@@ -410,135 +382,15 @@ func (s *ConnectionScreen) markCurrentStepError(label string) {
 	s.steps[s.cur].status = stepError
 }
 
-// refreshPane appends any status events that have landed since the
-// previous refresh. It tracks the last-seen event ID as a cursor so
-// each tick only feeds new events into the pane rather than replaying
-// the entire per-session log and accumulating duplicate entries.
-func (s *ConnectionScreen) refreshPane() {
-	if s.cfg.Session == nil {
-		return
-	}
-
-	events, err := s.cfg.Session.EventsAfter(s.ctx(), domain.StatusChannelName, s.cfg.Session.ConnectedAt())
-	if err != nil {
-		return
-	}
-
-	fresh := events[:0]
-	for _, evt := range events {
-		if evt.ID <= s.paneCursor {
-			continue
-		}
-
-		fresh = append(fresh, evt)
-	}
-
-	if len(fresh) == 0 {
-		return
-	}
-
-	*s.paneEvents = append(*s.paneEvents, fresh...)
-	s.paneCursor = fresh[len(fresh)-1].ID
-}
-
-func statusRefreshCmd(sess *session.Session) tea.Cmd {
-	if sess == nil {
-		return nil
-	}
-
-	return func() tea.Msg { return statusRefreshMsg{} }
-}
-
-// handleQuitRequested wires Ctrl-C and other quit triggers during
-// the connection phase. Behaviour mirrors ChatScreen: run the
-// backend quit, then return tea.Quit on QuitCompleteMsg.
-func (s ConnectionScreen) handleQuitRequested(msg ui.QuitRequestedMsg) (ui.Model, tea.Cmd) {
-	if s.quitting {
-		// A second quit request while the first is in flight is an
-		// escape hatch: the user pressed Ctrl+C again because the
-		// disconnect looks stuck. Bypass Session.Quit and exit now.
-		return s, tea.Quit
-	}
-
-	if s.cfg.Session == nil {
-		return s, tea.Quit
-	}
-
-	s.quitting = true
-
-	sess := s.cfg.Session
-	message := msg.Message
-	ctx := s.ctx()
-
-	return s, func() tea.Msg {
-		return ui.QuitCompleteMsg{Err: sess.Quit(ctx, message)}
-	}
-}
-
-// StatusItems implements ui.StatusProvider. The connection screen
-// only contributes the in-flight "Disconnecting…" indicator; the
-// startup animation already conveys the rest of the connection state.
-func (s ConnectionScreen) StatusItems() []ui.StatusItem {
-	if !s.quitting {
-		return nil
-	}
-
-	return []ui.StatusItem{disconnectingStatusItem}
-}
-
-// View implements ui.Model.
+// View implements ui.Model. The animation owns the visible area
+// for the connection screen's whole lifetime; the wrapped chat-
+// screen only becomes visible after [ui.ScreenMsg] swaps it in.
 func (s ConnectionScreen) View(width, height int) string {
 	if width < theme.MinTerminalWidth {
 		return theme.NarrowTerminalView(width, height)
 	}
 
-	// The connection screen only contributes to the status bar while
-	// quitting; idle renders skip the bar entirely so the animation
-	// owns the full vertical space instead of sitting above a blank
-	// trailing row.
-	bar := components.RenderStatusBar(width, ui.CollectKeyBindings(s), s.StatusItems())
-	if bar == "" {
-		return s.renderContent(width, height)
-	}
-
-	contentHeight := max(height-lipgloss.Height(bar), 0)
-
-	return lipgloss.JoinVertical(lipgloss.Left, s.renderContent(width, contentHeight), bar)
-}
-
-// renderContent renders the animation and status pane within the
-// supplied vertical budget, leaving the status bar (if any) to be
-// joined separately by View.
-func (s ConnectionScreen) renderContent(width, height int) string {
-	animation := s.renderAnimation()
-
-	paneHeight := s.paneHeight(height)
-	if paneHeight <= 0 {
-		return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, animation)
-	}
-
-	animationHeight := max(height-paneHeight, 0)
-	animationView := lipgloss.Place(width, animationHeight, lipgloss.Center, lipgloss.Center, animation)
-
-	paneView := s.pane.View(width, paneHeight)
-
-	return lipgloss.JoinVertical(lipgloss.Left, animationView, paneView)
-}
-
-// paneHeight returns the desired status-pane height. The pane
-// collapses on very short terminals so the animation always fits.
-func (s ConnectionScreen) paneHeight(total int) int {
-	if s.cfg.Session == nil {
-		return 0
-	}
-
-	desired := min(statusPaneMaxRows, total/3)
-
-	if total-desired < len(s.steps)+2 {
-		return 0
-	}
-
-	return desired
+	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, s.renderAnimation())
 }
 
 func (s ConnectionScreen) renderAnimation() string {

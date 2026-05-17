@@ -129,8 +129,7 @@ func TestConnectionScreen_progression_with_teatest(t *testing.T) {
 		HasAPIKey:    true,
 		ChannelCount: 0,
 		Nick:         string(sess.UserNick()),
-		Next:         chatScreen,
-	}))
+	}, chatScreen))
 	tm := uitest.New(t, root)
 
 	advanceConnection(tm, 5)

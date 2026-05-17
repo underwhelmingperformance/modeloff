@@ -413,6 +413,14 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	case protocolEventMsg:
 		return s.handleProtocolEvent(msg)
 
+	case joinAutojoinDoneMsg:
+		// Forwarded from the connection screen once autojoin
+		// settles. The chat-screen's initial `restoreFocus`
+		// returns a no-op when no channels are joined yet (the
+		// common case at decorator-Init time), so re-run it now
+		// that membership is populated.
+		return s, s.restoreFocus()
+
 	case ui.QuitRequestedMsg:
 		return s.handleQuitRequested(msg)
 

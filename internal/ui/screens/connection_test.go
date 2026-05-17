@@ -33,8 +33,7 @@ func TestConnectionScreen_with_api_key(t *testing.T) {
 		HasAPIKey:    true,
 		ChannelCount: 3,
 		Nick:         "alice",
-		Next:         next,
-	})
+	}, next)
 
 	// Initial view: first step is shown as pending.
 	require.Equal(t, []string{"… Connecting to modeloff"}, uitest.TrimmedVisibleLines(view(s)))
@@ -107,7 +106,9 @@ func TestConnectionScreen_with_api_key(t *testing.T) {
 	require.NotNil(t, cmd)
 
 	// Animation-only mode emits a bare ScreenMsg (no live-models
-	// payload to deliver since no session was attached).
+	// payload to deliver since no session was attached). Root
+	// only swaps the active pointer — the wrapped child has been
+	// running throughout the animation, so no Init follows.
 	msg := cmd()
 	require.Equal(t, ui.ScreenMsg{Screen: next}, msg)
 }
@@ -116,7 +117,7 @@ func TestConnectionScreen_no_api_key(t *testing.T) {
 	s := screens.NewConnectionScreen(screens.ConnectionConfig{
 		HasAPIKey: false,
 		Nick:      "bob",
-	})
+	}, nil)
 
 	// Tick 1: "Connecting" completes.
 	var m ui.Model = s
@@ -143,7 +144,7 @@ func TestConnectionScreen_Init_returns_tick_cmd(t *testing.T) {
 	s := screens.NewConnectionScreen(screens.ConnectionConfig{
 		HasAPIKey: true,
 		Nick:      "user",
-	})
+	}, nil)
 
 	require.NotNil(t, s.Init())
 }
@@ -152,7 +153,7 @@ func TestConnectionScreen_View_narrow_terminal(t *testing.T) {
 	s := screens.NewConnectionScreen(screens.ConnectionConfig{
 		HasAPIKey: true,
 		Nick:      "user",
-	})
+	}, nil)
 
 	t.Run("below threshold shows resize message", func(t *testing.T) {
 		got := s.View(79, 24)
@@ -171,7 +172,7 @@ func TestConnectionScreen_ignores_other_messages(t *testing.T) {
 	s := screens.NewConnectionScreen(screens.ConnectionConfig{
 		HasAPIKey: true,
 		Nick:      "user",
-	})
+	}, nil)
 
 	var m ui.Model = s
 	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})

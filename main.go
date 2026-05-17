@@ -96,10 +96,9 @@ func main() {
 		HasAPIKey:    cfg.APIKey != "",
 		ChannelCount: channelCount,
 		Nick:         cfg.UserNick,
-		Next:         chatScreen,
 		Session:      sess,
 		Ctx:          appCtx,
-	})
+	}, chatScreen)
 
 	p := tea.NewProgram(
 		ui.NewRoot(connScreen),
