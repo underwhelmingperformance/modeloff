@@ -1,11 +1,13 @@
 package components
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/charmbracelet/bubbles/cursor"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/richtext"
@@ -253,6 +255,37 @@ func TestRichTextareaAltDDeletesNextWord(t *testing.T) {
 	editor = updated.(RichTextarea)
 
 	require.Equal(t, "one three", editor.Value())
+}
+
+func TestRichTextareaSingleLineHorizontalScroll(t *testing.T) {
+	tests := []struct {
+		name        string
+		text        string
+		cursorIndex int
+		want        string
+	}{
+		{name: "ascii at end", text: "abcdef", cursorIndex: 6, want: "cdef "},
+		{name: "ascii beyond width", text: "abcdefgh", cursorIndex: 8, want: "efgh "},
+		{name: "cjk cursor on grapheme", text: "abcd你", cursorIndex: 4, want: "bcd你"},
+		{name: "cjk cursor at end", text: "abcd你", cursorIndex: 5, want: "cd你 "},
+		{name: "emoji cursor on grapheme", text: "abcd😀", cursorIndex: 4, want: "bcd😀"},
+		{name: "emoji cursor at end", text: "abcd😀", cursorIndex: 5, want: "cd😀 "},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			editor := NewRichTextarea(RichTextareaConfig{SingleLine: true})
+			editor = editor.SetPlainText(tt.text)
+			editor = editor.SetCursorFromRuneIndex(tt.cursorIndex)
+
+			view := editor.View(5, 1)
+			require.Equal(t, 1, lipgloss.Height(view), "view must not wrap")
+			require.Equal(t, 5, lipgloss.Width(view), "view width must match the requested width")
+
+			stripped := uitest.StripANSI(view)
+			require.Equal(t, tt.want, strings.TrimSuffix(stripped, "\n"))
+		})
+	}
 }
 
 func TestRichTextareaSingleLinePasteFlattensNewlines(t *testing.T) {

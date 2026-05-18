@@ -737,10 +737,6 @@ func (r RichTextarea) renderRow(row visualRow, width int) string {
 		cursorDrawn  bool
 	)
 
-	if r.config.SingleLine {
-		cellPosition = r.xOffset
-	}
-
 	for clusterIndex := row.Start; clusterIndex <= row.End; clusterIndex++ {
 		if !cursorDrawn && r.position.Line == row.Line && r.position.Cluster == clusterIndex {
 			clusterText := " "
@@ -948,17 +944,30 @@ func (r RichTextarea) ensureViewport() RichTextarea {
 
 	width := r.width
 	cursorCell := r.cursorCellX(r.position)
+	cursorWidth := r.cursorClusterWidth(r.position)
 	if cursorCell < r.xOffset {
 		r.xOffset = cursorCell
 	}
-	if cursorCell >= r.xOffset+width {
-		r.xOffset = cursorCell - width + 1
+	if cursorCell+cursorWidth > r.xOffset+width {
+		r.xOffset = cursorCell + cursorWidth - width
 	}
 	if r.xOffset < 0 {
 		r.xOffset = 0
 	}
 
 	return r
+}
+
+// cursorClusterWidth reports the display width of the grapheme under
+// the cursor. End-of-line positions report 1 (the cursor block alone).
+func (r RichTextarea) cursorClusterWidth(position richtext.Position) int {
+	position = r.document.ClampPosition(position)
+	clusters := r.document.LineClusters(position.Line)
+	if position.Cluster < len(clusters) {
+		return clusters[position.Cluster].Width
+	}
+
+	return 1
 }
 
 func (r RichTextarea) cursorCellX(position richtext.Position) int {
