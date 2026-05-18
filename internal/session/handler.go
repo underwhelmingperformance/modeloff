@@ -5,28 +5,46 @@ import (
 	"errors"
 	"fmt"
 
+	"go.opentelemetry.io/otel/attribute"
+
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/observability"
 	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/store"
 )
-
-// errHandlerNotYetImplemented is the underlying sentinel returned
-// (wrapped via [errNotYetImplemented]) by handler cases that have
-// no concrete delegate yet.
-var errHandlerNotYetImplemented = errors.New("not yet implemented")
 
 // Handle is the single entry point through which every protocol
 // [protocol.Client] sends commands to the session. Each
 // [protocol.Command] case looks up the actor implied by the
 // client's identity and forwards to the existing `*As` session
-// method (`joinAs`, `partAs`, …) where one exists.
-//
-// `AddModel`, `Quit`, and `Kill` currently return
-// [errHandlerNotYetImplemented].
+// method (`joinAs`, `partAs`, …).
 //
 // The `default` branch is unreachable; the [protocol.Command] sum
 // is sealed.
-func (s *Session) Handle(ctx context.Context, c protocol.Client, cmd protocol.Command) (protocol.Response, error) {
+//
+// A `session.handle` span brackets every dispatch so the wire
+// boundary shows up distinctly in traces. The per-command `*As`
+// spans nest underneath it. Typed command refusals carried on
+// `Response.Err` are tagged with `AttrErrorKind=validation`; a
+// non-nil second return is tagged with `ErrorKindDispatch` since
+// the underlying child span carries the finer-grained kind.
+func (s *Session) Handle(ctx context.Context, c protocol.Client, cmd protocol.Command) (resp protocol.Response, retErr error) {
+	ctx, span := s.startSpan(ctx, "session.handle",
+		attribute.String(observability.AttrOperation, "session.handle"),
+		attribute.String("protocol.command", cmd.Name()),
+	)
+	defer func() {
+		switch {
+		case retErr != nil:
+			setSpanError(span, retErr, observability.ErrorKindDispatch)
+		case resp.Err != nil:
+			setSpanError(span, resp.Err, observability.ErrorKindValidation)
+		default:
+			span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
+		}
+		span.End()
+	}()
+
 	switch cmd := cmd.(type) {
 	case protocol.Join:
 		return s.handleJoin(ctx, c, cmd)
@@ -79,7 +97,7 @@ func (s *Session) handleChannelMode(ctx context.Context, c protocol.Client, cmd 
 // emission shape matches the bootstrap path's promotion of the
 // user-client.
 func (s *Session) handleOper(ctx context.Context, c protocol.Client, cmd protocol.Oper) (protocol.Response, error) {
-	if !s.operAuth(c, cmd.Name, cmd.Password) {
+	if !s.operAuth(c, cmd.User, cmd.Password) {
 		return protocol.Response{Err: domain.OperFailedError{At: s.now()}}, nil
 	}
 
@@ -339,10 +357,4 @@ func (s *Session) resolveClientActor(ctx context.Context, c protocol.Client) (*d
 	}
 
 	return s.store.GetInstanceByID(ctx, id)
-}
-
-// errNotYetImplemented wraps [errHandlerNotYetImplemented] with the
-// command type so callers see which case fired.
-func errNotYetImplemented(cmd protocol.Command) error {
-	return fmt.Errorf("protocol command %T: %w", cmd, errHandlerNotYetImplemented)
 }

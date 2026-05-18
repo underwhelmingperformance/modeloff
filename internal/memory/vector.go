@@ -244,11 +244,13 @@ func (s *IndexedStore) Delete(ctx context.Context, id domain.InstanceID, key str
 // Reset removes all memories from both the vector index and the
 // FileStore.
 func (s *IndexedStore) Reset(ctx context.Context) error {
-	if err := s.db.Reset(); err != nil {
-		return fmt.Errorf("reset vector index: %w", err)
-	}
+	return s.inSpan(ctx, "memory.reset", nil, func(ctx context.Context, _ trace.Span) error {
+		if err := s.db.Reset(); err != nil {
+			return fmt.Errorf("reset vector index: %w", err)
+		}
 
-	return s.backing.Reset(ctx)
+		return s.backing.Reset(ctx)
+	})
 }
 
 // reindexInstance reads all entries for an instance from the

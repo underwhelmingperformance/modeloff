@@ -1356,8 +1356,10 @@ func TestSession_mutationOperations_recordSpans(t *testing.T) {
 		// the act phase, which is what we care about.
 		expected := []string{
 			"session.change_nick",
+			"session.handle",
 			"session.join",
 			"session.kick",
+			"session.mark_read",
 			"session.part",
 			"session.reset",
 			"session.set_topic",

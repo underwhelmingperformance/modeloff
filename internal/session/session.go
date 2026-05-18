@@ -774,7 +774,12 @@ func (s *Session) ConnectedAt() time.Time {
 // Shutdown is safe to call more than once; the gate is closed
 // via `sync.Once`. Subsequent calls re-wait on the same
 // waitgroup against the new caller's `ctx`.
-func (s *Session) Shutdown(ctx context.Context) error {
+func (s *Session) Shutdown(ctx context.Context) (retErr error) {
+	ctx, span := s.startSpan(ctx, "session.shutdown",
+		attribute.String(observability.AttrOperation, "session.shutdown"),
+	)
+	defer endSpan(span, &retErr, "")
+
 	// Close the shutdown gate under `subsMu` so the close is
 	// serialised with [Session.ensureModelClient]'s gate-check,
 	// which runs under the same lock. Either ensureModelClient
@@ -1236,7 +1241,12 @@ func (s *Session) JoinAutojoinChannels(ctx context.Context) error {
 // status window are not in the directory. The returned entries
 // are snapshots of name, member count, and topic; callers turn
 // them into per-row `domain.ListReply` events themselves.
-func (s *Session) DirectoryChannels(ctx context.Context) ([]domain.ChannelDirectoryEntry, error) {
+func (s *Session) DirectoryChannels(ctx context.Context) (_ []domain.ChannelDirectoryEntry, retErr error) {
+	ctx, span := s.startSpan(ctx, "session.directory_channels",
+		attribute.String(observability.AttrOperation, "session.directory_channels"),
+	)
+	defer endSpan(span, &retErr, observability.ErrorKindStore)
+
 	windows, err := s.store.ListWindows(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list windows: %w", err)
@@ -1268,6 +1278,8 @@ func (s *Session) DirectoryChannels(ctx context.Context) ([]domain.ChannelDirect
 			Topic:   topic,
 		})
 	}
+
+	span.SetAttributes(attribute.Int("directory.entry_count", len(entries)))
 
 	return entries, nil
 }
@@ -1480,7 +1492,13 @@ func (s *Session) GetWindow(ctx context.Context, name domain.ChannelName) (domai
 
 // MarkRead records that the user has seen all current events in a
 // channel by storing the rowid of the last event.
-func (s *Session) MarkRead(ctx context.Context, ch domain.ChannelName) error {
+func (s *Session) MarkRead(ctx context.Context, ch domain.ChannelName) (retErr error) {
+	ctx, span := s.startSpan(ctx, "session.mark_read",
+		attribute.String(observability.AttrOperation, "session.mark_read"),
+		attribute.String(observability.AttrChannel, string(ch)),
+	)
+	defer endSpan(span, &retErr, observability.ErrorKindStore)
+
 	events, err := s.store.EventsBefore(ctx, ch, nil, 1)
 	if err != nil {
 		return fmt.Errorf("get latest event: %w", err)
@@ -1495,7 +1513,16 @@ func (s *Session) MarkRead(ctx context.Context, ch domain.ChannelName) error {
 
 // UnreadCount returns the number of events in a channel that arrived
 // after the last-read position.
-func (s *Session) UnreadCount(ctx context.Context, ch domain.ChannelName) (int, error) {
+func (s *Session) UnreadCount(ctx context.Context, ch domain.ChannelName) (count int, retErr error) {
+	ctx, span := s.startSpan(ctx, "session.unread_count",
+		attribute.String(observability.AttrOperation, "session.unread_count"),
+		attribute.String(observability.AttrChannel, string(ch)),
+	)
+	defer func() {
+		span.SetAttributes(attribute.Int("unread.count", count))
+		endSpan(span, &retErr, observability.ErrorKindStore)
+	}()
+
 	lastID, err := s.store.GetLastRead(ctx, ch)
 	if err != nil {
 		return 0, fmt.Errorf("get last read: %w", err)
@@ -2144,7 +2171,13 @@ func (s *Session) resolveDispatchRecipients(ctx context.Context, target domain.C
 // after the given cutoff, in chronological order. The status pane
 // uses this to render the per-session view of the status channel
 // without showing previous sessions' entries.
-func (s *Session) EventsAfter(ctx context.Context, ch domain.ChannelName, after time.Time) ([]domain.StoredEvent, error) {
+func (s *Session) EventsAfter(ctx context.Context, ch domain.ChannelName, after time.Time) (_ []domain.StoredEvent, retErr error) {
+	ctx, span := s.startSpan(ctx, "session.events_after",
+		attribute.String(observability.AttrOperation, "session.events_after"),
+		attribute.String(observability.AttrChannel, string(ch)),
+	)
+	defer endSpan(span, &retErr, observability.ErrorKindStore)
+
 	events, err := s.store.EventsBefore(ctx, ch, nil, 500)
 	if err != nil {
 		return nil, err

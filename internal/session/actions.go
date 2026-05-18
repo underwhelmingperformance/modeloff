@@ -652,6 +652,18 @@ func (s *Session) setUserModeAs(ctx context.Context, by domain.Nick, target *ser
 		targetInst = s.user
 	}
 
+	ctx, span := s.startSpan(ctx, "session.set_user_mode",
+		attribute.String(observability.AttrOperation, "session.set_user_mode"),
+		attribute.String(observability.AttrNick, string(targetInst.Nick())),
+		attribute.String(observability.AttrInstanceID, string(targetInst.ID())),
+		attribute.String("mode.flag", string(mode)),
+		attribute.Bool("mode.add", add),
+	)
+	defer func() {
+		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
+		span.End()
+	}()
+
 	evt := domain.ModeChange{
 		Nick:       targetInst.Nick(),
 		InstanceID: targetInst.ID(),
@@ -787,7 +799,15 @@ func (s *Session) actorHasServerOper(actor *domain.Instance) bool {
 // applies. A runtime failure (e.g. unknown nick on `+o`) stops the
 // loop and returns the error; already-applied changes remain,
 // matching typical ircd behaviour.
-func (s *Session) applyChannelModeChangesAs(ctx context.Context, actor *domain.Instance, ch domain.ChannelName, changes []protocol.ChannelModeChange) error {
+func (s *Session) applyChannelModeChangesAs(ctx context.Context, actor *domain.Instance, ch domain.ChannelName, changes []protocol.ChannelModeChange) (retErr error) {
+	ctx, span := s.startSpan(ctx, "session.apply_channel_mode_changes",
+		attribute.String(observability.AttrOperation, "session.apply_channel_mode_changes"),
+		attribute.String(observability.AttrChannel, string(ch)),
+		attribute.String(observability.AttrNick, string(actor.Nick())),
+		attribute.Int("mode.change_count", len(changes)),
+	)
+	defer endSpan(span, &retErr, observability.ErrorKindStore)
+
 	window, err := s.loadChannelWindow(ctx, ch)
 	if err != nil {
 		return fmt.Errorf("get channel: %w", err)
@@ -860,7 +880,16 @@ func validateChannelModeChange(change protocol.ChannelModeChange, now time.Time)
 // the window, and emits a [domain.ModeChange] to channel peers.
 // Called from [applyChannelModeChangesAs] after up-front
 // validation, so the shape invariants are already enforced.
-func (s *Session) setMemberModeAs(ctx context.Context, window *domain.ChannelWindow, ch domain.ChannelName, actor *domain.Instance, change protocol.ChannelModeChange) error {
+func (s *Session) setMemberModeAs(ctx context.Context, window *domain.ChannelWindow, ch domain.ChannelName, actor *domain.Instance, change protocol.ChannelModeChange) (retErr error) {
+	ctx, span := s.startSpan(ctx, "session.set_member_mode",
+		attribute.String(observability.AttrOperation, "session.set_member_mode"),
+		attribute.String(observability.AttrChannel, string(ch)),
+		attribute.String(observability.AttrNick, string(change.Target)),
+		attribute.String("mode.flag", string(change.Flag)),
+		attribute.Bool("mode.add", change.Add),
+	)
+	defer endSpan(span, &retErr, observability.ErrorKindStore)
+
 	target, err := s.ResolveNick(ctx, change.Target)
 	if err != nil {
 		return err
@@ -893,7 +922,15 @@ func (s *Session) setMemberModeAs(ctx context.Context, window *domain.ChannelWin
 // [applyChannelModeChangesAs] after validation; parametric `+l` /
 // `+k` carry their value in `change.Param` (already a positive
 // int or non-empty key, respectively).
-func (s *Session) setChannelAttributeAs(ctx context.Context, window *domain.ChannelWindow, ch domain.ChannelName, actor *domain.Instance, change protocol.ChannelModeChange) error {
+func (s *Session) setChannelAttributeAs(ctx context.Context, window *domain.ChannelWindow, ch domain.ChannelName, actor *domain.Instance, change protocol.ChannelModeChange) (retErr error) {
+	ctx, span := s.startSpan(ctx, "session.set_channel_attribute",
+		attribute.String(observability.AttrOperation, "session.set_channel_attribute"),
+		attribute.String(observability.AttrChannel, string(ch)),
+		attribute.String("mode.flag", string(change.Flag)),
+		attribute.Bool("mode.add", change.Add),
+	)
+	defer endSpan(span, &retErr, observability.ErrorKindStore)
+
 	applyAttribute(&window.Modes, change)
 
 	if err := s.persistChannelWindow(ctx, window); err != nil {
