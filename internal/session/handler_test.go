@@ -276,7 +276,6 @@ func TestSession_Handle_delegates(t *testing.T) {
 			sess, store := newTestSession(t)
 			if c.setup != nil {
 				c.setup(t, sess, store)
-				drainSessionEvents(sess)
 			}
 
 			got, err := sess.Handle(t.Context(), c.client(), c.cmd)
@@ -297,15 +296,3 @@ func TestSession_Handle_delegates(t *testing.T) {
 	}
 }
 
-// drainSessionEvents empties the session's event channel of any
-// events queued by the test setup so the handler call under test
-// runs against a quiescent channel.
-func drainSessionEvents(sess *Session) {
-	for {
-		select {
-		case <-sess.events:
-		default:
-			return
-		}
-	}
-}

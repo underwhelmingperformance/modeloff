@@ -5,8 +5,7 @@ import "time"
 // StatusWindow is the per-session "server window" — the leaf for
 // server-narrated notices only. There are no members, no topic,
 // no modes, and no inbound chat events; the session emits
-// [SystemNoticeEvent] (and once the rename lands, the un-prefixed
-// `SystemNotice`) into it for connection-state lines, autojoin
+// [SystemNotice] into it for connection-state lines, autojoin
 // progress, and dispatch errors.
 type StatusWindow struct {
 	created time.Time

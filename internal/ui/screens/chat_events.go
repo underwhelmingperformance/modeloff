@@ -19,37 +19,6 @@ import (
 	"github.com/laney/modeloff/internal/ui/components"
 )
 
-// handleSessionEvent dispatches non-protocol UI events that flow
-// on `Session.Events()`: error events, system-notice wrappers, and
-// config changes. The protocol bus carries every session-emitted
-// event whose relative order matters to the chat-screen; those
-// are dispatched by [ChatScreen.handleProtocolEvent].
-func (s ChatScreen) handleSessionEvent(msg sessionEventMsg) (ui.Model, tea.Cmd) {
-	var (
-		updated ui.Model
-		cmd     tea.Cmd
-	)
-
-	// `bufferEvent` is called from both event-bus dispatchers; the
-	// body's PersistableEvent switch handles disjoint subsets.
-	s.bufferEvent(msg.event)
-
-	switch evt := msg.event.(type) {
-	case domain.ConfigChangedEvent:
-		updated, cmd = s.handleConfigChangedEvent(evt)
-	case domain.ErrorEvent:
-		updated, cmd = s.handleErrorEvent(evt)
-	case domain.SystemNoticeEvent:
-		updated, cmd = s.handleSystemNoticeEvent(evt)
-	}
-
-	if updated != nil {
-		s = updated.(ChatScreen)
-	}
-
-	return s, tea.Batch(cmd, s.scrollbackUpdatedCmd(), s.listenForEvents())
-}
-
 // handleProtocolEvent dispatches wire-shaped events plus the
 // session-emitted events whose ordering relative to the wire
 // sequence matters: joins, parts, messages, mode changes, topic
@@ -113,21 +82,17 @@ func (s ChatScreen) scrollbackUpdatedCmd() tea.Cmd {
 	return msgCmd(components.ScrollbackUpdatedMsg{Channel: *s.active})
 }
 
-// bufferEvent appends a session-bus persistable event to the
-// scrollback of the window(s) it belongs to. Live-event-driven:
-// a focus change later is a pure buffer swap. `Message` routes
-// via [domain.Message.RoutingKey] so DM traffic in either
-// direction lands in the per-peer scrollback. Other events are
-// channel-keyed by their `Target`. SystemNoticeEvent unwraps its
-// already-persisted inner event. Actor-scoped events (Quit,
-// NickChange) only flow on the protocol bus and are buffered by
-// [ChatScreen.bufferProtocolEvent], which has access to the
-// per-recipient `Targets` carried on the [protocol.Delivery]
+// bufferEvent appends a window-scoped event to the scrollback of
+// the window(s) it belongs to. Live-event-driven: a focus change
+// later is a pure buffer swap. `Message` routes via
+// [domain.Message.RoutingKey] so DM traffic in either direction
+// lands in the per-peer scrollback. Other events are channel-keyed
+// by their `Target`. Actor-scoped events (Quit, NickChange) are
+// handled by [ChatScreen.bufferProtocolEvent], which has access to
+// the per-recipient `Targets` carried on the [protocol.Delivery]
 // envelope.
 func (s ChatScreen) bufferEvent(evt domain.Event) {
 	switch e := evt.(type) {
-	case domain.SystemNoticeEvent:
-		s.appendToScrollback(e.Channel, e.Stored)
 	case domain.Message:
 		key, ok := e.RoutingKey(s.sess.UserInstance().ID())
 		if !ok || key == "" {
@@ -288,19 +253,6 @@ func (s ChatScreen) appendStatusNotice(at time.Time, text string) {
 			At:     at,
 		},
 	})
-}
-
-// handleSystemNoticeEvent forwards a freshly-appended system notice
-// to the message list when the affected channel is the active one.
-// Off-channel notices update only the unread badge.
-func (s ChatScreen) handleSystemNoticeEvent(msg domain.SystemNoticeEvent) (ui.Model, tea.Cmd) {
-	if msg.Channel == *s.active {
-		return s, msgCmd(msg.Stored)
-	}
-
-	count, _ := s.sess.UnreadCount(s.baseContext(), msg.Channel)
-
-	return s, msgCmd(components.ChannelUnreadMsg{Channel: msg.Channel, Count: count})
 }
 
 func (s ChatScreen) handleChannelFocus(msg chatcmd.ChannelFocusMsg) (ui.Model, tea.Cmd) {
@@ -846,18 +798,6 @@ func (s ChatScreen) sendMessageCmd(target domain.ChannelName, body string) tea.C
 
 		return msg
 	}
-}
-
-func (s ChatScreen) handleConfigChangedEvent(msg domain.ConfigChangedEvent) (ui.Model, tea.Cmd) {
-	if *s.active == "" {
-		return s, nil
-	}
-
-	return s, s.logAndShow(domain.SystemNotice{
-		Target: *s.active,
-		Text:   msg.Operation,
-		At:     msg.At,
-	})
 }
 
 func (s ChatScreen) handleErrorEvent(msg domain.ErrorEvent) (ui.Model, tea.Cmd) {

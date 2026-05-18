@@ -352,18 +352,10 @@ func TestChatScreen_parting_channel_purges_paced_queue(t *testing.T) {
 	require.False(t, pending.Pending)
 }
 
-func TestChatScreen_handleSessionEvent_routing(t *testing.T) {
-	type dispatchKind int
-
-	const (
-		dispatchSession dispatchKind = iota
-		dispatchProtocol
-	)
-
+func TestChatScreen_handleProtocolEvent_routing(t *testing.T) {
 	tests := []struct {
 		name     string
-		event    domain.Event
-		dispatch dispatchKind
+		event    protocol.Event
 		wantType any
 	}{
 		{
@@ -371,7 +363,6 @@ func TestChatScreen_handleSessionEvent_routing(t *testing.T) {
 			event: domain.ModelDispatchStarted{
 				Instance: domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil),
 			},
-			dispatch: dispatchProtocol,
 			wantType: components.PendingResponseMsg{},
 		},
 		{
@@ -379,7 +370,6 @@ func TestChatScreen_handleSessionEvent_routing(t *testing.T) {
 			event: domain.ModelDispatchDone{
 				Instance: domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil),
 			},
-			dispatch: dispatchProtocol,
 			wantType: components.PendingResponseMsg{},
 		},
 		{
@@ -390,18 +380,7 @@ func TestChatScreen_handleSessionEvent_routing(t *testing.T) {
 				InstanceID: "inst-botty",
 				Body:       "hi",
 			},
-			dispatch: dispatchProtocol,
 			wantType: deliverNextPacedMsg{},
-		},
-		{
-			name: "ErrorEvent routes to stored event",
-			event: domain.ErrorEvent{
-				Operation: "test op",
-				Err:       errors.New("boom"),
-				At:        time.Now(),
-			},
-			dispatch: dispatchSession,
-			wantType: domain.StoredEvent{},
 		},
 	}
 
@@ -414,15 +393,7 @@ func TestChatScreen_handleSessionEvent_routing(t *testing.T) {
 			// The handler returns tea.Batch(innerCmd, re-arm-listener).
 			// Inspect only the inner command to avoid blocking on the
 			// re-arm pump.
-			var cmd tea.Cmd
-			switch tt.dispatch {
-			case dispatchSession:
-				_, cmd = screen.handleSessionEvent(sessionEventMsg{event: tt.event})
-			case dispatchProtocol:
-				pe, ok := tt.event.(protocol.Event)
-				require.True(t, ok, "%T is not a protocol.Event", tt.event)
-				_, cmd = screen.handleProtocolEvent(protocolEventMsg{event: pe})
-			}
+			_, cmd := screen.handleProtocolEvent(protocolEventMsg{event: tt.event})
 			require.NotNil(t, cmd)
 
 			batchMsg := cmd()

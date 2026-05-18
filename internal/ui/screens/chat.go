@@ -26,17 +26,6 @@ import (
 	uitimestamp "github.com/laney/modeloff/internal/ui/timestamp"
 )
 
-// sessionEventMsg wraps a domain.Event received from the
-// session's non-protocol UI bus (`Session.Events()`): config
-// changes, focus changes, model-reply rendering, error events,
-// system notices, and other live-only events that don't satisfy
-// [domain.ProtocolEvent]. Using a dedicated wrapper prevents the
-// events channel listener from being re-invoked when the same
-// underlying types are sent directly as tea.Msg.
-type sessionEventMsg struct {
-	event domain.Event
-}
-
 // protocolEventMsg wraps a [protocol.Event] received from the
 // user-client subscription's `Events()` channel. The protocol bus
 // carries the wire-shaped events the chat-screen renders as IRC
@@ -323,7 +312,6 @@ func (s ChatScreen) Init() tea.Cmd {
 	s.channels.Insert(statusWindow)
 
 	cmds := []tea.Cmd{
-		s.listenForEvents(),
 		s.listenForProtocolEvents(),
 		msgCmd(components.ChannelAddedMsg{Channel: statusWindow.Window}),
 		msgCmd(components.CommandsMsg[chatcmd.CompletionContext]{
@@ -399,23 +387,6 @@ func (s ChatScreen) bootstrapFromSession() []tea.Cmd {
 	return cmds
 }
 
-// listenForEvents reads the next event from the session's
-// non-protocol UI channel and wraps it in a sessionEventMsg. After
-// each event, it should be re-invoked so the channel is
-// continuously drained.
-func (s ChatScreen) listenForEvents() tea.Cmd {
-	ch := s.sess.Events()
-
-	return func() tea.Msg {
-		evt, ok := <-ch
-		if !ok {
-			return nil
-		}
-
-		return sessionEventMsg{event: evt}
-	}
-}
-
 // listenForProtocolEvents reads the next delivery from the
 // user-client subscription's protocol channel and wraps its event
 // in a protocolEventMsg. The chat-screen does not consume the
@@ -447,9 +418,6 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		s.width = msg.Width
 		s.height = msg.Height
 		forwardedMsg = tea.WindowSizeMsg{Width: msg.Width, Height: s.layoutHeight()}
-
-	case sessionEventMsg:
-		return s.handleSessionEvent(msg)
 
 	case protocolEventMsg:
 		return s.handleProtocolEvent(msg)
@@ -709,9 +677,6 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 	case chatcmd.DMOpenedMsg:
 		return s.handleDMOpenedMsg(msg)
-
-	case domain.ConfigChangedEvent:
-		return s.handleConfigChangedEvent(msg)
 
 	case domain.ErrorEvent:
 		return s.handleErrorEvent(msg)

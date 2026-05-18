@@ -113,33 +113,25 @@ func normaliseInstance(inst *domain.Instance) comparableInstance {
 	}
 }
 
-// nextEvent reads the next event from whichever bus delivers
-// first. Used by helpers that don't know in advance which bus
-// will produce the value (general-purpose drains and
-// matcher-based collectors).
+// nextEvent reads the next event from the user-client
+// subscription's protocol bus.
 func nextEvent(sess *Session) (domain.Event, bool) {
-	select {
-	case evt, ok := <-sess.Events():
-		return evt, ok
-	case delivery, ok := <-sess.User().Events():
-		return delivery.Event, ok
-	}
+	delivery, ok := <-sess.User().Events()
+	return delivery.Event, ok
 }
 
 // collectEmittedEvents returns every event currently queued on
-// either bus, in arrival order across the two. The drain is
-// non-blocking: it returns whatever is in the buffers at call
-// time. Tests with in-goroutine producers (join, part, topic,
-// nick, mode — the synchronous actor methods) call this directly
-// after the action; tests with goroutine producers (model
-// dispatch) `synctest.Wait()` first, then call.
+// the user-client subscription's protocol bus, in arrival order.
+// The drain is non-blocking and returns whatever is in the buffer
+// at call time. Tests with in-goroutine producers (the synchronous
+// actor methods — join, part, topic, nick, mode) call this directly
+// after the action; tests with goroutine producers (model dispatch)
+// `synctest.Wait()` first, then call.
 //
-// Use this in place of cherry-picking single events by type:
-// the test asserts structurally on the full slice rather than
-// skipping past intervening events. The assertion is robust to
-// any future emission added between the test's action and its
-// check — the test fails until the expected slice updates,
-// which is the right pressure.
+// Use this to assert structurally on the full event slice. Any
+// future emission added between the test's action and its check
+// fails the test until the expected slice updates, which is the
+// right pressure.
 func collectEmittedEvents(t *testing.T, sess *Session) []domain.Event {
 	t.Helper()
 
@@ -147,8 +139,6 @@ func collectEmittedEvents(t *testing.T, sess *Session) []domain.Event {
 
 	for {
 		select {
-		case evt := <-sess.Events():
-			events = append(events, evt)
 		case delivery := <-sess.User().Events():
 			events = append(events, delivery.Event)
 		default:
@@ -831,7 +821,6 @@ func TestSession_user_snapshot_race_free(t *testing.T) {
 	go func() {
 		for {
 			select {
-			case <-sess.Events():
 			case <-sess.User().Events():
 			case <-drainCtx.Done():
 				return

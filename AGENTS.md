@@ -120,25 +120,22 @@ can send and the events log carries the conversation under that key.
 The chat-screen's `/query` is a UI affordance only — the session
 never sees it.
 
-### Bus partitioning
+### Event bus
 
-There are two event channels with distinct purposes.
+The session exposes one event channel per subscription: each
+subscription's `Client.Events()` returns the per-client protocol bus.
+The session fans out wire-shaped events (PRIVMSG, JOIN, PART, TOPIC,
+MODE, NICK, INVITE, KICK, QUIT) plus session-emitted events
+(`FocusChannelEvent`, `TopicInfo`, `NamesReplyEvent`, `PokeEvent`,
+`DispatchStartedEvent`, `DispatchDoneEvent`, `CommandError`,
+`UsageHint`, `PersonasList`, `Help`, `Whois`, `ListReply`, `ListEnd`,
+`SystemNotice`). Every value the session emits implements
+`domain.ProtocolEvent`, sealed via `isProtocolEvent()`.
 
-- The protocol bus is per-client: each subscription's `Client.Events()`
-  channel. The session fans out wire-shaped events (PRIVMSG, JOIN, PART,
-  TOPIC, MODE, NICK, INVITE, KICK, QUIT) plus session-emitted events whose
-  ordering relative to the wire stream matters (`FocusChannelEvent`,
-  `TopicInfo`, `NamesReplyEvent`, `PokeEvent`, `DispatchStartedEvent`,
-  `DispatchDoneEvent`, `CommandError`, `UsageHint`, `PersonasList`, `Help`,
-  `Whois`, `ListReply`, `ListEnd`, `SystemNotice`). Sealed via
-  `isProtocolEvent()`.
-- The non-protocol bus is `Session.Events()`, a single channel carrying
-  chat-screen-internal control signals — `ConfigChangedEvent`, `ErrorEvent`,
-  `SystemNoticeEvent`. Order relative to the wire stream is not a
-  correctness concern for these.
-
-The rule is one-line: if a session-emitted event's relative ordering
-matters to a consumer, it goes on the protocol bus.
+Chat-screen-local control signals (e.g. `domain.ErrorEvent` wrapping
+a backend error from a UI-issued command) flow as bare `tea.Msg`
+returns from the chat-screen's own `tea.Cmd`s and reach the Update
+loop directly. The session is not the courier for them.
 
 ### Echo gate and membership filter
 

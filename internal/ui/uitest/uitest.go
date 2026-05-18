@@ -404,15 +404,12 @@ func SeedMessage(t testing.TB, sess *session.Session, channel, body string) {
 	require.NoError(t, resp.Err)
 }
 
-// DrainEvents discards any buffered events on both session event
-// buses (the non-protocol UI bus via [session.Session.Events] and
-// the user-client subscription's protocol bus via
-// [session.Session.User]). This prevents seed operations from
+// DrainEvents discards any buffered events on the user-client
+// subscription's protocol bus. This prevents seed operations from
 // leaking stale events into the UI when tests start.
 func DrainEvents(sess *session.Session) {
 	for {
 		select {
-		case <-sess.Events():
 		case <-sess.User().Events():
 		default:
 			return

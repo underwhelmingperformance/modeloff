@@ -196,7 +196,6 @@ type Session struct {
 	smallModel  domain.ModelID
 	factory     func(apiKey, baseURL string) (api.Client, error)
 	now         func() time.Time
-	events      chan domain.Event
 
 	dispatchWG sync.WaitGroup
 
@@ -298,7 +297,6 @@ func New(
 		apiKey:              strings.TrimSpace(apiKey),
 		smallModel:          smallModel,
 		now:                 time.Now,
-		events:              make(chan domain.Event, eventBufSize),
 		connectedC:          make(chan struct{}),
 		persistenceFailures: persistenceFailures,
 		tracerProvider:      otel.GetTracerProvider(),
@@ -360,13 +358,6 @@ func (s *Session) WithTracerProvider(tp trace.TracerProvider) *Session {
 	return s
 }
 
-// Events returns the non-protocol bus carrying chat-screen-internal
-// control signals: ConfigChangedEvent, ErrorEvent, SystemNoticeEvent.
-// Protocol events — including dispatch lifecycle — flow through the
-// user-client subscription's events channel; see [Session.User].
-func (s *Session) Events() <-chan domain.Event {
-	return s.events
-}
 
 // User returns the user-client subscription, created at session
 // bootstrap and live for the whole session lifetime. The returned
@@ -1147,7 +1138,7 @@ func (s *Session) userQuit(ctx context.Context, message string) (retErr error) {
 	// point cleanupUncleanShutdown handles any residual memberships.
 	s.propagateActorEvent(ctx, s.user, actorEventConfig{
 		storeOnly: true,
-		build: func() domain.PersistableEvent {
+		build: func() broadcastEvent {
 			return domain.Quit{
 				Nick:    userNick,
 				Message: message,
@@ -2226,30 +2217,35 @@ func (s *Session) LogEvent(ctx context.Context, ch domain.ChannelName, event dom
 	return domain.StoredEvent{ID: id, Event: event}, nil
 }
 
-// emit routes an event to its bus. Protocol events fan out to
-// the subscriber registry — model-clients pick up dispatch
-// triggers from there; non-protocol UI events go to `s.events`
-// for the chat-screen's non-protocol bus. The context is threaded
-// through to preserve OTel trace parenting and to honour
-// cancellation during fan-out.
-func (s *Session) emit(ctx context.Context, evt domain.Event) {
-	if pe, ok := evt.(domain.ProtocolEvent); ok {
-		s.fanOutProtocol(ctx, pe)
-		return
-	}
-
-	s.events <- evt
+// broadcastEvent is the intersection type carried through the
+// session's persist-then-emit helpers: every value is both a
+// channel event the store accepts and a protocol event the
+// per-client fan-out delivers. The two sealed sums overlap
+// entirely on the concrete types the session emits (every
+// `domain.PersistableEvent` implementer is also a
+// `domain.ProtocolEvent`), and this combined interface makes that
+// invariant explicit in the helper signatures.
+type broadcastEvent interface {
+	domain.PersistableEvent
+	domain.ProtocolEvent
 }
 
-// persistAndEmit appends `evt` to the channel event log and emits it
-// on the UI channel, in that order. Persistence completing before
-// emission is a session-wide invariant: any UI observer that learns
-// about an event must always be able to find the same event in the
-// store. Since the unification (`#36`), the same value flows to both
-// destinations — the live `*Instance` and `Actor` fields are
-// `json:"-"` so the persisted shape is the snapshot, while live
-// consumers see the populated handle.
-func (s *Session) persistAndEmit(ctx context.Context, ch domain.ChannelName, evt domain.PersistableEvent) {
+// emit hands a protocol event to the subscriber-registry fan-out.
+// The context is threaded through to preserve OTel trace parenting
+// and to honour cancellation during fan-out.
+func (s *Session) emit(ctx context.Context, evt domain.ProtocolEvent) {
+	s.fanOutProtocol(ctx, evt)
+}
+
+// persistAndEmit appends `evt` to the channel event log and emits
+// it on the protocol bus, in that order. Persistence completing
+// before emission is a session-wide invariant: any consumer that
+// learns about an event must always be able to find the same
+// event in the store. The same value flows to both destinations
+// — the live `*Instance` and `Actor` fields are `json:"-"` so the
+// persisted shape is the snapshot, while live consumers see the
+// populated handle.
+func (s *Session) persistAndEmit(ctx context.Context, ch domain.ChannelName, evt broadcastEvent) {
 	s.appendEvent(ctx, ch, evt)
 	s.emit(ctx, evt)
 }
@@ -2263,14 +2259,14 @@ func (s *Session) persistAndEmit(ctx context.Context, ch domain.ChannelName, evt
 //     the actor from `Members`; nick change renames the snapshot).
 //     Nil for the user's `Quit`, where membership is reconciled by
 //     `cleanupUncleanShutdown` on the next start.
-//   - `storeOnly` persists without the UI emission; used by the
-//     user's `Quit` since the app is exiting.
+//   - `storeOnly` persists without emission; used by the user's
+//     `Quit` since the app is exiting.
 //   - `afterEach` runs per channel after the state update for
 //     caller-specific side effects (e.g. `forgetUserMode`).
 type actorEventConfig struct {
 	storeOnly bool
 	mutate    func(*domain.ChannelWindow)
-	build     func() domain.PersistableEvent
+	build     func() broadcastEvent
 	afterEach func(ctx context.Context, ch domain.ChannelName)
 }
 

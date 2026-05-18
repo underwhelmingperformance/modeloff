@@ -16,13 +16,6 @@ type ModelReplyEvent struct {
 	At       time.Time
 }
 
-// ConfigChangedEvent is emitted when a runtime configuration value is
-// updated.
-type ConfigChangedEvent struct {
-	Operation string
-	At        time.Time
-}
-
 // PokeEvent is emitted when a periodic poke should be dispatched to
 // model instances in a channel.
 type PokeEvent struct {
@@ -35,14 +28,6 @@ type ErrorEvent struct {
 	Operation string
 	Err       error
 	At        time.Time
-}
-
-// SystemNoticeEvent is emitted when a system notice has been
-// appended to a channel's event log. UI consumers can use it to
-// refresh the affected channel's view in real time without polling.
-type SystemNoticeEvent struct {
-	Channel ChannelName
-	Stored  StoredEvent
 }
 
 // Event is the sealed top-level interface every domain event
@@ -139,17 +124,15 @@ func (e ModelUnavailableError) Error() string {
 }
 
 // Pure-live (non-persistable) event types implement Event so they
-// flow through the session's unified event channel without
-// satisfying PersistableEvent. The persistable Channel* types implement
-// Event via channel_event.go.
+// flow through the same channel as the persistable types without
+// satisfying PersistableEvent. The persistable Channel* types
+// implement Event via channel_event.go.
 
 func (ModelReplyEvent) domainEvent()       {}
-func (ConfigChangedEvent) domainEvent()    {}
 func (PokeEvent) domainEvent()             {}
 func (ErrorEvent) domainEvent()            {}
 func (ModelDispatchStarted) domainEvent()  {}
 func (ModelDispatchDone) domainEvent()     {}
-func (SystemNoticeEvent) domainEvent()     {}
 func (NamesReplyEvent) domainEvent()       {}
 func (Welcome) domainEvent()               {}
 func (Reconnected) domainEvent()           {}

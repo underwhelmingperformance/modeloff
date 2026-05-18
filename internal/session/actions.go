@@ -291,7 +291,7 @@ func (s *Session) modelQuit(ctx context.Context, actor *domain.Instance, message
 				window.Members.Remove(m)
 			}
 		},
-		build: func() domain.PersistableEvent {
+		build: func() broadcastEvent {
 			return domain.Quit{
 				Nick:       actorNick,
 				InstanceID: actorID,
@@ -362,7 +362,7 @@ func (s *Session) changeNickAs(ctx context.Context, actor *domain.Instance, newN
 		mutate: func(window *domain.ChannelWindow) {
 			window.Members.RenameTo(actor, newNick)
 		},
-		build: func() domain.PersistableEvent {
+		build: func() broadcastEvent {
 			return domain.NickChange{
 				OldNick:    oldNick,
 				NewNick:    newNick,
