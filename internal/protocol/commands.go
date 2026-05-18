@@ -12,8 +12,12 @@ import "github.com/laney/modeloff/internal/domain"
 // originator receives a [Response] carrying confirmation events or a
 // typed error; broadcast side effects flow asynchronously to peers
 // via [Client.Events].
+//
+// `Name` returns the IRC mnemonic the command corresponds to
+// (uppercase, RFC 2812 names where one exists).
 type Command interface {
 	isCommand()
+	Name() string
 }
 
 // Join asks the server to add the issuing client to the named
@@ -127,7 +131,7 @@ type Kill struct {
 // future credentialed model elevation slots in by swapping the
 // authenticator.
 type Oper struct {
-	Name     string
+	User     string
 	Password string
 }
 
@@ -171,3 +175,19 @@ func (Quit) isCommand()        {}
 func (Kill) isCommand()        {}
 func (Oper) isCommand()        {}
 func (ChannelMode) isCommand() {}
+
+func (Join) Name() string        { return "JOIN" }
+func (Part) Name() string        { return "PART" }
+func (PrivMsg) Name() string     { return "PRIVMSG" }
+func (Action) Name() string      { return "ACTION" }
+func (Topic) Name() string       { return "TOPIC" }
+func (Invite) Name() string      { return "INVITE" }
+func (Kick) Name() string        { return "KICK" }
+func (Nick) Name() string        { return "NICK" }
+func (Whois) Name() string       { return "WHOIS" }
+func (List) Name() string        { return "LIST" }
+func (AddModel) Name() string    { return "ADDMODEL" }
+func (Quit) Name() string        { return "QUIT" }
+func (Kill) Name() string        { return "KILL" }
+func (Oper) Name() string        { return "OPER" }
+func (ChannelMode) Name() string { return "MODE" }

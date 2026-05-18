@@ -34,7 +34,7 @@ func TestCommand_sum_membership(t *testing.T) {
 		{"addmodel", protocol.AddModel{Model: "anthropic/claude", Persona: "p"}},
 		{"quit", protocol.Quit{Reason: "gone"}},
 		{"kill", protocol.Kill{Nick: nick, Reason: "spam"}},
-		{"oper", protocol.Oper{Name: "name", Password: "pw"}},
+		{"oper", protocol.Oper{User: "name", Password: "pw"}},
 		{"channelmode", protocol.ChannelMode{Channel: channel, Changes: []protocol.ChannelModeChange{
 			{Flag: domain.ModeOperator, Add: true, Target: nick},
 		}}},
