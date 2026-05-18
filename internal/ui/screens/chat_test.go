@@ -149,7 +149,7 @@ func TestChatScreen_checklist_api_key_set_no_channels(t *testing.T) {
 	tm.WaitFor("API key not configured")
 
 	tm.Submit("/config api-key test-key")
-	tm.WaitFor("Models available")
+	tm.WaitFor("0 models available")
 }
 
 func TestChatScreen_checklist_channels_exist_no_checklist(t *testing.T) {
@@ -189,7 +189,7 @@ func TestChatScreen_checklist_api_key_set_updates_live(t *testing.T) {
 	tm.WaitFor("Set an API key first")
 
 	tm.Submit("/config api-key test-key")
-	tm.WaitFor("Models available")
+	tm.WaitFor("0 models available")
 }
 
 func TestChatScreen_send_message(t *testing.T) {

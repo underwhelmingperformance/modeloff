@@ -912,6 +912,11 @@ func (s ChatScreen) isHighlight(body string) bool {
 func (s ChatScreen) handleLiveModelsLoaded(msg liveModelsLoadedMsg) (ui.Model, tea.Cmd) {
 	*s.liveModels = msg.models
 	*s.liveModelsState = command.SuggestionStateReady
+	s.checklist.modelCount = len(msg.models)
+
+	if s.realChannelCount() == 0 {
+		return s, msgCmd(components.SetPlaceholderMsg{Text: s.checklist.Render()})
+	}
 
 	return s, nil
 }
@@ -922,6 +927,7 @@ func (s ChatScreen) handleLiveModelsLoaded(msg liveModelsLoadedMsg) (ui.Model, t
 // chat-screen-owned default landing window.
 func (s ChatScreen) handleLiveModelsLoadFailed(msg liveModelsLoadFailedMsg) (ui.Model, tea.Cmd) {
 	*s.liveModels = nil
+	s.checklist.modelCount = 0
 
 	// ErrNoAPIKey here is a TOCTOU between loadLiveModels' HasAPIKey
 	// short-circuit and Session.ListModels' check; treat as silent.

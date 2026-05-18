@@ -495,6 +495,7 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		}
 
 		s.checklist.hasAPIKey = !msg.Reset
+		s.checklist.modelCount = 0
 		*s.liveModels = nil
 		*s.liveModelsState = command.SuggestionStateReady
 

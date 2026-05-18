@@ -15,6 +15,7 @@ type WelcomeChecklist struct {
 	nick         domain.Nick
 	hasAPIKey    bool
 	channelCount int
+	modelCount   int
 }
 
 // NewWelcomeChecklist creates a checklist with the given initial state.
@@ -62,7 +63,11 @@ func (w WelcomeChecklist) Render() string {
 
 	// Models available status.
 	if w.hasAPIKey {
-		lines = append(lines, theme.Success.Render("✓")+" Models available")
+		noun := "models"
+		if w.modelCount == 1 {
+			noun = "model"
+		}
+		lines = append(lines, theme.Success.Render("✓")+fmt.Sprintf(" %d %s available", w.modelCount, noun))
 	} else {
 		lines = append(lines, theme.Dim.Render("  Set an API key first to browse models."))
 	}
