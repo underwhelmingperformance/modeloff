@@ -116,16 +116,27 @@ func (h *history) append(
 }
 
 // sameStoredEvent reports whether `a` and `b` represent the same
-// persisted event. The store-loaded form (from `EventsBefore` /
-// `DMEventsBefore`) carries the row's ID; the fan-out form is
-// constructed without the ID since the wire layer does not
-// propagate it. Compare on the (type, timestamp) tuple instead:
-// two events of the same concrete type at the same nanosecond
-// timestamp are not realistically distinct, and a storeload-then-
-// fanout duplicate has both attributes identical by construction.
+// persisted event. The match handles two shapes:
+//
+//   - Both carry an ID (both loaded from the store): the row id
+//     is the canonical identity.
+//   - Exactly one carries an ID: this is the seed-then-fanout
+//     race shape — a registering consumer's seed read the event
+//     from the store while the producer's fan-out was still in
+//     flight, then the same event arrived again ID-less over the
+//     bus. Same concrete type + same timestamp identifies the
+//     pair.
+//
+// When both ids are zero the events arrived through separate
+// append paths (one from the dispatch loop, one from the model-
+// client's own send) and are kept as distinct entries.
 func sameStoredEvent(a, b domain.StoredEvent) bool {
 	if a.ID != 0 && b.ID != 0 {
 		return a.ID == b.ID
+	}
+
+	if a.ID == 0 && b.ID == 0 {
+		return false
 	}
 
 	if a.Event == nil || b.Event == nil {

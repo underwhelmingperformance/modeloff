@@ -219,10 +219,20 @@ func (mc *ModelClient) dispatchTurn(ctx context.Context, ch domain.ChannelName, 
 		return
 	}
 
-	if _, err := dispatchToInstance(ctx, mc.sess, apiClient, mc.memStore, mc.tools, mc.ensure, mc, window, inst, ch, historyEvents, []protocol.IRCMessage{trigger}); err != nil {
+	replies, err := dispatchToInstance(ctx, mc.sess, apiClient, mc.memStore, mc.tools, mc.ensure, mc, window, inst, ch, historyEvents, []protocol.IRCMessage{trigger})
+	if err != nil {
 		setSpanError(span, err, observability.ErrorKindDispatch)
 		mc.sess.Emit(ctx, domain.ModelUnavailableError{Channel: ch, Nick: nick, At: mc.sess.Now()})
 		return
+	}
+
+	// File the bot's own replies into its rolling history. The bus
+	// suppresses self-delivery of [domain.Message] events (echo
+	// gate, RFC 2812 §3.3.1) so the dispatch loop's hist.append
+	// path never sees them — without this, every subsequent turn's
+	// prompt would be missing the bot's own utterances.
+	for _, r := range replies {
+		mc.hist.append(ctx, mc.sess, inst.ID(), domain.StoredEvent{Event: r.Event}, ch)
 	}
 
 	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))

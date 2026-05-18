@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"testing/synctest"
 
@@ -72,6 +73,76 @@ func TestModelClient_dispatch_does_not_show_trigger_in_history_and_events(t *tes
 			"the trigger goes only in the events argument; placing it in history too "+
 				"surfaces the same line twice in the LLM prompt because buildMessages "+
 				"appends history then events")
+	})
+}
+
+// TestModelClient_history_contains_self_replies pins that a bot's
+// own outbound messages land in its prompt history on subsequent
+// turns. The bus's echo gate suppresses self-delivery of Message
+// events (RFC 2812 §3.3.1), so the rolling history buffer needs
+// to be fed at send time.
+//
+// Two user PRIVMSGs drive two dispatch turns. The fake captures
+// each turn's history and replies with a stable body each time.
+// Turn 1's history is empty; turn 2's history must include the
+// bot's turn-1 reply.
+func TestModelClient_history_contains_self_replies(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var (
+			mu       sync.Mutex
+			captures [][]protocol.IRCMessage
+		)
+
+		fake := &fakeAPIClient{
+			sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, history []protocol.IRCMessage, _ []protocol.IRCMessage) (protocol.ModelResponse, error) {
+				mu.Lock()
+				captures = append(captures, append([]protocol.IRCMessage(nil), history...))
+				mu.Unlock()
+
+				return protocol.Reply("bot reply"), nil
+			},
+		}
+
+		sess, s := newTestSessionWithAPI(t, fake)
+		ctx := t.Context()
+
+		botty := seedInstance(t, sess, s, instanceSpec{
+			Nick:     "botty",
+			ModelID:  "test/model",
+			Channels: testChannels("#room"),
+		})
+		seedChannelWithMembers(t, sess, s, "#room", userNick(t, sess), botty.Nick())
+
+		_, err := userSendMessage(ctx, t, sess, "#room", "first")
+		require.NoError(t, err)
+		synctest.Wait()
+
+		_, err = userSendMessage(ctx, t, sess, "#room", "second")
+		require.NoError(t, err)
+		synctest.Wait()
+
+		userTrigger1 := protocol.IRCMessage{
+			Kind:   protocol.KindPrivMsg,
+			From:   string(userNick(t, sess)),
+			Target: "#room",
+			Body:   "first",
+			At:     fixedTime,
+		}
+		bottyReply1 := protocol.IRCMessage{
+			Kind:       protocol.KindPrivMsg,
+			From:       "botty",
+			InstanceID: botty.ID(),
+			Target:     "#room",
+			Body:       "bot reply",
+			At:         fixedTime,
+		}
+
+		require.Equal(t, [][]protocol.IRCMessage{
+			nil,
+			{userTrigger1, bottyReply1},
+		}, captures,
+			"turn 2's history carries botty's turn-1 reply; the model has "+
+				"its own utterance available as ongoing context")
 	})
 }
 
