@@ -561,8 +561,24 @@ type structuredModelResponse struct {
 // pending calls are present, the caller must continue the
 // conversation.
 func parseCompletionResponse(resp *openai.ChatCompletion, rawResp *http.Response) (CompletionResult, openai.ChatCompletionMessageParamUnion, error) {
-	if resp == nil || len(resp.Choices) == 0 {
-		return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, fmt.Errorf("no choices in response")
+	if resp == nil {
+		return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, fmt.Errorf("no response")
+	}
+
+	// Some providers (Grok via OpenRouter, after a tool-loop
+	// continuation) return a well-formed envelope with no choices
+	// when the model has nothing further to add. Surface this as
+	// a silent pass with a stable reason; the dispatch loop reads
+	// the silence and moves on.
+	if len(resp.Choices) == 0 {
+		return CompletionResult{
+			RequestID: requestIDFromChatCompletion(resp, rawResp),
+			Usage:     usageFromResponse(resp.Usage),
+			Response: protocol.ModelResponse{
+				Kind:   protocol.ResponseSilence,
+				Reason: "empty response",
+			},
+		}, openai.ChatCompletionMessageParamUnion{}, nil
 	}
 
 	choice := resp.Choices[0]

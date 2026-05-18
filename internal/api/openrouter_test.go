@@ -992,6 +992,39 @@ func TestOpenRouterClient_SendEvents_refusal(t *testing.T) {
 	require.Equal(t, "I cannot do that", refused.Reason)
 }
 
+// TestOpenRouterClient_SendEvents_emptyChoices pins the parser's
+// handling of a zero-choice response. Some providers (Grok via
+// OpenRouter, observed after a tool-loop continuation) return a
+// well-formed envelope with `choices: []` when the model has
+// nothing further to add. The parser treats this as silence with
+// a stable reason so the dispatch loop doesn't fire
+// `ModelUnavailableError`.
+func TestOpenRouterClient_SendEvents_emptyChoices(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":      "chatcmpl_no_choices",
+			"choices": []map[string]any{},
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
+
+	got, err := client.SendEvents(
+		t.Context(), "test/model", "", "prompt", nil,
+		[]protocol.IRCMessage{{Kind: protocol.KindPrivMsg, From: "a", Target: "#t", Body: "x"}},
+	)
+	require.NoError(t, err)
+	require.Equal(t, CompletionResult{
+		RequestID: "chatcmpl_no_choices",
+		Response: protocol.ModelResponse{
+			Kind:   protocol.ResponseSilence,
+			Reason: "empty response",
+		},
+	}, got)
+}
+
 func TestOpenRouterClient_SendEvents_emptyResponse(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
