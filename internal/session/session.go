@@ -939,12 +939,6 @@ func (s *Session) Emit(ctx context.Context, evt domain.ProtocolEvent) {
 	s.emit(ctx, evt)
 }
 
-// AppendEvent persists a channel event, narrating any persistence
-// failure to the session's logger.
-func (s *Session) AppendEvent(ctx context.Context, ch domain.ChannelName, event domain.PersistableEvent) {
-	s.appendEvent(ctx, ch, event)
-}
-
 // ResolveInstanceByID returns the canonical `*domain.Instance`
 // for the given id.
 func (s *Session) ResolveInstanceByID(ctx context.Context, id domain.InstanceID) (*domain.Instance, error) {

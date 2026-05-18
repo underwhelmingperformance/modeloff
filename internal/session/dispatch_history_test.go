@@ -74,3 +74,46 @@ func TestModelClient_dispatch_does_not_show_trigger_in_history_and_events(t *tes
 				"appends history then events")
 	})
 }
+
+// TestModelClient_reply_is_gated_by_channel_modes pins that a model's
+// dispatch reply is routed through the same gated send path as a
+// user-issued PRIVMSG. Today buildReplies persists Messages by
+// calling Session.AppendEvent directly, which skips checkSendGates
+// and silently lets a `+m`-without-voice reply through. The
+// reproducer puts botty into a moderated channel with no voice,
+// drives a dispatch turn whose API stub returns a Reply, and asserts
+// the reply does NOT land in the event log.
+func TestModelClient_reply_is_gated_by_channel_modes(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		fake := &fakeAPIClient{
+			sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (protocol.ModelResponse, error) {
+				return protocol.Reply("i should be silenced"), nil
+			},
+		}
+
+		sess, s := newTestSessionWithAPI(t, fake)
+		ctx := t.Context()
+
+		botty := seedInstance(t, sess, s, instanceSpec{
+			Nick:     "botty",
+			ModelID:  "test/model",
+			Channels: testChannels("#chan"),
+		})
+		seedChannelWithMembers(t, sess, s, "#chan", userNick(t, sess), botty.Nick())
+
+		w, err := sess.loadChannelWindow(ctx, "#chan")
+		require.NoError(t, err)
+		w.Modes.Moderated = true
+		w.Members.SetMode(botty, domain.ModeNone)
+		require.NoError(t, sess.persistChannelWindow(ctx, w))
+
+		userMsg, err := userSendMessage(ctx, t, sess, "#chan", "speak up")
+		require.NoError(t, err)
+
+		synctest.Wait()
+
+		require.Equal(t, []domain.Message{userMsg}, channelMessages(t, s, "#chan"),
+			"a +m channel with no voice must reject botty's reply; the only persisted "+
+				"message should be the user's trigger")
+	})
+}

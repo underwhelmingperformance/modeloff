@@ -54,10 +54,6 @@ type Session interface {
 	// bus.
 	Emit(ctx context.Context, evt domain.ProtocolEvent)
 
-	// AppendEvent persists a channel event, narrating any
-	// persistence failure to the session's logger.
-	AppendEvent(ctx context.Context, ch domain.ChannelName, event domain.PersistableEvent)
-
 	// ResolveInstanceByID returns the canonical `*domain.Instance`
 	// for the given id.
 	ResolveInstanceByID(ctx context.Context, id domain.InstanceID) (*domain.Instance, error)

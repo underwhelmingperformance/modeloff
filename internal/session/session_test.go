@@ -1989,120 +1989,173 @@ func TestSession_model_reply_does_not_retrigger_dispatch(t *testing.T) {
 	require.Equal(t, 1, dispatchCount)
 }
 
+// TestDispatchToInstance_excludes_own_events pins the echo gate's
+// self-suppression rule: a model's outbound `domain.Message` is
+// fanned to every channel member except the originating client
+// (RFC 2812 §3.3.1). The test stands up two model bots and drives
+// a user PRIVMSG into the channel; botty replies and helper passes.
+// The fake captures every `sendEventsFn` call, and the asserted
+// shape pins both sides of the gate: botty is never invoked with
+// its own reply as a trigger, and helper sees the reply as a
+// separate turn (the bus delivers it after botty's send completes).
 func TestDispatchToInstance_excludes_own_events(t *testing.T) {
-	const bottyID = "inst-botty"
-	const helperID = "inst-helper"
+	synctest.Test(t, func(t *testing.T) {
+		const bottyID = "inst-botty"
+		const helperID = "inst-helper"
 
-	eventsByModel := make(map[domain.ModelID][]protocol.IRCMessage)
+		type call struct {
+			modelID domain.ModelID
+			events  []protocol.IRCMessage
+		}
 
-	fake := &fakeAPIClient{
-		sendEventsFn: func(_ context.Context, modelID domain.ModelID, selfID domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (protocol.ModelResponse, error) {
-			// Simulate what buildMessages does: exclude self-events.
-			for _, e := range events {
-				if selfID != "" && e.InstanceID == selfID {
-					continue
+		var (
+			mu    sync.Mutex
+			calls []call
+		)
+
+		fake := &fakeAPIClient{
+			sendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (protocol.ModelResponse, error) {
+				mu.Lock()
+				calls = append(calls, call{
+					modelID: modelID,
+					events:  append([]protocol.IRCMessage(nil), events...),
+				})
+				mu.Unlock()
+
+				if modelID == "test/model-a" && len(events) == 1 && events[0].From == "testuser" {
+					return protocol.Reply("hello"), nil
 				}
 
-				eventsByModel[modelID] = append(eventsByModel[modelID], e)
-			}
+				return protocol.ModelResponse{Kind: protocol.ResponseSilence, Reason: "pass"}, nil
+			},
+		}
+		sess, s := newTestSessionWithAPI(t, fake)
+		ctx := t.Context()
 
-			return protocol.Reply("hello"), nil
-		},
-	}
-	sess, s := newTestSessionWithAPI(t, fake)
-	ctx := t.Context()
+		seedInstance(t, sess, s, instanceSpec{
+			InstanceID: bottyID,
+			Nick:       "botty",
+			ModelID:    "test/model-a",
+			Channels:   testChannels("#general"),
+		})
+		seedInstance(t, sess, s, instanceSpec{
+			InstanceID: helperID,
+			Nick:       "helper",
+			ModelID:    "test/model-b",
+			Channels:   testChannels("#general"),
+		})
+		seedChannelWithMembers(t, sess, s, "#general", userNick(t, sess), "botty", "helper")
 
-	seedInstance(t, sess, s, instanceSpec{
-		InstanceID: bottyID,
-		Nick:       "botty",
-		ModelID:    "test/model-a",
-		Channels:   testChannels("#general"),
+		_, err := userSendMessage(ctx, t, sess, "#general", "hi")
+		require.NoError(t, err)
+
+		synctest.Wait()
+
+		userTrigger := protocol.IRCMessage{
+			Kind:   protocol.KindPrivMsg,
+			From:   string(userNick(t, sess)),
+			Target: "#general",
+			Body:   "hi",
+			At:     fixedTime,
+		}
+		bottyTrigger := protocol.IRCMessage{
+			Kind:       protocol.KindPrivMsg,
+			From:       "botty",
+			InstanceID: bottyID,
+			Target:     "#general",
+			Body:       "hello",
+			At:         fixedTime,
+		}
+
+		require.ElementsMatch(t, []call{
+			{modelID: "test/model-a", events: []protocol.IRCMessage{userTrigger}},
+			{modelID: "test/model-b", events: []protocol.IRCMessage{userTrigger}},
+			{modelID: "test/model-b", events: []protocol.IRCMessage{bottyTrigger}},
+		}, calls,
+			"botty (model-a) is invoked once with the user's trigger and never "+
+				"receives its own reply; helper (model-b) sees two separate turns "+
+				"— one for the user, one for botty's reply")
 	})
-	seedInstance(t, sess, s, instanceSpec{
-		InstanceID: helperID,
-		Nick:       "helper",
-		ModelID:    "test/model-b",
-		Channels:   testChannels("#general"),
-	})
-	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty", "helper")
-
-	// Trigger events include a message from botty itself.
-	triggerEvents := []protocol.IRCMessage{
-		{Kind: protocol.KindPrivMsg, From: "alice", Target: "#general", Body: "hi", At: fixedTime},
-		{Kind: protocol.KindPrivMsg, From: "botty", InstanceID: bottyID, Target: "#general", Body: "my own msg", At: fixedTime},
-	}
-
-	_, err := dispatchToChannel(ctx, sess, "#general", triggerEvents)
-	require.NoError(t, err)
-
-	// botty should only see alice's message, not its own.
-	require.Equal(t, []protocol.IRCMessage{
-		{Kind: protocol.KindPrivMsg, From: "alice", Target: "#general", Body: "hi", At: fixedTime},
-	}, eventsByModel["test/model-a"])
-
-	// helper should see alice's message, botty's original message, and
-	// botty's reply (appended by the dispatch loop).
-	require.Equal(t, []protocol.IRCMessage{
-		{Kind: protocol.KindPrivMsg, From: "alice", Target: "#general", Body: "hi", At: fixedTime},
-		{Kind: protocol.KindPrivMsg, From: "botty", InstanceID: bottyID, Target: "#general", Body: "my own msg", At: fixedTime},
-		{Kind: protocol.KindPrivMsg, From: "botty", InstanceID: bottyID, Target: "#general", Body: "hello", At: fixedTime},
-	}, eventsByModel["test/model-b"])
 }
 
 func TestDispatchToInstances_model_does_not_reply_to_self(t *testing.T) {
-	const bottyID = "inst-botty"
-	const helperID = "inst-helper"
+	synctest.Test(t, func(t *testing.T) {
+		const bottyID = "inst-botty"
+		const helperID = "inst-helper"
 
-	receivedByModel := make(map[domain.ModelID][]protocol.IRCMessage)
+		type call struct {
+			modelID domain.ModelID
+			events  []protocol.IRCMessage
+		}
 
-	fake := &fakeAPIClient{
-		sendEventsFn: func(_ context.Context, modelID domain.ModelID, selfID domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (protocol.ModelResponse, error) {
-			for _, e := range events {
-				if selfID != "" && e.InstanceID == selfID {
-					continue
+		var (
+			mu    sync.Mutex
+			calls []call
+		)
+
+		fake := &fakeAPIClient{
+			sendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (protocol.ModelResponse, error) {
+				mu.Lock()
+				calls = append(calls, call{
+					modelID: modelID,
+					events:  append([]protocol.IRCMessage(nil), events...),
+				})
+				mu.Unlock()
+
+				if modelID == "test/model-a" && len(events) == 1 && events[0].From == "testuser" {
+					return protocol.Reply("first reply"), nil
 				}
 
-				receivedByModel[modelID] = append(receivedByModel[modelID], e)
-			}
+				return protocol.ModelResponse{Kind: protocol.ResponseSilence, Reason: "pass"}, nil
+			},
+		}
+		sess, s := newTestSessionWithAPI(t, fake)
+		ctx := t.Context()
 
-			if modelID == "test/model-a" {
-				return protocol.Reply("first reply"), nil
-			}
+		seedChannelWithMembers(t, sess, s, "#general", userNick(t, sess), "botty", "helper")
+		seedInstance(t, sess, s, instanceSpec{
+			InstanceID: bottyID,
+			Nick:       "botty",
+			ModelID:    "test/model-a",
+			Channels:   testChannels("#general"),
+		})
+		seedInstance(t, sess, s, instanceSpec{
+			InstanceID: helperID,
+			Nick:       "helper",
+			ModelID:    "test/model-b",
+			Channels:   testChannels("#general"),
+		})
 
-			return protocol.Reply("second reply"), nil
-		},
-	}
-	sess, s := newTestSessionWithAPI(t, fake)
-	ctx := t.Context()
+		_, err := userSendMessage(ctx, t, sess, "#general", "hello everyone")
+		require.NoError(t, err)
 
-	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty", "helper")
-	seedInstance(t, sess, s, instanceSpec{
-		InstanceID: bottyID,
-		Nick:       "botty",
-		ModelID:    "test/model-a",
-		Channels:   testChannels("#general"),
+		synctest.Wait()
+
+		userTrigger := protocol.IRCMessage{
+			Kind:   protocol.KindPrivMsg,
+			From:   string(userNick(t, sess)),
+			Target: "#general",
+			Body:   "hello everyone",
+			At:     fixedTime,
+		}
+		bottyTrigger := protocol.IRCMessage{
+			Kind:       protocol.KindPrivMsg,
+			From:       "botty",
+			InstanceID: bottyID,
+			Target:     "#general",
+			Body:       "first reply",
+			At:         fixedTime,
+		}
+
+		require.ElementsMatch(t, []call{
+			{modelID: "test/model-a", events: []protocol.IRCMessage{userTrigger}},
+			{modelID: "test/model-b", events: []protocol.IRCMessage{userTrigger}},
+			{modelID: "test/model-b", events: []protocol.IRCMessage{bottyTrigger}},
+		}, calls,
+			"botty (model-a) sees only the user's message — the echo gate hides "+
+				"its own reply. helper (model-b) sees two separate turns: the user's "+
+				"message and botty's reply, each as its own dispatch on the bus.")
 	})
-	seedInstance(t, sess, s, instanceSpec{
-		InstanceID: helperID,
-		Nick:       "helper",
-		ModelID:    "test/model-b",
-		Channels:   testChannels("#general"),
-	})
-
-	_, ircMsg := seedUserMessage(t, s, "#general", "hello everyone")
-
-	_, err := dispatchToChannel(ctx, sess, "#general", []protocol.IRCMessage{ircMsg})
-	require.NoError(t, err)
-
-	// model-a (botty) should only see the user's message, not its own reply.
-	require.Equal(t, []protocol.IRCMessage{ircMsg}, receivedByModel["test/model-a"])
-
-	// model-b (helper) should see the user's message plus botty's reply,
-	// but not its own.
-	require.Equal(t, []protocol.IRCMessage{
-		ircMsg,
-		{Kind: protocol.KindPrivMsg, From: "botty", InstanceID: bottyID, Target: "#general", Body: "first reply", At: fixedTime},
-	}, receivedByModel["test/model-b"])
 }
 
 func TestSession_DispatchToChannel_broadcasts_to_channel_instances(t *testing.T) {
@@ -2279,40 +2332,52 @@ func TestSession_DispatchToChannel_reply_is_not_rebroadcast_in_same_dispatch(t *
 }
 
 func TestSession_DispatchToChannel_multiple_instances_each_reply_once(t *testing.T) {
-	fake := &fakeAPIClient{
-		sendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (protocol.ModelResponse, error) {
-			return protocol.Reply(fmt.Sprintf("reply from %s", modelID)), nil
-		},
-	}
-	sess, s := newTestSessionWithAPI(t, fake)
-	ctx := t.Context()
+	synctest.Test(t, func(t *testing.T) {
+		// Reply only to the user's message; peer-bot triggers pass.
+		// Otherwise the bus would loop replies between bots
+		// indefinitely (each reply fans to the other, which then
+		// replies, etc.) — production controls that with the "lurk"
+		// prompt and model judgement; the test pins the one-reply-
+		// per-bot shape directly by stubbing.
+		fake := &fakeAPIClient{
+			sendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (protocol.ModelResponse, error) {
+				if len(events) != 1 || events[0].From != "testuser" {
+					return protocol.ModelResponse{Kind: protocol.ResponseSilence, Reason: "pass"}, nil
+				}
 
-	seedChannelWithMembers(t, sess, s, "#general", "testuser", "bot-a", "bot-b")
-	seedInstance(t, sess, s, instanceSpec{
-		Nick:     "bot-a",
-		ModelID:  "test/model-a",
-		Channels: testChannels("#general"),
+				return protocol.Reply(fmt.Sprintf("reply from %s", modelID)), nil
+			},
+		}
+		sess, s := newTestSessionWithAPI(t, fake)
+		ctx := t.Context()
+
+		seedChannelWithMembers(t, sess, s, "#general", userNick(t, sess), "bot-a", "bot-b")
+		seedInstance(t, sess, s, instanceSpec{
+			Nick:     "bot-a",
+			ModelID:  "test/model-a",
+			Channels: testChannels("#general"),
+		})
+		seedInstance(t, sess, s, instanceSpec{
+			Nick:     "bot-b",
+			ModelID:  "test/model-b",
+			Channels: testChannels("#general"),
+		})
+
+		_, err := userSendMessage(ctx, t, sess, "#general", "hello world")
+		require.NoError(t, err)
+
+		synctest.Wait()
+
+		msgs := channelMessages(t, s, "#general")
+
+		require.Equal(t, domain.Message{
+			Target: "#general", From: "testuser", Body: "hello world", At: fixedTime,
+		}, msgs[0])
+		require.ElementsMatch(t, []domain.Message{
+			{Target: "#general", From: "bot-a", InstanceID: testMemberID("bot-a"), Body: "reply from test/model-a", At: fixedTime},
+			{Target: "#general", From: "bot-b", InstanceID: testMemberID("bot-b"), Body: "reply from test/model-b", At: fixedTime},
+		}, msgs[1:])
 	})
-	seedInstance(t, sess, s, instanceSpec{
-		Nick:     "bot-b",
-		ModelID:  "test/model-b",
-		Channels: testChannels("#general"),
-	})
-
-	_, ircMsg := seedUserMessage(t, s, "#general", "hello world")
-
-	_, err := dispatchToChannel(ctx, sess, "#general", []protocol.IRCMessage{ircMsg})
-	require.NoError(t, err)
-
-	msgs := channelMessages(t, s, "#general")
-
-	require.Equal(t, domain.Message{
-		Target: "#general", From: "testuser", Body: "hello world", At: fixedTime,
-	}, msgs[0])
-	require.ElementsMatch(t, []domain.Message{
-		{Target: "#general", From: "bot-a", InstanceID: testMemberID("bot-a"), Body: "reply from test/model-a", At: fixedTime},
-		{Target: "#general", From: "bot-b", InstanceID: testMemberID("bot-b"), Body: "reply from test/model-b", At: fixedTime},
-	}, msgs[1:])
 }
 
 func TestSession_DispatchToChannel_ignores_empty_reply_body(t *testing.T) {
@@ -3112,60 +3177,89 @@ func TestSession_DispatchToChannel_filters_history_before_join(t *testing.T) {
 	}, receivedHistory)
 }
 
+// TestSession_DispatchToChannel_forwards_replies_to_subsequent_models
+// pins the wire shape of cross-model dispatch fan-out: when alpha
+// replies, beta's dispatch loop receives the reply over the bus as
+// its own separate trigger. Production never bundles a peer reply
+// onto an in-flight turn — alpha's Send goes through
+// `sendMessageAs`, fans out, and beta's dispatch goroutine sees the
+// new event as one more delivery on its subscription.
+//
+// The test therefore expects two distinct calls into beta's
+// `sendEventsFn`: one with the user's message, one with alpha's
+// reply. Each call carries exactly one trigger event.
 func TestSession_DispatchToChannel_forwards_replies_to_subsequent_models(t *testing.T) {
-	// Track the events each model receives.
-	eventsByModel := map[domain.ModelID][]protocol.IRCMessage{}
+	synctest.Test(t, func(t *testing.T) {
+		type call struct {
+			modelID domain.ModelID
+			events  []protocol.IRCMessage
+		}
 
-	fake := &fakeAPIClient{
-		sendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (protocol.ModelResponse, error) {
-			eventsByModel[modelID] = append([]protocol.IRCMessage{}, events...)
+		var (
+			mu    sync.Mutex
+			calls []call
+		)
 
-			if modelID == "test/alpha" {
-				return protocol.Reply("alpha says hi"), nil
-			}
+		fake := &fakeAPIClient{
+			sendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (protocol.ModelResponse, error) {
+				mu.Lock()
+				calls = append(calls, call{
+					modelID: modelID,
+					events:  append([]protocol.IRCMessage(nil), events...),
+				})
+				mu.Unlock()
 
-			return protocol.ModelResponse{Kind: protocol.ResponseSilence, Reason: "pass"}, nil
-		},
-	}
+				if modelID == "test/alpha" {
+					return protocol.Reply("alpha says hi"), nil
+				}
 
-	sess, s := newTestSessionWithAPI(t, fake)
-	ctx := t.Context()
+				return protocol.ModelResponse{Kind: protocol.ResponseSilence, Reason: "pass"}, nil
+			},
+		}
 
-	seedChannelWithMembers(t, sess, s, "#general", "testuser", "alpha", "beta")
-	seedInstance(t, sess, s, instanceSpec{
-		Nick:     "alpha",
-		ModelID:  "test/alpha",
-		Channels: testChannels("#general")})
-	seedInstance(t, sess, s, instanceSpec{
-		Nick:     "beta",
-		ModelID:  "test/beta",
-		Channels: testChannels("#general")})
+		sess, s := newTestSessionWithAPI(t, fake)
+		ctx := t.Context()
 
-	userEvent := protocol.IRCMessage{
-		Kind:   protocol.KindPrivMsg,
-		From:   "testuser",
-		Target: "#general",
-		Body:   "hello everyone",
-	}
+		seedChannelWithMembers(t, sess, s, "#general", userNick(t, sess), "alpha", "beta")
+		seedInstance(t, sess, s, instanceSpec{
+			Nick:     "alpha",
+			ModelID:  "test/alpha",
+			Channels: testChannels("#general")})
+		seedInstance(t, sess, s, instanceSpec{
+			Nick:     "beta",
+			ModelID:  "test/beta",
+			Channels: testChannels("#general")})
 
-	_, err := dispatchToChannel(ctx, sess, "#general", []protocol.IRCMessage{userEvent})
-	require.NoError(t, err)
+		_, err := userSendMessage(ctx, t, sess, "#general", "hello everyone")
+		require.NoError(t, err)
 
-	// Alpha should see only the user's message.
-	require.Equal(t, []protocol.IRCMessage{userEvent}, eventsByModel["test/alpha"])
+		synctest.Wait()
 
-	// Beta should see the user's message AND alpha's reply.
-	require.Equal(t, []protocol.IRCMessage{
-		userEvent,
-		{
+		userTrigger := protocol.IRCMessage{
+			Kind:   protocol.KindPrivMsg,
+			From:   string(userNick(t, sess)),
+			Target: "#general",
+			Body:   "hello everyone",
+			At:     fixedTime,
+		}
+		alphaTrigger := protocol.IRCMessage{
 			Kind:       protocol.KindPrivMsg,
 			From:       "alpha",
 			InstanceID: testMemberID("alpha"),
 			Target:     "#general",
 			Body:       "alpha says hi",
 			At:         fixedTime,
-		},
-	}, eventsByModel["test/beta"])
+		}
+
+		require.ElementsMatch(t, []call{
+			{modelID: "test/alpha", events: []protocol.IRCMessage{userTrigger}},
+			{modelID: "test/beta", events: []protocol.IRCMessage{userTrigger}},
+			{modelID: "test/beta", events: []protocol.IRCMessage{alphaTrigger}},
+		}, calls,
+			"alpha sees only the user's message (echo gate hides its own reply); "+
+				"beta sees two separate turns — the user's message and alpha's reply "+
+				"— each as its own dispatch on the bus")
+	})
 }
 
 // --- Log capture ---

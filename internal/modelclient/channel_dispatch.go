@@ -128,11 +128,6 @@ func (d *Dispatcher) dispatchToInstances(
 		}
 
 		replies = append(replies, instReplies...)
-
-		for _, r := range instReplies {
-			ircMsg, _ := protocol.FromChannelEvent(r.Event)
-			events = append(events, ircMsg)
-		}
 	}
 
 	return replies, errors.Join(errs...)
@@ -273,7 +268,7 @@ func dispatchToInstance(
 			return nil, nil
 		}
 
-		return buildReplies(ctx, sess, channelName, inst, response.Messages), nil
+		return buildReplies(ctx, caller, channelName, inst, response.Messages), nil
 
 	default:
 		return nil, nil
@@ -297,23 +292,28 @@ func triggerSummary(events []protocol.IRCMessage) string {
 	return s
 }
 
-// buildReplies converts model reply parts into domain events and
-// persists each message. Returns the per-reply envelopes; the
-// goroutine driver in [ModelClient.dispatchTurn] emits each
-// reply's `Event` on the wire, while the synchronous
-// [Dispatcher.dispatchToInstances] driver returns replies to its
-// caller without emitting.
+// buildReplies converts model reply parts into wire commands and
+// routes each through `caller.Send`. The Send path runs the same
+// gate (`checkSendGates`) the user-client's PRIVMSG / Action path
+// runs — a `+m` channel where the model has no voice, a `+n`
+// channel the model is not in, a `+q` channel where the model is
+// not op all reject the reply at the session boundary. A rejection
+// is logged and the reply is skipped; persistence and bus fan-out
+// happen inside `sendMessageAs` / `sendActionAs` so there is no
+// path that lands a model Message without crossing the gate.
+//
+// Returns the per-reply envelopes built from each Send's
+// canonical [domain.Message] echo (`Response.Events`).
 func buildReplies(
 	ctx context.Context,
-	sess Session,
+	caller protocol.Client,
 	channelName domain.ChannelName,
 	inst *domain.Instance,
 	parts []protocol.ReplyPart,
 ) []domain.ModelReplyEvent {
 	var replies []domain.ModelReplyEvent
 
-	nick := inst.Nick()
-	instanceID := inst.ID()
+	logger := slog.Default().With("component", "modelclient")
 
 	for _, part := range parts {
 		body := strings.TrimSpace(renderReplyBody(part))
@@ -321,24 +321,47 @@ func buildReplies(
 			continue
 		}
 
-		now := sess.Now()
-		cm := domain.Message{
-			Target:     channelName,
-			From:       nick,
-			InstanceID: instanceID,
-			Body:       body,
-			Action:     part.Kind == protocol.ReplyAction,
-			At:         now,
+		var cmd protocol.Command
+		if part.Kind == protocol.ReplyAction {
+			cmd = protocol.Action{Target: channelName, Body: body}
+		} else {
+			cmd = protocol.PrivMsg{Target: channelName, Body: body}
 		}
 
-		sess.AppendEvent(ctx, channelName, cm)
+		resp, err := caller.Send(ctx, cmd)
+		if err != nil {
+			logger.ErrorContext(ctx, "model reply send failed",
+				"instance_id", inst.ID(),
+				"channel", channelName,
+				"error", err,
+			)
 
-		replies = append(replies, domain.ModelReplyEvent{
-			Channel:  channelName,
-			Event:    cm,
-			Instance: inst,
-			At:       now,
-		})
+			continue
+		}
+
+		if resp.Err != nil {
+			logger.WarnContext(ctx, "model reply rejected at send gate",
+				"instance_id", inst.ID(),
+				"channel", channelName,
+				"error", resp.Err,
+			)
+
+			continue
+		}
+
+		for _, evt := range resp.Events {
+			msg, ok := evt.(domain.Message)
+			if !ok {
+				continue
+			}
+
+			replies = append(replies, domain.ModelReplyEvent{
+				Channel:  channelName,
+				Event:    msg,
+				Instance: inst,
+				At:       msg.At,
+			})
+		}
 	}
 
 	return replies
