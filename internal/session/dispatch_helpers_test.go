@@ -2,16 +2,112 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/api"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/memory"
 	"github.com/laney/modeloff/internal/modelclient"
 	"github.com/laney/modeloff/internal/protocol"
+	"github.com/laney/modeloff/internal/ui/chatcmd"
 )
+
+// chatcmdToolRegistry is the chatcmd-derived tool registry the
+// test fixture wires into every modelclient it constructs. The
+// chatcmd grammar is the production source of truth for msg / me /
+// pass and the channel-management tools the dispatch loop now
+// drives.
+var chatcmdToolRegistry = func() *modelclient.ToolRegistry {
+	r, err := chatcmd.BuildToolRegistry()
+	if err != nil {
+		panic(fmt.Errorf("build chatcmd tool registry: %w", err))
+	}
+	return r
+}()
+
+// msgToolCalls builds a [api.CompletionResult] whose PendingToolCalls
+// invoke the `msg` tool once per body — the wire-shape the new
+// dispatch loop expects when a model wants to say something. The
+// `body` field on MsgCommand is a `[]string`, so the JSON shape is
+// an array of words (one element here per call).
+func msgToolCalls(t testing.TB, target domain.ChannelName, bodies ...string) api.CompletionResult {
+	t.Helper()
+
+	calls := make([]api.PendingToolCall, 0, len(bodies))
+	for i, body := range bodies {
+		args, err := json.Marshal(map[string]any{
+			"target": string(target),
+			"body":   []string{body},
+		})
+		require.NoError(t, err)
+
+		calls = append(calls, api.PendingToolCall{
+			ID:   fmt.Sprintf("call_msg_%d", i),
+			Name: "msg",
+			Args: args,
+		})
+	}
+
+	return api.CompletionResult{PendingToolCalls: calls}
+}
+
+// meToolCall builds a [api.CompletionResult] whose PendingToolCalls
+// invoke the `me` tool with the given action body.
+func meToolCall(t testing.TB, target domain.ChannelName, body string) api.CompletionResult {
+	t.Helper()
+
+	args, err := json.Marshal(map[string]any{
+		"target": string(target),
+		"action": []string{body},
+	})
+	require.NoError(t, err)
+
+	return api.CompletionResult{PendingToolCalls: []api.PendingToolCall{
+		{ID: "call_me_0", Name: "me", Args: args},
+	}}
+}
+
+// continueOnceWith builds a `continueWithToolResultsFn` that
+// captures the first turn's tool results into `*captured` and
+// returns `first`; every subsequent turn returns an empty result,
+// which terminates the tool loop. This lets tests pin the
+// tool-result shape from the initial round-trip without their fake
+// driving the loop forever.
+func continueOnceWith(captured *[]api.ToolResult, first api.CompletionResult) func(context.Context, *api.Conversation, []api.ToolResult) (api.CompletionResult, error) {
+	turn := 0
+	return func(_ context.Context, _ *api.Conversation, results []api.ToolResult) (api.CompletionResult, error) {
+		defer func() { turn++ }()
+		if turn == 0 {
+			*captured = results
+			return first, nil
+		}
+		return api.CompletionResult{}, nil
+	}
+}
+
+// msgSpansToolCall builds a [api.CompletionResult] whose
+// PendingToolCalls invoke the `msg` tool with structured spans
+// rather than a plain body. The dispatch loop's `msg` tool encodes
+// styled spans into IRC wire control characters via `ircfmt`; tests
+// that pin the encoded shape use this helper.
+func msgSpansToolCall(t testing.TB, target domain.ChannelName, spans []protocol.ReplySpan) api.CompletionResult {
+	t.Helper()
+
+	args, err := json.Marshal(map[string]any{
+		"target": string(target),
+		"spans":  spans,
+	})
+	require.NoError(t, err)
+
+	return api.CompletionResult{PendingToolCalls: []api.PendingToolCall{
+		{ID: "call_msg_spans_0", Name: "msg", Args: args},
+	}}
+}
 
 // dispatchToChannel runs the synchronous broadcast-to-channel
 // dispatch the test suite uses to drive end-to-end model
@@ -25,12 +121,12 @@ func dispatchToChannel(
 	sess *Session,
 	ch domain.ChannelName,
 	msgs []protocol.IRCMessage,
-) ([]domain.ModelReplyEvent, error) {
+) error {
 	f, ok := sess.modelClientFactory.(*testModelClientFactory)
 	if !ok {
-		return nil, fmt.Errorf("dispatchToChannel: factory is %T, expected *testModelClientFactory", sess.modelClientFactory)
+		return fmt.Errorf("dispatchToChannel: factory is %T, expected *testModelClientFactory", sess.modelClientFactory)
 	}
-	d := modelclient.NewDispatcher(sess, f.apiClient, f.memStore, nil, nil)
+	d := modelclient.NewDispatcher(sess, f.apiClient, f.memStore, chatcmdToolRegistry, nil)
 	return d.DispatchToChannel(ctx, ch, msgs)
 }
 
@@ -103,7 +199,7 @@ func (f *testModelClientFactory) Attach(ctx context.Context, sess *Session, inst
 	}
 
 	apiClient := f.apiClient
-	mc := modelclient.New(inst, sess, func() api.Client { return apiClient }, f.memStore, nil, nil, sess.baseContext)
+	mc := modelclient.New(inst, sess, func() api.Client { return apiClient }, f.memStore, chatcmdToolRegistry, nil, sess.baseContext)
 	f.clients[id] = mc
 	f.mu.Unlock()
 

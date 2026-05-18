@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/laney/modeloff/internal/api"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/protocol"
 )
@@ -45,9 +46,9 @@ func TestSession_PrivMsg_to_model_routes_DM_to_counterpart_only(t *testing.T) {
 		var calls []call
 
 		fake := &fakeAPIClient{
-			sendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			sendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 				calls = append(calls, call{modelID: modelID, trigger: append([]protocol.IRCMessage(nil), events...)})
-				return protocol.ModelResponse{Kind: protocol.ResponseSilence, Reason: "test"}, nil
+				return api.CompletionResult{}, nil
 			},
 		}
 

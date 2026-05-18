@@ -2,6 +2,7 @@ package command
 
 import (
 	"encoding"
+	"encoding/json"
 	"fmt"
 	"math/bits"
 	"net/url"
@@ -112,7 +113,12 @@ func (r *Registry) ForType(typ reflect.Type) Decoder {
 
 	switch typ.Kind() {
 	case reflect.Slice:
-		return r.sliceDecoder(typ)
+		if dec := r.sliceDecoder(typ); dec != nil {
+			return dec
+		}
+		if typ.Elem().Kind() == reflect.Struct {
+			return jsonDecoder()
+		}
 	case reflect.Map:
 		return r.mapDecoder(typ)
 	case reflect.Pointer:
@@ -124,6 +130,20 @@ func (r *Registry) ForType(typ reflect.Type) Decoder {
 	}
 
 	return nil
+}
+
+// jsonDecoder returns a Decoder that parses `raw` as JSON into the
+// target. It handles tool-grammar fields whose Go type is a struct
+// or struct-slice — the model passes a JSON blob, the slash parser
+// could in principle accept the same shape from the command line.
+func jsonDecoder() Decoder {
+	return DecoderFunc(func(raw string, target reflect.Value) error {
+		if err := json.Unmarshal([]byte(raw), target.Addr().Interface()); err != nil {
+			return &DecodeError{Value: raw, Expected: target.Type().String(), Err: err}
+		}
+
+		return nil
+	})
 }
 
 // RegisterDefaults registers decoders for all primitive Go kinds.

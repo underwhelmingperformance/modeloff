@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -18,27 +17,37 @@ import (
 )
 
 const (
-	maxNewlineRetries            = 2
-	maxToolLoopTurns             = 5
-	silenceReasonContentFiltered = "content filtered"
-	silenceReasonNewlineRetries  = "response contained newlines after retries"
-	silenceReasonFormatRetries   = "response contained invalid formatting after retries"
+	maxToolLoopTurns = 5
+	passToolName     = "pass"
 )
 
-// sendOutcome bundles the result of a [sendWithRetry] call plus
-// the per-attempt telemetry the dispatch turn records on its span.
-type sendOutcome struct {
-	result        api.CompletionResult
-	retryCount    int
+// turnOutcome bundles the result of a [runTurn] call plus the
+// per-turn telemetry the dispatch span records.
+type turnOutcome struct {
 	toolTurnCount int
 	passReason    string
 }
 
-// sendWithRetry sends events to a model and retries if the response
-// contains newlines in any message body. After maxNewlineRetries
-// retries, a silent pass is returned. Each attempt may involve
-// multiple API turns if the model uses memory tools.
-func sendWithRetry(
+// runTurn drives a single dispatch turn end-to-end: the initial
+// `SendEvents` call, the tool loop that executes any model-requested
+// tools and feeds their results back, and termination when the model
+// stops calling tools.
+//
+// The model's whole conversational surface is its tool calls — `msg`
+// and `me` post chat traffic, `pass` records explicit silence-with-
+// reason, memory and channel-management tools do their respective
+// work. A turn that emits no tool calls (the model genuinely has
+// nothing to do) is implicit silence; the loop exits without an API
+// retry.
+//
+// `pass` is mutually exclusive with every other tool. If the model
+// emits it alongside something else, every call in that turn is
+// rejected back to the model with an explanation and the loop
+// continues so the model can correct.
+//
+// Upstream-side silence (refusal, content filter) short-circuits
+// the turn and surfaces a stable pass reason on the span.
+func runTurn(
 	ctx context.Context,
 	apiClient api.Client,
 	sess Session,
@@ -49,141 +58,101 @@ func sendWithRetry(
 	history []protocol.IRCMessage,
 	events []protocol.IRCMessage,
 	registry *ToolRegistry,
-) (sendOutcome, error) {
-	lastRetryReason := silenceReasonNewlineRetries
-
-	for attempt := range maxNewlineRetries + 1 {
-		result, toolTurnCount, err := sendWithToolLoop(ctx, apiClient, sess, caller, inst, channelName, prompt, history, events, registry)
-		if err != nil {
-			if refused, ok := errors.AsType[*api.ErrModelRefused](err); ok {
-				return sendOutcome{
-					result: api.CompletionResult{
-						Response: protocol.ModelResponse{
-							Kind:   protocol.ResponseSilence,
-							Reason: refused.Reason,
-						},
-					},
-					retryCount:    attempt,
-					toolTurnCount: toolTurnCount,
-					passReason:    observability.PassReasonModelRefused,
-				}, nil
-			}
-
-			if errors.Is(err, api.ErrContentFiltered) {
-				return sendOutcome{
-					result: api.CompletionResult{
-						Response: protocol.ModelResponse{
-							Kind:   protocol.ResponseSilence,
-							Reason: silenceReasonContentFiltered,
-						},
-					},
-					retryCount:    attempt,
-					toolTurnCount: toolTurnCount,
-					passReason:    observability.PassReasonContentFiltered,
-				}, nil
-			}
-
-			return sendOutcome{}, err
-		}
-
-		if result.Response.Kind != protocol.ResponseReply || len(result.Response.Messages) == 0 {
-			return sendOutcome{
-				result:        result,
-				retryCount:    attempt,
-				toolTurnCount: toolTurnCount,
-				passReason:    passReasonForResponse(result.Response),
-			}, nil
-		}
-
-		hasNewlines := containsNewlines(result.Response)
-		hasInvalidFormatting := containsInvalidFormatting(result.Response)
-		if !hasNewlines && !hasInvalidFormatting {
-			return sendOutcome{
-				result:        result,
-				retryCount:    attempt,
-				toolTurnCount: toolTurnCount,
-			}, nil
-		}
-
-		if hasInvalidFormatting {
-			lastRetryReason = silenceReasonFormatRetries
-		} else {
-			lastRetryReason = silenceReasonNewlineRetries
-		}
-	}
-
-	resp := protocol.ModelResponse{
-		Kind:   protocol.ResponseSilence,
-		Reason: lastRetryReason,
-	}
-
-	return sendOutcome{
-		result:     api.CompletionResult{Response: resp},
-		retryCount: maxNewlineRetries,
-		passReason: passReasonForResponse(resp),
-	}, nil
-}
-
-// sendWithToolLoop sends events to a model and handles tool calls in a
-// loop until the model replies, passes, or exceeds the tool turn limit.
-func sendWithToolLoop(
-	ctx context.Context,
-	apiClient api.Client,
-	sess Session,
-	caller protocol.Client,
-	inst *domain.Instance,
-	channelName domain.ChannelName,
-	prompt string,
-	history []protocol.IRCMessage,
-	events []protocol.IRCMessage,
-	registry *ToolRegistry,
-) (api.CompletionResult, int, error) {
+) (turnOutcome, error) {
 	definitions := registry.Definitions()
 
 	result, err := apiClient.SendEvents(ctx, inst.ModelID, inst.ID(), prompt, history, events, definitions...)
 	if err != nil {
-		return api.CompletionResult{}, 0, err
+		if outcome, ok := classifyUpstreamSilence(err); ok {
+			return outcome, nil
+		}
+
+		return turnOutcome{}, err
 	}
 
-	toolTurnCount := 0
-	for range maxToolLoopTurns {
+	outcome := turnOutcome{}
 
+	for range maxToolLoopTurns {
 		if len(result.PendingToolCalls) == 0 {
-			return result, toolTurnCount, nil
+			outcome.passReason = observability.PassReasonModelPass
+			return outcome, nil
 		}
 
 		if registry == nil {
-			return result, toolTurnCount, nil
+			outcome.passReason = observability.PassReasonModelPass
+			return outcome, nil
 		}
 
-		toolResults := executeTools(ctx, sess, ToolContext{
+		toolResults, sawPass := executeTools(ctx, sess, ToolContext{
 			Session: sess,
 			Actor:   inst,
 			Channel: channelName,
 			Client:  caller,
 		}, registry, result.PendingToolCalls)
-		toolTurnCount++
+		outcome.toolTurnCount++
+
+		if sawPass {
+			outcome.passReason = observability.PassReasonModelPass
+			return outcome, nil
+		}
 
 		result, err = apiClient.ContinueWithToolResults(ctx, result.Conversation, toolResults, definitions...)
 		if err != nil {
-			return api.CompletionResult{}, toolTurnCount, err
+			if next, ok := classifyUpstreamSilence(err); ok {
+				next.toolTurnCount = outcome.toolTurnCount
+				return next, nil
+			}
+
+			return outcome, err
 		}
 	}
 
-	return result, toolTurnCount, nil
+	// The model kept emitting tool calls past the loop bound — the
+	// session-side analogue of the old structured-reply retry
+	// exhaustion. The final batch of tool calls has already executed;
+	// we just don't ask the model for more.
+	outcome.passReason = observability.PassReasonToolLoopExhausted
+	return outcome, nil
 }
 
-// executeTools runs pending tool calls and returns the results to feed
-// back to the model.
+// classifyUpstreamSilence maps known upstream-side failure modes
+// (refusal, content filter) to a stable pass reason. Anything else
+// propagates as a transport / parse error.
+func classifyUpstreamSilence(err error) (turnOutcome, bool) {
+	if _, ok := errors.AsType[*api.ErrModelRefused](err); ok {
+		return turnOutcome{passReason: observability.PassReasonModelRefused}, true
+	}
+
+	if errors.Is(err, api.ErrContentFiltered) {
+		return turnOutcome{passReason: observability.PassReasonContentFiltered}, true
+	}
+
+	return turnOutcome{}, false
+}
+
+// executeTools runs pending tool calls and returns the results to
+// feed back to the model. The second return value reports whether
+// the model called the `pass` tool — that ends the turn after the
+// current batch executes (or, if mixed with other tools, results
+// in a turn-wide rejection per the pass-exclusivity rule). The
+// rich reason text the model supplied to `pass` lands on the
+// per-call execute_tool span as `pass.reason`; the dispatch-turn
+// span carries the stable enum.
 func executeTools(
 	ctx context.Context,
 	sess Session,
 	toolCtx ToolContext,
 	registry *ToolRegistry,
 	calls []api.PendingToolCall,
-) []api.ToolResult {
+) ([]api.ToolResult, bool) {
+	if reject := rejectMixedPass(calls); reject != nil {
+		return reject, true
+	}
+
 	results := make([]api.ToolResult, 0, len(calls))
 	tracer := sess.TracerProvider().Tracer("github.com/laney/modeloff/internal/modelclient")
+
+	var sawPass bool
 
 	for _, call := range calls {
 		toolName := call.Name
@@ -218,50 +187,53 @@ func executeTools(
 
 		callSpan.End()
 
+		if toolName == passToolName {
+			sawPass = true
+		}
+
 		data, _ := json.Marshal(payload)
 		results = append(results, api.ToolResult{ToolCallID: call.ID, Content: string(data)})
 	}
 
-	return results
+	return results, sawPass
 }
 
-func passReasonForResponse(response protocol.ModelResponse) string {
-	if response.Kind != protocol.ResponseSilence {
-		return ""
-	}
+// rejectMixedPass enforces the rule that `pass` is mutually
+// exclusive with every other tool in the same turn. When violated,
+// every call (including the pass itself) receives an error result
+// explaining the rule. The caller treats the rejection as a turn-
+// ending silence so the model gets a single retry opportunity — the
+// next turn carries the rejection results as tool-role messages and
+// the model can issue a corrected call.
+func rejectMixedPass(calls []api.PendingToolCall) []api.ToolResult {
+	hasPass := false
+	hasOther := false
 
-	switch response.Reason {
-	case silenceReasonContentFiltered:
-		return observability.PassReasonContentFiltered
-	case silenceReasonNewlineRetries:
-		return observability.PassReasonNewlineRetryExhausted
-	case silenceReasonFormatRetries:
-		return observability.PassReasonFormatRetryExhausted
-	default:
-		return observability.PassReasonModelPass
-	}
-}
-
-// containsNewlines reports whether any reply part body contains a
-// newline after trimming.
-func containsNewlines(resp protocol.ModelResponse) bool {
-	for _, part := range resp.Messages {
-		if strings.Contains(strings.TrimSpace(part.Body), "\n") {
-			return true
+	for _, call := range calls {
+		if call.Name == passToolName {
+			hasPass = true
+			continue
 		}
+
+		hasOther = true
 	}
 
-	return false
-}
-
-func containsInvalidFormatting(resp protocol.ModelResponse) bool {
-	for _, part := range resp.Messages {
-		if err := protocol.ValidateReplyPart(part); err != nil {
-			return true
-		}
+	if !hasPass || !hasOther {
+		return nil
 	}
 
-	return false
+	payload := ToolResultPayload{
+		OK:    false,
+		Error: "pass cannot be combined with any other tool in the same turn — call pass on its own, or omit it",
+	}
+
+	data, _ := json.Marshal(payload)
+	rejected := make([]api.ToolResult, 0, len(calls))
+	for _, call := range calls {
+		rejected = append(rejected, api.ToolResult{ToolCallID: call.ID, Content: string(data)})
+	}
+
+	return rejected
 }
 
 // classifyEnsureModelError maps the errors produced by

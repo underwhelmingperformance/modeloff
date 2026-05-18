@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/invopop/jsonschema"
+
 	"github.com/laney/modeloff/internal/domain"
 )
 
@@ -141,9 +143,14 @@ type Node[C KindProvider] struct {
 	RequiredCapabilities []Capability
 	Tool                 bool
 	ToolDesc             string
-	Positionals          []Positional[C]
-	Flags                []Flag[C]
-	Children             []*Node[C]
+
+	// ToolOnly hides the node from the slash-command parser and
+	// completion path; only the model-tool path picks it up. The
+	// zero value is slash-callable.
+	ToolOnly    bool
+	Positionals []Positional[C]
+	Flags       []Flag[C]
+	Children    []*Node[C]
 
 	// factory creates a zero-valued pointer to the command struct for
 	// parsing. Nil for group nodes that have no struct of their own.
@@ -439,15 +446,25 @@ type Completer[C KindProvider] interface {
 }
 
 // Find looks up a top-level node by name, falling back to aliases
-// if no exact name match is found.
+// if no exact name match is found. Tool-only nodes (registered with
+// `tool:""` but no `cmd:""`) are skipped — they are not callable as
+// slash commands.
 func (s Set[C]) Find(name string) *Node[C] {
 	for _, node := range s.Commands {
+		if node.ToolOnly {
+			continue
+		}
+
 		if node.Name == name {
 			return node
 		}
 	}
 
 	for _, node := range s.Commands {
+		if node.ToolOnly {
+			continue
+		}
+
 		if slices.Contains(node.Aliases, name) {
 			return node
 		}
@@ -738,9 +755,33 @@ func toolSchemaForType(typ reflect.Type) map[string]any {
 			"items": toolSchemaForType(typ.Elem()),
 		}
 
+	case reflect.Struct:
+		return structSchemaViaReflector(typ)
+
 	default:
 		return map[string]any{"type": "string"}
 	}
+}
+
+// structSchemaViaReflector reflects a Go struct into a JSON-Schema
+// fragment via invopop/jsonschema. Used for tool-parameter fields
+// whose type is a nested struct (e.g. `[]protocol.ReplySpan`),
+// which the simple kind-switch above can't describe.
+func structSchemaViaReflector(typ reflect.Type) map[string]any {
+	reflector := jsonschema.Reflector{DoNotReference: true}
+	schema := reflector.ReflectFromType(typ)
+
+	data, err := json.Marshal(schema)
+	if err != nil {
+		return map[string]any{"type": "object"}
+	}
+
+	var out map[string]any
+	if err := json.Unmarshal(data, &out); err != nil {
+		return map[string]any{"type": "object"}
+	}
+
+	return out
 }
 
 func clampRaw(raw string) string {
@@ -763,6 +804,10 @@ func commandSuggestions[C KindProvider](set Set[C], kind domain.ChannelKind, cap
 	suggestions := make([]Suggestion, 0, len(set.Commands))
 
 	for _, node := range set.Commands {
+		if node.ToolOnly {
+			continue
+		}
+
 		if node.RequiredKind != nil && *node.RequiredKind != kind {
 			continue
 		}
@@ -797,6 +842,10 @@ func VisibleCommands[C KindProvider](set Set[C], caps CapabilityHolder) []*Node[
 	visible := make([]*Node[C], 0, len(set.Commands))
 
 	for _, node := range set.Commands {
+		if node.ToolOnly {
+			continue
+		}
+
 		if !holds(caps, node.RequiredCapabilities) {
 			continue
 		}

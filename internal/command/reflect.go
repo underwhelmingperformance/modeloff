@@ -254,11 +254,16 @@ func build[C KindProvider](grammar any) ([]*Node[C], error) {
 			continue
 		}
 
-		if _, ok := ft.Tag.Lookup("cmd"); !ok {
+		_, hasCmd := ft.Tag.Lookup("cmd")
+		_, hasTool := ft.Tag.Lookup("tool")
+		if !hasCmd && !hasTool {
 			continue
 		}
 
 		node, err := buildNode[C](ft, v.Field(i))
+		if err == nil {
+			node.ToolOnly = !hasCmd
+		}
 		if err != nil {
 			return nil, &FieldError{Field: ft.Name, Err: err}
 		}

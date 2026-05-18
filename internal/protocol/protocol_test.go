@@ -288,63 +288,74 @@ func TestFromChannelEvent_propagates_instance_id(t *testing.T) {
 }
 
 func TestValidateReplyPart(t *testing.T) {
-	t.Run("valid body", func(t *testing.T) {
-		err := ValidateReplyPart(ReplyPart{
-			Kind: ReplyMessage,
-			Body: "hello world",
-		})
+	fg := uint8(4)
+	outOfRange := uint8(16)
 
-		require.NoError(t, err)
-	})
-
-	t.Run("valid spans", func(t *testing.T) {
-		fg := uint8(4)
-		err := ValidateReplyPart(ReplyPart{
-			Kind: ReplyMessage,
-			Spans: []ReplySpan{
-				{Text: "hello "},
-				{Text: "world", Style: &ReplyStyle{Bold: true, FG: &fg}},
+	tests := []struct {
+		name    string
+		part    ReplyPart
+		wantErr string
+	}{
+		{
+			name: "valid body",
+			part: ReplyPart{Kind: ReplyMessage, Body: "hello world"},
+		},
+		{
+			name: "valid spans",
+			part: ReplyPart{
+				Kind: ReplyMessage,
+				Spans: []ReplySpan{
+					{Text: "hello "},
+					{Text: "world", Style: &ReplyStyle{Bold: true, FG: &fg}},
+				},
 			},
+		},
+		{
+			name:    "rejects body and spans together",
+			part:    ReplyPart{Body: "hello", Spans: []ReplySpan{{Text: "world"}}},
+			wantErr: "exactly one of body or spans",
+		},
+		{
+			name:    "rejects newline in body",
+			part:    ReplyPart{Kind: ReplyMessage, Body: "line one\nline two"},
+			wantErr: "reply body must not contain newlines",
+		},
+		{
+			name:    "rejects empty span",
+			part:    ReplyPart{Spans: []ReplySpan{{Text: ""}}},
+			wantErr: "span 0 is empty",
+		},
+		{
+			name:    "rejects newline in span",
+			part:    ReplyPart{Spans: []ReplySpan{{Text: "line one\nline two"}}},
+			wantErr: "span 0 contains a newline",
+		},
+		{
+			name:    "rejects out-of-range foreground colour",
+			part:    ReplyPart{Spans: []ReplySpan{{Text: "hello", Style: &ReplyStyle{FG: &outOfRange}}}},
+			wantErr: "foreground colour 16 is out of range",
+		},
+		{
+			name:    "rejects out-of-range background colour",
+			part:    ReplyPart{Spans: []ReplySpan{{Text: "hello", Style: &ReplyStyle{BG: &outOfRange}}}},
+			wantErr: "background colour 16 is out of range",
+		},
+		{
+			name:    "rejects missing body and spans",
+			part:    ReplyPart{},
+			wantErr: "exactly one of body or spans",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateReplyPart(tc.part)
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tc.wantErr)
 		})
-
-		require.NoError(t, err)
-	})
-
-	t.Run("rejects body and spans together", func(t *testing.T) {
-		err := ValidateReplyPart(ReplyPart{
-			Body: "hello",
-			Spans: []ReplySpan{
-				{Text: "world"},
-			},
-		})
-
-		require.ErrorContains(t, err, "exactly one of body or spans")
-	})
-
-	t.Run("rejects empty span", func(t *testing.T) {
-		err := ValidateReplyPart(ReplyPart{
-			Spans: []ReplySpan{
-				{Text: ""},
-			},
-		})
-
-		require.ErrorContains(t, err, "span 0 is empty")
-	})
-
-	t.Run("rejects invalid style colour", func(t *testing.T) {
-		fg := uint8(16)
-		err := ValidateReplyPart(ReplyPart{
-			Spans: []ReplySpan{
-				{Text: "hello", Style: &ReplyStyle{FG: &fg}},
-			},
-		})
-
-		require.ErrorContains(t, err, "foreground colour 16 is out of range")
-	})
-
-	t.Run("rejects missing body and spans", func(t *testing.T) {
-		err := ValidateReplyPart(ReplyPart{})
-
-		require.ErrorContains(t, err, "exactly one of body or spans")
-	})
+	}
 }
+

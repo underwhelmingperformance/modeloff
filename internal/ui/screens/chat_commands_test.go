@@ -32,9 +32,7 @@ func (stubAPI) SendEvents(
 	[]protocol.IRCMessage,
 	...api.ToolDefinition,
 ) (api.CompletionResult, error) {
-	return api.CompletionResult{
-		Response: protocol.ModelResponse{Kind: protocol.ResponseSilence},
-	}, nil
+	return api.CompletionResult{}, nil
 }
 
 func (stubAPI) ContinueWithToolResults(
@@ -43,9 +41,7 @@ func (stubAPI) ContinueWithToolResults(
 	[]api.ToolResult,
 	...api.ToolDefinition,
 ) (api.CompletionResult, error) {
-	return api.CompletionResult{
-		Response: protocol.ModelResponse{Kind: protocol.ResponseSilence},
-	}, nil
+	return api.CompletionResult{}, nil
 }
 
 func (stubAPI) GenerateNick(context.Context, domain.ModelID, string, []domain.Nick) (api.NicknameResult, error) {
@@ -112,6 +108,7 @@ func TestChatScreen_Commands_specs_are_complete(t *testing.T) {
 		{Name: "help", Help: "Show available commands."},
 		{Name: "clear", Help: "Clear the current window."},
 		{Name: "quit", Help: "Exit modeloff."},
+		{Name: "pass", Help: ""},
 	}, specs)
 }
 
@@ -145,6 +142,7 @@ func TestChatScreen_Commands_exposes_chat_commands(t *testing.T) {
 		"help",
 		"clear",
 		"quit",
+		"pass",
 	}, names)
 }
 

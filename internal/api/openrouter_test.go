@@ -209,103 +209,38 @@ func TestOpenRouterClient_ListModels_error_branches(t *testing.T) {
 	}
 }
 
-func TestOpenRouterClient_SendEvents(t *testing.T) {
-	tests := []struct {
-		name    string
-		content string
-		want    CompletionResult
-		wantErr bool
-	}{
-		{
-			name:    "model replies",
-			content: `{"response":{"kind":"reply","messages":[{"type":"message","body":"Hello there!"}]}}`,
-			want: CompletionResult{
-				RequestID: "chatcmpl_test",
-				Usage: Usage{
-					PromptTokens:     10,
-					CompletionTokens: 5,
-					TotalTokens:      15,
-					CostCredits:      0.125,
-				},
-				Response: protocol.ModelResponse{
-					Kind: protocol.ResponseReply,
-					Messages: []protocol.ReplyPart{
-						{Kind: protocol.ReplyMessage, Body: "Hello there!"},
-					},
-				},
-			},
+// TestOpenRouterClient_SendEvents_ignoresContent pins the new
+// contract: the model speaks via tool calls only, and any text
+// content the model emits alongside is discarded by the parser.
+// A completion with no tool calls is silence (empty PendingToolCalls,
+// nil Conversation).
+func TestOpenRouterClient_SendEvents_ignoresContent(t *testing.T) {
+	srv := newStructuredChatServer(t, "i should not be parsed")
+
+	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
+
+	got, err := client.SendEvents(
+		t.Context(),
+		"test/model",
+		"",
+		"You are a test bot.",
+		nil,
+		[]protocol.IRCMessage{
+			{Kind: protocol.KindPrivMsg, From: "alice", Target: "#test", Body: "hi"},
 		},
-		{
-			name:    "model passes",
-			content: `{"response":{"kind":"pass","reason":"Nothing to add"}}`,
-			want: CompletionResult{
-				RequestID: "chatcmpl_test",
-				Usage: Usage{
-					PromptTokens:     10,
-					CompletionTokens: 5,
-					TotalTokens:      15,
-					CostCredits:      0.125,
-				},
-				Response: protocol.ModelResponse{
-					Kind:   protocol.ResponseSilence,
-					Reason: "Nothing to add",
-				},
-			},
+		testMemoryTools(true)...,
+	)
+
+	require.NoError(t, err)
+	require.Equal(t, CompletionResult{
+		RequestID: "chatcmpl_test",
+		Usage: Usage{
+			PromptTokens:     10,
+			CompletionTokens: 5,
+			TotalTokens:      15,
+			CostCredits:      0.125,
 		},
-		{
-			name:    "unknown response kind",
-			content: `{"response":{"kind":"shout","text":"HELLO"}}`,
-			wantErr: true,
-		},
-		{
-			name:    "model replies with multiple messages including action",
-			content: `{"response":{"kind":"reply","messages":[{"type":"message","body":"hey"},{"type":"action","body":"waves"}]}}`,
-			want: CompletionResult{
-				RequestID: "chatcmpl_test",
-				Usage: Usage{
-					PromptTokens:     10,
-					CompletionTokens: 5,
-					TotalTokens:      15,
-					CostCredits:      0.125,
-				},
-				Response: protocol.ModelResponse{
-					Kind: protocol.ResponseReply,
-					Messages: []protocol.ReplyPart{
-						{Kind: protocol.ReplyMessage, Body: "hey"},
-						{Kind: protocol.ReplyAction, Body: "waves"},
-					},
-				},
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			srv := newStructuredChatServer(t, tt.content)
-
-			client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
-
-			got, err := client.SendEvents(
-				t.Context(),
-				"test/model",
-				"",
-				"You are a test bot.",
-				nil,
-				[]protocol.IRCMessage{
-					{Kind: protocol.KindPrivMsg, From: "alice", Target: "#test", Body: "hi"},
-				},
-				testMemoryTools(true)...,
-			)
-
-			if tt.wantErr {
-				require.Error(t, err)
-				return
-			}
-
-			require.NoError(t, err)
-			require.Equal(t, tt.want, got)
-		})
-	}
+	}, got)
 }
 
 func TestCompletionParseErrorKind(t *testing.T) {
@@ -1018,13 +953,14 @@ func TestOpenRouterClient_SendEvents_emptyChoices(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, CompletionResult{
 		RequestID: "chatcmpl_no_choices",
-		Response: protocol.ModelResponse{
-			Kind:   protocol.ResponseSilence,
-			Reason: "empty response",
-		},
 	}, got)
 }
 
+// TestOpenRouterClient_SendEvents_emptyResponse pins that a
+// completion with no content and no tool calls reads as silence
+// (the dispatch loop terminates without an error), since text
+// content is now ignored and the model communicates exclusively
+// through tools.
 func TestOpenRouterClient_SendEvents_emptyResponse(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -1043,12 +979,14 @@ func TestOpenRouterClient_SendEvents_emptyResponse(t *testing.T) {
 
 	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
 
-	_, err := client.SendEvents(
+	got, err := client.SendEvents(
 		t.Context(), "test/model", "", "prompt", nil,
 		[]protocol.IRCMessage{{Kind: protocol.KindPrivMsg, From: "a", Target: "#t", Body: "x"}},
 	)
-	require.Error(t, err)
-	require.EqualError(t, err, "model returned no response and no tool calls")
+	require.NoError(t, err)
+	require.Empty(t, got.PendingToolCalls)
+	require.Nil(t, got.Conversation)
+	require.Equal(t, "chatcmpl_empty", got.RequestID)
 }
 
 func TestOpenRouterClient_ContinueWithToolResults(t *testing.T) {
@@ -1083,9 +1021,11 @@ func TestOpenRouterClient_ContinueWithToolResults(t *testing.T) {
 			"tool_call_id": "call_123",
 		}, lastMsg)
 
-		require.NoError(t, json.NewEncoder(w).Encode(structuredChatResponse(
-			`{"response":{"kind":"reply","messages":[{"type":"message","body":"stored it"}]}}`,
-		)))
+		require.NoError(t, json.NewEncoder(w).Encode(toolCallResponse(toolCallFixture{
+			id:   "call_msg_1",
+			name: "msg",
+			args: `{"target": "#test", "body": "stored it"}`,
+		})))
 	}))
 	t.Cleanup(srv.Close)
 
@@ -1119,10 +1059,13 @@ func TestOpenRouterClient_ContinueWithToolResults(t *testing.T) {
 		testMemoryTools(false)...,
 	)
 	require.NoError(t, err)
-	require.Equal(t, protocol.ModelResponse{
-		Kind:     protocol.ResponseReply,
-		Messages: []protocol.ReplyPart{{Kind: protocol.ReplyMessage, Body: "stored it"}},
-	}, continued.Response)
+	require.Equal(t, []PendingToolCall{
+		{
+			ID:   "call_msg_1",
+			Name: "msg",
+			Args: json.RawMessage(`{"target": "#test", "body": "stored it"}`),
+		},
+	}, continued.PendingToolCalls)
 }
 
 func TestOpenRouterClient_GeneratePersonas(t *testing.T) {
@@ -1189,6 +1132,7 @@ func TestOpenRouterClient_GeneratePersonas_invalidJSON(t *testing.T) {
 // --- Test helpers ---
 
 type toolCallFixture struct {
+	id   string
 	name string
 	args string
 }
@@ -1231,7 +1175,7 @@ func toolCallResponse(tc toolCallFixture) map[string]any {
 					"content": "",
 					"tool_calls": []map[string]any{
 						{
-							"id":   "call_123",
+							"id":   callID(tc),
 							"type": "function",
 							"function": map[string]any{
 								"name":      tc.name,
@@ -1245,6 +1189,14 @@ func toolCallResponse(tc toolCallFixture) map[string]any {
 			},
 		},
 	}
+}
+
+func callID(tc toolCallFixture) string {
+	if tc.id != "" {
+		return tc.id
+	}
+
+	return "call_123"
 }
 
 func newStructuredChatServer(t *testing.T, content string) *httptest.Server {
@@ -1390,98 +1342,6 @@ func TestContinueWithToolResults_logs_token_counts(t *testing.T) {
 	require.Equal(t, 0.125, record["cost_credits"])
 }
 
-func TestModelResponseSchema_inlines_all_definitions(t *testing.T) {
-	want := map[string]any{
-		"$id":                  "https://github.com/laney/modeloff/internal/api/model-response-wrapper",
-		"$schema":              "https://json-schema.org/draft/2020-12/schema",
-		"additionalProperties": false,
-		"type":                 "object",
-		"required":             []any{"response"},
-		"properties": map[string]any{
-			"response": map[string]any{
-				"anyOf": []any{
-					map[string]any{
-						"additionalProperties": false,
-						"type":                 "object",
-						"required":             []any{"kind", "messages"},
-						"properties": map[string]any{
-							"kind": map[string]any{
-								"const": "reply",
-								"type":  "string",
-							},
-							"messages": map[string]any{
-								"description": "One or more messages to send.",
-								"type":        "array",
-								"items": map[string]any{
-									"additionalProperties": false,
-									"type":                 "object",
-									"required":             []any{"type"},
-									"properties": map[string]any{
-										"type": map[string]any{
-											"description": `"message" for a regular message, "action" for a /me action.`,
-											"type":        "string",
-											"enum":        []any{"message", "action"},
-										},
-										"body": map[string]any{
-											"description": "The plain message text. For actions, just the action body without /me. Provide either body or spans, not both.",
-											"type":        "string",
-										},
-										"spans": map[string]any{
-											"description": "Optional styled spans. Prefer this over raw IRC control characters when you want formatting. Provide either spans or body, not both.",
-											"type":        "array",
-											"items": map[string]any{
-												"$id":                  "https://github.com/laney/modeloff/internal/protocol/reply-span",
-												"$schema":              "https://json-schema.org/draft/2020-12/schema",
-												"additionalProperties": false,
-												"type":                 "object",
-												"required":             []any{"text"},
-												"properties": map[string]any{
-													"text": map[string]any{
-														"type": "string",
-													},
-													"style": map[string]any{
-														"additionalProperties": false,
-														"type":                 "object",
-														"properties": map[string]any{
-															"bold":      map[string]any{"type": "boolean"},
-															"italic":    map[string]any{"type": "boolean"},
-															"underline": map[string]any{"type": "boolean"},
-															"reverse":   map[string]any{"type": "boolean"},
-															"strike":    map[string]any{"type": "boolean"},
-															"fg":        map[string]any{"type": "integer"},
-															"bg":        map[string]any{"type": "integer"},
-														},
-													},
-												},
-											},
-										},
-									},
-								},
-							},
-						},
-					},
-					map[string]any{
-						"additionalProperties": false,
-						"type":                 "object",
-						"required":             []any{"kind", "reason"},
-						"properties": map[string]any{
-							"kind": map[string]any{
-								"const": "pass",
-								"type":  "string",
-							},
-							"reason": map[string]any{
-								"description": "A brief reason for not replying.",
-								"type":        "string",
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-
-	require.Equal(t, want, modelResponseSchemaMap)
-}
 
 // hangingTransport is an http.RoundTripper that blocks every request
 // until its context is cancelled, then returns the context error.

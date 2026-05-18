@@ -136,9 +136,26 @@ func (mc *ModelClient) Identity() protocol.ClientID {
 }
 
 // Send routes `cmd` through the session's dispatcher with this
-// client as the issuing actor.
+// client as the issuing actor. Successful [domain.Message] events
+// in `Response.Events` are filed into the model's rolling history
+// buffer; the originator-suppression rule (RFC 2812 §3.3.1) keeps
+// them off the bus.
 func (mc *ModelClient) Send(ctx context.Context, cmd protocol.Command) (protocol.Response, error) {
-	return mc.sess.Handle(ctx, mc, cmd)
+	resp, err := mc.sess.Handle(ctx, mc, cmd)
+	if err != nil || resp.Err != nil {
+		return resp, err
+	}
+
+	for _, evt := range resp.Events {
+		msg, ok := evt.(domain.Message)
+		if !ok {
+			continue
+		}
+
+		mc.hist.append(ctx, mc.sess, mc.instance.ID(), domain.StoredEvent{Event: msg}, msg.Target)
+	}
+
+	return resp, nil
 }
 
 // Events returns the per-subscription delivery stream, or nil if

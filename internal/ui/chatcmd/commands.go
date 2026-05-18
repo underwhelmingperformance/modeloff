@@ -8,6 +8,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/config"
@@ -410,8 +412,9 @@ func (c KickCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) mo
 // focusing) when a send goes to a nick the user has no open
 // window for.
 type MsgCommand struct {
-	Target string   `arg:"" help:"#channel or nick to message"`
-	Body   []string `arg:"" optional:"" nargs:"1" help:"Message text"`
+	Target string              `arg:"" help:"#channel or nick to message"`
+	Body   []string            `arg:"" optional:"" nargs:"1" help:"Plain message text. Provide either body or spans, not both."`
+	Spans  []protocol.ReplySpan `optional:"" help:"Styled spans for IRC formatting. Each span has text and optional style (bold, italic, underline, reverse, strike, fg, bg as palette 0..15). Provide either body or spans, not both."`
 }
 
 // Sources implements command.Completer.
@@ -572,31 +575,64 @@ func (c QueryCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 // are in or to a peer's nick. There is no UI window involved
 // and no "open DM" step — DMs are stateless on the server side,
 // and the conversation lives in the events log.
+//
+// The tool accepts either a plain `body` or styled `spans`;
+// `renderReplyPart` validates the structural shape (exactly one of
+// body/spans, no embedded newlines, spans are non-empty, colour
+// values in range) and renders spans into IRC wire control
+// characters via `ircfmt`. Validation failure returns an error
+// tool-result so the model can self-correct on its next call.
 func (c MsgCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolResultPayload {
-	body := strings.TrimSpace(strings.Join(c.Body, " "))
-	if body == "" {
-		return modelclient.ToolResultPayload{OK: false, Error: "message body is required"}
+	body, err := renderReplyPart(protocol.ReplyPart{
+		Kind:  protocol.ReplyMessage,
+		Body:  strings.TrimSpace(strings.Join(c.Body, " ")),
+		Spans: c.Spans,
+	})
+	if err != nil {
+		return modelclient.ToolResultPayload{OK: false, Error: err.Error()}
 	}
 
-	target := domain.ChannelName(c.Target)
+	target, err := resolveMsgTarget(ctx, tc, c.Target)
+	if err != nil {
+		return modelclient.ToolResultPayload{OK: false, Error: err.Error()}
+	}
+
+	resp, sendErr := tc.Client.Send(ctx, protocol.PrivMsg{Target: target, Body: body})
+	return resolveSendResult(resp, sendErr, "messaged "+c.Target)
+}
+
+// resolveMsgTarget normalises the model-supplied msg/me target into
+// a [domain.ChannelName] the session's send path accepts. A `#`-
+// prefixed value is a channel, used as-is. A bare value is first
+// looked up as a nick (the model normally sees peers by nick in
+// chat events); if no instance owns that nick, the value is assumed
+// to already be a DM key (`InstanceID`) and is passed through.
+// Unknown values that match neither a channel, nick, nor existing
+// instance surface as `UnknownNickError`.
+func resolveMsgTarget(ctx context.Context, tc modelclient.ToolContext, raw string) (domain.ChannelName, error) {
+	target := domain.ChannelName(raw)
 
 	if domain.InferChannelKind(target) == domain.KindChannel {
-		return sendToolCommand(ctx, tc, c, "messaged "+c.Target)
+		return target, nil
 	}
 
-	resolved, err := tc.Session.ResolveNick(ctx, domain.Nick(c.Target))
-	if err != nil {
-		if errors.Is(err, store.ErrNoSuchNick) {
-			return modelclient.ToolResultPayload{OK: false, Error: domain.UnknownNickError{Nick: domain.Nick(c.Target), At: time.Now()}.Error()}
-		}
-
-		return modelclient.ToolResultPayload{OK: false, Error: fmt.Errorf("resolve nick: %w", err).Error()}
+	resolved, err := tc.Session.ResolveNick(ctx, domain.Nick(raw))
+	if err == nil {
+		return domain.ChannelName(resolved.ID()), nil
 	}
 
-	resp, err := tc.Client.Send(ctx, protocol.PrivMsg{
-		Target: domain.ChannelName(resolved.ID()),
-		Body:   body,
-	})
+	if !errors.Is(err, store.ErrNoSuchNick) {
+		return "", fmt.Errorf("resolve nick: %w", err)
+	}
+
+	return target, nil
+}
+
+// resolveSendResult flattens a `caller.Send` outcome into the
+// tool-result envelope the model sees. Send-level errors and gate
+// rejections both surface as `OK: false`; a successful send returns
+// the caller-supplied summary.
+func resolveSendResult(resp protocol.Response, err error, summary string) modelclient.ToolResultPayload {
 	if err != nil {
 		return modelclient.ToolResultPayload{OK: false, Error: err.Error()}
 	}
@@ -605,10 +641,7 @@ func (c MsgCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) mod
 		return modelclient.ToolResultPayload{OK: false, Error: resp.Err.Error()}
 	}
 
-	return modelclient.ToolResultPayload{
-		OK:      true,
-		Summary: "messaged " + c.Target,
-	}
+	return modelclient.ToolResultPayload{OK: true, Summary: summary}
 }
 
 // NickCommand represents `/nick <new_nick>`.
@@ -835,7 +868,8 @@ func (c TopicCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) m
 
 // MeCommand represents `/me <action>`.
 type MeCommand struct {
-	Action []string `arg:"" nargs:"1" help:"Action text"`
+	Action []string            `arg:"" optional:"" nargs:"1" help:"Plain action text. Provide either action or spans, not both."`
+	Spans  []protocol.ReplySpan `optional:"" help:"Styled spans for IRC formatting. Each span has text and optional style (bold, italic, underline, reverse, strike, fg, bg as palette 0..15). Provide either action or spans, not both."`
 }
 
 // ToCommand builds the wire-protocol command for `/me`.
@@ -862,13 +896,26 @@ func (c MeCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	}
 }
 
-// RunTool implements ToolCommand.
+// RunTool implements ToolCommand. The action body goes through the
+// same validate+render path as `msg`: plain `action` text or styled
+// `spans`, exactly one, no newlines, etc. Encoded output is sent as
+// a `/me`-style Action to the active channel.
 func (c MeCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolResultPayload {
 	if tc.Channel == "" {
 		return modelclient.ToolResultPayload{OK: false, Error: "no active channel"}
 	}
 
-	return sendToolCommand(ctx, tc, c, "sent action to "+string(tc.Channel))
+	body, err := renderReplyPart(protocol.ReplyPart{
+		Kind:  protocol.ReplyAction,
+		Body:  strings.TrimSpace(strings.Join(c.Action, " ")),
+		Spans: c.Spans,
+	})
+	if err != nil {
+		return modelclient.ToolResultPayload{OK: false, Error: err.Error()}
+	}
+
+	resp, sendErr := tc.Client.Send(ctx, protocol.Action{Target: tc.Channel, Body: body})
+	return resolveSendResult(resp, sendErr, "sent action to "+string(tc.Channel))
 }
 
 // WhoisCommand represents `/whois <nick>`.
@@ -1459,4 +1506,25 @@ func normaliseTimestampFormat(parts []string) *string {
 	}
 
 	return &joined
+}
+
+// PassCommand is the model-only `pass` tool. The reason lands on
+// the per-tool-call observability span and as the tool result
+// summary, distinguishing a deliberate pass from the no-tool-call
+// silence.
+type PassCommand struct {
+	Reason string `arg:"" help:"A brief reason for not replying."`
+}
+
+// RunTool records the pass reason on the surrounding execute_tool
+// span and returns a stable confirmation summary.
+func (c PassCommand) RunTool(ctx context.Context, _ modelclient.ToolContext) modelclient.ToolResultPayload {
+	reason := strings.TrimSpace(c.Reason)
+	if reason == "" {
+		reason = "no reason given"
+	}
+
+	trace.SpanFromContext(ctx).SetAttributes(attribute.String("pass.reason", reason))
+
+	return modelclient.ToolResultPayload{OK: true, Summary: "passed: " + reason}
 }

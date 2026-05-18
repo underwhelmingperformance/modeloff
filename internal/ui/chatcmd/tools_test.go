@@ -103,6 +103,11 @@ func TestBuildToolRegistry_returns_expected_tools(t *testing.T) {
 			Description: "Shut down your instance and leave all channels.",
 			Parameters:  toolParams(t, "quit"),
 		},
+		{
+			Name:        "pass",
+			Description: "Explicitly record that you have nothing to say this turn, with a brief reason. Silence is the default — you only need to call this if you want the reason captured for observability. Do not call this in the same turn as a msg or me tool.",
+			Parameters:  toolParams(t, "pass"),
+		},
 	}, got)
 }
 
@@ -166,9 +171,7 @@ func (toolTestAPI) SendEvents(
 	[]protocol.IRCMessage,
 	...api.ToolDefinition,
 ) (api.CompletionResult, error) {
-	return api.CompletionResult{
-		Response: protocol.ModelResponse{Kind: protocol.ResponseSilence},
-	}, nil
+	return api.CompletionResult{}, nil
 }
 
 func (toolTestAPI) ContinueWithToolResults(
@@ -177,9 +180,7 @@ func (toolTestAPI) ContinueWithToolResults(
 	[]api.ToolResult,
 	...api.ToolDefinition,
 ) (api.CompletionResult, error) {
-	return api.CompletionResult{
-		Response: protocol.ModelResponse{Kind: protocol.ResponseSilence},
-	}, nil
+	return api.CompletionResult{}, nil
 }
 
 func (toolTestAPI) GenerateNick(context.Context, domain.ModelID, string, []domain.Nick) (api.NicknameResult, error) {
@@ -352,7 +353,7 @@ func TestRunTool_msg_rejects_empty_body(t *testing.T) {
 
 	require.Equal(t, modelclient.ToolResultPayload{
 		OK:    false,
-		Error: "message body is required",
+		Error: "reply part must contain exactly one of body or spans",
 	}, tool.RunTool(t.Context(), tc))
 }
 
@@ -388,6 +389,40 @@ func TestRunTool_me_no_channel_returns_error(t *testing.T) {
 		OK:    false,
 		Error: "no active channel",
 	}, result)
+}
+
+func TestRunTool_me_sends_action_to_channel(t *testing.T) {
+	sess, user := newToolTestSession(t)
+	require.NoError(t, user.Join(t.Context(), domain.ChannelName("#lobby")))
+	tc := userToolContext(sess, user, "#lobby")
+
+	v := toolValue(t, "me", `{"action": ["waves"]}`)
+
+	tool, ok := v.(ToolCommand)
+	require.True(t, ok, "MeCommand should implement ToolCommand")
+
+	require.Equal(t, modelclient.ToolResultPayload{
+		OK:      true,
+		Summary: "sent action to #lobby",
+	}, tool.RunTool(t.Context(), tc))
+}
+
+func TestRunTool_msg_with_spans_renders_irc_formatting(t *testing.T) {
+	sess, user := newToolTestSession(t)
+	require.NoError(t, user.Join(t.Context(), domain.ChannelName("#lobby")))
+	tc := userToolContext(sess, user, "#lobby")
+
+	v := toolValue(t, "msg",
+		`{"target": "#lobby", "spans": [{"text": "hello "}, {"text": "world", "style": {"bold": true, "fg": 4}}]}`,
+	)
+
+	tool, ok := v.(ToolCommand)
+	require.True(t, ok)
+
+	require.Equal(t, modelclient.ToolResultPayload{
+		OK:      true,
+		Summary: "messaged #lobby",
+	}, tool.RunTool(t.Context(), tc))
 }
 
 func TestRunTool_quit_succeeds(t *testing.T) {

@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/laney/modeloff/internal/api"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/protocol"
 )
@@ -31,8 +32,8 @@ func TestInviteAs_does_not_auto_attach_existing_model(t *testing.T) {
 		bootAt := time.Now()
 
 		fake := &fakeAPIClient{
-			sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (protocol.ModelResponse, error) {
-				return protocol.ModelResponse{Kind: protocol.ResponseSilence, Reason: "pass"}, nil
+			sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
+				return api.CompletionResult{}, nil
 			},
 		}
 

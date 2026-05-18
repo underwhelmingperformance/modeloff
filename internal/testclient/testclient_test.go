@@ -143,9 +143,7 @@ func (noopAPI) SendEvents(
 	[]protocol.IRCMessage,
 	...api.ToolDefinition,
 ) (api.CompletionResult, error) {
-	return api.CompletionResult{
-		Response: protocol.ModelResponse{Kind: protocol.ResponseSilence, Reason: "fake"},
-	}, nil
+	return api.CompletionResult{}, nil
 }
 
 func (noopAPI) ContinueWithToolResults(
@@ -154,9 +152,7 @@ func (noopAPI) ContinueWithToolResults(
 	[]api.ToolResult,
 	...api.ToolDefinition,
 ) (api.CompletionResult, error) {
-	return api.CompletionResult{
-		Response: protocol.ModelResponse{Kind: protocol.ResponseSilence, Reason: "fake"},
-	}, nil
+	return api.CompletionResult{}, nil
 }
 
 func (noopAPI) GenerateNick(context.Context, domain.ModelID, string, []domain.Nick) (api.NicknameResult, error) {

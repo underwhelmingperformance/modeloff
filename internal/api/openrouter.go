@@ -18,7 +18,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/invopop/jsonschema"
-	orderedmap "github.com/wk8/go-ordered-map/v2"
 
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/observability"
@@ -179,90 +178,6 @@ func generateSchema[T any]() map[string]any {
 	return result
 }
 
-// modelResponseBody is the discriminated union for the model's
-// reply/pass decision. It implements jsonschema.customSchemaImpl to
-// produce the anyOf schema with const discriminators.
-type modelResponseBody struct{}
-
-func (modelResponseBody) JSONSchema() *jsonschema.Schema {
-	reflector := jsonschema.Reflector{DoNotReference: true}
-	replySpanSchema := reflector.Reflect(protocol.ReplySpan{})
-	replyProps := jsonschema.NewProperties()
-	replyProps.Set("kind", &jsonschema.Schema{Type: "string", Const: "reply"})
-	replyProps.Set("messages", &jsonschema.Schema{
-		Type:        "array",
-		Description: "One or more messages to send.",
-		Items: &jsonschema.Schema{
-			Type:                 "object",
-			AdditionalProperties: jsonschema.FalseSchema,
-			Properties: func() *orderedmap.OrderedMap[string, *jsonschema.Schema] {
-				p := jsonschema.NewProperties()
-				p.Set("type", &jsonschema.Schema{
-					Type:        "string",
-					Enum:        []any{"message", "action"},
-					Description: `"message" for a regular message, "action" for a /me action.`,
-				})
-				// Keep the message item schema flat. Runtime validation still
-				// enforces exactly one of body or spans, but avoiding a nested
-				// anyOf here keeps the schema friendlier to stricter providers.
-				p.Set("body", &jsonschema.Schema{
-					Type:        "string",
-					Description: "The plain message text. For actions, just the action body without /me. Provide either body or spans, not both.",
-				})
-				p.Set("spans", &jsonschema.Schema{
-					Type:        "array",
-					Description: "Optional styled spans. Prefer this over raw IRC control characters when you want formatting. Provide either spans or body, not both.",
-					Items:       replySpanSchema,
-				})
-				return p
-			}(),
-			Required: []string{"type"},
-		},
-	})
-
-	passProps := jsonschema.NewProperties()
-	passProps.Set("kind", &jsonschema.Schema{Type: "string", Const: "pass"})
-	passProps.Set("reason", &jsonschema.Schema{
-		Type:        "string",
-		Description: "A brief reason for not replying.",
-	})
-
-	return &jsonschema.Schema{
-		AnyOf: []*jsonschema.Schema{
-			{
-				Type:                 "object",
-				Properties:           replyProps,
-				Required:             []string{"kind", "messages"},
-				AdditionalProperties: jsonschema.FalseSchema,
-			},
-			{
-				Type:                 "object",
-				Properties:           passProps,
-				Required:             []string{"kind", "reason"},
-				AdditionalProperties: jsonschema.FalseSchema,
-			},
-		},
-	}
-}
-
-type modelResponseWrapper struct {
-	Response modelResponseBody `json:"response"`
-}
-
-var modelResponseSchemaMap = generateSchema[modelResponseWrapper]()
-
-func responseFormat() openai.ChatCompletionNewParamsResponseFormatUnion {
-	return openai.ChatCompletionNewParamsResponseFormatUnion{
-		OfJSONSchema: &shared.ResponseFormatJSONSchemaParam{
-			JSONSchema: shared.ResponseFormatJSONSchemaJSONSchemaParam{
-				Name:   "model_response",
-				Schema: modelResponseSchemaMap,
-				Strict: openai.Bool(true),
-			},
-		},
-	}
-}
-
 func toolParams(definitions []ToolDefinition) []openai.ChatCompletionToolUnionParam {
 	tools := make([]openai.ChatCompletionToolUnionParam, 0, len(definitions))
 
@@ -298,10 +213,9 @@ func (c *OpenRouterClient) SendEvents(
 		func(ctx context.Context, span trace.Span) error {
 			msgs := buildMessages(systemPrompt, selfInstanceID, history, events)
 			resp, rawResp, err := c.chatCompletion(ctx, modelID, openai.ChatCompletionNewParams{ //nolint:bodyclose // SDK reads and closes the body.
-				Model:          shared.ChatModel(string(modelID)),
-				Messages:       msgs,
-				Tools:          toolParams(tools),
-				ResponseFormat: responseFormat(),
+				Model:    shared.ChatModel(string(modelID)),
+				Messages: msgs,
+				Tools:    toolParams(tools),
 			})
 			if err != nil {
 				markSpanError(span, observability.ErrorKindTransport, 0, err)
@@ -324,13 +238,13 @@ func (c *OpenRouterClient) SendEvents(
 			}
 
 			parsed.Usage.SetSpanAttributes(span, parsed.RequestID)
-			span.SetAttributes(attribute.String(observability.AttrResult, ResponseResultKind(parsed.Response)))
+			span.SetAttributes(attribute.String(observability.AttrResult, completionResultKind(parsed)))
 
 			logger.InfoContext(
 				ctx,
 				"openrouter send events completed",
 				"request_id", parsed.RequestID,
-				"result", ResponseResultKind(parsed.Response),
+				"result", completionResultKind(parsed),
 				"prompt_tokens", parsed.Usage.PromptTokens,
 				"completion_tokens", parsed.Usage.CompletionTokens,
 				"cost_credits", parsed.Usage.CostCredits,
@@ -368,10 +282,9 @@ func (c *OpenRouterClient) ContinueWithToolResults(
 			}
 
 			resp, rawResp, err := c.chatCompletion(ctx, conv.modelID, openai.ChatCompletionNewParams{ //nolint:bodyclose // SDK reads and closes the body.
-				Model:          shared.ChatModel(string(conv.modelID)),
-				Messages:       msgs,
-				Tools:          toolParams(tools),
-				ResponseFormat: responseFormat(),
+				Model:    shared.ChatModel(string(conv.modelID)),
+				Messages: msgs,
+				Tools:    toolParams(tools),
 			})
 			if err != nil {
 				markSpanError(span, observability.ErrorKindTransport, 0, err)
@@ -400,13 +313,13 @@ func (c *OpenRouterClient) ContinueWithToolResults(
 			}
 
 			parsed.Usage.SetSpanAttributes(span, parsed.RequestID)
-			span.SetAttributes(attribute.String(observability.AttrResult, ResponseResultKind(parsed.Response)))
+			span.SetAttributes(attribute.String(observability.AttrResult, completionResultKind(parsed)))
 
 			logger.InfoContext(
 				ctx,
 				"openrouter continue completed",
 				"request_id", parsed.RequestID,
-				"result", ResponseResultKind(parsed.Response),
+				"result", completionResultKind(parsed),
 				"prompt_tokens", parsed.Usage.PromptTokens,
 				"completion_tokens", parsed.Usage.CompletionTokens,
 				"cost_credits", parsed.Usage.CostCredits,
@@ -542,24 +455,15 @@ func runToMessage(r messageRun) openai.ChatCompletionMessageParamUnion {
 	return openai.ChatCompletionMessageParamUnion{}
 }
 
-type structuredModelResponse struct {
-	Response struct {
-		Kind     string               `json:"kind"`
-		Messages []protocol.ReplyPart `json:"messages,omitempty"`
-		Reason   string               `json:"reason,omitempty"`
-	} `json:"response"`
-}
-
-// parseCompletionResponse extracts the model's structured response and
-// any tool calls from an API response. It returns the
-// CompletionResult plus the raw assistant message (needed to build
-// the next turn in multi-turn exchanges).
+// parseCompletionResponse extracts the model's tool calls from an
+// API response. Returns the CompletionResult plus the raw assistant
+// message (needed to build the next turn in multi-turn exchanges).
 //
-// The model's reply/pass decision arrives as structured JSON in the
-// message content. Tool calls arrive as tool_calls and are returned
-// as PendingToolCalls. When
-// pending calls are present, the caller must continue the
-// conversation.
+// The model communicates exclusively through tool calls — `msg` and
+// `me` for chat traffic, `pass` for explicit silence-with-reason,
+// memory tools for retrieval, and the channel-management tools
+// (`join`, `part`, `topic`, etc.). A completion with no tool calls
+// is silence; any text content in `msg.Content` is ignored.
 func parseCompletionResponse(resp *openai.ChatCompletion, rawResp *http.Response) (CompletionResult, openai.ChatCompletionMessageParamUnion, error) {
 	if resp == nil {
 		return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, fmt.Errorf("no response")
@@ -567,17 +471,12 @@ func parseCompletionResponse(resp *openai.ChatCompletion, rawResp *http.Response
 
 	// Some providers (Grok via OpenRouter, after a tool-loop
 	// continuation) return a well-formed envelope with no choices
-	// when the model has nothing further to add. Surface this as
-	// a silent pass with a stable reason; the dispatch loop reads
-	// the silence and moves on.
+	// when the model has nothing further to add. Surface as silence:
+	// no tool calls, no conversation handle, dispatch loop terminates.
 	if len(resp.Choices) == 0 {
 		return CompletionResult{
 			RequestID: requestIDFromChatCompletion(resp, rawResp),
 			Usage:     usageFromResponse(resp.Usage),
-			Response: protocol.ModelResponse{
-				Kind:   protocol.ResponseSilence,
-				Reason: "empty response",
-			},
 		}, openai.ChatCompletionMessageParamUnion{}, nil
 	}
 
@@ -602,34 +501,19 @@ func parseCompletionResponse(resp *openai.ChatCompletion, rawResp *http.Response
 		})
 	}
 
-	if msg.Content != "" {
-		var structured structuredModelResponse
-
-		if err := json.Unmarshal([]byte(msg.Content), &structured); err != nil {
-			return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, &completionParseError{target: "structured response", err: err}
-		}
-
-		switch structured.Response.Kind {
-		case "reply":
-			result.Response = protocol.ModelResponse{
-				Kind:     protocol.ResponseReply,
-				Messages: structured.Response.Messages,
-			}
-		case "pass":
-			result.Response = protocol.ModelResponse{
-				Kind:   protocol.ResponseSilence,
-				Reason: structured.Response.Reason,
-			}
-		default:
-			return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, fmt.Errorf("unknown response kind: %q", structured.Response.Kind)
-		}
-	}
-
-	if result.Response.Kind == "" && len(result.PendingToolCalls) == 0 {
-		return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, fmt.Errorf("model returned no response and no tool calls")
-	}
-
 	return result, assistantMsg, nil
+}
+
+// completionResultKind maps a parsed [CompletionResult] to its
+// observability result string. A completion with tool calls is
+// recorded as `tool`; everything else (no tool calls, model
+// silence) reads as `pass`.
+func completionResultKind(result CompletionResult) string {
+	if len(result.PendingToolCalls) > 0 {
+		return observability.ResultTool
+	}
+
+	return observability.ResultPass
 }
 
 type modelsResponse struct {

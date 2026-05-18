@@ -28,6 +28,7 @@ type Grammar struct {
 	Help               HelpCommand               `cmd:"" aliases:"?" tool:"" help:"Show available commands."`
 	Clear              ClearCommand              `cmd:"" help:"Clear the current window."`
 	Quit               QuitCommand               `cmd:"" aliases:"q" tool:"Shut down your instance and leave all channels." help:"Exit modeloff."`
+	Pass               PassCommand               `tool:"Explicitly record that you have nothing to say this turn, with a brief reason. Silence is the default — you only need to call this if you want the reason captured for observability. Do not call this in the same turn as a msg or me tool."`
 }
 
 // NewParser builds the command parser. The grammar is static; all

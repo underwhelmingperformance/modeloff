@@ -89,16 +89,13 @@ func TestApp_add_model_and_receive_reply(t *testing.T) {
 			return "botty", nil
 		},
 		sendEventsFn: func(
-			context.Context,
-			domain.ModelID,
-			string,
-			[]protocol.IRCMessage,
-			[]protocol.IRCMessage,
-		) (protocol.ModelResponse, error) {
-			return protocol.ModelResponse{
-				Kind:     protocol.ResponseReply,
-				Messages: []protocol.ReplyPart{{Kind: protocol.ReplyMessage, Body: "hello back"}},
-			}, nil
+			_ context.Context,
+			_ domain.ModelID,
+			_ string,
+			_ []protocol.IRCMessage,
+			events []protocol.IRCMessage,
+		) (api.CompletionResult, error) {
+			return msgToolCall(t, events[0].Target, "hello back"), nil
 		},
 	}
 	sess, mgr, user, _, cfgStore := newIntegrationSession(t, apiClient)
@@ -189,15 +186,12 @@ func TestApp_periodic_poke_generates_message(t *testing.T) {
 			_ string,
 			_ []protocol.IRCMessage,
 			events []protocol.IRCMessage,
-		) (protocol.ModelResponse, error) {
+		) (api.CompletionResult, error) {
 			if len(events) == 1 && events[0].Kind == protocol.KindPoke {
-				return protocol.ModelResponse{
-					Kind:     protocol.ResponseReply,
-					Messages: []protocol.ReplyPart{{Kind: protocol.ReplyMessage, Body: "still alive"}},
-				}, nil
+				return msgToolCall(t, events[0].Target, "still alive"), nil
 			}
 
-			return protocol.ModelResponse{Kind: protocol.ResponseSilence}, nil
+			return api.CompletionResult{}, nil
 		},
 	}
 	sess, mgr, user, _, cfgStore := newIntegrationSession(t, apiClient)
@@ -221,7 +215,7 @@ func TestApp_reuse_existing_instance(t *testing.T) {
 		// The model accepts the INVITE by issuing a `join` tool call;
 		// the tool loop dispatches `protocol.Join` against the
 		// model's client and the bot lands in the target channel.
-		sendEventsFullFn: func(_ context.Context, _ domain.ModelID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+		sendEventsFn: func(_ context.Context, _ domain.ModelID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 			for _, ev := range events {
 				if ev.Kind == protocol.KindInvite {
 					return api.CompletionResult{
@@ -234,9 +228,7 @@ func TestApp_reuse_existing_instance(t *testing.T) {
 				}
 			}
 
-			return api.CompletionResult{
-				Response: protocol.ModelResponse{Kind: protocol.ResponseSilence},
-			}, nil
+			return api.CompletionResult{}, nil
 		},
 	}
 	_, _, _, store, _ := newIntegrationSession(t, apiClient)
@@ -282,7 +274,7 @@ func TestApp_vector_memory_write_and_search(t *testing.T) {
 		},
 
 		// First API call: model requests write_memory.
-		sendEventsFullFn: func(
+		sendEventsFn: func(
 			_ context.Context,
 			_ domain.ModelID,
 			_ string,
@@ -303,9 +295,7 @@ func TestApp_vector_memory_write_and_search(t *testing.T) {
 				}
 			}
 
-			return api.CompletionResult{
-				Response: protocol.ModelResponse{Kind: protocol.ResponseSilence},
-			}, nil
+			return api.CompletionResult{}, nil
 		},
 
 		// Tool loop turns:
@@ -353,12 +343,7 @@ func TestApp_vector_memory_write_and_search(t *testing.T) {
 					body = "I found: " + matches[0].Entry.Content
 				}
 
-				return api.CompletionResult{
-					Response: protocol.ModelResponse{
-						Kind:     protocol.ResponseReply,
-						Messages: []protocol.ReplyPart{{Kind: protocol.ReplyMessage, Body: body}},
-					},
-				}, nil
+				return msgToolCall(t, "#lab", body), nil
 			}
 		},
 	}
@@ -379,7 +364,10 @@ func TestApp_vector_memory_write_and_search(t *testing.T) {
 			PokeInterval: 5 * time.Minute,
 		},
 	}
-	sess, mgr, user := uitest.NewTestSession(t, store, apiClient, memStore, nil, cfgStore.cfg.APIKey, cfgStore.cfg.SmallModel, t.Context)
+	tools, err := chatcmd.BuildToolRegistry()
+	require.NoError(t, err)
+
+	sess, mgr, user := uitest.NewTestSession(t, store, apiClient, memStore, tools, cfgStore.cfg.APIKey, cfgStore.cfg.SmallModel, t.Context)
 
 	uitest.SeedChannel(t, user, "#lab")
 
@@ -399,8 +387,7 @@ func TestApp_vector_memory_write_and_search(t *testing.T) {
 
 type integrationAPI struct {
 	mu                        sync.Mutex
-	sendEventsFn              func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error)
-	sendEventsFullFn          func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error)
+	sendEventsFn              func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error)
 	continueWithToolResultsFn func(context.Context, *api.Conversation, []api.ToolResult) (api.CompletionResult, error)
 	generateNickFn            func(context.Context, domain.ModelID, string, []domain.Nick) (domain.Nick, error)
 }
@@ -421,18 +408,11 @@ func (f *integrationAPI) SendEvents(
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if f.sendEventsFullFn != nil {
-		return f.sendEventsFullFn(ctx, modelID, system, history, events)
-	}
-
 	if f.sendEventsFn != nil {
-		response, err := f.sendEventsFn(ctx, modelID, system, history, events)
-		return api.CompletionResult{Response: response}, err
+		return f.sendEventsFn(ctx, modelID, system, history, events)
 	}
 
-	return api.CompletionResult{
-		Response: protocol.ModelResponse{Kind: protocol.ResponseSilence},
-	}, nil
+	return api.CompletionResult{}, nil
 }
 
 func (f *integrationAPI) ContinueWithToolResults(
@@ -448,9 +428,7 @@ func (f *integrationAPI) ContinueWithToolResults(
 		return f.continueWithToolResultsFn(ctx, conv, results)
 	}
 
-	return api.CompletionResult{
-		Response: protocol.ModelResponse{Kind: protocol.ResponseSilence},
-	}, nil
+	return api.CompletionResult{}, nil
 }
 
 func (f *integrationAPI) GenerateNick(ctx context.Context, smallModel domain.ModelID, persona string, exclude []domain.Nick) (api.NicknameResult, error) {
@@ -511,7 +489,10 @@ func newIntegrationSessionWithConfigStore(
 
 	store := storetest.NewMemoryStore(t)
 	memStore := memory.NewStoreAdapter(storetest.NewMemoryStore(t))
-	sess, mgr, user := uitest.NewTestSession(t, store, apiClient, memStore, nil, cfgStore.cfg.APIKey, cfgStore.cfg.SmallModel, t.Context)
+	tools, err := chatcmd.BuildToolRegistry()
+	require.NoError(t, err)
+
+	sess, mgr, user := uitest.NewTestSession(t, store, apiClient, memStore, tools, cfgStore.cfg.APIKey, cfgStore.cfg.SmallModel, t.Context)
 
 	return sess, mgr, user, store
 }
@@ -551,4 +532,23 @@ func seedInstance(t *testing.T, sess *session.Session, _ *storemod.SQLiteStore, 
 	t.Cleanup(client.Detach)
 
 	return client.Instance()
+}
+
+// msgToolCall builds an [api.CompletionResult] whose PendingToolCalls
+// invoke the `msg` tool once with the given target and body — the
+// wire-shape the model emits when it wants to say something. The
+// `body` field on MsgCommand is a `[]string`, so the JSON shape is
+// an array of words.
+func msgToolCall(t *testing.T, target, body string) api.CompletionResult {
+	t.Helper()
+
+	args, err := json.Marshal(map[string]any{
+		"target": target,
+		"body":   []string{body},
+	})
+	require.NoError(t, err)
+
+	return api.CompletionResult{PendingToolCalls: []api.PendingToolCall{
+		{ID: "call_msg_0", Name: "msg", Args: args},
+	}}
 }

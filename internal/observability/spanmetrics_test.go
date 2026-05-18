@@ -61,7 +61,7 @@ func TestRuntime_snapshotMetrics_includes_span_derived_usage(t *testing.T) {
 	span.SetAttributes(
 		attribute.String(AttrOperation, "api.openrouter.send_events"),
 		attribute.String(AttrModelID, "anthropic/claude-3-haiku"),
-		attribute.String(AttrResult, ResultReply),
+		attribute.String(AttrResult, ResultTool),
 		attribute.Int64(AttrPromptTokens, 21),
 		attribute.Int64(AttrCompletionTokens, 13),
 		attribute.Int64(AttrReasoningTokens, 5),
@@ -103,8 +103,8 @@ func TestRuntime_snapshotMetrics_counts_tool_follow_up_requests(t *testing.T) {
 		require.NoError(t, runtime.Shutdown(context.WithoutCancel(t.Context())))
 	})
 
-	recordLLMUsageSpan(t, "api.openrouter.send_events", "anthropic/claude-3-haiku", ResultReply, 21, 13, 0.75)
-	recordLLMUsageSpan(t, "api.openrouter.continue_with_tool_results", "anthropic/claude-3-haiku", ResultReply, 5, 7, 0.25)
+	recordLLMUsageSpan(t, "api.openrouter.send_events", "anthropic/claude-3-haiku", ResultTool, 21, 13, 0.75)
+	recordLLMUsageSpan(t, "api.openrouter.continue_with_tool_results", "anthropic/claude-3-haiku", ResultTool, 5, 7, 0.25)
 
 	snapshot, err := runtime.SnapshotMetrics(t.Context())
 	require.NoError(t, err)
@@ -159,7 +159,7 @@ func TestRuntime_snapshotMetrics_counts_generate_personas_as_LLM_usage(t *testin
 		require.NoError(t, runtime.Shutdown(context.WithoutCancel(t.Context())))
 	})
 
-	recordLLMUsageSpan(t, "api.openrouter.generate_personas", "anthropic/claude-3-haiku", ResultReply, 30, 15, 0.5)
+	recordLLMUsageSpan(t, "api.openrouter.generate_personas", "anthropic/claude-3-haiku", ResultTool, 30, 15, 0.5)
 
 	snapshot, err := runtime.SnapshotMetrics(t.Context())
 	require.NoError(t, err)
@@ -186,7 +186,7 @@ func TestRuntime_snapshotMetrics_any_span_with_token_attrs_counts_as_LLM_usage(t
 		require.NoError(t, runtime.Shutdown(context.WithoutCancel(t.Context())))
 	})
 
-	recordLLMUsageSpan(t, "api.openrouter.hypothetical_future_op", "test/model", ResultReply, 10, 5, 0.1)
+	recordLLMUsageSpan(t, "api.openrouter.hypothetical_future_op", "test/model", ResultTool, 10, 5, 0.1)
 
 	snapshot, err := runtime.SnapshotMetrics(t.Context())
 	require.NoError(t, err)

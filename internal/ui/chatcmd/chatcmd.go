@@ -6,6 +6,7 @@ package chatcmd
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -13,8 +14,10 @@ import (
 	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/config"
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/ircfmt"
 	"github.com/laney/modeloff/internal/modelclient"
 	"github.com/laney/modeloff/internal/protocol"
+	"github.com/laney/modeloff/internal/richtext"
 )
 
 // Command is the typed command interface for the chat screen.
@@ -288,4 +291,48 @@ func (rc Context) configResetRequested() bool {
 	}
 
 	return cfg.Reset
+}
+
+// renderReplyPart validates a [protocol.ReplyPart] for IRC delivery
+// and returns the wire body. Plain text passes through; styled spans
+// are encoded into IRC mIRC control characters via `ircfmt`.
+func renderReplyPart(part protocol.ReplyPart) (string, error) {
+	if err := protocol.ValidateReplyPart(part); err != nil {
+		return "", err
+	}
+
+	if strings.TrimSpace(part.Body) != "" {
+		return part.Body, nil
+	}
+
+	spans := make([]richtext.Span, 0, len(part.Spans))
+	for _, span := range part.Spans {
+		attrs := richtext.Attrs{}
+		if span.Style != nil {
+			attrs = replyStyleToAttrs(*span.Style)
+		}
+		spans = append(spans, richtext.Span{Text: span.Text, Attrs: attrs})
+	}
+
+	return ircfmt.Encode(richtext.NewDocumentFromLines([]richtext.Line{{Spans: spans}})), nil
+}
+
+func replyStyleToAttrs(style protocol.ReplyStyle) richtext.Attrs {
+	return richtext.Attrs{
+		Bold:      style.Bold,
+		Italic:    style.Italic,
+		Underline: style.Underline,
+		Reverse:   style.Reverse,
+		Strike:    style.Strike,
+		FG:        cloneReplyColour(style.FG),
+		BG:        cloneReplyColour(style.BG),
+	}
+}
+
+func cloneReplyColour(colour *uint8) *uint8 {
+	if colour == nil {
+		return nil
+	}
+	value := *colour
+	return &value
 }

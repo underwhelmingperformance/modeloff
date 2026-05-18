@@ -132,7 +132,7 @@ func TestNewParser_produces_all_commands(t *testing.T) {
 		"join", "part", "list", "add-model", "invite", "kick", "kill",
 		"msg", "query", "nick", "topic", "mode", "me", "whois", "config",
 		"personas", "regenerate-personas",
-		"help", "clear", "quit",
+		"help", "clear", "quit", "pass",
 	}, names)
 
 	join := set.Find("join")

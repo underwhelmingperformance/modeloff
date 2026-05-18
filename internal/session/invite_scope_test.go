@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/laney/modeloff/internal/api"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/protocol"
 )
@@ -42,7 +43,7 @@ func TestInviteAs_delivery_is_scoped_to_inviter_and_invitee(t *testing.T) {
 		)
 
 		fake := &fakeAPIClient{
-			sendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			sendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 				mu.Lock()
 				calls = append(calls, call{
 					modelID:  modelID,
@@ -50,7 +51,7 @@ func TestInviteAs_delivery_is_scoped_to_inviter_and_invitee(t *testing.T) {
 				})
 				mu.Unlock()
 
-				return protocol.ModelResponse{Kind: protocol.ResponseSilence, Reason: "pass"}, nil
+				return api.CompletionResult{}, nil
 			},
 		}
 

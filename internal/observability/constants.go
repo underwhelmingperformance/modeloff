@@ -78,18 +78,17 @@ const (
 // operation completed.
 const (
 	ResultOK    = "ok"
-	ResultReply = "reply"
+	ResultTool  = "tool"
 	ResultPass  = "pass"
 	ResultError = "error"
 )
 
 // Values for stable pass_reason attributes.
 const (
-	PassReasonModelPass             = "model_pass"
-	PassReasonModelRefused          = "model_refused"
-	PassReasonContentFiltered       = "content_filtered"
-	PassReasonNewlineRetryExhausted = "newline_retry_exhausted"
-	PassReasonFormatRetryExhausted  = "format_retry_exhausted"
+	PassReasonModelPass        = "model_pass"
+	PassReasonModelRefused     = "model_refused"
+	PassReasonContentFiltered  = "content_filtered"
+	PassReasonToolLoopExhausted = "tool_loop_exhausted"
 )
 
 // Values for stable error_kind attributes. These categorise span

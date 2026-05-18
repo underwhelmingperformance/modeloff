@@ -49,9 +49,7 @@ func (f *fakeAPIClient) SendEvents(
 	[]protocol.IRCMessage,
 	...api.ToolDefinition,
 ) (api.CompletionResult, error) {
-	return api.CompletionResult{
-		Response: protocol.ModelResponse{Kind: protocol.ResponseSilence, Reason: "fake"},
-	}, nil
+	return api.CompletionResult{}, nil
 }
 
 func (f *fakeAPIClient) ContinueWithToolResults(
@@ -60,9 +58,7 @@ func (f *fakeAPIClient) ContinueWithToolResults(
 	[]api.ToolResult,
 	...api.ToolDefinition,
 ) (api.CompletionResult, error) {
-	return api.CompletionResult{
-		Response: protocol.ModelResponse{Kind: protocol.ResponseSilence, Reason: "fake"},
-	}, nil
+	return api.CompletionResult{}, nil
 }
 
 func (f *fakeAPIClient) GenerateNick(ctx context.Context, smallModel domain.ModelID, persona string, exclude []domain.Nick) (api.NicknameResult, error) {

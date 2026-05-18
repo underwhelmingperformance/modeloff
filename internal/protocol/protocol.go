@@ -33,6 +33,94 @@ import (
 	"github.com/laney/modeloff/internal/domain"
 )
 
+// ReplyKind distinguishes regular messages from actions in a model
+// reply.
+type ReplyKind string
+
+const (
+	// ReplyMessage is a regular chat message.
+	ReplyMessage ReplyKind = "message"
+
+	// ReplyAction is a /me action (e.g. "* nick waves").
+	ReplyAction ReplyKind = "action"
+)
+
+// ReplyPart is the validation shape for a message the model wants
+// to send via the `msg` / `me` tools. Exactly one of `Body` or
+// `Spans` must be populated; the renderer in `internal/ircfmt`
+// turns styled spans into wire-level IRC control characters.
+type ReplyPart struct {
+	Kind  ReplyKind   `json:"type"`
+	Body  string      `json:"body,omitempty"`
+	Spans []ReplySpan `json:"spans,omitempty"`
+}
+
+// ReplyStyle describes formatting to apply to a span. Colour values
+// are 0..15 (the IRC mIRC palette).
+type ReplyStyle struct {
+	Bold      bool   `json:"bold,omitempty"`
+	Italic    bool   `json:"italic,omitempty"`
+	Underline bool   `json:"underline,omitempty"`
+	Reverse   bool   `json:"reverse,omitempty"`
+	Strike    bool   `json:"strike,omitempty"`
+	FG        *uint8 `json:"fg,omitempty"`
+	BG        *uint8 `json:"bg,omitempty"`
+}
+
+// ReplySpan is a run of text with optional style.
+type ReplySpan struct {
+	Text  string      `json:"text"`
+	Style *ReplyStyle `json:"style,omitempty"`
+}
+
+// ValidateReplyPart reports whether a reply part is structurally
+// valid for IRC delivery. The dispatcher rejects the tool call back
+// to the model when validation fails so the model can self-correct.
+func ValidateReplyPart(part ReplyPart) error {
+	hasBody := strings.TrimSpace(part.Body) != ""
+	hasSpans := len(part.Spans) > 0
+
+	if hasBody == hasSpans {
+		return fmt.Errorf("reply part must contain exactly one of body or spans")
+	}
+
+	if hasBody {
+		if strings.Contains(part.Body, "\n") {
+			return fmt.Errorf("reply body must not contain newlines")
+		}
+
+		return nil
+	}
+
+	for index, span := range part.Spans {
+		if span.Text == "" {
+			return fmt.Errorf("span %d is empty", index)
+		}
+		if strings.Contains(span.Text, "\n") {
+			return fmt.Errorf("span %d contains a newline", index)
+		}
+		if span.Style == nil {
+			continue
+		}
+		if err := validateReplyStyle(*span.Style); err != nil {
+			return fmt.Errorf("span %d: %w", index, err)
+		}
+	}
+
+	return nil
+}
+
+func validateReplyStyle(style ReplyStyle) error {
+	if style.FG != nil && *style.FG > 15 {
+		return fmt.Errorf("foreground colour %d is out of range", *style.FG)
+	}
+	if style.BG != nil && *style.BG > 15 {
+		return fmt.Errorf("background colour %d is out of range", *style.BG)
+	}
+
+	return nil
+}
+
 // ClientID identifies a connected client. The user-client uses
 // [UserClientID] as its sentinel; each model-client uses its
 // instance's id.
@@ -112,65 +200,6 @@ type IRCMessage struct {
 	Subject    string            `json:"subject,omitempty"`
 	Body       string            `json:"body,omitempty"`
 	At         time.Time         `json:"at"`
-}
-
-// ResponseKind indicates whether the model chose to reply.
-type ResponseKind string
-
-// ResponseKind values represent the two possible outcomes when a model
-// processes events: it either replies with content or explicitly
-// chooses to remain silent.
-const (
-	// ResponseReply means the model has produced a message to send.
-	ResponseReply ResponseKind = "reply"
-
-	// ResponseSilence means the model chose not to respond. The
-	// Reason field on ModelResponse may explain why.
-	ResponseSilence ResponseKind = "silence"
-)
-
-// ReplyKind distinguishes regular messages from actions in a model
-// reply.
-type ReplyKind string
-
-const (
-	// ReplyMessage is a regular chat message.
-	ReplyMessage ReplyKind = "message"
-
-	// ReplyAction is a /me action (e.g. "* nick waves").
-	ReplyAction ReplyKind = "action"
-)
-
-// ReplyPart is a single typed message within a model's reply.
-type ReplyPart struct {
-	Kind  ReplyKind   `json:"type"`
-	Body  string      `json:"body,omitempty"`
-	Spans []ReplySpan `json:"spans,omitempty"`
-}
-
-// ReplyStyle describes formatting to apply to a span.
-type ReplyStyle struct {
-	Bold      bool   `json:"bold,omitempty"`
-	Italic    bool   `json:"italic,omitempty"`
-	Underline bool   `json:"underline,omitempty"`
-	Reverse   bool   `json:"reverse,omitempty"`
-	Strike    bool   `json:"strike,omitempty"`
-	FG        *uint8 `json:"fg,omitempty"`
-	BG        *uint8 `json:"bg,omitempty"`
-}
-
-// ReplySpan is a run of text with optional style.
-type ReplySpan struct {
-	Text  string      `json:"text"`
-	Style *ReplyStyle `json:"style,omitempty"`
-}
-
-// ModelResponse is the typed response from a model after receiving
-// events. The model must explicitly choose to reply or stay silent.
-type ModelResponse struct {
-	Kind     ResponseKind `json:"kind"`
-	Messages []ReplyPart  `json:"messages,omitempty"`
-	Reason   string       `json:"reason,omitempty"`
 }
 
 // FromChannelEvent converts a model-visible channel event into an
@@ -276,65 +305,3 @@ func FromChannelEvent(evt domain.PersistableEvent) (IRCMessage, bool) {
 	}
 }
 
-// Reply creates a ModelResponse containing a single regular message.
-func Reply(body string) ModelResponse {
-	return ModelResponse{
-		Kind:     ResponseReply,
-		Messages: []ReplyPart{{Kind: ReplyMessage, Body: body}},
-	}
-}
-
-// ActionReply creates a ModelResponse containing a single action
-// message.
-func ActionReply(body string) ModelResponse {
-	return ModelResponse{
-		Kind:     ResponseReply,
-		Messages: []ReplyPart{{Kind: ReplyAction, Body: body}},
-	}
-}
-
-// ValidateReplyPart reports whether a reply part is structurally valid.
-func ValidateReplyPart(part ReplyPart) error {
-	hasBody := strings.TrimSpace(part.Body) != ""
-	hasSpans := len(part.Spans) > 0
-
-	if hasBody == hasSpans {
-		return fmt.Errorf("reply part must contain exactly one of body or spans")
-	}
-
-	if hasBody {
-		if strings.Contains(part.Body, "\n") {
-			return fmt.Errorf("reply body must not contain newlines")
-		}
-
-		return nil
-	}
-
-	for index, span := range part.Spans {
-		if span.Text == "" {
-			return fmt.Errorf("span %d is empty", index)
-		}
-		if strings.Contains(span.Text, "\n") {
-			return fmt.Errorf("span %d contains a newline", index)
-		}
-		if span.Style == nil {
-			continue
-		}
-		if err := validateReplyStyle(*span.Style); err != nil {
-			return fmt.Errorf("span %d: %w", index, err)
-		}
-	}
-
-	return nil
-}
-
-func validateReplyStyle(style ReplyStyle) error {
-	if style.FG != nil && *style.FG > 15 {
-		return fmt.Errorf("foreground colour %d is out of range", *style.FG)
-	}
-	if style.BG != nil && *style.BG > 15 {
-		return fmt.Errorf("background colour %d is out of range", *style.BG)
-	}
-
-	return nil
-}

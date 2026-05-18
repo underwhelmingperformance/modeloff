@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/laney/modeloff/internal/api"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/protocol"
 )
@@ -374,9 +375,9 @@ func TestFanOutProtocol_AnonymousRewritesSender(t *testing.T) {
 		var triggers []protocol.IRCMessage
 
 		fake := &fakeAPIClient{
-			sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 				triggers = append(triggers, events...)
-				return protocol.ModelResponse{Kind: protocol.ResponseSilence}, nil
+				return api.CompletionResult{}, nil
 			},
 		}
 

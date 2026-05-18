@@ -101,12 +101,12 @@ type Conversation struct {
 	messages []openai.ChatCompletionMessageParamUnion
 }
 
-// CompletionResult contains the model's typed response alongside
-// request metadata. When the model calls memory tools, Response is
-// empty and PendingToolCalls contains the calls to execute. The
-// Conversation field carries the message state needed to continue.
+// CompletionResult contains the model's tool calls (if any)
+// alongside request metadata. An empty PendingToolCalls slice with
+// a nil Conversation signals silence: the model emitted nothing to
+// continue with. When PendingToolCalls is non-empty, Conversation
+// carries the message state the next turn appends to.
 type CompletionResult struct {
-	Response         protocol.ModelResponse
 	PendingToolCalls []PendingToolCall
 	Conversation     *Conversation
 	RequestID        string
@@ -181,14 +181,3 @@ func (u Usage) SetSpanAttributes(span trace.Span, requestID string) {
 	)
 }
 
-// ResponseResultKind maps a model response to an observability result string.
-func ResponseResultKind(response protocol.ModelResponse) string {
-	switch response.Kind {
-	case protocol.ResponseReply:
-		return observability.ResultReply
-	case protocol.ResponseSilence:
-		return observability.ResultPass
-	default:
-		return observability.ResultOK
-	}
-}

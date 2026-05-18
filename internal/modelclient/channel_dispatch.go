@@ -14,11 +14,9 @@ import (
 
 	"github.com/laney/modeloff/internal/api"
 	"github.com/laney/modeloff/internal/domain"
-	"github.com/laney/modeloff/internal/ircfmt"
 	"github.com/laney/modeloff/internal/memory"
 	"github.com/laney/modeloff/internal/observability"
 	"github.com/laney/modeloff/internal/protocol"
-	"github.com/laney/modeloff/internal/richtext"
 )
 
 // EnsureStructuredOutputModel validates that the given model
@@ -60,9 +58,11 @@ func NewDispatcher(sess Session, apiClient api.Client, memStore memory.Store, to
 // production the manager-supplied closure does the lookup.
 func noEnsure(context.Context, domain.ModelID) error { return nil }
 
-// DispatchToChannel sends new events to all model instances in a channel
-// and collects their replies. The caller provides the new IRC-formatted
-// events to broadcast; history is loaded from the store.
+// DispatchToChannel sends new events to all model instances in a
+// channel. The caller provides the new IRC-formatted events to
+// broadcast; history is loaded from the store. Any messages the
+// models emit land on the session's event bus as side effects of
+// their tool calls — DispatchToChannel returns nothing on success.
 //
 // Callers must not include events whose `InstanceID` matches a target
 // model — the wire-layer suppression is at fan-out, not at this driver.
@@ -70,7 +70,7 @@ func (d *Dispatcher) DispatchToChannel(
 	ctx context.Context,
 	ch domain.ChannelName,
 	newEvents []protocol.IRCMessage,
-) ([]domain.ModelReplyEvent, error) {
+) error {
 	tracer := d.sess.TracerProvider().Tracer("github.com/laney/modeloff/internal/modelclient")
 	ctx, span := tracer.Start(ctx, "modelclient.dispatch_to_channel",
 		trace.WithAttributes(attribute.String(observability.AttrOperation, "modelclient.dispatch_to_channel")),
@@ -80,18 +80,17 @@ func (d *Dispatcher) DispatchToChannel(
 	historyEvents, err := d.sess.EventsBefore(ctx, ch, nil, 500)
 	if err != nil {
 		setSpanError(span, err, observability.ErrorKindStore)
-		return nil, fmt.Errorf("list history: %w", err)
+		return fmt.Errorf("list history: %w", err)
 	}
 
-	replies, err := d.dispatchToInstances(ctx, ch, historyEvents, newEvents, d.ensure)
-	if err != nil {
+	if err := d.dispatchToInstances(ctx, ch, historyEvents, newEvents, d.ensure); err != nil {
 		setSpanError(span, err, observability.ErrorKindDispatch)
-		return nil, err
+		return err
 	}
 
 	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 
-	return replies, nil
+	return nil
 }
 
 func (d *Dispatcher) dispatchToInstances(
@@ -100,14 +99,13 @@ func (d *Dispatcher) dispatchToInstances(
 	historyEvents []domain.StoredEvent,
 	events []protocol.IRCMessage,
 	ensure EnsureStructuredOutputModel,
-) ([]domain.ModelReplyEvent, error) {
+) error {
 	instances, err := resolveDispatchRecipients(ctx, d.sess, channelName)
 	if err != nil {
-		return nil, fmt.Errorf("resolve dispatch recipients: %w", err)
+		return fmt.Errorf("resolve dispatch recipients: %w", err)
 	}
 
 	var errs []error
-	var replies []domain.ModelReplyEvent
 
 	for _, inst := range instances {
 		if len(events) == 0 {
@@ -122,20 +120,19 @@ func (d *Dispatcher) dispatchToInstances(
 		}
 
 		caller := d.sess.LookupClient(protocol.ClientID(inst.ID()))
-		instReplies, instErr := dispatchToInstance(ctx, d.sess, d.api, d.memStore, d.tools, ensure, caller, window, inst, channelName, historyEvents, events)
-		if instErr != nil {
+		if instErr := dispatchToInstance(ctx, d.sess, d.api, d.memStore, d.tools, ensure, caller, window, inst, channelName, historyEvents, events); instErr != nil {
 			errs = append(errs, instErr)
 		}
-
-		replies = append(replies, instReplies...)
 	}
 
-	return replies, errors.Join(errs...)
+	return errors.Join(errs...)
 }
 
 // dispatchToInstance runs the per-instance API turn. It assembles
-// the system prompt + tool registry, calls the model via
-// [sendWithRetry], and persists any replies via [buildReplies].
+// the system prompt + tool registry and calls the model via
+// [runTurn]. Any chat traffic the model emits lands on the session
+// bus as a side effect of its `msg` / `me` tool calls; this function
+// returns only the turn's outcome.
 func dispatchToInstance(
 	ctx context.Context,
 	sess Session,
@@ -149,7 +146,7 @@ func dispatchToInstance(
 	channelName domain.ChannelName,
 	historyEvents []domain.StoredEvent,
 	events []protocol.IRCMessage,
-) ([]domain.ModelReplyEvent, error) {
+) error {
 	nick := inst.Nick()
 
 	tracer := sess.TracerProvider().Tracer("github.com/laney/modeloff/internal/modelclient")
@@ -189,14 +186,14 @@ func dispatchToInstance(
 
 	if err := ensure(ctx, inst.ModelID); err != nil {
 		setSpanError(instanceSpan, err, classifyEnsureModelError(err))
-		return nil, fmt.Errorf("send events to %s: %w", nick, err)
+		return fmt.Errorf("send events to %s: %w", nick, err)
 	}
 
 	memories, err := memoriesForInstance(ctx, memStore, inst.ID())
 	if err != nil {
 		instanceSpan.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
 		instanceSpan.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("read memories for %s: %w", nick, err)
+		return fmt.Errorf("read memories for %s: %w", nick, err)
 	}
 
 	prompt := buildSystemPrompt(window, inst, memories)
@@ -211,18 +208,15 @@ func dispatchToInstance(
 		tools,
 	)
 
-	outcome, err := sendWithRetry(ctx, apiClient, sess, caller, inst, channelName, prompt, history, events, registry)
+	outcome, err := runTurn(ctx, apiClient, sess, caller, inst, channelName, prompt, history, events, registry)
 	if err != nil {
 		instanceSpan.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
 		instanceSpan.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("send events to %s: %w", nick, err)
+		return fmt.Errorf("send events to %s: %w", nick, err)
 	}
 
-	result := outcome.result
-	result.Usage.SetSpanAttributes(instanceSpan, result.RequestID)
 	instanceAttrs := []attribute.KeyValue{
-		attribute.String(observability.AttrResult, api.ResponseResultKind(result.Response)),
-		attribute.Int(observability.AttrRetryCount, outcome.retryCount),
+		attribute.String(observability.AttrResult, observability.ResultOK),
 		attribute.Int(observability.AttrToolTurnCount, outcome.toolTurnCount),
 	}
 	if outcome.passReason != "" {
@@ -230,49 +224,17 @@ func dispatchToInstance(
 	}
 	instanceSpan.SetAttributes(instanceAttrs...)
 
-	response := result.Response
-
-	var replyPreview string
-
-	switch response.Kind {
-	case protocol.ResponseReply:
-		var parts []string
-		for _, m := range response.Messages {
-			parts = append(parts, m.Body)
-		}
-
-		replyPreview = strings.Join(parts, " ")
-
-	default:
-		replyPreview = response.Reason
-	}
-
-	if len(replyPreview) > 200 {
-		replyPreview = replyPreview[:200]
-	}
-
-	logger := slog.Default().With("component", "modelclient")
-	logger.InfoContext(ctx, "dispatch to instance",
+	slog.Default().With("component", "modelclient").InfoContext(ctx, "dispatch to instance",
 		"channel", channelName,
 		"nick", nick,
 		"model_id", inst.ModelID,
 		"trigger_count", len(events),
 		"trigger_summary", triggerSummary(events),
-		"result", api.ResponseResultKind(result.Response),
-		"reply_preview", replyPreview,
+		"tool_turns", outcome.toolTurnCount,
+		"pass_reason", outcome.passReason,
 	)
 
-	switch response.Kind {
-	case protocol.ResponseReply:
-		if len(response.Messages) == 0 {
-			return nil, nil
-		}
-
-		return buildReplies(ctx, caller, channelName, inst, response.Messages), nil
-
-	default:
-		return nil, nil
-	}
+	return nil
 }
 
 // triggerSummary formats trigger events as a short description string.
@@ -290,81 +252,6 @@ func triggerSummary(events []protocol.IRCMessage) string {
 	}
 
 	return s
-}
-
-// buildReplies converts model reply parts into wire commands and
-// routes each through `caller.Send`. The Send path runs the same
-// gate (`checkSendGates`) the user-client's PRIVMSG / Action path
-// runs — a `+m` channel where the model has no voice, a `+n`
-// channel the model is not in, a `+q` channel where the model is
-// not op all reject the reply at the session boundary. A rejection
-// is logged and the reply is skipped; persistence and bus fan-out
-// happen inside `sendMessageAs` / `sendActionAs` so there is no
-// path that lands a model Message without crossing the gate.
-//
-// Returns the per-reply envelopes built from each Send's
-// canonical [domain.Message] echo (`Response.Events`).
-func buildReplies(
-	ctx context.Context,
-	caller protocol.Client,
-	channelName domain.ChannelName,
-	inst *domain.Instance,
-	parts []protocol.ReplyPart,
-) []domain.ModelReplyEvent {
-	var replies []domain.ModelReplyEvent
-
-	logger := slog.Default().With("component", "modelclient")
-
-	for _, part := range parts {
-		body := strings.TrimSpace(renderReplyBody(part))
-		if body == "" {
-			continue
-		}
-
-		var cmd protocol.Command
-		if part.Kind == protocol.ReplyAction {
-			cmd = protocol.Action{Target: channelName, Body: body}
-		} else {
-			cmd = protocol.PrivMsg{Target: channelName, Body: body}
-		}
-
-		resp, err := caller.Send(ctx, cmd)
-		if err != nil {
-			logger.ErrorContext(ctx, "model reply send failed",
-				"instance_id", inst.ID(),
-				"channel", channelName,
-				"error", err,
-			)
-
-			continue
-		}
-
-		if resp.Err != nil {
-			logger.WarnContext(ctx, "model reply rejected at send gate",
-				"instance_id", inst.ID(),
-				"channel", channelName,
-				"error", resp.Err,
-			)
-
-			continue
-		}
-
-		for _, evt := range resp.Events {
-			msg, ok := evt.(domain.Message)
-			if !ok {
-				continue
-			}
-
-			replies = append(replies, domain.ModelReplyEvent{
-				Channel:  channelName,
-				Event:    msg,
-				Instance: inst,
-				At:       msg.At,
-			})
-		}
-	}
-
-	return replies
 }
 
 func instancesForChannelWindow(window *domain.ChannelWindow) []*domain.Instance {
@@ -435,54 +322,6 @@ func resolveDispatchRecipients(ctx context.Context, sess Session, target domain.
 	}
 
 	return nil, nil
-}
-
-func renderReplyBody(part protocol.ReplyPart) string {
-	if len(part.Spans) == 0 {
-		return part.Body
-	}
-
-	if err := protocol.ValidateReplyPart(part); err != nil {
-		return part.Body
-	}
-
-	spans := make([]richtext.Span, 0, len(part.Spans))
-
-	for _, span := range part.Spans {
-		attrs := richtext.Attrs{}
-		if span.Style != nil {
-			attrs = replyStyleToAttrs(*span.Style)
-		}
-
-		spans = append(spans, richtext.Span{
-			Text:  span.Text,
-			Attrs: attrs,
-		})
-	}
-
-	return ircfmt.Encode(richtext.NewDocumentFromLines([]richtext.Line{{Spans: spans}}))
-}
-
-func replyStyleToAttrs(style protocol.ReplyStyle) richtext.Attrs {
-	return richtext.Attrs{
-		Bold:      style.Bold,
-		Italic:    style.Italic,
-		Underline: style.Underline,
-		Reverse:   style.Reverse,
-		Strike:    style.Strike,
-		FG:        cloneReplyColour(style.FG),
-		BG:        cloneReplyColour(style.BG),
-	}
-}
-
-func cloneReplyColour(colour *uint8) *uint8 {
-	if colour == nil {
-		return nil
-	}
-
-	value := *colour
-
-	return &value
 }
 
 func channelKindName(kind domain.ChannelKind) string {

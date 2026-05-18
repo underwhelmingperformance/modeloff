@@ -171,8 +171,11 @@ func dispatchTrigger(selfID domain.InstanceID, ev domain.ProtocolEvent) (domain.
 // instance in response to `trigger`, emitting `ModelDispatchStarted`
 // / `ModelDispatchDone` around the call so consumers can scope a
 // "this instance is thinking" indicator to the exact window of
-// the turn. The reply Messages are persisted and emitted by
-// [buildReplies].
+// the turn. The model's chat traffic lands on the session bus as a
+// side effect of its `msg` / `me` tool calls; the bus's echo gate
+// (RFC 2812 §3.3.1) means we never see our own messages come back,
+// so [ModelClient.Send] files them into the rolling history buffer
+// at the moment they're sent.
 //
 // `causeCtx` is the span context the producer captured at emit
 // time (see [protocol.Delivery]). When valid, the turn's span
@@ -216,20 +219,10 @@ func (mc *ModelClient) dispatchTurn(ctx context.Context, ch domain.ChannelName, 
 		return
 	}
 
-	replies, err := dispatchToInstance(ctx, mc.sess, apiClient, mc.memStore, mc.tools, mc.ensure, mc, window, inst, ch, historyEvents, []protocol.IRCMessage{trigger})
-	if err != nil {
+	if err := dispatchToInstance(ctx, mc.sess, apiClient, mc.memStore, mc.tools, mc.ensure, mc, window, inst, ch, historyEvents, []protocol.IRCMessage{trigger}); err != nil {
 		setSpanError(span, err, observability.ErrorKindDispatch)
 		mc.sess.Emit(ctx, domain.ModelUnavailableError{Channel: ch, Nick: nick, At: mc.sess.Now()})
 		return
-	}
-
-	// File the bot's own replies into its rolling history. The bus
-	// suppresses self-delivery of [domain.Message] events (echo
-	// gate, RFC 2812 §3.3.1) so the dispatch loop's hist.append
-	// path never sees them — without this, every subsequent turn's
-	// prompt would be missing the bot's own utterances.
-	for _, r := range replies {
-		mc.hist.append(ctx, mc.sess, inst.ID(), domain.StoredEvent{Event: r.Event}, ch)
 	}
 
 	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))

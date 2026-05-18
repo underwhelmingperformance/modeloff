@@ -243,10 +243,15 @@ func (a *App) CurrentView() string {
 // delegates to the corresponding function field when set, falling back
 // to a sensible default otherwise. The mutex protects concurrent access
 // from model goroutines during teatest runs.
+//
+// SendEventsFn returns the raw [api.CompletionResult] so tests can
+// drive either silence (the default — no tool calls) or specific
+// tool-call patterns (the model "wants to say something" via the
+// `msg`/`me`/`pass` tools).
 type FakeAPI struct {
 	mu                 sync.Mutex
 	ListModelsFn       func(context.Context) ([]api.ModelInfo, error)
-	SendEventsFn       func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error)
+	SendEventsFn       func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error)
 	GenerateNickFn     func(context.Context, domain.ModelID, string, []domain.Nick) (domain.Nick, error)
 	GeneratePersonasFn func(context.Context, domain.ModelID) ([]domain.Persona, error)
 }
@@ -263,7 +268,8 @@ func (f *FakeAPI) ListModels(ctx context.Context) ([]api.ModelInfo, error) {
 	return nil, nil
 }
 
-// SendEvents delegates to SendEventsFn or returns a silence response.
+// SendEvents delegates to SendEventsFn or returns silence (no tool
+// calls, which the dispatch loop terminates on).
 func (f *FakeAPI) SendEvents(
 	ctx context.Context,
 	modelID domain.ModelID,
@@ -277,25 +283,22 @@ func (f *FakeAPI) SendEvents(
 	defer f.mu.Unlock()
 
 	if f.SendEventsFn != nil {
-		response, err := f.SendEventsFn(ctx, modelID, system, history, events)
-		return api.CompletionResult{Response: response}, err
+		return f.SendEventsFn(ctx, modelID, system, history, events)
 	}
 
-	return api.CompletionResult{
-		Response: protocol.ModelResponse{Kind: protocol.ResponseSilence},
-	}, nil
+	return api.CompletionResult{}, nil
 }
 
-// ContinueWithToolResults always returns a silence response.
+// ContinueWithToolResults always returns silence — tests that want
+// to drive multi-turn tool loops should set SendEventsFn to return
+// the desired sequence directly.
 func (f *FakeAPI) ContinueWithToolResults(
 	_ context.Context,
 	_ *api.Conversation,
 	_ []api.ToolResult,
 	_ ...api.ToolDefinition,
 ) (api.CompletionResult, error) {
-	return api.CompletionResult{
-		Response: protocol.ModelResponse{Kind: protocol.ResponseSilence},
-	}, nil
+	return api.CompletionResult{}, nil
 }
 
 // GenerateNick delegates to GenerateNickFn or returns "fakenick".
