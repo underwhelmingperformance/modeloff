@@ -170,6 +170,48 @@ func TestRichTextareaDoubleClickSelectsWord(t *testing.T) {
 	require.Equal(t, 11, end.Cluster)
 }
 
+func TestRichTextareaTripleClickSelectsLine(t *testing.T) {
+	editor := NewRichTextarea(RichTextareaConfig{})
+	editor = editor.SetPlainText("hello world goodbye")
+	editor.width = 30
+	editor.height = 1
+
+	for range 3 {
+		updated, _ := editor.Update(tea.MouseMsg{
+			X:      7,
+			Y:      0,
+			Action: tea.MouseActionPress,
+			Button: tea.MouseButtonLeft,
+		})
+		editor = updated.(RichTextarea)
+		editor.lastClickAt = time.Now()
+	}
+
+	start, end := editor.selection.Normalized()
+	require.Equal(t, richtext.Position{Line: 0, Cluster: 0}, start)
+	require.Equal(t, richtext.Position{Line: 0, Cluster: 19}, end)
+}
+
+func TestRichTextareaQuadrupleClickResetsToCursor(t *testing.T) {
+	editor := NewRichTextarea(RichTextareaConfig{})
+	editor = editor.SetPlainText("hello world")
+	editor.width = 20
+	editor.height = 1
+
+	for range 4 {
+		updated, _ := editor.Update(tea.MouseMsg{
+			X:      7,
+			Y:      0,
+			Action: tea.MouseActionPress,
+			Button: tea.MouseButtonLeft,
+		})
+		editor = updated.(RichTextarea)
+		editor.lastClickAt = time.Now()
+	}
+
+	require.True(t, editor.selection.Collapsed(), "fourth click should collapse selection back to a cursor")
+}
+
 func TestRichTextareaMouseDragSelectsRange(t *testing.T) {
 	editor := NewRichTextarea(RichTextareaConfig{})
 	editor = editor.SetPlainText("hello world")

@@ -66,6 +66,7 @@ type RichTextarea struct {
 	palette        colourPalette
 	lastClickAt    time.Time
 	lastClickPos   richtext.Position
+	clickCount     int
 
 	killRing []string
 }
@@ -535,18 +536,33 @@ func (r RichTextarea) handleMouse(msg tea.MouseMsg) (RichTextarea, bool) {
 	switch msg.Action {
 	case tea.MouseActionPress:
 		position := r.positionFromPoint(msg.X, msg.Y)
+
 		if time.Since(r.lastClickAt) < 500*time.Millisecond && position == r.lastClickPos {
+			r.clickCount++
+		} else {
+			r.clickCount = 1
+		}
+		r.lastClickAt = time.Now()
+		r.lastClickPos = position
+
+		switch r.clickCount {
+		case 2:
 			r.selection = r.wordSelection(position)
 			r.position = r.selection.Head
-			r.lastClickAt = time.Time{}
 			return r.ensureViewport(), true
+		case 3:
+			r.selection = r.lineSelection(position)
+			r.position = r.selection.Head
+			return r.ensureViewport(), true
+		default:
+			if r.clickCount > 3 {
+				r.clickCount = 1
+			}
 		}
 
 		r.mouseSelecting = true
 		r.position = position
 		r.selection = richtext.Selection{Anchor: r.position, Head: r.position}
-		r.lastClickAt = time.Now()
-		r.lastClickPos = position
 		return r.ensureViewport(), true
 	case tea.MouseActionMotion:
 		if !r.mouseSelecting {
@@ -1291,6 +1307,16 @@ func (r RichTextarea) handlePaletteMouse(msg tea.MouseMsg) (RichTextarea, bool) 
 	}
 
 	return r, false
+}
+
+func (r RichTextarea) lineSelection(position richtext.Position) richtext.Selection {
+	return richtext.Selection{
+		Anchor: richtext.Position{Line: position.Line, Cluster: 0},
+		Head: richtext.Position{
+			Line:    position.Line,
+			Cluster: r.document.LineClusterCount(position.Line),
+		},
+	}
 }
 
 func (r RichTextarea) wordSelection(position richtext.Position) richtext.Selection {
