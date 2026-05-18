@@ -103,7 +103,7 @@ var DefaultInputBarKeyMap = InputBarKeyMap{
 		key.WithHelp("^←", "word ←"),
 	)),
 	WordRight: ui.Bind(key.NewBinding(
-		key.WithKeys("ctrl+right"),
+		key.WithKeys("ctrl+right", "alt+f"),
 		key.WithHelp("^→", "word →"),
 	)),
 	DeleteWordBack: ui.Bind(key.NewBinding(

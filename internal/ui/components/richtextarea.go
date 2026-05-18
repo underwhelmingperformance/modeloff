@@ -407,7 +407,7 @@ func (r RichTextarea) handleEditorKey(msg tea.KeyMsg) (RichTextarea, bool, tea.C
 	case "ctrl+left":
 		r.moveCursor(r.document.MoveWordLeft(r.position), extendSelection)
 		return r, true, nil
-	case "ctrl+right":
+	case "ctrl+right", "alt+f":
 		r.moveCursor(r.document.MoveWordRight(r.position), extendSelection)
 		return r, true, nil
 	case "left", "shift+left":

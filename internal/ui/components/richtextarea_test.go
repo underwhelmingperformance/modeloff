@@ -244,6 +244,21 @@ func TestRichTextareaPaletteKeyboardTargetsBackgroundForSelection(t *testing.T) 
 	}, editor.document.Line(0).Spans)
 }
 
+func TestRichTextareaAltFMovesWordRight(t *testing.T) {
+	editor := NewRichTextarea(RichTextareaConfig{})
+	editor = editor.SetPlainText("one two three")
+
+	updated, _ := editor.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}, Alt: true})
+	editor = updated.(RichTextarea)
+
+	require.Equal(t, richtext.Position{Line: 0, Cluster: 3}, editor.position)
+
+	updated, _ = editor.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}, Alt: true})
+	editor = updated.(RichTextarea)
+
+	require.Equal(t, richtext.Position{Line: 0, Cluster: 7}, editor.position)
+}
+
 func TestRichTextareaAltDDeletesNextWord(t *testing.T) {
 	editor := NewRichTextarea(RichTextareaConfig{})
 	editor = editor.SetPlainText("one two three")
