@@ -32,9 +32,11 @@ type channelMembership = *orderedmap.OrderedMap[domain.ChannelName, time.Time]
 //
 // The mode set is guarded by `modesMu`: `HasMode` and `Has` take
 // the read lock, `setMode` takes the write lock. The `instance`
-// pointer is set at construction for model-clients (nil for the
-// user-client) and is used by [Session.subscriberCanReceive] to
-// consult channel membership without a per-event store lookup.
+// pointer is set at construction and is the canonical actor handle
+// the dispatcher reads via [Session.resolveClientActor] — no
+// per-command store lookup. The user-client points at the
+// `*domain.Instance` constructed by [domain.NewUserInstance] in
+// [Session.New]; a model-client points at its own instance.
 type serverClient struct {
 	sess     *Session
 	id       protocol.ClientID
@@ -62,12 +64,14 @@ type serverClient struct {
 	history   map[domain.ChannelName][]domain.StoredEvent
 }
 
-// newServerClient constructs a subscription with the given identity.
-// `inst` may be nil for the user-client; model-clients hold the
-// canonical handle so membership lookups stay in-process. Modes
-// start empty — the user-client is promoted via [Session.New]'s
-// bootstrap call to `setUserModeAs`; future model elevation flows
-// through [protocol.Oper] via the dispatcher.
+// newServerClient constructs a subscription with the given identity
+// and actor instance. Modes start empty — the user-client is promoted
+// via [Session.New]'s bootstrap call to `setUserModeAs`; future model
+// elevation flows through [protocol.Oper] via the dispatcher.
+//
+// Model-clients run a dispatch loop and need a per-channel history
+// buffer for prompt assembly; the user-client never dispatches and
+// leaves `history` nil.
 func newServerClient(sess *Session, id protocol.ClientID, inst *domain.Instance) *serverClient {
 	c := &serverClient{
 		sess:     sess,
@@ -77,10 +81,7 @@ func newServerClient(sess *Session, id protocol.ClientID, inst *domain.Instance)
 		modes:    make(map[domain.Mode]struct{}),
 	}
 
-	// Only model-clients run a dispatch loop, so only model-clients
-	// need a history buffer. The user-client has no instance and
-	// never reads from `history`.
-	if inst != nil {
+	if id != protocol.UserClientID {
 		c.history = make(map[domain.ChannelName][]domain.StoredEvent)
 	}
 
@@ -148,18 +149,17 @@ func (c *serverClient) Has(cap command.Capability) bool {
 }
 
 // canReceive reports whether this subscription should receive
-// `ev`. The user-client (no backing instance) sees every event so
-// the chat-screen renders the full session view. A model-client
-// receives only events whose target window it is a member of, or
-// actor-scoped events (Quit, NickChange) where the recipient
-// shares any channel with the actor — RFC 2812 §3.3.1's
-// intersection rule. `actorTargets` is the per-recipient
-// intersection that [Session.fanOutProtocol] computed for this
-// fan-out; it is non-empty exactly when the actor and `c` share
-// at least one channel, so the test for actor-scoped delivery is
-// just a length check.
+// `ev`. The user-client sees every event so the chat-screen renders
+// the full session view. A model-client receives only events whose
+// target window it is a member of, or actor-scoped events (Quit,
+// NickChange) where the recipient shares any channel with the
+// actor — RFC 2812 §3.3.1's intersection rule. `actorTargets` is
+// the per-recipient intersection that [Session.fanOutProtocol]
+// computed for this fan-out; it is non-empty exactly when the actor
+// and `c` share at least one channel, so the test for actor-scoped
+// delivery is just a length check.
 func (c *serverClient) canReceive(ev domain.ProtocolEvent, actorTargets []domain.ChannelName) bool {
-	if c.instance == nil {
+	if c.id == protocol.UserClientID {
 		return true
 	}
 

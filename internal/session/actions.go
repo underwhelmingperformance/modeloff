@@ -779,16 +779,8 @@ func (s *Session) requireChannelOp(actor *domain.Instance, window *domain.Channe
 // carries `+o` user-mode. Used by [requireChannelOp] to honour
 // the server-operator override on channel-op-gated commands.
 func (s *Session) actorHasServerOper(actor *domain.Instance) bool {
-	var sc *serverClient
-	if actor == s.user {
-		sc = s.userClient
-	} else {
-		sc = s.lookupClientHandle(actor.ID())
-	}
-	if sc == nil {
-		return false
-	}
-	return sc.HasMode(domain.ModeOperator)
+	sc := s.lookupClientHandle(actor.ID())
+	return sc != nil && sc.HasMode(domain.ModeOperator)
 }
 
 // applyChannelModeChangesAs is the entry for [protocol.ChannelMode].

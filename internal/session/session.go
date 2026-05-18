@@ -315,7 +315,7 @@ func New(
 	// would produce; consumers (chat-screen, tests reading the
 	// user-client's events channel) see it as the first event of
 	// the session.
-	sess.userClient = newServerClient(sess, protocol.UserClientID, nil)
+	sess.userClient = newServerClient(sess, protocol.UserClientID, user)
 	sess.subscribers[sess.userClient.id] = sess.userClient
 	sess.clientHandles[sess.userClient.id] = sess.userClient
 	sess.setUserModeAs(baseContext(), "", sess.userClient, domain.ModeOperator, true)
@@ -494,10 +494,6 @@ func (s *Session) reapClient(id protocol.ClientID) {
 // store reads with a sequence-number dedupe on subsequent live
 // appends; for now the simpler pattern reads cleanly.
 func (s *Session) seedModelClientHistory(ctx context.Context, client *serverClient) {
-	if client.history == nil {
-		return
-	}
-
 	channels := client.instance.Channels()
 	if channels == nil {
 		return
@@ -680,19 +676,18 @@ func actorChannelSnapshot(pe domain.ProtocolEvent) []domain.ChannelName {
 // intersectActorTargets returns the recipient-visible channel
 // list for an actor-scoped event: those channels in
 // `actorChannels` that `sub` is also a member of. The user-client
-// (no backing instance) sees the actor's full channel list — the
-// chat-screen needs the complete picture to route the line into
-// every open window where the actor was a known member.
-// Window-scoped events pass `actorChannels == nil` and receive a
-// nil result.
+// sees the actor's full channel list — the chat-screen needs the
+// complete picture to route the line into every open window where
+// the actor was a known member. Window-scoped events pass
+// `actorChannels == nil` and receive a nil result.
 func intersectActorTargets(sub *serverClient, actorChannels []domain.ChannelName) []domain.ChannelName {
 	if len(actorChannels) == 0 {
 		return nil
 	}
 
-	if sub.instance == nil {
-		// User-client: the chat-screen is the operator window for
-		// every channel; expose the full actor list for routing.
+	if sub.id == protocol.UserClientID {
+		// The chat-screen is the operator window for every channel;
+		// expose the full actor list for routing.
 		out := make([]domain.ChannelName, len(actorChannels))
 		copy(out, actorChannels)
 		return out
@@ -2395,10 +2390,6 @@ func (s *Session) recordPersistenceFailure(ctx context.Context, ch domain.Channe
 // ctx passed at spawn) is cancelled. [Session.Shutdown] joins it
 // after the cancellation propagates.
 func (s *Session) runModelDispatch(ctx context.Context, c *serverClient) {
-	if c.instance == nil {
-		return
-	}
-
 	defer func() {
 		if r := recover(); r != nil {
 			slog.ErrorContext(ctx, "dispatch goroutine panicked", "instance_id", c.id, "panic", r)

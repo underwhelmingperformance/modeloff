@@ -82,7 +82,7 @@ func (s *Session) Handle(ctx context.Context, c protocol.Client, cmd protocol.Co
 }
 
 func (s *Session) handleChannelMode(ctx context.Context, c protocol.Client, cmd protocol.ChannelMode) (protocol.Response, error) {
-	actor, err := s.resolveClientActor(ctx, c)
+	actor, err := s.resolveClientActor(c)
 	if err != nil {
 		return protocol.Response{}, err
 	}
@@ -111,7 +111,7 @@ func (s *Session) handleOper(ctx context.Context, c protocol.Client, cmd protoco
 }
 
 func (s *Session) handleJoin(ctx context.Context, c protocol.Client, cmd protocol.Join) (protocol.Response, error) {
-	actor, err := s.resolveClientActor(ctx, c)
+	actor, err := s.resolveClientActor(c)
 	if err != nil {
 		return protocol.Response{}, err
 	}
@@ -120,7 +120,7 @@ func (s *Session) handleJoin(ctx context.Context, c protocol.Client, cmd protoco
 }
 
 func (s *Session) handlePart(ctx context.Context, c protocol.Client, cmd protocol.Part) (protocol.Response, error) {
-	actor, err := s.resolveClientActor(ctx, c)
+	actor, err := s.resolveClientActor(c)
 	if err != nil {
 		return protocol.Response{}, err
 	}
@@ -129,7 +129,7 @@ func (s *Session) handlePart(ctx context.Context, c protocol.Client, cmd protoco
 }
 
 func (s *Session) handlePrivMsg(ctx context.Context, c protocol.Client, cmd protocol.PrivMsg) (protocol.Response, error) {
-	actor, err := s.resolveClientActor(ctx, c)
+	actor, err := s.resolveClientActor(c)
 	if err != nil {
 		return protocol.Response{}, err
 	}
@@ -143,7 +143,7 @@ func (s *Session) handlePrivMsg(ctx context.Context, c protocol.Client, cmd prot
 }
 
 func (s *Session) handleAction(ctx context.Context, c protocol.Client, cmd protocol.Action) (protocol.Response, error) {
-	actor, err := s.resolveClientActor(ctx, c)
+	actor, err := s.resolveClientActor(c)
 	if err != nil {
 		return protocol.Response{}, err
 	}
@@ -157,7 +157,7 @@ func (s *Session) handleAction(ctx context.Context, c protocol.Client, cmd proto
 }
 
 func (s *Session) handleTopic(ctx context.Context, c protocol.Client, cmd protocol.Topic) (protocol.Response, error) {
-	actor, err := s.resolveClientActor(ctx, c)
+	actor, err := s.resolveClientActor(c)
 	if err != nil {
 		return protocol.Response{}, err
 	}
@@ -166,7 +166,7 @@ func (s *Session) handleTopic(ctx context.Context, c protocol.Client, cmd protoc
 }
 
 func (s *Session) handleInvite(ctx context.Context, c protocol.Client, cmd protocol.Invite) (protocol.Response, error) {
-	actor, err := s.resolveClientActor(ctx, c)
+	actor, err := s.resolveClientActor(c)
 	if err != nil {
 		return protocol.Response{}, err
 	}
@@ -175,7 +175,7 @@ func (s *Session) handleInvite(ctx context.Context, c protocol.Client, cmd proto
 }
 
 func (s *Session) handleKick(ctx context.Context, c protocol.Client, cmd protocol.Kick) (protocol.Response, error) {
-	actor, err := s.resolveClientActor(ctx, c)
+	actor, err := s.resolveClientActor(c)
 	if err != nil {
 		return protocol.Response{}, err
 	}
@@ -208,7 +208,7 @@ func (s *Session) dispatcherResolveNick(ctx context.Context, nick domain.Nick) (
 }
 
 func (s *Session) handleNick(ctx context.Context, c protocol.Client, cmd protocol.Nick) (protocol.Response, error) {
-	actor, err := s.resolveClientActor(ctx, c)
+	actor, err := s.resolveClientActor(c)
 	if err != nil {
 		return protocol.Response{}, err
 	}
@@ -280,7 +280,7 @@ func (s *Session) handleList(ctx context.Context) (protocol.Response, error) {
 // user-client is never reaped: its lifetime equals the session's,
 // and the process owning it shuts down after [handleQuit] returns.
 func (s *Session) handleQuit(ctx context.Context, c protocol.Client, cmd protocol.Quit) (protocol.Response, error) {
-	actor, err := s.resolveClientActor(ctx, c)
+	actor, err := s.resolveClientActor(c)
 	if err != nil {
 		return protocol.Response{}, err
 	}
@@ -301,7 +301,7 @@ func (s *Session) handleAddModel(ctx context.Context, c protocol.Client, cmd pro
 		return protocol.Response{Err: domain.NotOperatorError{Command: "ADDMODEL", At: s.now()}}, nil
 	}
 
-	actor, err := s.resolveClientActor(ctx, c)
+	actor, err := s.resolveClientActor(c)
 	if err != nil {
 		return protocol.Response{}, err
 	}
@@ -318,7 +318,7 @@ func (s *Session) handleKill(ctx context.Context, c protocol.Client, cmd protoco
 		return protocol.Response{Err: domain.NotOperatorError{Command: "KILL", At: s.now()}}, nil
 	}
 
-	oper, err := s.resolveClientActor(ctx, c)
+	oper, err := s.resolveClientActor(c)
 	if err != nil {
 		return protocol.Response{}, err
 	}
@@ -346,15 +346,15 @@ func commandResult(err error) (protocol.Response, error) {
 }
 
 // resolveClientActor turns a [protocol.Client] handle into the
-// `*domain.Instance` the existing `*As` methods take as their actor
-// argument. The user-client (identified by [protocol.UserClientID])
-// resolves to `s.user`; any other id is looked up in the store, which
-// returns the canonical pointer-stable handle.
-func (s *Session) resolveClientActor(ctx context.Context, c protocol.Client) (*domain.Instance, error) {
-	id := c.Identity()
-	if id == protocol.UserClientID {
-		return s.user, nil
+// `*domain.Instance` the `*As` methods take as their actor
+// argument. The registered subscription carries the canonical
+// instance pointer; the dispatcher reads it directly with no store
+// round-trip. An unregistered client is a structural bug — the
+// dispatcher only sees handles the session issued.
+func (s *Session) resolveClientActor(c protocol.Client) (*domain.Instance, error) {
+	sc := s.lookupClientHandle(c.Identity())
+	if sc == nil {
+		return nil, fmt.Errorf("client %q not registered with this session", c.Identity())
 	}
-
-	return s.store.GetInstanceByID(ctx, id)
+	return sc.instance, nil
 }

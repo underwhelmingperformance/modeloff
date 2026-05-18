@@ -201,26 +201,29 @@ func TestQuitAs_delivery_targets_intersect_per_recipient(t *testing.T) {
 	alphaChannels := testChannels("#shared", "#private")
 	betaChannels := testChannels("#shared")
 
+	alpha := domain.NewModelInstance("inst-alpha", "alpha", "test/model", "", alphaChannels)
+	beta := domain.NewModelInstance("inst-beta", "beta", "test/model", "", betaChannels)
+
 	gotAlpha := intersectActorTargets(
-		fakeServerClient(t, &domain.Instance{}, alphaChannels),
+		fakeServerClient(t, alpha),
 		channelNames(alphaChannels),
 	)
 	require.Equal(t, []domain.ChannelName{"#shared", "#private"}, gotAlpha,
 		"alpha is the actor; alpha sees the full set as receiver")
 
 	gotBeta := intersectActorTargets(
-		fakeServerClient(t, &domain.Instance{}, betaChannels),
+		fakeServerClient(t, beta),
 		channelNames(alphaChannels),
 	)
 	require.Equal(t, []domain.ChannelName{"#shared"}, gotBeta,
 		"beta receives only the channel it shares with alpha; #private is not on the wire")
 
 	gotUser := intersectActorTargets(
-		fakeServerClient(t, nil, nil),
+		fakeUserServerClient(t),
 		channelNames(alphaChannels),
 	)
 	require.Equal(t, []domain.ChannelName{"#shared", "#private"}, gotUser,
-		"user-client (no backing instance) receives the full actor channel list")
+		"user-client receives the full actor channel list")
 }
 
 // TestActorChannelSnapshot_only_for_actor_scoped pins the
@@ -249,27 +252,29 @@ func TestActorChannelSnapshot_only_for_actor_scoped(t *testing.T) {
 	}
 }
 
-// fakeServerClient builds a minimal serverClient for unit-testing
-// the per-recipient intersection helpers. The dispatch goroutine
-// is not started — the helpers under test are pure functions over
-// the client's channel membership.
-func fakeServerClient(t *testing.T, inst *domain.Instance, channels *orderedmap.OrderedMap[domain.ChannelName, time.Time]) *serverClient {
+// fakeServerClient builds a minimal model-client subscription for
+// unit-testing the per-recipient intersection helpers. The dispatch
+// goroutine is not started — the helpers under test are pure
+// functions over the client's identity and channel membership.
+func fakeServerClient(t *testing.T, inst *domain.Instance) *serverClient {
 	t.Helper()
 
-	c := &serverClient{}
-	if inst != nil {
-		inst.MutateChannels(func(m *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
-			if channels == nil {
-				return
-			}
-			for pair := channels.Oldest(); pair != nil; pair = pair.Next() {
-				m.Set(pair.Key, pair.Value)
-			}
-		})
-		c.instance = inst
+	return &serverClient{
+		id:       protocol.ClientID(inst.ID()),
+		instance: inst,
 	}
+}
 
-	return c
+// fakeUserServerClient builds a minimal user-client subscription
+// for the intersection helpers. Identity is [protocol.UserClientID];
+// no instance pointer is needed because the user-client branch of
+// the helpers reads only the id.
+func fakeUserServerClient(t *testing.T) *serverClient {
+	t.Helper()
+
+	return &serverClient{
+		id: protocol.UserClientID,
+	}
 }
 
 // channelNames flattens an ordered channel map into a slice in
