@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	cryptorand "crypto/rand"
+	"flag"
 	"fmt"
 	"log/slog"
 	"math/big"
@@ -29,8 +30,19 @@ import (
 )
 
 func main() {
+	wipe := flag.Bool("wipe", false, "Remove the on-disk database (channels, instances, memories, personas, autojoin) before starting. The config file is left untouched.")
+
+	flag.Parse()
+
 	appCtx, cancelApp := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancelApp()
+
+	if *wipe {
+		if err := store.Wipe(store.DefaultSQLitePath()); err != nil {
+			fmt.Fprintf(os.Stderr, "error wiping database: %v\n", err)
+			os.Exit(1)
+		}
+	}
 
 	obs, err := observability.NewRuntime()
 	if err != nil {

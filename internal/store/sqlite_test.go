@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -148,6 +149,27 @@ func TestNewSQLiteStore_sets_pragmas(t *testing.T) {
 	want := pragmas{JournalMode: "wal", BusyTimeout: 5000, ForeignKeys: 1}
 	require.Equal(t, want, readPragmas(t, c1))
 	require.Equal(t, want, readPragmas(t, c2))
+}
+
+// TestWipe_removes_database_and_sidecars exercises the startup
+// `--wipe` path against a path the test owns: a populated database
+// file with WAL and SHM sidecars is removed, and a follow-up wipe
+// over a missing file is a no-op.
+func TestWipe_removes_database_and_sidecars(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "modeloff.db")
+
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		require.NoError(t, os.WriteFile(base+suffix, []byte("x"), 0o600))
+	}
+
+	require.NoError(t, Wipe(base))
+
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		_, err := os.Stat(base + suffix)
+		require.ErrorIs(t, err, os.ErrNotExist, "file %s should be gone after wipe", base+suffix)
+	}
+
+	require.NoError(t, Wipe(base), "wipe over missing files is a no-op")
 }
 
 // --- Windows ---

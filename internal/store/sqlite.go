@@ -118,16 +118,40 @@ func SQLitePragmaDSN(path string) string {
 	return dsn + sep + "_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(on)"
 }
 
+// DefaultSQLitePath returns the on-disk location of the default
+// SQLite database — $XDG_DATA_HOME/modeloff/modeloff.db. It is the
+// same path [NewDefaultSQLiteStore] opens, exposed so callers
+// (e.g. a `--wipe` startup flag) can act on the file without
+// reopening it.
+func DefaultSQLitePath() string {
+	return filepath.Join(xdg.DataHome, "modeloff", "modeloff.db")
+}
+
+// Wipe removes the SQLite database file at base together with its
+// WAL and SHM sidecars (`base-wal`, `base-shm`). Missing files are
+// not an error: wiping a never-launched install is a no-op. After
+// Wipe, opening a [SQLiteStore] at the same path creates a fresh
+// schema.
+func Wipe(base string) error {
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		if err := os.Remove(base + suffix); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove %s: %w", base+suffix, err)
+		}
+	}
+
+	return nil
+}
+
 // NewDefaultSQLiteStore creates a SQLiteStore using the XDG data
 // directory ($XDG_DATA_HOME/modeloff/modeloff.db).
 func NewDefaultSQLiteStore(ctx context.Context) (*SQLiteStore, error) {
-	dir := filepath.Join(xdg.DataHome, "modeloff")
+	path := DefaultSQLitePath()
 
-	if err := os.MkdirAll(dir, 0o750); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return nil, fmt.Errorf("create data dir: %w", err)
 	}
 
-	db, err := sql.Open("sqlite3", SQLitePragmaDSN(filepath.Join(dir, "modeloff.db")))
+	db, err := sql.Open("sqlite3", SQLitePragmaDSN(path))
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
