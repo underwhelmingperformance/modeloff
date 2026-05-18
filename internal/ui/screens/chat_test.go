@@ -20,13 +20,16 @@ import (
 	"github.com/laney/modeloff/internal/ui/chatcmd"
 	"github.com/laney/modeloff/internal/ui/screens"
 	"github.com/laney/modeloff/internal/ui/uitest"
+	"github.com/laney/modeloff/internal/userclient"
 )
 
-// testHarness bundles a session + its manager so test helpers can
-// thread both into the chat-screen without separate ceremony.
+// testHarness bundles a session, its manager, and the user-client
+// so test helpers can thread all three into the chat-screen
+// without separate ceremony.
 type testHarness struct {
 	sess *session.Session
 	mgr  *modelmanager.Manager
+	user *userclient.UserClient
 }
 
 func newTestSession(t *testing.T) *testHarness {
@@ -34,8 +37,8 @@ func newTestSession(t *testing.T) *testHarness {
 
 	s := storetest.NewMemoryStore(t)
 	apiClient := &uitest.FakeAPI{}
-	sess, mgr := uitest.NewTestSession(t, s, apiClient, nil, nil, "", "", t.Context)
-	return &testHarness{sess: sess, mgr: mgr}
+	sess, mgr, user := uitest.NewTestSession(t, s, apiClient, nil, nil, "", "", t.Context)
+	return &testHarness{sess: sess, mgr: mgr, user: user}
 }
 
 func newTestSessionWithConfigStore(t *testing.T, cfgStore config.Store) *testHarness {
@@ -44,8 +47,8 @@ func newTestSessionWithConfigStore(t *testing.T, cfgStore config.Store) *testHar
 	s := storetest.NewMemoryStore(t)
 	cfg, _ := cfgStore.Load(t.Context())
 	apiClient := &uitest.FakeAPI{}
-	sess, mgr := uitest.NewTestSession(t, s, apiClient, nil, nil, cfg.APIKey, cfg.SmallModel, t.Context)
-	return &testHarness{sess: sess, mgr: mgr}
+	sess, mgr, user := uitest.NewTestSession(t, s, apiClient, nil, nil, cfg.APIKey, cfg.SmallModel, t.Context)
+	return &testHarness{sess: sess, mgr: mgr, user: user}
 }
 
 func newChatApp(t *testing.T, h *testHarness) *uitest.App {
@@ -57,7 +60,7 @@ func newChatApp(t *testing.T, h *testHarness) *uitest.App {
 func newChatAppWithConfig(t *testing.T, h *testHarness, cfgStore config.Store) *uitest.App {
 	t.Helper()
 
-	chatScreen, err := screens.NewChatScreen(t.Context, h.sess, h.mgr, cfgStore, nil, domain.KindStatus)
+	chatScreen, err := screens.NewChatScreen(t.Context, h.sess, h.mgr, h.user, cfgStore, nil, domain.KindStatus)
 	require.NoError(t, err)
 
 	root := uipkg.NewRoot(chatScreen)
@@ -68,7 +71,7 @@ func newChatAppInChannel(t *testing.T, channel domain.ChannelName) (*uitest.App,
 	t.Helper()
 
 	h := newTestSession(t)
-	uitest.SeedChannel(t, h.sess, string(channel))
+	uitest.SeedChannel(t, h.user, string(channel))
 
 	tm := newChatApp(t, h)
 	// Wait for the startup focus-restore (Init asynchronously focuses
@@ -109,7 +112,7 @@ func waitForChannelAndModelSeedDrain(tm *uitest.App) {
 
 func TestChatScreen_Init_loads_channels(t *testing.T) {
 	h := newTestSession(t)
-	uitest.SeedChannel(t, h.sess, "#general")
+	uitest.SeedChannel(t, h.user, "#general")
 	uitest.SeedMessage(t, h.sess, "#general", "hello")
 
 	tm := newChatApp(t, h)
@@ -151,7 +154,7 @@ func TestChatScreen_checklist_api_key_set_no_channels(t *testing.T) {
 
 func TestChatScreen_checklist_channels_exist_no_checklist(t *testing.T) {
 	h := newTestSession(t)
-	uitest.SeedChannel(t, h.sess, "#general")
+	uitest.SeedChannel(t, h.user, "#general")
 
 	tm := newChatApp(t, h)
 	// Wait for the focus-restore handshake to finish (handleChannelFocus
@@ -166,7 +169,7 @@ func TestChatScreen_checklist_channels_exist_no_checklist(t *testing.T) {
 
 func TestChatScreen_checklist_part_last_channel_shows_checklist(t *testing.T) {
 	h := newTestSession(t)
-	uitest.SeedChannel(t, h.sess, "#general")
+	uitest.SeedChannel(t, h.user, "#general")
 
 	tm := newChatApp(t, h)
 	waitForChannelSeedDrain(tm)
@@ -208,9 +211,9 @@ func TestChatScreen_join_new_channel(t *testing.T) {
 
 func TestChatScreen_join_existing_channel(t *testing.T) {
 	h := newTestSession(t)
-	uitest.SeedChannel(t, h.sess, "#general")
+	uitest.SeedChannel(t, h.user, "#general")
 	uitest.SeedMessage(t, h.sess, "#general", "general msg")
-	uitest.SeedChannel(t, h.sess, "#existing")
+	uitest.SeedChannel(t, h.user, "#existing")
 
 	tm := newChatApp(t, h)
 	tm.WaitFor("#existing")
@@ -266,9 +269,9 @@ func TestChatScreen_rejoin_hides_pre_session_history(t *testing.T) {
 	require.NoError(t, err)
 
 	apiClient := &uitest.FakeAPI{}
-	sess, mgr := uitest.NewTestSession(t, s, apiClient, nil, nil, "", "", t.Context)
-	h := &testHarness{sess: sess, mgr: mgr}
-	require.NoError(t, sess.JoinAutojoinChannels(ctx))
+	sess, mgr, user := uitest.NewTestSession(t, s, apiClient, nil, nil, "", "", t.Context)
+	h := &testHarness{sess: sess, mgr: mgr, user: user}
+	require.NoError(t, user.JoinAutojoinChannels(ctx))
 
 	tm := newChatApp(t, h)
 
@@ -330,12 +333,12 @@ func replaceTopicSeparator(lines []string) []string {
 func TestChatScreen_persists_last_channel_on_focus(t *testing.T) {
 	s := storetest.NewMemoryStore(t)
 	apiClient := &uitest.FakeAPI{}
-	sess, mgr := uitest.NewTestSession(t, s, apiClient, nil, nil, "", "", t.Context)
+	sess, mgr, user := uitest.NewTestSession(t, s, apiClient, nil, nil, "", "", t.Context)
 
-	uitest.SeedChannel(t, sess, "#general")
-	uitest.SeedChannel(t, sess, "#random")
+	uitest.SeedChannel(t, user, "#general")
+	uitest.SeedChannel(t, user, "#random")
 
-	chatScreen, err := screens.NewChatScreen(t.Context, sess, mgr, newFakeConfigStore(), s, domain.KindStatus)
+	chatScreen, err := screens.NewChatScreen(t.Context, sess, mgr, user, newFakeConfigStore(), s, domain.KindStatus)
 	require.NoError(t, err)
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen), teatest.WithInitialTermSize(256, 256))
@@ -358,8 +361,8 @@ func TestChatScreen_persists_last_channel_on_focus(t *testing.T) {
 
 func TestChatScreen_part_command(t *testing.T) {
 	h := newTestSession(t)
-	uitest.SeedChannel(t, h.sess, "#general")
-	uitest.SeedChannel(t, h.sess, "#random")
+	uitest.SeedChannel(t, h.user, "#general")
+	uitest.SeedChannel(t, h.user, "#random")
 
 	tm := newChatApp(t, h)
 	tm.WaitFor("#random")
@@ -390,7 +393,7 @@ func TestChatScreen_nick_command_reports_persist_error(t *testing.T) {
 	cfgStore := newFakeConfigStore()
 	cfgStore.saveErr = context.DeadlineExceeded
 	h := newTestSessionWithConfigStore(t, cfgStore)
-	uitest.SeedChannel(t, h.sess, "#general")
+	uitest.SeedChannel(t, h.user, "#general")
 
 	tm := newChatAppWithConfig(t, h, cfgStore)
 	waitForChannelSeedDrain(tm)
@@ -427,9 +430,9 @@ func TestChatScreen_topic_show_info_no_topic(t *testing.T) {
 
 func TestChatScreen_whois_command(t *testing.T) {
 	h := newTestSession(t)
-	uitest.SeedChannel(t, h.sess, "#general")
+	uitest.SeedChannel(t, h.user, "#general")
 
-	uitest.AddModel(t, h.sess, "#general", "anthropic/claude-3-haiku", "")
+	uitest.AddModel(t, h.user, "#general", "anthropic/claude-3-haiku", "")
 
 	tm := newChatApp(t, h)
 	waitForChannelAndModelSeedDrain(tm)
@@ -440,8 +443,8 @@ func TestChatScreen_whois_command(t *testing.T) {
 
 func TestChatScreen_whois_persists_to_status_channel(t *testing.T) {
 	h := newTestSession(t)
-	uitest.SeedChannel(t, h.sess, "#general")
-	uitest.AddModel(t, h.sess, "#general", "anthropic/claude-3-haiku", "")
+	uitest.SeedChannel(t, h.user, "#general")
+	uitest.AddModel(t, h.user, "#general", "anthropic/claude-3-haiku", "")
 
 	tm := newChatApp(t, h)
 	waitForChannelAndModelSeedDrain(tm)
@@ -494,8 +497,8 @@ func TestChatScreen_whois_unknown_nick(t *testing.T) {
 
 func TestChatScreen_list_command(t *testing.T) {
 	h := newTestSession(t)
-	uitest.SeedChannel(t, h.sess, "#general")
-	uitest.SeedChannel(t, h.sess, "#random")
+	uitest.SeedChannel(t, h.user, "#general")
+	uitest.SeedChannel(t, h.user, "#random")
 
 	tm := newChatApp(t, h)
 	tm.WaitFor("#random")
@@ -537,10 +540,10 @@ func TestChatScreen_add_model_no_args(t *testing.T) {
 
 func TestChatScreen_invite_existing_instance(t *testing.T) {
 	h := newTestSession(t)
-	uitest.SeedChannel(t, h.sess, "#general")
-	uitest.SeedChannel(t, h.sess, "#random")
+	uitest.SeedChannel(t, h.user, "#general")
+	uitest.SeedChannel(t, h.user, "#random")
 
-	uitest.AddModel(t, h.sess, "#general", "anthropic/claude-3-haiku", "")
+	uitest.AddModel(t, h.user, "#general", "anthropic/claude-3-haiku", "")
 
 	tm := newChatApp(t, h)
 	tm.WaitFor("#random")
@@ -551,9 +554,9 @@ func TestChatScreen_invite_existing_instance(t *testing.T) {
 
 func TestChatScreen_kick_command(t *testing.T) {
 	h := newTestSession(t)
-	uitest.SeedChannel(t, h.sess, "#general")
+	uitest.SeedChannel(t, h.user, "#general")
 
-	uitest.AddModel(t, h.sess, "#general", "anthropic/claude-3-haiku", "")
+	uitest.AddModel(t, h.user, "#general", "anthropic/claude-3-haiku", "")
 
 	tm := newChatApp(t, h)
 	waitForChannelAndModelSeedDrain(tm)
@@ -575,7 +578,7 @@ func TestChatScreen_config_set_api_key(t *testing.T) {
 	h.mgr.SetAPIFactory(func(string, string) (api.Client, error) {
 		return &uitest.FakeAPI{}, nil
 	})
-	uitest.SeedChannel(t, h.sess, "#general")
+	uitest.SeedChannel(t, h.user, "#general")
 
 	tm := newChatAppWithConfig(t, h, cfgStore)
 	waitForChannelSeedDrain(tm)
@@ -598,7 +601,7 @@ func TestChatScreen_config_set_api_key_updates_live_model_suggestions(t *testing
 			},
 		}, nil
 	})
-	uitest.SeedChannel(t, h.sess, "#general")
+	uitest.SeedChannel(t, h.user, "#general")
 
 	tm := newChatAppWithConfig(t, h, cfgStore)
 	waitForChannelSeedDrain(tm)
@@ -620,7 +623,7 @@ func TestChatScreen_config_set_api_key_surfaces_live_model_failure(t *testing.T)
 			},
 		}, nil
 	})
-	uitest.SeedChannel(t, h.sess, "#general")
+	uitest.SeedChannel(t, h.user, "#general")
 
 	tm := newChatAppWithConfig(t, h, cfgStore)
 	waitForChannelSeedDrain(tm)
@@ -632,7 +635,7 @@ func TestChatScreen_config_set_api_key_surfaces_live_model_failure(t *testing.T)
 func TestChatScreen_config_set_poke_interval(t *testing.T) {
 	cfgStore := newFakeConfigStore()
 	h := newTestSessionWithConfigStore(t, cfgStore)
-	uitest.SeedChannel(t, h.sess, "#general")
+	uitest.SeedChannel(t, h.user, "#general")
 
 	tm := newChatAppWithConfig(t, h, cfgStore)
 	waitForChannelSeedDrain(tm)
@@ -646,7 +649,7 @@ func TestChatScreen_config_set_poke_interval(t *testing.T) {
 func TestChatScreen_config_set_drain_timeout(t *testing.T) {
 	cfgStore := newFakeConfigStore()
 	h := newTestSessionWithConfigStore(t, cfgStore)
-	uitest.SeedChannel(t, h.sess, "#general")
+	uitest.SeedChannel(t, h.user, "#general")
 
 	tm := newChatAppWithConfig(t, h, cfgStore)
 	waitForChannelSeedDrain(tm)
@@ -660,7 +663,7 @@ func TestChatScreen_config_set_drain_timeout(t *testing.T) {
 func TestChatScreen_config_set_timestamp_format(t *testing.T) {
 	cfgStore := newFakeConfigStore()
 	h := newTestSessionWithConfigStore(t, cfgStore)
-	uitest.SeedChannel(t, h.sess, "#general")
+	uitest.SeedChannel(t, h.user, "#general")
 
 	tm := newChatAppWithConfig(t, h, cfgStore)
 	waitForChannelSeedDrain(tm)
@@ -675,7 +678,7 @@ func TestChatScreen_config_set_timestamp_format(t *testing.T) {
 func TestChatScreen_config_disable_timestamp_format(t *testing.T) {
 	cfgStore := newFakeConfigStore()
 	h := newTestSessionWithConfigStore(t, cfgStore)
-	uitest.SeedChannel(t, h.sess, "#general")
+	uitest.SeedChannel(t, h.user, "#general")
 
 	tm := newChatAppWithConfig(t, h, cfgStore)
 	waitForChannelSeedDrain(tm)
@@ -690,7 +693,7 @@ func TestChatScreen_config_disable_timestamp_format(t *testing.T) {
 func TestChatScreen_config_disable_timestamp_format_with_empty_quotes(t *testing.T) {
 	cfgStore := newFakeConfigStore()
 	h := newTestSessionWithConfigStore(t, cfgStore)
-	uitest.SeedChannel(t, h.sess, "#general")
+	uitest.SeedChannel(t, h.user, "#general")
 
 	tm := newChatAppWithConfig(t, h, cfgStore)
 	waitForChannelSeedDrain(tm)
@@ -706,7 +709,7 @@ func TestChatScreen_config_reset_poke_interval_from_parent_flag(t *testing.T) {
 	cfgStore := newFakeConfigStore()
 	cfgStore.cfg.PokeInterval = 10 * time.Minute
 	h := newTestSessionWithConfigStore(t, cfgStore)
-	uitest.SeedChannel(t, h.sess, "#general")
+	uitest.SeedChannel(t, h.user, "#general")
 
 	tm := newChatAppWithConfig(t, h, cfgStore)
 	waitForChannelSeedDrain(tm)
@@ -721,7 +724,7 @@ func TestChatScreen_config_reset_drain_timeout_from_parent_flag(t *testing.T) {
 	cfgStore := newFakeConfigStore()
 	cfgStore.cfg.DrainTimeout = 30 * time.Second
 	h := newTestSessionWithConfigStore(t, cfgStore)
-	uitest.SeedChannel(t, h.sess, "#general")
+	uitest.SeedChannel(t, h.user, "#general")
 
 	tm := newChatAppWithConfig(t, h, cfgStore)
 	waitForChannelSeedDrain(tm)
@@ -736,7 +739,7 @@ func TestChatScreen_config_reset_api_key_from_child_flag(t *testing.T) {
 	cfgStore := newFakeConfigStore()
 	cfgStore.cfg.APIKey = "test-key"
 	h := newTestSessionWithConfigStore(t, cfgStore)
-	uitest.SeedChannel(t, h.sess, "#general")
+	uitest.SeedChannel(t, h.user, "#general")
 
 	tm := newChatAppWithConfig(t, h, cfgStore)
 	waitForChannelSeedDrain(tm)
@@ -752,7 +755,7 @@ func TestChatScreen_config_reset_timestamp_format(t *testing.T) {
 	cfgStore := newFakeConfigStore()
 	cfgStore.cfg.TimestampFormat = &custom
 	h := newTestSessionWithConfigStore(t, cfgStore)
-	uitest.SeedChannel(t, h.sess, "#general")
+	uitest.SeedChannel(t, h.user, "#general")
 
 	tm := newChatAppWithConfig(t, h, cfgStore)
 	waitForChannelSeedDrain(tm)
@@ -767,7 +770,7 @@ func TestChatScreen_config_reset_base_url(t *testing.T) {
 	cfgStore := newFakeConfigStore()
 	cfgStore.cfg.BaseURL = "https://custom.example.com/v1"
 	h := newTestSessionWithConfigStore(t, cfgStore)
-	uitest.SeedChannel(t, h.sess, "#general")
+	uitest.SeedChannel(t, h.user, "#general")
 
 	tm := newChatAppWithConfig(t, h, cfgStore)
 	waitForChannelSeedDrain(tm)
@@ -782,7 +785,7 @@ func TestChatScreen_config_reset_small_model(t *testing.T) {
 	cfgStore := newFakeConfigStore()
 	cfgStore.cfg.SmallModel = "custom/small-model"
 	h := newTestSessionWithConfigStore(t, cfgStore)
-	uitest.SeedChannel(t, h.sess, "#general")
+	uitest.SeedChannel(t, h.user, "#general")
 
 	tm := newChatAppWithConfig(t, h, cfgStore)
 	waitForChannelSeedDrain(tm)
@@ -797,7 +800,7 @@ func TestChatScreen_config_reset_embedding_model(t *testing.T) {
 	cfgStore := newFakeConfigStore()
 	cfgStore.cfg.EmbeddingModel = "custom/embedding-model"
 	h := newTestSessionWithConfigStore(t, cfgStore)
-	uitest.SeedChannel(t, h.sess, "#general")
+	uitest.SeedChannel(t, h.user, "#general")
 
 	tm := newChatAppWithConfig(t, h, cfgStore)
 	waitForChannelSeedDrain(tm)
@@ -812,7 +815,7 @@ func TestChatScreen_config_reset_highlight(t *testing.T) {
 	cfgStore := newFakeConfigStore()
 	cfgStore.cfg.HighlightWords = []string{"custom", "words"}
 	h := newTestSessionWithConfigStore(t, cfgStore)
-	uitest.SeedChannel(t, h.sess, "#general")
+	uitest.SeedChannel(t, h.user, "#general")
 
 	tm := newChatAppWithConfig(t, h, cfgStore)
 	waitForChannelSeedDrain(tm)
@@ -843,8 +846,8 @@ func TestChatScreen_config_invalid_duration(t *testing.T) {
 // affordance.
 func TestChatScreen_msg_command_requires_body(t *testing.T) {
 	h := newTestSession(t)
-	uitest.SeedChannel(t, h.sess, "#general")
-	uitest.AddModel(t, h.sess, "#general", "anthropic/claude-3-haiku", "")
+	uitest.SeedChannel(t, h.user, "#general")
+	uitest.AddModel(t, h.user, "#general", "anthropic/claude-3-haiku", "")
 
 	tm := newChatApp(t, h)
 	waitForChannelAndModelSeedDrain(tm)
@@ -857,8 +860,8 @@ func TestChatScreen_msg_command_requires_body(t *testing.T) {
 // `/query <nick>` blank-window-and-focus path.
 func TestChatScreen_query_command_opens_dm(t *testing.T) {
 	h := newTestSession(t)
-	uitest.SeedChannel(t, h.sess, "#general")
-	uitest.AddModel(t, h.sess, "#general", "anthropic/claude-3-haiku", "")
+	uitest.SeedChannel(t, h.user, "#general")
+	uitest.AddModel(t, h.user, "#general", "anthropic/claude-3-haiku", "")
 
 	tm := newChatApp(t, h)
 	waitForChannelAndModelSeedDrain(tm)
@@ -872,8 +875,8 @@ func TestChatScreen_query_command_opens_dm(t *testing.T) {
 // switches, body sends.
 func TestChatScreen_query_command_opens_dm_and_sends_message(t *testing.T) {
 	h := newTestSession(t)
-	uitest.SeedChannel(t, h.sess, "#general")
-	uitest.AddModel(t, h.sess, "#general", "anthropic/claude-3-haiku", "")
+	uitest.SeedChannel(t, h.user, "#general")
+	uitest.AddModel(t, h.user, "#general", "anthropic/claude-3-haiku", "")
 
 	tm := newChatApp(t, h)
 	waitForChannelAndModelSeedDrain(tm)
@@ -898,7 +901,7 @@ func TestChatScreen_help_command(t *testing.T) {
 
 func TestChatScreen_clear_command_removes_messages(t *testing.T) {
 	h := newTestSession(t)
-	uitest.SeedChannel(t, h.sess, "#general")
+	uitest.SeedChannel(t, h.user, "#general")
 	uitest.SeedMessage(t, h.sess, "#general", "visible text")
 
 	tm := newChatApp(t, h)
@@ -944,8 +947,8 @@ func TestChatScreen_unknown_command_shows_error(t *testing.T) {
 
 func TestChatScreen_part_command_with_message(t *testing.T) {
 	h := newTestSession(t)
-	uitest.SeedChannel(t, h.sess, "#general")
-	uitest.SeedChannel(t, h.sess, "#random")
+	uitest.SeedChannel(t, h.user, "#general")
+	uitest.SeedChannel(t, h.user, "#random")
 
 	tm := newChatApp(t, h)
 	tm.WaitFor("#random")
@@ -955,7 +958,7 @@ func TestChatScreen_part_command_with_message(t *testing.T) {
 
 func TestChatScreen_quit_command_with_message(t *testing.T) {
 	h := newTestSession(t)
-	uitest.SeedChannel(t, h.sess, "#general")
+	uitest.SeedChannel(t, h.user, "#general")
 
 	tm := newChatApp(t, h)
 	waitForChannelSeedDrain(tm)
@@ -1001,7 +1004,7 @@ func TestChatScreen_WelcomeState_responsive(t *testing.T) {
 
 func TestChatScreen_personas_command(t *testing.T) {
 	h := newTestSession(t)
-	uitest.SeedChannel(t, h.sess, "#general")
+	uitest.SeedChannel(t, h.user, "#general")
 
 	require.NoError(t, h.mgr.SetPersona(t.Context(), "pirate", "A salty sea dog"))
 	require.NoError(t, h.mgr.SetPersona(t.Context(), "wizard", "A wise old mage"))
@@ -1022,7 +1025,7 @@ func TestChatScreen_personas_command_empty(t *testing.T) {
 
 func TestChatScreen_regenerate_personas_command(t *testing.T) {
 	h := newTestSession(t)
-	uitest.SeedChannel(t, h.sess, "#general")
+	uitest.SeedChannel(t, h.user, "#general")
 
 	tm := newChatAppWithConfig(t, h, newFakeConfigStore())
 	waitForChannelSeedDrain(tm)
@@ -1054,7 +1057,7 @@ func TestChatScreen_config_persona_no_description(t *testing.T) {
 
 func TestChatScreen_config_persona_reset(t *testing.T) {
 	h := newTestSession(t)
-	uitest.SeedChannel(t, h.sess, "#general")
+	uitest.SeedChannel(t, h.user, "#general")
 
 	require.NoError(t, h.mgr.SetPersona(t.Context(), "pirate", "A salty sea dog"))
 	require.NoError(t, h.mgr.SetPersona(t.Context(), "wizard", "A wise old mage"))
@@ -1107,9 +1110,9 @@ func TestChatScreen_add_model_short_circuits_when_model_list_unavailable(t *test
 	}
 
 	s := storetest.NewMemoryStore(t)
-	sess, mgr := uitest.NewTestSession(t, s, api, nil, nil, cfgStore.cfg.APIKey, cfgStore.cfg.SmallModel, t.Context)
-	h := &testHarness{sess: sess, mgr: mgr}
-	uitest.SeedChannel(t, sess, "#general")
+	sess, mgr, user := uitest.NewTestSession(t, s, api, nil, nil, cfgStore.cfg.APIKey, cfgStore.cfg.SmallModel, t.Context)
+	h := &testHarness{sess: sess, mgr: mgr, user: user}
+	uitest.SeedChannel(t, user, "#general")
 
 	tm := newChatAppWithConfig(t, h, cfgStore)
 	// After α, the connect-time live-model load runs in the
@@ -1138,9 +1141,9 @@ func TestChatScreen_add_model_completion_hides_popover_when_model_list_unavailab
 	}
 
 	s := storetest.NewMemoryStore(t)
-	sess, mgr := uitest.NewTestSession(t, s, api, nil, nil, cfgStore.cfg.APIKey, cfgStore.cfg.SmallModel, t.Context)
-	h := &testHarness{sess: sess, mgr: mgr}
-	uitest.SeedChannel(t, sess, "#general")
+	sess, mgr, user := uitest.NewTestSession(t, s, api, nil, nil, cfgStore.cfg.APIKey, cfgStore.cfg.SmallModel, t.Context)
+	h := &testHarness{sess: sess, mgr: mgr, user: user}
+	uitest.SeedChannel(t, user, "#general")
 
 	tm := newChatAppWithConfig(t, h, cfgStore)
 	tm.WaitFor("#general")

@@ -18,9 +18,9 @@ func TestChatScreen_semantic_regions_expose_sidebar_and_chat_content(t *testing.
 		" scrollback through a getter.")
 
 	h := newTestSession(t)
-	sess := h.sess
-	uitest.SeedChannel(t, sess, "#general")
-	uitest.SeedChannel(t, sess, "#random")
+	user := h.user
+	uitest.SeedChannel(t, user, "#general")
+	uitest.SeedChannel(t, user, "#random")
 
 	tm := newChatApp(t, h)
 	// Wait for the channel-creation scrollback line so the join's

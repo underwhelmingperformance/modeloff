@@ -27,12 +27,12 @@ import (
 func joinSetupEventsT(t *testing.T, sess *Session, bootAt time.Time, ch domain.ChannelName) []domain.Event {
 	t.Helper()
 
-	user := sess.UserInstance()
+	user := userInstance(t, sess)
 	w, err := sess.loadChannelWindow(t.Context(), ch)
 	require.NoError(t, err)
 
 	return []domain.Event{
-		bootstrapModeChange(sess, bootAt),
+		bootstrapModeChange(t, sess, bootAt),
 		domain.Join{
 			Target:     ch,
 			Nick:       user.Nick(),
@@ -61,7 +61,7 @@ func TestHandleChannelMode_GrantsMemberOp(t *testing.T) {
 		sess, s := newTestSession(t)
 		ctx := t.Context()
 
-		require.NoError(t, sess.Join(ctx, "#chan"))
+		require.NoError(t, userJoin(ctx, t, sess, "#chan"))
 		prefix := joinSetupEventsT(t, sess, bootAt, "#chan")
 
 		botty := seedInstance(t, sess, s, instanceSpec{
@@ -71,7 +71,7 @@ func TestHandleChannelMode_GrantsMemberOp(t *testing.T) {
 		})
 		seedChannelWithMembers(t, sess, s, "#chan", "testuser", "botty")
 
-		_, err := sess.User().Send(ctx, protocol.ChannelMode{
+		_, err := userClient(t, sess).Send(ctx, protocol.ChannelMode{
 			Channel: "#chan",
 			Changes: []protocol.ChannelModeChange{
 				{Flag: domain.ModeOperator, Add: true, Target: "botty"},
@@ -106,7 +106,7 @@ func TestHandleChannelMode_RevokeMemberOp(t *testing.T) {
 		sess, s := newTestSession(t)
 		ctx := t.Context()
 
-		require.NoError(t, sess.Join(ctx, "#chan"))
+		require.NoError(t, userJoin(ctx, t, sess, "#chan"))
 		prefix := joinSetupEventsT(t, sess, bootAt, "#chan")
 
 		botty := seedInstance(t, sess, s, instanceSpec{
@@ -121,7 +121,7 @@ func TestHandleChannelMode_RevokeMemberOp(t *testing.T) {
 		w.Members.SetMode(botty, domain.ModeOp)
 		require.NoError(t, sess.persistChannelWindow(ctx, w))
 
-		_, err = sess.User().Send(ctx, protocol.ChannelMode{
+		_, err = userClient(t, sess).Send(ctx, protocol.ChannelMode{
 			Channel: "#chan",
 			Changes: []protocol.ChannelModeChange{
 				{Flag: domain.ModeOperator, Add: false, Target: "botty"},
@@ -153,7 +153,7 @@ func TestHandleChannelMode_GrantMemberVoice(t *testing.T) {
 		sess, s := newTestSession(t)
 		ctx := t.Context()
 
-		require.NoError(t, sess.Join(ctx, "#chan"))
+		require.NoError(t, userJoin(ctx, t, sess, "#chan"))
 		prefix := joinSetupEventsT(t, sess, bootAt, "#chan")
 
 		botty := seedInstance(t, sess, s, instanceSpec{
@@ -163,7 +163,7 @@ func TestHandleChannelMode_GrantMemberVoice(t *testing.T) {
 		})
 		seedChannelWithMembers(t, sess, s, "#chan", "testuser", "botty")
 
-		_, err := sess.User().Send(ctx, protocol.ChannelMode{
+		_, err := userClient(t, sess).Send(ctx, protocol.ChannelMode{
 			Channel: "#chan",
 			Changes: []protocol.ChannelModeChange{
 				{Flag: domain.ModeChannelVoice, Add: true, Target: "botty"},
@@ -196,7 +196,7 @@ func TestHandleChannelMode_SetBooleanAttributes(t *testing.T) {
 		sess, _ := newTestSession(t)
 		ctx := t.Context()
 
-		require.NoError(t, sess.Join(ctx, "#chan"))
+		require.NoError(t, userJoin(ctx, t, sess, "#chan"))
 		prefix := joinSetupEventsT(t, sess, bootAt, "#chan")
 
 		flags := []domain.Mode{
@@ -215,7 +215,7 @@ func TestHandleChannelMode_SetBooleanAttributes(t *testing.T) {
 			changes = append(changes, protocol.ChannelModeChange{Flag: f, Add: true})
 		}
 
-		_, err := sess.User().Send(ctx, protocol.ChannelMode{
+		_, err := userClient(t, sess).Send(ctx, protocol.ChannelMode{
 			Channel: "#chan",
 			Changes: changes,
 		})
@@ -250,10 +250,10 @@ func TestHandleChannelMode_SetUserLimit(t *testing.T) {
 		sess, _ := newTestSession(t)
 		ctx := t.Context()
 
-		require.NoError(t, sess.Join(ctx, "#chan"))
+		require.NoError(t, userJoin(ctx, t, sess, "#chan"))
 		prefix := joinSetupEventsT(t, sess, bootAt, "#chan")
 
-		_, err := sess.User().Send(ctx, protocol.ChannelMode{
+		_, err := userClient(t, sess).Send(ctx, protocol.ChannelMode{
 			Channel: "#chan",
 			Changes: []protocol.ChannelModeChange{
 				{Flag: domain.ModeUserLimit, Add: true, Param: "10"},
@@ -287,10 +287,10 @@ func TestHandleChannelMode_SetKey(t *testing.T) {
 		sess, _ := newTestSession(t)
 		ctx := t.Context()
 
-		require.NoError(t, sess.Join(ctx, "#chan"))
+		require.NoError(t, userJoin(ctx, t, sess, "#chan"))
 		prefix := joinSetupEventsT(t, sess, bootAt, "#chan")
 
-		_, err := sess.User().Send(ctx, protocol.ChannelMode{
+		_, err := userClient(t, sess).Send(ctx, protocol.ChannelMode{
 			Channel: "#chan",
 			Changes: []protocol.ChannelModeChange{
 				{Flag: domain.ModeKey, Add: true, Param: "secret"},
@@ -325,7 +325,7 @@ func TestHandleChannelMode_ClearParametric(t *testing.T) {
 		sess, _ := newTestSession(t)
 		ctx := t.Context()
 
-		require.NoError(t, sess.Join(ctx, "#chan"))
+		require.NoError(t, userJoin(ctx, t, sess, "#chan"))
 		prefix := joinSetupEventsT(t, sess, bootAt, "#chan")
 
 		w, err := sess.loadChannelWindow(ctx, "#chan")
@@ -334,7 +334,7 @@ func TestHandleChannelMode_ClearParametric(t *testing.T) {
 		w.Modes.Key = "secret"
 		require.NoError(t, sess.persistChannelWindow(ctx, w))
 
-		_, err = sess.User().Send(ctx, protocol.ChannelMode{
+		_, err = userClient(t, sess).Send(ctx, protocol.ChannelMode{
 			Channel: "#chan",
 			Changes: []protocol.ChannelModeChange{
 				{Flag: domain.ModeUserLimit, Add: false},
@@ -365,7 +365,7 @@ func TestHandleChannelMode_NonOpRejected(t *testing.T) {
 		sess, s := newTestSession(t)
 		ctx := t.Context()
 
-		require.NoError(t, sess.Join(ctx, "#chan"))
+		require.NoError(t, userJoin(ctx, t, sess, "#chan"))
 		prefix := joinSetupEventsT(t, sess, bootAt, "#chan")
 
 		botty := seedInstance(t, sess, s, instanceSpec{
@@ -407,10 +407,10 @@ func TestHandleChannelMode_UnknownFlagRejected(t *testing.T) {
 		sess, _ := newTestSession(t)
 		ctx := t.Context()
 
-		require.NoError(t, sess.Join(ctx, "#chan"))
+		require.NoError(t, userJoin(ctx, t, sess, "#chan"))
 		prefix := joinSetupEventsT(t, sess, bootAt, "#chan")
 
-		resp, err := sess.User().Send(ctx, protocol.ChannelMode{
+		resp, err := userClient(t, sess).Send(ctx, protocol.ChannelMode{
 			Channel: "#chan",
 			Changes: []protocol.ChannelModeChange{
 				{Flag: domain.ModeTopicLock, Add: true},
@@ -456,10 +456,10 @@ func TestHandleChannelMode_MissingParamRejected(t *testing.T) {
 				sess, _ := newTestSession(t)
 				ctx := t.Context()
 
-				require.NoError(t, sess.Join(ctx, "#chan"))
+				require.NoError(t, userJoin(ctx, t, sess, "#chan"))
 				prefix := joinSetupEventsT(t, sess, bootAt, "#chan")
 
-				resp, err := sess.User().Send(ctx, protocol.ChannelMode{
+				resp, err := userClient(t, sess).Send(ctx, protocol.ChannelMode{
 					Channel: "#chan",
 					Changes: []protocol.ChannelModeChange{tt.change},
 				})
@@ -486,7 +486,7 @@ func TestHandleChannelMode_BatchAppliesInOrder(t *testing.T) {
 		sess, s := newTestSession(t)
 		ctx := t.Context()
 
-		require.NoError(t, sess.Join(ctx, "#chan"))
+		require.NoError(t, userJoin(ctx, t, sess, "#chan"))
 		prefix := joinSetupEventsT(t, sess, bootAt, "#chan")
 
 		botty := seedInstance(t, sess, s, instanceSpec{
@@ -496,7 +496,7 @@ func TestHandleChannelMode_BatchAppliesInOrder(t *testing.T) {
 		})
 		seedChannelWithMembers(t, sess, s, "#chan", "testuser", "botty")
 
-		_, err := sess.User().Send(ctx, protocol.ChannelMode{
+		_, err := userClient(t, sess).Send(ctx, protocol.ChannelMode{
 			Channel: "#chan",
 			Changes: []protocol.ChannelModeChange{
 				{Flag: domain.ModeOperator, Add: true, Target: "botty"},

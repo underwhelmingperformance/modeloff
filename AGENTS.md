@@ -85,10 +85,20 @@ Broadcast side effects flow asynchronously over `Client.Events()` to peers.
 
 ### Two client kinds
 
-- The user-client is a singleton with the same lifetime as the session.
-  It is constructed in `Session.New`, granted operator mode at
-  construction, and exposed via `Session.User()`. Its `Identity()` is
-  the sentinel `protocol.UserClientID` (the empty `ClientID`).
+- The user-client lives in the `internal/userclient` package. It is
+  constructed in `cmd/modeloff` (or a test fixture), holds the
+  user's `*domain.Instance`, and attaches to the session via the
+  public `Session.Subscribe(c, opts)` API with `+o` requested
+  through `protocol.SubscribeOptions.InitialModes`. Its
+  `Identity()` is the sentinel `protocol.UserClientID` (the empty
+  `ClientID`); its lifetime equals the session's. The chat-screen
+  holds a `*userclient.UserClient` directly and reads identity,
+  channel membership, and the protocol bus through it; user-actor
+  convenience methods (`Join`, `Part`, `SendMessage`, `SendAction`,
+  `SetTopic`, `ChangeNick`, `Quit`, `JoinAutojoinChannels`,
+  `MarkRead`, `Poke`) construct the appropriate `protocol.X`
+  command (or the equivalent store-side work) and dispatch through
+  `Send`.
 - A model-client lives in the `internal/modelclient` package. It
   owns the dispatch goroutine, the per-channel history ring buffer
   used for prompt assembly, the memory-tool registry, and a getter
@@ -171,15 +181,18 @@ the full feed.
 
 ### Operator capability
 
-User-mode `+o` is granted to the user-client at construction. The
-operator-gated commands today are `protocol.Kill` and `protocol.AddModel`;
+User-mode `+o` is requested via
+`protocol.SubscribeOptions.InitialModes` when the user-client
+attaches; the session writes the granting `domain.ModeChange` as
+the first event on the subscription's bus. The operator-gated
+commands today are `protocol.Kill` and `protocol.AddModel`;
 non-operator clients receive `domain.NotOperatorError` from the
-dispatcher (RFC 2812 numeric 481, ERR_NOPRIVILEGES). There is no wire
-`OPER` command:
-modeloff is a single-user app, and operator mode is set at construction
-rather than acquired through a credential exchange. A future revision
-that introduces credentialed operator promotion would extend the command
-sum without changing the dispatcher's mode-check shape.
+dispatcher (RFC 2812 numeric 481, ERR_NOPRIVILEGES). There is no
+wire `OPER` command in production use: modeloff is a single-user
+app, and operator mode is set at attach time rather than acquired
+through a credential exchange. A future revision that introduces
+credentialed operator promotion would extend the command sum
+without changing the dispatcher's mode-check shape.
 
 ### Slash commands and tool schemas
 

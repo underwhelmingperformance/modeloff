@@ -16,7 +16,7 @@ func TestSession_User_returns_user_client_with_operator_mode(t *testing.T) {
 
 	sess, _ := newTestSession(t)
 
-	user := sess.User()
+	user := userClient(t, sess)
 
 	require.NotNil(t, user)
 	require.Equal(t, protocol.UserClientID, user.Identity())
@@ -29,12 +29,12 @@ func TestSession_User_Send_routes_through_Handle(t *testing.T) {
 
 	sess, _ := newTestSession(t)
 
-	resp, err := sess.User().Send(t.Context(), protocol.Join{Channel: "#general"})
+	resp, err := userClient(t, sess).Send(t.Context(), protocol.Join{Channel: "#general"})
 
 	require.NoError(t, err)
 	require.Equal(t, protocol.Response{}, resp)
 
-	_, ok := sess.UserInstance().Channels().Get("#general")
+	_, ok := userInstance(t, sess).Channels().Get("#general")
 	require.True(t, ok)
 }
 
@@ -102,20 +102,32 @@ func TestSession_Subscribe_requires_instance(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestSession_Subscribe_rejects_user_client_id pins the
-// asymmetry: the user-client subscription is constructed inline at
-// session bootstrap, so the public `Subscribe` API refuses
-// [protocol.UserClientID]. A future commit moves the user-client
-// construction out of `Session.New` and lifts this restriction.
-func TestSession_Subscribe_rejects_user_client_id(t *testing.T) {
+// TestSession_Subscribe_accepts_user_client_id pins the symmetry
+// the user-client extraction relies on: [protocol.UserClientID]
+// is just another identity the session registers via the public
+// `Subscribe` API, with `+o` granted through
+// [protocol.SubscribeOptions.InitialModes]. The fixture's
+// `newTestSession` already attached the user-client, so the
+// repeat-call branch of `ensureSubscription` returns the same
+// envelope.
+func TestSession_Subscribe_accepts_user_client_id(t *testing.T) {
 	t.Parallel()
 
 	sess, _ := newTestSession(t)
-	inst := sess.UserInstance()
+	inst := userInstance(t, sess)
 
 	fake := &subscribeFakeClient{id: protocol.UserClientID}
-	_, err := sess.Subscribe(fake, protocol.SubscribeOptions{Instance: inst})
-	require.Error(t, err)
+	sub, err := sess.Subscribe(fake, protocol.SubscribeOptions{
+		Instance:     inst,
+		InitialModes: []domain.Mode{domain.ModeOperator},
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, sub)
+	require.NotNil(t, sub.Events())
+
+	user := userClient(t, sess)
+	require.True(t, user.HasMode(domain.ModeOperator))
 }
 
 // subscribeFakeClient is the minimal [protocol.Client] satisfier

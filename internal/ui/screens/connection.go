@@ -14,6 +14,7 @@ import (
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/chatcmd"
 	"github.com/laney/modeloff/internal/ui/theme"
+	"github.com/laney/modeloff/internal/userclient"
 )
 
 // stepDelay is the time between each connection step appearing.
@@ -55,8 +56,8 @@ type ConnectionTickMsg struct{}
 // connectionReadyMsg is sent when `Session.Connect` returns.
 type connectionReadyMsg struct{ err error }
 
-// joinAutojoinDoneMsg is sent when `Session.JoinAutojoinChannels`
-// returns.
+// joinAutojoinDoneMsg is sent when
+// [userclient.UserClient.JoinAutojoinChannels] returns.
 type joinAutojoinDoneMsg struct{ err error }
 
 // loadModelsDoneMsg carries the result of the connect-time
@@ -85,6 +86,11 @@ type ConnectionConfig struct {
 	// "Loading models" gate. When nil the gate behaves as if the
 	// load completed immediately, suiting animation-only tests.
 	Manager *modelmanager.Manager
+
+	// User is the user-client handle the screen invokes for the
+	// `JoinAutojoinChannels` step. When nil the autojoin gate
+	// behaves as if the join completed immediately.
+	User *userclient.UserClient
 
 	// BaseContext supplies the application context for each backend
 	// call, mirroring [session.New]'s shape. Defaults to
@@ -238,14 +244,21 @@ func (s ConnectionScreen) runLoadModels() tea.Cmd {
 	}
 }
 
-// runAutojoin issues `JoinAutojoinChannels`. Focus restoration
+// runAutojoin issues
+// [userclient.UserClient.JoinAutojoinChannels]. Focus restoration
 // is the chat screen's concern; the connection screen just kicks
-// off the joins and reports completion.
+// off the joins and reports completion. When no user-client is
+// configured (animation-only tests) the autojoin step short-
+// circuits with a nil error.
 func (s ConnectionScreen) runAutojoin() tea.Cmd {
-	sess := s.cfg.Session
+	user := s.cfg.User
 
 	return func() tea.Msg {
-		return joinAutojoinDoneMsg{err: sess.JoinAutojoinChannels(s.ctx())}
+		if user == nil {
+			return joinAutojoinDoneMsg{}
+		}
+
+		return joinAutojoinDoneMsg{err: user.JoinAutojoinChannels(s.ctx())}
 	}
 }
 

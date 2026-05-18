@@ -32,7 +32,7 @@ func TestSetTopicAs_TopicLockGate(t *testing.T) {
 			sess, s := newTestSession(t)
 			ctx := t.Context()
 
-			require.NoError(t, sess.Join(ctx, "#chan"))
+			require.NoError(t, userJoin(ctx, t, sess, "#chan"))
 
 			botty := seedInstance(t, sess, s, instanceSpec{
 				Nick: "botty", ModelID: "test/model",
@@ -53,7 +53,7 @@ func TestSetTopicAs_TopicLockGate(t *testing.T) {
 			sess, s := newTestSession(t)
 			ctx := t.Context()
 
-			require.NoError(t, sess.Join(ctx, "#chan"))
+			require.NoError(t, userJoin(ctx, t, sess, "#chan"))
 
 			botty := seedInstance(t, sess, s, instanceSpec{
 				Nick: "botty", ModelID: "test/model",
@@ -82,7 +82,7 @@ func TestInviteAs_InviteOnlyGate(t *testing.T) {
 			sess, s := newTestSession(t)
 			ctx := t.Context()
 
-			require.NoError(t, sess.Join(ctx, "#chan"))
+			require.NoError(t, userJoin(ctx, t, sess, "#chan"))
 
 			botty := seedInstance(t, sess, s, instanceSpec{
 				Nick: "botty", ModelID: "test/model",
@@ -104,7 +104,7 @@ func TestInviteAs_InviteOnlyGate(t *testing.T) {
 			sess, s := newTestSession(t)
 			ctx := t.Context()
 
-			require.NoError(t, sess.Join(ctx, "#chan"))
+			require.NoError(t, userJoin(ctx, t, sess, "#chan"))
 
 			botty := seedInstance(t, sess, s, instanceSpec{
 				Nick: "botty", ModelID: "test/model",
@@ -145,7 +145,7 @@ func TestJoinAs_KeyGate(t *testing.T) {
 				sess, s := newTestSession(t)
 				ctx := t.Context()
 
-				require.NoError(t, sess.Join(ctx, "#chan"))
+				require.NoError(t, userJoin(ctx, t, sess, "#chan"))
 				setChannelModes(t, sess, "#chan", domain.ChannelModes{Key: "secret"})
 
 				botty := seedInstance(t, sess, s, instanceSpec{
@@ -176,7 +176,7 @@ func TestJoinAs_UserLimitGate(t *testing.T) {
 		sess, s := newTestSession(t)
 		ctx := t.Context()
 
-		require.NoError(t, sess.Join(ctx, "#chan"))
+		require.NoError(t, userJoin(ctx, t, sess, "#chan"))
 		setChannelModes(t, sess, "#chan", domain.ChannelModes{UserLimit: 1})
 
 		botty := seedInstance(t, sess, s, instanceSpec{
@@ -202,7 +202,7 @@ func TestJoinAs_InviteOnlyGate(t *testing.T) {
 			sess, s := newTestSession(t)
 			ctx := t.Context()
 
-			require.NoError(t, sess.Join(ctx, "#chan"))
+			require.NoError(t, userJoin(ctx, t, sess, "#chan"))
 			setChannelModes(t, sess, "#chan", domain.ChannelModes{InviteOnly: true})
 
 			botty := seedInstance(t, sess, s, instanceSpec{
@@ -220,7 +220,7 @@ func TestJoinAs_InviteOnlyGate(t *testing.T) {
 			sess, s := newTestSession(t)
 			ctx := t.Context()
 
-			require.NoError(t, sess.Join(ctx, "#chan"))
+			require.NoError(t, userJoin(ctx, t, sess, "#chan"))
 
 			w, err := sess.loadChannelWindow(ctx, "#chan")
 			require.NoError(t, err)
@@ -258,7 +258,7 @@ func TestSendMessageAs_ModeratedGate(t *testing.T) {
 			sess, s := newTestSession(t)
 			ctx := t.Context()
 
-			require.NoError(t, sess.Join(ctx, "#chan"))
+			require.NoError(t, userJoin(ctx, t, sess, "#chan"))
 			setChannelModes(t, sess, "#chan", domain.ChannelModes{Moderated: true})
 
 			botty := seedInstance(t, sess, s, instanceSpec{
@@ -283,7 +283,7 @@ func TestSendMessageAs_ModeratedGate(t *testing.T) {
 			sess, s := newTestSession(t)
 			ctx := t.Context()
 
-			require.NoError(t, sess.Join(ctx, "#chan"))
+			require.NoError(t, userJoin(ctx, t, sess, "#chan"))
 
 			botty := seedInstance(t, sess, s, instanceSpec{
 				Nick: "botty", ModelID: "test/model",
@@ -314,7 +314,7 @@ func TestSendMessageAs_NoExternalGate(t *testing.T) {
 		sess, s := newTestSession(t)
 		ctx := t.Context()
 
-		require.NoError(t, sess.Join(ctx, "#chan"))
+		require.NoError(t, userJoin(ctx, t, sess, "#chan"))
 		setChannelModes(t, sess, "#chan", domain.ChannelModes{NoExternal: true})
 
 		// botty is not in the channel.
@@ -336,7 +336,7 @@ func TestSendMessageAs_QuietGate(t *testing.T) {
 		sess, s := newTestSession(t)
 		ctx := t.Context()
 
-		require.NoError(t, sess.Join(ctx, "#chan"))
+		require.NoError(t, userJoin(ctx, t, sess, "#chan"))
 
 		botty := seedInstance(t, sess, s, instanceSpec{
 			Nick: "botty", ModelID: "test/model",
@@ -357,7 +357,7 @@ func TestSendMessageAs_QuietGate(t *testing.T) {
 		require.Equal(t, domain.SendBlockQuiet, blockErr.Reason)
 
 		// The op (the user-client owner) may still speak.
-		_, err = sess.SendMessage(ctx, "#chan", "i'm an op")
+		_, err = userSendMessage(ctx, t, sess, "#chan", "i'm an op")
 		require.NoError(t, err)
 	})
 }
@@ -382,7 +382,7 @@ func TestFanOutProtocol_AnonymousRewritesSender(t *testing.T) {
 		sess, s := newTestSessionWithAPI(t, fake)
 		ctx := t.Context()
 
-		require.NoError(t, sess.Join(ctx, "#chan"))
+		require.NoError(t, userJoin(ctx, t, sess, "#chan"))
 
 		seedInstance(t, sess, s, instanceSpec{
 			Nick: "botty", ModelID: "test/model",
@@ -391,7 +391,7 @@ func TestFanOutProtocol_AnonymousRewritesSender(t *testing.T) {
 		seedChannelWithMembers(t, sess, s, "#chan", "testuser", "botty")
 		setChannelModes(t, sess, "#chan", domain.ChannelModes{Anonymous: true})
 
-		_, err := sess.SendMessage(ctx, "#chan", "secret")
+		_, err := userSendMessage(ctx, t, sess, "#chan", "secret")
 		require.NoError(t, err)
 		synctest.Wait()
 
@@ -413,15 +413,15 @@ func TestDirectoryChannels_SecretHiddenAndPrivateHasNoTopic(t *testing.T) {
 		sess, _ := newTestSession(t)
 		ctx := t.Context()
 
-		require.NoError(t, sess.Join(ctx, "#public"))
-		require.NoError(t, sess.setTopicAs(ctx, sess.UserInstance(), "#public", "public topic"))
+		require.NoError(t, userJoin(ctx, t, sess, "#public"))
+		require.NoError(t, sess.setTopicAs(ctx, userInstance(t, sess), "#public", "public topic"))
 
-		require.NoError(t, sess.Join(ctx, "#private"))
-		require.NoError(t, sess.setTopicAs(ctx, sess.UserInstance(), "#private", "private topic"))
+		require.NoError(t, userJoin(ctx, t, sess, "#private"))
+		require.NoError(t, sess.setTopicAs(ctx, userInstance(t, sess), "#private", "private topic"))
 		setChannelModes(t, sess, "#private", domain.ChannelModes{Private: true})
 
-		require.NoError(t, sess.Join(ctx, "#secret"))
-		require.NoError(t, sess.setTopicAs(ctx, sess.UserInstance(), "#secret", "secret topic"))
+		require.NoError(t, userJoin(ctx, t, sess, "#secret"))
+		require.NoError(t, sess.setTopicAs(ctx, userInstance(t, sess), "#secret", "secret topic"))
 		setChannelModes(t, sess, "#secret", domain.ChannelModes{Secret: true})
 
 		entries, err := sess.DirectoryChannels(ctx)

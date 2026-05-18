@@ -25,6 +25,7 @@ import (
 	"github.com/laney/modeloff/internal/modelmanager"
 	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/session"
+	"github.com/laney/modeloff/internal/userclient"
 )
 
 // App wraps teatest.TestModel with a cumulative output buffer.
@@ -327,10 +328,10 @@ func (f *FakeAPI) GeneratePersonas(ctx context.Context, smallModel domain.ModelI
 // holds `+o` from bootstrap so the operator gate passes; tests
 // that want to exercise the rejection path should `Send` the
 // command from a non-OPER model-client directly.
-func AddModel(t testing.TB, sess *session.Session, channel domain.ChannelName, model domain.ModelID, persona string) {
+func AddModel(t testing.TB, user *userclient.UserClient, channel domain.ChannelName, model domain.ModelID, persona string) {
 	t.Helper()
 
-	resp, err := sess.User().Send(t.Context(), protocol.AddModel{
+	resp, err := user.Send(t.Context(), protocol.AddModel{
 		Channel: channel,
 		Model:   model,
 		Persona: persona,
@@ -343,21 +344,19 @@ func AddModel(t testing.TB, sess *session.Session, channel domain.ChannelName, m
 // Used by tests that simulate a clean previous-session shutdown
 // to populate the autojoin list and clear the session-active
 // marker, the same effect the chat-screen's `/quit` handler has.
-func Quit(t testing.TB, sess *session.Session, message string) {
+func Quit(t testing.TB, user *userclient.UserClient, message string) {
 	t.Helper()
 
-	resp, err := sess.User().Send(t.Context(), protocol.Quit{Reason: message})
-	require.NoError(t, err)
-	require.NoError(t, resp.Err)
+	require.NoError(t, user.Quit(t.Context(), message))
 }
 
-// SeedChannel creates a channel by issuing a real /join on the
-// session and pins it as the user's last-focused channel in the
-// store, mirroring the state a returning user lands in: joined the
-// channel and the chat screen treats it as last-active on startup.
-// The resulting JoinEvent and friends remain on the session's events
-// channel so that a downstream ChatScreen drains and renders them
-// when it takes over.
+// SeedChannel creates a channel by issuing a real JOIN through
+// the user-client and pins it as the user's last-focused channel
+// in the store, mirroring the state a returning user lands in:
+// joined the channel and the chat screen treats it as last-active
+// on startup. The resulting JoinEvent and friends remain on the
+// user-client subscription's events stream so that a downstream
+// ChatScreen drains and renders them when it takes over.
 //
 // Last-channel persistence is the chat-screen's responsibility
 // (via the narrow `screens.UIStateStore` interface). Tests that
@@ -367,14 +366,14 @@ func Quit(t testing.TB, sess *session.Session, message string) {
 // screen's "no-preference, first NAMES reply wins" rule, which is
 // what the existing test pattern relies on.
 //
-// For integration tests that drive the ConnectionScreen and want to
-// simulate "previous session" state, follow up with sess.Quit +
-// DrainEvents to leave the channel on the autojoin list without
+// For integration tests that drive the ConnectionScreen and want
+// to simulate "previous session" state, follow up with [Quit] +
+// [DrainEvents] to leave the channel on the autojoin list without
 // lingering membership.
-func SeedChannel(t testing.TB, sess *session.Session, name string) {
+func SeedChannel(t testing.TB, user *userclient.UserClient, name string) {
 	t.Helper()
 
-	require.NoError(t, sess.Join(t.Context(), name))
+	require.NoError(t, user.Join(t.Context(), domain.ChannelName(name)))
 }
 
 // SeedMessage seeds a channel with a message from a synthetic
@@ -408,11 +407,13 @@ func SeedMessage(t testing.TB, sess *session.Session, channel, body string) {
 	require.NoError(t, resp.Err)
 }
 
-// NewTestSession constructs the trio of `*session.Session` and
-// `*modelmanager.Manager` chat-screen tests reach for. The manager
-// owns the api / memory / tools handles; the session is wired to
-// the manager as its factory. Cleanup hooks register so dispatch
-// goroutines drain before the next test.
+// NewTestSession constructs the `*session.Session`,
+// `*modelmanager.Manager`, and `*userclient.UserClient` trio
+// chat-screen tests reach for. The manager owns the api / memory /
+// tools handles; the session is wired to the manager as its
+// factory; the user-client attaches to the session under the
+// fixed "testuser" nick with `+o`. Cleanup hooks register so
+// dispatch goroutines drain before the next test.
 func NewTestSession(
 	t testing.TB,
 	store SessionStore,
@@ -422,7 +423,7 @@ func NewTestSession(
 	apiKey string,
 	smallModel domain.ModelID,
 	baseContext func() context.Context,
-) (*session.Session, *modelmanager.Manager) {
+) (*session.Session, *modelmanager.Manager, *userclient.UserClient) {
 	mgr := modelmanager.New(modelmanager.Config{
 		Store:         store,
 		APIClient:     apiClient,
@@ -439,9 +440,13 @@ func NewTestSession(
 		return apiClient, nil
 	})
 
-	sess := session.New(baseContext, store, mgr, "testuser")
+	sess := session.New(baseContext, store, mgr)
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
-	return sess, mgr
+
+	user := userclient.New("testuser", sess, store)
+	require.NoError(t, user.Attach(baseContext()))
+
+	return sess, mgr, user
 }
 
 // SessionStore is the union of the session and manager
@@ -483,10 +488,10 @@ func NewModelManager(
 // DrainEvents discards any buffered events on the user-client
 // subscription's protocol bus. This prevents seed operations from
 // leaking stale events into the UI when tests start.
-func DrainEvents(sess *session.Session) {
+func DrainEvents(user *userclient.UserClient) {
 	for {
 		select {
-		case <-sess.User().Events():
+		case <-user.Events():
 		default:
 			return
 		}

@@ -96,10 +96,138 @@ func normaliseInstance(inst *domain.Instance) comparableInstance {
 	}
 }
 
+// userClient returns the registered user-client handle as a
+// [protocol.Client]. The session-test fixture attaches a thin
+// user-client at construction time (see [newTestSessionWithAPI]),
+// and tests reach for it via this accessor instead of holding a
+// reference through the fixture struct.
+func userClient(t testing.TB, sess *Session) protocol.Client {
+	t.Helper()
+
+	c := sess.LookupClient(protocol.UserClientID)
+	require.NotNil(t, c, "user-client must be attached for this test")
+
+	return c
+}
+
+// userInstance returns the user's `*domain.Instance` from the
+// registered user-client subscription. Panics if no user-client
+// is attached — every test path through [newTestSessionWithAPI]
+// attaches one.
+func userInstance(t testing.TB, sess *Session) *domain.Instance {
+	t.Helper()
+
+	inst := sess.userInstance()
+	require.NotNil(t, inst, "user-client must be attached for this test")
+
+	return inst
+}
+
+// userNick is shorthand for `userInstance(t, sess).Nick()`.
+func userNick(t testing.TB, sess *Session) domain.Nick {
+	t.Helper()
+
+	return userInstance(t, sess).Nick()
+}
+
+// userJoinedAt returns the time the user joined `ch`, or the zero
+// time when the user is not in the channel.
+func userJoinedAt(t testing.TB, sess *Session, ch domain.ChannelName) time.Time {
+	t.Helper()
+
+	channels := userInstance(t, sess).Channels()
+	if channels == nil {
+		return time.Time{}
+	}
+
+	at, ok := channels.Get(ch)
+	if !ok {
+		return time.Time{}
+	}
+
+	return at
+}
+
+// userJoin is shorthand for `sess.joinAs(ctx, userInstance(...))`.
+func userJoin(ctx context.Context, t testing.TB, sess *Session, ch domain.ChannelName) error {
+	t.Helper()
+
+	return sess.joinAs(ctx, userInstance(t, sess), ch, "")
+}
+
+// userPart is shorthand for `sess.partAs(ctx, userInstance(...))`.
+func userPart(ctx context.Context, t testing.TB, sess *Session, ch domain.ChannelName, message string) error {
+	t.Helper()
+
+	return sess.partAs(ctx, userInstance(t, sess), ch, message)
+}
+
+// userSendMessage is shorthand for `sess.sendMessageAs(ctx, userInstance(...))`.
+func userSendMessage(ctx context.Context, t testing.TB, sess *Session, ch domain.ChannelName, body string) (domain.Message, error) {
+	t.Helper()
+
+	return sess.sendMessageAs(ctx, userInstance(t, sess), ch, body)
+}
+
+// userSetTopic is shorthand for `sess.setTopicAs(ctx, userInstance(...))`.
+func userSetTopic(ctx context.Context, t testing.TB, sess *Session, ch domain.ChannelName, topic string) error {
+	t.Helper()
+
+	return sess.setTopicAs(ctx, userInstance(t, sess), ch, topic)
+}
+
+// userChangeNick is shorthand for `sess.changeNickAs(ctx, userInstance(...))`.
+func userChangeNick(ctx context.Context, t testing.TB, sess *Session, newNick domain.Nick) error {
+	t.Helper()
+
+	return sess.changeNickAs(ctx, userInstance(t, sess), newNick)
+}
+
+// userPoke mirrors what the production user-client's [Poke] does:
+// iterate every addressable channel-window known to the session
+// and emit a [domain.PokeEvent] for it.
+func userPoke(ctx context.Context, t testing.TB, sess *Session) error {
+	t.Helper()
+
+	channels, err := sess.ChannelWindowNames(ctx)
+	if err != nil {
+		return err
+	}
+
+	now := sess.now()
+	for _, ch := range channels {
+		sess.Emit(ctx, domain.PokeEvent{Channel: ch, At: now})
+	}
+
+	return nil
+}
+
+// userJoinAutojoinChannels mirrors the user-client side autojoin
+// loop: read the autojoin list and JOIN each entry via the
+// user-actor.
+func userJoinAutojoinChannels(ctx context.Context, t testing.TB, sess *Session) error {
+	t.Helper()
+
+	channels, err := sess.store.ListAutojoinChannels(ctx)
+	if err != nil {
+		return err
+	}
+
+	for _, ch := range channels {
+		if err := userJoin(ctx, t, sess, ch); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // nextEvent reads the next event from the user-client
 // subscription's protocol bus.
-func nextEvent(sess *Session) (domain.Event, bool) {
-	delivery, ok := <-sess.User().Events()
+func nextEvent(t testing.TB, sess *Session) (domain.Event, bool) {
+	t.Helper()
+
+	delivery, ok := <-userClient(t, sess).Events()
 	return delivery.Event, ok
 }
 
@@ -115,14 +243,16 @@ func nextEvent(sess *Session) (domain.Event, bool) {
 // future emission added between the test's action and its check
 // fails the test until the expected slice updates, which is the
 // right pressure.
-func collectEmittedEvents(t *testing.T, sess *Session) []domain.Event {
+func collectEmittedEvents(t testing.TB, sess *Session) []domain.Event {
 	t.Helper()
+
+	uc := userClient(t, sess)
 
 	var events []domain.Event
 
 	for {
 		select {
-		case delivery := <-sess.User().Events():
+		case delivery := <-uc.Events():
 			events = append(events, delivery.Event)
 		default:
 			return events
@@ -131,7 +261,7 @@ func collectEmittedEvents(t *testing.T, sess *Session) []domain.Event {
 }
 
 // bootstrapModeChange returns the user-mode ModeChange every test
-// session emits at construction: the server promotes the user-
+// session emits at attach time: the server promotes the user-
 // client to +o via a wire MODE response. Tests prepend it to
 // their expected event slice when asserting on the full stream
 // from session start.
@@ -139,12 +269,14 @@ func collectEmittedEvents(t *testing.T, sess *Session) []domain.Event {
 // `at` is the time recorded on the bootstrap event. Tests capture
 // it with `time.Now()` before calling [newTestSession] so the
 // comparison is symmetric with how the session itself stamped the
-// event — `time.Now()` at construction. Inside a [synctest.Test]
-// bubble both reads return the same bubble clock value as long as
-// no goroutine yields between them, which is the case for
-// `New`'s synchronous construction.
-func bootstrapModeChange(sess *Session, at time.Time) domain.ModeChange {
-	user := sess.UserInstance()
+// event — `time.Now()` at attach. Inside a [synctest.Test] bubble
+// both reads return the same bubble clock value as long as no
+// goroutine yields between them, which is the case for the
+// synchronous attach path.
+func bootstrapModeChange(t testing.TB, sess *Session, at time.Time) domain.ModeChange {
+	t.Helper()
+
+	user := userInstance(t, sess)
 	return domain.ModeChange{
 		Nick:       user.Nick(),
 		InstanceID: user.ID(),
@@ -157,7 +289,7 @@ func bootstrapModeChange(sess *Session, at time.Time) domain.ModeChange {
 
 // testMembers builds a MemberList using canonical `*Instance`
 // handles from the given session + store. The user is looked up via
-// `sess.UserInstance()`; every model nick is resolved from the store
+// `userInstance(t, sess)`; every model nick is resolved from the store
 // via `ResolveNick`. If a model nick is not yet seeded, a placeholder
 // instance is created under the conventional `inst-<nick>` id so
 // tests can express channel membership without pre-seeding every
@@ -171,8 +303,8 @@ func testMembers(t *testing.T, sess *Session, s *storemod.SQLiteStore, nicks ...
 	for _, nick := range nicks {
 		var inst *domain.Instance
 
-		if nick == sess.UserNick() {
-			inst = sess.UserInstance()
+		if nick == userNick(t, sess) {
+			inst = userInstance(t, sess)
 		} else {
 			var err error
 			inst, err = s.ResolveNick(t.Context(), nick)
@@ -182,7 +314,7 @@ func testMembers(t *testing.T, sess *Session, s *storemod.SQLiteStore, nicks ...
 		}
 
 		ml.Add(inst)
-		if nick == sess.UserNick() {
+		if nick == userNick(t, sess) {
 			ml.SetMode(inst, domain.ModeOp)
 		}
 	}
@@ -240,7 +372,7 @@ func newTestSession(t *testing.T) (*Session, *storemod.SQLiteStore) {
 func addModelViaWire(ctx context.Context, t testing.TB, sess *Session, ch domain.ChannelName, model domain.ModelID, persona string) error {
 	t.Helper()
 
-	resp, err := sess.User().Send(ctx, protocol.AddModel{
+	resp, err := userClient(t, sess).Send(ctx, protocol.AddModel{
 		Channel: ch,
 		Model:   model,
 		Persona: persona,
@@ -259,7 +391,7 @@ func addModelViaWire(ctx context.Context, t testing.TB, sess *Session, ch domain
 func userQuitViaWire(ctx context.Context, t testing.TB, sess *Session, message string) error {
 	t.Helper()
 
-	resp, err := sess.User().Send(ctx, protocol.Quit{Reason: message})
+	resp, err := userClient(t, sess).Send(ctx, protocol.Quit{Reason: message})
 	if err != nil {
 		return err
 	}
@@ -275,7 +407,7 @@ func userQuitViaWire(ctx context.Context, t testing.TB, sess *Session, message s
 func kickViaWire(ctx context.Context, t testing.TB, sess *Session, ch domain.ChannelName, nick domain.Nick) error {
 	t.Helper()
 
-	resp, err := sess.User().Send(ctx, protocol.Kick{Channel: ch, Nick: nick})
+	resp, err := userClient(t, sess).Send(ctx, protocol.Kick{Channel: ch, Nick: nick})
 	if err != nil {
 		return err
 	}
@@ -307,7 +439,7 @@ func newTestSessionWithAPI(t *testing.T, apiClient api.Client) (*Session, *store
 	s := storetest.NewMemoryStore(t)
 	factory := newTestModelClientFactory(t, apiClient)
 
-	sess := New(t.Context, s, factory, "testuser")
+	sess := New(t.Context, s, factory)
 	// Cleanup uses `context.Background()` rather than `t.Context()`
 	// so [Session.Shutdown] actually waits for the dispatch
 	// goroutines to drain. `t.Context()` is cancelled BEFORE
@@ -317,10 +449,65 @@ func newTestSessionWithAPI(t *testing.T, apiClient api.Client) (*Session, *store
 	// `go test -timeout` is the principled bound for runaway
 	// cleanups.
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
+
+	// Attach before swapping the clock: the bootstrap `+o` MODE
+	// the user-client subscription emits is stamped with `s.now()`
+	// at attach time. Tests that capture `time.Now()` before
+	// constructing the session compare against that wall-clock
+	// stamp, so the attach must run while `s.now` is still the
+	// default `time.Now`.
+	attachTestUserClient(t, sess, "testuser")
 	sess.now = func() time.Time { return fixedTime }
 
 	return sess, s
 }
+
+// attachTestUserClient registers a thin user-client with the
+// session under `nick` and grants it `+o` via
+// [protocol.SubscribeOptions.InitialModes], matching what the
+// production-side `userclient.New(...).Attach(...)` does. The
+// session-test fixture lives in this package and cannot import
+// `internal/userclient` (the dependency is one-way), so it
+// satisfies [protocol.Client] inline here.
+func attachTestUserClient(t *testing.T, sess *Session, nick domain.Nick) {
+	t.Helper()
+
+	inst := domain.NewUserInstance(nick)
+	tc := &testUserClient{sess: sess, instance: inst}
+	sub, err := sess.Subscribe(tc, protocol.SubscribeOptions{
+		Instance:     inst,
+		InitialModes: []domain.Mode{domain.ModeOperator},
+	})
+	require.NoError(t, err)
+	tc.sub = sub
+}
+
+// testUserClient is the session-test fixture's minimal
+// [protocol.Client] for the user-actor side of the bus. Production
+// uses `internal/userclient`; this file mirrors it for the
+// in-package tests that cannot import that package.
+type testUserClient struct {
+	sess     *Session
+	instance *domain.Instance
+	sub      protocol.Subscription
+}
+
+func (c *testUserClient) Identity() protocol.ClientID { return protocol.UserClientID }
+func (c *testUserClient) Send(ctx context.Context, cmd protocol.Command) (protocol.Response, error) {
+	return c.sess.Handle(ctx, c, cmd)
+}
+func (c *testUserClient) Events() <-chan protocol.Delivery {
+	if c.sub == nil {
+		return nil
+	}
+	return c.sub.Events()
+}
+func (c *testUserClient) HasMode(m domain.Mode) bool     { return m == domain.ModeOperator }
+func (c *testUserClient) Caps() command.CapabilityHolder { return testUserCaps{} }
+
+type testUserCaps struct{}
+
+func (testUserCaps) Has(c command.Capability) bool { return c == protocol.CapOperator }
 
 func TestSession_Join(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
@@ -328,16 +515,16 @@ func TestSession_Join(t *testing.T) {
 		sess, s := newTestSession(t)
 		ctx := t.Context()
 
-		require.NoError(t, sess.Join(ctx, "#general"))
+		require.NoError(t, userJoin(ctx, t, sess, "#general"))
 		synctest.Wait()
 
-		user := sess.UserInstance()
+		user := userInstance(t, sess)
 		members := domain.NewMemberList()
 		members.Add(user)
 		members.SetMode(user, domain.ModeOp)
 
 		require.ElementsMatch(t, []domain.Event{
-			bootstrapModeChange(sess, bootAt),
+			bootstrapModeChange(t, sess, bootAt),
 			domain.Join{
 				Target:   "#general",
 				Nick:     "testuser",
@@ -370,7 +557,7 @@ func TestSession_JoinExistingChannel(t *testing.T) {
 	existing.Topic = "Already here"
 	saveTestChannel(t, sess, s, existing)
 
-	require.NoError(t, sess.Join(ctx, "#existing"))
+	require.NoError(t, userJoin(ctx, t, sess, "#existing"))
 
 	// Channel should not be overwritten.
 	ch, err := sess.loadChannelWindow(ctx, "#existing")
@@ -386,10 +573,10 @@ func TestSession_JoinAlreadyMember_no_duplicate_event(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	require.NoError(t, sess.Join(ctx, "#general"))
+	require.NoError(t, userJoin(ctx, t, sess, "#general"))
 
 	// Join again — should not emit a second join event.
-	require.NoError(t, sess.Join(ctx, "#general"))
+	require.NoError(t, userJoin(ctx, t, sess, "#general"))
 
 	// First join creates the channel, so we get a join event.
 	// Second join should add nothing.
@@ -401,11 +588,11 @@ func TestSession_JoinSwitchAndReturn_no_duplicate_event(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	require.NoError(t, sess.Join(ctx, "#general"))
-	require.NoError(t, sess.Join(ctx, "#random"))
+	require.NoError(t, userJoin(ctx, t, sess, "#general"))
+	require.NoError(t, userJoin(ctx, t, sess, "#random"))
 
 	// Switch back to #general — no new join event.
-	require.NoError(t, sess.Join(ctx, "#general"))
+	require.NoError(t, userJoin(ctx, t, sess, "#general"))
 
 	types := channelEventTypes(t, s, "#general")
 	require.Equal(t, []string{"join"}, types)
@@ -421,13 +608,13 @@ func TestSession_JoinAutojoinChannels_populates_user_join_times(t *testing.T) {
 		seedChannelWithMembers(t, sess, s, "#random", "botty")
 		require.NoError(t, s.SetAutojoinChannels(ctx, []domain.ChannelName{"#general", "#random"}))
 
-		require.True(t, sess.UserJoinedAt("#general").IsZero())
-		require.True(t, sess.UserJoinedAt("#random").IsZero())
+		require.True(t, userJoinedAt(t, sess, "#general").IsZero())
+		require.True(t, userJoinedAt(t, sess, "#random").IsZero())
 
-		require.NoError(t, sess.JoinAutojoinChannels(ctx))
+		require.NoError(t, userJoinAutojoinChannels(ctx, t, sess))
 		synctest.Wait()
 
-		user := sess.UserInstance()
+		user := userInstance(t, sess)
 		members := func(ch domain.ChannelName) domain.MemberList {
 			cw, err := sess.loadChannelWindow(ctx, ch)
 			require.NoError(t, err)
@@ -435,7 +622,7 @@ func TestSession_JoinAutojoinChannels_populates_user_join_times(t *testing.T) {
 		}
 
 		var expected []domain.Event
-		expected = append(expected, bootstrapModeChange(sess, bootAt))
+		expected = append(expected, bootstrapModeChange(t, sess, bootAt))
 		for _, ch := range []domain.ChannelName{"#general", "#random"} {
 			expected = append(expected,
 				domain.Join{
@@ -454,16 +641,16 @@ func TestSession_JoinAutojoinChannels_populates_user_join_times(t *testing.T) {
 
 		require.Equal(t, expected, collectEmittedEvents(t, sess))
 
-		require.Equal(t, fixedTime, sess.UserJoinedAt("#general"))
-		require.Equal(t, fixedTime, sess.UserJoinedAt("#random"))
+		require.Equal(t, fixedTime, userJoinedAt(t, sess, "#general"))
+		require.Equal(t, fixedTime, userJoinedAt(t, sess, "#random"))
 	})
 }
 
 func TestSession_JoinAutojoinChannels_empty_autojoin_is_noop(t *testing.T) {
 	sess, _ := newTestSession(t)
 
-	require.NoError(t, sess.JoinAutojoinChannels(t.Context()))
-	requireChannels(t, sess.UserInstance().Channels())
+	require.NoError(t, userJoinAutojoinChannels(t.Context(), t, sess))
+	requireChannels(t, userInstance(t, sess).Channels())
 }
 
 func TestSession_JoinAutojoinChannels_emits_join_events(t *testing.T) {
@@ -476,10 +663,10 @@ func TestSession_JoinAutojoinChannels_emits_join_events(t *testing.T) {
 		seedChannelWithMembers(t, sess, s, "#beta", "botty")
 		require.NoError(t, s.SetAutojoinChannels(ctx, []domain.ChannelName{"#alpha", "#beta"}))
 
-		require.NoError(t, sess.JoinAutojoinChannels(ctx))
+		require.NoError(t, userJoinAutojoinChannels(ctx, t, sess))
 		synctest.Wait()
 
-		user := sess.UserInstance()
+		user := userInstance(t, sess)
 		members := func(ch domain.ChannelName) domain.MemberList {
 			cw, err := sess.loadChannelWindow(ctx, ch)
 			require.NoError(t, err)
@@ -487,7 +674,7 @@ func TestSession_JoinAutojoinChannels_emits_join_events(t *testing.T) {
 		}
 
 		var expected []domain.Event
-		expected = append(expected, bootstrapModeChange(sess, bootAt))
+		expected = append(expected, bootstrapModeChange(t, sess, bootAt))
 		for _, ch := range []domain.ChannelName{"#alpha", "#beta"} {
 			expected = append(expected,
 				domain.Join{
@@ -516,12 +703,12 @@ func TestSession_Leave(t *testing.T) {
 
 		saveTestChannel(t, sess, s, newTestChannelWindow("#leaving", fixedTime, testMembers(t, sess, s, "testuser", "botty")))
 
-		require.NoError(t, sess.Part(ctx, "#leaving", ""))
+		require.NoError(t, userPart(ctx, t, sess, "#leaving", ""))
 		synctest.Wait()
 
-		user := sess.UserInstance()
+		user := userInstance(t, sess)
 		require.ElementsMatch(t, []domain.Event{
-			bootstrapModeChange(sess, bootAt),
+			bootstrapModeChange(t, sess, bootAt),
 			domain.Part{
 				Target:   "#leaving",
 				Nick:     "testuser",
@@ -539,7 +726,7 @@ func TestSession_Leave(t *testing.T) {
 func TestSession_LeaveNonexistent(t *testing.T) {
 	sess, _ := newTestSession(t)
 
-	require.Error(t, sess.Part(t.Context(), "#ghost", ""))
+	require.Error(t, userPart(t.Context(), t, sess, "#ghost", ""))
 }
 
 func TestSession_Part_carries_message(t *testing.T) {
@@ -550,15 +737,15 @@ func TestSession_Part_carries_message(t *testing.T) {
 
 		saveTestChannel(t, sess, s, newTestChannelWindow("#farewell", fixedTime, testMembers(t, sess, s, "testuser")))
 
-		require.NoError(t, sess.Part(ctx, "#farewell", "see ya later"))
+		require.NoError(t, userPart(ctx, t, sess, "#farewell", "see ya later"))
 		synctest.Wait()
 
 		require.ElementsMatch(t, []domain.Event{
-			bootstrapModeChange(sess, bootAt),
+			bootstrapModeChange(t, sess, bootAt),
 			domain.Part{
 				Target:   "#farewell",
 				Nick:     "testuser",
-				Instance: sess.UserInstance(),
+				Instance: userInstance(t, sess),
 				Message:  "see ya later",
 				At:       fixedTime,
 			},
@@ -587,10 +774,10 @@ func TestSession_Connect_marks_session_active(t *testing.T) {
 		}
 
 		require.ElementsMatch(t, []domain.Event{
-			bootstrapModeChange(sess, bootAt),
+			bootstrapModeChange(t, sess, bootAt),
 			domain.Welcome{
 				ServerName: domain.StatusServerName,
-				Nick:       sess.UserNick(),
+				Nick:       userNick(t, sess),
 				At:         fixedTime,
 			},
 		}, collectEmittedEvents(t, sess))
@@ -621,10 +808,10 @@ func TestSession_Connect_clears_unclean_user_membership(t *testing.T) {
 		requireChannelEqual(t, newTestChannelWindow("#random", fixedTime, domain.NewMemberList()), random)
 
 		require.ElementsMatch(t, []domain.Event{
-			bootstrapModeChange(sess, bootAt),
+			bootstrapModeChange(t, sess, bootAt),
 			domain.Welcome{
 				ServerName: domain.StatusServerName,
-				Nick:       sess.UserNick(),
+				Nick:       userNick(t, sess),
 				At:         fixedTime,
 			},
 			domain.Reconnected{At: fixedTime},
@@ -648,13 +835,13 @@ func TestSession_Connect_then_JoinAutojoin_stamps_UserJoinedAt(t *testing.T) {
 		require.NoError(t, s.SetAutojoinChannels(ctx, []domain.ChannelName{"#general", "#random"}))
 
 		require.NoError(t, sess.Connect(ctx))
-		require.NoError(t, sess.JoinAutojoinChannels(ctx))
+		require.NoError(t, userJoinAutojoinChannels(ctx, t, sess))
 		synctest.Wait()
 
-		require.Equal(t, fixedTime, sess.UserJoinedAt("#general"))
-		require.Equal(t, fixedTime, sess.UserJoinedAt("#random"))
+		require.Equal(t, fixedTime, userJoinedAt(t, sess, "#general"))
+		require.Equal(t, fixedTime, userJoinedAt(t, sess, "#random"))
 
-		user := sess.UserInstance()
+		user := userInstance(t, sess)
 		members := func(ch domain.ChannelName) domain.MemberList {
 			cw, err := sess.loadChannelWindow(ctx, ch)
 			require.NoError(t, err)
@@ -662,10 +849,10 @@ func TestSession_Connect_then_JoinAutojoin_stamps_UserJoinedAt(t *testing.T) {
 		}
 
 		expected := []domain.Event{
-			bootstrapModeChange(sess, bootAt),
+			bootstrapModeChange(t, sess, bootAt),
 			domain.Welcome{
 				ServerName: domain.StatusServerName,
-				Nick:       sess.UserNick(),
+				Nick:       userNick(t, sess),
 				At:         fixedTime,
 			},
 			domain.Reconnected{At: fixedTime},
@@ -695,13 +882,14 @@ func TestSession_Connect_Quit_Reconnect_omits_status_channel_from_autojoin(t *te
 		s := storetest.NewMemoryStore(t)
 
 		bootAt1 := time.Now()
-		sess1 := New(t.Context, s, newTestModelClientFactory(t, &fakeAPIClient{}), "testuser")
+		sess1 := New(t.Context, s, newTestModelClientFactory(t, &fakeAPIClient{}))
 		t.Cleanup(func() { _ = sess1.Shutdown(context.Background()) })
+		attachTestUserClient(t, sess1, "testuser")
 		sess1.now = func() time.Time { return fixedTime }
 		ctx := t.Context()
 
 		require.NoError(t, sess1.Connect(ctx))
-		require.NoError(t, sess1.Join(ctx, "#general"))
+		require.NoError(t, userJoin(ctx, t, sess1, "#general"))
 		// Snapshot the channel membership before Quit clears the user
 		// from it; the NamesReplyEvent emitted at join time carries
 		// the live MemberList by reference.
@@ -712,12 +900,12 @@ func TestSession_Connect_Quit_Reconnect_omits_status_channel_from_autojoin(t *te
 		require.NoError(t, userQuitViaWire(ctx, t, sess1, "bye"))
 		synctest.Wait()
 
-		user1 := sess1.UserInstance()
+		user1 := userInstance(t, sess1)
 		require.Equal(t, []domain.Event{
-			bootstrapModeChange(sess1, bootAt1),
+			bootstrapModeChange(t, sess1, bootAt1),
 			domain.Welcome{
 				ServerName: domain.StatusServerName,
-				Nick:       sess1.UserNick(),
+				Nick:       userNick(t, sess1),
 				At:         fixedTime,
 			},
 			domain.Join{
@@ -741,17 +929,18 @@ func TestSession_Connect_Quit_Reconnect_omits_status_channel_from_autojoin(t *te
 		// Starting a fresh session over the same store must not replay the
 		// status channel into the autojoin loop.
 		bootAt2 := time.Now()
-		sess2 := New(t.Context, s, newTestModelClientFactory(t, &fakeAPIClient{}), "testuser")
+		sess2 := New(t.Context, s, newTestModelClientFactory(t, &fakeAPIClient{}))
 		t.Cleanup(func() { _ = sess2.Shutdown(context.Background()) })
+		attachTestUserClient(t, sess2, "testuser")
 		sess2.now = func() time.Time { return fixedTime }
 		require.NoError(t, sess2.Connect(ctx))
 		synctest.Wait()
 
 		require.Equal(t, []domain.Event{
-			bootstrapModeChange(sess2, bootAt2),
+			bootstrapModeChange(t, sess2, bootAt2),
 			domain.Welcome{
 				ServerName: domain.StatusServerName,
-				Nick:       sess2.UserNick(),
+				Nick:       userNick(t, sess2),
 				At:         fixedTime,
 			},
 		}, collectEmittedEvents(t, sess2))
@@ -766,8 +955,9 @@ func TestSession_Connect_unclean_recovery_emits_welcome_and_reconnected(t *testi
 	synctest.Test(t, func(t *testing.T) {
 		bootAt := time.Now()
 		s := storetest.NewMemoryStore(t)
-		sess := New(t.Context, s, newTestModelClientFactory(t, &fakeAPIClient{}), "testuser")
+		sess := New(t.Context, s, newTestModelClientFactory(t, &fakeAPIClient{}))
 		t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
+		attachTestUserClient(t, sess, "testuser")
 		sess.now = func() time.Time { return fixedTime }
 		ctx := t.Context()
 
@@ -777,10 +967,10 @@ func TestSession_Connect_unclean_recovery_emits_welcome_and_reconnected(t *testi
 		synctest.Wait()
 
 		require.ElementsMatch(t, []domain.Event{
-			bootstrapModeChange(sess, bootAt),
+			bootstrapModeChange(t, sess, bootAt),
 			domain.Welcome{
 				ServerName: domain.StatusServerName,
-				Nick:       sess.UserNick(),
+				Nick:       userNick(t, sess),
 				At:         fixedTime,
 			},
 			domain.Reconnected{At: fixedTime},
@@ -805,7 +995,7 @@ func TestSession_user_snapshot_race_free(t *testing.T) {
 	go func() {
 		for {
 			select {
-			case <-sess.User().Events():
+			case <-userClient(t, sess).Events():
 			case <-drainCtx.Done():
 				return
 			}
@@ -820,16 +1010,16 @@ func TestSession_user_snapshot_race_free(t *testing.T) {
 	wg.Go(func() {
 		for i := range iters {
 			ch := channels[i%len(channels)]
-			_ = sess.Join(ctx, string(ch))
-			_ = sess.Part(ctx, ch, "")
+			_ = userJoin(ctx, t, sess, ch)
+			_ = userPart(ctx, t, sess, ch, "")
 		}
 	})
 
 	wg.Go(func() {
 		for i := range iters {
 			ch := channels[i%len(channels)]
-			_ = sess.UserJoinedAt(ch)
-			_ = sess.UserNick()
+			_ = userJoinedAt(t, sess, ch)
+			_ = userNick(t, sess)
 		}
 	})
 
@@ -840,7 +1030,7 @@ func TestSession_user_snapshot_race_free(t *testing.T) {
 	// UserJoinedAt on any known channel returns either zero time or
 	// fixedTime, never garbage.
 	for _, ch := range channels {
-		got := sess.UserJoinedAt(ch)
+		got := userJoinedAt(t, sess, ch)
 		if !got.IsZero() {
 			require.Equal(t, fixedTime, got, "UserJoinedAt must return a coherent snapshot value")
 		}
@@ -860,10 +1050,10 @@ func TestSession_Connect_is_idempotent(t *testing.T) {
 		synctest.Wait()
 
 		require.ElementsMatch(t, []domain.Event{
-			bootstrapModeChange(sess, bootAt),
+			bootstrapModeChange(t, sess, bootAt),
 			domain.Welcome{
 				ServerName: domain.StatusServerName,
-				Nick:       sess.UserNick(),
+				Nick:       userNick(t, sess),
 				At:         fixedTime,
 			},
 		}, collectEmittedEvents(t, sess))
@@ -894,8 +1084,8 @@ func TestSession_Quit_appends_channel_quit_events_and_saves_autojoin(t *testing.
 		sess, s := newTestSession(t)
 		ctx := t.Context()
 
-		require.NoError(t, sess.Join(ctx, "#general"))
-		require.NoError(t, sess.Join(ctx, "#random"))
+		require.NoError(t, userJoin(ctx, t, sess, "#general"))
+		require.NoError(t, userJoin(ctx, t, sess, "#random"))
 
 		general, err := sess.loadChannelWindow(ctx, "#general")
 		require.NoError(t, err)
@@ -907,8 +1097,8 @@ func TestSession_Quit_appends_channel_quit_events_and_saves_autojoin(t *testing.
 		require.NoError(t, userQuitViaWire(ctx, t, sess, "goodnight"))
 		synctest.Wait()
 
-		user := sess.UserInstance()
-		expected := []domain.Event{bootstrapModeChange(sess, bootAt)}
+		user := userInstance(t, sess)
+		expected := []domain.Event{bootstrapModeChange(t, sess, bootAt)}
 		for _, entry := range []struct {
 			ch      domain.ChannelName
 			members domain.MemberList
@@ -949,7 +1139,7 @@ func TestSession_Quit_removes_user_from_channel_members(t *testing.T) {
 		sess, _ := newTestSession(t)
 		ctx := t.Context()
 
-		require.NoError(t, sess.Join(ctx, "#general"))
+		require.NoError(t, userJoin(ctx, t, sess, "#general"))
 		general, err := sess.loadChannelWindow(ctx, "#general")
 		require.NoError(t, err)
 		generalMembers := general.Members
@@ -957,9 +1147,9 @@ func TestSession_Quit_removes_user_from_channel_members(t *testing.T) {
 		require.NoError(t, userQuitViaWire(ctx, t, sess, ""))
 		synctest.Wait()
 
-		user := sess.UserInstance()
+		user := userInstance(t, sess)
 		require.ElementsMatch(t, []domain.Event{
-			bootstrapModeChange(sess, bootAt),
+			bootstrapModeChange(t, sess, bootAt),
 			domain.Join{
 				Target:   "#general",
 				Nick:     "testuser",
@@ -986,7 +1176,7 @@ func TestSession_Quit_clears_in_memory_channels(t *testing.T) {
 		sess, _ := newTestSession(t)
 		ctx := t.Context()
 
-		require.NoError(t, sess.Join(ctx, "#general"))
+		require.NoError(t, userJoin(ctx, t, sess, "#general"))
 		general, err := sess.loadChannelWindow(ctx, "#general")
 		require.NoError(t, err)
 		generalMembers := general.Members
@@ -994,9 +1184,9 @@ func TestSession_Quit_clears_in_memory_channels(t *testing.T) {
 		require.NoError(t, userQuitViaWire(ctx, t, sess, ""))
 		synctest.Wait()
 
-		user := sess.UserInstance()
+		user := userInstance(t, sess)
 		require.ElementsMatch(t, []domain.Event{
-			bootstrapModeChange(sess, bootAt),
+			bootstrapModeChange(t, sess, bootAt),
 			domain.Join{
 				Target:   "#general",
 				Nick:     "testuser",
@@ -1012,7 +1202,7 @@ func TestSession_Quit_clears_in_memory_channels(t *testing.T) {
 		}, collectEmittedEvents(t, sess))
 
 		remaining := []domain.ChannelName{}
-		for pair := sess.UserInstance().Channels().Oldest(); pair != nil; pair = pair.Next() {
+		for pair := userInstance(t, sess).Channels().Oldest(); pair != nil; pair = pair.Next() {
 			remaining = append(remaining, pair.Key)
 		}
 
@@ -1037,7 +1227,7 @@ func TestSession_user_state_triple_stays_consistent(t *testing.T) {
 		t.Helper()
 
 		var channels []domain.ChannelName
-		for pair := sess.UserInstance().Channels().Oldest(); pair != nil; pair = pair.Next() {
+		for pair := userInstance(t, sess).Channels().Oldest(); pair != nil; pair = pair.Next() {
 			channels = append(channels, pair.Key)
 		}
 
@@ -1045,7 +1235,7 @@ func TestSession_user_state_triple_stays_consistent(t *testing.T) {
 		var onDisk bool
 		if err == nil {
 			if cw, ok := w.(*domain.ChannelWindow); ok {
-				onDisk = cw.Members.HasInstance(sess.UserInstance())
+				onDisk = cw.Members.HasInstance(userInstance(t, sess))
 			}
 		}
 
@@ -1061,7 +1251,7 @@ func TestSession_user_state_triple_stays_consistent(t *testing.T) {
 		sess, s := newTestSession(t)
 		ctx := t.Context()
 
-		require.NoError(t, sess.Join(ctx, "#general"))
+		require.NoError(t, userJoin(ctx, t, sess, "#general"))
 		require.Equal(t, userSnapshot{
 			Channels:   []domain.ChannelName{"#general"},
 			Mode:       domain.ModeOp,
@@ -1072,14 +1262,14 @@ func TestSession_user_state_triple_stays_consistent(t *testing.T) {
 		require.NoError(t, err)
 		generalMembers1 := general1.Members
 
-		require.NoError(t, sess.Part(ctx, "#general", ""))
+		require.NoError(t, userPart(ctx, t, sess, "#general", ""))
 		require.Equal(t, userSnapshot{
 			Channels:   nil,
 			Mode:       domain.ModeNone,
 			OnDiskUser: false,
 		}, snapshot(t, sess, s, "#general"))
 
-		require.NoError(t, sess.Join(ctx, "#general"))
+		require.NoError(t, userJoin(ctx, t, sess, "#general"))
 		require.Equal(t, userSnapshot{
 			Channels:   []domain.ChannelName{"#general"},
 			Mode:       domain.ModeNone,
@@ -1090,10 +1280,10 @@ func TestSession_user_state_triple_stays_consistent(t *testing.T) {
 		require.NoError(t, err)
 		generalMembers2 := general2.Members
 
-		require.NoError(t, sess.ChangeNick(ctx, "renamed"))
+		require.NoError(t, userChangeNick(ctx, t, sess, "renamed"))
 		synctest.Wait()
 
-		user := sess.UserInstance()
+		user := userInstance(t, sess)
 		require.ElementsMatch(t, []domain.Event{
 			domain.ModeChange{
 				Nick:       "testuser",
@@ -1198,7 +1388,7 @@ func TestSession_Quit_does_not_dispatch_to_models(t *testing.T) {
 		ModelID:  "test/model",
 		Channels: testChannels("#general"),
 	})
-	sess.UserInstance().MutateChannels(func(m *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
+	userInstance(t, sess).MutateChannels(func(m *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
 		m.Set("#general", fixedTime)
 	})
 
@@ -1224,7 +1414,7 @@ func TestSession_AddModel(t *testing.T) {
 		require.NotEmpty(t, inst.ID())
 
 		require.ElementsMatch(t, []domain.Event{
-			bootstrapModeChange(sess, bootAt),
+			bootstrapModeChange(t, sess, bootAt),
 			domain.ModelInvited{
 				Target:     "#dev",
 				Nick:       "fakenick",
@@ -1244,7 +1434,7 @@ func TestSession_AddModel(t *testing.T) {
 		updated, err := sess.loadChannelWindow(ctx, "#dev")
 		require.NoError(t, err)
 		require.Equal(t, []domain.Member{
-			{Instance: sess.UserInstance(), Nick: "testuser", Mode: domain.ModeOp},
+			{Instance: userInstance(t, sess), Nick: "testuser", Mode: domain.ModeOp},
 			{Instance: inst, Nick: "fakenick", Mode: domain.ModeNone},
 		}, slices.Collect(updated.Members.All()))
 	})
@@ -1267,7 +1457,7 @@ func TestSession_Kick(t *testing.T) {
 		synctest.Wait()
 
 		require.ElementsMatch(t, []domain.Event{
-			bootstrapModeChange(sess, bootAt),
+			bootstrapModeChange(t, sess, bootAt),
 			domain.ModelKicked{
 				Target:     "#dev",
 				Nick:       "botty",
@@ -1292,15 +1482,16 @@ func TestSession_mutationOperations_recordSpans(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		recorder, provider := oteltest.NewSpanRecorder(t)
 		s := storetest.NewMemoryStore(t).WithTracerProvider(provider)
-		sess := New(t.Context, s, newTestModelClientFactory(t, &fakeAPIClient{}), "testuser").WithTracerProvider(provider)
+		sess := New(t.Context, s, newTestModelClientFactory(t, &fakeAPIClient{})).WithTracerProvider(provider)
 		t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
+		attachTestUserClient(t, sess, "testuser")
 		sess.now = func() time.Time { return fixedTime }
 		ctx := t.Context()
 
-		require.NoError(t, sess.Join(ctx, "#general"))
+		require.NoError(t, userJoin(ctx, t, sess, "#general"))
 
 		seedChannelWithMembers(t, sess, s, "#leave", "testuser")
-		require.NoError(t, sess.Part(ctx, "#leave", ""))
+		require.NoError(t, userPart(ctx, t, sess, "#leave", ""))
 
 		botty := seedInstance(t, sess, s, instanceSpec{
 			Nick:     "botty",
@@ -1313,8 +1504,8 @@ func TestSession_mutationOperations_recordSpans(t *testing.T) {
 		saveTestChannel(t, sess, s, channel)
 		require.NoError(t, kickViaWire(ctx, t, sess, "#general", "botty"))
 
-		require.NoError(t, sess.SetTopic(ctx, "#general", "observability"))
-		require.NoError(t, sess.ChangeNick(ctx, "renamed"))
+		require.NoError(t, userSetTopic(ctx, t, sess, "#general", "observability"))
+		require.NoError(t, userChangeNick(ctx, t, sess, "renamed"))
 
 		expected := []string{
 			"session.change_nick",
@@ -1324,6 +1515,7 @@ func TestSession_mutationOperations_recordSpans(t *testing.T) {
 			"session.mark_read",
 			"session.part",
 			"session.set_topic",
+			"session.set_user_mode",
 			"store.sqlite.append_event",
 			"store.sqlite.events_before",
 			"store.sqlite.get_instance_by_id",
@@ -1356,8 +1548,8 @@ func TestSession_spans_carry_AttrInstanceID(t *testing.T) {
 			spanName: "session.change_nick",
 			act: func(t *testing.T, sess *Session, _ *storemod.SQLiteStore, ctx context.Context) {
 				t.Helper()
-				require.NoError(t, sess.Join(ctx, "#general"))
-				require.NoError(t, sess.ChangeNick(ctx, "renamed"))
+				require.NoError(t, userJoin(ctx, t, sess, "#general"))
+				require.NoError(t, userChangeNick(ctx, t, sess, "renamed"))
 			},
 			wantInstID: "",
 		},
@@ -1379,7 +1571,7 @@ func TestSession_spans_carry_AttrInstanceID(t *testing.T) {
 			spanName: "session.join",
 			act: func(t *testing.T, sess *Session, _ *storemod.SQLiteStore, ctx context.Context) {
 				t.Helper()
-				require.NoError(t, sess.Join(ctx, "#general"))
+				require.NoError(t, userJoin(ctx, t, sess, "#general"))
 			},
 			wantInstID: "",
 		},
@@ -1490,21 +1682,24 @@ func TestSession_DispatchToChannel_api_failure_records_dispatch_error_kind(t *te
 	require.Equal(t, observability.ErrorKindDispatch, oteltest.AttrValue(span.Attributes(), observability.AttrErrorKind))
 }
 
-func TestSession_JoinAutojoinChannels_records_aggregate_span(t *testing.T) {
-	recorder, provider := oteltest.NewSpanRecorder(t)
+// TestSession_AutojoinChannels_drives_per_channel_joins pins the
+// shape the user-client autojoin loop relies on: walking the
+// stored autojoin list and JOINing each entry as the user-actor
+// leaves the user instance carrying every channel in membership.
+// The aggregate observability span is the user-client's concern
+// and is covered alongside the user-client implementation.
+func TestSession_AutojoinChannels_drives_per_channel_joins(t *testing.T) {
 	sess, s := newTestSession(t)
-	sess.WithTracerProvider(provider)
 	ctx := t.Context()
 
 	require.NoError(t, s.SetAutojoinChannels(ctx, []domain.ChannelName{"#alpha", "#beta"}))
+	require.NoError(t, userJoinAutojoinChannels(ctx, t, sess))
 
-	require.NoError(t, sess.JoinAutojoinChannels(ctx))
-
-	span := oteltest.FindSpan(t, recorder, "session.autojoin")
-	require.Equal(t, "2", oteltest.AttrValue(span.Attributes(), observability.AttrAutojoinCount))
-	require.Equal(t, "0", oteltest.AttrValue(span.Attributes(), observability.AttrAutojoinFailed))
-	require.Equal(t, `["#alpha","#beta"]`, oteltest.AttrValue(span.Attributes(), observability.AttrAutojoinChannels))
-	require.Equal(t, observability.ResultOK, oteltest.AttrValue(span.Attributes(), observability.AttrResult))
+	var joined []domain.ChannelName
+	for pair := userInstance(t, sess).Channels().Oldest(); pair != nil; pair = pair.Next() {
+		joined = append(joined, pair.Key)
+	}
+	require.Equal(t, []domain.ChannelName{"#alpha", "#beta"}, joined)
 }
 
 func TestSession_dispatchToInstance_recordsPassReasonAndToolTurns(t *testing.T) {
@@ -1530,8 +1725,9 @@ func TestSession_dispatchToInstance_recordsPassReasonAndToolTurns(t *testing.T) 
 			}, nil
 		},
 	}
-	sess := New(t.Context, dataStore, newTestModelClientFactoryWith(t, fake, memStore), "testuser").WithTracerProvider(provider)
+	sess := New(t.Context, dataStore, newTestModelClientFactoryWith(t, fake, memStore)).WithTracerProvider(provider)
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
+	attachTestUserClient(t, sess, "testuser")
 	sess.now = func() time.Time { return fixedTime }
 	ctx := t.Context()
 
@@ -1575,7 +1771,7 @@ func TestSession_modelDispatchTurn_recordsSpan(t *testing.T) {
 		synctest.Wait()
 
 		require.ElementsMatch(t, []domain.Event{
-			bootstrapModeChange(sess, bootAt),
+			bootstrapModeChange(t, sess, bootAt),
 			domain.PokeEvent{Channel: "#general", At: fixedTime},
 			domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
 			domain.ModelDispatchDone{Instance: botty, At: fixedTime},
@@ -1595,7 +1791,7 @@ func TestSession_SendMessage(t *testing.T) {
 
 		seedChannelWithMembers(t, sess, s, "#general", "testuser")
 
-		persisted, err := sess.SendMessage(ctx, "#general", "hello world")
+		persisted, err := userSendMessage(ctx, t, sess, "#general", "hello world")
 		require.NoError(t, err)
 		require.Equal(t, domain.Message{
 			Target: "#general",
@@ -1616,7 +1812,7 @@ func TestSession_SendMessage(t *testing.T) {
 		// dispatch lifecycle, so only the bootstrap mode-change is
 		// queued on the bus.
 		require.ElementsMatch(t, []domain.Event{
-			bootstrapModeChange(sess, bootAt),
+			bootstrapModeChange(t, sess, bootAt),
 		}, collectEmittedEvents(t, sess))
 	})
 }
@@ -1640,7 +1836,7 @@ func TestSession_SendMessage_emits_dispatch_events(t *testing.T) {
 		})
 		seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
 
-		_, err := sess.SendMessage(ctx, "#general", "hello")
+		_, err := userSendMessage(ctx, t, sess, "#general", "hello")
 		require.NoError(t, err)
 		synctest.Wait()
 
@@ -1648,7 +1844,7 @@ func TestSession_SendMessage_emits_dispatch_events(t *testing.T) {
 		// (RFC 2812 §3.3.1) but botty's dispatch goroutine triggers on
 		// it and emits its reply Message on the wire.
 		require.ElementsMatch(t, []domain.Event{
-			bootstrapModeChange(sess, bootAt),
+			bootstrapModeChange(t, sess, bootAt),
 			domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
 			domain.Message{
 				Target:     "#general",
@@ -1687,10 +1883,10 @@ func TestSession_JoinEvent_triggers_dispatch(t *testing.T) {
 		seedChannelWithMembers(t, sess, s, "#general", "botty")
 
 		// Join an existing channel — the reactive dispatch should fire.
-		require.NoError(t, sess.Join(ctx, "#general"))
+		require.NoError(t, userJoin(ctx, t, sess, "#general"))
 		synctest.Wait()
 
-		userInst := sess.UserInstance()
+		userInst := userInstance(t, sess)
 		events := collectEmittedEvents(t, sess)
 
 		// The NamesReply carries the channel's MemberList at join
@@ -1723,7 +1919,7 @@ func TestSession_JoinEvent_triggers_dispatch(t *testing.T) {
 		wantDone := domain.ModelDispatchDone{Instance: botty, At: fixedTime}
 
 		require.ElementsMatch(t, []domain.Event{
-			bootstrapModeChange(sess, bootAt),
+			bootstrapModeChange(t, sess, bootAt),
 			domain.Join{
 				Target:     "#general",
 				Nick:       "testuser",
@@ -1780,7 +1976,7 @@ func TestSession_model_reply_does_not_retrigger_dispatch(t *testing.T) {
 		Channels: testChannels("#general"),
 	})
 
-	_, err := sess.SendMessage(ctx, "#general", "hello")
+	_, err := userSendMessage(ctx, t, sess, "#general", "hello")
 	require.NoError(t, err)
 
 	// The user's own outgoing message is not echoed on the
@@ -2210,7 +2406,7 @@ func TestSession_Poke_api_error_emits_error_event(t *testing.T) {
 		Channels: testChannels("#random"),
 	})
 
-	require.NoError(t, sess.Poke(ctx))
+	require.NoError(t, userPoke(ctx, t, sess))
 	events := drainEvents(t, sess, 2)
 
 	var failure *domain.ModelUnavailableError
@@ -2249,17 +2445,17 @@ func TestSession_SetTopic(t *testing.T) {
 
 		saveTestChannel(t, sess, s, domain.NewChannelWindow("#dev", fixedTime))
 
-		require.NoError(t, sess.SetTopic(ctx, "#dev", "Development Chat"))
+		require.NoError(t, userSetTopic(ctx, t, sess, "#dev", "Development Chat"))
 		synctest.Wait()
 
 		require.ElementsMatch(t, []domain.Event{
-			bootstrapModeChange(sess, bootAt),
+			bootstrapModeChange(t, sess, bootAt),
 			domain.TopicChange{
 				Target:     "#dev",
 				Topic:      "Development Chat",
 				By:         "testuser",
 				At:         fixedTime,
-				ByInstance: sess.UserInstance(),
+				ByInstance: userInstance(t, sess),
 			},
 		}, collectEmittedEvents(t, sess))
 
@@ -2277,20 +2473,21 @@ func TestSession_ChangeNick(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		bootAt := time.Now()
 		s := storetest.NewMemoryStore(t)
-		sess := New(t.Context, s, newTestModelClientFactory(t, &fakeAPIClient{}), "testuser")
+		sess := New(t.Context, s, newTestModelClientFactory(t, &fakeAPIClient{}))
 		t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
+		attachTestUserClient(t, sess, "testuser")
 		sess.now = func() time.Time { return fixedTime }
 
 		// Join a channel so the nick change emits per-channel events.
-		require.NoError(t, sess.Join(t.Context(), "#general"))
+		require.NoError(t, userJoin(t.Context(), t, sess, "#general"))
 		general, err := sess.loadChannelWindow(t.Context(), "#general")
 		require.NoError(t, err)
 		generalMembers := general.Members
 
-		require.NoError(t, sess.ChangeNick(t.Context(), "newname"))
+		require.NoError(t, userChangeNick(t.Context(), t, sess, "newname"))
 		synctest.Wait()
 
-		user := sess.UserInstance()
+		user := userInstance(t, sess)
 		require.ElementsMatch(t, []domain.Event{
 			domain.ModeChange{
 				Nick:       "testuser",
@@ -2321,7 +2518,7 @@ func TestSession_ChangeNick(t *testing.T) {
 			},
 		}, collectEmittedEvents(t, sess))
 
-		require.Equal(t, domain.Nick("newname"), sess.UserNick())
+		require.Equal(t, domain.Nick("newname"), userNick(t, sess))
 	})
 }
 
@@ -2346,7 +2543,7 @@ func TestSession_ChangeNickAs_collisions(t *testing.T) {
 			setup: func(t *testing.T, sess *Session, store *storemod.SQLiteStore) (*domain.Instance, domain.Nick) {
 				bob := seedInstance(t, sess, store, instanceSpec{Nick: "bob", ModelID: "test/model"})
 
-				return bob, sess.UserNick()
+				return bob, userNick(t, sess)
 			},
 			wantError: true,
 		},
@@ -2355,7 +2552,7 @@ func TestSession_ChangeNickAs_collisions(t *testing.T) {
 			setup: func(t *testing.T, sess *Session, store *storemod.SQLiteStore) (*domain.Instance, domain.Nick) {
 				_ = seedInstance(t, sess, store, instanceSpec{Nick: "alice", ModelID: "test/model"})
 
-				return sess.UserInstance(), "alice"
+				return userInstance(t, sess), "alice"
 			},
 			wantError: true,
 		},
@@ -2439,7 +2636,7 @@ func TestSession_InviteAs_existing_instance_to_nonexistent_channel_does_not_corr
 	})
 	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
 
-	require.Error(t, sess.inviteAs(ctx, sess.UserInstance(), "botty", "#ghost"))
+	require.Error(t, sess.inviteAs(ctx, userInstance(t, sess), "botty", "#ghost"))
 
 	// Instance should not have the phantom channel in its set.
 	inst, err := s.ResolveNick(ctx, "botty")
@@ -2462,7 +2659,7 @@ func TestSession_AddModel_persists_persona(t *testing.T) {
 		require.NoError(t, err)
 
 		require.ElementsMatch(t, []domain.Event{
-			bootstrapModeChange(sess, bootAt),
+			bootstrapModeChange(t, sess, bootAt),
 			domain.ModelInvited{
 				Target:     "#general",
 				Nick:       "fakenick",
@@ -2494,11 +2691,11 @@ func TestSession_InviteAs_reuses_existing_instance(t *testing.T) {
 		seedChannelWithMembers(t, sess, s, "#general", "testuser")
 		seedChannelWithMembers(t, sess, s, "#random", "testuser")
 
-		require.NoError(t, sess.inviteAs(ctx, sess.UserInstance(), "botty", "#random"))
+		require.NoError(t, sess.inviteAs(ctx, userInstance(t, sess), "botty", "#random"))
 		synctest.Wait()
 
 		require.ElementsMatch(t, []domain.Event{
-			bootstrapModeChange(sess, bootAt),
+			bootstrapModeChange(t, sess, bootAt),
 			domain.ModelInvited{
 				Target:     "#random",
 				Nick:       "botty",
@@ -2540,7 +2737,7 @@ func TestSession_InviteAs_existing_instance_is_idempotent(t *testing.T) {
 	})
 	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
 
-	require.NoError(t, sess.inviteAs(ctx, sess.UserInstance(), "botty", "#general"))
+	require.NoError(t, sess.inviteAs(ctx, userInstance(t, sess), "botty", "#general"))
 
 	inst, err := s.ResolveNick(ctx, "botty")
 	require.NoError(t, err)
@@ -2566,11 +2763,11 @@ func TestSession_InviteAs_existing_instance_preserves_persona(t *testing.T) {
 		seedChannelWithMembers(t, sess, s, "#general", "testuser")
 		seedChannelWithMembers(t, sess, s, "#random", "testuser")
 
-		require.NoError(t, sess.inviteAs(ctx, sess.UserInstance(), "botty", "#random"))
+		require.NoError(t, sess.inviteAs(ctx, userInstance(t, sess), "botty", "#random"))
 		synctest.Wait()
 
 		require.ElementsMatch(t, []domain.Event{
-			bootstrapModeChange(sess, bootAt),
+			bootstrapModeChange(t, sess, bootAt),
 			domain.ModelInvited{
 				Target:     "#random",
 				Nick:       "botty",
@@ -2613,7 +2810,7 @@ func TestSession_KickNonMember(t *testing.T) {
 		synctest.Wait()
 
 		require.ElementsMatch(t, []domain.Event{
-			bootstrapModeChange(sess, bootAt),
+			bootstrapModeChange(t, sess, bootAt),
 		}, collectEmittedEvents(t, sess))
 
 		updated, err := sess.loadChannelWindow(ctx, "#dev")
@@ -2625,7 +2822,7 @@ func TestSession_KickNonMember(t *testing.T) {
 func TestSession_SetTopicNonexistentChannel(t *testing.T) {
 	sess, _ := newTestSession(t)
 
-	require.Error(t, sess.SetTopic(t.Context(), "#ghost", "topic"))
+	require.Error(t, userSetTopic(t.Context(), t, sess, "#ghost", "topic"))
 }
 
 func TestSession_DispatchToChannel_includes_memory_in_prompt(t *testing.T) {
@@ -2646,8 +2843,9 @@ func TestSession_DispatchToChannel_includes_memory_in_prompt(t *testing.T) {
 		},
 	}
 	s := storetest.NewMemoryStore(t)
-	sess := New(t.Context, s, newTestModelClientFactoryWith(t, fake, memStore), "testuser")
+	sess := New(t.Context, s, newTestModelClientFactoryWith(t, fake, memStore))
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
+	attachTestUserClient(t, sess, "testuser")
 	sess.now = func() time.Time { return fixedTime }
 
 	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
@@ -2688,11 +2886,11 @@ func TestSession_Poke_emits_dispatch_events(t *testing.T) {
 		})
 		seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
 
-		require.NoError(t, sess.Poke(ctx))
+		require.NoError(t, userPoke(ctx, t, sess))
 		synctest.Wait()
 
 		require.ElementsMatch(t, []domain.Event{
-			bootstrapModeChange(sess, bootAt),
+			bootstrapModeChange(t, sess, bootAt),
 			domain.PokeEvent{Channel: "#general", At: fixedTime},
 			domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
 			domain.Message{
@@ -2739,7 +2937,7 @@ func TestSession_DM_routing_survives_counterpart_rename(t *testing.T) {
 
 	require.NoError(t, sess.changeNickAs(ctx, botty, "foobar"))
 
-	_, err := sess.sendMessageAs(ctx, sess.UserInstance(), dm.Name(), "hi")
+	_, err := sess.sendMessageAs(ctx, userInstance(t, sess), dm.Name(), "hi")
 	require.NoError(t, err)
 
 	require.Equal(t, domain.Nick(dm.Name()), <-delivered)
@@ -2798,7 +2996,7 @@ func TestSession_MarkRead_and_UnreadCount(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 2, count)
 
-	require.NoError(t, sess.MarkRead(ctx, "#general"))
+	require.NoError(t, sess.markRead(ctx, "#general"))
 
 	count, err = sess.UnreadCount(ctx, "#general")
 	require.NoError(t, err)
@@ -2816,7 +3014,7 @@ func TestSession_UnreadCount_after_new_messages(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	require.NoError(t, sess.MarkRead(ctx, "#general"))
+	require.NoError(t, sess.markRead(ctx, "#general"))
 
 	_, err = s.AppendEvent(ctx, "#general", domain.Message{
 		Target: "#general", From: "testuser", Body: "second", At: fixedTime,
@@ -2842,7 +3040,7 @@ func TestSession_Join_marks_channel_as_read(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	require.NoError(t, sess.Join(ctx, "#general"))
+	require.NoError(t, userJoin(ctx, t, sess, "#general"))
 
 	// The user is already a member, so no JoinEvent is appended.
 	// MarkRead clears the unread count to zero.
@@ -3234,8 +3432,9 @@ func newTestSessionWithMemory(t *testing.T, apiClient api.Client) (*Session, *st
 	s := storetest.NewMemoryStore(t)
 
 	m := memory.NewStoreAdapter(storetest.NewMemoryStore(t))
-	sess := New(t.Context, s, newTestModelClientFactoryWith(t, apiClient, m), "testuser")
+	sess := New(t.Context, s, newTestModelClientFactoryWith(t, apiClient, m))
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
+	attachTestUserClient(t, sess, "testuser")
 	sess.now = func() time.Time { return fixedTime }
 
 	return sess, s, m
@@ -3381,8 +3580,9 @@ func TestSession_DispatchToChannel_memory_write_error_returns_error_to_model(t *
 
 	s := storetest.NewMemoryStore(t)
 	memStore := &failingMemoryStore{writeErr: fmt.Errorf("disk full")}
-	sess := New(t.Context, s, newTestModelClientFactoryWith(t, fake, memStore), "testuser")
+	sess := New(t.Context, s, newTestModelClientFactoryWith(t, fake, memStore))
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
+	attachTestUserClient(t, sess, "testuser")
 	sess.now = func() time.Time { return fixedTime }
 	ctx := t.Context()
 
@@ -3602,8 +3802,9 @@ func newTestSessionWithIndexedMemory(
 	)
 
 	m := memory.NewIndexedStoreFromDB(backing, chromem.NewDB(), embeddingFunc)
-	sess := New(t.Context, s, newTestModelClientFactoryWith(t, apiClient, m), "testuser")
+	sess := New(t.Context, s, newTestModelClientFactoryWith(t, apiClient, m))
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
+	attachTestUserClient(t, sess, "testuser")
 	sess.now = func() time.Time { return fixedTime }
 
 	return sess, s, m
@@ -4035,7 +4236,7 @@ func seedChannelWithMembers(t *testing.T, sess *Session, s *storemod.SQLiteStore
 
 	registerUserMembership(t, sess, name, members)
 
-	cw.Members = cloneMembersWithout(cw.Members, sess.UserInstance())
+	cw.Members = cloneMembersWithout(cw.Members, userInstance(t, sess))
 	require.NoError(t, s.SaveWindow(t.Context(), cw))
 }
 
@@ -4051,9 +4252,9 @@ func saveTestChannel(t *testing.T, sess *Session, s *storemod.SQLiteStore, w dom
 	t.Helper()
 
 	if cw, ok := w.(*domain.ChannelWindow); ok {
-		user := sess.UserInstance()
+		user := userInstance(t, sess)
 		if m, ok := cw.Members.GetByInstance(user); ok {
-			sess.UserInstance().MutateChannels(func(mm *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
+			userInstance(t, sess).MutateChannels(func(mm *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
 				if _, exists := mm.Get(cw.Name()); !exists {
 					mm.Set(cw.Name(), fixedTime)
 				}
@@ -4080,13 +4281,13 @@ func saveTestChannel(t *testing.T, sess *Session, s *storemod.SQLiteStore, w dom
 // Tests that want a different mode can override via the internal
 // `setUserMode` helper.
 func registerUserMembership(t *testing.T, sess *Session, name domain.ChannelName, members []domain.Nick) {
-	userNick := sess.UserNick()
+	userNick := userNick(t, sess)
 	for _, m := range members {
 		if m != userNick {
 			continue
 		}
 
-		sess.UserInstance().MutateChannels(func(mm *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
+		userInstance(t, sess).MutateChannels(func(mm *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
 			if _, ok := mm.Get(name); !ok {
 				mm.Set(name, fixedTime)
 			}
@@ -4166,8 +4367,9 @@ type instanceSpec struct {
 }
 
 // seedUserMessage appends a user message as a Message event and
-// returns the event and its protocol representation. Unlike
-// sess.SendMessage, this does not trigger background dispatch.
+// returns the event and its protocol representation. Unlike the
+// user-client's send path, this does not trigger background
+// dispatch.
 func seedUserMessage(t *testing.T, s *storemod.SQLiteStore, ch domain.ChannelName, body string) (domain.Message, protocol.IRCMessage) {
 	t.Helper()
 
@@ -4299,7 +4501,7 @@ func drainEvents(t *testing.T, sess *Session, doneCount int) []domain.Event {
 	done := 0
 
 	for {
-		evt, ok := nextEvent(sess)
+		evt, ok := nextEvent(t, sess)
 		if !ok {
 			t.Fatal("events channels closed before receiving all ModelDispatchDones")
 			return nil
@@ -4337,7 +4539,7 @@ func TestSession_Invite_with_explicit_persona_skips_pool(t *testing.T) {
 		require.NoError(t, err)
 
 		require.ElementsMatch(t, []domain.Event{
-			bootstrapModeChange(sess, bootAt),
+			bootstrapModeChange(t, sess, bootAt),
 			domain.ModelInvited{
 				Target:     "#dev",
 				Nick:       "fakenick",
@@ -4468,7 +4670,7 @@ func TestSendMessageAs_model_triggers_dispatch_to_other_models(t *testing.T) {
 		synctest.Wait()
 
 		require.ElementsMatch(t, []domain.Event{
-			bootstrapModeChange(sess, bootAt),
+			bootstrapModeChange(t, sess, bootAt),
 			domain.Message{
 				Target:     "#general",
 				From:       "alpha",
@@ -4521,7 +4723,7 @@ func TestAddModel_dispatches_invite_notification_to_model(t *testing.T) {
 		require.NoError(t, err)
 
 		require.ElementsMatch(t, []domain.Event{
-			bootstrapModeChange(sess, bootAt),
+			bootstrapModeChange(t, sess, bootAt),
 			domain.ModelInvited{
 				Target:     "#dev",
 				Nick:       "fakenick",
@@ -4606,15 +4808,16 @@ func TestSession_appendEvent_persistence_failure_is_silent(t *testing.T) {
 					errFailedAppend: fmt.Errorf("disk full"),
 				}
 
-				sess := New(t.Context, store, newTestModelClientFactory(t, &fakeAPIClient{}), "testuser")
+				sess := New(t.Context, store, newTestModelClientFactory(t, &fakeAPIClient{}))
 				t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
+				attachTestUserClient(t, sess, "testuser")
 				sess.now = func() time.Time { return fixedTime }
 
 				sess.appendEvent(t.Context(), tc.channel, tc.event)
 				synctest.Wait()
 
 				require.ElementsMatch(t, []domain.Event{
-					bootstrapModeChange(sess, bootAt),
+					bootstrapModeChange(t, sess, bootAt),
 				}, collectEmittedEvents(t, sess))
 			})
 		})
@@ -4633,7 +4836,8 @@ func TestSession_Shutdown_waits_for_dispatch_drain(t *testing.T) {
 	t.Cleanup(cancelSupply)
 
 	s := storetest.NewMemoryStore(t)
-	sess := New(func() context.Context { return supplyCtx }, s, newTestModelClientFactory(t, &fakeAPIClient{}), "testuser")
+	sess := New(func() context.Context { return supplyCtx }, s, newTestModelClientFactory(t, &fakeAPIClient{}))
+	attachTestUserClient(t, sess, "testuser")
 	sess.now = func() time.Time { return fixedTime }
 
 	seedInstance(t, sess, s, instanceSpec{
@@ -4656,7 +4860,8 @@ func TestSession_Shutdown_waits_for_dispatch_drain(t *testing.T) {
 // already-elapsed deadline to `Shutdown`.
 func TestSession_Shutdown_returns_deadline_err_when_drain_exceeds_bound(t *testing.T) {
 	s := storetest.NewMemoryStore(t)
-	sess := New(t.Context, s, newTestModelClientFactory(t, &fakeAPIClient{}), "testuser")
+	sess := New(t.Context, s, newTestModelClientFactory(t, &fakeAPIClient{}))
+	attachTestUserClient(t, sess, "testuser")
 	sess.now = func() time.Time { return fixedTime }
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 
@@ -4683,7 +4888,8 @@ func TestSession_Subscribe_refused_after_shutdown(t *testing.T) {
 	t.Cleanup(cancelSupply)
 
 	s := storetest.NewMemoryStore(t)
-	sess := New(func() context.Context { return supplyCtx }, s, newTestModelClientFactory(t, &fakeAPIClient{}), "testuser")
+	sess := New(func() context.Context { return supplyCtx }, s, newTestModelClientFactory(t, &fakeAPIClient{}))
+	attachTestUserClient(t, sess, "testuser")
 	sess.now = func() time.Time { return fixedTime }
 
 	cancelSupply()

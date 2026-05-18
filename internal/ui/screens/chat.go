@@ -25,6 +25,7 @@ import (
 	"github.com/laney/modeloff/internal/ui/components"
 	"github.com/laney/modeloff/internal/ui/theme"
 	uitimestamp "github.com/laney/modeloff/internal/ui/timestamp"
+	"github.com/laney/modeloff/internal/userclient"
 )
 
 // protocolEventMsg wraps a [protocol.Event] received from the
@@ -116,6 +117,7 @@ type ChatScreen struct {
 	baseContext func() context.Context
 	sess        *session.Session
 	mgr         *modelmanager.Manager
+	user        *userclient.UserClient
 	client      protocol.Client
 	cfgStore    config.Store
 	uiState     UIStateStore
@@ -183,7 +185,7 @@ type ChatScreen struct {
 // channel before the first frame pass `domain.KindStatus` too —
 // `SetChannelMsg` supplies the real kind atomically on the first
 // focus event.
-func NewChatScreen(baseContext func() context.Context, sess *session.Session, mgr *modelmanager.Manager, cfgStore config.Store, uiState UIStateStore, initialKind domain.ChannelKind) (ChatScreen, error) {
+func NewChatScreen(baseContext func() context.Context, sess *session.Session, mgr *modelmanager.Manager, user *userclient.UserClient, cfgStore config.Store, uiState UIStateStore, initialKind domain.ChannelKind) (ChatScreen, error) {
 	active := domain.ChannelName("")
 	channels := set.NewSorted[*Window]()
 	scrollbackMu := &sync.RWMutex{}
@@ -201,7 +203,7 @@ func NewChatScreen(baseContext func() context.Context, sess *session.Session, mg
 	}
 
 	sidebar := components.NewChannelSidebar()
-	chatView := components.NewChatView[chatcmd.CompletionContext](events, "", initialKind, sess.UserNick(), "")
+	chatView := components.NewChatView[chatcmd.CompletionContext](events, "", initialKind, user.Nick(), "")
 	layout := components.NewMainLayout(sidebar, chatView)
 	layout.NickList = components.NewNickList(domain.NewMemberList())
 
@@ -212,7 +214,8 @@ func NewChatScreen(baseContext func() context.Context, sess *session.Session, mg
 		baseContext:     baseContext,
 		sess:            sess,
 		mgr:             mgr,
-		client:          sess.User(),
+		user:            user,
+		client:          user,
 		cfgStore:        cfgStore,
 		uiState:         uiState,
 		channels:        channels,
@@ -221,7 +224,7 @@ func NewChatScreen(baseContext func() context.Context, sess *session.Session, mg
 		liveModelsState: &liveModelsState,
 		layout:          layout,
 		keyMap:          components.DefaultChatScreenKeyMap,
-		checklist:       NewWelcomeChecklist(sess.UserNick(), mgr.HasAPIKey()),
+		checklist:       NewWelcomeChecklist(user.Nick(), mgr.HasAPIKey()),
 		pacedQueue:      map[domain.ChannelName][]domain.Message{},
 		dispatching:     map[*domain.Instance]bool{},
 		scrollbackMu:    scrollbackMu,
@@ -323,7 +326,7 @@ func (s ChatScreen) Init() tea.Cmd {
 		msgCmd(components.CompleterMsg{Completer: s.completer}),
 		msgCmd(components.HighlightWordsMsg{
 			Words:    cfg.HighlightWords,
-			UserNick: s.sess.UserNick(),
+			UserNick: s.user.Nick(),
 		}),
 		msgCmd(components.TimestampFormatMsg{
 			Format: cfg.TimestampFormat,
@@ -356,7 +359,7 @@ func (s ChatScreen) Init() tea.Cmd {
 // timestamp neither steals the focus nor loses it — the user's
 // most recent deliberate channel wins.
 func (s ChatScreen) bootstrapFromSession() []tea.Cmd {
-	channels := s.sess.UserInstance().Channels()
+	channels := s.user.Instance().Channels()
 	if channels == nil || channels.Len() == 0 {
 		return nil
 	}
@@ -562,7 +565,7 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 			}),
 			msgCmd(components.HighlightWordsMsg{
 				Words:    msg.Words,
-				UserNick: s.sess.UserNick(),
+				UserNick: s.user.Nick(),
 			}),
 		)
 
@@ -754,7 +757,7 @@ func (s ChatScreen) completionSet() command.CompletionSet[chatcmd.CompletionCont
 			ChannelMembers: s.activeChannelInstances,
 			ActiveMembers:  func() iter.Seq[domain.Nick] { return s.activeMemberNicks() },
 			ActiveChannel:  func() domain.ChannelName { return *s.active },
-			UserNick:       func() domain.Nick { return s.sess.UserNick() },
+			UserNick:       func() domain.Nick { return s.user.Nick() },
 			LiveModels: func() iter.Seq[chatcmd.ModelOption] {
 				return slices.Values(*s.liveModels)
 			},
@@ -953,7 +956,7 @@ func (s ChatScreen) handleQuitRequested(msg ui.QuitRequestedMsg) (ui.Model, tea.
 	cmds := []tea.Cmd{
 		msgCmd(components.InputLockedMsg{Locked: true}),
 		func() tea.Msg {
-			resp, err := s.sess.User().Send(s.baseContext(), protocol.Quit{Reason: message})
+			resp, err := s.user.Send(s.baseContext(), protocol.Quit{Reason: message})
 			if err == nil {
 				err = resp.Err
 			}
@@ -973,7 +976,7 @@ func (s ChatScreen) switchChannel(ch domain.ChannelName) tea.Cmd {
 		// channel; for ones already in our local cache, switching
 		// view is a buffer swap, not a backend round-trip.
 		if !exists {
-			if err := s.sess.Join(s.baseContext(), string(ch)); err != nil {
+			if err := s.user.Join(s.baseContext(), ch); err != nil {
 				return domain.ErrorEvent{Operation: "switch", Err: err, At: time.Now()}
 			}
 		}
@@ -986,7 +989,8 @@ func (s ChatScreen) switchChannel(ch domain.ChannelName) tea.Cmd {
 // active channel the user is on the welcome screen; the hint
 // directs them to join one. `&modeloff` is server-narrated only
 // and refuses chat with a hint that points at the right command.
-// Everything else flows through to `sess.SendMessage`.
+// Everything else flows through to the user-client's
+// [userclient.UserClient.SendMessage].
 func (s ChatScreen) handleMessageSubmit(msg components.MessageSubmitMsg) (ui.Model, tea.Cmd) {
 	if *s.active == "" {
 		return s, s.logAndShow(domain.UsageHint{
@@ -1007,7 +1011,7 @@ func (s ChatScreen) handleMessageSubmit(msg components.MessageSubmitMsg) (ui.Mod
 
 func (s ChatScreen) sendMessage(text string) tea.Cmd {
 	return func() tea.Msg {
-		msg, err := s.sess.SendMessage(s.baseContext(), *s.active, text)
+		msg, err := s.user.SendMessage(s.baseContext(), *s.active, text)
 		if err != nil {
 			return domain.ErrorEvent{Operation: "send", Err: err, At: time.Now()}
 		}

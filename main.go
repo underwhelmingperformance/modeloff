@@ -25,6 +25,7 @@ import (
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/chatcmd"
 	"github.com/laney/modeloff/internal/ui/screens"
+	"github.com/laney/modeloff/internal/userclient"
 )
 
 func main() {
@@ -79,7 +80,13 @@ func main() {
 		BaseContext:   baseContext,
 	})
 
-	sess := session.New(baseContext, dataStore, mgr, domain.Nick(cfg.UserNick))
+	sess := session.New(baseContext, dataStore, mgr)
+
+	user := userclient.New(domain.Nick(cfg.UserNick), sess, dataStore)
+	if err := user.Attach(appCtx); err != nil {
+		fmt.Fprintf(os.Stderr, "error attaching user client: %v\n", err)
+		os.Exit(1)
+	}
 
 	if err := mgr.Start(appCtx, sess); err != nil {
 		slog.Warn("attach boot model clients", "error", err)
@@ -91,7 +98,7 @@ func main() {
 		channelCount = len(autojoin)
 	}
 
-	chatScreen, err := screens.NewChatScreen(baseContext, sess, mgr, cfgStore, dataStore, domain.KindStatus)
+	chatScreen, err := screens.NewChatScreen(baseContext, sess, mgr, user, cfgStore, dataStore, domain.KindStatus)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error building command grammar: %v\n", err)
 		os.Exit(1)
@@ -105,6 +112,7 @@ func main() {
 		Nick:         cfg.UserNick,
 		Session:      sess,
 		Manager:      mgr,
+		User:         user,
 		BaseContext:  baseContext,
 	}, chatScreen)
 

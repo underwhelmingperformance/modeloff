@@ -89,27 +89,27 @@ func TestSession_Handle_delegates(t *testing.T) {
 			cmd:    protocol.Join{Channel: "#general"},
 			want:   protocol.Response{},
 			verify: func(t *testing.T, sess *Session, _ *storemod.SQLiteStore) {
-				_, ok := sess.user.Channels().Get("#general")
+				_, ok := userInstance(t, sess).Channels().Get("#general")
 				require.True(t, ok)
 			},
 		},
 		{
 			name: "part removes user from channel",
 			setup: func(t *testing.T, sess *Session, _ *storemod.SQLiteStore) {
-				require.NoError(t, sess.joinAs(t.Context(), sess.user, "#general", ""))
+				require.NoError(t, sess.joinAs(t.Context(), userInstance(t, sess), "#general", ""))
 			},
 			client: userClient,
 			cmd:    protocol.Part{Channel: "#general", Reason: "bye"},
 			want:   protocol.Response{},
 			verify: func(t *testing.T, sess *Session, _ *storemod.SQLiteStore) {
-				_, ok := sess.user.Channels().Get("#general")
+				_, ok := userInstance(t, sess).Channels().Get("#general")
 				require.False(t, ok)
 			},
 		},
 		{
 			name: "privmsg sends to channel",
 			setup: func(t *testing.T, sess *Session, _ *storemod.SQLiteStore) {
-				require.NoError(t, sess.joinAs(t.Context(), sess.user, "#general", ""))
+				require.NoError(t, sess.joinAs(t.Context(), userInstance(t, sess), "#general", ""))
 			},
 			client: userClient,
 			cmd:    protocol.PrivMsg{Target: "#general", Body: "hello"},
@@ -126,7 +126,7 @@ func TestSession_Handle_delegates(t *testing.T) {
 		{
 			name: "action sends action message to channel",
 			setup: func(t *testing.T, sess *Session, _ *storemod.SQLiteStore) {
-				require.NoError(t, sess.joinAs(t.Context(), sess.user, "#general", ""))
+				require.NoError(t, sess.joinAs(t.Context(), userInstance(t, sess), "#general", ""))
 			},
 			client: userClient,
 			cmd:    protocol.Action{Target: "#general", Body: "waves"},
@@ -144,7 +144,7 @@ func TestSession_Handle_delegates(t *testing.T) {
 		{
 			name: "topic updates channel topic",
 			setup: func(t *testing.T, sess *Session, _ *storemod.SQLiteStore) {
-				require.NoError(t, sess.joinAs(t.Context(), sess.user, "#general", ""))
+				require.NoError(t, sess.joinAs(t.Context(), userInstance(t, sess), "#general", ""))
 			},
 			client: userClient,
 			cmd:    protocol.Topic{Channel: "#general", Body: "discuss"},
@@ -158,7 +158,7 @@ func TestSession_Handle_delegates(t *testing.T) {
 		{
 			name: "invite adds known nick to channel",
 			setup: func(t *testing.T, sess *Session, s *storemod.SQLiteStore) {
-				require.NoError(t, sess.joinAs(t.Context(), sess.user, "#general", ""))
+				require.NoError(t, sess.joinAs(t.Context(), userInstance(t, sess), "#general", ""))
 				seedInstance(t, sess, s, instanceSpec{Nick: "botty", ModelID: "test/model"})
 			},
 			client: userClient,
@@ -174,13 +174,13 @@ func TestSession_Handle_delegates(t *testing.T) {
 		{
 			name: "kick removes nick from channel",
 			setup: func(t *testing.T, sess *Session, s *storemod.SQLiteStore) {
-				require.NoError(t, sess.joinAs(t.Context(), sess.user, "#general", ""))
+				require.NoError(t, sess.joinAs(t.Context(), userInstance(t, sess), "#general", ""))
 				inst := seedInstance(t, sess, s, instanceSpec{
 					Nick:     "botty",
 					ModelID:  "test/model",
 					Channels: testChannels("#general"),
 				})
-				require.NoError(t, sess.attachInstanceToChannel(t.Context(), "#general", inst, sess.user))
+				require.NoError(t, sess.attachInstanceToChannel(t.Context(), "#general", inst, userInstance(t, sess)))
 			},
 			client: userClient,
 			cmd:    protocol.Kick{Nick: "botty", Channel: "#general"},
@@ -198,7 +198,7 @@ func TestSession_Handle_delegates(t *testing.T) {
 			cmd:    protocol.Nick{New: "renamed"},
 			want:   protocol.Response{},
 			verify: func(t *testing.T, sess *Session, _ *storemod.SQLiteStore) {
-				require.Equal(t, domain.Nick("renamed"), sess.user.Nick())
+				require.Equal(t, domain.Nick("renamed"), userInstance(t, sess).Nick())
 			},
 		},
 		{
@@ -227,7 +227,7 @@ func TestSession_Handle_delegates(t *testing.T) {
 		{
 			name: "addmodel delegates to addModelAs for operators",
 			setup: func(t *testing.T, sess *Session, _ *storemod.SQLiteStore) {
-				require.NoError(t, sess.Join(t.Context(), "#dev"))
+				require.NoError(t, userJoin(t.Context(), t, sess, "#dev"))
 			},
 			client: userClient,
 			cmd:    protocol.AddModel{Channel: "#dev", Model: "anthropic/claude", Persona: "p"},

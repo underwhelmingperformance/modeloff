@@ -40,7 +40,7 @@ func (s *Session) joinAs(ctx context.Context, actor *domain.Instance, ch domain.
 	span.SetAttributes(attribute.String(observability.AttrInstanceID, string(actor.ID())))
 
 	now := s.now()
-	isUser := actor == s.user
+	isUser := actor.ID() == ""
 
 	window, created, err := s.ensureChannelWindowWithActor(ctx, ch, actor, now)
 	if err != nil {
@@ -86,7 +86,7 @@ func (s *Session) joinAs(ctx context.Context, actor *domain.Instance, ch domain.
 		// the join itself does not leave the channel showing as unread.
 		// `last_channel` persistence is the UI's concern and lands when
 		// the chat screen receives a `ChannelActiveMsg`.
-		if err := s.MarkRead(ctx, ch); err != nil {
+		if err := s.markRead(ctx, ch); err != nil {
 			return fmt.Errorf("mark read: %w", err)
 		}
 	}
@@ -209,7 +209,7 @@ func (s *Session) partAs(ctx context.Context, actor *domain.Instance, ch domain.
 		return fmt.Errorf("channel not found: %w", err)
 	}
 
-	isUser := actor == s.user
+	isUser := actor.ID() == ""
 
 	span.SetAttributes(attribute.String(observability.AttrInstanceID, string(actor.ID())))
 
@@ -260,7 +260,7 @@ func (s *Session) partAs(ctx context.Context, actor *domain.Instance, ch domain.
 // instance row — the dispatcher reaps the subscription separately
 // via [Session.reapClient].
 func (s *Session) quitAs(ctx context.Context, actor *domain.Instance, message string) (retErr error) {
-	if actor == s.user {
+	if actor.ID() == "" {
 		return s.userQuit(ctx, message)
 	}
 
@@ -339,7 +339,7 @@ func (s *Session) changeNickAs(ctx context.Context, actor *domain.Instance, newN
 		return errWithKind(domain.NickInUseError{Nick: newNick, At: s.now()}, observability.ErrorKindValidation)
 	}
 
-	isUser := actor == s.user
+	isUser := actor.ID() == ""
 
 	actor.SetNick(newNick)
 
@@ -547,7 +547,7 @@ func (s *Session) kickAs(ctx context.Context, actor, target *domain.Instance, ch
 		m.Delete(ch)
 	})
 
-	if target != s.user {
+	if target.ID() != "" {
 		if err := s.store.SaveInstance(ctx, target); err != nil {
 			return fmt.Errorf("save instance: %w", err)
 		}
@@ -608,7 +608,7 @@ func (s *Session) inviteAs(ctx context.Context, actor *domain.Instance, target d
 		return fmt.Errorf("save channel: %w", err)
 	}
 
-	if actor == s.user {
+	if actor.ID() == "" {
 		inst, err := s.store.ResolveNick(ctx, target)
 		if err == nil {
 			span.SetAttributes(attribute.String(observability.AttrInstanceID, string(inst.ID())))
@@ -647,9 +647,6 @@ func (s *Session) setUserModeAs(ctx context.Context, by domain.Nick, target *ser
 	}
 
 	targetInst := target.instance
-	if targetInst == nil {
-		targetInst = s.user
-	}
 
 	ctx, span := s.startSpan(ctx, "session.set_user_mode",
 		attribute.String(observability.AttrOperation, "session.set_user_mode"),
@@ -1061,7 +1058,7 @@ func (s *Session) addModelAs(
 // authority. The reap of the target's subscription happens in
 // the dispatcher too, after this returns.
 func (s *Session) killAs(ctx context.Context, oper, target *domain.Instance, reason string) error {
-	if target == s.user {
+	if target.ID() == "" {
 		return fmt.Errorf("KILL cannot target the user-client")
 	}
 

@@ -118,7 +118,7 @@ func TestChatScreen_keybind_toggle_nick_list_is_logged(t *testing.T) {
 	logs := captureLogs(t)
 
 	h := newTestSession(t)
-	uitest.SeedChannel(t, h.sess, "#general")
+	uitest.SeedChannel(t, h.user, "#general")
 
 	tm := newChatApp(t, h)
 	tm.WaitFor("#general")

@@ -94,7 +94,7 @@ func (s ChatScreen) scrollbackUpdatedCmd() tea.Cmd {
 func (s ChatScreen) bufferEvent(evt domain.Event) {
 	switch e := evt.(type) {
 	case domain.Message:
-		key, ok := e.RoutingKey(s.sess.UserInstance().ID())
+		key, ok := e.RoutingKey(s.user.Instance().ID())
 		if !ok || key == "" {
 			return
 		}
@@ -384,7 +384,7 @@ func (s ChatScreen) handleNamesReply(msg domain.NamesReplyEvent) (ui.Model, tea.
 }
 
 func (s ChatScreen) handleJoinEvent(msg domain.Join) (ui.Model, tea.Cmd) {
-	isUser := msg.Instance == s.sess.UserInstance()
+	isUser := msg.Instance == s.user.Instance()
 
 	w, channelKnown := s.windowByName(msg.Target)
 
@@ -459,7 +459,7 @@ func (s ChatScreen) handleModeChangeEvent(msg domain.ModeChange) (ui.Model, tea.
 // from VisibleCommands so the /help slice and the completion
 // popover both reflect the new capability state on next render.
 func (s ChatScreen) handleUserModeChangeEvent(msg domain.ModeChange) (ui.Model, tea.Cmd) {
-	if msg.InstanceID != s.sess.UserInstance().ID() {
+	if msg.InstanceID != s.user.Instance().ID() {
 		return s, nil
 	}
 
@@ -482,7 +482,7 @@ func (s ChatScreen) handlePartEvent(msg domain.Part) (ui.Model, tea.Cmd) {
 	// pending paced messages queued for it. Already-scheduled ticks
 	// for the parted channel's queue will no-op via
 	// deliverNextPaced's empty-queue branch when they fire.
-	if msg.Instance == s.sess.UserInstance() {
+	if msg.Instance == s.user.Instance() {
 		s.channels.Remove(windowKey(msg.Target))
 		delete(s.pacedQueue, msg.Target)
 		s.checklist.channelCount = s.realChannelCount()
@@ -631,14 +631,14 @@ func (s ChatScreen) handleNickChangeEvent(msg domain.NickChange, targets []domai
 			}
 		}
 
-		if msg.Instance == s.sess.UserInstance() {
+		if msg.Instance == s.user.Instance() {
 			cmds = append(cmds, msgCmd(components.UserNickMsg{Nick: msg.NewNick}))
 		}
 
 		nickCfg, _ := s.loadConfig()
 		cmds = append(cmds, msgCmd(components.HighlightWordsMsg{
 			Words:    nickCfg.HighlightWords,
-			UserNick: s.sess.UserNick(),
+			UserNick: s.user.Nick(),
 		}))
 	}
 
@@ -707,7 +707,7 @@ func (s ChatScreen) handleModelKickedEvent(msg domain.ModelKicked) (ui.Model, te
 // queue: the first message in an empty queue delivers immediately,
 // subsequent messages drain at [pacedInterval] cadence.
 func (s ChatScreen) handleMessageEvent(msg domain.Message) (ui.Model, tea.Cmd) {
-	key, ok := msg.RoutingKey(s.sess.UserInstance().ID())
+	key, ok := msg.RoutingKey(s.user.Instance().ID())
 	if !ok {
 		// Foreign DM (model-to-model traffic the user is not a
 		// party to). Not surfaced in the user's UI.
@@ -791,7 +791,7 @@ func (s ChatScreen) handleDMOpenedMsg(msg chatcmd.DMOpenedMsg) (ui.Model, tea.Cm
 // persisted [domain.Message] as a tea.Msg for local render.
 func (s ChatScreen) sendMessageCmd(target domain.ChannelName, body string) tea.Cmd {
 	return func() tea.Msg {
-		msg, err := s.sess.SendMessage(s.baseContext(), target, body)
+		msg, err := s.user.SendMessage(s.baseContext(), target, body)
 		if err != nil {
 			return domain.ErrorEvent{Operation: "msg", Err: err, At: time.Now()}
 		}
@@ -951,7 +951,7 @@ func (s ChatScreen) deliverNextPaced(msg deliverNextPacedMsg) (ui.Model, tea.Cmd
 func (s ChatScreen) isHighlight(body string) bool {
 	cfg, _ := s.loadConfig()
 
-	return components.ContainsHighlightWord(body, cfg.HighlightWords, s.sess.UserNick())
+	return components.ContainsHighlightWord(body, cfg.HighlightWords, s.user.Nick())
 }
 
 func (s ChatScreen) handleLiveModelsLoaded(msg liveModelsLoadedMsg) (ui.Model, tea.Cmd) {

@@ -24,6 +24,7 @@ import (
 	"github.com/laney/modeloff/internal/session"
 	storemod "github.com/laney/modeloff/internal/store"
 	"github.com/laney/modeloff/internal/store/storetest"
+	"github.com/laney/modeloff/internal/userclient"
 )
 
 // managerFakeAPI is the integration-test fake. The callbacks are
@@ -170,7 +171,7 @@ func newTestSessionWithManager(
 	t *testing.T,
 	apiClient api.Client,
 	apiKey string,
-) (*session.Session, *storemod.SQLiteStore, *modelmanager.Manager) {
+) (*session.Session, *storemod.SQLiteStore, *modelmanager.Manager, *userclient.UserClient) {
 	t.Helper()
 
 	store := storetest.NewMemoryStore(t)
@@ -183,18 +184,21 @@ func newTestSessionWithManager(
 	})
 	t.Cleanup(mgr.DetachAll)
 
-	sess := session.New(t.Context, store, mgr, "testuser")
+	sess := session.New(t.Context, store, mgr)
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 
-	return sess, store, mgr
+	user := userclient.New("testuser", sess, store)
+	require.NoError(t, user.Attach(t.Context()))
+
+	return sess, store, mgr, user
 }
 
-// seedChannel calls `Session.Join` to create the channel and grant
-// the user the channel-creator `+o` rank.
-func seedChannel(t *testing.T, sess *session.Session, ch domain.ChannelName) {
+// seedChannel JOINs the channel via the user-client to create it
+// and grant the user the channel-creator `+o` rank.
+func seedChannel(t *testing.T, user *userclient.UserClient, ch domain.ChannelName) {
 	t.Helper()
 
-	require.NoError(t, sess.Join(t.Context(), string(ch)))
+	require.NoError(t, user.Join(t.Context(), ch))
 }
 
 // seedStoreInstance writes a model-instance row directly to the store
@@ -218,10 +222,10 @@ func seedStoreInstance(t *testing.T, store *storemod.SQLiteStore, nick domain.Ni
 
 // addModelViaWire sends an [protocol.AddModel] through the
 // user-client.
-func addModelViaWire(ctx context.Context, t testing.TB, sess *session.Session, ch domain.ChannelName, model domain.ModelID, persona string) error {
+func addModelViaWire(ctx context.Context, t testing.TB, user *userclient.UserClient, ch domain.ChannelName, model domain.ModelID, persona string) error {
 	t.Helper()
 
-	resp, err := sess.User().Send(ctx, protocol.AddModel{
+	resp, err := user.Send(ctx, protocol.AddModel{
 		Channel: ch,
 		Model:   model,
 		Persona: persona,
@@ -237,12 +241,12 @@ func addModelViaWire(ctx context.Context, t testing.TB, sess *session.Session, c
 // user-client subscription's protocol bus. Callers under
 // `synctest.Test` must `synctest.Wait()` first to make sure all
 // producer goroutines have run.
-func collectUserEvents(sess *session.Session) []domain.Event {
+func collectUserEvents(user *userclient.UserClient) []domain.Event {
 	var events []domain.Event
 
 	for {
 		select {
-		case delivery := <-sess.User().Events():
+		case delivery := <-user.Events():
 			events = append(events, delivery.Event)
 		default:
 			return events
@@ -255,10 +259,10 @@ func collectUserEvents(sess *session.Session) []domain.Event {
 // helpers to discard the bootstrap mode change, the user JOIN, and
 // the NamesReply that the seed produced, so the subsequent
 // assertion sees only the AddModel-emitted events.
-func drainUserEvents(sess *session.Session) {
+func drainUserEvents(user *userclient.UserClient) {
 	for {
 		select {
-		case <-sess.User().Events():
+		case <-user.Events():
 		default:
 			return
 		}
@@ -278,17 +282,17 @@ func TestSession_AddModel_retries_on_nick_collision(t *testing.T) {
 			},
 		}
 
-		sess, store, _ := newTestSessionWithManager(t, fake, "")
+		_, store, _, user := newTestSessionWithManager(t, fake, "")
 		ctx := t.Context()
 
 		seedStoreInstance(t, store, "taken", "test/model")
 		seedStoreInstance(t, store, "alsotaken", "test/model")
-		seedChannel(t, sess, "#dev")
+		seedChannel(t, user, "#dev")
 		synctest.Wait()
-		drainUserEvents(sess)
+		drainUserEvents(user)
 
 		emittedAt := time.Now()
-		require.NoError(t, addModelViaWire(ctx, t, sess, "#dev", "test/model", "Helpful assistant"))
+		require.NoError(t, addModelViaWire(ctx, t, user, "#dev", "test/model", "Helpful assistant"))
 		synctest.Wait()
 
 		fresh, err := store.ResolveNick(ctx, "fresh")
@@ -305,7 +309,7 @@ func TestSession_AddModel_retries_on_nick_collision(t *testing.T) {
 			},
 			domain.ModelDispatchStarted{Instance: fresh, At: emittedAt},
 			domain.ModelDispatchDone{Instance: fresh, At: emittedAt},
-		}, collectUserEvents(sess))
+		}, collectUserEvents(user))
 
 		require.Equal(t, [][]domain.Nick{
 			nil,
@@ -323,13 +327,13 @@ func TestSession_AddModel_gives_up_after_max_attempts(t *testing.T) {
 		},
 	}
 
-	sess, store, _ := newTestSessionWithManager(t, fake, "")
+	_, store, _, user := newTestSessionWithManager(t, fake, "")
 	ctx := t.Context()
 
 	seedStoreInstance(t, store, "taken", "test/model")
-	seedChannel(t, sess, "#dev")
+	seedChannel(t, user, "#dev")
 
-	err := addModelViaWire(ctx, t, sess, "#dev", "test/model", "Helpful assistant")
+	err := addModelViaWire(ctx, t, user, "#dev", "test/model", "Helpful assistant")
 	require.EqualError(t, err,
 		"generate nick: 3 attempts exhausted, all suggestions collided")
 }
@@ -341,29 +345,29 @@ func TestSession_AddModelGenerateNickError(t *testing.T) {
 		},
 	}
 
-	sess, _, _ := newTestSessionWithManager(t, fake, "")
+	_, _, _, user := newTestSessionWithManager(t, fake, "")
 	ctx := t.Context()
 
-	seedChannel(t, sess, "#dev")
+	seedChannel(t, user, "#dev")
 
-	require.Error(t, addModelViaWire(ctx, t, sess, "#dev", "anthropic/claude-3-haiku", ""))
+	require.Error(t, addModelViaWire(ctx, t, user, "#dev", "anthropic/claude-3-haiku", ""))
 }
 
 func TestSession_AddModel_creates_new_instance_per_invocation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		sess, store, _ := newTestSessionWithManager(t, &managerFakeAPI{}, "")
+		_, store, _, user := newTestSessionWithManager(t, &managerFakeAPI{}, "")
 		ctx := t.Context()
 
-		seedChannel(t, sess, "#general")
-		seedChannel(t, sess, "#random")
+		seedChannel(t, user, "#general")
+		seedChannel(t, user, "#random")
 		synctest.Wait()
-		drainUserEvents(sess)
+		drainUserEvents(user)
 
 		emittedAt := time.Now()
 
-		require.NoError(t, addModelViaWire(ctx, t, sess, "#general", "test/model", "Helpful assistant"))
+		require.NoError(t, addModelViaWire(ctx, t, user, "#general", "test/model", "Helpful assistant"))
 		synctest.Wait()
-		require.NoError(t, addModelViaWire(ctx, t, sess, "#random", "test/model", ""))
+		require.NoError(t, addModelViaWire(ctx, t, user, "#random", "test/model", ""))
 		synctest.Wait()
 
 		// The default fake `GenerateNick` returns "fakenick" first and
@@ -396,7 +400,7 @@ func TestSession_AddModel_creates_new_instance_per_invocation(t *testing.T) {
 			},
 			domain.ModelDispatchStarted{Instance: second, At: emittedAt},
 			domain.ModelDispatchDone{Instance: second, At: emittedAt},
-		}, collectUserEvents(sess))
+		}, collectUserEvents(user))
 
 		// Each invocation produces a fresh `*Instance` with its own id.
 		require.NotEqual(t, first.ID(), second.ID())
@@ -422,15 +426,15 @@ func TestSession_Invite_without_persona_assigns_from_pool(t *testing.T) {
 			},
 		}
 
-		sess, store, _ := newTestSessionWithManager(t, fake, "")
+		_, store, _, user := newTestSessionWithManager(t, fake, "")
 		ctx := t.Context()
 
-		seedChannel(t, sess, "#dev")
+		seedChannel(t, user, "#dev")
 		synctest.Wait()
-		drainUserEvents(sess)
+		drainUserEvents(user)
 
 		emittedAt := time.Now()
-		require.NoError(t, addModelViaWire(ctx, t, sess, "#dev", "anthropic/claude-3-haiku", ""))
+		require.NoError(t, addModelViaWire(ctx, t, user, "#dev", "anthropic/claude-3-haiku", ""))
 		synctest.Wait()
 
 		inst, err := store.ResolveNick(ctx, "fakenick")
@@ -447,7 +451,7 @@ func TestSession_Invite_without_persona_assigns_from_pool(t *testing.T) {
 			},
 			domain.ModelDispatchStarted{Instance: inst, At: emittedAt},
 			domain.ModelDispatchDone{Instance: inst, At: emittedAt},
-		}, collectUserEvents(sess))
+		}, collectUserEvents(user))
 
 		require.NotEmpty(t, inst.Persona())
 
@@ -467,16 +471,16 @@ func TestSession_AddModel_short_circuits_after_ListModels_failure(t *testing.T) 
 	upstreamErr := fmt.Errorf("upstream unreachable")
 	client := &listModelsCountingClient{err: upstreamErr}
 
-	sess, _, mgr := newTestSessionWithManager(t, client, "test-key")
+	_, _, mgr, user := newTestSessionWithManager(t, client, "test-key")
 	ctx := t.Context()
 
-	seedChannel(t, sess, "#dev")
+	seedChannel(t, user, "#dev")
 
 	_, err := mgr.ListModels(ctx)
 	require.ErrorIs(t, err, upstreamErr)
 	require.Equal(t, modelmanager.ListStateFailed, mgr.ListState())
 
-	addErr := addModelViaWire(ctx, t, sess, "#dev", "anthropic/claude-3-haiku", "")
+	addErr := addModelViaWire(ctx, t, user, "#dev", "anthropic/claude-3-haiku", "")
 	require.ErrorIs(t, addErr, modelclient.ErrModelListUnavailable)
 
 	require.Equal(t, int32(1), client.calls.Load(),
@@ -500,13 +504,13 @@ func TestSession_AddModel_short_circuits_after_ListModels_failure(t *testing.T) 
 func TestSession_AddModel_lazy_loads_when_state_none(t *testing.T) {
 	client := &listModelsCountingClient{infos: []api.ModelInfo{{ID: "anthropic/claude-3-haiku"}}}
 
-	sess, _, mgr := newTestSessionWithManager(t, client, "test-key")
+	_, _, mgr, user := newTestSessionWithManager(t, client, "test-key")
 	ctx := t.Context()
 
-	seedChannel(t, sess, "#dev")
+	seedChannel(t, user, "#dev")
 
 	require.Equal(t, modelmanager.ListStateNone, mgr.ListState())
-	require.NoError(t, addModelViaWire(ctx, t, sess, "#dev", "anthropic/claude-3-haiku", ""))
+	require.NoError(t, addModelViaWire(ctx, t, user, "#dev", "anthropic/claude-3-haiku", ""))
 	require.Equal(t, modelmanager.ListStateOK, mgr.ListState())
 	require.Equal(t, int32(1), client.calls.Load())
 }
@@ -514,16 +518,16 @@ func TestSession_AddModel_lazy_loads_when_state_none(t *testing.T) {
 func TestSession_AddModel_returns_unsupported_when_model_missing_from_cache(t *testing.T) {
 	client := &listModelsCountingClient{infos: []api.ModelInfo{{ID: "openai/gpt-5"}}}
 
-	sess, _, mgr := newTestSessionWithManager(t, client, "test-key")
+	_, _, mgr, user := newTestSessionWithManager(t, client, "test-key")
 	ctx := t.Context()
 
-	seedChannel(t, sess, "#dev")
+	seedChannel(t, user, "#dev")
 
 	_, err := mgr.ListModels(ctx)
 	require.NoError(t, err)
 	require.Equal(t, modelmanager.ListStateOK, mgr.ListState())
 
-	addErr := addModelViaWire(ctx, t, sess, "#dev", "anthropic/claude-3-haiku", "")
+	addErr := addModelViaWire(ctx, t, user, "#dev", "anthropic/claude-3-haiku", "")
 	var unsupported domain.UnsupportedModelError
 	require.ErrorAs(t, addErr, &unsupported)
 	require.Equal(t, domain.ModelID("anthropic/claude-3-haiku"), unsupported.ModelID)
@@ -533,17 +537,17 @@ func TestSession_AddModel_short_circuits_when_lazy_load_fails(t *testing.T) {
 	upstreamErr := fmt.Errorf("upstream unreachable")
 	client := &listModelsCountingClient{err: upstreamErr}
 
-	sess, _, mgr := newTestSessionWithManager(t, client, "test-key")
+	_, _, mgr, user := newTestSessionWithManager(t, client, "test-key")
 	ctx := t.Context()
 
-	seedChannel(t, sess, "#dev")
+	seedChannel(t, user, "#dev")
 
-	first := addModelViaWire(ctx, t, sess, "#dev", "anthropic/claude-3-haiku", "")
+	first := addModelViaWire(ctx, t, user, "#dev", "anthropic/claude-3-haiku", "")
 	require.ErrorIs(t, first, upstreamErr,
 		"first AddModel should surface the underlying upstream error from the lazy load")
 	require.Equal(t, modelmanager.ListStateFailed, mgr.ListState())
 
-	second := addModelViaWire(ctx, t, sess, "#dev", "anthropic/claude-3-haiku", "")
+	second := addModelViaWire(ctx, t, user, "#dev", "anthropic/claude-3-haiku", "")
 	require.ErrorIs(t, second, modelclient.ErrModelListUnavailable)
 	require.Equal(t, int32(1), client.calls.Load(),
 		"second AddModel must short-circuit and not re-hit ListModels")

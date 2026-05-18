@@ -18,7 +18,7 @@ func (s ChatScreen) runContext() chatcmd.Context {
 		Manager: s.mgr,
 		Config:  s.cfgStore,
 		Active:  *s.active,
-		Actor:   s.sess.UserInstance(),
+		Actor:   s.user.Instance(),
 		Client:  s.client,
 	}
 }
@@ -62,7 +62,7 @@ func (s ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
 
 func (s ChatScreen) handlePoke() tea.Cmd {
 	return func() tea.Msg {
-		if err := s.sess.Poke(s.baseContext()); err != nil {
+		if err := s.user.Poke(s.baseContext()); err != nil {
 			return errorEvent("poke", err)
 		}
 

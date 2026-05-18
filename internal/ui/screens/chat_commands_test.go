@@ -16,6 +16,7 @@ import (
 	uipkg "github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/chatcmd"
 	"github.com/laney/modeloff/internal/ui/uitest"
+	"github.com/laney/modeloff/internal/userclient"
 )
 
 type stubAPI struct{}
@@ -55,7 +56,7 @@ func (stubAPI) GeneratePersonas(context.Context, domain.ModelID) ([]domain.Perso
 	return nil, nil
 }
 
-func newTestSession(t *testing.T) (*session.Session, *modelmanager.Manager) {
+func newTestSession(t *testing.T) (*session.Session, *modelmanager.Manager, *userclient.UserClient) {
 	t.Helper()
 
 	s := storetest.NewMemoryStore(t)
@@ -69,8 +70,8 @@ func newTestSession(t *testing.T) (*session.Session, *modelmanager.Manager) {
 // read as a single call.
 func newScreenFixture(t *testing.T) ChatScreen {
 	t.Helper()
-	sess, mgr := newTestSession(t)
-	screen, err := NewChatScreen(t.Context, sess, mgr, nil, nil, domain.KindStatus)
+	sess, mgr, user := newTestSession(t)
+	screen, err := NewChatScreen(t.Context, sess, mgr, user, nil, nil, domain.KindStatus)
 	require.NoError(t, err)
 	return screen
 }

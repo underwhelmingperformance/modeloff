@@ -86,7 +86,7 @@ func TestSession_PrivMsg_to_model_routes_DM_to_counterpart_only(t *testing.T) {
 		// lifecycle. A's dispatch turn never fires (echo gate); C's
 		// never fires (membership filter).
 		require.ElementsMatch(t, []domain.Event{
-			bootstrapModeChange(sess, bootAt),
+			bootstrapModeChange(t, sess, bootAt),
 			domain.Message{
 				Target:     domain.ChannelName(b.ID()),
 				From:       "alpha",

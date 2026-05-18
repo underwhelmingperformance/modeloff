@@ -119,15 +119,16 @@ type Store interface {
 // Session is the backend coordinator. It bridges the UI layer and
 // the underlying stores and API client.
 //
-// The user's `*domain.Instance` is constructed once at `New` time and
-// lives for the lifetime of the process: nick renames mutate it in
-// place via its own lock, so the pointer stays stable and every
-// caller keeps identity by comparing against `UserInstance()`.
+// The user's `*domain.Instance` is owned by an external
+// `*userclient.UserClient` and reaches the session through the
+// registered subscription envelope; the session reads it through
+// [Session.userInstance] when channel-state code needs the user
+// handle (member-list injection, autojoin persistence, mode
+// bookkeeping).
 type Session struct {
 	store Store
 
 	baseContext func() context.Context
-	user        *domain.Instance
 	userModes   map[domain.ChannelName]domain.NickMode
 	userMu      sync.Mutex
 	now         func() time.Time
@@ -143,13 +144,13 @@ type Session struct {
 	subsMu        sync.RWMutex
 	subscribers   map[protocol.ClientID]*serverClient
 	clientHandles map[protocol.ClientID]*serverClient
-	userClient    *serverClient
 
 	// operAuth gates [protocol.Oper]. The default rejects every
-	// client; the user-client is promoted by [Session.New]'s
-	// bootstrap call to `setUserModeAs`, not by a client-initiated
-	// OPER. Tests and future credential mechanisms swap the
-	// authenticator via [Session.SetOperAuthenticator].
+	// client; the user-client requests `+o` via
+	// [protocol.SubscribeOptions.InitialModes] at attach time, so
+	// the authenticator is consulted only for future
+	// credentialled OPER promotions. Tests swap it via
+	// [Session.SetOperAuthenticator].
 	operAuth OperAuthenticator
 
 	// modelClientFactory is the per-instance lifecycle hook the
@@ -193,26 +194,23 @@ type Session struct {
 // goroutines blocked forever and `Shutdown` would only return
 // once its own deadline elapses.
 //
-// The session owns the user's `*domain.Instance` handle for its
-// lifetime and publishes it to the store straight away so that
-// member-list resolution on channel load can see the user's
-// empty InstanceID. The store never persists the user to disk;
-// the handle is a session-scoped identity.
+// The user-client is constructed externally (in `cmd/modeloff`
+// or a test fixture) and attaches itself to the returned session
+// via [Session.Subscribe] before any command is dispatched. The
+// session reads the user's `*domain.Instance` through the
+// registered subscription envelope; the store never persists the
+// user to disk.
 func New(
 	baseContext func() context.Context,
 	s Store,
 	factory ModelClientFactory,
-	userNick domain.Nick,
 ) *Session {
-	user := domain.NewUserInstance(userNick)
-
 	persistenceFailures, _ := otel.Meter("github.com/laney/modeloff/internal/session").
 		Int64Counter(observability.MetricPersistenceFailures)
 
-	sess := &Session{
+	return &Session{
 		baseContext:         baseContext,
 		store:               s,
-		user:                user,
 		userModes:           make(map[domain.ChannelName]domain.NickMode),
 		now:                 time.Now,
 		connectedC:          make(chan struct{}),
@@ -222,24 +220,8 @@ func New(
 		clientHandles:       make(map[protocol.ClientID]*serverClient),
 		shuttingDown:        make(chan struct{}),
 		modelClientFactory:  factory,
+		operAuth:            DefaultOperAuthenticator,
 	}
-
-	sess.operAuth = DefaultOperAuthenticator
-	// The user-client starts with no modes; the server promotes it
-	// directly via setUserModeAs immediately after construction.
-	// This is server-initiated (empty `by`), not a client-issued
-	// OPER request — the local user IS the operator, so there is
-	// no credential exchange to perform. The wire-visible shape
-	// is the same [domain.ModeChange] event any later mode change
-	// would produce; consumers (chat-screen, tests reading the
-	// user-client's events channel) see it as the first event of
-	// the session.
-	sess.userClient = newServerClient(sess, protocol.UserClientID, user)
-	sess.subscribers[sess.userClient.id] = sess.userClient
-	sess.clientHandles[sess.userClient.id] = sess.userClient
-	sess.setUserModeAs(baseContext(), "", sess.userClient, domain.ModeOperator, true)
-
-	return sess
 }
 
 // OperAuthenticator validates a [protocol.Oper] attempt. Returning
@@ -277,13 +259,18 @@ func (s *Session) WithTracerProvider(tp trace.TracerProvider) *Session {
 	return s
 }
 
-// User returns the user-client subscription, created at session
-// bootstrap and live for the whole session lifetime. The returned
-// handle satisfies [protocol.Client]: it carries the user's
-// identity ([protocol.UserClientID]) and grants
-// [domain.ModeOperator].
-func (s *Session) User() protocol.Client {
-	return s.userClient
+// userInstance returns the user's canonical `*domain.Instance` as
+// read off the registered user-client subscription. Returns nil
+// when no user-client has attached yet — chat-screen tests that
+// drive the session directly without a user-client encounter this
+// path and rely on the consumer treating nil as "no user".
+func (s *Session) userInstance() *domain.Instance {
+	sc := s.lookupClientHandle(protocol.UserClientID)
+	if sc == nil {
+		return nil
+	}
+
+	return sc.instance
 }
 
 // lookupClientHandle returns the cached handle for `id` under the
@@ -313,9 +300,6 @@ func (s *Session) Subscribe(c protocol.Client, opts protocol.SubscribeOptions) (
 	}
 
 	id := c.Identity()
-	if id == protocol.UserClientID {
-		return nil, fmt.Errorf("session.Subscribe: user-client registration is not supported yet")
-	}
 
 	sc, ok := s.ensureSubscription(id, opts.Instance)
 	if !ok {
@@ -323,7 +307,12 @@ func (s *Session) Subscribe(c protocol.Client, opts protocol.SubscribeOptions) (
 	}
 
 	for _, m := range opts.InitialModes {
-		sc.setMode(m, true)
+		// `setUserModeAs` is idempotent on an already-held mode and
+		// writes a server-narrated [domain.ModeChange] to the
+		// subscription's events channel so the first event the
+		// consumer reads is the elevation. The empty `by` flags the
+		// emission as server-originated rather than peer-initiated.
+		s.setUserModeAs(s.baseContext(), "", sc, m, true)
 	}
 
 	return sc, nil
@@ -690,9 +679,14 @@ func (s *Session) Connect(ctx context.Context) (retErr error) {
 		return fmt.Errorf("set session active: %w", err)
 	}
 
+	welcomeNick := domain.Nick("")
+	if user := s.userInstance(); user != nil {
+		welcomeNick = user.Nick()
+	}
+
 	s.emit(ctx, domain.Welcome{
 		ServerName: domain.StatusServerName,
-		Nick:       s.user.Nick(),
+		Nick:       welcomeNick,
 		At:         s.connectedAt,
 	})
 
@@ -762,7 +756,12 @@ func (s *Session) userModeFor(ctx context.Context, ch domain.ChannelName) domain
 // channels loaded from disk rely on this to know whether to
 // re-inject the user.
 func (s *Session) userInChannel(ch domain.ChannelName) bool {
-	channels := s.user.Channels()
+	user := s.userInstance()
+	if user == nil {
+		return false
+	}
+
+	channels := user.Channels()
 	if channels == nil {
 		return false
 	}
@@ -799,18 +798,23 @@ func (s *Session) loadChannelWindow(ctx context.Context, name domain.ChannelName
 // `persistChannelWindow` strips them on save and this helper
 // adds them back on load.
 func (s *Session) injectUserIfChannelMember(ctx context.Context, cw *domain.ChannelWindow) {
+	user := s.userInstance()
+	if user == nil {
+		return
+	}
+
 	if !s.userInChannel(cw.Name()) {
 		return
 	}
 
-	if cw.Members.HasInstance(s.user) {
+	if cw.Members.HasInstance(user) {
 		return
 	}
 
-	cw.Members.Add(s.user)
+	cw.Members.Add(user)
 
 	if mode := s.userModeFor(ctx, cw.Name()); mode != domain.ModeNone {
-		cw.Members.SetMode(s.user, mode)
+		cw.Members.SetMode(user, mode)
 	}
 }
 
@@ -822,7 +826,7 @@ func (s *Session) injectUserIfChannelMember(ctx context.Context, cw *domain.Chan
 // `injectUserIfMember`.
 func (s *Session) persistChannelWindow(ctx context.Context, w *domain.ChannelWindow) error {
 	clone := *w
-	clone.Members = cloneMembersWithout(w.Members, s.user)
+	clone.Members = cloneMembersWithout(w.Members, s.userInstance())
 	return s.store.SaveWindow(ctx, &clone)
 }
 
@@ -853,20 +857,17 @@ func cloneMembersWithout(src domain.MemberList, excluded *domain.Instance) domai
 // channel map and the userModes map. There is no store-side
 // prior-nick residue to reconcile.
 func (s *Session) cleanupUncleanShutdown(ctx context.Context) error {
-	// The user is never persisted, so there is nothing to remove
-	// from the store. The only stale state is whatever this Session
-	// instance has accumulated in the in-memory user handle and
-	// userModes map — drop both so the post-connect view mirrors a
-	// fresh, clean start.
 	_ = ctx
 
-	s.user.MutateChannels(func(m *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
-		for pair := m.Oldest(); pair != nil; {
-			next := pair.Next()
-			m.Delete(pair.Key)
-			pair = next
-		}
-	})
+	if user := s.userInstance(); user != nil {
+		user.MutateChannels(func(m *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
+			for pair := m.Oldest(); pair != nil; {
+				next := pair.Next()
+				m.Delete(pair.Key)
+				pair = next
+			}
+		})
+	}
 
 	s.userMu.Lock()
 	s.userModes = make(map[domain.ChannelName]domain.NickMode)
@@ -970,20 +971,6 @@ func (s *Session) LookupClient(id protocol.ClientID) protocol.Client {
 	return sc
 }
 
-// UserInstance returns the canonical `*domain.Instance` for the
-// human user. Identity checks against this pointer are the way
-// callers recognise user-origin events; the returned handle is
-// pointer-stable for the process lifetime.
-func (s *Session) UserInstance() *domain.Instance {
-	return s.user
-}
-
-// UserNick is a convenience that reads the current user nick from
-// the handle returned by UserInstance.
-func (s *Session) UserNick() domain.Nick {
-	return s.user.Nick()
-}
-
 // ResolveNick turns a user-supplied nick into the canonical
 // `*domain.Instance` for that nick. This is the single boundary
 // where nick strings become handles — callers hold the handle and
@@ -991,36 +978,11 @@ func (s *Session) UserNick() domain.Nick {
 // user's current display nick resolves to the user's handle; any
 // other nick is looked up in the store.
 func (s *Session) ResolveNick(ctx context.Context, nick domain.Nick) (*domain.Instance, error) {
-	if nick == s.user.Nick() {
-		return s.user, nil
+	if user := s.userInstance(); user != nil && nick == user.Nick() {
+		return user, nil
 	}
 
 	return s.store.ResolveNick(ctx, nick)
-}
-
-// UserJoinedAt returns the time the user joined the given channel,
-// or the zero time if the user is not in the channel.
-func (s *Session) UserJoinedAt(ch domain.ChannelName) time.Time {
-	if channels := s.user.Channels(); channels != nil {
-		if t, ok := channels.Get(ch); ok {
-			return t
-		}
-	}
-
-	return time.Time{}
-}
-
-// Join creates or opens a channel. Events are emitted on the
-// session event channel.
-func (s *Session) Join(ctx context.Context, channelName string) error {
-	return s.joinAs(ctx, s.user, domain.ChannelName(channelName), "")
-}
-
-// Part records the user leaving a channel. An optional farewell
-// message is included in the event. Events are emitted on the
-// session event channel.
-func (s *Session) Part(ctx context.Context, ch domain.ChannelName, message string) error {
-	return s.partAs(ctx, s.user, ch, message)
 }
 
 // Quit performs a clean client-side shutdown. For each channel the
@@ -1041,10 +1003,15 @@ func (s *Session) userQuit(ctx context.Context, message string) (retErr error) {
 	)
 	defer endSpan(span, &retErr, observability.ErrorKindStore)
 
+	user := s.userInstance()
+	if user == nil {
+		return fmt.Errorf("user-client not registered with this session")
+	}
+
 	autojoin := s.persistableAutojoinChannels()
 
-	userNick := s.user.Nick()
-	channels := s.instanceChannelNames(s.user)
+	userNick := user.Nick()
+	channels := s.instanceChannelNames(user)
 	now := s.now()
 
 	// Order matters for crash-resilience: append per-channel quit events
@@ -1053,7 +1020,7 @@ func (s *Session) userQuit(ctx context.Context, message string) (retErr error) {
 	// session_active marker last. A crash between any of the earlier
 	// steps leaves the next startup classified as unclean, at which
 	// point cleanupUncleanShutdown handles any residual memberships.
-	s.propagateActorEvent(ctx, s.user, actorEventConfig{
+	s.propagateActorEvent(ctx, user, actorEventConfig{
 		storeOnly: true,
 		build: func() broadcastEvent {
 			return domain.Quit{
@@ -1071,7 +1038,7 @@ func (s *Session) userQuit(ctx context.Context, message string) (retErr error) {
 		return fmt.Errorf("save autojoin channels: %w", err)
 	}
 
-	s.user.MutateChannels(func(m *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
+	user.MutateChannels(func(m *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
 		for _, ch := range channels {
 			m.Delete(ch)
 		}
@@ -1081,66 +1048,6 @@ func (s *Session) userQuit(ctx context.Context, message string) (retErr error) {
 		return fmt.Errorf("clear session active: %w", err)
 	}
 
-	return nil
-}
-
-// JoinAutojoinChannels loads the autojoin channel list and issues an
-// ordinary JOIN for each entry. It is intended to be called by the
-// UI immediately after Connect signals readiness; from the backend's
-// perspective the resulting joinAs calls are indistinguishable from
-// the user typing /join manually.
-//
-// Pre-condition: Connect has been called, so any stale memberships
-// from the previous session have been cleaned up. Each joinAs call
-// therefore takes the !alreadyMember path and emits the full IRC
-// join protocol (JoinEvent, ChanServ +o ModeChangeEvent, optional
-// TopicInfoEvent) plus stamps UserJoinedAt to the current time.
-//
-// Error contract: best-effort. The function only returns a non-nil
-// error if the autojoin list itself cannot be loaded. Per-channel
-// joinAs failures are surfaced via two separate signals — a
-// "Failed to join …" notice on the status channel for the user, and
-// AttrAutojoinFailed plus an error-kind ErrorKindAutojoin on the
-// aggregate session.autojoin span for observability — and the
-// function still returns nil so that downstream startup steps
-// (FocusChannel, dispatch reactor) proceed.
-func (s *Session) JoinAutojoinChannels(ctx context.Context) error {
-	ctx, span := s.startSpan(ctx, "session.autojoin",
-		attribute.String(observability.AttrOperation, "session.autojoin"),
-	)
-	defer span.End()
-
-	channels, err := s.store.ListAutojoinChannels(ctx)
-	if err != nil {
-		setSpanError(span, err, observability.ErrorKindStore)
-		return fmt.Errorf("list autojoin channels: %w", err)
-	}
-
-	channelNames := make([]string, len(channels))
-	for i, ch := range channels {
-		channelNames[i] = string(ch)
-	}
-
-	var failed int
-	for _, ch := range channels {
-		if err := s.joinAs(ctx, s.user, ch, ""); err != nil {
-			failed++
-			slog.Default().ErrorContext(ctx, "autojoin channel", "channel", ch, "error", err)
-		}
-	}
-
-	span.SetAttributes(
-		attribute.Int(observability.AttrAutojoinCount, len(channels)),
-		attribute.Int(observability.AttrAutojoinFailed, failed),
-		attribute.StringSlice(observability.AttrAutojoinChannels, channelNames),
-	)
-
-	if failed > 0 {
-		setSpanError(span, fmt.Errorf("%d of %d autojoin channels failed", failed, len(channels)), observability.ErrorKindAutojoin)
-		return nil
-	}
-
-	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 	return nil
 }
 
@@ -1192,11 +1099,40 @@ func (s *Session) DirectoryChannels(ctx context.Context) (_ []domain.ChannelDire
 	return entries, nil
 }
 
+// ChannelWindowNames returns the names of every addressable
+// `*ChannelWindow` known to the session, in store-iteration
+// order. Unlike [Session.DirectoryChannels] no mode-visibility
+// filter is applied — the user-client's poke fans across every
+// channel the session knows about, including `+s` (secret) ones.
+func (s *Session) ChannelWindowNames(ctx context.Context) (_ []domain.ChannelName, retErr error) {
+	ctx, span := s.startSpan(ctx, "session.channel_window_names",
+		attribute.String(observability.AttrOperation, "session.channel_window_names"),
+	)
+	defer endSpan(span, &retErr, observability.ErrorKindStore)
+
+	windows, err := s.store.ListWindows(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list windows: %w", err)
+	}
+
+	names := make([]domain.ChannelName, 0, len(windows))
+	for _, w := range windows {
+		if _, ok := w.(*domain.ChannelWindow); !ok {
+			continue
+		}
+
+		names = append(names, w.Name())
+	}
+
+	return names, nil
+}
+
 // Instances returns an iterator over every known model instance.
 // The UI's tab-completion sources call this to offer `/invite`,
 // `/msg`, `/whois`, and `/add-model` suggestions across the full
 // session — not just the active channel's members. The user
-// instance is not included; it's reachable via `UserInstance()`.
+// instance is not included; consumers hold the user-client
+// handle directly and read identity through it.
 //
 // The iterator materialises a snapshot at call time and is safe
 // to range after the session state changes; subsequent mutations
@@ -1271,27 +1207,6 @@ func (s *Session) attachInstanceToChannel(
 	return nil
 }
 
-// SendMessage is the user shorthand for [Session.sendMessageAs].
-func (s *Session) SendMessage(ctx context.Context, ch domain.ChannelName, body string) (domain.Message, error) {
-	return s.sendMessageAs(ctx, s.user, ch, body)
-}
-
-// SendAction is the user shorthand for [Session.sendActionAs].
-func (s *Session) SendAction(ctx context.Context, ch domain.ChannelName, body string) (domain.Message, error) {
-	return s.sendActionAs(ctx, s.user, ch, body)
-}
-
-// SetTopic sets the topic of a channel.
-func (s *Session) SetTopic(ctx context.Context, ch domain.ChannelName, topic string) error {
-	return s.setTopicAs(ctx, s.user, ch, topic)
-}
-
-// ChangeNick changes the user's nickname and updates all channel
-// memberships accordingly.
-func (s *Session) ChangeNick(ctx context.Context, newNick domain.Nick) error {
-	return s.changeNickAs(ctx, s.user, newNick)
-}
-
 // SaveInstance persists a model instance. Used by integration-
 // test seed helpers; production paths register instances via
 // the invite / add-model flows.
@@ -1307,9 +1222,13 @@ func (s *Session) GetWindow(ctx context.Context, name domain.ChannelName) (domai
 	return s.store.GetWindow(ctx, name)
 }
 
-// MarkRead records that the user has seen all current events in a
-// channel by storing the rowid of the last event.
-func (s *Session) MarkRead(ctx context.Context, ch domain.ChannelName) (retErr error) {
+// markRead records that the user has seen all current events in
+// `ch` by stamping their last-read cursor at the rowid of the most
+// recent event. Used internally by [joinAs] to keep a freshly-
+// joined channel from appearing with the joiner's own arrival as
+// "unread". The user-client calls into the store directly for
+// `/mark-read`-style affordances.
+func (s *Session) markRead(ctx context.Context, ch domain.ChannelName) (retErr error) {
 	ctx, span := s.startSpan(ctx, "session.mark_read",
 		attribute.String(observability.AttrOperation, "session.mark_read"),
 		attribute.String(observability.AttrChannel, string(ch)),
@@ -1361,42 +1280,6 @@ func (s *Session) UnreadCount(ctx context.Context, ch domain.ChannelName) (count
 	}
 
 	return len(events), nil
-}
-
-// Poke sends a periodic prompt to model instances in every channel,
-// dispatching asynchronously and emitting events on the Events
-// channel.
-func (s *Session) Poke(ctx context.Context) error {
-	logger := slog.Default().With("component", "session")
-	ctx, span := s.startSpan(ctx, "session.poke", attribute.String(observability.AttrOperation, "session.poke"))
-	defer span.End()
-
-	windows, err := s.store.ListWindows(ctx)
-	if err != nil {
-		setSpanError(span, err, observability.ErrorKindStore)
-		return fmt.Errorf("list windows: %w", err)
-	}
-
-	now := s.now()
-
-	channelCount := 0
-	for _, w := range windows {
-		if _, ok := w.(*domain.ChannelWindow); !ok {
-			continue
-		}
-
-		s.emit(ctx, domain.PokeEvent{
-			Channel: w.Name(),
-			At:      now,
-		})
-
-		channelCount++
-	}
-
-	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-	logger.DebugContext(ctx, "scheduled poke dispatch", "channels", channelCount)
-
-	return nil
 }
 
 // instanceChannelNames returns the list of channels an instance is in.
@@ -1587,7 +1470,12 @@ func (s *Session) saveAutojoinList(ctx context.Context) error {
 func (s *Session) persistableAutojoinChannels() []domain.ChannelName {
 	var channels []domain.ChannelName
 
-	userChannels := s.user.Channels()
+	user := s.userInstance()
+	if user == nil {
+		return channels
+	}
+
+	userChannels := user.Channels()
 	if userChannels == nil {
 		return channels
 	}

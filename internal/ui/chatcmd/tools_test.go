@@ -15,6 +15,7 @@ import (
 	"github.com/laney/modeloff/internal/session"
 	"github.com/laney/modeloff/internal/store/storetest"
 	"github.com/laney/modeloff/internal/ui/uitest"
+	"github.com/laney/modeloff/internal/userclient"
 )
 
 func TestBuildToolRegistry_returns_expected_tools(t *testing.T) {
@@ -189,27 +190,27 @@ func (toolTestAPI) GeneratePersonas(context.Context, domain.ModelID) ([]domain.P
 	return nil, nil
 }
 
-func newToolTestSession(t *testing.T) *session.Session {
+func newToolTestSession(t *testing.T) (*session.Session, *userclient.UserClient) {
 	t.Helper()
 
 	s := storetest.NewMemoryStore(t)
 	apiClient := toolTestAPI{}
-	sess, _ := uitest.NewTestSession(t, s, apiClient, nil, nil, "", "", t.Context)
+	sess, _, user := uitest.NewTestSession(t, s, apiClient, nil, nil, "", "", t.Context)
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 
-	return sess
+	return sess, user
 }
 
 // userToolContext returns the [modelclient.ToolContext] tests use when
 // invoking `RunTool` as the user. The user-client handle is the
 // active actor so dispatched commands route through the same
 // [protocol.Client.Send] path the chat-screen exercises.
-func userToolContext(sess *session.Session, channel domain.ChannelName) modelclient.ToolContext {
+func userToolContext(sess *session.Session, user *userclient.UserClient, channel domain.ChannelName) modelclient.ToolContext {
 	return modelclient.ToolContext{
 		Session: sess,
-		Actor:   sess.UserInstance(),
+		Actor:   user.Instance(),
 		Channel: channel,
-		Client:  sess.User(),
+		Client:  user,
 	}
 }
 
@@ -232,8 +233,8 @@ func toolValue(t *testing.T, name string, rawJSON string) any {
 }
 
 func TestRunTool_join_with_channel(t *testing.T) {
-	sess := newToolTestSession(t)
-	tc := userToolContext(sess, "#general")
+	sess, user := newToolTestSession(t)
+	tc := userToolContext(sess, user, "#general")
 
 	v := toolValue(t, "join", `{"channel": "#testing"}`)
 
@@ -249,8 +250,8 @@ func TestRunTool_join_with_channel(t *testing.T) {
 }
 
 func TestRunTool_help_no_args(t *testing.T) {
-	sess := newToolTestSession(t)
-	tc := userToolContext(sess, "#general")
+	sess, user := newToolTestSession(t)
+	tc := userToolContext(sess, user, "#general")
 
 	v := toolValue(t, "help", `{}`)
 
@@ -266,8 +267,8 @@ func TestRunTool_help_no_args(t *testing.T) {
 }
 
 func TestRunTool_part_no_channel_returns_error(t *testing.T) {
-	sess := newToolTestSession(t)
-	tc := userToolContext(sess, "")
+	sess, user := newToolTestSession(t)
+	tc := userToolContext(sess, user, "")
 
 	v := toolValue(t, "part", `{}`)
 
@@ -283,8 +284,8 @@ func TestRunTool_part_no_channel_returns_error(t *testing.T) {
 }
 
 func TestRunTool_kick_no_channel_returns_error(t *testing.T) {
-	sess := newToolTestSession(t)
-	tc := userToolContext(sess, "")
+	sess, user := newToolTestSession(t)
+	tc := userToolContext(sess, user, "")
 
 	v := toolValue(t, "kick", `{"nick": "haiku"}`)
 
@@ -300,8 +301,8 @@ func TestRunTool_kick_no_channel_returns_error(t *testing.T) {
 }
 
 func TestRunTool_invite_missing_nick_returns_error(t *testing.T) {
-	sess := newToolTestSession(t)
-	tc := userToolContext(sess, "#general")
+	sess, user := newToolTestSession(t)
+	tc := userToolContext(sess, user, "#general")
 
 	v := toolValue(t, "invite", `{}`)
 
@@ -317,13 +318,13 @@ func TestRunTool_invite_missing_nick_returns_error(t *testing.T) {
 }
 
 func TestRunTool_msg_sends_to_nick(t *testing.T) {
-	sess := newToolTestSession(t)
+	sess, user := newToolTestSession(t)
 
 	// Join a channel and add a model so the nick resolves.
-	require.NoError(t, sess.Join(t.Context(), "#lobby"))
-	uitest.AddModel(t, sess, "#lobby", "anthropic/haiku", "")
+	require.NoError(t, user.Join(t.Context(), domain.ChannelName("#lobby")))
+	uitest.AddModel(t, user, "#lobby", "anthropic/haiku", "")
 
-	tc := userToolContext(sess, "")
+	tc := userToolContext(sess, user, "")
 
 	v := toolValue(t, "msg", `{"target": "testbot", "body": ["hello"]}`)
 
@@ -337,12 +338,12 @@ func TestRunTool_msg_sends_to_nick(t *testing.T) {
 }
 
 func TestRunTool_msg_rejects_empty_body(t *testing.T) {
-	sess := newToolTestSession(t)
+	sess, user := newToolTestSession(t)
 
-	require.NoError(t, sess.Join(t.Context(), "#lobby"))
-	uitest.AddModel(t, sess, "#lobby", "anthropic/haiku", "")
+	require.NoError(t, user.Join(t.Context(), domain.ChannelName("#lobby")))
+	uitest.AddModel(t, user, "#lobby", "anthropic/haiku", "")
 
-	tc := userToolContext(sess, "")
+	tc := userToolContext(sess, user, "")
 
 	v := toolValue(t, "msg", `{"target": "testbot"}`)
 
@@ -356,8 +357,8 @@ func TestRunTool_msg_rejects_empty_body(t *testing.T) {
 }
 
 func TestRunTool_nick_changes_nick(t *testing.T) {
-	sess := newToolTestSession(t)
-	tc := userToolContext(sess, "#general")
+	sess, user := newToolTestSession(t)
+	tc := userToolContext(sess, user, "#general")
 
 	v := toolValue(t, "nick", `{"new_nick": "newname"}`)
 
@@ -373,8 +374,8 @@ func TestRunTool_nick_changes_nick(t *testing.T) {
 }
 
 func TestRunTool_me_no_channel_returns_error(t *testing.T) {
-	sess := newToolTestSession(t)
-	tc := userToolContext(sess, "")
+	sess, user := newToolTestSession(t)
+	tc := userToolContext(sess, user, "")
 
 	v := toolValue(t, "me", `{"action": ["waves"]}`)
 
@@ -390,8 +391,8 @@ func TestRunTool_me_no_channel_returns_error(t *testing.T) {
 }
 
 func TestRunTool_quit_succeeds(t *testing.T) {
-	sess := newToolTestSession(t)
-	tc := userToolContext(sess, "")
+	sess, user := newToolTestSession(t)
+	tc := userToolContext(sess, user, "")
 
 	v := toolValue(t, "quit", `{}`)
 

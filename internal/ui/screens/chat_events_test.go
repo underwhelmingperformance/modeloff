@@ -14,9 +14,9 @@ import (
 
 func TestChatScreen_PartEvent_leaving_active_switches_channel(t *testing.T) {
 	h := newTestSession(t)
-	sess := h.sess
-	uitest.SeedChannel(t, sess, "#general")
-	uitest.SeedChannel(t, sess, "#random")
+	user := h.user
+	uitest.SeedChannel(t, user, "#general")
+	uitest.SeedChannel(t, user, "#random")
 
 	tm := newChatApp(t, h)
 	// Wait for the bootstrap focus-restore to fully land on
@@ -29,7 +29,7 @@ func TestChatScreen_PartEvent_leaving_active_switches_channel(t *testing.T) {
 			strings.Contains(view, "*** Created channel #random")
 	})
 
-	require.NoError(t, sess.Part(t.Context(), "#random", ""))
+	require.NoError(t, user.Part(t.Context(), "#random", ""))
 
 	// Wait for the sidebar to settle on the post-part state:
 	// scrollback shows #general (active), the `▸` marker has
@@ -56,13 +56,13 @@ func TestChatScreen_PartEvent_leaving_active_switches_channel(t *testing.T) {
 
 func TestChatScreen_PartEvent_leaving_last_channel_shows_welcome(t *testing.T) {
 	h := newTestSession(t)
-	sess := h.sess
-	uitest.SeedChannel(t, sess, "#only")
+	user := h.user
+	uitest.SeedChannel(t, user, "#only")
 
 	tm := newChatApp(t, h)
 	tm.WaitFor("#only")
 
-	require.NoError(t, sess.Part(t.Context(), "#only", ""))
+	require.NoError(t, user.Part(t.Context(), "#only", ""))
 
 	tm.WaitFor(
 		"Welcome to modeloff",
@@ -74,9 +74,9 @@ func TestChatScreen_PartEvent_leaving_last_channel_shows_welcome(t *testing.T) {
 
 func TestChatScreen_PartEvent_leaving_non_active_keeps_active(t *testing.T) {
 	h := newTestSession(t)
-	sess := h.sess
-	uitest.SeedChannel(t, sess, "#general")
-	uitest.SeedChannel(t, sess, "#random")
+	user := h.user
+	uitest.SeedChannel(t, user, "#general")
+	uitest.SeedChannel(t, user, "#random")
 
 	tm := newChatApp(t, h)
 	// Wait for the bootstrap focus-restore to land on #random
@@ -96,7 +96,7 @@ func TestChatScreen_PartEvent_leaving_non_active_keeps_active(t *testing.T) {
 
 	tm.Send(domain.Part{
 		Target:   "#random",
-		Instance: sess.UserInstance(),
+		Instance: user.Instance(),
 		At:       time.Now(),
 	})
 
@@ -108,9 +108,9 @@ func TestChatScreen_PartEvent_leaving_non_active_keeps_active(t *testing.T) {
 
 func TestChatScreen_TopicChangeEvent_different_channel(t *testing.T) {
 	h := newTestSession(t)
-	sess := h.sess
-	uitest.SeedChannel(t, sess, "#general")
-	uitest.SeedChannel(t, sess, "#random")
+	user := h.user
+	uitest.SeedChannel(t, user, "#general")
+	uitest.SeedChannel(t, user, "#random")
 
 	tm := newChatApp(t, h)
 	// Wait for the bootstrap focus-restore to land on #random
@@ -145,9 +145,10 @@ func TestChatScreen_TopicChangeEvent_different_channel(t *testing.T) {
 func TestChatScreen_QuitEvent_shows_quit_message(t *testing.T) {
 	h := newTestSession(t)
 	sess := h.sess
-	uitest.SeedChannel(t, sess, "#general")
+	user := h.user
+	uitest.SeedChannel(t, user, "#general")
 
-	uitest.AddModel(t, sess, "#general", "anthropic/claude-3-haiku", "")
+	uitest.AddModel(t, user, "#general", "anthropic/claude-3-haiku", "")
 
 	inst, err := sess.ResolveNick(t.Context(), "fakenick")
 	require.NoError(t, err)
@@ -180,9 +181,10 @@ func TestChatScreen_QuitEvent_removes_instance_from_nick_list(t *testing.T) {
 
 	h := newTestSession(t)
 	sess := h.sess
-	uitest.SeedChannel(t, sess, "#general")
+	user := h.user
+	uitest.SeedChannel(t, user, "#general")
 
-	uitest.AddModel(t, sess, "#general", "anthropic/claude-3-haiku", "")
+	uitest.AddModel(t, user, "#general", "anthropic/claude-3-haiku", "")
 
 	inst, err := sess.ResolveNick(t.Context(), "fakenick")
 	require.NoError(t, err)
@@ -221,8 +223,9 @@ func TestChatScreen_QuitEvent_removes_instance_from_nick_list(t *testing.T) {
 func TestChatScreen_QuitEvent_surfaces_in_open_DM(t *testing.T) {
 	h := newTestSession(t)
 	sess := h.sess
-	uitest.SeedChannel(t, sess, "#general")
-	uitest.AddModel(t, sess, "#general", "anthropic/claude-3-haiku", "")
+	user := h.user
+	uitest.SeedChannel(t, user, "#general")
+	uitest.AddModel(t, user, "#general", "anthropic/claude-3-haiku", "")
 
 	inst, err := sess.ResolveNick(t.Context(), "fakenick")
 	require.NoError(t, err)
@@ -265,8 +268,9 @@ func TestChatScreen_QuitEvent_surfaces_in_open_DM(t *testing.T) {
 func TestChatScreen_NickChangeEvent_surfaces_in_open_DM(t *testing.T) {
 	h := newTestSession(t)
 	sess := h.sess
-	uitest.SeedChannel(t, sess, "#general")
-	uitest.AddModel(t, sess, "#general", "anthropic/claude-3-haiku", "")
+	user := h.user
+	uitest.SeedChannel(t, user, "#general")
+	uitest.AddModel(t, user, "#general", "anthropic/claude-3-haiku", "")
 
 	inst, err := sess.ResolveNick(t.Context(), "fakenick")
 	require.NoError(t, err)
@@ -298,8 +302,8 @@ func TestChatScreen_NickChangeEvent_surfaces_in_open_DM(t *testing.T) {
 
 func TestChatScreen_ignores_join_for_unknown_channel(t *testing.T) {
 	h := newTestSession(t)
-	sess := h.sess
-	uitest.SeedChannel(t, sess, "#general")
+	user := h.user
+	uitest.SeedChannel(t, user, "#general")
 
 	tm := newChatApp(t, h)
 	// Wait for focus-restore to settle so subsequent MessageEvents for
@@ -332,9 +336,9 @@ func TestChatScreen_ignores_join_for_unknown_channel(t *testing.T) {
 
 func TestChatScreen_model_join_does_not_switch_active(t *testing.T) {
 	h := newTestSession(t)
-	sess := h.sess
-	uitest.SeedChannel(t, sess, "#general")
-	uitest.SeedChannel(t, sess, "#random")
+	user := h.user
+	uitest.SeedChannel(t, user, "#general")
+	uitest.SeedChannel(t, user, "#random")
 
 	tm := newChatApp(t, h)
 	// Wait for the bootstrap focus-restore to land on #random
@@ -381,10 +385,10 @@ func TestChatScreen_model_join_does_not_switch_active(t *testing.T) {
 
 func TestChatScreen_rapid_switch_does_not_revert(t *testing.T) {
 	h := newTestSession(t)
-	sess := h.sess
-	uitest.SeedChannel(t, sess, "#general")
-	uitest.SeedChannel(t, sess, "#random")
-	uitest.SeedChannel(t, sess, "#chat")
+	user := h.user
+	uitest.SeedChannel(t, user, "#general")
+	uitest.SeedChannel(t, user, "#random")
+	uitest.SeedChannel(t, user, "#chat")
 
 	tm := newChatApp(t, h)
 	// Wait for startup focus-restore to settle: #chat was seeded last,
@@ -399,12 +403,12 @@ func TestChatScreen_rapid_switch_does_not_revert(t *testing.T) {
 	// channel — they only update the sidebar.
 	tm.Send(domain.Join{
 		Target:   "#random",
-		Instance: sess.UserInstance(),
+		Instance: user.Instance(),
 		At:       time.Now(),
 	})
 	tm.Send(domain.Join{
 		Target:   "#general",
-		Instance: sess.UserInstance(),
+		Instance: user.Instance(),
 		At:       time.Now(),
 	})
 
@@ -440,8 +444,8 @@ func TestChatScreen_focus_new_channel_before_join_event(t *testing.T) {
 		" scrollback through a getter.")
 
 	h := newTestSession(t)
-	sess := h.sess
-	uitest.SeedChannel(t, sess, "#general")
+	user := h.user
+	uitest.SeedChannel(t, user, "#general")
 
 	tm := newChatApp(t, h)
 	// Wait for startup focus-restore to settle so the subsequent focus
@@ -469,8 +473,9 @@ func TestChatScreen_focus_new_channel_before_join_event(t *testing.T) {
 func TestChatScreen_focus_status_channel_keeps_status_identity(t *testing.T) {
 	h := newTestSession(t)
 	sess := h.sess
+	user := h.user
 	require.NoError(t, sess.Connect(t.Context()))
-	uitest.SeedChannel(t, sess, "#general")
+	uitest.SeedChannel(t, user, "#general")
 
 	tm := newChatApp(t, h)
 	tm.WaitFor("&modeloff", "Created channel #general")
@@ -500,9 +505,9 @@ func TestChatScreen_focus_status_channel_keeps_status_identity(t *testing.T) {
 
 func TestChatScreen_MessageEvent_inactive_channel(t *testing.T) {
 	h := newTestSession(t)
-	sess := h.sess
-	uitest.SeedChannel(t, sess, "#general")
-	uitest.SeedChannel(t, sess, "#random")
+	user := h.user
+	uitest.SeedChannel(t, user, "#general")
+	uitest.SeedChannel(t, user, "#random")
 
 	tm := newChatApp(t, h)
 	// Wait for the bootstrap focus-restore to land on #random

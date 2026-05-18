@@ -143,10 +143,10 @@ func TestChatScreen_ModelDispatchDone_deferred_while_replies_queued(t *testing.T
 }
 
 func TestChatScreen_ModelReply_queues_and_paces(t *testing.T) {
-	sess, mgr := newTestSession(t)
-	require.NoError(t, sess.Join(t.Context(), "#general"))
+	sess, mgr, user := newTestSession(t)
+	require.NoError(t, user.Join(t.Context(), domain.ChannelName("#general")))
 
-	screen, err := NewChatScreen(t.Context, sess, mgr, nil, nil, domain.KindStatus)
+	screen, err := NewChatScreen(t.Context, sess, mgr, user, nil, nil, domain.KindStatus)
 	require.NoError(t, err)
 	*screen.active = "#general"
 
@@ -212,11 +212,11 @@ func TestChatScreen_ModelReply_queues_and_paces(t *testing.T) {
 // a message in another channel. Each channel drains at its own
 // pacing cadence.
 func TestChatScreen_ModelReply_paces_per_channel_independently(t *testing.T) {
-	sess, mgr := newTestSession(t)
-	require.NoError(t, sess.Join(t.Context(), "#channel-a"))
-	require.NoError(t, sess.Join(t.Context(), "#channel-b"))
+	sess, mgr, user := newTestSession(t)
+	require.NoError(t, user.Join(t.Context(), domain.ChannelName("#channel-a")))
+	require.NoError(t, user.Join(t.Context(), domain.ChannelName("#channel-b")))
 
-	screen, err := NewChatScreen(t.Context, sess, mgr, nil, nil, domain.KindStatus)
+	screen, err := NewChatScreen(t.Context, sess, mgr, user, nil, nil, domain.KindStatus)
 	require.NoError(t, err)
 	*screen.active = "#channel-a"
 
@@ -304,10 +304,10 @@ func TestChatScreen_ModelReply_paces_per_channel_independently(t *testing.T) {
 // store, so re-joining the channel restores history — this purge
 // only affects the in-flight pacing queue.
 func TestChatScreen_parting_channel_purges_paced_queue(t *testing.T) {
-	sess, mgr := newTestSession(t)
-	require.NoError(t, sess.Join(t.Context(), "#x"))
+	sess, mgr, user := newTestSession(t)
+	require.NoError(t, user.Join(t.Context(), domain.ChannelName("#x")))
 
-	screen, err := NewChatScreen(t.Context, sess, mgr, nil, nil, domain.KindStatus)
+	screen, err := NewChatScreen(t.Context, sess, mgr, user, nil, nil, domain.KindStatus)
 	require.NoError(t, err)
 	*screen.active = "#x"
 
@@ -321,7 +321,7 @@ func TestChatScreen_parting_channel_purges_paced_queue(t *testing.T) {
 	// pending-paced queue entry.
 	updated, _ := screen.handlePartEvent(domain.Part{
 		Target:   "#x",
-		Instance: sess.UserInstance(),
+		Instance: user.Instance(),
 	})
 	screen = updated.(ChatScreen)
 
@@ -494,9 +494,9 @@ func TestChatScreen_completion_all_instance_commands_see_instances_outside_activ
 	)))
 
 	apiClient := &uitest.FakeAPI{}
-	sess, mgr := uitest.NewTestSession(t, s, apiClient, nil, nil, "", "", t.Context)
+	sess, mgr, user := uitest.NewTestSession(t, s, apiClient, nil, nil, "", "", t.Context)
 
-	screen, err := NewChatScreen(func() context.Context { return ctx }, sess, mgr, nil, nil, domain.KindStatus)
+	screen, err := NewChatScreen(func() context.Context { return ctx }, sess, mgr, user, nil, nil, domain.KindStatus)
 	require.NoError(t, err)
 
 	// Seed an active channel whose membership does NOT include
