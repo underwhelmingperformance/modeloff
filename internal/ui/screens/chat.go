@@ -118,15 +118,18 @@ type PokeTickMsg struct{}
 
 // ChatScreen is the main screen that composes Sidebar, ChatView, and
 // MainLayout. It holds a reference to the session for backend
-// operations.
+// operations. The `baseContext` supplier mirrors [net/http.Server.BaseContext]
+// and [session.New] — each backend call asks the supplier for the
+// current application context rather than capturing a snapshot at
+// construction.
 type ChatScreen struct {
-	ctx      context.Context
-	sess     *session.Session
-	client   protocol.Client
-	cfgStore config.Store
-	uiState  UIStateStore
-	layout   components.MainLayout
-	keyMap   components.ChatScreenKeyMap
+	baseContext func() context.Context
+	sess        *session.Session
+	client      protocol.Client
+	cfgStore    config.Store
+	uiState     UIStateStore
+	layout      components.MainLayout
+	keyMap      components.ChatScreenKeyMap
 
 	channels        *set.Sorted[*Window]
 	liveModels      *[]chatcmd.ModelOption
@@ -176,8 +179,11 @@ type ChatScreen struct {
 }
 
 // NewChatScreen creates a chat screen backed by the given session.
-// The provided context is used for all backend operations, allowing
-// them to be cancelled on shutdown.
+// `baseContext` is the supplier the screen calls to obtain the
+// application context for each backend operation, mirroring the
+// shape [session.New] takes. The supplier must return ctxs that
+// share a cancellation source so chat-screen-spawned goroutines
+// wake on app shutdown.
 //
 // initialKind is the channel kind the chat view renders against
 // until the first channel is focused. `&modeloff` is the default
@@ -186,7 +192,7 @@ type ChatScreen struct {
 // channel before the first frame pass `domain.KindStatus` too —
 // `SetChannelMsg` supplies the real kind atomically on the first
 // focus event.
-func NewChatScreen(ctx context.Context, sess *session.Session, cfgStore config.Store, uiState UIStateStore, initialKind domain.ChannelKind) (ChatScreen, error) {
+func NewChatScreen(baseContext func() context.Context, sess *session.Session, cfgStore config.Store, uiState UIStateStore, initialKind domain.ChannelKind) (ChatScreen, error) {
 	active := domain.ChannelName("")
 	channels := set.NewSorted[*Window]()
 	scrollbackMu := &sync.RWMutex{}
@@ -212,7 +218,7 @@ func NewChatScreen(ctx context.Context, sess *session.Session, cfgStore config.S
 	liveModelsState := command.SuggestionStateReady
 
 	cs := ChatScreen{
-		ctx:             ctx,
+		baseContext:     baseContext,
 		sess:            sess,
 		client:          sess.User(),
 		cfgStore:        cfgStore,
@@ -282,13 +288,13 @@ func (s ChatScreen) loadConfig() (config.Config, error) {
 		}, nil
 	}
 
-	return s.cfgStore.Load(s.ctx)
+	return s.cfgStore.Load(s.baseContext())
 }
 
 // WithObservability wires local observability into the chat screen.
 func (s ChatScreen) WithObservability(obs *observability.Runtime) ChatScreen {
 	s.obs = obs
-	s.summary = components.NewMetricsSummaryModel(s.ctx, obs)
+	s.summary = components.NewMetricsSummaryModel(s.baseContext, obs)
 
 	chatView, ok := s.layout.Content.(components.ChatView[chatcmd.CompletionContext])
 	if !ok {
@@ -296,7 +302,7 @@ func (s ChatScreen) WithObservability(obs *observability.Runtime) ChatScreen {
 	}
 
 	workspace := components.NewChatWorkspace(chatView).
-		WithMetrics(components.NewMetricsPane(s.ctx, obs)).
+		WithMetrics(components.NewMetricsPane(s.baseContext, obs)).
 		SetLogEntries(obs.LogBuffer().Entries())
 	s.layout.Content = workspace
 
@@ -740,7 +746,7 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		if ui.Matches(msg, s.keyMap.ToggleNickList) {
-			slog.Default().InfoContext(s.ctx, "keybind triggered",
+			slog.Default().InfoContext(s.baseContext(), "keybind triggered",
 				"component", "ui",
 				"action", "toggle_nick_list",
 				"key", msg.String(),
@@ -776,7 +782,7 @@ func (s ChatScreen) completionSet() command.CompletionSet[chatcmd.CompletionCont
 					}
 				}
 			},
-			Instances:      func() iter.Seq[*domain.Instance] { return s.sess.Instances(s.ctx) },
+			Instances:      func() iter.Seq[*domain.Instance] { return s.sess.Instances(s.baseContext()) },
 			ChannelMembers: s.activeChannelInstances,
 			ActiveMembers:  func() iter.Seq[domain.Nick] { return s.activeMemberNicks() },
 			ActiveChannel:  func() domain.ChannelName { return *s.active },
@@ -788,7 +794,7 @@ func (s ChatScreen) completionSet() command.CompletionSet[chatcmd.CompletionCont
 				return *s.liveModelsState
 			},
 			Personas: func() iter.Seq[domain.Persona] {
-				personas, _ := s.sess.ListPersonas(s.ctx)
+				personas, _ := s.sess.ListPersonas(s.baseContext())
 				return slices.Values(personas)
 			},
 			Kind: func() domain.ChannelKind { return s.activeKind() },
@@ -802,7 +808,7 @@ func (s ChatScreen) loadLiveModels() tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		models, err := s.sess.ListModels(s.ctx)
+		models, err := s.sess.ListModels(s.baseContext())
 		if err != nil {
 			return liveModelsLoadFailedMsg{err: err}
 		}
@@ -866,7 +872,7 @@ func (s ChatScreen) logAndShow(event domain.PersistableEvent) tea.Cmd {
 // in-flight focus mutation on the Update goroutine.
 func (s ChatScreen) logAndStoreCmd(ch domain.ChannelName, event domain.PersistableEvent) tea.Cmd {
 	return func() tea.Msg {
-		stored, err := s.sess.LogEvent(s.ctx, ch, event)
+		stored, err := s.sess.LogEvent(s.baseContext(), ch, event)
 		if err != nil {
 			return nil
 		}
@@ -886,8 +892,8 @@ func (s ChatScreen) logAndStoreCmd(ch domain.ChannelName, event domain.Persistab
 // an audit-trail copy.
 func (s ChatScreen) persistOnStatus(event domain.PersistableEvent) tea.Cmd {
 	return func() tea.Msg {
-		if _, err := s.sess.LogEvent(s.ctx, domain.StatusChannelName, event); err != nil {
-			slog.Default().ErrorContext(s.ctx, "persist on status channel", "error", err)
+		if _, err := s.sess.LogEvent(s.baseContext(), domain.StatusChannelName, event); err != nil {
+			slog.Default().ErrorContext(s.baseContext(), "persist on status channel", "error", err)
 		}
 
 		return nil
@@ -941,7 +947,7 @@ func (s ChatScreen) logAndShowOn(ch domain.ChannelName, event domain.Persistable
 	}
 
 	return func() tea.Msg {
-		stored, err := s.sess.LogEvent(s.ctx, ch, event)
+		stored, err := s.sess.LogEvent(s.baseContext(), ch, event)
 		if err != nil {
 			return nil
 		}
@@ -979,7 +985,7 @@ func (s ChatScreen) handleQuitRequested(msg ui.QuitRequestedMsg) (ui.Model, tea.
 	cmds := []tea.Cmd{
 		msgCmd(components.InputLockedMsg{Locked: true}),
 		func() tea.Msg {
-			resp, err := s.sess.User().Send(s.ctx, protocol.Quit{Reason: message})
+			resp, err := s.sess.User().Send(s.baseContext(), protocol.Quit{Reason: message})
 			if err == nil {
 				err = resp.Err
 			}
@@ -999,7 +1005,7 @@ func (s ChatScreen) switchChannel(ch domain.ChannelName) tea.Cmd {
 		// channel; for ones already in our local cache, switching
 		// view is a buffer swap, not a backend round-trip.
 		if !exists {
-			if err := s.sess.Join(s.ctx, string(ch)); err != nil {
+			if err := s.sess.Join(s.baseContext(), string(ch)); err != nil {
 				return domain.ErrorEvent{Operation: "switch", Err: err, At: time.Now()}
 			}
 		}
@@ -1033,7 +1039,7 @@ func (s ChatScreen) handleMessageSubmit(msg components.MessageSubmitMsg) (ui.Mod
 
 func (s ChatScreen) sendMessage(text string) tea.Cmd {
 	return func() tea.Msg {
-		msg, err := s.sess.SendMessage(s.ctx, *s.active, text)
+		msg, err := s.sess.SendMessage(s.baseContext(), *s.active, text)
 		if err != nil {
 			return domain.ErrorEvent{Operation: "send", Err: err, At: time.Now()}
 		}

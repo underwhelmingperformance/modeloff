@@ -20,16 +20,19 @@ type metricsSummaryRefreshedMsg struct {
 // MetricsSummaryModel owns the compact metrics summary shown in the
 // status bar.
 type MetricsSummaryModel struct {
-	ctx      context.Context
-	obs      *observability.Runtime
-	snapshot observability.MetricsSnapshot
+	baseContext func() context.Context
+	obs         *observability.Runtime
+	snapshot    observability.MetricsSnapshot
 }
 
-// NewMetricsSummaryModel creates a metrics summary model.
-func NewMetricsSummaryModel(ctx context.Context, obs *observability.Runtime) MetricsSummaryModel {
+// NewMetricsSummaryModel creates a metrics summary model. The
+// `baseContext` supplier is asked for a fresh ctx on every metrics
+// snapshot, mirroring [session.New]'s shape and avoiding a stored
+// context field on the model.
+func NewMetricsSummaryModel(baseContext func() context.Context, obs *observability.Runtime) MetricsSummaryModel {
 	return MetricsSummaryModel{
-		ctx: ctx,
-		obs: obs,
+		baseContext: baseContext,
+		obs:         obs,
 	}
 }
 
@@ -98,7 +101,7 @@ func (m MetricsSummaryModel) refreshCmd() tea.Cmd {
 	}
 
 	return tea.Tick(metricsRefreshInterval, func(time.Time) tea.Msg {
-		snapshot, err := m.obs.SnapshotMetrics(m.ctx)
+		snapshot, err := m.obs.SnapshotMetrics(m.baseContext())
 		if err != nil {
 			return metricsSummaryRefreshedMsg{}
 		}

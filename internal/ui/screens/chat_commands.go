@@ -29,7 +29,7 @@ func errorEvent(operation string, err error) domain.ErrorEvent {
 func (s ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
 	invocation, err := s.parser.ParseInvocation(msg.Raw)
 	if err != nil {
-		slog.Default().WarnContext(s.ctx, "command parse failed",
+		slog.Default().WarnContext(s.baseContext(), "command parse failed",
 			"component", "ui",
 			"raw", msg.Raw,
 			"error", err,
@@ -46,7 +46,7 @@ func (s ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
 		}
 	}
 
-	slog.Default().InfoContext(s.ctx, "command executed",
+	slog.Default().InfoContext(s.baseContext(), "command executed",
 		"component", "ui",
 		"command", invocation.Selected().Name,
 		"raw", msg.Raw,
@@ -56,12 +56,12 @@ func (s ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
 	rc := s.runContext()
 	rc.Invocation = invocation
 
-	return cmd.Run(s.ctx, rc)
+	return cmd.Run(s.baseContext(), rc)
 }
 
 func (s ChatScreen) handlePoke() tea.Cmd {
 	return func() tea.Msg {
-		if err := s.sess.Poke(s.ctx); err != nil {
+		if err := s.sess.Poke(s.baseContext()); err != nil {
 			return errorEvent("poke", err)
 		}
 

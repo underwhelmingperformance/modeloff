@@ -57,8 +57,10 @@ func main() {
 
 	apiClient := api.NewOpenRouterClient(cfg.APIKey, cfg.BaseURL, nil)
 
+	baseContext := func() context.Context { return appCtx }
+
 	sess := session.New(
-		func() context.Context { return appCtx },
+		baseContext,
 		dataStore,
 		memStore,
 		apiClient,
@@ -84,7 +86,7 @@ func main() {
 		channelCount = len(autojoin)
 	}
 
-	chatScreen, err := screens.NewChatScreen(appCtx, sess, cfgStore, dataStore, domain.KindStatus)
+	chatScreen, err := screens.NewChatScreen(baseContext, sess, cfgStore, dataStore, domain.KindStatus)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error building command grammar: %v\n", err)
 		os.Exit(1)
@@ -97,7 +99,7 @@ func main() {
 		ChannelCount: channelCount,
 		Nick:         cfg.UserNick,
 		Session:      sess,
-		Ctx:          appCtx,
+		BaseContext:  baseContext,
 	}, chatScreen)
 
 	p := tea.NewProgram(

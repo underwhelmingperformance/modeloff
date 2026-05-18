@@ -298,7 +298,7 @@ func (s ChatScreen) handleSystemNoticeEvent(msg domain.SystemNoticeEvent) (ui.Mo
 		return s, msgCmd(msg.Stored)
 	}
 
-	count, _ := s.sess.UnreadCount(s.ctx, msg.Channel)
+	count, _ := s.sess.UnreadCount(s.baseContext(), msg.Channel)
 
 	return s, msgCmd(components.ChannelUnreadMsg{Channel: msg.Channel, Count: count})
 }
@@ -380,8 +380,8 @@ func (s ChatScreen) persistLastChannel(ch domain.ChannelName) tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		if err := s.uiState.SetLastChannel(s.ctx, ch); err != nil {
-			slog.Default().ErrorContext(s.ctx, "persist last channel", "channel", ch, "error", err)
+		if err := s.uiState.SetLastChannel(s.baseContext(), ch); err != nil {
+			slog.Default().ErrorContext(s.baseContext(), "persist last channel", "channel", ch, "error", err)
 		}
 
 		return nil
@@ -407,7 +407,7 @@ func (s ChatScreen) handleNamesReply(msg domain.NamesReplyEvent) (ui.Model, tea.
 		// join handler should have populated the cache already.
 		// A miss means the upstream sequencing is wrong, but we
 		// don't have anything sensible to do here besides log.
-		slog.Default().WarnContext(s.ctx, "names reply for unknown channel",
+		slog.Default().WarnContext(s.baseContext(), "names reply for unknown channel",
 			"component", "chat_screen",
 			"channel", msg.Channel,
 		)
@@ -789,7 +789,7 @@ func (s ChatScreen) renderMessage(msg domain.Message, key domain.ChannelName) te
 		return nil
 	}
 
-	count, _ := s.sess.UnreadCount(s.ctx, key)
+	count, _ := s.sess.UnreadCount(s.baseContext(), key)
 	mention := s.isHighlight(msg.Body)
 
 	return msgCmd(components.ChannelUnreadMsg{Channel: key, Count: count, Mention: mention})
@@ -839,7 +839,7 @@ func (s ChatScreen) handleDMOpenedMsg(msg chatcmd.DMOpenedMsg) (ui.Model, tea.Cm
 // persisted [domain.Message] as a tea.Msg for local render.
 func (s ChatScreen) sendMessageCmd(target domain.ChannelName, body string) tea.Cmd {
 	return func() tea.Msg {
-		msg, err := s.sess.SendMessage(s.ctx, target, body)
+		msg, err := s.sess.SendMessage(s.baseContext(), target, body)
 		if err != nil {
 			return domain.ErrorEvent{Operation: "msg", Err: err, At: time.Now()}
 		}
@@ -1042,7 +1042,7 @@ func (s ChatScreen) handleLiveModelsLoadFailed(msg liveModelsLoadFailedMsg) (ui.
 		channel = domain.StatusChannelName
 	}
 
-	slog.Default().WarnContext(s.ctx, "live models load failed",
+	slog.Default().WarnContext(s.baseContext(), "live models load failed",
 		"component", "ui",
 		"channel", string(channel),
 		"error", msg.err,

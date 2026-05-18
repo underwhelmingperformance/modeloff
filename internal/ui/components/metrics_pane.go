@@ -18,20 +18,22 @@ type metricsPaneRefreshedMsg struct {
 
 // MetricsPane renders a scrollable snapshot of current metrics.
 type MetricsPane struct {
-	ctx      context.Context
-	obs      *observability.Runtime
-	feed     FeedView
-	snapshot observability.MetricsSnapshot
-	width    int
-	height   int
+	baseContext func() context.Context
+	obs         *observability.Runtime
+	feed        FeedView
+	snapshot    observability.MetricsSnapshot
+	width       int
+	height      int
 }
 
-// NewMetricsPane creates a metrics pane backed by OpenTelemetry snapshots.
-func NewMetricsPane(ctx context.Context, obs *observability.Runtime) MetricsPane {
+// NewMetricsPane creates a metrics pane backed by OpenTelemetry
+// snapshots. `baseContext` is the supplier the pane calls for a
+// fresh ctx on each refresh, mirroring [session.New]'s shape.
+func NewMetricsPane(baseContext func() context.Context, obs *observability.Runtime) MetricsPane {
 	return MetricsPane{
-		ctx:  ctx,
-		obs:  obs,
-		feed: NewFeedView("No metrics yet", "updated metrics"),
+		baseContext: baseContext,
+		obs:         obs,
+		feed:        NewFeedView("No metrics yet", "updated metrics"),
 	}
 }
 
@@ -81,7 +83,7 @@ func (m MetricsPane) refreshCmd() tea.Cmd {
 	}
 
 	return tea.Tick(metricsRefreshInterval, func(time.Time) tea.Msg {
-		snapshot, err := m.obs.SnapshotMetrics(m.ctx)
+		snapshot, err := m.obs.SnapshotMetrics(m.baseContext())
 		if err != nil {
 			return metricsPaneRefreshedMsg{}
 		}

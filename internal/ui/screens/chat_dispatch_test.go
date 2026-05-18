@@ -55,7 +55,7 @@ func containsMsg[T any](msgs []tea.Msg) (T, bool) {
 }
 
 func TestChatScreen_ModelDispatchStarted_shows_pending(t *testing.T) {
-	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil, nil, domain.KindStatus)
+	screen, err := NewChatScreen(t.Context, newTestSession(t), nil, nil, domain.KindStatus)
 	require.NoError(t, err)
 	*screen.active = "#general"
 
@@ -81,7 +81,7 @@ func TestChatScreen_ModelDispatchStarted_shows_pending(t *testing.T) {
 }
 
 func TestChatScreen_ModelDispatchDone_clears_pending(t *testing.T) {
-	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil, nil, domain.KindStatus)
+	screen, err := NewChatScreen(t.Context, newTestSession(t), nil, nil, domain.KindStatus)
 	require.NoError(t, err)
 	*screen.active = "#general"
 
@@ -106,7 +106,7 @@ func TestChatScreen_ModelDispatchDone_clears_pending(t *testing.T) {
 // the spinner while another model is still in its turn. The old
 // channel-keyed event would have flipped the global flag off here.
 func TestChatScreen_ModelDispatchDone_keeps_pending_with_concurrent_dispatch(t *testing.T) {
-	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil, nil, domain.KindStatus)
+	screen, err := NewChatScreen(t.Context, newTestSession(t), nil, nil, domain.KindStatus)
 	require.NoError(t, err)
 	*screen.active = "#general"
 
@@ -127,7 +127,7 @@ func TestChatScreen_ModelDispatchDone_keeps_pending_with_concurrent_dispatch(t *
 }
 
 func TestChatScreen_ModelDispatchDone_deferred_while_replies_queued(t *testing.T) {
-	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil, nil, domain.KindStatus)
+	screen, err := NewChatScreen(t.Context, newTestSession(t), nil, nil, domain.KindStatus)
 	require.NoError(t, err)
 	*screen.active = "#general"
 
@@ -151,7 +151,7 @@ func TestChatScreen_ModelReply_queues_and_paces(t *testing.T) {
 	sess := newTestSession(t)
 	require.NoError(t, sess.Join(t.Context(), "#general"))
 
-	screen, err := NewChatScreen(t.Context(), sess, nil, nil, domain.KindStatus)
+	screen, err := NewChatScreen(t.Context, sess, nil, nil, domain.KindStatus)
 	require.NoError(t, err)
 	*screen.active = "#general"
 
@@ -221,7 +221,7 @@ func TestChatScreen_ModelReply_paces_per_channel_independently(t *testing.T) {
 	require.NoError(t, sess.Join(t.Context(), "#channel-a"))
 	require.NoError(t, sess.Join(t.Context(), "#channel-b"))
 
-	screen, err := NewChatScreen(t.Context(), sess, nil, nil, domain.KindStatus)
+	screen, err := NewChatScreen(t.Context, sess, nil, nil, domain.KindStatus)
 	require.NoError(t, err)
 	*screen.active = "#channel-a"
 
@@ -312,7 +312,7 @@ func TestChatScreen_parting_channel_purges_paced_queue(t *testing.T) {
 	sess := newTestSession(t)
 	require.NoError(t, sess.Join(t.Context(), "#x"))
 
-	screen, err := NewChatScreen(t.Context(), sess, nil, nil, domain.KindStatus)
+	screen, err := NewChatScreen(t.Context, sess, nil, nil, domain.KindStatus)
 	require.NoError(t, err)
 	*screen.active = "#x"
 
@@ -407,7 +407,7 @@ func TestChatScreen_handleSessionEvent_routing(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			screen, err := NewChatScreen(t.Context(), newTestSession(t), nil, nil, domain.KindStatus)
+			screen, err := NewChatScreen(t.Context, newTestSession(t), nil, nil, domain.KindStatus)
 			require.NoError(t, err)
 			*screen.active = "#general"
 
@@ -448,7 +448,7 @@ func TestChatScreen_handleSessionEvent_routing(t *testing.T) {
 }
 
 func TestChatScreen_ErrorEvent_no_active_channel(t *testing.T) {
-	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil, nil, domain.KindStatus)
+	screen, err := NewChatScreen(t.Context, newTestSession(t), nil, nil, domain.KindStatus)
 	require.NoError(t, err)
 
 	// No active channel set — error should still produce a StoredEvent
@@ -477,7 +477,7 @@ func TestChatScreen_ErrorEvent_no_active_channel(t *testing.T) {
 // rather than sending. `&modeloff` is a chat-screen-owned window
 // the session has no concept of, so the validation lives here.
 func TestChatScreen_MessageSubmit_on_status_channel_renders_usage_hint(t *testing.T) {
-	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil, nil, domain.KindStatus)
+	screen, err := NewChatScreen(t.Context, newTestSession(t), nil, nil, domain.KindStatus)
 	require.NoError(t, err)
 	*screen.active = domain.StatusChannelName
 
@@ -533,7 +533,7 @@ func TestChatScreen_completion_all_instance_commands_see_instances_outside_activ
 	sess := session.New(t.Context, s, nil, &uitest.FakeAPI{}, "testuser", "", "")
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 
-	screen, err := NewChatScreen(ctx, sess, nil, nil, domain.KindStatus)
+	screen, err := NewChatScreen(func() context.Context { return ctx }, sess, nil, nil, domain.KindStatus)
 	require.NoError(t, err)
 
 	// Seed an active channel whose membership does NOT include
@@ -572,7 +572,7 @@ func TestChatScreen_completion_all_instance_commands_see_instances_outside_activ
 // handle still finds and removes the entry cleanly regardless of the
 // nick carried on the event.
 func TestChatScreen_NickChange_then_Quit_removes_instance(t *testing.T) {
-	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil, nil, domain.KindStatus)
+	screen, err := NewChatScreen(t.Context, newTestSession(t), nil, nil, domain.KindStatus)
 	require.NoError(t, err)
 
 	// Seed the channel so handleModelInvitedEvent finds it.
@@ -638,7 +638,7 @@ func TestChatScreen_NickChange_then_Quit_removes_instance(t *testing.T) {
 // envelope rather than reading any wire-side channel list off the
 // event itself.
 func TestChatScreen_QuitEvent_routes_to_targets_only(t *testing.T) {
-	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil, nil, domain.KindStatus)
+	screen, err := NewChatScreen(t.Context, newTestSession(t), nil, nil, domain.KindStatus)
 	require.NoError(t, err)
 
 	for _, name := range []domain.ChannelName{"#x", "#y", "#z"} {
@@ -665,7 +665,7 @@ func TestChatScreen_QuitEvent_routes_to_targets_only(t *testing.T) {
 // the line into the per-recipient `Targets` only, leaving
 // unrelated windows untouched.
 func TestChatScreen_NickChangeEvent_routes_to_targets_only(t *testing.T) {
-	screen, err := NewChatScreen(t.Context(), newTestSession(t), nil, nil, domain.KindStatus)
+	screen, err := NewChatScreen(t.Context, newTestSession(t), nil, nil, domain.KindStatus)
 	require.NoError(t, err)
 
 	for _, name := range []domain.ChannelName{"#x", "#y", "#z"} {

@@ -51,7 +51,7 @@ func newChatApp(t *testing.T, sess *session.Session) *uitest.App {
 func newChatAppWithConfig(t *testing.T, sess *session.Session, cfgStore config.Store) *uitest.App {
 	t.Helper()
 
-	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore, nil, domain.KindStatus)
+	chatScreen, err := screens.NewChatScreen(t.Context, sess, cfgStore, nil, domain.KindStatus)
 	require.NoError(t, err)
 
 	root := uipkg.NewRoot(chatScreen)
@@ -328,7 +328,7 @@ func TestChatScreen_persists_last_channel_on_focus(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#general")
 	uitest.SeedChannel(t, sess, "#random")
 
-	chatScreen, err := screens.NewChatScreen(t.Context(), sess, newFakeConfigStore(), s, domain.KindStatus)
+	chatScreen, err := screens.NewChatScreen(t.Context, sess, newFakeConfigStore(), s, domain.KindStatus)
 	require.NoError(t, err)
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen), teatest.WithInitialTermSize(256, 256))

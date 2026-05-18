@@ -13,7 +13,7 @@ import (
 )
 
 func TestMetricsSummaryModel_statusItems(t *testing.T) {
-	model := NewMetricsSummaryModel(t.Context(), nil)
+	model := NewMetricsSummaryModel(t.Context, nil)
 
 	updated, cmd := model.Update(metricsSummaryRefreshedMsg{
 		snapshot: observability.MetricsSnapshot{
@@ -43,7 +43,7 @@ func TestMetricsSummaryModel_statusItems(t *testing.T) {
 }
 
 func TestMetricsPane_view_renders_snapshot(t *testing.T) {
-	model := NewMetricsPane(t.Context(), nil)
+	model := NewMetricsPane(t.Context, nil)
 
 	sized, _ := model.Update(ui.BoundsMsg{
 		Rect: ui.Rect{Width: 80, Height: 30},
@@ -126,7 +126,7 @@ func TestMetricsPane_view_renders_snapshot(t *testing.T) {
 func TestChatWorkspace_statusItems_follow_observability_state(t *testing.T) {
 	workspace := NewChatWorkspace(
 		NewChatView[testKind](func() []domain.StoredEvent { return nil }, "#general", domain.KindChannel, "testuser", ""),
-	).WithMetrics(NewMetricsPane(t.Context(), nil))
+	).WithMetrics(NewMetricsPane(t.Context, nil))
 
 	require.Empty(t, workspace.StatusItems())
 	require.False(t, workspace.WantsNickListHidden())
@@ -169,7 +169,7 @@ func TestChatWorkspace_statusItems_follow_observability_state(t *testing.T) {
 func TestChatWorkspace_fullscreen_observability_renders_logs_and_metrics(t *testing.T) {
 	workspace := NewChatWorkspace(
 		NewChatView[testKind](func() []domain.StoredEvent { return nil }, "#general", domain.KindChannel, "testuser", ""),
-	).WithMetrics(NewMetricsPane(t.Context(), nil))
+	).WithMetrics(NewMetricsPane(t.Context, nil))
 
 	updated, _ := workspace.Update(ui.BoundsMsg{
 		Rect: ui.Rect{Width: 140, Height: 30},

@@ -57,7 +57,7 @@ func TestApp_send_message_shows_pending_indicator(t *testing.T) {
 	uitest.AddModel(t, sess, "#general", "test/model", "")
 	uitest.DrainEvents(sess)
 
-	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore, nil, domain.KindStatus)
+	chatScreen, err := screens.NewChatScreen(t.Context, sess, cfgStore, nil, domain.KindStatus)
 	require.NoError(t, err)
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen))
@@ -86,7 +86,7 @@ func TestApp_nick_command_with_teatest(t *testing.T) {
 	sess, _ := newIntegrationSessionWithConfigStore(t, &integrationAPI{}, cfgStore)
 	uitest.SeedChannel(t, sess, "#general")
 
-	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore, nil, domain.KindStatus)
+	chatScreen, err := screens.NewChatScreen(t.Context, sess, cfgStore, nil, domain.KindStatus)
 	require.NoError(t, err)
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen))
@@ -109,7 +109,7 @@ func TestApp_nick_command_reports_persist_error_with_teatest(t *testing.T) {
 	sess, _ := newIntegrationSessionWithConfigStore(t, &integrationAPI{}, cfgStore)
 	uitest.SeedChannel(t, sess, "#general")
 
-	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore, nil, domain.KindStatus)
+	chatScreen, err := screens.NewChatScreen(t.Context, sess, cfgStore, nil, domain.KindStatus)
 	require.NoError(t, err)
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen))
@@ -124,7 +124,7 @@ func TestApp_title_list_and_help_commands_with_teatest(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#general")
 	uitest.SeedChannel(t, sess, "#random")
 
-	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore, nil, domain.KindStatus)
+	chatScreen, err := screens.NewChatScreen(t.Context, sess, cfgStore, nil, domain.KindStatus)
 	require.NoError(t, err)
 
 	root := uipkg.NewRoot(chatScreen)
@@ -155,7 +155,7 @@ func TestApp_invite_whois_and_kick_commands_with_teatest(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#general")
 	uitest.SeedChannel(t, sess, "#random")
 
-	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore, nil, domain.KindStatus)
+	chatScreen, err := screens.NewChatScreen(t.Context, sess, cfgStore, nil, domain.KindStatus)
 	require.NoError(t, err)
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen),
@@ -185,7 +185,7 @@ func TestApp_config_commands_with_teatest(t *testing.T) {
 	sess, _ := newIntegrationSessionWithConfigStore(t, &integrationAPI{}, cfgStore)
 	uitest.SeedChannel(t, sess, "#general")
 
-	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore, nil, domain.KindStatus)
+	chatScreen, err := screens.NewChatScreen(t.Context, sess, cfgStore, nil, domain.KindStatus)
 	require.NoError(t, err)
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen))
@@ -221,7 +221,7 @@ func TestApp_config_commands_with_teatest(t *testing.T) {
 func TestApp_unknown_command_on_welcome_screen_with_teatest(t *testing.T) {
 	sess, _, cfgStore := newIntegrationSession(t, &integrationAPI{})
 
-	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore, nil, domain.KindStatus)
+	chatScreen, err := screens.NewChatScreen(t.Context, sess, cfgStore, nil, domain.KindStatus)
 	require.NoError(t, err)
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen))
@@ -241,7 +241,7 @@ func TestApp_unknown_command_on_welcome_screen_with_teatest(t *testing.T) {
 func TestApp_welcome_join_command_with_teatest(t *testing.T) {
 	sess, _, cfgStore := newIntegrationSession(t, &integrationAPI{})
 
-	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore, nil, domain.KindStatus)
+	chatScreen, err := screens.NewChatScreen(t.Context, sess, cfgStore, nil, domain.KindStatus)
 	require.NoError(t, err)
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen))
@@ -260,7 +260,7 @@ func TestApp_welcome_join_command_with_teatest(t *testing.T) {
 func TestApp_message_on_welcome_screen_rejected_with_teatest(t *testing.T) {
 	sess, _, cfgStore := newIntegrationSession(t, &integrationAPI{})
 
-	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore, nil, domain.KindStatus)
+	chatScreen, err := screens.NewChatScreen(t.Context, sess, cfgStore, nil, domain.KindStatus)
 	require.NoError(t, err)
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen))
@@ -280,7 +280,7 @@ func TestApp_message_on_welcome_screen_rejected_with_teatest(t *testing.T) {
 func TestApp_channel_command_on_welcome_screen_rejected_with_teatest(t *testing.T) {
 	sess, _, cfgStore := newIntegrationSession(t, &integrationAPI{})
 
-	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore, nil, domain.KindStatus)
+	chatScreen, err := screens.NewChatScreen(t.Context, sess, cfgStore, nil, domain.KindStatus)
 	require.NoError(t, err)
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen))
@@ -294,7 +294,7 @@ func TestApp_quit_command_with_teatest(t *testing.T) {
 	sess, _, cfgStore := newIntegrationSession(t, &integrationAPI{})
 	uitest.SeedChannel(t, sess, "#general")
 
-	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore, nil, domain.KindStatus)
+	chatScreen, err := screens.NewChatScreen(t.Context, sess, cfgStore, nil, domain.KindStatus)
 	require.NoError(t, err)
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen))
@@ -309,7 +309,7 @@ func TestApp_unknown_target_commands_with_teatest(t *testing.T) {
 	sess, _, cfgStore := newIntegrationSession(t, &integrationAPI{})
 	uitest.SeedChannel(t, sess, "#general")
 
-	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore, nil, domain.KindStatus)
+	chatScreen, err := screens.NewChatScreen(t.Context, sess, cfgStore, nil, domain.KindStatus)
 	require.NoError(t, err)
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen))
@@ -329,7 +329,7 @@ func TestApp_unread_counts_clear_when_visiting_channel_with_teatest(t *testing.T
 
 	uitest.SeedMessage(t, sess, "#general", "general unread")
 
-	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore, nil, domain.KindStatus)
+	chatScreen, err := screens.NewChatScreen(t.Context, sess, cfgStore, nil, domain.KindStatus)
 	require.NoError(t, err)
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen))
@@ -366,7 +366,7 @@ func TestApp_input_history_and_sidebar_shortcuts_with_teatest(t *testing.T) {
 	uitest.SeedMessage(t, sess, "#general", "general msg")
 	uitest.SeedChannel(t, sess, "#random")
 
-	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore, nil, domain.KindStatus)
+	chatScreen, err := screens.NewChatScreen(t.Context, sess, cfgStore, nil, domain.KindStatus)
 	require.NoError(t, err)
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen))
@@ -414,7 +414,7 @@ func TestApp_ctrl_arrow_scroll_preserves_draft_with_teatest(t *testing.T) {
 		uitest.SeedMessage(t, sess, "#general", fmt.Sprintf("message %d", i))
 	}
 
-	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore, nil, domain.KindStatus)
+	chatScreen, err := screens.NewChatScreen(t.Context, sess, cfgStore, nil, domain.KindStatus)
 	require.NoError(t, err)
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen))
@@ -465,7 +465,7 @@ func TestApp_new_messages_divider_with_teatest(t *testing.T) {
 		uitest.SeedMessage(t, sess, "#general", fmt.Sprintf("message %d", i))
 	}
 
-	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore, nil, domain.KindStatus)
+	chatScreen, err := screens.NewChatScreen(t.Context, sess, cfgStore, nil, domain.KindStatus)
 	require.NoError(t, err)
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen))

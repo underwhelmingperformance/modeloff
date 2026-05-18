@@ -78,10 +78,12 @@ type ConnectionConfig struct {
 	// mode (used by tests that only care about the visual sequence).
 	Session *session.Session
 
-	// Ctx is the application context used for backend calls. Defaults
-	// to context.Background when zero, but production callers should
-	// supply the application context so cancellation propagates.
-	Ctx context.Context
+	// BaseContext supplies the application context for each backend
+	// call, mirroring [session.New]'s shape. Defaults to
+	// context.Background when nil, but production callers should
+	// supply a closure over the application context so cancellation
+	// propagates.
+	BaseContext func() context.Context
 }
 
 // ConnectionScreen runs the IRC-style startup animation while the
@@ -159,8 +161,8 @@ func NewConnectionScreen(cfg ConnectionConfig, chatScreen ui.Model) ConnectionSc
 }
 
 func (s ConnectionScreen) ctx() context.Context {
-	if s.cfg.Ctx != nil {
-		return s.cfg.Ctx
+	if s.cfg.BaseContext != nil {
+		return s.cfg.BaseContext()
 	}
 
 	return context.Background()
