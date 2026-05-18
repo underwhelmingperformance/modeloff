@@ -502,6 +502,7 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		if s.realChannelCount() == 0 {
 			return s, tea.Batch(
 				s.loadLiveModels(),
+				s.ensurePersonas(),
 				msgCmd(components.SetPlaceholderMsg{
 					Text: s.checklist.Render(),
 				}),
@@ -513,6 +514,7 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 				Target: *s.active, Text: text, At: time.Now(),
 			}),
 			s.loadLiveModels(),
+			s.ensurePersonas(),
 		)
 
 	case chatcmd.PokeIntervalSetResult:
@@ -794,6 +796,30 @@ func (s ChatScreen) loadLiveModels() tea.Cmd {
 		}
 
 		return liveModelsLoadedMsg{models: options}
+	}
+}
+
+// ensurePersonas seeds the persona pool in the background so the
+// next `--persona` tab-completion has something to offer. Best-
+// effort: a failure is logged and discarded, since the persona pool
+// is not required for any user-visible flow except completion.
+func (s ChatScreen) ensurePersonas() tea.Cmd {
+	if !s.mgr.HasAPIKey() {
+		return nil
+	}
+
+	return func() tea.Msg {
+		ctx := s.baseContext()
+
+		if err := s.mgr.EnsurePersonas(ctx); err != nil {
+			slog.Default().WarnContext(ctx, "ensure personas",
+				"component", "ui",
+				"screen", "chat",
+				"error", err,
+			)
+		}
+
+		return nil
 	}
 }
 
