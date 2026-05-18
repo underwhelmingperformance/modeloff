@@ -348,13 +348,25 @@ func TestInputBar_ctrl_e_moves_to_end(t *testing.T) {
 	require.Equal(t, "helloX", inputValue(t, m))
 }
 
-func TestInputBar_ctrl_w_deletes_word_backward(t *testing.T) {
-	var m ui.Model = components.NewInputBar("")
+func TestInputBar_delete_word_backward(t *testing.T) {
+	tests := []struct {
+		name string
+		key  tea.KeyMsg
+	}{
+		{name: "ctrl+w", key: tea.KeyMsg{Type: tea.KeyCtrlW}},
+		{name: "alt+backspace", key: tea.KeyMsg{Type: tea.KeyBackspace, Alt: true}},
+	}
 
-	m = typeText(t, m, "hello world")
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlW})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var m ui.Model = components.NewInputBar("")
 
-	require.Equal(t, "hello ", inputValue(t, m))
+			m = typeText(t, m, "hello world")
+			m, _ = m.Update(tt.key)
+
+			require.Equal(t, "hello ", inputValue(t, m))
+		})
+	}
 }
 
 func TestInputBar_editing_shortcuts_work_after_history_recall(t *testing.T) {

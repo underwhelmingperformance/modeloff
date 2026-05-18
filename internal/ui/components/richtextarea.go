@@ -446,7 +446,7 @@ func (r RichTextarea) handleEditorKey(msg tea.KeyMsg) (RichTextarea, bool, tea.C
 		r.position = r.document.Delete(richtext.Selection{Anchor: r.position, Head: end})
 		r.selection = richtext.Selection{Anchor: r.position, Head: r.position}
 		return r.ensureViewport(), true, nil
-	case "ctrl+w":
+	case "ctrl+w", "alt+backspace":
 		if !r.selection.Collapsed() {
 			r.deleteSelection()
 			return r, true, nil

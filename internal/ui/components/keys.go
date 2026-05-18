@@ -107,7 +107,7 @@ var DefaultInputBarKeyMap = InputBarKeyMap{
 		key.WithHelp("^→", "word →"),
 	)),
 	DeleteWordBack: ui.Bind(key.NewBinding(
-		key.WithKeys("ctrl+w"),
+		key.WithKeys("ctrl+w", "alt+backspace"),
 		key.WithHelp("^W", "del word"),
 	)),
 	DeleteWordFwd: ui.Bind(key.NewBinding(
