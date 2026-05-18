@@ -83,6 +83,7 @@ type InputBarKeyMap struct {
 	ToggleStrike    ui.KeyBinding
 	OpenPalette     ui.KeyBinding
 	ResetFormat     ui.KeyBinding
+	CopySelection   ui.KeyBinding
 }
 
 // DefaultInputBarKeyMap is the default set of keybindings for the
@@ -163,6 +164,10 @@ var DefaultInputBarKeyMap = InputBarKeyMap{
 	ResetFormat: ui.Bind(key.NewBinding(
 		key.WithKeys("alt+o"),
 		key.WithHelp("M-o", "reset fmt"),
+	)),
+	CopySelection: ui.Bind(key.NewBinding(
+		key.WithKeys("alt+w"),
+		key.WithHelp("M-w", "copy sel"),
 	)),
 }
 

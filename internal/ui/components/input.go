@@ -12,6 +12,7 @@ import (
 	"github.com/laney/modeloff/internal/ircfmt"
 	"github.com/laney/modeloff/internal/richtext"
 	"github.com/laney/modeloff/internal/ui"
+	"github.com/laney/modeloff/internal/ui/clipboard"
 	"github.com/laney/modeloff/internal/ui/theme"
 )
 
@@ -196,6 +197,9 @@ func (b InputBar) handleKey(msg tea.KeyMsg) (ui.Model, tea.Cmd) {
 	switch {
 	case ui.Matches(msg, b.keyMap.Submit):
 		return b.submit()
+
+	case ui.Matches(msg, b.keyMap.CopySelection):
+		return b, clipboard.CopyCmd(b.input.SelectedText())
 
 	case ui.Matches(msg, b.keyMap.HistoryUp):
 		if !b.popover.IsVisible() {
@@ -537,6 +541,7 @@ func (b InputBar) KeyBindings() []ui.KeyBinding {
 		b.keyMap.DeleteToEnd,
 		ui.WithBindingEnabled(b.keyMap.Yank, len(b.input.killRing) > 0),
 		b.keyMap.Transpose,
+		ui.WithBindingEnabled(b.keyMap.CopySelection, !b.input.selection.Collapsed()),
 		b.keyMap.Home,
 		b.keyMap.End,
 	}

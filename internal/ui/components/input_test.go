@@ -1,6 +1,8 @@
 package components_test
 
 import (
+	"bytes"
+	"encoding/base64"
 	"fmt"
 	"strings"
 	"testing"
@@ -13,6 +15,7 @@ import (
 	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/ui"
+	"github.com/laney/modeloff/internal/ui/clipboard"
 	"github.com/laney/modeloff/internal/ui/components"
 	"github.com/laney/modeloff/internal/ui/uitest"
 )
@@ -490,6 +493,46 @@ func TestInputBar_palette_up_does_not_walk_history(t *testing.T) {
 		"Up inside the palette must not dismiss it; if it did, the empty-value check above would pass for the wrong reason")
 }
 
+func TestInputBar_alt_w_copies_selection_via_osc52(t *testing.T) {
+	var buf bytes.Buffer
+	restore := clipboard.SetWriter(&buf)
+	t.Cleanup(restore)
+
+	var m ui.Model = components.NewInputBar()
+	m = typeText(t, m, "hello world")
+
+	// Select "hello" with shift+home from position 5.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyShiftHome})
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}, Alt: true})
+
+	require.NotNil(t, cmd, "alt+w with a selection must emit a clipboard cmd")
+	cmd()
+
+	want := "\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte("hello")) + "\x07"
+	require.Equal(t, want, buf.String())
+}
+
+func TestInputBar_alt_w_with_no_selection_is_noop(t *testing.T) {
+	var buf bytes.Buffer
+	restore := clipboard.SetWriter(&buf)
+	t.Cleanup(restore)
+
+	var m ui.Model = components.NewInputBar()
+	m = typeText(t, m, "hello")
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}, Alt: true})
+
+	require.Nil(t, cmd, "alt+w without a selection must not emit a cmd")
+	require.Empty(t, buf.String())
+}
+
 func TestInputBar_keybindings_include_palette_when_visible(t *testing.T) {
 	var m ui.Model = components.NewInputBar()
 
@@ -540,6 +583,7 @@ func TestInputBar_keybindings_include_rich_shortcuts(t *testing.T) {
 		"^K\x00del → end":      {},
 		"^Y\x00yank":           {},
 		"^T\x00transpose":      {},
+		"M-w\x00copy sel":      {},
 		"Home\x00line start":   {},
 		"End\x00line end":      {},
 	}, bindings)
@@ -557,6 +601,7 @@ func TestInputBar_keybindings_include_rich_shortcuts(t *testing.T) {
 		"^K\x00del → end":      {},
 		"^Y\x00yank":           {},
 		"^T\x00transpose":      {},
+		"M-w\x00copy sel":      {},
 		"Home\x00line start":   {},
 		"End\x00line end":      {},
 	}, bindings)
@@ -924,6 +969,7 @@ func TestInputBar_keybindings_include_history_when_popover_hidden(t *testing.T) 
 		"del \u2192 end",
 		"yank",
 		"transpose",
+		"copy sel",
 		"line start",
 		"line end",
 		"bold",

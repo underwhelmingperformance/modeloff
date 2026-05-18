@@ -1069,6 +1069,12 @@ func (r RichTextarea) renderSwatch(index int) string {
 	return style.Render(label)
 }
 
+// SelectedText returns the plain text of the current selection, or
+// an empty string when nothing is selected.
+func (r RichTextarea) SelectedText() string {
+	return r.selectionText(r.selection)
+}
+
 // PaletteVisible reports whether the colour palette is open.
 func (r RichTextarea) PaletteVisible() bool {
 	return r.palette.open
