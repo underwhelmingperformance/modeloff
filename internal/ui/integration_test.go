@@ -22,6 +22,7 @@ import (
 	"github.com/laney/modeloff/internal/session"
 	storemod "github.com/laney/modeloff/internal/store"
 	"github.com/laney/modeloff/internal/store/storetest"
+	"github.com/laney/modeloff/internal/testclient"
 	uipkg "github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/screens"
 	"github.com/laney/modeloff/internal/ui/uitest"
@@ -156,8 +157,14 @@ func TestApp_terminal_output_shows_full_model_nick_in_user_list(t *testing.T) {
 		Channels: channels,
 	})
 
-	client := modelclient.New(grok, sess, func() api.Client { return nil }, nil, nil, nil, t.Context)
-	require.NoError(t, client.Attach(t.Context()), "attach grok model client")
+	client := testclient.New(grok.Nick(), sess,
+		testclient.WithInstanceID(grok.ID()),
+		testclient.WithModelID(grok.ModelID),
+		testclient.WithChannels("#general"),
+	)
+	require.NoError(t, client.Attach(t.Context()), "attach grok test client")
+	t.Cleanup(client.Detach)
+
 	resp, err := client.Send(t.Context(), protocol.Join{Channel: "#general"})
 	require.NoError(t, err)
 	require.NoError(t, resp.Err)
@@ -496,24 +503,26 @@ type instanceSpec struct {
 	Channels *orderedmap.OrderedMap[domain.ChannelName, time.Time]
 }
 
-func seedInstance(t *testing.T, sess *session.Session, store *storemod.SQLiteStore, spec instanceSpec) *domain.Instance {
+func seedInstance(t *testing.T, sess *session.Session, _ *storemod.SQLiteStore, spec instanceSpec) *domain.Instance {
 	t.Helper()
 
-	inst := domain.NewModelInstance(
-		domain.InstanceID("inst-"+string(spec.Nick)),
-		spec.Nick,
-		spec.ModelID,
-		spec.Persona,
-		spec.Channels,
-	)
-	require.NoError(t, store.SaveInstance(t.Context(), inst))
+	opts := []testclient.Option{
+		testclient.WithInstanceID(domain.InstanceID("inst-" + string(spec.Nick))),
+		testclient.WithModelID(spec.ModelID),
+		testclient.WithPersona(spec.Persona),
+	}
 
-	// Pair the persistent write with a [modelclient.ModelClient]
-	// attach so the model-client subscription is registered and its
-	// dispatch goroutine running before any test fans out an event to
-	// it. This mirrors the production lifecycle, where
-	// `attachInstanceToChannel` ensures the same invariant.
-	require.NoError(t, modelclient.New(inst, sess, func() api.Client { return nil }, nil, nil, nil, t.Context).Attach(t.Context()), "attach model client for seeded instance")
+	if spec.Channels != nil {
+		channels := make([]domain.ChannelName, 0, spec.Channels.Len())
+		for pair := spec.Channels.Oldest(); pair != nil; pair = pair.Next() {
+			channels = append(channels, pair.Key)
+		}
+		opts = append(opts, testclient.WithChannels(channels...))
+	}
 
-	return inst
+	client := testclient.New(spec.Nick, sess, opts...)
+	require.NoError(t, client.Attach(t.Context()), "attach test client for seeded instance")
+	t.Cleanup(client.Detach)
+
+	return client.Instance()
 }

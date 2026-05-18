@@ -25,6 +25,7 @@ import (
 	"github.com/laney/modeloff/internal/modelmanager"
 	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/session"
+	"github.com/laney/modeloff/internal/testclient"
 	"github.com/laney/modeloff/internal/userclient"
 )
 
@@ -387,19 +388,14 @@ func SeedChannel(t testing.TB, user *userclient.UserClient, name string) {
 func SeedMessage(t testing.TB, sess *session.Session, channel, body string) {
 	t.Helper()
 
-	const seederNick domain.Nick = "seedbot"
-	const seederID domain.InstanceID = "inst-seedbot"
+	bot := testclient.New("seedbot", sess,
+		testclient.WithInstanceID("inst-seedbot"),
+		testclient.WithChannels(domain.ChannelName(channel)),
+	)
+	require.NoError(t, bot.Attach(t.Context()))
+	t.Cleanup(bot.Detach)
 
-	bot, err := sess.ResolveNick(t.Context(), seederNick)
-	if err != nil {
-		bot = domain.NewModelInstance(seederID, seederNick, "test/model", "", nil)
-		require.NoError(t, sess.SaveInstance(t.Context(), bot))
-	}
-
-	client := modelclient.New(bot, sess, func() api.Client { return nil }, nil, nil, nil, t.Context)
-	require.NoError(t, client.Attach(t.Context()), "attach seedbot model client")
-
-	resp, err := client.Send(t.Context(), protocol.PrivMsg{
+	resp, err := bot.Send(t.Context(), protocol.PrivMsg{
 		Target: domain.ChannelName(channel),
 		Body:   body,
 	})
