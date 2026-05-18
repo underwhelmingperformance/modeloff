@@ -35,7 +35,7 @@ func TestBuildToolRegistry_returns_expected_tools(t *testing.T) {
 		},
 		{
 			Name:        "part",
-			Description: "Leave the current channel with an optional farewell message.",
+			Description: "Leave the current channel for an extended absence — a real exit, not a brief away. The message is the parting line peers see; an empty message parts silently. Do NOT part for short absences (brb, afk, food, sleep): just say so in chat and stay. Parting drops you from the channel; rejoining requires a fresh JOIN or an invite. Reserve PART for when you genuinely intend to leave the room.",
 			Parameters:  toolParams(t, "part"),
 		},
 		{
@@ -118,7 +118,7 @@ func TestBuildToolRegistry_tool_tag_overrides_help(t *testing.T) {
 
 	// Non-empty tool:"..." tag overrides the help text.
 	require.Equal(t,
-		"Leave the current channel with an optional farewell message.",
+		"Leave the current channel for an extended absence — a real exit, not a brief away. The message is the parting line peers see; an empty message parts silently. Do NOT part for short absences (brb, afk, food, sleep): just say so in chat and stay. Parting drops you from the channel; rejoining requires a fresh JOIN or an invite. Reserve PART for when you genuinely intend to leave the room.",
 		byName["part"].Description,
 	)
 	require.Equal(t,

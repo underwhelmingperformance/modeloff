@@ -9,7 +9,7 @@ import (
 // Grammar defines the complete set of chat screen commands.
 type Grammar struct {
 	Join               JoinCommand               `cmd:"" aliases:"j" tool:"" help:"Switch to a channel or create it if needed."`
-	Part               PartCommand               `cmd:"" tool:"Leave the current channel with an optional farewell message." help:"Part from the current channel."`
+	Part               PartCommand               `cmd:"" tool:"Leave the current channel for an extended absence — a real exit, not a brief away. The message is the parting line peers see; an empty message parts silently. Do NOT part for short absences (brb, afk, food, sleep): just say so in chat and stay. Parting drops you from the channel; rejoining requires a fresh JOIN or an invite. Reserve PART for when you genuinely intend to leave the room." help:"Part from the current channel."`
 	List               ListCommand               `cmd:"" tool:"" help:"List all known channels."`
 	AddModel           AddModelCommand           `cmd:"" kind:"channel" caps:"operator" tool:"Add a new model instance to the current channel by model ID, optionally with a persona." help:"Add a model or reusable instance into the current channel."`
 	Invite             InviteCommand             `cmd:"" tool:"" kind:"channel" help:"Invite a nick to a channel."`
