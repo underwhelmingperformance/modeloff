@@ -508,6 +508,10 @@ func (b InputBar) KeyBindings() []ui.KeyBinding {
 				key.WithHelp("←→", "swatch"),
 			)),
 			ui.Bind(key.NewBinding(
+				key.WithKeys("0", "1", "2", "3", "4", "5", "6", "7", "8", "9"),
+				key.WithHelp("0-9", "jump"),
+			)),
+			ui.Bind(key.NewBinding(
 				key.WithKeys("tab"),
 				key.WithHelp("Tab", "fg/bg"),
 			)),

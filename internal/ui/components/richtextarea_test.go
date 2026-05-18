@@ -260,6 +260,25 @@ func TestRichTextareaPaletteMouseAppliesForeground(t *testing.T) {
 	require.NotNil(t, editor.pending.FG)
 }
 
+func TestRichTextareaPaletteDigitJump(t *testing.T) {
+	const digits = "0123456789"
+	for index, digit := range digits {
+		t.Run(string(digit), func(t *testing.T) {
+			editor := NewRichTextarea(RichTextareaConfig{AllowFormatting: true})
+			editor = editor.SetPlainText("hello")
+
+			updated, _ := editor.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}, Alt: true})
+			editor = updated.(RichTextarea)
+			require.True(t, editor.PaletteVisible())
+
+			updated, _ = editor.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{digit}})
+			editor = updated.(RichTextarea)
+
+			require.Equal(t, index, editor.PaletteIndex())
+		})
+	}
+}
+
 func TestRichTextareaPaletteKeyboardTargetsBackgroundForSelection(t *testing.T) {
 	editor := NewRichTextarea(RichTextareaConfig{AllowFormatting: true})
 	editor = editor.SetPlainText("hello")

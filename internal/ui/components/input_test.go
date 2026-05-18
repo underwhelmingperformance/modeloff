@@ -503,7 +503,7 @@ func TestInputBar_keybindings_include_palette_when_visible(t *testing.T) {
 		helpTexts = append(helpTexts, b.Help().Desc)
 	}
 
-	require.Equal(t, []string{"swatch", "fg/bg", "apply", "dismiss"}, helpTexts)
+	require.Equal(t, []string{"swatch", "jump", "fg/bg", "apply", "dismiss"}, helpTexts)
 }
 
 func TestInputBar_palette_enter_does_not_submit(t *testing.T) {

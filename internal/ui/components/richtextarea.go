@@ -309,7 +309,28 @@ func (r RichTextarea) handlePaletteKey(msg tea.KeyMsg) (RichTextarea, bool) {
 		return r.applyPaletteSelection(), true
 	}
 
+	if digit, ok := digitRune(msg); ok {
+		r.palette.index = digit
+		return r, true
+	}
+
 	return r, false
+}
+
+// digitRune returns the numeric value of a single-digit rune key
+// without any modifier, plus a boolean indicating a match. Used by
+// the colour palette to let the user jump straight to a swatch.
+func digitRune(msg tea.KeyMsg) (int, bool) {
+	if msg.Type != tea.KeyRunes || msg.Alt || len(msg.Runes) != 1 {
+		return 0, false
+	}
+
+	r := msg.Runes[0]
+	if r < '0' || r > '9' {
+		return 0, false
+	}
+
+	return int(r - '0'), true
 }
 
 func (r RichTextarea) handleFormattingKey(msg tea.KeyMsg) (RichTextarea, bool) {
