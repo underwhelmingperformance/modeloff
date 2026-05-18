@@ -28,6 +28,13 @@ func TestJoinAs_model_actor(t *testing.T) {
 		require.NoError(t, sess.joinAs(ctx, botty, "#dev", ""))
 		synctest.Wait()
 
+		ch, err := sess.loadChannelWindow(ctx, "#dev")
+		require.NoError(t, err)
+		modelOnlyMembers := domain.NewMemberList()
+		modelOnlyMembers.Add(botty)
+		modelOnlyMembers.SetMode(botty, domain.ModeOp)
+		requireChannelEqual(t, newTestChannelWindow("#dev", fixedTime, modelOnlyMembers), ch)
+
 		require.ElementsMatch(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Join{
@@ -38,16 +45,14 @@ func TestJoinAs_model_actor(t *testing.T) {
 				At:         fixedTime,
 				Instance:   botty,
 			},
+			domain.NamesReplyEvent{
+				Channel: "#dev",
+				Members: ch.Members,
+				At:      fixedTime,
+			},
 			domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
 			domain.ModelDispatchDone{Instance: botty, At: fixedTime},
 		}, collectEmittedEvents(t, sess))
-
-		ch, err := sess.loadChannelWindow(ctx, "#dev")
-		require.NoError(t, err)
-		modelOnlyMembers := domain.NewMemberList()
-		modelOnlyMembers.Add(botty)
-		modelOnlyMembers.SetMode(botty, domain.ModeOp)
-		requireChannelEqual(t, newTestChannelWindow("#dev", fixedTime, modelOnlyMembers), ch)
 
 		inst, err := s.ResolveNick(ctx, "botty")
 		require.NoError(t, err)
@@ -60,6 +65,63 @@ func TestJoinAs_model_actor(t *testing.T) {
 		last, err := s.GetLastChannel(ctx)
 		require.NoError(t, err)
 		require.Equal(t, domain.ChannelName(""), last)
+	})
+}
+
+// TestJoinAs_model_joining_existing_channel_gets_RPL_topic_and_names
+// pins that a model joining a populated channel receives the
+// RFC-equivalent of RPL_TOPIC and RPL_NAMREPLY — the
+// [domain.TopicInfo] and [domain.NamesReplyEvent] envelopes. Without
+// these, the bot's first dispatch turn has no record of who set the
+// topic or who else is in the room beyond the system-prompt topic
+// line.
+func TestJoinAs_model_joining_existing_channel_gets_RPL_topic_and_names(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		sess, s := newTestSession(t)
+		ctx := t.Context()
+
+		require.NoError(t, userJoin(ctx, t, sess, "#dev"))
+		require.NoError(t, sess.setTopicAs(ctx, userInstance(t, sess), "#dev", "ongoing work"))
+
+		// Drain everything emitted up to this point so the assertion
+		// scopes to the bot's join sequence.
+		collectEmittedEvents(t, sess)
+
+		botty := seedInstance(t, sess, s, instanceSpec{
+			Nick:     "botty",
+			ModelID:  "test/model",
+			Channels: orderedmap.New[domain.ChannelName, time.Time](),
+		})
+
+		require.NoError(t, sess.joinAs(ctx, botty, "#dev", ""))
+		synctest.Wait()
+
+		ch, err := sess.loadChannelWindow(ctx, "#dev")
+		require.NoError(t, err)
+
+		require.ElementsMatch(t, []domain.Event{
+			domain.Join{
+				Target:     "#dev",
+				Nick:       "botty",
+				InstanceID: botty.ID(),
+				At:         fixedTime,
+				Instance:   botty,
+			},
+			domain.NamesReplyEvent{
+				Channel: "#dev",
+				Members: ch.Members,
+				At:      fixedTime,
+			},
+			domain.TopicInfo{
+				Target:     "#dev",
+				Topic:      "ongoing work",
+				TopicSetBy: userInstance(t, sess).Nick(),
+				TopicSetAt: fixedTime,
+				At:         fixedTime,
+			},
+			domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
+			domain.ModelDispatchDone{Instance: botty, At: fixedTime},
+		}, collectEmittedEvents(t, sess))
 	})
 }
 
@@ -566,6 +628,10 @@ func TestJoinAs_normalises_channel_prefix(t *testing.T) {
 		require.NoError(t, sess.joinAs(ctx, botty, "modeloff", ""))
 		synctest.Wait()
 
+		ch, err := sess.loadChannelWindow(ctx, "#modeloff")
+		require.NoError(t, err)
+		require.True(t, ch.Members.HasNick("botty"))
+
 		require.ElementsMatch(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Join{
@@ -576,13 +642,14 @@ func TestJoinAs_normalises_channel_prefix(t *testing.T) {
 				At:         fixedTime,
 				Instance:   botty,
 			},
+			domain.NamesReplyEvent{
+				Channel: "#modeloff",
+				Members: ch.Members,
+				At:      fixedTime,
+			},
 			domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
 			domain.ModelDispatchDone{Instance: botty, At: fixedTime},
 		}, collectEmittedEvents(t, sess))
-
-		ch, err := sess.loadChannelWindow(ctx, "#modeloff")
-		require.NoError(t, err)
-		require.True(t, ch.Members.HasNick("botty"))
 
 		_, err = sess.loadChannelWindow(ctx, "modeloff")
 		require.Error(t, err)
@@ -766,6 +833,9 @@ func TestJoinAs_model_voice_only_no_topic(t *testing.T) {
 		require.NoError(t, sess.joinAs(ctx, botty, "#dev", ""))
 		synctest.Wait()
 
+		ch, err := sess.loadChannelWindow(ctx, "#dev")
+		require.NoError(t, err)
+
 		require.ElementsMatch(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Join{
@@ -775,6 +845,18 @@ func TestJoinAs_model_voice_only_no_topic(t *testing.T) {
 				Created:    false,
 				At:         fixedTime,
 				Instance:   botty,
+			},
+			domain.NamesReplyEvent{
+				Channel: "#dev",
+				Members: ch.Members,
+				At:      fixedTime,
+			},
+			domain.TopicInfo{
+				Target:     "#dev",
+				Topic:      "some topic",
+				TopicSetBy: ch.TopicSetBy,
+				TopicSetAt: ch.TopicSetAt,
+				At:         fixedTime,
 			},
 			domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
 			domain.ModelDispatchDone{Instance: botty, At: fixedTime},

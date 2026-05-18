@@ -116,27 +116,28 @@ func (s *Session) joinAs(ctx context.Context, actor *domain.Instance, ch domain.
 		return fmt.Errorf("reload channel after join: %w", err)
 	}
 
-	if isUser {
-		// Send the joiner the channel's current member list (IRC's
-		// RPL_NAMREPLY). The chat-screen handler uses this to
-		// populate its local member-list cache with pre-existing
-		// members; without it, the cache would see only the joiner.
-		s.emit(ctx, domain.NamesReplyEvent{
-			Channel: ch,
-			Members: window.Members,
-			At:      now,
+	// RFC 2812 §3.2.1 / §3.2.4: every joiner gets the channel's
+	// member list and topic. The chat-screen consumes
+	// NamesReplyEvent to populate its member-list cache, and the
+	// model-client's dispatch loop files TopicInfo into history so
+	// the model knows who set the topic and when.
+	s.emit(ctx, domain.NamesReplyEvent{
+		Channel: ch,
+		Members: window.Members,
+		At:      now,
+	})
+
+	if window.Topic != "" {
+		s.emit(ctx, domain.TopicInfo{
+			Target:     ch,
+			Topic:      window.Topic,
+			TopicSetBy: window.TopicSetBy,
+			TopicSetAt: window.TopicSetAt,
+			At:         now,
 		})
+	}
 
-		if window.Topic != "" {
-			s.emit(ctx, domain.TopicInfo{
-				Target:     ch,
-				Topic:      window.Topic,
-				TopicSetBy: window.TopicSetBy,
-				TopicSetAt: window.TopicSetAt,
-				At:         now,
-			})
-		}
-
+	if isUser {
 		return s.saveAutojoinList(ctx)
 	}
 

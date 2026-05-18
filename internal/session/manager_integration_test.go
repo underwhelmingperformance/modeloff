@@ -282,7 +282,7 @@ func TestSession_AddModel_retries_on_nick_collision(t *testing.T) {
 			},
 		}
 
-		_, store, _, user := newTestSessionWithManager(t, fake, "")
+		sess, store, _, user := newTestSessionWithManager(t, fake, "")
 		ctx := t.Context()
 
 		seedStoreInstance(t, store, "taken", "test/model")
@@ -298,6 +298,9 @@ func TestSession_AddModel_retries_on_nick_collision(t *testing.T) {
 		fresh, err := store.ResolveNick(ctx, "fresh")
 		require.NoError(t, err)
 
+		dev, err := sess.LoadChannelWindow(ctx, "#dev")
+		require.NoError(t, err)
+
 		require.ElementsMatch(t, []domain.Event{
 			domain.Join{
 				Target:     "#dev",
@@ -305,6 +308,11 @@ func TestSession_AddModel_retries_on_nick_collision(t *testing.T) {
 				InstanceID: fresh.ID(),
 				At:         emittedAt,
 				Instance:   fresh,
+			},
+			domain.NamesReplyEvent{
+				Channel: "#dev",
+				Members: dev.Members,
+				At:      emittedAt,
 			},
 			domain.ModelDispatchStarted{Instance: fresh, At: emittedAt},
 			domain.ModelDispatchDone{Instance: fresh, At: emittedAt},
@@ -354,7 +362,7 @@ func TestSession_AddModelGenerateNickError(t *testing.T) {
 
 func TestSession_AddModel_creates_new_instance_per_invocation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		_, store, _, user := newTestSessionWithManager(t, &managerFakeAPI{}, "")
+		sess, store, _, user := newTestSessionWithManager(t, &managerFakeAPI{}, "")
 		ctx := t.Context()
 
 		seedChannel(t, user, "#general")
@@ -378,6 +386,11 @@ func TestSession_AddModel_creates_new_instance_per_invocation(t *testing.T) {
 		second, err := store.ResolveNick(ctx, "fakenick1")
 		require.NoError(t, err)
 
+		general, err := sess.LoadChannelWindow(ctx, "#general")
+		require.NoError(t, err)
+		random, err := sess.LoadChannelWindow(ctx, "#random")
+		require.NoError(t, err)
+
 		require.ElementsMatch(t, []domain.Event{
 			domain.Join{
 				Target:     "#general",
@@ -385,6 +398,11 @@ func TestSession_AddModel_creates_new_instance_per_invocation(t *testing.T) {
 				InstanceID: first.ID(),
 				At:         emittedAt,
 				Instance:   first,
+			},
+			domain.NamesReplyEvent{
+				Channel: "#general",
+				Members: general.Members,
+				At:      emittedAt,
 			},
 			domain.ModelDispatchStarted{Instance: first, At: emittedAt},
 			domain.ModelDispatchDone{Instance: first, At: emittedAt},
@@ -394,6 +412,11 @@ func TestSession_AddModel_creates_new_instance_per_invocation(t *testing.T) {
 				InstanceID: second.ID(),
 				At:         emittedAt,
 				Instance:   second,
+			},
+			domain.NamesReplyEvent{
+				Channel: "#random",
+				Members: random.Members,
+				At:      emittedAt,
 			},
 			domain.ModelDispatchStarted{Instance: second, At: emittedAt},
 			domain.ModelDispatchDone{Instance: second, At: emittedAt},
@@ -423,7 +446,7 @@ func TestSession_Invite_without_persona_assigns_from_pool(t *testing.T) {
 			},
 		}
 
-		_, store, _, user := newTestSessionWithManager(t, fake, "")
+		sess, store, _, user := newTestSessionWithManager(t, fake, "")
 		ctx := t.Context()
 
 		seedChannel(t, user, "#dev")
@@ -437,6 +460,9 @@ func TestSession_Invite_without_persona_assigns_from_pool(t *testing.T) {
 		inst, err := store.ResolveNick(ctx, "fakenick")
 		require.NoError(t, err)
 
+		dev, err := sess.LoadChannelWindow(ctx, "#dev")
+		require.NoError(t, err)
+
 		require.ElementsMatch(t, []domain.Event{
 			domain.Join{
 				Target:     "#dev",
@@ -444,6 +470,11 @@ func TestSession_Invite_without_persona_assigns_from_pool(t *testing.T) {
 				InstanceID: inst.ID(),
 				At:         emittedAt,
 				Instance:   inst,
+			},
+			domain.NamesReplyEvent{
+				Channel: "#dev",
+				Members: dev.Members,
+				At:      emittedAt,
 			},
 			domain.ModelDispatchStarted{Instance: inst, At: emittedAt},
 			domain.ModelDispatchDone{Instance: inst, At: emittedAt},

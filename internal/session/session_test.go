@@ -1413,6 +1413,9 @@ func TestSession_AddModel(t *testing.T) {
 		require.NoError(t, err)
 		require.NotEmpty(t, inst.ID())
 
+		updated, err := sess.loadChannelWindow(ctx, "#dev")
+		require.NoError(t, err)
+
 		require.ElementsMatch(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Join{
@@ -1422,6 +1425,11 @@ func TestSession_AddModel(t *testing.T) {
 				At:         fixedTime,
 				Instance:   inst,
 			},
+			domain.NamesReplyEvent{
+				Channel: "#dev",
+				Members: updated.Members,
+				At:      fixedTime,
+			},
 			domain.ModelDispatchStarted{Instance: inst, At: fixedTime},
 			domain.ModelDispatchDone{Instance: inst, At: fixedTime},
 		}, collectEmittedEvents(t, sess))
@@ -1430,8 +1438,6 @@ func TestSession_AddModel(t *testing.T) {
 			inst.ID(), "fakenick", "anthropic/claude-3-haiku", "", testChannels("#dev"),
 		), inst)
 
-		updated, err := sess.loadChannelWindow(ctx, "#dev")
-		require.NoError(t, err)
 		require.Equal(t, []domain.Member{
 			{Instance: userInstance(t, sess), Nick: "testuser", Mode: domain.ModeOp},
 			{Instance: inst, Nick: "fakenick", Mode: domain.ModeNone},
@@ -2722,6 +2728,9 @@ func TestSession_AddModel_persists_persona(t *testing.T) {
 		inst, err := s.ResolveNick(ctx, "fakenick")
 		require.NoError(t, err)
 
+		ch, err := sess.loadChannelWindow(ctx, "#general")
+		require.NoError(t, err)
+
 		require.ElementsMatch(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Join{
@@ -2730,6 +2739,11 @@ func TestSession_AddModel_persists_persona(t *testing.T) {
 				InstanceID: inst.ID(),
 				At:         fixedTime,
 				Instance:   inst,
+			},
+			domain.NamesReplyEvent{
+				Channel: "#general",
+				Members: ch.Members,
+				At:      fixedTime,
 			},
 			domain.ModelDispatchStarted{Instance: inst, At: fixedTime},
 			domain.ModelDispatchDone{Instance: inst, At: fixedTime},
@@ -4630,6 +4644,9 @@ func TestSession_Invite_with_explicit_persona_skips_pool(t *testing.T) {
 		inst, err := s.ResolveNick(ctx, "fakenick")
 		require.NoError(t, err)
 
+		ch, err := sess.loadChannelWindow(ctx, "#dev")
+		require.NoError(t, err)
+
 		require.ElementsMatch(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Join{
@@ -4638,6 +4655,11 @@ func TestSession_Invite_with_explicit_persona_skips_pool(t *testing.T) {
 				InstanceID: inst.ID(),
 				At:         fixedTime,
 				Instance:   inst,
+			},
+			domain.NamesReplyEvent{
+				Channel: "#dev",
+				Members: ch.Members,
+				At:      fixedTime,
 			},
 			domain.ModelDispatchStarted{Instance: inst, At: fixedTime},
 			domain.ModelDispatchDone{Instance: inst, At: fixedTime},
@@ -4818,6 +4840,9 @@ func TestAddModel_dispatches_join_trigger_to_model(t *testing.T) {
 		bot, err := s.ResolveNick(ctx, "fakenick")
 		require.NoError(t, err)
 
+		ch, err := sess.loadChannelWindow(ctx, "#dev")
+		require.NoError(t, err)
+
 		require.ElementsMatch(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Join{
@@ -4826,6 +4851,11 @@ func TestAddModel_dispatches_join_trigger_to_model(t *testing.T) {
 				InstanceID: bot.ID(),
 				At:         fixedTime,
 				Instance:   bot,
+			},
+			domain.NamesReplyEvent{
+				Channel: "#dev",
+				Members: ch.Members,
+				At:      fixedTime,
 			},
 			domain.ModelDispatchStarted{Instance: bot, At: fixedTime},
 			domain.ModelDispatchDone{Instance: bot, At: fixedTime},
