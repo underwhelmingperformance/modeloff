@@ -14,12 +14,19 @@ import (
 
 // runDispatchLoop is the long-lived dispatch goroutine for a model-
 // client. It reads [protocol.Delivery] envelopes from the
-// subscription's events channel and, for each delivery, files the
-// event into the model's per-channel rolling history buffer before
-// deciding whether to take an LLM turn (a message in a channel/DM
-// the model is in, a JOIN/PART/MODE in a channel it shares, an
-// INVITE addressed at it, or a poke). Replies emit on the bus so
+// subscription's events channel and, for each delivery, decides
+// whether to take an LLM turn (a message in a channel/DM the model
+// is in, a JOIN/PART/MODE in a channel it shares, an INVITE
+// addressed at it, or a poke) and files the event into the model's
+// per-channel rolling history buffer. Replies emit on the bus so
 // every subscriber sees them.
+//
+// When a delivery is going to trigger a turn, the loop snapshots
+// history before appending the triggering event and passes the
+// snapshot through to the turn. `buildMessages` lays history then
+// trigger events into the LLM request; keeping the trigger out of
+// the snapshot stops the same line appearing twice in the model's
+// prompt.
 //
 // The history buffer feeds [ModelClient.dispatchTurn]'s prompt
 // construction. Eager-seeded for known channels at attach (see
@@ -61,6 +68,13 @@ func (mc *ModelClient) runDispatchLoop(ctx context.Context, sub protocol.Subscri
 		case delivery = <-events:
 		}
 
+		ch, irc, ok := dispatchTrigger(mc.instance.ID(), delivery.Event)
+
+		var historyForTurn []domain.StoredEvent
+		if ok {
+			historyForTurn = mc.hist.snapshot(ch)
+		}
+
 		if pe, ok := delivery.Event.(domain.PersistableEvent); ok {
 			stored := domain.StoredEvent{Event: pe}
 			for _, target := range historyTargets(delivery) {
@@ -68,12 +82,11 @@ func (mc *ModelClient) runDispatchLoop(ctx context.Context, sub protocol.Subscri
 			}
 		}
 
-		ch, irc, ok := dispatchTrigger(mc.instance.ID(), delivery.Event)
 		if !ok {
 			continue
 		}
 
-		mc.dispatchTurn(ctx, ch, irc, delivery.SpanCtx)
+		mc.dispatchTurn(ctx, ch, irc, delivery.SpanCtx, historyForTurn)
 	}
 }
 
@@ -168,7 +181,7 @@ func dispatchTrigger(selfID domain.InstanceID, ev domain.ProtocolEvent) (domain.
 // time (see [protocol.Delivery]). When valid, the turn's span
 // carries an OTel link to it so traces stay connected across the
 // channel-based delivery boundary.
-func (mc *ModelClient) dispatchTurn(ctx context.Context, ch domain.ChannelName, trigger protocol.IRCMessage, causeCtx trace.SpanContext) {
+func (mc *ModelClient) dispatchTurn(ctx context.Context, ch domain.ChannelName, trigger protocol.IRCMessage, causeCtx trace.SpanContext, historyEvents []domain.StoredEvent) {
 	inst := mc.instance
 	nick := inst.Nick()
 
@@ -197,8 +210,6 @@ func (mc *ModelClient) dispatchTurn(ctx context.Context, ch domain.ChannelName, 
 		mc.sess.Emit(ctx, domain.ModelUnavailableError{Channel: ch, Nick: nick, At: mc.sess.Now()})
 		return
 	}
-
-	historyEvents := mc.hist.snapshot(ch)
 
 	mc.sess.Emit(ctx, domain.ModelDispatchStarted{Instance: inst, At: mc.sess.Now()})
 
