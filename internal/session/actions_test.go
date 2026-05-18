@@ -10,6 +10,7 @@ import (
 	orderedmap "github.com/wk8/go-ordered-map/v2"
 
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/protocol"
 )
 
 func TestJoinAs_model_actor(t *testing.T) {
@@ -142,7 +143,7 @@ func TestQuitAs_model_actor(t *testing.T) {
 		seedChannelWithMembers(t, sess, s, "#dev", "testuser", "botty")
 		seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
 
-		require.NoError(t, sess.QuitAs(ctx, botty, "farewell"))
+		require.NoError(t, modelQuitViaWire(t, sess, ctx, botty, "farewell"))
 		synctest.Wait()
 
 		require.ElementsMatch(t, []domain.Event{
@@ -158,6 +159,14 @@ func TestQuitAs_model_actor(t *testing.T) {
 
 		_, err := s.ResolveNick(ctx, "botty")
 		require.Error(t, err)
+
+		// handleQuit reaps the model-client's subscription so
+		// the dispatch goroutine exits and no future fan-out
+		// targets it. The user-client is never reaped.
+		sess.subsMu.RLock()
+		_, reaped := sess.subscribers[protocol.ClientID(botty.ID())]
+		sess.subsMu.RUnlock()
+		require.False(t, reaped, "model-client subscription should be reaped after QUIT")
 
 		ch1, err := sess.loadChannelWindow(ctx, "#dev")
 		require.NoError(t, err)

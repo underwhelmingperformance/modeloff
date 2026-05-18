@@ -979,7 +979,10 @@ func (s ChatScreen) handleQuitRequested(msg ui.QuitRequestedMsg) (ui.Model, tea.
 	cmds := []tea.Cmd{
 		msgCmd(components.InputLockedMsg{Locked: true}),
 		func() tea.Msg {
-			err := s.sess.Quit(s.ctx, message)
+			resp, err := s.sess.User().Send(s.ctx, protocol.Quit{Reason: message})
+			if err == nil {
+				err = resp.Err
+			}
 			return ui.QuitCompleteMsg{Err: err}
 		},
 	}

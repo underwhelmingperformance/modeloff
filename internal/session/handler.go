@@ -50,7 +50,7 @@ func (s *Session) Handle(ctx context.Context, c protocol.Client, cmd protocol.Co
 	case protocol.AddModel:
 		return s.handleAddModel(ctx, c, cmd)
 	case protocol.Quit:
-		return protocol.Response{}, errNotYetImplemented(cmd)
+		return s.handleQuit(ctx, c, cmd)
 	case protocol.Kill:
 		return s.handleKill(c, cmd)
 	case protocol.Oper:
@@ -188,6 +188,29 @@ func (s *Session) handleList(ctx context.Context) (protocol.Response, error) {
 	_, err := s.DirectoryChannels(ctx)
 
 	return commandResult(err)
+}
+
+// handleQuit dispatches a QUIT — the user-actor branch tears
+// down session state in-place (autojoin save, session-active
+// marker clear); the model-actor branch broadcasts the QUIT to
+// peers and reaps the subscription via [Session.reapClient]. The
+// user-client is never reaped: its lifetime equals the session's,
+// and the process owning it shuts down after [handleQuit] returns.
+func (s *Session) handleQuit(ctx context.Context, c protocol.Client, cmd protocol.Quit) (protocol.Response, error) {
+	actor, err := s.resolveClientActor(ctx, c)
+	if err != nil {
+		return protocol.Response{}, err
+	}
+
+	if quitErr := s.quitAs(ctx, actor, cmd.Reason); quitErr != nil {
+		return commandResult(quitErr)
+	}
+
+	if c.Identity() != protocol.UserClientID {
+		s.reapClient(c.Identity())
+	}
+
+	return protocol.Response{}, nil
 }
 
 func (s *Session) handleAddModel(ctx context.Context, c protocol.Client, cmd protocol.AddModel) (protocol.Response, error) {

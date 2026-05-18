@@ -875,7 +875,17 @@ type QuitCommand struct {
 	Message []string `arg:"" optional:"" nargs:"1" help:"Optional farewell message"`
 }
 
-// Run implements Command.
+// ToCommand builds the wire-protocol command for `/quit`.
+func (c QuitCommand) ToCommand(_ Context) (protocol.Command, error) {
+	return protocol.Quit{Reason: c.quitMessage()}, nil
+}
+
+// Run implements Command. The user-side `/quit` is a frontend
+// concern (lock input, display "Disconnecting…", schedule
+// `tea.Quit`) that the chat-screen orchestrates around its own
+// state — the wire QUIT fires from the screen's quit handler,
+// not from this command. Emitting [ui.QuitRequestedMsg] hands the
+// orchestration to that handler.
 func (c QuitCommand) Run(_ Context) tea.Cmd {
 	msg := c.quitMessage()
 
@@ -897,20 +907,9 @@ func (c QuitCommand) quitMessage() string {
 	return msg
 }
 
-func (c QuitCommand) executeQuit(ctx context.Context, sess *session.Session, actor *domain.Instance) error {
-	return sess.QuitAs(ctx, actor, c.quitMessage())
-}
-
 // RunTool implements ToolCommand.
 func (c QuitCommand) RunTool(ctx context.Context, tc session.ToolContext) session.ToolResultPayload {
-	if err := c.executeQuit(ctx, tc.Session, tc.Actor); err != nil {
-		return session.ToolResultPayload{OK: false, Error: err.Error()}
-	}
-
-	return session.ToolResultPayload{
-		OK:      true,
-		Summary: "shut down and left all channels",
-	}
+	return sendToolCommand(ctx, tc, c, "shut down and left all channels")
 }
 
 // PersonasCommand represents `/personas`.

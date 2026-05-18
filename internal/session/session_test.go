@@ -279,6 +279,39 @@ func addModelViaWire(t testing.TB, sess *Session, ctx context.Context, ch domain
 	return resp.Err
 }
 
+// userQuitViaWire issues a [protocol.Quit] through the user-client,
+// matching what the chat-screen does when the user types `/quit`.
+// Returns the dispatcher error (transport + `Response.Err`) so
+// callers can assert on it directly.
+func userQuitViaWire(t testing.TB, sess *Session, ctx context.Context, message string) error {
+	t.Helper()
+
+	resp, err := sess.User().Send(ctx, protocol.Quit{Reason: message})
+	if err != nil {
+		return err
+	}
+
+	return resp.Err
+}
+
+// modelQuitViaWire issues a [protocol.Quit] through the named
+// model-client. The model-actor branch of `handleQuit` broadcasts
+// QUIT to peers and reaps the subscription, matching the
+// model-tool path.
+func modelQuitViaWire(t testing.TB, sess *Session, ctx context.Context, actor *domain.Instance, message string) error {
+	t.Helper()
+
+	client := sess.Model(ctx, protocol.ClientID(actor.ID()))
+	require.NotNil(t, client, "model client must exist for quit test")
+
+	resp, err := client.Send(ctx, protocol.Quit{Reason: message})
+	if err != nil {
+		return err
+	}
+
+	return resp.Err
+}
+
 func newTestSessionWithAPI(t *testing.T, apiClient api.Client) (*Session, *storemod.SQLiteStore) {
 	t.Helper()
 
@@ -686,7 +719,7 @@ func TestSession_Connect_Quit_Reconnect_omits_status_channel_from_autojoin(t *te
 		require.NoError(t, err)
 		generalMembers := general1.Members
 
-		require.NoError(t, sess1.Quit(ctx, "bye"))
+		require.NoError(t, userQuitViaWire(t, sess1, ctx, "bye"))
 		synctest.Wait()
 
 		user1 := sess1.UserInstance()
@@ -882,7 +915,7 @@ func TestSession_Quit_appends_channel_quit_events_and_saves_autojoin(t *testing.
 		require.NoError(t, err)
 		randomMembers := random.Members
 
-		require.NoError(t, sess.Quit(ctx, "goodnight"))
+		require.NoError(t, userQuitViaWire(t, sess, ctx, "goodnight"))
 		synctest.Wait()
 
 		user := sess.UserInstance()
@@ -932,7 +965,7 @@ func TestSession_Quit_removes_user_from_channel_members(t *testing.T) {
 		require.NoError(t, err)
 		generalMembers := general.Members
 
-		require.NoError(t, sess.Quit(ctx, ""))
+		require.NoError(t, userQuitViaWire(t, sess, ctx, ""))
 		synctest.Wait()
 
 		user := sess.UserInstance()
@@ -969,7 +1002,7 @@ func TestSession_Quit_clears_in_memory_channels(t *testing.T) {
 		require.NoError(t, err)
 		generalMembers := general.Members
 
-		require.NoError(t, sess.Quit(ctx, ""))
+		require.NoError(t, userQuitViaWire(t, sess, ctx, ""))
 		synctest.Wait()
 
 		user := sess.UserInstance()
@@ -1134,7 +1167,7 @@ func TestSession_Quit_clears_session_active_marker(t *testing.T) {
 
 	require.NoError(t, s.SetSessionActive(ctx, fixedTime.Format(time.RFC3339Nano)))
 
-	require.NoError(t, sess.Quit(ctx, ""))
+	require.NoError(t, userQuitViaWire(t, sess, ctx, ""))
 
 	got, err := s.GetSessionActive(ctx)
 	require.NoError(t, err)
@@ -1147,7 +1180,7 @@ func TestSession_Quit_no_channels_is_noop_but_clears_marker(t *testing.T) {
 
 	require.NoError(t, s.SetSessionActive(ctx, fixedTime.Format(time.RFC3339Nano)))
 
-	require.NoError(t, sess.Quit(ctx, "bye"))
+	require.NoError(t, userQuitViaWire(t, sess, ctx, "bye"))
 
 	autojoin, err := s.ListAutojoinChannels(ctx)
 	require.NoError(t, err)
@@ -1180,7 +1213,7 @@ func TestSession_Quit_does_not_dispatch_to_models(t *testing.T) {
 		m.Set("#general", fixedTime)
 	})
 
-	require.NoError(t, sess.Quit(ctx, "bye"))
+	require.NoError(t, userQuitViaWire(t, sess, ctx, "bye"))
 
 	require.Equal(t, int32(0), calls.Load(),
 		"Quit must not dispatch to models; models see the quit next time they are dispatched against")

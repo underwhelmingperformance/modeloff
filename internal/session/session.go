@@ -463,8 +463,31 @@ func (s *Session) ensureModelClient(ctx context.Context, inst *domain.Instance) 
 // completion) wakes the goroutine on its select and ends the
 // loop. [Session.Shutdown] joins.
 func (s *Session) startModelDispatch(client *serverClient) {
-	ctx := s.baseContext()
+	ctx, cancel := context.WithCancel(s.baseContext())
+	client.cancel = cancel
 	s.dispatchWG.Go(func() { s.runModelDispatch(ctx, client) })
+}
+
+// reapClient removes a model-client from the subscriber set and
+// cancels its dispatch goroutine. The user-client is never
+// reaped — its lifetime equals the session. Idempotent on an
+// unknown id.
+func (s *Session) reapClient(id protocol.ClientID) {
+	if id == protocol.UserClientID {
+		return
+	}
+
+	s.subsMu.Lock()
+	client, ok := s.subscribers[id]
+	if ok {
+		delete(s.subscribers, id)
+		delete(s.clientHandles, id)
+	}
+	s.subsMu.Unlock()
+
+	if ok && client.cancel != nil {
+		client.cancel()
+	}
 }
 
 // seedModelClientHistory eager-seeds the model-client's per-channel
@@ -1101,7 +1124,7 @@ func (s *Session) Part(ctx context.Context, ch domain.ChannelName, message strin
 // for remote models to acknowledge the quit. The call is synchronous
 // but fast (local sqlite writes only); the UI wraps it in a tea.Cmd
 // to keep the event loop responsive.
-func (s *Session) Quit(ctx context.Context, message string) (retErr error) {
+func (s *Session) userQuit(ctx context.Context, message string) (retErr error) {
 	ctx, span := s.startSpan(ctx, "session.quit",
 		attribute.String(observability.AttrOperation, "session.quit"),
 	)

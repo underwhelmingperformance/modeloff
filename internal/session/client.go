@@ -41,6 +41,13 @@ type serverClient struct {
 	instance *domain.Instance
 	events   chan protocol.Delivery
 
+	// cancel terminates the per-client dispatch goroutine when the
+	// client is reaped (e.g. after a model `QUIT` or operator
+	// `KILL`). It is set by [Session.startModelDispatch] for
+	// model-clients; nil for the user-client, which has no
+	// dispatch loop and lives for the lifetime of the session.
+	cancel context.CancelFunc
+
 	modesMu sync.RWMutex
 	modes   map[domain.Mode]struct{}
 

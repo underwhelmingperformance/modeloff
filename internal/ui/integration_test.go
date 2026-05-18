@@ -42,7 +42,7 @@ func TestApp_startup_with_saved_channels(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#general")
 	uitest.SeedChannel(t, sess, "#random")
 	uitest.SeedMessage(t, sess, "#random", "hello from last time")
-	require.NoError(t, sess.Quit(t.Context(), ""))
+	uitest.Quit(t, sess, "")
 	uitest.DrainEvents(sess)
 
 	// The chat-screen needs a `UIStateStore` to persist its

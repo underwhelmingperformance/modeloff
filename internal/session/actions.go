@@ -251,12 +251,24 @@ func (s *Session) partAs(ctx context.Context, actor *domain.Instance, ch domain.
 	return nil
 }
 
-// QuitAs quits the given actor from every joined channel.
-func (s *Session) QuitAs(ctx context.Context, actor *domain.Instance, message string) (retErr error) {
+// quitAs disconnects the given actor from every joined channel.
+// For the user-client the call saves the autojoin list and clears
+// the session-active marker so the next startup is classified as
+// clean; the QUIT lines are persisted but not broadcast, because
+// the only consumer of broadcast events (the chat-screen) is
+// about to tear down. For a model-client the call broadcasts the
+// `domain.Quit` event to common-channel peers and deletes the
+// instance row — the dispatcher reaps the subscription separately
+// via [Session.reapClient].
+func (s *Session) quitAs(ctx context.Context, actor *domain.Instance, message string) (retErr error) {
 	if actor == s.user {
-		return s.Quit(ctx, message)
+		return s.userQuit(ctx, message)
 	}
 
+	return s.modelQuit(ctx, actor, message)
+}
+
+func (s *Session) modelQuit(ctx context.Context, actor *domain.Instance, message string) (retErr error) {
 	actorID := actor.ID()
 	actorNick := actor.Nick()
 

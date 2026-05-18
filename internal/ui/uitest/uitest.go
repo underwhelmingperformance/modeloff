@@ -336,6 +336,18 @@ func AddModel(t testing.TB, sess *session.Session, channel domain.ChannelName, m
 	require.NoError(t, resp.Err)
 }
 
+// Quit issues a wire-shaped `QUIT` through the user-client.
+// Used by tests that simulate a clean previous-session shutdown
+// to populate the autojoin list and clear the session-active
+// marker, the same effect the chat-screen's `/quit` handler has.
+func Quit(t testing.TB, sess *session.Session, message string) {
+	t.Helper()
+
+	resp, err := sess.User().Send(t.Context(), protocol.Quit{Reason: message})
+	require.NoError(t, err)
+	require.NoError(t, resp.Err)
+}
+
 // SeedChannel creates a channel by issuing a real /join on the
 // session and pins it as the user's last-focused channel in the
 // store, mirroring the state a returning user lands in: joined the

@@ -237,10 +237,10 @@ func TestSession_Handle_delegates(t *testing.T) {
 			want:   protocol.Response{Err: protocol.NotOperatorError{Command: "ADDMODEL", At: fixedTime}},
 		},
 		{
-			name:    "quit is not yet implemented",
-			client:  userClient,
-			cmd:     protocol.Quit{Reason: "gone"},
-			wantErr: errHandlerNotYetImplemented,
+			name:   "quit delegates to quitAs for the user-client",
+			client: userClient,
+			cmd:    protocol.Quit{Reason: "gone"},
+			want:   protocol.Response{},
 		},
 		{
 			name:    "kill is not yet implemented for operators",
