@@ -1272,9 +1272,12 @@ func TestSession_user_state_triple_stays_consistent(t *testing.T) {
 		require.NoError(t, userJoin(ctx, t, sess, "#general"))
 		require.Equal(t, userSnapshot{
 			Channels:   []domain.ChannelName{"#general"},
-			Mode:       domain.ModeNone,
+			Mode:       domain.ModeOp,
 			OnDiskUser: false,
-		}, snapshot(t, sess, s, "#general"))
+		}, snapshot(t, sess, s, "#general"),
+			"the user parted #general while sole occupant, so the channel was "+
+				"destroyed (RFC 2811 §2). The rejoin recreates the channel, and "+
+				"the creating user gets +o per RFC 2811 §4.3")
 
 		general2, err := sess.loadChannelWindow(ctx, "#general")
 		require.NoError(t, err)
@@ -1315,7 +1318,7 @@ func TestSession_user_state_triple_stays_consistent(t *testing.T) {
 				Target:   "#general",
 				Nick:     "testuser",
 				Instance: user,
-				Created:  false,
+				Created:  true,
 				At:       fixedTime,
 			},
 			domain.NamesReplyEvent{
@@ -1330,11 +1333,13 @@ func TestSession_user_state_triple_stays_consistent(t *testing.T) {
 				Instance:   user,
 				At:         fixedTime,
 			},
-		}, collectEmittedEvents(t, sess))
+		}, collectEmittedEvents(t, sess),
+			"the part destroyed the channel (RFC 2811 §2); the rejoin recreates "+
+				"it with Created:true and the user gets +o as the new creator")
 
 		require.Equal(t, userSnapshot{
 			Channels:   []domain.ChannelName{"#general"},
-			Mode:       domain.ModeNone,
+			Mode:       domain.ModeOp,
 			OnDiskUser: false,
 		}, snapshot(t, sess, s, "#general"))
 	})
@@ -1517,6 +1522,7 @@ func TestSession_mutationOperations_recordSpans(t *testing.T) {
 			"session.set_topic",
 			"session.set_user_mode",
 			"store.sqlite.append_event",
+			"store.sqlite.delete_window",
 			"store.sqlite.events_before",
 			"store.sqlite.get_instance_by_id",
 			"store.sqlite.get_window",

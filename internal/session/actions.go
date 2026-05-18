@@ -214,32 +214,20 @@ func (s *Session) partAs(ctx context.Context, actor *domain.Instance, ch domain.
 		return fmt.Errorf("channel not found: %w", err)
 	}
 
-	isUser := actor.ID() == ""
-
 	span.SetAttributes(attribute.String(observability.AttrInstanceID, string(actor.ID())))
 
-	m, ok := window.Members.GetByInstance(actor)
-	if !ok {
+	if !window.Members.HasInstance(actor) {
 		return nil
 	}
 
-	window.Members.Remove(m)
-
-	if err := s.persistChannelWindow(ctx, window); err != nil {
-		return fmt.Errorf("save channel: %w", err)
+	if err := s.removeMember(ctx, window, actor); err != nil {
+		return err
 	}
 
-	actor.MutateChannels(func(m *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
-		m.Delete(ch)
-	})
-
-	if isUser {
-		s.forgetUserMode(ctx, ch)
+	if actor.ID() == "" {
 		if err := s.saveAutojoinList(ctx); err != nil {
 			return fmt.Errorf("save autojoin: %w", err)
 		}
-	} else if err := s.store.SaveInstance(ctx, actor); err != nil {
-		return fmt.Errorf("save instance: %w", err)
 	}
 
 	now := s.now()
@@ -550,24 +538,8 @@ func (s *Session) kickAs(ctx context.Context, actor, target *domain.Instance, ch
 		return nil
 	}
 
-	if m, ok := window.Members.GetByInstance(target); ok {
-		window.Members.Remove(m)
-	}
-
-	if err := s.persistChannelWindow(ctx, window); err != nil {
-		return fmt.Errorf("save channel: %w", err)
-	}
-
-	target.MutateChannels(func(m *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
-		m.Delete(ch)
-	})
-
-	if target.ID() != "" {
-		if err := s.store.SaveInstance(ctx, target); err != nil {
-			return fmt.Errorf("save instance: %w", err)
-		}
-	} else {
-		s.forgetUserMode(ctx, ch)
+	if err := s.removeMember(ctx, window, target); err != nil {
+		return err
 	}
 
 	actorNick := actor.Nick()

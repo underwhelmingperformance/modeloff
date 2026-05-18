@@ -59,6 +59,7 @@ type Store interface {
 	ListWindows(ctx context.Context) ([]domain.Window, error)
 	GetWindow(ctx context.Context, name domain.ChannelName) (domain.Window, error)
 	SaveWindow(ctx context.Context, w domain.Window) error
+	DeleteWindow(ctx context.Context, name domain.ChannelName) error
 
 	// Event log.
 
@@ -830,6 +831,72 @@ func (s *Session) persistChannelWindow(ctx context.Context, w *domain.ChannelWin
 	return s.store.SaveWindow(ctx, &clone)
 }
 
+// commitChannel decides `window`'s fate after a membership
+// mutation: persist the updated state, or delete the window
+// outright when no occupants remain. RFC 2811 §2: "the channel
+// ceases to exist when the last user leaves." Channel-mode state
+// — including the `+i` invitation list — disappears with the
+// row; a re-creation under the same name starts fresh.
+func (s *Session) commitChannel(ctx context.Context, window *domain.ChannelWindow) error {
+	if s.channelOccupied(window) {
+		return s.persistChannelWindow(ctx, window)
+	}
+
+	return s.store.DeleteWindow(ctx, window.Name())
+}
+
+// channelOccupied reports whether `window` still has any
+// occupants after the most recent membership mutation. A model
+// occupant lives in `window.Members` with a non-empty
+// `InstanceID`; the user is tracked separately via the
+// session's user-instance channels map and is checked through
+// `userInChannel` (the persisted member list never contains the
+// user, and any in-memory injection has already been undone by
+// the caller).
+func (s *Session) channelOccupied(window *domain.ChannelWindow) bool {
+	for member := range window.Members.All() {
+		if member.Instance.ID() != "" {
+			return true
+		}
+	}
+
+	return s.userInChannel(window.Name())
+}
+
+// removeMember is the single membership-decrement primitive
+// shared by every action that drops an actor from a channel
+// (PART, KICK, model QUIT). It mutates `window.Members`, keeps
+// actor-side state in sync (the channel is dropped from
+// `actor.Channels()`; the instance row is saved for a model
+// actor; the user-mode map is cleared for the user actor), and
+// commits the window — persisting the updated state or deleting
+// the row when the channel is now empty (RFC 2811 §2).
+//
+// Callers own the broadcast event that announces the departure
+// (PART, KICK, QUIT) and any caller-specific bookkeeping
+// (autojoin-list refresh, instance-row deletion on model QUIT).
+func (s *Session) removeMember(ctx context.Context, window *domain.ChannelWindow, actor *domain.Instance) error {
+	ch := window.Name()
+
+	if m, ok := window.Members.GetByInstance(actor); ok {
+		window.Members.Remove(m)
+	}
+
+	actor.MutateChannels(func(m *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
+		m.Delete(ch)
+	})
+
+	if actor.ID() == "" {
+		s.forgetUserMode(ctx, ch)
+	} else {
+		if err := s.store.SaveInstance(ctx, actor); err != nil {
+			return fmt.Errorf("save instance: %w", err)
+		}
+	}
+
+	return s.commitChannel(ctx, window)
+}
+
 // cloneMembersWithout returns a new MemberList containing every
 // member of src except the one whose handle equals `excluded`.
 // Modes are preserved.
@@ -1372,8 +1439,8 @@ func (s *Session) propagateActorEvent(ctx context.Context, actor *domain.Instanc
 			} else {
 				cfg.mutate(window)
 
-				if err := s.persistChannelWindow(ctx, window); err != nil {
-					slog.Default().ErrorContext(ctx, "propagate actor event: save channel",
+				if err := s.commitChannel(ctx, window); err != nil {
+					slog.Default().ErrorContext(ctx, "propagate actor event: commit channel",
 						"instance_id", string(actor.ID()),
 						"channel", name,
 						"error", err,
