@@ -442,6 +442,10 @@ func (w ChatWorkspace[C]) renderObservabilityLayout(layout workspaceLayout, widt
 
 func (w ChatWorkspace[C]) renderLogsPane(width, height int) string {
 	innerWidth, innerHeight := borderedInnerSize(width, height)
+	if innerHeight <= 0 {
+		return ""
+	}
+
 	logs, _, _ := w.Logs.View(innerWidth, innerHeight)
 
 	return logs
@@ -449,6 +453,10 @@ func (w ChatWorkspace[C]) renderLogsPane(width, height int) string {
 
 func (w ChatWorkspace[C]) renderMetricsPane(width, height int) string {
 	innerWidth, innerHeight := borderedInnerSize(width, height)
+	if innerHeight <= 0 {
+		return ""
+	}
+
 	if !w.HasMetrics {
 		return lipgloss.Place(innerWidth, innerHeight, lipgloss.Center, lipgloss.Center, "No metrics yet")
 	}
@@ -497,18 +505,27 @@ func borderedPane(title, content string, focused bool) string {
 		style = style.BorderForeground(lipgloss.ANSIColor(6))
 	}
 
-	return style.Render(fmt.Sprintf("%s\n%s", theme.Bold.Render(title), content))
+	parts := []string{theme.Bold.Render(title)}
+	if content != "" {
+		parts = append(parts, content)
+	}
+
+	return style.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
 }
 
+// borderedInnerSize returns the content-area dimensions for a pane
+// wrapped by borderedPane. Width loses the two border columns;
+// height loses the two border rows plus the one-row title that
+// borderedPane prepends above the content.
 func borderedInnerSize(width, height int) (int, int) {
 	if width <= 2 {
 		width = 2
 	}
-	if height <= 2 {
-		height = 2
+	if height <= 3 {
+		height = 3
 	}
 
-	return width - 2, height - 2
+	return width - 2, height - 3
 }
 
 func renderLogLevel(level string) string {
