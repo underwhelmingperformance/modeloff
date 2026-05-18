@@ -86,9 +86,11 @@ type Whois struct {
 type List struct{}
 
 // AddModel creates a new model instance, persists it, registers a
-// model-client subscription for it, and broadcasts its arrival.
-// Operator-gated: the issuing client must carry [ModeOperator].
+// model-client subscription for it, and attaches it to the named
+// channel. Operator-gated: the issuing client must carry
+// [domain.ModeOperator].
 type AddModel struct {
+	Channel domain.ChannelName
 	Model   domain.ModelID
 	Persona string
 }

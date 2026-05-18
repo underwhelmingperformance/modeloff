@@ -190,7 +190,7 @@ func TestApp_periodic_poke_generates_message(t *testing.T) {
 	sess, _, cfgStore := newIntegrationSession(t, apiClient)
 	uitest.SeedChannel(t, sess, "#general")
 
-	require.NoError(t, sess.AddModel(t.Context(), "#general", "test/model", ""))
+	uitest.AddModel(t, sess, "#general", "test/model", "")
 	uitest.DrainEvents(sess)
 
 	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore, nil, domain.KindStatus)
@@ -219,7 +219,7 @@ func TestApp_reuse_existing_instance(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#general")
 	uitest.SeedChannel(t, sess, "#random")
 
-	require.NoError(t, sess.AddModel(t.Context(), "#general", "test/model", "Helpful assistant"))
+	uitest.AddModel(t, sess, "#general", "test/model", "Helpful assistant")
 	uitest.DrainEvents(sess)
 
 	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore, nil, domain.KindStatus)

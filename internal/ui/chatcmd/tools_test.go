@@ -13,6 +13,7 @@ import (
 	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/session"
 	"github.com/laney/modeloff/internal/store/storetest"
+	"github.com/laney/modeloff/internal/ui/uitest"
 )
 
 func TestBuildToolRegistry_returns_expected_tools(t *testing.T) {
@@ -39,6 +40,11 @@ func TestBuildToolRegistry_returns_expected_tools(t *testing.T) {
 			Name:        "list",
 			Description: "List all known channels.",
 			Parameters:  toolParams(t, "list"),
+		},
+		{
+			Name:        "add_model",
+			Description: "Add a new model instance to the current channel by model ID, optionally with a persona.",
+			Parameters:  toolParams(t, "add_model"),
 		},
 		{
 			Name:        "invite",
@@ -308,7 +314,7 @@ func TestRunTool_msg_sends_to_nick(t *testing.T) {
 
 	// Join a channel and add a model so the nick resolves.
 	require.NoError(t, sess.Join(t.Context(), "#lobby"))
-	require.NoError(t, sess.AddModel(t.Context(), "#lobby", "anthropic/haiku", ""))
+	uitest.AddModel(t, sess, "#lobby", "anthropic/haiku", "")
 
 	tc := userToolContext(sess, "")
 
@@ -327,7 +333,7 @@ func TestRunTool_msg_rejects_empty_body(t *testing.T) {
 	sess := newToolTestSession(t)
 
 	require.NoError(t, sess.Join(t.Context(), "#lobby"))
-	require.NoError(t, sess.AddModel(t.Context(), "#lobby", "anthropic/haiku", ""))
+	uitest.AddModel(t, sess, "#lobby", "anthropic/haiku", "")
 
 	tc := userToolContext(sess, "")
 

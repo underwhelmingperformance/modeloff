@@ -422,7 +422,7 @@ func TestChatScreen_whois_command(t *testing.T) {
 	sess := newTestSession(t)
 	uitest.SeedChannel(t, sess, "#general")
 
-	require.NoError(t, sess.AddModel(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
+	uitest.AddModel(t, sess, "#general", "anthropic/claude-3-haiku", "")
 
 	tm := newChatApp(t, sess)
 	waitForChannelAndModelSeedDrain(tm)
@@ -434,7 +434,7 @@ func TestChatScreen_whois_command(t *testing.T) {
 func TestChatScreen_whois_persists_to_status_channel(t *testing.T) {
 	sess := newTestSession(t)
 	uitest.SeedChannel(t, sess, "#general")
-	require.NoError(t, sess.AddModel(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
+	uitest.AddModel(t, sess, "#general", "anthropic/claude-3-haiku", "")
 
 	tm := newChatApp(t, sess)
 	waitForChannelAndModelSeedDrain(tm)
@@ -533,7 +533,7 @@ func TestChatScreen_invite_existing_instance(t *testing.T) {
 	uitest.SeedChannel(t, sess, "#general")
 	uitest.SeedChannel(t, sess, "#random")
 
-	require.NoError(t, sess.AddModel(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
+	uitest.AddModel(t, sess, "#general", "anthropic/claude-3-haiku", "")
 
 	tm := newChatApp(t, sess)
 	tm.WaitFor("#random")
@@ -546,7 +546,7 @@ func TestChatScreen_kick_command(t *testing.T) {
 	sess := newTestSession(t)
 	uitest.SeedChannel(t, sess, "#general")
 
-	require.NoError(t, sess.AddModel(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
+	uitest.AddModel(t, sess, "#general", "anthropic/claude-3-haiku", "")
 
 	tm := newChatApp(t, sess)
 	waitForChannelAndModelSeedDrain(tm)
@@ -837,7 +837,7 @@ func TestChatScreen_config_invalid_duration(t *testing.T) {
 func TestChatScreen_msg_command_requires_body(t *testing.T) {
 	sess := newTestSession(t)
 	uitest.SeedChannel(t, sess, "#general")
-	require.NoError(t, sess.AddModel(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
+	uitest.AddModel(t, sess, "#general", "anthropic/claude-3-haiku", "")
 
 	tm := newChatApp(t, sess)
 	waitForChannelAndModelSeedDrain(tm)
@@ -851,7 +851,7 @@ func TestChatScreen_msg_command_requires_body(t *testing.T) {
 func TestChatScreen_query_command_opens_dm(t *testing.T) {
 	sess := newTestSession(t)
 	uitest.SeedChannel(t, sess, "#general")
-	require.NoError(t, sess.AddModel(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
+	uitest.AddModel(t, sess, "#general", "anthropic/claude-3-haiku", "")
 
 	tm := newChatApp(t, sess)
 	waitForChannelAndModelSeedDrain(tm)
@@ -866,7 +866,7 @@ func TestChatScreen_query_command_opens_dm(t *testing.T) {
 func TestChatScreen_query_command_opens_dm_and_sends_message(t *testing.T) {
 	sess := newTestSession(t)
 	uitest.SeedChannel(t, sess, "#general")
-	require.NoError(t, sess.AddModel(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
+	uitest.AddModel(t, sess, "#general", "anthropic/claude-3-haiku", "")
 
 	tm := newChatApp(t, sess)
 	waitForChannelAndModelSeedDrain(tm)

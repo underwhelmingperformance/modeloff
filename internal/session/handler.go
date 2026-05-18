@@ -48,7 +48,7 @@ func (s *Session) Handle(ctx context.Context, c protocol.Client, cmd protocol.Co
 	case protocol.List:
 		return s.handleList(ctx)
 	case protocol.AddModel:
-		return s.handleAddModel(c, cmd)
+		return s.handleAddModel(ctx, c, cmd)
 	case protocol.Quit:
 		return protocol.Response{}, errNotYetImplemented(cmd)
 	case protocol.Kill:
@@ -190,12 +190,21 @@ func (s *Session) handleList(ctx context.Context) (protocol.Response, error) {
 	return commandResult(err)
 }
 
-func (s *Session) handleAddModel(c protocol.Client, cmd protocol.AddModel) (protocol.Response, error) {
+func (s *Session) handleAddModel(ctx context.Context, c protocol.Client, cmd protocol.AddModel) (protocol.Response, error) {
 	if !c.HasMode(domain.ModeOperator) {
 		return protocol.Response{Err: domain.NotOperatorError{Command: "ADDMODEL", At: s.now()}}, nil
 	}
 
-	return protocol.Response{}, errNotYetImplemented(cmd)
+	actor, err := s.resolveClientActor(ctx, c)
+	if err != nil {
+		return protocol.Response{}, err
+	}
+
+	if _, addErr := s.addModelAs(ctx, actor, cmd.Channel, cmd.Model, cmd.Persona); addErr != nil {
+		return commandResult(addErr)
+	}
+
+	return protocol.Response{}, nil
 }
 
 func (s *Session) handleKill(c protocol.Client, cmd protocol.Kill) (protocol.Response, error) {

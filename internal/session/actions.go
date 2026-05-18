@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -950,4 +951,71 @@ func attributeEmitParam(change protocol.ChannelModeChange) string {
 	}
 
 	return ""
+}
+
+// addModelAs creates a fresh model instance, generates a unique
+// nick for it via the small-model API, and attaches it to the
+// named channel as if `actor` had issued the invitation. The
+// dispatcher's [protocol.AddModel] handler is the only caller —
+// the operator gate lives there, so this method assumes the
+// caller has already verified the actor's authority.
+//
+// Persona resolution: a non-empty `persona` is used verbatim; an
+// empty value triggers a draw from the personas pool (lazily
+// generated if missing). API failures during persona generation
+// are logged but never block the add; the instance gets an empty
+// persona instead.
+func (s *Session) addModelAs(
+	ctx context.Context,
+	actor *domain.Instance,
+	ch domain.ChannelName,
+	modelID domain.ModelID,
+	persona string,
+) (*domain.Instance, error) {
+	logger := slog.Default().With("component", "session", "channel", ch, "model_id", modelID)
+	ctx, span := s.startSpan(ctx, "session.add_model", attribute.String(observability.AttrOperation, "session.add_model"))
+	defer span.End()
+
+	if err := s.ensureStructuredOutputModel(ctx, modelID); err != nil {
+		setSpanError(span, err, classifyEnsureModelError(err))
+		return nil, err
+	}
+
+	assignedPersona := strings.TrimSpace(persona)
+
+	if assignedPersona == "" {
+		if err := s.EnsurePersonas(ctx); err != nil {
+			logger.WarnContext(ctx, "persona pool generation failed", "error", err)
+		}
+
+		if p, err := s.RandomPersona(ctx); err == nil {
+			assignedPersona = p.Description
+		}
+	}
+
+	nick, err := s.generateUniqueNick(ctx, modelID, assignedPersona, logger)
+	if err != nil {
+		setSpanError(span, err, observability.ErrorKindDispatch)
+		return nil, err
+	}
+
+	channels := orderedmap.New[domain.ChannelName, time.Time]()
+	channels.Set(ch, s.now())
+
+	inst := domain.NewModelInstance(
+		domain.GenerateInstanceID(),
+		nick,
+		modelID,
+		assignedPersona,
+		channels,
+	)
+
+	if err := s.attachInstanceToChannel(ctx, ch, inst, actor); err != nil {
+		setSpanError(span, err, observability.ErrorKindStore)
+		return nil, err
+	}
+
+	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
+
+	return inst, nil
 }

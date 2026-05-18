@@ -142,7 +142,7 @@ func TestChatScreen_QuitEvent_shows_quit_message(t *testing.T) {
 	sess := newTestSession(t)
 	uitest.SeedChannel(t, sess, "#general")
 
-	require.NoError(t, sess.AddModel(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
+	uitest.AddModel(t, sess, "#general", "anthropic/claude-3-haiku", "")
 
 	inst, err := sess.ResolveNick(t.Context(), "fakenick")
 	require.NoError(t, err)
@@ -176,7 +176,7 @@ func TestChatScreen_QuitEvent_removes_instance_from_nick_list(t *testing.T) {
 	sess := newTestSession(t)
 	uitest.SeedChannel(t, sess, "#general")
 
-	require.NoError(t, sess.AddModel(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
+	uitest.AddModel(t, sess, "#general", "anthropic/claude-3-haiku", "")
 
 	inst, err := sess.ResolveNick(t.Context(), "fakenick")
 	require.NoError(t, err)
@@ -215,7 +215,7 @@ func TestChatScreen_QuitEvent_removes_instance_from_nick_list(t *testing.T) {
 func TestChatScreen_QuitEvent_surfaces_in_open_DM(t *testing.T) {
 	sess := newTestSession(t)
 	uitest.SeedChannel(t, sess, "#general")
-	require.NoError(t, sess.AddModel(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
+	uitest.AddModel(t, sess, "#general", "anthropic/claude-3-haiku", "")
 
 	inst, err := sess.ResolveNick(t.Context(), "fakenick")
 	require.NoError(t, err)
@@ -258,7 +258,7 @@ func TestChatScreen_QuitEvent_surfaces_in_open_DM(t *testing.T) {
 func TestChatScreen_NickChangeEvent_surfaces_in_open_DM(t *testing.T) {
 	sess := newTestSession(t)
 	uitest.SeedChannel(t, sess, "#general")
-	require.NoError(t, sess.AddModel(t.Context(), "#general", "anthropic/claude-3-haiku", ""))
+	uitest.AddModel(t, sess, "#general", "anthropic/claude-3-haiku", "")
 
 	inst, err := sess.ResolveNick(t.Context(), "fakenick")
 	require.NoError(t, err)

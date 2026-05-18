@@ -60,10 +60,20 @@ var testParser = func() Parser {
 	return p
 }()
 
+// operatorCaps is a stand-in [command.CapabilityHolder] that
+// grants every operator-gated tag. Completion tests use it so the
+// operator-only commands surface in the suggestion list — the
+// real wiring is via [protocol.Client.Caps] off the user-client,
+// which carries `+o` from bootstrap.
+type operatorCaps struct{}
+
+func (operatorCaps) Has(c command.Capability) bool { return c == "operator" }
+
 func testSet(ctx CompletionContext) command.CompletionSet[CompletionContext] {
 	return command.CompletionSet[CompletionContext]{
-		Set: testParser.Set(),
-		Ctx: ctx,
+		Set:  testParser.Set(),
+		Ctx:  ctx,
+		Caps: operatorCaps{},
 	}
 }
 

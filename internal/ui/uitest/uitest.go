@@ -318,6 +318,24 @@ func (f *FakeAPI) GeneratePersonas(ctx context.Context, smallModel domain.ModelI
 	return nil, nil
 }
 
+// AddModel attaches a model instance to a channel through the
+// wire path — the same dispatcher path the user-issued
+// `/add-model` and the OPER tool call take. The user-client
+// holds `+o` from bootstrap so the operator gate passes; tests
+// that want to exercise the rejection path should `Send` the
+// command from a non-OPER model-client directly.
+func AddModel(t testing.TB, sess *session.Session, channel domain.ChannelName, model domain.ModelID, persona string) {
+	t.Helper()
+
+	resp, err := sess.User().Send(t.Context(), protocol.AddModel{
+		Channel: channel,
+		Model:   model,
+		Persona: persona,
+	})
+	require.NoError(t, err)
+	require.NoError(t, resp.Err)
+}
+
 // SeedChannel creates a channel by issuing a real /join on the
 // session and pins it as the user's last-focused channel in the
 // store, mirroring the state a returning user lands in: joined the

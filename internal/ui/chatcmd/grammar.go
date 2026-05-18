@@ -11,7 +11,7 @@ type Grammar struct {
 	Join               JoinCommand               `cmd:"" aliases:"j" tool:"" help:"Switch to a channel or create it if needed."`
 	Part               PartCommand               `cmd:"" tool:"Leave the current channel with an optional farewell message." help:"Part from the current channel."`
 	List               ListCommand               `cmd:"" tool:"" help:"List all known channels."`
-	AddModel           AddModelCommand           `cmd:"" kind:"channel" help:"Add a model or reusable instance into the current channel."`
+	AddModel           AddModelCommand           `cmd:"" kind:"channel" caps:"operator" tool:"Add a new model instance to the current channel by model ID, optionally with a persona." help:"Add a model or reusable instance into the current channel."`
 	Invite             InviteCommand             `cmd:"" tool:"" kind:"channel" help:"Invite a nick to a channel."`
 	Kick               KickCommand               `cmd:"" tool:"" kind:"channel" help:"Remove a nick from the current channel."`
 	Msg                MsgCommand                `cmd:"" tool:"Send a message addressed to either a #channel you are in, or a user (by nick). The recipient sees the message and may reply." help:"Send a message to a #channel or to a user by nick."`

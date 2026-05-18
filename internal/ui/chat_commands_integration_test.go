@@ -54,7 +54,7 @@ func TestApp_send_message_shows_pending_indicator(t *testing.T) {
 	sess, _, cfgStore := newIntegrationSession(t, apiClient)
 	uitest.SeedChannel(t, sess, "#general")
 
-	require.NoError(t, sess.AddModel(t.Context(), "#general", "test/model", ""))
+	uitest.AddModel(t, sess, "#general", "test/model", "")
 	uitest.DrainEvents(sess)
 
 	chatScreen, err := screens.NewChatScreen(t.Context(), sess, cfgStore, nil, domain.KindStatus)

@@ -217,15 +217,23 @@ func TestSession_Handle_delegates(t *testing.T) {
 			want:   protocol.Response{},
 		},
 		{
-			name:    "addmodel is not yet implemented for operators",
-			client:  userClient,
-			cmd:     protocol.AddModel{Model: "anthropic/claude", Persona: "p"},
-			wantErr: errHandlerNotYetImplemented,
+			name: "addmodel delegates to addModelAs for operators",
+			setup: func(t *testing.T, sess *Session, _ *storemod.SQLiteStore) {
+				require.NoError(t, sess.Join(t.Context(), "#dev"))
+			},
+			client: userClient,
+			cmd:    protocol.AddModel{Channel: "#dev", Model: "anthropic/claude", Persona: "p"},
+			want:   protocol.Response{},
+			verify: func(t *testing.T, sess *Session, _ *storemod.SQLiteStore) {
+				window, err := sess.loadChannelWindow(t.Context(), "#dev")
+				require.NoError(t, err)
+				require.Equal(t, 2, window.Members.Len())
+			},
 		},
 		{
 			name:   "addmodel rejects non-operator with NotOperatorError",
 			client: func() protocol.Client { return newPlainClient("inst-1") },
-			cmd:    protocol.AddModel{Model: "anthropic/claude", Persona: "p"},
+			cmd:    protocol.AddModel{Channel: "#dev", Model: "anthropic/claude", Persona: "p"},
 			want:   protocol.Response{Err: protocol.NotOperatorError{Command: "ADDMODEL", At: fixedTime}},
 		},
 		{

@@ -197,6 +197,15 @@ func (AddModelCommand) Sources() map[string]command.SuggestionSource[CompletionC
 	}
 }
 
+// ToCommand builds the wire-protocol command for `/add-model`.
+func (c AddModelCommand) ToCommand(rc Context) (protocol.Command, error) {
+	return protocol.AddModel{
+		Channel: rc.Active,
+		Model:   domain.ModelID(c.Model),
+		Persona: strings.Join(c.Persona, " "),
+	}, nil
+}
+
 // Run implements Command.
 func (c AddModelCommand) Run(rc Context) tea.Cmd {
 	if rc.Active == "" {
@@ -208,12 +217,21 @@ func (c AddModelCommand) Run(rc Context) tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		if err := rc.Session.AddModel(rc.Ctx, rc.Active, domain.ModelID(c.Model), strings.Join(c.Persona, " ")); err != nil {
-			return errorEvent("add-model", err)
-		}
-
-		return nil
+		return sendCommand(rc, c, "add-model")
 	}
+}
+
+// RunTool implements ToolCommand.
+func (c AddModelCommand) RunTool(ctx context.Context, tc session.ToolContext) session.ToolResultPayload {
+	if tc.Channel == "" {
+		return session.ToolResultPayload{OK: false, Error: "no active channel"}
+	}
+
+	if c.Model == "" {
+		return session.ToolResultPayload{OK: false, Error: "model is required"}
+	}
+
+	return sendToolCommand(ctx, tc, c, "added "+c.Model+" to "+string(tc.Channel))
 }
 
 // InviteCommand represents `/invite <nick> [channel]`.

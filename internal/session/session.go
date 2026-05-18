@@ -1276,56 +1276,6 @@ func (s *Session) Instances(ctx context.Context) iter.Seq[*domain.Instance] {
 	}
 }
 
-// AddModel adds a model instance to a channel. If the model has no nick
-// yet, one is generated via the API.
-func (s *Session) AddModel(
-	ctx context.Context,
-	ch domain.ChannelName,
-	modelID domain.ModelID,
-	persona string,
-) error {
-	logger := slog.Default().With("component", "session", "channel", ch, "model_id", modelID)
-	ctx, span := s.startSpan(ctx, "session.invite", attribute.String(observability.AttrOperation, "session.invite"))
-	defer span.End()
-
-	if err := s.ensureStructuredOutputModel(ctx, modelID); err != nil {
-		setSpanError(span, err, classifyEnsureModelError(err))
-		return err
-	}
-
-	assignedPersona := strings.TrimSpace(persona)
-
-	if assignedPersona == "" {
-		if err := s.EnsurePersonas(ctx); err != nil {
-			logger.WarnContext(ctx, "persona pool generation failed", "error", err)
-		}
-
-		if p, err := s.RandomPersona(ctx); err == nil {
-			assignedPersona = p.Description
-		}
-	}
-
-	nick, err := s.generateUniqueNick(ctx, modelID, assignedPersona, logger)
-	if err != nil {
-		setSpanError(span, err, observability.ErrorKindDispatch)
-		return err
-	}
-
-	channels := orderedmap.New[domain.ChannelName, time.Time]()
-	channels.Set(ch, s.now())
-
-	inst := domain.NewModelInstance(
-		domain.GenerateInstanceID(),
-		nick,
-		modelID,
-		assignedPersona,
-		channels,
-	)
-
-	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-
-	return s.attachInstanceToChannel(ctx, ch, inst, s.user)
-}
 
 // maxNickGenerationAttempts caps the number of times the model is
 // asked for a nickname before the caller gives up. Each attempt after
