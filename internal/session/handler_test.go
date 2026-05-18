@@ -202,19 +202,27 @@ func TestSession_Handle_delegates(t *testing.T) {
 			},
 		},
 		{
-			name: "whois delegates to session.Whois",
+			name: "whois returns the Whois snapshot in Response.Events",
 			setup: func(t *testing.T, sess *Session, s *storemod.SQLiteStore) {
 				seedInstance(t, sess, s, instanceSpec{Nick: "botty", ModelID: "test/model"})
 			},
 			client: userClient,
 			cmd:    protocol.Whois{Nick: "botty"},
-			want:   protocol.Response{},
+			want: protocol.Response{Events: []domain.ProtocolEvent{
+				domain.Whois{
+					Nick:    "botty",
+					ModelID: "test/model",
+					At:      fixedTime,
+				},
+			}},
 		},
 		{
-			name:   "list delegates to session.DirectoryChannels",
+			name:   "list returns a closing ListEnd when no channels exist",
 			client: userClient,
 			cmd:    protocol.List{},
-			want:   protocol.Response{},
+			want: protocol.Response{Events: []domain.ProtocolEvent{
+				domain.ListEnd{At: fixedTime},
+			}},
 		},
 		{
 			name: "addmodel delegates to addModelAs for operators",

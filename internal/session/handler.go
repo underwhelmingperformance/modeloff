@@ -7,6 +7,7 @@ import (
 
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/protocol"
+	"github.com/laney/modeloff/internal/store"
 )
 
 // errHandlerNotYetImplemented is the underlying sentinel returned
@@ -161,12 +162,31 @@ func (s *Session) handleKick(ctx context.Context, c protocol.Client, cmd protoco
 		return protocol.Response{}, err
 	}
 
-	target, err := s.ResolveNick(ctx, cmd.Nick)
+	target, err := s.dispatcherResolveNick(ctx, cmd.Nick)
 	if err != nil {
 		return commandResult(err)
 	}
 
 	return commandResult(s.kickAs(ctx, actor, target, cmd.Channel))
+}
+
+// dispatcherResolveNick resolves a wire-supplied nick and
+// rewrites the store's untyped "no such nick" sentinel into the
+// typed [domain.UnknownNickError] the wire protocol surfaces
+// (RFC 2812 numeric 401 `ERR_NOSUCHNICK`). Internal call sites
+// that don't need to round-trip the error to a client should
+// keep using [Session.ResolveNick] directly.
+func (s *Session) dispatcherResolveNick(ctx context.Context, nick domain.Nick) (*domain.Instance, error) {
+	inst, err := s.ResolveNick(ctx, nick)
+	if err == nil {
+		return inst, nil
+	}
+
+	if errors.Is(err, store.ErrNoSuchNick) {
+		return nil, domain.UnknownNickError{Nick: nick, At: s.now()}
+	}
+
+	return nil, err
 }
 
 func (s *Session) handleNick(ctx context.Context, c protocol.Client, cmd protocol.Nick) (protocol.Response, error) {
@@ -178,16 +198,61 @@ func (s *Session) handleNick(ctx context.Context, c protocol.Client, cmd protoco
 	return commandResult(s.changeNickAs(ctx, actor, cmd.New))
 }
 
+// handleWhois resolves the requested nick and returns the
+// canonical `domain.Whois` snapshot in `Response.Events` (RFC 2812
+// numeric 311 `RPL_WHOISUSER`). The snapshot freezes the
+// instance's mutable identity surface at the moment of issue so
+// later renames or persona edits don't retro-edit historical
+// renderings. Renderers consume the event directly without going
+// back to the store.
 func (s *Session) handleWhois(ctx context.Context, cmd protocol.Whois) (protocol.Response, error) {
-	_, err := s.Whois(ctx, cmd.Nick)
+	inst, err := s.dispatcherResolveNick(ctx, cmd.Nick)
+	if err != nil {
+		return commandResult(err)
+	}
 
-	return commandResult(err)
+	whois := domain.Whois{
+		Nick:    inst.Nick(),
+		ModelID: inst.ModelID,
+		Persona: inst.Persona(),
+		At:      s.now(),
+	}
+
+	if channels := inst.Channels(); channels != nil && channels.Len() > 0 {
+		whois.Channels = make([]domain.ChannelName, 0, channels.Len())
+		for pair := channels.Oldest(); pair != nil; pair = pair.Next() {
+			whois.Channels = append(whois.Channels, pair.Key)
+		}
+	}
+
+	return protocol.Response{Events: []domain.ProtocolEvent{whois}}, nil
 }
 
+// handleList enumerates the channel directory and returns one
+// `domain.ListReply` per visible channel followed by a closing
+// `domain.ListEnd` in `Response.Events` (RFC 2812 numerics 322
+// `RPL_LIST` / 323 `RPL_LISTEND`). The `+s` and `+p` filters live
+// in [Session.DirectoryChannels] so the wire reply matches the
+// chat-screen's directory view exactly.
 func (s *Session) handleList(ctx context.Context) (protocol.Response, error) {
-	_, err := s.DirectoryChannels(ctx)
+	channels, err := s.DirectoryChannels(ctx)
+	if err != nil {
+		return commandResult(err)
+	}
 
-	return commandResult(err)
+	now := s.now()
+	events := make([]domain.ProtocolEvent, 0, len(channels)+1)
+	for _, ch := range channels {
+		events = append(events, domain.ListReply{
+			Channel: ch.Channel,
+			Members: ch.Members,
+			Topic:   ch.Topic,
+			At:      now,
+		})
+	}
+	events = append(events, domain.ListEnd{At: now})
+
+	return protocol.Response{Events: events}, nil
 }
 
 // handleQuit dispatches a QUIT — the user-actor branch tears
@@ -240,7 +305,7 @@ func (s *Session) handleKill(ctx context.Context, c protocol.Client, cmd protoco
 		return protocol.Response{}, err
 	}
 
-	target, err := s.ResolveNick(ctx, cmd.Nick)
+	target, err := s.dispatcherResolveNick(ctx, cmd.Nick)
 	if err != nil {
 		return commandResult(err)
 	}

@@ -294,6 +294,22 @@ func userQuitViaWire(t testing.TB, sess *Session, ctx context.Context, message s
 	return resp.Err
 }
 
+// kickViaWire issues a [protocol.Kick] through the user-client,
+// matching what the chat-screen does when the user types
+// `/kick`. The dispatcher surfaces `UnknownNickError` as
+// `Response.Err`; callers that want to assert the failure shape
+// can branch on the typed value via `errors.As`.
+func kickViaWire(t testing.TB, sess *Session, ctx context.Context, ch domain.ChannelName, nick domain.Nick) error {
+	t.Helper()
+
+	resp, err := sess.User().Send(ctx, protocol.Kick{Channel: ch, Nick: nick})
+	if err != nil {
+		return err
+	}
+
+	return resp.Err
+}
+
 // modelQuitViaWire issues a [protocol.Quit] through the named
 // model-client. The model-actor branch of `handleQuit` broadcasts
 // QUIT to peers and reaps the subscription, matching the
@@ -1274,7 +1290,7 @@ func TestSession_Kick(t *testing.T) {
 		})
 		saveTestChannel(t, sess, s, newTestChannelWindow("#dev", fixedTime, testMembers(t, sess, s, "testuser", "botty")))
 
-		require.NoError(t, sess.Kick(ctx, "#dev", "botty"))
+		require.NoError(t, kickViaWire(t, sess, ctx, "#dev", "botty"))
 		synctest.Wait()
 
 		require.ElementsMatch(t, []domain.Event{
@@ -1322,7 +1338,7 @@ func TestSession_mutationOperations_recordSpans(t *testing.T) {
 		require.NoError(t, err)
 		channel.Members.Add(botty)
 		saveTestChannel(t, sess, s, channel)
-		require.NoError(t, sess.Kick(ctx, "#general", "botty"))
+		require.NoError(t, kickViaWire(t, sess, ctx, "#general", "botty"))
 
 		require.NoError(t, sess.SetTopic(ctx, "#general", "observability"))
 		require.NoError(t, sess.ChangeNick(ctx, "renamed"))
@@ -1430,7 +1446,7 @@ func TestSession_spans_carry_AttrInstanceID(t *testing.T) {
 					Channels: testChannels("#dev"),
 				})
 				seedChannelWithMembers(t, sess, s, "#dev", "testuser", "botty")
-				require.NoError(t, sess.Kick(ctx, "#dev", "botty"))
+				require.NoError(t, kickViaWire(t, sess, ctx, "#dev", "botty"))
 			},
 			wantInstID: testMemberID("botty"),
 		},
@@ -2497,7 +2513,7 @@ func TestSession_ChangeNickAs_collisions(t *testing.T) {
 	}
 }
 
-func TestSession_Whois(t *testing.T) {
+func TestSession_ResolveNick(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
@@ -2508,15 +2524,15 @@ func TestSession_Whois(t *testing.T) {
 		Channels: testChannels("#dev"),
 	})
 
-	got, err := sess.Whois(ctx, "botty")
+	got, err := sess.ResolveNick(ctx, "botty")
 	require.NoError(t, err)
 	require.Same(t, inst, got)
 }
 
-func TestSession_WhoisNotFound(t *testing.T) {
+func TestSession_ResolveNickNotFound(t *testing.T) {
 	sess, _ := newTestSession(t)
 
-	_, err := sess.Whois(t.Context(), "ghost")
+	_, err := sess.ResolveNick(t.Context(), "ghost")
 	require.Error(t, err)
 }
 
@@ -2770,7 +2786,7 @@ func TestSession_AddModel_creates_new_instance_per_invocation(t *testing.T) {
 func TestSession_KickNonexistentChannel(t *testing.T) {
 	sess, _ := newTestSession(t)
 
-	require.Error(t, sess.Kick(t.Context(), "#ghost", "botty"))
+	require.Error(t, kickViaWire(t, sess, t.Context(), "#ghost", "botty"))
 }
 
 func TestSession_KickNonMember(t *testing.T) {
@@ -2781,11 +2797,11 @@ func TestSession_KickNonMember(t *testing.T) {
 
 		saveTestChannel(t, sess, s, newTestChannelWindow("#dev", fixedTime, testMembers(t, sess, s, "testuser")))
 
-		// Kicking an unresolved nick must be a no-op: no
-		// ModelKickedEvent emission (the empty-id fallback would
-		// otherwise point the UI at the human user), no stored
+		// Kicking an unresolved nick surfaces UnknownNickError
+		// from the dispatcher and leaves the channel state and
+		// the events bus untouched — no ModelKickedEvent, no
 		// membership mutation, no instance-channels mutation.
-		require.NoError(t, sess.Kick(ctx, "#dev", "nobody"))
+		require.ErrorAs(t, kickViaWire(t, sess, ctx, "#dev", "nobody"), &domain.UnknownNickError{})
 		synctest.Wait()
 
 		require.ElementsMatch(t, []domain.Event{

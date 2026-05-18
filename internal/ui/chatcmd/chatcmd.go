@@ -62,12 +62,16 @@ type HelpResult struct{}
 // ClearResult signals that the current window should be cleared.
 type ClearResult struct{}
 
-// WhoisResult carries the instance metadata for a /whois reply.
-// Instance is guaranteed non-nil at construction; /whois produces a
-// `UnknownNickError` when the nick does not resolve rather than a
-// WhoisResult carrying a nil handle.
+// WhoisResult is the chat-screen-side dispatch marker for a
+// `/whois` reply. It embeds the dispatcher's [domain.Whois]
+// snapshot so the renderer reads the snapshot fields directly,
+// and the wrapping struct keeps the result distinguishable from
+// a `Whois` event arriving on the protocol bus through any
+// other path. `/whois` produces an `UnknownNickError` when the
+// nick does not resolve rather than a `WhoisResult` carrying a
+// zero snapshot.
 type WhoisResult struct {
-	Instance *domain.Instance
+	domain.Whois
 }
 
 // TopicInfoResult carries the current topic metadata for
@@ -80,12 +84,12 @@ type TopicInfoResult struct {
 	Window *domain.ChannelWindow
 }
 
-// ListResult carries the channel directory for a `/list` reply.
-// The chat-screen handler iterates the entries and builds one
-// `domain.ListReply` per row plus a closing `ListEnd`.
-type ListResult struct {
-	Entries []domain.ChannelDirectoryEntry
-}
+// ListResult is the chat-screen-side dispatch marker for a
+// `/list` reply. The named-slice shape keeps the result
+// distinguishable from a bare `[]ChannelDirectoryEntry` in a
+// type switch while letting handlers iterate it directly without
+// an `.Entries` indirection.
+type ListResult []domain.ChannelDirectoryEntry
 
 // UsageError indicates a command was invoked incorrectly. Usage
 // carries the human-readable usage string (e.g. "/add-model <model-id>").
@@ -151,10 +155,11 @@ type TimestampFormatSetResult struct {
 	Reset  bool
 }
 
-// PersonasListResult carries the persona list for a /personas reply.
-type PersonasListResult struct {
-	Personas []domain.Persona
-}
+// PersonasListResult is the chat-screen-side dispatch marker
+// for a `/personas` reply. The named-slice shape keeps the
+// result distinguishable from a bare `[]domain.Persona` in a
+// type switch.
+type PersonasListResult []domain.Persona
 
 // PersonasRegeneratedResult signals that personas were regenerated.
 type PersonasRegeneratedResult struct {

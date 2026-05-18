@@ -491,7 +491,7 @@ func TestKickAs_rejects_DM(t *testing.T) {
 		ModelID: "test/model",
 	})
 
-	err := sess.Kick(ctx, domain.ChannelName(botty.ID()), "botty")
+	err := kickViaWire(t, sess, ctx, domain.ChannelName(botty.ID()), "botty")
 	require.EqualError(t, err, "cannot kick from a direct message")
 }
 

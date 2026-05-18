@@ -479,9 +479,9 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 	case chatcmd.ListResult:
 		now := time.Now()
-		cmds := make([]tea.Cmd, 0, len(msg.Entries)+1)
+		cmds := make([]tea.Cmd, 0, len(msg)+1)
 
-		for _, entry := range msg.Entries {
+		for _, entry := range msg {
 			cmds = append(cmds, s.logAndShow(domain.ListReply{
 				Channel: entry.Channel,
 				Members: entry.Members,
@@ -615,7 +615,7 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 	case chatcmd.PersonasListResult:
 		return s, s.logAndShow(domain.PersonasList{
-			Personas: msg.Personas,
+			Personas: msg,
 			At:       time.Now(),
 		})
 
@@ -1120,54 +1120,32 @@ func (s ChatScreen) updateLogEntries() ChatScreen {
 	return s
 }
 
-// handleWhoisResult routes a `/whois` response. When the active
-// window already is `&modeloff`, a single persisted entry serves both
-// roles; otherwise the response shows ephemerally on the active
-// window (in-memory scrollback append, no persistence) and an audit
-// copy is persisted under `&modeloff` so the IRC-style server log
+// handleWhoisResult routes a `/whois` response. The dispatcher
+// has already snapshotted the instance's identity surface into
+// `msg.Whois`; this method picks the rendering window and keeps
+// the audit trail. When the active window already is `&modeloff`,
+// a single persisted entry serves both roles; otherwise the
+// response shows ephemerally on the active window (in-memory
+// scrollback append, no persistence) and an audit copy is
+// persisted under `&modeloff` so the IRC-style server log
 // records every `/whois` the user ran.
 func (s ChatScreen) handleWhoisResult(msg chatcmd.WhoisResult) (ui.Model, tea.Cmd) {
-	now := time.Now()
-
 	if *s.active == domain.StatusChannelName {
-		return s, s.logAndShow(snapshotWhois(*s.active, msg.Instance, now))
+		whois := msg.Whois
+		whois.Target = domain.StatusChannelName
+		return s, s.logAndShow(whois)
 	}
 
-	statusEvent := snapshotWhois(domain.StatusChannelName, msg.Instance, now)
+	activeWhois := msg.Whois
+	activeWhois.Target = *s.active
 
-	s.appendToScrollback(*s.active, domain.StoredEvent{
-		Event: snapshotWhois(*s.active, msg.Instance, now),
-	})
+	statusWhois := msg.Whois
+	statusWhois.Target = domain.StatusChannelName
+
+	s.appendToScrollback(*s.active, domain.StoredEvent{Event: activeWhois})
 
 	return s, tea.Batch(
 		msgCmd(components.ScrollbackUpdatedMsg{Channel: *s.active}),
-		s.persistOnStatus(statusEvent),
+		s.persistOnStatus(statusWhois),
 	)
-}
-
-// snapshotWhois freezes an instance's mutable identity surface
-// (`Nick`, `Persona`, `Channels`) into a `Whois` event at the
-// moment `/whois` is issued. The renderer reads from these fields,
-// not the live pointer, so subsequent renames or channel changes do
-// not retro-edit the historical line. `ModelID` is captured even
-// though it is immutable so that future commits can drop the
-// `Instance` pointer entirely once legacy stored events have aged
-// out.
-func snapshotWhois(channel domain.ChannelName, inst *domain.Instance, at time.Time) domain.Whois {
-	whois := domain.Whois{
-		Target:  channel,
-		Nick:    inst.Nick(),
-		ModelID: inst.ModelID,
-		Persona: inst.Persona(),
-		At:      at,
-	}
-
-	if channels := inst.Channels(); channels != nil {
-		whois.Channels = make([]domain.ChannelName, 0, channels.Len())
-		for pair := channels.Oldest(); pair != nil; pair = pair.Next() {
-			whois.Channels = append(whois.Channels, pair.Key)
-		}
-	}
-
-	return whois
 }

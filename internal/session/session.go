@@ -35,7 +35,6 @@ import (
 	"github.com/laney/modeloff/internal/observability"
 	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/richtext"
-	"github.com/laney/modeloff/internal/store"
 )
 
 // eventBufSize is the capacity of the session event channel. It must
@@ -1299,7 +1298,6 @@ func (s *Session) Instances(ctx context.Context) iter.Seq[*domain.Instance] {
 	}
 }
 
-
 // maxNickGenerationAttempts caps the number of times the model is
 // asked for a nickname before the caller gives up. Each attempt after
 // the first carries the previously rejected suggestion as a follow-up
@@ -1414,24 +1412,6 @@ func (s *Session) attachInstanceToChannel(
 	return nil
 }
 
-// Kick removes a model instance from a channel.
-func (s *Session) Kick(ctx context.Context, ch domain.ChannelName, nick domain.Nick) error {
-	target, err := s.ResolveNick(ctx, nick)
-	if err != nil {
-		if errors.Is(err, store.ErrNoSuchNick) {
-			if _, chErr := s.loadChannelWindow(ctx, ch); chErr != nil {
-				return fmt.Errorf("get channel: %w", chErr)
-			}
-
-			return nil
-		}
-
-		return fmt.Errorf("resolve nick: %w", err)
-	}
-
-	return s.kickAs(ctx, s.user, target, ch)
-}
-
 // SendMessage is the user shorthand for [Session.sendMessageAs].
 func (s *Session) SendMessage(ctx context.Context, ch domain.ChannelName, body string) (domain.Message, error) {
 	return s.sendMessageAs(ctx, s.user, ch, body)
@@ -1482,11 +1462,6 @@ func (s *Session) SetTopic(ctx context.Context, ch domain.ChannelName, topic str
 // memberships accordingly.
 func (s *Session) ChangeNick(ctx context.Context, newNick domain.Nick) error {
 	return s.changeNickAs(ctx, s.user, newNick)
-}
-
-// Whois returns metadata about a model instance.
-func (s *Session) Whois(ctx context.Context, nick domain.Nick) (*domain.Instance, error) {
-	return s.ResolveNick(ctx, nick)
 }
 
 // SaveInstance persists a model instance. Used by integration-

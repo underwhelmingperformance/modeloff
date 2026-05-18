@@ -130,30 +130,34 @@ func (c PartCommand) RunTool(ctx context.Context, tc session.ToolContext) sessio
 // ListCommand represents `/list`.
 type ListCommand struct{}
 
-// Run implements Command. The user-side `/list` queries the
-// session for the channel directory and returns the entries to
-// the chat-screen handler, which builds and persists one
-// `domain.ListReply` per entry plus a closing `ListEnd`.
-func (ListCommand) Run(rc Context) tea.Cmd {
+// ToCommand builds the wire-protocol command for `/list`.
+func (ListCommand) ToCommand(_ Context) (protocol.Command, error) {
+	return protocol.List{}, nil
+}
+
+// Run implements Command. The dispatcher returns one
+// `domain.ListReply` per channel followed by a closing
+// `domain.ListEnd` in `Response.Events`; this method collects
+// the replies into a `ListResult` for the chat-screen handler.
+func (c ListCommand) Run(rc Context) tea.Cmd {
 	return func() tea.Msg {
-		entries, err := rc.Session.DirectoryChannels(rc.Ctx)
+		entries, err := c.fetch(rc.Ctx, rc.Client)
 		if err != nil {
 			return errorEvent("list", err)
 		}
 
-		return ListResult{Entries: entries}
+		return ListResult(entries)
 	}
 }
 
 // RunTool implements ToolCommand. Models invoke `/list` as a
-// tool to enumerate the public channel directory. The reply
-// shape mirrors the user-side path: per-entry `domain.ListReply`
-// events are persisted into the model's invocation channel so
-// the result is durable in the events log, and the same data
-// is returned via `ToolResultPayload` for the immediate-next-
-// turn context.
-func (ListCommand) RunTool(ctx context.Context, tc session.ToolContext) session.ToolResultPayload {
-	entries, err := tc.Session.DirectoryChannels(ctx)
+// tool to enumerate the public channel directory. The replies
+// returned via `Response.Events` are persisted into the
+// invocation channel so the directory is durable in the events
+// log, and the same data rides back to the model in
+// `ToolResultPayload.Data` for the immediate-next-turn context.
+func (c ListCommand) RunTool(ctx context.Context, tc session.ToolContext) session.ToolResultPayload {
+	entries, err := c.fetch(ctx, tc.Client)
 	if err != nil {
 		return session.ToolResultPayload{OK: false, Error: err.Error()}
 	}
@@ -181,6 +185,39 @@ func (ListCommand) RunTool(ctx context.Context, tc session.ToolContext) session.
 		Summary: "listed known channels",
 		Data:    entries,
 	}
+}
+
+// fetch issues the wire `LIST` and assembles the directory
+// entries from the per-channel `domain.ListReply` events the
+// dispatcher returns. The closing `domain.ListEnd` is consumed
+// but ignored — its presence in `Response.Events` is the
+// dispatcher's signal that the list is complete; callers don't
+// need to forward it.
+func (ListCommand) fetch(ctx context.Context, client protocol.Client) ([]domain.ChannelDirectoryEntry, error) {
+	resp, err := client.Send(ctx, protocol.List{})
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.Err != nil {
+		return nil, resp.Err
+	}
+
+	entries := make([]domain.ChannelDirectoryEntry, 0, len(resp.Events))
+	for _, evt := range resp.Events {
+		reply, ok := evt.(domain.ListReply)
+		if !ok {
+			continue
+		}
+
+		entries = append(entries, domain.ChannelDirectoryEntry{
+			Channel: reply.Channel,
+			Members: reply.Members,
+			Topic:   reply.Topic,
+		})
+	}
+
+	return entries, nil
 }
 
 // AddModelCommand represents `/add-model [model] [--persona text]`.
@@ -844,38 +881,68 @@ func (WhoisCommand) Sources() map[string]command.SuggestionSource[CompletionCont
 	return map[string]command.SuggestionSource[CompletionContext]{"nick": instancesSource}
 }
 
-// Run implements Command.
+// ToCommand builds the wire-protocol command for `/whois`.
+func (c WhoisCommand) ToCommand(_ Context) (protocol.Command, error) {
+	return protocol.Whois{Nick: domain.Nick(c.Nick)}, nil
+}
+
+// Run implements Command. The dispatcher returns the canonical
+// `domain.Whois` snapshot in `Response.Events`; this method wraps
+// it in a `WhoisResult` so the chat-screen's type switch routes
+// the reply through its dedicated handler rather than the
+// generic Whois-event path on the protocol bus.
 func (c WhoisCommand) Run(rc Context) tea.Cmd {
 	return func() tea.Msg {
-		inst, err := rc.Session.Whois(rc.Ctx, domain.Nick(c.Nick))
+		whois, err := c.fetch(rc.Ctx, rc.Client, domain.Nick(c.Nick))
 		if err != nil {
-			return errorEvent("whois", domain.UnknownNickError{Nick: domain.Nick(c.Nick), At: time.Now()})
+			return errorEvent("whois", err)
 		}
 
-		return WhoisResult{Instance: inst}
+		return WhoisResult{Whois: whois}
 	}
 }
 
 // RunTool implements ToolCommand.
 func (c WhoisCommand) RunTool(ctx context.Context, tc session.ToolContext) session.ToolResultPayload {
-	inst, err := tc.Session.Whois(ctx, domain.Nick(c.Nick))
+	whois, err := c.fetch(ctx, tc.Client, domain.Nick(c.Nick))
 	if err != nil {
 		return session.ToolResultPayload{OK: false, Error: err.Error()}
 	}
 
-	if _, err := tc.Session.LogEvent(ctx, tc.Channel, domain.Whois{
-		Target:   tc.Channel,
-		Instance: inst,
-		At:       time.Now(),
-	}); err != nil {
+	whois.Target = tc.Channel
+	if _, err := tc.Session.LogEvent(ctx, tc.Channel, whois); err != nil {
 		return session.ToolResultPayload{OK: false, Error: err.Error()}
 	}
 
 	return session.ToolResultPayload{
 		OK:      true,
 		Summary: "returned details for " + c.Nick,
-		Data:    inst,
+		Data:    whois,
 	}
+}
+
+// fetch issues the wire `WHOIS` and extracts the dispatcher's
+// `domain.Whois` snapshot from `Response.Events`. The snapshot
+// freezes the instance's identity surface at the moment of
+// query — `Nick`, `Persona`, `Channels` — so later renames or
+// channel changes don't retro-edit historical renderings.
+func (WhoisCommand) fetch(ctx context.Context, client protocol.Client, nick domain.Nick) (domain.Whois, error) {
+	resp, err := client.Send(ctx, protocol.Whois{Nick: nick})
+	if err != nil {
+		return domain.Whois{}, err
+	}
+
+	if resp.Err != nil {
+		return domain.Whois{}, resp.Err
+	}
+
+	for _, evt := range resp.Events {
+		if whois, ok := evt.(domain.Whois); ok {
+			return whois, nil
+		}
+	}
+
+	return domain.Whois{}, fmt.Errorf("dispatcher returned no Whois event")
 }
 
 // HelpCommand represents `/help`.
@@ -962,7 +1029,7 @@ func (PersonasCommand) Run(rc Context) tea.Cmd {
 			return errorEvent("personas", err)
 		}
 
-		return PersonasListResult{Personas: personas}
+		return PersonasListResult(personas)
 	}
 }
 
