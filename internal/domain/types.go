@@ -350,8 +350,6 @@ func (i *Instance) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// NickMode represents a user's privilege level in a channel, following
-// IRC conventions.
 // Mode is a single RFC 2812 mode flag letter. The same letter
 // carries different semantics depending on the target type of the
 // carrying [ModeChange]: 'o' on a channel target is channel-op;
@@ -360,17 +358,19 @@ func (i *Instance) UnmarshalJSON(data []byte) error {
 // letters.
 type Mode rune
 
+// Per-member modes from RFC 2812 §3.2.3. `+o` doubles as the
+// user-mode flag per §3.1.5 when the carrying event has no
+// channel target.
 const (
-	// Member modes (RFC 2812 §3.2.3 channel-scoped per-member
-	// privileges; also serve as user-mode `+o` per §3.1.5 when
-	// the carrying event has no channel target).
 	ModeOperator     Mode = 'o'
 	ModeChannelVoice Mode = 'v'
+)
 
-	// Channel-attribute modes (RFC 2811 §4.2 / RFC 2812 §3.2.3).
-	// Each scopes a behaviour on the channel as a whole: the
-	// boolean ones toggle a flag; `+l` and `+k` take a parameter
-	// (user-limit, channel key).
+// Channel-attribute modes from RFC 2811 §4.2 / RFC 2812 §3.2.3.
+// Each scopes a behaviour on the channel as a whole: the boolean
+// ones toggle a flag; `+l` and `+k` take a parameter (user-limit,
+// channel key).
+const (
 	ModeAnonymous  Mode = 'a'
 	ModeInviteOnly Mode = 'i'
 	ModeModerated  Mode = 'm'

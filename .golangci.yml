@@ -17,6 +17,14 @@ linters:
     - revive
     - staticcheck
     - unused
+  settings:
+    misspell:
+      # RFC 2812 numerics whose stem looks like a misspelling to
+      # the dictionary. `LISTEND` is the RPL_LISTEND name (RFC
+      # 2812 §5.2); the linter wants to "correct" it to
+      # `LISTENED`.
+      ignore-rules:
+        - LISTEND
   exclusions:
     rules:
       - path: internal/observability/constants\.go

@@ -176,18 +176,47 @@ func (Kill) isCommand()        {}
 func (Oper) isCommand()        {}
 func (ChannelMode) isCommand() {}
 
-func (Join) Name() string        { return "JOIN" }
-func (Part) Name() string        { return "PART" }
-func (PrivMsg) Name() string     { return "PRIVMSG" }
-func (Action) Name() string      { return "ACTION" }
-func (Topic) Name() string       { return "TOPIC" }
-func (Invite) Name() string      { return "INVITE" }
-func (Kick) Name() string        { return "KICK" }
-func (Nick) Name() string        { return "NICK" }
-func (Whois) Name() string       { return "WHOIS" }
-func (List) Name() string        { return "LIST" }
-func (AddModel) Name() string    { return "ADDMODEL" }
-func (Quit) Name() string        { return "QUIT" }
-func (Kill) Name() string        { return "KILL" }
-func (Oper) Name() string        { return "OPER" }
+// Name returns the wire verb "JOIN".
+func (Join) Name() string { return "JOIN" }
+
+// Name returns the wire verb "PART".
+func (Part) Name() string { return "PART" }
+
+// Name returns the wire verb "PRIVMSG".
+func (PrivMsg) Name() string { return "PRIVMSG" }
+
+// Name returns the wire verb "ACTION".
+func (Action) Name() string { return "ACTION" }
+
+// Name returns the wire verb "TOPIC".
+func (Topic) Name() string { return "TOPIC" }
+
+// Name returns the wire verb "INVITE".
+func (Invite) Name() string { return "INVITE" }
+
+// Name returns the wire verb "KICK".
+func (Kick) Name() string { return "KICK" }
+
+// Name returns the wire verb "NICK".
+func (Nick) Name() string { return "NICK" }
+
+// Name returns the wire verb "WHOIS".
+func (Whois) Name() string { return "WHOIS" }
+
+// Name returns the wire verb "LIST".
+func (List) Name() string { return "LIST" }
+
+// Name returns the wire verb "ADDMODEL".
+func (AddModel) Name() string { return "ADDMODEL" }
+
+// Name returns the wire verb "QUIT".
+func (Quit) Name() string { return "QUIT" }
+
+// Name returns the wire verb "KILL".
+func (Kill) Name() string { return "KILL" }
+
+// Name returns the wire verb "OPER".
+func (Oper) Name() string { return "OPER" }
+
+// Name returns the wire verb "MODE".
 func (ChannelMode) Name() string { return "MODE" }
