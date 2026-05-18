@@ -1503,6 +1503,11 @@ func TestToolName(t *testing.T) {
 	}
 }
 
+// TestToolParameters pins the strict-mode JSON Schema shape
+// emitted for each leaf's parameters. Every property name appears
+// in `required` and optional fields carry a nullable type union
+// so providers that enforce strict function-call schemas (Azure
+// OpenAI) accept the schema.
 func TestToolParameters(t *testing.T) {
 	s := toolSet(t)
 
@@ -1528,11 +1533,12 @@ func TestToolParameters(t *testing.T) {
 			"type": "object",
 			"properties": map[string]any{
 				"topic": map[string]any{
-					"type":        "array",
+					"type":        []any{"array", "null"},
 					"items":       map[string]any{"type": "string"},
 					"description": "Topic text",
 				},
 			},
+			"required":             []string{"topic"},
 			"additionalProperties": false,
 		}, params)
 	})
@@ -1543,9 +1549,9 @@ func TestToolParameters(t *testing.T) {
 			"type": "object",
 			"properties": map[string]any{
 				"nick":   map[string]any{"type": "string", "description": "Nick to kick"},
-				"reason": map[string]any{"type": "string", "description": "Kick reason"},
+				"reason": map[string]any{"type": []any{"string", "null"}, "description": "Kick reason"},
 			},
-			"required":             []string{"nick"},
+			"required":             []string{"nick", "reason"},
 			"additionalProperties": false,
 		}, node.ToolParameters())
 	})
@@ -1556,9 +1562,9 @@ func TestToolParameters(t *testing.T) {
 			"type": "object",
 			"properties": map[string]any{
 				"count": map[string]any{"type": "integer", "description": "Number of items"},
-				"force": map[string]any{"type": "boolean", "description": "Force operation"},
+				"force": map[string]any{"type": []any{"boolean", "null"}, "description": "Force operation"},
 			},
-			"required":             []string{"count"},
+			"required":             []string{"count", "force"},
 			"additionalProperties": false,
 		}, node.ToolParameters())
 	})
@@ -1569,7 +1575,7 @@ func TestToolParameters(t *testing.T) {
 
 		props := params["properties"].(map[string]any)
 		require.Equal(t, map[string]any{
-			"type":        "array",
+			"type":        []any{"array", "null"},
 			"items":       map[string]any{"type": "string"},
 			"description": "Tags to apply",
 		}, props["tags"])

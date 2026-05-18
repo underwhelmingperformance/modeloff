@@ -312,7 +312,11 @@ func (n *Node[C]) ToolName() string {
 }
 
 // ToolParameters returns the JSON-schema-like parameter object for a
-// tool-capable leaf node.
+// tool-capable leaf node. Every property name appears in
+// `required` regardless of whether the field is optional; optional
+// fields carry a nullable type union (`["string", "null"]`,
+// `["array", "null"]`, …) so providers that enforce strict
+// function-call schemas (Azure OpenAI) accept the schema.
 func (n *Node[C]) ToolParameters() map[string]any {
 	properties := map[string]any{}
 	required := make([]string, 0, len(n.fields))
@@ -320,11 +324,6 @@ func (n *Node[C]) ToolParameters() map[string]any {
 	for _, field := range n.fields {
 		name := toSnakeCase(field.name)
 		properties[name] = toolSchemaForField(field)
-
-		if field.optional {
-			continue
-		}
-
 		required = append(required, name)
 	}
 
@@ -705,6 +704,10 @@ func complete[C KindProvider](set Set[C], ctx C, raw string, cursor int, kind do
 func toolSchemaForField(field fieldMeta) map[string]any {
 	typ := field.typ
 	schema := toolSchemaForType(typ)
+
+	if field.optional {
+		schema["type"] = []any{schema["type"], "null"}
+	}
 
 	if field.help != "" {
 		schema["description"] = field.help
