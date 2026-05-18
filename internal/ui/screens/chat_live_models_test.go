@@ -14,7 +14,7 @@ import (
 
 	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
-	"github.com/laney/modeloff/internal/session"
+	"github.com/laney/modeloff/internal/modelclient"
 	"github.com/laney/modeloff/internal/ui/chatcmd"
 )
 
@@ -234,8 +234,8 @@ func TestChatScreen_handleLiveModelsLoadFailed(t *testing.T) {
 
 func TestChatScreen_handleLiveModelsLoadFailed_silent_on_no_api_key(t *testing.T) {
 	tests := map[string]error{
-		"bare sentinel":    session.ErrNoAPIKey,
-		"wrapped sentinel": fmt.Errorf("ListModels: %w", session.ErrNoAPIKey),
+		"bare sentinel":    modelclient.ErrNoAPIKey,
+		"wrapped sentinel": fmt.Errorf("ListModels: %w", modelclient.ErrNoAPIKey),
 	}
 
 	for name, err := range tests {

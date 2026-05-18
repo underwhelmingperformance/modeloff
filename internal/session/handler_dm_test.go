@@ -58,7 +58,7 @@ func TestSession_PrivMsg_to_model_routes_DM_to_counterpart_only(t *testing.T) {
 		b := seedInstance(t, sess, s, instanceSpec{Nick: "beta", ModelID: "test/model-b"})
 		seedInstance(t, sess, s, instanceSpec{Nick: "gamma", ModelID: "test/model-c"})
 
-		aClient := sess.ensureModelClient(ctx, a)
+		aClient := attachModelClient(t, sess, a)
 		require.NotNil(t, aClient, "model client for alpha must exist")
 
 		resp, err := aClient.Send(ctx, protocol.PrivMsg{

@@ -12,8 +12,8 @@ import (
 	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/config"
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/modelclient"
 	"github.com/laney/modeloff/internal/protocol"
-	"github.com/laney/modeloff/internal/session"
 	"github.com/laney/modeloff/internal/store"
 	"github.com/laney/modeloff/internal/ui"
 )
@@ -90,7 +90,7 @@ func (c JoinCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 }
 
 // RunTool implements ToolCommand.
-func (c JoinCommand) RunTool(ctx context.Context, tc session.ToolContext) session.ToolResultPayload {
+func (c JoinCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolResultPayload {
 	return sendToolCommand(ctx, tc, c, "joined "+c.Channel.String())
 }
 
@@ -119,9 +119,9 @@ func (c PartCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 }
 
 // RunTool implements ToolCommand.
-func (c PartCommand) RunTool(ctx context.Context, tc session.ToolContext) session.ToolResultPayload {
+func (c PartCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolResultPayload {
 	if tc.Channel == "" {
-		return session.ToolResultPayload{OK: false, Error: "no active channel"}
+		return modelclient.ToolResultPayload{OK: false, Error: "no active channel"}
 	}
 
 	return sendToolCommand(ctx, tc, c, "parted "+string(tc.Channel))
@@ -156,10 +156,10 @@ func (c ListCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 // invocation channel so the directory is durable in the events
 // log, and the same data rides back to the model in
 // `ToolResultPayload.Data` for the immediate-next-turn context.
-func (c ListCommand) RunTool(ctx context.Context, tc session.ToolContext) session.ToolResultPayload {
+func (c ListCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolResultPayload {
 	entries, err := c.fetch(ctx, tc.Client)
 	if err != nil {
-		return session.ToolResultPayload{OK: false, Error: err.Error()}
+		return modelclient.ToolResultPayload{OK: false, Error: err.Error()}
 	}
 
 	now := time.Now()
@@ -172,15 +172,15 @@ func (c ListCommand) RunTool(ctx context.Context, tc session.ToolContext) sessio
 		}
 
 		if _, logErr := tc.Session.LogEvent(ctx, tc.Channel, reply); logErr != nil {
-			return session.ToolResultPayload{OK: false, Error: logErr.Error()}
+			return modelclient.ToolResultPayload{OK: false, Error: logErr.Error()}
 		}
 	}
 
 	if _, logErr := tc.Session.LogEvent(ctx, tc.Channel, domain.ListEnd{At: now}); logErr != nil {
-		return session.ToolResultPayload{OK: false, Error: logErr.Error()}
+		return modelclient.ToolResultPayload{OK: false, Error: logErr.Error()}
 	}
 
-	return session.ToolResultPayload{
+	return modelclient.ToolResultPayload{
 		OK:      true,
 		Summary: "listed known channels",
 		Data:    entries,
@@ -259,13 +259,13 @@ func (c AddModelCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 }
 
 // RunTool implements ToolCommand.
-func (c AddModelCommand) RunTool(ctx context.Context, tc session.ToolContext) session.ToolResultPayload {
+func (c AddModelCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolResultPayload {
 	if tc.Channel == "" {
-		return session.ToolResultPayload{OK: false, Error: "no active channel"}
+		return modelclient.ToolResultPayload{OK: false, Error: "no active channel"}
 	}
 
 	if c.Model == "" {
-		return session.ToolResultPayload{OK: false, Error: "model is required"}
+		return modelclient.ToolResultPayload{OK: false, Error: "model is required"}
 	}
 
 	return sendToolCommand(ctx, tc, c, "added "+c.Model+" to "+string(tc.Channel))
@@ -308,13 +308,13 @@ func (c InviteCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 }
 
 // RunTool implements ToolCommand.
-func (c InviteCommand) RunTool(ctx context.Context, tc session.ToolContext) session.ToolResultPayload {
+func (c InviteCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolResultPayload {
 	if tc.Channel == "" && c.Channel == "" {
-		return session.ToolResultPayload{OK: false, Error: "no active channel"}
+		return modelclient.ToolResultPayload{OK: false, Error: "no active channel"}
 	}
 
 	if strings.TrimSpace(c.Nick) == "" {
-		return session.ToolResultPayload{OK: false, Error: "target nick is required"}
+		return modelclient.ToolResultPayload{OK: false, Error: "target nick is required"}
 	}
 
 	ch := tc.Channel
@@ -360,7 +360,7 @@ func (c KillCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 }
 
 // RunTool implements ToolCommand.
-func (c KillCommand) RunTool(ctx context.Context, tc session.ToolContext) session.ToolResultPayload {
+func (c KillCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolResultPayload {
 	return sendToolCommand(ctx, tc, c, "killed "+c.Nick)
 }
 
@@ -391,9 +391,9 @@ func (c KickCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 }
 
 // RunTool implements ToolCommand.
-func (c KickCommand) RunTool(ctx context.Context, tc session.ToolContext) session.ToolResultPayload {
+func (c KickCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolResultPayload {
 	if tc.Channel == "" {
-		return session.ToolResultPayload{OK: false, Error: "no active channel"}
+		return modelclient.ToolResultPayload{OK: false, Error: "no active channel"}
 	}
 
 	return sendToolCommand(ctx, tc, c, "kicked "+c.Nick+" from "+string(tc.Channel))
@@ -572,10 +572,10 @@ func (c QueryCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 // are in or to a peer's nick. There is no UI window involved
 // and no "open DM" step — DMs are stateless on the server side,
 // and the conversation lives in the events log.
-func (c MsgCommand) RunTool(ctx context.Context, tc session.ToolContext) session.ToolResultPayload {
+func (c MsgCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolResultPayload {
 	body := strings.TrimSpace(strings.Join(c.Body, " "))
 	if body == "" {
-		return session.ToolResultPayload{OK: false, Error: "message body is required"}
+		return modelclient.ToolResultPayload{OK: false, Error: "message body is required"}
 	}
 
 	target := domain.ChannelName(c.Target)
@@ -587,10 +587,10 @@ func (c MsgCommand) RunTool(ctx context.Context, tc session.ToolContext) session
 	resolved, err := tc.Session.ResolveNick(ctx, domain.Nick(c.Target))
 	if err != nil {
 		if errors.Is(err, store.ErrNoSuchNick) {
-			return session.ToolResultPayload{OK: false, Error: domain.UnknownNickError{Nick: domain.Nick(c.Target), At: time.Now()}.Error()}
+			return modelclient.ToolResultPayload{OK: false, Error: domain.UnknownNickError{Nick: domain.Nick(c.Target), At: time.Now()}.Error()}
 		}
 
-		return session.ToolResultPayload{OK: false, Error: fmt.Errorf("resolve nick: %w", err).Error()}
+		return modelclient.ToolResultPayload{OK: false, Error: fmt.Errorf("resolve nick: %w", err).Error()}
 	}
 
 	resp, err := tc.Client.Send(ctx, protocol.PrivMsg{
@@ -598,14 +598,14 @@ func (c MsgCommand) RunTool(ctx context.Context, tc session.ToolContext) session
 		Body:   body,
 	})
 	if err != nil {
-		return session.ToolResultPayload{OK: false, Error: err.Error()}
+		return modelclient.ToolResultPayload{OK: false, Error: err.Error()}
 	}
 
 	if resp.Err != nil {
-		return session.ToolResultPayload{OK: false, Error: resp.Err.Error()}
+		return modelclient.ToolResultPayload{OK: false, Error: resp.Err.Error()}
 	}
 
-	return session.ToolResultPayload{
+	return modelclient.ToolResultPayload{
 		OK:      true,
 		Summary: "messaged " + c.Target,
 	}
@@ -639,7 +639,7 @@ func (c NickCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 }
 
 // RunTool implements ToolCommand.
-func (c NickCommand) RunTool(ctx context.Context, tc session.ToolContext) session.ToolResultPayload {
+func (c NickCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolResultPayload {
 	return sendToolCommand(ctx, tc, c, "changed nick to "+c.Nick)
 }
 
@@ -678,9 +678,9 @@ func (c ModeCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 }
 
 // RunTool implements ToolCommand.
-func (c ModeCommand) RunTool(ctx context.Context, tc session.ToolContext) session.ToolResultPayload {
+func (c ModeCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolResultPayload {
 	if tc.Channel == "" {
-		return session.ToolResultPayload{OK: false, Error: "no active channel"}
+		return modelclient.ToolResultPayload{OK: false, Error: "no active channel"}
 	}
 
 	return sendToolCommand(ctx, tc, c, "mode change on "+string(tc.Channel))
@@ -807,23 +807,23 @@ func (c TopicCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 }
 
 // RunTool implements ToolCommand.
-func (c TopicCommand) RunTool(ctx context.Context, tc session.ToolContext) session.ToolResultPayload {
+func (c TopicCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolResultPayload {
 	if tc.Channel == "" {
-		return session.ToolResultPayload{OK: false, Error: "no active channel"}
+		return modelclient.ToolResultPayload{OK: false, Error: "no active channel"}
 	}
 
 	if len(c.Topic) == 0 {
 		w, err := tc.Session.GetWindow(ctx, tc.Channel)
 		if err != nil {
-			return session.ToolResultPayload{OK: false, Error: err.Error()}
+			return modelclient.ToolResultPayload{OK: false, Error: err.Error()}
 		}
 
 		cw, ok := w.(*domain.ChannelWindow)
 		if !ok {
-			return session.ToolResultPayload{OK: false, Error: fmt.Errorf("%s is not a channel", tc.Channel).Error()}
+			return modelclient.ToolResultPayload{OK: false, Error: fmt.Errorf("%s is not a channel", tc.Channel).Error()}
 		}
 
-		return session.ToolResultPayload{
+		return modelclient.ToolResultPayload{
 			OK:      true,
 			Summary: "returned current topic",
 			Data:    cw,
@@ -863,9 +863,9 @@ func (c MeCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 }
 
 // RunTool implements ToolCommand.
-func (c MeCommand) RunTool(ctx context.Context, tc session.ToolContext) session.ToolResultPayload {
+func (c MeCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolResultPayload {
 	if tc.Channel == "" {
-		return session.ToolResultPayload{OK: false, Error: "no active channel"}
+		return modelclient.ToolResultPayload{OK: false, Error: "no active channel"}
 	}
 
 	return sendToolCommand(ctx, tc, c, "sent action to "+string(tc.Channel))
@@ -903,18 +903,18 @@ func (c WhoisCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 }
 
 // RunTool implements ToolCommand.
-func (c WhoisCommand) RunTool(ctx context.Context, tc session.ToolContext) session.ToolResultPayload {
+func (c WhoisCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolResultPayload {
 	whois, err := c.fetch(ctx, tc.Client, domain.Nick(c.Nick))
 	if err != nil {
-		return session.ToolResultPayload{OK: false, Error: err.Error()}
+		return modelclient.ToolResultPayload{OK: false, Error: err.Error()}
 	}
 
 	whois.Target = tc.Channel
 	if _, err := tc.Session.LogEvent(ctx, tc.Channel, whois); err != nil {
-		return session.ToolResultPayload{OK: false, Error: err.Error()}
+		return modelclient.ToolResultPayload{OK: false, Error: err.Error()}
 	}
 
-	return session.ToolResultPayload{
+	return modelclient.ToolResultPayload{
 		OK:      true,
 		Summary: "returned details for " + c.Nick,
 		Data:    whois,
@@ -954,15 +954,15 @@ func (HelpCommand) Run(_ context.Context, _ Context) tea.Cmd {
 }
 
 // RunTool implements ToolCommand.
-func (HelpCommand) RunTool(ctx context.Context, tc session.ToolContext) session.ToolResultPayload {
+func (HelpCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolResultPayload {
 	if _, err := tc.Session.LogEvent(ctx, tc.Channel, domain.Help{
 		Target: tc.Channel,
 		At:     time.Now(),
 	}); err != nil {
-		return session.ToolResultPayload{OK: false, Error: err.Error()}
+		return modelclient.ToolResultPayload{OK: false, Error: err.Error()}
 	}
 
-	return session.ToolResultPayload{
+	return modelclient.ToolResultPayload{
 		OK:      true,
 		Summary: "available command tools include join, part, list, invite, kick, msg, nick, topic, me, whois, help, and quit",
 	}
@@ -1014,7 +1014,7 @@ func (c QuitCommand) quitMessage() string {
 }
 
 // RunTool implements ToolCommand.
-func (c QuitCommand) RunTool(ctx context.Context, tc session.ToolContext) session.ToolResultPayload {
+func (c QuitCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolResultPayload {
 	return sendToolCommand(ctx, tc, c, "shut down and left all channels")
 }
 

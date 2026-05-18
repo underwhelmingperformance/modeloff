@@ -10,6 +10,7 @@ import (
 	"github.com/laney/modeloff/internal/api"
 	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/modelclient"
 	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/session"
 	"github.com/laney/modeloff/internal/store/storetest"
@@ -192,18 +193,20 @@ func newToolTestSession(t *testing.T) *session.Session {
 	t.Helper()
 
 	s := storetest.NewMemoryStore(t)
-	sess := session.New(t.Context, s, nil, toolTestAPI{}, "testuser", "", "")
+	apiClient := toolTestAPI{}
+	factory := uitest.NewModelClientFactory(t, apiClient, nil, nil, t.Context)
+	sess := session.New(t.Context, s, nil, apiClient, factory, "testuser", "", "")
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 
 	return sess
 }
 
-// userToolContext returns the [session.ToolContext] tests use when
+// userToolContext returns the [modelclient.ToolContext] tests use when
 // invoking `RunTool` as the user. The user-client handle is the
 // active actor so dispatched commands route through the same
 // [protocol.Client.Send] path the chat-screen exercises.
-func userToolContext(sess *session.Session, channel domain.ChannelName) session.ToolContext {
-	return session.ToolContext{
+func userToolContext(sess *session.Session, channel domain.ChannelName) modelclient.ToolContext {
+	return modelclient.ToolContext{
 		Session: sess,
 		Actor:   sess.UserInstance(),
 		Channel: channel,
@@ -240,7 +243,7 @@ func TestRunTool_join_with_channel(t *testing.T) {
 
 	result := tool.RunTool(t.Context(), tc)
 
-	require.Equal(t, session.ToolResultPayload{
+	require.Equal(t, modelclient.ToolResultPayload{
 		OK:      true,
 		Summary: "joined #testing",
 	}, result)
@@ -257,7 +260,7 @@ func TestRunTool_help_no_args(t *testing.T) {
 
 	result := tool.RunTool(t.Context(), tc)
 
-	require.Equal(t, session.ToolResultPayload{
+	require.Equal(t, modelclient.ToolResultPayload{
 		OK:      true,
 		Summary: "available command tools include join, part, list, invite, kick, msg, nick, topic, me, whois, help, and quit",
 	}, result)
@@ -274,7 +277,7 @@ func TestRunTool_part_no_channel_returns_error(t *testing.T) {
 
 	result := tool.RunTool(t.Context(), tc)
 
-	require.Equal(t, session.ToolResultPayload{
+	require.Equal(t, modelclient.ToolResultPayload{
 		OK:    false,
 		Error: "no active channel",
 	}, result)
@@ -291,7 +294,7 @@ func TestRunTool_kick_no_channel_returns_error(t *testing.T) {
 
 	result := tool.RunTool(t.Context(), tc)
 
-	require.Equal(t, session.ToolResultPayload{
+	require.Equal(t, modelclient.ToolResultPayload{
 		OK:    false,
 		Error: "no active channel",
 	}, result)
@@ -308,7 +311,7 @@ func TestRunTool_invite_missing_nick_returns_error(t *testing.T) {
 
 	result := tool.RunTool(t.Context(), tc)
 
-	require.Equal(t, session.ToolResultPayload{
+	require.Equal(t, modelclient.ToolResultPayload{
 		OK:    false,
 		Error: "target nick is required",
 	}, result)
@@ -347,7 +350,7 @@ func TestRunTool_msg_rejects_empty_body(t *testing.T) {
 	tool, ok := v.(ToolCommand)
 	require.True(t, ok)
 
-	require.Equal(t, session.ToolResultPayload{
+	require.Equal(t, modelclient.ToolResultPayload{
 		OK:    false,
 		Error: "message body is required",
 	}, tool.RunTool(t.Context(), tc))
@@ -364,7 +367,7 @@ func TestRunTool_nick_changes_nick(t *testing.T) {
 
 	result := tool.RunTool(t.Context(), tc)
 
-	require.Equal(t, session.ToolResultPayload{
+	require.Equal(t, modelclient.ToolResultPayload{
 		OK:      true,
 		Summary: "changed nick to newname",
 	}, result)
@@ -381,7 +384,7 @@ func TestRunTool_me_no_channel_returns_error(t *testing.T) {
 
 	result := tool.RunTool(t.Context(), tc)
 
-	require.Equal(t, session.ToolResultPayload{
+	require.Equal(t, modelclient.ToolResultPayload{
 		OK:    false,
 		Error: "no active channel",
 	}, result)
@@ -398,7 +401,7 @@ func TestRunTool_quit_succeeds(t *testing.T) {
 
 	result := tool.RunTool(t.Context(), tc)
 
-	require.Equal(t, session.ToolResultPayload{
+	require.Equal(t, modelclient.ToolResultPayload{
 		OK:      true,
 		Summary: "shut down and left all channels",
 	}, result)

@@ -14,6 +14,7 @@ import (
 	"github.com/laney/modeloff/internal/store/storetest"
 	uipkg "github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/chatcmd"
+	"github.com/laney/modeloff/internal/ui/uitest"
 )
 
 type stubAPI struct{}
@@ -57,7 +58,9 @@ func newTestSession(t *testing.T) *session.Session {
 	t.Helper()
 
 	s := storetest.NewMemoryStore(t)
-	sess := session.New(t.Context, s, nil, stubAPI{}, "testuser", "", "")
+	apiClient := stubAPI{}
+	factory := uitest.NewModelClientFactory(t, apiClient, nil, nil, t.Context)
+	sess := session.New(t.Context, s, nil, apiClient, factory, "testuser", "", "")
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 
 	return sess

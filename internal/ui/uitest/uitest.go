@@ -20,6 +20,7 @@ import (
 
 	"github.com/laney/modeloff/internal/api"
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/memory"
 	"github.com/laney/modeloff/internal/modelclient"
 	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/session"
@@ -395,8 +396,8 @@ func SeedMessage(t testing.TB, sess *session.Session, channel, body string) {
 		require.NoError(t, sess.SaveInstance(t.Context(), bot))
 	}
 
-	client := modelclient.New(bot, sess)
-	require.NoError(t, client.Attach(), "attach seedbot model client")
+	client := modelclient.New(bot, sess, nil, nil, nil, t.Context)
+	require.NoError(t, client.Attach(t.Context()), "attach seedbot model client")
 
 	resp, err := client.Send(t.Context(), protocol.PrivMsg{
 		Target: domain.ChannelName(channel),
@@ -404,6 +405,92 @@ func SeedMessage(t testing.TB, sess *session.Session, channel, body string) {
 	})
 	require.NoError(t, err)
 	require.NoError(t, resp.Err)
+}
+
+// NewModelClientFactory returns a [session.ModelClientFactory]
+// suitable for passing to [session.New]. It constructs
+// [modelclient.ModelClient] handles over the provided
+// dependencies, registers them in a per-fixture map, and detaches
+// every registered handle on `t.Cleanup` so dispatch goroutines
+// join before the next test runs.
+func NewModelClientFactory(
+	t testing.TB,
+	apiClient api.Client,
+	memStore memory.Store,
+	tools *modelclient.ToolRegistry,
+	baseContext func() context.Context,
+) session.ModelClientFactory {
+	f := &wiredFactory{
+		apiClient:   apiClient,
+		memStore:    memStore,
+		tools:       tools,
+		baseContext: baseContext,
+		clients:     make(map[protocol.ClientID]*modelclient.ModelClient),
+	}
+	t.Cleanup(f.detachAll)
+	return f
+}
+
+type wiredFactory struct {
+	apiClient   api.Client
+	memStore    memory.Store
+	tools       *modelclient.ToolRegistry
+	baseContext func() context.Context
+
+	mu      sync.Mutex
+	clients map[protocol.ClientID]*modelclient.ModelClient
+}
+
+func (f *wiredFactory) Attach(ctx context.Context, sess *session.Session, inst *domain.Instance) (protocol.Client, error) {
+	id := protocol.ClientID(inst.ID())
+
+	f.mu.Lock()
+	if existing, ok := f.clients[id]; ok {
+		f.mu.Unlock()
+		return existing, nil
+	}
+
+	mc := modelclient.New(inst, sess, f.apiClient, f.memStore, f.tools, f.baseContext)
+	f.clients[id] = mc
+	f.mu.Unlock()
+
+	if err := mc.Attach(ctx); err != nil {
+		f.mu.Lock()
+		delete(f.clients, id)
+		f.mu.Unlock()
+		return nil, fmt.Errorf("attach: %w", err)
+	}
+
+	return mc, nil
+}
+
+func (f *wiredFactory) Detach(id protocol.ClientID) {
+	f.mu.Lock()
+	mc, ok := f.clients[id]
+	if ok {
+		delete(f.clients, id)
+	}
+	f.mu.Unlock()
+
+	if !ok {
+		return
+	}
+
+	mc.Detach()
+}
+
+func (f *wiredFactory) detachAll() {
+	f.mu.Lock()
+	clients := make([]*modelclient.ModelClient, 0, len(f.clients))
+	for _, mc := range f.clients {
+		clients = append(clients, mc)
+	}
+	f.clients = make(map[protocol.ClientID]*modelclient.ModelClient)
+	f.mu.Unlock()
+
+	for _, mc := range clients {
+		mc.Detach()
+	}
 }
 
 // DrainEvents discards any buffered events on the user-client

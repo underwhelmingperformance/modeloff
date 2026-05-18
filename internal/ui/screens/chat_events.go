@@ -12,8 +12,8 @@ import (
 
 	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/modelclient"
 	"github.com/laney/modeloff/internal/protocol"
-	"github.com/laney/modeloff/internal/session"
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/chatcmd"
 	"github.com/laney/modeloff/internal/ui/components"
@@ -970,7 +970,7 @@ func (s ChatScreen) handleLiveModelsLoadFailed(msg liveModelsLoadFailedMsg) (ui.
 
 	// ErrNoAPIKey here is a TOCTOU between loadLiveModels' HasAPIKey
 	// short-circuit and Session.ListModels' check; treat as silent.
-	if errors.Is(msg.err, session.ErrNoAPIKey) {
+	if errors.Is(msg.err, modelclient.ErrNoAPIKey) {
 		*s.liveModelsState = command.SuggestionStateReady
 		return s, nil
 	}

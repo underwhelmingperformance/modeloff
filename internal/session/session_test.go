@@ -11,7 +11,6 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"reflect"
 	"slices"
 	"strings"
@@ -25,11 +24,12 @@ import (
 	"github.com/stretchr/testify/require"
 	orderedmap "github.com/wk8/go-ordered-map/v2"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	"go.opentelemetry.io/otel/trace"
 
 	"github.com/laney/modeloff/internal/api"
+	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/memory"
+	"github.com/laney/modeloff/internal/modelclient"
 	"github.com/laney/modeloff/internal/observability"
 	"github.com/laney/modeloff/internal/observability/oteltest"
 	"github.com/laney/modeloff/internal/protocol"
@@ -61,23 +61,6 @@ func requireChannels(t *testing.T, channels *orderedmap.OrderedMap[domain.Channe
 	}
 
 	require.Equal(t, []domain.ChannelName(expected), got)
-}
-
-func loadGolden(t *testing.T, name string) string {
-	t.Helper()
-
-	root, err := os.OpenRoot("testdata")
-	require.NoError(t, err)
-	defer func() { _ = root.Close() }()
-
-	f, err := root.Open(name)
-	require.NoError(t, err)
-	defer func() { _ = f.Close() }()
-
-	data, err := io.ReadAll(f)
-	require.NoError(t, err)
-
-	return string(data)
 }
 
 type channelEntry struct {
@@ -307,7 +290,7 @@ func kickViaWire(ctx context.Context, t testing.TB, sess *Session, ch domain.Cha
 func modelQuitViaWire(ctx context.Context, t testing.TB, sess *Session, actor *domain.Instance, message string) error {
 	t.Helper()
 
-	client := sess.ensureModelClient(ctx, actor)
+	client := attachModelClient(t, sess, actor)
 	require.NotNil(t, client, "model client must exist for quit test")
 
 	resp, err := client.Send(ctx, protocol.Quit{Reason: message})
@@ -322,8 +305,9 @@ func newTestSessionWithAPI(t *testing.T, apiClient api.Client) (*Session, *store
 	t.Helper()
 
 	s := storetest.NewMemoryStore(t)
+	factory := newTestModelClientFactory(t, apiClient)
 
-	sess := New(t.Context, s, nil, apiClient, "testuser", "", "")
+	sess := New(t.Context, s, nil, apiClient, factory, "testuser", "", "")
 	// Cleanup uses `context.Background()` rather than `t.Context()`
 	// so [Session.Shutdown] actually waits for the dispatch
 	// goroutines to drain. `t.Context()` is cancelled BEFORE
@@ -711,7 +695,7 @@ func TestSession_Connect_Quit_Reconnect_omits_status_channel_from_autojoin(t *te
 		s := storetest.NewMemoryStore(t)
 
 		bootAt1 := time.Now()
-		sess1 := New(t.Context, s, nil, &fakeAPIClient{}, "testuser", "", "")
+		sess1 := New(t.Context, s, nil, &fakeAPIClient{}, newTestModelClientFactory(t, &fakeAPIClient{}), "testuser", "", "")
 		t.Cleanup(func() { _ = sess1.Shutdown(context.Background()) })
 		sess1.now = func() time.Time { return fixedTime }
 		ctx := t.Context()
@@ -757,7 +741,7 @@ func TestSession_Connect_Quit_Reconnect_omits_status_channel_from_autojoin(t *te
 		// Starting a fresh session over the same store must not replay the
 		// status channel into the autojoin loop.
 		bootAt2 := time.Now()
-		sess2 := New(t.Context, s, nil, &fakeAPIClient{}, "testuser", "", "")
+		sess2 := New(t.Context, s, nil, &fakeAPIClient{}, newTestModelClientFactory(t, &fakeAPIClient{}), "testuser", "", "")
 		t.Cleanup(func() { _ = sess2.Shutdown(context.Background()) })
 		sess2.now = func() time.Time { return fixedTime }
 		require.NoError(t, sess2.Connect(ctx))
@@ -782,7 +766,7 @@ func TestSession_Connect_unclean_recovery_emits_welcome_and_reconnected(t *testi
 	synctest.Test(t, func(t *testing.T) {
 		bootAt := time.Now()
 		s := storetest.NewMemoryStore(t)
-		sess := New(t.Context, s, nil, &fakeAPIClient{}, "testuser", "", "")
+		sess := New(t.Context, s, nil, &fakeAPIClient{}, newTestModelClientFactory(t, &fakeAPIClient{}), "testuser", "", "")
 		t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 		sess.now = func() time.Time { return fixedTime }
 		ctx := t.Context()
@@ -1308,7 +1292,7 @@ func TestSession_mutationOperations_recordSpans(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		recorder, provider := oteltest.NewSpanRecorder(t)
 		s := storetest.NewMemoryStore(t).WithTracerProvider(provider)
-		sess := New(t.Context, s, nil, &fakeAPIClient{}, "testuser", "", "").WithTracerProvider(provider)
+		sess := New(t.Context, s, nil, &fakeAPIClient{}, newTestModelClientFactory(t, &fakeAPIClient{}), "testuser", "", "").WithTracerProvider(provider)
 		t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 		sess.now = func() time.Time { return fixedTime }
 		ctx := t.Context()
@@ -1458,7 +1442,7 @@ func TestSession_spans_carry_AttrInstanceID(t *testing.T) {
 		},
 		{
 			name:     "dispatch_to_instance carries the dispatched instance id",
-			spanName: "session.dispatch_to_instance",
+			spanName: "modelclient.dispatch_to_instance",
 			act: func(t *testing.T, sess *Session, s *storemod.SQLiteStore, ctx context.Context) {
 				t.Helper()
 				seedInstance(t, sess, s, instanceSpec{
@@ -1468,7 +1452,7 @@ func TestSession_spans_carry_AttrInstanceID(t *testing.T) {
 				})
 				seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
 				_, ircMsg := seedUserMessage(t, s, "#general", "hi")
-				_, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+				_, err := dispatchToChannel(ctx, sess, "#general", []protocol.IRCMessage{ircMsg})
 				require.NoError(t, err)
 			},
 			wantInstID: testMemberID("botty"),
@@ -1511,10 +1495,10 @@ func TestSession_DispatchToChannel_api_failure_records_dispatch_error_kind(t *te
 	})
 	_, ircMsg := seedUserMessage(t, s, "#general", "hi")
 
-	_, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+	_, err := dispatchToChannel(ctx, sess, "#general", []protocol.IRCMessage{ircMsg})
 	require.Error(t, err)
 
-	span := oteltest.FindSpan(t, recorder, "session.dispatch_to_channel")
+	span := oteltest.FindSpan(t, recorder, "modelclient.dispatch_to_channel")
 	require.Equal(t, observability.ResultError, oteltest.AttrValue(span.Attributes(), observability.AttrResult))
 	require.Equal(t, observability.ErrorKindDispatch, oteltest.AttrValue(span.Attributes(), observability.AttrErrorKind))
 }
@@ -1559,25 +1543,24 @@ func TestSession_dispatchToInstance_recordsPassReasonAndToolTurns(t *testing.T) 
 			}, nil
 		},
 	}
-	sess := New(t.Context, dataStore, memStore, fake, "testuser", "", "").WithTracerProvider(provider)
+	sess := New(t.Context, dataStore, memStore, fake, newTestModelClientFactory(t, fake), "testuser", "", "").WithTracerProvider(provider)
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	sess.now = func() time.Time { return fixedTime }
 	ctx := t.Context()
 
-	botty := seedInstance(t, sess, dataStore, instanceSpec{
+	seedInstance(t, sess, dataStore, instanceSpec{
 		Nick:     "botty",
 		ModelID:  "test/model",
 		Channels: testChannels("#general"),
 	})
 	seedChannelWithMembers(t, sess, dataStore, "#general", "testuser", "botty")
-	window, err := sess.loadChannelWindow(ctx, "#general")
-	require.NoError(t, err)
+	_, ircMsg := seedUserMessage(t, dataStore, "#general", "hi")
 
-	replies, err := sess.dispatchToInstance(ctx, window, botty, "#general", nil, nil)
+	replies, err := dispatchToChannel(ctx, sess, "#general", []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 	require.Empty(t, replies)
 
-	span := oteltest.FindSpan(t, recorder, "session.dispatch_to_instance")
+	span := oteltest.FindSpan(t, recorder, "modelclient.dispatch_to_instance")
 	require.Equal(t, observability.ResultPass, oteltest.AttrValue(span.Attributes(), observability.AttrResult))
 	require.Equal(t, observability.PassReasonModelPass, oteltest.AttrValue(span.Attributes(), observability.AttrPassReason))
 	require.Equal(t, "0", oteltest.AttrValue(span.Attributes(), observability.AttrRetryCount))
@@ -1599,22 +1582,19 @@ func TestSession_modelDispatchTurn_recordsSpan(t *testing.T) {
 		})
 		seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
 
-		client := sess.ensureModelClient(ctx, botty)
-		trigger := protocol.IRCMessage{
-			Kind:   protocol.KindPoke,
-			From:   "modeloff",
-			Target: "#general",
-		}
-		sess.modelDispatchTurn(ctx, client, "#general", trigger, trace.SpanContext{})
+		attachModelClient(t, sess, botty)
+
+		sess.Emit(ctx, domain.PokeEvent{Channel: "#general", At: fixedTime})
 		synctest.Wait()
 
 		require.ElementsMatch(t, []domain.Event{
 			bootstrapModeChange(sess, bootAt),
+			domain.PokeEvent{Channel: "#general", At: fixedTime},
 			domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
 			domain.ModelDispatchDone{Instance: botty, At: fixedTime},
 		}, collectEmittedEvents(t, sess))
 
-		span := oteltest.FindSpan(t, recorder, "session.dispatch_model_turn")
+		span := oteltest.FindSpan(t, recorder, "modelclient.dispatch_turn")
 		require.Equal(t, "#general", oteltest.AttrValue(span.Attributes(), observability.AttrChannel))
 		require.Equal(t, observability.ResultOK, oteltest.AttrValue(span.Attributes(), observability.AttrResult))
 	})
@@ -1869,7 +1849,7 @@ func TestDispatchToInstance_excludes_own_events(t *testing.T) {
 		{Kind: protocol.KindPrivMsg, From: "botty", InstanceID: bottyID, Target: "#general", Body: "my own msg", At: fixedTime},
 	}
 
-	_, err := sess.DispatchToChannel(ctx, "#general", triggerEvents)
+	_, err := dispatchToChannel(ctx, sess, "#general", triggerEvents)
 	require.NoError(t, err)
 
 	// botty should only see alice's message, not its own.
@@ -1928,7 +1908,7 @@ func TestDispatchToInstances_model_does_not_reply_to_self(t *testing.T) {
 
 	_, ircMsg := seedUserMessage(t, s, "#general", "hello everyone")
 
-	_, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+	_, err := dispatchToChannel(ctx, sess, "#general", []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 
 	// model-a (botty) should only see the user's message, not its own reply.
@@ -1960,7 +1940,7 @@ func TestSession_DispatchToChannel_broadcasts_to_channel_instances(t *testing.T)
 
 	_, ircMsg := seedUserMessage(t, s, "#general", "hello world")
 
-	_, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+	_, err := dispatchToChannel(ctx, sess, "#general", []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 
 	msgs := channelMessages(t, s, "#general")
@@ -1983,7 +1963,7 @@ func TestSession_DispatchToChannel_does_not_broadcast_when_no_model_instances(t 
 
 	_, ircMsg := seedUserMessage(t, s, "#general", "hello world")
 
-	_, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+	_, err := dispatchToChannel(ctx, sess, "#general", []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 
 	msgs := channelMessages(t, s, "#general")
@@ -2013,7 +1993,7 @@ func TestSession_DispatchToChannel_pass_response_does_not_store_model_message(t 
 
 	_, ircMsg := seedUserMessage(t, s, "#general", "hello world")
 
-	_, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+	_, err := dispatchToChannel(ctx, sess, "#general", []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 
 	msgs := channelMessages(t, s, "#general")
@@ -2040,7 +2020,7 @@ func TestSession_DispatchToChannel_reply_response_stores_model_message(t *testin
 
 	_, ircMsg := seedUserMessage(t, s, "#general", "hello world")
 
-	_, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+	_, err := dispatchToChannel(ctx, sess, "#general", []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 
 	msgs := channelMessages(t, s, "#general")
@@ -2074,7 +2054,7 @@ func TestSession_DispatchToChannel_broadcasts_only_to_members_of_that_channel(t 
 
 	_, ircMsg := seedUserMessage(t, s, "#general", "hello world")
 
-	_, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+	_, err := dispatchToChannel(ctx, sess, "#general", []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 
 	generalMsgs := channelMessages(t, s, "#general")
@@ -2105,7 +2085,7 @@ func TestSession_DispatchToChannel_reply_is_not_rebroadcast_in_same_dispatch(t *
 
 	_, ircMsg := seedUserMessage(t, s, "#general", "hello world")
 
-	_, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+	_, err := dispatchToChannel(ctx, sess, "#general", []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 
 	msgs := channelMessages(t, s, "#general")
@@ -2138,7 +2118,7 @@ func TestSession_DispatchToChannel_multiple_instances_each_reply_once(t *testing
 
 	_, ircMsg := seedUserMessage(t, s, "#general", "hello world")
 
-	_, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+	_, err := dispatchToChannel(ctx, sess, "#general", []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 
 	msgs := channelMessages(t, s, "#general")
@@ -2170,7 +2150,7 @@ func TestSession_DispatchToChannel_ignores_empty_reply_body(t *testing.T) {
 
 	_, ircMsg := seedUserMessage(t, s, "#general", "hello world")
 
-	_, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+	_, err := dispatchToChannel(ctx, sess, "#general", []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 
 	msgs := channelMessages(t, s, "#general")
@@ -2206,7 +2186,7 @@ func TestSession_DispatchToChannel_api_error_continues_to_next_instance(t *testi
 
 	_, ircMsg := seedUserMessage(t, s, "#general", "hello world")
 
-	_, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+	_, err := dispatchToChannel(ctx, sess, "#general", []protocol.IRCMessage{ircMsg})
 	require.Error(t, err, "should surface the API error")
 	require.ErrorContains(t, err, "network timeout")
 
@@ -2310,7 +2290,7 @@ func TestSession_ChangeNick(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		bootAt := time.Now()
 		s := storetest.NewMemoryStore(t)
-		sess := New(t.Context, s, nil, &fakeAPIClient{}, "testuser", "", "")
+		sess := New(t.Context, s, nil, &fakeAPIClient{}, newTestModelClientFactory(t, &fakeAPIClient{}), "testuser", "", "")
 		t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 		sess.now = func() time.Time { return fixedTime }
 
@@ -2829,7 +2809,7 @@ func TestSession_DispatchToChannel_includes_memory_in_prompt(t *testing.T) {
 		},
 	}
 	s := storetest.NewMemoryStore(t)
-	sess := New(t.Context, s, memStore, fake, "testuser", "", "")
+	sess := New(t.Context, s, memStore, fake, newTestModelClientFactory(t, fake), "testuser", "", "")
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	sess.now = func() time.Time { return fixedTime }
 
@@ -2843,7 +2823,7 @@ func TestSession_DispatchToChannel_includes_memory_in_prompt(t *testing.T) {
 
 	_, ircMsg := seedUserMessage(t, s, "#general", "hello world")
 
-	_, err := sess.DispatchToChannel(t.Context(), "#general", []protocol.IRCMessage{ircMsg})
+	_, err := dispatchToChannel(t.Context(), sess, "#general", []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 
 	msgs := channelMessages(t, s, "#general")
@@ -2851,35 +2831,6 @@ func TestSession_DispatchToChannel_includes_memory_in_prompt(t *testing.T) {
 		{Target: "#general", From: "testuser", Body: "hello world", At: fixedTime},
 		{Target: "#general", From: "botty", InstanceID: testMemberID("botty"), Body: "memory and persona received", At: fixedTime},
 	}, msgs)
-}
-
-func TestBuildSystemPrompt(t *testing.T) {
-	sess, s := newTestSession(t)
-	botty := seedInstance(t, sess, s, instanceSpec{
-		Nick:    "botty",
-		ModelID: "test/model",
-		Persona: "grumpy sysadmin",
-	})
-	cw := domain.NewChannelWindow("#dev", time.Time{})
-	cw.Topic = "go stuff"
-	cw.Members = testMembers(t, sess, s, "testuser", "botty")
-
-	prompt := buildSystemPrompt(cw, botty, nil)
-
-	require.Equal(t, loadGolden(t, "system_prompt.golden.txt"), prompt)
-}
-
-func TestBuildSystemPrompt_with_memories(t *testing.T) {
-	cw := domain.NewChannelWindow("#dev", time.Time{})
-	inst := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
-	memories := []memory.Entry{
-		{Key: "mood", Content: "curious"},
-		{Key: "goal", Content: "learn go"},
-	}
-
-	prompt := buildSystemPrompt(cw, inst, memories)
-
-	require.Equal(t, loadGolden(t, "system_prompt_with_memories.golden.txt"), prompt)
 }
 
 func TestSession_Poke_emits_dispatch_events(t *testing.T) {
@@ -2981,7 +2932,7 @@ func TestSession_DispatchToChannel_dm_only_targets_that_instance(t *testing.T) {
 
 	_, ircMsg := seedUserMessage(t, s, target, "hello in dm")
 
-	_, err := sess.DispatchToChannel(ctx, target, []protocol.IRCMessage{ircMsg})
+	_, err := dispatchToChannel(ctx, sess, target, []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 
 	msgs := channelMessages(t, s, target)
@@ -3067,7 +3018,7 @@ func TestSession_SetAPIKey(t *testing.T) {
 	s := storetest.NewMemoryStore(t)
 	initial := &fakeAPIClient{}
 	replacement := &fakeAPIClient{}
-	sess := New(t.Context, s, nil, initial, "testuser", "", "")
+	sess := New(t.Context, s, nil, initial, newTestModelClientFactory(t, initial), "testuser", "", "")
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	sess.SetAPIFactory(func(apiKey, _ string) (api.Client, error) {
 		require.Equal(t, "test-key", apiKey)
@@ -3082,7 +3033,7 @@ func TestSession_SetAPIKey(t *testing.T) {
 func TestSession_SetAPIKey_factory_failure_keeps_existing_client(t *testing.T) {
 	s := storetest.NewMemoryStore(t)
 	initial := &fakeAPIClient{}
-	sess := New(t.Context, s, nil, initial, "testuser", "", "")
+	sess := New(t.Context, s, nil, initial, newTestModelClientFactory(t, initial), "testuser", "", "")
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	sess.SetAPIFactory(func(string, string) (api.Client, error) {
 		return nil, fmt.Errorf("boom")
@@ -3101,7 +3052,7 @@ func TestSession_SetBaseURL(t *testing.T) {
 	factoryCalls := 0
 	newClient := &fakeAPIClient{}
 
-	sess := New(t.Context, s, nil, &fakeAPIClient{}, "testuser", "test-key", "")
+	sess := New(t.Context, s, nil, &fakeAPIClient{}, newTestModelClientFactory(t, &fakeAPIClient{}), "testuser", "test-key", "")
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	sess.SetAPIFactory(func(_, baseURL string) (api.Client, error) {
 		factoryCalls++
@@ -3117,7 +3068,7 @@ func TestSession_SetBaseURL(t *testing.T) {
 func TestSession_runtimeConfigOperations_recordSpans(t *testing.T) {
 	recorder, provider := oteltest.NewSpanRecorder(t)
 	s := storetest.NewMemoryStore(t).WithTracerProvider(provider)
-	sess := New(t.Context, s, nil, &fakeAPIClient{}, "testuser", "test-key", "").WithTracerProvider(provider)
+	sess := New(t.Context, s, nil, &fakeAPIClient{}, newTestModelClientFactory(t, &fakeAPIClient{}), "testuser", "test-key", "").WithTracerProvider(provider)
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	sess.SetAPIFactory(func(_, _ string) (api.Client, error) {
 		return &fakeAPIClient{}, nil
@@ -3185,7 +3136,7 @@ func TestSession_DispatchToChannel_filters_history_before_join(t *testing.T) {
 		Target: "#general",
 		Body:   "ping",
 	}
-	_, err = sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{newEvent})
+	_, err = dispatchToChannel(ctx, sess, "#general", []protocol.IRCMessage{newEvent})
 	require.NoError(t, err)
 
 	// The model should only see the message from after it joined, not the
@@ -3237,7 +3188,7 @@ func TestSession_DispatchToChannel_forwards_replies_to_subsequent_models(t *test
 		Body:   "hello everyone",
 	}
 
-	_, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{userEvent})
+	_, err := dispatchToChannel(ctx, sess, "#general", []protocol.IRCMessage{userEvent})
 	require.NoError(t, err)
 
 	// Alpha should see only the user's message.
@@ -3404,7 +3355,7 @@ func (f *failingMemoryStore) Reset(_ context.Context) error {
 func TestSession_Reset(t *testing.T) {
 	s := storetest.NewMemoryStore(t)
 	memStore := memory.NewStoreAdapter(storetest.NewMemoryStore(t))
-	sess := New(t.Context, s, memStore, &fakeAPIClient{}, "testuser", "", "")
+	sess := New(t.Context, s, memStore, &fakeAPIClient{}, newTestModelClientFactory(t, &fakeAPIClient{}), "testuser", "", "")
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	sess.now = func() time.Time { return fixedTime }
 	ctx := t.Context()
@@ -3477,7 +3428,7 @@ func TestSession_DispatchToChannel_retries_on_multiline_reply(t *testing.T) {
 
 	_, ircMsg := seedUserMessage(t, s, "#general", "hello")
 
-	replies, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+	replies, err := dispatchToChannel(ctx, sess, "#general", []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 
 	require.Equal(t, []string{"multiline", "clean"}, attempts)
@@ -3517,7 +3468,7 @@ func TestSession_DispatchToChannel_drops_reply_after_max_retries(t *testing.T) {
 
 	_, ircMsg := seedUserMessage(t, s, "#general", "hello")
 
-	replies, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+	replies, err := dispatchToChannel(ctx, sess, "#general", []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 
 	require.Equal(t, 3, calls)
@@ -3547,7 +3498,7 @@ func TestSession_DispatchToChannel_accepts_single_line_reply(t *testing.T) {
 
 	_, ircMsg := seedUserMessage(t, s, "#general", "hello")
 
-	replies, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+	replies, err := dispatchToChannel(ctx, sess, "#general", []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 
 	require.Equal(t, []domain.ModelReplyEvent{
@@ -3572,7 +3523,7 @@ func newTestSessionWithMemory(t *testing.T, apiClient api.Client) (*Session, *st
 	s := storetest.NewMemoryStore(t)
 
 	m := memory.NewStoreAdapter(storetest.NewMemoryStore(t))
-	sess := New(t.Context, s, m, apiClient, "testuser", "", "")
+	sess := New(t.Context, s, m, apiClient, newTestModelClientFactory(t, apiClient), "testuser", "", "")
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	sess.now = func() time.Time { return fixedTime }
 
@@ -3585,7 +3536,7 @@ func mustRawJSON(t *testing.T, raw string) json.RawMessage {
 	return json.RawMessage(raw)
 }
 
-func mustToolResultContent(t *testing.T, payload ToolResultPayload) string {
+func mustToolResultContent(t *testing.T, payload modelclient.ToolResultPayload) string {
 	t.Helper()
 
 	data, err := json.Marshal(payload)
@@ -3625,11 +3576,11 @@ func TestSession_DispatchToChannel_write_memory_then_reply(t *testing.T) {
 
 	_, ircMsg := seedUserMessage(t, s, "#general", "hello")
 
-	replies, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+	replies, err := dispatchToChannel(ctx, sess, "#general", []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 
 	require.Equal(t, []api.ToolResult{
-		{ToolCallID: "call_1", Content: mustToolResultContent(t, ToolResultPayload{OK: true, Summary: `stored memory "mood"`})},
+		{ToolCallID: "call_1", Content: mustToolResultContent(t, modelclient.ToolResultPayload{OK: true, Summary: `stored memory "mood"`})},
 	}, continueResults)
 
 	require.Equal(t, []domain.ModelReplyEvent{
@@ -3685,12 +3636,12 @@ func TestSession_DispatchToChannel_delete_memory_then_pass(t *testing.T) {
 
 	_, ircMsg := seedUserMessage(t, s, "#general", "hello")
 
-	replies, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+	replies, err := dispatchToChannel(ctx, sess, "#general", []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 	require.Empty(t, replies)
 
 	require.Equal(t, []api.ToolResult{
-		{ToolCallID: "call_1", Content: mustToolResultContent(t, ToolResultPayload{OK: true, Summary: `deleted memory "old_stuff"`})},
+		{ToolCallID: "call_1", Content: mustToolResultContent(t, modelclient.ToolResultPayload{OK: true, Summary: `deleted memory "old_stuff"`})},
 	}, continueResults)
 
 	memories, err := memStore.Read(ctx, testMemberID("botty"))
@@ -3719,7 +3670,7 @@ func TestSession_DispatchToChannel_memory_write_error_returns_error_to_model(t *
 
 	s := storetest.NewMemoryStore(t)
 	memStore := &failingMemoryStore{writeErr: fmt.Errorf("disk full")}
-	sess := New(t.Context, s, memStore, fake, "testuser", "", "")
+	sess := New(t.Context, s, memStore, fake, newTestModelClientFactory(t, fake), "testuser", "", "")
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	sess.now = func() time.Time { return fixedTime }
 	ctx := t.Context()
@@ -3733,11 +3684,11 @@ func TestSession_DispatchToChannel_memory_write_error_returns_error_to_model(t *
 
 	_, ircMsg := seedUserMessage(t, s, "#general", "hello")
 
-	replies, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+	replies, err := dispatchToChannel(ctx, sess, "#general", []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 
 	require.Equal(t, []api.ToolResult{
-		{ToolCallID: "call_1", Content: mustToolResultContent(t, ToolResultPayload{OK: false, Error: "disk full"})},
+		{ToolCallID: "call_1", Content: mustToolResultContent(t, modelclient.ToolResultPayload{OK: false, Error: "disk full"})},
 	}, continueResults)
 
 	require.Equal(t, []domain.ModelReplyEvent{
@@ -3788,12 +3739,12 @@ func TestSession_DispatchToChannel_multiple_memory_calls_in_one_response(t *test
 
 	_, ircMsg := seedUserMessage(t, s, "#general", "hello")
 
-	replies, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+	replies, err := dispatchToChannel(ctx, sess, "#general", []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 
 	require.Equal(t, []api.ToolResult{
-		{ToolCallID: "call_1", Content: mustToolResultContent(t, ToolResultPayload{OK: true, Summary: `stored memory "mood"`})},
-		{ToolCallID: "call_2", Content: mustToolResultContent(t, ToolResultPayload{OK: true, Summary: `stored memory "topic"`})},
+		{ToolCallID: "call_1", Content: mustToolResultContent(t, modelclient.ToolResultPayload{OK: true, Summary: `stored memory "mood"`})},
+		{ToolCallID: "call_2", Content: mustToolResultContent(t, modelclient.ToolResultPayload{OK: true, Summary: `stored memory "topic"`})},
 	}, continueResults)
 
 	require.Equal(t, []domain.ModelReplyEvent{
@@ -3852,11 +3803,11 @@ func TestSession_DispatchToChannel_search_memory_then_reply(t *testing.T) {
 
 	_, ircMsg := seedUserMessage(t, s, "#general", "what is my favourite colour?")
 
-	replies, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+	replies, err := dispatchToChannel(ctx, sess, "#general", []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 
 	require.Equal(t, []api.ToolResult{
-		{ToolCallID: "call_1", Content: mustToolResultContent(t, ToolResultPayload{OK: false, Error: "unknown tool \"search_memory\""})},
+		{ToolCallID: "call_1", Content: mustToolResultContent(t, modelclient.ToolResultPayload{OK: false, Error: "unknown tool \"search_memory\""})},
 	}, continueResults)
 
 	require.Equal(t, []domain.ModelReplyEvent{
@@ -3940,7 +3891,7 @@ func newTestSessionWithIndexedMemory(
 	)
 
 	m := memory.NewIndexedStoreFromDB(backing, chromem.NewDB(), embeddingFunc)
-	sess := New(t.Context, s, m, apiClient, "testuser", "", "")
+	sess := New(t.Context, s, m, apiClient, newTestModelClientFactory(t, apiClient), "testuser", "", "")
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	sess.now = func() time.Time { return fixedTime }
 
@@ -3995,12 +3946,12 @@ func TestSession_DispatchToChannel_search_memory_with_vector_store(t *testing.T)
 
 	_, ircMsg := seedUserMessage(t, s, "#general", "what is my favourite pet?")
 
-	replies, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+	replies, err := dispatchToChannel(ctx, sess, "#general", []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 
 	// Unmarshal the JSON content so we can assert the full search
 	// results slice, then assert the full tool results wrapper too.
-	var payload ToolResultPayload
+	var payload modelclient.ToolResultPayload
 	require.NoError(t, json.Unmarshal([]byte(continueResults[0].Content), &payload))
 	require.True(t, payload.OK)
 	require.Equal(t, "found 3 matching memories", payload.Summary)
@@ -4090,15 +4041,15 @@ func TestSession_DispatchToChannel_write_then_search_memory_with_vector_store(t 
 
 	_, ircMsg := seedUserMessage(t, s, "#general", "hello")
 
-	_, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+	_, err := dispatchToChannel(ctx, sess, "#general", []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 
 	require.Equal(t, []api.ToolResult{
-		{ToolCallID: "call_write_cats", Content: mustToolResultContent(t, ToolResultPayload{OK: true, Summary: `stored memory "pet_cats"`})},
-		{ToolCallID: "call_write_dogs", Content: mustToolResultContent(t, ToolResultPayload{OK: true, Summary: `stored memory "pet_dogs"`})},
+		{ToolCallID: "call_write_cats", Content: mustToolResultContent(t, modelclient.ToolResultPayload{OK: true, Summary: `stored memory "pet_cats"`})},
+		{ToolCallID: "call_write_dogs", Content: mustToolResultContent(t, modelclient.ToolResultPayload{OK: true, Summary: `stored memory "pet_dogs"`})},
 	}, writeResults)
 
-	var searchPayload ToolResultPayload
+	var searchPayload modelclient.ToolResultPayload
 	require.NoError(t, json.Unmarshal([]byte(searchResults[0].Content), &searchPayload))
 	require.True(t, searchPayload.OK)
 
@@ -4160,7 +4111,7 @@ func TestSession_DispatchToChannel_memory_loop_respects_max_turns(t *testing.T) 
 
 	_, ircMsg := seedUserMessage(t, s, "#general", "hello")
 
-	replies, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+	replies, err := dispatchToChannel(ctx, sess, "#general", []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 	require.Empty(t, replies)
 
@@ -4203,7 +4154,7 @@ func TestSession_DispatchToChannel_encodes_structured_reply_formatting(t *testin
 
 	_, ircMsg := seedUserMessage(t, s, "#general", "hello")
 
-	replies, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+	replies, err := dispatchToChannel(ctx, sess, "#general", []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 
 	require.Equal(t, []domain.ModelReplyEvent{
@@ -4255,7 +4206,7 @@ func TestSession_DispatchToChannel_retries_on_invalid_structured_formatting(t *t
 
 	_, ircMsg := seedUserMessage(t, s, "#general", "hello")
 
-	replies, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+	replies, err := dispatchToChannel(ctx, sess, "#general", []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 	require.Equal(t, []string{"invalid", "clean"}, attempts)
 	require.Equal(t, []domain.ModelReplyEvent{
@@ -4304,7 +4255,7 @@ func TestSession_DispatchToChannel_format_retry_exhaustion(t *testing.T) {
 
 	_, ircMsg := seedUserMessage(t, s, "#general", "hello")
 
-	replies, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+	replies, err := dispatchToChannel(ctx, sess, "#general", []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 
 	require.Equal(t, 3, calls)
@@ -4315,64 +4266,48 @@ func TestSession_DispatchToChannel_format_retry_exhaustion(t *testing.T) {
 		{Target: "#general", From: "testuser", Body: "hello", At: fixedTime},
 	}, msgs)
 
-	span := oteltest.FindSpan(t, recorder, "session.dispatch_to_instance")
+	span := oteltest.FindSpan(t, recorder, "modelclient.dispatch_to_instance")
 	require.Equal(t, observability.PassReasonFormatRetryExhausted, oteltest.AttrValue(span.Attributes(), observability.AttrPassReason))
 }
 
 func TestSession_DispatchToChannel_newline_retry_exhaustion(t *testing.T) {
-	// Responses with embedded newlines also fail format validation,
-	// so the format reason takes precedence when both apply. To
-	// exercise the newline-specific exhaustion mapping, verify
-	// passReasonForResponse separately and ensure the dispatch still
-	// produces the correct observability attributes when newlines
-	// are the only issue.
+	// A body with newlines also fails format validation, so
+	// format takes precedence in the retry reason.
 
-	t.Run("passReasonForResponse maps newline silence", func(t *testing.T) {
-		resp := protocol.ModelResponse{
-			Kind:   protocol.ResponseSilence,
-			Reason: silenceReasonNewlineRetries,
-		}
-		require.Equal(t, observability.PassReasonNewlineRetryExhausted, passReasonForResponse(resp))
+	recorder, provider := oteltest.NewSpanRecorder(t)
+	calls := 0
+	fake := &fakeAPIClient{
+		sendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
+			calls++
+			return protocol.Reply("always\nmultiline"), nil
+		},
+	}
+	sess, s := newTestSessionWithAPI(t, fake)
+	sess.WithTracerProvider(provider)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
+	seedInstance(t, sess, s, instanceSpec{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: testChannels("#general"),
 	})
 
-	t.Run("dispatch with multiline body exhausts retries", func(t *testing.T) {
-		recorder, provider := oteltest.NewSpanRecorder(t)
-		calls := 0
-		fake := &fakeAPIClient{
-			sendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (protocol.ModelResponse, error) {
-				calls++
-				return protocol.Reply("always\nmultiline"), nil
-			},
-		}
-		sess, s := newTestSessionWithAPI(t, fake)
-		sess.WithTracerProvider(provider)
-		ctx := t.Context()
+	_, ircMsg := seedUserMessage(t, s, "#general", "hello")
 
-		seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
-		seedInstance(t, sess, s, instanceSpec{
-			Nick:     "botty",
-			ModelID:  "test/model",
-			Channels: testChannels("#general"),
-		})
+	replies, err := dispatchToChannel(ctx, sess, "#general", []protocol.IRCMessage{ircMsg})
+	require.NoError(t, err)
 
-		_, ircMsg := seedUserMessage(t, s, "#general", "hello")
+	require.Equal(t, 3, calls)
+	require.Empty(t, replies)
 
-		replies, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
-		require.NoError(t, err)
+	msgs := channelMessages(t, s, "#general")
+	require.Equal(t, []domain.Message{
+		{Target: "#general", From: "testuser", Body: "hello", At: fixedTime},
+	}, msgs)
 
-		require.Equal(t, 3, calls)
-		require.Empty(t, replies)
-
-		msgs := channelMessages(t, s, "#general")
-		require.Equal(t, []domain.Message{
-			{Target: "#general", From: "testuser", Body: "hello", At: fixedTime},
-		}, msgs)
-
-		// A body with newlines also fails format validation, so
-		// format takes precedence in the retry reason.
-		span := oteltest.FindSpan(t, recorder, "session.dispatch_to_instance")
-		require.Equal(t, observability.PassReasonFormatRetryExhausted, oteltest.AttrValue(span.Attributes(), observability.AttrPassReason))
-	})
+	span := oteltest.FindSpan(t, recorder, "modelclient.dispatch_to_instance")
+	require.Equal(t, observability.PassReasonFormatRetryExhausted, oteltest.AttrValue(span.Attributes(), observability.AttrPassReason))
 }
 
 // seedChannelWithMembers persists a channel with the given members.
@@ -4460,12 +4395,13 @@ func registerUserMembership(t *testing.T, sess *Session, name domain.ChannelName
 // returned — so a test can refer to the instance before or after
 // seeding and get the same pointer either way.
 // seedInstance writes a model-instance row to the store and
-// registers the corresponding model-client subscription. Pairing
-// the store write with [Session.ensureModelClient] keeps the test
-// fixture's invariant — a seeded instance is a registered
-// subscriber with its dispatch goroutine running — aligned with
-// the production lifecycle, where [Session.attachInstanceToChannel]
-// always pairs the persistent write with the same registration.
+// attaches a `*modelclient.ModelClient` for it via
+// [attachModelClient]. Pairing the store write with the attach
+// call keeps the test fixture's invariant — a seeded instance is
+// a registered subscriber with its dispatch goroutine running —
+// aligned with the production lifecycle, where
+// [Session.attachInstanceToChannel] always pairs the persistent
+// write with the same registration.
 func seedInstance(t *testing.T, sess *Session, s *storemod.SQLiteStore, spec instanceSpec) *domain.Instance {
 	t.Helper()
 
@@ -4495,13 +4431,13 @@ func seedInstance(t *testing.T, sess *Session, s *storemod.SQLiteStore, spec ins
 			}
 		})
 		require.NoError(t, s.SaveInstance(ctx, existing))
-		sess.ensureModelClient(ctx, existing)
+		attachModelClient(t, sess, existing)
 		return existing
 	}
 
 	inst := domain.NewModelInstance(id, spec.Nick, spec.ModelID, spec.Persona, spec.Channels)
 	require.NoError(t, s.SaveInstance(ctx, inst))
-	sess.ensureModelClient(ctx, inst)
+	attachModelClient(t, sess, inst)
 
 	return inst
 }
@@ -4591,7 +4527,7 @@ func TestSession_DispatchToChannel_content_filtered_returns_silence(t *testing.T
 
 	_, ircMsg := seedUserMessage(t, s, "#general", "hello")
 
-	replies, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+	replies, err := dispatchToChannel(ctx, sess, "#general", []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 	require.Empty(t, replies)
 }
@@ -4615,7 +4551,7 @@ func TestSession_DispatchToChannel_model_refused_returns_silence(t *testing.T) {
 
 	_, ircMsg := seedUserMessage(t, s, "#general", "hello")
 
-	replies, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+	replies, err := dispatchToChannel(ctx, sess, "#general", []protocol.IRCMessage{ircMsg})
 	require.NoError(t, err)
 	require.Empty(t, replies)
 }
@@ -4639,7 +4575,7 @@ func TestSession_DispatchToChannel_truncated_returns_error(t *testing.T) {
 
 	_, ircMsg := seedUserMessage(t, s, "#general", "hello")
 
-	_, err := sess.DispatchToChannel(ctx, "#general", []protocol.IRCMessage{ircMsg})
+	_, err := dispatchToChannel(ctx, sess, "#general", []protocol.IRCMessage{ircMsg})
 	require.ErrorIs(t, err, api.ErrResponseTruncated)
 }
 
@@ -4911,13 +4847,13 @@ func TestDispatchToInstance_logs_dispatch_attributes(t *testing.T) {
 		{Kind: protocol.KindJoin, From: "bob", Target: "#dev", At: fixedTime},
 	}
 
-	_, err := sess.DispatchToChannel(ctx, "#dev", triggerEvents)
+	_, err := dispatchToChannel(ctx, sess, "#dev", triggerEvents)
 	require.NoError(t, err)
 
 	record := buf.find("dispatch to instance")
 	require.NotNil(t, record, "expected 'dispatch to instance' log entry")
 
-	require.Equal(t, "session", record["component"])
+	require.Equal(t, "modelclient", record["component"])
 	require.Equal(t, "#dev", record["channel"])
 	require.Equal(t, "botty", record["nick"])
 	require.Equal(t, "test/model-a", record["model_id"])
@@ -4954,7 +4890,7 @@ func TestDispatchToInstance_logs_pass_reason(t *testing.T) {
 		{Kind: protocol.KindPrivMsg, From: "alice", Target: "#dev", Body: "anyone?", At: fixedTime},
 	}
 
-	_, err := sess.DispatchToChannel(ctx, "#dev", triggerEvents)
+	_, err := dispatchToChannel(ctx, sess, "#dev", triggerEvents)
 	require.NoError(t, err)
 
 	record := buf.find("dispatch to instance")
@@ -5104,7 +5040,7 @@ func TestSession_AddModel_short_circuits_after_ListModels_failure(t *testing.T) 
 	client := &listModelsCountingClient{err: upstreamErr}
 
 	s := storetest.NewMemoryStore(t)
-	sess := New(t.Context, s, nil, client, "testuser", "test-key", "")
+	sess := New(t.Context, s, nil, client, newTestModelClientFactory(t, client), "testuser", "test-key", "")
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	sess.now = func() time.Time { return fixedTime }
 
@@ -5115,7 +5051,7 @@ func TestSession_AddModel_short_circuits_after_ListModels_failure(t *testing.T) 
 	require.Equal(t, listModelsFailed, listModelsState(sess.listModelsState.Load()))
 
 	addErr := addModelViaWire(t.Context(), t, sess, "#dev", "anthropic/claude-3-haiku", "")
-	require.ErrorIs(t, addErr, ErrModelListUnavailable)
+	require.ErrorIs(t, addErr, modelclient.ErrModelListUnavailable)
 
 	require.Equal(t, int32(1), client.calls.Load(),
 		"AddModel must short-circuit on the cached failed state and not re-hit ListModels")
@@ -5157,15 +5093,15 @@ func TestClassifyEnsureModelError(t *testing.T) {
 		want string
 	}{
 		"ErrModelListUnavailable": {
-			err:  ErrModelListUnavailable,
+			err:  modelclient.ErrModelListUnavailable,
 			want: observability.ErrorKindClientState,
 		},
 		"wrapped ErrModelListUnavailable": {
-			err:  fmt.Errorf("wrap: %w", ErrModelListUnavailable),
+			err:  fmt.Errorf("wrap: %w", modelclient.ErrModelListUnavailable),
 			want: observability.ErrorKindClientState,
 		},
 		"ErrNoAPIKey": {
-			err:  ErrNoAPIKey,
+			err:  modelclient.ErrNoAPIKey,
 			want: observability.ErrorKindClientState,
 		},
 		"UnsupportedModelError": {
@@ -5197,7 +5133,7 @@ func TestSession_AddModel_lazy_loads_when_state_none(t *testing.T) {
 	client := &listModelsCountingClient{infos: []api.ModelInfo{{ID: "anthropic/claude-3-haiku"}}}
 
 	s := storetest.NewMemoryStore(t)
-	sess := New(t.Context, s, nil, client, "testuser", "test-key", "")
+	sess := New(t.Context, s, nil, client, newTestModelClientFactory(t, client), "testuser", "test-key", "")
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	sess.now = func() time.Time { return fixedTime }
 
@@ -5213,7 +5149,7 @@ func TestSession_AddModel_returns_unsupported_when_model_missing_from_cache(t *t
 	client := &listModelsCountingClient{infos: []api.ModelInfo{{ID: "openai/gpt-5"}}}
 
 	s := storetest.NewMemoryStore(t)
-	sess := New(t.Context, s, nil, client, "testuser", "test-key", "")
+	sess := New(t.Context, s, nil, client, newTestModelClientFactory(t, client), "testuser", "test-key", "")
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	sess.now = func() time.Time { return fixedTime }
 
@@ -5234,7 +5170,7 @@ func TestSession_AddModel_short_circuits_when_lazy_load_fails(t *testing.T) {
 	client := &listModelsCountingClient{err: upstreamErr}
 
 	s := storetest.NewMemoryStore(t)
-	sess := New(t.Context, s, nil, client, "testuser", "test-key", "")
+	sess := New(t.Context, s, nil, client, newTestModelClientFactory(t, client), "testuser", "test-key", "")
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	sess.now = func() time.Time { return fixedTime }
 
@@ -5246,7 +5182,7 @@ func TestSession_AddModel_short_circuits_when_lazy_load_fails(t *testing.T) {
 	require.Equal(t, listModelsFailed, listModelsState(sess.listModelsState.Load()))
 
 	second := addModelViaWire(t.Context(), t, sess, "#dev", "anthropic/claude-3-haiku", "")
-	require.ErrorIs(t, second, ErrModelListUnavailable)
+	require.ErrorIs(t, second, modelclient.ErrModelListUnavailable)
 	require.Equal(t, int32(1), client.calls.Load(),
 		"second AddModel must short-circuit and not re-hit ListModels")
 }
@@ -5255,7 +5191,7 @@ func TestSession_SetAPIKey_resets_listModelsState(t *testing.T) {
 	client := &listModelsCountingClient{err: fmt.Errorf("upstream unreachable")}
 
 	s := storetest.NewMemoryStore(t)
-	sess := New(t.Context, s, nil, client, "testuser", "initial-key", "")
+	sess := New(t.Context, s, nil, client, newTestModelClientFactory(t, client), "testuser", "initial-key", "")
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	sess.now = func() time.Time { return fixedTime }
 	sess.SetAPIFactory(func(string, string) (api.Client, error) {
@@ -5276,7 +5212,7 @@ func TestSession_Reset_clears_listModelsState(t *testing.T) {
 	client := &listModelsCountingClient{err: fmt.Errorf("upstream unreachable")}
 
 	s := storetest.NewMemoryStore(t)
-	sess := New(t.Context, s, nil, client, "testuser", "test-key", "")
+	sess := New(t.Context, s, nil, client, newTestModelClientFactory(t, client), "testuser", "test-key", "")
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	sess.now = func() time.Time { return fixedTime }
 
@@ -5349,7 +5285,7 @@ func TestSession_appendEvent_persistence_failure_is_silent(t *testing.T) {
 					errFailedAppend: fmt.Errorf("disk full"),
 				}
 
-				sess := New(t.Context, store, nil, &fakeAPIClient{}, "testuser", "", "")
+				sess := New(t.Context, store, nil, &fakeAPIClient{}, newTestModelClientFactory(t, &fakeAPIClient{}), "testuser", "", "")
 				t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 				sess.now = func() time.Time { return fixedTime }
 
@@ -5376,7 +5312,7 @@ func TestSession_Shutdown_waits_for_dispatch_drain(t *testing.T) {
 	t.Cleanup(cancelSupply)
 
 	s := storetest.NewMemoryStore(t)
-	sess := New(func() context.Context { return supplyCtx }, s, nil, &fakeAPIClient{}, "testuser", "", "")
+	sess := New(func() context.Context { return supplyCtx }, s, nil, &fakeAPIClient{}, newTestModelClientFactory(t, &fakeAPIClient{}), "testuser", "", "")
 	sess.now = func() time.Time { return fixedTime }
 
 	seedInstance(t, sess, s, instanceSpec{
@@ -5399,7 +5335,7 @@ func TestSession_Shutdown_waits_for_dispatch_drain(t *testing.T) {
 // already-elapsed deadline to `Shutdown`.
 func TestSession_Shutdown_returns_deadline_err_when_drain_exceeds_bound(t *testing.T) {
 	s := storetest.NewMemoryStore(t)
-	sess := New(t.Context, s, nil, &fakeAPIClient{}, "testuser", "", "")
+	sess := New(t.Context, s, nil, &fakeAPIClient{}, newTestModelClientFactory(t, &fakeAPIClient{}), "testuser", "", "")
 	sess.now = func() time.Time { return fixedTime }
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 
@@ -5416,19 +5352,17 @@ func TestSession_Shutdown_returns_deadline_err_when_drain_exceeds_bound(t *testi
 		"Shutdown must surface the caller ctx error when drain exceeds the bound")
 }
 
-// TestSession_ensureModelClient_refused_after_shutdown pins the
-// shutdown gate: a late JOIN whose handler reaches
-// [Session.ensureModelClient] after [Session.Shutdown] has begun
-// must not spawn a fresh dispatch goroutine. Returning nil at
-// the gate is what makes `dispatchWG.Wait()` safe — without it
-// a concurrent `dispatchWG.Go(...)` would race the Wait and trip
-// the wait-group reuse panic.
-func TestSession_ensureModelClient_refused_after_shutdown(t *testing.T) {
+// TestSession_Subscribe_refused_after_shutdown pins the shutdown
+// gate: a fresh subscription attempt after [Session.Shutdown] has
+// begun must be refused. Refusal at the registration point is what
+// keeps the modelclient-side dispatch goroutine off the bus once
+// the session has stopped accepting new work.
+func TestSession_Subscribe_refused_after_shutdown(t *testing.T) {
 	supplyCtx, cancelSupply := context.WithCancel(t.Context())
 	t.Cleanup(cancelSupply)
 
 	s := storetest.NewMemoryStore(t)
-	sess := New(func() context.Context { return supplyCtx }, s, nil, &fakeAPIClient{}, "testuser", "", "")
+	sess := New(func() context.Context { return supplyCtx }, s, nil, &fakeAPIClient{}, newTestModelClientFactory(t, &fakeAPIClient{}), "testuser", "", "")
 	sess.now = func() time.Time { return fixedTime }
 
 	cancelSupply()
@@ -5437,6 +5371,23 @@ func TestSession_ensureModelClient_refused_after_shutdown(t *testing.T) {
 	inst := domain.NewModelInstance("late-inst", "latebot", "test/model", "", nil)
 	require.NoError(t, s.SaveInstance(t.Context(), inst))
 
-	client := sess.ensureModelClient(t.Context(), inst)
-	require.Nil(t, client, "ensureModelClient must refuse new registration after Shutdown")
+	stub := &shutdownGateStubClient{id: protocol.ClientID(inst.ID())}
+	_, err := sess.Subscribe(stub, protocol.SubscribeOptions{Instance: inst})
+	require.Error(t, err, "Subscribe must refuse new registration after Shutdown")
 }
+
+// shutdownGateStubClient is the smallest possible [protocol.Client]
+// the shutdown-gate test uses to drive [Session.Subscribe]. The
+// session never reads `Events` or `Send` on it — the registration
+// refusal short-circuits before either runs.
+type shutdownGateStubClient struct {
+	id protocol.ClientID
+}
+
+func (c *shutdownGateStubClient) Identity() protocol.ClientID { return c.id }
+func (c *shutdownGateStubClient) Send(context.Context, protocol.Command) (protocol.Response, error) {
+	return protocol.Response{}, nil
+}
+func (c *shutdownGateStubClient) Events() <-chan protocol.Delivery { return nil }
+func (c *shutdownGateStubClient) HasMode(domain.Mode) bool         { return false }
+func (c *shutdownGateStubClient) Caps() command.CapabilityHolder   { return nil }

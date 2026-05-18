@@ -84,9 +84,9 @@ type liveModelsLoadedMsg struct {
 
 // liveModelsLoadFailedMsg is dispatched when `ListModels` fails. It
 // carries the underlying error; the handler empties `*s.liveModels`
-// to degrade tab-completion gracefully, treats `session.ErrNoAPIKey`
-// as a silent no-op, and surfaces other failures as a
-// `SystemNotice`.
+// to degrade tab-completion gracefully, treats
+// `modelclient.ErrNoAPIKey` as a silent no-op, and surfaces other
+// failures as a `SystemNotice`.
 type liveModelsLoadFailedMsg struct {
 	err error
 }

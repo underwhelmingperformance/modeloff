@@ -375,7 +375,7 @@ func TestHandleChannelMode_NonOpRejected(t *testing.T) {
 		})
 		seedChannelWithMembers(t, sess, s, "#chan", "testuser", "botty")
 
-		bClient := sess.ensureModelClient(ctx, botty)
+		bClient := attachModelClient(t, sess, botty)
 		require.NotNil(t, bClient)
 
 		resp, err := bClient.Send(ctx, protocol.ChannelMode{

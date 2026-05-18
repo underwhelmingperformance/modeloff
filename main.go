@@ -59,11 +59,20 @@ func main() {
 
 	baseContext := func() context.Context { return appCtx }
 
+	toolRegistry, err := chatcmd.BuildToolRegistry()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error building tool registry: %v\n", err)
+		os.Exit(1)
+	}
+
+	factory := newModelClientRegistry(apiClient, memStore, toolRegistry, baseContext)
+
 	sess := session.New(
 		baseContext,
 		dataStore,
 		memStore,
 		apiClient,
+		factory,
 		domain.Nick(cfg.UserNick),
 		cfg.APIKey,
 		cfg.SmallModel,
@@ -72,13 +81,11 @@ func main() {
 		return api.NewOpenRouterClient(apiKey, baseURL, nil), nil
 	})
 
-	toolRegistry, err := chatcmd.BuildToolRegistry()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error building tool registry: %v\n", err)
-		os.Exit(1)
+	for inst := range sess.Instances(appCtx) {
+		if _, err := factory.Attach(appCtx, sess, inst); err != nil {
+			slog.Warn("attach boot model client", "instance_id", inst.ID(), "error", err)
+		}
 	}
-
-	sess.SetToolRegistry(toolRegistry)
 
 	channelCount := 0
 

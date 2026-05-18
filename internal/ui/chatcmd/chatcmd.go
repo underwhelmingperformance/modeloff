@@ -13,8 +13,8 @@ import (
 	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/config"
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/modelclient"
 	"github.com/laney/modeloff/internal/protocol"
-	"github.com/laney/modeloff/internal/session"
 )
 
 // Command is the typed command interface for the chat screen.
@@ -32,7 +32,7 @@ type Parser = command.Parser[CompletionContext, Context, tea.Cmd]
 // context is threaded as an explicit first parameter to [Command.Run]
 // rather than carried on the struct.
 type Context struct {
-	Session    *session.Session
+	Session    modelclient.SessionAPI
 	Config     config.Store
 	Active     domain.ChannelName
 	Actor      *domain.Instance
@@ -222,13 +222,13 @@ func sendCommand(ctx context.Context, rc Context, c protocolCommand, operation s
 	return nil
 }
 
-// toolContext adapts a [session.ToolContext] to the [Context] that
-// `ToCommand` reads from, so the same translation method serves
+// toolContext adapts a [modelclient.ToolContext] to the [Context]
+// that `ToCommand` reads from, so the same translation method serves
 // both `Run` (chat-screen) and `RunTool` (model). The returned
 // context carries the actor, the active channel, and the protocol
 // client — every field `ToCommand` implementations consult. The
 // cancellation context is threaded separately to the wire send.
-func toolContext(tc session.ToolContext) Context {
+func toolContext(tc modelclient.ToolContext) Context {
 	return Context{
 		Session: tc.Session,
 		Active:  tc.Channel,
@@ -238,8 +238,8 @@ func toolContext(tc session.ToolContext) Context {
 }
 
 // sendToolCommand routes a migrated command through the model's
-// protocol client and assembles the [session.ToolResultPayload] the
-// LLM tool-result protocol expects. Errors at any of the three
+// protocol client and assembles the [modelclient.ToolResultPayload]
+// the LLM tool-result protocol expects. Errors at any of the three
 // failure points (translation, transport, dispatcher) collapse to
 // `OK: false` with the error string. Success returns `OK: true`
 // with the caller-supplied summary so the model sees a stable
@@ -248,22 +248,22 @@ func toolContext(tc session.ToolContext) Context {
 // Typed errors are flattened to strings; the LLM tool-result
 // protocol carries strings only, so callers cannot `errors.As` over
 // the result.
-func sendToolCommand(ctx context.Context, tc session.ToolContext, c protocolCommand, summary string) session.ToolResultPayload {
+func sendToolCommand(ctx context.Context, tc modelclient.ToolContext, c protocolCommand, summary string) modelclient.ToolResultPayload {
 	cmd, err := c.ToCommand(toolContext(tc))
 	if err != nil {
-		return session.ToolResultPayload{OK: false, Error: err.Error()}
+		return modelclient.ToolResultPayload{OK: false, Error: err.Error()}
 	}
 
 	resp, err := tc.Client.Send(ctx, cmd)
 	if err != nil {
-		return session.ToolResultPayload{OK: false, Error: err.Error()}
+		return modelclient.ToolResultPayload{OK: false, Error: err.Error()}
 	}
 
 	if resp.Err != nil {
-		return session.ToolResultPayload{OK: false, Error: resp.Err.Error()}
+		return modelclient.ToolResultPayload{OK: false, Error: resp.Err.Error()}
 	}
 
-	return session.ToolResultPayload{OK: true, Summary: summary}
+	return modelclient.ToolResultPayload{OK: true, Summary: summary}
 }
 
 func usageCmd(cmd, usage string) tea.Cmd {

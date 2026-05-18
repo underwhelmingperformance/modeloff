@@ -1,8 +1,9 @@
-package session
+package modelclient
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -12,110 +13,55 @@ import (
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/memory"
 	"github.com/laney/modeloff/internal/observability"
-	"github.com/laney/modeloff/internal/protocol"
 )
 
-// ToolContext carries the backend context for a model tool call.
-// Actor is the `*domain.Instance` for the caller — models dispatched
-// by the session receive their own handle, and the user's own
-// `/`-command tool invocations receive the user handle. Client is
-// the protocol-side handle the tool dispatches commands through;
-// it is the model-client handle for model invocations and the
-// user-client for user-driven tool calls.
-//
-// Callers must populate Client before invoking any tool whose
-// `RunTool` routes through the wire protocol; a nil Client crashes
-// with a nil-pointer dereference at `tc.Client.Send`.
-type ToolContext struct {
-	Session *Session
-	Actor   *domain.Instance
-	Channel domain.ChannelName
-	Client  protocol.Client
+// ErrNoAPIKey is returned by operations that require an OpenRouter
+// API key when one has not yet been configured. Callers can use
+// `errors.Is(err, modelclient.ErrNoAPIKey)` to distinguish this
+// validation outcome from an upstream failure, e.g. to suppress
+// user-facing notices while the user is still in onboarding.
+var ErrNoAPIKey = errors.New("api key not configured")
+
+// ErrModelListUnavailable is returned when the OpenRouter model
+// catalogue could not be fetched on the most recent attempt and
+// the session has no fresh list to validate against. `/add-model`
+// and other operations that need an authoritative model list
+// short-circuit with this sentinel. Callers can use
+// `errors.Is(err, modelclient.ErrModelListUnavailable)` to surface
+// a dedicated user notice.
+var ErrModelListUnavailable = errors.New("model list unavailable")
+
+// MemoryExecutor executes memory tool calls on behalf of a model
+// instance.
+type MemoryExecutor interface {
+	WriteMemory(ctx context.Context, key, content string) error
+	DeleteMemory(ctx context.Context, key string) error
+	SearchMemory(ctx context.Context, query string, limit int) ([]memory.SearchResult, error)
 }
 
-// ToolResultPayload is the common tool result envelope returned to models.
-type ToolResultPayload struct {
-	OK      bool   `json:"ok"`
-	Summary string `json:"summary,omitempty"`
-	Data    any    `json:"data,omitempty"`
-	Error   string `json:"error,omitempty"`
+// instanceMemory closes over an InstanceID and memory.Store to
+// implement MemoryExecutor. Keying by identity (not nick) means
+// memories survive a model instance's `/nick` rename.
+type instanceMemory struct {
+	instanceID domain.InstanceID
+	store      memory.Store
 }
 
-// ToolSpec describes a model-callable tool and how to execute it.
-type ToolSpec struct {
-	Definition api.ToolDefinition
-	Execute    func(context.Context, ToolContext, json.RawMessage) (ToolResultPayload, error)
+func (m *instanceMemory) WriteMemory(ctx context.Context, key, content string) error {
+	return m.store.Write(ctx, m.instanceID, memory.Entry{Key: key, Content: content})
 }
 
-// ToolRegistry holds the available tools for a dispatch.
-type ToolRegistry struct {
-	order  []ToolSpec
-	byName map[string]ToolSpec
+func (m *instanceMemory) DeleteMemory(ctx context.Context, key string) error {
+	return m.store.Delete(ctx, m.instanceID, key)
 }
 
-// NewToolRegistry builds a registry from the given specs.
-func NewToolRegistry(specs ...ToolSpec) *ToolRegistry {
-	registry := &ToolRegistry{
-		order:  make([]ToolSpec, 0, len(specs)),
-		byName: make(map[string]ToolSpec, len(specs)),
+func (m *instanceMemory) SearchMemory(ctx context.Context, query string, limit int) ([]memory.SearchResult, error) {
+	searcher, ok := m.store.(memory.Searcher)
+	if !ok {
+		return nil, fmt.Errorf("semantic search is not configured")
 	}
 
-	for _, spec := range specs {
-		registry.order = append(registry.order, spec)
-		registry.byName[spec.Definition.Name] = spec
-	}
-
-	return registry
-}
-
-// MergeToolRegistries combines registries in order, with later duplicates
-// ignored so earlier entries keep precedence.
-func MergeToolRegistries(registries ...*ToolRegistry) *ToolRegistry {
-	var specs []ToolSpec
-	seen := map[string]struct{}{}
-
-	for _, registry := range registries {
-		if registry == nil {
-			continue
-		}
-
-		for _, spec := range registry.order {
-			if _, ok := seen[spec.Definition.Name]; ok {
-				continue
-			}
-
-			seen[spec.Definition.Name] = struct{}{}
-			specs = append(specs, spec)
-		}
-	}
-
-	return NewToolRegistry(specs...)
-}
-
-// Definitions returns the API-facing tool definitions.
-func (r *ToolRegistry) Definitions() []api.ToolDefinition {
-	if r == nil {
-		return nil
-	}
-
-	definitions := make([]api.ToolDefinition, 0, len(r.order))
-
-	for _, spec := range r.order {
-		definitions = append(definitions, spec.Definition)
-	}
-
-	return definitions
-}
-
-// Find returns the named tool spec if present.
-func (r *ToolRegistry) Find(name string) (ToolSpec, bool) {
-	if r == nil {
-		return ToolSpec{}, false
-	}
-
-	spec, ok := r.byName[name]
-
-	return spec, ok
+	return searcher.Search(ctx, m.instanceID, query, limit)
 }
 
 func memoryToolRegistry(mem MemoryExecutor, searchEnabled bool) *ToolRegistry {
@@ -259,10 +205,4 @@ func recordMemoryTool(ctx context.Context, kind string, err error) {
 	observability.RecordMemoryToolCall(ctx, kind, result)
 	attrs = append(attrs, attribute.String(observability.AttrResult, result))
 	span.AddEvent("memory.tool_call", trace.WithAttributes(attrs...))
-}
-
-func searchEnabled(store memory.Store) bool {
-	_, ok := store.(memory.Searcher)
-
-	return ok
 }

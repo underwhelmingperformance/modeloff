@@ -153,8 +153,8 @@ func TestApp_terminal_output_shows_full_model_nick_in_user_list(t *testing.T) {
 		Channels: channels,
 	})
 
-	client := modelclient.New(grok, sess)
-	require.NoError(t, client.Attach(), "attach grok model client")
+	client := modelclient.New(grok, sess, nil, nil, nil, t.Context)
+	require.NoError(t, client.Attach(t.Context()), "attach grok model client")
 	resp, err := client.Send(t.Context(), protocol.Join{Channel: "#general"})
 	require.NoError(t, err)
 	require.NoError(t, resp.Err)
@@ -214,7 +214,8 @@ func TestApp_reuse_existing_instance(t *testing.T) {
 	}))
 
 	cfgStore := &integrationConfigStore{}
-	sess := session.New(t.Context, store, memStore, apiClient, "testuser", cfgStore.cfg.APIKey, cfgStore.cfg.SmallModel)
+	factory := uitest.NewModelClientFactory(t, apiClient, memStore, nil, t.Context)
+	sess := session.New(t.Context, store, memStore, apiClient, factory, "testuser", cfgStore.cfg.APIKey, cfgStore.cfg.SmallModel)
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 
 	uitest.SeedChannel(t, sess, "#general")
@@ -298,7 +299,7 @@ func TestApp_vector_memory_write_and_search(t *testing.T) {
 			default:
 				// search_memory returned results — reply with the
 				// remembered content.
-				var payload session.ToolResultPayload
+				var payload modelclient.ToolResultPayload
 				if err := json.Unmarshal([]byte(results[0].Content), &payload); err != nil {
 					return api.CompletionResult{}, err
 				}
@@ -344,7 +345,8 @@ func TestApp_vector_memory_write_and_search(t *testing.T) {
 			PokeInterval: 5 * time.Minute,
 		},
 	}
-	sess := session.New(t.Context, store, memStore, apiClient, "testuser", cfgStore.cfg.APIKey, cfgStore.cfg.SmallModel)
+	factory := uitest.NewModelClientFactory(t, apiClient, memStore, nil, t.Context)
+	sess := session.New(t.Context, store, memStore, apiClient, factory, "testuser", cfgStore.cfg.APIKey, cfgStore.cfg.SmallModel)
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 
 	uitest.SeedChannel(t, sess, "#lab")
@@ -477,7 +479,8 @@ func newIntegrationSessionWithConfigStore(
 
 	store := storetest.NewMemoryStore(t)
 	memStore := memory.NewStoreAdapter(storetest.NewMemoryStore(t))
-	sess := session.New(t.Context, store, memStore, apiClient, "testuser", cfgStore.cfg.APIKey, cfgStore.cfg.SmallModel)
+	factory := uitest.NewModelClientFactory(t, apiClient, memStore, nil, t.Context)
+	sess := session.New(t.Context, store, memStore, apiClient, factory, "testuser", cfgStore.cfg.APIKey, cfgStore.cfg.SmallModel)
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 
 	return sess, store
@@ -513,7 +516,7 @@ func seedInstance(t *testing.T, sess *session.Session, store *storemod.SQLiteSto
 	// dispatch goroutine running before any test fans out an event to
 	// it. This mirrors the production lifecycle, where
 	// `attachInstanceToChannel` ensures the same invariant.
-	require.NoError(t, modelclient.New(inst, sess).Attach(), "attach model client for seeded instance")
+	require.NoError(t, modelclient.New(inst, sess, nil, nil, nil, t.Context).Attach(t.Context()), "attach model client for seeded instance")
 
 	return inst
 }

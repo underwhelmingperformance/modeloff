@@ -276,9 +276,11 @@ func (s *Session) handleList(ctx context.Context) (protocol.Response, error) {
 // handleQuit dispatches a QUIT — the user-actor branch tears
 // down session state in-place (autojoin save, session-active
 // marker clear); the model-actor branch broadcasts the QUIT to
-// peers and reaps the subscription via [Session.reapClient]. The
-// user-client is never reaped: its lifetime equals the session's,
-// and the process owning it shuts down after [handleQuit] returns.
+// peers and releases the subscription via
+// [ModelClientFactory.Detach] so the model-client's dispatch
+// goroutine joins deterministically. The user-client is never
+// detached: its lifetime equals the session's, and the process
+// owning it shuts down after [handleQuit] returns.
 func (s *Session) handleQuit(ctx context.Context, c protocol.Client, cmd protocol.Quit) (protocol.Response, error) {
 	actor, err := s.resolveClientActor(c)
 	if err != nil {
@@ -290,7 +292,7 @@ func (s *Session) handleQuit(ctx context.Context, c protocol.Client, cmd protoco
 	}
 
 	if c.Identity() != protocol.UserClientID {
-		s.reapClient(c.Identity())
+		s.modelClientFactory.Detach(c.Identity())
 	}
 
 	return protocol.Response{}, nil
@@ -332,7 +334,7 @@ func (s *Session) handleKill(ctx context.Context, c protocol.Client, cmd protoco
 		return commandResult(killErr)
 	}
 
-	s.reapClient(protocol.ClientID(target.ID()))
+	s.modelClientFactory.Detach(protocol.ClientID(target.ID()))
 
 	return protocol.Response{}, nil
 }

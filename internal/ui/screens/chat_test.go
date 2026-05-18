@@ -25,7 +25,9 @@ func newTestSession(t *testing.T) *session.Session {
 	t.Helper()
 
 	s := storetest.NewMemoryStore(t)
-	sess := session.New(t.Context, s, nil, &uitest.FakeAPI{}, "testuser", "", "")
+	apiClient := &uitest.FakeAPI{}
+	factory := uitest.NewModelClientFactory(t, apiClient, nil, nil, t.Context)
+	sess := session.New(t.Context, s, nil, apiClient, factory, "testuser", "", "")
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 
 	return sess
@@ -36,7 +38,9 @@ func newTestSessionWithConfigStore(t *testing.T, cfgStore config.Store) *session
 
 	s := storetest.NewMemoryStore(t)
 	cfg, _ := cfgStore.Load(t.Context())
-	sess := session.New(t.Context, s, nil, &uitest.FakeAPI{}, "testuser", cfg.APIKey, cfg.SmallModel)
+	apiClient := &uitest.FakeAPI{}
+	factory := uitest.NewModelClientFactory(t, apiClient, nil, nil, t.Context)
+	sess := session.New(t.Context, s, nil, apiClient, factory, "testuser", cfg.APIKey, cfg.SmallModel)
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 
 	return sess
@@ -259,7 +263,9 @@ func TestChatScreen_rejoin_hides_pre_session_history(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	sess := session.New(t.Context, s, nil, &uitest.FakeAPI{}, "testuser", "", "")
+	apiClient := &uitest.FakeAPI{}
+	factory := uitest.NewModelClientFactory(t, apiClient, nil, nil, t.Context)
+	sess := session.New(t.Context, s, nil, apiClient, factory, "testuser", "", "")
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	require.NoError(t, sess.JoinAutojoinChannels(ctx))
 
@@ -322,7 +328,9 @@ func replaceTopicSeparator(lines []string) []string {
 
 func TestChatScreen_persists_last_channel_on_focus(t *testing.T) {
 	s := storetest.NewMemoryStore(t)
-	sess := session.New(t.Context, s, nil, &uitest.FakeAPI{}, "testuser", "", "")
+	apiClient := &uitest.FakeAPI{}
+	factory := uitest.NewModelClientFactory(t, apiClient, nil, nil, t.Context)
+	sess := session.New(t.Context, s, nil, apiClient, factory, "testuser", "", "")
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 
 	uitest.SeedChannel(t, sess, "#general")
@@ -1100,7 +1108,8 @@ func TestChatScreen_add_model_short_circuits_when_model_list_unavailable(t *test
 	}
 
 	s := storetest.NewMemoryStore(t)
-	sess := session.New(t.Context, s, nil, api, "testuser", cfgStore.cfg.APIKey, cfgStore.cfg.SmallModel)
+	factory := uitest.NewModelClientFactory(t, api, nil, nil, t.Context)
+	sess := session.New(t.Context, s, nil, api, factory, "testuser", cfgStore.cfg.APIKey, cfgStore.cfg.SmallModel)
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	uitest.SeedChannel(t, sess, "#general")
 
@@ -1131,7 +1140,8 @@ func TestChatScreen_add_model_completion_hides_popover_when_model_list_unavailab
 	}
 
 	s := storetest.NewMemoryStore(t)
-	sess := session.New(t.Context, s, nil, api, "testuser", cfgStore.cfg.APIKey, cfgStore.cfg.SmallModel)
+	factory := uitest.NewModelClientFactory(t, api, nil, nil, t.Context)
+	sess := session.New(t.Context, s, nil, api, factory, "testuser", cfgStore.cfg.APIKey, cfgStore.cfg.SmallModel)
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	uitest.SeedChannel(t, sess, "#general")
 

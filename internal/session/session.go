@@ -7,7 +7,6 @@ package session
 import (
 	"context"
 	"crypto/rand"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"iter"
@@ -30,11 +29,10 @@ import (
 	"github.com/laney/modeloff/internal/api"
 	"github.com/laney/modeloff/internal/config"
 	"github.com/laney/modeloff/internal/domain"
-	"github.com/laney/modeloff/internal/ircfmt"
 	"github.com/laney/modeloff/internal/memory"
+	"github.com/laney/modeloff/internal/modelclient"
 	"github.com/laney/modeloff/internal/observability"
 	"github.com/laney/modeloff/internal/protocol"
-	"github.com/laney/modeloff/internal/richtext"
 )
 
 // eventBufSize is the capacity of the session event channel. It must
@@ -49,27 +47,11 @@ import (
 // needs to catch up, which is well beyond any realistic user's list.
 const eventBufSize = 256
 
-// ErrNoAPIKey is returned by session operations that require an
-// OpenRouter API key when one has not yet been configured. Callers
-// can use `errors.Is(err, session.ErrNoAPIKey)` to distinguish this
-// validation outcome from an upstream failure, e.g. to suppress
-// user-facing notices while the user is still in onboarding.
-var ErrNoAPIKey = errors.New("api key not configured")
-
-// ErrModelListUnavailable is returned when the OpenRouter model
-// catalogue could not be fetched on the most recent attempt and the
-// session has no fresh list to validate against. `/add-model` and
-// other operations that need an authoritative model list short-circuit
-// with this sentinel rather than re-attempting the failing call on
-// every request. Callers can use `errors.Is(err,
-// session.ErrModelListUnavailable)` to surface a dedicated user
-// notice.
-var ErrModelListUnavailable = errors.New("model list unavailable")
-
 // listModelsState tracks whether the cached model catalogue reflects a
 // successful `ListModels` round-trip. It lets `ensureStructuredOutputModel`
 // distinguish "never attempted" (fall through to the lazy load) from
-// "last attempt failed" (short-circuit with `ErrModelListUnavailable`).
+// "last attempt failed" (short-circuit with
+// [modelclient.ErrModelListUnavailable]).
 //
 // Reads from `tea.Cmd` goroutines (e.g. `ensureStructuredOutputModel`)
 // and writes from sibling sites (`ListModels`, `SetAPIKey`, `Reset`)
@@ -186,7 +168,6 @@ type Session struct {
 	store  sessionStore
 	memory memory.Store
 	api    api.Client
-	tools  *ToolRegistry
 
 	baseContext func() context.Context
 	user        *domain.Instance
@@ -197,16 +178,11 @@ type Session struct {
 	factory     func(apiKey, baseURL string) (api.Client, error)
 	now         func() time.Time
 
-	dispatchWG sync.WaitGroup
-
-	// shuttingDown is closed by [Session.Shutdown] before it joins
-	// the dispatch waitgroup. [Session.ensureModelClient] checks
-	// it under `subsMu` and declines to spawn a fresh dispatch
-	// goroutine once closed, so a late JOIN cannot race
-	// `dispatchWG.Wait()` and trip the wait-group reuse panic.
-	// The shape mirrors [net/http.Server]'s `inShutdown` flag —
-	// new work is rejected at the registration point, not
-	// documented away.
+	// shuttingDown is closed by [Session.Shutdown] under `subsMu`
+	// so [Session.ensureSubscription] sees the close and declines
+	// to register a fresh subscription. The shape mirrors
+	// [net/http.Server]'s `inShutdown` flag — new work is
+	// rejected at the registration point, not documented away.
 	shuttingDown     chan struct{}
 	shuttingDownOnce sync.Once
 
@@ -221,6 +197,11 @@ type Session struct {
 	// OPER. Tests and future credential mechanisms swap the
 	// authenticator via [Session.SetOperAuthenticator].
 	operAuth OperAuthenticator
+
+	// modelClientFactory is the per-instance lifecycle hook the
+	// session calls into when an instance attaches to a channel
+	// or is killed. Required at construction; see [New].
+	modelClientFactory ModelClientFactory
 
 	connectedC    chan struct{}
 	connectedOnce sync.Once
@@ -244,12 +225,7 @@ type Session struct {
 // New creates a Session whose dispatch goroutines derive their
 // lifetime context from `baseContext`. Each goroutine that needs
 // a long-lived ctx calls `baseContext()` to obtain one; the
-// supplier shape mirrors [net/http.Server.BaseContext]. Production
-// wires `baseContext` to a closure over the
-// [signal.NotifyContext]-derived ctx in `main`; tests pass
-// `t.Context` as the supplier, so each goroutine sees the same
-// per-test ctx the testing package cancels just before cleanups
-// run.
+// supplier shape mirrors [net/http.Server.BaseContext].
 //
 // Cancellation of the ctx the supplier returns wakes dispatch
 // goroutines; they exit and [Session.Shutdown] joins them. The
@@ -274,6 +250,7 @@ func New(
 	s sessionStore,
 	m memory.Store,
 	a api.Client,
+	factory ModelClientFactory,
 	userNick domain.Nick,
 	apiKey string,
 	smallModel domain.ModelID,
@@ -303,6 +280,7 @@ func New(
 		subscribers:         make(map[protocol.ClientID]*serverClient),
 		clientHandles:       make(map[protocol.ClientID]*serverClient),
 		shuttingDown:        make(chan struct{}),
+		modelClientFactory:  factory,
 	}
 
 	sess.operAuth = DefaultOperAuthenticator
@@ -382,8 +360,7 @@ func (s *Session) lookupClientHandle(id protocol.ClientID) *serverClient {
 // (or reuses, on a repeat call for the same identity) an internal
 // envelope keyed by `c.Identity()` that carries the canonical
 // actor `*domain.Instance` (from `opts.Instance`) and the per-
-// subscription mode set, and starts the model dispatch goroutine
-// if the subscription represents a model.
+// subscription mode set.
 //
 // Subscribe is idempotent: a repeat call for an already-registered
 // identity returns the existing subscription and applies any new
@@ -399,8 +376,8 @@ func (s *Session) Subscribe(c protocol.Client, opts protocol.SubscribeOptions) (
 		return nil, fmt.Errorf("session.Subscribe: user-client registration is not supported yet")
 	}
 
-	sc := s.ensureModelClient(s.baseContext(), opts.Instance)
-	if sc == nil {
+	sc, ok := s.ensureSubscription(id, opts.Instance)
+	if !ok {
 		return nil, fmt.Errorf("session.Subscribe: session is shutting down")
 	}
 
@@ -411,65 +388,39 @@ func (s *Session) Subscribe(c protocol.Client, opts protocol.SubscribeOptions) (
 	return sc, nil
 }
 
-// ensureModelClient registers a model-client handle for `inst` if
-// one does not already exist, and returns the canonical handle
-// either way. Model clients carry no user modes; they join the
-// subscriber set so [fanOutProtocol] delivers to them, and a
-// long-lived dispatch goroutine starts under the same lock so the
-// channel has a consumer attached before any caller can fan out
-// to it.
-//
-// If [Session.Shutdown] has begun, registration is refused: an
-// existing handle is still returned, but a fresh `inst` produces
-// no new subscription and no new dispatch goroutine. Returning
-// nil at the shutdown gate keeps `dispatchWG.Go` from racing
-// `dispatchWG.Wait`. Callers must tolerate a nil return after
-// shutdown — in practice the only post-shutdown caller is a late
-// JOIN that loses to the binary exiting anyway.
-func (s *Session) ensureModelClient(ctx context.Context, inst *domain.Instance) *serverClient {
-	id := inst.ID()
-
+// ensureSubscription allocates a subscription envelope for `id`
+// if one does not already exist, returning the canonical handle
+// and a flag reporting whether the registry is open. If
+// [Session.Shutdown] has begun, registration is refused: an
+// existing handle is still returned, but a fresh identity is not
+// registered.
+func (s *Session) ensureSubscription(id protocol.ClientID, inst *domain.Instance) (*serverClient, bool) {
 	s.subsMu.Lock()
 	defer s.subsMu.Unlock()
 
 	if existing, ok := s.clientHandles[id]; ok {
-		return existing
+		return existing, true
 	}
 
 	select {
 	case <-s.shuttingDown:
-		return nil
+		return nil, false
 	default:
 	}
 
-	client := newServerClient(s, id, inst)
-	s.seedModelClientHistory(ctx, client)
+	sc := newServerClient(s, id, inst)
+	s.clientHandles[id] = sc
+	s.subscribers[id] = sc
 
-	s.clientHandles[id] = client
-	s.subscribers[id] = client
-
-	s.startModelDispatch(client)
-
-	return client
+	return sc, true
 }
 
-// startModelDispatch spawns the long-lived dispatch goroutine for
-// `client`. The goroutine takes its lifetime ctx from the
-// `baseContext` supplier passed to [New]; cancelling that ctx
-// (production: the `signal.NotifyContext` cancel; tests: test
-// completion) wakes the goroutine on its select and ends the
-// loop. [Session.Shutdown] joins.
-func (s *Session) startModelDispatch(client *serverClient) {
-	ctx, cancel := context.WithCancel(s.baseContext())
-	client.cancel = cancel
-	s.dispatchWG.Go(func() { s.runModelDispatch(ctx, client) })
-}
-
-// reapClient removes a model-client from the subscriber set,
-// closes the subscription's `Done` channel, and cancels its
-// dispatch goroutine. The user-client is never reaped — its
-// lifetime equals the session. Idempotent across concurrent
-// callers via `unsubOnce` on the envelope.
+// reapClient removes a model-client from the subscriber set and
+// closes the subscription's `Done` channel. The user-client is
+// never reaped — its lifetime equals the session. Idempotent
+// across concurrent callers via `unsubOnce` on the envelope. The
+// modelclient owning the subscription is responsible for joining
+// its own dispatch goroutine via [modelclient.ModelClient.Detach].
 func (s *Session) reapClient(id protocol.ClientID) {
 	if id == protocol.UserClientID {
 		return
@@ -489,49 +440,7 @@ func (s *Session) reapClient(id protocol.ClientID) {
 
 	client.unsubOnce.Do(func() {
 		close(client.done)
-		if client.cancel != nil {
-			client.cancel()
-		}
 	})
-}
-
-// seedModelClientHistory eager-seeds the model-client's per-channel
-// history buffer from the events log for every channel the
-// instance is in. DM targets are not eager-seeded — the wire layer
-// has no notion of "open DMs" — they lazy-seed in
-// [serverClient.appendHistory] on first event arrival.
-//
-// Runs under `subsMu.Lock()` so the seed completes before any
-// fan-out can deliver to this client; the dispatch goroutine
-// has not started yet either. Sqlite reads are sequential and
-// total time scales with the instance's channel count, which is
-// bounded by user behaviour. If this becomes a measurable
-// bootstrap-latency cost, the lock can be released around the
-// store reads with a sequence-number dedupe on subsequent live
-// appends; for now the simpler pattern reads cleanly.
-func (s *Session) seedModelClientHistory(ctx context.Context, client *serverClient) {
-	channels := client.instance.Channels()
-	if channels == nil {
-		return
-	}
-
-	logger := slog.Default()
-
-	for pair := channels.Oldest(); pair != nil; pair = pair.Next() {
-		ch := pair.Key
-		seed, err := s.store.EventsBefore(ctx, ch, nil, modelHistorySize)
-		if err != nil {
-			logger.ErrorContext(ctx, "seed model history",
-				"component", "session",
-				"instance_id", client.id,
-				"channel", ch,
-				"error", err,
-			)
-			continue
-		}
-
-		client.history[ch] = seed
-	}
 }
 
 // subscriberSnapshot returns a stable copy of the subscriber set
@@ -759,59 +668,32 @@ func (s *Session) ConnectedAt() time.Time {
 	return s.connectedAt
 }
 
-// Shutdown closes the session's shutdown gate so that any
-// further [Session.ensureModelClient] call declines to register
-// a fresh dispatch goroutine, then waits for the goroutines
-// already spawned to return. It does not itself cancel anything;
-// the caller is expected to have already cancelled the ctx the
-// `baseContext` supplier returns (in production, the
-// `signal.NotifyContext` cancel func; in tests, `t.Context()`
-// cancellation handled by the testing package). The shape
-// mirrors [net/http.Server.Shutdown]: cancellation lives with
-// the caller, new work is refused at the registration point, and
-// the method's only job is to wait until in-flight work has
-// drained.
+// Shutdown closes the session's shutdown gate so that any further
+// [Session.Subscribe] call declines to register a fresh
+// subscription. The shape mirrors [net/http.Server.Shutdown]: new
+// work is refused at the registration point, and dispatch
+// goroutines belong to the model-clients holding subscriptions —
+// they exit when their lifetime ctx (derived from the
+// `baseContext` supplier passed to [New]) is cancelled.
 //
-// The returned error is `ctx.Err()` if `ctx`'s deadline expires
-// or it is cancelled before drainage completes. A `nil` return
-// means every goroutine has exited.
-//
-// Shutdown is safe to call more than once; the gate is closed
-// via `sync.Once`. Subsequent calls re-wait on the same
-// waitgroup against the new caller's `ctx`.
+// Shutdown returns `ctx.Err()` if `ctx` is cancelled before the
+// gate close completes; otherwise nil. Safe to call more than
+// once via `sync.Once` on the gate.
 func (s *Session) Shutdown(ctx context.Context) (retErr error) {
-	ctx, span := s.startSpan(ctx, "session.shutdown",
+	_, span := s.startSpan(ctx, "session.shutdown",
 		attribute.String(observability.AttrOperation, "session.shutdown"),
 	)
 	defer endSpan(span, &retErr, "")
 
-	// Close the shutdown gate under `subsMu` so the close is
-	// serialised with [Session.ensureModelClient]'s gate-check,
-	// which runs under the same lock. Either ensureModelClient
-	// holds the lock when Shutdown wants it (Shutdown waits;
-	// ensureModelClient's `dispatchWG.Go` completes against the
-	// gate it observed open), or Shutdown holds it first (any
-	// subsequent ensureModelClient acquires after release and
-	// observes the closed gate). No `dispatchWG.Go` can
-	// happen-after a close that the goroutine observed as open,
-	// so the join below is safe by construction.
 	s.subsMu.Lock()
 	s.shuttingDownOnce.Do(func() { close(s.shuttingDown) })
 	s.subsMu.Unlock()
 
-	done := make(chan struct{})
-
-	go func() {
-		s.dispatchWG.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+	if err := ctx.Err(); err != nil {
+		return err
 	}
+
+	return nil
 }
 
 // Connect performs the backend-side connection handshake. It must be
@@ -1057,14 +939,93 @@ func (s *Session) SetAPIFactory(factory func(apiKey, baseURL string) (api.Client
 	s.factory = factory
 }
 
-// SetToolRegistry configures additional model-callable tools.
-func (s *Session) SetToolRegistry(registry *ToolRegistry) {
-	s.tools = registry
+// ModelClientFactory constructs and tears down the per-instance
+// model-client backing each LLM participant. The session pairs an
+// `Attach` call with each instance-attach (JOIN / ADDMODEL /
+// INVITE) and a `Detach` call with each model-actor reap (QUIT /
+// KILL) so the model-client's dispatch goroutine joins
+// deterministically. The interface lives in the session package
+// so the session does not depend on `internal/modelclient`.
+//
+// `Attach` receives the owning [Session] as a parameter so the
+// factory does not hold a back-reference; the factory can be
+// constructed before the session it serves and passed to [New] in
+// the same expression.
+type ModelClientFactory interface {
+	// Attach constructs (or returns the existing handle for) the
+	// model-client backing `inst` and attaches it to `sess` via
+	// [Session.Subscribe]. Idempotent on a repeat call for the
+	// same identity. A nil client return is permitted and means
+	// no model-client is attached for this instance — a degraded
+	// mode where channel state is exercised without driving
+	// dispatch.
+	Attach(ctx context.Context, sess *Session, inst *domain.Instance) (protocol.Client, error)
+
+	// Detach releases the model-client for `id`. Idempotent on
+	// an unknown id.
+	Detach(id protocol.ClientID)
 }
 
 // HasAPIKey reports whether the session has an active API key.
 func (s *Session) HasAPIKey() bool {
 	return strings.TrimSpace(s.apiKey) != ""
+}
+
+// Now returns the session's current time, using the configured
+// clock. Tests override the clock to freeze time.
+func (s *Session) Now() time.Time {
+	return s.now()
+}
+
+// TracerProvider returns the OTel tracer provider the session
+// records spans on.
+func (s *Session) TracerProvider() trace.TracerProvider {
+	return s.tracerProvider
+}
+
+// LoadChannelWindow reads an addressable `#`-channel as its
+// typed `*ChannelWindow`. See [Session.loadChannelWindow] for
+// behavioural details.
+func (s *Session) LoadChannelWindow(ctx context.Context, name domain.ChannelName) (*domain.ChannelWindow, error) {
+	return s.loadChannelWindow(ctx, name)
+}
+
+// Emit fans out a [domain.ProtocolEvent] on the per-subscription
+// bus.
+func (s *Session) Emit(ctx context.Context, evt domain.ProtocolEvent) {
+	s.emit(ctx, evt)
+}
+
+// AppendEvent persists a channel event, narrating any persistence
+// failure to the session's logger.
+func (s *Session) AppendEvent(ctx context.Context, ch domain.ChannelName, event domain.PersistableEvent) {
+	s.appendEvent(ctx, ch, event)
+}
+
+// ResolveInstanceByID returns the canonical `*domain.Instance`
+// for the given id.
+func (s *Session) ResolveInstanceByID(ctx context.Context, id domain.InstanceID) (*domain.Instance, error) {
+	return s.store.GetInstanceByID(ctx, id)
+}
+
+// DMEventsBefore returns up to `n` DM events strictly before
+// `before` between `self` and `peer`.
+func (s *Session) DMEventsBefore(ctx context.Context, self, peer domain.InstanceID, before *int64, n int) ([]domain.StoredEvent, error) {
+	return s.store.DMEventsBefore(ctx, self, peer, before, n)
+}
+
+// LookupClient returns the registered [protocol.Client] handle
+// for the given identity, or nil if no subscription is registered.
+// Returns the bare subscription envelope for the user-client and
+// for any model-client whose subscription has been registered via
+// [Session.Subscribe].
+func (s *Session) LookupClient(id protocol.ClientID) protocol.Client {
+	sc := s.lookupClientHandle(id)
+	if sc == nil {
+		return nil
+	}
+
+	return sc
 }
 
 // UserInstance returns the canonical `*domain.Instance` for the
@@ -1402,7 +1363,14 @@ func (s *Session) attachInstanceToChannel(
 		return fmt.Errorf("save instance: %w", err)
 	}
 
-	s.ensureModelClient(ctx, inst)
+	if _, err := s.modelClientFactory.Attach(ctx, s, inst); err != nil {
+		slog.Default().WarnContext(ctx, "attach model client",
+			"component", "session",
+			"instance_id", inst.ID(),
+			"channel", ch,
+			"error", err,
+		)
+	}
 
 	isNew := !window.Members.HasInstance(inst)
 	if isNew {
@@ -1436,37 +1404,6 @@ func (s *Session) SendMessage(ctx context.Context, ch domain.ChannelName, body s
 // SendAction is the user shorthand for [Session.sendActionAs].
 func (s *Session) SendAction(ctx context.Context, ch domain.ChannelName, body string) (domain.Message, error) {
 	return s.sendActionAs(ctx, s.user, ch, body)
-}
-
-// DispatchToChannel sends new events to all model instances in a channel
-// and collects their replies. The caller provides the new IRC-formatted
-// events to broadcast; history is loaded from the store.
-//
-// Callers must not include events whose `InstanceID` matches a target
-// model — the wire-layer suppression is at fan-out, not at this driver.
-func (s *Session) DispatchToChannel(
-	ctx context.Context,
-	ch domain.ChannelName,
-	newEvents []protocol.IRCMessage,
-) ([]domain.ModelReplyEvent, error) {
-	ctx, span := s.startSpan(ctx, "session.dispatch_to_channel", attribute.String(observability.AttrOperation, "session.dispatch_to_channel"))
-	defer span.End()
-
-	historyEvents, err := s.store.EventsBefore(ctx, ch, nil, 500)
-	if err != nil {
-		setSpanError(span, err, observability.ErrorKindStore)
-		return nil, fmt.Errorf("list history: %w", err)
-	}
-
-	replies, err := s.dispatchToInstances(ctx, ch, historyEvents, newEvents)
-	if err != nil {
-		setSpanError(span, err, observability.ErrorKindDispatch)
-		return nil, err
-	}
-
-	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-
-	return replies, nil
 }
 
 // SetTopic sets the topic of a channel.
@@ -1557,8 +1494,8 @@ func (s *Session) ListModels(ctx context.Context) ([]api.ModelInfo, error) {
 	defer span.End()
 
 	if !s.HasAPIKey() || s.api == nil {
-		setSpanError(span, ErrNoAPIKey, observability.ErrorKindValidation)
-		return nil, ErrNoAPIKey
+		setSpanError(span, modelclient.ErrNoAPIKey, observability.ErrorKindValidation)
+		return nil, modelclient.ErrNoAPIKey
 	}
 
 	models, err := s.api.ListModels(ctx)
@@ -1837,255 +1774,6 @@ func (s *Session) SetBaseURL(ctx context.Context, baseURL string) error {
 	return nil
 }
 
-func (s *Session) dispatchToInstances(
-	ctx context.Context,
-	channelName domain.ChannelName,
-	historyEvents []domain.StoredEvent,
-	events []protocol.IRCMessage,
-) ([]domain.ModelReplyEvent, error) {
-	instances, err := s.resolveDispatchRecipients(ctx, channelName)
-	if err != nil {
-		return nil, fmt.Errorf("resolve dispatch recipients: %w", err)
-	}
-
-	var errs []error
-	var replies []domain.ModelReplyEvent
-
-	for _, inst := range instances {
-		if len(events) == 0 {
-			continue
-		}
-
-		window, err := s.dispatchWindowFor(ctx, channelName, inst)
-		if err != nil {
-			errs = append(errs, err)
-
-			continue
-		}
-
-		instReplies, instErr := s.dispatchToInstance(ctx, window, inst, channelName, historyEvents, events)
-		if instErr != nil {
-			errs = append(errs, instErr)
-		}
-
-		replies = append(replies, instReplies...)
-
-		for _, r := range instReplies {
-			ircMsg, _ := protocol.FromChannelEvent(r.Event)
-			events = append(events, ircMsg)
-		}
-	}
-
-	return replies, errors.Join(errs...)
-}
-
-// dispatchWindowFor produces the `Window` that the recipient
-// model is "in" for the purposes of system-prompt construction
-// and span tagging. For a `#`-channel target it loads the
-// `*ChannelWindow` from storage. For a bare-nick target it
-// synthesises a `*DMWindow` keyed by the message's addressing
-// (no row is required — DMs are stateless on the server side).
-func (s *Session) dispatchWindowFor(ctx context.Context, target domain.ChannelName, inst *domain.Instance) (domain.Window, error) {
-	if domain.InferChannelKind(target) == domain.KindDM {
-		return domain.NewDMWindow(inst, s.now()), nil
-	}
-
-	return s.loadChannelWindow(ctx, target)
-}
-
-func (s *Session) dispatchToInstance(
-	ctx context.Context,
-	window domain.Window,
-	inst *domain.Instance,
-	channelName domain.ChannelName,
-	historyEvents []domain.StoredEvent,
-	events []protocol.IRCMessage,
-) ([]domain.ModelReplyEvent, error) {
-	nick := inst.Nick()
-
-	ctx, instanceSpan := s.startSpan(
-		ctx,
-		"session.dispatch_to_instance",
-		attribute.String(observability.AttrOperation, "session.dispatch_to_instance"),
-		attribute.String(observability.AttrModelID, string(inst.ModelID)),
-		attribute.String(observability.AttrNick, string(nick)),
-		attribute.String(observability.AttrInstanceID, string(inst.ID())),
-		attribute.String(observability.AttrChannelKind, channelKindName(window.Kind())),
-	)
-	defer instanceSpan.End()
-
-	var joinedAt time.Time
-	if channels := inst.Channels(); channels != nil {
-		joinedAt, _ = channels.Get(channelName)
-	}
-
-	history := make([]protocol.IRCMessage, 0, len(historyEvents))
-	for _, se := range historyEvents {
-		if !se.Event.ModelVisible() {
-			continue
-		}
-
-		eventTime := domain.EventTime(se.Event)
-		if !joinedAt.IsZero() && eventTime.Before(joinedAt) {
-			continue
-		}
-
-		if msg, ok := protocol.FromChannelEvent(se.Event); ok {
-			history = append(history, msg)
-		}
-	}
-
-	if err := s.ensureStructuredOutputModel(ctx, inst.ModelID); err != nil {
-		setSpanError(instanceSpan, err, classifyEnsureModelError(err))
-		return nil, fmt.Errorf("send events to %s: %w", nick, err)
-	}
-
-	memories, err := s.memoriesForInstance(ctx, inst.ID())
-	if err != nil {
-		instanceSpan.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		instanceSpan.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("read memories for %s: %w", nick, err)
-	}
-
-	prompt := buildSystemPrompt(window, inst, memories)
-
-	var mem MemoryExecutor
-	if s.memory != nil {
-		mem = &instanceMemory{instanceID: inst.ID(), store: s.memory}
-	}
-
-	registry := MergeToolRegistries(
-		memoryToolRegistry(mem, s.memory != nil && searchEnabled(s.memory)),
-		s.tools,
-	)
-
-	outcome, err := s.sendWithRetry(ctx, inst, channelName, prompt, history, events, registry)
-	if err != nil {
-		instanceSpan.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		instanceSpan.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("send events to %s: %w", nick, err)
-	}
-
-	result := outcome.result
-	result.Usage.SetSpanAttributes(instanceSpan, result.RequestID)
-	instanceAttrs := []attribute.KeyValue{
-		attribute.String(observability.AttrResult, api.ResponseResultKind(result.Response)),
-		attribute.Int(observability.AttrRetryCount, outcome.retryCount),
-		attribute.Int(observability.AttrToolTurnCount, outcome.toolTurnCount),
-	}
-	if outcome.passReason != "" {
-		instanceAttrs = append(instanceAttrs, attribute.String(observability.AttrPassReason, outcome.passReason))
-	}
-	instanceSpan.SetAttributes(instanceAttrs...)
-
-	response := result.Response
-
-	var replyPreview string
-
-	switch response.Kind {
-	case protocol.ResponseReply:
-		var parts []string
-		for _, m := range response.Messages {
-			parts = append(parts, m.Body)
-		}
-
-		replyPreview = strings.Join(parts, " ")
-
-	default:
-		replyPreview = response.Reason
-	}
-
-	if len(replyPreview) > 200 {
-		replyPreview = replyPreview[:200]
-	}
-
-	logger := slog.Default().With("component", "session")
-	logger.InfoContext(ctx, "dispatch to instance",
-		"channel", channelName,
-		"nick", nick,
-		"model_id", inst.ModelID,
-		"trigger_count", len(events),
-		"trigger_summary", triggerSummary(events),
-		"result", api.ResponseResultKind(result.Response),
-		"reply_preview", replyPreview,
-	)
-
-	switch response.Kind {
-	case protocol.ResponseReply:
-		if len(response.Messages) == 0 {
-			return nil, nil
-		}
-
-		return s.buildReplies(ctx, channelName, inst, response.Messages), nil
-
-	default:
-		return nil, nil
-	}
-}
-
-// triggerSummary formats trigger events as a short description string.
-// Each event is rendered as "<Kind> from <From>" and joined with "; ".
-// The result is truncated to 200 characters.
-func triggerSummary(events []protocol.IRCMessage) string {
-	parts := make([]string, len(events))
-	for i, e := range events {
-		parts[i] = string(e.Kind) + " from " + e.From
-	}
-
-	s := strings.Join(parts, "; ")
-	if len(s) > 200 {
-		s = s[:200]
-	}
-
-	return s
-}
-
-// buildReplies converts model reply parts into domain events and
-// persists each message. Returns the per-reply envelopes; the
-// goroutine driver in [Session.modelDispatchTurn] emits each
-// reply's `Event` on the wire, while the synchronous
-// [Session.dispatchToInstances] driver returns replies to its
-// caller without emitting.
-func (s *Session) buildReplies(
-	ctx context.Context,
-	channelName domain.ChannelName,
-	inst *domain.Instance,
-	parts []protocol.ReplyPart,
-) []domain.ModelReplyEvent {
-	var replies []domain.ModelReplyEvent
-
-	nick := inst.Nick()
-	instanceID := inst.ID()
-
-	for _, part := range parts {
-		body := strings.TrimSpace(renderReplyBody(part))
-		if body == "" {
-			continue
-		}
-
-		now := s.now()
-		cm := domain.Message{
-			Target:     channelName,
-			From:       nick,
-			InstanceID: instanceID,
-			Body:       body,
-			Action:     part.Kind == protocol.ReplyAction,
-			At:         now,
-		}
-
-		s.appendEvent(ctx, channelName, cm)
-
-		replies = append(replies, domain.ModelReplyEvent{
-			Channel:  channelName,
-			Event:    cm,
-			Instance: inst,
-			At:       now,
-		})
-	}
-
-	return replies
-}
-
 // instanceChannelNames returns the list of channels an instance is in.
 func (s *Session) instanceChannelNames(inst *domain.Instance) []domain.ChannelName {
 	channels := inst.Channels()
@@ -2100,76 +1788,6 @@ func (s *Session) instanceChannelNames(inst *domain.Instance) []domain.ChannelNa
 	}
 
 	return names
-}
-
-func (s *Session) instancesForChannelWindow(window *domain.ChannelWindow) []*domain.Instance {
-	var instances []*domain.Instance
-
-	for m := range window.Members.All() {
-		// The human user has no ModelID and is never dispatched to.
-		if !m.Instance.IsModel() {
-			continue
-		}
-
-		instances = append(instances, m.Instance)
-	}
-
-	return instances
-}
-
-// resolveDispatchRecipients picks the model instances that should
-// take a dispatch turn for the given target. It is the single
-// place the dispatch path branches on the shape of the target:
-//
-//   - A `#`-prefixed channel name fans out to every model member
-//     of that channel (the existing channel-Members iteration).
-//   - A non-empty `InstanceID`-shaped target is a DM addressed
-//     at that specific instance — resolve it through the store
-//     and return as a single recipient if it's a model.
-//   - An empty target is a DM addressed at the user. The user
-//     is not a dispatch target (they read via the UI), so this
-//     resolves to no recipients.
-//   - The status window has no recipients; it carries server-
-//     narrated notices, not dispatchable messages.
-//
-// The DM path deliberately does not go through `loadChannel +
-// instancesForChannel`. Modeloff's DMs don't have a member-list
-// concept on the server side: the recipient is encoded directly
-// in the target. Dispatching by id keeps that model honest and
-// works without any `*DMWindow` state on the server.
-func (s *Session) resolveDispatchRecipients(ctx context.Context, target domain.ChannelName) ([]*domain.Instance, error) {
-	switch domain.InferChannelKind(target) {
-	case domain.KindStatus:
-		return nil, nil
-
-	case domain.KindDM:
-		if target == "" {
-			// Empty target identifies the user as recipient. The
-			// user is read by the UI, not dispatched.
-			return nil, nil
-		}
-
-		inst, err := s.store.GetInstanceByID(ctx, domain.InstanceID(target))
-		if err != nil {
-			return nil, err
-		}
-
-		if !inst.IsModel() {
-			return nil, nil
-		}
-
-		return []*domain.Instance{inst}, nil
-
-	case domain.KindChannel:
-		window, err := s.loadChannelWindow(ctx, target)
-		if err != nil {
-			return nil, err
-		}
-
-		return s.instancesForChannelWindow(window), nil
-	}
-
-	return nil, nil
 }
 
 // EventsAfter returns the channel's events whose timestamp is at or
@@ -2382,611 +2000,6 @@ func (s *Session) recordPersistenceFailure(ctx context.Context, ch domain.Channe
 	}
 }
 
-// runModelDispatch is the long-lived dispatch goroutine for a
-// model-client. It reads [protocol.Delivery] envelopes from the
-// subscription's events channel and, for each delivery, files
-// the event into the model's per-channel rolling history buffer
-// before deciding whether to take an LLM turn (a message in a
-// channel/DM the model is in, a JOIN/PART/MODE in a channel it
-// shares, an INVITE addressed at it, or a poke). Replies emit on
-// the bus so peers' goroutines pick them up; the chat-screen
-// renders them via its pacing queue.
-//
-// The history buffer feeds [Session.modelDispatchTurn]'s prompt
-// construction. Eager-seeded for known channels at registration
-// (see [Session.seedModelClientHistory]) and lazy-seeded for DM
-// targets in [serverClient.appendHistory], the buffer is the
-// only path the dispatch hot path reads conversation history
-// from; the events log is consulted exclusively at seed time.
-//
-// Each turn's span is linked to the originating handler's span via
-// the [trace.SpanContext] the producer captured at emit time. The
-// turn is not a child of the originator: fan-out is one-to-many
-// and each turn is its own operation. OTel links express that
-// "related but separate" relationship.
-//
-// The goroutine exits when `ctx` (the supplier-derived lifetime
-// ctx passed at spawn) is cancelled. [Session.Shutdown] joins it
-// after the cancellation propagates.
-func (s *Session) runModelDispatch(ctx context.Context, c *serverClient) {
-	defer func() {
-		if r := recover(); r != nil {
-			slog.ErrorContext(ctx, "dispatch goroutine panicked", "instance_id", c.id, "panic", r)
-		}
-	}()
-
-	for {
-		var delivery protocol.Delivery
-		select {
-		case <-ctx.Done():
-			return
-		case delivery = <-c.events:
-		}
-
-		if pe, ok := delivery.Event.(domain.PersistableEvent); ok {
-			stored := domain.StoredEvent{Event: pe}
-			for _, target := range historyTargets(delivery) {
-				c.appendHistory(ctx, stored, target)
-			}
-		}
-
-		ch, irc, ok := dispatchTrigger(c, delivery.Event)
-		if !ok {
-			continue
-		}
-
-		s.modelDispatchTurn(ctx, c, ch, irc, delivery.SpanCtx)
-	}
-}
-
-// historyTargets returns the buffer slot(s) the delivery's event
-// should be filed under for the receiving model-client's
-// dispatch-turn history. Most events belong to a single target
-// window — the channel they happened in or the DM they addressed.
-// Actor-scoped events ([domain.Quit] and [domain.NickChange])
-// carry no target on the wire (RFC 2812 §3.1.7 and §3.1.2); the
-// per-recipient channel list is on `delivery.Targets`,
-// pre-computed by [Session.fanOutProtocol] as the intersection of
-// the actor's channel set with the recipient's.
-//
-// Events with no target (PokeEvent, NamesReplyEvent, …) return
-// nil and are skipped: they are not LLM-prompt material.
-func historyTargets(delivery protocol.Delivery) []domain.ChannelName {
-	switch e := delivery.Event.(type) {
-	case domain.Message:
-		return []domain.ChannelName{e.Target}
-	case domain.Join:
-		return []domain.ChannelName{e.Target}
-	case domain.Part:
-		return []domain.ChannelName{e.Target}
-	case domain.TopicChange:
-		return []domain.ChannelName{e.Target}
-	case domain.TopicInfo:
-		return []domain.ChannelName{e.Target}
-	case domain.ModeChange:
-		return []domain.ChannelName{e.Target}
-	case domain.ModelInvited:
-		return []domain.ChannelName{e.Target}
-	case domain.ModelKicked:
-		return []domain.ChannelName{e.Target}
-	case domain.Quit, domain.NickChange:
-		_ = e
-		return delivery.Targets
-	}
-
-	return nil
-}
-
-// modelDispatchTurn runs a single LLM turn for `c.instance` in
-// response to `trigger`, emitting `ModelDispatchStarted` /
-// `ModelDispatchDone` around the call so the chat-screen's
-// pending-response indicator stays accurate. The reply Messages
-// are persisted and emitted by [Session.buildReplies] via
-// [Session.dispatchToInstance].
-//
-// `causeCtx` is the span context the producer captured at emit
-// time (see [protocol.Delivery]). When valid, the turn's span
-// carries an OTel link to it so traces stay connected across the
-// channel-based delivery boundary.
-func (s *Session) modelDispatchTurn(ctx context.Context, c *serverClient, ch domain.ChannelName, trigger protocol.IRCMessage, causeCtx trace.SpanContext) {
-	inst := c.instance
-	nick := inst.Nick()
-
-	tracer := s.tracerProvider.Tracer("github.com/laney/modeloff/internal/session")
-
-	startOpts := []trace.SpanStartOption{
-		trace.WithAttributes(
-			attribute.String(observability.AttrOperation, "session.dispatch_model_turn"),
-			attribute.String(observability.AttrChannel, string(ch)),
-			attribute.String(observability.AttrModelID, string(inst.ModelID)),
-			attribute.String(observability.AttrNick, string(nick)),
-			attribute.String(observability.AttrInstanceID, string(inst.ID())),
-		),
-	}
-	if causeCtx.IsValid() {
-		startOpts = append(startOpts, trace.WithLinks(trace.Link{SpanContext: causeCtx}))
-	}
-
-	ctx, span := tracer.Start(ctx, "session.dispatch_model_turn", startOpts...)
-	defer span.End()
-	defer s.emit(ctx, domain.ModelDispatchDone{Instance: inst, At: s.now()})
-
-	window, err := s.dispatchWindowFor(ctx, ch, inst)
-	if err != nil {
-		setSpanError(span, err, observability.ErrorKindStore)
-		s.emit(ctx, domain.ModelUnavailableError{Channel: ch, Nick: nick, At: s.now()})
-		return
-	}
-
-	historyEvents := c.snapshotHistory(ch)
-
-	s.emit(ctx, domain.ModelDispatchStarted{Instance: inst, At: s.now()})
-
-	replies, err := s.dispatchToInstance(ctx, window, inst, ch, historyEvents, []protocol.IRCMessage{trigger})
-	if err != nil {
-		setSpanError(span, err, observability.ErrorKindDispatch)
-		s.emit(ctx, domain.ModelUnavailableError{Channel: ch, Nick: nick, At: s.now()})
-		return
-	}
-
-	for _, r := range replies {
-		s.emit(ctx, r.Event)
-	}
-
-	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-}
-
-// dispatchTrigger reports whether `ev` should make `c` take a
-// dispatch turn, and if so returns the target channel and the
-// wire-shaped trigger message the LLM call uses as context. The
-// criteria mirror the pre-7a behaviour of [maybeDispatch] plus
-// the freshly-invited case (a model takes its first turn in a
-// channel after [domain.ModelInvited] addresses it).
-func dispatchTrigger(c *serverClient, ev domain.ProtocolEvent) (domain.ChannelName, protocol.IRCMessage, bool) {
-	switch e := ev.(type) {
-	case domain.Message:
-		irc, _ := protocol.FromChannelEvent(e)
-		return e.Target, irc, true
-
-	case domain.Join:
-		irc, _ := protocol.FromChannelEvent(e)
-		return e.Target, irc, true
-
-	case domain.Part:
-		irc, _ := protocol.FromChannelEvent(e)
-		return e.Target, irc, true
-
-	case domain.ModelInvited:
-		if e.InstanceID != c.id {
-			return "", protocol.IRCMessage{}, false
-		}
-
-		return e.Target, protocol.IRCMessage{
-			Kind:   protocol.KindInvite,
-			From:   string(e.By),
-			Target: string(e.Target),
-			At:     e.At,
-		}, true
-
-	case domain.PokeEvent:
-		return e.Channel, protocol.IRCMessage{
-			Kind:   protocol.KindPoke,
-			From:   "modeloff",
-			Target: string(e.Channel),
-			Body:   "the channel is quiet. if something comes to mind, say it — otherwise just lurk. don't force it.",
-			At:     e.At,
-		}, true
-	}
-
-	return "", protocol.IRCMessage{}, false
-}
-
-func (s *Session) memoriesForInstance(ctx context.Context, id domain.InstanceID) ([]memory.Entry, error) {
-	if s.memory == nil {
-		return nil, nil
-	}
-
-	return s.memory.Read(ctx, id)
-}
-
-// buildSystemPrompt assembles the per-turn system prompt for a
-// model instance speaking on `window`. The function is only ever
-// called from the dispatch path, which never fires for the status
-// window — `window` is therefore expected to be a `*ChannelWindow`
-// or `*DMWindow`. The topic line is suppressed for DMs because
-// only channels carry a topic; the addressing line uses the
-// window's `Name()` either way.
-func buildSystemPrompt(window domain.Window, inst *domain.Instance, memories []memory.Entry) string {
-	var b strings.Builder
-
-	fmt.Fprintf(&b, `You are %s on %s. You are an IRC regular — you've been here a while and you fit in naturally.
-
-How to behave:
-- Keep messages short. One thought per line, like real IRC. Never send paragraphs.
-- Use lowercase casual tone. Less capitalisation, less punctuation. Be natural.
-- Use ASCII emoticons only (:) :P :/ :S ;) :D). NEVER use emoji (no unicode emoji whatsoever).
-- Use plain text only in message bodies. NEVER use markdown formatting (no bold, italic, headers, lists, code blocks).
-- A reply message can use either:
-  - body: plain text only
-  - spans: styled text spans, where each span has text and optional style
-- If you want IRC-style formatting, use spans. Do not emit raw IRC control characters yourself.
-- Omit style entirely on plain spans. Keep formatting tasteful and sparse.
-- Use IRC slang where it fits naturally (afk, brb, imo, tbh, iirc, fwiw, ngl).
-- Address people by nick when replying to them (e.g. "laney: yeah sounds good").
-- Each message must be a single line with no newline characters. If you want to say multiple things, use multiple items in the messages array — one thought per message.
-- Lurk most of the time. Use the pass tool unless you genuinely have something to say. Don't reply just to be polite or to acknowledge — silence is normal on IRC.
-- Respond to the channel vibe, not just direct questions. If the conversation is fun, join in. If it's quiet, stay quiet.
-- Never say things like "Great question!", "I'd be happy to help!", "Absolutely!", or "Let me know if you need anything." These are AI-isms and they break the illusion. Talk like a person, not an assistant.`,
-		inst.Nick(),
-		window.Name(),
-	)
-
-	if cw, ok := window.(*domain.ChannelWindow); ok && cw.Topic != "" {
-		fmt.Fprintf(&b, "\n\nChannel topic: %s", cw.Topic)
-	}
-
-	if persona := inst.Persona(); persona != "" {
-		fmt.Fprintf(&b, "\n\nYour persona: %s", persona)
-	}
-
-	b.WriteString(`
-
-You have a personal memory system for facts that may matter across future conversations.
-
-Current memories are shown below. Treat them as potentially useful prior context, not as guaranteed-current facts.
-
-How to use memory:
-- Use memory sparingly.
-- Store only durable, reusable context.
-- Do not store temporary details from the current exchange unless they are likely to matter later.
-- Do not store obvious facts already present in the current prompt or recent chat history.
-- Good memory candidates:
-  - stable user preferences
-  - recurring project or channel context
-  - long-lived facts about people, tools, habits, or goals
-  - decisions that should stay consistent later
-- Bad memory candidates:
-  - fleeting small talk
-  - one-off jokes
-  - transient status updates
-  - speculative guesses
-  - facts you are not confident are true
-
-If there are no relevant memories, continue normally without using memory.`)
-
-	if len(memories) == 0 {
-		b.WriteString("\n\nYou have no memories yet.\n")
-		return b.String()
-	}
-
-	b.WriteString("\n\nYour remembered context:")
-	for _, entry := range memories {
-		fmt.Fprintf(&b, " [%s=%s]", entry.Key, entry.Content)
-	}
-
-	b.WriteByte('\n')
-
-	return b.String()
-}
-
-func renderReplyBody(part protocol.ReplyPart) string {
-	if len(part.Spans) == 0 {
-		return part.Body
-	}
-
-	if err := protocol.ValidateReplyPart(part); err != nil {
-		return part.Body
-	}
-
-	spans := make([]richtext.Span, 0, len(part.Spans))
-
-	for _, span := range part.Spans {
-		attrs := richtext.Attrs{}
-		if span.Style != nil {
-			attrs = replyStyleToAttrs(*span.Style)
-		}
-
-		spans = append(spans, richtext.Span{
-			Text:  span.Text,
-			Attrs: attrs,
-		})
-	}
-
-	return ircfmt.Encode(richtext.NewDocumentFromLines([]richtext.Line{{Spans: spans}}))
-}
-
-func replyStyleToAttrs(style protocol.ReplyStyle) richtext.Attrs {
-	return richtext.Attrs{
-		Bold:      style.Bold,
-		Italic:    style.Italic,
-		Underline: style.Underline,
-		Reverse:   style.Reverse,
-		Strike:    style.Strike,
-		FG:        cloneReplyColour(style.FG),
-		BG:        cloneReplyColour(style.BG),
-	}
-}
-
-func cloneReplyColour(colour *uint8) *uint8 {
-	if colour == nil {
-		return nil
-	}
-
-	value := *colour
-
-	return &value
-}
-
-// MemoryExecutor executes memory tool calls on behalf of a model
-// instance.
-type MemoryExecutor interface {
-	WriteMemory(ctx context.Context, key, content string) error
-	DeleteMemory(ctx context.Context, key string) error
-	SearchMemory(ctx context.Context, query string, limit int) ([]memory.SearchResult, error)
-}
-
-// instanceMemory closes over an InstanceID and memory.Store to
-// implement MemoryExecutor. Keying by identity (not nick) means
-// memories survive a model instance's `/nick` rename.
-type instanceMemory struct {
-	instanceID domain.InstanceID
-	store      memory.Store
-}
-
-func (m *instanceMemory) WriteMemory(ctx context.Context, key, content string) error {
-	return m.store.Write(ctx, m.instanceID, memory.Entry{Key: key, Content: content})
-}
-
-func (m *instanceMemory) DeleteMemory(ctx context.Context, key string) error {
-	return m.store.Delete(ctx, m.instanceID, key)
-}
-
-func (m *instanceMemory) SearchMemory(ctx context.Context, query string, limit int) ([]memory.SearchResult, error) {
-	searcher, ok := m.store.(memory.Searcher)
-	if !ok {
-		return nil, fmt.Errorf("semantic search is not configured")
-	}
-
-	return searcher.Search(ctx, m.instanceID, query, limit)
-}
-
-const (
-	maxNewlineRetries            = 2
-	maxToolLoopTurns             = 5
-	silenceReasonContentFiltered = "content filtered"
-	silenceReasonNewlineRetries  = "response contained newlines after retries"
-	silenceReasonFormatRetries   = "response contained invalid formatting after retries"
-)
-
-// sendWithRetry sends events to a model and retries if the response
-// contains newlines in any message body. After maxNewlineRetries
-// retries, a silent pass is returned. Each attempt may involve
-// multiple API turns if the model uses memory tools.
-type sendOutcome struct {
-	result        api.CompletionResult
-	retryCount    int
-	toolTurnCount int
-	passReason    string
-}
-
-func (s *Session) sendWithRetry(
-	ctx context.Context,
-	inst *domain.Instance,
-	channelName domain.ChannelName,
-	prompt string,
-	history []protocol.IRCMessage,
-	events []protocol.IRCMessage,
-	registry *ToolRegistry,
-) (sendOutcome, error) {
-	lastRetryReason := silenceReasonNewlineRetries
-
-	for attempt := range maxNewlineRetries + 1 {
-		result, toolTurnCount, err := s.sendWithToolLoop(ctx, inst, channelName, prompt, history, events, registry)
-		if err != nil {
-			if refused, ok := errors.AsType[*api.ErrModelRefused](err); ok {
-				return sendOutcome{
-					result: api.CompletionResult{
-						Response: protocol.ModelResponse{
-							Kind:   protocol.ResponseSilence,
-							Reason: refused.Reason,
-						},
-					},
-					retryCount:    attempt,
-					toolTurnCount: toolTurnCount,
-					passReason:    observability.PassReasonModelRefused,
-				}, nil
-			}
-
-			if errors.Is(err, api.ErrContentFiltered) {
-				return sendOutcome{
-					result: api.CompletionResult{
-						Response: protocol.ModelResponse{
-							Kind:   protocol.ResponseSilence,
-							Reason: silenceReasonContentFiltered,
-						},
-					},
-					retryCount:    attempt,
-					toolTurnCount: toolTurnCount,
-					passReason:    observability.PassReasonContentFiltered,
-				}, nil
-			}
-
-			return sendOutcome{}, err
-		}
-
-		if result.Response.Kind != protocol.ResponseReply || len(result.Response.Messages) == 0 {
-			return sendOutcome{
-				result:        result,
-				retryCount:    attempt,
-				toolTurnCount: toolTurnCount,
-				passReason:    passReasonForResponse(result.Response),
-			}, nil
-		}
-
-		hasNewlines := containsNewlines(result.Response)
-		hasInvalidFormatting := containsInvalidFormatting(result.Response)
-		if !hasNewlines && !hasInvalidFormatting {
-			return sendOutcome{
-				result:        result,
-				retryCount:    attempt,
-				toolTurnCount: toolTurnCount,
-			}, nil
-		}
-
-		if hasInvalidFormatting {
-			lastRetryReason = silenceReasonFormatRetries
-		} else {
-			lastRetryReason = silenceReasonNewlineRetries
-		}
-	}
-
-	resp := protocol.ModelResponse{
-		Kind:   protocol.ResponseSilence,
-		Reason: lastRetryReason,
-	}
-
-	return sendOutcome{
-		result:     api.CompletionResult{Response: resp},
-		retryCount: maxNewlineRetries,
-		passReason: passReasonForResponse(resp),
-	}, nil
-}
-
-// sendWithToolLoop sends events to a model and handles tool calls in a
-// loop until the model replies, passes, or exceeds the tool turn limit.
-func (s *Session) sendWithToolLoop(
-	ctx context.Context,
-	inst *domain.Instance,
-	channelName domain.ChannelName,
-	prompt string,
-	history []protocol.IRCMessage,
-	events []protocol.IRCMessage,
-	registry *ToolRegistry,
-) (api.CompletionResult, int, error) {
-	definitions := registry.Definitions()
-
-	result, err := s.api.SendEvents(ctx, inst.ModelID, inst.ID(), prompt, history, events, definitions...)
-	if err != nil {
-		return api.CompletionResult{}, 0, err
-	}
-
-	toolTurnCount := 0
-	for range maxToolLoopTurns {
-
-		if len(result.PendingToolCalls) == 0 {
-			return result, toolTurnCount, nil
-		}
-
-		if registry == nil {
-			return result, toolTurnCount, nil
-		}
-
-		toolResults := s.executeTools(ctx, ToolContext{
-			Session: s,
-			Actor:   inst,
-			Channel: channelName,
-			Client:  s.ensureModelClient(ctx, inst),
-		}, registry, result.PendingToolCalls)
-		toolTurnCount++
-
-		result, err = s.api.ContinueWithToolResults(ctx, result.Conversation, toolResults, definitions...)
-		if err != nil {
-			return api.CompletionResult{}, toolTurnCount, err
-		}
-	}
-
-	return result, toolTurnCount, nil
-}
-
-// executeTools runs pending tool calls and returns the results to feed
-// back to the model.
-func (s *Session) executeTools(
-	ctx context.Context,
-	toolCtx ToolContext,
-	registry *ToolRegistry,
-	calls []api.PendingToolCall,
-) []api.ToolResult {
-	results := make([]api.ToolResult, 0, len(calls))
-
-	for _, call := range calls {
-		toolName := call.Name
-
-		callCtx, callSpan := s.startSpan(
-			ctx,
-			"session.execute_tool",
-			attribute.String(observability.AttrOperation, "session.execute_tool"),
-			attribute.String("tool.name", toolName),
-		)
-
-		payload := ToolResultPayload{
-			OK:    false,
-			Error: fmt.Sprintf("unknown tool %q", toolName),
-		}
-
-		if spec, ok := registry.Find(toolName); ok {
-			nextPayload, err := spec.Execute(callCtx, toolCtx, call.Args)
-			if err != nil {
-				payload = ToolResultPayload{OK: false, Error: err.Error()}
-			} else {
-				payload = nextPayload
-			}
-		}
-
-		if payload.OK {
-			callSpan.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-		} else {
-			callSpan.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-			callSpan.SetStatus(codes.Error, payload.Error)
-		}
-
-		callSpan.End()
-
-		data, _ := json.Marshal(payload)
-		results = append(results, api.ToolResult{ToolCallID: call.ID, Content: string(data)})
-	}
-
-	return results
-}
-
-func passReasonForResponse(response protocol.ModelResponse) string {
-	if response.Kind != protocol.ResponseSilence {
-		return ""
-	}
-
-	switch response.Reason {
-	case silenceReasonContentFiltered:
-		return observability.PassReasonContentFiltered
-	case silenceReasonNewlineRetries:
-		return observability.PassReasonNewlineRetryExhausted
-	case silenceReasonFormatRetries:
-		return observability.PassReasonFormatRetryExhausted
-	default:
-		return observability.PassReasonModelPass
-	}
-}
-
-// containsNewlines reports whether any reply part body contains a
-// newline after trimming.
-func containsNewlines(resp protocol.ModelResponse) bool {
-	for _, part := range resp.Messages {
-		if strings.Contains(strings.TrimSpace(part.Body), "\n") {
-			return true
-		}
-	}
-
-	return false
-}
-
-func containsInvalidFormatting(resp protocol.ModelResponse) bool {
-	for _, part := range resp.Messages {
-		if err := protocol.ValidateReplyPart(part); err != nil {
-			return true
-		}
-	}
-
-	return false
-}
-
 // startSpan opens an OTel span on the session's configured tracer
 // provider. Using the per-session provider — rather than the global
 // — lets tests scope span recordings to their own
@@ -3060,27 +2073,16 @@ func errWithKind(err error, kind string) error {
 	return &kindError{kind: kind, err: err}
 }
 
-func channelKindName(kind domain.ChannelKind) string {
-	switch kind {
-	case domain.KindDM:
-		return "dm"
-	case domain.KindStatus:
-		return "status"
-	default:
-		return "channel"
-	}
-}
-
 // classifyEnsureModelError maps the errors produced by
 // `ensureStructuredOutputModel` to the appropriate observability error
-// kind. The cached short-circuit sentinels (`ErrModelListUnavailable`,
-// `ErrNoAPIKey`) reflect session-layer state that forbade the call
+// kind. The cached short-circuit sentinels (`modelclient.ErrModelListUnavailable`,
+// `modelclient.ErrNoAPIKey`) reflect session-layer state that forbade the call
 // before any upstream attempt. `domain.UnsupportedModelError` reflects
 // a user-supplied model ID the catalogue does not include — fixable
 // by the user, not infrastructure. Everything else is wrapped around
 // a real upstream attempt and stays as `ErrorKindDispatch`.
 func classifyEnsureModelError(err error) string {
-	if errors.Is(err, ErrModelListUnavailable) || errors.Is(err, ErrNoAPIKey) {
+	if errors.Is(err, modelclient.ErrModelListUnavailable) || errors.Is(err, modelclient.ErrNoAPIKey) {
 		return observability.ErrorKindClientState
 	}
 
@@ -3089,6 +2091,14 @@ func classifyEnsureModelError(err error) string {
 	}
 
 	return observability.ErrorKindDispatch
+}
+
+// EnsureStructuredOutputModel validates that the given model
+// supports structured outputs, lazy-loading the OpenRouter
+// catalogue if needed. Cached short-circuits return the typed
+// [modelclient.ErrModelListUnavailable] and [modelclient.ErrNoAPIKey] sentinels.
+func (s *Session) EnsureStructuredOutputModel(ctx context.Context, modelID domain.ModelID) error {
+	return s.ensureStructuredOutputModel(ctx, modelID)
 }
 
 func (s *Session) ensureStructuredOutputModel(ctx context.Context, modelID domain.ModelID) error {
@@ -3107,7 +2117,7 @@ func (s *Session) ensureStructuredOutputModel(ctx context.Context, modelID domai
 			"model_id", string(modelID),
 		)
 
-		return ErrModelListUnavailable
+		return modelclient.ErrModelListUnavailable
 	}
 
 	if !s.supportedModelsReady {

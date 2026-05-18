@@ -89,27 +89,25 @@ Broadcast side effects flow asynchronously over `Client.Events()` to peers.
   It is constructed in `Session.New`, granted operator mode at
   construction, and exposed via `Session.User()`. Its `Identity()` is
   the sentinel `protocol.UserClientID` (the empty `ClientID`).
-- A model-client lives in the `internal/modelclient` package and is
-  attached externally: callers construct a `modelclient.ModelClient`
-  with the actor `*domain.Instance` and call `Attach()`, which routes
-  through the public `Session.Subscribe(c, opts)` API. Subscribe
-  registers the client under its identity, starts the dispatch
-  goroutine, and returns a `protocol.Subscription` the caller holds
-  for the lifetime of the attachment. `Detach()` releases via the
-  subscription's `Unsubscribe()`. The dispatch goroutine decides via
-  `dispatchTrigger` whether each inbound event should make the model
-  take an LLM turn (a message in a window it shares, a join/part/
-  invite that addresses it, a poke). The dispatch loop, history
-  buffer, memory tools, and prompt assembly still live in the
-  `session` package; a future commit moves them into `modelclient`
-  and lets `Session` drop its `api.Client`, `memory.Store`, and
-  tool-registry fields.
+- A model-client lives in the `internal/modelclient` package. It owns
+  the dispatch goroutine, the per-channel history ring buffer used
+  for prompt assembly, the OpenRouter `api.Client` it calls, and the
+  memory-tool registry. `ModelClient.Attach` registers with the
+  session via the public `Session.Subscribe(c, opts)` API and
+  returns a `protocol.Subscription`; `Detach` reverses both. The
+  dispatch goroutine watches the subscription's `Events` and `Done`
+  channels and runs an LLM turn when `dispatchTrigger` says so (a
+  message in a window the instance shares, a join/part/invite that
+  addresses it, a poke).
 
-Production-side model attachment runs through `Session`'s internal
-`ensureModelClient` from `attachInstanceToChannel` and the tool-call
-dispatch path. External callers (the boot-time fan-out in
-`cmd/modeloff`, UI test seeders, future `modelmanager` work) use the
-`modelclient.New` + `Attach` shape.
+Model-client lifecycle is mediated by a `session.ModelClientFactory`
+the binary supplies at `session.New` time. `attachInstanceToChannel`
+asks the factory to attach when an instance joins a channel; the
+`KILL` and `QUIT` handlers ask the factory to detach so the
+dispatch goroutine joins deterministically. The factory's owning
+session arrives as a parameter on each `Attach` call so the
+factory can be constructed before the session it serves and the
+two can be assembled in one expression.
 
 ### Dispatcher
 

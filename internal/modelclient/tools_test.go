@@ -1,9 +1,10 @@
-package session
+package modelclient
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -229,4 +230,25 @@ func TestMemoryToolRegistry_search_executes(t *testing.T) {
 	payload, err := spec.Execute(t.Context(), ToolContext{}, args)
 	require.NoError(t, err)
 	require.True(t, payload.OK)
+}
+
+func loadGolden(t *testing.T, name string) string {
+	t.Helper()
+
+	root, err := os.OpenRoot("testdata")
+	require.NoError(t, err)
+	defer func() { _ = root.Close() }()
+
+	f, err := root.Open(name)
+	require.NoError(t, err)
+	defer func() { _ = f.Close() }()
+
+	info, err := f.Stat()
+	require.NoError(t, err)
+
+	buf := make([]byte, info.Size())
+	_, err = f.Read(buf)
+	require.NoError(t, err)
+
+	return string(buf)
 }

@@ -2,47 +2,125 @@
 // [protocol.Client]. A model-client represents a single LLM
 // instance participating in the session: it attaches itself to the
 // session via [Session.Subscribe], holds the resulting
-// [protocol.Subscription], and acts as the actor for any commands
-// the LLM issues during a dispatch turn.
-//
-// The package's current scope is the client handle and its
-// attach/detach lifecycle. The dispatch goroutine and prompt
-// assembly still live in the `session` package; a future commit
-// moves them here and lets [Session] drop its `api.Client`,
-// `memory.Store`, and tool-registry fields.
+// [protocol.Subscription], drives its own dispatch goroutine, and
+// acts as the actor for any commands the LLM issues during a
+// dispatch turn.
 package modelclient
 
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"sync"
 
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/laney/modeloff/internal/api"
 	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/memory"
 	"github.com/laney/modeloff/internal/protocol"
 )
 
 // Session is the dependency surface a [ModelClient] needs from the
-// session: subscription registration and the command-handling
-// entry point its `Send` routes through.
+// session. The concrete `*session.Session` satisfies it implicitly.
+// It embeds [SessionAPI] so the tool registry's [ToolContext.Session]
+// can be populated from the same handle the dispatch loop holds.
 type Session interface {
+	SessionAPI
+
+	// Subscribe registers the client with the session and returns
+	// the per-client delivery handle.
 	Subscribe(c protocol.Client, opts protocol.SubscribeOptions) (protocol.Subscription, error)
+
+	// Handle is the wire dispatcher's entry point.
 	Handle(ctx context.Context, c protocol.Client, cmd protocol.Command) (protocol.Response, error)
+
+	// EventsBefore returns up to `n` channel events strictly
+	// before `before` (most recent if nil), in chronological
+	// order. Used at attach-time history seeding.
+	EventsBefore(ctx context.Context, ch domain.ChannelName, before *int64, n int) ([]domain.StoredEvent, error)
+
+	// DMEventsBefore returns up to `n` DM events strictly before
+	// `before` between `self` and `peer`. Used at lazy DM history
+	// seeding.
+	DMEventsBefore(ctx context.Context, self, peer domain.InstanceID, before *int64, n int) ([]domain.StoredEvent, error)
+
+	// LoadChannelWindow loads the addressable `*ChannelWindow` row
+	// the prompt-assembly and instance-resolution paths use.
+	LoadChannelWindow(ctx context.Context, name domain.ChannelName) (*domain.ChannelWindow, error)
+
+	// Emit fans out a [domain.ProtocolEvent] on the per-subscription
+	// bus.
+	Emit(ctx context.Context, evt domain.ProtocolEvent)
+
+	// AppendEvent persists a channel event, narrating any
+	// persistence failure to the session's logger.
+	AppendEvent(ctx context.Context, ch domain.ChannelName, event domain.PersistableEvent)
+
+	// ResolveInstanceByID returns the canonical `*domain.Instance`
+	// for the given id.
+	ResolveInstanceByID(ctx context.Context, id domain.InstanceID) (*domain.Instance, error)
+
+	// EnsureStructuredOutputModel validates that the given model
+	// supports structured outputs, lazy-loading the catalogue if
+	// needed.
+	EnsureStructuredOutputModel(ctx context.Context, modelID domain.ModelID) error
+
+	// LookupClient returns the registered [protocol.Client] for
+	// the given identity, or nil if none is registered.
+	LookupClient(id protocol.ClientID) protocol.Client
+
+	// TracerProvider returns the OTel tracer provider used for
+	// modelclient-side spans.
+	TracerProvider() trace.TracerProvider
 }
 
 // ModelClient is the [protocol.Client] backing a single LLM
 // instance. Construct one per instance and call [ModelClient.Attach]
 // to register it with a session; call [ModelClient.Detach] to
-// release the subscription.
+// release the subscription and join the dispatch goroutine.
 type ModelClient struct {
-	instance *domain.Instance
-	sess     Session
-	sub      protocol.Subscription
+	instance  *domain.Instance
+	sess      Session
+	apiClient api.Client
+	memStore  memory.Store
+	tools     *ToolRegistry
+
+	baseContext func() context.Context
+
+	hist *history
+
+	mu     sync.Mutex
+	sub    protocol.Subscription
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
 }
 
-// New returns an unattached `ModelClient` for `inst`. The client
-// is inert until [ModelClient.Attach] runs.
-func New(inst *domain.Instance, sess Session) *ModelClient {
-	return &ModelClient{instance: inst, sess: sess}
+// New returns an unattached `ModelClient` for `inst`. The client is
+// inert until [ModelClient.Attach] runs.
+//
+// `baseContext` supplies the long-lived context the dispatch
+// goroutine derives its lifetime from; cancelling it (and calling
+// [ModelClient.Detach]) is how the goroutine is woken at shutdown.
+func New(
+	inst *domain.Instance,
+	sess Session,
+	apiClient api.Client,
+	memStore memory.Store,
+	tools *ToolRegistry,
+	baseContext func() context.Context,
+) *ModelClient {
+	return &ModelClient{
+		instance:    inst,
+		sess:        sess,
+		apiClient:   apiClient,
+		memStore:    memStore,
+		tools:       tools,
+		baseContext: baseContext,
+		hist:        newHistory(),
+	}
 }
 
 // Instance returns the canonical actor handle.
@@ -63,16 +141,18 @@ func (mc *ModelClient) Send(ctx context.Context, cmd protocol.Command) (protocol
 // Events returns the per-subscription delivery stream, or nil if
 // the client has not been attached.
 func (mc *ModelClient) Events() <-chan protocol.Delivery {
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+
 	if mc.sub == nil {
 		return nil
 	}
+
 	return mc.sub.Events()
 }
 
-// HasMode reports false for any mode: model-clients carry no
-// user modes. Operator promotion would happen via a wire `OPER`
-// exchange the dispatcher would track on the per-subscription
-// envelope; until that path exists the answer is always false.
+// HasMode reports false for any mode: model-clients carry no user
+// modes today.
 func (mc *ModelClient) HasMode(_ domain.Mode) bool { return false }
 
 // Caps exposes a static capability holder reporting no
@@ -80,28 +160,93 @@ func (mc *ModelClient) HasMode(_ domain.Mode) bool { return false }
 // hides operator-gated tools from model invocations.
 func (mc *ModelClient) Caps() command.CapabilityHolder { return modelCaps{} }
 
-// Attach registers the client with its session and stores the
-// resulting subscription handle. Returns the registration error
-// from [Session.Subscribe]; the client remains inert on failure.
-func (mc *ModelClient) Attach() error {
+// Attach registers the client with its session, seeds per-channel
+// history from the event log for every channel the instance is in,
+// and starts the dispatch goroutine. Returns the registration
+// error from [Session.Subscribe]; the client remains inert on
+// failure.
+//
+// Attach is idempotent: a repeat call on an already-attached
+// client returns nil.
+func (mc *ModelClient) Attach(ctx context.Context) error {
+	mc.mu.Lock()
+	if mc.sub != nil {
+		mc.mu.Unlock()
+		return nil
+	}
+
 	sub, err := mc.sess.Subscribe(mc, protocol.SubscribeOptions{Instance: mc.instance})
 	if err != nil {
+		mc.mu.Unlock()
 		return fmt.Errorf("attach model client %q: %w", mc.instance.ID(), err)
 	}
 
 	mc.sub = sub
+
+	loopCtx, cancel := context.WithCancel(mc.baseContext())
+	mc.ctx = loopCtx
+	mc.cancel = cancel
+	mc.mu.Unlock()
+
+	mc.seedHistory(ctx)
+
+	mc.wg.Go(func() {
+		mc.runDispatchLoop(loopCtx, sub)
+	})
+
 	return nil
 }
 
-// Detach releases the subscription. Idempotent on an already-
+// Detach releases the subscription, cancels the dispatch
+// goroutine's context, and joins it. Idempotent on an already-
 // detached or never-attached client.
 func (mc *ModelClient) Detach() {
-	if mc.sub == nil {
+	mc.mu.Lock()
+	sub := mc.sub
+	cancel := mc.cancel
+	mc.sub = nil
+	mc.cancel = nil
+	mc.ctx = nil
+	mc.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+
+	if sub != nil {
+		sub.Unsubscribe()
+	}
+
+	mc.wg.Wait()
+}
+
+// seedHistory eager-seeds the per-channel history buffer from the
+// event log for every channel the instance is currently in. DM
+// targets are not eager-seeded — they lazy-seed in [history.append]
+// on first event arrival.
+func (mc *ModelClient) seedHistory(ctx context.Context) {
+	channels := mc.instance.Channels()
+	if channels == nil {
 		return
 	}
 
-	mc.sub.Unsubscribe()
-	mc.sub = nil
+	logger := slog.Default()
+
+	for pair := channels.Oldest(); pair != nil; pair = pair.Next() {
+		ch := pair.Key
+		seed, err := mc.sess.EventsBefore(ctx, ch, nil, modelHistorySize)
+		if err != nil {
+			logger.ErrorContext(ctx, "seed model history",
+				"component", "modelclient",
+				"instance_id", mc.instance.ID(),
+				"channel", ch,
+				"error", err,
+			)
+			continue
+		}
+
+		mc.hist.seedChannel(ch, seed)
+	}
 }
 
 // modelCaps is the no-capabilities holder returned by

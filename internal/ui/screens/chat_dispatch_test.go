@@ -501,7 +501,9 @@ func TestChatScreen_completion_all_instance_commands_see_instances_outside_activ
 		"inst-outsider", "outsider", "test/model", "", nil,
 	)))
 
-	sess := session.New(t.Context, s, nil, &uitest.FakeAPI{}, "testuser", "", "")
+	apiClient := &uitest.FakeAPI{}
+	factory := uitest.NewModelClientFactory(t, apiClient, nil, nil, t.Context)
+	sess := session.New(t.Context, s, nil, apiClient, factory, "testuser", "", "")
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 
 	screen, err := NewChatScreen(func() context.Context { return ctx }, sess, nil, nil, domain.KindStatus)
