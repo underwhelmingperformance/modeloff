@@ -57,6 +57,11 @@ func TestBuildToolRegistry_returns_expected_tools(t *testing.T) {
 			Parameters:  toolParams(t, "kick"),
 		},
 		{
+			Name:        "kill",
+			Description: "Forcibly disconnect a model instance from the server with a reason.",
+			Parameters:  toolParams(t, "kill"),
+		},
+		{
 			Name:        "msg",
 			Description: "Send a message addressed to either a #channel you are in, or a user (by nick). The recipient sees the message and may reply.",
 			Parameters:  toolParams(t, "msg"),

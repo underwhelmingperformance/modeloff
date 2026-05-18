@@ -52,7 +52,7 @@ func (s *Session) Handle(ctx context.Context, c protocol.Client, cmd protocol.Co
 	case protocol.Quit:
 		return s.handleQuit(ctx, c, cmd)
 	case protocol.Kill:
-		return s.handleKill(c, cmd)
+		return s.handleKill(ctx, c, cmd)
 	case protocol.Oper:
 		return s.handleOper(ctx, c, cmd)
 	case protocol.ChannelMode:
@@ -230,12 +230,28 @@ func (s *Session) handleAddModel(ctx context.Context, c protocol.Client, cmd pro
 	return protocol.Response{}, nil
 }
 
-func (s *Session) handleKill(c protocol.Client, cmd protocol.Kill) (protocol.Response, error) {
+func (s *Session) handleKill(ctx context.Context, c protocol.Client, cmd protocol.Kill) (protocol.Response, error) {
 	if !c.HasMode(domain.ModeOperator) {
 		return protocol.Response{Err: domain.NotOperatorError{Command: "KILL", At: s.now()}}, nil
 	}
 
-	return protocol.Response{}, errNotYetImplemented(cmd)
+	oper, err := s.resolveClientActor(ctx, c)
+	if err != nil {
+		return protocol.Response{}, err
+	}
+
+	target, err := s.ResolveNick(ctx, cmd.Nick)
+	if err != nil {
+		return commandResult(err)
+	}
+
+	if killErr := s.killAs(ctx, oper, target, cmd.Reason); killErr != nil {
+		return commandResult(killErr)
+	}
+
+	s.reapClient(protocol.ClientID(target.ID()))
+
+	return protocol.Response{}, nil
 }
 
 // commandResult turns a delegation-call error into the canonical

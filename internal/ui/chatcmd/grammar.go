@@ -14,6 +14,7 @@ type Grammar struct {
 	AddModel           AddModelCommand           `cmd:"" kind:"channel" caps:"operator" tool:"Add a new model instance to the current channel by model ID, optionally with a persona." help:"Add a model or reusable instance into the current channel."`
 	Invite             InviteCommand             `cmd:"" tool:"" kind:"channel" help:"Invite a nick to a channel."`
 	Kick               KickCommand               `cmd:"" tool:"" kind:"channel" help:"Remove a nick from the current channel."`
+	Kill               KillCommand               `cmd:"" caps:"operator" tool:"Forcibly disconnect a model instance from the server with a reason." help:"Disconnect a model instance from the server."`
 	Msg                MsgCommand                `cmd:"" tool:"Send a message addressed to either a #channel you are in, or a user (by nick). The recipient sees the message and may reply." help:"Send a message to a #channel or to a user by nick."`
 	Query              QueryCommand              `cmd:"" help:"Open (or focus) a direct-message window with a nick. Optional trailing body is sent as the first message."`
 	Nick               NickCommand               `cmd:"" tool:"" help:"Change your nickname."`

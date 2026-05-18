@@ -243,10 +243,17 @@ func TestSession_Handle_delegates(t *testing.T) {
 			want:   protocol.Response{},
 		},
 		{
-			name:    "kill is not yet implemented for operators",
-			client:  userClient,
-			cmd:     protocol.Kill{Nick: "botty", Reason: "spam"},
-			wantErr: errHandlerNotYetImplemented,
+			name: "kill delegates to killAs for operators",
+			setup: func(t *testing.T, sess *Session, s *storemod.SQLiteStore) {
+				seedInstance(t, sess, s, instanceSpec{Nick: "botty", ModelID: "test/model"})
+			},
+			client: userClient,
+			cmd:    protocol.Kill{Nick: "botty", Reason: "spam"},
+			want:   protocol.Response{},
+			verify: func(t *testing.T, sess *Session, _ *storemod.SQLiteStore) {
+				_, err := sess.ResolveNick(t.Context(), "botty")
+				require.Error(t, err)
+			},
 		},
 		{
 			name:   "kill rejects non-operator with NotOperatorError",

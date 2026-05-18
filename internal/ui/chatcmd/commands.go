@@ -288,6 +288,45 @@ func (c InviteCommand) RunTool(ctx context.Context, tc session.ToolContext) sess
 	return sendToolCommand(ctx, tc, c, "invited "+c.Nick+" to "+string(ch))
 }
 
+// KillCommand represents `/kill <nick> [reason]`.
+type KillCommand struct {
+	Nick   string   `arg:"" help:"Nick to disconnect"`
+	Reason []string `arg:"" optional:"" help:"Optional reason; defaults to 'No reason given'."`
+}
+
+// Sources implements command.Completer.
+func (KillCommand) Sources() map[string]command.SuggestionSource[CompletionContext] {
+	return map[string]command.SuggestionSource[CompletionContext]{"nick": instancesSource}
+}
+
+// ToCommand builds the wire-protocol command for `/kill`.
+func (c KillCommand) ToCommand(_ Context) (protocol.Command, error) {
+	return protocol.Kill{Nick: domain.Nick(c.Nick), Reason: c.killReason()}, nil
+}
+
+const defaultKillReason = "No reason given"
+
+func (c KillCommand) killReason() string {
+	r := strings.TrimSpace(strings.Join(c.Reason, " "))
+	if r == "" {
+		return defaultKillReason
+	}
+
+	return r
+}
+
+// Run implements Command.
+func (c KillCommand) Run(rc Context) tea.Cmd {
+	return func() tea.Msg {
+		return sendCommand(rc, c, "kill")
+	}
+}
+
+// RunTool implements ToolCommand.
+func (c KillCommand) RunTool(ctx context.Context, tc session.ToolContext) session.ToolResultPayload {
+	return sendToolCommand(ctx, tc, c, "killed "+c.Nick)
+}
+
 // KickCommand represents `/kick <nick>`.
 type KickCommand struct {
 	Nick string `arg:"" help:"Nick to kick"`
