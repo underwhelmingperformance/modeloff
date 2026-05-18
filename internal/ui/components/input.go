@@ -71,9 +71,10 @@ type InputBar struct {
 	popover  Popover
 	bounds   ui.Rect
 
-	history   []string
-	histPos   int // -1 = editing new input, 0..len(history)-1 = browsing
-	histDraft string
+	history         []string
+	histPos         int // -1 = editing new input, 0..len(history)-1 = browsing
+	histDraft       string
+	histDraftCursor int
 
 	nicks    []domain.Nick
 	nickComp nickCompletion
@@ -335,6 +336,7 @@ func (b InputBar) historyUp() InputBar {
 
 	if b.histPos == -1 {
 		b.histDraft = b.rawValue()
+		b.histDraftCursor = b.input.Cursor()
 		b.histPos = len(b.history) - 1
 	} else if b.histPos > 0 {
 		b.histPos--
@@ -355,11 +357,14 @@ func (b InputBar) historyDown() InputBar {
 	if b.histPos < len(b.history)-1 {
 		b.histPos++
 		b = b.setRawValue(b.history[b.histPos])
-	} else {
-		b.histPos = -1
-		b = b.setRawValue(b.histDraft)
-		b.histDraft = ""
+		return b
 	}
+
+	b.histPos = -1
+	b = b.setRawValue(b.histDraft)
+	b.input = b.input.SetCursorFromRuneIndex(b.histDraftCursor)
+	b.histDraft = ""
+	b.histDraftCursor = 0
 
 	return b
 }

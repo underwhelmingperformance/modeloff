@@ -279,6 +279,29 @@ func TestInputBar_history_preserves_draft(t *testing.T) {
 	require.Equal(t, []string{">", "draft"}, viewTokens(m))
 }
 
+func TestInputBar_history_restores_draft_cursor(t *testing.T) {
+	var m ui.Model = components.NewInputBar("")
+
+	m = typeText(t, m, "previous")
+	m, _ = enter(t, m)
+
+	m = typeText(t, m, "draft text")
+	// Move cursor to position 5 ("draft|text").
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyHome})
+	for range 5 {
+		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	}
+	require.Equal(t, 5, m.(components.InputBar).Cursor())
+
+	// Recall, then return to the draft.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	require.Equal(t, "previous", inputValue(t, m))
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	require.Equal(t, "draft text", inputValue(t, m))
+	require.Equal(t, 5, m.(components.InputBar).Cursor(), "draft cursor must be restored to its original position")
+}
+
 func TestInputBar_history_no_duplicate_consecutive(t *testing.T) {
 	var m ui.Model = components.NewInputBar("")
 
