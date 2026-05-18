@@ -501,6 +501,27 @@ func (b InputBar) KeyBindings() []ui.KeyBinding {
 		}
 	}
 
+	if b.input.PaletteVisible() {
+		return []ui.KeyBinding{
+			ui.Bind(key.NewBinding(
+				key.WithKeys("left", "right"),
+				key.WithHelp("←→", "swatch"),
+			)),
+			ui.Bind(key.NewBinding(
+				key.WithKeys("tab"),
+				key.WithHelp("Tab", "fg/bg"),
+			)),
+			ui.Bind(key.NewBinding(
+				key.WithKeys("enter"),
+				key.WithHelp("↵", "apply"),
+			)),
+			ui.Bind(key.NewBinding(
+				key.WithKeys("esc"),
+				key.WithHelp("Esc", "dismiss"),
+			)),
+		}
+	}
+
 	bindings := []ui.KeyBinding{
 		b.keyMap.Submit,
 		ui.WithBindingEnabled(b.keyMap.HistoryUp, len(b.history) > 0),

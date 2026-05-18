@@ -478,6 +478,22 @@ func TestInputBar_palette_up_does_not_walk_history(t *testing.T) {
 		"Up inside the palette must not dismiss it; if it did, the empty-value check above would pass for the wrong reason")
 }
 
+func TestInputBar_keybindings_include_palette_when_visible(t *testing.T) {
+	var m ui.Model = components.NewInputBar()
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}, Alt: true})
+	require.True(t, m.(components.InputBar).PaletteVisible())
+
+	bindings := m.(components.InputBar).KeyBindings()
+
+	var helpTexts []string
+	for _, b := range bindings {
+		helpTexts = append(helpTexts, b.Help().Desc)
+	}
+
+	require.Equal(t, []string{"swatch", "fg/bg", "apply", "dismiss"}, helpTexts)
+}
+
 func TestInputBar_palette_enter_does_not_submit(t *testing.T) {
 	var m ui.Model = components.NewInputBar()
 
