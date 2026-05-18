@@ -295,4 +295,3 @@ func TestSession_Handle_delegates(t *testing.T) {
 		})
 	}
 }
-

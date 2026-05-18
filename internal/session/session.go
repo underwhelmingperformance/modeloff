@@ -358,7 +358,6 @@ func (s *Session) WithTracerProvider(tp trace.TracerProvider) *Session {
 	return s
 }
 
-
 // User returns the user-client subscription, created at session
 // bootstrap and live for the whole session lifetime. The returned
 // handle satisfies [protocol.Client]: it carries the user's
@@ -368,32 +367,6 @@ func (s *Session) User() protocol.Client {
 	return s.userClient
 }
 
-// Model returns the [protocol.Client] handle for the model instance
-// identified by `id`. Handles are pointer-stable: two calls for the
-// same id return the same `*serverClient`. The handle is
-// lazy-allocated on first access for any id whose row exists in the
-// store. Returns nil if the id is empty (the user-client lives at
-// [Session.User]) or if no instance row matches.
-//
-// The handle is currently `Send`-only; its `Events()` channel is
-// allocated but unused by the dispatcher.
-func (s *Session) Model(ctx context.Context, id protocol.ClientID) protocol.Client {
-	if id == protocol.UserClientID {
-		return nil
-	}
-
-	if c := s.lookupClientHandle(id); c != nil {
-		return c
-	}
-
-	inst, err := s.store.GetInstanceByID(ctx, id)
-	if err != nil || inst == nil {
-		return nil
-	}
-
-	return s.ensureModelClient(ctx, inst)
-}
-
 // lookupClientHandle returns the cached handle for `id` under the
 // read lock, or nil if none has been allocated yet.
 func (s *Session) lookupClientHandle(id protocol.ClientID) *serverClient {
@@ -401,6 +374,41 @@ func (s *Session) lookupClientHandle(id protocol.ClientID) *serverClient {
 	defer s.subsMu.RUnlock()
 
 	return s.clientHandles[id]
+}
+
+// Subscribe registers `c` with the session and returns the
+// per-client [protocol.Subscription] handle the caller uses to
+// read events and to release the subscription. The session creates
+// (or reuses, on a repeat call for the same identity) an internal
+// envelope keyed by `c.Identity()` that carries the canonical
+// actor `*domain.Instance` (from `opts.Instance`) and the per-
+// subscription mode set, and starts the model dispatch goroutine
+// if the subscription represents a model.
+//
+// Subscribe is idempotent: a repeat call for an already-registered
+// identity returns the existing subscription and applies any new
+// `InitialModes` to it. Returns an error if `opts.Instance` is nil
+// or if [Session.Shutdown] has begun.
+func (s *Session) Subscribe(c protocol.Client, opts protocol.SubscribeOptions) (protocol.Subscription, error) {
+	if opts.Instance == nil {
+		return nil, fmt.Errorf("session.Subscribe: opts.Instance is required")
+	}
+
+	id := c.Identity()
+	if id == protocol.UserClientID {
+		return nil, fmt.Errorf("session.Subscribe: user-client registration is not supported yet")
+	}
+
+	sc := s.ensureModelClient(s.baseContext(), opts.Instance)
+	if sc == nil {
+		return nil, fmt.Errorf("session.Subscribe: session is shutting down")
+	}
+
+	for _, m := range opts.InitialModes {
+		sc.setMode(m, true)
+	}
+
+	return sc, nil
 }
 
 // ensureModelClient registers a model-client handle for `inst` if

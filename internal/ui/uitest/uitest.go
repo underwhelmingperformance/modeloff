@@ -20,6 +20,7 @@ import (
 
 	"github.com/laney/modeloff/internal/api"
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/modelclient"
 	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/session"
 )
@@ -394,8 +395,9 @@ func SeedMessage(t testing.TB, sess *session.Session, channel, body string) {
 		require.NoError(t, sess.SaveInstance(t.Context(), bot))
 	}
 
-	client := sess.Model(t.Context(), protocol.ClientID(bot.ID()))
-	require.NotNil(t, client, "model client for seedbot must exist")
+	client := modelclient.New(bot, sess)
+	require.NoError(t, client.Attach(), "attach seedbot model client")
+
 	resp, err := client.Send(t.Context(), protocol.PrivMsg{
 		Target: domain.ChannelName(channel),
 		Body:   body,

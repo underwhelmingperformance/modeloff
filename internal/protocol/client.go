@@ -58,3 +58,33 @@ type Client interface {
 // `/help` output, and the model tool registry for clients whose
 // [Client.Caps] holder does not hold +o.
 const CapOperator command.Capability = "operator"
+
+// Subscription is the handle a client carries after attaching to a
+// session. It exposes the per-client delivery stream and the
+// release mechanism. The session is the sole writer to the events
+// channel and owns its lifecycle; calling Unsubscribe removes the
+// client from the registry and cancels any session-owned resources
+// tied to it.
+type Subscription interface {
+	// Events returns the read end of the per-client delivery
+	// stream. Same semantics as [Client.Events] — the
+	// subscription handle is the canonical way to get at it once
+	// a client has been attached via [Session.Subscribe].
+	Events() <-chan Delivery
+
+	// Unsubscribe removes the client from the session's subscriber
+	// registry. Idempotent.
+	Unsubscribe()
+}
+
+// SubscribeOptions configures a Subscribe call. Instance is the
+// canonical actor handle the dispatcher reads to resolve the actor
+// for any command this client issues; it is required.
+// InitialModes applies the given modes to the subscription before
+// the first event can be delivered, so a client granted +o at
+// subscribe time sees the [domain.ModeChange] event as the first
+// item on its bus.
+type SubscribeOptions struct {
+	Instance     *domain.Instance
+	InitialModes []domain.Mode
+}

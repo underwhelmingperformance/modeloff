@@ -89,14 +89,27 @@ Broadcast side effects flow asynchronously over `Client.Events()` to peers.
   It is constructed in `Session.New`, granted operator mode at
   construction, and exposed via `Session.User()`. Its `Identity()` is
   the sentinel `protocol.UserClientID` (the empty `ClientID`).
-- A model-client is allocated when an instance attaches to its first
-  channel, or on first `Session.Model(ctx, id)` lookup for store-loaded
-  instances that haven't yet attached. Either path returns the canonical
-  pointer-stable handle, registered into the subscriber set with a
-  long-lived dispatch goroutine consuming its `Client.Events()` channel.
-  The goroutine decides via `dispatchTrigger` whether each inbound event
-  should make the model take an LLM turn (a message in a window it
-  shares, a join/part/invite that addresses it, a poke).
+- A model-client lives in the `internal/modelclient` package and is
+  attached externally: callers construct a `modelclient.ModelClient`
+  with the actor `*domain.Instance` and call `Attach()`, which routes
+  through the public `Session.Subscribe(c, opts)` API. Subscribe
+  registers the client under its identity, starts the dispatch
+  goroutine, and returns a `protocol.Subscription` the caller holds
+  for the lifetime of the attachment. `Detach()` releases via the
+  subscription's `Unsubscribe()`. The dispatch goroutine decides via
+  `dispatchTrigger` whether each inbound event should make the model
+  take an LLM turn (a message in a window it shares, a join/part/
+  invite that addresses it, a poke). The dispatch loop, history
+  buffer, memory tools, and prompt assembly still live in the
+  `session` package; a future commit moves them into `modelclient`
+  and lets `Session` drop its `api.Client`, `memory.Store`, and
+  tool-registry fields.
+
+Production-side model attachment runs through `Session`'s internal
+`ensureModelClient` from `attachInstanceToChannel` and the tool-call
+dispatch path. External callers (the boot-time fan-out in
+`cmd/modeloff`, UI test seeders, future `modelmanager` work) use the
+`modelclient.New` + `Attach` shape.
 
 ### Dispatcher
 

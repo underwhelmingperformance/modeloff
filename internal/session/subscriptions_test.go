@@ -1,10 +1,12 @@
 package session
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/protocol"
 )
@@ -36,66 +38,102 @@ func TestSession_User_Send_routes_through_Handle(t *testing.T) {
 	require.True(t, ok)
 }
 
-func TestSession_Model_returns_handle_for_known_instance(t *testing.T) {
+// TestSession_Subscribe_registers_model_client pins the public
+// attach API: the foreign client (here a [subscribeFakeClient]
+// satisfying [protocol.Client]) is registered under its identity,
+// the returned subscription's `Events()` is the per-client delivery
+// stream, and the dispatcher resolves the actor instance through
+// the registered envelope.
+func TestSession_Subscribe_registers_model_client(t *testing.T) {
 	t.Parallel()
 
 	sess, store := newTestSession(t)
-	ctx := t.Context()
 
 	inst := seedInstance(t, sess, store, instanceSpec{
 		Nick:    "botty",
 		ModelID: "test/model",
 	})
 
-	type clientShape struct {
-		identity protocol.ClientID
-		operator bool
-	}
+	fake := &subscribeFakeClient{id: protocol.ClientID(inst.ID())}
+	sub, err := sess.Subscribe(fake, protocol.SubscribeOptions{Instance: inst})
 
-	client := sess.Model(ctx, inst.ID())
-	require.NotNil(t, client)
-
-	got := clientShape{
-		identity: client.Identity(),
-		operator: client.HasMode(domain.ModeOperator),
-	}
-
-	require.Equal(t, clientShape{
-		identity: protocol.ClientID(inst.ID()),
-		operator: false,
-	}, got)
+	require.NoError(t, err)
+	require.NotNil(t, sub)
+	require.NotNil(t, sub.Events())
 }
 
-func TestSession_Model_returns_same_pointer_on_repeat_lookup(t *testing.T) {
+// TestSession_Subscribe_is_idempotent_per_identity pins the
+// "subscribing the same identity twice returns the existing
+// envelope" contract. The factory wrapper in cmd/modeloff relies on
+// this so a re-attach (e.g. a fresh INVITE for an already-registered
+// model) is a no-op rather than an error.
+func TestSession_Subscribe_is_idempotent_per_identity(t *testing.T) {
 	t.Parallel()
 
 	sess, store := newTestSession(t)
-	ctx := t.Context()
 
 	inst := seedInstance(t, sess, store, instanceSpec{
 		Nick:    "botty",
 		ModelID: "test/model",
 	})
 
-	first := sess.Model(ctx, inst.ID())
-	second := sess.Model(ctx, inst.ID())
+	fake := &subscribeFakeClient{id: protocol.ClientID(inst.ID())}
 
-	require.NotNil(t, first)
+	first, err := sess.Subscribe(fake, protocol.SubscribeOptions{Instance: inst})
+	require.NoError(t, err)
+
+	second, err := sess.Subscribe(fake, protocol.SubscribeOptions{Instance: inst})
+	require.NoError(t, err)
+
 	require.Same(t, first, second)
 }
 
-func TestSession_Model_returns_nil_for_unknown_id(t *testing.T) {
+// TestSession_Subscribe_requires_instance pins the precondition:
+// the session needs the actor handle to satisfy
+// `resolveClientActor`. A nil `opts.Instance` is a structural
+// bug that should fail loudly.
+func TestSession_Subscribe_requires_instance(t *testing.T) {
 	t.Parallel()
 
 	sess, _ := newTestSession(t)
 
-	require.Nil(t, sess.Model(t.Context(), "no-such-instance"))
+	fake := &subscribeFakeClient{id: "inst-1"}
+	_, err := sess.Subscribe(fake, protocol.SubscribeOptions{})
+	require.Error(t, err)
 }
 
-func TestSession_Model_returns_nil_for_user_client_id(t *testing.T) {
+// TestSession_Subscribe_rejects_user_client_id pins the
+// asymmetry: the user-client subscription is constructed inline at
+// session bootstrap, so the public `Subscribe` API refuses
+// [protocol.UserClientID]. A future commit moves the user-client
+// construction out of `Session.New` and lifts this restriction.
+func TestSession_Subscribe_rejects_user_client_id(t *testing.T) {
 	t.Parallel()
 
 	sess, _ := newTestSession(t)
+	inst := sess.UserInstance()
 
-	require.Nil(t, sess.Model(t.Context(), protocol.UserClientID))
+	fake := &subscribeFakeClient{id: protocol.UserClientID}
+	_, err := sess.Subscribe(fake, protocol.SubscribeOptions{Instance: inst})
+	require.Error(t, err)
 }
+
+// subscribeFakeClient is the minimal [protocol.Client] satisfier
+// used by the Subscribe contract tests. The session reads only the
+// client's identity at subscribe time; the other interface methods
+// are inert.
+type subscribeFakeClient struct {
+	id protocol.ClientID
+}
+
+func (c *subscribeFakeClient) Identity() protocol.ClientID { return c.id }
+func (c *subscribeFakeClient) Send(_ context.Context, _ protocol.Command) (protocol.Response, error) {
+	return protocol.Response{}, nil
+}
+func (c *subscribeFakeClient) Events() <-chan protocol.Delivery { return nil }
+func (c *subscribeFakeClient) HasMode(_ domain.Mode) bool       { return false }
+func (c *subscribeFakeClient) Caps() command.CapabilityHolder   { return subscribeFakeCaps{} }
+
+type subscribeFakeCaps struct{}
+
+func (subscribeFakeCaps) Has(_ command.Capability) bool { return false }

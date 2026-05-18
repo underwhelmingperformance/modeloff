@@ -96,6 +96,12 @@ func (c *serverClient) Send(ctx context.Context, cmd protocol.Command) (protocol
 
 func (c *serverClient) Events() <-chan protocol.Delivery { return c.events }
 
+// Unsubscribe removes the client from the session's subscriber
+// registry and cancels its dispatch goroutine (model-clients).
+// The user-client never reaps — its lifetime equals the session.
+// Idempotent on already-reaped or unknown ids via [Session.reapClient].
+func (c *serverClient) Unsubscribe() { c.sess.reapClient(c.id) }
+
 func (c *serverClient) HasMode(m domain.Mode) bool {
 	c.modesMu.RLock()
 	defer c.modesMu.RUnlock()

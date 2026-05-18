@@ -307,7 +307,7 @@ func kickViaWire(t testing.TB, sess *Session, ctx context.Context, ch domain.Cha
 func modelQuitViaWire(t testing.TB, sess *Session, ctx context.Context, actor *domain.Instance, message string) error {
 	t.Helper()
 
-	client := sess.Model(ctx, protocol.ClientID(actor.ID()))
+	client := sess.ensureModelClient(ctx, actor)
 	require.NotNil(t, client, "model client must exist for quit test")
 
 	resp, err := client.Send(ctx, protocol.Quit{Reason: message})

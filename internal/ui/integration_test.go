@@ -16,6 +16,7 @@ import (
 	"github.com/laney/modeloff/internal/config"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/memory"
+	"github.com/laney/modeloff/internal/modelclient"
 	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/session"
 	storemod "github.com/laney/modeloff/internal/store"
@@ -152,8 +153,8 @@ func TestApp_terminal_output_shows_full_model_nick_in_user_list(t *testing.T) {
 		Channels: channels,
 	})
 
-	client := sess.Model(t.Context(), protocol.ClientID(grok.ID()))
-	require.NotNil(t, client, "model client for seeded grok must exist")
+	client := modelclient.New(grok, sess)
+	require.NoError(t, client.Attach(), "attach grok model client")
 	resp, err := client.Send(t.Context(), protocol.Join{Channel: "#general"})
 	require.NoError(t, err)
 	require.NoError(t, resp.Err)
@@ -507,12 +508,12 @@ func seedInstance(t *testing.T, sess *session.Session, store *storemod.SQLiteSto
 	)
 	require.NoError(t, store.SaveInstance(t.Context(), inst))
 
-	// Pair the persistent write with a `Session.Model` lookup so
-	// the model-client subscription is registered and its dispatch
-	// goroutine running before any test fans out an event to it.
-	// This mirrors the production lifecycle, where
+	// Pair the persistent write with a [modelclient.ModelClient]
+	// attach so the model-client subscription is registered and its
+	// dispatch goroutine running before any test fans out an event to
+	// it. This mirrors the production lifecycle, where
 	// `attachInstanceToChannel` ensures the same invariant.
-	sess.Model(t.Context(), protocol.ClientID(inst.ID()))
+	require.NoError(t, modelclient.New(inst, sess).Attach(), "attach model client for seeded instance")
 
 	return inst
 }
