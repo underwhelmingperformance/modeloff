@@ -60,11 +60,10 @@ type Client interface {
 const CapOperator command.Capability = "operator"
 
 // Subscription is the handle a client carries after attaching to a
-// session. It exposes the per-client delivery stream and the
-// release mechanism. The session is the sole writer to the events
-// channel and owns its lifecycle; calling Unsubscribe removes the
-// client from the registry and cancels any session-owned resources
-// tied to it.
+// session. It exposes the per-client delivery stream, a "done"
+// signal that fires when the subscription is reaped (either by the
+// client calling Unsubscribe or by the session removing it via a
+// QUIT / KILL handler), and the release mechanism.
 type Subscription interface {
 	// Events returns the read end of the per-client delivery
 	// stream. Same semantics as [Client.Events] — the
@@ -72,8 +71,14 @@ type Subscription interface {
 	// a client has been attached via [Session.Subscribe].
 	Events() <-chan Delivery
 
+	// Done returns a channel that closes when the subscription is
+	// reaped from any source. Long-running consumers (e.g. a
+	// model-client's dispatch goroutine) select on Done alongside
+	// Events to exit cleanly when the session has detached them.
+	Done() <-chan struct{}
+
 	// Unsubscribe removes the client from the session's subscriber
-	// registry. Idempotent.
+	// registry and closes [Done]. Idempotent.
 	Unsubscribe()
 }
 

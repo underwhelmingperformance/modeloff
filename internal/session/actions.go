@@ -679,6 +679,8 @@ func (s *Session) setUserModeAs(ctx context.Context, by domain.Nick, target *ser
 		Event:   evt,
 		SpanCtx: trace.SpanContextFromContext(ctx),
 	}:
+	case <-target.done:
+		// Target was reaped between resolution and delivery; drop.
 	case <-ctx.Done():
 	}
 }
@@ -1095,6 +1097,9 @@ func (s *Session) killAs(ctx context.Context, oper, target *domain.Instance, rea
 			},
 			SpanCtx: trace.SpanContextFromContext(ctx),
 		}:
+		case <-sc.done:
+			// Target was concurrently reaped; the Killed line
+			// belongs to a subscription that no longer exists.
 		case <-ctx.Done():
 		}
 	}

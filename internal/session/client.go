@@ -43,6 +43,15 @@ type serverClient struct {
 	instance *domain.Instance
 	events   chan protocol.Delivery
 
+	// done closes exactly once when the subscription is reaped,
+	// from any source: client-initiated via [serverClient.Unsubscribe],
+	// session-initiated via QUIT / KILL through [Session.reapClient],
+	// or shutdown. `unsubOnce` serialises the close so the channel
+	// is never closed twice and never written to. Consumers that
+	// long-poll on `Events` select on `done` to exit cleanly.
+	done      chan struct{}
+	unsubOnce sync.Once
+
 	// cancel terminates the per-client dispatch goroutine when the
 	// client is reaped (e.g. after a model `QUIT` or operator
 	// `KILL`). It is set by [Session.startModelDispatch] for
@@ -78,6 +87,7 @@ func newServerClient(sess *Session, id protocol.ClientID, inst *domain.Instance)
 		id:       id,
 		instance: inst,
 		events:   make(chan protocol.Delivery, eventBufSize),
+		done:     make(chan struct{}),
 		modes:    make(map[domain.Mode]struct{}),
 	}
 
@@ -96,10 +106,16 @@ func (c *serverClient) Send(ctx context.Context, cmd protocol.Command) (protocol
 
 func (c *serverClient) Events() <-chan protocol.Delivery { return c.events }
 
+// Done returns a channel closed when the subscription is reaped.
+// The user-client's `done` channel is allocated but never closed —
+// the user-client lives for the session's lifetime.
+func (c *serverClient) Done() <-chan struct{} { return c.done }
+
 // Unsubscribe removes the client from the session's subscriber
-// registry and cancels its dispatch goroutine (model-clients).
-// The user-client never reaps — its lifetime equals the session.
-// Idempotent on already-reaped or unknown ids via [Session.reapClient].
+// registry, closes [Done], and cancels its dispatch goroutine
+// (model-clients). The user-client never reaps — its lifetime
+// equals the session. Idempotent across concurrent callers via
+// `unsubOnce`.
 func (c *serverClient) Unsubscribe() { c.sess.reapClient(c.id) }
 
 func (c *serverClient) HasMode(m domain.Mode) bool {

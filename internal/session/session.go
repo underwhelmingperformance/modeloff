@@ -465,10 +465,11 @@ func (s *Session) startModelDispatch(client *serverClient) {
 	s.dispatchWG.Go(func() { s.runModelDispatch(ctx, client) })
 }
 
-// reapClient removes a model-client from the subscriber set and
-// cancels its dispatch goroutine. The user-client is never
-// reaped — its lifetime equals the session. Idempotent on an
-// unknown id.
+// reapClient removes a model-client from the subscriber set,
+// closes the subscription's `Done` channel, and cancels its
+// dispatch goroutine. The user-client is never reaped — its
+// lifetime equals the session. Idempotent across concurrent
+// callers via `unsubOnce` on the envelope.
 func (s *Session) reapClient(id protocol.ClientID) {
 	if id == protocol.UserClientID {
 		return
@@ -482,9 +483,16 @@ func (s *Session) reapClient(id protocol.ClientID) {
 	}
 	s.subsMu.Unlock()
 
-	if ok && client.cancel != nil {
-		client.cancel()
+	if !ok {
+		return
 	}
+
+	client.unsubOnce.Do(func() {
+		close(client.done)
+		if client.cancel != nil {
+			client.cancel()
+		}
+	})
 }
 
 // seedModelClientHistory eager-seeds the model-client's per-channel
@@ -613,6 +621,9 @@ func (s *Session) fanOutProtocol(ctx context.Context, pe domain.ProtocolEvent) {
 			Targets: targets,
 			SpanCtx: spanCtx,
 		}:
+		case <-sub.done:
+			// Subscription was reaped between the snapshot and the
+			// send. The recipient is gone; drop the delivery.
 		case <-ctx.Done():
 			return
 		}
