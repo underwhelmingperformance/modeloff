@@ -260,6 +260,16 @@ func TestRichTextareaPaletteMouseAppliesForeground(t *testing.T) {
 	require.NotNil(t, editor.pending.FG)
 }
 
+func TestRichTextareaPaletteLabelsNoColourClearly(t *testing.T) {
+	editor := NewRichTextarea(RichTextareaConfig{AllowFormatting: true})
+	editor.palette.open = true
+
+	view := editor.PaletteView(80)
+	stripped := uitest.StripANSI(view)
+
+	require.Contains(t, strings.TrimRight(stripped, " "), "fg: -- 00 01 02 03 04 05 06 07 08 09 10 11 12 13 14 15")
+}
+
 func TestRichTextareaPaletteDigitJump(t *testing.T) {
 	const digits = "0123456789"
 	for index, digit := range digits {

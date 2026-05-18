@@ -961,22 +961,7 @@ func (r RichTextarea) renderStatus(width int) string {
 func (r RichTextarea) renderPalette(width int) string {
 	swatches := make([]string, 0, 17)
 	for index := 0; index <= 16; index++ {
-		label := "df"
-		style := lipgloss.NewStyle()
-		if index > 0 {
-			colour := uint8(index - 1)
-			label = fmt.Sprintf("%02d", colour)
-			if r.palette.target == colourTargetForeground {
-				style = style.Foreground(lipgloss.ANSIColor(colour))
-			} else {
-				style = style.Background(lipgloss.ANSIColor(colour))
-			}
-		}
-		if index == r.palette.index {
-			style = style.Reverse(true).Bold(true)
-		}
-
-		swatches = append(swatches, style.Render(label))
+		swatches = append(swatches, r.renderSwatch(index))
 	}
 
 	target := "fg"
@@ -985,6 +970,37 @@ func (r RichTextarea) renderPalette(width int) string {
 	}
 
 	return theme.Dim.Width(width).Render(target + ": " + strings.Join(swatches, " "))
+}
+
+// renderSwatch returns the visual for a single palette swatch in
+// fixed two-cell form, matching the mouse hit-test stride. Index 0
+// is the "no colour" entry rendered as a dim em-dash plus filler so
+// the user reads "clear" rather than the cryptic "df" used before.
+// Numbered swatches paint the colour the user is about to apply
+// (foreground or background depending on the active target).
+func (r RichTextarea) renderSwatch(index int) string {
+	if index == 0 {
+		style := theme.Dim
+		if index == r.palette.index {
+			style = lipgloss.NewStyle().Reverse(true).Bold(true)
+		}
+
+		return style.Render("--")
+	}
+
+	colour := uint8(index - 1) //nolint:gosec // bounded by loop above
+	label := fmt.Sprintf("%02d", colour)
+	style := lipgloss.NewStyle()
+	if r.palette.target == colourTargetForeground {
+		style = style.Foreground(lipgloss.ANSIColor(colour))
+	} else {
+		style = style.Background(lipgloss.ANSIColor(colour))
+	}
+	if index == r.palette.index {
+		style = style.Reverse(true).Bold(true)
+	}
+
+	return style.Render(label)
 }
 
 // PaletteVisible reports whether the colour palette is open.
