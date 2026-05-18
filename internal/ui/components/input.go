@@ -611,8 +611,17 @@ func (b InputBar) View(width, _ int) string {
 	nickLabel := theme.UserNick.Render(string(b.userNick)) + " "
 	prompt := theme.Prompt.Render("> ")
 
-	editorWidth := max(width-lipgloss.Width(nickLabel)-lipgloss.Width(prompt), 0)
-	inputLine := nickLabel + prompt + b.input.View(editorWidth, 1)
+	var lockBadge string
+	editor := b.input
+	if b.locked {
+		lockBadge = theme.Dim.Render("(locked) ")
+		nickLabel = theme.Dim.Render(string(b.userNick)) + " "
+		prompt = theme.Dim.Render("> ")
+		editor.cursor.Blur()
+	}
+
+	editorWidth := max(width-lipgloss.Width(nickLabel)-lipgloss.Width(lockBadge)-lipgloss.Width(prompt), 0)
+	inputLine := nickLabel + lockBadge + prompt + editor.View(editorWidth, 1)
 
 	popoverView := b.popover.Render(width)
 	if popoverView == "" {
