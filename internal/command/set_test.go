@@ -1582,6 +1582,46 @@ func TestToolParameters(t *testing.T) {
 	})
 }
 
+// strictStyle and strictSpan stand in for the nested-struct shape
+// in protocol.ReplySpan / protocol.ReplyStyle. The reflected schema
+// must satisfy OpenAI strict-mode invariants on every object level
+// — `additionalProperties: false`, every property in `required`,
+// optional fields nullable — or providers such as Azure reject the
+// tool with `invalid_function_parameters`.
+type strictStyle struct {
+	Bold bool   `json:"bold,omitempty"`
+	FG   *uint8 `json:"fg,omitempty"`
+	BG   *uint8 `json:"bg,omitempty"`
+}
+
+type strictSpan struct {
+	Text  string       `json:"text"`
+	Style *strictStyle `json:"style,omitempty"`
+}
+
+func TestStructSchemaViaReflector_strict(t *testing.T) {
+	schema := structSchemaViaReflector(reflect.TypeFor[strictSpan]())
+
+	require.Equal(t, map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []string{"text", "style"},
+		"properties": map[string]any{
+			"text": map[string]any{"type": "string"},
+			"style": map[string]any{
+				"type":                 []any{"object", "null"},
+				"additionalProperties": false,
+				"required":             []string{"bg", "bold", "fg"},
+				"properties": map[string]any{
+					"bold": map[string]any{"type": []any{"boolean", "null"}},
+					"fg":   map[string]any{"type": []any{"integer", "null"}},
+					"bg":   map[string]any{"type": []any{"integer", "null"}},
+				},
+			},
+		},
+	}, schema)
+}
+
 func TestToolValue(t *testing.T) {
 	s := toolSet(t)
 

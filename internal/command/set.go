@@ -6,6 +6,7 @@ import (
 	"iter"
 	"reflect"
 	"slices"
+	"sort"
 	"strings"
 
 	"github.com/invopop/jsonschema"
@@ -766,7 +767,9 @@ func toolSchemaForType(typ reflect.Type) map[string]any {
 // structSchemaViaReflector reflects a Go struct into a JSON-Schema
 // fragment via invopop/jsonschema. Used for tool-parameter fields
 // whose type is a nested struct (e.g. `[]protocol.ReplySpan`),
-// which the simple kind-switch above can't describe.
+// which the simple kind-switch above can't describe. The reflected
+// schema is hardened for OpenAI strict-mode function calling via
+// [makeStrictObjectSchema] before being returned.
 func structSchemaViaReflector(typ reflect.Type) map[string]any {
 	reflector := jsonschema.Reflector{DoNotReference: true}
 	schema := reflector.ReflectFromType(typ)
@@ -781,7 +784,140 @@ func structSchemaViaReflector(typ reflect.Type) map[string]any {
 		return map[string]any{"type": "object"}
 	}
 
+	makeStrictObjectSchema(out)
+
 	return out
+}
+
+// makeStrictObjectSchema walks a JSON-Schema fragment in place and
+// enforces the invariants OpenAI strict-mode function calling
+// requires of every object node: `additionalProperties: false`,
+// `required` lists every property in `properties`, and properties
+// that were not originally required gain a nullable type union so
+// the model can omit them by emitting `null`. The schema's own `$id`
+// and `$schema` metadata keys are stripped — they're invopop noise
+// that some strict providers reject.
+//
+// The walk recurses into `properties`, `items`, and the `oneOf` /
+// `anyOf` / `allOf` combinators. Original `required` ordering is
+// preserved; newly-added entries are appended in alphabetical order
+// so the output is deterministic.
+func makeStrictObjectSchema(schema map[string]any) {
+	delete(schema, "$id")
+	delete(schema, "$schema")
+
+	if isObjectSchema(schema) {
+		if props, ok := schema["properties"].(map[string]any); ok && len(props) > 0 {
+			originallyRequired := map[string]bool{}
+
+			required := make([]string, 0, len(props))
+			switch r := schema["required"].(type) {
+			case []string:
+				for _, k := range r {
+					originallyRequired[k] = true
+					required = append(required, k)
+				}
+			case []any:
+				for _, v := range r {
+					if s, ok := v.(string); ok {
+						originallyRequired[s] = true
+						required = append(required, s)
+					}
+				}
+			}
+
+			missing := make([]string, 0, len(props))
+			for name := range props {
+				if !originallyRequired[name] {
+					missing = append(missing, name)
+				}
+			}
+			sort.Strings(missing)
+
+			for _, name := range missing {
+				required = append(required, name)
+				if sub, ok := props[name].(map[string]any); ok {
+					makeNullable(sub)
+				}
+			}
+
+			schema["required"] = required
+			schema["additionalProperties"] = false
+		}
+	}
+
+	if props, ok := schema["properties"].(map[string]any); ok {
+		for _, p := range props {
+			if sub, ok := p.(map[string]any); ok {
+				makeStrictObjectSchema(sub)
+			}
+		}
+	}
+
+	if items, ok := schema["items"].(map[string]any); ok {
+		makeStrictObjectSchema(items)
+	}
+
+	for _, key := range []string{"oneOf", "anyOf", "allOf"} {
+		arr, ok := schema[key].([]any)
+		if !ok {
+			continue
+		}
+
+		for _, v := range arr {
+			if sub, ok := v.(map[string]any); ok {
+				makeStrictObjectSchema(sub)
+			}
+		}
+	}
+}
+
+// isObjectSchema reports whether schema has an `object` type. The
+// `type` keyword may be a single string or a union array, so both
+// shapes are checked.
+func isObjectSchema(schema map[string]any) bool {
+	t, ok := schema["type"]
+	if !ok {
+		return false
+	}
+
+	switch v := t.(type) {
+	case string:
+		return v == "object"
+	case []any:
+		for _, x := range v {
+			if x == "object" {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// makeNullable widens a schema's `type` to include `"null"`,
+// turning a scalar type into a `[<type>, "null"]` union. Idempotent.
+func makeNullable(schema map[string]any) {
+	t, ok := schema["type"]
+	if !ok {
+		schema["type"] = []any{"null"}
+		return
+	}
+
+	switch v := t.(type) {
+	case string:
+		if v == "null" {
+			return
+		}
+		schema["type"] = []any{v, "null"}
+	case []any:
+		for _, x := range v {
+			if x == "null" {
+				return
+			}
+		}
+		schema["type"] = append(v, "null")
+	}
 }
 
 func clampRaw(raw string) string {
