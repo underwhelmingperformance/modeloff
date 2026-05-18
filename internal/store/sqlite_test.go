@@ -536,47 +536,6 @@ func TestSQLiteStore_DMEventsBefore_includes_peer_actor_events(t *testing.T) {
 	require.IsType(t, domain.Quit{}, got[1].Event)
 }
 
-// TestSQLiteStore_drops_legacy_actor_event_rows pins the
-// pre-release migration that drops the `events` table when it
-// finds per-channel `quit` / `nick_change` rows from before the
-// RFC-aligned shape (one event with `Channels` array). Detection
-// looks for the legacy `channel` field inside the event data
-// JSON; a fresh start with the new array-shaped payload is left
-// alone.
-func TestSQLiteStore_drops_legacy_actor_event_rows(t *testing.T) {
-	ctx := t.Context()
-	dbPath := filepath.Join(t.TempDir(), "legacy.db")
-	db, err := sql.Open("sqlite3", SQLitePragmaDSN(dbPath))
-	require.NoError(t, err)
-
-	// Bring up a fresh store so the `events` table exists, then
-	// hand-craft a row in the legacy shape by writing the JSON
-	// envelope directly.
-	s, err := NewSQLiteStore(ctx, db)
-	require.NoError(t, err)
-
-	const legacy = `{"type":"quit","data":{"channel":"#general","nick":"botty","at":"2025-01-01T00:00:00Z"}}`
-	_, err = db.ExecContext(ctx,
-		`INSERT INTO events (channel, type, data, at) VALUES (?, ?, ?, ?)`,
-		"#general", "quit", legacy, "2025-01-01T00:00:00Z",
-	)
-	require.NoError(t, err)
-	require.NoError(t, s.Close())
-
-	// Re-open. The migration should detect the legacy row, drop
-	// the events table, and recreate it empty.
-	db2, err := sql.Open("sqlite3", SQLitePragmaDSN(dbPath))
-	require.NoError(t, err)
-
-	s2, err := NewSQLiteStore(ctx, db2)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = s2.Close() })
-
-	got, err := s2.EventsBefore(ctx, "#general", nil, 100)
-	require.NoError(t, err)
-	require.Empty(t, got)
-}
-
 func TestSQLiteStore_EventsFrom_nil_returns_earliest(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
@@ -1042,82 +1001,6 @@ func TestSQLiteStore_SessionActive_clear(t *testing.T) {
 	require.Empty(t, got)
 }
 
-func TestSQLiteStore_NewSQLiteStore_purges_legacy_pending_quit(t *testing.T) {
-	db, err := sql.Open("sqlite3", ":memory:")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = db.Close() })
-
-	db.SetMaxOpenConns(1)
-
-	// Pre-create the schema and seed a stale pending_quit row.
-	_, err = db.Exec(`CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT NOT NULL)`)
-	require.NoError(t, err)
-	_, err = db.Exec(`INSERT INTO state (key, value) VALUES ('pending_quit', 'stale-blob')`)
-	require.NoError(t, err)
-
-	s, err := NewSQLiteStore(t.Context(), db)
-	require.NoError(t, err)
-
-	var got string
-	err = db.QueryRow(`SELECT value FROM state WHERE key = 'pending_quit'`).Scan(&got)
-	require.ErrorIs(t, err, sql.ErrNoRows, "legacy pending_quit row should be purged on store open")
-
-	// Other state untouched.
-	require.NoError(t, s.SetSessionActive(t.Context(), "ok"))
-	v, err := s.GetSessionActive(t.Context())
-	require.NoError(t, err)
-	require.Equal(t, "ok", v)
-}
-
-func TestSQLiteStore_NewSQLiteStore_drops_legacy_instance_tables(t *testing.T) {
-	db, err := sql.Open("sqlite3", ":memory:")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = db.Close() })
-
-	db.SetMaxOpenConns(1)
-
-	// Seed the v1 nick-keyed shape of `instances` and `memories`
-	// plus one row in each so we can confirm that the drop happens
-	// rather than an in-place column rename or a failed CREATE.
-	_, err = db.Exec(`CREATE TABLE instances (
-	    nick TEXT PRIMARY KEY,
-	    data TEXT NOT NULL
-	)`)
-	require.NoError(t, err)
-
-	_, err = db.Exec(`INSERT INTO instances (nick, data) VALUES ('legacy', '{}')`)
-	require.NoError(t, err)
-
-	_, err = db.Exec(`CREATE TABLE memories (
-	    nick    TEXT NOT NULL,
-	    key     TEXT NOT NULL,
-	    content TEXT NOT NULL,
-	    PRIMARY KEY (nick, key)
-	)`)
-	require.NoError(t, err)
-
-	_, err = db.Exec(`INSERT INTO memories (nick, key, content) VALUES ('legacy', 'k', 'v')`)
-	require.NoError(t, err)
-
-	_, err = NewSQLiteStore(t.Context(), db)
-	require.NoError(t, err)
-
-	// The legacy row must be gone; schema v2 is identified by the
-	// presence of the `instance_id` column on `instances` and on
-	// `memories`.
-	assertColumnPresent(t, db, "instances", "instance_id")
-	assertColumnPresent(t, db, "memories", "instance_id")
-
-	var count int
-	err = db.QueryRow(`SELECT COUNT(*) FROM instances`).Scan(&count)
-	require.NoError(t, err)
-	require.Equal(t, 0, count, "legacy instances rows should be dropped")
-
-	err = db.QueryRow(`SELECT COUNT(*) FROM memories`).Scan(&count)
-	require.NoError(t, err)
-	require.Equal(t, 0, count, "legacy memories rows should be dropped")
-}
-
 func TestSQLiteStore_NewSQLiteStore_preserves_v2_instances(t *testing.T) {
 	db, err := sql.Open("sqlite3", ":memory:")
 	require.NoError(t, err)
@@ -1140,35 +1023,6 @@ func TestSQLiteStore_NewSQLiteStore_preserves_v2_instances(t *testing.T) {
 	got, err := s.GetInstanceByID(t.Context(), "inst-keep")
 	require.NoError(t, err)
 	require.Equal(t, normaliseInstance(seed), normaliseInstance(got))
-}
-
-// assertColumnPresent checks that a given column exists on a table.
-func assertColumnPresent(t *testing.T, db *sql.DB, table, column string) {
-	t.Helper()
-
-	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = rows.Close() })
-
-	var found bool
-	for rows.Next() {
-		var (
-			cid     int
-			name    string
-			colType string
-			notNull int
-			dflt    sql.NullString
-			pk      int
-		)
-
-		require.NoError(t, rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk))
-		if name == column {
-			found = true
-		}
-	}
-
-	require.NoError(t, rows.Err())
-	require.True(t, found, "table %q is missing column %q", table, column)
 }
 
 func TestSQLiteStore_SessionActive_overwrite(t *testing.T) {

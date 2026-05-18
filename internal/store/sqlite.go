@@ -75,6 +75,8 @@ CREATE TABLE IF NOT EXISTS last_read (
     channel  TEXT PRIMARY KEY REFERENCES channels(name) ON DELETE CASCADE,
     event_id INTEGER NOT NULL REFERENCES events(id)
 );
+
+INSERT OR IGNORE INTO state (key, value) VALUES ('schema_version', '1');
 `
 
 // SQLiteStore implements Store using a single SQLite database. It
@@ -136,10 +138,11 @@ func NewDefaultSQLiteStore(ctx context.Context) (*SQLiteStore, error) {
 // NewSQLiteStore creates a store backed by the given database. The
 // caller is responsible for opening the database with a DSN that
 // configures the required connection-time PRAGMAs (`busy_timeout`,
-// `journal_mode`, `foreign_keys`); `SQLitePragmaDSN` builds one. The
-// schema is created if it does not already exist. The context is used
-// for migration logging so that any surrounding trace is correlated
-// with the startup-time log line.
+// `journal_mode`, `foreign_keys`); `SQLitePragmaDSN` builds one.
+// The schema is created on first open; subsequent opens are no-ops
+// thanks to `CREATE TABLE IF NOT EXISTS`. Existing databases whose
+// recorded schema version differs from [SchemaVersion] are
+// reconciled through [applyMigrations].
 func NewSQLiteStore(ctx context.Context, db *sql.DB) (*SQLiteStore, error) {
 	// Read the resulting journal mode for operator visibility — an
 	// on-disk database normally reports `wal` here, but a `:memory:`
@@ -155,55 +158,19 @@ func NewSQLiteStore(ctx context.Context, db *sql.DB) (*SQLiteStore, error) {
 		"mode", journalMode,
 	)
 
-	s := &SQLiteStore{
-		db:             db,
-		instances:      make(map[domain.InstanceID]*domain.Instance),
-		tracerProvider: otel.GetTracerProvider(),
-	}
-
-	// Pre-release schema v2 migration: the `instances` and `memories`
-	// tables used to be keyed by nick; they are now keyed by
-	// InstanceID. Nicks are display state that can drift during a
-	// session, so identity-keyed storage is the correct long-term
-	// shape. The project contract is that pre-release schema changes
-	// drop the affected rows rather than migrate them (same pattern as
-	// the `pending_quit` purge further down, and the membership rekey
-	// in the channels table). If the legacy `instances.nick` primary
-	// key is present, drop both tables so the fresh schema creation
-	// below produces the v2 shape.
-	if err := s.dropLegacyInstanceTables(ctx); err != nil {
-		return nil, fmt.Errorf("drop legacy instance tables: %w", err)
-	}
-
-	if err := s.dropLegacyEventTypes(ctx); err != nil {
-		return nil, fmt.Errorf("drop legacy event types: %w", err)
-	}
-
-	if err := s.dropLegacyActorEvents(ctx); err != nil {
-		return nil, fmt.Errorf("drop legacy actor events: %w", err)
-	}
-
-	if err := s.dropLegacyDMWindows(ctx); err != nil {
-		return nil, fmt.Errorf("drop legacy dm windows: %w", err)
-	}
-
-	if _, err := db.Exec(schema); err != nil {
+	if _, err := db.ExecContext(ctx, schema); err != nil {
 		return nil, fmt.Errorf("create schema: %w", err)
 	}
 
-	// One-off migration: pending_quit was the deferred-shutdown
-	// mechanism replaced by Session.Quit's synchronous path. Existing
-	// rows are stale.
-	result, err := db.Exec(`DELETE FROM state WHERE key = 'pending_quit'`)
-	if err != nil {
-		return nil, fmt.Errorf("purge legacy pending_quit row: %w", err)
+	if err := applyMigrations(ctx, db); err != nil {
+		return nil, err
 	}
 
-	if rows, err := result.RowsAffected(); err == nil && rows > 0 {
-		slog.Default().InfoContext(ctx, "purged legacy pending_quit row", "component", "store.sqlite", "rows", rows)
-	}
-
-	return s, nil
+	return &SQLiteStore{
+		db:             db,
+		instances:      make(map[domain.InstanceID]*domain.Instance),
+		tracerProvider: otel.GetTracerProvider(),
+	}, nil
 }
 
 // WithTracerProvider overrides the OTel `TracerProvider` the store
@@ -263,206 +230,6 @@ func (s *SQLiteStore) resolveInstance(id domain.InstanceID) *domain.Instance {
 	defer s.instancesMu.RUnlock()
 
 	return s.instances[id]
-}
-
-// dropLegacyEventTypes detects the legacy `list` discriminator
-// in the `events` table (the pre-`ListReply`/`ListEnd` shape)
-// and drops the events table when found. Pre-release reset, not
-// a data-preserving migration.
-func (s *SQLiteStore) dropLegacyEventTypes(ctx context.Context) error {
-	return s.inSpan(ctx, "store.sqlite.migrate_events_v2", nil, func(ctx context.Context, span trace.Span) error {
-		var detected bool
-		err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM events WHERE type = 'list' LIMIT 1)`).Scan(&detected)
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return nil
-			}
-
-			// Table absent on first start.
-			if strings.Contains(err.Error(), "no such table") {
-				return nil
-			}
-
-			return fmt.Errorf("probe legacy events: %w", err)
-		}
-
-		span.SetAttributes(attribute.Bool("modeloff.migration.detected", detected))
-
-		if !detected {
-			return nil
-		}
-
-		if _, err := s.db.ExecContext(ctx, `DROP TABLE IF EXISTS events`); err != nil {
-			return fmt.Errorf("drop legacy events: %w", err)
-		}
-
-		slog.Default().WarnContext(ctx,
-			"modeloff events table dropped; legacy `list` event rows present",
-			"component", "store.sqlite",
-		)
-
-		return nil
-	})
-}
-
-// dropLegacyActorEvents detects `quit` / `nick_change` rows
-// whose data carries a single `channel` string field (the old
-// per-channel-targeted shape) instead of the new `channels`
-// array, and drops the events table on match. Pre-release
-// reset, not a data-preserving migration.
-func (s *SQLiteStore) dropLegacyActorEvents(ctx context.Context) error {
-	return s.inSpan(ctx, "store.sqlite.migrate_events_v3", nil, func(ctx context.Context, span trace.Span) error {
-		var detected bool
-		err := s.db.QueryRowContext(ctx, `SELECT EXISTS(
-			SELECT 1 FROM events
-			WHERE type IN ('quit', 'nick_change')
-			  AND json_extract(data, '$.data.channel') IS NOT NULL
-			LIMIT 1
-		)`).Scan(&detected)
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return nil
-			}
-
-			if strings.Contains(err.Error(), "no such table") {
-				return nil
-			}
-
-			return fmt.Errorf("probe legacy actor events: %w", err)
-		}
-
-		span.SetAttributes(attribute.Bool("modeloff.migration.detected", detected))
-
-		if !detected {
-			return nil
-		}
-
-		if _, err := s.db.ExecContext(ctx, `DROP TABLE IF EXISTS events`); err != nil {
-			return fmt.Errorf("drop legacy events: %w", err)
-		}
-
-		slog.Default().WarnContext(ctx,
-			"modeloff events table dropped; legacy per-channel quit/nick_change rows present",
-			"component", "store.sqlite",
-		)
-
-		return nil
-	})
-}
-
-// dropLegacyDMWindows deletes any rows in the `channels` table
-// whose JSON `Kind` discriminator marks them as a DM. DMs were
-// previously persisted as their own channel rows; the new policy
-// treats them as pure in-memory UI state owned by the chat-screen
-// sidebar cache, so any persisted row is a leftover from an older
-// session and is dropped on startup.
-func (s *SQLiteStore) dropLegacyDMWindows(ctx context.Context) error {
-	return s.inSpan(ctx, "store.sqlite.drop_legacy_dm_windows", nil, func(ctx context.Context, span trace.Span) error {
-		result, err := s.db.ExecContext(ctx,
-			`DELETE FROM channels WHERE json_extract(data, '$.Kind') = ?`,
-			int(domain.KindDM),
-		)
-		if err != nil {
-			if strings.Contains(err.Error(), "no such table") {
-				return nil
-			}
-
-			return fmt.Errorf("delete legacy dm windows: %w", err)
-		}
-
-		rows, err := result.RowsAffected()
-		if err != nil {
-			return fmt.Errorf("rows affected: %w", err)
-		}
-
-		span.SetAttributes(attribute.Int64("modeloff.migration.rows_dropped", rows))
-
-		if rows > 0 {
-			slog.Default().InfoContext(ctx,
-				"dropped legacy DM window rows",
-				"component", "store.sqlite",
-				"rows", rows,
-			)
-		}
-
-		return nil
-	})
-}
-
-// dropLegacyInstanceTables detects the nick-keyed v1 shape of the
-// `instances` table (no `instance_id` column) and, if found, drops
-// both `instances` and `memories` so the fresh v2 schema can be
-// created. The legacy rows are not migrated: this is a pre-release
-// reset, not a data-preserving migration.
-//
-// Detection is v1→v2 specific; any future schema change requires its
-// own detector.
-func (s *SQLiteStore) dropLegacyInstanceTables(ctx context.Context) error {
-	return s.inSpan(ctx, "store.sqlite.migrate_v2", nil, func(ctx context.Context, span trace.Span) error {
-		rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(instances)`)
-		if err != nil {
-			return fmt.Errorf("inspect instances schema: %w", err)
-		}
-
-		var (
-			hasInstancesTable  bool
-			hasInstanceIDField bool
-		)
-
-		for rows.Next() {
-			hasInstancesTable = true
-
-			var (
-				cid     int
-				name    string
-				colType string
-				notNull int
-				dflt    sql.NullString
-				pk      int
-			)
-
-			if err := rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk); err != nil {
-				_ = rows.Close()
-				return fmt.Errorf("scan column info: %w", err)
-			}
-
-			if name == "instance_id" {
-				hasInstanceIDField = true
-			}
-		}
-
-		if err := rows.Err(); err != nil {
-			_ = rows.Close()
-			return fmt.Errorf("iterate column info: %w", err)
-		}
-
-		if err := rows.Close(); err != nil {
-			return fmt.Errorf("close column info: %w", err)
-		}
-
-		detected := hasInstancesTable && !hasInstanceIDField
-		span.SetAttributes(attribute.Bool("modeloff.migration.detected", detected))
-
-		if !detected {
-			return nil
-		}
-
-		if _, err := s.db.ExecContext(ctx, `DROP TABLE IF EXISTS instances`); err != nil {
-			return fmt.Errorf("drop legacy instances: %w", err)
-		}
-
-		if _, err := s.db.ExecContext(ctx, `DROP TABLE IF EXISTS memories`); err != nil {
-			return fmt.Errorf("drop legacy memories: %w", err)
-		}
-
-		slog.Default().WarnContext(ctx,
-			"modeloff store schema v2 applied; legacy instances/memories tables dropped",
-			"component", "store.sqlite",
-			"reason", "legacy nick-keyed instances table detected",
-		)
-
-		return nil
-	})
 }
 
 // Close closes the underlying database connection.
