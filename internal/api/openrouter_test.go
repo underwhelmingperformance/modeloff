@@ -402,6 +402,19 @@ func TestBuildMessages_survives_nick_rename(t *testing.T) {
 	require.Equal(t, []string{"system", "assistant", "assistant", "user"}, messageRoles(msgs))
 }
 
+func TestBuildMessages_poke_is_system_message(t *testing.T) {
+	const pokeBody = "the channel is quiet. if something comes to mind, say it — otherwise just lurk."
+
+	events := []protocol.IRCMessage{
+		{Kind: protocol.KindPoke, From: "modeloff", Target: "#room", Body: pokeBody},
+	}
+
+	msgs := buildMessages("system prompt", "", nil, events)
+
+	require.Equal(t, []string{"system", "system"}, messageRoles(msgs))
+	require.Equal(t, []string{"system prompt", pokeBody}, messageContents(msgs))
+}
+
 func TestBuildMessages_instance_id_stripped_from_json(t *testing.T) {
 	events := []protocol.IRCMessage{
 		{Kind: protocol.KindPrivMsg, From: "botty", InstanceID: "inst-xyz", Target: "#test", Body: "hello"},

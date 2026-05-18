@@ -431,6 +431,12 @@ func buildMessages(
 	msgs := []openai.ChatCompletionMessageParamUnion{openai.SystemMessage(systemPrompt)}
 
 	appendMsg := func(m protocol.IRCMessage) {
+		// POKE bodies are session-side directives; emit as system role.
+		if m.Kind == protocol.KindPoke {
+			msgs = append(msgs, openai.SystemMessage(m.Body))
+			return
+		}
+
 		isSelf := selfInstanceID != "" && m.InstanceID == selfInstanceID
 
 		// Strip the internal instance ID before marshalling so it
