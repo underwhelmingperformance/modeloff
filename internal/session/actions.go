@@ -699,10 +699,13 @@ func (s *Session) checkSendGates(ctx context.Context, actor *domain.Instance, ch
 	}
 
 	window, err := s.loadChannelWindow(ctx, ch)
-	if err != nil {
-		// A missing channel falls through to the existing
-		// append/emit path; the caller decides how to react.
+	if errors.Is(err, store.ErrNoSuchChannel) {
+		// A missing channel has no gates of its own; the
+		// append/emit path produces the right error downstream.
 		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("load channel: %w", err)
 	}
 
 	member, isMember := window.Members.GetByInstance(actor)

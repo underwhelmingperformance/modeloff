@@ -55,8 +55,8 @@ func (c *fakeClient) HasMode(m domain.Mode) bool {
 
 func (c *fakeClient) Caps() command.CapabilityHolder { return c }
 
-func (c *fakeClient) Has(cap command.Capability) bool {
-	if cap == protocol.CapOperator {
+func (c *fakeClient) Has(capability command.Capability) bool {
+	if capability == protocol.CapOperator {
 		return c.HasMode(domain.ModeOperator)
 	}
 	return false

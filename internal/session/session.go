@@ -587,7 +587,7 @@ func (s *Session) fanOutProtocol(ctx context.Context, pe domain.ProtocolEvent) {
 	// `"anonymous"` sentinel (RFC 2811 §4.2.1) before delivery, so
 	// even the channel's own members can't see who sent what. The
 	// stored event retains the real From for audit.
-	pe = anonymiseIfNeeded(s, ctx, pe)
+	pe = anonymiseIfNeeded(ctx, s, pe)
 
 	// Actor-scoped events ([domain.Quit] and [domain.NickChange])
 	// carry no target on the wire; the per-recipient channel list
@@ -623,7 +623,7 @@ func (s *Session) fanOutProtocol(ctx context.Context, pe domain.ProtocolEvent) {
 // to `"anonymous"` when the target channel carries `+a`. Returns
 // the event unchanged when the channel is not anonymous or when
 // the event is not chat traffic.
-func anonymiseIfNeeded(s *Session, ctx context.Context, pe domain.ProtocolEvent) domain.ProtocolEvent {
+func anonymiseIfNeeded(ctx context.Context, s *Session, pe domain.ProtocolEvent) domain.ProtocolEvent {
 	msg, ok := pe.(domain.Message)
 	if !ok {
 		return pe

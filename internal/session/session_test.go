@@ -254,7 +254,7 @@ func newTestSession(t *testing.T) (*Session, *storemod.SQLiteStore) {
 // user-client (which holds `+o` from bootstrap) so tests exercise
 // the same dispatcher path the chatcmd `/add-model` and the
 // model-tool call take.
-func addModelViaWire(t testing.TB, sess *Session, ctx context.Context, ch domain.ChannelName, model domain.ModelID, persona string) error {
+func addModelViaWire(ctx context.Context, t testing.TB, sess *Session, ch domain.ChannelName, model domain.ModelID, persona string) error {
 	t.Helper()
 
 	resp, err := sess.User().Send(ctx, protocol.AddModel{
@@ -273,7 +273,7 @@ func addModelViaWire(t testing.TB, sess *Session, ctx context.Context, ch domain
 // matching what the chat-screen does when the user types `/quit`.
 // Returns the dispatcher error (transport + `Response.Err`) so
 // callers can assert on it directly.
-func userQuitViaWire(t testing.TB, sess *Session, ctx context.Context, message string) error {
+func userQuitViaWire(ctx context.Context, t testing.TB, sess *Session, message string) error {
 	t.Helper()
 
 	resp, err := sess.User().Send(ctx, protocol.Quit{Reason: message})
@@ -289,7 +289,7 @@ func userQuitViaWire(t testing.TB, sess *Session, ctx context.Context, message s
 // `/kick`. The dispatcher surfaces `UnknownNickError` as
 // `Response.Err`; callers that want to assert the failure shape
 // can branch on the typed value via `errors.As`.
-func kickViaWire(t testing.TB, sess *Session, ctx context.Context, ch domain.ChannelName, nick domain.Nick) error {
+func kickViaWire(ctx context.Context, t testing.TB, sess *Session, ch domain.ChannelName, nick domain.Nick) error {
 	t.Helper()
 
 	resp, err := sess.User().Send(ctx, protocol.Kick{Channel: ch, Nick: nick})
@@ -304,7 +304,7 @@ func kickViaWire(t testing.TB, sess *Session, ctx context.Context, ch domain.Cha
 // model-client. The model-actor branch of `handleQuit` broadcasts
 // QUIT to peers and reaps the subscription, matching the
 // model-tool path.
-func modelQuitViaWire(t testing.TB, sess *Session, ctx context.Context, actor *domain.Instance, message string) error {
+func modelQuitViaWire(ctx context.Context, t testing.TB, sess *Session, actor *domain.Instance, message string) error {
 	t.Helper()
 
 	client := sess.ensureModelClient(ctx, actor)
@@ -725,7 +725,7 @@ func TestSession_Connect_Quit_Reconnect_omits_status_channel_from_autojoin(t *te
 		require.NoError(t, err)
 		generalMembers := general1.Members
 
-		require.NoError(t, userQuitViaWire(t, sess1, ctx, "bye"))
+		require.NoError(t, userQuitViaWire(ctx, t, sess1, "bye"))
 		synctest.Wait()
 
 		user1 := sess1.UserInstance()
@@ -920,7 +920,7 @@ func TestSession_Quit_appends_channel_quit_events_and_saves_autojoin(t *testing.
 		require.NoError(t, err)
 		randomMembers := random.Members
 
-		require.NoError(t, userQuitViaWire(t, sess, ctx, "goodnight"))
+		require.NoError(t, userQuitViaWire(ctx, t, sess, "goodnight"))
 		synctest.Wait()
 
 		user := sess.UserInstance()
@@ -970,7 +970,7 @@ func TestSession_Quit_removes_user_from_channel_members(t *testing.T) {
 		require.NoError(t, err)
 		generalMembers := general.Members
 
-		require.NoError(t, userQuitViaWire(t, sess, ctx, ""))
+		require.NoError(t, userQuitViaWire(ctx, t, sess, ""))
 		synctest.Wait()
 
 		user := sess.UserInstance()
@@ -1007,7 +1007,7 @@ func TestSession_Quit_clears_in_memory_channels(t *testing.T) {
 		require.NoError(t, err)
 		generalMembers := general.Members
 
-		require.NoError(t, userQuitViaWire(t, sess, ctx, ""))
+		require.NoError(t, userQuitViaWire(ctx, t, sess, ""))
 		synctest.Wait()
 
 		user := sess.UserInstance()
@@ -1172,7 +1172,7 @@ func TestSession_Quit_clears_session_active_marker(t *testing.T) {
 
 	require.NoError(t, s.SetSessionActive(ctx, fixedTime.Format(time.RFC3339Nano)))
 
-	require.NoError(t, userQuitViaWire(t, sess, ctx, ""))
+	require.NoError(t, userQuitViaWire(ctx, t, sess, ""))
 
 	got, err := s.GetSessionActive(ctx)
 	require.NoError(t, err)
@@ -1185,7 +1185,7 @@ func TestSession_Quit_no_channels_is_noop_but_clears_marker(t *testing.T) {
 
 	require.NoError(t, s.SetSessionActive(ctx, fixedTime.Format(time.RFC3339Nano)))
 
-	require.NoError(t, userQuitViaWire(t, sess, ctx, "bye"))
+	require.NoError(t, userQuitViaWire(ctx, t, sess, "bye"))
 
 	autojoin, err := s.ListAutojoinChannels(ctx)
 	require.NoError(t, err)
@@ -1218,7 +1218,7 @@ func TestSession_Quit_does_not_dispatch_to_models(t *testing.T) {
 		m.Set("#general", fixedTime)
 	})
 
-	require.NoError(t, userQuitViaWire(t, sess, ctx, "bye"))
+	require.NoError(t, userQuitViaWire(ctx, t, sess, "bye"))
 
 	require.Equal(t, int32(0), calls.Load(),
 		"Quit must not dispatch to models; models see the quit next time they are dispatched against")
@@ -1232,7 +1232,7 @@ func TestSession_AddModel(t *testing.T) {
 
 		saveTestChannel(t, sess, s, newTestChannelWindow("#dev", fixedTime, testMembers(t, sess, s, "testuser")))
 
-		require.NoError(t, addModelViaWire(t, sess, ctx, "#dev", "anthropic/claude-3-haiku", ""))
+		require.NoError(t, addModelViaWire(ctx, t, sess, "#dev", "anthropic/claude-3-haiku", ""))
 		synctest.Wait()
 
 		inst, err := s.ResolveNick(ctx, "fakenick")
@@ -1279,7 +1279,7 @@ func TestSession_Kick(t *testing.T) {
 		})
 		saveTestChannel(t, sess, s, newTestChannelWindow("#dev", fixedTime, testMembers(t, sess, s, "testuser", "botty")))
 
-		require.NoError(t, kickViaWire(t, sess, ctx, "#dev", "botty"))
+		require.NoError(t, kickViaWire(ctx, t, sess, "#dev", "botty"))
 		synctest.Wait()
 
 		require.ElementsMatch(t, []domain.Event{
@@ -1327,7 +1327,7 @@ func TestSession_mutationOperations_recordSpans(t *testing.T) {
 		require.NoError(t, err)
 		channel.Members.Add(botty)
 		saveTestChannel(t, sess, s, channel)
-		require.NoError(t, kickViaWire(t, sess, ctx, "#general", "botty"))
+		require.NoError(t, kickViaWire(ctx, t, sess, "#general", "botty"))
 
 		require.NoError(t, sess.SetTopic(ctx, "#general", "observability"))
 		require.NoError(t, sess.ChangeNick(ctx, "renamed"))
@@ -1437,7 +1437,7 @@ func TestSession_spans_carry_AttrInstanceID(t *testing.T) {
 					Channels: testChannels("#dev"),
 				})
 				seedChannelWithMembers(t, sess, s, "#dev", "testuser", "botty")
-				require.NoError(t, kickViaWire(t, sess, ctx, "#dev", "botty"))
+				require.NoError(t, kickViaWire(ctx, t, sess, "#dev", "botty"))
 			},
 			wantInstID: testMemberID("botty"),
 		},
@@ -2382,7 +2382,7 @@ func TestSession_AddModel_retries_on_nick_collision(t *testing.T) {
 
 		seedChannelWithMembers(t, sess, s, "#dev", "testuser")
 
-		require.NoError(t, addModelViaWire(t, sess, ctx, "#dev", "test/model", "Helpful assistant"))
+		require.NoError(t, addModelViaWire(ctx, t, sess, "#dev", "test/model", "Helpful assistant"))
 		synctest.Wait()
 
 		fresh, err := s.ResolveNick(ctx, "fresh")
@@ -2424,7 +2424,7 @@ func TestSession_AddModel_gives_up_after_max_attempts(t *testing.T) {
 	_ = seedInstance(t, sess, s, instanceSpec{Nick: "taken", ModelID: "test/model"})
 	seedChannelWithMembers(t, sess, s, "#dev", "testuser")
 
-	err := addModelViaWire(t, sess, ctx, "#dev", "test/model", "Helpful assistant")
+	err := addModelViaWire(ctx, t, sess, "#dev", "test/model", "Helpful assistant")
 	require.EqualError(t, err,
 		fmt.Sprintf("generate nick: %d attempts exhausted, all suggestions collided",
 			maxNickGenerationAttempts))
@@ -2530,7 +2530,7 @@ func TestSession_ResolveNickNotFound(t *testing.T) {
 func TestSession_AddModelNonexistentChannel(t *testing.T) {
 	sess, _ := newTestSession(t)
 
-	require.Error(t, addModelViaWire(t, sess, t.Context(), "#ghost", "anthropic/claude-3-haiku", ""))
+	require.Error(t, addModelViaWire(t.Context(), t, sess, "#ghost", "anthropic/claude-3-haiku", ""))
 }
 
 func TestSession_InviteAs_existing_instance_to_nonexistent_channel_does_not_corrupt(t *testing.T) {
@@ -2564,7 +2564,7 @@ func TestSession_AddModelGenerateNickError(t *testing.T) {
 
 	saveTestChannel(t, sess, s, newTestChannelWindow("#dev", fixedTime, testMembers(t, sess, s, "testuser")))
 
-	require.Error(t, addModelViaWire(t, sess, ctx, "#dev", "anthropic/claude-3-haiku", ""))
+	require.Error(t, addModelViaWire(ctx, t, sess, "#dev", "anthropic/claude-3-haiku", ""))
 }
 
 func TestSession_AddModel_persists_persona(t *testing.T) {
@@ -2575,7 +2575,7 @@ func TestSession_AddModel_persists_persona(t *testing.T) {
 
 		seedChannelWithMembers(t, sess, s, "#general", "testuser")
 
-		require.NoError(t, addModelViaWire(t, sess, ctx, "#general", "anthropic/claude-3-haiku", "Helpful assistant"))
+		require.NoError(t, addModelViaWire(ctx, t, sess, "#general", "anthropic/claude-3-haiku", "Helpful assistant"))
 		synctest.Wait()
 
 		inst, err := s.ResolveNick(ctx, "fakenick")
@@ -2720,9 +2720,9 @@ func TestSession_AddModel_creates_new_instance_per_invocation(t *testing.T) {
 		seedChannelWithMembers(t, sess, s, "#general", "testuser")
 		seedChannelWithMembers(t, sess, s, "#random", "testuser")
 
-		require.NoError(t, addModelViaWire(t, sess, ctx, "#general", "test/model", "Helpful assistant"))
+		require.NoError(t, addModelViaWire(ctx, t, sess, "#general", "test/model", "Helpful assistant"))
 		synctest.Wait()
-		require.NoError(t, addModelViaWire(t, sess, ctx, "#random", "test/model", ""))
+		require.NoError(t, addModelViaWire(ctx, t, sess, "#random", "test/model", ""))
 		synctest.Wait()
 
 		// The default fake `GenerateNick` returns "fakenick" first and
@@ -2777,7 +2777,7 @@ func TestSession_AddModel_creates_new_instance_per_invocation(t *testing.T) {
 func TestSession_KickNonexistentChannel(t *testing.T) {
 	sess, _ := newTestSession(t)
 
-	require.Error(t, kickViaWire(t, sess, t.Context(), "#ghost", "botty"))
+	require.Error(t, kickViaWire(t.Context(), t, sess, "#ghost", "botty"))
 }
 
 func TestSession_KickNonMember(t *testing.T) {
@@ -2792,7 +2792,7 @@ func TestSession_KickNonMember(t *testing.T) {
 		// from the dispatcher and leaves the channel state and
 		// the events bus untouched — no ModelKickedEvent, no
 		// membership mutation, no instance-channels mutation.
-		require.ErrorAs(t, kickViaWire(t, sess, ctx, "#dev", "nobody"), &domain.UnknownNickError{})
+		require.ErrorAs(t, kickViaWire(ctx, t, sess, "#dev", "nobody"), &domain.UnknownNickError{})
 		synctest.Wait()
 
 		require.ElementsMatch(t, []domain.Event{
@@ -4714,7 +4714,7 @@ func TestSession_Invite_without_persona_assigns_from_pool(t *testing.T) {
 
 		seedChannelWithMembers(t, sess, s, "#dev", "testuser")
 
-		require.NoError(t, addModelViaWire(t, sess, ctx, "#dev", "anthropic/claude-3-haiku", ""))
+		require.NoError(t, addModelViaWire(ctx, t, sess, "#dev", "anthropic/claude-3-haiku", ""))
 		synctest.Wait()
 
 		inst, err := s.ResolveNick(ctx, "fakenick")
@@ -4761,7 +4761,7 @@ func TestSession_Invite_with_explicit_persona_skips_pool(t *testing.T) {
 
 		seedChannelWithMembers(t, sess, s, "#dev", "testuser")
 
-		require.NoError(t, addModelViaWire(t, sess, ctx, "#dev", "anthropic/claude-3-haiku", "Custom persona"))
+		require.NoError(t, addModelViaWire(ctx, t, sess, "#dev", "anthropic/claude-3-haiku", "Custom persona"))
 		synctest.Wait()
 
 		inst, err := s.ResolveNick(ctx, "fakenick")
@@ -5043,7 +5043,7 @@ func TestAddModel_dispatches_invite_notification_to_model(t *testing.T) {
 
 		seedChannelWithMembers(t, sess, s, "#dev", "testuser")
 
-		require.NoError(t, addModelViaWire(t, sess, ctx, "#dev", "test/model", ""))
+		require.NoError(t, addModelViaWire(ctx, t, sess, "#dev", "test/model", ""))
 		synctest.Wait()
 
 		botty, err := s.ResolveNick(ctx, "botty")
@@ -5114,7 +5114,7 @@ func TestSession_AddModel_short_circuits_after_ListModels_failure(t *testing.T) 
 	require.ErrorIs(t, err, upstreamErr)
 	require.Equal(t, listModelsFailed, listModelsState(sess.listModelsState.Load()))
 
-	addErr := addModelViaWire(t, sess, t.Context(), "#dev", "anthropic/claude-3-haiku", "")
+	addErr := addModelViaWire(t.Context(), t, sess, "#dev", "anthropic/claude-3-haiku", "")
 	require.ErrorIs(t, addErr, ErrModelListUnavailable)
 
 	require.Equal(t, int32(1), client.calls.Load(),
@@ -5204,7 +5204,7 @@ func TestSession_AddModel_lazy_loads_when_state_none(t *testing.T) {
 	seedChannelWithMembers(t, sess, s, "#dev", "testuser")
 
 	require.Equal(t, listModelsNone, listModelsState(sess.listModelsState.Load()))
-	require.NoError(t, addModelViaWire(t, sess, t.Context(), "#dev", "anthropic/claude-3-haiku", ""))
+	require.NoError(t, addModelViaWire(t.Context(), t, sess, "#dev", "anthropic/claude-3-haiku", ""))
 	require.Equal(t, listModelsOK, listModelsState(sess.listModelsState.Load()))
 	require.Equal(t, int32(1), client.calls.Load())
 }
@@ -5223,7 +5223,7 @@ func TestSession_AddModel_returns_unsupported_when_model_missing_from_cache(t *t
 	require.NoError(t, err)
 	require.Equal(t, listModelsOK, listModelsState(sess.listModelsState.Load()))
 
-	addErr := addModelViaWire(t, sess, t.Context(), "#dev", "anthropic/claude-3-haiku", "")
+	addErr := addModelViaWire(t.Context(), t, sess, "#dev", "anthropic/claude-3-haiku", "")
 	var unsupported domain.UnsupportedModelError
 	require.ErrorAs(t, addErr, &unsupported)
 	require.Equal(t, domain.ModelID("anthropic/claude-3-haiku"), unsupported.ModelID)
@@ -5240,12 +5240,12 @@ func TestSession_AddModel_short_circuits_when_lazy_load_fails(t *testing.T) {
 
 	seedChannelWithMembers(t, sess, s, "#dev", "testuser")
 
-	first := addModelViaWire(t, sess, t.Context(), "#dev", "anthropic/claude-3-haiku", "")
+	first := addModelViaWire(t.Context(), t, sess, "#dev", "anthropic/claude-3-haiku", "")
 	require.ErrorIs(t, first, upstreamErr,
 		"first AddModel should surface the underlying upstream error from the lazy load")
 	require.Equal(t, listModelsFailed, listModelsState(sess.listModelsState.Load()))
 
-	second := addModelViaWire(t, sess, t.Context(), "#dev", "anthropic/claude-3-haiku", "")
+	second := addModelViaWire(t.Context(), t, sess, "#dev", "anthropic/claude-3-haiku", "")
 	require.ErrorIs(t, second, ErrModelListUnavailable)
 	require.Equal(t, int32(1), client.calls.Load(),
 		"second AddModel must short-circuit and not re-hit ListModels")

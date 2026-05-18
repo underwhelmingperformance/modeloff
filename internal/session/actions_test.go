@@ -143,7 +143,7 @@ func TestQuitAs_model_actor(t *testing.T) {
 		seedChannelWithMembers(t, sess, s, "#dev", "testuser", "botty")
 		seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
 
-		require.NoError(t, modelQuitViaWire(t, sess, ctx, botty, "farewell"))
+		require.NoError(t, modelQuitViaWire(ctx, t, sess, botty, "farewell"))
 		synctest.Wait()
 
 		require.ElementsMatch(t, []domain.Event{
@@ -496,7 +496,7 @@ func TestKickAs_rejects_DM(t *testing.T) {
 		ModelID: "test/model",
 	})
 
-	err := kickViaWire(t, sess, ctx, domain.ChannelName(botty.ID()), "botty")
+	err := kickViaWire(ctx, t, sess, domain.ChannelName(botty.ID()), "botty")
 	require.EqualError(t, err, "cannot kick from a direct message")
 }
 

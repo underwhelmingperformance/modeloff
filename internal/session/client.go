@@ -145,8 +145,8 @@ func (c *serverClient) Caps() command.CapabilityHolder { return c }
 // Has implements [command.CapabilityHolder]. Adding a new capability
 // that maps to a mode requires both a [protocol] constant and a
 // new case here.
-func (c *serverClient) Has(cap command.Capability) bool {
-	switch cap {
+func (c *serverClient) Has(capability command.Capability) bool {
+	switch capability {
 	case protocol.CapOperator:
 		return c.HasMode(domain.ModeOperator)
 	default:
