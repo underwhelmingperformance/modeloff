@@ -116,19 +116,22 @@ func (s *Session) joinAs(ctx context.Context, actor *domain.Instance, ch domain.
 		return fmt.Errorf("reload channel after join: %w", err)
 	}
 
-	// RFC 2812 §3.2.1 / §3.2.4: every joiner gets the channel's
-	// member list and topic. The chat-screen consumes
-	// NamesReplyEvent to populate its member-list cache, and the
-	// model-client's dispatch loop files TopicInfo into history so
-	// the model knows who set the topic and when.
-	s.emit(ctx, domain.NamesReplyEvent{
+	// RFC 2812 §3.2.1 / §3.2.4: RPL_NAMREPLY and RPL_TOPIC are
+	// sent only to the joiner — they are server-to-client
+	// responses, not channel broadcasts. Deliver directly to the
+	// joiner's subscription via [Session.deliverToClient]. The
+	// chat-screen consumes NamesReplyEvent to populate its
+	// member-list cache when the user joins; the model-client's
+	// dispatch loop files TopicInfo into history when a model
+	// joins so the prompt knows who set the topic and when.
+	s.deliverToClient(ctx, actor.ID(), domain.NamesReplyEvent{
 		Channel: ch,
 		Members: window.Members,
 		At:      now,
 	})
 
 	if window.Topic != "" {
-		s.emit(ctx, domain.TopicInfo{
+		s.deliverToClient(ctx, actor.ID(), domain.TopicInfo{
 			Target:     ch,
 			Topic:      window.Topic,
 			TopicSetBy: window.TopicSetBy,

@@ -45,14 +45,11 @@ func TestJoinAs_model_actor(t *testing.T) {
 				At:         fixedTime,
 				Instance:   botty,
 			},
-			domain.NamesReplyEvent{
-				Channel: "#dev",
-				Members: ch.Members,
-				At:      fixedTime,
-			},
 			domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
 			domain.ModelDispatchDone{Instance: botty, At: fixedTime},
-		}, collectEmittedEvents(t, sess))
+		}, collectEmittedEvents(t, sess),
+			"NamesReplyEvent is scoped to the joiner (the bot) per RFC 2812 §3.2.1; "+
+				"the user-client bus does not carry it")
 
 		inst, err := s.ResolveNick(ctx, "botty")
 		require.NoError(t, err)
@@ -70,11 +67,15 @@ func TestJoinAs_model_actor(t *testing.T) {
 
 // TestJoinAs_model_joining_existing_channel_gets_RPL_topic_and_names
 // pins that a model joining a populated channel receives the
-// RFC-equivalent of RPL_TOPIC and RPL_NAMREPLY — the
-// [domain.TopicInfo] and [domain.NamesReplyEvent] envelopes. Without
-// these, the bot's first dispatch turn has no record of who set the
-// topic or who else is in the room beyond the system-prompt topic
-// line.
+// RFC 2812 §3.2.1 / §3.2.4 equivalents of RPL_NAMREPLY and
+// RPL_TOPIC ([domain.NamesReplyEvent] and [domain.TopicInfo]) on
+// the joiner's own subscription — not as channel-wide broadcasts.
+//
+// The test captures the user-client bus (which is everyone else
+// in this fixture) and asserts the RPL envelopes are NOT on it:
+// the user did not join, so per RFC they get nothing. The Join
+// itself is still broadcast (every member sees a JOIN) and the
+// model's own dispatch lifecycle fires as usual.
 func TestJoinAs_model_joining_existing_channel_gets_RPL_topic_and_names(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		sess, s := newTestSession(t)
@@ -96,9 +97,6 @@ func TestJoinAs_model_joining_existing_channel_gets_RPL_topic_and_names(t *testi
 		require.NoError(t, sess.joinAs(ctx, botty, "#dev", ""))
 		synctest.Wait()
 
-		ch, err := sess.loadChannelWindow(ctx, "#dev")
-		require.NoError(t, err)
-
 		require.ElementsMatch(t, []domain.Event{
 			domain.Join{
 				Target:     "#dev",
@@ -107,21 +105,12 @@ func TestJoinAs_model_joining_existing_channel_gets_RPL_topic_and_names(t *testi
 				At:         fixedTime,
 				Instance:   botty,
 			},
-			domain.NamesReplyEvent{
-				Channel: "#dev",
-				Members: ch.Members,
-				At:      fixedTime,
-			},
-			domain.TopicInfo{
-				Target:     "#dev",
-				Topic:      "ongoing work",
-				TopicSetBy: userInstance(t, sess).Nick(),
-				TopicSetAt: fixedTime,
-				At:         fixedTime,
-			},
 			domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
 			domain.ModelDispatchDone{Instance: botty, At: fixedTime},
-		}, collectEmittedEvents(t, sess))
+		}, collectEmittedEvents(t, sess),
+			"the user-client bus carries only the JOIN broadcast and the bot's "+
+				"dispatch lifecycle; NamesReplyEvent + TopicInfo are scoped to the "+
+				"joiner (the bot) and never reach the user")
 	})
 }
 
@@ -691,11 +680,6 @@ func TestJoinAs_normalises_channel_prefix(t *testing.T) {
 				At:         fixedTime,
 				Instance:   botty,
 			},
-			domain.NamesReplyEvent{
-				Channel: "#modeloff",
-				Members: ch.Members,
-				At:      fixedTime,
-			},
 			domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
 			domain.ModelDispatchDone{Instance: botty, At: fixedTime},
 		}, collectEmittedEvents(t, sess))
@@ -882,9 +866,6 @@ func TestJoinAs_model_voice_only_no_topic(t *testing.T) {
 		require.NoError(t, sess.joinAs(ctx, botty, "#dev", ""))
 		synctest.Wait()
 
-		ch, err := sess.loadChannelWindow(ctx, "#dev")
-		require.NoError(t, err)
-
 		require.ElementsMatch(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Join{
@@ -895,21 +876,11 @@ func TestJoinAs_model_voice_only_no_topic(t *testing.T) {
 				At:         fixedTime,
 				Instance:   botty,
 			},
-			domain.NamesReplyEvent{
-				Channel: "#dev",
-				Members: ch.Members,
-				At:      fixedTime,
-			},
-			domain.TopicInfo{
-				Target:     "#dev",
-				Topic:      "some topic",
-				TopicSetBy: ch.TopicSetBy,
-				TopicSetAt: ch.TopicSetAt,
-				At:         fixedTime,
-			},
 			domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
 			domain.ModelDispatchDone{Instance: botty, At: fixedTime},
-		}, collectEmittedEvents(t, sess))
+		}, collectEmittedEvents(t, sess),
+			"NamesReplyEvent and TopicInfo are scoped to the joiner (the bot); "+
+				"the user-client bus does not carry them")
 	})
 }
 
