@@ -301,8 +301,7 @@ func (r RichTextarea) handlePaletteKey(msg tea.KeyMsg) (RichTextarea, bool) {
 		}
 		return r, true
 	case "enter":
-		r.applyPaletteSelection()
-		return r, true
+		return r.applyPaletteSelection(), true
 	}
 
 	return r, false
@@ -800,6 +799,32 @@ func (r RichTextarea) renderPalette(width int) string {
 func (r RichTextarea) PaletteVisible() bool {
 	return r.palette.open
 }
+
+// PaletteTarget reports whether the palette is currently editing the
+// foreground or background colour. The result is meaningful only when
+// PaletteVisible reports true.
+func (r RichTextarea) PaletteTarget() PaletteTarget {
+	if r.palette.target == colourTargetBackground {
+		return PaletteTargetBackground
+	}
+
+	return PaletteTargetForeground
+}
+
+// PaletteIndex returns the cursor position within the swatch row,
+// meaningful only when PaletteVisible reports true.
+func (r RichTextarea) PaletteIndex() int {
+	return r.palette.index
+}
+
+// PaletteTarget identifies which colour slot the palette is editing.
+type PaletteTarget int
+
+// Palette target values.
+const (
+	PaletteTargetForeground PaletteTarget = iota
+	PaletteTargetBackground
+)
 
 // PaletteView renders the colour palette as a popover row.
 func (r RichTextarea) PaletteView(width int) string {

@@ -421,6 +421,75 @@ func TestInputBar_command_mode_disables_formatting_shortcuts(t *testing.T) {
 	require.Equal(t, components.CommandSubmitMsg{Raw: "/join #general"}, cmd())
 }
 
+func TestInputBar_palette_right_arrow_navigates_swatches(t *testing.T) {
+	var m ui.Model = components.NewInputBar()
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}, Alt: true})
+	require.True(t, m.(components.InputBar).PaletteVisible())
+	require.Equal(t, 0, m.(components.InputBar).PaletteIndex())
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
+
+	require.Equal(t, 2, m.(components.InputBar).PaletteIndex())
+}
+
+func TestInputBar_palette_tab_switches_target(t *testing.T) {
+	var m ui.Model = components.NewInputBar()
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}, Alt: true})
+	require.Equal(t, components.PaletteTargetForeground, m.(components.InputBar).PaletteTarget())
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+
+	require.Equal(t, components.PaletteTargetBackground, m.(components.InputBar).PaletteTarget())
+}
+
+func TestInputBar_palette_enter_applies_and_dismisses(t *testing.T) {
+	var m ui.Model = components.NewInputBar()
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}, Alt: true})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	require.False(t, m.(components.InputBar).PaletteVisible())
+
+	m = typeText(t, m, "x")
+	_, cmd := enter(t, m)
+
+	require.NotNil(t, cmd)
+	require.Equal(t, components.MessageSubmitMsg{Text: "\x0300x\x0f"}, cmd())
+}
+
+func TestInputBar_palette_up_does_not_walk_history(t *testing.T) {
+	var m ui.Model = components.NewInputBar()
+
+	m = typeText(t, m, "earlier")
+	m, _ = enter(t, m)
+	require.Equal(t, "", inputValue(t, m))
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}, Alt: true})
+	require.True(t, m.(components.InputBar).PaletteVisible())
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+
+	require.Equal(t, "", inputValue(t, m))
+	require.True(t, m.(components.InputBar).PaletteVisible(),
+		"Up inside the palette must not dismiss it; if it did, the empty-value check above would pass for the wrong reason")
+}
+
+func TestInputBar_palette_enter_does_not_submit(t *testing.T) {
+	var m ui.Model = components.NewInputBar()
+
+	m = typeText(t, m, "draft")
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}, Alt: true})
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	require.Nil(t, cmd, "Enter inside palette must not produce a submit cmd")
+}
+
 func TestInputBar_keybindings_include_rich_shortcuts(t *testing.T) {
 	b := components.NewInputBar()
 

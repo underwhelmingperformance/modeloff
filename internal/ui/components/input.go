@@ -182,6 +182,17 @@ func (b InputBar) handleKey(msg tea.KeyMsg) (ui.Model, tea.Cmd) {
 		}
 	}
 
+	// When the colour palette is open, the rich textarea owns
+	// Esc/Tab/Left/Right/Enter and digit jumps. Forward the key
+	// straight through so the input bar's Submit, history, and
+	// nick-completion bindings don't swallow them.
+	if b.input.PaletteVisible() {
+		b.nickComp.active = false
+		updated, cmd := b.input.Update(msg)
+		b.input = updated.(RichTextarea)
+		return b, cmd
+	}
+
 	switch {
 	case ui.Matches(msg, b.keyMap.Submit):
 		return b.submit()
@@ -600,6 +611,17 @@ func (b InputBar) ActiveFormats() ActiveFormats {
 // PaletteVisible reports whether the colour palette is open.
 func (b InputBar) PaletteVisible() bool {
 	return b.input.PaletteVisible()
+}
+
+// PaletteTarget reports which colour slot the palette is editing.
+// The result is meaningful only when PaletteVisible reports true.
+func (b InputBar) PaletteTarget() PaletteTarget {
+	return b.input.PaletteTarget()
+}
+
+// PaletteIndex returns the active swatch index within the palette.
+func (b InputBar) PaletteIndex() int {
+	return b.input.PaletteIndex()
 }
 
 // PaletteView renders the colour palette picker.
