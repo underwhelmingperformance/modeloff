@@ -14,7 +14,6 @@ import (
 
 func (s ChatScreen) runContext() chatcmd.Context {
 	return chatcmd.Context{
-		Ctx:     s.ctx,
 		Session: s.sess,
 		Config:  s.cfgStore,
 		Active:  *s.active,
@@ -54,10 +53,10 @@ func (s ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
 		"channel", string(*s.active),
 	)
 
-	ctx := s.runContext()
-	ctx.Invocation = invocation
+	rc := s.runContext()
+	rc.Invocation = invocation
 
-	return cmd.Run(ctx)
+	return cmd.Run(s.ctx, rc)
 }
 
 func (s ChatScreen) handlePoke() tea.Cmd {

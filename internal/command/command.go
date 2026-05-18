@@ -1,19 +1,23 @@
 // Package command provides generic infrastructure for parsing and
-// completing IRC-style slash commands. It is independent of any
-// particular application — concrete command types and execution
-// contexts are defined by the consumer.
+// completing IRC-style slash commands. Concrete command types and
+// execution contexts are defined by the consumer; the cancellation
+// context is threaded through explicitly as the first parameter to
+// [Command.Run].
 package command
 
 import (
+	"context"
 	"reflect"
 	"strings"
 )
 
 // Command is the interface that parsed command structs must
 // implement. C is the run context type provided by the consumer, R
-// is the return type (e.g. tea.Cmd).
+// is the return type (e.g. tea.Cmd). The cancellation context is
+// threaded as an explicit first parameter so consumers do not have
+// to stuff it into C.
 type Command[C any, R any] interface {
-	Run(C) R
+	Run(context.Context, C) R
 }
 
 // Parser wraps a Set and returns typed Command values from Parse.

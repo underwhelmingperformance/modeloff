@@ -1,6 +1,7 @@
 package command
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -258,8 +259,8 @@ type runnableCommand struct {
 	Arg string `arg:"" help:"An argument"`
 }
 
-func (c runnableCommand) Run(ctx testContext) testResult {
-	return testResult(ctx.Value + ":" + c.Arg)
+func (c runnableCommand) Run(_ context.Context, rc testContext) testResult {
+	return testResult(rc.Value + ":" + c.Arg)
 }
 
 type runnableGrammar struct {
@@ -273,7 +274,7 @@ func TestParser_Parse_returns_typed_command(t *testing.T) {
 	cmd, err := parser.Parse("/do hello")
 	require.NoError(t, err)
 
-	result := cmd.Run(testContext{Value: "ctx"})
+	result := cmd.Run(t.Context(), testContext{Value: "ctx"})
 	require.Equal(t, testResult("ctx:hello"), result)
 }
 

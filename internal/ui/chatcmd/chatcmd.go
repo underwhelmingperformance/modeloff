@@ -28,9 +28,10 @@ type Parser = command.Parser[CompletionContext, Context, tea.Cmd]
 // for slash-command invocations. Client is the protocol-side client
 // handle the caller dispatches commands through (the user-client
 // for chat-screen invocations). Both are guaranteed non-nil at
-// construction in `runContext` (chat_commands.go).
+// construction in `runContext` (chat_commands.go). The cancellation
+// context is threaded as an explicit first parameter to [Command.Run]
+// rather than carried on the struct.
 type Context struct {
-	Ctx        context.Context
 	Session    *session.Session
 	Config     config.Store
 	Active     domain.ChannelName
@@ -41,15 +42,15 @@ type Context struct {
 
 // updateConfig loads the current configuration, applies fn, and saves
 // the result. It returns the updated configuration.
-func (rc Context) updateConfig(fn func(*config.Config)) (config.Config, error) {
-	cfg, err := rc.Config.Load(rc.Ctx)
+func (rc Context) updateConfig(ctx context.Context, fn func(*config.Config)) (config.Config, error) {
+	cfg, err := rc.Config.Load(ctx)
 	if err != nil {
 		return config.Config{}, fmt.Errorf("load config: %w", err)
 	}
 
 	fn(&cfg)
 
-	if err := rc.Config.Save(rc.Ctx, cfg); err != nil {
+	if err := rc.Config.Save(ctx, cfg); err != nil {
 		return config.Config{}, fmt.Errorf("save config: %w", err)
 	}
 
@@ -199,13 +200,13 @@ type protocolCommand interface {
 // populate `Response.Events` (Topic, Invite, Kick, Nick, …)
 // return `nil`, leaving the caller to follow up with whatever
 // post-success `tea.Msg` it wants.
-func sendCommand(rc Context, c protocolCommand, operation string) tea.Msg {
+func sendCommand(ctx context.Context, rc Context, c protocolCommand, operation string) tea.Msg {
 	cmd, err := c.ToCommand(rc)
 	if err != nil {
 		return errorEvent(operation, err)
 	}
 
-	resp, err := rc.Client.Send(rc.Ctx, cmd)
+	resp, err := rc.Client.Send(ctx, cmd)
 	if err != nil {
 		return errorEvent(operation, err)
 	}
@@ -224,12 +225,11 @@ func sendCommand(rc Context, c protocolCommand, operation string) tea.Msg {
 // toolContext adapts a [session.ToolContext] to the [Context] that
 // `ToCommand` reads from, so the same translation method serves
 // both `Run` (chat-screen) and `RunTool` (model). The returned
-// context carries the actor, the active channel, the protocol
-// client, and the call-site context — every field `ToCommand`
-// implementations consult.
-func toolContext(ctx context.Context, tc session.ToolContext) Context {
+// context carries the actor, the active channel, and the protocol
+// client — every field `ToCommand` implementations consult. The
+// cancellation context is threaded separately to the wire send.
+func toolContext(tc session.ToolContext) Context {
 	return Context{
-		Ctx:     ctx,
 		Session: tc.Session,
 		Active:  tc.Channel,
 		Actor:   tc.Actor,
@@ -249,7 +249,7 @@ func toolContext(ctx context.Context, tc session.ToolContext) Context {
 // protocol carries strings only, so callers cannot `errors.As` over
 // the result.
 func sendToolCommand(ctx context.Context, tc session.ToolContext, c protocolCommand, summary string) session.ToolResultPayload {
-	cmd, err := c.ToCommand(toolContext(ctx, tc))
+	cmd, err := c.ToCommand(toolContext(tc))
 	if err != nil {
 		return session.ToolResultPayload{OK: false, Error: err.Error()}
 	}

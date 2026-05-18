@@ -79,9 +79,9 @@ func (c JoinCommand) ToCommand(_ Context) (protocol.Command, error) {
 }
 
 // Run implements Command.
-func (c JoinCommand) Run(rc Context) tea.Cmd {
+func (c JoinCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	return func() tea.Msg {
-		if msg := sendCommand(rc, c, "join"); msg != nil {
+		if msg := sendCommand(ctx, rc, c, "join"); msg != nil {
 			return msg
 		}
 
@@ -108,13 +108,13 @@ func (c PartCommand) ToCommand(rc Context) (protocol.Command, error) {
 }
 
 // Run implements Command.
-func (c PartCommand) Run(rc Context) tea.Cmd {
+func (c PartCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	if rc.Active == "" {
 		return noChannelCmd("part")
 	}
 
 	return func() tea.Msg {
-		return sendCommand(rc, c, "part")
+		return sendCommand(ctx, rc, c, "part")
 	}
 }
 
@@ -139,9 +139,9 @@ func (ListCommand) ToCommand(_ Context) (protocol.Command, error) {
 // `domain.ListReply` per channel followed by a closing
 // `domain.ListEnd` in `Response.Events`; this method collects
 // the replies into a `ListResult` for the chat-screen handler.
-func (c ListCommand) Run(rc Context) tea.Cmd {
+func (c ListCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	return func() tea.Msg {
-		entries, err := c.fetch(rc.Ctx, rc.Client)
+		entries, err := c.fetch(ctx, rc.Client)
 		if err != nil {
 			return errorEvent("list", err)
 		}
@@ -244,7 +244,7 @@ func (c AddModelCommand) ToCommand(rc Context) (protocol.Command, error) {
 }
 
 // Run implements Command.
-func (c AddModelCommand) Run(rc Context) tea.Cmd {
+func (c AddModelCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	if rc.Active == "" {
 		return noChannelCmd("add-model")
 	}
@@ -254,7 +254,7 @@ func (c AddModelCommand) Run(rc Context) tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		return sendCommand(rc, c, "add-model")
+		return sendCommand(ctx, rc, c, "add-model")
 	}
 }
 
@@ -293,7 +293,7 @@ func (c InviteCommand) ToCommand(rc Context) (protocol.Command, error) {
 }
 
 // Run implements Command.
-func (c InviteCommand) Run(rc Context) tea.Cmd {
+func (c InviteCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	if rc.Active == "" && c.Channel == "" {
 		return noChannelCmd("invite")
 	}
@@ -303,7 +303,7 @@ func (c InviteCommand) Run(rc Context) tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		return sendCommand(rc, c, "invite")
+		return sendCommand(ctx, rc, c, "invite")
 	}
 }
 
@@ -353,9 +353,9 @@ func (c KillCommand) killReason() string {
 }
 
 // Run implements Command.
-func (c KillCommand) Run(rc Context) tea.Cmd {
+func (c KillCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	return func() tea.Msg {
-		return sendCommand(rc, c, "kill")
+		return sendCommand(ctx, rc, c, "kill")
 	}
 }
 
@@ -380,13 +380,13 @@ func (c KickCommand) ToCommand(rc Context) (protocol.Command, error) {
 }
 
 // Run implements Command.
-func (c KickCommand) Run(rc Context) tea.Cmd {
+func (c KickCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	if rc.Active == "" {
 		return noChannelCmd("kick")
 	}
 
 	return func() tea.Msg {
-		return sendCommand(rc, c, "kick")
+		return sendCommand(ctx, rc, c, "kick")
 	}
 }
 
@@ -460,7 +460,7 @@ func (c MsgCommand) ToCommand(rc Context) (protocol.Command, error) {
 // resulting `domain.Message` event and auto-creates a DM window
 // in the sidebar if one does not already exist for that target.
 // No focus switch in either case.
-func (c MsgCommand) Run(rc Context) tea.Cmd {
+func (c MsgCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	return func() tea.Msg {
 		body := strings.TrimSpace(strings.Join(c.Body, " "))
 		if body == "" {
@@ -470,12 +470,12 @@ func (c MsgCommand) Run(rc Context) tea.Cmd {
 		target := domain.ChannelName(c.Target)
 
 		if domain.InferChannelKind(target) == domain.KindChannel {
-			return sendCommand(rc, c, "msg")
+			return sendCommand(ctx, rc, c, "msg")
 		}
 
 		nick := domain.Nick(c.Target)
 
-		resolved, err := rc.Session.ResolveNick(rc.Ctx, nick)
+		resolved, err := rc.Session.ResolveNick(ctx, nick)
 		if err != nil {
 			if errors.Is(err, store.ErrNoSuchNick) {
 				return errorEvent("msg", domain.UnknownNickError{Nick: nick, At: time.Now()})
@@ -545,11 +545,11 @@ func (QueryCommand) Sources() map[string]command.SuggestionSource[CompletionCont
 }
 
 // Run implements Command.
-func (c QueryCommand) Run(rc Context) tea.Cmd {
+func (c QueryCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	return func() tea.Msg {
 		nick := domain.Nick(c.Nick)
 
-		resolved, err := rc.Session.ResolveNick(rc.Ctx, nick)
+		resolved, err := rc.Session.ResolveNick(ctx, nick)
 		if err != nil {
 			if errors.Is(err, store.ErrNoSuchNick) {
 				return errorEvent("query", domain.UnknownNickError{Nick: nick, At: time.Now()})
@@ -624,17 +624,17 @@ func (c NickCommand) ToCommand(_ Context) (protocol.Command, error) {
 // Run implements Command. Persisting the chosen nick to config so
 // it survives a restart is a chat-screen-side concern; the wire
 // nick change goes via the protocol client.
-func (c NickCommand) Run(rc Context) tea.Cmd {
+func (c NickCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	return func() tea.Msg {
 		nick := domain.Nick(c.Nick)
 
-		if _, err := rc.updateConfig(func(cfg *config.Config) {
+		if _, err := rc.updateConfig(ctx, func(cfg *config.Config) {
 			cfg.UserNick = string(nick)
 		}); err != nil {
 			return errorEvent("nick", err)
 		}
 
-		return sendCommand(rc, c, "nick")
+		return sendCommand(ctx, rc, c, "nick")
 	}
 }
 
@@ -667,13 +667,13 @@ func (c ModeCommand) ToCommand(rc Context) (protocol.Command, error) {
 }
 
 // Run implements Command.
-func (c ModeCommand) Run(rc Context) tea.Cmd {
+func (c ModeCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	if rc.Active == "" {
 		return noChannelCmd("mode")
 	}
 
 	return func() tea.Msg {
-		return sendCommand(rc, c, "mode")
+		return sendCommand(ctx, rc, c, "mode")
 	}
 }
 
@@ -780,14 +780,14 @@ func (c TopicCommand) ToCommand(rc Context) (protocol.Command, error) {
 }
 
 // Run implements Command.
-func (c TopicCommand) Run(rc Context) tea.Cmd {
+func (c TopicCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	if rc.Active == "" {
 		return noChannelCmd("topic")
 	}
 
 	if len(c.Topic) == 0 {
 		return func() tea.Msg {
-			w, err := rc.Session.GetWindow(rc.Ctx, rc.Active)
+			w, err := rc.Session.GetWindow(ctx, rc.Active)
 			if err != nil {
 				return errorEvent("topic", err)
 			}
@@ -802,7 +802,7 @@ func (c TopicCommand) Run(rc Context) tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		return sendCommand(rc, c, "topic")
+		return sendCommand(ctx, rc, c, "topic")
 	}
 }
 
@@ -847,7 +847,7 @@ func (c MeCommand) ToCommand(rc Context) (protocol.Command, error) {
 }
 
 // Run implements Command.
-func (c MeCommand) Run(rc Context) tea.Cmd {
+func (c MeCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	if rc.Active == "" {
 		return noChannelCmd("me")
 	}
@@ -858,7 +858,7 @@ func (c MeCommand) Run(rc Context) tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		return sendCommand(rc, c, "me")
+		return sendCommand(ctx, rc, c, "me")
 	}
 }
 
@@ -891,9 +891,9 @@ func (c WhoisCommand) ToCommand(_ Context) (protocol.Command, error) {
 // it in a `WhoisResult` so the chat-screen's type switch routes
 // the reply through its dedicated handler rather than the
 // generic Whois-event path on the protocol bus.
-func (c WhoisCommand) Run(rc Context) tea.Cmd {
+func (c WhoisCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	return func() tea.Msg {
-		whois, err := c.fetch(rc.Ctx, rc.Client, domain.Nick(c.Nick))
+		whois, err := c.fetch(ctx, rc.Client, domain.Nick(c.Nick))
 		if err != nil {
 			return errorEvent("whois", err)
 		}
@@ -949,7 +949,7 @@ func (WhoisCommand) fetch(ctx context.Context, client protocol.Client, nick doma
 type HelpCommand struct{}
 
 // Run implements Command.
-func (HelpCommand) Run(_ Context) tea.Cmd {
+func (HelpCommand) Run(_ context.Context, _ Context) tea.Cmd {
 	return func() tea.Msg { return HelpResult{} }
 }
 
@@ -972,7 +972,7 @@ func (HelpCommand) RunTool(ctx context.Context, tc session.ToolContext) session.
 type ClearCommand struct{}
 
 // Run implements Command.
-func (ClearCommand) Run(_ Context) tea.Cmd {
+func (ClearCommand) Run(_ context.Context, _ Context) tea.Cmd {
 	return func() tea.Msg { return ClearResult{} }
 }
 
@@ -992,7 +992,7 @@ func (c QuitCommand) ToCommand(_ Context) (protocol.Command, error) {
 // state — the wire QUIT fires from the screen's quit handler,
 // not from this command. Emitting [ui.QuitRequestedMsg] hands the
 // orchestration to that handler.
-func (c QuitCommand) Run(_ Context) tea.Cmd {
+func (c QuitCommand) Run(_ context.Context, _ Context) tea.Cmd {
 	msg := c.quitMessage()
 
 	return func() tea.Msg {
@@ -1022,9 +1022,9 @@ func (c QuitCommand) RunTool(ctx context.Context, tc session.ToolContext) sessio
 type PersonasCommand struct{}
 
 // Run implements Command.
-func (PersonasCommand) Run(rc Context) tea.Cmd {
+func (PersonasCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	return func() tea.Msg {
-		personas, err := rc.Session.ListPersonas(rc.Ctx)
+		personas, err := rc.Session.ListPersonas(ctx)
 		if err != nil {
 			return errorEvent("personas", err)
 		}
@@ -1037,9 +1037,9 @@ func (PersonasCommand) Run(rc Context) tea.Cmd {
 type RegeneratePersonasCommand struct{}
 
 // Run implements Command.
-func (RegeneratePersonasCommand) Run(rc Context) tea.Cmd {
+func (RegeneratePersonasCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	return func() tea.Msg {
-		personas, err := rc.Session.RegeneratePersonas(rc.Ctx)
+		personas, err := rc.Session.RegeneratePersonas(ctx)
 		if err != nil {
 			return errorEvent("regenerate-personas", err)
 		}
@@ -1069,14 +1069,14 @@ type APIKeyConfig struct {
 }
 
 // Run implements Command.
-func (c APIKeyConfig) Run(rc Context) tea.Cmd {
+func (c APIKeyConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 	if rc.configResetRequested() {
 		return func() tea.Msg {
-			if err := rc.Session.SetAPIKey(rc.Ctx, "", config.DefaultBaseURL); err != nil {
+			if err := rc.Session.SetAPIKey(ctx, "", config.DefaultBaseURL); err != nil {
 				return errorEvent("config api-key", err)
 			}
 
-			if _, err := rc.updateConfig(func(cfg *config.Config) {
+			if _, err := rc.updateConfig(ctx, func(cfg *config.Config) {
 				cfg.APIKey = ""
 			}); err != nil {
 				return errorEvent("config api-key", err)
@@ -1091,16 +1091,16 @@ func (c APIKeyConfig) Run(rc Context) tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		cfg, err := rc.Config.Load(rc.Ctx)
+		cfg, err := rc.Config.Load(ctx)
 		if err != nil {
 			return errorEvent("config api-key", err)
 		}
 
-		if err := rc.Session.SetAPIKey(rc.Ctx, c.Value, cfg.BaseURL); err != nil {
+		if err := rc.Session.SetAPIKey(ctx, c.Value, cfg.BaseURL); err != nil {
 			return errorEvent("config api-key", err)
 		}
 
-		if _, err := rc.updateConfig(func(cfg *config.Config) {
+		if _, err := rc.updateConfig(ctx, func(cfg *config.Config) {
 			cfg.APIKey = c.Value
 		}); err != nil {
 			return errorEvent("config api-key", err)
@@ -1116,14 +1116,14 @@ type BaseURLConfig struct {
 }
 
 // Run implements Command.
-func (c BaseURLConfig) Run(rc Context) tea.Cmd {
+func (c BaseURLConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 	if rc.configResetRequested() {
 		return func() tea.Msg {
-			if err := rc.Session.SetBaseURL(rc.Ctx, config.DefaultBaseURL); err != nil {
+			if err := rc.Session.SetBaseURL(ctx, config.DefaultBaseURL); err != nil {
 				return errorEvent("config base-url", err)
 			}
 
-			if _, err := rc.updateConfig(func(cfg *config.Config) {
+			if _, err := rc.updateConfig(ctx, func(cfg *config.Config) {
 				cfg.BaseURL = config.DefaultBaseURL
 			}); err != nil {
 				return errorEvent("config base-url", err)
@@ -1138,11 +1138,11 @@ func (c BaseURLConfig) Run(rc Context) tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		if err := rc.Session.SetBaseURL(rc.Ctx, c.URL); err != nil {
+		if err := rc.Session.SetBaseURL(ctx, c.URL); err != nil {
 			return errorEvent("config base-url", err)
 		}
 
-		if _, err := rc.updateConfig(func(cfg *config.Config) {
+		if _, err := rc.updateConfig(ctx, func(cfg *config.Config) {
 			cfg.BaseURL = c.URL
 		}); err != nil {
 			return errorEvent("config base-url", err)
@@ -1170,10 +1170,10 @@ func (PokeIntervalConfig) Sources() map[string]command.SuggestionSource[Completi
 }
 
 // Run implements Command.
-func (c PokeIntervalConfig) Run(rc Context) tea.Cmd {
+func (c PokeIntervalConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 	if rc.configResetRequested() {
 		return func() tea.Msg {
-			if _, err := rc.updateConfig(func(cfg *config.Config) {
+			if _, err := rc.updateConfig(ctx, func(cfg *config.Config) {
 				cfg.PokeInterval = config.DefaultPokeInterval
 			}); err != nil {
 				return errorEvent("config poke-interval", err)
@@ -1197,7 +1197,7 @@ func (c PokeIntervalConfig) Run(rc Context) tea.Cmd {
 			})
 		}
 
-		if _, err := rc.updateConfig(func(cfg *config.Config) {
+		if _, err := rc.updateConfig(ctx, func(cfg *config.Config) {
 			cfg.PokeInterval = interval
 		}); err != nil {
 			return errorEvent("config poke-interval", err)
@@ -1228,10 +1228,10 @@ func (DrainTimeoutConfig) Sources() map[string]command.SuggestionSource[Completi
 }
 
 // Run implements Command.
-func (c DrainTimeoutConfig) Run(rc Context) tea.Cmd {
+func (c DrainTimeoutConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 	if rc.configResetRequested() {
 		return func() tea.Msg {
-			if _, err := rc.updateConfig(func(cfg *config.Config) {
+			if _, err := rc.updateConfig(ctx, func(cfg *config.Config) {
 				cfg.DrainTimeout = config.DefaultDrainTimeout
 			}); err != nil {
 				return errorEvent("config drain-timeout", err)
@@ -1255,7 +1255,7 @@ func (c DrainTimeoutConfig) Run(rc Context) tea.Cmd {
 			})
 		}
 
-		if _, err := rc.updateConfig(func(cfg *config.Config) {
+		if _, err := rc.updateConfig(ctx, func(cfg *config.Config) {
 			cfg.DrainTimeout = timeout
 		}); err != nil {
 			return errorEvent("config drain-timeout", err)
@@ -1271,12 +1271,12 @@ type SmallModelConfig struct {
 }
 
 // Run implements Command.
-func (c SmallModelConfig) Run(rc Context) tea.Cmd {
+func (c SmallModelConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 	if rc.configResetRequested() {
 		return func() tea.Msg {
-			rc.Session.SetSmallModel(rc.Ctx, config.DefaultSmallModel)
+			rc.Session.SetSmallModel(ctx, config.DefaultSmallModel)
 
-			if _, err := rc.updateConfig(func(cfg *config.Config) {
+			if _, err := rc.updateConfig(ctx, func(cfg *config.Config) {
 				cfg.SmallModel = config.DefaultSmallModel
 			}); err != nil {
 				return errorEvent("config small-model", err)
@@ -1292,9 +1292,9 @@ func (c SmallModelConfig) Run(rc Context) tea.Cmd {
 
 	return func() tea.Msg {
 		modelID := domain.ModelID(c.ModelID)
-		rc.Session.SetSmallModel(rc.Ctx, modelID)
+		rc.Session.SetSmallModel(ctx, modelID)
 
-		if _, err := rc.updateConfig(func(cfg *config.Config) {
+		if _, err := rc.updateConfig(ctx, func(cfg *config.Config) {
 			cfg.SmallModel = modelID
 		}); err != nil {
 			return errorEvent("config small-model", err)
@@ -1310,10 +1310,10 @@ type EmbeddingModelConfig struct {
 }
 
 // Run implements Command.
-func (c EmbeddingModelConfig) Run(rc Context) tea.Cmd {
+func (c EmbeddingModelConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 	if rc.configResetRequested() {
 		return func() tea.Msg {
-			if _, err := rc.updateConfig(func(cfg *config.Config) {
+			if _, err := rc.updateConfig(ctx, func(cfg *config.Config) {
 				cfg.EmbeddingModel = config.DefaultEmbeddingModel
 			}); err != nil {
 				return errorEvent("config embedding-model", err)
@@ -1330,7 +1330,7 @@ func (c EmbeddingModelConfig) Run(rc Context) tea.Cmd {
 	return func() tea.Msg {
 		modelID := domain.ModelID(c.ModelID)
 
-		if _, err := rc.updateConfig(func(cfg *config.Config) {
+		if _, err := rc.updateConfig(ctx, func(cfg *config.Config) {
 			cfg.EmbeddingModel = modelID
 		}); err != nil {
 			return errorEvent("config embedding-model", err)
@@ -1346,12 +1346,12 @@ type HighlightConfig struct {
 }
 
 // Run implements Command.
-func (c HighlightConfig) Run(rc Context) tea.Cmd {
+func (c HighlightConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 	if rc.configResetRequested() {
 		return func() tea.Msg {
 			words := append([]string(nil), config.DefaultHighlightWords...)
 
-			if _, err := rc.updateConfig(func(cfg *config.Config) {
+			if _, err := rc.updateConfig(ctx, func(cfg *config.Config) {
 				cfg.HighlightWords = words
 			}); err != nil {
 				return errorEvent("config highlight", err)
@@ -1366,7 +1366,7 @@ func (c HighlightConfig) Run(rc Context) tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		if _, err := rc.updateConfig(func(cfg *config.Config) {
+		if _, err := rc.updateConfig(ctx, func(cfg *config.Config) {
 			cfg.HighlightWords = c.Words
 		}); err != nil {
 			return errorEvent("config highlight", err)
@@ -1382,10 +1382,10 @@ type TimestampFormatConfig struct {
 }
 
 // Run implements Command.
-func (c TimestampFormatConfig) Run(rc Context) tea.Cmd {
+func (c TimestampFormatConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 	if rc.configResetRequested() {
 		return func() tea.Msg {
-			cfg, err := rc.updateConfig(func(cfg *config.Config) {
+			cfg, err := rc.updateConfig(ctx, func(cfg *config.Config) {
 				cfg.TimestampFormat = nil
 			})
 			if err != nil {
@@ -1399,7 +1399,7 @@ func (c TimestampFormatConfig) Run(rc Context) tea.Cmd {
 	return func() tea.Msg {
 		format := normaliseTimestampFormat(c.Format)
 
-		if _, err := rc.updateConfig(func(cfg *config.Config) {
+		if _, err := rc.updateConfig(ctx, func(cfg *config.Config) {
 			cfg.TimestampFormat = format
 		}); err != nil {
 			return errorEvent("config timestamp-format", err)
@@ -1416,10 +1416,10 @@ type PersonaConfig struct {
 }
 
 // Run implements Command.
-func (c PersonaConfig) Run(rc Context) tea.Cmd {
+func (c PersonaConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 	if rc.configResetRequested() {
 		return func() tea.Msg {
-			count, err := rc.Session.ResetPersonas(rc.Ctx)
+			count, err := rc.Session.ResetPersonas(ctx)
 			if err != nil {
 				return errorEvent("config persona", err)
 			}
@@ -1438,7 +1438,7 @@ func (c PersonaConfig) Run(rc Context) tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		if err := rc.Session.SetPersona(rc.Ctx, c.ID, desc); err != nil {
+		if err := rc.Session.SetPersona(ctx, c.ID, desc); err != nil {
 			return errorEvent("config persona", err)
 		}
 

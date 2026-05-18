@@ -332,7 +332,7 @@ func TestParse_clear_command(t *testing.T) {
 
 func TestClearCommand_Run_returns_ClearResult(t *testing.T) {
 	cmd := ClearCommand{}
-	c := cmd.Run(Context{})
+	c := cmd.Run(t.Context(), Context{})
 	msg := c()
 	require.Equal(t, ClearResult{}, msg)
 }

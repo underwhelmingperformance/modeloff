@@ -144,7 +144,7 @@ func TestChatScreen_HelpCommand_emits_typed_event(t *testing.T) {
 	cmd, err := screen.parser.Parse("/help")
 	require.NoError(t, err)
 
-	msg := cmd.Run(screen.runContext())()
+	msg := cmd.Run(t.Context(), screen.runContext())()
 	require.Equal(t, chatcmd.HelpResult{}, msg)
 }
 
@@ -155,7 +155,7 @@ func TestChatScreen_QuitCommand_returns_quit_requested(t *testing.T) {
 	cmd, err := screen.parser.Parse("/quit goodnight")
 	require.NoError(t, err)
 
-	msg := cmd.Run(screen.runContext())()
+	msg := cmd.Run(t.Context(), screen.runContext())()
 	require.Equal(t, uipkg.QuitRequestedMsg{Message: "goodnight"}, msg)
 }
 
