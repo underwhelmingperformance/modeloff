@@ -413,6 +413,12 @@ func (r RichTextarea) handleEditorKey(msg tea.KeyMsg) (RichTextarea, bool, tea.C
 	case "ctrl+right", "alt+f":
 		r.moveCursor(r.document.MoveWordRight(r.position), extendSelection)
 		return r, true, nil
+	case "ctrl+shift+left":
+		r.moveCursor(r.document.MoveWordLeft(r.position), true)
+		return r, true, nil
+	case "ctrl+shift+right":
+		r.moveCursor(r.document.MoveWordRight(r.position), true)
+		return r, true, nil
 	case "left", "shift+left":
 		r.moveCursor(r.document.MoveLeft(r.position), extendSelection)
 		return r, true, nil
@@ -422,8 +428,14 @@ func (r RichTextarea) handleEditorKey(msg tea.KeyMsg) (RichTextarea, bool, tea.C
 	case "home":
 		r.moveCursor(r.document.MoveLineStart(r.position), extendSelection)
 		return r, true, nil
+	case "shift+home":
+		r.moveCursor(r.document.MoveLineStart(r.position), true)
+		return r, true, nil
 	case "end":
 		r.moveCursor(r.document.MoveLineEnd(r.position), extendSelection)
+		return r, true, nil
+	case "shift+end":
+		r.moveCursor(r.document.MoveLineEnd(r.position), true)
 		return r, true, nil
 	case "up", "shift+up":
 		r.moveCursor(r.moveVertical(-1), extendSelection)

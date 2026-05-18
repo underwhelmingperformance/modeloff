@@ -244,6 +244,65 @@ func TestRichTextareaPaletteKeyboardTargetsBackgroundForSelection(t *testing.T) 
 	}, editor.document.Line(0).Spans)
 }
 
+func TestRichTextareaSelectionExtension(t *testing.T) {
+	tests := []struct {
+		name       string
+		text       string
+		start      int
+		key        tea.KeyMsg
+		wantAnchor richtext.Position
+		wantHead   richtext.Position
+	}{
+		{
+			name:       "ctrl+shift+right extends by word",
+			text:       "one two three",
+			start:      0,
+			key:        tea.KeyMsg{Type: tea.KeyCtrlShiftRight},
+			wantAnchor: richtext.Position{Line: 0, Cluster: 0},
+			wantHead:   richtext.Position{Line: 0, Cluster: 3},
+		},
+		{
+			name:       "ctrl+shift+left extends backward by word",
+			text:       "one two three",
+			start:      13,
+			key:        tea.KeyMsg{Type: tea.KeyCtrlShiftLeft},
+			wantAnchor: richtext.Position{Line: 0, Cluster: 13},
+			wantHead:   richtext.Position{Line: 0, Cluster: 8},
+		},
+		{
+			name:       "shift+home extends to line start",
+			text:       "hello",
+			start:      3,
+			key:        tea.KeyMsg{Type: tea.KeyShiftHome},
+			wantAnchor: richtext.Position{Line: 0, Cluster: 3},
+			wantHead:   richtext.Position{Line: 0, Cluster: 0},
+		},
+		{
+			name:       "shift+end extends to line end",
+			text:       "hello",
+			start:      2,
+			key:        tea.KeyMsg{Type: tea.KeyShiftEnd},
+			wantAnchor: richtext.Position{Line: 0, Cluster: 2},
+			wantHead:   richtext.Position{Line: 0, Cluster: 5},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			editor := NewRichTextarea(RichTextareaConfig{SingleLine: true})
+			editor = editor.SetPlainText(tt.text)
+			editor = editor.SetCursorFromRuneIndex(tt.start)
+
+			updated, _ := editor.Update(tt.key)
+			editor = updated.(RichTextarea)
+
+			require.False(t, editor.selection.Collapsed(), "selection must be non-collapsed")
+			require.Equal(t, tt.wantAnchor, editor.selection.Anchor, "anchor")
+			require.Equal(t, tt.wantHead, editor.selection.Head, "head")
+		})
+	}
+}
+
 func TestRichTextareaKillRing_CtrlW_then_CtrlY_restores_word(t *testing.T) {
 	editor := NewRichTextarea(RichTextareaConfig{SingleLine: true})
 	editor = editor.SetPlainText("hello world")
