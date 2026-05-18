@@ -272,8 +272,8 @@ func renderHelp[C command.KindProvider](commands []*command.Node[C]) string {
 	}
 
 	lines = append(lines,
-		"formatting                      M-B/M-I/M-U/M-R/M-S toggle styles",
-		"formatting                      M-C colours, M-O clears formatting",
+		"formatting                      M-b/M-i/M-u/M-r/M-s toggle styles",
+		"formatting                      M-c colours, M-o clears formatting",
 	)
 
 	var parts []string

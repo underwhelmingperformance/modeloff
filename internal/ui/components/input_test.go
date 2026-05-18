@@ -514,14 +514,14 @@ func TestInputBar_keybindings_include_rich_shortcuts(t *testing.T) {
 		"↵\x00send":            {},
 		"↑\x00history":         {},
 		"↓\x00history":         {},
-		"M-B\x00bold":          {},
-		"M-I\x00italic":        {},
-		"M-U\x00underline":     {},
-		"M-R\x00reverse":       {},
-		"M-S\x00strike":        {},
-		"M-C\x00colour":        {},
-		"M-O\x00reset fmt":     {},
-		"M-D\x00del next word": {},
+		"M-b\x00bold":          {},
+		"M-i\x00italic":        {},
+		"M-u\x00underline":     {},
+		"M-r\x00reverse":       {},
+		"M-s\x00strike":        {},
+		"M-c\x00colour":        {},
+		"M-o\x00reset fmt":     {},
+		"M-d\x00del next word": {},
 		"^←\x00word ←":         {},
 		"^→\x00word →":         {},
 		"^W\x00del word":       {},
@@ -536,7 +536,7 @@ func TestInputBar_keybindings_include_rich_shortcuts(t *testing.T) {
 		"↵\x00send":            {},
 		"↑\x00history":         {},
 		"↓\x00history":         {},
-		"M-D\x00del next word": {},
+		"M-d\x00del next word": {},
 		"^←\x00word ←":         {},
 		"^→\x00word →":         {},
 		"^W\x00del word":       {},
@@ -1001,11 +1001,11 @@ func TestInputBar_status_bar_renders_active_format_bold(t *testing.T) {
 	rendered := components.RenderStatusBar(200, bindings, nil)
 
 	// Extract the literal content of every ANSI-bold (SGR 1)
-	// segment. The bold-format binding must contribute "M-B" and
+	// segment. The bold-format binding must contribute "M-b" and
 	// "bold" so the user sees that the active format is highlighted;
-	// "M-O reset fmt" is also rendered bold because pressing it
+	// "M-o reset fmt" is also rendered bold because pressing it
 	// would clear bold — the styling reflects current state.
-	require.Equal(t, []string{"M-B", "bold", "M-O", "reset fmt"}, boldSegments(rendered))
+	require.Equal(t, []string{"M-b", "bold", "M-o", "reset fmt"}, boldSegments(rendered))
 }
 
 // boldSegments returns the literal content of every `\x1b[1;…m…\x1b[m`

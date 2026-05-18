@@ -112,7 +112,7 @@ var DefaultInputBarKeyMap = InputBarKeyMap{
 	)),
 	DeleteWordFwd: ui.Bind(key.NewBinding(
 		key.WithKeys("alt+d"),
-		key.WithHelp("M-D", "del next word"),
+		key.WithHelp("M-d", "del next word"),
 	)),
 	DeleteToEnd: ui.Bind(key.NewBinding(
 		key.WithKeys("ctrl+k"),
@@ -128,31 +128,31 @@ var DefaultInputBarKeyMap = InputBarKeyMap{
 	)),
 	ToggleBold: ui.Bind(key.NewBinding(
 		key.WithKeys("alt+b"),
-		key.WithHelp("M-B", "bold"),
+		key.WithHelp("M-b", "bold"),
 	)),
 	ToggleItalic: ui.Bind(key.NewBinding(
 		key.WithKeys("alt+i"),
-		key.WithHelp("M-I", "italic"),
+		key.WithHelp("M-i", "italic"),
 	)),
 	ToggleUnderline: ui.Bind(key.NewBinding(
 		key.WithKeys("alt+u"),
-		key.WithHelp("M-U", "underline"),
+		key.WithHelp("M-u", "underline"),
 	)),
 	ToggleReverse: ui.Bind(key.NewBinding(
 		key.WithKeys("alt+r"),
-		key.WithHelp("M-R", "reverse"),
+		key.WithHelp("M-r", "reverse"),
 	)),
 	ToggleStrike: ui.Bind(key.NewBinding(
 		key.WithKeys("alt+s"),
-		key.WithHelp("M-S", "strike"),
+		key.WithHelp("M-s", "strike"),
 	)),
 	OpenPalette: ui.Bind(key.NewBinding(
 		key.WithKeys("alt+c"),
-		key.WithHelp("M-C", "colour"),
+		key.WithHelp("M-c", "colour"),
 	)),
 	ResetFormat: ui.Bind(key.NewBinding(
 		key.WithKeys("alt+o"),
-		key.WithHelp("M-O", "reset fmt"),
+		key.WithHelp("M-o", "reset fmt"),
 	)),
 }
 
