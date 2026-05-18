@@ -250,14 +250,17 @@ func (e ModeChange) persistableEventTime() time.Time { return e.At }
 func (e ModeChange) ModelVisible() bool { return e.ChannelMode() }
 
 // ModelInvited records a model instance being added to a
-// channel. `Instance` is the live invitee handle, populated on
-// emission and ignored by JSON.
+// channel. `Nick`/`InstanceID` identify the invitee (the subject
+// of the event); `By`/`ByInstanceID` identify the inviter (the
+// actor that issued the INVITE). `Instance` is the live invitee
+// handle, populated on emission and ignored by JSON.
 type ModelInvited struct {
-	Target     ChannelName `json:"channel"`
-	Nick       Nick        `json:"nick"`
-	InstanceID InstanceID  `json:"instance_id,omitzero"`
-	By         Nick        `json:"by"`
-	At         time.Time   `json:"at"`
+	Target       ChannelName `json:"channel"`
+	Nick         Nick        `json:"nick"`
+	InstanceID   InstanceID  `json:"instance_id,omitzero"`
+	By           Nick        `json:"by"`
+	ByInstanceID InstanceID  `json:"by_instance_id,omitzero"`
+	At           time.Time   `json:"at"`
 
 	Instance *Instance `json:"-"`
 }
@@ -269,14 +272,17 @@ func (e ModelInvited) persistableEventTime() time.Time { return e.At }
 func (ModelInvited) ModelVisible() bool { return true }
 
 // ModelKicked records a model instance being removed from a
-// channel. `Instance` is the live kicked-target handle, populated on
-// emission and ignored by JSON.
+// channel. `Nick`/`InstanceID` identify the kicked party (the
+// subject); `By`/`ByInstanceID` identify the operator who issued
+// the KICK (the actor). `Instance` is the live kicked-target
+// handle, populated on emission and ignored by JSON.
 type ModelKicked struct {
-	Target     ChannelName `json:"channel"`
-	Nick       Nick        `json:"nick"`
-	InstanceID InstanceID  `json:"instance_id,omitzero"`
-	By         Nick        `json:"by"`
-	At         time.Time   `json:"at"`
+	Target       ChannelName `json:"channel"`
+	Nick         Nick        `json:"nick"`
+	InstanceID   InstanceID  `json:"instance_id,omitzero"`
+	By           Nick        `json:"by"`
+	ByInstanceID InstanceID  `json:"by_instance_id,omitzero"`
+	At           time.Time   `json:"at"`
 
 	Instance *Instance `json:"-"`
 }

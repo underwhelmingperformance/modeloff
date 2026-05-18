@@ -76,6 +76,12 @@ func TestSession_Handle_delegates(t *testing.T) {
 		client  func() protocol.Client
 		cmd     protocol.Command
 		want    protocol.Response
+		// wantFn lets a case compute its expected response from the
+		// post-setup session state — needed when the expected
+		// response refers to identities (instance pointers, ids)
+		// allocated during setup. When non-nil, `wantFn` takes
+		// precedence over `want`.
+		wantFn  func(t *testing.T, sess *Session, s *storemod.SQLiteStore) protocol.Response
 		wantErr error
 		verify  func(t *testing.T, sess *Session, s *storemod.SQLiteStore)
 	}
@@ -163,7 +169,21 @@ func TestSession_Handle_delegates(t *testing.T) {
 			},
 			client: userClient,
 			cmd:    protocol.Invite{Nick: "botty", Channel: "#general"},
-			want:   protocol.Response{},
+			wantFn: func(t *testing.T, sess *Session, s *storemod.SQLiteStore) protocol.Response {
+				botty, err := s.ResolveNick(t.Context(), "botty")
+				require.NoError(t, err)
+				return protocol.Response{
+					Events: []domain.ProtocolEvent{domain.ModelInvited{
+						Target:       "#general",
+						Nick:         "botty",
+						InstanceID:   botty.ID(),
+						By:           "testuser",
+						ByInstanceID: "",
+						At:           fixedTime,
+						Instance:     botty,
+					}},
+				}
+			},
 			verify: func(t *testing.T, sess *Session, _ *storemod.SQLiteStore) {
 				cw, err := sess.loadChannelWindow(t.Context(), "#general")
 				require.NoError(t, err)
@@ -293,7 +313,12 @@ func TestSession_Handle_delegates(t *testing.T) {
 			}
 
 			require.NoError(t, err)
-			require.Equal(t, c.want, got)
+
+			want := c.want
+			if c.wantFn != nil {
+				want = c.wantFn(t, sess, store)
+			}
+			require.Equal(t, want, got)
 
 			if c.verify != nil {
 				c.verify(t, sess, store)

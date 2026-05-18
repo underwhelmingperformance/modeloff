@@ -91,7 +91,8 @@ func TestInviteAs_InviteOnlyGate(t *testing.T) {
 			seedInstance(t, sess, s, instanceSpec{Nick: "helper", ModelID: "test/model-b"})
 			seedChannelWithMembers(t, sess, s, "#chan", "testuser", "botty")
 
-			require.NoError(t, sess.inviteAs(ctx, botty, "helper", "#chan"))
+			_, err := sess.inviteAs(ctx, botty, "helper", "#chan")
+			require.NoError(t, err)
 
 			w, err := sess.loadChannelWindow(ctx, "#chan")
 			require.NoError(t, err)
@@ -114,7 +115,7 @@ func TestInviteAs_InviteOnlyGate(t *testing.T) {
 			seedChannelWithMembers(t, sess, s, "#chan", "testuser", "botty")
 			setChannelModes(t, sess, "#chan", domain.ChannelModes{InviteOnly: true})
 
-			err := sess.inviteAs(ctx, botty, "helper", "#chan")
+			_, err := sess.inviteAs(ctx, botty, "helper", "#chan")
 			var copReq domain.ChanOpRequiredError
 			require.ErrorAs(t, err, &copReq)
 

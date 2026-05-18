@@ -165,13 +165,25 @@ func (s *Session) handleTopic(ctx context.Context, c protocol.Client, cmd protoc
 	return commandResult(s.setTopicAs(ctx, actor, cmd.Channel, cmd.Body))
 }
 
+// handleInvite delegates to [Session.inviteAs] and lands the
+// resulting envelope in `Response.Events` as the inviter's
+// RPL_INVITING-equivalent. The chat-screen's `sendCommand` reads
+// `Response.Events[0]` for synchronous numeric-reply payloads
+// (see `internal/ui/chatcmd.sendCommand` and the `WhoisCommand`
+// pattern). A typed dispatcher failure still goes through
+// [commandResult].
 func (s *Session) handleInvite(ctx context.Context, c protocol.Client, cmd protocol.Invite) (protocol.Response, error) {
 	actor, err := s.resolveClientActor(c)
 	if err != nil {
 		return protocol.Response{}, err
 	}
 
-	return commandResult(s.inviteAs(ctx, actor, cmd.Nick, cmd.Channel))
+	event, err := s.inviteAs(ctx, actor, cmd.Nick, cmd.Channel)
+	if err != nil {
+		return commandResult(err)
+	}
+
+	return protocol.Response{Events: []domain.ProtocolEvent{event}}, nil
 }
 
 func (s *Session) handleKick(ctx context.Context, c protocol.Client, cmd protocol.Kick) (protocol.Response, error) {

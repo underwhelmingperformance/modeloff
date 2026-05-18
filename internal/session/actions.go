@@ -571,25 +571,34 @@ func (s *Session) kickAs(ctx context.Context, actor, target *domain.Instance, ch
 
 	now := s.now()
 	s.persistAndEmit(ctx, ch, domain.ModelKicked{
-		Target:     ch,
-		Nick:       targetNick,
-		InstanceID: target.ID(),
-		By:         actorNick,
-		At:         now,
-		Instance:   target,
+		Target:       ch,
+		Nick:         targetNick,
+		InstanceID:   target.ID(),
+		By:           actorNick,
+		ByInstanceID: actor.ID(),
+		At:           now,
+		Instance:     target,
 	})
 
 	return nil
 }
 
-// inviteAs records the invited nick against the channel's
-// `InvitedNicks` set (so a follow-up JOIN can clear `+i`) and
-// fans out the wire INVITE as [domain.ModelInvited] for an
-// attached model — the dispatch goroutine takes a turn on it and
-// may issue its own `/join`, matching RFC 2812 §3.2.7. The
-// channel announcement (`<actor> invited <target> to <ch>`) is
-// written as a [domain.SystemNotice] either way.
-func (s *Session) inviteAs(ctx context.Context, actor *domain.Instance, target domain.Nick, ch domain.ChannelName) (retErr error) {
+// inviteAs implements RFC 2812 §3.2.7's INVITE command. The
+// invited nick is recorded against the channel's `InvitedNicks`
+// set so a follow-up JOIN can clear `+i`. Delivery is scoped to
+// the inviter and invitee: the returned [domain.ModelInvited]
+// envelope is the inviter's `RPL_INVITING`-equivalent (the
+// caller — [Session.handleInvite] — wraps it in `Response.Events`
+// for the synchronous client reply), and the same envelope is
+// written directly to the invitee's subscription as their wire
+// `INVITE` message. The channel event log is not touched and no
+// broadcast happens; other channel members are not told.
+//
+// An unknown target nick has no subscription to receive the
+// invite. The inviter gets a [domain.SystemNotice] in its place
+// so the chat-screen surfaces the missing-nick condition; the
+// channel still records nothing.
+func (s *Session) inviteAs(ctx context.Context, actor *domain.Instance, target domain.Nick, ch domain.ChannelName) (event domain.ProtocolEvent, retErr error) {
 	actorNick := actor.Nick()
 
 	ctx, span := s.startSpan(
@@ -604,12 +613,12 @@ func (s *Session) inviteAs(ctx context.Context, actor *domain.Instance, target d
 
 	target = domain.Nick(strings.TrimSpace(string(target)))
 	if target == "" {
-		return fmt.Errorf("target nick is required")
+		return nil, fmt.Errorf("target nick is required")
 	}
 
 	window, err := s.loadChannelWindow(ctx, ch)
 	if err != nil {
-		return fmt.Errorf("get channel: %w", err)
+		return nil, fmt.Errorf("get channel: %w", err)
 	}
 
 	// INVITE is op-gated only when the target channel carries
@@ -617,13 +626,13 @@ func (s *Session) inviteAs(ctx context.Context, actor *domain.Instance, target d
 	// invite.
 	if window.Modes.InviteOnly {
 		if err := s.requireChannelOp(actor, window, "INVITE", ch); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
 	window.InvitedNicks.Add(target)
 	if err := s.persistChannelWindow(ctx, window); err != nil {
-		return fmt.Errorf("save channel: %w", err)
+		return nil, fmt.Errorf("save channel: %w", err)
 	}
 
 	now := s.now()
@@ -633,26 +642,53 @@ func (s *Session) inviteAs(ctx context.Context, actor *domain.Instance, target d
 	case err == nil:
 		span.SetAttributes(attribute.String(observability.AttrInstanceID, string(inst.ID())))
 
-		s.persistAndEmit(ctx, ch, domain.ModelInvited{
-			Target:     ch,
-			Nick:       inst.Nick(),
-			InstanceID: inst.ID(),
-			By:         actorNick,
-			At:         now,
-			Instance:   inst,
-		})
+		invited := domain.ModelInvited{
+			Target:       ch,
+			Nick:         inst.Nick(),
+			InstanceID:   inst.ID(),
+			By:           actorNick,
+			ByInstanceID: actor.ID(),
+			At:           now,
+			Instance:     inst,
+		}
+
+		s.deliverToClient(ctx, inst.ID(), invited)
+
+		return invited, nil
+
 	case errors.Is(err, store.ErrNoSuchNick):
-		// Unknown target: fall through to the system notice. No
-		// wire INVITE goes out because there is nobody to receive
-		// it; the channel announcement is purely informational.
+		notice := domain.SystemNotice{
+			Target: ch,
+			Text:   fmt.Sprintf("no such nick: %s", target),
+			At:     now,
+		}
+
+		return notice, nil
+
 	default:
-		return fmt.Errorf("resolve nick: %w", err)
+		return nil, fmt.Errorf("resolve nick: %w", err)
+	}
+}
+
+// deliverToClient writes a single event directly to the
+// subscription registered under `id`, bypassing
+// [Session.fanOutProtocol]. Used by commands whose RFC scope
+// names a specific recipient (INVITE, user-mode replies) rather
+// than the channel-wide audience.
+func (s *Session) deliverToClient(ctx context.Context, id domain.InstanceID, evt domain.ProtocolEvent) {
+	target := s.lookupClientHandle(protocol.ClientID(id))
+	if target == nil {
+		return
 	}
 
-	notice := fmt.Sprintf("%s invited %s to %s", actorNick, target, ch)
-	s.appendEvent(ctx, ch, domain.SystemNotice{Target: ch, Text: notice, At: now})
-
-	return nil
+	select {
+	case target.events <- protocol.Delivery{
+		Event:   evt,
+		SpanCtx: trace.SpanContextFromContext(ctx),
+	}:
+	case <-target.done:
+	case <-ctx.Done():
+	}
 }
 
 // setUserModeAs mutates a single user-mode flag on `target` and

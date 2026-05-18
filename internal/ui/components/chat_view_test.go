@@ -968,7 +968,7 @@ func TestRenderLine_IRC_events(t *testing.T) {
 			domain.StoredEvent{Event: domain.ModelInvited{
 				Target: "#general", Nick: "botty", By: "alice", At: now,
 			}},
-			"*** botty has joined #general",
+			"*** alice invited botty to #general",
 		},
 		{
 			"model_kicked",

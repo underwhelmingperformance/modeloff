@@ -166,11 +166,6 @@ func (c *serverClient) canReceive(ev domain.ProtocolEvent, actorTargets []domain
 		return channelsContains(channels, e.Target)
 	case domain.ModeChange:
 		return channelsContains(channels, e.Target)
-	case domain.ModelInvited:
-		// The freshly-invited model needs to see its own invite to
-		// trigger its first dispatch turn; other models in the
-		// channel see it for member-list refresh purposes.
-		return e.InstanceID == c.id || channelsContains(channels, e.Target)
 	case domain.ModelKicked:
 		return channelsContains(channels, e.Target)
 	case domain.Quit, domain.NickChange, domain.ModelDispatchStarted, domain.ModelDispatchDone:

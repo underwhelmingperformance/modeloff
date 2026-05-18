@@ -134,28 +134,25 @@ func historyTargets(delivery protocol.Delivery) []domain.ChannelName {
 func dispatchTrigger(selfID domain.InstanceID, ev domain.ProtocolEvent) (domain.ChannelName, protocol.IRCMessage, bool) {
 	switch e := ev.(type) {
 	case domain.Message:
-		irc, _ := protocol.FromChannelEvent(e)
-		return e.Target, irc, true
+		msg, _ := protocol.FromChannelEvent(e)
+		return e.Target, msg, true
 
 	case domain.Join:
-		irc, _ := protocol.FromChannelEvent(e)
-		return e.Target, irc, true
+		msg, _ := protocol.FromChannelEvent(e)
+		return e.Target, msg, true
 
 	case domain.Part:
-		irc, _ := protocol.FromChannelEvent(e)
-		return e.Target, irc, true
+		msg, _ := protocol.FromChannelEvent(e)
+		return e.Target, msg, true
 
 	case domain.ModelInvited:
-		if e.InstanceID != protocol.ClientID(selfID) {
+		if e.InstanceID != selfID {
 			return "", protocol.IRCMessage{}, false
 		}
 
-		return e.Target, protocol.IRCMessage{
-			Kind:   protocol.KindInvite,
-			From:   string(e.By),
-			Target: string(e.Target),
-			At:     e.At,
-		}, true
+		msg, _ := protocol.FromChannelEvent(e)
+
+		return e.Target, msg, true
 
 	case domain.PokeEvent:
 		return e.Channel, protocol.IRCMessage{

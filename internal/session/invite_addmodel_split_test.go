@@ -47,19 +47,27 @@ func TestInviteAs_does_not_auto_attach_existing_model(t *testing.T) {
 		seedChannelWithMembers(t, sess, s, "#general", userNick(t, sess), "botty")
 		seedChannelWithMembers(t, sess, s, "#random", userNick(t, sess))
 
-		require.NoError(t, sess.inviteAs(ctx, userInstance(t, sess), "botty", "#random"))
+		event, err := sess.inviteAs(ctx, userInstance(t, sess), "botty", "#random")
+		require.NoError(t, err)
+		require.Equal(t, domain.ModelInvited{
+			Target:       "#random",
+			Nick:         "botty",
+			InstanceID:   botty.ID(),
+			By:           userNick(t, sess),
+			ByInstanceID: "",
+			At:           fixedTime,
+			Instance:     botty,
+		}, event,
+			"inviteAs returns the ModelInvited envelope as the inviter's "+
+				"RPL_INVITING-equivalent — the handler wraps it into Response.Events")
+
 		synctest.Wait()
 
+		// INVITE is scoped to inviter + invitee (RFC 2812 §3.2.7).
+		// The user-client bus carries only botty's dispatch
+		// lifecycle: the invite itself does not broadcast.
 		require.ElementsMatch(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
-			domain.ModelInvited{
-				Target:     "#random",
-				Nick:       "botty",
-				InstanceID: botty.ID(),
-				By:         userNick(t, sess),
-				At:         fixedTime,
-				Instance:   botty,
-			},
 			domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
 			domain.ModelDispatchDone{Instance: botty, At: fixedTime},
 		}, collectEmittedEvents(t, sess))

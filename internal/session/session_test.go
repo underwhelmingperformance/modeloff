@@ -2706,7 +2706,8 @@ func TestSession_InviteAs_existing_instance_to_nonexistent_channel_does_not_corr
 	})
 	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
 
-	require.Error(t, sess.inviteAs(ctx, userInstance(t, sess), "botty", "#ghost"))
+	_, err := sess.inviteAs(ctx, userInstance(t, sess), "botty", "#ghost")
+	require.Error(t, err)
 
 	// Instance should not have the phantom channel in its set.
 	inst, err := s.ResolveNick(ctx, "botty")
@@ -2768,19 +2769,24 @@ func TestSession_InviteAs_reuses_existing_instance(t *testing.T) {
 		seedChannelWithMembers(t, sess, s, "#general", "testuser")
 		seedChannelWithMembers(t, sess, s, "#random", "testuser")
 
-		require.NoError(t, sess.inviteAs(ctx, userInstance(t, sess), "botty", "#random"))
+		event, err := sess.inviteAs(ctx, userInstance(t, sess), "botty", "#random")
+		require.NoError(t, err)
+		require.Equal(t, domain.ModelInvited{
+			Target:       "#random",
+			Nick:         "botty",
+			InstanceID:   botty.ID(),
+			By:           "testuser",
+			ByInstanceID: "",
+			At:           fixedTime,
+			Instance:     botty,
+		}, event)
 		synctest.Wait()
 
+		// INVITE delivery is scoped to inviter + invitee
+		// (RFC 2812 §3.2.7); the user-client bus carries only
+		// botty's dispatch lifecycle.
 		require.ElementsMatch(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
-			domain.ModelInvited{
-				Target:     "#random",
-				Nick:       "botty",
-				InstanceID: botty.ID(),
-				By:         "testuser",
-				At:         fixedTime,
-				Instance:   botty,
-			},
 			domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
 			domain.ModelDispatchDone{Instance: botty, At: fixedTime},
 		}, collectEmittedEvents(t, sess))
@@ -2816,7 +2822,8 @@ func TestSession_InviteAs_existing_instance_is_idempotent(t *testing.T) {
 	})
 	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
 
-	require.NoError(t, sess.inviteAs(ctx, userInstance(t, sess), "botty", "#general"))
+	_, err := sess.inviteAs(ctx, userInstance(t, sess), "botty", "#general")
+	require.NoError(t, err)
 
 	inst, err := s.ResolveNick(ctx, "botty")
 	require.NoError(t, err)
@@ -2842,19 +2849,24 @@ func TestSession_InviteAs_existing_instance_preserves_persona(t *testing.T) {
 		seedChannelWithMembers(t, sess, s, "#general", "testuser")
 		seedChannelWithMembers(t, sess, s, "#random", "testuser")
 
-		require.NoError(t, sess.inviteAs(ctx, userInstance(t, sess), "botty", "#random"))
+		event, err := sess.inviteAs(ctx, userInstance(t, sess), "botty", "#random")
+		require.NoError(t, err)
+		require.Equal(t, domain.ModelInvited{
+			Target:       "#random",
+			Nick:         "botty",
+			InstanceID:   botty.ID(),
+			By:           "testuser",
+			ByInstanceID: "",
+			At:           fixedTime,
+			Instance:     botty,
+		}, event)
 		synctest.Wait()
 
+		// INVITE delivery is scoped to inviter + invitee
+		// (RFC 2812 §3.2.7); the user-client bus carries only
+		// botty's dispatch lifecycle.
 		require.ElementsMatch(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
-			domain.ModelInvited{
-				Target:     "#random",
-				Nick:       "botty",
-				InstanceID: botty.ID(),
-				By:         "testuser",
-				At:         fixedTime,
-				Instance:   botty,
-			},
 			domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
 			domain.ModelDispatchDone{Instance: botty, At: fixedTime},
 		}, collectEmittedEvents(t, sess))

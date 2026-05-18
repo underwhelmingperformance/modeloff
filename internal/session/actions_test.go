@@ -532,12 +532,13 @@ func TestKickAs_model_actor(t *testing.T) {
 		require.ElementsMatch(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.ModelKicked{
-				Target:     "#dev",
-				Nick:       "helper",
-				InstanceID: helper.ID(),
-				By:         "botty",
-				At:         fixedTime,
-				Instance:   helper,
+				Target:       "#dev",
+				Nick:         "helper",
+				InstanceID:   helper.ID(),
+				By:           "botty",
+				ByInstanceID: botty.ID(),
+				At:           fixedTime,
+				Instance:     helper,
 			},
 		}, collectEmittedEvents(t, sess))
 
@@ -555,29 +556,33 @@ func TestKickAs_model_actor(t *testing.T) {
 	})
 }
 
-func TestInviteAs_model_actor(t *testing.T) {
+// TestInviteAs_unknown_nick_returns_notice pins the unknown-nick
+// path of `inviteAs`: there is no subscription to deliver the
+// invite to, so the call returns a [domain.SystemNotice] for the
+// inviter and leaves the channel event log untouched.
+func TestInviteAs_unknown_nick_returns_notice(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
 	botty := seedInstance(t, sess, s, instanceSpec{Nick: "botty", ModelID: "test/model"})
 	seedChannelWithMembers(t, sess, s, "#dev", "testuser", "botty")
 
-	require.NoError(t, sess.inviteAs(ctx, botty, "helper", "#dev"))
-
-	// Model invites produce a system notice, not a real invite.
-	events, err := s.EventsBefore(ctx, "#dev", nil, 100)
+	event, err := sess.inviteAs(ctx, botty, "helper", "#dev")
 	require.NoError(t, err)
+	require.Equal(t, domain.SystemNotice{
+		Target: "#dev",
+		Text:   "no such nick: helper",
+		At:     fixedTime,
+	}, event)
 
-	var notices []domain.SystemNotice
-	for _, se := range events {
-		if n, ok := se.Event.(domain.SystemNotice); ok {
-			notices = append(notices, n)
-		}
+	stored, err := s.EventsBefore(ctx, "#dev", nil, 100)
+	require.NoError(t, err)
+	for _, se := range stored {
+		_, isNotice := se.Event.(domain.SystemNotice)
+		require.False(t, isNotice,
+			"channel log carries no SystemNotice from invite — the unknown-nick "+
+				"notice is the inviter's RPL_NOSUCHNICK-equivalent, not channel chat")
 	}
-
-	require.Equal(t, []domain.SystemNotice{
-		{Target: "#dev", Text: "botty invited helper to #dev", At: fixedTime},
-	}, notices)
 }
 
 func TestSetTopicAs_rejects_DM(t *testing.T) {

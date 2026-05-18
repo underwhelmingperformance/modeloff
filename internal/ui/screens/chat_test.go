@@ -549,7 +549,7 @@ func TestChatScreen_invite_existing_instance(t *testing.T) {
 	tm.WaitFor("#random")
 
 	tm.Submit("/invite fakenick")
-	tm.WaitFor("fakenick has joined #random")
+	tm.WaitFor("testuser invited fakenick to #random")
 }
 
 func TestChatScreen_kick_command(t *testing.T) {

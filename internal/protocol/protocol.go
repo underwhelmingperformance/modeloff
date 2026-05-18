@@ -98,14 +98,18 @@ const (
 
 // IRCMessage is the structured representation of an event sent to a
 // model. It mirrors IRC message structure: a sender, a kind, a
-// target (channel or nick), and a body. InstanceID identifies the
-// originating model instance and is used internally for
-// self-message detection; it is omitted from JSON sent to models.
+// target (channel or nick), and a body. `From` + `InstanceID`
+// identify the actor — whoever the wire `:<sender>` prefix would
+// name. `Subject` carries the affected participant's nick for
+// ditransitive events where actor and subject differ (KICK names
+// the kicked nick; INVITE names the invitee). `InstanceID` is
+// stripped before the envelope reaches the model.
 type IRCMessage struct {
 	Kind       MessageKind       `json:"kind"`
 	From       string            `json:"from"`
 	InstanceID domain.InstanceID `json:"instance_id,omitzero"`
 	Target     string            `json:"target"`
+	Subject    string            `json:"subject,omitempty"`
 	Body       string            `json:"body,omitempty"`
 	At         time.Time         `json:"at"`
 }
@@ -242,20 +246,28 @@ func FromChannelEvent(evt domain.PersistableEvent) (IRCMessage, bool) {
 		}, true
 
 	case domain.ModelInvited:
+		// `From` is the inviter (the actor that issued the INVITE).
+		// The invitee identity is the recipient of the event — for
+		// the dispatch loop it is the receiving model itself, so it
+		// stays implicit rather than landing in `Subject`.
 		return IRCMessage{
 			Kind:       KindInvite,
-			From:       string(e.Nick),
-			InstanceID: e.InstanceID,
+			From:       string(e.By),
+			InstanceID: e.ByInstanceID,
 			Target:     string(e.Target),
 			At:         e.At,
 		}, true
 
 	case domain.ModelKicked:
+		// `From` is the kicker. `Subject` is the kicked nick — other
+		// channel members reading this event in their history need
+		// to know who was removed.
 		return IRCMessage{
 			Kind:       KindKick,
-			From:       string(e.Nick),
-			InstanceID: e.InstanceID,
+			From:       string(e.By),
+			InstanceID: e.ByInstanceID,
 			Target:     string(e.Target),
+			Subject:    string(e.Nick),
 			At:         e.At,
 		}, true
 

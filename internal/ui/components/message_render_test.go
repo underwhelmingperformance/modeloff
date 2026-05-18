@@ -36,6 +36,7 @@ func TestRenderChannelEvent_by_kind(t *testing.T) {
 	message := domain.Message{Target: "#test", From: "alice", Body: "hello", At: at}
 	notice := domain.SystemNotice{Target: "#test", Text: "OpenRouter API key saved.", At: at}
 	join := domain.Join{Target: "#test", Nick: "alice", At: at}
+	invited := domain.ModelInvited{Target: "#test", Nick: "alice", By: "laney", At: at}
 
 	tests := map[string]struct {
 		kind  domain.ChannelKind
@@ -51,6 +52,11 @@ func TestRenderChannelEvent_by_kind(t *testing.T) {
 		"channel join on channel": {kind: domain.KindChannel, event: join, want: "*** alice has joined #test"},
 		"channel join on dm":      {kind: domain.KindDM, event: join, want: "*** alice has joined #test"},
 		"channel join on status":  {kind: domain.KindStatus, event: join, want: "*** alice has joined #test"},
+		"invite renders as invitation, not as join": {
+			kind:  domain.KindChannel,
+			event: invited,
+			want:  "*** laney invited alice to #test",
+		},
 	}
 
 	for name, tc := range tests {
