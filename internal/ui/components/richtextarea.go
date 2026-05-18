@@ -547,6 +547,10 @@ func (r RichTextarea) handleMouse(msg tea.MouseMsg) (RichTextarea, bool) {
 }
 
 func (r *RichTextarea) insertText(text string) {
+	if r.config.SingleLine {
+		text = flattenNewlines(text)
+	}
+
 	if !r.selection.Collapsed() {
 		r.position = r.document.ReplaceText(r.selection, text, r.pending)
 	} else {
@@ -554,6 +558,30 @@ func (r *RichTextarea) insertText(text string) {
 	}
 	r.selection = richtext.Selection{Anchor: r.position, Head: r.position}
 	*r = r.ensureViewport()
+}
+
+// flattenNewlines collapses CR/LF runs into single spaces so a paste
+// containing line breaks lands as one visible line. Carriage returns
+// are dropped outright; line feeds become a single space each.
+func flattenNewlines(text string) string {
+	if !strings.ContainsAny(text, "\r\n") {
+		return text
+	}
+
+	var b strings.Builder
+	b.Grow(len(text))
+	for _, r := range text {
+		switch r {
+		case '\r':
+			continue
+		case '\n':
+			b.WriteRune(' ')
+		default:
+			b.WriteRune(r)
+		}
+	}
+
+	return b.String()
 }
 
 func (r *RichTextarea) deleteSelection() {

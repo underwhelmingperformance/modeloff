@@ -255,6 +255,43 @@ func TestRichTextareaAltDDeletesNextWord(t *testing.T) {
 	require.Equal(t, "one three", editor.Value())
 }
 
+func TestRichTextareaSingleLinePasteFlattensNewlines(t *testing.T) {
+	tests := []struct {
+		name  string
+		paste string
+		want  string
+	}{
+		{name: "lf between words", paste: "abc\ndef", want: "abc def"},
+		{name: "crlf between words", paste: "abc\r\ndef", want: "abc def"},
+		{name: "leading lf", paste: "\nabc", want: " abc"},
+		{name: "trailing lf", paste: "abc\n", want: "abc "},
+		{name: "multiple lf", paste: "a\n\nb", want: "a  b"},
+		{name: "no break", paste: "abc", want: "abc"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			editor := NewRichTextarea(RichTextareaConfig{SingleLine: true})
+
+			updated, _ := editor.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(tt.paste)})
+			editor = updated.(RichTextarea)
+
+			require.Equal(t, tt.want, editor.Value())
+			require.Equal(t, 1, editor.document.LineCount())
+		})
+	}
+}
+
+func TestRichTextareaMultilinePastePreservesNewlines(t *testing.T) {
+	editor := NewRichTextarea(RichTextareaConfig{Wrap: true})
+
+	updated, _ := editor.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("abc\ndef")})
+	editor = updated.(RichTextarea)
+
+	require.Equal(t, "abc\ndef", editor.Value())
+	require.Equal(t, 2, editor.document.LineCount())
+}
+
 func TestRichTextareaEnterAddsNewLineInMultilineMode(t *testing.T) {
 	editor := NewRichTextarea(RichTextareaConfig{Wrap: true})
 	editor = editor.SetPlainText("hello")
