@@ -1132,8 +1132,7 @@ func (s ChatScreen) scrollbackOf(name domain.ChannelName) []domain.StoredEvent {
 // either way for non-channel kinds (status / DM) or absent entries;
 // the channel-only handlers (`handleJoinEvent`,
 // `handleModeChangeEvent`, etc.) use this to read and mutate
-// `Members` / `Topic` without going through the legacy `Channel`
-// projection.
+// `Members` / `Topic` off the typed handle.
 func (s ChatScreen) channelWindowByName(name domain.ChannelName) (*domain.ChannelWindow, bool) {
 	w, ok := s.windowByName(name)
 	if !ok {

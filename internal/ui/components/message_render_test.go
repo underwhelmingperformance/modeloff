@@ -71,25 +71,6 @@ func TestRenderChannelEvent_by_kind(t *testing.T) {
 	}
 }
 
-func TestNickColourSeed_prefers_instance_id(t *testing.T) {
-	tests := []struct {
-		name string
-		id   domain.InstanceID
-		nick domain.Nick
-		want string
-	}{
-		{name: "id present uses id", id: "abc123", nick: "alice", want: "abc123"},
-		{name: "rename keeps id-derived seed", id: "abc123", nick: "bob", want: "abc123"},
-		{name: "empty id falls back to nick", id: "", nick: "alice", want: "alice"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, nickColourSeed(tt.id, tt.nick))
-		})
-	}
-}
-
 func TestRenderWhoisEvent_uses_stored_snapshot(t *testing.T) {
 	at := time.Date(2026, 4, 19, 10, 0, 0, 0, time.UTC)
 
@@ -119,60 +100,6 @@ func stripWhois(s string) string {
 	}
 
 	return strings.Join(lines, "\n")
-}
-
-func TestRenderWhoisEvent_snapshot_takes_precedence_over_live_instance(t *testing.T) {
-	at := time.Date(2026, 4, 19, 10, 0, 0, 0, time.UTC)
-
-	// A mutable instance whose live state will diverge from the
-	// snapshot. The renderer must ignore it when snapshot fields are
-	// populated, exactly to keep historical /whois lines immutable.
-	live := domain.NewModelInstance("inst-1", "bob", "anthropic/claude-3-haiku", "a grumpy parrot", nil)
-
-	whois := domain.Whois{
-		Target:   "#dev",
-		Nick:     "alice",
-		ModelID:  "anthropic/claude-3-haiku",
-		Persona:  "a cheerful pirate",
-		Channels: []domain.ChannelName{"#dev"},
-		Instance: live,
-		At:       at,
-	}
-
-	want := strings.Join([]string{
-		"*** alice is anthropic/claude-3-haiku",
-		"***   persona: a cheerful pirate",
-		"***   channels: #dev",
-	}, "\n")
-	rendered := stripWhois(renderWhoisEvent(whois))
-	require.Equal(t, want, rendered,
-		"snapshot fields must beat the live Instance fields")
-
-	// Renaming after emission must not retroactively rewrite the
-	// rendered line — the snapshot is frozen.
-	live.SetNick("carol")
-	live.SetPersona("a relentlessly chatty bot")
-
-	require.Equal(t, want, stripWhois(renderWhoisEvent(whois)),
-		"snapshot whois render must not change when the underlying Instance mutates")
-}
-
-func TestRenderWhoisEvent_legacy_instance_fallback(t *testing.T) {
-	at := time.Date(2026, 4, 19, 10, 0, 0, 0, time.UTC)
-
-	inst := domain.NewModelInstance("inst-1", "alice", "anthropic/claude-3-haiku", "a cheerful pirate", nil)
-
-	whois := domain.Whois{
-		Target:   "#dev",
-		Instance: inst,
-		At:       at,
-	}
-
-	want := strings.Join([]string{
-		"*** alice is anthropic/claude-3-haiku",
-		"***   persona: a cheerful pirate",
-	}, "\n")
-	require.Equal(t, want, stripWhois(renderWhoisEvent(whois)))
 }
 
 func TestRenderChannelEvent_system_notice_style_changes_by_kind(t *testing.T) {

@@ -339,17 +339,13 @@ func (Help) ModelVisible() bool { return false }
 // (`Nick`, `ModelID`, `Persona`, `Channels`) are captured at the
 // moment `/whois` is issued and then immutable, so a later rename
 // or persona edit does not retro-edit the historical line — IRC
-// fidelity demands history is fixed once printed. `Instance` is
-// retained as the legacy carrier for events written before the
-// snapshot fields existed; renderers fall back to it only when the
-// snapshot is empty.
+// fidelity demands history is fixed once printed.
 type Whois struct {
 	Target   ChannelName   `json:"channel"`
 	Nick     Nick          `json:"nick,omitzero"`
 	ModelID  ModelID       `json:"model_id,omitzero"`
 	Persona  string        `json:"persona,omitzero"`
 	Channels []ChannelName `json:"channels,omitzero"`
-	Instance *Instance     `json:"instance,omitempty"`
 	At       time.Time     `json:"at"`
 }
 

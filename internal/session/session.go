@@ -360,11 +360,10 @@ func (s *Session) WithTracerProvider(tp trace.TracerProvider) *Session {
 	return s
 }
 
-// Events returns the legacy non-protocol bus carrying chat-screen-
-// internal control signals: ConfigChangedEvent, ErrorEvent,
-// SystemNoticeEvent. Protocol events — including dispatch lifecycle
-// — flow through the user-client subscription's events channel; see
-// [Session.User].
+// Events returns the non-protocol bus carrying chat-screen-internal
+// control signals: ConfigChangedEvent, ErrorEvent, SystemNoticeEvent.
+// Protocol events — including dispatch lifecycle — flow through the
+// user-client subscription's events channel; see [Session.User].
 func (s *Session) Events() <-chan domain.Event {
 	return s.events
 }
@@ -2197,7 +2196,7 @@ func (s *Session) LogEvent(ctx context.Context, ch domain.ChannelName, event dom
 // emit routes an event to its bus. Protocol events fan out to
 // the subscriber registry — model-clients pick up dispatch
 // triggers from there; non-protocol UI events go to `s.events`
-// for the chat-screen's legacy bus. The context is threaded
+// for the chat-screen's non-protocol bus. The context is threaded
 // through to preserve OTel trace parenting and to honour
 // cancellation during fan-out.
 func (s *Session) emit(ctx context.Context, evt domain.Event) {

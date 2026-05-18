@@ -37,7 +37,7 @@ func renderChannelEvent[C command.KindProvider](
 		highlighted := ContainsHighlightWord(e.Body, highlightWords, userNick)
 		body := renderIRCBody(e.Body)
 
-		seed := nickColourSeed(e.InstanceID, e.From)
+		seed := string(e.InstanceID)
 
 		if e.Action {
 			nick := theme.NickStyle(seed).Render(string(e.From))
@@ -207,19 +207,17 @@ func formatTimestampPrefix(at time.Time, format *string, locale language.Tag) st
 }
 
 func renderWhoisEvent(w domain.Whois) string {
-	nick, modelID, persona, channels := whoisFields(w)
-
 	lines := []string{
-		fmt.Sprintf("%s is %s", nick, modelID),
+		fmt.Sprintf("%s is %s", w.Nick, w.ModelID),
 	}
 
-	if persona != "" {
-		lines = append(lines, fmt.Sprintf("  persona: %s", persona))
+	if w.Persona != "" {
+		lines = append(lines, fmt.Sprintf("  persona: %s", w.Persona))
 	}
 
-	if len(channels) > 0 {
-		strs := make([]string, len(channels))
-		for i, ch := range channels {
+	if len(w.Channels) > 0 {
+		strs := make([]string, len(w.Channels))
+		for i, ch := range w.Channels {
 			strs[i] = string(ch)
 		}
 
@@ -232,34 +230,6 @@ func renderWhoisEvent(w domain.Whois) string {
 	}
 
 	return strings.Join(parts, "\n")
-}
-
-// whoisFields returns the identity fields a whois render needs,
-// preferring the immutable snapshot recorded at emission time. For
-// legacy events written before the snapshot fields existed, the
-// stored `*Instance` is the only carrier — its values were frozen at
-// JSON marshal time, so dereferencing on a fresh-from-store handle
-// is still IRC-faithful. The live-pointer hazard only exists between
-// emission and the first persistence round-trip; the new snapshot
-// path closes that window.
-func whoisFields(w domain.Whois) (domain.Nick, domain.ModelID, string, []domain.ChannelName) {
-	if w.Nick != "" || w.ModelID != "" || w.Persona != "" || len(w.Channels) > 0 {
-		return w.Nick, w.ModelID, w.Persona, w.Channels
-	}
-
-	if w.Instance == nil {
-		return "", "", "", nil
-	}
-
-	var legacyChannels []domain.ChannelName
-	if c := w.Instance.Channels(); c != nil && c.Len() > 0 {
-		legacyChannels = make([]domain.ChannelName, 0, c.Len())
-		for pair := c.Oldest(); pair != nil; pair = pair.Next() {
-			legacyChannels = append(legacyChannels, pair.Key)
-		}
-	}
-
-	return w.Instance.Nick(), w.Instance.ModelID, w.Instance.Persona(), legacyChannels
 }
 
 func renderListReplyEvent(r domain.ListReply) string {
@@ -369,18 +339,4 @@ func renderIRCBody(body string) string {
 	}
 
 	return strings.TrimSuffix(builder.String(), "\n")
-}
-
-// nickColourSeed returns the value to hash into a nick colour. The
-// immutable InstanceID is preferred so a `/nick` rename keeps an
-// author's historical messages on the same colour. The nick is the
-// fallback for legacy stored events written before InstanceID was
-// threaded onto Message; those rows hash on the snapshotted
-// nick at storage time, which is stable in its own right.
-func nickColourSeed(id domain.InstanceID, nick domain.Nick) string {
-	if id != "" {
-		return string(id)
-	}
-
-	return string(nick)
 }

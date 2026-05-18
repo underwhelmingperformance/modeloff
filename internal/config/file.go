@@ -13,7 +13,6 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/observability"
 )
 
@@ -108,24 +107,7 @@ func (s *FileStore) Load(ctx context.Context) (Config, error) {
 			return err
 		}
 
-		if err := json.Unmarshal(data, &cfg); err != nil {
-			return err
-		}
-
-		// Backward compat: migrate the old "nick_model" key.
-		var raw map[string]json.RawMessage
-		if err := json.Unmarshal(data, &raw); err == nil {
-			if _, hasNew := raw["small_model"]; !hasNew {
-				if v, ok := raw["nick_model"]; ok {
-					var old domain.ModelID
-					if err := json.Unmarshal(v, &old); err == nil && old != "" {
-						cfg.SmallModel = old
-					}
-				}
-			}
-		}
-
-		return nil
+		return json.Unmarshal(data, &cfg)
 	})
 	if err != nil {
 		return Config{}, err

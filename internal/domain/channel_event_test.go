@@ -148,9 +148,10 @@ func TestChannelEvent_JSON_round_trip(t *testing.T) {
 		{
 			name: "whois",
 			event: domain.Whois{
-				Target:   "#general",
-				Instance: domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil),
-				At:       ts,
+				Target:  "#general",
+				Nick:    "botty",
+				ModelID: "test/model",
+				At:      ts,
 			},
 		},
 		{
