@@ -531,6 +531,7 @@ func (b InputBar) KeyBindings() []ui.KeyBinding {
 		b.keyMap.DeleteWordBack,
 		b.keyMap.DeleteWordFwd,
 		b.keyMap.DeleteToEnd,
+		ui.WithBindingEnabled(b.keyMap.Yank, len(b.input.killRing) > 0),
 		b.keyMap.Transpose,
 		b.keyMap.Home,
 		b.keyMap.End,

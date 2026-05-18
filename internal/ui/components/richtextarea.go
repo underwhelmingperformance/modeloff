@@ -66,7 +66,11 @@ type RichTextarea struct {
 	palette        colourPalette
 	lastClickAt    time.Time
 	lastClickPos   richtext.Position
+
+	killRing []string
 }
+
+const killRingCap = 16
 
 // NewRichTextarea creates a new editor.
 func NewRichTextarea(config RichTextareaConfig) RichTextarea {
@@ -397,13 +401,12 @@ func (r RichTextarea) handleEditorKey(msg tea.KeyMsg) (RichTextarea, bool, tea.C
 	switch msg.String() {
 	case "alt+d":
 		if !r.selection.Collapsed() {
-			r.deleteSelection()
+			r.killSelection()
 			return r, true, nil
 		}
 		end := r.document.MoveWordRight(r.position)
-		r.position = r.document.Delete(richtext.Selection{Anchor: r.position, Head: end})
-		r.selection = richtext.Selection{Anchor: r.position, Head: r.position}
-		return r.ensureViewport(), true, nil
+		r.killRange(richtext.Selection{Anchor: r.position, Head: end})
+		return r, true, nil
 	case "ctrl+left":
 		r.moveCursor(r.document.MoveWordLeft(r.position), extendSelection)
 		return r, true, nil
@@ -436,27 +439,27 @@ func (r RichTextarea) handleEditorKey(msg tea.KeyMsg) (RichTextarea, bool, tea.C
 		return r, true, nil
 	case "ctrl+k":
 		if !r.selection.Collapsed() {
-			r.deleteSelection()
+			r.killSelection()
 			return r, true, nil
 		}
 		end := richtext.Position{
 			Line:    r.position.Line,
 			Cluster: r.document.LineClusterCount(r.position.Line),
 		}
-		r.position = r.document.Delete(richtext.Selection{Anchor: r.position, Head: end})
-		r.selection = richtext.Selection{Anchor: r.position, Head: r.position}
-		return r.ensureViewport(), true, nil
+		r.killRange(richtext.Selection{Anchor: r.position, Head: end})
+		return r, true, nil
 	case "ctrl+t":
 		return r.transposeChars(), true, nil
 	case "ctrl+w", "alt+backspace":
 		if !r.selection.Collapsed() {
-			r.deleteSelection()
+			r.killSelection()
 			return r, true, nil
 		}
 		start := r.document.MoveWordLeft(r.position)
-		r.position = r.document.Delete(richtext.Selection{Anchor: start, Head: r.position})
-		r.selection = richtext.Selection{Anchor: r.position, Head: r.position}
-		return r.ensureViewport(), true, nil
+		r.killRange(richtext.Selection{Anchor: start, Head: r.position})
+		return r, true, nil
+	case "ctrl+y":
+		return r.yank(), true, nil
 	case "backspace":
 		if !r.selection.Collapsed() {
 			r.deleteSelection()
@@ -627,6 +630,83 @@ func (r *RichTextarea) deleteSelection() {
 	r.position = r.document.Delete(r.selection)
 	r.selection = richtext.Selection{Anchor: r.position, Head: r.position}
 	*r = r.ensureViewport()
+}
+
+// killSelection records the current selection text on the kill ring
+// and deletes it from the document.
+func (r *RichTextarea) killSelection() {
+	r.recordKill(r.selectionText(r.selection))
+	r.deleteSelection()
+}
+
+// killRange records the selected range's text on the kill ring and
+// removes it from the document.
+func (r *RichTextarea) killRange(selection richtext.Selection) {
+	r.recordKill(r.selectionText(selection))
+	r.position = r.document.Delete(selection)
+	r.selection = richtext.Selection{Anchor: r.position, Head: r.position}
+	*r = r.ensureViewport()
+}
+
+// recordKill prepends text to the kill ring (newest first), capping
+// the ring to killRingCap entries. Empty kills are dropped.
+func (r *RichTextarea) recordKill(text string) {
+	if text == "" {
+		return
+	}
+
+	ring := make([]string, 0, len(r.killRing)+1)
+	ring = append(ring, text)
+	ring = append(ring, r.killRing...)
+	if len(ring) > killRingCap {
+		ring = ring[:killRingCap]
+	}
+
+	r.killRing = ring
+}
+
+// yank inserts the most recently killed text at the cursor. Empty
+// ring is a no-op.
+func (r RichTextarea) yank() RichTextarea {
+	if len(r.killRing) == 0 {
+		return r
+	}
+
+	r.insertText(r.killRing[0])
+
+	return r
+}
+
+// selectionText returns the plain text covered by the selection. It
+// spans line breaks with `\n`.
+func (r RichTextarea) selectionText(selection richtext.Selection) string {
+	start, end := selection.Normalized()
+	start = r.document.ClampPosition(start)
+	end = r.document.ClampPosition(end)
+	if start == end {
+		return ""
+	}
+
+	if start.Line == end.Line {
+		return clustersText(r.document.LineClusters(start.Line)[start.Cluster:end.Cluster])
+	}
+
+	parts := []string{clustersText(r.document.LineClusters(start.Line)[start.Cluster:])}
+	for line := start.Line + 1; line < end.Line; line++ {
+		parts = append(parts, r.document.LinePlain(line))
+	}
+	parts = append(parts, clustersText(r.document.LineClusters(end.Line)[:end.Cluster]))
+
+	return strings.Join(parts, "\n")
+}
+
+func clustersText(clusters []richtext.Grapheme) string {
+	var b strings.Builder
+	for _, cluster := range clusters {
+		b.WriteString(cluster.Text)
+	}
+
+	return b.String()
 }
 
 func (r *RichTextarea) moveCursor(next richtext.Position, extend bool) {

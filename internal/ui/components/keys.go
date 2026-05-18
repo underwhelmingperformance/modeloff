@@ -72,6 +72,7 @@ type InputBarKeyMap struct {
 	DeleteWordBack  ui.KeyBinding
 	DeleteWordFwd   ui.KeyBinding
 	DeleteToEnd     ui.KeyBinding
+	Yank            ui.KeyBinding
 	Transpose       ui.KeyBinding
 	Home            ui.KeyBinding
 	End             ui.KeyBinding
@@ -118,6 +119,10 @@ var DefaultInputBarKeyMap = InputBarKeyMap{
 	DeleteToEnd: ui.Bind(key.NewBinding(
 		key.WithKeys("ctrl+k"),
 		key.WithHelp("^K", "del → end"),
+	)),
+	Yank: ui.Bind(key.NewBinding(
+		key.WithKeys("ctrl+y"),
+		key.WithHelp("^Y", "yank"),
 	)),
 	Transpose: ui.Bind(key.NewBinding(
 		key.WithKeys("ctrl+t"),

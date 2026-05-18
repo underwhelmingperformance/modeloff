@@ -244,6 +244,80 @@ func TestRichTextareaPaletteKeyboardTargetsBackgroundForSelection(t *testing.T) 
 	}, editor.document.Line(0).Spans)
 }
 
+func TestRichTextareaKillRing_CtrlW_then_CtrlY_restores_word(t *testing.T) {
+	editor := NewRichTextarea(RichTextareaConfig{SingleLine: true})
+	editor = editor.SetPlainText("hello world")
+	editor = editor.SetCursorFromRuneIndex(11)
+
+	updated, _ := editor.Update(tea.KeyMsg{Type: tea.KeyCtrlW})
+	editor = updated.(RichTextarea)
+	require.Equal(t, "hello ", editor.Value())
+	require.Equal(t, []string{"world"}, editor.killRing)
+
+	updated, _ = editor.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	editor = updated.(RichTextarea)
+	require.Equal(t, "hello world", editor.Value())
+}
+
+func TestRichTextareaKillRing_CtrlK_then_CtrlY_restores_tail(t *testing.T) {
+	editor := NewRichTextarea(RichTextareaConfig{SingleLine: true})
+	editor = editor.SetPlainText("hello world")
+	editor = editor.SetCursorFromRuneIndex(5)
+
+	updated, _ := editor.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
+	editor = updated.(RichTextarea)
+	require.Equal(t, "hello", editor.Value())
+	require.Equal(t, []string{" world"}, editor.killRing)
+
+	updated, _ = editor.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	editor = updated.(RichTextarea)
+	require.Equal(t, "hello world", editor.Value())
+}
+
+func TestRichTextareaKillRing_AltD_then_CtrlY_restores_forward_word(t *testing.T) {
+	editor := NewRichTextarea(RichTextareaConfig{SingleLine: true})
+	editor = editor.SetPlainText("hello world")
+	editor = editor.SetCursorFromRuneIndex(0)
+
+	updated, _ := editor.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}, Alt: true})
+	editor = updated.(RichTextarea)
+	require.Equal(t, " world", editor.Value())
+	require.Equal(t, []string{"hello"}, editor.killRing)
+
+	updated, _ = editor.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	editor = updated.(RichTextarea)
+	require.Equal(t, "hello world", editor.Value())
+}
+
+func TestRichTextareaKillRing_Empty_CtrlY_noop(t *testing.T) {
+	editor := NewRichTextarea(RichTextareaConfig{SingleLine: true})
+	editor = editor.SetPlainText("abc")
+	editor = editor.SetCursorFromRuneIndex(1)
+
+	updated, _ := editor.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	editor = updated.(RichTextarea)
+
+	require.Equal(t, "abc", editor.Value())
+	require.Equal(t, richtext.Position{Line: 0, Cluster: 1}, editor.position)
+}
+
+func TestRichTextareaKillRing_RetainsOrderAndCap(t *testing.T) {
+	editor := NewRichTextarea(RichTextareaConfig{SingleLine: true})
+
+	for i := range killRingCap + 4 {
+		editor = editor.SetPlainText("word" + string(rune('A'+i)))
+		editor = editor.SetCursorFromRuneIndex(len([]rune(editor.Value())))
+
+		// Reset the kill ring once on the first iteration; ensure
+		// successive kills append in newest-first order.
+		updated, _ := editor.Update(tea.KeyMsg{Type: tea.KeyCtrlW})
+		editor = updated.(RichTextarea)
+	}
+
+	require.Len(t, editor.killRing, killRingCap)
+	require.Equal(t, "word"+string(rune('A'+killRingCap+3)), editor.killRing[0])
+}
+
 func TestRichTextareaTransposeChars(t *testing.T) {
 	tests := []struct {
 		name       string
