@@ -959,17 +959,83 @@ func (r RichTextarea) renderStatus(width int) string {
 }
 
 func (r RichTextarea) renderPalette(width int) string {
-	swatches := make([]string, 0, 17)
-	for index := 0; index <= 16; index++ {
-		swatches = append(swatches, r.renderSwatch(index))
-	}
-
 	target := "fg"
 	if r.palette.target == colourTargetBackground {
 		target = "bg"
 	}
 
-	return theme.Dim.Width(width).Render(target + ": " + strings.Join(swatches, " "))
+	prefix := target + ": "
+	const (
+		swatchWidth     = 2
+		separatorWidth  = 1
+		chevronWidth    = 2 // glyph + trailing space
+		swatchCount     = 17
+		swatchStride    = swatchWidth + separatorWidth
+		minSwatchBudget = swatchWidth
+	)
+
+	available := width - lipgloss.Width(prefix)
+	if available < minSwatchBudget {
+		return theme.Dim.Width(width).Render(prefix)
+	}
+
+	first, last, leftChevron, rightChevron := paletteVisibleRange(r.palette.index, swatchCount, available, chevronWidth, swatchStride)
+
+	parts := make([]string, 0, swatchCount+2)
+	if leftChevron {
+		parts = append(parts, theme.Dim.Render("‹"))
+	}
+	for index := first; index <= last; index++ {
+		parts = append(parts, r.renderSwatch(index))
+	}
+	if rightChevron {
+		parts = append(parts, theme.Dim.Render("›"))
+	}
+
+	return theme.Dim.Width(width).Render(prefix + strings.Join(parts, " "))
+}
+
+// paletteVisibleRange picks a window of swatch indexes [first, last]
+// that fits the available width while keeping the active swatch
+// visible. When swatches sit outside the window, the chevrons take
+// their share of the budget too.
+func paletteVisibleRange(active, count, available, chevronWidth, stride int) (int, int, bool, bool) {
+	capacity := (available + 1) / stride // count of swatches that fit ignoring chevrons
+	if capacity >= count {
+		return 0, count - 1, false, false
+	}
+
+	first := max(active-capacity/2, 0)
+	last := first + capacity - 1
+	if last >= count {
+		last = count - 1
+		first = last - capacity + 1
+	}
+
+	leftChevron := first > 0
+	rightChevron := last < count-1
+	chevronCount := 0
+	if leftChevron {
+		chevronCount++
+	}
+	if rightChevron {
+		chevronCount++
+	}
+
+	// Subtract the chevron budget and recompute if needed.
+	if chevronCount > 0 {
+		capacity = max((available-chevronCount*chevronWidth+1)/stride, 1)
+		first = max(active-capacity/2, 0)
+		last = first + capacity - 1
+		if last >= count {
+			last = count - 1
+			first = last - capacity + 1
+		}
+		leftChevron = first > 0
+		rightChevron = last < count-1
+	}
+
+	return first, last, leftChevron, rightChevron
 }
 
 // renderSwatch returns the visual for a single palette swatch in

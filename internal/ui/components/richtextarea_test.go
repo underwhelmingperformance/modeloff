@@ -260,6 +260,46 @@ func TestRichTextareaPaletteMouseAppliesForeground(t *testing.T) {
 	require.NotNil(t, editor.pending.FG)
 }
 
+func TestRichTextareaPaletteScrollsToKeepActiveVisible(t *testing.T) {
+	tests := []struct {
+		name        string
+		width       int
+		index       int
+		wantContain string
+		wantLeft    bool
+		wantRight   bool
+	}{
+		{name: "fits at 80", width: 80, index: 8, wantContain: "-- 00 01 02 03 04 05 06 07 08 09 10 11 12 13 14 15", wantLeft: false, wantRight: false},
+		{name: "narrow, active near start", width: 40, index: 0, wantContain: "-- 00", wantLeft: false, wantRight: true},
+		{name: "narrow, active near middle", width: 40, index: 8, wantContain: "08", wantLeft: true, wantRight: true},
+		{name: "narrow, active at end", width: 40, index: 16, wantContain: "15", wantLeft: true, wantRight: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			editor := NewRichTextarea(RichTextareaConfig{AllowFormatting: true})
+			editor.palette.open = true
+			editor.palette.index = tt.index
+
+			view := editor.PaletteView(tt.width)
+			stripped := uitest.StripANSI(view)
+
+			require.Equal(t, tt.width, lipgloss.Width(view), "rendered width must match the budget")
+			require.Contains(t, stripped, tt.wantContain)
+			if tt.wantLeft {
+				require.Contains(t, stripped, "‹")
+			} else {
+				require.NotContains(t, stripped, "‹")
+			}
+			if tt.wantRight {
+				require.Contains(t, stripped, "›")
+			} else {
+				require.NotContains(t, stripped, "›")
+			}
+		})
+	}
+}
+
 func TestRichTextareaPaletteLabelsNoColourClearly(t *testing.T) {
 	editor := NewRichTextarea(RichTextareaConfig{AllowFormatting: true})
 	editor.palette.open = true
