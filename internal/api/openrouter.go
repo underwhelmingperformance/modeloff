@@ -422,18 +422,45 @@ func (c *OpenRouterClient) ContinueWithToolResults(
 	return result, nil
 }
 
+// messageRole is the openai role a coalesced run emits under.
+type messageRole string
+
+const (
+	roleSystem    messageRole = "system"
+	roleUser      messageRole = "user"
+	roleAssistant messageRole = "assistant"
+)
+
+// messageRun is a contiguous sequence of content carrying the same
+// role. `buildMessages` accumulates runs as it walks history and
+// events, then emits each run as one openai message — single-part
+// runs collapse to a plain-string body, multi-part runs become an
+// array of text content parts.
+type messageRun struct {
+	role  messageRole
+	parts []string
+}
+
 func buildMessages(
 	systemPrompt string,
 	selfInstanceID domain.InstanceID,
 	history []protocol.IRCMessage,
 	events []protocol.IRCMessage,
 ) []openai.ChatCompletionMessageParamUnion {
-	msgs := []openai.ChatCompletionMessageParamUnion{openai.SystemMessage(systemPrompt)}
+	runs := []messageRun{{role: roleSystem, parts: []string{systemPrompt}}}
+
+	addPart := func(role messageRole, text string) {
+		if last := len(runs) - 1; last >= 0 && runs[last].role == role {
+			runs[last].parts = append(runs[last].parts, text)
+			return
+		}
+		runs = append(runs, messageRun{role: role, parts: []string{text}})
+	}
 
 	appendMsg := func(m protocol.IRCMessage) {
 		// POKE bodies are session-side directives; emit as system role.
 		if m.Kind == protocol.KindPoke {
-			msgs = append(msgs, openai.SystemMessage(m.Body))
+			addPart(roleSystem, m.Body)
 			return
 		}
 
@@ -445,9 +472,9 @@ func buildMessages(
 
 		data, _ := json.Marshal(m)
 		if isSelf {
-			msgs = append(msgs, openai.AssistantMessage(string(data)))
+			addPart(roleAssistant, string(data))
 		} else {
-			msgs = append(msgs, openai.UserMessage(string(data)))
+			addPart(roleUser, string(data))
 		}
 	}
 
@@ -463,7 +490,56 @@ func buildMessages(
 		appendMsg(e)
 	}
 
+	msgs := make([]openai.ChatCompletionMessageParamUnion, 0, len(runs))
+	for _, r := range runs {
+		msgs = append(msgs, runToMessage(r))
+	}
+
 	return msgs
+}
+
+func runToMessage(r messageRun) openai.ChatCompletionMessageParamUnion {
+	switch r.role {
+	case roleSystem:
+		if len(r.parts) == 1 {
+			return openai.SystemMessage(r.parts[0])
+		}
+
+		parts := make([]openai.ChatCompletionContentPartTextParam, len(r.parts))
+		for i, p := range r.parts {
+			parts[i] = openai.ChatCompletionContentPartTextParam{Text: p}
+		}
+
+		return openai.SystemMessage(parts)
+
+	case roleAssistant:
+		if len(r.parts) == 1 {
+			return openai.AssistantMessage(r.parts[0])
+		}
+
+		parts := make([]openai.ChatCompletionAssistantMessageParamContentArrayOfContentPartUnion, len(r.parts))
+		for i, p := range r.parts {
+			parts[i] = openai.ChatCompletionAssistantMessageParamContentArrayOfContentPartUnion{
+				OfText: &openai.ChatCompletionContentPartTextParam{Text: p},
+			}
+		}
+
+		return openai.AssistantMessage(parts)
+
+	case roleUser:
+		if len(r.parts) == 1 {
+			return openai.UserMessage(r.parts[0])
+		}
+
+		parts := make([]openai.ChatCompletionContentPartUnionParam, len(r.parts))
+		for i, p := range r.parts {
+			parts[i] = openai.TextContentPart(p)
+		}
+
+		return openai.UserMessage(parts)
+	}
+
+	return openai.ChatCompletionMessageParamUnion{}
 }
 
 type structuredModelResponse struct {

@@ -371,7 +371,8 @@ func TestBuildMessages_self_messages_are_assistant_role_in_history(t *testing.T)
 
 	msgs := buildMessages("system prompt", selfID, history, events)
 
-	require.Equal(t, []string{"system", "assistant", "user", "user"}, messageRoles(msgs))
+	require.Equal(t, []string{"system", "assistant", "user"}, messageRoles(msgs),
+		"alice + bob share the user role and coalesce")
 }
 
 func TestBuildMessages_self_events_are_excluded(t *testing.T) {
@@ -385,7 +386,9 @@ func TestBuildMessages_self_events_are_excluded(t *testing.T) {
 
 	msgs := buildMessages("system prompt", selfID, nil, events)
 
-	require.Equal(t, []string{"system", "user", "user"}, messageRoles(msgs))
+	require.Equal(t, []string{"system", "user"}, messageRoles(msgs),
+		"bob's trigger and alice's trigger surround a filtered self-event; "+
+			"the surviving user-role triggers coalesce into one message")
 }
 
 func TestBuildMessages_survives_nick_rename(t *testing.T) {
@@ -399,7 +402,57 @@ func TestBuildMessages_survives_nick_rename(t *testing.T) {
 
 	msgs := buildMessages("system prompt", selfID, history, nil)
 
-	require.Equal(t, []string{"system", "assistant", "assistant", "user"}, messageRoles(msgs))
+	require.Equal(t, []string{"system", "assistant", "user"}, messageRoles(msgs),
+		"the two self entries coalesce into one assistant message")
+}
+
+// TestBuildMessages_coalesces_same_role_runs pins that consecutive
+// history/event items mapping to the same role land in a single
+// openai message with multi-part text content. Alternating roles
+// stay as separate messages.
+func TestBuildMessages_coalesces_same_role_runs(t *testing.T) {
+	const selfID = "inst-self"
+
+	history := []protocol.IRCMessage{
+		{Kind: protocol.KindPrivMsg, From: "alice", Target: "#room", Body: "alice-1"},
+		{Kind: protocol.KindPrivMsg, From: "bob", Target: "#room", Body: "bob-1"},
+		{Kind: protocol.KindPrivMsg, From: "self-nick", InstanceID: selfID, Target: "#room", Body: "self-1"},
+		{Kind: protocol.KindPrivMsg, From: "self-nick", InstanceID: selfID, Target: "#room", Body: "self-2"},
+		{Kind: protocol.KindPrivMsg, From: "alice", Target: "#room", Body: "alice-2"},
+	}
+	events := []protocol.IRCMessage{
+		{Kind: protocol.KindPrivMsg, From: "alice", Target: "#room", Body: "alice-3"},
+	}
+
+	want := []openai.ChatCompletionMessageParamUnion{
+		openai.SystemMessage("system prompt"),
+		openai.UserMessage([]openai.ChatCompletionContentPartUnionParam{
+			openai.TextContentPart(ircJSON(t, history[0])),
+			openai.TextContentPart(ircJSON(t, history[1])),
+		}),
+		openai.AssistantMessage([]openai.ChatCompletionAssistantMessageParamContentArrayOfContentPartUnion{
+			{OfText: &openai.ChatCompletionContentPartTextParam{Text: ircJSON(t, history[2])}},
+			{OfText: &openai.ChatCompletionContentPartTextParam{Text: ircJSON(t, history[3])}},
+		}),
+		openai.UserMessage([]openai.ChatCompletionContentPartUnionParam{
+			openai.TextContentPart(ircJSON(t, history[4])),
+			openai.TextContentPart(ircJSON(t, events[0])),
+		}),
+	}
+
+	require.Equal(t, want, buildMessages("system prompt", selfID, history, events))
+}
+
+// ircJSON marshals `m` with the `InstanceID` stripped, matching the
+// wire shape `buildMessages` puts into a content part.
+func ircJSON(t *testing.T, m protocol.IRCMessage) string {
+	t.Helper()
+
+	m.InstanceID = ""
+	data, err := json.Marshal(m)
+	require.NoError(t, err)
+
+	return string(data)
 }
 
 func TestBuildMessages_poke_is_system_message(t *testing.T) {
@@ -409,10 +462,14 @@ func TestBuildMessages_poke_is_system_message(t *testing.T) {
 		{Kind: protocol.KindPoke, From: "modeloff", Target: "#room", Body: pokeBody},
 	}
 
-	msgs := buildMessages("system prompt", "", nil, events)
+	want := []openai.ChatCompletionMessageParamUnion{
+		openai.SystemMessage([]openai.ChatCompletionContentPartTextParam{
+			{Text: "system prompt"},
+			{Text: pokeBody},
+		}),
+	}
 
-	require.Equal(t, []string{"system", "system"}, messageRoles(msgs))
-	require.Equal(t, []string{"system prompt", pokeBody}, messageContents(msgs))
+	require.Equal(t, want, buildMessages("system prompt", "", nil, events))
 }
 
 func TestBuildMessages_instance_id_stripped_from_json(t *testing.T) {
@@ -466,29 +523,23 @@ func TestOpenRouterClient_SendEventsWithHistory(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	var wantMsgs []map[string]any
+	historyJSON, err := json.Marshal(history[0])
+	require.NoError(t, err)
+	eventJSON, err := json.Marshal(events[0])
+	require.NoError(t, err)
 
-	wantMsgs = append(wantMsgs, map[string]any{
-		"role":    "system",
-		"content": "System prompt",
-	})
-
-	for _, h := range history {
-		data, err := json.Marshal(h)
-		require.NoError(t, err)
-		wantMsgs = append(wantMsgs, map[string]any{
-			"role":    "user",
-			"content": string(data),
-		})
-	}
-
-	for _, e := range events {
-		data, err := json.Marshal(e)
-		require.NoError(t, err)
-		wantMsgs = append(wantMsgs, map[string]any{
-			"role":    "user",
-			"content": string(data),
-		})
+	wantMsgs := []map[string]any{
+		{
+			"role":    "system",
+			"content": "System prompt",
+		},
+		{
+			"role": "user",
+			"content": []map[string]any{
+				{"type": "text", "text": string(historyJSON)},
+				{"type": "text", "text": string(eventJSON)},
+			},
+		},
 	}
 
 	wantJSON, err := json.Marshal(wantMsgs)
