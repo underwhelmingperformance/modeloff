@@ -58,6 +58,7 @@ func runTurn(
 	history []protocol.IRCMessage,
 	events []protocol.IRCMessage,
 	registry *ToolRegistry,
+	pacer *Pacer,
 ) (turnOutcome, error) {
 	definitions := registry.Definitions()
 
@@ -88,7 +89,7 @@ func runTurn(
 			Actor:   inst,
 			Channel: channelName,
 			Client:  caller,
-		}, registry, result.PendingToolCalls)
+		}, registry, result.PendingToolCalls, pacer)
 		outcome.toolTurnCount++
 
 		if sawPass {
@@ -144,6 +145,7 @@ func executeTools(
 	toolCtx ToolContext,
 	registry *ToolRegistry,
 	calls []api.PendingToolCall,
+	pacer *Pacer,
 ) ([]api.ToolResult, bool) {
 	if reject := rejectMixedPass(calls); reject != nil {
 		return reject, true
@@ -163,6 +165,10 @@ func executeTools(
 				attribute.String("tool.name", toolName),
 			),
 		)
+
+		if body, ok := pacingBody(toolName, call.Args); ok {
+			pacer.Wait(callCtx, body)
+		}
 
 		payload := ToolResultPayload{
 			OK:    false,

@@ -199,7 +199,7 @@ func (f *testModelClientFactory) Attach(ctx context.Context, sess *Session, inst
 	}
 
 	apiClient := f.apiClient
-	mc := modelclient.New(inst, sess, func() api.Client { return apiClient }, f.memStore, chatcmdToolRegistry, nil, sess.baseContext)
+	mc := modelclient.New(inst, sess, func() api.Client { return apiClient }, f.memStore, chatcmdToolRegistry, nil, sess.baseContext, nil)
 	f.clients[id] = mc
 	f.mu.Unlock()
 

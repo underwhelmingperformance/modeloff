@@ -120,7 +120,7 @@ func (d *Dispatcher) dispatchToInstances(
 		}
 
 		caller := d.sess.LookupClient(protocol.ClientID(inst.ID()))
-		if instErr := dispatchToInstance(ctx, d.sess, d.api, d.memStore, d.tools, ensure, caller, window, inst, channelName, historyEvents, events); instErr != nil {
+		if instErr := dispatchToInstance(ctx, d.sess, d.api, d.memStore, d.tools, ensure, nil, caller, window, inst, channelName, historyEvents, events); instErr != nil {
 			errs = append(errs, instErr)
 		}
 	}
@@ -140,6 +140,7 @@ func dispatchToInstance(
 	memStore memory.Store,
 	tools *ToolRegistry,
 	ensure EnsureStructuredOutputModel,
+	pacer *Pacer,
 	caller protocol.Client,
 	window domain.Window,
 	inst *domain.Instance,
@@ -208,7 +209,7 @@ func dispatchToInstance(
 		tools,
 	)
 
-	outcome, err := runTurn(ctx, apiClient, sess, caller, inst, channelName, prompt, history, events, registry)
+	outcome, err := runTurn(ctx, apiClient, sess, caller, inst, channelName, prompt, history, events, registry, pacer)
 	if err != nil {
 		instanceSpan.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
 		instanceSpan.SetStatus(codes.Error, err.Error())

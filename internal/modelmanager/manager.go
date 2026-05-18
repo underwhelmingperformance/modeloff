@@ -73,6 +73,24 @@ type Config struct {
 	// TracerProvider overrides the OTel tracer provider the
 	// manager records spans on. Defaults to the global provider.
 	TracerProvider trace.TracerProvider
+
+	// Pacer is the typing-delay [modelclient.Pacer] threaded into
+	// every attached model-client. Nil selects a default Pacer
+	// tuned for natural-feeling bot replies; explicit zero-valued
+	// pacers disable pacing.
+	Pacer *modelclient.Pacer
+}
+
+// defaultPacer returns the production typing-delay tuning. Floor
+// stops one-liners feeling instant; CPS gives longer replies a
+// proportional pause; jitter staggers concurrent bot dispatches.
+func defaultPacer() *modelclient.Pacer {
+	return &modelclient.Pacer{
+		Floor:  250 * time.Millisecond,
+		CPS:    40,
+		Jitter: 200 * time.Millisecond,
+		Rng:    modelclient.NewRandRandomiser(),
+	}
 }
 
 // ListState reports the manager's view of the cached model
@@ -107,6 +125,7 @@ type Manager struct {
 	baseContext func() context.Context
 	now         func() time.Time
 	tracer      trace.TracerProvider
+	pacer       *modelclient.Pacer
 
 	mu         sync.RWMutex
 	api        api.Client
@@ -143,6 +162,11 @@ func New(cfg Config) *Manager {
 		tracer = otel.GetTracerProvider()
 	}
 
+	pacer := cfg.Pacer
+	if pacer == nil {
+		pacer = defaultPacer()
+	}
+
 	return &Manager{
 		store:       cfg.Store,
 		memory:      cfg.Memory,
@@ -150,6 +174,7 @@ func New(cfg Config) *Manager {
 		baseContext: cfg.BaseContext,
 		now:         now,
 		tracer:      tracer,
+		pacer:       pacer,
 		api:         cfg.APIClient,
 		apiKey:      strings.TrimSpace(cfg.InitialAPIKey),
 		smallModel:  smallModel,
@@ -809,7 +834,7 @@ func (m *Manager) Attach(ctx context.Context, sess *session.Session, inst *domai
 		return existing, nil
 	}
 
-	mc := modelclient.New(inst, sess, m.APIClientGetter(), m.memory, m.tools, m.EnsureStructuredOutputModel, m.baseContext)
+	mc := modelclient.New(inst, sess, m.APIClientGetter(), m.memory, m.tools, m.EnsureStructuredOutputModel, m.baseContext, m.pacer)
 	m.clients[id] = mc
 	m.clientsMu.Unlock()
 

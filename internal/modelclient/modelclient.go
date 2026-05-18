@@ -78,6 +78,7 @@ type ModelClient struct {
 	memStore memory.Store
 	tools    *ToolRegistry
 	ensure   EnsureStructuredOutputModel
+	pacer    *Pacer
 
 	baseContext func() context.Context
 
@@ -102,6 +103,9 @@ type ModelClient struct {
 // `baseContext` supplies the long-lived context the dispatch
 // goroutine derives its lifetime from; cancelling it (and calling
 // [ModelClient.Detach]) is how the goroutine is woken at shutdown.
+//
+// `pacer` adds a typing delay before each chat-tool emit so bots
+// don't fire at machine speed; a nil `pacer` disables pacing.
 func New(
 	inst *domain.Instance,
 	sess Session,
@@ -110,6 +114,7 @@ func New(
 	tools *ToolRegistry,
 	ensure EnsureStructuredOutputModel,
 	baseContext func() context.Context,
+	pacer *Pacer,
 ) *ModelClient {
 	if ensure == nil {
 		ensure = noEnsure
@@ -121,6 +126,7 @@ func New(
 		memStore:    memStore,
 		tools:       tools,
 		ensure:      ensure,
+		pacer:       pacer,
 		baseContext: baseContext,
 		hist:        newHistory(),
 	}
