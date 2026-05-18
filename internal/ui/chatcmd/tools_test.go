@@ -194,8 +194,7 @@ func newToolTestSession(t *testing.T) *session.Session {
 
 	s := storetest.NewMemoryStore(t)
 	apiClient := toolTestAPI{}
-	factory := uitest.NewModelClientFactory(t, apiClient, nil, nil, t.Context)
-	sess := session.New(t.Context, s, nil, apiClient, factory, "testuser", "", "")
+	sess, _ := uitest.NewTestSession(t, s, apiClient, nil, nil, "", "", t.Context)
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 
 	return sess

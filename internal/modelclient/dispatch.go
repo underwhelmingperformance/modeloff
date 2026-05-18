@@ -202,7 +202,13 @@ func (mc *ModelClient) dispatchTurn(ctx context.Context, ch domain.ChannelName, 
 
 	mc.sess.Emit(ctx, domain.ModelDispatchStarted{Instance: inst, At: mc.sess.Now()})
 
-	replies, err := dispatchToInstance(ctx, mc.sess, mc.apiClient, mc.memStore, mc.tools, mc, window, inst, ch, historyEvents, []protocol.IRCMessage{trigger})
+	apiClient := mc.apiFn()
+	if apiClient == nil {
+		mc.sess.Emit(ctx, domain.ModelUnavailableError{Channel: ch, Nick: nick, At: mc.sess.Now()})
+		return
+	}
+
+	replies, err := dispatchToInstance(ctx, mc.sess, apiClient, mc.memStore, mc.tools, mc.ensure, mc, window, inst, ch, historyEvents, []protocol.IRCMessage{trigger})
 	if err != nil {
 		setSpanError(span, err, observability.ErrorKindDispatch)
 		mc.sess.Emit(ctx, domain.ModelUnavailableError{Channel: ch, Nick: nick, At: mc.sess.Now()})

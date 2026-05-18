@@ -115,22 +115,21 @@ func TestChatScreen_command_parse_failure_is_logged(t *testing.T) {
 }
 
 func TestChatScreen_keybind_toggle_nick_list_is_logged(t *testing.T) {
-	h := captureLogs(t)
+	logs := captureLogs(t)
 
-	sess := newTestSession(t)
-	uitest.SeedChannel(t, sess, "#general")
+	h := newTestSession(t)
+	uitest.SeedChannel(t, h.sess, "#general")
 
-	tm := newChatApp(t, sess)
+	tm := newChatApp(t, h)
 	tm.WaitFor("#general")
 
 	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlN})
 
-	// Send a follow-up event to ensure the keybind has been processed.
 	tm.Submit("hello after toggle")
 	tm.WaitFor("hello after toggle")
 
-	rec, found := h.find("keybind triggered")
-	require.True(t, found, "expected 'keybind triggered' log entry, got: %v", h.all())
+	rec, found := logs.find("keybind triggered")
+	require.True(t, found, "expected 'keybind triggered' log entry, got: %v", logs.all())
 	require.Equal(t, slog.LevelInfo, rec.Level)
 	require.Equal(t, "toggle_nick_list", rec.Attrs["action"])
 	require.Equal(t, "ui", rec.Attrs["component"])

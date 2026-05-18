@@ -62,11 +62,6 @@ type Session interface {
 	// for the given id.
 	ResolveInstanceByID(ctx context.Context, id domain.InstanceID) (*domain.Instance, error)
 
-	// EnsureStructuredOutputModel validates that the given model
-	// supports structured outputs, lazy-loading the catalogue if
-	// needed.
-	EnsureStructuredOutputModel(ctx context.Context, modelID domain.ModelID) error
-
 	// LookupClient returns the registered [protocol.Client] for
 	// the given identity, or nil if none is registered.
 	LookupClient(id protocol.ClientID) protocol.Client
@@ -81,11 +76,12 @@ type Session interface {
 // to register it with a session; call [ModelClient.Detach] to
 // release the subscription and join the dispatch goroutine.
 type ModelClient struct {
-	instance  *domain.Instance
-	sess      Session
-	apiClient api.Client
-	memStore  memory.Store
-	tools     *ToolRegistry
+	instance *domain.Instance
+	sess     Session
+	apiFn    func() api.Client
+	memStore memory.Store
+	tools    *ToolRegistry
+	ensure   EnsureStructuredOutputModel
 
 	baseContext func() context.Context
 
@@ -101,23 +97,34 @@ type ModelClient struct {
 // New returns an unattached `ModelClient` for `inst`. The client is
 // inert until [ModelClient.Attach] runs.
 //
+// `apiFn` is consulted once per dispatch turn to obtain the current
+// [api.Client], so a manager-driven `SetAPIKey` rebuild propagates
+// to the next turn without reattach. A nil return from `apiFn` is
+// the same signal as "no API key configured" — the dispatch turn
+// short-circuits to silence.
+//
 // `baseContext` supplies the long-lived context the dispatch
 // goroutine derives its lifetime from; cancelling it (and calling
 // [ModelClient.Detach]) is how the goroutine is woken at shutdown.
 func New(
 	inst *domain.Instance,
 	sess Session,
-	apiClient api.Client,
+	apiFn func() api.Client,
 	memStore memory.Store,
 	tools *ToolRegistry,
+	ensure EnsureStructuredOutputModel,
 	baseContext func() context.Context,
 ) *ModelClient {
+	if ensure == nil {
+		ensure = noEnsure
+	}
 	return &ModelClient{
 		instance:    inst,
 		sess:        sess,
-		apiClient:   apiClient,
+		apiFn:       apiFn,
 		memStore:    memStore,
 		tools:       tools,
+		ensure:      ensure,
 		baseContext: baseContext,
 		hist:        newHistory(),
 	}

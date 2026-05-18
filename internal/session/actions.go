@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -1018,28 +1017,10 @@ func (s *Session) addModelAs(
 	modelID domain.ModelID,
 	persona string,
 ) (*domain.Instance, error) {
-	logger := slog.Default().With("component", "session", "channel", ch, "model_id", modelID)
 	ctx, span := s.startSpan(ctx, "session.add_model", attribute.String(observability.AttrOperation, "session.add_model"))
 	defer span.End()
 
-	if err := s.ensureStructuredOutputModel(ctx, modelID); err != nil {
-		setSpanError(span, err, classifyEnsureModelError(err))
-		return nil, err
-	}
-
-	assignedPersona := strings.TrimSpace(persona)
-
-	if assignedPersona == "" {
-		if err := s.EnsurePersonas(ctx); err != nil {
-			logger.WarnContext(ctx, "persona pool generation failed", "error", err)
-		}
-
-		if p, err := s.RandomPersona(ctx); err == nil {
-			assignedPersona = p.Description
-		}
-	}
-
-	nick, err := s.generateUniqueNick(ctx, modelID, assignedPersona, logger)
+	nick, assignedPersona, err := s.modelClientFactory.PrepareInstance(ctx, s, modelID, persona)
 	if err != nil {
 		setSpanError(span, err, observability.ErrorKindDispatch)
 		return nil, err

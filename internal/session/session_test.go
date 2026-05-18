@@ -307,7 +307,7 @@ func newTestSessionWithAPI(t *testing.T, apiClient api.Client) (*Session, *store
 	s := storetest.NewMemoryStore(t)
 	factory := newTestModelClientFactory(t, apiClient)
 
-	sess := New(t.Context, s, nil, apiClient, factory, "testuser", "", "")
+	sess := New(t.Context, s, factory, "testuser")
 	// Cleanup uses `context.Background()` rather than `t.Context()`
 	// so [Session.Shutdown] actually waits for the dispatch
 	// goroutines to drain. `t.Context()` is cancelled BEFORE
@@ -695,7 +695,7 @@ func TestSession_Connect_Quit_Reconnect_omits_status_channel_from_autojoin(t *te
 		s := storetest.NewMemoryStore(t)
 
 		bootAt1 := time.Now()
-		sess1 := New(t.Context, s, nil, &fakeAPIClient{}, newTestModelClientFactory(t, &fakeAPIClient{}), "testuser", "", "")
+		sess1 := New(t.Context, s, newTestModelClientFactory(t, &fakeAPIClient{}), "testuser")
 		t.Cleanup(func() { _ = sess1.Shutdown(context.Background()) })
 		sess1.now = func() time.Time { return fixedTime }
 		ctx := t.Context()
@@ -741,7 +741,7 @@ func TestSession_Connect_Quit_Reconnect_omits_status_channel_from_autojoin(t *te
 		// Starting a fresh session over the same store must not replay the
 		// status channel into the autojoin loop.
 		bootAt2 := time.Now()
-		sess2 := New(t.Context, s, nil, &fakeAPIClient{}, newTestModelClientFactory(t, &fakeAPIClient{}), "testuser", "", "")
+		sess2 := New(t.Context, s, newTestModelClientFactory(t, &fakeAPIClient{}), "testuser")
 		t.Cleanup(func() { _ = sess2.Shutdown(context.Background()) })
 		sess2.now = func() time.Time { return fixedTime }
 		require.NoError(t, sess2.Connect(ctx))
@@ -766,7 +766,7 @@ func TestSession_Connect_unclean_recovery_emits_welcome_and_reconnected(t *testi
 	synctest.Test(t, func(t *testing.T) {
 		bootAt := time.Now()
 		s := storetest.NewMemoryStore(t)
-		sess := New(t.Context, s, nil, &fakeAPIClient{}, newTestModelClientFactory(t, &fakeAPIClient{}), "testuser", "", "")
+		sess := New(t.Context, s, newTestModelClientFactory(t, &fakeAPIClient{}), "testuser")
 		t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 		sess.now = func() time.Time { return fixedTime }
 		ctx := t.Context()
@@ -1292,7 +1292,7 @@ func TestSession_mutationOperations_recordSpans(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		recorder, provider := oteltest.NewSpanRecorder(t)
 		s := storetest.NewMemoryStore(t).WithTracerProvider(provider)
-		sess := New(t.Context, s, nil, &fakeAPIClient{}, newTestModelClientFactory(t, &fakeAPIClient{}), "testuser", "", "").WithTracerProvider(provider)
+		sess := New(t.Context, s, newTestModelClientFactory(t, &fakeAPIClient{}), "testuser").WithTracerProvider(provider)
 		t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 		sess.now = func() time.Time { return fixedTime }
 		ctx := t.Context()
@@ -1316,17 +1316,6 @@ func TestSession_mutationOperations_recordSpans(t *testing.T) {
 		require.NoError(t, sess.SetTopic(ctx, "#general", "observability"))
 		require.NoError(t, sess.ChangeNick(ctx, "renamed"))
 
-		require.NoError(t, sess.Reset(ctx))
-
-		// Background goroutines (Kick / Reset dispatch) end their spans
-		// asynchronously. [synctest.Wait] settles every bubbled
-		// goroutine before the assertion, so a single snapshot is
-		// authoritative. The construction-time `store.sqlite.migrate_v2`
-		// span is not included: the store is built before
-		// `WithTracerProvider` is chained on, so its migration scan
-		// lands on the default provider, not the test recorder. This
-		// test pins the session/store operation spans emitted during
-		// the act phase, which is what we care about.
 		expected := []string{
 			"session.change_nick",
 			"session.handle",
@@ -1334,13 +1323,11 @@ func TestSession_mutationOperations_recordSpans(t *testing.T) {
 			"session.kick",
 			"session.mark_read",
 			"session.part",
-			"session.reset",
 			"session.set_topic",
 			"store.sqlite.append_event",
 			"store.sqlite.events_before",
 			"store.sqlite.get_instance_by_id",
 			"store.sqlite.get_window",
-			"store.sqlite.reset",
 			"store.sqlite.resolve_nick",
 			"store.sqlite.save_instance",
 			"store.sqlite.save_window",
@@ -1543,7 +1530,7 @@ func TestSession_dispatchToInstance_recordsPassReasonAndToolTurns(t *testing.T) 
 			}, nil
 		},
 	}
-	sess := New(t.Context, dataStore, memStore, fake, newTestModelClientFactory(t, fake), "testuser", "", "").WithTracerProvider(provider)
+	sess := New(t.Context, dataStore, newTestModelClientFactoryWith(t, fake, memStore), "testuser").WithTracerProvider(provider)
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	sess.now = func() time.Time { return fixedTime }
 	ctx := t.Context()
@@ -2290,7 +2277,7 @@ func TestSession_ChangeNick(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		bootAt := time.Now()
 		s := storetest.NewMemoryStore(t)
-		sess := New(t.Context, s, nil, &fakeAPIClient{}, newTestModelClientFactory(t, &fakeAPIClient{}), "testuser", "", "")
+		sess := New(t.Context, s, newTestModelClientFactory(t, &fakeAPIClient{}), "testuser")
 		t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 		sess.now = func() time.Time { return fixedTime }
 
@@ -2336,78 +2323,6 @@ func TestSession_ChangeNick(t *testing.T) {
 
 		require.Equal(t, domain.Nick("newname"), sess.UserNick())
 	})
-}
-
-func TestSession_AddModel_retries_on_nick_collision(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		bootAt := time.Now()
-		suggestions := []domain.Nick{"taken", "alsotaken", "fresh"}
-		var seenExclusions [][]domain.Nick
-
-		fake := &fakeAPIClient{
-			generateNickFn: func(_ context.Context, _ domain.ModelID, _ string, exclude []domain.Nick) (domain.Nick, error) {
-				seenExclusions = append(seenExclusions, slices.Clone(exclude))
-
-				return suggestions[len(exclude)], nil
-			},
-		}
-
-		sess, s := newTestSessionWithAPI(t, fake)
-		ctx := t.Context()
-
-		// Pre-seed two instances with the colliding nicks so the first two
-		// suggestions get rejected by the session-side uniqueness guard.
-		_ = seedInstance(t, sess, s, instanceSpec{Nick: "taken", ModelID: "test/model"})
-		_ = seedInstance(t, sess, s, instanceSpec{Nick: "alsotaken", ModelID: "test/model"})
-
-		seedChannelWithMembers(t, sess, s, "#dev", "testuser")
-
-		require.NoError(t, addModelViaWire(ctx, t, sess, "#dev", "test/model", "Helpful assistant"))
-		synctest.Wait()
-
-		fresh, err := s.ResolveNick(ctx, "fresh")
-		require.NoError(t, err)
-
-		require.ElementsMatch(t, []domain.Event{
-			bootstrapModeChange(sess, bootAt),
-			domain.ModelInvited{
-				Target:     "#dev",
-				Nick:       "fresh",
-				InstanceID: fresh.ID(),
-				By:         "testuser",
-				At:         fixedTime,
-				Instance:   fresh,
-			},
-			domain.ModelDispatchStarted{Instance: fresh, At: fixedTime},
-			domain.ModelDispatchDone{Instance: fresh, At: fixedTime},
-		}, collectEmittedEvents(t, sess))
-
-		require.Equal(t, [][]domain.Nick{
-			nil,
-			{"taken"},
-			{"taken", "alsotaken"},
-		}, seenExclusions,
-			"each retry must pass the previously rejected suggestions to the model")
-	})
-}
-
-func TestSession_AddModel_gives_up_after_max_attempts(t *testing.T) {
-	fake := &fakeAPIClient{
-		generateNickFn: func(_ context.Context, _ domain.ModelID, _ string, _ []domain.Nick) (domain.Nick, error) {
-			return "taken", nil
-		},
-	}
-
-	sess, s := newTestSessionWithAPI(t, fake)
-	ctx := t.Context()
-
-	_ = seedInstance(t, sess, s, instanceSpec{Nick: "taken", ModelID: "test/model"})
-	seedChannelWithMembers(t, sess, s, "#dev", "testuser")
-
-	err := addModelViaWire(ctx, t, sess, "#dev", "test/model", "Helpful assistant")
-	require.EqualError(t, err,
-		fmt.Sprintf("generate nick: %d attempts exhausted, all suggestions collided",
-			maxNickGenerationAttempts))
 }
 
 func TestSession_ChangeNickAs_collisions(t *testing.T) {
@@ -2530,21 +2445,6 @@ func TestSession_InviteAs_existing_instance_to_nonexistent_channel_does_not_corr
 	inst, err := s.ResolveNick(ctx, "botty")
 	require.NoError(t, err)
 	requireChannels(t, inst.Channels(), "#general")
-}
-
-func TestSession_AddModelGenerateNickError(t *testing.T) {
-	fake := &fakeAPIClient{
-		generateNickFn: func(_ context.Context, _ domain.ModelID, _ string, _ []domain.Nick) (domain.Nick, error) {
-			return "", fmt.Errorf("API unavailable")
-		},
-	}
-
-	sess, s := newTestSessionWithAPI(t, fake)
-	ctx := t.Context()
-
-	saveTestChannel(t, sess, s, newTestChannelWindow("#dev", fixedTime, testMembers(t, sess, s, "testuser")))
-
-	require.Error(t, addModelViaWire(ctx, t, sess, "#dev", "anthropic/claude-3-haiku", ""))
 }
 
 func TestSession_AddModel_persists_persona(t *testing.T) {
@@ -2691,69 +2591,6 @@ func TestSession_InviteAs_existing_instance_preserves_persona(t *testing.T) {
 	})
 }
 
-func TestSession_AddModel_creates_new_instance_per_invocation(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		bootAt := time.Now()
-		sess, s := newTestSession(t)
-		ctx := t.Context()
-
-		seedChannelWithMembers(t, sess, s, "#general", "testuser")
-		seedChannelWithMembers(t, sess, s, "#random", "testuser")
-
-		require.NoError(t, addModelViaWire(ctx, t, sess, "#general", "test/model", "Helpful assistant"))
-		synctest.Wait()
-		require.NoError(t, addModelViaWire(ctx, t, sess, "#random", "test/model", ""))
-		synctest.Wait()
-
-		// The default fake `GenerateNick` returns "fakenick" first and
-		// then "fakenick1" on the second invocation (numbered by
-		// exclusion-list length); both names resolve to distinct
-		// instances.
-		first, err := s.ResolveNick(ctx, "fakenick")
-		require.NoError(t, err)
-		second, err := s.ResolveNick(ctx, "fakenick1")
-		require.NoError(t, err)
-
-		require.ElementsMatch(t, []domain.Event{
-			bootstrapModeChange(sess, bootAt),
-			domain.ModelInvited{
-				Target:     "#general",
-				Nick:       "fakenick",
-				InstanceID: first.ID(),
-				By:         "testuser",
-				At:         fixedTime,
-				Instance:   first,
-			},
-			domain.ModelDispatchStarted{Instance: first, At: fixedTime},
-			domain.ModelDispatchDone{Instance: first, At: fixedTime},
-			domain.ModelInvited{
-				Target:     "#random",
-				Nick:       "fakenick1",
-				InstanceID: second.ID(),
-				By:         "testuser",
-				At:         fixedTime,
-				Instance:   second,
-			},
-			domain.ModelDispatchStarted{Instance: second, At: fixedTime},
-			domain.ModelDispatchDone{Instance: second, At: fixedTime},
-		}, collectEmittedEvents(t, sess))
-
-		// Each invocation produces a fresh `*Instance` with its own id.
-		require.NotEqual(t, first.ID(), second.ID())
-		require.NotSame(t, first, second)
-
-		instances, err := s.ListInstances(ctx)
-		require.NoError(t, err)
-
-		ids := make([]domain.InstanceID, len(instances))
-		for i, inst := range instances {
-			ids[i] = inst.ID()
-		}
-
-		require.ElementsMatch(t, []domain.InstanceID{first.ID(), second.ID()}, ids)
-	})
-}
-
 func TestSession_KickNonexistentChannel(t *testing.T) {
 	sess, _ := newTestSession(t)
 
@@ -2809,7 +2646,7 @@ func TestSession_DispatchToChannel_includes_memory_in_prompt(t *testing.T) {
 		},
 	}
 	s := storetest.NewMemoryStore(t)
-	sess := New(t.Context, s, memStore, fake, newTestModelClientFactory(t, fake), "testuser", "", "")
+	sess := New(t.Context, s, newTestModelClientFactoryWith(t, fake, memStore), "testuser")
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	sess.now = func() time.Time { return fixedTime }
 
@@ -3012,81 +2849,6 @@ func TestSession_Join_marks_channel_as_read(t *testing.T) {
 	count, err := sess.UnreadCount(ctx, "#general")
 	require.NoError(t, err)
 	require.Equal(t, 0, count)
-}
-
-func TestSession_SetAPIKey(t *testing.T) {
-	s := storetest.NewMemoryStore(t)
-	initial := &fakeAPIClient{}
-	replacement := &fakeAPIClient{}
-	sess := New(t.Context, s, nil, initial, newTestModelClientFactory(t, initial), "testuser", "", "")
-	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
-	sess.SetAPIFactory(func(apiKey, _ string) (api.Client, error) {
-		require.Equal(t, "test-key", apiKey)
-		return replacement, nil
-	})
-
-	require.NoError(t, sess.SetAPIKey(t.Context(), "test-key", ""))
-	require.Equal(t, "test-key", sess.apiKey)
-	require.Same(t, replacement, sess.api)
-}
-
-func TestSession_SetAPIKey_factory_failure_keeps_existing_client(t *testing.T) {
-	s := storetest.NewMemoryStore(t)
-	initial := &fakeAPIClient{}
-	sess := New(t.Context, s, nil, initial, newTestModelClientFactory(t, initial), "testuser", "", "")
-	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
-	sess.SetAPIFactory(func(string, string) (api.Client, error) {
-		return nil, fmt.Errorf("boom")
-	})
-
-	err := sess.SetAPIKey(t.Context(), "test-key", "")
-	require.Error(t, err)
-	require.Same(t, initial, sess.api)
-	require.Equal(t, "", sess.apiKey)
-}
-
-func TestSession_SetBaseURL(t *testing.T) {
-	s := storetest.NewMemoryStore(t)
-
-	var factoryBaseURL string
-	factoryCalls := 0
-	newClient := &fakeAPIClient{}
-
-	sess := New(t.Context, s, nil, &fakeAPIClient{}, newTestModelClientFactory(t, &fakeAPIClient{}), "testuser", "test-key", "")
-	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
-	sess.SetAPIFactory(func(_, baseURL string) (api.Client, error) {
-		factoryCalls++
-		factoryBaseURL = baseURL
-		return newClient, nil
-	})
-
-	require.NoError(t, sess.SetBaseURL(t.Context(), "https://custom.example.com"))
-	require.Equal(t, 1, factoryCalls)
-	require.Equal(t, "https://custom.example.com", factoryBaseURL)
-}
-
-func TestSession_runtimeConfigOperations_recordSpans(t *testing.T) {
-	recorder, provider := oteltest.NewSpanRecorder(t)
-	s := storetest.NewMemoryStore(t).WithTracerProvider(provider)
-	sess := New(t.Context, s, nil, &fakeAPIClient{}, newTestModelClientFactory(t, &fakeAPIClient{}), "testuser", "test-key", "").WithTracerProvider(provider)
-	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
-	sess.SetAPIFactory(func(_, _ string) (api.Client, error) {
-		return &fakeAPIClient{}, nil
-	})
-
-	require.NoError(t, sess.SetAPIKey(t.Context(), "next-key", "https://openrouter.ai/api/v1"))
-	sess.SetSmallModel(t.Context(), "anthropic/claude-haiku-4.5")
-	require.NoError(t, sess.SetBaseURL(t.Context(), "https://custom.example.com"))
-
-	apiKeySpan := oteltest.FindSpan(t, recorder, "session.set_api_key")
-	require.Equal(t, observability.ResultOK, oteltest.AttrValue(apiKeySpan.Attributes(), observability.AttrResult))
-
-	smallModelSpan := oteltest.FindSpan(t, recorder, "session.set_small_model")
-	require.Equal(t, observability.ResultOK, oteltest.AttrValue(smallModelSpan.Attributes(), observability.AttrResult))
-	require.Equal(t, "anthropic/claude-haiku-4.5", oteltest.AttrValue(smallModelSpan.Attributes(), observability.AttrModelID))
-
-	baseURLSpan := oteltest.FindSpan(t, recorder, "session.set_base_url")
-	require.Equal(t, observability.ResultOK, oteltest.AttrValue(baseURLSpan.Attributes(), observability.AttrResult))
 }
 
 func TestSession_DispatchToChannel_filters_history_before_join(t *testing.T) {
@@ -3352,57 +3114,6 @@ func (f *failingMemoryStore) Reset(_ context.Context) error {
 	return nil
 }
 
-func TestSession_Reset(t *testing.T) {
-	s := storetest.NewMemoryStore(t)
-	memStore := memory.NewStoreAdapter(storetest.NewMemoryStore(t))
-	sess := New(t.Context, s, memStore, &fakeAPIClient{}, newTestModelClientFactory(t, &fakeAPIClient{}), "testuser", "", "")
-	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
-	sess.now = func() time.Time { return fixedTime }
-	ctx := t.Context()
-
-	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
-	seedInstance(t, sess, s, instanceSpec{
-		Nick:     "botty",
-		ModelID:  "test/model",
-		Channels: testChannels("#general"),
-	})
-	_, err := s.AppendEvent(ctx, "#general", domain.Message{
-		Target: "#general", From: "testuser", Body: "hello", At: fixedTime,
-	})
-	require.NoError(t, err)
-	require.NoError(t, memStore.Write(ctx, testMemberID("botty"), memory.Entry{Key: "mood", Content: "happy"}))
-
-	require.NoError(t, sess.Reset(ctx))
-
-	windows, err := s.ListWindows(ctx)
-	require.NoError(t, err)
-	require.Empty(t, windows)
-
-	instances, err := s.ListInstances(ctx)
-	require.NoError(t, err)
-	require.Empty(t, instances)
-
-	msgs := channelMessages(t, s, "#general")
-	require.Empty(t, msgs)
-
-	memories, err := memStore.Read(ctx, testMemberID("botty"))
-	require.NoError(t, err)
-	require.Empty(t, memories)
-}
-
-func TestSession_Reset_nil_memory_store(t *testing.T) {
-	sess, s := newTestSession(t)
-	ctx := t.Context()
-
-	seedChannelWithMembers(t, sess, s, "#general", "testuser")
-
-	require.NoError(t, sess.Reset(ctx))
-
-	windows, err := s.ListWindows(ctx)
-	require.NoError(t, err)
-	require.Empty(t, windows)
-}
-
 func TestSession_DispatchToChannel_retries_on_multiline_reply(t *testing.T) {
 	attempts := make([]string, 0, 2)
 	fake := &fakeAPIClient{
@@ -3523,7 +3234,7 @@ func newTestSessionWithMemory(t *testing.T, apiClient api.Client) (*Session, *st
 	s := storetest.NewMemoryStore(t)
 
 	m := memory.NewStoreAdapter(storetest.NewMemoryStore(t))
-	sess := New(t.Context, s, m, apiClient, newTestModelClientFactory(t, apiClient), "testuser", "", "")
+	sess := New(t.Context, s, newTestModelClientFactoryWith(t, apiClient, m), "testuser")
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	sess.now = func() time.Time { return fixedTime }
 
@@ -3670,7 +3381,7 @@ func TestSession_DispatchToChannel_memory_write_error_returns_error_to_model(t *
 
 	s := storetest.NewMemoryStore(t)
 	memStore := &failingMemoryStore{writeErr: fmt.Errorf("disk full")}
-	sess := New(t.Context, s, memStore, fake, newTestModelClientFactory(t, fake), "testuser", "", "")
+	sess := New(t.Context, s, newTestModelClientFactoryWith(t, fake, memStore), "testuser")
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	sess.now = func() time.Time { return fixedTime }
 	ctx := t.Context()
@@ -3891,7 +3602,7 @@ func newTestSessionWithIndexedMemory(
 	)
 
 	m := memory.NewIndexedStoreFromDB(backing, chromem.NewDB(), embeddingFunc)
-	sess := New(t.Context, s, m, apiClient, newTestModelClientFactory(t, apiClient), "testuser", "", "")
+	sess := New(t.Context, s, newTestModelClientFactoryWith(t, apiClient, m), "testuser")
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	sess.now = func() time.Time { return fixedTime }
 
@@ -4604,84 +4315,6 @@ func drainEvents(t *testing.T, sess *Session, doneCount int) []domain.Event {
 	}
 }
 
-func testPersonas() []domain.Persona {
-	return []domain.Persona{
-		{ID: "grumpy-sysadmin", Description: "Runs FreeBSD on everything.", Origin: domain.PersonaGenerated},
-		{ID: "lurker-larry", Description: "Only corrects RFC citations.", Origin: domain.PersonaGenerated},
-		{ID: "retro-gamer", Description: "Speedruns Doom on a toaster.", Origin: domain.PersonaGenerated},
-	}
-}
-
-func TestSession_EnsurePersonas_lazy_generation(t *testing.T) {
-	calls := 0
-	fake := &fakeAPIClient{
-		generatePersonasFn: func(_ context.Context, _ domain.ModelID) ([]domain.Persona, error) {
-			calls++
-			return testPersonas(), nil
-		},
-	}
-
-	sess, s := newTestSessionWithAPI(t, fake)
-	ctx := t.Context()
-
-	require.NoError(t, sess.EnsurePersonas(ctx))
-	require.Equal(t, 1, calls)
-
-	got, err := s.ListPersonas(ctx)
-	require.NoError(t, err)
-	require.Equal(t, testPersonas(), got)
-
-	// Second call should not generate again — pool is already populated.
-	require.NoError(t, sess.EnsurePersonas(ctx))
-	require.Equal(t, 1, calls)
-}
-
-func TestSession_Invite_without_persona_assigns_from_pool(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		bootAt := time.Now()
-		fake := &fakeAPIClient{
-			generatePersonasFn: func(_ context.Context, _ domain.ModelID) ([]domain.Persona, error) {
-				return testPersonas(), nil
-			},
-		}
-
-		sess, s := newTestSessionWithAPI(t, fake)
-		ctx := t.Context()
-
-		seedChannelWithMembers(t, sess, s, "#dev", "testuser")
-
-		require.NoError(t, addModelViaWire(ctx, t, sess, "#dev", "anthropic/claude-3-haiku", ""))
-		synctest.Wait()
-
-		inst, err := s.ResolveNick(ctx, "fakenick")
-		require.NoError(t, err)
-
-		require.ElementsMatch(t, []domain.Event{
-			bootstrapModeChange(sess, bootAt),
-			domain.ModelInvited{
-				Target:     "#dev",
-				Nick:       "fakenick",
-				InstanceID: inst.ID(),
-				By:         "testuser",
-				At:         fixedTime,
-				Instance:   inst,
-			},
-			domain.ModelDispatchStarted{Instance: inst, At: fixedTime},
-			domain.ModelDispatchDone{Instance: inst, At: fixedTime},
-		}, collectEmittedEvents(t, sess))
-
-		require.NotEmpty(t, inst.Persona())
-
-		descriptions := make(map[string]bool)
-		for _, p := range testPersonas() {
-			descriptions[p.Description] = true
-		}
-
-		require.True(t, descriptions[inst.Persona()],
-			"assigned persona %q not in pool", inst.Persona())
-	})
-}
-
 func TestSession_Invite_with_explicit_persona_skips_pool(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		bootAt := time.Now()
@@ -4719,104 +4352,6 @@ func TestSession_Invite_with_explicit_persona_skips_pool(t *testing.T) {
 
 		require.Equal(t, "Custom persona", inst.Persona())
 	})
-}
-
-func TestSession_RandomPersona(t *testing.T) {
-	sess, s := newTestSessionWithAPI(t, &fakeAPIClient{})
-	ctx := t.Context()
-
-	for _, p := range testPersonas() {
-		require.NoError(t, s.SavePersona(ctx, p))
-	}
-
-	got, err := sess.RandomPersona(ctx)
-	require.NoError(t, err)
-
-	ids := make(map[string]bool)
-	for _, p := range testPersonas() {
-		ids[p.ID] = true
-	}
-
-	require.True(t, ids[got.ID], "random persona %q not in pool", got.ID)
-}
-
-func TestSession_RandomPersona_empty_pool(t *testing.T) {
-	sess, _ := newTestSessionWithAPI(t, &fakeAPIClient{})
-
-	_, err := sess.RandomPersona(t.Context())
-	require.EqualError(t, err, "no personas available")
-}
-
-func TestSession_RegeneratePersonas_preserves_user_defined(t *testing.T) {
-	fake := &fakeAPIClient{
-		generatePersonasFn: func(_ context.Context, _ domain.ModelID) ([]domain.Persona, error) {
-			return []domain.Persona{
-				{ID: "new-gen", Description: "Freshly generated.", Origin: domain.PersonaGenerated},
-			}, nil
-		},
-	}
-
-	sess, s := newTestSessionWithAPI(t, fake)
-	ctx := t.Context()
-
-	// Seed a user-defined persona and a generated one.
-	require.NoError(t, s.SavePersona(ctx, domain.Persona{
-		ID: "my-persona", Description: "User defined.", Origin: domain.PersonaUser,
-	}))
-	require.NoError(t, s.SavePersona(ctx, domain.Persona{
-		ID: "old-gen", Description: "Old generated.", Origin: domain.PersonaGenerated,
-	}))
-
-	got, err := sess.RegeneratePersonas(ctx)
-	require.NoError(t, err)
-	require.Equal(t, []domain.Persona{
-		{ID: "new-gen", Description: "Freshly generated.", Origin: domain.PersonaGenerated},
-	}, got)
-
-	// Store should have the user persona plus the new generated one.
-	all, err := s.ListPersonas(ctx)
-	require.NoError(t, err)
-	require.Equal(t, []domain.Persona{
-		{ID: "my-persona", Description: "User defined.", Origin: domain.PersonaUser},
-		{ID: "new-gen", Description: "Freshly generated.", Origin: domain.PersonaGenerated},
-	}, all)
-}
-
-func TestSession_SetPersona(t *testing.T) {
-	sess, s := newTestSessionWithAPI(t, &fakeAPIClient{})
-	ctx := t.Context()
-
-	require.NoError(t, sess.SetPersona(ctx, "custom-bot", "A friendly helper."))
-
-	got, err := s.GetPersona(ctx, "custom-bot")
-	require.NoError(t, err)
-	require.Equal(t, domain.Persona{
-		ID:          "custom-bot",
-		Description: "A friendly helper.",
-		Origin:      domain.PersonaUser,
-	}, got)
-}
-
-func TestSession_ResetPersonas_removes_user_keeps_generated(t *testing.T) {
-	sess, s := newTestSessionWithAPI(t, &fakeAPIClient{})
-	ctx := t.Context()
-
-	require.NoError(t, s.SavePersona(ctx, domain.Persona{
-		ID: "my-persona", Description: "User defined.", Origin: domain.PersonaUser,
-	}))
-	require.NoError(t, s.SavePersona(ctx, domain.Persona{
-		ID: "gen-persona", Description: "Generated.", Origin: domain.PersonaGenerated,
-	}))
-
-	removed, err := sess.ResetPersonas(ctx)
-	require.NoError(t, err)
-	require.Equal(t, 1, removed)
-
-	got, err := s.ListPersonas(ctx)
-	require.NoError(t, err)
-	require.Equal(t, []domain.Persona{
-		{ID: "gen-persona", Description: "Generated.", Origin: domain.PersonaGenerated},
-	}, got)
 }
 
 func TestDispatchToInstance_logs_dispatch_attributes(t *testing.T) {
@@ -4982,21 +4517,21 @@ func TestAddModel_dispatches_invite_notification_to_model(t *testing.T) {
 		require.NoError(t, addModelViaWire(ctx, t, sess, "#dev", "test/model", ""))
 		synctest.Wait()
 
-		botty, err := s.ResolveNick(ctx, "botty")
+		bot, err := s.ResolveNick(ctx, "fakenick")
 		require.NoError(t, err)
 
 		require.ElementsMatch(t, []domain.Event{
 			bootstrapModeChange(sess, bootAt),
 			domain.ModelInvited{
 				Target:     "#dev",
-				Nick:       "botty",
-				InstanceID: botty.ID(),
+				Nick:       "fakenick",
+				InstanceID: bot.ID(),
 				By:         "testuser",
 				At:         fixedTime,
-				Instance:   botty,
+				Instance:   bot,
 			},
-			domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
-			domain.ModelDispatchDone{Instance: botty, At: fixedTime},
+			domain.ModelDispatchStarted{Instance: bot, At: fixedTime},
+			domain.ModelDispatchDone{Instance: bot, At: fixedTime},
 		}, collectEmittedEvents(t, sess))
 
 		require.Equal(t, map[domain.ModelID][]protocol.IRCMessage{
@@ -5012,226 +4547,12 @@ func TestAddModel_dispatches_invite_notification_to_model(t *testing.T) {
 	})
 }
 
-// listModelsCountingClient records the number of `ListModels` calls so
-// short-circuit tests can assert the upstream is not re-hit after a
-// known failure.
-type listModelsCountingClient struct {
-	fakeAPIClient
-
-	calls atomic.Int32
-	err   error
-	infos []api.ModelInfo
-}
-
-func (c *listModelsCountingClient) ListModels(context.Context) ([]api.ModelInfo, error) {
-	c.calls.Add(1)
-
-	if c.err != nil {
-		return nil, c.err
-	}
-
-	return c.infos, nil
-}
-
-func TestSession_AddModel_short_circuits_after_ListModels_failure(t *testing.T) {
-	logs := installSessionLogCapture(t)
-
-	upstreamErr := fmt.Errorf("upstream unreachable")
-	client := &listModelsCountingClient{err: upstreamErr}
-
-	s := storetest.NewMemoryStore(t)
-	sess := New(t.Context, s, nil, client, newTestModelClientFactory(t, client), "testuser", "test-key", "")
-	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
-	sess.now = func() time.Time { return fixedTime }
-
-	seedChannelWithMembers(t, sess, s, "#dev", "testuser")
-
-	_, err := sess.ListModels(t.Context())
-	require.ErrorIs(t, err, upstreamErr)
-	require.Equal(t, listModelsFailed, listModelsState(sess.listModelsState.Load()))
-
-	addErr := addModelViaWire(t.Context(), t, sess, "#dev", "anthropic/claude-3-haiku", "")
-	require.ErrorIs(t, addErr, modelclient.ErrModelListUnavailable)
-
-	require.Equal(t, int32(1), client.calls.Load(),
-		"AddModel must short-circuit on the cached failed state and not re-hit ListModels")
-
-	transition := logs.find("model list state transitioned")
-	require.NotNil(t, transition, "expected transition log record")
-	require.Equal(t, "WARN", transition["level"])
-	require.Equal(t, "session", transition["component"])
-	require.Equal(t, "none", transition["from"])
-	require.Equal(t, "failed", transition["to"])
-	require.Equal(t, upstreamErr.Error(), transition["error"])
-
-	shortCircuit := logs.find("add-model short-circuited: model list unavailable")
-	require.NotNil(t, shortCircuit, "expected short-circuit log record")
-	require.Equal(t, "INFO", shortCircuit["level"])
-	require.Equal(t, "session", shortCircuit["component"])
-	require.Equal(t, "anthropic/claude-3-haiku", shortCircuit["model_id"])
-}
-
-// installSessionLogCapture redirects `slog.Default()` to a JSON
-// `logBuffer` for the duration of the test, restoring a discard
-// handler on cleanup. Mirrors the inline pattern used by
-// `TestDispatchToInstance_logs_dispatch_attributes` so log assertions
-// can read structured fields out of the captured records.
-func installSessionLogCapture(t *testing.T) *logBuffer {
-	t.Helper()
-
-	buf := &logBuffer{}
-	handler := slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelInfo})
-	slog.SetDefault(slog.New(handler))
-	t.Cleanup(func() { slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil))) })
-
-	return buf
-}
-
-func TestClassifyEnsureModelError(t *testing.T) {
-	tests := map[string]struct {
-		err  error
-		want string
-	}{
-		"ErrModelListUnavailable": {
-			err:  modelclient.ErrModelListUnavailable,
-			want: observability.ErrorKindClientState,
-		},
-		"wrapped ErrModelListUnavailable": {
-			err:  fmt.Errorf("wrap: %w", modelclient.ErrModelListUnavailable),
-			want: observability.ErrorKindClientState,
-		},
-		"ErrNoAPIKey": {
-			err:  modelclient.ErrNoAPIKey,
-			want: observability.ErrorKindClientState,
-		},
-		"UnsupportedModelError": {
-			err:  domain.UnsupportedModelError{ModelID: "foo"},
-			want: observability.ErrorKindValidation,
-		},
-		"wrapped UnsupportedModelError": {
-			err:  fmt.Errorf("wrap: %w", domain.UnsupportedModelError{ModelID: "foo"}),
-			want: observability.ErrorKindValidation,
-		},
-		"upstream wrapped as list models": {
-			err:  fmt.Errorf("list models: %w", fmt.Errorf("transport")),
-			want: observability.ErrorKindDispatch,
-		},
-		"unrelated error": {
-			err:  fmt.Errorf("anything else"),
-			want: observability.ErrorKindDispatch,
-		},
-	}
-
-	for name, tc := range tests {
-		t.Run(name, func(t *testing.T) {
-			require.Equal(t, tc.want, classifyEnsureModelError(tc.err))
-		})
-	}
-}
-
-func TestSession_AddModel_lazy_loads_when_state_none(t *testing.T) {
-	client := &listModelsCountingClient{infos: []api.ModelInfo{{ID: "anthropic/claude-3-haiku"}}}
-
-	s := storetest.NewMemoryStore(t)
-	sess := New(t.Context, s, nil, client, newTestModelClientFactory(t, client), "testuser", "test-key", "")
-	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
-	sess.now = func() time.Time { return fixedTime }
-
-	seedChannelWithMembers(t, sess, s, "#dev", "testuser")
-
-	require.Equal(t, listModelsNone, listModelsState(sess.listModelsState.Load()))
-	require.NoError(t, addModelViaWire(t.Context(), t, sess, "#dev", "anthropic/claude-3-haiku", ""))
-	require.Equal(t, listModelsOK, listModelsState(sess.listModelsState.Load()))
-	require.Equal(t, int32(1), client.calls.Load())
-}
-
-func TestSession_AddModel_returns_unsupported_when_model_missing_from_cache(t *testing.T) {
-	client := &listModelsCountingClient{infos: []api.ModelInfo{{ID: "openai/gpt-5"}}}
-
-	s := storetest.NewMemoryStore(t)
-	sess := New(t.Context, s, nil, client, newTestModelClientFactory(t, client), "testuser", "test-key", "")
-	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
-	sess.now = func() time.Time { return fixedTime }
-
-	seedChannelWithMembers(t, sess, s, "#dev", "testuser")
-
-	_, err := sess.ListModels(t.Context())
-	require.NoError(t, err)
-	require.Equal(t, listModelsOK, listModelsState(sess.listModelsState.Load()))
-
-	addErr := addModelViaWire(t.Context(), t, sess, "#dev", "anthropic/claude-3-haiku", "")
-	var unsupported domain.UnsupportedModelError
-	require.ErrorAs(t, addErr, &unsupported)
-	require.Equal(t, domain.ModelID("anthropic/claude-3-haiku"), unsupported.ModelID)
-}
-
-func TestSession_AddModel_short_circuits_when_lazy_load_fails(t *testing.T) {
-	upstreamErr := fmt.Errorf("upstream unreachable")
-	client := &listModelsCountingClient{err: upstreamErr}
-
-	s := storetest.NewMemoryStore(t)
-	sess := New(t.Context, s, nil, client, newTestModelClientFactory(t, client), "testuser", "test-key", "")
-	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
-	sess.now = func() time.Time { return fixedTime }
-
-	seedChannelWithMembers(t, sess, s, "#dev", "testuser")
-
-	first := addModelViaWire(t.Context(), t, sess, "#dev", "anthropic/claude-3-haiku", "")
-	require.ErrorIs(t, first, upstreamErr,
-		"first AddModel should surface the underlying upstream error from the lazy load")
-	require.Equal(t, listModelsFailed, listModelsState(sess.listModelsState.Load()))
-
-	second := addModelViaWire(t.Context(), t, sess, "#dev", "anthropic/claude-3-haiku", "")
-	require.ErrorIs(t, second, modelclient.ErrModelListUnavailable)
-	require.Equal(t, int32(1), client.calls.Load(),
-		"second AddModel must short-circuit and not re-hit ListModels")
-}
-
-func TestSession_SetAPIKey_resets_listModelsState(t *testing.T) {
-	client := &listModelsCountingClient{err: fmt.Errorf("upstream unreachable")}
-
-	s := storetest.NewMemoryStore(t)
-	sess := New(t.Context, s, nil, client, newTestModelClientFactory(t, client), "testuser", "initial-key", "")
-	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
-	sess.now = func() time.Time { return fixedTime }
-	sess.SetAPIFactory(func(string, string) (api.Client, error) {
-		return &fakeAPIClient{}, nil
-	})
-
-	_, err := sess.ListModels(t.Context())
-	require.Error(t, err)
-	require.Equal(t, listModelsFailed, listModelsState(sess.listModelsState.Load()))
-
-	require.NoError(t, sess.SetAPIKey(t.Context(), "next-key", ""))
-	require.Equal(t, listModelsNone, listModelsState(sess.listModelsState.Load()))
-	require.False(t, sess.supportedModelsReady)
-	require.Nil(t, sess.supportedModels)
-}
-
-func TestSession_Reset_clears_listModelsState(t *testing.T) {
-	client := &listModelsCountingClient{err: fmt.Errorf("upstream unreachable")}
-
-	s := storetest.NewMemoryStore(t)
-	sess := New(t.Context, s, nil, client, newTestModelClientFactory(t, client), "testuser", "test-key", "")
-	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
-	sess.now = func() time.Time { return fixedTime }
-
-	_, err := sess.ListModels(t.Context())
-	require.Error(t, err)
-	require.Equal(t, listModelsFailed, listModelsState(sess.listModelsState.Load()))
-
-	require.NoError(t, sess.Reset(t.Context()))
-	require.Equal(t, listModelsNone, listModelsState(sess.listModelsState.Load()))
-	require.False(t, sess.supportedModelsReady)
-	require.Nil(t, sess.supportedModels)
-}
-
-// failingAppendStore wraps a [sessionStore] and forces AppendEvent
+// failingAppendStore wraps a [Store] and forces AppendEvent
 // to return errFailedAppend for any channel listed in failChannels.
 // All other methods pass through to the embedded interface
 // unchanged.
 type failingAppendStore struct {
-	sessionStore
+	Store
 
 	failChannels    map[domain.ChannelName]struct{}
 	errFailedAppend error
@@ -5242,7 +4563,7 @@ func (f *failingAppendStore) AppendEvent(ctx context.Context, ch domain.ChannelN
 		return 0, f.errFailedAppend
 	}
 
-	return f.sessionStore.AppendEvent(ctx, ch, event)
+	return f.Store.AppendEvent(ctx, ch, event)
 }
 
 // TestSession_appendEvent_persistence_failure_is_silent pins the
@@ -5280,12 +4601,12 @@ func TestSession_appendEvent_persistence_failure_is_silent(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				bootAt := time.Now()
 				store := &failingAppendStore{
-					sessionStore:    storetest.NewMemoryStore(t),
+					Store:           storetest.NewMemoryStore(t),
 					failChannels:    map[domain.ChannelName]struct{}{tc.channel: {}},
 					errFailedAppend: fmt.Errorf("disk full"),
 				}
 
-				sess := New(t.Context, store, nil, &fakeAPIClient{}, newTestModelClientFactory(t, &fakeAPIClient{}), "testuser", "", "")
+				sess := New(t.Context, store, newTestModelClientFactory(t, &fakeAPIClient{}), "testuser")
 				t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 				sess.now = func() time.Time { return fixedTime }
 
@@ -5312,7 +4633,7 @@ func TestSession_Shutdown_waits_for_dispatch_drain(t *testing.T) {
 	t.Cleanup(cancelSupply)
 
 	s := storetest.NewMemoryStore(t)
-	sess := New(func() context.Context { return supplyCtx }, s, nil, &fakeAPIClient{}, newTestModelClientFactory(t, &fakeAPIClient{}), "testuser", "", "")
+	sess := New(func() context.Context { return supplyCtx }, s, newTestModelClientFactory(t, &fakeAPIClient{}), "testuser")
 	sess.now = func() time.Time { return fixedTime }
 
 	seedInstance(t, sess, s, instanceSpec{
@@ -5335,7 +4656,7 @@ func TestSession_Shutdown_waits_for_dispatch_drain(t *testing.T) {
 // already-elapsed deadline to `Shutdown`.
 func TestSession_Shutdown_returns_deadline_err_when_drain_exceeds_bound(t *testing.T) {
 	s := storetest.NewMemoryStore(t)
-	sess := New(t.Context, s, nil, &fakeAPIClient{}, newTestModelClientFactory(t, &fakeAPIClient{}), "testuser", "", "")
+	sess := New(t.Context, s, newTestModelClientFactory(t, &fakeAPIClient{}), "testuser")
 	sess.now = func() time.Time { return fixedTime }
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 
@@ -5362,7 +4683,7 @@ func TestSession_Subscribe_refused_after_shutdown(t *testing.T) {
 	t.Cleanup(cancelSupply)
 
 	s := storetest.NewMemoryStore(t)
-	sess := New(func() context.Context { return supplyCtx }, s, nil, &fakeAPIClient{}, newTestModelClientFactory(t, &fakeAPIClient{}), "testuser", "", "")
+	sess := New(func() context.Context { return supplyCtx }, s, newTestModelClientFactory(t, &fakeAPIClient{}), "testuser")
 	sess.now = func() time.Time { return fixedTime }
 
 	cancelSupply()

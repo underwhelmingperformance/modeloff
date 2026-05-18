@@ -137,7 +137,7 @@ func TestChatScreen_handleLiveModelsLoadFailed(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			logs := installLogSink(t)
 
-			sess := newTestSession(t)
+			sess, mgr := newTestSession(t)
 			if tc.active != "" {
 				require.NoError(t, sess.Join(t.Context(), string(tc.active)))
 			}
@@ -145,7 +145,7 @@ func TestChatScreen_handleLiveModelsLoadFailed(t *testing.T) {
 				require.NoError(t, sess.Join(t.Context(), string(tc.lastChannel)))
 			}
 
-			screen, err := NewChatScreen(t.Context, sess, nil, nil, domain.KindStatus)
+			screen, err := NewChatScreen(t.Context, sess, mgr, nil, nil, domain.KindStatus)
 			require.NoError(t, err)
 			*screen.active = tc.active
 			*screen.liveModels = placeholderModels()
@@ -242,8 +242,7 @@ func TestChatScreen_handleLiveModelsLoadFailed_silent_on_no_api_key(t *testing.T
 		t.Run(name, func(t *testing.T) {
 			logs := installLogSink(t)
 
-			screen, newErr := NewChatScreen(t.Context, newTestSession(t), nil, nil, domain.KindStatus)
-			require.NoError(t, newErr)
+			screen := newScreenFixture(t)
 			*screen.liveModels = placeholderModels()
 			*screen.liveModelsState = command.SuggestionStateReady
 
@@ -272,10 +271,10 @@ func TestChatScreen_APIKeySetResult_clears_live_models_and_resets_state(t *testi
 
 	for name, msg := range tests {
 		t.Run(name, func(t *testing.T) {
-			sess := newTestSession(t)
+			sess, mgr := newTestSession(t)
 			require.NoError(t, sess.Join(t.Context(), "#general"))
 
-			screen, err := NewChatScreen(t.Context, sess, nil, nil, domain.KindStatus)
+			screen, err := NewChatScreen(t.Context, sess, mgr, nil, nil, domain.KindStatus)
 			require.NoError(t, err)
 			*screen.active = "#general"
 			*screen.liveModels = placeholderModels()

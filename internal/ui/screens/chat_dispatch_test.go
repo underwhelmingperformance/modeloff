@@ -13,7 +13,6 @@ import (
 
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/protocol"
-	"github.com/laney/modeloff/internal/session"
 	"github.com/laney/modeloff/internal/store/storetest"
 	"github.com/laney/modeloff/internal/ui/components"
 	"github.com/laney/modeloff/internal/ui/uitest"
@@ -55,8 +54,7 @@ func containsMsg[T any](msgs []tea.Msg) (T, bool) {
 }
 
 func TestChatScreen_ModelDispatchStarted_shows_pending(t *testing.T) {
-	screen, err := NewChatScreen(t.Context, newTestSession(t), nil, nil, domain.KindStatus)
-	require.NoError(t, err)
+	screen := newScreenFixture(t)
 	*screen.active = "#general"
 
 	botty := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
@@ -81,8 +79,7 @@ func TestChatScreen_ModelDispatchStarted_shows_pending(t *testing.T) {
 }
 
 func TestChatScreen_ModelDispatchDone_clears_pending(t *testing.T) {
-	screen, err := NewChatScreen(t.Context, newTestSession(t), nil, nil, domain.KindStatus)
-	require.NoError(t, err)
+	screen := newScreenFixture(t)
 	*screen.active = "#general"
 
 	botty := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
@@ -106,8 +103,7 @@ func TestChatScreen_ModelDispatchDone_clears_pending(t *testing.T) {
 // the spinner while another model is still in its turn. The old
 // channel-keyed event would have flipped the global flag off here.
 func TestChatScreen_ModelDispatchDone_keeps_pending_with_concurrent_dispatch(t *testing.T) {
-	screen, err := NewChatScreen(t.Context, newTestSession(t), nil, nil, domain.KindStatus)
-	require.NoError(t, err)
+	screen := newScreenFixture(t)
 	*screen.active = "#general"
 
 	botty := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
@@ -127,8 +123,7 @@ func TestChatScreen_ModelDispatchDone_keeps_pending_with_concurrent_dispatch(t *
 }
 
 func TestChatScreen_ModelDispatchDone_deferred_while_replies_queued(t *testing.T) {
-	screen, err := NewChatScreen(t.Context, newTestSession(t), nil, nil, domain.KindStatus)
-	require.NoError(t, err)
+	screen := newScreenFixture(t)
 	*screen.active = "#general"
 
 	botty := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
@@ -148,10 +143,10 @@ func TestChatScreen_ModelDispatchDone_deferred_while_replies_queued(t *testing.T
 }
 
 func TestChatScreen_ModelReply_queues_and_paces(t *testing.T) {
-	sess := newTestSession(t)
+	sess, mgr := newTestSession(t)
 	require.NoError(t, sess.Join(t.Context(), "#general"))
 
-	screen, err := NewChatScreen(t.Context, sess, nil, nil, domain.KindStatus)
+	screen, err := NewChatScreen(t.Context, sess, mgr, nil, nil, domain.KindStatus)
 	require.NoError(t, err)
 	*screen.active = "#general"
 
@@ -217,11 +212,11 @@ func TestChatScreen_ModelReply_queues_and_paces(t *testing.T) {
 // a message in another channel. Each channel drains at its own
 // pacing cadence.
 func TestChatScreen_ModelReply_paces_per_channel_independently(t *testing.T) {
-	sess := newTestSession(t)
+	sess, mgr := newTestSession(t)
 	require.NoError(t, sess.Join(t.Context(), "#channel-a"))
 	require.NoError(t, sess.Join(t.Context(), "#channel-b"))
 
-	screen, err := NewChatScreen(t.Context, sess, nil, nil, domain.KindStatus)
+	screen, err := NewChatScreen(t.Context, sess, mgr, nil, nil, domain.KindStatus)
 	require.NoError(t, err)
 	*screen.active = "#channel-a"
 
@@ -309,10 +304,10 @@ func TestChatScreen_ModelReply_paces_per_channel_independently(t *testing.T) {
 // store, so re-joining the channel restores history — this purge
 // only affects the in-flight pacing queue.
 func TestChatScreen_parting_channel_purges_paced_queue(t *testing.T) {
-	sess := newTestSession(t)
+	sess, mgr := newTestSession(t)
 	require.NoError(t, sess.Join(t.Context(), "#x"))
 
-	screen, err := NewChatScreen(t.Context, sess, nil, nil, domain.KindStatus)
+	screen, err := NewChatScreen(t.Context, sess, mgr, nil, nil, domain.KindStatus)
 	require.NoError(t, err)
 	*screen.active = "#x"
 
@@ -386,8 +381,7 @@ func TestChatScreen_handleProtocolEvent_routing(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			screen, err := NewChatScreen(t.Context, newTestSession(t), nil, nil, domain.KindStatus)
-			require.NoError(t, err)
+			screen := newScreenFixture(t)
 			*screen.active = "#general"
 
 			// The handler returns tea.Batch(innerCmd, re-arm-listener).
@@ -419,8 +413,7 @@ func TestChatScreen_handleProtocolEvent_routing(t *testing.T) {
 }
 
 func TestChatScreen_ErrorEvent_no_active_channel(t *testing.T) {
-	screen, err := NewChatScreen(t.Context, newTestSession(t), nil, nil, domain.KindStatus)
-	require.NoError(t, err)
+	screen := newScreenFixture(t)
 
 	// No active channel set — error should still produce a StoredEvent
 	// message so the UI can display it.
@@ -448,8 +441,7 @@ func TestChatScreen_ErrorEvent_no_active_channel(t *testing.T) {
 // rather than sending. `&modeloff` is a chat-screen-owned window
 // the session has no concept of, so the validation lives here.
 func TestChatScreen_MessageSubmit_on_status_channel_renders_usage_hint(t *testing.T) {
-	screen, err := NewChatScreen(t.Context, newTestSession(t), nil, nil, domain.KindStatus)
-	require.NoError(t, err)
+	screen := newScreenFixture(t)
 	*screen.active = domain.StatusChannelName
 
 	_, cmd := screen.Update(components.MessageSubmitMsg{Text: "hello"})
@@ -502,11 +494,9 @@ func TestChatScreen_completion_all_instance_commands_see_instances_outside_activ
 	)))
 
 	apiClient := &uitest.FakeAPI{}
-	factory := uitest.NewModelClientFactory(t, apiClient, nil, nil, t.Context)
-	sess := session.New(t.Context, s, nil, apiClient, factory, "testuser", "", "")
-	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
+	sess, mgr := uitest.NewTestSession(t, s, apiClient, nil, nil, "", "", t.Context)
 
-	screen, err := NewChatScreen(func() context.Context { return ctx }, sess, nil, nil, domain.KindStatus)
+	screen, err := NewChatScreen(func() context.Context { return ctx }, sess, mgr, nil, nil, domain.KindStatus)
 	require.NoError(t, err)
 
 	// Seed an active channel whose membership does NOT include
@@ -545,8 +535,7 @@ func TestChatScreen_completion_all_instance_commands_see_instances_outside_activ
 // handle still finds and removes the entry cleanly regardless of the
 // nick carried on the event.
 func TestChatScreen_NickChange_then_Quit_removes_instance(t *testing.T) {
-	screen, err := NewChatScreen(t.Context, newTestSession(t), nil, nil, domain.KindStatus)
-	require.NoError(t, err)
+	screen := newScreenFixture(t)
 
 	// Seed the channel so handleModelInvitedEvent finds it.
 	screen.channels.Insert(newWindow(domain.NewChannelWindow("#general", time.Time{})))
@@ -611,8 +600,7 @@ func TestChatScreen_NickChange_then_Quit_removes_instance(t *testing.T) {
 // envelope rather than reading any wire-side channel list off the
 // event itself.
 func TestChatScreen_QuitEvent_routes_to_targets_only(t *testing.T) {
-	screen, err := NewChatScreen(t.Context, newTestSession(t), nil, nil, domain.KindStatus)
-	require.NoError(t, err)
+	screen := newScreenFixture(t)
 
 	for _, name := range []domain.ChannelName{"#x", "#y", "#z"} {
 		screen.channels.Insert(newWindow(domain.NewChannelWindow(name, time.Time{})))
@@ -638,8 +626,7 @@ func TestChatScreen_QuitEvent_routes_to_targets_only(t *testing.T) {
 // the line into the per-recipient `Targets` only, leaving
 // unrelated windows untouched.
 func TestChatScreen_NickChangeEvent_routes_to_targets_only(t *testing.T) {
-	screen, err := NewChatScreen(t.Context, newTestSession(t), nil, nil, domain.KindStatus)
-	require.NoError(t, err)
+	screen := newScreenFixture(t)
 
 	for _, name := range []domain.ChannelName{"#x", "#y", "#z"} {
 		screen.channels.Insert(newWindow(domain.NewChannelWindow(name, time.Time{})))

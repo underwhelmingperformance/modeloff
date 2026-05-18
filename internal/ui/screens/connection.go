@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/laney/modeloff/internal/modelmanager"
 	"github.com/laney/modeloff/internal/session"
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/chatcmd"
@@ -59,8 +60,8 @@ type connectionReadyMsg struct{ err error }
 type joinAutojoinDoneMsg struct{ err error }
 
 // loadModelsDoneMsg carries the result of the connect-time
-// `sess.ListModels` call. `models` is nil when no API key is
-// configured (a silent no-op rather than an error).
+// `manager.ListModels` call. `models` is nil when no API key is
+// configured (a silent no-op, not an error).
 type loadModelsDoneMsg struct {
 	models []chatcmd.ModelOption
 	err    error
@@ -74,9 +75,16 @@ type ConnectionConfig struct {
 	Nick         string
 
 	// Session is the backend handle the screen drives during the
-	// connection handshake. When nil the screen runs in animation-only
-	// mode (used by tests that only care about the visual sequence).
+	// connection handshake. When nil the screen runs in animation-
+	// only mode (used by tests that only care about the visual
+	// sequence).
 	Session *session.Session
+
+	// Manager owns the LLM-side state — the live model catalogue
+	// in particular. The connection screen reads it for the
+	// "Loading models" gate. When nil the gate behaves as if the
+	// load completed immediately, suiting animation-only tests.
+	Manager *modelmanager.Manager
 
 	// BaseContext supplies the application context for each backend
 	// call, mirroring [session.New]'s shape. Defaults to
@@ -199,19 +207,20 @@ func (s ConnectionScreen) runConnect() tea.Cmd {
 	}
 }
 
-// runLoadModels calls [session.Session.ListModels] and packages
-// the result as a `loadModelsDoneMsg`. With no API key configured
-// the load is a silent no-op, leaving the chat screen's
-// suggestion state at its zero value (ready, empty).
+// runLoadModels calls [modelmanager.Manager.ListModels] and
+// packages the result as a `loadModelsDoneMsg`. With no manager
+// configured (animation-only tests) or no API key the load is a
+// silent no-op, leaving the chat screen's suggestion state at its
+// zero value (ready, empty).
 func (s ConnectionScreen) runLoadModels() tea.Cmd {
-	sess := s.cfg.Session
+	mgr := s.cfg.Manager
 
 	return func() tea.Msg {
-		if !sess.HasAPIKey() {
+		if mgr == nil || !mgr.HasAPIKey() {
 			return loadModelsDoneMsg{}
 		}
 
-		models, err := sess.ListModels(s.ctx())
+		models, err := mgr.ListModels(s.ctx())
 		if err != nil {
 			return loadModelsDoneMsg{err: err}
 		}

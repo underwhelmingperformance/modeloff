@@ -22,6 +22,7 @@ import (
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/memory"
 	"github.com/laney/modeloff/internal/modelclient"
+	"github.com/laney/modeloff/internal/modelmanager"
 	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/session"
 )
@@ -396,7 +397,7 @@ func SeedMessage(t testing.TB, sess *session.Session, channel, body string) {
 		require.NoError(t, sess.SaveInstance(t.Context(), bot))
 	}
 
-	client := modelclient.New(bot, sess, nil, nil, nil, t.Context)
+	client := modelclient.New(bot, sess, func() api.Client { return nil }, nil, nil, nil, t.Context)
 	require.NoError(t, client.Attach(t.Context()), "attach seedbot model client")
 
 	resp, err := client.Send(t.Context(), protocol.PrivMsg{
@@ -407,90 +408,76 @@ func SeedMessage(t testing.TB, sess *session.Session, channel, body string) {
 	require.NoError(t, resp.Err)
 }
 
-// NewModelClientFactory returns a [session.ModelClientFactory]
-// suitable for passing to [session.New]. It constructs
-// [modelclient.ModelClient] handles over the provided
-// dependencies, registers them in a per-fixture map, and detaches
-// every registered handle on `t.Cleanup` so dispatch goroutines
-// join before the next test runs.
-func NewModelClientFactory(
+// NewTestSession constructs the trio of `*session.Session` and
+// `*modelmanager.Manager` chat-screen tests reach for. The manager
+// owns the api / memory / tools handles; the session is wired to
+// the manager as its factory. Cleanup hooks register so dispatch
+// goroutines drain before the next test.
+func NewTestSession(
 	t testing.TB,
+	store SessionStore,
 	apiClient api.Client,
 	memStore memory.Store,
 	tools *modelclient.ToolRegistry,
+	apiKey string,
+	smallModel domain.ModelID,
 	baseContext func() context.Context,
-) session.ModelClientFactory {
-	f := &wiredFactory{
-		apiClient:   apiClient,
-		memStore:    memStore,
-		tools:       tools,
-		baseContext: baseContext,
-		clients:     make(map[protocol.ClientID]*modelclient.ModelClient),
-	}
-	t.Cleanup(f.detachAll)
-	return f
+) (*session.Session, *modelmanager.Manager) {
+	mgr := modelmanager.New(modelmanager.Config{
+		Store:         store,
+		APIClient:     apiClient,
+		Memory:        memStore,
+		Tools:         tools,
+		BaseContext:   baseContext,
+		InitialAPIKey: apiKey,
+		SmallModel:    smallModel,
+	})
+	t.Cleanup(mgr.DetachAll)
+	mgr.SetAPIFactory(func(apiKey, baseURL string) (api.Client, error) {
+		_ = baseURL
+		_ = apiKey
+		return apiClient, nil
+	})
+
+	sess := session.New(baseContext, store, mgr, "testuser")
+	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
+	return sess, mgr
 }
 
-type wiredFactory struct {
-	apiClient   api.Client
-	memStore    memory.Store
-	tools       *modelclient.ToolRegistry
-	baseContext func() context.Context
-
-	mu      sync.Mutex
-	clients map[protocol.ClientID]*modelclient.ModelClient
+// SessionStore is the union of the session and manager
+// persistence surfaces. The concrete `*storetest.MemoryStore` and
+// `*store.SQLiteStore` satisfy it implicitly.
+type SessionStore interface {
+	session.Store
+	modelmanager.Store
 }
 
-func (f *wiredFactory) Attach(ctx context.Context, sess *session.Session, inst *domain.Instance) (protocol.Client, error) {
-	id := protocol.ClientID(inst.ID())
-
-	f.mu.Lock()
-	if existing, ok := f.clients[id]; ok {
-		f.mu.Unlock()
-		return existing, nil
-	}
-
-	mc := modelclient.New(inst, sess, f.apiClient, f.memStore, f.tools, f.baseContext)
-	f.clients[id] = mc
-	f.mu.Unlock()
-
-	if err := mc.Attach(ctx); err != nil {
-		f.mu.Lock()
-		delete(f.clients, id)
-		f.mu.Unlock()
-		return nil, fmt.Errorf("attach: %w", err)
-	}
-
-	return mc, nil
-}
-
-func (f *wiredFactory) Detach(id protocol.ClientID) {
-	f.mu.Lock()
-	mc, ok := f.clients[id]
-	if ok {
-		delete(f.clients, id)
-	}
-	f.mu.Unlock()
-
-	if !ok {
-		return
-	}
-
-	mc.Detach()
-}
-
-func (f *wiredFactory) detachAll() {
-	f.mu.Lock()
-	clients := make([]*modelclient.ModelClient, 0, len(f.clients))
-	for _, mc := range f.clients {
-		clients = append(clients, mc)
-	}
-	f.clients = make(map[protocol.ClientID]*modelclient.ModelClient)
-	f.mu.Unlock()
-
-	for _, mc := range clients {
-		mc.Detach()
-	}
+// NewModelManager returns a fresh [modelmanager.Manager] backed by
+// the supplied dependencies and registered for cleanup. Pass the
+// returned value as the `factory` argument to [session.New]; the
+// concrete `*modelmanager.Manager` satisfies
+// [session.ModelClientFactory].
+func NewModelManager(
+	t testing.TB,
+	store modelmanager.Store,
+	apiClient api.Client,
+	memStore memory.Store,
+	tools *modelclient.ToolRegistry,
+	apiKey string,
+	smallModel domain.ModelID,
+	baseContext func() context.Context,
+) *modelmanager.Manager {
+	mgr := modelmanager.New(modelmanager.Config{
+		Store:         store,
+		APIClient:     apiClient,
+		Memory:        memStore,
+		Tools:         tools,
+		BaseContext:   baseContext,
+		InitialAPIKey: apiKey,
+		SmallModel:    smallModel,
+	})
+	t.Cleanup(mgr.DetachAll)
+	return mgr
 }
 
 // DrainEvents discards any buffered events on the user-client

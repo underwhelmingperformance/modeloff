@@ -8,21 +8,29 @@ import (
 
 	"github.com/laney/modeloff/internal/api"
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/memory"
 	"github.com/laney/modeloff/internal/modelclient"
 	"github.com/laney/modeloff/internal/protocol"
 )
 
 // dispatchToChannel runs the synchronous broadcast-to-channel
 // dispatch the test suite uses to drive end-to-end model
-// behaviour. It builds a [modelclient.Dispatcher] over the
-// session's `api` and `memory` handles and forwards.
+// behaviour. The session's [ModelClientFactory] arrived from
+// [newTestModelClientFactory], which stores the api client + the
+// optional memory backing — those are the same handles a
+// production manager threads into each [modelclient.ModelClient],
+// so the helper reuses them through a type assertion.
 func dispatchToChannel(
 	ctx context.Context,
 	sess *Session,
 	ch domain.ChannelName,
 	msgs []protocol.IRCMessage,
 ) ([]domain.ModelReplyEvent, error) {
-	d := modelclient.NewDispatcher(sess, sess.api, sess.memory, nil)
+	f, ok := sess.modelClientFactory.(*testModelClientFactory)
+	if !ok {
+		return nil, fmt.Errorf("dispatchToChannel: factory is %T, expected *testModelClientFactory", sess.modelClientFactory)
+	}
+	d := modelclient.NewDispatcher(sess, f.apiClient, f.memStore, nil, nil)
 	return d.DispatchToChannel(ctx, ch, msgs)
 }
 
@@ -45,27 +53,44 @@ func attachModelClient(t testing.TB, sess *Session, inst *domain.Instance) proto
 }
 
 // testModelClientFactory satisfies [ModelClientFactory] by
-// constructing [modelclient.ModelClient]s over the supplied `api`
-// handle and the session-supplied `*Session` reference passed to
-// each `Attach` call. The fixture wires one through `New` so
-// JOIN / ADDMODEL / INVITE handlers attach a real modelclient-side
-// dispatch goroutine, matching production behaviour.
+// constructing [modelclient.ModelClient]s over the supplied api
+// and memory handles. The fixture wires one through `New` so JOIN
+// / ADDMODEL / INVITE handlers attach a real modelclient-side
+// dispatch goroutine, matching production behaviour, while
+// keeping the test fixture independent of the modelmanager
+// package.
 type testModelClientFactory struct {
 	t         testing.TB
 	apiClient api.Client
+	memStore  memory.Store
+	nick      domain.Nick
 
 	mu      sync.Mutex
 	clients map[protocol.ClientID]*modelclient.ModelClient
 }
 
 func newTestModelClientFactory(t testing.TB, apiClient api.Client) *testModelClientFactory {
+	return newTestModelClientFactoryWith(t, apiClient, nil)
+}
+
+func newTestModelClientFactoryWith(t testing.TB, apiClient api.Client, memStore memory.Store) *testModelClientFactory {
 	f := &testModelClientFactory{
 		t:         t,
 		apiClient: apiClient,
+		memStore:  memStore,
+		nick:      "fakenick",
 		clients:   make(map[protocol.ClientID]*modelclient.ModelClient),
 	}
 	t.Cleanup(f.detachAll)
 	return f
+}
+
+// PrepareInstance returns a fixed persona-trimmed pair so the
+// session's `addModelAs` can build a fresh instance without
+// reaching for an LLM. Tests that rely on the persona arbitration
+// or unique-nick generation paths construct the manager directly.
+func (f *testModelClientFactory) PrepareInstance(_ context.Context, _ *Session, _ domain.ModelID, persona string) (domain.Nick, string, error) {
+	return f.nick, persona, nil
 }
 
 func (f *testModelClientFactory) Attach(ctx context.Context, sess *Session, inst *domain.Instance) (protocol.Client, error) {
@@ -77,7 +102,8 @@ func (f *testModelClientFactory) Attach(ctx context.Context, sess *Session, inst
 		return existing, nil
 	}
 
-	mc := modelclient.New(inst, sess, f.apiClient, sess.memory, nil, sess.baseContext)
+	apiClient := f.apiClient
+	mc := modelclient.New(inst, sess, func() api.Client { return apiClient }, f.memStore, nil, nil, sess.baseContext)
 	f.clients[id] = mc
 	f.mu.Unlock()
 

@@ -6,16 +6,13 @@ package session
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"iter"
 	"log/slog"
-	"math/big"
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -26,11 +23,7 @@ import (
 
 	orderedmap "github.com/wk8/go-ordered-map/v2"
 
-	"github.com/laney/modeloff/internal/api"
-	"github.com/laney/modeloff/internal/config"
 	"github.com/laney/modeloff/internal/domain"
-	"github.com/laney/modeloff/internal/memory"
-	"github.com/laney/modeloff/internal/modelclient"
 	"github.com/laney/modeloff/internal/observability"
 	"github.com/laney/modeloff/internal/protocol"
 )
@@ -47,34 +40,12 @@ import (
 // needs to catch up, which is well beyond any realistic user's list.
 const eventBufSize = 256
 
-// listModelsState tracks whether the cached model catalogue reflects a
-// successful `ListModels` round-trip. It lets `ensureStructuredOutputModel`
-// distinguish "never attempted" (fall through to the lazy load) from
-// "last attempt failed" (short-circuit with
-// [modelclient.ErrModelListUnavailable]).
-//
-// Reads from `tea.Cmd` goroutines (e.g. `ensureStructuredOutputModel`)
-// and writes from sibling sites (`ListModels`, `SetAPIKey`, `Reset`)
-// run under the same single-writer serialisation as the existing
-// `supportedModels` field. Concrete writer goroutines today:
-// `loadLiveModels` (refresh) and `ensureStructuredOutputModel` (lazy
-// load from `AddModel`). The field is held as an `atomic.Uint32` so
-// that `tea.Cmd` reads cannot race with concurrent writes; task #25
-// will codify the broader serialisation across `Session` mutations.
-type listModelsState uint32
-
-const (
-	listModelsNone   listModelsState = iota // never attempted
-	listModelsOK                            // last attempt succeeded
-	listModelsFailed                        // last attempt failed
-)
-
-// sessionStore is the persistence surface [Session] depends on.
+// Store is the persistence surface [Session] depends on.
 // The concrete [github.com/laney/modeloff/internal/store.SQLiteStore]
 // satisfies it implicitly. The session does not call any other
 // store methods; consumers with different needs (the memory
 // adapter, the chat-screen) declare their own.
-type sessionStore interface {
+type Store interface {
 	// Windows.
 	//
 	// Addressable-by-name windows live in the `channels` table.
@@ -139,22 +110,10 @@ type sessionStore interface {
 	GetLastRead(ctx context.Context, ch domain.ChannelName) (int64, error)
 	SetLastRead(ctx context.Context, ch domain.ChannelName, eventID int64) error
 
-	// Personas.
-
-	ListPersonas(ctx context.Context) ([]domain.Persona, error)
-	SavePersona(ctx context.Context, p domain.Persona) error
-	DeletePersonasByOrigin(ctx context.Context, origin domain.PersonaOrigin) error
-	ReplaceGeneratedPersonas(ctx context.Context, personas []domain.Persona) error
-
 	// Autojoin list. The set of channels rejoined at next
 	// `Connect`; rewritten on every successful `Quit`.
 	ListAutojoinChannels(ctx context.Context) ([]domain.ChannelName, error)
 	SetAutojoinChannels(ctx context.Context, channels []domain.ChannelName) error
-
-	// Reset truncates every table the session reads or writes.
-	// Used by `/config --reset` and by the unclean-shutdown
-	// recovery path.
-	Reset(ctx context.Context) error
 }
 
 // Session is the backend coordinator. It bridges the UI layer and
@@ -165,17 +124,12 @@ type sessionStore interface {
 // place via its own lock, so the pointer stays stable and every
 // caller keeps identity by comparing against `UserInstance()`.
 type Session struct {
-	store  sessionStore
-	memory memory.Store
-	api    api.Client
+	store Store
 
 	baseContext func() context.Context
 	user        *domain.Instance
 	userModes   map[domain.ChannelName]domain.NickMode
 	userMu      sync.Mutex
-	apiKey      string
-	smallModel  domain.ModelID
-	factory     func(apiKey, baseURL string) (api.Client, error)
 	now         func() time.Time
 
 	// shuttingDown is closed by [Session.Shutdown] under `subsMu`
@@ -200,16 +154,15 @@ type Session struct {
 
 	// modelClientFactory is the per-instance lifecycle hook the
 	// session calls into when an instance attaches to a channel
-	// or is killed. Required at construction; see [New].
+	// or is killed. The factory also satisfies the LLM-side
+	// preparation surface the `AddModel` handler calls into for
+	// persona arbitration and unique nick generation. Required at
+	// construction; see [New].
 	modelClientFactory ModelClientFactory
 
 	connectedC    chan struct{}
 	connectedOnce sync.Once
 	connectedAt   time.Time
-
-	supportedModels      map[domain.ModelID]struct{}
-	supportedModelsReady bool
-	listModelsState      atomic.Uint32
 
 	persistenceFailures metric.Int64Counter
 
@@ -247,18 +200,10 @@ type Session struct {
 // the handle is a session-scoped identity.
 func New(
 	baseContext func() context.Context,
-	s sessionStore,
-	m memory.Store,
-	a api.Client,
+	s Store,
 	factory ModelClientFactory,
 	userNick domain.Nick,
-	apiKey string,
-	smallModel domain.ModelID,
 ) *Session {
-	if smallModel == "" {
-		smallModel = config.DefaultSmallModel
-	}
-
 	user := domain.NewUserInstance(userNick)
 
 	persistenceFailures, _ := otel.Meter("github.com/laney/modeloff/internal/session").
@@ -267,12 +212,8 @@ func New(
 	sess := &Session{
 		baseContext:         baseContext,
 		store:               s,
-		memory:              m,
-		api:                 a,
 		user:                user,
 		userModes:           make(map[domain.ChannelName]domain.NickMode),
-		apiKey:              strings.TrimSpace(apiKey),
-		smallModel:          smallModel,
 		now:                 time.Now,
 		connectedC:          make(chan struct{}),
 		persistenceFailures: persistenceFailures,
@@ -934,24 +875,30 @@ func (s *Session) cleanupUncleanShutdown(ctx context.Context) error {
 	return nil
 }
 
-// SetAPIFactory configures how runtime API clients are created.
-func (s *Session) SetAPIFactory(factory func(apiKey, baseURL string) (api.Client, error)) {
-	s.factory = factory
-}
-
 // ModelClientFactory constructs and tears down the per-instance
-// model-client backing each LLM participant. The session pairs an
-// `Attach` call with each instance-attach (JOIN / ADDMODEL /
-// INVITE) and a `Detach` call with each model-actor reap (QUIT /
-// KILL) so the model-client's dispatch goroutine joins
-// deterministically. The interface lives in the session package
-// so the session does not depend on `internal/modelclient`.
+// model-client backing each LLM participant and prepares the LLM-
+// side state a fresh `ADDMODEL` needs before attach. The session
+// pairs an `Attach` call with each instance-attach (JOIN /
+// ADDMODEL / INVITE) and a `Detach` call with each model-actor
+// reap (QUIT / KILL) so the model-client's dispatch goroutine
+// joins deterministically. The interface lives in the session
+// package so the session does not depend on `internal/modelmanager`
+// or `internal/modelclient`.
 //
-// `Attach` receives the owning [Session] as a parameter so the
-// factory does not hold a back-reference; the factory can be
-// constructed before the session it serves and passed to [New] in
-// the same expression.
+// `Attach` and `PrepareInstance` receive the owning [Session] as
+// a parameter so the factory does not hold a back-reference; the
+// factory can be constructed before the session it serves and
+// passed to [New] in the same expression.
 type ModelClientFactory interface {
+	// PrepareInstance resolves the persona and unique nick for a
+	// new instance with the given model id and persona hint. An
+	// empty persona triggers a draw from the manager's persona
+	// pool (lazily generated if missing). Returns the chosen nick,
+	// the resolved persona (verbatim if non-empty, else the drawn
+	// pool entry), and any error from structured-output
+	// validation or nick generation.
+	PrepareInstance(ctx context.Context, sess *Session, modelID domain.ModelID, persona string) (domain.Nick, string, error)
+
 	// Attach constructs (or returns the existing handle for) the
 	// model-client backing `inst` and attaches it to `sess` via
 	// [Session.Subscribe]. Idempotent on a repeat call for the
@@ -964,11 +911,6 @@ type ModelClientFactory interface {
 	// Detach releases the model-client for `id`. Idempotent on
 	// an unknown id.
 	Detach(id protocol.ClientID)
-}
-
-// HasAPIKey reports whether the session has an active API key.
-func (s *Session) HasAPIKey() bool {
-	return strings.TrimSpace(s.apiKey) != ""
 }
 
 // Now returns the session's current time, using the configured
@@ -1275,73 +1217,6 @@ func (s *Session) Instances(ctx context.Context) iter.Seq[*domain.Instance] {
 	}
 }
 
-// maxNickGenerationAttempts caps the number of times the model is
-// asked for a nickname before the caller gives up. Each attempt after
-// the first carries the previously rejected suggestion as a follow-up
-// turn so the model picks something different — the user's full nick
-// list is intentionally never sent to the model.
-const maxNickGenerationAttempts = 3
-
-// generateUniqueNick asks the small model for a nickname guided by
-// the assigned persona and retries up to `maxNickGenerationAttempts`
-// times if the suggested nick is already in use by another instance
-// or the user.
-func (s *Session) generateUniqueNick(
-	ctx context.Context,
-	modelID domain.ModelID,
-	persona string,
-	logger *slog.Logger,
-) (domain.Nick, error) {
-	generateCtx, generateSpan := s.startSpan(
-		ctx,
-		"session.generate_nick",
-		attribute.String(observability.AttrOperation, "session.generate_nick"),
-		attribute.String(observability.AttrModelID, string(modelID)),
-	)
-	defer generateSpan.End()
-
-	var rejected []domain.Nick
-
-	for attempt := 1; attempt <= maxNickGenerationAttempts; attempt++ {
-		result, err := s.api.GenerateNick(generateCtx, s.smallModel, persona, rejected)
-		if err != nil {
-			setSpanError(generateSpan, err, observability.ErrorKindDispatch)
-			logger.ErrorContext(ctx, "generate nick failed",
-				"error", err,
-				"attempt", attempt,
-			)
-			return "", fmt.Errorf("generate nick: %w", err)
-		}
-
-		result.Usage.SetSpanAttributes(generateSpan, result.RequestID)
-
-		if !s.nickIsTaken(ctx, result.Nick) {
-			generateSpan.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-			return result.Nick, nil
-		}
-
-		logger.InfoContext(ctx, "generated nick already in use",
-			"nick", result.Nick,
-			"attempt", attempt,
-		)
-		rejected = append(rejected, result.Nick)
-	}
-
-	err := fmt.Errorf("generate nick: %d attempts exhausted, all suggestions collided", maxNickGenerationAttempts)
-	setSpanError(generateSpan, err, observability.ErrorKindDispatch)
-
-	return "", err
-}
-
-// nickIsTaken reports whether `nick` is already held by the user or
-// any registered model instance. Resolution flows through
-// `Session.ResolveNick` so the user-vs-store dispatch matches every
-// other nick-keyed code path.
-func (s *Session) nickIsTaken(ctx context.Context, nick domain.Nick) bool {
-	_, err := s.ResolveNick(ctx, nick)
-	return err == nil
-}
-
 func (s *Session) attachInstanceToChannel(
 	ctx context.Context,
 	ch domain.ChannelName,
@@ -1488,57 +1363,6 @@ func (s *Session) UnreadCount(ctx context.Context, ch domain.ChannelName) (count
 	return len(events), nil
 }
 
-// ListModels fetches live model metadata using the current API client.
-func (s *Session) ListModels(ctx context.Context) ([]api.ModelInfo, error) {
-	ctx, span := s.startSpan(ctx, "session.list_models", attribute.String(observability.AttrOperation, "session.list_models"))
-	defer span.End()
-
-	if !s.HasAPIKey() || s.api == nil {
-		setSpanError(span, modelclient.ErrNoAPIKey, observability.ErrorKindValidation)
-		return nil, modelclient.ErrNoAPIKey
-	}
-
-	models, err := s.api.ListModels(ctx)
-	if err != nil {
-		s.transitionListModelsState(ctx, listModelsFailed, err)
-		setSpanError(span, err, observability.ErrorKindDispatch)
-		return nil, err
-	}
-
-	s.cacheSupportedModels(ctx, models)
-
-	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-
-	return models, nil
-}
-
-// Reset clears all channels, messages, model instances, and memories,
-// returning the application to a fresh state. Config is preserved.
-func (s *Session) Reset(ctx context.Context) error {
-	ctx, span := s.startSpan(ctx, "session.reset", attribute.String(observability.AttrOperation, "session.reset"))
-	defer span.End()
-
-	if err := s.store.Reset(ctx); err != nil {
-		setSpanError(span, err, observability.ErrorKindStore)
-		return fmt.Errorf("reset store: %w", err)
-	}
-
-	if s.memory != nil {
-		if err := s.memory.Reset(ctx); err != nil {
-			setSpanError(span, err, observability.ErrorKindStore)
-			return fmt.Errorf("reset memories: %w", err)
-		}
-	}
-
-	s.supportedModels = nil
-	s.supportedModelsReady = false
-	s.transitionListModelsState(ctx, listModelsNone, nil)
-
-	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-
-	return nil
-}
-
 // Poke sends a periodic prompt to model instances in every channel,
 // dispatching asynchronously and emitting events on the Events
 // channel.
@@ -1572,205 +1396,6 @@ func (s *Session) Poke(ctx context.Context) error {
 	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 	logger.DebugContext(ctx, "scheduled poke dispatch", "channels", channelCount)
 
-	return nil
-}
-
-// SetAPIKey updates the active API key and rebuilds the API client.
-func (s *Session) SetAPIKey(ctx context.Context, apiKey, baseURL string) error {
-	_, span := s.startSpan(ctx, "session.set_api_key",
-		attribute.String(observability.AttrOperation, "session.set_api_key"))
-	defer span.End()
-	apiKey = strings.TrimSpace(apiKey)
-
-	var nextClient api.Client
-	if apiKey != "" {
-		if s.factory != nil {
-			client, err := s.factory(apiKey, baseURL)
-			if err != nil {
-				setSpanError(span, err, observability.ErrorKindValidation)
-				return fmt.Errorf("build api client: %w", err)
-			}
-
-			nextClient = client
-		} else {
-			nextClient = s.api
-		}
-	}
-
-	s.api = nextClient
-	s.apiKey = apiKey
-	s.supportedModels = nil
-	s.supportedModelsReady = false
-	s.transitionListModelsState(ctx, listModelsNone, nil)
-
-	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-	return nil
-}
-
-// SetSmallModel updates the model used for lightweight tasks such as
-// nick generation.
-func (s *Session) SetSmallModel(ctx context.Context, modelID domain.ModelID) {
-	_, span := s.startSpan(ctx, "session.set_small_model",
-		attribute.String(observability.AttrOperation, "session.set_small_model"),
-		attribute.String(observability.AttrModelID, string(modelID)))
-	defer span.End()
-
-	s.smallModel = modelID
-
-	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-}
-
-// EnsurePersonas populates the persona pool if it is empty. It calls
-// the API to generate personas and saves each to the store.
-func (s *Session) EnsurePersonas(ctx context.Context) (retErr error) {
-	ctx, span := s.startSpan(ctx, "session.ensure_personas",
-		attribute.String(observability.AttrOperation, "session.ensure_personas"),
-	)
-	defer endSpan(span, &retErr, observability.ErrorKindStore)
-
-	existing, err := s.store.ListPersonas(ctx)
-	if err != nil {
-		return fmt.Errorf("list personas: %w", err)
-	}
-
-	if len(existing) > 0 {
-		return nil
-	}
-
-	personas, err := s.api.GeneratePersonas(ctx, s.smallModel)
-	if err != nil {
-		return fmt.Errorf("generate personas: %w", err)
-	}
-
-	for _, p := range personas {
-		if err := s.store.SavePersona(ctx, p); err != nil {
-			return fmt.Errorf("save persona %q: %w", p.ID, err)
-		}
-	}
-
-	return nil
-}
-
-// RandomPersona picks a random persona from the store pool.
-func (s *Session) RandomPersona(ctx context.Context) (_ domain.Persona, retErr error) {
-	ctx, span := s.startSpan(ctx, "session.random_persona",
-		attribute.String(observability.AttrOperation, "session.random_persona"),
-	)
-	defer endSpan(span, &retErr, observability.ErrorKindStore)
-
-	personas, err := s.store.ListPersonas(ctx)
-	if err != nil {
-		return domain.Persona{}, fmt.Errorf("list personas: %w", err)
-	}
-
-	if len(personas) == 0 {
-		return domain.Persona{}, fmt.Errorf("no personas available")
-	}
-
-	n, err := rand.Int(rand.Reader, big.NewInt(int64(len(personas))))
-	if err != nil {
-		return domain.Persona{}, fmt.Errorf("random selection: %w", err)
-	}
-
-	return personas[n.Int64()], nil
-}
-
-// RegeneratePersonas generates a fresh set of personas via the API,
-// then replaces all generated personas in the store. The API call
-// happens first so that the existing pool is preserved if generation
-// fails. User-defined personas are never touched.
-func (s *Session) RegeneratePersonas(ctx context.Context) (_ []domain.Persona, retErr error) {
-	ctx, span := s.startSpan(ctx, "session.regenerate_personas",
-		attribute.String(observability.AttrOperation, "session.regenerate_personas"),
-	)
-	defer endSpan(span, &retErr, observability.ErrorKindStore)
-
-	personas, err := s.api.GeneratePersonas(ctx, s.smallModel)
-	if err != nil {
-		return nil, fmt.Errorf("generate personas: %w", err)
-	}
-
-	if err := s.store.ReplaceGeneratedPersonas(ctx, personas); err != nil {
-		return nil, fmt.Errorf("replace generated personas: %w", err)
-	}
-
-	return personas, nil
-}
-
-// SetPersona saves a user-defined persona to the store.
-func (s *Session) SetPersona(ctx context.Context, id string, description string) (retErr error) {
-	ctx, span := s.startSpan(ctx, "session.set_persona",
-		attribute.String(observability.AttrOperation, "session.set_persona"),
-		attribute.String("persona.id", id),
-	)
-	defer endSpan(span, &retErr, observability.ErrorKindStore)
-
-	p := domain.Persona{
-		ID:          id,
-		Description: description,
-		Origin:      domain.PersonaUser,
-	}
-
-	return s.store.SavePersona(ctx, p)
-}
-
-// ListPersonas returns all personas from the store.
-func (s *Session) ListPersonas(ctx context.Context) (_ []domain.Persona, retErr error) {
-	ctx, span := s.startSpan(ctx, "session.list_personas",
-		attribute.String(observability.AttrOperation, "session.list_personas"),
-	)
-	defer endSpan(span, &retErr, observability.ErrorKindStore)
-
-	return s.store.ListPersonas(ctx)
-}
-
-// ResetPersonas removes all user-defined personas from the store,
-// leaving only generated ones. It returns the number of personas
-// that were removed.
-func (s *Session) ResetPersonas(ctx context.Context) (_ int, retErr error) {
-	ctx, span := s.startSpan(ctx, "session.reset_personas",
-		attribute.String(observability.AttrOperation, "session.reset_personas"),
-	)
-	defer endSpan(span, &retErr, observability.ErrorKindStore)
-
-	personas, err := s.store.ListPersonas(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("list personas: %w", err)
-	}
-
-	count := 0
-	for _, p := range personas {
-		if p.Origin == domain.PersonaUser {
-			count++
-		}
-	}
-
-	if err := s.store.DeletePersonasByOrigin(ctx, domain.PersonaUser); err != nil {
-		return 0, err
-	}
-
-	return count, nil
-}
-
-// SetBaseURL rebuilds the API client with the given base URL.
-func (s *Session) SetBaseURL(ctx context.Context, baseURL string) error {
-	_, span := s.startSpan(ctx, "session.set_base_url",
-		attribute.String(observability.AttrOperation, "session.set_base_url"))
-	defer span.End()
-
-	baseURL = strings.TrimSpace(baseURL)
-
-	if s.factory != nil && s.apiKey != "" {
-		client, err := s.factory(s.apiKey, baseURL)
-		if err != nil {
-			setSpanError(span, err, observability.ErrorKindValidation)
-			return fmt.Errorf("build api client: %w", err)
-		}
-
-		s.api = client
-	}
-
-	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 	return nil
 }
 
@@ -2071,121 +1696,4 @@ func errWithKind(err error, kind string) error {
 		return nil
 	}
 	return &kindError{kind: kind, err: err}
-}
-
-// classifyEnsureModelError maps the errors produced by
-// `ensureStructuredOutputModel` to the appropriate observability error
-// kind. The cached short-circuit sentinels (`modelclient.ErrModelListUnavailable`,
-// `modelclient.ErrNoAPIKey`) reflect session-layer state that forbade the call
-// before any upstream attempt. `domain.UnsupportedModelError` reflects
-// a user-supplied model ID the catalogue does not include — fixable
-// by the user, not infrastructure. Everything else is wrapped around
-// a real upstream attempt and stays as `ErrorKindDispatch`.
-func classifyEnsureModelError(err error) string {
-	if errors.Is(err, modelclient.ErrModelListUnavailable) || errors.Is(err, modelclient.ErrNoAPIKey) {
-		return observability.ErrorKindClientState
-	}
-
-	if _, ok := errors.AsType[domain.UnsupportedModelError](err); ok {
-		return observability.ErrorKindValidation
-	}
-
-	return observability.ErrorKindDispatch
-}
-
-// EnsureStructuredOutputModel validates that the given model
-// supports structured outputs, lazy-loading the OpenRouter
-// catalogue if needed. Cached short-circuits return the typed
-// [modelclient.ErrModelListUnavailable] and [modelclient.ErrNoAPIKey] sentinels.
-func (s *Session) EnsureStructuredOutputModel(ctx context.Context, modelID domain.ModelID) error {
-	return s.ensureStructuredOutputModel(ctx, modelID)
-}
-
-func (s *Session) ensureStructuredOutputModel(ctx context.Context, modelID domain.ModelID) error {
-	if !s.HasAPIKey() || s.api == nil {
-		return nil
-	}
-
-	if listModelsState(s.listModelsState.Load()) == listModelsFailed {
-		// Info, not Warn: the transition-to-failed event is the
-		// alerting-worthy signal (logged once by
-		// transitionListModelsState); subsequent short-circuits are
-		// the expected symptom of that state and would otherwise
-		// produce one Warn per `/add-model` attempt.
-		slog.Default().InfoContext(ctx, "add-model short-circuited: model list unavailable",
-			"component", "session",
-			"model_id", string(modelID),
-		)
-
-		return modelclient.ErrModelListUnavailable
-	}
-
-	if !s.supportedModelsReady {
-		models, err := s.api.ListModels(ctx)
-		if err != nil {
-			s.transitionListModelsState(ctx, listModelsFailed, err)
-			return fmt.Errorf("list models: %w", err)
-		}
-
-		s.cacheSupportedModels(ctx, models)
-	}
-
-	if _, ok := s.supportedModels[modelID]; !ok {
-		return domain.UnsupportedModelError{ModelID: modelID, At: s.now()}
-	}
-
-	return nil
-}
-
-func (s *Session) cacheSupportedModels(ctx context.Context, models []api.ModelInfo) {
-	s.supportedModels = make(map[domain.ModelID]struct{}, len(models))
-	for _, model := range models {
-		s.supportedModels[model.ID] = struct{}{}
-	}
-
-	s.supportedModelsReady = true
-	s.transitionListModelsState(ctx, listModelsOK, nil)
-}
-
-// transitionListModelsState atomically updates listModelsState and logs
-// the transition so operators can correlate `/add-model` short-circuits
-// with the upstream failure that put the catalogue into a known-stale
-// state.
-func (s *Session) transitionListModelsState(ctx context.Context, to listModelsState, err error) {
-	from := listModelsState(s.listModelsState.Swap(uint32(to)))
-
-	if from == to {
-		return
-	}
-
-	attrs := []any{
-		"component", "session",
-		"from", listModelsStateName(from),
-		"to", listModelsStateName(to),
-	}
-
-	if err != nil {
-		attrs = append(attrs, "error", err)
-	}
-
-	if to == listModelsFailed {
-		slog.Default().WarnContext(ctx, "model list state transitioned", attrs...)
-
-		return
-	}
-
-	slog.Default().InfoContext(ctx, "model list state transitioned", attrs...)
-}
-
-func listModelsStateName(s listModelsState) string {
-	switch s {
-	case listModelsNone:
-		return "none"
-	case listModelsOK:
-		return "ok"
-	case listModelsFailed:
-		return "failed"
-	default:
-		return "unknown"
-	}
 }

@@ -1024,7 +1024,7 @@ type PersonasCommand struct{}
 // Run implements Command.
 func (PersonasCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	return func() tea.Msg {
-		personas, err := rc.Session.ListPersonas(ctx)
+		personas, err := rc.Manager.ListPersonas(ctx)
 		if err != nil {
 			return errorEvent("personas", err)
 		}
@@ -1039,7 +1039,7 @@ type RegeneratePersonasCommand struct{}
 // Run implements Command.
 func (RegeneratePersonasCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	return func() tea.Msg {
-		personas, err := rc.Session.RegeneratePersonas(ctx)
+		personas, err := rc.Manager.RegeneratePersonas(ctx)
 		if err != nil {
 			return errorEvent("regenerate-personas", err)
 		}
@@ -1072,7 +1072,7 @@ type APIKeyConfig struct {
 func (c APIKeyConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 	if rc.configResetRequested() {
 		return func() tea.Msg {
-			if err := rc.Session.SetAPIKey(ctx, "", config.DefaultBaseURL); err != nil {
+			if err := rc.Manager.SetAPIKey(ctx, "", config.DefaultBaseURL); err != nil {
 				return errorEvent("config api-key", err)
 			}
 
@@ -1096,7 +1096,7 @@ func (c APIKeyConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 			return errorEvent("config api-key", err)
 		}
 
-		if err := rc.Session.SetAPIKey(ctx, c.Value, cfg.BaseURL); err != nil {
+		if err := rc.Manager.SetAPIKey(ctx, c.Value, cfg.BaseURL); err != nil {
 			return errorEvent("config api-key", err)
 		}
 
@@ -1119,7 +1119,7 @@ type BaseURLConfig struct {
 func (c BaseURLConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 	if rc.configResetRequested() {
 		return func() tea.Msg {
-			if err := rc.Session.SetBaseURL(ctx, config.DefaultBaseURL); err != nil {
+			if err := rc.Manager.SetBaseURL(ctx, config.DefaultBaseURL); err != nil {
 				return errorEvent("config base-url", err)
 			}
 
@@ -1138,7 +1138,7 @@ func (c BaseURLConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		if err := rc.Session.SetBaseURL(ctx, c.URL); err != nil {
+		if err := rc.Manager.SetBaseURL(ctx, c.URL); err != nil {
 			return errorEvent("config base-url", err)
 		}
 
@@ -1274,7 +1274,7 @@ type SmallModelConfig struct {
 func (c SmallModelConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 	if rc.configResetRequested() {
 		return func() tea.Msg {
-			rc.Session.SetSmallModel(ctx, config.DefaultSmallModel)
+			rc.Manager.SetSmallModel(ctx, config.DefaultSmallModel)
 
 			if _, err := rc.updateConfig(ctx, func(cfg *config.Config) {
 				cfg.SmallModel = config.DefaultSmallModel
@@ -1292,7 +1292,7 @@ func (c SmallModelConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 
 	return func() tea.Msg {
 		modelID := domain.ModelID(c.ModelID)
-		rc.Session.SetSmallModel(ctx, modelID)
+		rc.Manager.SetSmallModel(ctx, modelID)
 
 		if _, err := rc.updateConfig(ctx, func(cfg *config.Config) {
 			cfg.SmallModel = modelID
@@ -1419,7 +1419,7 @@ type PersonaConfig struct {
 func (c PersonaConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 	if rc.configResetRequested() {
 		return func() tea.Msg {
-			count, err := rc.Session.ResetPersonas(ctx)
+			count, err := rc.Manager.ResetPersonas(ctx)
 			if err != nil {
 				return errorEvent("config persona", err)
 			}
@@ -1438,7 +1438,7 @@ func (c PersonaConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		if err := rc.Session.SetPersona(ctx, c.ID, desc); err != nil {
+		if err := rc.Manager.SetPersona(ctx, c.ID, desc); err != nil {
 			return errorEvent("config persona", err)
 		}
 

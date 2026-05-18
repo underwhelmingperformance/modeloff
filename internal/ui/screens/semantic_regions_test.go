@@ -17,11 +17,12 @@ func TestChatScreen_semantic_regions_expose_sidebar_and_chat_content(t *testing.
 		" `HistoryLoadedMsg`/`loadHistory` and have MessageList read" +
 		" scrollback through a getter.")
 
-	sess := newTestSession(t)
+	h := newTestSession(t)
+	sess := h.sess
 	uitest.SeedChannel(t, sess, "#general")
 	uitest.SeedChannel(t, sess, "#random")
 
-	tm := newChatApp(t, sess)
+	tm := newChatApp(t, h)
 	// Wait for the channel-creation scrollback line so the join's
 	// initial render has fully landed before the snapshot is taken.
 	tm.WaitFor("Created channel #random")

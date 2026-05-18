@@ -15,6 +15,7 @@ import (
 	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/config"
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/modelmanager"
 	"github.com/laney/modeloff/internal/observability"
 	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/session"
@@ -114,6 +115,7 @@ type PokeTickMsg struct{}
 type ChatScreen struct {
 	baseContext func() context.Context
 	sess        *session.Session
+	mgr         *modelmanager.Manager
 	client      protocol.Client
 	cfgStore    config.Store
 	uiState     UIStateStore
@@ -181,7 +183,7 @@ type ChatScreen struct {
 // channel before the first frame pass `domain.KindStatus` too —
 // `SetChannelMsg` supplies the real kind atomically on the first
 // focus event.
-func NewChatScreen(baseContext func() context.Context, sess *session.Session, cfgStore config.Store, uiState UIStateStore, initialKind domain.ChannelKind) (ChatScreen, error) {
+func NewChatScreen(baseContext func() context.Context, sess *session.Session, mgr *modelmanager.Manager, cfgStore config.Store, uiState UIStateStore, initialKind domain.ChannelKind) (ChatScreen, error) {
 	active := domain.ChannelName("")
 	channels := set.NewSorted[*Window]()
 	scrollbackMu := &sync.RWMutex{}
@@ -209,6 +211,7 @@ func NewChatScreen(baseContext func() context.Context, sess *session.Session, cf
 	cs := ChatScreen{
 		baseContext:     baseContext,
 		sess:            sess,
+		mgr:             mgr,
 		client:          sess.User(),
 		cfgStore:        cfgStore,
 		uiState:         uiState,
@@ -218,7 +221,7 @@ func NewChatScreen(baseContext func() context.Context, sess *session.Session, cf
 		liveModelsState: &liveModelsState,
 		layout:          layout,
 		keyMap:          components.DefaultChatScreenKeyMap,
-		checklist:       NewWelcomeChecklist(sess.UserNick(), sess.HasAPIKey()),
+		checklist:       NewWelcomeChecklist(sess.UserNick(), mgr.HasAPIKey()),
 		pacedQueue:      map[domain.ChannelName][]domain.Message{},
 		dispatching:     map[*domain.Instance]bool{},
 		scrollbackMu:    scrollbackMu,
@@ -759,7 +762,7 @@ func (s ChatScreen) completionSet() command.CompletionSet[chatcmd.CompletionCont
 				return *s.liveModelsState
 			},
 			Personas: func() iter.Seq[domain.Persona] {
-				personas, _ := s.sess.ListPersonas(s.baseContext())
+				personas, _ := s.mgr.ListPersonas(s.baseContext())
 				return slices.Values(personas)
 			},
 			Kind: func() domain.ChannelKind { return s.activeKind() },
@@ -768,12 +771,12 @@ func (s ChatScreen) completionSet() command.CompletionSet[chatcmd.CompletionCont
 }
 
 func (s ChatScreen) loadLiveModels() tea.Cmd {
-	if !s.sess.HasAPIKey() {
+	if !s.mgr.HasAPIKey() {
 		return nil
 	}
 
 	return func() tea.Msg {
-		models, err := s.sess.ListModels(s.baseContext())
+		models, err := s.mgr.ListModels(s.baseContext())
 		if err != nil {
 			return liveModelsLoadFailedMsg{err: err}
 		}

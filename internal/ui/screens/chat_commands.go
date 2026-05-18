@@ -15,6 +15,7 @@ import (
 func (s ChatScreen) runContext() chatcmd.Context {
 	return chatcmd.Context{
 		Session: s.sess,
+		Manager: s.mgr,
 		Config:  s.cfgStore,
 		Active:  *s.active,
 		Actor:   s.sess.UserInstance(),

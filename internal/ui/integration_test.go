@@ -17,6 +17,7 @@ import (
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/memory"
 	"github.com/laney/modeloff/internal/modelclient"
+	"github.com/laney/modeloff/internal/modelmanager"
 	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/session"
 	storemod "github.com/laney/modeloff/internal/store"
@@ -38,7 +39,7 @@ func TestApp_startup_without_api_key(t *testing.T) {
 }
 
 func TestApp_startup_with_saved_channels(t *testing.T) {
-	sess, store, cfgStore := newIntegrationSession(t, &integrationAPI{})
+	sess, mgr, store, cfgStore := newIntegrationSession(t, &integrationAPI{})
 
 	uitest.SeedChannel(t, sess, "#general")
 	uitest.SeedChannel(t, sess, "#random")
@@ -50,7 +51,7 @@ func TestApp_startup_with_saved_channels(t *testing.T) {
 	// `last_channel` write; pass the integration store through so
 	// the final assertion on `GetLastChannel` reflects the focus
 	// the screen actually settled on.
-	chatScreen, err := screens.NewChatScreen(t.Context, sess, cfgStore, store, domain.KindStatus)
+	chatScreen, err := screens.NewChatScreen(t.Context, sess, mgr, cfgStore, store, domain.KindStatus)
 	require.NoError(t, err)
 
 	root := uipkg.NewRoot(screens.NewConnectionScreen(screens.ConnectionConfig{
@@ -95,10 +96,10 @@ func TestApp_add_model_and_receive_reply(t *testing.T) {
 			}, nil
 		},
 	}
-	sess, _, cfgStore := newIntegrationSession(t, apiClient)
+	sess, mgr, _, cfgStore := newIntegrationSession(t, apiClient)
 	uitest.SeedChannel(t, sess, "#general")
 
-	chatScreen, err := screens.NewChatScreen(t.Context, sess, cfgStore, nil, domain.KindStatus)
+	chatScreen, err := screens.NewChatScreen(t.Context, sess, mgr, cfgStore, nil, domain.KindStatus)
 	require.NoError(t, err)
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen))
@@ -113,14 +114,14 @@ func TestApp_add_model_and_receive_reply(t *testing.T) {
 
 func TestApp_open_dm_and_send_message(t *testing.T) {
 	apiClient := &integrationAPI{}
-	sess, store, cfgStore := newIntegrationSession(t, apiClient)
+	sess, mgr, store, cfgStore := newIntegrationSession(t, apiClient)
 	uitest.SeedChannel(t, sess, "#general")
 	seedInstance(t, sess, store, instanceSpec{
 		Nick:    "botty",
 		ModelID: "test/model",
 	})
 
-	chatScreen, err := screens.NewChatScreen(t.Context, sess, cfgStore, nil, domain.KindStatus)
+	chatScreen, err := screens.NewChatScreen(t.Context, sess, mgr, cfgStore, nil, domain.KindStatus)
 	require.NoError(t, err)
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen))
@@ -141,7 +142,7 @@ func TestApp_terminal_output_shows_full_model_nick_in_user_list(t *testing.T) {
 		" MessageList read scrollback through a getter, eliminating the" +
 		" focus/event race entirely.")
 
-	sess, store, cfgStore := newIntegrationSession(t, &integrationAPI{})
+	sess, mgr, store, cfgStore := newIntegrationSession(t, &integrationAPI{})
 	uitest.SeedChannel(t, sess, "#general")
 
 	channels := orderedmap.New[domain.ChannelName, time.Time]()
@@ -153,13 +154,13 @@ func TestApp_terminal_output_shows_full_model_nick_in_user_list(t *testing.T) {
 		Channels: channels,
 	})
 
-	client := modelclient.New(grok, sess, nil, nil, nil, t.Context)
+	client := modelclient.New(grok, sess, func() api.Client { return nil }, nil, nil, nil, t.Context)
 	require.NoError(t, client.Attach(t.Context()), "attach grok model client")
 	resp, err := client.Send(t.Context(), protocol.Join{Channel: "#general"})
 	require.NoError(t, err)
 	require.NoError(t, resp.Err)
 
-	chatScreen, err := screens.NewChatScreen(t.Context, sess, cfgStore, nil, domain.KindStatus)
+	chatScreen, err := screens.NewChatScreen(t.Context, sess, mgr, cfgStore, nil, domain.KindStatus)
 	require.NoError(t, err)
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen),
@@ -188,13 +189,13 @@ func TestApp_periodic_poke_generates_message(t *testing.T) {
 			return protocol.ModelResponse{Kind: protocol.ResponseSilence}, nil
 		},
 	}
-	sess, _, cfgStore := newIntegrationSession(t, apiClient)
+	sess, mgr, _, cfgStore := newIntegrationSession(t, apiClient)
 	uitest.SeedChannel(t, sess, "#general")
 
 	uitest.AddModel(t, sess, "#general", "test/model", "")
 	uitest.DrainEvents(sess)
 
-	chatScreen, err := screens.NewChatScreen(t.Context, sess, cfgStore, nil, domain.KindStatus)
+	chatScreen, err := screens.NewChatScreen(t.Context, sess, mgr, cfgStore, nil, domain.KindStatus)
 	require.NoError(t, err)
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen))
@@ -206,7 +207,7 @@ func TestApp_periodic_poke_generates_message(t *testing.T) {
 
 func TestApp_reuse_existing_instance(t *testing.T) {
 	apiClient := &integrationAPI{}
-	_, store, _ := newIntegrationSession(t, apiClient)
+	_, _, store, _ := newIntegrationSession(t, apiClient)
 	memStore := memory.NewStoreAdapter(storetest.NewMemoryStore(t))
 	require.NoError(t, memStore.Write(t.Context(), "botty", memory.Entry{
 		Key:     "topic",
@@ -214,9 +215,7 @@ func TestApp_reuse_existing_instance(t *testing.T) {
 	}))
 
 	cfgStore := &integrationConfigStore{}
-	factory := uitest.NewModelClientFactory(t, apiClient, memStore, nil, t.Context)
-	sess := session.New(t.Context, store, memStore, apiClient, factory, "testuser", cfgStore.cfg.APIKey, cfgStore.cfg.SmallModel)
-	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
+	sess, mgr := uitest.NewTestSession(t, store, apiClient, memStore, nil, cfgStore.cfg.APIKey, cfgStore.cfg.SmallModel, t.Context)
 
 	uitest.SeedChannel(t, sess, "#general")
 	uitest.SeedChannel(t, sess, "#random")
@@ -224,7 +223,7 @@ func TestApp_reuse_existing_instance(t *testing.T) {
 	uitest.AddModel(t, sess, "#general", "test/model", "Helpful assistant")
 	uitest.DrainEvents(sess)
 
-	chatScreen, err := screens.NewChatScreen(t.Context, sess, cfgStore, nil, domain.KindStatus)
+	chatScreen, err := screens.NewChatScreen(t.Context, sess, mgr, cfgStore, nil, domain.KindStatus)
 	require.NoError(t, err)
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen))
@@ -345,13 +344,11 @@ func TestApp_vector_memory_write_and_search(t *testing.T) {
 			PokeInterval: 5 * time.Minute,
 		},
 	}
-	factory := uitest.NewModelClientFactory(t, apiClient, memStore, nil, t.Context)
-	sess := session.New(t.Context, store, memStore, apiClient, factory, "testuser", cfgStore.cfg.APIKey, cfgStore.cfg.SmallModel)
-	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
+	sess, mgr := uitest.NewTestSession(t, store, apiClient, memStore, nil, cfgStore.cfg.APIKey, cfgStore.cfg.SmallModel, t.Context)
 
 	uitest.SeedChannel(t, sess, "#lab")
 
-	chatScreen, err := screens.NewChatScreen(t.Context, sess, cfgStore, nil, domain.KindStatus)
+	chatScreen, err := screens.NewChatScreen(t.Context, sess, mgr, cfgStore, nil, domain.KindStatus)
 	require.NoError(t, err)
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen),
@@ -456,7 +453,7 @@ func (s *integrationConfigStore) OnChange(_ config.ChangeFunc) config.Unsubscrib
 	return func() {}
 }
 
-func newIntegrationSession(t *testing.T, apiClient api.Client) (*session.Session, *storemod.SQLiteStore, *integrationConfigStore) {
+func newIntegrationSession(t *testing.T, apiClient api.Client) (*session.Session, *modelmanager.Manager, *storemod.SQLiteStore, *integrationConfigStore) {
 	t.Helper()
 
 	cfgStore := &integrationConfigStore{
@@ -466,24 +463,22 @@ func newIntegrationSession(t *testing.T, apiClient api.Client) (*session.Session
 		},
 	}
 
-	sess, store := newIntegrationSessionWithConfigStore(t, apiClient, cfgStore)
-	return sess, store, cfgStore
+	sess, mgr, store := newIntegrationSessionWithConfigStore(t, apiClient, cfgStore)
+	return sess, mgr, store, cfgStore
 }
 
 func newIntegrationSessionWithConfigStore(
 	t *testing.T,
 	apiClient api.Client,
 	cfgStore *integrationConfigStore,
-) (*session.Session, *storemod.SQLiteStore) {
+) (*session.Session, *modelmanager.Manager, *storemod.SQLiteStore) {
 	t.Helper()
 
 	store := storetest.NewMemoryStore(t)
 	memStore := memory.NewStoreAdapter(storetest.NewMemoryStore(t))
-	factory := uitest.NewModelClientFactory(t, apiClient, memStore, nil, t.Context)
-	sess := session.New(t.Context, store, memStore, apiClient, factory, "testuser", cfgStore.cfg.APIKey, cfgStore.cfg.SmallModel)
-	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
+	sess, mgr := uitest.NewTestSession(t, store, apiClient, memStore, nil, cfgStore.cfg.APIKey, cfgStore.cfg.SmallModel, t.Context)
 
-	return sess, store
+	return sess, mgr, store
 }
 
 func advanceConnection(tm *uitest.App, ticks int) {
@@ -516,7 +511,7 @@ func seedInstance(t *testing.T, sess *session.Session, store *storemod.SQLiteSto
 	// dispatch goroutine running before any test fans out an event to
 	// it. This mirrors the production lifecycle, where
 	// `attachInstanceToChannel` ensures the same invariant.
-	require.NoError(t, modelclient.New(inst, sess, nil, nil, nil, t.Context).Attach(t.Context()), "attach model client for seeded instance")
+	require.NoError(t, modelclient.New(inst, sess, func() api.Client { return nil }, nil, nil, nil, t.Context).Attach(t.Context()), "attach model client for seeded instance")
 
 	return inst
 }

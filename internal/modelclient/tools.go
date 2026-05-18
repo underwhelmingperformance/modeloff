@@ -11,8 +11,8 @@ import (
 	"github.com/laney/modeloff/internal/protocol"
 )
 
-// SessionAPI is the dependency surface the chatcmd tool grammar
-// reads through [ToolContext.Session]. The concrete
+// SessionAPI is the session-side dependency surface the chatcmd
+// tool grammar reads through [ToolContext.Session]. The concrete
 // `*session.Session` satisfies it implicitly; defining it here lets
 // the chatcmd and modelclient packages stay independent of the
 // session package's symbol set.
@@ -20,6 +20,15 @@ type SessionAPI interface {
 	GetWindow(ctx context.Context, name domain.ChannelName) (domain.Window, error)
 	LogEvent(ctx context.Context, ch domain.ChannelName, event domain.PersistableEvent) (domain.StoredEvent, error)
 	ResolveNick(ctx context.Context, nick domain.Nick) (*domain.Instance, error)
+	Now() time.Time
+}
+
+// ManagerAPI is the manager-side dependency surface the chatcmd
+// tool grammar reads through [ToolContext.Manager]. The concrete
+// `*modelmanager.Manager` satisfies it implicitly; defining it
+// here lets the chatcmd and modelclient packages stay independent
+// of the modelmanager package's symbol set.
+type ManagerAPI interface {
 	SetAPIKey(ctx context.Context, apiKey, baseURL string) error
 	SetBaseURL(ctx context.Context, baseURL string) error
 	SetSmallModel(ctx context.Context, modelID domain.ModelID)
@@ -27,7 +36,6 @@ type SessionAPI interface {
 	ListPersonas(ctx context.Context) ([]domain.Persona, error)
 	RegeneratePersonas(ctx context.Context) ([]domain.Persona, error)
 	ResetPersonas(ctx context.Context) (int, error)
-	Now() time.Time
 }
 
 // ToolContext carries the backend context for a model tool call.
@@ -43,6 +51,7 @@ type SessionAPI interface {
 // with a nil-pointer dereference at `tc.Client.Send`.
 type ToolContext struct {
 	Session SessionAPI
+	Manager ManagerAPI
 	Actor   *domain.Instance
 	Channel domain.ChannelName
 	Client  protocol.Client

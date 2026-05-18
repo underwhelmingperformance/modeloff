@@ -30,9 +30,10 @@ type Parser = command.Parser[CompletionContext, Context, tea.Cmd]
 // for chat-screen invocations). Both are guaranteed non-nil at
 // construction in `runContext` (chat_commands.go). The cancellation
 // context is threaded as an explicit first parameter to [Command.Run]
-// rather than carried on the struct.
+// and not carried on the struct.
 type Context struct {
 	Session    modelclient.SessionAPI
+	Manager    modelclient.ManagerAPI
 	Config     config.Store
 	Active     domain.ChannelName
 	Actor      *domain.Instance
@@ -231,6 +232,7 @@ func sendCommand(ctx context.Context, rc Context, c protocolCommand, operation s
 func toolContext(tc modelclient.ToolContext) Context {
 	return Context{
 		Session: tc.Session,
+		Manager: tc.Manager,
 		Active:  tc.Channel,
 		Actor:   tc.Actor,
 		Client:  tc.Client,

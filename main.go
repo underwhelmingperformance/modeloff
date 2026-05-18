@@ -18,6 +18,7 @@ import (
 	"github.com/laney/modeloff/internal/config"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/memory"
+	"github.com/laney/modeloff/internal/modelmanager"
 	"github.com/laney/modeloff/internal/observability"
 	"github.com/laney/modeloff/internal/session"
 	"github.com/laney/modeloff/internal/store"
@@ -65,26 +66,23 @@ func main() {
 		os.Exit(1)
 	}
 
-	factory := newModelClientRegistry(apiClient, memStore, toolRegistry, baseContext)
-
-	sess := session.New(
-		baseContext,
-		dataStore,
-		memStore,
-		apiClient,
-		factory,
-		domain.Nick(cfg.UserNick),
-		cfg.APIKey,
-		cfg.SmallModel,
-	)
-	sess.SetAPIFactory(func(apiKey, baseURL string) (api.Client, error) {
-		return api.NewOpenRouterClient(apiKey, baseURL, nil), nil
+	mgr := modelmanager.New(modelmanager.Config{
+		Store:     dataStore,
+		Memory:    memStore,
+		APIClient: apiClient,
+		APIFactory: func(apiKey, baseURL string) (api.Client, error) {
+			return api.NewOpenRouterClient(apiKey, baseURL, nil), nil
+		},
+		InitialAPIKey: cfg.APIKey,
+		SmallModel:    cfg.SmallModel,
+		Tools:         toolRegistry,
+		BaseContext:   baseContext,
 	})
 
-	for inst := range sess.Instances(appCtx) {
-		if _, err := factory.Attach(appCtx, sess, inst); err != nil {
-			slog.Warn("attach boot model client", "instance_id", inst.ID(), "error", err)
-		}
+	sess := session.New(baseContext, dataStore, mgr, domain.Nick(cfg.UserNick))
+
+	if err := mgr.Start(appCtx, sess); err != nil {
+		slog.Warn("attach boot model clients", "error", err)
 	}
 
 	channelCount := 0
@@ -93,7 +91,7 @@ func main() {
 		channelCount = len(autojoin)
 	}
 
-	chatScreen, err := screens.NewChatScreen(baseContext, sess, cfgStore, dataStore, domain.KindStatus)
+	chatScreen, err := screens.NewChatScreen(baseContext, sess, mgr, cfgStore, dataStore, domain.KindStatus)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error building command grammar: %v\n", err)
 		os.Exit(1)
@@ -106,6 +104,7 @@ func main() {
 		ChannelCount: channelCount,
 		Nick:         cfg.UserNick,
 		Session:      sess,
+		Manager:      mgr,
 		BaseContext:  baseContext,
 	}, chatScreen)
 

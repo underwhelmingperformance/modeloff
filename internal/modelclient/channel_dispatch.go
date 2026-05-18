@@ -21,6 +21,12 @@ import (
 	"github.com/laney/modeloff/internal/richtext"
 )
 
+// EnsureStructuredOutputModel validates that the given model
+// supports structured outputs. Each dispatch turn consults this
+// before invoking the upstream API. Implementations carry their
+// own catalogue cache; the modelclient does not retain one.
+type EnsureStructuredOutputModel func(ctx context.Context, modelID domain.ModelID) error
+
 // Dispatcher synchronously broadcasts to every model member of a
 // channel, returning their replies as a slice. Each instance gets
 // its own per-turn prompt and tool-registry (memory tools merged
@@ -36,13 +42,23 @@ type Dispatcher struct {
 	api      api.Client
 	memStore memory.Store
 	tools    *ToolRegistry
+	ensure   EnsureStructuredOutputModel
 }
 
 // NewDispatcher returns a Dispatcher bound to the given session and
 // dependencies.
-func NewDispatcher(sess Session, apiClient api.Client, memStore memory.Store, tools *ToolRegistry) *Dispatcher {
-	return &Dispatcher{sess: sess, api: apiClient, memStore: memStore, tools: tools}
+func NewDispatcher(sess Session, apiClient api.Client, memStore memory.Store, tools *ToolRegistry, ensure EnsureStructuredOutputModel) *Dispatcher {
+	if ensure == nil {
+		ensure = noEnsure
+	}
+	return &Dispatcher{sess: sess, api: apiClient, memStore: memStore, tools: tools, ensure: ensure}
 }
+
+// noEnsure is the permissive default consulted when a [Dispatcher]
+// or [ModelClient] is constructed without a real catalogue check.
+// Tests that do not care about catalogue validation use it; in
+// production the manager-supplied closure does the lookup.
+func noEnsure(context.Context, domain.ModelID) error { return nil }
 
 // DispatchToChannel sends new events to all model instances in a channel
 // and collects their replies. The caller provides the new IRC-formatted
@@ -67,7 +83,7 @@ func (d *Dispatcher) DispatchToChannel(
 		return nil, fmt.Errorf("list history: %w", err)
 	}
 
-	replies, err := d.dispatchToInstances(ctx, ch, historyEvents, newEvents)
+	replies, err := d.dispatchToInstances(ctx, ch, historyEvents, newEvents, d.ensure)
 	if err != nil {
 		setSpanError(span, err, observability.ErrorKindDispatch)
 		return nil, err
@@ -83,6 +99,7 @@ func (d *Dispatcher) dispatchToInstances(
 	channelName domain.ChannelName,
 	historyEvents []domain.StoredEvent,
 	events []protocol.IRCMessage,
+	ensure EnsureStructuredOutputModel,
 ) ([]domain.ModelReplyEvent, error) {
 	instances, err := resolveDispatchRecipients(ctx, d.sess, channelName)
 	if err != nil {
@@ -105,7 +122,7 @@ func (d *Dispatcher) dispatchToInstances(
 		}
 
 		caller := d.sess.LookupClient(protocol.ClientID(inst.ID()))
-		instReplies, instErr := dispatchToInstance(ctx, d.sess, d.api, d.memStore, d.tools, caller, window, inst, channelName, historyEvents, events)
+		instReplies, instErr := dispatchToInstance(ctx, d.sess, d.api, d.memStore, d.tools, ensure, caller, window, inst, channelName, historyEvents, events)
 		if instErr != nil {
 			errs = append(errs, instErr)
 		}
@@ -130,6 +147,7 @@ func dispatchToInstance(
 	apiClient api.Client,
 	memStore memory.Store,
 	tools *ToolRegistry,
+	ensure EnsureStructuredOutputModel,
 	caller protocol.Client,
 	window domain.Window,
 	inst *domain.Instance,
@@ -174,7 +192,7 @@ func dispatchToInstance(
 		}
 	}
 
-	if err := sess.EnsureStructuredOutputModel(ctx, inst.ModelID); err != nil {
+	if err := ensure(ctx, inst.ModelID); err != nil {
 		setSpanError(instanceSpan, err, classifyEnsureModelError(err))
 		return nil, fmt.Errorf("send events to %s: %w", nick, err)
 	}

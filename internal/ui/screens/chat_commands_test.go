@@ -9,6 +9,7 @@ import (
 
 	"github.com/laney/modeloff/internal/api"
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/modelmanager"
 	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/session"
 	"github.com/laney/modeloff/internal/store/storetest"
@@ -54,21 +55,28 @@ func (stubAPI) GeneratePersonas(context.Context, domain.ModelID) ([]domain.Perso
 	return nil, nil
 }
 
-func newTestSession(t *testing.T) *session.Session {
+func newTestSession(t *testing.T) (*session.Session, *modelmanager.Manager) {
 	t.Helper()
 
 	s := storetest.NewMemoryStore(t)
 	apiClient := stubAPI{}
-	factory := uitest.NewModelClientFactory(t, apiClient, nil, nil, t.Context)
-	sess := session.New(t.Context, s, nil, apiClient, factory, "testuser", "", "")
-	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
+	return uitest.NewTestSession(t, s, apiClient, nil, nil, "", "", t.Context)
+}
 
-	return sess
+// newScreenFixture returns a ChatScreen built over a fresh
+// session/manager pair the in-package tests reach for. It pins the
+// constructor's argument layout in one place so the per-test sites
+// read as a single call.
+func newScreenFixture(t *testing.T) ChatScreen {
+	t.Helper()
+	sess, mgr := newTestSession(t)
+	screen, err := NewChatScreen(t.Context, sess, mgr, nil, nil, domain.KindStatus)
+	require.NoError(t, err)
+	return screen
 }
 
 func TestChatScreen_Commands_specs_are_complete(t *testing.T) {
-	screen, err := NewChatScreen(t.Context, newTestSession(t), nil, nil, domain.KindStatus)
-	require.NoError(t, err)
+	screen := newScreenFixture(t)
 
 	commands := screen.parser.Set().Commands
 
@@ -107,8 +115,7 @@ func TestChatScreen_Commands_specs_are_complete(t *testing.T) {
 }
 
 func TestChatScreen_Commands_exposes_chat_commands(t *testing.T) {
-	screen, err := NewChatScreen(t.Context, newTestSession(t), nil, nil, domain.KindStatus)
-	require.NoError(t, err)
+	screen := newScreenFixture(t)
 
 	commands := screen.parser.Set().Commands
 	names := make([]string, 0, len(commands))
@@ -141,8 +148,7 @@ func TestChatScreen_Commands_exposes_chat_commands(t *testing.T) {
 }
 
 func TestChatScreen_HelpCommand_emits_typed_event(t *testing.T) {
-	screen, err := NewChatScreen(t.Context, newTestSession(t), nil, nil, domain.KindStatus)
-	require.NoError(t, err)
+	screen := newScreenFixture(t)
 
 	cmd, err := screen.parser.Parse("/help")
 	require.NoError(t, err)
@@ -152,8 +158,7 @@ func TestChatScreen_HelpCommand_emits_typed_event(t *testing.T) {
 }
 
 func TestChatScreen_QuitCommand_returns_quit_requested(t *testing.T) {
-	screen, err := NewChatScreen(t.Context, newTestSession(t), nil, nil, domain.KindStatus)
-	require.NoError(t, err)
+	screen := newScreenFixture(t)
 
 	cmd, err := screen.parser.Parse("/quit goodnight")
 	require.NoError(t, err)
@@ -163,8 +168,7 @@ func TestChatScreen_QuitCommand_returns_quit_requested(t *testing.T) {
 }
 
 func TestChatScreen_StatusItems_disconnecting_lifecycle(t *testing.T) {
-	screen, err := NewChatScreen(t.Context, newTestSession(t), nil, nil, domain.KindStatus)
-	require.NoError(t, err)
+	screen := newScreenFixture(t)
 
 	disconnecting := uipkg.StatusItem{
 		ID:       "disconnecting",
@@ -187,8 +191,7 @@ func TestChatScreen_StatusItems_disconnecting_lifecycle(t *testing.T) {
 }
 
 func TestChatScreen_second_quit_request_escalates_to_tea_quit(t *testing.T) {
-	screen, err := NewChatScreen(t.Context, newTestSession(t), nil, nil, domain.KindStatus)
-	require.NoError(t, err)
+	screen := newScreenFixture(t)
 
 	// First quit starts the disconnect flow.
 	updated, _ := screen.Update(uipkg.QuitRequestedMsg{})
