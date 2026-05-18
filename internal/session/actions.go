@@ -498,6 +498,7 @@ func (s *Session) setTopicAs(ctx context.Context, actor *domain.Instance, ch dom
 		Target:     ch,
 		Topic:      topic,
 		By:         actorNick,
+		InstanceID: actor.ID(),
 		At:         now,
 		ByInstance: actor,
 	})

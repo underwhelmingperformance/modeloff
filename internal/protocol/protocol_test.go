@@ -141,6 +141,149 @@ func TestFromChannelEvent_nick_change(t *testing.T) {
 	}, got)
 }
 
+// TestFromChannelEvent_propagates_instance_id pins that every
+// channel event with an actor InstanceID carries it through into
+// the resulting IRCMessage. Without it `buildMessages` files the
+// bot's own JOIN/PART/TOPIC events as user-role messages and the
+// model reads them as someone else's actions.
+func TestFromChannelEvent_propagates_instance_id(t *testing.T) {
+	at := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
+	const selfID = domain.InstanceID("inst-self")
+
+	tests := []struct {
+		name  string
+		event domain.PersistableEvent
+		want  IRCMessage
+	}{
+		{
+			name: "join",
+			event: domain.Join{
+				Target:     "#room",
+				Nick:       "botty",
+				InstanceID: selfID,
+				At:         at,
+			},
+			want: IRCMessage{
+				Kind:       KindJoin,
+				From:       "botty",
+				InstanceID: selfID,
+				Target:     "#room",
+				At:         at,
+			},
+		},
+		{
+			name: "part",
+			event: domain.Part{
+				Target:     "#room",
+				Nick:       "botty",
+				InstanceID: selfID,
+				Message:    "afk",
+				At:         at,
+			},
+			want: IRCMessage{
+				Kind:       KindPart,
+				From:       "botty",
+				InstanceID: selfID,
+				Target:     "#room",
+				Body:       "afk",
+				At:         at,
+			},
+		},
+		{
+			name: "quit",
+			event: domain.Quit{
+				Nick:       "botty",
+				InstanceID: selfID,
+				Message:    "bye",
+				At:         at,
+			},
+			want: IRCMessage{
+				Kind:       KindQuit,
+				From:       "botty",
+				InstanceID: selfID,
+				Body:       "bye",
+				At:         at,
+			},
+		},
+		{
+			name: "topic_change",
+			event: domain.TopicChange{
+				Target:     "#room",
+				Topic:      "new topic",
+				By:         "botty",
+				InstanceID: selfID,
+				At:         at,
+			},
+			want: IRCMessage{
+				Kind:       KindTopic,
+				From:       "botty",
+				InstanceID: selfID,
+				Target:     "#room",
+				Body:       "new topic",
+				At:         at,
+			},
+		},
+		{
+			name: "nick_change",
+			event: domain.NickChange{
+				OldNick:    "botty",
+				NewNick:    "botstronger",
+				InstanceID: selfID,
+				At:         at,
+			},
+			want: IRCMessage{
+				Kind:       KindNick,
+				From:       "botty",
+				InstanceID: selfID,
+				Target:     "botstronger",
+				At:         at,
+			},
+		},
+		{
+			name: "model_invited",
+			event: domain.ModelInvited{
+				Target:     "#room",
+				Nick:       "botty",
+				InstanceID: selfID,
+				By:         "laney",
+				At:         at,
+			},
+			want: IRCMessage{
+				Kind:       KindInvite,
+				From:       "botty",
+				InstanceID: selfID,
+				Target:     "#room",
+				At:         at,
+			},
+		},
+		{
+			name: "model_kicked",
+			event: domain.ModelKicked{
+				Target:     "#room",
+				Nick:       "botty",
+				InstanceID: selfID,
+				By:         "laney",
+				At:         at,
+			},
+			want: IRCMessage{
+				Kind:       KindKick,
+				From:       "botty",
+				InstanceID: selfID,
+				Target:     "#room",
+				At:         at,
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := FromChannelEvent(tc.event)
+			require.True(t, ok)
+			require.Equal(t, tc.want, got)
+		})
+	}
+}
+
 func TestValidateReplyPart(t *testing.T) {
 	t.Run("valid body", func(t *testing.T) {
 		err := ValidateReplyPart(ReplyPart{

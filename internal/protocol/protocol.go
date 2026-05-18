@@ -191,20 +191,22 @@ func FromChannelEvent(evt domain.PersistableEvent) (IRCMessage, bool) {
 
 	case domain.Join:
 		return IRCMessage{
-			Kind:   KindJoin,
-			From:   string(e.Nick),
-			Target: string(e.Target),
-			Body:   e.Message,
-			At:     e.At,
+			Kind:       KindJoin,
+			From:       string(e.Nick),
+			InstanceID: e.InstanceID,
+			Target:     string(e.Target),
+			Body:       e.Message,
+			At:         e.At,
 		}, true
 
 	case domain.Part:
 		return IRCMessage{
-			Kind:   KindPart,
-			From:   string(e.Nick),
-			Target: string(e.Target),
-			Body:   e.Message,
-			At:     e.At,
+			Kind:       KindPart,
+			From:       string(e.Nick),
+			InstanceID: e.InstanceID,
+			Target:     string(e.Target),
+			Body:       e.Message,
+			At:         e.At,
 		}, true
 
 	case domain.Quit:
@@ -213,43 +215,48 @@ func FromChannelEvent(evt domain.PersistableEvent) (IRCMessage, bool) {
 		// model knows which window the line belongs to without
 		// a target field on the protocol message.
 		return IRCMessage{
-			Kind: KindQuit,
-			From: string(e.Nick),
-			Body: e.Message,
-			At:   e.At,
+			Kind:       KindQuit,
+			From:       string(e.Nick),
+			InstanceID: e.InstanceID,
+			Body:       e.Message,
+			At:         e.At,
 		}, true
 
 	case domain.TopicChange:
 		return IRCMessage{
-			Kind:   KindTopic,
-			From:   string(e.By),
-			Target: string(e.Target),
-			Body:   e.Topic,
-			At:     e.At,
+			Kind:       KindTopic,
+			From:       string(e.By),
+			InstanceID: e.InstanceID,
+			Target:     string(e.Target),
+			Body:       e.Topic,
+			At:         e.At,
 		}, true
 
 	case domain.NickChange:
 		return IRCMessage{
-			Kind:   KindNick,
-			From:   string(e.OldNick),
-			Target: string(e.NewNick),
-			At:     e.At,
+			Kind:       KindNick,
+			From:       string(e.OldNick),
+			InstanceID: e.InstanceID,
+			Target:     string(e.NewNick),
+			At:         e.At,
 		}, true
 
 	case domain.ModelInvited:
 		return IRCMessage{
-			Kind:   KindInvite,
-			From:   string(e.Nick),
-			Target: string(e.Target),
-			At:     e.At,
+			Kind:       KindInvite,
+			From:       string(e.Nick),
+			InstanceID: e.InstanceID,
+			Target:     string(e.Target),
+			At:         e.At,
 		}, true
 
 	case domain.ModelKicked:
 		return IRCMessage{
-			Kind:   KindKick,
-			From:   string(e.Nick),
-			Target: string(e.Target),
-			At:     e.At,
+			Kind:       KindKick,
+			From:       string(e.Nick),
+			InstanceID: e.InstanceID,
+			Target:     string(e.Target),
+			At:         e.At,
 		}, true
 
 	default:

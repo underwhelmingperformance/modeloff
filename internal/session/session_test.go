@@ -4864,10 +4864,11 @@ func TestAddModel_dispatches_join_trigger_to_model(t *testing.T) {
 		require.Equal(t, map[domain.ModelID][]protocol.IRCMessage{
 			"test/model": {
 				{
-					Kind:   protocol.KindJoin,
-					From:   "fakenick",
-					Target: "#dev",
-					At:     fixedTime,
+					Kind:       protocol.KindJoin,
+					From:       "fakenick",
+					InstanceID: bot.ID(),
+					Target:     "#dev",
+					At:         fixedTime,
 				},
 			},
 		}, dispatched)

@@ -445,6 +445,7 @@ func TestSetTopicAs_model_actor(t *testing.T) {
 				Target:     "#dev",
 				Topic:      "new topic",
 				By:         "botty",
+				InstanceID: botty.ID(),
 				At:         fixedTime,
 				ByInstance: botty,
 			},

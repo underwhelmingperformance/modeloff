@@ -185,13 +185,15 @@ func (e Quit) persistableEventTime() time.Time { return e.At }
 func (Quit) ModelVisible() bool { return true }
 
 // TopicChange records a topic change. `By` is the actor's
-// nick at the time of the change; `ByInstance` is the live handle,
-// populated on emission and ignored by JSON.
+// nick at the time of the change; `InstanceID` is the actor's
+// persistent id (empty for the human user); `ByInstance` is the
+// live handle, populated on emission and ignored by JSON.
 type TopicChange struct {
-	Target ChannelName `json:"channel"`
-	Topic  string      `json:"topic"`
-	By     Nick        `json:"by"`
-	At     time.Time   `json:"at"`
+	Target     ChannelName `json:"channel"`
+	Topic      string      `json:"topic"`
+	By         Nick        `json:"by"`
+	InstanceID InstanceID  `json:"instance_id,omitzero"`
+	At         time.Time   `json:"at"`
 
 	ByInstance *Instance `json:"-"`
 }
