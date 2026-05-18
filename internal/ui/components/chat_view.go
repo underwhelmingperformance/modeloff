@@ -11,12 +11,6 @@ import (
 	"github.com/laney/modeloff/internal/ui/theme"
 )
 
-// PendingResponseMsg sets or clears the "awaiting response" indicator
-// in the chat view.
-type PendingResponseMsg struct {
-	Pending bool
-}
-
 // SetChannelMsg updates the channel identity and topic for a channel
 // switch. The message list re-reads its events through the injected
 // getter; no explicit history payload is carried.
@@ -188,7 +182,7 @@ func (c ChatView[C]) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 		return c, nil
 
-	case SetPlaceholderMsg, PendingResponseMsg, HighlightWordsMsg, TimestampFormatMsg:
+	case SetPlaceholderMsg, HighlightWordsMsg, TimestampFormatMsg:
 		var cmd tea.Cmd
 		c, cmd = c.updateMessages(msg)
 		c = c.syncMessageViewport()
@@ -339,16 +333,11 @@ func (c ChatView[C]) layoutRects() chatViewLayout {
 		topicHeight = lipgloss.Height(c.renderTopic(width))
 	}
 
-	pendingHeight := 0
-	if c.messages.Pending() {
-		pendingHeight = 1
-	}
-
 	messageRect := ui.Rect{
 		X:      c.bounds.X,
 		Y:      c.bounds.Y + topicHeight,
 		Width:  width,
-		Height: c.bounds.Height - topicHeight - pendingHeight - paletteHeight - inputHeight,
+		Height: c.bounds.Height - topicHeight - paletteHeight - inputHeight,
 	}
 	if messageRect.Height < 0 {
 		messageRect.Height = 0

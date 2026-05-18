@@ -53,7 +53,7 @@ func containsMsg[T any](msgs []tea.Msg) (T, bool) {
 	return zero, false
 }
 
-func TestChatScreen_ModelDispatchStarted_shows_pending(t *testing.T) {
+func TestChatScreen_ModelDispatchStarted_marks_nick_thinking(t *testing.T) {
 	screen := newScreenFixture(t)
 	*screen.active = "#general"
 
@@ -69,16 +69,12 @@ func TestChatScreen_ModelDispatchStarted_shows_pending(t *testing.T) {
 
 	msgs := collectMsgs(cmd)
 
-	pending, ok := containsMsg[components.PendingResponseMsg](msgs)
-	require.True(t, ok, "expected PendingResponseMsg in batch")
-	require.True(t, pending.Pending)
-
 	thinking, ok := containsMsg[components.NickListThinkingMsg](msgs)
 	require.True(t, ok, "expected NickListThinkingMsg in batch")
-	require.True(t, thinking.Nicks["botty"], "active-channel member should be listed as thinking")
+	require.Equal(t, map[domain.Nick]bool{"botty": true}, thinking.Nicks)
 }
 
-func TestChatScreen_ModelDispatchDone_clears_pending(t *testing.T) {
+func TestChatScreen_ModelDispatchDone_clears_nick_thinking(t *testing.T) {
 	screen := newScreenFixture(t)
 	*screen.active = "#general"
 
@@ -91,23 +87,29 @@ func TestChatScreen_ModelDispatchDone_clears_pending(t *testing.T) {
 
 	msgs := collectMsgs(cmd)
 
-	pending, ok := containsMsg[components.PendingResponseMsg](msgs)
-	require.True(t, ok, "expected PendingResponseMsg in batch")
-	require.False(t, pending.Pending)
+	thinking, ok := containsMsg[components.NickListThinkingMsg](msgs)
+	require.True(t, ok, "expected NickListThinkingMsg in batch")
+	require.Empty(t, thinking.Nicks)
 
 	require.Empty(t, screen.dispatching, "Done must remove the instance from the dispatching set")
 }
 
-// TestChatScreen_ModelDispatchDone_keeps_pending_with_concurrent_dispatch
+// TestChatScreen_ModelDispatchDone_keeps_thinking_with_concurrent_dispatch
 // pins the per-instance contract: a Done for one model does not clear
-// the spinner while another model is still in its turn. The old
-// channel-keyed event would have flipped the global flag off here.
-func TestChatScreen_ModelDispatchDone_keeps_pending_with_concurrent_dispatch(t *testing.T) {
+// the nick-list thinking indicator while another model is still in
+// its turn.
+func TestChatScreen_ModelDispatchDone_keeps_thinking_with_concurrent_dispatch(t *testing.T) {
 	screen := newScreenFixture(t)
 	*screen.active = "#general"
 
 	botty := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
 	other := domain.NewModelInstance("inst-other", "other", "test/model", "", nil)
+
+	cw := domain.NewChannelWindow("#general", time.Time{})
+	cw.Members.Add(botty)
+	cw.Members.Add(other)
+	screen.channels.Insert(newWindow(cw))
+
 	screen.dispatching[botty] = true
 	screen.dispatching[other] = true
 
@@ -117,29 +119,10 @@ func TestChatScreen_ModelDispatchDone_keeps_pending_with_concurrent_dispatch(t *
 
 	msgs := collectMsgs(cmd)
 
-	_, ok := containsMsg[components.PendingResponseMsg](msgs)
-	require.False(t, ok,
-		"Done for one instance must not flip PendingResponseMsg while another is still dispatching")
-}
-
-func TestChatScreen_ModelDispatchDone_deferred_while_replies_queued(t *testing.T) {
-	screen := newScreenFixture(t)
-	*screen.active = "#general"
-
-	botty := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
-	screen.dispatching[botty] = true
-	screen.pacedQueue["#general"] = []domain.Message{
-		{Target: "#general", From: "botty", InstanceID: "inst-botty", Body: "queued"},
-	}
-
-	// With paced messages still queued, Done must not clear the
-	// pending indicator — the queue drainer handles that.
-	_, cmd := screen.handleModelDispatchDone(domain.ModelDispatchDone{Instance: botty})
-	require.NotNil(t, cmd)
-
-	msgs := collectMsgs(cmd)
-	_, ok := containsMsg[components.PendingResponseMsg](msgs)
-	require.False(t, ok, "Done must not emit PendingResponseMsg while paced replies remain")
+	thinking, ok := containsMsg[components.NickListThinkingMsg](msgs)
+	require.True(t, ok, "expected NickListThinkingMsg in batch")
+	require.Equal(t, map[domain.Nick]bool{"other": true}, thinking.Nicks,
+		"Done for one instance must keep the other listed as thinking")
 }
 
 func TestChatScreen_ModelReply_queues_and_paces(t *testing.T) {
@@ -194,17 +177,11 @@ func TestChatScreen_ModelReply_queues_and_paces(t *testing.T) {
 	}, screen.pacedQueue)
 	require.NotNil(t, cmd, "should schedule next paced delivery")
 
-	// Delivering the last message clears the pending indicator.
-	updated, cmd = screen.deliverNextPaced(deliverNextPacedMsg{Channel: "#general"})
+	// Delivering the last message empties the queue.
+	updated, _ = screen.deliverNextPaced(deliverNextPacedMsg{Channel: "#general"})
 	screen = updated.(ChatScreen)
 
 	require.Equal(t, map[domain.ChannelName][]domain.Message{}, screen.pacedQueue)
-
-	msgs = collectMsgs(cmd)
-
-	pending, ok := containsMsg[components.PendingResponseMsg](msgs)
-	require.True(t, ok, "expected PendingResponseMsg after queue drained")
-	require.False(t, pending.Pending)
 }
 
 // TestChatScreen_ModelReply_paces_per_channel_independently pins the
@@ -265,35 +242,23 @@ func TestChatScreen_ModelReply_paces_per_channel_independently(t *testing.T) {
 		"#channel-b": {bFirst},
 	}, screen.pacedQueue)
 
-	// Delivering #channel-b's single message empties its queue. The
-	// application-wide pending indicator must stay on because
-	// #channel-a still has queued messages.
-	updated, cmd = screen.deliverNextPaced(deliverNextPacedMsg{Channel: "#channel-b"})
+	// Delivering #channel-b's single message empties its queue
+	// while #channel-a's queue remains untouched.
+	updated, _ = screen.deliverNextPaced(deliverNextPacedMsg{Channel: "#channel-b"})
 	screen = updated.(ChatScreen)
 
 	require.Equal(t, map[domain.ChannelName][]domain.Message{
 		"#channel-a": {aFirst, aSecond},
 	}, screen.pacedQueue)
 
-	msgs = collectMsgs(cmd)
-	_, hasPending := containsMsg[components.PendingResponseMsg](msgs)
-	require.False(t, hasPending,
-		"draining one channel must not clear pending while another channel still has messages")
-
-	// Drain #channel-a fully. Only the final delivery — when no
-	// channel has queued messages — clears the pending indicator.
+	// Drain #channel-a fully.
 	updated, _ = screen.deliverNextPaced(deliverNextPacedMsg{Channel: "#channel-a"})
 	screen = updated.(ChatScreen)
 
-	updated, cmd = screen.deliverNextPaced(deliverNextPacedMsg{Channel: "#channel-a"})
+	updated, _ = screen.deliverNextPaced(deliverNextPacedMsg{Channel: "#channel-a"})
 	screen = updated.(ChatScreen)
 
 	require.Equal(t, map[domain.ChannelName][]domain.Message{}, screen.pacedQueue)
-
-	msgs = collectMsgs(cmd)
-	pending, ok := containsMsg[components.PendingResponseMsg](msgs)
-	require.True(t, ok, "final drain should clear pending indicator")
-	require.False(t, pending.Pending)
 }
 
 // TestChatScreen_parting_channel_purges_paced_queue pins the F4
@@ -329,9 +294,7 @@ func TestChatScreen_parting_channel_purges_paced_queue(t *testing.T) {
 	require.False(t, stillQueued, "paced queue for parted channel must be dropped")
 
 	// A stale tick for the parted channel fires. deliverNextPaced's
-	// empty-queue branch no-ops for render, and clears the
-	// application-wide pending indicator because no other channel
-	// has pending work.
+	// empty-queue branch no-ops cleanly.
 	_, cmd := screen.deliverNextPaced(deliverNextPacedMsg{Channel: "#x"})
 
 	msgs := collectMsgs(cmd)
@@ -341,10 +304,6 @@ func TestChatScreen_parting_channel_purges_paced_queue(t *testing.T) {
 
 	_, hasUnread := containsMsg[components.ChannelUnreadMsg](msgs)
 	require.False(t, hasUnread, "stale tick must not mark the parted channel as unread")
-
-	pending, ok := containsMsg[components.PendingResponseMsg](msgs)
-	require.True(t, ok, "stale tick on an empty queue with nothing else pending should clear the indicator")
-	require.False(t, pending.Pending)
 }
 
 func TestChatScreen_handleProtocolEvent_routing(t *testing.T) {
@@ -354,18 +313,18 @@ func TestChatScreen_handleProtocolEvent_routing(t *testing.T) {
 		wantType any
 	}{
 		{
-			name: "ModelDispatchStarted routes to pending indicator",
+			name: "ModelDispatchStarted routes to nick-list thinking",
 			event: domain.ModelDispatchStarted{
 				Instance: domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil),
 			},
-			wantType: components.PendingResponseMsg{},
+			wantType: components.NickListThinkingMsg{},
 		},
 		{
-			name: "ModelDispatchDone routes to pending clear",
+			name: "ModelDispatchDone routes to nick-list thinking clear",
 			event: domain.ModelDispatchDone{
 				Instance: domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil),
 			},
-			wantType: components.PendingResponseMsg{},
+			wantType: components.NickListThinkingMsg{},
 		},
 		{
 			name: "Message from model routes to paced delivery",

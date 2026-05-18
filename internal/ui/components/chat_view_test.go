@@ -125,8 +125,6 @@ func visibleEventLines(view string) []string {
 			continue
 		case strings.HasPrefix(trimmed, "(") && strings.HasSuffix(trimmed, "%)"):
 			continue
-		case strings.Contains(trimmed, "responding"):
-			continue
 		case strings.Contains(trimmed, " new messages "):
 			continue
 		case !strings.Contains(trimmed, "<") && !strings.HasPrefix(trimmed, "***") && trimmed != "No messages yet":
@@ -143,17 +141,6 @@ func scrollIndicatorLine(view string) string {
 	for _, line := range chatRenderedLines(view) {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "(") && strings.HasSuffix(trimmed, "%)") {
-			return trimmed
-		}
-	}
-
-	return ""
-}
-
-func pendingIndicatorLine(view string) string {
-	for _, line := range chatRenderedLines(view) {
-		trimmed := strings.TrimSpace(line)
-		if strings.Contains(trimmed, "responding") {
 			return trimmed
 		}
 	}
@@ -863,58 +850,6 @@ func TestChatView_TopicUpdatedMsg_updates_topic_bar(t *testing.T) {
 		"[10:01:00] <bob> hi there",
 		"[10:02:00] <alice> how are you?",
 	}, chatSegments(ansi.Strip(v)))
-}
-
-func TestChatView_pending_indicator(t *testing.T) {
-	cv := newChatViewWithEvents("#general", "testuser", "", testEvents)
-	var m ui.Model = cv
-
-	// Initially no pending indicator.
-	v := m.View(80, 24)
-	require.Equal(t, "", pendingIndicatorLine(v))
-
-	// Set pending.
-	m, _ = m.Update(components.PendingResponseMsg{Pending: true})
-
-	v = m.View(80, 24)
-	require.True(t, strings.HasSuffix(pendingIndicatorLine(v), "responding…"))
-	require.Equal(t, []string{
-		"[10:00:00] <alice> hello",
-		"[10:01:00] <bob> hi there",
-		"[10:02:00] <alice> how are you?",
-	}, visibleEventLines(v))
-
-	// Clear pending.
-	m, _ = m.Update(components.PendingResponseMsg{Pending: false})
-
-	v = m.View(80, 24)
-	require.Equal(t, "", pendingIndicatorLine(v))
-}
-
-func TestChatView_pending_indicator_reduces_message_area(t *testing.T) {
-	msgs := make([]domain.Message, 30)
-	for i := range msgs {
-		msgs[i] = domain.Message{
-			Target: "#general",
-			From:   "user",
-			Body:   fmt.Sprintf("msg %d", i),
-		}
-	}
-
-	cv := newChatViewWithEvents("#general", "testuser", "", messagesToEvents(msgs))
-	var m ui.Model = cv
-
-	m, _ = m.Update(components.PendingResponseMsg{Pending: true})
-
-	v := m.View(80, 24)
-	withLines := lipgloss.Height(v)
-
-	// Total height stays the same; the pending indicator pushes
-	// the visible window up by one line, so the most-recent 22
-	// messages (8..29) remain in view.
-	require.Equal(t, 24, withLines)
-	require.Equal(t, numberedUserMessages("msg", 8, 22), visibleEventsWithoutTimestamps(v))
-	require.NotEmpty(t, pendingIndicatorLine(v))
 }
 
 func renderSingleEvent(event domain.StoredEvent) string {

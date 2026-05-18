@@ -14,67 +14,10 @@ import (
 
 	"github.com/laney/modeloff/internal/config"
 	"github.com/laney/modeloff/internal/domain"
-	"github.com/laney/modeloff/internal/protocol"
 	uipkg "github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/screens"
 	"github.com/laney/modeloff/internal/ui/uitest"
 )
-
-func TestApp_send_message_shows_pending_indicator(t *testing.T) {
-	// The test exercises the user-`/msg`-triggered pending
-	// indicator. Block the dispatch turn that handles the user's
-	// PRIVMSG so the indicator stays on long enough for the
-	// assertion; let unrelated turns (the INVITE-driven turn
-	// AddModel triggers, the model-clients' first-attach turn,
-	// etc.) return silence immediately. Without this guard the
-	// model's dispatch goroutine is still parked in the INVITE
-	// turn when the user submits, queues the new Message behind
-	// it, and never emits the `ModelDispatchStarted` the pending
-	// indicator depends on.
-	release := make(chan struct{})
-
-	apiClient := &integrationAPI{
-		generateNickFn: func(context.Context, domain.ModelID, string, []domain.Nick) (domain.Nick, error) {
-			return "fakenick", nil
-		},
-		sendEventsFn: func(
-			_ context.Context,
-			_ domain.ModelID,
-			_ string,
-			_ []protocol.IRCMessage,
-			events []protocol.IRCMessage,
-		) (protocol.ModelResponse, error) {
-			if len(events) > 0 && events[0].Kind == protocol.KindPrivMsg {
-				<-release
-			}
-
-			return protocol.ModelResponse{Kind: protocol.ResponseSilence}, nil
-		},
-	}
-	sess, mgr, user, _, cfgStore := newIntegrationSession(t, apiClient)
-	uitest.SeedChannel(t, user, "#general")
-
-	uitest.AddModel(t, user, "#general", "test/model", "")
-	uitest.DrainEvents(user)
-
-	chatScreen, err := screens.NewChatScreen(t.Context, sess, mgr, user, cfgStore, nil, domain.KindStatus)
-	require.NoError(t, err)
-
-	tm := uitest.New(t, uipkg.NewRoot(chatScreen))
-	tm.WaitFor("#general")
-
-	tm.Submit("hello world")
-
-	// The user's message should appear immediately alongside the
-	// pending indicator, before the model has responded.
-	tm.WaitFor("hello world", "responding")
-
-	// Let the model respond. Wait for the pending indicator to clear.
-	close(release)
-	tm.WaitForCondition(func(out []byte) bool {
-		return !bytes.Contains(out, []byte("responding"))
-	})
-}
 
 func TestApp_nick_command_with_teatest(t *testing.T) {
 	cfgStore := &integrationConfigStore{

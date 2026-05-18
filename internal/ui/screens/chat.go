@@ -139,11 +139,10 @@ type ChatScreen struct {
 	pacedQueue map[domain.ChannelName][]domain.Message
 
 	// dispatching tracks the model instances currently in a turn.
-	// Membership is per-instance rather than per-channel so two
-	// models running concurrently in the same window survive each
-	// other's `ModelDispatchDone` — the pending spinner stays on
-	// until the last instance completes. The map's lifetime
-	// matches `ChatScreen`'s; mutations from value-receiver Update
+	// Membership is per-instance so the nick list's thinking
+	// indicator stays on for every concurrently-dispatching model
+	// until each one completes. The map's lifetime matches
+	// `ChatScreen`'s; mutations from value-receiver Update
 	// handlers are visible to subsequent calls because maps are
 	// reference types.
 	dispatching map[*domain.Instance]bool

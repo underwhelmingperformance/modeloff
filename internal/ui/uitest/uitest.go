@@ -100,7 +100,7 @@ func (a *App) WaitFor(parts ...string) {
 // WaitForCondition blocks until condition returns true against the
 // output accumulated since this call began. Unlike WaitFor, the
 // condition receives a fresh buffer (not the cumulative one), so it
-// can be used for absence checks like "responding indicator gone".
+// can be used for absence checks like "spinner gone".
 // Output still flows into the cumulative buffer for FinalView.
 func (a *App) WaitForCondition(condition func([]byte) bool) {
 	a.t.Helper()

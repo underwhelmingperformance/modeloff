@@ -202,8 +202,7 @@ func TestChatScreen_QuitEvent_removes_instance_from_nick_list(t *testing.T) {
 	})
 
 	view := tm.WaitForView(func(view string) bool {
-		return strings.Contains(view, "fakenick has quit") &&
-			!strings.Contains(view, "responding…")
+		return strings.Contains(view, "fakenick has quit")
 	})
 	body, _ := uitest.SplitBodyAndStatus(view)
 	require.Equal(t, []string{

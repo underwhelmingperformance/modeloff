@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -33,10 +32,10 @@ type TimestampFormatMsg struct {
 }
 
 // MessageList displays channel events in a scrollable viewport with
-// support for a new-messages divider, a pending-response spinner,
-// and an empty-state placeholder. C is the grammar's completion-
-// context type; it is carried so the `/help` renderer can walk the
-// typed command tree supplied by [CommandsMsg].
+// support for a new-messages divider and an empty-state placeholder.
+// C is the grammar's completion-context type; it is carried so the
+// `/help` renderer can walk the typed command tree supplied by
+// [CommandsMsg].
 //
 // The message list does not own the event storage. The owning
 // chat-screen (or test harness) passes an `events` closure that
@@ -49,8 +48,6 @@ type MessageList[C command.KindProvider] struct {
 	channel     domain.ChannelName
 	kind        domain.ChannelKind
 	viewport    viewport.Model
-	pending     bool
-	spinner     spinner.Model
 	placeholder string
 
 	// seenLen records how many events each window held the last
@@ -101,21 +98,12 @@ func NewMessageList[C command.KindProvider](
 		seenLen:       map[domain.ChannelName]int{},
 		lastEventsLen: map[domain.ChannelName]int{},
 		locale:        timestamp.CurrentLocale(),
-		spinner: spinner.New(
-			spinner.WithSpinner(spinner.Dot),
-			spinner.WithStyle(theme.Dim),
-		),
 	}
 }
 
 // Len returns the current event count of the active window.
 func (m MessageList[C]) Len() int {
 	return len(m.events())
-}
-
-// Pending returns whether the pending indicator is active.
-func (m MessageList[C]) Pending() bool {
-	return m.pending
 }
 
 // SetKeyMap applies viewport key bindings from the ChatView key map.
@@ -168,25 +156,6 @@ func (m MessageList[C]) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	case CommandsMsg[C]:
 		m.commands = msg.Commands
 		return m, nil
-
-	case PendingResponseMsg:
-		m.pending = msg.Pending
-
-		if m.pending {
-			return m, m.spinner.Tick
-		}
-
-		return m, nil
-
-	case spinner.TickMsg:
-		if !m.pending {
-			return m, nil
-		}
-
-		var cmd tea.Cmd
-		m.spinner, cmd = m.spinner.Update(msg)
-
-		return m, cmd
 
 	case ui.BoundsMsg:
 		m.viewport.Width = max(msg.Rect.Width, 0)
@@ -251,39 +220,25 @@ func (m MessageList[C]) View(width, height int) string {
 		m.seenLen[m.channel] = len(events)
 	}
 
-	var pendingView string
-	pendingHeight := 0
-
-	if m.pending {
-		pendingView = m.spinner.View() + theme.Info.Render(" responding…")
-		pendingHeight = lipgloss.Height(pendingView)
-	}
-
-	maxListHeight := max(height-pendingHeight, 0)
-
-	messageView, scrolled, scrollPct := m.renderMessages(events, width, maxListHeight)
+	messageView, scrolled, scrollPct := m.renderMessages(events, width, height)
 
 	var scrollView string
 	if scrolled {
 		indicator := theme.Dim.Render(fmt.Sprintf("(%d%%)", int(scrollPct*100)))
 		scrollView = lipgloss.PlaceHorizontal(width, lipgloss.Right, indicator)
 
-		listHeight := max(maxListHeight-1, 0)
+		listHeight := max(height-1, 0)
 
 		messageView, _, _ = m.renderMessages(events, width, listHeight)
 	}
 
-	parts := make([]string, 0, 4)
+	parts := make([]string, 0, 2)
 
 	if scrollView != "" {
 		parts = append(parts, scrollView)
 	}
 
 	parts = append(parts, messageView)
-
-	if pendingView != "" {
-		parts = append(parts, pendingView)
-	}
 
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }

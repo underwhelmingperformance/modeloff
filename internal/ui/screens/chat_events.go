@@ -809,19 +809,15 @@ func (s ChatScreen) handleErrorEvent(msg domain.ErrorEvent) (ui.Model, tea.Cmd) 
 		At:     msg.At,
 	}))
 
-	cmds = append(cmds, msgCmd(components.PendingResponseMsg{Pending: false}))
 	cmds = append(cmds, msgCmd(components.NickListThinkingMsg{}))
 
 	return s, tea.Batch(cmds...)
 }
 
 // handleModelDispatchStarted marks `msg.Instance` as currently
-// dispatching and updates the pending/thinking indicators. The
-// pending spinner is on whenever any tracked instance is in a
-// turn (concurrent dispatches from different models in the same
-// window survive each other's Done events), and the thinking
-// nick list for the active channel surfaces every dispatching
-// instance whose membership the active window can see.
+// dispatching and refreshes the nick list's thinking indicator,
+// which surfaces every dispatching instance whose membership the
+// active window can see.
 func (s ChatScreen) handleModelDispatchStarted(msg domain.ModelDispatchStarted) (ui.Model, tea.Cmd) {
 	if msg.Instance == nil {
 		return s, nil
@@ -829,31 +825,17 @@ func (s ChatScreen) handleModelDispatchStarted(msg domain.ModelDispatchStarted) 
 
 	s.dispatching[msg.Instance] = true
 
-	return s, tea.Batch(
-		msgCmd(components.PendingResponseMsg{Pending: true}),
-		msgCmd(components.NickListThinkingMsg{Nicks: s.thinkingNicks()}),
-	)
+	return s, msgCmd(components.NickListThinkingMsg{Nicks: s.thinkingNicks()})
 }
 
 // handleModelDispatchDone clears the dispatching mark for
-// `msg.Instance` and re-derives the indicators. Paced model
-// replies still in the per-channel queue keep the spinner on:
-// the user sees a single continuous "responding…" line across
-// dispatch turn and paced reply drain.
+// `msg.Instance` and refreshes the nick list's thinking indicator.
 func (s ChatScreen) handleModelDispatchDone(msg domain.ModelDispatchDone) (ui.Model, tea.Cmd) {
 	if msg.Instance != nil {
 		delete(s.dispatching, msg.Instance)
 	}
 
-	cmds := []tea.Cmd{
-		msgCmd(components.NickListThinkingMsg{Nicks: s.thinkingNicks()}),
-	}
-
-	if len(s.dispatching) == 0 && !s.hasQueuedPaced() {
-		cmds = append(cmds, msgCmd(components.PendingResponseMsg{Pending: false}))
-	}
-
-	return s, tea.Batch(cmds...)
+	return s, msgCmd(components.NickListThinkingMsg{Nicks: s.thinkingNicks()})
 }
 
 // thinkingNicks returns the nicks of every dispatching instance
@@ -884,15 +866,6 @@ func (s ChatScreen) thinkingNicks() map[domain.Nick]bool {
 
 const pacedInterval = 400 * time.Millisecond
 
-// hasQueuedPaced reports whether any channel has pending paced
-// messages. The pending/thinking indicators are application-wide,
-// so they clear only when every channel's queue has drained. The
-// field's pruning invariant (drained channels are deleted from the
-// map) makes this an O(1) length check.
-func (s ChatScreen) hasQueuedPaced() bool {
-	return len(s.pacedQueue) > 0
-}
-
 func (s ChatScreen) scheduleNextPaced(ch domain.ChannelName) tea.Cmd {
 	return tea.Tick(pacedInterval, func(time.Time) tea.Msg {
 		return deliverNextPacedMsg{Channel: ch}
@@ -909,16 +882,6 @@ func (s ChatScreen) deliverNextPacedCmd(ch domain.ChannelName) tea.Cmd {
 func (s ChatScreen) deliverNextPaced(msg deliverNextPacedMsg) (ui.Model, tea.Cmd) {
 	queue := s.pacedQueue[msg.Channel]
 	if len(queue) == 0 {
-		// The channel's queue has drained. If no other channel has
-		// pending messages either, clear the application-wide
-		// pending/thinking indicators.
-		if !s.hasQueuedPaced() {
-			return s, tea.Batch(
-				msgCmd(components.NickListThinkingMsg{}),
-				msgCmd(components.PendingResponseMsg{Pending: false}),
-			)
-		}
-
 		return s, nil
 	}
 
@@ -933,16 +896,8 @@ func (s ChatScreen) deliverNextPaced(msg deliverNextPacedMsg) (ui.Model, tea.Cmd
 
 	cmd := s.renderMessage(next, msg.Channel)
 
-	// Schedule the next delivery for this channel if more remain
-	// here; otherwise, if every channel has drained, clear the
-	// application-wide pending indicators.
 	if len(s.pacedQueue[msg.Channel]) > 0 {
 		cmd = tea.Batch(cmd, s.scheduleNextPaced(msg.Channel))
-	} else if !s.hasQueuedPaced() {
-		cmd = tea.Batch(cmd,
-			msgCmd(components.NickListThinkingMsg{}),
-			msgCmd(components.PendingResponseMsg{Pending: false}),
-		)
 	}
 
 	return s, cmd
