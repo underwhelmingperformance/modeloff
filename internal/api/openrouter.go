@@ -666,7 +666,8 @@ func (c *OpenRouterClient) ListModels(ctx context.Context) ([]ModelInfo, error) 
 // schema enforces shape (length and allowed characters) so callers do
 // not need to sanitise free-form text.
 type nicknameResponse struct {
-	Nick string `json:"nick" jsonschema:"minLength=1,maxLength=12,pattern=^[a-z0-9_-]{1,12}$" jsonschema_description:"Exactly one IRC nickname suggestion."`
+	// The pattern must not contain a comma: the invopop/jsonschema tag parser splits on it.
+	Nick string `json:"nick" jsonschema:"minLength=1,maxLength=12,pattern=^[a-z0-9_-]+$" jsonschema_description:"Exactly one IRC nickname suggestion."`
 }
 
 var nicknameSchemaMap = generateSchema[nicknameResponse]()
