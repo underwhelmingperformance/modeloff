@@ -1147,60 +1147,6 @@ func (s *Session) Instances(ctx context.Context) iter.Seq[*domain.Instance] {
 	}
 }
 
-func (s *Session) attachInstanceToChannel(
-	ctx context.Context,
-	ch domain.ChannelName,
-	inst *domain.Instance,
-	by *domain.Instance,
-) error {
-	window, err := s.loadChannelWindow(ctx, ch)
-	if err != nil {
-		return fmt.Errorf("get channel: %w", err)
-	}
-
-	inst.MutateChannels(func(m *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
-		if _, ok := m.Get(ch); !ok {
-			m.Set(ch, s.now())
-		}
-	})
-
-	if err := s.store.SaveInstance(ctx, inst); err != nil {
-		return fmt.Errorf("save instance: %w", err)
-	}
-
-	if _, err := s.modelClientFactory.Attach(ctx, s, inst); err != nil {
-		slog.Default().WarnContext(ctx, "attach model client",
-			"component", "session",
-			"instance_id", inst.ID(),
-			"channel", ch,
-			"error", err,
-		)
-	}
-
-	isNew := !window.Members.HasInstance(inst)
-	if isNew {
-		window.Members.Add(inst)
-	}
-
-	if err := s.persistChannelWindow(ctx, window); err != nil {
-		return fmt.Errorf("save channel: %w", err)
-	}
-
-	now := s.now()
-	byNick := by.Nick()
-
-	s.persistAndEmit(ctx, ch, domain.ModelInvited{
-		Target:     ch,
-		Nick:       inst.Nick(),
-		InstanceID: inst.ID(),
-		By:         byNick,
-		At:         now,
-		Instance:   inst,
-	})
-
-	return nil
-}
-
 // SaveInstance persists a model instance. Used by integration-
 // test seed helpers; production paths register instances via
 // the invite / add-model flows.

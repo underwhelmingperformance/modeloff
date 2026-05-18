@@ -75,14 +75,11 @@ func TestModelClient_dispatch_does_not_show_trigger_in_history_and_events(t *tes
 	})
 }
 
-// TestModelClient_reply_is_gated_by_channel_modes pins that a model's
-// dispatch reply is routed through the same gated send path as a
-// user-issued PRIVMSG. Today buildReplies persists Messages by
-// calling Session.AppendEvent directly, which skips checkSendGates
-// and silently lets a `+m`-without-voice reply through. The
-// reproducer puts botty into a moderated channel with no voice,
-// drives a dispatch turn whose API stub returns a Reply, and asserts
-// the reply does NOT land in the event log.
+// TestModelClient_reply_is_gated_by_channel_modes pins that a
+// model's dispatch reply crosses `checkSendGates`. botty sits in a
+// `+m` channel with no voice; the API stub returns a Reply; the
+// gate rejects it and the event log carries only the user's
+// trigger.
 func TestModelClient_reply_is_gated_by_channel_modes(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		fake := &fakeAPIClient{

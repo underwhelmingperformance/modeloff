@@ -3,6 +3,7 @@ package ui_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"github.com/laney/modeloff/internal/store/storetest"
 	"github.com/laney/modeloff/internal/testclient"
 	uipkg "github.com/laney/modeloff/internal/ui"
+	"github.com/laney/modeloff/internal/ui/chatcmd"
 	"github.com/laney/modeloff/internal/ui/screens"
 	"github.com/laney/modeloff/internal/ui/uitest"
 	"github.com/laney/modeloff/internal/userclient"
@@ -215,7 +217,28 @@ func TestApp_periodic_poke_generates_message(t *testing.T) {
 }
 
 func TestApp_reuse_existing_instance(t *testing.T) {
-	apiClient := &integrationAPI{}
+	apiClient := &integrationAPI{
+		// The model accepts the INVITE by issuing a `join` tool call;
+		// the tool loop dispatches `protocol.Join` against the
+		// model's client and the bot lands in the target channel.
+		sendEventsFullFn: func(_ context.Context, _ domain.ModelID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+			for _, ev := range events {
+				if ev.Kind == protocol.KindInvite {
+					return api.CompletionResult{
+						PendingToolCalls: []api.PendingToolCall{{
+							ID:   "tc-join",
+							Name: "join",
+							Args: json.RawMessage(fmt.Sprintf(`{"channel":%q}`, ev.Target)),
+						}},
+					}, nil
+				}
+			}
+
+			return api.CompletionResult{
+				Response: protocol.ModelResponse{Kind: protocol.ResponseSilence},
+			}, nil
+		},
+	}
 	_, _, _, store, _ := newIntegrationSession(t, apiClient)
 	memStore := memory.NewStoreAdapter(storetest.NewMemoryStore(t))
 	require.NoError(t, memStore.Write(t.Context(), "botty", memory.Entry{
@@ -224,7 +247,10 @@ func TestApp_reuse_existing_instance(t *testing.T) {
 	}))
 
 	cfgStore := &integrationConfigStore{}
-	sess, mgr, user := uitest.NewTestSession(t, store, apiClient, memStore, nil, cfgStore.cfg.APIKey, cfgStore.cfg.SmallModel, t.Context)
+	tools, err := chatcmd.BuildToolRegistry()
+	require.NoError(t, err)
+
+	sess, mgr, user := uitest.NewTestSession(t, store, apiClient, memStore, tools, cfgStore.cfg.APIKey, cfgStore.cfg.SmallModel, t.Context)
 
 	uitest.SeedChannel(t, user, "#general")
 	uitest.SeedChannel(t, user, "#random")

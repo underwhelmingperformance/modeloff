@@ -1415,11 +1415,10 @@ func TestSession_AddModel(t *testing.T) {
 
 		require.ElementsMatch(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
-			domain.ModelInvited{
+			domain.Join{
 				Target:     "#dev",
 				Nick:       "fakenick",
 				InstanceID: inst.ID(),
-				By:         "testuser",
 				At:         fixedTime,
 				Instance:   inst,
 			},
@@ -2725,11 +2724,10 @@ func TestSession_AddModel_persists_persona(t *testing.T) {
 
 		require.ElementsMatch(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
-			domain.ModelInvited{
+			domain.Join{
 				Target:     "#general",
 				Nick:       "fakenick",
 				InstanceID: inst.ID(),
-				By:         "testuser",
 				At:         fixedTime,
 				Instance:   inst,
 			},
@@ -2775,19 +2773,21 @@ func TestSession_InviteAs_reuses_existing_instance(t *testing.T) {
 
 		requireInstanceEqual(t, domain.NewModelInstance(
 			testMemberID("botty"), "botty", "test/model", "Helpful assistant",
-			testChannels("#general", "#random"),
+			testChannels("#general"),
 		), botty)
 
 		inst, err := s.ResolveNick(ctx, "botty")
 		require.NoError(t, err)
 		requireInstanceEqual(t, domain.NewModelInstance(
 			testMemberID("botty"), "botty", "test/model", "Helpful assistant",
-			testChannels("#general", "#random"),
+			testChannels("#general"),
 		), inst)
 
 		channel, err := sess.loadChannelWindow(ctx, "#random")
 		require.NoError(t, err)
-		require.Equal(t, slices.Collect(testMembers(t, sess, s, "testuser", "botty").All()), slices.Collect(channel.Members.All()))
+		require.False(t, channel.Members.HasInstance(botty),
+			"INVITE does not mutate membership; the invited model joins via "+
+				"its own dispatch turn")
 	})
 }
 
@@ -4405,9 +4405,7 @@ func registerUserMembership(t *testing.T, sess *Session, name domain.ChannelName
 // [attachModelClient]. Pairing the store write with the attach
 // call keeps the test fixture's invariant — a seeded instance is
 // a registered subscriber with its dispatch goroutine running —
-// aligned with the production lifecycle, where
-// [Session.attachInstanceToChannel] always pairs the persistent
-// write with the same registration.
+// aligned with the production lifecycle.
 func seedInstance(t *testing.T, sess *Session, s *storemod.SQLiteStore, spec instanceSpec) *domain.Instance {
 	t.Helper()
 
@@ -4634,11 +4632,10 @@ func TestSession_Invite_with_explicit_persona_skips_pool(t *testing.T) {
 
 		require.ElementsMatch(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
-			domain.ModelInvited{
+			domain.Join{
 				Target:     "#dev",
 				Nick:       "fakenick",
 				InstanceID: inst.ID(),
-				By:         "testuser",
 				At:         fixedTime,
 				Instance:   inst,
 			},
@@ -4791,7 +4788,12 @@ func TestSendMessageAs_model_triggers_dispatch_to_other_models(t *testing.T) {
 	})
 }
 
-func TestAddModel_dispatches_invite_notification_to_model(t *testing.T) {
+// TestAddModel_dispatches_join_trigger_to_model pins that the
+// newly-added model's first dispatch turn is triggered by its own
+// JOIN event. `/add-model` joins the model forcefully via `joinAs`;
+// the model's dispatch loop receives the JOIN on the bus, takes a
+// turn, and `events` carries the wire-formatted JOIN.
+func TestAddModel_dispatches_join_trigger_to_model(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		bootAt := time.Now()
 		dispatched := make(map[domain.ModelID][]protocol.IRCMessage)
@@ -4818,11 +4820,10 @@ func TestAddModel_dispatches_invite_notification_to_model(t *testing.T) {
 
 		require.ElementsMatch(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
-			domain.ModelInvited{
+			domain.Join{
 				Target:     "#dev",
 				Nick:       "fakenick",
 				InstanceID: bot.ID(),
-				By:         "testuser",
 				At:         fixedTime,
 				Instance:   bot,
 			},
@@ -4833,8 +4834,8 @@ func TestAddModel_dispatches_invite_notification_to_model(t *testing.T) {
 		require.Equal(t, map[domain.ModelID][]protocol.IRCMessage{
 			"test/model": {
 				{
-					Kind:   protocol.KindInvite,
-					From:   "testuser",
+					Kind:   protocol.KindJoin,
+					From:   "fakenick",
 					Target: "#dev",
 					At:     fixedTime,
 				},

@@ -156,7 +156,7 @@ func TestSession_Handle_delegates(t *testing.T) {
 			},
 		},
 		{
-			name: "invite adds known nick to channel",
+			name: "invite records known nick on the channel's invitedNicks set",
 			setup: func(t *testing.T, sess *Session, s *storemod.SQLiteStore) {
 				require.NoError(t, sess.joinAs(t.Context(), userInstance(t, sess), "#general", ""))
 				seedInstance(t, sess, s, instanceSpec{Nick: "botty", ModelID: "test/model"})
@@ -167,8 +167,15 @@ func TestSession_Handle_delegates(t *testing.T) {
 			verify: func(t *testing.T, sess *Session, _ *storemod.SQLiteStore) {
 				cw, err := sess.loadChannelWindow(t.Context(), "#general")
 				require.NoError(t, err)
-				_, ok := cw.Members.GetByNick("botty")
-				require.True(t, ok)
+
+				_, isMember := cw.Members.GetByNick("botty")
+				require.False(t, isMember,
+					"INVITE does not mutate membership; the invited model joins "+
+						"via its own dispatch turn")
+
+				require.True(t, cw.InvitedNicks.Contains("botty"),
+					"INVITE records the nick on InvitedNicks so a follow-up "+
+						"JOIN clears `+i`")
 			},
 		},
 		{
@@ -176,11 +183,10 @@ func TestSession_Handle_delegates(t *testing.T) {
 			setup: func(t *testing.T, sess *Session, s *storemod.SQLiteStore) {
 				require.NoError(t, sess.joinAs(t.Context(), userInstance(t, sess), "#general", ""))
 				inst := seedInstance(t, sess, s, instanceSpec{
-					Nick:     "botty",
-					ModelID:  "test/model",
-					Channels: testChannels("#general"),
+					Nick:    "botty",
+					ModelID: "test/model",
 				})
-				require.NoError(t, sess.attachInstanceToChannel(t.Context(), "#general", inst, userInstance(t, sess)))
+				require.NoError(t, sess.joinAs(t.Context(), inst, "#general", ""))
 			},
 			client: userClient,
 			cmd:    protocol.Kick{Nick: "botty", Channel: "#general"},

@@ -299,11 +299,10 @@ func TestSession_AddModel_retries_on_nick_collision(t *testing.T) {
 		require.NoError(t, err)
 
 		require.ElementsMatch(t, []domain.Event{
-			domain.ModelInvited{
+			domain.Join{
 				Target:     "#dev",
 				Nick:       "fresh",
 				InstanceID: fresh.ID(),
-				By:         "testuser",
 				At:         emittedAt,
 				Instance:   fresh,
 			},
@@ -380,21 +379,19 @@ func TestSession_AddModel_creates_new_instance_per_invocation(t *testing.T) {
 		require.NoError(t, err)
 
 		require.ElementsMatch(t, []domain.Event{
-			domain.ModelInvited{
+			domain.Join{
 				Target:     "#general",
 				Nick:       "fakenick",
 				InstanceID: first.ID(),
-				By:         "testuser",
 				At:         emittedAt,
 				Instance:   first,
 			},
 			domain.ModelDispatchStarted{Instance: first, At: emittedAt},
 			domain.ModelDispatchDone{Instance: first, At: emittedAt},
-			domain.ModelInvited{
+			domain.Join{
 				Target:     "#random",
 				Nick:       "fakenick1",
 				InstanceID: second.ID(),
-				By:         "testuser",
 				At:         emittedAt,
 				Instance:   second,
 			},
@@ -441,11 +438,10 @@ func TestSession_Invite_without_persona_assigns_from_pool(t *testing.T) {
 		require.NoError(t, err)
 
 		require.ElementsMatch(t, []domain.Event{
-			domain.ModelInvited{
+			domain.Join{
 				Target:     "#dev",
 				Nick:       "fakenick",
 				InstanceID: inst.ID(),
-				By:         "testuser",
 				At:         emittedAt,
 				Instance:   inst,
 			},

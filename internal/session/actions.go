@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -570,7 +571,13 @@ func (s *Session) kickAs(ctx context.Context, actor, target *domain.Instance, ch
 	return nil
 }
 
-// inviteAs sends a real IRC-style invite.
+// inviteAs records the invited nick against the channel's
+// `InvitedNicks` set (so a follow-up JOIN can clear `+i`) and
+// fans out the wire INVITE as [domain.ModelInvited] for an
+// attached model — the dispatch goroutine takes a turn on it and
+// may issue its own `/join`, matching RFC 2812 §3.2.7. The
+// channel announcement (`<actor> invited <target> to <ch>`) is
+// written as a [domain.SystemNotice] either way.
 func (s *Session) inviteAs(ctx context.Context, actor *domain.Instance, target domain.Nick, ch domain.ChannelName) (retErr error) {
 	actorNick := actor.Nick()
 
@@ -608,19 +615,29 @@ func (s *Session) inviteAs(ctx context.Context, actor *domain.Instance, target d
 		return fmt.Errorf("save channel: %w", err)
 	}
 
-	if actor.ID() == "" {
-		inst, err := s.store.ResolveNick(ctx, target)
-		if err == nil {
-			span.SetAttributes(attribute.String(observability.AttrInstanceID, string(inst.ID())))
-			return s.attachInstanceToChannel(ctx, ch, inst, actor)
-		}
+	now := s.now()
 
-		if !errors.Is(err, store.ErrNoSuchNick) {
-			return fmt.Errorf("resolve nick: %w", err)
-		}
+	inst, err := s.store.ResolveNick(ctx, target)
+	switch {
+	case err == nil:
+		span.SetAttributes(attribute.String(observability.AttrInstanceID, string(inst.ID())))
+
+		s.persistAndEmit(ctx, ch, domain.ModelInvited{
+			Target:     ch,
+			Nick:       inst.Nick(),
+			InstanceID: inst.ID(),
+			By:         actorNick,
+			At:         now,
+			Instance:   inst,
+		})
+	case errors.Is(err, store.ErrNoSuchNick):
+		// Unknown target: fall through to the system notice. No
+		// wire INVITE goes out because there is nobody to receive
+		// it; the channel announcement is purely informational.
+	default:
+		return fmt.Errorf("resolve nick: %w", err)
 	}
 
-	now := s.now()
 	notice := fmt.Sprintf("%s invited %s to %s", actorNick, target, ch)
 	s.appendEvent(ctx, ch, domain.SystemNotice{Target: ch, Text: notice, At: now})
 
@@ -996,11 +1013,12 @@ func attributeEmitParam(change protocol.ChannelModeChange) string {
 }
 
 // addModelAs creates a fresh model instance, generates a unique
-// nick for it via the small-model API, and attaches it to the
-// named channel as if `actor` had issued the invitation. The
-// dispatcher's [protocol.AddModel] handler is the only caller —
-// the operator gate lives there, so this method assumes the
-// caller has already verified the actor's authority.
+// nick for it via the small-model API, attaches the model-client,
+// and joins it to the named channel via `joinAs`. The bus carries
+// a `Join` event with the same wire shape any `/join` would
+// produce. The dispatcher's [protocol.AddModel] handler is the
+// only caller — the operator gate lives there, so this method
+// assumes the caller has already verified `actor`'s authority.
 //
 // Persona resolution: a non-empty `persona` is used verbatim; an
 // empty value triggers a draw from the personas pool (lazily
@@ -1014,7 +1032,11 @@ func (s *Session) addModelAs(
 	modelID domain.ModelID,
 	persona string,
 ) (*domain.Instance, error) {
-	ctx, span := s.startSpan(ctx, "session.add_model", attribute.String(observability.AttrOperation, "session.add_model"))
+	ctx, span := s.startSpan(ctx, "session.add_model",
+		attribute.String(observability.AttrOperation, "session.add_model"),
+		attribute.String(observability.AttrChannel, string(ch)),
+		attribute.String(observability.AttrNick, string(actor.Nick())),
+	)
 	defer span.End()
 
 	nick, assignedPersona, err := s.modelClientFactory.PrepareInstance(ctx, s, modelID, persona)
@@ -1034,7 +1056,35 @@ func (s *Session) addModelAs(
 		channels,
 	)
 
-	if err := s.attachInstanceToChannel(ctx, ch, inst, actor); err != nil {
+	if _, err := s.loadChannelWindow(ctx, ch); err != nil {
+		setSpanError(span, err, observability.ErrorKindStore)
+		return nil, fmt.Errorf("get channel: %w", err)
+	}
+
+	if err := s.store.SaveInstance(ctx, inst); err != nil {
+		setSpanError(span, err, observability.ErrorKindStore)
+		return nil, fmt.Errorf("save instance: %w", err)
+	}
+
+	if _, err := s.modelClientFactory.Attach(ctx, s, inst); err != nil {
+		slog.Default().WarnContext(ctx, "attach model client",
+			"component", "session",
+			"instance_id", inst.ID(),
+			"channel", ch,
+			"error", err,
+		)
+	}
+
+	// Pre-seed `InvitedNicks` so `joinAs` clears `+i`.
+	if window, err := s.loadChannelWindow(ctx, ch); err == nil {
+		window.InvitedNicks.Add(nick)
+		if err := s.persistChannelWindow(ctx, window); err != nil {
+			setSpanError(span, err, observability.ErrorKindStore)
+			return nil, fmt.Errorf("save channel: %w", err)
+		}
+	}
+
+	if err := s.joinAs(ctx, inst, ch, ""); err != nil {
 		setSpanError(span, err, observability.ErrorKindStore)
 		return nil, err
 	}
