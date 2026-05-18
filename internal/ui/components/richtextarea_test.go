@@ -244,6 +244,38 @@ func TestRichTextareaPaletteKeyboardTargetsBackgroundForSelection(t *testing.T) 
 	}, editor.document.Line(0).Spans)
 }
 
+func TestRichTextareaTransposeChars(t *testing.T) {
+	tests := []struct {
+		name       string
+		text       string
+		cursor     int
+		wantValue  string
+		wantCursor richtext.Position
+	}{
+		{name: "mid line", text: "abc", cursor: 2, wantValue: "bac", wantCursor: richtext.Position{Line: 0, Cluster: 2}},
+		{name: "at end", text: "abc", cursor: 3, wantValue: "acb", wantCursor: richtext.Position{Line: 0, Cluster: 3}},
+		{name: "single grapheme noop", text: "a", cursor: 1, wantValue: "a", wantCursor: richtext.Position{Line: 0, Cluster: 1}},
+		{name: "empty noop", text: "", cursor: 0, wantValue: "", wantCursor: richtext.Position{Line: 0, Cluster: 0}},
+		{name: "cursor at start noop", text: "abc", cursor: 0, wantValue: "abc", wantCursor: richtext.Position{Line: 0, Cluster: 0}},
+		{name: "cursor at one noop", text: "abc", cursor: 1, wantValue: "abc", wantCursor: richtext.Position{Line: 0, Cluster: 1}},
+		{name: "wide grapheme", text: "a你c", cursor: 2, wantValue: "你ac", wantCursor: richtext.Position{Line: 0, Cluster: 2}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			editor := NewRichTextarea(RichTextareaConfig{SingleLine: true})
+			editor = editor.SetPlainText(tt.text)
+			editor = editor.SetCursorFromRuneIndex(tt.cursor)
+
+			updated, _ := editor.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+			editor = updated.(RichTextarea)
+
+			require.Equal(t, tt.wantValue, editor.Value())
+			require.Equal(t, tt.wantCursor, editor.position)
+		})
+	}
+}
+
 func TestRichTextareaAltFMovesWordRight(t *testing.T) {
 	editor := NewRichTextarea(RichTextareaConfig{})
 	editor = editor.SetPlainText("one two three")

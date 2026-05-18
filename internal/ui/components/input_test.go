@@ -538,6 +538,7 @@ func TestInputBar_keybindings_include_rich_shortcuts(t *testing.T) {
 		"^→\x00word →":         {},
 		"^W\x00del word":       {},
 		"^K\x00del → end":      {},
+		"^T\x00transpose":      {},
 		"Home\x00line start":   {},
 		"End\x00line end":      {},
 	}, bindings)
@@ -553,6 +554,7 @@ func TestInputBar_keybindings_include_rich_shortcuts(t *testing.T) {
 		"^→\x00word →":         {},
 		"^W\x00del word":       {},
 		"^K\x00del → end":      {},
+		"^T\x00transpose":      {},
 		"Home\x00line start":   {},
 		"End\x00line end":      {},
 	}, bindings)
@@ -918,6 +920,7 @@ func TestInputBar_keybindings_include_history_when_popover_hidden(t *testing.T) 
 		"del word",
 		"del next word",
 		"del \u2192 end",
+		"transpose",
 		"line start",
 		"line end",
 		"bold",
@@ -1010,7 +1013,7 @@ func TestInputBar_status_bar_renders_active_format_bold(t *testing.T) {
 	bar := m.(components.InputBar)
 	bindings := bar.KeyBindings()
 
-	rendered := components.RenderStatusBar(200, bindings, nil)
+	rendered := components.RenderStatusBar(300, bindings, nil)
 
 	// Extract the literal content of every ANSI-bold (SGR 1)
 	// segment. The bold-format binding must contribute "M-b" and

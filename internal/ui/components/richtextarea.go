@@ -446,6 +446,8 @@ func (r RichTextarea) handleEditorKey(msg tea.KeyMsg) (RichTextarea, bool, tea.C
 		r.position = r.document.Delete(richtext.Selection{Anchor: r.position, Head: end})
 		r.selection = richtext.Selection{Anchor: r.position, Head: r.position}
 		return r.ensureViewport(), true, nil
+	case "ctrl+t":
+		return r.transposeChars(), true, nil
 	case "ctrl+w", "alt+backspace":
 		if !r.selection.Collapsed() {
 			r.deleteSelection()
@@ -582,6 +584,43 @@ func flattenNewlines(text string) string {
 	}
 
 	return b.String()
+}
+
+// transposeChars swaps the two grapheme clusters immediately around
+// the cursor and advances the cursor by one cluster, matching
+// readline `transpose-chars`. With the cursor at end-of-line, swap
+// the last two clusters and leave the cursor at the end. With fewer
+// than two clusters left of the cursor, the buffer is unchanged.
+func (r RichTextarea) transposeChars() RichTextarea {
+	line := r.position.Line
+	clusters := r.document.LineClusters(line)
+	if len(clusters) < 2 {
+		return r
+	}
+
+	end := min(r.position.Cluster, len(clusters))
+	if end < 2 {
+		return r
+	}
+
+	first := clusters[end-2]
+	second := clusters[end-1]
+
+	replacement := richtext.NewDocumentFromLines([]richtext.Line{{
+		Spans: []richtext.Span{
+			{Text: second.Text, Attrs: second.Attrs},
+			{Text: first.Text, Attrs: first.Attrs},
+		},
+	}})
+
+	selection := richtext.Selection{
+		Anchor: richtext.Position{Line: line, Cluster: end - 2},
+		Head:   richtext.Position{Line: line, Cluster: end},
+	}
+	r.position = r.document.Replace(selection, replacement)
+	r.selection = richtext.Selection{Anchor: r.position, Head: r.position}
+
+	return r.ensureViewport()
 }
 
 func (r *RichTextarea) deleteSelection() {
