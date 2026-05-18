@@ -486,6 +486,15 @@ func (s *Session) setTopicAs(ctx context.Context, actor *domain.Instance, ch dom
 		}
 	}
 
+	// A TOPIC command that leaves the topic unchanged is a no-op:
+	// IRC servers conventionally suppress the wire event, and
+	// without this guard a chatty model can re-set the same
+	// string on every turn and the channel sees a stream of
+	// duplicate TopicChange events.
+	if window.Topic == topic {
+		return nil
+	}
+
 	window.Topic = topic
 	window.TopicSetBy = actorNick
 	window.TopicSetAt = now

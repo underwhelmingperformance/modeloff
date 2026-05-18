@@ -462,6 +462,49 @@ func TestSetTopicAs_model_actor(t *testing.T) {
 	})
 }
 
+// TestSetTopicAs_no_op_suppresses_event pins the convention that
+// setting a topic to a string equal to the current one neither
+// persists nor emits a [domain.TopicChange]. Models tend to call
+// /topic redundantly; without this guard each call narrates as a
+// fresh topic-set event the channel has to react to.
+func TestSetTopicAs_no_op_suppresses_event(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		bootAt := time.Now()
+		sess, s := newTestSession(t)
+		ctx := t.Context()
+
+		botty := seedInstance(t, sess, s, instanceSpec{Nick: "botty", ModelID: "test/model"})
+		seedChannelWithMembers(t, sess, s, "#dev", "testuser", "botty")
+
+		require.NoError(t, sess.setTopicAs(ctx, userInstance(t, sess), "#dev", "stable topic"))
+		require.NoError(t, sess.setTopicAs(ctx, botty, "#dev", "stable topic"))
+		synctest.Wait()
+
+		require.ElementsMatch(t, []domain.Event{
+			bootstrapModeChange(t, sess, bootAt),
+			domain.TopicChange{
+				Target:     "#dev",
+				Topic:      "stable topic",
+				By:         userInstance(t, sess).Nick(),
+				At:         fixedTime,
+				ByInstance: userInstance(t, sess),
+			},
+		}, collectEmittedEvents(t, sess))
+
+		events, err := s.EventsBefore(ctx, "#dev", nil, 10)
+		require.NoError(t, err)
+
+		var topicChanges int
+		for _, se := range events {
+			if _, ok := se.Event.(domain.TopicChange); ok {
+				topicChanges++
+			}
+		}
+		require.Equal(t, 1, topicChanges,
+			"the no-op second call did not persist a TopicChange")
+	})
+}
+
 func TestKickAs_model_actor(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		bootAt := time.Now()
