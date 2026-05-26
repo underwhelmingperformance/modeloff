@@ -372,11 +372,7 @@ func (c ChatView[C]) updateInput(msg tea.Msg) (ChatView[C], tea.Cmd) {
 func (c ChatView[C]) renderTopic(width int) string {
 	text := theme.ChannelTitle.Render(c.topic)
 
-	style := lipgloss.NewStyle().
-		Width(width).
-		BorderStyle(lipgloss.NormalBorder()).
-		BorderBottom(true).
-		BorderForeground(lipgloss.ANSIColor(8))
+	style := theme.PaneBorder.BorderBottom(true).Width(width)
 
 	return style.Render(text)
 }

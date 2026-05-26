@@ -135,3 +135,16 @@ var (
 			BorderLeft(true).
 			BorderForeground(colourBrightBlack)
 )
+
+// Pane styles.
+var (
+	// PaneBorder is the base style for bordered panes. Compose with
+	// a Border* modifier to pick which edges are drawn.
+	PaneBorder = lipgloss.NewStyle().
+			BorderStyle(lipgloss.NormalBorder()).
+			BorderForeground(colourBrightBlack)
+
+	// PaneBorderFocused is PaneBorder in cyan, signalling the
+	// focused pane.
+	PaneBorderFocused = PaneBorder.BorderForeground(colourCyan)
+)

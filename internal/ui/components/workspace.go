@@ -497,12 +497,9 @@ func renderLogEntries(entries []observability.PanelEntry, width int, format *str
 }
 
 func borderedPane(title, content string, focused bool) string {
-	style := lipgloss.NewStyle().
-		BorderStyle(lipgloss.NormalBorder()).
-		BorderForeground(lipgloss.ANSIColor(8))
-
+	style := theme.PaneBorder
 	if focused {
-		style = style.BorderForeground(lipgloss.ANSIColor(6))
+		style = theme.PaneBorderFocused
 	}
 
 	parts := []string{theme.Bold.Render(title)}
