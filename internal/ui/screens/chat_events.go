@@ -635,9 +635,8 @@ func (s ChatScreen) handleNickChangeEvent(msg domain.NickChange, targets []domai
 			cmds = append(cmds, msgCmd(components.UserNickMsg{Nick: msg.NewNick}))
 		}
 
-		nickCfg, _ := s.loadConfig()
 		cmds = append(cmds, msgCmd(components.HighlightWordsMsg{
-			Words:    nickCfg.HighlightWords,
+			Words:    s.highlightWords,
 			UserNick: s.user.Nick(),
 		}))
 	}
@@ -904,9 +903,7 @@ func (s ChatScreen) deliverNextPaced(msg deliverNextPacedMsg) (ui.Model, tea.Cmd
 }
 
 func (s ChatScreen) isHighlight(body string) bool {
-	cfg, _ := s.loadConfig()
-
-	return components.ContainsHighlightWord(body, cfg.HighlightWords, s.user.Nick())
+	return components.ContainsHighlightWord(body, s.highlightWords, s.user.Nick())
 }
 
 func (s ChatScreen) handleLiveModelsLoaded(msg liveModelsLoadedMsg) (ui.Model, tea.Cmd) {

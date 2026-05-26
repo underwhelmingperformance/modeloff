@@ -168,6 +168,14 @@ type ChatScreen struct {
 	// so subsequent quit signals are ignored and input remains
 	// locked.
 	quitting bool
+
+	// highlightWords is the cached highlight-words slice read from
+	// the config store at construction and refreshed when
+	// [chatcmd.HighlightWordsSetResult] flows through Update.
+	// Per-message and per-nick-change highlight checks read this
+	// directly instead of doing a blocking SQLite load on the Tea
+	// goroutine.
+	highlightWords []string
 }
 
 // NewChatScreen creates a chat screen backed by the given session.
@@ -237,6 +245,13 @@ func NewChatScreen(baseContext func() context.Context, sess *session.Session, mg
 	cs.parser = parser
 	cs.completer = cs.completionSet()
 
+	cfg, err := cs.loadConfig()
+	if err != nil {
+		return ChatScreen{}, err
+	}
+
+	cs.highlightWords = cfg.HighlightWords
+
 	return cs, nil
 }
 
@@ -278,7 +293,7 @@ func (s ChatScreen) firstRealChannel() (*Window, bool) {
 func (s ChatScreen) loadConfig() (config.Config, error) {
 	if s.cfgStore == nil {
 		return config.Config{
-			HighlightWords: config.DefaultHighlightWords,
+			HighlightWords: slices.Clone(config.DefaultHighlightWords),
 		}, nil
 	}
 
@@ -324,7 +339,7 @@ func (s ChatScreen) Init() tea.Cmd {
 		}),
 		msgCmd(components.CompleterMsg{Completer: s.completer}),
 		msgCmd(components.HighlightWordsMsg{
-			Words:    cfg.HighlightWords,
+			Words:    s.highlightWords,
 			UserNick: s.user.Nick(),
 		}),
 		msgCmd(components.TimestampFormatMsg{
@@ -554,6 +569,8 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		})
 
 	case chatcmd.HighlightWordsSetResult:
+		s.highlightWords = msg.Words
+
 		text := fmt.Sprintf("highlight words set to: %v", msg.Words)
 		if msg.Reset {
 			text = fmt.Sprintf("highlight words reset to: %v", msg.Words)
