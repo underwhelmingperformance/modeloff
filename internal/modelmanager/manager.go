@@ -27,7 +27,6 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/laney/modeloff/internal/api"
@@ -232,75 +231,66 @@ func (m *Manager) APIClientGetter() func() api.Client {
 // invalidated so the next add-model lazy-loads against the new
 // upstream.
 func (m *Manager) SetAPIKey(ctx context.Context, apiKey, baseURL string) error {
-	_, span := m.startSpan(ctx, "modelmanager.set_api_key",
-		attribute.String(observability.AttrOperation, "modelmanager.set_api_key"))
-	defer span.End()
+	return m.inSpan(ctx, "modelmanager.set_api_key", nil, func(ctx context.Context, _ trace.Span) error {
+		apiKey = strings.TrimSpace(apiKey)
 
-	apiKey = strings.TrimSpace(apiKey)
-
-	m.mu.Lock()
-	nextClient := m.api
-	if apiKey != "" && m.factory != nil {
-		client, err := m.factory(apiKey, baseURL)
-		if err != nil {
-			m.mu.Unlock()
-			setSpanError(span, err, observability.ErrorKindValidation)
-			return fmt.Errorf("build api client: %w", err)
+		m.mu.Lock()
+		nextClient := m.api
+		if apiKey != "" && m.factory != nil {
+			client, err := m.factory(apiKey, baseURL)
+			if err != nil {
+				m.mu.Unlock()
+				return errWithKind(fmt.Errorf("build api client: %w", err), observability.ErrorKindValidation)
+			}
+			nextClient = client
 		}
-		nextClient = client
-	}
-	if apiKey == "" {
-		nextClient = nil
-	}
+		if apiKey == "" {
+			nextClient = nil
+		}
 
-	m.api = nextClient
-	m.apiKey = apiKey
-	m.mu.Unlock()
+		m.api = nextClient
+		m.apiKey = apiKey
+		m.mu.Unlock()
 
-	m.invalidateCatalogue(ctx)
+		m.invalidateCatalogue(ctx)
 
-	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-	return nil
+		return nil
+	})
 }
 
 // SetBaseURL rebuilds the API client with the given base URL if a
 // factory and an API key are configured.
 func (m *Manager) SetBaseURL(ctx context.Context, baseURL string) error {
-	_, span := m.startSpan(ctx, "modelmanager.set_base_url",
-		attribute.String(observability.AttrOperation, "modelmanager.set_base_url"))
-	defer span.End()
+	return m.inSpan(ctx, "modelmanager.set_base_url", nil, func(_ context.Context, _ trace.Span) error {
+		baseURL = strings.TrimSpace(baseURL)
 
-	baseURL = strings.TrimSpace(baseURL)
+		m.mu.Lock()
+		defer m.mu.Unlock()
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if m.factory != nil && m.apiKey != "" {
-		client, err := m.factory(m.apiKey, baseURL)
-		if err != nil {
-			setSpanError(span, err, observability.ErrorKindValidation)
-			return fmt.Errorf("build api client: %w", err)
+		if m.factory != nil && m.apiKey != "" {
+			client, err := m.factory(m.apiKey, baseURL)
+			if err != nil {
+				return errWithKind(fmt.Errorf("build api client: %w", err), observability.ErrorKindValidation)
+			}
+			m.api = client
 		}
-		m.api = client
-	}
 
-	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-	return nil
+		return nil
+	})
 }
 
 // SetSmallModel updates the model id the manager uses for nick
 // generation and persona seeding.
 func (m *Manager) SetSmallModel(ctx context.Context, modelID domain.ModelID) {
-	_, span := m.startSpan(ctx, "modelmanager.set_small_model",
-		attribute.String(observability.AttrOperation, "modelmanager.set_small_model"),
-		attribute.String(observability.AttrModelID, string(modelID)))
-	defer span.End()
+	_ = m.inSpan(ctx, "modelmanager.set_small_model", []attribute.KeyValue{
+		attribute.String(observability.AttrModelID, string(modelID)),
+	}, func(_ context.Context, _ trace.Span) error {
+		m.mu.Lock()
+		m.smallModel = modelID
+		m.mu.Unlock()
 
-	m.mu.Lock()
-	m.smallModel = modelID
-	m.mu.Unlock()
-
-	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
+		return nil
+	})
 }
 
 // SmallModel returns the configured small-model id.
@@ -331,27 +321,27 @@ func (m *Manager) SetClock(clock func() time.Time) {
 // API and caches it. Returns [modelclient.ErrNoAPIKey] when no API
 // key is configured.
 func (m *Manager) ListModels(ctx context.Context) ([]api.ModelInfo, error) {
-	ctx, span := m.startSpan(ctx, "modelmanager.list_models",
-		attribute.String(observability.AttrOperation, "modelmanager.list_models"))
-	defer span.End()
+	var models []api.ModelInfo
 
-	client, key := m.snapshotAPI()
-	if key == "" || client == nil {
-		setSpanError(span, modelclient.ErrNoAPIKey, observability.ErrorKindValidation)
-		return nil, modelclient.ErrNoAPIKey
-	}
+	err := m.inSpan(ctx, "modelmanager.list_models", nil, func(ctx context.Context, _ trace.Span) error {
+		client, key := m.snapshotAPI()
+		if key == "" || client == nil {
+			return errWithKind(modelclient.ErrNoAPIKey, observability.ErrorKindValidation)
+		}
 
-	models, err := client.ListModels(ctx)
-	if err != nil {
-		m.transitionListState(ctx, ListStateFailed, err)
-		setSpanError(span, err, observability.ErrorKindDispatch)
-		return nil, err
-	}
+		fetched, err := client.ListModels(ctx)
+		if err != nil {
+			m.transitionListState(ctx, ListStateFailed, err)
+			return errWithKind(err, observability.ErrorKindDispatch)
+		}
 
-	m.cacheSupportedModels(ctx, models)
+		m.cacheSupportedModels(ctx, fetched)
+		models = fetched
 
-	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-	return models, nil
+		return nil
+	})
+
+	return models, err
 }
 
 // EnsureStructuredOutputModel validates that the given model
@@ -506,170 +496,170 @@ func (m *Manager) snapshotAPI() (api.Client, string) {
 
 // EnsurePersonas populates the persona pool if it is empty. It
 // calls the API to generate personas and saves each to the store.
-func (m *Manager) EnsurePersonas(ctx context.Context) (retErr error) {
-	ctx, span := m.startSpan(ctx, "modelmanager.ensure_personas",
-		attribute.String(observability.AttrOperation, "modelmanager.ensure_personas"),
-	)
-	defer endSpan(span, &retErr, observability.ErrorKindStore)
-
-	existing, err := m.store.ListPersonas(ctx)
-	if err != nil {
-		return fmt.Errorf("list personas: %w", err)
-	}
-
-	if len(existing) > 0 {
-		return nil
-	}
-
-	client, _ := m.snapshotAPI()
-	if client == nil {
-		return fmt.Errorf("generate personas: api client not configured")
-	}
-
-	personas, err := client.GeneratePersonas(ctx, m.SmallModel())
-	if err != nil {
-		return fmt.Errorf("generate personas: %w", err)
-	}
-
-	for _, p := range personas {
-		if err := m.store.SavePersona(ctx, p); err != nil {
-			return fmt.Errorf("save persona %q: %w", p.ID, err)
+func (m *Manager) EnsurePersonas(ctx context.Context) error {
+	return m.inSpan(ctx, "modelmanager.ensure_personas", nil, func(ctx context.Context, _ trace.Span) error {
+		existing, err := m.store.ListPersonas(ctx)
+		if err != nil {
+			return fmt.Errorf("list personas: %w", err)
 		}
-	}
 
-	return nil
+		if len(existing) > 0 {
+			return nil
+		}
+
+		client, _ := m.snapshotAPI()
+		if client == nil {
+			return fmt.Errorf("generate personas: api client not configured")
+		}
+
+		personas, err := client.GeneratePersonas(ctx, m.SmallModel())
+		if err != nil {
+			return fmt.Errorf("generate personas: %w", err)
+		}
+
+		for _, p := range personas {
+			if err := m.store.SavePersona(ctx, p); err != nil {
+				return fmt.Errorf("save persona %q: %w", p.ID, err)
+			}
+		}
+
+		return nil
+	})
 }
 
 // RandomPersona picks a random persona from the store pool.
-func (m *Manager) RandomPersona(ctx context.Context) (_ domain.Persona, retErr error) {
-	ctx, span := m.startSpan(ctx, "modelmanager.random_persona",
-		attribute.String(observability.AttrOperation, "modelmanager.random_persona"),
-	)
-	defer endSpan(span, &retErr, observability.ErrorKindStore)
+func (m *Manager) RandomPersona(ctx context.Context) (domain.Persona, error) {
+	var chosen domain.Persona
 
-	personas, err := m.store.ListPersonas(ctx)
-	if err != nil {
-		return domain.Persona{}, fmt.Errorf("list personas: %w", err)
-	}
+	err := m.inSpan(ctx, "modelmanager.random_persona", nil, func(ctx context.Context, _ trace.Span) error {
+		personas, err := m.store.ListPersonas(ctx)
+		if err != nil {
+			return fmt.Errorf("list personas: %w", err)
+		}
 
-	if len(personas) == 0 {
-		return domain.Persona{}, fmt.Errorf("no personas available")
-	}
+		if len(personas) == 0 {
+			return fmt.Errorf("no personas available")
+		}
 
-	n, err := rand.Int(rand.Reader, big.NewInt(int64(len(personas))))
-	if err != nil {
-		return domain.Persona{}, fmt.Errorf("random selection: %w", err)
-	}
+		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(personas))))
+		if err != nil {
+			return fmt.Errorf("random selection: %w", err)
+		}
 
-	return personas[n.Int64()], nil
+		chosen = personas[n.Int64()]
+		return nil
+	})
+
+	return chosen, err
 }
 
 // RegeneratePersonas generates a fresh set of personas via the
 // API, then replaces all generated personas in the store. The API
 // call happens first so that the existing pool is preserved if
 // generation fails. User-defined personas are never touched.
-func (m *Manager) RegeneratePersonas(ctx context.Context) (_ []domain.Persona, retErr error) {
-	ctx, span := m.startSpan(ctx, "modelmanager.regenerate_personas",
-		attribute.String(observability.AttrOperation, "modelmanager.regenerate_personas"),
-	)
-	defer endSpan(span, &retErr, observability.ErrorKindStore)
+func (m *Manager) RegeneratePersonas(ctx context.Context) ([]domain.Persona, error) {
+	var personas []domain.Persona
 
-	client, _ := m.snapshotAPI()
-	if client == nil {
-		return nil, fmt.Errorf("generate personas: api client not configured")
-	}
+	err := m.inSpan(ctx, "modelmanager.regenerate_personas", nil, func(ctx context.Context, _ trace.Span) error {
+		client, _ := m.snapshotAPI()
+		if client == nil {
+			return fmt.Errorf("generate personas: api client not configured")
+		}
 
-	personas, err := client.GeneratePersonas(ctx, m.SmallModel())
-	if err != nil {
-		return nil, fmt.Errorf("generate personas: %w", err)
-	}
+		generated, err := client.GeneratePersonas(ctx, m.SmallModel())
+		if err != nil {
+			return fmt.Errorf("generate personas: %w", err)
+		}
 
-	if err := m.store.ReplaceGeneratedPersonas(ctx, personas); err != nil {
-		return nil, fmt.Errorf("replace generated personas: %w", err)
-	}
+		if err := m.store.ReplaceGeneratedPersonas(ctx, generated); err != nil {
+			return fmt.Errorf("replace generated personas: %w", err)
+		}
 
-	return personas, nil
+		personas = generated
+		return nil
+	})
+
+	return personas, err
 }
 
 // SetPersona saves a user-defined persona to the store.
-func (m *Manager) SetPersona(ctx context.Context, id string, description string) (retErr error) {
-	ctx, span := m.startSpan(ctx, "modelmanager.set_persona",
-		attribute.String(observability.AttrOperation, "modelmanager.set_persona"),
+func (m *Manager) SetPersona(ctx context.Context, id string, description string) error {
+	return m.inSpan(ctx, "modelmanager.set_persona", []attribute.KeyValue{
 		attribute.String("persona.id", id),
-	)
-	defer endSpan(span, &retErr, observability.ErrorKindStore)
+	}, func(ctx context.Context, _ trace.Span) error {
+		p := domain.Persona{
+			ID:          id,
+			Description: description,
+			Origin:      domain.PersonaUser,
+		}
 
-	p := domain.Persona{
-		ID:          id,
-		Description: description,
-		Origin:      domain.PersonaUser,
-	}
-
-	return m.store.SavePersona(ctx, p)
+		return m.store.SavePersona(ctx, p)
+	})
 }
 
 // ListPersonas returns all personas from the store.
-func (m *Manager) ListPersonas(ctx context.Context) (_ []domain.Persona, retErr error) {
-	ctx, span := m.startSpan(ctx, "modelmanager.list_personas",
-		attribute.String(observability.AttrOperation, "modelmanager.list_personas"),
-	)
-	defer endSpan(span, &retErr, observability.ErrorKindStore)
+func (m *Manager) ListPersonas(ctx context.Context) ([]domain.Persona, error) {
+	var personas []domain.Persona
 
-	return m.store.ListPersonas(ctx)
+	err := m.inSpan(ctx, "modelmanager.list_personas", nil, func(ctx context.Context, _ trace.Span) error {
+		listed, err := m.store.ListPersonas(ctx)
+		if err != nil {
+			return err
+		}
+		personas = listed
+		return nil
+	})
+
+	return personas, err
 }
 
 // ResetPersonas removes all user-defined personas from the store,
 // leaving only generated ones. It returns the number of personas
 // that were removed.
-func (m *Manager) ResetPersonas(ctx context.Context) (_ int, retErr error) {
-	ctx, span := m.startSpan(ctx, "modelmanager.reset_personas",
-		attribute.String(observability.AttrOperation, "modelmanager.reset_personas"),
-	)
-	defer endSpan(span, &retErr, observability.ErrorKindStore)
+func (m *Manager) ResetPersonas(ctx context.Context) (int, error) {
+	var count int
 
-	personas, err := m.store.ListPersonas(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("list personas: %w", err)
-	}
-
-	count := 0
-	for _, p := range personas {
-		if p.Origin == domain.PersonaUser {
-			count++
+	err := m.inSpan(ctx, "modelmanager.reset_personas", nil, func(ctx context.Context, _ trace.Span) error {
+		personas, err := m.store.ListPersonas(ctx)
+		if err != nil {
+			return fmt.Errorf("list personas: %w", err)
 		}
-	}
 
-	if err := m.store.DeletePersonasByOrigin(ctx, domain.PersonaUser); err != nil {
-		return 0, err
-	}
+		for _, p := range personas {
+			if p.Origin == domain.PersonaUser {
+				count++
+			}
+		}
 
-	return count, nil
+		if err := m.store.DeletePersonasByOrigin(ctx, domain.PersonaUser); err != nil {
+			return err
+		}
+
+		return nil
+	})
+
+	return count, err
 }
 
 // Reset clears the store, the memory backend, and the supported-
 // models cache. The chat-screen's `/config --reset` semantics rely
 // on this returning the application to a fresh state.
 func (m *Manager) Reset(ctx context.Context) error {
-	ctx, span := m.startSpan(ctx, "modelmanager.reset",
-		attribute.String(observability.AttrOperation, "modelmanager.reset"))
-	defer span.End()
-
-	if err := m.store.Reset(ctx); err != nil {
-		setSpanError(span, err, observability.ErrorKindStore)
-		return fmt.Errorf("reset store: %w", err)
-	}
-
-	if m.memory != nil {
-		if err := m.memory.Reset(ctx); err != nil {
-			setSpanError(span, err, observability.ErrorKindStore)
-			return fmt.Errorf("reset memories: %w", err)
+	return m.inSpan(ctx, "modelmanager.reset", nil, func(ctx context.Context, _ trace.Span) error {
+		if err := m.store.Reset(ctx); err != nil {
+			return fmt.Errorf("reset store: %w", err)
 		}
-	}
 
-	m.invalidateCatalogue(ctx)
+		if m.memory != nil {
+			if err := m.memory.Reset(ctx); err != nil {
+				return fmt.Errorf("reset memories: %w", err)
+			}
+		}
 
-	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-	return nil
+		m.invalidateCatalogue(ctx)
+
+		return nil
+	})
 }
 
 // maxNickGenerationAttempts caps the number of times the small
@@ -689,53 +679,51 @@ func (m *Manager) generateUniqueNick(
 	persona string,
 	logger *slog.Logger,
 ) (domain.Nick, error) {
-	generateCtx, generateSpan := m.startSpan(
-		ctx,
-		"modelmanager.generate_nick",
-		attribute.String(observability.AttrOperation, "modelmanager.generate_nick"),
+	var nick domain.Nick
+
+	err := m.inSpan(ctx, "modelmanager.generate_nick", []attribute.KeyValue{
 		attribute.String(observability.AttrModelID, string(modelID)),
-	)
-	defer generateSpan.End()
+	}, func(generateCtx context.Context, generateSpan trace.Span) error {
+		client, _ := m.snapshotAPI()
+		if client == nil {
+			return errWithKind(fmt.Errorf("generate nick: api client not configured"), observability.ErrorKindValidation)
+		}
 
-	client, _ := m.snapshotAPI()
-	if client == nil {
-		err := fmt.Errorf("generate nick: api client not configured")
-		setSpanError(generateSpan, err, observability.ErrorKindValidation)
-		return "", err
-	}
+		small := m.SmallModel()
 
-	small := m.SmallModel()
+		var rejected []domain.Nick
 
-	var rejected []domain.Nick
+		for attempt := 1; attempt <= maxNickGenerationAttempts; attempt++ {
+			result, err := client.GenerateNick(generateCtx, small, persona, rejected)
+			if err != nil {
+				logger.ErrorContext(ctx, "generate nick failed",
+					"error", err,
+					"attempt", attempt,
+				)
+				return errWithKind(fmt.Errorf("generate nick: %w", err), observability.ErrorKindDispatch)
+			}
 
-	for attempt := 1; attempt <= maxNickGenerationAttempts; attempt++ {
-		result, err := client.GenerateNick(generateCtx, small, persona, rejected)
-		if err != nil {
-			setSpanError(generateSpan, err, observability.ErrorKindDispatch)
-			logger.ErrorContext(ctx, "generate nick failed",
-				"error", err,
+			result.Usage.SetSpanAttributes(generateSpan, result.RequestID)
+
+			if !m.nickIsTaken(ctx, sess, result.Nick) {
+				nick = result.Nick
+				return nil
+			}
+
+			logger.InfoContext(ctx, "generated nick already in use",
+				"nick", result.Nick,
 				"attempt", attempt,
 			)
-			return "", fmt.Errorf("generate nick: %w", err)
+			rejected = append(rejected, result.Nick)
 		}
 
-		result.Usage.SetSpanAttributes(generateSpan, result.RequestID)
-
-		if !m.nickIsTaken(ctx, sess, result.Nick) {
-			generateSpan.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-			return result.Nick, nil
-		}
-
-		logger.InfoContext(ctx, "generated nick already in use",
-			"nick", result.Nick,
-			"attempt", attempt,
+		return errWithKind(
+			fmt.Errorf("generate nick: %d attempts exhausted, all suggestions collided", maxNickGenerationAttempts),
+			observability.ErrorKindDispatch,
 		)
-		rejected = append(rejected, result.Nick)
-	}
+	})
 
-	err := fmt.Errorf("generate nick: %d attempts exhausted, all suggestions collided", maxNickGenerationAttempts)
-	setSpanError(generateSpan, err, observability.ErrorKindDispatch)
-	return "", err
+	return nick, err
 }
 
 // nickIsTaken reports whether `nick` is already held by the user
@@ -882,50 +870,35 @@ func (m *Manager) DetachAll() {
 	}
 }
 
-func (m *Manager) startSpan(ctx context.Context, name string, attrs ...attribute.KeyValue) (context.Context, trace.Span) {
-	tracer := m.tracer.Tracer("github.com/laney/modeloff/internal/modelmanager")
-	ctx, span := tracer.Start(ctx, name)
-	span.SetAttributes(attrs...)
-
-	return ctx, span
+// inSpan brackets fn with a span and result-recording on the
+// manager's tracer provider. The fallback error kind is
+// [observability.ErrorKindStore] — most manager operations are
+// persistence-backed. Sites that need to override (catalogue
+// dispatch failures, validation refusals) wrap their returned error
+// with [errWithKind], which the classifier here unwraps.
+func (m *Manager) inSpan(
+	ctx context.Context,
+	op string,
+	attrs []attribute.KeyValue,
+	fn func(ctx context.Context, span trace.Span) error,
+) error {
+	return observability.SpanRunner{
+		Tracer:         m.tracer.Tracer("github.com/laney/modeloff/internal/modelmanager"),
+		DefaultErrKind: observability.ErrorKindStore,
+		ClassifyError:  classifyManagerError,
+	}.Run(ctx, op, attrs, fn)
 }
 
-// endSpan finalises the span with ok/error status. The fallback
-// errorKind is attached as AttrErrorKind when the deferred error
-// is non-nil and does not already carry a kind via *kindError.
-func endSpan(span trace.Span, errPtr *error, errorKind string) {
-	err := *errPtr
-
-	if err == nil {
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-		span.End()
-		return
+func classifyManagerError(err error) string {
+	if ke, ok := errors.AsType[*kindError](err); ok {
+		return ke.kind
 	}
-
-	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-
-	kind := errorKind
-	var ke *kindError
-	if errors.As(err, &ke) {
-		kind = ke.kind
-	}
-
-	if kind != "" {
-		span.SetAttributes(attribute.String(observability.AttrErrorKind, kind))
-	}
-
-	span.SetStatus(codes.Error, err.Error())
-	span.End()
+	return ""
 }
 
-func setSpanError(span trace.Span, err error, errorKind string) {
-	span.SetAttributes(
-		attribute.String(observability.AttrResult, observability.ResultError),
-		attribute.String(observability.AttrErrorKind, errorKind),
-	)
-	span.SetStatus(codes.Error, err.Error())
-}
-
+// kindError tags an error with an observability error kind so the
+// span classifier can attach `AttrErrorKind` without every call site
+// having to pass the kind through an auxiliary return value.
 type kindError struct {
 	kind string
 	err  error
@@ -933,3 +906,12 @@ type kindError struct {
 
 func (e *kindError) Error() string { return e.err.Error() }
 func (e *kindError) Unwrap() error { return e.err }
+
+// errWithKind annotates err with the given observability error kind.
+// Returns nil when err is nil so it can wrap the tail of a return.
+func errWithKind(err error, kind string) error {
+	if err == nil {
+		return nil
+	}
+	return &kindError{kind: kind, err: err}
+}
