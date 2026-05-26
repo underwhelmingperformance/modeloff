@@ -9,6 +9,7 @@ import (
 
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/ui/chatcmd"
+	"github.com/laney/modeloff/internal/ui/screens/screenstest"
 	"github.com/laney/modeloff/internal/ui/uitest"
 )
 
@@ -94,11 +95,11 @@ func TestChatScreen_PartEvent_leaving_non_active_keeps_active(t *testing.T) {
 			strings.Contains(view, "*** Created channel #general")
 	})
 
-	tm.Send(domain.Part{
+	screenstest.SendProtocolEvent(tm.TestModel, domain.Part{
 		Target:   "#random",
 		Instance: user.Instance(),
 		At:       time.Now(),
-	})
+	}, []domain.ChannelName{"#random"})
 
 	// Active channel should remain #general since we parted #random.
 	view := tm.CurrentView()
@@ -127,12 +128,12 @@ func TestChatScreen_TopicChangeEvent_different_channel(t *testing.T) {
 			strings.Contains(view, "*** Created channel #general")
 	})
 
-	tm.Send(domain.TopicChange{
+	screenstest.SendProtocolEvent(tm.TestModel, domain.TopicChange{
 		Target: "#random",
 		Topic:  "Random topic",
 		By:     "someone",
 		At:     time.Now(),
-	})
+	}, []domain.ChannelName{"#random"})
 
 	view := tm.CurrentView()
 	body, _ := uitest.SplitBodyAndStatus(view)
@@ -159,12 +160,12 @@ func TestChatScreen_QuitEvent_shows_quit_message(t *testing.T) {
 	// context to render against.
 	tm.WaitFor("Created channel #general", "fakenick has joined #general")
 
-	tm.Send(domain.Quit{
+	screenstest.SendProtocolEvent(tm.TestModel, domain.Quit{
 		Nick:     inst.Nick(),
 		Instance: inst,
 		Message:  "shutting down",
 		At:       time.Now(),
-	})
+	}, []domain.ChannelName{"#general"})
 
 	tm.WaitFor("fakenick has quit (shutting down)")
 }
@@ -195,11 +196,11 @@ func TestChatScreen_QuitEvent_removes_instance_from_nick_list(t *testing.T) {
 	// context to render against.
 	tm.WaitFor("Created channel #general", "fakenick has joined #general")
 
-	tm.Send(domain.Quit{
+	screenstest.SendProtocolEvent(tm.TestModel, domain.Quit{
 		Nick:     inst.Nick(),
 		Instance: inst,
 		At:       time.Now(),
-	})
+	}, []domain.ChannelName{"#general"})
 
 	view := tm.WaitForView(func(view string) bool {
 		return strings.Contains(view, "fakenick has quit")
@@ -242,12 +243,12 @@ func TestChatScreen_QuitEvent_surfaces_in_open_DM(t *testing.T) {
 		return strings.Contains(view, "▸fakenick")
 	})
 
-	tm.Send(domain.Quit{
+	screenstest.SendProtocolEvent(tm.TestModel, domain.Quit{
 		Nick:     inst.Nick(),
 		Instance: inst,
 		Message:  "shutting down",
 		At:       time.Now(),
-	})
+	}, []domain.ChannelName{"#general"})
 
 	// The active window is the DM. The QUIT line should land
 	// here as a frontend policy choice — the user wants to see
@@ -289,12 +290,12 @@ func TestChatScreen_NickChangeEvent_surfaces_in_open_DM(t *testing.T) {
 	// canonical handle before dispatch.
 	inst.SetNick("renamedbot")
 
-	tm.Send(domain.NickChange{
+	screenstest.SendProtocolEvent(tm.TestModel, domain.NickChange{
 		OldNick:  "fakenick",
 		NewNick:  "renamedbot",
 		Instance: inst,
 		At:       time.Now(),
-	})
+	}, []domain.ChannelName{"#general"})
 
 	tm.WaitFor("fakenick is now known as renamedbot")
 }
@@ -311,11 +312,11 @@ func TestChatScreen_ignores_join_for_unknown_channel(t *testing.T) {
 	tm.WaitFor("Created channel #general")
 
 	// A model joins a channel the user isn't in.
-	tm.Send(domain.Join{
+	screenstest.SendProtocolEvent(tm.TestModel, domain.Join{
 		Target:   "#secret",
 		Instance: domain.NewModelInstance("bot-1", "botty", "test/model", "", nil),
 		At:       time.Now(),
-	})
+	}, []domain.ChannelName{"#secret"})
 
 	// Send a subsequent event to #general to ensure the join event
 	// has been fully processed before we inspect the view.
@@ -356,11 +357,11 @@ func TestChatScreen_model_join_does_not_switch_active(t *testing.T) {
 	})
 
 	// A model joins #random (which the user is in).
-	tm.Send(domain.Join{
+	screenstest.SendProtocolEvent(tm.TestModel, domain.Join{
 		Target:   "#random",
 		Instance: domain.NewModelInstance("bot-1", "botty", "test/model", "", nil),
 		At:       time.Now(),
-	})
+	}, []domain.ChannelName{"#random"})
 
 	// Send a subsequent event to ensure the join event has been processed.
 	tm.Send(domain.Message{
@@ -400,16 +401,16 @@ func TestChatScreen_rapid_switch_does_not_revert(t *testing.T) {
 	// Simulate rapid switch: JoinEvents from two switches arrive
 	// back to back. With the fix, these no longer change the active
 	// channel — they only update the sidebar.
-	tm.Send(domain.Join{
+	screenstest.SendProtocolEvent(tm.TestModel, domain.Join{
 		Target:   "#random",
 		Instance: user.Instance(),
 		At:       time.Now(),
-	})
-	tm.Send(domain.Join{
+	}, []domain.ChannelName{"#random"})
+	screenstest.SendProtocolEvent(tm.TestModel, domain.Join{
 		Target:   "#general",
 		Instance: user.Instance(),
 		At:       time.Now(),
-	})
+	}, []domain.ChannelName{"#general"})
 
 	// Send a sync marker to #chat to ensure the JoinEvents have
 	// been fully processed.

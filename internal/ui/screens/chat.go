@@ -44,32 +44,15 @@ type protocolEventMsg struct {
 	targets []domain.ChannelName
 }
 
-// actorChannelsForDirectSend returns the actor's full channel
-// list as a stand-in for the per-recipient
-// [protocol.Delivery.Targets] envelope when an actor-scoped
-// event reaches the chat-screen's [tea.Model.Update] without
-// having gone through [Session.fanOutProtocol] — the test
-// `tm.Send(domain.Quit{...})` shortcut. The user-client always
-// receives the actor's full channel list anyway (no intersection
-// is applied for it; see `intersectActorTargets`), so this
-// matches the production-shaped envelope that path would
-// produce.
-func actorChannelsForDirectSend(actor *domain.Instance) []domain.ChannelName {
-	if actor == nil {
-		return nil
-	}
-
-	channels := actor.Channels()
-	if channels == nil {
-		return nil
-	}
-
-	out := make([]domain.ChannelName, 0, channels.Len())
-	for pair := channels.Oldest(); pair != nil; pair = pair.Next() {
-		out = append(out, pair.Key)
-	}
-
-	return out
+// NewProtocolEventForTest builds a [tea.Msg] that injects a
+// protocol-bus delivery into the chat screen's update loop, mimicking
+// the envelope shape the session's fan-out would have produced. The
+// returned message is the only supported way to deliver an event into
+// the chat screen from outside the `screens` package; tests should
+// reach for it via [screenstest.SendProtocolEvent] rather than
+// constructing wire events directly.
+func NewProtocolEventForTest(evt protocol.Event, targets []domain.ChannelName) tea.Msg {
+	return protocolEventMsg{event: evt, targets: targets}
 }
 
 // deliverNextPacedMsg triggers delivery of the next queued paced
@@ -663,42 +646,23 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 			}),
 		)
 
-	case domain.Join:
-		s.bufferEvent(msg)
-		return s.handleJoinEvent(msg)
-
-	case domain.Part:
-		s.bufferEvent(msg)
-		return s.handlePartEvent(msg)
-
-	case domain.Quit:
-		targets := actorChannelsForDirectSend(msg.Instance)
-		s.bufferActorEvent(targets, msg.Instance, domain.StoredEvent{Event: msg})
-		return s.handleQuitEvent(msg, targets)
-
-	case domain.TopicChange:
-		s.bufferEvent(msg)
-		return s.handleTopicChangeEvent(msg)
-
-	case domain.NickChange:
-		targets := actorChannelsForDirectSend(msg.Instance)
-		s.bufferActorEvent(targets, msg.Instance, domain.StoredEvent{Event: msg})
-		return s.handleNickChangeEvent(msg, targets)
-
-	case domain.ModelInvited:
-		s.bufferEvent(msg)
-		return s.handleModelInvitedEvent(msg)
-
-	case domain.ModelKicked:
-		s.bufferEvent(msg)
-		return s.handleModelKickedEvent(msg)
-
 	case domain.Message:
-		// User-side outgoing arrives here directly from the
-		// send-cmd path; incoming model traffic comes via
-		// `protocolEventMsg` and is buffered there.
+		// Echo path for the user's own outgoing PRIVMSG. The session
+		// bus originator-suppresses Message events
+		// (`session.chatTrafficSender`), so this is the only way the
+		// user-client sees its own line in scrollback.
 		s.bufferEvent(msg)
 		return s.handleMessageEvent(msg)
+
+	case domain.ModelInvited:
+		// Echo path for the inviter's own `/invite` result. `session.handleInvite`
+		// returns the resulting `ModelInvited` in `protocol.Response.Events`,
+		// which `chatcmd.sendCommand` unwraps as a `tea.Msg`. The session bus
+		// does not deliver this event back to the inviter, so this is the
+		// only way the inviter sees the RPL_INVITING-equivalent line in
+		// scrollback.
+		s.bufferEvent(msg)
+		return s.handleModelInvitedEvent(msg)
 
 	case chatcmd.DMOpenedMsg:
 		return s.handleDMOpenedMsg(msg)
