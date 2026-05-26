@@ -127,25 +127,25 @@ func (b InputBar) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		return b, nil
 
 	case CompleterMsg:
-		b = b.refreshPopover(PopoverApplyMsg{
+		b, cmd := b.refreshPopover(PopoverApplyMsg{
 			Completer: msg.Completer,
 			Raw:       b.input.Value(),
 			Cursor:    b.input.Cursor(),
 		})
-		return b, nil
+		return b, cmd
 
 	case PopoverAcceptMsg:
 		b = b.ReplaceRange(msg.ReplaceStart, msg.ReplaceEnd, msg.Replacement)
-		b = b.refreshPopover(PopoverRefreshMsg{
+		b, cmd := b.refreshPopover(PopoverRefreshMsg{
 			Raw:    b.input.Value(),
 			Cursor: b.input.Cursor(),
 		})
-		return b, nil
+		return b, cmd
 
 	case ui.BoundsMsg:
 		b.bounds = msg.Rect
-		b = b.refreshPopover(msg)
-		return b, nil
+		b, cmd := b.refreshPopover(msg)
+		return b, cmd
 
 	case tea.MouseMsg:
 		if updated, handled, cmd := b.handleMouse(msg); handled {
@@ -205,21 +205,21 @@ func (b InputBar) handleKey(msg tea.KeyMsg) (ui.Model, tea.Cmd) {
 	case ui.Matches(msg, b.keyMap.HistoryUp):
 		if !b.popover.IsVisible() {
 			b = b.historyUp()
-			b = b.refreshPopover(PopoverRefreshMsg{
+			b, cmd := b.refreshPopover(PopoverRefreshMsg{
 				Raw:    b.input.Value(),
 				Cursor: b.input.Cursor(),
 			})
-			return b, nil
+			return b, cmd
 		}
 
 	case ui.Matches(msg, b.keyMap.HistoryDn):
 		if !b.popover.IsVisible() {
 			b = b.historyDown()
-			b = b.refreshPopover(PopoverRefreshMsg{
+			b, cmd := b.refreshPopover(PopoverRefreshMsg{
 				Raw:    b.input.Value(),
 				Cursor: b.input.Cursor(),
 			})
-			return b, nil
+			return b, cmd
 		}
 
 	case msg.Type == tea.KeyTab:
@@ -235,12 +235,12 @@ func (b InputBar) handleKey(msg tea.KeyMsg) (ui.Model, tea.Cmd) {
 	b.input = updated.(RichTextarea)
 	b.input = b.input.SetAllowFormatting(!strings.HasPrefix(b.input.Value(), "/"))
 
-	b = b.refreshPopover(PopoverRefreshMsg{
+	b, popCmd := b.refreshPopover(PopoverRefreshMsg{
 		Raw:    b.input.Value(),
 		Cursor: b.input.Cursor(),
 	})
 
-	return b, cmd
+	return b, tea.Batch(cmd, popCmd)
 }
 
 func (b InputBar) handleMouse(msg tea.MouseMsg) (InputBar, bool, tea.Cmd) {
@@ -258,8 +258,9 @@ func (b InputBar) handleMouse(msg tea.MouseMsg) (InputBar, bool, tea.Cmd) {
 		return b, true, cmd
 	}
 
+	var dismissCmd tea.Cmd
 	if b.popover.IsVisible() && msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
-		b = b.refreshPopover(PopoverDismissMsg{Raw: b.input.Value()})
+		b, dismissCmd = b.refreshPopover(PopoverDismissMsg{Raw: b.input.Value()})
 	}
 
 	if inputRect.Contains(msg.X, msg.Y) {
@@ -268,19 +269,19 @@ func (b InputBar) handleMouse(msg tea.MouseMsg) (InputBar, bool, tea.Cmd) {
 			if msg.Button == tea.MouseButtonLeft {
 				localX, _ := inputRect.Local(msg.X, msg.Y)
 				b = b.SetCursorFromCell(localX)
-				b = b.refreshPopover(PopoverRefreshMsg{
+				b, popCmd := b.refreshPopover(PopoverRefreshMsg{
 					Raw:    b.input.Value(),
 					Cursor: b.input.Cursor(),
 				})
 
-				return b, true, nil
+				return b, true, tea.Batch(dismissCmd, popCmd)
 			}
 		case tea.MouseActionMotion:
-			return b, true, nil
+			return b, true, dismissCmd
 		}
 	}
 
-	return b, false, nil
+	return b, false, dismissCmd
 }
 
 func (b InputBar) submit() (ui.Model, tea.Cmd) {
@@ -299,20 +300,20 @@ func (b InputBar) submit() (ui.Model, tea.Cmd) {
 	b.histPos = -1
 	b.histDraft = ""
 
-	b = b.refreshPopover(PopoverRefreshMsg{
+	b, popCmd := b.refreshPopover(PopoverRefreshMsg{
 		Raw:    b.input.Value(),
 		Cursor: b.input.Cursor(),
 	})
 
 	if strings.HasPrefix(text, "/") {
-		return b, func() tea.Msg {
+		return b, tea.Batch(popCmd, func() tea.Msg {
 			return CommandSubmitMsg{Raw: text}
-		}
+		})
 	}
 
-	return b, func() tea.Msg {
+	return b, tea.Batch(popCmd, func() tea.Msg {
 		return MessageSubmitMsg{Text: raw}
-	}
+	})
 }
 
 func (b InputBar) pushHistory(text string) InputBar {
@@ -574,11 +575,11 @@ func (b InputBar) fmtBinding(binding ui.KeyBinding, active bool) ui.KeyBinding {
 	return ui.WithBindingActive(binding, active)
 }
 
-func (b InputBar) refreshPopover(msg tea.Msg) InputBar {
-	updated, _ := b.popover.Update(msg)
+func (b InputBar) refreshPopover(msg tea.Msg) (InputBar, tea.Cmd) {
+	updated, cmd := b.popover.Update(msg)
 	b.popover = updated.(Popover)
 
-	return b
+	return b, cmd
 }
 
 func (b InputBar) inputRect() ui.Rect {

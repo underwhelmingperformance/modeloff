@@ -151,54 +151,52 @@ func (c ChatView[C]) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case ui.BoundsMsg:
 		c.bounds = msg.Rect
-		c = c.updateInput(msg)
-		c = c.syncMessageViewport()
-		return c, nil
+		c, inputCmd := c.updateInput(msg)
+		c, syncCmd := c.syncMessageViewport()
+		return c, tea.Batch(inputCmd, syncCmd)
 
 	case SetChannelMsg:
 		c.channel = msg.Channel
 		c.kind = msg.Kind
 		c.topic = msg.Topic
 
-		var cmd tea.Cmd
-		c, cmd = c.updateMessages(msg)
-		c = c.syncMessageViewport()
+		c, msgCmd := c.updateMessages(msg)
+		c, syncCmd := c.syncMessageViewport()
 
-		return c, cmd
+		return c, tea.Batch(msgCmd, syncCmd)
 
 	case TopicUpdatedMsg:
 		c.topic = msg.Topic
-		c = c.syncMessageViewport()
-		return c, nil
+		c, syncCmd := c.syncMessageViewport()
+		return c, syncCmd
 
 	case UserNickMsg:
 		c.userNick = msg.Nick
-		c = c.updateInput(msg)
+		c, inputCmd := c.updateInput(msg)
 
-		return c, nil
+		return c, inputCmd
 
 	case NickListUpdatedMsg:
-		c = c.updateInput(msg)
+		c, inputCmd := c.updateInput(msg)
 
-		return c, nil
+		return c, inputCmd
 
 	case SetPlaceholderMsg, HighlightWordsMsg, TimestampFormatMsg:
-		var cmd tea.Cmd
-		c, cmd = c.updateMessages(msg)
-		c = c.syncMessageViewport()
+		c, msgCmd := c.updateMessages(msg)
+		c, syncCmd := c.syncMessageViewport()
 
-		return c, cmd
+		return c, tea.Batch(msgCmd, syncCmd)
 
 	case CommandsMsg[C]:
 		c, _ = c.updateMessages(msg)
-		c = c.syncMessageViewport()
+		c, syncCmd := c.syncMessageViewport()
 
-		return c, nil
+		return c, syncCmd
 
 	case CompleterMsg:
-		c = c.updateInput(msg)
+		c, inputCmd := c.updateInput(msg)
 
-		return c, nil
+		return c, inputCmd
 
 	case tea.MouseMsg:
 		if updated, handled, cmd := c.handleMouse(msg); handled {
@@ -207,14 +205,12 @@ func (c ChatView[C]) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	}
 
 	// Forward to message list for viewport navigation, then input bar.
-	var mlCmd tea.Cmd
-	c, mlCmd = c.updateMessages(msg)
+	c, mlCmd := c.updateMessages(msg)
 
-	updated, inputCmd := c.input.Update(msg)
-	c.input = updated.(InputBar)
-	c = c.syncMessageViewport()
+	c, inputCmd := c.updateInput(msg)
+	c, syncCmd := c.syncMessageViewport()
 
-	return c, tea.Batch(mlCmd, inputCmd)
+	return c, tea.Batch(mlCmd, inputCmd, syncCmd)
 }
 
 func (c ChatView[C]) handleMouse(msg tea.MouseMsg) (ChatView[C], bool, tea.Cmd) {
@@ -252,9 +248,9 @@ func (c ChatView[C]) handleMouse(msg tea.MouseMsg) (ChatView[C], bool, tea.Cmd) 
 		switch msg.Button {
 		case tea.MouseButtonWheelUp, tea.MouseButtonWheelDown:
 			c, _ = c.updateMessages(msg)
-			c = c.syncMessageViewport()
+			c, syncCmd := c.syncMessageViewport()
 
-			return c, true, nil
+			return c, true, syncCmd
 		}
 	}
 
@@ -357,20 +353,20 @@ func (c ChatView[C]) updateMessages(msg tea.Msg) (ChatView[C], tea.Cmd) {
 	return c, cmd
 }
 
-func (c ChatView[C]) syncMessageViewport() ChatView[C] {
+func (c ChatView[C]) syncMessageViewport() (ChatView[C], tea.Cmd) {
 	layout := c.layoutRects()
 
-	updated, _ := c.messages.Update(ui.BoundsMsg{Rect: layout.MessageRect})
+	updated, cmd := c.messages.Update(ui.BoundsMsg{Rect: layout.MessageRect})
 	c.messages = updated.(MessageList[C])
 
-	return c
+	return c, cmd
 }
 
-func (c ChatView[C]) updateInput(msg tea.Msg) ChatView[C] {
-	updated, _ := c.input.Update(msg)
+func (c ChatView[C]) updateInput(msg tea.Msg) (ChatView[C], tea.Cmd) {
+	updated, cmd := c.input.Update(msg)
 	c.input = updated.(InputBar)
 
-	return c
+	return c, cmd
 }
 
 func (c ChatView[C]) renderTopic(width int) string {
