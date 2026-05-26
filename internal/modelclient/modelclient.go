@@ -9,16 +9,19 @@ package modelclient
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/laney/modeloff/internal/api"
 	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/memory"
+	"github.com/laney/modeloff/internal/observability"
 	"github.com/laney/modeloff/internal/protocol"
 )
 
@@ -280,3 +283,50 @@ func (mc *ModelClient) seedHistory(ctx context.Context) {
 type modelCaps struct{}
 
 func (modelCaps) Has(_ command.Capability) bool { return false }
+
+// inSpan brackets fn with a span and result-recording on the
+// session's tracer provider. The fallback error kind is
+// [observability.ErrorKindStore] — most modelclient operations are
+// persistence-backed. Sites that need to override (downstream
+// dispatch failures, ensure-model classification) wrap their
+// returned error with [errWithKind], which the classifier here
+// unwraps.
+func (mc *ModelClient) inSpan(
+	ctx context.Context,
+	op string,
+	attrs []attribute.KeyValue,
+	fn func(ctx context.Context, span trace.Span) error,
+) error {
+	return observability.SpanRunner{
+		Tracer:         mc.sess.TracerProvider().Tracer("github.com/laney/modeloff/internal/modelclient"),
+		DefaultErrKind: observability.ErrorKindStore,
+		ClassifyError:  classifyModelclientError,
+	}.Run(ctx, op, attrs, fn)
+}
+
+func classifyModelclientError(err error) string {
+	if ke, ok := errors.AsType[*kindError](err); ok {
+		return ke.kind
+	}
+	return ""
+}
+
+// kindError tags an error with an observability error kind so the
+// span classifier can attach `AttrErrorKind` without every call site
+// having to pass the kind through an auxiliary return value.
+type kindError struct {
+	kind string
+	err  error
+}
+
+func (e *kindError) Error() string { return e.err.Error() }
+func (e *kindError) Unwrap() error { return e.err }
+
+// errWithKind annotates err with the given observability error kind.
+// Returns nil when err is nil so it can wrap the tail of a return.
+func errWithKind(err error, kind string) error {
+	if err == nil {
+		return nil
+	}
+	return &kindError{kind: kind, err: err}
+}

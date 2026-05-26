@@ -185,47 +185,41 @@ func (mc *ModelClient) dispatchTurn(ctx context.Context, ch domain.ChannelName, 
 	inst := mc.instance
 	nick := inst.Nick()
 
-	tracer := mc.sess.TracerProvider().Tracer("github.com/laney/modeloff/internal/modelclient")
-
-	startOpts := []trace.SpanStartOption{
-		trace.WithAttributes(
-			attribute.String(observability.AttrOperation, "modelclient.dispatch_turn"),
-			attribute.String(observability.AttrChannel, string(ch)),
-			attribute.String(observability.AttrModelID, string(inst.ModelID)),
-			attribute.String(observability.AttrNick, string(nick)),
-			attribute.String(observability.AttrInstanceID, string(inst.ID())),
-		),
-	}
-	if causeCtx.IsValid() {
-		startOpts = append(startOpts, trace.WithLinks(trace.Link{SpanContext: causeCtx}))
+	attrs := []attribute.KeyValue{
+		attribute.String(observability.AttrChannel, string(ch)),
+		attribute.String(observability.AttrModelID, string(inst.ModelID)),
+		attribute.String(observability.AttrNick, string(nick)),
+		attribute.String(observability.AttrInstanceID, string(inst.ID())),
 	}
 
-	ctx, span := tracer.Start(ctx, "modelclient.dispatch_turn", startOpts...)
-	defer span.End()
-	defer mc.sess.Emit(ctx, domain.ModelDispatchDone{Instance: inst, At: mc.sess.Now()})
+	_ = mc.inSpan(ctx, "modelclient.dispatch_turn", attrs, func(ctx context.Context, span trace.Span) error {
+		if causeCtx.IsValid() {
+			span.AddLink(trace.Link{SpanContext: causeCtx})
+		}
 
-	window, err := dispatchWindowFor(ctx, mc.sess, ch, inst)
-	if err != nil {
-		setSpanError(span, err, observability.ErrorKindStore)
-		mc.sess.Emit(ctx, domain.ModelUnavailableError{Channel: ch, Nick: nick, At: mc.sess.Now()})
-		return
-	}
+		defer mc.sess.Emit(ctx, domain.ModelDispatchDone{Instance: inst, At: mc.sess.Now()})
 
-	mc.sess.Emit(ctx, domain.ModelDispatchStarted{Instance: inst, At: mc.sess.Now()})
+		window, err := dispatchWindowFor(ctx, mc.sess, ch, inst)
+		if err != nil {
+			mc.sess.Emit(ctx, domain.ModelUnavailableError{Channel: ch, Nick: nick, At: mc.sess.Now()})
+			return err
+		}
 
-	apiClient := mc.apiFn()
-	if apiClient == nil {
-		mc.sess.Emit(ctx, domain.ModelUnavailableError{Channel: ch, Nick: nick, At: mc.sess.Now()})
-		return
-	}
+		mc.sess.Emit(ctx, domain.ModelDispatchStarted{Instance: inst, At: mc.sess.Now()})
 
-	if err := dispatchToInstance(ctx, mc.sess, apiClient, mc.memStore, mc.tools, mc.ensure, mc.pacer, mc, window, inst, ch, historyEvents, []protocol.IRCMessage{trigger}); err != nil {
-		setSpanError(span, err, observability.ErrorKindDispatch)
-		mc.sess.Emit(ctx, domain.ModelUnavailableError{Channel: ch, Nick: nick, At: mc.sess.Now()})
-		return
-	}
+		apiClient := mc.apiFn()
+		if apiClient == nil {
+			mc.sess.Emit(ctx, domain.ModelUnavailableError{Channel: ch, Nick: nick, At: mc.sess.Now()})
+			return nil
+		}
 
-	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
+		if err := dispatchToInstance(ctx, mc.sess, apiClient, mc.memStore, mc.tools, mc.ensure, mc.pacer, mc, window, inst, ch, historyEvents, []protocol.IRCMessage{trigger}); err != nil {
+			mc.sess.Emit(ctx, domain.ModelUnavailableError{Channel: ch, Nick: nick, At: mc.sess.Now()})
+			return errWithKind(err, observability.ErrorKindDispatch)
+		}
+
+		return nil
+	})
 }
 
 // dispatchWindowFor produces the `Window` that the recipient

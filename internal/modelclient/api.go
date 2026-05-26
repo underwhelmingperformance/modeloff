@@ -261,11 +261,3 @@ func classifyEnsureModelError(err error) string {
 
 	return observability.ErrorKindDispatch
 }
-
-func setSpanError(span trace.Span, err error, errorKind string) {
-	span.SetAttributes(
-		attribute.String(observability.AttrResult, observability.ResultError),
-		attribute.String(observability.AttrErrorKind, errorKind),
-	)
-	span.SetStatus(codes.Error, err.Error())
-}

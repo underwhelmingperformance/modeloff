@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/laney/modeloff/internal/api"
@@ -71,26 +70,24 @@ func (d *Dispatcher) DispatchToChannel(
 	ch domain.ChannelName,
 	newEvents []protocol.IRCMessage,
 ) error {
-	tracer := d.sess.TracerProvider().Tracer("github.com/laney/modeloff/internal/modelclient")
-	ctx, span := tracer.Start(ctx, "modelclient.dispatch_to_channel",
-		trace.WithAttributes(attribute.String(observability.AttrOperation, "modelclient.dispatch_to_channel")),
-	)
-	defer span.End()
-
-	historyEvents, err := d.sess.EventsBefore(ctx, ch, nil, 500)
-	if err != nil {
-		setSpanError(span, err, observability.ErrorKindStore)
-		return fmt.Errorf("list history: %w", err)
+	runner := observability.SpanRunner{
+		Tracer:         d.sess.TracerProvider().Tracer("github.com/laney/modeloff/internal/modelclient"),
+		DefaultErrKind: observability.ErrorKindStore,
+		ClassifyError:  classifyModelclientError,
 	}
 
-	if err := d.dispatchToInstances(ctx, ch, historyEvents, newEvents, d.ensure); err != nil {
-		setSpanError(span, err, observability.ErrorKindDispatch)
-		return err
-	}
+	return runner.Run(ctx, "modelclient.dispatch_to_channel", nil, func(ctx context.Context, _ trace.Span) error {
+		historyEvents, err := d.sess.EventsBefore(ctx, ch, nil, 500)
+		if err != nil {
+			return fmt.Errorf("list history: %w", err)
+		}
 
-	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
+		if err := d.dispatchToInstances(ctx, ch, historyEvents, newEvents, d.ensure); err != nil {
+			return errWithKind(err, observability.ErrorKindDispatch)
+		}
 
-	return nil
+		return nil
+	})
 }
 
 func (d *Dispatcher) dispatchToInstances(
@@ -150,92 +147,87 @@ func dispatchToInstance(
 ) error {
 	nick := inst.Nick()
 
-	tracer := sess.TracerProvider().Tracer("github.com/laney/modeloff/internal/modelclient")
-	ctx, instanceSpan := tracer.Start(
-		ctx,
-		"modelclient.dispatch_to_instance",
-		trace.WithAttributes(
-			attribute.String(observability.AttrOperation, "modelclient.dispatch_to_instance"),
-			attribute.String(observability.AttrModelID, string(inst.ModelID)),
-			attribute.String(observability.AttrNick, string(nick)),
-			attribute.String(observability.AttrInstanceID, string(inst.ID())),
-			attribute.String(observability.AttrChannelKind, channelKindName(window.Kind())),
-		),
-	)
-	defer instanceSpan.End()
-
-	var joinedAt time.Time
-	if channels := inst.Channels(); channels != nil {
-		joinedAt, _ = channels.Get(channelName)
+	runner := observability.SpanRunner{
+		Tracer:         sess.TracerProvider().Tracer("github.com/laney/modeloff/internal/modelclient"),
+		DefaultErrKind: observability.ErrorKindStore,
+		ClassifyError:  classifyModelclientError,
 	}
 
-	history := make([]protocol.IRCMessage, 0, len(historyEvents))
-	for _, se := range historyEvents {
-		if !se.Event.ModelVisible() {
-			continue
+	attrs := []attribute.KeyValue{
+		attribute.String(observability.AttrModelID, string(inst.ModelID)),
+		attribute.String(observability.AttrNick, string(nick)),
+		attribute.String(observability.AttrInstanceID, string(inst.ID())),
+		attribute.String(observability.AttrChannelKind, channelKindName(window.Kind())),
+	}
+
+	return runner.Run(ctx, "modelclient.dispatch_to_instance", attrs, func(ctx context.Context, span trace.Span) error {
+		var joinedAt time.Time
+		if channels := inst.Channels(); channels != nil {
+			joinedAt, _ = channels.Get(channelName)
 		}
 
-		eventTime := domain.EventTime(se.Event)
-		if !joinedAt.IsZero() && eventTime.Before(joinedAt) {
-			continue
+		history := make([]protocol.IRCMessage, 0, len(historyEvents))
+		for _, se := range historyEvents {
+			if !se.Event.ModelVisible() {
+				continue
+			}
+
+			eventTime := domain.EventTime(se.Event)
+			if !joinedAt.IsZero() && eventTime.Before(joinedAt) {
+				continue
+			}
+
+			if msg, ok := protocol.FromChannelEvent(se.Event); ok {
+				history = append(history, msg)
+			}
 		}
 
-		if msg, ok := protocol.FromChannelEvent(se.Event); ok {
-			history = append(history, msg)
+		if err := ensure(ctx, inst.ModelID); err != nil {
+			return errWithKind(fmt.Errorf("send events to %s: %w", nick, err), classifyEnsureModelError(err))
 		}
-	}
 
-	if err := ensure(ctx, inst.ModelID); err != nil {
-		setSpanError(instanceSpan, err, classifyEnsureModelError(err))
-		return fmt.Errorf("send events to %s: %w", nick, err)
-	}
+		memories, err := memoriesForInstance(ctx, memStore, inst.ID())
+		if err != nil {
+			return fmt.Errorf("read memories for %s: %w", nick, err)
+		}
 
-	memories, err := memoriesForInstance(ctx, memStore, inst.ID())
-	if err != nil {
-		instanceSpan.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		instanceSpan.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("read memories for %s: %w", nick, err)
-	}
+		prompt := buildSystemPrompt(window, inst, memories)
 
-	prompt := buildSystemPrompt(window, inst, memories)
+		var mem MemoryExecutor
+		if memStore != nil {
+			mem = &instanceMemory{instanceID: inst.ID(), store: memStore}
+		}
 
-	var mem MemoryExecutor
-	if memStore != nil {
-		mem = &instanceMemory{instanceID: inst.ID(), store: memStore}
-	}
+		registry := MergeToolRegistries(
+			memoryToolRegistry(mem, memStore != nil && searchEnabled(memStore)),
+			tools,
+		)
 
-	registry := MergeToolRegistries(
-		memoryToolRegistry(mem, memStore != nil && searchEnabled(memStore)),
-		tools,
-	)
+		outcome, err := runTurn(ctx, apiClient, sess, caller, inst, channelName, prompt, history, events, registry, pacer)
+		if err != nil {
+			return errWithKind(
+				fmt.Errorf("send events to %s: %w", nick, err),
+				observability.ErrorKindDispatch,
+			)
+		}
 
-	outcome, err := runTurn(ctx, apiClient, sess, caller, inst, channelName, prompt, history, events, registry, pacer)
-	if err != nil {
-		instanceSpan.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-		instanceSpan.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("send events to %s: %w", nick, err)
-	}
+		span.SetAttributes(attribute.Int(observability.AttrToolTurnCount, outcome.toolTurnCount))
+		if outcome.passReason != "" {
+			span.SetAttributes(attribute.String(observability.AttrPassReason, outcome.passReason))
+		}
 
-	instanceAttrs := []attribute.KeyValue{
-		attribute.String(observability.AttrResult, observability.ResultOK),
-		attribute.Int(observability.AttrToolTurnCount, outcome.toolTurnCount),
-	}
-	if outcome.passReason != "" {
-		instanceAttrs = append(instanceAttrs, attribute.String(observability.AttrPassReason, outcome.passReason))
-	}
-	instanceSpan.SetAttributes(instanceAttrs...)
+		slog.Default().With("component", "modelclient").InfoContext(ctx, "dispatch to instance",
+			"channel", channelName,
+			"nick", nick,
+			"model_id", inst.ModelID,
+			"trigger_count", len(events),
+			"trigger_summary", triggerSummary(events),
+			"tool_turns", outcome.toolTurnCount,
+			"pass_reason", outcome.passReason,
+		)
 
-	slog.Default().With("component", "modelclient").InfoContext(ctx, "dispatch to instance",
-		"channel", channelName,
-		"nick", nick,
-		"model_id", inst.ModelID,
-		"trigger_count", len(events),
-		"trigger_summary", triggerSummary(events),
-		"tool_turns", outcome.toolTurnCount,
-		"pass_reason", outcome.passReason,
-	)
-
-	return nil
+		return nil
+	})
 }
 
 // triggerSummary formats trigger events as a short description string.
