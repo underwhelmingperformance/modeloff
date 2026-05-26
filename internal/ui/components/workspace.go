@@ -466,6 +466,7 @@ func (w ChatWorkspace[C]) renderMetricsPane(width, height int) string {
 
 func renderLogEntries(entries []observability.PanelEntry, width int, format *string, locale language.Tag) []string {
 	lines := make([]string, 0, len(entries))
+	lineStyle := lipgloss.NewStyle().Width(width)
 
 	for _, entry := range entries {
 		parts := []string{renderLogLevel(entry.Level)}
@@ -490,7 +491,7 @@ func renderLogEntries(entries []observability.PanelEntry, width int, format *str
 		}
 
 		line := strings.Join(parts, " ")
-		lines = append(lines, lipgloss.NewStyle().Width(width).Render(line))
+		lines = append(lines, lineStyle.Render(line))
 	}
 
 	return lines
