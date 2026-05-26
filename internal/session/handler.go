@@ -6,6 +6,8 @@ import (
 	"fmt"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/observability"
@@ -28,23 +30,44 @@ import (
 // `Response.Err` are tagged with `AttrErrorKind=validation`; a
 // non-nil second return is tagged with `ErrorKindDispatch` since
 // the underlying child span carries the finer-grained kind.
-func (s *Session) Handle(ctx context.Context, c protocol.Client, cmd protocol.Command) (resp protocol.Response, retErr error) {
-	ctx, span := s.startSpan(ctx, "session.handle",
-		attribute.String(observability.AttrOperation, "session.handle"),
+func (s *Session) Handle(ctx context.Context, c protocol.Client, cmd protocol.Command) (protocol.Response, error) {
+	var resp protocol.Response
+
+	err := (observability.SpanRunner{
+		Tracer:       s.tracerProvider.Tracer("github.com/laney/modeloff/internal/session"),
+		ManualResult: true,
+	}).Run(ctx, "session.handle", []attribute.KeyValue{
 		attribute.String("protocol.command", cmd.Name()),
-	)
-	defer func() {
+	}, func(ctx context.Context, span trace.Span) error {
+		r, dispatchErr := s.dispatchCommand(ctx, c, cmd)
+		resp = r
+
 		switch {
-		case retErr != nil:
-			setSpanError(span, retErr, observability.ErrorKindDispatch)
+		case dispatchErr != nil:
+			span.SetAttributes(
+				attribute.String(observability.AttrResult, observability.ResultError),
+				attribute.String(observability.AttrErrorKind, observability.ErrorKindDispatch),
+			)
 		case resp.Err != nil:
-			setSpanError(span, resp.Err, observability.ErrorKindValidation)
+			span.SetAttributes(
+				attribute.String(observability.AttrResult, observability.ResultError),
+				attribute.String(observability.AttrErrorKind, observability.ErrorKindValidation),
+			)
+			span.SetStatus(codes.Error, resp.Err.Error())
 		default:
 			span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 		}
-		span.End()
-	}()
 
+		return dispatchErr
+	})
+
+	return resp, err
+}
+
+// dispatchCommand routes a [protocol.Command] to its per-command
+// handler. Split out from [Session.Handle] so the span-bracketing
+// runner sees the dispatch's `(resp, err)` shape on a single call.
+func (s *Session) dispatchCommand(ctx context.Context, c protocol.Client, cmd protocol.Command) (protocol.Response, error) {
 	switch cmd := cmd.(type) {
 	case protocol.Join:
 		return s.handleJoin(ctx, c, cmd)

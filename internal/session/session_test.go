@@ -1067,7 +1067,8 @@ func TestSession_Connect_is_idempotent(t *testing.T) {
 		}
 
 		// The no-op second call records no span: it short-circuits before
-		// startSpan so session.connect counts reflect real attempts only.
+		// the span-bracketing runner so session.connect counts reflect
+		// real attempts only.
 		var connectSpans int
 		for _, span := range recorder.Ended() {
 			if span.Name() == "session.connect" {

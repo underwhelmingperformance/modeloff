@@ -17,7 +17,6 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
@@ -610,21 +609,20 @@ func (s *Session) ConnectedAt() time.Time {
 // Shutdown returns `ctx.Err()` if `ctx` is cancelled before the
 // gate close completes; otherwise nil. Safe to call more than
 // once via `sync.Once` on the gate.
-func (s *Session) Shutdown(ctx context.Context) (retErr error) {
-	_, span := s.startSpan(ctx, "session.shutdown",
-		attribute.String(observability.AttrOperation, "session.shutdown"),
-	)
-	defer endSpan(span, &retErr, "")
+func (s *Session) Shutdown(ctx context.Context) error {
+	return observability.SpanRunner{
+		Tracer: s.tracerProvider.Tracer("github.com/laney/modeloff/internal/session"),
+	}.Run(ctx, "session.shutdown", nil, func(ctx context.Context, _ trace.Span) error {
+		s.subsMu.Lock()
+		s.shuttingDownOnce.Do(func() { close(s.shuttingDown) })
+		s.subsMu.Unlock()
 
-	s.subsMu.Lock()
-	s.shuttingDownOnce.Do(func() { close(s.shuttingDown) })
-	s.subsMu.Unlock()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	return nil
+		return nil
+	})
 }
 
 // Connect performs the backend-side connection handshake. It must be
@@ -649,7 +647,7 @@ func (s *Session) Shutdown(ctx context.Context) (retErr error) {
 // constructs its own local view of the server window and renders
 // the emitted events into it; the connection screen subscribes to
 // the same bus during its boot-time pane.
-func (s *Session) Connect(ctx context.Context) (retErr error) {
+func (s *Session) Connect(ctx context.Context) error {
 	if !s.connectedAt.IsZero() {
 		// No span is recorded for a no-op call: it is not a real
 		// connect attempt and would otherwise inflate
@@ -657,47 +655,44 @@ func (s *Session) Connect(ctx context.Context) (retErr error) {
 		return nil
 	}
 
-	ctx, span := s.startSpan(ctx, "session.connect",
-		attribute.String(observability.AttrOperation, "session.connect"),
-	)
-	defer endSpan(span, &retErr, observability.ErrorKindStore)
+	return s.inSpan(ctx, "session.connect", nil, func(ctx context.Context, _ trace.Span) error {
+		s.connectedAt = s.now()
 
-	s.connectedAt = s.now()
-
-	prev, err := s.store.GetSessionActive(ctx)
-	if err != nil {
-		return fmt.Errorf("get session active: %w", err)
-	}
-
-	unclean := prev != ""
-	if unclean {
-		if err := s.cleanupUncleanShutdown(ctx); err != nil {
-			return fmt.Errorf("cleanup unclean shutdown: %w", err)
+		prev, err := s.store.GetSessionActive(ctx)
+		if err != nil {
+			return fmt.Errorf("get session active: %w", err)
 		}
-	}
 
-	if err := s.store.SetSessionActive(ctx, s.connectedAt.UTC().Format(time.RFC3339Nano)); err != nil {
-		return fmt.Errorf("set session active: %w", err)
-	}
+		unclean := prev != ""
+		if unclean {
+			if err := s.cleanupUncleanShutdown(ctx); err != nil {
+				return fmt.Errorf("cleanup unclean shutdown: %w", err)
+			}
+		}
 
-	welcomeNick := domain.Nick("")
-	if user := s.userInstance(); user != nil {
-		welcomeNick = user.Nick()
-	}
+		if err := s.store.SetSessionActive(ctx, s.connectedAt.UTC().Format(time.RFC3339Nano)); err != nil {
+			return fmt.Errorf("set session active: %w", err)
+		}
 
-	s.emit(ctx, domain.Welcome{
-		ServerName: domain.StatusServerName,
-		Nick:       welcomeNick,
-		At:         s.connectedAt,
+		welcomeNick := domain.Nick("")
+		if user := s.userInstance(); user != nil {
+			welcomeNick = user.Nick()
+		}
+
+		s.emit(ctx, domain.Welcome{
+			ServerName: domain.StatusServerName,
+			Nick:       welcomeNick,
+			At:         s.connectedAt,
+		})
+
+		if unclean {
+			s.emit(ctx, domain.Reconnected{At: s.connectedAt})
+		}
+
+		s.connectedOnce.Do(func() { close(s.connectedC) })
+
+		return nil
 	})
-
-	if unclean {
-		s.emit(ctx, domain.Reconnected{At: s.connectedAt})
-	}
-
-	s.connectedOnce.Do(func() { close(s.connectedC) })
-
-	return nil
 }
 
 // setUserMode records the user's mode for a channel. It is called
@@ -1058,58 +1053,55 @@ func (s *Session) ResolveNick(ctx context.Context, nick domain.Nick) (*domain.In
 // for remote models to acknowledge the quit. The call is synchronous
 // but fast (local sqlite writes only); the UI wraps it in a tea.Cmd
 // to keep the event loop responsive.
-func (s *Session) userQuit(ctx context.Context, message string) (retErr error) {
-	ctx, span := s.startSpan(ctx, "session.quit",
-		attribute.String(observability.AttrOperation, "session.quit"),
-	)
-	defer endSpan(span, &retErr, observability.ErrorKindStore)
-
-	user := s.userInstance()
-	if user == nil {
-		return fmt.Errorf("user-client not registered with this session")
-	}
-
-	autojoin := s.persistableAutojoinChannels()
-
-	userNick := user.Nick()
-	channels := s.instanceChannelNames(user)
-	now := s.now()
-
-	// Order matters for crash-resilience: append per-channel quit events
-	// and drop the user from the members list first, persist the
-	// autojoin list second, clear in-memory state third, and clear the
-	// session_active marker last. A crash between any of the earlier
-	// steps leaves the next startup classified as unclean, at which
-	// point cleanupUncleanShutdown handles any residual memberships.
-	s.propagateActorEvent(ctx, user, actorEventConfig{
-		storeOnly: true,
-		build: func() broadcastEvent {
-			return domain.Quit{
-				Nick:    userNick,
-				Message: message,
-				At:      now,
-			}
-		},
-		afterEach: func(ctx context.Context, ch domain.ChannelName) {
-			s.forgetUserMode(ctx, ch)
-		},
-	})
-
-	if err := s.store.SetAutojoinChannels(ctx, autojoin); err != nil {
-		return fmt.Errorf("save autojoin channels: %w", err)
-	}
-
-	user.MutateChannels(func(m *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
-		for _, ch := range channels {
-			m.Delete(ch)
+func (s *Session) userQuit(ctx context.Context, message string) error {
+	return s.inSpan(ctx, "session.quit", nil, func(ctx context.Context, _ trace.Span) error {
+		user := s.userInstance()
+		if user == nil {
+			return fmt.Errorf("user-client not registered with this session")
 		}
+
+		autojoin := s.persistableAutojoinChannels()
+
+		userNick := user.Nick()
+		channels := s.instanceChannelNames(user)
+		now := s.now()
+
+		// Order matters for crash-resilience: append per-channel quit events
+		// and drop the user from the members list first, persist the
+		// autojoin list second, clear in-memory state third, and clear the
+		// session_active marker last. A crash between any of the earlier
+		// steps leaves the next startup classified as unclean, at which
+		// point cleanupUncleanShutdown handles any residual memberships.
+		s.propagateActorEvent(ctx, user, actorEventConfig{
+			storeOnly: true,
+			build: func() broadcastEvent {
+				return domain.Quit{
+					Nick:    userNick,
+					Message: message,
+					At:      now,
+				}
+			},
+			afterEach: func(ctx context.Context, ch domain.ChannelName) {
+				s.forgetUserMode(ctx, ch)
+			},
+		})
+
+		if err := s.store.SetAutojoinChannels(ctx, autojoin); err != nil {
+			return fmt.Errorf("save autojoin channels: %w", err)
+		}
+
+		user.MutateChannels(func(m *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
+			for _, ch := range channels {
+				m.Delete(ch)
+			}
+		})
+
+		if err := s.store.ClearSessionActive(ctx); err != nil {
+			return fmt.Errorf("clear session active: %w", err)
+		}
+
+		return nil
 	})
-
-	if err := s.store.ClearSessionActive(ctx); err != nil {
-		return fmt.Errorf("clear session active: %w", err)
-	}
-
-	return nil
 }
 
 // DirectoryChannels returns the public channel directory for
@@ -1117,47 +1109,48 @@ func (s *Session) userQuit(ctx context.Context, message string) (retErr error) {
 // status window are not in the directory. The returned entries
 // are snapshots of name, member count, and topic; callers turn
 // them into per-row `domain.ListReply` events themselves.
-func (s *Session) DirectoryChannels(ctx context.Context) (_ []domain.ChannelDirectoryEntry, retErr error) {
-	ctx, span := s.startSpan(ctx, "session.directory_channels",
-		attribute.String(observability.AttrOperation, "session.directory_channels"),
-	)
-	defer endSpan(span, &retErr, observability.ErrorKindStore)
+func (s *Session) DirectoryChannels(ctx context.Context) ([]domain.ChannelDirectoryEntry, error) {
+	var entries []domain.ChannelDirectoryEntry
 
-	windows, err := s.store.ListWindows(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("list windows: %w", err)
-	}
-
-	entries := make([]domain.ChannelDirectoryEntry, 0, len(windows))
-	for _, w := range windows {
-		cw, ok := w.(*domain.ChannelWindow)
-		if !ok {
-			continue
+	err := s.inSpan(ctx, "session.directory_channels", nil, func(ctx context.Context, span trace.Span) error {
+		windows, err := s.store.ListWindows(ctx)
+		if err != nil {
+			return fmt.Errorf("list windows: %w", err)
 		}
 
-		// `+s` channels are hidden from the directory entirely
-		// (RFC 2811 §4.2.7). `+p` channels appear but with their
-		// topic suppressed (§4.2.6) — the channel name itself
-		// stays visible.
-		if cw.Modes.Secret {
-			continue
+		entries = make([]domain.ChannelDirectoryEntry, 0, len(windows))
+		for _, w := range windows {
+			cw, ok := w.(*domain.ChannelWindow)
+			if !ok {
+				continue
+			}
+
+			// `+s` channels are hidden from the directory entirely
+			// (RFC 2811 §4.2.7). `+p` channels appear but with their
+			// topic suppressed (§4.2.6) — the channel name itself
+			// stays visible.
+			if cw.Modes.Secret {
+				continue
+			}
+
+			topic := cw.Topic
+			if cw.Modes.Private {
+				topic = ""
+			}
+
+			entries = append(entries, domain.ChannelDirectoryEntry{
+				Channel: cw.Name(),
+				Members: cw.Members.Len(),
+				Topic:   topic,
+			})
 		}
 
-		topic := cw.Topic
-		if cw.Modes.Private {
-			topic = ""
-		}
+		span.SetAttributes(attribute.Int("directory.entry_count", len(entries)))
 
-		entries = append(entries, domain.ChannelDirectoryEntry{
-			Channel: cw.Name(),
-			Members: cw.Members.Len(),
-			Topic:   topic,
-		})
-	}
+		return nil
+	})
 
-	span.SetAttributes(attribute.Int("directory.entry_count", len(entries)))
-
-	return entries, nil
+	return entries, err
 }
 
 // ChannelWindowNames returns the names of every addressable
@@ -1165,27 +1158,28 @@ func (s *Session) DirectoryChannels(ctx context.Context) (_ []domain.ChannelDire
 // order. Unlike [Session.DirectoryChannels] no mode-visibility
 // filter is applied — the user-client's poke fans across every
 // channel the session knows about, including `+s` (secret) ones.
-func (s *Session) ChannelWindowNames(ctx context.Context) (_ []domain.ChannelName, retErr error) {
-	ctx, span := s.startSpan(ctx, "session.channel_window_names",
-		attribute.String(observability.AttrOperation, "session.channel_window_names"),
-	)
-	defer endSpan(span, &retErr, observability.ErrorKindStore)
+func (s *Session) ChannelWindowNames(ctx context.Context) ([]domain.ChannelName, error) {
+	var names []domain.ChannelName
 
-	windows, err := s.store.ListWindows(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("list windows: %w", err)
-	}
-
-	names := make([]domain.ChannelName, 0, len(windows))
-	for _, w := range windows {
-		if _, ok := w.(*domain.ChannelWindow); !ok {
-			continue
+	err := s.inSpan(ctx, "session.channel_window_names", nil, func(ctx context.Context, _ trace.Span) error {
+		windows, err := s.store.ListWindows(ctx)
+		if err != nil {
+			return fmt.Errorf("list windows: %w", err)
 		}
 
-		names = append(names, w.Name())
-	}
+		names = make([]domain.ChannelName, 0, len(windows))
+		for _, w := range windows {
+			if _, ok := w.(*domain.ChannelWindow); !ok {
+				continue
+			}
 
-	return names, nil
+			names = append(names, w.Name())
+		}
+
+		return nil
+	})
+
+	return names, err
 }
 
 // Instances returns an iterator over every known model instance.
@@ -1235,58 +1229,61 @@ func (s *Session) GetWindow(ctx context.Context, name domain.ChannelName) (domai
 // joined channel from appearing with the joiner's own arrival as
 // "unread". The user-client calls into the store directly for
 // `/mark-read`-style affordances.
-func (s *Session) markRead(ctx context.Context, ch domain.ChannelName) (retErr error) {
-	ctx, span := s.startSpan(ctx, "session.mark_read",
-		attribute.String(observability.AttrOperation, "session.mark_read"),
+func (s *Session) markRead(ctx context.Context, ch domain.ChannelName) error {
+	return s.inSpan(ctx, "session.mark_read", []attribute.KeyValue{
 		attribute.String(observability.AttrChannel, string(ch)),
-	)
-	defer endSpan(span, &retErr, observability.ErrorKindStore)
+	}, func(ctx context.Context, _ trace.Span) error {
+		events, err := s.store.EventsBefore(ctx, ch, nil, 1)
+		if err != nil {
+			return fmt.Errorf("get latest event: %w", err)
+		}
 
-	events, err := s.store.EventsBefore(ctx, ch, nil, 1)
-	if err != nil {
-		return fmt.Errorf("get latest event: %w", err)
-	}
+		if len(events) == 0 {
+			return nil
+		}
 
-	if len(events) == 0 {
-		return nil
-	}
-
-	return s.store.SetLastRead(ctx, ch, events[0].ID)
+		return s.store.SetLastRead(ctx, ch, events[0].ID)
+	})
 }
 
 // UnreadCount returns the number of events in a channel that arrived
 // after the last-read position.
-func (s *Session) UnreadCount(ctx context.Context, ch domain.ChannelName) (count int, retErr error) {
-	ctx, span := s.startSpan(ctx, "session.unread_count",
-		attribute.String(observability.AttrOperation, "session.unread_count"),
+func (s *Session) UnreadCount(ctx context.Context, ch domain.ChannelName) (int, error) {
+	var count int
+
+	err := s.inSpan(ctx, "session.unread_count", []attribute.KeyValue{
 		attribute.String(observability.AttrChannel, string(ch)),
-	)
-	defer func() {
-		span.SetAttributes(attribute.Int("unread.count", count))
-		endSpan(span, &retErr, observability.ErrorKindStore)
-	}()
+	}, func(ctx context.Context, span trace.Span) error {
+		defer func() {
+			span.SetAttributes(attribute.Int("unread.count", count))
+		}()
 
-	lastID, err := s.store.GetLastRead(ctx, ch)
-	if err != nil {
-		return 0, fmt.Errorf("get last read: %w", err)
-	}
-
-	if lastID == 0 {
-		events, err := s.store.EventsBefore(ctx, ch, nil, 1000)
+		lastID, err := s.store.GetLastRead(ctx, ch)
 		if err != nil {
-			return 0, err
+			return fmt.Errorf("get last read: %w", err)
 		}
 
-		return len(events), nil
-	}
+		if lastID == 0 {
+			events, err := s.store.EventsBefore(ctx, ch, nil, 1000)
+			if err != nil {
+				return err
+			}
 
-	fromID := lastID + 1
-	events, err := s.store.EventsFrom(ctx, ch, &fromID, 1000)
-	if err != nil {
-		return 0, err
-	}
+			count = len(events)
+			return nil
+		}
 
-	return len(events), nil
+		fromID := lastID + 1
+		events, err := s.store.EventsFrom(ctx, ch, &fromID, 1000)
+		if err != nil {
+			return err
+		}
+
+		count = len(events)
+		return nil
+	})
+
+	return count, err
 }
 
 // instanceChannelNames returns the list of channels an instance is in.
@@ -1309,30 +1306,34 @@ func (s *Session) instanceChannelNames(inst *domain.Instance) []domain.ChannelNa
 // after the given cutoff, in chronological order. The status pane
 // uses this to render the per-session view of the status channel
 // without showing previous sessions' entries.
-func (s *Session) EventsAfter(ctx context.Context, ch domain.ChannelName, after time.Time) (_ []domain.StoredEvent, retErr error) {
-	ctx, span := s.startSpan(ctx, "session.events_after",
-		attribute.String(observability.AttrOperation, "session.events_after"),
+func (s *Session) EventsAfter(ctx context.Context, ch domain.ChannelName, after time.Time) ([]domain.StoredEvent, error) {
+	var out []domain.StoredEvent
+
+	err := s.inSpan(ctx, "session.events_after", []attribute.KeyValue{
 		attribute.String(observability.AttrChannel, string(ch)),
-	)
-	defer endSpan(span, &retErr, observability.ErrorKindStore)
-
-	events, err := s.store.EventsBefore(ctx, ch, nil, 500)
-	if err != nil {
-		return nil, err
-	}
-
-	if after.IsZero() {
-		return events, nil
-	}
-
-	filtered := events[:0]
-	for _, evt := range events {
-		if !domain.EventTime(evt.Event).Before(after) {
-			filtered = append(filtered, evt)
+	}, func(ctx context.Context, _ trace.Span) error {
+		events, err := s.store.EventsBefore(ctx, ch, nil, 500)
+		if err != nil {
+			return err
 		}
-	}
 
-	return filtered, nil
+		if after.IsZero() {
+			out = events
+			return nil
+		}
+
+		filtered := events[:0]
+		for _, evt := range events {
+			if !domain.EventTime(evt.Event).Before(after) {
+				filtered = append(filtered, evt)
+			}
+		}
+
+		out = filtered
+		return nil
+	})
+
+	return out, err
 }
 
 // EventsBefore returns up to n events before the given ID (or the
@@ -1520,62 +1521,35 @@ func (s *Session) recordPersistenceFailure(ctx context.Context, ch domain.Channe
 	}
 }
 
-// startSpan opens an OTel span on the session's configured tracer
-// provider. Using the per-session provider — rather than the global
-// — lets tests scope span recordings to their own
-// `tracetest.SpanRecorder` even when dispatch goroutines outlive
-// the test that spawned them.
-func (s *Session) startSpan(ctx context.Context, name string, attrs ...attribute.KeyValue) (context.Context, trace.Span) {
-	tracer := s.tracerProvider.Tracer("github.com/laney/modeloff/internal/session")
-	ctx, span := tracer.Start(ctx, name)
-	span.SetAttributes(attrs...)
-
-	return ctx, span
+// inSpan brackets fn with a span and result-recording on the
+// session's tracer provider. The fallback error kind is
+// [observability.ErrorKindStore] — most session operations are
+// persistence-backed. Sites that need to override (e.g. validation
+// refusals) wrap their returned error with [errWithKind], which the
+// classifier here unwraps.
+func (s *Session) inSpan(
+	ctx context.Context,
+	op string,
+	attrs []attribute.KeyValue,
+	fn func(ctx context.Context, span trace.Span) error,
+) error {
+	return observability.SpanRunner{
+		Tracer:         s.tracerProvider.Tracer("github.com/laney/modeloff/internal/session"),
+		DefaultErrKind: observability.ErrorKindStore,
+		ClassifyError:  classifySessionError,
+	}.Run(ctx, op, attrs, fn)
 }
 
-// endSpan finalises the span with ok/error status. The fallback
-// errorKind is attached as AttrErrorKind when the deferred error is
-// non-nil and does not already carry a kind via *kindError (which
-// errWithKind produces and errors.As unwraps here). Pass an empty
-// string when no fallback is meaningful.
-func endSpan(span trace.Span, errPtr *error, errorKind string) {
-	err := *errPtr
-
-	if err == nil {
-		span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
-		span.End()
-		return
-	}
-
-	span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultError))
-
-	kind := errorKind
+func classifySessionError(err error) string {
 	if ke, ok := errors.AsType[*kindError](err); ok {
-		kind = ke.kind
+		return ke.kind
 	}
-
-	if kind != "" {
-		span.SetAttributes(attribute.String(observability.AttrErrorKind, kind))
-	}
-
-	span.SetStatus(codes.Error, err.Error())
-	span.End()
+	return ""
 }
 
-// setSpanError records an error result on the span together with the
-// given error kind. Inline alternative to endSpan for sites where the
-// span is finalised outside a defer.
-func setSpanError(span trace.Span, err error, errorKind string) {
-	span.SetAttributes(
-		attribute.String(observability.AttrResult, observability.ResultError),
-		attribute.String(observability.AttrErrorKind, errorKind),
-	)
-	span.SetStatus(codes.Error, err.Error())
-}
-
-// kindError tags an error with an observability error kind so
-// endSpan can attach AttrErrorKind without every call site having to
-// pass the kind through an auxiliary return value.
+// kindError tags an error with an observability error kind so the
+// span classifier can attach `AttrErrorKind` without every call site
+// having to pass the kind through an auxiliary return value.
 type kindError struct {
 	kind string
 	err  error
