@@ -552,6 +552,13 @@ func TestChatScreen_invite_existing_instance(t *testing.T) {
 	tm.WaitFor("testuser invited fakenick to #random")
 }
 
+func TestChatScreen_invite_unknown_nick_shows_notice(t *testing.T) {
+	tm, _ := newChatAppInChannel(t, "#general")
+
+	tm.Submit("/invite nobody")
+	tm.WaitFor("no such nick: nobody")
+}
+
 func TestChatScreen_kick_command(t *testing.T) {
 	h := newTestSession(t)
 	uitest.SeedChannel(t, h.user, "#general")

@@ -198,12 +198,18 @@ type protocolCommand interface {
 // dispatcher's typed `Response.Err`) it returns a
 // [domain.ErrorEvent] for the chat-screen to render. On success
 // it returns the first event the dispatcher synthesised in
-// `Response.Events` — for `PrivMsg` and `Action` that is the
-// canonical [domain.Message] the session persisted, which the
-// chat-screen renders inline. Commands whose handler does not
-// populate `Response.Events` (Topic, Invite, Kick, Nick, …)
-// return `nil`, leaving the caller to follow up with whatever
-// post-success `tea.Msg` it wants.
+// `Response.Events` — for `PrivMsg` and `Action` the canonical
+// [domain.Message] the session persisted, which the chat-screen
+// renders inline; for `Invite` a [domain.ModelInvited] (or a
+// [domain.SystemNotice] when the target nick is unknown). Commands
+// whose handler does not populate `Response.Events` (Topic, Kick,
+// Nick, …) return `nil`, leaving the caller to follow up with
+// whatever post-success `tea.Msg` it wants.
+//
+// Only `resp.Events[0]` is surfaced, so a handler returning
+// multiple events would lose all but the first; today only `List`
+// produces several, and it uses its own `fetch` path rather than
+// `sendCommand`.
 func sendCommand(ctx context.Context, rc Context, c protocolCommand, operation string) tea.Msg {
 	cmd, err := c.ToCommand(rc)
 	if err != nil {

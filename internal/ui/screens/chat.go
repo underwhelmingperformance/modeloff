@@ -664,6 +664,16 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		s.bufferEvent(msg)
 		return s.handleModelInvitedEvent(msg)
 
+	case domain.SystemNotice:
+		// Command-reply feedback path for the issuing client. A handler
+		// such as `session.handleInvite` returns a `SystemNotice` (for a
+		// failed `/invite`, "no such nick: <target>") in
+		// `protocol.Response.Events`, which `chatcmd.sendCommand` unwraps
+		// as a `tea.Msg`. The session bus does not deliver this notice
+		// back over the protocol feed, so this arm renders it on the
+		// notice's own target channel.
+		return s, s.logAndShowOn(msg.Target, msg)
+
 	case chatcmd.DMOpenedMsg:
 		return s.handleDMOpenedMsg(msg)
 
