@@ -120,9 +120,13 @@ issuing `serverClient`, not as a branch on which kind of client it is.
   channel membership, and the protocol bus through it; user-actor
   convenience methods (`Join`, `Part`, `SendMessage`, `SendAction`,
   `SetTopic`, `ChangeNick`, `Quit`, `JoinAutojoinChannels`,
-  `MarkRead`, `Poke`) construct the appropriate `protocol.X`
-  command (or the equivalent store-side work) and dispatch through
-  `Send`.
+  `MarkRead`) construct the appropriate `protocol.X` command (or the
+  equivalent store-side work) and dispatch through `Send`. The
+  user-client's `Poke` is the exception: poke is not a user action.
+  The automatic schedule is session-owned (`Session.StartPoking`
+  drives a perturbed, configurable cadence that nudges only channels
+  gone quiet since the last cycle, per point 12 above); `Poke` merely
+  relays the optional manual `/poke` to `Session.PokeNow`.
 - A model-client lives in the `internal/modelclient` package. It
   owns the dispatch goroutine, the per-channel history ring buffer
   used for prompt assembly, the memory-tool registry, and a getter

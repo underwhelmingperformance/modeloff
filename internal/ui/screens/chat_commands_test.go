@@ -107,6 +107,7 @@ func TestChatScreen_Commands_specs_are_complete(t *testing.T) {
 		{Name: "regenerate-personas", Help: "Regenerate AI-created personas."},
 		{Name: "help", Help: "Show available commands."},
 		{Name: "clear", Help: "Clear the current window."},
+		{Name: "poke", Help: "Poke idle channels now to prompt model activity."},
 		{Name: "quit", Help: "Exit modeloff."},
 		{Name: "pass", Help: ""},
 	}, specs)
@@ -141,6 +142,7 @@ func TestChatScreen_Commands_exposes_chat_commands(t *testing.T) {
 		"regenerate-personas",
 		"help",
 		"clear",
+		"poke",
 		"quit",
 		"pass",
 	}, names)

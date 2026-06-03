@@ -984,6 +984,16 @@ func (ClearCommand) Run(_ context.Context, _ Context) tea.Cmd {
 	return func() tea.Msg { return ClearResult{} }
 }
 
+// PokeCommand represents `/poke`: a manual nudge that asks the
+// session to poke idle channels now. The automatic schedule is
+// session-owned; this is optional sugar for an on-demand poke.
+type PokeCommand struct{}
+
+// Run implements Command.
+func (PokeCommand) Run(_ context.Context, _ Context) tea.Cmd {
+	return func() tea.Msg { return PokeRequested{} }
+}
+
 // QuitCommand represents `/quit [message]`.
 type QuitCommand struct {
 	Message []string `arg:"" optional:"" nargs:"1" help:"Optional farewell message"`

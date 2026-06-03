@@ -105,7 +105,7 @@ func TestComplete_dm_excludes_channel_only_commands(t *testing.T) {
 		"join", "part", "list", "kill",
 		"msg", "query", "nick", "me", "whois", "config",
 		"personas", "regenerate-personas",
-		"help", "clear", "quit",
+		"help", "clear", "poke", "quit",
 	}, suggestionValues(c))
 }
 
@@ -116,7 +116,7 @@ func TestComplete_channel_includes_all_commands(t *testing.T) {
 		"join", "part", "list", "add-model", "invite", "kick", "kill",
 		"msg", "query", "nick", "topic", "mode", "me", "whois", "config",
 		"personas", "regenerate-personas",
-		"help", "clear", "quit",
+		"help", "clear", "poke", "quit",
 	}, suggestionValues(c))
 }
 
@@ -132,7 +132,7 @@ func TestNewParser_produces_all_commands(t *testing.T) {
 		"join", "part", "list", "add-model", "invite", "kick", "kill",
 		"msg", "query", "nick", "topic", "mode", "me", "whois", "config",
 		"personas", "regenerate-personas",
-		"help", "clear", "quit", "pass",
+		"help", "clear", "poke", "quit", "pass",
 	}, names)
 
 	join := set.Find("join")
@@ -335,6 +335,19 @@ func TestClearCommand_Run_returns_ClearResult(t *testing.T) {
 	c := cmd.Run(t.Context(), Context{})
 	msg := c()
 	require.Equal(t, ClearResult{}, msg)
+}
+
+func TestParse_poke_command(t *testing.T) {
+	cmd, err := testParser.Parse("/poke")
+	require.NoError(t, err)
+	require.Equal(t, PokeCommand{}, cmd)
+}
+
+func TestPokeCommand_Run_returns_PokeRequested(t *testing.T) {
+	cmd := PokeCommand{}
+	c := cmd.Run(t.Context(), Context{})
+	msg := c()
+	require.Equal(t, PokeRequested{}, msg)
 }
 
 func TestParse_config_persona_command(t *testing.T) {

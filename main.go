@@ -3,11 +3,9 @@ package main
 
 import (
 	"context"
-	cryptorand "crypto/rand"
 	"flag"
 	"fmt"
 	"log/slog"
-	"math/big"
 	"os"
 	"os/signal"
 	"syscall"
@@ -135,7 +133,7 @@ func main() {
 		tea.WithContext(appCtx),
 	)
 
-	go runPokeLoop(appCtx, p, cfgStore)
+	sess.StartPoking(appCtx, pokeScheduleFromConfig(cfgStore))
 
 	_, runErr := p.Run()
 
@@ -171,49 +169,18 @@ func loadConfig(ctx context.Context) (config.Config, *config.FileStore, error) {
 	return cfg, cfgStore, nil
 }
 
-func runPokeLoop(ctx context.Context, p *tea.Program, cfgStore config.Store) {
-	for {
+// pokeScheduleFromConfig adapts the persisted config into the
+// session's [session.PokeSchedule]: poking is enabled once an API key
+// is set and the interval is positive, and the live value is re-read
+// each cycle so `/config poke-interval` takes effect without a
+// restart.
+func pokeScheduleFromConfig(cfgStore config.Store) session.PokeSchedule {
+	return func(ctx context.Context) (time.Duration, bool) {
 		cfg, err := cfgStore.Load(ctx)
 		if err != nil || cfg.APIKey == "" || cfg.PokeInterval <= 0 {
-			if !sleepOrDone(ctx, time.Minute) {
-				return
-			}
-
-			continue
+			return 0, false
 		}
 
-		if !sleepOrDone(ctx, perturbDuration(cfg.PokeInterval)) {
-			return
-		}
-
-		p.Send(screens.PokeTickMsg{})
-	}
-}
-
-func perturbDuration(interval time.Duration) time.Duration {
-	delta := interval / 10
-	if delta <= 0 {
-		return interval
-	}
-
-	n, err := cryptorand.Int(cryptorand.Reader, big.NewInt(int64(delta*2)+1))
-	if err != nil {
-		return interval
-	}
-
-	offset := time.Duration(n.Int64()) - delta
-
-	return interval + offset
-}
-
-func sleepOrDone(ctx context.Context, delay time.Duration) bool {
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-
-	select {
-	case <-ctx.Done():
-		return false
-	case <-timer.C:
-		return true
+		return cfg.PokeInterval, true
 	}
 }

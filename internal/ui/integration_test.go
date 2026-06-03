@@ -206,7 +206,7 @@ func TestApp_periodic_poke_generates_message(t *testing.T) {
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen))
 	tm.WaitFor("#general")
 
-	tm.Send(screens.PokeTickMsg{})
+	tm.Send(chatcmd.PokeRequested{})
 	tm.WaitFor("still alive")
 }
 

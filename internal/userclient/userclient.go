@@ -44,23 +44,13 @@ type Session interface {
 	// Handle is the wire dispatcher's entry point.
 	Handle(ctx context.Context, c protocol.Client, cmd protocol.Command) (protocol.Response, error)
 
-	// Emit fans out a [domain.ProtocolEvent] on the per-subscription
-	// bus.
-	Emit(ctx context.Context, evt domain.ProtocolEvent)
-
 	// GetWindow retrieves an addressable window by name.
 	GetWindow(ctx context.Context, name domain.ChannelName) (domain.Window, error)
 
-	// ChannelWindowNames returns the names of every addressable
-	// `*ChannelWindow` known to the session, regardless of mode
-	// visibility. The user-client uses it to fan a poke across
-	// every model-bearing channel.
-	ChannelWindowNames(ctx context.Context) ([]domain.ChannelName, error)
-
-	// Now returns the session's current time. Tests inject a stub
-	// clock at the session boundary; the user-client reads through
-	// here so its event timestamps stay aligned.
-	Now() time.Time
+	// PokeNow asks the session to run an immediate poke pass over
+	// every channel. The session owns the poke schedule and the bus
+	// emission; the user-client only relays a manual request.
+	PokeNow(ctx context.Context) error
 }
 
 // Store is the persistence surface a [UserClient] needs. It is the
@@ -327,33 +317,12 @@ func (uc *UserClient) MarkRead(ctx context.Context, ch domain.ChannelName) error
 	return uc.store.SetLastRead(ctx, ch, events[0].ID)
 }
 
-// Poke fans a [domain.PokeEvent] on every channel in the session.
-// Models subscribed to a channel use the event as a cue to take a
+// Poke asks the session to run an immediate poke pass over every
+// channel. The session owns the schedule and the bus emission.
+// Models subscribed to a channel use the poke as a cue to take a
 // dispatch turn even when there has been no recent traffic.
 func (uc *UserClient) Poke(ctx context.Context) error {
-	tracer := otel.GetTracerProvider().Tracer("github.com/laney/modeloff/internal/userclient")
-	ctx, span := tracer.Start(ctx, "userclient.poke",
-		trace.WithAttributes(attribute.String(observability.AttrOperation, "userclient.poke")),
-	)
-	defer span.End()
-
-	channels, err := uc.sess.ChannelWindowNames(ctx)
-	if err != nil {
-		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("list channels: %w", err)
-	}
-
-	now := uc.sess.Now()
-	for _, ch := range channels {
-		uc.sess.Emit(ctx, domain.PokeEvent{
-			Channel: ch,
-			At:      now,
-		})
-	}
-
-	span.SetAttributes(attribute.Int("poke.channels", len(channels)))
-
-	return nil
+	return uc.sess.PokeNow(ctx)
 }
 
 // firstErr returns the first non-nil error of `transport` and

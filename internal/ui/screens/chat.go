@@ -87,9 +87,6 @@ type UIStateStore interface {
 
 type logsUpdatedMsg struct{}
 
-// PokeTickMsg triggers a background poke cycle for model instances.
-type PokeTickMsg struct{}
-
 // ChatScreen is the main screen that composes Sidebar, ChatView, and
 // MainLayout. It holds a reference to the session for backend
 // operations. The `baseContext` supplier mirrors [net/http.Server.BaseContext]
@@ -442,6 +439,9 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		}
 		return s, nil
 
+	case chatcmd.PokeRequested:
+		return s, s.handlePoke()
+
 	case chatcmd.TopicInfoResult:
 		return s, s.logAndShow(domain.TopicInfo{
 			Target:     msg.Window.Name(),
@@ -698,9 +698,6 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 	case deliverNextPacedMsg:
 		return s.deliverNextPaced(msg)
-
-	case PokeTickMsg:
-		return s, s.handlePoke()
 
 	case components.ChannelSelectedMsg:
 		return s, s.switchChannel(msg.Channel)

@@ -65,6 +65,8 @@ func (s *Session) subscriberSnapshot() []*serverClient {
 // blocked send aborts when shutdown begins, even if its target
 // dispatch goroutine has already exited.
 func (s *Session) fanOutProtocol(ctx context.Context, pe domain.ProtocolEvent) {
+	s.noteChatActivity(pe)
+
 	suppressOriginator, sender := chatTrafficSender(pe)
 	spanCtx := trace.SpanContextFromContext(ctx)
 

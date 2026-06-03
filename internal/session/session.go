@@ -180,6 +180,13 @@ type Session struct {
 	// span recordings stay scoped to a single test even when
 	// dispatch goroutines outlive the test that spawned them.
 	tracerProvider trace.TracerProvider
+
+	// activeChannels records which channel windows have seen chat
+	// traffic since the poke scheduler last drained the set. The
+	// scheduler skips active channels so it nudges only windows that
+	// have genuinely gone quiet (AGENTS.md point 12).
+	activeMu       sync.Mutex
+	activeChannels map[domain.ChannelName]struct{}
 }
 
 // New creates a Session whose dispatch goroutines derive their
@@ -227,6 +234,7 @@ func New(
 		shuttingDown:        make(chan struct{}),
 		modelClientFactory:  factory,
 		operAuth:            DefaultOperAuthenticator,
+		activeChannels:      make(map[domain.ChannelName]struct{}),
 	}
 }
 
@@ -743,7 +751,7 @@ func (s *Session) DirectoryChannels(ctx context.Context) ([]domain.ChannelDirect
 // ChannelWindowNames returns the names of every addressable
 // `*ChannelWindow` known to the session, in store-iteration
 // order. Unlike [Session.DirectoryChannels] no mode-visibility
-// filter is applied — the user-client's poke fans across every
+// filter is applied — the session's poke scheduler fans across every
 // channel the session knows about, including `+s` (secret) ones.
 func (s *Session) ChannelWindowNames(ctx context.Context) ([]domain.ChannelName, error) {
 	var names []domain.ChannelName

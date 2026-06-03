@@ -183,23 +183,12 @@ func userChangeNick(ctx context.Context, t testing.TB, sess *Session, newNick do
 	return sess.changeNickAs(ctx, userInstance(t, sess), newNick)
 }
 
-// userPoke mirrors what the production user-client's [Poke] does:
-// iterate every addressable channel-window known to the session
-// and emit a [domain.PokeEvent] for it.
+// userPoke runs a manual poke pass over every channel — the same
+// operation the `/poke` command triggers through the session.
 func userPoke(ctx context.Context, t testing.TB, sess *Session) error {
 	t.Helper()
 
-	channels, err := sess.ChannelWindowNames(ctx)
-	if err != nil {
-		return err
-	}
-
-	now := sess.now()
-	for _, ch := range channels {
-		sess.Emit(ctx, domain.PokeEvent{Channel: ch, At: now})
-	}
-
-	return nil
+	return sess.PokeNow(ctx)
 }
 
 // userJoinAutojoinChannels mirrors the user-client side autojoin

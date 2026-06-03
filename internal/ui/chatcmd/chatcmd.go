@@ -67,6 +67,11 @@ type HelpResult struct{}
 // ClearResult signals that the current window should be cleared.
 type ClearResult struct{}
 
+// PokeRequested signals that the user asked the session to poke idle
+// channels now. The automatic schedule is session-owned and runs
+// without UI involvement.
+type PokeRequested struct{}
+
 // TopicInfoResult carries the current topic metadata for
 // display. `Window` is the typed `*ChannelWindow` so the UI
 // can read `Topic` / `TopicSetBy` / `TopicSetAt` directly off
