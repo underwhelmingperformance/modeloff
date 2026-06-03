@@ -134,20 +134,20 @@ func (c *serverClient) Has(capability command.Capability) bool {
 }
 
 // canReceive reports whether this subscription should receive
-// `ev`. The user-client sees every event so the chat-screen renders
-// the full session view. A model-client receives only events whose
-// target window it is a member of, or actor-scoped events (Quit,
-// NickChange) where the recipient shares any channel with the
-// actor — RFC 2812 §3.3.1's intersection rule. `actorTargets` is
-// the per-recipient intersection that [Session.fanOutProtocol]
-// computed for this fan-out; it is non-empty exactly when the actor
-// and `c` share at least one channel, so the test for actor-scoped
-// delivery is just a length check.
+// `ev`. Both kinds of client ride the same filter: a subscription
+// receives only events whose target window it is a member of, or
+// actor-scoped events (Quit, NickChange) where the recipient shares
+// any channel with the actor — RFC 2812 §3.3.1's intersection rule.
+// The user-client is a member of whatever it has joined, so the
+// chat-screen renders exactly those windows; server handshake
+// numerics and command replies reach it point-to-point (via
+// [Session.deliverToClient] or the issuing command's
+// `Response.Events`), not through this filter. `actorTargets` is the
+// per-recipient intersection that [Session.fanOutProtocol] computed
+// for this fan-out; it is non-empty exactly when the actor and `c`
+// share at least one channel, so the test for actor-scoped delivery
+// is just a length check.
 func (c *serverClient) canReceive(ev domain.ProtocolEvent, actorTargets []domain.ChannelName) bool {
-	if c.id == protocol.UserClientID {
-		return true
-	}
-
 	channels := c.instance.Channels()
 	if channels == nil {
 		return false
@@ -177,12 +177,21 @@ func (c *serverClient) canReceive(ev domain.ProtocolEvent, actorTargets []domain
 		return channelsContains(channels, e.Channel)
 	case domain.NamesEnd:
 		return channelsContains(channels, e.Channel)
+	case domain.ModelUnavailableError:
+		_ = e
+		// Dispatch failures are operator diagnostics, rendered in the
+		// operator's status window; an operator subscription receives
+		// them across every window, channel and DM alike.
+		return c.HasMode(domain.ModeOperator)
 	}
 
-	// Server-narrated and lifecycle events (FocusChannelEvent,
-	// Help, Whois, ListReply, ListEnd, SystemNotice, CommandError,
-	// UsageHint, PersonasList) have no model-side rendering; they
-	// belong to the chat-screen.
+	// Server handshake numerics (Welcome, Reconnected) and the
+	// point-to-point command replies the session emits (Whois,
+	// ListReply, ListEnd, the invite-failure SystemNotice) reach the
+	// issuing client through [Session.deliverToClient] or the
+	// command's `Response.Events`. Help, UsageHint, PersonasList and
+	// CommandError are chat-screen-local control signals the session
+	// never puts on this bus.
 	return false
 }
 

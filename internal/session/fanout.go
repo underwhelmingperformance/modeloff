@@ -55,10 +55,10 @@ func (s *Session) subscriberSnapshot() []*serverClient {
 // member-subscriber including the originator, matching IRC's
 // behaviour for those signals.
 //
-// Membership filtering keeps model-clients from receiving events
-// for channels they are not in. The user-client is treated as
-// connected to every window: the chat-screen renders the entire
-// session and needs the full feed.
+// Membership filtering keeps every client — the user-client
+// included — from receiving events for windows it is not in. The
+// user-client is a member of whatever it has joined, so the
+// chat-screen renders exactly those windows.
 //
 // The send-side select gates only on `ctx.Done()`: cancelling the
 // supplier ctx propagates to every in-flight handler's ctx, so a
@@ -174,21 +174,12 @@ func actorChannelSnapshot(pe domain.ProtocolEvent) []domain.ChannelName {
 // intersectActorTargets returns the recipient-visible channel
 // list for an actor-scoped event: those channels in
 // `actorChannels` that `sub` is also a member of. The user-client
-// sees the actor's full channel list — the chat-screen needs the
-// complete picture to route the line into every open window where
-// the actor was a known member. Window-scoped events pass
+// uses the same intersection as a model-client — it sees the actor
+// move only in the windows the two share. Window-scoped events pass
 // `actorChannels == nil` and receive a nil result.
 func intersectActorTargets(sub *serverClient, actorChannels []domain.ChannelName) []domain.ChannelName {
 	if len(actorChannels) == 0 {
 		return nil
-	}
-
-	if sub.id == protocol.UserClientID {
-		// The chat-screen is the operator window for every channel;
-		// expose the full actor list for routing.
-		out := make([]domain.ChannelName, len(actorChannels))
-		copy(out, actorChannels)
-		return out
 	}
 
 	subChannels := sub.instance.Channels()

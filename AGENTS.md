@@ -198,14 +198,22 @@ loop directly. The session is not the courier for them.
 (PRIVMSG and `/me` actions), per RFC 2812 §3.3.1: chat traffic is
 delivered to every member of the target window except the sender.
 Other event types — JOIN, PART, MODE, TOPIC, NICK, etc. — are
-delivered to every member-subscriber including the originator.
+delivered to every member-subscriber including the originator. A
+`PART` is broadcast while the departing actor is still a member, then
+membership is dropped (RFC 2812 §3.2.2 order), so the actor receives
+its own `PART`.
 
-Each model-client carries a membership filter via `serverClient.canReceive`:
-it only sees events for windows it is in — channel: target-channel
-membership; DM: counterpart match; actor-scoped (`Quit`, `NickChange`):
-any-channel-in-common with the actor. The user-client receives every
-protocol event; the chat-screen renders the entire session and needs
-the full feed.
+Every client — the user-client included — carries the same membership
+filter via `serverClient.canReceive`: it sees events only for windows
+it is in — channel: target-channel membership; DM: counterpart match;
+actor-scoped (`Quit`, `NickChange`): any-channel-in-common with the
+actor. The user-client is a member of whatever it has joined, so the
+chat-screen renders exactly those windows. Server handshake numerics
+(`Welcome`, `Reconnected`) and command replies reach the user-client
+point-to-point — via `deliverToClient` or the issuing command's
+`Response.Events` — not through this broadcast filter. A whole-session
+"god's-eye" view, if wanted, is an explicit request-driven inspector
+layered on top (see Out of scope), never an always-on bypass.
 
 ### Operator capability
 
@@ -276,8 +284,9 @@ model in the channel never sees them.
   and the model-client's eager seed. Replay is for model-clients only;
   the user-client sees live traffic forward by design.
 - A request-driven "god's-eye" inspector letting the user peek into a
-  window or actor's vantage it is not a member of — the explicit
-  successor to the user-client's current full-feed delivery.
+  window or actor's vantage it is not a member of — the supported
+  route to a whole-session view, layered on top of the membership
+  filter.
 - Credentialed operator promotion through `OPER`, backed by a real
   `OperAuthenticator`.
 

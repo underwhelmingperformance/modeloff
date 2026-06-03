@@ -2547,16 +2547,13 @@ func TestSession_SetTopic(t *testing.T) {
 		require.NoError(t, userSetTopic(ctx, t, sess, "#dev", "Development Chat"))
 		synctest.Wait()
 
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
-			domain.TopicChange{
-				Target:     "#dev",
-				Topic:      "Development Chat",
-				By:         "testuser",
-				At:         fixedTime,
-				ByInstance: userInstance(t, sess),
-			},
-		}, collectEmittedEvents(t, sess))
+		}, collectEmittedEvents(t, sess),
+			"the user is not a member of #dev here, so its topic change is not echoed back over the bus")
+
+		require.Equal(t, []string{"topic_change"}, channelEventTypes(t, s, "#dev"),
+			"the topic change is broadcast and persisted to the channel")
 
 		updated, err := sess.loadChannelWindow(ctx, "#dev")
 		require.NoError(t, err)

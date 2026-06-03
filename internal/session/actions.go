@@ -216,16 +216,10 @@ func (s *Session) partAs(ctx context.Context, actor *domain.Instance, ch domain.
 			return domain.NotOnChannelError{Channel: ch, Command: "PART", At: s.now()}
 		}
 
-		if err := s.removeMember(ctx, window, actor); err != nil {
-			return err
-		}
-
-		if actor.ID() == "" {
-			if err := s.saveAutojoinList(ctx); err != nil {
-				return fmt.Errorf("save autojoin: %w", err)
-			}
-		}
-
+		// The PART is broadcast to the channel while `actor` is still a
+		// member, then membership is dropped — RFC 2812 §3.2.2 order.
+		// Emitting first is what lets the departing member receive its
+		// own PART through the membership filter.
 		now := s.now()
 		s.persistAndEmit(ctx, ch, domain.Part{
 			Target:     ch,
@@ -235,6 +229,16 @@ func (s *Session) partAs(ctx context.Context, actor *domain.Instance, ch domain.
 			At:         now,
 			Instance:   actor,
 		})
+
+		if err := s.removeMember(ctx, window, actor); err != nil {
+			return err
+		}
+
+		if actor.ID() == "" {
+			if err := s.saveAutojoinList(ctx); err != nil {
+				return fmt.Errorf("save autojoin: %w", err)
+			}
+		}
 
 		return nil
 	})

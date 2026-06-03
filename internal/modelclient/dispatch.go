@@ -142,6 +142,10 @@ func dispatchTrigger(selfID domain.InstanceID, ev domain.ProtocolEvent) (domain.
 		return e.Target, msg, true
 
 	case domain.Part:
+		if e.InstanceID == selfID {
+			return "", protocol.IRCMessage{}, false
+		}
+
 		msg, _ := protocol.FromChannelEvent(e)
 		return e.Target, msg, true
 

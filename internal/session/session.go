@@ -479,19 +479,26 @@ func (s *Session) Connect(ctx context.Context) error {
 			return fmt.Errorf("set session active: %w", err)
 		}
 
+		user := s.userInstance()
+
 		welcomeNick := domain.Nick("")
-		if user := s.userInstance(); user != nil {
+		if user != nil {
 			welcomeNick = user.Nick()
 		}
 
-		s.emit(ctx, domain.Welcome{
-			ServerName: domain.StatusServerName,
-			Nick:       welcomeNick,
-			At:         s.connectedAt,
-		})
+		// RFC 2812 RPL_WELCOME (001) is a response to the connecting
+		// client, so it is delivered point-to-point to the user-client
+		// via deliverToClient.
+		if user != nil {
+			s.deliverToClient(ctx, user.ID(), domain.Welcome{
+				ServerName: domain.StatusServerName,
+				Nick:       welcomeNick,
+				At:         s.connectedAt,
+			})
 
-		if unclean {
-			s.emit(ctx, domain.Reconnected{At: s.connectedAt})
+			if unclean {
+				s.deliverToClient(ctx, user.ID(), domain.Reconnected{At: s.connectedAt})
+			}
 		}
 
 		s.connectedOnce.Do(func() { close(s.connectedC) })

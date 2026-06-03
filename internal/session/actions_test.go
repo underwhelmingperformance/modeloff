@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"slices"
 	"testing"
 	"testing/synctest"
@@ -9,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 	orderedmap "github.com/wk8/go-ordered-map/v2"
 
+	"github.com/laney/modeloff/internal/api"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/protocol"
 )
@@ -35,21 +37,13 @@ func TestJoinAs_model_actor(t *testing.T) {
 		modelOnlyMembers.SetMode(botty, domain.ModeOp)
 		requireChannelEqual(t, newTestChannelWindow("#dev", fixedTime, modelOnlyMembers), ch)
 
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
-			domain.Join{
-				Target:     "#dev",
-				Nick:       "botty",
-				InstanceID: botty.ID(),
-				Created:    true,
-				At:         fixedTime,
-				Instance:   botty,
-			},
-			domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
-			domain.ModelDispatchDone{Instance: botty, At: fixedTime},
 		}, collectEmittedEvents(t, sess),
-			"NamesReplyEvent is scoped to the joiner (the bot) per RFC 2812 §3.2.1; "+
-				"the user-client bus does not carry it")
+			"the user is not in #dev, so botty's join and dispatch do not reach the user-client")
+
+		require.Equal(t, []string{"join"}, channelEventTypes(t, s, "#dev"),
+			"the join is broadcast and persisted to the channel")
 
 		inst, err := s.ResolveNick(ctx, "botty")
 		require.NoError(t, err)
@@ -311,12 +305,13 @@ func TestQuitAs_delivery_targets_intersect_per_recipient(t *testing.T) {
 	require.Equal(t, []domain.ChannelName{"#shared"}, gotBeta,
 		"beta receives only the channel it shares with alpha; #private is not on the wire")
 
+	user := domain.NewModelInstance("", "testuser", "", "", testChannels("#shared"))
 	gotUser := intersectActorTargets(
-		fakeUserServerClient(t),
+		fakeUserServerClient(t, user),
 		channelNames(alphaChannels),
 	)
-	require.Equal(t, []domain.ChannelName{"#shared", "#private"}, gotUser,
-		"user-client receives the full actor channel list")
+	require.Equal(t, []domain.ChannelName{"#shared"}, gotUser,
+		"user-client receives only the channels it shares with the actor")
 }
 
 // TestActorChannelSnapshot_only_for_actor_scoped pins the
@@ -360,13 +355,14 @@ func fakeServerClient(t *testing.T, inst *domain.Instance) *serverClient {
 
 // fakeUserServerClient builds a minimal user-client subscription
 // for the intersection helpers. Identity is [protocol.UserClientID];
-// no instance pointer is needed because the user-client branch of
-// the helpers reads only the id.
-func fakeUserServerClient(t *testing.T) *serverClient {
+// the user rides the same membership filter as a model, so the
+// instance carries the channels the user has joined.
+func fakeUserServerClient(t *testing.T, inst *domain.Instance) *serverClient {
 	t.Helper()
 
 	return &serverClient{
-		id: protocol.UserClientID,
+		id:       protocol.UserClientID,
+		instance: inst,
 	}
 }
 
@@ -654,7 +650,16 @@ func TestKickAs_rejects_DM(t *testing.T) {
 func TestSendMessageAs_model_to_model_dispatches(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		bootAt := time.Now()
-		sess, s := newTestSession(t)
+
+		var dispatched []domain.ModelID
+		fake := &fakeAPIClient{
+			sendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
+				dispatched = append(dispatched, modelID)
+				return api.CompletionResult{}, nil
+			},
+		}
+
+		sess, s := newTestSessionWithAPI(t, fake)
 		ctx := t.Context()
 
 		botty := seedInstance(t, sess, s, instanceSpec{
@@ -677,17 +682,14 @@ func TestSendMessageAs_model_to_model_dispatches(t *testing.T) {
 		require.NoError(t, err)
 		synctest.Wait()
 
-		require.ElementsMatch(t, []domain.Event{
+		// helper takes a dispatch turn on the incoming DM; botty, the
+		// sender, is echo-gated and does not.
+		require.Equal(t, []domain.ModelID{"test/model-b"}, dispatched)
+
+		// The user is not party to the model↔model DM, so it sees only
+		// its bootstrap OPER promotion.
+		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
-			domain.Message{
-				Target:     target,
-				From:       "botty",
-				InstanceID: testMemberID("botty"),
-				Body:       "hey there",
-				At:         fixedTime,
-			},
-			domain.ModelDispatchStarted{Instance: helper, At: fixedTime},
-			domain.ModelDispatchDone{Instance: helper, At: fixedTime},
 		}, collectEmittedEvents(t, sess))
 
 		msgs := channelMessages(t, s, target)
@@ -716,19 +718,13 @@ func TestJoinAs_normalises_channel_prefix(t *testing.T) {
 		require.NoError(t, err)
 		require.True(t, ch.Members.HasNick("botty"))
 
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
-			domain.Join{
-				Target:     "#modeloff",
-				Nick:       "botty",
-				InstanceID: botty.ID(),
-				Created:    true,
-				At:         fixedTime,
-				Instance:   botty,
-			},
-			domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
-			domain.ModelDispatchDone{Instance: botty, At: fixedTime},
-		}, collectEmittedEvents(t, sess))
+		}, collectEmittedEvents(t, sess),
+			"the user is not in #modeloff, so botty's join does not reach the user-client")
+
+		require.Equal(t, []string{"join"}, channelEventTypes(t, s, "#modeloff"),
+			"the normalised join is broadcast and persisted to #modeloff")
 
 		_, err = sess.loadChannelWindow(ctx, "modeloff")
 		require.Error(t, err)

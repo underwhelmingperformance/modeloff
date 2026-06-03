@@ -82,21 +82,12 @@ func TestSession_PrivMsg_to_model_routes_DM_to_counterpart_only(t *testing.T) {
 
 		synctest.Wait()
 
-		// Full event stream on the user-client's bus: the bootstrap
-		// OPER promotion, then the DM round — Message + B's dispatch
-		// lifecycle. A's dispatch turn never fires (echo gate); C's
-		// never fires (membership filter).
-		require.ElementsMatch(t, []domain.Event{
+		// The user is not party to the alpha↔beta DM, so the DM round
+		// does not reach the user-client; it sees only its bootstrap
+		// OPER promotion. Routing is verified below via the dispatch
+		// calls and the persisted DM.
+		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
-			domain.Message{
-				Target:     domain.ChannelName(b.ID()),
-				From:       "alpha",
-				InstanceID: a.ID(),
-				Body:       "private to beta",
-				At:         fixedTime,
-			},
-			domain.ModelDispatchStarted{Instance: b, At: fixedTime},
-			domain.ModelDispatchDone{Instance: b, At: fixedTime},
 		}, collectEmittedEvents(t, sess))
 
 		expectedTrigger := protocol.IRCMessage{
