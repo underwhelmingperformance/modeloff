@@ -196,7 +196,12 @@ loop directly. The session is not the courier for them.
 
 `fanOutProtocol` skips the originator for `domain.Message` events
 (PRIVMSG and `/me` actions), per RFC 2812 §3.3.1: chat traffic is
-delivered to every member of the target window except the sender.
+delivered to every member of the target window except the sender. A
+subscription granted IRCv3 echo-message (today only the user-client,
+via `protocol.SubscribeOptions.EchoMessage`) then receives a direct
+echo of its own chat traffic back over the bus through
+`Session.echoToOriginator`; a model holds no such capability and
+keeps the no-self-echo rule.
 Other event types — JOIN, PART, MODE, TOPIC, NICK, etc. — are
 delivered to every member-subscriber including the originator. A
 `PART` is broadcast while the departing actor is still a member, then

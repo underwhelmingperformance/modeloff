@@ -182,11 +182,13 @@ type protocolCommand interface {
 // dispatcher synthesised in `Response.Events`. The chat-screen
 // unpacks it into a [tea.Sequence] that re-delivers each event as
 // its own message, so every confirmation reaches the per-event
-// render arms in dispatcher order — for `PrivMsg` and `Action` the
-// canonical [domain.Message]; for `Invite` a [domain.ModelInvited]
-// or a [domain.SystemNotice]; for `Whois` a [domain.Whois]; for
-// `List` one [domain.ListReply] per channel followed by a closing
-// [domain.ListEnd].
+// render arms in dispatcher order — for `Invite` a
+// [domain.ModelInvited] or a [domain.SystemNotice]; for `Whois` a
+// [domain.Whois]; for `List` one [domain.ListReply] per channel
+// followed by a closing [domain.ListEnd]. A `PrivMsg` / `Action`
+// confirmation reaches the user-client over the bus via
+// echo-message, so the chat-screen drops [domain.Message] from this
+// slice.
 type ReplyEvents []domain.ProtocolEvent
 
 // sendCommand routes a migrated command through the protocol

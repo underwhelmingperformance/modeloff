@@ -466,6 +466,7 @@ func attachTestUserClient(t *testing.T, sess *Session, nick domain.Nick) {
 	sub, err := sess.Subscribe(tc, protocol.SubscribeOptions{
 		Instance:     inst,
 		InitialModes: []domain.Mode{domain.ModeOperator},
+		EchoMessage:  true,
 	})
 	require.NoError(t, err)
 	tc.sub = sub
@@ -1835,12 +1836,12 @@ func TestSession_SendMessage(t *testing.T) {
 			{Target: "#general", From: "testuser", Body: "hello world", At: fixedTime},
 		}, msgs)
 
-		// The session does not echo the user's own message on its
-		// events channel, and a channel without models produces no
-		// dispatch lifecycle, so only the bootstrap mode-change is
-		// queued on the bus.
+		// The user-client holds echo-message, so its own line returns
+		// on the bus; a channel without models produces no dispatch
+		// lifecycle.
 		require.ElementsMatch(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
+			domain.Message{Target: "#general", From: "testuser", Body: "hello world", At: fixedTime},
 		}, collectEmittedEvents(t, sess))
 	})
 }
@@ -1868,11 +1869,17 @@ func TestSession_SendMessage_emits_dispatch_events(t *testing.T) {
 		require.NoError(t, err)
 		synctest.Wait()
 
-		// The session does not echo the user's own outgoing message
-		// (RFC 2812 §3.3.1) but botty's dispatch goroutine triggers on
-		// it and emits its reply Message on the wire.
+		// The user-client holds echo-message, so its own outgoing line
+		// returns on the bus; botty's dispatch goroutine triggers on it
+		// and emits its reply Message on the wire.
 		require.ElementsMatch(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
+			domain.Message{
+				Target: "#general",
+				From:   "testuser",
+				Body:   "hello",
+				At:     fixedTime,
+			},
 			domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
 			domain.Message{
 				Target:     "#general",

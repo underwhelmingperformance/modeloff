@@ -87,4 +87,11 @@ type Subscription interface {
 type SubscribeOptions struct {
 	Instance     *domain.Instance
 	InitialModes []domain.Mode
+
+	// EchoMessage grants IRCv3 echo-message: the session delivers the
+	// client's own PRIVMSG / ACTION back to it over Events, so a
+	// consumer renders its sent lines from the bus like any other
+	// event. Without it, a client follows RFC 2812 §3.3.1 and never
+	// sees its own chat traffic echoed.
+	EchoMessage bool
 }

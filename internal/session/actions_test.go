@@ -415,13 +415,14 @@ func TestSendMessageAs_model_actor(t *testing.T) {
 	})
 }
 
-// TestSendMessageAs_user_actor_does_not_echo_to_originator pins the
-// echo gate's structural property: a PRIVMSG sent by the user to a
-// channel they're in does not arrive on their own subscription's
-// events channel. The session's chat-traffic suppression rule is
-// applied uniformly at fan-out (RFC 2812 §3.3.1); the user-actor
-// branch in [Session.sendMessageAs] no longer carries it.
-func TestSendMessageAs_user_actor_does_not_echo_to_originator(t *testing.T) {
+// TestSendMessageAs_user_actor_echoes_to_originator pins the
+// echo-message capability: the user-client holds it, so a PRIVMSG it
+// sends to a channel it is in returns on its own subscription's
+// events channel (IRCv3 echo-message). A model, without the cap,
+// keeps RFC 2812 §3.3.1 no-self-echo — see
+// TestSendMessageAs_model_to_model_dispatches, where a self-echoing
+// model would wrongly self-dispatch.
+func TestSendMessageAs_user_actor_echoes_to_originator(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		bootAt := time.Now()
 		sess, s := newTestSession(t)
@@ -453,6 +454,13 @@ func TestSendMessageAs_user_actor_does_not_echo_to_originator(t *testing.T) {
 			domain.NamesEnd{
 				Channel: "#dev",
 				At:      fixedTime,
+			},
+			domain.Message{
+				Target:     "#dev",
+				From:       "testuser",
+				InstanceID: user.ID(),
+				Body:       "hello",
+				At:         fixedTime,
 			},
 		}, collectEmittedEvents(t, sess))
 	})

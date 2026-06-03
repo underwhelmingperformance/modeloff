@@ -48,11 +48,12 @@ func (s *Session) subscriberSnapshot() []*serverClient {
 // [eventBufSize]; callers should attach a consumer before
 // bootstrap-time emission exceeds that capacity.
 //
-// PRIVMSG/Action events do not echo back to their originator
-// (RFC 2812 §3.3.1: chat traffic is delivered to every member of
-// the target window except the sender). Other event types — JOIN,
-// PART, MODE, TOPIC, NICK, etc. — are delivered to every
-// member-subscriber including the originator, matching IRC's
+// Chat traffic (PRIVMSG/Action) is delivered to every member of the
+// target window except the sender during membership fan-out (RFC
+// 2812 §3.3.1); a sender holding IRCv3 echo-message then receives a
+// direct echo of its own line via [Session.echoToOriginator]. Other
+// event types — JOIN, PART, MODE, TOPIC, NICK, etc. — are delivered
+// to every member-subscriber including the originator, matching IRC's
 // behaviour for those signals.
 //
 // Membership filtering keeps every client — the user-client
@@ -106,6 +107,30 @@ func (s *Session) fanOutProtocol(ctx context.Context, pe domain.ProtocolEvent) {
 		case <-ctx.Done():
 			return
 		}
+	}
+
+	if suppressOriginator {
+		s.echoToOriginator(ctx, pe, sender, spanCtx)
+	}
+}
+
+// echoToOriginator delivers chat traffic back to its sender when the
+// sender holds echo-message (IRCv3). The echo is a direct send to the
+// originating subscription: a message is keyed for its recipient
+// window — a DM's target is the counterpart's id — so the sender's
+// own copy cannot ride the membership filter. A sender without the
+// capability (every model) gets nothing, keeping RFC 2812 §3.3.1
+// no-self-echo.
+func (s *Session) echoToOriginator(ctx context.Context, pe domain.ProtocolEvent, sender protocol.ClientID, spanCtx trace.SpanContext) {
+	origin := s.lookupClientHandle(sender)
+	if origin == nil || !origin.echo {
+		return
+	}
+
+	select {
+	case origin.events <- protocol.Delivery{Event: pe, SpanCtx: spanCtx}:
+	case <-origin.done:
+	case <-ctx.Done():
 	}
 }
 

@@ -362,10 +362,10 @@ func (s *Session) changeNickAs(ctx context.Context, actor *domain.Instance, newN
 
 // sendMessageAs records a message from the given actor and
 // returns the persisted [domain.Message]. The message is emitted
-// via [Session.emit]; the broadcast helper applies the
-// originator-suppression rule (RFC 2812 §3.3.1) so the sender
-// does not see their own line on its [protocol.Client.Events]
-// channel.
+// via [Session.emit]; membership fan-out suppresses the originator
+// (RFC 2812 §3.3.1), and a sender holding echo-message additionally
+// receives a direct echo via [Session.echoToOriginator]. A model,
+// holding no echo capability, sees no copy of its own line.
 func (s *Session) sendMessageAs(ctx context.Context, actor *domain.Instance, ch domain.ChannelName, body string) (domain.Message, error) {
 	actorNick := actor.Nick()
 

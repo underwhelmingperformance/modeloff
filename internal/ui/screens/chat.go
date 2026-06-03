@@ -629,14 +629,6 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 			}),
 		)
 
-	case domain.Message:
-		// Echo path for the user's own outgoing PRIVMSG. The session
-		// bus originator-suppresses Message events
-		// (`session.chatTrafficSender`), so this is the only way the
-		// user-client sees its own line in scrollback.
-		s.bufferEvent(msg)
-		return s.handleMessageEvent(msg)
-
 	case domain.ModelInvited:
 		// Echo path for the inviter's own `/invite` result. `session.handleInvite`
 		// returns the resulting `ModelInvited` in `protocol.Response.Events`,
@@ -741,6 +733,13 @@ func msgCmd(msg tea.Msg) tea.Cmd {
 func (s ChatScreen) deliverReplyEvents(events chatcmd.ReplyEvents) tea.Cmd {
 	cmds := make([]tea.Cmd, 0, len(events))
 	for _, event := range events {
+		// The user-client's own chat traffic returns over the bus
+		// (echo-message) and renders there. The reply path carries the
+		// point-to-point numerics (Whois, ListReply, …).
+		if _, ok := event.(domain.Message); ok {
+			continue
+		}
+
 		cmds = append(cmds, msgCmd(event))
 	}
 
@@ -1043,12 +1042,13 @@ func (s ChatScreen) handleMessageSubmit(msg components.MessageSubmitMsg) (ui.Mod
 
 func (s ChatScreen) sendMessage(text string) tea.Cmd {
 	return func() tea.Msg {
-		msg, err := s.user.SendMessage(s.baseContext(), *s.active, text)
-		if err != nil {
+		if _, err := s.user.SendMessage(s.baseContext(), *s.active, text); err != nil {
 			return domain.ErrorEvent{Operation: "send", Err: err, At: time.Now()}
 		}
 
-		return msg
+		// The user-client holds echo-message: the sent line returns on
+		// the protocol bus and renders through the normal event path.
+		return nil
 	}
 }
 

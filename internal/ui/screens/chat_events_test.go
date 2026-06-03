@@ -320,12 +320,12 @@ func TestChatScreen_ignores_join_for_unknown_channel(t *testing.T) {
 
 	// Send a subsequent event to #general to ensure the join event
 	// has been fully processed before we inspect the view.
-	tm.Send(domain.Message{
+	screenstest.SendProtocolEvent(tm.TestModel, domain.Message{
 		Target: "#general",
 		From:   "alice",
 		Body:   "sync marker",
 		At:     time.Now(),
-	})
+	}, nil)
 	tm.WaitFor("sync marker")
 
 	// The sidebar should NOT show #secret.
@@ -364,12 +364,12 @@ func TestChatScreen_model_join_does_not_switch_active(t *testing.T) {
 	}, []domain.ChannelName{"#random"})
 
 	// Send a subsequent event to ensure the join event has been processed.
-	tm.Send(domain.Message{
+	screenstest.SendProtocolEvent(tm.TestModel, domain.Message{
 		Target: "#general",
 		From:   "alice",
 		Body:   "sync marker",
 		At:     time.Now(),
-	})
+	}, nil)
 	tm.WaitFor("sync marker")
 
 	// Active channel should remain #general — the view should show
@@ -414,12 +414,12 @@ func TestChatScreen_rapid_switch_does_not_revert(t *testing.T) {
 
 	// Send a sync marker to #chat to ensure the JoinEvents have
 	// been fully processed.
-	tm.Send(domain.Message{
+	screenstest.SendProtocolEvent(tm.TestModel, domain.Message{
 		Target: "#chat",
 		From:   "alice",
 		Body:   "sync marker",
 		At:     time.Now(),
-	})
+	}, nil)
 	tm.WaitFor("sync marker")
 
 	// Active channel should still be #chat — JoinEvents for the
@@ -526,20 +526,20 @@ func TestChatScreen_MessageEvent_inactive_channel(t *testing.T) {
 			strings.Contains(view, "*** Created channel #general")
 	})
 
-	tm.Send(domain.Message{
+	screenstest.SendProtocolEvent(tm.TestModel, domain.Message{
 		Target: "#random",
 		From:   "bob",
 		Body:   "hello from random",
-	})
+	}, nil)
 
 	// Send a sync marker to #general to ensure the MessageEvent
 	// for #random has been fully processed.
-	tm.Send(domain.Message{
+	screenstest.SendProtocolEvent(tm.TestModel, domain.Message{
 		Target: "#general",
 		From:   "alice",
 		Body:   "sync marker",
 		At:     time.Now(),
-	})
+	}, nil)
 	tm.WaitFor("sync marker")
 
 	view := tm.CurrentView()

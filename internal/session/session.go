@@ -320,6 +320,10 @@ func (s *Session) Subscribe(c protocol.Client, opts protocol.SubscribeOptions) (
 		return nil, fmt.Errorf("session.Subscribe: session is shutting down")
 	}
 
+	if opts.EchoMessage {
+		sc.echo = true
+	}
+
 	for _, m := range opts.InitialModes {
 		// `setUserModeAs` is idempotent on an already-held mode and
 		// writes a server-narrated [domain.ModeChange] to the

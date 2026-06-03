@@ -526,11 +526,12 @@ func (s ChatScreen) handleModelKickedEvent(msg domain.ModelKicked) (ui.Model, te
 	return s, msgCmd(components.NickListUpdatedMsg{Members: members})
 }
 
-// handleMessageEvent renders an incoming Message. User-originated
-// Messages (the synthesised echo from the send-cmd path, identified
-// by an empty InstanceID matching [protocol.UserClientID]) render
-// inline. Model-originated Messages enter the per-channel paced
-// queue: the first message in an empty queue delivers immediately,
+// handleMessageEvent renders an incoming Message. The user-client
+// holds echo-message, so its own chat traffic returns over the
+// protocol bus; identified here by an empty InstanceID matching
+// [protocol.UserClientID], it renders inline. Model-originated
+// Messages enter the per-channel paced queue: the first message in an
+// empty queue delivers immediately,
 // subsequent messages drain at [pacedInterval] cadence.
 func (s ChatScreen) handleMessageEvent(msg domain.Message) (ui.Model, tea.Cmd) {
 	key, ok := msg.RoutingKey(s.user.Instance().ID())
@@ -613,16 +614,16 @@ func (s ChatScreen) handleDMOpenedMsg(msg chatcmd.DMOpenedMsg) (ui.Model, tea.Cm
 	return s, tea.Sequence(cmds...)
 }
 
-// sendMessageCmd fires a user `SendMessage` and returns the
-// persisted [domain.Message] as a tea.Msg for local render.
+// sendMessageCmd fires a user `SendMessage`. On success the sent line
+// returns over the protocol bus via echo-message and renders through
+// the normal event path; only a failure surfaces here.
 func (s ChatScreen) sendMessageCmd(target domain.ChannelName, body string) tea.Cmd {
 	return func() tea.Msg {
-		msg, err := s.user.SendMessage(s.baseContext(), target, body)
-		if err != nil {
+		if _, err := s.user.SendMessage(s.baseContext(), target, body); err != nil {
 			return domain.ErrorEvent{Operation: "msg", Err: err, At: time.Now()}
 		}
 
-		return msg
+		return nil
 	}
 }
 

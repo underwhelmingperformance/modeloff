@@ -142,6 +142,7 @@ func (uc *UserClient) Attach(ctx context.Context) error {
 	sub, err := uc.sess.Subscribe(uc, protocol.SubscribeOptions{
 		Instance:     uc.instance,
 		InitialModes: []domain.Mode{domain.ModeOperator},
+		EchoMessage:  true,
 	})
 	if err != nil {
 		return fmt.Errorf("attach user client: %w", err)

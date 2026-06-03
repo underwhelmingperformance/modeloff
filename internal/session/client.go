@@ -45,6 +45,11 @@ type serverClient struct {
 
 	modesMu sync.RWMutex
 	modes   map[domain.Mode]struct{}
+
+	// echo grants IRCv3 echo-message: the client's own chat traffic
+	// is delivered back to it (see [Session.fanOutProtocol]). Set once
+	// at subscribe time from [protocol.SubscribeOptions.EchoMessage].
+	echo bool
 }
 
 // newServerClient constructs a subscription with the given identity
