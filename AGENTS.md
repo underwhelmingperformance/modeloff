@@ -79,14 +79,36 @@ Clients implement the small `Client` interface — `Identity()`, `Send(ctx,
 Command) (Response, error)`, `Events() <-chan Event`, `HasMode(UserMode) bool`.
 A `Send` returns a `Response` whose `Err` field carries any typed command
 failure (e.g. `domain.NotOperatorError`, `domain.UnknownNickError`); callers
-branch on it via `errors.As`. The `Response.Events` slot is reserved for
-synchronous numeric-reply payloads but is currently unused — see Out of scope.
-Broadcast side effects flow asynchronously over `Client.Events()` to peers.
+branch on it via `errors.As`. The `Response.Events` slot carries the
+dispatcher's synchronous numeric-reply payloads: the persisted
+`domain.Message` for `PrivMsg`/`Action`, `domain.ModelInvited` for `Invite`,
+the `domain.Whois` snapshot for `Whois`, and the `domain.ListReply` stream
+terminated by `domain.ListEnd` for `List`. Broadcast side effects flow
+asynchronously over `Client.Events()` to peers.
+
+### Two kinds of actor
+
+The user-client and the model-clients are uniform on the protocol — same
+`Send → Handle`, same event types, same dispatcher — but they are deliberately
+different kinds of actor in their lifecycle and the capabilities granted at
+attach.
+
+A model is a persistent inhabitant. The fiction the app maintains is that the
+server kept running while the user was away, so a model returns with its context
+intact. The persisted event log (`store.EventsBefore` / `store.DMEventsBefore`)
+is the server's memory of channel activity; on (re)attach a model restores its
+context from it. The user is a transient client: by IRC convention it sees live
+traffic forward and nothing from before it connected, so it gets no history
+replay — the chat-screen's scrollback is populated purely from live events.
+
+Differences between the two kinds are expressed as server-side capabilities
+granted at attach (`SubscribeOptions.InitialModes`) and read live off the
+issuing `serverClient`, not as a branch on which kind of client it is.
 
 ### Two client kinds
 
 - The user-client lives in the `internal/userclient` package. It is
-  constructed in `cmd/modeloff` (or a test fixture), holds the
+  constructed in the repo-root `main.go` (or a test fixture), holds the
   user's `*domain.Instance`, and attaches to the session via the
   public `Session.Subscribe(c, opts)` API with `+o` requested
   through `protocol.SubscribeOptions.InitialModes`. Its
@@ -135,11 +157,11 @@ where required, then delegates to a per-command implementation in the
 …) is unexported: outside the package, the only way to reach it is
 through `Send → Handle`.
 
-`AddModel`, `Quit`, and `Kill` currently return `errNotYetImplemented`
-from the dispatcher. The chatcmd entry points for `AddModel` and `Quit`
-still call into legacy public methods on the session
-(`Session.AddModel`, `Session.QuitAs`) and retire alongside the dispatcher
-fills.
+`AddModel`, `Quit`, `Kill`, and `Oper` are full dispatcher handlers
+(`handleAddModel`, `handleQuit`, `handleKill`, `handleOper`); there are no
+legacy public `Session.AddModel` / `Session.QuitAs` methods. `AddModel` and
+`Kill` are operator-gated; a non-operator client receives
+`domain.NotOperatorError`.
 
 DMs have no wire-level "open" command. A direct message is just a
 `PrivMsg` whose target is the counterpart's `InstanceID`; either party
@@ -187,12 +209,12 @@ attaches; the session writes the granting `domain.ModeChange` as
 the first event on the subscription's bus. The operator-gated
 commands today are `protocol.Kill` and `protocol.AddModel`;
 non-operator clients receive `domain.NotOperatorError` from the
-dispatcher (RFC 2812 numeric 481, ERR_NOPRIVILEGES). There is no
-wire `OPER` command in production use: modeloff is a single-user
-app, and operator mode is set at attach time rather than acquired
-through a credential exchange. A future revision that introduces
-credentialed operator promotion would extend the command sum
-without changing the dispatcher's mode-check shape.
+dispatcher (RFC 2812 numeric 481, ERR_NOPRIVILEGES). A wire `OPER`
+command (`protocol.Oper`, RFC 2812 §3.1.4) exists and is dispatched
+by `handleOper`; its `OperAuthenticator` defaults to rejecting every
+attempt, so credentialed operator promotion is a ready extension
+point rather than a live capability. The user-client's `+o` is still
+granted at attach via `InitialModes`, not acquired through `OPER`.
 
 ### Slash commands and tool schemas
 
@@ -203,13 +225,14 @@ the grammar at registration time and derives the OpenAI tool schema
 (name, description, JSON-schema parameters) by reflection. When a
 chatcmd struct implements `ToCommand(Context) (protocol.Command, error)`,
 the same wire command flows whether the user typed `/foo` or a model
-called the `foo` tool. Some `/`-commands (`/help`, `/clear`, `/list`,
-`/whois`) are UI-side or session-side without a wire counterpart, and
-do not implement `ToCommand`.
+called the `foo` tool. `/list` and `/whois` implement `ToCommand`
+(returning `protocol.List` / `protocol.Whois`); only the purely
+UI-side `/help` and `/clear` have no wire counterpart and do not
+implement `ToCommand`.
 
 The three memory tools (`write_memory`, `delete_memory`, `search_memory`)
 are in-process operations rather than wire commands, and stay
-hand-rolled in `internal/session/tools.go`.
+hand-rolled in `internal/modelclient/memory_tools.go`.
 
 ### Persistence
 
@@ -225,22 +248,20 @@ today this includes events that pre-date the instance's join.
 
 ### Out of scope, design accommodates
 
-- Synchronous numeric-reply payloads (e.g. `RPL_LIST` / `RPL_LISTEND`
-  for `protocol.List`, `RPL_WHOISUSER` for `protocol.Whois`) populating
-  `Response.Events`. Today the dispatcher's `List`/`Whois` handlers
-  discard these and the chatcmd-side path emits the events directly;
-  the dispatcher fill collapses both into a single `Response.Events`
-  flow.
-- Opt-in user-side log replay (mirroring how models read pre-join
-  history) is a future toggle, not a current behaviour.
-- `KILL` implementation will need the dispatcher's handler plus
-  permanent removal from the subscriber set.
-- `AddModel` and `Quit` dispatcher fills retire the legacy
-  chatcmd-direct paths.
-- Bootstrap-time replay of recent events into newly-allocated
-  subscriptions, replacing the per-dispatch store read, is tracked
-  separately — and `joined_at` scoping for that replay if it becomes
-  the desired shape.
+- A single multi-event `Response.Events` reply stream. The dispatcher
+  populates `Response.Events`, but `chatcmd.sendCommand` surfaces only
+  the first element, so `List` (and `Whois`) use a bespoke `fetch` path
+  that re-walks the slice. Consolidating every consumer onto one
+  multi-event reply is pending.
+- Bootstrap-time, `joined_at`-scoped replay of recent events into a
+  newly-allocated subscription, replacing the per-dispatch store read
+  and the model-client's eager seed. Replay is for model-clients only;
+  the user-client sees live traffic forward by design.
+- A request-driven "god's-eye" inspector letting the user peek into a
+  window or actor's vantage it is not a member of — the explicit
+  successor to the user-client's current full-feed delivery.
+- Credentialed operator promotion through `OPER`, backed by a real
+  `OperAuthenticator`.
 
 ## External libraries
 

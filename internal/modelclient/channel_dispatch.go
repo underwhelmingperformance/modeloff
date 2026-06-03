@@ -77,7 +77,7 @@ func (d *Dispatcher) DispatchToChannel(
 	}
 
 	return runner.Run(ctx, "modelclient.dispatch_to_channel", nil, func(ctx context.Context, _ trace.Span) error {
-		historyEvents, err := d.sess.EventsBefore(ctx, ch, nil, 500)
+		historyEvents, err := d.sess.EventsBefore(ctx, ch, nil, modelHistorySize)
 		if err != nil {
 			return fmt.Errorf("list history: %w", err)
 		}

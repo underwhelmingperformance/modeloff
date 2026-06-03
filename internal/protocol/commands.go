@@ -57,8 +57,9 @@ type Topic struct {
 }
 
 // Invite asks the server to add a model instance to the named
-// channel. Operator-gated for non-self invites in future revisions;
-// today the user-client is the sole inviter.
+// channel. Both the user-client and a model (via the `invite` tool)
+// issue it over this wire command; on a `+i` channel it is
+// operator-gated, otherwise any member may invite.
 type Invite struct {
 	Nick    domain.Nick
 	Channel domain.ChannelName

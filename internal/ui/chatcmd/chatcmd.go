@@ -185,10 +185,9 @@ func errorEvent(operation string, err error) domain.ErrorEvent {
 	return domain.ErrorEvent{Operation: operation, Err: err, At: time.Now()}
 }
 
-// protocolCommand is the migrated-command interface: any chatcmd
-// that has translated to the wire protocol exposes it via
-// `ToCommand`. UI-only commands (help, clear, …) and commands
-// whose protocol counterpart is still a stub do not implement it.
+// protocolCommand is implemented by any chatcmd that translates to a
+// wire command, exposing it via `ToCommand`. Purely UI-side commands
+// (help, clear, …) do not implement it.
 type protocolCommand interface {
 	ToCommand(rc Context) (protocol.Command, error)
 }
