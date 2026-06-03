@@ -49,6 +49,47 @@ func (e NoSuchChannelError) Error() string {
 	return fmt.Sprintf("no such channel: %s", e.Channel)
 }
 
+// NotOnChannelError refuses a channel command issued by an actor
+// that is not a member of the target channel (RFC 2812 numeric 442
+// ERR_NOTONCHANNEL). PART is the issuing command today; `Command`
+// carries it so renderers and tool-result formatters can name the
+// rejected call without reparsing the error string.
+type NotOnChannelError struct {
+	Channel ChannelName
+	Command string
+	At      time.Time
+}
+
+func (e NotOnChannelError) Error() string {
+	return fmt.Sprintf("%s: you are not on %s", e.Command, e.Channel)
+}
+
+// UserNotInChannelError refuses a command whose target nick is not
+// a member of the channel it names (RFC 2812 numeric 441
+// ERR_USERNOTINCHANNEL). KICK is the issuing command today.
+type UserNotInChannelError struct {
+	Nick    Nick
+	Channel ChannelName
+	Command string
+	At      time.Time
+}
+
+func (e UserNotInChannelError) Error() string {
+	return fmt.Sprintf("%s: %s is not on %s", e.Command, e.Nick, e.Channel)
+}
+
+// UserOnChannelError refuses an INVITE whose target nick is already
+// a member of the channel (RFC 2812 numeric 443 ERR_USERONCHANNEL).
+type UserOnChannelError struct {
+	Nick    Nick
+	Channel ChannelName
+	At      time.Time
+}
+
+func (e UserOnChannelError) Error() string {
+	return fmt.Sprintf("%s is already on %s", e.Nick, e.Channel)
+}
+
 // UnknownConfigKeyError indicates an unrecognised configuration key.
 type UnknownConfigKeyError struct {
 	Key string

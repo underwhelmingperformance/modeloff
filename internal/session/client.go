@@ -175,6 +175,8 @@ func (c *serverClient) canReceive(ev domain.ProtocolEvent, actorTargets []domain
 		return channelsContains(channels, e.Channel)
 	case domain.NamesReplyEvent:
 		return channelsContains(channels, e.Channel)
+	case domain.NamesEnd:
+		return channelsContains(channels, e.Channel)
 	}
 
 	// Server-narrated and lifecycle events (FocusChannelEvent,

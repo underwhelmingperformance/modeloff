@@ -46,6 +46,7 @@ func (PokeEvent) isProtocolEvent()             {}
 func (ModelDispatchStarted) isProtocolEvent()  {}
 func (ModelDispatchDone) isProtocolEvent()     {}
 func (NamesReplyEvent) isProtocolEvent()       {}
+func (NamesEnd) isProtocolEvent()              {}
 func (Welcome) isProtocolEvent()               {}
 func (Reconnected) isProtocolEvent()           {}
 func (ModelUnavailableError) isProtocolEvent() {}
@@ -57,6 +58,9 @@ func (ModelUnavailableError) isProtocolEvent() {}
 func (UnknownNickError) isProtocolEvent()         {}
 func (NoSuchChannelError) isProtocolEvent()       {}
 func (NickInUseError) isProtocolEvent()           {}
+func (NotOnChannelError) isProtocolEvent()        {}
+func (UserNotInChannelError) isProtocolEvent()    {}
+func (UserOnChannelError) isProtocolEvent()       {}
 func (NotOperatorError) isProtocolEvent()         {}
 func (OperFailedError) isProtocolEvent()          {}
 func (ChanOpRequiredError) isProtocolEvent()      {}
@@ -74,6 +78,9 @@ func (UnsupportedModelError) isProtocolEvent()    {}
 func (UnknownNickError) domainEvent()         {}
 func (NoSuchChannelError) domainEvent()       {}
 func (NickInUseError) domainEvent()           {}
+func (NotOnChannelError) domainEvent()        {}
+func (UserNotInChannelError) domainEvent()    {}
+func (UserOnChannelError) domainEvent()       {}
 func (NotOperatorError) domainEvent()         {}
 func (OperFailedError) domainEvent()          {}
 func (ChanOpRequiredError) domainEvent()      {}

@@ -81,6 +81,15 @@ type NamesReplyEvent struct {
 	At      time.Time
 }
 
+// NamesEnd closes the member-list reply, mirroring RFC 2812 numeric
+// 366 (RPL_ENDOFNAMES). It follows the [NamesReplyEvent] on the
+// joiner's own subscription and names the same channel, so a client
+// that consumes the snapshot knows the list is complete.
+type NamesEnd struct {
+	Channel ChannelName
+	At      time.Time
+}
+
 // Welcome announces successful connection registration, mirroring
 // RFC 2812 numeric 001 (RPL_WELCOME). The session emits it once
 // per [Session.Connect] so listening clients render the equivalent
@@ -134,6 +143,7 @@ func (ErrorEvent) domainEvent()            {}
 func (ModelDispatchStarted) domainEvent()  {}
 func (ModelDispatchDone) domainEvent()     {}
 func (NamesReplyEvent) domainEvent()       {}
+func (NamesEnd) domainEvent()              {}
 func (Welcome) domainEvent()               {}
 func (Reconnected) domainEvent()           {}
 func (ModelUnavailableError) domainEvent() {}

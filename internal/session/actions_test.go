@@ -154,7 +154,7 @@ func TestPartAs_model_actor(t *testing.T) {
 	})
 }
 
-func TestPartAs_unknown_actor_is_noop(t *testing.T) {
+func TestPartAs_non_member_returns_442(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		bootAt := time.Now()
 		sess, s := newTestSession(t)
@@ -162,12 +162,16 @@ func TestPartAs_unknown_actor_is_noop(t *testing.T) {
 
 		saveTestChannel(t, sess, s, newTestChannelWindow("#dev", fixedTime, testMembers(t, sess, s, "testuser")))
 
-		// partAs for an instance that isn't in the channel must be a
-		// no-op: no PartEvent emission (the empty-id fallback would
-		// otherwise ask the UI to drop the human's channel), no stored
-		// membership mutation, no instance-channels mutation.
+		// partAs for an instance that isn't in the channel refuses
+		// with RFC 2812 numeric 442 (ERR_NOTONCHANNEL) and otherwise
+		// changes nothing: no PartEvent emission (the empty-id
+		// fallback would otherwise ask the UI to drop the human's
+		// channel), no stored membership mutation, no instance-
+		// channels mutation.
 		ghost := domain.NewModelInstance("ghost-id", "ghost", "test/model", "", nil)
-		require.NoError(t, sess.partAs(ctx, ghost, "#dev", "bye"))
+		require.Equal(t,
+			domain.NotOnChannelError{Channel: "#dev", Command: "PART", At: fixedTime},
+			sess.partAs(ctx, ghost, "#dev", "bye"))
 		synctest.Wait()
 
 		require.ElementsMatch(t, []domain.Event{
@@ -410,6 +414,10 @@ func TestSendMessageAs_user_actor_does_not_echo_to_originator(t *testing.T) {
 			domain.NamesReplyEvent{
 				Channel: "#dev",
 				Members: testMembers(t, sess, s, "testuser"),
+				At:      fixedTime,
+			},
+			domain.NamesEnd{
+				Channel: "#dev",
 				At:      fixedTime,
 			},
 		}, collectEmittedEvents(t, sess))
@@ -714,6 +722,10 @@ func TestJoinAs_user_rejoin_preserves_join_time(t *testing.T) {
 				Members: testMembers(t, sess, s, "testuser"),
 				At:      fixedTime,
 			},
+			domain.NamesEnd{
+				Channel: "#general",
+				At:      fixedTime,
+			},
 		}, collectEmittedEvents(t, sess))
 
 		originalJoinTime := userJoinedAt(t, sess, "#general")
@@ -752,6 +764,10 @@ func TestJoinAs_user_new_channel_emits_join_and_mode(t *testing.T) {
 			domain.NamesReplyEvent{
 				Channel: "#dev",
 				Members: testMembers(t, sess, s, "testuser"),
+				At:      fixedTime,
+			},
+			domain.NamesEnd{
+				Channel: "#dev",
 				At:      fixedTime,
 			},
 		}, collectEmittedEvents(t, sess))
@@ -800,6 +816,10 @@ func TestJoinAs_user_existing_channel_with_topic(t *testing.T) {
 				Members: expectedMembers,
 				At:      fixedTime,
 			},
+			domain.NamesEnd{
+				Channel: "#dev",
+				At:      fixedTime,
+			},
 			domain.TopicInfo{
 				Target:     "#dev",
 				Topic:      "Go development",
@@ -840,6 +860,10 @@ func TestJoinAs_user_existing_channel_no_topic(t *testing.T) {
 			domain.NamesReplyEvent{
 				Channel: "#dev",
 				Members: expectedMembers,
+				At:      fixedTime,
+			},
+			domain.NamesEnd{
+				Channel: "#dev",
 				At:      fixedTime,
 			},
 		}, collectEmittedEvents(t, sess))
@@ -910,6 +934,10 @@ func TestJoinAs_user_updates_autojoin(t *testing.T) {
 				Members: testMembers(t, sess, s, "testuser"),
 				At:      fixedTime,
 			},
+			domain.NamesEnd{
+				Channel: "#general",
+				At:      fixedTime,
+			},
 			domain.Join{
 				Target:     "#dev",
 				Nick:       "testuser",
@@ -921,6 +949,10 @@ func TestJoinAs_user_updates_autojoin(t *testing.T) {
 			domain.NamesReplyEvent{
 				Channel: "#dev",
 				Members: testMembers(t, sess, s, "testuser"),
+				At:      fixedTime,
+			},
+			domain.NamesEnd{
+				Channel: "#dev",
 				At:      fixedTime,
 			},
 		}, collectEmittedEvents(t, sess))
@@ -958,6 +990,10 @@ func TestPartAs_user_updates_autojoin(t *testing.T) {
 				Members: testMembers(t, sess, s, "testuser"),
 				At:      fixedTime,
 			},
+			domain.NamesEnd{
+				Channel: "#general",
+				At:      fixedTime,
+			},
 			domain.Join{
 				Target:     "#dev",
 				Nick:       "testuser",
@@ -969,6 +1005,10 @@ func TestPartAs_user_updates_autojoin(t *testing.T) {
 			domain.NamesReplyEvent{
 				Channel: "#dev",
 				Members: testMembers(t, sess, s, "testuser"),
+				At:      fixedTime,
+			},
+			domain.NamesEnd{
+				Channel: "#dev",
 				At:      fixedTime,
 			},
 			domain.Part{

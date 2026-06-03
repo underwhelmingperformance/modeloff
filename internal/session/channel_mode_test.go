@@ -46,6 +46,10 @@ func joinSetupEventsT(t *testing.T, sess *Session, bootAt time.Time, ch domain.C
 			Members: w.Members,
 			At:      fixedTime,
 		},
+		domain.NamesEnd{
+			Channel: ch,
+			At:      fixedTime,
+		},
 	}
 }
 

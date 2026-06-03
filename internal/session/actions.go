@@ -125,6 +125,11 @@ func (s *Session) joinAs(ctx context.Context, actor *domain.Instance, ch domain.
 			At:      now,
 		})
 
+		s.deliverToClient(ctx, actor.ID(), domain.NamesEnd{
+			Channel: ch,
+			At:      now,
+		})
+
 		if window.Topic != "" {
 			s.deliverToClient(ctx, actor.ID(), domain.TopicInfo{
 				Target:     ch,
@@ -208,7 +213,7 @@ func (s *Session) partAs(ctx context.Context, actor *domain.Instance, ch domain.
 		span.SetAttributes(attribute.String(observability.AttrInstanceID, string(actor.ID())))
 
 		if !window.Members.HasInstance(actor) {
-			return nil
+			return domain.NotOnChannelError{Channel: ch, Command: "PART", At: s.now()}
 		}
 
 		if err := s.removeMember(ctx, window, actor); err != nil {
@@ -509,7 +514,7 @@ func (s *Session) kickAs(ctx context.Context, actor, target *domain.Instance, ch
 		}
 
 		if !window.Members.HasInstance(target) {
-			return nil
+			return domain.UserNotInChannelError{Nick: targetNick, Channel: ch, Command: "KICK", At: s.now()}
 		}
 
 		if err := s.removeMember(ctx, window, target); err != nil {
@@ -544,6 +549,10 @@ func (s *Session) kickAs(ctx context.Context, actor, target *domain.Instance, ch
 // `INVITE` message. The channel event log is not touched and no
 // broadcast happens; other channel members are not told.
 //
+// A target nick already on the channel is refused with
+// [domain.UserOnChannelError] (RFC 2812 numeric 443
+// ERR_USERONCHANNEL) and nothing is recorded.
+//
 // An unknown target nick has no subscription to receive the
 // invite. The inviter gets a [domain.SystemNotice] in its place
 // so the chat-screen surfaces the missing-nick condition; the
@@ -575,6 +584,10 @@ func (s *Session) inviteAs(ctx context.Context, actor *domain.Instance, target d
 			if err := s.requireChannelOp(actor, window, "INVITE", ch); err != nil {
 				return err
 			}
+		}
+
+		if _, alreadyMember := window.Members.GetByNick(target); alreadyMember {
+			return domain.UserOnChannelError{Nick: target, Channel: ch, At: s.now()}
 		}
 
 		window.InvitedNicks.Add(target)

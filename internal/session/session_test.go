@@ -536,6 +536,10 @@ func TestSession_Join(t *testing.T) {
 				Members: members,
 				At:      fixedTime,
 			},
+			domain.NamesEnd{
+				Channel: "#general",
+				At:      fixedTime,
+			},
 		}, collectEmittedEvents(t, sess))
 
 		ch, err := sess.loadChannelWindow(ctx, "#general")
@@ -635,6 +639,10 @@ func TestSession_JoinAutojoinChannels_populates_user_join_times(t *testing.T) {
 					Members: members(ch),
 					At:      fixedTime,
 				},
+				domain.NamesEnd{
+					Channel: ch,
+					At:      fixedTime,
+				},
 			)
 		}
 
@@ -685,6 +693,10 @@ func TestSession_JoinAutojoinChannels_emits_join_events(t *testing.T) {
 				domain.NamesReplyEvent{
 					Channel: ch,
 					Members: members(ch),
+					At:      fixedTime,
+				},
+				domain.NamesEnd{
+					Channel: ch,
 					At:      fixedTime,
 				},
 			)
@@ -869,6 +881,10 @@ func TestSession_Connect_then_JoinAutojoin_stamps_UserJoinedAt(t *testing.T) {
 					Members: members(ch),
 					At:      fixedTime,
 				},
+				domain.NamesEnd{
+					Channel: ch,
+					At:      fixedTime,
+				},
 			)
 		}
 
@@ -917,6 +933,10 @@ func TestSession_Connect_Quit_Reconnect_omits_status_channel_from_autojoin(t *te
 			domain.NamesReplyEvent{
 				Channel: "#general",
 				Members: generalMembers,
+				At:      fixedTime,
+			},
+			domain.NamesEnd{
+				Channel: "#general",
 				At:      fixedTime,
 			},
 		}, collectEmittedEvents(t, sess1))
@@ -1119,6 +1139,10 @@ func TestSession_Quit_appends_channel_quit_events_and_saves_autojoin(t *testing.
 					Members: entry.members,
 					At:      fixedTime,
 				},
+				domain.NamesEnd{
+					Channel: entry.ch,
+					At:      fixedTime,
+				},
 			)
 		}
 		require.Equal(t, expected, collectEmittedEvents(t, sess))
@@ -1162,6 +1186,10 @@ func TestSession_Quit_removes_user_from_channel_members(t *testing.T) {
 				Members: generalMembers,
 				At:      fixedTime,
 			},
+			domain.NamesEnd{
+				Channel: "#general",
+				At:      fixedTime,
+			},
 		}, collectEmittedEvents(t, sess))
 
 		ch, err := sess.loadChannelWindow(ctx, "#general")
@@ -1197,6 +1225,10 @@ func TestSession_Quit_clears_in_memory_channels(t *testing.T) {
 			domain.NamesReplyEvent{
 				Channel: "#general",
 				Members: generalMembers,
+				At:      fixedTime,
+			},
+			domain.NamesEnd{
+				Channel: "#general",
 				At:      fixedTime,
 			},
 		}, collectEmittedEvents(t, sess))
@@ -1308,6 +1340,10 @@ func TestSession_user_state_triple_stays_consistent(t *testing.T) {
 				Members: generalMembers1,
 				At:      fixedTime,
 			},
+			domain.NamesEnd{
+				Channel: "#general",
+				At:      fixedTime,
+			},
 			domain.Part{
 				Target:   "#general",
 				Nick:     "testuser",
@@ -1324,6 +1360,10 @@ func TestSession_user_state_triple_stays_consistent(t *testing.T) {
 			domain.NamesReplyEvent{
 				Channel: "#general",
 				Members: generalMembers2,
+				At:      fixedTime,
+			},
+			domain.NamesEnd{
+				Channel: "#general",
 				At:      fixedTime,
 			},
 			domain.NickChange{
@@ -1892,7 +1932,8 @@ func TestSession_JoinEvent_triggers_dispatch(t *testing.T) {
 		// time. Extracting the exact MemberList for an equality match
 		// would couple to its internals, so confirm one is present
 		// addressing the right channel and time, then assert the rest.
-		var sawNames bool
+		// Its RPL_ENDOFNAMES terminator is filtered the same way.
+		var sawNames, sawNamesEnd bool
 		rest := make([]domain.Event, 0, len(events))
 		for _, e := range events {
 			if n, ok := e.(domain.NamesReplyEvent); ok {
@@ -1903,9 +1944,17 @@ func TestSession_JoinEvent_triggers_dispatch(t *testing.T) {
 				continue
 			}
 
+			if n, ok := e.(domain.NamesEnd); ok {
+				require.Equal(t, domain.NamesEnd{Channel: "#general", At: fixedTime}, n)
+				sawNamesEnd = true
+
+				continue
+			}
+
 			rest = append(rest, e)
 		}
 		require.True(t, sawNames, "expected a NamesReplyEvent in the join burst")
+		require.True(t, sawNamesEnd, "expected a NamesEnd terminator in the join burst")
 
 		wantStarted := domain.ModelDispatchStarted{Instance: botty, At: fixedTime}
 		wantReply := domain.Message{
@@ -2570,6 +2619,10 @@ func TestSession_ChangeNick(t *testing.T) {
 				Members: generalMembers,
 				At:      fixedTime,
 			},
+			domain.NamesEnd{
+				Channel: "#general",
+				At:      fixedTime,
+			},
 			domain.NickChange{
 				InstanceID: user.ID(),
 				OldNick:    "testuser",
@@ -2794,7 +2847,7 @@ func TestSession_InviteAs_reuses_existing_instance(t *testing.T) {
 	})
 }
 
-func TestSession_InviteAs_existing_instance_is_idempotent(t *testing.T) {
+func TestSession_InviteAs_existing_member_returns_443(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
@@ -2805,8 +2858,12 @@ func TestSession_InviteAs_existing_instance_is_idempotent(t *testing.T) {
 	})
 	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
 
-	_, err := sess.inviteAs(ctx, userInstance(t, sess), "botty", "#general")
-	require.NoError(t, err)
+	// Inviting a nick that is already on the channel refuses with
+	// RFC 2812 numeric 443 (ERR_USERONCHANNEL) and leaves the
+	// channel membership untouched.
+	event, err := sess.inviteAs(ctx, userInstance(t, sess), "botty", "#general")
+	require.Nil(t, event)
+	require.Equal(t, domain.UserOnChannelError{Nick: "botty", Channel: "#general", At: fixedTime}, err)
 
 	inst, err := s.ResolveNick(ctx, "botty")
 	require.NoError(t, err)
