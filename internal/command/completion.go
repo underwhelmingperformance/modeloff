@@ -204,7 +204,7 @@ func commandSuggestions[C KindProvider](set Set[C], kind domain.ChannelKind, cap
 			continue
 		}
 
-		if !holds(caps, node.RequiredCapabilities) {
+		if !Holds(caps, node.RequiredCapabilities) {
 			continue
 		}
 
@@ -238,7 +238,7 @@ func VisibleCommands[C KindProvider](set Set[C], caps CapabilityHolder) []*Node[
 			continue
 		}
 
-		if !holds(caps, node.RequiredCapabilities) {
+		if !Holds(caps, node.RequiredCapabilities) {
 			continue
 		}
 

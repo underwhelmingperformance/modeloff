@@ -34,6 +34,8 @@ func BuildToolRegistry() (*modelclient.ToolRegistry, error) {
 				Description: current.ToolDescription(current.NewZero()),
 				Parameters:  current.ToolParameters(),
 			},
+			RequiredCapabilities: current.RequiredCapabilities,
+			RequiredKind:         current.RequiredKind,
 			Execute: func(ctx context.Context, tc modelclient.ToolContext, rawArgs json.RawMessage) (modelclient.ToolResultPayload, error) {
 				value, err := current.ToolValue(rawArgs)
 				if err != nil {

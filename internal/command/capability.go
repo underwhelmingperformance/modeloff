@@ -29,9 +29,9 @@ type noCapabilities struct{}
 
 func (noCapabilities) Has(Capability) bool { return false }
 
-// holds returns true if the holder grants every capability in caps.
+// Holds returns true if the holder grants every capability in caps.
 // A nil or empty caps slice is trivially satisfied.
-func holds(holder CapabilityHolder, caps []Capability) bool {
+func Holds(holder CapabilityHolder, caps []Capability) bool {
 	if len(caps) == 0 {
 		return true
 	}

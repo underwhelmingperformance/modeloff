@@ -200,7 +200,7 @@ func dispatchToInstance(
 
 		registry := MergeToolRegistries(
 			memoryToolRegistry(mem, memStore != nil && searchEnabled(memStore)),
-			tools,
+			tools.Filter(modelCaps{}, window.Kind()),
 		)
 
 		outcome, err := runTurn(ctx, apiClient, sess, caller, inst, channelName, prompt, history, events, registry, pacer)

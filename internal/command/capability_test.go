@@ -50,7 +50,7 @@ func TestHolds(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, holds(tt.holder, tt.caps))
+			require.Equal(t, tt.want, Holds(tt.holder, tt.caps))
 		})
 	}
 }

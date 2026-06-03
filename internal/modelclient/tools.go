@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/laney/modeloff/internal/api"
+	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/memory"
 	"github.com/laney/modeloff/internal/protocol"
@@ -67,9 +68,14 @@ type ToolResultPayload struct {
 }
 
 // ToolSpec describes a model-callable tool and how to execute it.
+// RequiredCapabilities and RequiredKind mirror the command grammar's
+// `caps:` / `kind:` tags so [ToolRegistry.Filter] can present a model
+// only the tools it can actually use in the current window.
 type ToolSpec struct {
-	Definition api.ToolDefinition
-	Execute    func(context.Context, ToolContext, json.RawMessage) (ToolResultPayload, error)
+	Definition           api.ToolDefinition
+	Execute              func(context.Context, ToolContext, json.RawMessage) (ToolResultPayload, error)
+	RequiredCapabilities []command.Capability
+	RequiredKind         *domain.ChannelKind
 }
 
 // ToolRegistry holds the available tools for a dispatch.
@@ -141,6 +147,32 @@ func (r *ToolRegistry) Find(name string) (ToolSpec, bool) {
 	spec, ok := r.byName[name]
 
 	return spec, ok
+}
+
+// Filter returns a registry holding only the tools a holder with
+// `caps` may call in a window of `kind`. A tool is dropped when the
+// holder lacks one of its RequiredCapabilities, or when its
+// RequiredKind names a different window. Tools with neither
+// requirement always pass.
+func (r *ToolRegistry) Filter(caps command.CapabilityHolder, kind domain.ChannelKind) *ToolRegistry {
+	if r == nil {
+		return nil
+	}
+
+	specs := make([]ToolSpec, 0, len(r.order))
+	for _, spec := range r.order {
+		if spec.RequiredKind != nil && *spec.RequiredKind != kind {
+			continue
+		}
+
+		if !command.Holds(caps, spec.RequiredCapabilities) {
+			continue
+		}
+
+		specs = append(specs, spec)
+	}
+
+	return NewToolRegistry(specs...)
 }
 
 func searchEnabled(store memory.Store) bool {
