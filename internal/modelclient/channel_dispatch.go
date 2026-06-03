@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -166,7 +167,14 @@ func dispatchToInstance(
 			joinedAt, _ = channels.Get(channelName)
 		}
 
-		history := make([]protocol.IRCMessage, 0, len(historyEvents))
+		type timedMessage struct {
+			at  time.Time
+			msg protocol.IRCMessage
+		}
+
+		var timeline []timedMessage
+
+		// The shared channel transcript: model-visible, join-scoped.
 		for _, se := range historyEvents {
 			if !se.Event.ModelVisible() {
 				continue
@@ -178,8 +186,32 @@ func dispatchToInstance(
 			}
 
 			if msg, ok := protocol.FromChannelEvent(se.Event); ok {
-				history = append(history, msg)
+				timeline = append(timeline, timedMessage{at: eventTime, msg: msg})
 			}
+		}
+
+		// The instance's own replies: its private experience, shown in
+		// every window it dispatches in so the transcript reads as if
+		// its quit never happened. They are not channel-broadcast, so
+		// the model-visibility and join-scope filters do not apply.
+		replies, repliesErr := sess.InstanceRepliesBefore(ctx, inst.ID(), nil, modelHistorySize)
+		if repliesErr != nil {
+			return errWithKind(fmt.Errorf("read replies for %s: %w", nick, repliesErr), observability.ErrorKindStore)
+		}
+
+		for _, se := range replies {
+			if msg, ok := protocol.FromChannelEvent(se.Event); ok {
+				timeline = append(timeline, timedMessage{at: domain.EventTime(se.Event), msg: msg})
+			}
+		}
+
+		sort.SliceStable(timeline, func(i, j int) bool {
+			return timeline[i].at.Before(timeline[j].at)
+		})
+
+		history := make([]protocol.IRCMessage, len(timeline))
+		for i, tm := range timeline {
+			history[i] = tm.msg
 		}
 
 		if err := ensure(ctx, inst.ModelID); err != nil {

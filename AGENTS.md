@@ -248,14 +248,25 @@ captures only events the user has seen this session, mirroring IRC's
 to 500 most-recent events from the channel log on each dispatch turn;
 today this includes events that pre-date the instance's join.
 
+A model's own point-to-point replies (`WHOIS`, `LIST`) are not channel
+activity, so they live in a private per-instance reply log
+(`store.AppendInstanceReply` / `store.InstanceRepliesBefore`), not the
+shared channel log. The dispatcher records a model issuer's reply
+there; a user issuer's is live-only, since the user is transient. Each
+dispatch turn merges the instance's own replies chronologically into
+its prompt transcript, so a model re-experiences its lookups across
+turns and reattach — as if its quit never happened — while another
+model in the channel never sees them.
+
 ### Out of scope, design accommodates
 
-- Folding the model `RunTool` path for `/list` and `/whois` onto the
-  shared reply. The user `/`-command path consumes `Response.Events`
-  directly through `chatcmd.sendCommand`; the model tool path still
-  re-walks the slice through `fetch` and re-logs the entries into the
-  channel. Removing those off-bus writes lands with the tool-surface
-  cleanup.
+- The remaining tool-surface protocol-routing cleanup: the model tool
+  path still resolves nicks client-side (`ResolveNick`) where the
+  dispatcher already resolves them server-side, reads the current topic
+  through `GetWindow`, and the chat-screen holds a concrete
+  `*session.Session` for its own command-reply renders. Routing those
+  through the protocol — and dropping the concrete session from the
+  chat-screen — is a follow-up.
 - Bootstrap-time, `joined_at`-scoped replay of recent events into a
   newly-allocated subscription, replacing the per-dispatch store read
   and the model-client's eager seed. Replay is for model-clients only;

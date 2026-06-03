@@ -371,8 +371,9 @@ func buildMessages(
 	}
 
 	appendMsg := func(m protocol.IRCMessage) {
-		// POKE bodies are session-side directives; emit as system role.
-		if m.Kind == protocol.KindPoke {
+		// POKE directives and SERVER_REPLY context lines are
+		// session-side; emit them as readable system-role text.
+		if m.Kind == protocol.KindPoke || m.Kind == protocol.KindServerReply {
 			addPart(roleSystem, m.Body)
 			return
 		}

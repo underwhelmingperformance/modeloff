@@ -149,33 +149,14 @@ func (c ListCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 }
 
 // RunTool implements ToolCommand. Models invoke `/list` as a
-// tool to enumerate the public channel directory. The replies
-// returned via `Response.Events` are persisted into the
-// invocation channel so the directory is durable in the events
-// log, and the same data rides back to the model in
-// `ToolResultPayload.Data` for the immediate-next-turn context.
+// tool to enumerate the public channel directory. The wire `LIST`
+// the dispatcher serves records the reply in the model's private
+// reply log — its own memory of the lookup — and the same data
+// rides back in `ToolResultPayload.Data` for the immediate turn.
 func (c ListCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolResultPayload {
 	entries, err := c.fetch(ctx, tc.Client)
 	if err != nil {
 		return modelclient.ToolResultPayload{OK: false, Error: err.Error()}
-	}
-
-	now := time.Now()
-	for _, e := range entries {
-		reply := domain.ListReply{
-			Channel: e.Channel,
-			Members: e.Members,
-			Topic:   e.Topic,
-			At:      now,
-		}
-
-		if _, logErr := tc.Session.LogEvent(ctx, tc.Channel, reply); logErr != nil {
-			return modelclient.ToolResultPayload{OK: false, Error: logErr.Error()}
-		}
-	}
-
-	if _, logErr := tc.Session.LogEvent(ctx, tc.Channel, domain.ListEnd{At: now}); logErr != nil {
-		return modelclient.ToolResultPayload{OK: false, Error: logErr.Error()}
 	}
 
 	return modelclient.ToolResultPayload{
@@ -946,11 +927,6 @@ func (c WhoisCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) m
 		return modelclient.ToolResultPayload{OK: false, Error: err.Error()}
 	}
 
-	whois.Target = tc.Channel
-	if _, err := tc.Session.LogEvent(ctx, tc.Channel, whois); err != nil {
-		return modelclient.ToolResultPayload{OK: false, Error: err.Error()}
-	}
-
 	return modelclient.ToolResultPayload{
 		OK:      true,
 		Summary: "returned details for " + c.Nick,
@@ -990,15 +966,10 @@ func (HelpCommand) Run(_ context.Context, _ Context) tea.Cmd {
 	return func() tea.Msg { return HelpResult{} }
 }
 
-// RunTool implements ToolCommand.
-func (HelpCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolResultPayload {
-	if _, err := tc.Session.LogEvent(ctx, tc.Channel, domain.Help{
-		Target: tc.Channel,
-		At:     time.Now(),
-	}); err != nil {
-		return modelclient.ToolResultPayload{OK: false, Error: err.Error()}
-	}
-
+// RunTool implements ToolCommand. The command list is a UI
+// affordance with no memory value, so it is returned to the model
+// for the immediate turn and never persisted.
+func (HelpCommand) RunTool(_ context.Context, _ modelclient.ToolContext) modelclient.ToolResultPayload {
 	return modelclient.ToolResultPayload{
 		OK:      true,
 		Summary: "available command tools include join, part, list, invite, kick, msg, nick, topic, me, whois, help, and quit",

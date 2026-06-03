@@ -182,6 +182,12 @@ const (
 	// KindPoke is a periodic nudge sent to models to prompt
 	// unsolicited conversation.
 	KindPoke MessageKind = "POKE"
+
+	// KindServerReply is a point-to-point server reply an instance
+	// received in answer to its own command (WHOIS, LIST). It carries
+	// the rendered reply in `Body` and is replayed to that instance as
+	// session-side context, never attributed to a peer.
+	KindServerReply MessageKind = "SERVER_REPLY"
 )
 
 // IRCMessage is the structured representation of an event sent to a
@@ -300,8 +306,50 @@ func FromChannelEvent(evt domain.PersistableEvent) (IRCMessage, bool) {
 			At:         e.At,
 		}, true
 
+	case domain.Whois:
+		return IRCMessage{
+			Kind: KindServerReply,
+			Body: whoisReplyLine(e),
+			At:   e.At,
+		}, true
+
+	case domain.ListReply:
+		return IRCMessage{
+			Kind: KindServerReply,
+			Body: listReplyLine(e),
+			At:   e.At,
+		}, true
+
 	default:
 		return IRCMessage{}, false
 	}
 }
 
+// whoisReplyLine renders a [domain.Whois] reply as the readable line
+// an instance re-reads in its own history.
+func whoisReplyLine(w domain.Whois) string {
+	line := fmt.Sprintf("whois %s: %s", w.Nick, w.ModelID)
+	if w.Persona != "" {
+		line += fmt.Sprintf(", persona %q", w.Persona)
+	}
+
+	if len(w.Channels) > 0 {
+		names := make([]string, len(w.Channels))
+		for i, ch := range w.Channels {
+			names[i] = string(ch)
+		}
+		line += ", in " + strings.Join(names, " ")
+	}
+
+	return line
+}
+
+// listReplyLine renders one [domain.ListReply] directory row.
+func listReplyLine(r domain.ListReply) string {
+	line := fmt.Sprintf("list: %s (%d members)", r.Channel, r.Members)
+	if r.Topic != "" {
+		line += ", topic: " + r.Topic
+	}
+
+	return line
+}

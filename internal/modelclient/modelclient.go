@@ -49,6 +49,12 @@ type Session interface {
 	// seeding.
 	DMEventsBefore(ctx context.Context, self, peer domain.InstanceID, before *int64, n int) ([]domain.StoredEvent, error)
 
+	// InstanceRepliesBefore returns up to `n` of the instance's own
+	// point-to-point replies (WHOIS, LIST) strictly before `before`,
+	// in chronological order. These are the instance's private memory
+	// of replies it received, merged into its prompt transcript.
+	InstanceRepliesBefore(ctx context.Context, id domain.InstanceID, before *int64, n int) ([]domain.StoredEvent, error)
+
 	// LoadChannelWindow loads the addressable `*ChannelWindow` row
 	// the prompt-assembly and instance-resolution paths use.
 	LoadChannelWindow(ctx context.Context, name domain.ChannelName) (*domain.ChannelWindow, error)

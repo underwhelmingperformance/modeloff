@@ -74,6 +74,14 @@ type Store interface {
 	// (the user's [domain.InstanceID] is empty by convention).
 	DMEventsBefore(ctx context.Context, self, peer domain.InstanceID, before *int64, n int) ([]domain.StoredEvent, error)
 
+	// AppendInstanceReply records a point-to-point reply (WHOIS,
+	// LIST) in the instance's private reply log; InstanceRepliesBefore
+	// reads it back in chronological order. This is an instance's own
+	// memory of replies it received, replayed only into its own
+	// prompt — never the shared channel log.
+	AppendInstanceReply(ctx context.Context, id domain.InstanceID, event domain.PersistableEvent) (int64, error)
+	InstanceRepliesBefore(ctx context.Context, id domain.InstanceID, before *int64, n int) ([]domain.StoredEvent, error)
+
 	// Model instances.
 	//
 	// The store is the sole authority for `*domain.Instance`
@@ -586,6 +594,12 @@ func (s *Session) DMEventsBefore(ctx context.Context, self, peer domain.Instance
 	return s.store.DMEventsBefore(ctx, self, peer, before, n)
 }
 
+// InstanceRepliesBefore returns up to `n` of the instance's own
+// replies strictly before `before`, in chronological order.
+func (s *Session) InstanceRepliesBefore(ctx context.Context, id domain.InstanceID, before *int64, n int) ([]domain.StoredEvent, error) {
+	return s.store.InstanceRepliesBefore(ctx, id, before, n)
+}
+
 // LookupClient returns the registered [protocol.Client] handle
 // for the given identity, or nil if no subscription is registered.
 // Returns the bare subscription envelope for the user-client and
@@ -1079,6 +1093,34 @@ func (s *Session) appendEvent(ctx context.Context, ch domain.ChannelName, event 
 	}
 }
 
+// persistInstanceReplies records a model issuer's point-to-point
+// reply events in its private reply log, so it re-reads them as its
+// own experience on later turns. A user issuer is transient: it sees
+// the reply live and persists nothing.
+func (s *Session) persistInstanceReplies(ctx context.Context, c protocol.Client, events []domain.ProtocolEvent) {
+	if c.Identity() == protocol.UserClientID {
+		return
+	}
+
+	id := domain.InstanceID(c.Identity())
+	for _, ev := range events {
+		if reply, ok := ev.(domain.PersistableEvent); ok {
+			s.appendInstanceReply(ctx, id, reply)
+		}
+	}
+}
+
+// appendInstanceReply best-effort persists one reply to the
+// instance's private log. A failed write is logged and counted but
+// does not fail the command: the reply was already delivered live,
+// and only the instance's durable memory of it is lost.
+func (s *Session) appendInstanceReply(ctx context.Context, id domain.InstanceID, event domain.PersistableEvent) {
+	if _, err := s.store.AppendInstanceReply(ctx, id, event); err != nil {
+		slog.Default().ErrorContext(ctx, "append instance reply", "instance_id", id, "error", err)
+		s.recordInstancePersistenceFailure(ctx, id)
+	}
+}
+
 // recordPersistenceFailure increments the persistence-failures
 // counter and lets the surrounding slog at the [appendEvent]
 // call-site narrate the cause for operators. The user-facing
@@ -1091,6 +1133,15 @@ func (s *Session) recordPersistenceFailure(ctx context.Context, ch domain.Channe
 	if s.persistenceFailures != nil {
 		s.persistenceFailures.Add(ctx, 1,
 			metric.WithAttributes(attribute.String(observability.AttrChannel, string(ch))))
+	}
+}
+
+// recordInstancePersistenceFailure increments the persistence-failures
+// counter tagged with the instance whose reply-log write failed.
+func (s *Session) recordInstancePersistenceFailure(ctx context.Context, id domain.InstanceID) {
+	if s.persistenceFailures != nil {
+		s.persistenceFailures.Add(ctx, 1,
+			metric.WithAttributes(attribute.String(observability.AttrInstanceID, string(id))))
 	}
 }
 

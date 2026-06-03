@@ -40,6 +40,17 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS idx_events_channel_id
     ON events (channel, id);
 
+CREATE TABLE IF NOT EXISTS instance_replies (
+    id          INTEGER PRIMARY KEY,
+    instance_id TEXT NOT NULL,
+    type        TEXT NOT NULL,
+    data        TEXT NOT NULL,
+    at          TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_instance_replies_instance_id
+    ON instance_replies (instance_id, id);
+
 CREATE TABLE IF NOT EXISTS instances (
     instance_id TEXT PRIMARY KEY,
     nick        TEXT NOT NULL,
@@ -614,6 +625,61 @@ func (s *SQLiteStore) EventsBefore(ctx context.Context, ch domain.ChannelName, b
 						SELECT id, data FROM events WHERE channel = ? AND id < ?
 						ORDER BY id DESC LIMIT ?
 					) ORDER BY id ASC`, []any{ch, *before, n}
+			}
+
+			got, err := queryRows(ctx, s.db, query, args, storedEventRow)
+			if err != nil {
+				return err
+			}
+
+			events = got
+			return nil
+		})
+
+	return events, err
+}
+
+// AppendInstanceReply records a point-to-point reply — a numeric the
+// instance received in answer to its own command (WHOIS, LIST) — in
+// the instance's private reply log. This is the instance's own
+// memory: it replays only into that instance's prompt, never into
+// the shared channel log where other instances would read it.
+func (s *SQLiteStore) AppendInstanceReply(ctx context.Context, id domain.InstanceID, event domain.PersistableEvent) (int64, error) {
+	var rowID int64
+	err := s.inSpan(ctx, "store.sqlite.append_instance_reply",
+		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
+		func(ctx context.Context, _ trace.Span) error {
+			data, err := domain.MarshalPersistableEvent(event)
+			if err != nil {
+				return fmt.Errorf("marshal event: %w", err)
+			}
+
+			rowID, err = execInsert(ctx, s.db,
+				`INSERT INTO instance_replies (instance_id, type, data, at) VALUES (?, ?, ?, ?)`,
+				id, domain.EventType(event), string(data), domain.EventTime(event).Format(time.RFC3339Nano))
+			return err
+		})
+
+	return rowID, err
+}
+
+// InstanceRepliesBefore returns up to `n` of the instance's own
+// replies strictly before `before` (or the most recent when `before`
+// is nil), in chronological order.
+func (s *SQLiteStore) InstanceRepliesBefore(ctx context.Context, id domain.InstanceID, before *int64, n int) ([]domain.StoredEvent, error) {
+	var events []domain.StoredEvent
+	err := s.inSpan(ctx, "store.sqlite.instance_replies_before",
+		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
+		func(ctx context.Context, _ trace.Span) error {
+			query, args := `SELECT id, data FROM (
+					SELECT id, data FROM instance_replies WHERE instance_id = ?
+					ORDER BY id DESC LIMIT ?
+				) ORDER BY id ASC`, []any{id, n}
+			if before != nil {
+				query, args = `SELECT id, data FROM (
+						SELECT id, data FROM instance_replies WHERE instance_id = ? AND id < ?
+						ORDER BY id DESC LIMIT ?
+					) ORDER BY id ASC`, []any{id, *before, n}
 			}
 
 			got, err := queryRows(ctx, s.db, query, args, storedEventRow)

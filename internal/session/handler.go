@@ -86,9 +86,9 @@ func (s *Session) dispatchCommand(ctx context.Context, c protocol.Client, cmd pr
 	case protocol.Nick:
 		return s.handleNick(ctx, c, cmd)
 	case protocol.Whois:
-		return s.handleWhois(ctx, cmd)
+		return s.handleWhois(ctx, c, cmd)
 	case protocol.List:
-		return s.handleList(ctx)
+		return s.handleList(ctx, c)
 	case protocol.AddModel:
 		return s.handleAddModel(ctx, c, cmd)
 	case protocol.Quit:
@@ -258,7 +258,7 @@ func (s *Session) handleNick(ctx context.Context, c protocol.Client, cmd protoco
 // later renames or persona edits don't retro-edit historical
 // renderings. Renderers consume the event directly without going
 // back to the store.
-func (s *Session) handleWhois(ctx context.Context, cmd protocol.Whois) (protocol.Response, error) {
+func (s *Session) handleWhois(ctx context.Context, c protocol.Client, cmd protocol.Whois) (protocol.Response, error) {
 	inst, err := s.dispatcherResolveNick(ctx, cmd.Nick)
 	if err != nil {
 		return commandResult(err)
@@ -278,7 +278,10 @@ func (s *Session) handleWhois(ctx context.Context, cmd protocol.Whois) (protocol
 		}
 	}
 
-	return protocol.Response{Events: []domain.ProtocolEvent{whois}}, nil
+	events := []domain.ProtocolEvent{whois}
+	s.persistInstanceReplies(ctx, c, events)
+
+	return protocol.Response{Events: events}, nil
 }
 
 // handleList enumerates the channel directory and returns one
@@ -287,7 +290,7 @@ func (s *Session) handleWhois(ctx context.Context, cmd protocol.Whois) (protocol
 // `RPL_LIST` / 323 `RPL_LISTEND`). The `+s` and `+p` filters live
 // in [Session.DirectoryChannels] so the wire reply matches the
 // chat-screen's directory view exactly.
-func (s *Session) handleList(ctx context.Context) (protocol.Response, error) {
+func (s *Session) handleList(ctx context.Context, c protocol.Client) (protocol.Response, error) {
 	channels, err := s.DirectoryChannels(ctx)
 	if err != nil {
 		return commandResult(err)
@@ -303,6 +306,12 @@ func (s *Session) handleList(ctx context.Context) (protocol.Response, error) {
 			At:      now,
 		})
 	}
+
+	// The directory rows are the lookup result the model remembers; the
+	// closing ListEnd is a wire terminator that carries no transcript
+	// line, so it stays out of the reply log.
+	s.persistInstanceReplies(ctx, c, events)
+
 	events = append(events, domain.ListEnd{At: now})
 
 	return protocol.Response{Events: events}, nil
