@@ -181,8 +181,8 @@ func (c *serverClient) canReceive(ev domain.ProtocolEvent, actorTargets []domain
 
 	// Server-narrated and lifecycle events (FocusChannelEvent,
 	// Help, Whois, ListReply, ListEnd, SystemNotice, CommandError,
-	// UsageHint, PersonasList, Killed) have no model-side
-	// rendering; they belong to the chat-screen.
+	// UsageHint, PersonasList) have no model-side rendering; they
+	// belong to the chat-screen.
 	return false
 }
 

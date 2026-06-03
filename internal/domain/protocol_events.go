@@ -95,23 +95,6 @@ func (UnknownConfigKeyError) domainEvent()    {}
 func (InvalidDurationError) domainEvent()     {}
 func (UnsupportedModelError) domainEvent()    {}
 
-// `Killed` is a protocol-only event (no domain-side persistence).
-func (Killed) isProtocolEvent() {}
-
-// Killed is the target-side notification emitted on a client's
-// Events channel as the final wire event before the server reaps
-// its subscription, in response to an operator-issued KILL
-// (RFC 2812 §3.7.1). Renderers display it as the scrollback's last
-// word; peers in shared channels separately receive a QUIT line
-// with the conventional "Killed by <oper> (<reason>)" reason.
-type Killed struct {
-	By     Nick
-	Reason string
-	At     time.Time
-}
-
-func (Killed) domainEvent() {}
-
 // NotOperatorError is the protocol-shaped form of ERR_NOPRIVILEGES
 // (RFC 2812 numeric 481). The dispatcher returns it from operator-
 // gated handlers ([protocol.AddModel], [protocol.Kill]) in

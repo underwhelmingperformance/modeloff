@@ -111,7 +111,6 @@ func TestEvent_sum_membership(t *testing.T) {
 		{"unknown_config_key_error", domain.UnknownConfigKeyError{Key: "bogus"}},
 		{"invalid_duration_error", domain.InvalidDurationError{Input: "5xq", Err: fmt.Errorf("bad")}},
 		{"unsupported_model_error", domain.UnsupportedModelError{ModelID: "test/model"}},
-		{"killed", protocol.Killed{By: nick, Reason: "spam", At: at}},
 	}
 
 	for _, tc := range cases {
@@ -150,8 +149,7 @@ func TestEvent_sum_membership(t *testing.T) {
 				domain.UnknownCommandError,
 				domain.UnknownConfigKeyError,
 				domain.InvalidDurationError,
-				domain.UnsupportedModelError,
-				protocol.Killed:
+				domain.UnsupportedModelError:
 				// member of the sum
 			default:
 				t.Fatalf("event %T is not a member of the protocol Event sum", tc.event)

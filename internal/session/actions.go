@@ -788,13 +788,10 @@ func (s *Session) addModelAs(
 }
 
 // killAs is the operator-issued forced disconnect of `target` per
-// RFC 2812 §3.7.1. The target receives a single [domain.Killed]
-// event on its own Events channel before its subscription is
-// reaped — that line is the renderer's last word, the
-// notification "you were KILLed by X". Peers in shared channels
-// separately receive a wire `QUIT` with the conventional
-// `"Killed by <oper> (<reason>)"` body, emitted by `quitAs`'s
-// model-actor branch.
+// RFC 2812 §3.7.1. The kill is announced exactly as IRC frames it: a
+// killed client is seen to QUIT, so `quitAs`'s model-actor branch
+// broadcasts a wire `QUIT` to peers in shared channels with the
+// conventional `"Killed by <oper> (<reason>)"` body.
 //
 // The dispatcher's `handleKill` is the only caller and runs the
 // operator gate, so this method assumes `oper` has the
@@ -806,24 +803,6 @@ func (s *Session) killAs(ctx context.Context, oper, target *domain.Instance, rea
 	}
 
 	body := fmt.Sprintf("Killed by %s (%s)", oper.Nick(), reason)
-
-	sc := s.lookupClientHandle(protocol.ClientID(target.ID()))
-	if sc != nil {
-		select {
-		case sc.events <- protocol.Delivery{
-			Event: domain.Killed{
-				By:     oper.Nick(),
-				Reason: reason,
-				At:     s.now(),
-			},
-			SpanCtx: trace.SpanContextFromContext(ctx),
-		}:
-		case <-sc.done:
-			// Target was concurrently reaped; the Killed line
-			// belongs to a subscription that no longer exists.
-		case <-ctx.Done():
-		}
-	}
 
 	return s.quitAs(ctx, target, body)
 }

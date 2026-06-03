@@ -239,6 +239,44 @@ func TestQuitAs_model_actor(t *testing.T) {
 	})
 }
 
+// TestKillAs_announces_as_quit pins the kill announcement: an
+// operator KILL is seen by peers exactly as RFC 2812 frames it — a
+// QUIT carrying the "Killed by <oper> (<reason>)" reason. There is no
+// separate notification to the killed model, which is being reaped.
+func TestKillAs_announces_as_quit(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		bootAt := time.Now()
+		sess, s := newTestSession(t)
+		ctx := t.Context()
+
+		botty := seedInstance(t, sess, s, instanceSpec{
+			Nick:     "botty",
+			ModelID:  "test/model",
+			Channels: testChannels("#dev"),
+		})
+		seedChannelWithMembers(t, sess, s, "#dev", "testuser", "botty")
+
+		resp, err := sess.Handle(ctx, userClient(t, sess), protocol.Kill{Nick: "botty", Reason: "spam"})
+		require.NoError(t, err)
+		require.NoError(t, resp.Err)
+		synctest.Wait()
+
+		require.ElementsMatch(t, []domain.Event{
+			bootstrapModeChange(t, sess, bootAt),
+			domain.Quit{
+				Nick:       "botty",
+				InstanceID: botty.ID(),
+				Message:    "Killed by testuser (spam)",
+				At:         fixedTime,
+				Instance:   botty,
+			},
+		}, collectEmittedEvents(t, sess))
+
+		_, err = s.ResolveNick(ctx, "botty")
+		require.Error(t, err)
+	})
+}
+
 // TestQuitAs_delivery_targets_intersect_per_recipient pins the
 // privacy property of the actor-scoped fan-out. Actor `alpha` is
 // in #shared and #private; recipient `beta` is in #shared and

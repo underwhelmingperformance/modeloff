@@ -111,10 +111,9 @@ type Quit struct {
 
 // Kill is a server-initiated disconnect of another client per
 // RFC 2812 §3.7.1. Operator-gated: the issuing client must carry
-// [domain.ModeOperator]. On success the dispatcher emits a
-// [domain.Killed] event on the killed client's Events channel,
-// broadcasts QUIT to peers with the conventional "Killed by
-// <oper> (<reason>)" reason, and reaps the subscription.
+// [domain.ModeOperator]. The killed client is seen to QUIT — the
+// dispatcher broadcasts QUIT to peers with the conventional
+// "Killed by <oper> (<reason>)" reason and reaps the subscription.
 type Kill struct {
 	Nick   domain.Nick
 	Reason string

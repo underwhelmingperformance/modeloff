@@ -7,11 +7,6 @@ import "github.com/laney/modeloff/internal/domain"
 // member types.
 type Event = domain.ProtocolEvent
 
-// Killed is emitted on the killed client's Events channel as the
-// final wire event before the server closes it. Renderers display it
-// as the scrollback's last word.
-type Killed = domain.Killed
-
 // NotOperatorError is the protocol-shaped form of ERR_NOPRIVILEGES
 // (RFC 2812 numeric 481). Returned in [Response.Err] when an
 // operator-gated command was rejected for lack of [ModeOperator],
