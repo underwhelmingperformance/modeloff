@@ -67,18 +67,6 @@ type HelpResult struct{}
 // ClearResult signals that the current window should be cleared.
 type ClearResult struct{}
 
-// WhoisResult is the chat-screen-side dispatch marker for a
-// `/whois` reply. It embeds the dispatcher's [domain.Whois]
-// snapshot so the renderer reads the snapshot fields directly,
-// and the wrapping struct keeps the result distinguishable from
-// a `Whois` event arriving on the protocol bus through any
-// other path. `/whois` produces an `UnknownNickError` when the
-// nick does not resolve rather than a `WhoisResult` carrying a
-// zero snapshot.
-type WhoisResult struct {
-	domain.Whois
-}
-
 // TopicInfoResult carries the current topic metadata for
 // display. `Window` is the typed `*ChannelWindow` so the UI
 // can read `Topic` / `TopicSetBy` / `TopicSetAt` directly off
@@ -88,13 +76,6 @@ type WhoisResult struct {
 type TopicInfoResult struct {
 	Window *domain.ChannelWindow
 }
-
-// ListResult is the chat-screen-side dispatch marker for a
-// `/list` reply. The named-slice shape keeps the result
-// distinguishable from a bare `[]ChannelDirectoryEntry` in a
-// type switch while letting handlers iterate it directly without
-// an `.Entries` indirection.
-type ListResult []domain.ChannelDirectoryEntry
 
 // UsageError indicates a command was invoked incorrectly. Usage
 // carries the human-readable usage string (e.g. "/add-model <model-id>").
@@ -192,23 +173,26 @@ type protocolCommand interface {
 	ToCommand(rc Context) (protocol.Command, error)
 }
 
+// ReplyEvents carries the full slice of confirmation events the
+// dispatcher synthesised in `Response.Events`. The chat-screen
+// unpacks it into a [tea.Sequence] that re-delivers each event as
+// its own message, so every confirmation reaches the per-event
+// render arms in dispatcher order — for `PrivMsg` and `Action` the
+// canonical [domain.Message]; for `Invite` a [domain.ModelInvited]
+// or a [domain.SystemNotice]; for `Whois` a [domain.Whois]; for
+// `List` one [domain.ListReply] per channel followed by a closing
+// [domain.ListEnd].
+type ReplyEvents []domain.ProtocolEvent
+
 // sendCommand routes a migrated command through the protocol
 // client. On any failure (translation, transport, or the
 // dispatcher's typed `Response.Err`) it returns a
-// [domain.ErrorEvent] for the chat-screen to render. On success
-// it returns the first event the dispatcher synthesised in
-// `Response.Events` — for `PrivMsg` and `Action` the canonical
-// [domain.Message] the session persisted, which the chat-screen
-// renders inline; for `Invite` a [domain.ModelInvited] (or a
-// [domain.SystemNotice] when the target nick is unknown). Commands
-// whose handler does not populate `Response.Events` (Topic, Kick,
-// Nick, …) return `nil`, leaving the caller to follow up with
-// whatever post-success `tea.Msg` it wants.
-//
-// Only `resp.Events[0]` is surfaced, so a handler returning
-// multiple events would lose all but the first; today only `List`
-// produces several, and it uses its own `fetch` path rather than
-// `sendCommand`.
+// [domain.ErrorEvent] for the chat-screen to render. On success it
+// returns a [ReplyEvents] carrying every event the dispatcher
+// synthesised in `Response.Events`. Commands whose handler does not
+// populate `Response.Events` (Join, Topic, Kick, Nick, …) return
+// `nil`, leaving the caller to follow up with whatever post-success
+// `tea.Msg` it wants.
 func sendCommand(ctx context.Context, rc Context, c protocolCommand, operation string) tea.Msg {
 	cmd, err := c.ToCommand(rc)
 	if err != nil {
@@ -225,7 +209,7 @@ func sendCommand(ctx context.Context, rc Context, c protocolCommand, operation s
 	}
 
 	if len(resp.Events) > 0 {
-		return resp.Events[0]
+		return ReplyEvents(resp.Events)
 	}
 
 	return nil
@@ -251,7 +235,11 @@ func toolContext(tc modelclient.ToolContext) Context {
 // protocol client and assembles the [modelclient.ToolResultPayload]
 // the LLM tool-result protocol expects. Errors at any of the three
 // failure points (translation, transport, dispatcher) collapse to
-// `OK: false` with the error string. Success returns `OK: true`
+// `OK: false` with the error string. A failure folded into
+// `Response.Events` as a [domain.SystemNotice], where `Response.Err`
+// is nil — the shape `inviteAs` uses for an unknown target nick —
+// also collapses to `OK: false`, carrying the notice text so the
+// model sees what went wrong. Success returns `OK: true`
 // with the caller-supplied summary so the model sees a stable
 // confirmation line.
 //
@@ -273,7 +261,26 @@ func sendToolCommand(ctx context.Context, tc modelclient.ToolContext, c protocol
 		return modelclient.ToolResultPayload{OK: false, Error: resp.Err.Error()}
 	}
 
+	if notice, ok := replyFailureNotice(resp.Events); ok {
+		return modelclient.ToolResultPayload{OK: false, Error: notice.Text}
+	}
+
 	return modelclient.ToolResultPayload{OK: true, Summary: summary}
+}
+
+// replyFailureNotice reports whether the dispatcher folded a
+// failure into `Response.Events` as a [domain.SystemNotice] — the
+// shape `inviteAs` uses for an unknown target nick, where the
+// command itself succeeds (`Response.Err == nil`) but the action
+// did not take effect.
+func replyFailureNotice(events []domain.ProtocolEvent) (domain.SystemNotice, bool) {
+	for _, evt := range events {
+		if notice, ok := evt.(domain.SystemNotice); ok {
+			return notice, true
+		}
+	}
+
+	return domain.SystemNotice{}, false
 }
 
 func usageCmd(cmd, usage string) tea.Cmd {

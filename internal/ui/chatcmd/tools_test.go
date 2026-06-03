@@ -318,6 +318,23 @@ func TestRunTool_invite_missing_nick_returns_error(t *testing.T) {
 	}, result)
 }
 
+func TestRunTool_invite_unknown_nick_reports_failure(t *testing.T) {
+	sess, user := newToolTestSession(t)
+
+	require.NoError(t, user.Join(t.Context(), domain.ChannelName("#general")))
+	tc := userToolContext(sess, user, "#general")
+
+	v := toolValue(t, "invite", `{"nick": "nobody"}`)
+
+	tool, ok := v.(ToolCommand)
+	require.True(t, ok, "InviteCommand should implement ToolCommand")
+
+	require.Equal(t, modelclient.ToolResultPayload{
+		OK:    false,
+		Error: "no such nick: nobody",
+	}, tool.RunTool(t.Context(), tc))
+}
+
 func TestRunTool_msg_sends_to_nick(t *testing.T) {
 	sess, user := newToolTestSession(t)
 

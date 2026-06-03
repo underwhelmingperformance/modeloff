@@ -504,7 +504,7 @@ func TestChatScreen_list_command(t *testing.T) {
 	tm.WaitFor("#random")
 
 	tm.Submit("/list")
-	tm.WaitFor("#general", "#random")
+	tm.WaitFor("#general", "#random", "End of /list")
 }
 
 func TestChatScreen_list_empty(t *testing.T) {

@@ -139,16 +139,12 @@ func (ListCommand) ToCommand(_ Context) (protocol.Command, error) {
 
 // Run implements Command. The dispatcher returns one
 // `domain.ListReply` per channel followed by a closing
-// `domain.ListEnd` in `Response.Events`; this method collects
-// the replies into a `ListResult` for the chat-screen handler.
+// `domain.ListEnd` in `Response.Events`; `sendCommand` delivers
+// the whole slice to the chat-screen, which renders each event
+// through the generic bus-event path.
 func (c ListCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	return func() tea.Msg {
-		entries, err := c.fetch(ctx, rc.Client)
-		if err != nil {
-			return errorEvent("list", err)
-		}
-
-		return ListResult(entries)
+		return sendCommand(ctx, rc, c, "list")
 	}
 }
 
@@ -934,18 +930,12 @@ func (c WhoisCommand) ToCommand(_ Context) (protocol.Command, error) {
 }
 
 // Run implements Command. The dispatcher returns the canonical
-// `domain.Whois` snapshot in `Response.Events`; this method wraps
-// it in a `WhoisResult` so the chat-screen's type switch routes
-// the reply through its dedicated handler rather than the
-// generic Whois-event path on the protocol bus.
+// `domain.Whois` snapshot in `Response.Events`; `sendCommand`
+// delivers it to the chat-screen, which renders the snapshot
+// through the generic bus-event path.
 func (c WhoisCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	return func() tea.Msg {
-		whois, err := c.fetch(ctx, rc.Client, domain.Nick(c.Nick))
-		if err != nil {
-			return errorEvent("whois", err)
-		}
-
-		return WhoisResult{Whois: whois}
+		return sendCommand(ctx, rc, c, "whois")
 	}
 }
 

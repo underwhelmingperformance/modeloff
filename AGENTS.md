@@ -250,11 +250,12 @@ today this includes events that pre-date the instance's join.
 
 ### Out of scope, design accommodates
 
-- A single multi-event `Response.Events` reply stream. The dispatcher
-  populates `Response.Events`, but `chatcmd.sendCommand` surfaces only
-  the first element, so `List` (and `Whois`) use a bespoke `fetch` path
-  that re-walks the slice. Consolidating every consumer onto one
-  multi-event reply is pending.
+- Folding the model `RunTool` path for `/list` and `/whois` onto the
+  shared reply. The user `/`-command path consumes `Response.Events`
+  directly through `chatcmd.sendCommand`; the model tool path still
+  re-walks the slice through `fetch` and re-logs the entries into the
+  channel. Removing those off-bus writes lands with the tool-surface
+  cleanup.
 - Bootstrap-time, `joined_at`-scoped replay of recent events into a
   newly-allocated subscription, replacing the per-dispatch store read
   and the model-client's eager seed. Replay is for model-clients only;

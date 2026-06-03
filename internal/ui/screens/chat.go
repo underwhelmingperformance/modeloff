@@ -451,25 +451,8 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 			At:         time.Now(),
 		})
 
-	case chatcmd.WhoisResult:
-		return s.handleWhoisResult(msg)
-
-	case chatcmd.ListResult:
-		now := time.Now()
-		cmds := make([]tea.Cmd, 0, len(msg)+1)
-
-		for _, entry := range msg {
-			cmds = append(cmds, s.logAndShow(domain.ListReply{
-				Channel: entry.Channel,
-				Members: entry.Members,
-				Topic:   entry.Topic,
-				At:      now,
-			}))
-		}
-
-		cmds = append(cmds, s.logAndShow(domain.ListEnd{At: now}))
-
-		return s, tea.Sequence(cmds...)
+	case chatcmd.ReplyEvents:
+		return s, s.deliverReplyEvents(msg)
 
 	case chatcmd.UsageError:
 		return s, s.logAndShow(domain.UsageHint{
@@ -657,10 +640,10 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	case domain.ModelInvited:
 		// Echo path for the inviter's own `/invite` result. `session.handleInvite`
 		// returns the resulting `ModelInvited` in `protocol.Response.Events`,
-		// which `chatcmd.sendCommand` unwraps as a `tea.Msg`. The session bus
-		// does not deliver this event back to the inviter, so this is the
-		// only way the inviter sees the RPL_INVITING-equivalent line in
-		// scrollback.
+		// which `chatcmd.sendCommand` delivers to the chat-screen via
+		// `chatcmd.ReplyEvents`. The session bus does not deliver this event
+		// back to the inviter, so this is the only way the inviter sees the
+		// RPL_INVITING-equivalent line in scrollback.
 		s.bufferEvent(msg)
 		return s.handleModelInvitedEvent(msg)
 
@@ -668,11 +651,31 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		// Command-reply feedback path for the issuing client. A handler
 		// such as `session.handleInvite` returns a `SystemNotice` (for a
 		// failed `/invite`, "no such nick: <target>") in
-		// `protocol.Response.Events`, which `chatcmd.sendCommand` unwraps
-		// as a `tea.Msg`. The session bus does not deliver this notice
-		// back over the protocol feed, so this arm renders it on the
+		// `protocol.Response.Events`, which `chatcmd.sendCommand` delivers
+		// via `chatcmd.ReplyEvents`. The session bus does not deliver this
+		// notice back over the protocol feed, so this arm renders it on the
 		// notice's own target channel.
 		return s, s.logAndShowOn(msg.Target, msg)
+
+	case domain.Whois:
+		// Command-reply feedback path for the issuing client's `/whois`.
+		// `session.handleWhois` returns the identity snapshot in
+		// `protocol.Response.Events`; `chatcmd.sendCommand` delivers it via
+		// `chatcmd.ReplyEvents`. The snapshot's `Target` is unset, so this
+		// arm picks the rendering window and keeps the audit trail.
+		return s.handleWhoisReply(msg)
+
+	case domain.ListReply:
+		// Command-reply feedback path for the issuing client's `/list`.
+		// `session.handleList` returns one `ListReply` per channel followed
+		// by a closing `ListEnd` in `protocol.Response.Events`;
+		// `chatcmd.sendCommand` delivers them in order via
+		// `chatcmd.ReplyEvents`. Each renders on the active channel through
+		// the generic bus-event path.
+		return s, s.logAndShow(msg)
+
+	case domain.ListEnd:
+		return s, s.logAndShow(msg)
 
 	case chatcmd.DMOpenedMsg:
 		return s.handleDMOpenedMsg(msg)
@@ -730,6 +733,21 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 // Tea runtime rather than bypassing it with a direct Update call.
 func msgCmd(msg tea.Msg) tea.Cmd {
 	return func() tea.Msg { return msg }
+}
+
+// deliverReplyEvents re-delivers each confirmation event from a
+// command's `protocol.Response.Events` as its own message, in
+// dispatcher order, so each lands on its per-event render arm. The
+// [tea.Sequence] preserves ordering — for `/list` the
+// `domain.ListReply` rows render before the closing
+// `domain.ListEnd`.
+func (s ChatScreen) deliverReplyEvents(events chatcmd.ReplyEvents) tea.Cmd {
+	cmds := make([]tea.Cmd, 0, len(events))
+	for _, event := range events {
+		cmds = append(cmds, msgCmd(event))
+	}
+
+	return tea.Sequence(cmds...)
 }
 
 func (s ChatScreen) completionSet() command.CompletionSet[chatcmd.CompletionContext] {
@@ -1115,26 +1133,25 @@ func (s ChatScreen) updateLogEntries() ChatScreen {
 	return s
 }
 
-// handleWhoisResult routes a `/whois` response. The dispatcher
+// handleWhoisReply routes a `/whois` response. The dispatcher
 // has already snapshotted the instance's identity surface into
-// `msg.Whois`; this method picks the rendering window and keeps
-// the audit trail. When the active window already is `&modeloff`,
-// a single persisted entry serves both roles; otherwise the
-// response shows ephemerally on the active window (in-memory
-// scrollback append, no persistence) and an audit copy is
-// persisted under `&modeloff` so the IRC-style server log
-// records every `/whois` the user ran.
-func (s ChatScreen) handleWhoisResult(msg chatcmd.WhoisResult) (ui.Model, tea.Cmd) {
+// `whois`; this method picks the rendering window and keeps the
+// audit trail. When the active window already is `&modeloff`, a
+// single persisted entry serves both roles; otherwise the response
+// shows ephemerally on the active window (in-memory scrollback
+// append, no persistence) and an audit copy is persisted under
+// `&modeloff` so the IRC-style server log records every `/whois`
+// the user ran.
+func (s ChatScreen) handleWhoisReply(whois domain.Whois) (ui.Model, tea.Cmd) {
 	if *s.active == domain.StatusChannelName {
-		whois := msg.Whois
 		whois.Target = domain.StatusChannelName
 		return s, s.logAndShow(whois)
 	}
 
-	activeWhois := msg.Whois
+	activeWhois := whois
 	activeWhois.Target = *s.active
 
-	statusWhois := msg.Whois
+	statusWhois := whois
 	statusWhois.Target = domain.StatusChannelName
 
 	s.appendToScrollback(*s.active, domain.StoredEvent{Event: activeWhois})
