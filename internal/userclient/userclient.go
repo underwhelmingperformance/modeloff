@@ -127,14 +127,6 @@ func (uc *UserClient) Events() <-chan protocol.Delivery {
 	return uc.sub.Events()
 }
 
-// HasMode reports whether the user-client carries the given mode
-// flag. The user-client is granted [domain.ModeOperator] at
-// attach time and carries it for the session's lifetime; no other
-// modes are tracked today.
-func (uc *UserClient) HasMode(m domain.Mode) bool {
-	return m == domain.ModeOperator
-}
-
 // Caps exposes the user-client's capabilities for the chatcmd
 // grammar's `caps:` filter. The operator bit is held for the
 // session's lifetime, so the visibility filter sees the full

@@ -48,10 +48,10 @@ func newFixture(t *testing.T) *fixture {
 	return &fixture{sess: sess, store: s, user: user}
 }
 
-func TestUserClient_attach_grants_operator(t *testing.T) {
+func TestUserClient_reports_operator_capability(t *testing.T) {
 	f := newFixture(t)
 
-	require.True(t, f.user.HasMode(domain.ModeOperator))
+	require.True(t, f.user.Caps().Has(protocol.CapOperator))
 	require.Equal(t, domain.Nick("testuser"), f.user.Nick())
 	require.Equal(t, protocol.UserClientID, f.user.Identity())
 }

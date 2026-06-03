@@ -51,7 +51,6 @@ func TestTestClient_New_applies_defaults(t *testing.T) {
 	require.Equal(t, protocol.ClientID("test-seedbot"), bot.Identity())
 	require.Equal(t, domain.Nick("seedbot"), bot.Instance().Nick())
 	require.Equal(t, domain.ModelID("test/model"), bot.Instance().ModelID)
-	require.False(t, bot.HasMode(domain.ModeOperator))
 	require.Nil(t, bot.Events())
 }
 
@@ -63,12 +62,10 @@ func TestTestClient_New_applies_options(t *testing.T) {
 		testclient.WithModelID("vendor/model"),
 		testclient.WithPersona("a curious bot"),
 		testclient.WithChannels("#general", "#random"),
-		testclient.WithInitialModes(domain.ModeOperator),
 	)
 
 	require.Equal(t, protocol.ClientID("inst-custom"), bot.Identity())
 	require.Equal(t, domain.ModelID("vendor/model"), bot.Instance().ModelID)
-	require.True(t, bot.HasMode(domain.ModeOperator))
 
 	channels := bot.Instance().Channels()
 	require.NotNil(t, channels)

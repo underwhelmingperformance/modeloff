@@ -20,8 +20,11 @@ func TestSession_User_returns_user_client_with_operator_mode(t *testing.T) {
 
 	require.NotNil(t, user)
 	require.Equal(t, protocol.UserClientID, user.Identity())
-	require.True(t, user.HasMode(domain.ModeOperator))
-	require.False(t, user.HasMode(domain.Mode('w')))
+
+	sc := sess.lookupClientHandle(protocol.UserClientID)
+	require.NotNil(t, sc)
+	require.True(t, sc.HasMode(domain.ModeOperator))
+	require.False(t, sc.HasMode(domain.Mode('w')))
 }
 
 func TestSession_User_Send_routes_through_Handle(t *testing.T) {
@@ -126,8 +129,7 @@ func TestSession_Subscribe_accepts_user_client_id(t *testing.T) {
 	require.NotNil(t, sub)
 	require.NotNil(t, sub.Events())
 
-	user := userClient(t, sess)
-	require.True(t, user.HasMode(domain.ModeOperator))
+	require.True(t, sess.idHasServerOper(protocol.UserClientID))
 }
 
 // subscribeFakeClient is the minimal [protocol.Client] satisfier
@@ -143,7 +145,6 @@ func (c *subscribeFakeClient) Send(_ context.Context, _ protocol.Command) (proto
 	return protocol.Response{}, nil
 }
 func (c *subscribeFakeClient) Events() <-chan protocol.Delivery { return nil }
-func (c *subscribeFakeClient) HasMode(_ domain.Mode) bool       { return false }
 func (c *subscribeFakeClient) Caps() command.CapabilityHolder   { return subscribeFakeCaps{} }
 
 type subscribeFakeCaps struct{}

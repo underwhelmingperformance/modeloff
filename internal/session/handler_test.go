@@ -22,18 +22,11 @@ var closedProtocolEvents = func() <-chan protocol.Delivery {
 }()
 
 // fakeClient is a minimal in-test [protocol.Client] for handler
-// tests. The dispatcher only reads `Identity()` and `HasMode()`, so
-// `Send` and `Events` are inert satisfiers of the interface.
+// tests. The dispatcher reads `Identity()`; operator capability is
+// read off the session-side `serverClient` keyed by that identity,
+// so `Send` and `Events` are inert satisfiers of the interface.
 type fakeClient struct {
-	id    protocol.ClientID
-	modes map[domain.Mode]struct{}
-}
-
-func newOperatorClient(id protocol.ClientID) *fakeClient {
-	return &fakeClient{
-		id:    id,
-		modes: map[domain.Mode]struct{}{domain.ModeOperator: {}},
-	}
+	id protocol.ClientID
 }
 
 func newPlainClient(id protocol.ClientID) *fakeClient {
@@ -48,18 +41,84 @@ func (c *fakeClient) Send(_ context.Context, _ protocol.Command) (protocol.Respo
 
 func (c *fakeClient) Events() <-chan protocol.Delivery { return closedProtocolEvents }
 
-func (c *fakeClient) HasMode(m domain.Mode) bool {
-	_, ok := c.modes[m]
-	return ok
+func (c *fakeClient) Caps() command.CapabilityHolder { return command.NoCapabilities() }
+
+// TestSession_operator_gate_honours_oper_elevation proves the
+// operator gate for ADDMODEL and KILL consults the issuing client's
+// live `serverClient` modes. A model self-elevates through the wire
+// OPER path — which writes `+o` to the serverClient only — and then
+// clears the gate, even though its client object reports no
+// capability.
+func TestSession_operator_gate_honours_oper_elevation(t *testing.T) {
+	cases := []struct {
+		name string
+		cmd  protocol.Command
+	}{
+		{name: "addmodel", cmd: protocol.AddModel{Channel: "#dev", Model: "anthropic/claude", Persona: "p"}},
+		{name: "kill", cmd: protocol.Kill{Nick: "victim", Reason: "spam"}},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			sess, store := newTestSession(t)
+			ctx := t.Context()
+
+			sess.SetOperAuthenticator(func(protocol.Client, string, string) bool { return true })
+			require.NoError(t, userJoin(ctx, t, sess, "#dev"))
+			seedInstance(t, sess, store, instanceSpec{Nick: "victim", ModelID: "test/model"})
+
+			// A model-like client whose client object reports no
+			// capability: the operator signal lives only on its
+			// serverClient, written by OPER.
+			inst := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
+			fc := newPlainClient(protocol.ClientID(inst.ID()))
+			_, err := sess.Subscribe(fc, protocol.SubscribeOptions{Instance: inst})
+			require.NoError(t, err)
+
+			operResp, err := sess.Handle(ctx, fc, protocol.Oper{})
+			require.NoError(t, err)
+			require.NoError(t, operResp.Err)
+
+			got, err := sess.Handle(ctx, fc, c.cmd)
+			require.NoError(t, err)
+			require.Equal(t, protocol.Response{}, got)
+		})
+	}
 }
 
-func (c *fakeClient) Caps() command.CapabilityHolder { return c }
-
-func (c *fakeClient) Has(capability command.Capability) bool {
-	if capability == protocol.CapOperator {
-		return c.HasMode(domain.ModeOperator)
+// TestSession_operator_gate_rejects_subscribed_non_operator covers
+// the production deny path: a registered model-client that holds no
+// `+o` on its serverClient is refused ADDMODEL and KILL. The
+// dispatcher's gate distinguishes this from an unregistered issuer,
+// which is rejected on the nil-handle branch.
+func TestSession_operator_gate_rejects_subscribed_non_operator(t *testing.T) {
+	cases := []struct {
+		name    string
+		cmd     protocol.Command
+		command string
+	}{
+		{name: "addmodel", cmd: protocol.AddModel{Channel: "#dev", Model: "m", Persona: "p"}, command: "ADDMODEL"},
+		{name: "kill", cmd: protocol.Kill{Nick: "victim", Reason: "x"}, command: "KILL"},
 	}
-	return false
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			sess, store := newTestSession(t)
+			ctx := t.Context()
+			seedInstance(t, sess, store, instanceSpec{Nick: "victim", ModelID: "test/model"})
+
+			inst := domain.NewModelInstance("inst-plain", "plain", "test/model", "", nil)
+			fc := newPlainClient(protocol.ClientID(inst.ID()))
+			_, err := sess.Subscribe(fc, protocol.SubscribeOptions{Instance: inst})
+			require.NoError(t, err)
+
+			got, err := sess.Handle(ctx, fc, c.cmd)
+			require.NoError(t, err)
+			require.Equal(t,
+				protocol.Response{Err: protocol.NotOperatorError{Command: c.command, At: fixedTime}},
+				got)
+		})
+	}
 }
 
 // TestSession_Handle_delegates exercises every concrete
@@ -86,7 +145,7 @@ func TestSession_Handle_delegates(t *testing.T) {
 		verify  func(t *testing.T, sess *Session, s *storemod.SQLiteStore)
 	}
 
-	userClient := func() protocol.Client { return newOperatorClient(protocol.UserClientID) }
+	userClient := func() protocol.Client { return newPlainClient(protocol.UserClientID) }
 
 	cases := []tc{
 		{

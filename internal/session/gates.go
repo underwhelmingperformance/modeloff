@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/store"
 )
 
@@ -108,6 +109,14 @@ func (s *Session) requireChannelOp(actor *domain.Instance, window *domain.Channe
 // carries `+o` user-mode. Used by [requireChannelOp] to honour
 // the server-operator override on channel-op-gated commands.
 func (s *Session) actorHasServerOper(actor *domain.Instance) bool {
-	sc := s.lookupClientHandle(actor.ID())
+	return s.idHasServerOper(actor.ID())
+}
+
+// idHasServerOper reports whether the subscription registered under
+// `id` carries `+o`. The dispatcher's operator gate reads this so an
+// [protocol.Oper] elevation written to the serverClient is honoured
+// without the issuing client object changing.
+func (s *Session) idHasServerOper(id protocol.ClientID) bool {
+	sc := s.lookupClientHandle(id)
 	return sc != nil && sc.HasMode(domain.ModeOperator)
 }

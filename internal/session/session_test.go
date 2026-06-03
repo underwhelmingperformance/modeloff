@@ -502,7 +502,6 @@ func (c *testUserClient) Events() <-chan protocol.Delivery {
 	}
 	return c.sub.Events()
 }
-func (c *testUserClient) HasMode(m domain.Mode) bool     { return m == domain.ModeOperator }
 func (c *testUserClient) Caps() command.CapabilityHolder { return testUserCaps{} }
 
 type testUserCaps struct{}
@@ -4809,5 +4808,4 @@ func (c *shutdownGateStubClient) Send(context.Context, protocol.Command) (protoc
 	return protocol.Response{}, nil
 }
 func (c *shutdownGateStubClient) Events() <-chan protocol.Delivery { return nil }
-func (c *shutdownGateStubClient) HasMode(domain.Mode) bool         { return false }
 func (c *shutdownGateStubClient) Caps() command.CapabilityHolder   { return nil }

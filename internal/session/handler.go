@@ -334,7 +334,7 @@ func (s *Session) handleQuit(ctx context.Context, c protocol.Client, cmd protoco
 }
 
 func (s *Session) handleAddModel(ctx context.Context, c protocol.Client, cmd protocol.AddModel) (protocol.Response, error) {
-	if !c.HasMode(domain.ModeOperator) {
+	if !s.idHasServerOper(c.Identity()) {
 		return protocol.Response{Err: domain.NotOperatorError{Command: "ADDMODEL", At: s.now()}}, nil
 	}
 
@@ -351,7 +351,7 @@ func (s *Session) handleAddModel(ctx context.Context, c protocol.Client, cmd pro
 }
 
 func (s *Session) handleKill(ctx context.Context, c protocol.Client, cmd protocol.Kill) (protocol.Response, error) {
-	if !c.HasMode(domain.ModeOperator) {
+	if !s.idHasServerOper(c.Identity()) {
 		return protocol.Response{Err: domain.NotOperatorError{Command: "KILL", At: s.now()}}, nil
 	}
 

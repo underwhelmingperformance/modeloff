@@ -72,9 +72,10 @@ func WithChannels(channels ...domain.ChannelName) Option {
 
 // WithInitialModes grants the listed user modes to the
 // subscription at attach time, the same way [userclient.UserClient]
-// requests `+o`. Each mode is reflected in the test client's own
-// [TestClient.HasMode] so the dispatcher's operator gate sees the
-// elevation.
+// requests `+o`. [TestClient.Attach] passes them as
+// [protocol.SubscribeOptions.InitialModes], landing them on the
+// session-side serverClient that the dispatcher's operator gate
+// reads.
 func WithInitialModes(modes ...domain.Mode) Option {
 	return func(c *config) { c.modes = append(c.modes, modes...) }
 }
@@ -130,13 +131,6 @@ func (tc *TestClient) Events() <-chan protocol.Delivery {
 	}
 
 	return tc.sub.Events()
-}
-
-// HasMode reports whether the client was constructed with the
-// given mode via [WithInitialModes].
-func (tc *TestClient) HasMode(m domain.Mode) bool {
-	_, ok := tc.modes[m]
-	return ok
 }
 
 // Caps returns an empty capability holder. Tests that need

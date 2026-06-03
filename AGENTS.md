@@ -76,15 +76,17 @@ also sealed via an unexported method declared on each event type in the
 to build until it is handled — the migration path is mechanical.
 
 Clients implement the small `Client` interface — `Identity()`, `Send(ctx,
-Command) (Response, error)`, `Events() <-chan Event`, `HasMode(UserMode) bool`.
-A `Send` returns a `Response` whose `Err` field carries any typed command
-failure (e.g. `domain.NotOperatorError`, `domain.UnknownNickError`); callers
-branch on it via `errors.As`. The `Response.Events` slot carries the
-dispatcher's synchronous numeric-reply payloads: the persisted
-`domain.Message` for `PrivMsg`/`Action`, `domain.ModelInvited` for `Invite`,
-the `domain.Whois` snapshot for `Whois`, and the `domain.ListReply` stream
-terminated by `domain.ListEnd` for `List`. Broadcast side effects flow
-asynchronously over `Client.Events()` to peers.
+Command) (Response, error)`, `Events() <-chan Event`, `Caps()
+command.CapabilityHolder`. Operator gating reads the live `serverClient` mode
+set keyed by `Identity`, so an `Oper` elevation is honoured without the client
+object changing. A `Send` returns a `Response` whose `Err` field carries any
+typed command failure (e.g. `domain.NotOperatorError`,
+`domain.UnknownNickError`); callers branch on it via `errors.As`. The
+`Response.Events` slot carries the dispatcher's synchronous numeric-reply
+payloads: the persisted `domain.Message` for `PrivMsg`/`Action`,
+`domain.ModelInvited` for `Invite`, the `domain.Whois` snapshot for `Whois`,
+and the `domain.ListReply` stream terminated by `domain.ListEnd` for `List`.
+Broadcast side effects flow asynchronously over `Client.Events()` to peers.
 
 ### Two kinds of actor
 

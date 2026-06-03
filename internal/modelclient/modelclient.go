@@ -180,10 +180,6 @@ func (mc *ModelClient) Events() <-chan protocol.Delivery {
 	return mc.sub.Events()
 }
 
-// HasMode reports false for any mode: model-clients carry no user
-// modes today.
-func (mc *ModelClient) HasMode(_ domain.Mode) bool { return false }
-
 // Caps exposes a static capability holder reporting no
 // capabilities. The chatcmd grammar's `caps:` filter therefore
 // hides operator-gated tools from model invocations.

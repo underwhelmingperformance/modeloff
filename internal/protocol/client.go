@@ -37,18 +37,13 @@ type Client interface {
 	// shutdown.
 	Events() <-chan Delivery
 
-	// HasMode reports whether the client carries the given mode
-	// flag. Operator-gated handlers consult this with
-	// [domain.ModeOperator] and return [NotOperatorError] on
-	// failure.
-	HasMode(m domain.Mode) bool
-
 	// Caps exposes the client's modes (and any future runtime
 	// state) as a [command.CapabilityHolder] so the chatcmd
 	// grammar's `caps:` filter can hide commands the client cannot
-	// use. The returned holder is bound to live state — each
-	// consultation reads the current mode set, so a mode change is
-	// reflected on the next read.
+	// use. Operator gating of dispatcher commands does not read this:
+	// the dispatcher consults the live `serverClient` mode set keyed
+	// by [Client.Identity], so an [Oper] elevation is honoured without
+	// the client object changing.
 	Caps() command.CapabilityHolder
 }
 
