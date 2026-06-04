@@ -579,10 +579,15 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		})
 
 	case chatcmd.PersonasListResult:
-		return s, s.logAndShow(domain.PersonasList{
+		personasList := domain.PersonasList{
 			Personas: msg,
 			At:       time.Now(),
-		})
+		}
+
+		return s, tea.Batch(
+			s.logAndShow(personasList),
+			s.recordReply(personasList),
+		)
 
 	case chatcmd.PersonasRegeneratedResult:
 		return s, s.logAndShow(domain.SystemNotice{

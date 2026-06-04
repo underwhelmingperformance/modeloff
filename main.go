@@ -92,7 +92,7 @@ func main() {
 
 	sess := session.New(baseContext, dataStore, mgr)
 
-	user := userclient.New(domain.Nick(cfg.UserNick), sess, dataStore)
+	user := userclient.New(domain.Nick(cfg.UserNick), sess, dataStore, userclient.NewStoreReplyLog(dataStore))
 	if err := user.Attach(appCtx); err != nil {
 		fmt.Fprintf(os.Stderr, "error attaching user client: %v\n", err)
 		os.Exit(1)

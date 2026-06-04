@@ -62,6 +62,38 @@ type Store interface {
 	SetLastRead(ctx context.Context, ch domain.ChannelName, eventID int64) error
 }
 
+// ReplyLog is the write handle the user-client uses to persist its
+// own point-to-point replies (query responses and command errors)
+// to the per-issuer reply log, keyed by the issuer's identity. It
+// mirrors the model-client's direct, store-backed write: the
+// user-client records its replies without routing them through the
+// session.
+type ReplyLog interface {
+	Record(ctx context.Context, issuer domain.InstanceID, reply domain.IssuerReply) error
+}
+
+// appendInstanceReply is the store-side reply-log write the concrete
+// `*store.SQLiteStore` provides. [NewStoreReplyLog] adapts it to
+// [ReplyLog], discarding the returned row id.
+type appendInstanceReply interface {
+	AppendInstanceReply(ctx context.Context, id domain.InstanceID, reply domain.IssuerReply) (int64, error)
+}
+
+// NewStoreReplyLog adapts a store's instance-reply write to the
+// [ReplyLog] the user-client holds.
+func NewStoreReplyLog(store appendInstanceReply) ReplyLog {
+	return storeReplyLog{store: store}
+}
+
+type storeReplyLog struct {
+	store appendInstanceReply
+}
+
+func (l storeReplyLog) Record(ctx context.Context, issuer domain.InstanceID, reply domain.IssuerReply) error {
+	_, err := l.store.AppendInstanceReply(ctx, issuer, reply)
+	return err
+}
+
 // UserClient is the [protocol.Client] backing the human user. It
 // holds the canonical `*domain.Instance` for the user and a
 // subscription on the owning [Session]; the chat-screen reads
@@ -70,6 +102,7 @@ type UserClient struct {
 	instance *domain.Instance
 	sess     Session
 	store    Store
+	replyLog ReplyLog
 
 	mu  sync.Mutex
 	sub protocol.Subscription
@@ -78,11 +111,12 @@ type UserClient struct {
 // New returns an unattached `UserClient` for `nick`. Call
 // [UserClient.Attach] to register it with the session before any
 // command flows through it.
-func New(nick domain.Nick, sess Session, store Store) *UserClient {
+func New(nick domain.Nick, sess Session, store Store, replyLog ReplyLog) *UserClient {
 	return &UserClient{
 		instance: domain.NewUserInstance(nick),
 		sess:     sess,
 		store:    store,
+		replyLog: replyLog,
 	}
 }
 
@@ -316,6 +350,23 @@ func (uc *UserClient) MarkRead(ctx context.Context, ch domain.ChannelName) error
 	}
 
 	return uc.store.SetLastRead(ctx, ch, events[0].ID)
+}
+
+// RecordReply persists one of the user's own point-to-point replies
+// to the per-issuer reply log, keyed by the user-client's identity
+// (the empty [domain.InstanceID] by convention). The user is
+// transient and never restores, so this is the durable record a
+// future restore or inspector reads; the user does not see it again
+// this session. Best-effort: a failed write is logged, since the
+// reply was already rendered live.
+func (uc *UserClient) RecordReply(ctx context.Context, reply domain.IssuerReply) {
+	id := domain.InstanceID(uc.Identity())
+	if err := uc.replyLog.Record(ctx, id, reply); err != nil {
+		slog.Default().ErrorContext(ctx, "record user reply",
+			"component", "userclient",
+			"error", err,
+		)
+	}
 }
 
 // Poke asks the session to run an immediate poke pass over every

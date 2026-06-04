@@ -183,7 +183,7 @@ func newTestSessionWithManager(
 	sess := session.New(t.Context, store, mgr)
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 
-	user := userclient.New("testuser", sess, store)
+	user := userclient.New("testuser", sess, store, userclient.NewStoreReplyLog(store))
 	require.NoError(t, user.Attach(t.Context()))
 
 	return sess, store, mgr, user

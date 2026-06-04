@@ -3,6 +3,7 @@ package userclient_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
@@ -42,7 +43,7 @@ func newFixture(t *testing.T) *fixture {
 	sess := session.New(t.Context, s, mgr)
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 
-	user := userclient.New("testuser", sess, s)
+	user := userclient.New("testuser", sess, s, userclient.NewStoreReplyLog(s))
 	require.NoError(t, user.Attach(t.Context()))
 
 	return &fixture{sess: sess, store: s, user: user}
@@ -95,6 +96,23 @@ func TestUserClient_JoinAutojoinChannels_emits_aggregate_span(t *testing.T) {
 		oteltest.AttrValue(span.Attributes(), observability.AttrAutojoinFailed))
 	require.Equal(t, `["#alpha","#beta"]`,
 		oteltest.AttrValue(span.Attributes(), observability.AttrAutojoinChannels))
+}
+
+func TestUserClient_RecordReply_persists_to_issuer_reply_log(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+
+	reply := domain.CommandError{
+		Target: "#general",
+		Err:    "whois: no such nick",
+		At:     time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC),
+	}
+
+	f.user.RecordReply(ctx, reply)
+
+	replies, err := f.store.InstanceRepliesBefore(ctx, domain.InstanceID(protocol.UserClientID), nil, 10)
+	require.NoError(t, err)
+	require.Equal(t, []domain.StoredEvent{{ID: 1, Event: reply}}, replies)
 }
 
 // noopAPI satisfies [api.Client] with empty responses — enough for

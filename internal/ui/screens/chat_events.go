@@ -628,15 +628,28 @@ func (s ChatScreen) sendMessageCmd(target domain.ChannelName, body string) tea.C
 func (s ChatScreen) handleErrorEvent(msg domain.ErrorEvent) (ui.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
-	cmds = append(cmds, s.logAndShow(domain.CommandError{
+	commandError := domain.CommandError{
 		Target: *s.active,
 		Err:    fmt.Sprintf("%s: %s", msg.Operation, msg.Err),
 		At:     msg.At,
-	}))
+	}
 
+	cmds = append(cmds, s.logAndShow(commandError))
+	cmds = append(cmds, s.recordReply(commandError))
 	cmds = append(cmds, msgCmd(components.NickListThinkingMsg{}))
 
 	return s, tea.Batch(cmds...)
+}
+
+// recordReply persists one of the user's own point-to-point replies
+// to its reply log through the user-client. It is best-effort and
+// renders nothing: the live view is already served by the
+// accompanying `logAndShow`.
+func (s ChatScreen) recordReply(reply domain.IssuerReply) tea.Cmd {
+	return func() tea.Msg {
+		s.user.RecordReply(s.baseContext(), reply)
+		return nil
+	}
 }
 
 // handleModelDispatchStarted marks `msg.Instance` as currently

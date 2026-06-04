@@ -37,7 +37,7 @@ func newFixture(t *testing.T) *fixture {
 	sess := session.New(t.Context, s, mgr)
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 
-	user := userclient.New("testuser", sess, s)
+	user := userclient.New("testuser", sess, s, userclient.NewStoreReplyLog(s))
 	require.NoError(t, user.Attach(t.Context()))
 
 	return &fixture{sess: sess, store: s, user: user}
