@@ -1695,7 +1695,7 @@ func TestSession_spans_carry_AttrInstanceID(t *testing.T) {
 func TestSession_DispatchToChannel_api_failure_records_dispatch_error_kind(t *testing.T) {
 	recorder, provider := oteltest.NewSpanRecorder(t)
 	fake := &fakeAPIClient{
-		sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+		sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
 			return api.CompletionResult{}, fmt.Errorf("upstream boom")
 		},
 	}
@@ -3181,7 +3181,7 @@ func TestSession_DispatchToChannel_filters_history_before_join(t *testing.T) {
 	var receivedHistory []protocol.IRCMessage
 
 	fake := &fakeAPIClient{
-		sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, history []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+		sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, history []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
 			receivedHistory = history
 			return api.CompletionResult{}, nil
 		},
@@ -3456,7 +3456,6 @@ func (f *failingMemoryStore) Reset(_ context.Context) error {
 	return nil
 }
 
-
 func newTestSessionWithMemory(t *testing.T, apiClient api.Client) (*Session, *storemod.SQLiteStore, *memory.StoreAdapter) {
 	t.Helper()
 
@@ -3490,7 +3489,7 @@ func TestSession_DispatchToChannel_write_memory_then_reply(t *testing.T) {
 	var continueResults []api.ToolResult
 	turn := 0
 	fake := &fakeAPIClient{
-		sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+		sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
 			return api.CompletionResult{
 				Conversation: &api.Conversation{},
 				PendingToolCalls: []api.PendingToolCall{
@@ -3540,7 +3539,7 @@ func TestSession_DispatchToChannel_write_memory_then_reply(t *testing.T) {
 func TestSession_DispatchToChannel_delete_memory_then_pass(t *testing.T) {
 	var continueResults []api.ToolResult
 	fake := &fakeAPIClient{
-		sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+		sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
 			return api.CompletionResult{
 				Conversation: &api.Conversation{},
 				PendingToolCalls: []api.PendingToolCall{
@@ -3587,7 +3586,7 @@ func TestSession_DispatchToChannel_delete_memory_then_pass(t *testing.T) {
 func TestSession_DispatchToChannel_memory_write_error_returns_error_to_model(t *testing.T) {
 	var continueResults []api.ToolResult
 	fake := &fakeAPIClient{
-		sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+		sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
 			return api.CompletionResult{
 				Conversation: &api.Conversation{},
 				PendingToolCalls: []api.PendingToolCall{
@@ -3631,7 +3630,7 @@ func TestSession_DispatchToChannel_memory_write_error_returns_error_to_model(t *
 func TestSession_DispatchToChannel_multiple_memory_calls_in_one_response(t *testing.T) {
 	var continueResults []api.ToolResult
 	fake := &fakeAPIClient{
-		sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+		sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
 			return api.CompletionResult{
 				Conversation: &api.Conversation{},
 				PendingToolCalls: []api.PendingToolCall{
@@ -3679,7 +3678,7 @@ func TestSession_DispatchToChannel_multiple_memory_calls_in_one_response(t *test
 func TestSession_DispatchToChannel_search_memory_then_reply(t *testing.T) {
 	var continueResults []api.ToolResult
 	fake := &fakeAPIClient{
-		sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+		sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
 			return api.CompletionResult{
 				Conversation: &api.Conversation{},
 				PendingToolCalls: []api.PendingToolCall{
@@ -3806,7 +3805,7 @@ func TestSession_DispatchToChannel_search_memory_with_vector_store(t *testing.T)
 
 	var continueResults []api.ToolResult
 	fake := &fakeAPIClient{
-		sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+		sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
 			return api.CompletionResult{
 				Conversation: &api.Conversation{},
 				PendingToolCalls: []api.PendingToolCall{
@@ -3877,7 +3876,7 @@ func TestSession_DispatchToChannel_write_then_search_memory_with_vector_store(t 
 
 	var writeResults, searchResults []api.ToolResult
 	fake := &fakeAPIClient{
-		sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+		sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
 			return api.CompletionResult{
 				Conversation: &api.Conversation{},
 				PendingToolCalls: []api.PendingToolCall{
@@ -3955,7 +3954,7 @@ func TestSession_DispatchToChannel_memory_loop_respects_max_turns(t *testing.T) 
 	// calls and return no replies.
 	var writtenKeys []string
 	fake := &fakeAPIClient{
-		sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+		sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
 			return api.CompletionResult{
 				Conversation: &api.Conversation{},
 				PendingToolCalls: []api.PendingToolCall{

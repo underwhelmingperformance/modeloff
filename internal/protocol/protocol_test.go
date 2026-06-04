@@ -358,4 +358,3 @@ func TestValidateReplyPart(t *testing.T) {
 		})
 	}
 }
-

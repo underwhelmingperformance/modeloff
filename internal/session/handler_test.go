@@ -130,11 +130,11 @@ func TestSession_operator_gate_rejects_subscribed_non_operator(t *testing.T) {
 // effect.
 func TestSession_Handle_delegates(t *testing.T) {
 	type tc struct {
-		name    string
-		setup   func(t *testing.T, sess *Session, s *storemod.SQLiteStore)
-		client  func() protocol.Client
-		cmd     protocol.Command
-		want    protocol.Response
+		name   string
+		setup  func(t *testing.T, sess *Session, s *storemod.SQLiteStore)
+		client func() protocol.Client
+		cmd    protocol.Command
+		want   protocol.Response
 		// wantFn lets a case compute its expected response from the
 		// post-setup session state — needed when the expected
 		// response refers to identities (instance pointers, ids)
@@ -228,7 +228,7 @@ func TestSession_Handle_delegates(t *testing.T) {
 			},
 			client: userClient,
 			cmd:    protocol.Invite{Nick: "botty", Channel: "#general"},
-			wantFn: func(t *testing.T, sess *Session, s *storemod.SQLiteStore) protocol.Response {
+			wantFn: func(t *testing.T, _ *Session, s *storemod.SQLiteStore) protocol.Response {
 				botty, err := s.ResolveNick(t.Context(), "botty")
 				require.NoError(t, err)
 				return protocol.Response{

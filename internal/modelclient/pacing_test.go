@@ -160,11 +160,11 @@ func TestPacingBody(t *testing.T) {
 	}
 
 	cases := []struct {
-		name   string
-		tool   string
-		args   json.RawMessage
-		want   string
-		paced  bool
+		name  string
+		tool  string
+		args  json.RawMessage
+		want  string
+		paced bool
 	}{
 		{
 			name:  "msg with body",

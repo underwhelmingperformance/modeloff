@@ -85,9 +85,9 @@ const (
 
 // Values for stable pass_reason attributes.
 const (
-	PassReasonModelPass        = "model_pass"
-	PassReasonModelRefused     = "model_refused"
-	PassReasonContentFiltered  = "content_filtered"
+	PassReasonModelPass         = "model_pass"
+	PassReasonModelRefused      = "model_refused"
+	PassReasonContentFiltered   = "content_filtered"
 	PassReasonToolLoopExhausted = "tool_loop_exhausted"
 )
 

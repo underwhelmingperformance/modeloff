@@ -389,8 +389,8 @@ func (c KickCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) mo
 // focusing) when a send goes to a nick the user has no open
 // window for.
 type MsgCommand struct {
-	Target string              `arg:"" help:"#channel or nick to message"`
-	Body   []string            `arg:"" optional:"" nargs:"1" help:"Plain message text. Provide either body or spans, not both."`
+	Target string               `arg:"" help:"#channel or nick to message"`
+	Body   []string             `arg:"" optional:"" nargs:"1" help:"Plain message text. Provide either body or spans, not both."`
 	Spans  []protocol.ReplySpan `optional:"" help:"Styled spans for IRC formatting. Each span has text and optional style (bold, italic, underline, reverse, strike, fg, bg as palette 0..15). Provide either body or spans, not both."`
 }
 
@@ -845,7 +845,7 @@ func (c TopicCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) m
 
 // MeCommand represents `/me <action>`.
 type MeCommand struct {
-	Action []string            `arg:"" optional:"" nargs:"1" help:"Plain action text. Provide either action or spans, not both."`
+	Action []string             `arg:"" optional:"" nargs:"1" help:"Plain action text. Provide either action or spans, not both."`
 	Spans  []protocol.ReplySpan `optional:"" help:"Styled spans for IRC formatting. Each span has text and optional style (bold, italic, underline, reverse, strike, fg, bg as palette 0..15). Provide either action or spans, not both."`
 }
 

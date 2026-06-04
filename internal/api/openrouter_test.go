@@ -1342,7 +1342,6 @@ func TestContinueWithToolResults_logs_token_counts(t *testing.T) {
 	require.Equal(t, 0.125, record["cost_credits"])
 }
 
-
 // hangingTransport is an http.RoundTripper that blocks every request
 // until its context is cancelled, then returns the context error.
 // Used inside a synctest bubble it lets us drive timeout tests off

@@ -180,4 +180,3 @@ func (u Usage) SetSpanAttributes(span trace.Span, requestID string) {
 		attribute.Float64(observability.AttrCostCredits, u.CostCredits),
 	)
 }
-
