@@ -11,7 +11,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/laney/modeloff/internal/modelmanager"
-	"github.com/laney/modeloff/internal/session"
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/chatcmd"
 	"github.com/laney/modeloff/internal/ui/theme"
@@ -69,6 +68,13 @@ type loadModelsDoneMsg struct {
 	err    error
 }
 
+// SessionConnector is the connection screen's slice of the session:
+// the handshake call it drives. The concrete `*session.Session`
+// satisfies it.
+type SessionConnector interface {
+	Connect(ctx context.Context) error
+}
+
 // ConnectionConfig holds the inputs the connection screen needs to
 // determine what to show.
 type ConnectionConfig struct {
@@ -80,7 +86,7 @@ type ConnectionConfig struct {
 	// connection handshake. When nil the screen runs in animation-
 	// only mode (used by tests that only care about the visual
 	// sequence).
-	Session *session.Session
+	Session SessionConnector
 
 	// Manager owns the LLM-side state — the live model catalogue
 	// in particular. The connection screen reads it for the
@@ -94,10 +100,9 @@ type ConnectionConfig struct {
 	User *userclient.UserClient
 
 	// BaseContext supplies the application context for each backend
-	// call, mirroring [session.New]'s shape. Defaults to
-	// context.Background when nil, but production callers should
-	// supply a closure over the application context so cancellation
-	// propagates.
+	// call. Defaults to context.Background when nil, but production
+	// callers should supply a closure over the application context so
+	// cancellation propagates.
 	BaseContext func() context.Context
 }
 

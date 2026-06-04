@@ -292,11 +292,10 @@ log a model loads holds nothing but genuine channel activity.
 
 - The remaining tool-surface protocol-routing cleanup: the model tool
   path still resolves nicks client-side (`ResolveNick`) where the
-  dispatcher already resolves them server-side, reads the current topic
-  through `GetWindow`, and the chat-screen holds a concrete
-  `*session.Session` for its own command-reply renders. Routing those
-  through the protocol — and dropping the concrete session from the
-  chat-screen — is a follow-up.
+  dispatcher already resolves them server-side, and reads the current
+  topic through `GetWindow`. Both still reach the session through the
+  narrow `SessionReader` the chat-screen holds; routing them through
+  the protocol so neither is resolved client-side is a follow-up.
 - Bootstrap-time, `joined_at`-scoped replay of recent events into a
   newly-allocated subscription, replacing the per-dispatch store read
   and the model-client's eager seed. Replay is for model-clients only;

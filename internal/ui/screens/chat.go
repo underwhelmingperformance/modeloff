@@ -18,7 +18,6 @@ import (
 	"github.com/laney/modeloff/internal/modelmanager"
 	"github.com/laney/modeloff/internal/observability"
 	"github.com/laney/modeloff/internal/protocol"
-	"github.com/laney/modeloff/internal/session"
 	"github.com/laney/modeloff/internal/set"
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/chatcmd"
@@ -87,15 +86,30 @@ type UIStateStore interface {
 
 type logsUpdatedMsg struct{}
 
+// SessionReader is the read-only slice of the session the chat-screen
+// depends on: backend state it renders (unread counts, the live
+// instance set, the connect time) and the lookups the command context
+// needs (window, nick, clock). The concrete `*session.Session`
+// satisfies it; holding the interface keeps the frontend off the
+// concrete backend type.
+type SessionReader interface {
+	GetWindow(ctx context.Context, name domain.ChannelName) (domain.Window, error)
+	ResolveNick(ctx context.Context, nick domain.Nick) (*domain.Instance, error)
+	Now() time.Time
+	UnreadCount(ctx context.Context, ch domain.ChannelName) (int, error)
+	Instances(ctx context.Context) iter.Seq[*domain.Instance]
+	ConnectedAt() time.Time
+}
+
 // ChatScreen is the main screen that composes Sidebar, ChatView, and
-// MainLayout. It holds a reference to the session for backend
-// operations. The `baseContext` supplier mirrors [net/http.Server.BaseContext]
-// and [session.New] — each backend call asks the supplier for the
-// current application context rather than capturing a snapshot at
-// construction.
+// MainLayout. It reads backend state through the narrow
+// [SessionReader]. The `baseContext` supplier mirrors
+// [net/http.Server.BaseContext]: each backend call asks the supplier
+// for the current application context rather than capturing a
+// snapshot at construction.
 type ChatScreen struct {
 	baseContext func() context.Context
-	sess        *session.Session
+	sess        SessionReader
 	mgr         *modelmanager.Manager
 	user        *userclient.UserClient
 	client      protocol.Client
@@ -158,12 +172,11 @@ type ChatScreen struct {
 	highlightWords []string
 }
 
-// NewChatScreen creates a chat screen backed by the given session.
-// `baseContext` is the supplier the screen calls to obtain the
-// application context for each backend operation, mirroring the
-// shape [session.New] takes. The supplier must return ctxs that
-// share a cancellation source so chat-screen-spawned goroutines
-// wake on app shutdown.
+// NewChatScreen creates a chat screen reading backend state through
+// the given [SessionReader]. `baseContext` is the supplier the screen
+// calls to obtain the application context for each backend operation;
+// it must return ctxs that share a cancellation source so
+// chat-screen-spawned goroutines wake on app shutdown.
 //
 // initialKind is the channel kind the chat view renders against
 // until the first channel is focused. `&modeloff` is the default
@@ -172,7 +185,7 @@ type ChatScreen struct {
 // channel before the first frame pass `domain.KindStatus` too —
 // `SetChannelMsg` supplies the real kind atomically on the first
 // focus event.
-func NewChatScreen(baseContext func() context.Context, sess *session.Session, mgr *modelmanager.Manager, user *userclient.UserClient, cfgStore config.Store, uiState UIStateStore, initialKind domain.ChannelKind) (ChatScreen, error) {
+func NewChatScreen(baseContext func() context.Context, sess SessionReader, mgr *modelmanager.Manager, user *userclient.UserClient, cfgStore config.Store, uiState UIStateStore, initialKind domain.ChannelKind) (ChatScreen, error) {
 	active := domain.ChannelName("")
 	channels := set.NewSorted[*Window]()
 	scrollbackMu := &sync.RWMutex{}
