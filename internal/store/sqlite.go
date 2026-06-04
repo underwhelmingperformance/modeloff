@@ -644,7 +644,7 @@ func (s *SQLiteStore) EventsBefore(ctx context.Context, ch domain.ChannelName, b
 // the instance's private reply log. This is the instance's own
 // memory: it replays only into that instance's prompt, never into
 // the shared channel log where other instances would read it.
-func (s *SQLiteStore) AppendInstanceReply(ctx context.Context, id domain.InstanceID, event domain.PersistableEvent) (int64, error) {
+func (s *SQLiteStore) AppendInstanceReply(ctx context.Context, id domain.InstanceID, event domain.IssuerReply) (int64, error) {
 	var rowID int64
 	err := s.inSpan(ctx, "store.sqlite.append_instance_reply",
 		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},

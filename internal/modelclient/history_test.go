@@ -82,8 +82,9 @@ func TestHistory_replies_load_append_read(t *testing.T) {
 		ModelID: "test/model",
 		At:      time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC),
 	}
-	live := domain.ListEnd{
-		At: time.Date(2025, 1, 1, 12, 0, 1, 0, time.UTC),
+	live := domain.SystemNotice{
+		Text: "poke interval changed",
+		At:   time.Date(2025, 1, 1, 12, 0, 1, 0, time.UTC),
 	}
 
 	h := newHistory()
@@ -107,13 +108,13 @@ func TestHistory_replies_trim_from_older_end(t *testing.T) {
 	base := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
 	total := modelHistorySize + 3
 	for i := range total {
-		h.appendReply(domain.StoredEvent{Event: domain.ListEnd{At: base.Add(time.Duration(i) * time.Second)}})
+		h.appendReply(domain.StoredEvent{Event: domain.SystemNotice{At: base.Add(time.Duration(i) * time.Second)}})
 	}
 
 	want := make([]domain.StoredEvent, modelHistorySize)
 	for i := range want {
 		at := base.Add(time.Duration(i+3) * time.Second)
-		want[i] = domain.StoredEvent{Event: domain.ListEnd{At: at}}
+		want[i] = domain.StoredEvent{Event: domain.SystemNotice{At: at}}
 	}
 
 	require.Equal(t, want, h.snapshotReplies())
@@ -127,10 +128,10 @@ func TestHistory_snapshotReplies_is_defensive_copy(t *testing.T) {
 
 	at := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
 	h := newHistory()
-	h.appendReply(domain.StoredEvent{Event: domain.ListEnd{At: at}})
+	h.appendReply(domain.StoredEvent{Event: domain.SystemNotice{At: at}})
 
 	snap := h.snapshotReplies()
-	h.appendReply(domain.StoredEvent{Event: domain.ListEnd{At: at.Add(time.Second)}})
+	h.appendReply(domain.StoredEvent{Event: domain.SystemNotice{At: at.Add(time.Second)}})
 
-	require.Equal(t, []domain.StoredEvent{{Event: domain.ListEnd{At: at}}}, snap)
+	require.Equal(t, []domain.StoredEvent{{Event: domain.SystemNotice{At: at}}}, snap)
 }

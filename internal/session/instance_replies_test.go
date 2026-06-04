@@ -98,6 +98,64 @@ func TestSession_list_persists_to_model_issuer(t *testing.T) {
 	require.Equal(t, []string{"join"}, channelEventTypes(t, store, "#dev"))
 }
 
+// TestSession_failed_invite_persists_notice_to_issuer proves that a
+// refused INVITE against an unknown nick files its [domain.SystemNotice]
+// to the issuer's private reply log, so a model re-experiences the
+// refusal on replay. The notice never reaches the shared channel log.
+func TestSession_failed_invite_persists_notice_to_issuer(t *testing.T) {
+	sess, store := newTestSession(t)
+	ctx := t.Context()
+
+	inst := seedInstance(t, sess, store, instanceSpec{Nick: "asker", ModelID: "test/model"})
+	seedChannelWithMembers(t, sess, store, "#dev", "testuser", "asker")
+
+	model := newPlainClient(protocol.ClientID(inst.ID()))
+	_, err := sess.Subscribe(model, protocol.SubscribeOptions{Instance: inst})
+	require.NoError(t, err)
+
+	resp, err := sess.Handle(ctx, model, protocol.Invite{Nick: "ghost", Channel: "#dev"})
+	require.NoError(t, err)
+	require.NoError(t, resp.Err)
+	require.Equal(t, []domain.ProtocolEvent{domain.SystemNotice{
+		Target: "#dev",
+		Text:   "no such nick: ghost",
+		At:     fixedTime,
+	}}, resp.Events)
+
+	replies, err := store.InstanceRepliesBefore(ctx, inst.ID(), nil, 10)
+	require.NoError(t, err)
+	require.Equal(t, []domain.PersistableEvent{domain.SystemNotice{
+		Target: "#dev",
+		Text:   "no such nick: ghost",
+		At:     fixedTime,
+	}}, storedReplyEvents(replies))
+}
+
+// TestSession_successful_invite_not_in_issuer_reply_log proves that a
+// successful INVITE's [domain.ModelInvited] envelope is channel
+// activity, not an issuer reply, so it is not filed to the issuer's
+// private reply log.
+func TestSession_successful_invite_not_in_issuer_reply_log(t *testing.T) {
+	sess, store := newTestSession(t)
+	ctx := t.Context()
+
+	inst := seedInstance(t, sess, store, instanceSpec{Nick: "asker", ModelID: "test/model"})
+	seedInstance(t, sess, store, instanceSpec{Nick: "target", ModelID: "test/model"})
+	seedChannelWithMembers(t, sess, store, "#dev", "testuser", "asker")
+
+	model := newPlainClient(protocol.ClientID(inst.ID()))
+	_, err := sess.Subscribe(model, protocol.SubscribeOptions{Instance: inst})
+	require.NoError(t, err)
+
+	resp, err := sess.Handle(ctx, model, protocol.Invite{Nick: "target", Channel: "#dev"})
+	require.NoError(t, err)
+	require.NoError(t, resp.Err)
+
+	replies, err := store.InstanceRepliesBefore(ctx, inst.ID(), nil, 10)
+	require.NoError(t, err)
+	require.Empty(t, replies)
+}
+
 // TestSession_user_replies_do_not_pollute_channel_log proves that a
 // user's point-to-point command replies (WHOIS, LIST) never reach the
 // shared channel event log, even when issued from inside a channel.

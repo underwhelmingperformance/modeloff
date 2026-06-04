@@ -157,12 +157,6 @@ func TestChannelEvent_JSON_round_trip(t *testing.T) {
 			},
 		},
 		{
-			name: "list end",
-			event: domain.ListEnd{
-				At: ts,
-			},
-		},
-		{
 			name: "command error",
 			event: domain.CommandError{
 				Target: "#general",
@@ -222,6 +216,52 @@ func TestRenderOnlyEvents_are_not_persistable(t *testing.T) {
 	}
 }
 
+// TestPersistableEvent_partition checks that each persistable type it
+// lists falls into exactly one of [domain.ChannelActivity] and
+// [domain.IssuerReply] — disjoint, none left unclassified. The list is
+// maintained by hand, so a new persistable type must be added here to
+// be covered.
+func TestPersistableEvent_partition(t *testing.T) {
+	type classification struct {
+		channelActivity bool
+		issuerReply     bool
+	}
+
+	persistable := map[string]domain.PersistableEvent{
+		"message":             domain.Message{},
+		"join":                domain.Join{},
+		"part":                domain.Part{},
+		"quit":                domain.Quit{},
+		"topic change":        domain.TopicChange{},
+		"channel mode change": domain.ChannelModeChange{},
+		"model invited":       domain.ModelInvited{},
+		"model kicked":        domain.ModelKicked{},
+		"nick change":         domain.NickChange{},
+		"topic info":          domain.TopicInfo{},
+		"whois":               domain.Whois{},
+		"list reply":          domain.ListReply{},
+		"command error":       domain.CommandError{},
+		"system notice":       domain.SystemNotice{},
+		"personas list":       domain.PersonasList{},
+	}
+
+	classify := func(e domain.PersistableEvent) classification {
+		_, channelActivity := e.(domain.ChannelActivity)
+		_, issuerReply := e.(domain.IssuerReply)
+
+		return classification{channelActivity: channelActivity, issuerReply: issuerReply}
+	}
+
+	for name, event := range persistable {
+		t.Run(name, func(t *testing.T) {
+			got := classify(event)
+
+			require.True(t, got.channelActivity != got.issuerReply,
+				"%T must be exactly one of ChannelActivity or IssuerReply, got %+v", event, got)
+		})
+	}
+}
+
 // TestUnmarshalPersistableEvent_unknown_type ensures a stored row
 // whose discriminator this build no longer recognises yields the
 // [domain.ErrUnknownEventType] sentinel, so the channel-log read path
@@ -230,6 +270,7 @@ func TestUnmarshalPersistableEvent_unknown_type(t *testing.T) {
 	tests := map[string]string{
 		"legacy help":       `{"type":"help","data":{"channel":"#general","at":"2026-04-06T12:00:00Z"}}`,
 		"legacy usage hint": `{"type":"usage_hint","data":{"channel":"#general","command":"invite"}}`,
+		"legacy list end":   `{"type":"list_end","data":{"at":"2026-04-06T12:00:00Z"}}`,
 		"never known":       `{"type":"made_up","data":{}}`,
 	}
 

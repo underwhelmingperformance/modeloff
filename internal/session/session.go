@@ -79,7 +79,7 @@ type Store interface {
 	// reads it back in chronological order. This is an instance's own
 	// memory of replies it received, replayed only into its own
 	// prompt — never the shared channel log.
-	AppendInstanceReply(ctx context.Context, id domain.InstanceID, event domain.PersistableEvent) (int64, error)
+	AppendInstanceReply(ctx context.Context, id domain.InstanceID, event domain.IssuerReply) (int64, error)
 	InstanceRepliesBefore(ctx context.Context, id domain.InstanceID, before *int64, n int) ([]domain.StoredEvent, error)
 
 	// Model instances.
@@ -1107,7 +1107,7 @@ func (s *Session) appendEvent(ctx context.Context, ch domain.ChannelName, event 
 func (s *Session) persistInstanceReplies(ctx context.Context, c protocol.Client, events []domain.ProtocolEvent) {
 	id := domain.InstanceID(c.Identity())
 	for _, ev := range events {
-		if reply, ok := ev.(domain.PersistableEvent); ok {
+		if reply, ok := ev.(domain.IssuerReply); ok {
 			s.appendInstanceReply(ctx, id, reply)
 		}
 	}
@@ -1117,7 +1117,7 @@ func (s *Session) persistInstanceReplies(ctx context.Context, c protocol.Client,
 // instance's private log. A failed write is logged and counted but
 // does not fail the command: the reply was already delivered live,
 // and only the instance's durable memory of it is lost.
-func (s *Session) appendInstanceReply(ctx context.Context, id domain.InstanceID, event domain.PersistableEvent) {
+func (s *Session) appendInstanceReply(ctx context.Context, id domain.InstanceID, event domain.IssuerReply) {
 	if _, err := s.store.AppendInstanceReply(ctx, id, event); err != nil {
 		slog.Default().ErrorContext(ctx, "append instance reply", "instance_id", id, "error", err)
 		s.recordInstancePersistenceFailure(ctx, id)

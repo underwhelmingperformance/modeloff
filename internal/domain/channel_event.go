@@ -49,6 +49,23 @@ type ChannelActivity interface {
 	channelActivity()
 }
 
+// IssuerReply is the subset of `PersistableEvent` that records a
+// point-to-point reply or notice an actor received in answer to its
+// own command (WHOIS, LIST, a refused INVITE, a topic query). These
+// are an issuer's private memory: they live in the per-instance reply
+// log keyed by the issuer's identity, never in a channel's shared log.
+// The reply-log write API accepts only `IssuerReply`, so a channel-
+// activity event reaching it is a compile error.
+//
+// `ChannelActivity` and `IssuerReply` partition `PersistableEvent`:
+// the two sets are disjoint and together cover every persistable type.
+// `TestPersistableEvent_partition` checks that each persistable type
+// it lists is classified as exactly one of the two.
+type IssuerReply interface {
+	PersistableEvent
+	issuerReply()
+}
+
 // StoredEvent pairs a channel event with its persistent row ID.
 type StoredEvent struct {
 	ID    int64
@@ -69,7 +86,6 @@ var (
 	_ PersistableEvent = TopicInfo{}
 	_ PersistableEvent = Whois{}
 	_ PersistableEvent = ListReply{}
-	_ PersistableEvent = ListEnd{}
 	_ PersistableEvent = CommandError{}
 	_ PersistableEvent = SystemNotice{}
 	_ PersistableEvent = PersonasList{}
@@ -78,6 +94,10 @@ var (
 	// persisted, so they satisfy `Event` but not `PersistableEvent`.
 	_ Event = Help{}
 	_ Event = UsageHint{}
+
+	// ListEnd rides the wire as a `/list` terminator but carries no
+	// content and is never stored, so it is `ProtocolEvent`-only.
+	_ ProtocolEvent = ListEnd{}
 
 	_ ChannelActivity = Message{}
 	_ ChannelActivity = Join{}
@@ -88,6 +108,13 @@ var (
 	_ ChannelActivity = ModelInvited{}
 	_ ChannelActivity = ModelKicked{}
 	_ ChannelActivity = NickChange{}
+
+	_ IssuerReply = Whois{}
+	_ IssuerReply = ListReply{}
+	_ IssuerReply = TopicInfo{}
+	_ IssuerReply = CommandError{}
+	_ IssuerReply = SystemNotice{}
+	_ IssuerReply = PersonasList{}
 )
 
 // Message records a message sent in a channel.
@@ -340,6 +367,7 @@ type TopicInfo struct {
 
 func (TopicInfo) persistableEvent()                 {}
 func (e TopicInfo) persistableEventTime() time.Time { return e.At }
+func (TopicInfo) issuerReply()                      {}
 
 // Help carries the `/help` output. It is a render-only DTO raised by
 // the chat-screen when the user types `/help`; it never touches the
@@ -366,6 +394,7 @@ type Whois struct {
 
 func (Whois) persistableEvent()                 {}
 func (e Whois) persistableEventTime() time.Time { return e.At }
+func (Whois) issuerReply()                      {}
 
 // ListReply records a single per-channel entry in a `/list`
 // response, shaped after IRC's RPL_LIST numeric. There is no
@@ -381,16 +410,17 @@ type ListReply struct {
 
 func (ListReply) persistableEvent()                 {}
 func (e ListReply) persistableEventTime() time.Time { return e.At }
+func (ListReply) issuerReply()                      {}
 
 // ListEnd marks the close of a `/list` response, shaped after
 // IRC's end-of-list numeric (323). Carries no fields beyond the
-// timestamp — the wire numeric has none either.
+// timestamp — the wire numeric has none either. It rides the wire
+// in `Response.Events` but holds no content, so it is delivered live
+// and never persisted: the model reconstructs the list boundary from
+// the preceding `ListReply` sequence.
 type ListEnd struct {
 	At time.Time `json:"at"`
 }
-
-func (ListEnd) persistableEvent()                 {}
-func (e ListEnd) persistableEventTime() time.Time { return e.At }
 
 // CommandError records a command error.
 type CommandError struct {
@@ -401,6 +431,7 @@ type CommandError struct {
 
 func (CommandError) persistableEvent()                 {}
 func (e CommandError) persistableEventTime() time.Time { return e.At }
+func (CommandError) issuerReply()                      {}
 
 // UsageHint carries a command usage hint. It is a render-only DTO the
 // chat-screen raises when the user mistypes a command or issues one
@@ -424,6 +455,7 @@ type SystemNotice struct {
 
 func (SystemNotice) persistableEvent()                 {}
 func (e SystemNotice) persistableEventTime() time.Time { return e.At }
+func (SystemNotice) issuerReply()                      {}
 
 // PersonasList records /personas output.
 type PersonasList struct {
@@ -433,6 +465,7 @@ type PersonasList struct {
 
 func (PersonasList) persistableEvent()                 {}
 func (e PersonasList) persistableEventTime() time.Time { return e.At }
+func (PersonasList) issuerReply()                      {}
 
 // EventTime returns the timestamp of a channel event.
 func EventTime(e PersistableEvent) time.Time {
@@ -470,8 +503,6 @@ func EventTarget(e PersistableEvent) ChannelName {
 	case Whois:
 		return v.Target
 	case ListReply:
-		return ""
-	case ListEnd:
 		return ""
 	case CommandError:
 		return v.Target
@@ -512,8 +543,6 @@ func EventType(e PersistableEvent) string {
 		return "whois"
 	case ListReply:
 		return "list_reply"
-	case ListEnd:
-		return "list_end"
 	case CommandError:
 		return "command_error"
 	case SystemNotice:
@@ -603,9 +632,6 @@ func UnmarshalPersistableEvent(b []byte) (PersistableEvent, error) {
 		return e, unmarshal(&e)
 	case "list_reply":
 		var e ListReply
-		return e, unmarshal(&e)
-	case "list_end":
-		var e ListEnd
 		return e, unmarshal(&e)
 	case "command_error":
 		var e CommandError

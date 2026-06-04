@@ -195,6 +195,13 @@ func (s *Session) handleTopic(ctx context.Context, c protocol.Client, cmd protoc
 // (see `internal/ui/chatcmd.sendCommand` and the `WhoisCommand`
 // pattern). A typed dispatcher failure still goes through
 // [commandResult].
+//
+// A refused INVITE against an unknown nick yields a
+// [domain.SystemNotice] in place of the `RPL_INVITING` envelope; that
+// notice is an [domain.IssuerReply], so it is filed to the issuer's
+// reply log and a model re-experiences the refusal on replay. The
+// success-case [domain.ModelInvited] is channel activity, not an
+// issuer reply, so it is not filed here.
 func (s *Session) handleInvite(ctx context.Context, c protocol.Client, cmd protocol.Invite) (protocol.Response, error) {
 	actor, err := s.resolveClientActor(c)
 	if err != nil {
@@ -206,7 +213,10 @@ func (s *Session) handleInvite(ctx context.Context, c protocol.Client, cmd proto
 		return commandResult(err)
 	}
 
-	return protocol.Response{Events: []domain.ProtocolEvent{event}}, nil
+	events := []domain.ProtocolEvent{event}
+	s.persistInstanceReplies(ctx, c, events)
+
+	return protocol.Response{Events: events}, nil
 }
 
 func (s *Session) handleKick(ctx context.Context, c protocol.Client, cmd protocol.Kick) (protocol.Response, error) {

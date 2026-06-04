@@ -20,8 +20,9 @@ type ProtocolEvent interface {
 	isProtocolEvent()
 }
 
-// Persistable channel events. Order matches the seal block in
-// `channel_event.go` so reviewers can diff the two side by side.
+// Wire-shaped events delivered on the protocol bus: channel activity,
+// issuer replies, and the protocol-only `UserModeChange` and
+// `ListEnd`.
 func (Message) isProtocolEvent()           {}
 func (Join) isProtocolEvent()              {}
 func (Part) isProtocolEvent()              {}
