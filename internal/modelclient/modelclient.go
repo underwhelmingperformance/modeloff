@@ -299,9 +299,6 @@ func (mc *ModelClient) loadHistory(ctx context.Context) {
 
 			kept := seed[:0:0]
 			for _, se := range seed {
-				if !se.Event.ModelVisible() {
-					continue
-				}
 				if domain.EventTime(se.Event).Before(joinedAt) {
 					continue
 				}

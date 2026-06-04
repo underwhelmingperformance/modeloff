@@ -587,7 +587,7 @@ func (s *SQLiteStore) DeleteWindow(ctx context.Context, name domain.ChannelName)
 }
 
 // AppendEvent implements Store.
-func (s *SQLiteStore) AppendEvent(ctx context.Context, ch domain.ChannelName, event domain.PersistableEvent) (int64, error) {
+func (s *SQLiteStore) AppendEvent(ctx context.Context, ch domain.ChannelName, event domain.ChannelActivity) (int64, error) {
 	var id int64
 	err := s.inSpan(ctx, "store.sqlite.append_event",
 		[]attribute.KeyValue{attribute.String(observability.AttrChannel, string(ch))},

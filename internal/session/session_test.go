@@ -4703,7 +4703,7 @@ type failingAppendStore struct {
 	errFailedAppend error
 }
 
-func (f *failingAppendStore) AppendEvent(ctx context.Context, ch domain.ChannelName, event domain.PersistableEvent) (int64, error) {
+func (f *failingAppendStore) AppendEvent(ctx context.Context, ch domain.ChannelName, event domain.ChannelActivity) (int64, error) {
 	if _, ok := f.failChannels[ch]; ok {
 		return 0, f.errFailedAppend
 	}
@@ -4712,8 +4712,8 @@ func (f *failingAppendStore) AppendEvent(ctx context.Context, ch domain.ChannelN
 }
 
 // TestSession_appendEvent_persistence_failure_is_silent pins the
-// post-α0 contract for store-side append failures: they increment
-// the `persistence_failures` counter and log via slog, but do not
+// contract for store-side append failures: they increment the
+// `persistence_failures` counter and log via slog, but do not
 // surface a chat-window notice. The IRC protocol has no numeric
 // for "your server's database is broken"; the operator-facing
 // signal is metrics and logs. The check covers both a regular
@@ -4723,7 +4723,7 @@ func TestSession_appendEvent_persistence_failure_is_silent(t *testing.T) {
 	cases := []struct {
 		name    string
 		channel domain.ChannelName
-		event   domain.PersistableEvent
+		event   domain.ChannelActivity
 	}{
 		{
 			name:    "regular channel",
@@ -4735,8 +4735,8 @@ func TestSession_appendEvent_persistence_failure_is_silent(t *testing.T) {
 		{
 			name:    "status channel",
 			channel: domain.StatusChannelName,
-			event: domain.SystemNotice{
-				Target: domain.StatusChannelName, Text: "boot notice", At: fixedTime,
+			event: domain.Message{
+				Target: domain.StatusChannelName, From: "testuser", Body: "boot notice", At: fixedTime,
 			},
 		},
 	}

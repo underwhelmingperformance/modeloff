@@ -34,11 +34,18 @@ type PersistableEvent interface {
 	Event
 	persistableEvent()
 	persistableEventTime() time.Time
-	// ModelVisible reports whether this event should be included in
-	// the context sent to model instances. Conversation events
-	// (messages, joins, parts) return true; client-local events
-	// (command output, errors) return false.
-	ModelVisible() bool
+}
+
+// ChannelActivity is the subset of `PersistableEvent` that records
+// genuine channel activity: the conversation and membership events
+// that belong in a channel's shared event log and are broadcast to
+// its members. Numeric replies, command output, and local notices
+// are `PersistableEvent` but not `ChannelActivity`, so the channel
+// log's write API — which accepts only `ChannelActivity` — rejects
+// them at compile time.
+type ChannelActivity interface {
+	PersistableEvent
+	channelActivity()
 }
 
 // StoredEvent pairs a channel event with its persistent row ID.
@@ -67,6 +74,16 @@ var (
 	_ PersistableEvent = UsageHint{}
 	_ PersistableEvent = SystemNotice{}
 	_ PersistableEvent = PersonasList{}
+
+	_ ChannelActivity = Message{}
+	_ ChannelActivity = Join{}
+	_ ChannelActivity = Part{}
+	_ ChannelActivity = Quit{}
+	_ ChannelActivity = TopicChange{}
+	_ ChannelActivity = ChannelModeChange{}
+	_ ChannelActivity = ModelInvited{}
+	_ ChannelActivity = ModelKicked{}
+	_ ChannelActivity = NickChange{}
 )
 
 // Message records a message sent in a channel.
@@ -81,9 +98,7 @@ type Message struct {
 
 func (Message) persistableEvent()                 {}
 func (e Message) persistableEventTime() time.Time { return e.At }
-
-// ModelVisible implements PersistableEvent.
-func (Message) ModelVisible() bool { return true }
+func (Message) channelActivity()                  {}
 
 // RoutingKey returns the conversation key this message belongs
 // to from `self`'s point of view. For channel- and status-shaped
@@ -140,9 +155,7 @@ type Join struct {
 
 func (Join) persistableEvent()                 {}
 func (e Join) persistableEventTime() time.Time { return e.At }
-
-// ModelVisible implements PersistableEvent.
-func (Join) ModelVisible() bool { return true }
+func (Join) channelActivity()                  {}
 
 // Part records a user or model leaving a channel. See
 // `Join` for the `Instance` / `InstanceID` contract.
@@ -158,9 +171,7 @@ type Part struct {
 
 func (Part) persistableEvent()                 {}
 func (e Part) persistableEventTime() time.Time { return e.At }
-
-// ModelVisible implements PersistableEvent.
-func (Part) ModelVisible() bool { return true }
+func (Part) channelActivity()                  {}
 
 // Quit records a user or model quitting the server. The wire
 // payload carries no channel list — RFC 2812 §3.1.7 QUIT is an
@@ -180,9 +191,7 @@ type Quit struct {
 
 func (Quit) persistableEvent()                 {}
 func (e Quit) persistableEventTime() time.Time { return e.At }
-
-// ModelVisible implements PersistableEvent.
-func (Quit) ModelVisible() bool { return true }
+func (Quit) channelActivity()                  {}
 
 // TopicChange records a topic change. `By` is the actor's
 // nick at the time of the change; `InstanceID` is the actor's
@@ -200,9 +209,7 @@ type TopicChange struct {
 
 func (TopicChange) persistableEvent()                 {}
 func (e TopicChange) persistableEventTime() time.Time { return e.At }
-
-// ModelVisible implements PersistableEvent.
-func (TopicChange) ModelVisible() bool { return true }
+func (TopicChange) channelActivity()                  {}
 
 // ChannelModeChange records the channel-scoped form of an RFC 2812
 // MODE mutation: a member mode (`+o`/`+v` on a nick) or a channel
@@ -236,9 +243,7 @@ func (e ChannelModeChange) ServerIssued() bool { return e.By == "" }
 
 func (ChannelModeChange) persistableEvent()                 {}
 func (e ChannelModeChange) persistableEventTime() time.Time { return e.At }
-
-// ModelVisible implements PersistableEvent.
-func (ChannelModeChange) ModelVisible() bool { return true }
+func (ChannelModeChange) channelActivity()                  {}
 
 // UserModeChange records the user-scoped form of an RFC 2812 MODE
 // mutation: a global flag on a single client (the `+o` operator
@@ -277,9 +282,7 @@ type ModelInvited struct {
 
 func (ModelInvited) persistableEvent()                 {}
 func (e ModelInvited) persistableEventTime() time.Time { return e.At }
-
-// ModelVisible implements PersistableEvent.
-func (ModelInvited) ModelVisible() bool { return true }
+func (ModelInvited) channelActivity()                  {}
 
 // ModelKicked records a model instance being removed from a
 // channel. `Nick`/`InstanceID` identify the kicked party (the
@@ -299,9 +302,7 @@ type ModelKicked struct {
 
 func (ModelKicked) persistableEvent()                 {}
 func (e ModelKicked) persistableEventTime() time.Time { return e.At }
-
-// ModelVisible implements PersistableEvent.
-func (ModelKicked) ModelVisible() bool { return true }
+func (ModelKicked) channelActivity()                  {}
 
 // NickChange records a nick change. The wire payload carries no
 // channel list — RFC 2812 §3.1.2 NICK is an actor-scoped notice
@@ -321,9 +322,7 @@ type NickChange struct {
 
 func (NickChange) persistableEvent()                 {}
 func (e NickChange) persistableEventTime() time.Time { return e.At }
-
-// ModelVisible implements PersistableEvent.
-func (NickChange) ModelVisible() bool { return true }
+func (NickChange) channelActivity()                  {}
 
 // TopicInfo records the current topic state when queried
 // (e.g. via /topic with no arguments).
@@ -338,9 +337,6 @@ type TopicInfo struct {
 func (TopicInfo) persistableEvent()                 {}
 func (e TopicInfo) persistableEventTime() time.Time { return e.At }
 
-// ModelVisible implements PersistableEvent.
-func (TopicInfo) ModelVisible() bool { return false }
-
 // Help records /help output.
 type Help struct {
 	Target ChannelName `json:"channel"`
@@ -349,9 +345,6 @@ type Help struct {
 
 func (Help) persistableEvent()                 {}
 func (e Help) persistableEventTime() time.Time { return e.At }
-
-// ModelVisible implements PersistableEvent.
-func (Help) ModelVisible() bool { return false }
 
 // Whois records /whois output. Identity-revealing fields
 // (`Nick`, `ModelID`, `Persona`, `Channels`) are captured at the
@@ -370,9 +363,6 @@ type Whois struct {
 func (Whois) persistableEvent()                 {}
 func (e Whois) persistableEventTime() time.Time { return e.At }
 
-// ModelVisible implements PersistableEvent.
-func (Whois) ModelVisible() bool { return false }
-
 // ListReply records a single per-channel entry in a `/list`
 // response, shaped after IRC's RPL_LIST numeric. There is no
 // `Target` field — RPL_LIST is a server-to-client reply that
@@ -388,9 +378,6 @@ type ListReply struct {
 func (ListReply) persistableEvent()                 {}
 func (e ListReply) persistableEventTime() time.Time { return e.At }
 
-// ModelVisible implements PersistableEvent.
-func (ListReply) ModelVisible() bool { return false }
-
 // ListEnd marks the close of a `/list` response, shaped after
 // IRC's end-of-list numeric (323). Carries no fields beyond the
 // timestamp — the wire numeric has none either.
@@ -401,9 +388,6 @@ type ListEnd struct {
 func (ListEnd) persistableEvent()                 {}
 func (e ListEnd) persistableEventTime() time.Time { return e.At }
 
-// ModelVisible implements PersistableEvent.
-func (ListEnd) ModelVisible() bool { return false }
-
 // CommandError records a command error.
 type CommandError struct {
 	Target ChannelName `json:"channel"`
@@ -413,9 +397,6 @@ type CommandError struct {
 
 func (CommandError) persistableEvent()                 {}
 func (e CommandError) persistableEventTime() time.Time { return e.At }
-
-// ModelVisible implements PersistableEvent.
-func (CommandError) ModelVisible() bool { return false }
 
 // UsageHint records a command usage hint.
 type UsageHint struct {
@@ -428,9 +409,6 @@ type UsageHint struct {
 func (UsageHint) persistableEvent()                 {}
 func (e UsageHint) persistableEventTime() time.Time { return e.At }
 
-// ModelVisible implements PersistableEvent.
-func (UsageHint) ModelVisible() bool { return false }
-
 // SystemNotice records a system notification (API key saved,
 // poke interval changed, etc.).
 type SystemNotice struct {
@@ -442,9 +420,6 @@ type SystemNotice struct {
 func (SystemNotice) persistableEvent()                 {}
 func (e SystemNotice) persistableEventTime() time.Time { return e.At }
 
-// ModelVisible implements PersistableEvent.
-func (SystemNotice) ModelVisible() bool { return false }
-
 // PersonasList records /personas output.
 type PersonasList struct {
 	Personas []Persona `json:"personas"`
@@ -453,9 +428,6 @@ type PersonasList struct {
 
 func (PersonasList) persistableEvent()                 {}
 func (e PersonasList) persistableEventTime() time.Time { return e.At }
-
-// ModelVisible implements PersistableEvent.
-func (PersonasList) ModelVisible() bool { return false }
 
 // EventTime returns the timestamp of a channel event.
 func EventTime(e PersistableEvent) time.Time {

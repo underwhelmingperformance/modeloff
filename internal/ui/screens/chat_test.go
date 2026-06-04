@@ -259,15 +259,6 @@ func TestChatScreen_rejoin_hides_pre_session_history(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// A persisted command error from a previous session likewise
-	// stays out of the user's view.
-	_, err = s.AppendEvent(ctx, "#general", domain.CommandError{
-		Target: "#general",
-		Err:    "ancient dispatch failure",
-		At:     oldTime,
-	})
-	require.NoError(t, err)
-
 	apiClient := &uitest.FakeAPI{}
 	sess, mgr, user := uitest.NewTestSession(t, s, apiClient, nil, nil, "", "", t.Context)
 	h := &testHarness{sess: sess, mgr: mgr, user: user}
@@ -308,7 +299,7 @@ func TestChatScreen_rejoin_hides_pre_session_history(t *testing.T) {
 		"<testuser> fresh message",
 		"testuser >",
 	}, shaped,
-		"events from before the session start must not appear in the user's scrollback (covers both 'previous session message' and 'ancient dispatch failure')")
+		"events from before the session start must not appear in the user's scrollback (the persisted 'previous session message')")
 }
 
 // replaceTopicSeparator substitutes the horizontal-rule row that the

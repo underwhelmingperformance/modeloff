@@ -60,7 +60,7 @@ type Store interface {
 
 	// Event log.
 
-	AppendEvent(ctx context.Context, ch domain.ChannelName, event domain.PersistableEvent) (int64, error)
+	AppendEvent(ctx context.Context, ch domain.ChannelName, event domain.ChannelActivity) (int64, error)
 	EventsBefore(ctx context.Context, ch domain.ChannelName, before *int64, n int) ([]domain.StoredEvent, error)
 	EventsFrom(ctx context.Context, ch domain.ChannelName, from *int64, n int) ([]domain.StoredEvent, error)
 
@@ -959,15 +959,13 @@ func (s *Session) EventsBefore(ctx context.Context, ch domain.ChannelName, befor
 }
 
 // broadcastEvent is the intersection type carried through the
-// session's persist-then-emit helpers: every value is both a
-// channel event the store accepts and a protocol event the
-// per-client fan-out delivers. The two sealed sums overlap
-// entirely on the concrete types the session emits (every
-// `domain.PersistableEvent` implementer is also a
-// `domain.ProtocolEvent`), and this combined interface makes that
-// invariant explicit in the helper signatures.
+// session's persist-then-emit helpers: every value is both channel
+// activity the store accepts and a protocol event the per-client
+// fan-out delivers. The combined interface makes explicit in the
+// helper signatures that persist-then-emit only ever carries channel
+// activity.
 type broadcastEvent interface {
-	domain.PersistableEvent
+	domain.ChannelActivity
 	domain.ProtocolEvent
 }
 
@@ -1092,7 +1090,7 @@ func (s *Session) persistableAutojoinChannels() []domain.ChannelName {
 	return channels
 }
 
-func (s *Session) appendEvent(ctx context.Context, ch domain.ChannelName, event domain.PersistableEvent) {
+func (s *Session) appendEvent(ctx context.Context, ch domain.ChannelName, event domain.ChannelActivity) {
 	if _, err := s.store.AppendEvent(ctx, ch, event); err != nil {
 		slog.Default().ErrorContext(ctx, "append event", "channel", ch, "error", err)
 		s.recordPersistenceFailure(ctx, ch)

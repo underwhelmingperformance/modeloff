@@ -60,11 +60,10 @@ func (h *history) seedReplies(events []domain.StoredEvent) {
 }
 
 // appendReply records `ev` against the private-replies buffer. These
-// are the model's `/whois` and `/list` results, which are
-// `!ModelVisible` by design and must be kept, so no model-visibility
-// filter applies here. The buffer trims to [modelHistorySize] from
-// the older end so a chatty lookup history cannot grow it without
-// bound.
+// are the model's `/whois` and `/list` results: its own point-to-point
+// replies, kept so the model re-experiences them. The buffer trims to
+// [modelHistorySize] from the older end so a chatty lookup history
+// cannot grow it without bound.
 func (h *history) appendReply(ev domain.StoredEvent) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -108,10 +107,9 @@ func (h *history) snapshot(target domain.ChannelName) []domain.StoredEvent {
 	return dst
 }
 
-// append records `ev` against `target` in the rolling buffer. Events
-// the LLM never sees in its prompt (`!ModelVisible`) are skipped so
-// the buffer's trim cap reflects turns of conversation rather than
-// wire chatter.
+// append records `ev` against `target` in the rolling buffer. The
+// feeder admits only [domain.ChannelActivity], so the buffer holds
+// the conversation a turn assembles its prompt from.
 //
 // On first sight of a DM target — `target` is a counterpart
 // `InstanceID` and the buffer has no entry for it yet — the method
@@ -136,10 +134,6 @@ func (h *history) append(
 	ev domain.StoredEvent,
 	target domain.ChannelName,
 ) {
-	if !ev.Event.ModelVisible() {
-		return
-	}
-
 	h.mu.Lock()
 	defer h.mu.Unlock()
 

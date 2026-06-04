@@ -75,8 +75,8 @@ func (mc *ModelClient) runDispatchLoop(ctx context.Context, sub protocol.Subscri
 			historyForTurn = mc.hist.snapshot(ch)
 		}
 
-		if pe, ok := delivery.Event.(domain.PersistableEvent); ok {
-			stored := domain.StoredEvent{Event: pe}
+		if ca, ok := delivery.Event.(domain.ChannelActivity); ok {
+			stored := domain.StoredEvent{Event: ca}
 			for _, target := range historyTargets(delivery) {
 				mc.hist.append(ctx, mc.sess, mc.instance.ID(), stored, target)
 			}
@@ -111,8 +111,6 @@ func historyTargets(delivery protocol.Delivery) []domain.ChannelName {
 	case domain.Part:
 		return []domain.ChannelName{e.Target}
 	case domain.TopicChange:
-		return []domain.ChannelName{e.Target}
-	case domain.TopicInfo:
 		return []domain.ChannelName{e.Target}
 	case domain.ChannelModeChange:
 		return []domain.ChannelName{e.Target}

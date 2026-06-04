@@ -519,7 +519,7 @@ func TestSQLiteStore_DMEventsBefore_includes_peer_actor_events(t *testing.T) {
 	const userID domain.InstanceID = ""
 	const bottyID domain.InstanceID = "inst-botty"
 
-	mustAppend := func(channel domain.ChannelName, evt domain.PersistableEvent) int64 {
+	mustAppend := func(channel domain.ChannelName, evt domain.ChannelActivity) int64 {
 		t.Helper()
 		id, err := s.AppendEvent(ctx, channel, evt)
 		require.NoError(t, err)
@@ -650,7 +650,7 @@ func TestSQLiteStore_Events_type_discriminator_round_trip(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
 
-	events := []domain.PersistableEvent{
+	events := []domain.ChannelActivity{
 		domain.Message{Target: "#general", From: "alice", Body: "hello", At: testTime},
 		domain.Join{Target: "#general", Nick: "bob", At: testTime},
 		domain.Part{Target: "#general", Nick: "bob", At: testTime},
@@ -669,12 +669,17 @@ func TestSQLiteStore_Events_type_discriminator_round_trip(t *testing.T) {
 	got, err := s.EventsFrom(ctx, "#general", nil, 100)
 	require.NoError(t, err)
 
+	want := make([]domain.PersistableEvent, len(events))
+	for i, e := range events {
+		want[i] = e
+	}
+
 	gotEvents := make([]domain.PersistableEvent, len(got))
 	for i, se := range got {
 		gotEvents[i] = se.Event
 	}
 
-	require.Equal(t, events, gotEvents)
+	require.Equal(t, want, gotEvents)
 }
 
 // --- Model instances ---

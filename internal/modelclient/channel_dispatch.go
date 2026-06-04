@@ -155,9 +155,6 @@ func joinScopedHistory(events []domain.StoredEvent, inst *domain.Instance, chann
 
 	kept := events[:0:0]
 	for _, se := range events {
-		if !se.Event.ModelVisible() {
-			continue
-		}
 		if domain.EventTime(se.Event).Before(joinedAt) {
 			continue
 		}
@@ -212,12 +209,8 @@ func dispatchToInstance(
 		var timeline []timedMessage
 
 		// The shared channel transcript. The ring is join-scoped by
-		// construction; the model-visibility skip is cheap defence.
+		// construction and holds only channel activity.
 		for _, se := range historyEvents {
-			if !se.Event.ModelVisible() {
-				continue
-			}
-
 			if msg, ok := protocol.FromChannelEvent(se.Event); ok {
 				timeline = append(timeline, timedMessage{at: domain.EventTime(se.Event), msg: msg})
 			}

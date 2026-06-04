@@ -71,9 +71,9 @@ func TestHistory_append_distinct_events_both_appended(t *testing.T) {
 
 // TestHistory_replies_load_append_read covers the private-replies
 // ring's lifecycle: seeded at attach, appended live, read by
-// snapshot. The replies are `/whois` results — `!ModelVisible` by
-// design — so the ring must keep them where the channel buffer
-// would drop them.
+// snapshot. The replies are `/whois` results — `PersistableEvent`
+// but not `domain.ChannelActivity` — so the channel buffer's feeder
+// never admits them; the replies ring is where the model keeps them.
 func TestHistory_replies_load_append_read(t *testing.T) {
 	t.Parallel()
 
@@ -85,9 +85,6 @@ func TestHistory_replies_load_append_read(t *testing.T) {
 	live := domain.ListEnd{
 		At: time.Date(2025, 1, 1, 12, 0, 1, 0, time.UTC),
 	}
-
-	require.False(t, seeded.ModelVisible(),
-		"a whois reply is not model-visible; the replies ring must keep it anyway")
 
 	h := newHistory()
 	h.seedReplies([]domain.StoredEvent{{ID: 7, Event: seeded}})
