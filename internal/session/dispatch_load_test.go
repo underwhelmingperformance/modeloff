@@ -49,10 +49,10 @@ func (c *capturedHistory) snapshot() [][]protocol.IRCMessage {
 // join time are dropped at load.
 func TestModelClient_load_is_join_scoped(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		var cap capturedHistory
+		var captured capturedHistory
 		fake := &fakeAPIClient{
 			sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, history []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
-				cap.record(history)
+				captured.record(history)
 				return api.CompletionResult{}, nil
 			},
 		}
@@ -85,7 +85,7 @@ func TestModelClient_load_is_join_scoped(t *testing.T) {
 
 		synctest.Wait()
 
-		require.Equal(t, [][]protocol.IRCMessage{nil}, cap.snapshot(),
+		require.Equal(t, [][]protocol.IRCMessage{nil}, captured.snapshot(),
 			"the pre-join message must not appear in the prompt history; "+
 				"the load is join-scoped")
 	})
@@ -96,10 +96,10 @@ func TestModelClient_load_is_join_scoped(t *testing.T) {
 // the load surfaces no history at all, never the whole channel.
 func TestModelClient_load_fails_closed_on_zero_join(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		var cap capturedHistory
+		var captured capturedHistory
 		fake := &fakeAPIClient{
 			sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, history []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
-				cap.record(history)
+				captured.record(history)
 				return api.CompletionResult{}, nil
 			},
 		}
@@ -127,7 +127,7 @@ func TestModelClient_load_fails_closed_on_zero_join(t *testing.T) {
 
 		synctest.Wait()
 
-		require.Equal(t, [][]protocol.IRCMessage{nil}, cap.snapshot(),
+		require.Equal(t, [][]protocol.IRCMessage{nil}, captured.snapshot(),
 			"a zero join time loads nothing: the load fails closed")
 	})
 }
@@ -140,14 +140,14 @@ func TestModelClient_load_fails_closed_on_zero_join(t *testing.T) {
 func TestModelClient_private_replies_converge_on_local_ring(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var (
-			cap    capturedHistory
-			turn   int
-			turnMu sync.Mutex
+			captured capturedHistory
+			turn     int
+			turnMu   sync.Mutex
 		)
 
 		fake := &fakeAPIClient{
 			sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, history []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
-				cap.record(history)
+				captured.record(history)
 
 				turnMu.Lock()
 				n := turn
@@ -184,7 +184,7 @@ func TestModelClient_private_replies_converge_on_local_ring(t *testing.T) {
 		require.NoError(t, err)
 		synctest.Wait()
 
-		snapshots := cap.snapshot()
+		snapshots := captured.snapshot()
 		require.NotEmpty(t, snapshots, "the model dispatched at least once")
 
 		var latestReplies []string
