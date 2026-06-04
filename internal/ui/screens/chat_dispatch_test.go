@@ -388,7 +388,7 @@ func TestChatScreen_ErrorEvent_no_active_channel(t *testing.T) {
 	scrollback := screen.scrollbackOf(domain.StatusChannelName)
 	cmdErrs := make([]string, 0, len(scrollback))
 	for _, ev := range scrollback {
-		if cmdErr, ok := ev.Event.(domain.CommandError); ok {
+		if cmdErr, ok := ev.(domain.CommandError); ok {
 			cmdErrs = append(cmdErrs, cmdErr.Err)
 		}
 	}
@@ -411,7 +411,7 @@ func TestChatScreen_MessageSubmit_on_status_channel_renders_usage_hint(t *testin
 	scrollback := screen2.(ChatScreen).scrollbackOf(domain.StatusChannelName)
 	hints := make([]domain.UsageHint, 0, len(scrollback))
 	for _, ev := range scrollback {
-		if hint, ok := ev.Event.(domain.UsageHint); ok {
+		if hint, ok := ev.(domain.UsageHint); ok {
 			hint.At = time.Time{}
 			hints = append(hints, hint)
 		}
@@ -575,10 +575,10 @@ func TestChatScreen_QuitEvent_routes_to_targets_only(t *testing.T) {
 
 	screen.bufferProtocolEvent(quit, []domain.ChannelName{"#x", "#y"})
 
-	expected := domain.StoredEvent{Event: quit}
+	expected := []domain.Event{quit}
 
-	require.Equal(t, []domain.StoredEvent{expected}, screen.scrollbackOf("#x"))
-	require.Equal(t, []domain.StoredEvent{expected}, screen.scrollbackOf("#y"))
+	require.Equal(t, expected, screen.scrollbackOf("#x"))
+	require.Equal(t, expected, screen.scrollbackOf("#y"))
 	require.Empty(t, screen.scrollbackOf("#z"),
 		"a QUIT for {#x, #y} must not surface in #z's scrollback")
 }
@@ -606,10 +606,10 @@ func TestChatScreen_NickChangeEvent_routes_to_targets_only(t *testing.T) {
 
 	screen.bufferProtocolEvent(nick, []domain.ChannelName{"#x", "#y"})
 
-	expected := domain.StoredEvent{Event: nick}
+	expected := []domain.Event{nick}
 
-	require.Equal(t, []domain.StoredEvent{expected}, screen.scrollbackOf("#x"))
-	require.Equal(t, []domain.StoredEvent{expected}, screen.scrollbackOf("#y"))
+	require.Equal(t, expected, screen.scrollbackOf("#x"))
+	require.Equal(t, expected, screen.scrollbackOf("#y"))
 	require.Empty(t, screen.scrollbackOf("#z"),
 		"a NICK for {#x, #y} must not surface in #z's scrollback")
 }

@@ -139,13 +139,6 @@ func TestChannelEvent_JSON_round_trip(t *testing.T) {
 			},
 		},
 		{
-			name: "help",
-			event: domain.Help{
-				Target: "#general",
-				At:     ts,
-			},
-		},
-		{
 			name: "whois",
 			event: domain.Whois{
 				Target:  "#general",
@@ -178,15 +171,6 @@ func TestChannelEvent_JSON_round_trip(t *testing.T) {
 			},
 		},
 		{
-			name: "usage hint",
-			event: domain.UsageHint{
-				Target:  "#general",
-				Command: "invite",
-				Usage:   "/add-model <model-id> [--persona <text>]",
-				At:      ts,
-			},
-		},
-		{
 			name: "system notice",
 			event: domain.SystemNotice{
 				Target: "#general",
@@ -215,6 +199,46 @@ func TestChannelEvent_JSON_round_trip(t *testing.T) {
 			require.NoError(t, err)
 
 			require.Equal(t, tt.event, got)
+		})
+	}
+}
+
+// TestRenderOnlyEvents_are_not_persistable pins the compile-time fact
+// that the render-only feedback DTOs satisfy [domain.Event] but not
+// [domain.PersistableEvent]: they render in the chat-screen scrollback
+// yet never reach the store.
+func TestRenderOnlyEvents_are_not_persistable(t *testing.T) {
+	renderOnly := map[string]domain.Event{
+		"help":       domain.Help{Target: "#general"},
+		"usage hint": domain.UsageHint{Target: "#general", Command: "invite", Usage: "/add-model"},
+	}
+
+	for name, event := range renderOnly {
+		t.Run(name, func(t *testing.T) {
+			_, persistable := event.(domain.PersistableEvent)
+			require.False(t, persistable,
+				"%T must be Event-only, never PersistableEvent", event)
+		})
+	}
+}
+
+// TestUnmarshalPersistableEvent_unknown_type ensures a stored row
+// whose discriminator this build no longer recognises yields the
+// [domain.ErrUnknownEventType] sentinel, so the channel-log read path
+// can skip it rather than failing the whole batch.
+func TestUnmarshalPersistableEvent_unknown_type(t *testing.T) {
+	tests := map[string]string{
+		"legacy help":       `{"type":"help","data":{"channel":"#general","at":"2026-04-06T12:00:00Z"}}`,
+		"legacy usage hint": `{"type":"usage_hint","data":{"channel":"#general","command":"invite"}}`,
+		"never known":       `{"type":"made_up","data":{}}`,
+	}
+
+	for name, row := range tests {
+		t.Run(name, func(t *testing.T) {
+			got, err := domain.UnmarshalPersistableEvent([]byte(row))
+
+			require.Nil(t, got)
+			require.ErrorIs(t, err, domain.ErrUnknownEventType)
 		})
 	}
 }

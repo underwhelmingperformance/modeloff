@@ -96,7 +96,7 @@ type chatViewLayout struct {
 // every `View` for the active window's scrollback. The chat
 // screen owns the storage; this view is a pure read over it.
 func NewChatView[C command.KindProvider](
-	events func() []domain.StoredEvent,
+	events func() []domain.Event,
 	ch domain.ChannelName,
 	kind domain.ChannelKind,
 	userNick domain.Nick,

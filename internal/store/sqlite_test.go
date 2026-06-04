@@ -454,6 +454,33 @@ func TestSQLiteStore_EventsBefore_with_cursor(t *testing.T) {
 	require.Equal(t, []int64{ids[1], ids[2]}, gotIDs)
 }
 
+// TestSQLiteStore_EventsBefore_skips_unrecognised_row pins the
+// decode-resilience of the channel-log read path. An older database
+// may hold rows whose type discriminator this build no longer knows
+// (here a legacy `help` row). Such a row is skipped and the rest of
+// the batch is returned intact, so one stale row cannot wedge a
+// channel's history.
+func TestSQLiteStore_EventsBefore_skips_unrecognised_row(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	legacy := `{"type":"help","data":{"channel":"#general","at":"2025-01-15T10:29:00Z"}}`
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO events (channel, type, data, at) VALUES (?, ?, ?, ?)`,
+		"#general", "help", legacy, testTime.Add(-time.Minute).Format(time.RFC3339Nano))
+	require.NoError(t, err)
+
+	good := domain.Join{Target: "#general", Nick: "alice", At: testTime}
+	id, err := s.AppendEvent(ctx, "#general", good)
+	require.NoError(t, err)
+
+	got, err := s.EventsBefore(ctx, "#general", nil, 10)
+	require.NoError(t, err)
+	require.Equal(t, []domain.StoredEvent{
+		{ID: id, Event: good},
+	}, got)
+}
+
 // TestSQLiteStore_DMEventsBefore_unions_both_directions pins
 // the bidirectional fetch: events the user sent into the DM
 // (channel = peer.ID(), instance_id = "") and events the model

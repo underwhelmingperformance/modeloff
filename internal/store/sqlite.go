@@ -627,7 +627,7 @@ func (s *SQLiteStore) EventsBefore(ctx context.Context, ch domain.ChannelName, b
 					) ORDER BY id ASC`, []any{ch, *before, n}
 			}
 
-			got, err := queryRows(ctx, s.db, query, args, storedEventRow)
+			got, err := queryEventRows(ctx, s.db, query, args)
 			if err != nil {
 				return err
 			}
@@ -682,7 +682,7 @@ func (s *SQLiteStore) InstanceRepliesBefore(ctx context.Context, id domain.Insta
 					) ORDER BY id ASC`, []any{id, *before, n}
 			}
 
-			got, err := queryRows(ctx, s.db, query, args, storedEventRow)
+			got, err := queryEventRows(ctx, s.db, query, args)
 			if err != nil {
 				return err
 			}
@@ -745,7 +745,7 @@ func (s *SQLiteStore) DMEventsBefore(ctx context.Context, self, peer domain.Inst
 					[]any{string(peer), string(self), string(self), string(peer), string(peer), *before, n}
 			}
 
-			got, err := queryRows(ctx, s.db, query, args, storedEventRow)
+			got, err := queryEventRows(ctx, s.db, query, args)
 			if err != nil {
 				return err
 			}
@@ -770,7 +770,7 @@ func (s *SQLiteStore) EventsFrom(ctx context.Context, ch domain.ChannelName, fro
 					 ORDER BY id ASC LIMIT ?`, []any{ch, *from, n}
 			}
 
-			got, err := queryRows(ctx, s.db, query, args, storedEventRow)
+			got, err := queryEventRows(ctx, s.db, query, args)
 			if err != nil {
 				return err
 			}
@@ -1135,27 +1135,6 @@ func setState(ctx context.Context, db *sql.DB, key, value string) error {
 		`INSERT INTO state (key, value) VALUES (?, ?)
 		 ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
 		key, value)
-}
-
-// storedEventRow decodes the (id, data) shape used by every event-log
-// query. Returns a `domain.StoredEvent` with the unmarshalled
-// payload.
-func storedEventRow(r rowScanner) (domain.StoredEvent, error) {
-	var (
-		id   int64
-		data string
-	)
-
-	if err := r.Scan(&id, &data); err != nil {
-		return domain.StoredEvent{}, err
-	}
-
-	event, err := domain.UnmarshalPersistableEvent([]byte(data))
-	if err != nil {
-		return domain.StoredEvent{}, err
-	}
-
-	return domain.StoredEvent{ID: id, Event: event}, nil
 }
 
 // scalarColumn returns a decoder that scans a single value into a

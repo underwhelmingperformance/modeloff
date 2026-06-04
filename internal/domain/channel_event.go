@@ -2,6 +2,7 @@ package domain
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -66,14 +67,17 @@ var (
 	_ PersistableEvent = ModelKicked{}
 	_ PersistableEvent = NickChange{}
 	_ PersistableEvent = TopicInfo{}
-	_ PersistableEvent = Help{}
 	_ PersistableEvent = Whois{}
 	_ PersistableEvent = ListReply{}
 	_ PersistableEvent = ListEnd{}
 	_ PersistableEvent = CommandError{}
-	_ PersistableEvent = UsageHint{}
 	_ PersistableEvent = SystemNotice{}
 	_ PersistableEvent = PersonasList{}
+
+	// Render-only DTOs: renderable on the chat-screen, never
+	// persisted, so they satisfy `Event` but not `PersistableEvent`.
+	_ Event = Help{}
+	_ Event = UsageHint{}
 
 	_ ChannelActivity = Message{}
 	_ ChannelActivity = Join{}
@@ -337,14 +341,14 @@ type TopicInfo struct {
 func (TopicInfo) persistableEvent()                 {}
 func (e TopicInfo) persistableEventTime() time.Time { return e.At }
 
-// Help records /help output.
+// Help carries the `/help` output. It is a render-only DTO raised by
+// the chat-screen when the user types `/help`; it never touches the
+// session or the store, so it is a plain `Event` and not a
+// `PersistableEvent`.
 type Help struct {
 	Target ChannelName `json:"channel"`
 	At     time.Time   `json:"at"`
 }
-
-func (Help) persistableEvent()                 {}
-func (e Help) persistableEventTime() time.Time { return e.At }
 
 // Whois records /whois output. Identity-revealing fields
 // (`Nick`, `ModelID`, `Persona`, `Channels`) are captured at the
@@ -398,16 +402,17 @@ type CommandError struct {
 func (CommandError) persistableEvent()                 {}
 func (e CommandError) persistableEventTime() time.Time { return e.At }
 
-// UsageHint records a command usage hint.
+// UsageHint carries a command usage hint. It is a render-only DTO the
+// chat-screen raises when the user mistypes a command or issues one
+// out of context; the chatcmd grammar rejects the input client-side
+// and nothing reaches the session, so it is a plain `Event` and not a
+// `PersistableEvent`.
 type UsageHint struct {
 	Target  ChannelName `json:"channel"`
 	Command string      `json:"command"`
 	Usage   string      `json:"usage"`
 	At      time.Time   `json:"at"`
 }
-
-func (UsageHint) persistableEvent()                 {}
-func (e UsageHint) persistableEventTime() time.Time { return e.At }
 
 // SystemNotice records a system notification (API key saved,
 // poke interval changed, etc.).
@@ -462,8 +467,6 @@ func EventTarget(e PersistableEvent) ChannelName {
 		return v.Target
 	case TopicInfo:
 		return v.Target
-	case Help:
-		return v.Target
 	case Whois:
 		return v.Target
 	case ListReply:
@@ -471,8 +474,6 @@ func EventTarget(e PersistableEvent) ChannelName {
 	case ListEnd:
 		return ""
 	case CommandError:
-		return v.Target
-	case UsageHint:
 		return v.Target
 	case SystemNotice:
 		return v.Target
@@ -507,8 +508,6 @@ func EventType(e PersistableEvent) string {
 		return "nick_change"
 	case TopicInfo:
 		return "topic_info"
-	case Help:
-		return "help"
 	case Whois:
 		return "whois"
 	case ListReply:
@@ -517,8 +516,6 @@ func EventType(e PersistableEvent) string {
 		return "list_end"
 	case CommandError:
 		return "command_error"
-	case UsageHint:
-		return "usage_hint"
 	case SystemNotice:
 		return "system_notice"
 	case PersonasList:
@@ -549,8 +546,17 @@ func MarshalPersistableEvent(e PersistableEvent) ([]byte, error) {
 	})
 }
 
+// ErrUnknownEventType reports that a stored event row carries a type
+// discriminator this build no longer recognises. An older database may
+// hold rows for event kinds that have since left the persistable
+// hierarchy; the channel-log read path skips such rows rather than
+// failing the whole batch. Callers test for it with `errors.Is`.
+var ErrUnknownEventType = errors.New("unknown channel event type")
+
 // UnmarshalPersistableEvent decodes a channel event from JSON, using the
-// type discriminator to select the concrete type.
+// type discriminator to select the concrete type. A discriminator this
+// build does not know yields [ErrUnknownEventType] so the read path can
+// skip the row.
 func UnmarshalPersistableEvent(b []byte) (PersistableEvent, error) {
 	var env persistableEventEnvelope
 	if err := json.Unmarshal(b, &env); err != nil {
@@ -592,9 +598,6 @@ func UnmarshalPersistableEvent(b []byte) (PersistableEvent, error) {
 	case "topic_info":
 		var e TopicInfo
 		return e, unmarshal(&e)
-	case "help":
-		var e Help
-		return e, unmarshal(&e)
 	case "whois":
 		var e Whois
 		return e, unmarshal(&e)
@@ -607,9 +610,6 @@ func UnmarshalPersistableEvent(b []byte) (PersistableEvent, error) {
 	case "command_error":
 		var e CommandError
 		return e, unmarshal(&e)
-	case "usage_hint":
-		var e UsageHint
-		return e, unmarshal(&e)
 	case "system_notice":
 		var e SystemNotice
 		return e, unmarshal(&e)
@@ -617,7 +617,7 @@ func UnmarshalPersistableEvent(b []byte) (PersistableEvent, error) {
 		var e PersonasList
 		return e, unmarshal(&e)
 	default:
-		return nil, fmt.Errorf("unknown channel event type: %q", env.Type)
+		return nil, fmt.Errorf("%w: %q", ErrUnknownEventType, env.Type)
 	}
 }
 

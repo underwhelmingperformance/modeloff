@@ -27,7 +27,7 @@ func (s ChatScreen) bufferEvent(evt domain.Event) {
 			return
 		}
 
-		s.appendToScrollback(key, domain.StoredEvent{Event: e})
+		s.appendToScrollback(key, e)
 	case domain.Welcome:
 		s.appendStatusNotice(e.At, fmt.Sprintf("Welcome to %s, %s", e.ServerName, e.Nick))
 	case domain.Reconnected:
@@ -48,7 +48,7 @@ func (s ChatScreen) bufferEvent(evt domain.Event) {
 			return
 		}
 
-		s.appendToScrollback(ch, domain.StoredEvent{Event: e})
+		s.appendToScrollback(ch, e)
 	}
 }
 
@@ -62,23 +62,23 @@ func (s ChatScreen) bufferEvent(evt domain.Event) {
 func (s ChatScreen) bufferProtocolEvent(evt domain.Event, targets []domain.ChannelName) {
 	switch e := evt.(type) {
 	case domain.Quit:
-		s.bufferActorEvent(targets, e.Instance, domain.StoredEvent{Event: e})
+		s.bufferActorEvent(targets, e.Instance, e)
 	case domain.NickChange:
-		s.bufferActorEvent(targets, e.Instance, domain.StoredEvent{Event: e})
+		s.bufferActorEvent(targets, e.Instance, e)
 	default:
 		s.bufferEvent(evt)
 	}
 }
 
-// bufferActorEvent appends `stored` to each channel scrollback
+// bufferActorEvent appends `event` to each channel scrollback
 // in `targets` plus any open DM whose counterpart is `actor`.
 // `targets` comes from [protocol.Delivery.Targets] — the
 // per-recipient intersection the session computed at fan-out
 // time, so the chat-screen never reads a channels list off the
 // wire payload.
-func (s ChatScreen) bufferActorEvent(targets []domain.ChannelName, actor *domain.Instance, stored domain.StoredEvent) {
+func (s ChatScreen) bufferActorEvent(targets []domain.ChannelName, actor *domain.Instance, event domain.Event) {
 	for _, ch := range targets {
-		s.appendToScrollback(ch, stored)
+		s.appendToScrollback(ch, event)
 	}
 
 	if actor == nil {
@@ -92,7 +92,7 @@ func (s ChatScreen) bufferActorEvent(targets []domain.ChannelName, actor *domain
 		}
 
 		if dm.Counterpart == actor {
-			s.appendToScrollback(dm.Name(), stored)
+			s.appendToScrollback(dm.Name(), event)
 		}
 	}
 }
@@ -139,7 +139,7 @@ func (s ChatScreen) lifecycleBumps(channels []domain.ChannelName, actor *domain.
 	return cmds
 }
 
-func (s ChatScreen) appendToScrollback(ch domain.ChannelName, evt domain.StoredEvent) {
+func (s ChatScreen) appendToScrollback(ch domain.ChannelName, evt domain.Event) {
 	w, ok := s.windowByName(ch)
 	if !ok {
 		// Channels for events that arrive before the chat-screen
@@ -174,11 +174,9 @@ func (s ChatScreen) appendToScrollback(ch domain.ChannelName, evt domain.StoredE
 // [domain.SystemNotice] lets the existing renderer style them
 // as `*** <text>` without growing the event-render switch.
 func (s ChatScreen) appendStatusNotice(at time.Time, text string) {
-	s.appendToScrollback(domain.StatusChannelName, domain.StoredEvent{
-		Event: domain.SystemNotice{
-			Target: domain.StatusChannelName,
-			Text:   text,
-			At:     at,
-		},
+	s.appendToScrollback(domain.StatusChannelName, domain.SystemNotice{
+		Target: domain.StatusChannelName,
+		Text:   text,
+		At:     at,
 	})
 }

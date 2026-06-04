@@ -177,7 +177,7 @@ func NewChatScreen(baseContext func() context.Context, sess *session.Session, mg
 	channels := set.NewSorted[*Window]()
 	scrollbackMu := &sync.RWMutex{}
 
-	events := func() []domain.StoredEvent {
+	events := func() []domain.Event {
 		scrollbackMu.RLock()
 		defer scrollbackMu.RUnlock()
 
@@ -855,10 +855,10 @@ func (s ChatScreen) layoutHeight() int {
 // the writer side of `*s.active`); a trailing `ChannelFocusMsg` runs
 // the rest of the focus pipeline (sidebar marker, placeholder clear,
 // last-channel persist) without re-touching `*s.active`.
-func (s ChatScreen) logAndShow(event domain.PersistableEvent) tea.Cmd {
+func (s ChatScreen) logAndShow(event domain.Event) tea.Cmd {
 	if *s.active == "" {
 		*s.active = domain.StatusChannelName
-		s.appendToScrollback(domain.StatusChannelName, domain.StoredEvent{Event: event})
+		s.appendToScrollback(domain.StatusChannelName, event)
 
 		return func() tea.Msg {
 			return chatcmd.ChannelFocusMsg{Channel: domain.StatusChannelName, At: time.Now()}
@@ -879,12 +879,12 @@ func (s ChatScreen) logAndShow(event domain.PersistableEvent) tea.Cmd {
 //
 // An empty `ch` carries no window to render in, so the event is
 // dropped.
-func (s ChatScreen) logAndShowOn(ch domain.ChannelName, event domain.PersistableEvent) tea.Cmd {
+func (s ChatScreen) logAndShowOn(ch domain.ChannelName, event domain.Event) tea.Cmd {
 	if ch == "" {
 		return nil
 	}
 
-	s.appendToScrollback(ch, domain.StoredEvent{Event: event})
+	s.appendToScrollback(ch, event)
 
 	return msgCmd(components.ScrollbackUpdatedMsg{Channel: ch})
 }

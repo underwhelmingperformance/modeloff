@@ -44,7 +44,7 @@ type TimestampFormatMsg struct {
 // of truth removes the live-append-vs-snapshot race that an
 // internally-owned buffer would introduce.
 type MessageList[C command.KindProvider] struct {
-	events      func() []domain.StoredEvent
+	events      func() []domain.Event
 	channel     domain.ChannelName
 	kind        domain.ChannelKind
 	viewport    viewport.Model
@@ -83,7 +83,7 @@ type MessageList[C command.KindProvider] struct {
 // through the supplied closure. `channel` and `kind` seed the
 // initial active window; subsequent [SetChannelMsg] updates them.
 func NewMessageList[C command.KindProvider](
-	events func() []domain.StoredEvent,
+	events func() []domain.Event,
 	channel domain.ChannelName,
 	kind domain.ChannelKind,
 ) MessageList[C] {
@@ -249,7 +249,7 @@ func (m MessageList[C]) ScrollInfo() (scrolled bool, pct float64) {
 	return !m.viewport.AtBottom(), m.viewport.ScrollPercent()
 }
 
-func (m MessageList[C]) renderMessages(events []domain.StoredEvent, width, height int) (view string, scrolled bool, scrollPct float64) {
+func (m MessageList[C]) renderMessages(events []domain.Event, width, height int) (view string, scrolled bool, scrollPct float64) {
 	if len(events) == 0 {
 		text := theme.Dim.Render("No messages yet")
 		if m.placeholder != "" {
@@ -278,7 +278,7 @@ func (m MessageList[C]) renderMessages(events []domain.StoredEvent, width, heigh
 	return rendered, !vp.AtBottom(), vp.ScrollPercent()
 }
 
-func (m MessageList[C]) renderedContent(events []domain.StoredEvent, width int) string {
+func (m MessageList[C]) renderedContent(events []domain.Event, width int) string {
 	rendered := make([]string, 0, len(events)+1)
 	seenLen := m.seenLen[m.channel]
 
@@ -287,12 +287,12 @@ func (m MessageList[C]) renderedContent(events []domain.StoredEvent, width int) 
 			rendered = append(rendered, renderNewMessagesDivider(width))
 		}
 
-		if m.kind == domain.KindDM && isDMSuppressedEvent(ev.Event) {
+		if m.kind == domain.KindDM && isDMSuppressedEvent(ev) {
 			continue
 		}
 
 		rendered = append(rendered, renderChannelEvent(
-			ev.Event,
+			ev,
 			m.kind,
 			width,
 			m.highlightWords,
@@ -310,7 +310,7 @@ func (m MessageList[C]) renderedContent(events []domain.StoredEvent, width int) 
 	return strings.Join(rendered, "\n")
 }
 
-func isDMSuppressedEvent(event domain.PersistableEvent) bool {
+func isDMSuppressedEvent(event domain.Event) bool {
 	switch event.(type) {
 	case domain.Join,
 		domain.Part,

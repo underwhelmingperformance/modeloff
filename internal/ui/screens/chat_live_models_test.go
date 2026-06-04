@@ -165,10 +165,10 @@ func TestChatScreen_handleLiveModelsLoadFailed(t *testing.T) {
 			scrollback := screen.scrollbackOf(tc.expectedChannel)
 			scrollbackNotices := make([]domain.SystemNotice, 0, len(scrollback))
 			for _, ev := range scrollback {
-				notice, ok := ev.Event.(domain.SystemNotice)
+				notice, ok := ev.(domain.SystemNotice)
 				require.True(t, ok,
 					"unexpected scrollback event %T on %s; only the notice should be present",
-					ev.Event, tc.expectedChannel)
+					ev, tc.expectedChannel)
 				notice.At = want.At
 				scrollbackNotices = append(scrollbackNotices, notice)
 			}

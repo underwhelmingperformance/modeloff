@@ -803,7 +803,7 @@ func (s ChatScreen) windowByName(name domain.ChannelName) (*Window, bool) {
 // window, or nil if the chat-screen has no entry for it. Test-only
 // helper; production reads go through the message-list's getter
 // closure.
-func (s ChatScreen) scrollbackOf(name domain.ChannelName) []domain.StoredEvent {
+func (s ChatScreen) scrollbackOf(name domain.ChannelName) []domain.Event {
 	w, ok := s.windowByName(name)
 	if !ok {
 		return nil

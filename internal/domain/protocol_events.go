@@ -33,12 +33,10 @@ func (ModelInvited) isProtocolEvent()      {}
 func (ModelKicked) isProtocolEvent()       {}
 func (NickChange) isProtocolEvent()        {}
 func (TopicInfo) isProtocolEvent()         {}
-func (Help) isProtocolEvent()              {}
 func (Whois) isProtocolEvent()             {}
 func (ListReply) isProtocolEvent()         {}
 func (ListEnd) isProtocolEvent()           {}
 func (CommandError) isProtocolEvent()      {}
-func (UsageHint) isProtocolEvent()         {}
 func (SystemNotice) isProtocolEvent()      {}
 func (PersonasList) isProtocolEvent()      {}
 

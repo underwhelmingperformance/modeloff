@@ -102,7 +102,7 @@ func TestChatWorkspace_ObsView_height_matches_ObsHeight(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			workspace := NewChatWorkspace(
-				NewChatView[testKind](func() []domain.StoredEvent { return nil }, "#general", domain.KindChannel, "testuser", ""),
+				NewChatView[testKind](func() []domain.Event { return nil }, "#general", domain.KindChannel, "testuser", ""),
 			).WithMetrics(NewMetricsPane(t.Context, nil))
 
 			sized, _ := workspace.Update(ui.BoundsMsg{

@@ -5,6 +5,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log/slog"
+
+	"github.com/laney/modeloff/internal/domain"
 )
 
 // rowScanner is the common surface of `*sql.Row` and a single
@@ -64,6 +67,57 @@ func queryRows[T any](
 		}
 
 		out = append(out, v)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return out, nil
+}
+
+// queryEventRows reads the `(id, data)` event-log shape, decoding each
+// row through [domain.UnmarshalPersistableEvent]. A row whose type
+// discriminator this build no longer recognises
+// ([domain.ErrUnknownEventType]) is skipped and logged: an older
+// database may hold rows for event kinds that have since left the
+// persistable hierarchy, and one stale row must not fail the whole
+// batch. Any other decode error fails the read.
+func queryEventRows(
+	ctx context.Context,
+	db *sql.DB,
+	query string,
+	args []any,
+) ([]domain.StoredEvent, error) {
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []domain.StoredEvent
+
+	for rows.Next() {
+		var (
+			id   int64
+			data string
+		)
+
+		if err := rows.Scan(&id, &data); err != nil {
+			return nil, err
+		}
+
+		event, err := domain.UnmarshalPersistableEvent([]byte(data))
+		if errors.Is(err, domain.ErrUnknownEventType) {
+			slog.Default().WarnContext(ctx, "skipping unrecognised event-log row",
+				"id", id, "error", err)
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		out = append(out, domain.StoredEvent{ID: id, Event: event})
 	}
 
 	if err := rows.Err(); err != nil {

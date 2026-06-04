@@ -19,8 +19,11 @@ type Window struct {
 	// Scrollback is the per-window in-memory event history the
 	// message list renders. The chat-screen appends here from
 	// the protocol bus; the message list reads through a closure
-	// the chat-screen passes at construction.
-	Scrollback []domain.StoredEvent
+	// the chat-screen passes at construction. It holds the
+	// renderable base `domain.Event` so it can carry both persisted
+	// channel events and the render-only UI feedback (`Help`,
+	// `UsageHint`) the chat-screen raises locally.
+	Scrollback []domain.Event
 
 	// Unread is the count of messages addressed at this window
 	// the user has not yet seen. The sidebar surfaces it as a

@@ -15,12 +15,14 @@ import (
 	"github.com/laney/modeloff/internal/ui/timestamp"
 )
 
-// renderChannelEvent renders a domain.PersistableEvent into a styled
-// string at the given width. kind discriminates channel/DM from
-// status rendering — see [renderSystemNotice] for the
-// status-channel variant.
+// renderChannelEvent renders a domain.Event into a styled string at
+// the given width. It accepts the renderable base so it can render
+// both persisted channel events and the render-only UI feedback
+// (`Help`, `UsageHint`) the chat-screen raises locally. kind
+// discriminates channel/DM from status rendering — see
+// [renderSystemNotice] for the status-channel variant.
 func renderChannelEvent[C command.KindProvider](
-	event domain.PersistableEvent,
+	event domain.Event,
 	kind domain.ChannelKind,
 	width int,
 	highlightWords []string,
