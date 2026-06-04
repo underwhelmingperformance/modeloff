@@ -1556,6 +1556,7 @@ func TestSession_mutationOperations_recordSpans(t *testing.T) {
 			"store.sqlite.events_before",
 			"store.sqlite.get_instance_by_id",
 			"store.sqlite.get_window",
+			"store.sqlite.instance_replies_before",
 			"store.sqlite.resolve_nick",
 			"store.sqlite.save_instance",
 			"store.sqlite.save_window",

@@ -14,14 +14,25 @@ import (
 // this bound regardless of where the events come from.
 const modelHistorySize = 500
 
-// history holds the per-channel rolling buffer this model uses to
-// construct each dispatch turn's prompt. Channels are eager-seeded
-// at attach via [ModelClient.seedHistory]; DM targets are lazy-
-// seeded on first event arrival, both under `historyMu` so no
-// concurrent appender can interleave with a seed.
+// history holds the local memory a model uses to construct each
+// dispatch turn's prompt. It has two parts, both following the same
+// lifecycle of load-at-attach, append-live, read-local:
+//
+//   - per-channel rolling buffers of the shared channel transcript.
+//     Channel buffers are loaded at attach, join-scoped, by
+//     [ModelClient.loadHistory]; DM targets are lazy-seeded on first
+//     event arrival.
+//   - a single rolling buffer of the model's own point-to-point
+//     replies (its `/whois` and `/list` results). These are not
+//     channel traffic and are never broadcast, so they carry no
+//     channel key.
+//
+// All access is under `mu` so no concurrent appender can interleave
+// with a seed.
 type history struct {
-	mu  sync.Mutex
-	buf map[domain.ChannelName][]domain.StoredEvent
+	mu      sync.Mutex
+	buf     map[domain.ChannelName][]domain.StoredEvent
+	replies []domain.StoredEvent
 }
 
 func newHistory() *history {
@@ -29,13 +40,55 @@ func newHistory() *history {
 }
 
 // seedChannel populates the buffer for `ch` with a pre-fetched slice
-// of stored events. Used by [ModelClient.seedHistory] at attach to
+// of stored events. Used by [ModelClient.loadHistory] at attach to
 // fill channel buffers from the event log.
 func (h *history) seedChannel(ch domain.ChannelName, events []domain.StoredEvent) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	h.buf[ch] = events
+}
+
+// seedReplies populates the model's own private-replies buffer with
+// a pre-fetched slice. Used by [ModelClient.loadHistory] at attach to
+// fill the buffer from the instance-reply log.
+func (h *history) seedReplies(events []domain.StoredEvent) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	h.replies = events
+}
+
+// appendReply records `ev` against the private-replies buffer. These
+// are the model's `/whois` and `/list` results, which are
+// `!ModelVisible` by design and must be kept, so no model-visibility
+// filter applies here. The buffer trims to [modelHistorySize] from
+// the older end so a chatty lookup history cannot grow it without
+// bound.
+func (h *history) appendReply(ev domain.StoredEvent) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	h.replies = append(h.replies, ev)
+	if len(h.replies) > modelHistorySize {
+		h.replies = h.replies[len(h.replies)-modelHistorySize:]
+	}
+}
+
+// snapshotReplies returns a defensive copy of the private-replies
+// buffer. The dispatch turn iterates the slice without holding the
+// lock, so the snapshot must not alias the live backing array.
+func (h *history) snapshotReplies() []domain.StoredEvent {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if len(h.replies) == 0 {
+		return nil
+	}
+
+	dst := make([]domain.StoredEvent, len(h.replies))
+	copy(dst, h.replies)
+	return dst
 }
 
 // snapshot returns a defensive copy of the buffer for `target`. The
@@ -64,8 +117,8 @@ func (h *history) snapshot(target domain.ChannelName) []domain.StoredEvent {
 // `InstanceID` and the buffer has no entry for it yet — the method
 // lazy-seeds from the store under the same lock the live append
 // takes, so no concurrent appender can interleave between seed and
-// append. Channel targets are eager-seeded at attach time; the
-// lazy-seed branch is DM-only.
+// append. Channel targets are loaded at attach time; the lazy-seed
+// branch is DM-only.
 //
 // Skips a duplicate if the incoming event matches the buffer's
 // most-recent entry by concrete type and timestamp; protects

@@ -56,6 +56,21 @@ func msgToolCalls(t testing.TB, target domain.ChannelName, bodies ...string) api
 	return api.CompletionResult{PendingToolCalls: calls}
 }
 
+// whoisToolCall builds a [api.CompletionResult] whose
+// PendingToolCalls invoke the `whois` tool for `nick`. A model that
+// runs this in a dispatch turn receives a [domain.Whois] reply, which
+// [modelclient.ModelClient.Send] files into its private replies ring.
+func whoisToolCall(t testing.TB, nick domain.Nick) api.CompletionResult {
+	t.Helper()
+
+	args, err := json.Marshal(map[string]any{"nick": string(nick)})
+	require.NoError(t, err)
+
+	return api.CompletionResult{PendingToolCalls: []api.PendingToolCall{
+		{ID: "call_whois_0", Name: "whois", Args: args},
+	}}
+}
+
 // meToolCall builds a [api.CompletionResult] whose PendingToolCalls
 // invoke the `me` tool with the given action body.
 func meToolCall(t testing.TB, target domain.ChannelName, body string) api.CompletionResult {

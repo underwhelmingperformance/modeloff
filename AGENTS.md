@@ -257,13 +257,15 @@ hand-rolled in `internal/modelclient/memory_tools.go`.
 
 The channel-keyed event log (`store.AppendEvent` /
 `store.EventsBefore` / `store.DMEventsBefore`) is the server-side
-record of channel history. Each model dispatch turn reads from it via
-`dispatchHistoryFor` to assemble the LLM prompt. The chat-screen does
-not read this log on focus changes — the in-memory scrollback buffer
-captures only events the user has seen this session, mirroring IRC's
-"you don't see what happened before you joined" rule. Models see up
-to 500 most-recent events from the channel log on each dispatch turn;
-today this includes events that pre-date the instance's join.
+record of channel history. A model-client loads it once at attach:
+per channel, a single bounded read of the most-recent events
+(`modelHistorySize`), kept to those at or after the instance's join
+time — a channel with no known join time loads nothing (fail-closed).
+From there the per-channel ring is appended live and read locally
+each dispatch turn; the store is not re-read per turn. The chat-screen
+does not read this log on focus changes — the in-memory scrollback
+buffer captures only events the user has seen this session, mirroring
+IRC's "you don't see what happened before you joined" rule.
 
 An issuer's own point-to-point replies (`WHOIS`, `LIST`) are not
 channel activity, so they live in a private per-instance reply log
@@ -271,12 +273,12 @@ channel activity, so they live in a private per-instance reply log
 by the issuer's identity, not the shared channel log. Both actors
 write their replies the same way: the dispatcher records every
 issuer's reply there, the user-client included (under the empty id).
-The two actors differ only in whether they restore — a model re-reads
-its log on each dispatch turn, merging its own replies chronologically
-into the prompt transcript so it re-experiences its lookups across
-turns and reattach, as if its quit never happened; the user is
-transient and never restores, so its entries are the durable record a
-future restore or inspector would read rather than anything it sees
+The two actors differ only in whether they restore — a model loads
+its log once at attach, merging its own replies chronologically into
+the prompt transcript so it re-experiences its lookups across turns
+and reattach, as if its quit never happened; the user is transient
+and never restores, so its entries are the durable record a future
+restore or inspector would read, and the user sees nothing of them
 again this session. Another model in the channel never sees a peer's
 replies. The dispatcher also stamps the issuing window onto a reply it
 owns: `handleWhois` sets `domain.Whois.Target` to the window the

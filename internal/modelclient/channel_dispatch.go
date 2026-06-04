@@ -117,13 +117,54 @@ func (d *Dispatcher) dispatchToInstances(
 			continue
 		}
 
+		// The live ring path loads a join-scoped channel slice and the
+		// instance's own replies at attach; this synchronous path
+		// reproduces both per instance so its behaviour matches.
+		joinScoped := joinScopedHistory(historyEvents, inst, channelName)
+
+		replies, err := d.sess.InstanceRepliesBefore(ctx, inst.ID(), nil, modelHistorySize)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("read replies for %s: %w", inst.Nick(), err))
+
+			continue
+		}
+
 		caller := d.sess.LookupClient(protocol.ClientID(inst.ID()))
-		if instErr := dispatchToInstance(ctx, d.sess, d.api, d.memStore, d.tools, ensure, nil, caller, window, inst, channelName, historyEvents, events); instErr != nil {
+		if instErr := dispatchToInstance(ctx, d.sess, d.api, d.memStore, d.tools, ensure, nil, caller, window, inst, channelName, joinScoped, replies, events); instErr != nil {
 			errs = append(errs, instErr)
 		}
 	}
 
 	return errors.Join(errs...)
+}
+
+// joinScopedHistory filters channel-log events to the slice the
+// instance would hold in its rolling ring: model-visible and at or
+// after its recorded join time. A zero/unknown join time scopes to
+// nothing, matching the fail-closed load in
+// [ModelClient.loadHistory].
+func joinScopedHistory(events []domain.StoredEvent, inst *domain.Instance, channelName domain.ChannelName) []domain.StoredEvent {
+	var joinedAt time.Time
+	if channels := inst.Channels(); channels != nil {
+		joinedAt, _ = channels.Get(channelName)
+	}
+
+	if joinedAt.IsZero() {
+		return nil
+	}
+
+	kept := events[:0:0]
+	for _, se := range events {
+		if !se.Event.ModelVisible() {
+			continue
+		}
+		if domain.EventTime(se.Event).Before(joinedAt) {
+			continue
+		}
+		kept = append(kept, se)
+	}
+
+	return kept
 }
 
 // dispatchToInstance runs the per-instance API turn. It assembles
@@ -144,6 +185,7 @@ func dispatchToInstance(
 	inst *domain.Instance,
 	channelName domain.ChannelName,
 	historyEvents []domain.StoredEvent,
+	replyEvents []domain.StoredEvent,
 	events []protocol.IRCMessage,
 ) error {
 	nick := inst.Nick()
@@ -162,11 +204,6 @@ func dispatchToInstance(
 	}
 
 	return runner.Run(ctx, "modelclient.dispatch_to_instance", attrs, func(ctx context.Context, span trace.Span) error {
-		var joinedAt time.Time
-		if channels := inst.Channels(); channels != nil {
-			joinedAt, _ = channels.Get(channelName)
-		}
-
 		type timedMessage struct {
 			at  time.Time
 			msg protocol.IRCMessage
@@ -174,32 +211,23 @@ func dispatchToInstance(
 
 		var timeline []timedMessage
 
-		// The shared channel transcript: model-visible, join-scoped.
+		// The shared channel transcript. The ring is join-scoped by
+		// construction; the model-visibility skip is cheap defence.
 		for _, se := range historyEvents {
 			if !se.Event.ModelVisible() {
 				continue
 			}
 
-			eventTime := domain.EventTime(se.Event)
-			if !joinedAt.IsZero() && eventTime.Before(joinedAt) {
-				continue
-			}
-
 			if msg, ok := protocol.FromChannelEvent(se.Event); ok {
-				timeline = append(timeline, timedMessage{at: eventTime, msg: msg})
+				timeline = append(timeline, timedMessage{at: domain.EventTime(se.Event), msg: msg})
 			}
 		}
 
 		// The instance's own replies: its private experience, shown in
 		// every window it dispatches in so the transcript reads as if
 		// its quit never happened. They are not channel-broadcast, so
-		// the model-visibility and join-scope filters do not apply.
-		replies, repliesErr := sess.InstanceRepliesBefore(ctx, inst.ID(), nil, modelHistorySize)
-		if repliesErr != nil {
-			return errWithKind(fmt.Errorf("read replies for %s: %w", nick, repliesErr), observability.ErrorKindStore)
-		}
-
-		for _, se := range replies {
+		// the model-visibility filter does not apply.
+		for _, se := range replyEvents {
 			if msg, ok := protocol.FromChannelEvent(se.Event); ok {
 				timeline = append(timeline, timedMessage{at: domain.EventTime(se.Event), msg: msg})
 			}

@@ -29,11 +29,11 @@ import (
 // prompt.
 //
 // The history buffer feeds [ModelClient.dispatchTurn]'s prompt
-// construction. Eager-seeded for known channels at attach (see
-// [ModelClient.seedHistory]) and lazy-seeded for DM targets in
+// construction. Loaded for known channels at attach (see
+// [ModelClient.loadHistory]) and lazy-seeded for DM targets in
 // [history.append], the buffer is the only path the dispatch hot
 // path reads conversation history from; the events log is
-// consulted exclusively at seed time.
+// consulted exclusively at load time.
 //
 // Each turn's span is linked to the originating handler's span via
 // the [trace.SpanContext] the producer captured at emit time. The
@@ -217,7 +217,9 @@ func (mc *ModelClient) dispatchTurn(ctx context.Context, ch domain.ChannelName, 
 			return nil
 		}
 
-		if err := dispatchToInstance(ctx, mc.sess, apiClient, mc.memStore, mc.tools, mc.ensure, mc.pacer, mc, window, inst, ch, historyEvents, []protocol.IRCMessage{trigger}); err != nil {
+		replyEvents := mc.hist.snapshotReplies()
+
+		if err := dispatchToInstance(ctx, mc.sess, apiClient, mc.memStore, mc.tools, mc.ensure, mc.pacer, mc, window, inst, ch, historyEvents, replyEvents, []protocol.IRCMessage{trigger}); err != nil {
 			mc.sess.Emit(ctx, domain.ModelUnavailableError{Channel: ch, Nick: nick, At: mc.sess.Now()})
 			return errWithKind(err, observability.ErrorKindDispatch)
 		}

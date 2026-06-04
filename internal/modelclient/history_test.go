@@ -68,3 +68,72 @@ func TestHistory_append_distinct_events_both_appended(t *testing.T) {
 
 	require.Equal(t, []domain.StoredEvent{{Event: first}, {Event: second}}, h.snapshot(target))
 }
+
+// TestHistory_replies_load_append_read covers the private-replies
+// ring's lifecycle: seeded at attach, appended live, read by
+// snapshot. The replies are `/whois` results — `!ModelVisible` by
+// design — so the ring must keep them where the channel buffer
+// would drop them.
+func TestHistory_replies_load_append_read(t *testing.T) {
+	t.Parallel()
+
+	seeded := domain.Whois{
+		Nick:    "target",
+		ModelID: "test/model",
+		At:      time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC),
+	}
+	live := domain.ListEnd{
+		At: time.Date(2025, 1, 1, 12, 0, 1, 0, time.UTC),
+	}
+
+	require.False(t, seeded.ModelVisible(),
+		"a whois reply is not model-visible; the replies ring must keep it anyway")
+
+	h := newHistory()
+	h.seedReplies([]domain.StoredEvent{{ID: 7, Event: seeded}})
+	h.appendReply(domain.StoredEvent{Event: live})
+
+	require.Equal(t, []domain.StoredEvent{
+		{ID: 7, Event: seeded},
+		{Event: live},
+	}, h.snapshotReplies())
+}
+
+// TestHistory_replies_trim_from_older_end pins that the replies ring
+// trims to modelHistorySize from the older end, dropping the oldest
+// entries first.
+func TestHistory_replies_trim_from_older_end(t *testing.T) {
+	t.Parallel()
+
+	h := newHistory()
+
+	base := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
+	total := modelHistorySize + 3
+	for i := range total {
+		h.appendReply(domain.StoredEvent{Event: domain.ListEnd{At: base.Add(time.Duration(i) * time.Second)}})
+	}
+
+	want := make([]domain.StoredEvent, modelHistorySize)
+	for i := range want {
+		at := base.Add(time.Duration(i+3) * time.Second)
+		want[i] = domain.StoredEvent{Event: domain.ListEnd{At: at}}
+	}
+
+	require.Equal(t, want, h.snapshotReplies())
+}
+
+// TestHistory_snapshotReplies_is_defensive_copy proves the dispatch
+// turn's snapshot does not alias the live backing array, so a
+// concurrent append cannot mutate a snapshot already handed out.
+func TestHistory_snapshotReplies_is_defensive_copy(t *testing.T) {
+	t.Parallel()
+
+	at := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
+	h := newHistory()
+	h.appendReply(domain.StoredEvent{Event: domain.ListEnd{At: at}})
+
+	snap := h.snapshotReplies()
+	h.appendReply(domain.StoredEvent{Event: domain.ListEnd{At: at.Add(time.Second)}})
+
+	require.Equal(t, []domain.StoredEvent{{Event: domain.ListEnd{At: at}}}, snap)
+}

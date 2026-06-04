@@ -151,10 +151,20 @@ func (mc *ModelClient) Identity() protocol.ClientID {
 }
 
 // Send routes `cmd` through the session's dispatcher with this
-// client as the issuing actor. Successful [domain.Message] events
-// in `Response.Events` are filed into the model's rolling history
-// buffer; the originator-suppression rule (RFC 2812 §3.3.1) keeps
-// them off the bus.
+// client as the issuing actor and files the dispatcher's synchronous
+// reply events into the model's local memory:
+//
+//   - [domain.Message] events go to the channel rolling buffer keyed
+//     by their target; the originator-suppression rule (RFC 2812
+//     §3.3.1) keeps them off the bus, so this is the only path that
+//     feeds the model its own chat traffic.
+//   - the model's own point-to-point reply numerics ([domain.Whois],
+//     [domain.ListReply]) go to the private replies ring. These are
+//     the events the dispatcher persists to the instance-reply log,
+//     so the local ring stays in step with the log it loads at
+//     attach. The wire-terminator [domain.ListEnd] carries no
+//     transcript line and the dispatcher does not persist it, so it
+//     is not filed.
 func (mc *ModelClient) Send(ctx context.Context, cmd protocol.Command) (protocol.Response, error) {
 	resp, err := mc.sess.Handle(ctx, mc, cmd)
 	if err != nil || resp.Err != nil {
@@ -162,12 +172,12 @@ func (mc *ModelClient) Send(ctx context.Context, cmd protocol.Command) (protocol
 	}
 
 	for _, evt := range resp.Events {
-		msg, ok := evt.(domain.Message)
-		if !ok {
-			continue
+		switch e := evt.(type) {
+		case domain.Message:
+			mc.hist.append(ctx, mc.sess, mc.instance.ID(), domain.StoredEvent{Event: e}, e.Target)
+		case domain.Whois, domain.ListReply:
+			mc.hist.appendReply(domain.StoredEvent{Event: e.(domain.PersistableEvent)})
 		}
-
-		mc.hist.append(ctx, mc.sess, mc.instance.ID(), domain.StoredEvent{Event: msg}, msg.Target)
 	}
 
 	return resp, nil
@@ -191,11 +201,11 @@ func (mc *ModelClient) Events() <-chan protocol.Delivery {
 // hides operator-gated tools from model invocations.
 func (mc *ModelClient) Caps() command.CapabilityHolder { return modelCaps{} }
 
-// Attach registers the client with its session, seeds per-channel
-// history from the event log for every channel the instance is in,
-// and starts the dispatch goroutine. Returns the registration
-// error from [Session.Subscribe]; the client remains inert on
-// failure.
+// Attach registers the client with its session, loads its local
+// memory (the join-scoped per-channel transcript and its own private
+// replies) from the persisted logs, and starts the dispatch
+// goroutine. Returns the registration error from [Session.Subscribe];
+// the client remains inert on failure.
 //
 // Attach is idempotent: a repeat call on an already-attached
 // client returns nil.
@@ -219,7 +229,7 @@ func (mc *ModelClient) Attach(ctx context.Context) error {
 	mc.cancel = cancel
 	mc.mu.Unlock()
 
-	mc.seedHistory(ctx)
+	mc.loadHistory(ctx)
 
 	mc.wg.Go(func() {
 		mc.runDispatchLoop(loopCtx, sub)
@@ -251,33 +261,68 @@ func (mc *ModelClient) Detach() {
 	mc.wg.Wait()
 }
 
-// seedHistory eager-seeds the per-channel history buffer from the
-// event log for every channel the instance is currently in. DM
-// targets are not eager-seeded — they lazy-seed in [history.append]
-// on first event arrival.
-func (mc *ModelClient) seedHistory(ctx context.Context) {
-	channels := mc.instance.Channels()
-	if channels == nil {
+// loadHistory loads both of the model's local memories at attach: the
+// per-channel shared transcript and the model's own private replies.
+//
+// Each channel buffer is join-scoped: only events at or after the
+// instance's recorded join time are kept, and a channel with a
+// zero/unknown join time loads nothing. Reaction to history is
+// avoided purely by order of operations — this load runs before the
+// dispatch loop starts, so loaded events are never delivered as
+// triggers. DM targets are not loaded here; they lazy-seed in
+// [history.append] on first event arrival.
+func (mc *ModelClient) loadHistory(ctx context.Context) {
+	logger := slog.Default()
+
+	if channels := mc.instance.Channels(); channels != nil {
+		for pair := channels.Oldest(); pair != nil; pair = pair.Next() {
+			ch, joinedAt := pair.Key, pair.Value
+			if joinedAt.IsZero() {
+				continue
+			}
+
+			// The channel log records activity in arrival order, so
+			// this single bounded read returns the n most-recent
+			// rows. Command replies route to the per-instance reply
+			// log and notices render transiently, so the rows kept at
+			// or after the join time are the model's join-scoped view.
+			seed, err := mc.sess.EventsBefore(ctx, ch, nil, modelHistorySize)
+			if err != nil {
+				logger.ErrorContext(ctx, "load model channel history",
+					"component", "modelclient",
+					"instance_id", mc.instance.ID(),
+					"channel", ch,
+					"error", err,
+				)
+				continue
+			}
+
+			kept := seed[:0:0]
+			for _, se := range seed {
+				if !se.Event.ModelVisible() {
+					continue
+				}
+				if domain.EventTime(se.Event).Before(joinedAt) {
+					continue
+				}
+				kept = append(kept, se)
+			}
+
+			mc.hist.seedChannel(ch, kept)
+		}
+	}
+
+	replies, err := mc.sess.InstanceRepliesBefore(ctx, mc.instance.ID(), nil, modelHistorySize)
+	if err != nil {
+		logger.ErrorContext(ctx, "load model replies",
+			"component", "modelclient",
+			"instance_id", mc.instance.ID(),
+			"error", err,
+		)
 		return
 	}
 
-	logger := slog.Default()
-
-	for pair := channels.Oldest(); pair != nil; pair = pair.Next() {
-		ch := pair.Key
-		seed, err := mc.sess.EventsBefore(ctx, ch, nil, modelHistorySize)
-		if err != nil {
-			logger.ErrorContext(ctx, "seed model history",
-				"component", "modelclient",
-				"instance_id", mc.instance.ID(),
-				"channel", ch,
-				"error", err,
-			)
-			continue
-		}
-
-		mc.hist.seedChannel(ch, seed)
-	}
+	mc.hist.seedReplies(replies)
 }
 
 // modelCaps is the no-capabilities holder returned by
