@@ -326,7 +326,7 @@ func (s *Session) Subscribe(c protocol.Client, opts protocol.SubscribeOptions) (
 
 	for _, m := range opts.InitialModes {
 		// `setUserModeAs` is idempotent on an already-held mode and
-		// writes a server-narrated [domain.ModeChange] to the
+		// writes a server-narrated [domain.UserModeChange] to the
 		// subscription's events channel so the first event the
 		// consumer reads is the elevation. The empty `by` flags the
 		// emission as server-originated rather than peer-initiated.

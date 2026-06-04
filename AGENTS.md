@@ -224,7 +224,7 @@ layered on top (see Out of scope), never an always-on bypass.
 
 User-mode `+o` is requested via
 `protocol.SubscribeOptions.InitialModes` when the user-client
-attaches; the session writes the granting `domain.ModeChange` as
+attaches; the session writes the granting `domain.UserModeChange` as
 the first event on the subscription's bus. The operator-gated
 commands today are `protocol.Kill` and `protocol.AddModel`;
 non-operator clients receive `domain.NotOperatorError` from the

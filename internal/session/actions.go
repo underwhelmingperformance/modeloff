@@ -660,16 +660,15 @@ func (s *Session) deliverToClient(ctx context.Context, id domain.InstanceID, evt
 }
 
 // setUserModeAs mutates a single user-mode flag on `target` and
-// announces the change via a [domain.ModeChange] with empty
-// `Target` (the user-mode form). Delivered only to the affected
-// client — RFC 2812 §3.1.5 scopes user-mode replies to the
-// requester — so this bypasses [Session.fanOutProtocol] and
+// announces the change via a [domain.UserModeChange]. Delivered only
+// to the affected client — RFC 2812 §3.1.5 scopes user-mode replies
+// to the requester — so this bypasses [Session.fanOutProtocol] and
 // writes directly to the target's events channel.
 //
-// Empty `by` signals server-originated (the canonical OPER MODE
-// response shape per RFC §3.1.4): the chat-screen renderer prints
-// `*** server sets mode +o nick` rather than attributing to a
-// peer nick.
+// Empty `by` signals a server-originated change (the canonical OPER
+// MODE response shape per RFC §3.1.4). The affected client consumes
+// the event to refresh its capability-gated command palette; it
+// raises no scrollback line.
 //
 // Idempotent: a grant for an already-held mode (or a clear for an
 // unheld mode) is a no-op and emits nothing.
@@ -686,7 +685,7 @@ func (s *Session) setUserModeAs(ctx context.Context, by domain.Nick, target *ser
 		attribute.String("mode.flag", string(mode)),
 		attribute.Bool("mode.add", add),
 	}, func(ctx context.Context, _ trace.Span) error {
-		evt := domain.ModeChange{
+		evt := domain.UserModeChange{
 			Nick:       targetInst.Nick(),
 			InstanceID: targetInst.ID(),
 			Flag:       mode,

@@ -114,7 +114,7 @@ func historyTargets(delivery protocol.Delivery) []domain.ChannelName {
 		return []domain.ChannelName{e.Target}
 	case domain.TopicInfo:
 		return []domain.ChannelName{e.Target}
-	case domain.ModeChange:
+	case domain.ChannelModeChange:
 		return []domain.ChannelName{e.Target}
 	case domain.ModelInvited:
 		return []domain.ChannelName{e.Target}

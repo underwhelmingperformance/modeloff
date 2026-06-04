@@ -655,7 +655,7 @@ func TestSQLiteStore_Events_type_discriminator_round_trip(t *testing.T) {
 		domain.Join{Target: "#general", Nick: "bob", At: testTime},
 		domain.Part{Target: "#general", Nick: "bob", At: testTime},
 		domain.TopicChange{Target: "#general", Topic: "new", By: "alice", At: testTime},
-		domain.ModeChange{Target: "#general", Nick: "bob", Flag: domain.ModeChannelVoice, Add: true, By: "ChanServ", At: testTime},
+		domain.ChannelModeChange{Target: "#general", Nick: "bob", Flag: domain.ModeChannelVoice, Add: true, By: "ChanServ", At: testTime},
 		domain.ModelInvited{Target: "#general", Nick: "botty", By: "alice", At: testTime},
 		domain.ModelKicked{Target: "#general", Nick: "botty", By: "alice", At: testTime},
 		domain.NickChange{OldNick: "bob", NewNick: "robert", At: testTime},

@@ -1,11 +1,10 @@
 package domain
 
-// Mode is a single RFC 2812 mode flag letter. The same letter
-// carries different semantics depending on the target type of the
-// carrying [ModeChange]: 'o' on a channel target is channel-op;
-// 'o' with no channel target is server-OPER (a user mode).
-// `rune` is the natural carrier — IRC mode flags are single ASCII
-// letters.
+// Mode is a single RFC 2812 mode flag letter. The same letter carries
+// different semantics by the event carrying it: 'o' on a
+// [ChannelModeChange] is channel-op; 'o' on a [UserModeChange] is
+// server-OPER. `rune` is the natural carrier — IRC mode flags are
+// single ASCII letters.
 type Mode rune
 
 // Per-member modes from RFC 2812 §3.2.3. `+o` doubles as the
@@ -104,7 +103,7 @@ func (m NickMode) IRCMode() string {
 }
 
 // WireFlag returns the wire-protocol [Mode] letter for this rank,
-// suitable for populating [ModeChange.Flag]. The zero value
+// suitable for populating [ChannelModeChange.Flag]. The zero value
 // [ModeNone] returns the zero [Mode].
 func (m NickMode) WireFlag() Mode {
 	switch m {

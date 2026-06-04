@@ -85,7 +85,7 @@ func TestHandleChannelMode_GrantsMemberOp(t *testing.T) {
 		synctest.Wait()
 
 		require.Equal(t, append(prefix,
-			domain.ModeChange{
+			domain.ChannelModeChange{
 				Target:     "#chan",
 				Nick:       "botty",
 				InstanceID: botty.ID(),
@@ -135,7 +135,7 @@ func TestHandleChannelMode_RevokeMemberOp(t *testing.T) {
 		synctest.Wait()
 
 		require.Equal(t, append(prefix,
-			domain.ModeChange{
+			domain.ChannelModeChange{
 				Target:     "#chan",
 				Nick:       "botty",
 				InstanceID: botty.ID(),
@@ -177,7 +177,7 @@ func TestHandleChannelMode_GrantMemberVoice(t *testing.T) {
 		synctest.Wait()
 
 		require.Equal(t, append(prefix,
-			domain.ModeChange{
+			domain.ChannelModeChange{
 				Target:     "#chan",
 				Nick:       "botty",
 				InstanceID: botty.ID(),
@@ -228,7 +228,7 @@ func TestHandleChannelMode_SetBooleanAttributes(t *testing.T) {
 
 		expected := append([]domain.Event(nil), prefix...)
 		for _, f := range flags {
-			expected = append(expected, domain.ModeChange{
+			expected = append(expected, domain.ChannelModeChange{
 				Target: "#chan",
 				Flag:   f,
 				Add:    true,
@@ -267,7 +267,7 @@ func TestHandleChannelMode_SetUserLimit(t *testing.T) {
 		synctest.Wait()
 
 		require.Equal(t, append(prefix,
-			domain.ModeChange{
+			domain.ChannelModeChange{
 				Target: "#chan",
 				Flag:   domain.ModeUserLimit,
 				Add:    true,
@@ -304,7 +304,7 @@ func TestHandleChannelMode_SetKey(t *testing.T) {
 		synctest.Wait()
 
 		require.Equal(t, append(prefix,
-			domain.ModeChange{
+			domain.ChannelModeChange{
 				Target: "#chan",
 				Flag:   domain.ModeKey,
 				Add:    true,
@@ -349,8 +349,8 @@ func TestHandleChannelMode_ClearParametric(t *testing.T) {
 		synctest.Wait()
 
 		require.Equal(t, append(prefix,
-			domain.ModeChange{Target: "#chan", Flag: domain.ModeUserLimit, Add: false, By: "testuser", At: fixedTime},
-			domain.ModeChange{Target: "#chan", Flag: domain.ModeKey, Add: false, By: "testuser", At: fixedTime},
+			domain.ChannelModeChange{Target: "#chan", Flag: domain.ModeUserLimit, Add: false, By: "testuser", At: fixedTime},
+			domain.ChannelModeChange{Target: "#chan", Flag: domain.ModeKey, Add: false, By: "testuser", At: fixedTime},
 		), collectEmittedEvents(t, sess))
 
 		w, err = sess.loadChannelWindow(ctx, "#chan")
@@ -512,16 +512,16 @@ func TestHandleChannelMode_BatchAppliesInOrder(t *testing.T) {
 		synctest.Wait()
 
 		require.Equal(t, append(prefix,
-			domain.ModeChange{
+			domain.ChannelModeChange{
 				Target: "#chan", Nick: "botty", InstanceID: botty.ID(),
 				Flag: domain.ModeOperator, Add: true,
 				By: "testuser", At: fixedTime, Instance: botty,
 			},
-			domain.ModeChange{
+			domain.ChannelModeChange{
 				Target: "#chan", Flag: domain.ModeTopicLock, Add: true,
 				By: "testuser", At: fixedTime,
 			},
-			domain.ModeChange{
+			domain.ChannelModeChange{
 				Target: "#chan", Flag: domain.ModeUserLimit, Add: true, Param: "5",
 				By: "testuser", At: fixedTime,
 			},
@@ -535,5 +535,78 @@ func TestHandleChannelMode_BatchAppliesInOrder(t *testing.T) {
 		require.Equal(t, domain.ModeOp, m.Mode)
 		require.True(t, w.Modes.TopicLock)
 		require.Equal(t, 5, w.Modes.UserLimit)
+	})
+}
+
+// channelLogModeRows returns every ChannelModeChange persisted to
+// `ch`'s event log, in store order. It also fails the test if any
+// UserModeChange somehow reached the log — the type is not a
+// PersistableEvent, so this can only ever be a regression guard.
+func channelLogModeRows(t *testing.T, sess *Session, ch domain.ChannelName) []domain.ChannelModeChange {
+	t.Helper()
+
+	stored, err := sess.EventsBefore(t.Context(), ch, nil, 100)
+	require.NoError(t, err)
+
+	var rows []domain.ChannelModeChange
+	for _, se := range stored {
+		row, ok := se.Event.(domain.ChannelModeChange)
+		require.True(t, ok || domain.EventType(se.Event) != "mode_change",
+			"a non-channel mode_change row decoded from the channel log")
+
+		if ok {
+			rows = append(rows, row)
+		}
+	}
+
+	return rows
+}
+
+// TestChannelMode_persists_to_channel_log_while_user_mode_does_not
+// pins the home-log split. A channel-scoped `+o` is channel activity:
+// it broadcasts to peers and lands in the channel event log. The
+// bootstrap user-mode `+o` grant is a capability signal delivered
+// point-to-point on the user-client's bus and never persisted, so the
+// channel log holds the channel-mode row alone.
+func TestChannelMode_persists_to_channel_log_while_user_mode_does_not(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		bootAt := time.Now()
+		sess, s := newTestSession(t)
+		ctx := t.Context()
+
+		require.NoError(t, userJoin(ctx, t, sess, "#chan"))
+		joinSetupEventsT(t, sess, bootAt, "#chan")
+
+		botty := seedInstance(t, sess, s, instanceSpec{
+			Nick:     "botty",
+			ModelID:  "test/model",
+			Channels: testChannels("#chan"),
+		})
+		seedChannelWithMembers(t, sess, s, "#chan", "testuser", "botty")
+
+		_, err := userClient(t, sess).Send(ctx, protocol.ChannelMode{
+			Channel: "#chan",
+			Changes: []protocol.ChannelModeChange{
+				{Flag: domain.ModeOperator, Add: true, Target: "botty"},
+			},
+		})
+		require.NoError(t, err)
+		synctest.Wait()
+
+		// The user-client received the bootstrap user-mode +o grant on
+		// its bus, proving the grant happened.
+		require.Contains(t, collectEmittedEvents(t, sess), bootstrapModeChange(t, sess, bootAt))
+
+		// Yet the channel log holds only the channel-scoped row; the
+		// user-mode grant left no trace there.
+		require.Equal(t, []domain.ChannelModeChange{{
+			Target:     "#chan",
+			Nick:       "botty",
+			InstanceID: botty.ID(),
+			Flag:       domain.ModeOperator,
+			Add:        true,
+			By:         "testuser",
+			At:         fixedTime,
+		}}, channelLogModeRows(t, sess, "#chan"))
 	})
 }

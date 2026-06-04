@@ -125,7 +125,7 @@ func (uc *UserClient) Caps() command.CapabilityHolder { return userCaps{} }
 
 // Attach registers the user-client with its session, requesting
 // `+o` (operator) as its initial mode. The session writes the
-// granting [domain.ModeChange] as the first event on the
+// granting [domain.UserModeChange] as the first event on the
 // subscription's bus so consumers see the elevation before any
 // other traffic.
 //

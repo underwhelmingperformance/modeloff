@@ -15,7 +15,7 @@ import (
 //
 // Every persistable type that carries a `Nick` field
 // (`Join.Nick`, `Part.Nick`, `Quit.Nick`,
-// `TopicChange.By`, `ModeChange.Nick` and `.By`,
+// `TopicChange.By`, `ChannelModeChange.Nick` and `.By`,
 // `ModelInvited.Nick`, `ModelKicked.Nick`,
 // `NickChange.OldNick`/`.NewNick`) holds a snapshot of the
 // nick at event time. These values are point-in-time records and
@@ -54,7 +54,7 @@ var (
 	_ PersistableEvent = Part{}
 	_ PersistableEvent = Quit{}
 	_ PersistableEvent = TopicChange{}
-	_ PersistableEvent = ModeChange{}
+	_ PersistableEvent = ChannelModeChange{}
 	_ PersistableEvent = ModelInvited{}
 	_ PersistableEvent = ModelKicked{}
 	_ PersistableEvent = NickChange{}
@@ -204,12 +204,11 @@ func (e TopicChange) persistableEventTime() time.Time { return e.At }
 // ModelVisible implements PersistableEvent.
 func (TopicChange) ModelVisible() bool { return true }
 
-// ModeChange records an RFC 2812 MODE mutation. The same shape
-// carries both forms of MODE: a channel-scoped event has a non-
-// empty `Target`; a user-mode event leaves `Target` empty.
-// `ChannelMode` and `ServerIssued` encapsulate the sentinel
-// fields behind named predicates rather than open-coding them at
-// every call site.
+// ChannelModeChange records the channel-scoped form of an RFC 2812
+// MODE mutation: a member mode (`+o`/`+v` on a nick) or a channel
+// attribute (`+m`, `+l <int>`, `+k <key>`). It is genuine channel
+// activity — persisted to the channel log and broadcast to channel
+// peers.
 //
 // `Param` carries the argument for parametric attribute modes
 // (`+l <int>`, `+k <key>`); it is empty for member-mode and
@@ -217,8 +216,8 @@ func (TopicChange) ModelVisible() bool { return true }
 //
 // `Instance` is the live affected member, populated on emission
 // and ignored by JSON.
-type ModeChange struct {
-	Target     ChannelName `json:"channel,omitempty"`
+type ChannelModeChange struct {
+	Target     ChannelName `json:"channel"`
 	Nick       Nick        `json:"nick"`
 	InstanceID InstanceID  `json:"instance_id,omitzero"`
 	Flag       Mode        `json:"flag"`
@@ -230,24 +229,35 @@ type ModeChange struct {
 	Instance *Instance `json:"-"`
 }
 
-// ChannelMode reports whether this event mutates a channel-scoped
-// mode (the wire MODE form with a channel target). The inverse is
-// a user-mode change.
-func (e ModeChange) ChannelMode() bool { return e.Target != "" }
-
 // ServerIssued reports whether the change was originated by the
 // server rather than by a client actor — the RFC convention is an
 // absent nick prefix on the wire, mirrored here as an empty `By`.
-func (e ModeChange) ServerIssued() bool { return e.By == "" }
+func (e ChannelModeChange) ServerIssued() bool { return e.By == "" }
 
-func (ModeChange) persistableEvent()                 {}
-func (e ModeChange) persistableEventTime() time.Time { return e.At }
+func (ChannelModeChange) persistableEvent()                 {}
+func (e ChannelModeChange) persistableEventTime() time.Time { return e.At }
 
-// ModelVisible reports whether this event reaches model dispatch
-// history. Channel-mode events do; user-mode events do not — RFC
-// 2812 §3.1.5 scopes user-mode replies to the requester rather
-// than broadcasting to channel peers.
-func (e ModeChange) ModelVisible() bool { return e.ChannelMode() }
+// ModelVisible implements PersistableEvent.
+func (ChannelModeChange) ModelVisible() bool { return true }
+
+// UserModeChange records the user-scoped form of an RFC 2812 MODE
+// mutation: a global flag on a single client (the `+o` operator
+// grant). It is a capability signal delivered point-to-point to the
+// affected client's own bus — RFC 2812 §3.1.5 scopes user-mode
+// replies to the requester — never persisted and never broadcast.
+//
+// `Instance` is the live affected client, populated on emission and
+// ignored by JSON.
+type UserModeChange struct {
+	Nick       Nick       `json:"nick"`
+	InstanceID InstanceID `json:"instance_id,omitzero"`
+	Flag       Mode       `json:"flag"`
+	Add        bool       `json:"add"`
+	By         Nick       `json:"by,omitempty"`
+	At         time.Time  `json:"at"`
+
+	Instance *Instance `json:"-"`
+}
 
 // ModelInvited records a model instance being added to a
 // channel. `Nick`/`InstanceID` identify the invitee (the subject
@@ -472,7 +482,7 @@ func EventTarget(e PersistableEvent) ChannelName {
 		return ""
 	case TopicChange:
 		return v.Target
-	case ModeChange:
+	case ChannelModeChange:
 		return v.Target
 	case ModelInvited:
 		return v.Target
@@ -515,7 +525,7 @@ func EventType(e PersistableEvent) string {
 		return "quit"
 	case TopicChange:
 		return "topic_change"
-	case ModeChange:
+	case ChannelModeChange:
 		return "mode_change"
 	case ModelInvited:
 		return "model_invited"
@@ -596,7 +606,7 @@ func UnmarshalPersistableEvent(b []byte) (PersistableEvent, error) {
 		var e TopicChange
 		return e, unmarshal(&e)
 	case "mode_change":
-		var e ModeChange
+		var e ChannelModeChange
 		return e, unmarshal(&e)
 	case "model_invited":
 		var e ModelInvited
@@ -642,21 +652,22 @@ func UnmarshalPersistableEvent(b []byte) (PersistableEvent, error) {
 // All PersistableEvent types also implement Event so they flow through
 // the session's unified event channel.
 
-func (Message) domainEvent()      {}
-func (Join) domainEvent()         {}
-func (Part) domainEvent()         {}
-func (Quit) domainEvent()         {}
-func (TopicChange) domainEvent()  {}
-func (ModeChange) domainEvent()   {}
-func (ModelInvited) domainEvent() {}
-func (ModelKicked) domainEvent()  {}
-func (NickChange) domainEvent()   {}
-func (TopicInfo) domainEvent()    {}
-func (Help) domainEvent()         {}
-func (Whois) domainEvent()        {}
-func (ListReply) domainEvent()    {}
-func (ListEnd) domainEvent()      {}
-func (CommandError) domainEvent() {}
-func (UsageHint) domainEvent()    {}
-func (SystemNotice) domainEvent() {}
-func (PersonasList) domainEvent() {}
+func (Message) domainEvent()           {}
+func (Join) domainEvent()              {}
+func (Part) domainEvent()              {}
+func (Quit) domainEvent()              {}
+func (TopicChange) domainEvent()       {}
+func (ChannelModeChange) domainEvent() {}
+func (UserModeChange) domainEvent()    {}
+func (ModelInvited) domainEvent()      {}
+func (ModelKicked) domainEvent()       {}
+func (NickChange) domainEvent()        {}
+func (TopicInfo) domainEvent()         {}
+func (Help) domainEvent()              {}
+func (Whois) domainEvent()             {}
+func (ListReply) domainEvent()         {}
+func (ListEnd) domainEvent()           {}
+func (CommandError) domainEvent()      {}
+func (UsageHint) domainEvent()         {}
+func (SystemNotice) domainEvent()      {}
+func (PersonasList) domainEvent()      {}

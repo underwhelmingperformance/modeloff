@@ -42,8 +42,8 @@ func renderChannelEvent[C command.KindProvider](
 		return wrap.Render(theme.SystemEvent.Render("*** " + quitText(e)))
 	case domain.TopicChange:
 		return wrap.Render(theme.SystemEvent.Render("*** " + topicChangeText(e)))
-	case domain.ModeChange:
-		return wrap.Render(theme.SystemEvent.Render("*** " + modeChangeText(e)))
+	case domain.ChannelModeChange:
+		return wrap.Render(theme.SystemEvent.Render("*** " + channelModeChangeText(e)))
 	case domain.ModelInvited:
 		return wrap.Render(theme.SystemEvent.Render(
 			fmt.Sprintf("*** %s invited %s to %s", e.By, e.Nick, e.Target)))
@@ -134,21 +134,21 @@ func topicChangeText(e domain.TopicChange) string {
 	return fmt.Sprintf("topic for %s set to: %s", e.Target, e.Topic)
 }
 
-func modeChangeText(e domain.ModeChange) string {
+func channelModeChangeText(e domain.ChannelModeChange) string {
 	issuer := string(e.By)
 	if e.ServerIssued() {
 		issuer = "server"
 	}
 
-	return fmt.Sprintf("%s sets mode %s %s", issuer, e.Flag.IRCString(e.Add), modeChangeTarget(e))
+	return fmt.Sprintf("%s sets mode %s %s", issuer, e.Flag.IRCString(e.Add), channelModeChangeTarget(e))
 }
 
-// modeChangeTarget formats the right-hand operand of the rendered
-// `MODE` line. Parametric attribute modes (+l, +k) show the param
-// alongside the channel; member modes (+o/+v on a nick) and user
-// modes show the affected nick.
-func modeChangeTarget(e domain.ModeChange) string {
-	if e.ChannelMode() && e.Param != "" {
+// channelModeChangeTarget formats the right-hand operand of the
+// rendered `MODE` line. Parametric attribute modes (+l, +k) show the
+// param alongside the channel; member modes (+o/+v on a nick) show
+// the affected nick.
+func channelModeChangeTarget(e domain.ChannelModeChange) string {
+	if e.Param != "" {
 		return e.Param + " " + string(e.Target)
 	}
 	return string(e.Nick)

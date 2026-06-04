@@ -314,7 +314,7 @@ func isDMSuppressedEvent(event domain.PersistableEvent) bool {
 	switch event.(type) {
 	case domain.Join,
 		domain.Part,
-		domain.ModeChange,
+		domain.ChannelModeChange,
 		domain.TopicChange,
 		domain.ModelInvited,
 		domain.ModelKicked:

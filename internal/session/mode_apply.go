@@ -98,7 +98,7 @@ func validateChannelModeChange(change protocol.ChannelModeChange, now time.Time)
 
 // setMemberModeAs applies a member-mode change (`+o`/`+v` add or
 // remove) to `change.Target`'s entry in `window.Members`, persists
-// the window, and emits a [domain.ModeChange] to channel peers.
+// the window, and emits a [domain.ChannelModeChange] to channel peers.
 // Called from [applyChannelModeChangesAs] after up-front
 // validation, so the shape invariants are already enforced.
 func (s *Session) setMemberModeAs(ctx context.Context, window *domain.ChannelWindow, ch domain.ChannelName, actor *domain.Instance, change protocol.ChannelModeChange) error {
@@ -120,7 +120,7 @@ func (s *Session) setMemberModeAs(ctx context.Context, window *domain.ChannelWin
 			return fmt.Errorf("save channel: %w", err)
 		}
 
-		s.persistAndEmit(ctx, ch, domain.ModeChange{
+		s.persistAndEmit(ctx, ch, domain.ChannelModeChange{
 			Target:     ch,
 			Nick:       target.Nick(),
 			InstanceID: target.ID(),
@@ -137,7 +137,7 @@ func (s *Session) setMemberModeAs(ctx context.Context, window *domain.ChannelWin
 
 // setChannelAttributeAs applies an attribute-mode change to the
 // channel's `Modes` field, persists the window, and emits a
-// [domain.ModeChange] to peers. Called from
+// [domain.ChannelModeChange] to peers. Called from
 // [applyChannelModeChangesAs] after validation; parametric `+l` /
 // `+k` carry their value in `change.Param` (already a positive
 // int or non-empty key, respectively).
@@ -153,7 +153,7 @@ func (s *Session) setChannelAttributeAs(ctx context.Context, window *domain.Chan
 			return fmt.Errorf("save channel: %w", err)
 		}
 
-		s.persistAndEmit(ctx, ch, domain.ModeChange{
+		s.persistAndEmit(ctx, ch, domain.ChannelModeChange{
 			Target: ch,
 			Flag:   change.Flag,
 			Add:    change.Add,
@@ -204,7 +204,7 @@ func applyAttribute(modes *domain.ChannelModes, change protocol.ChannelModeChang
 }
 
 // attributeEmitParam returns the parameter to include on the
-// broadcast [domain.ModeChange] for an attribute change. Boolean
+// broadcast [domain.ChannelModeChange] for an attribute change. Boolean
 // modes and remove-form parametric modes emit no parameter.
 func attributeEmitParam(change protocol.ChannelModeChange) string {
 	if !change.Add {

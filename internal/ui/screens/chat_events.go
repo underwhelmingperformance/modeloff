@@ -39,8 +39,10 @@ func (s ChatScreen) handleProtocolEvent(msg protocolEventMsg) (ui.Model, tea.Cmd
 		updated, cmd = s.handlePartEvent(evt)
 	case domain.Quit:
 		updated, cmd = s.handleQuitEvent(evt, msg.targets)
-	case domain.ModeChange:
-		updated, cmd = s.handleModeChangeEvent(evt)
+	case domain.ChannelModeChange:
+		updated, cmd = s.handleChannelModeChangeEvent(evt)
+	case domain.UserModeChange:
+		updated, cmd = s.handleUserModeChangeEvent(evt)
 	case domain.Message:
 		updated, cmd = s.handleMessageEvent(evt)
 	case domain.TopicChange:
@@ -261,11 +263,7 @@ func (s ChatScreen) handleJoinEvent(msg domain.Join) (ui.Model, tea.Cmd) {
 	)
 }
 
-func (s ChatScreen) handleModeChangeEvent(msg domain.ModeChange) (ui.Model, tea.Cmd) {
-	if !msg.ChannelMode() {
-		return s.handleUserModeChangeEvent(msg)
-	}
-
+func (s ChatScreen) handleChannelModeChangeEvent(msg domain.ChannelModeChange) (ui.Model, tea.Cmd) {
 	cw, ok := s.channelWindowByName(msg.Target)
 	if !ok {
 		return s, nil
@@ -280,12 +278,12 @@ func (s ChatScreen) handleModeChangeEvent(msg domain.ModeChange) (ui.Model, tea.
 	return s, msgCmd(components.NickListUpdatedMsg{Members: cw.Members})
 }
 
-// handleUserModeChangeEvent reacts to a user-mode ModeChange (empty
-// Target). When the change targets the user-client's own instance,
-// the visible command set may have flipped — re-emit CommandsMsg
-// from VisibleCommands so the /help slice and the completion
-// popover both reflect the new capability state on next render.
-func (s ChatScreen) handleUserModeChangeEvent(msg domain.ModeChange) (ui.Model, tea.Cmd) {
+// handleUserModeChangeEvent reacts to a user-mode change. When the
+// change targets the user-client's own instance, the visible command
+// set may have flipped — re-emit CommandsMsg from VisibleCommands so
+// the /help slice and the completion popover both reflect the new
+// capability state on next render.
+func (s ChatScreen) handleUserModeChangeEvent(msg domain.UserModeChange) (ui.Model, tea.Cmd) {
 	if msg.InstanceID != s.user.Instance().ID() {
 		return s, nil
 	}

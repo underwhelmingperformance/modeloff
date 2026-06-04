@@ -249,7 +249,7 @@ func collectEmittedEvents(t testing.TB, sess *Session) []domain.Event {
 	}
 }
 
-// bootstrapModeChange returns the user-mode ModeChange every test
+// bootstrapModeChange returns the UserModeChange every test
 // session emits at attach time: the server promotes the user-
 // client to +o via a wire MODE response. Tests prepend it to
 // their expected event slice when asserting on the full stream
@@ -262,11 +262,11 @@ func collectEmittedEvents(t testing.TB, sess *Session) []domain.Event {
 // both reads return the same bubble clock value as long as no
 // goroutine yields between them, which is the case for the
 // synchronous attach path.
-func bootstrapModeChange(t testing.TB, sess *Session, at time.Time) domain.ModeChange {
+func bootstrapModeChange(t testing.TB, sess *Session, at time.Time) domain.UserModeChange {
 	t.Helper()
 
 	user := userInstance(t, sess)
-	return domain.ModeChange{
+	return domain.UserModeChange{
 		Nick:       user.Nick(),
 		InstanceID: user.ID(),
 		Flag:       domain.ModeOperator,
@@ -1310,7 +1310,7 @@ func TestSession_user_state_triple_stays_consistent(t *testing.T) {
 
 		user := userInstance(t, sess)
 		require.ElementsMatch(t, []domain.Event{
-			domain.ModeChange{
+			domain.UserModeChange{
 				Nick:       "testuser",
 				InstanceID: user.ID(),
 				Flag:       domain.ModeOperator,
@@ -2593,7 +2593,7 @@ func TestSession_ChangeNick(t *testing.T) {
 
 		user := userInstance(t, sess)
 		require.ElementsMatch(t, []domain.Event{
-			domain.ModeChange{
+			domain.UserModeChange{
 				Nick:       "testuser",
 				InstanceID: user.ID(),
 				Flag:       domain.ModeOperator,

@@ -82,7 +82,7 @@ type Subscription interface {
 // for any command this client issues; it is required.
 // InitialModes applies the given modes to the subscription before
 // the first event can be delivered, so a client granted +o at
-// subscribe time sees the [domain.ModeChange] event as the first
+// subscribe time sees the [domain.UserModeChange] event as the first
 // item on its bus.
 type SubscribeOptions struct {
 	Instance     *domain.Instance

@@ -22,24 +22,25 @@ type ProtocolEvent interface {
 
 // Persistable channel events. Order matches the seal block in
 // `channel_event.go` so reviewers can diff the two side by side.
-func (Message) isProtocolEvent()      {}
-func (Join) isProtocolEvent()         {}
-func (Part) isProtocolEvent()         {}
-func (Quit) isProtocolEvent()         {}
-func (TopicChange) isProtocolEvent()  {}
-func (ModeChange) isProtocolEvent()   {}
-func (ModelInvited) isProtocolEvent() {}
-func (ModelKicked) isProtocolEvent()  {}
-func (NickChange) isProtocolEvent()   {}
-func (TopicInfo) isProtocolEvent()    {}
-func (Help) isProtocolEvent()         {}
-func (Whois) isProtocolEvent()        {}
-func (ListReply) isProtocolEvent()    {}
-func (ListEnd) isProtocolEvent()      {}
-func (CommandError) isProtocolEvent() {}
-func (UsageHint) isProtocolEvent()    {}
-func (SystemNotice) isProtocolEvent() {}
-func (PersonasList) isProtocolEvent() {}
+func (Message) isProtocolEvent()           {}
+func (Join) isProtocolEvent()              {}
+func (Part) isProtocolEvent()              {}
+func (Quit) isProtocolEvent()              {}
+func (TopicChange) isProtocolEvent()       {}
+func (ChannelModeChange) isProtocolEvent() {}
+func (UserModeChange) isProtocolEvent()    {}
+func (ModelInvited) isProtocolEvent()      {}
+func (ModelKicked) isProtocolEvent()       {}
+func (NickChange) isProtocolEvent()        {}
+func (TopicInfo) isProtocolEvent()         {}
+func (Help) isProtocolEvent()              {}
+func (Whois) isProtocolEvent()             {}
+func (ListReply) isProtocolEvent()         {}
+func (ListEnd) isProtocolEvent()           {}
+func (CommandError) isProtocolEvent()      {}
+func (UsageHint) isProtocolEvent()         {}
+func (SystemNotice) isProtocolEvent()      {}
+func (PersonasList) isProtocolEvent()      {}
 
 // Pure-live events. Order matches the seal block in `events.go`.
 func (PokeEvent) isProtocolEvent()             {}

@@ -98,7 +98,7 @@ func (c *serverClient) HasMode(m domain.Mode) bool {
 // Idempotent: a grant for an already-held mode (or a clear for an
 // unheld mode) is a no-op. Returns true if the call mutated state —
 // actor methods use it to decide whether to emit a
-// [domain.ModeChange].
+// [domain.UserModeChange].
 func (c *serverClient) setMode(m domain.Mode, add bool) bool {
 	c.modesMu.Lock()
 	defer c.modesMu.Unlock()
@@ -169,7 +169,7 @@ func (c *serverClient) canReceive(ev domain.ProtocolEvent, actorTargets []domain
 		return channelsContains(channels, e.Target)
 	case domain.TopicInfo:
 		return channelsContains(channels, e.Target)
-	case domain.ModeChange:
+	case domain.ChannelModeChange:
 		return channelsContains(channels, e.Target)
 	case domain.ModelKicked:
 		return channelsContains(channels, e.Target)
