@@ -441,7 +441,7 @@ func TestChatScreen_whois_command(t *testing.T) {
 	tm.WaitFor("fakenick is anthropic/claude-3-haiku")
 }
 
-func TestChatScreen_whois_persists_to_status_channel(t *testing.T) {
+func TestChatScreen_whois_does_not_pollute_channel_log(t *testing.T) {
 	h := newTestSession(t)
 	uitest.SeedChannel(t, h.user, "#general")
 	uitest.AddModel(t, h.user, "#general", "anthropic/claude-3-haiku", "")
@@ -452,40 +452,27 @@ func TestChatScreen_whois_persists_to_status_channel(t *testing.T) {
 	tm.Submit("/whois fakenick")
 	tm.WaitFor("fakenick is anthropic/claude-3-haiku")
 
-	// Status channel must carry a persisted copy so the IRC-style
-	// server log shows every /whois the user ran, regardless of
-	// where they typed it.
-	statusEvents, err := h.sess.EventsBefore(t.Context(), domain.StatusChannelName, nil, 100)
-	require.NoError(t, err)
+	// The reply renders in the active window's in-memory scrollback
+	// only. No Whois numeric reaches any channel's shared event log —
+	// that log holds genuine channel activity a model later loads.
+	whoisCount := func(ch domain.ChannelName) int {
+		events, err := h.sess.EventsBefore(t.Context(), ch, nil, 100)
+		require.NoError(t, err)
 
-	type whoisKey struct {
-		Target domain.ChannelName
-		Nick   domain.Nick
-	}
-
-	whoisKeys := func(events []domain.StoredEvent) []whoisKey {
-		out := []whoisKey{}
+		count := 0
 		for _, ev := range events {
-			if w, ok := ev.Event.(domain.Whois); ok {
-				out = append(out, whoisKey{Target: w.Target, Nick: w.Nick})
+			if _, ok := ev.Event.(domain.Whois); ok {
+				count++
 			}
 		}
 
-		return out
+		return count
 	}
 
-	require.Equal(t, []whoisKey{
-		{Target: domain.StatusChannelName, Nick: "fakenick"},
-	}, whoisKeys(statusEvents),
-		"&modeloff must carry exactly one Whois for fakenick")
-
-	// Active channel display is ephemeral: the #general event log
-	// should NOT carry any Whois entries.
-	generalEvents, err := h.sess.EventsBefore(t.Context(), "#general", nil, 100)
-	require.NoError(t, err)
-
-	require.Equal(t, []whoisKey{}, whoisKeys(generalEvents),
-		"whois should only land on &modeloff, never on the active channel")
+	require.Zero(t, whoisCount("#general"),
+		"whois must not land in the active channel's event log")
+	require.Zero(t, whoisCount(domain.StatusChannelName),
+		"whois must not land in the &modeloff event log")
 }
 
 func TestChatScreen_whois_unknown_nick(t *testing.T) {

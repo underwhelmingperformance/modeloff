@@ -20,11 +20,13 @@ func storedReplyEvents(replies []domain.StoredEvent) []domain.PersistableEvent {
 	return events
 }
 
-// TestSession_whois_persists_to_model_issuer_only proves a model's
-// WHOIS reply lands in its own private reply log — its durable memory
-// of the lookup — while a user issuer is transient and persists
-// nothing.
-func TestSession_whois_persists_to_model_issuer_only(t *testing.T) {
+// TestSession_whois_persists_to_issuer_reply_log proves both actors
+// write their WHOIS reply to their own private reply log, keyed by
+// identity, and that the dispatcher stamps the reply's `Target` with
+// the window the command was issued in. The model's reply is its
+// durable memory of the lookup; the user's (keyed by the empty id) is
+// the durable record a future restore would read.
+func TestSession_whois_persists_to_issuer_reply_log(t *testing.T) {
 	sess, store := newTestSession(t)
 	ctx := t.Context()
 
@@ -35,25 +37,37 @@ func TestSession_whois_persists_to_model_issuer_only(t *testing.T) {
 	_, err := sess.Subscribe(model, protocol.SubscribeOptions{Instance: inst})
 	require.NoError(t, err)
 
-	resp, err := sess.Handle(ctx, model, protocol.Whois{Nick: "target"})
+	resp, err := sess.Handle(ctx, model, protocol.Whois{Nick: "target", Channel: "#dev"})
 	require.NoError(t, err)
 	require.NoError(t, resp.Err)
+	require.Equal(t, []domain.ProtocolEvent{domain.Whois{
+		Target:  "#dev",
+		Nick:    "target",
+		ModelID: "test/model",
+		At:      fixedTime,
+	}}, resp.Events)
 
 	replies, err := store.InstanceRepliesBefore(ctx, inst.ID(), nil, 10)
 	require.NoError(t, err)
 	require.Equal(t, []domain.PersistableEvent{domain.Whois{
+		Target:  "#dev",
 		Nick:    "target",
 		ModelID: "test/model",
 		At:      fixedTime,
 	}}, storedReplyEvents(replies))
 
-	userResp, err := sess.Handle(ctx, userClient(t, sess), protocol.Whois{Nick: "target"})
+	userResp, err := sess.Handle(ctx, userClient(t, sess), protocol.Whois{Nick: "target", Channel: "#ops"})
 	require.NoError(t, err)
 	require.NoError(t, userResp.Err)
 
 	userReplies, err := store.InstanceRepliesBefore(ctx, "", nil, 10)
 	require.NoError(t, err)
-	require.Empty(t, userReplies)
+	require.Equal(t, []domain.PersistableEvent{domain.Whois{
+		Target:  "#ops",
+		Nick:    "target",
+		ModelID: "test/model",
+		At:      fixedTime,
+	}}, storedReplyEvents(userReplies))
 }
 
 // TestSession_list_persists_to_model_issuer proves a model's LIST
@@ -81,6 +95,30 @@ func TestSession_list_persists_to_model_issuer(t *testing.T) {
 	}, storedReplyEvents(replies))
 
 	// The reply is private: it never reaches the shared channel log.
+	require.Equal(t, []string{"join"}, channelEventTypes(t, store, "#dev"))
+}
+
+// TestSession_user_replies_do_not_pollute_channel_log proves that a
+// user's point-to-point command replies (WHOIS, LIST) never reach the
+// shared channel event log, even when issued from inside a channel.
+// Only genuine channel activity belongs there.
+func TestSession_user_replies_do_not_pollute_channel_log(t *testing.T) {
+	sess, store := newTestSession(t)
+	ctx := t.Context()
+
+	require.NoError(t, userJoin(ctx, t, sess, "#dev"))
+	seedInstance(t, sess, store, instanceSpec{Nick: "target", ModelID: "test/model"})
+
+	user := userClient(t, sess)
+
+	whoisResp, err := sess.Handle(ctx, user, protocol.Whois{Nick: "target", Channel: "#dev"})
+	require.NoError(t, err)
+	require.NoError(t, whoisResp.Err)
+
+	listResp, err := sess.Handle(ctx, user, protocol.List{})
+	require.NoError(t, err)
+	require.NoError(t, listResp.Err)
+
 	require.Equal(t, []string{"join"}, channelEventTypes(t, store, "#dev"))
 }
 

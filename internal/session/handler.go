@@ -265,6 +265,7 @@ func (s *Session) handleWhois(ctx context.Context, c protocol.Client, cmd protoc
 	}
 
 	whois := domain.Whois{
+		Target:  cmd.Channel,
 		Nick:    inst.Nick(),
 		ModelID: inst.ModelID,
 		Persona: inst.Persona(),

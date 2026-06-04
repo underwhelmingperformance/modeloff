@@ -265,15 +265,26 @@ captures only events the user has seen this session, mirroring IRC's
 to 500 most-recent events from the channel log on each dispatch turn;
 today this includes events that pre-date the instance's join.
 
-A model's own point-to-point replies (`WHOIS`, `LIST`) are not channel
-activity, so they live in a private per-instance reply log
-(`store.AppendInstanceReply` / `store.InstanceRepliesBefore`), not the
-shared channel log. The dispatcher records a model issuer's reply
-there; a user issuer's is live-only, since the user is transient. Each
-dispatch turn merges the instance's own replies chronologically into
-its prompt transcript, so a model re-experiences its lookups across
-turns and reattach — as if its quit never happened — while another
-model in the channel never sees them.
+An issuer's own point-to-point replies (`WHOIS`, `LIST`) are not
+channel activity, so they live in a private per-instance reply log
+(`store.AppendInstanceReply` / `store.InstanceRepliesBefore`), keyed
+by the issuer's identity, not the shared channel log. Both actors
+write their replies the same way: the dispatcher records every
+issuer's reply there, the user-client included (under the empty id).
+The two actors differ only in whether they restore — a model re-reads
+its log on each dispatch turn, merging its own replies chronologically
+into the prompt transcript so it re-experiences its lookups across
+turns and reattach, as if its quit never happened; the user is
+transient and never restores, so its entries are the durable record a
+future restore or inspector would read rather than anything it sees
+again this session. Another model in the channel never sees a peer's
+replies. The dispatcher also stamps the issuing window onto a reply it
+owns: `handleWhois` sets `domain.Whois.Target` to the window the
+`WHOIS` was issued from, so the issuer renders the reply where it
+asked. Numerics and UI notices the chat-screen raises locally (help,
+usage hints, system notices) stay out of the channel log entirely:
+they render to the in-memory scrollback only, so the shared channel
+log a model loads holds nothing but genuine channel activity.
 
 ### Out of scope, design accommodates
 
@@ -294,6 +305,11 @@ model in the channel never sees them.
   filter.
 - Credentialed operator promotion through `OPER`, backed by a real
   `OperAuthenticator`.
+- A user-restore-history feature that, on reconnect, routes each
+  persisted wire-command reply back to its source window.
+  `Whois.Target` already carries that window; `ListReply` and
+  `ListEnd` would need an issuing-window field added at that point,
+  since `RPL_LIST` carries no addressable target on the wire today.
 
 ## External libraries
 

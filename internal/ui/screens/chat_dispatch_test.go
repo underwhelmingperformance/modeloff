@@ -374,8 +374,8 @@ func TestChatScreen_handleProtocolEvent_routing(t *testing.T) {
 func TestChatScreen_ErrorEvent_no_active_channel(t *testing.T) {
 	screen := newScreenFixture(t)
 
-	// No active channel set — error should still produce a StoredEvent
-	// message so the UI can display it.
+	// No active channel set — the error routes to `&modeloff`, which
+	// is brought into focus, and renders in that window's scrollback.
 	_, cmd := screen.handleErrorEvent(domain.ErrorEvent{
 		Operation: "startup failure",
 		Err:       errors.New("no api key"),
@@ -383,15 +383,16 @@ func TestChatScreen_ErrorEvent_no_active_channel(t *testing.T) {
 	})
 
 	require.NotNil(t, cmd)
+	require.Equal(t, domain.StatusChannelName, *screen.active)
 
-	msgs := collectMsgs(cmd)
-
-	stored, ok := containsMsg[domain.StoredEvent](msgs)
-	require.True(t, ok, "expected StoredEvent in batch")
-
-	cmdErr, ok := stored.Event.(domain.CommandError)
-	require.True(t, ok, "expected CommandError inside StoredEvent, got %T", stored.Event)
-	require.Equal(t, "startup failure: no api key", cmdErr.Err)
+	scrollback := screen.scrollbackOf(domain.StatusChannelName)
+	cmdErrs := make([]string, 0, len(scrollback))
+	for _, ev := range scrollback {
+		if cmdErr, ok := ev.Event.(domain.CommandError); ok {
+			cmdErrs = append(cmdErrs, cmdErr.Err)
+		}
+	}
+	require.Equal(t, []string{"startup failure: no api key"}, cmdErrs)
 }
 
 // TestChatScreen_MessageSubmit_on_status_channel_renders_usage_hint
@@ -403,20 +404,22 @@ func TestChatScreen_MessageSubmit_on_status_channel_renders_usage_hint(t *testin
 	screen := newScreenFixture(t)
 	*screen.active = domain.StatusChannelName
 
-	_, cmd := screen.Update(components.MessageSubmitMsg{Text: "hello"})
+	screen2, cmd := screen.Update(components.MessageSubmitMsg{Text: "hello"})
 
 	require.NotNil(t, cmd)
 
-	msgs := collectMsgs(cmd)
-	stored, ok := containsMsg[domain.StoredEvent](msgs)
-	require.True(t, ok, "expected StoredEvent in batch, got %v", msgsTypes(msgs))
-
-	hint, ok := stored.Event.(domain.UsageHint)
-	require.True(t, ok, "expected UsageHint, got %T", stored.Event)
-	require.Equal(t, "send", hint.Command)
-	require.Equal(t,
-		"the status channel doesn't take messages — try /msg <nick-or-#channel> instead",
-		hint.Usage)
+	scrollback := screen2.(ChatScreen).scrollbackOf(domain.StatusChannelName)
+	hints := make([]domain.UsageHint, 0, len(scrollback))
+	for _, ev := range scrollback {
+		if hint, ok := ev.Event.(domain.UsageHint); ok {
+			hint.At = time.Time{}
+			hints = append(hints, hint)
+		}
+	}
+	require.Equal(t, []domain.UsageHint{{
+		Command: "send",
+		Usage:   "the status channel doesn't take messages — try /msg <nick-or-#channel> instead",
+	}}, hints)
 }
 
 func sameType(a, b any) bool {

@@ -374,6 +374,27 @@ func TestRunTool_msg_rejects_empty_body(t *testing.T) {
 	}, tool.RunTool(t.Context(), tc))
 }
 
+func TestRunTool_whois_stamps_issuing_window(t *testing.T) {
+	sess, user := newToolTestSession(t)
+
+	require.NoError(t, user.Join(t.Context(), domain.ChannelName("#lobby")))
+	uitest.AddModel(t, user, "#lobby", "anthropic/haiku", "")
+
+	tc := userToolContext(sess, user, "#lobby")
+
+	v := toolValue(t, "whois", `{"nick": "testbot"}`)
+
+	tool, ok := v.(ToolCommand)
+	require.True(t, ok, "WhoisCommand should implement ToolCommand")
+
+	result := tool.RunTool(t.Context(), tc)
+
+	require.True(t, result.OK)
+	whois, ok := result.Data.(domain.Whois)
+	require.True(t, ok, "whois tool returns a domain.Whois snapshot")
+	require.Equal(t, domain.ChannelName("#lobby"), whois.Target)
+}
+
 func TestRunTool_nick_changes_nick(t *testing.T) {
 	sess, user := newToolTestSession(t)
 	tc := userToolContext(sess, user, "#general")

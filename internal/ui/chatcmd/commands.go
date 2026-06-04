@@ -905,9 +905,11 @@ func (WhoisCommand) Sources() map[string]command.SuggestionSource[CompletionCont
 	return map[string]command.SuggestionSource[CompletionContext]{"nick": instancesSource}
 }
 
-// ToCommand builds the wire-protocol command for `/whois`.
-func (c WhoisCommand) ToCommand(_ Context) (protocol.Command, error) {
-	return protocol.Whois{Nick: domain.Nick(c.Nick)}, nil
+// ToCommand builds the wire-protocol command for `/whois`, carrying
+// the issuing window so the dispatcher can stamp it onto the reply's
+// render target.
+func (c WhoisCommand) ToCommand(ctx Context) (protocol.Command, error) {
+	return protocol.Whois{Nick: domain.Nick(c.Nick), Channel: ctx.Active}, nil
 }
 
 // Run implements Command. The dispatcher returns the canonical
@@ -922,7 +924,7 @@ func (c WhoisCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 
 // RunTool implements ToolCommand.
 func (c WhoisCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolResultPayload {
-	whois, err := c.fetch(ctx, tc.Client, domain.Nick(c.Nick))
+	whois, err := c.fetch(ctx, tc.Client, domain.Nick(c.Nick), tc.Channel)
 	if err != nil {
 		return modelclient.ToolResultPayload{OK: false, Error: err.Error()}
 	}
@@ -934,13 +936,13 @@ func (c WhoisCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) m
 	}
 }
 
-// fetch issues the wire `WHOIS` and extracts the dispatcher's
-// `domain.Whois` snapshot from `Response.Events`. The snapshot
-// freezes the instance's identity surface at the moment of
+// fetch issues the wire `WHOIS` from `channel` and extracts the
+// dispatcher's `domain.Whois` snapshot from `Response.Events`. The
+// snapshot freezes the instance's identity surface at the moment of
 // query — `Nick`, `Persona`, `Channels` — so later renames or
 // channel changes don't retro-edit historical renderings.
-func (WhoisCommand) fetch(ctx context.Context, client protocol.Client, nick domain.Nick) (domain.Whois, error) {
-	resp, err := client.Send(ctx, protocol.Whois{Nick: nick})
+func (WhoisCommand) fetch(ctx context.Context, client protocol.Client, nick domain.Nick, channel domain.ChannelName) (domain.Whois, error) {
+	resp, err := client.Send(ctx, protocol.Whois{Nick: nick, Channel: channel})
 	if err != nil {
 		return domain.Whois{}, err
 	}

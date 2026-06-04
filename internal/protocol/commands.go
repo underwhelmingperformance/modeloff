@@ -80,9 +80,13 @@ type Nick struct {
 }
 
 // Whois asks the server to emit a [domain.Whois] reply describing
-// the named instance.
+// the named instance. `Channel` carries the window the command was
+// issued in; the dispatcher stamps it onto the reply's
+// [domain.Whois.Target] so the issuer renders the response in the
+// window it asked from.
 type Whois struct {
-	Nick domain.Nick
+	Nick    domain.Nick
+	Channel domain.ChannelName
 }
 
 // List asks the server to emit a stream of [domain.ListReply] events

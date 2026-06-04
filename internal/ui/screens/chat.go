@@ -653,9 +653,15 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		// Command-reply feedback path for the issuing client's `/whois`.
 		// `session.handleWhois` returns the identity snapshot in
 		// `protocol.Response.Events`; `chatcmd.sendCommand` delivers it via
-		// `chatcmd.ReplyEvents`. The snapshot's `Target` is unset, so this
-		// arm picks the rendering window and keeps the audit trail.
-		return s.handleWhoisReply(msg)
+		// `chatcmd.ReplyEvents`. The dispatcher stamps the snapshot's
+		// `Target` with the window the command was issued from, so this arm
+		// renders it there. A whois issued with no active window carries an
+		// empty target; `logAndShow` routes it to `&modeloff`, matching the
+		// other numeric replies.
+		if msg.Target == "" {
+			return s, s.logAndShow(msg)
+		}
+		return s, s.logAndShowOn(msg.Target, msg)
 
 	case domain.ListReply:
 		// Command-reply feedback path for the issuing client's `/list`.
@@ -836,132 +842,51 @@ func (s ChatScreen) layoutHeight() int {
 	return max(s.height-lipgloss.Height(components.RenderStatusBar(s.width, s.KeyBindings(), s.StatusItems())), 0)
 }
 
-// logAndShow persists a channel event under the active channel and
-// returns a command that sends the StoredEvent to the message list.
-// When no channel is active the event is still sent for rendering but
-// is not persisted to the store.
+// logAndShow renders a numeric or UI-feedback event in the active
+// window's in-memory scrollback. These are the issuing client's
+// command replies and UI notices; they are transient by design and
+// never reach the shared channel log, which holds only genuine
+// channel activity that a model later loads.
+//
+// When no channel is active the user is on the welcome screen with
+// no channels. The output is routed to `&modeloff` and that window
+// brought into focus so the user sees the response. The active
+// pointer is set inline (the call site is inside Update, which owns
+// the writer side of `*s.active`); a trailing `ChannelFocusMsg` runs
+// the rest of the focus pipeline (sidebar marker, placeholder clear,
+// last-channel persist) without re-touching `*s.active`.
 func (s ChatScreen) logAndShow(event domain.PersistableEvent) tea.Cmd {
-	// Empty active means the user is on the welcome screen with no
-	// channels. Route transient output to `&modeloff` and bring it
-	// into focus so the user sees the response. The active pointer
-	// is set inline (the call site is inside Update, which owns
-	// the writer side of `*s.active`) so the `logAndShowOn`
-	// closure observes the new target and returns its StoredEvent
-	// — necessary for the message-list render trigger and for
-	// callers that inspect the returned cmd. A trailing
-	// `ChannelFocusMsg` runs the rest of the focus pipeline
-	// (sidebar marker, placeholder clear, last-channel persist)
-	// without re-touching `*s.active`.
 	if *s.active == "" {
 		*s.active = domain.StatusChannelName
+		s.appendToScrollback(domain.StatusChannelName, domain.StoredEvent{Event: event})
 
-		return tea.Batch(
-			s.logAndStoreCmd(domain.StatusChannelName, event),
-			func() tea.Msg {
-				return chatcmd.ChannelFocusMsg{Channel: domain.StatusChannelName, At: time.Now()}
-			},
-		)
+		return func() tea.Msg {
+			return chatcmd.ChannelFocusMsg{Channel: domain.StatusChannelName, At: time.Now()}
+		}
 	}
 
 	return s.logAndShowOn(*s.active, event)
 }
 
-// logAndStoreCmd persists `event` under `ch` and appends to the
-// matching scrollback, returning the StoredEvent unconditionally so
-// it can act as the message-list render trigger for the freshly-
-// focused window. Unlike [ChatScreen.logAndShowOn] it does not read
-// `*s.active` from the Cmd goroutine, which would race against an
-// in-flight focus mutation on the Update goroutine.
-func (s ChatScreen) logAndStoreCmd(ch domain.ChannelName, event domain.PersistableEvent) tea.Cmd {
-	return func() tea.Msg {
-		stored, err := s.sess.LogEvent(s.baseContext(), ch, event)
-		if err != nil {
-			return nil
-		}
-
-		s.appendToScrollback(ch, stored)
-
-		return stored
-	}
-}
-
-// persistOnStatus records a channel event on the per-session status
-// channel without forwarding it to the active window. The store
-// call runs inside the returned Cmd; failures log via slog and the
-// `#10` persistence-failure path inside the session, so callers
-// can fire-and-forget. Returns nil if the persistence step fails to
-// schedule, since dropping the trailing message is acceptable for
-// an audit-trail copy.
-func (s ChatScreen) persistOnStatus(event domain.PersistableEvent) tea.Cmd {
-	return func() tea.Msg {
-		if _, err := s.sess.LogEvent(s.baseContext(), domain.StatusChannelName, event); err != nil {
-			slog.Default().ErrorContext(s.baseContext(), "persist on status channel", "error", err)
-		}
-
-		return nil
-	}
-}
-
-// logAndShowOn persists a channel event under the explicit target
-// channel and returns a command that sends the StoredEvent to the
-// message list. Callers use this when the event's home is not the
-// currently-focused channel — for example, routing a notice to the
-// status channel when no user-visible channel is active. The caller
-// is responsible for setting event.Channel consistently with ch;
-// this helper does not rewrite it.
+// logAndShowOn renders a numeric or UI-feedback event in the
+// scrollback of the explicit target window. Callers use this when the
+// event's home is not the currently-focused window — for example a
+// notice carrying its own target channel, or a `/whois` reply the
+// dispatcher stamped with the window it was issued from. The append
+// happens on the Update goroutine (the single writer of chat-screen
+// state); the returned `ScrollbackUpdatedMsg` nudges the message list
+// to re-evaluate the active window's scrollback.
 //
-// The store call happens inside the returned Cmd, not in the
-// caller's goroutine, so Update remains the single writer of
-// chat-screen state — the session mutation is fenced off the Tea
-// program's main loop until its result lands as a tea.Msg.
-//
-// The Cmd appends the persisted event to `s.scrollback[ch]` under
-// `scrollbackMu` so a subsequent focus into `ch` re-renders the
-// line via [ChatScreen.scrollbackCmd]. Without this, a focus
-// change racing with the Cmd would replace the message list with
-// the channel's scrollback (which would not contain the freshly-
-// logged event) and wipe the line off the screen.
-//
-// `*s.active` is read from the Cmd goroutine but the chat-screen
-// is the single writer of `*s.active` on the Update goroutine,
-// and this Cmd was scheduled from Update. The active-channel
-// branch returns `stored` for live append; the off-channel branch
-// returns `nil` and lets `scrollbackCmd` own the next render.
-//
-// A narrow residual race remains in the active-channel branch:
-// if focus settles to `ch` during the persist's lifetime,
-// [ChatScreen.handleChannelFocus] will have queued a
-// `scrollbackCmd(ch)` at the tail of its [tea.Sequence], and if
-// our `appendToScrollback` wins against that queued closure's
-// `RLock`, the focus-driven `HistoryLoadedMsg` carries a snapshot
-// containing the line and the subsequent live `stored` append
-// doubles it. The window is bounded by the focus sequence's
-// `persistLastChannel` step (an SQLite write) and is rare in
-// practice — 400-iter `-race` runs at the test sites are clean.
-// A structurally airtight fix would move the scrollback append
-// back onto the Update goroutine after the persist resolves, at
-// the cost of an extra round-trip; the duplicate-line failure
-// mode is visually less severe than the original wipe, so we
-// accept the residual here.
+// An empty `ch` carries no window to render in, so the event is
+// dropped.
 func (s ChatScreen) logAndShowOn(ch domain.ChannelName, event domain.PersistableEvent) tea.Cmd {
 	if ch == "" {
-		return msgCmd(domain.StoredEvent{Event: event})
-	}
-
-	return func() tea.Msg {
-		stored, err := s.sess.LogEvent(s.baseContext(), ch, event)
-		if err != nil {
-			return nil
-		}
-
-		s.appendToScrollback(ch, stored)
-
-		if ch == *s.active {
-			return stored
-		}
-
 		return nil
 	}
+
+	s.appendToScrollback(ch, domain.StoredEvent{Event: event})
+
+	return msgCmd(components.ScrollbackUpdatedMsg{Channel: ch})
 }
 
 // handleQuitRequested locks the UI, shows a "Disconnecting…"
@@ -1128,33 +1053,4 @@ func (s ChatScreen) updateLogEntries() ChatScreen {
 	s.layout.Content = workspace.SetLogEntries(s.obs.LogBuffer().Entries())
 
 	return s
-}
-
-// handleWhoisReply routes a `/whois` response. The dispatcher
-// has already snapshotted the instance's identity surface into
-// `whois`; this method picks the rendering window and keeps the
-// audit trail. When the active window already is `&modeloff`, a
-// single persisted entry serves both roles; otherwise the response
-// shows ephemerally on the active window (in-memory scrollback
-// append, no persistence) and an audit copy is persisted under
-// `&modeloff` so the IRC-style server log records every `/whois`
-// the user ran.
-func (s ChatScreen) handleWhoisReply(whois domain.Whois) (ui.Model, tea.Cmd) {
-	if *s.active == domain.StatusChannelName {
-		whois.Target = domain.StatusChannelName
-		return s, s.logAndShow(whois)
-	}
-
-	activeWhois := whois
-	activeWhois.Target = *s.active
-
-	statusWhois := whois
-	statusWhois.Target = domain.StatusChannelName
-
-	s.appendToScrollback(*s.active, domain.StoredEvent{Event: activeWhois})
-
-	return s, tea.Batch(
-		msgCmd(components.ScrollbackUpdatedMsg{Channel: *s.active}),
-		s.persistOnStatus(statusWhois),
-	)
 }

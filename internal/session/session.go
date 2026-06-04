@@ -958,19 +958,6 @@ func (s *Session) EventsBefore(ctx context.Context, ch domain.ChannelName, befor
 	return s.store.EventsBefore(ctx, ch, before, n)
 }
 
-// LogEvent persists a channel event to the event log and returns
-// the stored event with its assigned ID. This is used by the UI to
-// persist client-local events (help output, errors, etc.) that
-// don't originate from session operations.
-func (s *Session) LogEvent(ctx context.Context, ch domain.ChannelName, event domain.PersistableEvent) (domain.StoredEvent, error) {
-	id, err := s.store.AppendEvent(ctx, ch, event)
-	if err != nil {
-		return domain.StoredEvent{}, err
-	}
-
-	return domain.StoredEvent{ID: id, Event: event}, nil
-}
-
 // broadcastEvent is the intersection type carried through the
 // session's persist-then-emit helpers: every value is both a
 // channel event the store accepts and a protocol event the
@@ -1112,15 +1099,14 @@ func (s *Session) appendEvent(ctx context.Context, ch domain.ChannelName, event 
 	}
 }
 
-// persistInstanceReplies records a model issuer's point-to-point
-// reply events in its private reply log, so it re-reads them as its
-// own experience on later turns. A user issuer is transient: it sees
-// the reply live and persists nothing.
+// persistInstanceReplies records an issuer's point-to-point reply
+// events in its private reply log, keyed by the issuer's identity. A
+// model re-reads them as its own experience on later turns. The
+// user-client (whose identity is the empty id) writes the same log;
+// it is transient and never restores, so its entries are the durable
+// record a future restore or inspector would read rather than
+// anything the user sees again this session.
 func (s *Session) persistInstanceReplies(ctx context.Context, c protocol.Client, events []domain.ProtocolEvent) {
-	if c.Identity() == protocol.UserClientID {
-		return
-	}
-
 	id := domain.InstanceID(c.Identity())
 	for _, ev := range events {
 		if reply, ok := ev.(domain.PersistableEvent); ok {

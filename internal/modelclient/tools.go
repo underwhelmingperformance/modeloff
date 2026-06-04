@@ -19,7 +19,6 @@ import (
 // session package's symbol set.
 type SessionAPI interface {
 	GetWindow(ctx context.Context, name domain.ChannelName) (domain.Window, error)
-	LogEvent(ctx context.Context, ch domain.ChannelName, event domain.PersistableEvent) (domain.StoredEvent, error)
 	ResolveNick(ctx context.Context, nick domain.Nick) (*domain.Instance, error)
 	Now() time.Time
 }
