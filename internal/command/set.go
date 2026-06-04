@@ -637,46 +637,80 @@ func makeStrictObjectSchema(schema map[string]any) {
 	delete(schema, "$id")
 	delete(schema, "$schema")
 
-	if isObjectSchema(schema) {
-		if props, ok := schema["properties"].(map[string]any); ok && len(props) > 0 {
-			originallyRequired := map[string]bool{}
+	enforceStrictObject(schema)
+	recurseStrictChildren(schema)
+}
 
-			required := make([]string, 0, len(props))
-			switch r := schema["required"].(type) {
-			case []string:
-				for _, k := range r {
-					originallyRequired[k] = true
-					required = append(required, k)
-				}
-			case []any:
-				for _, v := range r {
-					if s, ok := v.(string); ok {
-						originallyRequired[s] = true
-						required = append(required, s)
-					}
-				}
-			}
+// enforceStrictObject applies the strict-mode invariants to schema
+// when it is an object node carrying properties: `required` lists
+// every property, a property that was not originally required gains a
+// nullable type so the model can omit it by emitting `null`, and
+// additional properties are forbidden. Original `required` ordering is
+// preserved; newly-required names are appended alphabetically so the
+// output is deterministic. A non-object node, or one without
+// properties, is left untouched.
+func enforceStrictObject(schema map[string]any) {
+	if !isObjectSchema(schema) {
+		return
+	}
 
-			missing := make([]string, 0, len(props))
-			for name := range props {
-				if !originallyRequired[name] {
-					missing = append(missing, name)
-				}
-			}
-			sort.Strings(missing)
+	props, ok := schema["properties"].(map[string]any)
+	if !ok || len(props) == 0 {
+		return
+	}
 
-			for _, name := range missing {
-				required = append(required, name)
-				if sub, ok := props[name].(map[string]any); ok {
-					makeNullable(sub)
-				}
-			}
+	required, originallyRequired := collectRequired(schema, len(props))
 
-			schema["required"] = required
-			schema["additionalProperties"] = false
+	missing := make([]string, 0, len(props))
+	for name := range props {
+		if !originallyRequired[name] {
+			missing = append(missing, name)
+		}
+	}
+	sort.Strings(missing)
+
+	for _, name := range missing {
+		required = append(required, name)
+		if sub, ok := props[name].(map[string]any); ok {
+			makeNullable(sub)
 		}
 	}
 
+	schema["required"] = required
+	schema["additionalProperties"] = false
+}
+
+// collectRequired reads the schema's existing `required` keyword,
+// which the JSON-Schema source may encode as `[]string` or `[]any`,
+// returning the names in their original order and a membership set.
+// `capacity` sizes the result slice for the appends the caller will
+// make.
+func collectRequired(schema map[string]any, capacity int) ([]string, map[string]bool) {
+	originallyRequired := make(map[string]bool)
+	required := make([]string, 0, capacity)
+
+	switch r := schema["required"].(type) {
+	case []string:
+		for _, k := range r {
+			originallyRequired[k] = true
+			required = append(required, k)
+		}
+	case []any:
+		for _, v := range r {
+			if s, ok := v.(string); ok {
+				originallyRequired[s] = true
+				required = append(required, s)
+			}
+		}
+	}
+
+	return required, originallyRequired
+}
+
+// recurseStrictChildren applies the strict walk to every nested schema
+// reachable from schema: its `properties`, its `items`, and the
+// `oneOf` / `anyOf` / `allOf` combinators.
+func recurseStrictChildren(schema map[string]any) {
 	if props, ok := schema["properties"].(map[string]any); ok {
 		for _, p := range props {
 			if sub, ok := p.(map[string]any); ok {
