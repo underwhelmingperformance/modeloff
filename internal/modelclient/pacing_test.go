@@ -3,6 +3,7 @@ package modelclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -21,11 +22,17 @@ type fixedRandomiser struct {
 	idx    int
 }
 
-func (f *fixedRandomiser) Float64() float64 {
+func (f *fixedRandomiser) Float64() (float64, error) {
 	v := f.values[f.idx%len(f.values)]
 	f.idx++
-	return v
+	return v, nil
 }
+
+// errRandomiser fails every draw, standing in for an exhausted or
+// unavailable entropy source.
+type errRandomiser struct{ err error }
+
+func (e errRandomiser) Float64() (float64, error) { return 0, e.err }
 
 func TestPacer_duration(t *testing.T) {
 	cases := []struct {
@@ -93,7 +100,9 @@ func TestPacer_duration(t *testing.T) {
 				p.Rng = &fixedRandomiser{values: tc.rng}
 			}
 
-			require.Equal(t, tc.want, p.duration(tc.body))
+			got, err := p.duration(tc.body)
+			require.NoError(t, err)
+			require.Equal(t, tc.want, got)
 		})
 	}
 }
@@ -108,7 +117,7 @@ func TestPacer_Wait_advancesVirtualClock(t *testing.T) {
 		}
 
 		start := time.Now()
-		p.Wait(t.Context(), "hello") // 250ms + 125ms + 0ms jitter
+		require.NoError(t, p.Wait(t.Context(), "hello")) // 250ms + 125ms + 0ms jitter
 		require.Equal(t, 375*time.Millisecond, time.Since(start))
 	})
 }
@@ -122,8 +131,8 @@ func TestPacer_Wait_consecutiveCallsAccumulate(t *testing.T) {
 		}
 
 		start := time.Now()
-		p.Wait(t.Context(), "abcde")      // 100ms + 100ms = 200ms
-		p.Wait(t.Context(), "abcdefghij") // 100ms + 200ms = 300ms
+		require.NoError(t, p.Wait(t.Context(), "abcde"))      // 100ms + 100ms = 200ms
+		require.NoError(t, p.Wait(t.Context(), "abcdefghij")) // 100ms + 200ms = 300ms
 		require.Equal(t, 500*time.Millisecond, time.Since(start))
 	})
 }
@@ -136,7 +145,7 @@ func TestPacer_Wait_cancelledContextAborts(t *testing.T) {
 		cancel()
 
 		start := time.Now()
-		p.Wait(ctx, "")
+		require.NoError(t, p.Wait(ctx, ""))
 		require.Equal(t, time.Duration(0), time.Since(start))
 	})
 }
@@ -146,8 +155,29 @@ func TestPacer_Wait_nilReceiverIsNoOp(t *testing.T) {
 		var p *Pacer
 
 		start := time.Now()
-		p.Wait(t.Context(), "anything")
+		require.NoError(t, p.Wait(t.Context(), "anything"))
 		require.Equal(t, time.Duration(0), time.Since(start))
+	})
+}
+
+func TestPacer_jitterError(t *testing.T) {
+	sentinel := errors.New("entropy unavailable")
+
+	t.Run("propagates when jitter applies", func(t *testing.T) {
+		p := &Pacer{Floor: 100 * time.Millisecond, Jitter: 50 * time.Millisecond, Rng: errRandomiser{err: sentinel}}
+
+		_, err := p.duration("hi")
+		require.ErrorIs(t, err, sentinel)
+
+		require.ErrorIs(t, p.Wait(t.Context(), "hi"), sentinel)
+	})
+
+	t.Run("rng untouched when jitter is zero", func(t *testing.T) {
+		p := &Pacer{Floor: 100 * time.Millisecond, Jitter: 0, Rng: errRandomiser{err: sentinel}}
+
+		d, err := p.duration("hi")
+		require.NoError(t, err)
+		require.Equal(t, 100*time.Millisecond, d)
 	})
 }
 

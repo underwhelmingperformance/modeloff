@@ -84,12 +84,15 @@ func runTurn(
 			return outcome, nil
 		}
 
-		toolResults, sawPass := executeTools(ctx, sess, ToolContext{
+		toolResults, sawPass, wErr := executeTools(ctx, sess, ToolContext{
 			Session: sess,
 			Actor:   inst,
 			Channel: channelName,
 			Client:  caller,
 		}, registry, result.PendingToolCalls, pacer)
+		if wErr != nil {
+			return outcome, wErr
+		}
 		outcome.toolTurnCount++
 
 		if sawPass {
@@ -146,9 +149,9 @@ func executeTools(
 	registry *ToolRegistry,
 	calls []api.PendingToolCall,
 	pacer *Pacer,
-) ([]api.ToolResult, bool) {
+) ([]api.ToolResult, bool, error) {
 	if reject := rejectMixedPass(calls); reject != nil {
-		return reject, true
+		return reject, true, nil
 	}
 
 	results := make([]api.ToolResult, 0, len(calls))
@@ -167,7 +170,10 @@ func executeTools(
 		)
 
 		if body, ok := pacingBody(toolName, call.Args); ok {
-			pacer.Wait(callCtx, body)
+			if err := pacer.Wait(callCtx, body); err != nil {
+				callSpan.End()
+				return nil, false, err
+			}
 		}
 
 		payload := ToolResultPayload{
@@ -201,7 +207,7 @@ func executeTools(
 		results = append(results, api.ToolResult{ToolCallID: call.ID, Content: string(data)})
 	}
 
-	return results, sawPass
+	return results, sawPass, nil
 }
 
 // rejectMixedPass enforces the rule that `pass` is mutually

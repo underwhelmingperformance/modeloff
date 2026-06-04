@@ -2,30 +2,40 @@ package modelclient
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"encoding/json"
-	"math/rand/v2"
 	"strings"
 	"time"
 
 	"github.com/laney/modeloff/internal/protocol"
 )
 
-// Randomiser supplies the random component of typing-delay jitter
-// as a value in [0.0, 1.0). Production wires a math/rand/v2-backed
-// implementation; tests pass a deterministic stub so assertions can
-// pin the exact wait duration.
+// Randomiser supplies the random component of typing-delay jitter as
+// a value in [0.0, 1.0); the error reports a failure of the
+// underlying entropy source.
 type Randomiser interface {
-	Float64() float64
+	Float64() (float64, error)
 }
 
-// NewRandRandomiser returns a [Randomiser] backed by math/rand/v2.
+// NewRandRandomiser returns a [Randomiser] backed by crypto/rand.
 func NewRandRandomiser() Randomiser {
 	return randRandomiser{}
 }
 
 type randRandomiser struct{}
 
-func (randRandomiser) Float64() float64 { return rand.Float64() }
+// Float64 draws a uniform value in [0.0, 1.0) from crypto/rand,
+// taking 53 bits — a float64's mantissa width — so every
+// representable value in the range is reachable.
+func (randRandomiser) Float64() (float64, error) {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return 0, err
+	}
+
+	return float64(binary.BigEndian.Uint64(b[:])>>11) / (1 << 53), nil
+}
 
 // Pacer adds a length-scaled typing delay before each model-emitted
 // chat line so bots don't appear to fire at machine speed. The wait
@@ -40,15 +50,19 @@ type Pacer struct {
 }
 
 // Wait blocks for the typing delay implied by body. Returns early
-// when ctx is cancelled.
-func (p *Pacer) Wait(ctx context.Context, body string) {
+// when ctx is cancelled, and surfaces a failure from the jitter
+// source.
+func (p *Pacer) Wait(ctx context.Context, body string) error {
 	if p == nil {
-		return
+		return nil
 	}
 
-	d := p.duration(body)
+	d, err := p.duration(body)
+	if err != nil {
+		return err
+	}
 	if d <= 0 {
-		return
+		return nil
 	}
 
 	t := time.NewTimer(d)
@@ -58,9 +72,11 @@ func (p *Pacer) Wait(ctx context.Context, body string) {
 	case <-ctx.Done():
 	case <-t.C:
 	}
+
+	return nil
 }
 
-func (p *Pacer) duration(body string) time.Duration {
+func (p *Pacer) duration(body string) (time.Duration, error) {
 	d := p.Floor
 
 	if p.CPS > 0 {
@@ -68,11 +84,14 @@ func (p *Pacer) duration(body string) time.Duration {
 	}
 
 	if p.Jitter > 0 && p.Rng != nil {
-		f := p.Rng.Float64()*2 - 1
-		d += time.Duration(f * float64(p.Jitter))
+		f, err := p.Rng.Float64()
+		if err != nil {
+			return 0, err
+		}
+		d += time.Duration((f*2 - 1) * float64(p.Jitter))
 	}
 
-	return d
+	return d, nil
 }
 
 // pacingBody returns the textual content of a chat tool call and
