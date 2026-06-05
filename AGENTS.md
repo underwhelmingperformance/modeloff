@@ -35,8 +35,8 @@ There is no server component. This uses the OpenRouter API.
    conversations which would become costly very quickly.
 9. A channel can have a `/topic`, which is shown in the UI. This is optional
    but it will be sent to the model as part of its prompt.
-10. A small model such as Haiku should be used to give each invited model a
-    nickname.
+10. A small, cheap model (configurable, defaulting to `openai/gpt-5.4-mini`) is
+    used to give each invited model a nickname.
 11. `/whois` can be used on a nickname to show metadata, and common channels.
 12. On a random (perturbed a bit) configurable (via `/config`) schedule, the
     model instances are poked to see if they want to say anything, so that
@@ -53,8 +53,9 @@ There is no server component. This uses the OpenRouter API.
    we call the API.
 2. In a way the protocol should follow the IRC protocol. For example the model
    will be told when there's a message, when there's a join/part event etc.
-3. There should be a per-instance (keyed by nick) memory system so that the
-   model can remember what's happened to it. This should be exposed as a tool so
+3. There should be a per-instance (keyed by the immutable instance ID, so
+   memories survive a `/nick` rename) memory system so that the model can
+   remember what's happened to it. This should be exposed as a tool so
    that it can decide when to read and write memories.
 
 ## Server-client protocol
@@ -76,9 +77,11 @@ also sealed via an unexported method declared on each event type in the
 to build until it is handled — the migration path is mechanical.
 
 Clients implement the small `Client` interface — `Identity()`, `Send(ctx,
-Command) (Response, error)`, `Events() <-chan Event`, `Caps()
-command.CapabilityHolder`. Operator gating reads the live `serverClient` mode
-set keyed by `Identity`, so an `Oper` elevation is honoured without the client
+Command) (Response, error)`, `Events() <-chan Delivery`, `Caps()
+command.CapabilityHolder`; each `Delivery` wraps an `Event` with the originating
+handler's span context for OTel trace continuity. Operator gating reads the live
+`serverClient` mode set keyed by `Identity`, so an `Oper` elevation is honoured
+without the client
 object changing. A `Send` returns a `Response` whose `Err` field carries any
 typed command failure (e.g. `domain.NotOperatorError`,
 `domain.UnknownNickError`); callers branch on it via `errors.As`. The
@@ -132,11 +135,14 @@ issuing `serverClient`, not as a branch on which kind of client it is.
   used for prompt assembly, the memory-tool registry, and a getter
   for the live OpenRouter `api.Client`. `ModelClient.Attach`
   registers with the session via the public `Session.Subscribe(c,
-  opts)` API and returns a `protocol.Subscription`; `Detach`
-  reverses both. The dispatch goroutine watches the subscription's
+  opts)` API, storing the resulting `protocol.Subscription`
+  internally, and returns only an error; `Detach` reverses both,
+  unsubscribing and tearing down the dispatch goroutine. The
+  dispatch goroutine watches the subscription's
   `Events` and `Done` channels and runs an LLM turn when
-  `dispatchTrigger` says so (a message in a window the instance
-  shares, a join/part/invite that addresses it, a poke). Each turn
+  `dispatchTrigger` says so (a message or join in a window the
+  instance shares, a part by another member, an invite addressed to
+  it, a poke). Each turn
   re-reads the api client through the getter so a manager-driven
   `SetAPIKey` rebuild propagates without reattach.
 
@@ -144,11 +150,11 @@ The LLM-side state — the api client and its rebuild factory, the
 persona pool, the small-model id used for nick generation, the
 catalogue cache, and the per-instance model-client registry —
 lives in the `internal/modelmanager` package. A `*Manager`
-satisfies `session.ModelClientFactory`: the session's
-`attachInstanceToChannel` asks the manager to construct a
-model-client when an instance joins a channel, `KILL` / `QUIT`
-ask it to detach, and `ADDMODEL` asks it for persona arbitration
-and a unique nick via `PrepareInstance`. The chatcmd and chat-
+satisfies `session.ModelClientFactory`: the session's `addModelAs`
+(the `protocol.AddModel` handler) asks the manager to construct a
+model-client when a new instance is added to a channel, `KILL` /
+`QUIT` ask it to detach, and `ADDMODEL` asks it for persona
+arbitration and a unique nick via `PrepareInstance`. The chatcmd and chat-
 screen layers route persona / api-key / model-directory commands
 through the manager too; nothing LLM-shaped flows through the
 session router.
@@ -181,16 +187,18 @@ The session exposes one event channel per subscription: each
 subscription's `Client.Events()` returns the per-client protocol bus.
 The session fans out wire-shaped events (PRIVMSG, JOIN, PART, TOPIC,
 MODE, NICK, INVITE, KICK, QUIT) plus session-emitted events
-(`FocusChannelEvent`, `TopicInfo`, `NamesReplyEvent`, `PokeEvent`,
-`DispatchStartedEvent`, `DispatchDoneEvent`, `CommandError`,
-`UsageHint`, `PersonasList`, `Help`, `Whois`, `ListReply`, `ListEnd`,
-`SystemNotice`). Every value the session emits implements
+(`TopicInfo`, `NamesReplyEvent`, `NamesEnd`, `PokeEvent`,
+`ModelDispatchStarted`, `ModelDispatchDone`, `Whois`, `ListReply`,
+`ListEnd`, `SystemNotice`). Every value the session emits implements
 `domain.ProtocolEvent`, sealed via `isProtocolEvent()`.
 
-Chat-screen-local control signals (e.g. `domain.ErrorEvent` wrapping
-a backend error from a UI-issued command) flow as bare `tea.Msg`
-returns from the chat-screen's own `tea.Cmd`s and reach the Update
-loop directly. The session is not the courier for them.
+Chat-screen-local control signals — `domain.ErrorEvent` wrapping a
+backend error from a UI-issued command, and the `Help`, `UsageHint`,
+`PersonasList` and `CommandError` events the chat-screen builds and
+renders itself — flow as bare `tea.Msg` returns from the chat-screen's
+own `tea.Cmd`s and reach the Update loop directly. The session never
+puts them on the bus (`serverClient.canReceive` returns false for
+them); it is not the courier for them.
 
 ### Echo gate and membership filter
 
@@ -244,10 +252,15 @@ the grammar at registration time and derives the OpenAI tool schema
 (name, description, JSON-schema parameters) by reflection. When a
 chatcmd struct implements `ToCommand(Context) (protocol.Command, error)`,
 the same wire command flows whether the user typed `/foo` or a model
-called the `foo` tool. `/list` and `/whois` implement `ToCommand`
-(returning `protocol.List` / `protocol.Whois`); only the purely
-UI-side `/help` and `/clear` have no wire counterpart and do not
-implement `ToCommand`.
+called the `foo` tool. Most commands implement `ToCommand` and so
+have a wire counterpart: `/join`, `/part`, `/list`, `/addmodel`,
+`/invite`, `/kill`, `/kick`, `/msg`, `/nick`, `/mode`, `/topic`,
+`/me`, `/whois`, and `/quit` (for example `ListCommand` returns
+`protocol.List` and `WhoisCommand` returns `protocol.Whois`). The
+remaining commands are purely UI-side, have no wire counterpart, and
+do not implement `ToCommand`: `/config`, `/query`, `/personas`,
+`/regenerate-personas`, `/help`, `/clear`, `/poke`, and the tool-only
+`pass`.
 
 The three memory tools (`write_memory`, `delete_memory`, `search_memory`)
 are in-process operations rather than wire commands, and stay
