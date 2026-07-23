@@ -14,7 +14,7 @@ require (
 	github.com/jeandeaual/go-locale v0.0.0-20250612000132-0ef82f21eade
 	github.com/muesli/termenv v0.16.0
 	github.com/ncruces/go-sqlite3 v0.35.2
-	github.com/openai/openai-go/v3 v3.44.0
+	github.com/openai/openai-go/v3 v3.45.0
 	github.com/philippgille/chromem-go v0.7.0
 	github.com/rivo/uniseg v0.4.7
 	github.com/stretchr/testify v1.11.1
@@ -61,13 +61,13 @@ require (
 	github.com/ncruces/julianday v1.0.0 // indirect
 	github.com/pb33f/ordered-map/v2 v2.3.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
-	github.com/tidwall/gjson v1.18.0 // indirect
+	github.com/tidwall/gjson v1.19.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.2 // indirect
-	golang.org/x/sys v0.46.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
