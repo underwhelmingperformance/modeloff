@@ -150,6 +150,8 @@ github.com/openai/openai-go/v3 v3.44.0 h1:kkGh+jb/sKfSh5P74Jk5mCRufaQ0q7oH+lq+pN
 github.com/openai/openai-go/v3 v3.44.0/go.mod h1:cdufnVK14cWcT9qA1rRtrXx4FTRsgbDPW7Ia7SS5cZo=
 github.com/openai/openai-go/v3 v3.45.0 h1:bmSSXh5EhTrFA7AFYFLBs4NmeIuWB8iUSk+gGKUTmkA=
 github.com/openai/openai-go/v3 v3.45.0/go.mod h1:b8MgNMpR3lPifYnaOH8XwcG8qRHwhzZxuDgM9lL7h5k=
+github.com/openai/openai-go/v3 v3.46.0 h1:9HzL4DOybwOHAAcsGpMQyELuw0e9OqynJOPV8SH8g5M=
+github.com/openai/openai-go/v3 v3.46.0/go.mod h1:b8MgNMpR3lPifYnaOH8XwcG8qRHwhzZxuDgM9lL7h5k=
 github.com/pb33f/ordered-map/v2 v2.3.1 h1:5319HDO0aw4DA4gzi+zv4FXU9UlSs3xGZ40wcP1nBjY=
 github.com/pb33f/ordered-map/v2 v2.3.1/go.mod h1:qxFQgd0PkVUtOMCkTapqotNgzRhMPL7VvaHKbd1HnmQ=
 github.com/philippgille/chromem-go v0.7.0 h1:4jfvfyKymjKNfGxBUhHUcj1kp7B17NL/I1P+vGh1RvY=
