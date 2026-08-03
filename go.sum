@@ -62,6 +62,8 @@ github.com/charmbracelet/x/exp/teatest v0.0.0-20260727090823-41c9e6be3365 h1:HTA
 github.com/charmbracelet/x/exp/teatest v0.0.0-20260727090823-41c9e6be3365/go.mod h1:aPVjFrBwbJgj5Qz1F0IXsnbcOVJcMKgu1ySUfTAxh7k=
 github.com/charmbracelet/x/exp/teatest v0.0.0-20260730164118-7e2d3e6c5238 h1:iZpLYAeJXh1zzcUxKojH/PC/VUQ98vq5BlnOIhB+km8=
 github.com/charmbracelet/x/exp/teatest v0.0.0-20260730164118-7e2d3e6c5238/go.mod h1:aPVjFrBwbJgj5Qz1F0IXsnbcOVJcMKgu1ySUfTAxh7k=
+github.com/charmbracelet/x/exp/teatest v0.0.0-20260803091719-3755ebad01b1 h1:wHQXg8yTV8dugUh26pT6wXpqsAMQGL0HKh4zHGMAj/Q=
+github.com/charmbracelet/x/exp/teatest v0.0.0-20260803091719-3755ebad01b1/go.mod h1:aPVjFrBwbJgj5Qz1F0IXsnbcOVJcMKgu1ySUfTAxh7k=
 github.com/charmbracelet/x/term v0.2.2 h1:xVRT/S2ZcKdhhOuSP4t5cLi5o+JxklsoEObBSgfgZRk=
 github.com/charmbracelet/x/term v0.2.2/go.mod h1:kF8CY5RddLWrsgVwpw4kAa6TESp6EB5y3uxGLeCqzAI=
 github.com/clipperhouse/displaywidth v0.9.0 h1:Qb4KOhYwRiN3viMv1v/3cTBlz3AcAZX3+y9OLhMtAtA=
