@@ -132,6 +132,8 @@ github.com/ncruces/go-sqlite3 v0.35.1 h1:h/LaVyQwIvBBT0+2JmVe2tbYyWjUQ093/pYhpBq
 github.com/ncruces/go-sqlite3 v0.35.1/go.mod h1:fXOSIkWwN5NXgbJk+7Zls8QIW4xOflmgh11OFvcY+J0=
 github.com/ncruces/go-sqlite3 v0.35.2 h1:YOoumI7tkxMIm1MBrkucRb1qtvAPEh8RrZtv6U+2aLs=
 github.com/ncruces/go-sqlite3 v0.35.2/go.mod h1:lVlozMCF6VGdI1FOgl0pBfMviw6DIh/QIMKQyjmg2ac=
+github.com/ncruces/go-sqlite3 v0.35.3 h1:Ei07Zv1qfV/vyXzelhFsyS5Oh9TArBZHsmFk14Xv3GY=
+github.com/ncruces/go-sqlite3 v0.35.3/go.mod h1:i1rhym/NIiB5xeEfzbN+e24Y+i7NGUpf7C2xZ3Dpwks=
 github.com/ncruces/go-sqlite3-wasm v1.0.4-0.20260329114232-2491c387476c h1:Fnw6J6r2trodoTlRk7mDo+ZXEnBSJFPmorGV7urtgvI=
 github.com/ncruces/go-sqlite3-wasm v1.0.4-0.20260329114232-2491c387476c/go.mod h1:eewd1iQhpv/1qDXP83cfDk06Bpbhmt3EspN/0krcy70=
 github.com/ncruces/go-sqlite3-wasm/v2 v2.6.35302 h1:IZCiInPIp6OhOc1skMDGOBMwMQuE1TK+QqVe35vd/ro=
@@ -140,6 +142,8 @@ github.com/ncruces/go-sqlite3-wasm/v3 v3.1.35302 h1:Cew7/eNAMd1zhpXYBjofBua/63pF
 github.com/ncruces/go-sqlite3-wasm/v3 v3.1.35302/go.mod h1:xe0CfafDUxfh+fSVKjHHMiAxoG9KALt5nFtbGNb/jRs=
 github.com/ncruces/go-sqlite3-wasm/v3 v3.2.35303 h1:td8kMW1bWwzc7NnlzPjQV4GbDNLkje8htGBfbZRaSh8=
 github.com/ncruces/go-sqlite3-wasm/v3 v3.2.35303/go.mod h1:o8gr9w/50fXA5TDskg6bNUjvqmFfw4KaXth4q+yDSjg=
+github.com/ncruces/go-sqlite3-wasm/v3 v3.2.35304 h1:5NoQAewtgKNK3G4bjNPxVoGXu6F6NzLXWCTdD5FFAEY=
+github.com/ncruces/go-sqlite3-wasm/v3 v3.2.35304/go.mod h1:o8gr9w/50fXA5TDskg6bNUjvqmFfw4KaXth4q+yDSjg=
 github.com/ncruces/julianday v1.0.0 h1:fH0OKwa7NWvniGQtxdJRxAgkBMolni2BjDHaWTxqt7M=
 github.com/ncruces/julianday v1.0.0/go.mod h1:Dusn2KvZrrovOMJuOt0TNXL6tB7U2E8kvza5fFc9G7g=
 github.com/openai/openai-go/v3 v3.30.0 h1:T8VkhqAm6BuvxwpVG+Aw+H4TcYIsbj9nqytjpWcE/aU=
@@ -168,6 +172,8 @@ github.com/openai/openai-go/v3 v3.48.0 h1:HRVBn6UEP4qzGK2c6UWAZ0mdFf6yODNWTJ4ywL
 github.com/openai/openai-go/v3 v3.48.0/go.mod h1:nCqcbgPr2jYDV8wiCWPA2tRL56mWXdb6QavBmBwzSis=
 github.com/openai/openai-go/v3 v3.49.0 h1:/BObwLKdgHJ3AbJ7AXK8BRDfjuTAV+eTmEQFbG86wnQ=
 github.com/openai/openai-go/v3 v3.49.0/go.mod h1:nCqcbgPr2jYDV8wiCWPA2tRL56mWXdb6QavBmBwzSis=
+github.com/openai/openai-go/v3 v3.50.0 h1:CXn+C8a10oQiI5CMyMbCiykhITVhVxhdHX8j3CfLa2U=
+github.com/openai/openai-go/v3 v3.50.0/go.mod h1:Ogjo0gDct+Jm7yCqaCjLGQGygeV8xNfNHV1/yKvCji0=
 github.com/pb33f/ordered-map/v2 v2.3.1 h1:5319HDO0aw4DA4gzi+zv4FXU9UlSs3xGZ40wcP1nBjY=
 github.com/pb33f/ordered-map/v2 v2.3.1/go.mod h1:qxFQgd0PkVUtOMCkTapqotNgzRhMPL7VvaHKbd1HnmQ=
 github.com/philippgille/chromem-go v0.7.0 h1:4jfvfyKymjKNfGxBUhHUcj1kp7B17NL/I1P+vGh1RvY=
