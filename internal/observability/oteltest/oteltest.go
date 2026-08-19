@@ -55,7 +55,7 @@ func AttrValue(attrs []attribute.KeyValue, key string) string {
 			continue
 		}
 
-		return attr.Value.Emit()
+		return attr.Value.String()
 	}
 
 	return ""

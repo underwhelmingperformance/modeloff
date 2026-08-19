@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 )
@@ -102,7 +102,7 @@ func panelEntryFromRecord(record sdklog.Record) PanelEntry {
 		entry.Level = fmt.Sprint(record.Severity())
 	}
 
-	record.WalkAttributes(func(kv log.KeyValue) bool {
+	record.WalkAttributes(func(kv attribute.KeyValue) bool {
 		entry.Fields = append(entry.Fields, PanelField{
 			Key:   string(kv.Key),
 			Value: valueString(kv.Value),
@@ -114,21 +114,29 @@ func panelEntryFromRecord(record sdklog.Record) PanelEntry {
 	return entry
 }
 
-func valueString(v log.Value) string {
-	switch v.Kind() {
-	case log.KindBool:
+func valueString(v attribute.Value) string {
+	switch v.Type() {
+	case attribute.BOOL:
 		return fmt.Sprint(v.AsBool())
-	case log.KindFloat64:
+	case attribute.FLOAT64:
 		return fmt.Sprint(v.AsFloat64())
-	case log.KindInt64:
+	case attribute.INT64:
 		return fmt.Sprint(v.AsInt64())
-	case log.KindString:
+	case attribute.STRING:
 		return v.AsString()
-	case log.KindBytes:
-		return string(v.AsBytes())
-	case log.KindSlice:
+	case attribute.BYTESLICE:
+		return string(v.AsByteSlice())
+	case attribute.BOOLSLICE:
+		return fmt.Sprint(v.AsBoolSlice())
+	case attribute.INT64SLICE:
+		return fmt.Sprint(v.AsInt64Slice())
+	case attribute.FLOAT64SLICE:
+		return fmt.Sprint(v.AsFloat64Slice())
+	case attribute.STRINGSLICE:
+		return fmt.Sprint(v.AsStringSlice())
+	case attribute.SLICE:
 		return fmt.Sprint(v.AsSlice())
-	case log.KindMap:
+	case attribute.MAP:
 		return fmt.Sprint(v.AsMap())
 	default:
 		return ""

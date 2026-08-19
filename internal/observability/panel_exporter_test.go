@@ -88,8 +88,8 @@ func TestPanelExporter_exports_records_to_entries(t *testing.T) {
 	records := emitRecord(ctx, t, func(r *otellog.Record) {
 		r.SetTimestamp(timestamp)
 		r.SetSeverityText("INFO")
-		r.SetBody(otellog.StringValue("hello"))
-		r.AddAttributes(otellog.KeyValueFromAttribute(attribute.String("component", "session")))
+		r.SetBody(attribute.StringValue("hello"))
+		r.AddAttributes(attribute.String("component", "session"))
 	})
 
 	require.NoError(t, exporter.Export(ctx, records))
@@ -123,7 +123,7 @@ func TestPanelExporter_records_dropped_logs_on_backpressure(t *testing.T) {
 
 	records := emitRecord(t.Context(), t, func(r *otellog.Record) {
 		r.SetObservedTimestamp(time.Now())
-		r.SetBody(otellog.StringValue("dropped"))
+		r.SetBody(attribute.StringValue("dropped"))
 	})
 
 	require.NoError(t, exporter.Export(t.Context(), records))
@@ -158,8 +158,8 @@ func TestPanelEntryFromRecord_uses_observed_timestamp_when_timestamp_missing(t *
 
 	records := emitRecord(t.Context(), t, func(r *otellog.Record) {
 		r.SetObservedTimestamp(observed)
-		r.SetBody(otellog.StringValue("hello"))
-		r.AddAttributes(otellog.KeyValueFromAttribute(attribute.String("model_id", "anthropic/claude-3-haiku")))
+		r.SetBody(attribute.StringValue("hello"))
+		r.AddAttributes(attribute.String("model_id", "anthropic/claude-3-haiku"))
 		r.SetSeverity(otellog.SeverityInfo)
 	})
 
@@ -181,6 +181,6 @@ func TestPanelEntryFromRecord_uses_observed_timestamp_when_timestamp_missing(t *
 }
 
 func TestValueString_formats_string_values(t *testing.T) {
-	require.Equal(t, "session", valueString(otellog.StringValue("session")))
-	require.Equal(t, "42", valueString(otellog.Int64Value(42)))
+	require.Equal(t, "session", valueString(attribute.StringValue("session")))
+	require.Equal(t, "42", valueString(attribute.Int64Value(42)))
 }
