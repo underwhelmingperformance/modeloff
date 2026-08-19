@@ -63,9 +63,10 @@ func (s ChatScreen) handleProtocolEvent(msg protocolEventMsg) (ChatScreen, tea.C
 // scrollbackUpdatedCmd nudges the message list to re-evaluate the
 // active window's scrollback after an event was buffered. Without
 // the nudge the new content would still render on the next View
-// because the message list reads through a getter, but the divider
-// latch would miss the per-tick growth signal and an off-bottom user
-// would never see the "new messages" line.
+// because the message list reads through a getter, but the seen mark
+// would never move over it: a line the user watched arrive would
+// stay behind the divider, and an off-bottom user would never see
+// the "new messages" line at all.
 func (s ChatScreen) scrollbackUpdatedCmd() tea.Cmd {
 	if s.active == "" {
 		return nil
@@ -108,11 +109,7 @@ func (s ChatScreen) handleChannelFocus(msg chatcmd.ChannelFocusMsg) (ChatScreen,
 
 	cmds := []tea.Cmd{rebind}
 	cmds = append(cmds, msgCmd(components.SetPlaceholderMsg{}))
-	cmds = append(cmds, msgCmd(components.SetChannelMsg{
-		Channel: msg.Channel,
-		Topic:   s.activeTopic(),
-		Kind:    w.Kind(),
-	}))
+	cmds = append(cmds, s.setChannelCmd())
 
 	cmds = append(cmds, msgCmd(components.ChannelActiveMsg{Channel: msg.Channel}))
 	cmds = append(cmds, s.persistLastChannel(msg.Channel))
@@ -320,7 +317,8 @@ func (s ChatScreen) handlePartEvent(msg domain.Part) (ChatScreen, tea.Cmd) {
 }
 
 // closeWindow drops a window the user has left: the sidebar entry,
-// the cached window, and any paced messages still queued for it.
+// the cached window, the message list's record of how much of it the
+// user had read, and any paced messages still queued for it.
 // Already-scheduled ticks for the queue no-op via deliverNextPaced's
 // empty-queue branch when they fire. When the closed window was the
 // visible one the user lands on the first remaining channel, or on
@@ -336,7 +334,10 @@ func (s ChatScreen) closeWindow(ch domain.ChannelName, at time.Time) (ChatScreen
 	delete(s.pacedQueue, ch)
 	s.checklist.channelCount = s.realChannelCount()
 
-	cmds := []tea.Cmd{msgCmd(components.ChannelRemovedMsg{Channel: ch})}
+	cmds := []tea.Cmd{
+		msgCmd(components.ChannelRemovedMsg{Channel: ch}),
+		msgCmd(components.ScrollbackClearedMsg{Channel: ch}),
+	}
 
 	if !wasVisible {
 		return s, tea.Batch(cmds...)
@@ -356,11 +357,7 @@ func (s ChatScreen) closeWindow(ch domain.ChannelName, at time.Time) (ChatScreen
 
 	cmds = append(cmds,
 		rebind,
-		msgCmd(components.SetChannelMsg{
-			Channel: s.active,
-			Topic:   s.activeTopic(),
-			Kind:    s.activeKind(),
-		}),
+		s.setChannelCmd(),
 		msgCmd(components.ChannelActiveMsg{Channel: s.active}),
 		s.persistLastChannel(s.active),
 	)
@@ -430,11 +427,7 @@ func (s ChatScreen) handleTopicInfoEvent(msg domain.TopicInfo) (ChatScreen, tea.
 		return s, nil
 	}
 
-	return s, msgCmd(components.SetChannelMsg{
-		Channel: msg.Target,
-		Topic:   msg.Topic,
-		Kind:    s.activeKind(),
-	})
+	return s, s.setChannelCmd()
 }
 
 func (s ChatScreen) handleNickChangeEvent(msg domain.NickChange, targets []domain.ChannelName) (ChatScreen, tea.Cmd) {
@@ -593,15 +586,47 @@ func (s ChatScreen) handleMessageEvent(msg domain.Message) (ChatScreen, tea.Cmd)
 // on the next frame because the message list reads scrollback
 // through a getter and `bufferEvent` has already appended the
 // message; no live `StoredEvent` is needed.
+//
+// Whether the body mentions the user is decided here, on the Update
+// goroutine, off the highlight set the screen already holds. The
+// count is a store query, so it runs in the command: a message
+// arriving in a window the user is not reading must not make the one
+// they are reading wait on a database. The window's visit count is
+// read here too and travels with the result, so
+// [ChatScreen.deliverUnreadCount] can tell a count that is still
+// current from one the user has read past.
 func (s ChatScreen) renderMessage(msg domain.Message, key domain.ChannelName) tea.Cmd {
 	if key == s.active {
 		return nil
 	}
 
-	count, _ := s.sess.UnreadCount(s.baseContext(), key)
 	mention := s.isHighlight(msg.Body)
 
-	return msgCmd(components.ChannelUnreadMsg{Channel: key, Count: count, Mention: mention})
+	var visits int
+	if w, ok := s.windowByName(key); ok {
+		visits = w.Visits
+	}
+
+	return func() tea.Msg {
+		ctx := s.baseContext()
+
+		count, err := s.sess.UnreadCount(ctx, key)
+		if err != nil {
+			slog.Default().WarnContext(ctx, "unread count",
+				"component", "ui",
+				"screen", "chat",
+				"channel", key,
+				"error", err,
+			)
+		}
+
+		return unreadCountedMsg{
+			channel: key,
+			count:   count,
+			mention: mention,
+			visits:  visits,
+		}
+	}
 }
 
 // handleDMOpenedMsg materialises the DM window in the sidebar
@@ -630,11 +655,7 @@ func (s ChatScreen) handleDMOpenedMsg(msg chatcmd.DMOpenedMsg) (ChatScreen, tea.
 
 		cmds = append(cmds, rebind)
 		cmds = append(cmds, msgCmd(components.SetPlaceholderMsg{}))
-		cmds = append(cmds, msgCmd(components.SetChannelMsg{
-			Channel: name,
-			Topic:   s.activeTopic(),
-			Kind:    domain.KindDM,
-		}))
+		cmds = append(cmds, s.setChannelCmd())
 		cmds = append(cmds, msgCmd(components.ChannelActiveMsg{Channel: name}))
 		cmds = append(cmds, s.persistLastChannel(name))
 		cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: domain.MemberList{}}))

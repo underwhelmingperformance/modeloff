@@ -34,13 +34,20 @@ var testEvents = []domain.Event{
 	domain.Message{Target: "#general", From: "alice", Body: "how are you?", At: time.Date(2025, 1, 1, 10, 2, 0, 0, time.UTC)},
 }
 
-// nilEvents is the message-list events getter for tests that
+// nilContent is the message-list content getter for tests that
 // construct a chat view without any pre-loaded scrollback.
-func nilEvents() []domain.Event { return nil }
+func nilContent(ch domain.ChannelName) func() components.WindowContent {
+	return func() components.WindowContent {
+		return components.WindowContent{Channel: ch}
+	}
+}
 
-// staticEvents returns an events getter that always reports `evs`.
-func staticEvents(evs []domain.Event) func() []domain.Event {
-	return func() []domain.Event { return evs }
+// staticContent returns a content getter that always reports `evs`
+// as the events of `ch`.
+func staticContent(ch domain.ChannelName, evs []domain.Event) func() components.WindowContent {
+	return func() components.WindowContent {
+		return components.WindowContent{Channel: ch, Events: evs}
+	}
 }
 
 // messagesToEvents converts channel messages into stored events.
@@ -58,7 +65,7 @@ func messagesToEvents(msgs []domain.Message) []domain.Event {
 // events through its message-list getter.
 func newChatViewWithEvents(ch domain.ChannelName, userNick domain.Nick, topic string, events []domain.Event) components.ChatView[testKind] {
 	cv := components.NewChatView[testKind](
-		func() []domain.Event { return events },
+		staticContent(ch, events),
 		ch, domain.KindChannel, userNick, topic,
 	)
 	timestampFmt := "[15:04:05]"
@@ -277,7 +284,9 @@ func TestChatView_clear_messages_removes_visible_messages(t *testing.T) {
 	// caller's responsibility (it owns the underlying slice).
 	events := append([]domain.Event(nil), testEvents...)
 	cv := components.NewChatView[testKind](
-		func() []domain.Event { return events },
+		func() components.WindowContent {
+			return components.WindowContent{Channel: "#general", Events: events}
+		},
 		"#general", domain.KindChannel, "testuser", "",
 	)
 	timestampFmt := "[15:04:05]"
@@ -318,7 +327,9 @@ func TestChatView_View_shows_timestamps(t *testing.T) {
 func TestChatView_View_disables_timestamps(t *testing.T) {
 	events := testEvents
 	cv := components.NewChatView[testKind](
-		func() []domain.Event { return events },
+		func() components.WindowContent {
+			return components.WindowContent{Channel: "#general", Events: events}
+		},
 		"#general", domain.KindChannel, "testuser", "",
 	)
 	disabled := ""
@@ -341,7 +352,9 @@ func TestChatView_View_disables_timestamps(t *testing.T) {
 func TestChatView_View_uses_strftime_timestamp_format(t *testing.T) {
 	events := testEvents[:1]
 	cv := components.NewChatView[testKind](
-		func() []domain.Event { return events },
+		func() components.WindowContent {
+			return components.WindowContent{Channel: "#general", Events: events}
+		},
 		"#general", domain.KindChannel, "testuser", "",
 	)
 	format := "%X"
@@ -380,7 +393,7 @@ func TestChatView_View_wraps_long_messages(t *testing.T) {
 }
 
 func TestChatView_View_empty_messages(t *testing.T) {
-	cv := components.NewChatView[testKind](nilEvents, "#general", domain.KindChannel, "testuser", "")
+	cv := components.NewChatView[testKind](nilContent("#general"), "#general", domain.KindChannel, "testuser", "")
 	v := cv.View(80, 24)
 
 	require.Equal(t, []string{"No messages yet"}, chatRegionLines(v))
@@ -394,7 +407,7 @@ func TestChatView_View_has_input_prompt(t *testing.T) {
 }
 
 func TestChatView_typing_goes_to_input(t *testing.T) {
-	cv := components.NewChatView[testKind](nilEvents, "#general", domain.KindChannel, "testuser", "")
+	cv := components.NewChatView[testKind](nilContent("#general"), "#general", domain.KindChannel, "testuser", "")
 	var m ui.Model = cv
 
 	m = typeText(t, m, "test message")
@@ -409,7 +422,7 @@ func TestChatView_typing_goes_to_input(t *testing.T) {
 }
 
 func TestChatView_command_from_input(t *testing.T) {
-	cv := components.NewChatView[testKind](nilEvents, "#general", domain.KindChannel, "testuser", "")
+	cv := components.NewChatView[testKind](nilContent("#general"), "#general", domain.KindChannel, "testuser", "")
 	var m ui.Model = cv
 
 	m = typeText(t, m, "/join #random")
@@ -434,7 +447,9 @@ func TestChatView_messages_updated(t *testing.T) {
 func TestChatView_original_messages_persist(t *testing.T) {
 	events := append([]domain.Event(nil), testEvents...)
 	cv := components.NewChatView[testKind](
-		func() []domain.Event { return events },
+		func() components.WindowContent {
+			return components.WindowContent{Channel: "#general", Events: events}
+		},
 		"#general", domain.KindChannel, "testuser", "",
 	)
 	timestampFmt := "[15:04:05]"
@@ -458,7 +473,9 @@ func TestChatView_original_messages_persist(t *testing.T) {
 func TestChatView_append_event(t *testing.T) {
 	events := append([]domain.Event(nil), testEvents...)
 	cv := components.NewChatView[testKind](
-		func() []domain.Event { return events },
+		func() components.WindowContent {
+			return components.WindowContent{Channel: "#general", Events: events}
+		},
 		"#general", domain.KindChannel, "testuser", "",
 	)
 	timestampFmt := "[15:04:05]"
@@ -702,7 +719,7 @@ func TestChatView_nick_updates_after_change(t *testing.T) {
 }
 
 func TestChatView_dm_hides_topic_bar(t *testing.T) {
-	cv := components.NewChatView[testKind](nilEvents, "botname", domain.KindChannel, "testuser", "")
+	cv := components.NewChatView[testKind](nilContent("botname"), "botname", domain.KindChannel, "testuser", "")
 
 	m, _ := cv.Update(components.SetChannelMsg{
 		Channel: "botname",
@@ -728,7 +745,7 @@ func TestChatView_dm_suppresses_join_part_events(t *testing.T) {
 		domain.Message{Target: "botname", From: "bot", Body: "hello human", At: now},
 	}
 
-	cv := components.NewChatView[testKind](staticEvents(events), "botname", domain.KindChannel, "testuser", "")
+	cv := components.NewChatView[testKind](staticContent("botname", events), "botname", domain.KindChannel, "testuser", "")
 	m, _ := cv.Update(components.SetChannelMsg{
 		Channel: "botname",
 		Kind:    domain.KindDM,
@@ -746,7 +763,7 @@ func TestChatView_dm_shows_quit_messages(t *testing.T) {
 		domain.Quit{Nick: "bot", Message: "goodbye", At: now},
 	}
 
-	cv := components.NewChatView[testKind](staticEvents(events), "botname", domain.KindChannel, "testuser", "")
+	cv := components.NewChatView[testKind](staticContent("botname", events), "botname", domain.KindChannel, "testuser", "")
 	m, _ := cv.Update(components.SetChannelMsg{
 		Channel: "botname",
 		Kind:    domain.KindDM,
@@ -854,7 +871,7 @@ func renderSingleEvent(event domain.Event) string {
 
 func renderSingleEventWithHighlight(event domain.Event, words []string, nick domain.Nick) string {
 	cv := components.NewChatView[testKind](
-		staticEvents([]domain.Event{event}),
+		staticContent("#test", []domain.Event{event}),
 		"#test", domain.KindChannel, nick, "",
 	)
 	var m ui.Model = cv
@@ -1002,7 +1019,7 @@ func TestRenderLine_topic_info_omits_timestamp_when_disabled(t *testing.T) {
 		},
 	}
 
-	cv := components.NewChatView[testKind](staticEvents(events), "#test", domain.KindChannel, "testuser", "")
+	cv := components.NewChatView[testKind](staticContent("#test", events), "#test", domain.KindChannel, "testuser", "")
 	var m ui.Model = cv
 	disabled := ""
 
@@ -1127,7 +1144,9 @@ func TestNewMessagesDivider_fills_width(t *testing.T) {
 	}
 
 	cv := components.NewChatView[testKind](
-		func() []domain.Event { return events },
+		func() components.WindowContent {
+			return components.WindowContent{Channel: "#test", Events: events}
+		},
 		"#test", domain.KindChannel, "testuser", "",
 	)
 	var m ui.Model = cv
@@ -1153,7 +1172,7 @@ func TestNewMessagesDivider_fills_width(t *testing.T) {
 }
 
 func TestChatView_command_popover_renders_and_completes(t *testing.T) {
-	var m ui.Model = components.NewChatView[testKind](nilEvents, "#general", domain.KindChannel, "testuser", "")
+	var m ui.Model = components.NewChatView[testKind](nilContent("#general"), "#general", domain.KindChannel, "testuser", "")
 	nodes := []*command.Node[testKind]{
 		{
 			Name: "join",
@@ -1193,7 +1212,7 @@ func TestChatView_command_popover_renders_and_completes(t *testing.T) {
 }
 
 func TestChatView_popover_arrow_keys_do_not_fall_through(t *testing.T) {
-	var m ui.Model = components.NewChatView[testKind](nilEvents, "#general", domain.KindChannel, "testuser", "")
+	var m ui.Model = components.NewChatView[testKind](nilContent("#general"), "#general", domain.KindChannel, "testuser", "")
 	nodes := []*command.Node[testKind]{
 		{Name: "join", Help: "Join a channel"},
 		{Name: "part", Help: "Part from the current channel"},
@@ -1235,7 +1254,7 @@ func TestChatView_popover_arrow_keys_do_not_fall_through(t *testing.T) {
 }
 
 func TestChatView_popover_renders_usage_in_suggestions(t *testing.T) {
-	var m ui.Model = components.NewChatView[testKind](nilEvents, "#general", domain.KindChannel, "testuser", "")
+	var m ui.Model = components.NewChatView[testKind](nilContent("#general"), "#general", domain.KindChannel, "testuser", "")
 	nodes := []*command.Node[testKind]{
 		{Name: "join", Help: "Join a channel", Positionals: []command.Positional[testKind]{{Name: "channel"}}},
 		{Name: "part", Help: "Part from the current channel"},
@@ -1266,7 +1285,7 @@ func TestChatView_popover_collapses_aliases_onto_single_row(t *testing.T) {
 	// with its Label trimmed against the canonical Usage. Aliases
 	// must be collapsed into the single parenthesised group after the
 	// canonical name, followed by positional args and the help text.
-	var m ui.Model = components.NewChatView[testKind](nilEvents, "#general", domain.KindChannel, "testuser", "")
+	var m ui.Model = components.NewChatView[testKind](nilContent("#general"), "#general", domain.KindChannel, "testuser", "")
 	nodes := []*command.Node[testKind]{
 		{
 			Name:        "join",
@@ -1295,7 +1314,7 @@ func TestChatView_popover_collapses_aliases_onto_single_row(t *testing.T) {
 }
 
 func TestChatView_mouse_click_positions_input_cursor(t *testing.T) {
-	cv := components.NewChatView[testKind](nilEvents, "#general", domain.KindChannel, "testuser", "")
+	cv := components.NewChatView[testKind](nilContent("#general"), "#general", domain.KindChannel, "testuser", "")
 	var m ui.Model = cv
 
 	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 20, Y: 0, Width: 60, Height: 24}})
@@ -1328,7 +1347,9 @@ func TestChatView_divider_inserted_when_scrolled_up(t *testing.T) {
 	}
 
 	cv := components.NewChatView[testKind](
-		func() []domain.Event { return events },
+		func() components.WindowContent {
+			return components.WindowContent{Channel: "#general", Events: events}
+		},
 		"#general", domain.KindChannel, "testuser", "",
 	)
 	timestampFmt := "[15:04:05]"
@@ -1415,7 +1436,9 @@ func TestChatView_stored_events_insert_divider_when_scrolled_up(t *testing.T) {
 	}
 
 	cv := components.NewChatView[testKind](
-		func() []domain.Event { return events },
+		func() components.WindowContent {
+			return components.WindowContent{Channel: "#general", Events: events}
+		},
 		"#general", domain.KindChannel, "testuser", "",
 	)
 	timestampFmt := "[15:04:05]"
@@ -1481,7 +1504,9 @@ func TestChatView_stored_events_keep_divider_when_more_arrive_during_catch_up(t 
 	}
 
 	cv := components.NewChatView[testKind](
-		func() []domain.Event { return events },
+		func() components.WindowContent {
+			return components.WindowContent{Channel: "#general", Events: events}
+		},
 		"#general", domain.KindChannel, "testuser", "",
 	)
 	timestampFmt := "[15:04:05]"
@@ -1544,6 +1569,245 @@ func TestChatView_stored_events_keep_divider_when_more_arrive_during_catch_up(t 
 	}, visibleEventLines(v))
 }
 
+// windowedChatView drives a chat view over several windows, playing
+// the part the chat-screen plays in production: it owns each window's
+// events, appends to them, and tells the view which window is in
+// view.
+type windowedChatView struct {
+	t       *testing.T
+	model   ui.Model
+	windows map[domain.ChannelName][]domain.Event
+	active  domain.ChannelName
+}
+
+func newWindowedChatView(t *testing.T, active domain.ChannelName, windows map[domain.ChannelName][]domain.Event) *windowedChatView {
+	t.Helper()
+
+	w := &windowedChatView{
+		t:       t,
+		windows: windows,
+		active:  active,
+	}
+
+	cv := components.NewChatView[testKind](
+		func() components.WindowContent {
+			return components.WindowContent{Channel: w.active, Events: w.windows[w.active]}
+		},
+		active, domain.KindChannel, "testuser", "",
+	)
+
+	timestampFmt := "[15:04:05]"
+	updated, _ := cv.Update(components.TimestampFormatMsg{
+		Format: &timestampFmt,
+		Locale: language.BritishEnglish,
+	})
+
+	w.model = updated.(components.ChatView[testKind])
+	w.send(ui.BoundsMsg{Rect: ui.Rect{Width: 80, Height: 24}})
+
+	return w
+}
+
+// send delivers one message to the view.
+func (w *windowedChatView) send(msg tea.Msg) {
+	w.t.Helper()
+
+	updated, _ := w.model.Update(msg)
+	w.model = updated
+}
+
+// arrive appends an event to a window and, when that window is the
+// one in view, nudges the view the way the chat-screen does for the
+// window the user is looking at.
+func (w *windowedChatView) arrive(ch domain.ChannelName, body string) {
+	w.t.Helper()
+
+	w.windows[ch] = append(w.windows[ch], domain.Message{Target: ch, From: "alice", Body: body})
+
+	if ch != w.active {
+		return
+	}
+
+	w.send(components.ScrollbackUpdatedMsg{Channel: ch})
+}
+
+// switchTo moves the view to another window.
+func (w *windowedChatView) switchTo(ch domain.ChannelName) {
+	w.t.Helper()
+
+	w.active = ch
+	w.send(components.SetChannelMsg{Channel: ch, Kind: domain.KindChannel})
+}
+
+// view renders the chat region with the divider reduced to a marker.
+func (w *windowedChatView) view() []string {
+	w.t.Helper()
+
+	return contentLines(ansi.Strip(w.model.View(80, 24)))
+}
+
+// contentLines returns the chat region's non-empty rows with the
+// divider reduced to a marker. The divider is drawn to fill the
+// width, so an assertion on the marker pins the line it sits above
+// and leaves the width to the renderer.
+func contentLines(view string) []string {
+	lines := chatRenderedLines(view)
+	out := make([]string, 0, len(lines))
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		switch {
+		case trimmed == "":
+			continue
+		case strings.Contains(trimmed, " new messages "):
+			out = append(out, "<new messages>")
+		default:
+			out = append(out, trimmed)
+		}
+	}
+
+	return out
+}
+
+// TestChatView_divider_marks_what_arrived_while_another_window_was_in_view
+// pins the primary IRC case for the new-messages divider: the reader
+// leaves a window, messages land in it while they are elsewhere, and
+// on return the divider sits between what they had read and what
+// arrived. The message list keeps the mark per window, so the switch
+// away does not lose the reader's place.
+func TestChatView_divider_marks_what_arrived_while_another_window_was_in_view(t *testing.T) {
+	w := newWindowedChatView(t, "#general", map[domain.ChannelName][]domain.Event{
+		"#general": {},
+		"#random":  {},
+	})
+
+	// Read #general to the bottom: these three are seen.
+	w.arrive("#general", "read one")
+	w.arrive("#general", "read two")
+	w.arrive("#general", "read three")
+
+	w.switchTo("#random")
+
+	// Two more land in #general while #random is in view.
+	w.arrive("#general", "arrived while away")
+	w.arrive("#general", "arrived while away too")
+
+	w.switchTo("#general")
+
+	require.Equal(t, []string{
+		"[00:00:00] <alice> read one",
+		"[00:00:00] <alice> read two",
+		"[00:00:00] <alice> read three",
+		"<new messages>",
+		"[00:00:00] <alice> arrived while away",
+		"[00:00:00] <alice> arrived while away too",
+	}, w.view())
+}
+
+// TestChatView_leaving_and_returning_keeps_the_reading_position
+// covers the same story over three switches. The mark for a window
+// has to survive every one of them, including the switches that
+// happen before anything else arrives in it.
+func TestChatView_leaving_and_returning_keeps_the_reading_position(t *testing.T) {
+	w := newWindowedChatView(t, "#general", map[domain.ChannelName][]domain.Event{
+		"#general": {},
+		"#random":  {},
+	})
+
+	w.arrive("#general", "read one")
+
+	w.switchTo("#random")
+	w.switchTo("#general")
+	w.switchTo("#random")
+
+	w.arrive("#general", "arrived while away")
+
+	w.switchTo("#general")
+
+	require.Equal(t, []string{
+		"[00:00:00] <alice> read one",
+		"<new messages>",
+		"[00:00:00] <alice> arrived while away",
+	}, w.view())
+}
+
+// TestChatView_first_visit_reads_what_a_window_already_holds pins the
+// state a window is in before anyone has looked at it. The list takes
+// its mark from what the window holds at the moment it starts
+// rendering that window, so a line the chat-screen buffered while the
+// switch was still in flight is read as part of what the reader
+// arrived to, and no divider appears above it.
+func TestChatView_first_visit_reads_what_a_window_already_holds(t *testing.T) {
+	w := newWindowedChatView(t, "#general", map[domain.ChannelName][]domain.Event{
+		"#general": {},
+		"#random": {
+			domain.Message{Target: "#random", From: "alice", Body: "landed before anyone looked"},
+		},
+	})
+
+	// The switch is under way, and another line lands in the window
+	// before the list has taken it over.
+	w.windows["#random"] = append(w.windows["#random"],
+		domain.Message{Target: "#random", From: "alice", Body: "landed during the switch"})
+
+	w.switchTo("#random")
+
+	require.Equal(t, []string{
+		"[00:00:00] <alice> landed before anyone looked",
+		"[00:00:00] <alice> landed during the switch",
+	}, w.view())
+}
+
+// TestChatView_divider_clears_once_the_reader_catches_up pins the
+// other end of the same rule: content arriving while the window is in
+// view and at the bottom has been seen, so it advances the mark and
+// leaves no divider behind.
+func TestChatView_divider_clears_once_the_reader_catches_up(t *testing.T) {
+	w := newWindowedChatView(t, "#general", map[domain.ChannelName][]domain.Event{
+		"#general": {},
+		"#random":  {},
+	})
+
+	w.arrive("#general", "read one")
+	w.switchTo("#random")
+	w.arrive("#general", "arrived while away")
+	w.switchTo("#general")
+	w.arrive("#general", "arrived while watching")
+
+	require.Equal(t, []string{
+		"[00:00:00] <alice> read one",
+		"[00:00:00] <alice> arrived while away",
+		"[00:00:00] <alice> arrived while watching",
+	}, w.view())
+}
+
+// TestChatView_clearing_a_window_drops_the_reading_position pins the
+// `/clear` half of the contract. The lines the mark pointed at are
+// gone, so the mark goes with them and the next line to arrive is not
+// treated as one the reader had already read.
+func TestChatView_clearing_a_window_drops_the_reading_position(t *testing.T) {
+	w := newWindowedChatView(t, "#general", map[domain.ChannelName][]domain.Event{
+		"#general": {},
+		"#random":  {},
+	})
+
+	w.arrive("#general", "read one")
+	w.arrive("#general", "read two")
+
+	w.windows["#general"] = nil
+	w.send(components.ScrollbackClearedMsg{Channel: "#general"})
+
+	w.switchTo("#random")
+	w.arrive("#general", "arrived while away")
+	w.switchTo("#general")
+
+	require.Equal(t, []string{
+		"<new messages>",
+		"[00:00:00] <alice> arrived while away",
+	}, w.view())
+}
+
 func TestChatView_mouse_wheel_scrolls_messages(t *testing.T) {
 	msgs := make([]domain.Message, 30)
 	for i := range msgs {
@@ -1571,7 +1835,7 @@ func TestChatView_mouse_wheel_scrolls_messages(t *testing.T) {
 }
 
 func TestChatView_mouse_click_accepts_popover_suggestion(t *testing.T) {
-	var m ui.Model = components.NewChatView[testKind](nilEvents, "#general", domain.KindChannel, "testuser", "")
+	var m ui.Model = components.NewChatView[testKind](nilContent("#general"), "#general", domain.KindChannel, "testuser", "")
 	nodes := []*command.Node[testKind]{
 		{
 			Name: "join",

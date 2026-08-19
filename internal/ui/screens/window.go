@@ -5,6 +5,7 @@ import (
 
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/set"
+	"github.com/laney/modeloff/internal/ui/components"
 )
 
 // Window is the chat-screen's per-window state container. It wraps
@@ -35,6 +36,14 @@ type Window struct {
 	// contained a highlight word. The sidebar surfaces it as
 	// magenta-bold (overrides plain bold). Cleared on focus.
 	Mentions bool
+
+	// Visits counts the times the user has focused this window. An
+	// unread count is read from the store on its own goroutine and
+	// carries the value it was requested against; the handler drops
+	// a count whose value is behind, because focusing the window in
+	// the meantime both cleared the badge and moved the read cursor
+	// past what that count was counting.
+	Visits int
 
 	// Activity is true when at least one unseen actor-scoped
 	// event (a peer's QUIT or NICK rename) has appended to the
@@ -80,16 +89,18 @@ type visibleWindow struct {
 	name     domain.ChannelName
 }
 
-// scrollback returns the visible window's event history, or nil while
-// no window is focused. It is the closure the message list calls on
-// every render.
-func (v *visibleWindow) scrollback() []domain.Event {
+// content returns the visible window and its event history. It is
+// the closure the message list calls on every render, and it answers
+// with both together so the list can tell which window's events it
+// has: [ChatScreen.focus] moves the name during its own Update, and
+// the chat view hears about the switch a message later.
+func (v *visibleWindow) content() components.WindowContent {
 	w, ok := v.channels.Get(windowKey(v.name))
 	if !ok {
-		return nil
+		return components.WindowContent{Channel: v.name}
 	}
 
-	return w.Scrollback
+	return components.WindowContent{Channel: v.name, Events: w.Scrollback}
 }
 
 // windowKey returns a placeholder `*Window` suitable only for

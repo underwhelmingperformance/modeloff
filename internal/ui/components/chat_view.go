@@ -20,6 +20,14 @@ type SetChannelMsg struct {
 	Kind    domain.ChannelKind
 }
 
+// ScrollbackClearedMsg tells the message list that a window's
+// history is gone, either because `/clear` emptied it or because the
+// user left the window. The list drops the reader's place in that
+// window, so the next thing to arrive in it is new.
+type ScrollbackClearedMsg struct {
+	Channel domain.ChannelName
+}
+
 // ScrollbackUpdatedMsg signals that the scrollback for the named
 // channel has been appended to and the active view should re-evaluate
 // — picking up new content for the active window and arming the
@@ -92,11 +100,11 @@ type chatViewLayout struct {
 // messages update the kind atomically when the user switches
 // channels.
 //
-// `events` is the closure the embedded [MessageList] consults on
-// every `View` for the active window's scrollback. The chat
+// `content` is the closure the embedded [MessageList] consults on
+// every `View` for the window in view and its scrollback. The chat
 // screen owns the storage; this view is a pure read over it.
 func NewChatView[C command.KindProvider](
-	events func() []domain.Event,
+	content func() WindowContent,
 	ch domain.ChannelName,
 	kind domain.ChannelKind,
 	userNick domain.Nick,
@@ -104,7 +112,7 @@ func NewChatView[C command.KindProvider](
 ) ChatView[C] {
 	keyMap := DefaultChatViewKeyMap
 
-	ml := NewMessageList[C](events, ch, kind).SetKeyMap(keyMap)
+	ml := NewMessageList[C](content, kind).SetKeyMap(keyMap)
 
 	return ChatView[C]{
 		channel:  ch,
@@ -188,10 +196,10 @@ func (c ChatView[C]) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		return c, tea.Batch(msgCmd, syncCmd)
 
 	case CommandsMsg[C]:
-		c, _ = c.updateMessages(msg)
+		c, msgCmd := c.updateMessages(msg)
 		c, syncCmd := c.syncMessageViewport()
 
-		return c, syncCmd
+		return c, tea.Batch(msgCmd, syncCmd)
 
 	case CompleterMsg:
 		c, inputCmd := c.updateInput(msg)
@@ -247,10 +255,10 @@ func (c ChatView[C]) handleMouse(msg tea.MouseMsg) (ChatView[C], bool, tea.Cmd) 
 	if layout.MessageRect.Contains(msg.X, msg.Y) && msg.Action == tea.MouseActionPress {
 		switch msg.Button {
 		case tea.MouseButtonWheelUp, tea.MouseButtonWheelDown:
-			c, _ = c.updateMessages(msg)
+			c, mlCmd := c.updateMessages(msg)
 			c, syncCmd := c.syncMessageViewport()
 
-			return c, true, syncCmd
+			return c, true, tea.Batch(mlCmd, syncCmd)
 		}
 	}
 

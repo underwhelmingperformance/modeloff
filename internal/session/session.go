@@ -62,7 +62,12 @@ type Store interface {
 
 	AppendEvent(ctx context.Context, ch domain.ChannelName, event domain.ChannelActivity) (int64, error)
 	EventsBefore(ctx context.Context, ch domain.ChannelName, before *int64, n int) ([]domain.StoredEvent, error)
-	EventsFrom(ctx context.Context, ch domain.ChannelName, from *int64, n int) ([]domain.StoredEvent, error)
+
+	// CountEventsFrom counts the channel's events at or after the
+	// given event id, or all of them when `from` is nil. It is how
+	// the unread badge is answered: a count, not a page of decoded
+	// rows nobody reads.
+	CountEventsFrom(ctx context.Context, ch domain.ChannelName, from *int64) (int, error)
 
 	// DMEventsBefore returns up to `n` events from the DM thread
 	// between `self` and `peer` strictly before `before` (or the
@@ -923,24 +928,19 @@ func (s *Session) UnreadCount(ctx context.Context, ch domain.ChannelName) (int, 
 			return fmt.Errorf("get last read: %w", err)
 		}
 
-		if lastID == 0 {
-			events, err := s.store.EventsBefore(ctx, ch, nil, 1000)
-			if err != nil {
-				return err
-			}
-
-			count = len(events)
-			return nil
+		// No cursor means nothing in the channel has been read, so
+		// the whole log counts; otherwise everything past the
+		// cursor does. Either way the store counts rows and the
+		// badge is the whole answer, however far behind the user is.
+		var from *int64
+		if lastID > 0 {
+			fromID := lastID + 1
+			from = &fromID
 		}
 
-		fromID := lastID + 1
-		events, err := s.store.EventsFrom(ctx, ch, &fromID, 1000)
-		if err != nil {
-			return err
-		}
+		count, err = s.store.CountEventsFrom(ctx, ch, from)
 
-		count = len(events)
-		return nil
+		return err
 	})
 
 	return count, err

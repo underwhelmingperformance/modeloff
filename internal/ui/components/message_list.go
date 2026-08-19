@@ -31,6 +31,15 @@ type TimestampFormatMsg struct {
 	Locale language.Tag
 }
 
+// WindowContent is the window the message list renders: which window
+// it is, and what that window holds. The chat-screen answers both in
+// one read, so the list always knows whose events it has and can
+// never charge one window's arrivals to another.
+type WindowContent struct {
+	Channel domain.ChannelName
+	Events  []domain.Event
+}
+
 // MessageList displays channel events in a scrollable viewport with
 // support for a new-messages divider and an empty-state placeholder.
 // C is the grammar's completion-context type; it is carried so the
@@ -38,39 +47,57 @@ type TimestampFormatMsg struct {
 // [CommandsMsg].
 //
 // The message list does not own the event storage. The owning
-// chat-screen (or test harness) passes an `events` closure that
-// returns the current event slice for the active window; the
-// message list reads through it on every `View`. A single source
-// of truth removes the live-append-vs-snapshot race that an
-// internally-owned buffer would introduce.
+// chat-screen (or test harness) passes a `content` closure that
+// returns the window in view and its events; the message list reads
+// through it on every `View`. A single source of truth removes the
+// live-append-vs-snapshot race that an internally-owned buffer would
+// introduce.
 type MessageList[C command.KindProvider] struct {
-	events      func() []domain.Event
-	channel     domain.ChannelName
+	content func() WindowContent
+
+	// channel is the window the last tick was about. The chat-screen
+	// moves the window in view during its own Update, and the list
+	// hears about it on the next message, so `content()` can already
+	// be answering with another window when a render happens in
+	// between. Rendering compares the two and works the divider out
+	// afresh when they differ.
+	channel domain.ChannelName
+
 	kind        domain.ChannelKind
 	viewport    viewport.Model
 	placeholder string
 
-	// seenLen records how many events each window held the last
-	// time the user was at the bottom of it. Once the user
-	// scrolls up and the window's event slice grows past that
-	// mark, the divider latches on (see [showDivider]) and stays
-	// on until the user receives further events while at the
-	// bottom — the catch-up signal IRC clients use to acknowledge
-	// "I've seen what arrived".
+	// seenLen records, per window, how far into that window's
+	// events the reader has caught up. The divider is drawn there
+	// when they come back to it, so the entry has to outlive the
+	// switch away.
+	//
+	// Both inputs to the mark live here: the viewport decides
+	// whether the reader is at the bottom, and the content getter
+	// says how much the window holds. Keeping the mark itself in
+	// the chat-screen would make the answer depend on the order in
+	// which two models exchange messages, and a mark that arrived
+	// late would silently fold a missed message into "already
+	// read". [ScrollbackClearedMsg] is how the chat-screen drops an
+	// entry when a window's history goes away.
 	seenLen map[domain.ChannelName]int
 
-	// lastEventsLen records the events-slice length observed on
-	// the previous render-affecting tick, per window. Comparing
-	// this to the current length tells us whether new content
-	// arrived *during this tick* — which is what the divider
-	// latch and the catch-up clear key off, rather than the
-	// running gap between seenLen and the current length.
-	lastEventsLen map[domain.ChannelName]int
+	// lastEventsLen is the active window's event count at the
+	// previous render-affecting tick. Growth between ticks is what
+	// advances the mark, since the reader was at the bottom when
+	// the content landed and so watched it arrive. A bare
+	// scroll-to-bottom keystroke carries no growth and leaves the
+	// divider where it is.
+	lastEventsLen int
 
-	// showDivider is true once new events have arrived while the
-	// viewport was scrolled up. The divider is rendered between
-	// `seenLen` and the next event until the user catches up.
-	showDivider bool
+	// unseen is true when `channel` held events past its seen mark
+	// as of the last tick, and is what the divider renders from
+	// while that window is still the one in view. The content getter
+	// is live, so a render can see an event that no tick has moved
+	// the mark over yet; deciding at render time flashed a divider
+	// for one frame on every message that arrived in the focused
+	// window.
+	unseen bool
 
 	commands        []*command.Node[C]
 	highlightWords  []string
@@ -79,31 +106,46 @@ type MessageList[C command.KindProvider] struct {
 	locale          language.Tag
 }
 
-// NewMessageList builds a message list that reads its events
-// through the supplied closure. `channel` and `kind` seed the
-// initial active window; subsequent [SetChannelMsg] updates them.
+// NewMessageList builds a message list that reads the window in view
+// through the supplied closure. `kind` is the initial window's kind;
+// subsequent [SetChannelMsg] updates it.
 func NewMessageList[C command.KindProvider](
-	events func() []domain.Event,
-	channel domain.ChannelName,
+	content func() WindowContent,
 	kind domain.ChannelKind,
 ) MessageList[C] {
 	vp := viewport.New(0, 0)
 	vp.MouseWheelEnabled = true
 
+	initial := content()
+
 	return MessageList[C]{
-		events:        events,
-		channel:       channel,
+		content:       content,
+		channel:       initial.Channel,
 		kind:          kind,
 		viewport:      vp,
 		seenLen:       map[domain.ChannelName]int{},
-		lastEventsLen: map[domain.ChannelName]int{},
+		lastEventsLen: len(initial.Events),
 		locale:        timestamp.CurrentLocale(),
 	}
 }
 
-// Len returns the current event count of the active window.
+// mark returns the reader's place in `ch`, given that it holds `held`
+// events. A window the list has not shown before takes its mark from
+// what the window holds at that moment: the reader is arriving at it
+// now, so the connection narration and anything else already there
+// counts as read.
+func (m MessageList[C]) mark(ch domain.ChannelName, held int) int {
+	seen, tracked := m.seenLen[ch]
+	if !tracked {
+		return held
+	}
+
+	return seen
+}
+
+// Len returns the current event count of the window in view.
 func (m MessageList[C]) Len() int {
-	return len(m.events())
+	return len(m.content().Events)
 }
 
 // SetKeyMap applies viewport key bindings from the ChatView key map.
@@ -127,16 +169,20 @@ func (m MessageList[C]) Init() tea.Cmd {
 func (m MessageList[C]) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case SetChannelMsg:
-		// A channel switch reseeds the seen-mark against the new
-		// window's current event count so a same-render-cycle
-		// divider check does not fire on stale state.
-		m.channel = msg.Channel
 		m.kind = msg.Kind
-		m.seenLen[msg.Channel] = len(m.events())
-		m.lastEventsLen[msg.Channel] = len(m.events())
-		m.showDivider = false
-		m.viewport.SetContent("")
-		m.viewport.GotoBottom()
+		m = m.syncContent()
+
+		return m, nil
+
+	case ScrollbackClearedMsg:
+		delete(m.seenLen, msg.Channel)
+
+		if msg.Channel == m.channel {
+			m.lastEventsLen = 0
+		}
+
+		m = m.syncContent()
+
 		return m, nil
 
 	case SetPlaceholderMsg:
@@ -164,10 +210,12 @@ func (m MessageList[C]) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		return m, nil
 
 	case ScrollbackUpdatedMsg:
-		if msg.Channel != m.channel {
+		if msg.Channel != m.content().Channel {
 			return m, nil
 		}
+
 		m = m.syncContent()
+
 		return m, nil
 	}
 
@@ -179,27 +227,38 @@ func (m MessageList[C]) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// syncContent re-evaluates the active window's events through the
-// injected getter, re-renders the viewport, and updates the
-// divider/seen-mark bookkeeping. The divider behaviour keys off a
-// per-tick *growth* signal — content arriving on this tick — rather
-// than the running gap between seen-len and the current length, so a
-// bare scroll-to-bottom keystroke neither arms nor clears the
-// divider; only fresh content arriving does.
+// syncContent re-reads the window in view, re-renders the viewport,
+// and advances that window's seen mark when content arrived on this
+// tick with the reader at the bottom to watch it. The growth signal
+// is what makes a bare scroll-to-bottom keystroke leave the divider
+// alone: only fresh content the reader was there for clears it.
+//
+// Growth is only meaningful while the window in view stays the same.
+// When it has changed since the last tick, the counts belong to
+// different windows, and the viewport is reset onto the new one.
 func (m MessageList[C]) syncContent() MessageList[C] {
-	wasAtBottom := m.viewport.AtBottom() || m.viewport.TotalLineCount() == 0
-	events := m.events()
-	grewThisTick := len(events) > m.lastEventsLen[m.channel]
-	if grewThisTick {
-		if wasAtBottom {
-			m.seenLen[m.channel] = len(events)
-			m.showDivider = false
-		} else {
-			m.showDivider = true
-		}
+	content := m.content()
+	held := len(content.Events)
+	switched := content.Channel != m.channel
+
+	if switched {
+		m.viewport.SetContent("")
+		m.viewport.GotoBottom()
 	}
-	m.lastEventsLen[m.channel] = len(events)
-	m.viewport.SetContent(m.renderedContent(events, m.viewport.Width))
+
+	wasAtBottom := m.viewport.AtBottom() || m.viewport.TotalLineCount() == 0
+	seen := m.mark(content.Channel, held)
+
+	if !switched && held > m.lastEventsLen && wasAtBottom {
+		seen = held
+	}
+
+	m.channel = content.Channel
+	m.seenLen[content.Channel] = seen
+	m.lastEventsLen = held
+	m.unseen = seen < held
+	m.viewport.SetContent(m.renderedContent(content, m.viewport.Width))
+
 	if wasAtBottom {
 		m.viewport.GotoBottom()
 	}
@@ -209,18 +268,9 @@ func (m MessageList[C]) syncContent() MessageList[C] {
 
 // View implements ui.Model.
 func (m MessageList[C]) View(width, height int) string {
-	events := m.events()
+	content := m.content()
 
-	// First sight of the active channel seeds the seen-mark so a
-	// freshly-loaded window does not light the divider on its
-	// initial frame. Subsequent frames advance it only when the
-	// user is at the bottom (handled in [Update] after viewport
-	// scroll events).
-	if _, tracked := m.seenLen[m.channel]; !tracked {
-		m.seenLen[m.channel] = len(events)
-	}
-
-	messageView, scrolled, scrollPct := m.renderMessages(events, width, height)
+	messageView, scrolled, scrollPct := m.renderMessages(content, width, height)
 
 	var scrollView string
 	if scrolled {
@@ -229,7 +279,7 @@ func (m MessageList[C]) View(width, height int) string {
 
 		listHeight := max(height-1, 0)
 
-		messageView, _, _ = m.renderMessages(events, width, listHeight)
+		messageView, _, _ = m.renderMessages(content, width, listHeight)
 	}
 
 	parts := make([]string, 0, 2)
@@ -249,8 +299,8 @@ func (m MessageList[C]) ScrollInfo() (scrolled bool, pct float64) {
 	return !m.viewport.AtBottom(), m.viewport.ScrollPercent()
 }
 
-func (m MessageList[C]) renderMessages(events []domain.Event, width, height int) (view string, scrolled bool, scrollPct float64) {
-	if len(events) == 0 {
+func (m MessageList[C]) renderMessages(content WindowContent, width, height int) (view string, scrolled bool, scrollPct float64) {
+	if len(content.Events) == 0 {
 		text := theme.Dim.Render("No messages yet")
 		if m.placeholder != "" {
 			text = m.placeholder
@@ -264,26 +314,40 @@ func (m MessageList[C]) renderMessages(events []domain.Event, width, height int)
 	vp.Width = width
 	vp.Height = height
 	wasAtBottom := vp.AtBottom() || vp.TotalLineCount() == 0
-	content := m.renderedContent(events, width)
-	vp.SetContent(content)
+	rendered := m.renderedContent(content, width)
+	vp.SetContent(rendered)
 	if wasAtBottom {
 		vp.GotoBottom()
 	}
 
-	rendered := vp.View()
-	if lipgloss.Height(content) <= height {
-		rendered = lipgloss.Place(width, height, lipgloss.Left, lipgloss.Bottom, content)
+	view = vp.View()
+	if lipgloss.Height(rendered) <= height {
+		view = lipgloss.Place(width, height, lipgloss.Left, lipgloss.Bottom, rendered)
 	}
 
-	return rendered, !vp.AtBottom(), vp.ScrollPercent()
+	return view, !vp.AtBottom(), vp.ScrollPercent()
 }
 
-func (m MessageList[C]) renderedContent(events []domain.Event, width int) string {
+// renderedContent renders the window's events, with the new-messages
+// divider at the seen mark whenever the window holds events past it.
+//
+// A window switch reaches the list one message after the content
+// getter starts answering with the new window, so a render can fall
+// between the two. The mark for that window is what the reader last
+// saw in it, and nothing has arrived in it since the switch was
+// decided, so the divider is worked out from the mark directly.
+func (m MessageList[C]) renderedContent(content WindowContent, width int) string {
+	events := content.Events
 	rendered := make([]string, 0, len(events)+1)
-	seenLen := m.seenLen[m.channel]
+	seen := m.mark(content.Channel, len(events))
+
+	unseen := m.unseen
+	if content.Channel != m.channel {
+		unseen = seen < len(events)
+	}
 
 	for i, ev := range events {
-		if m.showDivider && i == seenLen {
+		if unseen && i == seen {
 			rendered = append(rendered, renderNewMessagesDivider(width))
 		}
 
@@ -301,10 +365,6 @@ func (m MessageList[C]) renderedContent(events []domain.Event, width int) string
 			m.timestampFormat,
 			m.locale,
 		))
-	}
-
-	if m.showDivider && seenLen >= len(events) {
-		rendered = append(rendered, renderNewMessagesDivider(width))
 	}
 
 	return strings.Join(rendered, "\n")

@@ -85,6 +85,18 @@ type UIStateStore interface {
 
 type logsUpdatedMsg struct{}
 
+// unreadCountedMsg carries the result of an unread-count query back
+// to the Update goroutine. `visits` is the target window's visit
+// count when the query was made; [ChatScreen.deliverUnreadCount]
+// compares it with the window's current one before the badge is
+// updated.
+type unreadCountedMsg struct {
+	channel domain.ChannelName
+	count   int
+	mention bool
+	visits  int
+}
+
 // SessionReader is the read-only slice of the session the chat-screen
 // depends on: backend state it renders (unread counts, the live
 // instance set, the connect time) and the lookups the command context
@@ -193,7 +205,7 @@ func NewChatScreen(baseContext func() context.Context, sess SessionReader, mgr *
 	visible := &visibleWindow{channels: channels}
 
 	sidebar := components.NewChannelSidebar()
-	chatView := components.NewChatView[chatcmd.CompletionContext](visible.scrollback, "", initialKind, user.Nick(), "")
+	chatView := components.NewChatView[chatcmd.CompletionContext](visible.content, "", initialKind, user.Nick(), "")
 	layout := components.NewMainLayout(sidebar, chatView)
 	layout.NickList = components.NewNickList(domain.NewMemberList())
 
@@ -241,12 +253,84 @@ func NewChatScreen(baseContext func() context.Context, sess SessionReader, mgr *
 //
 // This is the only writer of the focused window: the `active` value
 // every handler reads and every command closure captures, and the
-// render-side handle the message list resolves, move together.
+// render-side handle the message list resolves, move together. It is
+// therefore also where the read cursor moves. Both ends of the switch
+// are marked read: what the window being left received while it was
+// in view, and what the window being entered was already holding when
+// the user arrived. Between them, the badge counts what landed in a
+// window while the user was somewhere else.
 func (s ChatScreen) focus(ch domain.ChannelName) (ChatScreen, tea.Cmd) {
+	leaving := s.active
+
 	s.active = ch
 	s.visible.name = ch
 
-	return s, s.rebindCompleter()
+	if w, ok := s.windowByName(ch); ok {
+		w.Visits++
+	}
+
+	cmds := []tea.Cmd{s.rebindCompleter(), s.markReadCmd(ch)}
+	if leaving != ch {
+		cmds = append(cmds, s.markReadCmd(leaving))
+	}
+
+	return s, tea.Batch(cmds...)
+}
+
+// markReadCmd persists the user's read position in `ch`. The write
+// runs off the Update goroutine; the badge the sidebar shows is
+// cleared by the focus change itself, so nothing on screen waits for
+// it. A failure costs a badge that over-counts until the window is
+// next read, which is worth a log line and nothing more.
+func (s ChatScreen) markReadCmd(ch domain.ChannelName) tea.Cmd {
+	if ch == "" {
+		return nil
+	}
+
+	return func() tea.Msg {
+		ctx := s.baseContext()
+
+		if err := s.user.MarkRead(ctx, ch); err != nil {
+			slog.Default().WarnContext(ctx, "mark channel read",
+				"component", "ui",
+				"screen", "chat",
+				"channel", ch,
+				"error", err,
+			)
+		}
+
+		return nil
+	}
+}
+
+// setChannelCmd tells the chat view which window it is rendering,
+// with that window's topic and kind. Every switch goes through here,
+// after [ChatScreen.focus] has moved the user.
+func (s ChatScreen) setChannelCmd() tea.Cmd {
+	return msgCmd(components.SetChannelMsg{
+		Channel: s.active,
+		Topic:   s.activeTopic(),
+		Kind:    s.activeKind(),
+	})
+}
+
+// deliverUnreadCount hands a store-read unread count to the sidebar,
+// unless the user has visited the window since the count was
+// requested. Focusing a window clears its badge and moves the read
+// cursor to the end of the channel, so a count read before that
+// visit describes a state the user has already left behind, and
+// applying it would put the badge back on a window they are reading.
+func (s ChatScreen) deliverUnreadCount(msg unreadCountedMsg) (ChatScreen, tea.Cmd) {
+	w, ok := s.windowByName(msg.channel)
+	if !ok || w.Visits != msg.visits {
+		return s, nil
+	}
+
+	return s, msgCmd(components.ChannelUnreadMsg{
+		Channel: msg.channel,
+		Count:   msg.count,
+		Mention: msg.mention,
+	})
 }
 
 // setLiveModels replaces the cached OpenRouter model catalogue and
@@ -526,10 +610,14 @@ func (s ChatScreen) update(msg tea.Msg) (ChatScreen, tea.Cmd) {
 		return s, s.logAndShow(domain.Help{Target: s.active, At: time.Now()})
 
 	case chatcmd.ClearResult:
-		if w, ok := s.windowByName(s.active); ok {
-			w.Scrollback = nil
+		w, ok := s.windowByName(s.active)
+		if !ok {
+			return s, nil
 		}
-		return s, nil
+
+		w.Scrollback = nil
+
+		return s, msgCmd(components.ScrollbackClearedMsg{Channel: s.active})
 
 	case chatcmd.PokeRequested:
 		return s, s.handlePoke()
@@ -799,6 +887,9 @@ func (s ChatScreen) update(msg tea.Msg) (ChatScreen, tea.Cmd) {
 
 	case components.ChannelSelectedMsg:
 		return s, s.switchChannel(msg.Channel)
+
+	case unreadCountedMsg:
+		return s.deliverUnreadCount(msg)
 
 	case components.MessageSubmitMsg:
 		return s.handleMessageSubmit(msg)
