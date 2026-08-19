@@ -32,6 +32,7 @@ import (
 // exclusion-list length so AddModel-twice tests get distinct nicks
 // without each case maintaining its own counter.
 type managerFakeAPI struct {
+	sendEventsFn       func(context.Context) (api.CompletionResult, error)
 	generateNickFn     func(context.Context, domain.ModelID, string, []domain.Nick) (domain.Nick, error)
 	generatePersonasFn func(context.Context, domain.ModelID) ([]domain.Persona, error)
 }
@@ -41,14 +42,18 @@ func (f *managerFakeAPI) ListModels(context.Context) ([]api.ModelInfo, error) {
 }
 
 func (f *managerFakeAPI) SendEvents(
-	context.Context,
-	domain.ModelID,
-	domain.InstanceID,
-	string,
-	[]protocol.IRCMessage,
-	[]protocol.IRCMessage,
-	...api.ToolDefinition,
+	ctx context.Context,
+	_ domain.ModelID,
+	_ domain.InstanceID,
+	_ string,
+	_ []protocol.IRCMessage,
+	_ []protocol.IRCMessage,
+	_ ...api.ToolDefinition,
 ) (api.CompletionResult, error) {
+	if f.sendEventsFn != nil {
+		return f.sendEventsFn(ctx)
+	}
+
 	return api.CompletionResult{}, nil
 }
 
@@ -181,7 +186,11 @@ func newTestSessionWithManager(
 	t.Cleanup(mgr.DetachAll)
 
 	sess := session.New(t.Context, store, mgr)
-	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
+	// The manager's cleanup was registered first, so it runs last:
+	// `Shutdown` closes the gate the pumps exit on, and `DetachAll`
+	// then joins every dispatch goroutine, the released ones
+	// included.
+	t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
 
 	user := userclient.New("testuser", sess, store, userclient.NewStoreReplyLog(store))
 	require.NoError(t, user.Attach(t.Context()))
@@ -408,6 +417,76 @@ func TestSession_AddModel_creates_new_instance_per_invocation(t *testing.T) {
 		}
 
 		require.ElementsMatch(t, []domain.InstanceID{first.ID(), second.ID()}, ids)
+	})
+}
+
+// TestManager_DetachAll_joins_a_client_released_mid_session pins
+// where the join reaches. A KILL, a QUIT, a send-queue disconnect
+// and a failed ADDMODEL all release their client through
+// `Manager.Detach`, which frees the identity immediately — but the
+// dispatch goroutine behind it can still be inside an upstream call,
+// and `DetachAll` is the only thing that waits for it. A client the
+// manager forgot at release would take its goroutine out of every
+// join's reach, and the process would exit with a turn still
+// running against a store that is closing.
+//
+// The fixture parks a turn upstream, kills the model under it, and
+// asserts the join does not finish while that turn is still in
+// flight.
+func TestManager_DetachAll_joins_a_client_released_mid_session(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		upstream := make(chan struct{})
+
+		// The park ignores cancellation, which is what a real upstream
+		// call that has already been handed to the network does.
+		fake := &managerFakeAPI{
+			sendEventsFn: func(context.Context) (api.CompletionResult, error) {
+				<-upstream
+				return api.CompletionResult{}, nil
+			},
+		}
+
+		sess, store, mgr, user := newTestSessionWithManager(t, fake, "")
+		ctx := t.Context()
+
+		seedChannel(t, user, "#general")
+		require.NoError(t, addModelViaWire(ctx, t, user, "#general", "test/model", ""))
+
+		// The model's own JOIN wakes its first turn, which parks.
+		synctest.Wait()
+
+		bot, err := store.ResolveNick(ctx, "fakenick")
+		require.NoError(t, err)
+
+		resp, err := user.Send(ctx, protocol.Kill{Nick: "fakenick", Reason: "time to go"})
+		require.NoError(t, err)
+		require.NoError(t, resp.Err)
+
+		joined := make(chan struct{})
+		go func() {
+			defer close(joined)
+			mgr.DetachAll()
+		}()
+
+		synctest.Wait()
+
+		select {
+		case <-joined:
+			t.Fatal("DetachAll returned while a released client's turn was still running")
+		default:
+		}
+
+		close(upstream)
+		synctest.Wait()
+
+		<-joined
+
+		// The kill did what a kill does, and the join waited for what
+		// was left of it.
+		require.Nil(t, sess.LookupClient(protocol.ClientID(bot.ID())))
+
+		_, err = store.GetInstanceByID(ctx, bot.ID())
+		require.Error(t, err)
 	})
 }
 

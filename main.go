@@ -139,6 +139,13 @@ func main() {
 
 	cancelApp()
 
+	// Cancelling the app context wakes every dispatch goroutine;
+	// DetachAll is what waits for them — the models still attached
+	// and the ones already draining from a QUIT or KILL alike — so no
+	// model turn is still running when the session closes its
+	// subscriptions underneath it.
+	mgr.DetachAll()
+
 	drainCtx, drainCancel := context.WithTimeout(context.Background(), cfg.DrainTimeout)
 	if err := sess.Shutdown(drainCtx); err != nil {
 		slog.Warn("session shutdown timed out", "error", err)

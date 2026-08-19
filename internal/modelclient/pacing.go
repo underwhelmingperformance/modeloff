@@ -40,8 +40,8 @@ func (randRandomiser) Float64() (float64, error) {
 // Pacer adds a length-scaled typing delay before each model-emitted
 // chat line so bots don't appear to fire at machine speed. The wait
 // is `Floor + len(body)/CPS · 1s + j`, where `j` is uniform in
-// `[-Jitter, +Jitter]` when `Rng` is set. A nil receiver waits zero —
-// the synchronous [Dispatcher] path uses that to opt out.
+// `[-Jitter, +Jitter]` when `Rng` is set. A nil receiver waits zero,
+// which is how a caller opts out of pacing entirely.
 type Pacer struct {
 	Floor  time.Duration
 	CPS    float64
@@ -49,9 +49,11 @@ type Pacer struct {
 	Rng    Randomiser
 }
 
-// Wait blocks for the typing delay implied by body. Returns early
-// when ctx is cancelled, and surfaces a failure from the jitter
-// source.
+// Wait blocks for the typing delay implied by body, and surfaces a
+// failure from the jitter source. A cancelled ctx returns
+// `ctx.Err()`: the wait was interrupted because the turn is over, so
+// the caller must abandon the emit it was pacing. The context it
+// holds is spent by then, and the emit would have nowhere to land.
 func (p *Pacer) Wait(ctx context.Context, body string) error {
 	if p == nil {
 		return nil
@@ -70,6 +72,7 @@ func (p *Pacer) Wait(ctx context.Context, body string) error {
 
 	select {
 	case <-ctx.Done():
+		return ctx.Err()
 	case <-t.C:
 	}
 

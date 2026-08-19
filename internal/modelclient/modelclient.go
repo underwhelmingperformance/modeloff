@@ -39,6 +39,13 @@ type Session interface {
 	// Handle is the wire dispatcher's entry point.
 	Handle(ctx context.Context, c protocol.Client, cmd protocol.Command) (protocol.Response, error)
 
+	// Disconnect ends the named client's connection server-side: the
+	// QUIT carrying `reason` is broadcast to the channels it was in,
+	// its subscription is reaped and its model-client released. It
+	// is how the server closes a connection it can no longer serve,
+	// leaving nothing half-present behind it.
+	Disconnect(ctx context.Context, id protocol.ClientID, reason string)
+
 	// EventsBefore returns up to `n` channel events strictly
 	// before `before` (most recent if nil), in chronological
 	// order. Used at attach-time history seeding.
@@ -78,8 +85,16 @@ type Session interface {
 
 // ModelClient is the [protocol.Client] backing a single LLM
 // instance. Construct one per instance and call [ModelClient.Attach]
-// to register it with a session; call [ModelClient.Detach] to
-// release the subscription and join the dispatch goroutine.
+// to register it with a session; call [ModelClient.Release] to end
+// its connection and [ModelClient.Wait] to join the dispatch
+// goroutine afterwards.
+//
+// Ending a connection is two phases because the model can end its
+// own: a `quit` tool call runs on the dispatch goroutine, so the
+// QUIT handler reaches this client from inside the very goroutine a
+// join would wait for. `Release` is the phase that is safe there;
+// `Wait` is the phase that is not, and belongs to whoever owns the
+// client's lifetime.
 type ModelClient struct {
 	instance *domain.Instance
 	sess     Session
@@ -93,11 +108,12 @@ type ModelClient struct {
 
 	hist *history
 
-	mu     sync.Mutex
-	sub    protocol.Subscription
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	// mu guards the subscription handle and the released flag.
+	mu       sync.Mutex
+	sub      protocol.Subscription
+	cancel   context.CancelFunc
+	released bool
+	wg       sync.WaitGroup
 }
 
 // New returns an unattached `ModelClient` for `inst`. The client is
@@ -201,6 +217,12 @@ func (mc *ModelClient) Events() <-chan protocol.Delivery {
 // hides operator-gated tools from model invocations.
 func (mc *ModelClient) Caps() command.CapabilityHolder { return modelCaps{} }
 
+// ErrReleased is returned by [ModelClient.Attach] for a client whose
+// connection has already ended. A released client is spent: QUIT and
+// KILL end a client for good, and the instance behind it is deleted,
+// so a fresh connection means a fresh `ModelClient`.
+var ErrReleased = errors.New("modelclient: client has been released")
+
 // Attach registers the client with its session, loads its local
 // memory (the join-scoped per-channel transcript and its own private
 // replies) from the persisted logs, and starts the dispatch
@@ -208,9 +230,16 @@ func (mc *ModelClient) Caps() command.CapabilityHolder { return modelCaps{} }
 // the client remains inert on failure.
 //
 // Attach is idempotent: a repeat call on an already-attached
-// client returns nil.
+// client returns nil. It returns [ErrReleased] once the client's
+// connection has ended.
 func (mc *ModelClient) Attach(ctx context.Context) error {
 	mc.mu.Lock()
+
+	if mc.released {
+		mc.mu.Unlock()
+		return fmt.Errorf("attach model client %q: %w", mc.instance.ID(), ErrReleased)
+	}
+
 	if mc.sub != nil {
 		mc.mu.Unlock()
 		return nil
@@ -222,32 +251,53 @@ func (mc *ModelClient) Attach(ctx context.Context) error {
 		return fmt.Errorf("attach model client %q: %w", mc.instance.ID(), err)
 	}
 
-	mc.sub = sub
-
 	loopCtx, cancel := context.WithCancel(mc.baseContext())
-	mc.ctx = loopCtx
+
+	mc.sub = sub
 	mc.cancel = cancel
+
+	// The dispatch goroutine joins the wait group before the lock is
+	// released, so a `Release` landing during the history load below
+	// is followed by a `Wait` that joins this goroutine. Registering
+	// it after the load would leave that window with an empty group,
+	// and a `Wait` in it would report a join that had not happened.
+	//
+	// It then waits for the load, because a loaded event must never
+	// reach the model as a trigger: the loop reads its first
+	// delivery only once the history it is prompted from is in
+	// place. The close is deferred so the gate opens however this
+	// call returns — a load that panics releases the goroutine on
+	// the way out, where leaving it parked would hang every later
+	// `Wait`, shutdown's included.
+	loaded := make(chan struct{})
+	defer close(loaded)
+
+	mc.wg.Go(func() {
+		<-loaded
+
+		mc.runDispatchLoop(loopCtx, sub)
+	})
+
 	mc.mu.Unlock()
 
 	mc.loadHistory(ctx)
 
-	mc.wg.Go(func() {
-		mc.runDispatchLoop(loopCtx, sub)
-	})
-
 	return nil
 }
 
-// Detach releases the subscription, cancels the dispatch
-// goroutine's context, and joins it. Idempotent on an already-
-// detached or never-attached client.
-func (mc *ModelClient) Detach() {
+// Release ends the client's connection: it cancels the dispatch
+// goroutine's context and unsubscribes from the session. It does not
+// wait for the goroutine to finish, so it is safe from any goroutine
+// — including the dispatch goroutine itself, which is where a model
+// that calls the `quit` tool issues its own QUIT from. Idempotent on
+// an already-released or never-attached client.
+func (mc *ModelClient) Release() {
 	mc.mu.Lock()
 	sub := mc.sub
 	cancel := mc.cancel
 	mc.sub = nil
 	mc.cancel = nil
-	mc.ctx = nil
+	mc.released = true
 	mc.mu.Unlock()
 
 	if cancel != nil {
@@ -257,8 +307,22 @@ func (mc *ModelClient) Detach() {
 	if sub != nil {
 		sub.Unsubscribe()
 	}
+}
 
+// Wait blocks until the dispatch goroutine has exited. Call it only
+// from a goroutine that owns the client's lifetime — shutdown, or a
+// test's cleanup. Calling it from the dispatch goroutine would be
+// that goroutine waiting on itself.
+func (mc *ModelClient) Wait() {
 	mc.wg.Wait()
+}
+
+// Detach releases the connection and joins the dispatch goroutine.
+// It carries `Wait`'s restriction: never call it from the dispatch
+// path.
+func (mc *ModelClient) Detach() {
+	mc.Release()
+	mc.Wait()
 }
 
 // loadHistory loads both of the model's local memories at attach: the

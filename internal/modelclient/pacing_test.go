@@ -137,6 +137,10 @@ func TestPacer_Wait_consecutiveCallsAccumulate(t *testing.T) {
 	})
 }
 
+// TestPacer_Wait_cancelledContextAborts pins that a cancelled wait
+// reports the cancellation. The caller is mid-turn with a context it
+// can no longer use, so returning nil here would have it carry on
+// and emit with one.
 func TestPacer_Wait_cancelledContextAborts(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		p := &Pacer{Floor: 1 * time.Second}
@@ -145,7 +149,7 @@ func TestPacer_Wait_cancelledContextAborts(t *testing.T) {
 		cancel()
 
 		start := time.Now()
-		require.NoError(t, p.Wait(ctx, ""))
+		require.ErrorIs(t, p.Wait(ctx, ""), context.Canceled)
 		require.Equal(t, time.Duration(0), time.Since(start))
 	})
 }

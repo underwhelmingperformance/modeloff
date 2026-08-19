@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"testing/synctest"
 
 	"github.com/stretchr/testify/require"
 
@@ -185,37 +186,40 @@ func TestSession_user_replies_do_not_pollute_channel_log(t *testing.T) {
 // reappears in its prompt transcript on a later dispatch, as if its
 // quit never happened.
 func TestSession_dispatch_replays_instance_replies_into_prompt(t *testing.T) {
-	var sawWhois bool
-	fake := &fakeAPIClient{
-		sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, history []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
-			for _, h := range history {
-				if h.Kind == protocol.KindServerReply && strings.Contains(h.Body, "whois target") {
-					sawWhois = true
+	synctest.Test(t, func(t *testing.T) {
+		var sawWhois bool
+		fake := &fakeAPIClient{
+			sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, history []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+				for _, h := range history {
+					if h.Kind == protocol.KindServerReply && strings.Contains(h.Body, "whois target") {
+						sawWhois = true
+					}
 				}
-			}
-			return msgToolCalls(t, domain.ChannelName(events[0].Target), "ok"), nil
-		},
-	}
-	sess, s := newTestSessionWithAPI(t, fake)
-	ctx := t.Context()
+				return msgToolCalls(t, domain.ChannelName(events[0].Target), "ok"), nil
+			},
+		}
+		sess, s := newTestSessionWithAPI(t, fake)
+		ctx := t.Context()
 
-	botty := seedInstance(t, sess, s, instanceSpec{
-		Nick:     "botty",
-		ModelID:  "test/model",
-		Channels: testChannels("#general"),
+		// botty looked up "target" in an earlier connection; that reply
+		// is its own memory, and the write lands before the attach that
+		// restores it.
+		_, err := s.AppendInstanceReply(ctx, testMemberID("botty"), domain.Whois{
+			Nick:    "target",
+			ModelID: "test/model",
+			At:      fixedTime,
+		})
+		require.NoError(t, err)
+
+		seedInstance(t, sess, s, instanceSpec{
+			Nick:     "botty",
+			ModelID:  "test/model",
+			Channels: testChannels("#general"),
+		})
+		seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
+
+		dispatchUserMessage(ctx, t, sess, "#general", "hi")
+
+		require.True(t, sawWhois, "botty's own whois reply should re-appear in its prompt transcript")
 	})
-	seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
-
-	// botty looked up "target" earlier; that reply is its own memory.
-	_, err := s.AppendInstanceReply(ctx, botty.ID(), domain.Whois{
-		Nick:    "target",
-		ModelID: "test/model",
-		At:      fixedTime,
-	})
-	require.NoError(t, err)
-
-	_, ircMsg := seedUserMessage(t, s, "#general", "hi")
-	require.NoError(t, dispatchToChannel(ctx, sess, "#general", []protocol.IRCMessage{ircMsg}))
-
-	require.True(t, sawWhois, "botty's own whois reply should re-appear in its prompt transcript")
 }

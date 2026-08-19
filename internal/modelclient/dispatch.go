@@ -2,6 +2,7 @@ package modelclient
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -14,19 +15,21 @@ import (
 
 // runDispatchLoop is the long-lived dispatch goroutine for a model-
 // client. It reads [protocol.Delivery] envelopes from the
-// subscription's events channel and, for each delivery, decides
-// whether to take an LLM turn (a message in a channel/DM the model
-// is in, a JOIN/PART/MODE in a channel it shares, an INVITE
-// addressed at it, or a poke) and files the event into the model's
-// per-channel rolling history buffer. Replies emit on the bus so
-// every subscriber sees them.
+// subscription's events channel and decides which of them call for
+// an LLM turn (a message in a channel/DM the model is in, a JOIN or
+// PART in a channel it shares, an INVITE addressed at it, or a
+// poke), filing each into the model's per-channel rolling history
+// buffer as it goes. Replies emit on the bus so every subscriber
+// sees them.
 //
-// When a delivery is going to trigger a turn, the loop snapshots
-// history before appending the triggering event and passes the
-// snapshot through to the turn. `buildMessages` lays history then
-// trigger events into the LLM request; keeping the trigger out of
-// the snapshot stops the same line appearing twice in the model's
-// prompt.
+// A burst is taken as a batch. After a delivery arrives the loop
+// drains whatever else is already queued without blocking, and the
+// triggers it finds for one window go into a single turn. Five
+// messages that land while the model was busy are five lines in one
+// prompt, which is both what a person reading a channel sees and
+// four fewer round-trips than one turn each. [ModelClient.fileBatch]
+// is where the split by window happens and where each window's
+// history snapshot is taken.
 //
 // The history buffer feeds [ModelClient.dispatchTurn]'s prompt
 // construction. Loaded for known channels at attach (see
@@ -35,9 +38,9 @@ import (
 // path reads conversation history from; the events log is
 // consulted exclusively at load time.
 //
-// Each turn's span is linked to the originating handler's span via
-// the [trace.SpanContext] the producer captured at emit time. The
-// turn is not a child of the originator: fan-out is one-to-many
+// Each turn's span is linked to the originating handlers' spans via
+// the [trace.SpanContext] each producer captured at emit time. The
+// turn is not a child of any of them: fan-out is one-to-many
 // and each turn is its own operation. OTel links express that
 // "related but separate" relationship.
 //
@@ -45,18 +48,10 @@ import (
 // ctx passed at attach) is cancelled, or when the subscription's
 // `Done` channel closes.
 func (mc *ModelClient) runDispatchLoop(ctx context.Context, sub protocol.Subscription) {
-	defer func() {
-		if r := recover(); r != nil {
-			slog.ErrorContext(ctx, "dispatch goroutine panicked",
-				"component", "modelclient",
-				"instance_id", mc.instance.ID(),
-				"panic", r,
-			)
-		}
-	}()
-
 	events := sub.Events()
 	done := sub.Done()
+
+	defer mc.recoverDispatchPanic(ctx)
 
 	for {
 		var delivery protocol.Delivery
@@ -68,26 +63,147 @@ func (mc *ModelClient) runDispatchLoop(ctx context.Context, sub protocol.Subscri
 		case delivery = <-events:
 		}
 
-		ch, irc, ok := dispatchTrigger(mc.instance.ID(), delivery.Event)
-
-		var historyForTurn []domain.StoredEvent
-		if ok {
-			historyForTurn = mc.hist.snapshot(ch)
-		}
-
-		if ca, ok := delivery.Event.(domain.ChannelActivity); ok {
-			stored := domain.StoredEvent{Event: ca}
-			for _, target := range historyTargets(delivery) {
-				mc.hist.append(ctx, mc.sess, mc.instance.ID(), stored, target)
+		for _, batch := range mc.fileBatch(ctx, append([]protocol.Delivery{delivery}, drain(events)...)) {
+			// An earlier turn in this burst may have ended the
+			// connection — a `quit` tool call cancels the loop's
+			// context from inside the turn that made it. The
+			// remaining windows belong to a client that has left, and
+			// dispatching them would show peers a departed model
+			// thinking.
+			if ctx.Err() != nil {
+				return
 			}
+
+			mc.dispatchTurn(ctx, batch)
+		}
+	}
+}
+
+// recoverDispatchPanic ends the client's connection when its
+// dispatch goroutine dies of a panic. Without it the subscription
+// stays registered with nobody reading it: the instance would go on
+// being a member of its channels, accumulating a backlog the server
+// keeps for a consumer that no longer exists. The QUIT the
+// disconnect broadcasts is what the channel sees, so the failure is
+// visible where the client was.
+func (mc *ModelClient) recoverDispatchPanic(ctx context.Context) {
+	r := recover()
+	if r == nil {
+		return
+	}
+
+	slog.ErrorContext(ctx, "dispatch goroutine panicked",
+		"component", "modelclient",
+		"instance_id", mc.instance.ID(),
+		"panic", r,
+	)
+
+	mc.sess.Disconnect(ctx, mc.Identity(), "Internal error")
+}
+
+// drain takes everything already queued on `events` without
+// blocking. What it returns is the rest of the burst the caller's
+// first delivery started.
+func drain(events <-chan protocol.Delivery) []protocol.Delivery {
+	var rest []protocol.Delivery
+
+	for {
+		select {
+		case d := <-events:
+			rest = append(rest, d)
+		default:
+			return rest
+		}
+	}
+}
+
+// turnBatch is one window's worth of a burst: the triggers that
+// arrived for it, the transcript the turn reads them against, and
+// the span contexts of the deliveries that carried them.
+type turnBatch struct {
+	channel  domain.ChannelName
+	history  []domain.StoredEvent
+	triggers []protocol.IRCMessage
+	causes   []trace.SpanContext
+}
+
+// fileBatch files `deliveries` into the per-channel history buffers
+// and returns the turns they call for, one per window, in the order
+// the windows first appeared in the burst.
+//
+// The split between a turn's history and its triggers is the split
+// between what the model is shown as context and what it is being
+// asked about. Every window that will take a turn is snapshotted
+// before anything from the burst is filed, so a trigger the prompt
+// lists explicitly is not also sitting in the transcript above it.
+// The burst's own non-triggers — a topic change, a mode change, a
+// peer's quit — are then appended to that transcript in arrival
+// order, because a model catching up on five messages has to be told
+// what happened between them.
+func (mc *ModelClient) fileBatch(ctx context.Context, deliveries []protocol.Delivery) []*turnBatch {
+	batches, byWindow := mc.openBatches(deliveries)
+
+	for _, delivery := range deliveries {
+		ch, irc, isTrigger := dispatchTrigger(mc.instance.ID(), delivery.Event)
+
+		if isTrigger {
+			batch := byWindow[ch]
+			batch.triggers = append(batch.triggers, irc)
+			batch.causes = append(batch.causes, delivery.SpanCtx)
 		}
 
+		ca, ok := delivery.Event.(domain.ChannelActivity)
 		if !ok {
 			continue
 		}
 
-		mc.dispatchTurn(ctx, ch, irc, delivery.SpanCtx, historyForTurn)
+		stored := domain.StoredEvent{Event: ca}
+
+		for _, target := range historyTargets(delivery) {
+			mc.hist.append(ctx, mc.sess, mc.instance.ID(), stored, target)
+
+			if isTrigger && target == ch {
+				continue
+			}
+
+			if batch, ok := byWindow[target]; ok {
+				batch.history = append(batch.history, stored)
+			}
+		}
 	}
+
+	return batches
+}
+
+// openBatches allocates one batch per window the burst will raise a
+// turn for, in the order those windows first appear, and seeds each
+// with its window's transcript as it stands before the burst.
+//
+// It is a pass of its own because the snapshots have to be taken
+// while none of the burst has been filed: a window whose first
+// trigger is the last delivery still needs the transcript from
+// before the first.
+func (mc *ModelClient) openBatches(deliveries []protocol.Delivery) ([]*turnBatch, map[domain.ChannelName]*turnBatch) {
+	var batches []*turnBatch
+
+	byWindow := make(map[domain.ChannelName]*turnBatch)
+
+	for _, delivery := range deliveries {
+		ch, _, isTrigger := dispatchTrigger(mc.instance.ID(), delivery.Event)
+		if !isTrigger {
+			continue
+		}
+
+		if _, ok := byWindow[ch]; ok {
+			continue
+		}
+
+		batch := &turnBatch{channel: ch, history: mc.hist.snapshot(ch)}
+		byWindow[ch] = batch
+		batches = append(batches, batch)
+	}
+
+	return batches, byWindow
 }
 
 // historyTargets returns the buffer slot(s) the delivery's event
@@ -170,22 +286,32 @@ func dispatchTrigger(selfID domain.InstanceID, ev domain.ProtocolEvent) (domain.
 }
 
 // dispatchTurn runs a single LLM turn for the model-client's
-// instance in response to `trigger`, emitting `ModelDispatchStarted`
+// instance in response to `batch`, emitting `ModelDispatchStarted`
 // / `ModelDispatchDone` around the call so consumers can scope a
 // "this instance is thinking" indicator to the exact window of
-// the turn. The model's chat traffic lands on the session bus as a
+// the turn. Started is emitted first and Done deferred immediately
+// after, so the pair is either both or neither: a consumer's
+// thinking indicator has no way to be raised and never lowered.
+// The model's chat traffic lands on the session bus as a
 // side effect of its `msg` / `me` tool calls; the bus's echo gate
 // (RFC 2812 §3.3.1) means we never see our own messages come back,
 // so [ModelClient.Send] files them into the rolling history buffer
 // at the moment they're sent.
 //
-// `causeCtx` is the span context the producer captured at emit
-// time (see [protocol.Delivery]). When valid, the turn's span
-// carries an OTel link to it so traces stay connected across the
-// channel-based delivery boundary.
-func (mc *ModelClient) dispatchTurn(ctx context.Context, ch domain.ChannelName, trigger protocol.IRCMessage, causeCtx trace.SpanContext, historyEvents []domain.StoredEvent) {
+// `batch.causes` holds the span contexts the producers captured at
+// emit time (see [protocol.Delivery]). Each valid one becomes an
+// OTel link on the turn's span, so traces stay connected across the
+// channel-based delivery boundary and a coalesced turn names every
+// delivery that fed it.
+//
+// A cancelled context is the server tearing this client down — a
+// KILL, a QUIT, or shutdown — so the turn ends without the
+// `ModelUnavailableError` an upstream failure would raise. Nothing
+// was unavailable; the client was closed.
+func (mc *ModelClient) dispatchTurn(ctx context.Context, batch *turnBatch) {
 	inst := mc.instance
 	nick := inst.Nick()
+	ch := batch.channel
 
 	attrs := []attribute.KeyValue{
 		attribute.String(observability.AttrChannel, string(ch)),
@@ -195,19 +321,19 @@ func (mc *ModelClient) dispatchTurn(ctx context.Context, ch domain.ChannelName, 
 	}
 
 	_ = mc.inSpan(ctx, "modelclient.dispatch_turn", attrs, func(ctx context.Context, span trace.Span) error {
-		if causeCtx.IsValid() {
-			span.AddLink(trace.Link{SpanContext: causeCtx})
+		for _, cause := range batch.causes {
+			if cause.IsValid() {
+				span.AddLink(trace.Link{SpanContext: cause})
+			}
 		}
 
+		mc.sess.Emit(ctx, domain.ModelDispatchStarted{Instance: inst, At: mc.sess.Now()})
 		defer mc.sess.Emit(ctx, domain.ModelDispatchDone{Instance: inst, At: mc.sess.Now()})
 
 		window, err := dispatchWindowFor(ctx, mc.sess, ch, inst)
 		if err != nil {
-			mc.sess.Emit(ctx, domain.ModelUnavailableError{Channel: ch, Nick: nick, At: mc.sess.Now()})
-			return err
+			return mc.reportTurnFailure(ctx, ch, nick, err)
 		}
-
-		mc.sess.Emit(ctx, domain.ModelDispatchStarted{Instance: inst, At: mc.sess.Now()})
 
 		apiClient := mc.apiFn()
 		if apiClient == nil {
@@ -217,13 +343,26 @@ func (mc *ModelClient) dispatchTurn(ctx context.Context, ch domain.ChannelName, 
 
 		replyEvents := mc.hist.snapshotReplies()
 
-		if err := dispatchToInstance(ctx, mc.sess, apiClient, mc.memStore, mc.tools, mc.ensure, mc.pacer, mc, window, inst, ch, historyEvents, replyEvents, []protocol.IRCMessage{trigger}); err != nil {
-			mc.sess.Emit(ctx, domain.ModelUnavailableError{Channel: ch, Nick: nick, At: mc.sess.Now()})
-			return errWithKind(err, observability.ErrorKindDispatch)
+		if err := dispatchToInstance(ctx, mc.sess, apiClient, mc.memStore, mc.tools, mc.ensure, mc.pacer, mc, window, inst, ch, batch.history, replyEvents, batch.triggers); err != nil {
+			return mc.reportTurnFailure(ctx, ch, nick, errWithKind(err, observability.ErrorKindDispatch))
 		}
 
 		return nil
 	})
+}
+
+// reportTurnFailure raises the operator diagnostic for a turn that
+// could not run and hands the error back for the span to record. A
+// context cancellation is teardown, not a failure of the model, so
+// it is recorded on the span without a diagnostic.
+func (mc *ModelClient) reportTurnFailure(ctx context.Context, ch domain.ChannelName, nick domain.Nick, err error) error {
+	if errors.Is(err, context.Canceled) {
+		return err
+	}
+
+	mc.sess.Emit(ctx, domain.ModelUnavailableError{Channel: ch, Nick: nick, At: mc.sess.Now()})
+
+	return err
 }
 
 // dispatchWindowFor produces the `Window` that the recipient

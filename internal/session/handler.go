@@ -364,16 +364,14 @@ func (s *Session) handleList(ctx context.Context, c protocol.Client) (protocol.R
 // handleQuit dispatches a QUIT — the user-actor branch tears
 // down session state in-place (autojoin save, session-active
 // marker clear); the model-actor branch broadcasts the QUIT to
-// peers and releases the subscription via
-// [ModelClientFactory.Detach] so the model-client's dispatch
-// goroutine joins deterministically. The user-client is never
-// detached: its lifetime equals the session's, and the process
-// owning it shuts down after [handleQuit] returns.
+// peers and releases the model-client via [releaseClient].
 //
-// `Detach` waits for the target's dispatch goroutine to finish,
-// and that goroutine may be queued behind the command loop for a
-// command of its own — so the detach runs after the loop has
-// released the QUIT, never on it.
+// A model can end its own connection: the `quit` tool runs on that
+// model's dispatch goroutine, so this handler is reached from
+// inside the very goroutine the release addresses. The release is
+// the phase that tolerates it — it cancels and unsubscribes without
+// waiting — and it runs after the loop has let the QUIT go, because
+// the dispatch goroutine it ends may be queued behind that loop.
 func (s *Session) handleQuit(ctx context.Context, c protocol.Client, cmd protocol.Quit) (protocol.Response, error) {
 	resp, err := s.onWriter(ctx, func(ctx context.Context) (protocol.Response, error) {
 		actor, resolveErr := s.resolveClientActor(c)
@@ -388,9 +386,7 @@ func (s *Session) handleQuit(ctx context.Context, c protocol.Client, cmd protoco
 		return resp, err
 	}
 
-	if c.Identity() != protocol.UserClientID {
-		s.modelClientFactory.Detach(c.Identity())
-	}
+	s.releaseClient(c.Identity())
 
 	return resp, nil
 }
@@ -497,13 +493,13 @@ func (s *Session) handleAddModel(ctx context.Context, c protocol.Client, cmd pro
 }
 
 // discardModel unwinds a registration whose JOIN did not land. The
-// detach runs off the command loop for the same reason QUIT's does
-// — it joins a dispatch goroutine that may be queued behind the
-// loop — and the instance is deleted so its nick returns to the
-// pool. Best-effort: the ADDMODEL has already failed, and the
-// caller's refusal is the answer the client gets either way.
+// release runs off the command loop for the same reason QUIT's does
+// — it ends a dispatch goroutine that may be queued behind the loop
+// — and the instance is deleted so its nick returns to the pool.
+// Best-effort: the ADDMODEL has already failed, and the caller's
+// refusal is the answer the client gets either way.
 func (s *Session) discardModel(ctx context.Context, inst *domain.Instance) {
-	s.modelClientFactory.Detach(protocol.ClientID(inst.ID()))
+	s.releaseClient(protocol.ClientID(inst.ID()))
 
 	if err := s.store.DeleteInstanceByID(ctx, inst.ID()); err != nil {
 		slog.Default().ErrorContext(ctx, "discard model after failed add",
@@ -515,9 +511,9 @@ func (s *Session) discardModel(ctx context.Context, inst *domain.Instance) {
 }
 
 // handleKill is the operator-issued forced disconnect. As with
-// QUIT, the target's detach joins a goroutine that may be waiting
-// on the command loop, so it runs once the loop has released the
-// KILL. The operator gate is checked on the loop alongside the act
+// QUIT, the target's release ends a goroutine that may be waiting
+// on the command loop, so it runs once the loop has let the KILL
+// go. The operator gate is checked on the loop alongside the act
 // it authorises.
 func (s *Session) handleKill(ctx context.Context, c protocol.Client, cmd protocol.Kill) (protocol.Response, error) {
 	var killed *domain.Instance
@@ -550,7 +546,7 @@ func (s *Session) handleKill(ctx context.Context, c protocol.Client, cmd protoco
 		return resp, err
 	}
 
-	s.modelClientFactory.Detach(protocol.ClientID(killed.ID()))
+	s.releaseClient(protocol.ClientID(killed.ID()))
 
 	return resp, err
 }

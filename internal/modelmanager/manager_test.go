@@ -225,42 +225,6 @@ func TestManager_runtimeConfigOperations_recordSpans(t *testing.T) {
 	require.Equal(t, observability.ResultOK, oteltest.AttrValue(baseURLSpan.Attributes(), observability.AttrResult))
 }
 
-func TestManager_Reset(t *testing.T) {
-	store := storetest.NewMemoryStore(t)
-	memStore := memory.NewStoreAdapter(storetest.NewMemoryStore(t))
-
-	fx := newTestManager(t, modelmanager.Config{
-		Store:     store,
-		Memory:    memStore,
-		APIClient: &fakeAPIClient{},
-	})
-
-	ctx := t.Context()
-
-	require.NoError(t, store.SavePersona(ctx, domain.Persona{
-		ID: "p1", Description: "x", Origin: domain.PersonaUser,
-	}))
-	require.NoError(t, memStore.Write(ctx, "inst-botty", memory.Entry{Key: "mood", Content: "happy"}))
-
-	require.NoError(t, fx.mgr.Reset(ctx))
-
-	personas, err := store.ListPersonas(ctx)
-	require.NoError(t, err)
-	require.Empty(t, personas)
-
-	memories, err := memStore.Read(ctx, "inst-botty")
-	require.NoError(t, err)
-	require.Empty(t, memories)
-}
-
-func TestManager_Reset_nil_memory_store(t *testing.T) {
-	fx := newTestManager(t, modelmanager.Config{
-		APIClient: &fakeAPIClient{},
-	})
-
-	require.NoError(t, fx.mgr.Reset(t.Context()))
-}
-
 func TestManager_EnsurePersonas_lazy_generation(t *testing.T) {
 	calls := 0
 	fake := &fakeAPIClient{
@@ -416,24 +380,6 @@ func TestManager_SetAPIKey_resets_listState(t *testing.T) {
 	require.Equal(t, modelmanager.ListStateFailed, fx.mgr.ListState())
 
 	require.NoError(t, fx.mgr.SetAPIKey(t.Context(), "next-key", ""))
-	require.Equal(t, modelmanager.ListStateNone, fx.mgr.ListState())
-	require.False(t, fx.mgr.SupportedModelsReady())
-	require.Nil(t, fx.mgr.SupportedModels())
-}
-
-func TestManager_Reset_clears_listState(t *testing.T) {
-	client := &listModelsCountingClient{err: fmt.Errorf("upstream unreachable")}
-
-	fx := newTestManager(t, modelmanager.Config{
-		APIClient:     client,
-		InitialAPIKey: "test-key",
-	})
-
-	_, err := fx.mgr.ListModels(t.Context())
-	require.Error(t, err)
-	require.Equal(t, modelmanager.ListStateFailed, fx.mgr.ListState())
-
-	require.NoError(t, fx.mgr.Reset(t.Context()))
 	require.Equal(t, modelmanager.ListStateNone, fx.mgr.ListState())
 	require.False(t, fx.mgr.SupportedModelsReady())
 	require.Nil(t, fx.mgr.SupportedModels())

@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 
 	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
@@ -42,14 +43,11 @@ type serverClient struct {
 	unsubOnce sync.Once
 
 	// outbox is this subscription's send queue, guarded by `outMu`.
-	// It is unbounded, so a backlog survives a consumer that has
-	// fallen behind for as long as the subscription does: what the
-	// queue still holds is released when the subscription is reaped
-	// or the session shuts down, and only then. The bound on its
-	// growth arrives with flood control, which disconnects a client
-	// whose queue exceeds its allowance (RFC 1459 §8.10) — a
-	// visible KILL-shaped ending in place of a silent gap in the
-	// transcript.
+	// A backlog survives a consumer that has fallen behind, up to
+	// `sendQAllowance`; past that the server disconnects the client,
+	// which is where the buffering stops. What the queue still holds
+	// is released when the subscription is reaped or the session
+	// shuts down.
 	//
 	// `outWake` carries a single coalesced wake-up: producers offer
 	// one after appending and the pump drains the queue dry on each
@@ -58,6 +56,12 @@ type serverClient struct {
 	outbox    []protocol.Delivery
 	outWake   chan struct{}
 	outClosed bool
+
+	// overflowed latches when the queue first passes its allowance,
+	// so the one delivery that trips it starts exactly one
+	// disconnect — including the QUIT that disconnect broadcasts,
+	// which comes straight back to this same queue.
+	overflowed atomic.Bool
 
 	// pumpDone closes when this subscription's pump goroutine
 	// exits, so [Session.reapClient] and [Session.Shutdown] can join
@@ -99,9 +103,32 @@ func newServerClient(sess *Session, id protocol.ClientID, inst *domain.Instance,
 	return c
 }
 
+// sendQAllowance is how many deliveries the server will hold for one
+// subscription before it stops holding any. It is generous: a model
+// mid-turn is not reading, and a busy channel can queue a long burst
+// behind a single LLM round-trip without anything being wrong.
+//
+// A client past it is one the server can no longer serve, and RFC
+// 1459 §8.10's answer is to close the connection, not to skip
+// deliveries. That keeps the invariant every reader depends on —
+// what a client receives is a prefix of what the server sent, never
+// a version of it with holes.
+const sendQAllowance = 1024
+
+// hasSessionLifetime reports whether this subscription's lifetime is
+// the session's own. There is exactly one such subscription, and its
+// identity is what says so: it belongs to the process hosting the
+// server, so there is no connection under it for the server to
+// close. Every bound whose remedy is a disconnect is therefore
+// undefined for it — see [serverClient.queue] and
+// [Session.Disconnect].
+func (c *serverClient) hasSessionLifetime() bool {
+	return c.id == protocol.UserClientID
+}
+
 // enqueue accepts `delivery` for this subscription and returns. It
-// never blocks: the queue is unbounded, so a producer's progress
-// does not depend on the consumer's.
+// never blocks: a producer's progress does not depend on the
+// consumer's.
 //
 // While the client is keeping up — nothing queued and room in its
 // channel — the delivery goes straight across, so a client that
@@ -112,24 +139,53 @@ func newServerClient(sess *Session, id protocol.ClientID, inst *domain.Instance,
 // when the queue is empty, and the pump keeps a delivery queued
 // until its send completes.
 //
+// A queue past `sendQAllowance` ends the connection. The rule is one
+// property of the subscription, so it reaches every client the
+// server can close, whatever kind of actor is behind it.
+//
 // A reaped subscription accepts nothing and drops what it holds:
 // the client it addressed has gone, so there is nobody left to read
 // either. The same goes for whatever is still queued when the
 // session shuts down.
 func (c *serverClient) enqueue(delivery protocol.Delivery) {
+	if c.queue(delivery) {
+		return
+	}
+
+	c.sess.disconnectOverflowed(c)
+}
+
+// queue appends `delivery` to the send queue, reporting false when
+// the queue is already at its allowance and the subscription must be
+// disconnected. A reaped subscription reports true: there is nobody
+// left to deliver to, and nobody left to disconnect either.
+//
+// A subscription with the session's lifetime is exempt, and the
+// consequence is deliberate: its queue grows without bound, keeping
+// the contract every queue had before the allowance existed. The
+// allowance buys a bounded queue by spending a disconnect, and that
+// is a price only a closable connection can pay. Skipping deliveries
+// for it instead would put a hole in the one transcript a person is
+// reading, and tearing it down would run the session's shutdown
+// under a process that is still running.
+func (c *serverClient) queue(delivery protocol.Delivery) bool {
 	c.outMu.Lock()
 	defer c.outMu.Unlock()
 
 	if c.outClosed {
-		return
+		return true
 	}
 
 	if len(c.outbox) == 0 {
 		select {
 		case c.events <- delivery:
-			return
+			return true
 		default:
 		}
+	}
+
+	if len(c.outbox) >= sendQAllowance && !c.hasSessionLifetime() {
+		return false
 	}
 
 	c.outbox = append(c.outbox, delivery)
@@ -138,6 +194,15 @@ func (c *serverClient) enqueue(delivery protocol.Delivery) {
 	case c.outWake <- struct{}{}:
 	default:
 	}
+
+	return true
+}
+
+// markOverflowed latches the overflow flag, reporting true for the
+// caller that set it. Every later caller gets false, so one
+// disconnect runs however many deliveries pile up behind it.
+func (c *serverClient) markOverflowed() bool {
+	return c.overflowed.CompareAndSwap(false, true)
 }
 
 // pump is the subscription's outbound goroutine. It moves queued

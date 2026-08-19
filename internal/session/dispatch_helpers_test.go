@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
+	"testing/synctest"
 
 	"github.com/stretchr/testify/require"
 
@@ -124,25 +126,92 @@ func msgSpansToolCall(t testing.TB, target domain.ChannelName, spans []protocol.
 	}}
 }
 
-// dispatchToChannel runs the synchronous broadcast-to-channel
-// dispatch the test suite uses to drive end-to-end model
-// behaviour. The session's [ModelClientFactory] arrived from
-// [newTestModelClientFactory], which stores the api client + the
-// optional memory backing — those are the same handles a
-// production manager threads into each [modelclient.ModelClient],
-// so the helper reuses them through a type assertion.
-func dispatchToChannel(
-	ctx context.Context,
-	sess *Session,
-	ch domain.ChannelName,
-	msgs []protocol.IRCMessage,
-) error {
-	f, ok := sess.modelClientFactory.(*testModelClientFactory)
-	if !ok {
-		return fmt.Errorf("dispatchToChannel: factory is %T, expected *testModelClientFactory", sess.modelClientFactory)
+// dispatchUserMessage sends `body` to `ch` as the user and returns
+// once every dispatch turn it woke has finished, including the
+// turns a model's reply woke in its peers.
+//
+// This is the production path: the message fans out over the bus and
+// each model-client's own dispatch goroutine decides whether to take
+// a turn. Settling is [synctest.Wait], so the caller must be inside
+// a [synctest.Test] bubble and the wait is exact — no polling and no
+// deadline.
+func dispatchUserMessage(ctx context.Context, t testing.TB, sess *Session, ch domain.ChannelName, body string) domain.Message {
+	t.Helper()
+
+	msg, err := userSendMessage(ctx, t, sess, ch, body)
+	require.NoError(t, err)
+
+	synctest.Wait()
+
+	return msg
+}
+
+// dispatchRecorder captures the triggers each model was dispatched
+// with, flattened across turns.
+//
+// Turn boundaries are not a stable fact about a burst: a model that
+// is mid-turn when two events arrive takes both in one coalesced
+// turn, and one that is idle takes them in two, so where the splits
+// fall depends on when each dispatch goroutine last read its queue.
+// Which triggers reach which model does not depend on that, and it
+// is what the echo gate and the membership filter promise.
+type dispatchRecorder struct {
+	mu       sync.Mutex
+	triggers map[domain.ModelID][]protocol.IRCMessage
+}
+
+func newDispatchRecorder() *dispatchRecorder {
+	return &dispatchRecorder{triggers: make(map[domain.ModelID][]protocol.IRCMessage)}
+}
+
+// record files one turn's triggers under the dispatched model.
+func (r *dispatchRecorder) record(modelID domain.ModelID, events []protocol.IRCMessage) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.triggers[modelID] = append(r.triggers[modelID], events...)
+}
+
+// byModel returns the triggers each model saw, in the order its own
+// dispatch loop read them.
+func (r *dispatchRecorder) byModel() map[domain.ModelID][]protocol.IRCMessage {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	out := make(map[domain.ModelID][]protocol.IRCMessage, len(r.triggers))
+	for id, msgs := range r.triggers {
+		out[id] = append([]protocol.IRCMessage(nil), msgs...)
 	}
-	d := modelclient.NewDispatcher(sess, f.apiClient, f.memStore, chatcmdToolRegistry, nil)
-	return d.DispatchToChannel(ctx, ch, msgs)
+
+	return out
+}
+
+// triggeredBy reports whether a dispatch batch carries a message
+// from `nick`. A batch can carry several triggers, so a fixture that
+// answers one participant asks about the whole batch.
+func triggeredBy(events []protocol.IRCMessage, nick domain.Nick) bool {
+	return slices.ContainsFunc(events, func(e protocol.IRCMessage) bool {
+		return e.From == string(nick)
+	})
+}
+
+// dispatchUserMessageAwaitingTurns sends `body` to `ch` as the user
+// and returns once `turns` dispatch turns have reported
+// `ModelDispatchDone` on the user-client's bus.
+//
+// [dispatchUserMessage] is the settle to reach for. This one is for
+// the fixtures that include an HTTP server: net/http parks a
+// connection's read loop on the network for as long as the
+// connection is pooled, and a goroutine parked there never parks
+// durably — so a bubble containing one never settles and
+// [synctest.Wait] would sit there until the test timed out.
+func dispatchUserMessageAwaitingTurns(ctx context.Context, t *testing.T, sess *Session, ch domain.ChannelName, body string, turns int) {
+	t.Helper()
+
+	_, err := userSendMessage(ctx, t, sess, ch, body)
+	require.NoError(t, err)
+
+	drainEvents(t, sess, turns)
 }
 
 // attachModelClient routes through the session's
@@ -176,8 +245,15 @@ type testModelClientFactory struct {
 	memStore  memory.Store
 	nick      domain.Nick
 
-	mu      sync.Mutex
-	clients map[protocol.ClientID]*modelclient.ModelClient
+	// clients and draining mirror the production manager's two sets:
+	// attached model-clients, and released ones whose dispatch
+	// goroutines are still unwinding. `detachAll` joins both, so a
+	// test that quits or kills a model does not leave its goroutine
+	// running past the end of the test with the `t`-scoped store
+	// still in hand.
+	mu       sync.Mutex
+	clients  map[protocol.ClientID]*modelclient.ModelClient
+	draining []*modelclient.ModelClient
 }
 
 func newTestModelClientFactory(t testing.TB, apiClient api.Client) *testModelClientFactory {
@@ -228,11 +304,16 @@ func (f *testModelClientFactory) Attach(ctx context.Context, sess *Session, inst
 	return mc, nil
 }
 
+// Detach mirrors the production manager: release only, so a model
+// that ends its own connection from inside a dispatch turn does not
+// wait on the goroutine it is running on, with the released client
+// held for `detachAll` to join.
 func (f *testModelClientFactory) Detach(id protocol.ClientID) {
 	f.mu.Lock()
 	mc, ok := f.clients[id]
 	if ok {
 		delete(f.clients, id)
+		f.draining = append(f.draining, mc)
 	}
 	f.mu.Unlock()
 
@@ -240,7 +321,7 @@ func (f *testModelClientFactory) Detach(id protocol.ClientID) {
 		return
 	}
 
-	mc.Detach()
+	mc.Release()
 }
 
 // attached returns the identities the factory currently holds a
@@ -259,14 +340,20 @@ func (f *testModelClientFactory) attached() []protocol.ClientID {
 
 func (f *testModelClientFactory) detachAll() {
 	f.mu.Lock()
-	clients := make([]*modelclient.ModelClient, 0, len(f.clients))
+	clients := make([]*modelclient.ModelClient, 0, len(f.clients)+len(f.draining))
 	for _, mc := range f.clients {
 		clients = append(clients, mc)
 	}
+	clients = append(clients, f.draining...)
 	f.clients = make(map[protocol.ClientID]*modelclient.ModelClient)
+	f.draining = nil
 	f.mu.Unlock()
 
 	for _, mc := range clients {
-		mc.Detach()
+		mc.Release()
+	}
+
+	for _, mc := range clients {
+		mc.Wait()
 	}
 }

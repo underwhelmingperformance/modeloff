@@ -49,8 +49,6 @@ type Store interface {
 	SavePersona(ctx context.Context, p domain.Persona) error
 	DeletePersonasByOrigin(ctx context.Context, origin domain.PersonaOrigin) error
 	ReplaceGeneratedPersonas(ctx context.Context, personas []domain.Persona) error
-
-	Reset(ctx context.Context) error
 }
 
 // Config is the construction-time configuration for a [Manager].
@@ -116,8 +114,20 @@ type Manager struct {
 	supportedModelsReady bool
 	state                atomic.Uint32
 
+	// clients holds the attached model-clients; draining holds the
+	// ones already released, whose dispatch goroutines are on their
+	// way out. Both are guarded by `clientsMu`.
+	//
+	// A released client leaves `clients` the moment it is released,
+	// because its identity is free again from that point. It moves to
+	// `draining` so the join still has something to join: a turn can
+	// be mid-flight for as long as its upstream call takes, and
+	// [Manager.DetachAll] is the only thing that waits for it. A
+	// client dropped at release would take its goroutine out of every
+	// join's reach.
 	clientsMu sync.Mutex
 	clients   map[protocol.ClientID]*modelclient.ModelClient
+	draining  []*modelclient.ModelClient
 }
 
 // New constructs a [Manager] from cfg. The returned value is ready
@@ -305,27 +315,6 @@ func (m *Manager) snapshotAPI() (api.Client, string) {
 	return m.api, m.apiKey
 }
 
-// Reset clears the store, the memory backend, and the supported-
-// models cache. The chat-screen's `/config --reset` semantics rely
-// on this returning the application to a fresh state.
-func (m *Manager) Reset(ctx context.Context) error {
-	return m.inSpan(ctx, "modelmanager.reset", nil, func(ctx context.Context, _ trace.Span) error {
-		if err := m.store.Reset(ctx); err != nil {
-			return fmt.Errorf("reset store: %w", err)
-		}
-
-		if m.memory != nil {
-			if err := m.memory.Reset(ctx); err != nil {
-				return fmt.Errorf("reset memories: %w", err)
-			}
-		}
-
-		m.invalidateCatalogue(ctx)
-
-		return nil
-	})
-}
-
 // maxNickGenerationAttempts caps the number of times the small
 // model is asked for a nickname before [Manager.generateUniqueNick]
 // gives up. Each retry carries the previously rejected suggestion
@@ -500,13 +489,21 @@ func (m *Manager) Attach(ctx context.Context, sess *session.Session, inst *domai
 	return mc, nil
 }
 
-// Detach releases the model-client for `id`. Idempotent on an
-// unknown id.
+// Detach releases the model-client for `id`, ending its connection
+// without waiting for its dispatch goroutine to finish. That
+// goroutine is where a model's own `quit` tool call runs, so this is
+// reached from inside it whenever a model ends its own connection;
+// waiting here would be that goroutine waiting on itself.
+//
+// The client moves to the draining set on the way out, so the
+// goroutine it is still running stays reachable by
+// [Manager.DetachAll]. Idempotent on an unknown id.
 func (m *Manager) Detach(id protocol.ClientID) {
 	m.clientsMu.Lock()
 	mc, ok := m.clients[id]
 	if ok {
 		delete(m.clients, id)
+		m.draining = append(m.draining, mc)
 	}
 	m.clientsMu.Unlock()
 
@@ -514,23 +511,34 @@ func (m *Manager) Detach(id protocol.ClientID) {
 		return
 	}
 
-	mc.Detach()
+	mc.Release()
 }
 
-// DetachAll releases every attached model client. Test fixtures
-// call it on cleanup so the per-instance dispatch goroutines join
-// before the next test starts.
+// DetachAll ends every model client's connection and joins its
+// dispatch goroutine — the attached ones and the ones already
+// draining from an earlier QUIT, KILL, send-queue disconnect or
+// failed ADDMODEL. It releases them all first, so the turns they are
+// in unwind in parallel, then waits for each.
+//
+// It carries [modelclient.ModelClient.Wait]'s restriction: never
+// from a dispatch turn.
 func (m *Manager) DetachAll() {
 	m.clientsMu.Lock()
-	clients := make([]*modelclient.ModelClient, 0, len(m.clients))
+	clients := make([]*modelclient.ModelClient, 0, len(m.clients)+len(m.draining))
 	for _, mc := range m.clients {
 		clients = append(clients, mc)
 	}
+	clients = append(clients, m.draining...)
 	m.clients = make(map[protocol.ClientID]*modelclient.ModelClient)
+	m.draining = nil
 	m.clientsMu.Unlock()
 
 	for _, mc := range clients {
-		mc.Detach()
+		mc.Release()
+	}
+
+	for _, mc := range clients {
+		mc.Wait()
 	}
 }
 

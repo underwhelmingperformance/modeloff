@@ -160,15 +160,32 @@ issuing `serverClient`, not as a branch on which kind of client it is.
   for the live OpenRouter `api.Client`. `ModelClient.Attach`
   registers with the session via the public `Session.Subscribe(c,
   opts)` API, storing the resulting `protocol.Subscription`
-  internally, and returns only an error; `Detach` reverses both,
-  unsubscribing and tearing down the dispatch goroutine. The
+  internally, and returns only an error. Ending the connection is
+  two phases, because a model can end its own: `Release` cancels the
+  loop's context and unsubscribes, and is safe from any goroutine —
+  including the dispatch goroutine a `quit` tool call runs on —
+  while `Wait` joins that goroutine and belongs to whoever owns the
+  client's lifetime. `Detach` is the two together, and carries
+  `Wait`'s restriction. A client released mid-session — by QUIT,
+  KILL, a send-queue disconnect or a failed ADDMODEL — leaves the
+  manager's registry at once, since its identity is free from that
+  point, and moves to a draining set: its turn may still be inside
+  an upstream call, and `Manager.DetachAll` joins the draining set
+  along with the attached one. That is the only join, and `main.go`
+  runs it on the way out. The
   dispatch goroutine watches the subscription's
   `Events` and `Done` channels and runs an LLM turn when
   `dispatchTrigger` says so (a message or join in a window the
   instance shares, a part by another member, an invite addressed to
-  it, a poke). Each turn
+  it, a poke). A burst is taken as a batch: after a delivery arrives
+  the loop drains what is already queued and gives one turn every
+  trigger that arrived for the same window, so a model that was busy
+  catches up in a single prompt. Each turn
   re-reads the api client through the getter so a manager-driven
-  `SetAPIKey` rebuild propagates without reattach.
+  `SetAPIKey` rebuild propagates without reattach. A panic in the
+  loop ends the connection through `Session.Disconnect`, so a dead
+  dispatch goroutine leaves a QUIT in the channel and no orphaned
+  subscription behind it.
 
 The LLM-side state — the api client and its rebuild factory, the
 persona pool, the small-model id used for nick generation, the
@@ -221,9 +238,10 @@ the `session` package:
   `ModelClientFactory.PrepareInstance` (an LLM round-trip) and
   `ModelClientFactory.Attach` (which loads the new client's history
   from the store) off it, and `QUIT` / `KILL` run
-  `ModelClientFactory.Detach` after leaving it — `Detach` joins a
-  dispatch goroutine that may itself be queued behind the loop.
-  Everything that touches session state runs on it.
+  `ModelClientFactory.Detach` after leaving it — the model-client it
+  releases may be one whose dispatch goroutine is queued behind the
+  loop for a command of its own. Everything that touches session
+  state runs on it.
 
 `ADDMODEL` is the one command that takes the loop twice, because it
 is the sequence a client goes through on a real server: register
@@ -238,14 +256,37 @@ the poke scheduler, a model-client's own emissions — hands the
 delivery over and returns, and only the pump waits on the client's
 channel. Without that, a model that is mid-turn and therefore not
 reading, while waiting on the loop for a command of its own, would
-deadlock the whole server. The queue is unbounded today, so a
-backlog survives a consumer that has fallen behind; what it still
+deadlock the whole server. A backlog therefore survives a consumer
+that has fallen behind, up to `sendQAllowance`; what the queue still
 holds is released when the subscription is reaped or the session
-shuts down, since in both cases there is nobody left to read it. The
-bound on its growth arrives with flood control, which disconnects a
-client whose queue exceeds its allowance (RFC 1459 §8.10) — a
-visible KILL-shaped ending in place of a silent gap in the
-transcript.
+shuts down, since in both cases there is nobody left to read it.
+
+Past that allowance the server stops holding anything for that
+client and disconnects it instead (RFC 1459 §8.10). The disconnect
+goes through the ordinary QUIT teardown — `Session.Disconnect` runs
+the QUIT on the loop, releases the model-client and reaps the
+subscription — so the channel sees the client leave with a "Max
+SendQ exceeded" message. Dropping deliveries would leave every
+reader's transcript with a hole in it and nothing to say one was
+there. The rule is one property of the subscription, so it reaches
+every client the server can close, whatever kind of actor is behind
+it.
+
+The exception is the one client whose lifetime is the session's.
+The allowance buys a bounded queue by spending a disconnect, and
+that is a price only a closable connection can pay: this client is
+the process hosting the server, so there is no connection under it
+to close and `Session.Disconnect` is undefined for it. Its
+subscription therefore keeps the unbounded queue every subscription
+had before the allowance existed, and that consequence is accepted
+deliberately — the alternatives are a hole in the one transcript a
+person is reading, or running the session's own shutdown underneath
+a process that is still running. If a hopelessly-behind UI is worth
+noticing, the mechanism is a metric, not a QUIT.
+
+Per-command flood control (the RFC 1459 §8.10 penalty algorithm,
+channel mode `+f`) is the inbound counterpart and is separate from
+this outbound bound.
 
 Channel state — member lists, topics, modes, invitation sets —
 lives in memory in the session and is the source of truth. Records

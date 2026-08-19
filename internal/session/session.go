@@ -618,8 +618,13 @@ type ModelClientFactory interface {
 	// dispatch.
 	Attach(ctx context.Context, sess *Session, inst *domain.Instance) (protocol.Client, error)
 
-	// Detach releases the model-client for `id`. Idempotent on
-	// an unknown id.
+	// Detach releases the model-client for `id`: it unsubscribes
+	// the client and tells its dispatch goroutine to stop. It does
+	// not wait for that goroutine to finish — a model that ends its
+	// own connection with the `quit` tool issues the QUIT from
+	// inside it, so a wait here would be that goroutine waiting on
+	// itself. Joining belongs to whoever owns the client's
+	// lifetime. Idempotent on an unknown id.
 	Detach(id protocol.ClientID)
 }
 
