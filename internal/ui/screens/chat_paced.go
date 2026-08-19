@@ -6,7 +6,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/laney/modeloff/internal/domain"
-	"github.com/laney/modeloff/internal/ui"
 )
 
 const pacedInterval = 400 * time.Millisecond
@@ -24,7 +23,7 @@ func (s ChatScreen) deliverNextPacedCmd(ch domain.ChannelName) tea.Cmd {
 	return func() tea.Msg { return deliverNextPacedMsg{Channel: ch} }
 }
 
-func (s ChatScreen) deliverNextPaced(msg deliverNextPacedMsg) (ui.Model, tea.Cmd) {
+func (s ChatScreen) deliverNextPaced(msg deliverNextPacedMsg) (ChatScreen, tea.Cmd) {
 	queue := s.pacedQueue[msg.Channel]
 	if len(queue) == 0 {
 		return s, nil

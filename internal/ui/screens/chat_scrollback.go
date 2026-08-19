@@ -108,7 +108,7 @@ func (s ChatScreen) lifecycleBumps(channels []domain.ChannelName, actor *domain.
 	var cmds []tea.Cmd
 
 	for _, ch := range channels {
-		if ch == *s.active {
+		if ch == s.active {
 			continue
 		}
 
@@ -129,7 +129,7 @@ func (s ChatScreen) lifecycleBumps(channels []domain.ChannelName, actor *domain.
 			continue
 		}
 
-		if dm.Name() == *s.active {
+		if dm.Name() == s.active {
 			continue
 		}
 
@@ -160,9 +160,6 @@ func (s ChatScreen) appendToScrollback(ch domain.ChannelName, evt domain.Event) 
 
 		s.channels.Insert(w)
 	}
-
-	s.scrollbackMu.Lock()
-	defer s.scrollbackMu.Unlock()
 
 	w.Scrollback = append(w.Scrollback, evt)
 }

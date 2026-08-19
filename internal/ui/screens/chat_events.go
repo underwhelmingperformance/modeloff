@@ -14,7 +14,6 @@ import (
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/modelclient"
 	"github.com/laney/modeloff/internal/protocol"
-	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/chatcmd"
 	"github.com/laney/modeloff/internal/ui/components"
 )
@@ -24,47 +23,38 @@ import (
 // sequence matters: joins, parts, messages, mode changes, topic
 // info, dispatch lifecycle, names replies, the status-window
 // signal, and focus changes.
-func (s ChatScreen) handleProtocolEvent(msg protocolEventMsg) (ui.Model, tea.Cmd) {
-	var (
-		updated ui.Model
-		cmd     tea.Cmd
-	)
+func (s ChatScreen) handleProtocolEvent(msg protocolEventMsg) (ChatScreen, tea.Cmd) {
+	var cmd tea.Cmd
 
 	s.bufferProtocolEvent(msg.event, msg.targets)
 
 	switch evt := msg.event.(type) {
 	case domain.Join:
-		updated, cmd = s.handleJoinEvent(evt)
+		s, cmd = s.handleJoinEvent(evt)
 	case domain.Part:
-		updated, cmd = s.handlePartEvent(evt)
+		s, cmd = s.handlePartEvent(evt)
 	case domain.Quit:
-		updated, cmd = s.handleQuitEvent(evt, msg.targets)
+		s, cmd = s.handleQuitEvent(evt, msg.targets)
 	case domain.ChannelModeChange:
-		updated, cmd = s.handleChannelModeChangeEvent(evt)
+		s, cmd = s.handleChannelModeChangeEvent(evt)
 	case domain.UserModeChange:
-		updated, cmd = s.handleUserModeChangeEvent(evt)
+		s, cmd = s.handleUserModeChangeEvent(evt)
 	case domain.Message:
-		updated, cmd = s.handleMessageEvent(evt)
+		s, cmd = s.handleMessageEvent(evt)
 	case domain.TopicChange:
-		updated, cmd = s.handleTopicChangeEvent(evt)
+		s, cmd = s.handleTopicChangeEvent(evt)
 	case domain.NickChange:
-		updated, cmd = s.handleNickChangeEvent(evt, msg.targets)
-	case domain.Invited:
-		updated, cmd = s.handleInvitedEvent(evt)
+		s, cmd = s.handleNickChangeEvent(evt, msg.targets)
 	case domain.Kicked:
-		updated, cmd = s.handleKickedEvent(evt)
+		s, cmd = s.handleKickedEvent(evt)
 	case domain.TopicInfo:
-		updated, cmd = s.handleTopicInfoEvent(evt)
+		s, cmd = s.handleTopicInfoEvent(evt)
 	case domain.ModelDispatchStarted:
-		updated, cmd = s.handleModelDispatchStarted(evt)
+		s, cmd = s.handleModelDispatchStarted(evt)
 	case domain.ModelDispatchDone:
-		updated, cmd = s.handleModelDispatchDone(evt)
+		s, cmd = s.handleModelDispatchDone(evt)
 	case domain.NamesReplyEvent:
-		updated, cmd = s.handleNamesReply(evt)
-	}
-
-	if updated != nil {
-		s = updated.(ChatScreen)
+		s, cmd = s.handleNamesReply(evt)
 	}
 
 	return s, tea.Batch(cmd, s.scrollbackUpdatedCmd(), s.listenForProtocolEvents())
@@ -77,14 +67,14 @@ func (s ChatScreen) handleProtocolEvent(msg protocolEventMsg) (ui.Model, tea.Cmd
 // latch would miss the per-tick growth signal and an off-bottom user
 // would never see the "new messages" line.
 func (s ChatScreen) scrollbackUpdatedCmd() tea.Cmd {
-	if s.active == nil || *s.active == "" {
+	if s.active == "" {
 		return nil
 	}
 
-	return msgCmd(components.ScrollbackUpdatedMsg{Channel: *s.active})
+	return msgCmd(components.ScrollbackUpdatedMsg{Channel: s.active})
 }
 
-func (s ChatScreen) handleChannelFocus(msg chatcmd.ChannelFocusMsg) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleChannelFocus(msg chatcmd.ChannelFocusMsg) (ChatScreen, tea.Cmd) {
 	w, exists := s.windowByName(msg.Channel)
 	if !exists {
 		// A focus event for a window the chat screen doesn't
@@ -108,7 +98,7 @@ func (s ChatScreen) handleChannelFocus(msg chatcmd.ChannelFocusMsg) (ui.Model, t
 		return s, msgCmd(components.ChannelHasLifecycleMsg{Channel: msg.Channel})
 	}
 
-	*s.active = msg.Channel
+	s, rebind := s.focus(msg.Channel)
 	w.UserTime = msg.At
 
 	var members domain.MemberList
@@ -116,7 +106,7 @@ func (s ChatScreen) handleChannelFocus(msg chatcmd.ChannelFocusMsg) (ui.Model, t
 		members = cw.Members
 	}
 
-	var cmds []tea.Cmd
+	cmds := []tea.Cmd{rebind}
 	cmds = append(cmds, msgCmd(components.SetPlaceholderMsg{}))
 	cmds = append(cmds, msgCmd(components.SetChannelMsg{
 		Channel: msg.Channel,
@@ -140,11 +130,11 @@ func (s ChatScreen) handleChannelFocus(msg chatcmd.ChannelFocusMsg) (ui.Model, t
 // activity and surfaces on the sidebar instead. An empty active —
 // the startup case — accepts any event.
 func (s ChatScreen) focusWins(at time.Time) bool {
-	if s.active == nil || *s.active == "" {
+	if s.active == "" {
 		return true
 	}
 
-	active, ok := s.windowByName(*s.active)
+	active, ok := s.windowByName(s.active)
 	if !ok {
 		return true
 	}
@@ -181,7 +171,7 @@ func (s ChatScreen) persistLastChannel(ch domain.ChannelName) tea.Cmd {
 // keeps the user where they are if they've already navigated past
 // this join, and lands them on the freshest autojoin channel
 // otherwise.
-func (s ChatScreen) handleNamesReply(msg domain.NamesReplyEvent) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleNamesReply(msg domain.NamesReplyEvent) (ChatScreen, tea.Cmd) {
 	w, ok := s.windowByName(msg.Channel)
 	if !ok {
 		// `NamesReplyEvent` only follows a real user-join; the
@@ -205,14 +195,14 @@ func (s ChatScreen) handleNamesReply(msg domain.NamesReplyEvent) (ui.Model, tea.
 		msgCmd(chatcmd.ChannelFocusMsg{Channel: msg.Channel, At: w.UserTime}),
 	}
 
-	if isChannel && msg.Channel == *s.active {
+	if isChannel && msg.Channel == s.active {
 		cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: cw.Members}))
 	}
 
 	return s, tea.Batch(cmds...)
 }
 
-func (s ChatScreen) handleJoinEvent(msg domain.Join) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleJoinEvent(msg domain.Join) (ChatScreen, tea.Cmd) {
 	isUser := msg.Instance == s.user.Instance()
 
 	w, channelKnown := s.windowByName(msg.Target)
@@ -238,7 +228,7 @@ func (s ChatScreen) handleJoinEvent(msg domain.Join) (ui.Model, tea.Cmd) {
 	}
 
 	if !isUser {
-		if msg.Target == *s.active && cw != nil {
+		if msg.Target == s.active && cw != nil {
 			return s, msgCmd(components.NickListUpdatedMsg{Members: cw.Members})
 		}
 
@@ -263,7 +253,7 @@ func (s ChatScreen) handleJoinEvent(msg domain.Join) (ui.Model, tea.Cmd) {
 	)
 }
 
-func (s ChatScreen) handleChannelModeChangeEvent(msg domain.ChannelModeChange) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleChannelModeChangeEvent(msg domain.ChannelModeChange) (ChatScreen, tea.Cmd) {
 	cw, ok := s.channelWindowByName(msg.Target)
 	if !ok {
 		return s, nil
@@ -271,7 +261,7 @@ func (s ChatScreen) handleChannelModeChangeEvent(msg domain.ChannelModeChange) (
 
 	cw.Members.SetMode(msg.Instance, domain.NickModeFor(msg.Flag, msg.Add))
 
-	if msg.Target != *s.active {
+	if msg.Target != s.active {
 		return s, nil
 	}
 
@@ -283,7 +273,7 @@ func (s ChatScreen) handleChannelModeChangeEvent(msg domain.ChannelModeChange) (
 // set may have flipped — re-emit CommandsMsg from VisibleCommands so
 // the /help slice and the completion popover both reflect the new
 // capability state on next render.
-func (s ChatScreen) handleUserModeChangeEvent(msg domain.UserModeChange) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleUserModeChangeEvent(msg domain.UserModeChange) (ChatScreen, tea.Cmd) {
 	if msg.InstanceID != s.user.Instance().ID() {
 		return s, nil
 	}
@@ -293,8 +283,13 @@ func (s ChatScreen) handleUserModeChangeEvent(msg domain.UserModeChange) (ui.Mod
 	})
 }
 
-func (s ChatScreen) handlePartEvent(msg domain.Part) (ui.Model, tea.Cmd) {
-	leavingActive := *s.active == msg.Target
+// handlePartEvent narrates a departure and, when the departing actor
+// is the user, closes the window. A PART names the actor that left
+// (RFC 2812 §3.2.2): a model leaving drops it from the nick list and
+// nothing more — the user is still in the channel, so the sidebar
+// entry stays and the visible area does not move.
+func (s ChatScreen) handlePartEvent(msg domain.Part) (ChatScreen, tea.Cmd) {
+	isUser := msg.Instance == s.user.Instance()
 
 	// Remove the member from the channel's member list.
 	if cw, ok := s.channelWindowByName(msg.Target); ok {
@@ -303,49 +298,18 @@ func (s ChatScreen) handlePartEvent(msg domain.Part) (ui.Model, tea.Cmd) {
 		}
 	}
 
-	// If the user is leaving, remove the channel and purge any
-	// pending paced messages queued for it. Already-scheduled ticks
-	// for the parted channel's queue will no-op via
-	// deliverNextPaced's empty-queue branch when they fire.
-	if msg.Instance == s.user.Instance() {
-		s.channels.Remove(windowKey(msg.Target))
-		delete(s.pacedQueue, msg.Target)
-		s.checklist.channelCount = s.realChannelCount()
-	}
-
 	var cmds []tea.Cmd
-	cmds = append(cmds, msgCmd(components.ChannelRemovedMsg{Channel: msg.Target}))
 
-	if leavingActive {
-		if first, ok := s.firstRealChannel(); ok {
-			*s.active = first.Name()
-			// Bump the new active's `UserTime` to the Part moment.
-			// The Part is the user's freshest deliberate action,
-			// so any still-in-flight focus event from before the
-			// Part (e.g. a buffered `NamesReply` for the channel
-			// we just left) must lose the next [focusWins]
-			// comparison and not steal the visible area back.
-			first.UserTime = msg.At
-		} else {
-			*s.active = ""
-			cmds = append(cmds, msgCmd(components.SetPlaceholderMsg{
-				Text: s.checklist.Render(),
-			}))
-		}
-
-		cmds = append(cmds, msgCmd(components.SetChannelMsg{
-			Channel: *s.active,
-			Topic:   s.activeTopic(),
-			Kind:    s.activeKind(),
-		}))
-		cmds = append(cmds, msgCmd(components.ChannelActiveMsg{Channel: *s.active}))
-		cmds = append(cmds, s.persistLastChannel(*s.active))
+	if isUser {
+		var closed tea.Cmd
+		s, closed = s.closeWindow(msg.Target, msg.At)
+		cmds = append(cmds, closed)
 	}
 
 	var members domain.MemberList
 
-	if *s.active != "" {
-		if cw, ok := s.channelWindowByName(*s.active); ok {
+	if s.active != "" {
+		if cw, ok := s.channelWindowByName(s.active); ok {
 			members = cw.Members
 		}
 	}
@@ -355,7 +319,56 @@ func (s ChatScreen) handlePartEvent(msg domain.Part) (ui.Model, tea.Cmd) {
 	return s, tea.Batch(cmds...)
 }
 
-func (s ChatScreen) handleQuitEvent(msg domain.Quit, targets []domain.ChannelName) (ui.Model, tea.Cmd) {
+// closeWindow drops a window the user has left: the sidebar entry,
+// the cached window, and any paced messages still queued for it.
+// Already-scheduled ticks for the queue no-op via deliverNextPaced's
+// empty-queue branch when they fire. When the closed window was the
+// visible one the user lands on the first remaining channel, or on
+// the welcome checklist when none is left. `at` is the moment of the
+// departure, which the new visible window takes as its `UserTime`:
+// the part is the user's freshest deliberate action, so [focusWins]
+// keeps them here against any focus event still in flight from before
+// it, such as a buffered `NamesReply` for the window just closed.
+func (s ChatScreen) closeWindow(ch domain.ChannelName, at time.Time) (ChatScreen, tea.Cmd) {
+	wasVisible := s.active == ch
+
+	s.channels.Remove(windowKey(ch))
+	delete(s.pacedQueue, ch)
+	s.checklist.channelCount = s.realChannelCount()
+
+	cmds := []tea.Cmd{msgCmd(components.ChannelRemovedMsg{Channel: ch})}
+
+	if !wasVisible {
+		return s, tea.Batch(cmds...)
+	}
+
+	var rebind tea.Cmd
+
+	if first, ok := s.firstRealChannel(); ok {
+		s, rebind = s.focus(first.Name())
+		first.UserTime = at
+	} else {
+		s, rebind = s.focus("")
+		cmds = append(cmds, msgCmd(components.SetPlaceholderMsg{
+			Text: s.checklist.Render(),
+		}))
+	}
+
+	cmds = append(cmds,
+		rebind,
+		msgCmd(components.SetChannelMsg{
+			Channel: s.active,
+			Topic:   s.activeTopic(),
+			Kind:    s.activeKind(),
+		}),
+		msgCmd(components.ChannelActiveMsg{Channel: s.active}),
+		s.persistLastChannel(s.active),
+	)
+
+	return s, tea.Batch(cmds...)
+}
+
+func (s ChatScreen) handleQuitEvent(msg domain.Quit, targets []domain.ChannelName) (ChatScreen, tea.Cmd) {
 	// `bufferProtocolEvent` has already fanned the line into
 	// every channel in `targets` and any open DM with the actor.
 	// The handler updates the in-memory `Members` snapshot for
@@ -378,11 +391,11 @@ func (s ChatScreen) handleQuitEvent(msg domain.Quit, targets []domain.ChannelNam
 	var cmds []tea.Cmd
 
 	for _, ch := range targets {
-		if ch != *s.active {
+		if ch != s.active {
 			continue
 		}
 
-		if cw, ok := s.channelWindowByName(*s.active); ok {
+		if cw, ok := s.channelWindowByName(s.active); ok {
 			cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: cw.Members}))
 		}
 	}
@@ -392,28 +405,28 @@ func (s ChatScreen) handleQuitEvent(msg domain.Quit, targets []domain.ChannelNam
 	return s, tea.Batch(cmds...)
 }
 
-func (s ChatScreen) handleTopicChangeEvent(msg domain.TopicChange) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleTopicChangeEvent(msg domain.TopicChange) (ChatScreen, tea.Cmd) {
 	if cw, ok := s.channelWindowByName(msg.Target); ok {
 		cw.Topic = msg.Topic
 		cw.TopicSetBy = msg.By
 		cw.TopicSetAt = msg.At
 	}
 
-	if *s.active != msg.Target {
+	if s.active != msg.Target {
 		return s, nil
 	}
 
 	return s, msgCmd(components.TopicUpdatedMsg{Topic: msg.Topic})
 }
 
-func (s ChatScreen) handleTopicInfoEvent(msg domain.TopicInfo) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleTopicInfoEvent(msg domain.TopicInfo) (ChatScreen, tea.Cmd) {
 	if cw, ok := s.channelWindowByName(msg.Target); ok {
 		cw.Topic = msg.Topic
 		cw.TopicSetBy = msg.TopicSetBy
 		cw.TopicSetAt = msg.TopicSetAt
 	}
 
-	if *s.active != msg.Target {
+	if s.active != msg.Target {
 		return s, nil
 	}
 
@@ -424,7 +437,7 @@ func (s ChatScreen) handleTopicInfoEvent(msg domain.TopicInfo) (ui.Model, tea.Cm
 	})
 }
 
-func (s ChatScreen) handleNickChangeEvent(msg domain.NickChange, targets []domain.ChannelName) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleNickChangeEvent(msg domain.NickChange, targets []domain.ChannelName) (ChatScreen, tea.Cmd) {
 	// `msg.Instance.Nick()` is already the new value — the
 	// session renames before emitting. Update the snapshot in
 	// each affected channel's member list, then fire the
@@ -444,22 +457,22 @@ func (s ChatScreen) handleNickChangeEvent(msg domain.NickChange, targets []domai
 
 	var cmds []tea.Cmd
 
-	activeIsChannel := slices.Contains(targets, *s.active)
+	activeIsChannel := slices.Contains(targets, s.active)
 
 	activeDM, activeIsDM := s.activeDMWith(msg.Instance)
-	activeDMVisible := activeIsDM && activeDM.Name() == *s.active
+	activeDMVisible := activeIsDM && activeDM.Name() == s.active
 
-	if activeIsChannel || activeDMVisible {
-		if activeIsChannel {
-			if cw, ok := s.channelWindowByName(*s.active); ok {
-				cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: cw.Members}))
-			}
+	if activeIsChannel {
+		if cw, ok := s.channelWindowByName(s.active); ok {
+			cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: cw.Members}))
 		}
+	}
 
-		if msg.Instance == s.user.Instance() {
-			cmds = append(cmds, msgCmd(components.UserNickMsg{Nick: msg.NewNick}))
-		}
-
+	if msg.Instance == s.user.Instance() {
+		var own tea.Cmd
+		s, own = s.handleOwnNickChange(msg, activeIsChannel)
+		cmds = append(cmds, own)
+	} else if activeIsChannel || activeDMVisible {
 		cmds = append(cmds, msgCmd(components.HighlightWordsMsg{
 			Words:    s.highlightWords,
 			UserNick: s.user.Nick(),
@@ -467,6 +480,41 @@ func (s ChatScreen) handleNickChangeEvent(msg domain.NickChange, targets []domai
 	}
 
 	cmds = append(cmds, s.lifecycleBumps(targets, msg.Instance)...)
+
+	return s, tea.Batch(cmds...)
+}
+
+// handleOwnNickChange applies the user's own rename to the three
+// parts of the UI that carry the user's own name: the input bar's
+// prompt, the highlight-word set that decides what counts as a
+// mention, and the welcome checklist. All three are global to the
+// session, so all three move on every rename, whatever window is in
+// view. Only the nick list belongs to a window, and its refresh stays
+// with the caller.
+//
+// The confirmation line follows the same rule. `bufferActorEvent` has
+// already filed the rename into every window the session named as a
+// target; `renderedInActive` says whether the visible window was one
+// of them, and it is rendered here when it was not, so the user sees
+// the answer wherever they typed the command.
+func (s ChatScreen) handleOwnNickChange(msg domain.NickChange, renderedInActive bool) (ChatScreen, tea.Cmd) {
+	s.checklist.nick = msg.NewNick
+
+	cmds := []tea.Cmd{
+		msgCmd(components.UserNickMsg{Nick: msg.NewNick}),
+		msgCmd(components.HighlightWordsMsg{
+			Words:    s.highlightWords,
+			UserNick: msg.NewNick,
+		}),
+	}
+
+	if !renderedInActive {
+		cmds = append(cmds, s.logAndShow(msg))
+	}
+
+	if s.realChannelCount() == 0 {
+		cmds = append(cmds, msgCmd(components.SetPlaceholderMsg{Text: s.checklist.Render()}))
+	}
 
 	return s, tea.Batch(cmds...)
 }
@@ -492,23 +540,7 @@ func (s ChatScreen) activeDMWith(actor *domain.Instance) (*domain.DMWindow, bool
 	return nil, false
 }
 
-func (s ChatScreen) handleInvitedEvent(msg domain.Invited) (ui.Model, tea.Cmd) {
-	if cw, ok := s.channelWindowByName(msg.Target); ok {
-		if !cw.Members.HasInstance(msg.Instance) {
-			cw.Members.Add(msg.Instance)
-		}
-	}
-
-	var members domain.MemberList
-
-	if cw, ok := s.channelWindowByName(*s.active); ok {
-		members = cw.Members
-	}
-
-	return s, msgCmd(components.NickListUpdatedMsg{Members: members})
-}
-
-func (s ChatScreen) handleKickedEvent(msg domain.Kicked) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleKickedEvent(msg domain.Kicked) (ChatScreen, tea.Cmd) {
 	if cw, ok := s.channelWindowByName(msg.Target); ok {
 		if m, mOK := cw.Members.GetByInstance(msg.Instance); mOK {
 			cw.Members.Remove(m)
@@ -517,7 +549,7 @@ func (s ChatScreen) handleKickedEvent(msg domain.Kicked) (ui.Model, tea.Cmd) {
 
 	var members domain.MemberList
 
-	if cw, ok := s.channelWindowByName(*s.active); ok {
+	if cw, ok := s.channelWindowByName(s.active); ok {
 		members = cw.Members
 	}
 
@@ -531,7 +563,7 @@ func (s ChatScreen) handleKickedEvent(msg domain.Kicked) (ui.Model, tea.Cmd) {
 // Messages enter the per-channel paced queue: the first message in an
 // empty queue delivers immediately,
 // subsequent messages drain at [pacedInterval] cadence.
-func (s ChatScreen) handleMessageEvent(msg domain.Message) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleMessageEvent(msg domain.Message) (ChatScreen, tea.Cmd) {
 	key, ok := msg.RoutingKey(s.user.Instance().ID())
 	if !ok {
 		// Foreign DM (model-to-model traffic the user is not a
@@ -562,7 +594,7 @@ func (s ChatScreen) handleMessageEvent(msg domain.Message) (ui.Model, tea.Cmd) {
 // through a getter and `bufferEvent` has already appended the
 // message; no live `StoredEvent` is needed.
 func (s ChatScreen) renderMessage(msg domain.Message, key domain.ChannelName) tea.Cmd {
-	if key == *s.active {
+	if key == s.active {
 		return nil
 	}
 
@@ -576,7 +608,7 @@ func (s ChatScreen) renderMessage(msg domain.Message, key domain.ChannelName) te
 // (insert is idempotent), optionally focus-switches, and
 // optionally sends a trailing body. `/query` sets `Focus`;
 // `/msg` does not.
-func (s ChatScreen) handleDMOpenedMsg(msg chatcmd.DMOpenedMsg) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleDMOpenedMsg(msg chatcmd.DMOpenedMsg) (ChatScreen, tea.Cmd) {
 	dm := domain.NewDMWindow(msg.Counterpart, msg.At)
 	name := dm.Name()
 
@@ -593,7 +625,10 @@ func (s ChatScreen) handleDMOpenedMsg(msg chatcmd.DMOpenedMsg) (ui.Model, tea.Cm
 	}
 
 	if msg.Focus {
-		*s.active = name
+		var rebind tea.Cmd
+		s, rebind = s.focus(name)
+
+		cmds = append(cmds, rebind)
 		cmds = append(cmds, msgCmd(components.SetPlaceholderMsg{}))
 		cmds = append(cmds, msgCmd(components.SetChannelMsg{
 			Channel: name,
@@ -606,30 +641,34 @@ func (s ChatScreen) handleDMOpenedMsg(msg chatcmd.DMOpenedMsg) (ui.Model, tea.Cm
 	}
 
 	if msg.Body != "" {
-		cmds = append(cmds, s.sendMessageCmd(name, msg.Body))
+		cmds = append(cmds, s.sendMessageCmd("msg", name, msg.Body))
 	}
 
 	return s, tea.Sequence(cmds...)
 }
 
-// sendMessageCmd fires a user `SendMessage`. On success the sent line
-// returns over the protocol bus via echo-message and renders through
-// the normal event path; only a failure surfaces here.
-func (s ChatScreen) sendMessageCmd(target domain.ChannelName, body string) tea.Cmd {
+// sendMessageCmd fires a user `SendMessage` at `target`. The window
+// is a parameter, so the command carries the window its caller
+// resolved on the Update goroutine and a later focus change cannot
+// move the line. On success the sent line returns over the protocol
+// bus via echo-message and renders through the normal event path;
+// only a failure surfaces here, labelled with the `operation` the
+// user asked for.
+func (s ChatScreen) sendMessageCmd(operation string, target domain.ChannelName, body string) tea.Cmd {
 	return func() tea.Msg {
 		if _, err := s.user.SendMessage(s.baseContext(), target, body); err != nil {
-			return domain.ErrorEvent{Operation: "msg", Err: err, At: time.Now()}
+			return domain.ErrorEvent{Operation: operation, Err: err, At: time.Now()}
 		}
 
 		return nil
 	}
 }
 
-func (s ChatScreen) handleErrorEvent(msg domain.ErrorEvent) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleErrorEvent(msg domain.ErrorEvent) (ChatScreen, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	commandError := domain.CommandError{
-		Target: *s.active,
+		Target: s.active,
 		Err:    fmt.Sprintf("%s: %s", msg.Operation, msg.Err),
 		At:     msg.At,
 	}
@@ -656,7 +695,7 @@ func (s ChatScreen) recordReply(reply domain.IssuerReply) tea.Cmd {
 // dispatching and refreshes the nick list's thinking indicator,
 // which surfaces every dispatching instance whose membership the
 // active window can see.
-func (s ChatScreen) handleModelDispatchStarted(msg domain.ModelDispatchStarted) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleModelDispatchStarted(msg domain.ModelDispatchStarted) (ChatScreen, tea.Cmd) {
 	if msg.Instance == nil {
 		return s, nil
 	}
@@ -668,7 +707,7 @@ func (s ChatScreen) handleModelDispatchStarted(msg domain.ModelDispatchStarted) 
 
 // handleModelDispatchDone clears the dispatching mark for
 // `msg.Instance` and refreshes the nick list's thinking indicator.
-func (s ChatScreen) handleModelDispatchDone(msg domain.ModelDispatchDone) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleModelDispatchDone(msg domain.ModelDispatchDone) (ChatScreen, tea.Cmd) {
 	if msg.Instance != nil {
 		delete(s.dispatching, msg.Instance)
 	}
@@ -681,11 +720,11 @@ func (s ChatScreen) handleModelDispatchDone(msg domain.ModelDispatchDone) (ui.Mo
 // channels the user is not in stay invisible — RFC 2812 §3.3.1's
 // intersection rule applied to the local view.
 func (s ChatScreen) thinkingNicks() map[domain.Nick]bool {
-	if s.active == nil || *s.active == "" || len(s.dispatching) == 0 {
+	if s.active == "" || len(s.dispatching) == 0 {
 		return nil
 	}
 
-	cw, ok := s.channelWindowByName(*s.active)
+	cw, ok := s.channelWindowByName(s.active)
 	if !ok {
 		return nil
 	}
@@ -706,36 +745,30 @@ func (s ChatScreen) isHighlight(body string) bool {
 	return components.ContainsHighlightWord(body, s.highlightWords, s.user.Nick())
 }
 
-func (s ChatScreen) handleLiveModelsLoaded(msg liveModelsLoadedMsg) (ui.Model, tea.Cmd) {
-	*s.liveModels = msg.models
-	*s.liveModelsState = command.SuggestionStateReady
-	s.checklist.modelCount = len(msg.models)
+func (s ChatScreen) handleLiveModelsLoaded(msg liveModelsLoadedMsg) (ChatScreen, tea.Cmd) {
+	s, rebind := s.setLiveModels(msg.models, command.SuggestionStateReady)
 
 	if s.realChannelCount() == 0 {
-		return s, msgCmd(components.SetPlaceholderMsg{Text: s.checklist.Render()})
+		return s, tea.Batch(rebind, msgCmd(components.SetPlaceholderMsg{Text: s.checklist.Render()}))
 	}
 
-	return s, nil
+	return s, rebind
 }
 
 // handleLiveModelsLoadFailed is the UI-policy home for live-model
-// load failures. When `*s.active` is empty — no real channel
+// load failures. When `s.active` is empty — no real channel
 // joined yet — the notice is routed to `&modeloff`, the
 // chat-screen-owned default landing window.
-func (s ChatScreen) handleLiveModelsLoadFailed(msg liveModelsLoadFailedMsg) (ui.Model, tea.Cmd) {
-	*s.liveModels = nil
-	s.checklist.modelCount = 0
-
+func (s ChatScreen) handleLiveModelsLoadFailed(msg liveModelsLoadFailedMsg) (ChatScreen, tea.Cmd) {
 	// ErrNoAPIKey here is a TOCTOU between loadLiveModels' HasAPIKey
 	// short-circuit and Session.ListModels' check; treat as silent.
 	if errors.Is(msg.err, modelclient.ErrNoAPIKey) {
-		*s.liveModelsState = command.SuggestionStateReady
-		return s, nil
+		return s.setLiveModels(nil, command.SuggestionStateReady)
 	}
 
-	*s.liveModelsState = command.SuggestionStateError
+	s, rebind := s.setLiveModels(nil, command.SuggestionStateError)
 
-	channel := *s.active
+	channel := s.active
 	if channel == "" {
 		channel = domain.StatusChannelName
 	}
@@ -746,19 +779,19 @@ func (s ChatScreen) handleLiveModelsLoadFailed(msg liveModelsLoadFailedMsg) (ui.
 		"error", msg.err,
 	)
 
-	return s, s.logAndShowOn(channel, domain.SystemNotice{
+	return s, tea.Batch(rebind, s.logAndShowOn(channel, domain.SystemNotice{
 		Target: channel,
 		Text:   fmt.Sprintf("Model list unavailable: %s.", msg.err),
 		At:     time.Now(),
-	})
+	}))
 }
 
 func (s ChatScreen) activeTopic() string {
-	if *s.active == "" {
+	if s.active == "" {
 		return ""
 	}
 
-	cw, ok := s.channelWindowByName(*s.active)
+	cw, ok := s.channelWindowByName(s.active)
 	if !ok {
 		return ""
 	}
@@ -767,20 +800,20 @@ func (s ChatScreen) activeTopic() string {
 }
 
 func (s ChatScreen) activeKind() domain.ChannelKind {
-	if *s.active == "" {
+	if s.active == "" {
 		return domain.KindChannel
 	}
 
-	w, ok := s.windowByName(*s.active)
+	w, ok := s.windowByName(s.active)
 	if !ok {
-		return domain.InferChannelKind(*s.active)
+		return domain.InferChannelKind(s.active)
 	}
 
 	return w.Kind()
 }
 
 func (s ChatScreen) activeMemberNicks() iter.Seq[domain.Nick] {
-	cw, ok := s.channelWindowByName(*s.active)
+	cw, ok := s.channelWindowByName(s.active)
 	if !ok {
 		return func(func(domain.Nick) bool) {}
 	}
@@ -794,7 +827,7 @@ func (s ChatScreen) activeMemberNicks() iter.Seq[domain.Nick] {
 // see in their nick list, matching IRC semantics.
 func (s ChatScreen) activeChannelInstances() iter.Seq[*domain.Instance] {
 	return func(yield func(*domain.Instance) bool) {
-		cw, ok := s.channelWindowByName(*s.active)
+		cw, ok := s.channelWindowByName(s.active)
 		if !ok {
 			return
 		}

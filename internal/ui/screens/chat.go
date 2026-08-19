@@ -6,7 +6,6 @@ import (
 	"iter"
 	"log/slog"
 	"slices"
-	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -67,8 +66,8 @@ type liveModelsLoadedMsg struct {
 }
 
 // liveModelsLoadFailedMsg is dispatched when `ListModels` fails. It
-// carries the underlying error; the handler empties `*s.liveModels`
-// to degrade tab-completion gracefully, treats
+// carries the underlying error; the handler empties the live-model
+// cache to degrade tab-completion gracefully, treats
 // `modelclient.ErrNoAPIKey` as a silent no-op, and surfaces other
 // failures as a `SystemNotice`.
 type liveModelsLoadFailedMsg struct {
@@ -119,10 +118,9 @@ type ChatScreen struct {
 	keyMap      components.ChatScreenKeyMap
 
 	channels        *set.Sorted[*Window]
-	liveModels      *[]chatcmd.ModelOption
-	liveModelsState *command.SuggestionState
+	liveModels      []chatcmd.ModelOption
+	liveModelsState command.SuggestionState
 	parser          chatcmd.Parser
-	completer       command.Completable
 	// pacedQueue holds queued non-user incoming messages keyed by
 	// channel. Each channel drains at its own paced cadence
 	// (pacedInterval) independently, so a burst of messages in one
@@ -141,19 +139,24 @@ type ChatScreen struct {
 	// reference types.
 	dispatching map[*domain.Instance]bool
 
-	// scrollbackMu guards reads of [Window.Scrollback] from
-	// goroutines other than Update — message-list rendering on a
-	// teardown frame may overlap with a final append from a
-	// background Cmd. Writes happen from the Update goroutine
-	// via [appendToScrollback] (live event-bus traffic) and from
-	// the `logAndShowOn` Cmd goroutine (chat-screen-authored
-	// events). The mutex pointer is shared across value-receiver
-	// copies of `ChatScreen`.
-	scrollbackMu *sync.RWMutex
+	width  int
+	height int
 
-	width     int
-	height    int
-	active    *domain.ChannelName
+	// active names the window the user is looking at. It is a plain
+	// value: an `Update` arm that needs the window a command was
+	// issued against reads it before building the `tea.Cmd`, so the
+	// command carries the window the user typed in even if the user
+	// switches away before Bubble Tea runs it.
+	active domain.ChannelName
+
+	// visible is the render-side handle to the same window. The
+	// message list is built once, in [NewChatScreen], and reads the
+	// visible scrollback through a closure bound then, so the name
+	// it resolves has to outlive the screen value that closure was
+	// built from. [ChatScreen.focus] writes it and `active`
+	// together and is the only writer of either.
+	visible *visibleWindow
+
 	obs       *observability.Runtime
 	summary   components.MetricsSummaryModel
 	checklist WelcomeChecklist
@@ -186,29 +189,13 @@ type ChatScreen struct {
 // `SetChannelMsg` supplies the real kind atomically on the first
 // focus event.
 func NewChatScreen(baseContext func() context.Context, sess SessionReader, mgr *modelmanager.Manager, user *userclient.UserClient, cfgStore config.Store, uiState UIStateStore, initialKind domain.ChannelKind) (ChatScreen, error) {
-	active := domain.ChannelName("")
 	channels := set.NewSorted[*Window]()
-	scrollbackMu := &sync.RWMutex{}
-
-	events := func() []domain.Event {
-		scrollbackMu.RLock()
-		defer scrollbackMu.RUnlock()
-
-		w, ok := channels.Get(windowKey(active))
-		if !ok {
-			return nil
-		}
-
-		return w.Scrollback
-	}
+	visible := &visibleWindow{channels: channels}
 
 	sidebar := components.NewChannelSidebar()
-	chatView := components.NewChatView[chatcmd.CompletionContext](events, "", initialKind, user.Nick(), "")
+	chatView := components.NewChatView[chatcmd.CompletionContext](visible.scrollback, "", initialKind, user.Nick(), "")
 	layout := components.NewMainLayout(sidebar, chatView)
 	layout.NickList = components.NewNickList(domain.NewMemberList())
-
-	liveModels := []chatcmd.ModelOption(nil)
-	liveModelsState := command.SuggestionStateReady
 
 	cs := ChatScreen{
 		baseContext:     baseContext,
@@ -219,15 +206,13 @@ func NewChatScreen(baseContext func() context.Context, sess SessionReader, mgr *
 		cfgStore:        cfgStore,
 		uiState:         uiState,
 		channels:        channels,
-		active:          &active,
-		liveModels:      &liveModels,
-		liveModelsState: &liveModelsState,
+		visible:         visible,
+		liveModelsState: command.SuggestionStateReady,
 		layout:          layout,
 		keyMap:          components.DefaultChatScreenKeyMap,
 		checklist:       NewWelcomeChecklist(user.Nick(), mgr.HasAPIKey()),
 		pacedQueue:      map[domain.ChannelName][]domain.Message{},
 		dispatching:     map[*domain.Instance]bool{},
-		scrollbackMu:    scrollbackMu,
 	}
 
 	parser, err := chatcmd.NewParser()
@@ -236,7 +221,6 @@ func NewChatScreen(baseContext func() context.Context, sess SessionReader, mgr *
 	}
 
 	cs.parser = parser
-	cs.completer = cs.completionSet()
 
 	cfg, err := cs.loadConfig()
 	if err != nil {
@@ -246,6 +230,45 @@ func NewChatScreen(baseContext func() context.Context, sess SessionReader, mgr *
 	cs.highlightWords = cfg.HighlightWords
 
 	return cs, nil
+}
+
+// focus moves the user to `ch` and returns the updated screen
+// alongside the completer rebind that keeps tab-completion in step —
+// the completion context resolves the active window and its kind, so
+// suggestions bind to the window in view. An empty `ch` leaves the
+// user with no window, which is the state the welcome checklist
+// renders against.
+//
+// This is the only writer of the focused window: the `active` value
+// every handler reads and every command closure captures, and the
+// render-side handle the message list resolves, move together.
+func (s ChatScreen) focus(ch domain.ChannelName) (ChatScreen, tea.Cmd) {
+	s.active = ch
+	s.visible.name = ch
+
+	return s, s.rebindCompleter()
+}
+
+// setLiveModels replaces the cached OpenRouter model catalogue and
+// the suggestion state derived from the load that produced it,
+// returning the completer rebind that publishes both to the input
+// bar's popover.
+func (s ChatScreen) setLiveModels(models []chatcmd.ModelOption, state command.SuggestionState) (ChatScreen, tea.Cmd) {
+	s.liveModels = models
+	s.liveModelsState = state
+	s.checklist.modelCount = len(models)
+
+	return s, s.rebindCompleter()
+}
+
+// rebindCompleter republishes the completion set to the input bar.
+// [chatcmd.CompletionContext] reads the chat-screen through accessor
+// closures; the ones that read a plain value field — the active
+// window, its kind, the live-model cache — freeze that value when the
+// closure is built, so a fresh set has to be published whenever one
+// of them moves.
+func (s ChatScreen) rebindCompleter() tea.Cmd {
+	return msgCmd(components.CompleterMsg{Completer: s.completionSet()})
 }
 
 // realChannelCount returns the number of sidebar entries that are
@@ -330,7 +353,7 @@ func (s ChatScreen) Init() tea.Cmd {
 		msgCmd(components.CommandsMsg[chatcmd.CompletionContext]{
 			Commands: command.VisibleCommands(s.parser.Set(), s.client.Caps()),
 		}),
-		msgCmd(components.CompleterMsg{Completer: s.completer}),
+		s.rebindCompleter(),
 		msgCmd(components.HighlightWordsMsg{
 			Words:    s.highlightWords,
 			UserNick: s.user.Nick(),
@@ -359,12 +382,12 @@ func (s ChatScreen) Init() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-// bootstrapFromSession pre-seeds the channel cache and emits a
-// focus event for the most-recently-joined channel. The Window's
-// `UserTime` is the session's recorded join time, so a focus
-// event arriving later from the protocol bus with the same
-// timestamp neither steals the focus nor loses it — the user's
-// most recent deliberate channel wins.
+// bootstrapFromSession pre-seeds the channel cache and emits a focus
+// event for the window the user should land in. The Window's
+// `UserTime` is the session's recorded join time, so a focus event
+// arriving later from the protocol bus with the same timestamp
+// neither steals the focus nor loses it — the user's most recent
+// deliberate channel wins.
 func (s ChatScreen) bootstrapFromSession() []tea.Cmd {
 	channels := s.user.Instance().Channels()
 	if channels == nil || channels.Len() == 0 {
@@ -373,6 +396,7 @@ func (s ChatScreen) bootstrapFromSession() []tea.Cmd {
 
 	var (
 		cmds       []tea.Cmd
+		joined     = map[domain.ChannelName]time.Time{}
 		newestName domain.ChannelName
 		newestTime time.Time
 	)
@@ -384,20 +408,59 @@ func (s ChatScreen) bootstrapFromSession() []tea.Cmd {
 		s.channels.Insert(w)
 		cmds = append(cmds, msgCmd(components.ChannelAddedMsg{Channel: cw}))
 
+		joined[pair.Key] = pair.Value
+
 		if pair.Value.After(newestTime) {
 			newestTime = pair.Value
 			newestName = pair.Key
 		}
 	}
 
-	if newestName != "" {
-		cmds = append(cmds, msgCmd(chatcmd.ChannelFocusMsg{
-			Channel: newestName,
-			At:      newestTime,
-		}))
+	// The window the user left open last session is their standing
+	// preference, so it beats the join times: it is stamped `now`,
+	// which outranks every join-time-stamped proposal the autojoin
+	// NAMES replies will make as the protocol bus drains. Anything
+	// the user is not currently in falls back to the freshest join —
+	// a first run with nothing recorded, a channel since parted, or
+	// a DM, whose counterpart this bootstrap has no handle on. The
+	// fallback carries its own join time, so the matching NAMES
+	// reply neither steals the focus nor loses it.
+	landing, at := newestName, newestTime
+
+	if last, ok := s.restoredChannel(); ok {
+		if _, open := joined[last]; open {
+			landing, at = last, time.Now()
+		}
+	}
+
+	if landing != "" {
+		cmds = append(cmds, msgCmd(chatcmd.ChannelFocusMsg{Channel: landing, At: at}))
 	}
 
 	return cmds
+}
+
+// restoredChannel reads the window the user had open when they last
+// quit. A screen built without a [UIStateStore] has no preference to
+// restore, and a read failure is reported and treated the same way:
+// the caller falls back to the freshest join.
+func (s ChatScreen) restoredChannel() (domain.ChannelName, bool) {
+	if s.uiState == nil {
+		return "", false
+	}
+
+	last, err := s.uiState.GetLastChannel(s.baseContext())
+	if err != nil {
+		slog.Default().WarnContext(s.baseContext(), "read last channel",
+			"component", "ui",
+			"screen", "chat",
+			"error", err,
+		)
+
+		return "", false
+	}
+
+	return last, last != ""
 }
 
 // listenForProtocolEvents reads the next delivery from the
@@ -420,8 +483,26 @@ func (s ChatScreen) listenForProtocolEvents() tea.Cmd {
 	}
 }
 
-// Update implements ui.Model.
+// Update implements ui.Model. It adapts the concrete screen the
+// message handling produces to the [ui.Model] the router stores.
 func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
+	next, cmd := s.update(msg)
+
+	return next, cmd
+}
+
+// update routes a message to its handler and returns the updated
+// screen. Every arm and every handler returns the concrete
+// `ChatScreen` by value, so a state change reaches the caller as a
+// snapshot taken the moment the handler ran. A command built from
+// that snapshot keeps the values its arm read there, even once Bubble
+// Tea runs it later: it cannot observe whatever the screen holds by
+// then, because it never held a pointer into the screen to begin
+// with. The window records, the paced queue and the dispatching set
+// stay shared — they are per-window and per-instance state with a
+// lifetime longer than one message, and only this goroutine touches
+// them.
+func (s ChatScreen) update(msg tea.Msg) (ChatScreen, tea.Cmd) {
 	forwardedMsg := msg
 	summary, summaryCmd := s.summary.Update(msg)
 	s.summary = summary
@@ -442,13 +523,11 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		return s, tea.Quit
 
 	case chatcmd.HelpResult:
-		return s, s.logAndShow(domain.Help{Target: *s.active, At: time.Now()})
+		return s, s.logAndShow(domain.Help{Target: s.active, At: time.Now()})
 
 	case chatcmd.ClearResult:
-		if w, ok := s.windowByName(*s.active); ok {
-			s.scrollbackMu.Lock()
+		if w, ok := s.windowByName(s.active); ok {
 			w.Scrollback = nil
-			s.scrollbackMu.Unlock()
 		}
 		return s, nil
 
@@ -469,7 +548,7 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 	case chatcmd.UsageError:
 		return s, s.logAndShow(domain.UsageHint{
-			Target: *s.active, Command: msg.Command, Usage: msg.Usage, At: time.Now(),
+			Target: s.active, Command: msg.Command, Usage: msg.Usage, At: time.Now(),
 		})
 
 	case chatcmd.NoChannelError:
@@ -489,12 +568,13 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		}
 
 		s.checklist.hasAPIKey = !msg.Reset
-		s.checklist.modelCount = 0
-		*s.liveModels = nil
-		*s.liveModelsState = command.SuggestionStateReady
+
+		var rebind tea.Cmd
+		s, rebind = s.setLiveModels(nil, command.SuggestionStateReady)
 
 		if s.realChannelCount() == 0 {
 			return s, tea.Batch(
+				rebind,
 				s.loadLiveModels(),
 				s.ensurePersonas(),
 				msgCmd(components.SetPlaceholderMsg{
@@ -504,8 +584,9 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		}
 
 		return s, tea.Batch(
+			rebind,
 			s.logAndShow(domain.SystemNotice{
-				Target: *s.active, Text: text, At: time.Now(),
+				Target: s.active, Text: text, At: time.Now(),
 			}),
 			s.loadLiveModels(),
 			s.ensurePersonas(),
@@ -518,7 +599,7 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		}
 
 		return s, s.logAndShow(domain.SystemNotice{
-			Target: *s.active,
+			Target: s.active,
 			Text:   text,
 			At:     time.Now(),
 		})
@@ -530,7 +611,7 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		}
 
 		return s, s.logAndShow(domain.SystemNotice{
-			Target: *s.active,
+			Target: s.active,
 			Text:   text,
 			At:     time.Now(),
 		})
@@ -542,7 +623,7 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		}
 
 		return s, s.logAndShow(domain.SystemNotice{
-			Target: *s.active,
+			Target: s.active,
 			Text:   text,
 			At:     time.Now(),
 		})
@@ -557,7 +638,7 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 		return s, tea.Batch(
 			s.logAndShow(domain.SystemNotice{
-				Target: *s.active,
+				Target: s.active,
 				Text:   text,
 				At:     time.Now(),
 			}),
@@ -574,7 +655,7 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		}
 
 		return s, s.logAndShow(domain.SystemNotice{
-			Target: *s.active,
+			Target: s.active,
 			Text:   text,
 			At:     time.Now(),
 		})
@@ -586,7 +667,7 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		}
 
 		return s, s.logAndShow(domain.SystemNotice{
-			Target: *s.active,
+			Target: s.active,
 			Text:   text,
 			At:     time.Now(),
 		})
@@ -604,21 +685,21 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 	case chatcmd.PersonasRegeneratedResult:
 		return s, s.logAndShow(domain.SystemNotice{
-			Target: *s.active,
+			Target: s.active,
 			Text:   fmt.Sprintf("Generated %d personas.", msg.Count),
 			At:     time.Now(),
 		})
 
 	case chatcmd.PersonaSetResult:
 		return s, s.logAndShow(domain.SystemNotice{
-			Target: *s.active,
+			Target: s.active,
 			Text:   fmt.Sprintf("Persona %s saved.", msg.ID),
 			At:     time.Now(),
 		})
 
 	case chatcmd.PersonaResetResult:
 		return s, s.logAndShow(domain.SystemNotice{
-			Target: *s.active,
+			Target: s.active,
 			Text:   fmt.Sprintf("Removed %d user-defined persona(s).", msg.Count),
 			At:     time.Now(),
 		})
@@ -637,7 +718,7 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 		return s, tea.Batch(
 			s.logAndShow(domain.SystemNotice{
-				Target: *s.active,
+				Target: s.active,
 				Text:   text,
 				At:     time.Now(),
 			}),
@@ -653,9 +734,10 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		// which `chatcmd.sendCommand` delivers to the chat-screen via
 		// `chatcmd.ReplyEvents`. The session bus does not deliver this event
 		// back to the inviter, so this is the only way the inviter sees the
-		// RPL_INVITING-equivalent line in scrollback.
-		s.bufferEvent(msg)
-		return s.handleInvitedEvent(msg)
+		// RPL_INVITING-equivalent line in scrollback. An invitation confers
+		// no membership (RFC 2812 §3.2.7): the nick list gains the invitee
+		// only when the JOIN arrives, if it ever does.
+		return s, s.logAndShowOn(msg.Target, msg)
 
 	case domain.SystemNotice:
 		// Command-reply feedback path for the issuing client. A handler
@@ -770,6 +852,11 @@ func (s ChatScreen) deliverReplyEvents(events chatcmd.ReplyEvents) tea.Cmd {
 	return tea.Sequence(cmds...)
 }
 
+// completionSet binds the grammar to the chat-screen's current state.
+// The accessor closures capture this receiver, so the ones reading a
+// plain value field — the visible window, its kind, the live-model
+// cache — answer with the values held when the set was built.
+// [ChatScreen.rebindCompleter] republishes the set when one moves.
 func (s ChatScreen) completionSet() command.CompletionSet[chatcmd.CompletionContext] {
 	return command.CompletionSet[chatcmd.CompletionContext]{
 		Set:  s.parser.Set(),
@@ -787,13 +874,13 @@ func (s ChatScreen) completionSet() command.CompletionSet[chatcmd.CompletionCont
 			Instances:      func() iter.Seq[*domain.Instance] { return s.sess.Instances(s.baseContext()) },
 			ChannelMembers: s.activeChannelInstances,
 			ActiveMembers:  func() iter.Seq[domain.Nick] { return s.activeMemberNicks() },
-			ActiveChannel:  func() domain.ChannelName { return *s.active },
+			ActiveChannel:  func() domain.ChannelName { return s.active },
 			UserNick:       func() domain.Nick { return s.user.Nick() },
 			LiveModels: func() iter.Seq[chatcmd.ModelOption] {
-				return slices.Values(*s.liveModels)
+				return slices.Values(s.liveModels)
 			},
 			LiveModelsState: func() command.SuggestionState {
-				return *s.liveModelsState
+				return s.liveModelsState
 			},
 			Personas: func() iter.Seq[domain.Persona] {
 				personas, _ := s.mgr.ListPersonas(s.baseContext())
@@ -867,23 +954,19 @@ func (s ChatScreen) layoutHeight() int {
 // channel activity that a model later loads.
 //
 // When no channel is active the user is on the welcome screen with
-// no channels. The output is routed to `&modeloff` and that window
-// brought into focus so the user sees the response. The active
-// pointer is set inline (the call site is inside Update, which owns
-// the writer side of `*s.active`); a trailing `ChannelFocusMsg` runs
-// the rest of the focus pipeline (sidebar marker, placeholder clear,
-// last-channel persist) without re-touching `*s.active`.
+// no channels. The output is routed to `&modeloff` and a trailing
+// `ChannelFocusMsg` brings that window into focus so the user sees
+// the response — the focus handler is the one place that moves the
+// user, so the routing decision here stays a pure read.
 func (s ChatScreen) logAndShow(event domain.Event) tea.Cmd {
-	if *s.active == "" {
-		*s.active = domain.StatusChannelName
-		s.appendToScrollback(domain.StatusChannelName, event)
-
-		return func() tea.Msg {
-			return chatcmd.ChannelFocusMsg{Channel: domain.StatusChannelName, At: time.Now()}
-		}
+	if s.active != "" {
+		return s.logAndShowOn(s.active, event)
 	}
 
-	return s.logAndShowOn(*s.active, event)
+	return tea.Batch(
+		s.logAndShowOn(domain.StatusChannelName, event),
+		msgCmd(chatcmd.ChannelFocusMsg{Channel: domain.StatusChannelName, At: time.Now()}),
+	)
 }
 
 // logAndShowOn renders a numeric or UI-feedback event in the
@@ -911,7 +994,7 @@ func (s ChatScreen) logAndShowOn(ch domain.ChannelName, event domain.Event) tea.
 // indication, and runs the backend quit asynchronously. The result
 // arrives as a QuitCompleteMsg, which the screen turns into
 // tea.Quit.
-func (s ChatScreen) handleQuitRequested(msg ui.QuitRequestedMsg) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleQuitRequested(msg ui.QuitRequestedMsg) (ChatScreen, tea.Cmd) {
 	if s.quitting {
 		// A second quit request while the first is in flight is an
 		// escape hatch: the user pressed Ctrl+C again because the
@@ -965,14 +1048,19 @@ func (s ChatScreen) switchChannel(ch domain.ChannelName) tea.Cmd {
 // and refuses chat with a hint that points at the right command.
 // Everything else flows through to the user-client's
 // [userclient.UserClient.SendMessage].
-func (s ChatScreen) handleMessageSubmit(msg components.MessageSubmitMsg) (ui.Model, tea.Cmd) {
-	if *s.active == "" {
+//
+// The target window is read here, on the Update goroutine, and handed
+// to [ChatScreen.sendMessageCmd] as a value, so a channel switch
+// between the submit and Bubble Tea running the command cannot
+// redirect the line the user typed.
+func (s ChatScreen) handleMessageSubmit(msg components.MessageSubmitMsg) (ChatScreen, tea.Cmd) {
+	if s.active == "" {
 		return s, s.logAndShow(domain.UsageHint{
 			Usage: "join a channel first", At: time.Now(),
 		})
 	}
 
-	if *s.active == domain.StatusChannelName {
+	if s.active == domain.StatusChannelName {
 		return s, s.logAndShow(domain.UsageHint{
 			Command: "send",
 			Usage:   "the status channel doesn't take messages — try /msg <nick-or-#channel> instead",
@@ -980,19 +1068,7 @@ func (s ChatScreen) handleMessageSubmit(msg components.MessageSubmitMsg) (ui.Mod
 		})
 	}
 
-	return s, s.sendMessage(msg.Text)
-}
-
-func (s ChatScreen) sendMessage(text string) tea.Cmd {
-	return func() tea.Msg {
-		if _, err := s.user.SendMessage(s.baseContext(), *s.active, text); err != nil {
-			return domain.ErrorEvent{Operation: "send", Err: err, At: time.Now()}
-		}
-
-		// The user-client holds echo-message: the sent line returns on
-		// the protocol bus and renders through the normal event path.
-		return nil
-	}
+	return s, s.sendMessageCmd("send", s.active, msg.Text)
 }
 
 // KeyBindings implements ui.Keybinding.

@@ -17,7 +17,7 @@ func (s ChatScreen) runContext() chatcmd.Context {
 		Session: s.sess,
 		Manager: s.mgr,
 		Config:  s.cfgStore,
-		Active:  *s.active,
+		Active:  s.active,
 		Actor:   s.user.Instance(),
 		Client:  s.client,
 	}
@@ -51,7 +51,7 @@ func (s ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
 		"component", "ui",
 		"command", invocation.Selected().Name,
 		"raw", msg.Raw,
-		"channel", string(*s.active),
+		"channel", string(s.active),
 	)
 
 	rc := s.runContext()

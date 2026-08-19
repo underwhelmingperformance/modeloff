@@ -130,14 +130,13 @@ func TestChatScreen_handleLiveModelsLoadFailed(t *testing.T) {
 
 			screen, err := NewChatScreen(t.Context, sess, mgr, user, nil, nil, domain.KindStatus)
 			require.NoError(t, err)
-			*screen.active = tc.active
-			*screen.liveModels = placeholderModels()
-			*screen.liveModelsState = command.SuggestionStateReady
+			screen, _ = screen.focus(tc.active)
+			screen, _ = screen.setLiveModels(placeholderModels(), command.SuggestionStateReady)
 
-			_, cmd := screen.handleLiveModelsLoadFailed(liveModelsLoadFailedMsg{err: upstreamErr})
+			screen, cmd := screen.handleLiveModelsLoadFailed(liveModelsLoadFailedMsg{err: upstreamErr})
 
-			require.Nil(t, *screen.liveModels, "liveModels should be emptied")
-			require.Equal(t, command.SuggestionStateError, *screen.liveModelsState,
+			require.Nil(t, screen.liveModels, "liveModels should be emptied")
+			require.Equal(t, command.SuggestionStateError, screen.liveModelsState,
 				"real upstream failure must flip completer state to Error so the popover is suppressed")
 			require.NotNil(t, cmd)
 
@@ -146,13 +145,21 @@ func TestChatScreen_handleLiveModelsLoadFailed(t *testing.T) {
 				Text:   liveModelsUnavailableNotice,
 			}
 
-			// The notice nudges the message list to re-read the
-			// target window's scrollback; it never returns a
-			// StoredEvent for direct render.
+			// The failure republishes the completer so the popover
+			// picks up the error state, and nudges the message list
+			// to re-read the target window's scrollback; it never
+			// returns a StoredEvent for direct render. The completer
+			// carries accessor closures, so the batch is pinned by
+			// message type and the addressable one by value.
 			msgs := collectMsgs(cmd)
-			require.Equal(t, []tea.Msg{
-				components.ScrollbackUpdatedMsg{Channel: tc.expectedChannel},
-			}, msgs)
+			require.Equal(t, []string{
+				"components.CompleterMsg",
+				"components.ScrollbackUpdatedMsg",
+			}, msgsTypes(msgs))
+
+			nudge, ok := containsMsg[components.ScrollbackUpdatedMsg](msgs)
+			require.True(t, ok)
+			require.Equal(t, components.ScrollbackUpdatedMsg{Channel: tc.expectedChannel}, nudge)
 
 			// The notice is UI feedback, not channel activity: it
 			// lands only in the in-memory scrollback and never
@@ -196,15 +203,15 @@ func TestChatScreen_handleLiveModelsLoadFailed_silent_on_no_api_key(t *testing.T
 			logs := installLogSink(t)
 
 			screen := newScreenFixture(t)
-			*screen.liveModels = placeholderModels()
-			*screen.liveModelsState = command.SuggestionStateReady
+			screen, _ = screen.setLiveModels(placeholderModels(), command.SuggestionStateReady)
 
-			_, cmd := screen.handleLiveModelsLoadFailed(liveModelsLoadFailedMsg{err: err})
+			screen, cmd := screen.handleLiveModelsLoadFailed(liveModelsLoadFailedMsg{err: err})
 
-			require.Nil(t, *screen.liveModels)
-			require.Equal(t, command.SuggestionStateReady, *screen.liveModelsState,
+			require.Nil(t, screen.liveModels)
+			require.Equal(t, command.SuggestionStateReady, screen.liveModelsState,
 				"ErrNoAPIKey must leave the completer in Ready: the popover suppression is reserved for genuine upstream failures")
-			require.Nil(t, cmd, "ErrNoAPIKey is a validation race and must not surface")
+			require.Equal(t, []string{"components.CompleterMsg"}, msgsTypes(collectMsgs(cmd)),
+				"ErrNoAPIKey is a validation race: the emptied cache is republished and nothing is rendered")
 
 			_, found := logs.find("live models load failed")
 			require.False(t, found, "ErrNoAPIKey must not be logged; got %v", logs.all())
@@ -229,15 +236,15 @@ func TestChatScreen_APIKeySetResult_clears_live_models_and_resets_state(t *testi
 
 			screen, err := NewChatScreen(t.Context, sess, mgr, user, nil, nil, domain.KindStatus)
 			require.NoError(t, err)
-			*screen.active = "#general"
-			*screen.liveModels = placeholderModels()
-			*screen.liveModelsState = command.SuggestionStateError
+			screen, _ = screen.focus("#general")
+			screen, _ = screen.setLiveModels(placeholderModels(), command.SuggestionStateError)
 
-			_, _ = screen.Update(msg)
+			updated, _ := screen.Update(msg)
+			screen = updated.(ChatScreen)
 
-			require.Nil(t, *screen.liveModels,
+			require.Nil(t, screen.liveModels,
 				"APIKeySetResult must clear the stale cache so the next loadLiveModels tick repopulates it")
-			require.Equal(t, command.SuggestionStateReady, *screen.liveModelsState,
+			require.Equal(t, command.SuggestionStateReady, screen.liveModelsState,
 				"APIKeySetResult must reset completer state so the popover reappears once the reload lands")
 		})
 	}

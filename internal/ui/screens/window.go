@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/set"
 )
 
 // Window is the chat-screen's per-window state container. It wraps
@@ -65,6 +66,30 @@ func newWindow(w domain.Window) *Window {
 // underlying [domain.Window.Less].
 func (w *Window) Less(other *Window) bool {
 	return w.Window.Less(other.Window)
+}
+
+// visibleWindow names the window the message list renders. The list
+// is constructed once, before any window is focused, and reads its
+// events through a closure bound at that moment; this record is what
+// that closure resolves, and it outlives the chat-screen value the
+// closure captured. `Update` and `View` both run on the Bubble Tea
+// event-loop goroutine, so one goroutine reads and writes the record
+// and it needs no synchronisation.
+type visibleWindow struct {
+	channels *set.Sorted[*Window]
+	name     domain.ChannelName
+}
+
+// scrollback returns the visible window's event history, or nil while
+// no window is focused. It is the closure the message list calls on
+// every render.
+func (v *visibleWindow) scrollback() []domain.Event {
+	w, ok := v.channels.Get(windowKey(v.name))
+	if !ok {
+		return nil
+	}
+
+	return w.Scrollback
 }
 
 // windowKey returns a placeholder `*Window` suitable only for
