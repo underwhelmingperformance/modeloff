@@ -111,10 +111,12 @@ type Store interface {
 	ClearSessionActive(ctx context.Context) error
 
 	// Last-read tracking. The event id high-watermark per
-	// channel that the chat-screen has rendered; the session
-	// reads it to compute unread badges.
+	// channel that the chat-screen has rendered. Where the
+	// cursor sits is the client's business — the user-client
+	// writes it through its own store surface — and the session
+	// only reads it, to answer the unread-badge query the
+	// chat-screen asks.
 	GetLastRead(ctx context.Context, ch domain.ChannelName) (int64, error)
-	SetLastRead(ctx context.Context, ch domain.ChannelName, eventID int64) error
 
 	// Autojoin list. The set of channels rejoined at next
 	// `Connect`; rewritten on every successful `Quit`.
@@ -150,6 +152,18 @@ type Session struct {
 	subsMu        sync.RWMutex
 	subscribers   map[protocol.ClientID]*serverClient
 	clientHandles map[protocol.ClientID]*serverClient
+
+	// writerQ hands commands to the session's command loop and
+	// writerStopped closes when that loop exits. The handoff is
+	// unbuffered so a command accepted onto the queue is a command
+	// the loop has committed to running. See [Session.onWriter].
+	writerQ       chan writerJob
+	writerStopped chan struct{}
+
+	// channels is the session's live channel state — the member
+	// lists, topics, modes and invitation sets every command reads
+	// and every reader consults. See [channelState].
+	channels *channelState
 
 	// operAuth gates [protocol.Oper]. The default rejects every
 	// client; the user-client requests `+o` via
@@ -194,6 +208,12 @@ type Session struct {
 // a long-lived ctx calls `baseContext()` to obtain one; the
 // supplier shape mirrors [net/http.Server.BaseContext].
 //
+// The returned session has its command loop already running (see
+// [Session.runWriter]); every client command is processed on it, in
+// arrival order. The loop stops when the supplier's ctx is cancelled
+// or [Session.Shutdown] runs, after which further commands are
+// refused.
+//
 // Cancellation of the ctx the supplier returns wakes dispatch
 // goroutines; they exit and [Session.Shutdown] joins them. The
 // session itself never cancels anything internally — the cancel
@@ -221,7 +241,7 @@ func New(
 	persistenceFailures, _ := otel.Meter("github.com/laney/modeloff/internal/session").
 		Int64Counter(observability.MetricPersistenceFailures)
 
-	return &Session{
+	sess := &Session{
 		baseContext:         baseContext,
 		store:               s,
 		userModes:           make(map[domain.ChannelName]domain.NickMode),
@@ -235,7 +255,14 @@ func New(
 		modelClientFactory:  factory,
 		operAuth:            DefaultOperAuthenticator,
 		activeChannels:      make(map[domain.ChannelName]struct{}),
+		writerQ:             make(chan writerJob),
+		writerStopped:       make(chan struct{}),
+		channels:            newChannelState(),
 	}
+
+	go sess.runWriter(baseContext())
+
+	return sess
 }
 
 // OperAuthenticator validates a [protocol.Oper] attempt. Returning
@@ -356,19 +383,23 @@ func (s *Session) ensureSubscription(id protocol.ClientID, inst *domain.Instance
 	default:
 	}
 
-	sc := newServerClient(s, id, inst)
+	sc := newServerClient(s, id, inst, s.shuttingDown)
 	s.clientHandles[id] = sc
 	s.subscribers[id] = sc
 
 	return sc, true
 }
 
-// reapClient removes a model-client from the subscriber set and
-// closes the subscription's `Done` channel. The user-client is
-// never reaped — its lifetime equals the session. Idempotent
+// reapClient removes a model-client from the subscriber set, closes
+// the subscription's `Done` channel, and joins its outbound pump so
+// no goroutine outlives the subscription it serves. The user-client
+// is never reaped — its lifetime equals the session. Idempotent
 // across concurrent callers via `unsubOnce` on the envelope. The
 // modelclient owning the subscription is responsible for joining
 // its own dispatch goroutine via [modelclient.ModelClient.Detach].
+//
+// The pump join cannot hang: closing `done` is what releases a pump
+// parked on a send to a consumer that has stopped reading.
 func (s *Session) reapClient(id protocol.ClientID) {
 	if id == protocol.UserClientID {
 		return
@@ -387,8 +418,11 @@ func (s *Session) reapClient(id protocol.ClientID) {
 	}
 
 	client.unsubOnce.Do(func() {
+		client.closeOutbound()
 		close(client.done)
 	})
+
+	<-client.pumpDone
 }
 
 // Connected returns a channel that is closed once Connect has
@@ -409,15 +443,20 @@ func (s *Session) ConnectedAt() time.Time {
 
 // Shutdown closes the session's shutdown gate so that any further
 // [Session.Subscribe] call declines to register a fresh
-// subscription. The shape mirrors [net/http.Server.Shutdown]: new
-// work is refused at the registration point, and dispatch
-// goroutines belong to the model-clients holding subscriptions —
-// they exit when their lifetime ctx (derived from the
-// `baseContext` supplier passed to [New]) is cancelled.
+// subscription and the command loop stops taking commands. The
+// shape mirrors [net/http.Server.Shutdown]: new work is refused at
+// the registration point, and dispatch goroutines belong to the
+// model-clients holding subscriptions — they exit when their
+// lifetime ctx (derived from the `baseContext` supplier passed to
+// [New]) is cancelled.
+//
+// Closing the gate also stops every subscription's outbound pump,
+// which Shutdown then joins so no delivery goroutine outlives the
+// call.
 //
 // Shutdown returns `ctx.Err()` if `ctx` is cancelled before the
-// gate close completes; otherwise nil. Safe to call more than
-// once via `sync.Once` on the gate.
+// gate close and the pump join complete; otherwise nil. Safe to
+// call more than once via `sync.Once` on the gate.
 func (s *Session) Shutdown(ctx context.Context) error {
 	return observability.SpanRunner{
 		Tracer: s.tracerProvider.Tracer("github.com/laney/modeloff/internal/session"),
@@ -428,6 +467,14 @@ func (s *Session) Shutdown(ctx context.Context) error {
 
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+
+		for _, sub := range s.subscriberSnapshot() {
+			select {
+			case <-sub.pumpDone:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		}
 
 		return nil
@@ -823,33 +870,15 @@ func (s *Session) SaveInstance(ctx context.Context, inst *domain.Instance) error
 
 // GetWindow retrieves an addressable window by name as its typed
 // concrete `Window` (`*StatusWindow`, `*ChannelWindow`, or
-// `*DMWindow`). DM rows resolve their counterpart through the
-// store's nick→instance registry.
+// `*DMWindow`). A `#`-channel is answered from the session's live
+// channel state; status and DM rows come from the store, which
+// resolves a DM's counterpart through its nick→instance registry.
 func (s *Session) GetWindow(ctx context.Context, name domain.ChannelName) (domain.Window, error) {
+	if domain.InferChannelKind(name) == domain.KindChannel {
+		return s.liveChannelWindow(ctx, name)
+	}
+
 	return s.store.GetWindow(ctx, name)
-}
-
-// markRead records that the user has seen all current events in
-// `ch` by stamping their last-read cursor at the rowid of the most
-// recent event. Used internally by [joinAs] to keep a freshly-
-// joined channel from appearing with the joiner's own arrival as
-// "unread". The user-client calls into the store directly for
-// `/mark-read`-style affordances.
-func (s *Session) markRead(ctx context.Context, ch domain.ChannelName) error {
-	return s.inSpan(ctx, "session.mark_read", []attribute.KeyValue{
-		attribute.String(observability.AttrChannel, string(ch)),
-	}, func(ctx context.Context, _ trace.Span) error {
-		events, err := s.store.EventsBefore(ctx, ch, nil, 1)
-		if err != nil {
-			return fmt.Errorf("get latest event: %w", err)
-		}
-
-		if len(events) == 0 {
-			return nil
-		}
-
-		return s.store.SetLastRead(ctx, ch, events[0].ID)
-	})
 }
 
 // UnreadCount returns the number of events in a channel that arrived

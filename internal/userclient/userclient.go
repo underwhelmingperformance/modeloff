@@ -133,9 +133,49 @@ func (uc *UserClient) Nick() domain.Nick { return uc.instance.Nick() }
 func (uc *UserClient) Identity() protocol.ClientID { return protocol.UserClientID }
 
 // Send routes `cmd` through the session's dispatcher with this
-// client as the issuing actor.
+// client as the issuing actor, and keeps this client's own state in
+// step with the commands it issues.
+//
+// Today that means one thing: a successful JOIN stamps the read
+// cursor at the channel's head. Every way the user joins arrives
+// here — [UserClient.Join] and so [UserClient.JoinAutojoinChannels],
+// the chat-screen's window switch, and the `/join` slash command,
+// which builds its own [protocol.Join] and dispatches it through
+// this method — so this is the one place that covers them all.
+// Doing it per call site would leave whichever one was forgotten
+// showing a channel as unread the moment you arrive in it.
 func (uc *UserClient) Send(ctx context.Context, cmd protocol.Command) (protocol.Response, error) {
-	return uc.sess.Handle(ctx, uc, cmd)
+	resp, err := uc.sess.Handle(ctx, uc, cmd)
+	if err != nil || resp.Err != nil {
+		return resp, err
+	}
+
+	if join, ok := cmd.(protocol.Join); ok {
+		uc.markJoinedChannelRead(ctx, join.Channel)
+	}
+
+	return resp, nil
+}
+
+// markJoinedChannelRead stamps the read cursor for a channel this
+// client has just joined. The name is normalised the way the
+// dispatcher normalises it, so the cursor is keyed to the same
+// channel the events were logged under.
+//
+// Best-effort: the join itself succeeded, and failing to move a
+// cursor is not worth turning that into an error the user sees. The
+// cost of a miss is a badge that over-counts until the channel is
+// next read.
+func (uc *UserClient) markJoinedChannelRead(ctx context.Context, ch domain.ChannelName) {
+	name := domain.NormaliseChannelName(ch)
+
+	if err := uc.MarkRead(ctx, name); err != nil {
+		slog.Default().ErrorContext(ctx, "mark joined channel read",
+			"component", "userclient",
+			"channel", name,
+			"error", err,
+		)
+	}
 }
 
 // Events returns the per-subscription delivery stream, or nil if
@@ -197,9 +237,12 @@ func (uc *UserClient) Subscription() protocol.Subscription {
 	return uc.sub
 }
 
-// Join issues a wire JOIN as the user-actor.
+// Join issues a wire JOIN as the user-actor. The read cursor moves
+// with it — see [UserClient.Send], which stamps it for every JOIN
+// this client issues, however it was raised.
 func (uc *UserClient) Join(ctx context.Context, ch domain.ChannelName) error {
 	resp, err := uc.Send(ctx, protocol.Join{Channel: ch})
+
 	return firstErr(err, resp.Err)
 }
 

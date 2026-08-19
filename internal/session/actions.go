@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -24,7 +23,10 @@ import (
 // channel; a fresh channel (this call creates it) has no modes
 // and so no gate applies.
 //
-//nolint:gocognit // sequenced join steps (create-or-load, gate, op-grant, mark-read, persist, broadcast, replies) read clearer inline than as further-extracted helpers.
+// Runs on the session's command loop, so the load-mutate-commit of
+// the channel record below is atomic against every other command.
+//
+//nolint:gocognit // sequenced join steps (create-or-load, gate, op-grant, persist, broadcast, replies) read clearer inline than as further-extracted helpers.
 func (s *Session) joinAs(ctx context.Context, actor *domain.Instance, ch domain.ChannelName, key string) error {
 	ch = domain.NormaliseChannelName(ch)
 
@@ -74,16 +76,6 @@ func (s *Session) joinAs(ctx context.Context, actor *domain.Instance, ch domain.
 
 			if err := s.persistChannelWindow(ctx, window); err != nil {
 				return fmt.Errorf("save channel after mode: %w", err)
-			}
-		}
-
-		if isUser {
-			// Stamp the user's mark-as-read cursor at the current head so
-			// the join itself does not leave the channel showing as unread.
-			// `last_channel` persistence is the UI's concern and lands when
-			// the chat screen receives a `ChannelActiveMsg`.
-			if err := s.markRead(ctx, ch); err != nil {
-				return fmt.Errorf("mark read: %w", err)
 			}
 		}
 
@@ -152,14 +144,23 @@ func (s *Session) joinAs(ctx context.Context, actor *domain.Instance, ch domain.
 // a fresh one that already contains the actor. Returns the
 // (possibly freshly-saved) `*ChannelWindow`, whether it was newly
 // created, and any persistence error encountered along the way.
-// joinAs is the only caller and is gated on `#`-prefixed names by
-// `NormaliseChannelName`, so a load that returns a non-channel
-// row indicates a programming error in the upstream guard rather
-// than a user-reachable state.
+//
+// A channel is created only when the load says the channel does not
+// exist. Any other load failure is returned as-is: creating a fresh
+// window on, say, a transient store failure would overwrite the
+// live channel's topic, modes and invitation list with an empty
+// record. joinAs is the only caller and is gated on `#`-prefixed
+// names by `NormaliseChannelName`, so a load that returns a
+// non-channel row indicates a programming error in the upstream
+// guard; that too is returned.
 func (s *Session) ensureChannelWindowWithActor(ctx context.Context, ch domain.ChannelName, actor *domain.Instance, now time.Time) (*domain.ChannelWindow, bool, error) {
 	window, err := s.loadChannelWindow(ctx, ch)
 	if err == nil {
 		return window, false, nil
+	}
+
+	if !errors.Is(err, store.ErrNoSuchChannel) {
+		return nil, false, fmt.Errorf("load channel: %w", err)
 	}
 
 	window = domain.NewChannelWindow(ch, now)
@@ -309,6 +310,10 @@ func (s *Session) modelQuit(ctx context.Context, actor *domain.Instance, message
 }
 
 // changeNickAs changes the given actor's nickname.
+//
+// Runs on the session's command loop, which is what makes the
+// collision check below decisive: no other command can claim
+// `newNick` between the check and the rename that takes it.
 func (s *Session) changeNickAs(ctx context.Context, actor *domain.Instance, newNick domain.Nick) error {
 	oldNick := actor.Nick()
 
@@ -649,14 +654,10 @@ func (s *Session) deliverToClient(ctx context.Context, id domain.InstanceID, evt
 		return
 	}
 
-	select {
-	case target.events <- protocol.Delivery{
+	target.enqueue(protocol.Delivery{
 		Event:   evt,
 		SpanCtx: trace.SpanContextFromContext(ctx),
-	}:
-	case <-target.done:
-	case <-ctx.Done():
-	}
+	})
 }
 
 // setUserModeAs mutates a single user-mode flag on `target` and
@@ -685,59 +686,54 @@ func (s *Session) setUserModeAs(ctx context.Context, by domain.Nick, target *ser
 		attribute.String("mode.flag", string(mode)),
 		attribute.Bool("mode.add", add),
 	}, func(ctx context.Context, _ trace.Span) error {
-		evt := domain.UserModeChange{
-			Nick:       targetInst.Nick(),
-			InstanceID: targetInst.ID(),
-			Flag:       mode,
-			Add:        add,
-			By:         by,
-			At:         s.now(),
-			Instance:   targetInst,
-		}
-
-		select {
-		case target.events <- protocol.Delivery{
-			Event:   evt,
+		target.enqueue(protocol.Delivery{
+			Event: domain.UserModeChange{
+				Nick:       targetInst.Nick(),
+				InstanceID: targetInst.ID(),
+				Flag:       mode,
+				Add:        add,
+				By:         by,
+				At:         s.now(),
+				Instance:   targetInst,
+			},
 			SpanCtx: trace.SpanContextFromContext(ctx),
-		}:
-		case <-target.done:
-			// Target was reaped between resolution and delivery; drop.
-		case <-ctx.Done():
-		}
+		})
 
 		return nil
 	})
 }
 
-// addModelAs creates a fresh model instance, generates a unique
-// nick for it via the small-model API, attaches the model-client,
-// and joins it to the named channel via `joinAs`. The bus carries
-// a `Join` event with the same wire shape any `/join` would
-// produce. The dispatcher's [protocol.AddModel] handler is the
-// only caller — the operator gate lives there, so this method
-// assumes the caller has already verified `actor`'s authority.
+// registerModelAs claims `nick` for a fresh model instance and
+// records it. This is the registration half of `ADDMODEL`: the
+// instance exists and holds its nick, but has no subscription and is
+// in no channel yet. The dispatcher's [protocol.AddModel] handler is
+// the only caller and has already run the operator gate.
 //
-// Persona resolution: a non-empty `persona` is used verbatim; an
-// empty value triggers a draw from the personas pool (lazily
-// generated if missing). API failures during persona generation
-// are logged but never block the add; the instance gets an empty
-// persona instead.
-func (s *Session) addModelAs(
+// Runs on the session's command loop. `nick` was chosen against a
+// snapshot of the nick space taken before the loop was reached, so
+// the claim is checked here: this is the point at which the nick is
+// actually taken, and the only point where the check cannot be
+// overtaken by a concurrent rename.
+func (s *Session) registerModelAs(
 	ctx context.Context,
-	actor *domain.Instance,
 	ch domain.ChannelName,
 	modelID domain.ModelID,
+	nick domain.Nick,
 	persona string,
 ) (*domain.Instance, error) {
 	var inst *domain.Instance
 
-	err := s.inSpan(ctx, "session.add_model", []attribute.KeyValue{
+	err := s.inSpan(ctx, "session.register_model", []attribute.KeyValue{
 		attribute.String(observability.AttrChannel, string(ch)),
-		attribute.String(observability.AttrNick, string(actor.Nick())),
+		attribute.String(observability.AttrNick, string(nick)),
+		attribute.String(observability.AttrModelID, string(modelID)),
 	}, func(ctx context.Context, _ trace.Span) error {
-		nick, assignedPersona, err := s.modelClientFactory.PrepareInstance(ctx, s, modelID, persona)
-		if err != nil {
-			return errWithKind(err, observability.ErrorKindDispatch)
+		if err := s.requireNickFree(ctx, nick); err != nil {
+			return err
+		}
+
+		if _, err := s.loadChannelWindow(ctx, ch); err != nil {
+			return fmt.Errorf("get channel: %w", err)
 		}
 
 		channels := orderedmap.New[domain.ChannelName, time.Time]()
@@ -747,37 +743,12 @@ func (s *Session) addModelAs(
 			domain.GenerateInstanceID(),
 			nick,
 			modelID,
-			assignedPersona,
+			persona,
 			channels,
 		)
 
-		if _, err := s.loadChannelWindow(ctx, ch); err != nil {
-			return fmt.Errorf("get channel: %w", err)
-		}
-
 		if err := s.store.SaveInstance(ctx, inst); err != nil {
 			return fmt.Errorf("save instance: %w", err)
-		}
-
-		if _, err := s.modelClientFactory.Attach(ctx, s, inst); err != nil {
-			slog.Default().WarnContext(ctx, "attach model client",
-				"component", "session",
-				"instance_id", inst.ID(),
-				"channel", ch,
-				"error", err,
-			)
-		}
-
-		// Pre-seed `InvitedNicks` so `joinAs` clears `+i`.
-		if window, err := s.loadChannelWindow(ctx, ch); err == nil {
-			window.InvitedNicks.Add(nick)
-			if err := s.persistChannelWindow(ctx, window); err != nil {
-				return fmt.Errorf("save channel: %w", err)
-			}
-		}
-
-		if err := s.joinAs(ctx, inst, ch, ""); err != nil {
-			return err
 		}
 
 		return nil
@@ -788,6 +759,49 @@ func (s *Session) addModelAs(
 	}
 
 	return inst, nil
+}
+
+// requireNickFree reports [domain.NickInUseError] when `nick` is
+// already held. Only a clean "no such nick" from the store counts as
+// free: any other resolve failure is returned, so a store that is
+// briefly unavailable refuses the claim and no duplicate gets
+// through.
+func (s *Session) requireNickFree(ctx context.Context, nick domain.Nick) error {
+	_, err := s.ResolveNick(ctx, nick)
+
+	switch {
+	case err == nil:
+		return errWithKind(domain.NickInUseError{Nick: nick, At: s.now()}, observability.ErrorKindValidation)
+	case errors.Is(err, store.ErrNoSuchNick):
+		return nil
+	default:
+		return fmt.Errorf("resolve nick: %w", err)
+	}
+}
+
+// admitModelAs joins a registered model instance to `ch`, the
+// closing half of `ADDMODEL`. The bus carries a `Join` event with
+// the same wire shape any `/join` would produce. `actor` is the
+// operator who issued the command, carried here for the span.
+//
+// Runs on the session's command loop, after the instance's
+// model-client has attached, so the JOIN reaches its subscription.
+func (s *Session) admitModelAs(ctx context.Context, actor, inst *domain.Instance, ch domain.ChannelName) error {
+	return s.inSpan(ctx, "session.add_model", []attribute.KeyValue{
+		attribute.String(observability.AttrChannel, string(ch)),
+		attribute.String(observability.AttrNick, string(actor.Nick())),
+		attribute.String(observability.AttrInstanceID, string(inst.ID())),
+	}, func(ctx context.Context, _ trace.Span) error {
+		// Pre-seed `InvitedNicks` so `joinAs` clears `+i`.
+		if window, err := s.loadChannelWindow(ctx, ch); err == nil {
+			window.InvitedNicks.Add(inst.Nick())
+			if err := s.persistChannelWindow(ctx, window); err != nil {
+				return fmt.Errorf("save channel: %w", err)
+			}
+		}
+
+		return s.joinAs(ctx, inst, ch, "")
+	})
 }
 
 // killAs is the operator-issued forced disconnect of `target` per

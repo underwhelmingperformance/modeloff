@@ -448,12 +448,14 @@ func NewTestSession(
 	return sess, mgr, user
 }
 
-// SessionStore is the union of the session and manager
-// persistence surfaces. The concrete `*storetest.MemoryStore` and
-// `*store.SQLiteStore` satisfy it implicitly.
+// SessionStore is the union of the session, manager and
+// user-client persistence surfaces. The concrete
+// `*storetest.MemoryStore` and `*store.SQLiteStore` satisfy it
+// implicitly.
 type SessionStore interface {
 	session.Store
 	modelmanager.Store
+	userclient.Store
 }
 
 // NewModelManager returns a fresh [modelmanager.Manager] backed by

@@ -253,6 +253,28 @@ func (i *Instance) Channels() *orderedmap.OrderedMap[ChannelName, time.Time] {
 	return cloneChannels(i.channels)
 }
 
+// InChannel reports whether the instance is currently in `ch`. It
+// answers the membership question directly under the read lock,
+// where [Instance.Channels] would have to copy the whole ordered
+// map first. The event-delivery filter asks this once per
+// subscriber per event, so the copy is worth avoiding.
+func (i *Instance) InChannel(ch ChannelName) bool {
+	if i == nil {
+		return false
+	}
+
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+
+	if i.channels == nil {
+		return false
+	}
+
+	_, ok := i.channels.Get(ch)
+
+	return ok
+}
+
 // MutateChannels applies fn to the channels map under the write
 // lock. fn sees the live map and is free to mutate it in place.
 // Readers that raced with the mutation observe either the pre- or

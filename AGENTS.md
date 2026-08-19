@@ -199,6 +199,72 @@ legacy public `Session.AddModel` / `Session.QuitAs` methods. `AddModel` and
 `Kill` are operator-gated; a non-operator client receives
 `domain.NotOperatorError`.
 
+### Command loop and live channel state
+
+The session is a single writer. `Session.Handle` does not run a
+command on the caller's goroutine: each handler hands its
+state-touching work to the session's command loop through
+`onWriter`, and that one goroutine runs commands serially in
+arrival order. A command therefore sees the full effect of every
+command before it and none of any command after it, which is what
+makes a handler's read-modify-write of a channel atomic. The call
+stays synchronous for the caller — `Handle` still returns that
+command's own `Response`.
+
+Two rules follow, and both are load-bearing for anything added to
+the `session` package:
+
+- Code running on the loop must not call `Handle` or a client's
+  `Send`. The loop is busy running the current command, so a nested
+  submission would never be taken up.
+- Blocking work stays off the loop. `ADDMODEL` runs
+  `ModelClientFactory.PrepareInstance` (an LLM round-trip) and
+  `ModelClientFactory.Attach` (which loads the new client's history
+  from the store) off it, and `QUIT` / `KILL` run
+  `ModelClientFactory.Detach` after leaving it — `Detach` joins a
+  dispatch goroutine that may itself be queued behind the loop.
+  Everything that touches session state runs on it.
+
+`ADDMODEL` is the one command that takes the loop twice, because it
+is the sequence a client goes through on a real server: register
+(claim the nick, record the instance — on the loop), connect (attach
+the model-client — off it), then join (on the loop). Attaching
+between the two is what lets the new client receive its own JOIN and
+the `RPL_NAMREPLY` / `RPL_TOPIC` that follow.
+
+No emitter ever blocks on a consumer. Each subscription owns an
+outbound queue and a pump goroutine: a producer — the command loop,
+the poke scheduler, a model-client's own emissions — hands the
+delivery over and returns, and only the pump waits on the client's
+channel. Without that, a model that is mid-turn and therefore not
+reading, while waiting on the loop for a command of its own, would
+deadlock the whole server. The queue is unbounded today, so a
+backlog survives a consumer that has fallen behind; what it still
+holds is released when the subscription is reaped or the session
+shuts down, since in both cases there is nobody left to read it. The
+bound on its growth arrives with flood control, which disconnects a
+client whose queue exceeds its allowance (RFC 1459 §8.10) — a
+visible KILL-shaped ending in place of a silent gap in the
+transcript.
+
+Channel state — member lists, topics, modes, invitation sets —
+lives in memory in the session and is the source of truth. Records
+enter it on demand from the store and are written through to the
+store on every mutation; a read hands the caller its own copy, so
+readers on other goroutines (the fan-out's `+a` check, the send
+gates, a model assembling its prompt) never touch the record the
+next command will read, and never pay for a row fetch. Enumerating
+every channel (`LIST`, the poke scheduler) still reads the store,
+since live state holds only the channels this session has touched.
+The two agree while the write-through succeeds; when it fails they
+part company, and the persistence-failure counter is what reports
+it.
+
+The nick space is claimed on the loop for the same reason: `NICK`
+checks and takes a nick as one step, and `ADDMODEL` re-checks the
+nick it was given, because that nick was chosen off the loop and a
+rename may have taken it in the meantime.
+
 DMs have no wire-level "open" command. A direct message is just a
 `PrivMsg` whose target is the counterpart's `InstanceID`; either party
 can send and the events log carries the conversation under that key.

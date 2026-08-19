@@ -75,6 +75,122 @@ func TestUserClient_Join_routes_through_dispatcher(t *testing.T) {
 	require.True(t, ok)
 }
 
+// TestUserClient_joining_marks_the_channel_read pins that arriving
+// in a channel leaves nothing showing as unread. The read cursor is
+// this client's state, so the client is what stamps it; the server
+// does not touch it.
+//
+// Every way the user joins has to behave the same. `/join` builds
+// its own [protocol.Join] in the chatcmd grammar and dispatches it
+// through `Send`, never touching [userclient.UserClient.Join], so a
+// cursor stamped only in `Join` would leave the app's primary join
+// command showing a badge the moment you arrive. The unprefixed
+// case covers `/join general`, where the dispatcher normalises the
+// name and the cursor has to land on the same key the events did.
+//
+// The rejoin case is the one that matters most in use: a channel
+// left and rejoined must not count the backlog it was away for.
+func TestUserClient_joining_marks_the_channel_read(t *testing.T) {
+	tests := []struct {
+		name  string
+		setUp func(t *testing.T, f *fixture)
+		join  func(t *testing.T, f *fixture)
+	}{
+		{
+			name:  "Join does not count its own arrival",
+			setUp: func(*testing.T, *fixture) {},
+			join: func(t *testing.T, f *fixture) {
+				t.Helper()
+
+				require.NoError(t, f.user.Join(t.Context(), "#general"))
+			},
+		},
+		{
+			name:  "a JOIN dispatched through Send does not count its own arrival",
+			setUp: func(*testing.T, *fixture) {},
+			join: func(t *testing.T, f *fixture) {
+				t.Helper()
+
+				resp, err := f.user.Send(t.Context(), protocol.Join{Channel: "#general"})
+				require.NoError(t, err)
+				require.NoError(t, resp.Err)
+			},
+		},
+		{
+			name:  "a JOIN naming the channel unprefixed stamps the normalised name",
+			setUp: func(*testing.T, *fixture) {},
+			join: func(t *testing.T, f *fixture) {
+				t.Helper()
+
+				resp, err := f.user.Send(t.Context(), protocol.Join{Channel: "general"})
+				require.NoError(t, err)
+				require.NoError(t, resp.Err)
+			},
+		},
+		{
+			name: "a rejoin does not count the backlog",
+			setUp: func(t *testing.T, f *fixture) {
+				t.Helper()
+
+				require.NoError(t, f.user.Join(t.Context(), "#general"))
+				require.NoError(t, f.user.Part(t.Context(), "#general", "brb"))
+
+				for _, body := range []string{"first", "second", "third"} {
+					_, err := f.store.AppendEvent(t.Context(), "#general", domain.Message{
+						Target: "#general",
+						From:   "botty",
+						Body:   body,
+					})
+					require.NoError(t, err)
+				}
+			},
+			join: func(t *testing.T, f *fixture) {
+				t.Helper()
+
+				require.NoError(t, f.user.Join(t.Context(), "#general"))
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFixture(t)
+			tt.setUp(t, f)
+			tt.join(t, f)
+
+			unread, err := f.sess.UnreadCount(t.Context(), "#general")
+			require.NoError(t, err)
+			require.Equal(t, 0, unread)
+		})
+	}
+}
+
+// TestUserClient_a_message_after_joining_counts_as_unread pins the
+// other half: the cursor stamped on arrival must not swallow what
+// arrives afterwards. This is what puts the badge on an inactive
+// channel in the sidebar.
+func TestUserClient_a_message_after_joining_counts_as_unread(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+
+	require.NoError(t, f.user.Join(ctx, "#general"))
+
+	unread, err := f.sess.UnreadCount(ctx, "#general")
+	require.NoError(t, err)
+	require.Equal(t, 0, unread)
+
+	_, err = f.store.AppendEvent(ctx, "#general", domain.Message{
+		Target: "#general",
+		From:   "botty",
+		Body:   "hello after you arrived",
+	})
+	require.NoError(t, err)
+
+	unread, err = f.sess.UnreadCount(ctx, "#general")
+	require.NoError(t, err)
+	require.Equal(t, 1, unread)
+}
+
 func TestUserClient_JoinAutojoinChannels_emits_aggregate_span(t *testing.T) {
 	recorder, provider := oteltest.NewSpanRecorder(t)
 	previous := otel.GetTracerProvider()

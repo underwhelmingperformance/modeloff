@@ -8,6 +8,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/protocol"
+	"github.com/laney/modeloff/internal/testclient"
 	"github.com/laney/modeloff/internal/ui/chatcmd"
 	"github.com/laney/modeloff/internal/ui/screens/screenstest"
 	"github.com/laney/modeloff/internal/ui/uitest"
@@ -526,21 +528,30 @@ func TestChatScreen_MessageEvent_inactive_channel(t *testing.T) {
 			strings.Contains(view, "*** Created channel #general")
 	})
 
-	screenstest.SendProtocolEvent(tm.TestModel, domain.Message{
-		Target: "#random",
-		From:   "bob",
-		Body:   "hello from random",
-	}, nil)
+	// Both lines go through the session, which is what a message
+	// from another client does: it is logged before it is fanned
+	// out, so the unread count the sidebar reads can see it. An
+	// event injected straight into the model would never reach the
+	// log, and the badge would have nothing to count.
+	bob := testclient.New("bob", h.sess, testclient.WithChannels("#random", "#general"))
+	require.NoError(t, bob.Attach(t.Context()))
+	t.Cleanup(bob.Detach)
 
-	// Send a sync marker to #general to ensure the MessageEvent
-	// for #random has been fully processed.
-	screenstest.SendProtocolEvent(tm.TestModel, domain.Message{
-		Target: "#general",
-		From:   "alice",
-		Body:   "sync marker",
-		At:     time.Now(),
-	}, nil)
-	tm.WaitFor("sync marker")
+	resp, err := bob.Send(t.Context(), protocol.PrivMsg{Target: "#random", Body: "hello from random"})
+	require.NoError(t, err)
+	require.NoError(t, resp.Err)
+
+	resp, err = bob.Send(t.Context(), protocol.PrivMsg{Target: "#general", Body: "sync marker"})
+	require.NoError(t, err)
+	require.NoError(t, resp.Err)
+
+	// Each channel paces its own delivery, so the two renders are
+	// independent round-trips and neither implies the other. Wait
+	// for both to have landed before reading the frame.
+	tm.WaitForView(func(view string) bool {
+		return strings.Contains(view, "sync marker") &&
+			strings.Contains(view, "#random (1)")
+	})
 
 	view := tm.CurrentView()
 	body, _ := uitest.SplitBodyAndStatus(view)
@@ -548,7 +559,7 @@ func TestChatScreen_MessageEvent_inactive_channel(t *testing.T) {
 	require.Equal(t, []string{"Channels", "&modeloff", "▸#general", "#random (1)"}, uitest.NonEmptyColumn(columns[0]))
 	require.Equal(t, []string{
 		"*** Created channel #general",
-		"<alice> sync marker",
+		"<bob> sync marker",
 		"testuser >",
 	}, normaliseContent(uitest.NonEmptyColumn(columns[1])))
 }

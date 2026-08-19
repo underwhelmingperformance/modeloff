@@ -243,6 +243,20 @@ func (f *testModelClientFactory) Detach(id protocol.ClientID) {
 	mc.Detach()
 }
 
+// attached returns the identities the factory currently holds a
+// model-client for.
+func (f *testModelClientFactory) attached() []protocol.ClientID {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	ids := make([]protocol.ClientID, 0, len(f.clients))
+	for id := range f.clients {
+		ids = append(ids, id)
+	}
+
+	return ids
+}
+
 func (f *testModelClientFactory) detachAll() {
 	f.mu.Lock()
 	clients := make([]*modelclient.ModelClient, 0, len(f.clients))

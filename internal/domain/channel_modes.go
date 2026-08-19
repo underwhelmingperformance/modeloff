@@ -113,6 +113,17 @@ func (s InvitedNicks) Contains(nick Nick) bool {
 	return set.Set[Nick](s).Has(nick)
 }
 
+// Clone returns an independent copy of the invitation set. A nil
+// set clones to nil, matching the zero value's meaning of "nobody
+// invited".
+func (s InvitedNicks) Clone() InvitedNicks {
+	if s == nil {
+		return nil
+	}
+
+	return InvitedNicks(set.Set[Nick](s).Clone())
+}
+
 // MarshalJSON renders the invitation set as a sorted nick array so
 // the on-disk representation is stable across persistence
 // round-trips and reviews.

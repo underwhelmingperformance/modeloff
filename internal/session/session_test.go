@@ -1547,7 +1547,6 @@ func TestSession_mutationOperations_recordSpans(t *testing.T) {
 			"session.handle",
 			"session.join",
 			"session.kick",
-			"session.mark_read",
 			"session.part",
 			"session.set_topic",
 			"session.set_user_mode",
@@ -3102,6 +3101,20 @@ func TestSession_DispatchToChannel_dm_only_targets_that_instance(t *testing.T) {
 	}, msgs)
 }
 
+// markReadViaStore stamps the read cursor for `ch` at the newest
+// event, the way [userclient.UserClient.MarkRead] does. Where the
+// cursor sits is client state; the session only reads it back
+// through [Session.UnreadCount].
+func markReadViaStore(t *testing.T, s *storemod.SQLiteStore, ch domain.ChannelName) {
+	t.Helper()
+
+	events, err := s.EventsBefore(t.Context(), ch, nil, 1)
+	require.NoError(t, err)
+	require.NotEmpty(t, events, "no event to mark read in %s", ch)
+
+	require.NoError(t, s.SetLastRead(t.Context(), ch, events[0].ID))
+}
+
 func TestSession_MarkRead_and_UnreadCount(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
@@ -3121,7 +3134,7 @@ func TestSession_MarkRead_and_UnreadCount(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 2, count)
 
-	require.NoError(t, sess.markRead(ctx, "#general"))
+	markReadViaStore(t, s, "#general")
 
 	count, err = sess.UnreadCount(ctx, "#general")
 	require.NoError(t, err)
@@ -3139,7 +3152,7 @@ func TestSession_UnreadCount_after_new_messages(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	require.NoError(t, sess.markRead(ctx, "#general"))
+	markReadViaStore(t, s, "#general")
 
 	_, err = s.AppendEvent(ctx, "#general", domain.Message{
 		Target: "#general", From: "testuser", Body: "second", At: fixedTime,
@@ -3153,25 +3166,6 @@ func TestSession_UnreadCount_after_new_messages(t *testing.T) {
 	count, err := sess.UnreadCount(ctx, "#general")
 	require.NoError(t, err)
 	require.Equal(t, 2, count)
-}
-
-func TestSession_Join_marks_channel_as_read(t *testing.T) {
-	sess, s := newTestSession(t)
-	ctx := t.Context()
-
-	seedChannelWithMembers(t, sess, s, "#general", "testuser")
-	_, err := s.AppendEvent(ctx, "#general", domain.Message{
-		Target: "#general", From: "testuser", Body: "old", At: fixedTime,
-	})
-	require.NoError(t, err)
-
-	require.NoError(t, userJoin(ctx, t, sess, "#general"))
-
-	// The user is already a member, so no JoinEvent is appended.
-	// MarkRead clears the unread count to zero.
-	count, err := sess.UnreadCount(ctx, "#general")
-	require.NoError(t, err)
-	require.Equal(t, 0, count)
 }
 
 func TestSession_DispatchToChannel_filters_history_before_join(t *testing.T) {
@@ -4160,13 +4154,18 @@ func TestSession_DispatchToChannel_msg_tool_rejects_newline_body(t *testing.T) {
 	}, channelMessages(t, s, "#general"))
 }
 
-// seedChannelWithMembers persists a channel with the given members.
+// seedChannelWithMembers commits a channel with the given members.
 // Each member nick must either be the session user or must have been
 // previously seeded via `seedInstance` so that its canonical handle
 // exists in the store. If the user is listed, the session's in-memory
-// `user.Channels()` and recorded user mode are updated to match, and
-// the user is stripped from the member list before persistence — the
-// user is an ephemeral actor that is never written to disk.
+// `user.Channels()` and recorded user mode are updated to match.
+//
+// The commit goes through the session so the seeded channel lands in
+// live state as well as the store — the session answers every
+// channel question from live state, so a fixture that wrote only to
+// the store would be seeding a record nothing reads. The user is an
+// ephemeral actor stripped on the way to disk, which the session's
+// own commit path handles.
 func seedChannelWithMembers(t *testing.T, sess *Session, s *storemod.SQLiteStore, name domain.ChannelName, members ...domain.Nick) {
 	t.Helper()
 
@@ -4174,42 +4173,44 @@ func seedChannelWithMembers(t *testing.T, sess *Session, s *storemod.SQLiteStore
 
 	registerUserMembership(t, sess, name, members)
 
-	cw.Members = cloneMembersWithout(cw.Members, userInstance(t, sess))
-	require.NoError(t, s.SaveWindow(t.Context(), cw))
+	require.NoError(t, sess.persistChannelWindow(t.Context(), cw))
 }
 
-// saveTestChannel persists a pre-built window fixture. For
+// saveTestChannel commits a pre-built window fixture. For
 // `*domain.ChannelWindow` it splits ephemeral user membership
 // from the on-disk form: if the channel's member list lists the
 // session user, the session's `user.Channels()` + recorded user
-// mode are updated to match, and the user is stripped from the
-// saved member list before persistence. Tests construct channel
-// windows with the user as a member for readability; the store
-// never sees the user. DM and status windows are persisted as-is.
+// mode are updated to match, and the commit goes through the
+// session so the channel lands in live state as well as the store.
+// Tests construct channel windows with the user as a member for
+// readability; the store never sees the user. DM and status
+// windows are persisted as-is — the session holds no live state
+// for them.
 func saveTestChannel(t *testing.T, sess *Session, s *storemod.SQLiteStore, w domain.Window) {
 	t.Helper()
 
-	if cw, ok := w.(*domain.ChannelWindow); ok {
-		user := userInstance(t, sess)
-		if m, ok := cw.Members.GetByInstance(user); ok {
-			userInstance(t, sess).MutateChannels(func(mm *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
-				if _, exists := mm.Get(cw.Name()); !exists {
-					mm.Set(cw.Name(), fixedTime)
-				}
-			})
-
-			mode := m.Mode
-			if mode == domain.ModeNone {
-				mode = domain.ModeOp
-			}
-
-			sess.setUserMode(t.Context(), cw.Name(), mode)
-
-			cw.Members = cloneMembersWithout(cw.Members, user)
-		}
+	cw, ok := w.(*domain.ChannelWindow)
+	if !ok {
+		require.NoError(t, s.SaveWindow(t.Context(), w))
+		return
 	}
 
-	require.NoError(t, s.SaveWindow(t.Context(), w))
+	if m, found := cw.Members.GetByInstance(userInstance(t, sess)); found {
+		userInstance(t, sess).MutateChannels(func(mm *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
+			if _, exists := mm.Get(cw.Name()); !exists {
+				mm.Set(cw.Name(), fixedTime)
+			}
+		})
+
+		mode := m.Mode
+		if mode == domain.ModeNone {
+			mode = domain.ModeOp
+		}
+
+		sess.setUserMode(t.Context(), cw.Name(), mode)
+	}
+
+	require.NoError(t, sess.persistChannelWindow(t.Context(), cw))
 }
 
 // registerUserMembership updates the session's in-memory user state

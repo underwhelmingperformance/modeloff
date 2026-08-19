@@ -41,12 +41,13 @@ func (s *Session) subscriberSnapshot() []*serverClient {
 }
 
 // fanOutProtocol delivers a protocol event to every active
-// subscription that should receive it. Sends are blocking,
-// matching the back-pressure discipline of `s.events`: a stuck
-// consumer surfaces as a wedged producer rather than silent data
-// loss. Each subscription's events channel is buffered to
-// [eventBufSize]; callers should attach a consumer before
-// bootstrap-time emission exceeds that capacity.
+// subscription that should receive it. Each delivery is handed to
+// the subscription and the call returns: a consumer that has
+// stopped reading grows its own backlog and holds up nobody else.
+// This is what lets the command loop fan out safely — a model that
+// is mid-turn, and therefore not draining its events channel, can
+// still be sent to while it waits on the loop for a command of its
+// own.
 //
 // Chat traffic (PRIVMSG/Action) is delivered to every member of the
 // target window except the sender during membership fan-out (RFC
@@ -60,11 +61,6 @@ func (s *Session) subscriberSnapshot() []*serverClient {
 // included — from receiving events for windows it is not in. The
 // user-client is a member of whatever it has joined, so the
 // chat-screen renders exactly those windows.
-//
-// The send-side select gates only on `ctx.Done()`: cancelling the
-// supplier ctx propagates to every in-flight handler's ctx, so a
-// blocked send aborts when shutdown begins, even if its target
-// dispatch goroutine has already exited.
 func (s *Session) fanOutProtocol(ctx context.Context, pe domain.ProtocolEvent) {
 	s.noteChatActivity(pe)
 
@@ -95,18 +91,11 @@ func (s *Session) fanOutProtocol(ctx context.Context, pe domain.ProtocolEvent) {
 			continue
 		}
 
-		select {
-		case sub.events <- protocol.Delivery{
+		sub.enqueue(protocol.Delivery{
 			Event:   pe,
 			Targets: targets,
 			SpanCtx: spanCtx,
-		}:
-		case <-sub.done:
-			// Subscription was reaped between the snapshot and the
-			// send. The recipient is gone; drop the delivery.
-		case <-ctx.Done():
-			return
-		}
+		})
 	}
 
 	if suppressOriginator {
@@ -121,23 +110,21 @@ func (s *Session) fanOutProtocol(ctx context.Context, pe domain.ProtocolEvent) {
 // own copy cannot ride the membership filter. A sender without the
 // capability (every model) gets nothing, keeping RFC 2812 §3.3.1
 // no-self-echo.
-func (s *Session) echoToOriginator(ctx context.Context, pe domain.ProtocolEvent, sender protocol.ClientID, spanCtx trace.SpanContext) {
+func (s *Session) echoToOriginator(_ context.Context, pe domain.ProtocolEvent, sender protocol.ClientID, spanCtx trace.SpanContext) {
 	origin := s.lookupClientHandle(sender)
 	if origin == nil || !origin.echo {
 		return
 	}
 
-	select {
-	case origin.events <- protocol.Delivery{Event: pe, SpanCtx: spanCtx}:
-	case <-origin.done:
-	case <-ctx.Done():
-	}
+	origin.enqueue(protocol.Delivery{Event: pe, SpanCtx: spanCtx})
 }
 
 // anonymiseIfNeeded rewrites a chat-traffic event's `From` field
 // to `"anonymous"` when the target channel carries `+a`. Returns
 // the event unchanged when the channel is not anonymous or when
-// the event is not chat traffic.
+// the event is not chat traffic. The mode set comes from the
+// session's live channel state, which is what makes this
+// affordable on every message the server fans out.
 func anonymiseIfNeeded(ctx context.Context, s *Session, pe domain.ProtocolEvent) domain.ProtocolEvent {
 	msg, ok := pe.(domain.Message)
 	if !ok {
@@ -148,8 +135,8 @@ func anonymiseIfNeeded(ctx context.Context, s *Session, pe domain.ProtocolEvent)
 		return pe
 	}
 
-	window, err := s.loadChannelWindow(ctx, msg.Target)
-	if err != nil || !window.Modes.Anonymous {
+	modes, ok := s.channelModes(ctx, msg.Target)
+	if !ok || !modes.Anonymous {
 		return pe
 	}
 
@@ -207,14 +194,9 @@ func intersectActorTargets(sub *serverClient, actorChannels []domain.ChannelName
 		return nil
 	}
 
-	subChannels := sub.instance.Channels()
-	if subChannels == nil {
-		return nil
-	}
-
 	var out []domain.ChannelName
 	for _, ch := range actorChannels {
-		if _, ok := subChannels.Get(ch); ok {
+		if sub.instance.InChannel(ch) {
 			out = append(out, ch)
 		}
 	}

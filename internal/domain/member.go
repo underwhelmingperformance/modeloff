@@ -246,6 +246,26 @@ func (ml MemberList) All() iter.Seq[Member] {
 	return ml.members.All()
 }
 
+// Clone returns an independent member list holding the same
+// members. Each [Member] is copied verbatim — including its nick
+// snapshot — so the copy renders exactly as the original would;
+// the `*Instance` handles stay shared, as those are the canonical
+// identity pointers callers compare by.
+func (ml MemberList) Clone() MemberList {
+	dst := NewMemberList()
+
+	if ml.members == nil {
+		return dst
+	}
+
+	for m := range ml.All() {
+		dst.members.Insert(m)
+		dst.byInstance[m.Instance] = m
+	}
+
+	return dst
+}
+
 // Nicks returns an iterator over just the nicks in display order.
 func (ml MemberList) Nicks() iter.Seq[Nick] {
 	return func(yield func(Nick) bool) {

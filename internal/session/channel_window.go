@@ -68,27 +68,33 @@ func (s *Session) userModeFor(ctx context.Context, ch domain.ChannelName) domain
 // channels loaded from disk rely on this to know whether to
 // re-inject the user.
 func (s *Session) userInChannel(ch domain.ChannelName) bool {
-	user := s.userInstance()
-	if user == nil {
-		return false
-	}
-
-	channels := user.Channels()
-	if channels == nil {
-		return false
-	}
-
-	_, ok := channels.Get(ch)
-	return ok
+	return s.userInstance().InChannel(ch)
 }
 
 // loadChannelWindow reads an addressable `#`-channel as its typed
 // `*ChannelWindow`, with the user re-injected as a member when
-// the session records them as being in the channel. Returns
+// the session records them as being in the channel. The record
+// comes from the session's live channel state; the caller owns the
+// returned copy and may mutate it freely before committing it back
+// through [Session.persistChannelWindow]. Returns
 // `domain.ErrNotChannelWindow` if the row exists but is not a
 // channel (status / DM) — channel-only callers rely on this as
 // a typed guard.
 func (s *Session) loadChannelWindow(ctx context.Context, name domain.ChannelName) (*domain.ChannelWindow, error) {
+	cw, err := s.liveChannelWindow(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+
+	s.injectUserIfChannelMember(ctx, cw)
+
+	return cw, nil
+}
+
+// loadChannelWindowFromStore reads the persisted row for `name` and
+// asserts it is a channel. This is the cold path behind the live
+// channel state and the only place channel records enter it.
+func (s *Session) loadChannelWindowFromStore(ctx context.Context, name domain.ChannelName) (*domain.ChannelWindow, error) {
 	w, err := s.store.GetWindow(ctx, name)
 	if err != nil {
 		return nil, err
@@ -98,8 +104,6 @@ func (s *Session) loadChannelWindow(ctx context.Context, name domain.ChannelName
 	if !ok {
 		return nil, fmt.Errorf("%w: kind %d for %q", domain.ErrNotChannelWindow, w.Kind(), name)
 	}
-
-	s.injectUserIfChannelMember(ctx, cw)
 
 	return cw, nil
 }
@@ -130,30 +134,49 @@ func (s *Session) injectUserIfChannelMember(ctx context.Context, cw *domain.Chan
 	}
 }
 
-// persistChannelWindow saves a `*ChannelWindow` through the
-// store's typed `SaveWindow` surface, with the user stripped from
-// the member list — same contract as `persistChannel`. The user
-// is an ephemeral session actor and is never persisted; the
-// equivalent load path injects them back via
-// `injectUserIfMember`.
+// persistChannelWindow commits a `*ChannelWindow` as the session's
+// live record for that channel and writes it through to the store,
+// with the user stripped from the member list. The user is an
+// ephemeral session actor and is never persisted; the load path
+// injects them back via `injectUserIfChannelMember`.
+//
+// Live state is updated first so the next reader sees the committed
+// record even if the durable write fails. A failed write leaves the
+// store behind live state, and counts against the
+// persistence-failure metric so operators see the two diverge.
 func (s *Session) persistChannelWindow(ctx context.Context, w *domain.ChannelWindow) error {
 	clone := *w
 	clone.Members = cloneMembersWithout(w.Members, s.userInstance())
-	return s.store.SaveWindow(ctx, &clone)
+
+	s.installChannelWindow(&clone)
+
+	if err := s.store.SaveWindow(ctx, &clone); err != nil {
+		s.recordPersistenceFailure(ctx, w.Name())
+
+		return err
+	}
+
+	return nil
 }
 
 // commitChannel decides `window`'s fate after a membership
-// mutation: persist the updated state, or delete the window
+// mutation: persist the updated state, or destroy the channel
 // outright when no occupants remain. RFC 2811 §2: "the channel
 // ceases to exist when the last user leaves." Channel-mode state
 // — including the `+i` invitation list — disappears with the
-// row; a re-creation under the same name starts fresh.
+// record; a re-creation under the same name starts fresh.
 func (s *Session) commitChannel(ctx context.Context, window *domain.ChannelWindow) error {
 	if s.channelOccupied(window) {
 		return s.persistChannelWindow(ctx, window)
 	}
 
-	return s.store.DeleteWindow(ctx, window.Name())
+	if err := s.destroyChannel(ctx, window.Name()); err != nil {
+		s.recordPersistenceFailure(ctx, window.Name())
+
+		return err
+	}
+
+	return nil
 }
 
 // channelOccupied reports whether `window` still has any
