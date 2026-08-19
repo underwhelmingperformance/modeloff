@@ -17,7 +17,7 @@ import (
 // Every persistable type that carries a `Nick` field
 // (`Join.Nick`, `Part.Nick`, `Quit.Nick`,
 // `TopicChange.By`, `ChannelModeChange.Nick` and `.By`,
-// `ModelInvited.Nick`, `ModelKicked.Nick`,
+// `Invited.Nick`, `Kicked.Nick`,
 // `NickChange.OldNick`/`.NewNick`) holds a snapshot of the
 // nick at event time. These values are point-in-time records and
 // may differ from the instance handle's current nick after a later
@@ -80,8 +80,8 @@ var (
 	_ PersistableEvent = Quit{}
 	_ PersistableEvent = TopicChange{}
 	_ PersistableEvent = ChannelModeChange{}
-	_ PersistableEvent = ModelInvited{}
-	_ PersistableEvent = ModelKicked{}
+	_ PersistableEvent = Invited{}
+	_ PersistableEvent = Kicked{}
 	_ PersistableEvent = NickChange{}
 	_ PersistableEvent = TopicInfo{}
 	_ PersistableEvent = Whois{}
@@ -105,8 +105,8 @@ var (
 	_ ChannelActivity = Quit{}
 	_ ChannelActivity = TopicChange{}
 	_ ChannelActivity = ChannelModeChange{}
-	_ ChannelActivity = ModelInvited{}
-	_ ChannelActivity = ModelKicked{}
+	_ ChannelActivity = Invited{}
+	_ ChannelActivity = Kicked{}
 	_ ChannelActivity = NickChange{}
 
 	_ IssuerReply = Whois{}
@@ -295,12 +295,12 @@ type UserModeChange struct {
 	Instance *Instance `json:"-"`
 }
 
-// ModelInvited records a model instance being added to a
+// Invited records a model instance being added to a
 // channel. `Nick`/`InstanceID` identify the invitee (the subject
 // of the event); `By`/`ByInstanceID` identify the inviter (the
 // actor that issued the INVITE). `Instance` is the live invitee
 // handle, populated on emission and ignored by JSON.
-type ModelInvited struct {
+type Invited struct {
 	Target       ChannelName `json:"channel"`
 	Nick         Nick        `json:"nick"`
 	InstanceID   InstanceID  `json:"instance_id,omitzero"`
@@ -311,16 +311,16 @@ type ModelInvited struct {
 	Instance *Instance `json:"-"`
 }
 
-func (ModelInvited) persistableEvent()                 {}
-func (e ModelInvited) persistableEventTime() time.Time { return e.At }
-func (ModelInvited) channelActivity()                  {}
+func (Invited) persistableEvent()                 {}
+func (e Invited) persistableEventTime() time.Time { return e.At }
+func (Invited) channelActivity()                  {}
 
-// ModelKicked records a model instance being removed from a
+// Kicked records a model instance being removed from a
 // channel. `Nick`/`InstanceID` identify the kicked party (the
 // subject); `By`/`ByInstanceID` identify the operator who issued
 // the KICK (the actor). `Instance` is the live kicked-target
 // handle, populated on emission and ignored by JSON.
-type ModelKicked struct {
+type Kicked struct {
 	Target       ChannelName `json:"channel"`
 	Nick         Nick        `json:"nick"`
 	InstanceID   InstanceID  `json:"instance_id,omitzero"`
@@ -331,9 +331,9 @@ type ModelKicked struct {
 	Instance *Instance `json:"-"`
 }
 
-func (ModelKicked) persistableEvent()                 {}
-func (e ModelKicked) persistableEventTime() time.Time { return e.At }
-func (ModelKicked) channelActivity()                  {}
+func (Kicked) persistableEvent()                 {}
+func (e Kicked) persistableEventTime() time.Time { return e.At }
+func (Kicked) channelActivity()                  {}
 
 // NickChange records a nick change. The wire payload carries no
 // channel list — RFC 2812 §3.1.2 NICK is an actor-scoped notice
@@ -494,9 +494,9 @@ func EventTarget(e PersistableEvent) ChannelName {
 		return v.Target
 	case ChannelModeChange:
 		return v.Target
-	case ModelInvited:
+	case Invited:
 		return v.Target
-	case ModelKicked:
+	case Kicked:
 		return v.Target
 	case TopicInfo:
 		return v.Target
@@ -516,7 +516,11 @@ func EventTarget(e PersistableEvent) ChannelName {
 }
 
 // EventType returns the discriminator string for a channel
-// event.
+// event. These are a fixed, hand-maintained vocabulary persisted in
+// the store — not derived from the Go type name — so a type rename
+// never orphans existing rows. `Invited` and `Kicked` keep their
+// historic "model_invited"/"model_kicked" tags for exactly this
+// reason.
 func EventType(e PersistableEvent) string {
 	switch e.(type) {
 	case Message:
@@ -531,9 +535,9 @@ func EventType(e PersistableEvent) string {
 		return "topic_change"
 	case ChannelModeChange:
 		return "mode_change"
-	case ModelInvited:
+	case Invited:
 		return "model_invited"
-	case ModelKicked:
+	case Kicked:
 		return "model_kicked"
 	case NickChange:
 		return "nick_change"
@@ -616,10 +620,10 @@ func UnmarshalPersistableEvent(b []byte) (PersistableEvent, error) {
 		var e ChannelModeChange
 		return e, unmarshal(&e)
 	case "model_invited":
-		var e ModelInvited
+		var e Invited
 		return e, unmarshal(&e)
 	case "model_kicked":
-		var e ModelKicked
+		var e Kicked
 		return e, unmarshal(&e)
 	case "nick_change":
 		var e NickChange
@@ -657,8 +661,8 @@ func (Quit) domainEvent()              {}
 func (TopicChange) domainEvent()       {}
 func (ChannelModeChange) domainEvent() {}
 func (UserModeChange) domainEvent()    {}
-func (ModelInvited) domainEvent()      {}
-func (ModelKicked) domainEvent()       {}
+func (Invited) domainEvent()           {}
+func (Kicked) domainEvent()            {}
 func (NickChange) domainEvent()        {}
 func (TopicInfo) domainEvent()         {}
 func (Help) domainEvent()              {}

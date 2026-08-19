@@ -171,7 +171,7 @@ func (c *serverClient) canReceive(ev domain.ProtocolEvent, actorTargets []domain
 		return channelsContains(channels, e.Target)
 	case domain.ChannelModeChange:
 		return channelsContains(channels, e.Target)
-	case domain.ModelKicked:
+	case domain.Kicked:
 		return channelsContains(channels, e.Target)
 	case domain.Quit, domain.NickChange, domain.ModelDispatchStarted, domain.ModelDispatchDone:
 		_ = e

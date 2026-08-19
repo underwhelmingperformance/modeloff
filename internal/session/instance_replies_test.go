@@ -132,7 +132,7 @@ func TestSession_failed_invite_persists_notice_to_issuer(t *testing.T) {
 }
 
 // TestSession_successful_invite_not_in_issuer_reply_log proves that a
-// successful INVITE's [domain.ModelInvited] envelope is channel
+// successful INVITE's [domain.Invited] envelope is channel
 // activity, not an issuer reply, so it is not filed to the issuer's
 // private reply log.
 func TestSession_successful_invite_not_in_issuer_reply_log(t *testing.T) {

@@ -960,15 +960,15 @@ func TestRenderLine_IRC_events(t *testing.T) {
 			"*** alice sets mode +v botty",
 		},
 		{
-			"model_invited",
-			domain.ModelInvited{
+			"invited",
+			domain.Invited{
 				Target: "#general", Nick: "botty", By: "alice", At: now,
 			},
 			"*** alice invited botty to #general",
 		},
 		{
-			"model_kicked",
-			domain.ModelKicked{Target: "#general", Nick: "botty", By: "someone", At: now},
+			"kicked",
+			domain.Kicked{Target: "#general", Nick: "botty", By: "someone", At: now},
 			"*** botty was kicked from #general by someone",
 		},
 		{

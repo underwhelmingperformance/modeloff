@@ -49,10 +49,10 @@ func (s ChatScreen) handleProtocolEvent(msg protocolEventMsg) (ui.Model, tea.Cmd
 		updated, cmd = s.handleTopicChangeEvent(evt)
 	case domain.NickChange:
 		updated, cmd = s.handleNickChangeEvent(evt, msg.targets)
-	case domain.ModelInvited:
-		updated, cmd = s.handleModelInvitedEvent(evt)
-	case domain.ModelKicked:
-		updated, cmd = s.handleModelKickedEvent(evt)
+	case domain.Invited:
+		updated, cmd = s.handleInvitedEvent(evt)
+	case domain.Kicked:
+		updated, cmd = s.handleKickedEvent(evt)
 	case domain.TopicInfo:
 		updated, cmd = s.handleTopicInfoEvent(evt)
 	case domain.ModelDispatchStarted:
@@ -492,7 +492,7 @@ func (s ChatScreen) activeDMWith(actor *domain.Instance) (*domain.DMWindow, bool
 	return nil, false
 }
 
-func (s ChatScreen) handleModelInvitedEvent(msg domain.ModelInvited) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleInvitedEvent(msg domain.Invited) (ui.Model, tea.Cmd) {
 	if cw, ok := s.channelWindowByName(msg.Target); ok {
 		if !cw.Members.HasInstance(msg.Instance) {
 			cw.Members.Add(msg.Instance)
@@ -508,7 +508,7 @@ func (s ChatScreen) handleModelInvitedEvent(msg domain.ModelInvited) (ui.Model, 
 	return s, msgCmd(components.NickListUpdatedMsg{Members: members})
 }
 
-func (s ChatScreen) handleModelKickedEvent(msg domain.ModelKicked) (ui.Model, tea.Cmd) {
+func (s ChatScreen) handleKickedEvent(msg domain.Kicked) (ui.Model, tea.Cmd) {
 	if cw, ok := s.channelWindowByName(msg.Target); ok {
 		if m, mOK := cw.Members.GetByInstance(msg.Instance); mOK {
 			cw.Members.Remove(m)

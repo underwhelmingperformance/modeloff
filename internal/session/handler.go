@@ -200,7 +200,7 @@ func (s *Session) handleTopic(ctx context.Context, c protocol.Client, cmd protoc
 // [domain.SystemNotice] in place of the `RPL_INVITING` envelope; that
 // notice is an [domain.IssuerReply], so it is filed to the issuer's
 // reply log and a model re-experiences the refusal on replay. The
-// success-case [domain.ModelInvited] is channel activity, not an
+// success-case [domain.Invited] is channel activity, not an
 // issuer reply, so it is not filed here.
 func (s *Session) handleInvite(ctx context.Context, c protocol.Client, cmd protocol.Invite) (protocol.Response, error) {
 	actor, err := s.resolveClientActor(c)

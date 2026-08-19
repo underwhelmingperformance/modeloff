@@ -647,15 +647,15 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 			}),
 		)
 
-	case domain.ModelInvited:
+	case domain.Invited:
 		// Echo path for the inviter's own `/invite` result. `session.handleInvite`
-		// returns the resulting `ModelInvited` in `protocol.Response.Events`,
+		// returns the resulting `Invited` in `protocol.Response.Events`,
 		// which `chatcmd.sendCommand` delivers to the chat-screen via
 		// `chatcmd.ReplyEvents`. The session bus does not deliver this event
 		// back to the inviter, so this is the only way the inviter sees the
 		// RPL_INVITING-equivalent line in scrollback.
 		s.bufferEvent(msg)
-		return s.handleModelInvitedEvent(msg)
+		return s.handleInvitedEvent(msg)
 
 	case domain.SystemNotice:
 		// Command-reply feedback path for the issuing client. A handler

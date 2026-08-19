@@ -30,8 +30,8 @@ func (Quit) isProtocolEvent()              {}
 func (TopicChange) isProtocolEvent()       {}
 func (ChannelModeChange) isProtocolEvent() {}
 func (UserModeChange) isProtocolEvent()    {}
-func (ModelInvited) isProtocolEvent()      {}
-func (ModelKicked) isProtocolEvent()       {}
+func (Invited) isProtocolEvent()           {}
+func (Kicked) isProtocolEvent()            {}
 func (NickChange) isProtocolEvent()        {}
 func (TopicInfo) isProtocolEvent()         {}
 func (Whois) isProtocolEvent()             {}

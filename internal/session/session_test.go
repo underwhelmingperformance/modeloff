@@ -1493,7 +1493,7 @@ func TestSession_Kick(t *testing.T) {
 
 		require.ElementsMatch(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
-			domain.ModelKicked{
+			domain.Kicked{
 				Target:     "#dev",
 				Nick:       "botty",
 				InstanceID: botty.ID(),
@@ -2801,7 +2801,7 @@ func TestSession_InviteAs_reuses_existing_instance(t *testing.T) {
 
 		event, err := sess.inviteAs(ctx, userInstance(t, sess), "botty", "#random")
 		require.NoError(t, err)
-		require.Equal(t, domain.ModelInvited{
+		require.Equal(t, domain.Invited{
 			Target:       "#random",
 			Nick:         "botty",
 			InstanceID:   botty.ID(),
@@ -2885,7 +2885,7 @@ func TestSession_InviteAs_existing_instance_preserves_persona(t *testing.T) {
 
 		event, err := sess.inviteAs(ctx, userInstance(t, sess), "botty", "#random")
 		require.NoError(t, err)
-		require.Equal(t, domain.ModelInvited{
+		require.Equal(t, domain.Invited{
 			Target:       "#random",
 			Nick:         "botty",
 			InstanceID:   botty.ID(),
@@ -2929,7 +2929,7 @@ func TestSession_KickNonMember(t *testing.T) {
 
 		// Kicking an unresolved nick surfaces UnknownNickError
 		// from the dispatcher and leaves the channel state and
-		// the events bus untouched — no ModelKickedEvent, no
+		// the events bus untouched — no KickedEvent, no
 		// membership mutation, no instance-channels mutation.
 		require.ErrorAs(t, kickViaWire(ctx, t, sess, "#dev", "nobody"), &domain.UnknownNickError{})
 		synctest.Wait()

@@ -114,9 +114,9 @@ func historyTargets(delivery protocol.Delivery) []domain.ChannelName {
 		return []domain.ChannelName{e.Target}
 	case domain.ChannelModeChange:
 		return []domain.ChannelName{e.Target}
-	case domain.ModelInvited:
+	case domain.Invited:
 		return []domain.ChannelName{e.Target}
-	case domain.ModelKicked:
+	case domain.Kicked:
 		return []domain.ChannelName{e.Target}
 	case domain.Quit, domain.NickChange:
 		_ = e
@@ -147,7 +147,7 @@ func dispatchTrigger(selfID domain.InstanceID, ev domain.ProtocolEvent) (domain.
 		msg, _ := protocol.FromChannelEvent(e)
 		return e.Target, msg, true
 
-	case domain.ModelInvited:
+	case domain.Invited:
 		if e.InstanceID != selfID {
 			return "", protocol.IRCMessage{}, false
 		}

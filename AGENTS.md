@@ -108,7 +108,7 @@ typed command failure (e.g. `domain.NotOperatorError`,
 `domain.UnknownNickError`); callers branch on it via `errors.As`. The
 `Response.Events` slot carries the dispatcher's synchronous numeric-reply
 payloads: the persisted `domain.Message` for `PrivMsg`/`Action`,
-`domain.ModelInvited` for `Invite`, the `domain.Whois` snapshot for `Whois`,
+`domain.Invited` for `Invite`, the `domain.Whois` snapshot for `Whois`,
 and the `domain.ListReply` stream terminated by `domain.ListEnd` for `List`.
 Broadcast side effects flow asynchronously over `Client.Events()` to peers.
 

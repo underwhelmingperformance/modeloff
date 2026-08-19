@@ -24,8 +24,8 @@ func TestDispatchTrigger(t *testing.T) {
 		{"join triggers", domain.Join{Target: "#dev", Nick: "alice", InstanceID: other, At: at}, "#dev", true},
 		{"part by another triggers", domain.Part{Target: "#dev", Nick: "alice", InstanceID: other, At: at}, "#dev", true},
 		{"part by self does not trigger", domain.Part{Target: "#dev", Nick: "me", InstanceID: self, At: at}, "", false},
-		{"invite addressed to self triggers", domain.ModelInvited{Target: "#dev", Nick: "me", InstanceID: self, By: "alice", At: at}, "#dev", true},
-		{"invite addressed to another does not trigger", domain.ModelInvited{Target: "#dev", Nick: "alice", InstanceID: other, By: "bob", At: at}, "", false},
+		{"invite addressed to self triggers", domain.Invited{Target: "#dev", Nick: "me", InstanceID: self, By: "alice", At: at}, "#dev", true},
+		{"invite addressed to another does not trigger", domain.Invited{Target: "#dev", Nick: "alice", InstanceID: other, By: "bob", At: at}, "", false},
 		{"poke triggers", domain.PokeEvent{Channel: "#dev", At: at}, "#dev", true},
 		{"quit does not trigger", domain.Quit{At: at}, "", false},
 	}

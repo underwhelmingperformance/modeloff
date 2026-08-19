@@ -570,7 +570,7 @@ func TestKickAs_model_actor(t *testing.T) {
 
 		require.ElementsMatch(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
-			domain.ModelKicked{
+			domain.Kicked{
 				Target:       "#dev",
 				Nick:         "helper",
 				InstanceID:   helper.ID(),

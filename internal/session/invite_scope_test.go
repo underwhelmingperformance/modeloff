@@ -15,7 +15,7 @@ import (
 
 // TestInviteAs_delivery_is_scoped_to_inviter_and_invitee pins the
 // RFC 2812 §3.2.7 scope rule: the inviter receives RPL_INVITING
-// (in modeloff terms, the [domain.ModelInvited] envelope returned
+// (in modeloff terms, the [domain.Invited] envelope returned
 // in `Response.Events`), the invitee receives the INVITE message
 // on its own subscription, and no other channel member is told
 // anything. The channel event log is not touched — INVITE is a
@@ -25,11 +25,11 @@ import (
 // already in #room (so it would be in the broadcast set under
 // the old fan-out shape). The test asserts:
 //
-//   - The Send response carries the ModelInvited.
+//   - The Send response carries the Invited.
 //   - botty's dispatch loop fires an INVITE turn — its fake
 //     records the trigger, proving the event reached it.
 //   - helper's dispatch loop does not fire.
-//   - The channel events log has no ModelInvited row.
+//   - The channel events log has no Invited row.
 func TestInviteAs_delivery_is_scoped_to_inviter_and_invitee(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		type call struct {
@@ -75,7 +75,7 @@ func TestInviteAs_delivery_is_scoped_to_inviter_and_invitee(t *testing.T) {
 
 		synctest.Wait()
 
-		wantInvited := domain.ModelInvited{
+		wantInvited := domain.Invited{
 			Target:       "#room",
 			Nick:         "botty",
 			InstanceID:   botty.ID(),
@@ -86,7 +86,7 @@ func TestInviteAs_delivery_is_scoped_to_inviter_and_invitee(t *testing.T) {
 		}
 
 		require.Equal(t, []protocol.Event{wantInvited}, resp.Events,
-			"the Send response carries the ModelInvited envelope — the inviter's RPL_INVITING")
+			"the Send response carries the Invited envelope — the inviter's RPL_INVITING")
 
 		require.Equal(t, []call{
 			{
@@ -109,9 +109,9 @@ func TestInviteAs_delivery_is_scoped_to_inviter_and_invitee(t *testing.T) {
 		events, err := s.EventsBefore(ctx, "#room", nil, 50)
 		require.NoError(t, err)
 
-		var storedInvites []domain.ModelInvited
+		var storedInvites []domain.Invited
 		for _, se := range events {
-			if inv, ok := se.Event.(domain.ModelInvited); ok {
+			if inv, ok := se.Event.(domain.Invited); ok {
 				storedInvites = append(storedInvites, inv)
 			}
 		}

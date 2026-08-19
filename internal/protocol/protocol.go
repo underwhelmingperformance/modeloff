@@ -280,7 +280,7 @@ func FromChannelEvent(evt domain.PersistableEvent) (IRCMessage, bool) {
 			At:         e.At,
 		}, true
 
-	case domain.ModelInvited:
+	case domain.Invited:
 		// `From` is the inviter (the actor that issued the INVITE).
 		// The invitee identity is the recipient of the event — for
 		// the dispatch loop it is the receiving model itself, so it
@@ -293,7 +293,7 @@ func FromChannelEvent(evt domain.PersistableEvent) (IRCMessage, bool) {
 			At:         e.At,
 		}, true
 
-	case domain.ModelKicked:
+	case domain.Kicked:
 		// `From` is the kicker. `Subject` is the kicked nick — other
 		// channel members reading this event in their history need
 		// to know who was removed.

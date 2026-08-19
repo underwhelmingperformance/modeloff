@@ -528,7 +528,7 @@ func (s *Session) kickAs(ctx context.Context, actor, target *domain.Instance, ch
 		actorNick := actor.Nick()
 
 		now := s.now()
-		s.persistAndEmit(ctx, ch, domain.ModelKicked{
+		s.persistAndEmit(ctx, ch, domain.Kicked{
 			Target:       ch,
 			Nick:         targetNick,
 			InstanceID:   target.ID(),
@@ -545,7 +545,7 @@ func (s *Session) kickAs(ctx context.Context, actor, target *domain.Instance, ch
 // inviteAs implements RFC 2812 §3.2.7's INVITE command. The
 // invited nick is recorded against the channel's `InvitedNicks`
 // set so a follow-up JOIN can clear `+i`. Delivery is scoped to
-// the inviter and invitee: the returned [domain.ModelInvited]
+// the inviter and invitee: the returned [domain.Invited]
 // envelope is the inviter's `RPL_INVITING`-equivalent (the
 // caller — [Session.handleInvite] — wraps it in `Response.Events`
 // for the synchronous client reply), and the same envelope is
@@ -606,7 +606,7 @@ func (s *Session) inviteAs(ctx context.Context, actor *domain.Instance, target d
 		case err == nil:
 			span.SetAttributes(attribute.String(observability.AttrInstanceID, string(inst.ID())))
 
-			invited := domain.ModelInvited{
+			invited := domain.Invited{
 				Target:       ch,
 				Nick:         inst.Nick(),
 				InstanceID:   inst.ID(),

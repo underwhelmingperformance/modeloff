@@ -499,7 +499,7 @@ func TestChatScreen_completion_all_instance_commands_see_instances_outside_activ
 func TestChatScreen_NickChange_then_Quit_removes_instance(t *testing.T) {
 	screen := newScreenFixture(t)
 
-	// Seed the channel so handleModelInvitedEvent finds it.
+	// Seed the channel so handleInvitedEvent finds it.
 	screen.channels.Insert(newWindow(domain.NewChannelWindow("#general", time.Time{})))
 	*screen.active = "#general"
 
@@ -507,7 +507,7 @@ func TestChatScreen_NickChange_then_Quit_removes_instance(t *testing.T) {
 
 	bot := domain.NewModelInstance("bot-1", "oldnick", "test/model", "", nil)
 
-	_, _ = screen.handleModelInvitedEvent(domain.ModelInvited{
+	_, _ = screen.handleInvitedEvent(domain.Invited{
 		Target:   "#general",
 		Instance: bot,
 		By:       "testuser",

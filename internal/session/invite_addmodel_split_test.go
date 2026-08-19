@@ -15,7 +15,7 @@ import (
 )
 
 // TestInviteAs_does_not_auto_attach_existing_model pins the design
-// of `/invite` for already-attached models: emit `ModelInvited` as
+// of `/invite` for already-attached models: emit `Invited` as
 // a wire notification (and a `SystemNotice` for the channel log)
 // while leaving channel membership untouched. The invited model
 // takes a turn on the INVITE and chooses whether to issue its own
@@ -25,7 +25,7 @@ import (
 // botty is invited to `#random`. The fake passes on the INVITE
 // turn. Afterwards: botty's `Channels` set carries only its
 // existing memberships, the channel's member list does not carry
-// botty, and the bus has carried exactly one `ModelInvited` plus
+// botty, and the bus has carried exactly one `Invited` plus
 // botty's dispatch lifecycle.
 func TestInviteAs_does_not_auto_attach_existing_model(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
@@ -50,7 +50,7 @@ func TestInviteAs_does_not_auto_attach_existing_model(t *testing.T) {
 
 		event, err := sess.inviteAs(ctx, userInstance(t, sess), "botty", "#random")
 		require.NoError(t, err)
-		require.Equal(t, domain.ModelInvited{
+		require.Equal(t, domain.Invited{
 			Target:       "#random",
 			Nick:         "botty",
 			InstanceID:   botty.ID(),
@@ -59,7 +59,7 @@ func TestInviteAs_does_not_auto_attach_existing_model(t *testing.T) {
 			At:           fixedTime,
 			Instance:     botty,
 		}, event,
-			"inviteAs returns the ModelInvited envelope as the inviter's "+
+			"inviteAs returns the Invited envelope as the inviter's "+
 				"RPL_INVITING-equivalent — the handler wraps it into Response.Events")
 
 		synctest.Wait()
@@ -112,11 +112,11 @@ func TestAddModel_emits_real_Join(t *testing.T) {
 				"wire shape a /join would produce")
 
 		invitedIdx := slices.IndexFunc(events, func(e domain.Event) bool {
-			_, ok := e.(domain.ModelInvited)
+			_, ok := e.(domain.Invited)
 			return ok
 		})
 		require.Less(t, invitedIdx, 0,
-			"the add-model path emits Join; ModelInvited belongs to the invite path")
+			"the add-model path emits Join; Invited belongs to the invite path")
 
 		channel, err := sess.loadChannelWindow(ctx, "#general")
 		require.NoError(t, err)

@@ -232,7 +232,7 @@ func TestSession_Handle_delegates(t *testing.T) {
 				botty, err := s.ResolveNick(t.Context(), "botty")
 				require.NoError(t, err)
 				return protocol.Response{
-					Events: []domain.ProtocolEvent{domain.ModelInvited{
+					Events: []domain.ProtocolEvent{domain.Invited{
 						Target:       "#general",
 						Nick:         "botty",
 						InstanceID:   botty.ID(),

@@ -240,8 +240,8 @@ func TestFromChannelEvent_propagates_instance_id(t *testing.T) {
 			},
 		},
 		{
-			name: "model_invited carries the inviter (actor) as From/InstanceID",
-			event: domain.ModelInvited{
+			name: "invited carries the inviter (actor) as From/InstanceID",
+			event: domain.Invited{
 				Target:       "#room",
 				Nick:         "botty",
 				InstanceID:   "inst-botty",
@@ -258,8 +258,8 @@ func TestFromChannelEvent_propagates_instance_id(t *testing.T) {
 			},
 		},
 		{
-			name: "model_kicked carries the kicker as From/InstanceID and the kicked nick as Subject",
-			event: domain.ModelKicked{
+			name: "kicked carries the kicker as From/InstanceID and the kicked nick as Subject",
+			event: domain.Kicked{
 				Target:       "#room",
 				Nick:         "botty",
 				InstanceID:   "inst-botty",

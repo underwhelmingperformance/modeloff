@@ -113,8 +113,8 @@ func TestChannelEvent_JSON_round_trip(t *testing.T) {
 			},
 		},
 		{
-			name: "model invited",
-			event: domain.ModelInvited{
+			name: "invited",
+			event: domain.Invited{
 				Target: "#general",
 				Nick:   "botty",
 				By:     "alice",
@@ -122,8 +122,8 @@ func TestChannelEvent_JSON_round_trip(t *testing.T) {
 			},
 		},
 		{
-			name: "model kicked",
-			event: domain.ModelKicked{
+			name: "kicked",
+			event: domain.Kicked{
 				Target: "#general",
 				Nick:   "botty",
 				By:     "alice",
@@ -234,8 +234,8 @@ func TestPersistableEvent_partition(t *testing.T) {
 		"quit":                domain.Quit{},
 		"topic change":        domain.TopicChange{},
 		"channel mode change": domain.ChannelModeChange{},
-		"model invited":       domain.ModelInvited{},
-		"model kicked":        domain.ModelKicked{},
+		"invited":             domain.Invited{},
+		"kicked":              domain.Kicked{},
 		"nick change":         domain.NickChange{},
 		"topic info":          domain.TopicInfo{},
 		"whois":               domain.Whois{},

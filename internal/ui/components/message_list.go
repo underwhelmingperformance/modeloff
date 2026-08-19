@@ -316,8 +316,8 @@ func isDMSuppressedEvent(event domain.Event) bool {
 		domain.Part,
 		domain.ChannelModeChange,
 		domain.TopicChange,
-		domain.ModelInvited,
-		domain.ModelKicked:
+		domain.Invited,
+		domain.Kicked:
 		return true
 	}
 

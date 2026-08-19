@@ -46,10 +46,10 @@ func renderChannelEvent[C command.KindProvider](
 		return wrap.Render(theme.SystemEvent.Render("*** " + topicChangeText(e)))
 	case domain.ChannelModeChange:
 		return wrap.Render(theme.SystemEvent.Render("*** " + channelModeChangeText(e)))
-	case domain.ModelInvited:
+	case domain.Invited:
 		return wrap.Render(theme.SystemEvent.Render(
 			fmt.Sprintf("*** %s invited %s to %s", e.By, e.Nick, e.Target)))
-	case domain.ModelKicked:
+	case domain.Kicked:
 		return wrap.Render(theme.SystemEvent.Render(
 			fmt.Sprintf("*** %s was kicked from %s by %s", e.Nick, e.Target, e.By)))
 	case domain.NickChange:
