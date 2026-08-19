@@ -439,7 +439,7 @@ func NewTestSession(
 		return apiClient, nil
 	})
 
-	sess := session.New(baseContext, store, mgr)
+	sess := session.New(baseContext, store, mgr, nil)
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 
 	user := userclient.New("testuser", sess, store, userclient.NewStoreReplyLog(store))

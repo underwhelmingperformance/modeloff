@@ -11,26 +11,25 @@ import (
 	"github.com/laney/modeloff/internal/domain"
 )
 
-// setUserMode records the user's mode for a channel. It is called
-// from joinAs on a successful join and from SetMode when the user's
-// mode changes. The mode is used by loadChannel/loadChannels to
-// re-inject the user into channel member lists returned from the
+// setUserModes records the privileges the user holds in a channel.
+// The user is never persisted, so loadChannel/loadChannels read this
+// record to re-inject the user into member lists loaded from the
 // store.
-func (s *Session) setUserMode(ctx context.Context, ch domain.ChannelName, mode domain.NickMode) {
+func (s *Session) setUserModes(ctx context.Context, ch domain.ChannelName, modes domain.MemberModes) {
 	s.userMu.Lock()
-	s.userModes[ch] = mode
+	s.userModes[ch] = modes
 	s.userMu.Unlock()
 
 	slog.Default().DebugContext(ctx, "user mode changed",
 		"component", "session",
 		"channel", ch,
-		"mode", mode.String(),
+		"mode", modes.IRCString(),
 	)
 }
 
-// forgetUserMode drops the recorded mode for a channel when the
-// user parts or is kicked.
-func (s *Session) forgetUserMode(ctx context.Context, ch domain.ChannelName) {
+// forgetUserModes drops the recorded privileges for a channel when
+// the user parts or is kicked.
+func (s *Session) forgetUserModes(ctx context.Context, ch domain.ChannelName) {
 	s.userMu.Lock()
 	delete(s.userModes, ch)
 	s.userMu.Unlock()
@@ -41,14 +40,14 @@ func (s *Session) forgetUserMode(ctx context.Context, ch domain.ChannelName) {
 	)
 }
 
-// userModeFor reads the recorded mode for a channel. The zero value
-// (ModeNone) is returned when no mode has been recorded. Callers
-// that ask about a channel the user isn't in get a debug-level log
-// line as a diagnostic aid — the mode map is only meaningful for
-// channels the user is currently in, but legitimate callers
-// (assertions, tests) may probe non-member channels and ModeNone is
-// the right answer for them.
-func (s *Session) userModeFor(ctx context.Context, ch domain.ChannelName) domain.NickMode {
+// userModesFor reads the recorded privileges for a channel. It
+// returns the zero value (no privileges) when nothing has been
+// recorded. Callers that ask about a channel the user isn't in get a
+// debug-level log line as a diagnostic aid: the record is only
+// meaningful for channels the user is currently in, but legitimate
+// callers (assertions, tests) may probe non-member channels, and the
+// zero value is the right answer for them.
+func (s *Session) userModesFor(ctx context.Context, ch domain.ChannelName) domain.MemberModes {
 	if !s.userInChannel(ch) {
 		slog.Default().DebugContext(ctx, "user mode requested for channel user is not in",
 			"component", "session",
@@ -128,10 +127,7 @@ func (s *Session) injectUserIfChannelMember(ctx context.Context, cw *domain.Chan
 	}
 
 	cw.Members.Add(user)
-
-	if mode := s.userModeFor(ctx, cw.Name()); mode != domain.ModeNone {
-		cw.Members.SetMode(user, mode)
-	}
+	cw.Members.SetModes(user, s.userModesFor(ctx, cw.Name()))
 }
 
 // persistChannelWindow commits a `*ChannelWindow` as the session's
@@ -221,7 +217,7 @@ func (s *Session) removeMember(ctx context.Context, window *domain.ChannelWindow
 	})
 
 	if actor.ID() == "" {
-		s.forgetUserMode(ctx, ch)
+		s.forgetUserModes(ctx, ch)
 	} else {
 		if err := s.store.SaveInstance(ctx, actor); err != nil {
 			return fmt.Errorf("save instance: %w", err)
@@ -233,7 +229,7 @@ func (s *Session) removeMember(ctx context.Context, window *domain.ChannelWindow
 
 // cloneMembersWithout returns a new MemberList containing every
 // member of src except the one whose handle equals `excluded`.
-// Modes are preserved.
+// Privileges are preserved.
 func cloneMembersWithout(src domain.MemberList, excluded *domain.Instance) domain.MemberList {
 	dst := domain.NewMemberList()
 	for m := range src.All() {
@@ -242,9 +238,7 @@ func cloneMembersWithout(src domain.MemberList, excluded *domain.Instance) domai
 		}
 
 		dst.Add(m.Instance)
-		if m.Mode != domain.ModeNone {
-			dst.SetMode(m.Instance, m.Mode)
-		}
+		dst.SetModes(m.Instance, m.Modes)
 	}
 
 	return dst

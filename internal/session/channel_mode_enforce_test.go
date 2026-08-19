@@ -272,7 +272,7 @@ func TestSendMessageAs_ModeratedGate(t *testing.T) {
 
 			w, err := sess.loadChannelWindow(ctx, "#chan")
 			require.NoError(t, err)
-			w.Members.SetMode(botty, domain.ModeVoice)
+			w.Members.SetModes(botty, domain.MemberModes{Voice: true})
 			require.NoError(t, sess.persistChannelWindow(ctx, w))
 
 			_, err = sess.sendMessageAs(ctx, botty, "#chan", "voiced")
@@ -296,7 +296,7 @@ func TestSendMessageAs_ModeratedGate(t *testing.T) {
 			// Strip botty's default voice so the +m gate rejects.
 			w, err := sess.loadChannelWindow(ctx, "#chan")
 			require.NoError(t, err)
-			w.Members.SetMode(botty, domain.ModeNone)
+			w.Members.SetModes(botty, domain.MemberModes{})
 			w.Modes.Moderated = true
 			require.NoError(t, sess.persistChannelWindow(ctx, w))
 
@@ -349,7 +349,7 @@ func TestSendMessageAs_QuietGate(t *testing.T) {
 		w, err := sess.loadChannelWindow(ctx, "#chan")
 		require.NoError(t, err)
 		w.Modes.Quiet = true
-		w.Members.SetMode(botty, domain.ModeVoice)
+		w.Members.SetModes(botty, domain.MemberModes{Voice: true})
 		require.NoError(t, sess.persistChannelWindow(ctx, w))
 
 		_, err = sess.sendMessageAs(ctx, botty, "#chan", "silenced")

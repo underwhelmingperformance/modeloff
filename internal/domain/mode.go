@@ -1,5 +1,10 @@
 package domain
 
+import (
+	"encoding/json"
+	"log/slog"
+)
+
 // Mode is a single RFC 2812 mode flag letter. The same letter carries
 // different semantics by the event carrying it: 'o' on a
 // [ChannelModeChange] is channel-op; 'o' on a [UserModeChange] is
@@ -56,12 +61,129 @@ func (m Mode) IRCString(add bool) string {
 	return "-" + string(rune(m))
 }
 
+// MemberModes is the set of per-member privileges one member holds
+// in one channel. RFC 2811 §4.1 makes channel-operator and voice
+// independent privileges: a member may hold both at once, and
+// granting or revoking either one leaves the other alone.
+//
+// The zero value is an ordinary member with neither privilege.
+type MemberModes struct {
+	Operator bool
+	Voice    bool
+}
+
+// Has reports whether the member holds `flag`. It reports false for
+// any flag that is not a per-member mode.
+func (m MemberModes) Has(flag Mode) bool {
+	switch flag {
+	case ModeOperator:
+		return m.Operator
+	case ModeChannelVoice:
+		return m.Voice
+	default:
+		return false
+	}
+}
+
+// With applies `+flag` (add) or `-flag` to the receiver and returns
+// the result. Only the named privilege changes. For a flag that is
+// not a per-member mode it returns the receiver unchanged.
+func (m MemberModes) With(flag Mode, add bool) MemberModes {
+	switch flag {
+	case ModeOperator:
+		m.Operator = add
+	case ModeChannelVoice:
+		m.Voice = add
+	}
+
+	return m
+}
+
+// Rank returns the highest privilege the member holds. The nick-list
+// prefix and the member sort order both use it. The ordering is the
+// ISUPPORT PREFIX one: `@` outranks `+`.
+func (m MemberModes) Rank() NickMode {
+	switch {
+	case m.Operator:
+		return ModeOp
+	case m.Voice:
+		return ModeVoice
+	default:
+		return ModeNone
+	}
+}
+
+// IRCString renders the held privileges as their mode letters in
+// rank order (`ov`, `o`, `v`, or the empty string).
+func (m MemberModes) IRCString() string {
+	var flags []rune
+
+	if m.Operator {
+		flags = append(flags, rune(ModeOperator))
+	}
+	if m.Voice {
+		flags = append(flags, rune(ModeChannelVoice))
+	}
+
+	return string(flags)
+}
+
+// MarshalJSON encodes the set as its mode letters, so a persisted
+// member record spells out the privileges the member holds.
+func (m MemberModes) MarshalJSON() ([]byte, error) {
+	return json.Marshal(m.IRCString())
+}
+
+// UnmarshalJSON decodes the mode-letter form [MemberModes.MarshalJSON]
+// writes. It keeps the letters this build understands and drops the
+// rest, naming them in a single log line.
+//
+// Dropping rather than refusing is deliberate. A record written by a
+// build that knows a per-member mode this one does not, which is what
+// a downgrade or a later half-op letter produces, reaches this method
+// through the channel-window decode, and an error here fails
+// `store.GetWindow` and so the JOIN. One member's privileges must not
+// decide whether anyone can enter the channel. Refusing an
+// unrecognised flag belongs to [ParseChannelModes] and the MODE
+// command's own validation, where a caller is checking input it can
+// still correct.
+func (m *MemberModes) UnmarshalJSON(data []byte) error {
+	var letters string
+	if err := json.Unmarshal(data, &letters); err != nil {
+		return err
+	}
+
+	var parsed MemberModes
+	var unknown []rune
+
+	for _, r := range letters {
+		flag := Mode(r)
+		if !flag.MemberMode() {
+			unknown = append(unknown, r)
+
+			continue
+		}
+
+		parsed = parsed.With(flag, true)
+	}
+
+	if len(unknown) > 0 {
+		slog.Default().Warn("dropped member mode letters this build does not know",
+			"component", "domain",
+			"letters", string(unknown),
+		)
+	}
+
+	*m = parsed
+
+	return nil
+}
+
 // NickMode is a per-member display rank used by the nick-list
-// renderer for sort ordering and the `@`/`+` prefix. It is a
-// display concern distinct from the wire-flag [Mode]; the two
-// coexist because the chat-screen sorts members by privilege
-// while the wire carries single-letter flags. Use [WireFlag]
-// to convert.
+// renderer for sort ordering and the `@`/`+` prefix. It is derived
+// from a member's [MemberModes] via [MemberModes.Rank]: the wire
+// carries the single-letter [Mode] flags, and a rank names only the
+// highest privilege a member holds.
 type NickMode int
 
 const (
@@ -89,48 +211,16 @@ func (m NickMode) String() string {
 	}
 }
 
-// IRCMode returns the IRC mode-change string for the mode, e.g. "+v"
-// for voice and "+o" for op.
-func (m NickMode) IRCMode() string {
-	switch m {
+// modesForRank maps a display rank back to the privilege set that
+// produces it. Member records written before the two privileges
+// became independent store a single rank; see [memberJSON].
+func modesForRank(rank NickMode) MemberModes {
+	switch rank {
 	case ModeOp:
-		return "+o"
+		return MemberModes{Operator: true}
 	case ModeVoice:
-		return "+v"
+		return MemberModes{Voice: true}
 	default:
-		return ""
-	}
-}
-
-// WireFlag returns the wire-protocol [Mode] letter for this rank,
-// suitable for populating [ChannelModeChange.Flag]. The zero value
-// [ModeNone] returns the zero [Mode].
-func (m NickMode) WireFlag() Mode {
-	switch m {
-	case ModeOp:
-		return ModeOperator
-	case ModeVoice:
-		return ModeChannelVoice
-	default:
-		return 0
-	}
-}
-
-// NickModeFor inverts [NickMode.WireFlag]: it maps a channel-scoped
-// wire flag back to its display rank. The zero value is returned
-// for any flag that is not a channel-member mode, or when `add` is
-// false (the member loses the rank).
-func NickModeFor(flag Mode, add bool) NickMode {
-	if !add {
-		return ModeNone
-	}
-
-	switch flag {
-	case ModeOperator:
-		return ModeOp
-	case ModeChannelVoice:
-		return ModeVoice
-	default:
-		return ModeNone
+		return MemberModes{}
 	}
 }

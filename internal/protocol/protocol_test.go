@@ -287,6 +287,121 @@ func TestFromChannelEvent_propagates_instance_id(t *testing.T) {
 	}
 }
 
+// TestFromChannelEvent_channel_mode_change covers the MODE arm. A
+// model granted `+v` in a `+m` channel only learns it may speak if
+// the mode change is rendered into its prompt, so every shape of
+// MODE has to render: a member mode puts the affected nick in
+// `Subject`, an attribute mode leaves `Subject` empty, and a
+// parametric attribute mode carries its value alongside the flag.
+func TestFromChannelEvent_channel_mode_change(t *testing.T) {
+	at := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name  string
+		event domain.ChannelModeChange
+		want  IRCMessage
+	}{
+		{
+			name: "member mode grant",
+			event: domain.ChannelModeChange{
+				Target:     "#room",
+				Nick:       "botty",
+				InstanceID: "inst-botty",
+				Flag:       domain.ModeChannelVoice,
+				Add:        true,
+				By:         "laney",
+				At:         at,
+			},
+			want: IRCMessage{
+				Kind:    KindMode,
+				From:    "laney",
+				Target:  "#room",
+				Subject: "botty",
+				Body:    "+v",
+				At:      at,
+			},
+		},
+		{
+			name: "member mode revoke",
+			event: domain.ChannelModeChange{
+				Target:     "#room",
+				Nick:       "botty",
+				InstanceID: "inst-botty",
+				Flag:       domain.ModeOperator,
+				Add:        false,
+				By:         "laney",
+				At:         at,
+			},
+			want: IRCMessage{
+				Kind:    KindMode,
+				From:    "laney",
+				Target:  "#room",
+				Subject: "botty",
+				Body:    "-o",
+				At:      at,
+			},
+		},
+		{
+			name: "boolean attribute mode",
+			event: domain.ChannelModeChange{
+				Target: "#room",
+				Flag:   domain.ModeModerated,
+				Add:    true,
+				By:     "laney",
+				At:     at,
+			},
+			want: IRCMessage{
+				Kind:   KindMode,
+				From:   "laney",
+				Target: "#room",
+				Body:   "+m",
+				At:     at,
+			},
+		},
+		{
+			name: "parametric attribute mode",
+			event: domain.ChannelModeChange{
+				Target: "#room",
+				Flag:   domain.ModeUserLimit,
+				Add:    true,
+				Param:  "20",
+				By:     "laney",
+				At:     at,
+			},
+			want: IRCMessage{
+				Kind:   KindMode,
+				From:   "laney",
+				Target: "#room",
+				Body:   "+l 20",
+				At:     at,
+			},
+		},
+		{
+			name: "server-issued change has no actor",
+			event: domain.ChannelModeChange{
+				Target: "#room",
+				Flag:   domain.ModeNoExternal,
+				Add:    true,
+				At:     at,
+			},
+			want: IRCMessage{
+				Kind:   KindMode,
+				Target: "#room",
+				Body:   "+n",
+				At:     at,
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := FromChannelEvent(tc.event)
+			require.True(t, ok)
+			require.Equal(t, tc.want, got)
+		})
+	}
+}
+
 func TestValidateReplyPart(t *testing.T) {
 	fg := uint8(4)
 	outOfRange := uint8(16)
@@ -318,7 +433,17 @@ func TestValidateReplyPart(t *testing.T) {
 		{
 			name:    "rejects newline in body",
 			part:    ReplyPart{Kind: ReplyMessage, Body: "line one\nline two"},
-			wantErr: "reply body must not contain newlines",
+			wantErr: "reply body must not contain NUL, CR or LF",
+		},
+		{
+			name:    "rejects carriage return in body",
+			part:    ReplyPart{Kind: ReplyMessage, Body: "line one\rline two"},
+			wantErr: "reply body must not contain NUL, CR or LF",
+		},
+		{
+			name:    "rejects NUL in body",
+			part:    ReplyPart{Kind: ReplyMessage, Body: "before\x00after"},
+			wantErr: "reply body must not contain NUL, CR or LF",
 		},
 		{
 			name:    "rejects empty span",
@@ -328,7 +453,17 @@ func TestValidateReplyPart(t *testing.T) {
 		{
 			name:    "rejects newline in span",
 			part:    ReplyPart{Spans: []ReplySpan{{Text: "line one\nline two"}}},
-			wantErr: "span 0 contains a newline",
+			wantErr: "span 0 contains NUL, CR or LF",
+		},
+		{
+			name:    "rejects carriage return in span",
+			part:    ReplyPart{Spans: []ReplySpan{{Text: "line one\rline two"}}},
+			wantErr: "span 0 contains NUL, CR or LF",
+		},
+		{
+			name:    "rejects NUL in span",
+			part:    ReplyPart{Spans: []ReplySpan{{Text: "before\x00after"}}},
+			wantErr: "span 0 contains NUL, CR or LF",
 		},
 		{
 			name:    "rejects out-of-range foreground colour",

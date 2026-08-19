@@ -28,8 +28,8 @@ func TestMainLayout_semantic_regions_expose_rendered_sidebar_chat_and_nicklist(t
 	})
 
 	nicklist := components.NewNickList(members(
-		member("alice", domain.ModeOp),
-		member("botty", domain.ModeVoice),
+		member("alice", op),
+		member("botty", voiced),
 	))
 
 	layout := components.NewMainLayout(sidebarModel.(components.ChannelSidebar), chat)

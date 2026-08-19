@@ -521,7 +521,7 @@ func TestChatScreen_NickChange_then_Quit_removes_instance(t *testing.T) {
 	require.Equal(t, []domain.Member{{
 		Instance: bot,
 		Nick:     "oldnick",
-		Mode:     domain.ModeNone,
+		Modes:    domain.MemberModes{},
 	}}, slices.Collect(cw.Members.All()))
 
 	// Rename: the session mutates the instance's own nick before
@@ -541,7 +541,7 @@ func TestChatScreen_NickChange_then_Quit_removes_instance(t *testing.T) {
 	require.Equal(t, []domain.Member{{
 		Instance: bot,
 		Nick:     "newnick",
-		Mode:     domain.ModeNone,
+		Modes:    domain.MemberModes{},
 	}}, slices.Collect(cw.Members.All()),
 		"nick change should sync the member snapshot while preserving identity")
 

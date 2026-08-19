@@ -256,7 +256,7 @@ func (s ChatScreen) handleChannelModeChangeEvent(msg domain.ChannelModeChange) (
 		return s, nil
 	}
 
-	cw.Members.SetMode(msg.Instance, domain.NickModeFor(msg.Flag, msg.Add))
+	cw.Members.ApplyMode(msg.Instance, msg.Flag, msg.Add)
 
 	if msg.Target != s.active {
 		return s, nil

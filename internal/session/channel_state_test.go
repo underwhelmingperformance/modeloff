@@ -50,7 +50,7 @@ func (c *countingLoadStore) GetWindow(ctx context.Context, name domain.ChannelNa
 func newSessionWithStore(t *testing.T, wrapped Store) *Session {
 	t.Helper()
 
-	sess := New(t.Context, wrapped, newTestModelClientFactory(t, &fakeAPIClient{}))
+	sess := New(t.Context, wrapped, newTestModelClientFactory(t, &fakeAPIClient{}), nil)
 	t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
 
 	attachTestUserClient(t, sess, "testuser")

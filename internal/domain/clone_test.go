@@ -21,7 +21,7 @@ func TestChannelWindow_Clone_is_independent(t *testing.T) {
 	original.TopicSetAt = cloneTestTime
 	original.Modes = ChannelModes{TopicLock: true, UserLimit: 4}
 	original.Members.Add(alice)
-	original.Members.SetMode(alice, ModeOp)
+	original.Members.SetModes(alice, MemberModes{Operator: true})
 	original.InvitedNicks.Add("carol")
 
 	clone := original.Clone()
@@ -32,7 +32,7 @@ func TestChannelWindow_Clone_is_independent(t *testing.T) {
 	require.Equal(t, original.TopicSetBy, clone.TopicSetBy)
 	require.Equal(t, original.TopicSetAt, clone.TopicSetAt)
 	require.Equal(t, original.Modes, clone.Modes)
-	require.Equal(t, []Member{{Instance: alice, Nick: "alice", Mode: ModeOp}}, membersOf(clone))
+	require.Equal(t, []Member{{Instance: alice, Nick: "alice", Modes: MemberModes{Operator: true}}}, membersOf(clone))
 	require.True(t, clone.InvitedNicks.Contains("carol"))
 
 	clone.Topic = "rewritten"
@@ -44,7 +44,7 @@ func TestChannelWindow_Clone_is_independent(t *testing.T) {
 
 	require.Equal(t, "shipping", original.Topic)
 	require.Equal(t, ChannelModes{TopicLock: true, UserLimit: 4}, original.Modes)
-	require.Equal(t, []Member{{Instance: alice, Nick: "alice", Mode: ModeOp}}, membersOf(original))
+	require.Equal(t, []Member{{Instance: alice, Nick: "alice", Modes: MemberModes{Operator: true}}}, membersOf(original))
 	require.True(t, original.InvitedNicks.Contains("carol"))
 	require.False(t, original.InvitedNicks.Contains("dave"))
 }
@@ -59,12 +59,12 @@ func TestMemberList_Clone_preserves_nick_snapshots(t *testing.T) {
 
 	original := NewMemberList()
 	original.Add(alice)
-	original.SetMode(alice, ModeVoice)
+	original.SetModes(alice, MemberModes{Voice: true})
 
 	alice.SetNick("renamed-behind-the-list")
 
 	require.Equal(t,
-		[]Member{{Instance: alice, Nick: "alice", Mode: ModeVoice}},
+		[]Member{{Instance: alice, Nick: "alice", Modes: MemberModes{Voice: true}}},
 		memberEntries(original.Clone()))
 }
 

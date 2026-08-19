@@ -142,9 +142,14 @@ type Session struct {
 	store Store
 
 	baseContext func() context.Context
-	userModes   map[domain.ChannelName]domain.NickMode
+	userModes   map[domain.ChannelName]domain.MemberModes
 	userMu      sync.Mutex
 	now         func() time.Time
+
+	// defaultChannelModes returns the modes a newly created channel
+	// starts with. Nil means no modes; see
+	// [Session.newChannelModes].
+	defaultChannelModes DefaultChannelModes
 
 	// shuttingDown is closed by [Session.Shutdown] under `subsMu`
 	// so [Session.ensureSubscription] sees the close and declines
@@ -226,6 +231,22 @@ type Session struct {
 	pokeWake chan struct{}
 }
 
+// DefaultChannelModes returns the modes to give a channel at the
+// moment it is created. The session calls it on every JOIN that
+// creates a channel, so an implementation that tracks a live setting
+// reaches the next channel created without a restart. A channel that
+// already exists keeps the modes it has.
+//
+// An implementation must return without blocking. The session calls
+// this on its command loop, where every other client's command waits
+// behind it, so an implementation backed by a configuration file
+// reads a value it refreshed elsewhere instead of reading the file
+// here.
+//
+// If the supplier is nil, the session creates channels with no modes
+// set.
+type DefaultChannelModes func(ctx context.Context) domain.ChannelModes
+
 // New creates a Session whose dispatch goroutines derive their
 // lifetime context from `baseContext`. Each goroutine that needs
 // a long-lived ctx calls `baseContext()` to obtain one; the
@@ -260,6 +281,7 @@ func New(
 	baseContext func() context.Context,
 	s Store,
 	factory ModelClientFactory,
+	defaultChannelModes DefaultChannelModes,
 ) *Session {
 	persistenceFailures, _ := otel.Meter("github.com/laney/modeloff/internal/session").
 		Int64Counter(observability.MetricPersistenceFailures)
@@ -267,7 +289,8 @@ func New(
 	sess := &Session{
 		baseContext:         baseContext,
 		store:               s,
-		userModes:           make(map[domain.ChannelName]domain.NickMode),
+		defaultChannelModes: defaultChannelModes,
+		userModes:           make(map[domain.ChannelName]domain.MemberModes),
 		now:                 time.Now,
 		connectedC:          make(chan struct{}),
 		persistenceFailures: persistenceFailures,
@@ -288,6 +311,17 @@ func New(
 	go sess.runWriter(baseContext())
 
 	return sess
+}
+
+// newChannelModes reads the session's [DefaultChannelModes] supplier
+// for the modes to give a channel that is being created. A session
+// constructed without a supplier creates channels with no modes set.
+func (s *Session) newChannelModes(ctx context.Context) domain.ChannelModes {
+	if s.defaultChannelModes == nil {
+		return domain.ChannelModes{}
+	}
+
+	return s.defaultChannelModes(ctx)
 }
 
 // OperAuthenticator validates a [protocol.Oper] attempt. Returning
@@ -604,7 +638,7 @@ func (s *Session) cleanupUncleanShutdown(ctx context.Context) error {
 	}
 
 	s.userMu.Lock()
-	s.userModes = make(map[domain.ChannelName]domain.NickMode)
+	s.userModes = make(map[domain.ChannelName]domain.MemberModes)
 	s.userMu.Unlock()
 
 	return nil
@@ -765,7 +799,7 @@ func (s *Session) userQuit(ctx context.Context, message string) error {
 				}
 			},
 			afterEach: func(ctx context.Context, ch domain.ChannelName) {
-				s.forgetUserMode(ctx, ch)
+				s.forgetUserModes(ctx, ch)
 			},
 		})
 

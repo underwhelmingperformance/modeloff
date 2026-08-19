@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -102,7 +103,13 @@ func main() {
 		BaseContext:   baseContext,
 	})
 
-	sess := session.New(baseContext, dataStore, mgr)
+	defaultChannelModes, err := defaultChannelModesFromConfig(cfg, cfgStore)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error reading default channel modes: %v\n", err)
+		os.Exit(1)
+	}
+
+	sess := session.New(baseContext, dataStore, mgr, defaultChannelModes)
 
 	user := userclient.New(domain.Nick(cfg.UserNick), sess, dataStore, userclient.NewStoreReplyLog(dataStore))
 	if err := user.Attach(appCtx); err != nil {
@@ -234,6 +241,78 @@ func loadConfig(ctx context.Context) (config.Config, *config.FileStore, error) {
 	}
 
 	return cfg, cfgStore, nil
+}
+
+// channelModesHolder keeps the parsed default channel modes the
+// session reads when a JOIN creates a channel.
+//
+// The session performs that read on its command loop, where every
+// other client's command waits behind it, so the read must not touch
+// the config file. Parsing happens in `store` instead, called once at
+// startup and again from the config-change listener, both off the
+// loop.
+type channelModesHolder struct {
+	parsed   atomic.Pointer[domain.ChannelModes]
+	fallback domain.ChannelModes
+}
+
+// store parses `spec` and keeps the result for later reads. An
+// unparseable spec logs and keeps the built-in default: `/config`
+// validates what it writes, but config.json is hand-editable, and
+// refusing to create the channel would leave the user unable to join
+// anything until they had repaired the file by hand.
+func (h *channelModesHolder) store(spec string) {
+	parsed, err := domain.ParseChannelModes(spec)
+	if err != nil {
+		slog.Warn("parse configured default channel modes, using built-in default",
+			"component", "main",
+			"configured", spec,
+			"default_modes", config.DefaultChannelModesSpec,
+			"error", err,
+		)
+
+		parsed = h.fallback
+	}
+
+	h.parsed.Store(&parsed)
+}
+
+// read returns the modes last stored. It satisfies
+// [session.DefaultChannelModes] and costs one atomic load, so the
+// session's command loop never waits on it.
+func (h *channelModesHolder) read(context.Context) domain.ChannelModes {
+	return *h.parsed.Load()
+}
+
+// defaultChannelModesFromConfig builds the session's
+// [session.DefaultChannelModes] from `cfg`, and subscribes to
+// `cfgStore` so that a `/config default-modes` edit is reparsed as it
+// is saved. The next channel created then starts on the new value,
+// without a restart and without the session reading the config file
+// itself.
+//
+// The built-in default is parsed once up front, since it is the
+// fallback every later parse failure lands on. A build whose own
+// compiled-in default does not parse is a programming error worth
+// refusing to start on, and is the only error returned here.
+func defaultChannelModesFromConfig(cfg config.Config, cfgStore config.Store) (session.DefaultChannelModes, error) {
+	fallback, err := domain.ParseChannelModes(config.DefaultChannelModesSpec)
+	if err != nil {
+		return nil, fmt.Errorf("parse built-in default channel modes %q: %w", config.DefaultChannelModesSpec, err)
+	}
+
+	holder := &channelModesHolder{fallback: fallback}
+	holder.store(cfg.DefaultChannelModes)
+
+	cfgStore.OnChange(func(prev, curr config.Config) {
+		if prev.DefaultChannelModes == curr.DefaultChannelModes {
+			return
+		}
+
+		holder.store(curr.DefaultChannelModes)
+	})
+
+	return holder.read, nil
 }
 
 // pokeScheduleFromConfig adapts the persisted config into the

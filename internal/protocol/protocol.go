@@ -73,6 +73,16 @@ type ReplySpan struct {
 	Style *ReplyStyle `json:"style,omitempty"`
 }
 
+// forbiddenBodyBytes are the octets RFC 2812 §2.3 excludes from a
+// message parameter: NUL, CR and LF. CR and LF terminate a message
+// on the wire and NUL is not part of the grammar, so any of the
+// three in a body would split or truncate the line.
+//
+// This is the wire's own rule. Control characters that the wire
+// permits but that would disturb a terminal (ESC and the rest of C0)
+// are sanitised where the message is rendered, not here.
+const forbiddenBodyBytes = "\x00\r\n"
+
 // ValidateReplyPart reports whether a reply part is structurally
 // valid for IRC delivery. The dispatcher rejects the tool call back
 // to the model when validation fails so the model can self-correct.
@@ -85,8 +95,8 @@ func ValidateReplyPart(part ReplyPart) error {
 	}
 
 	if hasBody {
-		if strings.Contains(part.Body, "\n") {
-			return fmt.Errorf("reply body must not contain newlines")
+		if strings.ContainsAny(part.Body, forbiddenBodyBytes) {
+			return fmt.Errorf("reply body must not contain NUL, CR or LF")
 		}
 
 		return nil
@@ -96,8 +106,8 @@ func ValidateReplyPart(part ReplyPart) error {
 		if span.Text == "" {
 			return fmt.Errorf("span %d is empty", index)
 		}
-		if strings.Contains(span.Text, "\n") {
-			return fmt.Errorf("span %d contains a newline", index)
+		if strings.ContainsAny(span.Text, forbiddenBodyBytes) {
+			return fmt.Errorf("span %d contains NUL, CR or LF", index)
 		}
 		if span.Style == nil {
 			continue
@@ -166,6 +176,11 @@ const (
 
 	// KindTopic indicates a channel's topic has been changed.
 	KindTopic MessageKind = "TOPIC"
+
+	// KindMode indicates a channel mode has been changed: a member
+	// privilege against a nick, or an attribute of the channel
+	// itself.
+	KindMode MessageKind = "MODE"
 
 	// KindInvite indicates a model has been invited to a channel.
 	KindInvite MessageKind = "INVITE"
@@ -271,6 +286,23 @@ func FromChannelEvent(evt domain.PersistableEvent) (IRCMessage, bool) {
 			At:         e.At,
 		}, true
 
+	case domain.ChannelModeChange:
+		// `From` is the actor that issued the MODE. It is empty for a
+		// server-issued change, which carries no nick prefix on the
+		// wire. `Subject` is the affected nick on a member mode; an
+		// attribute mode affects the channel itself, so it leaves
+		// `Subject` empty. The event records an instance id for the
+		// affected member but not for the actor, so `InstanceID` stays
+		// empty.
+		return IRCMessage{
+			Kind:    KindMode,
+			From:    string(e.By),
+			Target:  string(e.Target),
+			Subject: string(e.Nick),
+			Body:    modeChangeLine(e),
+			At:      e.At,
+		}, true
+
 	case domain.NickChange:
 		return IRCMessage{
 			Kind:       KindNick,
@@ -323,6 +355,18 @@ func FromChannelEvent(evt domain.PersistableEvent) (IRCMessage, bool) {
 	default:
 		return IRCMessage{}, false
 	}
+}
+
+// modeChangeLine renders the flag and direction of a mode change in
+// the `+o` / `-v` form, with the parameter of a parametric attribute
+// mode (`+l 20`, `+k secret`) appended.
+func modeChangeLine(e domain.ChannelModeChange) string {
+	line := e.Flag.IRCString(e.Add)
+	if e.Param == "" {
+		return line
+	}
+
+	return line + " " + e.Param
 }
 
 // whoisReplyLine renders a [domain.Whois] reply as the readable line

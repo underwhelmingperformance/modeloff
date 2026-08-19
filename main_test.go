@@ -5,12 +5,14 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/config"
+	"github.com/laney/modeloff/internal/domain"
 )
 
 // stubConfigStore is a [config.Store] that returns a fixed config and
@@ -74,6 +76,116 @@ func TestPokeScheduleFromConfig(t *testing.T) {
 			require.Equal(t, tc.wantInterval, interval)
 			require.Equal(t, tc.wantEnabled, enabled)
 		})
+	}
+}
+
+func TestDefaultChannelModesFromConfig(t *testing.T) {
+	builtIn, err := domain.ParseChannelModes(config.DefaultChannelModesSpec)
+	require.NoError(t, err)
+
+	cases := []struct {
+		name string
+		cfg  config.Config
+		want domain.ChannelModes
+	}{
+		{
+			name: "parses the configured spec",
+			cfg:  config.Config{DefaultChannelModes: "+mst"},
+			want: domain.ChannelModes{Moderated: true, Secret: true, TopicLock: true},
+		},
+		{
+			name: "an empty spec is not a mode string, so the built-in default applies",
+			cfg:  config.Config{},
+			want: builtIn,
+		},
+		{
+			name: "a hand-edited spec this build cannot parse falls back",
+			cfg:  config.Config{DefaultChannelModes: "+zz"},
+			want: builtIn,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			supplier, err := defaultChannelModesFromConfig(tc.cfg, &recordingConfigStore{})
+			require.NoError(t, err)
+
+			require.Equal(t, tc.want, supplier(t.Context()))
+		})
+	}
+}
+
+// TestDefaultChannelModesFromConfig_refreshes_on_a_config_change pins
+// that a `/config default-modes` edit applies to the next channel
+// created, without the session being rebuilt. A saved value this
+// build cannot parse leaves the built-in default in place.
+func TestDefaultChannelModesFromConfig_refreshes_on_a_config_change(t *testing.T) {
+	builtIn, err := domain.ParseChannelModes(config.DefaultChannelModesSpec)
+	require.NoError(t, err)
+
+	store := &recordingConfigStore{}
+
+	supplier, err := defaultChannelModesFromConfig(config.Config{DefaultChannelModes: "+m"}, store)
+	require.NoError(t, err)
+
+	require.Equal(t, domain.ChannelModes{Moderated: true}, supplier(t.Context()))
+
+	store.change(config.Config{DefaultChannelModes: "+m"}, config.Config{DefaultChannelModes: "+i"})
+	require.Equal(t, domain.ChannelModes{InviteOnly: true}, supplier(t.Context()))
+
+	store.change(config.Config{DefaultChannelModes: "+i"}, config.Config{DefaultChannelModes: "+zz"})
+	require.Equal(t, builtIn, supplier(t.Context()))
+}
+
+// TestDefaultChannelModesFromConfig_supplier_does_not_read_the_store
+// pins the property finding 1 of the landing-gate review was about.
+// The session calls the supplier on its command loop, where every
+// other client's command waits behind it, so a call must not reach
+// the config store and the file read behind it.
+func TestDefaultChannelModesFromConfig_supplier_does_not_read_the_store(t *testing.T) {
+	store := &recordingConfigStore{}
+
+	supplier, err := defaultChannelModesFromConfig(config.Config{DefaultChannelModes: "+m"}, store)
+	require.NoError(t, err)
+
+	for range 3 {
+		require.Equal(t, domain.ChannelModes{Moderated: true}, supplier(t.Context()))
+	}
+
+	require.Zero(t, store.loads.Load())
+}
+
+// recordingConfigStore is a [config.Store] that counts Load calls and
+// lets a test fire the registered change callbacks by hand, which is
+// what `/config default-modes` does through Update in production.
+type recordingConfigStore struct {
+	loads     atomic.Int64
+	callbacks []config.ChangeFunc
+}
+
+func (s *recordingConfigStore) Load(context.Context) (config.Config, error) {
+	s.loads.Add(1)
+
+	return config.Config{}, nil
+}
+
+func (s *recordingConfigStore) Save(context.Context, config.Config) error { return nil }
+
+func (s *recordingConfigStore) Update(_ context.Context, fn func(config.Config) config.Config) (config.Config, error) {
+	return fn(config.Config{}), nil
+}
+
+func (s *recordingConfigStore) OnChange(fn config.ChangeFunc) config.UnsubscribeFunc {
+	s.callbacks = append(s.callbacks, fn)
+
+	return func() {}
+}
+
+// change fires every registered callback, as a successful Save or
+// Update does.
+func (s *recordingConfigStore) change(prev, curr config.Config) {
+	for _, fn := range s.callbacks {
+		fn(prev, curr)
 	}
 }
 

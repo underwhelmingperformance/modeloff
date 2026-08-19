@@ -40,7 +40,7 @@ func newFixture(t *testing.T) *fixture {
 	})
 	t.Cleanup(mgr.DetachAll)
 
-	sess := session.New(t.Context, s, mgr)
+	sess := session.New(t.Context, s, mgr, nil)
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 
 	user := userclient.New("testuser", sess, s, userclient.NewStoreReplyLog(s))

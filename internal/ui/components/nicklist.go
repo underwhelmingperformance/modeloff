@@ -21,7 +21,7 @@ type NickListThinkingMsg struct {
 
 func nickListView(thinking map[domain.Nick]bool) func(domain.Member, ViewState, int) string {
 	return func(m domain.Member, _ ViewState, _ int) string {
-		prefix := m.Mode.String()
+		prefix := m.Modes.Rank().String()
 		nick := string(m.Nick)
 
 		// Hash the colour by stable identity, not by the live nick

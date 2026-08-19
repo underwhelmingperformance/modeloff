@@ -191,7 +191,7 @@ func newTestSessionWithManager(
 	})
 	t.Cleanup(mgr.DetachAll)
 
-	sess := session.New(t.Context, store, mgr)
+	sess := session.New(t.Context, store, mgr, nil)
 	// The manager's cleanup was registered first, so it runs last:
 	// `Shutdown` closes the gate the pumps exit on, and `DetachAll`
 	// then joins every dispatch goroutine, the released ones

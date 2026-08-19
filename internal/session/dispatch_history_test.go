@@ -173,7 +173,7 @@ func TestModelClient_reply_is_gated_by_channel_modes(t *testing.T) {
 		w, err := sess.loadChannelWindow(ctx, "#chan")
 		require.NoError(t, err)
 		w.Modes.Moderated = true
-		w.Members.SetMode(botty, domain.ModeNone)
+		w.Members.SetModes(botty, domain.MemberModes{})
 		require.NoError(t, sess.persistChannelWindow(ctx, w))
 
 		userMsg, err := userSendMessage(ctx, t, sess, "#chan", "speak up")

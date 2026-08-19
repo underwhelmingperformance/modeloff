@@ -89,7 +89,7 @@ func newGatedTestSession(t *testing.T, gate <-chan struct{}) (*Session, *storemo
 	s := storetest.NewMemoryStore(t)
 	factory := newTestModelClientFactory(t, &fakeAPIClient{})
 
-	sess := New(t.Context, &gatedStore{Store: s, gate: gate}, factory)
+	sess := New(t.Context, &gatedStore{Store: s, gate: gate}, factory, nil)
 	t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
 
 	attachTestUserClient(t, sess, "testuser")

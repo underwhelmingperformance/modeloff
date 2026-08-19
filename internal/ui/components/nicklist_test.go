@@ -16,7 +16,7 @@ func members(ms ...domain.Member) domain.MemberList {
 
 	for _, m := range ms {
 		ml.Add(m.Instance)
-		ml.SetMode(m.Instance, m.Mode)
+		ml.SetModes(m.Instance, m.Modes)
 	}
 
 	return ml
@@ -27,19 +27,27 @@ func members(ms ...domain.Member) domain.MemberList {
 // instance here keeps `memberLess`'s InstanceID tiebreaker stable —
 // synthetic members must not share the empty ID, which they would
 // if the helper returned a bare nick-only struct.
-func member(nick string, mode domain.NickMode) domain.Member {
+func member(nick string, modes domain.MemberModes) domain.Member {
 	inst := domain.NewModelInstance(
 		domain.InstanceID("inst-"+nick),
 		domain.Nick(nick), "", "", nil,
 	)
-	return domain.Member{Instance: inst, Nick: domain.Nick(nick), Mode: mode}
+	return domain.Member{Instance: inst, Nick: domain.Nick(nick), Modes: modes}
 }
+
+// op, voiced and plain are the three privilege sets the nick-list
+// tests give their members.
+var (
+	op     = domain.MemberModes{Operator: true}
+	voiced = domain.MemberModes{Voice: true}
+	plain  = domain.MemberModes{}
+)
 
 func TestNickList_View_shows_members(t *testing.T) {
 	nl := components.NewNickList(members(
-		member("alice", domain.ModeOp),
-		member("charlie", domain.ModeVoice),
-		member("bob", domain.ModeNone),
+		member("alice", op),
+		member("charlie", voiced),
+		member("bob", plain),
 	))
 
 	v := nl.View(20, 10)
@@ -60,8 +68,8 @@ func TestNickList_Update_handles_NickListUpdatedMsg(t *testing.T) {
 
 	updated, _ := nl.Update(components.NickListUpdatedMsg{
 		Members: members(
-			member("eve", domain.ModeVoice),
-			member("dave", domain.ModeNone),
+			member("eve", voiced),
+			member("dave", plain),
 		),
 	})
 
@@ -70,7 +78,7 @@ func TestNickList_Update_handles_NickListUpdatedMsg(t *testing.T) {
 }
 
 func TestNickList_Update_clears_on_empty(t *testing.T) {
-	nl := components.NewNickList(members(member("alice", domain.ModeNone)))
+	nl := components.NewNickList(members(member("alice", plain)))
 
 	v := nl.View(20, 10)
 	require.Equal(t, []string{"Nicks", "alice"}, visibleLines(v))
@@ -100,8 +108,8 @@ func TestNickList_View_overflow_fits_height(t *testing.T) {
 
 func TestNickList_View_responsive(t *testing.T) {
 	nl := components.NewNickList(members(
-		member("alice", domain.ModeOp),
-		member("bob", domain.ModeVoice),
+		member("alice", op),
+		member("bob", voiced),
 	))
 
 	sizes := []struct{ w, h int }{
@@ -120,9 +128,9 @@ func TestNickList_View_responsive(t *testing.T) {
 
 func TestNickList_View_shows_mode_prefixes(t *testing.T) {
 	nl := components.NewNickList(members(
-		member("alice", domain.ModeOp),
-		member("botty", domain.ModeVoice),
-		member("charlie", domain.ModeNone),
+		member("alice", op),
+		member("botty", voiced),
+		member("charlie", plain),
 	))
 
 	v := nl.View(20, 10)
@@ -132,9 +140,9 @@ func TestNickList_View_shows_mode_prefixes(t *testing.T) {
 
 func TestNickList_View_shows_thinking_indicator(t *testing.T) {
 	nl := components.NewNickList(members(
-		member("alice", domain.ModeOp),
-		member("botty", domain.ModeVoice),
-		member("claude", domain.ModeVoice),
+		member("alice", op),
+		member("botty", voiced),
+		member("claude", voiced),
 	))
 
 	updated, _ := nl.Update(components.NickListThinkingMsg{
@@ -147,8 +155,8 @@ func TestNickList_View_shows_thinking_indicator(t *testing.T) {
 
 func TestNickList_View_clears_thinking_indicator(t *testing.T) {
 	nl := components.NewNickList(members(
-		member("alice", domain.ModeOp),
-		member("botty", domain.ModeVoice),
+		member("alice", op),
+		member("botty", voiced),
 	))
 
 	updated, _ := nl.Update(components.NickListThinkingMsg{
@@ -162,10 +170,10 @@ func TestNickList_View_clears_thinking_indicator(t *testing.T) {
 
 func TestNickList_View_preserves_display_order(t *testing.T) {
 	nl := components.NewNickList(members(
-		member("alice", domain.ModeOp),
-		member("dave", domain.ModeVoice),
-		member("zara", domain.ModeVoice),
-		member("bob", domain.ModeNone),
+		member("alice", op),
+		member("dave", voiced),
+		member("zara", voiced),
+		member("bob", plain),
 	))
 
 	v := nl.View(30, 10)

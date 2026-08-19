@@ -99,7 +99,9 @@ func validateChannelModeChange(change protocol.ChannelModeChange, now time.Time)
 // setMemberModeAs applies a member-mode change (`+o`/`+v` add or
 // remove) to `change.Target`'s entry in `window.Members`, persists
 // the window, and emits a [domain.ChannelModeChange] to channel peers.
-// Called from [applyChannelModeChangesAs] after up-front
+// The change touches only the named privilege, so a member holding
+// both `@` and `+` keeps whichever one the change does not name (RFC
+// 2811 §4.1). Called from [applyChannelModeChangesAs] after up-front
 // validation, so the shape invariants are already enforced.
 func (s *Session) setMemberModeAs(ctx context.Context, window *domain.ChannelWindow, ch domain.ChannelName, actor *domain.Instance, change protocol.ChannelModeChange) error {
 	return s.inSpan(ctx, "session.set_member_mode", []attribute.KeyValue{
@@ -113,8 +115,16 @@ func (s *Session) setMemberModeAs(ctx context.Context, window *domain.ChannelWin
 			return err
 		}
 
-		nickMode := domain.NickModeFor(change.Flag, change.Add)
-		window.Members.SetMode(target, nickMode)
+		window.Members.ApplyMode(target, change.Flag, change.Add)
+
+		// The user is stripped from the member list on save and
+		// re-injected on load from the session's own record, so the
+		// user's privileges must be written to that record too.
+		// Otherwise the next load restores the user without this
+		// change.
+		if updated, ok := window.Members.GetByInstance(target); ok && target.ID() == "" {
+			s.setUserModes(ctx, ch, updated.Modes)
+		}
 
 		if err := s.persistChannelWindow(ctx, window); err != nil {
 			return fmt.Errorf("save channel: %w", err)

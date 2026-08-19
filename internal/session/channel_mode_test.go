@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -122,7 +123,7 @@ func TestHandleChannelMode_RevokeMemberOp(t *testing.T) {
 
 		w, err := sess.loadChannelWindow(ctx, "#chan")
 		require.NoError(t, err)
-		w.Members.SetMode(botty, domain.ModeOp)
+		w.Members.SetModes(botty, domain.MemberModes{Operator: true})
 		require.NoError(t, sess.persistChannelWindow(ctx, w))
 
 		_, err = userClient(t, sess).Send(ctx, protocol.ChannelMode{
@@ -532,9 +533,195 @@ func TestHandleChannelMode_BatchAppliesInOrder(t *testing.T) {
 
 		m, ok := w.Members.GetByInstance(botty)
 		require.True(t, ok)
-		require.Equal(t, domain.ModeOp, m.Mode)
+		require.Equal(t, domain.MemberModes{Operator: true}, m.Modes)
 		require.True(t, w.Modes.TopicLock)
 		require.Equal(t, 5, w.Modes.UserLimit)
+	})
+}
+
+// TestChannelMode_member_privileges_are_independent covers RFC 2811
+// §4.1: channel-operator and voice are separate privileges one member
+// may hold together, so a `+v`/`-v` never touches the member's `@` and
+// a `+o`/`-o` never touches its `+`.
+//
+// Each case is asserted through the `+q` and `+m` send gates, which
+// read the two privileges separately: `+q` admits ops only, `+m`
+// admits ops and voiced members.
+func TestChannelMode_member_privileges_are_independent(t *testing.T) {
+	tests := []struct {
+		name string
+
+		// grant is applied in order before the gate check.
+		grant []protocol.ChannelModeChange
+
+		// channelModes is the gate the send is made against.
+		channelModes domain.ChannelModes
+
+		wantSendOK bool
+	}{
+		{
+			name: "voice grant leaves op intact under +q",
+			grant: []protocol.ChannelModeChange{
+				{Flag: domain.ModeOperator, Add: true, Target: "botty"},
+				{Flag: domain.ModeChannelVoice, Add: true, Target: "botty"},
+			},
+			channelModes: domain.ChannelModes{Quiet: true},
+			wantSendOK:   true,
+		},
+		{
+			name: "voice revoke leaves op intact under +q",
+			grant: []protocol.ChannelModeChange{
+				{Flag: domain.ModeOperator, Add: true, Target: "botty"},
+				{Flag: domain.ModeChannelVoice, Add: false, Target: "botty"},
+			},
+			channelModes: domain.ChannelModes{Quiet: true},
+			wantSendOK:   true,
+		},
+		{
+			name: "op revoke leaves voice intact under +m",
+			grant: []protocol.ChannelModeChange{
+				{Flag: domain.ModeChannelVoice, Add: true, Target: "botty"},
+				{Flag: domain.ModeOperator, Add: true, Target: "botty"},
+				{Flag: domain.ModeOperator, Add: false, Target: "botty"},
+			},
+			channelModes: domain.ChannelModes{Moderated: true},
+			wantSendOK:   true,
+		},
+		{
+			name: "op revoke drops the op privilege under +q",
+			grant: []protocol.ChannelModeChange{
+				{Flag: domain.ModeChannelVoice, Add: true, Target: "botty"},
+				{Flag: domain.ModeOperator, Add: true, Target: "botty"},
+				{Flag: domain.ModeOperator, Add: false, Target: "botty"},
+			},
+			channelModes: domain.ChannelModes{Quiet: true},
+			wantSendOK:   false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				sess, s := newTestSession(t)
+				ctx := t.Context()
+
+				require.NoError(t, userJoin(ctx, t, sess, "#chan"))
+
+				botty := seedInstance(t, sess, s, instanceSpec{
+					Nick:     "botty",
+					ModelID:  "test/model",
+					Channels: testChannels("#chan"),
+				})
+				seedChannelWithMembers(t, sess, s, "#chan", "testuser", "botty")
+
+				resp, err := userClient(t, sess).Send(ctx, protocol.ChannelMode{
+					Channel: "#chan",
+					Changes: tc.grant,
+				})
+				require.NoError(t, err)
+				require.NoError(t, resp.Err)
+
+				setChannelModes(t, sess, "#chan", tc.channelModes)
+				synctest.Wait()
+
+				_, err = sess.sendMessageAs(ctx, botty, "#chan", "still privileged?")
+
+				if tc.wantSendOK {
+					require.NoError(t, err)
+
+					return
+				}
+
+				var blockErr domain.CannotSendToChannelError
+				require.ErrorAs(t, err, &blockErr)
+			})
+		})
+	}
+}
+
+// TestChannelMode_against_the_user_survives_a_reload covers the one
+// place the two actor kinds differ in storage: the user is stripped
+// from a channel's member list on save and re-injected on load from
+// the session's own record, so a MODE against the user must be
+// written to that record as well.
+func TestChannelMode_against_the_user_survives_a_reload(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		sess, _ := newTestSession(t)
+		ctx := t.Context()
+
+		require.NoError(t, userJoin(ctx, t, sess, "#chan"))
+
+		resp, err := userClient(t, sess).Send(ctx, protocol.ChannelMode{
+			Channel: "#chan",
+			Changes: []protocol.ChannelModeChange{
+				{Flag: domain.ModeChannelVoice, Add: true, Target: "testuser"},
+			},
+		})
+		require.NoError(t, err)
+		require.NoError(t, resp.Err)
+		synctest.Wait()
+
+		w, err := sess.loadChannelWindow(ctx, "#chan")
+		require.NoError(t, err)
+
+		m, ok := w.Members.GetByInstance(userInstance(t, sess))
+		require.True(t, ok)
+		require.Equal(t, domain.MemberModes{Operator: true, Voice: true}, m.Modes)
+	})
+}
+
+// TestJoinAs_applies_default_channel_modes covers AGENTS.md point
+// 3.1: a JOIN that creates a channel starts it on the configured
+// default mode set, and a JOIN into a channel that already exists
+// leaves that channel's own modes alone.
+//
+// The supplier is called at creation time rather than at
+// construction, so a `/config default-modes` edit applies to the
+// next channel created without a restart.
+func TestJoinAs_applies_default_channel_modes(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		sess, _ := newTestSession(t)
+		ctx := t.Context()
+
+		defaults := domain.ChannelModes{NoExternal: true, TopicLock: true}
+		sess.defaultChannelModes = func(context.Context) domain.ChannelModes { return defaults }
+
+		require.NoError(t, userJoin(ctx, t, sess, "#first"))
+
+		first, err := sess.loadChannelWindow(ctx, "#first")
+		require.NoError(t, err)
+		require.Equal(t, defaults, first.Modes)
+
+		// A later config edit applies to the next channel created.
+		defaults = domain.ChannelModes{Moderated: true}
+
+		require.NoError(t, userJoin(ctx, t, sess, "#second"))
+
+		second, err := sess.loadChannelWindow(ctx, "#second")
+		require.NoError(t, err)
+		require.Equal(t, domain.ChannelModes{Moderated: true}, second.Modes)
+
+		// #first already exists, so it keeps the modes it was created
+		// with even though the default has moved on.
+		first, err = sess.loadChannelWindow(ctx, "#first")
+		require.NoError(t, err)
+		require.Equal(t, domain.ChannelModes{NoExternal: true, TopicLock: true}, first.Modes)
+	})
+}
+
+// TestJoinAs_without_default_channel_modes_creates_a_modeless_channel
+// pins the nil-supplier contract a session constructed without one
+// carries.
+func TestJoinAs_without_default_channel_modes_creates_a_modeless_channel(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		sess, _ := newTestSession(t)
+		ctx := t.Context()
+
+		require.NoError(t, userJoin(ctx, t, sess, "#chan"))
+
+		w, err := sess.loadChannelWindow(ctx, "#chan")
+		require.NoError(t, err)
+		require.Equal(t, domain.ChannelModes{}, w.Modes)
 	})
 }
 

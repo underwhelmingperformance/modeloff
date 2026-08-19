@@ -41,12 +41,12 @@ func (s *Session) checkSendGates(ctx context.Context, actor *domain.Instance, ch
 		return domain.CannotSendToChannelError{Channel: ch, Reason: domain.SendBlockNoExternal, At: s.now()}
 	}
 
-	if window.Modes.Quiet && (!isMember || member.Mode != domain.ModeOp) {
+	if window.Modes.Quiet && (!isMember || !member.Modes.Operator) {
 		return domain.CannotSendToChannelError{Channel: ch, Reason: domain.SendBlockQuiet, At: s.now()}
 	}
 
 	if window.Modes.Moderated {
-		if !isMember || (member.Mode != domain.ModeOp && member.Mode != domain.ModeVoice) {
+		if !isMember || (!member.Modes.Operator && !member.Modes.Voice) {
 			return domain.CannotSendToChannelError{Channel: ch, Reason: domain.SendBlockModerated, At: s.now()}
 		}
 	}
@@ -99,7 +99,7 @@ func (s *Session) requireChannelOp(actor *domain.Instance, window *domain.Channe
 	}
 
 	member, ok := window.Members.GetByInstance(actor)
-	if !ok || member.Mode != domain.ModeOp {
+	if !ok || !member.Modes.Operator {
 		return domain.ChanOpRequiredError{Command: cmd, Channel: ch, At: s.now()}
 	}
 	return nil

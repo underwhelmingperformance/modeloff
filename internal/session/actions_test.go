@@ -34,7 +34,7 @@ func TestJoinAs_model_actor(t *testing.T) {
 		require.NoError(t, err)
 		modelOnlyMembers := domain.NewMemberList()
 		modelOnlyMembers.Add(botty)
-		modelOnlyMembers.SetMode(botty, domain.ModeOp)
+		modelOnlyMembers.SetModes(botty, domain.MemberModes{Operator: true})
 		requireChannelEqual(t, newTestChannelWindow("#dev", fixedTime, modelOnlyMembers), ch)
 
 		require.Equal(t, []domain.Event{
@@ -560,7 +560,7 @@ func TestKickAs_model_actor(t *testing.T) {
 		// before exercising the kick path.
 		w, err := sess.loadChannelWindow(ctx, "#dev")
 		require.NoError(t, err)
-		w.Members.SetMode(botty, domain.ModeOp)
+		w.Members.SetModes(botty, domain.MemberModes{Operator: true})
 		require.NoError(t, sess.persistChannelWindow(ctx, w))
 
 		require.NoError(t, sess.kickAs(ctx, botty, helper, "#dev"))
@@ -582,7 +582,7 @@ func TestKickAs_model_actor(t *testing.T) {
 		ch, err := sess.loadChannelWindow(ctx, "#dev")
 		require.NoError(t, err)
 		expectedMembers := testMembers(t, sess, s, "testuser", "botty")
-		expectedMembers.SetMode(botty, domain.ModeOp)
+		expectedMembers.SetModes(botty, domain.MemberModes{Operator: true})
 		requireChannelEqual(t, newTestChannelWindow("#dev", fixedTime, expectedMembers), ch)
 
 		inst, err := s.ResolveNick(ctx, "helper")
@@ -817,7 +817,7 @@ func TestJoinAs_user_new_channel_emits_join_and_mode(t *testing.T) {
 
 		m, ok := ch.Members.GetByInstance(user)
 		require.True(t, ok)
-		require.Equal(t, domain.ModeOp, m.Mode)
+		require.Equal(t, domain.MemberModes{Operator: true}, m.Modes)
 	})
 }
 
@@ -840,7 +840,7 @@ func TestJoinAs_user_existing_channel_with_topic(t *testing.T) {
 
 		user := userInstance(t, sess)
 		expectedMembers := testMembers(t, sess, s, "testuser", "alice")
-		expectedMembers.SetMode(user, domain.ModeNone)
+		expectedMembers.SetModes(user, domain.MemberModes{})
 		require.ElementsMatch(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Join{
@@ -886,7 +886,7 @@ func TestJoinAs_user_existing_channel_no_topic(t *testing.T) {
 
 		user := userInstance(t, sess)
 		expectedMembers := testMembers(t, sess, s, "testuser", "alice")
-		expectedMembers.SetMode(user, domain.ModeNone)
+		expectedMembers.SetModes(user, domain.MemberModes{})
 		require.ElementsMatch(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Join{

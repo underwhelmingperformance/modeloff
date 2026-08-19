@@ -304,7 +304,7 @@ func testMembers(t *testing.T, sess *Session, s *storemod.SQLiteStore, nicks ...
 
 		ml.Add(inst)
 		if nick == userNick(t, sess) {
-			ml.SetMode(inst, domain.ModeOp)
+			ml.SetModes(inst, domain.MemberModes{Operator: true})
 		}
 	}
 	return ml
@@ -428,7 +428,7 @@ func newTestSessionWithAPI(t *testing.T, apiClient api.Client) (*Session, *store
 	s := storetest.NewMemoryStore(t)
 	factory := newTestModelClientFactory(t, apiClient)
 
-	sess := New(t.Context, s, factory)
+	sess := New(t.Context, s, factory, nil)
 	// The factory registered its cleanup first, so it runs last:
 	// `Shutdown` closes the gate every pump exits on, and the
 	// factory's `detachAll` then joins every dispatch goroutine.
@@ -508,7 +508,7 @@ func TestSession_Join(t *testing.T) {
 		user := userInstance(t, sess)
 		members := domain.NewMemberList()
 		members.Add(user)
-		members.SetMode(user, domain.ModeOp)
+		members.SetModes(user, domain.MemberModes{Operator: true})
 
 		require.ElementsMatch(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
@@ -885,7 +885,7 @@ func TestSession_Connect_Quit_Reconnect_omits_status_channel_from_autojoin(t *te
 		s := storetest.NewMemoryStore(t)
 
 		bootAt1 := time.Now()
-		sess1 := New(t.Context, s, newTestModelClientFactory(t, &fakeAPIClient{}))
+		sess1 := New(t.Context, s, newTestModelClientFactory(t, &fakeAPIClient{}), nil)
 		t.Cleanup(func() { _ = sess1.Shutdown(t.Context()) })
 		attachTestUserClient(t, sess1, "testuser")
 		sess1.now = func() time.Time { return fixedTime }
@@ -936,7 +936,7 @@ func TestSession_Connect_Quit_Reconnect_omits_status_channel_from_autojoin(t *te
 		// Starting a fresh session over the same store must not replay the
 		// status channel into the autojoin loop.
 		bootAt2 := time.Now()
-		sess2 := New(t.Context, s, newTestModelClientFactory(t, &fakeAPIClient{}))
+		sess2 := New(t.Context, s, newTestModelClientFactory(t, &fakeAPIClient{}), nil)
 		t.Cleanup(func() { _ = sess2.Shutdown(t.Context()) })
 		attachTestUserClient(t, sess2, "testuser")
 		sess2.now = func() time.Time { return fixedTime }
@@ -962,7 +962,7 @@ func TestSession_Connect_unclean_recovery_emits_welcome_and_reconnected(t *testi
 	synctest.Test(t, func(t *testing.T) {
 		bootAt := time.Now()
 		s := storetest.NewMemoryStore(t)
-		sess := New(t.Context, s, newTestModelClientFactory(t, &fakeAPIClient{}))
+		sess := New(t.Context, s, newTestModelClientFactory(t, &fakeAPIClient{}), nil)
 		t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
 		attachTestUserClient(t, sess, "testuser")
 		sess.now = func() time.Time { return fixedTime }
@@ -1239,7 +1239,7 @@ func TestSession_Quit_clears_in_memory_channels(t *testing.T) {
 func TestSession_user_state_triple_stays_consistent(t *testing.T) {
 	type userSnapshot struct {
 		Channels   []domain.ChannelName
-		Mode       domain.NickMode
+		Modes      domain.MemberModes
 		OnDiskUser bool
 	}
 
@@ -1261,7 +1261,7 @@ func TestSession_user_state_triple_stays_consistent(t *testing.T) {
 
 		return userSnapshot{
 			Channels:   channels,
-			Mode:       sess.userModeFor(t.Context(), ch),
+			Modes:      sess.userModesFor(t.Context(), ch),
 			OnDiskUser: onDisk,
 		}
 	}
@@ -1274,7 +1274,7 @@ func TestSession_user_state_triple_stays_consistent(t *testing.T) {
 		require.NoError(t, userJoin(ctx, t, sess, "#general"))
 		require.Equal(t, userSnapshot{
 			Channels:   []domain.ChannelName{"#general"},
-			Mode:       domain.ModeOp,
+			Modes:      domain.MemberModes{Operator: true},
 			OnDiskUser: false,
 		}, snapshot(t, sess, s, "#general"))
 
@@ -1285,14 +1285,14 @@ func TestSession_user_state_triple_stays_consistent(t *testing.T) {
 		require.NoError(t, userPart(ctx, t, sess, "#general", ""))
 		require.Equal(t, userSnapshot{
 			Channels:   nil,
-			Mode:       domain.ModeNone,
+			Modes:      domain.MemberModes{},
 			OnDiskUser: false,
 		}, snapshot(t, sess, s, "#general"))
 
 		require.NoError(t, userJoin(ctx, t, sess, "#general"))
 		require.Equal(t, userSnapshot{
 			Channels:   []domain.ChannelName{"#general"},
-			Mode:       domain.ModeOp,
+			Modes:      domain.MemberModes{Operator: true},
 			OnDiskUser: false,
 		}, snapshot(t, sess, s, "#general"),
 			"the user parted #general while sole occupant, so the channel was "+
@@ -1367,7 +1367,7 @@ func TestSession_user_state_triple_stays_consistent(t *testing.T) {
 
 		require.Equal(t, userSnapshot{
 			Channels:   []domain.ChannelName{"#general"},
-			Mode:       domain.ModeOp,
+			Modes:      domain.MemberModes{Operator: true},
 			OnDiskUser: false,
 		}, snapshot(t, sess, s, "#general"))
 	})
@@ -1467,8 +1467,8 @@ func TestSession_AddModel(t *testing.T) {
 		), inst)
 
 		require.Equal(t, []domain.Member{
-			{Instance: userInstance(t, sess), Nick: "testuser", Mode: domain.ModeOp},
-			{Instance: inst, Nick: "fakenick", Mode: domain.ModeNone},
+			{Instance: userInstance(t, sess), Nick: "testuser", Modes: domain.MemberModes{Operator: true}},
+			{Instance: inst, Nick: "fakenick", Modes: domain.MemberModes{}},
 		}, slices.Collect(updated.Members.All()))
 	})
 }
@@ -1515,7 +1515,7 @@ func TestSession_mutationOperations_recordSpans(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		recorder, provider := oteltest.NewSpanRecorder(t)
 		s := storetest.NewMemoryStore(t).WithTracerProvider(provider)
-		sess := New(t.Context, s, newTestModelClientFactory(t, &fakeAPIClient{})).WithTracerProvider(provider)
+		sess := New(t.Context, s, newTestModelClientFactory(t, &fakeAPIClient{}), nil).WithTracerProvider(provider)
 		t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
 		attachTestUserClient(t, sess, "testuser")
 		sess.now = func() time.Time { return fixedTime }
@@ -1767,7 +1767,7 @@ func TestSession_dispatchToInstance_recordsPassReasonAndToolTurns(t *testing.T) 
 				return api.CompletionResult{}, nil
 			},
 		}
-		sess := New(t.Context, dataStore, newTestModelClientFactoryWith(t, fake, memStore)).WithTracerProvider(provider)
+		sess := New(t.Context, dataStore, newTestModelClientFactoryWith(t, fake, memStore), nil).WithTracerProvider(provider)
 		t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
 		attachTestUserClient(t, sess, "testuser")
 		sess.now = func() time.Time { return fixedTime }
@@ -2557,7 +2557,7 @@ func TestSession_ChangeNick(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		bootAt := time.Now()
 		s := storetest.NewMemoryStore(t)
-		sess := New(t.Context, s, newTestModelClientFactory(t, &fakeAPIClient{}))
+		sess := New(t.Context, s, newTestModelClientFactory(t, &fakeAPIClient{}), nil)
 		t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
 		attachTestUserClient(t, sess, "testuser")
 		sess.now = func() time.Time { return fixedTime }
@@ -2949,7 +2949,7 @@ func TestSession_Dispatch_includes_memory_in_prompt(t *testing.T) {
 			},
 		}
 		s := storetest.NewMemoryStore(t)
-		sess := New(t.Context, s, newTestModelClientFactoryWith(t, fake, memStore))
+		sess := New(t.Context, s, newTestModelClientFactoryWith(t, fake, memStore), nil)
 		t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
 		attachTestUserClient(t, sess, "testuser")
 		sess.now = func() time.Time { return fixedTime }
@@ -3411,7 +3411,7 @@ func newTestSessionWithMemory(t *testing.T, apiClient api.Client) (*Session, *st
 	s := storetest.NewMemoryStore(t)
 
 	m := memory.NewStoreAdapter(storetest.NewMemoryStore(t))
-	sess := New(t.Context, s, newTestModelClientFactoryWith(t, apiClient, m))
+	sess := New(t.Context, s, newTestModelClientFactoryWith(t, apiClient, m), nil)
 	t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
 	attachTestUserClient(t, sess, "testuser")
 	sess.now = func() time.Time { return fixedTime }
@@ -3547,7 +3547,7 @@ func TestSession_Dispatch_memory_write_error_returns_error_to_model(t *testing.T
 
 		s := storetest.NewMemoryStore(t)
 		memStore := &failingMemoryStore{writeErr: fmt.Errorf("disk full")}
-		sess := New(t.Context, s, newTestModelClientFactoryWith(t, fake, memStore))
+		sess := New(t.Context, s, newTestModelClientFactoryWith(t, fake, memStore), nil)
 		t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
 		attachTestUserClient(t, sess, "testuser")
 		sess.now = func() time.Time { return fixedTime }
@@ -3725,7 +3725,7 @@ func newTestSessionWithIndexedMemory(
 	)
 
 	m := memory.NewIndexedStoreFromDB(t.Context(), backing, chromem.NewDB(), embeddingFunc)
-	sess := New(t.Context, s, newTestModelClientFactoryWith(t, apiClient, m))
+	sess := New(t.Context, s, newTestModelClientFactoryWith(t, apiClient, m), nil)
 	t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
 	attachTestUserClient(t, sess, "testuser")
 	sess.now = func() time.Time { return fixedTime }
@@ -4141,12 +4141,12 @@ func saveTestChannel(t *testing.T, sess *Session, s *storemod.SQLiteStore, w dom
 			}
 		})
 
-		mode := m.Mode
-		if mode == domain.ModeNone {
-			mode = domain.ModeOp
+		modes := m.Modes
+		if modes == (domain.MemberModes{}) {
+			modes = domain.MemberModes{Operator: true}
 		}
 
-		sess.setUserMode(t.Context(), cw.Name(), mode)
+		sess.setUserModes(t.Context(), cw.Name(), modes)
 	}
 
 	require.NoError(t, sess.persistChannelWindow(t.Context(), cw))
@@ -4155,9 +4155,9 @@ func saveTestChannel(t *testing.T, sess *Session, s *storemod.SQLiteStore, w dom
 // registerUserMembership updates the session's in-memory user state
 // when a test seeds a channel that lists the user as a member. It
 // adds the channel to `user.Channels()` and records the
-// conventional ModeOp that `joinAs` would have set on a real join.
-// Tests that want a different mode can override via the internal
-// `setUserMode` helper.
+// conventional operator privilege that `joinAs` would have set on a
+// real join. Tests that want different privileges can override via
+// the internal `setUserModes` helper.
 func registerUserMembership(t *testing.T, sess *Session, name domain.ChannelName, members []domain.Nick) {
 	userNick := userNick(t, sess)
 	for _, m := range members {
@@ -4170,7 +4170,7 @@ func registerUserMembership(t *testing.T, sess *Session, name domain.ChannelName
 				mm.Set(name, fixedTime)
 			}
 		})
-		sess.setUserMode(t.Context(), name, domain.ModeOp)
+		sess.setUserModes(t.Context(), name, domain.MemberModes{Operator: true})
 		return
 	}
 }
@@ -4651,7 +4651,7 @@ func TestSession_appendEvent_persistence_failure_is_silent(t *testing.T) {
 					errFailedAppend: fmt.Errorf("disk full"),
 				}
 
-				sess := New(t.Context, store, newTestModelClientFactory(t, &fakeAPIClient{}))
+				sess := New(t.Context, store, newTestModelClientFactory(t, &fakeAPIClient{}), nil)
 				t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
 				attachTestUserClient(t, sess, "testuser")
 				sess.now = func() time.Time { return fixedTime }
@@ -4679,7 +4679,7 @@ func TestSession_Shutdown_waits_for_dispatch_drain(t *testing.T) {
 	t.Cleanup(cancelSupply)
 
 	s := storetest.NewMemoryStore(t)
-	sess := New(func() context.Context { return supplyCtx }, s, newTestModelClientFactory(t, &fakeAPIClient{}))
+	sess := New(func() context.Context { return supplyCtx }, s, newTestModelClientFactory(t, &fakeAPIClient{}), nil)
 	attachTestUserClient(t, sess, "testuser")
 	sess.now = func() time.Time { return fixedTime }
 
@@ -4703,7 +4703,7 @@ func TestSession_Shutdown_waits_for_dispatch_drain(t *testing.T) {
 // already-elapsed deadline to `Shutdown`.
 func TestSession_Shutdown_returns_deadline_err_when_drain_exceeds_bound(t *testing.T) {
 	s := storetest.NewMemoryStore(t)
-	sess := New(t.Context, s, newTestModelClientFactory(t, &fakeAPIClient{}))
+	sess := New(t.Context, s, newTestModelClientFactory(t, &fakeAPIClient{}), nil)
 	attachTestUserClient(t, sess, "testuser")
 	sess.now = func() time.Time { return fixedTime }
 	t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
@@ -4731,7 +4731,7 @@ func TestSession_Subscribe_refused_after_shutdown(t *testing.T) {
 	t.Cleanup(cancelSupply)
 
 	s := storetest.NewMemoryStore(t)
-	sess := New(func() context.Context { return supplyCtx }, s, newTestModelClientFactory(t, &fakeAPIClient{}))
+	sess := New(func() context.Context { return supplyCtx }, s, newTestModelClientFactory(t, &fakeAPIClient{}), nil)
 	attachTestUserClient(t, sess, "testuser")
 	sess.now = func() time.Time { return fixedTime }
 

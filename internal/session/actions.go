@@ -69,9 +69,9 @@ func (s *Session) joinAs(ctx context.Context, actor *domain.Instance, ch domain.
 		// (the `@` prefix in NAMES is how RFC 2812 §3.2.1 conveys the
 		// new op's rank — there is no separate MODE message).
 		if created {
-			window.Members.SetMode(actor, domain.ModeOp)
+			window.Members.ApplyMode(actor, domain.ModeOperator, true)
 			if isUser {
-				s.setUserMode(ctx, ch, domain.ModeOp)
+				s.setUserModes(ctx, ch, domain.MemberModes{Operator: true})
 			}
 
 			if err := s.persistChannelWindow(ctx, window); err != nil {
@@ -153,6 +153,10 @@ func (s *Session) joinAs(ctx context.Context, actor *domain.Instance, ch domain.
 // names by `NormaliseChannelName`, so a load that returns a
 // non-channel row indicates a programming error in the upstream
 // guard; that too is returned.
+//
+// A freshly created channel starts with the session's default mode
+// set (see [DefaultChannelModes]); a channel that already exists
+// keeps the modes it has.
 func (s *Session) ensureChannelWindowWithActor(ctx context.Context, ch domain.ChannelName, actor *domain.Instance, now time.Time) (*domain.ChannelWindow, bool, error) {
 	window, err := s.loadChannelWindow(ctx, ch)
 	if err == nil {
@@ -164,6 +168,7 @@ func (s *Session) ensureChannelWindowWithActor(ctx context.Context, ch domain.Ch
 	}
 
 	window = domain.NewChannelWindow(ch, now)
+	window.Modes = s.newChannelModes(ctx)
 	window.Members.Add(actor)
 
 	if saveErr := s.persistChannelWindow(ctx, window); saveErr != nil {

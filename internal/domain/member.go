@@ -7,8 +7,8 @@ import (
 	"github.com/laney/modeloff/internal/set"
 )
 
-// Member pairs an Instance with its channel mode for display in the
-// nick list.
+// Member pairs an Instance with the privileges that instance holds
+// in one channel, for display in the nick list.
 //
 // Nick is a snapshot of the instance's nick at the time of the last
 // Add/RenameTo; it stays consistent within a single render frame
@@ -20,21 +20,22 @@ import (
 type Member struct {
 	Instance *Instance
 	Nick     Nick
-	Mode     NickMode
+	Modes    MemberModes
 }
 
 func (m Member) String() string {
-	return m.Mode.String() + string(m.Nick)
+	return m.Modes.Rank().String() + string(m.Nick)
 }
 
-// Less defines the display order for members: higher modes
-// first (op > voice > none), then alphabetically by nick within
-// each mode. The final tiebreaker on `Instance.ID()` keeps
-// distinct instances with the same mode-and-nick pair from
-// colliding inside the sorted set.
+// Less defines the display order for members: higher ranks first
+// (op > voice > none), then alphabetically by nick within each
+// rank. The final tiebreaker on `Instance.ID()` keeps distinct
+// instances with the same rank-and-nick pair from colliding inside
+// the sorted set.
 func (m Member) Less(other Member) bool {
-	if m.Mode != other.Mode {
-		return m.Mode > other.Mode
+	rank, otherRank := m.Modes.Rank(), other.Modes.Rank()
+	if rank != otherRank {
+		return rank > otherRank
 	}
 
 	if m.Nick != other.Nick {
@@ -77,15 +78,15 @@ func (ml *MemberList) ensureInit() {
 // snapshot nick in the resulting Member is captured from the
 // instance at call time; subsequent renames propagate through
 // `RenameTo`. Adding an instance that is already a member updates
-// its snapshot nick while preserving the current mode.
+// its snapshot nick while preserving the privileges it holds.
 func (ml *MemberList) Add(inst *Instance) {
 	ml.ensureInit()
 
-	m := Member{Instance: inst, Nick: inst.Nick(), Mode: ModeNone}
+	m := Member{Instance: inst, Nick: inst.Nick()}
 
 	if cur, ok := ml.byInstance[inst]; ok {
 		ml.members.Remove(cur)
-		m.Mode = cur.Mode
+		m.Modes = cur.Modes
 	}
 
 	ml.members.Insert(m)
@@ -93,9 +94,9 @@ func (ml *MemberList) Add(inst *Instance) {
 }
 
 // Remove deletes the given member. Identity is taken from
-// `m.Instance`; the Mode and Nick on the argument are ignored so
-// that callers holding a stale mode can still remove a member
-// cleanly.
+// `m.Instance`; the Modes and Nick on the argument are ignored so
+// that callers holding a stale privilege set can still remove a
+// member cleanly.
 func (ml *MemberList) Remove(m Member) {
 	if ml.members == nil {
 		return
@@ -117,10 +118,11 @@ func (ml *MemberList) RemoveInstance(inst *Instance) {
 	ml.Remove(Member{Instance: inst})
 }
 
-// SetMode changes a member's privilege level. This removes and
-// re-inserts the member since mode is part of the sort key. Setting
-// the mode of an unknown instance is a no-op.
-func (ml *MemberList) SetMode(inst *Instance, mode NickMode) {
+// SetModes replaces the privileges a member holds. This removes and
+// re-inserts the member, because the rank derived from those
+// privileges is part of the sort key. Setting the privileges of an
+// unknown instance does nothing.
+func (ml *MemberList) SetModes(inst *Instance, modes MemberModes) {
 	if ml.members == nil {
 		return
 	}
@@ -132,30 +134,37 @@ func (ml *MemberList) SetMode(inst *Instance, mode NickMode) {
 
 	ml.members.Remove(cur)
 
-	updated := Member{Instance: inst, Nick: cur.Nick, Mode: mode}
+	updated := Member{Instance: inst, Nick: cur.Nick, Modes: modes}
 	ml.members.Insert(updated)
 	ml.byInstance[inst] = updated
 }
 
-// SetModeByNick is a display-layer convenience that forwards to
-// SetMode after resolving the nick to its instance handle. Wire
-// code that only has a nick in hand (e.g. ChanServ-style commands)
-// uses this. It is a no-op if the nick is unknown.
-func (ml *MemberList) SetModeByNick(nick Nick, mode NickMode) {
-	if ml.members == nil {
+// ApplyMode grants or revokes a single privilege, leaving the
+// member's other privileges as they are (RFC 2811 §4.1). It does
+// nothing if the flag is not a per-member mode, or if the instance
+// is not a member.
+func (ml *MemberList) ApplyMode(inst *Instance, flag Mode, add bool) {
+	cur, ok := ml.GetByInstance(inst)
+	if !ok {
 		return
 	}
 
+	ml.SetModes(inst, cur.Modes.With(flag, add))
+}
+
+// SetModesByNick resolves `nick` to its instance handle and forwards
+// to SetModes. It does nothing if the nick is not a member.
+func (ml *MemberList) SetModesByNick(nick Nick, modes MemberModes) {
 	m, ok := ml.GetByNick(nick)
 	if !ok {
 		return
 	}
 
-	ml.SetMode(m.Instance, mode)
+	ml.SetModes(m.Instance, modes)
 }
 
 // RenameTo updates the snapshot nick for the given instance handle,
-// preserving the existing mode. The underlying sorted set is
+// preserving the privileges it holds. The underlying sorted set is
 // re-keyed in place (remove + insert) because Nick participates in
 // the sort order. It is a no-op if the instance is not currently a
 // member.
@@ -176,7 +185,7 @@ func (ml *MemberList) RenameTo(inst *Instance, newNick Nick) {
 
 	ml.members.Remove(cur)
 
-	updated := Member{Instance: inst, Nick: newNick, Mode: cur.Mode}
+	updated := Member{Instance: inst, Nick: newNick, Modes: cur.Modes}
 	ml.members.Insert(updated)
 	ml.byInstance[inst] = updated
 }
@@ -282,10 +291,39 @@ func (ml MemberList) Nicks() iter.Seq[Nick] {
 // store has resolved ids back to canonical `*Instance` handles; the
 // store layer provides an `InstanceResolver` when loading to rewrite
 // the id back to a pointer.
+//
+// A member's privileges are written under `modes` as their mode
+// letters. Records written before the two privileges became
+// independent instead store a single display rank under `mode`, and
+// `Rank` reads that field.
+//
+// `modes` decides whenever the record carries it, `mode` only when it
+// does not. Both fields are pointers so that a record carrying
+// `"modes":""` is distinguishable from one carrying no `modes` at
+// all: the first states that the member holds no privileges and must
+// read that way even beside a stale rank, while only the second
+// consults `mode`. Marshalling always writes `modes` and never
+// writes `mode`.
 type memberJSON struct {
-	InstanceID InstanceID `json:"instance_id,omitempty"`
-	Nick       Nick       `json:"nick"`
-	Mode       NickMode   `json:"mode"`
+	InstanceID InstanceID   `json:"instance_id,omitempty"`
+	Nick       Nick         `json:"nick"`
+	Modes      *MemberModes `json:"modes"`
+	Rank       *NickMode    `json:"mode,omitempty"`
+}
+
+// memberModesFrom returns the privileges a decoded member record
+// holds, applying the `modes`-over-`mode` precedence [memberJSON]
+// documents. A record carrying neither field holds no privileges.
+func memberModesFrom(r memberJSON) MemberModes {
+	if r.Modes != nil {
+		return *r.Modes
+	}
+
+	if r.Rank != nil {
+		return modesForRank(*r.Rank)
+	}
+
+	return MemberModes{}
 }
 
 // MarshalJSON encodes the member list as a JSON array of members
@@ -299,7 +337,8 @@ func (ml MemberList) MarshalJSON() ([]byte, error) {
 			id = m.Instance.ID()
 		}
 
-		out = append(out, memberJSON{InstanceID: id, Nick: m.Nick, Mode: m.Mode})
+		modes := m.Modes
+		out = append(out, memberJSON{InstanceID: id, Nick: m.Nick, Modes: &modes})
 	}
 
 	return json.Marshal(out)
@@ -324,7 +363,7 @@ func (ml *MemberList) UnmarshalJSON(data []byte) error {
 
 	for _, r := range records {
 		stub := &Instance{instanceID: r.InstanceID}
-		m := Member{Instance: stub, Nick: r.Nick, Mode: r.Mode}
+		m := Member{Instance: stub, Nick: r.Nick, Modes: memberModesFrom(r)}
 
 		ml.members.Insert(m)
 		ml.byInstance[stub] = m
@@ -367,7 +406,7 @@ func (ml *MemberList) ResolveInstances(resolve InstanceResolver) {
 			continue
 		}
 
-		updated := Member{Instance: canonical, Nick: m.Nick, Mode: m.Mode}
+		updated := Member{Instance: canonical, Nick: m.Nick, Modes: m.Modes}
 		rebuilt.Insert(updated)
 		byInstance[canonical] = updated
 	}
