@@ -199,9 +199,11 @@ const (
 	KindPoke MessageKind = "POKE"
 
 	// KindServerReply is a point-to-point server reply an instance
-	// received in answer to its own command (WHOIS, LIST). It carries
-	// the rendered reply in `Body` and is replayed to that instance as
-	// session-side context, never attributed to a peer.
+	// received: an answer to its own command (WHOIS, LIST), or a
+	// server notice addressed to it alone (the flood-throttle
+	// warning). It carries the rendered reply in `Body` and is
+	// replayed to that instance as session-side context, never
+	// attributed to a peer.
 	KindServerReply MessageKind = "SERVER_REPLY"
 )
 
@@ -350,6 +352,18 @@ func FromChannelEvent(evt domain.PersistableEvent) (IRCMessage, bool) {
 			Kind: KindServerReply,
 			Body: listReplyLine(e),
 			At:   e.At,
+		}, true
+
+	case domain.SystemNotice:
+		// A notice the server addressed to one client, so it renders
+		// with no sender prefix. `Target` names the window the notice
+		// is about; a notice about the connection itself, such as the
+		// flood throttle, names the status window.
+		return IRCMessage{
+			Kind:   KindServerReply,
+			Target: string(e.Target),
+			Body:   e.Text,
+			At:     e.At,
 		}, true
 
 	default:

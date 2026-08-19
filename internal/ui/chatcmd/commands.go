@@ -763,13 +763,19 @@ const (
 
 // channelModeParamShape reports whether a flag in the given
 // direction consumes an argument and, if so, whether the argument
-// is a nick (member-mode `+o`/`+v`) or a free value (`+l` int /
-// `+k` string).
+// is a nick (a per-member grant) or a free value (a count or a
+// key). It reads [domain.ModeArgumentFor], so the set of flags that
+// take an argument is the one the dispatcher validates against.
+//
+// An unknown flag consumes nothing here. The dispatcher is what
+// rejects it, with [domain.UnknownModeFlagError], and consuming an
+// argument for it would turn that into a confusing surplus-argument
+// complaint about the next flag along.
 func channelModeParamShape(flag domain.Mode, add bool) (bool, modeParamKind) {
-	switch flag {
-	case domain.ModeOperator, domain.ModeChannelVoice:
+	switch domain.ModeArgumentFor(flag) {
+	case domain.ModeArgNick:
 		return true, modeParamTarget
-	case domain.ModeUserLimit, domain.ModeKey:
+	case domain.ModeArgCount, domain.ModeArgText:
 		if add {
 			return true, modeParamValue
 		}

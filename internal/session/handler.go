@@ -26,8 +26,13 @@ import (
 // the session's command loop via [Session.onWriter], one command at
 // a time in arrival order, so a command sees the full effect of
 // every command before it and none of any command after it. The
-// call stays synchronous for the caller — `Handle` returns that
+// call stays synchronous for the caller: `Handle` returns that
 // command's own `Response`.
+//
+// Every command is first billed to the issuing connection's flood
+// penalty timer (RFC 1459 §8.10). A client sending faster than the
+// timer allows waits here, on its own goroutine, before its command
+// reaches the loop. See [Session.throttleCommand].
 //
 // The `default` branch is unreachable; the [protocol.Command] sum
 // is sealed.
@@ -47,6 +52,10 @@ func (s *Session) Handle(ctx context.Context, c protocol.Client, cmd protocol.Co
 	}).Run(ctx, "session.handle", []attribute.KeyValue{
 		attribute.String("protocol.command", cmd.Name()),
 	}, func(ctx context.Context, span trace.Span) error {
+		if delay := s.throttleCommand(ctx, c); delay > 0 {
+			span.SetAttributes(attribute.Int64("flood.delay_ms", delay.Milliseconds()))
+		}
+
 		r, dispatchErr := s.dispatchCommand(ctx, c, cmd)
 		resp = r
 

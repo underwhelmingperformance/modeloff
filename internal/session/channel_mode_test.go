@@ -439,8 +439,8 @@ func TestHandleChannelMode_UnknownFlagRejected(t *testing.T) {
 
 // TestHandleChannelMode_MissingParamRejected pins the
 // `MissingModeParamError` shape across the parametric forms that
-// can be missing a value: `+o` without target, `+l` add without
-// integer, `+k` add without key.
+// can be missing a value: `+o` without target, `+l` and `+f` add
+// without integer, `+k` add without key.
 func TestHandleChannelMode_MissingParamRejected(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -452,6 +452,9 @@ func TestHandleChannelMode_MissingParamRejected(t *testing.T) {
 		{name: "+l non-numeric", change: protocol.ChannelModeChange{Flag: domain.ModeUserLimit, Add: true, Param: "ten"}},
 		{name: "+l zero", change: protocol.ChannelModeChange{Flag: domain.ModeUserLimit, Add: true, Param: "0"}},
 		{name: "+k empty", change: protocol.ChannelModeChange{Flag: domain.ModeKey, Add: true}},
+		{name: "+f no param", change: protocol.ChannelModeChange{Flag: domain.ModeFloodLimit, Add: true}},
+		{name: "+f non-numeric", change: protocol.ChannelModeChange{Flag: domain.ModeFloodLimit, Add: true, Param: "lots"}},
+		{name: "+f zero", change: protocol.ChannelModeChange{Flag: domain.ModeFloodLimit, Add: true, Param: "0"}},
 	}
 
 	for _, tt := range tests {

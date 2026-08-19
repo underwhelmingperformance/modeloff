@@ -22,8 +22,12 @@ const (
 
 // Channel-attribute modes from RFC 2811 §4.2 / RFC 2812 §3.2.3.
 // Each scopes a behaviour on the channel as a whole: the boolean
-// ones toggle a flag; `+l` and `+k` take a parameter (user-limit,
-// channel key).
+// ones toggle a flag; `+l`, `+k` and `+f` take a parameter
+// (user-limit, channel key, message limit).
+//
+// `+f` is not in RFC 2811. It is the letter ircds conventionally
+// give a channel flood limit, and it behaves like `+l`: a positive
+// number that the channel enforces, cleared by `-f`.
 const (
 	ModeAnonymous  Mode = 'a'
 	ModeInviteOnly Mode = 'i'
@@ -35,6 +39,7 @@ const (
 	ModeTopicLock  Mode = 't'
 	ModeUserLimit  Mode = 'l'
 	ModeKey        Mode = 'k'
+	ModeFloodLimit Mode = 'f'
 )
 
 // MemberMode reports whether the flag is one of the per-member

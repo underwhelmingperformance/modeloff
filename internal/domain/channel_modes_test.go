@@ -24,9 +24,10 @@ func TestChannelModes_IRCString(t *testing.T) {
 		{name: "user-limit only", modes: domain.ChannelModes{UserLimit: 10}, want: "+l 10"},
 		{name: "key only", modes: domain.ChannelModes{Key: "secret"}, want: "+k secret"},
 		{name: "limit then key", modes: domain.ChannelModes{UserLimit: 5, Key: "pw"}, want: "+lk 5 pw"},
+		{name: "flood limit only", modes: domain.ChannelModes{FloodLimit: 30}, want: "+f 30"},
 		{name: "mixed booleans and parametric", modes: domain.ChannelModes{
-			TopicLock: true, NoExternal: true, UserLimit: 20, Key: "s3cret",
-		}, want: "+ntlk 20 s3cret"},
+			TopicLock: true, NoExternal: true, UserLimit: 20, Key: "s3cret", FloodLimit: 30,
+		}, want: "+ntlkf 20 s3cret 30"},
 	}
 
 	for _, tt := range tests {
@@ -60,6 +61,110 @@ func TestParseChannelModes(t *testing.T) {
 	}
 }
 
+// TestModeArgumentFor pins what each mode letter takes alongside it.
+// The `MODE` validator, the slash-command argument parser and the
+// broadcast renderer all decide from this one answer, so a wrong
+// entry here is a wrong answer in three places at once.
+func TestModeArgumentFor(t *testing.T) {
+	tests := []struct {
+		flag domain.Mode
+		want domain.ModeArgument
+	}{
+		{flag: domain.ModeOperator, want: domain.ModeArgNick},
+		{flag: domain.ModeChannelVoice, want: domain.ModeArgNick},
+		{flag: domain.ModeAnonymous, want: domain.ModeArgNone},
+		{flag: domain.ModeInviteOnly, want: domain.ModeArgNone},
+		{flag: domain.ModeModerated, want: domain.ModeArgNone},
+		{flag: domain.ModeNoExternal, want: domain.ModeArgNone},
+		{flag: domain.ModePrivate, want: domain.ModeArgNone},
+		{flag: domain.ModeQuiet, want: domain.ModeArgNone},
+		{flag: domain.ModeSecret, want: domain.ModeArgNone},
+		{flag: domain.ModeTopicLock, want: domain.ModeArgNone},
+		{flag: domain.ModeUserLimit, want: domain.ModeArgCount},
+		{flag: domain.ModeFloodLimit, want: domain.ModeArgCount},
+		{flag: domain.ModeKey, want: domain.ModeArgText},
+		{flag: domain.Mode('z'), want: domain.ModeArgUnknown},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(rune(tt.flag)), func(t *testing.T) {
+			require.Equal(t, tt.want, domain.ModeArgumentFor(tt.flag))
+		})
+	}
+}
+
+// TestChannelModes_ApplyChannelMode checks that each flag writes to
+// its own field and leaves the rest of the set alone, and that the
+// remove form clears it.
+func TestChannelModes_ApplyChannelMode(t *testing.T) {
+	// Every field set, so a change that touched a field it should not
+	// shows up as a difference from this.
+	full := domain.ChannelModes{
+		Anonymous: true, InviteOnly: true, Moderated: true, NoExternal: true,
+		Private: true, Quiet: true, Secret: true, TopicLock: true,
+		UserLimit: 20, Key: "s3cret", FloodLimit: 30,
+	}
+
+	tests := []struct {
+		name  string
+		start domain.ChannelModes
+		flag  domain.Mode
+		add   bool
+		param string
+		want  domain.ChannelModes
+	}{
+		{
+			name: "boolean add", start: domain.ChannelModes{}, flag: domain.ModeTopicLock, add: true,
+			want: domain.ChannelModes{TopicLock: true},
+		},
+		{
+			name: "boolean remove", start: full, flag: domain.ModeTopicLock,
+			want: func() domain.ChannelModes { m := full; m.TopicLock = false; return m }(),
+		},
+		{
+			name: "count add", start: domain.ChannelModes{}, flag: domain.ModeUserLimit, add: true, param: "12",
+			want: domain.ChannelModes{UserLimit: 12},
+		},
+		{
+			name: "count remove", start: full, flag: domain.ModeUserLimit,
+			want: func() domain.ChannelModes { m := full; m.UserLimit = 0; return m }(),
+		},
+		{
+			name: "flood limit add", start: domain.ChannelModes{}, flag: domain.ModeFloodLimit, add: true, param: "7",
+			want: domain.ChannelModes{FloodLimit: 7},
+		},
+		{
+			name: "flood limit remove", start: full, flag: domain.ModeFloodLimit,
+			want: func() domain.ChannelModes { m := full; m.FloodLimit = 0; return m }(),
+		},
+		{
+			name: "text add", start: domain.ChannelModes{}, flag: domain.ModeKey, add: true, param: "pw",
+			want: domain.ChannelModes{Key: "pw"},
+		},
+		{
+			name: "text remove", start: full, flag: domain.ModeKey,
+			want: func() domain.ChannelModes { m := full; m.Key = ""; return m }(),
+		},
+		{
+			name: "member mode writes nothing", start: full, flag: domain.ModeOperator, add: true, param: "alice",
+			want: full,
+		},
+		{
+			name: "unknown flag writes nothing", start: full, flag: domain.Mode('z'), add: true,
+			want: full,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.start
+			got.ApplyChannelMode(tt.flag, tt.add, tt.param)
+
+			require.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestParseChannelModes_roundtrips_through_IRCString(t *testing.T) {
 	in := domain.ChannelModes{NoExternal: true, TopicLock: true, Secret: true}
 
@@ -81,6 +186,7 @@ func TestParseChannelModes_errors(t *testing.T) {
 		{name: "member mode voice", in: "+v", wantErr: domain.UnknownModeFlagError{Flag: domain.ModeChannelVoice}},
 		{name: "parametric user limit", in: "+l", wantErr: domain.UnknownModeFlagError{Flag: domain.ModeUserLimit}},
 		{name: "parametric key", in: "+k", wantErr: domain.UnknownModeFlagError{Flag: domain.ModeKey}},
+		{name: "parametric flood limit", in: "+f", wantErr: domain.UnknownModeFlagError{Flag: domain.ModeFloodLimit}},
 		{name: "unrecognised letter", in: "+z", wantErr: domain.UnknownModeFlagError{Flag: domain.Mode('z')}},
 	}
 

@@ -175,6 +175,14 @@ type Session struct {
 	// and every reader consults. See [channelState].
 	channels *channelState
 
+	// flood is the server's flood-control setting, applied to every
+	// connection alike. See [floodPolicy].
+	flood floodPolicy
+
+	// channelFlood counts messages per flood window for the channels
+	// that set `+f`. See [channelFlood].
+	channelFlood *channelFlood
+
 	// operAuth gates [protocol.Oper]. The default rejects every
 	// client; the user-client requests `+o` via
 	// [protocol.SubscribeOptions.InitialModes] at attach time, so
@@ -306,6 +314,8 @@ func New(
 		writerQ:             make(chan writerJob),
 		writerStopped:       make(chan struct{}),
 		channels:            newChannelState(),
+		flood:               rfcFloodPolicy,
+		channelFlood:        newChannelFlood(),
 	}
 
 	go sess.runWriter(baseContext())

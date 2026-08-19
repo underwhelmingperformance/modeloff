@@ -210,7 +210,7 @@ func (e ChannelFullError) Error() string {
 // channel mode that forbids it (RFC 2812 numeric 404
 // ERR_CANNOTSENDTOCHAN). `Reason` distinguishes which mode
 // triggered the refusal — moderated (`+m`), no-external (`+n`),
-// or quiet (`+q`).
+// quiet (`+q`), or the channel's flood limit (`+f`).
 type CannotSendToChannelError struct {
 	Channel ChannelName
 	Reason  SendBlockReason
@@ -233,6 +233,9 @@ const (
 	SendBlockNoExternal
 	// SendBlockQuiet names `+q`: only op may speak.
 	SendBlockQuiet
+	// SendBlockFlood names `+f`: the channel has already carried as
+	// many messages this flood window as its limit allows.
+	SendBlockFlood
 )
 
 func (r SendBlockReason) String() string {
@@ -243,6 +246,8 @@ func (r SendBlockReason) String() string {
 		return "no external messages (+n)"
 	case SendBlockQuiet:
 		return "channel is quiet (+q)"
+	case SendBlockFlood:
+		return "channel message limit reached (+f)"
 	}
 	return "blocked"
 }

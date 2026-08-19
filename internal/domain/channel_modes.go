@@ -11,7 +11,7 @@ import (
 
 // ChannelModes is the per-channel attribute mode set. Each boolean
 // field tracks the corresponding RFC 2811 §4.2 / RFC 2812 §3.2.3
-// flag; parametric modes (`+l`, `+k`) carry their value in the
+// flag; parametric modes (`+l`, `+k`, `+f`) store their value in the
 // corresponding scalar field and are considered set iff the value
 // is non-zero.
 //
@@ -29,6 +29,192 @@ type ChannelModes struct {
 	TopicLock  bool   `json:"topic_lock,omitempty"`
 	UserLimit  int    `json:"user_limit,omitempty"`
 	Key        string `json:"key,omitempty"`
+
+	// FloodLimit is the `+f` message limit: how many messages the
+	// channel relays in one flood window before it refuses further
+	// PRIVMSG and ACTION traffic. Zero means the channel sets no
+	// limit of its own. The window itself is a server constant, so
+	// the mode parameter is a message count.
+	FloodLimit int `json:"flood_limit,omitempty"`
+}
+
+// ModeArgument says what a mode flag needs alongside it in a `MODE`
+// change. Everything that parses or renders a mode change reads it,
+// so a new mode is one entry in [channelModeSpecs] and no new case
+// anywhere else.
+type ModeArgument int
+
+const (
+	// ModeArgUnknown is a flag letter this build does not know. It is
+	// the zero value so a lookup that found nothing cannot pass for a
+	// boolean flag.
+	ModeArgUnknown ModeArgument = iota
+
+	// ModeArgNone is a boolean channel attribute. `+t`, `+m`, `+n`
+	// and the rest take no argument in either direction.
+	ModeArgNone
+
+	// ModeArgCount is a channel attribute set to a positive integer:
+	// `+l 20`, `+f 30`. The remove form takes no argument.
+	ModeArgCount
+
+	// ModeArgText is a channel attribute set to a non-empty string:
+	// `+k secret`. The remove form takes no argument.
+	ModeArgText
+
+	// ModeArgNick is a privilege granted to one named member: `+o
+	// alice`, `+v bob`. Its value lives on the member, not on the
+	// channel, so no [ChannelModes] field describes it.
+	ModeArgNick
+)
+
+// channelModeSpec describes one channel-attribute mode: what it
+// takes alongside it, how to read its current setting off a
+// [ChannelModes], and how to write a change into one.
+type channelModeSpec struct {
+	flag Mode
+	arg  ModeArgument
+
+	// setting reports the mode's `MODE` parameter as `m` has it, and
+	// whether the mode is set at all. A boolean flag that is set
+	// reports an empty parameter.
+	setting func(m ChannelModes) (string, bool)
+
+	// apply writes `+flag param` (add) or `-flag` (remove) into `m`.
+	// The caller has already checked that `param` fits the flag's
+	// [ModeArgument], so a malformed value cannot reach here.
+	apply func(m *ChannelModes, add bool, param string)
+}
+
+// channelModeSpecs describes every channel-attribute mode, in the
+// order [ChannelModes.IRCString] renders them. The per-member modes
+// (`+o`, `+v`) are not here: [Mode.MemberMode] is what recognises
+// those, and their value lives on a member.
+var channelModeSpecs = []channelModeSpec{
+	boolModeSpec(ModeAnonymous, func(m *ChannelModes) *bool { return &m.Anonymous }),
+	boolModeSpec(ModeInviteOnly, func(m *ChannelModes) *bool { return &m.InviteOnly }),
+	boolModeSpec(ModeModerated, func(m *ChannelModes) *bool { return &m.Moderated }),
+	boolModeSpec(ModeNoExternal, func(m *ChannelModes) *bool { return &m.NoExternal }),
+	boolModeSpec(ModePrivate, func(m *ChannelModes) *bool { return &m.Private }),
+	boolModeSpec(ModeQuiet, func(m *ChannelModes) *bool { return &m.Quiet }),
+	boolModeSpec(ModeSecret, func(m *ChannelModes) *bool { return &m.Secret }),
+	boolModeSpec(ModeTopicLock, func(m *ChannelModes) *bool { return &m.TopicLock }),
+	countModeSpec(ModeUserLimit, func(m *ChannelModes) *int { return &m.UserLimit }),
+	textModeSpec(ModeKey, func(m *ChannelModes) *string { return &m.Key }),
+	countModeSpec(ModeFloodLimit, func(m *ChannelModes) *int { return &m.FloodLimit }),
+}
+
+// boolModeSpec describes a boolean channel attribute stored in the
+// field `field` points at.
+func boolModeSpec(flag Mode, field func(*ChannelModes) *bool) channelModeSpec {
+	return channelModeSpec{
+		flag: flag,
+		arg:  ModeArgNone,
+		setting: func(m ChannelModes) (string, bool) {
+			return "", *field(&m)
+		},
+		apply: func(m *ChannelModes, add bool, _ string) {
+			*field(m) = add
+		},
+	}
+}
+
+// countModeSpec describes a channel attribute stored as a positive
+// integer. Zero is the unset value, so `-flag` writes zero.
+func countModeSpec(flag Mode, field func(*ChannelModes) *int) channelModeSpec {
+	return channelModeSpec{
+		flag: flag,
+		arg:  ModeArgCount,
+		setting: func(m ChannelModes) (string, bool) {
+			n := *field(&m)
+
+			return strconv.Itoa(n), n > 0
+		},
+		apply: func(m *ChannelModes, add bool, param string) {
+			if !add {
+				*field(m) = 0
+
+				return
+			}
+
+			// Validation upstream has already accepted this parameter
+			// as a positive integer, so a parse failure here would be
+			// a bug in that check, and zero is the value that leaves
+			// the mode unset.
+			n, _ := strconv.Atoi(param)
+			*field(m) = n
+		},
+	}
+}
+
+// textModeSpec describes a channel attribute stored as a string. The
+// empty string is the unset value, so `-flag` writes it.
+func textModeSpec(flag Mode, field func(*ChannelModes) *string) channelModeSpec {
+	return channelModeSpec{
+		flag: flag,
+		arg:  ModeArgText,
+		setting: func(m ChannelModes) (string, bool) {
+			s := *field(&m)
+
+			return s, s != ""
+		},
+		apply: func(m *ChannelModes, add bool, param string) {
+			if !add {
+				*field(m) = ""
+
+				return
+			}
+
+			*field(m) = param
+		},
+	}
+}
+
+// channelModeSpecFor finds the description of a channel-attribute
+// mode. It reports false for a per-member mode and for a letter this
+// build does not know, without distinguishing the two;
+// [ModeArgumentFor] is what tells them apart.
+func channelModeSpecFor(flag Mode) (channelModeSpec, bool) {
+	for _, spec := range channelModeSpecs {
+		if spec.flag == flag {
+			return spec, true
+		}
+	}
+
+	return channelModeSpec{}, false
+}
+
+// ModeArgumentFor reports what `flag` takes alongside it in a `MODE`
+// change, or [ModeArgUnknown] for a letter this build does not know.
+// It is the single answer to that question, so the command parser
+// that consumes the argument, the validator that checks it and the
+// renderer that puts it back on the wire cannot disagree about which
+// flags have one.
+func ModeArgumentFor(flag Mode) ModeArgument {
+	if flag.MemberMode() {
+		return ModeArgNick
+	}
+
+	spec, ok := channelModeSpecFor(flag)
+	if !ok {
+		return ModeArgUnknown
+	}
+
+	return spec.arg
+}
+
+// ApplyChannelMode writes one `MODE` change into `m`: `+flag param`
+// when `add`, `-flag` otherwise. A per-member mode or an unknown
+// letter leaves `m` alone, since neither has a [ChannelModes] field.
+// The caller has already checked `param` against the flag's
+// [ModeArgument].
+func (m *ChannelModes) ApplyChannelMode(flag Mode, add bool, param string) {
+	spec, ok := channelModeSpecFor(flag)
+	if !ok {
+		return
+	}
+
+	spec.apply(m, add, param)
 }
 
 // IRCString renders the mode set in canonical RFC 2812 form: a
@@ -36,9 +222,8 @@ type ChannelModes struct {
 // any parameters in matching order separated by spaces. The empty
 // mode set returns `+`.
 //
-// Canonical order is the order [ChannelModes] declares its fields
-// (anonymous, invite-only, moderated, no-external, private, quiet,
-// secret, topic-lock, user-limit, key), so two equal mode sets
+// Canonical order is [channelModeSpecs]' order, which follows the
+// order [ChannelModes] declares its fields, so two equal mode sets
 // always render identically.
 func (m ChannelModes) IRCString() string {
 	var flags strings.Builder
@@ -46,37 +231,17 @@ func (m ChannelModes) IRCString() string {
 
 	flags.WriteByte('+')
 
-	if m.Anonymous {
-		flags.WriteRune(rune(ModeAnonymous))
-	}
-	if m.InviteOnly {
-		flags.WriteRune(rune(ModeInviteOnly))
-	}
-	if m.Moderated {
-		flags.WriteRune(rune(ModeModerated))
-	}
-	if m.NoExternal {
-		flags.WriteRune(rune(ModeNoExternal))
-	}
-	if m.Private {
-		flags.WriteRune(rune(ModePrivate))
-	}
-	if m.Quiet {
-		flags.WriteRune(rune(ModeQuiet))
-	}
-	if m.Secret {
-		flags.WriteRune(rune(ModeSecret))
-	}
-	if m.TopicLock {
-		flags.WriteRune(rune(ModeTopicLock))
-	}
-	if m.UserLimit > 0 {
-		flags.WriteRune(rune(ModeUserLimit))
-		params = append(params, strconv.Itoa(m.UserLimit))
-	}
-	if m.Key != "" {
-		flags.WriteRune(rune(ModeKey))
-		params = append(params, m.Key)
+	for _, spec := range channelModeSpecs {
+		param, set := spec.setting(m)
+		if !set {
+			continue
+		}
+
+		flags.WriteRune(rune(spec.flag))
+
+		if spec.arg != ModeArgNone {
+			params = append(params, param)
+		}
 	}
 
 	if len(params) == 0 {
@@ -86,17 +251,23 @@ func (m ChannelModes) IRCString() string {
 	return flags.String() + " " + strings.Join(params, " ")
 }
 
-// ParseChannelModes parses a leading-`+` channel-mode string (the
-// form [ChannelModes.IRCString] renders, e.g. "+nt") into a
-// [ChannelModes] value. It accepts only the boolean channel-
-// attribute flags this type carries: anonymous, invite-only,
-// moderated, no-external, private, quiet, secret, topic-lock. The
-// per-member modes ('o', 'v') and the parametric attribute modes
-// ('l', 'k') each take a value with no meaning as a fixed default: a
-// nick to grant ops to, a user limit, a key. ParseChannelModes
-// rejects them the same as any other unrecognised letter, via
-// [UnknownModeFlagError]. A string that does not start with '+' is
-// rejected via [MalformedChannelModeError].
+// ParseChannelModes parses a leading-`+` string of boolean channel
+// flags, e.g. "+nt", into a [ChannelModes] value. A string that does
+// not start with '+' is rejected via [MalformedChannelModeError].
+//
+// This reads the `/config` default-channel-modes setting, so what it
+// accepts is what a channel can be created with. It accepts the
+// boolean flags only, and rejects both a per-member mode
+// ([ModeArgNick]) and a parametric one ([ModeArgCount],
+// [ModeArgText]) via [UnknownModeFlagError]. The two are rejected
+// for different reasons. A per-member grant needs a member to grant
+// it to, and a channel has none at the moment it is created. A
+// parametric default would be a coherent setting; this grammar has
+// nowhere to put its argument. Giving a new channel a user limit, a
+// key or a flood limit therefore means extending the grammar to the
+// parameter form [ChannelModes.IRCString] already renders ("+ntl
+// 20"). Until then the two are inverses only across the boolean
+// flags.
 func ParseChannelModes(s string) (ChannelModes, error) {
 	if len(s) == 0 || s[0] != '+' {
 		return ChannelModes{}, MalformedChannelModeError{Input: s}
@@ -107,26 +278,11 @@ func ParseChannelModes(s string) (ChannelModes, error) {
 	for _, r := range s[1:] {
 		flag := Mode(r)
 
-		switch flag {
-		case ModeAnonymous:
-			modes.Anonymous = true
-		case ModeInviteOnly:
-			modes.InviteOnly = true
-		case ModeModerated:
-			modes.Moderated = true
-		case ModeNoExternal:
-			modes.NoExternal = true
-		case ModePrivate:
-			modes.Private = true
-		case ModeQuiet:
-			modes.Quiet = true
-		case ModeSecret:
-			modes.Secret = true
-		case ModeTopicLock:
-			modes.TopicLock = true
-		default:
+		if ModeArgumentFor(flag) != ModeArgNone {
 			return ChannelModes{}, UnknownModeFlagError{Flag: flag}
 		}
+
+		modes.ApplyChannelMode(flag, true, "")
 	}
 
 	return modes, nil

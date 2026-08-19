@@ -265,6 +265,8 @@ func TestSession_add_model_refuses_a_nick_taken_after_preparation(t *testing.T) 
 func TestSession_a_silent_consumer_does_not_stall_the_command_loop(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		sess, s := newTestSession(t)
+		unpaceFlood(sess)
+
 		ctx := t.Context()
 
 		silent := domain.NewModelInstance("inst-silent", "silent", "test/model", "", testChannels("#busy"))
@@ -359,6 +361,8 @@ func TestSession_add_model_rolls_back_when_the_join_is_refused(t *testing.T) {
 // while deliveries are still moving.
 func TestSession_reaping_a_subscription_mid_send_is_clean(t *testing.T) {
 	sess, s := newTestSession(t)
+	unpaceFlood(sess)
+
 	ctx := t.Context()
 
 	talker := domain.NewModelInstance("inst-talker", "talker", "test/model", "", nil)

@@ -89,6 +89,7 @@ func (s *Session) destroyChannel(ctx context.Context, name domain.ChannelName) e
 	defer s.channels.mu.Unlock()
 
 	delete(s.channels.windows, name)
+	s.channelFlood.forget(name)
 
 	return s.store.DeleteWindow(ctx, name)
 }

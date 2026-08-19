@@ -60,6 +60,18 @@ func TestModeCommand_ToCommand(t *testing.T) {
 			want:  []protocol.ChannelModeChange{{Flag: domain.ModeKey, Add: true, Param: "secret"}},
 		},
 		{
+			name:  "parametric +f add",
+			flags: "+f",
+			args:  []string{"30"},
+			want:  []protocol.ChannelModeChange{{Flag: domain.ModeFloodLimit, Add: true, Param: "30"}},
+		},
+		{
+			name:  "parametric -f remove takes no param",
+			flags: "-f",
+			args:  nil,
+			want:  []protocol.ChannelModeChange{{Flag: domain.ModeFloodLimit, Add: false}},
+		},
+		{
 			name:  "compound +ov on two nicks",
 			flags: "+ov",
 			args:  []string{"alice", "bob"},

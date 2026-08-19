@@ -13,11 +13,16 @@ import (
 // checkSendGates enforces the per-channel PRIVMSG / Action
 // preconditions tied to channel modes: `+n` requires the sender
 // to be a channel member; `+m` requires the sender to hold voice
-// or op; `+q` silences everyone except ops. DMs (non-channel
-// targets) skip the check — they have no member list and no
+// or op; `+q` silences everyone except ops; `+f` caps how many
+// messages the channel relays per flood window. DMs (non-channel
+// targets) skip the check, because they have no member list and no
 // channel modes.
 //
-// Each rejection carries a typed [domain.SendBlockReason] so
+// `+f` is checked last, and it is the one gate that changes state:
+// a message an earlier gate refuses was never going to be relayed,
+// so it must not spend the channel's flood budget.
+//
+// Each rejection names a typed [domain.SendBlockReason] so
 // renderers can format the right message without parsing a
 // free-form error string.
 func (s *Session) checkSendGates(ctx context.Context, actor *domain.Instance, ch domain.ChannelName) error {
@@ -51,7 +56,7 @@ func (s *Session) checkSendGates(ctx context.Context, actor *domain.Instance, ch
 		}
 	}
 
-	return nil
+	return s.checkChannelFlood(ch, window.Modes)
 }
 
 // checkJoinGates enforces the per-channel JOIN preconditions

@@ -284,10 +284,6 @@ person is reading, or running the session's own shutdown underneath
 a process that is still running. If a hopelessly-behind UI is worth
 noticing, the mechanism is a metric, not a QUIT.
 
-Per-command flood control (the RFC 1459 §8.10 penalty algorithm,
-channel mode `+f`) is the inbound counterpart and is separate from
-this outbound bound.
-
 Channel state — member lists, topics, modes, invitation sets —
 lives in memory in the session and is the source of truth. Records
 enter it on demand from the store and are written through to the
@@ -311,6 +307,89 @@ DMs have no wire-level "open" command. A direct message is just a
 can send and the events log carries the conversation under that key.
 The chat-screen's `/query` is a UI affordance only — the session
 never sees it.
+
+### Flood control
+
+Flood control is the inbound counterpart to the send-queue bound, and
+is separate from it. It has two halves, and both apply to every
+client the same way.
+
+Per connection, the RFC 1459 §8.10 penalty algorithm paces commands.
+Each subscription has a message timer; `Session.Handle` charges two
+seconds to it per command and holds a command back for as long as the
+timer runs more than ten seconds ahead of now. A client may therefore
+send five or six commands at once and one every two seconds after
+that. The rule reads nothing about what kind of actor is sending: it
+is a property of the connection, and the asymmetry the app wants
+follows from behaviour, since typing at human speed gains half a
+second per line and two models answering each other gain two.
+
+One composition qualifies that today. Autojoin issues one JOIN per
+channel, each charged like any other command, so a user with six or
+more autojoin channels has spent the connection's allowance before
+typing anything, and the first thing they type waits two seconds. A
+multi-target JOIN (RFC 2812 §3.2.1, "JOIN #a,#b,#c") is one command
+and one charge however many channels it names, which is how a real
+client avoids this; `protocol.Join` carries a single channel and
+cannot express it yet.
+`TestSession_autojoin_spends_the_user_allowance` pins what the
+current shape costs, so the improvement shows up there when the
+multi-target form lands.
+
+A held-back command is delayed, never dropped, which is what an ircd
+does when it reads a flooding connection more slowly. The wait
+happens on the sending client's own goroutine, before the command
+reaches the command loop, so the loop is never held up by it. A
+model-client waiting there is not draining its events channel, which
+is the state it is already in mid-turn: peers sending to it still do
+not block, and a backlog past `sendQAllowance` disconnects it through
+the ordinary teardown. The wait also ends early on the client's
+context, its subscription being reaped, or the loop stopping, so a
+throttled client never delays its own teardown or shutdown.
+
+A client crossing into a throttle is told: it receives a server
+notice on its own delivery stream, once as the episode opens and not
+once per held-back command. The episode ends only when the timer has
+drained the whole way back to now, which takes as long as the client
+spent building it up, so a client alternating between bursts and
+short pauses is warned once and not once per burst.
+
+The notice is filed nowhere. The instance reply log holds an issuer's
+own lookup results, which a model replays as things it asked for and
+still knows; a throttle was true for a few seconds, and a model
+reading it back on every later turn would be told to slow down long
+after it already had, at the cost of prompt space. What a client
+carries forward from a throttle is the delay it experienced.
+
+Per channel, mode `+f <messages>` caps how many messages the channel
+relays in one flood window. It is parametric like `+l`, it is checked
+last among the send gates so a message an earlier gate refuses does
+not spend the budget, and going over it refuses the message with
+ERR_CANNOTSENDTOCHAN (RFC 2812 numeric 404), the same shape `+m`,
+`+n` and `+q` refuse with. The window is fixed rather than sliding,
+so a channel can relay twice its limit across a boundary; the
+per-connection pacing already bounds the rate such a burst can
+arrive at. Both flood timers measure elapsed time on the monotonic
+clock, never `Session.now`, which stamps domain events and is
+commonly frozen. `domain.ParseChannelModes`, which reads
+the `/config` default-channel-modes string, rejects `+f` along with
+the other parametric modes: that grammar reads bare flags and has
+nowhere to put a parameter, so a creation default for a flood limit
+means extending it to the parameter form `ChannelModes.IRCString`
+already renders.
+
+`+f` needed no new arm in any mode parser. Each mode letter is
+described once, in `domain`'s `channelModeSpecs`: what it takes
+alongside it (`domain.ModeArgumentFor`), how to read its current
+setting for rendering, and how to write a change into a
+`domain.ChannelModes` (`ChannelModes.ApplyChannelMode`). The `MODE`
+validator, the `/mode` argument parser, the broadcast renderer,
+`IRCString` and `ParseChannelModes` all decide from that one
+description, so a new mode is one entry there.
+
+Together with `+m` and KILL, those are the primitives an operator or
+a future policy layer composes a spend budget out of. Nothing in the
+session decides a budget, and `dispatchTrigger` holds no hidden gate.
 
 ### Event bus
 

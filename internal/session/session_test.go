@@ -354,6 +354,17 @@ func newTestSession(t *testing.T) (*Session, *storemod.SQLiteStore) {
 	return newTestSessionWithAPI(t, &fakeAPIClient{})
 }
 
+// unpaceFlood turns off the server's RFC 1459 §8.10 pacing for a
+// test that deliberately floods the session to reach some other
+// bound, such as the send-queue allowance. Those tests send
+// thousands of commands from one client, which the pacing would
+// spread over hours of the test's clock, and the pacing is not what
+// they are checking. Every other test runs on the production
+// setting, so ordinary command sequences stay under it.
+func unpaceFlood(sess *Session) {
+	sess.flood = floodPolicy{}
+}
+
 // addModelViaWire issues a [protocol.AddModel] through the
 // user-client (which holds `+o` from bootstrap) so tests exercise
 // the same dispatcher path the chatcmd `/add-model` and the

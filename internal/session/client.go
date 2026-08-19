@@ -68,6 +68,11 @@ type serverClient struct {
 	// it before returning.
 	pumpDone chan struct{}
 
+	// penalty is this connection's RFC 1459 §8.10 message timer.
+	// [Session.throttleCommand] charges every command the client
+	// sends to it, whatever kind of actor is behind the connection.
+	penalty penaltyTimer
+
 	modesMu sync.RWMutex
 	modes   map[domain.Mode]struct{}
 
