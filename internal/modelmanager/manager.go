@@ -195,6 +195,22 @@ func (m *Manager) HasAPIKey() bool {
 	return m.apiKey != ""
 }
 
+// EmbeddingSearchable reports whether the memory store's embedding
+// endpoint is currently reachable, and the error from its most
+// recent probe. memory.NewDefaultStore re-probes on every APIKey,
+// BaseURL or EmbeddingModel change, so this reads that already-
+// refreshed state without triggering a new probe of its own. A
+// memory store with no embedding endpoint to probe (the plain,
+// non-indexed fallback) reports ok=false with a nil error.
+func (m *Manager) EmbeddingSearchable() (bool, error) {
+	prober, ok := m.memory.(memory.EmbeddingProber)
+	if !ok {
+		return false, nil
+	}
+
+	return prober.Searchable(), prober.ProbeError()
+}
+
 // APIClient returns the current API client. The handle may change
 // over the manager's lifetime as `SetAPIKey` / `SetBaseURL` rebuild
 // it; callers that hold a value risk talking to a stale handle.

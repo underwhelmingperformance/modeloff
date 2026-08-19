@@ -638,8 +638,9 @@ func (c NickCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	return func() tea.Msg {
 		nick := domain.Nick(c.Nick)
 
-		if _, err := rc.updateConfig(ctx, func(cfg *config.Config) {
+		if _, err := rc.Config.Update(ctx, func(cfg config.Config) config.Config {
 			cfg.UserNick = string(nick)
+			return cfg
 		}); err != nil {
 			return errorEvent("nick", err)
 		}

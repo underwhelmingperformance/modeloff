@@ -73,6 +73,51 @@ func (m *Manager) EnsureStructuredOutputModel(ctx context.Context, modelID domai
 		return nil
 	}
 
+	if err := m.ensureCatalogueLoaded(ctx, client, modelID); err != nil {
+		return err
+	}
+
+	if !m.catalogueHas(modelID) {
+		return domain.UnsupportedModelError{ModelID: modelID, At: m.now()}
+	}
+
+	return nil
+}
+
+// EnsureKnownModel validates that modelID appears in the model
+// catalogue, lazy-loading it if needed. Unlike
+// [Manager.EnsureStructuredOutputModel], it makes no claim about the
+// model's capabilities. Callers that need chat-completion or tool-
+// call support (nick generation, an invited instance) use
+// EnsureStructuredOutputModel; this method is for callers that only
+// need the id to be real, such as the embedding-model id `/config`
+// sets. Returns [modelclient.ErrModelListUnavailable] when the
+// cached state recorded an upstream failure, nil when no API key is
+// configured (validation is deferred until one exists), or
+// [domain.UnknownModelError] when the catalogue does not include the
+// model.
+func (m *Manager) EnsureKnownModel(ctx context.Context, modelID domain.ModelID) error {
+	client, key := m.snapshotAPI()
+	if key == "" || client == nil {
+		return nil
+	}
+
+	if err := m.ensureCatalogueLoaded(ctx, client, modelID); err != nil {
+		return err
+	}
+
+	if !m.catalogueHas(modelID) {
+		return domain.UnknownModelError{ModelID: modelID, At: m.now()}
+	}
+
+	return nil
+}
+
+// ensureCatalogueLoaded lazy-loads the model catalogue if it has not
+// been fetched yet, short-circuiting with
+// [modelclient.ErrModelListUnavailable] when the cached state
+// recorded an upstream failure. modelID is logging context only.
+func (m *Manager) ensureCatalogueLoaded(ctx context.Context, client api.Client, modelID domain.ModelID) error {
 	if ListState(m.state.Load()) == ListStateFailed {
 		slog.Default().InfoContext(ctx, "add-model short-circuited: model list unavailable",
 			"component", "modelmanager",
@@ -85,24 +130,30 @@ func (m *Manager) EnsureStructuredOutputModel(ctx context.Context, modelID domai
 	ready := m.supportedModelsReady
 	m.cacheMu.Unlock()
 
-	if !ready {
-		models, err := client.ListModels(ctx)
-		if err != nil {
-			m.transitionListState(ctx, ListStateFailed, err)
-			return fmt.Errorf("list models: %w", err)
-		}
-		m.cacheSupportedModels(ctx, models)
+	if ready {
+		return nil
 	}
 
-	m.cacheMu.Lock()
-	_, ok := m.supportedModels[modelID]
-	m.cacheMu.Unlock()
-
-	if !ok {
-		return domain.UnsupportedModelError{ModelID: modelID, At: m.now()}
+	models, err := client.ListModels(ctx)
+	if err != nil {
+		m.transitionListState(ctx, ListStateFailed, err)
+		return fmt.Errorf("list models: %w", err)
 	}
+
+	m.cacheSupportedModels(ctx, models)
 
 	return nil
+}
+
+// catalogueHas reports whether modelID is present in the cached
+// catalogue.
+func (m *Manager) catalogueHas(modelID domain.ModelID) bool {
+	m.cacheMu.Lock()
+	defer m.cacheMu.Unlock()
+
+	_, ok := m.supportedModels[modelID]
+
+	return ok
 }
 
 // CachedContextLen returns the context length the catalogue cache

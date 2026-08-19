@@ -86,6 +86,52 @@ func (m ChannelModes) IRCString() string {
 	return flags.String() + " " + strings.Join(params, " ")
 }
 
+// ParseChannelModes parses a leading-`+` channel-mode string (the
+// form [ChannelModes.IRCString] renders, e.g. "+nt") into a
+// [ChannelModes] value. It accepts only the boolean channel-
+// attribute flags this type carries: anonymous, invite-only,
+// moderated, no-external, private, quiet, secret, topic-lock. The
+// per-member modes ('o', 'v') and the parametric attribute modes
+// ('l', 'k') each take a value with no meaning as a fixed default: a
+// nick to grant ops to, a user limit, a key. ParseChannelModes
+// rejects them the same as any other unrecognised letter, via
+// [UnknownModeFlagError]. A string that does not start with '+' is
+// rejected via [MalformedChannelModeError].
+func ParseChannelModes(s string) (ChannelModes, error) {
+	if len(s) == 0 || s[0] != '+' {
+		return ChannelModes{}, MalformedChannelModeError{Input: s}
+	}
+
+	var modes ChannelModes
+
+	for _, r := range s[1:] {
+		flag := Mode(r)
+
+		switch flag {
+		case ModeAnonymous:
+			modes.Anonymous = true
+		case ModeInviteOnly:
+			modes.InviteOnly = true
+		case ModeModerated:
+			modes.Moderated = true
+		case ModeNoExternal:
+			modes.NoExternal = true
+		case ModePrivate:
+			modes.Private = true
+		case ModeQuiet:
+			modes.Quiet = true
+		case ModeSecret:
+			modes.Secret = true
+		case ModeTopicLock:
+			modes.TopicLock = true
+		default:
+			return ChannelModes{}, UnknownModeFlagError{Flag: flag}
+		}
+	}
+
+	return modes, nil
+}
+
 // InvitedNicks is the per-channel pending-invitation set populated
 // by `INVITE` and consumed by `JOIN` when `+i` is set. Each entry
 // is single-use: a successful join removes the inviter's record.

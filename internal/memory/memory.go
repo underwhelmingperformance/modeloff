@@ -57,6 +57,27 @@ type Searcher interface {
 	Searchable() bool
 }
 
+// EmbeddingProber is an optional capability a Store can implement to
+// re-probe its embedding endpoint on demand and report the outcome.
+// NewDefaultStore's config-change hook already runs a fire-and-
+// forget re-probe on every relevant change; this exposes that same
+// outcome for a caller that wants to read it directly. IndexedStore
+// implements it; the plain, non-indexed fallback store has no
+// embedding endpoint and does not.
+type EmbeddingProber interface {
+	// Searchable reports the outcome of the most recent probe.
+	Searchable() bool
+
+	// ProbeError returns that probe's error, or nil if it succeeded
+	// (or no API key was configured for it to attempt).
+	ProbeError() error
+
+	// RefreshSearchable re-probes the embedding endpoint, updates
+	// what Searchable and ProbeError report, and returns the same
+	// error ProbeError would return afterwards.
+	RefreshSearchable(ctx context.Context) error
+}
+
 // InstanceDeleter is an optional capability a memory Store can
 // implement to remove state it owns for a single instance, keyed by
 // identity. The FileStore-backed memories rows are already removed

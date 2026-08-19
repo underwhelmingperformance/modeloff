@@ -36,6 +36,62 @@ func TestChannelModes_IRCString(t *testing.T) {
 	}
 }
 
+func TestParseChannelModes(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want domain.ChannelModes
+	}{
+		{name: "empty set", in: "+", want: domain.ChannelModes{}},
+		{name: "single boolean", in: "+t", want: domain.ChannelModes{TopicLock: true}},
+		{name: "multiple booleans", in: "+nt", want: domain.ChannelModes{NoExternal: true, TopicLock: true}},
+		{name: "all booleans", in: "+aimnpqst", want: domain.ChannelModes{
+			Anonymous: true, InviteOnly: true, Moderated: true, NoExternal: true,
+			Private: true, Quiet: true, Secret: true, TopicLock: true,
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := domain.ParseChannelModes(tt.in)
+			require.NoError(t, err)
+			require.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestParseChannelModes_roundtrips_through_IRCString(t *testing.T) {
+	in := domain.ChannelModes{NoExternal: true, TopicLock: true, Secret: true}
+
+	got, err := domain.ParseChannelModes(in.IRCString())
+	require.NoError(t, err)
+	require.Equal(t, in, got)
+}
+
+func TestParseChannelModes_errors(t *testing.T) {
+	tests := []struct {
+		name    string
+		in      string
+		wantErr error
+	}{
+		{name: "empty string", in: "", wantErr: domain.MalformedChannelModeError{Input: ""}},
+		{name: "missing leading plus", in: "nt", wantErr: domain.MalformedChannelModeError{Input: "nt"}},
+		{name: "leading minus", in: "-nt", wantErr: domain.MalformedChannelModeError{Input: "-nt"}},
+		{name: "member mode operator", in: "+o", wantErr: domain.UnknownModeFlagError{Flag: domain.ModeOperator}},
+		{name: "member mode voice", in: "+v", wantErr: domain.UnknownModeFlagError{Flag: domain.ModeChannelVoice}},
+		{name: "parametric user limit", in: "+l", wantErr: domain.UnknownModeFlagError{Flag: domain.ModeUserLimit}},
+		{name: "parametric key", in: "+k", wantErr: domain.UnknownModeFlagError{Flag: domain.ModeKey}},
+		{name: "unrecognised letter", in: "+z", wantErr: domain.UnknownModeFlagError{Flag: domain.Mode('z')}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := domain.ParseChannelModes(tt.in)
+			require.Equal(t, tt.wantErr, err)
+		})
+	}
+}
+
 func TestChannelModes_JSONRoundtrip(t *testing.T) {
 	in := domain.ChannelModes{
 		Moderated:  true,

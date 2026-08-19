@@ -405,7 +405,7 @@ func TestChatScreen_nick_command_reports_persist_error(t *testing.T) {
 	waitForChannelSeedDrain(tm)
 
 	tm.Submit("/nick newnick")
-	tm.WaitFor("save config", "context deadline exceeded")
+	tm.WaitFor("context deadline exceeded")
 }
 
 func TestChatScreen_topic_command(t *testing.T) {
@@ -569,7 +569,7 @@ func TestChatScreen_config_no_subcommand(t *testing.T) {
 	tm, _ := newChatAppInChannel(t, "#general")
 
 	tm.Submit("/config")
-	tm.WaitFor("/config requires a subcommand")
+	tm.WaitFor("poke-interval = ")
 }
 
 func TestChatScreen_config_set_api_key(t *testing.T) {
@@ -675,7 +675,7 @@ func TestChatScreen_config_set_timestamp_format(t *testing.T) {
 	require.Equal(t, "02/01 15:04:05", *cfgStore.cfg.TimestampFormat)
 }
 
-func TestChatScreen_config_disable_timestamp_format(t *testing.T) {
+func TestChatScreen_config_bare_timestamp_format_shows_usage(t *testing.T) {
 	cfgStore := newFakeConfigStore()
 	h := newTestSessionWithConfigStore(t, cfgStore)
 	uitest.SeedChannel(t, h.user, "#general")
@@ -684,10 +684,9 @@ func TestChatScreen_config_disable_timestamp_format(t *testing.T) {
 	waitForChannelSeedDrain(tm)
 
 	tm.Submit("/config timestamp-format")
-	tm.WaitFor("timestamps disabled")
+	tm.WaitFor("usage: /config timestamp-format <format>")
 
-	require.NotNil(t, cfgStore.cfg.TimestampFormat)
-	require.Equal(t, "", *cfgStore.cfg.TimestampFormat)
+	require.Nil(t, cfgStore.cfg.TimestampFormat)
 }
 
 func TestChatScreen_config_disable_timestamp_format_with_empty_quotes(t *testing.T) {
@@ -1097,6 +1096,16 @@ func (f *fakeConfigStore) Save(_ context.Context, cfg config.Config) error {
 
 	f.cfg = cfg
 	return nil
+}
+
+func (f *fakeConfigStore) Update(ctx context.Context, fn func(config.Config) config.Config) (config.Config, error) {
+	next := fn(f.cfg)
+
+	if err := f.Save(ctx, next); err != nil {
+		return config.Config{}, err
+	}
+
+	return next, nil
 }
 
 func TestChatScreen_add_model_short_circuits_when_model_list_unavailable(t *testing.T) {

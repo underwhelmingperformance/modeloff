@@ -76,18 +76,21 @@ func failingEmbedder() chromem.EmbeddingFunc {
 
 func TestProbeEmbeddingFunc(t *testing.T) {
 	tests := []struct {
-		name string
-		fn   chromem.EmbeddingFunc
-		want bool
+		name    string
+		fn      chromem.EmbeddingFunc
+		want    bool
+		wantErr bool
 	}{
-		{name: "nil function (no API key) is unreachable", fn: nil, want: false},
-		{name: "failing function is unreachable", fn: failingEmbedder(), want: false},
-		{name: "working function is reachable", fn: trivialEmbedder(), want: true},
+		{name: "nil function (no API key) is unreachable", fn: nil, want: false, wantErr: false},
+		{name: "failing function is unreachable", fn: failingEmbedder(), want: false, wantErr: true},
+		{name: "working function is reachable", fn: trivialEmbedder(), want: true, wantErr: false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, probeEmbeddingFunc(t.Context(), tt.fn))
+			ok, err := probeEmbeddingFunc(t.Context(), tt.fn)
+			require.Equal(t, tt.want, ok)
+			require.Equal(t, tt.wantErr, err != nil)
 		})
 	}
 }
@@ -116,29 +119,36 @@ func TestIndexedStore_Searchable(t *testing.T) {
 // (a fresh install with no API key yet, or a real network failure)
 // becomes searchable again once the underlying embedder starts
 // working, without reattaching the store — and the reverse, so a
-// working endpoint later going bad is also reflected.
+// working endpoint later going bad is also reflected. It also pins
+// that ProbeError and RefreshSearchable's own return value track the
+// same transitions: nil once the embedder works, the probe's error
+// once it fails again.
 func TestIndexedStore_RefreshSearchable(t *testing.T) {
 	ctx := t.Context()
 
 	var working atomic.Bool
+	probeErr := fmt.Errorf("embedding service unavailable")
 	embedder := func(context.Context, string) ([]float32, error) {
 		if working.Load() {
 			return []float32{1.0, 0.0, 0.0}, nil
 		}
 
-		return nil, fmt.Errorf("embedding service unavailable")
+		return nil, probeErr
 	}
 
 	store := newTestIndexedStore(t, embedder)
 	require.False(t, store.Searchable())
+	require.Equal(t, probeErr, store.ProbeError())
 
 	working.Store(true)
-	store.RefreshSearchable(ctx)
+	require.NoError(t, store.RefreshSearchable(ctx))
 	require.True(t, store.Searchable())
+	require.NoError(t, store.ProbeError())
 
 	working.Store(false)
-	store.RefreshSearchable(ctx)
+	require.Equal(t, probeErr, store.RefreshSearchable(ctx))
 	require.False(t, store.Searchable())
+	require.Equal(t, probeErr, store.ProbeError())
 }
 
 // --- DeleteInstance ---

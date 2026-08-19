@@ -59,7 +59,7 @@ func TestApp_nick_command_reports_persist_error_with_teatest(t *testing.T) {
 	tm.WaitFor("#general")
 
 	tm.Submit("/nick newnick")
-	tm.WaitFor("save config", "context deadline exceeded")
+	tm.WaitFor("context deadline exceeded")
 }
 
 func TestApp_title_list_and_help_commands_with_teatest(t *testing.T) {
@@ -135,7 +135,7 @@ func TestApp_config_commands_with_teatest(t *testing.T) {
 	tm.WaitFor("#general")
 
 	tm.Submit("/config")
-	tm.WaitFor("/config requires a subcommand")
+	tm.WaitFor("poke-interval = ")
 
 	tm.Submit("/config api-key test-key")
 	tm.WaitFor("OpenRouter API key saved and activated.")

@@ -13,6 +13,14 @@ import (
 	"github.com/laney/modeloff/internal/config"
 )
 
+// DefaultIndexDir returns the chromem-go vector-index directory
+// NewDefaultStore opens by default: the single source of truth for
+// that path, so a caller that needs it without constructing a Store
+// (main's --wipe flag, for instance) stays in step with it.
+func DefaultIndexDir() string {
+	return filepath.Join(xdg.DataHome, "modeloff", "memory_index")
+}
+
 // NewDefaultStore creates a memory Store using the given data store
 // for persistence and chromem-go for vector search. The returned
 // store is the IndexedStore unless the vector index itself cannot be
@@ -35,9 +43,7 @@ func NewDefaultStore(ctx context.Context, dataStore DataStore, cfg config.Config
 
 	embeddingFunc := buildEmbeddingFunc(&embeddingPtr)
 
-	indexDir := filepath.Join(xdg.DataHome, "modeloff", "memory_index")
-
-	indexed, err := NewIndexedStore(ctx, adapter, indexDir, embeddingFunc)
+	indexed, err := NewIndexedStore(ctx, adapter, DefaultIndexDir(), embeddingFunc)
 	if err != nil {
 		slog.Default().Warn("vector index unavailable, falling back to store adapter",
 			"error", err)
@@ -59,8 +65,11 @@ func NewDefaultStore(ctx context.Context, dataStore DataStore, cfg config.Config
 		// UI command with its own lifetime already over by the time
 		// any listener not itself passed that command's context
 		// runs. This re-probe uses context.Background(), since no
-		// live context in scope describes its lifetime.
-		indexed.RefreshSearchable(context.Background())
+		// live context in scope describes its lifetime. The probe
+		// result is recorded on indexed and read back later through
+		// Searchable and ProbeError, so the returned error is
+		// discarded here.
+		_ = indexed.RefreshSearchable(context.Background())
 	})
 
 	return indexed, nil

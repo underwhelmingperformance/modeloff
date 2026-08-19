@@ -462,6 +462,16 @@ func (s *integrationConfigStore) Save(_ context.Context, cfg config.Config) erro
 	return nil
 }
 
+func (s *integrationConfigStore) Update(ctx context.Context, fn func(config.Config) config.Config) (config.Config, error) {
+	next := fn(s.cfg)
+
+	if err := s.Save(ctx, next); err != nil {
+		return config.Config{}, err
+	}
+
+	return next, nil
+}
+
 func (s *integrationConfigStore) OnChange(_ config.ChangeFunc) config.UnsubscribeFunc {
 	return func() {}
 }

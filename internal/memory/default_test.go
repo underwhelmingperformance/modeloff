@@ -2,15 +2,21 @@ package memory
 
 import (
 	"context"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 
+	"github.com/adrg/xdg"
 	chromem "github.com/philippgille/chromem-go"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/config"
 	"github.com/laney/modeloff/internal/domain"
 )
+
+func TestDefaultIndexDir(t *testing.T) {
+	require.Equal(t, filepath.Join(xdg.DataHome, "modeloff", "memory_index"), DefaultIndexDir())
+}
 
 func testConfig(overrides ...func(*config.Config)) config.Config {
 	cfg := config.Config{
@@ -78,7 +84,10 @@ func TestBuildEmbeddingFunc_no_api_key_errors_without_a_call(t *testing.T) {
 
 	_, err := fn(t.Context(), "probe")
 	require.Error(t, err)
-	require.False(t, probeEmbeddingFunc(t.Context(), fn))
+
+	ok, probeErr := probeEmbeddingFunc(t.Context(), fn)
+	require.False(t, ok)
+	require.Equal(t, err, probeErr)
 }
 
 // TestBuildEmbeddingFunc_reads_ptr_live pins that the returned

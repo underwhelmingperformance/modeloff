@@ -41,6 +41,12 @@ type IndexedStore struct {
 	// NewDefaultStore, on every relevant config change).
 	searchable atomic.Bool
 
+	// probeErr is the error from that same probe, or nil when it
+	// succeeded. ProbeError exposes it so a caller that just changed
+	// the embedding configuration can report why search stayed
+	// unavailable, not only that it did.
+	probeErr atomic.Pointer[error]
+
 	// tracerProvider is the OTel `TracerProvider` the store uses for
 	// its spans. Defaults to `otel.GetTracerProvider()`; tests inject
 	// a per-test recorder via `WithTracerProvider`.
@@ -69,7 +75,7 @@ func NewIndexedStore(ctx context.Context, backing Store, indexDir string, embedd
 		tracerProvider: otel.GetTracerProvider(),
 	}
 	s.embeddingFunc = s.instrumentEmbedding(embeddingFunc)
-	s.searchable.Store(probeEmbeddingFunc(ctx, embeddingFunc))
+	s.storeProbeResult(probeEmbeddingFunc(ctx, embeddingFunc))
 
 	return s, nil
 }
@@ -87,7 +93,7 @@ func NewIndexedStoreFromDB(ctx context.Context, backing Store, db *chromem.DB, e
 		tracerProvider: otel.GetTracerProvider(),
 	}
 	s.embeddingFunc = s.instrumentEmbedding(embeddingFunc)
-	s.searchable.Store(probeEmbeddingFunc(ctx, embeddingFunc))
+	s.storeProbeResult(probeEmbeddingFunc(ctx, embeddingFunc))
 
 	return s
 }
@@ -98,15 +104,16 @@ func NewIndexedStoreFromDB(ctx context.Context, backing Store, db *chromem.DB, e
 // serves no /embeddings endpoint, so without this check a broken
 // endpoint is discovered only when a model calls search_memory
 // and gets an error. A nil fn (no API key configured) short-circuits
-// without a call.
-func probeEmbeddingFunc(ctx context.Context, fn chromem.EmbeddingFunc) bool {
+// without a call and reports no error, since there is nothing to
+// blame yet: a fresh install has no key by design.
+func probeEmbeddingFunc(ctx context.Context, fn chromem.EmbeddingFunc) (bool, error) {
 	if fn == nil {
-		return false
+		return false, nil
 	}
 
 	_, err := fn(ctx, "modeloff memory index probe")
 
-	return err == nil
+	return err == nil, err
 }
 
 // WithTracerProvider overrides the OTel `TracerProvider` the store
@@ -159,16 +166,34 @@ func (s *IndexedStore) Searchable() bool {
 	return s.searchable.Load()
 }
 
-// RefreshSearchable re-probes this store's embedding function and
-// updates the outcome Searchable reports. embeddingFunc reads its
+// ProbeError returns the error from the most recent probe of this
+// store's embedding function, or nil if that probe succeeded (or no
+// API key was configured for it to attempt).
+func (s *IndexedStore) ProbeError() error {
+	return *s.probeErr.Load()
+}
+
+// RefreshSearchable re-probes this store's embedding function,
+// updates the outcome Searchable and ProbeError report, and returns
+// the probe's error, or nil on success. embeddingFunc reads its
 // underlying endpoint through an atomic pointer indirection
 // (NewDefaultStore's storeEmbedder), so the same closure passed to
 // the constructor already reflects a config change by the time this
 // runs — a caller re-probes to learn whether that change turned a
 // working endpoint into a broken one, or vice versa, without
 // reattaching the store.
-func (s *IndexedStore) RefreshSearchable(ctx context.Context) {
-	s.searchable.Store(probeEmbeddingFunc(ctx, s.embeddingFunc))
+func (s *IndexedStore) RefreshSearchable(ctx context.Context) error {
+	ok, err := probeEmbeddingFunc(ctx, s.embeddingFunc)
+	s.storeProbeResult(ok, err)
+
+	return err
+}
+
+// storeProbeResult records a probe's outcome for Searchable and
+// ProbeError to report.
+func (s *IndexedStore) storeProbeResult(ok bool, err error) {
+	s.searchable.Store(ok)
+	s.probeErr.Store(&err)
 }
 
 // Search finds memories semantically similar to the query, returning

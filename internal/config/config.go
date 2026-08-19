@@ -19,6 +19,11 @@ const DefaultBaseURL = "https://openrouter.ai/api/v1"
 // no override has been configured.
 const DefaultPokeInterval = 5 * time.Minute
 
+// MinPokeInterval is the floor `/config poke-interval` enforces, so
+// a single typo (e.g. "5s" meant as "5m") cannot start a tight,
+// paid poke loop.
+const MinPokeInterval = 30 * time.Second
+
 // DefaultDrainTimeout is the deadline `main` allows
 // [github.com/laney/modeloff/internal/session.Session.Shutdown] to
 // drain in-flight dispatch goroutines before logging a warning.
@@ -40,17 +45,27 @@ var DefaultHighlightWords = []string{"$nick"}
 // embeddings for the memory system.
 const DefaultEmbeddingModel = domain.ModelID("openai/text-embedding-3-small")
 
+// DefaultChannelModesSpec is the mode string a freshly created
+// channel starts with when no override has been configured.
+const DefaultChannelModesSpec = "+nt"
+
 // Config holds all application settings.
 type Config struct {
-	APIKey          string         `json:"api_key"`
-	BaseURL         string         `json:"base_url,omitempty"`
-	UserNick        string         `json:"user_nick"`
-	PokeInterval    time.Duration  `json:"poke_interval"`
-	DrainTimeout    time.Duration  `json:"drain_timeout"`
-	SmallModel      domain.ModelID `json:"small_model"`
-	EmbeddingModel  domain.ModelID `json:"embedding_model"`
-	HighlightWords  []string       `json:"highlight_words"`
-	TimestampFormat *string        `json:"timestamp_format,omitempty"`
+	APIKey         string         `json:"api_key"`
+	BaseURL        string         `json:"base_url,omitempty"`
+	UserNick       string         `json:"user_nick"`
+	PokeInterval   time.Duration  `json:"poke_interval"`
+	DrainTimeout   time.Duration  `json:"drain_timeout"`
+	SmallModel     domain.ModelID `json:"small_model"`
+	EmbeddingModel domain.ModelID `json:"embedding_model"`
+	HighlightWords []string       `json:"highlight_words"`
+
+	// DefaultChannelModes sets the modes a freshly created channel
+	// starts with, in [domain.ChannelModes.IRCString] form (e.g.
+	// "+nt"). The session applies it at channel creation; `/config`
+	// only validates and persists it via [domain.ParseChannelModes].
+	DefaultChannelModes string  `json:"default_channel_modes,omitempty"`
+	TimestampFormat     *string `json:"timestamp_format,omitempty"`
 }
 
 // duration marshals a time.Duration as its human-readable string
@@ -150,8 +165,18 @@ type Store interface {
 	Load(ctx context.Context) (Config, error)
 	Save(ctx context.Context, cfg Config) error
 
+	// Update loads the current configuration, applies fn, and
+	// persists the result as a single operation serialised against
+	// every other Save and Update on the same Store. A caller that
+	// calls Load, mutates the result itself, and then calls Save
+	// races every other such caller: two callers can each read the
+	// same "current" value, so the second Save clobbers the first
+	// caller's change with a value that never accounted for it.
+	// Update returns the configuration fn produced.
+	Update(ctx context.Context, fn func(Config) Config) (Config, error)
+
 	// OnChange registers a callback to be invoked after every
-	// successful Save. It returns a function that removes the
-	// callback when called.
+	// successful Save or Update. It returns a function that removes
+	// the callback when called.
 	OnChange(fn ChangeFunc) UnsubscribeFunc
 }

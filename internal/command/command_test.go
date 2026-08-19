@@ -481,6 +481,90 @@ func TestParseInvocation_unknown_flag_checks_active_ancestors(t *testing.T) {
 	require.Equal(t, "--unknown", unknown.Flag)
 }
 
+// --- Bare-runnable group nodes ---
+
+type runnableGroupCommand struct {
+	Get testGetSubCommand `cmd:"" help:"Get a value."`
+}
+
+func (c runnableGroupCommand) Run(_ context.Context, rc testContext) testResult {
+	return testResult(rc.Value + ":show-all")
+}
+
+type testGetSubCommand struct {
+	Key string `arg:"" help:"Key to get"`
+}
+
+func (c testGetSubCommand) Run(_ context.Context, rc testContext) testResult {
+	return testResult(rc.Value + ":get:" + c.Key)
+}
+
+type runnableGroupGrammar struct {
+	Config runnableGroupCommand `cmd:"" help:"Config."`
+}
+
+type nonRunnableGroupCommand struct {
+	Get testGetSubCommand `cmd:"" help:"Get a value."`
+}
+
+type nonRunnableGroupGrammar struct {
+	Config nonRunnableGroupCommand `cmd:"" help:"Config."`
+}
+
+func TestParser_ParseInvocation_bare_group_runs_itself_when_runnable(t *testing.T) {
+	parser, err := BuildParser[testCtx, testContext, testResult](&runnableGroupGrammar{})
+	require.NoError(t, err)
+
+	invocation, err := parser.ParseInvocation("/config")
+	require.NoError(t, err)
+
+	cmd, ok := invocation.Leaf().(Command[testContext, testResult])
+	require.True(t, ok)
+	require.Equal(t, testResult("ctx:show-all"), cmd.Run(t.Context(), testContext{Value: "ctx"}))
+}
+
+func TestParser_Parse_bare_group_runs_itself_when_runnable(t *testing.T) {
+	parser, err := BuildParser[testCtx, testContext, testResult](&runnableGroupGrammar{})
+	require.NoError(t, err)
+
+	cmd, err := parser.Parse("/config")
+	require.NoError(t, err)
+	require.Equal(t, testResult("ctx:show-all"), cmd.Run(t.Context(), testContext{Value: "ctx"}))
+}
+
+func TestParser_ParseInvocation_subcommand_still_runs_the_child(t *testing.T) {
+	parser, err := BuildParser[testCtx, testContext, testResult](&runnableGroupGrammar{})
+	require.NoError(t, err)
+
+	invocation, err := parser.ParseInvocation("/config get api-key")
+	require.NoError(t, err)
+
+	cmd, ok := invocation.Leaf().(Command[testContext, testResult])
+	require.True(t, ok)
+	require.Equal(t, testResult("ctx:get:api-key"), cmd.Run(t.Context(), testContext{Value: "ctx"}))
+}
+
+func TestParser_ParseInvocation_bare_group_still_errors_when_not_runnable(t *testing.T) {
+	parser, err := BuildParser[testCtx, testContext, testResult](&nonRunnableGroupGrammar{})
+	require.NoError(t, err)
+
+	_, err = parser.ParseInvocation("/config")
+
+	var subErr *SubcommandError
+	require.ErrorAs(t, err, &subErr)
+	require.Equal(t, &SubcommandError{Path: "config", Children: []string{"get"}}, subErr)
+}
+
+func TestParser_Parse_bare_group_still_errors_when_not_runnable(t *testing.T) {
+	parser, err := BuildParser[testCtx, testContext, testResult](&nonRunnableGroupGrammar{})
+	require.NoError(t, err)
+
+	_, err = parser.Parse("/config")
+
+	var subErr *SubcommandError
+	require.ErrorAs(t, err, &subErr)
+}
+
 func TestBuild_rejects_alias_collisions(t *testing.T) {
 	tests := []struct {
 		name    string

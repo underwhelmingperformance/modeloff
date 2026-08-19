@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -38,6 +39,17 @@ func main() {
 	if *wipe {
 		if err := store.Wipe(store.DefaultSQLitePath()); err != nil {
 			fmt.Fprintf(os.Stderr, "error wiping database: %v\n", err)
+			os.Exit(1)
+		}
+
+		// The vector index lives beside the SQLite database, under
+		// the same "modeloff" data directory, but is a chromem-go
+		// directory tree, not a single file store.Wipe knows how to
+		// remove. It holds memory content in cleartext metadata, so
+		// --wipe's promise to remove memories is not met while this
+		// directory survives.
+		if err := os.RemoveAll(memory.DefaultIndexDir()); err != nil {
+			fmt.Fprintf(os.Stderr, "error wiping memory index: %v\n", err)
 			os.Exit(1)
 		}
 	}
@@ -174,6 +186,12 @@ func main() {
 	}
 }
 
+// loadConfig loads the persisted configuration. A config.json that
+// exists but fails to parse would otherwise leave the application
+// refusing to start, with no way to recover short of deleting the
+// file by hand. loadConfig instead moves it aside to a timestamped
+// backup and retries, so the application starts with defaults and
+// the user keeps the original file to inspect or restore from.
 func loadConfig(ctx context.Context) (config.Config, *config.FileStore, error) {
 	cfgStore, err := config.NewDefaultFileStore()
 	if err != nil {
@@ -181,6 +199,36 @@ func loadConfig(ctx context.Context) (config.Config, *config.FileStore, error) {
 	}
 
 	cfg, err := cfgStore.Load(ctx)
+	if err == nil {
+		return cfg, cfgStore, nil
+	}
+
+	// Only a genuine decode failure (a corrupt config.json) is worth
+	// recovering from by moving the file aside. A read failure for
+	// some other reason, a permissions problem for instance, would
+	// still fail identically after a rename, and the rename itself
+	// would discard a config file that was never actually corrupt.
+	if !errors.Is(err, config.ErrCorrupt) {
+		return config.Config{}, nil, err
+	}
+
+	backup, recoverErr := cfgStore.RecoverCorrupt()
+	if recoverErr != nil || backup == "" {
+		return config.Config{}, nil, err
+	}
+
+	fmt.Fprintf(os.Stderr,
+		"warning: config file at %s could not be read (%v); it has been backed up to %s and defaults will be used\n",
+		cfgStore.Path(), err, backup,
+	)
+	slog.Default().WarnContext(ctx, "config file was unreadable, recovered with defaults",
+		"component", "main",
+		"path", cfgStore.Path(),
+		"backup_path", backup,
+		"error", err,
+	)
+
+	cfg, err = cfgStore.Load(ctx)
 	if err != nil {
 		return config.Config{}, nil, err
 	}

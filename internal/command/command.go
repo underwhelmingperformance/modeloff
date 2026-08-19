@@ -7,6 +7,7 @@ package command
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"strings"
 )
@@ -139,9 +140,28 @@ func (p Parser[K, C, R]) Parse(input string) (Command[C, R], error) {
 }
 
 // ParseInvocation returns the full parsed branch, including ancestor
-// values and the selected leaf.
+// values and the selected leaf. A bare invocation of a group node
+// (one with `cmd:""` children) whose own value implements
+// Command[C, R] runs the group itself, so a grammar can give a
+// childful command a bare-form action alongside its subcommands:
+// the irssi `/set` convention of a bare command reporting its
+// current state. A group node whose value does not implement
+// Command[C, R] still surfaces a [SubcommandError] for a bare
+// invocation.
 func (p Parser[K, C, R]) ParseInvocation(input string) (Invocation[K], error) {
-	return p.set.ParseInvocation(input)
+	invocation, err := p.set.ParseInvocation(input)
+	if err == nil {
+		return invocation, nil
+	}
+
+	var subErr *SubcommandError
+	if errors.As(err, &subErr) {
+		if _, ok := invocation.Leaf().(Command[C, R]); ok {
+			return invocation, nil
+		}
+	}
+
+	return Invocation[K]{}, err
 }
 
 // Build reflects over a grammar struct and produces a Set. Each
@@ -205,11 +225,23 @@ func (s Set[K]) ParseInvocation(input string) (Invocation[K], error) {
 		return Invocation[K]{}, err
 	}
 
-	if len(current.Children) > 0 {
-		return Invocation[K]{}, subcommandErrorFor(current)
+	invocation, err := buildInvocation(path, values, states)
+	if err != nil {
+		return Invocation[K]{}, err
 	}
 
-	return buildInvocation(path, values, states)
+	if len(current.Children) > 0 {
+		// current still has unconsumed children: no subcommand token
+		// was given. The invocation is still returned alongside the
+		// error, with current's own value fully populated from
+		// whatever args it did consume, so a typed caller such as
+		// [Parser.ParseInvocation] can run the group itself when its
+		// value implements the caller's Command interface (irssi's
+		// bare `/set` reporting current state, for example).
+		return invocation, subcommandErrorFor(current)
+	}
+
+	return invocation, nil
 }
 
 func parseInvocationArgs[K KindProvider](

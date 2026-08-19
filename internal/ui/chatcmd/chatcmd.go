@@ -5,7 +5,6 @@ package chatcmd
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"time"
 
@@ -42,23 +41,6 @@ type Context struct {
 	Actor      *domain.Instance
 	Client     protocol.Client
 	Invocation command.Invocation[CompletionContext]
-}
-
-// updateConfig loads the current configuration, applies fn, and saves
-// the result. It returns the updated configuration.
-func (rc Context) updateConfig(ctx context.Context, fn func(*config.Config)) (config.Config, error) {
-	cfg, err := rc.Config.Load(ctx)
-	if err != nil {
-		return config.Config{}, fmt.Errorf("load config: %w", err)
-	}
-
-	fn(&cfg)
-
-	if err := rc.Config.Save(ctx, cfg); err != nil {
-		return config.Config{}, fmt.Errorf("save config: %w", err)
-	}
-
-	return cfg, nil
 }
 
 // HelpResult signals that the help screen should be shown.

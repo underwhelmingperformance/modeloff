@@ -36,6 +36,25 @@ type ManagerAPI interface {
 	ListPersonas(ctx context.Context) ([]domain.Persona, error)
 	RegeneratePersonas(ctx context.Context) ([]domain.Persona, error)
 	ResetPersonas(ctx context.Context) (int, error)
+
+	// HasAPIKey reports whether an API key is configured. `/config`
+	// small-model validation uses it to decide between validating
+	// against the catalogue now and deferring until a key exists.
+	HasAPIKey() bool
+
+	// EnsureStructuredOutputModel validates that modelID supports
+	// the app's strict structured-output contract, lazily loading
+	// the model catalogue if needed. It is a no-op returning nil
+	// when no API key is configured.
+	EnsureStructuredOutputModel(ctx context.Context, modelID domain.ModelID) error
+
+	// EmbeddingSearchable reports whether the memory store's
+	// embedding endpoint is currently reachable, and the error from
+	// its most recent probe. `/config` embedding-model uses it to
+	// report the outcome of the probe a successful config change
+	// already triggers. The model catalogue has no embedding models
+	// in it, so validating the id against it is not an option.
+	EmbeddingSearchable() (bool, error)
 }
 
 // ToolContext carries the backend context for a model tool call.

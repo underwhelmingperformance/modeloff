@@ -123,6 +123,49 @@ func (e UnsupportedModelError) Error() string {
 	return fmt.Sprintf("model does not support structured outputs: %s", e.ModelID)
 }
 
+// UnknownModelError indicates a model id is absent from the
+// upstream catalogue. Unlike [UnsupportedModelError], it makes no
+// claim about the model's capabilities: it fires for any use that
+// only needs the id to be real, such as the embedding-model id
+// `/config` sets.
+type UnknownModelError struct {
+	ModelID ModelID
+	At      time.Time
+}
+
+func (e UnknownModelError) Error() string {
+	return fmt.Sprintf("unknown model: %s", e.ModelID)
+}
+
+// MalformedChannelModeError indicates a channel-mode string does
+// not start with the leading '+' [ChannelModes.IRCString] always
+// renders, so [ParseChannelModes] cannot read it back.
+type MalformedChannelModeError struct {
+	Input string
+}
+
+func (e MalformedChannelModeError) Error() string {
+	return fmt.Sprintf("malformed channel mode string %q: must start with %q", e.Input, "+")
+}
+
+// PokeIntervalOutOfRangeError indicates a `/config poke-interval`
+// value was non-positive (which would silently disable the
+// scheduled poke feature entirely) or below the configured floor (a
+// typo that would otherwise start a tight, paid poke loop).
+type PokeIntervalOutOfRangeError struct {
+	Interval time.Duration
+	Floor    time.Duration
+	At       time.Time
+}
+
+func (e PokeIntervalOutOfRangeError) Error() string {
+	if e.Interval <= 0 {
+		return fmt.Sprintf("poke interval must be positive: got %s", e.Interval)
+	}
+
+	return fmt.Sprintf("poke interval must be at least %s: got %s", e.Floor, e.Interval)
+}
+
 // NickInUseError indicates a nickname change was refused because
 // the target nick is already held by another instance (a model
 // or the user). Wire-shape equivalent of RFC 2812 numeric 433
