@@ -300,6 +300,20 @@ func TestRichTextareaPaletteScrollsToKeepActiveVisible(t *testing.T) {
 	}
 }
 
+func TestStyleForAttrsRendersExtendedPaletteColoursAsRGB(t *testing.T) {
+	style := styleForAttrs(richtext.Attrs{FG: colour(16), BG: colour(98)})
+
+	require.Equal(t, lipgloss.Color("#470000"), style.GetForeground())
+	require.Equal(t, lipgloss.Color("#ffffff"), style.GetBackground())
+}
+
+func TestStyleForAttrsRendersLegacyPaletteColoursAsANSIIndex(t *testing.T) {
+	style := styleForAttrs(richtext.Attrs{FG: colour(4), BG: colour(9)})
+
+	require.Equal(t, lipgloss.ANSIColor(4), style.GetForeground())
+	require.Equal(t, lipgloss.ANSIColor(9), style.GetBackground())
+}
+
 func TestRichTextareaPaletteLabelsNoColourClearly(t *testing.T) {
 	editor := NewRichTextarea(RichTextareaConfig{AllowFormatting: true})
 	editor.palette.open = true

@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/rivo/uniseg"
 
+	"github.com/laney/modeloff/internal/ircfmt"
 	"github.com/laney/modeloff/internal/richtext"
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/theme"
@@ -1328,13 +1329,27 @@ func styleForAttrs(attrs richtext.Attrs) lipgloss.Style {
 		style = style.Strikethrough(true)
 	}
 	if attrs.FG != nil {
-		style = style.Foreground(lipgloss.ANSIColor(*attrs.FG))
+		style = style.Foreground(ircColour(*attrs.FG))
 	}
 	if attrs.BG != nil {
-		style = style.Background(lipgloss.ANSIColor(*attrs.BG))
+		style = style.Background(ircColour(*attrs.BG))
 	}
 
 	return style
+}
+
+// ircColour renders an IRC colour index as a lipgloss colour. Indices
+// 16-98 carry the modern formatting spec's fixed RGB value, which is
+// independent of any terminal theme; indices 0-15 have no spec-defined
+// RGB value and render through the terminal's own ANSI palette instead,
+// per the design system's rule of using ANSI colours so the user's theme
+// still governs the base palette.
+func ircColour(index uint8) lipgloss.TerminalColor {
+	if hex, ok := ircfmt.ExtendedRGB(index); ok {
+		return lipgloss.Color(hex)
+	}
+
+	return lipgloss.ANSIColor(index)
 }
 
 func paletteColour(index int) *uint8 {
