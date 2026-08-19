@@ -61,7 +61,7 @@ func main() {
 	}
 	defer func() { _ = dataStore.Close() }()
 
-	memStore, err := memory.NewDefaultStore(dataStore, cfg, cfgStore)
+	memStore, err := memory.NewDefaultStore(appCtx, dataStore, cfg, cfgStore)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error creating memory store: %v\n", err)
 		os.Exit(1)

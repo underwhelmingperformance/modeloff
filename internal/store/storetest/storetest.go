@@ -11,12 +11,17 @@ import (
 )
 
 // NewMemoryStore creates an in-memory SQLite store for use in tests.
-// The connection pool is limited to one so all goroutines share the
-// same in-memory database. The store is closed when the test ends.
+// It opens through [store.SQLitePragmaDSN], the same DSN construction
+// the real store uses, so `foreign_keys` (and the other
+// connection-time PRAGMAs) match production — a test that leans on
+// foreign-key enforcement needs it turned on here to fail the same
+// way it would against the real database. The connection pool is
+// limited to one so all goroutines share the same in-memory database.
+// The store is closed when the test ends.
 func NewMemoryStore(t testing.TB) *store.SQLiteStore {
 	t.Helper()
 
-	db, err := sql.Open("sqlite3", ":memory:")
+	db, err := sql.Open("sqlite3", store.SQLitePragmaDSN(":memory:"))
 	if err != nil {
 		t.Fatal("open in-memory sqlite:", err)
 	}

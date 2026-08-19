@@ -153,6 +153,15 @@ func Wipe(base string) error {
 	return nil
 }
 
+// maxSQLiteConns bounds the connection pool [NewDefaultSQLiteStore]
+// opens. The `ncruces/go-sqlite3` driver backs every connection with
+// its own wazero WASM instance, so an unbounded pool spins up one
+// such instance per concurrent caller; this is a single-user desktop
+// application, so a small fixed pool comfortably covers the handful
+// of goroutines (model dispatch turns, the chat-screen) that touch
+// the store at once without growing unbounded under a burst.
+const maxSQLiteConns = 4
+
 // NewDefaultSQLiteStore creates a SQLiteStore using the XDG data
 // directory ($XDG_DATA_HOME/modeloff/modeloff.db).
 func NewDefaultSQLiteStore(ctx context.Context) (*SQLiteStore, error) {
@@ -166,6 +175,9 @@ func NewDefaultSQLiteStore(ctx context.Context) (*SQLiteStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
+
+	db.SetMaxOpenConns(maxSQLiteConns)
+	db.SetMaxIdleConns(maxSQLiteConns)
 
 	return NewSQLiteStore(ctx, db)
 }
@@ -698,10 +710,12 @@ func (s *SQLiteStore) InstanceRepliesBefore(ctx context.Context, id domain.Insta
 // between `self` and `peer`: bidirectional message rows plus
 // peer's actor-scoped events from any channel, deduped by
 // `(instance_id, type, at)`. Either id may be the empty string
-// (the user). The `coalesce` over the JSON `instance_id` path
-// reads an absent field (the `omitzero` shape for empty ids)
-// the same as a present empty string. Rows come back
-// chronological via inner-desc / outer-asc.
+// (the user). `dm_instance_id` is a generated column carrying
+// `json_extract(data, '$.data.instance_id')` as a real, indexable
+// value — an absent field (the `omitzero` shape for empty ids) reads
+// the same as a present empty string; `type` is the event's own
+// stored column, not a JSON extraction. Rows come back chronological
+// via inner-desc / outer-asc.
 func (s *SQLiteStore) DMEventsBefore(ctx context.Context, self, peer domain.InstanceID, before *int64, n int) ([]domain.StoredEvent, error) {
 	var events []domain.StoredEvent
 	err := s.inSpan(ctx, "store.sqlite.dm_events_before",
@@ -711,23 +725,25 @@ func (s *SQLiteStore) DMEventsBefore(ctx context.Context, self, peer domain.Inst
 		},
 		func(ctx context.Context, _ trace.Span) error {
 			// Bidirectional message rows: peer→self and self→peer.
+			// idx_events_dm_thread (dm_instance_id, type, channel, id)
+			// covers both branches of the OR.
 			const messageRows = `SELECT id, data FROM events WHERE
-				(channel = ? AND coalesce(json_extract(data, '$.data.instance_id'), '') = ?)
+				(channel = ? AND dm_instance_id = ?)
 				OR
-				(channel = ? AND coalesce(json_extract(data, '$.data.instance_id'), '') = ?)
+				(channel = ? AND dm_instance_id = ?)
 			`
 
 			// Peer's actor-scoped events anywhere, deduped by
 			// (instance_id, type, at). Per-channel persistence
 			// (one row per channel the actor was in at event
 			// time) collapses to one representative row via
-			// MIN(id).
+			// MIN(id). idx_events_dm_thread narrows this to the
+			// peer's own rows before the JSON extraction the
+			// GROUP BY still needs for `at`.
 			const actorEventRows = `SELECT MIN(id) AS id, data FROM events
-				WHERE coalesce(json_extract(data, '$.data.instance_id'), '') = ?
-					AND json_extract(data, '$.type') IN ('quit', 'nick_change')
-				GROUP BY json_extract(data, '$.data.instance_id'),
-					json_extract(data, '$.type'),
-					json_extract(data, '$.data.at')
+				WHERE dm_instance_id = ?
+					AND type IN ('quit', 'nick_change')
+				GROUP BY dm_instance_id, type, json_extract(data, '$.data.at')
 			`
 
 			union := `(` + messageRows + ` UNION ` + actorEventRows + `)`
@@ -780,6 +796,33 @@ func (s *SQLiteStore) EventsFrom(ctx context.Context, ch domain.ChannelName, fro
 		})
 
 	return events, err
+}
+
+// CountEventsFrom implements Store. Returns the number of events in
+// channel ch at or after the given event id (inclusive), or the
+// total row count for the channel when from is nil — the same
+// bounds as EventsFrom, computed with a `count(*)` so no matched
+// row's JSON payload is decoded just to take len() of the result.
+func (s *SQLiteStore) CountEventsFrom(ctx context.Context, ch domain.ChannelName, from *int64) (int, error) {
+	var count int
+	err := s.inSpan(ctx, "store.sqlite.count_events_from",
+		[]attribute.KeyValue{attribute.String(observability.AttrChannel, string(ch))},
+		func(ctx context.Context, _ trace.Span) error {
+			query, args := `SELECT count(*) FROM events WHERE channel = ?`, []any{ch}
+			if from != nil {
+				query, args = `SELECT count(*) FROM events WHERE channel = ? AND id >= ?`, []any{ch, *from}
+			}
+
+			got, err := queryRow(ctx, s.db, query, args, nil, scalarColumn[int]())
+			if err != nil {
+				return err
+			}
+
+			count = got
+			return nil
+		})
+
+	return count, err
 }
 
 // ListInstances implements Store. Returns canonical `*Instance`
@@ -910,14 +953,36 @@ func (s *SQLiteStore) SaveInstance(ctx context.Context, inst *domain.Instance) e
 		})
 }
 
-// DeleteInstanceByID implements Store. Evicts the row from SQLite
-// and the handle from the canonical registry.
+// DeleteInstanceByID implements Store. Evicts the instance row and
+// its `memories` rows from SQLite in the same transaction — instance
+// ids are never reused, so a memories row left behind after its
+// owning instance is gone would never be reachable again — and the
+// handle from the canonical registry. The chromem-go vector
+// collection a memory.IndexedStore may hold for this instance lives
+// outside SQLite entirely; a caller that also uses the memory
+// package's indexed store is responsible for calling its
+// DeleteInstance alongside this method.
 func (s *SQLiteStore) DeleteInstanceByID(ctx context.Context, id domain.InstanceID) error {
 	return s.inSpan(ctx, "store.sqlite.delete_instance_by_id",
 		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
 		func(ctx context.Context, _ trace.Span) error {
-			if err := execMutation(ctx, s.db, `DELETE FROM instances WHERE instance_id = ?`, string(id)); err != nil {
-				return err
+			tx, err := s.db.BeginTx(ctx, nil)
+			if err != nil {
+				return fmt.Errorf("begin tx: %w", err)
+			}
+
+			defer func() { _ = tx.Rollback() }()
+
+			if _, err := tx.ExecContext(ctx, `DELETE FROM memories WHERE instance_id = ?`, string(id)); err != nil {
+				return fmt.Errorf("delete memories: %w", err)
+			}
+
+			if _, err := tx.ExecContext(ctx, `DELETE FROM instances WHERE instance_id = ?`, string(id)); err != nil {
+				return fmt.Errorf("delete instance: %w", err)
+			}
+
+			if err := tx.Commit(); err != nil {
+				return fmt.Errorf("commit: %w", err)
 			}
 
 			s.forgetInstance(id)
@@ -1055,7 +1120,9 @@ func (s *SQLiteStore) SetAutojoinChannels(ctx context.Context, channels []domain
 	})
 }
 
-// Reset implements Store.
+// Reset implements Store. Clears every table this store owns and
+// invalidates the canonical instance registry so a subsequent load
+// of a since-recreated id never hands back a stale pre-Reset handle.
 func (s *SQLiteStore) Reset(ctx context.Context) error {
 	return s.inSpan(ctx, "store.sqlite.reset", nil, func(ctx context.Context, _ trace.Span) error {
 		tx, err := s.db.BeginTx(ctx, nil)
@@ -1065,11 +1132,14 @@ func (s *SQLiteStore) Reset(ctx context.Context) error {
 
 		defer func() { _ = tx.Rollback() }()
 
-		// Order: children before parents (last_read → channels, events).
+		// Order: children before parents (last_read → channels;
+		// dm_windows, instance_replies, memories → instances; events).
 		for _, stmt := range []string{
 			`DELETE FROM last_read`,
 			`DELETE FROM channels`,
 			`DELETE FROM events`,
+			`DELETE FROM dm_windows`,
+			`DELETE FROM instance_replies`,
 			`DELETE FROM instances`,
 			`DELETE FROM memories`,
 			`DELETE FROM personas`,
@@ -1084,6 +1154,10 @@ func (s *SQLiteStore) Reset(ctx context.Context) error {
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("commit: %w", err)
 		}
+
+		s.instancesMu.Lock()
+		s.instances = make(map[domain.InstanceID]*domain.Instance)
+		s.instancesMu.Unlock()
 
 		return nil
 	})

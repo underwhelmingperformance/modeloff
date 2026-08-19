@@ -619,6 +619,54 @@ func TestSQLiteStore_EventsFrom_with_cursor(t *testing.T) {
 	require.Equal(t, []int64{ids[2], ids[3]}, gotIDs)
 }
 
+func TestSQLiteStore_CountEventsFrom(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	ids := appendTestEvents(t, s, "#general", 5)
+
+	tests := []struct {
+		name string
+		from *int64
+		want int
+	}{
+		{name: "nil counts every event in the channel", from: nil, want: 5},
+		{name: "cursor at the first id counts all", from: &ids[0], want: 5},
+		{name: "cursor mid-stream counts inclusive of the cursor", from: &ids[2], want: 3},
+		{name: "cursor past the last id counts none", from: new(ids[4] + 1), want: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := s.CountEventsFrom(ctx, "#general", tt.from)
+			require.NoError(t, err)
+			require.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestSQLiteStore_CountEventsFrom_empty_channel(t *testing.T) {
+	got, err := newTestStore(t).CountEventsFrom(t.Context(), "#empty", nil)
+	require.NoError(t, err)
+	require.Zero(t, got)
+}
+
+func TestSQLiteStore_CountEventsFrom_isolated_by_channel(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	appendTestEvents(t, s, "#alpha", 3)
+	appendTestEvents(t, s, "#beta", 2)
+
+	gotAlpha, err := s.CountEventsFrom(ctx, "#alpha", nil)
+	require.NoError(t, err)
+	require.Equal(t, 3, gotAlpha)
+
+	gotBeta, err := s.CountEventsFrom(ctx, "#beta", nil)
+	require.NoError(t, err)
+	require.Equal(t, 2, gotBeta)
+}
+
 func TestSQLiteStore_Events_fewer_than_requested(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
@@ -774,6 +822,46 @@ func TestSQLiteStore_DeleteInstanceByID(t *testing.T) {
 
 	_, err := s.GetInstanceByID(ctx, "inst-temp")
 	require.Error(t, err)
+}
+
+// TestSQLiteStore_DeleteInstanceByID_removes_memories pins that
+// deleting an instance also deletes its `memories` rows in the same
+// operation: instance ids are never reused, so a memories row left
+// behind after its owning instance is gone would never be reachable
+// again.
+func TestSQLiteStore_DeleteInstanceByID_removes_memories(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	inst := domain.NewModelInstance("inst-temp", "temp", "test/model", "", nil)
+	require.NoError(t, s.SaveInstance(ctx, inst))
+	require.NoError(t, s.WriteMemory(ctx, "inst-temp", "fact", "likes tea"))
+
+	require.NoError(t, s.DeleteInstanceByID(ctx, "inst-temp"))
+
+	entries, err := s.ReadMemories(ctx, "inst-temp")
+	require.NoError(t, err)
+	require.Empty(t, entries)
+}
+
+// TestSQLiteStore_DeleteInstanceByID_leaves_other_instances_memories
+// pins that the memories cleanup is scoped to the deleted instance.
+func TestSQLiteStore_DeleteInstanceByID_leaves_other_instances_memories(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	gone := domain.NewModelInstance("inst-gone", "gone", "test/model", "", nil)
+	kept := domain.NewModelInstance("inst-kept", "kept", "test/model", "", nil)
+	require.NoError(t, s.SaveInstance(ctx, gone))
+	require.NoError(t, s.SaveInstance(ctx, kept))
+	require.NoError(t, s.WriteMemory(ctx, "inst-gone", "fact", "likes tea"))
+	require.NoError(t, s.WriteMemory(ctx, "inst-kept", "fact", "likes coffee"))
+
+	require.NoError(t, s.DeleteInstanceByID(ctx, "inst-gone"))
+
+	entries, err := s.ReadMemories(ctx, "inst-kept")
+	require.NoError(t, err)
+	require.Equal(t, []MemoryEntry{{Key: "fact", Content: "likes coffee"}}, entries)
 }
 
 func TestSQLiteStore_registry_canonical_pointer_across_reloads(t *testing.T) {
@@ -1000,6 +1088,9 @@ func TestSQLiteStore_Reset(t *testing.T) {
 	))
 	require.NoError(t, s.SetLastChannel(ctx, "#general"))
 	require.NoError(t, s.SetLastRead(ctx, "#general", eventID))
+	_, err = s.AppendInstanceReply(ctx, "inst-botty", domain.Whois{Target: "#general", At: testTime})
+	require.NoError(t, err)
+	require.NoError(t, s.AddDMWindow(ctx, "inst-botty"))
 
 	require.NoError(t, s.Reset(ctx))
 
@@ -1022,6 +1113,39 @@ func TestSQLiteStore_Reset(t *testing.T) {
 	lastRead, err := s.GetLastRead(ctx, "#general")
 	require.NoError(t, err)
 	require.Empty(t, lastRead)
+
+	replies, err := s.InstanceRepliesBefore(ctx, "inst-botty", nil, 10)
+	require.NoError(t, err)
+	require.Empty(t, replies)
+
+	dmWindows, err := s.ListDMWindows(ctx)
+	require.NoError(t, err)
+	require.Empty(t, dmWindows)
+}
+
+// TestSQLiteStore_Reset_invalidates_instance_registry pins that
+// Reset clears the canonical instance-pointer registry, not just the
+// `instances` table: a `SaveInstance` after Reset for an id that
+// existed before must hand back a fresh handle, never the pre-Reset
+// pointer, since that pointer's in-memory state (nick, persona,
+// channels) belongs to an instance Reset just erased.
+func TestSQLiteStore_Reset_invalidates_instance_registry(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	before := domain.NewModelInstance("inst-botty", "botty", "test/model", "original", nil)
+	require.NoError(t, s.SaveInstance(ctx, before))
+
+	require.NoError(t, s.Reset(ctx))
+
+	after := domain.NewModelInstance("inst-botty", "botty", "test/model", "rebuilt", nil)
+	require.NoError(t, s.SaveInstance(ctx, after))
+
+	got, err := s.GetInstanceByID(ctx, "inst-botty")
+	require.NoError(t, err)
+	require.NotSame(t, before, got)
+	require.Same(t, after, got)
+	require.Equal(t, "rebuilt", got.Persona())
 }
 
 func TestSQLiteStore_SessionActive_empty(t *testing.T) {
@@ -1339,11 +1463,14 @@ func TestSQLiteStore_Reset_rollback_on_partial_failure(t *testing.T) {
 		Origin:      domain.PersonaGenerated,
 	}))
 	require.NoError(t, s.SetAutojoinChannels(ctx, []domain.ChannelName{"#general"}))
+	_, err = s.AppendInstanceReply(ctx, "inst-botty", domain.Whois{Target: "#general", At: testTime})
+	require.NoError(t, err)
+	require.NoError(t, s.AddDMWindow(ctx, "inst-botty"))
 
 	// `memories` is one of the tables Reset deletes from; dropping it
-	// after seeding the others guarantees the fifth DELETE in Reset
-	// fails with "no such table", which must roll back the prior four
-	// DELETEs in the same transaction.
+	// after seeding the others guarantees the DELETE targeting it
+	// fails with "no such table" partway through Reset's transaction,
+	// which must roll back every DELETE that ran before it.
 	before := snapshotPersistentTables(t, s.db)
 
 	_, err = s.db.ExecContext(ctx, `DROP TABLE memories`)
@@ -1357,7 +1484,7 @@ func TestSQLiteStore_Reset_rollback_on_partial_failure(t *testing.T) {
 	// the production schema (rather than restating the table inline)
 	// means the test cannot silently drift from the real definition;
 	// the `IF NOT EXISTS` clauses make the re-exec a no-op for the
-	// other seven tables.
+	// other tables Reset touches.
 	_, err = s.db.ExecContext(ctx, schema)
 	require.NoError(t, err)
 
@@ -1398,14 +1525,16 @@ func snapshotPersistentTables(t *testing.T, db *sql.DB) map[string][]string {
 	t.Helper()
 
 	queries := map[string]string{
-		"last_read": `SELECT * FROM last_read`,
-		"channels":  `SELECT * FROM channels`,
-		"events":    `SELECT * FROM events`,
-		"instances": `SELECT * FROM instances`,
-		"memories":  `SELECT * FROM memories`,
-		"personas":  `SELECT * FROM personas`,
-		"state":     `SELECT * FROM state`,
-		"autojoin":  `SELECT * FROM autojoin`,
+		"last_read":        `SELECT * FROM last_read`,
+		"channels":         `SELECT * FROM channels`,
+		"events":           `SELECT * FROM events`,
+		"dm_windows":       `SELECT * FROM dm_windows`,
+		"instance_replies": `SELECT * FROM instance_replies`,
+		"instances":        `SELECT * FROM instances`,
+		"memories":         `SELECT * FROM memories`,
+		"personas":         `SELECT * FROM personas`,
+		"state":            `SELECT * FROM state`,
+		"autojoin":         `SELECT * FROM autojoin`,
 	}
 
 	out := make(map[string][]string, len(queries))

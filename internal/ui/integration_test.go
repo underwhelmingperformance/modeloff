@@ -355,7 +355,7 @@ func TestApp_vector_memory_write_and_search(t *testing.T) {
 	embedder := func(_ context.Context, _ string) ([]float32, error) {
 		return []float32{1.0, 0.0, 0.0}, nil
 	}
-	memStore := memory.NewIndexedStoreFromDB(backing, db, embedder)
+	memStore := memory.NewIndexedStoreFromDB(t.Context(), backing, db, embedder)
 
 	store := storetest.NewMemoryStore(t)
 	cfgStore := &integrationConfigStore{

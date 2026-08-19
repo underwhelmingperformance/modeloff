@@ -57,7 +57,7 @@ func (m *instanceMemory) DeleteMemory(ctx context.Context, key string) error {
 
 func (m *instanceMemory) SearchMemory(ctx context.Context, query string, limit int) ([]memory.SearchResult, error) {
 	searcher, ok := m.store.(memory.Searcher)
-	if !ok {
+	if !ok || !searcher.Searchable() {
 		return nil, fmt.Errorf("semantic search is not configured")
 	}
 

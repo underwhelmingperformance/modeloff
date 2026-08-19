@@ -117,33 +117,20 @@ func (s *FileStore) Load(ctx context.Context) (Config, error) {
 }
 
 // Save writes the configuration to disk, creating the directory if
-// necessary. Registered change callbacks are fired after a
-// successful write with the old and new values.
+// necessary, and fires registered change callbacks with the old and
+// new values. The read-modify-write of the previous value and the
+// write itself run under s.mu (see writeLocked) so two concurrent
+// Save calls can't interleave — without that, the second of two
+// racing Saves could read the first's pre-write value as "old" and
+// hand every callback the wrong diff. The lock is released before
+// any callback runs, so a listener that itself calls Save or
+// OnChange doesn't self-deadlock on s.mu, which is not reentrant.
 func (s *FileStore) Save(ctx context.Context, cfg Config) error {
 	return s.inSpan(ctx, "config.file.save", func(ctx context.Context, _ trace.Span) error {
-		old, _ := s.Load(ctx)
-
-		dir := filepath.Dir(s.path)
-
-		if err := os.MkdirAll(dir, 0o750); err != nil {
-			return err
-		}
-
-		data, err := json.MarshalIndent(cfg, "", "  ") //nolint:gosec // G117: API key is intentionally persisted to the config file.
+		old, cbs, err := s.writeLocked(ctx, cfg)
 		if err != nil {
 			return err
 		}
-
-		if err := os.WriteFile(s.path, data, 0o600); err != nil {
-			return err
-		}
-
-		s.mu.Lock()
-		cbs := make([]ChangeFunc, 0, len(s.callbacks))
-		for _, fn := range s.callbacks {
-			cbs = append(cbs, fn)
-		}
-		s.mu.Unlock()
 
 		for _, fn := range cbs {
 			fn(old, cfg)
@@ -151,6 +138,76 @@ func (s *FileStore) Save(ctx context.Context, cfg Config) error {
 
 		return nil
 	})
+}
+
+// writeLocked performs Save's read-modify-write under s.mu: reading
+// the previous value, writing the new one atomically via
+// writeFileAtomic (so a crash mid-write can never leave config.json
+// truncated, which would lose the API key), and snapshotting the
+// registered callbacks to run once the lock is released.
+func (s *FileStore) writeLocked(ctx context.Context, cfg Config) (Config, []ChangeFunc, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	old, _ := s.Load(ctx)
+
+	dir := filepath.Dir(s.path)
+
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return Config{}, nil, err
+	}
+
+	data, err := json.MarshalIndent(cfg, "", "  ") //nolint:gosec // G117: API key is intentionally persisted to the config file.
+	if err != nil {
+		return Config{}, nil, err
+	}
+
+	if err := writeFileAtomic(s.path, data, 0o600); err != nil {
+		return Config{}, nil, err
+	}
+
+	cbs := make([]ChangeFunc, 0, len(s.callbacks))
+	for _, fn := range s.callbacks {
+		cbs = append(cbs, fn)
+	}
+
+	return old, cbs, nil
+}
+
+// writeFileAtomic writes data to path by first writing to a temp
+// file in the same directory, then renaming it into place. The
+// rename replaces any existing file at path in a single filesystem
+// operation, so a reader or a crash never observes a partially
+// written config.json — os.WriteFile's truncate-then-write can leave
+// an empty or half-written file behind if the process dies mid-call.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+
+	tmp, err := os.CreateTemp(dir, ".config-*.json.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+
+	// Removing an already-renamed-away temp path is a no-op; this
+	// only cleans up after a failure between here and the rename.
+	defer func() { _ = os.Remove(tmpPath) }()
+
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+
+	return os.Rename(tmpPath, path)
 }
 
 // OnChange registers a callback to be invoked after every successful

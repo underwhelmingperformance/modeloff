@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sync/atomic"
 	"testing"
 
 	chromem "github.com/philippgille/chromem-go"
@@ -54,7 +55,7 @@ func newTestIndexedStore(t *testing.T, embedder chromem.EmbeddingFunc) *IndexedS
 	backing := NewStoreAdapter(storetest.NewMemoryStore(t))
 	db := chromem.NewDB()
 
-	return NewIndexedStoreFromDB(backing, db, embedder)
+	return NewIndexedStoreFromDB(t.Context(), backing, db, embedder)
 }
 
 // trivialEmbedder returns a constant vector — sufficient for
@@ -69,6 +70,125 @@ func failingEmbedder() chromem.EmbeddingFunc {
 	return func(_ context.Context, _ string) ([]float32, error) {
 		return nil, fmt.Errorf("embedding service unavailable")
 	}
+}
+
+// --- Construction-time embedding probe ---
+
+func TestProbeEmbeddingFunc(t *testing.T) {
+	tests := []struct {
+		name string
+		fn   chromem.EmbeddingFunc
+		want bool
+	}{
+		{name: "nil function (no API key) is unreachable", fn: nil, want: false},
+		{name: "failing function is unreachable", fn: failingEmbedder(), want: false},
+		{name: "working function is reachable", fn: trivialEmbedder(), want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, probeEmbeddingFunc(t.Context(), tt.fn))
+		})
+	}
+}
+
+func TestIndexedStore_Searchable(t *testing.T) {
+	tests := []struct {
+		name     string
+		embedder chromem.EmbeddingFunc
+		want     bool
+	}{
+		{name: "working embedder is searchable", embedder: trivialEmbedder(), want: true},
+		{name: "failing embedder is not searchable", embedder: failingEmbedder(), want: false},
+		{name: "nil embedder is not searchable", embedder: nil, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newTestIndexedStore(t, tt.embedder)
+			require.Equal(t, tt.want, store.Searchable())
+		})
+	}
+}
+
+// TestIndexedStore_RefreshSearchable pins the /config recovery path:
+// a store constructed while the embedding endpoint is unreachable
+// (a fresh install with no API key yet, or a real network failure)
+// becomes searchable again once the underlying embedder starts
+// working, without reattaching the store — and the reverse, so a
+// working endpoint later going bad is also reflected.
+func TestIndexedStore_RefreshSearchable(t *testing.T) {
+	ctx := t.Context()
+
+	var working atomic.Bool
+	embedder := func(context.Context, string) ([]float32, error) {
+		if working.Load() {
+			return []float32{1.0, 0.0, 0.0}, nil
+		}
+
+		return nil, fmt.Errorf("embedding service unavailable")
+	}
+
+	store := newTestIndexedStore(t, embedder)
+	require.False(t, store.Searchable())
+
+	working.Store(true)
+	store.RefreshSearchable(ctx)
+	require.True(t, store.Searchable())
+
+	working.Store(false)
+	store.RefreshSearchable(ctx)
+	require.False(t, store.Searchable())
+}
+
+// --- DeleteInstance ---
+
+func TestIndexedStore_DeleteInstance_removes_collection(t *testing.T) {
+	ctx := t.Context()
+	topics := map[string]int{"cats": 0, "dogs": 1}
+	store := newTestIndexedStore(t, fakeEmbedder(2, topics))
+	id := domain.InstanceID("deleteme")
+
+	require.NoError(t, store.Write(ctx, id, Entry{Key: "fact", Content: "cats are great"}))
+
+	// Confirm the collection is actually populated before deleting it.
+	col, err := store.collection(id)
+	require.NoError(t, err)
+	require.Equal(t, 1, col.Count())
+
+	require.NoError(t, store.DeleteInstance(ctx, id))
+
+	col, err = store.collection(id)
+	require.NoError(t, err)
+	require.Zero(t, col.Count())
+}
+
+func TestIndexedStore_DeleteInstance_leaves_backing_store_and_other_instances_untouched(t *testing.T) {
+	ctx := t.Context()
+	topics := map[string]int{"cats": 0, "dogs": 1}
+	store := newTestIndexedStore(t, fakeEmbedder(2, topics))
+
+	require.NoError(t, store.Write(ctx, "gone", Entry{Key: "fact", Content: "cats are great"}))
+	require.NoError(t, store.Write(ctx, "kept", Entry{Key: "fact", Content: "dogs are loyal"}))
+
+	require.NoError(t, store.DeleteInstance(ctx, "gone"))
+
+	// DeleteInstance only clears chromem's collection; the FileStore
+	// row is a separate concern the store's own instance-deletion
+	// path (store.SQLiteStore.DeleteInstanceByID) already handles.
+	entries, err := store.Read(ctx, "gone")
+	require.NoError(t, err)
+	require.Equal(t, []Entry{{Key: "fact", Content: "cats are great"}}, entries)
+
+	results, err := store.Search(ctx, "kept", "dogs", 5)
+	require.NoError(t, err)
+	require.Equal(t, []SearchResult{
+		{Entry: Entry{Key: "fact", Content: "dogs are loyal"}, Similarity: 1.0},
+	}, results)
+}
+
+func TestIndexedStore_DeleteInstance_noop_for_instance_never_indexed(t *testing.T) {
+	require.NoError(t, newTestIndexedStore(t, trivialEmbedder()).DeleteInstance(t.Context(), "never-seen"))
 }
 
 // --- Layer 1: Store interface compliance ---
@@ -358,7 +478,7 @@ func TestIndexedStore_Search_embedding_failure_on_query(t *testing.T) {
 	))
 
 	backing := NewStoreAdapter(storetest.NewMemoryStore(t))
-	store := NewIndexedStoreFromDB(backing, db, failingEmbedder())
+	store := NewIndexedStoreFromDB(ctx, backing, db, failingEmbedder())
 
 	_, err = store.Search(ctx, id, "query", 5)
 	require.Error(t, err)
@@ -377,7 +497,7 @@ func TestIndexedStore_persistence(t *testing.T) {
 	sqlStore := storetest.NewMemoryStore(t)
 
 	backing1 := NewStoreAdapter(sqlStore)
-	store1, err := NewIndexedStore(backing1, indexDir, embedder)
+	store1, err := NewIndexedStore(ctx, backing1, indexDir, embedder)
 	require.NoError(t, err)
 
 	require.NoError(t, store1.Write(ctx, id, Entry{Key: "cat", Content: "cats are great"}))
@@ -385,7 +505,7 @@ func TestIndexedStore_persistence(t *testing.T) {
 
 	// Reopen: new adapter and index on the same backing store and directory.
 	backing2 := NewStoreAdapter(sqlStore)
-	store2, err := NewIndexedStore(backing2, indexDir, embedder)
+	store2, err := NewIndexedStore(ctx, backing2, indexDir, embedder)
 	require.NoError(t, err)
 
 	got, err := store2.Read(ctx, id)
@@ -415,7 +535,7 @@ func TestIndexedStore_Search_reindexes_from_backing_store(t *testing.T) {
 	require.NoError(t, backing.Write(ctx, id, Entry{Key: "cat", Content: "cats are great"}))
 	require.NoError(t, backing.Write(ctx, id, Entry{Key: "dog", Content: "dogs are loyal"}))
 
-	store := NewIndexedStoreFromDB(backing, chromem.NewDB(), embedder)
+	store := NewIndexedStoreFromDB(ctx, backing, chromem.NewDB(), embedder)
 
 	// Search should trigger a lazy reindex and return results.
 	results, err := store.Search(ctx, id, "cats", 1)

@@ -43,8 +43,27 @@ type Store interface {
 }
 
 // Searcher is an optional interface that a Store can implement to
-// provide semantic search over memories. Callers should check for
-// this with a type assertion before offering search_memory as a tool.
+// provide semantic search over memories. Search is structurally
+// present on any type that implements it regardless of whether its
+// embedding endpoint actually works; Searchable reports the real,
+// probed outcome. Callers should check both: the type assertion
+// before offering search_memory as a tool at all, and Searchable
+// before trusting that a Search call will succeed.
 type Searcher interface {
 	Search(ctx context.Context, id domain.InstanceID, query string, limit int) ([]SearchResult, error)
+
+	// Searchable reports whether this store's embedding endpoint was
+	// confirmed to work by a probe at construction time.
+	Searchable() bool
+}
+
+// InstanceDeleter is an optional capability a memory Store can
+// implement to remove state it owns for a single instance, keyed by
+// identity. The FileStore-backed memories rows are already removed
+// when the instance's own row is deleted (see
+// [github.com/laney/modeloff/internal/store.SQLiteStore.DeleteInstanceByID]);
+// this exists for state the memory layer owns independently of that
+// row, such as an IndexedStore's chromem-go vector collection.
+type InstanceDeleter interface {
+	DeleteInstance(ctx context.Context, id domain.InstanceID) error
 }

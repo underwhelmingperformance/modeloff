@@ -3774,7 +3774,7 @@ func newTestSessionWithIndexedMemory(
 		embeddingURL, "test-key", "test-model", &normalized,
 	)
 
-	m := memory.NewIndexedStoreFromDB(backing, chromem.NewDB(), embeddingFunc)
+	m := memory.NewIndexedStoreFromDB(t.Context(), backing, chromem.NewDB(), embeddingFunc)
 	sess := New(t.Context, s, newTestModelClientFactoryWith(t, apiClient, m))
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	attachTestUserClient(t, sess, "testuser")

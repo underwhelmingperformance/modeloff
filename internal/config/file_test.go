@@ -1,8 +1,10 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -126,6 +128,102 @@ func TestFileStore_LoadInvalidJSON(t *testing.T) {
 
 	_, err := store.Load(t.Context())
 	require.Error(t, err)
+}
+
+func TestFileStore_Save_writes_human_readable_durations_on_disk(t *testing.T) {
+	dir := t.TempDir()
+	store := NewFileStore(dir)
+
+	require.NoError(t, store.Save(t.Context(), Config{
+		UserNick:     "laney",
+		PokeInterval: 5 * time.Minute,
+		DrainTimeout: 10 * time.Second,
+	}))
+
+	raw, err := os.ReadFile(filepath.Join(dir, "config.json")) //nolint:gosec // G304: dir is t.TempDir(), not external input.
+	require.NoError(t, err)
+
+	var got struct {
+		PokeInterval string `json:"poke_interval"`
+		DrainTimeout string `json:"drain_timeout"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &got))
+	require.Equal(t, "5m0s", got.PokeInterval)
+	require.Equal(t, "10s", got.DrainTimeout)
+}
+
+// TestFileStore_Save_leaves_no_temp_file pins that the atomic
+// temp-then-rename write cleans up after itself: only config.json
+// remains in the directory once Save returns.
+func TestFileStore_Save_leaves_no_temp_file(t *testing.T) {
+	dir := t.TempDir()
+	store := NewFileStore(dir)
+
+	require.NoError(t, store.Save(t.Context(), Config{UserNick: "laney", PokeInterval: time.Minute}))
+
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+
+	names := make([]string, len(entries))
+	for i, e := range entries {
+		names[i] = e.Name()
+	}
+
+	require.Equal(t, []string{"config.json"}, names)
+}
+
+// TestFileStore_Save_concurrent_calls_serialize_correct_diffs pins
+// that concurrent Save calls never interleave: every OnChange
+// callback invocation is handed a (prev, curr) pair that actually
+// occurred in some serial ordering of the Saves, never a prev value
+// some other, later Save already overwrote.
+func TestFileStore_Save_concurrent_calls_serialize_correct_diffs(t *testing.T) {
+	store := NewFileStore(t.TempDir())
+
+	seen := make(map[time.Duration]time.Duration)
+	var mu sync.Mutex
+
+	store.OnChange(func(prev, curr Config) {
+		mu.Lock()
+		seen[prev.PokeInterval] = curr.PokeInterval
+		mu.Unlock()
+	})
+
+	const n = 20
+
+	// Offset well clear of defaults().PokeInterval (5 minutes) so
+	// the very first Save's prev — the default, since no file exists
+	// yet — can never coincide by value with any call's own curr.
+	var wg sync.WaitGroup
+	for i := 1; i <= n; i++ {
+		wg.Go(func() {
+			require.NoError(t, store.Save(t.Context(), Config{PokeInterval: time.Duration(100+i) * time.Minute}))
+		})
+	}
+	wg.Wait()
+
+	// A mutex-serialized Save reads a fresh "old" value only after
+	// every prior Save has fully committed, so each of the n calls
+	// observes a distinct prev value and records its own curr under
+	// that key. A race would let two calls read the same stale prev,
+	// so one call's curr would overwrite another's under the
+	// colliding key — comparing the full sorted set of recorded curr
+	// values against every curr this test actually wrote catches
+	// that collision (fewer than n distinct curr values) as well as
+	// a wrong-pairing bug a bare count would miss (n curr values
+	// present, but not the right n).
+	gotCurrs := make([]time.Duration, 0, len(seen))
+	for _, curr := range seen {
+		gotCurrs = append(gotCurrs, curr)
+	}
+	slices.Sort(gotCurrs)
+
+	wantCurrs := make([]time.Duration, n)
+	for i := range n {
+		wantCurrs[i] = time.Duration(101+i) * time.Minute
+	}
+
+	require.Equal(t, wantCurrs, gotCurrs)
 }
 
 func TestFileStore_OnChange_fires_callback(t *testing.T) {

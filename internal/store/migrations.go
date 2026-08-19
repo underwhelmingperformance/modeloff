@@ -8,16 +8,21 @@ import (
 )
 
 // SchemaVersion is the current on-disk schema version. Bumped by
-// exactly one whenever the SQL in `schema` (sqlite.go) changes;
-// the corresponding [migration] entry brings a v(N-1) database
-// forward to vN.
+// exactly one whenever a schema change is needed; the corresponding
+// [migration] entry brings a v(N-1) database forward to vN.
 //
-// A fresh database adopts SchemaVersion atomically as part of the
-// `schema` exec: the seed `INSERT OR IGNORE` into `state` lands
-// in the same statement batch as the table creations. Existing
-// databases keep whatever version they last recorded; the
-// `INSERT OR IGNORE` is a no-op.
-const SchemaVersion = 1
+// `schema` (sqlite.go) only ever describes the v1 shape and seeds
+// `state.schema_version` to '1' via `INSERT OR IGNORE` — it never
+// grows the v2+ shape directly. NewSQLiteStore execs `schema` before
+// running migrations, and `CREATE TABLE IF NOT EXISTS` /
+// `CREATE INDEX IF NOT EXISTS` are no-ops against a table an earlier
+// version already created; if `schema` also carried a v2+ column or
+// index reference, that statement would run before the migration
+// that is supposed to introduce it and fail against any database
+// that predates this version. Every database — fresh or
+// pre-existing — reaches the current shape through applyMigrations,
+// the single path from v1 onward.
+const SchemaVersion = 2
 
 // migration is one forward-only step that brings the database
 // from v(Version-1) to vVersion. Apply runs inside the
@@ -28,11 +33,48 @@ type migration struct {
 	Apply   func(ctx context.Context, tx *sql.Tx) error
 }
 
-// migrations is the ordered registry of forward-only steps.
-// Empty: v1 is the first cut and nothing predates it. Future
-// schema changes append entries with strictly increasing
-// `Version`.
-var migrations = []migration{}
+// migrations is the ordered registry of forward-only steps. v1 is
+// the first cut and nothing predates it. Future schema changes
+// append entries with strictly increasing `Version`.
+var migrations = []migration{
+	{
+		Version: 2,
+		Apply: func(ctx context.Context, tx *sql.Tx) error {
+			// dm_instance_id gives DMEventsBefore's thread lookup a
+			// real column, so idx_events_dm_thread can serve it as an
+			// index seek.
+			if _, err := tx.ExecContext(ctx, `
+				ALTER TABLE events ADD COLUMN dm_instance_id TEXT GENERATED ALWAYS AS
+					(coalesce(json_extract(data, '$.data.instance_id'), '')) VIRTUAL
+			`); err != nil {
+				return fmt.Errorf("add events.dm_instance_id: %w", err)
+			}
+
+			if _, err := tx.ExecContext(ctx, `
+				CREATE INDEX IF NOT EXISTS idx_events_dm_thread
+					ON events (dm_instance_id, type, channel, id)
+			`); err != nil {
+				return fmt.Errorf("create idx_events_dm_thread: %w", err)
+			}
+
+			// dm_windows holds the user-client's set of open DM
+			// windows, keyed by the counterpart model instance's id.
+			// Client-owned data: the user-client reads and writes
+			// this table directly; the session dispatcher never
+			// touches it. Deleting the counterpart instance cascades
+			// to drop its DM window entry too.
+			if _, err := tx.ExecContext(ctx, `
+				CREATE TABLE IF NOT EXISTS dm_windows (
+					instance_id TEXT PRIMARY KEY REFERENCES instances(instance_id) ON DELETE CASCADE
+				)
+			`); err != nil {
+				return fmt.Errorf("create dm_windows: %w", err)
+			}
+
+			return nil
+		},
+	},
+}
 
 // applyMigrations reconciles the recorded schema version against
 // [SchemaVersion]. A current database is a no-op; an older
@@ -118,10 +160,11 @@ func missingMigrations(from int) []migration {
 
 // readSchemaVersion returns the recorded version, or 0 when no
 // row exists. A 0 result from an empty database is normal — the
-// `INSERT OR IGNORE` in `schema` seeds the row to [SchemaVersion]
-// on first exec. A 0 from a populated database indicates a state
-// row that pre-dates the seed and is handled by
-// [applyMigrations]'s "no migration to reach" branch.
+// `INSERT OR IGNORE` in `schema` seeds the row to '1' on first
+// exec, and applyMigrations brings it to [SchemaVersion] right
+// after. A 0 from a populated database indicates a state row that
+// pre-dates the seed and is handled by applyMigrations's "no
+// migration to reach" branch.
 func readSchemaVersion(ctx context.Context, db *sql.DB) (int, error) {
 	var v int
 	err := db.QueryRowContext(ctx,

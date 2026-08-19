@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 
 	chromem "github.com/philippgille/chromem-go"
 	"go.opentelemetry.io/otel"
@@ -15,8 +16,9 @@ import (
 )
 
 var (
-	_ Store    = (*IndexedStore)(nil)
-	_ Searcher = (*IndexedStore)(nil)
+	_ Store           = (*IndexedStore)(nil)
+	_ Searcher        = (*IndexedStore)(nil)
+	_ InstanceDeleter = (*IndexedStore)(nil)
 )
 
 // IndexedStore wraps a FileStore with a chromem-go vector index to
@@ -29,6 +31,16 @@ type IndexedStore struct {
 	db            *chromem.DB
 	embeddingFunc chromem.EmbeddingFunc
 
+	// searchable is the live outcome of the most recent probe of
+	// embeddingFunc — see probeEmbeddingFunc. Search always has a
+	// real chromem method regardless of whether the endpoint behind
+	// it works, so this is the signal Searchable exposes for callers
+	// deciding whether calling it will actually work. Set once at
+	// construction and updated again by RefreshSearchable whenever a
+	// caller knows the underlying endpoint may have changed (e.g.
+	// NewDefaultStore, on every relevant config change).
+	searchable atomic.Bool
+
 	// tracerProvider is the OTel `TracerProvider` the store uses for
 	// its spans. Defaults to `otel.GetTracerProvider()`; tests inject
 	// a per-test recorder via `WithTracerProvider`.
@@ -36,8 +48,16 @@ type IndexedStore struct {
 }
 
 // NewIndexedStore creates an IndexedStore backed by the given memory
-// Store and a persistent chromem-go database at indexDir.
-func NewIndexedStore(backing Store, indexDir string, embeddingFunc chromem.EmbeddingFunc) (*IndexedStore, error) {
+// Store and a persistent chromem-go database at indexDir. A single
+// probe call to embeddingFunc during construction, on ctx, determines
+// what Searchable reports until a caller calls RefreshSearchable.
+// Threading ctx through matters: chromem-go's OpenAI-compatible
+// embedding function builds its HTTP client with no timeout of its
+// own by design, relying on the caller's context for cancellation, so
+// a caller-supplied ctx (ultimately the process's own cancellable
+// root context) is what keeps a black-holed endpoint from hanging
+// construction — and therefore application startup — uncancellably.
+func NewIndexedStore(ctx context.Context, backing Store, indexDir string, embeddingFunc chromem.EmbeddingFunc) (*IndexedStore, error) {
 	db, err := chromem.NewPersistentDB(indexDir, false)
 	if err != nil {
 		return nil, fmt.Errorf("open vector index: %w", err)
@@ -49,22 +69,44 @@ func NewIndexedStore(backing Store, indexDir string, embeddingFunc chromem.Embed
 		tracerProvider: otel.GetTracerProvider(),
 	}
 	s.embeddingFunc = s.instrumentEmbedding(embeddingFunc)
+	s.searchable.Store(probeEmbeddingFunc(ctx, embeddingFunc))
 
 	return s, nil
 }
 
 // NewIndexedStoreFromDB creates an IndexedStore from an existing
 // chromem-go DB. This allows callers to provide an in-memory database
-// for testing while using a persistent one in production.
-func NewIndexedStoreFromDB(backing Store, db *chromem.DB, embeddingFunc chromem.EmbeddingFunc) *IndexedStore {
+// for testing while using a persistent one in production. As with
+// NewIndexedStore, a single probe call to embeddingFunc during
+// construction, on ctx, determines what Searchable reports until a
+// caller calls RefreshSearchable.
+func NewIndexedStoreFromDB(ctx context.Context, backing Store, db *chromem.DB, embeddingFunc chromem.EmbeddingFunc) *IndexedStore {
 	s := &IndexedStore{
 		backing:        backing,
 		db:             db,
 		tracerProvider: otel.GetTracerProvider(),
 	}
 	s.embeddingFunc = s.instrumentEmbedding(embeddingFunc)
+	s.searchable.Store(probeEmbeddingFunc(ctx, embeddingFunc))
 
 	return s
+}
+
+// probeEmbeddingFunc performs a single, cheap call to fn to confirm
+// the configured embedding endpoint actually responds — the
+// OpenRouter-compatible base URL a Config otherwise defaults to
+// serves no /embeddings endpoint, so without this check a broken
+// endpoint is discovered only when a model calls search_memory
+// and gets an error. A nil fn (no API key configured) short-circuits
+// without a call.
+func probeEmbeddingFunc(ctx context.Context, fn chromem.EmbeddingFunc) bool {
+	if fn == nil {
+		return false
+	}
+
+	_, err := fn(ctx, "modeloff memory index probe")
+
+	return err == nil
 }
 
 // WithTracerProvider overrides the OTel `TracerProvider` the store
@@ -106,6 +148,27 @@ func (s *IndexedStore) collection(id domain.InstanceID) (*chromem.Collection, er
 // Read delegates to the underlying FileStore.
 func (s *IndexedStore) Read(ctx context.Context, id domain.InstanceID) ([]Entry, error) {
 	return s.backing.Read(ctx, id)
+}
+
+// Searchable reports the outcome of the most recent probe of this
+// store's embedding function — the initial one at construction, or
+// the latest RefreshSearchable call. Search always exists as a
+// method regardless; this is the signal that calling it will
+// actually reach a working embedding endpoint.
+func (s *IndexedStore) Searchable() bool {
+	return s.searchable.Load()
+}
+
+// RefreshSearchable re-probes this store's embedding function and
+// updates the outcome Searchable reports. embeddingFunc reads its
+// underlying endpoint through an atomic pointer indirection
+// (NewDefaultStore's storeEmbedder), so the same closure passed to
+// the constructor already reflects a config change by the time this
+// runs — a caller re-probes to learn whether that change turned a
+// working endpoint into a broken one, or vice versa, without
+// reattaching the store.
+func (s *IndexedStore) RefreshSearchable(ctx context.Context) {
+	s.searchable.Store(probeEmbeddingFunc(ctx, s.embeddingFunc))
 }
 
 // Search finds memories semantically similar to the query, returning
@@ -238,6 +301,24 @@ func (s *IndexedStore) Delete(ctx context.Context, id domain.InstanceID, key str
 			}
 
 			return s.backing.Delete(ctx, id, key)
+		})
+}
+
+// DeleteInstance removes the given instance's chromem-go vector
+// collection. It is a no-op if the instance never had a collection.
+// The FileStore-backed memories rows for the same instance are
+// removed automatically when the instance's own row is deleted (see
+// [InstanceDeleter]'s doc comment); this only needs to clear index
+// state chromem owns independently of that row.
+func (s *IndexedStore) DeleteInstance(ctx context.Context, id domain.InstanceID) error {
+	return s.inSpan(ctx, "memory.delete_instance",
+		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
+		func(_ context.Context, _ trace.Span) error {
+			if err := s.db.DeleteCollection(string(id)); err != nil {
+				return fmt.Errorf("delete collection: %w", err)
+			}
+
+			return nil
 		})
 }
 

@@ -175,7 +175,7 @@ func (r *ToolRegistry) Filter(caps command.CapabilityHolder, kind domain.Channel
 }
 
 func searchEnabled(store memory.Store) bool {
-	_, ok := store.(memory.Searcher)
+	searcher, ok := store.(memory.Searcher)
 
-	return ok
+	return ok && searcher.Searchable()
 }

@@ -4,6 +4,8 @@ package config
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/laney/modeloff/internal/domain"
@@ -49,6 +51,90 @@ type Config struct {
 	EmbeddingModel  domain.ModelID `json:"embedding_model"`
 	HighlightWords  []string       `json:"highlight_words"`
 	TimestampFormat *string        `json:"timestamp_format,omitempty"`
+}
+
+// duration marshals a time.Duration as its human-readable string
+// form (e.g. "5m0s"), so a hand-edited config.json accepts values
+// like "5m". It also accepts a plain JSON number of nanoseconds, so
+// a config.json holding a raw integer for this field keeps loading.
+// It exists only to give [Config]'s own MarshalJSON/UnmarshalJSON
+// this behaviour for PokeInterval and DrainTimeout; those fields
+// stay plain time.Duration in Go so every other package keeps using
+// them as such.
+type duration time.Duration
+
+func (d duration) MarshalJSON() ([]byte, error) {
+	return json.Marshal(time.Duration(d).String())
+}
+
+func (d *duration) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		parsed, err := time.ParseDuration(s)
+		if err != nil {
+			return fmt.Errorf("parse duration %q: %w", s, err)
+		}
+
+		*d = duration(parsed)
+		return nil
+	}
+
+	var ns int64
+	if err := json.Unmarshal(data, &ns); err != nil {
+		return fmt.Errorf("duration must be a string or a number of nanoseconds: %w", err)
+	}
+
+	*d = duration(ns)
+	return nil
+}
+
+// MarshalJSON writes PokeInterval and DrainTimeout in their
+// human-readable string form (e.g. "5m0s"), so config.json stays
+// hand-editable. Every other field marshals exactly as its own
+// struct tag says.
+func (c Config) MarshalJSON() ([]byte, error) {
+	type alias Config
+
+	return json.Marshal(struct {
+		alias
+
+		PokeInterval duration `json:"poke_interval"`
+		DrainTimeout duration `json:"drain_timeout"`
+	}{
+		alias:        alias(c),
+		PokeInterval: duration(c.PokeInterval),
+		DrainTimeout: duration(c.DrainTimeout),
+	})
+}
+
+// UnmarshalJSON reads PokeInterval and DrainTimeout from their
+// human-readable string form ("5m0s"), and also accepts the raw
+// nanosecond integer a config.json holds for these fields. Fields
+// the input JSON omits keep whatever value *c already carries — the
+// same merge-with-defaults behaviour a plain json.Unmarshal into an
+// already-populated Config has.
+func (c *Config) UnmarshalJSON(data []byte) error {
+	type alias Config
+
+	aux := struct {
+		*alias
+
+		PokeInterval duration `json:"poke_interval"`
+		DrainTimeout duration `json:"drain_timeout"`
+	}{
+		alias:        (*alias)(c),
+		PokeInterval: duration(c.PokeInterval),
+		DrainTimeout: duration(c.DrainTimeout),
+	}
+
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	c.PokeInterval = time.Duration(aux.PokeInterval)
+	c.DrainTimeout = time.Duration(aux.DrainTimeout)
+
+	return nil
 }
 
 // ChangeFunc is called after a successful Save with the old and new
