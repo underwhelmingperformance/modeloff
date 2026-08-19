@@ -4,7 +4,8 @@ An old school IRC-style interface but for one user talking to multiple agents.
 
 ## Services
 
-There is no server component. This uses the OpenRouter API.
+There is no network server. The session in `internal/session` is an in-process
+IRC-like server; the only external service is the OpenRouter API.
 
 ## The flow
 
@@ -14,12 +15,20 @@ There is no server component. This uses the OpenRouter API.
 2. Any channels from last time are loaded and shown in the sidebar. The
    channel that was open last time is opened again.
    1. If there are no channels, a welcome message is shown.
-3. The user can `/join` a channel (`#`-prefix like IRC), or use shortcuts
-   like ctrl-d,ctrl-u,ctrl-o to navigate in the sidebar (or the mouse).
-   1. If the channel doesn't exist, it is created.
+3. The user can `/join` a channel (`#`-prefix like IRC), or switch windows
+   with the usual IRC-client keybindings — `alt+1`…`alt+9` for a direct
+   switch, `alt+a` for the next window with activity, `ctrl+n`/`ctrl+p` for
+   next and previous — or the mouse. `ctrl+u` (kill to line start) and
+   `ctrl+d` (delete character) belong to the input editor.
+   1. If the channel doesn't exist, it is created with the default channel
+      modes — a validated `/config` setting, defaulting to `+nt`.
    2. The user can have multiple channels open at once.
 4. The user can `/part` a channel.
-   1. Parting a channel doesn't delete it.
+   1. A channel exists only while it has occupants; the last occupant
+      parting destroys it, along with its topic, modes and invitation list
+      (RFC 2811 §2). The sidebar entry and the autojoin list are client
+      state and survive a part. If durable channels are ever wanted, the
+      mechanism is an explicit permanent-channel mode.
 5. The user can `/list` all channels.
 6. The user can `/invite` models to add them to the channel, and `/kick`
    them to remove them.
@@ -27,20 +36,32 @@ There is no server component. This uses the OpenRouter API.
       using the OpenRouter API. If no name or ID is given, the user is prompted
       to select from a list of models or existing instances.
    2. When an existing instance is invited, a memory system is used so that it
-      remembers previous conversations.
+      remembers previous conversations. This applies only to instances that
+      still exist: QUIT and KILL end a client and free its nick, and a quit
+      instance cannot be re-invited. Bringing one back would need an account
+      registry distinct from the connection record (the services model),
+      introduced for human and model users alike.
 7. The user can `/msg` to DM a model, which is shown similarly to a channel
    except no `#` prefix.
-8. From then on, it's a channel. All events are broadcast to all models.
-   They can reply or not. Measures should be taken to prevent infinite
-   conversations which would become costly very quickly.
+8. From then on, it's a channel. Event delivery follows the echo gate and
+   membership filter described below. Models can reply or not. Runaway
+   conversations are bounded by server-side flood control applied uniformly
+   to every client (RFC 1459 §8.10's penalty algorithm, with channel mode
+   `+f` for a per-channel limit); the throttle is surfaced to the throttled
+   client, and a turn is never silently dropped. Any spend budget beyond
+   that is app policy expressed through IRC primitives such as `+m` or
+   KILL, not a hidden gate.
 9. A channel can have a `/topic`, which is shown in the UI. This is optional
    but it will be sent to the model as part of its prompt.
 10. A small, cheap model (configurable, defaulting to `openai/gpt-5.4-mini`) is
     used to give each invited model a nickname.
-11. `/whois` can be used on a nickname to show metadata, and common channels.
+11. `/whois` can be used on a nickname to show metadata and the target's
+    channels, except those that are `+s` or `+p` and on which the issuer is
+    not present; server operators see all (RFC 2812 §3.6.2).
 12. On a random (perturbed a bit) configurable (via `/config`) schedule, the
     model instances are poked to see if they want to say anything, so that
-    channels don't go dead.
+    channels don't go dead. The poke is the server's PING (RFC 2812 §3.7.2):
+    an unsolicited prod the model may answer with a PRIVMSG or with nothing.
 13. Models can be given a persona when they're instantiated.
 14. The user can rename themselves via `/nick`. By default we use their username
     on the system.
@@ -98,13 +119,16 @@ The user-client and the model-clients are uniform on the protocol — same
 different kinds of actor in their lifecycle and the capabilities granted at
 attach.
 
-A model is a persistent inhabitant. The fiction the app maintains is that the
-server kept running while the user was away, so a model returns with its context
-intact. The persisted event log (`store.EventsBefore` / `store.DMEventsBefore`)
-is the server's memory of channel activity; on (re)attach a model restores its
-context from it. The user is a transient client: by IRC convention it sees live
-traffic forward and nothing from before it connected, so it gets no history
-replay — the chat-screen's scrollback is populated purely from live events.
+Persistence is a property of identity and connection state, not of actor kind.
+A client that has not quit is still connected: the fiction the app maintains is
+that the server kept running while the user was away, so such a client returns
+with its context intact. The persisted event log (`store.EventsBefore` /
+`store.DMEventsBefore`) is the server's memory of channel activity; on
+(re)attach a model-client restores its context from it through the
+history-replay capability. A client that quit is gone, whatever kind it is:
+QUIT ends the client and frees its nick. The user-client does not request
+history replay, so it sees live traffic forward and nothing from before it
+connected — the chat-screen's scrollback is populated purely from live events.
 
 Differences between the two kinds are expressed as server-side capabilities
 granted at attach (`SubscribeOptions.InitialModes`) and read live off the
@@ -185,11 +209,14 @@ never sees it.
 
 The session exposes one event channel per subscription: each
 subscription's `Client.Events()` returns the per-client protocol bus.
-The session fans out wire-shaped events (PRIVMSG, JOIN, PART, TOPIC,
-MODE, NICK, INVITE, KICK, QUIT) plus session-emitted events
-(`TopicInfo`, `NamesReplyEvent`, `NamesEnd`, `PokeEvent`,
-`ModelDispatchStarted`, `ModelDispatchDone`, `Whois`, `ListReply`,
-`ListEnd`, `SystemNotice`). Every value the session emits implements
+The session fans out the broadcast events — the wire-shaped PRIVMSG,
+JOIN, PART, TOPIC, MODE, NICK, KICK and QUIT, plus the session-emitted
+`PokeEvent`, `ModelDispatchStarted` and `ModelDispatchDone`. The
+point-to-point events — INVITE, `TopicInfo`, `NamesReplyEvent`/
+`NamesEnd`, `Whois`, `ListReply`/`ListEnd` and `SystemNotice` — are
+the numerics (341, 332/333, 353/366, 311–319, 322/323, and free-form
+notices), addressed to one client by construction, and are delivered
+to that client only. Every value the session emits implements
 `domain.ProtocolEvent`, sealed via `isProtocolEvent()`.
 
 Chat-screen-local control signals — `domain.ErrorEvent` wrapping a
@@ -203,11 +230,12 @@ them); it is not the courier for them.
 ### Echo gate and membership filter
 
 `fanOutProtocol` skips the originator for `domain.Message` events
-(PRIVMSG and `/me` actions), per RFC 2812 §3.3.1: chat traffic is
-delivered to every member of the target window except the sender. A
-subscription granted IRCv3 echo-message (today only the user-client,
-via `protocol.SubscribeOptions.EchoMessage`) then receives a direct
-echo of its own chat traffic back over the bus through
+(PRIVMSG and `/me` actions): the base protocol provides no echo of a
+client's own chat traffic, which is delivered to every member of the
+target window except the sender. IRCv3 echo-message is the extension
+that adds the echo. A subscription granted it (today only the
+user-client, via `protocol.SubscribeOptions.EchoMessage`) receives a
+direct echo of its own chat traffic back over the bus through
 `Session.echoToOriginator`; a model holds no such capability and
 keeps the no-self-echo rule.
 Other event types — JOIN, PART, MODE, TOPIC, NICK, etc. — are
@@ -225,8 +253,8 @@ chat-screen renders exactly those windows. Server handshake numerics
 (`Welcome`, `Reconnected`) and command replies reach the user-client
 point-to-point — via `deliverToClient` or the issuing command's
 `Response.Events` — not through this broadcast filter. A whole-session
-"god's-eye" view, if wanted, is an explicit request-driven inspector
-layered on top (see Out of scope), never an always-on bypass.
+view, if wanted, is the operator exemption inside the channel-visibility
+predicate (see Out of scope), never an always-on bypass of this filter.
 
 ### Operator capability
 
@@ -253,7 +281,7 @@ the grammar at registration time and derives the OpenAI tool schema
 chatcmd struct implements `ToCommand(Context) (protocol.Command, error)`,
 the same wire command flows whether the user typed `/foo` or a model
 called the `foo` tool. Most commands implement `ToCommand` and so
-have a wire counterpart: `/join`, `/part`, `/list`, `/addmodel`,
+have a wire counterpart: `/join`, `/part`, `/list`, `/add-model`,
 `/invite`, `/kill`, `/kick`, `/msg`, `/nick`, `/mode`, `/topic`,
 `/me`, `/whois`, and `/quit` (for example `ListCommand` returns
 `protocol.List` and `WhoisCommand` returns `protocol.Whois`). The
@@ -311,12 +339,14 @@ log a model loads holds nothing but genuine channel activity.
   the protocol so neither is resolved client-side is a follow-up.
 - Bootstrap-time, `joined_at`-scoped replay of recent events into a
   newly-allocated subscription, replacing the per-dispatch store read
-  and the model-client's eager seed. Replay is for model-clients only;
-  the user-client sees live traffic forward by design.
-- A request-driven "god's-eye" inspector letting the user peek into a
-  window or actor's vantage it is not a member of — the supported
-  route to a whole-session view, layered on top of the membership
-  filter.
+  and the model-client's eager seed. History replay is the IRCv3
+  `chathistory` capability, granted at attach via `SubscribeOptions`;
+  the user-client simply does not request it today.
+- A whole-session view through operator privilege: LIST, WHOIS, NAMES
+  and WHO answer a server operator without the `+s`/`+p` filter, via
+  the operator exemption in the single channel-visibility predicate.
+  The user-client already holds `+o`; no separate inspector layer is
+  needed.
 - Credentialed operator promotion through `OPER`, backed by a real
   `OperAuthenticator`.
 - A user-restore-history feature that, on reconnect, routes each
