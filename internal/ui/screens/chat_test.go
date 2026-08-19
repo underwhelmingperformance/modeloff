@@ -23,6 +23,21 @@ import (
 	"github.com/laney/modeloff/internal/userclient"
 )
 
+// termWidth and termHeight are the terminal dimensions chat-screen
+// tests render at. They match a large but real terminal size, in step
+// with the 200x60 the observability test in this package asks for.
+//
+// Frame cost is proportional to cell count: Bubble Tea re-renders the
+// whole screen on each message, and lipgloss measures every line with
+// ansi.StringWidth, which segments grapheme clusters. Sizing the
+// fixture like a terminal someone actually has keeps a
+// race-instrumented render comfortably inside the convergence budget
+// the uitest wait helpers poll against.
+const (
+	termWidth  = 200
+	termHeight = 50
+)
+
 // testHarness bundles a session, its manager, and the user-client
 // so test helpers can thread all three into the chat-screen
 // without separate ceremony.
@@ -64,7 +79,7 @@ func newChatAppWithConfig(t *testing.T, h *testHarness, cfgStore config.Store) *
 	require.NoError(t, err)
 
 	root := uipkg.NewRoot(chatScreen)
-	return uitest.New(t, root, teatest.WithInitialTermSize(256, 256))
+	return uitest.New(t, root, teatest.WithInitialTermSize(termWidth, termHeight))
 }
 
 func newChatAppInChannel(t *testing.T, channel domain.ChannelName) (*uitest.App, *testHarness) {
@@ -332,7 +347,7 @@ func TestChatScreen_persists_last_channel_on_focus(t *testing.T) {
 	chatScreen, err := screens.NewChatScreen(t.Context, sess, mgr, user, newFakeConfigStore(), s, domain.KindStatus)
 	require.NoError(t, err)
 
-	tm := uitest.New(t, uipkg.NewRoot(chatScreen), teatest.WithInitialTermSize(256, 256))
+	tm := uitest.New(t, uipkg.NewRoot(chatScreen), teatest.WithInitialTermSize(termWidth, termHeight))
 	// `SeedChannel`'s last call (#random) ends up active because no
 	// `last_channel` is persisted at the start of the test, so the
 	// chat screen's "no-preference, first NAMES reply wins" rule

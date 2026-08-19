@@ -171,14 +171,20 @@ func TestApp_unknown_command_on_welcome_screen_with_teatest(t *testing.T) {
 	tm.WaitFor("Welcome to modeloff")
 
 	tm.Submit("/foo")
-	tm.WaitFor("unknown command: /foo")
+
+	// The status window's focus marker arrives on a message of its
+	// own, independently of the rejection notice. Anchor the
+	// assertion to the snapshot carrying both; matching the notice
+	// on the cumulative output stream can return while `&modeloff`
+	// is still unmarked.
+	view := tm.WaitForViewContains("▸&modeloff", "unknown command: /foo")
 
 	require.Equal(t, []string{
 		"Channels",
 		"▸&modeloff",
 		"No members",
 		"✗ command: unknown command: /foo",
-	}, visibleBodySegments(tm.CurrentView()))
+	}, visibleBodySegments(view))
 }
 
 func TestApp_welcome_join_command_with_teatest(t *testing.T) {
@@ -210,14 +216,20 @@ func TestApp_message_on_welcome_screen_rejected_with_teatest(t *testing.T) {
 	tm.WaitFor("Welcome to modeloff")
 
 	tm.Submit("hello world")
-	tm.WaitFor("join a channel first")
+
+	// The status window's focus marker arrives on a message of its
+	// own, independently of the rejection notice. Anchor the
+	// assertion to the snapshot carrying both; matching the notice
+	// on the cumulative output stream can return while `&modeloff`
+	// is still unmarked.
+	view := tm.WaitForViewContains("▸&modeloff", "join a channel first")
 
 	require.Equal(t, []string{
 		"Channels",
 		"▸&modeloff",
 		"No members",
 		"⚠ join a channel first",
-	}, visibleBodySegments(tm.CurrentView()))
+	}, visibleBodySegments(view))
 }
 
 func TestApp_channel_command_on_welcome_screen_rejected_with_teatest(t *testing.T) {
