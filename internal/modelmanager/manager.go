@@ -110,7 +110,7 @@ type Manager struct {
 	factory    func(apiKey, baseURL string) (api.Client, error)
 
 	cacheMu              sync.Mutex
-	supportedModels      map[domain.ModelID]struct{}
+	supportedModels      map[domain.ModelID]api.ModelInfo
 	supportedModelsReady bool
 	state                atomic.Uint32
 
@@ -475,7 +475,7 @@ func (m *Manager) Attach(ctx context.Context, sess *session.Session, inst *domai
 		return existing, nil
 	}
 
-	mc := modelclient.New(inst, sess, m.APIClientGetter(), m.memory, m.tools, m.EnsureStructuredOutputModel, m.baseContext, m.pacer)
+	mc := modelclient.New(inst, sess, m.APIClientGetter(), m.memory, m.tools, m.EnsureStructuredOutputModel, m.CachedContextLen, m.baseContext, m.pacer)
 	m.clients[id] = mc
 	m.clientsMu.Unlock()
 

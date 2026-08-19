@@ -9,6 +9,67 @@ import (
 	"github.com/laney/modeloff/internal/memory"
 )
 
+// maxMemoryEntries and maxMemoryBytes cap the block of memories
+// [buildSystemPrompt] inlines into every system prompt. Without a
+// bound, an instance's memories grow without limit and every entry
+// is paid for, in tokens, on every single turn from then on —
+// including a poke turn nothing prompted. The values are deliberately
+// generous: a model that needs more than this reaches for
+// search_memory, which exists for exactly this case.
+const (
+	maxMemoryEntries = 50
+	maxMemoryBytes   = 4000
+)
+
+// capMemoriesForPrompt returns the prefix of entries that fits within
+// [maxMemoryEntries] and [maxMemoryBytes] of combined key+content
+// text, and reports whether anything was left out. Entries are kept
+// in the order the store returns them; memory.Entry carries no
+// timestamp today, so that order is not a recency ordering — see
+// [github.com/laney/modeloff/internal/memory.Entry].
+//
+// A single entry bigger than maxMemoryBytes on its own is kept, with
+// its content truncated to fit — dropping it outright would leave
+// the prompt's truncation note pointing at memories the model can't
+// see any of.
+func capMemoriesForPrompt(entries []memory.Entry) ([]memory.Entry, bool) {
+	truncated := false
+
+	capped := entries
+	if len(capped) > maxMemoryEntries {
+		capped = capped[:maxMemoryEntries]
+		truncated = true
+	}
+
+	total := 0
+	for i, e := range capped {
+		total += len(e.Key) + len(e.Content)
+		if total <= maxMemoryBytes {
+			continue
+		}
+
+		if i == 0 {
+			return []memory.Entry{truncateMemoryEntry(e, maxMemoryBytes)}, true
+		}
+
+		return capped[:i], true
+	}
+
+	return capped, truncated
+}
+
+// truncateMemoryEntry shortens e's content so its combined key+content
+// length fits within maxBytes, keeping the key intact.
+func truncateMemoryEntry(e memory.Entry, maxBytes int) memory.Entry {
+	room := max(maxBytes-len(e.Key), 0)
+
+	if len(e.Content) > room {
+		e.Content = e.Content[:room]
+	}
+
+	return e
+}
+
 // buildSystemPrompt assembles the per-turn system prompt for a
 // model instance speaking on `window`. The function is only ever
 // called from the dispatch path, which never fires for the status
@@ -82,12 +143,18 @@ If there are no relevant memories, continue normally without using memory.`)
 		return b.String()
 	}
 
+	capped, truncated := capMemoriesForPrompt(memories)
+
 	b.WriteString("\n\nYour remembered context:")
-	for _, entry := range memories {
+	for _, entry := range capped {
 		fmt.Fprintf(&b, " [%s=%s]", entry.Key, entry.Content)
 	}
 
 	b.WriteByte('\n')
+
+	if truncated {
+		b.WriteString("\nSome memories were left out to keep this prompt short. Use search_memory to look up anything not shown here.\n")
+	}
 
 	return b.String()
 }

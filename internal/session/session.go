@@ -201,6 +201,24 @@ type Session struct {
 	// have genuinely gone quiet (AGENTS.md point 12).
 	activeMu       sync.Mutex
 	activeChannels map[domain.ChannelName]struct{}
+
+	// pokeBackoffMu guards pokeBackoffState, the poke scheduler's
+	// per-channel exponential backoff (see [Session.pokeQuietWindows]).
+	// It is a separate lock from activeMu because the two track
+	// different lifetimes: activeChannels resets every cycle, while
+	// pokeBackoffState persists across cycles for a channel that
+	// keeps going unanswered.
+	pokeBackoffMu    sync.Mutex
+	pokeBackoffState map[domain.ChannelName]pokeBackoff
+
+	// pokeWake interrupts the poke scheduler's current sleep, so a
+	// [PokeSchedule] change (a `/config poke-interval` edit, a
+	// freshly-set API key) takes effect on this cycle even while a
+	// longer sleep from the previous cycle is already under way.
+	// Buffered by one so a wake that lands while the loop is between
+	// sleeps is not lost, and [Session.WakePoke] never blocks its
+	// caller.
+	pokeWake chan struct{}
 }
 
 // New creates a Session whose dispatch goroutines derive their
@@ -255,6 +273,8 @@ func New(
 		modelClientFactory:  factory,
 		operAuth:            DefaultOperAuthenticator,
 		activeChannels:      make(map[domain.ChannelName]struct{}),
+		pokeBackoffState:    make(map[domain.ChannelName]pokeBackoff),
+		pokeWake:            make(chan struct{}, 1),
 		writerQ:             make(chan writerJob),
 		writerStopped:       make(chan struct{}),
 		channels:            newChannelState(),

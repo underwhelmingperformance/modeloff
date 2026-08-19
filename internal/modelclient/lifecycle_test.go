@@ -130,7 +130,7 @@ func (s *fakeSubscription) Unsubscribe()                     { s.once.Do(func() 
 func newTestModelClient(sess Session) *ModelClient {
 	inst := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
 
-	return New(inst, sess, func() api.Client { return nil }, nil, nil, nil, context.Background, nil)
+	return New(inst, sess, func() api.Client { return nil }, nil, nil, nil, nil, context.Background, nil)
 }
 
 // TestModelClient_Detach_waits_for_an_in_flight_Attach pins the

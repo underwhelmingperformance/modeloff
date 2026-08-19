@@ -105,6 +105,24 @@ func (m *Manager) EnsureStructuredOutputModel(ctx context.Context, modelID domai
 	return nil
 }
 
+// CachedContextLen returns the context length the catalogue cache
+// last recorded for modelID, or 0 if the model is not in the cache
+// (never fetched, or absent from the upstream catalogue). It is a
+// pure read of whatever [Manager.EnsureStructuredOutputModel] last
+// left in the cache and never itself reaches upstream: a
+// model-client's dispatch loop calls this every burst to keep
+// [modelclient.ModelClient]'s transcript token budget current with
+// the catalogue, and a network round trip on that path would defeat
+// the point. The zero return matches [modelclient.ModelClient]'s
+// "unknown context length" contract, so a caller that has never seen
+// a successful catalogue load is a safe no-op.
+func (m *Manager) CachedContextLen(modelID domain.ModelID) int {
+	m.cacheMu.Lock()
+	defer m.cacheMu.Unlock()
+
+	return m.supportedModels[modelID].ContextLen
+}
+
 // ListState reports the manager's current catalogue state. Tests
 // use it to assert the manager's view of the upstream after a
 // `ListModels` or `EnsureStructuredOutputModel` call.
@@ -122,11 +140,11 @@ func (m *Manager) SupportedModelsReady() bool {
 	return m.supportedModelsReady
 }
 
-// SupportedModels returns a snapshot of the cached supported-model
-// set. The returned map is shared with the cache; callers should
-// not mutate it. Tests use this to assert the contents after a
-// successful `ListModels`.
-func (m *Manager) SupportedModels() map[domain.ModelID]struct{} {
+// SupportedModels returns a snapshot of the cached catalogue, keyed
+// by model id. The returned map is shared with the cache; callers
+// should not mutate it. Tests use this to assert the contents after
+// a successful `ListModels`.
+func (m *Manager) SupportedModels() map[domain.ModelID]api.ModelInfo {
 	m.cacheMu.Lock()
 	defer m.cacheMu.Unlock()
 
@@ -145,9 +163,9 @@ func (m *Manager) invalidateCatalogue(ctx context.Context) {
 }
 
 func (m *Manager) cacheSupportedModels(ctx context.Context, models []api.ModelInfo) {
-	cache := make(map[domain.ModelID]struct{}, len(models))
+	cache := make(map[domain.ModelID]api.ModelInfo, len(models))
 	for _, model := range models {
-		cache[model.ID] = struct{}{}
+		cache[model.ID] = model
 	}
 
 	m.cacheMu.Lock()

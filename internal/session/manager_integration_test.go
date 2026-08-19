@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -32,26 +33,31 @@ import (
 // exclusion-list length so AddModel-twice tests get distinct nicks
 // without each case maintaining its own counter.
 type managerFakeAPI struct {
-	sendEventsFn       func(context.Context) (api.CompletionResult, error)
+	listModelsFn       func(context.Context) ([]api.ModelInfo, error)
+	sendEventsFn       func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error)
 	generateNickFn     func(context.Context, domain.ModelID, string, []domain.Nick) (domain.Nick, error)
 	generatePersonasFn func(context.Context, domain.ModelID) ([]domain.Persona, error)
 }
 
-func (f *managerFakeAPI) ListModels(context.Context) ([]api.ModelInfo, error) {
+func (f *managerFakeAPI) ListModels(ctx context.Context) ([]api.ModelInfo, error) {
+	if f.listModelsFn != nil {
+		return f.listModelsFn(ctx)
+	}
+
 	return nil, nil
 }
 
 func (f *managerFakeAPI) SendEvents(
 	ctx context.Context,
-	_ domain.ModelID,
-	_ domain.InstanceID,
-	_ string,
-	_ []protocol.IRCMessage,
-	_ []protocol.IRCMessage,
+	modelID domain.ModelID,
+	selfInstanceID domain.InstanceID,
+	system string,
+	history []protocol.IRCMessage,
+	events []protocol.IRCMessage,
 	_ ...api.ToolDefinition,
 ) (api.CompletionResult, error) {
 	if f.sendEventsFn != nil {
-		return f.sendEventsFn(ctx)
+		return f.sendEventsFn(ctx, modelID, selfInstanceID, system, history, events)
 	}
 
 	return api.CompletionResult{}, nil
@@ -303,7 +309,9 @@ func TestSession_AddModel_retries_on_nick_collision(t *testing.T) {
 		fresh, err := store.ResolveNick(ctx, "fresh")
 		require.NoError(t, err)
 
-		require.ElementsMatch(t, []domain.Event{
+		// The model's own JOIN is delivered but raises no dispatch
+		// turn — it has nothing to say about its own arrival.
+		require.Equal(t, []domain.Event{
 			domain.Join{
 				Target:     "#dev",
 				Nick:       "fresh",
@@ -311,8 +319,6 @@ func TestSession_AddModel_retries_on_nick_collision(t *testing.T) {
 				At:         emittedAt,
 				Instance:   fresh,
 			},
-			domain.ModelDispatchStarted{Instance: fresh, At: emittedAt},
-			domain.ModelDispatchDone{Instance: fresh, At: emittedAt},
 		}, collectUserEvents(user))
 
 		require.Equal(t, [][]domain.Nick{
@@ -383,6 +389,8 @@ func TestSession_AddModel_creates_new_instance_per_invocation(t *testing.T) {
 		second, err := store.ResolveNick(ctx, "fakenick1")
 		require.NoError(t, err)
 
+		// Each model's own JOIN is delivered but raises no dispatch
+		// turn — neither has anything to say about its own arrival.
 		require.ElementsMatch(t, []domain.Event{
 			domain.Join{
 				Target:     "#general",
@@ -391,8 +399,6 @@ func TestSession_AddModel_creates_new_instance_per_invocation(t *testing.T) {
 				At:         emittedAt,
 				Instance:   first,
 			},
-			domain.ModelDispatchStarted{Instance: first, At: emittedAt},
-			domain.ModelDispatchDone{Instance: first, At: emittedAt},
 			domain.Join{
 				Target:     "#random",
 				Nick:       "fakenick1",
@@ -400,8 +406,6 @@ func TestSession_AddModel_creates_new_instance_per_invocation(t *testing.T) {
 				At:         emittedAt,
 				Instance:   second,
 			},
-			domain.ModelDispatchStarted{Instance: second, At: emittedAt},
-			domain.ModelDispatchDone{Instance: second, At: emittedAt},
 		}, collectUserEvents(user))
 
 		// Each invocation produces a fresh `*Instance` with its own id.
@@ -440,7 +444,7 @@ func TestManager_DetachAll_joins_a_client_released_mid_session(t *testing.T) {
 		// The park ignores cancellation, which is what a real upstream
 		// call that has already been handed to the network does.
 		fake := &managerFakeAPI{
-			sendEventsFn: func(context.Context) (api.CompletionResult, error) {
+			sendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
 				<-upstream
 				return api.CompletionResult{}, nil
 			},
@@ -451,8 +455,12 @@ func TestManager_DetachAll_joins_a_client_released_mid_session(t *testing.T) {
 
 		seedChannel(t, user, "#general")
 		require.NoError(t, addModelViaWire(ctx, t, user, "#general", "test/model", ""))
+		synctest.Wait()
 
-		// The model's own JOIN wakes its first turn, which parks.
+		// The model's own JOIN raises no turn; a channel message does,
+		// and this one wakes the turn that parks upstream.
+		_, err := user.SendMessage(ctx, "#general", "anyone about?")
+		require.NoError(t, err)
 		synctest.Wait()
 
 		bot, err := store.ResolveNick(ctx, "fakenick")
@@ -512,7 +520,10 @@ func TestSession_Invite_without_persona_assigns_from_pool(t *testing.T) {
 		inst, err := store.ResolveNick(ctx, "fakenick")
 		require.NoError(t, err)
 
-		require.ElementsMatch(t, []domain.Event{
+		// The model's own JOIN is delivered but raises no dispatch
+		// turn — a model has nothing to say about its own arrival,
+		// and a turn nobody asked for is a paid API call for nothing.
+		require.Equal(t, []domain.Event{
 			domain.Join{
 				Target:     "#dev",
 				Nick:       "fakenick",
@@ -520,8 +531,6 @@ func TestSession_Invite_without_persona_assigns_from_pool(t *testing.T) {
 				At:         emittedAt,
 				Instance:   inst,
 			},
-			domain.ModelDispatchStarted{Instance: inst, At: emittedAt},
-			domain.ModelDispatchDone{Instance: inst, At: emittedAt},
 		}, collectUserEvents(user))
 
 		require.NotEmpty(t, inst.Persona())
@@ -622,4 +631,95 @@ func TestSession_AddModel_short_circuits_when_lazy_load_fails(t *testing.T) {
 	require.ErrorIs(t, second, modelclient.ErrModelListUnavailable)
 	require.Equal(t, int32(1), client.calls.Load(),
 		"second AddModel must short-circuit and not re-hit ListModels")
+}
+
+// TestDispatch_transcript_token_budget_from_catalogue_context_len
+// proves the transcript token budget engages through the real
+// dispatch/turn call graph, not just [history]'s own unit tests: a
+// model whose cached [api.ModelInfo.ContextLen] is small gets a
+// trimmed `history` argument on its `SendEvents` call once the
+// channel's transcript grows past the budget, while a model whose
+// catalogue entry reports no context length (the common shape for a
+// listing OpenRouter didn't attach one to) keeps the legacy
+// event-count-only bound and sees everything.
+//
+// Each of three long messages is sent and waited on individually so
+// it becomes its own turn — the model's `history` argument for turn
+// N is the ring's contents from turns 1..N-1, growing one entry at a
+// time exactly the way a live channel would.
+func TestDispatch_transcript_token_budget_from_catalogue_context_len(t *testing.T) {
+	tests := []struct {
+		name       string
+		contextLen int
+		wantThird  []string
+	}{
+		{
+			name:       "small ContextLen trims the transcript to the newest entry",
+			contextLen: 2000,
+			wantThird:  []string{"second"},
+		},
+		{
+			// The leading "" is the model's own JOIN, filed into
+			// history (but not dispatched — see the self-join guard
+			// in dispatchTrigger) when it was added to the channel;
+			// with no token budget in effect it survives alongside
+			// both messages.
+			name:       "context length OpenRouter didn't report keeps every entry",
+			contextLen: 0,
+			wantThird:  []string{"", "first", "second"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				var histories [][]protocol.IRCMessage
+
+				fake := &managerFakeAPI{
+					listModelsFn: func(context.Context) ([]api.ModelInfo, error) {
+						return []api.ModelInfo{{ID: "test/model", ContextLen: tc.contextLen}}, nil
+					},
+					sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, history []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
+						histories = append(histories, history)
+						return api.CompletionResult{}, nil
+					},
+				}
+
+				_, _, mgr, user := newTestSessionWithManager(t, fake, "test-key")
+				ctx := t.Context()
+
+				// Warm the catalogue cache up front so CachedContextLen
+				// has something to report from the model's very first
+				// turn, not just after it happens to lazy-load.
+				_, err := mgr.ListModels(ctx)
+				require.NoError(t, err)
+
+				seedChannel(t, user, "#dev")
+				require.NoError(t, addModelViaWire(ctx, t, user, "#dev", "test/model", ""))
+				synctest.Wait()
+
+				// Each body is long enough that two of them together
+				// overflow even the smallest budget
+				// [tokenBudgetForContextLen]'s floor allows, while one
+				// alone still fits comfortably under it.
+				big := strings.Repeat("x", 4000)
+
+				for _, label := range []string{"first", "second", "third"} {
+					_, err := user.SendMessage(ctx, "#dev", label+" "+big)
+					require.NoError(t, err)
+					synctest.Wait()
+				}
+
+				require.Len(t, histories, 3)
+
+				var thirdTurnLabels []string
+				for _, msg := range histories[2] {
+					label, _, _ := strings.Cut(msg.Body, " ")
+					thirdTurnLabels = append(thirdTurnLabels, label)
+				}
+
+				require.Equal(t, tc.wantThird, thirdTurnLabels)
+			})
+		})
+	}
 }

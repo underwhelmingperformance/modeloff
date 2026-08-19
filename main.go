@@ -135,6 +135,18 @@ func main() {
 
 	sess.StartPoking(appCtx, pokeScheduleFromConfig(cfgStore))
 
+	// A `/config poke-interval` edit or a freshly-set API key changes
+	// what the schedule reports; WakePoke interrupts the scheduler's
+	// current sleep so the change takes effect on this cycle instead
+	// of only once that sleep runs out.
+	cfgStore.OnChange(func(prev, curr config.Config) {
+		if prev.PokeInterval == curr.PokeInterval && prev.APIKey == curr.APIKey {
+			return
+		}
+
+		sess.WakePoke()
+	})
+
 	_, runErr := p.Run()
 
 	cancelApp()

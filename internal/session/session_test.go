@@ -1449,6 +1449,8 @@ func TestSession_AddModel(t *testing.T) {
 		updated, err := sess.loadChannelWindow(ctx, "#dev")
 		require.NoError(t, err)
 
+		// The model's own JOIN is delivered but raises no dispatch
+		// turn — it has nothing to say about its own arrival.
 		require.ElementsMatch(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Join{
@@ -1458,8 +1460,6 @@ func TestSession_AddModel(t *testing.T) {
 				At:         fixedTime,
 				Instance:   inst,
 			},
-			domain.ModelDispatchStarted{Instance: inst, At: fixedTime},
-			domain.ModelDispatchDone{Instance: inst, At: fixedTime},
 		}, collectEmittedEvents(t, sess))
 
 		requireInstanceEqual(t, domain.NewModelInstance(
@@ -2747,6 +2747,8 @@ func TestSession_AddModel_persists_persona(t *testing.T) {
 		inst, err := s.ResolveNick(ctx, "fakenick")
 		require.NoError(t, err)
 
+		// The model's own JOIN is delivered but raises no dispatch
+		// turn — it has nothing to say about its own arrival.
 		require.ElementsMatch(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Join{
@@ -2756,8 +2758,6 @@ func TestSession_AddModel_persists_persona(t *testing.T) {
 				At:         fixedTime,
 				Instance:   inst,
 			},
-			domain.ModelDispatchStarted{Instance: inst, At: fixedTime},
-			domain.ModelDispatchDone{Instance: inst, At: fixedTime},
 		}, collectEmittedEvents(t, sess))
 
 		require.Equal(t, "Helpful assistant", inst.Persona())
@@ -4373,6 +4373,8 @@ func TestSession_Invite_with_explicit_persona_skips_pool(t *testing.T) {
 		inst, err := s.ResolveNick(ctx, "fakenick")
 		require.NoError(t, err)
 
+		// The model's own JOIN is delivered but raises no dispatch
+		// turn — it has nothing to say about its own arrival.
 		require.ElementsMatch(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Join{
@@ -4382,8 +4384,6 @@ func TestSession_Invite_with_explicit_persona_skips_pool(t *testing.T) {
 				At:         fixedTime,
 				Instance:   inst,
 			},
-			domain.ModelDispatchStarted{Instance: inst, At: fixedTime},
-			domain.ModelDispatchDone{Instance: inst, At: fixedTime},
 		}, collectEmittedEvents(t, sess))
 
 		require.Equal(t, "Custom persona", inst.Persona())
@@ -4529,19 +4529,22 @@ func TestSendMessageAs_model_triggers_dispatch_to_other_models(t *testing.T) {
 	})
 }
 
-// TestAddModel_dispatches_join_trigger_to_model pins that the
-// newly-added model's first dispatch turn is triggered by its own
-// JOIN event. `/add-model` joins the model forcefully via `joinAs`;
-// the model's dispatch loop receives the JOIN on the bus, takes a
-// turn, and `events` carries the wire-formatted JOIN.
-func TestAddModel_dispatches_join_trigger_to_model(t *testing.T) {
+// TestAddModel_own_join_is_filed_but_not_dispatched pins the two
+// halves of AGENTS.md's self-join guard: the newly-added model's own
+// JOIN raises no dispatch turn — a model has nothing to say about its
+// own arrival, and a turn nobody asked for is a paid API call for
+// nothing — but the event still reaches the model's transcript, so a
+// later turn's history shows it joined.
+func TestAddModel_own_join_is_filed_but_not_dispatched(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		bootAt := time.Now()
 		dispatched := make(map[domain.ModelID][]protocol.IRCMessage)
+		var lastHistory []protocol.IRCMessage
 
 		fake := &fakeAPIClient{
-			sendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+			sendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ string, history []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 				dispatched[modelID] = append(dispatched[modelID], events...)
+				lastHistory = history
 				return api.CompletionResult{}, nil
 			},
 			generateNickFn: func(_ context.Context, _ domain.ModelID, _ string, _ []domain.Nick) (domain.Nick, error) {
@@ -4559,30 +4562,33 @@ func TestAddModel_dispatches_join_trigger_to_model(t *testing.T) {
 		bot, err := s.ResolveNick(ctx, "fakenick")
 		require.NoError(t, err)
 
+		joinEvent := domain.Join{
+			Target:     "#dev",
+			Nick:       "fakenick",
+			InstanceID: bot.ID(),
+			At:         fixedTime,
+			Instance:   bot,
+		}
+
 		require.ElementsMatch(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
-			domain.Join{
-				Target:     "#dev",
-				Nick:       "fakenick",
-				InstanceID: bot.ID(),
-				At:         fixedTime,
-				Instance:   bot,
-			},
-			domain.ModelDispatchStarted{Instance: bot, At: fixedTime},
-			domain.ModelDispatchDone{Instance: bot, At: fixedTime},
+			joinEvent,
 		}, collectEmittedEvents(t, sess))
+		require.Empty(t, dispatched)
 
-		require.Equal(t, map[domain.ModelID][]protocol.IRCMessage{
-			"test/model": {
-				{
-					Kind:       protocol.KindJoin,
-					From:       "fakenick",
-					InstanceID: bot.ID(),
-					Target:     "#dev",
-					At:         fixedTime,
-				},
-			},
-		}, dispatched)
+		// A message from someone else does trigger a turn; its
+		// history shows the earlier JOIN was filed, not dropped.
+		_, err = userSendMessage(ctx, t, sess, "#dev", "hey botty")
+		require.NoError(t, err)
+		synctest.Wait()
+
+		require.Contains(t, lastHistory, protocol.IRCMessage{
+			Kind:       protocol.KindJoin,
+			From:       "fakenick",
+			InstanceID: bot.ID(),
+			Target:     "#dev",
+			At:         fixedTime,
+		})
 	})
 }
 

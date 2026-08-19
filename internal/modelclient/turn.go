@@ -35,6 +35,13 @@ func noEnsure(context.Context, domain.ModelID) error { return nil }
 // [runTurn]. Any chat traffic the model emits lands on the session
 // bus as a side effect of its `msg` / `me` tool calls; this function
 // returns only the turn's outcome.
+//
+// `tokenBudget` is the turn's transcript token budget (see
+// [history.TokenBudget]). [composeTranscriptBudget] spends it once
+// across `historyEvents`, `replyEvents` and `events` together before
+// any of them is rendered — trimming the three independently would
+// let each fit its own share of the budget while their sum still
+// overran the model's context.
 func dispatchToInstance(
 	ctx context.Context,
 	sess Session,
@@ -50,7 +57,10 @@ func dispatchToInstance(
 	historyEvents []domain.StoredEvent,
 	replyEvents []domain.StoredEvent,
 	events []protocol.IRCMessage,
+	tokenBudget int,
 ) error {
+	historyEvents, replyEvents, events = composeTranscriptBudget(historyEvents, replyEvents, events, tokenBudget)
+
 	nick := inst.Nick()
 
 	runner := observability.SpanRunner{

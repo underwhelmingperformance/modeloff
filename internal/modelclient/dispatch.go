@@ -63,6 +63,12 @@ func (mc *ModelClient) runDispatchLoop(ctx context.Context, sub protocol.Subscri
 		case delivery = <-events:
 		}
 
+		// Re-consulted every burst, so a catalogue refresh (a lazy
+		// first load, a `SetAPIKey` invalidation followed by a fresh
+		// `ListModels`) reaches the transcript token budget without
+		// needing a reattach.
+		mc.hist.SetContextLen(mc.contextLenFn(mc.instance.ModelID))
+
 		for _, batch := range mc.fileBatch(ctx, append([]protocol.Delivery{delivery}, drain(events)...)) {
 			// An earlier turn in this burst may have ended the
 			// connection — a `quit` tool call cancels the loop's
@@ -252,6 +258,10 @@ func dispatchTrigger(selfID domain.InstanceID, ev domain.ProtocolEvent) (domain.
 		return e.Target, msg, true
 
 	case domain.Join:
+		if e.InstanceID == selfID {
+			return "", protocol.IRCMessage{}, false
+		}
+
 		msg, _ := protocol.FromChannelEvent(e)
 		return e.Target, msg, true
 
@@ -343,7 +353,7 @@ func (mc *ModelClient) dispatchTurn(ctx context.Context, batch *turnBatch) {
 
 		replyEvents := mc.hist.snapshotReplies()
 
-		if err := dispatchToInstance(ctx, mc.sess, apiClient, mc.memStore, mc.tools, mc.ensure, mc.pacer, mc, window, inst, ch, batch.history, replyEvents, batch.triggers); err != nil {
+		if err := dispatchToInstance(ctx, mc.sess, apiClient, mc.memStore, mc.tools, mc.ensure, mc.pacer, mc, window, inst, ch, batch.history, replyEvents, batch.triggers, mc.hist.TokenBudget()); err != nil {
 			return mc.reportTurnFailure(ctx, ch, nick, errWithKind(err, observability.ErrorKindDispatch))
 		}
 

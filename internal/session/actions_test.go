@@ -99,12 +99,10 @@ func TestJoinAs_model_joining_existing_channel_gets_RPL_topic_and_names(t *testi
 				At:         fixedTime,
 				Instance:   botty,
 			},
-			domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
-			domain.ModelDispatchDone{Instance: botty, At: fixedTime},
 		}, collectEmittedEvents(t, sess),
-			"the user-client bus carries only the JOIN broadcast and the bot's "+
-				"dispatch lifecycle; NamesReplyEvent + TopicInfo are scoped to the "+
-				"joiner (the bot) and never reach the user")
+			"the user-client bus carries only the JOIN broadcast; the bot's own "+
+				"JOIN raises no dispatch turn, and NamesReplyEvent + TopicInfo are "+
+				"scoped to the joiner (the bot) and never reach the user")
 	})
 }
 
@@ -942,11 +940,10 @@ func TestJoinAs_model_voice_only_no_topic(t *testing.T) {
 				At:         fixedTime,
 				Instance:   botty,
 			},
-			domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
-			domain.ModelDispatchDone{Instance: botty, At: fixedTime},
 		}, collectEmittedEvents(t, sess),
-			"NamesReplyEvent and TopicInfo are scoped to the joiner (the bot); "+
-				"the user-client bus does not carry them")
+			"NamesReplyEvent and TopicInfo are scoped to the joiner (the bot) and "+
+				"the user-client bus does not carry them; the bot's own JOIN also "+
+				"raises no dispatch turn")
 	})
 }
 

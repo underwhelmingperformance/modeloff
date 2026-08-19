@@ -96,13 +96,14 @@ type Session interface {
 // `Wait` is the phase that is not, and belongs to whoever owns the
 // client's lifetime.
 type ModelClient struct {
-	instance *domain.Instance
-	sess     Session
-	apiFn    func() api.Client
-	memStore memory.Store
-	tools    *ToolRegistry
-	ensure   EnsureStructuredOutputModel
-	pacer    *Pacer
+	instance     *domain.Instance
+	sess         Session
+	apiFn        func() api.Client
+	memStore     memory.Store
+	tools        *ToolRegistry
+	ensure       EnsureStructuredOutputModel
+	contextLenFn func(domain.ModelID) int
+	pacer        *Pacer
 
 	baseContext func() context.Context
 
@@ -129,6 +130,14 @@ type ModelClient struct {
 // goroutine derives its lifetime from; cancelling it (and calling
 // [ModelClient.Detach]) is how the goroutine is woken at shutdown.
 //
+// `contextLenFn` reports the live catalogue-cached context length
+// for a model id. It is consulted at the top of every dispatch burst
+// (see [ModelClient.runDispatchLoop]), so the transcript token
+// budget stays current with whatever the catalogue holds across the
+// client's whole lifetime. A zero return — including from a nil
+// `contextLenFn` — disables the budget for that burst, leaving
+// [modelHistorySize]'s event-count ring as the only bound.
+//
 // `pacer` adds a typing delay before each chat-tool emit so bots
 // don't fire at machine speed; a nil `pacer` disables pacing.
 func New(
@@ -138,24 +147,37 @@ func New(
 	memStore memory.Store,
 	tools *ToolRegistry,
 	ensure EnsureStructuredOutputModel,
+	contextLenFn func(domain.ModelID) int,
 	baseContext func() context.Context,
 	pacer *Pacer,
 ) *ModelClient {
 	if ensure == nil {
 		ensure = noEnsure
 	}
+	if contextLenFn == nil {
+		contextLenFn = noContextLen
+	}
 	return &ModelClient{
-		instance:    inst,
-		sess:        sess,
-		apiFn:       apiFn,
-		memStore:    memStore,
-		tools:       tools,
-		ensure:      ensure,
-		pacer:       pacer,
-		baseContext: baseContext,
-		hist:        newHistory(),
+		instance:     inst,
+		sess:         sess,
+		apiFn:        apiFn,
+		memStore:     memStore,
+		tools:        tools,
+		ensure:       ensure,
+		contextLenFn: contextLenFn,
+		pacer:        pacer,
+		baseContext:  baseContext,
+		hist:         newHistory(),
 	}
 }
+
+// noContextLen is the permissive default consulted when a
+// [ModelClient] is constructed without a real catalogue lookup.
+// Reporting 0 (unknown) for every model id disables the transcript
+// token budget, leaving [modelHistorySize]'s event-count ring as the
+// only bound — the same behaviour the codebase had before the budget
+// existed.
+func noContextLen(domain.ModelID) int { return 0 }
 
 // Instance returns the canonical actor handle.
 func (mc *ModelClient) Instance() *domain.Instance { return mc.instance }
