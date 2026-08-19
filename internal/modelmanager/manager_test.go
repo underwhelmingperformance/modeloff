@@ -80,17 +80,24 @@ func (f *fakeAPIClient) GeneratePersonas(ctx context.Context, smallModel domain.
 
 // listModelsCountingClient records the number of `ListModels` calls
 // so short-circuit tests can assert the upstream is not re-hit after
-// a known failure.
+// a known failure. When block is non-nil, ListModels waits on it
+// before returning, so a single-flight test can hold a fetch open
+// while concurrent callers pile up behind it.
 type listModelsCountingClient struct {
 	fakeAPIClient
 
 	calls atomic.Int32
 	err   error
 	infos []api.ModelInfo
+	block chan struct{}
 }
 
 func (c *listModelsCountingClient) ListModels(context.Context) ([]api.ModelInfo, error) {
 	c.calls.Add(1)
+
+	if c.block != nil {
+		<-c.block
+	}
 
 	if c.err != nil {
 		return nil, c.err
@@ -197,6 +204,53 @@ func TestManager_SetBaseURL(t *testing.T) {
 	require.Equal(t, "https://custom.example.com", factoryBaseURL)
 }
 
+// TestManager_SetBaseURL_invalidates_catalogue pins that a base-URL
+// change drops the previous provider's catalogue cache, the same way
+// SetAPIKey does. A cache left in place after a provider switch would
+// validate add-model requests against a catalogue that belongs to the
+// old endpoint.
+func TestManager_SetBaseURL_invalidates_catalogue(t *testing.T) {
+	client := &listModelsCountingClient{infos: fakeCatalogue()}
+
+	fx := newTestManager(t, modelmanager.Config{
+		APIClient:     client,
+		InitialAPIKey: "test-key",
+	})
+
+	fx.mgr.SetAPIFactory(func(string, string) (api.Client, error) {
+		return client, nil
+	})
+
+	require.NoError(t, fx.mgr.EnsureKnownModel(t.Context(), "openai/gpt-5.4-mini"))
+	require.True(t, fx.mgr.SupportedModelsReady())
+
+	require.NoError(t, fx.mgr.SetBaseURL(t.Context(), "https://custom.example.com"))
+
+	require.False(t, fx.mgr.SupportedModelsReady())
+	require.Nil(t, fx.mgr.SupportedModels())
+	require.Equal(t, modelmanager.ListStateNone, fx.mgr.ListState())
+}
+
+// TestManager_SetBaseURL_noFactory_leavesCatalogueAlone pins that a
+// base-URL change which rebuilds no client (no factory configured, or
+// no API key yet) leaves the existing catalogue cache untouched: it
+// still describes the client actually in use.
+func TestManager_SetBaseURL_noFactory_leavesCatalogueAlone(t *testing.T) {
+	client := &listModelsCountingClient{infos: fakeCatalogue()}
+
+	fx := newTestManager(t, modelmanager.Config{
+		APIClient:     client,
+		InitialAPIKey: "test-key",
+	})
+
+	require.NoError(t, fx.mgr.EnsureKnownModel(t.Context(), "openai/gpt-5.4-mini"))
+	require.True(t, fx.mgr.SupportedModelsReady())
+
+	require.NoError(t, fx.mgr.SetBaseURL(t.Context(), "https://custom.example.com"))
+
+	require.True(t, fx.mgr.SupportedModelsReady())
+}
+
 func TestManager_runtimeConfigOperations_recordSpans(t *testing.T) {
 	recorder, provider := oteltest.NewSpanRecorder(t)
 
@@ -271,6 +325,64 @@ func TestManager_RandomPersona(t *testing.T) {
 		ids[p.ID] = true
 	}
 
+	require.True(t, ids[got.ID], "random persona %q not in pool", got.ID)
+}
+
+// TestManager_RandomPersona_excludes_personas_held_by_live_instances
+// pins that the draw skips a persona description already assigned to
+// a connected model instance, so a fresh invite does not hand out a
+// duplicate while an unused persona is still available.
+func TestManager_RandomPersona_excludes_personas_held_by_live_instances(t *testing.T) {
+	fx := newTestManager(t, modelmanager.Config{
+		APIClient: &fakeAPIClient{},
+	})
+
+	ctx := t.Context()
+	personas := testPersonas()
+	for _, p := range personas {
+		require.NoError(t, fx.store.SavePersona(ctx, p))
+	}
+
+	for i, nick := range []domain.Nick{"grumpybot", "lurkerbot"} {
+		inst := domain.NewModelInstance(domain.GenerateInstanceID(), nick, "openai/gpt-5.4-mini", personas[i].Description, nil)
+		require.NoError(t, fx.store.SaveInstance(ctx, inst))
+	}
+
+	// Only personas[2] is unheld; repeating the draw rules out a lucky
+	// hit from a plain uniform draw over all three personas.
+	for range 30 {
+		got, err := fx.mgr.RandomPersona(ctx)
+		require.NoError(t, err)
+		require.Equal(t, personas[2], got)
+	}
+}
+
+// TestManager_RandomPersona_allows_duplicates_when_pool_exhausted pins
+// that the draw falls back to the full pool, duplicates included,
+// once every persona in it is already held by a live instance.
+func TestManager_RandomPersona_allows_duplicates_when_pool_exhausted(t *testing.T) {
+	fx := newTestManager(t, modelmanager.Config{
+		APIClient: &fakeAPIClient{},
+	})
+
+	ctx := t.Context()
+	personas := testPersonas()
+	for _, p := range personas {
+		require.NoError(t, fx.store.SavePersona(ctx, p))
+	}
+
+	for i, p := range personas {
+		inst := domain.NewModelInstance(domain.GenerateInstanceID(), domain.Nick(fmt.Sprintf("bot%d", i)), "openai/gpt-5.4-mini", p.Description, nil)
+		require.NoError(t, fx.store.SaveInstance(ctx, inst))
+	}
+
+	got, err := fx.mgr.RandomPersona(ctx)
+	require.NoError(t, err)
+
+	ids := make(map[string]bool)
+	for _, p := range personas {
+		ids[p.ID] = true
+	}
 	require.True(t, ids[got.ID], "random persona %q not in pool", got.ID)
 }
 

@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -112,7 +113,18 @@ type Manager struct {
 	cacheMu              sync.Mutex
 	supportedModels      map[domain.ModelID]api.ModelInfo
 	supportedModelsReady bool
-	state                atomic.Uint32
+	// catalogueLoadDone is non-nil while a catalogue fetch is in
+	// flight, and closes when it finishes. A caller that finds one
+	// already set waits on it and starts no upstream call of its
+	// own, so concurrent add-model demands single-flight into one
+	// ListModels round trip.
+	catalogueLoadDone chan struct{}
+	state             atomic.Uint32
+	// stateFailedAt holds the UnixNano time of the most recent
+	// transition into ListStateFailed, so ensureCatalogueLoaded can
+	// tell whether CatalogueRetryBackoff has elapsed. Zero means the
+	// catalogue has never failed.
+	stateFailedAt atomic.Int64
 
 	// clients holds the attached model-clients; draining holds the
 	// ones already released, whose dispatch goroutines are on their
@@ -264,20 +276,29 @@ func (m *Manager) SetAPIKey(ctx context.Context, apiKey, baseURL string) error {
 }
 
 // SetBaseURL rebuilds the API client with the given base URL if a
-// factory and an API key are configured.
+// factory and an API key are configured. A rebuild invalidates the
+// supported-models cache, the same way SetAPIKey does: the cache
+// describes the provider behind the old base URL, so the next
+// add-model lazy-loads a fresh catalogue for the new one.
 func (m *Manager) SetBaseURL(ctx context.Context, baseURL string) error {
-	return m.inSpan(ctx, "modelmanager.set_base_url", nil, func(_ context.Context, _ trace.Span) error {
+	return m.inSpan(ctx, "modelmanager.set_base_url", nil, func(ctx context.Context, _ trace.Span) error {
 		baseURL = strings.TrimSpace(baseURL)
 
 		m.mu.Lock()
-		defer m.mu.Unlock()
-
+		rebuilt := false
 		if m.factory != nil && m.apiKey != "" {
 			client, err := m.factory(m.apiKey, baseURL)
 			if err != nil {
+				m.mu.Unlock()
 				return errWithKind(fmt.Errorf("build api client: %w", err), observability.ErrorKindValidation)
 			}
 			m.api = client
+			rebuilt = true
+		}
+		m.mu.Unlock()
+
+		if rebuilt {
+			m.invalidateCatalogue(ctx)
 		}
 
 		return nil
@@ -331,17 +352,62 @@ func (m *Manager) snapshotAPI() (api.Client, string) {
 	return m.api, m.apiKey
 }
 
-// maxNickGenerationAttempts caps the number of times the small
-// model is asked for a nickname before [Manager.generateUniqueNick]
-// gives up. Each retry carries the previously rejected suggestion
-// as a follow-up turn so the model picks something different — the
+// maxNickGenerationAttempts caps the number of times the small model
+// is asked for a nickname before [Manager.generateNickFromModel]
+// gives up. Each retry carries the previously rejected suggestion as
+// a follow-up turn so the model picks something different. The
 // user's full nick list is intentionally never sent to the model.
 const maxNickGenerationAttempts = 3
 
-// generateUniqueNick asks the small model for a nickname guided by
-// the assigned persona and retries up to [maxNickGenerationAttempts]
-// times if the suggested nick is already taken.
+// nickMaxLen matches the nickname schema's `maxLength` constraint
+// declared alongside `nicknameResponse` in the api package.
+const nickMaxLen = 12
+
+// deterministicNickBaseLen caps the length of the model-id-derived
+// base [deterministicNickBase] produces, leaving room within
+// [nickMaxLen] for a numeric collision suffix.
+const deterministicNickBaseLen = 8
+
+// maxDeterministicNickAttempts caps how many numbered variants
+// [Manager.fallbackNick] tries before giving up.
+const maxDeterministicNickAttempts = 1000
+
+// generateUniqueNick resolves a nick for a new model instance. It
+// asks the small model for one, guided by the assigned persona, and
+// falls back to a nick derived deterministically from modelID
+// whenever the small model cannot supply a usable one: an upstream
+// failure, no API client configured, or every suggestion colliding
+// with a taken nick. Nick generation therefore never blocks an
+// add-model on its own.
 func (m *Manager) generateUniqueNick(
+	ctx context.Context,
+	sess *session.Session,
+	modelID domain.ModelID,
+	persona string,
+	logger *slog.Logger,
+) (domain.Nick, error) {
+	nick, err := m.generateNickFromModel(ctx, sess, modelID, persona, logger)
+	if err == nil {
+		return nick, nil
+	}
+
+	logger.WarnContext(ctx, "nick generation unavailable, falling back to a deterministic nick",
+		"error", err,
+	)
+
+	fallback, fallbackErr := m.fallbackNick(ctx, sess, modelID)
+	if fallbackErr != nil {
+		return "", fmt.Errorf("generate nick: %w; deterministic fallback also failed: %w", err, fallbackErr)
+	}
+
+	return fallback, nil
+}
+
+// generateNickFromModel asks the small model for a nickname guided
+// by the assigned persona and retries up to
+// [maxNickGenerationAttempts] times if the suggested nick is already
+// taken.
+func (m *Manager) generateNickFromModel(
 	ctx context.Context,
 	sess *session.Session,
 	modelID domain.ModelID,
@@ -395,6 +461,70 @@ func (m *Manager) generateUniqueNick(
 	return nick, err
 }
 
+// deterministicNickBase derives a nick-safe base string from a model
+// id: the segment after the last `/`, lowercased, with every
+// character outside the nick charset (`[a-z0-9_-]`) replaced by `-`,
+// trimmed of leading and trailing `-`, and capped at
+// [deterministicNickBaseLen] so a numeric collision suffix still fits
+// within the 12-character nick limit.
+func deterministicNickBase(modelID domain.ModelID) string {
+	id := string(modelID)
+	if idx := strings.LastIndexByte(id, '/'); idx >= 0 {
+		id = id[idx+1:]
+	}
+
+	var b strings.Builder
+	for _, r := range strings.ToLower(id) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '_', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('-')
+		}
+	}
+
+	base := strings.Trim(b.String(), "-")
+	if len(base) > deterministicNickBaseLen {
+		base = base[:deterministicNickBaseLen]
+	}
+	base = strings.Trim(base, "-")
+
+	if base == "" {
+		base = "model"
+	}
+
+	return base
+}
+
+// fallbackNick derives a nick deterministically from modelID for use
+// when nick generation cannot supply one. It tries the bare
+// [deterministicNickBase] first, then numbered variants ("nick2",
+// "nick3", ...) up to [maxDeterministicNickAttempts], checking each
+// against sess for uniqueness the same way generateNickFromModel
+// does.
+func (m *Manager) fallbackNick(ctx context.Context, sess *session.Session, modelID domain.ModelID) (domain.Nick, error) {
+	base := deterministicNickBase(modelID)
+
+	for i := range maxDeterministicNickAttempts {
+		candidate := base
+		if i > 0 {
+			suffix := strconv.Itoa(i + 1)
+			keep := max(nickMaxLen-len(suffix), 1)
+			if len(candidate) > keep {
+				candidate = candidate[:keep]
+			}
+			candidate += suffix
+		}
+
+		nick := domain.Nick(candidate)
+		if !m.nickIsTaken(ctx, sess, nick) {
+			return nick, nil
+		}
+	}
+
+	return "", fmt.Errorf("%d deterministic candidates exhausted for %q", maxDeterministicNickAttempts, modelID)
+}
+
 // nickIsTaken reports whether `nick` is already held by the user
 // or any registered model instance. Resolution flows through
 // `Session.ResolveNick`, which gives the same answer the
@@ -408,7 +538,7 @@ func (m *Manager) nickIsTaken(ctx context.Context, sess *session.Session, nick d
 // model instance. The session's `AddModel` handler calls this
 // before attaching the constructed instance to a channel. Errors
 // in persona generation are swallowed (the instance gets an empty
-// persona); nick failures and structured-output validation are
+// persona); nick failures and tool-capability validation are
 // surfaced. The supplied session is consulted for nick-uniqueness
 // resolution so the manager does not hold a back-reference.
 func (m *Manager) PrepareInstance(
@@ -419,7 +549,7 @@ func (m *Manager) PrepareInstance(
 ) (domain.Nick, string, error) {
 	logger := slog.Default().With("component", "modelmanager", "model_id", modelID)
 
-	if err := m.EnsureStructuredOutputModel(ctx, modelID); err != nil {
+	if err := m.EnsureToolCapableModel(ctx, modelID); err != nil {
 		return "", "", err
 	}
 
@@ -430,7 +560,10 @@ func (m *Manager) PrepareInstance(
 			logger.WarnContext(ctx, "persona pool generation failed", "error", err)
 		}
 
-		if p, err := m.RandomPersona(ctx); err == nil {
+		p, err := m.RandomPersona(ctx)
+		if err != nil {
+			logger.WarnContext(ctx, "persona assignment failed, instance will have no persona", "error", err)
+		} else {
 			assigned = p.Description
 		}
 	}
@@ -491,7 +624,7 @@ func (m *Manager) Attach(ctx context.Context, sess *session.Session, inst *domai
 		return existing, nil
 	}
 
-	mc := modelclient.New(inst, sess, m.APIClientGetter(), m.memory, m.tools, m.EnsureStructuredOutputModel, m.CachedContextLen, m.baseContext, m.pacer)
+	mc := modelclient.New(inst, sess, m.APIClientGetter(), m.memory, m.tools, m.EnsureToolCapableModel, m.CachedContextLen, m.baseContext, m.pacer)
 	m.clients[id] = mc
 	m.clientsMu.Unlock()
 

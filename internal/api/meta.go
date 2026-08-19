@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"regexp"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -24,6 +26,19 @@ type nicknameResponse struct {
 }
 
 var nicknameSchemaMap = generateSchema[nicknameResponse]()
+
+// nicknamePattern mirrors the shape declared on nicknameResponse's
+// `pattern`/`minLength`/`maxLength` JSON-schema tags. The schema
+// asks a well-behaved provider to enforce this; GenerateNick
+// re-checks it locally because the schema is a request, not a
+// guarantee, and re-validates before trusting the result.
+var nicknamePattern = regexp.MustCompile(`^[a-z0-9_-]{1,12}$`)
+
+// maxNickFormatAttempts caps how many times GenerateNick asks the
+// small model for a nick that matches nicknamePattern before giving
+// up: the first response, plus one retry carrying the rejected nick
+// as a follow-up turn.
+const maxNickFormatAttempts = 2
 
 func nicknameResponseFormat() openai.ChatCompletionNewParamsResponseFormatUnion {
 	return openai.ChatCompletionNewParamsResponseFormatUnion{
@@ -92,40 +107,71 @@ func (c *OpenRouterClient) GenerateNick(
 				)
 			}
 
-			resp, rawResp, err := c.chatCompletion(ctx, smallModel, openai.ChatCompletionNewParams{ //nolint:bodyclose // SDK reads and closes the body.
-				Model:          shared.ChatModel(string(smallModel)),
-				Messages:       messages,
-				ResponseFormat: nicknameResponseFormat(),
-			})
-			if err != nil {
-				markSpanError(span, observability.ErrorKindTransport, 0, err)
-				logger.ErrorContext(ctx, "openrouter generate nick failed", "error", err)
-				return err
-			}
+			var (
+				parsed  nicknameResponse
+				resp    *openai.ChatCompletion
+				rawResp *http.Response
+			)
 
-			if len(resp.Choices) == 0 {
-				err := fmt.Errorf("generate nick: no choices in response")
-				markSpanError(span, observability.ErrorKindInvalidResponse, 0, err)
-				return err
-			}
+			for formatAttempt := 1; formatAttempt <= maxNickFormatAttempts; formatAttempt++ {
+				var err error
+				resp, rawResp, err = c.chatCompletion(ctx, smallModel, openai.ChatCompletionNewParams{ //nolint:bodyclose // SDK reads and closes the body.
+					Model:          shared.ChatModel(string(smallModel)),
+					Messages:       messages,
+					ResponseFormat: nicknameResponseFormat(),
+				})
+				if err != nil {
+					markSpanError(span, observability.ErrorKindTransport, 0, err)
+					logger.ErrorContext(ctx, "openrouter generate nick failed", "error", err)
+					return err
+				}
 
-			choice := resp.Choices[0]
+				if len(resp.Choices) == 0 {
+					err := fmt.Errorf("generate nick: no choices in response")
+					markSpanError(span, observability.ErrorKindInvalidResponse, 0, err)
+					return err
+				}
 
-			if err := validateChoice(choice); err != nil {
-				markSpanError(span, observability.ErrorKindInvalidResponse, 0, err)
-				return err
-			}
+				choice := resp.Choices[0]
 
-			var parsed nicknameResponse
-			if err := json.Unmarshal([]byte(choice.Message.Content), &parsed); err != nil {
-				markSpanError(span, observability.ErrorKindResponseParse, 0, err)
-				return &completionParseError{target: "nickname", err: err}
-			}
+				if err := validateChoice(choice); err != nil {
+					markSpanError(span, observability.ErrorKindInvalidResponse, 0, err)
+					return err
+				}
 
-			if parsed.Nick == "" {
-				err := fmt.Errorf("generate nick: schema-valid response carried an empty nick")
-				markSpanError(span, observability.ErrorKindInvalidResponse, 0, err)
-				return err
+				if err := json.Unmarshal([]byte(choice.Message.Content), &parsed); err != nil {
+					markSpanError(span, observability.ErrorKindResponseParse, 0, err)
+					return &completionParseError{target: "nickname", err: err}
+				}
+
+				if parsed.Nick == "" {
+					err := fmt.Errorf("generate nick: schema-valid response carried an empty nick")
+					markSpanError(span, observability.ErrorKindInvalidResponse, 0, err)
+					return err
+				}
+
+				if nicknamePattern.MatchString(parsed.Nick) {
+					break
+				}
+
+				logger.WarnContext(ctx, "generated nick violated the schema pattern",
+					"nick", parsed.Nick,
+					"format_attempt", formatAttempt,
+				)
+
+				if formatAttempt == maxNickFormatAttempts {
+					err := fmt.Errorf("generate nick: %q does not match the required format after %d attempts", parsed.Nick, maxNickFormatAttempts)
+					markSpanError(span, observability.ErrorKindInvalidResponse, 0, err)
+					return err
+				}
+
+				messages = append(messages,
+					openai.AssistantMessage(fmt.Sprintf(`{"nick":%q}`, parsed.Nick)),
+					openai.UserMessage(fmt.Sprintf(
+						"%q doesn't match the required format (lowercase letters, digits, underscore or hyphen, 1-12 characters). Suggest a different one.",
+						parsed.Nick,
+					)),
+				)
 			}
 
 			result = NicknameResult{

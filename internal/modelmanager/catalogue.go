@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"go.opentelemetry.io/otel/trace"
 
@@ -13,10 +14,20 @@ import (
 	"github.com/laney/modeloff/internal/observability"
 )
 
+// CatalogueRetryBackoff is the minimum time
+// [Manager.EnsureToolCapableModel], [Manager.EnsureStructuredOutputModel],
+// and [Manager.EnsureKnownModel] wait after a failed catalogue fetch
+// before the next add-model demand retries the upstream. It bounds
+// how long [ListStateFailed] can stay latched after a transient
+// outage: without it, every later add-model would short-circuit with
+// [modelclient.ErrModelListUnavailable] for as long as the process
+// runs, unless a `SetAPIKey` cleared the cache.
+const CatalogueRetryBackoff = 30 * time.Second
+
 // ListState reports the manager's view of the cached model
-// catalogue. The values let tests assert short-circuit behaviour
-// in [Manager.EnsureStructuredOutputModel] after an upstream
-// failure or a fresh `SetAPIKey`.
+// catalogue. The values let tests assert short-circuit behaviour in
+// [Manager.EnsureToolCapableModel] or [Manager.EnsureStructuredOutputModel]
+// after an upstream failure or a fresh `SetAPIKey`.
 type ListState uint32
 
 const (
@@ -59,14 +70,50 @@ func (m *Manager) ListModels(ctx context.Context) ([]api.ModelInfo, error) {
 	return models, err
 }
 
+// EnsureToolCapableModel validates that the given model supports
+// tool calling, lazy-loading the catalogue if needed. This is the
+// capability an invited instance's chat dispatch depends on:
+// OpenRouterClient.SendEvents drives every turn through tool calls
+// (`msg`, `me`, `pass`, the channel-management and memory tools), so
+// a model missing tool support validates but then fails every
+// dispatch upstream. Returns [modelclient.ErrModelListUnavailable]
+// when the cached state recorded an upstream failure;
+// [modelclient.ErrNoAPIKey] when no key is configured (silently: no
+// API key means no LLM concerns, so callers ignore the check); or
+// [domain.UnsupportedModelError] when the catalogue does not include
+// the model, or lists it without OpenRouter's `tools` entry in
+// `supported_parameters`.
+func (m *Manager) EnsureToolCapableModel(ctx context.Context, modelID domain.ModelID) error {
+	client, key := m.snapshotAPI()
+	if key == "" || client == nil {
+		return nil
+	}
+
+	if err := m.ensureCatalogueLoaded(ctx, client, modelID); err != nil {
+		return err
+	}
+
+	info, ok := m.catalogueLookup(modelID)
+	if !ok || !info.SupportsTools() {
+		return domain.UnsupportedModelError{ModelID: modelID, At: m.now()}
+	}
+
+	return nil
+}
+
 // EnsureStructuredOutputModel validates that the given model
-// supports structured outputs, lazy-loading the catalogue if
-// needed. Returns [modelclient.ErrModelListUnavailable] when the
-// cached state recorded an upstream failure;
-// [modelclient.ErrNoAPIKey] when no key is configured (silently —
-// no API key means no LLM concerns, so callers ignore the check);
-// or [domain.UnsupportedModelError] when the catalogue does not
-// include the model.
+// supports strict JSON-schema structured outputs, lazy-loading the
+// catalogue if needed. This is the capability the small model's own
+// calls depend on: GenerateNick and GeneratePersonas both set a
+// strict `json_schema` ResponseFormat and never set Tools, so a
+// model missing structured-output support validates but then fails
+// every nick or persona call upstream. Returns
+// [modelclient.ErrModelListUnavailable] when the cached state
+// recorded an upstream failure; [modelclient.ErrNoAPIKey] when no
+// key is configured (silently: no API key means no LLM concerns, so
+// callers ignore the check); or [domain.UnsupportedModelError] when
+// the catalogue does not include the model, or lists it without
+// OpenRouter's `structured_outputs` entry in `supported_parameters`.
 func (m *Manager) EnsureStructuredOutputModel(ctx context.Context, modelID domain.ModelID) error {
 	client, key := m.snapshotAPI()
 	if key == "" || client == nil {
@@ -77,7 +124,8 @@ func (m *Manager) EnsureStructuredOutputModel(ctx context.Context, modelID domai
 		return err
 	}
 
-	if !m.catalogueHas(modelID) {
+	info, ok := m.catalogueLookup(modelID)
+	if !ok || !info.SupportsStructuredOutputs() {
 		return domain.UnsupportedModelError{ModelID: modelID, At: m.now()}
 	}
 
@@ -86,9 +134,11 @@ func (m *Manager) EnsureStructuredOutputModel(ctx context.Context, modelID domai
 
 // EnsureKnownModel validates that modelID appears in the model
 // catalogue, lazy-loading it if needed. Unlike
-// [Manager.EnsureStructuredOutputModel], it makes no claim about the
-// model's capabilities. Callers that need chat-completion or tool-
-// call support (nick generation, an invited instance) use
+// [Manager.EnsureToolCapableModel] and [Manager.EnsureStructuredOutputModel],
+// it makes no claim about the model's capabilities. Callers that need
+// tool-calling support (an invited instance's chat dispatch) use
+// EnsureToolCapableModel; callers that need strict structured-output
+// support (nick and persona generation via the small model) use
 // EnsureStructuredOutputModel; this method is for callers that only
 // need the id to be real, such as the embedding-model id `/config`
 // sets. Returns [modelclient.ErrModelListUnavailable] when the
@@ -116,14 +166,73 @@ func (m *Manager) EnsureKnownModel(ctx context.Context, modelID domain.ModelID) 
 // ensureCatalogueLoaded lazy-loads the model catalogue if it has not
 // been fetched yet, short-circuiting with
 // [modelclient.ErrModelListUnavailable] when the cached state
-// recorded an upstream failure. modelID is logging context only.
+// recorded an upstream failure less than [CatalogueRetryBackoff] ago.
+// Once that window has passed, this call falls through and retries
+// the upstream itself, so a transient outage self-heals on the next
+// add-model demand. A caller that finds a fetch already in flight
+// waits for it via [Manager.awaitCatalogueLoad] and does not start a
+// second one, so concurrent add-model demands single-flight into one
+// upstream round trip; this recurs every retry window after a
+// failure, which is exactly when several demands are likely to land
+// together. modelID is logging context only.
 func (m *Manager) ensureCatalogueLoaded(ctx context.Context, client api.Client, modelID domain.ModelID) error {
-	if ListState(m.state.Load()) == ListStateFailed {
+	if ListState(m.state.Load()) == ListStateFailed && !m.catalogueRetryDue() {
 		slog.Default().InfoContext(ctx, "add-model short-circuited: model list unavailable",
 			"component", "modelmanager",
 			"model_id", string(modelID),
 		)
 		return modelclient.ErrModelListUnavailable
+	}
+
+	m.cacheMu.Lock()
+	if m.supportedModelsReady {
+		m.cacheMu.Unlock()
+		return nil
+	}
+
+	if inFlight := m.catalogueLoadDone; inFlight != nil {
+		m.cacheMu.Unlock()
+		return m.awaitCatalogueLoad(ctx, inFlight)
+	}
+
+	done := make(chan struct{})
+	m.catalogueLoadDone = done
+	m.cacheMu.Unlock()
+
+	models, err := client.ListModels(ctx)
+
+	// The cache and state must be fully settled before done closes:
+	// a waiter woken by the close reads supportedModelsReady straight
+	// away, with no synchronisation of its own to order that read
+	// after this goroutine's write.
+	if err != nil {
+		m.transitionListState(ctx, ListStateFailed, err)
+	} else {
+		m.cacheSupportedModels(ctx, models)
+	}
+
+	m.cacheMu.Lock()
+	m.catalogueLoadDone = nil
+	m.cacheMu.Unlock()
+	close(done)
+
+	if err != nil {
+		return fmt.Errorf("list models: %w", err)
+	}
+
+	return nil
+}
+
+// awaitCatalogueLoad blocks until the in-flight catalogue fetch
+// signalled by done completes, then reports its outcome without
+// issuing an upstream call of its own. ctx cancellation while
+// waiting returns ctx.Err(), independently of how the in-flight
+// fetch itself resolves.
+func (m *Manager) awaitCatalogueLoad(ctx context.Context, done <-chan struct{}) error {
+	select {
+	case <-done:
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 
 	m.cacheMu.Lock()
@@ -134,33 +243,33 @@ func (m *Manager) ensureCatalogueLoaded(ctx context.Context, client api.Client, 
 		return nil
 	}
 
-	models, err := client.ListModels(ctx)
-	if err != nil {
-		m.transitionListState(ctx, ListStateFailed, err)
-		return fmt.Errorf("list models: %w", err)
-	}
-
-	m.cacheSupportedModels(ctx, models)
-
-	return nil
+	return modelclient.ErrModelListUnavailable
 }
 
 // catalogueHas reports whether modelID is present in the cached
 // catalogue.
 func (m *Manager) catalogueHas(modelID domain.ModelID) bool {
+	_, ok := m.catalogueLookup(modelID)
+	return ok
+}
+
+// catalogueLookup returns the cached catalogue entry for modelID,
+// and whether it is present.
+func (m *Manager) catalogueLookup(modelID domain.ModelID) (api.ModelInfo, bool) {
 	m.cacheMu.Lock()
 	defer m.cacheMu.Unlock()
 
-	_, ok := m.supportedModels[modelID]
+	info, ok := m.supportedModels[modelID]
 
-	return ok
+	return info, ok
 }
 
 // CachedContextLen returns the context length the catalogue cache
 // last recorded for modelID, or 0 if the model is not in the cache
 // (never fetched, or absent from the upstream catalogue). It is a
-// pure read of whatever [Manager.EnsureStructuredOutputModel] last
-// left in the cache and never itself reaches upstream: a
+// pure read of whatever [Manager.EnsureToolCapableModel] last left
+// in the cache for the dispatching instance's model id, and never
+// itself reaches upstream: a
 // model-client's dispatch loop calls this every burst to keep
 // [modelclient.ModelClient]'s transcript token budget current with
 // the catalogue, and a network round trip on that path would defeat
@@ -176,7 +285,8 @@ func (m *Manager) CachedContextLen(modelID domain.ModelID) int {
 
 // ListState reports the manager's current catalogue state. Tests
 // use it to assert the manager's view of the upstream after a
-// `ListModels` or `EnsureStructuredOutputModel` call.
+// `ListModels`, `EnsureToolCapableModel`, or `EnsureStructuredOutputModel`
+// call.
 func (m *Manager) ListState() ListState {
 	return ListState(m.state.Load())
 }
@@ -227,12 +337,30 @@ func (m *Manager) cacheSupportedModels(ctx context.Context, models []api.ModelIn
 	m.transitionListState(ctx, ListStateOK, nil)
 }
 
+// catalogueRetryDue reports whether at least [CatalogueRetryBackoff]
+// has passed since the catalogue's most recent transition into
+// [ListStateFailed].
+func (m *Manager) catalogueRetryDue() bool {
+	failedAtNano := m.stateFailedAt.Load()
+	if failedAtNano == 0 {
+		return true
+	}
+
+	return m.now().Sub(time.Unix(0, failedAtNano)) >= CatalogueRetryBackoff
+}
+
 // transitionListState atomically updates the catalogue state and
 // logs the transition so operators can correlate add-model short-
 // circuits with the upstream failure that put the catalogue into a
-// known-stale state.
+// known-stale state. Every transition into [ListStateFailed] stamps
+// `stateFailedAt`, so a second failure restarts the backoff window
+// from itself.
 func (m *Manager) transitionListState(ctx context.Context, to ListState, err error) {
 	from := ListState(m.state.Swap(uint32(to)))
+
+	if to == ListStateFailed {
+		m.stateFailedAt.Store(m.now().UnixNano())
+	}
 
 	if from == to {
 		return

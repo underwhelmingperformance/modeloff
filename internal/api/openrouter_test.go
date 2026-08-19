@@ -78,28 +78,32 @@ func TestOpenRouterClient_ListModels(t *testing.T) {
 						"id": "anthropic/claude-3-haiku",
 						"name": "Claude 3 Haiku",
 						"description": "Fast and compact",
-						"context_length": 200000
+						"context_length": 200000,
+						"supported_parameters": ["tools", "response_format"]
 					},
 					{
 						"id": "openai/gpt-4o",
 						"name": "GPT-4o",
 						"description": "Flagship model",
-						"context_length": 128000
+						"context_length": 128000,
+						"supported_parameters": ["response_format"]
 					}
 				]
 			}`,
 			want: []ModelInfo{
 				{
-					ID:          "anthropic/claude-3-haiku",
-					Name:        "Claude 3 Haiku",
-					Description: "Fast and compact",
-					ContextLen:  200000,
+					ID:                  "anthropic/claude-3-haiku",
+					Name:                "Claude 3 Haiku",
+					Description:         "Fast and compact",
+					ContextLen:          200000,
+					SupportedParameters: []string{"tools", "response_format"},
 				},
 				{
-					ID:          "openai/gpt-4o",
-					Name:        "GPT-4o",
-					Description: "Flagship model",
-					ContextLen:  128000,
+					ID:                  "openai/gpt-4o",
+					Name:                "GPT-4o",
+					Description:         "Flagship model",
+					ContextLen:          128000,
+					SupportedParameters: []string{"response_format"},
 				},
 			},
 		},
@@ -138,6 +142,37 @@ func TestOpenRouterClient_ListModels(t *testing.T) {
 
 			require.NoError(t, err)
 			require.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestModelInfo_SupportsTools(t *testing.T) {
+	tests := []struct {
+		name                string
+		supportedParameters []string
+		want                bool
+	}{
+		{
+			name:                "tools present",
+			supportedParameters: []string{"tools", "response_format"},
+			want:                true,
+		},
+		{
+			name:                "tools absent",
+			supportedParameters: []string{"response_format"},
+			want:                false,
+		},
+		{
+			name:                "no supported parameters at all",
+			supportedParameters: nil,
+			want:                false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			info := ModelInfo{SupportedParameters: tt.supportedParameters}
+			require.Equal(t, tt.want, info.SupportsTools())
 		})
 	}
 }
@@ -671,6 +706,67 @@ func TestOpenRouterClient_GenerateNick(t *testing.T) {
 
 		var parseErr *completionParseError
 		require.ErrorAs(t, err, &parseErr)
+	})
+
+	t.Run("a nick violating the schema pattern is retried once then accepted", func(t *testing.T) {
+		calls := 0
+
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			calls++
+
+			nick := "Bad Nick!"
+			if calls > 1 {
+				nick = "goodnick"
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": "chatcmpl_nick_format",
+				"choices": []map[string]any{
+					{
+						"message": map[string]any{
+							"role":    "assistant",
+							"content": fmt.Sprintf(`{"nick":%q}`, nick),
+						},
+						"finish_reason": "stop",
+						"index":         0,
+					},
+				},
+			})
+		}))
+		t.Cleanup(srv.Close)
+
+		client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
+
+		got, err := client.GenerateNick(t.Context(), "anthropic/claude-haiku-4.5", persona, nil)
+		require.NoError(t, err)
+		require.Equal(t, domain.Nick("goodnick"), got.Nick)
+		require.Equal(t, 2, calls)
+	})
+
+	t.Run("a nick still violating the schema pattern after retry is reported as an error", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": "chatcmpl_nick_format_fail",
+				"choices": []map[string]any{
+					{
+						"message": map[string]any{
+							"role":    "assistant",
+							"content": `{"nick":"Still Bad!"}`,
+						},
+						"finish_reason": "stop",
+						"index":         0,
+					},
+				},
+			})
+		}))
+		t.Cleanup(srv.Close)
+
+		client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
+
+		_, err := client.GenerateNick(t.Context(), "anthropic/claude-haiku-4.5", persona, nil)
+		require.Error(t, err)
 	})
 }
 

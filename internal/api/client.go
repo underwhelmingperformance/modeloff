@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 
 	openai "github.com/openai/openai-go/v3"
 	"go.opentelemetry.io/otel/attribute"
@@ -53,10 +54,33 @@ func validateChoice(choice openai.ChatCompletionChoice) error {
 
 // ModelInfo holds metadata about an available model from OpenRouter.
 type ModelInfo struct {
-	ID          domain.ModelID `json:"id"`
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	ContextLen  int            `json:"context_length"`
+	ID                  domain.ModelID `json:"id"`
+	Name                string         `json:"name"`
+	Description         string         `json:"description"`
+	ContextLen          int            `json:"context_length"`
+	SupportedParameters []string       `json:"supported_parameters"`
+}
+
+// SupportsTools reports whether OpenRouter advertises tool-calling
+// support for this model, via `"tools"` in its `supported_parameters`
+// list. The app's chat-completion protocol drives every model turn
+// through tool calls (`msg`, `me`, `pass`, the channel-management and
+// memory tools), so a model without this parameter fails every turn
+// upstream even though it validates fine at invite time.
+func (m ModelInfo) SupportsTools() bool {
+	return slices.Contains(m.SupportedParameters, "tools")
+}
+
+// SupportsStructuredOutputs reports whether OpenRouter advertises
+// strict JSON-schema structured-output support for this model, via
+// `"structured_outputs"` in its `supported_parameters` list.
+// OpenRouter tracks this separately from `"tools"`: the two are
+// independent capabilities, not usually-correlated ones, so a model
+// can have either, both, or neither. GenerateNick and
+// GeneratePersonas set a strict `json_schema` `ResponseFormat` and
+// never set `Tools`, so this is the parameter their calls depend on.
+func (m ModelInfo) SupportsStructuredOutputs() bool {
+	return slices.Contains(m.SupportedParameters, "structured_outputs")
 }
 
 // Usage contains token and cost metadata returned by OpenRouter.

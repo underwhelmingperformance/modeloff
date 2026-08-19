@@ -45,7 +45,11 @@ func (m *Manager) EnsurePersonas(ctx context.Context) error {
 	})
 }
 
-// RandomPersona picks a random persona from the store pool.
+// RandomPersona picks a random persona from the store pool, excluding
+// any persona description already held by a connected model instance
+// so a run of invites does not hand out the same persona twice while
+// an unused one is available. Once every persona in the pool is held,
+// the draw falls back to the full pool and hands out a duplicate.
 func (m *Manager) RandomPersona(ctx context.Context) (domain.Persona, error) {
 	var chosen domain.Persona
 
@@ -59,16 +63,61 @@ func (m *Manager) RandomPersona(ctx context.Context) (domain.Persona, error) {
 			return fmt.Errorf("no personas available")
 		}
 
-		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(personas))))
+		held, err := m.heldPersonaDescriptions(ctx)
+		if err != nil {
+			return fmt.Errorf("list instances: %w", err)
+		}
+
+		pool := personas
+		if unheld := excludeHeld(personas, held); len(unheld) > 0 {
+			pool = unheld
+		}
+
+		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(pool))))
 		if err != nil {
 			return fmt.Errorf("random selection: %w", err)
 		}
 
-		chosen = personas[n.Int64()]
+		chosen = pool[n.Int64()]
 		return nil
 	})
 
 	return chosen, err
+}
+
+// heldPersonaDescriptions returns the persona descriptions assigned
+// to every instance row [Store.ListInstances] currently reports.
+// QUIT and KILL delete an instance's row on a clean disconnect, so
+// this is normally just the connected instances. The session's
+// cleanup after a failed ADDMODEL is best-effort, though: if it
+// cannot delete the row it leaves behind, that row's persona stays
+// excluded from the draw until something removes it.
+func (m *Manager) heldPersonaDescriptions(ctx context.Context) (map[string]bool, error) {
+	instances, err := m.store.ListInstances(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	held := make(map[string]bool, len(instances))
+	for _, inst := range instances {
+		if p := inst.Persona(); p != "" {
+			held[p] = true
+		}
+	}
+
+	return held, nil
+}
+
+// excludeHeld returns the personas whose description is not in held.
+func excludeHeld(personas []domain.Persona, held map[string]bool) []domain.Persona {
+	unheld := make([]domain.Persona, 0, len(personas))
+	for _, p := range personas {
+		if !held[p.Description] {
+			unheld = append(unheld, p)
+		}
+	}
+
+	return unheld
 }
 
 // RegeneratePersonas generates a fresh set of personas via the

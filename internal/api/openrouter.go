@@ -519,10 +519,11 @@ func completionResultKind(result CompletionResult) string {
 
 type modelsResponse struct {
 	Data []struct {
-		ID            string `json:"id"`
-		Name          string `json:"name"`
-		Description   string `json:"description"`
-		ContextLength int    `json:"context_length"`
+		ID                  string   `json:"id"`
+		Name                string   `json:"name"`
+		Description         string   `json:"description"`
+		ContextLength       int      `json:"context_length"`
+		SupportedParameters []string `json:"supported_parameters"`
 	} `json:"data"`
 }
 
@@ -629,10 +630,11 @@ func (c *OpenRouterClient) ListModels(ctx context.Context) ([]ModelInfo, error) 
 		models = make([]ModelInfo, len(mr.Data))
 		for i, model := range mr.Data {
 			models[i] = ModelInfo{
-				ID:          domain.ModelID(model.ID),
-				Name:        model.Name,
-				Description: model.Description,
-				ContextLen:  model.ContextLength,
+				ID:                  domain.ModelID(model.ID),
+				Name:                model.Name,
+				Description:         model.Description,
+				ContextLen:          model.ContextLength,
+				SupportedParameters: model.SupportedParameters,
 			}
 		}
 

@@ -330,7 +330,12 @@ func TestSession_AddModel_retries_on_nick_collision(t *testing.T) {
 	})
 }
 
-func TestSession_AddModel_gives_up_after_max_attempts(t *testing.T) {
+// TestSession_AddModel_fallsBackToDeterministicNick_afterCollisionExhaustion
+// pins that AddModel succeeds when the small model's suggestions all
+// collide with a taken nick: PrepareInstance falls back to a nick
+// derived deterministically from the model id ("test/model" ->
+// "model"), which "taken" does not collide with.
+func TestSession_AddModel_fallsBackToDeterministicNick_afterCollisionExhaustion(t *testing.T) {
 	fake := &managerFakeAPI{
 		generateNickFn: func(_ context.Context, _ domain.ModelID, _ string, _ []domain.Nick) (domain.Nick, error) {
 			return "taken", nil
@@ -343,24 +348,37 @@ func TestSession_AddModel_gives_up_after_max_attempts(t *testing.T) {
 	seedStoreInstance(t, store, "taken", "test/model")
 	seedChannel(t, user, "#dev")
 
-	err := addModelViaWire(ctx, t, user, "#dev", "test/model", "Helpful assistant")
-	require.EqualError(t, err,
-		"generate nick: 3 attempts exhausted, all suggestions collided")
+	require.NoError(t, addModelViaWire(ctx, t, user, "#dev", "test/model", "Helpful assistant"))
+
+	inst, err := store.ResolveNick(ctx, "model")
+	require.NoError(t, err)
+	require.Equal(t, domain.Nick("model"), inst.Nick())
+	require.Equal(t, domain.ModelID("test/model"), inst.ModelID)
 }
 
-func TestSession_AddModelGenerateNickError(t *testing.T) {
+// TestSession_AddModel_fallsBackToDeterministicNick_afterGenerateNickError
+// pins that AddModel succeeds when the small model's GenerateNick
+// call errors outright: PrepareInstance falls back to a nick derived
+// deterministically from the model id
+// ("anthropic/claude-3-haiku" -> "claude-3").
+func TestSession_AddModel_fallsBackToDeterministicNick_afterGenerateNickError(t *testing.T) {
 	fake := &managerFakeAPI{
 		generateNickFn: func(_ context.Context, _ domain.ModelID, _ string, _ []domain.Nick) (domain.Nick, error) {
 			return "", fmt.Errorf("API unavailable")
 		},
 	}
 
-	_, _, _, user := newTestSessionWithManager(t, fake, "")
+	_, store, _, user := newTestSessionWithManager(t, fake, "")
 	ctx := t.Context()
 
 	seedChannel(t, user, "#dev")
 
-	require.Error(t, addModelViaWire(ctx, t, user, "#dev", "anthropic/claude-3-haiku", ""))
+	require.NoError(t, addModelViaWire(ctx, t, user, "#dev", "anthropic/claude-3-haiku", ""))
+
+	inst, err := store.ResolveNick(ctx, "claude-3")
+	require.NoError(t, err)
+	require.Equal(t, domain.Nick("claude-3"), inst.Nick())
+	require.Equal(t, domain.ModelID("anthropic/claude-3-haiku"), inst.ModelID)
 }
 
 func TestSession_AddModel_creates_new_instance_per_invocation(t *testing.T) {
@@ -582,7 +600,7 @@ func TestSession_AddModel_short_circuits_after_ListModels_failure(t *testing.T) 
 }
 
 func TestSession_AddModel_lazy_loads_when_state_none(t *testing.T) {
-	client := &listModelsCountingClient{infos: []api.ModelInfo{{ID: "anthropic/claude-3-haiku"}}}
+	client := &listModelsCountingClient{infos: []api.ModelInfo{{ID: "anthropic/claude-3-haiku", SupportedParameters: []string{"tools"}}}}
 
 	_, _, mgr, user := newTestSessionWithManager(t, client, "test-key")
 	ctx := t.Context()
@@ -677,7 +695,7 @@ func TestDispatch_transcript_token_budget_from_catalogue_context_len(t *testing.
 
 				fake := &managerFakeAPI{
 					listModelsFn: func(context.Context) ([]api.ModelInfo, error) {
-						return []api.ModelInfo{{ID: "test/model", ContextLen: tc.contextLen}}, nil
+						return []api.ModelInfo{{ID: "test/model", ContextLen: tc.contextLen, SupportedParameters: []string{"tools"}}}, nil
 					},
 					sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, history []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
 						histories = append(histories, history)
