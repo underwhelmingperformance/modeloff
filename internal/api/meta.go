@@ -72,13 +72,66 @@ Persona: %s`
 // GenerateNick asks a model to suggest one IRC-style nickname guided
 // by the persona description. Rejected suggestions from prior calls
 // are folded into the conversation as a follow-up turn so the model
-// avoids repeating them; the caller's authoritative nick list is
-// never sent.
+// avoids repeating them, each with the fixed "already taken" wording;
+// the caller's authoritative nick list is never sent.
+// [OpenRouterClient.GenerateNickWithReasons] is the same generation
+// with a distinct retry hint per rejection reason.
 func (c *OpenRouterClient) GenerateNick(
 	ctx context.Context,
 	smallModel domain.ModelID,
 	persona string,
 	excludePreviousSuggestions []domain.Nick,
+) (NicknameResult, error) {
+	retries := make([]nickRetryHint, len(excludePreviousSuggestions))
+	for i, rejected := range excludePreviousSuggestions {
+		retries[i] = nickRetryHint{
+			nick: rejected,
+			hint: fmt.Sprintf("That nick is already taken. Suggest a different one. Avoid: %s", string(rejected)),
+		}
+	}
+
+	return c.generateNick(ctx, smallModel, persona, retries)
+}
+
+// GenerateNickWithReasons implements [NickReasonGenerator]. It is the
+// same generation as [OpenRouterClient.GenerateNick], except the
+// retry hint for each rejected suggestion names the reason it was
+// rejected, so a grammar failure ("must start with a letter or one
+// of ...") reads differently from a plain collision ("already
+// taken").
+func (c *OpenRouterClient) GenerateNickWithReasons(
+	ctx context.Context,
+	smallModel domain.ModelID,
+	persona string,
+	excluded []RejectedNick,
+) (NicknameResult, error) {
+	retries := make([]nickRetryHint, len(excluded))
+	for i, rejected := range excluded {
+		retries[i] = nickRetryHint{
+			nick: rejected.Nick,
+			hint: fmt.Sprintf("%q was rejected: %s. Suggest a different one.", string(rejected.Nick), rejected.Reason),
+		}
+	}
+
+	return c.generateNick(ctx, smallModel, persona, retries)
+}
+
+// nickRetryHint is one nickname suggestion GenerateNick already
+// tried, together with the exact retry message to fold into the
+// conversation for it.
+type nickRetryHint struct {
+	nick domain.Nick
+	hint string
+}
+
+// generateNick is the shared implementation behind GenerateNick and
+// GenerateNickWithReasons: they differ only in the wording of each
+// retry's hint, which the caller has already resolved into retries.
+func (c *OpenRouterClient) generateNick(
+	ctx context.Context,
+	smallModel domain.ModelID,
+	persona string,
+	retries []nickRetryHint,
 ) (NicknameResult, error) {
 	ctx, cancel := ensureDeadline(ctx, c.metaTimeout)
 	defer cancel()
@@ -86,7 +139,7 @@ func (c *OpenRouterClient) GenerateNick(
 	logger := slog.Default().With(
 		"component", "api.openrouter",
 		"small_model", smallModel,
-		"attempt", len(excludePreviousSuggestions)+1,
+		"attempt", len(retries)+1,
 	)
 
 	var result NicknameResult
@@ -97,13 +150,10 @@ func (c *OpenRouterClient) GenerateNick(
 				openai.UserMessage(fmt.Sprintf(nicknamePrompt, persona)),
 			}
 
-			for _, rejected := range excludePreviousSuggestions {
+			for _, retry := range retries {
 				messages = append(messages,
-					openai.AssistantMessage(fmt.Sprintf(`{"nick":%q}`, string(rejected))),
-					openai.UserMessage(fmt.Sprintf(
-						"That nick is already taken. Suggest a different one. Avoid: %s",
-						string(rejected),
-					)),
+					openai.AssistantMessage(fmt.Sprintf(`{"nick":%q}`, string(retry.nick))),
+					openai.UserMessage(retry.hint),
 				)
 			}
 

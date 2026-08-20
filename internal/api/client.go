@@ -145,6 +145,32 @@ type NicknameResult struct {
 	Usage     Usage
 }
 
+// RejectedNick pairs a nickname suggestion GenerateNick already tried
+// with why it could not be used. NickReasonGenerator's retry prompt
+// uses Reason to tell a grammar rejection ("must start with a letter
+// or one of ...") from a plain collision ("already taken"), which
+// GenerateNick's single fixed wording cannot.
+type RejectedNick struct {
+	Nick   domain.Nick
+	Reason string
+}
+
+// NickReasonGenerator is an optional capability a Client can
+// implement alongside GenerateNick: the same nickname generation,
+// except each previously rejected suggestion carries the reason it
+// was rejected. A caller that wants that distinction in the retry
+// prompt probes for this interface with a type assertion; a Client
+// that does not implement it is asked through GenerateNick instead,
+// whose retry wording covers only a collision.
+type NickReasonGenerator interface {
+	GenerateNickWithReasons(
+		ctx context.Context,
+		smallModel domain.ModelID,
+		persona string,
+		excluded []RejectedNick,
+	) (NicknameResult, error)
+}
+
 // Client defines the interface for all API interactions. Both the
 // chat completion (via openai-go) and OpenRouter-specific calls are
 // abstracted behind this interface to support testing with fakes.

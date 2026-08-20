@@ -431,10 +431,10 @@ func (m *Manager) generateNickFromModel(
 
 		small := m.SmallModel()
 
-		var rejected []domain.Nick
+		var rejected []api.RejectedNick
 
 		for attempt := 1; attempt <= maxNickGenerationAttempts; attempt++ {
-			result, err := client.GenerateNick(generateCtx, small, persona, rejected)
+			result, err := callGenerateNick(generateCtx, client, small, persona, rejected)
 			if err != nil {
 				logger.ErrorContext(ctx, "generate nick failed",
 					"error", err,
@@ -451,7 +451,10 @@ func (m *Manager) generateNickFromModel(
 					"attempt", attempt,
 					"reason", rejection.String(),
 				)
-				rejected = append(rejected, result.Nick)
+				rejected = append(rejected, api.RejectedNick{
+					Nick:   result.Nick,
+					Reason: "doesn't satisfy the nick grammar: " + rejection.String(),
+				})
 
 				continue
 			}
@@ -465,7 +468,7 @@ func (m *Manager) generateNickFromModel(
 				"nick", result.Nick,
 				"attempt", attempt,
 			)
-			rejected = append(rejected, result.Nick)
+			rejected = append(rejected, api.RejectedNick{Nick: result.Nick, Reason: "is already taken"})
 		}
 
 		return observability.ErrWithKind(
@@ -475,6 +478,33 @@ func (m *Manager) generateNickFromModel(
 	})
 
 	return nick, err
+}
+
+// callGenerateNick asks client for a nickname, carrying each
+// rejected suggestion's reason through [api.NickReasonGenerator] when
+// client implements that optional capability, so the retry prompt
+// can tell a grammar rejection from a plain collision. A client that
+// does not, which is every fake and every provider besides
+// [github.com/laney/modeloff/internal/api.OpenRouterClient], falls
+// back to plain [api.Client.GenerateNick], whose fixed wording covers
+// only a collision.
+func callGenerateNick(
+	ctx context.Context,
+	client api.Client,
+	smallModel domain.ModelID,
+	persona string,
+	rejected []api.RejectedNick,
+) (api.NicknameResult, error) {
+	if reasoner, ok := client.(api.NickReasonGenerator); ok {
+		return reasoner.GenerateNickWithReasons(ctx, smallModel, persona, rejected)
+	}
+
+	var plain []domain.Nick
+	for _, r := range rejected {
+		plain = append(plain, r.Nick)
+	}
+
+	return client.GenerateNick(ctx, smallModel, persona, plain)
 }
 
 // deterministicNickBase derives a nick-safe base string from a model
@@ -695,6 +725,16 @@ func (m *Manager) Attach(ctx context.Context, sess *session.Session, inst *domai
 // The client moves to the draining set on the way out, so the
 // goroutine it is still running stays reachable by
 // [Manager.DetachAll]. Idempotent on an unknown id.
+//
+// Session.releaseClient is the only production caller of this
+// method, and it runs for exactly the paths that also delete the
+// instance's store row (QUIT, KILL, a send-queue disconnect, a
+// failed ADDMODEL), never for [Manager.DetachAll]'s bulk release at
+// shutdown, which leaves every attached instance's row alone for the
+// next run. That is what makes it safe to also delete the instance's
+// memory collection for a known id here: every call site that
+// reaches an attached client already means the instance itself is
+// gone too.
 func (m *Manager) Detach(id protocol.ClientID) {
 	m.clientsMu.Lock()
 	mc, ok := m.clients[id]
@@ -709,6 +749,32 @@ func (m *Manager) Detach(id protocol.ClientID) {
 	}
 
 	mc.Release()
+	m.deleteMemoryCollection(id)
+}
+
+// deleteMemoryCollection removes id's memory-index state through
+// [memory.InstanceDeleter], when the configured memory Store
+// implements that optional capability. The plain, non-indexed
+// fallback store [NewDefaultStore] falls back to when the vector
+// index cannot be opened does not, and has no such state to remove.
+func (m *Manager) deleteMemoryCollection(id protocol.ClientID) {
+	deleter, ok := m.memory.(memory.InstanceDeleter)
+	if !ok {
+		return
+	}
+
+	ctx := context.Background()
+	if m.baseContext != nil {
+		ctx = m.baseContext()
+	}
+
+	if err := deleter.DeleteInstance(ctx, domain.InstanceID(id)); err != nil {
+		slog.Default().WarnContext(ctx, "delete memory collection",
+			"component", "modelmanager",
+			"instance_id", string(id),
+			"error", err,
+		)
+	}
 }
 
 // DetachAll ends every model client's connection and joins its

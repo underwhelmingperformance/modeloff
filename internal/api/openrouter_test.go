@@ -791,6 +791,76 @@ func TestOpenRouterClient_GenerateNick(t *testing.T) {
 	})
 }
 
+// TestOpenRouterClient_GenerateNickWithReasons pins the small
+// difference between it and GenerateNick: OpenRouterClient satisfies
+// NickReasonGenerator, and the retry hint it sends names the reason
+// a suggestion was rejected instead of always saying it was taken.
+func TestOpenRouterClient_GenerateNickWithReasons(t *testing.T) {
+	const persona = "Idle bot operator with a dozen scripts running."
+
+	t.Run("OpenRouterClient satisfies NickReasonGenerator", func(t *testing.T) {
+		var client Client = NewOpenRouterClient("test-key", "http://example.invalid", http.DefaultClient)
+		_, ok := client.(NickReasonGenerator)
+		require.True(t, ok)
+	})
+
+	t.Run("each rejection reason becomes its own follow-up turn", func(t *testing.T) {
+		var requestBody map[string]any
+
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&requestBody))
+
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": "chatcmpl_nick_reasons",
+				"choices": []map[string]any{
+					{
+						"message": map[string]any{
+							"role":    "assistant",
+							"content": `{"nick":"dustbench"}`,
+						},
+						"finish_reason": "stop",
+						"index":         0,
+					},
+				},
+			})
+		}))
+		t.Cleanup(srv.Close)
+
+		client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
+
+		got, err := client.GenerateNickWithReasons(t.Context(), "anthropic/claude-haiku-4.5", persona, []RejectedNick{
+			{Nick: "dustbunny", Reason: "is already taken"},
+			{Nick: "1bot", Reason: "doesn't satisfy the nick grammar: must start with a letter or one of []`_^{|}"},
+		})
+		require.NoError(t, err)
+		require.Equal(t, domain.Nick("dustbench"), got.Nick)
+
+		require.Equal(t, []any{
+			map[string]any{
+				"role":    "user",
+				"content": fmt.Sprintf(nicknamePrompt, persona),
+			},
+			map[string]any{
+				"role":    "assistant",
+				"content": `{"nick":"dustbunny"}`,
+			},
+			map[string]any{
+				"role":    "user",
+				"content": `"dustbunny" was rejected: is already taken. Suggest a different one.`,
+			},
+			map[string]any{
+				"role":    "assistant",
+				"content": `{"nick":"1bot"}`,
+			},
+			map[string]any{
+				"role":    "user",
+				"content": "\"1bot\" was rejected: doesn't satisfy the nick grammar: must start with a letter or one of []`_^{|}. Suggest a different one.",
+			},
+		}, requestBody["messages"])
+	})
+}
+
 func TestOpenRouterClient_SendEvents_write_memory(t *testing.T) {
 	srv := newToolCallServer(t, toolCallFixture{
 		name: "write_memory",
