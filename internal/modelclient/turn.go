@@ -140,7 +140,7 @@ func (mc *ModelClient) dispatchToInstance(ctx context.Context, turn turnRequest)
 
 		var mem MemoryExecutor
 		if mc.memStore != nil {
-			mem = &instanceMemory{instanceID: inst.ID(), store: mc.memStore}
+			mem = &instanceMemory{instanceID: inst.ID(), store: mc.memStore, now: mc.sess.Now}
 		}
 
 		// The tool set is filtered by what the server says this client

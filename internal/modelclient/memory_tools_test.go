@@ -3,6 +3,7 @@ package modelclient
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -47,6 +48,48 @@ var (
 	_ memory.Store    = (*fakeSearchableStore)(nil)
 	_ memory.Searcher = (*fakeSearchableStore)(nil)
 )
+
+// writeRecordingStore is a memory.Store that records every Entry a
+// Write call receives, so a test can inspect what instanceMemory
+// actually persisted.
+type writeRecordingStore struct {
+	written []memory.Entry
+}
+
+func (s *writeRecordingStore) Read(context.Context, domain.InstanceID) ([]memory.Entry, error) {
+	return nil, nil
+}
+
+func (s *writeRecordingStore) Write(_ context.Context, _ domain.InstanceID, entry memory.Entry) error {
+	s.written = append(s.written, entry)
+	return nil
+}
+
+func (s *writeRecordingStore) Delete(context.Context, domain.InstanceID, string) error {
+	return nil
+}
+
+func (s *writeRecordingStore) Reset(context.Context) error {
+	return nil
+}
+
+var _ memory.Store = (*writeRecordingStore)(nil)
+
+// TestInstanceMemory_WriteMemory_stamps_the_injected_clock pins that
+// a written entry's At carries the clock instanceMemory was
+// constructed with, not the zero value. A zero At is the sentinel a
+// pre-migration row reads back as, so a WriteMemory that left it
+// zero would make every newly written memory indistinguishable from
+// one that predates the write-time column.
+func TestInstanceMemory_WriteMemory_stamps_the_injected_clock(t *testing.T) {
+	store := &writeRecordingStore{}
+	fixed := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	mem := &instanceMemory{instanceID: "inst-1", store: store, now: func() time.Time { return fixed }}
+
+	require.NoError(t, mem.WriteMemory(t.Context(), "mood", "happy"))
+
+	require.Equal(t, []memory.Entry{{Key: "mood", Content: "happy", At: fixed}}, store.written)
+}
 
 func TestInstanceMemory_SearchMemory_unsearchable_store_errors(t *testing.T) {
 	mem := &instanceMemory{instanceID: "inst-1", store: &fakeSearchableStore{searchable: false}}

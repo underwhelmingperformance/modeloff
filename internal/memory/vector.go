@@ -2,9 +2,14 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"sync"
 	"sync/atomic"
+	"time"
 
 	chromem "github.com/philippgille/chromem-go"
 	"go.opentelemetry.io/otel"
@@ -21,15 +26,32 @@ var (
 	_ InstanceDeleter = (*IndexedStore)(nil)
 )
 
-// IndexedStore wraps a FileStore with a chromem-go vector index to
-// provide semantic search. CRUD operations delegate to the underlying
-// FileStore. Writes and deletes also update the vector index, but
-// indexing failures are logged rather than returned — the FileStore
-// is the source of truth.
+// IndexedStore wraps a backing [Store] (in production, a
+// [StoreAdapter] over SQLite) with a chromem-go vector index to
+// provide semantic search. CRUD operations delegate to the backing
+// store. Writes and deletes also update the vector index, but
+// indexing failures are logged rather than returned: the backing
+// store is the source of truth, and [IndexedStore.ensureIndexed]
+// reconciles the index against it on every search.
 type IndexedStore struct {
 	backing       Store
 	db            *chromem.DB
 	embeddingFunc chromem.EmbeddingFunc
+
+	// indexDir is the directory NewIndexedStore opened db from, and
+	// the root ReconcileEmbeddingModel persists its marker file
+	// under. Empty for a store built via NewIndexedStoreFromDB (tests
+	// and in-memory callers), which makes ReconcileEmbeddingModel's
+	// persistence a no-op: there is no directory of this store's own
+	// to keep it in.
+	indexDir string
+
+	// embeddingModelMu guards embeddingModel: ReconcileEmbeddingModel
+	// reads the previous value, decides whether to reset the index,
+	// and records the new one as one step, and a concurrent config
+	// change must not interleave with that.
+	embeddingModelMu sync.Mutex
+	embeddingModel   string
 
 	// searchable is the live outcome of the most recent probe of
 	// embeddingFunc — see probeEmbeddingFunc. Search always has a
@@ -72,6 +94,7 @@ func NewIndexedStore(ctx context.Context, backing Store, indexDir string, embedd
 	s := &IndexedStore{
 		backing:        backing,
 		db:             db,
+		indexDir:       indexDir,
 		tracerProvider: otel.GetTracerProvider(),
 	}
 	s.embeddingFunc = s.instrumentEmbedding(embeddingFunc)
@@ -135,7 +158,7 @@ func (s *IndexedStore) tracer() trace.Tracer {
 // inSpan brackets fn with a span and result-recording on the store's
 // tracer provider. See `observability.SpanRunner`. Underlying
 // failures are tagged `ErrorKindStore` since the indexed store is a
-// thin facade over the file store and the chromem index.
+// thin facade over the backing store and the chromem index.
 func (s *IndexedStore) inSpan(
 	ctx context.Context,
 	op string,
@@ -152,7 +175,7 @@ func (s *IndexedStore) collection(id domain.InstanceID) (*chromem.Collection, er
 	return s.db.GetOrCreateCollection(string(id), nil, s.embeddingFunc)
 }
 
-// Read delegates to the underlying FileStore.
+// Read delegates to the backing store.
 func (s *IndexedStore) Read(ctx context.Context, id domain.InstanceID) ([]Entry, error) {
 	return s.backing.Read(ctx, id)
 }
@@ -197,9 +220,11 @@ func (s *IndexedStore) storeProbeResult(ok bool, err error) {
 }
 
 // Search finds memories semantically similar to the query, returning
-// up to limit results ordered by descending similarity. On the first
-// call for an instance, the index is rebuilt from the FileStore if
-// needed.
+// up to limit results ordered by descending similarity. Before
+// querying, ensureIndexed reconciles the instance's collection
+// against the backing store, so a divergence between the two (nothing
+// indexed yet, or an index missing entries the store still has) is
+// repaired first.
 func (s *IndexedStore) Search(ctx context.Context, id domain.InstanceID, query string, limit int) ([]SearchResult, error) {
 	var searchResults []SearchResult
 	err := s.inSpan(ctx, "memory.search",
@@ -244,7 +269,7 @@ func (s *IndexedStore) Search(ctx context.Context, id domain.InstanceID, query s
 				}
 
 				searchResults = append(searchResults, SearchResult{
-					Entry:      Entry{Key: key, Content: content},
+					Entry:      Entry{Key: key, Content: content, At: parseEntryAt(r.Metadata["at"])},
 					Similarity: r.Similarity,
 				})
 			}
@@ -268,9 +293,10 @@ func (s *IndexedStore) Search(ctx context.Context, id domain.InstanceID, query s
 	return searchResults, nil
 }
 
-// Write persists the entry to the FileStore, then indexes it in the
-// vector database. If indexing fails, the error is logged but not
-// returned — the entry is still saved.
+// Write persists the entry to the backing store, then indexes it in
+// the vector database. If indexing fails, the error is logged but not
+// returned: the entry is still saved, and the next Search's
+// ensureIndexed call reconciles the index against it.
 func (s *IndexedStore) Write(ctx context.Context, id domain.InstanceID, entry Entry) error {
 	return s.inSpan(ctx, "memory.write",
 		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
@@ -303,15 +329,29 @@ func (s *IndexedStore) index(ctx context.Context, id domain.InstanceID, entry En
 		Metadata: map[string]string{
 			"key":     entry.Key,
 			"content": entry.Content,
+			"at":      entry.At.Format(time.RFC3339Nano),
 		},
 	}
 
 	return col.AddDocuments(ctx, []chromem.Document{doc}, 1)
 }
 
+// parseEntryAt reads a chromem document's "at" metadata value back
+// into a time.Time. A document indexed before this metadata existed,
+// or any other unparsable value, is not an error worth surfacing: it
+// reads back as the zero time, [Entry.At]'s own zero-value meaning.
+func parseEntryAt(s string) time.Time {
+	t, err := time.Parse(time.RFC3339Nano, s)
+	if err != nil {
+		return time.Time{}
+	}
+
+	return t
+}
+
 // Delete removes the entry from the vector index, then from the
-// FileStore. If the vector delete fails, it is logged but the
-// FileStore delete still proceeds.
+// backing store. If the vector delete fails, it is logged but the
+// backing store delete still proceeds.
 func (s *IndexedStore) Delete(ctx context.Context, id domain.InstanceID, key string) error {
 	return s.inSpan(ctx, "memory.delete",
 		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
@@ -331,7 +371,7 @@ func (s *IndexedStore) Delete(ctx context.Context, id domain.InstanceID, key str
 
 // DeleteInstance removes the given instance's chromem-go vector
 // collection. It is a no-op if the instance never had a collection.
-// The FileStore-backed memories rows for the same instance are
+// The backing store's memories rows for the same instance are
 // removed automatically when the instance's own row is deleted (see
 // [InstanceDeleter]'s doc comment); this only needs to clear index
 // state chromem owns independently of that row.
@@ -348,7 +388,7 @@ func (s *IndexedStore) DeleteInstance(ctx context.Context, id domain.InstanceID)
 }
 
 // Reset removes all memories from both the vector index and the
-// FileStore.
+// backing store.
 func (s *IndexedStore) Reset(ctx context.Context) error {
 	return s.inSpan(ctx, "memory.reset", nil, func(ctx context.Context, _ trace.Span) error {
 		if err := s.db.Reset(); err != nil {
@@ -359,50 +399,267 @@ func (s *IndexedStore) Reset(ctx context.Context) error {
 	})
 }
 
-// reindexInstance reads all entries for an instance from the
-// FileStore and indexes them. This handles migration from a plain
-// FileStore and recovery from a corrupted index.
-func (s *IndexedStore) reindexInstance(ctx context.Context, id domain.InstanceID) error {
-	entries, err := s.backing.Read(ctx, id)
-	if err != nil {
-		return fmt.Errorf("read entries for %s: %w", id, err)
-	}
-
-	for _, entry := range entries {
-		if err := s.index(ctx, id, entry); err != nil {
-			return fmt.Errorf("index entry %s/%s: %w", id, entry.Key, err)
-		}
-	}
-
-	return nil
-}
-
-// ensureIndexed checks whether an instance's collection is empty
-// and, if the FileStore has entries, rebuilds the index. This is
-// called lazily on Search so callers never need to think about
-// reindexing.
+// ensureIndexed reconciles an instance's collection against the
+// backing store, which is the source of truth: it lists both sides
+// by key and repairs any difference between them, so a divergence
+// reconverges on the next search regardless of which direction it
+// went in and regardless of whether the two sides happen to be the
+// same size. Nothing indexed yet, an index wiped out from under a
+// store that survived, a crash between the backing-store write and
+// the index write leaving one entry unindexed, and a failed
+// col.Delete during Delete leaving a document behind after its entry
+// was removed are all the same shape of problem from here: an entry
+// the collection is missing, or a document the collection holds that
+// names no backing entry.
+//
+// A comparison keyed only by count would miss the case where one of
+// each has happened: an orphaned document and a missing entry of the
+// same instance leave the counts equal, and a check that stopped
+// there would search on with the missing entry absent and the
+// orphan's stale content still answering. Comparing the key sets
+// catches both regardless of what the counts say.
+//
+// An instance with zero backing entries is the extreme case of the
+// same problem: every document the collection still holds, if any,
+// names no backing entry, so the whole collection is deleted rather
+// than reconciled document by document. This is what keeps an
+// instance that deleted its last memory from having a stale document
+// go on answering search_memory after the backing store has nothing
+// left for it.
+//
+// This is called lazily on Search so callers never need to think
+// about reconciling. Missing entries are indexed one at a time on the
+// calling goroutine: an instance's memories are a personal,
+// human-scale list, not something worth an unbounded goroutine
+// fan-out over concurrent embedding calls.
 func (s *IndexedStore) ensureIndexed(ctx context.Context, id domain.InstanceID) error {
-	col, err := s.collection(id)
-	if err != nil {
-		return fmt.Errorf("get collection for %s: %w", id, err)
-	}
-
-	if col.Count() > 0 {
-		return nil
-	}
-
 	entries, err := s.backing.Read(ctx, id)
 	if err != nil {
 		return fmt.Errorf("read entries for %s: %w", id, err)
 	}
 
 	if len(entries) == 0 {
+		return s.clearCollection(ctx, id)
+	}
+
+	col, err := s.collection(id)
+	if err != nil {
+		return fmt.Errorf("get collection for %s: %w", id, err)
+	}
+
+	backingKeys := make(map[string]struct{}, len(entries))
+
+	var anchor string
+	var added int
+
+	for _, entry := range entries {
+		backingKeys[entry.Key] = struct{}{}
+		anchor = entry.Key
+
+		if _, err := col.GetByID(ctx, entry.Key); err == nil {
+			continue
+		}
+
+		if err := s.index(ctx, id, entry); err != nil {
+			return fmt.Errorf("index entry %s/%s: %w", id, entry.Key, err)
+		}
+
+		added++
+	}
+
+	removed, err := s.pruneOrphanDocuments(ctx, id, col, anchor, backingKeys)
+	if err != nil {
+		return err
+	}
+
+	if added > 0 || removed > 0 {
+		slog.Default().InfoContext(ctx, "reconciled memory index against the backing store",
+			"instance_id", string(id),
+			"added", added,
+			"removed", removed,
+		)
+	}
+
+	return nil
+}
+
+// pruneOrphanDocuments removes every document col holds whose id is
+// not a key in backingKeys, and returns how many it removed.
+//
+// chromem exposes no method to list a collection's document ids
+// directly, so this asks for them the way it exposes: an exhaustive
+// QueryEmbedding for every document the collection holds (nResults
+// set to the collection's own count), which returns the full set
+// regardless of relevance ranking. anchor names a document
+// ensureIndexed has already guaranteed exists in col (any backing
+// entry, once its own loop has run), and QueryEmbedding takes a
+// precomputed vector rather than text to embed, so reusing that
+// document's own embedding as the query vector costs no embedding-API
+// call of its own.
+func (s *IndexedStore) pruneOrphanDocuments(
+	ctx context.Context,
+	id domain.InstanceID,
+	col *chromem.Collection,
+	anchor string,
+	backingKeys map[string]struct{},
+) (int, error) {
+	count := col.Count()
+	if count == 0 {
+		return 0, nil
+	}
+
+	anchorDoc, err := col.GetByID(ctx, anchor)
+	if err != nil {
+		return 0, fmt.Errorf("get anchor document %s/%s: %w", id, anchor, err)
+	}
+
+	results, err := col.QueryEmbedding(ctx, anchorDoc.Embedding, count, nil, nil)
+	if err != nil {
+		return 0, fmt.Errorf("enumerate index documents for %s: %w", id, err)
+	}
+
+	var removed int
+	for _, r := range results {
+		if _, ok := backingKeys[r.ID]; ok {
+			continue
+		}
+
+		if err := col.Delete(ctx, nil, nil, r.ID); err != nil {
+			slog.Default().WarnContext(ctx, "failed to remove orphaned memory from index",
+				"instance_id", string(id), "key", r.ID, "error", err)
+
+			continue
+		}
+
+		removed++
+	}
+
+	return removed, nil
+}
+
+// clearCollection deletes id's entire chromem collection when the
+// backing store holds zero entries for it: every document such a
+// collection still holds names no backing entry, so nothing needs an
+// anchor or an enumeration to know it is orphaned. A no-op when the
+// collection does not exist or is already empty, checked with
+// s.db.GetCollection rather than s.collection so that querying an
+// instance that has never written a memory does not create one.
+func (s *IndexedStore) clearCollection(ctx context.Context, id domain.InstanceID) error {
+	col := s.db.GetCollection(string(id), nil)
+	if col == nil || col.Count() == 0 {
 		return nil
 	}
 
-	slog.Default().InfoContext(ctx, "rebuilding memory index", "instance_id", string(id))
+	removed := col.Count()
 
-	return s.reindexInstance(ctx, id)
+	if err := s.db.DeleteCollection(string(id)); err != nil {
+		return fmt.Errorf("delete collection for %s: %w", id, err)
+	}
+
+	slog.Default().InfoContext(ctx, "reconciled memory index against the backing store",
+		"instance_id", string(id),
+		"added", 0,
+		"removed", removed,
+	)
+
+	return nil
+}
+
+// embeddingModelMarkerFile is the name of the sidecar file
+// ReconcileEmbeddingModel persists inside indexDir, recording which
+// embedding model most recently built the index.
+const embeddingModelMarkerFile = "embedding_model"
+
+// ReconcileEmbeddingModel records model as the embedding model
+// backing this store's index and, if a different model built it
+// before, wipes the vector index so every instance's collection is
+// rebuilt against model on its next search: entries embedded under
+// one model are meaningless to query vectors built from another.
+// Only the chromem-go index is cleared; the backing store, which
+// still holds every entry regardless of what embedded it, is
+// untouched, so ensureIndexed's reconciliation is what performs the
+// actual reindex, lazily, the next time each instance is searched.
+//
+// The comparison is best-effort across restarts: when this store was
+// built with an on-disk indexDir (NewIndexedStore), the previous
+// model is also read from and written to a marker file there, so a
+// model change made while the app was closed is still caught on the
+// next open. A store built via NewIndexedStoreFromDB has no
+// directory of its own, so persistence is skipped and only a change
+// within this process's lifetime is caught: the shape every test
+// double using an in-memory chromem.DB needs, and no less than what
+// NewIndexedStore itself catches on its very first open, before any
+// marker file exists to compare against.
+//
+// Call this once at construction with the configured model, and
+// again whenever a config change might have altered it, the same
+// moments NewDefaultStore already calls RefreshSearchable.
+func (s *IndexedStore) ReconcileEmbeddingModel(ctx context.Context, model string) error {
+	s.embeddingModelMu.Lock()
+	defer s.embeddingModelMu.Unlock()
+
+	previous := s.embeddingModel
+	if previous == "" {
+		previous = s.readEmbeddingModelMarker(ctx)
+	}
+
+	if previous != "" && previous != model {
+		slog.Default().InfoContext(ctx, "embedding model changed, resetting the vector index",
+			"previous_model", previous,
+			"model", model,
+		)
+
+		if err := s.db.Reset(); err != nil {
+			return fmt.Errorf("reset vector index for embedding model change: %w", err)
+		}
+	}
+
+	s.embeddingModel = model
+	s.writeEmbeddingModelMarker(ctx, model)
+
+	return nil
+}
+
+// readEmbeddingModelMarker reads the persisted embedding-model
+// marker from indexDir, or "" if there is no directory to read one
+// from, no marker file yet (a fresh index), or the file could not be
+// read. A read failure is logged rather than returned:
+// ReconcileEmbeddingModel treats it the same as no previous marker,
+// which risks a missed reset over a transient filesystem glitch
+// rather than wiping a healthy index on one.
+func (s *IndexedStore) readEmbeddingModelMarker(ctx context.Context) string {
+	if s.indexDir == "" {
+		return ""
+	}
+
+	data, err := os.ReadFile(filepath.Join(s.indexDir, embeddingModelMarkerFile))
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			slog.Default().WarnContext(ctx, "read embedding model marker",
+				"index_dir", s.indexDir, "error", err)
+		}
+
+		return ""
+	}
+
+	return string(data)
+}
+
+// writeEmbeddingModelMarker persists model to indexDir for a future
+// open to compare against. A no-op when this store has no directory
+// of its own (NewIndexedStoreFromDB); a write failure is logged, not
+// returned, the same as every other index-maintenance failure in
+// this store: the backing store remains the source of truth either
+// way.
+func (s *IndexedStore) writeEmbeddingModelMarker(ctx context.Context, model string) {
+	if s.indexDir == "" {
+		return
+	}
+
+	if err := os.WriteFile(filepath.Join(s.indexDir, embeddingModelMarkerFile), []byte(model), 0o600); err != nil {
+		slog.Default().WarnContext(ctx, "write embedding model marker",
+			"index_dir", s.indexDir, "error", err)
+	}
 }
 
 func (s *IndexedStore) instrumentEmbedding(inner chromem.EmbeddingFunc) chromem.EmbeddingFunc {

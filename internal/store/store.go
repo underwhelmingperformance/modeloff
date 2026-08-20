@@ -3,7 +3,10 @@
 // for all data that survives across sessions.
 package store
 
-import "errors"
+import (
+	"errors"
+	"time"
+)
 
 // ErrNoSuchNick signals that a nick lookup did not match any
 // stored instance.
@@ -17,4 +20,11 @@ var ErrNoSuchChannel = errors.New("no such channel")
 type MemoryEntry struct {
 	Key     string
 	Content string
+
+	// At is when this entry was written, as recorded by
+	// WriteMemory's caller. A row written before this field existed
+	// carries the zero time: nothing recorded its original write
+	// time, so it sorts as the oldest possible entry rather than
+	// being backdated to a time it was not actually written.
+	At time.Time
 }

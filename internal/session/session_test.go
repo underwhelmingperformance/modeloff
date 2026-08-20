@@ -3675,7 +3675,7 @@ func TestSession_Dispatch_write_memory_then_reply(t *testing.T) {
 
 		memories, err := memStore.Read(ctx, testMemberID("botty"))
 		require.NoError(t, err)
-		require.Equal(t, []memory.Entry{{Key: "mood", Content: "happy"}}, memories)
+		require.Equal(t, []memory.Entry{{Key: "mood", Content: "happy", At: fixedTime}}, memories)
 	})
 }
 
@@ -3809,8 +3809,8 @@ func TestSession_Dispatch_multiple_memory_calls_in_one_response(t *testing.T) {
 		memories, err := memStore.Read(ctx, testMemberID("botty"))
 		require.NoError(t, err)
 		require.Equal(t, []memory.Entry{
-			{Key: "mood", Content: "happy"},
-			{Key: "topic", Content: "go programming"},
+			{Key: "mood", Content: "happy", At: fixedTime},
+			{Key: "topic", Content: "go programming", At: fixedTime},
 		}, memories)
 	})
 }
@@ -4077,8 +4077,8 @@ func TestSession_Dispatch_write_then_search_memory_with_vector_store(t *testing.
 	}, searchResults)
 
 	require.Equal(t, []memory.SearchResult{
-		{Entry: memory.Entry{Key: "pet_cats", Content: "cats are wonderful"}, Similarity: 1.0},
-		{Entry: memory.Entry{Key: "pet_dogs", Content: "dogs are loyal"}, Similarity: 0},
+		{Entry: memory.Entry{Key: "pet_cats", Content: "cats are wonderful", At: fixedTime}, Similarity: 1.0},
+		{Entry: memory.Entry{Key: "pet_dogs", Content: "dogs are loyal", At: fixedTime}, Similarity: 0},
 	}, parsed)
 }
 

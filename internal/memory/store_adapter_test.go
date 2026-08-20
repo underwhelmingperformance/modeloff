@@ -2,6 +2,7 @@ package memory
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -38,14 +39,31 @@ func TestStoreAdapter_WriteAndRead(t *testing.T) {
 	require.Equal(t, entries, got)
 }
 
+// TestStoreAdapter_WriteAndRead_preservesAt pins that an entry's
+// write time round-trips through the adapter unchanged: the adapter
+// does not stamp its own clock, it passes through whatever At the
+// caller set.
+func TestStoreAdapter_WriteAndRead_preservesAt(t *testing.T) {
+	ctx := t.Context()
+	store := NewStoreAdapter(storetest.NewMemoryStore(t))
+	id := domain.InstanceID("inst-bob")
+	at := time.Date(2025, 6, 1, 9, 0, 0, 0, time.UTC)
+
+	require.NoError(t, store.Write(ctx, id, Entry{Key: "greeting", Content: "hi", At: at}))
+
+	got, err := store.Read(ctx, id)
+	require.NoError(t, err)
+	require.Equal(t, []Entry{{Key: "greeting", Content: "hi", At: at}}, got)
+}
+
 func TestStoreAdapter_Write_recordsSpan(t *testing.T) {
 	recorder, provider := oteltest.NewSpanRecorder(t)
 	store := NewStoreAdapter(storetest.NewMemoryStore(t)).WithTracerProvider(provider)
 
 	require.NoError(t, store.Write(t.Context(), "inst-bob", Entry{Key: "greeting", Content: "hello"}))
 
-	span := oteltest.FindSpan(t, recorder, "memory.file.write")
-	require.Equal(t, "memory.file.write", oteltest.AttrValue(span.Attributes(), observability.AttrOperation))
+	span := oteltest.FindSpan(t, recorder, "memory.adapter.write")
+	require.Equal(t, "memory.adapter.write", oteltest.AttrValue(span.Attributes(), observability.AttrOperation))
 	require.Equal(t, "inst-bob", oteltest.AttrValue(span.Attributes(), observability.AttrInstanceID))
 	require.Equal(t, observability.ResultOK, oteltest.AttrValue(span.Attributes(), observability.AttrResult))
 }

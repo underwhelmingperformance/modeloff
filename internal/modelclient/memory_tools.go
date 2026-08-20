@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -45,10 +46,18 @@ type MemoryExecutor interface {
 type instanceMemory struct {
 	instanceID domain.InstanceID
 	store      memory.Store
+
+	// now is the clock a written entry's At is stamped from. Callers
+	// construct instanceMemory with the same session clock the rest
+	// of a dispatch turn already reads (Session.Now, the SessionAPI
+	// method mc.sess.Now already calls elsewhere), not time.Now
+	// directly, so a frozen test clock stamps memories the same way
+	// it stamps every other event in that turn.
+	now func() time.Time
 }
 
 func (m *instanceMemory) WriteMemory(ctx context.Context, key, content string) error {
-	return m.store.Write(ctx, m.instanceID, memory.Entry{Key: key, Content: content})
+	return m.store.Write(ctx, m.instanceID, memory.Entry{Key: key, Content: content, At: m.now()})
 }
 
 func (m *instanceMemory) DeleteMemory(ctx context.Context, key string) error {

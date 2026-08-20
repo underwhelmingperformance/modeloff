@@ -51,6 +51,16 @@ func NewDefaultStore(ctx context.Context, dataStore DataStore, cfg config.Config
 		return adapter, nil
 	}
 
+	// Entries embedded under one model are meaningless to query
+	// vectors built from another, so the index is reconciled against
+	// the configured model both now and on every later change to it.
+	// A construction-time failure here is not fatal to startup: it is
+	// logged and left for the model-change branch below, or a later
+	// RefreshSearchable-triggering config edit, to catch.
+	if err := indexed.ReconcileEmbeddingModel(ctx, string(cfg.EmbeddingModel)); err != nil {
+		slog.Default().Warn("reconcile embedding model", "error", err)
+	}
+
 	cfgStore.OnChange(func(prev, curr config.Config) {
 		if prev.APIKey == curr.APIKey &&
 			prev.BaseURL == curr.BaseURL &&
@@ -64,10 +74,16 @@ func NewDefaultStore(ctx context.Context, dataStore DataStore, cfg config.Config
 		// fires synchronously from within Save, itself driven by a
 		// UI command with its own lifetime already over by the time
 		// any listener not itself passed that command's context
-		// runs. This re-probe uses context.Background(), since no
-		// live context in scope describes its lifetime. The probe
-		// result is recorded on indexed and read back later through
-		// Searchable and ProbeError, so the returned error is
+		// runs. Both calls below use context.Background(), since no
+		// live context in scope describes their lifetime.
+		if curr.EmbeddingModel != prev.EmbeddingModel {
+			if err := indexed.ReconcileEmbeddingModel(context.Background(), string(curr.EmbeddingModel)); err != nil {
+				slog.Default().Warn("reconcile embedding model", "error", err)
+			}
+		}
+
+		// The probe result is recorded on indexed and read back later
+		// through Searchable and ProbeError, so the returned error is
 		// discarded here.
 		_ = indexed.RefreshSearchable(context.Background())
 	})

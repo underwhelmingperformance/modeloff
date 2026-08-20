@@ -886,6 +886,62 @@ func TestSQLiteStore_DeleteInstanceByID(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestSQLiteStore_WriteMemory_records_at pins that a written entry
+// carries the write time its caller supplied, read back exactly.
+func TestSQLiteStore_WriteMemory_records_at(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	inst := domain.NewModelInstance("inst-temp", "temp", "test/model", "", nil)
+	require.NoError(t, s.SaveInstance(ctx, inst))
+	require.NoError(t, s.WriteMemory(ctx, "inst-temp", "fact", "likes tea", testTime))
+
+	entries, err := s.ReadMemories(ctx, "inst-temp")
+	require.NoError(t, err)
+	require.Equal(t, []MemoryEntry{{Key: "fact", Content: "likes tea", At: testTime}}, entries)
+}
+
+// TestSQLiteStore_WriteMemory_overwrite_updates_at pins that
+// overwriting an existing key's content also updates its write time,
+// so a memory touched again is fresh again for recency ordering.
+func TestSQLiteStore_WriteMemory_overwrite_updates_at(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	inst := domain.NewModelInstance("inst-temp", "temp", "test/model", "", nil)
+	require.NoError(t, s.SaveInstance(ctx, inst))
+	require.NoError(t, s.WriteMemory(ctx, "inst-temp", "mood", "happy", testTime))
+
+	later := testTime.Add(time.Hour)
+	require.NoError(t, s.WriteMemory(ctx, "inst-temp", "mood", "excited", later))
+
+	entries, err := s.ReadMemories(ctx, "inst-temp")
+	require.NoError(t, err)
+	require.Equal(t, []MemoryEntry{{Key: "mood", Content: "excited", At: later}}, entries)
+}
+
+// TestSQLiteStore_ReadMemories_legacy_row_has_zero_at pins the
+// backfill story for a row written before the `at` column existed: a
+// direct INSERT that never sets it (mirroring a pre-migration row,
+// which the migration's `DEFAULT` backfill leaves exactly this way)
+// reads back as the zero time rather than failing or fabricating
+// one.
+func TestSQLiteStore_ReadMemories_legacy_row_has_zero_at(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	inst := domain.NewModelInstance("inst-temp", "temp", "test/model", "", nil)
+	require.NoError(t, s.SaveInstance(ctx, inst))
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO memories (instance_id, key, content) VALUES (?, ?, ?)`,
+		"inst-temp", "fact", "likes tea")
+	require.NoError(t, err)
+
+	entries, err := s.ReadMemories(ctx, "inst-temp")
+	require.NoError(t, err)
+	require.Equal(t, []MemoryEntry{{Key: "fact", Content: "likes tea", At: time.Time{}}}, entries)
+}
+
 // TestSQLiteStore_DeleteInstanceByID_removes_memories pins that
 // deleting an instance also deletes its `memories` rows in the same
 // operation: instance ids are never reused, so a memories row left
@@ -897,7 +953,7 @@ func TestSQLiteStore_DeleteInstanceByID_removes_memories(t *testing.T) {
 
 	inst := domain.NewModelInstance("inst-temp", "temp", "test/model", "", nil)
 	require.NoError(t, s.SaveInstance(ctx, inst))
-	require.NoError(t, s.WriteMemory(ctx, "inst-temp", "fact", "likes tea"))
+	require.NoError(t, s.WriteMemory(ctx, "inst-temp", "fact", "likes tea", testTime))
 
 	require.NoError(t, s.DeleteInstanceByID(ctx, "inst-temp"))
 
@@ -916,14 +972,14 @@ func TestSQLiteStore_DeleteInstanceByID_leaves_other_instances_memories(t *testi
 	kept := domain.NewModelInstance("inst-kept", "kept", "test/model", "", nil)
 	require.NoError(t, s.SaveInstance(ctx, gone))
 	require.NoError(t, s.SaveInstance(ctx, kept))
-	require.NoError(t, s.WriteMemory(ctx, "inst-gone", "fact", "likes tea"))
-	require.NoError(t, s.WriteMemory(ctx, "inst-kept", "fact", "likes coffee"))
+	require.NoError(t, s.WriteMemory(ctx, "inst-gone", "fact", "likes tea", testTime))
+	require.NoError(t, s.WriteMemory(ctx, "inst-kept", "fact", "likes coffee", testTime))
 
 	require.NoError(t, s.DeleteInstanceByID(ctx, "inst-gone"))
 
 	entries, err := s.ReadMemories(ctx, "inst-kept")
 	require.NoError(t, err)
-	require.Equal(t, []MemoryEntry{{Key: "fact", Content: "likes coffee"}}, entries)
+	require.Equal(t, []MemoryEntry{{Key: "fact", Content: "likes coffee", At: testTime}}, entries)
 }
 
 func TestSQLiteStore_registry_canonical_pointer_across_reloads(t *testing.T) {

@@ -22,7 +22,7 @@ import (
 // that predates this version. Every database — fresh or
 // pre-existing — reaches the current shape through applyMigrations,
 // the single path from v1 onward.
-const SchemaVersion = 4
+const SchemaVersion = 5
 
 // migration is one forward-only step that brings the database
 // from v(Version-1) to vVersion. Apply runs inside the
@@ -126,6 +126,25 @@ var migrations = []migration{
 				)
 			`); err != nil {
 				return fmt.Errorf("create dm_last_read: %w", err)
+			}
+
+			return nil
+		},
+	},
+	{
+		Version: 5,
+		Apply: func(ctx context.Context, tx *sql.Tx) error {
+			// memories carried no per-entry write time, so nothing
+			// could prefer a recently-written memory over a stale
+			// one when a caller caps how many flow into a prompt.
+			// A row written before this column existed gets the
+			// default empty string, which parseMemoryAt reads back
+			// as the zero time: the oldest possible entry, rather
+			// than a fabricated write time it never actually had.
+			if _, err := tx.ExecContext(ctx, `
+				ALTER TABLE memories ADD COLUMN at TEXT NOT NULL DEFAULT ''
+			`); err != nil {
+				return fmt.Errorf("add memories.at: %w", err)
 			}
 
 			return nil

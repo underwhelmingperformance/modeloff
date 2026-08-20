@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -19,7 +20,7 @@ import (
 // this interface implicitly.
 type DataStore interface {
 	ReadMemories(ctx context.Context, id domain.InstanceID) ([]store.MemoryEntry, error)
-	WriteMemory(ctx context.Context, id domain.InstanceID, key, content string) error
+	WriteMemory(ctx context.Context, id domain.InstanceID, key, content string, at time.Time) error
 	DeleteMemory(ctx context.Context, id domain.InstanceID, key string) error
 }
 
@@ -33,7 +34,10 @@ type Resetter interface {
 }
 
 // StoreAdapter implements the memory Store interface by delegating
-// to a [DataStore]'s memory methods.
+// to a [DataStore]'s memory methods. It is the SQLite-backed Store:
+// [IndexedStore] treats it as the source of truth its vector index
+// reconciles against, and [NewDefaultStore] wraps it in one whenever
+// the vector index cannot be opened at all.
 type StoreAdapter struct {
 	store DataStore
 
@@ -81,7 +85,7 @@ func (a *StoreAdapter) inSpan(
 // Read retrieves all memories for a given model instance.
 func (a *StoreAdapter) Read(ctx context.Context, id domain.InstanceID) ([]Entry, error) {
 	var result []Entry
-	err := a.inSpan(ctx, "memory.file.read",
+	err := a.inSpan(ctx, "memory.adapter.read",
 		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
 		func(ctx context.Context, _ trace.Span) error {
 			entries, err := a.store.ReadMemories(ctx, id)
@@ -91,7 +95,7 @@ func (a *StoreAdapter) Read(ctx context.Context, id domain.InstanceID) ([]Entry,
 
 			result = make([]Entry, len(entries))
 			for i, e := range entries {
-				result[i] = Entry{Key: e.Key, Content: e.Content}
+				result[i] = Entry{Key: e.Key, Content: e.Content, At: e.At}
 			}
 
 			return nil
@@ -102,16 +106,16 @@ func (a *StoreAdapter) Read(ctx context.Context, id domain.InstanceID) ([]Entry,
 
 // Write stores a memory entry for a given model instance.
 func (a *StoreAdapter) Write(ctx context.Context, id domain.InstanceID, entry Entry) error {
-	return a.inSpan(ctx, "memory.file.write",
+	return a.inSpan(ctx, "memory.adapter.write",
 		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
 		func(ctx context.Context, _ trace.Span) error {
-			return a.store.WriteMemory(ctx, id, entry.Key, entry.Content)
+			return a.store.WriteMemory(ctx, id, entry.Key, entry.Content, entry.At)
 		})
 }
 
 // Delete removes a specific memory entry by key.
 func (a *StoreAdapter) Delete(ctx context.Context, id domain.InstanceID, key string) error {
-	return a.inSpan(ctx, "memory.file.delete",
+	return a.inSpan(ctx, "memory.adapter.delete",
 		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
 		func(ctx context.Context, _ trace.Span) error {
 			return a.store.DeleteMemory(ctx, id, key)
@@ -121,7 +125,7 @@ func (a *StoreAdapter) Delete(ctx context.Context, id domain.InstanceID, key str
 // Reset removes all memories. Delegates to [Resetter] on the
 // underlying store when available; otherwise a no-op.
 func (a *StoreAdapter) Reset(ctx context.Context) error {
-	return a.inSpan(ctx, "memory.file.reset", nil,
+	return a.inSpan(ctx, "memory.adapter.reset", nil,
 		func(ctx context.Context, _ trace.Span) error {
 			r, ok := a.store.(Resetter)
 			if !ok {

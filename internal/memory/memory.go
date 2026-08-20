@@ -7,6 +7,7 @@ package memory
 
 import (
 	"context"
+	"time"
 
 	"github.com/laney/modeloff/internal/domain"
 )
@@ -15,6 +16,13 @@ import (
 type Entry struct {
 	Key     string `json:"key"`
 	Content string `json:"content"`
+
+	// At is when this entry was written. A caller that does not set
+	// it gets the zero value, which [Store] implementations persist
+	// and read back as-is: it is not a guarantee that every entry
+	// carries a real write time, only that one is preserved when a
+	// caller supplies it.
+	At time.Time `json:"at,omitzero"`
 }
 
 // SearchResult pairs a memory entry with its similarity score from a
@@ -80,8 +88,8 @@ type EmbeddingProber interface {
 
 // InstanceDeleter is an optional capability a memory Store can
 // implement to remove state it owns for a single instance, keyed by
-// identity. The FileStore-backed memories rows are already removed
-// when the instance's own row is deleted (see
+// identity. An instance's `memories` rows are already removed when
+// its own row is deleted (see
 // [github.com/laney/modeloff/internal/store.SQLiteStore.DeleteInstanceByID]);
 // this exists for state the memory layer owns independently of that
 // row, such as an IndexedStore's chromem-go vector collection.
