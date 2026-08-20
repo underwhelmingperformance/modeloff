@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
 
-	"github.com/laney/modeloff/internal/api"
+	"github.com/laney/modeloff/internal/api/apitest"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/modelmanager"
 	"github.com/laney/modeloff/internal/observability"
@@ -36,7 +36,7 @@ func newFixture(t *testing.T) *fixture {
 	s := storetest.NewMemoryStore(t)
 	mgr := modelmanager.New(modelmanager.Config{
 		Store:       s,
-		APIClient:   &noopAPI{},
+		APIClient:   &apitest.Fake{},
 		BaseContext: t.Context,
 	})
 	t.Cleanup(func() { _ = mgr.DetachAll(context.Background()) })
@@ -67,7 +67,7 @@ func TestUserClient_capabilities_come_from_the_session(t *testing.T) {
 	s := storetest.NewMemoryStore(t)
 	mgr := modelmanager.New(modelmanager.Config{
 		Store:       s,
-		APIClient:   &noopAPI{},
+		APIClient:   &apitest.Fake{},
 		BaseContext: t.Context,
 	})
 	t.Cleanup(func() { _ = mgr.DetachAll(context.Background()) })
@@ -423,36 +423,4 @@ func (s *recordingStore) RemoveDMWindow(_ context.Context, peer domain.InstanceI
 	s.dmWindows = slices.DeleteFunc(s.dmWindows, func(open domain.InstanceID) bool { return open == peer })
 
 	return nil
-}
-
-// noopAPI satisfies [api.Client] with empty responses — enough for
-// the user-client's join / poke / autojoin paths, none of which
-// exercise the model dispatch loop.
-type noopAPI struct{}
-
-func (noopAPI) ListModels(context.Context) ([]api.ModelInfo, error) { return nil, nil }
-func (noopAPI) SendEvents(
-	context.Context,
-	domain.ModelID,
-	domain.InstanceID,
-	string,
-	[]protocol.IRCMessage,
-	[]protocol.IRCMessage,
-	...api.ToolDefinition,
-) (api.CompletionResult, error) {
-	return api.CompletionResult{}, nil
-}
-func (noopAPI) ContinueWithToolResults(
-	context.Context,
-	*api.Conversation,
-	[]api.ToolResult,
-	...api.ToolDefinition,
-) (api.CompletionResult, error) {
-	return api.CompletionResult{}, nil
-}
-func (noopAPI) GenerateNick(context.Context, domain.ModelID, string, []domain.Nick) (api.NicknameResult, error) {
-	return api.NicknameResult{Nick: "noopnick"}, nil
-}
-func (noopAPI) GeneratePersonas(context.Context, domain.ModelID) ([]domain.Persona, error) {
-	return nil, nil
 }

@@ -5,6 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/laney/modeloff/internal/api/apitest"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/modelmanager"
 	"github.com/laney/modeloff/internal/protocol"
@@ -23,7 +24,7 @@ import (
 // offered drift from what the dispatcher's operator gate will
 // actually run for it.
 func TestModelClient_Caps_follows_the_subscription_mode_set(t *testing.T) {
-	fx := newTestManager(t, modelmanager.Config{APIClient: &fakeAPIClient{}})
+	fx := newTestManager(t, modelmanager.Config{APIClient: &apitest.Fake{}})
 
 	sess := session.New(t.Context, fx.store, fx.mgr, nil)
 	t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
@@ -50,7 +51,7 @@ func TestModelClient_Caps_follows_the_subscription_mode_set(t *testing.T) {
 // holds no subscription for grants nothing, which is what a client
 // that has not attached yet (or has already quit) reports.
 func TestSession_ClientCaps_answers_nothing_for_an_unregistered_identity(t *testing.T) {
-	fx := newTestManager(t, modelmanager.Config{APIClient: &fakeAPIClient{}})
+	fx := newTestManager(t, modelmanager.Config{APIClient: &apitest.Fake{}})
 
 	sess := session.New(t.Context, fx.store, fx.mgr, nil)
 	t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })

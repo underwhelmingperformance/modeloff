@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/api"
+	"github.com/laney/modeloff/internal/api/apitest"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/modelmanager"
 	"github.com/laney/modeloff/internal/session"
@@ -103,11 +104,11 @@ func TestManager_PrepareInstance_nickGeneration_fallsBackToDeterministicNick(t *
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := modelmanager.Config{InitialAPIKey: tt.apiKey}
 			if tt.withClient {
-				cfg.APIClient = &fakeAPIClient{
-					listModelsFn: func(context.Context) ([]api.ModelInfo, error) {
+				cfg.APIClient = &apitest.Fake{
+					ListModelsFn: func(context.Context) ([]api.ModelInfo, error) {
 						return toolsCatalogue(modelID), nil
 					},
-					generateNickFn: tt.generateNick,
+					GenerateNickFn: tt.generateNick,
 				}
 			}
 
@@ -139,11 +140,11 @@ func TestManager_PrepareInstance_nickGeneration_retriesPastAnInvalidSuggestion(t
 
 	var seenExclusions [][]domain.Nick
 
-	client := &fakeAPIClient{
-		listModelsFn: func(context.Context) ([]api.ModelInfo, error) {
+	client := &apitest.Fake{
+		ListModelsFn: func(context.Context) ([]api.ModelInfo, error) {
 			return toolsCatalogue(modelID), nil
 		},
-		generateNickFn: func(_ context.Context, _ domain.ModelID, _ string, exclude []domain.Nick) (domain.Nick, error) {
+		GenerateNickFn: func(_ context.Context, _ domain.ModelID, _ string, exclude []domain.Nick) (domain.Nick, error) {
 			seenExclusions = append(seenExclusions, append([]domain.Nick(nil), exclude...))
 			if len(exclude) == 0 {
 				return "1bad", nil
@@ -174,11 +175,11 @@ func TestManager_PrepareInstance_nickGeneration_retriesPastAnInvalidSuggestion(t
 func TestManager_PrepareInstance_deterministicFallback_avoidsCollision(t *testing.T) {
 	const modelID = domain.ModelID("openai/gpt-5.4-mini")
 
-	client := &fakeAPIClient{
-		listModelsFn: func(context.Context) ([]api.ModelInfo, error) {
+	client := &apitest.Fake{
+		ListModelsFn: func(context.Context) ([]api.ModelInfo, error) {
 			return toolsCatalogue(modelID), nil
 		},
-		generateNickFn: func(context.Context, domain.ModelID, string, []domain.Nick) (domain.Nick, error) {
+		GenerateNickFn: func(context.Context, domain.ModelID, string, []domain.Nick) (domain.Nick, error) {
 			return "", fmt.Errorf("small-model upstream unreachable")
 		},
 	}

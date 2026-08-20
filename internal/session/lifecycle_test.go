@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/api"
+	"github.com/laney/modeloff/internal/api/apitest"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/protocol"
 )
@@ -41,11 +42,11 @@ func quitToolCall(t testing.TB, message string) api.CompletionResult {
 func TestSession_model_quit_tool_ends_its_own_connection(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		continues := 0
-		fake := &fakeAPIClient{
-			sendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
+		fake := &apitest.Fake{
+			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
 				return quitToolCall(t, "signing off"), nil
 			},
-			continueWithToolResultsFn: func(context.Context, *api.Conversation, []api.ToolResult) (api.CompletionResult, error) {
+			ContinueWithToolResultsFn: func(context.Context, *api.Conversation, []api.ToolResult) (api.CompletionResult, error) {
 				continues++
 				return api.CompletionResult{}, nil
 			},
@@ -97,8 +98,8 @@ func TestSession_sendQ_overflow_disconnects_the_client(t *testing.T) {
 		// The turn parks until the client's own teardown cancels it,
 		// which is what leaves the subscription with nobody reading
 		// it while the flood arrives.
-		fake := &fakeAPIClient{
-			sendEventsFn: func(ctx context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
+		fake := &apitest.Fake{
+			SendEventsFn: func(ctx context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
 				<-ctx.Done()
 				return api.CompletionResult{}, ctx.Err()
 			},
@@ -163,7 +164,7 @@ func TestSession_sendQ_overflow_disconnects_the_client(t *testing.T) {
 // still running, and the next start would read as a clean one.
 func TestSession_sendQ_overflow_spares_the_session_lifetime_client(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		sess, s := newTestSessionWithAPI(t, &fakeAPIClient{})
+		sess, s := newTestSessionWithAPI(t, &apitest.Fake{})
 		ctx := t.Context()
 
 		seedChannelWithMembers(t, sess, s, "#general", "testuser")
@@ -223,7 +224,7 @@ func queuedDeliveries(c *serverClient) int {
 // on Started must always get the Done that lowers it again.
 func TestSession_dispatch_started_and_done_are_paired(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		sess, s := newTestSessionWithAPI(t, &fakeAPIClient{})
+		sess, s := newTestSessionWithAPI(t, &apitest.Fake{})
 		ctx := t.Context()
 
 		// Both actors believe they are in #ghost, which has no channel

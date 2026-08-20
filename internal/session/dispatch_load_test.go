@@ -11,6 +11,7 @@ import (
 	orderedmap "github.com/wk8/go-ordered-map/v2"
 
 	"github.com/laney/modeloff/internal/api"
+	"github.com/laney/modeloff/internal/api/apitest"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/protocol"
 )
@@ -50,8 +51,8 @@ func (c *capturedHistory) snapshot() [][]protocol.IRCMessage {
 func TestModelClient_load_is_join_scoped(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var captured capturedHistory
-		fake := &fakeAPIClient{
-			sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, history []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
+		fake := &apitest.Fake{
+			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, history []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
 				captured.record(history)
 				return api.CompletionResult{}, nil
 			},
@@ -97,8 +98,8 @@ func TestModelClient_load_is_join_scoped(t *testing.T) {
 func TestModelClient_load_fails_closed_on_zero_join(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var captured capturedHistory
-		fake := &fakeAPIClient{
-			sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, history []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
+		fake := &apitest.Fake{
+			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, history []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
 				captured.record(history)
 				return api.CompletionResult{}, nil
 			},
@@ -145,8 +146,8 @@ func TestModelClient_private_replies_converge_on_local_ring(t *testing.T) {
 			turnMu   sync.Mutex
 		)
 
-		fake := &fakeAPIClient{
-			sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, history []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+		fake := &apitest.Fake{
+			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, history []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 				captured.record(history)
 
 				turnMu.Lock()

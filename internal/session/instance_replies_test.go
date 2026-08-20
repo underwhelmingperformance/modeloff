@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/api"
+	"github.com/laney/modeloff/internal/api/apitest"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/protocol"
 )
@@ -188,8 +189,8 @@ func TestSession_user_replies_do_not_pollute_channel_log(t *testing.T) {
 func TestSession_dispatch_replays_instance_replies_into_prompt(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var sawWhois bool
-		fake := &fakeAPIClient{
-			sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, history []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+		fake := &apitest.Fake{
+			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, history []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 				for _, h := range history {
 					if h.Kind == protocol.KindServerReply && strings.Contains(h.Body, "whois target") {
 						sawWhois = true

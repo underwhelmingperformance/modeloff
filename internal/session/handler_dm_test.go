@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/api"
+	"github.com/laney/modeloff/internal/api/apitest"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/protocol"
 )
@@ -22,8 +23,8 @@ import (
 // answers cannot read it.
 func TestSession_model_action_in_a_DM_reaches_the_counterpart(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		fake := &fakeAPIClient{
-			sendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
+		fake := &apitest.Fake{
+			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
 				return meToolCall(t, "waves"), nil
 			},
 		}
@@ -70,7 +71,7 @@ func TestSession_model_action_in_a_DM_reaches_the_counterpart(t *testing.T) {
 //     outbound message, so a chatty model can't trip itself into
 //     an echo loop.
 //
-// The test asserts each model's `sendEventsFn` is or isn't invoked
+// The test asserts each model's `SendEventsFn` is or isn't invoked
 // for the round, capturing the trigger events to confirm the
 // reachability shape. It also asserts the events log persists the
 // message addressable by the counterpart's instance id, which is
@@ -86,8 +87,8 @@ func TestSession_PrivMsg_to_model_routes_DM_to_counterpart_only(t *testing.T) {
 
 		var calls []call
 
-		fake := &fakeAPIClient{
-			sendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+		fake := &apitest.Fake{
+			SendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 				calls = append(calls, call{modelID: modelID, trigger: append([]protocol.IRCMessage(nil), events...)})
 				return api.CompletionResult{}, nil
 			},

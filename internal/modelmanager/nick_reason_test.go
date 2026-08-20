@@ -8,38 +8,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/api"
+	"github.com/laney/modeloff/internal/api/apitest"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/modelmanager"
 )
-
-// reasonAwareFakeAPIClient wraps fakeAPIClient and additionally
-// implements api.NickReasonGenerator, recording the excluded
-// []api.RejectedNick it was called with on every attempt. It exists
-// as its own type, separate from fakeAPIClient, so every other test
-// in this package keeps exercising the plain api.Client fallback path
-// callGenerateNick takes when a Client does not implement the
-// optional capability.
-type reasonAwareFakeAPIClient struct {
-	fakeAPIClient
-
-	generateNickWithReasonsFn func(context.Context, domain.ModelID, string, []api.RejectedNick) (domain.Nick, error)
-	seenExclusions            [][]api.RejectedNick
-}
-
-func (f *reasonAwareFakeAPIClient) GenerateNickWithReasons(
-	ctx context.Context,
-	smallModel domain.ModelID,
-	persona string,
-	excluded []api.RejectedNick,
-) (api.NicknameResult, error) {
-	f.seenExclusions = append(f.seenExclusions, append([]api.RejectedNick(nil), excluded...))
-
-	nick, err := f.generateNickWithReasonsFn(ctx, smallModel, persona, excluded)
-
-	return api.NicknameResult{Nick: nick}, err
-}
-
-var _ api.NickReasonGenerator = (*reasonAwareFakeAPIClient)(nil)
 
 // TestManager_PrepareInstance_nickGeneration_prefers_NickReasonGenerator
 // covers the connection point item 9 adds: a Client that implements
@@ -51,13 +23,17 @@ var _ api.NickReasonGenerator = (*reasonAwareFakeAPIClient)(nil)
 func TestManager_PrepareInstance_nickGeneration_prefers_NickReasonGenerator(t *testing.T) {
 	const modelID = domain.ModelID("openai/gpt-5.4-mini")
 
-	client := &reasonAwareFakeAPIClient{
-		fakeAPIClient: fakeAPIClient{
-			listModelsFn: func(context.Context) ([]api.ModelInfo, error) {
+	var seenExclusions [][]api.RejectedNick
+
+	client := &apitest.ReasonAware{
+		Fake: apitest.Fake{
+			ListModelsFn: func(context.Context) ([]api.ModelInfo, error) {
 				return toolsCatalogue(modelID), nil
 			},
 		},
-		generateNickWithReasonsFn: func(_ context.Context, _ domain.ModelID, _ string, excluded []api.RejectedNick) (domain.Nick, error) {
+		GenerateNickWithReasonsFn: func(_ context.Context, _ domain.ModelID, _ string, excluded []api.RejectedNick) (domain.Nick, error) {
+			seenExclusions = append(seenExclusions, append([]api.RejectedNick(nil), excluded...))
+
 			switch len(excluded) {
 			case 0:
 				return "1bad", nil
@@ -91,7 +67,7 @@ func TestManager_PrepareInstance_nickGeneration_prefers_NickReasonGenerator(t *t
 			{Nick: "1bad", Reason: fmt.Sprintf("doesn't satisfy the nick grammar: %s", domain.NickBadFirstCharacter.String())},
 			{Nick: "taken", Reason: "is already taken"},
 		},
-	}, client.seenExclusions)
+	}, seenExclusions)
 }
 
 // TestManager_PrepareInstance_nickGeneration_falls_back_without_NickReasonGenerator
@@ -104,11 +80,11 @@ func TestManager_PrepareInstance_nickGeneration_falls_back_without_NickReasonGen
 
 	var seenExclusions [][]domain.Nick
 
-	client := &fakeAPIClient{
-		listModelsFn: func(context.Context) ([]api.ModelInfo, error) {
+	client := &apitest.Fake{
+		ListModelsFn: func(context.Context) ([]api.ModelInfo, error) {
 			return toolsCatalogue(modelID), nil
 		},
-		generateNickFn: func(_ context.Context, _ domain.ModelID, _ string, exclude []domain.Nick) (domain.Nick, error) {
+		GenerateNickFn: func(_ context.Context, _ domain.ModelID, _ string, exclude []domain.Nick) (domain.Nick, error) {
 			seenExclusions = append(seenExclusions, append([]domain.Nick(nil), exclude...))
 
 			return "goodnick", nil

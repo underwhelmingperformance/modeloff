@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/laney/modeloff/internal/api/apitest"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/memory"
 	"github.com/laney/modeloff/internal/modelmanager"
@@ -86,7 +87,7 @@ func attachTestInstance(t *testing.T, fx *managerFixture, sess *session.Session,
 // attached instance's memories on exit.
 func TestManager_Detach_deletes_the_instances_memory_collection(t *testing.T) {
 	spy := &spyMemoryDeleter{}
-	fx := newTestManager(t, modelmanager.Config{APIClient: &fakeAPIClient{}, Memory: spy})
+	fx := newTestManager(t, modelmanager.Config{APIClient: &apitest.Fake{}, Memory: spy})
 
 	sess := session.New(t.Context, fx.store, fx.mgr, nil)
 	t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
@@ -107,7 +108,7 @@ func TestManager_Detach_tolerates_a_memory_store_without_InstanceDeleter(t *test
 	s := storetest.NewMemoryStore(t)
 	fx := newTestManager(t, modelmanager.Config{
 		Store:     s,
-		APIClient: &fakeAPIClient{},
+		APIClient: &apitest.Fake{},
 		Memory:    memory.NewStoreAdapter(s),
 	})
 
@@ -129,7 +130,7 @@ func TestManager_Detach_tolerates_a_memory_store_without_InstanceDeleter(t *test
 // must never reach the deleter.
 func TestManager_DetachAll_does_not_delete_memory_collections(t *testing.T) {
 	spy := &spyMemoryDeleter{}
-	fx := newTestManager(t, modelmanager.Config{APIClient: &fakeAPIClient{}, Memory: spy})
+	fx := newTestManager(t, modelmanager.Config{APIClient: &apitest.Fake{}, Memory: spy})
 
 	sess := session.New(t.Context, fx.store, fx.mgr, nil)
 	t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
@@ -146,7 +147,7 @@ func TestManager_DetachAll_does_not_delete_memory_collections(t *testing.T) {
 // ever attached, so nothing should be told to delete anything.
 func TestManager_Detach_unknown_id_is_a_noop(t *testing.T) {
 	spy := &spyMemoryDeleter{}
-	fx := newTestManager(t, modelmanager.Config{APIClient: &fakeAPIClient{}, Memory: spy})
+	fx := newTestManager(t, modelmanager.Config{APIClient: &apitest.Fake{}, Memory: spy})
 
 	fx.mgr.Detach(protocol.ClientID("inst-nobody"))
 

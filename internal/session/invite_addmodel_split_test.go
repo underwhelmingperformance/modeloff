@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/api"
+	"github.com/laney/modeloff/internal/api/apitest"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/protocol"
 	storemod "github.com/laney/modeloff/internal/store"
@@ -33,8 +34,8 @@ func TestInviteAs_does_not_auto_attach_existing_model(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		bootAt := time.Now()
 
-		fake := &fakeAPIClient{
-			sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
+		fake := &apitest.Fake{
+			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
 				return api.CompletionResult{}, nil
 			},
 		}

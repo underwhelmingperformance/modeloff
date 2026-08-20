@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/laney/modeloff/internal/api/apitest"
 	"github.com/laney/modeloff/internal/domain"
 	storemod "github.com/laney/modeloff/internal/store"
 	"github.com/laney/modeloff/internal/store/storetest"
@@ -50,7 +51,7 @@ func (c *countingLoadStore) GetWindow(ctx context.Context, name domain.ChannelNa
 func newSessionWithStore(t *testing.T, wrapped Store) *Session {
 	t.Helper()
 
-	sess := New(t.Context, wrapped, newTestModelClientFactory(t, &fakeAPIClient{}), nil)
+	sess := New(t.Context, wrapped, newTestModelClientFactory(t, &apitest.Fake{}), nil)
 	t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
 
 	attachTestUserClient(t, sess, "testuser")

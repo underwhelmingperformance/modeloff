@@ -12,6 +12,7 @@ import (
 	orderedmap "github.com/wk8/go-ordered-map/v2"
 
 	"github.com/laney/modeloff/internal/api"
+	"github.com/laney/modeloff/internal/api/apitest"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/protocol"
 )
@@ -683,8 +684,8 @@ func TestSendMessageAs_model_to_model_dispatches(t *testing.T) {
 		bootAt := time.Now()
 
 		var dispatched []domain.ModelID
-		fake := &fakeAPIClient{
-			sendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
+		fake := &apitest.Fake{
+			SendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
 				dispatched = append(dispatched, modelID)
 				return api.CompletionResult{}, nil
 			},

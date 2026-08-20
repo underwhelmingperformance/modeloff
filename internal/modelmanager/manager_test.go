@@ -10,73 +10,17 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/api"
+	"github.com/laney/modeloff/internal/api/apitest"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/memory"
 	"github.com/laney/modeloff/internal/modelmanager"
 	"github.com/laney/modeloff/internal/observability"
 	"github.com/laney/modeloff/internal/observability/oteltest"
-	"github.com/laney/modeloff/internal/protocol"
 	storemod "github.com/laney/modeloff/internal/store"
 	"github.com/laney/modeloff/internal/store/storetest"
 )
 
 var fixedTime = time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
-
-// fakeAPIClient is a hand-rolled `api.Client` whose `ListModels`,
-// `GeneratePersonas`, and `GenerateNick` methods route through
-// per-test callbacks. The default behaviour returns empty / silence
-// so a test only needs to set the field it cares about.
-type fakeAPIClient struct {
-	listModelsFn       func(context.Context) ([]api.ModelInfo, error)
-	generateNickFn     func(context.Context, domain.ModelID, string, []domain.Nick) (domain.Nick, error)
-	generatePersonasFn func(context.Context, domain.ModelID) ([]domain.Persona, error)
-}
-
-func (f *fakeAPIClient) ListModels(ctx context.Context) ([]api.ModelInfo, error) {
-	if f.listModelsFn != nil {
-		return f.listModelsFn(ctx)
-	}
-
-	return nil, nil
-}
-
-func (f *fakeAPIClient) SendEvents(
-	context.Context,
-	domain.ModelID,
-	domain.InstanceID,
-	string,
-	[]protocol.IRCMessage,
-	[]protocol.IRCMessage,
-	...api.ToolDefinition,
-) (api.CompletionResult, error) {
-	return api.CompletionResult{}, nil
-}
-
-func (f *fakeAPIClient) ContinueWithToolResults(
-	context.Context,
-	*api.Conversation,
-	[]api.ToolResult,
-	...api.ToolDefinition,
-) (api.CompletionResult, error) {
-	return api.CompletionResult{}, nil
-}
-
-func (f *fakeAPIClient) GenerateNick(ctx context.Context, smallModel domain.ModelID, persona string, exclude []domain.Nick) (api.NicknameResult, error) {
-	if f.generateNickFn != nil {
-		nick, err := f.generateNickFn(ctx, smallModel, persona, exclude)
-		return api.NicknameResult{Nick: nick}, err
-	}
-
-	return api.NicknameResult{Nick: "fakenick"}, nil
-}
-
-func (f *fakeAPIClient) GeneratePersonas(ctx context.Context, smallModel domain.ModelID) ([]domain.Persona, error) {
-	if f.generatePersonasFn != nil {
-		return f.generatePersonasFn(ctx, smallModel)
-	}
-
-	return nil, nil
-}
 
 // listModelsCountingClient records the number of `ListModels` calls
 // so short-circuit tests can assert the upstream is not re-hit after
@@ -84,7 +28,7 @@ func (f *fakeAPIClient) GeneratePersonas(ctx context.Context, smallModel domain.
 // before returning, so a single-flight test can hold a fetch open
 // while concurrent callers pile up behind it.
 type listModelsCountingClient struct {
-	fakeAPIClient
+	apitest.Fake
 
 	calls atomic.Int32
 	err   error
@@ -148,8 +92,8 @@ func newTestManager(t *testing.T, cfg modelmanager.Config) *managerFixture {
 }
 
 func TestManager_SetAPIKey(t *testing.T) {
-	initial := &fakeAPIClient{}
-	replacement := &fakeAPIClient{}
+	initial := &apitest.Fake{}
+	replacement := &apitest.Fake{}
 
 	fx := newTestManager(t, modelmanager.Config{
 		APIClient:     initial,
@@ -167,7 +111,7 @@ func TestManager_SetAPIKey(t *testing.T) {
 }
 
 func TestManager_SetAPIKey_factory_failure_keeps_existing_client(t *testing.T) {
-	initial := &fakeAPIClient{}
+	initial := &apitest.Fake{}
 
 	fx := newTestManager(t, modelmanager.Config{
 		APIClient: initial,
@@ -186,10 +130,10 @@ func TestManager_SetAPIKey_factory_failure_keeps_existing_client(t *testing.T) {
 func TestManager_SetBaseURL(t *testing.T) {
 	var factoryBaseURL string
 	factoryCalls := 0
-	newClient := &fakeAPIClient{}
+	newClient := &apitest.Fake{}
 
 	fx := newTestManager(t, modelmanager.Config{
-		APIClient:     &fakeAPIClient{},
+		APIClient:     &apitest.Fake{},
 		InitialAPIKey: "test-key",
 	})
 
@@ -255,13 +199,13 @@ func TestManager_runtimeConfigOperations_recordSpans(t *testing.T) {
 	recorder, provider := oteltest.NewSpanRecorder(t)
 
 	fx := newTestManager(t, modelmanager.Config{
-		APIClient:      &fakeAPIClient{},
+		APIClient:      &apitest.Fake{},
 		InitialAPIKey:  "test-key",
 		TracerProvider: provider,
 	})
 
 	fx.mgr.SetAPIFactory(func(_, _ string) (api.Client, error) {
-		return &fakeAPIClient{}, nil
+		return &apitest.Fake{}, nil
 	})
 
 	require.NoError(t, fx.mgr.SetAPIKey(t.Context(), "next-key", "https://openrouter.ai/api/v1"))
@@ -281,8 +225,8 @@ func TestManager_runtimeConfigOperations_recordSpans(t *testing.T) {
 
 func TestManager_EnsurePersonas_lazy_generation(t *testing.T) {
 	calls := 0
-	fake := &fakeAPIClient{
-		generatePersonasFn: func(_ context.Context, _ domain.ModelID) ([]domain.Persona, error) {
+	fake := &apitest.Fake{
+		GeneratePersonasFn: func(_ context.Context, _ domain.ModelID) ([]domain.Persona, error) {
 			calls++
 			return testPersonas(), nil
 		},
@@ -309,7 +253,7 @@ func TestManager_EnsurePersonas_lazy_generation(t *testing.T) {
 
 func TestManager_RandomPersona(t *testing.T) {
 	fx := newTestManager(t, modelmanager.Config{
-		APIClient: &fakeAPIClient{},
+		APIClient: &apitest.Fake{},
 	})
 
 	ctx := t.Context()
@@ -334,7 +278,7 @@ func TestManager_RandomPersona(t *testing.T) {
 // duplicate while an unused persona is still available.
 func TestManager_RandomPersona_excludes_personas_held_by_live_instances(t *testing.T) {
 	fx := newTestManager(t, modelmanager.Config{
-		APIClient: &fakeAPIClient{},
+		APIClient: &apitest.Fake{},
 	})
 
 	ctx := t.Context()
@@ -362,7 +306,7 @@ func TestManager_RandomPersona_excludes_personas_held_by_live_instances(t *testi
 // once every persona in it is already held by a live instance.
 func TestManager_RandomPersona_allows_duplicates_when_pool_exhausted(t *testing.T) {
 	fx := newTestManager(t, modelmanager.Config{
-		APIClient: &fakeAPIClient{},
+		APIClient: &apitest.Fake{},
 	})
 
 	ctx := t.Context()
@@ -388,7 +332,7 @@ func TestManager_RandomPersona_allows_duplicates_when_pool_exhausted(t *testing.
 
 func TestManager_RandomPersona_empty_pool(t *testing.T) {
 	fx := newTestManager(t, modelmanager.Config{
-		APIClient: &fakeAPIClient{},
+		APIClient: &apitest.Fake{},
 	})
 
 	_, err := fx.mgr.RandomPersona(t.Context())
@@ -396,8 +340,8 @@ func TestManager_RandomPersona_empty_pool(t *testing.T) {
 }
 
 func TestManager_RegeneratePersonas_preserves_user_defined(t *testing.T) {
-	fake := &fakeAPIClient{
-		generatePersonasFn: func(_ context.Context, _ domain.ModelID) ([]domain.Persona, error) {
+	fake := &apitest.Fake{
+		GeneratePersonasFn: func(_ context.Context, _ domain.ModelID) ([]domain.Persona, error) {
 			return []domain.Persona{
 				{ID: "new-gen", Description: "Freshly generated.", Origin: domain.PersonaGenerated},
 			}, nil
@@ -434,7 +378,7 @@ func TestManager_RegeneratePersonas_preserves_user_defined(t *testing.T) {
 
 func TestManager_SetPersona(t *testing.T) {
 	fx := newTestManager(t, modelmanager.Config{
-		APIClient: &fakeAPIClient{},
+		APIClient: &apitest.Fake{},
 	})
 
 	ctx := t.Context()
@@ -452,7 +396,7 @@ func TestManager_SetPersona(t *testing.T) {
 
 func TestManager_ResetPersonas_removes_user_keeps_generated(t *testing.T) {
 	fx := newTestManager(t, modelmanager.Config{
-		APIClient: &fakeAPIClient{},
+		APIClient: &apitest.Fake{},
 	})
 
 	ctx := t.Context()
@@ -484,7 +428,7 @@ func TestManager_SetAPIKey_resets_listState(t *testing.T) {
 	})
 
 	fx.mgr.SetAPIFactory(func(string, string) (api.Client, error) {
-		return &fakeAPIClient{}, nil
+		return &apitest.Fake{}, nil
 	})
 
 	_, err := fx.mgr.ListModels(t.Context())

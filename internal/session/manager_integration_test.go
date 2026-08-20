@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/api"
+	"github.com/laney/modeloff/internal/api/apitest"
 	"github.com/laney/modeloff/internal/config"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/memory"
@@ -30,85 +31,11 @@ import (
 	"github.com/laney/modeloff/internal/userclient"
 )
 
-// managerFakeAPI is the integration-test fake. The callbacks are
-// optional; the default `GenerateNick` numbers retries by
-// exclusion-list length so AddModel-twice tests get distinct nicks
-// without each case maintaining its own counter.
-type managerFakeAPI struct {
-	listModelsFn       func(context.Context) ([]api.ModelInfo, error)
-	sendEventsFn       func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error)
-	generateNickFn     func(context.Context, domain.ModelID, string, []domain.Nick) (domain.Nick, error)
-	generatePersonasFn func(context.Context, domain.ModelID) ([]domain.Persona, error)
-
-	// toolResultsFn observes the results the model is handed back
-	// after its tool calls run, so a test can pin what a tool told it.
-	toolResultsFn func([]api.ToolResult)
-}
-
-func (f *managerFakeAPI) ListModels(ctx context.Context) ([]api.ModelInfo, error) {
-	if f.listModelsFn != nil {
-		return f.listModelsFn(ctx)
-	}
-
-	return nil, nil
-}
-
-func (f *managerFakeAPI) SendEvents(
-	ctx context.Context,
-	modelID domain.ModelID,
-	selfInstanceID domain.InstanceID,
-	system string,
-	history []protocol.IRCMessage,
-	events []protocol.IRCMessage,
-	_ ...api.ToolDefinition,
-) (api.CompletionResult, error) {
-	if f.sendEventsFn != nil {
-		return f.sendEventsFn(ctx, modelID, selfInstanceID, system, history, events)
-	}
-
-	return api.CompletionResult{}, nil
-}
-
-func (f *managerFakeAPI) ContinueWithToolResults(
-	_ context.Context,
-	_ *api.Conversation,
-	results []api.ToolResult,
-	_ ...api.ToolDefinition,
-) (api.CompletionResult, error) {
-	if f.toolResultsFn != nil {
-		f.toolResultsFn(results)
-	}
-
-	return api.CompletionResult{}, nil
-}
-
-func (f *managerFakeAPI) GenerateNick(ctx context.Context, smallModel domain.ModelID, persona string, exclude []domain.Nick) (api.NicknameResult, error) {
-	if f.generateNickFn != nil {
-		nick, err := f.generateNickFn(ctx, smallModel, persona, exclude)
-		return api.NicknameResult{Nick: nick}, err
-	}
-
-	nick := domain.Nick("fakenick")
-	if len(exclude) > 0 {
-		nick = domain.Nick(fmt.Sprintf("fakenick%d", len(exclude)))
-	}
-
-	return api.NicknameResult{Nick: nick}, nil
-}
-
-func (f *managerFakeAPI) GeneratePersonas(ctx context.Context, smallModel domain.ModelID) ([]domain.Persona, error) {
-	if f.generatePersonasFn != nil {
-		return f.generatePersonasFn(ctx, smallModel)
-	}
-
-	return nil, nil
-}
-
 // listModelsCountingClient records the number of `ListModels` calls
 // so short-circuit tests can assert the upstream is not re-hit after
 // a known failure.
 type listModelsCountingClient struct {
-	managerFakeAPI
+	apitest.Fake
 
 	calls atomic.Int32
 	err   error
@@ -322,8 +249,8 @@ func TestSession_AddModel_retries_on_nick_collision(t *testing.T) {
 		suggestions := []domain.Nick{"taken", "alsotaken", "fresh"}
 		var seenExclusions [][]domain.Nick
 
-		fake := &managerFakeAPI{
-			generateNickFn: func(_ context.Context, _ domain.ModelID, _ string, exclude []domain.Nick) (domain.Nick, error) {
+		fake := &apitest.Fake{
+			GenerateNickFn: func(_ context.Context, _ domain.ModelID, _ string, exclude []domain.Nick) (domain.Nick, error) {
 				seenExclusions = append(seenExclusions, slices.Clone(exclude))
 
 				return suggestions[len(exclude)], nil
@@ -373,8 +300,8 @@ func TestSession_AddModel_retries_on_nick_collision(t *testing.T) {
 // derived deterministically from the model id ("test/model" ->
 // "model"), which "taken" does not collide with.
 func TestSession_AddModel_fallsBackToDeterministicNick_afterCollisionExhaustion(t *testing.T) {
-	fake := &managerFakeAPI{
-		generateNickFn: func(_ context.Context, _ domain.ModelID, _ string, _ []domain.Nick) (domain.Nick, error) {
+	fake := &apitest.Fake{
+		GenerateNickFn: func(_ context.Context, _ domain.ModelID, _ string, _ []domain.Nick) (domain.Nick, error) {
 			return "taken", nil
 		},
 	}
@@ -399,8 +326,8 @@ func TestSession_AddModel_fallsBackToDeterministicNick_afterCollisionExhaustion(
 // deterministically from the model id
 // ("anthropic/claude-3-haiku" -> "claude-3").
 func TestSession_AddModel_fallsBackToDeterministicNick_afterGenerateNickError(t *testing.T) {
-	fake := &managerFakeAPI{
-		generateNickFn: func(_ context.Context, _ domain.ModelID, _ string, _ []domain.Nick) (domain.Nick, error) {
+	fake := &apitest.Fake{
+		GenerateNickFn: func(_ context.Context, _ domain.ModelID, _ string, _ []domain.Nick) (domain.Nick, error) {
 			return "", fmt.Errorf("API unavailable")
 		},
 	}
@@ -420,7 +347,7 @@ func TestSession_AddModel_fallsBackToDeterministicNick_afterGenerateNickError(t 
 
 func TestSession_AddModel_creates_new_instance_per_invocation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		_, store, _, user := newTestSessionWithManager(t, &managerFakeAPI{}, "")
+		_, store, _, user := newTestSessionWithManager(t, &apitest.Fake{}, "")
 		ctx := t.Context()
 
 		seedChannel(t, user, "#general")
@@ -498,8 +425,8 @@ func TestManager_DetachAll_joins_a_client_released_mid_session(t *testing.T) {
 
 		// The park ignores cancellation, which is what a real upstream
 		// call that has already been handed to the network does.
-		fake := &managerFakeAPI{
-			sendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
+		fake := &apitest.Fake{
+			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
 				<-upstream
 				return api.CompletionResult{}, nil
 			},
@@ -566,8 +493,8 @@ func TestManager_DetachAll_abandons_a_turn_past_the_drain_deadline(t *testing.T)
 		upstream := make(chan struct{})
 		t.Cleanup(func() { close(upstream) })
 
-		fake := &managerFakeAPI{
-			sendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
+		fake := &apitest.Fake{
+			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
 				<-upstream
 				return api.CompletionResult{}, nil
 			},
@@ -628,15 +555,19 @@ func TestManager_DetachAll_abandoned_turn_is_quiet_when_the_store_closes(t *test
 
 		var toolResults []api.ToolResult
 
-		fake := &managerFakeAPI{
-			sendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
+		fake := &apitest.Fake{
+			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
 				// The park ignores cancellation, which is what a real
 				// upstream call already handed to the network does.
 				<-upstream
 
 				return writeMemoryToolCall(t, "still_here", "the drain gave up on me"), nil
 			},
-			toolResultsFn: func(results []api.ToolResult) { toolResults = results },
+			ContinueWithToolResultsFn: func(_ context.Context, _ *api.Conversation, results []api.ToolResult) (api.CompletionResult, error) {
+				toolResults = results
+
+				return api.CompletionResult{}, nil
+			},
 		}
 
 		store := storetest.NewMemoryStore(t)
@@ -730,8 +661,8 @@ func writeMemoryToolCall(t *testing.T, key, content string) api.CompletionResult
 
 func TestSession_Invite_without_persona_assigns_from_pool(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		fake := &managerFakeAPI{
-			generatePersonasFn: func(_ context.Context, _ domain.ModelID) ([]domain.Persona, error) {
+		fake := &apitest.Fake{
+			GeneratePersonasFn: func(_ context.Context, _ domain.ModelID) ([]domain.Persona, error) {
 				return testPersonas(), nil
 			},
 		}
@@ -905,11 +836,11 @@ func TestDispatch_transcript_token_budget_from_catalogue_context_len(t *testing.
 			synctest.Test(t, func(t *testing.T) {
 				var histories [][]protocol.IRCMessage
 
-				fake := &managerFakeAPI{
-					listModelsFn: func(context.Context) ([]api.ModelInfo, error) {
+				fake := &apitest.Fake{
+					ListModelsFn: func(context.Context) ([]api.ModelInfo, error) {
 						return []api.ModelInfo{{ID: "test/model", ContextLen: tc.contextLen, SupportedParameters: []string{"tools"}}}, nil
 					},
-					sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, history []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
+					SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, history []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
 						histories = append(histories, history)
 						return api.CompletionResult{}, nil
 					},

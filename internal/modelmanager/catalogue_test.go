@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/api"
+	"github.com/laney/modeloff/internal/api/apitest"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/modelclient"
 	"github.com/laney/modeloff/internal/modelmanager"
@@ -71,7 +72,7 @@ func TestManager_EnsureToolCapableModel(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client := &fakeAPIClient{listModelsFn: func(context.Context) ([]api.ModelInfo, error) {
+			client := &apitest.Fake{ListModelsFn: func(context.Context) ([]api.ModelInfo, error) {
 				return fakeCatalogue(), nil
 			}}
 
@@ -131,7 +132,7 @@ func TestManager_EnsureStructuredOutputModel(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client := &fakeAPIClient{listModelsFn: func(context.Context) ([]api.ModelInfo, error) {
+			client := &apitest.Fake{ListModelsFn: func(context.Context) ([]api.ModelInfo, error) {
 				return fakeCatalogue(), nil
 			}}
 
@@ -180,7 +181,7 @@ func TestManager_EnsureKnownModel(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client := &fakeAPIClient{listModelsFn: func(context.Context) ([]api.ModelInfo, error) {
+			client := &apitest.Fake{ListModelsFn: func(context.Context) ([]api.ModelInfo, error) {
 				return fakeCatalogue(), nil
 			}}
 

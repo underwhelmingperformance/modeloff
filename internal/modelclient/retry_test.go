@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/api"
+	"github.com/laney/modeloff/internal/api/apitest"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/protocol"
 )
@@ -28,8 +29,12 @@ type turnPrompt struct {
 // countingAPI is an [api.Client] that records every `SendEvents` call
 // and answers each one from `errs`, so a test can fail the first
 // attempt and let the next succeed. A call past the end of `errs`
-// succeeds with silence.
+// succeeds with silence. The embedded [apitest.Fake] answers every
+// other method with its ordinary defaults; nothing in this file
+// exercises them.
 type countingAPI struct {
+	apitest.Fake
+
 	mu    sync.Mutex
 	calls []turnPrompt
 	errs  []error
@@ -96,25 +101,6 @@ func (c *countingAPI) triggeredBodies() []string {
 	}
 
 	return all
-}
-
-func (*countingAPI) ListModels(context.Context) ([]api.ModelInfo, error) { return nil, nil }
-
-func (*countingAPI) ContinueWithToolResults(
-	context.Context,
-	*api.Conversation,
-	[]api.ToolResult,
-	...api.ToolDefinition,
-) (api.CompletionResult, error) {
-	return api.CompletionResult{}, nil
-}
-
-func (*countingAPI) GenerateNick(context.Context, domain.ModelID, string, []domain.Nick) (api.NicknameResult, error) {
-	return api.NicknameResult{}, nil
-}
-
-func (*countingAPI) GeneratePersonas(context.Context, domain.ModelID) ([]domain.Persona, error) {
-	return nil, nil
 }
 
 // upstreamError builds the `*openai.Error` shape the SDK surfaces for

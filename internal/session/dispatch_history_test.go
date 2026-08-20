@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/api"
+	"github.com/laney/modeloff/internal/api/apitest"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/protocol"
 )
@@ -34,8 +35,8 @@ func TestModelClient_dispatch_does_not_show_trigger_in_history_and_events(t *tes
 
 		var captures []capture
 
-		fake := &fakeAPIClient{
-			sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, history []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+		fake := &apitest.Fake{
+			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, history []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 				captures = append(captures, capture{
 					history: append([]protocol.IRCMessage(nil), history...),
 					events:  append([]protocol.IRCMessage(nil), events...),
@@ -94,8 +95,8 @@ func TestModelClient_history_contains_self_replies(t *testing.T) {
 			captures [][]protocol.IRCMessage
 		)
 
-		fake := &fakeAPIClient{
-			sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, history []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+		fake := &apitest.Fake{
+			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, history []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 				mu.Lock()
 				captures = append(captures, append([]protocol.IRCMessage(nil), history...))
 				mu.Unlock()
@@ -154,8 +155,8 @@ func TestModelClient_history_contains_self_replies(t *testing.T) {
 // trigger.
 func TestModelClient_reply_is_gated_by_channel_modes(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		fake := &fakeAPIClient{
-			sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+		fake := &apitest.Fake{
+			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 				return msgToolCalls(t, domain.ChannelName(events[0].Target), "i should be silenced"), nil
 			},
 		}

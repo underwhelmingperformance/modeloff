@@ -11,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/laney/modeloff/internal/api/apitest"
 	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/protocol"
@@ -87,7 +88,7 @@ func newGatedTestSession(t *testing.T, gate <-chan struct{}) (*Session, *storemo
 	t.Helper()
 
 	s := storetest.NewMemoryStore(t)
-	factory := newTestModelClientFactory(t, &fakeAPIClient{})
+	factory := newTestModelClientFactory(t, &apitest.Fake{})
 
 	sess := New(t.Context, &gatedStore{Store: s, gate: gate}, factory, nil)
 	t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
