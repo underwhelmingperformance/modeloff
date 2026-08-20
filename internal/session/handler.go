@@ -155,6 +155,27 @@ func (s *Session) handleOper(ctx context.Context, c protocol.Client, cmd protoco
 	})
 }
 
+// handleJoin processes every channel in cmd.Channels as one JOIN
+// command (RFC 2812 §3.2.1's "JOIN #a,#b,#c"), so the connection's
+// flood-control penalty is charged once regardless of how many
+// channels it names. A list longer than [protocol.MaxJoinTargets]
+// is refused whole, before any channel in it is joined, with
+// [domain.TooManyJoinTargetsError]. Otherwise channels are joined
+// one at a time, in order, on this writer-loop turn; a gate refusal
+// on one channel (`+i`, `+l`, `+k`) does not stop the rest. A real
+// ircd answers each target in a multi-target JOIN with its own
+// numeric, and this is that per-target answer.
+//
+// `Response.Events` carries one entry per channel processed: a
+// [domain.JoinedChannel] for a channel that joined, or the gate's
+// typed refusal ([domain.ChannelKeyMismatchError],
+// [domain.ChannelInviteOnlyError], [domain.ChannelFullError]), which
+// already doubles as a [protocol.Event]. This is the same shape
+// [Session.handleList] uses to land one [domain.ListReply] per
+// directory row. `Response.Err` carries every refusal joined
+// together with [errors.Join], so a caller that only checks success
+// or failure still gets one answer, while a caller that wants to
+// know which channels joined and which did not reads `Events`.
 func (s *Session) handleJoin(ctx context.Context, c protocol.Client, cmd protocol.Join) (protocol.Response, error) {
 	return s.onWriter(ctx, func(ctx context.Context) (protocol.Response, error) {
 		actor, err := s.resolveClientActor(c)
@@ -162,7 +183,31 @@ func (s *Session) handleJoin(ctx context.Context, c protocol.Client, cmd protoco
 			return protocol.Response{}, err
 		}
 
-		return commandResult(s.joinAs(ctx, actor, cmd.Channel, cmd.Key))
+		if len(cmd.Channels) > protocol.MaxJoinTargets {
+			return commandResult(domain.TooManyJoinTargetsError{
+				Requested: len(cmd.Channels),
+				Max:       protocol.MaxJoinTargets,
+				At:        s.now(),
+			})
+		}
+
+		var failures []error
+		var events []protocol.Event
+
+		for _, ch := range cmd.Channels {
+			joinErr := s.joinAs(ctx, actor, ch, cmd.Key)
+			if joinErr != nil {
+				failures = append(failures, joinErr)
+				if ev, ok := joinErr.(protocol.Event); ok {
+					events = append(events, ev)
+				}
+				continue
+			}
+
+			events = append(events, domain.JoinedChannel{Channel: domain.NormaliseChannelName(ch)})
+		}
+
+		return protocol.Response{Events: events, Err: errors.Join(failures...)}, nil
 	})
 }
 

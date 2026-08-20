@@ -21,7 +21,7 @@ func TestCommand_sum_membership(t *testing.T) {
 		name string
 		cmd  protocol.Command
 	}{
-		{"join", protocol.Join{Channel: channel}},
+		{"join", protocol.Join{Channels: []domain.ChannelName{channel}}},
 		{"part", protocol.Part{Channel: channel, Reason: "bye"}},
 		{"privmsg", protocol.PrivMsg{Target: channel, Body: "hello"}},
 		{"action", protocol.Action{Target: channel, Body: "waves"}},

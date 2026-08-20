@@ -422,6 +422,20 @@ type ListEnd struct {
 	At time.Time `json:"at"`
 }
 
+// JoinedChannel confirms one channel a JOIN command reached. RFC
+// 2812 §3.2.1 answers each target in a multi-target JOIN with its
+// own reply; `Session.handleJoin` puts one `JoinedChannel` in
+// `Response.Events` for every channel it actually joined, alongside
+// a typed error for every channel a gate refused. Together,
+// `Response.Events` is a complete account of what a multi-target
+// JOIN did: which channels joined, and why the rest did not. Like
+// `ListEnd`, it rides the wire in `Response.Events` but is never
+// persisted. A model reloads its channel history from the channel's
+// own event log on reattach, not from this reply.
+type JoinedChannel struct {
+	Channel ChannelName `json:"channel"`
+}
+
 // CommandError records a command error.
 type CommandError struct {
 	Target ChannelName `json:"channel"`
@@ -669,6 +683,7 @@ func (Help) domainEvent()              {}
 func (Whois) domainEvent()             {}
 func (ListReply) domainEvent()         {}
 func (ListEnd) domainEvent()           {}
+func (JoinedChannel) domainEvent()     {}
 func (CommandError) domainEvent()      {}
 func (UsageHint) domainEvent()         {}
 func (SystemNotice) domainEvent()      {}

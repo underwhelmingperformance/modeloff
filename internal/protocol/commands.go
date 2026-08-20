@@ -20,13 +20,30 @@ type Command interface {
 	Name() string
 }
 
-// Join asks the server to add the issuing client to the named
-// channel, creating it if it does not yet exist. `Key` carries the
-// channel password for keyed (`+k`) channels per RFC 2812 §3.2.1;
-// empty for unkeyed channels.
+// MaxJoinTargets is the most channels a single JOIN may name, the
+// TARGMAX RFC 2812 ISUPPORT advertises for a real ircd; real ircds
+// vary between four and ten, and this picks the upper end. The
+// dispatcher refuses an over-cap JOIN before joining any of its
+// channels: RFC 1459 §8.10 charges the whole command one flat
+// penalty regardless of its channel count, so an uncapped list
+// would turn that flat charge into unbounded per-command work.
+// `/join`'s help text and `userclient.JoinAutojoinChannels`'s
+// chunking both track this value.
+const MaxJoinTargets = 10
+
+// Join asks the server to add the issuing client to every channel
+// in Channels, creating each one that does not yet exist. RFC 2812
+// §3.2.1 lets one JOIN name several channels at once
+// ("JOIN #a,#b,#c"); the dispatcher processes the whole list as a
+// single command, so the flood-control penalty (RFC 1459 §8.10) is
+// charged once no matter how many channels it names, up to
+// [MaxJoinTargets]. Key carries one channel password and applies to
+// every channel in the list; RFC 2812 supports a parallel
+// per-channel key list, but nothing in modeloff needs more than one
+// keyed channel per JOIN yet.
 type Join struct {
-	Channel domain.ChannelName
-	Key     string
+	Channels []domain.ChannelName
+	Key      string
 }
 
 // Part asks the server to remove the issuing client from the named

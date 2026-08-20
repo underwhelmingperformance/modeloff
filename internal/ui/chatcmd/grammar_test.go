@@ -1,6 +1,7 @@
 package chatcmd
 
 import (
+	"fmt"
 	"iter"
 	"slices"
 	"testing"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/protocol"
 )
 
 func testContext(kind domain.ChannelKind) CompletionContext {
@@ -215,6 +217,152 @@ func TestComplete_join_filters_by_prefix(t *testing.T) {
 
 	require.True(t, c.Visible)
 	require.Equal(t, []string{"#random"}, suggestionValues(c))
+}
+
+// TestJoinCommand_ToCommand_multi_target covers RFC 2812 §3.2.1's
+// JOIN syntax: `/join` accepts a comma-separated channel list
+// ("#a,#b,#c") alongside its ordinary single-channel form, and
+// every entry gets the same `#`-prefixing a bare single channel
+// does.
+func TestJoinCommand_ToCommand_multi_target(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want []domain.ChannelName
+	}{
+		{name: "single channel gets the # prefix", raw: "/join general", want: []domain.ChannelName{"#general"}},
+		{name: "already-prefixed channel is unchanged", raw: "/join #general", want: []domain.ChannelName{"#general"}},
+		{name: "a comma-separated list splits into its channels", raw: "/join #a,#b,#c", want: []domain.ChannelName{"#a", "#b", "#c"}},
+		{name: "each entry in an unprefixed list gets its own #", raw: "/join a,b,c", want: []domain.ChannelName{"#a", "#b", "#c"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parsed, err := testParser.Parse(tt.raw)
+			require.NoError(t, err)
+
+			join, ok := parsed.(JoinCommand)
+			require.True(t, ok, "expected a JoinCommand, got %T", parsed)
+
+			wire, err := join.ToCommand(Context{})
+			require.NoError(t, err)
+			require.Equal(t, protocol.Join{Channels: tt.want}, wire)
+		})
+	}
+}
+
+// TestJoinCommand_comma_hygiene pins the two malformed shapes that
+// stay within one space-delimited token: a trailing comma and a
+// doubled comma. Both leave an empty entry once split; Decode drops
+// it, which keeps a stray comma from manufacturing a channel named
+// bare "#".
+func TestJoinCommand_comma_hygiene(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want []domain.ChannelName
+	}{
+		{name: "trailing comma drops the empty entry", raw: "/join #a,", want: []domain.ChannelName{"#a"}},
+		{name: "doubled comma drops the empty entry", raw: "/join #a,,#b", want: []domain.ChannelName{"#a", "#b"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parsed, err := testParser.Parse(tt.raw)
+			require.NoError(t, err)
+
+			join, ok := parsed.(JoinCommand)
+			require.True(t, ok, "expected a JoinCommand, got %T", parsed)
+
+			wire, err := join.ToCommand(Context{})
+			require.NoError(t, err)
+			require.Equal(t, protocol.Join{Channels: tt.want}, wire)
+		})
+	}
+}
+
+// TestJoinCommand_refuses_an_argument_with_no_channel covers a
+// comma-only argument ("/join ,"): every entry is empty once
+// trimmed, so nothing survives to prefix. Parsing refuses the
+// argument, so nothing later can silently join a channel named bare
+// "#".
+func TestJoinCommand_refuses_an_argument_with_no_channel(t *testing.T) {
+	_, err := testParser.Parse("/join ,")
+	require.Error(t, err)
+}
+
+// TestJoinCommand_refuses_a_key_that_looks_like_a_channel covers
+// the shape a space after a comma produces. The CLI grammar reads
+// the channel argument and the key argument as separate tokens, so
+// "/join #a, #b" parses as Channel "#a," and Key "#b" before Decode
+// ever sees a second channel; Decode then drops "#a,"'s trailing
+// empty entry down to "#a", leaving no parse error to catch the
+// mistake. ToCommand is where it is caught: a key that itself looks
+// like a channel name is refused, so "#b" is not silently taken as
+// a password and dropped from the join.
+func TestJoinCommand_refuses_a_key_that_looks_like_a_channel(t *testing.T) {
+	parsed, err := testParser.Parse("/join #a, #b")
+	require.NoError(t, err)
+
+	join, ok := parsed.(JoinCommand)
+	require.True(t, ok, "expected a JoinCommand, got %T", parsed)
+	require.Equal(t, ChannelArg("#a"), join.Channel)
+	require.Equal(t, "#b", join.Key)
+
+	_, err = join.ToCommand(Context{})
+	require.Error(t, err)
+}
+
+// TestJoinOutcome_Text covers how a JOIN's per-channel outcomes
+// render into the one line the tool-result payload and the
+// chat-screen's notice both carry.
+func TestJoinOutcome_Text(t *testing.T) {
+	tests := []struct {
+		name   string
+		events []protocol.Event
+		want   string
+	}{
+		{
+			name: "every channel joined",
+			events: []protocol.Event{
+				domain.JoinedChannel{Channel: "#a"},
+				domain.JoinedChannel{Channel: "#b"},
+			},
+			want: "joined #a, #b",
+		},
+		{
+			name:   "every channel was refused",
+			events: []protocol.Event{domain.ChannelFullError{Channel: "#a"}},
+			want:   "cannot join #a: channel is full",
+		},
+		{
+			name: "a mix of joined and refused channels",
+			events: []protocol.Event{
+				domain.JoinedChannel{Channel: "#a"},
+				domain.ChannelInviteOnlyError{Channel: "#b"},
+			},
+			want: "joined #a; cannot join #b: invite-only channel",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, newJoinOutcome(tt.events).Text())
+		})
+	}
+}
+
+// TestJoinCommand_help_states_the_channel_cap pins the join
+// grammar's help text against [protocol.MaxJoinTargets]: a change
+// to the cap that leaves the text stale fails this test.
+func TestJoinCommand_help_states_the_channel_cap(t *testing.T) {
+	node := testParser.Set().Find("join")
+	require.NotNil(t, node)
+	require.Len(t, node.Positionals, 2)
+	require.Equal(t,
+		fmt.Sprintf("Channel to join or create, or a comma-separated list of up to %d to join at once", protocol.MaxJoinTargets),
+		node.Positionals[0].Help,
+	)
 }
 
 func TestComplete_kick_suggests_active_members_excluding_self(t *testing.T) {

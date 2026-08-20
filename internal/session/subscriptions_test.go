@@ -32,10 +32,10 @@ func TestSession_User_Send_routes_through_Handle(t *testing.T) {
 
 	sess, _ := newTestSession(t)
 
-	resp, err := userClient(t, sess).Send(t.Context(), protocol.Join{Channel: "#general"})
+	resp, err := userClient(t, sess).Send(t.Context(), protocol.Join{Channels: []domain.ChannelName{"#general"}})
 
 	require.NoError(t, err)
-	require.Equal(t, protocol.Response{}, resp)
+	require.Equal(t, protocol.Response{Events: []protocol.Event{domain.JoinedChannel{Channel: "#general"}}}, resp)
 
 	_, ok := userInstance(t, sess).Channels().Get("#general")
 	require.True(t, ok)

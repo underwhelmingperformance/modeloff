@@ -130,7 +130,7 @@ func TestSession_concurrent_joins_do_not_lose_a_membership(t *testing.T) {
 		)
 
 		wg.Go(func() {
-			resp, err := firstClient.Send(ctx, protocol.Join{Channel: "#room"})
+			resp, err := firstClient.Send(ctx, protocol.Join{Channels: []domain.ChannelName{"#room"}})
 			firstErr = errors.Join(err, resp.Err)
 		})
 
@@ -139,7 +139,7 @@ func TestSession_concurrent_joins_do_not_lose_a_membership(t *testing.T) {
 		synctest.Wait()
 
 		wg.Go(func() {
-			resp, err := secondClient.Send(ctx, protocol.Join{Channel: "#room"})
+			resp, err := secondClient.Send(ctx, protocol.Join{Channels: []domain.ChannelName{"#room"}})
 			secondErr = errors.Join(err, resp.Err)
 		})
 
@@ -279,7 +279,7 @@ func TestSession_a_silent_consumer_does_not_stall_the_command_loop(t *testing.T)
 
 		require.NoError(t, userJoin(ctx, t, sess, "#busy"))
 
-		resp, err := talkerClient.Send(ctx, protocol.Join{Channel: "#busy"})
+		resp, err := talkerClient.Send(ctx, protocol.Join{Channels: []domain.ChannelName{"#busy"}})
 		require.NoError(t, errors.Join(err, resp.Err))
 
 		for i := range eventBufSize * 3 {
@@ -371,7 +371,7 @@ func TestSession_reaping_a_subscription_mid_send_is_clean(t *testing.T) {
 
 	require.NoError(t, userJoin(ctx, t, sess, "#busy"))
 
-	resp, err := talkerClient.Send(ctx, protocol.Join{Channel: "#busy"})
+	resp, err := talkerClient.Send(ctx, protocol.Join{Channels: []domain.ChannelName{"#busy"}})
 	require.NoError(t, errors.Join(err, resp.Err))
 
 	// Which arm of the pump's select wins when both come ready is a
@@ -432,7 +432,7 @@ func TestSession_commands_after_shutdown_are_refused(t *testing.T) {
 
 		synctest.Wait()
 
-		_, err := userClient(t, sess).Send(ctx, protocol.Join{Channel: "#late"})
+		_, err := userClient(t, sess).Send(ctx, protocol.Join{Channels: []domain.ChannelName{"#late"}})
 		require.ErrorIs(t, err, ErrSessionClosed)
 
 		_, err = sess.loadChannelWindow(ctx, "#late")

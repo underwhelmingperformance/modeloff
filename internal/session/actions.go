@@ -28,6 +28,10 @@ import (
 //
 //nolint:gocognit // sequenced join steps (create-or-load, gate, op-grant, persist, broadcast, replies) read clearer inline than as further-extracted helpers.
 func (s *Session) joinAs(ctx context.Context, actor *domain.Instance, ch domain.ChannelName, key string) error {
+	if isBareChannelPrefix(ch) {
+		return domain.BareChannelNameError{Channel: ch, At: s.now()}
+	}
+
 	ch = domain.NormaliseChannelName(ch)
 
 	actorNick := actor.Nick()
@@ -138,6 +142,16 @@ func (s *Session) joinAs(ctx context.Context, actor *domain.Instance, ch domain.
 
 		return nil
 	})
+}
+
+// isBareChannelPrefix reports whether ch is nothing but a channel
+// prefix character with no name after it ("#" or "&"). No caller
+// should construct one deliberately, but a comma-separated JOIN
+// list can produce it from an empty entry between two commas.
+// joinAs checks this directly: the dispatcher does not trust a
+// client to have refused the value first.
+func isBareChannelPrefix(ch domain.ChannelName) bool {
+	return ch == "#" || ch == "&"
 }
 
 // ensureChannelWindowWithActor loads the channel-window or creates

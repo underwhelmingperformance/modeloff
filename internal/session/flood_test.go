@@ -3,6 +3,7 @@ package session
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -242,29 +243,30 @@ func TestSession_user_typing_at_human_speed_is_never_throttled(t *testing.T) {
 	})
 }
 
-// TestSession_autojoin_spends_the_user_allowance pins the one
-// composition where a person reaches the throttle without sending
-// anything quickly. Autojoin issues one JOIN per channel, each
-// charged like any other command, so a list of six or more channels
-// spends the connection's allowance before the person has typed.
+// TestSession_autojoin_spends_the_user_allowance pins the cost of
+// autojoin restoring a channel list on connect, whatever its length.
+// `userclient.JoinAutojoinChannels` chunks the list to
+// [protocol.MaxJoinTargets] channels per JOIN (RFC 2812 §3.2.1), so
+// restoring N channels costs ⌈N/MaxJoinTargets⌉ commands, and the
+// flood-control penalty (RFC 1459 §8.10) charges each of those
+// commands once regardless of how many channels it names.
 //
-// The numbers below are what that costs today. A multi-target JOIN
-// ("JOIN #a,#b,#c", RFC 2812 §3.2.1) is one command and one charge
-// however many channels it names, which is how a real client avoids
-// this; `protocol.Join` carries a single channel and cannot express
-// it yet. When it can, this test is where the improvement shows up:
-// every row's timings drop to zero.
+// Every row here stays at two chunks or fewer (twenty channels is
+// two chunks of ten), so the message timer never gets more than
+// four seconds ahead of now: two commands at two seconds each,
+// still well inside the ten-second lead a burst gets before
+// anything is held back. Both the JOIN sequence and the first thing
+// the person types afterwards therefore land with zero delay for
+// every row.
 func TestSession_autojoin_spends_the_user_allowance(t *testing.T) {
 	tests := []struct {
-		name           string
-		channels       int
-		wantJoins      time.Duration
-		wantFirstTyped time.Duration
+		name     string
+		channels int
 	}{
-		{name: "six channels", channels: 6, wantJoins: 0, wantFirstTyped: 2 * time.Second},
-		{name: "eight channels", channels: 8, wantJoins: 4 * time.Second, wantFirstTyped: 2 * time.Second},
-		{name: "twelve channels", channels: 12, wantJoins: 12 * time.Second, wantFirstTyped: 2 * time.Second},
-		{name: "twenty channels", channels: 20, wantJoins: 28 * time.Second, wantFirstTyped: 2 * time.Second},
+		{name: "six channels", channels: 6},
+		{name: "eight channels", channels: 8},
+		{name: "twelve channels", channels: 12},
+		{name: "twenty channels", channels: 20},
 	}
 
 	for _, tt := range tests {
@@ -276,12 +278,16 @@ func TestSession_autojoin_spends_the_user_allowance(t *testing.T) {
 				client := userClient(t, sess)
 				start := time.Now()
 
-				// One JOIN per channel, which is what
-				// `userclient.JoinAutojoinChannels` issues.
-				for i := range tt.channels {
-					resp, err := client.Send(ctx, protocol.Join{
-						Channel: domain.ChannelName(fmt.Sprintf("#room%d", i)),
-					})
+				channels := make([]domain.ChannelName, tt.channels)
+				for i := range channels {
+					channels[i] = domain.ChannelName(fmt.Sprintf("#room%d", i))
+				}
+
+				// One JOIN per protocol.MaxJoinTargets-sized chunk,
+				// which is what `userclient.JoinAutojoinChannels`
+				// issues.
+				for chunk := range slices.Chunk(channels, protocol.MaxJoinTargets) {
+					resp, err := client.Send(ctx, protocol.Join{Channels: chunk})
 					require.NoError(t, errors.Join(err, resp.Err))
 				}
 
@@ -290,8 +296,8 @@ func TestSession_autojoin_spends_the_user_allowance(t *testing.T) {
 				resp, err := client.Send(ctx, protocol.PrivMsg{Target: "#room0", Body: "hello"})
 				require.NoError(t, errors.Join(err, resp.Err))
 
-				require.Equal(t, tt.wantJoins, joined)
-				require.Equal(t, tt.wantFirstTyped, time.Since(start)-joined)
+				require.Equal(t, time.Duration(0), joined)
+				require.Equal(t, time.Duration(0), time.Since(start)-joined)
 			})
 		})
 	}

@@ -179,9 +179,11 @@ type ReplyEvents []domain.ProtocolEvent
 // [domain.ErrorEvent] for the chat-screen to render. On success it
 // returns a [ReplyEvents] carrying every event the dispatcher
 // synthesised in `Response.Events`. Commands whose handler does not
-// populate `Response.Events` (Join, Topic, Kick, Nick, …) return
-// `nil`, leaving the caller to follow up with whatever post-success
-// `tea.Msg` it wants.
+// populate `Response.Events` (Topic, Kick, Nick, …) return `nil`,
+// leaving the caller to follow up with whatever post-success
+// `tea.Msg` it wants. JOIN's partial-success shape does not fit this
+// contract: a refusal there is not a total failure. [JoinCommand.Run]
+// talks to the client directly and skips this helper.
 func sendCommand(ctx context.Context, rc Context, c protocolCommand, operation string) tea.Msg {
 	cmd, err := c.ToCommand(rc)
 	if err != nil {

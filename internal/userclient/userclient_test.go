@@ -111,7 +111,7 @@ func TestUserClient_joining_marks_the_channel_read(t *testing.T) {
 			join: func(t *testing.T, f *fixture) {
 				t.Helper()
 
-				resp, err := f.user.Send(t.Context(), protocol.Join{Channel: "#general"})
+				resp, err := f.user.Send(t.Context(), protocol.Join{Channels: []domain.ChannelName{"#general"}})
 				require.NoError(t, err)
 				require.NoError(t, resp.Err)
 			},
@@ -122,7 +122,7 @@ func TestUserClient_joining_marks_the_channel_read(t *testing.T) {
 			join: func(t *testing.T, f *fixture) {
 				t.Helper()
 
-				resp, err := f.user.Send(t.Context(), protocol.Join{Channel: "general"})
+				resp, err := f.user.Send(t.Context(), protocol.Join{Channels: []domain.ChannelName{"general"}})
 				require.NoError(t, err)
 				require.NoError(t, resp.Err)
 			},
@@ -189,6 +189,44 @@ func TestUserClient_a_message_after_joining_counts_as_unread(t *testing.T) {
 	unread, err = f.sess.UnreadCount(ctx, "#general")
 	require.NoError(t, err)
 	require.Equal(t, 1, unread)
+}
+
+// TestUserClient_multi_target_join_stamps_only_the_channels_that_joined
+// covers the read-cursor half of a multi-target JOIN (RFC 2812
+// §3.2.1): a gate refusal on one channel must not withhold the
+// cursor stamp the other, successful channel in the same command
+// has already earned.
+func TestUserClient_multi_target_join_stamps_only_the_channels_that_joined(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+
+	locked := domain.NewChannelWindow("#locked", time.Now())
+	locked.Modes = domain.ChannelModes{InviteOnly: true}
+	require.NoError(t, f.store.SaveWindow(ctx, locked))
+
+	for _, body := range []string{"first", "second"} {
+		_, err := f.store.AppendEvent(ctx, "#locked", domain.Message{
+			Target: "#locked",
+			From:   "botty",
+			Body:   body,
+		})
+		require.NoError(t, err)
+	}
+
+	resp, err := f.user.Send(ctx, protocol.Join{Channels: []domain.ChannelName{"#general", "#locked"}})
+	require.NoError(t, err)
+
+	var refused domain.ChannelInviteOnlyError
+	require.ErrorAs(t, resp.Err, &refused)
+	require.Equal(t, domain.ChannelName("#locked"), refused.Channel)
+
+	generalUnread, err := f.sess.UnreadCount(ctx, "#general")
+	require.NoError(t, err)
+	require.Equal(t, 0, generalUnread, "the channel that joined must have its cursor stamped")
+
+	lockedUnread, err := f.sess.UnreadCount(ctx, "#locked")
+	require.NoError(t, err)
+	require.Equal(t, 2, lockedUnread, "the refused channel must not have its cursor stamped")
 }
 
 func TestUserClient_JoinAutojoinChannels_emits_aggregate_span(t *testing.T) {

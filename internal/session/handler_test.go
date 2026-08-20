@@ -151,8 +151,8 @@ func TestSession_Handle_delegates(t *testing.T) {
 		{
 			name:   "join creates and joins channel",
 			client: userClient,
-			cmd:    protocol.Join{Channel: "#general"},
-			want:   protocol.Response{},
+			cmd:    protocol.Join{Channels: []domain.ChannelName{"#general"}},
+			want:   protocol.Response{Events: []protocol.Event{domain.JoinedChannel{Channel: "#general"}}},
 			verify: func(t *testing.T, sess *Session, _ *storemod.SQLiteStore) {
 				_, ok := userInstance(t, sess).Channels().Get("#general")
 				require.True(t, ok)

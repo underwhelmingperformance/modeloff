@@ -19,6 +19,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
@@ -136,25 +137,46 @@ func (uc *UserClient) Identity() protocol.ClientID { return protocol.UserClientI
 // client as the issuing actor, and keeps this client's own state in
 // step with the commands it issues.
 //
-// Today that means one thing: a successful JOIN stamps the read
-// cursor at the channel's head. Every way the user joins arrives
-// here — [UserClient.Join] and so [UserClient.JoinAutojoinChannels],
-// the chat-screen's window switch, and the `/join` slash command,
-// which builds its own [protocol.Join] and dispatches it through
-// this method — so this is the one place that covers them all.
-// Doing it per call site would leave whichever one was forgotten
-// showing a channel as unread the moment you arrive in it.
+// Today that means one thing: every channel a JOIN reaches stamps
+// its read cursor at the channel's head. Every way the user joins
+// arrives here: [UserClient.Join] and so
+// [UserClient.JoinAutojoinChannels], the chat-screen's window
+// switch, and the `/join` slash command, which builds its own
+// [protocol.Join] and dispatches it through this method. This is
+// the one place that covers them all. Doing it per call site would
+// leave whichever one was forgotten showing a channel as unread the
+// moment you arrive in it.
 func (uc *UserClient) Send(ctx context.Context, cmd protocol.Command) (protocol.Response, error) {
 	resp, err := uc.sess.Handle(ctx, uc, cmd)
-	if err != nil || resp.Err != nil {
+	if err != nil {
 		return resp, err
 	}
 
-	if join, ok := cmd.(protocol.Join); ok {
-		uc.markJoinedChannelRead(ctx, join.Channel)
+	if _, ok := cmd.(protocol.Join); ok {
+		uc.markJoinedChannelsRead(ctx, resp.Events)
 	}
 
 	return resp, nil
+}
+
+// markJoinedChannelsRead stamps the read cursor for every channel a
+// JOIN reached. [Session.handleJoin] knows exactly which channels it
+// joined and puts a [domain.JoinedChannel] in `Response.Events` for
+// each one; this stamps exactly that set and nothing else. A gate
+// refusal, and a failure the dispatcher never turned into a typed
+// event, both leave a channel simply absent from `events`, so
+// neither ever gets a stamp. The derivation is fail-closed: it
+// withholds a stamp by default, and grants one only for a channel
+// `events` confirms joined.
+func (uc *UserClient) markJoinedChannelsRead(ctx context.Context, events []protocol.Event) {
+	for _, ev := range events {
+		joined, ok := ev.(domain.JoinedChannel)
+		if !ok {
+			continue
+		}
+
+		uc.markJoinedChannelRead(ctx, joined.Channel)
+	}
 }
 
 // markJoinedChannelRead stamps the read cursor for a channel this
@@ -241,7 +263,7 @@ func (uc *UserClient) Subscription() protocol.Subscription {
 // with it — see [UserClient.Send], which stamps it for every JOIN
 // this client issues, however it was raised.
 func (uc *UserClient) Join(ctx context.Context, ch domain.ChannelName) error {
-	resp, err := uc.Send(ctx, protocol.Join{Channel: ch})
+	resp, err := uc.Send(ctx, protocol.Join{Channels: []domain.ChannelName{ch}})
 
 	return firstErr(err, resp.Err)
 }
@@ -332,10 +354,16 @@ func (uc *UserClient) JoinedAt(ch domain.ChannelName) time.Time {
 }
 
 // JoinAutojoinChannels loads the autojoin channel list from the
-// store and issues an ordinary JOIN for each entry. Best-effort:
-// per-channel join failures are logged but do not abort the
-// iteration. Returns a non-nil error only if the autojoin list
-// itself cannot be loaded.
+// store and issues it as multi-target JOINs (RFC 2812 §3.2.1),
+// chunked to [protocol.MaxJoinTargets] channels per command so no
+// single JOIN is refused for naming too many. Each chunk still
+// charges the connection's flood-control penalty only once, so
+// restoring dozens of channels on connect costs a handful of
+// two-second charges, not one per channel.
+// Best-effort: [Session.handleJoin] processes every channel in a
+// chunk independently, so a gate refusal on one is logged without
+// withholding the rest. Returns a non-nil error only if the
+// autojoin list itself cannot be loaded.
 func (uc *UserClient) JoinAutojoinChannels(ctx context.Context) (retErr error) {
 	tracer := otel.GetTracerProvider().Tracer("github.com/laney/modeloff/internal/userclient")
 	ctx, span := tracer.Start(ctx, "userclient.autojoin",
@@ -359,15 +387,32 @@ func (uc *UserClient) JoinAutojoinChannels(ctx context.Context) (retErr error) {
 	}
 
 	var failed int
-	for _, ch := range channels {
-		if err := uc.Join(ctx, ch); err != nil {
-			failed++
+	for chunk := range slices.Chunk(channels, protocol.MaxJoinTargets) {
+		resp, sendErr := uc.Send(ctx, protocol.Join{Channels: chunk})
+		if sendErr != nil {
+			failed += len(chunk)
+			slog.Default().ErrorContext(ctx, "autojoin channels",
+				"component", "userclient",
+				"channels", chunk,
+				"error", sendErr,
+			)
+			continue
+		}
+
+		joined := 0
+		for _, ev := range resp.Events {
+			if _, ok := ev.(domain.JoinedChannel); ok {
+				joined++
+				continue
+			}
+
 			slog.Default().ErrorContext(ctx, "autojoin channel",
 				"component", "userclient",
-				"channel", ch,
-				"error", err,
+				"error", ev,
 			)
 		}
+
+		failed += len(chunk) - joined
 	}
 
 	span.SetAttributes(

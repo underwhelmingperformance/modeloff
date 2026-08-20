@@ -21,8 +21,8 @@ type ProtocolEvent interface {
 }
 
 // Wire-shaped events delivered on the protocol bus: channel activity,
-// issuer replies, and the protocol-only `UserModeChange` and
-// `ListEnd`.
+// issuer replies, and the protocol-only `UserModeChange`,
+// `ListEnd` and `JoinedChannel`.
 func (Message) isProtocolEvent()           {}
 func (Join) isProtocolEvent()              {}
 func (Part) isProtocolEvent()              {}
@@ -37,6 +37,7 @@ func (TopicInfo) isProtocolEvent()         {}
 func (Whois) isProtocolEvent()             {}
 func (ListReply) isProtocolEvent()         {}
 func (ListEnd) isProtocolEvent()           {}
+func (JoinedChannel) isProtocolEvent()     {}
 func (CommandError) isProtocolEvent()      {}
 func (SystemNotice) isProtocolEvent()      {}
 func (PersonasList) isProtocolEvent()      {}
@@ -69,6 +70,8 @@ func (MissingModeParamError) isProtocolEvent()    {}
 func (ChannelKeyMismatchError) isProtocolEvent()  {}
 func (ChannelInviteOnlyError) isProtocolEvent()   {}
 func (ChannelFullError) isProtocolEvent()         {}
+func (TooManyJoinTargetsError) isProtocolEvent()  {}
+func (BareChannelNameError) isProtocolEvent()     {}
 func (CannotSendToChannelError) isProtocolEvent() {}
 func (UnknownCommandError) isProtocolEvent()      {}
 func (UnknownConfigKeyError) isProtocolEvent()    {}
@@ -89,6 +92,8 @@ func (MissingModeParamError) domainEvent()    {}
 func (ChannelKeyMismatchError) domainEvent()  {}
 func (ChannelInviteOnlyError) domainEvent()   {}
 func (ChannelFullError) domainEvent()         {}
+func (TooManyJoinTargetsError) domainEvent()  {}
+func (BareChannelNameError) domainEvent()     {}
 func (CannotSendToChannelError) domainEvent() {}
 func (UnknownCommandError) domainEvent()      {}
 func (UnknownConfigKeyError) domainEvent()    {}
@@ -204,6 +209,34 @@ type ChannelFullError struct {
 
 func (e ChannelFullError) Error() string {
 	return fmt.Sprintf("cannot join %s: channel is full", e.Channel)
+}
+
+// TooManyJoinTargetsError refuses a JOIN naming more channels than
+// [protocol.MaxJoinTargets] allows in one command (RFC 2812
+// ISUPPORT TARGMAX). The dispatcher checks the whole list before
+// joining any of it, so a client that names too many channels gets
+// one clear refusal and no partial join.
+type TooManyJoinTargetsError struct {
+	Requested int
+	Max       int
+	At        time.Time
+}
+
+func (e TooManyJoinTargetsError) Error() string {
+	return fmt.Sprintf("JOIN names %d channels, more than the %d a single command may name", e.Requested, e.Max)
+}
+
+// BareChannelNameError refuses a channel name that is nothing but a
+// channel prefix ("#" or "&") with no name after it. joinAs checks
+// this directly: the dispatcher does not trust a client to have
+// refused the value first.
+type BareChannelNameError struct {
+	Channel ChannelName
+	At      time.Time
+}
+
+func (e BareChannelNameError) Error() string {
+	return fmt.Sprintf("%q is not a valid channel name", e.Channel)
 }
 
 // CannotSendToChannelError refuses a PRIVMSG / Action against a

@@ -320,21 +320,22 @@ seconds to it per command and holds a command back for as long as the
 timer runs more than ten seconds ahead of now. A client may therefore
 send five or six commands at once and one every two seconds after
 that. The rule reads nothing about what kind of actor is sending: it
-is a property of the connection, and the asymmetry the app wants
-follows from behaviour, since typing at human speed gains half a
-second per line and two models answering each other gain two.
-
-One composition qualifies that today. Autojoin issues one JOIN per
-channel, each charged like any other command, so a user with six or
-more autojoin channels has spent the connection's allowance before
-typing anything, and the first thing they type waits two seconds. A
-multi-target JOIN (RFC 2812 §3.2.1, "JOIN #a,#b,#c") is one command
-and one charge however many channels it names, which is how a real
-client avoids this; `protocol.Join` carries a single channel and
-cannot express it yet.
-`TestSession_autojoin_spends_the_user_allowance` pins what the
-current shape costs, so the improvement shows up there when the
-multi-target form lands.
+is a property of the connection, and a person typing never reaches
+the threshold. Typing at human speed gains half a second per line;
+autojoin restoring channels on connect is one multi-target JOIN per
+chunk of `protocol.MaxJoinTargets` channels (RFC 2812 §3.2.1,
+"JOIN #a,#b,#c"), and each chunk is one charge.
+`protocol.MaxJoinTargets` is this server's TARGMAX (RFC 2812
+ISUPPORT): a JOIN naming more channels than that is refused whole,
+with `domain.TooManyJoinTargetsError`, before any channel in it is
+joined, so one command's channel list cannot grow the writer loop's
+per-command work without bound. `userclient.JoinAutojoinChannels`
+chunks the autojoin list to that cap, and
+`TestSession_autojoin_spends_the_user_allowance` pins the cost at
+zero delay, both joining and on the first thing typed afterwards,
+for the channel counts autojoin sees in practice. Two models
+answering each other back to back are the case that does gain two
+seconds a turn.
 
 A held-back command is delayed, never dropped, which is what an ircd
 does when it reads a flooding connection more slowly. The wait

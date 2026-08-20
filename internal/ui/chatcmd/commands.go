@@ -47,26 +47,60 @@ type DMOpenedMsg struct {
 }
 
 // ChannelArg is a command-layer wrapper around domain.ChannelName
-// that implements FieldDecoder to ensure the # prefix is present.
+// that implements FieldDecoder to ensure the # prefix is present. It
+// also accepts RFC 2812 §3.2.1's own JOIN syntax, a comma-separated
+// channel list ("#a,#b,#c"): Decode splits on commas, drops any
+// empty entry, and prefixes every surviving one; [ChannelArg.Channels]
+// splits the decoded argument back into its individual names.
 type ChannelArg string
 
-// Decode implements command.FieldDecoder.
+// Decode implements command.FieldDecoder. A trailing or doubled
+// comma must not manufacture a bare "#" channel: an entry that is
+// empty once trimmed is dropped, never prefixed, and an argument
+// that decodes to no channel at all (",", ",,", "") is refused.
 func (c *ChannelArg) Decode(raw string) error {
-	if !strings.HasPrefix(raw, domain.ChannelPrefix) {
-		raw = domain.ChannelPrefix + raw
+	parts := strings.Split(raw, ",")
+	channels := make([]string, 0, len(parts))
+
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if !strings.HasPrefix(part, domain.ChannelPrefix) {
+			part = domain.ChannelPrefix + part
+		}
+		channels = append(channels, part)
 	}
 
-	*c = ChannelArg(raw)
+	if len(channels) == 0 {
+		return fmt.Errorf("no channel name given")
+	}
+
+	*c = ChannelArg(strings.Join(channels, ","))
 	return nil
 }
 
-// String returns the channel name as a plain string.
+// String returns the decoded argument as a plain string: a single
+// channel name, or a comma-separated list for a multi-target JOIN.
 func (c ChannelArg) String() string { return string(c) }
 
-// JoinCommand represents `/join <channel> [key]`. The optional
-// key is required when the channel carries `+k`.
+// Channels splits a decoded argument into its individual channel
+// names. A single-channel argument yields a one-element slice.
+func (c ChannelArg) Channels() []domain.ChannelName {
+	parts := strings.Split(string(c), ",")
+	channels := make([]domain.ChannelName, len(parts))
+	for i, part := range parts {
+		channels[i] = domain.ChannelName(part)
+	}
+	return channels
+}
+
+// JoinCommand represents `/join <channel>[,<channel>...] [key]`.
+// The optional key is required when a keyed (`+k`) channel is
+// named, and applies to every channel in the list.
 type JoinCommand struct {
-	Channel ChannelArg `arg:"channel" help:"Channel to join or create"`
+	Channel ChannelArg `arg:"channel" help:"Channel to join or create, or a comma-separated list of up to 10 to join at once"`
 	Key     string     `arg:"" optional:"" help:"Channel key, if the channel has +k"`
 }
 
@@ -75,25 +109,130 @@ func (JoinCommand) Sources() map[string]command.SuggestionSource[CompletionConte
 	return map[string]command.SuggestionSource[CompletionContext]{"channel": channelsSource}
 }
 
-// ToCommand builds the wire-protocol command for `/join`.
+// ToCommand builds the wire-protocol command for `/join`. The CLI
+// grammar reads the channel argument and the key argument as
+// separate, space-delimited tokens, so a space after a comma in the
+// channel list ("/join #a, #b") splits into Channel "#a," and Key
+// "#b" before Decode ever runs: the intended second channel becomes
+// a key. RFC 2812's own list syntax has no space in it
+// ("/join #a,#b"); a key that itself looks like a channel name is
+// refused here, since a real key starting with "#" is far less
+// likely than this typo.
 func (c JoinCommand) ToCommand(_ Context) (protocol.Command, error) {
-	return protocol.Join{Channel: domain.ChannelName(c.Channel.String()), Key: c.Key}, nil
+	if strings.HasPrefix(c.Key, domain.ChannelPrefix) {
+		return nil, fmt.Errorf("%q looks like a channel, not a key; join a list with no space after the comma, e.g. \"#a,#b\"", c.Key)
+	}
+
+	return protocol.Join{Channels: c.Channel.Channels(), Key: c.Key}, nil
 }
 
-// Run implements Command.
+// Run implements Command. Success is silent: the channels that
+// joined show up through the ordinary JOIN broadcast, the same way
+// any other member sees them. A refusal is not on that bus, so a
+// partial or total refusal is reported as a system notice naming
+// which channels joined and which were refused, and why; focus does
+// not move for that case. On full success it focuses the first
+// channel named, the way a single-channel `/join` always has.
 func (c JoinCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	return func() tea.Msg {
-		if msg := sendCommand(ctx, rc, c, "join"); msg != nil {
-			return msg
+		cmd, err := c.ToCommand(rc)
+		if err != nil {
+			return errorEvent("join", err)
 		}
 
-		return ChannelFocusMsg{Channel: domain.ChannelName(c.Channel.String()), At: time.Now()}
+		resp, err := rc.Client.Send(ctx, cmd)
+		if err != nil {
+			return errorEvent("join", err)
+		}
+
+		if len(resp.Events) == 0 {
+			if resp.Err != nil {
+				return errorEvent("join", resp.Err)
+			}
+			return nil
+		}
+
+		outcome := newJoinOutcome(resp.Events)
+		if len(outcome.Refused) > 0 {
+			return ReplyEvents{domain.SystemNotice{Target: rc.Active, Text: outcome.Text(), At: time.Now()}}
+		}
+
+		return ChannelFocusMsg{Channel: c.Channel.Channels()[0], At: time.Now()}
 	}
 }
 
-// RunTool implements ToolCommand.
+// RunTool implements ToolCommand. A multi-target JOIN's partial
+// success (some channels joined, some refused) is reported as
+// success: OK reflects whether anything joined at all, and Summary
+// names every channel's outcome, giving the model the per-channel
+// detail behind a single verdict.
 func (c JoinCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolResultPayload {
-	return sendToolCommand(ctx, tc, c, "joined "+c.Channel.String())
+	cmd, err := c.ToCommand(toolContext(tc))
+	if err != nil {
+		return modelclient.ToolResultPayload{OK: false, Error: err.Error()}
+	}
+
+	resp, err := tc.Client.Send(ctx, cmd)
+	if err != nil {
+		return modelclient.ToolResultPayload{OK: false, Error: err.Error()}
+	}
+
+	if len(resp.Events) == 0 {
+		if resp.Err != nil {
+			return modelclient.ToolResultPayload{OK: false, Error: resp.Err.Error()}
+		}
+		return modelclient.ToolResultPayload{OK: false, Error: "no channel was joined"}
+	}
+
+	outcome := newJoinOutcome(resp.Events)
+	if len(outcome.Joined) == 0 {
+		return modelclient.ToolResultPayload{OK: false, Error: outcome.Text()}
+	}
+
+	return modelclient.ToolResultPayload{OK: true, Summary: outcome.Text()}
+}
+
+// joinOutcome partitions a JOIN's Response.Events into which
+// channels joined and which were refused. RFC 2812 answers each
+// target in a multi-target JOIN with its own reply; both the
+// tool-result payload and the chat-screen's notice carry a single
+// string, so [joinOutcome.Text] renders the whole partition into
+// that one line.
+type joinOutcome struct {
+	Joined  []string
+	Refused []string
+}
+
+func newJoinOutcome(events []protocol.Event) joinOutcome {
+	var o joinOutcome
+
+	for _, ev := range events {
+		switch e := ev.(type) {
+		case domain.JoinedChannel:
+			o.Joined = append(o.Joined, string(e.Channel))
+		case error:
+			o.Refused = append(o.Refused, e.Error())
+		}
+	}
+
+	return o
+}
+
+// Text renders the outcome as one semicolon-separated line. It uses
+// no newlines, which a message body may not carry
+// ([protocol.ValidateReplyPart]) and which [errors.Join] would have
+// produced from the refused list.
+func (o joinOutcome) Text() string {
+	var parts []string
+
+	if len(o.Joined) > 0 {
+		parts = append(parts, "joined "+strings.Join(o.Joined, ", "))
+	}
+	if len(o.Refused) > 0 {
+		parts = append(parts, strings.Join(o.Refused, "; "))
+	}
+
+	return strings.Join(parts, "; ")
 }
 
 // PartCommand represents `/part [message]`.

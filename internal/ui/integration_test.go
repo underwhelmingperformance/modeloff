@@ -164,7 +164,7 @@ func TestApp_terminal_output_shows_full_model_nick_in_user_list(t *testing.T) {
 	require.NoError(t, client.Attach(t.Context()), "attach grok test client")
 	t.Cleanup(client.Detach)
 
-	resp, err := client.Send(t.Context(), protocol.Join{Channel: "#general"})
+	resp, err := client.Send(t.Context(), protocol.Join{Channels: []domain.ChannelName{"#general"}})
 	require.NoError(t, err)
 	require.NoError(t, resp.Err)
 

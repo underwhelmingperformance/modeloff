@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -248,6 +249,61 @@ func TestRunTool_join_with_channel(t *testing.T) {
 		OK:      true,
 		Summary: "joined #testing",
 	}, result)
+}
+
+// TestRunTool_join_multi_target_partial_success covers a
+// multi-target JOIN where one channel joins and one is refused: the
+// call reports success, and the summary names both outcomes.
+func TestRunTool_join_multi_target_partial_success(t *testing.T) {
+	s := storetest.NewMemoryStore(t)
+	sess, _, user := uitest.NewTestSession(t, s, toolTestAPI{}, nil, nil, "", "", t.Context)
+	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
+
+	locked := domain.NewChannelWindow("#locked", time.Now())
+	locked.Modes = domain.ChannelModes{InviteOnly: true}
+	require.NoError(t, s.SaveWindow(t.Context(), locked))
+
+	tc := userToolContext(sess, user, "#general")
+
+	v := toolValue(t, "join", `{"channel": "#open,#locked"}`)
+	tool, ok := v.(ToolCommand)
+	require.True(t, ok, "JoinCommand should implement ToolCommand")
+
+	result := tool.RunTool(t.Context(), tc)
+
+	require.Equal(t, modelclient.ToolResultPayload{
+		OK:      true,
+		Summary: "joined #open; cannot join #locked: invite-only channel",
+	}, result)
+}
+
+// TestJoinCommand_Run_multi_target_partial_success_shows_a_notice
+// covers the chat-screen path for the same partial-success shape.
+// The channel that joined shows up through the ordinary JOIN
+// broadcast, so Run's own return value only needs to report the
+// refusal: a system notice naming both outcomes.
+func TestJoinCommand_Run_multi_target_partial_success_shows_a_notice(t *testing.T) {
+	s := storetest.NewMemoryStore(t)
+	sess, _, user := uitest.NewTestSession(t, s, toolTestAPI{}, nil, nil, "", "", t.Context)
+	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
+
+	locked := domain.NewChannelWindow("#locked", time.Now())
+	locked.Modes = domain.ChannelModes{InviteOnly: true}
+	require.NoError(t, s.SaveWindow(t.Context(), locked))
+
+	join := JoinCommand{Channel: "#open,#locked"}
+	rc := Context{Client: user, Active: "#general"}
+
+	msg := join.Run(t.Context(), rc)()
+
+	events, ok := msg.(ReplyEvents)
+	require.True(t, ok, "expected ReplyEvents, got %T", msg)
+	require.Len(t, events, 1)
+
+	notice, ok := events[0].(domain.SystemNotice)
+	require.True(t, ok, "expected a SystemNotice, got %T", events[0])
+	require.Equal(t, domain.ChannelName("#general"), notice.Target)
+	require.Equal(t, "joined #open; cannot join #locked: invite-only channel", notice.Text)
 }
 
 func TestRunTool_help_no_args(t *testing.T) {
