@@ -406,8 +406,12 @@ func (m *Manager) generateUniqueNick(
 
 // generateNickFromModel asks the small model for a nickname guided
 // by the assigned persona and retries up to
-// [maxNickGenerationAttempts] times if the suggested nick is already
-// taken.
+// [maxNickGenerationAttempts] times if the suggested nick fails
+// [domain.ValidateNick] or is already taken. Either way the rejected
+// suggestion is carried into the next attempt's exclusion list, so a
+// nick that would be refused with [domain.ErroneousNicknameError]
+// (432) is never handed to the caller any more than one that would
+// collide with [domain.NickInUseError] (433) is.
 func (m *Manager) generateNickFromModel(
 	ctx context.Context,
 	sess *session.Session,
@@ -441,6 +445,17 @@ func (m *Manager) generateNickFromModel(
 
 			result.Usage.SetSpanAttributes(generateSpan, result.RequestID)
 
+			if rejection := domain.ValidateNick(result.Nick); rejection != domain.NickAccepted {
+				logger.InfoContext(ctx, "generated nick fails the nick grammar",
+					"nick", result.Nick,
+					"attempt", attempt,
+					"reason", rejection.String(),
+				)
+				rejected = append(rejected, result.Nick)
+
+				continue
+			}
+
 			if !m.nickIsTaken(ctx, sess, result.Nick) {
 				nick = result.Nick
 				return nil
@@ -454,7 +469,7 @@ func (m *Manager) generateNickFromModel(
 		}
 
 		return observability.ErrWithKind(
-			fmt.Errorf("generate nick: %d attempts exhausted, all suggestions collided", maxNickGenerationAttempts),
+			fmt.Errorf("generate nick: %d attempts exhausted, no suggestion was usable", maxNickGenerationAttempts),
 			observability.ErrorKindDispatch,
 		)
 	})
@@ -467,7 +482,9 @@ func (m *Manager) generateNickFromModel(
 // character outside the nick charset (`[a-z0-9_-]`) replaced by `-`,
 // trimmed of leading and trailing `-`, and capped at
 // [deterministicNickBaseLen] so a numeric collision suffix still fits
-// within the 12-character nick limit.
+// within the 12-character nick limit. [sanitizeNickBase] then fixes
+// what that substitution can still leave behind, so the result always
+// satisfies [domain.ValidateNick].
 func deterministicNickBase(modelID domain.ModelID) string {
 	id := string(modelID)
 	if idx := strings.LastIndexByte(id, '/'); idx >= 0 {
@@ -490,8 +507,29 @@ func deterministicNickBase(modelID domain.ModelID) string {
 	}
 	base = strings.Trim(base, "-")
 
-	if base == "" {
-		base = "model"
+	return sanitizeNickBase(base)
+}
+
+// sanitizeNickBase guarantees its result satisfies
+// [domain.ValidateNick], given a base already restricted to the nick
+// charset (`[a-z0-9_-]`) and at most [deterministicNickBaseLen]
+// characters, which is the shape deterministicNickBase builds before
+// calling it. Within that precondition, the only failures left to fix
+// are an empty result, a base that folded onto the reserved
+// [domain.AnonymousNick], and a digit-leading one: RFC 2812 §2.3.1
+// requires a letter or one of the specials first; the substitution
+// step admits digits into that charset, but the grammar refuses them
+// in the first position.
+func sanitizeNickBase(base string) string {
+	if base == "" || domain.EqualNick(domain.Nick(base), domain.AnonymousNick) {
+		return "model"
+	}
+
+	if domain.ValidateNick(domain.Nick(base)) == domain.NickBadFirstCharacter {
+		base = "m" + base
+		if len(base) > deterministicNickBaseLen {
+			base = base[:deterministicNickBaseLen]
+		}
 	}
 
 	return base

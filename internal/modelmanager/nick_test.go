@@ -79,6 +79,24 @@ func TestManager_PrepareInstance_nickGeneration_fallsBackToDeterministicNick(t *
 			alreadyTaken: []domain.Nick{"taken"},
 			wantNick:     "gpt-5-4",
 		},
+		{
+			name:       "every LLM suggestion fails the nick grammar, falls back after exhausting attempts",
+			apiKey:     "sk-test",
+			withClient: true,
+			generateNick: func(context.Context, domain.ModelID, string, []domain.Nick) (domain.Nick, error) {
+				return "1bot", nil
+			},
+			wantNick: "gpt-5-4",
+		},
+		{
+			name:       "every LLM suggestion is the reserved anonymous nick, falls back after exhausting attempts",
+			apiKey:     "sk-test",
+			withClient: true,
+			generateNick: func(context.Context, domain.ModelID, string, []domain.Nick) (domain.Nick, error) {
+				return "anonymous", nil
+			},
+			wantNick: "gpt-5-4",
+		},
 	}
 
 	for _, tt := range tests {
@@ -108,6 +126,44 @@ func TestManager_PrepareInstance_nickGeneration_fallsBackToDeterministicNick(t *
 			require.Equal(t, tt.wantNick, prepared.Nick)
 		})
 	}
+}
+
+// TestManager_PrepareInstance_nickGeneration_retriesPastAnInvalidSuggestion
+// pins that a suggestion failing [domain.ValidateNick] is retried the
+// same way a colliding one is, rather than being handed straight to
+// the caller (which would surface as an [domain.ErroneousNicknameError]
+// when the session came to claim it) or being asked for again
+// unchanged.
+func TestManager_PrepareInstance_nickGeneration_retriesPastAnInvalidSuggestion(t *testing.T) {
+	const modelID = domain.ModelID("openai/gpt-5.4-mini")
+
+	var seenExclusions [][]domain.Nick
+
+	client := &fakeAPIClient{
+		listModelsFn: func(context.Context) ([]api.ModelInfo, error) {
+			return toolsCatalogue(modelID), nil
+		},
+		generateNickFn: func(_ context.Context, _ domain.ModelID, _ string, exclude []domain.Nick) (domain.Nick, error) {
+			seenExclusions = append(seenExclusions, append([]domain.Nick(nil), exclude...))
+			if len(exclude) == 0 {
+				return "1bad", nil
+			}
+
+			return "goodnick", nil
+		},
+	}
+
+	fx := newTestManager(t, modelmanager.Config{
+		APIClient:     client,
+		InitialAPIKey: "sk-test",
+	})
+	sess := newTestSession(t, fx)
+
+	prepared, err := fx.mgr.PrepareInstance(t.Context(), sess, modelID, "")
+	require.NoError(t, err)
+	require.Equal(t, domain.Nick("goodnick"), prepared.Nick)
+	require.Equal(t, [][]domain.Nick{nil, {"1bad"}}, seenExclusions,
+		"the invalid suggestion must be carried into the next attempt's exclusion list, the same as a collision")
 }
 
 // TestManager_PrepareInstance_deterministicFallback_avoidsCollision
