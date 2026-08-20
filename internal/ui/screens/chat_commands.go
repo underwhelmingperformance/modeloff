@@ -23,8 +23,12 @@ func (s ChatScreen) runContext() chatcmd.Context {
 	}
 }
 
-func errorEvent(operation string, err error) domain.ErrorEvent {
-	return domain.ErrorEvent{Operation: operation, Err: err, At: time.Now()}
+// errorEvent builds an [domain.ErrorEvent] stamped with the window
+// the failure belongs to, matching [chatcmd.Context.errorEvent]'s
+// convention for the chat-screen's own error paths (command parsing,
+// `/poke`), which run outside any `chatcmd.Command.Run`.
+func errorEvent(target domain.ChannelName, operation string, err error) domain.ErrorEvent {
+	return domain.ErrorEvent{Operation: operation, Err: err, Target: target, At: time.Now()}
 }
 
 func (s ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
@@ -36,13 +40,13 @@ func (s ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
 			"error", err,
 		)
 
-		return func() tea.Msg { return errorEvent("command", err) }
+		return func() tea.Msg { return errorEvent(s.active, "command", err) }
 	}
 
 	cmd, ok := invocation.Leaf().(chatcmd.Command)
 	if !ok {
 		return func() tea.Msg {
-			return errorEvent("command",
+			return errorEvent(s.active, "command",
 				fmt.Errorf("parsed command %T does not implement the expected command interface", invocation.Leaf()))
 		}
 	}
@@ -63,7 +67,7 @@ func (s ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
 func (s ChatScreen) handlePoke() tea.Cmd {
 	return func() tea.Msg {
 		if err := s.user.Poke(s.baseContext()); err != nil {
-			return errorEvent("poke", err)
+			return errorEvent(s.active, "poke", err)
 		}
 
 		return nil

@@ -604,7 +604,7 @@ func (s ChatScreen) renderMessage(msg domain.Message, key domain.ChannelName) te
 		visits = w.Visits
 	}
 
-	return s.unreadCountCmd(key, s.isHighlight(msg.Body), visits)
+	return s.unreadCountCmd(key, s.isHighlight(msg), visits)
 }
 
 // unreadCountCmd asks the store how much of `key` the user has not
@@ -773,7 +773,7 @@ func (s ChatScreen) mentionsUser(events []domain.Event) bool {
 			continue
 		}
 
-		if s.isHighlight(msg.Body) {
+		if s.isHighlight(msg) {
 			return true
 		}
 	}
@@ -910,7 +910,7 @@ func (s ChatScreen) handleDMOpenedMsg(msg chatcmd.DMOpenedMsg) (ChatScreen, tea.
 func (s ChatScreen) sendMessageCmd(operation string, target domain.ChannelName, body string) tea.Cmd {
 	return func() tea.Msg {
 		if _, err := s.user.SendMessage(s.baseContext(), target, body); err != nil {
-			return domain.ErrorEvent{Operation: operation, Err: err, At: time.Now()}
+			return domain.ErrorEvent{Operation: operation, Err: err, Target: target, At: time.Now()}
 		}
 
 		return nil
@@ -924,19 +924,45 @@ func (s ChatScreen) sendMessageCmd(operation string, target domain.ChannelName, 
 // itself gets commandErrorText's short, actionable copy so a raw
 // wrapped chain ("send: send message: Post \"https://...\": dial
 // tcp: ...") never lands in front of the user.
+//
+// The error renders at `msg.Target`, the window the failed command
+// was issued from, unless the chat-screen no longer has that window
+// open: an empty `Target` and a `Target` naming a window closed since
+// the command was issued both fail the same `windowByName` check, so
+// both fall back to the currently active window (the same fallback
+// [ChatScreen.logAndShow] applies to any other numeric reply issued
+// with no window at all). This fallback is what keeps a closed DM
+// from being silently dropped: a DM window needs its counterpart's
+// instance handle to rebuild, which
+// [ChatScreen.appendToScrollback]'s placeholder-creation path cannot
+// synthesise, so routing straight there for a closed DM's `Target`
+// would lose the error. The same fallback keeps a parted channel
+// from being resurrected client-side by a stale reply, since
+// appendToScrollback's placeholder path exists for live traffic
+// arriving before a join is seen, not for this.
 func (s ChatScreen) handleErrorEvent(msg domain.ErrorEvent) (ChatScreen, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	slog.Default().ErrorContext(s.baseContext(), "command failed",
 		"operation", msg.Operation, "error", msg.Err)
 
+	target := msg.Target
+	if _, open := s.windowByName(target); !open {
+		target = s.active
+	}
+
 	commandError := domain.CommandError{
-		Target: s.active,
+		Target: target,
 		Err:    commandErrorText(msg.Operation, msg.Err),
 		At:     msg.At,
 	}
 
-	cmds = append(cmds, s.logAndShow(commandError))
+	if target == "" {
+		cmds = append(cmds, s.logAndShow(commandError))
+	} else {
+		cmds = append(cmds, s.logAndShowOn(target, commandError))
+	}
+
 	cmds = append(cmds, s.recordReply(commandError))
 	cmds = append(cmds, msgCmd(components.NickListThinkingMsg{}))
 
@@ -1038,8 +1064,14 @@ func (s ChatScreen) thinkingNicks() map[domain.Nick]bool {
 	return thinking
 }
 
-func (s ChatScreen) isHighlight(body string) bool {
-	return components.ContainsHighlightWord(body, s.highlightWords, s.user.Nick())
+// isHighlight reports whether msg's body mentions the user, matching
+// [components.renderMessage]'s exemption for the user's own messages:
+// the user-client carries no [domain.InstanceID] (the empty string is
+// [protocol.UserClientID]'s sentinel), so an empty InstanceID picks
+// out the user's own message and exempts it from the mention check.
+// The user should never see a mention badge on their own words.
+func (s ChatScreen) isHighlight(msg domain.Message) bool {
+	return msg.InstanceID != "" && components.ContainsHighlightWord(msg.Body, s.highlightWords, s.user.Nick())
 }
 
 func (s ChatScreen) handleLiveModelsLoaded(msg liveModelsLoadedMsg) (ChatScreen, tea.Cmd) {

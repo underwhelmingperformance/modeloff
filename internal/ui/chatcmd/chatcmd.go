@@ -149,8 +149,12 @@ type PersonaResetResult struct {
 	Count int
 }
 
-func errorEvent(operation string, err error) domain.ErrorEvent {
-	return domain.ErrorEvent{Operation: operation, Err: err, At: time.Now()}
+// errorEvent builds the failure event for a command run from this
+// Context, stamped with the window the command was issued from
+// (`rc.Active`) so the chat-screen renders it there even if the user
+// has switched windows by the time the event arrives.
+func (rc Context) errorEvent(operation string, err error) domain.ErrorEvent {
+	return domain.ErrorEvent{Operation: operation, Err: err, Target: rc.Active, At: time.Now()}
 }
 
 // protocolCommand is implemented by any chatcmd that translates to a
@@ -187,16 +191,16 @@ type ReplyEvents []domain.ProtocolEvent
 func sendCommand(ctx context.Context, rc Context, c protocolCommand, operation string) tea.Msg {
 	cmd, err := c.ToCommand(rc)
 	if err != nil {
-		return errorEvent(operation, err)
+		return rc.errorEvent(operation, err)
 	}
 
 	resp, err := rc.Client.Send(ctx, cmd)
 	if err != nil {
-		return errorEvent(operation, err)
+		return rc.errorEvent(operation, err)
 	}
 
 	if resp.Err != nil {
-		return errorEvent(operation, resp.Err)
+		return rc.errorEvent(operation, resp.Err)
 	}
 
 	if len(resp.Events) > 0 {

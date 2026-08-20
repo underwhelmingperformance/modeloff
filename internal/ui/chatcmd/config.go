@@ -39,7 +39,7 @@ func (c ConfigCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	return func() tea.Msg {
 		cfg, err := rc.Config.Load(ctx)
 		if err != nil {
-			return errorEvent("config", err)
+			return rc.errorEvent("config", err)
 		}
 
 		return configNotice(rc, renderConfig(cfg))
@@ -56,14 +56,14 @@ func (c APIKeyConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 	if rc.configResetRequested() {
 		return func() tea.Msg {
 			if err := rc.Manager.SetAPIKey(ctx, "", config.DefaultBaseURL); err != nil {
-				return errorEvent("config api-key", err)
+				return rc.errorEvent("config api-key", err)
 			}
 
 			if _, err := rc.Config.Update(ctx, func(cfg config.Config) config.Config {
 				cfg.APIKey = ""
 				return cfg
 			}); err != nil {
-				return errorEvent("config api-key", err)
+				return rc.errorEvent("config api-key", err)
 			}
 
 			return APIKeySetResult{Reset: true}
@@ -74,7 +74,7 @@ func (c APIKeyConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 		return func() tea.Msg {
 			cfg, err := rc.Config.Load(ctx)
 			if err != nil {
-				return errorEvent("config api-key", err)
+				return rc.errorEvent("config api-key", err)
 			}
 
 			return configNotice(rc, configLine("api-key", maskAPIKey(cfg.APIKey)))
@@ -84,11 +84,11 @@ func (c APIKeyConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 	return func() tea.Msg {
 		cfg, err := rc.Config.Load(ctx)
 		if err != nil {
-			return errorEvent("config api-key", err)
+			return rc.errorEvent("config api-key", err)
 		}
 
 		if err := rc.Manager.SetAPIKey(ctx, c.Value, cfg.BaseURL); err != nil {
-			return errorEvent("config api-key", err)
+			return rc.errorEvent("config api-key", err)
 		}
 
 		updated, err := rc.Config.Update(ctx, func(cfg config.Config) config.Config {
@@ -96,7 +96,7 @@ func (c APIKeyConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 			return cfg
 		})
 		if err != nil {
-			return errorEvent("config api-key", err)
+			return rc.errorEvent("config api-key", err)
 		}
 
 		// A small-model id set before any key existed was persisted
@@ -135,14 +135,14 @@ func (c BaseURLConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 	if rc.configResetRequested() {
 		return func() tea.Msg {
 			if err := rc.Manager.SetBaseURL(ctx, config.DefaultBaseURL); err != nil {
-				return errorEvent("config base-url", err)
+				return rc.errorEvent("config base-url", err)
 			}
 
 			if _, err := rc.Config.Update(ctx, func(cfg config.Config) config.Config {
 				cfg.BaseURL = config.DefaultBaseURL
 				return cfg
 			}); err != nil {
-				return errorEvent("config base-url", err)
+				return rc.errorEvent("config base-url", err)
 			}
 
 			return BaseURLSetResult{URL: config.DefaultBaseURL, Reset: true}
@@ -153,7 +153,7 @@ func (c BaseURLConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 		return func() tea.Msg {
 			cfg, err := rc.Config.Load(ctx)
 			if err != nil {
-				return errorEvent("config base-url", err)
+				return rc.errorEvent("config base-url", err)
 			}
 
 			return configNotice(rc, configLine("base-url", cfg.BaseURL))
@@ -162,14 +162,14 @@ func (c BaseURLConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 
 	return func() tea.Msg {
 		if err := rc.Manager.SetBaseURL(ctx, c.URL); err != nil {
-			return errorEvent("config base-url", err)
+			return rc.errorEvent("config base-url", err)
 		}
 
 		if _, err := rc.Config.Update(ctx, func(cfg config.Config) config.Config {
 			cfg.BaseURL = c.URL
 			return cfg
 		}); err != nil {
-			return errorEvent("config base-url", err)
+			return rc.errorEvent("config base-url", err)
 		}
 
 		return BaseURLSetResult{URL: c.URL}
@@ -201,7 +201,7 @@ func (c PokeIntervalConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 				cfg.PokeInterval = config.DefaultPokeInterval
 				return cfg
 			}); err != nil {
-				return errorEvent("config poke-interval", err)
+				return rc.errorEvent("config poke-interval", err)
 			}
 
 			return PokeIntervalSetResult{Interval: config.DefaultPokeInterval, Reset: true}
@@ -212,7 +212,7 @@ func (c PokeIntervalConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 		return func() tea.Msg {
 			cfg, err := rc.Config.Load(ctx)
 			if err != nil {
-				return errorEvent("config poke-interval", err)
+				return rc.errorEvent("config poke-interval", err)
 			}
 
 			return configNotice(rc, configLine("poke-interval", cfg.PokeInterval.String()))
@@ -222,7 +222,7 @@ func (c PokeIntervalConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 	return func() tea.Msg {
 		interval, err := time.ParseDuration(c.Duration)
 		if err != nil {
-			return errorEvent("config poke-interval", domain.InvalidDurationError{
+			return rc.errorEvent("config poke-interval", domain.InvalidDurationError{
 				Input: c.Duration,
 				Err:   err,
 				At:    time.Now(),
@@ -234,7 +234,7 @@ func (c PokeIntervalConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 		// starts a tight, paid poke loop from a single typo (e.g. "5s"
 		// meant as "5m"). MinPokeInterval catches both in one check.
 		if interval < config.MinPokeInterval {
-			return errorEvent("config poke-interval", domain.PokeIntervalOutOfRangeError{
+			return rc.errorEvent("config poke-interval", domain.PokeIntervalOutOfRangeError{
 				Interval: interval,
 				Floor:    config.MinPokeInterval,
 				At:       time.Now(),
@@ -245,7 +245,7 @@ func (c PokeIntervalConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 			cfg.PokeInterval = interval
 			return cfg
 		}); err != nil {
-			return errorEvent("config poke-interval", err)
+			return rc.errorEvent("config poke-interval", err)
 		}
 
 		return PokeIntervalSetResult{Interval: interval}
@@ -280,7 +280,7 @@ func (c DrainTimeoutConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 				cfg.DrainTimeout = config.DefaultDrainTimeout
 				return cfg
 			}); err != nil {
-				return errorEvent("config drain-timeout", err)
+				return rc.errorEvent("config drain-timeout", err)
 			}
 
 			return DrainTimeoutSetResult{Timeout: config.DefaultDrainTimeout, Reset: true}
@@ -291,7 +291,7 @@ func (c DrainTimeoutConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 		return func() tea.Msg {
 			cfg, err := rc.Config.Load(ctx)
 			if err != nil {
-				return errorEvent("config drain-timeout", err)
+				return rc.errorEvent("config drain-timeout", err)
 			}
 
 			return configNotice(rc, configLine("drain-timeout", cfg.DrainTimeout.String()))
@@ -301,7 +301,7 @@ func (c DrainTimeoutConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 	return func() tea.Msg {
 		timeout, err := time.ParseDuration(c.Duration)
 		if err != nil {
-			return errorEvent("config drain-timeout", domain.InvalidDurationError{
+			return rc.errorEvent("config drain-timeout", domain.InvalidDurationError{
 				Input: c.Duration,
 				Err:   err,
 				At:    time.Now(),
@@ -314,7 +314,7 @@ func (c DrainTimeoutConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 		// dispatches almost as soon as `/quit` is asked to wait for
 		// them. Mirrors the poke-interval floor check above.
 		if timeout < config.MinDrainTimeout {
-			return errorEvent("config drain-timeout", domain.DrainTimeoutOutOfRangeError{
+			return rc.errorEvent("config drain-timeout", domain.DrainTimeoutOutOfRangeError{
 				Timeout: timeout,
 				Floor:   config.MinDrainTimeout,
 				At:      time.Now(),
@@ -325,7 +325,7 @@ func (c DrainTimeoutConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 			cfg.DrainTimeout = timeout
 			return cfg
 		}); err != nil {
-			return errorEvent("config drain-timeout", err)
+			return rc.errorEvent("config drain-timeout", err)
 		}
 
 		return DrainTimeoutSetResult{Timeout: timeout}
@@ -347,7 +347,7 @@ func (c SmallModelConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 				cfg.SmallModel = config.DefaultSmallModel
 				return cfg
 			}); err != nil {
-				return errorEvent("config small-model", err)
+				return rc.errorEvent("config small-model", err)
 			}
 
 			return SmallModelSetResult{ModelID: config.DefaultSmallModel, Reset: true}
@@ -358,7 +358,7 @@ func (c SmallModelConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 		return func() tea.Msg {
 			cfg, err := rc.Config.Load(ctx)
 			if err != nil {
-				return errorEvent("config small-model", err)
+				return rc.errorEvent("config small-model", err)
 			}
 
 			return configNotice(rc, configLine("small-model", string(cfg.SmallModel)))
@@ -381,7 +381,7 @@ func (c SmallModelConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 
 		if !deferred {
 			if err := rc.Manager.EnsureStructuredOutputModel(ctx, modelID); err != nil {
-				return errorEvent("config small-model", err)
+				return rc.errorEvent("config small-model", err)
 			}
 		}
 
@@ -391,7 +391,7 @@ func (c SmallModelConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 			cfg.SmallModel = modelID
 			return cfg
 		}); err != nil {
-			return errorEvent("config small-model", err)
+			return rc.errorEvent("config small-model", err)
 		}
 
 		if deferred {
@@ -418,7 +418,7 @@ func (c EmbeddingModelConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 				cfg.EmbeddingModel = config.DefaultEmbeddingModel
 				return cfg
 			}); err != nil {
-				return errorEvent("config embedding-model", err)
+				return rc.errorEvent("config embedding-model", err)
 			}
 
 			return EmbeddingModelSetResult{ModelID: config.DefaultEmbeddingModel, Reset: true}
@@ -429,7 +429,7 @@ func (c EmbeddingModelConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 		return func() tea.Msg {
 			cfg, err := rc.Config.Load(ctx)
 			if err != nil {
-				return errorEvent("config embedding-model", err)
+				return rc.errorEvent("config embedding-model", err)
 			}
 
 			return configNotice(rc, configLine("embedding-model", string(cfg.EmbeddingModel)))
@@ -456,7 +456,7 @@ func (c EmbeddingModelConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 			cfg.EmbeddingModel = modelID
 			return cfg
 		}); err != nil {
-			return errorEvent("config embedding-model", err)
+			return rc.errorEvent("config embedding-model", err)
 		}
 
 		if !rc.Manager.HasAPIKey() {
@@ -506,7 +506,7 @@ func (c HighlightConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 				cfg.HighlightWords = words
 				return cfg
 			}); err != nil {
-				return errorEvent("config highlight", err)
+				return rc.errorEvent("config highlight", err)
 			}
 
 			return HighlightWordsSetResult{Words: words, Reset: true}
@@ -517,7 +517,7 @@ func (c HighlightConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 		return func() tea.Msg {
 			cfg, err := rc.Config.Load(ctx)
 			if err != nil {
-				return errorEvent("config highlight", err)
+				return rc.errorEvent("config highlight", err)
 			}
 
 			return configNotice(rc, configLine("highlight", formatWords(cfg.HighlightWords)))
@@ -531,7 +531,7 @@ func (c HighlightConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 			cfg.HighlightWords = words
 			return cfg
 		}); err != nil {
-			return errorEvent("config highlight", err)
+			return rc.errorEvent("config highlight", err)
 		}
 
 		return HighlightWordsSetResult{Words: words}
@@ -588,7 +588,7 @@ func (c DefaultModesConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 				cfg.DefaultChannelModes = config.DefaultChannelModesSpec
 				return cfg
 			}); err != nil {
-				return errorEvent("config default-modes", err)
+				return rc.errorEvent("config default-modes", err)
 			}
 
 			return configNotice(rc, configLine("default-modes", config.DefaultChannelModesSpec))
@@ -599,7 +599,7 @@ func (c DefaultModesConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 		return func() tea.Msg {
 			cfg, err := rc.Config.Load(ctx)
 			if err != nil {
-				return errorEvent("config default-modes", err)
+				return rc.errorEvent("config default-modes", err)
 			}
 
 			return configNotice(rc, configLine("default-modes", cfg.DefaultChannelModes))
@@ -609,7 +609,7 @@ func (c DefaultModesConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 	return func() tea.Msg {
 		modes, err := domain.ParseChannelModes(c.Modes)
 		if err != nil {
-			return errorEvent("config default-modes", err)
+			return rc.errorEvent("config default-modes", err)
 		}
 
 		// Canonicalised, not the caller's raw spelling: two
@@ -622,7 +622,7 @@ func (c DefaultModesConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 			cfg.DefaultChannelModes = canonical
 			return cfg
 		}); err != nil {
-			return errorEvent("config default-modes", err)
+			return rc.errorEvent("config default-modes", err)
 		}
 
 		return configNotice(rc, configLine("default-modes", canonical))
@@ -650,7 +650,7 @@ func (c TimestampFormatConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 				return cfg
 			})
 			if err != nil {
-				return errorEvent("config timestamp-format", err)
+				return rc.errorEvent("config timestamp-format", err)
 			}
 
 			return TimestampFormatSetResult{Format: cfg.TimestampFormat, Reset: true}
@@ -668,7 +668,7 @@ func (c TimestampFormatConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 			cfg.TimestampFormat = format
 			return cfg
 		}); err != nil {
-			return errorEvent("config timestamp-format", err)
+			return rc.errorEvent("config timestamp-format", err)
 		}
 
 		return TimestampFormatSetResult{Format: format}
@@ -687,7 +687,7 @@ func (c PersonaConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 		return func() tea.Msg {
 			count, err := rc.Manager.ResetPersonas(ctx)
 			if err != nil {
-				return errorEvent("config persona", err)
+				return rc.errorEvent("config persona", err)
 			}
 
 			return PersonaResetResult{Count: count}
@@ -705,7 +705,7 @@ func (c PersonaConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 
 	return func() tea.Msg {
 		if err := rc.Manager.SetPersona(ctx, c.ID, desc); err != nil {
-			return errorEvent("config persona", err)
+			return rc.errorEvent("config persona", err)
 		}
 
 		return PersonaSetResult{ID: c.ID}

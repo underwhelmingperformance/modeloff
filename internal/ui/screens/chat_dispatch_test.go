@@ -389,14 +389,200 @@ func TestChatScreen_ErrorEvent_no_active_channel(t *testing.T) {
 	require.True(t, ok, "the error must bring its landing window into view")
 	require.Equal(t, domain.StatusChannelName, focus.Channel)
 
-	scrollback := screen.scrollbackOf(domain.StatusChannelName)
-	cmdErrs := make([]string, 0, len(scrollback))
+	require.Equal(t, []string{"startup failure: no api key"}, commandErrorTexts(screen.scrollbackOf(domain.StatusChannelName)))
+}
+
+// TestChatScreen_ErrorEvent_renders_at_issuing_window covers a
+// command issued in one window whose failure arrives after the user
+// has switched to another: the error must land in the window the
+// command was issued from (ErrorEvent.Target), not wherever the user
+// is now looking. Unlike TestChatScreen_ErrorEvent_no_active_channel,
+// the issuing window is still open, so nothing should move the
+// user's focus to see it.
+func TestChatScreen_ErrorEvent_renders_at_issuing_window(t *testing.T) {
+	screen := newScreenFixture(t)
+	screen.channels.Insert(newWindow(domain.NewChannelWindow("#general", time.Time{})))
+	screen.channels.Insert(newWindow(domain.NewChannelWindow("#other", time.Time{})))
+
+	screen, _ = screen.focus("#general")
+	screen, _ = screen.focus("#other")
+
+	screen, cmd := screen.handleErrorEvent(domain.ErrorEvent{
+		Operation: "topic",
+		Err:       errors.New("not a channel operator"),
+		Target:    "#general",
+		At:        time.Now(),
+	})
+
+	msgs := collectMsgs(cmd)
+	_, moved := containsMsg[chatcmd.ChannelFocusMsg](msgs)
+	require.False(t, moved, "an error at a background window must not move focus")
+
+	generalErrs := commandErrorTexts(screen.scrollbackOf("#general"))
+	require.Equal(t, []string{"topic: not a channel operator"}, generalErrs)
+
+	require.Empty(t, commandErrorTexts(screen.scrollbackOf("#other")),
+		"the error must not land in the window the user switched to")
+}
+
+// TestChatScreen_ErrorEvent_renders_at_issuing_dm_window covers the
+// same routing for a command issued in a DM window: ErrorEvent.Target
+// is a domain.ChannelName, and a DM window's addressable name (the
+// counterpart's InstanceID) is a domain.ChannelName too, so the same
+// routing that keeps a channel-issued error out of a window the user
+// switched to must also keep a DM-issued one in the DM it was issued
+// from. Bare `/topic` fails in a DM window because a DM is never
+// persisted as a channel row (SQLiteStore.SaveWindow refuses to save
+// one), so GetWindow always errors for a DM's name; that failure
+// exercises the same rc.errorEvent path a channel-issued failure
+// takes.
+func TestChatScreen_ErrorEvent_renders_at_issuing_dm_window(t *testing.T) {
+	sess, mgr, user := newTestSession(t)
+
+	counterpart := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
+	require.NoError(t, sess.SaveInstance(t.Context(), counterpart))
+
+	screen, err := NewChatScreen(t.Context, sess, mgr, user, nil, nil, domain.KindStatus)
+	require.NoError(t, err)
+
+	dm := domain.NewDMWindow(counterpart, time.Time{})
+	screen.channels.Insert(newWindow(dm))
+	screen.channels.Insert(newWindow(domain.NewChannelWindow("#other", time.Time{})))
+
+	screen, _ = screen.focus(dm.Name())
+
+	cmd := screen.handleCommand(components.CommandSubmitMsg{Raw: "/topic"})
+	require.NotNil(t, cmd)
+
+	// The user switches away before the async GetWindow failure
+	// comes back, the same race TestChatScreen_ErrorEvent_renders_at_
+	// issuing_window covers for a channel.
+	screen, _ = screen.focus("#other")
+
+	errEvent, ok := cmd().(domain.ErrorEvent)
+	require.True(t, ok, "want domain.ErrorEvent, got %T", cmd())
+	require.Equal(t, dm.Name(), errEvent.Target)
+
+	_, storeErr := sess.GetWindow(t.Context(), dm.Name())
+	require.Error(t, storeErr, "a DM window is never persisted, so GetWindow must fail")
+	wantText := commandErrorText("topic", storeErr)
+
+	screen, renderCmd := screen.handleErrorEvent(errEvent)
+
+	msgs := collectMsgs(renderCmd)
+	_, moved := containsMsg[chatcmd.ChannelFocusMsg](msgs)
+	require.False(t, moved, "an error at a background DM window must not move focus")
+
+	require.Equal(t, []string{wantText}, commandErrorTexts(screen.scrollbackOf(dm.Name())))
+	require.Empty(t, commandErrorTexts(screen.scrollbackOf("#other")),
+		"the error must not land in the window the user switched to")
+}
+
+// TestChatScreen_ErrorEvent_dm_window_closed_before_it_arrives covers
+// the case the two "still open" tests above don't: the window the
+// error targets can vanish between the command being issued and the
+// failure coming back. appendToScrollback's placeholder-creation
+// switch has no case for a closed DM (a DM window needs its
+// counterpart's instance handle to rebuild, which the switch cannot
+// synthesise), so routing straight to msg.Target there would drop the
+// error where the user would never see it. handleErrorEvent must
+// notice the window is gone and fall back to the active one, the same
+// window an error always reached before ErrorEvent carried a Target
+// at all.
+func TestChatScreen_ErrorEvent_dm_window_closed_before_it_arrives(t *testing.T) {
+	sess, mgr, user := newTestSession(t)
+
+	counterpart := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
+	require.NoError(t, sess.SaveInstance(t.Context(), counterpart))
+
+	screen, err := NewChatScreen(t.Context, sess, mgr, user, nil, nil, domain.KindStatus)
+	require.NoError(t, err)
+
+	dm := domain.NewDMWindow(counterpart, time.Time{})
+	screen.channels.Insert(newWindow(dm))
+	screen.channels.Insert(newWindow(domain.NewChannelWindow("#other", time.Time{})))
+
+	screen, _ = screen.focus(dm.Name())
+
+	// The command was issued while the DM was in view.
+	errEvent := domain.ErrorEvent{
+		Operation: "topic",
+		Err:       errors.New("not a channel"),
+		Target:    dm.Name(),
+		At:        time.Now(),
+	}
+
+	// The user closes the DM before the failure comes back.
+	// closeWindow is what /close runs on a query window.
+	screen, closeCmd := screen.closeWindow(dm.Name(), time.Now())
+	collectMsgs(closeCmd)
+	require.Equal(t, domain.ChannelName("#other"), screen.active,
+		"closing the only other window in view must land the user on #other")
+
+	screen, cmd := screen.handleErrorEvent(errEvent)
+
+	msgs := collectMsgs(cmd)
+	_, moved := containsMsg[chatcmd.ChannelFocusMsg](msgs)
+	require.False(t, moved, "the user already landed on #other when the DM closed; nothing should move focus again")
+
+	_, reopened := screen.windowByName(dm.Name())
+	require.False(t, reopened, "a late error must not recreate the closed DM window")
+
+	require.Equal(t, []string{"topic: not a channel"}, commandErrorTexts(screen.scrollbackOf("#other")))
+}
+
+// TestChatScreen_ErrorEvent_channel_parted_before_it_arrives is the
+// channel counterpart: appendToScrollback does have a case for an
+// unopened channel, but it is meant for live traffic arriving before
+// a join is seen. Routing a stale reply to a channel the user has
+// since left through that case would resurrect #a client-side with
+// no membership behind it, so handleErrorEvent's closed-window
+// fallback must catch this case too.
+func TestChatScreen_ErrorEvent_channel_parted_before_it_arrives(t *testing.T) {
+	screen := newScreenFixture(t)
+	screen.channels.Insert(newWindow(domain.NewChannelWindow("#a", time.Time{})))
+	screen.channels.Insert(newWindow(domain.NewChannelWindow("#b", time.Time{})))
+
+	screen, _ = screen.focus("#a")
+
+	// The command was issued while #a was in view.
+	errEvent := domain.ErrorEvent{
+		Operation: "topic",
+		Err:       errors.New("not a channel operator"),
+		Target:    "#a",
+		At:        time.Now(),
+	}
+
+	// The user parts #a and switches to #b before the failure comes
+	// back. closeWindow is what /part and /close both run.
+	screen, closeCmd := screen.closeWindow("#a", time.Now())
+	collectMsgs(closeCmd)
+	screen, _ = screen.focus("#b")
+
+	screen, cmd := screen.handleErrorEvent(errEvent)
+
+	msgs := collectMsgs(cmd)
+	_, moved := containsMsg[chatcmd.ChannelFocusMsg](msgs)
+	require.False(t, moved, "the user already switched to #b; nothing should move focus again")
+
+	_, reappeared := screen.windowByName("#a")
+	require.False(t, reappeared, "a late error must not resurrect a parted channel")
+
+	require.Equal(t, []string{"topic: not a channel operator"}, commandErrorTexts(screen.scrollbackOf("#b")))
+}
+
+// commandErrorTexts extracts the Err field of every domain.CommandError
+// in scrollback, in order.
+func commandErrorTexts(scrollback []domain.Event) []string {
+	var texts []string
+
 	for _, ev := range scrollback {
 		if cmdErr, ok := ev.(domain.CommandError); ok {
-			cmdErrs = append(cmdErrs, cmdErr.Err)
+			texts = append(texts, cmdErr.Err)
 		}
 	}
-	require.Equal(t, []string{"startup failure: no api key"}, cmdErrs)
+
+	return texts
 }
 
 // TestChatScreen_MessageSubmit_on_status_channel_renders_usage_hint

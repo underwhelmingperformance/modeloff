@@ -153,17 +153,17 @@ func (c JoinCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	return func() tea.Msg {
 		cmd, err := c.ToCommand(rc)
 		if err != nil {
-			return errorEvent("join", err)
+			return rc.errorEvent("join", err)
 		}
 
 		resp, err := rc.Client.Send(ctx, cmd)
 		if err != nil {
-			return errorEvent("join", err)
+			return rc.errorEvent("join", err)
 		}
 
 		if len(resp.Events) == 0 {
 			if resp.Err != nil {
-				return errorEvent("join", resp.Err)
+				return rc.errorEvent("join", resp.Err)
 			}
 			return nil
 		}
@@ -615,7 +615,7 @@ func (c MsgCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	return func() tea.Msg {
 		body := strings.TrimSpace(strings.Join(c.Body, " "))
 		if body == "" {
-			return errorEvent("msg", fmt.Errorf("message body is required"))
+			return rc.errorEvent("msg", fmt.Errorf("message body is required"))
 		}
 
 		target := domain.ChannelName(c.Target)
@@ -629,10 +629,10 @@ func (c MsgCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 		resolved, err := rc.Session.ResolveNick(ctx, nick)
 		if err != nil {
 			if errors.Is(err, store.ErrNoSuchNick) {
-				return errorEvent("msg", domain.UnknownNickError{Nick: nick, At: time.Now()})
+				return rc.errorEvent("msg", domain.UnknownNickError{Nick: nick, At: time.Now()})
 			}
 
-			return errorEvent("msg", fmt.Errorf("resolve nick: %w", err))
+			return rc.errorEvent("msg", fmt.Errorf("resolve nick: %w", err))
 		}
 
 		// The chat screen handler materialises the DM window
@@ -703,10 +703,10 @@ func (c QueryCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 		resolved, err := rc.Session.ResolveNick(ctx, nick)
 		if err != nil {
 			if errors.Is(err, store.ErrNoSuchNick) {
-				return errorEvent("query", domain.UnknownNickError{Nick: nick, At: time.Now()})
+				return rc.errorEvent("query", domain.UnknownNickError{Nick: nick, At: time.Now()})
 			}
 
-			return errorEvent("query", fmt.Errorf("resolve nick: %w", err))
+			return rc.errorEvent("query", fmt.Errorf("resolve nick: %w", err))
 		}
 
 		return DMOpenedMsg{
@@ -818,7 +818,7 @@ func (c NickCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 			cfg.UserNick = string(nick)
 			return cfg
 		}); err != nil {
-			return errorEvent("nick", err)
+			return rc.errorEvent("nick", err)
 		}
 
 		return sendCommand(ctx, rc, c, "nick")
@@ -983,12 +983,12 @@ func (c TopicCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 		return func() tea.Msg {
 			w, err := rc.Session.GetWindow(ctx, rc.Active)
 			if err != nil {
-				return errorEvent("topic", err)
+				return rc.errorEvent("topic", err)
 			}
 
 			cw, ok := w.(*domain.ChannelWindow)
 			if !ok {
-				return errorEvent("topic", fmt.Errorf("%s is not a channel", rc.Active))
+				return rc.errorEvent("topic", fmt.Errorf("%s is not a channel", rc.Active))
 			}
 
 			return TopicInfoResult{Window: cw}
@@ -1247,7 +1247,7 @@ func (PersonasCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	return func() tea.Msg {
 		personas, err := rc.Manager.ListPersonas(ctx)
 		if err != nil {
-			return errorEvent("personas", err)
+			return rc.errorEvent("personas", err)
 		}
 
 		return PersonasListResult(personas)
@@ -1262,7 +1262,7 @@ func (RegeneratePersonasCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	return func() tea.Msg {
 		personas, err := rc.Manager.RegeneratePersonas(ctx)
 		if err != nil {
-			return errorEvent("regenerate-personas", err)
+			return rc.errorEvent("regenerate-personas", err)
 		}
 
 		return PersonasRegeneratedResult{Count: len(personas)}

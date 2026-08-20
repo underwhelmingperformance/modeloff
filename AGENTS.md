@@ -630,6 +630,16 @@ own `tea.Cmd`s and reach the Update loop directly. The session never
 puts them on the bus (`serverClient.canReceive` returns false for
 them); it is not the courier for them.
 
+`ErrorEvent.Target` and `CommandError.Target` name the window
+`ChatScreen.handleErrorEvent` renders a command failure into, a
+choice the chat-screen makes entirely on its own side. It carries no
+bus-addressing meaning the way `Whois.Target` does: the session never
+reads it, since an `ErrorEvent` never reaches the session at all. The
+chat-screen falls back to the active window when `Target` is empty or
+names a window it no longer has open (a closed DM, a parted channel),
+so a late failure always renders somewhere and never resurrects a
+window the user has left.
+
 ### Echo gate and membership filter
 
 `fanOutProtocol` skips the originator for `domain.Message` events

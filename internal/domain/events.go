@@ -23,10 +23,15 @@ type PokeEvent struct {
 	At      time.Time
 }
 
-// ErrorEvent wraps a backend error as a domain event.
+// ErrorEvent wraps a backend error as a domain event. Target names
+// the window the failed command was issued from, the same role
+// [Whois.Target] plays for a `/whois` reply: the chat-screen renders
+// the error there even after the user has switched to a different
+// window, falling back to the active window when Target is empty.
 type ErrorEvent struct {
 	Operation string
 	Err       error
+	Target    ChannelName
 	At        time.Time
 }
 

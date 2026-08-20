@@ -142,6 +142,14 @@ type SessionReader interface {
 	UnreadCount(ctx context.Context, ch domain.ChannelName) (int, error)
 	Instances(ctx context.Context) iter.Seq[*domain.Instance]
 	ConnectedAt() time.Time
+
+	// DirectoryChannels answers with the channels `issuer` may be
+	// told exist, the same [Session.channelVisibleTo] predicate
+	// `/list` answers under. `completionSet` calls it with the
+	// user's own instance so `/join` completion can offer a channel
+	// the user has not joined without bypassing that predicate; the
+	// user-client holds `+o`, so in practice it sees every channel.
+	DirectoryChannels(ctx context.Context, issuer *domain.Instance) ([]domain.ChannelDirectoryEntry, error)
 }
 
 // ChatScreen is the main screen that composes Sidebar, ChatView, and
@@ -1101,6 +1109,19 @@ func (s ChatScreen) completionSet() command.CompletionSet[chatcmd.CompletionCont
 				return slices.Values(personas)
 			},
 			Kind: func() domain.ChannelKind { return s.activeKind() },
+			Directory: func() iter.Seq[domain.ChannelDirectoryEntry] {
+				entries, err := s.sess.DirectoryChannels(s.baseContext(), s.user.Instance())
+				if err != nil {
+					slog.Default().ErrorContext(s.baseContext(), "directory channels for completion",
+						"component", "ui",
+						"screen", "chat",
+						"error", err,
+					)
+					return func(func(domain.ChannelDirectoryEntry) bool) {}
+				}
+
+				return slices.Values(entries)
+			},
 		},
 	}
 }
@@ -1248,7 +1269,7 @@ func (s ChatScreen) switchChannel(ch domain.ChannelName) tea.Cmd {
 		// view is a buffer swap, not a backend round-trip.
 		if !exists {
 			if err := s.user.Join(s.baseContext(), ch); err != nil {
-				return domain.ErrorEvent{Operation: "switch", Err: err, At: time.Now()}
+				return domain.ErrorEvent{Operation: "switch", Err: err, Target: s.active, At: time.Now()}
 			}
 		}
 

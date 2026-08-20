@@ -13,6 +13,7 @@ import (
 	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/session"
 	"github.com/laney/modeloff/internal/store/storetest"
+	"github.com/laney/modeloff/internal/testclient"
 	uipkg "github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/chatcmd"
 	"github.com/laney/modeloff/internal/ui/uitest"
@@ -215,4 +216,39 @@ func TestChatScreen_second_quit_request_escalates_to_tea_quit(t *testing.T) {
 
 	require.Equal(t, tea.Quit(), cmd(),
 		"second QuitRequestedMsg should escalate to tea.Quit")
+}
+
+// TestChatScreen_join_completion_offers_unjoined_directory_channel
+// covers /join completion for a channel the user has not joined.
+// channelsSource already merges CompletionContext.Directory with the
+// open windows (see chatcmd's TestChannelsSource_merges_directory_
+// with_open_windows); what this test pins is that completionSet
+// actually supplies a Directory accessor, so /join can offer a
+// channel that exists in the session but has no window open for the
+// user. The candidate channel is created by another instance
+// joining it, so it exists in the directory without the user ever
+// being a member.
+func TestChatScreen_join_completion_offers_unjoined_directory_channel(t *testing.T) {
+	sess, mgr, user := newTestSession(t)
+
+	bot := testclient.New("bot", sess)
+	require.NoError(t, bot.Attach(t.Context()))
+	t.Cleanup(bot.Detach)
+
+	resp, err := bot.Send(t.Context(), protocol.Join{Channels: []domain.ChannelName{"#unjoined"}})
+	require.NoError(t, err)
+	require.NoError(t, resp.Err)
+
+	screen, err := NewChatScreen(t.Context, sess, mgr, user, nil, nil, domain.KindStatus)
+	require.NoError(t, err)
+
+	completer := screen.completionSet()
+	c := completer.Complete("/join #u", len("/join #u"))
+
+	var values []string
+	for _, s := range c.Suggestions {
+		values = append(values, s.Value)
+	}
+
+	require.Contains(t, values, "#unjoined")
 }

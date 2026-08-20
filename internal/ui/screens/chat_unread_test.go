@@ -107,6 +107,44 @@ func TestChatScreen_unread_badge_counts_only_what_arrived_since_the_last_visit(t
 	}
 }
 
+// TestChatScreen_own_message_mentioning_own_nick_does_not_badge_mention
+// covers the self-exemption isHighlight owes components.renderMessage:
+// the render path never highlights the user's own message even when
+// its body contains the user's nick, identifying it by its empty
+// InstanceID. isHighlight must apply the same exemption, or the
+// user's own message echoing their nick back (e.g. a reply quoting
+// what someone called them) would badge the channel as mentioning
+// them.
+func TestChatScreen_own_message_mentioning_own_nick_does_not_badge_mention(t *testing.T) {
+	sess, mgr, user := newTestSession(t)
+	require.NoError(t, user.Join(t.Context(), domain.ChannelName("#general")))
+	require.NoError(t, user.Join(t.Context(), domain.ChannelName("#random")))
+
+	screen, err := NewChatScreen(t.Context, sess, mgr, user, nil, nil, domain.KindStatus)
+	require.NoError(t, err)
+
+	for _, ch := range []domain.ChannelName{"#general", "#random"} {
+		screen.channels.Insert(newWindow(domain.NewChannelWindow(ch, time.Time{})))
+	}
+
+	screen = focused(t, screen, "#general")
+
+	ownMessage := domain.Message{
+		Target:     "#random",
+		From:       user.Nick(),
+		InstanceID: "",
+		Body:       "hey " + string(user.Nick()),
+	}
+
+	counted := collectMsgs(screen.renderMessage(ownMessage, "#random"))
+
+	require.Equal(t, []tea.Msg{components.ChannelUnreadMsg{
+		Channel: "#random",
+		Count:   0,
+		Mention: false,
+	}}, deliverBadges(t, screen, counted))
+}
+
 // TestChatScreen_clear_drops_the_window_history pins the `/clear`
 // bookkeeping: the scrollback goes, and the message list is told the
 // window's history went with it, so the reader's place in that window
