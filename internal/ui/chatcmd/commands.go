@@ -284,11 +284,12 @@ func (c PartCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 
 // RunTool implements ToolCommand.
 func (c PartCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolResultPayload {
-	if tc.Channel == "" {
-		return modelclient.ToolResultPayload{OK: false, Error: "no active channel"}
+	ch, ok := toolChannel(tc)
+	if !ok {
+		return noActiveChannel()
 	}
 
-	return sendToolCommand(ctx, tc, c, "parted "+string(tc.Channel))
+	return sendToolCommand(ctx, tc, c, "parted "+string(ch))
 }
 
 // ListCommand represents `/list`.
@@ -401,15 +402,16 @@ func (c AddModelCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 
 // RunTool implements ToolCommand.
 func (c AddModelCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolResultPayload {
-	if tc.Channel == "" {
-		return modelclient.ToolResultPayload{OK: false, Error: "no active channel"}
+	ch, ok := toolChannel(tc)
+	if !ok {
+		return noActiveChannel()
 	}
 
 	if c.Model == "" {
 		return modelclient.ToolResultPayload{OK: false, Error: "model is required"}
 	}
 
-	return sendToolCommand(ctx, tc, c, "added "+c.Model+" to "+string(tc.Channel))
+	return sendToolCommand(ctx, tc, c, "added "+c.Model+" to "+string(ch))
 }
 
 // InviteCommand represents `/invite <nick> [channel]`.
@@ -450,15 +452,15 @@ func (c InviteCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 
 // RunTool implements ToolCommand.
 func (c InviteCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolResultPayload {
-	if tc.Channel == "" && c.Channel == "" {
-		return modelclient.ToolResultPayload{OK: false, Error: "no active channel"}
+	ch, ok := toolChannel(tc)
+	if !ok && c.Channel == "" {
+		return noActiveChannel()
 	}
 
 	if strings.TrimSpace(c.Nick) == "" {
 		return modelclient.ToolResultPayload{OK: false, Error: "target nick is required"}
 	}
 
-	ch := tc.Channel
 	if c.Channel != "" {
 		ch = domain.ChannelName(c.Channel.String())
 	}
@@ -533,11 +535,12 @@ func (c KickCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 
 // RunTool implements ToolCommand.
 func (c KickCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolResultPayload {
-	if tc.Channel == "" {
-		return modelclient.ToolResultPayload{OK: false, Error: "no active channel"}
+	ch, ok := toolChannel(tc)
+	if !ok {
+		return noActiveChannel()
 	}
 
-	return sendToolCommand(ctx, tc, c, "kicked "+c.Nick+" from "+string(tc.Channel))
+	return sendToolCommand(ctx, tc, c, "kicked "+c.Nick+" from "+string(ch))
 }
 
 // MsgCommand represents `/msg <target> <message>` where `target`
@@ -575,21 +578,17 @@ func msgTargetSource(ctx CompletionContext, st command.InvocationState[Completio
 	return command.SuggestionResult{Suggestions: merged}
 }
 
-// ToCommand builds the wire-protocol command for `/msg` against a
-// channel target. The nick-target branch of `/msg` does not have a
-// protocol counterpart yet (DM materialisation is still
-// chat-screen-side); callers must pre-check the target shape
-// before invoking.
+// ToCommand builds the wire-protocol command for `/msg`. The target
+// is read the way a server reads `<msgtarget>`: a `#`-prefixed value
+// is a channel, anything else is a nick the dispatcher resolves. A
+// channel the actor is not in is refused here so the chat-screen can
+// surface a typed error without going over the wire.
 func (c MsgCommand) ToCommand(rc Context) (protocol.Command, error) {
 	body := strings.TrimSpace(strings.Join(c.Body, " "))
-	target := domain.ChannelName(c.Target)
+	target := protocol.ParseMsgTarget(c.Target)
 
-	if domain.InferChannelKind(target) != domain.KindChannel {
-		return nil, fmt.Errorf("/msg nick-target is not a wire-protocol command")
-	}
-
-	if !c.actorInChannel(rc.Actor, target) {
-		return nil, notInChannelError(target)
+	if ch, ok := target.(protocol.ChannelTarget); ok && !c.actorInChannel(rc.Actor, domain.ChannelName(ch)) {
+		return nil, notInChannelError(domain.ChannelName(ch))
 	}
 
 	return protocol.PrivMsg{Target: target, Body: body}, nil
@@ -731,40 +730,12 @@ func (c MsgCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) mod
 		return modelclient.ToolResultPayload{OK: false, Error: err.Error()}
 	}
 
-	target, err := resolveMsgTarget(ctx, tc, c.Target)
-	if err != nil {
-		return modelclient.ToolResultPayload{OK: false, Error: err.Error()}
-	}
+	resp, sendErr := tc.Client.Send(ctx, protocol.PrivMsg{
+		Target: protocol.ParseMsgTarget(c.Target),
+		Body:   body,
+	})
 
-	resp, sendErr := tc.Client.Send(ctx, protocol.PrivMsg{Target: target, Body: body})
 	return resolveSendResult(resp, sendErr, "messaged "+c.Target)
-}
-
-// resolveMsgTarget normalises the model-supplied msg/me target into
-// a [domain.ChannelName] the session's send path accepts. A `#`-
-// prefixed value is a channel, used as-is. A bare value is first
-// looked up as a nick (the model normally sees peers by nick in
-// chat events); if no instance owns that nick, the value is assumed
-// to already be a DM key (`InstanceID`) and is passed through.
-// Unknown values that match neither a channel, nick, nor existing
-// instance surface as `UnknownNickError`.
-func resolveMsgTarget(ctx context.Context, tc modelclient.ToolContext, raw string) (domain.ChannelName, error) {
-	target := domain.ChannelName(raw)
-
-	if domain.InferChannelKind(target) == domain.KindChannel {
-		return target, nil
-	}
-
-	resolved, err := tc.Session.ResolveNick(ctx, domain.Nick(raw))
-	if err == nil {
-		return domain.ChannelName(resolved.ID()), nil
-	}
-
-	if !errors.Is(err, store.ErrNoSuchNick) {
-		return "", fmt.Errorf("resolve nick: %w", err)
-	}
-
-	return target, nil
 }
 
 // resolveSendResult flattens a `caller.Send` outcome into the
@@ -852,11 +823,12 @@ func (c ModeCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 
 // RunTool implements ToolCommand.
 func (c ModeCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolResultPayload {
-	if tc.Channel == "" {
-		return modelclient.ToolResultPayload{OK: false, Error: "no active channel"}
+	ch, ok := toolChannel(tc)
+	if !ok {
+		return noActiveChannel()
 	}
 
-	return sendToolCommand(ctx, tc, c, "mode change on "+string(tc.Channel))
+	return sendToolCommand(ctx, tc, c, "mode change on "+string(ch))
 }
 
 // parseChannelModeString walks `flags` left-to-right, tracking
@@ -987,19 +959,20 @@ func (c TopicCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 
 // RunTool implements ToolCommand.
 func (c TopicCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolResultPayload {
-	if tc.Channel == "" {
-		return modelclient.ToolResultPayload{OK: false, Error: "no active channel"}
+	ch, ok := toolChannel(tc)
+	if !ok {
+		return noActiveChannel()
 	}
 
 	if len(c.Topic) == 0 {
-		w, err := tc.Session.GetWindow(ctx, tc.Channel)
+		w, err := tc.Session.GetWindow(ctx, ch)
 		if err != nil {
 			return modelclient.ToolResultPayload{OK: false, Error: err.Error()}
 		}
 
-		cw, ok := w.(*domain.ChannelWindow)
-		if !ok {
-			return modelclient.ToolResultPayload{OK: false, Error: fmt.Errorf("%s is not a channel", tc.Channel).Error()}
+		cw, isChannel := w.(*domain.ChannelWindow)
+		if !isChannel {
+			return modelclient.ToolResultPayload{OK: false, Error: fmt.Errorf("%s is not a channel", ch).Error()}
 		}
 
 		return modelclient.ToolResultPayload{
@@ -1009,7 +982,7 @@ func (c TopicCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) m
 		}
 	}
 
-	return sendToolCommand(ctx, tc, c, "updated topic for "+string(tc.Channel))
+	return sendToolCommand(ctx, tc, c, "updated topic for "+string(ch))
 }
 
 // MeCommand represents `/me <action>`.
@@ -1018,10 +991,12 @@ type MeCommand struct {
 	Spans  []protocol.ReplySpan `optional:"" help:"Styled spans for IRC formatting. Each span has text and optional style (bold, italic, underline, reverse, strike, fg, bg as palette 0..15). Provide either action or spans, not both."`
 }
 
-// ToCommand builds the wire-protocol command for `/me`.
+// ToCommand builds the wire-protocol command for `/me`. The action
+// goes to the window the user is in, which
+// [protocol.TargetForWindow] turns into a channel or a counterpart.
 func (c MeCommand) ToCommand(rc Context) (protocol.Command, error) {
 	return protocol.Action{
-		Target: rc.Active,
+		Target: protocol.TargetForWindow(rc.Active),
 		Body:   strings.TrimSpace(strings.Join(c.Action, " ")),
 	}, nil
 }
@@ -1045,10 +1020,16 @@ func (c MeCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 // RunTool implements ToolCommand. The action body goes through the
 // same validate+render path as `msg`: plain `action` text or styled
 // `spans`, exactly one, no newlines, etc. Encoded output is sent as
-// a `/me`-style Action to the active channel.
+// a `/me`-style Action addressed at the window the turn is running
+// in, which is a channel or, in a DM, the counterpart the turn is
+// with.
+//
+// Any window will do, so this asks only that there be one. A caller
+// with no window carries a nil Target, which is a different value
+// from every window a client can hold.
 func (c MeCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolResultPayload {
-	if tc.Channel == "" {
-		return modelclient.ToolResultPayload{OK: false, Error: "no active channel"}
+	if tc.Target == nil {
+		return modelclient.ToolResultPayload{OK: false, Error: "no active window"}
 	}
 
 	body, err := renderReplyPart(protocol.ReplyPart{
@@ -1060,8 +1041,12 @@ func (c MeCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) mode
 		return modelclient.ToolResultPayload{OK: false, Error: err.Error()}
 	}
 
-	resp, sendErr := tc.Client.Send(ctx, protocol.Action{Target: tc.Channel, Body: body})
-	return resolveSendResult(resp, sendErr, "sent action to "+string(tc.Channel))
+	resp, sendErr := tc.Client.Send(ctx, protocol.Action{
+		Target: tc.Target,
+		Body:   body,
+	})
+
+	return resolveSendResult(resp, sendErr, "sent action to "+tc.Target.String())
 }
 
 // WhoisCommand represents `/whois <nick>`.
@@ -1091,9 +1076,13 @@ func (c WhoisCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	}
 }
 
-// RunTool implements ToolCommand.
+// RunTool implements ToolCommand. The reply is stamped with the
+// window the lookup was issued from, so it renders where the model
+// asked; a DM window is named by its counterpart's id.
 func (c WhoisCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolResultPayload {
-	whois, err := c.fetch(ctx, tc.Client, domain.Nick(c.Nick), tc.Channel)
+	window, _ := protocol.WindowName(tc.Target)
+
+	whois, err := c.fetch(ctx, tc.Client, domain.Nick(c.Nick), window)
 	if err != nil {
 		return modelclient.ToolResultPayload{OK: false, Error: err.Error()}
 	}

@@ -23,13 +23,13 @@ func TestSession_privmsg_to_a_channel_that_does_not_exist(t *testing.T) {
 		{
 			name: "privmsg",
 			send: func(target domain.ChannelName) protocol.Command {
-				return protocol.PrivMsg{Target: target, Body: "anyone there"}
+				return protocol.PrivMsg{Target: protocol.ChannelTarget(target), Body: "anyone there"}
 			},
 		},
 		{
 			name: "action",
 			send: func(target domain.ChannelName) protocol.Command {
-				return protocol.Action{Target: target, Body: "waves"}
+				return protocol.Action{Target: protocol.ChannelTarget(target), Body: "waves"}
 			},
 		},
 	}

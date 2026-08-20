@@ -229,7 +229,12 @@ func (s *Session) handlePrivMsg(ctx context.Context, c protocol.Client, cmd prot
 			return protocol.Response{}, err
 		}
 
-		msg, sendErr := s.sendMessageAs(ctx, actor, cmd.Target, cmd.Body)
+		target, err := s.resolveMsgTarget(cmd.Target)
+		if err != nil {
+			return commandResult(err)
+		}
+
+		msg, sendErr := s.sendMessageAs(ctx, actor, target, cmd.Body)
 		if sendErr != nil {
 			return commandResult(sendErr)
 		}
@@ -245,13 +250,72 @@ func (s *Session) handleAction(ctx context.Context, c protocol.Client, cmd proto
 			return protocol.Response{}, err
 		}
 
-		msg, sendErr := s.sendActionAs(ctx, actor, cmd.Target, cmd.Body)
+		target, err := s.resolveMsgTarget(cmd.Target)
+		if err != nil {
+			return commandResult(err)
+		}
+
+		msg, sendErr := s.sendActionAs(ctx, actor, target, cmd.Body)
 		if sendErr != nil {
 			return commandResult(sendErr)
 		}
 
 		return protocol.Response{Events: []protocol.Event{msg}}, nil
 	})
+}
+
+// resolveMsgTarget turns the target a client addressed into the
+// conversation key the session logs and routes the message under.
+// This is the server's half of RFC 2812 §3.3.1 addressing: the client
+// says who it is talking to, and the server decides where that
+// conversation lives.
+//
+// A channel target keeps the name it was given; the send gates
+// canonicalise the spelling against the channel record. A client
+// target, named by nick or by id, resolves to that client, and the
+// key is the counterpart's [domain.InstanceID], which is what both
+// sides of a DM read the conversation back under (see
+// [domain.Message.RoutingKey]). A target naming no connected client
+// is refused with [domain.UnknownNickError], RFC 2812 numeric 401,
+// naming the target the way the client addressed it; a nick outside
+// the grammar is refused with [domain.ErroneousNicknameError] (432)
+// before anything is looked up.
+//
+// It runs on the command loop and reads only live state, so
+// addressing a message costs the loop no store round-trip.
+func (s *Session) resolveMsgTarget(target protocol.MsgTarget) (domain.ChannelName, error) {
+	switch t := target.(type) {
+	case protocol.ChannelTarget:
+		return domain.ChannelName(t), nil
+
+	case protocol.NickTarget:
+		nick := domain.Nick(t)
+
+		// The two refusals IRC distinguishes, in the order
+		// [Session.requireNickAvailable] asks them: a nick outside the
+		// RFC 2812 §2.3.1 grammar names nobody who could ever hold it,
+		// which is 432 and not the 433-shaped answer a lookup gives.
+		if reason := domain.ValidateNick(nick); reason != domain.NickAccepted {
+			return "", domain.ErroneousNicknameError{Nick: nick, Reason: reason, At: s.now()}
+		}
+
+		return s.dmKeyFor(s.lookupClientByNick(nick), t)
+
+	case protocol.ClientTarget:
+		return s.dmKeyFor(s.lookupClientHandle(protocol.ClientID(t)), t)
+	}
+
+	return "", fmt.Errorf("unknown message target %T", target)
+}
+
+// dmKeyFor returns the conversation key for a resolved client, or the
+// 401 refusal naming `addressed` when the target resolved to nobody.
+func (s *Session) dmKeyFor(sc *serverClient, addressed protocol.MsgTarget) (domain.ChannelName, error) {
+	if sc == nil {
+		return "", domain.UnknownNickError{Nick: domain.Nick(addressed.String()), At: s.now()}
+	}
+
+	return domain.ChannelName(sc.instance.ID()), nil
 }
 
 func (s *Session) handleTopic(ctx context.Context, c protocol.Client, cmd protocol.Topic) (protocol.Response, error) {
@@ -515,9 +579,14 @@ func (s *Session) handleQuit(ctx context.Context, c protocol.Client, cmd protoco
 // by the send gates, which read the channel's member list — and it
 // is the price of the subscription existing before the broadcast.
 //
-// A failure in step 4 unwinds steps 2 and 3: the client is detached
-// and the instance deleted, so a refused ADDMODEL leaves no nick
-// claimed and no dispatch goroutine behind.
+// A failure in step 3 or step 4 unwinds what came before it: the
+// client is detached and the instance deleted, so a refused ADDMODEL
+// leaves no nick claimed and no dispatch goroutine behind. A client
+// that could not connect fails the command for the same reason a
+// refused JOIN does: every member of a channel has a client behind
+// it, so a message addressed to any nick in the member list reaches
+// somebody, and a registration that stopped short of connecting
+// would put a nick there that nothing can reach.
 func (s *Session) handleAddModel(ctx context.Context, c protocol.Client, cmd protocol.AddModel) (protocol.Response, error) {
 	if !s.idHasServerOper(c.Identity()) {
 		return protocol.Response{Err: domain.NotOperatorError{Command: "ADDMODEL", At: s.now()}}, nil
@@ -569,12 +638,12 @@ func (s *Session) handleAddModel(ctx context.Context, c protocol.Client, cmd pro
 	}
 
 	if _, attachErr := s.modelClientFactory.Attach(ctx, s, inst); attachErr != nil {
-		slog.Default().WarnContext(ctx, "attach model client",
-			"component", "session",
-			"instance_id", inst.ID(),
-			"channel", cmd.Channel,
-			"error", attachErr,
-		)
+		s.discardModel(ctx, inst)
+
+		return commandResult(errWithKind(
+			fmt.Errorf("connect model client: %w", attachErr),
+			observability.ErrorKindDispatch,
+		))
 	}
 
 	admitted, admitErr := s.onWriter(ctx, func(ctx context.Context) (protocol.Response, error) {

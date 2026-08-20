@@ -353,7 +353,14 @@ func (mc *ModelClient) dispatchTurn(ctx context.Context, batch *turnBatch) {
 
 		replyEvents := mc.hist.snapshotReplies()
 
-		if err := dispatchToInstance(ctx, mc.sess, apiClient, mc.memStore, mc.tools, mc.ensure, mc.pacer, mc, window, inst, ch, batch.history, replyEvents, batch.triggers, mc.hist.TokenBudget()); err != nil {
+		// The turn addresses the window it is running in, and this is
+		// the only place that address is built: `batch.channel` comes
+		// from [dispatchTrigger], which names a window only alongside
+		// a turn to run in it, so a tool cannot be handed a target
+		// derived from a window that was never there.
+		target := protocol.TargetForWindow(ch)
+
+		if err := dispatchToInstance(ctx, mc.sess, apiClient, mc.memStore, mc.tools, mc.ensure, mc.pacer, mc, window, inst, target, batch.history, replyEvents, batch.triggers, mc.hist.TokenBudget()); err != nil {
 			return mc.reportTurnFailure(ctx, ch, nick, errWithKind(err, observability.ErrorKindDispatch))
 		}
 

@@ -53,7 +53,7 @@ func dispatchToInstance(
 	caller protocol.Client,
 	window domain.Window,
 	inst *domain.Instance,
-	channelName domain.ChannelName,
+	target protocol.MsgTarget,
 	historyEvents []domain.StoredEvent,
 	replyEvents []domain.StoredEvent,
 	events []protocol.IRCMessage,
@@ -136,7 +136,7 @@ func dispatchToInstance(
 			tools.Filter(modelCaps{}, window.Kind()),
 		)
 
-		outcome, err := runTurn(ctx, apiClient, sess, caller, inst, channelName, prompt, history, events, registry, pacer)
+		outcome, err := runTurn(ctx, apiClient, sess, caller, inst, target, prompt, history, events, registry, pacer)
 		if err != nil {
 			return errWithKind(
 				fmt.Errorf("send events to %s: %w", nick, err),
@@ -150,7 +150,7 @@ func dispatchToInstance(
 		}
 
 		slog.Default().With("component", "modelclient").InfoContext(ctx, "dispatch to instance",
-			"channel", channelName,
+			"channel", window.Name(),
 			"nick", nick,
 			"model_id", inst.ModelID,
 			"trigger_count", len(events),

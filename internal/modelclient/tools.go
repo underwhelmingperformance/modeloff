@@ -58,12 +58,21 @@ type ManagerAPI interface {
 }
 
 // ToolContext carries the backend context for a model tool call.
-// Actor is the `*domain.Instance` for the caller — models dispatched
+// Actor is the `*domain.Instance` for the caller: models dispatched
 // by the session receive their own handle, and the user's own
 // `/`-command tool invocations receive the user handle. Client is
 // the protocol-side handle the tool dispatches commands through;
 // it is the model-client handle for model invocations and the
 // user-client for user-driven tool calls.
+//
+// Target addresses the window the call is running in, as a
+// [protocol.MsgTarget] built by the dispatch loop from that window's
+// key. The address is what keeps a caller with no window apart from a
+// caller in the DM with the user: the user's [domain.InstanceID] is
+// empty, so an empty key names that conversation, while a nil Target
+// names nothing and every tool that needs a window refuses it. A tool
+// that needs the window's name asks [protocol.WindowName]; a tool
+// that needs a channel asserts [protocol.ChannelTarget].
 //
 // Callers must populate Client before invoking any tool whose
 // `RunTool` routes through the wire protocol; a nil Client crashes
@@ -72,7 +81,7 @@ type ToolContext struct {
 	Session SessionAPI
 	Manager ManagerAPI
 	Actor   *domain.Instance
-	Channel domain.ChannelName
+	Target  protocol.MsgTarget
 	Client  protocol.Client
 }
 

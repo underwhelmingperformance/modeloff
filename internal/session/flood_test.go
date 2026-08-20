@@ -28,7 +28,7 @@ func sendTimings(t *testing.T, client protocol.Client, ch domain.ChannelName, co
 
 	for i := range count {
 		resp, err := client.Send(t.Context(), protocol.PrivMsg{
-			Target: ch,
+			Target: protocol.ChannelTarget(ch),
 			Body:   fmt.Sprintf("message %d", i),
 		})
 		require.NoError(t, errors.Join(err, resp.Err))
@@ -126,7 +126,7 @@ func TestSession_flood_penalty_is_per_connection(t *testing.T) {
 			before := time.Now()
 
 			resp, err := quietClient.Send(ctx, protocol.PrivMsg{
-				Target: "#busy",
+				Target: protocol.ChannelTarget("#busy"),
 				Body:   fmt.Sprintf("quiet %d", i),
 			})
 			require.NoError(t, errors.Join(err, resp.Err))
@@ -230,7 +230,7 @@ func TestSession_user_typing_at_human_speed_is_never_throttled(t *testing.T) {
 		// and it is still slower than the two seconds a message costs.
 		for i := range 40 {
 			resp, err := client.Send(ctx, protocol.PrivMsg{
-				Target: "#general",
+				Target: protocol.ChannelTarget("#general"),
 				Body:   fmt.Sprintf("line %d", i),
 			})
 			require.NoError(t, errors.Join(err, resp.Err))
@@ -293,7 +293,7 @@ func TestSession_autojoin_spends_the_user_allowance(t *testing.T) {
 
 				joined := time.Since(start)
 
-				resp, err := client.Send(ctx, protocol.PrivMsg{Target: "#room0", Body: "hello"})
+				resp, err := client.Send(ctx, protocol.PrivMsg{Target: protocol.ChannelTarget("#room0"), Body: "hello"})
 				require.NoError(t, errors.Join(err, resp.Err))
 
 				require.Equal(t, time.Duration(0), joined)
@@ -400,14 +400,14 @@ func TestSession_channel_flood_limit(t *testing.T) {
 		for _, ch := range []domain.ChannelName{"#limited", "#open"} {
 			for i := range 3 {
 				resp, err := client.Send(ctx, protocol.PrivMsg{
-					Target: ch,
+					Target: protocol.ChannelTarget(ch),
 					Body:   fmt.Sprintf("message %d", i),
 				})
 				require.NoError(t, errors.Join(err, resp.Err))
 			}
 		}
 
-		limited, err := client.Send(ctx, protocol.PrivMsg{Target: "#limited", Body: "one too many"})
+		limited, err := client.Send(ctx, protocol.PrivMsg{Target: protocol.ChannelTarget("#limited"), Body: "one too many"})
 		require.NoError(t, err)
 		require.Equal(t, domain.CannotSendToChannelError{
 			Channel: "#limited",
@@ -417,7 +417,7 @@ func TestSession_channel_flood_limit(t *testing.T) {
 
 		// The quieter channel sets no limit of its own and is
 		// unaffected by its neighbour's.
-		open, err := client.Send(ctx, protocol.PrivMsg{Target: "#open", Body: "still fine"})
+		open, err := client.Send(ctx, protocol.PrivMsg{Target: protocol.ChannelTarget("#open"), Body: "still fine"})
 		require.NoError(t, errors.Join(err, open.Err))
 	})
 }
@@ -446,19 +446,19 @@ func TestSession_channel_flood_limit_window_reopens(t *testing.T) {
 		})
 		require.NoError(t, errors.Join(err, resp.Err))
 
-		first, err := client.Send(ctx, protocol.PrivMsg{Target: "#limited", Body: "one"})
+		first, err := client.Send(ctx, protocol.PrivMsg{Target: protocol.ChannelTarget("#limited"), Body: "one"})
 		require.NoError(t, errors.Join(err, first.Err))
 
-		second, err := client.Send(ctx, protocol.PrivMsg{Target: "#limited", Body: "two"})
+		second, err := client.Send(ctx, protocol.PrivMsg{Target: protocol.ChannelTarget("#limited"), Body: "two"})
 		require.NoError(t, errors.Join(err, second.Err))
 
-		third, err := client.Send(ctx, protocol.PrivMsg{Target: "#limited", Body: "three"})
+		third, err := client.Send(ctx, protocol.PrivMsg{Target: protocol.ChannelTarget("#limited"), Body: "three"})
 		require.NoError(t, err)
 		require.ErrorAs(t, third.Err, &domain.CannotSendToChannelError{})
 
 		time.Sleep(channelFloodWindow)
 
-		fourth, err := client.Send(ctx, protocol.PrivMsg{Target: "#limited", Body: "four"})
+		fourth, err := client.Send(ctx, protocol.PrivMsg{Target: protocol.ChannelTarget("#limited"), Body: "four"})
 		require.NoError(t, errors.Join(err, fourth.Err))
 	})
 }

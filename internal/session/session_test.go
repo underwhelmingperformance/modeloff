@@ -3114,11 +3114,22 @@ func TestSession_DM_routing_survives_counterpart_rename(t *testing.T) {
 	require.Equal(t, "foobar", dm.DisplayName())
 }
 
+// TestSession_Dispatch_dm_only_targets_that_instance pins where a
+// DM's two directions are logged and who they reach. Each direction
+// is logged under its recipient: the user's line under botty's id,
+// botty's answer under the user's (empty) id. The conversation is the
+// union of the two, which is what `DMEventsBefore` reads back and
+// what either party sees as one thread.
+//
+// The reply addresses the sender by nick, the way a client answers a
+// PRIVMSG. A model has no other name for the person it is talking to:
+// the trigger's target is the model's own id, which names the
+// conversation and not a client the model may address.
 func TestSession_Dispatch_dm_only_targets_that_instance(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		fake := &fakeAPIClient{
 			sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
-				return msgToolCalls(t, domain.ChannelName(events[0].Target), "dm reply"), nil
+				return msgToolCalls(t, domain.ChannelName(events[0].From), "dm reply"), nil
 			},
 		}
 		sess, s := newTestSessionWithAPI(t, fake)
@@ -3138,14 +3149,32 @@ func TestSession_Dispatch_dm_only_targets_that_instance(t *testing.T) {
 
 		dispatchUserMessage(ctx, t, sess, target, "hello in dm")
 
-		msgs := channelMessages(t, s, target)
 		require.Equal(t, []domain.Message{
 			{Target: target, From: "testuser", Body: "hello in dm", At: fixedTime},
-			{Target: target, From: "botty", InstanceID: testMemberID("botty"), Body: "dm reply", At: fixedTime},
-		}, msgs)
+			{Target: "", From: "botty", InstanceID: testMemberID("botty"), Body: "dm reply", At: fixedTime},
+		}, dmThreadMessages(t, s, "", botty.ID()))
 
 		require.Empty(t, channelMessages(t, s, "#general"))
 	})
+}
+
+// dmThreadMessages reads the messages of the DM thread between
+// `self` and `peer`, in chronological order and in both directions.
+func dmThreadMessages(t *testing.T, s *storemod.SQLiteStore, self, peer domain.InstanceID) []domain.Message {
+	t.Helper()
+
+	events, err := s.DMEventsBefore(t.Context(), self, peer, nil, 1000)
+	require.NoError(t, err)
+
+	var msgs []domain.Message
+
+	for _, se := range events {
+		if cm, ok := se.Event.(domain.Message); ok {
+			msgs = append(msgs, cm)
+		}
+	}
+
+	return msgs
 }
 
 // markReadViaStore stamps the read cursor for `ch` at the newest

@@ -209,17 +209,40 @@ func sendCommand(ctx context.Context, rc Context, c protocolCommand, operation s
 // toolContext adapts a [modelclient.ToolContext] to the [Context]
 // that `ToCommand` reads from, so the same translation method serves
 // both `Run` (chat-screen) and `RunTool` (model). The returned
-// context carries the actor, the active channel, and the protocol
-// client — every field `ToCommand` implementations consult. The
+// context carries the actor, the active window, and the protocol
+// client: every field `ToCommand` implementations consult. The
 // cancellation context is threaded separately to the wire send.
+//
+// `Active` is the name of the window the call is running in, which a
+// tool context carries as an address (see
+// [modelclient.ToolContext]). A caller with no window leaves it
+// empty, and the tools that need one have already refused by the
+// time this runs.
 func toolContext(tc modelclient.ToolContext) Context {
+	window, _ := protocol.WindowName(tc.Target)
+
 	return Context{
 		Session: tc.Session,
 		Manager: tc.Manager,
-		Active:  tc.Channel,
+		Active:  window,
 		Actor:   tc.Actor,
 		Client:  tc.Client,
 	}
+}
+
+// toolChannel returns the channel the call is running in. The second
+// return is false when the window is not a channel, which covers a
+// DM, the status window and a caller with no window at all.
+func toolChannel(tc modelclient.ToolContext) (domain.ChannelName, bool) {
+	ch, ok := tc.Target.(protocol.ChannelTarget)
+
+	return domain.ChannelName(ch), ok
+}
+
+// noActiveChannel is the refusal a channel-scoped tool returns when
+// the call is not running in a channel.
+func noActiveChannel() modelclient.ToolResultPayload {
+	return modelclient.ToolResultPayload{OK: false, Error: "no active channel"}
 }
 
 // sendToolCommand routes a migrated command through the model's

@@ -245,6 +245,10 @@ type testModelClientFactory struct {
 	memStore  memory.Store
 	nick      domain.Nick
 
+	// attachErr, when set, fails every attach. A model instance whose
+	// client cannot connect is what the ADDMODEL unwind is about.
+	attachErr error
+
 	// clients and draining mirror the production manager's two sets:
 	// attached model-clients, and released ones whose dispatch
 	// goroutines are still unwinding. `detachAll` joins both, so a
@@ -281,6 +285,10 @@ func (f *testModelClientFactory) PrepareInstance(_ context.Context, _ *Session, 
 }
 
 func (f *testModelClientFactory) Attach(ctx context.Context, sess *Session, inst *domain.Instance) (protocol.Client, error) {
+	if f.attachErr != nil {
+		return nil, f.attachErr
+	}
+
 	id := protocol.ClientID(inst.ID())
 
 	f.mu.Lock()

@@ -218,7 +218,7 @@ func TestSession_Handle_delegates(t *testing.T) {
 				require.NoError(t, joinAs(t.Context(), sess, userInstance(t, sess), "#general", ""))
 			},
 			client: userClient,
-			cmd:    protocol.PrivMsg{Target: "#general", Body: "hello"},
+			cmd:    protocol.PrivMsg{Target: protocol.ChannelTarget("#general"), Body: "hello"},
 			want: protocol.Response{Events: []protocol.Event{domain.Message{
 				Target: "#general",
 				From:   "testuser",
@@ -235,7 +235,7 @@ func TestSession_Handle_delegates(t *testing.T) {
 				require.NoError(t, joinAs(t.Context(), sess, userInstance(t, sess), "#general", ""))
 			},
 			client: userClient,
-			cmd:    protocol.Action{Target: "#general", Body: "waves"},
+			cmd:    protocol.Action{Target: protocol.ChannelTarget("#general"), Body: "waves"},
 			want: protocol.Response{Events: []protocol.Event{domain.Message{
 				Target: "#general",
 				From:   "testuser",

@@ -284,7 +284,7 @@ func TestSession_a_silent_consumer_does_not_stall_the_command_loop(t *testing.T)
 
 		for i := range eventBufSize * 3 {
 			resp, err := talkerClient.Send(ctx, protocol.PrivMsg{
-				Target: "#busy",
+				Target: protocol.ChannelTarget("#busy"),
 				Body:   fmt.Sprintf("message %d", i),
 			})
 			require.NoError(t, errors.Join(err, resp.Err))
@@ -389,7 +389,7 @@ func TestSession_reaping_a_subscription_mid_send_is_clean(t *testing.T) {
 		// parked handing a delivery to a full channel.
 		for i := range eventBufSize * 2 {
 			resp, err := talkerClient.Send(ctx, protocol.PrivMsg{
-				Target: "#busy",
+				Target: protocol.ChannelTarget("#busy"),
 				Body:   fmt.Sprintf("round %d message %d", round, i),
 			})
 			require.NoError(t, errors.Join(err, resp.Err))

@@ -537,11 +537,11 @@ func TestChatScreen_MessageEvent_inactive_channel(t *testing.T) {
 	require.NoError(t, bob.Attach(t.Context()))
 	t.Cleanup(bob.Detach)
 
-	resp, err := bob.Send(t.Context(), protocol.PrivMsg{Target: "#random", Body: "hello from random"})
+	resp, err := bob.Send(t.Context(), protocol.PrivMsg{Target: protocol.ChannelTarget("#random"), Body: "hello from random"})
 	require.NoError(t, err)
 	require.NoError(t, resp.Err)
 
-	resp, err = bob.Send(t.Context(), protocol.PrivMsg{Target: "#general", Body: "sync marker"})
+	resp, err = bob.Send(t.Context(), protocol.PrivMsg{Target: protocol.ChannelTarget("#general"), Body: "sync marker"})
 	require.NoError(t, err)
 	require.NoError(t, resp.Err)
 

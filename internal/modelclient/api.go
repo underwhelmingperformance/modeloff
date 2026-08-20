@@ -89,7 +89,7 @@ func runTurn(
 	sess Session,
 	caller protocol.Client,
 	inst *domain.Instance,
-	channelName domain.ChannelName,
+	target protocol.MsgTarget,
 	prompt string,
 	history []protocol.IRCMessage,
 	events []protocol.IRCMessage,
@@ -123,7 +123,7 @@ func runTurn(
 		toolResults, terminal, wErr := executeTools(ctx, sess, ToolContext{
 			Session: sess,
 			Actor:   inst,
-			Channel: channelName,
+			Target:  target,
 			Client:  caller,
 		}, registry, result.PendingToolCalls, pacer)
 		if wErr != nil {

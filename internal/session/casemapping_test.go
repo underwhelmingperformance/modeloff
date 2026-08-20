@@ -68,7 +68,7 @@ func TestSession_message_to_a_channel_in_another_case_uses_its_name(t *testing.T
 
 	require.NoError(t, userJoin(ctx, t, sess, "#Dev"))
 
-	resp, err := userClient(t, sess).Send(ctx, protocol.PrivMsg{Target: "#dev", Body: "hello"})
+	resp, err := userClient(t, sess).Send(ctx, protocol.PrivMsg{Target: protocol.ChannelTarget("#dev"), Body: "hello"})
 	require.NoError(t, err)
 	require.NoError(t, resp.Err)
 

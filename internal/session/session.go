@@ -390,6 +390,31 @@ func (s *Session) lookupClientHandle(id protocol.ClientID) *serverClient {
 	return s.clientHandles[id]
 }
 
+// lookupClientByNick returns the connected client currently holding
+// `nick`, or nil if no client does. The match runs under the server's
+// casemapping via [domain.EqualNick], so `Botty` and `botty` are one
+// client.
+//
+// The answer comes from the registry of connected clients, which is
+// what the question means: a nick names somebody a message can
+// reach, and a client the server holds no subscription for cannot be
+// reached. The registry is in memory, so a
+// caller on the command loop pays no I/O for the lookup. It holds one
+// entry per connected client, which is the user plus the model
+// instances in this session.
+func (s *Session) lookupClientByNick(nick domain.Nick) *serverClient {
+	s.subsMu.RLock()
+	defer s.subsMu.RUnlock()
+
+	for _, sc := range s.clientHandles {
+		if domain.EqualNick(sc.instance.Nick(), nick) {
+			return sc
+		}
+	}
+
+	return nil
+}
+
 // Subscribe registers `c` with the session and returns the
 // per-client [protocol.Subscription] handle the caller uses to
 // read events and to release the subscription. The session creates

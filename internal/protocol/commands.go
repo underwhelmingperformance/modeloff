@@ -53,17 +53,20 @@ type Part struct {
 	Reason  string
 }
 
-// PrivMsg sends a chat message to a channel or DM target. The same
-// command shape covers both: the dispatcher infers routing from
-// `Target`'s [domain.ChannelKind].
+// PrivMsg sends a chat message to a channel or to another client
+// (RFC 2812 §3.3.1). The same command shape covers both: `Target`
+// names the form the client addressed it with, and the dispatcher
+// resolves that into the conversation the message belongs to. A
+// target naming nobody is refused with [domain.UnknownNickError].
 type PrivMsg struct {
-	Target domain.ChannelName
+	Target MsgTarget
 	Body   string
 }
 
-// Action sends a /me-style action message to a channel or DM target.
+// Action sends a /me-style action message. It addresses its target
+// exactly as [PrivMsg] does.
 type Action struct {
-	Target domain.ChannelName
+	Target MsgTarget
 	Body   string
 }
 

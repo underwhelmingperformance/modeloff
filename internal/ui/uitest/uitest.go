@@ -399,7 +399,7 @@ func SeedMessage(t testing.TB, sess *session.Session, channel, body string) {
 	t.Cleanup(bot.Detach)
 
 	resp, err := bot.Send(t.Context(), protocol.PrivMsg{
-		Target: domain.ChannelName(channel),
+		Target: protocol.ChannelTarget(channel),
 		Body:   body,
 	})
 	require.NoError(t, err)

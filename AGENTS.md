@@ -303,11 +303,45 @@ checks and takes a nick as one step, and `ADDMODEL` re-checks the
 nick it was given, because that nick was chosen off the loop and a
 rename may have taken it in the meantime.
 
+### Message targets
+
+`PrivMsg` and `Action` carry a `protocol.MsgTarget`: the closed sum of
+what RFC 2812 §3.3.1's `<msgtarget>` may name. A client says what it
+is addressing and the server works out which conversation that is.
+No client resolves a target itself.
+
+- `ChannelTarget` names a channel. The send gates canonicalise the
+  spelling against the channel record, so `#Dev` is logged and
+  broadcast under `#dev`.
+- `NickTarget` names another client by nick, matched under the
+  server's casemapping. This is what a person types after `/msg` and
+  what a model passes to the `msg` tool; `protocol.ParseMsgTarget`
+  reads a raw token into a channel or a nick exactly as a server reads
+  the wire parameter.
+- `ClientTarget` names another client by `InstanceID`, for a client
+  that already holds the conversation open. A nick is display state
+  its holder may change, so a window pinned to a client addresses it
+  by identity, the same choice `domain.Invitations` makes.
+  `protocol.TargetForWindow` builds the target from a window key, and
+  is how the user-client sends from a DM window and how a model's
+  `/me` addresses the window its turn is running in.
+
+`Session.resolveMsgTarget` runs the resolution on the command loop
+against the registry of connected clients, so addressing a message
+costs the loop no store round-trip. A target naming no connected
+client is refused with `domain.UnknownNickError` (RFC 2812 numeric 401
+ERR_NOSUCHNICK) and nothing is logged: a message the server cannot
+place has to come back as a refusal, since a client that is told
+nothing assumes it arrived.
+
 DMs have no wire-level "open" command. A direct message is just a
-`PrivMsg` whose target is the counterpart's `InstanceID`; either party
-can send and the events log carries the conversation under that key.
-The chat-screen's `/query` is a UI affordance only — the session
-never sees it.
+`PrivMsg` naming the counterpart. The conversation key is the
+counterpart's `InstanceID`, and each direction is logged under its
+recipient: a line to `botty` under botty's id, botty's answer under
+the user's (empty) id. `store.DMEventsBefore` reads the union, and
+`domain.Message.RoutingKey` is how either party turns a single event
+into the conversation it belongs to. The chat-screen's `/query` is a
+UI affordance only; the session never sees it.
 
 ### Casemapping and naming
 
@@ -667,12 +701,19 @@ log a model loads holds nothing but genuine channel activity.
 
 ### Out of scope, design accommodates
 
-- The remaining tool-surface protocol-routing cleanup: the model tool
-  path still resolves nicks client-side (`ResolveNick`) where the
-  dispatcher already resolves them server-side, and reads the current
-  topic through `GetWindow`. Both still reach the session through the
-  narrow `SessionReader` the chat-screen holds; routing them through
-  the protocol so neither is resolved client-side is a follow-up.
+- The remaining tool-surface protocol-routing cleanup: the `topic`
+  tool still reads the current topic through `GetWindow`, and the
+  chat-screen's `/msg` and `/query` still resolve a nick client-side
+  to materialise the DM window they open. Both reach the session
+  through the narrow `SessionReader` the chat-screen holds; routing
+  them through the protocol is a follow-up. Message targets do not go
+  this way; see Message targets above.
+- `KICK`, `WHOIS` and `KILL` resolve their nick through
+  `Session.ResolveNick`, which reads the store, while a message target
+  resolves against the registry of connected clients. The two answers
+  differ only for an instance row whose client failed to attach, which
+  is a client the server cannot deliver to; giving all four commands
+  the one answer is a follow-up.
 - Bootstrap-time, `joined_at`-scoped replay of recent events into a
   newly-allocated subscription, replacing the per-dispatch store read
   and the model-client's eager seed. History replay is the IRCv3

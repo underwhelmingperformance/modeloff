@@ -112,7 +112,7 @@ func TestTestClient_Send_routes_through_dispatcher(t *testing.T) {
 	require.NoError(t, bot.Attach(t.Context()))
 	t.Cleanup(bot.Detach)
 
-	resp, err := bot.Send(t.Context(), protocol.PrivMsg{Target: "#general", Body: "hi"})
+	resp, err := bot.Send(t.Context(), protocol.PrivMsg{Target: protocol.ChannelTarget("#general"), Body: "hi"})
 	require.NoError(t, err)
 	require.NoError(t, resp.Err)
 }

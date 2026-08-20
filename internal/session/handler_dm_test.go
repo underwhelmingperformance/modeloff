@@ -63,7 +63,7 @@ func TestSession_PrivMsg_to_model_routes_DM_to_counterpart_only(t *testing.T) {
 		require.NotNil(t, aClient, "model client for alpha must exist")
 
 		resp, err := aClient.Send(ctx, protocol.PrivMsg{
-			Target: domain.ChannelName(b.ID()),
+			Target: protocol.NickTarget("beta"),
 			Body:   "private to beta",
 		})
 		require.NoError(t, err)
