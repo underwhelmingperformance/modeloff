@@ -8,6 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/ircfmt"
 	"github.com/laney/modeloff/internal/richtext"
@@ -81,6 +82,12 @@ type InputBar struct {
 
 	locked bool
 
+	// secretChecker reports whether a raw line carries a credential,
+	// so pushHistory can keep it out of ↑ recall. Set once from
+	// SecretCheckerMsg; nil until then, which pushHistory reads as
+	// "nothing to exclude yet" rather than refusing every line.
+	secretChecker command.SecretChecker
+
 	// pasteFlattened is set when the most recent key was a paste that
 	// contained a newline, which SingleLine flattens to one line. It
 	// is cleared by any other key, so the hint reflects only the
@@ -139,6 +146,10 @@ func (b InputBar) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 			Cursor:    b.input.Cursor(),
 		})
 		return b, cmd
+
+	case SecretCheckerMsg:
+		b.secretChecker = msg.Checker
+		return b, nil
 
 	case PopoverAcceptMsg:
 		b = b.ReplaceRange(msg.ReplaceStart, msg.ReplaceEnd, msg.Replacement)
@@ -416,8 +427,14 @@ func (b InputBar) submit() (ui.Model, tea.Cmd) {
 	})
 }
 
+// pushHistory appends text to the history ring, unless it repeats the
+// last entry or secretChecker reports it carries a credential — the
+// chatcmd grammar's `secret:""` marker is what decides that, so a
+// later /config api-key run can't be recalled with ↑ and re-submitted
+// (or just read off the screen) by anyone who gets a look at this
+// session afterwards.
 func (b InputBar) pushHistory(text string) InputBar {
-	if isSecretCommand(text) {
+	if b.secretChecker != nil && b.secretChecker.IsSecret(text) {
 		return b
 	}
 
@@ -432,48 +449,6 @@ func (b InputBar) pushHistory(text string) InputBar {
 	}
 
 	return b
-}
-
-// secretCommandPrefixes lists the leading tokens of commands whose
-// argument carries a credential. Their raw text is excluded from
-// input history, so a later /config api-key run can't be recalled
-// with ↑ and re-submitted (or just read off the screen) by anyone
-// who gets a look at this session afterwards.
-//
-// The chatcmd grammar owns the authoritative command surface and
-// already masks this value when it prints it back (maskAPIKey in
-// chatcmd/config.go); this list is a small, hand-maintained echo of
-// the one command that carries a secret today, kept here because the
-// input bar sees only the typed line, not the grammar.
-var secretCommandPrefixes = [][]string{
-	{"/config", "api-key"},
-}
-
-// isSecretCommand reports whether raw invokes a command in
-// secretCommandPrefixes.
-func isSecretCommand(raw string) bool {
-	fields := strings.Fields(strings.ToLower(raw))
-
-	for _, prefix := range secretCommandPrefixes {
-		if len(fields) < len(prefix) {
-			continue
-		}
-
-		match := true
-
-		for i, tok := range prefix {
-			if fields[i] != tok {
-				match = false
-				break
-			}
-		}
-
-		if match {
-			return true
-		}
-	}
-
-	return false
 }
 
 func (b InputBar) historyUp() InputBar {

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"iter"
 	"reflect"
-	"slices"
 	"sort"
 	"strings"
 
@@ -144,6 +143,12 @@ type Node[C KindProvider] struct {
 	RequiredCapabilities []Capability
 	Tool                 bool
 	ToolDesc             string
+
+	// Secret marks a node whose arguments carry a credential, from
+	// the grammar's `secret:""` tag. A raw command line that resolves
+	// to a secret node must not be logged verbatim; see
+	// Set.resolveSecret and Parser.RedactedRaw.
+	Secret bool
 
 	// ToolOnly hides the node from the slash-command parser and
 	// completion path; only the model-tool path picks it up. The
@@ -404,17 +409,23 @@ func (n *Node[C]) AllFlags() []Flag[C] {
 }
 
 // Find looks up a direct child node by name, falling back to
-// aliases if no exact name match is found.
+// aliases if no exact match is found under the server's ascii
+// casemapping (domain.CaseFold): `/CONFIG` and `/config` name the
+// same node.
 func (n *Node[C]) Find(name string) *Node[C] {
+	folded := domain.CaseFold(name)
+
 	for _, child := range n.Children {
-		if child.Name == name {
+		if domain.CaseFold(child.Name) == folded {
 			return child
 		}
 	}
 
 	for _, child := range n.Children {
-		if slices.Contains(child.Aliases, name) {
-			return child
+		for _, alias := range child.Aliases {
+			if domain.CaseFold(alias) == folded {
+				return child
+			}
 		}
 	}
 
@@ -446,17 +457,57 @@ type Completer[C KindProvider] interface {
 	Sources() map[string]SuggestionSource[C]
 }
 
+// resolveSecret resolves as many of input's leading tokens as name a
+// command node, without decoding its arguments, and reports whether
+// any node on that path is marked Secret. Stopping at name
+// resolution keeps the answer available for a line whose arguments
+// fail to decode, such as an accidental extra token after a pasted
+// credential, since it never reaches ParseInvocation's full
+// argument-consuming walk. The returned node is the deepest one
+// resolved, for a caller that wants to log the command path without
+// the argument that follows it. Name resolution goes through Find,
+// so a command or subcommand name in any casing still resolves.
+func (s Set[C]) resolveSecret(input string) (*Node[C], bool) {
+	fields := strings.Fields(strings.TrimSpace(input))
+	if len(fields) == 0 {
+		return nil, false
+	}
+
+	node := s.Find(strings.TrimPrefix(fields[0], "/"))
+	if node == nil {
+		return nil, false
+	}
+
+	for _, tok := range fields[1:] {
+		if node.Secret {
+			return node, true
+		}
+
+		next := node.Find(tok)
+		if next == nil {
+			break
+		}
+
+		node = next
+	}
+
+	return node, node.Secret
+}
+
 // Find looks up a top-level node by name, falling back to aliases
-// if no exact name match is found. Tool-only nodes (registered with
-// `tool:""` but no `cmd:""`) are skipped — they are not callable as
-// slash commands.
+// if no exact match is found under the server's ascii casemapping
+// (domain.CaseFold): `/CONFIG` and `/config` name the same node.
+// Tool-only nodes (registered with `tool:""` but no `cmd:""`) are
+// skipped — they are not callable as slash commands.
 func (s Set[C]) Find(name string) *Node[C] {
+	folded := domain.CaseFold(name)
+
 	for _, node := range s.Commands {
 		if node.ToolOnly {
 			continue
 		}
 
-		if node.Name == name {
+		if domain.CaseFold(node.Name) == folded {
 			return node
 		}
 	}
@@ -466,8 +517,10 @@ func (s Set[C]) Find(name string) *Node[C] {
 			continue
 		}
 
-		if slices.Contains(node.Aliases, name) {
-			return node
+		for _, alias := range node.Aliases {
+			if domain.CaseFold(alias) == folded {
+				return node
+			}
 		}
 	}
 

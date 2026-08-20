@@ -139,6 +139,43 @@ func (p Parser[K, C, R]) Parse(input string) (Command[C, R], error) {
 	return cmd, nil
 }
 
+// RedactedRaw returns input unchanged, unless it resolves to a
+// command node the grammar marks `secret:""` — /config api-key is
+// the one case today. A secret-bearing input is collapsed to its
+// command path with the argument text dropped, so a caller logging
+// the command a user ran never logs the credential that followed it,
+// while still naming which command ran.
+func (p Parser[K, C, R]) RedactedRaw(input string) string {
+	node, secret := p.set.resolveSecret(input)
+	if !secret {
+		return input
+	}
+
+	return "/" + node.Path() + " <redacted>"
+}
+
+// IsSecret reports whether input resolves to a command node the
+// grammar marks `secret:""`, the same resolution RedactedRaw uses.
+// It gives a caller that only needs the yes/no answer — an input
+// bar deciding whether to keep a typed line in history, say — that
+// answer without redacting text of its own.
+func (p Parser[K, C, R]) IsSecret(input string) bool {
+	_, secret := p.set.resolveSecret(input)
+
+	return secret
+}
+
+// SecretChecker is the narrow, type-parameter-free view of a
+// [Parser] a caller outside the `command` package's generic surface
+// can hold: any Parser instantiation satisfies it. Components that
+// only need to ask "does this line carry a credential" — the input
+// bar's history exclusion, for instance — take this instead of a
+// concrete Parser, so they need not name the grammar's completion,
+// run-context and result type parameters.
+type SecretChecker interface {
+	IsSecret(input string) bool
+}
+
 // ParseInvocation returns the full parsed branch, including ancestor
 // values and the selected leaf. A bare invocation of a group node
 // (one with `cmd:""` children) whose own value implements

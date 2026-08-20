@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/stretchr/testify/require"
 
+	"github.com/laney/modeloff/internal/api"
 	"github.com/laney/modeloff/internal/ui/uitest"
 )
 
@@ -96,6 +97,100 @@ func TestChatScreen_command_execution_is_logged(t *testing.T) {
 	require.Equal(t, "/topic cool topic", rec.Attrs["raw"])
 	require.Equal(t, "#general", rec.Attrs["channel"])
 	require.Equal(t, "ui", rec.Attrs["component"])
+}
+
+// TestChatScreen_config_api_key_command_is_logged_without_the_secret
+// pins finding 4: /config api-key <key> puts the key in msg.Raw, and
+// both the "command executed" and "command parse failed" log lines
+// log msg.Raw verbatim. The grammar marks APIKeyConfig secret:"", so
+// handleCommand must redact the raw text before either log line sees
+// it, and the actual key value must never reach any log record this
+// command produces. Set.Find resolves a command or subcommand name
+// under the server's ascii casemapping, so redaction must hold for
+// any casing the user happens to type — a mismatch there would have
+// RedactedRaw fail to resolve the node and return msg.Raw unchanged.
+func TestChatScreen_config_api_key_command_is_logged_without_the_secret(t *testing.T) {
+	const secret = "sk-or-v1-super-secret-value" //nolint:gosec // G101: a fixture value, not a real credential.
+
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{name: "lowercase", raw: "/config api-key " + secret},
+		{name: "uppercase", raw: "/CONFIG API-KEY " + secret},
+		{name: "mixed case", raw: "/Config Api-Key " + secret},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := captureLogs(t)
+
+			cfgStore := newFakeConfigStore()
+			harness := newTestSessionWithConfigStore(t, cfgStore)
+			harness.mgr.SetAPIFactory(func(string, string) (api.Client, error) {
+				return &uitest.FakeAPI{}, nil
+			})
+
+			tm := newChatAppWithConfig(t, harness, cfgStore)
+
+			tm.Submit(tt.raw)
+			tm.WaitFor("0 models available")
+
+			rec, found := h.find("command executed")
+			require.True(t, found, "expected 'command executed' log entry, got: %v", h.all())
+			require.Equal(t, "api-key", rec.Attrs["command"])
+			require.Equal(t, "/config api-key <redacted>", rec.Attrs["raw"])
+
+			for _, r := range h.all() {
+				for key, value := range r.Attrs {
+					require.NotContains(t, value, secret,
+						"log record %q attr %q must not carry the API key", r.Message, key)
+				}
+			}
+		})
+	}
+}
+
+// TestChatScreen_config_api_key_parse_failure_is_logged_without_the_secret
+// covers the other log site finding 4 names: a secret-bearing line
+// whose command and subcommand name still resolve, but whose
+// arguments fail to decode (a stray flag after the key, here), takes
+// the "command parse failed" WARN path instead of "command executed".
+// That path must redact the same way, in any casing Set.Find
+// resolves.
+func TestChatScreen_config_api_key_parse_failure_is_logged_without_the_secret(t *testing.T) {
+	const secret = "sk-or-v1-super-secret-value" //nolint:gosec // G101: a fixture value, not a real credential.
+
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{name: "lowercase", raw: "/config api-key " + secret + " --bogus-flag"},
+		{name: "uppercase", raw: "/CONFIG API-KEY " + secret + " --bogus-flag"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := captureLogs(t)
+
+			tm, _ := newChatAppInChannel(t, "#general")
+
+			tm.Submit(tt.raw)
+			tm.WaitFor("unknown flag --bogus-flag")
+
+			rec, found := h.find("command parse failed")
+			require.True(t, found, "expected 'command parse failed' log entry, got: %v", h.all())
+			require.Equal(t, slog.LevelWarn, rec.Level)
+			require.Equal(t, "/config api-key <redacted>", rec.Attrs["raw"])
+
+			for _, r := range h.all() {
+				for key, value := range r.Attrs {
+					require.NotContains(t, value, secret,
+						"log record %q attr %q must not carry the API key", r.Message, key)
+				}
+			}
+		})
+	}
 }
 
 func TestChatScreen_command_parse_failure_is_logged(t *testing.T) {

@@ -15,6 +15,7 @@ import (
 	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/ui"
+	"github.com/laney/modeloff/internal/ui/chatcmd"
 	"github.com/laney/modeloff/internal/ui/clipboard"
 	"github.com/laney/modeloff/internal/ui/components"
 	"github.com/laney/modeloff/internal/ui/uitest"
@@ -235,8 +236,18 @@ func TestInputBar_paste_flatten_hint_clears_on_next_key(t *testing.T) {
 	require.NotContains(t, renderedLines(m.View(60, 2)), "Pasted text flattened to one line")
 }
 
+// TestInputBar_history_excludes_config_api_key pins that the history
+// exclusion comes from the chatcmd grammar's own secret:"" marker
+// (via SecretCheckerMsg), not a hand-maintained list local to the
+// input bar: it builds the real production parser, so a future
+// grammar change that dropped the marker from APIKeyConfig would fail
+// this test rather than only the command package's own unit test.
 func TestInputBar_history_excludes_config_api_key(t *testing.T) {
+	parser, err := chatcmd.NewParser()
+	require.NoError(t, err)
+
 	var m ui.Model = components.NewInputBar("")
+	m, _ = m.Update(components.SecretCheckerMsg{Checker: parser})
 
 	m = typeText(t, m, "/config api-key sk-super-secret")
 	m, _ = enter(t, m)
@@ -249,6 +260,43 @@ func TestInputBar_history_excludes_config_api_key(t *testing.T) {
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 	require.Equal(t, "hello", inputValue(t, m),
 		"the api-key line must be excluded from history, leaving only one entry to recall")
+}
+
+// TestInputBar_history_excludes_config_api_key_any_case pins that the
+// exclusion follows Set.Find's ascii-fold command resolution: typing
+// the command in any casing still keeps it out of history.
+func TestInputBar_history_excludes_config_api_key_any_case(t *testing.T) {
+	parser, err := chatcmd.NewParser()
+	require.NoError(t, err)
+
+	var m ui.Model = components.NewInputBar("")
+	m, _ = m.Update(components.SecretCheckerMsg{Checker: parser})
+
+	m = typeText(t, m, "/CONFIG API-KEY sk-super-secret")
+	m, _ = enter(t, m)
+	m = typeText(t, m, "hello")
+	m, _ = enter(t, m)
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	require.Equal(t, "hello", inputValue(t, m))
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	require.Equal(t, "hello", inputValue(t, m),
+		"the api-key line must be excluded from history however it was cased")
+}
+
+// TestInputBar_history_keeps_lines_before_the_checker_is_set pins the
+// nil-checker default: before SecretCheckerMsg has arrived (Init's
+// batch is still in flight, in production), pushHistory must not
+// refuse every line — it has nothing to exclude yet, not everything.
+func TestInputBar_history_keeps_lines_before_the_checker_is_set(t *testing.T) {
+	var m ui.Model = components.NewInputBar("")
+
+	m = typeText(t, m, "/config api-key sk-super-secret")
+	m, _ = enter(t, m)
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	require.Equal(t, "/config api-key sk-super-secret", inputValue(t, m))
 }
 
 func TestInputBar_word_left_moves_by_word(t *testing.T) {

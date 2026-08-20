@@ -496,6 +496,7 @@ func (s ChatScreen) Init() tea.Cmd {
 		msgCmd(components.CommandsMsg[chatcmd.CompletionContext]{
 			Commands: command.VisibleCommands(s.parser.Set(), s.client.Caps()),
 		}),
+		msgCmd(components.SecretCheckerMsg{Checker: s.parser}),
 		s.rebindCompleter(),
 		msgCmd(components.HighlightWordsMsg{
 			Words:    s.highlightWords,

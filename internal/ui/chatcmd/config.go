@@ -17,7 +17,7 @@ import (
 // config keys. Each subcommand has its own args and Run method.
 type ConfigCommand struct {
 	Reset           bool                  `optional:"" help:"Reset the selected setting to its default"`
-	APIKey          APIKeyConfig          `cmd:"" name:"api-key" help:"Activate OpenRouter immediately."`
+	APIKey          APIKeyConfig          `cmd:"" name:"api-key" help:"Activate OpenRouter immediately." secret:""`
 	BaseURL         BaseURLConfig         `cmd:"" name:"base-url" help:"Set the API base URL."`
 	PokeInterval    PokeIntervalConfig    `cmd:"" name:"poke-interval" help:"Set the background poke cadence."`
 	DrainTimeout    DrainTimeoutConfig    `cmd:"" name:"drain-timeout" help:"Bound the time /quit waits for in-flight LLM dispatches to drain on exit."`

@@ -32,11 +32,17 @@ func errorEvent(target domain.ChannelName, operation string, err error) domain.E
 }
 
 func (s ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
+	// Redacted once up front so a command whose arguments carry a
+	// credential (/config api-key) never has that value reach the
+	// log, whether parsing succeeds or a malformed line fails after
+	// the command and any subcommand name still resolved.
+	raw := s.parser.RedactedRaw(msg.Raw)
+
 	invocation, err := s.parser.ParseInvocation(msg.Raw)
 	if err != nil {
 		slog.Default().WarnContext(s.baseContext(), "command parse failed",
 			"component", "ui",
-			"raw", msg.Raw,
+			"raw", raw,
 			"error", err,
 		)
 
@@ -54,7 +60,7 @@ func (s ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
 	slog.Default().InfoContext(s.baseContext(), "command executed",
 		"component", "ui",
 		"command", invocation.Selected().Name,
-		"raw", msg.Raw,
+		"raw", raw,
 		"channel", string(s.active),
 	)
 

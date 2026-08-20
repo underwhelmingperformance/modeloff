@@ -433,7 +433,10 @@ NOCASE collation, so a case-insensitive lookup is an index seek
 (`idx_instances_nick_nocase`, `idx_channels_name_nocase`) and the
 store never has to read a row to decide whether it matches.
 
-`domain.EqualNick` and `domain.KeyForChannel` are the only places
+`domain.EqualNick` and `domain.KeyForChannel` apply the fold to nicks
+and channel names; `command.Set` and `command.Node`'s name resolution
+apply the same fold, exported as `domain.CaseFold`, to command and
+subcommand names in the chat grammar. Those are the only three places
 the fold is applied. The session's live channel state is keyed by
 `domain.ChannelKey`, and `store.GetWindow` / `store.ResolveNick`
 match under NOCASE, so `#Dev` and `#dev` are one channel and `Botty`

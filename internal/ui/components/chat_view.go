@@ -58,6 +58,15 @@ type CompleterMsg struct {
 	Completer command.Completable
 }
 
+// SecretCheckerMsg sets the checker the input bar's history uses to
+// keep a secret-bearing command line out of ↑ recall. The grammar is
+// static, so unlike CompleterMsg — which rebinds whenever chat-screen
+// state the completion context closes over moves — this is sent once,
+// at startup.
+type SecretCheckerMsg struct {
+	Checker command.SecretChecker
+}
+
 // CommandsMsg sets the command tree walked by `/help` rendering.
 type CommandsMsg[C command.KindProvider] struct {
 	Commands []*command.Node[C]
@@ -203,6 +212,11 @@ func (c ChatView[C]) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		return c, tea.Batch(msgCmd, syncCmd)
 
 	case CompleterMsg:
+		c, inputCmd := c.updateInput(msg)
+
+		return c, inputCmd
+
+	case SecretCheckerMsg:
 		c, inputCmd := c.updateInput(msg)
 
 		return c, inputCmd

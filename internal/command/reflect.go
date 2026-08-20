@@ -206,6 +206,7 @@ func buildNode[C KindProvider](ft reflect.StructField, fieldVal reflect.Value) (
 		RequiredCapabilities: parseRequiredCapabilities(ft.Tag.Get("caps")),
 		Tool:                 hasToolTag(ft),
 		ToolDesc:             toolDescFromTag(ft),
+		Secret:               hasSecretTag(ft),
 		Positionals:          buildPositionals[C](fields, sources),
 		Flags:                buildFlags[C](fields, sources),
 		fields:               fields,
@@ -302,6 +303,15 @@ func hasTag(f reflect.StructField) bool {
 
 func hasToolTag(f reflect.StructField) bool {
 	_, ok := f.Tag.Lookup("tool")
+
+	return ok
+}
+
+// hasSecretTag reports whether f is marked `secret:""`, the grammar's
+// declarative marker for a command whose arguments carry a
+// credential.
+func hasSecretTag(f reflect.StructField) bool {
+	_, ok := f.Tag.Lookup("secret")
 
 	return ok
 }
