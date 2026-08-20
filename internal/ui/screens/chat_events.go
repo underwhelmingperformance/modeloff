@@ -917,39 +917,45 @@ func (s ChatScreen) sendMessageCmd(operation string, target domain.ChannelName, 
 	}
 }
 
+// fallbackTarget resolves ch to itself when the chat-screen still has
+// that window open, or to the active window otherwise. An empty ch
+// and one naming a window closed since the event that carried it was
+// raised both fail the same windowByName check, so both fall back to
+// the currently active window (the same fallback [ChatScreen.logAndShow]
+// applies to any other numeric reply issued with no window at all).
+// This is what keeps a closed DM from being silently dropped: a DM
+// window needs its counterpart's instance handle to rebuild, which
+// [ChatScreen.appendToScrollback]'s placeholder-creation path cannot
+// synthesise, so routing straight to a closed DM's target would lose
+// the event. The same fallback keeps a parted channel from being
+// resurrected client-side by a stale reply, since
+// appendToScrollback's placeholder path exists for live traffic
+// arriving before a join is seen, not for this.
+func (s ChatScreen) fallbackTarget(ch domain.ChannelName) domain.ChannelName {
+	if _, open := s.windowByName(ch); open {
+		return ch
+	}
+
+	return s.active
+}
+
 // handleErrorEvent turns a command failure into the transcript line
 // the user sees. The full Go error chain (`msg.Err`) goes to the
 // observability log unconditionally, since it carries the detail an
 // operator needs to diagnose a transport failure; the transcript
 // itself gets commandErrorText's short, actionable copy so a raw
 // wrapped chain ("send: send message: Post \"https://...\": dial
-// tcp: ...") never lands in front of the user.
-//
-// The error renders at `msg.Target`, the window the failed command
-// was issued from, unless the chat-screen no longer has that window
-// open: an empty `Target` and a `Target` naming a window closed since
-// the command was issued both fail the same `windowByName` check, so
-// both fall back to the currently active window (the same fallback
-// [ChatScreen.logAndShow] applies to any other numeric reply issued
-// with no window at all). This fallback is what keeps a closed DM
-// from being silently dropped: a DM window needs its counterpart's
-// instance handle to rebuild, which
-// [ChatScreen.appendToScrollback]'s placeholder-creation path cannot
-// synthesise, so routing straight there for a closed DM's `Target`
-// would lose the error. The same fallback keeps a parted channel
-// from being resurrected client-side by a stale reply, since
-// appendToScrollback's placeholder path exists for live traffic
-// arriving before a join is seen, not for this.
+// tcp: ...") never lands in front of the user. The error renders at
+// fallbackTarget(msg.Target): the window the failed command was
+// issued from when the chat-screen still has it open, the active
+// window otherwise.
 func (s ChatScreen) handleErrorEvent(msg domain.ErrorEvent) (ChatScreen, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	slog.Default().ErrorContext(s.baseContext(), "command failed",
 		"operation", msg.Operation, "error", msg.Err)
 
-	target := msg.Target
-	if _, open := s.windowByName(target); !open {
-		target = s.active
-	}
+	target := s.fallbackTarget(msg.Target)
 
 	commandError := domain.CommandError{
 		Target: target,

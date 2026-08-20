@@ -37,7 +37,7 @@ func (s ChatScreen) bufferEvent(evt domain.Event) tea.Cmd {
 	case domain.Reconnected:
 		s.appendStatusNotice(e.At, "Reconnected after unclean shutdown")
 	case domain.ModelUnavailableError:
-		s.appendStatusNotice(e.At, e.Error())
+		s.appendDispatchFailure(e)
 	case domain.UnknownNickError:
 		s.appendStatusNotice(time.Now(), e.Error())
 	case domain.NoSuchChannelError:
@@ -199,6 +199,38 @@ func (s ChatScreen) appendToScrollback(ch domain.ChannelName, evt domain.Event) 
 	}
 
 	w.Scrollback.Append(evt)
+}
+
+// appendDispatchFailure renders a failed model turn in the window it
+// ran in — fallbackTarget(e.Channel), or the status window if
+// neither that window nor the active one resolves — as
+// chat-screen-local content, the same closed-window fallback
+// handleErrorEvent applies to a command failure. A dispatch turn can
+// fail for a channel the user is not currently looking at, or has
+// since parted, so this must not always land in `&modeloff`
+// regardless of which window the turn was actually running in, and
+// must never resurrect a window the user has left.
+//
+// The empty-target guard here is its own, not a call into
+// handleErrorEvent's logAndShow fallback: this method has no tea.Cmd
+// to carry a focus change through, and a background dispatch failure
+// is not something the user asked to see, so it never moves focus the
+// way a command failure's empty-target case does. Without the guard,
+// appendToScrollback would drop the notice outright when fallbackTarget
+// also comes back empty — reachable only in a fixture built with no
+// window ever focused, since a running session always lands on one
+// once any channel exists (see bootstrapFromSession).
+func (s ChatScreen) appendDispatchFailure(e domain.ModelUnavailableError) {
+	target := s.fallbackTarget(e.Channel)
+	if target == "" {
+		target = domain.StatusChannelName
+	}
+
+	s.appendToScrollback(target, domain.SystemNotice{
+		Target: target,
+		Text:   e.Error(),
+		At:     e.At,
+	})
 }
 
 // appendStatusNotice records a server-narrated line in the local

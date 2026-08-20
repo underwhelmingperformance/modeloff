@@ -123,7 +123,9 @@ type Reconnected struct {
 // or the dispatch path itself faulted. No RFC analogue; the IRC
 // dispatcher protocol does not model server-side LLM failures.
 // `Channel` and `Nick` identify the failed turn so the chat-screen
-// can surface the reason in `&modeloff`.
+// can surface the reason in the window the turn ran in
+// (ChatScreen.appendDispatchFailure), falling back to the active
+// window when that one is no longer open.
 type ModelUnavailableError struct {
 	Channel ChannelName
 	Nick    Nick

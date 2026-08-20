@@ -372,6 +372,74 @@ func TestChatScreen_handleProtocolEvent_routing(t *testing.T) {
 	}
 }
 
+// TestChatScreen_ModelUnavailableError_renders_in_dispatch_channel
+// pins that a failed model turn renders in the window the turn ran
+// in — domain.ModelUnavailableError.Channel — so a failure in a
+// background channel does not get lost among `&modeloff`'s unrelated
+// server notices and is not attributed to whatever window the user
+// happens to be looking at.
+func TestChatScreen_ModelUnavailableError_renders_in_dispatch_channel(t *testing.T) {
+	screen := newScreenFixture(t)
+	screen.channels.Insert(newWindow(domain.NewChannelWindow("#general", time.Time{})))
+	screen.channels.Insert(newWindow(domain.NewChannelWindow("#other", time.Time{})))
+
+	screen, _ = screen.focus("#general")
+	screen, _ = screen.focus("#other")
+
+	failure := domain.ModelUnavailableError{
+		Channel: "#general",
+		Nick:    "botty",
+		At:      time.Now(),
+	}
+
+	screen.bufferEvent(failure)
+
+	require.Equal(t, []string{failure.Error()}, scrollbackSystemNotices(screen.scrollbackOf("#general")))
+	require.Empty(t, scrollbackSystemNotices(screen.scrollbackOf("#other")),
+		"the failure must not land in the window the user switched to")
+}
+
+// TestChatScreen_ModelUnavailableError_falls_back_to_active_when_channel_closed
+// covers a dispatch turn that failed for a channel the chat-screen
+// has no open window for — parted, or never joined by the user — the
+// same closed-window fallback handleErrorEvent applies to a command
+// failure. Routing straight to the named channel would either drop
+// the failure (appendToScrollback has no placeholder path for a DM)
+// or resurrect a parted channel client-side; fallbackTarget's
+// windowByName check catches both.
+func TestChatScreen_ModelUnavailableError_falls_back_to_active_when_channel_closed(t *testing.T) {
+	screen := newScreenFixture(t)
+	screen.channels.Insert(newWindow(domain.NewChannelWindow("#other", time.Time{})))
+	screen, _ = screen.focus("#other")
+
+	failure := domain.ModelUnavailableError{
+		Channel: "#gone",
+		Nick:    "botty",
+		At:      time.Now(),
+	}
+
+	screen.bufferEvent(failure)
+
+	_, opened := screen.windowByName("#gone")
+	require.False(t, opened, "a dispatch failure must not resurrect a channel client-side")
+
+	require.Equal(t, []string{failure.Error()}, scrollbackSystemNotices(screen.scrollbackOf("#other")))
+}
+
+// scrollbackSystemNotices extracts the Text field of every
+// domain.SystemNotice in scrollback, in order.
+func scrollbackSystemNotices(scrollback []domain.Event) []string {
+	var texts []string
+
+	for _, ev := range scrollback {
+		if notice, ok := ev.(domain.SystemNotice); ok {
+			texts = append(texts, notice.Text)
+		}
+	}
+
+	return texts
+}
+
 func TestChatScreen_ErrorEvent_no_active_channel(t *testing.T) {
 	screen := newScreenFixture(t)
 
