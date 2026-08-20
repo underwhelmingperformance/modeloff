@@ -151,10 +151,9 @@ func runTurn(
 		}
 	}
 
-	// The model kept emitting tool calls past the loop bound — the
-	// session-side analogue of the old structured-reply retry
-	// exhaustion. The final batch of tool calls has already executed;
-	// we just don't ask the model for more.
+	// The model kept emitting tool calls past maxToolLoopTurns. The
+	// final batch has already executed; the turn ends here without
+	// asking the model for a further response.
 	outcome.passReason = observability.PassReasonToolLoopExhausted
 	return outcome, nil
 }

@@ -2994,25 +2994,15 @@ func TestSession_Dispatch_includes_memory_in_prompt(t *testing.T) {
 			Content: "curious",
 		}))
 
+		var gotSystem string
+		var gotHistory []protocol.IRCMessage
+
 		fake := &apitest.Fake{
 			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, system string, history []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
-				// The persona is the app's own statement of who this
-				// instance is, so it is in the system prompt. A memory
-				// is text the instance stored, so it rides in the
-				// transcript as a server reply the model reads as
-				// data.
-				memoryLine := protocol.IRCMessage{
-					Kind:   protocol.KindServerReply,
-					Target: "#general",
-					Body:   "your stored memories: [mood=curious]",
-				}
+				gotSystem = system
+				gotHistory = history
 
-				if strings.Contains(system, "Your persona: Helpful assistant") &&
-					slices.Contains(history, memoryLine) {
-					return msgToolCalls(t, domain.ChannelName(events[0].Target), "memory and persona received"), nil
-				}
-
-				return api.CompletionResult{}, nil
+				return msgToolCalls(t, domain.ChannelName(events[0].Target), "memory and persona received"), nil
 			},
 		}
 		s := storetest.NewMemoryStore(t)
@@ -3030,6 +3020,18 @@ func TestSession_Dispatch_includes_memory_in_prompt(t *testing.T) {
 		})
 
 		dispatchUserMessage(t.Context(), t, sess, "#general", "hello world")
+
+		// The persona is the app's own statement of who this instance
+		// is, so it is in the system prompt, appended as the segment
+		// modelclient.PersonaLine renders. A memory is text the
+		// instance stored, so it rides in the transcript as a server
+		// reply the model reads as data.
+		require.Contains(t, gotSystem, modelclient.PersonaLine("Helpful assistant"))
+		require.Contains(t, gotHistory, protocol.IRCMessage{
+			Kind:   protocol.KindServerReply,
+			Target: "#general",
+			Body:   "your stored memories: [mood=curious]",
+		})
 
 		msgs := channelMessages(t, s, "#general")
 		require.Equal(t, []domain.Message{

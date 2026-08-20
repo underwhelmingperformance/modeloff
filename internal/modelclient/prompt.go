@@ -74,6 +74,22 @@ func truncateMemoryEntry(e memory.Entry, maxBytes int) memory.Entry {
 	return e
 }
 
+// personaLineFormat is the trailer buildSystemPrompt appends to state
+// an instance's persona: two newlines to separate it from the
+// prompt's fixed preamble, then a label and the persona text as
+// given.
+const personaLineFormat = "\n\nYour persona: %s"
+
+// PersonaLine renders the persona trailer buildSystemPrompt appends
+// when an instance carries a persona, from the same format
+// personaLineFormat holds. It is exported so a caller outside this
+// package, such as a test asserting on an assembled prompt, can build
+// the exact segment to look for instead of restating the format
+// string by hand.
+func PersonaLine(persona string) string {
+	return fmt.Sprintf(personaLineFormat, persona)
+}
+
 // buildSystemPrompt assembles the per-turn system prompt for a
 // model instance speaking on `window`.
 //
@@ -135,7 +151,7 @@ How to behave:
 	)
 
 	if persona := inst.Persona(); persona != "" {
-		fmt.Fprintf(&b, "\n\nYour persona: %s", persona)
+		b.WriteString(PersonaLine(persona))
 	}
 
 	b.WriteString(`

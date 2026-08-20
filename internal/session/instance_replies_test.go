@@ -2,7 +2,6 @@ package session
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"testing/synctest"
 
@@ -192,7 +191,7 @@ func TestSession_dispatch_replays_instance_replies_into_prompt(t *testing.T) {
 		fake := &apitest.Fake{
 			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, history []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 				for _, h := range history {
-					if h.Kind == protocol.KindServerReply && strings.Contains(h.Body, "whois target") {
+					if h.Kind == protocol.KindServerReply && h.Body == "whois target: test/model" {
 						sawWhois = true
 					}
 				}

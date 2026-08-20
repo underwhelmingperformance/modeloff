@@ -9,136 +9,63 @@ import (
 	"github.com/laney/modeloff/internal/domain"
 )
 
-func TestFromChannelEvent_join(t *testing.T) {
+// TestFromChannelEvent covers the basic rendering for each channel
+// event kind FromChannelEvent handles, with no actor InstanceID and
+// no channel-specific fields beyond what the event itself carries.
+// TestFromChannelEvent_propagates_instance_id below covers the
+// InstanceID-carrying shape of the same events.
+func TestFromChannelEvent(t *testing.T) {
 	at := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
 
-	got, ok := FromChannelEvent(domain.Join{
-		Target: "#general",
-		Nick:   "alice",
-		At:     at,
-	})
+	tests := []struct {
+		name  string
+		event domain.PersistableEvent
+		want  IRCMessage
+	}{
+		{
+			name:  "join",
+			event: domain.Join{Target: "#general", Nick: "alice", At: at},
+			want:  IRCMessage{Kind: KindJoin, From: "alice", Target: "#general", At: at},
+		},
+		{
+			name:  "part",
+			event: domain.Part{Target: "#general", Nick: "alice", At: at},
+			want:  IRCMessage{Kind: KindPart, From: "alice", Target: "#general", At: at},
+		},
+		{
+			name:  "topic_change",
+			event: domain.TopicChange{Target: "#general", Topic: "Discussion", By: "alice", At: at},
+			want:  IRCMessage{Kind: KindTopic, From: "alice", Target: "#general", Body: "Discussion", At: at},
+		},
+		{
+			name:  "join_with_message",
+			event: domain.Join{Target: "#general", Nick: "alice", Message: "hello everyone", At: at},
+			want:  IRCMessage{Kind: KindJoin, From: "alice", Target: "#general", Body: "hello everyone", At: at},
+		},
+		{
+			name:  "part_with_message",
+			event: domain.Part{Target: "#general", Nick: "alice", Message: "goodbye", At: at},
+			want:  IRCMessage{Kind: KindPart, From: "alice", Target: "#general", Body: "goodbye", At: at},
+		},
+		{
+			name:  "quit",
+			event: domain.Quit{Nick: "alice", Message: "gone fishing", At: at},
+			want:  IRCMessage{Kind: KindQuit, From: "alice", Body: "gone fishing", At: at},
+		},
+		{
+			name:  "nick_change",
+			event: domain.NickChange{OldNick: "alice", NewNick: "ally", At: at},
+			want:  IRCMessage{Kind: KindNick, From: "alice", Target: "ally", At: at},
+		},
+	}
 
-	require.True(t, ok)
-	require.Equal(t, IRCMessage{
-		Kind:   KindJoin,
-		From:   "alice",
-		Target: "#general",
-		At:     at,
-	}, got)
-}
-
-func TestFromChannelEvent_part(t *testing.T) {
-	at := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
-
-	got, ok := FromChannelEvent(domain.Part{
-		Target: "#general",
-		Nick:   "alice",
-		At:     at,
-	})
-
-	require.True(t, ok)
-	require.Equal(t, IRCMessage{
-		Kind:   KindPart,
-		From:   "alice",
-		Target: "#general",
-		At:     at,
-	}, got)
-}
-
-func TestFromChannelEvent_topic_change(t *testing.T) {
-	at := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
-
-	got, ok := FromChannelEvent(domain.TopicChange{
-		Target: "#general",
-		Topic:  "Discussion",
-		By:     "alice",
-		At:     at,
-	})
-
-	require.True(t, ok)
-	require.Equal(t, IRCMessage{
-		Kind:   KindTopic,
-		From:   "alice",
-		Target: "#general",
-		Body:   "Discussion",
-		At:     at,
-	}, got)
-}
-
-func TestFromChannelEvent_join_with_message(t *testing.T) {
-	at := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
-
-	got, ok := FromChannelEvent(domain.Join{
-		Target:  "#general",
-		Nick:    "alice",
-		Message: "hello everyone",
-		At:      at,
-	})
-
-	require.True(t, ok)
-	require.Equal(t, IRCMessage{
-		Kind:   KindJoin,
-		From:   "alice",
-		Target: "#general",
-		Body:   "hello everyone",
-		At:     at,
-	}, got)
-}
-
-func TestFromChannelEvent_part_with_message(t *testing.T) {
-	at := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
-
-	got, ok := FromChannelEvent(domain.Part{
-		Target:  "#general",
-		Nick:    "alice",
-		Message: "goodbye",
-		At:      at,
-	})
-
-	require.True(t, ok)
-	require.Equal(t, IRCMessage{
-		Kind:   KindPart,
-		From:   "alice",
-		Target: "#general",
-		Body:   "goodbye",
-		At:     at,
-	}, got)
-}
-
-func TestFromChannelEvent_quit(t *testing.T) {
-	at := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
-
-	got, ok := FromChannelEvent(domain.Quit{
-		Nick:    "alice",
-		Message: "gone fishing",
-		At:      at,
-	})
-
-	require.True(t, ok)
-	require.Equal(t, IRCMessage{
-		Kind: KindQuit,
-		From: "alice",
-		Body: "gone fishing",
-		At:   at,
-	}, got)
-}
-
-func TestFromChannelEvent_nick_change(t *testing.T) {
-	at := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
-
-	got, ok := FromChannelEvent(domain.NickChange{
-		OldNick: "alice",
-		NewNick: "ally",
-		At:      at,
-	})
-
-	require.True(t, ok)
-	require.Equal(t, IRCMessage{
-		Kind:   KindNick,
-		From:   "alice",
-		Target: "ally",
-		At:     at,
-	}, got)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := FromChannelEvent(tc.event)
+			require.True(t, ok)
+			require.Equal(t, tc.want, got)
+		})
+	}
 }
 
 // TestFromChannelEvent_propagates_instance_id pins that every
