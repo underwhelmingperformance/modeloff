@@ -44,6 +44,13 @@ IRC-like server; the only external service is the OpenRouter API.
       introduced for human and model users alike.
 7. The user can `/msg` to DM a model, which is shown similarly to a channel
    except no `#` prefix.
+   1. A model can start one too. A message from a model the user has no
+      window for opens the window and badges it, without taking the
+      focus off whatever the user is reading.
+   2. `/close` (`/wc`, `/unquery`) closes the window in view. The open
+      windows are remembered across restarts and reopened on the next
+      one; closing a window leaves the conversation itself in the log,
+      and the next message opens a window on it again.
 8. From then on, it's a channel. Event delivery follows the echo gate and
    membership filter described below. Models can reply or not. Runaway
    conversations are bounded by server-side flood control applied uniformly
@@ -345,8 +352,14 @@ counterpart's `InstanceID`, and each direction is logged under its
 recipient: a line to `botty` under botty's id, botty's answer under
 the user's (empty) id. `store.DMEventsBefore` reads the union, and
 `domain.Message.RoutingKey` is how either party turns a single event
-into the conversation it belongs to. The chat-screen's `/query` is a
-UI affordance only; the session never sees it.
+into the conversation it belongs to.
+
+Opening and closing a DM window is therefore the client's own
+business, and the session sees none of it. `/query` opens one; a DM
+arriving from a counterpart the user has no window for opens one too,
+the autocreate-on-message rule every IRC client has for an
+unsolicited private message; `/close` closes one. None of the three
+touches the conversation, which is in the event log either way.
 
 ### Casemapping and naming
 
@@ -665,6 +678,17 @@ do not implement `ToCommand`: `/config`, `/query`, `/personas`,
 `/regenerate-personas`, `/help`, `/clear`, `/poke`, and the tool-only
 `pass`.
 
+`/close` (aliases `/wc`, `/unquery`) is the one command whose wire
+counterpart depends on the window it is run in, so it has no
+`ToCommand` of its own. In a channel window it dispatches
+`PartCommand`'s PART, because a channel window exists only while the
+user is in the channel, which is what `/wc` does in irssi and
+`/close` in WeeChat. In a DM window it closes client state and never
+reaches the wire. PART takes a channel and correctly refuses anything
+else, which is what a query window needs in its place. In
+`&modeloff` it refuses: that window is the client's own view of the
+server and lives as long as the session.
+
 The three memory tools (`write_memory`, `delete_memory`, `search_memory`)
 are in-process operations rather than wire commands, and stay
 hand-rolled in `internal/modelclient/memory_tools.go`.
@@ -703,6 +727,19 @@ two tables: `last_read` keys a channel's cursor and references
 counterpart's `InstanceID` with a cascade to `instances`, so a
 deleted counterpart drops its cursor with it. `UserClient.MarkRead`
 and `Session.UnreadCount` pick the table by the window key's kind.
+
+Which DM windows the user has open is client state, and `dm_windows`
+is where the client keeps it. A channel comes back on its own,
+because it is on the autojoin list and the JOIN announces it. Nothing
+on the wire reopens a DM window, so without a record the user returns
+to a sidebar missing every conversation they had open. The user-client is
+the only actor that touches the table (`UserClient.DMWindows` /
+`OpenDMWindow` / `CloseDMWindow`); the session never reads or writes
+it. The chat-screen records a window whenever it opens one and
+forgets it on `/close`, and reopens the recorded set at bootstrap,
+landing on one of them when that is the window the user left open.
+The rows are keyed by the counterpart's `InstanceID` and cascade from
+`instances`, like the DM cursors.
 
 An issuer's own point-to-point replies (`WHOIS`, `LIST`) are not
 channel activity, so they live in a private per-instance reply log

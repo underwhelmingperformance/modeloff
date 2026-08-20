@@ -46,6 +46,16 @@ type DMOpenedMsg struct {
 	At          time.Time
 }
 
+// DMClosedMsg is fired by `/close` in a DM window. The chat screen
+// drops the window, its scrollback and its sidebar entry, and
+// forgets it from the set the next run reopens. The conversation
+// survives: the event log keeps both directions of it, and
+// messaging the counterpart again opens the window on it.
+type DMClosedMsg struct {
+	Window domain.ChannelName
+	At     time.Time
+}
+
 // ChannelArg is a command-layer wrapper around domain.ChannelName
 // that implements FieldDecoder to ensure the # prefix is present. It
 // also accepts RFC 2812 §3.2.1's own JOIN syntax, a comma-separated
@@ -706,6 +716,39 @@ func (c QueryCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 			At:          time.Now(),
 		}
 	}
+}
+
+// CloseCommand represents `/close`, with irssi's `/wc` and
+// `/unquery` as aliases. It closes the window in view, and what
+// that means follows from what the window is.
+//
+// A channel window exists because the user is in the channel, so
+// closing it parts the channel, the same thing `/wc` does in irssi
+// and `/close` in WeeChat. A DM window is client state the server
+// holds nothing for, so closing it never reaches the wire: PART
+// takes a channel and refuses anything else (RFC 2812 §3.2.2), and
+// this is the command a query window has instead. `&modeloff` is
+// the client's own view of the server and stays for the session.
+type CloseCommand struct{}
+
+// Run implements Command.
+func (c CloseCommand) Run(ctx context.Context, rc Context) tea.Cmd {
+	if rc.Active == "" {
+		return usageCmd("close", "no window to close")
+	}
+
+	switch domain.InferChannelKind(rc.Active) {
+	case domain.KindStatus:
+		return usageCmd("close", "&modeloff stays open for the session")
+	case domain.KindDM:
+		window := rc.Active
+
+		return func() tea.Msg {
+			return DMClosedMsg{Window: window, At: time.Now()}
+		}
+	}
+
+	return PartCommand{}.Run(ctx, rc)
 }
 
 // RunTool implements ToolCommand. Models call this as the `msg`

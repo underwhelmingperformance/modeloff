@@ -85,6 +85,30 @@ type UIStateStore interface {
 
 type logsUpdatedMsg struct{}
 
+// dmWindowResolvedMsg carries the counterpart handle a held-back DM
+// window was waiting on. `window` is the window key the events were
+// held under, and `at` the time of the first of them, which the
+// window takes as its creation time. A nil `counterpart` means the
+// lookup failed and the held events are dropped: without the
+// instance there is no window to render them in.
+type dmWindowResolvedMsg struct {
+	window      domain.ChannelName
+	counterpart *domain.Instance
+	at          time.Time
+}
+
+// dmWindowsRestoredMsg carries the counterparts of the DM windows
+// the user had open when the process last ran, resolved from the
+// client-owned record the user-client keeps. `landing` is the window
+// the user left open, read in the same command so the Update
+// goroutine waits on no store read; it names one of these windows
+// when that is where the user left off, and something else when the
+// user left off in a channel.
+type dmWindowsRestoredMsg struct {
+	counterparts []*domain.Instance
+	landing      domain.ChannelName
+}
+
 // unreadCountedMsg carries the result of an unread-count query back
 // to the Update goroutine. `visits` is the target window's visit
 // count when the query was made; [ChatScreen.deliverUnreadCount]
@@ -106,6 +130,13 @@ type unreadCountedMsg struct {
 type SessionReader interface {
 	GetWindow(ctx context.Context, name domain.ChannelName) (domain.Window, error)
 	ResolveNick(ctx context.Context, nick domain.Nick) (*domain.Instance, error)
+
+	// ResolveInstanceByID answers with the canonical handle for an
+	// instance id. A DM window is addressed by its counterpart's id,
+	// so this is what turns a window key back into the instance the
+	// window is built around: for a DM arriving from someone the user
+	// has no window for, and for the windows reopened at bootstrap.
+	ResolveInstanceByID(ctx context.Context, id domain.InstanceID) (*domain.Instance, error)
 	Now() time.Time
 	UnreadCount(ctx context.Context, ch domain.ChannelName) (int, error)
 	Instances(ctx context.Context) iter.Seq[*domain.Instance]
@@ -141,6 +172,18 @@ type ChatScreen struct {
 	// the last entry is popped — so len(pacedQueue) is the count
 	// of channels with pending work.
 	pacedQueue map[domain.ChannelName][]domain.Message
+
+	// pendingDM holds the events of a DM window the chat-screen has
+	// no entry for yet, keyed by the counterpart's id. A DM names its
+	// counterpart by id and the window is built around the instance
+	// handle, which is a store read, so the first line of a
+	// conversation arrives before there is anywhere to put it. It
+	// waits here, in arrival order, until
+	// [ChatScreen.handleDMWindowResolved] moves the whole queue into
+	// the new window's scrollback. A map value is never stored empty:
+	// a queue that was empty is what schedules the resolve, so one
+	// lookup runs however many lines arrive behind it.
+	pendingDM map[domain.ChannelName][]domain.Event
 
 	// dispatching tracks the model instances currently in a turn.
 	// Membership is per-instance so the nick list's thinking
@@ -224,6 +267,7 @@ func NewChatScreen(baseContext func() context.Context, sess SessionReader, mgr *
 		keyMap:          components.DefaultChatScreenKeyMap,
 		checklist:       NewWelcomeChecklist(user.Nick(), mgr.HasAPIKey()),
 		pacedQueue:      map[domain.ChannelName][]domain.Message{},
+		pendingDM:       map[domain.ChannelName][]domain.Event{},
 		dispatching:     map[*domain.Instance]bool{},
 	}
 
@@ -458,6 +502,7 @@ func (s ChatScreen) Init() tea.Cmd {
 	// against before the protocol bus has caught up with the
 	// listener.
 	cmds = append(cmds, s.bootstrapFromSession()...)
+	cmds = append(cmds, s.restoreDMWindows())
 
 	if s.obs != nil {
 		cmds = append(cmds, s.summary.Init(), s.waitForLogUpdateCmd())
@@ -505,10 +550,12 @@ func (s ChatScreen) bootstrapFromSession() []tea.Cmd {
 	// which outranks every join-time-stamped proposal the autojoin
 	// NAMES replies will make as the protocol bus drains. Anything
 	// the user is not currently in falls back to the freshest join —
-	// a first run with nothing recorded, a channel since parted, or
-	// a DM, whose counterpart this bootstrap has no handle on. The
-	// fallback carries its own join time, so the matching NAMES
-	// reply neither steals the focus nor loses it.
+	// a first run with nothing recorded, or a channel since parted.
+	// The fallback carries its own join time, so the matching NAMES
+	// reply neither steals the focus nor loses it. A DM window is
+	// not among the channels read here at all;
+	// [ChatScreen.handleDMWindowsRestored] lands on one when that is
+	// where the user left off.
 	landing, at := newestName, newestTime
 
 	if last, ok := s.restoredChannel(); ok {
@@ -582,10 +629,10 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 // that snapshot keeps the values its arm read there, even once Bubble
 // Tea runs it later: it cannot observe whatever the screen holds by
 // then, because it never held a pointer into the screen to begin
-// with. The window records, the paced queue and the dispatching set
-// stay shared — they are per-window and per-instance state with a
-// lifetime longer than one message, and only this goroutine touches
-// them.
+// with. The window records, the paced and pending-DM queues and the
+// dispatching set stay shared: they are per-window and per-instance
+// state with a lifetime longer than one message, and only this
+// goroutine touches them.
 func (s ChatScreen) update(msg tea.Msg) (ChatScreen, tea.Cmd) {
 	forwardedMsg := msg
 	summary, summaryCmd := s.summary.Update(msg)
@@ -865,6 +912,15 @@ func (s ChatScreen) update(msg tea.Msg) (ChatScreen, tea.Cmd) {
 
 	case chatcmd.DMOpenedMsg:
 		return s.handleDMOpenedMsg(msg)
+
+	case chatcmd.DMClosedMsg:
+		return s.handleDMClosedMsg(msg)
+
+	case dmWindowResolvedMsg:
+		return s.handleDMWindowResolved(msg)
+
+	case dmWindowsRestoredMsg:
+		return s.handleDMWindowsRestored(msg)
 
 	case domain.ErrorEvent:
 		return s.handleErrorEvent(msg)

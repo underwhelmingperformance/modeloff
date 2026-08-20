@@ -17,6 +17,7 @@ type Grammar struct {
 	Kill               KillCommand               `cmd:"" caps:"operator" tool:"Forcibly disconnect a model instance from the server with a reason." help:"Disconnect a model instance from the server."`
 	Msg                MsgCommand                `cmd:"" tool:"Send a message addressed to either a #channel you are in, or a user (by nick). The recipient sees the message and may reply." help:"Send a message to a #channel or to a user by nick."`
 	Query              QueryCommand              `cmd:"" help:"Open (or focus) a direct-message window with a nick. Optional trailing body is sent as the first message."`
+	Close              CloseCommand              `cmd:"" aliases:"wc,unquery" help:"Close the current window, parting the channel if it is one."`
 	Nick               NickCommand               `cmd:"" tool:"" help:"Change your nickname."`
 	Topic              TopicCommand              `cmd:"" tool:"" kind:"channel" help:"Set or clear the current channel topic."`
 	Mode               ModeCommand               `cmd:"" kind:"channel" tool:"Set or clear one or more channel modes. Syntax: <modes> [args]. Examples: +o nick, +tn, -i+l 10, +k secret, +ov-i alice bob." help:"Set or clear channel modes."`

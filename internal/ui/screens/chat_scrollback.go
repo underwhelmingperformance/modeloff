@@ -19,15 +19,19 @@ import (
 // handled by [ChatScreen.bufferProtocolEvent], which has access to
 // the per-recipient `Targets` carried on the [protocol.Delivery]
 // envelope.
-func (s ChatScreen) bufferEvent(evt domain.Event) {
+//
+// The returned command is the counterpart lookup a first line from
+// an unopened DM needs; every other event buffers outright and
+// returns nil.
+func (s ChatScreen) bufferEvent(evt domain.Event) tea.Cmd {
 	switch e := evt.(type) {
 	case domain.Message:
 		key, ok := e.RoutingKey(s.user.Instance().ID())
 		if !ok || key == "" {
-			return
+			return nil
 		}
 
-		s.appendToScrollback(key, e)
+		return s.appendMessage(key, e)
 	case domain.Welcome:
 		s.appendStatusNotice(e.At, fmt.Sprintf("Welcome to %s, %s", e.ServerName, e.Nick))
 	case domain.Reconnected:
@@ -45,11 +49,39 @@ func (s ChatScreen) bufferEvent(evt domain.Event) {
 	case domain.PersistableEvent:
 		ch := domain.EventTarget(e)
 		if ch == "" {
-			return
+			return nil
 		}
 
 		s.appendToScrollback(ch, e)
 	}
+
+	return nil
+}
+
+// appendMessage files a message in the window its routing key names.
+// A key naming a DM the chat-screen has no window for is first
+// contact: a model messaging the user out of the blue, which every
+// IRC client answers by opening the query window for it. The window is built around the counterpart's
+// instance handle and the key carries only its id, so the line waits
+// in `pendingDM` while the returned command looks the handle up;
+// [ChatScreen.handleDMWindowResolved] moves the queue into the new
+// window.
+func (s ChatScreen) appendMessage(key domain.ChannelName, msg domain.Message) tea.Cmd {
+	_, open := s.windowByName(key)
+	if open || domain.InferChannelKind(key) != domain.KindDM {
+		s.appendToScrollback(key, msg)
+
+		return nil
+	}
+
+	held := s.pendingDM[key]
+	s.pendingDM[key] = append(held, msg)
+
+	if len(held) > 0 {
+		return nil
+	}
+
+	return s.resolveDMWindow(key, msg.At)
 }
 
 // bufferProtocolEvent buffers an event delivered on the protocol
@@ -58,16 +90,19 @@ func (s ChatScreen) bufferEvent(evt domain.Event) {
 // [protocol.Delivery] — to fan the line into each affected
 // channel scrollback plus any open DM whose counterpart is the
 // actor; window-scoped events fall through to the shared
-// [ChatScreen.bufferEvent] path.
-func (s ChatScreen) bufferProtocolEvent(evt domain.Event, targets []domain.ChannelName) {
+// [ChatScreen.bufferEvent] path and the caller runs the command it
+// returns.
+func (s ChatScreen) bufferProtocolEvent(evt domain.Event, targets []domain.ChannelName) tea.Cmd {
 	switch e := evt.(type) {
 	case domain.Quit:
 		s.bufferActorEvent(targets, e.Instance, e)
 	case domain.NickChange:
 		s.bufferActorEvent(targets, e.Instance, e)
 	default:
-		s.bufferEvent(evt)
+		return s.bufferEvent(evt)
 	}
+
+	return nil
 }
 
 // bufferActorEvent appends `event` to each channel scrollback
@@ -146,9 +181,11 @@ func (s ChatScreen) appendToScrollback(ch domain.ChannelName, evt domain.Event) 
 		// has seen a join for the target are placeholder-created
 		// here so scrollback never drops live traffic: the user
 		// may focus this channel later and expect to see what
-		// happened during their absence. DM windows can only be
-		// constructed with a counterpart instance, so DM events
-		// for unknown windows are dropped.
+		// happened during their absence. A DM window needs its
+		// counterpart's instance handle, which this cannot
+		// synthesise; chat traffic takes the lookup path in
+		// [ChatScreen.appendMessage] instead, and anything else
+		// naming an unopened DM is dropped.
 		switch domain.InferChannelKind(ch) {
 		case domain.KindChannel:
 			w = newWindow(domain.NewChannelWindow(ch, time.Time{}))

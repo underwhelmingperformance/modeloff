@@ -75,6 +75,14 @@ type Store interface {
 	// InstanceID, since last_read.channel references channels(name)
 	// and a DM window is never a row there.
 	SetDMLastRead(ctx context.Context, peer domain.InstanceID, eventID int64) error
+
+	// ListDMWindows returns the counterparts of the DM windows the
+	// user has open. AddDMWindow and RemoveDMWindow are its writes.
+	// The set is client-owned: the session never reads or writes it,
+	// so the user-client is the only actor that touches these three.
+	ListDMWindows(ctx context.Context) ([]domain.InstanceID, error)
+	AddDMWindow(ctx context.Context, peer domain.InstanceID) error
+	RemoveDMWindow(ctx context.Context, peer domain.InstanceID) error
 }
 
 // ReplyLog is the write handle the user-client uses to persist its
@@ -476,6 +484,30 @@ func (uc *UserClient) latestEvent(ctx context.Context, ch domain.ChannelName) ([
 	}
 
 	return uc.store.EventsBefore(ctx, ch, nil, 1)
+}
+
+// DMWindows returns the counterparts of the DM windows the user had
+// open when the process last ran. A channel is rejoined on connect
+// and announces itself with a JOIN, but a DM is not a membership the
+// server holds: nothing on the wire would bring the window back, so
+// the client keeps the list itself and the chat-screen reopens it at
+// bootstrap.
+func (uc *UserClient) DMWindows(ctx context.Context) ([]domain.InstanceID, error) {
+	return uc.store.ListDMWindows(ctx)
+}
+
+// OpenDMWindow records that the user has a DM window open with
+// `peer`, so a later run reopens it. Idempotent.
+func (uc *UserClient) OpenDMWindow(ctx context.Context, peer domain.InstanceID) error {
+	return uc.store.AddDMWindow(ctx, peer)
+}
+
+// CloseDMWindow drops `peer` from the set of open DM windows. The
+// conversation itself survives: the event log keeps both directions
+// of it, and messaging the counterpart again reopens the window with
+// its history intact. Idempotent.
+func (uc *UserClient) CloseDMWindow(ctx context.Context, peer domain.InstanceID) error {
+	return uc.store.RemoveDMWindow(ctx, peer)
 }
 
 // RecordReply persists one of the user's own point-to-point replies

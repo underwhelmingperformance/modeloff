@@ -2,6 +2,7 @@ package userclient_test
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -304,6 +305,36 @@ func TestUserClient_MarkRead_reads_the_window_it_marks(t *testing.T) {
 	}
 }
 
+// TestUserClient_DM_window_set_round_trips pins the client-owned
+// record of which DM windows are open. A channel comes back on its
+// own through autojoin; a DM window is not a membership the server
+// holds, so this set is what the chat-screen reopens at bootstrap.
+// Both writes are idempotent, and closing a window leaves the others
+// alone.
+func TestUserClient_DM_window_set_round_trips(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+
+	for id, nick := range map[domain.InstanceID]domain.Nick{"inst-botty": "botty", "inst-helper": "helper"} {
+		require.NoError(t, f.store.SaveInstance(ctx, domain.NewModelInstance(id, nick, "test/model", "", nil)))
+	}
+
+	require.NoError(t, f.user.OpenDMWindow(ctx, "inst-botty"))
+	require.NoError(t, f.user.OpenDMWindow(ctx, "inst-helper"))
+	require.NoError(t, f.user.OpenDMWindow(ctx, "inst-botty"))
+
+	open, err := f.user.DMWindows(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []domain.InstanceID{"inst-botty", "inst-helper"}, open)
+
+	require.NoError(t, f.user.CloseDMWindow(ctx, "inst-botty"))
+	require.NoError(t, f.user.CloseDMWindow(ctx, "inst-botty"))
+
+	open, err = f.user.DMWindows(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []domain.InstanceID{"inst-helper"}, open)
+}
+
 // lastRead is one cursor write, whichever of
 // [userclient.Store.SetLastRead] or [userclient.Store.SetDMLastRead]
 // made it. For a DM call, channel holds the peer InstanceID converted
@@ -321,6 +352,7 @@ type recordingStore struct {
 	channelHead int64
 	threadHead  int64
 	stamped     []lastRead
+	dmWindows   []domain.InstanceID
 }
 
 func (*recordingStore) ListAutojoinChannels(context.Context) ([]domain.ChannelName, error) {
@@ -343,6 +375,26 @@ func (s *recordingStore) SetLastRead(_ context.Context, ch domain.ChannelName, e
 
 func (s *recordingStore) SetDMLastRead(_ context.Context, peer domain.InstanceID, eventID int64) error {
 	s.stamped = append(s.stamped, lastRead{channel: domain.ChannelName(peer), eventID: eventID})
+
+	return nil
+}
+
+func (s *recordingStore) ListDMWindows(context.Context) ([]domain.InstanceID, error) {
+	return slices.Clone(s.dmWindows), nil
+}
+
+func (s *recordingStore) AddDMWindow(_ context.Context, peer domain.InstanceID) error {
+	if slices.Contains(s.dmWindows, peer) {
+		return nil
+	}
+
+	s.dmWindows = append(s.dmWindows, peer)
+
+	return nil
+}
+
+func (s *recordingStore) RemoveDMWindow(_ context.Context, peer domain.InstanceID) error {
+	s.dmWindows = slices.DeleteFunc(s.dmWindows, func(open domain.InstanceID) bool { return open == peer })
 
 	return nil
 }

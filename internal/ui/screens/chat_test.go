@@ -15,6 +15,7 @@ import (
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/modelmanager"
 	"github.com/laney/modeloff/internal/session"
+	"github.com/laney/modeloff/internal/store"
 	"github.com/laney/modeloff/internal/store/storetest"
 	uipkg "github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/chatcmd"
@@ -42,9 +43,10 @@ const (
 // so test helpers can thread all three into the chat-screen
 // without separate ceremony.
 type testHarness struct {
-	sess *session.Session
-	mgr  *modelmanager.Manager
-	user *userclient.UserClient
+	sess  *session.Session
+	mgr   *modelmanager.Manager
+	user  *userclient.UserClient
+	store *store.SQLiteStore
 }
 
 func newTestSession(t *testing.T) *testHarness {
@@ -53,7 +55,7 @@ func newTestSession(t *testing.T) *testHarness {
 	s := storetest.NewMemoryStore(t)
 	apiClient := &uitest.FakeAPI{}
 	sess, mgr, user := uitest.NewTestSession(t, s, apiClient, nil, nil, "", "", t.Context)
-	return &testHarness{sess: sess, mgr: mgr, user: user}
+	return &testHarness{sess: sess, mgr: mgr, user: user, store: s}
 }
 
 func newTestSessionWithConfigStore(t *testing.T, cfgStore config.Store) *testHarness {
@@ -63,7 +65,7 @@ func newTestSessionWithConfigStore(t *testing.T, cfgStore config.Store) *testHar
 	cfg, _ := cfgStore.Load(t.Context())
 	apiClient := &uitest.FakeAPI{}
 	sess, mgr, user := uitest.NewTestSession(t, s, apiClient, nil, nil, cfg.APIKey, cfg.SmallModel, t.Context)
-	return &testHarness{sess: sess, mgr: mgr, user: user}
+	return &testHarness{sess: sess, mgr: mgr, user: user, store: s}
 }
 
 func newChatApp(t *testing.T, h *testHarness) *uitest.App {
