@@ -391,7 +391,7 @@ func modeChangeLine(e domain.ChannelModeChange) string {
 // whoisReplyLine renders a [domain.Whois] reply as the readable line
 // an instance re-reads in its own history.
 func whoisReplyLine(w domain.Whois) string {
-	line := fmt.Sprintf("whois %s: %s", w.Nick, w.ModelID)
+	line := fmt.Sprintf("whois %s: %s", w.Nick, whoisSubject(w.ModelID))
 	if w.Persona != "" {
 		line += fmt.Sprintf(", persona %q", w.Persona)
 	}
@@ -405,6 +405,15 @@ func whoisReplyLine(w domain.Whois) string {
 	}
 
 	return line
+}
+
+// whoisSubject names what a `/whois` reply's nick is: a model id, or
+// the human user's instance, which carries no [domain.ModelID].
+func whoisSubject(modelID domain.ModelID) string {
+	if modelID == "" {
+		return "the human user"
+	}
+	return string(modelID)
 }
 
 // listReplyLine renders one [domain.ListReply] directory row.

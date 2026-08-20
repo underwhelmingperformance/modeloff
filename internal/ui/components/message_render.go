@@ -85,14 +85,14 @@ func renderMessage(e domain.Message, highlightWords []string, userNick domain.Ni
 	ts := formatTimestampPrefix(e.At, timestampFormat, locale)
 	highlighted := ContainsHighlightWord(e.Body, highlightWords, userNick)
 	body := renderIRCBody(e.Body)
-	seed := string(e.InstanceID)
+	style := nickStyleFor(e)
 
 	var prefix string
 	if e.Action {
-		nick := theme.NickStyle(seed).Render(string(e.From))
+		nick := style.Render(string(e.From))
 		prefix = fmt.Sprintf("%s* %s", ts, nick)
 	} else {
-		nick := theme.NickStyle(seed).Render(fmt.Sprintf("<%s>", string(e.From)))
+		nick := style.Render(fmt.Sprintf("<%s>", string(e.From)))
 		prefix = ts + nick
 	}
 
@@ -101,6 +101,25 @@ func renderMessage(e domain.Message, highlightWords []string, userNick domain.Ni
 	}
 
 	return strings.TrimSpace(fmt.Sprintf("%s %s", prefix, body))
+}
+
+// anonymousNickStyle is the one colour every `+a`-masked line renders
+// in. `+a` (RFC 2811 §4.2.1) exists so members cannot tell senders
+// apart; a colour that still varied by sender's instance id would
+// leak that distinction back through the palette.
+var anonymousNickStyle = theme.Dim.Bold(true)
+
+// nickStyleFor picks the nick colour for a message. The session
+// masks an anonymous channel's `From` to [domain.AnonymousNick] but
+// leaves `InstanceID` carrying the real sender, since the stored
+// event keeps the real origin for audit; the renderer must not seed
+// the colour hash from it once the line is masked.
+func nickStyleFor(e domain.Message) lipgloss.Style {
+	if e.From == domain.AnonymousNick {
+		return anonymousNickStyle
+	}
+
+	return theme.NickStyle(string(e.InstanceID))
 }
 
 func joinText(e domain.Join) string {
@@ -142,16 +161,22 @@ func channelModeChangeText(e domain.ChannelModeChange) string {
 		issuer = "server"
 	}
 
-	return fmt.Sprintf("%s sets mode %s %s", issuer, e.Flag.IRCString(e.Add), channelModeChangeTarget(e))
+	flag := e.Flag.IRCString(e.Add)
+	if operand := channelModeChangeOperand(e); operand != "" {
+		flag += " " + operand
+	}
+
+	return fmt.Sprintf("%s sets mode %s on %s", issuer, flag, e.Target)
 }
 
-// channelModeChangeTarget formats the right-hand operand of the
-// rendered `MODE` line. Parametric attribute modes (+l, +k) show the
-// param alongside the channel; member modes (+o/+v on a nick) show
-// the affected nick.
-func channelModeChangeTarget(e domain.ChannelModeChange) string {
+// channelModeChangeOperand formats the argument between the mode
+// flag and the channel name on a rendered `MODE` line: the affected
+// nick for a member mode (+o/+v), the parameter for a parametric
+// attribute mode (+l, +k, +f), or nothing for a boolean attribute
+// mode (+i, +m, ...).
+func channelModeChangeOperand(e domain.ChannelModeChange) string {
 	if e.Param != "" {
-		return e.Param + " " + string(e.Target)
+		return e.Param
 	}
 	return string(e.Nick)
 }
@@ -209,7 +234,7 @@ func formatTimestampPrefix(at time.Time, format *string, locale language.Tag) st
 
 func renderWhoisEvent(w domain.Whois) string {
 	lines := []string{
-		fmt.Sprintf("%s is %s", w.Nick, w.ModelID),
+		fmt.Sprintf("%s is %s", w.Nick, whoisSubject(w.ModelID)),
 	}
 
 	if w.Persona != "" {
@@ -231,6 +256,15 @@ func renderWhoisEvent(w domain.Whois) string {
 	}
 
 	return strings.Join(parts, "\n")
+}
+
+// whoisSubject names what a `/whois` reply's nick is: a model id, or
+// the human user's instance, which carries no [domain.ModelID].
+func whoisSubject(modelID domain.ModelID) string {
+	if modelID == "" {
+		return "the human user"
+	}
+	return string(modelID)
 }
 
 func renderListReplyEvent(r domain.ListReply) string {

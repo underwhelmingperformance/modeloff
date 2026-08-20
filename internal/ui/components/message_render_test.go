@@ -108,6 +108,95 @@ func stripWhois(s string) string {
 	return strings.Join(lines, "\n")
 }
 
+func TestChannelModeChangeText(t *testing.T) {
+	at := time.Date(2026, 4, 19, 10, 0, 0, 0, time.UTC)
+
+	tests := map[string]struct {
+		event domain.ChannelModeChange
+		want  string
+	}{
+		"boolean": {
+			event: domain.ChannelModeChange{
+				Target: "#dev", Flag: domain.ModeInviteOnly, Add: true, By: "laney", At: at,
+			},
+			want: "laney sets mode +i on #dev",
+		},
+		"member": {
+			event: domain.ChannelModeChange{
+				Target: "#dev", Nick: "botty", Flag: domain.ModeOperator, Add: true, By: "laney", At: at,
+			},
+			want: "laney sets mode +o botty on #dev",
+		},
+		"parametric": {
+			event: domain.ChannelModeChange{
+				Target: "#dev", Param: "20", Flag: domain.ModeUserLimit, Add: true, By: "laney", At: at,
+			},
+			want: "laney sets mode +l 20 on #dev",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := renderChannelEvent[testKind](
+				tc.event,
+				domain.KindChannel,
+				80,
+				nil,
+				"testuser",
+				nil,
+				noTimestamp(),
+				language.BritishEnglish,
+			)
+
+			require.Equal(t, "*** "+tc.want, stripLine(got))
+		})
+	}
+}
+
+func TestRenderWhoisEvent_human_user_has_no_dangling_line(t *testing.T) {
+	at := time.Date(2026, 4, 19, 10, 0, 0, 0, time.UTC)
+
+	whois := domain.Whois{
+		Target: "#dev",
+		Nick:   "laney",
+		At:     at,
+	}
+
+	want := "*** laney is the human user"
+	require.Equal(t, want, stripWhois(renderWhoisEvent(whois)))
+}
+
+func TestRenderMessage_anonymous_body(t *testing.T) {
+	message := domain.Message{
+		Target: "#dev", From: domain.AnonymousNick, InstanceID: "alice-instance",
+		Body: "hi", At: time.Date(2026, 4, 19, 10, 0, 0, 0, time.UTC),
+	}
+
+	got := renderMessage(message, nil, "testuser", noTimestamp(), language.BritishEnglish)
+	require.Equal(t, "<anonymous> hi", stripLine(got))
+}
+
+// TestNickStyleFor_anonymous_lines_share_one_colour and its sibling
+// below assert on [nickStyleFor]'s returned [lipgloss.Style] rather
+// than on a rendered string. lipgloss disables colour output
+// entirely when its renderer detects no terminal, which is always
+// the case under `go test`, so a rendered line carries no ANSI codes
+// to compare and cannot show whether the colour varies by sender.
+func TestNickStyleFor_anonymous_lines_share_one_colour(t *testing.T) {
+	alice := domain.Message{From: domain.AnonymousNick, InstanceID: "alice-instance"}
+	bob := domain.Message{From: domain.AnonymousNick, InstanceID: "bob-instance"}
+
+	require.Equal(t, nickStyleFor(alice).GetForeground(), nickStyleFor(bob).GetForeground(),
+		"two anonymous senders with different instance ids must share one nick colour")
+}
+
+func TestNickStyleFor_named_lines_vary_by_instance(t *testing.T) {
+	alice := domain.Message{From: "alice", InstanceID: "alice-instance"}
+	bob := domain.Message{From: "bob", InstanceID: "bob-instance"}
+
+	require.NotEqual(t, nickStyleFor(alice).GetForeground(), nickStyleFor(bob).GetForeground())
+}
+
 func TestRenderChannelEvent_system_notice_style_changes_by_kind(t *testing.T) {
 	notice := domain.SystemNotice{
 		Target: "#test",

@@ -974,7 +974,7 @@ func TestRenderLine_IRC_events(t *testing.T) {
 			domain.ChannelModeChange{
 				Target: "#general", Nick: "botty", Flag: domain.ModeChannelVoice, Add: true, By: "alice", At: now,
 			},
-			"*** alice sets mode +v botty",
+			"*** alice sets mode +v botty on #general",
 		},
 		{
 			"invited",
