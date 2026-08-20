@@ -667,6 +667,10 @@ func (m *Manager) PrepareInstance(
 // relies on. Returns the count of attach attempts plus any failure
 // that surfaced.
 //
+// An instance the session already holds a client for is skipped, so
+// a client that registered its own row and connected before the boot
+// runs keeps the one subscription it has.
+//
 // Failures are logged per-instance and accumulated; the manager
 // returns the first error so the connection screen can surface it,
 // but later instances still attempt their attach.
@@ -680,6 +684,17 @@ func (m *Manager) Start(ctx context.Context, sess *session.Session) error {
 
 	var firstErr error
 	for _, inst := range instances {
+		// An identity the session already holds a client for is
+		// connected, and a second client on it would read the same
+		// events channel as the first: both goroutines would receive
+		// from it and each delivery would reach only one of them. The
+		// question is about connectedness, not about what kind of
+		// actor is behind the row, and the client that registers
+		// before this runs is the one asking for the boot.
+		if sess.LookupClient(protocol.ClientID(inst.ID())) != nil {
+			continue
+		}
+
 		if _, attachErr := m.Attach(ctx, sess, inst); attachErr != nil {
 			logger.WarnContext(ctx, "attach boot model client",
 				"component", "modelmanager",

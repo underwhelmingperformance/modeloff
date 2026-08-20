@@ -457,8 +457,9 @@ nick. It reads the same registry `resolveMsgTarget` reads, so all
 five agree with message addressing on who a nick reaches, and the
 user resolves like any other client through the sentinel empty
 `protocol.ClientID` its subscription is registered under. A
-subscription is what makes the user addressable, not an instances
-row. A nick outside the RFC 2812 §2.3.1 grammar is refused with
+subscription is what makes a client addressable: the connection
+record says a client exists, and the subscription says the server can
+reach it. A nick outside the RFC 2812 §2.3.1 grammar is refused with
 `domain.ErroneousNicknameError` (432) before any lookup runs; a nick
 naming no connected client is refused with `domain.UnknownNickError`
 (401), including a nick an instances row still holds when the client
@@ -647,11 +648,11 @@ distinction, listing a `+p` channel with its topic suppressed, but
 that leaks the one thing the mode exists to hide, and modern ircds
 treat the two the same.
 
-Membership is read from the issuing client's own channel set, not
-from the channel's member list: the user-client is never persisted
-into a member list, so a directory row read straight from the store
-does not contain it. The same correction gives `RPL_LIST` its member
-count.
+Membership is read from the issuing client's own channel set, which
+is the client's own answer to a question about itself and costs no
+channel load. `LIST` asks it once per directory row, so consulting
+each channel's member list instead would turn one enumeration into
+one lookup per channel.
 
 That predicate is also what a whole-session view is made of. The
 user-client already holds `+o`, so its `/list` and `/whois` see
@@ -849,6 +850,56 @@ are in-process operations rather than wire commands, and stay
 hand-rolled in `internal/modelclient/memory_tools.go`.
 
 ### Persistence
+
+Every connected client has a row in `instances`, its connection
+record, and the empty `InstanceID` the user-client registers under is
+an ordinary key there. `UserClient.Attach` writes the row before it
+subscribes, which is the registration step `ADDMODEL` performs for a
+model; from then on the session is the only writer of it, exactly as
+it is for a model's. A join stamps the channel onto it, a `NICK`
+rewrites the nick, and the QUIT teardown deletes it, which is what
+frees the nick. The write is an upsert on a table that already
+existed, so a database from before the row needs no migration: the
+first attach creates it.
+
+A row is not a connection. `Session.Subscribe` allocates the
+subscription envelope to the client that asks for the identity, and
+refuses a second client asking for the same one with
+`session.ErrIdentityInUse`: the envelope's events channel has one
+reader, and two goroutines receiving from it would take deliveries
+from each other. `Manager.Start` asks the same question the other way
+round, skipping any instance row the session already holds a client
+for, so the boot-time attach of stored model instances leaves a
+client that registered and connected before it alone. That is what
+keeps `main.go`'s order (attach the user-client, then start the
+manager) from putting two readers on one bus.
+
+This is the connection record, not an account registry. Nothing about
+it survives the QUIT that deletes it, and re-inviting a client that
+quit would still need the services model described in point 6.2 of
+the flow.
+
+That row is what lets a channel record name the client in its member
+list. `store.resolveChannelMembers` resolves every member id through
+the registry, the empty one included, so a member entry keeps
+resolving to the same `*domain.Instance` the client holds and the
+pointer comparisons downstream keep matching. `Session.ResolveNick`
+and `Session.ResolveInstanceByID` therefore answer for every client
+the same way, out of the store, with no short-circuit for one of
+them. `Session.Instances` returns every row, this client's included;
+a caller that wants everybody but itself excludes its own identity,
+which is a question only that caller can answer, and the chat-screen
+does it for its completion sources.
+
+A run that ends without a QUIT never runs the teardown, so the
+persisted member lists still name the client. `Connect` classifies
+that run as unclean from the `session_active` marker and
+`cleanupUncleanShutdown` reconciles it: on the command loop, every
+channel record naming this client loses the membership, and a channel
+the departure empties is destroyed, which is what the departure would
+have done in order (RFC 2811 §2). It reads the channel records rather
+than the client's own channel set, because the client registered a
+moment ago with an empty one.
 
 The channel-keyed event log (`store.AppendEvent` /
 `store.EventsBefore` / `store.DMEventsBefore`) is the server-side

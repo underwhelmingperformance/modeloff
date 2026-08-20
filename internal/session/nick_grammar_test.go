@@ -101,9 +101,9 @@ func TestSession_add_model_refuses_an_erroneous_generated_nick(t *testing.T) {
 		domain.ErroneousNicknameError{Nick: "bot ty", Reason: domain.NickBadCharacter, At: fixedTime},
 		erroneous)
 
-	instances, err := s.ListInstances(ctx)
-	require.NoError(t, err)
-	require.Empty(t, instances)
+	require.Equal(t, []domain.InstanceID{""}, instanceIDs(t, s),
+		"the refused registration left no instance behind; the connection "+
+			"record of the client that issued it is the only one")
 
 	_, resolveErr := sess.ResolveNick(ctx, "bot ty")
 	require.ErrorIs(t, resolveErr, storemod.ErrNoSuchNick)

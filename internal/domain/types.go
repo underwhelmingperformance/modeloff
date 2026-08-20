@@ -348,9 +348,8 @@ func (i *Instance) LeaveChannels(channels ...ChannelName) {
 	}
 }
 
-// LeaveAllChannels empties the instance's channel set. The session's
-// unclean-shutdown recovery uses it to reset the ephemeral user
-// handle, which holds memberships no store row can contradict.
+// LeaveAllChannels empties the instance's channel set, for a caller
+// that is taking the client off every channel at once.
 func (i *Instance) LeaveAllChannels() {
 	i.mu.Lock()
 	defer i.mu.Unlock()

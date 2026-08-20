@@ -552,7 +552,7 @@ func (s ChatScreen) completionSet() command.CompletionSet[chatcmd.CompletionCont
 					}
 				}
 			},
-			Instances:      func() iter.Seq[*domain.Instance] { return s.sess.Instances(s.baseContext()) },
+			Instances:      s.otherInstances,
 			ChannelMembers: s.activeChannelInstances,
 			ActiveMembers:  func() iter.Seq[domain.Nick] { return s.activeMemberNicks() },
 			ActiveChannel:  func() domain.ChannelName { return s.active },

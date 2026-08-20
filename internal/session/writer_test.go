@@ -335,9 +335,9 @@ func TestSession_add_model_rolls_back_when_the_join_is_refused(t *testing.T) {
 		_, resolveErr := sess.ResolveNick(ctx, "fakenick")
 		require.ErrorIs(t, resolveErr, storemod.ErrNoSuchNick)
 
-		instances, err := s.ListInstances(ctx)
-		require.NoError(t, err)
-		require.Empty(t, instances, "the registered instance is deleted when its join is refused")
+		require.Equal(t, []domain.InstanceID{""}, instanceIDs(t, s),
+			"the registered instance is deleted when its join is refused, "+
+				"leaving only the connection record of the client that asked")
 
 		factory, ok := sess.modelClientFactory.(*testModelClientFactory)
 		require.True(t, ok)

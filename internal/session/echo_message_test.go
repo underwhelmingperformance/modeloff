@@ -60,7 +60,10 @@ func TestEchoToOriginator_without_cap_no_self_echo(t *testing.T) {
 		sess, s := newTestSession(t)
 		ctx := t.Context()
 
-		botty := seedInstance(t, sess, s, instanceSpec{
+		// The identity is left free for `passiveClient` to register:
+		// a subscription belongs to the client that took it, and this
+		// test means to read botty's bus itself.
+		botty := seedInstanceRow(t, s, instanceSpec{
 			Nick:     "botty",
 			ModelID:  "test/model",
 			Channels: testChannels("#chan"),

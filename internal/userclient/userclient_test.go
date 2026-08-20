@@ -105,6 +105,53 @@ func TestUserClient_capabilities_come_from_the_session(t *testing.T) {
 	require.True(t, user.Caps().Has(protocol.CapOperator))
 }
 
+// TestUserClient_attach_registers_the_connection_record pins the row
+// the rest of the system reads this client through, and the reason
+// a database written before the row existed needs no migration: the
+// row is created on demand by an upsert on the first attach.
+//
+// A channel record naming this client in its member list resolves
+// that entry back through the row, so without it the entry would be
+// dropped at load and every pointer comparison downstream would
+// stop matching.
+func TestUserClient_attach_registers_the_connection_record(t *testing.T) {
+	s := storetest.NewMemoryStore(t)
+	ctx := t.Context()
+
+	_, err := s.GetInstanceByID(ctx, domain.InstanceID(protocol.UserClientID))
+	require.Error(t, err, "a database written before this row holds no row for it")
+
+	mgr := modelmanager.New(modelmanager.Config{
+		Store:       s,
+		APIClient:   &apitest.Fake{},
+		BaseContext: t.Context,
+	})
+	t.Cleanup(func() { _ = mgr.DetachAll(context.Background()) })
+
+	sess := session.New(t.Context, s, mgr, nil)
+	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
+
+	user := userclient.New("testuser", sess, s, userclient.NewStoreReplyLog(s))
+	require.NoError(t, user.Attach(ctx))
+
+	row, err := s.GetInstanceByID(ctx, domain.InstanceID(protocol.UserClientID))
+	require.NoError(t, err)
+	require.Same(t, user.Instance(), row)
+
+	require.NoError(t, user.Join(ctx, "#general"))
+
+	w, err := s.GetWindow(ctx, "#general")
+	require.NoError(t, err)
+
+	cw, ok := w.(*domain.ChannelWindow)
+	require.True(t, ok)
+
+	member, found := cw.Members.GetByInstance(user.Instance())
+	require.True(t, found, "the persisted member list names this client")
+	require.Equal(t, domain.MemberModes{Operator: true}, member.Modes,
+		"the channel record carries the privileges, RFC 2811 §4.3's grant included")
+}
+
 func TestUserClient_attach_is_idempotent(t *testing.T) {
 	f := newFixture(t)
 
@@ -541,6 +588,10 @@ func (*recordingStore) ListAutojoinChannels(context.Context) ([]domain.ChannelNa
 func (s *recordingStore) SetAutojoinChannels(_ context.Context, channels []domain.ChannelName) error {
 	s.autojoin = slices.Clone(channels)
 
+	return nil
+}
+
+func (*recordingStore) SaveInstance(context.Context, *domain.Instance) error {
 	return nil
 }
 

@@ -51,7 +51,6 @@ func (s *Session) joinAs(ctx context.Context, actor *domain.Instance, kind joinK
 		attribute.String(observability.AttrInstanceID, string(actor.ID())),
 	}, func(ctx context.Context, _ trace.Span) error {
 		now := s.now()
-		isUser := actor.ID() == ""
 
 		window, created, err := s.ensureChannelWindowWithActor(ctx, ch, actor, now)
 		if err != nil {
@@ -90,9 +89,6 @@ func (s *Session) joinAs(ctx context.Context, actor *domain.Instance, kind joinK
 		// new op's rank — there is no separate MODE message).
 		if created {
 			window.Members.ApplyMode(actor, domain.ModeOperator, true)
-			if isUser {
-				s.setUserModes(ctx, ch, domain.MemberModes{Operator: true})
-			}
 
 			if err := s.persistChannelWindow(ctx, window); err != nil {
 				return fmt.Errorf("save channel after mode: %w", err)
@@ -100,7 +96,7 @@ func (s *Session) joinAs(ctx context.Context, actor *domain.Instance, kind joinK
 		}
 
 		if !alreadyMember {
-			if err := s.recordActorMembership(ctx, actor, ch, now, isUser); err != nil {
+			if err := s.recordActorMembership(ctx, actor, ch, now); err != nil {
 				return err
 			}
 		}
@@ -207,14 +203,9 @@ func (s *Session) ensureChannelWindowWithActor(ctx context.Context, ch domain.Ch
 }
 
 // recordActorMembership stamps the channel onto the actor's joined-
-// channels map and — for model actors — persists the updated
-// instance row.
-func (s *Session) recordActorMembership(ctx context.Context, actor *domain.Instance, ch domain.ChannelName, now time.Time, isUser bool) error {
+// channels map and persists the updated instance row.
+func (s *Session) recordActorMembership(ctx context.Context, actor *domain.Instance, ch domain.ChannelName, now time.Time) error {
 	actor.JoinChannel(ch, now)
-
-	if isUser {
-		return nil
-	}
 
 	if err := s.store.SaveInstance(ctx, actor); err != nil {
 		return fmt.Errorf("save instance: %w", err)
@@ -363,16 +354,12 @@ func (s *Session) changeNickAs(ctx context.Context, actor *domain.Instance, newN
 			return err
 		}
 
-		isUser := actor.ID() == ""
-
 		actor.SetNick(newNick)
 
-		if !isUser {
-			// The instances table is keyed by InstanceID, so a rename is
-			// an in-place update of the `nick` column.
-			if err := s.store.SaveInstance(ctx, actor); err != nil {
-				return fmt.Errorf("save instance: %w", err)
-			}
+		// The instances table is keyed by InstanceID, so a rename is
+		// an in-place update of the `nick` column.
+		if err := s.store.SaveInstance(ctx, actor); err != nil {
+			return fmt.Errorf("save instance: %w", err)
 		}
 
 		span.SetAttributes(attribute.String(observability.AttrInstanceID, string(actor.ID())))
@@ -645,10 +632,11 @@ func (s *Session) kickAs(ctx context.Context, actor, target *domain.Instance, ch
 // the invitation is written, so an unknown nick leaves the channel's
 // invitation set untouched rather than holding an entry for a client
 // that does not exist. Resolving against the registry of connected
-// clients is what makes the user an invitable target: it holds no
-// instances row, so a store lookup would answer "no such nick" for
-// it. The inviter gets a [domain.SystemNotice] in place of the
-// envelope, so the chat-screen surfaces the missing-nick condition.
+// clients is what an invitation asks for: somebody the server can
+// deliver it to, which a nick an instances row still holds is not if
+// nothing ever attached under it. The inviter gets a
+// [domain.SystemNotice] in place of the envelope, so the chat-screen
+// surfaces the missing-nick condition.
 func (s *Session) inviteAs(ctx context.Context, actor *domain.Instance, target domain.Nick, ch domain.ChannelName) (domain.ProtocolEvent, error) {
 	actorNick := actor.Nick()
 

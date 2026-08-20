@@ -402,7 +402,8 @@ func TestSession_AddModel_creates_new_instance_per_invocation(t *testing.T) {
 			ids[i] = inst.ID()
 		}
 
-		require.ElementsMatch(t, []domain.InstanceID{first.ID(), second.ID()}, ids)
+		require.ElementsMatch(t, []domain.InstanceID{"", first.ID(), second.ID()}, ids,
+			"both models plus the connection record of the client that added them")
 	})
 }
 
@@ -883,4 +884,53 @@ func TestDispatch_transcript_token_budget_from_catalogue_context_len(t *testing.
 			})
 		})
 	}
+}
+
+// TestBootOrder_Start_leaves_the_connected_client_alone pins the
+// boot sequence `main.go` runs: the user-client registers and
+// connects, then the manager attaches a model-client for every
+// instance row it finds. That client's own row is among them now,
+// and attaching a second client to one identity would put two
+// goroutines on one events channel, where each delivery reaches
+// only whichever of them received first. The chat screen would go
+// blank and the model-client would take LLM turns under this
+// client's nick.
+//
+// `Start` returning no error says it did not attach a client for an
+// identity the session already holds one for, and the events say the
+// subscription is still this client's to read. The refusal that
+// backs the skip up is
+// `TestSession_Subscribe_owns_the_identity_it_registers`.
+func TestBootOrder_Start_leaves_the_connected_client_alone(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		sess, _, mgr, user := newTestSessionWithManager(t, &apitest.Fake{}, "test-key")
+		ctx := t.Context()
+
+		require.NoError(t, mgr.Start(ctx, sess),
+			"the boot attach skips an identity the session already holds a client for")
+
+		synctest.Wait()
+		drainUserEvents(user)
+
+		joinedAt := time.Now()
+		require.NoError(t, user.Join(ctx, "#general"))
+		synctest.Wait()
+
+		members := domain.NewMemberList()
+		members.Add(user.Instance())
+		members.SetModes(user.Instance(), domain.MemberModes{Operator: true})
+
+		require.Equal(t, []domain.Event{
+			domain.Join{
+				Target:   "#general",
+				Nick:     "testuser",
+				Created:  true,
+				At:       joinedAt,
+				Instance: user.Instance(),
+			},
+			domain.NamesReplyEvent{Channel: "#general", Members: members, At: joinedAt},
+			domain.NamesEnd{Channel: "#general", At: joinedAt},
+		}, collectUserEvents(user),
+			"the subscription still delivers to the client that registered it")
+	})
 }

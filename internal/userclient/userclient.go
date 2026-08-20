@@ -79,6 +79,14 @@ type Store interface {
 	// it describes.
 	ClearSessionActive(ctx context.Context) error
 
+	// SaveInstance writes this client's connection record. It is
+	// written at attach, under the empty [domain.InstanceID] the
+	// user-client registers with, and from then on the session
+	// maintains it exactly as it maintains a model's: a join stamps
+	// the channel onto it, a NICK rewrites the nick, and the QUIT
+	// teardown deletes it.
+	SaveInstance(ctx context.Context, inst *domain.Instance) error
+
 	EventsBefore(ctx context.Context, ch domain.ChannelName, before *int64, n int) ([]domain.StoredEvent, error)
 
 	// DMEventsBefore reads the DM thread between `self` and `peer`,
@@ -351,6 +359,22 @@ func (uc *UserClient) Caps() command.CapabilityHolder {
 // subscription's bus so consumers see the elevation before any
 // other traffic.
 //
+// The connection record is written first. A model's is written by
+// `ADDMODEL`'s registration step before its client connects, and
+// this is the same step for a client that registers itself: from
+// here on the session is the only writer of that row, and channel
+// records loaded from the store resolve this client's member
+// entries through it. The write is an upsert, so a database from
+// before this row existed needs no migration and a repeat run
+// overwrites the row it left.
+//
+// That write is also what registers this client's `*domain.Instance`
+// as the canonical handle for its id, so Attach must run before
+// anything loads a channel record: a member entry naming this client
+// resolves through the registry, and one resolved before the write
+// would either miss or bind to a different handle. `main.go` attaches
+// as its first act on the session for that reason.
+//
 // Attach is idempotent: a repeat call on an already-attached
 // client returns nil.
 func (uc *UserClient) Attach(ctx context.Context) error {
@@ -359,6 +383,10 @@ func (uc *UserClient) Attach(ctx context.Context) error {
 
 	if uc.sub != nil {
 		return nil
+	}
+
+	if err := uc.store.SaveInstance(ctx, uc.instance); err != nil {
+		return fmt.Errorf("register user client: %w", err)
 	}
 
 	sub, err := uc.sess.Subscribe(uc, protocol.SubscribeOptions{
@@ -371,7 +399,6 @@ func (uc *UserClient) Attach(ctx context.Context) error {
 	}
 
 	uc.sub = sub
-	_ = ctx
 
 	return nil
 }

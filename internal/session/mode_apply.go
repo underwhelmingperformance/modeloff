@@ -109,8 +109,8 @@ func validateChannelModeChange(change protocol.ChannelModeChange, now time.Time)
 //
 // `change.Target` resolves through [Session.resolveConnectedNick],
 // the same registry INVITE, KICK, WHOIS and KILL resolve a nick
-// through, so `MODE` can grant `+o`/`+v` to a connected client before
-// an instances row exists for it.
+// through, so a grant reaches whoever currently holds the nick and
+// not a row nothing is attached under.
 func (s *Session) setMemberModeAs(ctx context.Context, window *domain.ChannelWindow, ch domain.ChannelName, actor *domain.Instance, change protocol.ChannelModeChange) error {
 	return s.inSpan(ctx, "session.set_member_mode", []attribute.KeyValue{
 		attribute.String(observability.AttrChannel, string(ch)),
@@ -124,15 +124,6 @@ func (s *Session) setMemberModeAs(ctx context.Context, window *domain.ChannelWin
 		}
 
 		window.Members.ApplyMode(target, change.Flag, change.Add)
-
-		// The user is stripped from the member list on save and
-		// re-injected on load from the session's own record, so the
-		// user's privileges must be written to that record too.
-		// Otherwise the next load restores the user without this
-		// change.
-		if updated, ok := window.Members.GetByInstance(target); ok && target.ID() == "" {
-			s.setUserModes(ctx, ch, updated.Modes)
-		}
 
 		if err := s.persistChannelWindow(ctx, window); err != nil {
 			return fmt.Errorf("save channel: %w", err)

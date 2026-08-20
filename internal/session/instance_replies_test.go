@@ -107,7 +107,7 @@ func TestSession_failed_invite_persists_notice_to_issuer(t *testing.T) {
 	sess, store := newTestSession(t)
 	ctx := t.Context()
 
-	inst := seedInstance(t, sess, store, instanceSpec{Nick: "asker", ModelID: "test/model"})
+	inst := seedInstanceRow(t, store, instanceSpec{Nick: "asker", ModelID: "test/model"})
 	seedChannelWithMembers(t, sess, store, "#dev", "testuser", "asker")
 
 	model := newPlainClient(protocol.ClientID(inst.ID()))
@@ -140,7 +140,7 @@ func TestSession_successful_invite_not_in_issuer_reply_log(t *testing.T) {
 	sess, store := newTestSession(t)
 	ctx := t.Context()
 
-	inst := seedInstance(t, sess, store, instanceSpec{Nick: "asker", ModelID: "test/model"})
+	inst := seedInstanceRow(t, store, instanceSpec{Nick: "asker", ModelID: "test/model"})
 	seedInstance(t, sess, store, instanceSpec{Nick: "target", ModelID: "test/model"})
 	seedChannelWithMembers(t, sess, store, "#dev", "testuser", "asker")
 

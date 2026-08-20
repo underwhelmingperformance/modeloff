@@ -391,12 +391,8 @@ func SeedChannel(t testing.TB, user *userclient.UserClient, name string) {
 func SeedMessage(t testing.TB, sess *session.Session, channel, body string) {
 	t.Helper()
 
-	bot := testclient.New("seedbot", sess,
-		testclient.WithInstanceID("inst-seedbot"),
-		testclient.WithChannels(domain.ChannelName(channel)),
-	)
-	require.NoError(t, bot.Attach(t.Context()))
-	t.Cleanup(bot.Detach)
+	bot := seedbotFor(t, sess)
+	bot.Instance().JoinChannel(domain.ChannelName(channel), time.Now())
 
 	resp, err := bot.Send(t.Context(), protocol.PrivMsg{
 		Target: protocol.ChannelTarget(channel),
@@ -404,6 +400,37 @@ func SeedMessage(t testing.TB, sess *session.Session, channel, body string) {
 	})
 	require.NoError(t, err)
 	require.NoError(t, resp.Err)
+}
+
+// seedbots holds the seed client of each session a test has seeded
+// through, so repeated [SeedMessage] calls speak as one client. A
+// subscription belongs to the client that registered it, so a second
+// client under "inst-seedbot" would be refused; and one identity
+// keeps the nick a test renders the same from one seeded line to the
+// next.
+var seedbots sync.Map
+
+func seedbotFor(t testing.TB, sess *session.Session) *testclient.TestClient {
+	t.Helper()
+
+	if existing, ok := seedbots.Load(sess); ok {
+		bot, isBot := existing.(*testclient.TestClient)
+		require.True(t, isBot)
+
+		return bot
+	}
+
+	bot := testclient.New("seedbot", sess, testclient.WithInstanceID("inst-seedbot"))
+	require.NoError(t, bot.Attach(t.Context()))
+
+	seedbots.Store(sess, bot)
+
+	t.Cleanup(func() {
+		seedbots.Delete(sess)
+		bot.Detach()
+	})
+
+	return bot
 }
 
 // NewTestSession constructs the `*session.Session`,

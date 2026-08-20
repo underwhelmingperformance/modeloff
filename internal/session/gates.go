@@ -166,10 +166,11 @@ func (s *Session) requireChannelOp(actor *domain.Instance, window *domain.Channe
 // suppressed, but that leaks the one thing the mode exists to hide,
 // and modern ircds treat the two the same.
 //
-// Membership is read from the issuer's own channel set, not from
-// `window.Members`: the user-client is never persisted into a
-// member list, so a directory row read straight from the store does
-// not contain it.
+// Membership is read from the issuer's own channel set, which is
+// the client's own answer to a question about itself and costs no
+// channel load. `LIST` asks it for every row in the directory, so
+// loading each channel to consult its member list instead would
+// turn one enumeration into one lookup per channel.
 func (s *Session) channelVisibleTo(issuer *domain.Instance, name domain.ChannelName, modes domain.ChannelModes) bool {
 	if !modes.Secret && !modes.Private {
 		return true

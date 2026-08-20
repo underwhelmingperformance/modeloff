@@ -416,3 +416,140 @@ func TestSession_Quit_reaches_a_client_the_broadcast_cannot(t *testing.T) {
 		})
 	}
 }
+
+// TestSession_commands_naming_the_issuing_client answers the question
+// this programme is about: does a command mean the same thing when it
+// names the client that sent it? Every one of these reads the same
+// registry and the same channel records for the issuer as for anybody
+// else, so the answers are the RFC's, not a special case.
+func TestSession_commands_naming_the_issuing_client(t *testing.T) {
+	tests := []struct {
+		name   string
+		run    func(t *testing.T, sess *Session, ctx context.Context) (protocol.Response, error)
+		assert func(t *testing.T, sess *Session, resp protocol.Response)
+	}{
+		{
+			name: "WHOIS answers with the issuer's own snapshot",
+			run: func(t *testing.T, sess *Session, ctx context.Context) (protocol.Response, error) {
+				t.Helper()
+
+				return userClient(t, sess).Send(ctx, protocol.Whois{Nick: "testuser", Channel: "#general"})
+			},
+			assert: func(t *testing.T, _ *Session, resp protocol.Response) {
+				t.Helper()
+
+				require.NoError(t, resp.Err)
+				require.Equal(t, []protocol.Event{domain.Whois{
+					Target:   "#general",
+					Nick:     "testuser",
+					Channels: []domain.ChannelName{"#general"},
+					At:       fixedTime,
+				}}, resp.Events)
+			},
+		},
+		{
+			name: "INVITE of a nick already on the channel is refused with 443",
+			run: func(t *testing.T, sess *Session, ctx context.Context) (protocol.Response, error) {
+				t.Helper()
+
+				return userClient(t, sess).Send(ctx, protocol.Invite{Nick: "testuser", Channel: "#general"})
+			},
+			assert: func(t *testing.T, _ *Session, resp protocol.Response) {
+				t.Helper()
+
+				require.Equal(t,
+					domain.UserOnChannelError{Nick: "testuser", Channel: "#general", At: fixedTime},
+					resp.Err)
+			},
+		},
+		{
+			name: "MODE +v names the issuer like any other member",
+			run: func(t *testing.T, sess *Session, ctx context.Context) (protocol.Response, error) {
+				t.Helper()
+
+				return userClient(t, sess).Send(ctx, protocol.ChannelMode{
+					Channel: "#general",
+					Changes: []protocol.ChannelModeChange{
+						{Flag: domain.ModeChannelVoice, Add: true, Target: "testuser"},
+					},
+				})
+			},
+			assert: func(t *testing.T, sess *Session, resp protocol.Response) {
+				t.Helper()
+
+				require.NoError(t, resp.Err)
+
+				window, err := sess.loadChannelWindow(t.Context(), "#general")
+				require.NoError(t, err)
+
+				member, ok := window.Members.GetByNick("testuser")
+				require.True(t, ok)
+				require.Equal(t, domain.MemberModes{Operator: true, Voice: true}, member.Modes)
+			},
+		},
+		{
+			name: "KICK takes the issuer off the channel",
+			run: func(t *testing.T, sess *Session, ctx context.Context) (protocol.Response, error) {
+				t.Helper()
+
+				return userClient(t, sess).Send(ctx, protocol.Kick{Channel: "#general", Nick: "testuser"})
+			},
+			assert: func(t *testing.T, sess *Session, resp protocol.Response) {
+				t.Helper()
+
+				require.NoError(t, resp.Err)
+				requireChannels(t, userInstance(t, sess).Channels())
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				sess, _ := newTestSession(t)
+				ctx := t.Context()
+
+				require.NoError(t, userJoin(ctx, t, sess, "#general"))
+				collectEmittedEvents(t, sess)
+
+				resp, err := tc.run(t, sess, ctx)
+				require.NoError(t, err)
+
+				tc.assert(t, sess, resp)
+			})
+		})
+	}
+}
+
+// TestSession_the_issuing_client_has_a_connection_record pins the row
+// itself. It is written when the client registers, the session
+// maintains it exactly as it maintains a model's, and the QUIT
+// teardown deletes it. A join stamps the channel onto it, a NICK
+// rewrites the nick, and deleting the row is what frees the nick.
+func TestSession_the_issuing_client_has_a_connection_record(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		sess, s := newTestSession(t)
+		ctx := t.Context()
+
+		require.NoError(t, userJoin(ctx, t, sess, "#general"))
+
+		row, err := s.GetInstanceByID(ctx, "")
+		require.NoError(t, err)
+		require.Same(t, userInstance(t, sess), row)
+		require.Equal(t, comparableInstance{
+			Nick:     "testuser",
+			Channels: []channelEntry{{Name: "#general", JoinedAt: fixedTime}},
+		}, normaliseInstance(row))
+
+		require.NoError(t, userChangeNick(ctx, t, sess, "renamed"))
+
+		resolved, err := s.ResolveNick(ctx, "renamed")
+		require.NoError(t, err)
+		require.Same(t, userInstance(t, sess), resolved)
+
+		require.NoError(t, userQuitViaWire(ctx, t, sess, "bye"))
+
+		require.Equal(t, []domain.InstanceID{}, instanceIDs(t, s),
+			"the QUIT teardown deletes the connection record, which frees the nick")
+	})
+}

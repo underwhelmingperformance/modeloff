@@ -28,8 +28,15 @@ import (
 // That is what keeps a client that has stopped reading from
 // stalling the server.
 type serverClient struct {
-	sess     *Session
-	id       protocol.ClientID
+	sess *Session
+	id   protocol.ClientID
+
+	// owner is the client this subscription was allocated for.
+	// [Session.ensureSubscription] compares against it so the
+	// envelope is never handed to a second client: `events` has one
+	// reader, and two would take deliveries from each other.
+	owner protocol.Client
+
 	instance *domain.Instance
 	events   chan protocol.Delivery
 
@@ -91,10 +98,11 @@ type serverClient struct {
 // `stop` ends the pump for a subscription that is never reaped: the
 // user-client lives for the session, so its pump exits on the
 // session's shutdown gate.
-func newServerClient(sess *Session, id protocol.ClientID, inst *domain.Instance, stop <-chan struct{}) *serverClient {
+func newServerClient(sess *Session, owner protocol.Client, inst *domain.Instance, stop <-chan struct{}) *serverClient {
 	c := &serverClient{
 		sess:     sess,
-		id:       id,
+		id:       owner.Identity(),
+		owner:    owner,
 		instance: inst,
 		events:   make(chan protocol.Delivery, eventBufSize),
 		done:     make(chan struct{}),

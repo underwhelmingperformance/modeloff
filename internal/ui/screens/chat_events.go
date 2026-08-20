@@ -675,6 +675,27 @@ func (s ChatScreen) activeMemberNicks() iter.Seq[domain.Nick] {
 	return cw.Members.Nicks()
 }
 
+// otherInstances iterates every registered instance except this
+// client's own. The session's directory names every client with a
+// connection record, this one included; a completion offers a nick
+// to address, and typing your own nick after `/msg` or `/invite` is
+// not what the suggestion list is for.
+func (s ChatScreen) otherInstances() iter.Seq[*domain.Instance] {
+	return func(yield func(*domain.Instance) bool) {
+		self := s.user.Instance()
+
+		for inst := range s.sess.Instances(s.baseContext()) {
+			if inst == self {
+				continue
+			}
+
+			if !yield(inst) {
+				return
+			}
+		}
+	}
+}
+
 // activeChannelInstances iterates the `*Instance` handles for every
 // member of the currently-active channel. Tab completion sources this
 // iterator: the user only gets completions for nicks they can already

@@ -41,54 +41,47 @@ func TestSession_User_Send_routes_through_Handle(t *testing.T) {
 	require.True(t, ok)
 }
 
-// TestSession_Subscribe_registers_model_client pins the public
-// attach API: the foreign client (here a [subscribeFakeClient]
-// satisfying [protocol.Client]) is registered under its identity,
-// the returned subscription's `Events()` is the per-client delivery
-// stream, and the dispatcher resolves the actor instance through
-// the registered envelope.
-func TestSession_Subscribe_registers_model_client(t *testing.T) {
+// TestSession_Subscribe_owns_the_identity_it_registers pins the
+// attach contract. A subscription's events channel has one reader, so
+// the envelope belongs to the client the session allocated it for:
+// the same client asking again gets it back, and a different client
+// asking for the same identity is refused rather than handed a
+// channel it would take deliveries from.
+//
+// [protocol.UserClientID] is an ordinary identity under all of it.
+// The fixture has already registered it, so it is the case where a
+// second client asks for one somebody holds.
+func TestSession_Subscribe_owns_the_identity_it_registers(t *testing.T) {
 	t.Parallel()
 
 	sess, store := newTestSession(t)
 
-	inst := seedInstance(t, sess, store, instanceSpec{
-		Nick:    "botty",
-		ModelID: "test/model",
+	inst := seedInstanceRow(t, store, instanceSpec{Nick: "botty", ModelID: "test/model"})
+	owner := &subscribeFakeClient{id: protocol.ClientID(inst.ID())}
+
+	first, err := sess.Subscribe(owner, protocol.SubscribeOptions{Instance: inst})
+	require.NoError(t, err)
+	require.NotNil(t, first)
+	require.NotNil(t, first.Events())
+
+	second, err := sess.Subscribe(owner, protocol.SubscribeOptions{Instance: inst})
+	require.NoError(t, err)
+	require.Same(t, first, second, "the owner asking again gets the envelope it holds")
+
+	impostor := &subscribeFakeClient{id: protocol.ClientID(inst.ID())}
+	_, err = sess.Subscribe(impostor, protocol.SubscribeOptions{Instance: inst})
+	require.ErrorIs(t, err, ErrIdentityInUse)
+
+	userImpostor := &subscribeFakeClient{id: protocol.UserClientID}
+	_, err = sess.Subscribe(userImpostor, protocol.SubscribeOptions{
+		Instance:     userInstance(t, sess),
+		InitialModes: []domain.Mode{domain.ModeOperator},
 	})
+	require.ErrorIs(t, err, ErrIdentityInUse,
+		"the sentinel identity is held by the client that registered it, like any other")
 
-	fake := &subscribeFakeClient{id: protocol.ClientID(inst.ID())}
-	sub, err := sess.Subscribe(fake, protocol.SubscribeOptions{Instance: inst})
-
-	require.NoError(t, err)
-	require.NotNil(t, sub)
-	require.NotNil(t, sub.Events())
-}
-
-// TestSession_Subscribe_is_idempotent_per_identity pins the
-// "subscribing the same identity twice returns the existing
-// envelope" contract. The factory wrapper in cmd/modeloff relies on
-// this so a re-attach (e.g. a fresh INVITE for an already-registered
-// model) is a no-op rather than an error.
-func TestSession_Subscribe_is_idempotent_per_identity(t *testing.T) {
-	t.Parallel()
-
-	sess, store := newTestSession(t)
-
-	inst := seedInstance(t, sess, store, instanceSpec{
-		Nick:    "botty",
-		ModelID: "test/model",
-	})
-
-	fake := &subscribeFakeClient{id: protocol.ClientID(inst.ID())}
-
-	first, err := sess.Subscribe(fake, protocol.SubscribeOptions{Instance: inst})
-	require.NoError(t, err)
-
-	second, err := sess.Subscribe(fake, protocol.SubscribeOptions{Instance: inst})
-	require.NoError(t, err)
-
-	require.Same(t, first, second)
+	require.True(t, sess.idHasServerOper(protocol.UserClientID),
+		"the refused attach left the registered client's modes alone")
 }
 
 // TestSession_Subscribe_requires_instance pins the precondition:
@@ -103,33 +96,6 @@ func TestSession_Subscribe_requires_instance(t *testing.T) {
 	fake := &subscribeFakeClient{id: "inst-1"}
 	_, err := sess.Subscribe(fake, protocol.SubscribeOptions{})
 	require.Error(t, err)
-}
-
-// TestSession_Subscribe_accepts_user_client_id pins the symmetry
-// the user-client extraction relies on: [protocol.UserClientID]
-// is just another identity the session registers via the public
-// `Subscribe` API, with `+o` granted through
-// [protocol.SubscribeOptions.InitialModes]. The fixture's
-// `newTestSession` already attached the user-client, so the
-// repeat-call branch of `ensureSubscription` returns the same
-// envelope.
-func TestSession_Subscribe_accepts_user_client_id(t *testing.T) {
-	t.Parallel()
-
-	sess, _ := newTestSession(t)
-	inst := userInstance(t, sess)
-
-	fake := &subscribeFakeClient{id: protocol.UserClientID}
-	sub, err := sess.Subscribe(fake, protocol.SubscribeOptions{
-		Instance:     inst,
-		InitialModes: []domain.Mode{domain.ModeOperator},
-	})
-
-	require.NoError(t, err)
-	require.NotNil(t, sub)
-	require.NotNil(t, sub.Events())
-
-	require.True(t, sess.idHasServerOper(protocol.UserClientID))
 }
 
 // subscribeFakeClient is the minimal [protocol.Client] satisfier

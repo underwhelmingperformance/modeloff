@@ -351,9 +351,8 @@ func (s *SQLiteStore) resolveChannelMembers(ctx context.Context, row *channelRow
 	}
 
 	// Gather the ids carried by stubs that aren't already in the
-	// registry. The human user's instance (empty id) is ignored
-	// because the session constructs it on its own at Connect time
-	// and seeds the registry before loading channels.
+	// registry. Every client has an instances row, so the empty id
+	// the user-client registers under is looked up like any other.
 	var missing []domain.InstanceID
 	seen := make(map[domain.InstanceID]struct{})
 
@@ -365,10 +364,6 @@ func (s *SQLiteStore) resolveChannelMembers(ctx context.Context, row *channelRow
 		}
 
 		seen[id] = struct{}{}
-
-		if id == "" {
-			continue
-		}
 
 		if s.resolveInstance(id) != nil {
 			continue

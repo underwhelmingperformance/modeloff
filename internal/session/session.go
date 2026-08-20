@@ -6,6 +6,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"iter"
 	"log/slog"
@@ -137,14 +138,13 @@ type Store interface {
 // The user's `*domain.Instance` is owned by an external
 // `*userclient.UserClient` and reaches the session through the
 // registered subscription envelope; the session reads it through
-// [Session.userInstance] when channel-state code needs the user
-// handle (member-list injection, mode bookkeeping).
+// [Session.userInstance] for the two things addressed to that one
+// client, the welcome numerics and the unclean-shutdown
+// reconciliation.
 type Session struct {
 	store Store
 
 	baseContext func() context.Context
-	userModes   map[domain.ChannelName]domain.MemberModes
-	userMu      sync.Mutex
 	now         func() time.Time
 
 	// defaultChannelModes returns the modes a newly created channel
@@ -284,8 +284,9 @@ type DefaultChannelModes func(ctx context.Context) domain.ChannelModes
 // or a test fixture) and attaches itself to the returned session
 // via [Session.Subscribe] before any command is dispatched. The
 // session reads the user's `*domain.Instance` through the
-// registered subscription envelope; the store never persists the
-// user to disk.
+// registered subscription envelope; the client writes its own
+// connection record on the way in, which is what makes that handle
+// the canonical one for the empty [domain.InstanceID].
 func New(
 	baseContext func() context.Context,
 	s Store,
@@ -299,7 +300,6 @@ func New(
 		baseContext:         baseContext,
 		store:               s,
 		defaultChannelModes: defaultChannelModes,
-		userModes:           make(map[domain.ChannelName]domain.MemberModes),
 		now:                 time.Now,
 		connectedC:          make(chan struct{}),
 		persistenceFailures: persistenceFailures,
@@ -426,20 +426,25 @@ func (s *Session) lookupClientByNick(nick domain.Nick) *serverClient {
 // actor `*domain.Instance` (from `opts.Instance`) and the per-
 // subscription mode set.
 //
-// Subscribe is idempotent: a repeat call for an already-registered
-// identity returns the existing subscription and applies any new
-// `InitialModes` to it. Returns an error if `opts.Instance` is nil
-// or if [Session.Shutdown] has begun.
+// Subscribe is idempotent for the client that already holds the
+// identity: a repeat call returns the same subscription and applies
+// any new `InitialModes` to it. A different client asking for an
+// identity that is already registered is refused with
+// [ErrIdentityInUse]. A subscription's events channel has one
+// reader; handing it to a second client would have both goroutines
+// receive from it, and each delivery would reach only one of them.
+// An identity becomes free again when its subscription is reaped.
+//
+// Returns an error if `opts.Instance` is nil or if
+// [Session.Shutdown] has begun.
 func (s *Session) Subscribe(c protocol.Client, opts protocol.SubscribeOptions) (protocol.Subscription, error) {
 	if opts.Instance == nil {
 		return nil, fmt.Errorf("session.Subscribe: opts.Instance is required")
 	}
 
-	id := c.Identity()
-
-	sc, ok := s.ensureSubscription(id, opts.Instance)
-	if !ok {
-		return nil, fmt.Errorf("session.Subscribe: session is shutting down")
+	sc, err := s.ensureSubscription(c, opts.Instance)
+	if err != nil {
+		return nil, err
 	}
 
 	if opts.EchoMessage {
@@ -458,31 +463,46 @@ func (s *Session) Subscribe(c protocol.Client, opts protocol.SubscribeOptions) (
 	return sc, nil
 }
 
-// ensureSubscription allocates a subscription envelope for `id`
-// if one does not already exist, returning the canonical handle
-// and a flag reporting whether the registry is open. If
-// [Session.Shutdown] has begun, registration is refused: an
-// existing handle is still returned, but a fresh identity is not
-// registered.
-func (s *Session) ensureSubscription(id protocol.ClientID, inst *domain.Instance) (*serverClient, bool) {
+// ErrIdentityInUse is returned by [Session.Subscribe] when the
+// identity a client is asking for is already registered to a
+// different client. Callers branch on it with `errors.Is`.
+var ErrIdentityInUse = errors.New("identity is already registered to another client")
+
+// ensureSubscription returns the subscription envelope `c` holds,
+// allocating one if the identity is free. A subscription belongs to
+// the client that registered it: an identity already registered to a
+// different client is refused with [ErrIdentityInUse], because the
+// envelope's events channel has one reader and a second client
+// receiving from it would take deliveries away from the first.
+//
+// If [Session.Shutdown] has begun, registration is refused: an
+// existing handle is still returned to its owner, but a fresh
+// identity is not registered.
+func (s *Session) ensureSubscription(c protocol.Client, inst *domain.Instance) (*serverClient, error) {
+	id := c.Identity()
+
 	s.subsMu.Lock()
 	defer s.subsMu.Unlock()
 
 	if existing, ok := s.clientHandles[id]; ok {
-		return existing, true
+		if existing.owner != c {
+			return nil, fmt.Errorf("session.Subscribe: %q: %w", id, ErrIdentityInUse)
+		}
+
+		return existing, nil
 	}
 
 	select {
 	case <-s.shuttingDown:
-		return nil, false
+		return nil, fmt.Errorf("session.Subscribe: session is shutting down")
 	default:
 	}
 
-	sc := newServerClient(s, id, inst, s.shuttingDown)
+	sc := newServerClient(s, c, inst, s.shuttingDown)
 	s.clientHandles[id] = sc
 	s.subscribers[id] = sc
 
-	return sc, true
+	return sc, nil
 }
 
 // reapClient removes a model-client from the subscriber set, closes
@@ -653,25 +673,60 @@ func (s *Session) Connect(ctx context.Context) error {
 	})
 }
 
-// cleanupUncleanShutdown resets this Session's in-memory user
-// state so a post-connect view mirrors a fresh, clean start.
+// cleanupUncleanShutdown drops the memberships the previous run left
+// behind. A run that ended without a QUIT never ran the teardown
+// that takes a client off its channels, so the persisted member
+// lists still name it and its instance row still carries the
+// channels. This is what a real server observes after a client
+// disconnects without saying goodbye, and reconciling it here is
+// what lets the connecting client start from a known-empty state and
+// rejoin from its autojoin list.
 //
-// The user is ephemeral — never persisted to the store — so
-// cleanup is purely an in-memory reset of the user handle's
-// channel map and the userModes map. There is no store-side
-// prior-nick residue to reconcile.
+// Only the connecting client is reconciled. A model-client's
+// instance row is deleted by its own QUIT, and one that survived the
+// previous run is reattached by the model manager at startup, which
+// is what makes its memberships live again.
+//
+// The channel records are session state, so the work runs on the
+// command loop. A channel the departure empties is destroyed, which
+// is what the departure would have done had it happened in order
+// (RFC 2811 §2).
 func (s *Session) cleanupUncleanShutdown(ctx context.Context) error {
-	_ = ctx
-
-	if user := s.userInstance(); user != nil {
-		user.LeaveAllChannels()
+	user := s.userInstance()
+	if user == nil {
+		return nil
 	}
 
-	s.userMu.Lock()
-	s.userModes = make(map[domain.ChannelName]domain.MemberModes)
-	s.userMu.Unlock()
+	_, err := s.onWriter(ctx, func(ctx context.Context) (protocol.Response, error) {
+		// The channel records are what is asked, not the client's own
+		// channel set: this client registered a moment ago with an
+		// empty one, and what the previous run left behind is in the
+		// member lists.
+		windows, listErr := s.store.ListWindows(ctx)
+		if listErr != nil {
+			return protocol.Response{}, fmt.Errorf("list windows: %w", listErr)
+		}
 
-	return nil
+		for _, w := range windows {
+			cw, ok := w.(*domain.ChannelWindow)
+			if !ok || !cw.Members.HasInstance(user) {
+				continue
+			}
+
+			window, loadErr := s.loadChannelWindow(ctx, cw.Name())
+			if loadErr != nil {
+				return protocol.Response{}, fmt.Errorf("load channel %q: %w", cw.Name(), loadErr)
+			}
+
+			if removeErr := s.removeMember(ctx, window, user); removeErr != nil {
+				return protocol.Response{}, fmt.Errorf("drop stale membership of %q: %w", cw.Name(), removeErr)
+			}
+		}
+
+		return protocol.Response{}, nil
+	})
+
+	return err
 }
 
 // ModelClientFactory constructs and tears down the per-instance
@@ -766,15 +821,11 @@ func (s *Session) Emit(ctx context.Context, evt domain.ProtocolEvent) {
 }
 
 // ResolveInstanceByID returns the canonical `*domain.Instance` for
-// the given id. The user's own id resolves to the user's handle,
-// which the store never holds a row for; every other id is looked up
-// there. This is the id-side counterpart of [Session.ResolveNick],
-// and answers for the same set of clients.
+// the given id. This is the id-side counterpart of
+// [Session.ResolveNick], and answers for the same set of clients:
+// every connected client has an instances row, so every one of them
+// is looked up the same way.
 func (s *Session) ResolveInstanceByID(ctx context.Context, id domain.InstanceID) (*domain.Instance, error) {
-	if user := s.userInstance(); user != nil && id == user.ID() {
-		return user, nil
-	}
-
 	return s.store.GetInstanceByID(ctx, id)
 }
 
@@ -827,15 +878,10 @@ func (s *Session) ClientCaps(id protocol.ClientID) command.CapabilityHolder {
 // ResolveNick turns a user-supplied nick into the canonical
 // `*domain.Instance` for that nick. This is the single boundary
 // where nick strings become handles — callers hold the handle and
-// compare by pointer identity from there on. A nick matching the
-// user's current display nick resolves to the user's handle; any
-// other nick is looked up in the store. Both comparisons run under
-// the server's casemapping, so `/whois Botty` finds `botty`.
+// compare by pointer identity from there on. Every connected client
+// has an instances row, so every nick is looked up in the store,
+// under the server's casemapping: `/whois Botty` finds `botty`.
 func (s *Session) ResolveNick(ctx context.Context, nick domain.Nick) (*domain.Instance, error) {
-	if user := s.userInstance(); user != nil && domain.EqualNick(nick, user.Nick()) {
-		return user, nil
-	}
-
 	return s.store.ResolveNick(ctx, nick)
 }
 
@@ -867,19 +913,9 @@ func (s *Session) DirectoryChannels(ctx context.Context, issuer *domain.Instance
 				continue
 			}
 
-			// The user is never written into a persisted member list,
-			// so a row read straight from the store is short by one
-			// for every channel the user is in. This is the same
-			// correction `injectUserIfChannelMember` applies on the
-			// load path.
-			members := cw.Members.Len()
-			if s.userInChannel(cw.Name()) {
-				members++
-			}
-
 			entries = append(entries, domain.ChannelDirectoryEntry{
 				Channel: cw.Name(),
-				Members: members,
+				Members: cw.Members.Len(),
 				Topic:   cw.Topic,
 			})
 		}
@@ -921,12 +957,11 @@ func (s *Session) ChannelWindowNames(ctx context.Context) ([]domain.ChannelName,
 	return names, err
 }
 
-// Instances returns an iterator over every known model instance.
-// The UI's tab-completion sources call this to offer `/invite`,
-// `/msg`, `/whois`, and `/add-model` suggestions across the full
-// session — not just the active channel's members. The user
-// instance is not included; consumers hold the user-client
-// handle directly and read identity through it.
+// Instances returns an iterator over every registered instance,
+// which is every client with a connection record, the one behind the
+// calling process included. A caller that wants everybody but itself
+// excludes its own identity, which is a question only that caller
+// can answer.
 //
 // The iterator materialises a snapshot at call time and is safe
 // to range after the session state changes; subsequent mutations

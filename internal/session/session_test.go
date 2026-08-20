@@ -222,6 +222,24 @@ func userJoinAutojoinChannels(ctx context.Context, t testing.TB, sess *Session, 
 	return nil
 }
 
+// instanceIDs is the id of every registered instance, in store
+// order. Every connected client has a connection record, so the
+// user-client's empty id is among them and a test asserting on the
+// registry names it.
+func instanceIDs(t testing.TB, s *storemod.SQLiteStore) []domain.InstanceID {
+	t.Helper()
+
+	instances, err := s.ListInstances(t.Context())
+	require.NoError(t, err)
+
+	ids := make([]domain.InstanceID, 0, len(instances))
+	for _, inst := range instances {
+		ids = append(ids, inst.ID())
+	}
+
+	return ids
+}
+
 // nextEvent reads the next event from the user-client
 // subscription's protocol bus.
 func nextEvent(t testing.TB, sess *Session) (domain.Event, bool) {
@@ -474,14 +492,18 @@ func newTestSessionWithAPI(t *testing.T, apiClient api.Client) (*Session, *store
 // attachTestUserClient registers a thin user-client with the
 // session under `nick` and grants it `+o` via
 // [protocol.SubscribeOptions.InitialModes], matching what the
-// production-side `userclient.New(...).Attach(...)` does. The
-// session-test fixture lives in this package and cannot import
+// production-side `userclient.New(...).Attach(...)` does, connection
+// record included: a channel record loaded from the store resolves
+// this client's member entries through that row. The session-test
+// fixture lives in this package and cannot import
 // `internal/userclient` (the dependency is one-way), so it
 // satisfies [protocol.Client] inline here.
 func attachTestUserClient(t *testing.T, sess *Session, nick domain.Nick) {
 	t.Helper()
 
 	inst := domain.NewUserInstance(nick)
+	require.NoError(t, sess.store.SaveInstance(t.Context(), inst))
+
 	tc := &testUserClient{sess: sess, instance: inst}
 	sub, err := sess.Subscribe(tc, protocol.SubscribeOptions{
 		Instance:     inst,
@@ -824,9 +846,11 @@ func TestSession_Connect_clears_unclean_user_membership(t *testing.T) {
 		require.NoError(t, err)
 		requireChannelEqual(t, newTestChannelWindow("#general", fixedTime, testMembers(t, sess, s, "botty")), general)
 
-		random, err := sess.loadChannelWindow(ctx, "#random")
-		require.NoError(t, err)
-		requireChannelEqual(t, newTestChannelWindow("#random", fixedTime, domain.NewMemberList()), random)
+		_, err = sess.loadChannelWindow(ctx, "#random")
+		require.ErrorIs(t, err, storemod.ErrNoSuchChannel,
+			"the stale membership was the channel's last, so dropping it "+
+				"destroys the channel, which is what the departure would have "+
+				"done in order (RFC 2811 §2)")
 
 		require.ElementsMatch(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
@@ -878,21 +902,33 @@ func TestSession_Connect_then_JoinAutojoin_stamps_UserJoinedAt(t *testing.T) {
 			},
 			domain.Reconnected{At: fixedTime},
 		}
-		for _, ch := range []domain.ChannelName{"#general", "#random"} {
+
+		// #general still has botty on it, so dropping the stale
+		// membership leaves the channel standing and the autojoin
+		// rejoins it. #random had nobody else, so the same drop
+		// destroyed it (RFC 2811 §2) and the rejoin creates it afresh.
+		for _, entry := range []struct {
+			ch      domain.ChannelName
+			created bool
+		}{
+			{ch: "#general"},
+			{ch: "#random", created: true},
+		} {
 			expected = append(expected,
 				domain.Join{
-					Target:   ch,
+					Target:   entry.ch,
 					Nick:     "testuser",
 					Instance: user,
+					Created:  entry.created,
 					At:       fixedTime,
 				},
 				domain.NamesReplyEvent{
-					Channel: ch,
-					Members: members(ch),
+					Channel: entry.ch,
+					Members: members(entry.ch),
 					At:      fixedTime,
 				},
 				domain.NamesEnd{
-					Channel: ch,
+					Channel: entry.ch,
 					At:      fixedTime,
 				},
 			)
@@ -1182,12 +1218,12 @@ func TestSession_Quit_appends_channel_quit_events(t *testing.T) {
 	})
 }
 
-// TestSession_user_state_triple_stays_consistent verifies that the
-// three sources of user-membership state stay aligned through a
-// full command sequence (join, part, rejoin, nick change). The
-// invariant being pinned: userModes, user.Channels(), and the
-// stripped persisted Channel.Members agree at every step.
-func TestSession_user_state_triple_stays_consistent(t *testing.T) {
+// TestSession_user_membership_stays_consistent verifies that the two
+// sources of the user's membership stay aligned through a full
+// command sequence (join, part, rejoin, nick change): the client's
+// own channel set, and the persisted channel record's member list,
+// which is where its privileges live.
+func TestSession_user_membership_stays_consistent(t *testing.T) {
 	type userSnapshot struct {
 		Channels   []domain.ChannelName
 		Modes      domain.MemberModes
@@ -1202,19 +1238,19 @@ func TestSession_user_state_triple_stays_consistent(t *testing.T) {
 			channels = append(channels, pair.Key)
 		}
 
+		snap := userSnapshot{Channels: channels}
+
 		w, err := s.GetWindow(t.Context(), ch)
-		var onDisk bool
 		if err == nil {
 			if cw, ok := w.(*domain.ChannelWindow); ok {
-				onDisk = cw.Members.HasInstance(userInstance(t, sess))
+				if m, found := cw.Members.GetByInstance(userInstance(t, sess)); found {
+					snap.OnDiskUser = true
+					snap.Modes = m.Modes
+				}
 			}
 		}
 
-		return userSnapshot{
-			Channels:   channels,
-			Modes:      sess.userModesFor(t.Context(), ch),
-			OnDiskUser: onDisk,
-		}
+		return snap
 	}
 
 	synctest.Test(t, func(t *testing.T) {
@@ -1226,7 +1262,7 @@ func TestSession_user_state_triple_stays_consistent(t *testing.T) {
 		require.Equal(t, userSnapshot{
 			Channels:   []domain.ChannelName{"#general"},
 			Modes:      domain.MemberModes{Operator: true},
-			OnDiskUser: false,
+			OnDiskUser: true,
 		}, snapshot(t, sess, s, "#general"))
 
 		general1, err := sess.loadChannelWindow(ctx, "#general")
@@ -1244,7 +1280,7 @@ func TestSession_user_state_triple_stays_consistent(t *testing.T) {
 		require.Equal(t, userSnapshot{
 			Channels:   []domain.ChannelName{"#general"},
 			Modes:      domain.MemberModes{Operator: true},
-			OnDiskUser: false,
+			OnDiskUser: true,
 		}, snapshot(t, sess, s, "#general"),
 			"the user parted #general while sole occupant, so the channel was "+
 				"destroyed (RFC 2811 §2). The rejoin recreates the channel, and "+
@@ -1319,7 +1355,7 @@ func TestSession_user_state_triple_stays_consistent(t *testing.T) {
 		require.Equal(t, userSnapshot{
 			Channels:   []domain.ChannelName{"#general"},
 			Modes:      domain.MemberModes{Operator: true},
-			OnDiskUser: false,
+			OnDiskUser: true,
 		}, snapshot(t, sess, s, "#general"))
 	})
 }
@@ -4173,26 +4209,17 @@ func saveTestChannel(t *testing.T, sess *Session, s *storemod.SQLiteStore, w dom
 		return
 	}
 
-	if m, found := cw.Members.GetByInstance(userInstance(t, sess)); found {
+	if _, found := cw.Members.GetByInstance(userInstance(t, sess)); found {
 		userInstance(t, sess).JoinChannel(cw.Name(), fixedTime)
-
-		modes := m.Modes
-		if modes == (domain.MemberModes{}) {
-			modes = domain.MemberModes{Operator: true}
-		}
-
-		sess.setUserModes(t.Context(), cw.Name(), modes)
 	}
 
 	require.NoError(t, sess.persistChannelWindow(t.Context(), cw))
 }
 
-// registerUserMembership updates the session's in-memory user state
-// when a test seeds a channel that lists the user as a member. It
-// adds the channel to `user.Channels()` and records the
-// conventional operator privilege that `joinAs` would have set on a
-// real join. Tests that want different privileges can override via
-// the internal `setUserModes` helper.
+// registerUserMembership stamps a seeded channel onto the user's own
+// channel set when the seed lists the user as a member, which is
+// what `joinAs` would have done on a real join. The channel record's
+// member list carries the privileges.
 func registerUserMembership(t *testing.T, sess *Session, name domain.ChannelName, members []domain.Nick) {
 	userNick := userNick(t, sess)
 	for _, m := range members {
@@ -4201,7 +4228,7 @@ func registerUserMembership(t *testing.T, sess *Session, name domain.ChannelName
 		}
 
 		userInstance(t, sess).JoinChannel(name, fixedTime)
-		sess.setUserModes(t.Context(), name, domain.MemberModes{Operator: true})
+
 		return
 	}
 }
@@ -4251,6 +4278,26 @@ func seedInstance(t *testing.T, sess *Session, s *storemod.SQLiteStore, spec ins
 	inst := domain.NewModelInstance(id, spec.Nick, spec.ModelID, spec.Persona, spec.Channels)
 	require.NoError(t, s.SaveInstance(ctx, inst))
 	attachModelClient(t, sess, inst)
+
+	return inst
+}
+
+// seedInstanceRow writes a model-instance row and attaches nothing,
+// leaving the identity free for a test that brings its own
+// [protocol.Client]. A subscription belongs to the client that
+// registered it, so a test that means to read an instance's bus has
+// to be the client on it; going through [seedInstance] first would
+// leave the identity registered to the model-client it attached.
+func seedInstanceRow(t *testing.T, s *storemod.SQLiteStore, spec instanceSpec) *domain.Instance {
+	t.Helper()
+
+	id := spec.InstanceID
+	if id == "" {
+		id = testMemberID(spec.Nick)
+	}
+
+	inst := domain.NewModelInstance(id, spec.Nick, spec.ModelID, spec.Persona, spec.Channels)
+	require.NoError(t, s.SaveInstance(t.Context(), inst))
 
 	return inst
 }
