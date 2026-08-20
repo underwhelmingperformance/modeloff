@@ -12,6 +12,7 @@ import (
 	"github.com/laney/modeloff/internal/api/apitest"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/protocol"
+	storemod "github.com/laney/modeloff/internal/store"
 )
 
 // quitToolCall builds a [api.CompletionResult] whose PendingToolCalls
@@ -262,4 +263,55 @@ func dispatchLifecycleEvents(events []domain.Event) []domain.Event {
 	}
 
 	return kept
+}
+
+// TestSession_Quit_tears_down_the_same_way_for_every_actor pins the
+// one QUIT. Whoever sent it, the channels the actor was on are told,
+// its membership is dropped from each of them, and a channel the
+// departure leaves empty is destroyed like a last PART (RFC 2811
+// §2). The user is not exempt from any of it: the only thing its
+// QUIT does differently is that the subscription survives, because
+// the process hosting the server is the connection under it.
+func TestSession_Quit_tears_down_the_same_way_for_every_actor(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		sess, s := newTestSession(t)
+		ctx := t.Context()
+
+		seedInstance(t, sess, s, instanceSpec{
+			Nick:     "botty",
+			ModelID:  "test/model",
+			Channels: testChannels("#general"),
+		})
+		seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
+		require.NoError(t, userJoin(ctx, t, sess, "#solo"))
+
+		collectEmittedEvents(t, sess)
+
+		user := userInstance(t, sess)
+		require.NoError(t, userQuitViaWire(ctx, t, sess, "goodnight"))
+		synctest.Wait()
+
+		require.Equal(t, []domain.Event{
+			domain.Quit{
+				Nick:       "testuser",
+				InstanceID: user.ID(),
+				Message:    "goodnight",
+				At:         fixedTime,
+				Instance:   user,
+			},
+		}, collectEmittedEvents(t, sess),
+			"the departing client is on the channels the QUIT reaches, so the "+
+				"membership filter carries it its own QUIT")
+
+		general, err := sess.loadChannelWindow(ctx, "#general")
+		require.NoError(t, err)
+		require.False(t, general.Members.HasInstance(user),
+			"a channel with another occupant survives, without the client that left")
+
+		_, err = sess.loadChannelWindow(ctx, "#solo")
+		require.ErrorIs(t, err, storemod.ErrNoSuchChannel,
+			"the channel the departure emptied is destroyed")
+
+		requireChannels(t, user.Channels())
+	})
 }

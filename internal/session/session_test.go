@@ -954,6 +954,13 @@ func TestSession_Connect_Quit_Reconnect_replays_nothing(t *testing.T) {
 				Channel: "#general",
 				At:      fixedTime,
 			},
+			domain.Quit{
+				Nick:       "testuser",
+				InstanceID: user1.ID(),
+				Message:    "bye",
+				At:         fixedTime,
+				Instance:   user1,
+			},
 		}, collectEmittedEvents(t, sess1))
 
 		// Ending the crash marker is the user-client's half of a clean
@@ -1159,97 +1166,19 @@ func TestSession_Quit_appends_channel_quit_events(t *testing.T) {
 				},
 			)
 		}
+		expected = append(expected, domain.Quit{
+			Nick:       "testuser",
+			InstanceID: user.ID(),
+			Message:    "goodnight",
+			At:         fixedTime,
+			Instance:   user,
+		})
+
 		require.Equal(t, expected, collectEmittedEvents(t, sess))
 
 		for _, ch := range []domain.ChannelName{"#general", "#random"} {
 			require.Equal(t, []string{"join", "quit"}, channelEventTypes(t, s, ch))
 		}
-	})
-}
-
-func TestSession_Quit_removes_user_from_channel_members(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		bootAt := time.Now()
-		sess, _ := newTestSession(t)
-		ctx := t.Context()
-
-		require.NoError(t, userJoin(ctx, t, sess, "#general"))
-		general, err := sess.loadChannelWindow(ctx, "#general")
-		require.NoError(t, err)
-		generalMembers := general.Members
-
-		require.NoError(t, userQuitViaWire(ctx, t, sess, ""))
-		synctest.Wait()
-
-		user := userInstance(t, sess)
-		require.ElementsMatch(t, []domain.Event{
-			bootstrapModeChange(t, sess, bootAt),
-			domain.Join{
-				Target:   "#general",
-				Nick:     "testuser",
-				Instance: user,
-				Created:  true,
-				At:       fixedTime,
-			},
-			domain.NamesReplyEvent{
-				Channel: "#general",
-				Members: generalMembers,
-				At:      fixedTime,
-			},
-			domain.NamesEnd{
-				Channel: "#general",
-				At:      fixedTime,
-			},
-		}, collectEmittedEvents(t, sess))
-
-		ch, err := sess.loadChannelWindow(ctx, "#general")
-		require.NoError(t, err)
-		requireChannelEqual(t, newTestChannelWindow("#general", fixedTime, domain.NewMemberList()), ch)
-	})
-}
-
-func TestSession_Quit_clears_in_memory_channels(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		bootAt := time.Now()
-		sess, _ := newTestSession(t)
-		ctx := t.Context()
-
-		require.NoError(t, userJoin(ctx, t, sess, "#general"))
-		general, err := sess.loadChannelWindow(ctx, "#general")
-		require.NoError(t, err)
-		generalMembers := general.Members
-
-		require.NoError(t, userQuitViaWire(ctx, t, sess, ""))
-		synctest.Wait()
-
-		user := userInstance(t, sess)
-		require.ElementsMatch(t, []domain.Event{
-			bootstrapModeChange(t, sess, bootAt),
-			domain.Join{
-				Target:   "#general",
-				Nick:     "testuser",
-				Instance: user,
-				Created:  true,
-				At:       fixedTime,
-			},
-			domain.NamesReplyEvent{
-				Channel: "#general",
-				Members: generalMembers,
-				At:      fixedTime,
-			},
-			domain.NamesEnd{
-				Channel: "#general",
-				At:      fixedTime,
-			},
-		}, collectEmittedEvents(t, sess))
-
-		remaining := []domain.ChannelName{}
-		for pair := userInstance(t, sess).Channels().Oldest(); pair != nil; pair = pair.Next() {
-			remaining = append(remaining, pair.Key)
-		}
-
-		require.Equal(t, []domain.ChannelName{}, remaining,
-			"quit must clear the user's channel list")
 	})
 }
 

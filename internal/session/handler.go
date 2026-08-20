@@ -528,10 +528,10 @@ func (s *Session) handleList(ctx context.Context, c protocol.Client) (protocol.R
 	})
 }
 
-// handleQuit dispatches a QUIT — the user-actor branch tears
-// down session state in-place (autojoin save, session-active
-// marker clear); the model-actor branch broadcasts the QUIT to
-// peers and releases the model-client via [releaseClient].
+// handleQuit dispatches a QUIT: [Session.quitAs] broadcasts it to
+// the channels the actor was on and unwinds its membership, and the
+// issuing client's model-client is then released via
+// [Session.releaseClient].
 //
 // A model can end its own connection: the `quit` tool runs on that
 // model's dispatch goroutine, so this handler is reached from

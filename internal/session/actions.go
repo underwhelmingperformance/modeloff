@@ -267,21 +267,20 @@ func (s *Session) partAs(ctx context.Context, actor *domain.Instance, ch domain.
 }
 
 // quitAs disconnects the given actor from every joined channel.
-// For the user-client the QUIT lines are persisted but not
-// broadcast, because the only consumer of broadcast events (the
-// chat-screen) is about to tear down. For a model-client the call
-// broadcasts the `domain.Quit` event to common-channel peers and
-// deletes the instance row. The dispatcher reaps the subscription
-// separately, via [Session.reapClient].
+// The QUIT is logged and broadcast while the actor is still on those
+// channels, which is the order PART follows (RFC 2812 §3.2.2) and
+// what carries the event to the peers who share them and to the
+// departing client itself. Membership goes afterwards, one channel
+// at a time through [Session.removeMember], so a channel the
+// departure empties is destroyed like a last PART (RFC 2811 §2).
+// The instance record goes last, which is what frees the nick.
+//
+// This is the one teardown, whoever sent the QUIT. The subscription
+// is a separate matter: the dispatcher reaps a model-client's
+// through [Session.releaseClient] and [Session.reapClient], and the
+// client whose lifetime is the session's has no connection under it
+// to close, so both refuse for it.
 func (s *Session) quitAs(ctx context.Context, actor *domain.Instance, message string) error {
-	if actor.ID() == "" {
-		return s.userQuit(ctx, message)
-	}
-
-	return s.modelQuit(ctx, actor, message)
-}
-
-func (s *Session) modelQuit(ctx context.Context, actor *domain.Instance, message string) error {
 	actorID := actor.ID()
 	actorNick := actor.Nick()
 
@@ -294,11 +293,6 @@ func (s *Session) modelQuit(ctx context.Context, actor *domain.Instance, message
 		channels := s.instanceChannelNames(actor)
 
 		s.propagateActorEvent(ctx, actor, actorEventConfig{
-			mutate: func(window *domain.ChannelWindow) {
-				if m, ok := window.Members.GetByInstance(actor); ok {
-					window.Members.Remove(m)
-				}
-			},
 			build: func() broadcastEvent {
 				return domain.Quit{
 					Nick:       actorNick,
@@ -310,10 +304,15 @@ func (s *Session) modelQuit(ctx context.Context, actor *domain.Instance, message
 			},
 		})
 
-		actor.LeaveChannels(channels...)
+		for _, ch := range channels {
+			window, err := s.loadChannelWindow(ctx, ch)
+			if err != nil {
+				return fmt.Errorf("load channel %q: %w", ch, err)
+			}
 
-		if err := s.store.SaveInstance(ctx, actor); err != nil {
-			return fmt.Errorf("save instance: %w", err)
+			if err := s.removeMember(ctx, window, actor); err != nil {
+				return err
+			}
 		}
 
 		if err := s.store.DeleteInstanceByID(ctx, actorID); err != nil {
@@ -895,9 +894,9 @@ func (s *Session) admitModelAs(ctx context.Context, actor, inst *domain.Instance
 
 // killAs is the operator-issued forced disconnect of `target` per
 // RFC 2812 §3.7.1. The kill is announced exactly as IRC frames it: a
-// killed client is seen to QUIT, so `quitAs`'s model-actor branch
-// broadcasts a wire `QUIT` to peers in shared channels with the
-// conventional `"Killed by <oper> (<reason>)"` body.
+// killed client is seen to QUIT, so `quitAs` broadcasts a wire
+// `QUIT` to peers in shared channels with the conventional
+// `"Killed by <oper> (<reason>)"` body.
 //
 // The dispatcher's `handleKill` is the only caller and runs the
 // operator gate, so this method assumes `oper` has the

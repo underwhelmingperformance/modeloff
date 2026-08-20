@@ -29,8 +29,8 @@ func TestChannelDestroy_when_last_member_parts(t *testing.T) {
 }
 
 // TestChannelDestroy_when_last_model_quits pins the QUIT path:
-// when a model leaves all its channels via `modelQuit`, any
-// channel the model was the sole occupant of is destroyed.
+// when a model leaves all its channels via `quitAs`, any channel
+// the model was the sole occupant of is destroyed.
 func TestChannelDestroy_when_last_model_quits(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		sess, s := newTestSession(t)
@@ -43,7 +43,7 @@ func TestChannelDestroy_when_last_model_quits(t *testing.T) {
 		})
 		seedChannelWithMembers(t, sess, s, "#bots-only", botty.Nick())
 
-		require.NoError(t, sess.modelQuit(ctx, botty, "shutting down"))
+		require.NoError(t, sess.quitAs(ctx, botty, "shutting down"))
 
 		_, err := s.GetWindow(ctx, "#bots-only")
 		require.ErrorIs(t, err, store.ErrNoSuchChannel,

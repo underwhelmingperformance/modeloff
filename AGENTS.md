@@ -152,6 +152,28 @@ QUIT ends the client and frees its nick. The user-client does not request
 history replay, so it sees live traffic forward and nothing from before it
 connected — the chat-screen's scrollback is populated purely from live events.
 
+`Session.quitAs` is that one teardown, and it runs the same whoever sent
+the QUIT. The event is logged and broadcast while the actor is still on
+its channels, which is the order PART follows and what carries the QUIT
+to the peers who share them and to the departing client itself.
+Membership goes afterwards, one channel at a time through the shared
+`removeMember`. The instance record goes last, and deleting it is what
+frees the nick, for every client alike. What differs for the client
+whose lifetime is the session's is only what sits under the
+connection: `Session.releaseClient` has no model-client to release and
+`Session.reapClient` has no connection to close, so both refuse for it
+and its subscription outlives its own QUIT. The subscription is the
+only thing that survives.
+
+A channel the departure empties is destroyed like a last PART (RFC
+2811 §2), and everything the channel held goes with it: its topic,
+its modes and its invitation list, and its event log too, which the
+next store open removes as orphaned rows once no `channels` row
+answers to the name. Autojoin then recreates the channel on the next
+connection, empty, with the configured default modes and no history.
+A QUIT is therefore how a channel nobody else is in is forgotten, and
+`/part` is the same act said deliberately.
+
 Differences between the two kinds are expressed as server-side capabilities
 granted at attach (`SubscribeOptions.InitialModes`) and read live off the
 issuing `serverClient`, not as a branch on which kind of client it is.

@@ -839,47 +839,6 @@ func (s *Session) ResolveNick(ctx context.Context, nick domain.Nick) (*domain.In
 	return s.store.ResolveNick(ctx, nick)
 }
 
-// userQuit performs a clean client-side shutdown. For each channel
-// the user is in it appends a Quit event to the log (so models see
-// the quit the next time they are dispatched against in that
-// channel), removes the user from the channel members list and
-// clears the in-memory channel state.
-//
-// No model dispatch is performed: a running process does not wait
-// for remote models to acknowledge the quit. The call is synchronous
-// but fast (local sqlite writes only); the UI wraps it in a tea.Cmd
-// to keep the event loop responsive.
-func (s *Session) userQuit(ctx context.Context, message string) error {
-	return s.inSpan(ctx, "session.quit", nil, func(ctx context.Context, _ trace.Span) error {
-		user := s.userInstance()
-		if user == nil {
-			return fmt.Errorf("user-client not registered with this session")
-		}
-
-		userNick := user.Nick()
-		channels := s.instanceChannelNames(user)
-		now := s.now()
-
-		s.propagateActorEvent(ctx, user, actorEventConfig{
-			storeOnly: true,
-			build: func() broadcastEvent {
-				return domain.Quit{
-					Nick:    userNick,
-					Message: message,
-					At:      now,
-				}
-			},
-			afterEach: func(ctx context.Context, ch domain.ChannelName) {
-				s.forgetUserModes(ctx, ch)
-			},
-		})
-
-		user.LeaveChannels(channels...)
-
-		return nil
-	})
-}
-
 // DirectoryChannels returns the channel directory `issuer` may see,
 // for `/list`. It filters to `*ChannelWindow` only, since DMs and
 // the status window are not in the directory, and then to the
@@ -1168,19 +1127,15 @@ func (s *Session) persistAndEmit(ctx context.Context, ch domain.ChannelName, evt
 //   - `build` produces the actor-scoped event. The wire payload
 //     carries no channel list; per-channel persistence still
 //     happens because the event log is keyed by channel.
-//   - `mutate` runs per channel before persistence (quit removes
-//     the actor from `Members`; nick change renames the snapshot).
-//     Nil for the user's `Quit`, where membership is reconciled by
-//     `cleanupUncleanShutdown` on the next start.
-//   - `storeOnly` persists without emission; used by the user's
-//     `Quit` since the app is exiting.
-//   - `afterEach` runs per channel after the state update for
-//     caller-specific side effects (e.g. `forgetUserMode`).
+//   - `mutate` runs per channel before persistence, and is how a
+//     nick change renames the actor in each channel's member
+//     snapshot. `QUIT` leaves it nil and drops membership after the
+//     broadcast instead, so the departing client is still on the
+//     channel when the event goes out and the membership filter
+//     carries it its own QUIT.
 type actorEventConfig struct {
-	storeOnly bool
-	mutate    func(*domain.ChannelWindow)
-	build     func() broadcastEvent
-	afterEach func(ctx context.Context, ch domain.ChannelName)
+	mutate func(*domain.ChannelWindow)
+	build  func() broadcastEvent
 }
 
 // propagateActorEvent fans an actor-scoped event into the per-
@@ -1216,13 +1171,9 @@ func (s *Session) propagateActorEvent(ctx context.Context, actor *domain.Instanc
 		}
 
 		s.appendEvent(ctx, name, evt)
-
-		if cfg.afterEach != nil {
-			cfg.afterEach(ctx, name)
-		}
 	}
 
-	if !cfg.storeOnly && len(channels) > 0 {
+	if len(channels) > 0 {
 		s.emit(ctx, evt)
 	}
 }
