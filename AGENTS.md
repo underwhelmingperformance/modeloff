@@ -695,14 +695,14 @@ holding both directions of the conversation and a model reads back
 what it said itself.
 
 The unread badge is answered by `Session.UnreadCount` against the
-user's `last_read` cursor. A DM counts through `store.CountDMEventsFrom`,
+user's read cursor. A DM counts through `store.CountDMEventsFrom`,
 over both directions of the thread, since counting the window's own
-key would count only the lines the user sent. The cursor itself
-cannot be recorded for a DM yet: `last_read.channel` references
-`channels(name)`, and a DM window is never written to that table
-(`store.SaveWindow` refuses one), so `UserClient.MarkRead` on a DM
-fails on the foreign key and the badge counts the whole thread. The
-fix is a schema change to `last_read`.
+key would count only the lines the user sent. The cursors live in
+two tables: `last_read` keys a channel's cursor and references
+`channels(name)`, and `dm_last_read` keys a DM's cursor by the
+counterpart's `InstanceID` with a cascade to `instances`, so a
+deleted counterpart drops its cursor with it. `UserClient.MarkRead`
+and `Session.UnreadCount` pick the table by the window key's kind.
 
 An issuer's own point-to-point replies (`WHOIS`, `LIST`) are not
 channel activity, so they live in a private per-instance reply log
