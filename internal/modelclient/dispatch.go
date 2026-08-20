@@ -379,17 +379,23 @@ func (mc *ModelClient) dispatchTurn(ctx context.Context, batch *turnBatch) {
 			return nil
 		}
 
-		replyEvents := mc.hist.snapshotReplies()
+		turn := turnRequest{
+			api:    apiClient,
+			window: window,
+			// The turn addresses the window it is running in, and this
+			// is the only place that address is built: `batch.channel`
+			// comes from [dispatchTrigger], which names a window only
+			// alongside a turn to run in it, so a tool cannot be handed
+			// a target derived from a window that was never there.
+			target:      protocol.TargetForWindow(ch),
+			history:     batch.history,
+			replies:     mc.hist.snapshotReplies(),
+			triggers:    batch.triggers,
+			tokenBudget: mc.hist.TokenBudget(),
+		}
 
-		// The turn addresses the window it is running in, and this is
-		// the only place that address is built: `batch.channel` comes
-		// from [dispatchTrigger], which names a window only alongside
-		// a turn to run in it, so a tool cannot be handed a target
-		// derived from a window that was never there.
-		target := protocol.TargetForWindow(ch)
-
-		if err := dispatchToInstance(ctx, mc.sess, apiClient, mc.memStore, mc.tools, mc.ensure, mc.pacer, mc, window, inst, target, batch.history, replyEvents, batch.triggers, mc.hist.TokenBudget()); err != nil {
-			return mc.reportTurnFailure(ctx, ch, nick, errWithKind(err, observability.ErrorKindDispatch))
+		if err := mc.dispatchToInstance(ctx, turn); err != nil {
+			return mc.reportTurnFailure(ctx, ch, nick, observability.ErrWithKind(err, observability.ErrorKindDispatch))
 		}
 
 		return nil

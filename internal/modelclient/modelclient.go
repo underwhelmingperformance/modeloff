@@ -78,6 +78,11 @@ type Session interface {
 	// the given identity, or nil if none is registered.
 	LookupClient(id protocol.ClientID) protocol.Client
 
+	// ClientCaps reports the capabilities granted to a registered
+	// subscription. [ModelClient.Caps] delegates to it, so the tool
+	// registry is filtered by the modes the session holds.
+	ClientCaps(id protocol.ClientID) command.CapabilityHolder
+
 	// TracerProvider returns the OTel tracer provider used for
 	// modelclient-side spans.
 	TracerProvider() trace.TracerProvider
@@ -198,13 +203,15 @@ func (mc *ModelClient) Identity() protocol.ClientID {
 //     originator-suppression rule (RFC 2812 §3.3.1) keeps them off
 //     the bus, so this is the only path that feeds the model its own
 //     chat traffic.
-//   - the model's own point-to-point reply numerics ([domain.Whois],
-//     [domain.ListReply]) go to the private replies ring. These are
-//     the events the dispatcher persists to the instance-reply log,
-//     so the local ring stays in step with the log it loads at
-//     attach. The wire-terminator [domain.ListEnd] carries no
-//     transcript line and the dispatcher does not persist it, so it
-//     is not filed.
+//   - the model's own point-to-point replies ([domain.Whois],
+//     [domain.ListReply], and the [domain.SystemNotice] a refused
+//     INVITE answers with) go to the private replies ring. These are
+//     exactly the [domain.IssuerReply] events the dispatcher persists
+//     to the instance-reply log, so the local ring stays in step with
+//     the log it loads at attach: a model meets its own refusal on
+//     the turn that caused it, not only after a reattach. The wire-
+//     terminator [domain.ListEnd] carries no transcript line and the
+//     dispatcher does not persist it, so it is not filed.
 func (mc *ModelClient) Send(ctx context.Context, cmd protocol.Command) (protocol.Response, error) {
 	resp, err := mc.sess.Handle(ctx, mc, cmd)
 	if err != nil || resp.Err != nil {
@@ -222,7 +229,7 @@ func (mc *ModelClient) Send(ctx context.Context, cmd protocol.Command) (protocol
 			}
 
 			mc.hist.append(ctx, mc.sess, selfID, domain.StoredEvent{Event: e}, key)
-		case domain.Whois, domain.ListReply:
+		case domain.Whois, domain.ListReply, domain.SystemNotice:
 			mc.hist.appendReply(domain.StoredEvent{Event: e.(domain.PersistableEvent)})
 		}
 	}
@@ -243,10 +250,15 @@ func (mc *ModelClient) Events() <-chan protocol.Delivery {
 	return mc.sub.Events()
 }
 
-// Caps exposes a static capability holder reporting no
-// capabilities. The chatcmd grammar's `caps:` filter therefore
-// hides operator-gated tools from model invocations.
-func (mc *ModelClient) Caps() command.CapabilityHolder { return modelCaps{} }
+// Caps reports the capabilities the session has granted this
+// client's subscription, which is what the chatcmd grammar's
+// `caps:` filter hides operator-gated tools by. A model is
+// subscribed with no modes, so today it holds none. The answer comes
+// from the session on every question, so a client the server elevates
+// is offered what it may actually use.
+func (mc *ModelClient) Caps() command.CapabilityHolder {
+	return protocol.LiveCaps(mc.sess, mc.Identity())
+}
 
 // ErrReleased is returned by [ModelClient.Attach] for a client whose
 // connection has already ended. A released client is spent: QUIT and
@@ -417,19 +429,13 @@ func (mc *ModelClient) loadHistory(ctx context.Context) {
 	mc.hist.seedReplies(replies)
 }
 
-// modelCaps is the no-capabilities holder returned by
-// [ModelClient.Caps].
-type modelCaps struct{}
-
-func (modelCaps) Has(_ command.Capability) bool { return false }
-
 // inSpan brackets fn with a span and result-recording on the
 // session's tracer provider. The fallback error kind is
 // [observability.ErrorKindStore] — most modelclient operations are
 // persistence-backed. Sites that need to override (downstream
 // dispatch failures, ensure-model classification) wrap their
-// returned error with [errWithKind], which the classifier here
-// unwraps.
+// returned error with [observability.ErrWithKind], which the
+// classifier here unwraps.
 func (mc *ModelClient) inSpan(
 	ctx context.Context,
 	op string,
@@ -439,33 +445,6 @@ func (mc *ModelClient) inSpan(
 	return observability.SpanRunner{
 		Tracer:         mc.sess.TracerProvider().Tracer("github.com/laney/modeloff/internal/modelclient"),
 		DefaultErrKind: observability.ErrorKindStore,
-		ClassifyError:  classifyModelclientError,
+		ClassifyError:  observability.ErrorKindOf,
 	}.Run(ctx, op, attrs, fn)
-}
-
-func classifyModelclientError(err error) string {
-	if ke, ok := errors.AsType[*kindError](err); ok {
-		return ke.kind
-	}
-	return ""
-}
-
-// kindError tags an error with an observability error kind so the
-// span classifier can attach `AttrErrorKind` without every call site
-// having to pass the kind through an auxiliary return value.
-type kindError struct {
-	kind string
-	err  error
-}
-
-func (e *kindError) Error() string { return e.err.Error() }
-func (e *kindError) Unwrap() error { return e.err }
-
-// errWithKind annotates err with the given observability error kind.
-// Returns nil when err is nil so it can wrap the tail of a return.
-func errWithKind(err error, kind string) error {
-	if err == nil {
-		return nil
-	}
-	return &kindError{kind: kind, err: err}
 }

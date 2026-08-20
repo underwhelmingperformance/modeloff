@@ -6,7 +6,6 @@ package session
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"iter"
 	"log/slog"
@@ -18,6 +17,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/observability"
 	"github.com/laney/modeloff/internal/protocol"
@@ -697,11 +697,11 @@ type ModelClientFactory interface {
 	// PrepareInstance resolves the persona and unique nick for a
 	// new instance with the given model id and persona hint. An
 	// empty persona triggers a draw from the manager's persona
-	// pool (lazily generated if missing). Returns the chosen nick,
-	// the resolved persona (verbatim if non-empty, else the drawn
-	// pool entry), and any error from structured-output
-	// validation or nick generation.
-	PrepareInstance(ctx context.Context, sess *Session, modelID domain.ModelID, persona string) (domain.Nick, string, error)
+	// pool (lazily generated if missing). The error covers
+	// structured-output validation and nick generation; a
+	// preparation that fell short without failing reports it in
+	// [PreparedInstance.Warnings].
+	PrepareInstance(ctx context.Context, sess *Session, modelID domain.ModelID, persona string) (PreparedInstance, error)
 
 	// Attach constructs (or returns the existing handle for) the
 	// model-client backing `inst` and attaches it to `sess` via
@@ -720,6 +720,29 @@ type ModelClientFactory interface {
 	// itself. Joining belongs to whoever owns the client's
 	// lifetime. Idempotent on an unknown id.
 	Detach(id protocol.ClientID)
+}
+
+// PreparedInstance is what [ModelClientFactory.PrepareInstance]
+// resolved for a new model instance, before `ADDMODEL` claims the
+// nick and registers the instance.
+type PreparedInstance struct {
+	// Nick is the unique nick the instance claims. `ADDMODEL`
+	// re-checks it on the command loop, because it was chosen off
+	// the loop and a rename may have taken it since.
+	Nick domain.Nick
+
+	// Persona is the persona text the instance carries: the
+	// requester's own, verbatim, or one drawn from the pool.
+	Persona string
+
+	// Warnings describes, for the operator, each part of the
+	// preparation that fell short without failing the command. A
+	// persona the pool could not supply is the case that exists
+	// today: the model joins and behaves differently for the rest of
+	// its life, and the person who issued the `ADDMODEL` is the one
+	// who can do something about it. `handleAddModel` answers each
+	// warning with a [domain.SystemNotice] on the command's reply.
+	Warnings []string
 }
 
 // Now returns the session's current time, using the configured
@@ -784,6 +807,26 @@ func (s *Session) LookupClient(id protocol.ClientID) protocol.Client {
 	}
 
 	return sc
+}
+
+// ClientCaps reports the capabilities granted to the subscription
+// registered under `id`, satisfying [protocol.CapsRegistry]. The
+// returned holder reads the subscription's live mode set, so a
+// caller may keep it and still see a later `MODE` change; an
+// identity with no subscription holds nothing.
+//
+// This is the same mode set [Session.idHasServerOper] gates
+// operator-only commands on. Both client kinds delegate their
+// `Caps()` here, so the commands a client is offered and the
+// commands the dispatcher will run for it are decided from one
+// place.
+func (s *Session) ClientCaps(id protocol.ClientID) command.CapabilityHolder {
+	sc := s.lookupClientHandle(id)
+	if sc == nil {
+		return command.NoCapabilities()
+	}
+
+	return sc.Caps()
 }
 
 // ResolveNick turns a user-supplied nick into the canonical
@@ -1306,8 +1349,8 @@ func (s *Session) recordInstancePersistenceFailure(ctx context.Context, id domai
 // session's tracer provider. The fallback error kind is
 // [observability.ErrorKindStore] — most session operations are
 // persistence-backed. Sites that need to override (e.g. validation
-// refusals) wrap their returned error with [errWithKind], which the
-// classifier here unwraps.
+// refusals) wrap their returned error with
+// [observability.ErrWithKind], which the classifier here unwraps.
 func (s *Session) inSpan(
 	ctx context.Context,
 	op string,
@@ -1317,33 +1360,6 @@ func (s *Session) inSpan(
 	return observability.SpanRunner{
 		Tracer:         s.tracerProvider.Tracer("github.com/laney/modeloff/internal/session"),
 		DefaultErrKind: observability.ErrorKindStore,
-		ClassifyError:  classifySessionError,
+		ClassifyError:  observability.ErrorKindOf,
 	}.Run(ctx, op, attrs, fn)
-}
-
-func classifySessionError(err error) string {
-	if ke, ok := errors.AsType[*kindError](err); ok {
-		return ke.kind
-	}
-	return ""
-}
-
-// kindError tags an error with an observability error kind so the
-// span classifier can attach `AttrErrorKind` without every call site
-// having to pass the kind through an auxiliary return value.
-type kindError struct {
-	kind string
-	err  error
-}
-
-func (e *kindError) Error() string { return e.err.Error() }
-func (e *kindError) Unwrap() error { return e.err }
-
-// errWithKind annotates err with the given observability error kind.
-// Returns nil when err is nil so it can wrap the tail of a return.
-func errWithKind(err error, kind string) error {
-	if err == nil {
-		return nil
-	}
-	return &kindError{kind: kind, err: err}
 }

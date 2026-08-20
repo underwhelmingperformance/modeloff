@@ -236,7 +236,7 @@ func (s *Session) partAs(ctx context.Context, actor *domain.Instance, ch domain.
 		attribute.String(observability.AttrNick, string(actorNick)),
 	}, func(ctx context.Context, span trace.Span) error {
 		if domain.InferChannelKind(ch) != domain.KindChannel {
-			return errWithKind(fmt.Errorf("cannot part %s", ch), observability.ErrorKindValidation)
+			return observability.ErrWithKind(fmt.Errorf("cannot part %s", ch), observability.ErrorKindValidation)
 		}
 
 		window, err := s.loadChannelWindow(ctx, ch)
@@ -499,7 +499,7 @@ func (s *Session) setTopicAs(ctx context.Context, actor *domain.Instance, ch dom
 		span.SetAttributes(attribute.String(observability.AttrInstanceID, string(actor.ID())))
 
 		if domain.InferChannelKind(ch) != domain.KindChannel {
-			return errWithKind(fmt.Errorf("cannot set topic on a direct message"), observability.ErrorKindValidation)
+			return observability.ErrWithKind(fmt.Errorf("cannot set topic on a direct message"), observability.ErrorKindValidation)
 		}
 
 		now := s.now()
@@ -568,7 +568,7 @@ func (s *Session) kickAs(ctx context.Context, actor, target *domain.Instance, ch
 		attribute.String(observability.AttrNick, string(targetNick)),
 	}, func(ctx context.Context, span trace.Span) error {
 		if domain.InferChannelKind(ch) != domain.KindChannel {
-			return errWithKind(fmt.Errorf("cannot kick from a direct message"), observability.ErrorKindValidation)
+			return observability.ErrWithKind(fmt.Errorf("cannot kick from a direct message"), observability.ErrorKindValidation)
 		}
 
 		window, err := s.loadChannelWindow(ctx, ch)
@@ -852,7 +852,7 @@ func (s *Session) registerModelAs(
 // unavailable refuses the claim and no duplicate gets through.
 func (s *Session) requireNickAvailable(ctx context.Context, nick domain.Nick, holder *domain.Instance) error {
 	if reason := domain.ValidateNick(nick); reason != domain.NickAccepted {
-		return errWithKind(
+		return observability.ErrWithKind(
 			domain.ErroneousNicknameError{Nick: nick, Reason: reason, At: s.now()},
 			observability.ErrorKindValidation,
 		)
@@ -866,7 +866,7 @@ func (s *Session) requireNickAvailable(ctx context.Context, nick domain.Nick, ho
 			return nil
 		}
 
-		return errWithKind(domain.NickInUseError{Nick: nick, At: s.now()}, observability.ErrorKindValidation)
+		return observability.ErrWithKind(domain.NickInUseError{Nick: nick, At: s.now()}, observability.ErrorKindValidation)
 	case errors.Is(err, store.ErrNoSuchNick):
 		return nil
 	default:

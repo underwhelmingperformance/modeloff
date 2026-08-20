@@ -52,6 +52,11 @@ type Session interface {
 	// every channel. The session owns the poke schedule and the bus
 	// emission; the user-client only relays a manual request.
 	PokeNow(ctx context.Context) error
+
+	// ClientCaps reports the capabilities granted to a registered
+	// subscription. [UserClient.Caps] delegates to it, so the
+	// command-visibility filter reads the modes the session holds.
+	ClientCaps(id protocol.ClientID) command.CapabilityHolder
 }
 
 // Store is the persistence surface a [UserClient] needs. It is the
@@ -235,11 +240,15 @@ func (uc *UserClient) Events() <-chan protocol.Delivery {
 	return uc.sub.Events()
 }
 
-// Caps exposes the user-client's capabilities for the chatcmd
-// grammar's `caps:` filter. The operator bit is held for the
-// session's lifetime, so the visibility filter sees the full
-// command and tool set.
-func (uc *UserClient) Caps() command.CapabilityHolder { return userCaps{} }
+// Caps reports the capabilities the session has granted this
+// client's subscription, for the chatcmd grammar's `caps:` filter.
+// The answer is the session's, read afresh on each question: the
+// `+o` [UserClient.Attach] requests is what puts the operator-gated
+// commands in the palette, and a client that has not attached yet
+// holds nothing.
+func (uc *UserClient) Caps() command.CapabilityHolder {
+	return protocol.LiveCaps(uc.sess, uc.Identity())
+}
 
 // Attach registers the user-client with its session, requesting
 // `+o` (operator) as its initial mode. The session writes the
@@ -544,14 +553,4 @@ func firstErr(transport, cmd error) error {
 		return transport
 	}
 	return cmd
-}
-
-// userCaps is the capability holder returned by [UserClient.Caps].
-// The user-client carries the operator bit for the session's
-// lifetime, so the holder reports `true` for [protocol.CapOperator]
-// unconditionally.
-type userCaps struct{}
-
-func (userCaps) Has(c command.Capability) bool {
-	return c == protocol.CapOperator
 }

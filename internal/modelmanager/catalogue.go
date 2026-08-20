@@ -52,13 +52,13 @@ func (m *Manager) ListModels(ctx context.Context) ([]api.ModelInfo, error) {
 	err := m.inSpan(ctx, "modelmanager.list_models", nil, func(ctx context.Context, _ trace.Span) error {
 		client, key := m.snapshotAPI()
 		if key == "" || client == nil {
-			return errWithKind(modelclient.ErrNoAPIKey, observability.ErrorKindValidation)
+			return observability.ErrWithKind(modelclient.ErrNoAPIKey, observability.ErrorKindValidation)
 		}
 
 		fetched, err := client.ListModels(ctx)
 		if err != nil {
 			m.transitionListState(ctx, ListStateFailed, err)
-			return errWithKind(err, observability.ErrorKindDispatch)
+			return observability.ErrWithKind(err, observability.ErrorKindDispatch)
 		}
 
 		m.cacheSupportedModels(ctx, fetched)

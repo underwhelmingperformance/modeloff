@@ -15,7 +15,6 @@ package modelmanager
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -257,7 +256,7 @@ func (m *Manager) SetAPIKey(ctx context.Context, apiKey, baseURL string) error {
 			client, err := m.factory(apiKey, baseURL)
 			if err != nil {
 				m.mu.Unlock()
-				return errWithKind(fmt.Errorf("build api client: %w", err), observability.ErrorKindValidation)
+				return observability.ErrWithKind(fmt.Errorf("build api client: %w", err), observability.ErrorKindValidation)
 			}
 			nextClient = client
 		}
@@ -290,7 +289,7 @@ func (m *Manager) SetBaseURL(ctx context.Context, baseURL string) error {
 			client, err := m.factory(m.apiKey, baseURL)
 			if err != nil {
 				m.mu.Unlock()
-				return errWithKind(fmt.Errorf("build api client: %w", err), observability.ErrorKindValidation)
+				return observability.ErrWithKind(fmt.Errorf("build api client: %w", err), observability.ErrorKindValidation)
 			}
 			m.api = client
 			rebuilt = true
@@ -421,7 +420,7 @@ func (m *Manager) generateNickFromModel(
 	}, func(generateCtx context.Context, generateSpan trace.Span) error {
 		client, _ := m.snapshotAPI()
 		if client == nil {
-			return errWithKind(fmt.Errorf("generate nick: api client not configured"), observability.ErrorKindValidation)
+			return observability.ErrWithKind(fmt.Errorf("generate nick: api client not configured"), observability.ErrorKindValidation)
 		}
 
 		small := m.SmallModel()
@@ -435,7 +434,7 @@ func (m *Manager) generateNickFromModel(
 					"error", err,
 					"attempt", attempt,
 				)
-				return errWithKind(fmt.Errorf("generate nick: %w", err), observability.ErrorKindDispatch)
+				return observability.ErrWithKind(fmt.Errorf("generate nick: %w", err), observability.ErrorKindDispatch)
 			}
 
 			result.Usage.SetSpanAttributes(generateSpan, result.RequestID)
@@ -452,7 +451,7 @@ func (m *Manager) generateNickFromModel(
 			rejected = append(rejected, result.Nick)
 		}
 
-		return errWithKind(
+		return observability.ErrWithKind(
 			fmt.Errorf("generate nick: %d attempts exhausted, all suggestions collided", maxNickGenerationAttempts),
 			observability.ErrorKindDispatch,
 		)
@@ -536,26 +535,30 @@ func (m *Manager) nickIsTaken(ctx context.Context, sess *session.Session, nick d
 
 // PrepareInstance resolves the persona and unique nick for a new
 // model instance. The session's `AddModel` handler calls this
-// before attaching the constructed instance to a channel. Errors
-// in persona generation are swallowed (the instance gets an empty
-// persona); nick failures and tool-capability validation are
-// surfaced. The supplied session is consulted for nick-uniqueness
-// resolution so the manager does not hold a back-reference.
+// before attaching the constructed instance to a channel. Nick
+// failures and tool-capability validation fail the command; a
+// persona the pool could not supply does not, since a model with no
+// persona still works, so it comes back as a warning the handler
+// answers with a server notice. The supplied session is consulted
+// for nick-uniqueness resolution so the manager does not hold a
+// back-reference.
 func (m *Manager) PrepareInstance(
 	ctx context.Context,
 	sess *session.Session,
 	modelID domain.ModelID,
 	persona string,
-) (domain.Nick, string, error) {
+) (session.PreparedInstance, error) {
 	logger := slog.Default().With("component", "modelmanager", "model_id", modelID)
 
 	if err := m.EnsureToolCapableModel(ctx, modelID); err != nil {
-		return "", "", err
+		return session.PreparedInstance{}, err
 	}
 
-	assigned := strings.TrimSpace(persona)
+	prepared := session.PreparedInstance{Persona: strings.TrimSpace(persona)}
 
-	if assigned == "" {
+	if prepared.Persona == "" {
+		// A pool that could not be topped up is only a problem if it
+		// is also empty, which the draw below is what discovers.
 		if err := m.EnsurePersonas(ctx); err != nil {
 			logger.WarnContext(ctx, "persona pool generation failed", "error", err)
 		}
@@ -563,17 +566,22 @@ func (m *Manager) PrepareInstance(
 		p, err := m.RandomPersona(ctx)
 		if err != nil {
 			logger.WarnContext(ctx, "persona assignment failed, instance will have no persona", "error", err)
+
+			prepared.Warnings = append(prepared.Warnings,
+				fmt.Sprintf("no persona was assigned to %s (%v); it joins without one", modelID, err))
 		} else {
-			assigned = p.Description
+			prepared.Persona = p.Description
 		}
 	}
 
-	nick, err := m.generateUniqueNick(ctx, sess, modelID, assigned, logger)
+	nick, err := m.generateUniqueNick(ctx, sess, modelID, prepared.Persona, logger)
 	if err != nil {
-		return "", assigned, err
+		return prepared, err
 	}
 
-	return nick, assigned, nil
+	prepared.Nick = nick
+
+	return prepared, nil
 }
 
 // Start attaches the boot-time model-instance set to sess. Each
@@ -696,7 +704,8 @@ func (m *Manager) DetachAll() {
 // [observability.ErrorKindStore] — most manager operations are
 // persistence-backed. Sites that need to override (catalogue
 // dispatch failures, validation refusals) wrap their returned error
-// with [errWithKind], which the classifier here unwraps.
+// with [observability.ErrWithKind], which the classifier here
+// unwraps.
 func (m *Manager) inSpan(
 	ctx context.Context,
 	op string,
@@ -706,33 +715,6 @@ func (m *Manager) inSpan(
 	return observability.SpanRunner{
 		Tracer:         m.tracer.Tracer("github.com/laney/modeloff/internal/modelmanager"),
 		DefaultErrKind: observability.ErrorKindStore,
-		ClassifyError:  classifyManagerError,
+		ClassifyError:  observability.ErrorKindOf,
 	}.Run(ctx, op, attrs, fn)
-}
-
-func classifyManagerError(err error) string {
-	if ke, ok := errors.AsType[*kindError](err); ok {
-		return ke.kind
-	}
-	return ""
-}
-
-// kindError tags an error with an observability error kind so the
-// span classifier can attach `AttrErrorKind` without every call site
-// having to pass the kind through an auxiliary return value.
-type kindError struct {
-	kind string
-	err  error
-}
-
-func (e *kindError) Error() string { return e.err.Error() }
-func (e *kindError) Unwrap() error { return e.err }
-
-// errWithKind annotates err with the given observability error kind.
-// Returns nil when err is nil so it can wrap the tail of a return.
-func errWithKind(err error, kind string) error {
-	if err == nil {
-		return nil
-	}
-	return &kindError{kind: kind, err: err}
 }

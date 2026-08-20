@@ -58,6 +58,32 @@ func TestUserClient_reports_operator_capability(t *testing.T) {
 	require.Equal(t, protocol.UserClientID, f.user.Identity())
 }
 
+// TestUserClient_capabilities_come_from_the_session pins where the
+// answer is read from. The operator bit arrives with the `+o` the
+// attach requests, so a client that has not attached holds nothing.
+// That is the same rule a model-client answers under, and neither
+// side can set it on its own.
+func TestUserClient_capabilities_come_from_the_session(t *testing.T) {
+	s := storetest.NewMemoryStore(t)
+	mgr := modelmanager.New(modelmanager.Config{
+		Store:       s,
+		APIClient:   &noopAPI{},
+		BaseContext: t.Context,
+	})
+	t.Cleanup(mgr.DetachAll)
+
+	sess := session.New(t.Context, s, mgr, nil)
+	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
+
+	user := userclient.New("testuser", sess, s, userclient.NewStoreReplyLog(s))
+
+	require.False(t, user.Caps().Has(protocol.CapOperator))
+
+	require.NoError(t, user.Attach(t.Context()))
+
+	require.True(t, user.Caps().Has(protocol.CapOperator))
+}
+
 func TestUserClient_attach_is_idempotent(t *testing.T) {
 	f := newFixture(t)
 

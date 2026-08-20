@@ -103,9 +103,9 @@ func TestManager_PrepareInstance_nickGeneration_fallsBackToDeterministicNick(t *
 
 			sess := newTestSession(t, fx)
 
-			nick, _, err := fx.mgr.PrepareInstance(ctx, sess, modelID, "")
+			prepared, err := fx.mgr.PrepareInstance(ctx, sess, modelID, "")
 			require.NoError(t, err)
-			require.Equal(t, tt.wantNick, nick)
+			require.Equal(t, tt.wantNick, prepared.Nick)
 		})
 	}
 }
@@ -138,7 +138,7 @@ func TestManager_PrepareInstance_deterministicFallback_avoidsCollision(t *testin
 
 	sess := newTestSession(t, fx)
 
-	nick, _, err := fx.mgr.PrepareInstance(ctx, sess, modelID, "")
+	prepared, err := fx.mgr.PrepareInstance(ctx, sess, modelID, "")
 	require.NoError(t, err)
-	require.Equal(t, domain.Nick("gpt-5-42"), nick)
+	require.Equal(t, domain.Nick("gpt-5-42"), prepared.Nick)
 }

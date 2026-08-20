@@ -601,10 +601,7 @@ func (s *Session) handleAddModel(ctx context.Context, c protocol.Client, cmd pro
 		return protocol.Response{}, err
 	}
 
-	var (
-		nick    domain.Nick
-		persona string
-	)
+	var prepared PreparedInstance
 
 	prepErr := s.inSpan(ctx, "session.prepare_model", []attribute.KeyValue{
 		attribute.String(observability.AttrChannel, string(cmd.Channel)),
@@ -612,9 +609,9 @@ func (s *Session) handleAddModel(ctx context.Context, c protocol.Client, cmd pro
 	}, func(ctx context.Context, _ trace.Span) error {
 		var err error
 
-		nick, persona, err = s.modelClientFactory.PrepareInstance(ctx, s, cmd.Model, cmd.Persona)
+		prepared, err = s.modelClientFactory.PrepareInstance(ctx, s, cmd.Model, cmd.Persona)
 
-		return errWithKind(err, observability.ErrorKindDispatch)
+		return observability.ErrWithKind(err, observability.ErrorKindDispatch)
 	})
 	if prepErr != nil {
 		return commandResult(prepErr)
@@ -623,7 +620,7 @@ func (s *Session) handleAddModel(ctx context.Context, c protocol.Client, cmd pro
 	var inst *domain.Instance
 
 	resp, err := s.onWriter(ctx, func(ctx context.Context) (protocol.Response, error) {
-		registered, registerErr := s.registerModelAs(ctx, cmd.Channel, cmd.Model, nick, persona)
+		registered, registerErr := s.registerModelAs(ctx, cmd.Channel, cmd.Model, prepared.Nick, prepared.Persona)
 		if registerErr != nil {
 			return commandResult(registerErr)
 		}
@@ -640,14 +637,21 @@ func (s *Session) handleAddModel(ctx context.Context, c protocol.Client, cmd pro
 	if _, attachErr := s.modelClientFactory.Attach(ctx, s, inst); attachErr != nil {
 		s.discardModel(ctx, inst)
 
-		return commandResult(errWithKind(
+		return commandResult(observability.ErrWithKind(
 			fmt.Errorf("connect model client: %w", attachErr),
 			observability.ErrorKindDispatch,
 		))
 	}
 
 	admitted, admitErr := s.onWriter(ctx, func(ctx context.Context) (protocol.Response, error) {
-		return commandResult(s.admitModelAs(ctx, actor, inst, cmd.Channel))
+		resp, err := commandResult(s.admitModelAs(ctx, actor, inst, cmd.Channel))
+		if err != nil || resp.Err != nil {
+			return resp, err
+		}
+
+		resp.Events = s.preparationNotices(ctx, c, cmd.Channel, prepared.Warnings)
+
+		return resp, nil
 	})
 
 	if admitErr != nil || admitted.Err != nil {
@@ -655,6 +659,40 @@ func (s *Session) handleAddModel(ctx context.Context, c protocol.Client, cmd pro
 	}
 
 	return admitted, admitErr
+}
+
+// preparationNotices turns each warning
+// [ModelClientFactory.PrepareInstance] reported into a
+// [domain.SystemNotice] on the `ADDMODEL` reply, addressed to the
+// channel the command was issued from. Without them a preparation
+// that quietly fell short, such as a persona pool the small model
+// could not supply, reaches only the log, and the operator sees a
+// model join with none of the character they asked for and nothing
+// to say why.
+//
+// The notices are point-to-point replies to the issuer, so they are
+// filed to its reply log exactly as a refused INVITE's notice is,
+// and no other member of the channel is told.
+func (s *Session) preparationNotices(
+	ctx context.Context,
+	c protocol.Client,
+	ch domain.ChannelName,
+	warnings []string,
+) []domain.ProtocolEvent {
+	if len(warnings) == 0 {
+		return nil
+	}
+
+	now := s.now()
+
+	events := make([]domain.ProtocolEvent, 0, len(warnings))
+	for _, warning := range warnings {
+		events = append(events, domain.SystemNotice{Target: ch, Text: warning, At: now})
+	}
+
+	s.persistInstanceReplies(ctx, c, events)
+
+	return events
 }
 
 // discardModel unwinds a registration whose JOIN did not land. The

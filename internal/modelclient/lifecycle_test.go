@@ -13,6 +13,7 @@ import (
 	"go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/laney/modeloff/internal/api"
+	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/protocol"
 )
@@ -36,6 +37,11 @@ type fakeSession struct {
 	// handleFn, when non-nil, answers a dispatched command, so a test
 	// can drive the reply events a real dispatcher would return.
 	handleFn func(protocol.Command) protocol.Response
+
+	// caps, when non-nil, is what [fakeSession.ClientCaps] reports for
+	// every identity, so a test can grant the client under test a
+	// capability the tool filter reads.
+	caps command.CapabilityHolder
 
 	mu          sync.Mutex
 	sub         *fakeSubscription
@@ -137,6 +143,17 @@ func (f *fakeSession) ResolveInstanceByID(_ context.Context, id domain.InstanceI
 }
 
 func (f *fakeSession) LookupClient(protocol.ClientID) protocol.Client { return nil }
+
+// ClientCaps answers with whatever the test put in `caps`. The zero
+// value is nil, which reads as the no-capabilities holder a model
+// subscribed with no modes gets from the real session.
+func (f *fakeSession) ClientCaps(protocol.ClientID) command.CapabilityHolder {
+	if f.caps == nil {
+		return command.NoCapabilities()
+	}
+
+	return f.caps
+}
 
 func (f *fakeSession) TracerProvider() trace.TracerProvider { return noop.NewTracerProvider() }
 

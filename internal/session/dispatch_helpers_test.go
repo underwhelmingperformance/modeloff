@@ -248,6 +248,11 @@ type testModelClientFactory struct {
 	// client cannot connect is what the ADDMODEL unwind is about.
 	attachErr error
 
+	// prepareWarnings is what [testModelClientFactory.PrepareInstance]
+	// reports as having fallen short, standing in for the manager's
+	// persona-assignment failure.
+	prepareWarnings []string
+
 	// clients and draining mirror the production manager's two sets:
 	// attached model-clients, and released ones whose dispatch
 	// goroutines are still unwinding. `detachAll` joins both, so a
@@ -275,12 +280,13 @@ func newTestModelClientFactoryWith(t testing.TB, apiClient api.Client, memStore 
 	return f
 }
 
-// PrepareInstance returns a fixed persona-trimmed pair so the
-// session's `addModelAs` can build a fresh instance without
-// reaching for an LLM. Tests that rely on the persona arbitration
-// or unique-nick generation paths construct the manager directly.
-func (f *testModelClientFactory) PrepareInstance(_ context.Context, _ *Session, _ domain.ModelID, persona string) (domain.Nick, string, error) {
-	return f.nick, persona, nil
+// PrepareInstance returns a fixed nick and the persona it was given
+// so the session's `addModelAs` can build a fresh instance without
+// reaching for an LLM. `prepareWarnings` stands in for a preparation
+// that fell short. Tests that rely on the persona arbitration or
+// unique-nick generation paths construct the manager directly.
+func (f *testModelClientFactory) PrepareInstance(_ context.Context, _ *Session, _ domain.ModelID, persona string) (PreparedInstance, error) {
+	return PreparedInstance{Nick: f.nick, Persona: persona, Warnings: f.prepareWarnings}, nil
 }
 
 func (f *testModelClientFactory) Attach(ctx context.Context, sess *Session, inst *domain.Instance) (protocol.Client, error) {

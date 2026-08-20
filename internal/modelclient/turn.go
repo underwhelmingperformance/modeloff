@@ -13,7 +13,6 @@ import (
 
 	"github.com/laney/modeloff/internal/api"
 	"github.com/laney/modeloff/internal/domain"
-	"github.com/laney/modeloff/internal/memory"
 	"github.com/laney/modeloff/internal/observability"
 	"github.com/laney/modeloff/internal/protocol"
 )
@@ -30,59 +29,72 @@ type EnsureStructuredOutputModel func(ctx context.Context, modelID domain.ModelI
 // manager-supplied closure does the lookup.
 func noEnsure(context.Context, domain.ModelID) error { return nil }
 
+// turnRequest is everything one dispatch turn is about, as against
+// the client-lifetime handles the [ModelClient] receiver already
+// carries. Each field is read once per turn and none of them
+// outlives it: the API client because a `SetAPIKey` rebuild may have
+// replaced it since the last turn, and the rest because they describe
+// this turn's window and the traffic it is answering.
+type turnRequest struct {
+	// api is the client this turn calls upstream through, read
+	// through [ModelClient.apiFn] at the top of the turn.
+	api api.Client
+
+	// window is the channel or DM the turn runs in, and target
+	// addresses it. The prompt is built from the first; the model's
+	// chat tools send to the second.
+	window domain.Window
+	target protocol.MsgTarget
+
+	// history is the window's transcript as it stood before the
+	// burst, replies is the instance's own point-to-point replies,
+	// and triggers is what the model is being asked about.
+	history  []domain.StoredEvent
+	replies  []domain.StoredEvent
+	triggers []protocol.IRCMessage
+
+	// tokenBudget is the turn's transcript token budget (see
+	// [history.TokenBudget]). [composeTranscriptBudget] spends it once
+	// across the context lines, `history`, `replies` and `triggers`
+	// together before any of them is rendered. Trimming them
+	// independently would let each fit its own share of the budget
+	// while their sum still overran the model's context.
+	tokenBudget int
+}
+
 // dispatchToInstance runs the per-instance API turn. It assembles
 // the system prompt + tool registry and calls the model via
 // [runTurn]. Any chat traffic the model emits lands on the session
-// bus as a side effect of its `msg` / `me` tool calls; this function
+// bus as a side effect of its `msg` / `me` tool calls; this method
 // returns only the turn's outcome.
-//
-// `tokenBudget` is the turn's transcript token budget (see
-// [history.TokenBudget]). [composeTranscriptBudget] spends it once
-// across the context lines, `historyEvents`, `replyEvents` and
-// `events` together before any of them is rendered. Trimming them
-// independently would let each fit its own share of the budget while
-// their sum still overran the model's context.
-func dispatchToInstance(
-	ctx context.Context,
-	sess Session,
-	apiClient api.Client,
-	memStore memory.Store,
-	tools *ToolRegistry,
-	ensure EnsureStructuredOutputModel,
-	pacer *Pacer,
-	caller protocol.Client,
-	window domain.Window,
-	inst *domain.Instance,
-	target protocol.MsgTarget,
-	historyEvents []domain.StoredEvent,
-	replyEvents []domain.StoredEvent,
-	events []protocol.IRCMessage,
-	tokenBudget int,
-) error {
+func (mc *ModelClient) dispatchToInstance(ctx context.Context, turn turnRequest) error {
+	inst := mc.instance
 	nick := inst.Nick()
 
 	runner := observability.SpanRunner{
-		Tracer:         sess.TracerProvider().Tracer("github.com/laney/modeloff/internal/modelclient"),
+		Tracer:         mc.sess.TracerProvider().Tracer("github.com/laney/modeloff/internal/modelclient"),
 		DefaultErrKind: observability.ErrorKindStore,
-		ClassifyError:  classifyModelclientError,
+		ClassifyError:  observability.ErrorKindOf,
 	}
 
 	attrs := []attribute.KeyValue{
 		attribute.String(observability.AttrModelID, string(inst.ModelID)),
 		attribute.String(observability.AttrNick, string(nick)),
 		attribute.String(observability.AttrInstanceID, string(inst.ID())),
-		attribute.String(observability.AttrChannelKind, channelKindName(window.Kind())),
+		attribute.String(observability.AttrChannelKind, channelKindName(turn.window.Kind())),
 	}
 
 	return runner.Run(ctx, "modelclient.dispatch_to_instance", attrs, func(ctx context.Context, span trace.Span) error {
-		memories, err := memoriesForInstance(ctx, memStore, inst.ID())
+		memories, err := memoriesForInstance(ctx, mc.memStore, inst.ID())
 		if err != nil {
 			return fmt.Errorf("read memories for %s: %w", nick, err)
 		}
 
-		contextLines := contextReplies(window, memories)
+		contextLines := contextReplies(turn.window, memories)
 
-		historyEvents, replyEvents, events = composeTranscriptBudget(contextLines, historyEvents, replyEvents, events, tokenBudget)
+		historyEvents, replyEvents, events := composeTranscriptBudget(
+			contextLines, turn.history, turn.replies, turn.triggers, turn.tokenBudget,
+		)
 
 		type timedMessage struct {
 			at  time.Time
@@ -120,25 +132,27 @@ func dispatchToInstance(
 
 		history = append(history, contextLines...)
 
-		if err := ensure(ctx, inst.ModelID); err != nil {
-			return errWithKind(fmt.Errorf("send events to %s: %w", nick, err), classifyEnsureModelError(err))
+		if err := mc.ensure(ctx, inst.ModelID); err != nil {
+			return observability.ErrWithKind(fmt.Errorf("send events to %s: %w", nick, err), classifyEnsureModelError(err))
 		}
 
-		prompt := buildSystemPrompt(window, inst)
+		prompt := buildSystemPrompt(turn.window, inst)
 
 		var mem MemoryExecutor
-		if memStore != nil {
-			mem = &instanceMemory{instanceID: inst.ID(), store: memStore}
+		if mc.memStore != nil {
+			mem = &instanceMemory{instanceID: inst.ID(), store: mc.memStore}
 		}
 
+		// The tool set is filtered by what the server says this client
+		// holds, so a tool the dispatcher would refuse is not offered.
 		registry := MergeToolRegistries(
-			memoryToolRegistry(mem, memStore != nil && searchEnabled(memStore)),
-			tools.Filter(modelCaps{}, window.Kind()),
+			memoryToolRegistry(mem, mc.memStore != nil && searchEnabled(mc.memStore)),
+			mc.tools.Filter(mc.Caps(), turn.window.Kind()),
 		)
 
-		outcome, err := runTurn(ctx, apiClient, sess, caller, inst, target, prompt, history, events, registry, pacer)
+		outcome, err := runTurn(ctx, turn.api, mc.sess, mc, inst, turn.target, prompt, history, events, registry, mc.pacer)
 		if err != nil {
-			return errWithKind(
+			return observability.ErrWithKind(
 				fmt.Errorf("send events to %s: %w", nick, err),
 				observability.ErrorKindDispatch,
 			)
@@ -150,7 +164,7 @@ func dispatchToInstance(
 		}
 
 		slog.Default().With("component", "modelclient").InfoContext(ctx, "dispatch to instance",
-			"channel", window.Name(),
+			"channel", turn.window.Name(),
 			"nick", nick,
 			"model_id", inst.ModelID,
 			"trigger_count", len(events),

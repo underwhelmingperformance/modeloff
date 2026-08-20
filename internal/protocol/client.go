@@ -40,11 +40,40 @@ type Client interface {
 	// Caps exposes the client's modes (and any future runtime
 	// state) as a [command.CapabilityHolder] so the chatcmd
 	// grammar's `caps:` filter can hide commands the client cannot
-	// use. Operator gating of dispatcher commands does not read this:
-	// the dispatcher consults the live `serverClient` mode set keyed
-	// by [Client.Identity], so an [Oper] elevation is honoured without
-	// the client object changing.
+	// use. It answers from the same live mode set the dispatcher's
+	// operator gate reads, keyed by [Client.Identity], so an [Oper]
+	// elevation reaches both without the client object changing.
+	// [LiveCaps] is the implementation both client kinds return.
 	Caps() command.CapabilityHolder
+}
+
+// CapsRegistry is the session-side read a client delegates
+// [Client.Caps] to: the registry holding the per-subscription mode
+// set. `*session.Session` satisfies it.
+type CapsRegistry interface {
+	// ClientCaps reports the capabilities granted to the subscription
+	// registered under `id`. An identity with no subscription holds
+	// none.
+	ClientCaps(id ClientID) command.CapabilityHolder
+}
+
+// LiveCaps binds `registry` and `id` into a [command.CapabilityHolder]
+// that consults the registry afresh on every question. Both client
+// kinds return one from [Client.Caps], so the answer is the server's:
+// a mode the session grants or clears is reflected the next time the
+// command-visibility filter or the model tool registry asks, and the
+// client side holds no copy to keep in step.
+func LiveCaps(registry CapsRegistry, id ClientID) command.CapabilityHolder {
+	return liveCaps{registry: registry, id: id}
+}
+
+type liveCaps struct {
+	registry CapsRegistry
+	id       ClientID
+}
+
+func (c liveCaps) Has(capability command.Capability) bool {
+	return c.registry.ClientCaps(c.id).Has(capability)
 }
 
 // CapOperator is the visibility capability backed by

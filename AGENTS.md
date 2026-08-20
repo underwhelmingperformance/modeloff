@@ -108,16 +108,20 @@ to build until it is handled — the migration path is mechanical.
 Clients implement the small `Client` interface — `Identity()`, `Send(ctx,
 Command) (Response, error)`, `Events() <-chan Delivery`, `Caps()
 command.CapabilityHolder`; each `Delivery` wraps an `Event` with the originating
-handler's span context for OTel trace continuity. Operator gating reads the live
-`serverClient` mode set keyed by `Identity`, so an `Oper` elevation is honoured
-without the client
-object changing. A `Send` returns a `Response` whose `Err` field carries any
-typed command failure (e.g. `domain.NotOperatorError`,
+handler's span context for OTel trace continuity. Both the dispatcher's operator
+gate and `Caps()` read the live `serverClient` mode set keyed by `Identity`, so
+an `Oper` elevation is honoured without the client object changing, and the
+commands a client is offered are decided from the same place as the commands
+the dispatcher will run for it. Neither client kind holds a capability constant
+of its own: `protocol.LiveCaps` binds an identity to `Session.ClientCaps` and
+both kinds return one. A `Send` returns a `Response` whose `Err` field carries
+any typed command failure (e.g. `domain.NotOperatorError`,
 `domain.UnknownNickError`); callers branch on it via `errors.As`. The
 `Response.Events` slot carries the dispatcher's synchronous numeric-reply
 payloads: the persisted `domain.Message` for `PrivMsg`/`Action`,
 `domain.Invited` for `Invite`, the `domain.Whois` snapshot for `Whois`,
-and the `domain.ListReply` stream terminated by `domain.ListEnd` for `List`.
+the `domain.ListReply` stream terminated by `domain.ListEnd` for `List`, and a
+`domain.SystemNotice` for each warning `ADDMODEL`'s preparation reported.
 Broadcast side effects flow asynchronously over `Client.Events()` to peers.
 
 ### Two kinds of actor
@@ -741,10 +745,15 @@ landing on one of them when that is the window the user left open.
 The rows are keyed by the counterpart's `InstanceID` and cascade from
 `instances`, like the DM cursors.
 
-An issuer's own point-to-point replies (`WHOIS`, `LIST`) are not
-channel activity, so they live in a private per-instance reply log
+An issuer's own point-to-point replies (`WHOIS`, `LIST`, and the
+`domain.SystemNotice` a refused `INVITE` or a fallen-short `ADDMODEL`
+preparation answers with) are not channel activity, so they live in a
+private per-instance reply log
 (`store.AppendInstanceReply` / `store.InstanceRepliesBefore`), keyed
-by the issuer's identity, not the shared channel log. Both actors
+by the issuer's identity, not the shared channel log. A model files
+the same set into its own in-memory replies ring as the reply comes
+back, so it meets a refusal on the turn that caused it and not only
+after a reattach reloads the log. Both actors
 write their replies the same way: the dispatcher records every
 issuer's reply there, the user-client included (under the empty id).
 The two actors differ only in whether they restore — a model loads
