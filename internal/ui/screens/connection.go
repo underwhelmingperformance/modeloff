@@ -32,6 +32,22 @@ const (
 	gateAutojoin
 )
 
+// fatal reports whether a failure of the step waiting on this gate
+// stops the sequence outright. A non-fatal step's failure is marked
+// on its own step and the sequence still completes normally. Only
+// the connect step is fatal: it is the store-backed handshake every
+// later step depends on, so a store that cannot service it cannot be
+// trusted for the chat screen the sequence would otherwise hand off
+// to. No API key configured is a step already marked failed at
+// construction (see NewConnectionScreen), a fixed condition known
+// before the sequence starts, not a gate that fails at runtime.
+// Loading the model catalogue and joining the autojoin channels are
+// both best-effort: a failure there is worth telling the user about,
+// but neither leaves the chat screen unusable.
+func (g stepGate) fatal() bool {
+	return g == gateConnect
+}
+
 // connectionStep describes one line in the connection sequence.
 // `gate` keeps the step's async dependency data-driven: adding a
 // new gated phase is a `stepGate` value plus a step entry, no
@@ -128,8 +144,24 @@ type ConnectionScreen struct {
 	cfg        ConnectionConfig
 	chatScreen ui.Model
 	steps      []connectionStep
-	cur        int
-	done       bool
+	// stepIndex maps each gated step's gate to its position in
+	// steps, so the handler for that gate's async signal can mark
+	// the step that owns it directly, whatever step the animation
+	// cursor currently sits on. The two are independent: the three
+	// async calls race each other, but the animation only advances
+	// past a gated step once its own signal has arrived.
+	stepIndex map[stepGate]int
+	cur       int
+	done      bool
+
+	// fatal is set once a fatal gate's step fails. advanceTick stops
+	// ticking as soon as it is set, so the sequence freezes on the
+	// failed step. Without it the cursor would sit waiting on a later
+	// gate that the failing step's own failure prevented from ever
+	// being armed (a failed Connect skips runAutojoin; see the
+	// connectionReadyMsg case in Update), and would eventually
+	// advance to a chat screen a broken store cannot usefully back.
+	fatal bool
 
 	connected      bool
 	autojoinDone   bool
@@ -163,10 +195,18 @@ func NewConnectionScreen(cfg ConnectionConfig, chatScreen ui.Model) ConnectionSc
 		)
 	}
 
+	stepIndex := make(map[stepGate]int, len(steps))
+	for i, step := range steps {
+		if step.gate != gateNone {
+			stepIndex[step.gate] = i
+		}
+	}
+
 	s := ConnectionScreen{
 		cfg:        cfg,
 		chatScreen: chatScreen,
 		steps:      steps,
+		stepIndex:  stepIndex,
 	}
 
 	// Animation-only mode (no Session): pretend the async signals
@@ -312,7 +352,7 @@ func (s ConnectionScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	case connectionReadyMsg:
 		s.connected = true
 		if m.err != nil {
-			s.markCurrentStepError(m.err.Error())
+			s = s.failStep(gateConnect, m.err.Error())
 		} else if s.cfg.Session != nil {
 			// Connect → autojoin is the only sequenced edge in
 			// the async graph: unclean-recovery clears stale
@@ -326,7 +366,7 @@ func (s ConnectionScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	case joinAutojoinDoneMsg:
 		s.autojoinDone = true
 		if m.err != nil {
-			s.markCurrentStepError(m.err.Error())
+			s = s.failStep(gateAutojoin, m.err.Error())
 		}
 
 	case loadModelsDoneMsg:
@@ -334,7 +374,7 @@ func (s ConnectionScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		s.loadedModels = m.models
 		s.loadModelsErr = m.err
 		if m.err != nil {
-			s.markCurrentStepError(fmt.Sprintf("Loading models: %s", m.err))
+			s = s.failStep(gateLoadModels, fmt.Sprintf("Loading models: %s", m.err))
 		}
 	}
 
@@ -353,7 +393,22 @@ func (s ConnectionScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 // re-arms without advancing. Once `cur` reaches the end the screen
 // transitions — which by construction means every gated signal has
 // already landed.
+//
+// A fatal step's failure stops the ticking outright: `failStep` set
+// `s.fatal` at the moment it happened, cur is still pointed at that
+// step (a fatal gate never becomes satisfied, so advanceTick never
+// got to move past it), and renderAnimation already shows it as the
+// pending line, which renderPending renders as the error it now
+// carries. Ticking further would either sit re-arming forever behind
+// a gate nothing will ever satisfy, or — for a gate that did resolve
+// after the fatal one, since the three async calls run independently
+// — walk into a later step whose own gate has nothing to do with why
+// the sequence stopped.
 func (s ConnectionScreen) advanceTick(_ ConnectionTickMsg) (ConnectionScreen, tea.Cmd) {
+	if s.fatal {
+		return s, nil
+	}
+
 	if s.cur >= len(s.steps) {
 		return s, s.transitionCmd()
 	}
@@ -428,13 +483,28 @@ func (s ConnectionScreen) transitionCmd() tea.Cmd {
 	return tea.Sequence(screenCmd, deliverCmd)
 }
 
-func (s *ConnectionScreen) markCurrentStepError(label string) {
-	if s.cur >= len(s.steps) {
-		return
+// failStep marks the step waiting on gate as failed, wherever the
+// animation cursor currently is: the three async calls behind
+// gateConnect, gateLoadModels and gateAutojoin race each other, so
+// the step reporting the failure is not necessarily the one the
+// animation is showing yet. A gate with no step in this sequence
+// (the no-API-key path omits the load-models and autojoin steps
+// entirely; see NewConnectionScreen) is a no-op: there is nowhere to
+// render the failure.
+func (s ConnectionScreen) failStep(gate stepGate, label string) ConnectionScreen {
+	idx, ok := s.stepIndex[gate]
+	if !ok {
+		return s
 	}
 
-	s.steps[s.cur].label = label
-	s.steps[s.cur].status = stepError
+	s.steps[idx].label = label
+	s.steps[idx].status = stepError
+
+	if gate.fatal() {
+		s.fatal = true
+	}
+
+	return s
 }
 
 // View implements ui.Model. The animation owns the visible area

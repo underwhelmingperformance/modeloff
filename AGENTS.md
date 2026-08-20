@@ -12,6 +12,11 @@ IRC-like server; the only external service is the OpenRouter API.
 1. Start the application. A cool IRC-style connection sequence appears.
    1. If there's no OpenRouter API key configured, the user is prompted to use
       `/config` to set it up. The app won't work until this is done.
+   2. A step failing during the sequence is fatal only for the connect step:
+      every later step depends on the store-backed handshake it performs. A
+      failure loading the model catalogue or joining the autojoin channels is
+      noted on its own line, and the sequence still completes and hands off
+      to the chat screen.
 2. Any channels from last time are loaded and shown in the sidebar. The
    channel that was open last time is opened again.
    1. If there are no channels, a welcome message is shown.
