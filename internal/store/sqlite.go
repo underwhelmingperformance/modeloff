@@ -110,11 +110,26 @@ type SQLiteStore struct {
 }
 
 // SQLitePragmaDSN appends the connection-time PRAGMAs that the store
-// requires (`busy_timeout`, `journal_mode`, `foreign_keys`) to the
-// given filename or `file:` URI. The `ncruces/go-sqlite3` driver
-// applies `_pragma=` parameters on every connection it opens, so any
-// pool size sees the same configuration. Order matters per the driver
-// docs: `busy_timeout` and the locking mode must come first.
+// requires (`busy_timeout`, `auto_vacuum`, `journal_mode`,
+// `foreign_keys`) to the given filename or `file:` URI. The
+// `ncruces/go-sqlite3` driver applies `_pragma=` parameters on every
+// connection it opens, so any pool size sees the same configuration.
+//
+// Order matters, and not only for the reason the driver's own docs
+// give (`busy_timeout` and the locking mode must come first):
+// `auto_vacuum` also has to precede `journal_mode`. SQLite only
+// accepts an `auto_vacuum` change on a database with no pages
+// allocated yet, and switching to WAL allocates one, so setting
+// `auto_vacuum` after `journal_mode(WAL)` silently does nothing.
+//
+// A brand-new database is created in incremental-vacuum mode by this
+// pragma. `auto_vacuum` only changes an empty database, so an
+// existing database predates the pragma and stays whatever mode it
+// was created in; this is a silent no-op against one that already
+// has a schema. [SQLiteStore.pruneEvents] runs
+// `PRAGMA incremental_vacuum` after its retention pass, which only
+// does anything for a database that is actually in incremental-vacuum
+// mode.
 func SQLitePragmaDSN(path string) string {
 	dsn := path
 	if !strings.HasPrefix(dsn, "file:") {
@@ -126,7 +141,7 @@ func SQLitePragmaDSN(path string) string {
 		sep = "&"
 	}
 
-	return dsn + sep + "_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(on)"
+	return dsn + sep + "_pragma=busy_timeout(5000)&_pragma=auto_vacuum(incremental)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(on)"
 }
 
 // DefaultSQLitePath returns the on-disk location of the default
@@ -213,11 +228,21 @@ func NewSQLiteStore(ctx context.Context, db *sql.DB) (*SQLiteStore, error) {
 		return nil, err
 	}
 
-	return &SQLiteStore{
+	store := &SQLiteStore{
 		db:             db,
 		instances:      make(map[domain.InstanceID]*domain.Instance),
 		tracerProvider: otel.GetTracerProvider(),
-	}, nil
+	}
+
+	// Retention is disk hygiene, not a correctness requirement the
+	// rest of the store depends on, so a failure here is logged
+	// rather than turned into a failed open. See pruneEvents for why
+	// it runs here, once, rather than on a recurring schedule.
+	if err := store.pruneEvents(ctx); err != nil {
+		slog.Default().ErrorContext(ctx, "prune events", "component", "store.sqlite", "error", err)
+	}
+
+	return store, nil
 }
 
 // WithTracerProvider overrides the OTel `TracerProvider` the store
