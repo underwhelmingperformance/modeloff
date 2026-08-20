@@ -157,7 +157,7 @@ func main() {
 	// what the schedule reports; WakePoke interrupts the scheduler's
 	// current sleep so the change takes effect on this cycle instead
 	// of only once that sleep runs out.
-	cfgStore.OnChange(func(prev, curr config.Config) {
+	cfgStore.OnChange(func(_ context.Context, prev, curr config.Config) {
 		if prev.PokeInterval == curr.PokeInterval && prev.APIKey == curr.APIKey {
 			return
 		}
@@ -358,7 +358,7 @@ func defaultChannelModesFromConfig(cfg config.Config, cfgStore config.Store) (se
 	holder := &channelModesHolder{fallback: fallback}
 	holder.store(cfg.DefaultChannelModes)
 
-	cfgStore.OnChange(func(prev, curr config.Config) {
+	cfgStore.OnChange(func(_ context.Context, prev, curr config.Config) {
 		if prev.DefaultChannelModes == curr.DefaultChannelModes {
 			return
 		}

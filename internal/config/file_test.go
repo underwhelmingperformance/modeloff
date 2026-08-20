@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -250,7 +251,7 @@ func TestFileStore_Save_concurrent_calls_serialize_correct_diffs(t *testing.T) {
 	seen := make(map[time.Duration]time.Duration)
 	var mu sync.Mutex
 
-	store.OnChange(func(prev, curr Config) {
+	store.OnChange(func(_ context.Context, prev, curr Config) {
 		mu.Lock()
 		seen[prev.PokeInterval] = curr.PokeInterval
 		mu.Unlock()
@@ -318,7 +319,7 @@ func TestFileStore_Update_firesOnChangeWithOldAndNew(t *testing.T) {
 	store := NewFileStore(t.TempDir())
 
 	var received []Config
-	store.OnChange(func(prev, curr Config) {
+	store.OnChange(func(_ context.Context, prev, curr Config) {
 		received = append(received, prev, curr)
 	})
 
@@ -378,7 +379,7 @@ func TestFileStore_OnChange_fires_callback(t *testing.T) {
 
 	var received []Config
 
-	store.OnChange(func(prev, curr Config) {
+	store.OnChange(func(_ context.Context, prev, curr Config) {
 		received = append(received, prev, curr)
 	})
 
@@ -400,11 +401,35 @@ func TestFileStore_OnChange_fires_callback(t *testing.T) {
 	}, received)
 }
 
+// TestFileStore_OnChange_receives_the_calls_context pins that a
+// callback runs under the same context Save was called with, deadline
+// and cancellation included, rather than a background context of its
+// own devising. A listener that starts further work under it is
+// therefore bound by whatever the caller of Save already carries.
+func TestFileStore_OnChange_receives_the_calls_context(t *testing.T) {
+	store := NewFileStore(t.TempDir())
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	var received bool
+	var gotErr error
+
+	store.OnChange(func(cbCtx context.Context, _, _ Config) {
+		received = true
+		gotErr = cbCtx.Err()
+	})
+
+	require.NoError(t, store.Save(ctx, Config{UserNick: "a"}))
+	require.True(t, received)
+	require.ErrorIs(t, gotErr, context.Canceled)
+}
+
 func TestFileStore_OnChange_unsubscribe(t *testing.T) {
 	store := NewFileStore(t.TempDir())
 
 	calls := 0
-	unsub := store.OnChange(func(_, _ Config) { calls++ })
+	unsub := store.OnChange(func(_ context.Context, _, _ Config) { calls++ })
 
 	require.NoError(t, store.Save(t.Context(), Config{UserNick: "a"}))
 	require.Equal(t, 1, calls)
@@ -422,7 +447,7 @@ func TestFileStore_OnChange_multiple_callbacks(t *testing.T) {
 	var order []int
 
 	for i := range 3 {
-		store.OnChange(func(_, _ Config) {
+		store.OnChange(func(_ context.Context, _, _ Config) {
 			mu.Lock()
 			order = append(order, i)
 			mu.Unlock()
@@ -444,7 +469,7 @@ func TestFileStore_OnChange_concurrent_safety(t *testing.T) {
 
 	for range 10 {
 		wg.Go(func() {
-			unsub := store.OnChange(func(_, _ Config) {})
+			unsub := store.OnChange(func(_ context.Context, _, _ Config) {})
 			unsub()
 		})
 	}

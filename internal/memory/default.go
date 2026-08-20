@@ -61,7 +61,7 @@ func NewDefaultStore(ctx context.Context, dataStore DataStore, cfg config.Config
 		slog.Default().Warn("reconcile embedding model", "error", err)
 	}
 
-	cfgStore.OnChange(func(prev, curr config.Config) {
+	cfgStore.OnChange(func(ctx context.Context, prev, curr config.Config) {
 		if prev.APIKey == curr.APIKey &&
 			prev.BaseURL == curr.BaseURL &&
 			prev.EmbeddingModel == curr.EmbeddingModel {
@@ -70,14 +70,8 @@ func NewDefaultStore(ctx context.Context, dataStore DataStore, cfg config.Config
 
 		storeEmbedder(&embeddingPtr, curr)
 
-		// ChangeFunc carries no request-scoped context: OnChange
-		// fires synchronously from within Save, itself driven by a
-		// UI command with its own lifetime already over by the time
-		// any listener not itself passed that command's context
-		// runs. Both calls below use context.Background(), since no
-		// live context in scope describes their lifetime.
 		if curr.EmbeddingModel != prev.EmbeddingModel {
-			if err := indexed.ReconcileEmbeddingModel(context.Background(), string(curr.EmbeddingModel)); err != nil {
+			if err := indexed.ReconcileEmbeddingModel(ctx, string(curr.EmbeddingModel)); err != nil {
 				slog.Default().Warn("reconcile embedding model", "error", err)
 			}
 		}
@@ -85,7 +79,7 @@ func NewDefaultStore(ctx context.Context, dataStore DataStore, cfg config.Config
 		// The probe result is recorded on indexed and read back later
 		// through Searchable and ProbeError, so the returned error is
 		// discarded here.
-		_ = indexed.RefreshSearchable(context.Background())
+		_ = indexed.RefreshSearchable(ctx)
 	})
 
 	return indexed, nil

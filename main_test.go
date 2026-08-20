@@ -130,10 +130,10 @@ func TestDefaultChannelModesFromConfig_refreshes_on_a_config_change(t *testing.T
 
 	require.Equal(t, domain.ChannelModes{Moderated: true}, supplier(t.Context()))
 
-	store.change(config.Config{DefaultChannelModes: "+m"}, config.Config{DefaultChannelModes: "+i"})
+	store.change(t.Context(), config.Config{DefaultChannelModes: "+m"}, config.Config{DefaultChannelModes: "+i"})
 	require.Equal(t, domain.ChannelModes{InviteOnly: true}, supplier(t.Context()))
 
-	store.change(config.Config{DefaultChannelModes: "+i"}, config.Config{DefaultChannelModes: "+zz"})
+	store.change(t.Context(), config.Config{DefaultChannelModes: "+i"}, config.Config{DefaultChannelModes: "+zz"})
 	require.Equal(t, builtIn, supplier(t.Context()))
 }
 
@@ -183,9 +183,9 @@ func (s *recordingConfigStore) OnChange(fn config.ChangeFunc) config.Unsubscribe
 
 // change fires every registered callback, as a successful Save or
 // Update does.
-func (s *recordingConfigStore) change(prev, curr config.Config) {
+func (s *recordingConfigStore) change(ctx context.Context, prev, curr config.Config) {
 	for _, fn := range s.callbacks {
-		fn(prev, curr)
+		fn(ctx, prev, curr)
 	}
 }
 

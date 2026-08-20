@@ -159,10 +159,11 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// ChangeFunc is called after a successful Save with the old and new
-// configuration values. Callbacks should compare the fields they
-// care about and return early if nothing relevant changed.
-type ChangeFunc func(prev, curr Config)
+// ChangeFunc is called after a successful Save or Update with the
+// context that call was made under and the old and new configuration
+// values. Callbacks should compare the fields they care about and
+// return early if nothing relevant changed.
+type ChangeFunc func(ctx context.Context, prev, curr Config)
 
 // UnsubscribeFunc cancels a change subscription when called.
 type UnsubscribeFunc func()
@@ -183,7 +184,8 @@ type Store interface {
 	Update(ctx context.Context, fn func(Config) Config) (Config, error)
 
 	// OnChange registers a callback to be invoked after every
-	// successful Save or Update. It returns a function that removes
-	// the callback when called.
+	// successful Save or Update, with the context that call was made
+	// under. It returns a function that removes the callback when
+	// called.
 	OnChange(fn ChangeFunc) UnsubscribeFunc
 }

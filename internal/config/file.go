@@ -167,6 +167,11 @@ func (s *FileStore) Load(ctx context.Context) (Config, error) {
 // hand every callback the wrong diff. The lock is released before
 // any callback runs, so a listener that itself calls Save or
 // OnChange doesn't self-deadlock on s.mu, which is not reentrant.
+//
+// Each callback is handed the span-scoped context this call runs
+// under, so a listener that starts further work under it is bound by
+// whatever deadline or cancellation the caller of Save already
+// carries.
 func (s *FileStore) Save(ctx context.Context, cfg Config) error {
 	return s.inSpan(ctx, "config.file.save", func(ctx context.Context, _ trace.Span) error {
 		old, cbs, err := s.writeLocked(ctx, cfg)
@@ -175,7 +180,7 @@ func (s *FileStore) Save(ctx context.Context, cfg Config) error {
 		}
 
 		for _, fn := range cbs {
-			fn(old, cfg)
+			fn(ctx, old, cfg)
 		}
 
 		return nil
@@ -244,7 +249,7 @@ func (s *FileStore) Update(ctx context.Context, fn func(Config) Config) (Config,
 		}
 
 		for _, cb := range cbs {
-			cb(old, next)
+			cb(ctx, old, next)
 		}
 
 		return nil
@@ -311,8 +316,9 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 }
 
 // OnChange registers a callback to be invoked after every successful
-// Save with the old and new configuration values. The returned
-// function removes the callback when called.
+// Save or Update, with the call's context and the old and new
+// configuration values. The returned function removes the callback
+// when called.
 func (s *FileStore) OnChange(fn ChangeFunc) UnsubscribeFunc {
 	id := s.nextID.Add(1)
 
