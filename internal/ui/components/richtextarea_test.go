@@ -155,7 +155,7 @@ func TestRichTextareaDoubleClickSelectsWord(t *testing.T) {
 		Button: tea.MouseButtonLeft,
 	})
 	editor = updated.(RichTextarea)
-	editor.lastClickAt = time.Now()
+	editor.clicks.lastAt = time.Now()
 
 	updated, _ = editor.Update(tea.MouseMsg{
 		X:      7,
@@ -184,7 +184,7 @@ func TestRichTextareaTripleClickSelectsLine(t *testing.T) {
 			Button: tea.MouseButtonLeft,
 		})
 		editor = updated.(RichTextarea)
-		editor.lastClickAt = time.Now()
+		editor.clicks.lastAt = time.Now()
 	}
 
 	start, end := editor.selection.Normalized()
@@ -206,7 +206,7 @@ func TestRichTextareaQuadrupleClickResetsToCursor(t *testing.T) {
 			Button: tea.MouseButtonLeft,
 		})
 		editor = updated.(RichTextarea)
-		editor.lastClickAt = time.Now()
+		editor.clicks.lastAt = time.Now()
 	}
 
 	require.True(t, editor.selection.Collapsed(), "fourth click should collapse selection back to a cursor")
@@ -436,7 +436,7 @@ func TestRichTextareaKillRing_CtrlW_then_CtrlY_restores_word(t *testing.T) {
 	updated, _ := editor.Update(tea.KeyMsg{Type: tea.KeyCtrlW})
 	editor = updated.(RichTextarea)
 	require.Equal(t, "hello ", editor.Value())
-	require.Equal(t, []string{"world"}, editor.killRing)
+	require.Equal(t, []string{"world"}, editor.kills.entries)
 
 	updated, _ = editor.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
 	editor = updated.(RichTextarea)
@@ -451,7 +451,7 @@ func TestRichTextareaKillRing_CtrlK_then_CtrlY_restores_tail(t *testing.T) {
 	updated, _ := editor.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
 	editor = updated.(RichTextarea)
 	require.Equal(t, "hello", editor.Value())
-	require.Equal(t, []string{" world"}, editor.killRing)
+	require.Equal(t, []string{" world"}, editor.kills.entries)
 
 	updated, _ = editor.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
 	editor = updated.(RichTextarea)
@@ -466,7 +466,7 @@ func TestRichTextareaKillRing_AltD_then_CtrlY_restores_forward_word(t *testing.T
 	updated, _ := editor.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}, Alt: true})
 	editor = updated.(RichTextarea)
 	require.Equal(t, " world", editor.Value())
-	require.Equal(t, []string{"hello"}, editor.killRing)
+	require.Equal(t, []string{"hello"}, editor.kills.entries)
 
 	updated, _ = editor.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
 	editor = updated.(RichTextarea)
@@ -498,8 +498,8 @@ func TestRichTextareaKillRing_RetainsOrderAndCap(t *testing.T) {
 		editor = updated.(RichTextarea)
 	}
 
-	require.Len(t, editor.killRing, killRingCap)
-	require.Equal(t, "word"+string(rune('A'+killRingCap+3)), editor.killRing[0])
+	require.Len(t, editor.kills.entries, killRingCap)
+	require.Equal(t, "word"+string(rune('A'+killRingCap+3)), editor.kills.entries[0])
 }
 
 func TestRichTextareaTransposeChars(t *testing.T) {

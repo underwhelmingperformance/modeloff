@@ -680,7 +680,7 @@ func (b InputBar) KeyBindings() []ui.KeyBinding {
 		b.keyMap.DeleteToEnd,
 		b.keyMap.KillLineStart,
 		b.keyMap.DeleteChar,
-		ui.WithBindingEnabled(b.keyMap.Yank, len(b.input.killRing) > 0),
+		ui.WithBindingEnabled(b.keyMap.Yank, b.input.canYank()),
 		b.keyMap.Transpose,
 		ui.WithBindingEnabled(b.keyMap.CopySelection, !b.input.selection.Collapsed()),
 		b.keyMap.Home,
