@@ -41,6 +41,20 @@ func TestBuildSystemPrompt_without_persona(t *testing.T) {
 	require.Equal(t, loadGolden(t, "system_prompt_without_persona.golden.txt"), prompt)
 }
 
+// TestBuildSystemPrompt_dm_window pins the addressing line for a DM
+// turn. The window's counterpart in that conversation is the user,
+// whose [domain.InstanceID] is empty by convention, so `window.Name()`
+// there is the empty string and would render "You are botty on .";
+// the prompt uses `DisplayName()`, which resolves to the user's nick.
+func TestBuildSystemPrompt_dm_window(t *testing.T) {
+	inst := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
+	dm := domain.NewDMWindow(domain.NewUserInstance("testuser"), time.Time{})
+
+	prompt := buildSystemPrompt(dm, inst)
+
+	require.Equal(t, loadGolden(t, "system_prompt_dm.golden.txt"), prompt)
+}
+
 // TestBuildSystemPrompt_keeps_actor_written_text_out covers the
 // system role's one rule: the app's own instructions never quote
 // what an actor wrote. Any channel member can set the topic, and a
@@ -150,7 +164,7 @@ func TestContextReplies(t *testing.T) {
 			want: []protocol.IRCMessage{
 				{
 					Kind:   protocol.KindServerReply,
-					Target: "inst-peer",
+					Target: "peer",
 					Body:   "your stored memories: [mood=curious] [goal=learn go]",
 				},
 			},

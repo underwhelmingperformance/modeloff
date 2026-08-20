@@ -69,6 +69,12 @@ type Store interface {
 	DMEventsBefore(ctx context.Context, self, peer domain.InstanceID, before *int64, n int) ([]domain.StoredEvent, error)
 
 	SetLastRead(ctx context.Context, ch domain.ChannelName, eventID int64) error
+
+	// SetDMLastRead is SetLastRead's DM counterpart: the cursor for a
+	// DM thread lives in its own table, keyed by the counterpart's
+	// InstanceID, since last_read.channel references channels(name)
+	// and a DM window is never a row there.
+	SetDMLastRead(ctx context.Context, peer domain.InstanceID, eventID int64) error
 }
 
 // ReplyLog is the write handle the user-client uses to persist its
@@ -448,6 +454,10 @@ func (uc *UserClient) MarkRead(ctx context.Context, ch domain.ChannelName) error
 
 	if len(events) == 0 {
 		return nil
+	}
+
+	if domain.InferChannelKind(ch) == domain.KindDM {
+		return uc.store.SetDMLastRead(ctx, domain.InstanceID(ch), events[0].ID)
 	}
 
 	return uc.store.SetLastRead(ctx, ch, events[0].ID)

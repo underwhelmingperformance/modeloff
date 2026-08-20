@@ -3191,15 +3191,26 @@ func markReadViaStore(t *testing.T, s *storemod.SQLiteStore, ch domain.ChannelNa
 	require.NoError(t, s.SetLastRead(t.Context(), ch, events[0].ID))
 }
 
+// markDMReadViaStore stamps the DM read cursor with peer at the
+// newest event of the thread, the way
+// [userclient.UserClient.MarkRead] does for a DM window.
+func markDMReadViaStore(t *testing.T, s *storemod.SQLiteStore, peer domain.InstanceID) {
+	t.Helper()
+
+	events, err := s.DMEventsBefore(t.Context(), "", peer, nil, 1)
+	require.NoError(t, err)
+	require.NotEmpty(t, events, "no event to mark read in DM with %s", peer)
+
+	require.NoError(t, s.SetDMLastRead(t.Context(), peer, events[0].ID))
+}
+
 // TestSession_UnreadCount_counts_both_directions_of_a_DM pins the
-// badge for a DM window. Each direction is logged under its
-// recipient, so counting the window's own key would count the lines
-// the user sent and none of the ones it has not read: a model that
-// answers three times would show nothing new.
-//
-// The cursor half of the badge is not exercised here because a DM
-// cannot carry one yet: `last_read.channel` references
-// `channels(name)`, and a DM window is never written to that table.
+// badge for a DM window with no cursor recorded yet. Each direction
+// is logged under its recipient, so counting the window's own key
+// would count the lines the user sent and none of the ones it has
+// not read: a model that answers three times would show nothing new.
+// TestSession_MarkRead_and_UnreadCount_for_a_DM exercises the cursor
+// half.
 func TestSession_UnreadCount_counts_both_directions_of_a_DM(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
@@ -3251,6 +3262,57 @@ func TestSession_MarkRead_and_UnreadCount(t *testing.T) {
 	markReadViaStore(t, s, "#general")
 
 	count, err = sess.UnreadCount(ctx, "#general")
+	require.NoError(t, err)
+	require.Equal(t, 0, count)
+}
+
+// TestSession_MarkRead_and_UnreadCount_for_a_DM is the DM
+// counterpart to TestSession_MarkRead_and_UnreadCount, pinning the
+// cursor half of the badge that last_read.channel's foreign key to
+// channels(name) used to block: a DM window is never a row in
+// channels, so the cursor for a DM had nowhere to be recorded.
+func TestSession_MarkRead_and_UnreadCount_for_a_DM(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := t.Context()
+
+	botty := seedInstance(t, sess, s, instanceSpec{Nick: "botty", ModelID: "test/model"})
+	window := domain.ChannelName(botty.ID())
+
+	appendDM := func(from domain.Nick, id domain.InstanceID, target domain.ChannelName, body string) {
+		t.Helper()
+
+		_, err := s.AppendEvent(ctx, target, domain.Message{
+			Target:     target,
+			From:       from,
+			InstanceID: id,
+			Body:       body,
+			At:         fixedTime,
+		})
+		require.NoError(t, err)
+	}
+
+	appendDM("testuser", "", window, "are you there?")
+	appendDM("botty", botty.ID(), "", "i am")
+
+	count, err := sess.UnreadCount(ctx, window)
+	require.NoError(t, err)
+	require.Equal(t, 2, count)
+
+	markDMReadViaStore(t, s, botty.ID())
+
+	count, err = sess.UnreadCount(ctx, window)
+	require.NoError(t, err)
+	require.Equal(t, 0, count)
+
+	appendDM("botty", botty.ID(), "", "still there?")
+
+	count, err = sess.UnreadCount(ctx, window)
+	require.NoError(t, err)
+	require.Equal(t, 1, count)
+
+	markDMReadViaStore(t, s, botty.ID())
+
+	count, err = sess.UnreadCount(ctx, window)
 	require.NoError(t, err)
 	require.Equal(t, 0, count)
 }

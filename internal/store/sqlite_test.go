@@ -1134,6 +1134,111 @@ func TestSQLiteStore_SetLastRead_overwrites(t *testing.T) {
 	require.Equal(t, id2, got)
 }
 
+// seedDMWithEvent saves peer's instance row and appends one message
+// from it, returning the message's event id. dm_last_read.instance_id
+// references instances(instance_id), so the instance has to exist
+// before a cursor can be recorded against it.
+func seedDMWithEvent(t *testing.T, s *SQLiteStore, peer domain.InstanceID) int64 {
+	t.Helper()
+	ctx := t.Context()
+
+	require.NoError(t, s.SaveInstance(ctx,
+		domain.NewModelInstance(peer, domain.Nick(peer), "test/model", "", nil),
+	))
+
+	id, err := s.AppendEvent(ctx, domain.ChannelName(peer), domain.Message{
+		Target: domain.ChannelName(peer), From: "testuser", Body: "hi", At: testTime,
+	})
+	require.NoError(t, err)
+
+	return id
+}
+
+func TestSQLiteStore_GetDMLastReadEmpty(t *testing.T) {
+	got, err := newTestStore(t).GetDMLastRead(t.Context(), "inst-botty")
+	require.NoError(t, err)
+	require.Equal(t, int64(0), got)
+}
+
+func TestSQLiteStore_SetAndGetDMLastRead(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	eventID := seedDMWithEvent(t, s, "inst-botty")
+	require.NoError(t, s.SetDMLastRead(ctx, "inst-botty", eventID))
+
+	got, err := s.GetDMLastRead(ctx, "inst-botty")
+	require.NoError(t, err)
+	require.Equal(t, eventID, got)
+}
+
+func TestSQLiteStore_SetDMLastRead_independent_per_peer(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	id1 := seedDMWithEvent(t, s, "inst-botty")
+	id2 := seedDMWithEvent(t, s, "inst-helper")
+
+	require.NoError(t, s.SetDMLastRead(ctx, "inst-botty", id1))
+	require.NoError(t, s.SetDMLastRead(ctx, "inst-helper", id2))
+
+	b, err := s.GetDMLastRead(ctx, "inst-botty")
+	require.NoError(t, err)
+	require.Equal(t, id1, b)
+
+	h, err := s.GetDMLastRead(ctx, "inst-helper")
+	require.NoError(t, err)
+	require.Equal(t, id2, h)
+}
+
+func TestSQLiteStore_SetDMLastRead_overwrites(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	seedDMWithEvent(t, s, "inst-botty")
+	// Append a second event to get a different ID.
+	id2, err := s.AppendEvent(ctx, "inst-botty", domain.Message{
+		Target: "inst-botty", From: "botty", InstanceID: "inst-botty", Body: "again", At: testTime,
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, s.SetDMLastRead(ctx, "inst-botty", 1))
+	require.NoError(t, s.SetDMLastRead(ctx, "inst-botty", id2))
+
+	got, err := s.GetDMLastRead(ctx, "inst-botty")
+	require.NoError(t, err)
+	require.Equal(t, id2, got)
+}
+
+// TestSQLiteStore_SetDMLastRead_requires_existing_instance pins the
+// same referential-integrity rule dm_windows already enforces: a
+// cursor cannot be recorded against a counterpart the store has never
+// seen.
+func TestSQLiteStore_SetDMLastRead_requires_existing_instance(t *testing.T) {
+	err := newTestStore(t).SetDMLastRead(t.Context(), "inst-ghost", 1)
+	require.Error(t, err)
+}
+
+// TestSQLiteStore_DeleteInstanceByID_cascades_dm_last_read pins that
+// deleting a model instance drops its DM read cursor too, via
+// dm_last_read.instance_id's ON DELETE CASCADE — the same guarantee
+// TestSQLiteStore_DeleteInstanceByID_cascades_dm_window already gives
+// dm_windows, so a deleted counterpart never leaves a stale cursor
+// behind.
+func TestSQLiteStore_DeleteInstanceByID_cascades_dm_last_read(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	eventID := seedDMWithEvent(t, s, "inst-botty")
+	require.NoError(t, s.SetDMLastRead(ctx, "inst-botty", eventID))
+
+	require.NoError(t, s.DeleteInstanceByID(ctx, "inst-botty"))
+
+	got, err := s.GetDMLastRead(ctx, "inst-botty")
+	require.NoError(t, err)
+	require.Equal(t, int64(0), got)
+}
+
 // --- Reset ---
 
 func TestSQLiteStore_Reset(t *testing.T) {
@@ -1153,6 +1258,7 @@ func TestSQLiteStore_Reset(t *testing.T) {
 	_, err = s.AppendInstanceReply(ctx, "inst-botty", domain.Whois{Target: "#general", At: testTime})
 	require.NoError(t, err)
 	require.NoError(t, s.AddDMWindow(ctx, "inst-botty"))
+	require.NoError(t, s.SetDMLastRead(ctx, "inst-botty", eventID))
 
 	require.NoError(t, s.Reset(ctx))
 
@@ -1175,6 +1281,10 @@ func TestSQLiteStore_Reset(t *testing.T) {
 	lastRead, err := s.GetLastRead(ctx, "#general")
 	require.NoError(t, err)
 	require.Empty(t, lastRead)
+
+	dmLastRead, err := s.GetDMLastRead(ctx, "inst-botty")
+	require.NoError(t, err)
+	require.Empty(t, dmLastRead)
 
 	replies, err := s.InstanceRepliesBefore(ctx, "inst-botty", nil, 10)
 	require.NoError(t, err)
@@ -1528,6 +1638,7 @@ func TestSQLiteStore_Reset_rollback_on_partial_failure(t *testing.T) {
 	_, err = s.AppendInstanceReply(ctx, "inst-botty", domain.Whois{Target: "#general", At: testTime})
 	require.NoError(t, err)
 	require.NoError(t, s.AddDMWindow(ctx, "inst-botty"))
+	require.NoError(t, s.SetDMLastRead(ctx, "inst-botty", eventID))
 
 	// `memories` is one of the tables Reset deletes from; dropping it
 	// after seeding the others guarantees the DELETE targeting it
@@ -1591,6 +1702,7 @@ func snapshotPersistentTables(t *testing.T, db *sql.DB) map[string][]string {
 		"channels":         `SELECT * FROM channels`,
 		"events":           `SELECT * FROM events`,
 		"dm_windows":       `SELECT * FROM dm_windows`,
+		"dm_last_read":     `SELECT * FROM dm_last_read`,
 		"instance_replies": `SELECT * FROM instance_replies`,
 		"instances":        `SELECT * FROM instances`,
 		"memories":         `SELECT * FROM memories`,

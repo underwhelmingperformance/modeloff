@@ -304,7 +304,11 @@ func TestUserClient_MarkRead_reads_the_window_it_marks(t *testing.T) {
 	}
 }
 
-// lastRead is one [userclient.Store.SetLastRead] call.
+// lastRead is one cursor write, whichever of
+// [userclient.Store.SetLastRead] or [userclient.Store.SetDMLastRead]
+// made it. For a DM call, channel holds the peer InstanceID converted
+// to a [domain.ChannelName], matching the window it was asked to
+// mark.
 type lastRead struct {
 	channel domain.ChannelName
 	eventID int64
@@ -333,6 +337,12 @@ func (s *recordingStore) DMEventsBefore(_ context.Context, _, _ domain.InstanceI
 
 func (s *recordingStore) SetLastRead(_ context.Context, ch domain.ChannelName, eventID int64) error {
 	s.stamped = append(s.stamped, lastRead{channel: ch, eventID: eventID})
+
+	return nil
+}
+
+func (s *recordingStore) SetDMLastRead(_ context.Context, peer domain.InstanceID, eventID int64) error {
+	s.stamped = append(s.stamped, lastRead{channel: domain.ChannelName(peer), eventID: eventID})
 
 	return nil
 }

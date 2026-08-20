@@ -1140,6 +1140,48 @@ func (s *SQLiteStore) SetLastRead(ctx context.Context, ch domain.ChannelName, ev
 		})
 }
 
+// GetDMLastRead implements Store. Returns 0 when no cursor has been
+// recorded for the DM thread with peer, the same "nothing read yet"
+// convention GetLastRead uses for a channel.
+func (s *SQLiteStore) GetDMLastRead(ctx context.Context, peer domain.InstanceID) (int64, error) {
+	var eventID int64
+	err := s.inSpan(ctx, "store.sqlite.get_dm_last_read",
+		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(peer))},
+		func(ctx context.Context, _ trace.Span) error {
+			id, err := queryRow(ctx, s.db,
+				`SELECT event_id FROM dm_last_read WHERE instance_id = ?`,
+				[]any{peer}, nil, scalarColumn[int64]())
+			if errors.Is(err, sql.ErrNoRows) {
+				eventID = 0
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+
+			eventID = id
+			return nil
+		})
+
+	return eventID, err
+}
+
+// SetDMLastRead implements Store, recording the user's read cursor
+// for the DM thread with peer. This is last_read's counterpart for a
+// DM: last_read.channel references channels(name), and a DM window
+// is never a row in that table, so the cursor for a DM thread is
+// recorded here instead, keyed by the counterpart's instance id.
+func (s *SQLiteStore) SetDMLastRead(ctx context.Context, peer domain.InstanceID, eventID int64) error {
+	return s.inSpan(ctx, "store.sqlite.set_dm_last_read",
+		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(peer))},
+		func(ctx context.Context, _ trace.Span) error {
+			return execMutation(ctx, s.db,
+				`INSERT INTO dm_last_read (instance_id, event_id) VALUES (?, ?)
+				 ON CONFLICT (instance_id) DO UPDATE SET event_id = excluded.event_id`,
+				peer, eventID)
+		})
+}
+
 // GetSessionActive implements Store.
 func (s *SQLiteStore) GetSessionActive(ctx context.Context) (string, error) {
 	var value string
@@ -1225,10 +1267,12 @@ func (s *SQLiteStore) Reset(ctx context.Context) error {
 
 		defer func() { _ = tx.Rollback() }()
 
-		// Order: children before parents (last_read → channels;
-		// dm_windows, instance_replies, memories → instances; events).
+		// Order: children before parents (last_read, dm_last_read →
+		// channels, events; dm_windows, instance_replies, memories →
+		// instances).
 		for _, stmt := range []string{
 			`DELETE FROM last_read`,
+			`DELETE FROM dm_last_read`,
 			`DELETE FROM channels`,
 			`DELETE FROM events`,
 			`DELETE FROM dm_windows`,

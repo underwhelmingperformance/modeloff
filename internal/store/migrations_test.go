@@ -271,6 +271,45 @@ func TestApplyMigrations_v1_to_v3_adds_casemapped_indexes(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// TestApplyMigrations_v1_to_v4_adds_dm_last_read pins the v4 step:
+// dm_last_read exists after the migration and accepts a row keyed to
+// an instance created under the pre-existing `instances` table, the
+// same shape TestApplyMigrations_v1_to_v2_adds_dm_thread_support
+// checks for dm_windows.
+func TestApplyMigrations_v1_to_v4_adds_dm_last_read(t *testing.T) {
+	ctx := t.Context()
+	db, err := sql.Open("sqlite3", SQLitePragmaDSN(":memory:"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	db.SetMaxOpenConns(1)
+
+	seedV1Database(t, db)
+
+	require.NoError(t, applyMigrations(ctx, db))
+
+	got, err := readSchemaVersion(ctx, db)
+	require.NoError(t, err)
+	require.Equal(t, SchemaVersion, got)
+
+	_, err = db.ExecContext(ctx,
+		`INSERT INTO instances (instance_id, nick, data) VALUES ('inst-botty', 'botty', '{}')`)
+	require.NoError(t, err)
+
+	// seedV1Database already inserted event id 1, which
+	// dm_last_read.event_id can reference.
+	_, err = db.ExecContext(ctx,
+		`INSERT INTO dm_last_read (instance_id, event_id) VALUES ('inst-botty', 1)`)
+	require.NoError(t, err)
+
+	// dm_last_read.instance_id enforces the same referential
+	// integrity dm_windows does: a cursor against an instance the
+	// database has never seen is refused.
+	_, err = db.ExecContext(ctx,
+		`INSERT INTO dm_last_read (instance_id, event_id) VALUES ('inst-ghost', 1)`)
+	require.Error(t, err)
+}
+
 // TestNewSQLiteStore_opens_existing_v1_database is the regression
 // test for the schema/migration ordering bug this package shipped
 // once already: NewSQLiteStore execs `schema` unconditionally before
@@ -326,6 +365,80 @@ func TestNewSQLiteStore_opens_existing_v1_database(t *testing.T) {
 			},
 		},
 	}, events)
+}
+
+// seedV3Database brings db to a genuine v3 shape by running the v2
+// and v3 migration steps directly against a v1 database, stopping
+// short of v4, and recording the version as 3. This is what a real
+// pre-existing v3 database looks like on disk: the shape
+// TestSQLiteStore_Reset (and every other test in this package)
+// exercised before dm_last_read existed, and the shape
+// NewSQLiteStore has to upgrade cleanly from.
+func seedV3Database(t *testing.T, db *sql.DB) {
+	t.Helper()
+
+	ctx := t.Context()
+
+	seedV1Database(t, db)
+
+	tx, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tx.Rollback() })
+
+	for _, m := range migrations {
+		if m.Version > 3 {
+			continue
+		}
+		require.NoError(t, m.Apply(ctx, tx))
+	}
+
+	_, err = tx.ExecContext(ctx,
+		`INSERT OR REPLACE INTO state (key, value) VALUES ('schema_version', '3')`)
+	require.NoError(t, err)
+	require.NoError(t, tx.Commit())
+}
+
+// TestNewSQLiteStore_opens_existing_v3_database is the regression
+// test for the DM read-cursor blocker: before dm_last_read existed,
+// a DM's read cursor could never be recorded, because
+// last_read.channel references channels(name) and a DM window is
+// never a row there. It goes through the real NewSQLiteStore entry
+// point against a genuine v3 database, the same path
+// NewDefaultSQLiteStore uses against a user's actual on-disk
+// database, and then exercises the fix through the store's public
+// API rather than by inspecting the schema directly.
+func TestNewSQLiteStore_opens_existing_v3_database(t *testing.T) {
+	ctx := t.Context()
+	db, err := sql.Open("sqlite3", SQLitePragmaDSN(":memory:"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	db.SetMaxOpenConns(1)
+
+	seedV3Database(t, db)
+
+	// A pre-existing instance row, the way a real v3 database already
+	// holds one for any model that has ever joined.
+	_, err = db.ExecContext(ctx,
+		`INSERT INTO instances (instance_id, nick, data) VALUES ('inst-botty', 'botty', '{}')`)
+	require.NoError(t, err)
+
+	s, err := NewSQLiteStore(ctx, db)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close() })
+
+	got, err := readSchemaVersion(ctx, db)
+	require.NoError(t, err)
+	require.Equal(t, SchemaVersion, got)
+
+	// seedV1Database already inserted event id 1; SetDMLastRead can
+	// reference it. This is the write that used to fail on
+	// last_read's foreign key.
+	require.NoError(t, s.SetDMLastRead(ctx, "inst-botty", 1))
+
+	dmLastRead, err := s.GetDMLastRead(ctx, "inst-botty")
+	require.NoError(t, err)
+	require.Equal(t, int64(1), dmLastRead)
 }
 
 func TestReadSchemaVersion_absent_row_returns_zero(t *testing.T) {

@@ -123,8 +123,11 @@ type Store interface {
 	// cursor sits is the client's business — the user-client
 	// writes it through its own store surface — and the session
 	// only reads it, to answer the unread-badge query the
-	// chat-screen asks.
+	// chat-screen asks. GetDMLastRead is the DM counterpart,
+	// keyed by the counterpart's InstanceID rather than by a
+	// channel name, since a DM cursor lives in its own table.
 	GetLastRead(ctx context.Context, ch domain.ChannelName) (int64, error)
+	GetDMLastRead(ctx context.Context, peer domain.InstanceID) (int64, error)
 
 	// Autojoin list. The set of channels rejoined at next
 	// `Connect`; rewritten on every successful `Quit`.
@@ -998,37 +1001,49 @@ func (s *Session) UnreadCount(ctx context.Context, ch domain.ChannelName) (int, 
 			span.SetAttributes(attribute.Int("unread.count", count))
 		}()
 
+		// A DM's cursor lives in its own table, keyed by the
+		// counterpart's InstanceID, and its two directions are
+		// logged under their recipients, so the count is over the
+		// thread: counting the window's own key would count the
+		// lines the user sent and none of the ones it has not read.
+		if domain.InferChannelKind(ch) == domain.KindDM {
+			peer := domain.InstanceID(ch)
+
+			lastID, err := s.store.GetDMLastRead(ctx, peer)
+			if err != nil {
+				return fmt.Errorf("get last read: %w", err)
+			}
+
+			count, err = s.store.CountDMEventsFrom(ctx, domain.InstanceID(protocol.UserClientID), peer, unreadFrom(lastID))
+
+			return err
+		}
+
 		lastID, err := s.store.GetLastRead(ctx, ch)
 		if err != nil {
 			return fmt.Errorf("get last read: %w", err)
 		}
 
-		// No cursor means nothing in the channel has been read, so
-		// the whole log counts; otherwise everything past the
-		// cursor does. Either way the store counts rows and the
-		// badge is the whole answer, however far behind the user is.
-		var from *int64
-		if lastID > 0 {
-			fromID := lastID + 1
-			from = &fromID
-		}
-
-		// A DM's two directions are logged under their recipients, so
-		// the count is over the thread. Counting the window's own key
-		// would count the lines the user sent and none of the ones it
-		// has not read.
-		if domain.InferChannelKind(ch) == domain.KindDM {
-			count, err = s.store.CountDMEventsFrom(ctx, domain.InstanceID(protocol.UserClientID), domain.InstanceID(ch), from)
-
-			return err
-		}
-
-		count, err = s.store.CountEventsFrom(ctx, ch, from)
+		count, err = s.store.CountEventsFrom(ctx, ch, unreadFrom(lastID))
 
 		return err
 	})
 
 	return count, err
+}
+
+// unreadFrom turns a last-read cursor into the "at or after" argument
+// CountEventsFrom / CountDMEventsFrom take: nil when nothing has been
+// read, so the whole log counts, or the id right after the cursor
+// otherwise.
+func unreadFrom(lastID int64) *int64 {
+	if lastID <= 0 {
+		return nil
+	}
+
+	fromID := lastID + 1
+
+	return &fromID
 }
 
 // instanceChannelNames returns the list of channels an instance is in.

@@ -103,7 +103,9 @@ func truncateMemoryEntry(e memory.Entry, maxBytes int) memory.Entry {
 // The function is only ever called from the dispatch path, which
 // never fires for the status window, so `window` is a
 // `*domain.ChannelWindow` or a `*domain.DMWindow`; the addressing
-// line uses the window's `Name()` either way.
+// line uses the window's `DisplayName()` either way, which is the
+// channel name for a channel and the counterpart's nick for a DM —
+// `Name()` would give the counterpart's `InstanceID` instead.
 func buildSystemPrompt(window domain.Window, inst *domain.Instance) string {
 	var b strings.Builder
 
@@ -129,7 +131,7 @@ How to behave:
 - Respond to the channel vibe, not just direct questions. If the conversation is fun, join in. If it's quiet, stay quiet.
 - Never say things like "Great question!", "I'd be happy to help!", "Absolutely!", or "Let me know if you need anything." These are AI-isms and they break the illusion. Talk like a person, not an assistant.`,
 		inst.Nick(),
-		window.Name(),
+		window.DisplayName(),
 	)
 
 	if persona := inst.Persona(); persona != "" {
@@ -195,7 +197,7 @@ func contextReplies(window domain.Window, memories []memory.Entry) []protocol.IR
 	if body, ok := memoryReplyBody(memories); ok {
 		replies = append(replies, protocol.IRCMessage{
 			Kind:   protocol.KindServerReply,
-			Target: string(window.Name()),
+			Target: window.DisplayName(),
 			Body:   body,
 		})
 	}

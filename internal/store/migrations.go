@@ -22,7 +22,7 @@ import (
 // that predates this version. Every database — fresh or
 // pre-existing — reaches the current shape through applyMigrations,
 // the single path from v1 onward.
-const SchemaVersion = 3
+const SchemaVersion = 4
 
 // migration is one forward-only step that brings the database
 // from v(Version-1) to vVersion. Apply runs inside the
@@ -104,6 +104,28 @@ var migrations = []migration{
 					ON channels (name COLLATE NOCASE)
 			`); err != nil {
 				return fmt.Errorf("create idx_channels_name_nocase: %w", err)
+			}
+
+			return nil
+		},
+	},
+	{
+		Version: 4,
+		Apply: func(ctx context.Context, tx *sql.Tx) error {
+			// last_read.channel references channels(name), and a DM
+			// window is never a row in that table, so a DM's cursor
+			// cannot be recorded there. dm_last_read is a second cursor
+			// table keyed by the counterpart's instance id instead,
+			// mirroring dm_windows: deleting the counterpart drops its
+			// cursor along with it, the same way deleting a channel
+			// already drops that channel's row in last_read.
+			if _, err := tx.ExecContext(ctx, `
+				CREATE TABLE IF NOT EXISTS dm_last_read (
+					instance_id TEXT PRIMARY KEY REFERENCES instances(instance_id) ON DELETE CASCADE,
+					event_id    INTEGER NOT NULL REFERENCES events(id)
+				)
+			`); err != nil {
+				return fmt.Errorf("create dm_last_read: %w", err)
 			}
 
 			return nil
