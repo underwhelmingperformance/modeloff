@@ -108,6 +108,18 @@ func NewChannelSidebar() ChannelSidebar {
 						return ChannelSelectedMsg{Channel: w.Name()}
 					}
 				},
+				// DMs already sort last and contiguous under
+				// domain.Window's ordering, so labelling them
+				// "Queries" (irssi's term for a DM window) needs no
+				// sort of its own: the label is drawn once, where the
+				// run of DMs begins.
+				Section: func(w domain.Window) string {
+					if w.Kind() == domain.KindDM {
+						return "Queries"
+					}
+
+					return ""
+				},
 			},
 		).
 			SetHeader("Channels").

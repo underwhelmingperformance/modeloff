@@ -111,7 +111,7 @@ func TestChannelSidebar_status_channel_stays_pinned_and_unprefixed(t *testing.T)
 	m := newTestChannelSidebar(channels, "#general", nil)
 	v := m.View(30, 10)
 
-	require.Equal(t, []string{"Channels", "&modeloff", "▸#general", "botty"}, visibleLines(v))
+	require.Equal(t, []string{"Channels", "&modeloff", "▸#general", "Queries", "botty"}, visibleLines(v))
 	require.NotContains(t, v, "#&modeloff")
 }
 
@@ -124,7 +124,7 @@ func TestChannelSidebar_ChannelRemovedMsg_drops_dm(t *testing.T) {
 	m := newTestChannelSidebar(channels, "#general", nil)
 
 	require.Equal(t,
-		[]string{"Channels", "▸#general", "botty"},
+		[]string{"Channels", "▸#general", "Queries", "botty"},
 		visibleLines(m.View(30, 10)))
 
 	// DMs are addressed by the counterpart's InstanceID; the
@@ -278,7 +278,7 @@ func TestChannelSidebar_dm_shows_at_prefix(t *testing.T) {
 	m := newTestChannelSidebar(channels, "#general", nil)
 	v := m.View(30, 10)
 
-	require.Equal(t, []string{"Channels", "▸#general", "botty"}, visibleLines(v))
+	require.Equal(t, []string{"Channels", "▸#general", "Queries", "botty"}, visibleLines(v))
 }
 
 func TestChannelSidebar_dm_cursor_uses_dm_style(t *testing.T) {
@@ -291,7 +291,7 @@ func TestChannelSidebar_dm_cursor_uses_dm_style(t *testing.T) {
 	m, _ = m.Update(ctrlKey("alt+down"))
 
 	v := m.View(30, 10)
-	require.Equal(t, []string{"Channels", "#general", "▸botty"}, visibleLines(v))
+	require.Equal(t, []string{"Channels", "#general", "Queries", "▸botty"}, visibleLines(v))
 }
 
 func TestChannelSidebar_cursor_follows_active_on_set_channels(t *testing.T) {

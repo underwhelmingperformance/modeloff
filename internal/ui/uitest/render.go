@@ -104,6 +104,27 @@ func NonEmptyColumn(lines []string) []string {
 	return out
 }
 
+// isBorderRule reports whether line is a horizontal border rule: a
+// non-empty run of box-drawing characters and nothing else.
+func isBorderRule(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	return trimmed != "" && strings.Trim(trimmed, "┌┐└┘─│├┤┬┴┼") == ""
+}
+
+// WithoutHeader returns lines (typically a chat content column from
+// NonEmptyColumn) with a leading window header removed: every
+// ChatView renders one unconditionally, a content row identifying
+// the channel/topic or DM counterpart followed by its border rule.
+// Detecting the rule row lets a test skip past both without
+// hardcoding a fixed header height.
+func WithoutHeader(lines []string) []string {
+	if len(lines) > 1 && isBorderRule(lines[1]) {
+		return lines[2:]
+	}
+
+	return lines
+}
+
 // TrimmedVisibleLines returns NonEmptyLines with whitespace trimmed on
 // each side, for tests that compare against unpadded expectations.
 func TrimmedVisibleLines(view string) []string {

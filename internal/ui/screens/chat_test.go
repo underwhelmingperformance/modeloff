@@ -301,7 +301,7 @@ func TestChatScreen_rejoin_hides_pre_session_history(t *testing.T) {
 	tm.Submit("fresh message")
 	view := tm.WaitForViewContains("<testuser> fresh message")
 	body, _ := uitest.SplitBodyAndStatus(view)
-	content := normaliseContent(uitest.NonEmptyColumn(uitest.VisibleColumns(body)[1]))
+	content := normaliseContent(uitest.WithoutHeader(uitest.NonEmptyColumn(uitest.VisibleColumns(body)[1])))
 
 	// Replace the topic-separator rule row with a stable placeholder
 	// so the assertion pins the column's overall shape without
@@ -392,7 +392,7 @@ func TestChatScreen_nick_command_updates_input_bar(t *testing.T) {
 	tm.WaitFor("testuser is now known as newnick")
 
 	body, _ := uitest.SplitBodyAndStatus(tm.CurrentView())
-	content := uitest.NonEmptyColumn(uitest.VisibleColumns(body)[1])
+	content := uitest.WithoutHeader(uitest.NonEmptyColumn(uitest.VisibleColumns(body)[1]))
 	require.Equal(t, "newnick >", uitest.CompactLine(content[len(content)-1]),
 		"input bar should show the new nick after /nick command")
 }
@@ -407,7 +407,7 @@ func TestChatScreen_nick_command_reports_persist_error(t *testing.T) {
 	waitForChannelSeedDrain(tm)
 
 	tm.Submit("/nick newnick")
-	tm.WaitFor("context deadline exceeded")
+	tm.WaitFor("nick: timed out; try again")
 }
 
 func TestChatScreen_topic_command(t *testing.T) {
@@ -643,7 +643,7 @@ func TestChatScreen_config_set_poke_interval(t *testing.T) {
 	waitForChannelSeedDrain(tm)
 
 	tm.Submit("/config poke-interval 10m")
-	tm.WaitFor("Poke interval set to 10m0s.")
+	tm.WaitFor("Poke interval set to 10m.")
 
 	require.Equal(t, 10*time.Minute, cfgStore.cfg.PokeInterval)
 }
@@ -671,7 +671,7 @@ func TestChatScreen_config_set_timestamp_format(t *testing.T) {
 	waitForChannelSeedDrain(tm)
 
 	tm.Submit("/config timestamp-format 02/01 15:04:05")
-	tm.WaitFor("timestamp format set to 02/01 15:04:05")
+	tm.WaitFor("Timestamp format set to 02/01 15:04:05.")
 
 	require.NotNil(t, cfgStore.cfg.TimestampFormat)
 	require.Equal(t, "02/01 15:04:05", *cfgStore.cfg.TimestampFormat)
@@ -700,7 +700,7 @@ func TestChatScreen_config_disable_timestamp_format_with_empty_quotes(t *testing
 	waitForChannelSeedDrain(tm)
 
 	tm.Submit(`/config timestamp-format ""`)
-	tm.WaitFor("timestamps disabled")
+	tm.WaitFor("Timestamps disabled.")
 
 	require.NotNil(t, cfgStore.cfg.TimestampFormat)
 	require.Equal(t, "", *cfgStore.cfg.TimestampFormat)
@@ -716,7 +716,7 @@ func TestChatScreen_config_reset_poke_interval_from_parent_flag(t *testing.T) {
 	waitForChannelSeedDrain(tm)
 
 	tm.Submit("/config --reset poke-interval")
-	tm.WaitFor("Poke interval reset to 5m0s.")
+	tm.WaitFor("Poke interval reset to 5m.")
 
 	require.Equal(t, config.DefaultPokeInterval, cfgStore.cfg.PokeInterval)
 }
@@ -762,7 +762,7 @@ func TestChatScreen_config_reset_timestamp_format(t *testing.T) {
 	waitForChannelSeedDrain(tm)
 
 	tm.Submit("/config --reset timestamp-format")
-	tm.WaitFor("Timestamp format reset to locale default.")
+	tm.WaitFor("Timestamp format reset to the default 24-hour clock.")
 
 	require.Nil(t, cfgStore.cfg.TimestampFormat)
 }
@@ -777,7 +777,7 @@ func TestChatScreen_config_reset_base_url(t *testing.T) {
 	waitForChannelSeedDrain(tm)
 
 	tm.Submit("/config --reset base-url")
-	tm.WaitFor("base URL reset to https://openrouter.ai/api/v1")
+	tm.WaitFor("Base URL reset to https://openrouter.ai/api/v1.")
 
 	require.Equal(t, config.DefaultBaseURL, cfgStore.cfg.BaseURL)
 }
@@ -807,7 +807,7 @@ func TestChatScreen_config_reset_embedding_model(t *testing.T) {
 	waitForChannelSeedDrain(tm)
 
 	tm.Submit("/config --reset embedding-model")
-	tm.WaitFor("embedding model reset to openai/text-embedding-3-small")
+	tm.WaitFor("Embedding model reset to openai/text-embedding-3-small.")
 
 	require.Equal(t, config.DefaultEmbeddingModel, cfgStore.cfg.EmbeddingModel)
 }
@@ -822,7 +822,7 @@ func TestChatScreen_config_reset_highlight(t *testing.T) {
 	waitForChannelSeedDrain(tm)
 
 	tm.Submit("/config --reset highlight")
-	tm.WaitFor("highlight words reset to: [$nick]")
+	tm.WaitFor("Highlight words reset to: $nick.")
 
 	require.Equal(t, config.DefaultHighlightWords, cfgStore.cfg.HighlightWords)
 }
@@ -925,7 +925,7 @@ func TestChatScreen_clear_command_removes_messages(t *testing.T) {
 	tm.WaitFor("No messages yet")
 
 	body, _ := uitest.SplitBodyAndStatus(tm.CurrentView())
-	content := uitest.NonEmptyColumn(uitest.VisibleColumns(body)[1])
+	content := uitest.WithoutHeader(uitest.NonEmptyColumn(uitest.VisibleColumns(body)[1]))
 	require.Equal(t, []string{"No messages yet", "testuser >"}, []string{
 		content[0],
 		uitest.CompactLine(content[1]),

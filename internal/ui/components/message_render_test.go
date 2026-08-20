@@ -197,6 +197,59 @@ func TestNickStyleFor_named_lines_vary_by_instance(t *testing.T) {
 	require.NotEqual(t, nickStyleFor(alice).GetForeground(), nickStyleFor(bob).GetForeground())
 }
 
+func TestContainsHighlightWord_matches_whole_words_only(t *testing.T) {
+	// The highlight word in every case is "art".
+	tests := map[string]struct {
+		body string
+		want bool
+	}{
+		"substring inside \"start\" doesn't match":    {body: "let's start", want: false},
+		"substring inside \"starting\" doesn't match": {body: "starting is hard", want: false},
+		"word at start of body matches":               {body: "art class today", want: true},
+		"word at end of body matches":                 {body: "modern art", want: true},
+		"punctuation-bounded word matches":            {body: "great art!", want: true},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := ContainsHighlightWord(tc.body, []string{"art"}, "")
+			require.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestContainsHighlightWord_case_insensitive_and_finds_later_overlap(t *testing.T) {
+	// "art" first appears at index 1 inside "xart", bounded by 'x' on
+	// one side (a word rune, so that occurrence fails), and the
+	// search must still find the bounded occurrence at index 4.
+	require.True(t, ContainsHighlightWord("xART art", []string{"art"}, ""))
+}
+
+func TestContainsHighlightWord_expands_nick_placeholder(t *testing.T) {
+	require.True(t, ContainsHighlightWord("hey laney, look", []string{"$nick"}, "laney"))
+	require.False(t, ContainsHighlightWord("hey laneyford, look", []string{"$nick"}, "laney"))
+}
+
+func TestMessagePrefixText_composes_raw_segments(t *testing.T) {
+	require.Equal(t, "10:00 <alice>", messagePrefixText("10:00 ", "<alice>", false))
+	require.Equal(t, "10:00 * alice", messagePrefixText("10:00 ", "alice", true))
+	require.Equal(t, "<alice>", messagePrefixText("", "<alice>", false), "no timestamp leaves no leading space")
+}
+
+func TestRenderMessage_exempts_users_own_instance_from_highlight(t *testing.T) {
+	// InstanceID "" is the user's own instance (protocol.UserClientID's
+	// sentinel); its messages must never trigger the highlight ribbon
+	// even when the body contains a configured highlight word.
+	own := domain.Message{From: "laney", InstanceID: "", Body: "start now", At: time.Date(2026, 4, 19, 10, 0, 0, 0, time.UTC)}
+	other := domain.Message{From: "botty", InstanceID: "botty-instance", Body: "start now", At: time.Date(2026, 4, 19, 10, 0, 0, 0, time.UTC)}
+
+	gotOwn := renderMessage(own, []string{"start"}, "laney", noTimestamp(), language.BritishEnglish)
+	gotOther := renderMessage(other, []string{"start"}, "laney", noTimestamp(), language.BritishEnglish)
+
+	require.Equal(t, "<laney> start now", stripLine(gotOwn))
+	require.Equal(t, "<botty> start now", stripLine(gotOther))
+}
+
 func TestRenderChannelEvent_system_notice_style_changes_by_kind(t *testing.T) {
 	notice := domain.SystemNotice{
 		Target: "#test",

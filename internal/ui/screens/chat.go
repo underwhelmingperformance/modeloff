@@ -6,6 +6,7 @@ import (
 	"iter"
 	"log/slog"
 	"slices"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -728,9 +729,9 @@ func (s ChatScreen) update(msg tea.Msg) (ChatScreen, tea.Cmd) {
 		)
 
 	case chatcmd.PokeIntervalSetResult:
-		text := fmt.Sprintf("Poke interval set to %s.", msg.Interval)
+		text := fmt.Sprintf("Poke interval set to %s.", humanDuration(msg.Interval))
 		if msg.Reset {
-			text = fmt.Sprintf("Poke interval reset to %s.", msg.Interval)
+			text = fmt.Sprintf("Poke interval reset to %s.", humanDuration(msg.Interval))
 		}
 
 		return s, s.logAndShow(domain.SystemNotice{
@@ -740,9 +741,9 @@ func (s ChatScreen) update(msg tea.Msg) (ChatScreen, tea.Cmd) {
 		})
 
 	case chatcmd.DrainTimeoutSetResult:
-		text := fmt.Sprintf("Drain timeout set to %s.", msg.Timeout)
+		text := fmt.Sprintf("Drain timeout set to %s.", humanDuration(msg.Timeout))
 		if msg.Reset {
-			text = fmt.Sprintf("Drain timeout reset to %s.", msg.Timeout)
+			text = fmt.Sprintf("Drain timeout reset to %s.", humanDuration(msg.Timeout))
 		}
 
 		return s, s.logAndShow(domain.SystemNotice{
@@ -766,9 +767,9 @@ func (s ChatScreen) update(msg tea.Msg) (ChatScreen, tea.Cmd) {
 	case chatcmd.HighlightWordsSetResult:
 		s.highlightWords = msg.Words
 
-		text := fmt.Sprintf("highlight words set to: %v", msg.Words)
+		text := fmt.Sprintf("Highlight words set to: %s.", humanWordList(msg.Words))
 		if msg.Reset {
-			text = fmt.Sprintf("highlight words reset to: %v", msg.Words)
+			text = fmt.Sprintf("Highlight words reset to: %s.", humanWordList(msg.Words))
 		}
 
 		return s, tea.Batch(
@@ -784,9 +785,9 @@ func (s ChatScreen) update(msg tea.Msg) (ChatScreen, tea.Cmd) {
 		)
 
 	case chatcmd.BaseURLSetResult:
-		text := fmt.Sprintf("base URL set to %s", msg.URL)
+		text := fmt.Sprintf("Base URL set to %s.", msg.URL)
 		if msg.Reset {
-			text = fmt.Sprintf("base URL reset to %s", msg.URL)
+			text = fmt.Sprintf("Base URL reset to %s.", msg.URL)
 		}
 
 		return s, s.logAndShow(domain.SystemNotice{
@@ -796,9 +797,9 @@ func (s ChatScreen) update(msg tea.Msg) (ChatScreen, tea.Cmd) {
 		})
 
 	case chatcmd.EmbeddingModelSetResult:
-		text := fmt.Sprintf("embedding model set to %s", msg.ModelID)
+		text := fmt.Sprintf("Embedding model set to %s.", msg.ModelID)
 		if msg.Reset {
-			text = fmt.Sprintf("embedding model reset to %s", msg.ModelID)
+			text = fmt.Sprintf("Embedding model reset to %s.", msg.ModelID)
 		}
 
 		return s, s.logAndShow(domain.SystemNotice{
@@ -844,11 +845,11 @@ func (s ChatScreen) update(msg tea.Msg) (ChatScreen, tea.Cmd) {
 
 		switch {
 		case msg.Reset:
-			text = "Timestamp format reset to locale default."
+			text = "Timestamp format reset to the default 24-hour clock."
 		case msg.Format != nil && *msg.Format != "":
-			text = fmt.Sprintf("timestamp format set to %s", *msg.Format)
+			text = fmt.Sprintf("Timestamp format set to %s.", *msg.Format)
 		default:
-			text = "timestamps disabled"
+			text = "Timestamps disabled."
 		}
 
 		return s, tea.Batch(
@@ -975,6 +976,60 @@ func (s ChatScreen) update(msg tea.Msg) (ChatScreen, tea.Cmd) {
 // Tea runtime rather than bypassing it with a direct Update call.
 func msgCmd(msg tea.Msg) tea.Cmd {
 	return func() tea.Msg { return msg }
+}
+
+// humanDuration renders d for a `/config` confirmation without Go's
+// trailing zero-value units: time.Duration.String() would print
+// "1h0m0s" for an hour, where a person reads "1h". Only the
+// hour/minute/second components that matter for the durations
+// `/config` accepts (poke-interval, drain-timeout) are considered;
+// a sub-second remainder falls back to Duration's own String.
+func humanDuration(d time.Duration) string {
+	if d == 0 {
+		return "0s"
+	}
+
+	sign := ""
+	whole := d
+	if d < 0 {
+		sign = "-"
+		whole = -d
+	}
+
+	hours := whole / time.Hour
+	remainder := whole - hours*time.Hour
+	minutes := remainder / time.Minute
+	remainder -= minutes * time.Minute
+	seconds := remainder / time.Second
+	remainder -= seconds * time.Second
+
+	if remainder != 0 {
+		return d.String()
+	}
+
+	var parts []string
+	if hours > 0 {
+		parts = append(parts, fmt.Sprintf("%dh", hours))
+	}
+	if minutes > 0 {
+		parts = append(parts, fmt.Sprintf("%dm", minutes))
+	}
+	if seconds > 0 {
+		parts = append(parts, fmt.Sprintf("%ds", seconds))
+	}
+
+	return sign + strings.Join(parts, "")
+}
+
+// humanWordList renders a word list for a `/config` confirmation as
+// a plain comma-separated sentence, not Go's `%v` slice rendering
+// (e.g. "[alice bob $nick]").
+func humanWordList(words []string) string {
+	if len(words) == 0 {
+		return "(none)"
+	}
+
+	return strings.Join(words, ", ")
 }
 
 // deliverReplyEvents re-delivers each confirmation event from a

@@ -59,7 +59,7 @@ func TestApp_nick_command_reports_persist_error_with_teatest(t *testing.T) {
 	tm.WaitFor("#general")
 
 	tm.Submit("/nick newnick")
-	tm.WaitFor("context deadline exceeded")
+	tm.WaitFor("nick: timed out; try again")
 }
 
 func TestApp_title_list_and_help_commands_with_teatest(t *testing.T) {
@@ -141,13 +141,13 @@ func TestApp_config_commands_with_teatest(t *testing.T) {
 	tm.WaitFor("OpenRouter API key saved and activated.")
 
 	tm.Submit("/config poke-interval 10m")
-	tm.WaitFor("Poke interval set to 10m0s.")
+	tm.WaitFor("Poke interval set to 10m.")
 
 	tm.Submit("/config timestamp-format %c")
-	tm.WaitFor("timestamp format set to %c")
+	tm.WaitFor("Timestamp format set to %c.")
 
 	tm.Submit(`/config timestamp-format ""`)
-	tm.WaitFor("timestamps disabled")
+	tm.WaitFor("Timestamps disabled.")
 
 	tm.Submit("/config nonsense")
 	tm.WaitFor("unknown subcommand")
@@ -172,15 +172,23 @@ func TestApp_unknown_command_on_welcome_screen_with_teatest(t *testing.T) {
 
 	tm.Submit("/foo")
 
-	// The status window's focus marker arrives on a message of its
-	// own, independently of the rejection notice. Anchor the
-	// assertion to the snapshot carrying both; matching the notice
-	// on the cumulative output stream can return while `&modeloff`
-	// is still unmarked.
-	view := tm.WaitForViewContains("▸&modeloff", "unknown command: /foo")
+	// The sidebar's active marker and the chat view's own window
+	// header each arrive on a message of their own: ChannelActiveMsg
+	// and SetChannelMsg are two independent commands in the same
+	// focus batch, so a frame can carry one without the other. Once
+	// both have landed, "&modeloff" appears twice: once in the
+	// sidebar entry, once in the header. Anchoring on that count, not
+	// just the sidebar marker, rules out the frame where the sidebar
+	// has caught up but the header has not.
+	view := tm.WaitForView(func(view string) bool {
+		return strings.Contains(view, "▸&modeloff") &&
+			strings.Contains(view, "unknown command: /foo") &&
+			strings.Count(view, "&modeloff") >= 2
+	})
 
 	require.Equal(t, []string{
 		"Channels",
+		"&modeloff",
 		"▸&modeloff",
 		"No members",
 		"✗ command: unknown command: /foo",
@@ -201,9 +209,12 @@ func TestApp_welcome_join_command_with_teatest(t *testing.T) {
 
 	view := tm.CurrentView()
 	require.Equal(t, []string{"Channels", "&modeloff", "▸#general"}, sidebarColumn(view))
-	require.Equal(t, []string{
-		"*** Created channel #general",
-	}, normaliseContent(contentColumn(view)))
+
+	content := normaliseContent(contentColumn(view))
+	require.Len(t, content, 3, "window header, its border rule, one message")
+	require.Equal(t, "#general", content[0])
+	require.Regexp(t, `^─+$`, content[1], "second content line is the header's border rule")
+	require.Equal(t, "*** Created channel #general", content[2])
 }
 
 func TestApp_message_on_welcome_screen_rejected_with_teatest(t *testing.T) {
@@ -217,15 +228,23 @@ func TestApp_message_on_welcome_screen_rejected_with_teatest(t *testing.T) {
 
 	tm.Submit("hello world")
 
-	// The status window's focus marker arrives on a message of its
-	// own, independently of the rejection notice. Anchor the
-	// assertion to the snapshot carrying both; matching the notice
-	// on the cumulative output stream can return while `&modeloff`
-	// is still unmarked.
-	view := tm.WaitForViewContains("▸&modeloff", "join a channel first")
+	// The sidebar's active marker and the chat view's own window
+	// header each arrive on a message of their own: ChannelActiveMsg
+	// and SetChannelMsg are two independent commands in the same
+	// focus batch, so a frame can carry one without the other. Once
+	// both have landed, "&modeloff" appears twice: once in the
+	// sidebar entry, once in the header. Anchoring on that count, not
+	// just the sidebar marker, rules out the frame where the sidebar
+	// has caught up but the header has not.
+	view := tm.WaitForView(func(view string) bool {
+		return strings.Contains(view, "▸&modeloff") &&
+			strings.Contains(view, "join a channel first") &&
+			strings.Count(view, "&modeloff") >= 2
+	})
 
 	require.Equal(t, []string{
 		"Channels",
+		"&modeloff",
 		"▸&modeloff",
 		"No members",
 		"⚠ join a channel first",

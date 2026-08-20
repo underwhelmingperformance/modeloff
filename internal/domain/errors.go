@@ -166,6 +166,25 @@ func (e PokeIntervalOutOfRangeError) Error() string {
 	return fmt.Sprintf("poke interval must be at least %s: got %s", e.Floor, e.Interval)
 }
 
+// DrainTimeoutOutOfRangeError indicates a `/config drain-timeout`
+// value was non-positive (which would leave `main`'s shutdown
+// sequence with no drain bound at all) or below the configured
+// floor (a typo that would abandon in-flight LLM dispatches almost
+// immediately on exit).
+type DrainTimeoutOutOfRangeError struct {
+	Timeout time.Duration
+	Floor   time.Duration
+	At      time.Time
+}
+
+func (e DrainTimeoutOutOfRangeError) Error() string {
+	if e.Timeout <= 0 {
+		return fmt.Sprintf("drain timeout must be positive: got %s", e.Timeout)
+	}
+
+	return fmt.Sprintf("drain timeout must be at least %s: got %s", e.Floor, e.Timeout)
+}
+
 // NickInUseError indicates a nickname change was refused because
 // the target nick is already held by another instance (a model
 // or the user). Wire-shape equivalent of RFC 2812 numeric 433

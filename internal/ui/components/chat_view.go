@@ -75,8 +75,9 @@ type UserNickMsg struct {
 type ChatView[C command.KindProvider] struct {
 	channel domain.ChannelName
 	// kind governs kind-sensitive decisions: the glyph/style used for
-	// system notices in the message list, and the topic-bar
-	// suppression that hides DM topics (KindDM never has a topic).
+	// system notices in the message list, and which of headerText's
+	// two shapes the window header renders (the channel name plus
+	// its topic for a channel, or a DM's "@nick").
 	kind     domain.ChannelKind
 	topic    string
 	userNick domain.Nick
@@ -276,20 +277,19 @@ func (c ChatView[C]) View(width, height int) string {
 		paletteHeight = lipgloss.Height(paletteView)
 	}
 
-	var topicView string
-	topicHeight := 0
-	if c.topic != "" && c.kind != domain.KindDM {
-		topicView = c.renderTopic(width)
-		topicHeight = lipgloss.Height(topicView)
+	headerView := c.renderHeader(width)
+	headerHeight := 0
+	if headerView != "" {
+		headerHeight = lipgloss.Height(headerView)
 	}
 
-	messageListHeight := max(height-inputHeight-topicHeight-paletteHeight, 0)
+	messageListHeight := max(height-inputHeight-headerHeight-paletteHeight, 0)
 
 	messageView := c.messages.View(width, messageListHeight)
 
 	parts := make([]string, 0, 4)
-	if topicView != "" {
-		parts = append(parts, topicView)
+	if headerView != "" {
+		parts = append(parts, headerView)
 	}
 
 	parts = append(parts, messageView)
@@ -332,16 +332,16 @@ func (c ChatView[C]) layoutRects() chatViewLayout {
 		Height: paletteHeight,
 	}
 
-	topicHeight := 0
-	if c.topic != "" && c.kind != domain.KindDM {
-		topicHeight = lipgloss.Height(c.renderTopic(width))
+	headerHeight := 0
+	if headerView := c.renderHeader(width); headerView != "" {
+		headerHeight = lipgloss.Height(headerView)
 	}
 
 	messageRect := ui.Rect{
 		X:      c.bounds.X,
-		Y:      c.bounds.Y + topicHeight,
+		Y:      c.bounds.Y + headerHeight,
 		Width:  width,
-		Height: c.bounds.Height - topicHeight - paletteHeight - inputHeight,
+		Height: c.bounds.Height - headerHeight - paletteHeight - inputHeight,
 	}
 	if messageRect.Height < 0 {
 		messageRect.Height = 0
@@ -377,10 +377,44 @@ func (c ChatView[C]) updateInput(msg tea.Msg) (ChatView[C], tea.Cmd) {
 	return c, cmd
 }
 
-func (c ChatView[C]) renderTopic(width int) string {
-	text := theme.ChannelTitle.Render(c.topic)
+// headerText names the window in view: the channel name plus its
+// topic when one is set, or the counterpart's nick for a DM (a DM
+// window's `Name()` is already the counterpart's nick, matching
+// [domain.Window.DisplayName]'s "@nick" convention for DMs).
+//
+// `channel` starts as "" at construction, so the view's first frame
+// does not have to wait for the `SetChannelMsg` round trip that
+// supplies the real window; there is nothing to name during that
+// span, so headerText answers "".
+func (c ChatView[C]) headerText() string {
+	if c.channel == "" {
+		return ""
+	}
+
+	if c.kind == domain.KindDM {
+		return "@" + string(c.channel)
+	}
+
+	text := string(c.channel)
+	if c.topic != "" {
+		text += ": " + c.topic
+	}
+
+	return text
+}
+
+// renderHeader draws the window header: every window in view gets
+// one, so a topicless channel and a DM are identified the same way a
+// topic-bearing channel is. While headerText is still "" (before the
+// first SetChannelMsg), it renders nothing at all, not even the
+// border rule, so that span costs no row and draws no stray line.
+func (c ChatView[C]) renderHeader(width int) string {
+	text := c.headerText()
+	if text == "" {
+		return ""
+	}
 
 	style := theme.PaneBorder.BorderBottom(true).Width(width)
 
-	return style.Render(text)
+	return style.Render(theme.ChannelTitle.Render(text))
 }

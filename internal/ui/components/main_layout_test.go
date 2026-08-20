@@ -48,6 +48,27 @@ func (s stubModel) View(width, height int) string {
 	return fmt.Sprintf("%s:%dx%d", s.label, width, height)
 }
 
+// boundsRecordingStub is a stubModel that also records the last
+// [ui.BoundsMsg] it received, so a test can pin the Rect MainLayout
+// computed for it without exporting computeLayout.
+type boundsRecordingStub struct {
+	stubModel
+
+	bounds *ui.Rect
+}
+
+func newBoundsRecordingStub(label string) boundsRecordingStub {
+	return boundsRecordingStub{stubModel: stubModel{label: label}, bounds: &ui.Rect{}}
+}
+
+func (s boundsRecordingStub) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
+	if b, ok := msg.(ui.BoundsMsg); ok {
+		*s.bounds = b.Rect
+	}
+
+	return s, nil
+}
+
 // dims formats a `label:WxH` dimension token matching stubModel.View,
 // so tests can express expectations in terms of the layout constants.
 func dims(label string, width, height int) string {
@@ -120,10 +141,19 @@ func TestMainLayout_View_narrow_terminal(t *testing.T) {
 	content := stubModel{label: "content"}
 	layout := components.NewMainLayout(sidebar, content)
 
-	t.Run("below threshold shows resize message", func(t *testing.T) {
+	t.Run("below threshold collapses the sidebar and gives content the full width", func(t *testing.T) {
 		got := layout.View(79, 24)
 
-		require.Equal(t, []string{"Resize terminal to 80+ columns"}, visibleLines(got))
+		// No sidebar border ("│") appears at all: Content is the only
+		// thing rendered, at the full 79 columns.
+		require.NotContains(t, got, "│")
+		require.Equal(t, []string{dims("content", 79, 24)}, visibleLines(got))
+	})
+
+	t.Run("collapses at any width, not just above zero", func(t *testing.T) {
+		got := layout.View(20, 10)
+
+		require.Equal(t, []string{dims("content", 20, 10)}, visibleLines(got))
 	})
 
 	t.Run("at threshold renders normally", func(t *testing.T) {
@@ -133,6 +163,29 @@ func TestMainLayout_View_narrow_terminal(t *testing.T) {
 		require.Equal(t, []string{dims("sidebar", sidebarWidthAt80, defaultTestHeight)}, nonEmptyColumn(columns[0]))
 		require.Equal(t, []string{dims("content", contentWidthAt80, defaultTestHeight)}, nonEmptyColumn(columns[1]))
 	})
+}
+
+// TestMainLayout_WindowSizeMsg_narrow_terminal pins the BoundsMsg
+// Content receives below the compact threshold: the full terminal
+// width, matching what View actually renders it at. A Rect that
+// disagreed with the rendered width would misplace mouse
+// hit-testing inside Content even though the collapsed columns
+// looked right.
+func TestMainLayout_WindowSizeMsg_narrow_terminal(t *testing.T) {
+	sidebar := newBoundsRecordingStub("sidebar")
+	content := newBoundsRecordingStub("content")
+	layout := components.NewMainLayout(sidebar, content)
+
+	updated, _ := layout.Update(tea.WindowSizeMsg{Width: 60, Height: 20})
+	layout = updated.(components.MainLayout)
+
+	require.Equal(t, ui.Rect{X: 0, Y: 0, Width: 60, Height: 20}, *content.bounds,
+		"Content's bounds must span the full width the collapsed layout renders it at")
+	require.Equal(t, ui.Rect{X: 0, Y: 0, Width: 0, Height: 20}, *sidebar.bounds,
+		"the collapsed sidebar gets a zero-width Rect, matching that View never renders it")
+
+	got := layout.View(60, 20)
+	require.Equal(t, []string{dims("content", 60, 20)}, visibleLines(got))
 }
 
 func TestMainLayout_View_fills_width(t *testing.T) {

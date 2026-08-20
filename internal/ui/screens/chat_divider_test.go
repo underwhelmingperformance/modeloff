@@ -108,7 +108,7 @@ func TestChatScreen_divider_marks_messages_that_arrived_while_away(t *testing.T)
 		"<new messages>",
 		"<seedbot> arrived while away",
 		"testuser >",
-	}, withDividerMarker(normaliseContent(uitest.NonEmptyColumn(columns[1]))))
+	}, withDividerMarker(normaliseContent(uitest.WithoutHeader(uitest.NonEmptyColumn(columns[1])))))
 }
 
 // TestChatScreen_no_divider_for_a_line_that_lands_during_a_switch
@@ -158,5 +158,5 @@ func TestChatScreen_no_divider_for_a_line_that_lands_during_a_switch(t *testing.
 	require.Equal(t, []string{
 		"<alice> landed during the switch",
 		"testuser >",
-	}, withDividerMarker(normaliseContent(uitest.NonEmptyColumn(columns[1]))))
+	}, withDividerMarker(normaliseContent(uitest.WithoutHeader(uitest.NonEmptyColumn(columns[1])))))
 }

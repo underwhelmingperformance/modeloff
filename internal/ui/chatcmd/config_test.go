@@ -356,6 +356,76 @@ func TestPokeIntervalConfig_Run(t *testing.T) {
 	})
 }
 
+func TestDrainTimeoutConfig_Run(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  tea.Msg
+	}{
+		{name: "valid timeout", input: "/config drain-timeout 30s", want: DrainTimeoutSetResult{Timeout: 30 * time.Second}},
+		{name: "at the floor", input: "/config drain-timeout 1s", want: DrainTimeoutSetResult{Timeout: time.Second}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rc, _ := newConfigTestContext(t, &fakeManagerAPI{})
+
+			msg := runConfigCmd(t, rc, tt.input)
+			require.Equal(t, tt.want, msg)
+		})
+	}
+
+	rangeTests := []struct {
+		name    string
+		timeout string
+	}{
+		{name: "zero", timeout: "0s"},
+		{name: "negative", timeout: "-5s"},
+		{name: "below the floor", timeout: "500ms"},
+	}
+
+	for _, tt := range rangeTests {
+		t.Run(tt.name, func(t *testing.T) {
+			rc, _ := newConfigTestContext(t, &fakeManagerAPI{})
+
+			timeout, err := time.ParseDuration(tt.timeout)
+			require.NoError(t, err)
+
+			msg := runConfigCmd(t, rc, "/config drain-timeout "+tt.timeout)
+			requireErrorEvent(t, msg, "config drain-timeout", domain.DrainTimeoutOutOfRangeError{
+				Timeout: timeout,
+				Floor:   config.MinDrainTimeout,
+			})
+		})
+	}
+
+	t.Run("unparseable duration", func(t *testing.T) {
+		rc, _ := newConfigTestContext(t, &fakeManagerAPI{})
+
+		_, wantErr := time.ParseDuration("banana")
+
+		msg := runConfigCmd(t, rc, "/config drain-timeout banana")
+		requireErrorEvent(t, msg, "config drain-timeout", domain.InvalidDurationError{Input: "banana", Err: wantErr})
+	})
+
+	t.Run("bare shows the current value", func(t *testing.T) {
+		rc, store := newConfigTestContext(t, &fakeManagerAPI{})
+		require.NoError(t, store.Save(t.Context(), config.Config{DrainTimeout: 15 * time.Second}))
+
+		msg := runConfigCmd(t, rc, "/config drain-timeout")
+
+		requireSystemNotice(t, msg, "#test", "drain-timeout = 15s")
+	})
+
+	t.Run("reset restores the default", func(t *testing.T) {
+		rc, store := newConfigTestContext(t, &fakeManagerAPI{})
+		require.NoError(t, store.Save(t.Context(), config.Config{DrainTimeout: time.Minute}))
+
+		msg := runConfigCmd(t, rc, "/config --reset drain-timeout")
+		require.Equal(t, DrainTimeoutSetResult{Timeout: config.DefaultDrainTimeout, Reset: true}, msg)
+	})
+}
+
 func TestSmallModelConfig_Run(t *testing.T) {
 	t.Run("validates against the catalogue when a key is configured", func(t *testing.T) {
 		rc, store := newConfigTestContext(t, &fakeManagerAPI{hasAPIKey: true})

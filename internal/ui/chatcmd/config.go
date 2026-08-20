@@ -308,6 +308,19 @@ func (c DrainTimeoutConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 			})
 		}
 
+		// A non-positive value leaves `main`'s shutdown sequence with
+		// no drain bound at all, and a typo below the floor (e.g.
+		// "10ms" meant as "10s") would abandon in-flight LLM
+		// dispatches almost as soon as `/quit` is asked to wait for
+		// them. Mirrors the poke-interval floor check above.
+		if timeout < config.MinDrainTimeout {
+			return errorEvent("config drain-timeout", domain.DrainTimeoutOutOfRangeError{
+				Timeout: timeout,
+				Floor:   config.MinDrainTimeout,
+				At:      time.Now(),
+			})
+		}
+
 		if _, err := rc.Config.Update(ctx, func(cfg config.Config) config.Config {
 			cfg.DrainTimeout = timeout
 			return cfg

@@ -154,6 +154,17 @@ type layoutResult struct {
 }
 
 func (m MainLayout) computeLayout(width, height int) layoutResult {
+	if width < theme.MinTerminalWidth {
+		// Below the compact threshold there is no room for a sidebar
+		// or nick list alongside usable chat content, so both
+		// collapse and Content takes the full width. This is the
+		// same "shrink to nothing" outcome the deficit-driven
+		// shrinking below already reaches for the nick list; here it
+		// applies unconditionally rather than only once a shrunk
+		// render still overflows its allotted space.
+		return layoutResult{content: width}
+	}
+
 	sidebarBorder := theme.SidebarBorder.Height(height)
 	sidebarFrame, _ := sidebarBorder.GetFrameSize()
 
@@ -283,10 +294,6 @@ func (m MainLayout) columnHeight(totalHeight int) int {
 
 // View implements ui.Model.
 func (m MainLayout) View(width, height int) string {
-	if width < theme.MinTerminalWidth {
-		return theme.NarrowTerminalView(width, height)
-	}
-
 	obsH := 0
 	var obsView string
 
@@ -298,6 +305,20 @@ func (m MainLayout) View(width, height int) string {
 	}
 
 	colHeight := height - obsH
+
+	if width < theme.MinTerminalWidth {
+		// Collapse both side panels and give Content the full width,
+		// so every screen still renders at any width, per the
+		// "always responsive" rule. Content being usable at that
+		// width is a property of Content's own View, not of this
+		// layout.
+		content := m.Content.View(width, colHeight)
+		if obsH > 0 {
+			return lipgloss.JoinVertical(lipgloss.Left, content, obsView)
+		}
+
+		return content
+	}
 
 	sidebarBorder := theme.SidebarBorder.Height(colHeight)
 	sidebarCap := int(float64(width) * maxSidebarFraction)

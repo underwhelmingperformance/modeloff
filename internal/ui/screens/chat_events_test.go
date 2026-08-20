@@ -54,7 +54,7 @@ func TestChatScreen_PartEvent_leaving_active_switches_channel(t *testing.T) {
 	require.Equal(t, []string{
 		"*** Created channel #general",
 		"testuser >",
-	}, normaliseContent(uitest.NonEmptyColumn(columns[1])))
+	}, normaliseContent(uitest.WithoutHeader(uitest.NonEmptyColumn(columns[1]))))
 }
 
 func TestChatScreen_PartEvent_leaving_last_channel_shows_welcome(t *testing.T) {
@@ -142,7 +142,7 @@ func TestChatScreen_TopicChangeEvent_different_channel(t *testing.T) {
 	require.Equal(t, []string{
 		"*** Created channel #general",
 		"testuser >",
-	}, normaliseContent(uitest.NonEmptyColumn(uitest.VisibleColumns(body)[1])))
+	}, normaliseContent(uitest.WithoutHeader(uitest.NonEmptyColumn(uitest.VisibleColumns(body)[1]))))
 }
 
 func TestChatScreen_QuitEvent_shows_quit_message(t *testing.T) {
@@ -213,7 +213,7 @@ func TestChatScreen_QuitEvent_removes_instance_from_nick_list(t *testing.T) {
 		"*** fakenick has joined #general",
 		"*** fakenick has quit",
 		"testuser >",
-	}, normaliseContent(uitest.NonEmptyColumn(uitest.VisibleColumns(body)[1])))
+	}, normaliseContent(uitest.WithoutHeader(uitest.NonEmptyColumn(uitest.VisibleColumns(body)[1]))))
 }
 
 // TestChatScreen_QuitEvent_surfaces_in_open_DM exercises the
@@ -382,7 +382,7 @@ func TestChatScreen_model_join_does_not_switch_active(t *testing.T) {
 		"*** Created channel #general",
 		"<alice> sync marker",
 		"testuser >",
-	}, normaliseContent(uitest.NonEmptyColumn(uitest.VisibleColumns(body)[1])))
+	}, normaliseContent(uitest.WithoutHeader(uitest.NonEmptyColumn(uitest.VisibleColumns(body)[1]))))
 }
 
 func TestChatScreen_rapid_switch_does_not_revert(t *testing.T) {
@@ -433,7 +433,7 @@ func TestChatScreen_rapid_switch_does_not_revert(t *testing.T) {
 		"*** Created channel #chat",
 		"<alice> sync marker",
 		"testuser >",
-	}, normaliseContent(uitest.NonEmptyColumn(uitest.VisibleColumns(body)[1])),
+	}, normaliseContent(uitest.WithoutHeader(uitest.NonEmptyColumn(uitest.VisibleColumns(body)[1]))),
 		"#chat content should be visible — active channel should still be #chat")
 }
 
@@ -468,7 +468,7 @@ func TestChatScreen_focus_new_channel_before_join_event(t *testing.T) {
 	require.Equal(t, []string{
 		"No messages yet",
 		"testuser >",
-	}, normaliseContent(uitest.NonEmptyColumn(columns[1])),
+	}, normaliseContent(uitest.WithoutHeader(uitest.NonEmptyColumn(columns[1]))),
 		"#general content should not be shown — #newchannel is active")
 }
 
@@ -501,7 +501,7 @@ func TestChatScreen_focus_status_channel_keeps_status_identity(t *testing.T) {
 	require.Equal(t, []string{
 		"*** Welcome to modeloff, testuser",
 		"testuser >",
-	}, normaliseContent(uitest.NonEmptyColumn(columns[1])))
+	}, normaliseContent(uitest.WithoutHeader(uitest.NonEmptyColumn(columns[1]))))
 	require.NotContains(t, view, "#&modeloff")
 }
 
@@ -561,5 +561,5 @@ func TestChatScreen_MessageEvent_inactive_channel(t *testing.T) {
 		"*** Created channel #general",
 		"<bob> sync marker",
 		"testuser >",
-	}, normaliseContent(uitest.NonEmptyColumn(columns[1])))
+	}, normaliseContent(uitest.WithoutHeader(uitest.NonEmptyColumn(columns[1]))))
 }

@@ -28,6 +28,16 @@ type CompletionContext struct {
 	LiveModelsState func() command.SuggestionState
 	Personas        func() iter.Seq[domain.Persona]
 	Kind            func() domain.ChannelKind
+
+	// Directory iterates every channel the session knows of, joined
+	// or not, the same set `/list` answers with. `channelsSource`
+	// merges it with `Channels` (already-open windows) so `/join`
+	// and `/msg` can offer an unjoined channel as a completion
+	// target: the case completion is actually useful for, since a
+	// channel the user has already joined is one they typically
+	// don't need to type again. Optional: a nil Directory limits
+	// channel completion to windows already open.
+	Directory func() iter.Seq[domain.ChannelDirectoryEntry]
 }
 
 // ChannelKind implements command.KindProvider.
@@ -35,16 +45,37 @@ func (ctx CompletionContext) ChannelKind() domain.ChannelKind {
 	return ctx.Kind()
 }
 
-// channelsSource suggests known channels.
+// channelsSource suggests known channels: every window already open,
+// plus, when ctx.Directory is set, every other channel the session's
+// directory knows of, so an unjoined channel is offered too. A
+// channel present in both is suggested once, from Channels.
 func channelsSource(ctx CompletionContext, _ command.InvocationState[CompletionContext]) command.SuggestionResult {
 	var suggestions []command.Suggestion
 
+	open := make(map[domain.ChannelName]bool)
+
 	for w := range ctx.Channels() {
+		open[w.Name()] = true
+
 		suggestions = append(suggestions, command.Suggestion{
 			Value:  string(w.Name()),
 			Label:  string(w.Name()),
 			Detail: channelDetail(w),
 		})
+	}
+
+	if ctx.Directory != nil {
+		for entry := range ctx.Directory() {
+			if open[entry.Channel] {
+				continue
+			}
+
+			suggestions = append(suggestions, command.Suggestion{
+				Value:  string(entry.Channel),
+				Label:  string(entry.Channel),
+				Detail: entry.Topic,
+			})
+		}
 	}
 
 	return command.SuggestionResult{Suggestions: suggestions}

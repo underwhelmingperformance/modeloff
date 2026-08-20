@@ -12,6 +12,18 @@ import (
 
 var fallbackLocale = language.BritishEnglish
 
+// DefaultFormat is the timestamp format a message line uses when no
+// explicit [Format] override is configured: irssi's convention of a
+// bare 24-hour clock. The date itself is not repeated on every line;
+// it is carried by the day-change divider the message list draws
+// whenever consecutive events fall on different calendar days.
+const DefaultFormat = "%H:%M"
+
+// dayChangedFormat is the format a day-change divider renders its
+// date label in: the full weekday and month name, so the divider
+// reads as a sentence rather than a numeric date stamp.
+const dayChangedFormat = "%A %d %B %Y"
+
 // CurrentLocale returns the current system locale, falling back to
 // en-GB if detection fails or returns an unusable value.
 func CurrentLocale() language.Tag {
@@ -54,8 +66,8 @@ func DetectLocale(detect func() (string, error)) language.Tag {
 	return fallbackLocale
 }
 
-// Format renders t according to the configured timestamp format and locale.
-// Nil format means locale-aware %c formatting, while an explicit empty
+// Format renders t according to the configured timestamp format and
+// locale. A nil format means [DefaultFormat], while an explicit empty
 // string disables timestamps.
 func Format(t time.Time, format *string, locale language.Tag) string {
 	if locale.IsRoot() {
@@ -63,7 +75,7 @@ func Format(t time.Time, format *string, locale language.Tag) string {
 	}
 
 	if format == nil {
-		return strftime.Format(locale, "%c", t)
+		return strftime.Format(locale, DefaultFormat, t)
 	}
 
 	if *format == "" {
@@ -75,6 +87,16 @@ func Format(t time.Time, format *string, locale language.Tag) string {
 	}
 
 	return t.Format(*format)
+}
+
+// FormatDate renders the calendar date t falls on, for a day-change
+// divider: the full weekday and month name, locale-aware.
+func FormatDate(t time.Time, locale language.Tag) string {
+	if locale.IsRoot() {
+		locale = fallbackLocale
+	}
+
+	return strftime.Format(locale, dayChangedFormat, t)
 }
 
 func normaliseLocale(raw string) string {

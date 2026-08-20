@@ -41,6 +41,58 @@ type SidebarConfig[T any, K comparable] struct {
 	// jumping to. It is optional: a sidebar that never sets it simply
 	// ignores ActivateNextActivityMsg.
 	HasActivity func(T) bool
+
+	// Section returns the group label an item is rendered under. A
+	// label row is drawn once, immediately above the first item whose
+	// Section differs from the previous item's. Items already sorted
+	// into contiguous runs by that label (as [domain.Window]'s
+	// ordering already groups DMs after channels) form visible groups
+	// this way, without the sidebar doing any sorting of its own. The
+	// empty string renders no label. Section is optional: a nil
+	// Section draws no labels at all.
+	Section func(T) string
+}
+
+// sidebarRow is one line Sidebar.View draws: either a group label
+// (ItemIndex -1) or a pointer back to the item at ItemIndex in the
+// sorted set's iteration order. Cursor placement and mouse
+// hit-testing both walk this same row order, computed by rowLayout,
+// so a click lands on the item actually drawn at that row and a
+// label row is never mistaken for one.
+type sidebarRow struct {
+	ItemIndex int
+	Label     string
+}
+
+// rowLayout walks the sorted items in order and returns one entry
+// per line View will draw, inserting a label row wherever cfg.Section
+// changes to a new non-empty value. It does not depend on width, so
+// both View (which also needs rendered text) and the mouse
+// hit-tester (which needs only the mapping) can call it cheaply.
+func (s Sidebar[T, K]) rowLayout() []sidebarRow {
+	if s.items == nil {
+		return nil
+	}
+
+	rows := make([]sidebarRow, 0, s.items.Len())
+	lastSection := ""
+	idx := 0
+
+	for item := range s.items.All() {
+		if s.cfg.Section != nil {
+			if sec := s.cfg.Section(item); sec != lastSection && sec != "" {
+				rows = append(rows, sidebarRow{ItemIndex: -1, Label: sec})
+				lastSection = sec
+			} else {
+				lastSection = sec
+			}
+		}
+
+		rows = append(rows, sidebarRow{ItemIndex: idx})
+		idx++
+	}
+
+	return rows
 }
 
 // ActivateIndexMsg asks a sidebar to activate the item at the given
@@ -224,6 +276,72 @@ func (s Sidebar[T, K]) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	return s, nil
 }
 
+// renderRows renders every row rowLayout produced, a group label or
+// an item styled by its selection/activation state, and reports the
+// widest rendered row plus the row the cursor item landed on (-1 if
+// the cursor's key matched no row), so View can place the viewport's
+// scroll offset by row rather than by item index. A row whose item
+// no longer exists in the sorted set is dropped.
+func (s Sidebar[T, K]) renderRows(rows []sidebarRow, width, pad int) (rendered []string, naturalW int, cursorRow int) {
+	rendered = make([]string, 0, len(rows))
+	cursorRow = -1
+
+	for _, row := range rows {
+		text, isCursor, ok := s.renderRow(row, width-pad)
+		if !ok {
+			continue
+		}
+
+		if isCursor {
+			cursorRow = len(rendered)
+		}
+
+		rendered = append(rendered, text)
+
+		if rw := lipgloss.Width(text); rw > naturalW {
+			naturalW = rw
+		}
+	}
+
+	return rendered, naturalW, cursorRow
+}
+
+// renderRow renders one row: a group label, or an item styled by its
+// selection/activation state. ok is false only when row names an
+// item no longer present in the sorted set, in which case text and
+// isCursor are meaningless. isCursor reports whether this item's key
+// is the cursor's, the signal renderRows uses to place the
+// viewport's scroll offset.
+func (s Sidebar[T, K]) renderRow(row sidebarRow, itemWidth int) (text string, isCursor, ok bool) {
+	if row.ItemIndex < 0 {
+		return theme.SidebarSection.Render(row.Label), false, true
+	}
+
+	item, ok := s.items.GetAt(row.ItemIndex)
+	if !ok {
+		return "", false, false
+	}
+
+	k := s.cfg.Key(item)
+
+	return s.cfg.View(item, s.stateFor(k), itemWidth), k == s.cursor, true
+}
+
+// stateFor reports the ViewState an item's key renders with: active
+// and/or under the cursor.
+func (s Sidebar[T, K]) stateFor(k K) ViewState {
+	switch {
+	case k == s.active && k == s.cursor:
+		return StateActiveSelected
+	case k == s.active:
+		return StateActive
+	case k == s.cursor:
+		return StateSelected
+	default:
+		return StateNone
+	}
+}
+
 // View implements ui.Model.
 func (s Sidebar[T, K]) View(width, height int) string {
 	if s.minWidth > 0 && width < s.minWidth {
@@ -243,40 +361,15 @@ func (s Sidebar[T, K]) View(width, height int) string {
 			theme.Dim.Render(empty))
 	}
 
-	// Render each item, tracking the widest.
-	rendered := make([]string, 0, s.items.Len())
-	naturalW := 0
+	// Render each row (group labels and items alike), tracking the
+	// widest, and remember which row the cursor item landed on so the
+	// viewport can scroll to its row rather than its item index.
+	renderedRows, naturalW, cursorRow := s.renderRows(s.rowLayout(), width, pad)
 
 	if s.header != "" {
 		if hw := lipgloss.Width(s.header); hw > naturalW {
 			naturalW = hw
 		}
-	}
-
-	idx := 0
-
-	for item := range s.items.All() {
-		k := s.cfg.Key(item)
-
-		state := StateNone
-
-		switch {
-		case k == s.active && k == s.cursor:
-			state = StateActiveSelected
-		case k == s.active:
-			state = StateActive
-		case k == s.cursor:
-			state = StateSelected
-		}
-
-		text := s.cfg.View(item, state, width-pad)
-		rendered = append(rendered, text)
-
-		if rw := lipgloss.Width(text); rw > naturalW {
-			naturalW = rw
-		}
-
-		idx++
 	}
 
 	panelW := min(naturalW+pad, width)
@@ -297,14 +390,14 @@ func (s Sidebar[T, K]) View(width, height int) string {
 
 	var b strings.Builder
 
-	for i, text := range rendered {
+	for i, text := range renderedRows {
 		if lipgloss.Width(text) > contentW {
 			text = ansi.Truncate(text, contentW, "…")
 		}
 
 		b.WriteString(lineStyle.Render(text))
 
-		if i < len(rendered)-1 {
+		if i < len(renderedRows)-1 {
 			b.WriteByte('\n')
 		}
 	}
@@ -313,10 +406,12 @@ func (s Sidebar[T, K]) View(width, height int) string {
 	s.viewport.Height = listHeight
 	s.viewport.SetContent(b.String())
 
-	if s.cursorIdx < s.viewport.YOffset {
-		s.viewport.SetYOffset(s.cursorIdx)
-	} else if s.cursorIdx >= s.viewport.YOffset+listHeight {
-		s.viewport.SetYOffset(s.cursorIdx - listHeight + 1)
+	if cursorRow >= 0 {
+		if cursorRow < s.viewport.YOffset {
+			s.viewport.SetYOffset(cursorRow)
+		} else if cursorRow >= s.viewport.YOffset+listHeight {
+			s.viewport.SetYOffset(cursorRow - listHeight + 1)
+		}
 	}
 
 	if headerStr != "" {
@@ -519,7 +614,18 @@ func (s Sidebar[T, K]) handleMouse(msg tea.MouseMsg) (Sidebar[T, K], tea.Cmd) {
 
 		_, localY := s.bounds.Local(msg.X, msg.Y)
 		headerHeight := s.renderHeaderHeight()
-		itemIdx := localY - headerHeight + s.viewport.YOffset
+		rowIdx := localY - headerHeight + s.viewport.YOffset
+
+		rows := s.rowLayout()
+		if rowIdx < 0 || rowIdx >= len(rows) {
+			return s, nil
+		}
+
+		itemIdx := rows[rowIdx].ItemIndex
+		if itemIdx < 0 {
+			// A click on a group label row selects nothing.
+			return s, nil
+		}
 
 		return s, s.activateAt(itemIdx)
 	}

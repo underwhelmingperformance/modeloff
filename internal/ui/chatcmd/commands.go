@@ -77,7 +77,7 @@ func (c *ChannelArg) Decode(raw string) error {
 		if part == "" {
 			continue
 		}
-		if !strings.HasPrefix(part, domain.ChannelPrefix) {
+		if !domain.HasChannelPrefix(domain.ChannelName(part)) {
 			part = domain.ChannelPrefix + part
 		}
 		channels = append(channels, part)
@@ -129,7 +129,7 @@ func (JoinCommand) Sources() map[string]command.SuggestionSource[CompletionConte
 // refused here, since a real key starting with "#" is far less
 // likely than this typo.
 func (c JoinCommand) ToCommand(_ Context) (protocol.Command, error) {
-	if strings.HasPrefix(c.Key, domain.ChannelPrefix) {
+	if domain.HasChannelPrefix(domain.ChannelName(c.Key)) {
 		return nil, fmt.Errorf("%q looks like a channel, not a key; join a list with no space after the comma, e.g. \"#a,#b\"", c.Key)
 	}
 

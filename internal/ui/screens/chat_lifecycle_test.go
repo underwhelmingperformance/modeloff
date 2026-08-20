@@ -55,7 +55,7 @@ func TestChatScreen_PartEvent_model_part_keeps_user_in_channel(t *testing.T) {
 		"*** fakenick has joined #general",
 		"*** fakenick has left #general",
 		"testuser >",
-	}, normaliseContent(uitest.NonEmptyColumn(columns[1])),
+	}, normaliseContent(uitest.WithoutHeader(uitest.NonEmptyColumn(columns[1]))),
 		"the user stays in the channel and sees the model leave it")
 }
 
@@ -116,7 +116,7 @@ func TestChatScreen_nick_from_status_window_confirms_and_updates_prompt(t *testi
 	view := tm.WaitForViewContains("testuser is now known as newnick", "newnick >")
 
 	body, _ := uitest.SplitBodyAndStatus(view)
-	content := uitest.NonEmptyColumn(uitest.VisibleColumns(body)[1])
+	content := uitest.WithoutHeader(uitest.NonEmptyColumn(uitest.VisibleColumns(body)[1]))
 	require.Equal(t, []string{
 		"*** testuser is now known as newnick",
 		"newnick >",

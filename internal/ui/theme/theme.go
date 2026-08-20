@@ -93,6 +93,11 @@ var (
 	SidebarMentionSelected     = lipgloss.NewStyle().Foreground(colourMagenta).Bold(true).Background(colourBrightBlack)
 	SidebarLifecycle           = lipgloss.NewStyle().Foreground(colourBrightBlack).Italic(true)
 	SidebarLifecycleSelected   = lipgloss.NewStyle().Foreground(colourCyan).Italic(true).Background(colourBrightBlack)
+
+	// SidebarSection styles a group label rendered inline within a
+	// sidebar's item list (e.g. "Queries" above a run of DM windows),
+	// matching the sidebar's own top header style.
+	SidebarSection = Dim.Bold(true)
 )
 
 // System message styles — for join/part/topic events.
@@ -109,14 +114,18 @@ var (
 
 // Layout constants.
 const (
-	// MinTerminalWidth is the narrowest terminal width the app can
-	// render. Below this, screens show a fallback message.
+	// MinTerminalWidth is the width below which a multi-pane screen
+	// has no room for its side panels alongside usable content.
+	// `components.MainLayout` collapses its sidebar and nick list
+	// below this width, so every screen still renders at any width,
+	// per the "always responsive" rule; this is a threshold for that
+	// decision, not a floor.
 	MinTerminalWidth = 80
 )
 
 // NarrowTerminalView returns a centred fallback message prompting the
-// user to widen their terminal. Use this as an early return in View
-// methods when width < MinTerminalWidth.
+// user to widen their terminal, for a screen with no narrower layout
+// to degrade into.
 func NarrowTerminalView(width, height int) string {
 	return lipgloss.Place(width, height,
 		lipgloss.Center, lipgloss.Center,

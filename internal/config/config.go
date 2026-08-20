@@ -32,6 +32,13 @@ const MinPokeInterval = 30 * time.Second
 // does not hold the binary on exit.
 const DefaultDrainTimeout = 10 * time.Second
 
+// MinDrainTimeout is the floor `/config drain-timeout` enforces, the
+// same shape MinPokeInterval enforces for the poke interval: a
+// non-positive value would leave the shutdown sequence with no bound
+// at all, and a typo below this floor would abandon in-flight LLM
+// dispatches almost as soon as `/quit` is asked to wait for them.
+const MinDrainTimeout = 1 * time.Second
+
 // DefaultSmallModel is the model used for lightweight tasks such as
 // nick and persona generation when no override has been configured.
 const DefaultSmallModel = domain.ModelID("openai/gpt-5.4-mini")

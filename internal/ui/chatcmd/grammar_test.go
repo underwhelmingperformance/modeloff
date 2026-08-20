@@ -219,6 +219,50 @@ func TestComplete_join_filters_by_prefix(t *testing.T) {
 	require.Equal(t, []string{"#random"}, suggestionValues(c))
 }
 
+// TestChannelsSource_merges_directory_with_open_windows covers
+// completion for a channel the user has not joined: /join and /msg
+// only need completion for a channel that is not already an open
+// window, so channelsSource merges CompletionContext.Directory in
+// alongside the open windows, skipping a directory entry for a
+// channel already open to avoid suggesting it twice.
+func TestChannelsSource_merges_directory_with_open_windows(t *testing.T) {
+	open := []domain.Window{domain.NewChannelWindow("#general", time.Time{})}
+	directory := []domain.ChannelDirectoryEntry{
+		{Channel: "#general", Members: 3},               // already open: must not duplicate
+		{Channel: "#random", Members: 5, Topic: "chat"}, // unjoined: must appear
+	}
+
+	ctx := CompletionContext{
+		Channels:  func() iter.Seq[domain.Window] { return slices.Values(open) },
+		Directory: func() iter.Seq[domain.ChannelDirectoryEntry] { return slices.Values(directory) },
+		Kind:      func() domain.ChannelKind { return domain.KindChannel },
+	}
+
+	result := channelsSource(ctx, command.InvocationState[CompletionContext]{})
+
+	require.Equal(t, []command.Suggestion{
+		{Value: "#general", Label: "#general"},
+		{Value: "#random", Label: "#random", Detail: "chat"},
+	}, result.Suggestions)
+}
+
+// TestChannelsSource_nil_directory_is_open_windows_only pins the
+// default for a CompletionContext with no Directory set (the shape
+// most tests in this file build): channel completion is limited to
+// windows already open.
+func TestChannelsSource_nil_directory_is_open_windows_only(t *testing.T) {
+	open := []domain.Window{domain.NewChannelWindow("#general", time.Time{})}
+
+	ctx := CompletionContext{
+		Channels: func() iter.Seq[domain.Window] { return slices.Values(open) },
+		Kind:     func() domain.ChannelKind { return domain.KindChannel },
+	}
+
+	result := channelsSource(ctx, command.InvocationState[CompletionContext]{})
+
+	require.Equal(t, []command.Suggestion{{Value: "#general", Label: "#general"}}, result.Suggestions)
+}
+
 // TestJoinCommand_ToCommand_multi_target covers RFC 2812 §3.2.1's
 // JOIN syntax: `/join` accepts a comma-separated channel list
 // ("#a,#b,#c") alongside its ordinary single-channel form, and
@@ -234,6 +278,8 @@ func TestJoinCommand_ToCommand_multi_target(t *testing.T) {
 		{name: "already-prefixed channel is unchanged", raw: "/join #general", want: []domain.ChannelName{"#general"}},
 		{name: "a comma-separated list splits into its channels", raw: "/join #a,#b,#c", want: []domain.ChannelName{"#a", "#b", "#c"}},
 		{name: "each entry in an unprefixed list gets its own #", raw: "/join a,b,c", want: []domain.ChannelName{"#a", "#b", "#c"}},
+		{name: "an already-&-prefixed channel is left as & not doubled to #&", raw: "/join &ops", want: []domain.ChannelName{"&ops"}},
+		{name: "a & channel in a list keeps its own prefix", raw: "/join #a,&ops", want: []domain.ChannelName{"#a", "&ops"}},
 	}
 
 	for _, tt := range tests {
@@ -308,6 +354,22 @@ func TestJoinCommand_refuses_a_key_that_looks_like_a_channel(t *testing.T) {
 	require.True(t, ok, "expected a JoinCommand, got %T", parsed)
 	require.Equal(t, ChannelArg("#a"), join.Channel)
 	require.Equal(t, "#b", join.Key)
+
+	_, err = join.ToCommand(Context{})
+	require.Error(t, err)
+}
+
+// TestJoinCommand_refuses_a_key_that_looks_like_an_ampersand_channel
+// covers the same mistake for a server-local channel: "&" is as
+// legal a channel prefix as "#" (RFC 2812 §1.3), so a typo'd key
+// starting with "&" is refused the same way.
+func TestJoinCommand_refuses_a_key_that_looks_like_an_ampersand_channel(t *testing.T) {
+	parsed, err := testParser.Parse("/join #a, &ops")
+	require.NoError(t, err)
+
+	join, ok := parsed.(JoinCommand)
+	require.True(t, ok, "expected a JoinCommand, got %T", parsed)
+	require.Equal(t, "&ops", join.Key)
 
 	_, err = join.ToCommand(Context{})
 	require.Error(t, err)

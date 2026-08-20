@@ -19,6 +19,7 @@ import (
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/components"
+	"github.com/laney/modeloff/internal/ui/uitest"
 )
 
 // testKind is a minimal KindProvider for component tests.
@@ -77,13 +78,41 @@ func newChatViewWithEvents(ch domain.ChannelName, userNick domain.Nick, topic st
 	return updated.(components.ChatView[testKind])
 }
 
-// chatRegionLines returns the chat region's visible lines with the
-// final input-prompt row removed. The prompt row is detected via a
-// ` >` substring heuristic; if the prompt rendering changes shape (a
-// different separator, extra trailing glyph) this heuristic will stop
-// trimming the row and callers will see the prompt in their results.
-func chatRegionLines(view string) []string {
+// chatBodyLines returns view's visible lines with the window header
+// removed: every ChatView renders one unconditionally (the content
+// row identifying the channel/topic or DM counterpart, followed by
+// its border rule), so uitest.WithoutHeader lets every helper below
+// skip past both without hardcoding a fixed header height.
+func chatBodyLines(view string) []string {
+	return uitest.WithoutHeader(visibleLines(view))
+}
+
+// chatHeaderLine returns the window header's content row (the
+// channel name, its topic if set, or a DM's "@nick"), or "" if view
+// has no detectable header (a horizontal border rule immediately
+// below the first line).
+func chatHeaderLine(view string) string {
 	lines := visibleLines(view)
+	if len(lines) < 2 {
+		return ""
+	}
+
+	rule := strings.TrimSpace(lines[1])
+	if rule == "" || strings.Trim(rule, "┌┐└┘─│├┤┬┴┼") != "" {
+		return ""
+	}
+
+	return strings.TrimSpace(lines[0])
+}
+
+// chatRegionLines returns the chat region's visible lines with the
+// window header and the final input-prompt row removed. The prompt
+// row is detected via a ` >` substring heuristic; if the prompt
+// rendering changes shape (a different separator, extra trailing
+// glyph) this heuristic will stop trimming the row and callers will
+// see the prompt in their results.
+func chatRegionLines(view string) []string {
+	lines := chatBodyLines(view)
 	if len(lines) == 0 {
 		return nil
 	}
@@ -247,7 +276,7 @@ func chatInputTokens(view string) []string {
 }
 
 func popoverLines(view string) []string {
-	lines := visibleLines(ansi.Strip(view))
+	lines := chatBodyLines(ansi.Strip(view))
 	if len(lines) == 0 {
 		return nil
 	}
@@ -516,14 +545,14 @@ func TestChatView_scroll(t *testing.T) {
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
 
 	v := m.View(80, 24)
-	require.Equal(t, numberedUserMessages("message", 0, 22), visibleEventsWithoutTimestamps(v))
+	require.Equal(t, numberedUserMessages("message", 0, 20), visibleEventsWithoutTimestamps(v))
 	require.Equal(t, "(0%)", scrollIndicatorLine(v))
 
 	// Scroll back down.
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
 
 	v = m.View(80, 24)
-	require.Equal(t, numberedUserMessages("message", 7, 23), visibleEventsWithoutTimestamps(v))
+	require.Equal(t, numberedUserMessages("message", 9, 21), visibleEventsWithoutTimestamps(v))
 	require.Equal(t, "", scrollIndicatorLine(v))
 }
 
@@ -578,13 +607,13 @@ func TestChatView_ctrl_arrow_scroll(t *testing.T) {
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlUp})
 
 	v := m.View(80, 24)
-	require.Equal(t, numberedUserMessages("message", 6, 22), visibleEventsWithoutTimestamps(v))
-	require.Equal(t, "(85%)", scrollIndicatorLine(v))
+	require.Equal(t, numberedUserMessages("message", 8, 20), visibleEventsWithoutTimestamps(v))
+	require.Equal(t, "(88%)", scrollIndicatorLine(v))
 
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlDown})
 
 	v = m.View(80, 24)
-	require.Equal(t, numberedUserMessages("message", 7, 23), visibleEventsWithoutTimestamps(v))
+	require.Equal(t, numberedUserMessages("message", 9, 21), visibleEventsWithoutTimestamps(v))
 	require.Equal(t, "", scrollIndicatorLine(v))
 }
 
@@ -628,7 +657,7 @@ func TestChatView_arrow_keys_stay_with_input(t *testing.T) {
 
 	v := m.View(80, 24)
 	require.Equal(t, []string{"testuser", ">", "second"}, chatInputTokens(v))
-	require.Equal(t, numberedUserMessages("message", 7, 23), visibleEventsWithoutTimestamps(v))
+	require.Equal(t, numberedUserMessages("message", 9, 21), visibleEventsWithoutTimestamps(v))
 
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyLeft})
@@ -637,7 +666,7 @@ func TestChatView_arrow_keys_stay_with_input(t *testing.T) {
 
 	v = m.View(80, 24)
 	require.Equal(t, []string{"testuser", ">", "draXft"}, chatInputTokens(v))
-	require.Equal(t, numberedUserMessages("message", 7, 23), visibleEventsWithoutTimestamps(v))
+	require.Equal(t, numberedUserMessages("message", 9, 21), visibleEventsWithoutTimestamps(v))
 }
 
 func TestChatView_nicks_use_hashed_colours(t *testing.T) {
@@ -718,21 +747,24 @@ func TestChatView_nick_updates_after_change(t *testing.T) {
 	require.Equal(t, []string{"newnick", ">"}, chatInputTokens(v2))
 }
 
-func TestChatView_dm_hides_topic_bar(t *testing.T) {
+func TestChatView_dm_header_shows_counterpart_nick(t *testing.T) {
 	cv := components.NewChatView[testKind](nilContent("botname"), "botname", domain.KindChannel, "testuser", "")
 
 	m, _ := cv.Update(components.SetChannelMsg{
 		Channel: "botname",
-		Topic:   "should not appear",
+		Topic:   "a DM carries no topic",
 		Kind:    domain.KindDM,
 	})
 	cv = m.(components.ChatView[testKind])
 
 	v := cv.View(80, 24)
+	stripped := ansi.Strip(v)
 
-	// With no events and DM kind, the topic bar must not render
-	// even though a topic was supplied with `SetChannelMsg`.
-	require.Equal(t, []string{"No messages yet"}, chatSegments(ansi.Strip(v)))
+	// A DM window's header names the counterpart, "@nick", never a
+	// topic, which a DM cannot have (a topic on `SetChannelMsg` is
+	// ignored for this kind).
+	require.Equal(t, "@botname", chatHeaderLine(stripped))
+	require.Equal(t, []string{"No messages yet"}, chatSegments(stripped))
 }
 
 func TestChatView_dm_suppresses_join_part_events(t *testing.T) {
@@ -754,7 +786,50 @@ func TestChatView_dm_suppresses_join_part_events(t *testing.T) {
 
 	v := ansi.Strip(cv.View(80, 24))
 
-	require.Equal(t, []string{"Wed 01 Jan 2025 10:00:00 UTC <bot> hello human"}, chatSegments(v))
+	require.Equal(t, []string{"10:00 <bot> hello human"}, chatSegments(v))
+}
+
+// TestChatView_dm_suppressed_event_does_not_seed_the_day_change_divider
+// pins day-tracking against a DM-suppressed event whose own calendar
+// day differs from both the rendered message before it and the
+// rendered message after it. If day-tracking ran before DM
+// suppression, the never-rendered Join would still advance lastDay to
+// its own date and draw a divider for a transition nothing visible
+// motivates. The following message, genuinely on a third day, would
+// then draw a second divider right after it: two dividers back to
+// back, where the reader, seeing only the two rendered messages,
+// needs exactly one. Suppressing first keeps the Join from being
+// seen by day-tracking at all, so only the real transition between
+// the two rendered messages draws a divider.
+func TestChatView_dm_suppressed_event_does_not_seed_the_day_change_divider(t *testing.T) {
+	events := []domain.Event{
+		domain.Message{Target: "botname", From: "bot", Body: "day one", At: time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)},
+		domain.Join{Target: "botname", Nick: "bot", At: time.Date(2025, 1, 2, 12, 0, 0, 0, time.UTC)},
+		domain.Message{Target: "botname", From: "bot", Body: "day three", At: time.Date(2025, 1, 3, 12, 0, 0, 0, time.UTC)},
+	}
+
+	cv := components.NewChatView[testKind](staticContent("botname", events), "botname", domain.KindChannel, "testuser", "")
+	m, _ := cv.Update(components.SetChannelMsg{
+		Channel: "botname",
+		Kind:    domain.KindDM,
+	})
+	cv = m.(components.ChatView[testKind])
+
+	v := ansi.Strip(cv.View(80, 24))
+
+	require.Equal(t, 1, strings.Count(v, "January 2025"),
+		"exactly one divider covers the transition between the two rendered messages; the suppressed Join's own day draws none")
+
+	divider := dayChangedDividerLine(v)
+	require.Contains(t, divider, "03 January 2025", "the one divider names the day the second rendered message actually falls on")
+
+	lines := chatRenderedLines(v)
+	beforeIdx := indexOfLineContaining(lines, "day one")
+	dividerIdx := indexOfLineContaining(lines, "03 January 2025")
+	afterIdx := indexOfLineContaining(lines, "day three")
+
+	require.True(t, beforeIdx < dividerIdx && dividerIdx < afterIdx,
+		"the divider sits between the two rendered messages")
 }
 
 func TestChatView_dm_shows_quit_messages(t *testing.T) {
@@ -775,27 +850,30 @@ func TestChatView_dm_shows_quit_messages(t *testing.T) {
 	require.Equal(t, []string{"*** bot has quit (goodbye)"}, chatSegments(v))
 }
 
-func TestChatView_topic_bar_shown(t *testing.T) {
+func TestChatView_header_shows_channel_and_topic(t *testing.T) {
 	cv := newChatViewWithEvents("#general", "testuser", "Welcome to general", testEvents)
 	v := cv.View(80, 24)
 
+	require.Equal(t, "#general: Welcome to general", chatHeaderLine(v))
 	require.Equal(t, []string{
-		"Welcome to general",
 		"[10:00:00] <alice> hello",
 		"[10:01:00] <bob> hi there",
 		"[10:02:00] <alice> how are you?",
 	}, chatSegments(v))
 }
 
-func TestChatView_no_topic_bar_when_empty(t *testing.T) {
+func TestChatView_header_shows_channel_name_without_topic(t *testing.T) {
+	// A window header renders unconditionally: a topicless channel
+	// still identifies itself, it just carries no ": <topic>" suffix.
 	withTitle := newChatViewWithEvents("#general", "testuser", "some topic", testEvents)
 	without := newChatViewWithEvents("#general", "testuser", "", testEvents)
 
 	vWith := withTitle.View(80, 24)
 	vWithout := without.View(80, 24)
 
+	require.Equal(t, "#general: some topic", chatHeaderLine(vWith))
+	require.Equal(t, "#general", chatHeaderLine(vWithout))
 	require.Equal(t, []string{
-		"some topic",
 		"[10:00:00] <alice> hello",
 		"[10:01:00] <bob> hi there",
 		"[10:02:00] <alice> how are you?",
@@ -835,34 +913,30 @@ func TestChatView_topic_bar_reduces_message_area(t *testing.T) {
 func TestChatView_TopicUpdatedMsg_updates_topic_bar(t *testing.T) {
 	var m ui.Model = newChatViewWithEvents("#general", "testuser", "", testEvents)
 
-	// No topic initially.
-	v := m.View(80, 24)
-	require.Equal(t, []string{
+	wantMessages := []string{
 		"[10:00:00] <alice> hello",
 		"[10:01:00] <bob> hi there",
 		"[10:02:00] <alice> how are you?",
-	}, chatSegments(ansi.Strip(v)))
+	}
+
+	// No topic initially.
+	v := m.View(80, 24)
+	require.Equal(t, "#general", chatHeaderLine(ansi.Strip(v)))
+	require.Equal(t, wantMessages, chatSegments(ansi.Strip(v)))
 
 	// Send TopicUpdatedMsg.
 	m, _ = m.Update(components.TopicUpdatedMsg{Topic: "new topic"})
 
 	v = m.View(80, 24)
-	require.Equal(t, []string{
-		"new topic",
-		"[10:00:00] <alice> hello",
-		"[10:01:00] <bob> hi there",
-		"[10:02:00] <alice> how are you?",
-	}, chatSegments(ansi.Strip(v)))
+	require.Equal(t, "#general: new topic", chatHeaderLine(ansi.Strip(v)))
+	require.Equal(t, wantMessages, chatSegments(ansi.Strip(v)))
 
 	// Clear topic.
 	m, _ = m.Update(components.TopicUpdatedMsg{Topic: ""})
 
 	v = m.View(80, 24)
-	require.Equal(t, []string{
-		"[10:00:00] <alice> hello",
-		"[10:01:00] <bob> hi there",
-		"[10:02:00] <alice> how are you?",
-	}, chatSegments(ansi.Strip(v)))
+	require.Equal(t, "#general", chatHeaderLine(ansi.Strip(v)))
+	require.Equal(t, wantMessages, chatSegments(ansi.Strip(v)))
 }
 
 func renderSingleEvent(event domain.Event) string {
@@ -1364,7 +1438,7 @@ func TestChatView_divider_inserted_when_scrolled_up(t *testing.T) {
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
 
 	v := m.View(80, 24)
-	require.Equal(t, numberedUserMessages("message", 0, 22), visibleEventsWithoutTimestamps(v))
+	require.Equal(t, numberedUserMessages("message", 0, 20), visibleEventsWithoutTimestamps(v))
 
 	// Append new events to the closure-backed slice while scrolled
 	// up. A ScrollbackUpdatedMsg after each append signals the
@@ -1425,6 +1499,75 @@ func TestChatView_no_divider_when_at_bottom(t *testing.T) {
 	require.Equal(t, "", dividerLine(stripped))
 }
 
+// dayChangedDividerLine returns the rendered line naming a day-change
+// divider (a full weekday and month name, e.g. "Thursday 02 January
+// 2025"), or "" if the view has none.
+func dayChangedDividerLine(view string) string {
+	for _, line := range chatRenderedLines(view) {
+		trimmed := strings.TrimSpace(line)
+		if strings.Contains(trimmed, "January") || strings.Contains(trimmed, "February") {
+			return trimmed
+		}
+	}
+
+	return ""
+}
+
+func TestChatView_day_changed_divider_marks_a_date_rollover(t *testing.T) {
+	events := []domain.Event{
+		domain.Message{Target: "#general", From: "alice", Body: "before midnight", At: time.Date(2025, 1, 1, 23, 0, 0, 0, time.UTC)},
+		domain.Message{Target: "#general", From: "alice", Body: "after midnight", At: time.Date(2025, 1, 2, 0, 30, 0, 0, time.UTC)},
+	}
+
+	cv := newChatViewWithEvents("#general", "testuser", "", events)
+	v := ansi.Strip(cv.View(80, 24))
+
+	divider := dayChangedDividerLine(v)
+	require.NotEmpty(t, divider, "a day-change divider must mark the rollover between the two messages")
+	require.Contains(t, divider, "02 January 2025")
+
+	lines := chatRenderedLines(v)
+	beforeIdx := indexOfLineContaining(lines, "before midnight")
+	dividerIdx := indexOfLineContaining(lines, "02 January 2025")
+	afterIdx := indexOfLineContaining(lines, "after midnight")
+
+	require.True(t, beforeIdx < dividerIdx && dividerIdx < afterIdx,
+		"the divider sits between the two messages, not before the first")
+}
+
+func TestChatView_no_day_changed_divider_within_the_same_day(t *testing.T) {
+	events := []domain.Event{
+		domain.Message{Target: "#general", From: "alice", Body: "morning", At: time.Date(2025, 1, 1, 9, 0, 0, 0, time.UTC)},
+		domain.Message{Target: "#general", From: "alice", Body: "evening", At: time.Date(2025, 1, 1, 21, 0, 0, 0, time.UTC)},
+	}
+
+	cv := newChatViewWithEvents("#general", "testuser", "", events)
+	v := ansi.Strip(cv.View(80, 24))
+
+	require.Empty(t, dayChangedDividerLine(v))
+}
+
+func TestChatView_no_day_changed_divider_before_the_first_event(t *testing.T) {
+	events := []domain.Event{
+		domain.Message{Target: "#general", From: "alice", Body: "only message", At: time.Date(2025, 1, 1, 9, 0, 0, 0, time.UTC)},
+	}
+
+	cv := newChatViewWithEvents("#general", "testuser", "", events)
+	v := ansi.Strip(cv.View(80, 24))
+
+	require.Empty(t, dayChangedDividerLine(v), "there is no prior day for the window's first event to have rolled over from")
+}
+
+func indexOfLineContaining(lines []string, substr string) int {
+	for i, l := range lines {
+		if strings.Contains(l, substr) {
+			return i
+		}
+	}
+
+	return -1
+}
+
 func TestChatView_stored_events_insert_divider_when_scrolled_up(t *testing.T) {
 	events := make([]domain.Event, 30)
 	for i := range 30 {
@@ -1468,8 +1611,6 @@ func TestChatView_stored_events_insert_divider_when_scrolled_up(t *testing.T) {
 
 	require.Equal(t, expectedDivider(80), dividerLine(v))
 	require.Equal(t, []string{
-		"[00:00:00] <user> message 11",
-		"[00:00:00] <user> message 12",
 		"[00:00:00] <user> message 13",
 		"[00:00:00] <user> message 14",
 		"[00:00:00] <user> message 15",
@@ -1544,8 +1685,6 @@ func TestChatView_stored_events_keep_divider_when_more_arrive_during_catch_up(t 
 
 	require.Equal(t, expectedDivider(80), dividerLine(v))
 	require.Equal(t, []string{
-		"[00:00:00] <user> message 10",
-		"[00:00:00] <user> message 11",
 		"[00:00:00] <user> message 12",
 		"[00:00:00] <user> message 13",
 		"[00:00:00] <user> message 14",
@@ -1830,8 +1969,8 @@ func TestChatView_mouse_wheel_scrolls_messages(t *testing.T) {
 	})
 
 	v := m.View(60, 24)
-	require.Equal(t, numberedUserMessages("message", 4, 22), visibleEventsWithoutTimestamps(v))
-	require.Equal(t, "(57%)", scrollIndicatorLine(v))
+	require.Equal(t, numberedUserMessages("message", 6, 20), visibleEventsWithoutTimestamps(v))
+	require.Equal(t, "(66%)", scrollIndicatorLine(v))
 }
 
 func TestChatView_mouse_click_accepts_popover_suggestion(t *testing.T) {

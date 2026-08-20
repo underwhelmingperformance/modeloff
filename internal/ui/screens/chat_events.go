@@ -1,10 +1,12 @@
 package screens
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"iter"
 	"log/slog"
+	"net"
 	"slices"
 	"time"
 
@@ -915,12 +917,22 @@ func (s ChatScreen) sendMessageCmd(operation string, target domain.ChannelName, 
 	}
 }
 
+// handleErrorEvent turns a command failure into the transcript line
+// the user sees. The full Go error chain (`msg.Err`) goes to the
+// observability log unconditionally, since it carries the detail an
+// operator needs to diagnose a transport failure; the transcript
+// itself gets commandErrorText's short, actionable copy so a raw
+// wrapped chain ("send: send message: Post \"https://...\": dial
+// tcp: ...") never lands in front of the user.
 func (s ChatScreen) handleErrorEvent(msg domain.ErrorEvent) (ChatScreen, tea.Cmd) {
 	var cmds []tea.Cmd
 
+	slog.Default().ErrorContext(s.baseContext(), "command failed",
+		"operation", msg.Operation, "error", msg.Err)
+
 	commandError := domain.CommandError{
 		Target: s.active,
-		Err:    fmt.Sprintf("%s: %s", msg.Operation, msg.Err),
+		Err:    commandErrorText(msg.Operation, msg.Err),
 		At:     msg.At,
 	}
 
@@ -929,6 +941,40 @@ func (s ChatScreen) handleErrorEvent(msg domain.ErrorEvent) (ChatScreen, tea.Cmd
 	cmds = append(cmds, msgCmd(components.NickListThinkingMsg{}))
 
 	return s, tea.Batch(cmds...)
+}
+
+// commandErrorText renders a command failure for the transcript: the
+// operation plus a short, actionable description. A network or
+// context-cancellation failure carries nothing the user can act on
+// beyond "try again" or "check the connection", and its Go error
+// chain buries that behind dialer and URL detail that belongs in the
+// log, not the transcript; commandErrorText collapses that class to
+// one fixed sentence. Every other error's own Error() text is
+// already short by construction (a domain-typed error such as
+// [domain.PokeIntervalOutOfRangeError], or a store/protocol
+// sentinel), so it passes through unchanged.
+func commandErrorText(operation string, err error) string {
+	return operation + ": " + shortErrorText(err)
+}
+
+// shortErrorText classifies err into the one problematic class this
+// package knows how to shorten (network/transport failures and
+// context cancellation) and falls back to err.Error() for everything
+// else, which is assumed to already be short by construction.
+func shortErrorText(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timed out; try again"
+	case errors.Is(err, context.Canceled):
+		return "cancelled"
+	}
+
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return "could not reach the API; check your network connection and base URL"
+	}
+
+	return err.Error()
 }
 
 // recordReply persists one of the user's own point-to-point replies

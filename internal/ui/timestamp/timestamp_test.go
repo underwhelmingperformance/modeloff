@@ -47,12 +47,12 @@ func TestDetectLocale_falls_back_to_british_english(t *testing.T) {
 	}
 }
 
-func TestFormat_uses_locale_default_when_unset(t *testing.T) {
+func TestFormat_uses_bare_24_hour_clock_when_unset(t *testing.T) {
 	ref := time.Date(2026, 4, 7, 9, 30, 0, 0, time.UTC)
 
 	got := Format(ref, nil, language.BritishEnglish)
 
-	require.Equal(t, strftime.Format(language.BritishEnglish, "%c", ref), got)
+	require.Equal(t, "09:30", got, "the unset default is a bare HH:MM, not a full locale timestamp; the date is carried by the day-change divider instead")
 }
 
 func TestFormat_supports_custom_strftime_and_go_layouts(t *testing.T) {
@@ -69,4 +69,20 @@ func TestFormat_can_disable_timestamps(t *testing.T) {
 	disabled := ""
 
 	require.Equal(t, "", Format(ref, &disabled, language.BritishEnglish))
+}
+
+func TestFormatDate_renders_weekday_and_month_name(t *testing.T) {
+	ref := time.Date(2026, 8, 20, 9, 30, 0, 0, time.UTC)
+
+	got := FormatDate(ref, language.BritishEnglish)
+
+	require.Equal(t, strftime.Format(language.BritishEnglish, "%A %d %B %Y", ref), got)
+}
+
+func TestFormatDate_falls_back_to_british_english_for_root_locale(t *testing.T) {
+	ref := time.Date(2026, 8, 20, 9, 30, 0, 0, time.UTC)
+
+	got := FormatDate(ref, language.Und)
+
+	require.Equal(t, strftime.Format(language.BritishEnglish, "%A %d %B %Y", ref), got)
 }

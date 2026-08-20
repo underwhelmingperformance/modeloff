@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
 	"golang.org/x/text/language"
@@ -81,26 +83,56 @@ func renderChannelEvent[C command.KindProvider](
 // renderMessage builds the per-message line: timestamp prefix, nick
 // in its theme colour, optional highlight ribbon, IRC-formatted body.
 // The `* nick text` vs `<nick> text` shape switches on `e.Action`.
+//
+// The user's own instance carries no [domain.InstanceID] (the empty
+// string is `protocol.UserClientID`'s sentinel), so `e.InstanceID ==
+// ""` picks out the user's own messages and exempts them from
+// highlight matching: the user should never see a ribbon or a
+// mention on their own words.
 func renderMessage(e domain.Message, highlightWords []string, userNick domain.Nick, timestampFormat *string, locale language.Tag) string {
-	ts := formatTimestampPrefix(e.At, timestampFormat, locale)
-	highlighted := ContainsHighlightWord(e.Body, highlightWords, userNick)
+	ts := timestampPrefixText(e.At, timestampFormat, locale)
+	highlighted := e.InstanceID != "" && ContainsHighlightWord(e.Body, highlightWords, userNick)
 	body := renderIRCBody(e.Body)
 	style := nickStyleFor(e)
 
-	var prefix string
+	nickText := fmt.Sprintf("<%s>", string(e.From))
 	if e.Action {
-		nick := style.Render(string(e.From))
-		prefix = fmt.Sprintf("%s* %s", ts, nick)
-	} else {
-		nick := style.Render(fmt.Sprintf("<%s>", string(e.From)))
-		prefix = ts + nick
+		nickText = string(e.From)
 	}
 
 	if highlighted {
-		prefix = theme.Highlight.Render(strings.TrimSpace(prefix))
+		// The raw timestamp and nick text are composed into one
+		// string and styled with a single Render call. Styling each
+		// fragment first and wrapping the already-rendered result
+		// would embed an SGR reset from the inner style partway
+		// through, cancelling the highlight colour for the rest of
+		// the line.
+		prefix := theme.Highlight.Render(messagePrefixText(ts, nickText, e.Action))
+		return strings.TrimSpace(fmt.Sprintf("%s %s", prefix, body))
+	}
+
+	ts = theme.Dim.Render(ts)
+	nick := style.Render(nickText)
+
+	var prefix string
+	if e.Action {
+		prefix = fmt.Sprintf("%s* %s", ts, nick)
+	} else {
+		prefix = ts + nick
 	}
 
 	return strings.TrimSpace(fmt.Sprintf("%s %s", prefix, body))
+}
+
+// messagePrefixText composes the raw, unstyled prefix text (a
+// timestamp followed by `* nick` or `<nick>`, per `action`) that
+// [renderMessage] passes to a single [theme.Highlight] call.
+func messagePrefixText(ts, nickText string, action bool) string {
+	if action {
+		return strings.TrimSpace(fmt.Sprintf("%s* %s", ts, nickText))
+	}
+
+	return strings.TrimSpace(ts + nickText)
 }
 
 // anonymousNickStyle is the one colour every `+a`-masked line renders
@@ -223,13 +255,18 @@ func renderSystemNotice(e domain.SystemNotice, kind domain.ChannelKind) string {
 	return theme.Success.Render("✓ " + e.Text)
 }
 
-func formatTimestampPrefix(at time.Time, format *string, locale language.Tag) string {
+// timestampPrefixText renders the raw, unstyled timestamp prefix for
+// a message line: the formatted time followed by a space, or "" when
+// timestamps are disabled. [renderMessage] styles it, either on its
+// own (theme.Dim) or as part of a single highlighted-prefix Render
+// call.
+func timestampPrefixText(at time.Time, format *string, locale language.Tag) string {
 	rendered := timestamp.Format(at, format, locale)
 	if rendered == "" {
 		return ""
 	}
 
-	return theme.Dim.Render(rendered + " ")
+	return rendered + " "
 }
 
 func renderWhoisEvent(w domain.Whois) string {
@@ -321,7 +358,21 @@ func renderHelp[C command.KindProvider](commands []*command.Node[C]) string {
 }
 
 func renderNewMessagesDivider(width int) string {
-	label := theme.Warning.Render(" new messages ")
+	return centeredDivider(width, theme.Warning.Render(" new messages "))
+}
+
+// renderDayChangedDivider marks a date rollover between two
+// consecutive events in a window's scrollback, irssi's convention
+// for keeping the date visible without repeating it on every line
+// now that [timestamp.DefaultFormat] shows only the time of day.
+func renderDayChangedDivider(width int, at time.Time, locale language.Tag) string {
+	return centeredDivider(width, theme.Dim.Render(" "+timestamp.FormatDate(at, locale)+" "))
+}
+
+// centeredDivider draws label centred on a horizontal rule of dashes
+// spanning width, the shape both [renderNewMessagesDivider] and
+// [renderDayChangedDivider] use.
+func centeredDivider(width int, label string) string {
 	labelWidth := lipgloss.Width(label)
 
 	leftWidth := (width - labelWidth) / 2
@@ -334,14 +385,17 @@ func renderNewMessagesDivider(width int) string {
 }
 
 // ContainsHighlightWord reports whether body contains any of the
-// given highlight words. The placeholder "$nick" is expanded to the
-// provided userNick. Matching is case-insensitive.
+// given highlight words as a whole word: a highlight word matches
+// only where it is bounded by a non-word character (or the start/end
+// of the text) on each side, so "art" does not match inside "start".
+// The placeholder "$nick" is expanded to the provided userNick.
+// Matching is case-insensitive.
 func ContainsHighlightWord(body string, words []string, userNick domain.Nick) bool {
 	if len(words) == 0 {
 		return false
 	}
 
-	lower := strings.ToLower(ircfmt.Strip(body))
+	lowerText := strings.ToLower(ircfmt.Strip(body))
 
 	for _, word := range words {
 		w := word
@@ -353,12 +407,59 @@ func ContainsHighlightWord(body string, words []string, userNick domain.Nick) bo
 			continue
 		}
 
-		if strings.Contains(lower, strings.ToLower(w)) {
+		if containsWholeWord(lowerText, w) {
 			return true
 		}
 	}
 
 	return false
+}
+
+// containsWholeWord reports whether word occurs in text bounded by a
+// non-word rune (or the start/end of text) on each side. Matching is
+// case-insensitive and Unicode-aware: a word rune is a letter, digit,
+// or underscore.
+func containsWholeWord(text, word string) bool {
+	lowerText := strings.ToLower(text)
+	lowerWord := strings.ToLower(word)
+
+	for start := 0; start <= len(lowerText); {
+		idx := strings.Index(lowerText[start:], lowerWord)
+		if idx < 0 {
+			return false
+		}
+
+		idx += start
+
+		before := rune(' ')
+		if idx > 0 {
+			before, _ = utf8.DecodeLastRuneInString(lowerText[:idx])
+		}
+
+		afterIdx := idx + len(lowerWord)
+
+		after := rune(' ')
+		if afterIdx < len(lowerText) {
+			after, _ = utf8.DecodeRuneInString(lowerText[afterIdx:])
+		}
+
+		if !isWordRune(before) && !isWordRune(after) {
+			return true
+		}
+
+		// This occurrence's boundary failed; retry from the next byte
+		// so an overlapping later occurrence still gets a chance, e.g.
+		// word "art" against text "xartart y" first finds "art" at 1
+		// (bounded by 'x' and 'a', both word runes, so it fails) and
+		// must still find the one starting at 4.
+		start = idx + 1
+	}
+
+	return false
+}
+
+func isWordRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_'
 }
 
 func renderIRCBody(body string) string {

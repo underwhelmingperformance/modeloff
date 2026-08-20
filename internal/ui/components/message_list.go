@@ -3,6 +3,7 @@ package components
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -346,6 +347,8 @@ func (m MessageList[C]) renderedContent(content WindowContent, width int) string
 		unseen = seen < len(events)
 	}
 
+	var lastDay time.Time
+
 	for i, ev := range events {
 		if unseen && i == seen {
 			rendered = append(rendered, renderNewMessagesDivider(width))
@@ -353,6 +356,26 @@ func (m MessageList[C]) renderedContent(content WindowContent, width int) string
 
 		if m.kind == domain.KindDM && isDMSuppressedEvent(ev) {
 			continue
+		}
+
+		// A day-change divider marks a date rollover between two
+		// consecutive rendered events, irssi's convention for keeping
+		// the date visible without repeating it on every line now
+		// that the default timestamp shows only the time of day.
+		// Nothing is drawn before the window's first rendered event:
+		// there is no prior day to have rolled over from. An event
+		// with no timestamp (the zero time) carries no real calendar
+		// day, so it neither triggers a divider nor becomes lastDay.
+		if pe, ok := ev.(domain.PersistableEvent); ok {
+			if at := domain.EventTime(pe); !at.IsZero() {
+				day := calendarDay(at)
+
+				if !lastDay.IsZero() && !day.Equal(lastDay) {
+					rendered = append(rendered, renderDayChangedDivider(width, at, m.locale))
+				}
+
+				lastDay = day
+			}
 		}
 
 		rendered = append(rendered, renderChannelEvent(
@@ -368,6 +391,14 @@ func (m MessageList[C]) renderedContent(content WindowContent, width int) string
 	}
 
 	return strings.Join(rendered, "\n")
+}
+
+// calendarDay truncates t to midnight in its own location, so two
+// timestamps compare equal exactly when they fall on the same
+// calendar day.
+func calendarDay(t time.Time) time.Time {
+	y, mo, d := t.Date()
+	return time.Date(y, mo, d, 0, 0, 0, 0, t.Location())
 }
 
 func isDMSuppressedEvent(event domain.Event) bool {
