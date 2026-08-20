@@ -236,6 +236,21 @@ type ChatScreen struct {
 	// locked.
 	quitting bool
 
+	// apiKeyMissing mirrors whether the persisted config currently
+	// carries an API key, independent of channel state: the welcome
+	// checklist only renders while no channel is open, so it alone
+	// would let a still-unconfigured key go unnoticed once the user
+	// joins something. StatusItems appends noAPIKeyStatusItem while
+	// this is true, so the prompt to run /config stays visible
+	// however many channels are open. NewChatScreen subscribes to
+	// cfgStore's OnChange so any config write keeps this current, not
+	// only the /config api-key command path; listenForAPIKeyChanges
+	// is what reads those updates off apiKeyChanges, and unsubscribes
+	// via unsubscribeAPIKeyChanges once baseContext is done.
+	apiKeyMissing            bool
+	apiKeyChanges            <-chan bool
+	unsubscribeAPIKeyChanges config.UnsubscribeFunc
+
 	// highlightWords is the cached highlight-words slice read from
 	// the config store at construction and refreshed when
 	// [chatcmd.HighlightWordsSetResult] flows through Update.
@@ -267,6 +282,8 @@ func NewChatScreen(baseContext func() context.Context, sess SessionReader, mgr *
 	layout := components.NewMainLayout(sidebar, chatView)
 	layout.NickList = components.NewNickList(domain.NewMemberList())
 
+	apiKeyChanges := make(chan bool, 1)
+
 	cs := ChatScreen{
 		baseContext:     baseContext,
 		sess:            sess,
@@ -281,9 +298,31 @@ func NewChatScreen(baseContext func() context.Context, sess SessionReader, mgr *
 		layout:          layout,
 		keyMap:          components.DefaultChatScreenKeyMap,
 		checklist:       NewWelcomeChecklist(user.Nick(), mgr.HasAPIKey()),
+		apiKeyMissing:   !mgr.HasAPIKey(),
+		apiKeyChanges:   apiKeyChanges,
 		pacedQueue:      map[domain.ChannelName][]domain.Message{},
 		pendingDM:       map[domain.ChannelName][]domain.Event{},
 		dispatching:     map[*domain.Instance]bool{},
+	}
+
+	// A config write's OnChange callback can run on any goroutine
+	// that called Save or Update (see FileStore.Save), concurrently
+	// with another such call, so the send here must not assume it is
+	// the only writer. sendLatest keeps the channel holding whatever
+	// value was sent most recently: a plain non-blocking send would
+	// do the opposite when the buffer is already full — leaving the
+	// first unread value in place and dropping the new one — so two
+	// rapid opposite writes (key set, then cleared) would leave
+	// listenForAPIKeyChanges reading "key configured" until some
+	// later, unrelated write happened to correct it.
+	if cfgStore != nil {
+		cs.unsubscribeAPIKeyChanges = cfgStore.OnChange(func(_ context.Context, prev, curr config.Config) {
+			if prev.APIKey == curr.APIKey {
+				return
+			}
+
+			sendLatest(apiKeyChanges, curr.APIKey == "")
+		})
 	}
 
 	parser, err := chatcmd.NewParser()
@@ -492,6 +531,7 @@ func (s ChatScreen) Init() tea.Cmd {
 
 	cmds := []tea.Cmd{
 		s.listenForProtocolEvents(),
+		s.listenForAPIKeyChanges(),
 		msgCmd(components.ChannelAddedMsg{Channel: statusWindow.Window}),
 		msgCmd(components.CommandsMsg[chatcmd.CompletionContext]{
 			Commands: command.VisibleCommands(s.parser.Set(), s.client.Caps()),
@@ -630,6 +670,70 @@ func (s ChatScreen) listenForProtocolEvents() tea.Cmd {
 	}
 }
 
+// sendLatest sends v on ch, replacing whatever value ch already held
+// if it was full, so a reader draining ch one value at a time always
+// eventually reads the most recently sent value rather than getting
+// stuck behind an older one nobody has read yet. Safe for concurrent
+// callers: each retries until its own send lands, and ch's buffer
+// never holds more than one value at a time either way.
+func sendLatest[T any](ch chan T, v T) {
+	for {
+		select {
+		case ch <- v:
+			return
+		default:
+		}
+
+		select {
+		case <-ch:
+		default:
+		}
+	}
+}
+
+// apiKeyMissingMsg reports the API key's presence in the persisted
+// config, sent whenever the cfgStore.OnChange listener NewChatScreen
+// registers sees the key change.
+type apiKeyMissingMsg struct{ missing bool }
+
+// listenForAPIKeyChanges reads the next update off apiKeyChanges,
+// the channel the cfgStore.OnChange listener writes to. Mirrors
+// listenForProtocolEvents in that this should be re-invoked after
+// each delivery so the channel is continuously drained, but the two
+// end differently: listenForProtocolEvents' channel belongs to a
+// session subscription the session closes on teardown, while
+// apiKeyChanges is owned by this screen with nothing else to close
+// it. This instead ends when baseContext is done — the application
+// shutting down — and unsubscribes from cfgStore.OnChange in the same
+// moment, so a config write after shutdown finds no listener left to
+// call.
+func (s ChatScreen) listenForAPIKeyChanges() tea.Cmd {
+	ch := s.apiKeyChanges
+	if ch == nil {
+		return nil
+	}
+
+	ctx := s.baseContext()
+
+	return func() tea.Msg {
+		select {
+		case missing, ok := <-ch:
+			if !ok {
+				return nil
+			}
+
+			return apiKeyMissingMsg{missing: missing}
+
+		case <-ctx.Done():
+			if s.unsubscribeAPIKeyChanges != nil {
+				s.unsubscribeAPIKeyChanges()
+			}
+
+			return nil
+		}
+	}
+}
+
 // Update implements ui.Model. It adapts the concrete screen the
 // message handling produces to the [ui.Model] the router stores.
 func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
@@ -662,6 +766,10 @@ func (s ChatScreen) update(msg tea.Msg) (ChatScreen, tea.Cmd) {
 
 	case protocolEventMsg:
 		return s.handleProtocolEvent(msg)
+
+	case apiKeyMissingMsg:
+		s.apiKeyMissing = msg.missing
+		return s, s.listenForAPIKeyChanges()
 
 	case ui.QuitRequestedMsg:
 		return s.handleQuitRequested(msg)
@@ -1326,9 +1434,26 @@ var disconnectingStatusItem = ui.StatusItem{
 	Compact:  "off…",
 }
 
+// noAPIKeyStatusItem prompts the user to run /config while no API
+// key is configured. Spec point 1.1 has the app open and prompt for
+// /config until this is done; the welcome checklist carries the same
+// prompt but only while no channel is open, so this status item is
+// what keeps the prompt visible once the user has joined something.
+var noAPIKeyStatusItem = ui.StatusItem{
+	ID:       "no-api-key",
+	Side:     ui.StatusSideRight,
+	Priority: 90,
+	Full:     "No API key configured — use /config to set one",
+	Compact:  "no key",
+}
+
 // StatusItems implements ui.StatusProvider.
 func (s ChatScreen) StatusItems() []ui.StatusItem {
 	items := ui.CollectStatusItems(s.layout, s.summary)
+
+	if s.apiKeyMissing {
+		items = append(items, noAPIKeyStatusItem)
+	}
 
 	if s.quitting {
 		items = append(items, disconnectingStatusItem)

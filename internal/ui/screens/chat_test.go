@@ -3,6 +3,7 @@ package screens_test
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -207,6 +208,34 @@ func TestChatScreen_checklist_api_key_set_updates_live(t *testing.T) {
 
 	tm.Submit("/config api-key test-key")
 	tm.WaitFor("0 models available")
+}
+
+// TestChatScreen_no_api_key_status_item_persists_across_channels pins
+// spec point 1.1: the app prompts for /config until an API key is
+// configured. The welcome checklist alone only carries that prompt
+// while no channel is open, so this checks the status-bar item added
+// for the missing-key state survives joining a channel and clears
+// once the key is set, from the same cfgStore.OnChange listener that
+// keeps it current regardless of which command changed the config.
+func TestChatScreen_no_api_key_status_item_persists_across_channels(t *testing.T) {
+	cfgStore := newFakeConfigStore()
+	h := newTestSessionWithConfigStore(t, cfgStore)
+	h.mgr.SetAPIFactory(func(string, string) (api.Client, error) {
+		return &uitest.FakeAPI{}, nil
+	})
+
+	tm := newChatAppWithConfig(t, h, cfgStore)
+	tm.WaitFor("No API key configured")
+
+	tm.Submit("/join #general")
+	tm.WaitFor("Created channel #general")
+	tm.WaitForViewContains("No API key configured")
+
+	tm.Submit("/config api-key test-key")
+	tm.WaitFor("OpenRouter API key saved and activated.")
+	tm.WaitForView(func(view string) bool {
+		return !strings.Contains(view, "No API key configured")
+	})
 }
 
 func TestChatScreen_send_message(t *testing.T) {
@@ -1071,8 +1100,9 @@ func TestChatScreen_config_persona_reset(t *testing.T) {
 }
 
 type fakeConfigStore struct {
-	cfg     config.Config
-	saveErr error
+	cfg       config.Config
+	saveErr   error
+	callbacks []config.ChangeFunc
 }
 
 func newFakeConfigStore() *fakeConfigStore {
@@ -1089,14 +1119,34 @@ func (f *fakeConfigStore) Load(context.Context) (config.Config, error) {
 	return f.cfg, nil
 }
 
-func (f *fakeConfigStore) OnChange(config.ChangeFunc) config.UnsubscribeFunc { return func() {} }
+// OnChange registers fn and returns a function that removes it,
+// mirroring config.FileStore.OnChange closely enough for a test to
+// observe a Save or Update through it: real callers (main.go, and
+// now ChatScreen for the no-API-key status item) register once at
+// startup and never call Unsubscribe, so index-based removal that
+// shifts every later index is fine — no test here interleaves a
+// registration with an unsubscribe.
+func (f *fakeConfigStore) OnChange(fn config.ChangeFunc) config.UnsubscribeFunc {
+	f.callbacks = append(f.callbacks, fn)
+	idx := len(f.callbacks) - 1
 
-func (f *fakeConfigStore) Save(_ context.Context, cfg config.Config) error {
+	return func() {
+		f.callbacks = slices.Delete(f.callbacks, idx, idx+1)
+	}
+}
+
+func (f *fakeConfigStore) Save(ctx context.Context, cfg config.Config) error {
 	if f.saveErr != nil {
 		return f.saveErr
 	}
 
+	prev := f.cfg
 	f.cfg = cfg
+
+	for _, cb := range f.callbacks {
+		cb(ctx, prev, cfg)
+	}
+
 	return nil
 }
 

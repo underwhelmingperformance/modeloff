@@ -192,6 +192,7 @@ func TestApp_unknown_command_on_welcome_screen_with_teatest(t *testing.T) {
 		"▸&modeloff",
 		"No members",
 		"✗ command: unknown command: /foo",
+		"testuser >",
 	}, visibleBodySegments(view))
 }
 
@@ -211,10 +212,11 @@ func TestApp_welcome_join_command_with_teatest(t *testing.T) {
 	require.Equal(t, []string{"Channels", "&modeloff", "▸#general"}, sidebarColumn(view))
 
 	content := normaliseContent(contentColumn(view))
-	require.Len(t, content, 3, "window header, its border rule, one message")
+	require.Len(t, content, 4, "window header, its border rule, one message, and the input bar")
 	require.Equal(t, "#general", content[0])
 	require.Regexp(t, `^─+$`, content[1], "second content line is the header's border rule")
 	require.Equal(t, "*** Created channel #general", content[2])
+	require.Equal(t, "testuser >", content[3])
 }
 
 func TestApp_message_on_welcome_screen_rejected_with_teatest(t *testing.T) {
@@ -248,6 +250,7 @@ func TestApp_message_on_welcome_screen_rejected_with_teatest(t *testing.T) {
 		"▸&modeloff",
 		"No members",
 		"⚠ join a channel first",
+		"testuser >",
 	}, visibleBodySegments(view))
 }
 

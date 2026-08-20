@@ -8,10 +8,18 @@ import (
 
 // inputLine extracts the visible text of the input bar from a chat
 // screen render, with surrounding box borders and padding removed.
+// The input bar is the bordered workspace's own bottom row, not the
+// status bar SplitBodyAndStatus strips off — a status bar row, when
+// there is one, sits below it.
 func inputLine(view string) string {
-	_, status := uitest.SplitBodyAndStatus(view)
+	body, _ := uitest.SplitBodyAndStatus(view)
 
-	return strings.TrimSpace(strings.Trim(status, "│"))
+	lines := uitest.RenderedLines(body)
+	if len(lines) == 0 {
+		return ""
+	}
+
+	return strings.Trim(lines[len(lines)-1], "│ \t")
 }
 
 func visibleBodySegments(view string) []string {

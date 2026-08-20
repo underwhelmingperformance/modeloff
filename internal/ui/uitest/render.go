@@ -138,17 +138,32 @@ func TrimmedVisibleLines(view string) []string {
 }
 
 // SplitBodyAndStatus separates the chat body from the single-line
-// status bar at the bottom of the view.
+// status bar at the bottom of the view. ChatScreen.View only appends
+// a status bar row when RenderStatusBar produced one — with no active
+// keybinding and no status item, the workspace's own bordered render
+// is the whole view, and its last line is still body. A genuine
+// status bar row is plain text built from key hints and status item
+// text (see components.RenderStatusBar), so it never carries the `│`
+// pane-border character every row of the bordered sidebar/content/
+// nicklist layout does; that is what distinguishes the two cases.
+//
+// This holds only as long as no key-hint label and no status item's
+// text carries a literal `│` itself — true of every one defined
+// today (disconnectingStatusItem, noAPIKeyStatusItem, the keybinding
+// help strings). A status item whose text needed one would need a
+// different way to tell the two kinds of row apart.
 func SplitBodyAndStatus(view string) (string, string) {
 	lines := RenderedLines(view)
 	if len(lines) == 0 {
 		return "", ""
 	}
 
-	status := strings.TrimSpace(lines[len(lines)-1])
-	body := strings.Join(lines[:len(lines)-1], "\n")
+	last := lines[len(lines)-1]
+	if strings.Contains(last, "│") {
+		return strings.Join(lines, "\n"), ""
+	}
 
-	return body, status
+	return strings.Join(lines[:len(lines)-1], "\n"), strings.TrimSpace(last)
 }
 
 // CompactLine collapses runs of whitespace within a line into single
