@@ -195,7 +195,7 @@ func (s *Session) handleJoin(ctx context.Context, c protocol.Client, cmd protoco
 		var events []protocol.Event
 
 		for _, ch := range cmd.Channels {
-			joinErr := s.joinAs(ctx, actor, ch, cmd.Key)
+			joined, joinErr := s.joinAs(ctx, actor, ch, cmd.Key)
 			if joinErr != nil {
 				failures = append(failures, joinErr)
 				if ev, ok := joinErr.(protocol.Event); ok {
@@ -204,7 +204,7 @@ func (s *Session) handleJoin(ctx context.Context, c protocol.Client, cmd protoco
 				continue
 			}
 
-			events = append(events, domain.JoinedChannel{Channel: domain.NormaliseChannelName(ch)})
+			events = append(events, domain.JoinedChannel{Channel: joined})
 		}
 
 		return protocol.Response{Events: events, Err: errors.Join(failures...)}, nil

@@ -154,7 +154,7 @@ func TestJoinAs_KeyGate(t *testing.T) {
 					Nick: "botty", ModelID: "test/model",
 				})
 
-				err := sess.joinAs(ctx, botty, "#chan", tt.key)
+				err := joinAs(ctx, sess, botty, "#chan", tt.key)
 
 				if tt.wantErr {
 					var keyErr domain.ChannelKeyMismatchError
@@ -185,7 +185,7 @@ func TestJoinAs_UserLimitGate(t *testing.T) {
 			Nick: "botty", ModelID: "test/model",
 		})
 
-		err := sess.joinAs(ctx, botty, "#chan", "")
+		err := joinAs(ctx, sess, botty, "#chan", "")
 		var fullErr domain.ChannelFullError
 		require.ErrorAs(t, err, &fullErr)
 
@@ -211,7 +211,7 @@ func TestJoinAs_InviteOnlyGate(t *testing.T) {
 				Nick: "botty", ModelID: "test/model",
 			})
 
-			err := sess.joinAs(ctx, botty, "#chan", "")
+			err := joinAs(ctx, sess, botty, "#chan", "")
 			var ioErr domain.ChannelInviteOnlyError
 			require.ErrorAs(t, err, &ioErr)
 		})
@@ -234,7 +234,7 @@ func TestJoinAs_InviteOnlyGate(t *testing.T) {
 				Nick: "botty", ModelID: "test/model",
 			})
 
-			require.NoError(t, sess.joinAs(ctx, botty, "#chan", ""))
+			require.NoError(t, joinAs(ctx, sess, botty, "#chan", ""))
 
 			w, err = sess.loadChannelWindow(ctx, "#chan")
 			require.NoError(t, err)
@@ -245,7 +245,7 @@ func TestJoinAs_InviteOnlyGate(t *testing.T) {
 			// A second join attempt by the same nick (after part)
 			// fails because the invitation was single-use.
 			require.NoError(t, sess.partAs(ctx, botty, "#chan", ""))
-			err = sess.joinAs(ctx, botty, "#chan", "")
+			err = joinAs(ctx, sess, botty, "#chan", "")
 			var ioErr domain.ChannelInviteOnlyError
 			require.ErrorAs(t, err, &ioErr)
 		})

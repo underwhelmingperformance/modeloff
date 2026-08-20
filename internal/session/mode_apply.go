@@ -33,6 +33,8 @@ func (s *Session) applyChannelModeChangesAs(ctx context.Context, actor *domain.I
 			return fmt.Errorf("get channel: %w", err)
 		}
 
+		ch = window.Name()
+
 		if err := s.requireChannelOp(actor, window, "MODE", ch); err != nil {
 			return err
 		}

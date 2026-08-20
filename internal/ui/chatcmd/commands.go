@@ -132,7 +132,13 @@ func (c JoinCommand) ToCommand(_ Context) (protocol.Command, error) {
 // partial or total refusal is reported as a system notice naming
 // which channels joined and which were refused, and why; focus does
 // not move for that case. On full success it focuses the first
-// channel named, the way a single-channel `/join` always has.
+// channel joined, the way a single-channel `/join` always has.
+//
+// The focus target comes from the server's reply and not from what
+// the user typed. Channel names compare case-insensitively, so
+// `/join #DEV` against an existing `#dev` joins `#dev`, and focusing
+// the typed spelling would find no window and leave the user where
+// they were with the channel joined behind their back.
 func (c JoinCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	return func() tea.Msg {
 		cmd, err := c.ToCommand(rc)
@@ -157,7 +163,12 @@ func (c JoinCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 			return ReplyEvents{domain.SystemNotice{Target: rc.Active, Text: outcome.Text(), At: time.Now()}}
 		}
 
-		return ChannelFocusMsg{Channel: c.Channel.Channels()[0], At: time.Now()}
+		focus, ok := outcome.Focus()
+		if !ok {
+			return nil
+		}
+
+		return ChannelFocusMsg{Channel: focus, At: time.Now()}
 	}
 }
 
@@ -216,6 +227,18 @@ func newJoinOutcome(events []protocol.Event) joinOutcome {
 	}
 
 	return o
+}
+
+// Focus returns the channel a successful `/join` moves focus to:
+// the first one the server confirmed, spelled the way the server
+// spells it. The second return is false when the reply confirmed
+// none, and there is then nowhere to move to.
+func (o joinOutcome) Focus() (domain.ChannelName, bool) {
+	if len(o.Joined) == 0 {
+		return "", false
+	}
+
+	return domain.ChannelName(o.Joined[0]), true
 }
 
 // Text renders the outcome as one semicolon-separated line. It uses

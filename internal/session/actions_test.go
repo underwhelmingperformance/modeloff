@@ -27,7 +27,7 @@ func TestJoinAs_model_actor(t *testing.T) {
 			Channels: orderedmap.New[domain.ChannelName, time.Time](),
 		})
 
-		require.NoError(t, sess.joinAs(ctx, botty, "#dev", ""))
+		require.NoError(t, joinAs(ctx, sess, botty, "#dev", ""))
 		synctest.Wait()
 
 		ch, err := sess.loadChannelWindow(ctx, "#dev")
@@ -88,7 +88,7 @@ func TestJoinAs_model_joining_existing_channel_gets_RPL_topic_and_names(t *testi
 			Channels: orderedmap.New[domain.ChannelName, time.Time](),
 		})
 
-		require.NoError(t, sess.joinAs(ctx, botty, "#dev", ""))
+		require.NoError(t, joinAs(ctx, sess, botty, "#dev", ""))
 		synctest.Wait()
 
 		require.ElementsMatch(t, []domain.Event{
@@ -426,7 +426,7 @@ func TestSendMessageAs_user_actor_echoes_to_originator(t *testing.T) {
 		sess, s := newTestSession(t)
 		ctx := t.Context()
 
-		require.NoError(t, sess.joinAs(ctx, userInstance(t, sess), "#dev", ""))
+		require.NoError(t, joinAs(ctx, sess, userInstance(t, sess), "#dev", ""))
 		synctest.Wait()
 
 		_, err := sess.sendMessageAs(ctx, userInstance(t, sess), "#dev", "hello")
@@ -717,7 +717,7 @@ func TestJoinAs_normalises_channel_prefix(t *testing.T) {
 			Channels: orderedmap.New[domain.ChannelName, time.Time](),
 		})
 
-		require.NoError(t, sess.joinAs(ctx, botty, "modeloff", ""))
+		require.NoError(t, joinAs(ctx, sess, botty, "modeloff", ""))
 		synctest.Wait()
 
 		ch, err := sess.loadChannelWindow(ctx, "#modeloff")
@@ -787,7 +787,7 @@ func TestJoinAs_user_new_channel_emits_join_and_mode(t *testing.T) {
 		sess, s := newTestSession(t)
 		ctx := t.Context()
 
-		require.NoError(t, sess.joinAs(ctx, userInstance(t, sess), "#dev", ""))
+		require.NoError(t, joinAs(ctx, sess, userInstance(t, sess), "#dev", ""))
 		synctest.Wait()
 
 		user := userInstance(t, sess)
@@ -835,7 +835,7 @@ func TestJoinAs_user_existing_channel_with_topic(t *testing.T) {
 		withAlice.TopicSetAt = fixedTime.Add(-time.Hour)
 		saveTestChannel(t, sess, s, withAlice)
 
-		require.NoError(t, sess.joinAs(ctx, userInstance(t, sess), "#dev", ""))
+		require.NoError(t, joinAs(ctx, sess, userInstance(t, sess), "#dev", ""))
 		synctest.Wait()
 
 		user := userInstance(t, sess)
@@ -881,7 +881,7 @@ func TestJoinAs_user_existing_channel_no_topic(t *testing.T) {
 
 		saveTestChannel(t, sess, s, newTestChannelWindow("#dev", fixedTime.Add(-time.Hour), testMembers(t, sess, s, "alice")))
 
-		require.NoError(t, sess.joinAs(ctx, userInstance(t, sess), "#dev", ""))
+		require.NoError(t, joinAs(ctx, sess, userInstance(t, sess), "#dev", ""))
 		synctest.Wait()
 
 		user := userInstance(t, sess)
@@ -927,7 +927,7 @@ func TestJoinAs_model_voice_only_no_topic(t *testing.T) {
 		ch.Topic = "some topic"
 		saveTestChannel(t, sess, s, ch)
 
-		require.NoError(t, sess.joinAs(ctx, botty, "#dev", ""))
+		require.NoError(t, joinAs(ctx, sess, botty, "#dev", ""))
 		synctest.Wait()
 
 		require.ElementsMatch(t, []domain.Event{
@@ -953,8 +953,8 @@ func TestJoinAs_user_updates_autojoin(t *testing.T) {
 		sess, s := newTestSession(t)
 		ctx := t.Context()
 
-		require.NoError(t, sess.joinAs(ctx, userInstance(t, sess), "#general", ""))
-		require.NoError(t, sess.joinAs(ctx, userInstance(t, sess), "#dev", ""))
+		require.NoError(t, joinAs(ctx, sess, userInstance(t, sess), "#general", ""))
+		require.NoError(t, joinAs(ctx, sess, userInstance(t, sess), "#dev", ""))
 		synctest.Wait()
 
 		user := userInstance(t, sess)
@@ -1008,8 +1008,8 @@ func TestPartAs_user_updates_autojoin(t *testing.T) {
 		sess, s := newTestSession(t)
 		ctx := t.Context()
 
-		require.NoError(t, sess.joinAs(ctx, userInstance(t, sess), "#general", ""))
-		require.NoError(t, sess.joinAs(ctx, userInstance(t, sess), "#dev", ""))
+		require.NoError(t, joinAs(ctx, sess, userInstance(t, sess), "#general", ""))
+		require.NoError(t, joinAs(ctx, sess, userInstance(t, sess), "#dev", ""))
 		require.NoError(t, sess.partAs(ctx, userInstance(t, sess), "#general", "bye"))
 		synctest.Wait()
 

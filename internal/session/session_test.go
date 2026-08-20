@@ -148,11 +148,20 @@ func userJoinedAt(t testing.TB, sess *Session, ch domain.ChannelName) time.Time 
 	return at
 }
 
-// userJoin is shorthand for `sess.joinAs(ctx, userInstance(...))`.
+// joinAs is shorthand for the error half of [Session.joinAs], for
+// tests that do not care which spelling of the name the join landed
+// on.
+func joinAs(ctx context.Context, sess *Session, actor *domain.Instance, ch domain.ChannelName, key string) error {
+	_, err := sess.joinAs(ctx, actor, ch, key)
+
+	return err
+}
+
+// userJoin is shorthand for `joinAs(ctx, sess, userInstance(...))`.
 func userJoin(ctx context.Context, t testing.TB, sess *Session, ch domain.ChannelName) error {
 	t.Helper()
 
-	return sess.joinAs(ctx, userInstance(t, sess), ch, "")
+	return joinAs(ctx, sess, userInstance(t, sess), ch, "")
 }
 
 // userPart is shorthand for `sess.partAs(ctx, userInstance(...))`.
@@ -1432,9 +1441,7 @@ func TestSession_Quit_does_not_dispatch_to_models(t *testing.T) {
 		ModelID:  "test/model",
 		Channels: testChannels("#general"),
 	})
-	userInstance(t, sess).MutateChannels(func(m *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
-		m.Set("#general", fixedTime)
-	})
+	userInstance(t, sess).JoinChannel("#general", fixedTime)
 
 	require.NoError(t, userQuitViaWire(ctx, t, sess, "bye"))
 
@@ -1630,7 +1637,7 @@ func TestSession_spans_carry_AttrInstanceID(t *testing.T) {
 					Nick:    "botty",
 					ModelID: "test/model",
 				})
-				require.NoError(t, sess.joinAs(ctx, botty, "#dev", ""))
+				require.NoError(t, joinAs(ctx, sess, botty, "#dev", ""))
 			},
 			wantInstID: testMemberID("botty"),
 		},
@@ -4146,11 +4153,7 @@ func saveTestChannel(t *testing.T, sess *Session, s *storemod.SQLiteStore, w dom
 	}
 
 	if m, found := cw.Members.GetByInstance(userInstance(t, sess)); found {
-		userInstance(t, sess).MutateChannels(func(mm *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
-			if _, exists := mm.Get(cw.Name()); !exists {
-				mm.Set(cw.Name(), fixedTime)
-			}
-		})
+		userInstance(t, sess).JoinChannel(cw.Name(), fixedTime)
 
 		modes := m.Modes
 		if modes == (domain.MemberModes{}) {
@@ -4176,11 +4179,7 @@ func registerUserMembership(t *testing.T, sess *Session, name domain.ChannelName
 			continue
 		}
 
-		userInstance(t, sess).MutateChannels(func(mm *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
-			if _, ok := mm.Get(name); !ok {
-				mm.Set(name, fixedTime)
-			}
-		})
+		userInstance(t, sess).JoinChannel(name, fixedTime)
 		sess.setUserModes(t.Context(), name, domain.MemberModes{Operator: true})
 		return
 	}
@@ -4217,18 +4216,12 @@ func seedInstance(t *testing.T, sess *Session, s *storemod.SQLiteStore, spec ins
 		if spec.ModelID != "" {
 			existing.ModelID = spec.ModelID
 		}
-		existing.MutateChannels(func(m *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
-			for pair := m.Oldest(); pair != nil; {
-				next := pair.Next()
-				m.Delete(pair.Key)
-				pair = next
+		existing.LeaveAllChannels()
+		if spec.Channels != nil {
+			for pair := spec.Channels.Oldest(); pair != nil; pair = pair.Next() {
+				existing.JoinChannel(pair.Key, pair.Value)
 			}
-			if spec.Channels != nil {
-				for pair := spec.Channels.Oldest(); pair != nil; pair = pair.Next() {
-					m.Set(pair.Key, pair.Value)
-				}
-			}
-		})
+		}
 		require.NoError(t, s.SaveInstance(ctx, existing))
 		attachModelClient(t, sess, existing)
 		return existing

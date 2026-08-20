@@ -22,7 +22,7 @@ import (
 // that predates this version. Every database — fresh or
 // pre-existing — reaches the current shape through applyMigrations,
 // the single path from v1 onward.
-const SchemaVersion = 2
+const SchemaVersion = 3
 
 // migration is one forward-only step that brings the database
 // from v(Version-1) to vVersion. Apply runs inside the
@@ -69,6 +69,41 @@ var migrations = []migration{
 				)
 			`); err != nil {
 				return fmt.Errorf("create dm_windows: %w", err)
+			}
+
+			return nil
+		},
+	},
+	{
+		Version: 3,
+		Apply: func(ctx context.Context, tx *sql.Tx) error {
+			// The server casemaps nicks and channel names before
+			// comparing them (RFC 2812 §2.2), so `ResolveNick` and
+			// `GetWindow` match under NOCASE. Both columns already
+			// carry a BINARY index, which a NOCASE comparison cannot
+			// use; these index the folded form so the lookups stay
+			// index seeks.
+			//
+			// Neither index is UNIQUE. Uniqueness is the session's to
+			// enforce, on its command loop, where a nick is claimed and
+			// a channel is created, which is the convention
+			// `idx_instances_nick` already follows. A UNIQUE index
+			// would also refuse to be created against a database
+			// written before the casemapping existed, which may
+			// already hold `#Dev` alongside `#dev`, and failing the
+			// migration would leave that user unable to start at all.
+			if _, err := tx.ExecContext(ctx, `
+				CREATE INDEX IF NOT EXISTS idx_instances_nick_nocase
+					ON instances (nick COLLATE NOCASE)
+			`); err != nil {
+				return fmt.Errorf("create idx_instances_nick_nocase: %w", err)
+			}
+
+			if _, err := tx.ExecContext(ctx, `
+				CREATE INDEX IF NOT EXISTS idx_channels_name_nocase
+					ON channels (name COLLATE NOCASE)
+			`); err != nil {
+				return fmt.Errorf("create idx_channels_name_nocase: %w", err)
 			}
 
 			return nil

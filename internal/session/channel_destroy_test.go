@@ -122,7 +122,7 @@ func TestChannelDestroy_invite_evaporates(t *testing.T) {
 		// the invite would not have helped: there is no
 		// `InvitedNicks` because there is no channel-state to
 		// carry it.
-		require.NoError(t, sess.joinAs(ctx, botty, "#room", ""))
+		require.NoError(t, joinAs(ctx, sess, botty, "#room", ""))
 
 		w, err = sess.loadChannelWindow(ctx, "#room")
 		require.NoError(t, err)

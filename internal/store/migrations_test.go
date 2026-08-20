@@ -230,6 +230,47 @@ func TestApplyMigrations_v1_to_v2_adds_dm_thread_support(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// TestApplyMigrations_v1_to_v3_adds_casemapped_indexes pins the v3
+// step: the nick and channel-name lookups compare under NOCASE, and
+// a NOCASE comparison cannot use the BINARY index either column
+// already carries, so each gains an index on the folded form.
+func TestApplyMigrations_v1_to_v3_adds_casemapped_indexes(t *testing.T) {
+	ctx := t.Context()
+	db, err := sql.Open("sqlite3", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	db.SetMaxOpenConns(1)
+
+	seedV1Database(t, db)
+
+	require.NoError(t, applyMigrations(ctx, db))
+
+	rows, err := db.QueryContext(ctx,
+		`SELECT name FROM sqlite_master
+		 WHERE type = 'index' AND name IN ('idx_instances_nick_nocase', 'idx_channels_name_nocase')
+		 ORDER BY name`)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = rows.Close() })
+
+	var indexes []string
+	for rows.Next() {
+		var name string
+		require.NoError(t, rows.Scan(&name))
+		indexes = append(indexes, name)
+	}
+	require.NoError(t, rows.Err())
+
+	require.Equal(t, []string{"idx_channels_name_nocase", "idx_instances_nick_nocase"}, indexes)
+
+	// A database written before the casemapping existed may hold two
+	// rows whose names differ only in case. Neither index is UNIQUE,
+	// so the migration runs against such a database and upgrades it.
+	_, err = db.ExecContext(ctx,
+		`INSERT INTO channels (name, data) VALUES ('#Dev', '{}'), ('#dev', '{}')`)
+	require.NoError(t, err)
+}
+
 // TestNewSQLiteStore_opens_existing_v1_database is the regression
 // test for the schema/migration ordering bug this package shipped
 // once already: NewSQLiteStore execs `schema` unconditionally before

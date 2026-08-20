@@ -10,13 +10,17 @@ import (
 	"github.com/laney/modeloff/internal/store"
 )
 
-// checkSendGates enforces the per-channel PRIVMSG / Action
-// preconditions tied to channel modes: `+n` requires the sender
-// to be a channel member; `+m` requires the sender to hold voice
-// or op; `+q` silences everyone except ops; `+f` caps how many
-// messages the channel relays per flood window. DMs (non-channel
-// targets) skip the check, because they have no member list and no
-// channel modes.
+// checkSendGates enforces the PRIVMSG / Action preconditions for a
+// channel target. A channel that does not exist is refused with
+// [domain.NoSuchChannelError]: RFC 2812 §3.3.1 answers a PRIVMSG
+// naming an unknown target with 401 ERR_NOSUCHNICK, so a message
+// addressed to nowhere is refused at the gate and never reaches the
+// event log. The mode gates follow: `+n` requires the sender to be a
+// channel member; `+m` requires the sender to hold voice or op; `+q`
+// silences everyone except ops; `+f` caps how many messages the
+// channel relays per flood window. DMs (non-channel targets) skip
+// the whole check, because they have no member list and no channel
+// modes.
 //
 // `+f` is checked last, and it is the one gate that changes state:
 // a message an earlier gate refuses was never going to be relayed,
@@ -25,38 +29,44 @@ import (
 // Each rejection names a typed [domain.SendBlockReason] so
 // renderers can format the right message without parsing a
 // free-form error string.
-func (s *Session) checkSendGates(ctx context.Context, actor *domain.Instance, ch domain.ChannelName) error {
+//
+// The first return is the target's canonical name: for a channel,
+// the spelling the channel exists under, so a PRIVMSG to `#Dev` is
+// logged and broadcast against `#dev`. For a DM the target is
+// returned unchanged.
+func (s *Session) checkSendGates(ctx context.Context, actor *domain.Instance, ch domain.ChannelName) (domain.ChannelName, error) {
 	if domain.InferChannelKind(ch) != domain.KindChannel {
-		return nil
+		return ch, nil
 	}
 
 	window, err := s.loadChannelWindow(ctx, ch)
-	if errors.Is(err, store.ErrNoSuchChannel) {
-		// A missing channel has no gates of its own; the
-		// append/emit path produces the right error downstream.
-		return nil
-	}
 	if err != nil {
-		return fmt.Errorf("load channel: %w", err)
+		if errors.Is(err, store.ErrNoSuchChannel) {
+			return ch, domain.NoSuchChannelError{Channel: ch, At: s.now()}
+		}
+
+		return ch, fmt.Errorf("load channel: %w", err)
 	}
+
+	ch = window.Name()
 
 	member, isMember := window.Members.GetByInstance(actor)
 
 	if window.Modes.NoExternal && !isMember {
-		return domain.CannotSendToChannelError{Channel: ch, Reason: domain.SendBlockNoExternal, At: s.now()}
+		return ch, domain.CannotSendToChannelError{Channel: ch, Reason: domain.SendBlockNoExternal, At: s.now()}
 	}
 
 	if window.Modes.Quiet && (!isMember || !member.Modes.Operator) {
-		return domain.CannotSendToChannelError{Channel: ch, Reason: domain.SendBlockQuiet, At: s.now()}
+		return ch, domain.CannotSendToChannelError{Channel: ch, Reason: domain.SendBlockQuiet, At: s.now()}
 	}
 
 	if window.Modes.Moderated {
 		if !isMember || (!member.Modes.Operator && !member.Modes.Voice) {
-			return domain.CannotSendToChannelError{Channel: ch, Reason: domain.SendBlockModerated, At: s.now()}
+			return ch, domain.CannotSendToChannelError{Channel: ch, Reason: domain.SendBlockModerated, At: s.now()}
 		}
 	}
 
-	return s.checkChannelFlood(ch, window.Modes)
+	return ch, s.checkChannelFlood(ch, window.Modes)
 }
 
 // checkJoinGates enforces the per-channel JOIN preconditions

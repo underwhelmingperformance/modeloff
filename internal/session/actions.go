@@ -23,20 +23,26 @@ import (
 // channel; a fresh channel (this call creates it) has no modes
 // and so no gate applies.
 //
+// The first return is the channel's canonical name: the spelling
+// under which the channel actually exists, which may differ in case
+// from the one the client asked for. Callers that report the join
+// back to the client use it, so a `/join #Dev` that reached `#dev`
+// says so.
+//
 // Runs on the session's command loop, so the load-mutate-commit of
 // the channel record below is atomic against every other command.
 //
 //nolint:gocognit // sequenced join steps (create-or-load, gate, op-grant, persist, broadcast, replies) read clearer inline than as further-extracted helpers.
-func (s *Session) joinAs(ctx context.Context, actor *domain.Instance, ch domain.ChannelName, key string) error {
-	if isBareChannelPrefix(ch) {
-		return domain.BareChannelNameError{Channel: ch, At: s.now()}
-	}
-
+func (s *Session) joinAs(ctx context.Context, actor *domain.Instance, ch domain.ChannelName, key string) (domain.ChannelName, error) {
 	ch = domain.NormaliseChannelName(ch)
+
+	if reason := domain.ValidateChannelName(ch); reason != domain.ChannelNameAccepted {
+		return ch, domain.ErroneousChannelNameError{Channel: ch, Reason: reason, At: s.now()}
+	}
 
 	actorNick := actor.Nick()
 
-	return s.inSpan(ctx, "session.join", []attribute.KeyValue{
+	err := s.inSpan(ctx, "session.join", []attribute.KeyValue{
 		attribute.String(observability.AttrChannel, string(ch)),
 		attribute.String(observability.AttrNick, string(actorNick)),
 		attribute.String(observability.AttrInstanceID, string(actor.ID())),
@@ -48,6 +54,13 @@ func (s *Session) joinAs(ctx context.Context, actor *domain.Instance, ch domain.
 		if err != nil {
 			return err
 		}
+
+		// The channel record is the authority for how the name is
+		// spelled: under the casemapping a JOIN for `#Dev` reaches an
+		// existing `#dev`. Every key derived from here on uses the
+		// spelling the channel was created with, so the event log,
+		// the actor's channel set and the wire events all agree.
+		ch = window.Name()
 
 		alreadyMember := !created && window.Members.HasInstance(actor)
 
@@ -142,16 +155,8 @@ func (s *Session) joinAs(ctx context.Context, actor *domain.Instance, ch domain.
 
 		return nil
 	})
-}
 
-// isBareChannelPrefix reports whether ch is nothing but a channel
-// prefix character with no name after it ("#" or "&"). No caller
-// should construct one deliberately, but a comma-separated JOIN
-// list can produce it from an empty entry between two commas.
-// joinAs checks this directly: the dispatcher does not trust a
-// client to have refused the value first.
-func isBareChannelPrefix(ch domain.ChannelName) bool {
-	return ch == "#" || ch == "&"
+	return ch, err
 }
 
 // ensureChannelWindowWithActor loads the channel-window or creates
@@ -196,11 +201,7 @@ func (s *Session) ensureChannelWindowWithActor(ctx context.Context, ch domain.Ch
 // channels map and — for model actors — persists the updated
 // instance row.
 func (s *Session) recordActorMembership(ctx context.Context, actor *domain.Instance, ch domain.ChannelName, now time.Time, isUser bool) error {
-	actor.MutateChannels(func(m *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
-		if _, ok := m.Get(ch); !ok {
-			m.Set(ch, now)
-		}
-	})
+	actor.JoinChannel(ch, now)
 
 	if isUser {
 		return nil
@@ -229,6 +230,8 @@ func (s *Session) partAs(ctx context.Context, actor *domain.Instance, ch domain.
 		if err != nil {
 			return fmt.Errorf("channel not found: %w", err)
 		}
+
+		ch = window.Name()
 
 		span.SetAttributes(attribute.String(observability.AttrInstanceID, string(actor.ID())))
 
@@ -310,11 +313,7 @@ func (s *Session) modelQuit(ctx context.Context, actor *domain.Instance, message
 			},
 		})
 
-		actor.MutateChannels(func(m *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
-			for _, ch := range channels {
-				m.Delete(ch)
-			}
-		})
+		actor.LeaveChannels(channels...)
 
 		if err := s.store.SaveInstance(ctx, actor); err != nil {
 			return fmt.Errorf("save instance: %w", err)
@@ -328,11 +327,13 @@ func (s *Session) modelQuit(ctx context.Context, actor *domain.Instance, message
 	})
 }
 
-// changeNickAs changes the given actor's nickname.
+// changeNickAs changes the given actor's nickname. The grammar and
+// collision checks are [Session.requireNickAvailable]'s, the same
+// pair `ADDMODEL` runs before it claims a nick for a new instance.
 //
 // Runs on the session's command loop, which is what makes the
-// collision check below decisive: no other command can claim
-// `newNick` between the check and the rename that takes it.
+// collision check decisive: no other command can claim `newNick`
+// between the check and the rename that takes it.
 func (s *Session) changeNickAs(ctx context.Context, actor *domain.Instance, newNick domain.Nick) error {
 	oldNick := actor.Nick()
 
@@ -344,8 +345,8 @@ func (s *Session) changeNickAs(ctx context.Context, actor *domain.Instance, newN
 			return nil
 		}
 
-		if existing, err := s.ResolveNick(ctx, newNick); err == nil && existing != actor {
-			return errWithKind(domain.NickInUseError{Nick: newNick, At: s.now()}, observability.ErrorKindValidation)
+		if err := s.requireNickAvailable(ctx, newNick, actor); err != nil {
+			return err
 		}
 
 		isUser := actor.ID() == ""
@@ -402,17 +403,20 @@ func (s *Session) sendMessageAs(ctx context.Context, actor *domain.Instance, ch 
 		instanceID := actor.ID()
 		span.SetAttributes(attribute.String(observability.AttrInstanceID, string(instanceID)))
 
-		if err := s.checkSendGates(ctx, actor, ch); err != nil {
+		target, err := s.checkSendGates(ctx, actor, ch)
+		if err != nil {
 			return err
 		}
 
 		msg = domain.Message{
-			Target:     ch,
+			Target:     target,
 			From:       actorNick,
 			InstanceID: instanceID,
 			Body:       body,
 			At:         s.now(),
 		}
+
+		ch = target
 
 		s.appendEvent(ctx, ch, msg)
 		s.emit(ctx, msg)
@@ -437,18 +441,21 @@ func (s *Session) sendActionAs(ctx context.Context, actor *domain.Instance, ch d
 		instanceID := actor.ID()
 		span.SetAttributes(attribute.String(observability.AttrInstanceID, string(instanceID)))
 
-		if err := s.checkSendGates(ctx, actor, ch); err != nil {
+		target, err := s.checkSendGates(ctx, actor, ch)
+		if err != nil {
 			return err
 		}
 
 		msg = domain.Message{
-			Target:     ch,
+			Target:     target,
 			From:       actorNick,
 			InstanceID: instanceID,
 			Body:       body,
 			Action:     true,
 			At:         s.now(),
 		}
+
+		ch = target
 
 		s.appendEvent(ctx, ch, msg)
 		s.emit(ctx, msg)
@@ -479,6 +486,8 @@ func (s *Session) setTopicAs(ctx context.Context, actor *domain.Instance, ch dom
 		if err != nil {
 			return fmt.Errorf("get channel: %w", err)
 		}
+
+		ch = window.Name()
 
 		// `+t` restricts TOPIC to ops (RFC 2811 §4.2.7). When the
 		// channel doesn't carry `+t`, any member can change topic.
@@ -534,6 +543,8 @@ func (s *Session) kickAs(ctx context.Context, actor, target *domain.Instance, ch
 		if err != nil {
 			return fmt.Errorf("get channel: %w", err)
 		}
+
+		ch = window.Name()
 
 		span.SetAttributes(attribute.String(observability.AttrInstanceID, string(target.ID())))
 
@@ -604,6 +615,8 @@ func (s *Session) inviteAs(ctx context.Context, actor *domain.Instance, target d
 		if err != nil {
 			return fmt.Errorf("get channel: %w", err)
 		}
+
+		ch = window.Name()
 
 		// INVITE is op-gated only when the target channel carries
 		// `+i` (RFC 2812 §3.2.7). On `-i` channels any member can
@@ -747,7 +760,7 @@ func (s *Session) registerModelAs(
 		attribute.String(observability.AttrNick, string(nick)),
 		attribute.String(observability.AttrModelID, string(modelID)),
 	}, func(ctx context.Context, _ trace.Span) error {
-		if err := s.requireNickFree(ctx, nick); err != nil {
+		if err := s.requireNickAvailable(ctx, nick, nil); err != nil {
 			return err
 		}
 
@@ -780,16 +793,39 @@ func (s *Session) registerModelAs(
 	return inst, nil
 }
 
-// requireNickFree reports [domain.NickInUseError] when `nick` is
-// already held. Only a clean "no such nick" from the store counts as
-// free: any other resolve failure is returned, so a store that is
-// briefly unavailable refuses the claim and no duplicate gets
-// through.
-func (s *Session) requireNickFree(ctx context.Context, nick domain.Nick) error {
-	_, err := s.ResolveNick(ctx, nick)
+// requireNickAvailable is the one place a nick is checked before it
+// is claimed, whether the claim comes from `NICK` or from the
+// registration half of `ADDMODEL`. It answers the two refusals IRC
+// distinguishes, in the order a server does: a nick outside the RFC
+// 2812 §2.3.1 grammar is [domain.ErroneousNicknameError] (numeric
+// 432) and no client will ever hold it; a well-formed nick another
+// client holds is [domain.NickInUseError] (numeric 433) and the
+// answer changes when that client renames or quits.
+//
+// `holder` is the instance allowed to already hold the nick, which
+// is the renaming client under `NICK`, so re-taking one's own nick
+// in a different case is not a collision. Pass nil when no client
+// may hold it.
+//
+// Only a clean "no such nick" from the store counts as free: any
+// other resolve failure is returned, so a store that is briefly
+// unavailable refuses the claim and no duplicate gets through.
+func (s *Session) requireNickAvailable(ctx context.Context, nick domain.Nick, holder *domain.Instance) error {
+	if reason := domain.ValidateNick(nick); reason != domain.NickAccepted {
+		return errWithKind(
+			domain.ErroneousNicknameError{Nick: nick, Reason: reason, At: s.now()},
+			observability.ErrorKindValidation,
+		)
+	}
+
+	existing, err := s.ResolveNick(ctx, nick)
 
 	switch {
 	case err == nil:
+		if existing == holder {
+			return nil
+		}
+
 		return errWithKind(domain.NickInUseError{Nick: nick, At: s.now()}, observability.ErrorKindValidation)
 	case errors.Is(err, store.ErrNoSuchNick):
 		return nil
@@ -819,7 +855,9 @@ func (s *Session) admitModelAs(ctx context.Context, actor, inst *domain.Instance
 			}
 		}
 
-		return s.joinAs(ctx, inst, ch, "")
+		_, err := s.joinAs(ctx, inst, ch, "")
+
+		return err
 	})
 }
 

@@ -543,13 +543,24 @@ func (s *SQLiteStore) ListWindows(ctx context.Context) ([]domain.Window, error) 
 // resolved through the canonical registry; a missing counterpart
 // surfaces as an error so the caller can decide whether to recover
 // or surface to the user.
+//
+// The name is matched under NOCASE, which folds `A`-`Z` onto `a`-`z`
+// and nothing else, the same fold [domain.KeyForChannel] applies, so
+// a lookup here and a lookup in the session's live channel state
+// agree. The row keeps the spelling it was saved with, and that is
+// the name the returned window carries.
+//
+// `ORDER BY name LIMIT 1` settles a database written before the
+// casemapping existed, which may hold both `#Dev` and `#dev` as
+// separate rows: the same one of the pair answers every lookup, so
+// the channel behaves as one channel from here on.
 func (s *SQLiteStore) GetWindow(ctx context.Context, name domain.ChannelName) (domain.Window, error) {
 	var w domain.Window
 	err := s.inSpan(ctx, "store.sqlite.get_window",
 		[]attribute.KeyValue{attribute.String(observability.AttrChannel, string(name))},
 		func(ctx context.Context, _ trace.Span) error {
 			row, err := queryRow(ctx, s.db,
-				`SELECT data FROM channels WHERE name = ?`,
+				`SELECT data FROM channels WHERE name = ? COLLATE NOCASE ORDER BY name LIMIT 1`,
 				[]any{name}, ErrNoSuchChannel,
 				jsonColumn[channelRow])
 			if err != nil {
@@ -589,12 +600,29 @@ func (s *SQLiteStore) SaveWindow(ctx context.Context, w domain.Window) error {
 		})
 }
 
-// DeleteWindow implements Store.
+// DeleteWindow implements Store. The name is matched under NOCASE,
+// the collation [SQLiteStore.GetWindow] reads with, so destroying a
+// channel destroys every spelling of it.
+//
+// That matters on a database written before the casemapping existed,
+// which may hold `#Dev` and `#dev` as separate rows. `GetWindow`
+// answers such a pair with one of them, leaving the other a shadow
+// nothing can reach; a BINARY delete would remove the row it was
+// handed and promote the shadow, so the next client to create a
+// channel under that name would find it furnished with a topic and
+// modes from a channel nobody was in, against RFC 2811 §2's rule
+// that a re-created channel starts fresh.
+//
+// The shadow's `events` rows outlive it, because the event log is
+// keyed by channel name under BINARY and the session only ever asks
+// for the spelling `ChannelWindow.Name()` gave it. Nothing reads
+// those rows again; what to do with them is a retention question
+// filed with C3.
 func (s *SQLiteStore) DeleteWindow(ctx context.Context, name domain.ChannelName) error {
 	return s.inSpan(ctx, "store.sqlite.delete_window",
 		[]attribute.KeyValue{attribute.String(observability.AttrChannel, string(name))},
 		func(ctx context.Context, _ trace.Span) error {
-			return execMutation(ctx, s.db, `DELETE FROM channels WHERE name = ?`, name)
+			return execMutation(ctx, s.db, `DELETE FROM channels WHERE name = ? COLLATE NOCASE`, name)
 		})
 }
 
@@ -879,18 +907,24 @@ func (s *SQLiteStore) GetInstanceByID(ctx context.Context, id domain.InstanceID)
 // into a handle once at the boundary, and every downstream call
 // takes the handle.
 //
+// The nick is matched under NOCASE, which folds `A`-`Z` onto `a`-`z`
+// and nothing else, the same fold [domain.EqualNick] applies, so the
+// store and the session agree on when two nicks name one client. The
+// row keeps the spelling it was saved with.
+//
 // If multiple instances share the same display nick the store
-// returns one arbitrary matching row — the `idx_instances_nick`
-// index is non-unique because display nicks are expected to drift.
-// Callers are responsible for preventing collisions upstream (the
-// session refuses renames that would collide; see task #53).
+// returns the first in nick order. The `idx_instances_nick` indexes
+// are non-unique because display nicks are expected to drift, and
+// callers are responsible for preventing collisions upstream: the
+// session claims a nick on its command loop and refuses one already
+// held.
 func (s *SQLiteStore) ResolveNick(ctx context.Context, nick domain.Nick) (*domain.Instance, error) {
 	var inst *domain.Instance
 	err := s.inSpan(ctx, "store.sqlite.resolve_nick",
 		[]attribute.KeyValue{attribute.String(observability.AttrNick, string(nick))},
 		func(ctx context.Context, _ trace.Span) error {
 			fresh, err := queryRow(ctx, s.db,
-				`SELECT data FROM instances WHERE nick = ?`,
+				`SELECT data FROM instances WHERE nick = ? COLLATE NOCASE ORDER BY nick LIMIT 1`,
 				[]any{nick},
 				fmt.Errorf("resolve nick %q: %w", nick, ErrNoSuchNick),
 				jsonColumn[domain.Instance])

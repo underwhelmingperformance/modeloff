@@ -209,16 +209,17 @@ func (ml MemberList) HasInstance(inst *Instance) bool {
 	return ok
 }
 
-// GetByNick finds a member by display nick. It is intended for
-// display-layer lookups (tab completion, resolving a typed command
-// argument); identity-bearing code should prefer GetByInstance.
+// GetByNick finds a member by display nick, under the server's
+// casemapping. It is intended for display-layer lookups (tab
+// completion, resolving a typed command argument); identity-bearing
+// code should prefer GetByInstance.
 func (ml MemberList) GetByNick(nick Nick) (Member, bool) {
 	if ml.members == nil {
 		return Member{}, false
 	}
 
 	for m := range ml.members.All() {
-		if m.Nick == nick {
+		if EqualNick(m.Nick, nick) {
 			return m, true
 		}
 	}

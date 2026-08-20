@@ -56,49 +56,51 @@ func (ModelUnavailableError) isProtocolEvent() {}
 // the `error` interface (for `errors.As` extraction at the
 // emission boundary) and the protocol-event seal (so the session
 // can `emit` them like any other wire event).
-func (UnknownNickError) isProtocolEvent()         {}
-func (NoSuchChannelError) isProtocolEvent()       {}
-func (NickInUseError) isProtocolEvent()           {}
-func (NotOnChannelError) isProtocolEvent()        {}
-func (UserNotInChannelError) isProtocolEvent()    {}
-func (UserOnChannelError) isProtocolEvent()       {}
-func (NotOperatorError) isProtocolEvent()         {}
-func (OperFailedError) isProtocolEvent()          {}
-func (ChanOpRequiredError) isProtocolEvent()      {}
-func (UnknownModeFlagError) isProtocolEvent()     {}
-func (MissingModeParamError) isProtocolEvent()    {}
-func (ChannelKeyMismatchError) isProtocolEvent()  {}
-func (ChannelInviteOnlyError) isProtocolEvent()   {}
-func (ChannelFullError) isProtocolEvent()         {}
-func (TooManyJoinTargetsError) isProtocolEvent()  {}
-func (BareChannelNameError) isProtocolEvent()     {}
-func (CannotSendToChannelError) isProtocolEvent() {}
-func (UnknownCommandError) isProtocolEvent()      {}
-func (UnknownConfigKeyError) isProtocolEvent()    {}
-func (InvalidDurationError) isProtocolEvent()     {}
-func (UnsupportedModelError) isProtocolEvent()    {}
+func (UnknownNickError) isProtocolEvent()          {}
+func (NoSuchChannelError) isProtocolEvent()        {}
+func (NickInUseError) isProtocolEvent()            {}
+func (NotOnChannelError) isProtocolEvent()         {}
+func (UserNotInChannelError) isProtocolEvent()     {}
+func (UserOnChannelError) isProtocolEvent()        {}
+func (NotOperatorError) isProtocolEvent()          {}
+func (OperFailedError) isProtocolEvent()           {}
+func (ChanOpRequiredError) isProtocolEvent()       {}
+func (UnknownModeFlagError) isProtocolEvent()      {}
+func (MissingModeParamError) isProtocolEvent()     {}
+func (ChannelKeyMismatchError) isProtocolEvent()   {}
+func (ChannelInviteOnlyError) isProtocolEvent()    {}
+func (ChannelFullError) isProtocolEvent()          {}
+func (TooManyJoinTargetsError) isProtocolEvent()   {}
+func (ErroneousChannelNameError) isProtocolEvent() {}
+func (ErroneousNicknameError) isProtocolEvent()    {}
+func (CannotSendToChannelError) isProtocolEvent()  {}
+func (UnknownCommandError) isProtocolEvent()       {}
+func (UnknownConfigKeyError) isProtocolEvent()     {}
+func (InvalidDurationError) isProtocolEvent()      {}
+func (UnsupportedModelError) isProtocolEvent()     {}
 
-func (UnknownNickError) domainEvent()         {}
-func (NoSuchChannelError) domainEvent()       {}
-func (NickInUseError) domainEvent()           {}
-func (NotOnChannelError) domainEvent()        {}
-func (UserNotInChannelError) domainEvent()    {}
-func (UserOnChannelError) domainEvent()       {}
-func (NotOperatorError) domainEvent()         {}
-func (OperFailedError) domainEvent()          {}
-func (ChanOpRequiredError) domainEvent()      {}
-func (UnknownModeFlagError) domainEvent()     {}
-func (MissingModeParamError) domainEvent()    {}
-func (ChannelKeyMismatchError) domainEvent()  {}
-func (ChannelInviteOnlyError) domainEvent()   {}
-func (ChannelFullError) domainEvent()         {}
-func (TooManyJoinTargetsError) domainEvent()  {}
-func (BareChannelNameError) domainEvent()     {}
-func (CannotSendToChannelError) domainEvent() {}
-func (UnknownCommandError) domainEvent()      {}
-func (UnknownConfigKeyError) domainEvent()    {}
-func (InvalidDurationError) domainEvent()     {}
-func (UnsupportedModelError) domainEvent()    {}
+func (UnknownNickError) domainEvent()          {}
+func (NoSuchChannelError) domainEvent()        {}
+func (NickInUseError) domainEvent()            {}
+func (NotOnChannelError) domainEvent()         {}
+func (UserNotInChannelError) domainEvent()     {}
+func (UserOnChannelError) domainEvent()        {}
+func (NotOperatorError) domainEvent()          {}
+func (OperFailedError) domainEvent()           {}
+func (ChanOpRequiredError) domainEvent()       {}
+func (UnknownModeFlagError) domainEvent()      {}
+func (MissingModeParamError) domainEvent()     {}
+func (ChannelKeyMismatchError) domainEvent()   {}
+func (ChannelInviteOnlyError) domainEvent()    {}
+func (ChannelFullError) domainEvent()          {}
+func (TooManyJoinTargetsError) domainEvent()   {}
+func (ErroneousChannelNameError) domainEvent() {}
+func (ErroneousNicknameError) domainEvent()    {}
+func (CannotSendToChannelError) domainEvent()  {}
+func (UnknownCommandError) domainEvent()       {}
+func (UnknownConfigKeyError) domainEvent()     {}
+func (InvalidDurationError) domainEvent()      {}
+func (UnsupportedModelError) domainEvent()     {}
 
 // NotOperatorError is the protocol-shaped form of ERR_NOPRIVILEGES
 // (RFC 2812 numeric 481). The dispatcher returns it from operator-
@@ -226,17 +228,35 @@ func (e TooManyJoinTargetsError) Error() string {
 	return fmt.Sprintf("JOIN names %d channels, more than the %d a single command may name", e.Requested, e.Max)
 }
 
-// BareChannelNameError refuses a channel name that is nothing but a
-// channel prefix ("#" or "&") with no name after it. joinAs checks
-// this directly: the dispatcher does not trust a client to have
-// refused the value first.
-type BareChannelNameError struct {
+// ErroneousChannelNameError refuses a channel name that fails the
+// RFC 2812 §1.3 grammar (numeric 479 ERR_BADCHANNAME). `Reason`
+// carries which part of the grammar it failed, so renderers and
+// tool-result formatters can say so without reparsing the message.
+// The dispatcher checks the name itself: it does not trust a client
+// to have refused the value first.
+type ErroneousChannelNameError struct {
 	Channel ChannelName
+	Reason  ChannelNameRejection
 	At      time.Time
 }
 
-func (e BareChannelNameError) Error() string {
-	return fmt.Sprintf("%q is not a valid channel name", e.Channel)
+func (e ErroneousChannelNameError) Error() string {
+	return fmt.Sprintf("%q is not a valid channel name: %s", e.Channel, e.Reason)
+}
+
+// ErroneousNicknameError refuses a nick that fails the RFC 2812
+// §2.3.1 grammar (numeric 432 ERR_ERRONEUSNICKNAME). It is the
+// separate answer from [NickInUseError] (433): 432 says the nick
+// could never be taken by anyone, 433 says this nick is taken now
+// and another client may free it.
+type ErroneousNicknameError struct {
+	Nick   Nick
+	Reason NickRejection
+	At     time.Time
+}
+
+func (e ErroneousNicknameError) Error() string {
+	return fmt.Sprintf("nick %q is not allowed: %s", string(e.Nick), e.Reason)
 }
 
 // CannotSendToChannelError refuses a PRIVMSG / Action against a

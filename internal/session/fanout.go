@@ -140,7 +140,7 @@ func anonymiseIfNeeded(ctx context.Context, s *Session, pe domain.ProtocolEvent)
 		return pe
 	}
 
-	msg.From = "anonymous"
+	msg.From = domain.AnonymousNick
 	return msg
 }
 

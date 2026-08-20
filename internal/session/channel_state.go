@@ -38,13 +38,17 @@ import (
 // a failed `DeleteWindow` leaves one that `/list` still enumerates
 // and the poke scheduler still nudges; the persistence-failure
 // counter is what reports that the two have parted company.
+// The map is keyed by [domain.ChannelKey], the casemapped form of
+// the name, so `#Dev` and `#dev` reach one record. Each record keeps
+// the spelling it was created with under
+// [domain.ChannelWindow.Name], and that is what goes on the wire.
 type channelState struct {
 	mu      sync.Mutex
-	windows map[domain.ChannelName]*domain.ChannelWindow
+	windows map[domain.ChannelKey]*domain.ChannelWindow
 }
 
 func newChannelState() *channelState {
-	return &channelState{windows: make(map[domain.ChannelName]*domain.ChannelWindow)}
+	return &channelState{windows: make(map[domain.ChannelKey]*domain.ChannelWindow)}
 }
 
 // liveChannelWindow returns the live record for `name` as an
@@ -56,7 +60,7 @@ func (s *Session) liveChannelWindow(ctx context.Context, name domain.ChannelName
 	s.channels.mu.Lock()
 	defer s.channels.mu.Unlock()
 
-	if cw, ok := s.channels.windows[name]; ok {
+	if cw, ok := s.channels.windows[domain.KeyForChannel(name)]; ok {
 		return cw.Clone(), nil
 	}
 
@@ -65,7 +69,7 @@ func (s *Session) liveChannelWindow(ctx context.Context, name domain.ChannelName
 		return nil, err
 	}
 
-	s.channels.windows[name] = cw
+	s.channels.windows[domain.KeyForChannel(cw.Name())] = cw
 
 	return cw.Clone(), nil
 }
@@ -77,7 +81,7 @@ func (s *Session) installChannelWindow(w *domain.ChannelWindow) {
 	s.channels.mu.Lock()
 	defer s.channels.mu.Unlock()
 
-	s.channels.windows[w.Name()] = w.Clone()
+	s.channels.windows[domain.KeyForChannel(w.Name())] = w.Clone()
 }
 
 // destroyChannel ends a channel (RFC 2811 §2): the live record and
@@ -88,7 +92,7 @@ func (s *Session) destroyChannel(ctx context.Context, name domain.ChannelName) e
 	s.channels.mu.Lock()
 	defer s.channels.mu.Unlock()
 
-	delete(s.channels.windows, name)
+	delete(s.channels.windows, domain.KeyForChannel(name))
 	s.channelFlood.forget(name)
 
 	return s.store.DeleteWindow(ctx, name)
@@ -102,7 +106,7 @@ func (s *Session) channelModes(ctx context.Context, name domain.ChannelName) (do
 	s.channels.mu.Lock()
 	defer s.channels.mu.Unlock()
 
-	cw, ok := s.channels.windows[name]
+	cw, ok := s.channels.windows[domain.KeyForChannel(name)]
 	if !ok {
 		var err error
 
@@ -111,7 +115,7 @@ func (s *Session) channelModes(ctx context.Context, name domain.ChannelName) (do
 			return domain.ChannelModes{}, false
 		}
 
-		s.channels.windows[name] = cw
+		s.channels.windows[domain.KeyForChannel(cw.Name())] = cw
 	}
 
 	return cw.Modes, true

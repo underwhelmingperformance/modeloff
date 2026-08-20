@@ -2,6 +2,7 @@ package session
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -90,19 +91,23 @@ func TestSession_handleJoin_refuses_over_cap_list(t *testing.T) {
 	}
 }
 
-// TestSession_handleJoin_refuses_bare_channel_name covers the
-// dispatcher's own backstop against a channel name that is nothing
-// but a channel prefix. A comma-separated JOIN list can produce one
-// from an empty entry between two commas even after the chatcmd
-// grammar's own validation, and joinAs does not trust a client to
-// have caught that first.
-func TestSession_handleJoin_refuses_bare_channel_name(t *testing.T) {
+// TestSession_handleJoin_refuses_erroneous_channel_name covers the
+// dispatcher's own backstop against a channel name that fails the
+// RFC 2812 §1.3 grammar. A comma-separated JOIN list can produce a
+// bare prefix from an empty entry between two commas even after the
+// chatcmd grammar's own validation, and joinAs does not trust a
+// client to have caught that or anything else first.
+func TestSession_handleJoin_refuses_erroneous_channel_name(t *testing.T) {
 	tests := []struct {
-		name string
-		ch   domain.ChannelName
+		name   string
+		ch     domain.ChannelName
+		reason domain.ChannelNameRejection
 	}{
-		{name: "bare hash", ch: "#"},
-		{name: "bare ampersand", ch: "&"},
+		{name: "bare hash", ch: "#", reason: domain.ChannelNameBare},
+		{name: "bare ampersand", ch: "&", reason: domain.ChannelNameBare},
+		{name: "embedded space", ch: "#de v", reason: domain.ChannelNameBadCharacter},
+		{name: "embedded comma", ch: "#de,v", reason: domain.ChannelNameBadCharacter},
+		{name: "too long", ch: domain.ChannelName("#" + strings.Repeat("d", domain.ChannelNameMaxLen)), reason: domain.ChannelNameTooLong},
 	}
 
 	for _, tt := range tests {
@@ -115,14 +120,16 @@ func TestSession_handleJoin_refuses_bare_channel_name(t *testing.T) {
 			})
 			require.NoError(t, err)
 
-			var bareErr domain.BareChannelNameError
-			require.ErrorAs(t, resp.Err, &bareErr)
-			require.Equal(t, domain.BareChannelNameError{Channel: tt.ch, At: fixedTime}, bareErr)
-			require.Equal(t, []protocol.Event{bareErr}, resp.Events)
+			want := domain.ErroneousChannelNameError{Channel: tt.ch, Reason: tt.reason, At: fixedTime}
+
+			var nameErr domain.ErroneousChannelNameError
+			require.ErrorAs(t, resp.Err, &nameErr)
+			require.Equal(t, want, nameErr)
+			require.Equal(t, []protocol.Event{want}, resp.Events)
 
 			_, err = sess.loadChannelWindow(ctx, tt.ch)
 			require.ErrorIs(t, err, storemod.ErrNoSuchChannel,
-				"a bare channel name must not be created")
+				"an erroneous channel name must not be created")
 		})
 	}
 }

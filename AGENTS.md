@@ -308,6 +308,53 @@ can send and the events log carries the conversation under that key.
 The chat-screen's `/query` is a UI affordance only — the session
 never sees it.
 
+### Casemapping and naming
+
+Two names are the same name when they fold to the same thing (RFC
+2812 §2.2). This server uses the `ascii` casemapping: `A`-`Z` fold
+to `a`-`z` and nothing else. `rfc1459`'s extra fold of `[]\~` onto
+`{|}^` would take those characters away from nicks that may legally
+use them, and Unicode folding would make the answer depend on the Go
+version's case tables. The `ascii` fold is also exactly SQLite's
+NOCASE collation, so a case-insensitive lookup is an index seek
+(`idx_instances_nick_nocase`, `idx_channels_name_nocase`) and the
+store never has to read a row to decide whether it matches.
+
+`domain.EqualNick` and `domain.KeyForChannel` are the only places
+the fold is applied. The session's live channel state is keyed by
+`domain.ChannelKey`, and `store.GetWindow` / `store.ResolveNick`
+match under NOCASE, so `#Dev` and `#dev` are one channel and `Botty`
+and `botty` are one client wherever the question is asked. Neither
+store index is UNIQUE: uniqueness is the command loop's to enforce,
+where a nick is claimed and a channel is created, and a UNIQUE index
+would refuse to be created against a database written before the
+casemapping existed, which may already hold both spellings.
+
+Case is preserved, never folded away. A channel keeps the spelling
+it was created with and a client keeps the spelling of the nick it
+took; that spelling is what goes on the wire. Every `*As` method
+that loads a channel record adopts `ChannelWindow.Name()` as the
+channel's name from that point on, so the event log, the actor's
+channel set and the broadcast events all carry one spelling however
+the client asked. `Session.joinAs` returns that name, which is what
+the JOIN reply carries back.
+
+Names are checked against the RFC grammars before they are taken.
+`domain.ValidateNick` implements RFC 2812 §2.3.1 up to
+`domain.NickMaxLen`, and reserves `domain.AnonymousNick` because a
+client holding it could impersonate the `+a` mask;
+`domain.ValidateChannelName` implements §1.3 up to
+`domain.ChannelNameMaxLen`, admitting both prefixes in
+`domain.ChannelPrefixes`. Both return a rejection reason, which the
+session wraps in
+`domain.ErroneousNicknameError` (numeric 432) or
+`domain.ErroneousChannelNameError` (479) with its own timestamp. 432
+is the separate answer from `domain.NickInUseError` (433): 432 says
+the nick could never be taken by anyone, 433 says it is taken now
+and may be freed. `Session.requireNickAvailable` runs both checks in
+that order and is the one path to claiming a nick, for `NICK` and
+for `ADDMODEL`'s registration alike.
+
 ### Flood control
 
 Flood control is the inbound counterpart to the send-queue bound, and
@@ -361,6 +408,15 @@ still knows; a throttle was true for a few seconds, and a model
 reading it back on every later turn would be told to slow down long
 after it already had, at the cost of prompt space. What a client
 carries forward from a throttle is the delay it experienced.
+
+The send gates run in a fixed order, and the first of them is not a
+mode at all: a channel target the server does not know is refused
+with `domain.NoSuchChannelError`, RFC 2812 §3.3.1's 401
+ERR_NOSUCHNICK for a PRIVMSG addressed to nowhere. It is 401 and not
+403 ERR_NOSUCHCHANNEL, which §3.2.2 reserves for the commands that
+act on a channel the client is in. Refusing at the gate is what keeps
+the event log from carrying a row under a name no channel answers
+to.
 
 Per channel, mode `+f <messages>` caps how many messages the channel
 relays in one flood window. It is parametric like `+l`, it is checked

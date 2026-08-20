@@ -18,8 +18,6 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
-	orderedmap "github.com/wk8/go-ordered-map/v2"
-
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/observability"
 	"github.com/laney/modeloff/internal/protocol"
@@ -638,13 +636,7 @@ func (s *Session) cleanupUncleanShutdown(ctx context.Context) error {
 	_ = ctx
 
 	if user := s.userInstance(); user != nil {
-		user.MutateChannels(func(m *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
-			for pair := m.Oldest(); pair != nil; {
-				next := pair.Next()
-				m.Delete(pair.Key)
-				pair = next
-			}
-		})
+		user.LeaveAllChannels()
 	}
 
 	s.userMu.Lock()
@@ -759,9 +751,10 @@ func (s *Session) LookupClient(id protocol.ClientID) protocol.Client {
 // where nick strings become handles — callers hold the handle and
 // compare by pointer identity from there on. A nick matching the
 // user's current display nick resolves to the user's handle; any
-// other nick is looked up in the store.
+// other nick is looked up in the store. Both comparisons run under
+// the server's casemapping, so `/whois Botty` finds `botty`.
 func (s *Session) ResolveNick(ctx context.Context, nick domain.Nick) (*domain.Instance, error) {
-	if user := s.userInstance(); user != nil && nick == user.Nick() {
+	if user := s.userInstance(); user != nil && domain.EqualNick(nick, user.Nick()) {
 		return user, nil
 	}
 
@@ -817,11 +810,7 @@ func (s *Session) userQuit(ctx context.Context, message string) error {
 			return fmt.Errorf("save autojoin channels: %w", err)
 		}
 
-		user.MutateChannels(func(m *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
-			for _, ch := range channels {
-				m.Delete(ch)
-			}
-		})
+		user.LeaveChannels(channels...)
 
 		if err := s.store.ClearSessionActive(ctx); err != nil {
 			return fmt.Errorf("clear session active: %w", err)

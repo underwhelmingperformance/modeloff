@@ -306,6 +306,40 @@ func TestJoinCommand_Run_multi_target_partial_success_shows_a_notice(t *testing.
 	require.Equal(t, "joined #open; cannot join #locked: invite-only channel", notice.Text)
 }
 
+// TestJoinCommand_Run_focuses_the_channel_the_server_joined covers
+// the spelling `/join` moves focus to. Channel names compare
+// case-insensitively, so `/join #DEV` against an existing `#dev`
+// joins `#dev`; focusing the typed spelling would look up a window
+// that does not exist and leave the user where they were, with the
+// channel joined behind their back.
+func TestJoinCommand_Run_focuses_the_channel_the_server_joined(t *testing.T) {
+	tests := []struct {
+		name  string
+		typed ChannelArg
+		want  domain.ChannelName
+	}{
+		{name: "same spelling", typed: "#dev", want: "#dev"},
+		{name: "another case", typed: "#DEV", want: "#dev"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := storetest.NewMemoryStore(t)
+			sess, _, user := uitest.NewTestSession(t, s, toolTestAPI{}, nil, nil, "", "", t.Context)
+			t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
+
+			require.NoError(t, s.SaveWindow(t.Context(), domain.NewChannelWindow("#dev", time.Now())))
+
+			join := JoinCommand{Channel: tt.typed}
+			msg := join.Run(t.Context(), Context{Client: user, Active: "#general"})()
+
+			focus, ok := msg.(ChannelFocusMsg)
+			require.True(t, ok, "expected ChannelFocusMsg, got %T", msg)
+			require.Equal(t, tt.want, focus.Channel)
+		})
+	}
+}
+
 func TestRunTool_help_no_args(t *testing.T) {
 	sess, user := newToolTestSession(t)
 	tc := userToolContext(sess, user, "#general")

@@ -4,9 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"time"
-
-	orderedmap "github.com/wk8/go-ordered-map/v2"
 
 	"github.com/laney/modeloff/internal/domain"
 )
@@ -212,9 +209,7 @@ func (s *Session) removeMember(ctx context.Context, window *domain.ChannelWindow
 		window.Members.Remove(m)
 	}
 
-	actor.MutateChannels(func(m *orderedmap.OrderedMap[domain.ChannelName, time.Time]) {
-		m.Delete(ch)
-	})
+	actor.LeaveChannels(ch)
 
 	if actor.ID() == "" {
 		s.forgetUserModes(ctx, ch)

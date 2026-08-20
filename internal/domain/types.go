@@ -52,16 +52,33 @@ type Persona struct {
 // Nick represents a user or model nickname in the system.
 type Nick string
 
-// ChannelPrefix is the prefix used for channel names.
+// ChannelPrefix is the prefix a bare channel name gains.
 const ChannelPrefix = "#"
 
-// ChannelName represents a chat channel name (with # prefix).
+// ChannelPrefixes are the characters RFC 2812 §1.3 admits as the
+// first character of a channel name. `#` is the ordinary
+// network-wide channel; `&` is the server-local one, which on a
+// server that is one process is every bit as real (see
+// [StatusChannelName]).
+const ChannelPrefixes = "#&"
+
+// ChannelName represents a chat channel name, carrying one of
+// [ChannelPrefixes].
 type ChannelName string
 
-// NormaliseChannelName ensures a channel name has the standard #
-// prefix. Names that already start with # are returned unchanged.
+// HasChannelPrefix reports whether name starts with one of
+// [ChannelPrefixes].
+func HasChannelPrefix(name ChannelName) bool {
+	return name != "" && strings.ContainsRune(ChannelPrefixes, rune(name[0]))
+}
+
+// NormaliseChannelName gives a bare name the default `#` prefix. A
+// name that already carries a channel prefix keeps the one it has.
+// Case is left alone: the spelling a channel is created with is the
+// spelling the server puts on the wire, and [KeyForChannel] is what
+// makes two spellings meet.
 func NormaliseChannelName(name ChannelName) ChannelName {
-	if !strings.HasPrefix(string(name), ChannelPrefix) {
+	if !HasChannelPrefix(name) {
 		return ChannelName(ChannelPrefix + string(name))
 	}
 
@@ -111,13 +128,15 @@ const StatusServerName Nick = "modeloff"
 // InferChannelKind derives a channel's kind from its name alone. It
 // is the single source of truth for callers that need to look up a
 // channel in a sorted set keyed by `(Kind, Name)` but only have the
-// name to hand: the reserved status name is `KindStatus`,
-// `#`-prefixed names are `KindChannel`, and bare names are `KindDM`.
+// name to hand: the reserved status name is `KindStatus`, a name
+// carrying one of [ChannelPrefixes] is `KindChannel`, and a bare name
+// is `KindDM`, because a DM is addressed by its counterpart's
+// `InstanceID`, which carries no prefix.
 func InferChannelKind(name ChannelName) ChannelKind {
 	switch {
 	case name == StatusChannelName:
 		return KindStatus
-	case strings.HasPrefix(string(name), ChannelPrefix):
+	case HasChannelPrefix(name):
 		return KindChannel
 	default:
 		return KindDM
@@ -143,10 +162,24 @@ type Instance struct {
 	instanceID InstanceID // immutable, set at construction
 	ModelID    ModelID    // immutable, set at construction
 
-	mu       sync.RWMutex
-	nick     Nick
-	persona  string
-	channels *orderedmap.OrderedMap[ChannelName, time.Time]
+	mu      sync.RWMutex
+	nick    Nick
+	persona string
+
+	// channels is keyed by ChannelKey, so asking about a channel
+	// answers the same however the asker spells it. The value keeps
+	// the spelling the channel goes by, which is what every caller
+	// reading the set back out needs; folding it away would make the
+	// instance the one place in the session that cannot say what a
+	// channel is called.
+	channels *orderedmap.OrderedMap[ChannelKey, channelMembership]
+}
+
+// channelMembership is what an instance records about one channel it
+// is in.
+type channelMembership struct {
+	name     ChannelName
+	joinedAt time.Time
 }
 
 // NewUserInstance constructs the human user's Instance. The user
@@ -177,7 +210,7 @@ func newInstance(id InstanceID, modelID ModelID, nick Nick, persona string, chan
 		ModelID:    modelID,
 		nick:       nick,
 		persona:    persona,
-		channels:   channels,
+		channels:   keyedChannels(channels),
 	}
 }
 
@@ -238,10 +271,12 @@ func (i *Instance) SetPersona(persona string) {
 	i.persona = persona
 }
 
-// Channels returns a read-only snapshot of the channels-joined-time
-// map. The returned map is a clone; callers may read or iterate it
-// without coordinating with writers. Mutations must go through
-// MutateChannels.
+// Channels returns a snapshot of the instance's channels and the
+// time it joined each, in join order, under the spelling each
+// channel goes by. The returned map is a copy, so callers may read
+// or iterate it without coordinating with writers; changing it
+// changes nothing. Membership changes go through [Instance.JoinChannel]
+// and [Instance.LeaveChannels].
 func (i *Instance) Channels() *orderedmap.OrderedMap[ChannelName, time.Time] {
 	if i == nil {
 		return nil
@@ -250,14 +285,15 @@ func (i *Instance) Channels() *orderedmap.OrderedMap[ChannelName, time.Time] {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
 
-	return cloneChannels(i.channels)
+	return namedChannels(i.channels)
 }
 
-// InChannel reports whether the instance is currently in `ch`. It
-// answers the membership question directly under the read lock,
-// where [Instance.Channels] would have to copy the whole ordered
-// map first. The event-delivery filter asks this once per
-// subscriber per event, so the copy is worth avoiding.
+// InChannel reports whether the instance is currently in `ch`, under
+// the server's casemapping, so the answer does not depend on how the
+// asker spelled it. It answers directly under the read lock, where
+// [Instance.Channels] would have to copy the whole ordered map
+// first. The event-delivery filter asks this once per subscriber per
+// event, so the copy is worth avoiding.
 func (i *Instance) InChannel(ch ChannelName) bool {
 	if i == nil {
 		return false
@@ -270,41 +306,88 @@ func (i *Instance) InChannel(ch ChannelName) bool {
 		return false
 	}
 
-	_, ok := i.channels.Get(ch)
+	_, ok := i.channels.Get(KeyForChannel(ch))
 
 	return ok
 }
 
-// MutateChannels applies fn to the channels map under the write
-// lock. fn sees the live map and is free to mutate it in place.
-// Readers that raced with the mutation observe either the pre- or
-// post-state, never a partial one.
-func (i *Instance) MutateChannels(fn func(*orderedmap.OrderedMap[ChannelName, time.Time])) {
+// JoinChannel records that the instance is in `ch` as of `at`. A
+// channel it is already in keeps the join time and the spelling it
+// was first recorded under, which is what makes a repeat JOIN
+// harmless.
+func (i *Instance) JoinChannel(ch ChannelName, at time.Time) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 
 	if i.channels == nil {
-		i.channels = orderedmap.New[ChannelName, time.Time]()
+		i.channels = orderedmap.New[ChannelKey, channelMembership]()
 	}
 
-	fn(i.channels)
+	key := KeyForChannel(ch)
+	if _, ok := i.channels.Get(key); ok {
+		return
+	}
+
+	i.channels.Set(key, channelMembership{name: ch, joinedAt: at})
 }
 
-// cloneChannels returns a shallow copy of the ordered channel/join-
-// time map. The new map is safe to mutate; the original must be
-// treated as frozen.
-func cloneChannels(src *orderedmap.OrderedMap[ChannelName, time.Time]) *orderedmap.OrderedMap[ChannelName, time.Time] {
-	clone := orderedmap.New[ChannelName, time.Time]()
+// LeaveChannels drops each named channel from the instance's set.
+// Naming a channel it is not in does nothing. Passing none leaves
+// the set alone; [Instance.LeaveAllChannels] is how a caller clears
+// it.
+func (i *Instance) LeaveChannels(channels ...ChannelName) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	if i.channels == nil {
+		return
+	}
+
+	for _, ch := range channels {
+		i.channels.Delete(KeyForChannel(ch))
+	}
+}
+
+// LeaveAllChannels empties the instance's channel set. The session's
+// unclean-shutdown recovery uses it to reset the ephemeral user
+// handle, which holds memberships no store row can contradict.
+func (i *Instance) LeaveAllChannels() {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	i.channels = orderedmap.New[ChannelKey, channelMembership]()
+}
+
+// namedChannels projects the keyed membership map back to the
+// channel-name form callers read, preserving join order.
+func namedChannels(src *orderedmap.OrderedMap[ChannelKey, channelMembership]) *orderedmap.OrderedMap[ChannelName, time.Time] {
+	out := orderedmap.New[ChannelName, time.Time]()
 
 	if src == nil {
-		return clone
+		return out
 	}
 
 	for pair := src.Oldest(); pair != nil; pair = pair.Next() {
-		clone.Set(pair.Key, pair.Value)
+		out.Set(pair.Value.name, pair.Value.joinedAt)
 	}
 
-	return clone
+	return out
+}
+
+// keyedChannels is namedChannels' inverse, for the two boundaries
+// that hand over a name-keyed map: the constructors and JSON.
+func keyedChannels(src *orderedmap.OrderedMap[ChannelName, time.Time]) *orderedmap.OrderedMap[ChannelKey, channelMembership] {
+	out := orderedmap.New[ChannelKey, channelMembership]()
+
+	if src == nil {
+		return out
+	}
+
+	for pair := src.Oldest(); pair != nil; pair = pair.Next() {
+		out.Set(KeyForChannel(pair.Key), channelMembership{name: pair.Key, joinedAt: pair.Value})
+	}
+
+	return out
 }
 
 // IsModel reports whether the instance is a model (as opposed to
@@ -336,7 +419,7 @@ func (i *Instance) MarshalJSON() ([]byte, error) {
 		Nick:       i.nick,
 		ModelID:    i.ModelID,
 		Persona:    i.persona,
-		Channels:   cloneChannels(i.channels),
+		Channels:   namedChannels(i.channels),
 	}
 	i.mu.RUnlock()
 
@@ -354,17 +437,12 @@ func (i *Instance) UnmarshalJSON(data []byte) error {
 		return fmt.Errorf("unmarshal instance: %w", err)
 	}
 
-	channels := v.Channels
-	if channels == nil {
-		channels = orderedmap.New[ChannelName, time.Time]()
-	}
-
 	i.mu.Lock()
 	i.instanceID = v.InstanceID
 	i.ModelID = v.ModelID
 	i.nick = v.Nick
 	i.persona = v.Persona
-	i.channels = channels
+	i.channels = keyedChannels(v.Channels)
 	i.mu.Unlock()
 
 	return nil

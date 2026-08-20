@@ -329,7 +329,7 @@ func TestSession_add_model_rolls_back_when_the_join_is_refused(t *testing.T) {
 		synctest.Wait()
 
 		// The nick is free again, so a later claim is not refused.
-		require.NoError(t, sess.requireNickFree(ctx, "fakenick"))
+		require.NoError(t, sess.requireNickAvailable(ctx, "fakenick", nil))
 
 		_, resolveErr := sess.ResolveNick(ctx, "fakenick")
 		require.ErrorIs(t, resolveErr, storemod.ErrNoSuchNick)
