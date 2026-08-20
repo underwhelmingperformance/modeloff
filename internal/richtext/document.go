@@ -49,8 +49,9 @@ type Line struct {
 
 // Document is a line-oriented rich text document.
 type Document struct {
-	lines  []Line
-	caches []lineCache
+	lines      []Line
+	caches     []lineCache
+	normalised bool
 }
 
 // Position identifies a grapheme-cluster position in the document.
@@ -119,7 +120,8 @@ func (d *Document) Clone() Document {
 	d.ensureNormalised()
 
 	clone := Document{
-		lines: make([]Line, 0, len(d.lines)),
+		lines:      make([]Line, 0, len(d.lines)),
+		normalised: true,
 	}
 
 	for _, line := range d.lines {
@@ -134,7 +136,10 @@ func (d *Document) Clone() Document {
 		clone.lines = append(clone.lines, Line{Spans: spans})
 	}
 
-	clone.invalidateAll()
+	// The copy above preserves span boundaries exactly, so the clone is
+	// already normalised: it needs its own cache slice, not another pass
+	// through ensureNormalised.
+	clone.caches = make([]lineCache, len(clone.lines))
 
 	return clone
 }
@@ -147,7 +152,8 @@ func NewDocumentFromText(text string, attrs Attrs) Document {
 	}
 
 	doc := Document{
-		lines: make([]Line, 0, len(lines)),
+		lines:      make([]Line, 0, len(lines)),
+		normalised: true,
 	}
 
 	for _, line := range lines {
@@ -164,7 +170,10 @@ func NewDocumentFromText(text string, attrs Attrs) Document {
 		})
 	}
 
-	doc.invalidateAll()
+	// Each line has at most one non-empty span, so it already satisfies
+	// normaliseLine's invariants; only a fresh cache slice is needed, the
+	// same reasoning Clone applies to its own copy.
+	doc.caches = make([]lineCache, len(doc.lines))
 
 	return doc
 }
@@ -319,32 +328,40 @@ func (d *Document) Replace(selection Selection, replacement Document) Position {
 	suffix := d.LineClusters(end.Line)[end.Cluster:]
 	replacementLines := replacement.clusterLines()
 
-	newLines := make([]Line, 0, len(d.lines)-(end.Line-start.Line)+len(replacementLines))
-	newLines = append(newLines, d.lines[:start.Line]...)
+	var modifiedLines []Line
 
 	switch len(replacementLines) {
 	case 0:
-		newLines = append(newLines, clustersToLine(appendClusterSlices(prefix, suffix)))
+		modifiedLines = []Line{clustersToLine(appendClusterSlices(prefix, suffix))}
+	case 1:
+		modifiedLines = []Line{clustersToLine(appendClusterSlices(prefix, appendClusterSlices(replacementLines[0], suffix)))}
 	default:
-		firstLine := appendClusterSlices(prefix, replacementLines[0])
 		lastIndex := len(replacementLines) - 1
-		lastLine := appendClusterSlices(replacementLines[lastIndex], suffix)
-
-		if len(replacementLines) == 1 {
-			newLines = append(newLines, clustersToLine(appendClusterSlices(prefix, appendClusterSlices(replacementLines[0], suffix))))
-		} else {
-			newLines = append(newLines, clustersToLine(firstLine))
-			for _, line := range replacementLines[1:lastIndex] {
-				newLines = append(newLines, clustersToLine(line))
-			}
-			newLines = append(newLines, clustersToLine(lastLine))
+		modifiedLines = make([]Line, 0, len(replacementLines))
+		modifiedLines = append(modifiedLines, clustersToLine(appendClusterSlices(prefix, replacementLines[0])))
+		for _, line := range replacementLines[1:lastIndex] {
+			modifiedLines = append(modifiedLines, clustersToLine(line))
 		}
+		modifiedLines = append(modifiedLines, clustersToLine(appendClusterSlices(replacementLines[lastIndex], suffix)))
 	}
 
+	// The lines before start.Line and after end.Line are untouched, so their
+	// content and cache carry over unchanged; only modifiedLines need fresh
+	// (invalid) cache entries. clustersToLine already returns merged,
+	// non-empty spans, so the whole document remains normalised without
+	// another pass over every line.
+	newLines := make([]Line, 0, len(d.lines)-(end.Line-start.Line)+len(modifiedLines))
+	newLines = append(newLines, d.lines[:start.Line]...)
+	newLines = append(newLines, modifiedLines...)
 	newLines = append(newLines, d.lines[end.Line+1:]...)
+
+	newCaches := make([]lineCache, 0, len(newLines))
+	newCaches = append(newCaches, d.caches[:start.Line]...)
+	newCaches = append(newCaches, make([]lineCache, len(modifiedLines))...)
+	newCaches = append(newCaches, d.caches[end.Line+1:]...)
+
 	d.lines = newLines
-	d.invalidateAll()
-	d.ensureNormalised()
+	d.caches = newCaches
 
 	if len(replacementLines) == 0 {
 		return start
@@ -380,30 +397,28 @@ func (d *Document) UpdateAttrs(selection Selection, fn func(Attrs) Attrs) {
 		return
 	}
 
-	lines := d.clusterLines()
-
+	// Only the lines within the selection change; every other line's
+	// content and cache carry over untouched.
 	for lineIndex := start.Line; lineIndex <= end.Line; lineIndex++ {
+		clusters := d.LineClusters(lineIndex)
+
 		from := 0
 		if lineIndex == start.Line {
 			from = start.Cluster
 		}
 
-		to := len(lines[lineIndex])
+		to := len(clusters)
 		if lineIndex == end.Line {
 			to = end.Cluster
 		}
 
 		for clusterIndex := from; clusterIndex < to; clusterIndex++ {
-			lines[lineIndex][clusterIndex].Attrs = cloneAttrs(fn(lines[lineIndex][clusterIndex].Attrs))
+			clusters[clusterIndex].Attrs = cloneAttrs(fn(clusters[clusterIndex].Attrs))
 		}
-	}
 
-	d.lines = make([]Line, 0, len(lines))
-	for _, line := range lines {
-		d.lines = append(d.lines, clustersToLine(line))
+		d.lines[lineIndex] = clustersToLine(clusters)
+		d.caches[lineIndex] = lineCache{}
 	}
-	d.invalidateAll()
-	d.ensureNormalised()
 }
 
 // MoveLeft moves left by one grapheme cluster.
@@ -518,7 +533,14 @@ func (d *Document) MoveWordLeft(pos Position) Position {
 	}
 }
 
+// ensureNormalised re-merges spans and resizes the cache slice after a
+// mutation. It is a no-op once the document is already known normalised, so
+// repeated read accessors between mutations cost nothing beyond the check.
 func (d *Document) ensureNormalised() {
+	if d.normalised {
+		return
+	}
+
 	if len(d.lines) == 0 {
 		d.lines = []Line{{}}
 	}
@@ -530,10 +552,13 @@ func (d *Document) ensureNormalised() {
 	for index := range d.lines {
 		d.lines[index] = normaliseLine(d.lines[index])
 	}
+
+	d.normalised = true
 }
 
 func (d *Document) invalidateAll() {
 	d.caches = make([]lineCache, len(d.lines))
+	d.normalised = false
 }
 
 func (d *Document) lineCache(line int) lineCache {
@@ -555,36 +580,66 @@ func (d *Document) lineCache(line int) lineCache {
 	return cache
 }
 
+// buildLineCache segments the line's full text into grapheme clusters and
+// attributes each cluster to a span.
+//
+// Segmentation runs over the whole line rather than span by span: stepping
+// through one span's text in isolation always ends that span's last cluster
+// at the span boundary, even when the next span opens with a combining mark
+// or the rest of a ZWJ sequence that belongs to it. Joining the spans into
+// one string first means a boundary falling inside a cluster never splits
+// it; the cluster is then attributed to the span containing its first byte,
+// so a combining mark or ZWJ continuation takes the base character's attrs.
 func buildLineCache(line Line) lineCache {
-	var (
-		cache = lineCache{valid: true}
-		state = -1
-	)
+	cache := lineCache{valid: true}
 
-	for _, span := range line.Spans {
-		rest := span.Text
-		for rest != "" {
-			clusterText, next, boundaries, nextState := uniseg.StepString(rest, state)
-			if clusterText == "" {
-				break
-			}
+	if len(line.Spans) == 0 {
+		return cache
+	}
 
-			grapheme := Grapheme{
-				Text:              clusterText,
-				Attrs:             cloneAttrs(span.Attrs),
-				Width:             boundaries >> uniseg.ShiftWidth,
-				WordBoundaryAfter: boundaries&uniseg.MaskWord != 0,
-				LineBreakAfter:    boundaries & uniseg.MaskLine,
-				RuneCount:         utf8.RuneCountInString(clusterText),
-			}
+	spanOffsets := make([]int, len(line.Spans))
+	spanAttrs := make([]Attrs, len(line.Spans))
 
-			cache.graphemes = append(cache.graphemes, grapheme)
-			cache.plain += clusterText
-			cache.width += grapheme.Width
+	var text strings.Builder
+	for index, span := range line.Spans {
+		spanOffsets[index] = text.Len()
+		spanAttrs[index] = span.Attrs
+		text.WriteString(span.Text)
+	}
 
-			rest = next
-			state = nextState
+	full := text.String()
+	cache.plain = full
+
+	state := -1
+	rest := full
+	spanIndex := 0
+
+	for rest != "" {
+		pos := len(full) - len(rest)
+
+		clusterText, next, boundaries, nextState := uniseg.StepString(rest, state)
+		if clusterText == "" {
+			break
 		}
+
+		for spanIndex+1 < len(spanOffsets) && spanOffsets[spanIndex+1] <= pos {
+			spanIndex++
+		}
+
+		grapheme := Grapheme{
+			Text:              clusterText,
+			Attrs:             cloneAttrs(spanAttrs[spanIndex]),
+			Width:             boundaries >> uniseg.ShiftWidth,
+			WordBoundaryAfter: boundaries&uniseg.MaskWord != 0,
+			LineBreakAfter:    boundaries & uniseg.MaskLine,
+			RuneCount:         utf8.RuneCountInString(clusterText),
+		}
+
+		cache.graphemes = append(cache.graphemes, grapheme)
+		cache.width += grapheme.Width
+
+		rest = next
+		state = nextState
 	}
 
 	return cache
@@ -607,45 +662,65 @@ func clustersToLine(clusters []Grapheme) Line {
 		return line
 	}
 
-	var current Span
-	for index, cluster := range clusters {
-		if index == 0 || !current.Attrs.Equals(cluster.Attrs) {
-			if index > 0 {
-				line.Spans = append(line.Spans, current)
-			}
+	var (
+		text  strings.Builder
+		attrs Attrs
+	)
 
-			current = Span{
-				Text:  cluster.Text,
-				Attrs: cloneAttrs(cluster.Attrs),
-			}
-			continue
+	flush := func() {
+		if text.Len() == 0 {
+			return
 		}
 
-		current.Text += cluster.Text
+		line.Spans = append(line.Spans, Span{Text: text.String(), Attrs: cloneAttrs(attrs)})
+		text.Reset()
 	}
 
-	line.Spans = append(line.Spans, current)
+	for index, cluster := range clusters {
+		if index == 0 || !attrs.Equals(cluster.Attrs) {
+			flush()
+			attrs = cluster.Attrs
+		}
+
+		text.WriteString(cluster.Text)
+	}
+	flush()
 
 	return line
 }
 
 func normaliseLine(line Line) Line {
 	spans := make([]Span, 0, len(line.Spans))
+
+	var (
+		text     strings.Builder
+		attrs    Attrs
+		haveSpan bool
+	)
+
+	flush := func() {
+		if !haveSpan {
+			return
+		}
+
+		spans = append(spans, Span{Text: text.String(), Attrs: cloneAttrs(attrs)})
+		text.Reset()
+	}
+
 	for _, span := range line.Spans {
 		if span.Text == "" {
 			continue
 		}
 
-		if len(spans) > 0 && spans[len(spans)-1].Attrs.Equals(span.Attrs) {
-			spans[len(spans)-1].Text += span.Text
-			continue
+		if !haveSpan || !attrs.Equals(span.Attrs) {
+			flush()
+			attrs = span.Attrs
+			haveSpan = true
 		}
 
-		spans = append(spans, Span{
-			Text:  span.Text,
-			Attrs: cloneAttrs(span.Attrs),
-		})
+		text.WriteString(span.Text)
 	}
+	flush()
 
 	line.Spans = spans
 
