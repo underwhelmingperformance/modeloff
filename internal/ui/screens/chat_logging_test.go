@@ -130,11 +130,13 @@ func TestChatScreen_config_api_key_command_is_logged_without_the_secret(t *testi
 			harness.mgr.SetAPIFactory(func(string, string) (api.Client, error) {
 				return &uitest.FakeAPI{}, nil
 			})
+			uitest.SeedChannel(t, harness.user, "#general")
 
 			tm := newChatAppWithConfig(t, harness, cfgStore)
+			waitForChannelSeedDrain(tm)
 
 			tm.Submit(tt.raw)
-			tm.WaitFor("0 models available")
+			tm.WaitFor("OpenRouter API key saved and activated.")
 
 			rec, found := h.find("command executed")
 			require.True(t, found, "expected 'command executed' log entry, got: %v", h.all())

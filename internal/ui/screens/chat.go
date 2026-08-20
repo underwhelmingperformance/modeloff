@@ -770,28 +770,34 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	return next, cmd
 }
 
-// update routes a message to its handler and returns the updated
-// screen. Every arm and every handler returns the concrete
-// `ChatScreen` by value, so a state change reaches the caller as a
-// snapshot taken the moment the handler ran. A command built from
-// that snapshot keeps the values its arm read there, even once Bubble
-// Tea runs it later: it cannot observe whatever the screen holds by
-// then, because it never held a pointer into the screen to begin
-// with. The window records, the paced and pending-DM queues and the
-// dispatching set stay shared: they are per-window and per-instance
-// state with a lifetime longer than one message, and only this
-// goroutine touches them.
+// update gives every message to the metrics summary, then to the
+// router, and returns the two commands together. The summary reads
+// every message the screen sees and answers a refresh with the command
+// that schedules the next one, so that command has to survive whatever
+// the router decides to do with the same message.
+//
+// Every arm and every handler returns the concrete `ChatScreen` by
+// value, so a state change reaches the caller as a snapshot taken the
+// moment the handler ran. A command built from that snapshot keeps the
+// values its arm read there, even once Bubble Tea runs it later: it
+// cannot observe whatever the screen holds by then, because it never
+// held a pointer into the screen to begin with. The window records,
+// the paced and pending-DM queues and the dispatching set stay shared:
+// they are per-window and per-instance state with a lifetime longer
+// than one message, and only this goroutine touches them.
 func (s ChatScreen) update(msg tea.Msg) (ChatScreen, tea.Cmd) {
-	forwardedMsg := msg
 	summary, summaryCmd := s.summary.Update(msg)
 	s.summary = summary
 
-	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
-		s.width = msg.Width
-		s.height = msg.Height
-		forwardedMsg = tea.WindowSizeMsg{Width: msg.Width, Height: s.layoutHeight()}
+	next, cmd := s.route(msg)
 
+	return next, tea.Batch(summaryCmd, cmd)
+}
+
+// route hands a message to the handler that owns it, and falls through
+// to the layout for anything the chat screen does not answer itself.
+func (s ChatScreen) route(msg tea.Msg) (ChatScreen, tea.Cmd) {
+	switch msg := msg.(type) {
 	case protocolEventMsg:
 		return s.handleProtocolEvent(msg)
 
@@ -1088,7 +1094,7 @@ func (s ChatScreen) update(msg tea.Msg) (ChatScreen, tea.Cmd) {
 
 	case logsUpdatedMsg:
 		s = s.updateLogEntries()
-		return s, tea.Batch(summaryCmd, s.waitForLogUpdateCmd())
+		return s, s.waitForLogUpdateCmd()
 
 	case deliverNextPacedMsg:
 		return s.deliverNextPaced(msg)
@@ -1117,7 +1123,21 @@ func (s ChatScreen) update(msg tea.Msg) (ChatScreen, tea.Cmd) {
 		}
 	}
 
-	updated, cmd := s.layout.Update(forwardedMsg)
+	return s.forwardToLayout(msg)
+}
+
+// forwardToLayout gives a message the chat screen does not answer
+// itself to the layout below it. A resize is recorded on the way
+// through and the layout is given the height left over once the status
+// bar this screen draws has taken its row.
+func (s ChatScreen) forwardToLayout(msg tea.Msg) (ChatScreen, tea.Cmd) {
+	if size, ok := msg.(tea.WindowSizeMsg); ok {
+		s.width = size.Width
+		s.height = size.Height
+		msg = tea.WindowSizeMsg{Width: size.Width, Height: s.layoutHeight()}
+	}
+
+	updated, cmd := s.layout.Update(msg)
 	s.layout = updated.(components.MainLayout)
 
 	// The drawer's toggle key arrives here, so this is where a drawer
@@ -1126,7 +1146,7 @@ func (s ChatScreen) update(msg tea.Msg) (ChatScreen, tea.Cmd) {
 		s = s.updateLogEntries()
 	}
 
-	return s, tea.Batch(summaryCmd, cmd)
+	return s, cmd
 }
 
 // msgCmd wraps a message as a tea.Cmd so it flows through the Bubble
@@ -1343,23 +1363,33 @@ func (s ChatScreen) logAndShow(event domain.Event) tea.Cmd {
 
 // logAndShowOn renders a numeric or UI-feedback event in the
 // scrollback of the explicit target window. Callers use this when the
-// event's home is not the currently-focused window — for example a
-// notice carrying its own target channel, or a `/whois` reply the
-// dispatcher stamped with the window it was issued from. The append
-// happens on the Update goroutine (the single writer of chat-screen
-// state); the returned `ScrollbackUpdatedMsg` nudges the message list
-// to re-evaluate the active window's scrollback.
+// event's home is not the currently-focused window: a notice carrying
+// its own target channel, say, or a `/whois` reply the dispatcher
+// stamped with the window it was issued from. The append happens on
+// the Update goroutine (the single writer of chat-screen state); the
+// returned `ScrollbackUpdatedMsg` nudges the message list to
+// re-evaluate that window's scrollback.
 //
-// An empty `ch` carries no window to render in, so the event is
-// dropped.
+// A reply can outlive the window it was issued from: the user closes
+// the query window or parts the channel while the command is still in
+// flight. [ChatScreen.fallbackTarget] is the one answer every reply
+// arm takes for that, so the line renders in the window the user is
+// looking at and no closed window comes back to hold it. Parting the
+// last channel leaves the user looking at nothing, and the fallback
+// answers with the empty window; that reply takes
+// [ChatScreen.logAndShow]'s answer, which is `&modeloff` with the
+// focus moved there. The delegation terminates: logAndShow comes back
+// here naming `&modeloff`, which fallbackTarget always resolves to
+// itself.
 func (s ChatScreen) logAndShowOn(ch domain.ChannelName, event domain.Event) tea.Cmd {
-	if ch == "" {
-		return nil
+	target := s.fallbackTarget(ch)
+	if target == "" {
+		return s.logAndShow(event)
 	}
 
-	s.appendToScrollback(ch, event)
+	s.appendToScrollback(target, event)
 
-	return msgCmd(components.ScrollbackUpdatedMsg{Channel: ch})
+	return msgCmd(components.ScrollbackUpdatedMsg{Channel: target})
 }
 
 // handleQuitRequested locks the UI, shows a "Disconnecting…"

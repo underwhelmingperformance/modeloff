@@ -202,24 +202,20 @@ func (s ChatScreen) appendToScrollback(ch domain.ChannelName, evt domain.Event) 
 }
 
 // appendDispatchFailure renders a failed model turn in the window it
-// ran in — fallbackTarget(e.Channel), or the status window if
-// neither that window nor the active one resolves — as
-// chat-screen-local content, the same closed-window fallback
-// handleErrorEvent applies to a command failure. A dispatch turn can
-// fail for a channel the user is not currently looking at, or has
-// since parted, so this must not always land in `&modeloff`
-// regardless of which window the turn was actually running in, and
-// must never resurrect a window the user has left.
+// ran in, as chat-screen-local content. The window is
+// [ChatScreen.fallbackTarget]'s answer for e.Channel, the same one
+// every reply takes: a dispatch turn can fail for a channel the user
+// is not currently looking at, or has since parted, so this must
+// neither land in `&modeloff` regardless of where the turn was
+// running nor resurrect a window the user has left.
 //
-// The empty-target guard here is its own, not a call into
-// handleErrorEvent's logAndShow fallback: this method has no tea.Cmd
-// to carry a focus change through, and a background dispatch failure
-// is not something the user asked to see, so it never moves focus the
-// way a command failure's empty-target case does. Without the guard,
-// appendToScrollback would drop the notice outright when fallbackTarget
-// also comes back empty — reachable only in a fixture built with no
-// window ever focused, since a running session always lands on one
-// once any channel exists (see bootstrapFromSession).
+// The empty-target guard here is its own. A background dispatch
+// failure is not something the user asked to see, so it renders in
+// `&modeloff` and leaves the focus alone, where a reply with no window
+// to render in moves the user to `&modeloff` to show them the answer.
+// The guard is reachable only in a fixture built with no window ever
+// focused, since a running session always lands on one once any
+// channel exists (see bootstrapFromSession).
 func (s ChatScreen) appendDispatchFailure(e domain.ModelUnavailableError) {
 	target := s.fallbackTarget(e.Channel)
 	if target == "" {

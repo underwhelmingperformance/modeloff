@@ -128,6 +128,36 @@ func waitForChannelAndModelSeedDrain(tm *uitest.App) {
 	)
 }
 
+// newValidatedSmallModelHarness builds a session whose config names a
+// small model and whose catalogue holds it, which is the pair a real
+// config and a real key give `/config api-key`: setting the key
+// re-validates the stored small model against the catalogue. With
+// either half missing that validation fails and the command answers
+// the key with a warning as well as the confirmation, and a warning
+// raised while no channel is open takes the user to `&modeloff` to
+// read it, away from the welcome checklist.
+func newValidatedSmallModelHarness(t *testing.T) (*testHarness, *fakeConfigStore) {
+	t.Helper()
+
+	cfgStore := newFakeConfigStore()
+	cfgStore.cfg.SmallModel = config.DefaultSmallModel
+
+	h := newTestSessionWithConfigStore(t, cfgStore)
+	h.mgr.SetAPIFactory(func(string, string) (api.Client, error) {
+		return &uitest.FakeAPI{
+			ListModelsFn: func(context.Context) ([]api.ModelInfo, error) {
+				return []api.ModelInfo{{
+					ID:                  config.DefaultSmallModel,
+					Name:                "Small model",
+					SupportedParameters: []string{"tools", "structured_outputs"},
+				}}, nil
+			},
+		}, nil
+	})
+
+	return h, cfgStore
+}
+
 func TestChatScreen_Init_loads_channels(t *testing.T) {
 	h := newTestSession(t)
 	uitest.SeedChannel(t, h.user, "#general")
@@ -157,17 +187,13 @@ func TestChatScreen_Init_empty(t *testing.T) {
 }
 
 func TestChatScreen_checklist_api_key_set_no_channels(t *testing.T) {
-	cfgStore := newFakeConfigStore()
-	h := newTestSessionWithConfigStore(t, cfgStore)
-	h.mgr.SetAPIFactory(func(string, string) (api.Client, error) {
-		return &uitest.FakeAPI{}, nil
-	})
+	h, cfgStore := newValidatedSmallModelHarness(t)
 
 	tm := newChatAppWithConfig(t, h, cfgStore)
 	tm.WaitFor("API key not configured")
 
 	tm.Submit("/config api-key test-key")
-	tm.WaitFor("0 models available")
+	tm.WaitFor("1 model available")
 }
 
 func TestChatScreen_checklist_channels_exist_no_checklist(t *testing.T) {
@@ -197,17 +223,13 @@ func TestChatScreen_checklist_part_last_channel_shows_checklist(t *testing.T) {
 }
 
 func TestChatScreen_checklist_api_key_set_updates_live(t *testing.T) {
-	cfgStore := newFakeConfigStore()
-	h := newTestSessionWithConfigStore(t, cfgStore)
-	h.mgr.SetAPIFactory(func(string, string) (api.Client, error) {
-		return &uitest.FakeAPI{}, nil
-	})
+	h, cfgStore := newValidatedSmallModelHarness(t)
 
 	tm := newChatAppWithConfig(t, h, cfgStore)
 	tm.WaitFor("Set an API key first")
 
 	tm.Submit("/config api-key test-key")
-	tm.WaitFor("0 models available")
+	tm.WaitFor("1 model available")
 }
 
 // TestChatScreen_no_api_key_status_item_persists_across_channels pins

@@ -921,8 +921,7 @@ func (s ChatScreen) sendMessageCmd(operation string, target domain.ChannelName, 
 // that window open, or to the active window otherwise. An empty ch
 // and one naming a window closed since the event that carried it was
 // raised both fail the same windowByName check, so both fall back to
-// the currently active window (the same fallback [ChatScreen.logAndShow]
-// applies to any other numeric reply issued with no window at all).
+// the currently active window.
 // This is what keeps a closed DM from being silently dropped: a DM
 // window needs its counterpart's instance handle to rebuild, which
 // [ChatScreen.appendToScrollback]'s placeholder-creation path cannot
@@ -931,8 +930,30 @@ func (s ChatScreen) sendMessageCmd(operation string, target domain.ChannelName, 
 // resurrected client-side by a stale reply, since
 // appendToScrollback's placeholder path exists for live traffic
 // arriving before a join is seen, not for this.
+//
+// Every reply the chat-screen renders takes this answer.
+// [ChatScreen.logAndShowOn] applies it for the reply arms and for the
+// notices the chat-screen raises itself.
+// [ChatScreen.handleErrorEvent] and [ChatScreen.appendDispatchFailure]
+// read it directly as well, because each stamps the resolved window
+// onto the line it builds.
+//
+// The answer is the empty window when the user is looking at nothing,
+// which is where parting the last channel leaves them: firstRealChannel
+// skips `&modeloff`, so closeWindow has nowhere to move them.
+// logAndShowOn is where that case is answered.
 func (s ChatScreen) fallbackTarget(ch domain.ChannelName) domain.ChannelName {
 	if _, open := s.windowByName(ch); open {
+		return ch
+	}
+
+	// `&modeloff` is the client's own view of the server and lives as
+	// long as the session: no PART reaches it and `/close` refuses in
+	// it, so a line addressed there was never addressed to a window the
+	// user has left. It is also the one kind
+	// [ChatScreen.appendToScrollback] can open from the name alone,
+	// which is what a screen that has not run Init yet needs.
+	if ch == domain.StatusChannelName {
 		return ch
 	}
 
@@ -963,12 +984,7 @@ func (s ChatScreen) handleErrorEvent(msg domain.ErrorEvent) (ChatScreen, tea.Cmd
 		At:     msg.At,
 	}
 
-	if target == "" {
-		cmds = append(cmds, s.logAndShow(commandError))
-	} else {
-		cmds = append(cmds, s.logAndShowOn(target, commandError))
-	}
-
+	cmds = append(cmds, s.logAndShowOn(target, commandError))
 	cmds = append(cmds, s.recordReply(commandError))
 	cmds = append(cmds, msgCmd(components.NickListThinkingMsg{}))
 

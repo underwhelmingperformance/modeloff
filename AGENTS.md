@@ -667,11 +667,17 @@ them); it is not the courier for them.
 `ChatScreen.handleErrorEvent` renders a command failure into, a
 choice the chat-screen makes entirely on its own side. It carries no
 bus-addressing meaning the way `Whois.Target` does: the session never
-reads it, since an `ErrorEvent` never reaches the session at all. The
-chat-screen falls back to the active window when `Target` is empty or
-names a window it no longer has open (a closed DM, a parted channel),
-so a late failure always renders somewhere and never resurrects a
-window the user has left.
+reads it, since an `ErrorEvent` never reaches the session at all.
+
+`ChatScreen.fallbackTarget` gives every reply the chat-screen renders
+the same answer, `Whois`, `Invited` and `SystemNotice` alongside the
+failure: a reply naming a window the user has since closed renders in
+the window they are looking at, and no closed window is reopened to
+hold it. `&modeloff` is exempt and resolves to itself whether or not a
+window is open for it, because it lives as long as the session and is
+the one window `appendToScrollback` can create from the name alone. A
+reply arriving while nothing is focused takes `logAndShow`'s answer,
+`&modeloff` with the focus moved there.
 
 ### Echo gate and membership filter
 
