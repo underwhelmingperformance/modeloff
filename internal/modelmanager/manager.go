@@ -594,10 +594,16 @@ func (m *Manager) fallbackNick(ctx context.Context, sess *session.Session, model
 	return "", fmt.Errorf("%d deterministic candidates exhausted for %q", maxDeterministicNickAttempts, modelID)
 }
 
-// nickIsTaken reports whether `nick` is already held by the user
-// or any registered model instance. Resolution flows through
-// `Session.ResolveNick`, which gives the same answer the
-// dispatcher's nick resolver would.
+// nickIsTaken reports whether `nick` is already claimed, by the user
+// or any registered model instance. It reads through
+// `Session.ResolveNick`, the store-backed resolver, because a nick is
+// claimed the moment `Session.requireNickAvailable` writes the
+// instance row on the command loop, before that instance's
+// model-client has attached: the store holds every claim that
+// exists, whether or not the client behind it is reachable yet. This
+// call only screens a candidate before it is proposed;
+// `requireNickAvailable` is the check that actually claims a nick and
+// is the one that has to be right.
 func (m *Manager) nickIsTaken(ctx context.Context, sess *session.Session, nick domain.Nick) bool {
 	_, err := sess.ResolveNick(ctx, nick)
 	return err == nil

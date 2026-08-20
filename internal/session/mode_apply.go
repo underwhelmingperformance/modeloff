@@ -106,6 +106,11 @@ func validateChannelModeChange(change protocol.ChannelModeChange, now time.Time)
 // both `@` and `+` keeps whichever one the change does not name (RFC
 // 2811 §4.1). Called from [applyChannelModeChangesAs] after up-front
 // validation, so the shape invariants are already enforced.
+//
+// `change.Target` resolves through [Session.resolveConnectedNick],
+// the same registry INVITE, KICK, WHOIS and KILL resolve a nick
+// through, so `MODE` can grant `+o`/`+v` to a connected client before
+// an instances row exists for it.
 func (s *Session) setMemberModeAs(ctx context.Context, window *domain.ChannelWindow, ch domain.ChannelName, actor *domain.Instance, change protocol.ChannelModeChange) error {
 	return s.inSpan(ctx, "session.set_member_mode", []attribute.KeyValue{
 		attribute.String(observability.AttrChannel, string(ch)),
@@ -113,7 +118,7 @@ func (s *Session) setMemberModeAs(ctx context.Context, window *domain.ChannelWin
 		attribute.String("mode.flag", string(change.Flag)),
 		attribute.Bool("mode.add", change.Add),
 	}, func(ctx context.Context, _ trace.Span) error {
-		target, err := s.ResolveNick(ctx, change.Target)
+		target, err := s.resolveConnectedNick(change.Target)
 		if err != nil {
 			return err
 		}

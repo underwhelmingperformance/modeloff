@@ -631,11 +631,14 @@ func (s *Session) kickAs(ctx context.Context, actor, target *domain.Instance, ch
 //   - a target already on the channel is [domain.UserOnChannelError]
 //     (numeric 443 ERR_USERONCHANNEL).
 //
-// The target is resolved before the invitation is written, so an
-// unknown nick leaves the channel's invitation set untouched rather
-// than holding an entry for a client that does not exist. The
-// inviter gets a [domain.SystemNotice] in place of the envelope, so
-// the chat-screen surfaces the missing-nick condition.
+// The target is resolved, via [Session.resolveConnectedNick], before
+// the invitation is written, so an unknown nick leaves the channel's
+// invitation set untouched rather than holding an entry for a client
+// that does not exist. Resolving against the registry of connected
+// clients is what makes the user an invitable target: it holds no
+// instances row, so a store lookup would answer "no such nick" for
+// it. The inviter gets a [domain.SystemNotice] in place of the
+// envelope, so the chat-screen surfaces the missing-nick condition.
 func (s *Session) inviteAs(ctx context.Context, actor *domain.Instance, target domain.Nick, ch domain.ChannelName) (domain.ProtocolEvent, error) {
 	actorNick := actor.Nick()
 
@@ -674,18 +677,20 @@ func (s *Session) inviteAs(ctx context.Context, actor *domain.Instance, target d
 
 		now := s.now()
 
-		inst, err := s.store.ResolveNick(ctx, target)
-		if errors.Is(err, store.ErrNoSuchNick) {
-			event = domain.SystemNotice{
-				Target: ch,
-				Text:   fmt.Sprintf("no such nick: %s", target),
-				At:     now,
+		inst, err := s.resolveConnectedNick(target)
+		if err != nil {
+			var unknown domain.UnknownNickError
+			if errors.As(err, &unknown) {
+				event = domain.SystemNotice{
+					Target: ch,
+					Text:   fmt.Sprintf("no such nick: %s", target),
+					At:     now,
+				}
+
+				return nil
 			}
 
-			return nil
-		}
-		if err != nil {
-			return fmt.Errorf("resolve nick: %w", err)
+			return err
 		}
 
 		span.SetAttributes(attribute.String(observability.AttrInstanceID, string(inst.ID())))

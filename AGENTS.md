@@ -409,6 +409,22 @@ ERR_NOSUCHNICK) and nothing is logged: a message the server cannot
 place has to come back as a refusal, since a client that is told
 nothing assumes it arrived.
 
+`Session.resolveConnectedNick` answers the same question for
+`INVITE`, `KICK`, `WHOIS`, `KILL` and a member-mode `MODE` change
+(`+o`/`+v`'s target): which connected client currently holds this
+nick. It reads the same registry `resolveMsgTarget` reads, so all
+five agree with message addressing on who a nick reaches, and the
+user resolves like any other client through the sentinel empty
+`protocol.ClientID` its subscription is registered under. A
+subscription is what makes the user addressable, not an instances
+row. A nick outside the RFC 2812 §2.3.1 grammar is refused with
+`domain.ErroneousNicknameError` (432) before any lookup runs; a nick
+naming no connected client is refused with `domain.UnknownNickError`
+(401), including a nick an instances row still holds when the client
+behind it never attached: the server has no subscription to deliver
+a kick, a whois answer, a mode grant or a kill's disconnect to
+there.
+
 DMs have no wire-level "open" command. A direct message is just a
 `PrivMsg` naming the counterpart. The conversation key is the
 counterpart's `InstanceID`, and each direction is logged under its
@@ -738,6 +754,13 @@ An invitation is single-use and is consumed by any successful join,
 not owed a second entry after `+i` goes up. Like every other piece
 of channel state it dies with the channel (RFC 2811 §2).
 
+The user's empty `InstanceID` sentinel is an ordinary key here, like
+any other client's: `inviteAs` resolves the target through
+`Session.resolveConnectedNick`, which answers for the user the same
+way it answers for a model, so `/invite` can target the user and the
+user's own `+i` `JOIN` consumes the invitation `checkJoinGates` reads
+under `actor.ID()`.
+
 ### Slash commands and tool schemas
 
 `/`-commands and model-callable tools share a single source of truth.
@@ -856,12 +879,6 @@ log a model loads holds nothing but genuine channel activity.
   through the narrow `SessionReader` the chat-screen holds; routing
   them through the protocol is a follow-up. Message targets do not go
   this way; see Message targets above.
-- `KICK`, `WHOIS` and `KILL` resolve their nick through
-  `Session.ResolveNick`, which reads the store, while a message target
-  resolves against the registry of connected clients. The two answers
-  differ only for an instance row whose client failed to attach, which
-  is a client the server cannot deliver to; giving all four commands
-  the one answer is a follow-up.
 - Bootstrap-time, `joined_at`-scoped replay of recent events into a
   newly-allocated subscription, replacing the per-dispatch store read
   and the model-client's eager seed. History replay is the IRCv3

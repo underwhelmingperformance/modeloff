@@ -13,7 +13,6 @@ import (
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/observability"
 	"github.com/laney/modeloff/internal/protocol"
-	"github.com/laney/modeloff/internal/store"
 )
 
 // Handle is the single entry point through which every protocol
@@ -369,7 +368,7 @@ func (s *Session) handleKick(ctx context.Context, c protocol.Client, cmd protoco
 			return protocol.Response{}, err
 		}
 
-		target, err := s.dispatcherResolveNick(ctx, cmd.Nick)
+		target, err := s.resolveConnectedNick(cmd.Nick)
 		if err != nil {
 			return commandResult(err)
 		}
@@ -378,23 +377,35 @@ func (s *Session) handleKick(ctx context.Context, c protocol.Client, cmd protoco
 	})
 }
 
-// dispatcherResolveNick resolves a wire-supplied nick and
-// rewrites the store's untyped "no such nick" sentinel into the
-// typed [domain.UnknownNickError] the wire protocol surfaces
-// (RFC 2812 numeric 401 `ERR_NOSUCHNICK`). Internal call sites
-// that don't need to round-trip the error to a client should
-// keep using [Session.ResolveNick] directly.
-func (s *Session) dispatcherResolveNick(ctx context.Context, nick domain.Nick) (*domain.Instance, error) {
-	inst, err := s.ResolveNick(ctx, nick)
-	if err == nil {
-		return inst, nil
+// resolveConnectedNick resolves a wire-supplied nick against the
+// registry of connected clients, the same registry
+// [Session.resolveMsgTarget] reads for a [protocol.NickTarget].
+// INVITE, KICK, WHOIS, KILL and a member-mode MODE change each name a
+// client they mean to reach: an invitee, a member to remove, a
+// snapshot to answer, a connection to end, a privilege to grant or
+// revoke. "Who can the server currently reach under this nick" is the
+// question every one of them is asking. The user resolves like any
+// other client, through the sentinel empty [protocol.ClientID] its
+// subscription is registered under.
+//
+// A nick outside the RFC 2812 §2.3.1 grammar is refused with
+// [domain.ErroneousNicknameError] (432) before any lookup runs. A
+// nick naming no connected client is refused with
+// [domain.UnknownNickError] (401). This includes a nick an instances
+// row still holds if the client behind it never attached: the server
+// has no subscription to deliver to there, which is the case the
+// store and the registry disagree about.
+func (s *Session) resolveConnectedNick(nick domain.Nick) (*domain.Instance, error) {
+	if reason := domain.ValidateNick(nick); reason != domain.NickAccepted {
+		return nil, domain.ErroneousNicknameError{Nick: nick, Reason: reason, At: s.now()}
 	}
 
-	if errors.Is(err, store.ErrNoSuchNick) {
+	sc := s.lookupClientByNick(nick)
+	if sc == nil {
 		return nil, domain.UnknownNickError{Nick: nick, At: s.now()}
 	}
 
-	return nil, err
+	return sc.instance, nil
 }
 
 func (s *Session) handleNick(ctx context.Context, c protocol.Client, cmd protocol.Nick) (protocol.Response, error) {
@@ -428,7 +439,7 @@ func (s *Session) handleWhois(ctx context.Context, c protocol.Client, cmd protoc
 			return protocol.Response{}, err
 		}
 
-		inst, err := s.dispatcherResolveNick(ctx, cmd.Nick)
+		inst, err := s.resolveConnectedNick(cmd.Nick)
 		if err != nil {
 			return commandResult(err)
 		}
@@ -731,7 +742,7 @@ func (s *Session) handleKill(ctx context.Context, c protocol.Client, cmd protoco
 			return protocol.Response{}, resolveErr
 		}
 
-		target, targetErr := s.dispatcherResolveNick(ctx, cmd.Nick)
+		target, targetErr := s.resolveConnectedNick(cmd.Nick)
 		if targetErr != nil {
 			return commandResult(targetErr)
 		}
