@@ -8,14 +8,14 @@ import "time"
 // names-reply, mode change, topic change, model invite/kick) on
 // top of the addressable-window behaviour shared via [Window].
 type ChannelWindow struct {
-	name         ChannelName
-	created      time.Time
-	Topic        string
-	TopicSetBy   Nick
-	TopicSetAt   time.Time
-	Members      MemberList
-	Modes        ChannelModes
-	InvitedNicks InvitedNicks
+	name        ChannelName
+	created     time.Time
+	Topic       string
+	TopicSetBy  Nick
+	TopicSetAt  time.Time
+	Members     MemberList
+	Modes       ChannelModes
+	Invitations Invitations
 }
 
 // NewChannelWindow constructs a `#`-prefixed channel window with
@@ -42,7 +42,7 @@ func (w *ChannelWindow) Clone() *ChannelWindow {
 
 	clone := *w
 	clone.Members = w.Members.Clone()
-	clone.InvitedNicks = w.InvitedNicks.Clone()
+	clone.Invitations = w.Invitations.Clone()
 
 	return &clone
 }

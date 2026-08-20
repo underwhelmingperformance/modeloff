@@ -97,7 +97,7 @@ func TestInviteAs_InviteOnlyGate(t *testing.T) {
 
 			w, err := sess.loadChannelWindow(ctx, "#chan")
 			require.NoError(t, err)
-			require.True(t, w.InvitedNicks.Contains("helper"))
+			require.True(t, w.Invitations.Contains(testMemberID("helper")))
 		})
 	})
 
@@ -122,7 +122,7 @@ func TestInviteAs_InviteOnlyGate(t *testing.T) {
 
 			w, err := sess.loadChannelWindow(ctx, "#chan")
 			require.NoError(t, err)
-			require.False(t, w.InvitedNicks.Contains("helper"))
+			require.False(t, w.Invitations.Contains(testMemberID("helper")))
 		})
 	})
 }
@@ -227,7 +227,7 @@ func TestJoinAs_InviteOnlyGate(t *testing.T) {
 			w, err := sess.loadChannelWindow(ctx, "#chan")
 			require.NoError(t, err)
 			w.Modes.InviteOnly = true
-			w.InvitedNicks.Add("botty")
+			w.Invitations.Add(testMemberID("botty"))
 			require.NoError(t, sess.persistChannelWindow(ctx, w))
 
 			botty := seedInstance(t, sess, s, instanceSpec{
@@ -239,7 +239,7 @@ func TestJoinAs_InviteOnlyGate(t *testing.T) {
 			w, err = sess.loadChannelWindow(ctx, "#chan")
 			require.NoError(t, err)
 			require.True(t, w.Members.HasInstance(botty))
-			require.False(t, w.InvitedNicks.Contains("botty"),
+			require.False(t, w.Invitations.Contains(testMemberID("botty")),
 				"invitation must be consumed on successful join")
 
 			// A second join attempt by the same nick (after part)
@@ -416,40 +416,24 @@ func TestFanOutProtocol_AnonymousRewritesSender(t *testing.T) {
 	})
 }
 
-// TestDirectoryChannels_SecretHiddenAndPrivateHasNoTopic covers
-// `+s` (channel omitted from /list) and `+p` (channel listed
-// without topic). Both are RFC 2811 §4.2.6/§4.2.7.
-func TestDirectoryChannels_SecretHiddenAndPrivateHasNoTopic(t *testing.T) {
+// TestDirectoryChannels_shows_a_member_its_own_hidden_channels
+// covers the member exemption in the channel-visibility predicate:
+// the issuer is on all three channels, so `+s` and `+p` hide
+// nothing from it and each entry carries its real topic.
+func TestDirectoryChannels_shows_a_member_its_own_hidden_channels(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		sess, _ := newTestSession(t)
 		ctx := t.Context()
 
-		require.NoError(t, userJoin(ctx, t, sess, "#public"))
-		require.NoError(t, sess.setTopicAs(ctx, userInstance(t, sess), "#public", "public topic"))
+		seedVisibilityChannels(t, sess)
 
-		require.NoError(t, userJoin(ctx, t, sess, "#private"))
-		require.NoError(t, sess.setTopicAs(ctx, userInstance(t, sess), "#private", "private topic"))
-		setChannelModes(t, sess, "#private", domain.ChannelModes{Private: true})
-
-		require.NoError(t, userJoin(ctx, t, sess, "#secret"))
-		require.NoError(t, sess.setTopicAs(ctx, userInstance(t, sess), "#secret", "secret topic"))
-		setChannelModes(t, sess, "#secret", domain.ChannelModes{Secret: true})
-
-		entries, err := sess.DirectoryChannels(ctx)
+		entries, err := sess.DirectoryChannels(ctx, userInstance(t, sess))
 		require.NoError(t, err)
 
-		names := make(map[domain.ChannelName]domain.ChannelDirectoryEntry, len(entries))
-		for _, e := range entries {
-			names[e.Channel] = e
-		}
-
-		require.Contains(t, names, domain.ChannelName("#public"))
-		require.Equal(t, "public topic", names["#public"].Topic)
-
-		require.Contains(t, names, domain.ChannelName("#private"))
-		require.Equal(t, "", names["#private"].Topic, "private channels hide topic")
-
-		require.NotContains(t, names, domain.ChannelName("#secret"),
-			"secret channels do not appear in /list")
+		require.Equal(t, []domain.ChannelDirectoryEntry{
+			{Channel: "#private", Members: 1, Topic: "private topic"},
+			{Channel: "#public", Members: 1, Topic: "public topic"},
+			{Channel: "#secret", Members: 1, Topic: "secret topic"},
+		}, entries)
 	})
 }

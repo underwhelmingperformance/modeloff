@@ -209,8 +209,8 @@ func TestSQLiteStore_ChannelRoundtripPersistsModes(t *testing.T) {
 		UserLimit:  10,
 		Key:        "secret",
 	}
-	want.InvitedNicks.Add("alice")
-	want.InvitedNicks.Add("bravo")
+	want.Invitations.Add("inst-alice")
+	want.Invitations.Add("inst-bravo")
 	want.Members = storeTestMembers(t, s, "alice", "bob")
 
 	require.NoError(t, s.SaveWindow(ctx, want))
@@ -221,9 +221,9 @@ func TestSQLiteStore_ChannelRoundtripPersistsModes(t *testing.T) {
 	cw, ok := got.(*domain.ChannelWindow)
 	require.True(t, ok)
 	require.Equal(t, want.Modes, cw.Modes)
-	require.True(t, cw.InvitedNicks.Contains("alice"))
-	require.True(t, cw.InvitedNicks.Contains("bravo"))
-	require.Equal(t, 2, len(cw.InvitedNicks))
+	require.True(t, cw.Invitations.Contains("inst-alice"))
+	require.True(t, cw.Invitations.Contains("inst-bravo"))
+	require.Equal(t, 2, len(cw.Invitations))
 }
 
 func TestSQLiteStore_ChannelLegacyRowHydratesZeroModes(t *testing.T) {
@@ -231,7 +231,7 @@ func TestSQLiteStore_ChannelLegacyRowHydratesZeroModes(t *testing.T) {
 	s := newTestStore(t)
 
 	// A row saved before the modes field existed has no `modes`
-	// or `invited_nicks` keys. Persist a channel without setting
+	// or `invitations` keys. Persist a channel without setting
 	// them; the round-trip hydrates with the Go zero value.
 	want := domain.NewChannelWindow("#legacy", testTime)
 	want.Members = storeTestMembers(t, s, "alice")
@@ -244,7 +244,7 @@ func TestSQLiteStore_ChannelLegacyRowHydratesZeroModes(t *testing.T) {
 	cw, ok := got.(*domain.ChannelWindow)
 	require.True(t, ok)
 	require.Equal(t, domain.ChannelModes{}, cw.Modes)
-	require.Equal(t, 0, len(cw.InvitedNicks))
+	require.Equal(t, 0, len(cw.Invitations))
 }
 
 func TestSQLiteStore_SaveWindow_recordsSpan(t *testing.T) {

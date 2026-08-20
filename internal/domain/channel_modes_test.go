@@ -229,59 +229,59 @@ func TestChannelModes_LegacyRowHydratesAsZero(t *testing.T) {
 	require.Equal(t, domain.ChannelModes{}, modes)
 }
 
-func TestInvitedNicks_AddRemoveContains(t *testing.T) {
-	var s domain.InvitedNicks
+func TestInvitations_AddRemoveContains(t *testing.T) {
+	var s domain.Invitations
 
-	require.False(t, s.Contains("alpha"))
+	require.False(t, s.Contains("inst-alpha"))
 
-	s.Add("alpha")
-	require.True(t, s.Contains("alpha"))
+	s.Add("inst-alpha")
+	require.True(t, s.Contains("inst-alpha"))
 
-	s.Add("alpha")
-	require.True(t, s.Contains("alpha"))
+	s.Add("inst-alpha")
+	require.True(t, s.Contains("inst-alpha"))
 	require.Equal(t, 1, len(s))
 
-	s.Add("beta")
-	require.True(t, s.Contains("beta"))
+	s.Add("inst-beta")
+	require.True(t, s.Contains("inst-beta"))
 	require.Equal(t, 2, len(s))
 
-	require.True(t, s.Remove("alpha"))
-	require.False(t, s.Contains("alpha"))
-	require.True(t, s.Contains("beta"))
+	require.True(t, s.Remove("inst-alpha"))
+	require.False(t, s.Contains("inst-alpha"))
+	require.True(t, s.Contains("inst-beta"))
 
-	require.False(t, s.Remove("alpha"))
+	require.False(t, s.Remove("inst-alpha"))
 }
 
-func TestInvitedNicks_JSONRoundtripSorted(t *testing.T) {
-	var s domain.InvitedNicks
-	s.Add("charlie")
-	s.Add("alpha")
-	s.Add("bravo")
+func TestInvitations_JSONRoundtripSorted(t *testing.T) {
+	var s domain.Invitations
+	s.Add("inst-charlie")
+	s.Add("inst-alpha")
+	s.Add("inst-bravo")
 
 	data, err := json.Marshal(s)
 	require.NoError(t, err)
-	require.Equal(t, `["alpha","bravo","charlie"]`, string(data))
+	require.Equal(t, `["inst-alpha","inst-bravo","inst-charlie"]`, string(data))
 
-	var out domain.InvitedNicks
+	var out domain.Invitations
 	require.NoError(t, json.Unmarshal(data, &out))
-	require.True(t, out.Contains("alpha"))
-	require.True(t, out.Contains("bravo"))
-	require.True(t, out.Contains("charlie"))
+	require.True(t, out.Contains("inst-alpha"))
+	require.True(t, out.Contains("inst-bravo"))
+	require.True(t, out.Contains("inst-charlie"))
 	require.Equal(t, 3, len(out))
 }
 
-func TestInvitedNicks_EmptyMarshalsAsNull(t *testing.T) {
-	var s domain.InvitedNicks
+func TestInvitations_EmptyMarshalsAsNull(t *testing.T) {
+	var s domain.Invitations
 	data, err := json.Marshal(s)
 	require.NoError(t, err)
 	require.Equal(t, "null", string(data))
 }
 
-func TestInvitedNicks_NullUnmarshalsAsEmpty(t *testing.T) {
-	var s domain.InvitedNicks
-	s.Add("ghost")
+func TestInvitations_NullUnmarshalsAsEmpty(t *testing.T) {
+	var s domain.Invitations
+	s.Add("inst-ghost")
 
 	require.NoError(t, json.Unmarshal([]byte("null"), &s))
 	require.Equal(t, 0, len(s))
-	require.False(t, s.Contains("ghost"))
+	require.False(t, s.Contains("inst-ghost"))
 }

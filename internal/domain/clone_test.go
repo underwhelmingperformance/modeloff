@@ -22,7 +22,7 @@ func TestChannelWindow_Clone_is_independent(t *testing.T) {
 	original.Modes = ChannelModes{TopicLock: true, UserLimit: 4}
 	original.Members.Add(alice)
 	original.Members.SetModes(alice, MemberModes{Operator: true})
-	original.InvitedNicks.Add("carol")
+	original.Invitations.Add("inst-carol")
 
 	clone := original.Clone()
 
@@ -33,20 +33,20 @@ func TestChannelWindow_Clone_is_independent(t *testing.T) {
 	require.Equal(t, original.TopicSetAt, clone.TopicSetAt)
 	require.Equal(t, original.Modes, clone.Modes)
 	require.Equal(t, []Member{{Instance: alice, Nick: "alice", Modes: MemberModes{Operator: true}}}, membersOf(clone))
-	require.True(t, clone.InvitedNicks.Contains("carol"))
+	require.True(t, clone.Invitations.Contains("inst-carol"))
 
 	clone.Topic = "rewritten"
 	clone.Modes.TopicLock = false
 	clone.Members.Add(bob)
 	clone.Members.RemoveInstance(alice)
-	clone.InvitedNicks.Add("dave")
-	clone.InvitedNicks.Remove("carol")
+	clone.Invitations.Add("inst-dave")
+	clone.Invitations.Remove("inst-carol")
 
 	require.Equal(t, "shipping", original.Topic)
 	require.Equal(t, ChannelModes{TopicLock: true, UserLimit: 4}, original.Modes)
 	require.Equal(t, []Member{{Instance: alice, Nick: "alice", Modes: MemberModes{Operator: true}}}, membersOf(original))
-	require.True(t, original.InvitedNicks.Contains("carol"))
-	require.False(t, original.InvitedNicks.Contains("dave"))
+	require.True(t, original.Invitations.Contains("inst-carol"))
+	require.False(t, original.Invitations.Contains("inst-dave"))
 }
 
 // TestMemberList_Clone_preserves_nick_snapshots pins that cloning
@@ -78,14 +78,14 @@ func TestMemberList_Clone_of_the_zero_value_is_usable(t *testing.T) {
 	require.Equal(t, 0, zero.Len())
 }
 
-func TestInvitedNicks_Clone(t *testing.T) {
+func TestInvitations_Clone(t *testing.T) {
 	tests := []struct {
 		name string
-		in   InvitedNicks
+		in   Invitations
 	}{
 		{name: "nil set clones to nil", in: nil},
-		{name: "empty set clones empty", in: InvitedNicks{}},
-		{name: "populated set clones its entries", in: InvitedNicks{"alice": {}, "bob": {}}},
+		{name: "empty set clones empty", in: Invitations{}},
+		{name: "populated set clones its entries", in: Invitations{"inst-alice": {}, "inst-bob": {}}},
 	}
 
 	for _, tt := range tests {
@@ -93,8 +93,8 @@ func TestInvitedNicks_Clone(t *testing.T) {
 			clone := tt.in.Clone()
 			require.Equal(t, tt.in, clone)
 
-			clone.Add("carol")
-			require.False(t, tt.in.Contains("carol"))
+			clone.Add("inst-carol")
+			require.False(t, tt.in.Contains("inst-carol"))
 		})
 	}
 }

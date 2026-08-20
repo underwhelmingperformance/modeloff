@@ -67,10 +67,12 @@ func (s *Session) fanOutProtocol(ctx context.Context, pe domain.ProtocolEvent) {
 	suppressOriginator, sender := chatTrafficSender(pe)
 	spanCtx := trace.SpanContextFromContext(ctx)
 
-	// `+a` rewrites the visible nick on chat-traffic events to the
-	// `"anonymous"` sentinel (RFC 2811 §4.2.1) before delivery, so
+	// `+a` rewrites the visible nick on chat-traffic events to
+	// [domain.AnonymousNick] (RFC 2811 §4.2.1) before delivery, so
 	// even the channel's own members can't see who sent what. The
-	// stored event retains the real From for audit.
+	// stored event retains the real From for audit. The actor-scoped
+	// events are masked further down, per recipient, by
+	// [maskActorEvent].
 	pe = anonymiseIfNeeded(ctx, s, pe)
 
 	// Actor-scoped events ([domain.Quit] and [domain.NickChange])
@@ -80,6 +82,7 @@ func (s *Session) fanOutProtocol(ctx context.Context, pe domain.ProtocolEvent) {
 	// actor's channels once so the per-sub loop does not re-walk
 	// the ordered map.
 	actorChannels := actorChannelSnapshot(pe)
+	anonymous := s.anonymousChannels(ctx, actorChannels)
 
 	for _, sub := range s.subscriberSnapshot() {
 		if suppressOriginator && sub.Identity() == sender {
@@ -87,19 +90,133 @@ func (s *Session) fanOutProtocol(ctx context.Context, pe domain.ProtocolEvent) {
 		}
 
 		targets := intersectActorTargets(sub, actorChannels)
-		if !sub.canReceive(pe, targets) {
+
+		event, targets := maskActorEvent(pe, targets, anonymous)
+		if event == nil {
+			continue
+		}
+
+		if !sub.canReceive(event, targets) {
 			continue
 		}
 
 		sub.enqueue(protocol.Delivery{
-			Event:   pe,
+			Event:   event,
 			Targets: targets,
 			SpanCtx: spanCtx,
 		})
 	}
 
+	if quit, ok := pe.(domain.Quit); ok {
+		s.partAnonymousChannels(quit, anonymous, spanCtx)
+	}
+
 	if suppressOriginator {
 		s.echoToOriginator(ctx, pe, sender, spanCtx)
+	}
+}
+
+// anonymousChannels returns the subset of `channels` carrying `+a`.
+// It is read once per fan-out so the per-subscriber loop compares
+// against a small slice; an empty or nil argument reads nothing.
+func (s *Session) anonymousChannels(ctx context.Context, channels []domain.ChannelName) []domain.ChannelName {
+	var anonymous []domain.ChannelName
+
+	for _, ch := range channels {
+		if modes, ok := s.channelModes(ctx, ch); ok && modes.Anonymous {
+			anonymous = append(anonymous, ch)
+		}
+	}
+
+	return anonymous
+}
+
+// maskActorEvent applies `+a` to an actor-scoped event on its way to
+// one recipient, and returns what that recipient should be sent
+// along with the targets to send it under. A nil event means send
+// nothing.
+//
+// A recipient that shares only anonymous channels with the actor may
+// not learn who the actor is (RFC 2811 §4.2.1), so:
+//
+//   - a `QUIT` is withheld and the anonymous channels receive a
+//     `PART` in its place, per [Session.partAnonymousChannels];
+//   - a dispatch-lifecycle event loses its instance handle, which is
+//     the only thing in it that names anybody, so the recipient
+//     learns that something is happening and not who is doing it.
+//
+// A recipient that also shares a non-anonymous channel already knows
+// the actor from there, and receives the event unmasked but scoped
+// to those channels alone.
+func maskActorEvent(pe domain.ProtocolEvent, targets, anonymous []domain.ChannelName) (domain.ProtocolEvent, []domain.ChannelName) {
+	if len(anonymous) == 0 {
+		return pe, targets
+	}
+
+	var named []domain.ChannelName
+	for _, ch := range targets {
+		if !slices.Contains(anonymous, ch) {
+			named = append(named, ch)
+		}
+	}
+
+	switch e := pe.(type) {
+	case domain.Quit:
+		if len(named) == 0 {
+			return nil, nil
+		}
+
+		return e, named
+
+	case domain.ModelDispatchStarted:
+		if len(named) == 0 {
+			e.Instance = nil
+		}
+
+		return e, targets
+
+	case domain.ModelDispatchDone:
+		if len(named) == 0 {
+			e.Instance = nil
+		}
+
+		return e, targets
+	}
+
+	return pe, targets
+}
+
+// partAnonymousChannels delivers a `PART` to each anonymous channel
+// the quitting actor was in, which is what RFC 2811 §4.2.1 puts on
+// an anonymous channel in place of a `QUIT`: a member sees somebody
+// leave the channel and cannot tell that they left the server. The
+// departing nick is the `+a` mask, matching what every message in
+// the channel was already attributed to.
+//
+// The actor's own subscription is among the recipients, so the
+// quitting client sees the same masked departure its peers do.
+func (s *Session) partAnonymousChannels(quit domain.Quit, anonymous []domain.ChannelName, spanCtx trace.SpanContext) {
+	if len(anonymous) == 0 {
+		return
+	}
+
+	subs := s.subscriberSnapshot()
+
+	for _, ch := range anonymous {
+		part := domain.Part{
+			Target:  ch,
+			Nick:    domain.AnonymousNick,
+			Message: quit.Message,
+			At:      quit.At,
+		}
+
+		for _, sub := range subs {
+			if !sub.canReceive(part, nil) {
+				continue
+			}
+
+			sub.enqueue(protocol.Delivery{Event: part, SpanCtx: spanCtx})
+		}
 	}
 }
 

@@ -195,7 +195,7 @@ func (s *Session) handleJoin(ctx context.Context, c protocol.Client, cmd protoco
 		var events []protocol.Event
 
 		for _, ch := range cmd.Channels {
-			joined, joinErr := s.joinAs(ctx, actor, ch, cmd.Key)
+			joined, joinErr := s.joinAs(ctx, actor, clientJoin, ch, cmd.Key)
 			if joinErr != nil {
 				failures = append(failures, joinErr)
 				if ev, ok := joinErr.(protocol.Event); ok {
@@ -351,26 +351,31 @@ func (s *Session) handleNick(ctx context.Context, c protocol.Client, cmd protoco
 // later renames or persona edits don't retro-edit historical
 // renderings. Renderers consume the event directly without going
 // back to the store.
+//
+// The channel list is what RFC 2812 §3.6.2 makes conditional:
+// `RPL_WHOISCHANNELS` names the target's channels except those the
+// issuer may not see. The filter is [Session.channelVisibleTo], the
+// same one `LIST` answers under, so a `+s` channel cannot be hidden
+// from the directory and then read straight back out of a WHOIS.
 func (s *Session) handleWhois(ctx context.Context, c protocol.Client, cmd protocol.Whois) (protocol.Response, error) {
 	return s.onWriter(ctx, func(ctx context.Context) (protocol.Response, error) {
+		issuer, err := s.resolveClientActor(c)
+		if err != nil {
+			return protocol.Response{}, err
+		}
+
 		inst, err := s.dispatcherResolveNick(ctx, cmd.Nick)
 		if err != nil {
 			return commandResult(err)
 		}
 
 		whois := domain.Whois{
-			Target:  cmd.Channel,
-			Nick:    inst.Nick(),
-			ModelID: inst.ModelID,
-			Persona: inst.Persona(),
-			At:      s.now(),
-		}
-
-		if channels := inst.Channels(); channels != nil && channels.Len() > 0 {
-			whois.Channels = make([]domain.ChannelName, 0, channels.Len())
-			for pair := channels.Oldest(); pair != nil; pair = pair.Next() {
-				whois.Channels = append(whois.Channels, pair.Key)
-			}
+			Target:   cmd.Channel,
+			Nick:     inst.Nick(),
+			ModelID:  inst.ModelID,
+			Persona:  inst.Persona(),
+			Channels: s.whoisChannels(ctx, issuer, inst),
+			At:       s.now(),
 		}
 
 		events := []domain.ProtocolEvent{whois}
@@ -380,15 +385,48 @@ func (s *Session) handleWhois(ctx context.Context, c protocol.Client, cmd protoc
 	})
 }
 
+// whoisChannels returns the channels of `target` that `issuer` may
+// be told about. A channel whose mode set cannot be read is left
+// out: the session holds live modes for every channel it has
+// touched, and a channel it cannot read is one it cannot say is
+// public either, so the fail-closed answer is to omit it.
+func (s *Session) whoisChannels(ctx context.Context, issuer, target *domain.Instance) []domain.ChannelName {
+	channels := target.Channels()
+	if channels == nil || channels.Len() == 0 {
+		return nil
+	}
+
+	var visible []domain.ChannelName
+
+	for pair := channels.Oldest(); pair != nil; pair = pair.Next() {
+		modes, ok := s.channelModes(ctx, pair.Key)
+		if !ok {
+			continue
+		}
+
+		if s.channelVisibleTo(issuer, pair.Key, modes) {
+			visible = append(visible, pair.Key)
+		}
+	}
+
+	return visible
+}
+
 // handleList enumerates the channel directory and returns one
-// `domain.ListReply` per visible channel followed by a closing
-// `domain.ListEnd` in `Response.Events` (RFC 2812 numerics 322
-// `RPL_LIST` / 323 `RPL_LISTEND`). The `+s` and `+p` filters live
-// in [Session.DirectoryChannels] so the wire reply matches the
-// chat-screen's directory view exactly.
+// `domain.ListReply` per channel the issuer may see, followed by a
+// closing `domain.ListEnd` in `Response.Events` (RFC 2812 numerics
+// 322 `RPL_LIST` / 323 `RPL_LISTEND`). The visibility filter is
+// [Session.channelVisibleTo], applied in
+// [Session.DirectoryChannels], and it is the same one `WHOIS`
+// answers under.
 func (s *Session) handleList(ctx context.Context, c protocol.Client) (protocol.Response, error) {
 	return s.onWriter(ctx, func(ctx context.Context) (protocol.Response, error) {
-		channels, err := s.DirectoryChannels(ctx)
+		issuer, err := s.resolveClientActor(c)
+		if err != nil {
+			return protocol.Response{}, err
+		}
+
+		channels, err := s.DirectoryChannels(ctx, issuer)
 		if err != nil {
 			return commandResult(err)
 		}

@@ -23,6 +23,9 @@ import (
 // channel; a fresh channel (this call creates it) has no modes
 // and so no gate applies.
 //
+// `kind` says on whose authority the join is happening, which is
+// what decides whether `+i` admits it. See [joinKind].
+//
 // The first return is the channel's canonical name: the spelling
 // under which the channel actually exists, which may differ in case
 // from the one the client asked for. Callers that report the join
@@ -33,7 +36,7 @@ import (
 // the channel record below is atomic against every other command.
 //
 //nolint:gocognit // sequenced join steps (create-or-load, gate, op-grant, persist, broadcast, replies) read clearer inline than as further-extracted helpers.
-func (s *Session) joinAs(ctx context.Context, actor *domain.Instance, ch domain.ChannelName, key string) (domain.ChannelName, error) {
+func (s *Session) joinAs(ctx context.Context, actor *domain.Instance, kind joinKind, ch domain.ChannelName, key string) (domain.ChannelName, error) {
 	ch = domain.NormaliseChannelName(ch)
 
 	if reason := domain.ValidateChannelName(ch); reason != domain.ChannelNameAccepted {
@@ -65,7 +68,7 @@ func (s *Session) joinAs(ctx context.Context, actor *domain.Instance, ch domain.
 		alreadyMember := !created && window.Members.HasInstance(actor)
 
 		if !created && !alreadyMember {
-			if err := s.checkJoinGates(window, actorNick, key); err != nil {
+			if err := s.checkJoinGates(window, actor, kind, key); err != nil {
 				return err
 			}
 
@@ -121,16 +124,26 @@ func (s *Session) joinAs(ctx context.Context, actor *domain.Instance, ch domain.
 		}
 
 		// RFC 2812 §3.2.1 / §3.2.4: RPL_NAMREPLY and RPL_TOPIC are
-		// sent only to the joiner — they are server-to-client
-		// responses, not channel broadcasts. Deliver directly to the
-		// joiner's subscription via [Session.deliverToClient]. The
+		// sent only to the joiner. They are server-to-client
+		// responses, not channel broadcasts, so they go directly to
+		// the joiner's subscription via [Session.deliverToClient]. The
 		// chat-screen consumes NamesReplyEvent to populate its
 		// member-list cache when the user joins; the model-client's
 		// dispatch loop files TopicInfo into history when a model
 		// joins so the prompt knows who set the topic and when.
+		//
+		// On a `+a` channel the reply carries the mask alone (RFC
+		// 2811 §4.2.1). Anyone may join an anonymous channel, so a
+		// reply naming its members would be the way to ask who is on
+		// one. The topic names no member and needs no masking.
+		members := window.Members
+		if window.Modes.Anonymous {
+			members = domain.AnonymousMembers()
+		}
+
 		s.deliverToClient(ctx, actor.ID(), domain.NamesReplyEvent{
 			Channel: ch,
-			Members: window.Members,
+			Members: members,
 			At:      now,
 		})
 
@@ -366,20 +379,29 @@ func (s *Session) changeNickAs(ctx context.Context, actor *domain.Instance, newN
 		now := s.now()
 		actorID := actor.ID()
 
+		change := domain.NickChange{
+			OldNick:    oldNick,
+			NewNick:    newNick,
+			InstanceID: actorID,
+			At:         now,
+			Instance:   actor,
+		}
+
 		s.propagateActorEvent(ctx, actor, actorEventConfig{
 			mutate: func(window *domain.ChannelWindow) {
 				window.Members.RenameTo(actor, newNick)
 			},
-			build: func() broadcastEvent {
-				return domain.NickChange{
-					OldNick:    oldNick,
-					NewNick:    newNick,
-					InstanceID: actorID,
-					At:         now,
-					Instance:   actor,
-				}
-			},
+			build: func() broadcastEvent { return change },
 		})
+
+		// RFC 2812 §3.1.2: a client is always told its own NICK
+		// succeeded. The broadcast above carries it back through the
+		// membership filter for a client that is on a channel, but a
+		// client on none has no channel to reach it through, and
+		// without this its rename would land silently.
+		if len(s.instanceChannelNames(actor)) == 0 {
+			s.deliverToClient(ctx, actorID, change)
+		}
 
 		return nil
 	})
@@ -489,6 +511,16 @@ func (s *Session) setTopicAs(ctx context.Context, actor *domain.Instance, ch dom
 
 		ch = window.Name()
 
+		// RFC 2812 §3.2.4: setting a topic requires being on the
+		// channel, whatever the channel's modes say, and a server
+		// operator is no exception. The `+o` override waives channel-op
+		// status, which is a privilege among the members; it does not
+		// make a non-member a member, and a topic set by someone who
+		// is not there has no author anyone in the channel can address.
+		if !window.Members.HasInstance(actor) {
+			return domain.NotOnChannelError{Channel: ch, Command: "TOPIC", At: s.now()}
+		}
+
 		// `+t` restricts TOPIC to ops (RFC 2811 §4.2.7). When the
 		// channel doesn't carry `+t`, any member can change topic.
 		if window.Modes.TopicLock {
@@ -556,46 +588,54 @@ func (s *Session) kickAs(ctx context.Context, actor, target *domain.Instance, ch
 			return domain.UserNotInChannelError{Nick: targetNick, Channel: ch, Command: "KICK", At: s.now()}
 		}
 
-		if err := s.removeMember(ctx, window, target); err != nil {
-			return err
-		}
-
-		actorNick := actor.Nick()
-
+		// The KICK is broadcast to the channel while `target` is still
+		// a member, then membership is dropped, which is the order
+		// PART follows and the one RFC 2812 §3.2.8 requires: the
+		// kicked client is told it was kicked, and the membership
+		// filter is what carries the event to it.
 		now := s.now()
 		s.persistAndEmit(ctx, ch, domain.Kicked{
 			Target:       ch,
 			Nick:         targetNick,
 			InstanceID:   target.ID(),
-			By:           actorNick,
+			By:           actor.Nick(),
 			ByInstanceID: actor.ID(),
 			At:           now,
 			Instance:     target,
 		})
 
-		return nil
+		return s.removeMember(ctx, window, target)
 	})
 }
 
-// inviteAs implements RFC 2812 §3.2.7's INVITE command. The
-// invited nick is recorded against the channel's `InvitedNicks`
-// set so a follow-up JOIN can clear `+i`. Delivery is scoped to
-// the inviter and invitee: the returned [domain.Invited]
-// envelope is the inviter's `RPL_INVITING`-equivalent (the
-// caller — [Session.handleInvite] — wraps it in `Response.Events`
-// for the synchronous client reply), and the same envelope is
-// written directly to the invitee's subscription as their wire
-// `INVITE` message. The channel event log is not touched and no
-// broadcast happens; other channel members are not told.
+// inviteAs implements RFC 2812 §3.2.7's INVITE command. The invitee
+// is recorded against the channel's [domain.Invitations] set so a
+// follow-up JOIN can pass `+i`. Delivery is scoped to the inviter
+// and invitee: the returned [domain.Invited] envelope is the
+// inviter's `RPL_INVITING`-equivalent, which [Session.handleInvite]
+// wraps in `Response.Events` for the synchronous client reply, and
+// the same envelope is written directly to the invitee's
+// subscription as their wire `INVITE` message. The channel event log
+// is not touched and no broadcast happens; other channel members are
+// not told.
 //
-// A target nick already on the channel is refused with
-// [domain.UserOnChannelError] (RFC 2812 numeric 443
-// ERR_USERONCHANNEL) and nothing is recorded.
+// The gates run in RFC order, and nothing is recorded until every
+// one of them has passed:
 //
-// An unknown target nick has no subscription to receive the
-// invite. The inviter gets a [domain.SystemNotice] in its place
-// so the chat-screen surfaces the missing-nick condition; the
-// channel still records nothing.
+//   - the inviter must be on the channel, whatever its modes, or it
+//     is [domain.NotOnChannelError] (numeric 442 ERR_NOTONCHANNEL).
+//     An invitation is a member vouching for someone, so a client
+//     that is not there has nothing to vouch with.
+//   - on a `+i` channel the inviter must additionally hold `@`
+//     (§3.2.7). On `-i` channels any member may invite.
+//   - a target already on the channel is [domain.UserOnChannelError]
+//     (numeric 443 ERR_USERONCHANNEL).
+//
+// The target is resolved before the invitation is written, so an
+// unknown nick leaves the channel's invitation set untouched rather
+// than holding an entry for a client that does not exist. The
+// inviter gets a [domain.SystemNotice] in place of the envelope, so
+// the chat-screen surfaces the missing-nick condition.
 func (s *Session) inviteAs(ctx context.Context, actor *domain.Instance, target domain.Nick, ch domain.ChannelName) (domain.ProtocolEvent, error) {
 	actorNick := actor.Nick()
 
@@ -618,9 +658,10 @@ func (s *Session) inviteAs(ctx context.Context, actor *domain.Instance, target d
 
 		ch = window.Name()
 
-		// INVITE is op-gated only when the target channel carries
-		// `+i` (RFC 2812 §3.2.7). On `-i` channels any member can
-		// invite.
+		if !window.Members.HasInstance(actor) {
+			return domain.NotOnChannelError{Channel: ch, Command: "INVITE", At: s.now()}
+		}
+
 		if window.Modes.InviteOnly {
 			if err := s.requireChannelOp(actor, window, "INVITE", ch); err != nil {
 				return err
@@ -631,34 +672,10 @@ func (s *Session) inviteAs(ctx context.Context, actor *domain.Instance, target d
 			return domain.UserOnChannelError{Nick: target, Channel: ch, At: s.now()}
 		}
 
-		window.InvitedNicks.Add(target)
-		if err := s.persistChannelWindow(ctx, window); err != nil {
-			return fmt.Errorf("save channel: %w", err)
-		}
-
 		now := s.now()
 
 		inst, err := s.store.ResolveNick(ctx, target)
-		switch {
-		case err == nil:
-			span.SetAttributes(attribute.String(observability.AttrInstanceID, string(inst.ID())))
-
-			invited := domain.Invited{
-				Target:       ch,
-				Nick:         inst.Nick(),
-				InstanceID:   inst.ID(),
-				By:           actorNick,
-				ByInstanceID: actor.ID(),
-				At:           now,
-				Instance:     inst,
-			}
-
-			s.deliverToClient(ctx, inst.ID(), invited)
-
-			event = invited
-			return nil
-
-		case errors.Is(err, store.ErrNoSuchNick):
+		if errors.Is(err, store.ErrNoSuchNick) {
 			event = domain.SystemNotice{
 				Target: ch,
 				Text:   fmt.Sprintf("no such nick: %s", target),
@@ -666,10 +683,33 @@ func (s *Session) inviteAs(ctx context.Context, actor *domain.Instance, target d
 			}
 
 			return nil
-
-		default:
+		}
+		if err != nil {
 			return fmt.Errorf("resolve nick: %w", err)
 		}
+
+		span.SetAttributes(attribute.String(observability.AttrInstanceID, string(inst.ID())))
+
+		window.Invitations.Add(inst.ID())
+		if err := s.persistChannelWindow(ctx, window); err != nil {
+			return fmt.Errorf("save channel: %w", err)
+		}
+
+		invited := domain.Invited{
+			Target:       ch,
+			Nick:         inst.Nick(),
+			InstanceID:   inst.ID(),
+			By:           actorNick,
+			ByInstanceID: actor.ID(),
+			At:           now,
+			Instance:     inst,
+		}
+
+		s.deliverToClient(ctx, inst.ID(), invited)
+
+		event = invited
+
+		return nil
 	})
 
 	return event, err
@@ -837,7 +877,9 @@ func (s *Session) requireNickAvailable(ctx context.Context, nick domain.Nick, ho
 // admitModelAs joins a registered model instance to `ch`, the
 // closing half of `ADDMODEL`. The bus carries a `Join` event with
 // the same wire shape any `/join` would produce. `actor` is the
-// operator who issued the command, carried here for the span.
+// operator who issued the command; it is the join's authority, so a
+// `+i` channel admits the new instance on the operator's privileges
+// (see [Session.checkJoinGates]).
 //
 // Runs on the session's command loop, after the instance's
 // model-client has attached, so the JOIN reaches its subscription.
@@ -847,15 +889,7 @@ func (s *Session) admitModelAs(ctx context.Context, actor, inst *domain.Instance
 		attribute.String(observability.AttrNick, string(actor.Nick())),
 		attribute.String(observability.AttrInstanceID, string(inst.ID())),
 	}, func(ctx context.Context, _ trace.Span) error {
-		// Pre-seed `InvitedNicks` so `joinAs` clears `+i`.
-		if window, err := s.loadChannelWindow(ctx, ch); err == nil {
-			window.InvitedNicks.Add(inst.Nick())
-			if err := s.persistChannelWindow(ctx, window); err != nil {
-				return fmt.Errorf("save channel: %w", err)
-			}
-		}
-
-		_, err := s.joinAs(ctx, inst, ch, "")
+		_, err := s.joinAs(ctx, inst, operatorJoin, ch, "")
 
 		return err
 	})

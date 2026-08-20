@@ -74,7 +74,7 @@ func TestJoinAs_load_failure_leaves_the_channel_intact(t *testing.T) {
 		established.TopicSetBy = "testuser"
 		established.TopicSetAt = fixedTime
 		established.Modes = domain.ChannelModes{TopicLock: true, InviteOnly: true}
-		established.InvitedNicks.Add("botty")
+		established.Invitations.Add("inst-botty")
 		require.NoError(t, backing.SaveWindow(ctx, established))
 
 		// The session starts with cold live state, so the join has to
@@ -94,7 +94,7 @@ func TestJoinAs_load_failure_leaves_the_channel_intact(t *testing.T) {
 		require.Equal(t, "shipping the thing", reloaded.Topic)
 		require.Equal(t, domain.Nick("testuser"), reloaded.TopicSetBy)
 		require.Equal(t, domain.ChannelModes{TopicLock: true, InviteOnly: true}, reloaded.Modes)
-		require.True(t, reloaded.InvitedNicks.Contains("botty"))
+		require.True(t, reloaded.Invitations.Contains("inst-botty"))
 	})
 }
 
@@ -150,14 +150,14 @@ func TestLoadChannelWindow_hands_each_reader_its_own_copy(t *testing.T) {
 
 		scribbled.Topic = "scribbled over"
 		scribbled.Members.RemoveInstance(botty)
-		scribbled.InvitedNicks.Add("gatecrasher")
+		scribbled.Invitations.Add("inst-gatecrasher")
 
 		fresh, err := sess.loadChannelWindow(ctx, "#dev")
 		require.NoError(t, err)
 
 		require.Equal(t, "", fresh.Topic)
 		require.True(t, fresh.Members.HasInstance(botty))
-		require.False(t, fresh.InvitedNicks.Contains("gatecrasher"))
+		require.False(t, fresh.Invitations.Contains("inst-gatecrasher"))
 	})
 }
 

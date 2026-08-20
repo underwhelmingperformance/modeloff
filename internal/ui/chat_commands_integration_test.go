@@ -79,7 +79,7 @@ func TestApp_title_list_and_help_commands_with_teatest(t *testing.T) {
 	tm.WaitFor("topic for #random set by testuser: cool topic")
 
 	tm.Submit("/list")
-	tm.WaitFor("#general (0)", "#random (0) — cool topic", "End of /list")
+	tm.WaitFor("#general (1)", "#random (1) — cool topic", "End of /list")
 
 	tm.Submit("/topic")
 	tm.WaitFor("topic for #random: cool topic", "set by testuser")

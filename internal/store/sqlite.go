@@ -292,16 +292,23 @@ func (s *SQLiteStore) Close() error {
 // given row is left zero (a status row carries no members or
 // topic; a DM row's member list is empty and `Name` is the
 // counterpart's `InstanceID`).
+//
+// `Invitations` is written under its own key, so a row written when
+// the set was keyed by nick reads as empty. That is the right
+// outcome: those rows hold nicks, which the `InstanceID`-keyed field
+// cannot accept, and an invitation is short-lived state that dies
+// with its channel anyway (RFC 2811 §2), so there is nothing worth
+// translating forward.
 type channelRow struct {
-	Name         domain.ChannelName
-	Kind         domain.ChannelKind
-	Topic        string
-	TopicSetBy   domain.Nick
-	TopicSetAt   time.Time
-	Members      domain.MemberList
-	Modes        domain.ChannelModes
-	InvitedNicks domain.InvitedNicks
-	Created      time.Time
+	Name        domain.ChannelName
+	Kind        domain.ChannelKind
+	Topic       string
+	TopicSetBy  domain.Nick
+	TopicSetAt  time.Time
+	Members     domain.MemberList
+	Modes       domain.ChannelModes
+	Invitations domain.Invitations
+	Created     time.Time
 }
 
 // resolveChannelMembers rewrites the stub `*Instance` handles in
@@ -445,7 +452,7 @@ func (s *SQLiteStore) rowToWindow(ctx context.Context, row channelRow) (domain.W
 		cw.TopicSetAt = row.TopicSetAt
 		cw.Members = row.Members
 		cw.Modes = row.Modes
-		cw.InvitedNicks = row.InvitedNicks
+		cw.Invitations = row.Invitations
 		return cw, nil
 
 	case domain.KindDM:
@@ -479,7 +486,7 @@ func rowFromWindow(w domain.Window) channelRow {
 		row.TopicSetAt = cw.TopicSetAt
 		row.Members = cw.Members
 		row.Modes = cw.Modes
-		row.InvitedNicks = cw.InvitedNicks
+		row.Invitations = cw.Invitations
 	}
 
 	return row

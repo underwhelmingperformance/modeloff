@@ -152,7 +152,7 @@ func userJoinedAt(t testing.TB, sess *Session, ch domain.ChannelName) time.Time 
 // tests that do not care which spelling of the name the join landed
 // on.
 func joinAs(ctx context.Context, sess *Session, actor *domain.Instance, ch domain.ChannelName, key string) error {
-	_, err := sess.joinAs(ctx, actor, ch, key)
+	_, err := sess.joinAs(ctx, actor, clientJoin, ch, key)
 
 	return err
 }
@@ -2548,26 +2548,63 @@ func TestSession_SetTopic(t *testing.T) {
 		sess, s := newTestSession(t)
 		ctx := t.Context()
 
-		saveTestChannel(t, sess, s, domain.NewChannelWindow("#dev", fixedTime))
+		require.NoError(t, userJoin(ctx, t, sess, "#dev"))
 
 		require.NoError(t, userSetTopic(ctx, t, sess, "#dev", "Development Chat"))
 		synctest.Wait()
 
+		user := userInstance(t, sess)
+
 		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
+			domain.Join{
+				Target: "#dev", Nick: "testuser", Created: true,
+				At: fixedTime, Instance: user,
+			},
+			domain.NamesReplyEvent{
+				Channel: "#dev",
+				Members: testMembers(t, sess, s, "testuser"),
+				At:      fixedTime,
+			},
+			domain.NamesEnd{Channel: "#dev", At: fixedTime},
+			domain.TopicChange{
+				Target: "#dev", Topic: "Development Chat", By: "testuser",
+				At: fixedTime, ByInstance: user,
+			},
 		}, collectEmittedEvents(t, sess),
-			"the user is not a member of #dev here, so its topic change is not echoed back over the bus")
+			"the user is a member of #dev, so its own topic change comes back over the bus")
 
-		require.Equal(t, []string{"topic_change"}, channelEventTypes(t, s, "#dev"),
+		require.Equal(t, []string{"join", "topic_change"}, channelEventTypes(t, s, "#dev"),
 			"the topic change is broadcast and persisted to the channel")
 
 		updated, err := sess.loadChannelWindow(ctx, "#dev")
 		require.NoError(t, err)
-		expected := domain.NewChannelWindow("#dev", fixedTime)
-		expected.Topic = "Development Chat"
-		expected.TopicSetBy = "testuser"
-		expected.TopicSetAt = fixedTime
-		requireChannelEqual(t, expected, updated)
+		require.Equal(t, "Development Chat", updated.Topic)
+		require.Equal(t, domain.Nick("testuser"), updated.TopicSetBy)
+		require.Equal(t, fixedTime, updated.TopicSetAt)
+	})
+}
+
+// TestSession_SetTopic_requires_membership covers RFC 2812 §3.2.4:
+// TOPIC is refused for a client that is not on the channel, even on
+// a `-t` channel and even for a server operator. The `+o` override
+// waives channel-op status, which is a privilege among the members;
+// it does not make a non-member a member.
+func TestSession_SetTopic_requires_membership(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		sess, s := newTestSession(t)
+		ctx := t.Context()
+
+		saveTestChannel(t, sess, s, domain.NewChannelWindow("#dev", fixedTime))
+
+		err := userSetTopic(ctx, t, sess, "#dev", "Development Chat")
+		require.Equal(t, domain.NotOnChannelError{Channel: "#dev", Command: "TOPIC", At: fixedTime}, err)
+
+		unchanged, err := sess.loadChannelWindow(ctx, "#dev")
+		require.NoError(t, err)
+		require.Equal(t, "", unchanged.Topic)
+
+		require.Empty(t, channelEventTypes(t, s, "#dev"))
 	})
 }
 

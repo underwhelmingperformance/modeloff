@@ -288,55 +288,65 @@ func ParseChannelModes(s string) (ChannelModes, error) {
 	return modes, nil
 }
 
-// InvitedNicks is the per-channel pending-invitation set populated
+// Invitations is the per-channel pending-invitation set populated
 // by `INVITE` and consumed by `JOIN` when `+i` is set. Each entry
 // is single-use: a successful join removes the inviter's record.
 //
+// Entries are keyed by [InstanceID], not by nick. This is a
+// deliberate departure from RFC 2812 §3.2.7, which describes the
+// list in terms of nicks because a nick is all the wire carries. A
+// nick is display state a client may change at will: keyed by nick,
+// a client invited as `botty` and then renamed loses the invitation
+// it was granted, and a second client taking the freed nick inherits
+// it. Keying by the immutable id makes an invitation belong to the
+// client it was issued to for as long as that client exists. Do not
+// "correct" this back to nicks.
+//
 // The underlying type is [set.Set] so set operations stay O(1).
-// JSON round-trips through a sorted nick array so the on-disk
-// shape is deterministic and isn't littered with the empty-struct
-// values a raw map would carry.
-type InvitedNicks set.Set[Nick]
+// JSON round-trips through a sorted id array so the on-disk shape is
+// deterministic and isn't littered with the empty-struct values a
+// raw map would carry.
+type Invitations set.Set[InstanceID]
 
-// Add records a pending invitation for `nick`. Idempotent.
-func (s *InvitedNicks) Add(nick Nick) {
-	(*set.Set[Nick])(s).Add(nick)
+// Add records a pending invitation for `id`. Idempotent.
+func (s *Invitations) Add(id InstanceID) {
+	(*set.Set[InstanceID])(s).Add(id)
 }
 
-// Remove clears the pending invitation for `nick` and reports
+// Remove clears the pending invitation for `id` and reports
 // whether one was present. Used by `JOIN` to consume single-use
 // invitations atomically.
-func (s *InvitedNicks) Remove(nick Nick) bool {
-	return (*set.Set[Nick])(s).Remove(nick)
+func (s *Invitations) Remove(id InstanceID) bool {
+	return (*set.Set[InstanceID])(s).Remove(id)
 }
 
-// Contains reports whether `nick` is currently invited.
-func (s InvitedNicks) Contains(nick Nick) bool {
-	return set.Set[Nick](s).Has(nick)
+// Contains reports whether `id` is currently invited.
+func (s Invitations) Contains(id InstanceID) bool {
+	return set.Set[InstanceID](s).Has(id)
 }
 
 // Clone returns an independent copy of the invitation set. A nil
 // set clones to nil, matching the zero value's meaning of "nobody
 // invited".
-func (s InvitedNicks) Clone() InvitedNicks {
+func (s Invitations) Clone() Invitations {
 	if s == nil {
 		return nil
 	}
 
-	return InvitedNicks(set.Set[Nick](s).Clone())
+	return Invitations(set.Set[InstanceID](s).Clone())
 }
 
-// MarshalJSON renders the invitation set as a sorted nick array so
+// MarshalJSON renders the invitation set as a sorted id array so
 // the on-disk representation is stable across persistence
 // round-trips and reviews.
-func (s InvitedNicks) MarshalJSON() ([]byte, error) {
+func (s Invitations) MarshalJSON() ([]byte, error) {
 	if len(s) == 0 {
 		return []byte("null"), nil
 	}
 
-	out := make([]Nick, 0, len(s))
-	for n := range s {
-		out = append(out, n)
+	out := make([]InstanceID, 0, len(s))
+	for id := range s {
+		out = append(out, id)
 	}
 	slices.Sort(out)
 
@@ -345,20 +355,20 @@ func (s InvitedNicks) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON rehydrates an invitation set from its JSON array
 // form. A `null` or missing field yields the zero value.
-func (s *InvitedNicks) UnmarshalJSON(data []byte) error {
+func (s *Invitations) UnmarshalJSON(data []byte) error {
 	if string(data) == "null" {
 		*s = nil
 		return nil
 	}
 
-	var arr []Nick
+	var arr []InstanceID
 	if err := json.Unmarshal(data, &arr); err != nil {
 		return err
 	}
 
-	*s = make(InvitedNicks, len(arr))
-	for _, n := range arr {
-		(*s)[n] = struct{}{}
+	*s = make(Invitations, len(arr))
+	for _, id := range arr {
+		(*s)[id] = struct{}{}
 	}
 	return nil
 }

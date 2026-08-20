@@ -252,17 +252,26 @@ func (TopicChange) channelActivity()                  {}
 // (`+l <int>`, `+k <key>`); it is empty for member-mode and
 // boolean-attribute events.
 //
+// `Nick`/`InstanceID` identify the affected member (the subject of a
+// `+o`/`+v` change, empty for a channel attribute);
+// `By`/`ByInstanceID` identify the client that issued the MODE, as
+// [Kicked] and [Invited] carry their actor. A nick is display state
+// a client may change, so `ByInstanceID` is what lets a client tell
+// its own MODE from a peer's whatever either of them is called at
+// the time.
+//
 // `Instance` is the live affected member, populated on emission
 // and ignored by JSON.
 type ChannelModeChange struct {
-	Target     ChannelName `json:"channel"`
-	Nick       Nick        `json:"nick"`
-	InstanceID InstanceID  `json:"instance_id,omitzero"`
-	Flag       Mode        `json:"flag"`
-	Add        bool        `json:"add"`
-	Param      string      `json:"param,omitempty"`
-	By         Nick        `json:"by,omitempty"`
-	At         time.Time   `json:"at"`
+	Target       ChannelName `json:"channel"`
+	Nick         Nick        `json:"nick"`
+	InstanceID   InstanceID  `json:"instance_id,omitzero"`
+	Flag         Mode        `json:"flag"`
+	Add          bool        `json:"add"`
+	Param        string      `json:"param,omitempty"`
+	By           Nick        `json:"by,omitempty"`
+	ByInstanceID InstanceID  `json:"by_instance_id,omitzero"`
+	At           time.Time   `json:"at"`
 
 	Instance *Instance `json:"-"`
 }

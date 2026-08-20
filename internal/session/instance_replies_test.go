@@ -92,7 +92,7 @@ func TestSession_list_persists_to_model_issuer(t *testing.T) {
 	replies, err := store.InstanceRepliesBefore(ctx, inst.ID(), nil, 10)
 	require.NoError(t, err)
 	require.Equal(t, []domain.PersistableEvent{
-		domain.ListReply{Channel: "#dev", Members: 0, At: fixedTime},
+		domain.ListReply{Channel: "#dev", Members: 1, At: fixedTime},
 	}, storedReplyEvents(replies))
 
 	// The reply is private: it never reaches the shared channel log.

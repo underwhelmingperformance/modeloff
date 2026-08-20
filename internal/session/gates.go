@@ -71,14 +71,24 @@ func (s *Session) checkSendGates(ctx context.Context, actor *domain.Instance, ch
 
 // checkJoinGates enforces the per-channel JOIN preconditions
 // every existing channel imposes via its mode set: `+i` admits
-// only previously-invited nicks (and consumes the invitation on
-// success); `+l` rejects when the member count reaches the
-// limit; `+k` rejects on key mismatch.
+// only previously-invited clients; `+l` rejects when the member
+// count reaches the limit; `+k` rejects on key mismatch.
 //
-// Returns nil for a channel with no gates active. On `+i` the
-// consume happens on success — the next attempt by the same
-// nick fails unless re-invited.
-func (s *Session) checkJoinGates(window *domain.ChannelWindow, actorNick domain.Nick, key string) error {
+// Returns nil for a channel with no gates active.
+//
+// The invitation is consumed on every successful join, `+i` or not.
+// An invitation is single-use, and a client that used it to walk in
+// is not owed a second one because the channel happened to be open
+// at the time; leaving one behind would let it back in past a `+i`
+// set after it parted.
+//
+// An operator join passes `+i` without an invitation. That is what
+// carries `ADDMODEL`, which is operator-gated at the dispatcher: the
+// authority the operator already exercised to run the command is
+// what admits the client it is adding, so the server does not have
+// to write an invitation nobody issued into the channel's list
+// first.
+func (s *Session) checkJoinGates(window *domain.ChannelWindow, actor *domain.Instance, kind joinKind, key string) error {
 	if window.Modes.Key != "" && key != window.Modes.Key {
 		return domain.ChannelKeyMismatchError{Channel: window.Name(), At: s.now()}
 	}
@@ -87,15 +97,36 @@ func (s *Session) checkJoinGates(window *domain.ChannelWindow, actorNick domain.
 		return domain.ChannelFullError{Channel: window.Name(), At: s.now()}
 	}
 
-	if window.Modes.InviteOnly {
-		if !window.InvitedNicks.Contains(actorNick) {
-			return domain.ChannelInviteOnlyError{Channel: window.Name(), At: s.now()}
-		}
-		window.InvitedNicks.Remove(actorNick)
+	invited := window.Invitations.Remove(actor.ID())
+
+	if window.Modes.InviteOnly && !invited && kind != operatorJoin {
+		return domain.ChannelInviteOnlyError{Channel: window.Name(), At: s.now()}
 	}
 
 	return nil
 }
+
+// joinKind says on whose authority a join is happening, which is
+// what decides whether `+i` admits it.
+type joinKind int
+
+const (
+	// clientJoin is a client joining a channel itself, through
+	// [protocol.Join]. It is admitted only by the channel's own
+	// rules, and a client holding server-operator mode is no
+	// exception: `+i` is admission control over who may be in the
+	// channel, not a privilege among the members, and the `+o`
+	// override reaches the second and not the first (see
+	// [Session.requireChannelOp]).
+	clientJoin joinKind = iota
+
+	// operatorJoin is the server placing a client on a channel at an
+	// operator's request, through [protocol.AddModel]. RFC 2812 has
+	// no such command; ircds that grew one call it SAJOIN, and it is
+	// oper-only for exactly this reason, because it puts a client
+	// somewhere the channel's modes would not have admitted it.
+	operatorJoin
+)
 
 // requireChannelOp returns [domain.ChanOpRequiredError] when the
 // actor lacks `@` in `window`. Used by channel-op-gated commands
@@ -118,6 +149,37 @@ func (s *Session) requireChannelOp(actor *domain.Instance, window *domain.Channe
 		return domain.ChanOpRequiredError{Command: cmd, Channel: ch, At: s.now()}
 	}
 	return nil
+}
+
+// channelVisibleTo reports whether `issuer` may be told that a
+// channel with these modes and this name exists. `LIST`, `WHOIS` and
+// `NAMES` all give this one answer, so a channel cannot be hidden
+// from one of them and revealed by another.
+//
+// A channel carrying neither `+s` nor `+p` is public and visible to
+// anyone (RFC 2811 §4.2.5, §4.2.6). Either flag hides it, with two
+// exemptions: its own members already know it exists, and a server
+// operator sees the whole session (RFC 2812 §3.6.2).
+//
+// `+p` hides the channel outright, exactly as `+s` does. RFC 2811
+// draws a finer distinction, listing a `+p` channel with its topic
+// suppressed, but that leaks the one thing the mode exists to hide,
+// and modern ircds treat the two the same.
+//
+// Membership is read from the issuer's own channel set, not from
+// `window.Members`: the user-client is never persisted into a
+// member list, so a directory row read straight from the store does
+// not contain it.
+func (s *Session) channelVisibleTo(issuer *domain.Instance, name domain.ChannelName, modes domain.ChannelModes) bool {
+	if !modes.Secret && !modes.Private {
+		return true
+	}
+
+	if issuer.InChannel(name) {
+		return true
+	}
+
+	return s.actorHasServerOper(issuer)
 }
 
 // actorHasServerOper reports whether the actor's wire client

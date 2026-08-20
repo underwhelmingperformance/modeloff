@@ -820,12 +820,15 @@ func (s *Session) userQuit(ctx context.Context, message string) error {
 	})
 }
 
-// DirectoryChannels returns the public channel directory for
-// `/list`. Filters to `*ChannelWindow` only — DMs and the
-// status window are not in the directory. The returned entries
-// are snapshots of name, member count, and topic; callers turn
-// them into per-row `domain.ListReply` events themselves.
-func (s *Session) DirectoryChannels(ctx context.Context) ([]domain.ChannelDirectoryEntry, error) {
+// DirectoryChannels returns the channel directory `issuer` may see,
+// for `/list`. It filters to `*ChannelWindow` only, since DMs and
+// the status window are not in the directory, and then to the
+// channels [Session.channelVisibleTo] admits, so a `+s` or `+p`
+// channel the issuer is not on and holds no operator mode for is
+// left out entirely. The returned entries are snapshots of name,
+// member count, and topic; callers turn them into per-row
+// `domain.ListReply` events themselves.
+func (s *Session) DirectoryChannels(ctx context.Context, issuer *domain.Instance) ([]domain.ChannelDirectoryEntry, error) {
 	var entries []domain.ChannelDirectoryEntry
 
 	err := s.inSpan(ctx, "session.directory_channels", nil, func(ctx context.Context, span trace.Span) error {
@@ -841,23 +844,24 @@ func (s *Session) DirectoryChannels(ctx context.Context) ([]domain.ChannelDirect
 				continue
 			}
 
-			// `+s` channels are hidden from the directory entirely
-			// (RFC 2811 §4.2.7). `+p` channels appear but with their
-			// topic suppressed (§4.2.6) — the channel name itself
-			// stays visible.
-			if cw.Modes.Secret {
+			if !s.channelVisibleTo(issuer, cw.Name(), cw.Modes) {
 				continue
 			}
 
-			topic := cw.Topic
-			if cw.Modes.Private {
-				topic = ""
+			// The user is never written into a persisted member list,
+			// so a row read straight from the store is short by one
+			// for every channel the user is in. This is the same
+			// correction `injectUserIfChannelMember` applies on the
+			// load path.
+			members := cw.Members.Len()
+			if s.userInChannel(cw.Name()) {
+				members++
 			}
 
 			entries = append(entries, domain.ChannelDirectoryEntry{
 				Channel: cw.Name(),
-				Members: cw.Members.Len(),
-				Topic:   topic,
+				Members: members,
+				Topic:   cw.Topic,
 			})
 		}
 

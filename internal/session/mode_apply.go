@@ -134,14 +134,15 @@ func (s *Session) setMemberModeAs(ctx context.Context, window *domain.ChannelWin
 		}
 
 		s.persistAndEmit(ctx, ch, domain.ChannelModeChange{
-			Target:     ch,
-			Nick:       target.Nick(),
-			InstanceID: target.ID(),
-			Flag:       change.Flag,
-			Add:        change.Add,
-			By:         actor.Nick(),
-			At:         s.now(),
-			Instance:   target,
+			Target:       ch,
+			Nick:         target.Nick(),
+			InstanceID:   target.ID(),
+			Flag:         change.Flag,
+			Add:          change.Add,
+			By:           actor.Nick(),
+			ByInstanceID: actor.ID(),
+			At:           s.now(),
+			Instance:     target,
 		})
 
 		return nil
@@ -167,12 +168,13 @@ func (s *Session) setChannelAttributeAs(ctx context.Context, window *domain.Chan
 		}
 
 		s.persistAndEmit(ctx, ch, domain.ChannelModeChange{
-			Target: ch,
-			Flag:   change.Flag,
-			Add:    change.Add,
-			Param:  attributeEmitParam(change),
-			By:     actor.Nick(),
-			At:     s.now(),
+			Target:       ch,
+			Flag:         change.Flag,
+			Add:          change.Add,
+			Param:        attributeEmitParam(change),
+			By:           actor.Nick(),
+			ByInstanceID: actor.ID(),
+			At:           s.now(),
 		})
 
 		return nil

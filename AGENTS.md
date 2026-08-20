@@ -29,7 +29,8 @@ IRC-like server; the only external service is the OpenRouter API.
       (RFC 2811 §2). The sidebar entry and the autojoin list are client
       state and survive a part. If durable channels are ever wanted, the
       mechanism is an explicit permanent-channel mode.
-5. The user can `/list` all channels.
+5. The user can `/list` all channels, subject to the channel-visibility
+   rule described below.
 6. The user can `/invite` models to add them to the channel, and `/kick`
    them to remove them.
    1. The user can specify a model by name or ID, and the app will look it up
@@ -56,8 +57,8 @@ IRC-like server; the only external service is the OpenRouter API.
 10. A small, cheap model (configurable, defaulting to `openai/gpt-5.4-mini`) is
     used to give each invited model a nickname.
 11. `/whois` can be used on a nickname to show metadata and the target's
-    channels, except those that are `+s` or `+p` and on which the issuer is
-    not present; server operators see all (RFC 2812 §3.6.2).
+    channels, subject to the same channel-visibility rule `/list`
+    answers under.
 12. On a random (perturbed a bit) configurable (via `/config`) schedule, the
     model instances are poked to see if they want to say anything, so that
     channels don't go dead. The poke is the server's PING (RFC 2812 §3.7.2):
@@ -448,6 +449,55 @@ Together with `+m` and KILL, those are the primitives an operator or
 a future policy layer composes a spend budget out of. Nothing in the
 session decides a budget, and `dispatchTrigger` holds no hidden gate.
 
+### Channel visibility
+
+`Session.channelVisibleTo` is the one answer to "may this client be
+told that this channel exists". A channel carrying neither `+s` nor
+`+p` is visible to anyone; either flag hides it, and the two
+exemptions are its own members and a server operator (RFC 2811
+§4.2.5–§4.2.6, RFC 2812 §3.6.2). `LIST`, `WHOIS`'s channel list and
+the `NAMES` reply all answer under it, so a channel cannot be hidden
+from one and read straight back out of another. `+p` hides the
+channel outright, exactly as `+s` does: RFC 2811 drew a finer
+distinction, listing a `+p` channel with its topic suppressed, but
+that leaks the one thing the mode exists to hide, and modern ircds
+treat the two the same.
+
+Membership is read from the issuing client's own channel set, not
+from the channel's member list: the user-client is never persisted
+into a member list, so a directory row read straight from the store
+does not contain it. The same correction gives `RPL_LIST` its member
+count.
+
+That predicate is also what a whole-session view is made of. The
+user-client already holds `+o`, so its `/list` and `/whois` see
+everything without any bypass of the delivery filter, and no
+separate inspector layer is needed.
+
+### Anonymous channels
+
+Mode `+a` (RFC 2811 §4.2.1) means no member may learn who anyone
+else is. Three things follow, and all three happen at fan-out, where
+the per-recipient channel intersection is already known:
+
+- chat traffic is attributed to `domain.AnonymousNick` before
+  delivery, while the stored event keeps the real origin for audit;
+- a `QUIT` is delivered to the anonymous channel as a `PART` from
+  the mask, so a member sees somebody leave the channel and cannot
+  tell they left the server;
+- `ModelDispatchStarted` / `ModelDispatchDone` lose their instance
+  handle, which is the only thing in them that names anybody, so the
+  thinking indicator says that something is happening without saying
+  who is about to speak.
+
+The last two are per recipient, not per event: a client that also
+shares an ordinary channel with the actor already knows who it is
+from there, and receives the `QUIT` and the named dispatch events
+scoped to those channels.
+
+`domain.AnonymousNick` is reserved by `domain.ValidateNick`, so no
+client can take the mask and speak as it.
+
 ### Event bus
 
 The session exposes one event channel per subscription: each
@@ -485,7 +535,9 @@ Other event types — JOIN, PART, MODE, TOPIC, NICK, etc. — are
 delivered to every member-subscriber including the originator. A
 `PART` is broadcast while the departing actor is still a member, then
 membership is dropped (RFC 2812 §3.2.2 order), so the actor receives
-its own `PART`.
+its own `PART`. `KICK` follows the same order for the same reason:
+RFC 2812 §3.2.8 has the kicked client told it was kicked, and the
+membership filter is what carries the event to it.
 
 Every client — the user-client included — carries the same membership
 filter via `serverClient.canReceive`: it sees events only for windows
@@ -496,8 +548,14 @@ chat-screen renders exactly those windows. Server handshake numerics
 (`Welcome`, `Reconnected`) and command replies reach the user-client
 point-to-point — via `deliverToClient` or the issuing command's
 `Response.Events` — not through this broadcast filter. A whole-session
-view, if wanted, is the operator exemption inside the channel-visibility
-predicate (see Out of scope), never an always-on bypass of this filter.
+view is the operator exemption inside `Session.channelVisibleTo`,
+never an always-on bypass of this filter.
+
+`NICK` is the one actor-scoped event with a point-to-point fallback.
+RFC 2812 §3.1.2 has a client always told its own rename succeeded,
+and a client on no channels has no channel for the broadcast to
+reach it through, so `changeNickAs` delivers the `NickChange`
+directly in that case.
 
 ### Operator capability
 
@@ -513,6 +571,41 @@ by `handleOper`; its `OperAuthenticator` defaults to rejecting every
 attempt, so credentialed operator promotion is a ready extension
 point rather than a live capability. The user-client's `+o` is still
 granted at attach via `InitialModes`, not acquired through `OPER`.
+
+The `+o` override reaches privileges among a channel's members and
+stops there. `Session.requireChannelOp` waives channel-op status for
+an operator, so the user can `/kick` or `/mode` on a channel it
+joined without picking up `@`. It does not make a non-member a
+member: `TOPIC` requires being on the channel whatever the modes say
+(RFC 2812 §3.2.4), and so does `INVITE`, since an invitation is a
+member vouching for someone. `+i` controls who may be in the channel
+at all, which is not one of the privileges `+o` waives, so an
+operator's own `JOIN` is refused by it like anyone else's.
+
+`ADDMODEL` is the one join that passes `+i` without an invitation.
+It is the server placing a client on a channel at an operator's
+request, the thing ircds that grew one call SAJOIN, and
+`session.joinKind` is what distinguishes it from a client joining
+itself. The command is operator-gated at the dispatcher, so the
+authority the operator already exercised is what admits the new
+client, and the channel's invitation list is left holding only
+invitations somebody actually issued.
+
+### Invitations
+
+`domain.Invitations` is keyed by `domain.InstanceID`. This is a
+deliberate departure from RFC 2812 §3.2.7, which describes the list
+in terms of nicks because a nick is all the wire carries. A nick is
+display state a client may change at will: keyed by nick, a client
+invited as `botty` and then renamed loses the invitation it was
+granted, and a second client taking the freed nick inherits it.
+Keying by the immutable id makes an invitation belong to the client
+it was issued to for as long as that client exists.
+
+An invitation is single-use and is consumed by any successful join,
+`+i` or not: a client that walked in while the channel was open is
+not owed a second entry after `+i` goes up. Like every other piece
+of channel state it dies with the channel (RFC 2811 §2).
 
 ### Slash commands and tool schemas
 
@@ -585,11 +678,9 @@ log a model loads holds nothing but genuine channel activity.
   and the model-client's eager seed. History replay is the IRCv3
   `chathistory` capability, granted at attach via `SubscribeOptions`;
   the user-client simply does not request it today.
-- A whole-session view through operator privilege: LIST, WHOIS, NAMES
-  and WHO answer a server operator without the `+s`/`+p` filter, via
-  the operator exemption in the single channel-visibility predicate.
-  The user-client already holds `+o`; no separate inspector layer is
-  needed.
+- A `WHO` command, which would answer under the same
+  `Session.channelVisibleTo` predicate LIST, WHOIS and NAMES already
+  do.
 - Credentialed operator promotion through `OPER`, backed by a real
   `OperAuthenticator`.
 - A user-restore-history feature that, on reconnect, routes each

@@ -252,9 +252,9 @@ func TestSession_Handle_delegates(t *testing.T) {
 					"INVITE does not mutate membership; the invited model joins "+
 						"via its own dispatch turn")
 
-				require.True(t, cw.InvitedNicks.Contains("botty"),
-					"INVITE records the nick on InvitedNicks so a follow-up "+
-						"JOIN clears `+i`")
+				require.True(t, cw.Invitations.Contains(testMemberID("botty")),
+					"INVITE records the invitee's instance id so a follow-up "+
+						"JOIN passes `+i`")
 			},
 		},
 		{

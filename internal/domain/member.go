@@ -276,6 +276,21 @@ func (ml MemberList) Clone() MemberList {
 	return dst
 }
 
+// AnonymousMembers returns the member list an anonymous (`+a`)
+// channel answers a NAMES query with: one entry under
+// [AnonymousNick], holding no privileges and no instance handle.
+//
+// RFC 2811 §4.2.1 masks every name on such a channel, channel
+// operators included, so the reply carries neither who is there nor
+// how many. A per-member masked entry would still carry the count,
+// and one masked entry per rank would still say who holds `@`.
+func AnonymousMembers() MemberList {
+	ml := NewMemberList()
+	ml.members.Insert(Member{Nick: AnonymousNick})
+
+	return ml
+}
+
 // Nicks returns an iterator over just the nicks in display order.
 func (ml MemberList) Nicks() iter.Seq[Nick] {
 	return func(yield func(Nick) bool) {

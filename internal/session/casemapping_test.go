@@ -23,7 +23,7 @@ func TestSession_join_reaches_an_existing_channel_in_another_case(t *testing.T) 
 	botty := domain.NewModelInstance("m1", "botty", "test/model", "", nil)
 	require.NoError(t, sess.store.SaveInstance(ctx, botty))
 
-	joined, err := sess.joinAs(ctx, botty, "#dEV", "")
+	joined, err := sess.joinAs(ctx, botty, clientJoin, "#dEV", "")
 	require.NoError(t, err)
 	require.Equal(t, domain.ChannelName("#Dev"), joined)
 

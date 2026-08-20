@@ -77,7 +77,7 @@ func TestChannelDestroy_keeps_channel_when_user_remains(t *testing.T) {
 }
 
 // TestChannelDestroy_invite_evaporates pins the channel-mode
-// consequence: outstanding entries in `InvitedNicks` disappear
+// consequence: outstanding entries in `Invitations` disappear
 // with the channel. A re-created channel with the same name has
 // a fresh state; a previously-invited nick must be re-invited
 // or the channel must be `-i` for them to join.
@@ -96,7 +96,7 @@ func TestChannelDestroy_invite_evaporates(t *testing.T) {
 			ModelID: "test/model",
 		})
 
-		// Mark the channel +i so InvitedNicks gates the join. The
+		// Mark the channel +i so Invitations gates the join. The
 		// user is op (creator) and so can invite under +i.
 		w, err := sess.loadChannelWindow(ctx, "#room")
 		require.NoError(t, err)
@@ -108,7 +108,7 @@ func TestChannelDestroy_invite_evaporates(t *testing.T) {
 
 		w, err = sess.loadChannelWindow(ctx, "#room")
 		require.NoError(t, err)
-		require.True(t, w.InvitedNicks.Contains(botty.Nick()))
+		require.True(t, w.Invitations.Contains(botty.ID()))
 
 		// User parts → channel destroyed → invite evaporates.
 		require.NoError(t, sess.partAs(ctx, userInstance(t, sess), "#room", "leaving"))
@@ -120,7 +120,7 @@ func TestChannelDestroy_invite_evaporates(t *testing.T) {
 		// invite carried over, the freshly-created channel has no
 		// `+i` either — so the join succeeds, but on `+i` semantics
 		// the invite would not have helped: there is no
-		// `InvitedNicks` because there is no channel-state to
+		// `Invitations` because there is no channel-state to
 		// carry it.
 		require.NoError(t, joinAs(ctx, sess, botty, "#room", ""))
 
@@ -128,7 +128,7 @@ func TestChannelDestroy_invite_evaporates(t *testing.T) {
 		require.NoError(t, err)
 		require.False(t, w.Modes.InviteOnly,
 			"the re-created channel starts fresh — no +i carried over")
-		require.Empty(t, w.InvitedNicks,
+		require.Empty(t, w.Invitations,
 			"the re-created channel starts fresh — no invites carried over")
 
 		// Suppress unused if the protocol import drifts.
