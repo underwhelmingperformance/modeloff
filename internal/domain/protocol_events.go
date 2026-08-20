@@ -73,6 +73,7 @@ func (ChannelFullError) isProtocolEvent()          {}
 func (TooManyJoinTargetsError) isProtocolEvent()   {}
 func (ErroneousChannelNameError) isProtocolEvent() {}
 func (ErroneousNicknameError) isProtocolEvent()    {}
+func (ErroneousPersonaError) isProtocolEvent()     {}
 func (CannotSendToChannelError) isProtocolEvent()  {}
 func (UnknownCommandError) isProtocolEvent()       {}
 func (UnknownConfigKeyError) isProtocolEvent()     {}
@@ -96,6 +97,7 @@ func (ChannelFullError) domainEvent()          {}
 func (TooManyJoinTargetsError) domainEvent()   {}
 func (ErroneousChannelNameError) domainEvent() {}
 func (ErroneousNicknameError) domainEvent()    {}
+func (ErroneousPersonaError) domainEvent()     {}
 func (CannotSendToChannelError) domainEvent()  {}
 func (UnknownCommandError) domainEvent()       {}
 func (UnknownConfigKeyError) domainEvent()     {}
@@ -242,6 +244,21 @@ type ErroneousChannelNameError struct {
 
 func (e ErroneousChannelNameError) Error() string {
 	return fmt.Sprintf("%q is not a valid channel name: %s", e.Channel, e.Reason)
+}
+
+// ErroneousPersonaError refuses a persona description that fails
+// [ValidatePersona]. A persona is app-supplied instruction, carried
+// in the model's system prompt, so the server checks it where it
+// enters and does not trust the caller to have checked it first.
+// `Reason` carries which bound it failed, so renderers and
+// tool-result formatters can say so without reparsing the message.
+type ErroneousPersonaError struct {
+	Reason PersonaRejection
+	At     time.Time
+}
+
+func (e ErroneousPersonaError) Error() string {
+	return fmt.Sprintf("persona is not allowed: %s", e.Reason)
 }
 
 // ErroneousNicknameError refuses a nick that fails the RFC 2812

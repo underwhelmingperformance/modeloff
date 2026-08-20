@@ -2,6 +2,7 @@ package modelclient
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/memory"
 	"github.com/laney/modeloff/internal/protocol"
 )
 
@@ -280,7 +282,7 @@ func TestComposeTranscriptBudget_disabled_without_a_known_context_len(t *testing
 	replies := tokenSizedEvents(3, 100, at)
 	triggers := tokenSizedMessages(3, 100, at)
 
-	gotHistory, gotReplies, gotTriggers := composeTranscriptBudget(history, replies, triggers, 0)
+	gotHistory, gotReplies, gotTriggers := composeTranscriptBudget(nil, history, replies, triggers, 0)
 
 	require.Equal(t, history, gotHistory)
 	require.Equal(t, replies, gotReplies)
@@ -308,7 +310,7 @@ func TestComposeTranscriptBudget_backstop_then_split(t *testing.T) {
 	replies := tokenSizedEvents(3, 4, at)
 	triggers := tokenSizedMessages(3, 4, at)
 
-	gotHistory, gotReplies, gotTriggers := composeTranscriptBudget(history, replies, triggers, 10)
+	gotHistory, gotReplies, gotTriggers := composeTranscriptBudget(nil, history, replies, triggers, 10)
 
 	require.Equal(t, triggers[1:], gotTriggers, "triggers: newest two of three, trimmed against the full budget")
 	require.Equal(t, replies[2:], gotReplies, "replies: only the mandatory newest, once triggers spent nearly everything")
@@ -332,7 +334,7 @@ func TestComposeTranscriptBudget_invariant_at_floor_context(t *testing.T) {
 	replies := tokenSizedEvents(20, 15, at)
 	triggers := tokenSizedMessages(50, 15, at) // 750 tokens: fits the floor budget outright
 
-	gotHistory, gotReplies, gotTriggers := composeTranscriptBudget(history, replies, triggers, budget)
+	gotHistory, gotReplies, gotTriggers := composeTranscriptBudget(nil, history, replies, triggers, budget)
 
 	total := sumEventTokens(gotHistory) + sumEventTokens(gotReplies) + sumMessageTokens(gotTriggers)
 	require.LessOrEqual(t, total, budget)
@@ -363,7 +365,7 @@ func TestComposeTranscriptBudget_full_rings_large_burst_at_8192(t *testing.T) {
 	replies := tokenSizedEvents(modelHistorySize, 2, at)
 	triggers := tokenSizedMessages(257, 29, at)
 
-	gotHistory, gotReplies, gotTriggers := composeTranscriptBudget(history, replies, triggers, budget)
+	gotHistory, gotReplies, gotTriggers := composeTranscriptBudget(nil, history, replies, triggers, budget)
 
 	total := sumEventTokens(gotHistory) + sumEventTokens(gotReplies) + sumMessageTokens(gotTriggers)
 	require.LessOrEqual(t, total, budget)
@@ -372,6 +374,104 @@ func TestComposeTranscriptBudget_full_rings_large_burst_at_8192(t *testing.T) {
 	require.Equal(t, triggers[257-144:], gotTriggers, "144 of 257 triggers fit the full budget")
 	require.Equal(t, replies[modelHistorySize-4:], gotReplies, "4 of 500 replies fit what triggers left")
 	require.Equal(t, history[modelHistorySize-4:], gotHistory, "4 of 500 history events fit what replies left")
+}
+
+// fullContextReplies renders the largest context block
+// [contextReplies] can produce: a 300-character topic, and the whole
+// memory allowance [capMemoriesForPrompt] admits (50 entries whose
+// key and content together come to exactly maxMemoryBytes, so
+// nothing is truncated).
+func fullContextReplies(t *testing.T) []protocol.IRCMessage {
+	t.Helper()
+
+	cw := domain.NewChannelWindow("#dev", time.Time{})
+	cw.Topic = strings.Repeat("t", 300)
+	cw.TopicSetBy = "alice"
+
+	const keyLen = 3
+
+	memories := make([]memory.Entry, maxMemoryEntries)
+	for i := range memories {
+		memories[i] = memory.Entry{
+			Key:     fmt.Sprintf("k%02d", i),
+			Content: strings.Repeat("x", maxMemoryBytes/maxMemoryEntries-keyLen),
+		}
+	}
+
+	return contextReplies(cw, memories)
+}
+
+// TestComposeTranscriptBudget_charges_the_context_lines_first covers
+// the turn's one unbounded-by-position piece: the context lines are
+// never trimmed, so a turn stays inside its budget only if their
+// cost is taken off the top before the other three pieces are
+// apportioned. Added to the composed total afterwards, a full memory
+// block is roughly a quarter of an 8192-token model's transcript
+// allowance, spent out of the headroom reserved for the system
+// prompt, the tool schemas and the model's reply.
+func TestComposeTranscriptBudget_charges_the_context_lines_first(t *testing.T) {
+	t.Parallel()
+
+	budget := tokenBudgetForContextLen(8_192)
+	require.Equal(t, 8_192-turnHeadroomTokens, budget)
+
+	at := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	contextLines := fullContextReplies(t)
+	require.Equal(t, 1139, sumMessageTokens(contextLines), "a 300-character topic plus the full memory allowance")
+
+	// Both rings hold more than the budget can take, so what each
+	// one keeps is decided by the share left to it.
+	history := tokenSizedEvents(modelHistorySize, 15, at)
+	replies := tokenSizedEvents(modelHistorySize, 15, at)
+	triggers := tokenSizedMessages(50, 15, at) // 750 tokens: fits what the context lines left
+
+	gotHistory, gotReplies, gotTriggers := composeTranscriptBudget(contextLines, history, replies, triggers, budget)
+
+	total := sumMessageTokens(contextLines) +
+		sumEventTokens(gotHistory) +
+		sumEventTokens(gotReplies) +
+		sumMessageTokens(gotTriggers)
+	require.LessOrEqual(t, total, budget, "everything the turn carries fits the budget, context lines included")
+
+	// 4192 - 1139 context - 750 triggers leaves 2303; replies take
+	// half of that (76 events at 15 tokens = 1140), and history takes
+	// the 1163 remaining (77 events = 1155).
+	require.Equal(t, triggers, gotTriggers, "the whole trigger block fits what the context lines left")
+	require.Equal(t, replies[modelHistorySize-76:], gotReplies, "the newest 76 fit half of what triggers left")
+	require.Equal(t, history[modelHistorySize-77:], gotHistory, "the newest 77 fit what replies left")
+}
+
+// TestComposeTranscriptBudget_context_lines_crowd_out_the_floor is
+// the same charge at the floor budget, where a full memory block
+// costs more than the whole transcript allowance
+// ([minTranscriptTokenBudget] is 1000 tokens and
+// [maxMemoryBytes] alone is 4000 bytes). Every other piece is cut to
+// the single newest entry [trimToTokenBudget] always keeps, so a
+// tiny-context model spends its transcript on what it remembers and
+// sees almost nothing of the channel. That is a visible consequence
+// of one allowance rather than a silent overrun of it: the two caps
+// are set independently and the floor is where they meet.
+func TestComposeTranscriptBudget_context_lines_crowd_out_the_floor(t *testing.T) {
+	t.Parallel()
+
+	budget := tokenBudgetForContextLen(1_500)
+	require.Equal(t, minTranscriptTokenBudget, budget, "1_500 - turnHeadroomTokens is below the floor")
+
+	at := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	contextLines := fullContextReplies(t)
+	require.Greater(t, sumMessageTokens(contextLines), budget, "the context lines outrun the floor budget on their own")
+
+	history := tokenSizedEvents(20, 15, at)
+	replies := tokenSizedEvents(20, 15, at)
+	triggers := tokenSizedMessages(20, 15, at)
+
+	gotHistory, gotReplies, gotTriggers := composeTranscriptBudget(contextLines, history, replies, triggers, budget)
+
+	require.Equal(t, triggers[19:], gotTriggers, "triggers: the mandatory newest and nothing more")
+	require.Equal(t, replies[19:], gotReplies, "replies: the mandatory newest and nothing more")
+	require.Equal(t, history[19:], gotHistory, "history: the mandatory newest and nothing more")
 }
 
 // TestHistory_snapshotReplies_is_defensive_copy proves the dispatch

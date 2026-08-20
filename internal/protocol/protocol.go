@@ -215,6 +215,11 @@ const (
 // ditransitive events where actor and subject differ (KICK names
 // the kicked nick; INVITE names the invitee). `InstanceID` is
 // stripped before the envelope reaches the model.
+//
+// `At` is omitted when zero. Every event carries the time it
+// happened, and a server reply describing current state, such as the
+// line carrying an instance's stored memories, describes no point in
+// time at all.
 type IRCMessage struct {
 	Kind       MessageKind       `json:"kind"`
 	From       string            `json:"from"`
@@ -222,7 +227,7 @@ type IRCMessage struct {
 	Target     string            `json:"target"`
 	Subject    string            `json:"subject,omitempty"`
 	Body       string            `json:"body,omitempty"`
-	At         time.Time         `json:"at"`
+	At         time.Time         `json:"at,omitzero"`
 }
 
 // FromChannelEvent converts a model-visible channel event into an

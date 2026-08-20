@@ -152,6 +152,64 @@ func (r ChannelNameRejection) String() string {
 	return "rejected"
 }
 
+// PersonaMaxLen bounds a persona description. A persona is one line
+// describing an IRC regular, which is what the app asks the small
+// model for and what the `/config persona` help text describes.
+const PersonaMaxLen = 400
+
+// PersonaRejection names why [ValidatePersona] refused a persona
+// description. The zero value, [PersonaAccepted], means it did not.
+type PersonaRejection int
+
+const (
+	// PersonaAccepted means the description is within the bound.
+	PersonaAccepted PersonaRejection = iota
+	// PersonaTooLong means the description is longer than
+	// [PersonaMaxLen].
+	PersonaTooLong
+	// PersonaControlCharacter means the description contains a
+	// control character.
+	PersonaControlCharacter
+)
+
+func (r PersonaRejection) String() string {
+	switch r {
+	case PersonaAccepted:
+		return "accepted"
+	case PersonaTooLong:
+		return "too long"
+	case PersonaControlCharacter:
+		return "may not contain control characters"
+	}
+
+	return "rejected"
+}
+
+// ValidatePersona bounds a persona description. An empty description
+// is accepted: a persona is optional, and an instance without one
+// carries no persona line at all.
+//
+// A persona is the one input to a model's system prompt that is not
+// otherwise constrained, so this is what its trust rests on. The
+// length bound keeps it to the one line it is meant to be, and
+// refusing control characters keeps it to a single line in the
+// literal sense: a description carrying newlines could lay out
+// headings and sections that read as further instructions from the
+// app rather than as the sentence describing who this instance is.
+func ValidatePersona(description string) PersonaRejection {
+	if len(description) > PersonaMaxLen {
+		return PersonaTooLong
+	}
+
+	for i := range len(description) {
+		if description[i] < 0x20 || description[i] == 0x7f {
+			return PersonaControlCharacter
+		}
+	}
+
+	return PersonaAccepted
+}
+
 // ValidateChannelName checks a channel name against RFC 2812 §1.3.
 // Callers that mean to accept a bare name and let the server supply
 // the prefix run [NormaliseChannelName] first.

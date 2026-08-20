@@ -38,10 +38,10 @@ func noEnsure(context.Context, domain.ModelID) error { return nil }
 //
 // `tokenBudget` is the turn's transcript token budget (see
 // [history.TokenBudget]). [composeTranscriptBudget] spends it once
-// across `historyEvents`, `replyEvents` and `events` together before
-// any of them is rendered — trimming the three independently would
-// let each fit its own share of the budget while their sum still
-// overran the model's context.
+// across the context lines, `historyEvents`, `replyEvents` and
+// `events` together before any of them is rendered. Trimming them
+// independently would let each fit its own share of the budget while
+// their sum still overran the model's context.
 func dispatchToInstance(
 	ctx context.Context,
 	sess Session,
@@ -59,8 +59,6 @@ func dispatchToInstance(
 	events []protocol.IRCMessage,
 	tokenBudget int,
 ) error {
-	historyEvents, replyEvents, events = composeTranscriptBudget(historyEvents, replyEvents, events, tokenBudget)
-
 	nick := inst.Nick()
 
 	runner := observability.SpanRunner{
@@ -77,6 +75,15 @@ func dispatchToInstance(
 	}
 
 	return runner.Run(ctx, "modelclient.dispatch_to_instance", attrs, func(ctx context.Context, span trace.Span) error {
+		memories, err := memoriesForInstance(ctx, memStore, inst.ID())
+		if err != nil {
+			return fmt.Errorf("read memories for %s: %w", nick, err)
+		}
+
+		contextLines := contextReplies(window, memories)
+
+		historyEvents, replyEvents, events = composeTranscriptBudget(contextLines, historyEvents, replyEvents, events, tokenBudget)
+
 		type timedMessage struct {
 			at  time.Time
 			msg protocol.IRCMessage
@@ -106,21 +113,18 @@ func dispatchToInstance(
 			return timeline[i].at.Before(timeline[j].at)
 		})
 
-		history := make([]protocol.IRCMessage, len(timeline))
-		for i, tm := range timeline {
-			history[i] = tm.msg
+		history := make([]protocol.IRCMessage, 0, len(timeline)+len(contextLines))
+		for _, tm := range timeline {
+			history = append(history, tm.msg)
 		}
+
+		history = append(history, contextLines...)
 
 		if err := ensure(ctx, inst.ModelID); err != nil {
 			return errWithKind(fmt.Errorf("send events to %s: %w", nick, err), classifyEnsureModelError(err))
 		}
 
-		memories, err := memoriesForInstance(ctx, memStore, inst.ID())
-		if err != nil {
-			return fmt.Errorf("read memories for %s: %w", nick, err)
-		}
-
-		prompt := buildSystemPrompt(window, inst, memories)
+		prompt := buildSystemPrompt(window, inst)
 
 		var mem MemoryExecutor
 		if memStore != nil {

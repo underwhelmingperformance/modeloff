@@ -2994,9 +2994,20 @@ func TestSession_Dispatch_includes_memory_in_prompt(t *testing.T) {
 		}))
 
 		fake := &fakeAPIClient{
-			sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, system string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+			sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, system string, history []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+				// The persona is the app's own statement of who this
+				// instance is, so it is in the system prompt. A memory
+				// is text the instance stored, so it rides in the
+				// transcript as a server reply the model reads as
+				// data.
+				memoryLine := protocol.IRCMessage{
+					Kind:   protocol.KindServerReply,
+					Target: "#general",
+					Body:   "your stored memories: [mood=curious]",
+				}
+
 				if strings.Contains(system, "Your persona: Helpful assistant") &&
-					strings.Contains(system, "[mood=curious]") {
+					slices.Contains(history, memoryLine) {
 					return msgToolCalls(t, domain.ChannelName(events[0].Target), "memory and persona received"), nil
 				}
 

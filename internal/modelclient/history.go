@@ -158,24 +158,30 @@ func trimMessagesToTokenBudget(msgs []protocol.IRCMessage, budget int) []protoco
 }
 
 // composeTranscriptBudget spends a turn's transcript token budget
-// once, across the three pieces that make it up. Trimming each of
+// once, across the four pieces that make it up. Trimming each of
 // them independently, each against the full budget, is how a channel
 // ring at 4185 tokens, a replies ring at another 4185, and an
 // unbounded trigger block together overran an 8192-token model's
 // entire context, even though each individual piece looked correctly
 // bounded in isolation.
 //
+// `contextLines` is what [contextReplies] renders: the channel topic
+// and the instance's memories. The turn always carries them whole,
+// so they are never trimmed; their cost comes off the top and the
+// other three are apportioned out of what is left.
+// [capMemoriesForPrompt] is what keeps that first charge bounded.
+//
 // Triggers are what the turn is about, so they are costed and
-// trimmed first, against the full budget — a backstop for a
-// pathological burst (see [drain], which can coalesce up to a
-// channel's full send-queue allowance into one trigger block). What
-// triggers leave unspent is split between replies and history:
-// replies get up to half of it, and history gets whatever neither of
-// the other two claimed. That remainder can be zero or negative once
-// a large trigger block has spent most or all of the budget;
-// [trimToTokenBudget] and [trimMessagesToTokenBudget] both handle
-// that on their own, by keeping each piece's mandatory newest item —
-// no special case is needed here for it.
+// trimmed next, against everything the context lines left. That is a
+// backstop for a pathological burst (see [drain], which can coalesce
+// up to a channel's full send-queue allowance into one trigger
+// block). What triggers leave unspent is split between replies and
+// history: replies get up to half of it, and history gets whatever
+// neither of the other two claimed. Any of those shares can be zero
+// or negative once an earlier piece has spent most or all of the
+// budget; [trimToTokenBudget] and [trimMessagesToTokenBudget] both
+// handle that on their own, by keeping each piece's mandatory newest
+// item, so no special case is needed here for it.
 //
 // A non-positive budget for the whole turn disables every trim,
 // leaving each piece's own [modelHistorySize] event-count cap as the
@@ -183,6 +189,7 @@ func trimMessagesToTokenBudget(msgs []protocol.IRCMessage, budget int) []protoco
 // is unknown. This is the one place that check belongs: nothing
 // downstream re-applies it per piece.
 func composeTranscriptBudget(
+	contextLines []protocol.IRCMessage,
 	history []domain.StoredEvent,
 	replies []domain.StoredEvent,
 	triggers []protocol.IRCMessage,
@@ -191,6 +198,8 @@ func composeTranscriptBudget(
 	if budget <= 0 {
 		return history, replies, triggers
 	}
+
+	budget -= sumMessageTokens(contextLines)
 
 	trimmedTriggers = trimMessagesToTokenBudget(triggers, budget)
 	remaining := budget - sumMessageTokens(trimmedTriggers)

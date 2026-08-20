@@ -335,11 +335,13 @@ func (c *OpenRouterClient) ContinueWithToolResults(
 	return result, nil
 }
 
-// messageRole is the openai role a coalesced run emits under.
+// messageRole is the openai role a coalesced transcript run emits
+// under. The system role is not one of them: the system message is
+// the app's own prompt, emitted once ahead of every run, so no
+// transcript line can reach the privileged role.
 type messageRole string
 
 const (
-	roleSystem    messageRole = "system"
 	roleUser      messageRole = "user"
 	roleAssistant messageRole = "assistant"
 )
@@ -354,13 +356,34 @@ type messageRun struct {
 	parts []string
 }
 
+// buildMessages renders a turn's input as openai chat messages: the
+// app-authored system prompt, then the transcript.
+//
+// Only the system prompt takes the system role. Everything the
+// instance itself said takes the assistant role, and everything else
+// takes the user role as a JSON envelope naming the kind and the
+// sender: a peer's chat traffic, a join or a part, a poke, and a
+// server reply the instance asked for (WHOIS, LIST) or the server
+// pushed at it. A WHOIS answer quotes the target's persona and a
+// LIST answer quotes each channel's topic, both of them free text
+// some other client wrote, so a transcript line reaching the system
+// role would let any client write instructions the model reads as
+// the app's own.
+//
+// The tool role would be the exact fit for the answer to a command
+// the instance itself issued. A tool message has to name the
+// `tool_call_id` of a tool call in a preceding assistant message,
+// and the transcript replays earlier turns as text with no tool
+// calls in it, so a replayed reply has no id to name. Tool results
+// within a turn do keep the tool role, which
+// [OpenRouterClient.ContinueWithToolResults] gives them.
 func buildMessages(
 	systemPrompt string,
 	selfInstanceID domain.InstanceID,
 	history []protocol.IRCMessage,
 	events []protocol.IRCMessage,
 ) []openai.ChatCompletionMessageParamUnion {
-	runs := []messageRun{{role: roleSystem, parts: []string{systemPrompt}}}
+	var runs []messageRun
 
 	addPart := func(role messageRole, text string) {
 		if last := len(runs) - 1; last >= 0 && runs[last].role == role {
@@ -371,13 +394,6 @@ func buildMessages(
 	}
 
 	appendMsg := func(m protocol.IRCMessage) {
-		// POKE directives and SERVER_REPLY context lines are
-		// session-side; emit them as readable system-role text.
-		if m.Kind == protocol.KindPoke || m.Kind == protocol.KindServerReply {
-			addPart(roleSystem, m.Body)
-			return
-		}
-
 		isSelf := selfInstanceID != "" && m.InstanceID == selfInstanceID
 
 		// Strip the internal instance ID before marshalling so it
@@ -387,9 +403,10 @@ func buildMessages(
 		data, _ := json.Marshal(m)
 		if isSelf {
 			addPart(roleAssistant, string(data))
-		} else {
-			addPart(roleUser, string(data))
+			return
 		}
+
+		addPart(roleUser, string(data))
 	}
 
 	for _, h := range history {
@@ -404,7 +421,9 @@ func buildMessages(
 		appendMsg(e)
 	}
 
-	msgs := make([]openai.ChatCompletionMessageParamUnion, 0, len(runs))
+	msgs := make([]openai.ChatCompletionMessageParamUnion, 0, len(runs)+1)
+	msgs = append(msgs, openai.SystemMessage(systemPrompt))
+
 	for _, r := range runs {
 		msgs = append(msgs, runToMessage(r))
 	}
@@ -414,18 +433,6 @@ func buildMessages(
 
 func runToMessage(r messageRun) openai.ChatCompletionMessageParamUnion {
 	switch r.role {
-	case roleSystem:
-		if len(r.parts) == 1 {
-			return openai.SystemMessage(r.parts[0])
-		}
-
-		parts := make([]openai.ChatCompletionContentPartTextParam, len(r.parts))
-		for i, p := range r.parts {
-			parts[i] = openai.ChatCompletionContentPartTextParam{Text: p}
-		}
-
-		return openai.SystemMessage(parts)
-
 	case roleAssistant:
 		if len(r.parts) == 1 {
 			return openai.AssistantMessage(r.parts[0])

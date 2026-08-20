@@ -269,13 +269,27 @@ func (c *OpenRouterClient) GeneratePersonas(ctx context.Context, smallModel doma
 				return &completionParseError{target: "persona list", err: err}
 			}
 
-			personas = make([]domain.Persona, len(wrapper.Personas))
-			for i, p := range wrapper.Personas {
-				personas[i] = domain.Persona{
+			// A generated persona goes on to become the app's own
+			// instruction in an instance's system prompt, so what
+			// the small model returns is bounded here rather than
+			// taken as written. One unusable persona does not spoil
+			// the batch: the pool is drawn from whatever passed.
+			personas = make([]domain.Persona, 0, len(wrapper.Personas))
+			for _, p := range wrapper.Personas {
+				if reason := domain.ValidatePersona(p.Description); reason != domain.PersonaAccepted {
+					logger.WarnContext(ctx, "discarding generated persona",
+						"persona_id", p.ID,
+						"reason", reason,
+					)
+
+					continue
+				}
+
+				personas = append(personas, domain.Persona{
 					ID:          p.ID,
 					Description: p.Description,
 					Origin:      domain.PersonaGenerated,
-				}
+				})
 			}
 
 			usage := usageFromResponse(resp.Usage)
