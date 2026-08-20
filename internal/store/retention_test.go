@@ -348,3 +348,100 @@ func TestSQLitePragmaDSN_sets_incremental_auto_vacuum(t *testing.T) {
 	require.NoError(t, s.db.QueryRowContext(t.Context(), "PRAGMA auto_vacuum").Scan(&mode))
 	require.Equal(t, 2, mode, "2 is SQLite's auto_vacuum=incremental")
 }
+
+// TestSQLiteStore_pruneEvents_trims_every_dm_pair pins that a DM
+// thread's retention is measured per pair of correspondents, not per
+// instance against the user. A model addresses another model with the
+// `msg` tool, so a thread neither end of which is the user is
+// reachable and grows like any other; a pass that only ever paired an
+// instance with the user would leave it growing without bound.
+func TestSQLiteStore_pruneEvents_trims_every_dm_pair(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	const (
+		alphaID domain.InstanceID = "inst-alpha"
+		betaID  domain.InstanceID = "inst-beta"
+	)
+
+	require.NoError(t, s.SaveInstance(ctx, domain.NewModelInstance(alphaID, "alpha", "test/model", "", nil)))
+	require.NoError(t, s.SaveInstance(ctx, domain.NewModelInstance(betaID, "beta", "test/model", "", nil)))
+
+	total := eventRetentionHeadroom + 37
+	ids := make([]int64, total)
+
+	for i := range total {
+		at := testTime.Add(time.Duration(i) * time.Second)
+
+		from, to := alphaID, betaID
+		fromNick := domain.Nick("alpha")
+
+		if i%2 == 1 {
+			from, to = betaID, alphaID
+			fromNick = "beta"
+		}
+
+		id, err := s.AppendEvent(ctx, domain.ChannelName(to), domain.Message{
+			Target:     domain.ChannelName(to),
+			From:       fromNick,
+			InstanceID: from,
+			Body:       "hi",
+			At:         at,
+		})
+		require.NoError(t, err)
+
+		ids[i] = id
+	}
+
+	require.NoError(t, s.pruneEvents(ctx))
+
+	count, err := s.CountDMEventsFrom(ctx, alphaID, betaID, nil)
+	require.NoError(t, err)
+	require.Equal(t, eventRetentionHeadroom, count)
+
+	got, err := s.DMEventsBefore(ctx, alphaID, betaID, nil, eventRetentionHeadroom)
+	require.NoError(t, err)
+
+	gotIDs := make([]int64, len(got))
+	for i, e := range got {
+		gotIDs[i] = e.ID
+	}
+	require.Equal(t, ids[len(ids)-eventRetentionHeadroom:], gotIDs,
+		"the newest eventRetentionHeadroom messages of the pair survive")
+}
+
+// TestSQLiteStore_pruneEvents_trims_a_thread_a_client_holds_with_itself
+// covers the pair a client forms with itself, which `/msg` against
+// your own nick produces: both ends of the row carry the same id, so
+// the pair's two halves are the same predicate written twice. It
+// trims like any other thread.
+func TestSQLiteStore_pruneEvents_trims_a_thread_a_client_holds_with_itself(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	total := eventRetentionHeadroom + 9
+	ids := make([]int64, total)
+
+	for i := range total {
+		id, err := s.AppendEvent(ctx, "", domain.Message{
+			Target: "",
+			From:   "iain",
+			Body:   "note to self",
+			At:     testTime.Add(time.Duration(i) * time.Second),
+		})
+		require.NoError(t, err)
+
+		ids[i] = id
+	}
+
+	require.NoError(t, s.pruneEvents(ctx))
+
+	got, err := s.DMEventsBefore(ctx, "", "", nil, eventRetentionHeadroom+total)
+	require.NoError(t, err)
+
+	gotIDs := make([]int64, len(got))
+	for i, e := range got {
+		gotIDs[i] = e.ID
+	}
+	require.Equal(t, ids[len(ids)-eventRetentionHeadroom:], gotIDs)
+}

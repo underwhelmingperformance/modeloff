@@ -60,8 +60,9 @@ const cursorExclusion = `id NOT IN (
 
 // pruneEvents runs the store's retention pass over the events table:
 // pruneOrphanChannelEvents first removes rows no consumer can reach
-// at all, then every live channel and every known DM counterpart's
-// thread is trimmed down to eventRetentionHeadroom rows.
+// at all, then every live channel and every pair of DM
+// correspondents' thread is trimmed down to eventRetentionHeadroom
+// rows.
 //
 // It runs once, here, rather than on a recurring timer. A background
 // pass would need its own goroutine, a cancellation path, and a slot
@@ -105,17 +106,16 @@ func (s *SQLiteStore) pruneEvents(ctx context.Context) error {
 			channelTrimmed += n
 		}
 
-		instanceIDs, err := queryRows(ctx, s.db, `SELECT instance_id FROM instances ORDER BY instance_id`, nil,
-			scalarColumn[domain.InstanceID]())
+		pairs, err := s.dmPairs(ctx)
 		if err != nil {
-			return fmt.Errorf("list instances: %w", err)
+			return fmt.Errorf("list dm pairs: %w", err)
 		}
 
 		var dmTrimmed int64
-		for _, id := range instanceIDs {
-			n, err := s.pruneDMEvents(ctx, id)
+		for _, pair := range pairs {
+			n, err := s.pruneDMEvents(ctx, pair)
 			if err != nil {
-				return fmt.Errorf("prune dm thread %q events: %w", id, err)
+				return fmt.Errorf("prune dm thread between %q and %q: %w", pair.self, pair.peer, err)
 			}
 			dmTrimmed += n
 		}
@@ -277,22 +277,71 @@ func (s *SQLiteStore) pruneChannelEvents(ctx context.Context, ch domain.ChannelN
 	return deleteEventsBatched(ctx, s.db, query, []any{ch, ch, eventRetentionHeadroom})
 }
 
-// pruneDMEvents trims the message rows of the DM thread between the
-// user and peer down to eventRetentionHeadroom, matching the shape
-// DMEventsBefore reads: `(channel = peer, dm_instance_id = "")` for a
-// line the user sent, or `(channel = "", dm_instance_id = peer)` for
-// one peer sent back.
+// dmCorrespondents is one unordered pair of clients with a DM thread
+// between them, normalised so `self` is the BINARY-smaller of the two
+// ids. Normalising is what makes the pair one conversation: without
+// it the two directions of a thread enumerate as two pairs and each
+// gets trimmed against the headroom on its own.
+type dmCorrespondents struct {
+	self domain.InstanceID
+	peer domain.InstanceID
+}
+
+// dmPairs enumerates the distinct pairs of correspondents present in
+// DM-shaped event rows.
 //
-// The peer's actor-scoped events (quit, nick_change) that
+// A DM row names both of them: `channel` carries the recipient's
+// InstanceID and the generated `dm_instance_id` column carries the
+// sender's. The pair therefore comes off the row itself, which is
+// what makes a thread between two models visible here; the instances
+// table names each client but says nothing about who talked to whom.
+// Channel activity is excluded by the same channel-prefix test
+// pruneOrphanDMEvents uses, since its `channel` column names a real
+// channel and its `dm_instance_id` is only the sender.
+//
+// A row whose two ids are equal, which `/msg` against your own nick
+// writes, enumerates as a pair with itself, and the thread predicate
+// below then reads as the same half twice, which trims it correctly.
+func (s *SQLiteStore) dmPairs(ctx context.Context) ([]dmCorrespondents, error) {
+	prefixes := []rune(domain.ChannelPrefixes)
+	placeholders := make([]string, len(prefixes))
+	args := make([]any, len(prefixes))
+
+	for i, r := range prefixes {
+		placeholders[i] = "?"
+		args[i] = string(r)
+	}
+
+	query := `SELECT DISTINCT
+			min(channel, dm_instance_id) AS self,
+			max(channel, dm_instance_id) AS peer
+		FROM events
+		WHERE substr(channel, 1, 1) NOT IN (` + strings.Join(placeholders, ",") + `)
+		ORDER BY self, peer`
+
+	return queryRows(ctx, s.db, query, args, func(r rowScanner) (dmCorrespondents, error) {
+		var pair dmCorrespondents
+
+		err := r.Scan(&pair.self, &pair.peer)
+
+		return pair, err
+	})
+}
+
+// pruneDMEvents trims the message rows of one pair's DM thread down
+// to eventRetentionHeadroom, matching the shape DMEventsBefore reads:
+// `(channel = peer, dm_instance_id = self)` for a line self sent, or
+// `(channel = self, dm_instance_id = peer)` for one peer sent back.
+//
+// The pair's actor-scoped events (quit, nick_change) that
 // DMEventsBefore also replays into the thread are not counted here.
-// Their `channel` column names the real channel the peer was in, not
+// Their `channel` column names the real channel the actor was in, not
 // the DM, so they are governed by that channel's own
 // pruneChannelEvents pass; eventRetentionHeadroom is generously past
 // what either read needs, so leaving them out of the DM count does
 // not risk trimming a thread down to fewer than the 500 events a
 // model's attach-time load actually asks for.
-func (s *SQLiteStore) pruneDMEvents(ctx context.Context, peer domain.InstanceID) (int64, error) {
-	const self = domain.InstanceID("")
+func (s *SQLiteStore) pruneDMEvents(ctx context.Context, pair dmCorrespondents) (int64, error) {
 	const thread = `(channel = ? AND dm_instance_id = ?) OR (channel = ? AND dm_instance_id = ?)`
 
 	query := `DELETE FROM events WHERE id IN (
@@ -303,8 +352,8 @@ func (s *SQLiteStore) pruneDMEvents(ctx context.Context, peer domain.InstanceID)
 	)`
 
 	args := []any{
-		peer, self, self, peer, // outer predicate
-		peer, self, self, peer, // inner top-N subquery
+		pair.peer, pair.self, pair.self, pair.peer, // outer predicate
+		pair.peer, pair.self, pair.self, pair.peer, // inner top-N subquery
 		eventRetentionHeadroom,
 	}
 
