@@ -147,7 +147,7 @@ func TestChatScreen_Init_empty(t *testing.T) {
 		"✗", "No channels joined",
 		"/join #general",
 		"Set an API key first",
-		"^D, ^U, ^O",
+		"M-↓, M-↑, ^O",
 		"No channels",
 		">",
 	)
@@ -980,7 +980,7 @@ func TestChatScreen_KeyBindings_collect_active_bindings(t *testing.T) {
 	_, status := uitest.SplitBodyAndStatus(tm.CurrentView())
 
 	tokens := strings.Fields(status)
-	require.Subset(t, tokens, []string{"^D/^U", "^O", "↵", "^W", "^C"},
+	require.Subset(t, tokens, []string{"M-↓/M-↑", "^O", "↵", "^W", "^C"},
 		"status bar must surface core navigation, submit and quit bindings")
 }
 

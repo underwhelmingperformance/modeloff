@@ -1,8 +1,13 @@
 package ui
 
 import (
+	"time"
+
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+
+	"github.com/laney/modeloff/internal/ui/theme"
 )
 
 // ScreenMsg tells Root to switch the active screen. Root only
@@ -36,7 +41,8 @@ type QuitCompleteMsg struct {
 
 // AppKeyMap defines application-level keybindings handled by Root.
 type AppKeyMap struct {
-	Quit KeyBinding
+	Quit        KeyBinding
+	ToggleMouse KeyBinding
 }
 
 // DefaultAppKeyMap is the default set of application-level
@@ -46,7 +52,18 @@ var DefaultAppKeyMap = AppKeyMap{
 		key.WithKeys("ctrl+c"),
 		key.WithHelp("^C", "quit"),
 	)),
+	ToggleMouse: Bind(key.NewBinding(
+		key.WithKeys("alt+m"),
+		key.WithHelp("M-m", "mouse"),
+	)),
 }
+
+// quitConfirmWindow is how long a first Ctrl-C leaves the quit
+// confirmation armed, mirroring the "press again to quit" convention
+// many terminal IRC clients and multiplexers use in place of a
+// blocking confirm dialog. A second Ctrl-C within the window quits;
+// once it elapses, Ctrl-C starts over as a fresh first press.
+const quitConfirmWindow = 3 * time.Second
 
 // Root is the top-level model that acts as a router between screens.
 // It implements tea.Model and bridges to child screens that implement
@@ -56,13 +73,22 @@ type Root struct {
 	height int
 	screen Model
 	keyMap AppKeyMap
+
+	mouseEnabled bool
+	quitArmedAt  time.Time
+	now          func() time.Time
 }
 
 // NewRoot creates the top-level Root model with the given initial
 // screen. If screen is nil, Root renders an empty view until a
 // ScreenMsg arrives.
 func NewRoot(screen Model) Root {
-	return Root{screen: screen, keyMap: DefaultAppKeyMap}
+	return Root{
+		screen:       screen,
+		keyMap:       DefaultAppKeyMap,
+		mouseEnabled: true,
+		now:          time.Now,
+	}
 }
 
 // Init implements tea.Model.
@@ -83,9 +109,24 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		if Matches(msg, r.keyMap.Quit) {
-			return r, func() tea.Msg {
-				return QuitRequestedMsg{Message: "client exited"}
+			if r.quitArmed() {
+				return r, func() tea.Msg {
+					return QuitRequestedMsg{Message: "client exited"}
+				}
 			}
+
+			r.quitArmedAt = r.now()
+
+			return r, nil
+		}
+
+		if Matches(msg, r.keyMap.ToggleMouse) {
+			r.mouseEnabled = !r.mouseEnabled
+			if r.mouseEnabled {
+				return r, tea.EnableMouseCellMotion
+			}
+
+			return r, tea.DisableMouse
 		}
 
 	case ScreenMsg:
@@ -109,17 +150,41 @@ func (r Root) View() string {
 		return ""
 	}
 
-	return r.screen.View(r.width, r.height)
+	var banners []string
+
+	if !r.mouseEnabled {
+		banners = append(banners, theme.Dim.Render(
+			"Mouse tracking off (Alt+M re-enables), use the terminal's own selection to copy"))
+	}
+
+	if r.quitArmed() {
+		banners = append(banners, theme.Warning.Render("Press Ctrl+C again to quit"))
+	}
+
+	if len(banners) == 0 {
+		return r.screen.View(r.width, r.height)
+	}
+
+	banner := lipgloss.JoinVertical(lipgloss.Left, banners...)
+	screenHeight := max(r.height-lipgloss.Height(banner), 0)
+
+	return lipgloss.JoinVertical(lipgloss.Left, banner, r.screen.View(r.width, screenHeight))
+}
+
+// quitArmed reports whether a first Ctrl-C is still within its
+// confirmation window, awaiting a second press to actually quit.
+func (r Root) quitArmed() bool {
+	return !r.quitArmedAt.IsZero() && r.now().Sub(r.quitArmedAt) <= quitConfirmWindow
 }
 
 // KeyBindings implements Keybinding.
 func (r Root) KeyBindings() []KeyBinding {
 	if r.screen == nil {
-		return []KeyBinding{r.keyMap.Quit}
+		return []KeyBinding{r.keyMap.Quit, r.keyMap.ToggleMouse}
 	}
 
 	bindings := CollectKeyBindings(r.screen)
-	bindings = append(bindings, r.keyMap.Quit)
+	bindings = append(bindings, r.keyMap.Quit, r.keyMap.ToggleMouse)
 
 	return bindings
 }

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -15,7 +16,14 @@ import (
 // writer is the destination for OSC 52 sequences. Production writes
 // to stderr so the escape lands on the user's controlling terminal
 // regardless of where stdout is connected. Tests override it.
-var writer io.Writer = os.Stderr
+//
+// Bubble Tea runs each Cmd it returns on its own goroutine, so a
+// CopyCmd invocation and a concurrent SetWriter (or another CopyCmd)
+// can race on this package global; writerMu serialises access to it.
+var (
+	writerMu sync.RWMutex
+	writer   io.Writer = os.Stderr
+)
 
 // CopyCmd returns a tea.Cmd that copies text to the host terminal's
 // clipboard via an OSC 52 sequence. Empty input is a no-op (returns
@@ -31,7 +39,11 @@ func CopyCmd(text string) tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		_, _ = fmt.Fprintf(writer, "\x1b]52;c;%s\x07", base64.StdEncoding.EncodeToString([]byte(text)))
+		writerMu.RLock()
+		w := writer
+		writerMu.RUnlock()
+
+		_, _ = fmt.Fprintf(w, "\x1b]52;c;%s\x07", base64.StdEncoding.EncodeToString([]byte(text)))
 		return nil
 	}
 }
@@ -39,8 +51,14 @@ func CopyCmd(text string) tea.Cmd {
 // SetWriter overrides the destination for the OSC 52 sequence. Used
 // in tests to capture the emitted bytes.
 func SetWriter(w io.Writer) (restore func()) {
+	writerMu.Lock()
 	prev := writer
 	writer = w
+	writerMu.Unlock()
 
-	return func() { writer = prev }
+	return func() {
+		writerMu.Lock()
+		writer = prev
+		writerMu.Unlock()
+	}
 }

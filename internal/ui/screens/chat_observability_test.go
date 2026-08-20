@@ -46,7 +46,7 @@ func TestChatScreen_obs_drawer_open_view_fits_terminal(t *testing.T) {
 	tm.Submit("hello from #general")
 	tm.WaitFor("hello from #general")
 
-	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlL})
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}, Alt: true})
 
 	view := tm.WaitForViewContains("Logs", "Metrics", "hello from #general", "testuser >")
 

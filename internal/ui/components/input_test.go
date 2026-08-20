@@ -87,7 +87,7 @@ func TestInputBar_submit_rich_message_as_irc_formatting(t *testing.T) {
 	b := components.NewInputBar()
 	var m ui.Model = b
 
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}, Alt: true})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlB})
 	m = typeText(t, m, "bold")
 	_, cmd := enter(t, m)
 
@@ -159,14 +159,26 @@ func TestInputBar_home_end(t *testing.T) {
 	require.Equal(t, "XhelloY", inputValue(t, m))
 }
 
-func TestInputBar_ctrl_u_does_not_kill_to_start(t *testing.T) {
+func TestInputBar_ctrl_u_kills_to_line_start(t *testing.T) {
 	var m ui.Model = components.NewInputBar("")
 
 	m = typeText(t, m, "abcde")
 
-	// Ctrl+U is reserved for sidebar navigation and should not
-	// modify the input buffer.
+	// Move to position 2, then ctrl-u kills back to the start.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyHome})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlU})
+
+	require.Equal(t, "cde", inputValue(t, m))
+}
+
+func TestInputBar_ctrl_u_feeds_the_kill_ring(t *testing.T) {
+	var m ui.Model = components.NewInputBar("")
+
+	m = typeText(t, m, "abcde")
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlU})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
 
 	require.Equal(t, "abcde", inputValue(t, m))
 }
@@ -195,6 +207,58 @@ func TestInputBar_delete_key(t *testing.T) {
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDelete})
 
 	require.Equal(t, "bc", inputValue(t, m))
+}
+
+func TestInputBar_paste_with_newline_shows_flatten_hint(t *testing.T) {
+	var m ui.Model = components.NewInputBar("")
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("line one\nline two"), Paste: true})
+
+	require.Equal(t, "line one line two", inputValue(t, m))
+	require.Contains(t, renderedLines(m.View(60, 2)), "Pasted text flattened to one line")
+}
+
+func TestInputBar_paste_without_newline_shows_no_hint(t *testing.T) {
+	var m ui.Model = components.NewInputBar("")
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("no newline here"), Paste: true})
+
+	require.NotContains(t, renderedLines(m.View(60, 2)), "Pasted text flattened to one line")
+}
+
+func TestInputBar_paste_flatten_hint_clears_on_next_key(t *testing.T) {
+	var m ui.Model = components.NewInputBar("")
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a\nb"), Paste: true})
+	m = typeText(t, m, "x")
+
+	require.NotContains(t, renderedLines(m.View(60, 2)), "Pasted text flattened to one line")
+}
+
+func TestInputBar_history_excludes_config_api_key(t *testing.T) {
+	var m ui.Model = components.NewInputBar("")
+
+	m = typeText(t, m, "/config api-key sk-super-secret")
+	m, _ = enter(t, m)
+	m = typeText(t, m, "hello")
+	m, _ = enter(t, m)
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	require.Equal(t, "hello", inputValue(t, m))
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	require.Equal(t, "hello", inputValue(t, m),
+		"the api-key line must be excluded from history, leaving only one entry to recall")
+}
+
+func TestInputBar_word_left_moves_by_word(t *testing.T) {
+	var m ui.Model = components.NewInputBar("")
+
+	m = typeText(t, m, "one two three")
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}, Alt: true})
+	m = typeText(t, m, "X")
+
+	require.Equal(t, "one two Xthree", inputValue(t, m), "alt+b must move the cursor back one word, not toggle bold")
 }
 
 func TestInputBar_View_contains_prompt(t *testing.T) {
@@ -418,24 +482,33 @@ func TestInputBar_editing_shortcuts_work_after_history_recall(t *testing.T) {
 	require.Equal(t, "re: first ", inputValue(t, m))
 }
 
-func TestInputBar_ctrl_d_does_not_delete_forward(t *testing.T) {
+func TestInputBar_ctrl_d_deletes_char_forward(t *testing.T) {
 	var m ui.Model = components.NewInputBar("")
 
 	m = typeText(t, m, "abcde")
 
-	// Move to start, then Ctrl+D — reserved for sidebar navigation
-	// and should not delete the character under the cursor.
+	// Move to start, then ctrl-d deletes the character under the
+	// cursor, like the Delete key.
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyHome})
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
 
-	require.Equal(t, "abcde", inputValue(t, m))
+	require.Equal(t, "bcde", inputValue(t, m))
+}
+
+func TestInputBar_ctrl_d_at_end_is_a_no_op(t *testing.T) {
+	var m ui.Model = components.NewInputBar("")
+
+	m = typeText(t, m, "abc")
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
+
+	require.Equal(t, "abc", inputValue(t, m))
 }
 
 func TestInputBar_history_preserves_rich_formatting(t *testing.T) {
 	b := components.NewInputBar()
 	var m ui.Model = b
 
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}, Alt: true})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlB})
 	m = typeText(t, m, "bold")
 	m, _ = enter(t, m)
 
@@ -451,7 +524,7 @@ func TestInputBar_command_mode_disables_formatting_shortcuts(t *testing.T) {
 	var m ui.Model = b
 
 	m = typeText(t, m, "/join ")
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}, Alt: true})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlB})
 	m = typeText(t, m, "#general")
 	_, cmd := enter(t, m)
 
@@ -609,7 +682,7 @@ func TestInputBar_keybindings_include_rich_shortcuts(t *testing.T) {
 		"↵\x00send":            {},
 		"↑\x00history":         {},
 		"↓\x00history":         {},
-		"M-b\x00bold":          {},
+		"^B\x00bold":           {},
 		"M-i\x00italic":        {},
 		"M-u\x00underline":     {},
 		"M-r\x00reverse":       {},
@@ -621,6 +694,8 @@ func TestInputBar_keybindings_include_rich_shortcuts(t *testing.T) {
 		"^→\x00word →":         {},
 		"^W\x00del word":       {},
 		"^K\x00del → end":      {},
+		"^U\x00del → start":    {},
+		"^D\x00del char":       {},
 		"^Y\x00yank":           {},
 		"^T\x00transpose":      {},
 		"M-w\x00copy sel":      {},
@@ -639,6 +714,8 @@ func TestInputBar_keybindings_include_rich_shortcuts(t *testing.T) {
 		"^→\x00word →":         {},
 		"^W\x00del word":       {},
 		"^K\x00del → end":      {},
+		"^U\x00del → start":    {},
+		"^D\x00del char":       {},
 		"^Y\x00yank":           {},
 		"^T\x00transpose":      {},
 		"M-w\x00copy sel":      {},
@@ -681,6 +758,10 @@ func inputBarWithNicks(nicks []domain.Nick) ui.Model {
 
 func tabKey() tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeyTab}
+}
+
+func shiftTabKey() tea.KeyMsg {
+	return tea.KeyMsg{Type: tea.KeyShiftTab}
 }
 
 func TestInputBar_nick_completion(t *testing.T) {
@@ -768,6 +849,35 @@ func TestInputBar_nick_completion_cycles(t *testing.T) {
 	// Third Tab: wraps back to alex.
 	m, _ = m.Update(tabKey())
 	require.Equal(t, "alex: ", inputValue(t, m))
+}
+
+func TestInputBar_nick_completion_reverse_cycles_with_shift_tab(t *testing.T) {
+	nicks := []domain.Nick{"alice", "alex", "bob"}
+	m := inputBarWithNicks(nicks)
+
+	m = typeText(t, m, "al")
+
+	// Shift+Tab starts from the last match, alphabetically: alice.
+	m, _ = m.Update(shiftTabKey())
+	require.Equal(t, "alice: ", inputValue(t, m))
+
+	// Shift+Tab again steps backward, wrapping to the last match: alex.
+	m, _ = m.Update(shiftTabKey())
+	require.Equal(t, "alex: ", inputValue(t, m))
+}
+
+func TestInputBar_nick_completion_shift_tab_then_tab_reverses_direction(t *testing.T) {
+	nicks := []domain.Nick{"alice", "alex", "bob"}
+	m := inputBarWithNicks(nicks)
+
+	m = typeText(t, m, "al")
+
+	m, _ = m.Update(tabKey())
+	require.Equal(t, "alex: ", inputValue(t, m))
+
+	// Shift+Tab steps back to the previous match.
+	m, _ = m.Update(shiftTabKey())
+	require.Equal(t, "alice: ", inputValue(t, m))
 }
 
 func TestInputBar_nick_completion_resets_on_other_key(t *testing.T) {
@@ -1007,6 +1117,8 @@ func TestInputBar_keybindings_include_history_when_popover_hidden(t *testing.T) 
 		"del word",
 		"del next word",
 		"del \u2192 end",
+		"del \u2192 start",
+		"del char",
 		"yank",
 		"transpose",
 		"copy sel",
@@ -1029,40 +1141,49 @@ func TestInputBar_view_does_not_show_plain_indicator(t *testing.T) {
 }
 
 func TestInputBar_active_formats(t *testing.T) {
+	altToggle := func(r rune) tea.KeyMsg {
+		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}, Alt: true}
+	}
+
 	tests := []struct {
-		name   string
-		toggle rune
-		want   components.ActiveFormats
+		name      string
+		hasToggle bool
+		toggle    tea.KeyMsg
+		want      components.ActiveFormats
 	}{
 		{
-			name:   "no formatting active by default",
-			toggle: 0,
-			want:   components.ActiveFormats{},
+			name: "no formatting active by default",
+			want: components.ActiveFormats{},
 		},
 		{
-			name:   "bold active after toggle",
-			toggle: 'b',
-			want:   components.ActiveFormats{Bold: true},
+			name:      "bold active after toggle",
+			hasToggle: true,
+			toggle:    tea.KeyMsg{Type: tea.KeyCtrlB},
+			want:      components.ActiveFormats{Bold: true},
 		},
 		{
-			name:   "italic active after toggle",
-			toggle: 'i',
-			want:   components.ActiveFormats{Italic: true},
+			name:      "italic active after toggle",
+			hasToggle: true,
+			toggle:    altToggle('i'),
+			want:      components.ActiveFormats{Italic: true},
 		},
 		{
-			name:   "underline active after toggle",
-			toggle: 'u',
-			want:   components.ActiveFormats{Underline: true},
+			name:      "underline active after toggle",
+			hasToggle: true,
+			toggle:    altToggle('u'),
+			want:      components.ActiveFormats{Underline: true},
 		},
 		{
-			name:   "reverse active after toggle",
-			toggle: 'r',
-			want:   components.ActiveFormats{Reverse: true},
+			name:      "reverse active after toggle",
+			hasToggle: true,
+			toggle:    altToggle('r'),
+			want:      components.ActiveFormats{Reverse: true},
 		},
 		{
-			name:   "strikethrough active after toggle",
-			toggle: 's',
-			want:   components.ActiveFormats{Strike: true},
+			name:      "strikethrough active after toggle",
+			hasToggle: true,
+			toggle:    altToggle('s'),
+			want:      components.ActiveFormats{Strike: true},
 		},
 	}
 
@@ -1070,12 +1191,8 @@ func TestInputBar_active_formats(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var m ui.Model = components.NewInputBar()
 
-			if tt.toggle != 0 {
-				m, _ = m.Update(tea.KeyMsg{
-					Type:  tea.KeyRunes,
-					Runes: []rune{tt.toggle},
-					Alt:   true,
-				})
+			if tt.hasToggle {
+				m, _ = m.Update(tt.toggle)
 			}
 
 			bar := m.(components.InputBar)
@@ -1093,11 +1210,7 @@ func TestInputBar_status_bar_renders_active_format_bold(t *testing.T) {
 	var m ui.Model = components.NewInputBar("user")
 
 	// Toggle bold formatting.
-	m, _ = m.Update(tea.KeyMsg{
-		Type:  tea.KeyRunes,
-		Runes: []rune{'b'},
-		Alt:   true,
-	})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlB})
 
 	bar := m.(components.InputBar)
 	bindings := bar.KeyBindings()
@@ -1105,11 +1218,11 @@ func TestInputBar_status_bar_renders_active_format_bold(t *testing.T) {
 	rendered := components.RenderStatusBar(300, bindings, nil)
 
 	// Extract the literal content of every ANSI-bold (SGR 1)
-	// segment. The bold-format binding must contribute "M-b" and
+	// segment. The bold-format binding must contribute "^B" and
 	// "bold" so the user sees that the active format is highlighted;
 	// "M-o reset fmt" is also rendered bold because pressing it
 	// would clear bold — the styling reflects current state.
-	require.Equal(t, []string{"M-b", "bold", "M-o", "reset fmt"}, boldSegments(rendered))
+	require.Equal(t, []string{"^B", "bold", "M-o", "reset fmt"}, boldSegments(rendered))
 }
 
 // boldSegments returns the literal content of every `\x1b[1;…m…\x1b[m`

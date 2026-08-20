@@ -80,6 +80,12 @@ type InputBar struct {
 	nickComp nickCompletion
 
 	locked bool
+
+	// pasteFlattened is set when the most recent key was a paste that
+	// contained a newline, which SingleLine flattens to one line. It
+	// is cleared by any other key, so the hint reflects only the
+	// paste that just happened.
+	pasteFlattened bool
 }
 
 // NewInputBar creates an input bar with an optional user nick. When
@@ -174,6 +180,13 @@ func (b InputBar) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 }
 
 func (b InputBar) handleKey(msg tea.KeyMsg) (ui.Model, tea.Cmd) {
+	// A multi-line paste flattens to one line (the input bar is
+	// always single-line); note it here, before any branch below
+	// consumes the key, so every return path carries the flag. Any
+	// other key clears it, so the note reflects only the most recent
+	// keystroke.
+	b.pasteFlattened = msg.Paste && containsNewline(msg.Runes)
+
 	// When the popover is visible, give it first shot at keys.
 	if b.popover.IsVisible() {
 		updated, cmd := b.popover.Update(msg)
@@ -203,7 +216,7 @@ func (b InputBar) handleKey(msg tea.KeyMsg) (ui.Model, tea.Cmd) {
 		return b, clipboard.CopyCmd(b.input.SelectedText())
 
 	case ui.Matches(msg, b.keyMap.HistoryUp):
-		if !b.popover.IsVisible() {
+		if !b.popover.BlocksHistory() {
 			b = b.historyUp()
 			b, cmd := b.refreshPopover(PopoverRefreshMsg{
 				Raw:    b.input.Value(),
@@ -213,7 +226,7 @@ func (b InputBar) handleKey(msg tea.KeyMsg) (ui.Model, tea.Cmd) {
 		}
 
 	case ui.Matches(msg, b.keyMap.HistoryDn):
-		if !b.popover.IsVisible() {
+		if !b.popover.BlocksHistory() {
 			b = b.historyDown()
 			b, cmd := b.refreshPopover(PopoverRefreshMsg{
 				Raw:    b.input.Value(),
@@ -222,9 +235,33 @@ func (b InputBar) handleKey(msg tea.KeyMsg) (ui.Model, tea.Cmd) {
 			return b, cmd
 		}
 
+	case ui.Matches(msg, b.keyMap.KillLineStart):
+		return b.killToLineStart(), nil
+
+	case ui.Matches(msg, b.keyMap.DeleteChar):
+		return b.deleteCharForward(), nil
+
+	// alt+b is WordLeft's Emacs-style pairing with alt+f (WordRight).
+	// It is intercepted here, before it can fall through to the rich
+	// text editor, which still treats alt+b as its own hardcoded bold
+	// toggle. ctrl+left keeps working through the normal fallthrough
+	// below, unaffected by this case.
+	case ui.Matches(msg, b.keyMap.WordLeft) && msg.Alt:
+		return b.moveWordLeft(), nil
+
+	case ui.Matches(msg, b.keyMap.ToggleBold):
+		if !strings.HasPrefix(b.input.Value(), "/") {
+			return b.toggleBold(), nil
+		}
+
 	case msg.Type == tea.KeyTab:
 		if !strings.HasPrefix(b.input.Value(), "/") {
-			return b.completeNick(), nil
+			return b.completeNick(false), nil
+		}
+
+	case msg.Type == tea.KeyShiftTab:
+		if !strings.HasPrefix(b.input.Value(), "/") {
+			return b.completeNick(true), nil
 		}
 	}
 
@@ -241,6 +278,69 @@ func (b InputBar) handleKey(msg tea.KeyMsg) (ui.Model, tea.Cmd) {
 	})
 
 	return b, tea.Batch(cmd, popCmd)
+}
+
+// killToLineStart deletes from the cursor back to the start of the
+// line (Unix readline's unix-line-discard), recording the removed
+// text on the rich textarea's kill ring so ctrl+y can yank it back.
+func (b InputBar) killToLineStart() InputBar {
+	cursor := b.input.Cursor()
+	if cursor == 0 {
+		return b
+	}
+
+	value := []rune(b.input.Value())
+	b.input.recordKill(string(value[:cursor]))
+
+	return b.ReplaceRange(0, cursor, "")
+}
+
+// deleteCharForward deletes the character at the cursor (Emacs's
+// delete-char), or the selection if one is active. Unlike the kill
+// commands, it does not touch the kill ring.
+func (b InputBar) deleteCharForward() InputBar {
+	if !b.input.selection.Collapsed() {
+		b.input.deleteSelection()
+		return b
+	}
+
+	end := b.input.document.MoveRight(b.input.position)
+	b.input.position = b.input.document.Delete(richtext.Selection{Anchor: b.input.position, Head: end})
+	b.input.selection = richtext.Selection{Anchor: b.input.position, Head: b.input.position}
+	b.input = b.input.ensureViewport()
+
+	return b
+}
+
+// moveWordLeft moves the cursor one word to the left (Emacs's
+// backward-word), mirroring the rich textarea's own word-right
+// movement so alt+b and alt+f feel identical apart from direction.
+func (b InputBar) moveWordLeft() InputBar {
+	target := b.input.document.MoveWordLeft(b.input.position)
+	b.input.moveCursor(target, false)
+
+	return b
+}
+
+// toggleBold toggles bold at the cursor, or across the selection if
+// one is active.
+func (b InputBar) toggleBold() InputBar {
+	b.input = b.input.toggleFormatting(func(attrs *richtext.Attrs) { attrs.Bold = !attrs.Bold })
+
+	return b
+}
+
+// containsNewline reports whether runes contains a carriage return or
+// line feed, i.e. whether inserting it into the single-line input
+// would flatten it.
+func containsNewline(runes []rune) bool {
+	for _, r := range runes {
+		if r == '\r' || r == '\n' {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (b InputBar) handleMouse(msg tea.MouseMsg) (InputBar, bool, tea.Cmd) {
@@ -317,6 +417,10 @@ func (b InputBar) submit() (ui.Model, tea.Cmd) {
 }
 
 func (b InputBar) pushHistory(text string) InputBar {
+	if isSecretCommand(text) {
+		return b
+	}
+
 	if len(b.history) > 0 && b.history[len(b.history)-1] == text {
 		return b
 	}
@@ -328,6 +432,48 @@ func (b InputBar) pushHistory(text string) InputBar {
 	}
 
 	return b
+}
+
+// secretCommandPrefixes lists the leading tokens of commands whose
+// argument carries a credential. Their raw text is excluded from
+// input history, so a later /config api-key run can't be recalled
+// with ↑ and re-submitted (or just read off the screen) by anyone
+// who gets a look at this session afterwards.
+//
+// The chatcmd grammar owns the authoritative command surface and
+// already masks this value when it prints it back (maskAPIKey in
+// chatcmd/config.go); this list is a small, hand-maintained echo of
+// the one command that carries a secret today, kept here because the
+// input bar sees only the typed line, not the grammar.
+var secretCommandPrefixes = [][]string{
+	{"/config", "api-key"},
+}
+
+// isSecretCommand reports whether raw invokes a command in
+// secretCommandPrefixes.
+func isSecretCommand(raw string) bool {
+	fields := strings.Fields(strings.ToLower(raw))
+
+	for _, prefix := range secretCommandPrefixes {
+		if len(fields) < len(prefix) {
+			continue
+		}
+
+		match := true
+
+		for i, tok := range prefix {
+			if fields[i] != tok {
+				match = false
+				break
+			}
+		}
+
+		if match {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (b InputBar) historyUp() InputBar {
@@ -370,13 +516,21 @@ func (b InputBar) historyDown() InputBar {
 	return b
 }
 
-func (b InputBar) completeNick() InputBar {
+// completeNick cycles through nick matches for the word before the
+// cursor, forward on Tab and backward (reverse) on Shift+Tab.
+func (b InputBar) completeNick(reverse bool) InputBar {
 	if len(b.nicks) == 0 {
 		return b
 	}
 
 	if b.nickComp.active {
-		b.nickComp.index = (b.nickComp.index + 1) % len(b.nickComp.matches)
+		n := len(b.nickComp.matches)
+		if reverse {
+			b.nickComp.index = (b.nickComp.index - 1 + n) % n
+		} else {
+			b.nickComp.index = (b.nickComp.index + 1) % n
+		}
+
 		return b.applyNickCompletion()
 	}
 
@@ -407,6 +561,10 @@ func (b InputBar) completeNick() InputBar {
 		end:     cursor,
 		matches: matches,
 		index:   0,
+	}
+
+	if reverse {
+		b.nickComp.index = len(matches) - 1
 	}
 
 	return b.applyNickCompletion()
@@ -545,6 +703,8 @@ func (b InputBar) KeyBindings() []ui.KeyBinding {
 		b.keyMap.DeleteWordBack,
 		b.keyMap.DeleteWordFwd,
 		b.keyMap.DeleteToEnd,
+		b.keyMap.KillLineStart,
+		b.keyMap.DeleteChar,
 		ui.WithBindingEnabled(b.keyMap.Yank, len(b.input.killRing) > 0),
 		b.keyMap.Transpose,
 		ui.WithBindingEnabled(b.keyMap.CopySelection, !b.input.selection.Collapsed()),
@@ -629,12 +789,16 @@ func (b InputBar) View(width, _ int) string {
 	editorWidth := max(width-lipgloss.Width(nickLabel)-lipgloss.Width(lockBadge)-lipgloss.Width(prompt), 0)
 	inputLine := nickLabel + lockBadge + prompt + editor.View(editorWidth, 1)
 
-	popoverView := b.popover.Render(width)
-	if popoverView == "" {
-		return inputLine
+	if popoverView := b.popover.Render(width); popoverView != "" {
+		return lipgloss.JoinVertical(lipgloss.Left, popoverView, inputLine)
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Left, popoverView, inputLine)
+	if b.pasteFlattened {
+		note := theme.Dim.Render("Pasted text flattened to one line")
+		return lipgloss.JoinVertical(lipgloss.Left, note, inputLine)
+	}
+
+	return inputLine
 }
 
 // ActiveFormats returns the formatting state at the current cursor

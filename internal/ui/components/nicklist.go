@@ -60,7 +60,8 @@ func NewNickList(members domain.MemberList) NickList {
 		View: nickListView(nl.thinking),
 	}).
 		SetHeader("Nicks").
-		SetEmpty("No members")
+		SetEmpty("No members").
+		SetKeyMap(EmptySidebarKeyMap)
 
 	return nl
 }

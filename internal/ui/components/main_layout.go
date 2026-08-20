@@ -44,6 +44,8 @@ type MainLayout struct {
 	NickList ui.Model
 
 	NickListVisible bool
+
+	windowSwitch WindowSwitchKeyMap
 }
 
 // NewMainLayout creates a MainLayout with the given left panel and
@@ -53,6 +55,7 @@ func NewMainLayout(sidebar, content ui.Model) MainLayout {
 		Sidebar:         sidebar,
 		Content:         content,
 		NickListVisible: true,
+		windowSwitch:    DefaultWindowSwitchKeyMap,
 	}
 }
 
@@ -72,6 +75,19 @@ func (m MainLayout) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	if _, ok := msg.(NickListToggleMsg); ok {
 		m.NickListVisible = !m.NickListVisible
 		return m, nil
+	}
+
+	// Window-switch keys (alt+1..9, alt+a, ctrl+n, ctrl+p) are global:
+	// they target the sidebar directly and are consumed here rather
+	// than reaching Content, so an alt+<digit> chord can never be
+	// mistaken by the input editor for a literal character to insert.
+	if key, ok := msg.(tea.KeyMsg); ok {
+		if translated, matched := m.translateWindowSwitch(key); matched {
+			sidebar, cmd := m.Sidebar.Update(translated)
+			m.Sidebar = sidebar
+
+			return m, cmd
+		}
 	}
 
 	var cmds []tea.Cmd
@@ -207,6 +223,44 @@ func (m MainLayout) computeLayout(width, height int) layoutResult {
 	}
 }
 
+// translateWindowSwitch reports the sidebar message a window-switch
+// keypress produces, if msg is one.
+func (m MainLayout) translateWindowSwitch(msg tea.KeyMsg) (tea.Msg, bool) {
+	if ui.Matches(msg, m.windowSwitch.Direct) {
+		if idx, ok := directWindowIndex(msg); ok {
+			return ActivateIndexMsg{Index: idx}, true
+		}
+
+		return nil, false
+	}
+
+	switch {
+	case ui.Matches(msg, m.windowSwitch.NextActivity):
+		return ActivateNextActivityMsg{}, true
+	case ui.Matches(msg, m.windowSwitch.Next):
+		return ActivateOffsetMsg{Delta: 1}, true
+	case ui.Matches(msg, m.windowSwitch.Previous):
+		return ActivateOffsetMsg{Delta: -1}, true
+	}
+
+	return nil, false
+}
+
+// directWindowIndex extracts the zero-based window index from an
+// alt+1..alt+9 keypress.
+func directWindowIndex(msg tea.KeyMsg) (int, bool) {
+	if !msg.Alt || msg.Type != tea.KeyRunes || len(msg.Runes) != 1 {
+		return 0, false
+	}
+
+	r := msg.Runes[0]
+	if r < '1' || r > '9' {
+		return 0, false
+	}
+
+	return int(r - '1'), true
+}
+
 func (m MainLayout) wantsNickList() bool {
 	if m.NickList == nil || !m.NickListVisible {
 		return false
@@ -320,6 +374,13 @@ func (m MainLayout) KeyBindings() []ui.KeyBinding {
 	if m.NickList != nil && m.NickListVisible {
 		bindings = append(bindings, ui.CollectKeyBindings(m.NickList)...)
 	}
+
+	bindings = append(bindings,
+		m.windowSwitch.Direct,
+		m.windowSwitch.NextActivity,
+		m.windowSwitch.Next,
+		m.windowSwitch.Previous,
+	)
 
 	return bindings
 }

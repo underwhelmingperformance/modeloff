@@ -173,6 +173,15 @@ func (w ChatWorkspace[C]) updateSplit(msg tea.Msg) (ui.Model, tea.Cmd) {
 		return w, tea.Batch(cmds...)
 	}
 
+	// The chat transcript keeps keyboard focus while the drawer is
+	// only split open (not fullscreen): PgUp/PgDn and ctrl+up/down
+	// scroll it, not the drawer, which the mouse wheel still reaches
+	// directly. Without this, both panes would scroll on every press
+	// since they share the same scroll keymap.
+	if key, ok := msg.(tea.KeyMsg); ok && isChatScrollKey(w.Chat.keyMap, key) {
+		return w, tea.Batch(cmds...)
+	}
+
 	updatedLogs, cmd := w.Logs.Update(msg)
 	w.Logs = updatedLogs
 	cmds = append(cmds, cmd)
@@ -184,6 +193,13 @@ func (w ChatWorkspace[C]) updateSplit(msg tea.Msg) (ui.Model, tea.Cmd) {
 	}
 
 	return w, tea.Batch(cmds...)
+}
+
+// isChatScrollKey reports whether msg is one of the chat transcript's
+// scroll bindings (PgUp/PgDn, ctrl+up/down).
+func isChatScrollKey(km ChatViewKeyMap, msg tea.KeyMsg) bool {
+	return ui.Matches(msg, km.PageUp) || ui.Matches(msg, km.PageDown) ||
+		ui.Matches(msg, km.ScrollUp) || ui.Matches(msg, km.ScrollDown)
 }
 
 // KeyBindings implements ui.Keybinding.

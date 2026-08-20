@@ -206,28 +206,53 @@ func (p Popover) Render(width int) string {
 }
 
 func (p Popover) handleKey(msg tea.KeyMsg) (Popover, bool, tea.Cmd) {
-	if p.completion.Visible && p.HasSuggestions() {
-		switch msg.Type {
-		case tea.KeyTab:
-			return p, true, p.acceptCmd(p.selected)
-		case tea.KeyShiftTab, tea.KeyUp:
-			return p.moveSelection(-1), true, nil
-		case tea.KeyDown:
-			return p.moveSelection(1), true, nil
-		case tea.KeyEsc:
-			p.completion = command.Completion{}
-			p.closed = true
-			return p, true, nil
-		}
+	if !p.completion.Visible {
+		return p, false, nil
 	}
 
-	if msg.Type == tea.KeyEsc && p.completion.Visible {
+	switch msg.Type {
+	case tea.KeyTab:
+		if p.HasSuggestions() {
+			return p, true, p.acceptCmd(p.selected)
+		}
+	case tea.KeyEnter:
+		// Accept the highlighted suggestion first when doing so would
+		// change the typed text, matching Tab; a second Enter then
+		// submits. When the typed text already matches the selection
+		// exactly, fall through and let the input bar submit directly,
+		// so a fully-typed command still runs on one Enter.
+		if p.HasSuggestions() {
+			suggestion := p.completion.Suggestions[p.selected]
+			if acceptedReplacement(p.completion.TypedPrefix, suggestion) != p.completion.TypedPrefix {
+				return p, true, p.acceptCmd(p.selected)
+			}
+		}
+	case tea.KeyShiftTab, tea.KeyUp:
+		// Only claim the key when there's more than one suggestion to
+		// cycle between; otherwise let it fall through to input
+		// history, which the caller would otherwise never reach while
+		// composing a command.
+		if len(p.completion.Suggestions) > 1 {
+			return p.moveSelection(-1), true, nil
+		}
+	case tea.KeyDown:
+		if len(p.completion.Suggestions) > 1 {
+			return p.moveSelection(1), true, nil
+		}
+	case tea.KeyEsc:
 		p.completion = command.Completion{}
 		p.closed = true
 		return p, true, nil
 	}
 
 	return p, false, nil
+}
+
+// BlocksHistory reports whether the popover currently claims Up/Down
+// for suggestion cycling. The input bar consults this before letting
+// those keys browse input history instead.
+func (p Popover) BlocksHistory() bool {
+	return p.completion.Visible && len(p.completion.Suggestions) > 1
 }
 
 func (p Popover) handleMouse(msg tea.MouseMsg) (Popover, bool, tea.Cmd) {

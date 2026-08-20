@@ -36,7 +36,36 @@ type SidebarConfig[T any, K comparable] struct {
 	Key        func(T) K
 	View       func(T, ViewState, int) string
 	OnActivate func(T) tea.Cmd
+
+	// HasActivity reports whether an item has unseen activity worth
+	// jumping to. It is optional: a sidebar that never sets it simply
+	// ignores ActivateNextActivityMsg.
+	HasActivity func(T) bool
 }
+
+// ActivateIndexMsg asks a sidebar to activate the item at the given
+// zero-based position, driving the alt+1..alt+9 direct window
+// switch. An out-of-range index, or a sidebar with no OnActivate, is
+// a no-op.
+type ActivateIndexMsg struct {
+	Index int
+}
+
+// ActivateOffsetMsg asks a sidebar to activate the item at the given
+// signed offset from the currently active item (or the cursor, if
+// nothing is active yet), wrapping around the ends of the list. Used
+// for ctrl+n/ctrl+p (next/previous window). A sidebar with no
+// OnActivate is a no-op.
+type ActivateOffsetMsg struct {
+	Delta int
+}
+
+// ActivateNextActivityMsg asks a sidebar to activate the next item,
+// scanning forward and wrapping from the active item, whose
+// SidebarConfig.HasActivity predicate reports true. Used for alt+a
+// (next window with activity). A sidebar with no OnActivate or no
+// HasActivity predicate is a no-op.
+type ActivateNextActivityMsg struct{}
 
 // Sidebar renders a scrollable, sorted list of items with
 // cursor and active tracking by identity key. It is backed by a
@@ -169,6 +198,27 @@ func (s Sidebar[T, K]) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 	case tea.MouseMsg:
 		return s.handleMouse(msg)
+
+	case ActivateIndexMsg:
+		if s.cfg.OnActivate == nil {
+			return s, nil
+		}
+
+		return s, s.activateAt(msg.Index)
+
+	case ActivateOffsetMsg:
+		if s.cfg.OnActivate == nil || s.items == nil || s.items.Len() == 0 {
+			return s, nil
+		}
+
+		return s, s.activateAt(s.wrapIndex(s.baseIndex() + msg.Delta))
+
+	case ActivateNextActivityMsg:
+		if s.cfg.OnActivate == nil || s.cfg.HasActivity == nil {
+			return s, nil
+		}
+
+		return s.activateNextActivity()
 	}
 
 	return s, nil
@@ -338,6 +388,63 @@ func (s *Sidebar[T, K]) activateIndex(idx int) tea.Cmd {
 	return nil
 }
 
+// activateAt moves the cursor to idx and activates the item there.
+// Used by a direct mouse click and by the messages that jump straight
+// to an item (ActivateIndexMsg, ActivateOffsetMsg,
+// ActivateNextActivityMsg).
+func (s *Sidebar[T, K]) activateAt(idx int) tea.Cmd {
+	if s.items == nil || idx < 0 || idx >= s.items.Len() {
+		return nil
+	}
+
+	s.cursorIdx = idx
+	if item, ok := s.items.GetAt(idx); ok {
+		s.cursor = s.cfg.Key(item)
+	}
+
+	return s.activateIndex(idx)
+}
+
+// baseIndex is the item ActivateOffsetMsg and ActivateNextActivityMsg
+// count from: the active item if there is one, otherwise the cursor.
+func (s Sidebar[T, K]) baseIndex() int {
+	if s.hasActive {
+		return s.activeIdx
+	}
+
+	return s.cursorIdx
+}
+
+// wrapIndex wraps idx into [0, s.items.Len()).
+func (s Sidebar[T, K]) wrapIndex(idx int) int {
+	n := s.items.Len()
+	if n == 0 {
+		return 0
+	}
+
+	return ((idx % n) + n) % n
+}
+
+func (s Sidebar[T, K]) activateNextActivity() (Sidebar[T, K], tea.Cmd) {
+	n := s.items.Len()
+	if n == 0 {
+		return s, nil
+	}
+
+	start := s.baseIndex()
+
+	for i := 1; i <= n; i++ {
+		idx := s.wrapIndex(start + i)
+
+		item, ok := s.items.GetAt(idx)
+		if ok && s.cfg.HasActivity(item) {
+			return s, s.activateAt(idx)
+		}
+	}
+
+	return s, nil
+}
+
 func (s *Sidebar[T, K]) revalidate() {
 	if s.items == nil || s.items.Len() == 0 {
 		s.cursorIdx = 0
@@ -388,11 +495,19 @@ func (s Sidebar[T, K]) findIndex(k K) int {
 func (s Sidebar[T, K]) handleMouse(msg tea.MouseMsg) (Sidebar[T, K], tea.Cmd) {
 	switch {
 	case msg.Button == tea.MouseButtonWheelUp:
+		if !s.bounds.Contains(msg.X, msg.Y) {
+			return s, nil
+		}
+
 		s.moveCursor(-1)
 
 		return s, nil
 
 	case msg.Button == tea.MouseButtonWheelDown:
+		if !s.bounds.Contains(msg.X, msg.Y) {
+			return s, nil
+		}
+
 		s.moveCursor(1)
 
 		return s, nil
@@ -406,17 +521,7 @@ func (s Sidebar[T, K]) handleMouse(msg tea.MouseMsg) (Sidebar[T, K], tea.Cmd) {
 		headerHeight := s.renderHeaderHeight()
 		itemIdx := localY - headerHeight + s.viewport.YOffset
 
-		if itemIdx < 0 || itemIdx >= s.items.Len() {
-			return s, nil
-		}
-
-		s.cursorIdx = itemIdx
-
-		if item, ok := s.items.GetAt(itemIdx); ok {
-			s.cursor = s.cfg.Key(item)
-		}
-
-		return s, s.activateIndex(s.cursorIdx)
+		return s, s.activateAt(itemIdx)
 	}
 
 	return s, nil

@@ -43,10 +43,10 @@ func key(k string) tea.KeyMsg {
 
 func ctrlKey(k string) tea.KeyMsg {
 	switch k {
-	case "ctrl+d":
-		return tea.KeyMsg{Type: tea.KeyCtrlD}
-	case "ctrl+u":
-		return tea.KeyMsg{Type: tea.KeyCtrlU}
+	case "alt+down":
+		return tea.KeyMsg{Type: tea.KeyDown, Alt: true}
+	case "alt+up":
+		return tea.KeyMsg{Type: tea.KeyUp, Alt: true}
 	case "ctrl+o":
 		return tea.KeyMsg{Type: tea.KeyCtrlO}
 	default:
@@ -142,7 +142,7 @@ func TestChannelSidebar_keyboard_navigation(t *testing.T) {
 	m := newTestChannelSidebar(testChannels, "#general", nil)
 
 	// Down once → #random (index 2).
-	m, _ = m.Update(ctrlKey("ctrl+d"))
+	m, _ = m.Update(ctrlKey("alt+down"))
 
 	_, ch := activateAndGetChannel(t, m, ctrlKey("ctrl+o"))
 	require.Equal(t, domain.ChannelName("#random"), ch)
@@ -153,8 +153,8 @@ func TestChannelSidebar_keyboard_up(t *testing.T) {
 	m := newTestChannelSidebar(testChannels, "#random", nil)
 
 	// Up twice → #dev (index 0).
-	m, _ = m.Update(ctrlKey("ctrl+u"))
-	m, _ = m.Update(ctrlKey("ctrl+u"))
+	m, _ = m.Update(ctrlKey("alt+up"))
+	m, _ = m.Update(ctrlKey("alt+up"))
 
 	_, ch := activateAndGetChannel(t, m, ctrlKey("ctrl+o"))
 	require.Equal(t, domain.ChannelName("#dev"), ch)
@@ -165,8 +165,8 @@ func TestChannelSidebar_cursor_clamps_at_boundaries(t *testing.T) {
 	m := newTestChannelSidebar(testChannels, "#dev", nil)
 
 	// Up past the top — should stay at #dev.
-	m, _ = m.Update(ctrlKey("ctrl+u"))
-	m, _ = m.Update(ctrlKey("ctrl+u"))
+	m, _ = m.Update(ctrlKey("alt+up"))
+	m, _ = m.Update(ctrlKey("alt+up"))
 
 	_, ch := activateAndGetChannel(t, m, ctrlKey("ctrl+o"))
 	require.Equal(t, domain.ChannelName("#dev"), ch)
@@ -177,7 +177,7 @@ func TestChannelSidebar_cursor_clamps_at_bottom(t *testing.T) {
 	m := newTestChannelSidebar(testChannels, "#dev", nil)
 
 	for range 10 {
-		m, _ = m.Update(ctrlKey("ctrl+d"))
+		m, _ = m.Update(ctrlKey("alt+down"))
 	}
 
 	_, ch := activateAndGetChannel(t, m, ctrlKey("ctrl+o"))
@@ -288,7 +288,7 @@ func TestChannelSidebar_dm_cursor_uses_dm_style(t *testing.T) {
 	}
 
 	m := newTestChannelSidebar(channels, "#general", nil)
-	m, _ = m.Update(ctrlKey("ctrl+d"))
+	m, _ = m.Update(ctrlKey("alt+down"))
 
 	v := m.View(30, 10)
 	require.Equal(t, []string{"Channels", "#general", "▸botty"}, visibleLines(v))
@@ -297,8 +297,8 @@ func TestChannelSidebar_dm_cursor_uses_dm_style(t *testing.T) {
 func TestChannelSidebar_cursor_follows_active_on_set_channels(t *testing.T) {
 	m := newTestChannelSidebar(testChannels, "#general", nil)
 
-	m, _ = m.Update(ctrlKey("ctrl+d"))
-	m, _ = m.Update(ctrlKey("ctrl+d"))
+	m, _ = m.Update(ctrlKey("alt+down"))
+	m, _ = m.Update(ctrlKey("alt+down"))
 
 	m, _ = m.Update(components.SetChannelsMsg{
 		Channels: testChannels,
@@ -312,8 +312,8 @@ func TestChannelSidebar_cursor_follows_active_on_set_channels(t *testing.T) {
 func TestChannelSidebar_cursor_clamps_when_active_not_in_list(t *testing.T) {
 	m := newTestChannelSidebar(testChannels, "#general", nil)
 
-	m, _ = m.Update(ctrlKey("ctrl+d"))
-	m, _ = m.Update(ctrlKey("ctrl+d"))
+	m, _ = m.Update(ctrlKey("alt+down"))
+	m, _ = m.Update(ctrlKey("alt+down"))
 
 	m, _ = m.Update(components.SetChannelsMsg{
 		Channels: []domain.Window{

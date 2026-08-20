@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/components"
 )
 
@@ -166,6 +168,29 @@ func TestNickList_View_clears_thinking_indicator(t *testing.T) {
 
 	v := updated.View(30, 10)
 	require.Equal(t, []string{"Nicks", "@alice", "+botty"}, visibleLines(v))
+}
+
+func TestNickList_ignores_sidebar_cursor_and_activation_keys(t *testing.T) {
+	nl := components.NewNickList(members(
+		member("alice", op),
+		member("bob", plain),
+	))
+
+	var m ui.Model = nl
+	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 0, Y: 0, Width: 20, Height: 10}})
+
+	for _, key := range []tea.KeyMsg{
+		{Type: tea.KeyDown, Alt: true}, // channel sidebar's Down
+		{Type: tea.KeyUp, Alt: true},   // channel sidebar's Up
+		{Type: tea.KeyCtrlO},           // channel sidebar's Select
+	} {
+		updated, cmd := m.Update(key)
+		require.Nil(t, cmd, "the nick list has no activation semantics, so %s must be a no-op", key)
+		m = updated
+	}
+
+	require.Equal(t, []string{"Nicks", "@alice", "bob"}, visibleLines(m.View(20, 10)),
+		"rendering must be unaffected by keys the channel sidebar uses for cursor movement")
 }
 
 func TestNickList_View_preserves_display_order(t *testing.T) {

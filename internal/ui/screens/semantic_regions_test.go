@@ -49,6 +49,6 @@ func TestChatScreen_semantic_regions_expose_sidebar_and_chat_content(t *testing.
 	}, got, "the chat layout must expose three semantic columns: sidebar, chat content, nicks")
 
 	tokens := strings.Fields(status)
-	require.Subset(t, tokens, []string{"^D/^U", "^O", "↵", "^W", "^C"},
+	require.Subset(t, tokens, []string{"M-↓/M-↑", "^O", "↵", "^W", "^C"},
 		"status bar must surface core navigation, submit and quit bindings")
 }

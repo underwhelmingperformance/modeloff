@@ -123,7 +123,7 @@ func TestChatScreen_keybind_toggle_nick_list_is_logged(t *testing.T) {
 	tm := newChatApp(t, h)
 	tm.WaitFor("#general")
 
-	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlN})
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}, Alt: true})
 
 	tm.Submit("hello after toggle")
 	tm.WaitFor("hello after toggle")

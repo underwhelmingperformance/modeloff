@@ -289,7 +289,7 @@ func TestApp_unread_counts_clear_when_visiting_channel_with_teatest(t *testing.T
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen))
 	// Wait for the sidebar to settle (both channels rendered and the
-	// initial focus marker on #random) before issuing the Ctrl+U +
+	// initial focus marker on #random) before issuing the Alt+Up +
 	// Ctrl+O navigation. WaitFor on cumulative output can match a
 	// transient frame from before the focus marker is positioned,
 	// causing the navigation keys to be processed against a stale
@@ -299,7 +299,7 @@ func TestApp_unread_counts_clear_when_visiting_channel_with_teatest(t *testing.T
 			strings.Contains(view, "▸#random")
 	})
 
-	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlU})
+	tm.Send(tea.KeyMsg{Type: tea.KeyUp, Alt: true})
 	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlO})
 
 	// Anchor the assertion to the snapshot returned by WaitForView
@@ -340,7 +340,7 @@ func TestApp_input_history_and_sidebar_shortcuts_with_teatest(t *testing.T) {
 	tm.Send(tea.KeyMsg{Type: tea.KeyDown})
 	tm.WaitFor("draft-only")
 
-	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlU})
+	tm.Send(tea.KeyMsg{Type: tea.KeyUp, Alt: true})
 	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlO})
 	tm.WaitFor("general msg")
 

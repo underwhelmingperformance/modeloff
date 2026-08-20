@@ -16,7 +16,7 @@ import (
 // Layout dimensions used across the MainLayout tests. These track
 // the current width-split heuristics; if the heuristics change
 // (e.g. a wider sidebar, different nicklist width) update these
-// constants in one place rather than touching every test.
+// constants in one place, and every test that uses them follows.
 const (
 	sidebarWidthAt80           = 16
 	sidebarWidthAt100          = 20
@@ -386,5 +386,83 @@ func TestMainLayout_KeyBindings_collects_from_children(t *testing.T) {
 	require.Equal(t, []ui.KeyBinding{
 		ui.Bind(bkey.NewBinding(bkey.WithKeys("ctrl+d"), bkey.WithHelp("^D", "channels"))),
 		ui.Bind(bkey.NewBinding(bkey.WithKeys("pgup"), bkey.WithHelp("PgUp", "scroll"))),
+		components.DefaultWindowSwitchKeyMap.Direct,
+		components.DefaultWindowSwitchKeyMap.NextActivity,
+		components.DefaultWindowSwitchKeyMap.Next,
+		components.DefaultWindowSwitchKeyMap.Previous,
 	}, layout.KeyBindings())
+}
+
+// recordingModel is a ui.Model that records every message it
+// receives, so a test can assert exactly which child a message
+// reached.
+type recordingModel struct {
+	stubModel
+
+	received *[]tea.Msg
+}
+
+func (s recordingModel) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
+	*s.received = append(*s.received, msg)
+	return s, nil
+}
+
+func TestMainLayout_window_switch_keys_reach_only_the_sidebar(t *testing.T) {
+	tests := []struct {
+		name string
+		key  tea.KeyMsg
+		want tea.Msg
+	}{
+		{
+			name: "alt+3 activates index 2",
+			key:  tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'3'}, Alt: true},
+			want: components.ActivateIndexMsg{Index: 2},
+		},
+		{
+			name: "alt+a activates next activity",
+			key:  tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}, Alt: true},
+			want: components.ActivateNextActivityMsg{},
+		},
+		{
+			name: "ctrl+n steps forward",
+			key:  tea.KeyMsg{Type: tea.KeyCtrlN},
+			want: components.ActivateOffsetMsg{Delta: 1},
+		},
+		{
+			name: "ctrl+p steps backward",
+			key:  tea.KeyMsg{Type: tea.KeyCtrlP},
+			want: components.ActivateOffsetMsg{Delta: -1},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sidebarReceived := &[]tea.Msg{}
+			contentReceived := &[]tea.Msg{}
+
+			sidebar := recordingModel{stubModel: stubModel{label: "sidebar"}, received: sidebarReceived}
+			content := recordingModel{stubModel: stubModel{label: "content"}, received: contentReceived}
+
+			layout := components.NewMainLayout(sidebar, content)
+			layout.Update(tt.key)
+
+			require.Equal(t, []tea.Msg{tt.want}, *sidebarReceived)
+			require.Empty(t, *contentReceived,
+				"a window-switch key must not reach Content, where the input editor could mistake it for a literal character")
+		})
+	}
+}
+
+func TestMainLayout_non_window_switch_keys_reach_all_children(t *testing.T) {
+	sidebarReceived := &[]tea.Msg{}
+	contentReceived := &[]tea.Msg{}
+
+	sidebar := recordingModel{stubModel: stubModel{label: "sidebar"}, received: sidebarReceived}
+	content := recordingModel{stubModel: stubModel{label: "content"}, received: contentReceived}
+
+	layout := components.NewMainLayout(sidebar, content)
+	layout.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+
+	require.Len(t, *sidebarReceived, 1)
+	require.Len(t, *contentReceived, 1)
 }

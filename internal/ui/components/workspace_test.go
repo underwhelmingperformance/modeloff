@@ -110,7 +110,7 @@ func TestChatWorkspace_ObsView_height_matches_ObsHeight(t *testing.T) {
 			})
 			workspace = sized.(ChatWorkspace[testKind])
 
-			opened, _ := workspace.Update(tea.KeyMsg{Type: tea.KeyCtrlL})
+			opened, _ := workspace.Update(toggleObservabilityKey())
 			workspace = opened.(ChatWorkspace[testKind])
 
 			obsH := workspace.ObsHeight(tc.height)
@@ -120,4 +120,60 @@ func TestChatWorkspace_ObsView_height_matches_ObsHeight(t *testing.T) {
 				"ObsView must render exactly ObsHeight rows so MainLayout's reservation matches the actual drawer")
 		})
 	}
+}
+
+// toggleObservabilityKey is the alt+l keypress DefaultWorkspaceKeyMap
+// binds to ToggleObservability.
+func toggleObservabilityKey() tea.KeyMsg {
+	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}, Alt: true}
+}
+
+func TestIsChatScrollKey(t *testing.T) {
+	km := DefaultChatViewKeyMap
+
+	tests := []struct {
+		name string
+		msg  tea.KeyMsg
+		want bool
+	}{
+		{name: "pgup", msg: tea.KeyMsg{Type: tea.KeyPgUp}, want: true},
+		{name: "pgdown", msg: tea.KeyMsg{Type: tea.KeyPgDown}, want: true},
+		{name: "ctrl+up", msg: tea.KeyMsg{Type: tea.KeyCtrlUp}, want: true},
+		{name: "ctrl+down", msg: tea.KeyMsg{Type: tea.KeyCtrlDown}, want: true},
+		{name: "plain up is not a chat scroll key", msg: tea.KeyMsg{Type: tea.KeyUp}, want: false},
+		{name: "the drawer toggle is not a chat scroll key", msg: toggleObservabilityKey(), want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, isChatScrollKey(km, tt.msg))
+		})
+	}
+}
+
+func TestChatWorkspace_split_mode_routes_scroll_keys_to_chat_only(t *testing.T) {
+	workspace := NewChatWorkspace(
+		NewChatView[testKind](func() WindowContent { return WindowContent{Channel: "#general"} }, "#general", domain.KindChannel, "testuser", ""),
+	)
+
+	sized, _ := workspace.Update(ui.BoundsMsg{Rect: ui.Rect{Width: 80, Height: 30}})
+	workspace = sized.(ChatWorkspace[testKind])
+
+	opened, _ := workspace.Update(toggleObservabilityKey())
+	workspace = opened.(ChatWorkspace[testKind])
+	require.True(t, workspace.Open)
+	require.False(t, workspace.Fullscreen)
+
+	entries := make([]observability.PanelEntry, 0, 50)
+	for range 50 {
+		entries = append(entries, observability.PanelEntry{Level: "INFO", Message: "log line"})
+	}
+	workspace = workspace.SetLogEntries(entries)
+	require.False(t, workspace.Logs.ScrolledUp(), "the log feed starts pinned to its tail")
+
+	updated, _ := workspace.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	workspace = updated.(ChatWorkspace[testKind])
+
+	require.False(t, workspace.Logs.ScrolledUp(),
+		"PgUp must scroll the chat transcript, not the drawer, while the drawer is only split open")
 }

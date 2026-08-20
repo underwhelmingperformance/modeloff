@@ -131,7 +131,7 @@ func TestChatWorkspace_statusItems_follow_observability_state(t *testing.T) {
 	require.Empty(t, workspace.StatusItems())
 	require.False(t, workspace.WantsNickListHidden())
 
-	updated, _ := workspace.Update(tea.KeyMsg{Type: tea.KeyCtrlL})
+	updated, _ := workspace.Update(toggleObservabilityKey())
 	workspace = updated.(ChatWorkspace[testKind])
 
 	require.Equal(t, []ui.StatusItem{{
@@ -176,7 +176,7 @@ func TestChatWorkspace_fullscreen_observability_renders_logs_and_metrics(t *test
 	})
 	workspace = updated.(ChatWorkspace[testKind])
 
-	updated, _ = workspace.Update(tea.KeyMsg{Type: tea.KeyCtrlL})
+	updated, _ = workspace.Update(toggleObservabilityKey())
 	workspace = updated.(ChatWorkspace[testKind])
 
 	updated, _ = workspace.Update(tea.KeyMsg{Type: tea.KeyCtrlF})

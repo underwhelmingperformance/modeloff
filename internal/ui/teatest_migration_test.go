@@ -23,6 +23,10 @@ func TestRoot_quits_on_ctrl_c_with_teatest(t *testing.T) {
 
 	tm.WaitFor("Welcome to modeloff")
 
+	// The first Ctrl-C arms the quit confirmation; the second, within
+	// the confirmation window, actually quits.
+	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlC})
+	tm.WaitFor("Press Ctrl+C again to quit")
 	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlC})
 
 	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
@@ -79,13 +83,13 @@ func TestChatScreen_sidebar_navigation_with_teatest(t *testing.T) {
 	// (`#random`) — its `UserTime` is the freshest join.
 	tm.WaitFor("random msg")
 
-	// Ctrl-U navigates up the sidebar (&modeloff, #general,
+	// Alt-Up navigates up the sidebar (&modeloff, #general,
 	// #random) from #random to #general; Ctrl-O activates.
-	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlU})
+	tm.Send(tea.KeyMsg{Type: tea.KeyUp, Alt: true})
 	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlO})
 	tm.WaitFor("general msg")
 
-	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlD})
+	tm.Send(tea.KeyMsg{Type: tea.KeyDown, Alt: true})
 	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlO})
 	tm.WaitFor("random msg")
 }
