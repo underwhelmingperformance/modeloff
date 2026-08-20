@@ -158,10 +158,9 @@ func TestSession_sendQ_overflow_disconnects_the_client(t *testing.T) {
 //
 // The alternative endings are both worse than unbounded buffering.
 // Skipping deliveries would put a hole in the one transcript a
-// person is reading. Running the teardown would run the session's
-// own shutdown — every membership dropped, the autojoin list
-// rewritten, the crash marker cleared — underneath a process that is
-// still running, and the next start would read as a clean one.
+// person is reading. Running the teardown would drop every
+// membership and put a QUIT in each channel underneath a process
+// still running on the far side of it.
 func TestSession_sendQ_overflow_spares_the_session_lifetime_client(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		sess, s := newTestSessionWithAPI(t, &apitest.Fake{})

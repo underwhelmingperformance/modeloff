@@ -2,6 +2,7 @@ package userclient_test
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"testing"
 	"time"
@@ -21,13 +22,31 @@ import (
 	"github.com/laney/modeloff/internal/userclient"
 )
 
+// countingStore is the real store with a tally of the autojoin
+// writes made through it, so a test can pin how many a sequence
+// costs and not only what it left behind.
+type countingStore struct {
+	userclient.Store
+
+	autojoinWrites int
+}
+
+func (s *countingStore) SetAutojoinChannels(ctx context.Context, channels []domain.ChannelName) error {
+	s.autojoinWrites++
+
+	return s.Store.SetAutojoinChannels(ctx, channels)
+}
+
 // fixture is the common setup the user-client tests share: an
 // in-memory store, a noop-API model manager, a session, and an
-// attached user-client.
+// attached user-client. `userStore` is the handle the user-client
+// itself writes through; `store` is the same database, for the
+// assertions and the seeding a test does directly.
 type fixture struct {
-	sess  *session.Session
-	store *storemod.SQLiteStore
-	user  *userclient.UserClient
+	sess      *session.Session
+	store     *storemod.SQLiteStore
+	userStore *countingStore
+	user      *userclient.UserClient
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -44,10 +63,12 @@ func newFixture(t *testing.T) *fixture {
 	sess := session.New(t.Context, s, mgr, nil)
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 
-	user := userclient.New("testuser", sess, s, userclient.NewStoreReplyLog(s))
+	userStore := &countingStore{Store: s}
+
+	user := userclient.New("testuser", sess, userStore, userclient.NewStoreReplyLog(s))
 	require.NoError(t, user.Attach(t.Context()))
 
-	return &fixture{sess: sess, store: s, user: user}
+	return &fixture{sess: sess, store: s, userStore: userStore, user: user}
 }
 
 func TestUserClient_reports_operator_capability(t *testing.T) {
@@ -279,6 +300,136 @@ func TestUserClient_JoinAutojoinChannels_emits_aggregate_span(t *testing.T) {
 		oteltest.AttrValue(span.Attributes(), observability.AttrAutojoinChannels))
 }
 
+// TestUserClient_membership_commands_rewrite_the_autojoin_list pins
+// where the list is written from. It is this client's own record of
+// what to rejoin next time, so the client rewrites it after each
+// command of its own that changes which channels it is in, and the
+// session never touches it.
+//
+// QUIT is the case that does not rewrite it. Ending a connection
+// does not say the channels should stay behind, and the list is
+// what brings them back on the next one.
+func TestUserClient_membership_commands_rewrite_the_autojoin_list(t *testing.T) {
+	tests := []struct {
+		name string
+		act  func(t *testing.T, f *fixture)
+		want []domain.ChannelName
+	}{
+		{
+			name: "a JOIN adds the channel",
+			act:  func(*testing.T, *fixture) {},
+			want: []domain.ChannelName{"#dev", "#general"},
+		},
+		{
+			name: "a PART drops the channel",
+			act: func(t *testing.T, f *fixture) {
+				t.Helper()
+
+				require.NoError(t, f.user.Part(t.Context(), "#general", "bye"))
+			},
+			want: []domain.ChannelName{"#dev"},
+		},
+		{
+			name: "a KICK of this client's own nick drops the channel",
+			act: func(t *testing.T, f *fixture) {
+				t.Helper()
+
+				resp, err := f.user.Send(t.Context(), protocol.Kick{Channel: "#general", Nick: f.user.Nick()})
+				require.NoError(t, err)
+				require.NoError(t, resp.Err)
+			},
+			want: []domain.ChannelName{"#dev"},
+		},
+		{
+			name: "a QUIT leaves the list standing",
+			act: func(t *testing.T, f *fixture) {
+				t.Helper()
+
+				require.NoError(t, f.user.Quit(t.Context(), "bye"))
+			},
+			want: []domain.ChannelName{"#dev", "#general"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			ctx := t.Context()
+
+			require.NoError(t, f.user.Join(ctx, "#general"))
+			require.NoError(t, f.user.Join(ctx, "#dev"))
+
+			tc.act(t, f)
+
+			got, err := f.store.ListAutojoinChannels(ctx)
+			require.NoError(t, err)
+			require.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// TestUserClient_autojoin_list_omits_the_status_window pins the
+// filter on the way out. `&modeloff` is a legal channel name under
+// RFC 2812 §1.3, so a JOIN naming it is admitted, but it is the
+// client's own view of the server and lives as long as the session.
+// Rejoining it on the next start would put a second window on the
+// sidebar next to the one the chat-screen builds for itself.
+func TestUserClient_autojoin_list_omits_the_status_window(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+
+	require.NoError(t, f.user.Join(ctx, "#general"))
+	require.NoError(t, f.user.Join(ctx, domain.StatusChannelName))
+
+	got, err := f.store.ListAutojoinChannels(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []domain.ChannelName{"#general"}, got)
+}
+
+// TestUserClient_Quit_ends_the_session_active_marker covers the
+// crash marker's other half. The session writes it when the
+// connection opens; the client clears it when its own QUIT has gone
+// through, which is what makes the next start read this run as a
+// clean one. A run that ends without a QUIT leaves it in place.
+func TestUserClient_Quit_ends_the_session_active_marker(t *testing.T) {
+	tests := []struct {
+		name string
+		act  func(t *testing.T, f *fixture)
+		want string
+	}{
+		{
+			name: "a QUIT clears it",
+			act: func(t *testing.T, f *fixture) {
+				t.Helper()
+
+				require.NoError(t, f.user.Quit(t.Context(), "bye"))
+			},
+			want: "",
+		},
+		{
+			name: "a run that never quits leaves it",
+			act:  func(*testing.T, *fixture) {},
+			want: "open",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			ctx := t.Context()
+
+			require.NoError(t, f.store.SetSessionActive(ctx, "open"))
+			require.NoError(t, f.user.Join(ctx, "#general"))
+
+			tc.act(t, f)
+
+			active, err := f.store.GetSessionActive(ctx)
+			require.NoError(t, err)
+			require.Equal(t, tc.want, active)
+		})
+	}
+}
+
 func TestUserClient_RecordReply_persists_to_issuer_reply_log(t *testing.T) {
 	f := newFixture(t)
 	ctx := t.Context()
@@ -375,14 +526,28 @@ type lastRead struct {
 // distinct id, so a test can tell which read a cursor came from, and
 // records the cursors written to it.
 type recordingStore struct {
-	channelHead int64
-	threadHead  int64
-	stamped     []lastRead
-	dmWindows   []domain.InstanceID
+	channelHead          int64
+	threadHead           int64
+	stamped              []lastRead
+	dmWindows            []domain.InstanceID
+	autojoin             []domain.ChannelName
+	sessionActiveCleared int
 }
 
 func (*recordingStore) ListAutojoinChannels(context.Context) ([]domain.ChannelName, error) {
 	return nil, nil
+}
+
+func (s *recordingStore) SetAutojoinChannels(_ context.Context, channels []domain.ChannelName) error {
+	s.autojoin = slices.Clone(channels)
+
+	return nil
+}
+
+func (s *recordingStore) ClearSessionActive(context.Context) error {
+	s.sessionActiveCleared++
+
+	return nil
 }
 
 func (s *recordingStore) EventsBefore(_ context.Context, _ domain.ChannelName, _ *int64, _ int) ([]domain.StoredEvent, error) {
@@ -423,4 +588,34 @@ func (s *recordingStore) RemoveDMWindow(_ context.Context, peer domain.InstanceI
 	s.dmWindows = slices.DeleteFunc(s.dmWindows, func(open domain.InstanceID) bool { return open == peer })
 
 	return nil
+}
+
+// TestUserClient_autojoin_restore_writes_the_list_once covers the
+// restore reading and rewriting the same list. It joins in chunks of
+// [protocol.MaxJoinTargets], and a write between two chunks would
+// leave the stored list holding only the channels joined so far: a
+// process that ended there would come back to a list missing the
+// tail it never reached. The write happens once, after the last
+// chunk, and carries every channel.
+func TestUserClient_autojoin_restore_writes_the_list_once(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+
+	want := make([]domain.ChannelName, 0, protocol.MaxJoinTargets+3)
+	for i := range cap(want) {
+		want = append(want, domain.ChannelName(fmt.Sprintf("#chan%02d", i)))
+	}
+
+	require.NoError(t, f.store.SetAutojoinChannels(ctx, want))
+
+	f.userStore.autojoinWrites = 0
+
+	require.NoError(t, f.user.JoinAutojoinChannels(ctx))
+
+	require.Equal(t, 1, f.userStore.autojoinWrites,
+		"the restore spans more than one chunk and writes the list once, at the end")
+
+	got, err := f.store.ListAutojoinChannels(ctx)
+	require.NoError(t, err)
+	require.Equal(t, want, got)
 }

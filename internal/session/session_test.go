@@ -203,11 +203,12 @@ func userPoke(ctx context.Context, t testing.TB, sess *Session) error {
 
 // userJoinAutojoinChannels mirrors the user-client side autojoin
 // loop: read the autojoin list and JOIN each entry via the
-// user-actor.
-func userJoinAutojoinChannels(ctx context.Context, t testing.TB, sess *Session) error {
+// user-actor. The list is client state, so the read goes straight to
+// the store; the session offers no way to it.
+func userJoinAutojoinChannels(ctx context.Context, t testing.TB, sess *Session, s *storemod.SQLiteStore) error {
 	t.Helper()
 
-	channels, err := sess.store.ListAutojoinChannels(ctx)
+	channels, err := s.ListAutojoinChannels(ctx)
 	if err != nil {
 		return err
 	}
@@ -623,7 +624,7 @@ func TestSession_JoinAutojoinChannels_populates_user_join_times(t *testing.T) {
 		require.True(t, userJoinedAt(t, sess, "#general").IsZero())
 		require.True(t, userJoinedAt(t, sess, "#random").IsZero())
 
-		require.NoError(t, userJoinAutojoinChannels(ctx, t, sess))
+		require.NoError(t, userJoinAutojoinChannels(ctx, t, sess, s))
 		synctest.Wait()
 
 		user := userInstance(t, sess)
@@ -663,9 +664,9 @@ func TestSession_JoinAutojoinChannels_populates_user_join_times(t *testing.T) {
 }
 
 func TestSession_JoinAutojoinChannels_empty_autojoin_is_noop(t *testing.T) {
-	sess, _ := newTestSession(t)
+	sess, s := newTestSession(t)
 
-	require.NoError(t, userJoinAutojoinChannels(t.Context(), t, sess))
+	require.NoError(t, userJoinAutojoinChannels(t.Context(), t, sess, s))
 	requireChannels(t, userInstance(t, sess).Channels())
 }
 
@@ -679,7 +680,7 @@ func TestSession_JoinAutojoinChannels_emits_join_events(t *testing.T) {
 		seedChannelWithMembers(t, sess, s, "#beta", "botty")
 		require.NoError(t, s.SetAutojoinChannels(ctx, []domain.ChannelName{"#alpha", "#beta"}))
 
-		require.NoError(t, userJoinAutojoinChannels(ctx, t, sess))
+		require.NoError(t, userJoinAutojoinChannels(ctx, t, sess, s))
 		synctest.Wait()
 
 		user := userInstance(t, sess)
@@ -855,7 +856,7 @@ func TestSession_Connect_then_JoinAutojoin_stamps_UserJoinedAt(t *testing.T) {
 		require.NoError(t, s.SetAutojoinChannels(ctx, []domain.ChannelName{"#general", "#random"}))
 
 		require.NoError(t, sess.Connect(ctx))
-		require.NoError(t, userJoinAutojoinChannels(ctx, t, sess))
+		require.NoError(t, userJoinAutojoinChannels(ctx, t, sess, s))
 		synctest.Wait()
 
 		require.Equal(t, fixedTime, userJoinedAt(t, sess, "#general"))
@@ -901,7 +902,12 @@ func TestSession_Connect_then_JoinAutojoin_stamps_UserJoinedAt(t *testing.T) {
 	})
 }
 
-func TestSession_Connect_Quit_Reconnect_omits_status_channel_from_autojoin(t *testing.T) {
+// TestSession_Connect_Quit_Reconnect_replays_nothing pins what a
+// second connection over the same store puts on the bus: the
+// handshake numerics for this connection and nothing the previous
+// one raised. The autojoin list the first run leaves behind is
+// client state and is covered in `internal/userclient`.
+func TestSession_Connect_Quit_Reconnect_replays_nothing(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		s := storetest.NewMemoryStore(t)
 
@@ -950,12 +956,15 @@ func TestSession_Connect_Quit_Reconnect_omits_status_channel_from_autojoin(t *te
 			},
 		}, collectEmittedEvents(t, sess1))
 
-		autojoin, err := s.ListAutojoinChannels(ctx)
-		require.NoError(t, err)
-		require.Equal(t, []domain.ChannelName{"#general"}, autojoin)
+		// Ending the crash marker is the user-client's half of a clean
+		// exit (`userclient.UserClient.Quit`), which this package's
+		// thin test client does not carry. Without it the second
+		// connect below classifies the first run as unclean and
+		// answers with a `Reconnected` as well.
+		require.NoError(t, s.ClearSessionActive(ctx))
 
-		// Starting a fresh session over the same store must not replay the
-		// status channel into the autojoin loop.
+		// Starting a fresh session over the same store must not replay
+		// the first session's traffic.
 		bootAt2 := time.Now()
 		sess2 := New(t.Context, s, newTestModelClientFactory(t, &apitest.Fake{}), nil)
 		t.Cleanup(func() { _ = sess2.Shutdown(t.Context()) })
@@ -972,10 +981,6 @@ func TestSession_Connect_Quit_Reconnect_omits_status_channel_from_autojoin(t *te
 				At:         fixedTime,
 			},
 		}, collectEmittedEvents(t, sess2))
-
-		autojoin, err = s.ListAutojoinChannels(ctx)
-		require.NoError(t, err)
-		require.Equal(t, []domain.ChannelName{"#general"}, autojoin)
 	})
 }
 
@@ -1107,7 +1112,7 @@ func TestSession_Connect_is_idempotent(t *testing.T) {
 	})
 }
 
-func TestSession_Quit_appends_channel_quit_events_and_saves_autojoin(t *testing.T) {
+func TestSession_Quit_appends_channel_quit_events(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		bootAt := time.Now()
 		sess, s := newTestSession(t)
@@ -1155,10 +1160,6 @@ func TestSession_Quit_appends_channel_quit_events_and_saves_autojoin(t *testing.
 			)
 		}
 		require.Equal(t, expected, collectEmittedEvents(t, sess))
-
-		autojoin, err := s.ListAutojoinChannels(ctx)
-		require.NoError(t, err)
-		require.Equal(t, []domain.ChannelName{"#general", "#random"}, autojoin)
 
 		for _, ch := range []domain.ChannelName{"#general", "#random"} {
 			require.Equal(t, []string{"join", "quit"}, channelEventTypes(t, s, ch))
@@ -1394,34 +1395,19 @@ func TestSession_user_state_triple_stays_consistent(t *testing.T) {
 	})
 }
 
-func TestSession_Quit_clears_session_active_marker(t *testing.T) {
+// TestSession_Quit_on_no_channels_writes_nothing covers a QUIT from
+// a client that never joined anything. There is no channel for the
+// event log to carry it under, so the store is left exactly as it
+// was.
+func TestSession_Quit_on_no_channels_writes_nothing(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
-
-	require.NoError(t, s.SetSessionActive(ctx, fixedTime.Format(time.RFC3339Nano)))
-
-	require.NoError(t, userQuitViaWire(ctx, t, sess, ""))
-
-	got, err := s.GetSessionActive(ctx)
-	require.NoError(t, err)
-	require.Empty(t, got)
-}
-
-func TestSession_Quit_no_channels_is_noop_but_clears_marker(t *testing.T) {
-	sess, s := newTestSession(t)
-	ctx := t.Context()
-
-	require.NoError(t, s.SetSessionActive(ctx, fixedTime.Format(time.RFC3339Nano)))
 
 	require.NoError(t, userQuitViaWire(ctx, t, sess, "bye"))
 
-	autojoin, err := s.ListAutojoinChannels(ctx)
+	windows, err := s.ListWindows(ctx)
 	require.NoError(t, err)
-	require.Empty(t, autojoin)
-
-	got, err := s.GetSessionActive(ctx)
-	require.NoError(t, err)
-	require.Empty(t, got)
+	require.Empty(t, windows)
 }
 
 func TestSession_Quit_does_not_dispatch_to_models(t *testing.T) {
@@ -1576,7 +1562,6 @@ func TestSession_mutationOperations_recordSpans(t *testing.T) {
 			"store.sqlite.resolve_nick",
 			"store.sqlite.save_instance",
 			"store.sqlite.save_window",
-			"store.sqlite.set_autojoin_channels",
 		}
 
 		synctest.Wait()
@@ -1758,7 +1743,7 @@ func TestSession_AutojoinChannels_drives_per_channel_joins(t *testing.T) {
 	ctx := t.Context()
 
 	require.NoError(t, s.SetAutojoinChannels(ctx, []domain.ChannelName{"#alpha", "#beta"}))
-	require.NoError(t, userJoinAutojoinChannels(ctx, t, sess))
+	require.NoError(t, userJoinAutojoinChannels(ctx, t, sess, s))
 
 	var joined []domain.ChannelName
 	for pair := userInstance(t, sess).Channels().Oldest(); pair != nil; pair = pair.Next() {

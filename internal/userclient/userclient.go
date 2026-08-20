@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	orderedmap "github.com/wk8/go-ordered-map/v2"
@@ -63,7 +64,21 @@ type Session interface {
 // subset of the session store's surface used by autojoin,
 // mark-read and quit bookkeeping.
 type Store interface {
+	// Autojoin list. The channels this client rejoins on the next
+	// connection. It is client state: the client rewrites it as its
+	// own membership changes, and the session neither reads nor
+	// writes it, the same arrangement `dm_windows` has.
 	ListAutojoinChannels(ctx context.Context) ([]domain.ChannelName, error)
+	SetAutojoinChannels(ctx context.Context, channels []domain.ChannelName) error
+
+	// ClearSessionActive drops the marker that says a connection is
+	// open. [UserClient.Quit] writes it, so the next start reads a
+	// QUIT-terminated run as a clean one. The session sets the marker
+	// during its connect handshake and reads it to classify the
+	// previous run; ending it belongs to the client whose connection
+	// it describes.
+	ClearSessionActive(ctx context.Context) error
+
 	EventsBefore(ctx context.Context, ch domain.ChannelName, before *int64, n int) ([]domain.StoredEvent, error)
 
 	// DMEventsBefore reads the DM thread between `self` and `peer`,
@@ -134,6 +149,12 @@ type UserClient struct {
 
 	mu  sync.Mutex
 	sub protocol.Subscription
+
+	// restoring is set while [UserClient.JoinAutojoinChannels] is
+	// replaying the autojoin list, so the JOINs it issues do not
+	// rewrite the list they are reading. See
+	// [UserClient.saveAutojoinList].
+	restoring atomic.Bool
 }
 
 // New returns an unattached `UserClient` for `nick`. Call
@@ -164,10 +185,11 @@ func (uc *UserClient) Identity() protocol.ClientID { return protocol.UserClientI
 // client as the issuing actor, and keeps this client's own state in
 // step with the commands it issues.
 //
-// Today that means one thing: every channel a JOIN reaches stamps
-// its read cursor at the channel's head. Every way the user joins
-// arrives here: [UserClient.Join] and so
-// [UserClient.JoinAutojoinChannels], the chat-screen's window
+// Two pieces of state ride here. Every channel a JOIN reaches stamps
+// its read cursor at the channel's head, and every command that can
+// change which channels this client is in rewrites the autojoin
+// list. Every way the user joins arrives here: [UserClient.Join] and
+// so [UserClient.JoinAutojoinChannels], the chat-screen's window
 // switch, and the `/join` slash command, which builds its own
 // [protocol.Join] and dispatches it through this method. This is
 // the one place that covers them all. Doing it per call site would
@@ -183,7 +205,80 @@ func (uc *UserClient) Send(ctx context.Context, cmd protocol.Command) (protocol.
 		uc.markJoinedChannelsRead(ctx, resp.Events)
 	}
 
+	uc.saveAutojoinList(ctx, cmd)
+
 	return resp, nil
+}
+
+// saveAutojoinList rewrites the autojoin list after a command that
+// can change which channels this client is in. `Handle` has already
+// returned, so the command loop has finished with the command and
+// the client's channel set is the settled answer to what it is in.
+//
+// JOIN, PART and KICK are those commands. A KICK naming somebody
+// else costs one write that changes nothing, which is cheaper than
+// resolving the target here to find out. QUIT is deliberately not
+// among them: it ends the connection without saying the channels
+// should not come back, and this list is what brings them back.
+//
+// Best-effort, like the read cursor: the command itself succeeded,
+// and a list that missed one update is repaired by the next one.
+//
+// [UserClient.JoinAutojoinChannels] suppresses the write for as long
+// as it is replaying the list. It joins in chunks, so a write between
+// two chunks would leave the stored list holding only the channels
+// joined so far, and a process that died there would come back to a
+// list missing the tail it never reached.
+func (uc *UserClient) saveAutojoinList(ctx context.Context, cmd protocol.Command) {
+	switch cmd.(type) {
+	case protocol.Join, protocol.Part, protocol.Kick:
+	default:
+		return
+	}
+
+	if uc.restoring.Load() {
+		return
+	}
+
+	uc.writeAutojoinList(ctx)
+}
+
+// writeAutojoinList persists the client's current channel set as the
+// autojoin list. A failed write is logged and nothing else: the
+// command that prompted it has already succeeded.
+func (uc *UserClient) writeAutojoinList(ctx context.Context) {
+	if err := uc.store.SetAutojoinChannels(ctx, uc.autojoinChannels()); err != nil {
+		slog.Default().ErrorContext(ctx, "save autojoin list",
+			"component", "userclient",
+			"error", err,
+		)
+	}
+}
+
+// autojoinChannels is this client's current channel set restricted
+// to real `#`-channels. The order is the order it joined them in,
+// which the store does not preserve: it reads the list back sorted
+// by name, and the next restore joins them in that order instead.
+// The status window is the chat-screen's own view of the server and
+// is never a membership; a DM window holds no shared state to rejoin
+// and would reach `joinAs` under its `InstanceID`-shaped name.
+func (uc *UserClient) autojoinChannels() []domain.ChannelName {
+	channels := uc.instance.Channels()
+	if channels == nil {
+		return nil
+	}
+
+	var out []domain.ChannelName
+
+	for pair := channels.Oldest(); pair != nil; pair = pair.Next() {
+		if domain.InferChannelKind(pair.Key) != domain.KindChannel {
+			continue
+		}
+
+		out = append(out, pair.Key)
+	}
+
+	return out
 }
 
 // markJoinedChannelsRead stamps the read cursor for every channel a
@@ -361,10 +456,26 @@ func (uc *UserClient) ChangeNick(ctx context.Context, newNick domain.Nick) error
 	return firstErr(err, resp.Err)
 }
 
-// Quit issues a wire QUIT as the user-actor.
+// Quit issues a wire QUIT as the user-actor and records that this
+// connection ended cleanly.
+//
+// The session-active marker says a connection is open. Clearing it
+// once the QUIT has gone through is what makes the next start read
+// this exit as a clean one, so the memberships the QUIT has just
+// dropped are not reconciled a second time. A run that ends without
+// a QUIT leaves the marker in place, which is the state the next
+// connect classifies as unclean.
 func (uc *UserClient) Quit(ctx context.Context, reason string) error {
 	resp, err := uc.Send(ctx, protocol.Quit{Reason: reason})
-	return firstErr(err, resp.Err)
+	if err := firstErr(err, resp.Err); err != nil {
+		return err
+	}
+
+	if err := uc.store.ClearSessionActive(ctx); err != nil {
+		return fmt.Errorf("clear session active: %w", err)
+	}
+
+	return nil
 }
 
 // Channels returns the user's current channel set. Returns nil
@@ -400,6 +511,12 @@ func (uc *UserClient) JoinedAt(ch domain.ChannelName) time.Time {
 // chunk independently, so a gate refusal on one is logged without
 // withholding the rest. Returns a non-nil error only if the
 // autojoin list itself cannot be loaded.
+//
+// The list is rewritten once, after the last chunk, and the ordinary
+// per-command write is suppressed until then. Writing between chunks
+// would leave the stored list holding only what had been joined so
+// far, and a process that ended there would come back to a list
+// missing the tail it never reached.
 func (uc *UserClient) JoinAutojoinChannels(ctx context.Context) (retErr error) {
 	tracer := otel.GetTracerProvider().Tracer("github.com/laney/modeloff/internal/userclient")
 	ctx, span := tracer.Start(ctx, "userclient.autojoin",
@@ -416,6 +533,12 @@ func (uc *UserClient) JoinAutojoinChannels(ctx context.Context) (retErr error) {
 	if err != nil {
 		return fmt.Errorf("list autojoin channels: %w", err)
 	}
+
+	uc.restoring.Store(true)
+	defer func() {
+		uc.restoring.Store(false)
+		uc.writeAutojoinList(ctx)
+	}()
 
 	channelNames := make([]string, len(channels))
 	for i, ch := range channels {

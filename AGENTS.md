@@ -34,8 +34,10 @@ IRC-like server; the only external service is the OpenRouter API.
 4. The user can `/part` a channel.
    1. A channel exists only while it has occupants; the last occupant
       parting destroys it, along with its topic, modes and invitation list
-      (RFC 2811 §2). The sidebar entry and the autojoin list are client
-      state and survive a part. If durable channels are ever wanted, the
+      (RFC 2811 §2). The sidebar entry is client state and survives a
+      part. So is the autojoin list, and the client drops the channel
+      from it, because parting says the channel should not come back on
+      the next connection. If durable channels are ever wanted, the
       mechanism is an explicit permanent-channel mode.
 5. The user can `/list` all channels, subject to the channel-visibility
    rule described below.
@@ -855,6 +857,24 @@ forgets it on `/close`, and reopens the recorded set at bootstrap,
 landing on one of them when that is the window the user left open.
 The rows are keyed by the counterpart's `InstanceID` and cascade from
 `instances`, like the DM cursors.
+
+The autojoin list is client state on the same terms, and `autojoin` is
+where the client keeps it. `UserClient.Send` rewrites it after each
+JOIN, PART or KICK the client issues, from the channel set the command
+loop has just settled, and writes it through
+`userclient.Store.SetAutojoinChannels`; the session neither reads nor
+writes the table. QUIT is deliberately not one of those commands:
+ending a connection does not say the channels should stay behind, and
+this list is what brings them back on the next one. A KICK naming
+somebody else costs one write that changes nothing, which is cheaper
+than resolving the target to find out.
+
+The `session_active` marker is the other half of that record. The
+session writes it during its connect handshake and reads it there to
+classify the previous run; `UserClient.Quit` clears it once the QUIT
+has gone through. A run that ended without a QUIT therefore leaves the
+marker standing, and the next connect reconciles the memberships it
+left behind through `cleanupUncleanShutdown`.
 
 An issuer's own point-to-point replies (`WHOIS`, `LIST`, and the
 `domain.SystemNotice` a refused `INVITE` or a fallen-short `ADDMODEL`

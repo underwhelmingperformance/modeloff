@@ -23,11 +23,10 @@ const sendQExceededReason = "Max SendQ exceeded"
 // It is undefined for a client whose lifetime is the session's, and
 // refuses one. There is no connection there to close: that client
 // and the process hosting the server are the same thing, so the
-// teardown would not end anything, it would only run the session's
-// own shutdown — dropping every membership, rewriting the autojoin
-// list and clearing the crash marker — underneath a process still
-// running on the far side of it. The session ends when that process
-// does, and nothing before then may pretend otherwise.
+// teardown would end nothing. It would drop every membership and
+// put a QUIT in each channel underneath a process still running on
+// the far side of it. The session ends when that process does, and
+// nothing before then may pretend otherwise.
 //
 // Runs off the command loop, which the QUIT itself takes; a caller
 // already on the loop would wait for a turn it is holding. Calling

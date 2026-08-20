@@ -110,13 +110,14 @@ type Store interface {
 	// [store.ErrNoSuchNick] when no instance matches.
 	ResolveNick(ctx context.Context, nick domain.Nick) (*domain.Instance, error)
 
-	// Session-active marker. Set on `Connect`, cleared on a
-	// clean `Quit`; a non-empty value on the next `Connect`
-	// signals an unclean prior shutdown so the user's stale
-	// membership state can be reconciled.
+	// Session-active marker. Set on `Connect`; a non-empty value
+	// on the next `Connect` signals an unclean prior shutdown so
+	// the user's stale membership state can be reconciled.
+	// Clearing it belongs to the client whose connection it
+	// describes, which writes it through its own store surface
+	// (`userclient.Store.ClearSessionActive`).
 	GetSessionActive(ctx context.Context) (string, error)
 	SetSessionActive(ctx context.Context, value string) error
-	ClearSessionActive(ctx context.Context) error
 
 	// Last-read tracking. The event id high-watermark per
 	// channel that the chat-screen has rendered. Where the
@@ -128,11 +129,6 @@ type Store interface {
 	// channel name, since a DM cursor lives in its own table.
 	GetLastRead(ctx context.Context, ch domain.ChannelName) (int64, error)
 	GetDMLastRead(ctx context.Context, peer domain.InstanceID) (int64, error)
-
-	// Autojoin list. The set of channels rejoined at next
-	// `Connect`; rewritten on every successful `Quit`.
-	ListAutojoinChannels(ctx context.Context) ([]domain.ChannelName, error)
-	SetAutojoinChannels(ctx context.Context, channels []domain.ChannelName) error
 }
 
 // Session is the backend coordinator. It bridges the UI layer and
@@ -142,8 +138,7 @@ type Store interface {
 // `*userclient.UserClient` and reaches the session through the
 // registered subscription envelope; the session reads it through
 // [Session.userInstance] when channel-state code needs the user
-// handle (member-list injection, autojoin persistence, mode
-// bookkeeping).
+// handle (member-list injection, mode bookkeeping).
 type Session struct {
 	store Store
 
@@ -844,13 +839,11 @@ func (s *Session) ResolveNick(ctx context.Context, nick domain.Nick) (*domain.In
 	return s.store.ResolveNick(ctx, nick)
 }
 
-// Quit performs a clean client-side shutdown. For each channel the
-// user is in it appends a Quit event to the log (so models
-// see the quit the next time they are dispatched against in that
-// channel), removes the user from the channel members list, saves
-// the autojoin list so the channels can be rejoined on next startup,
-// clears in-memory channel state, and clears the session_active
-// marker so the next startup is classified as clean.
+// userQuit performs a clean client-side shutdown. For each channel
+// the user is in it appends a Quit event to the log (so models see
+// the quit the next time they are dispatched against in that
+// channel), removes the user from the channel members list and
+// clears the in-memory channel state.
 //
 // No model dispatch is performed: a running process does not wait
 // for remote models to acknowledge the quit. The call is synchronous
@@ -863,18 +856,10 @@ func (s *Session) userQuit(ctx context.Context, message string) error {
 			return fmt.Errorf("user-client not registered with this session")
 		}
 
-		autojoin := s.persistableAutojoinChannels()
-
 		userNick := user.Nick()
 		channels := s.instanceChannelNames(user)
 		now := s.now()
 
-		// Order matters for crash-resilience: append per-channel quit events
-		// and drop the user from the members list first, persist the
-		// autojoin list second, clear in-memory state third, and clear the
-		// session_active marker last. A crash between any of the earlier
-		// steps leaves the next startup classified as unclean, at which
-		// point cleanupUncleanShutdown handles any residual memberships.
 		s.propagateActorEvent(ctx, user, actorEventConfig{
 			storeOnly: true,
 			build: func() broadcastEvent {
@@ -889,15 +874,7 @@ func (s *Session) userQuit(ctx context.Context, message string) error {
 			},
 		})
 
-		if err := s.store.SetAutojoinChannels(ctx, autojoin); err != nil {
-			return fmt.Errorf("save autojoin channels: %w", err)
-		}
-
 		user.LeaveChannels(channels...)
-
-		if err := s.store.ClearSessionActive(ctx); err != nil {
-			return fmt.Errorf("clear session active: %w", err)
-		}
 
 		return nil
 	})
@@ -1248,43 +1225,6 @@ func (s *Session) propagateActorEvent(ctx context.Context, actor *domain.Instanc
 	if !cfg.storeOnly && len(channels) > 0 {
 		s.emit(ctx, evt)
 	}
-}
-
-// saveAutojoinList persists the current user channel list as the
-// autojoin set.
-func (s *Session) saveAutojoinList(ctx context.Context) error {
-	return s.store.SetAutojoinChannels(ctx, s.persistableAutojoinChannels())
-}
-
-// persistableAutojoinChannels returns the user's current channel
-// set restricted to `KindChannel` entries. The status window is a
-// chat-screen-only concept (no session-side membership) and would
-// not appear here regardless; DM windows are pure UI affordances —
-// they hold no shared state to rejoin and would resolve to a fake
-// `#`-channel if `JoinAutojoinChannels` ever called `joinAs`
-// with their `InstanceID`-shaped name.
-func (s *Session) persistableAutojoinChannels() []domain.ChannelName {
-	var channels []domain.ChannelName
-
-	user := s.userInstance()
-	if user == nil {
-		return channels
-	}
-
-	userChannels := user.Channels()
-	if userChannels == nil {
-		return channels
-	}
-
-	for pair := userChannels.Oldest(); pair != nil; pair = pair.Next() {
-		if domain.InferChannelKind(pair.Key) != domain.KindChannel {
-			continue
-		}
-
-		channels = append(channels, pair.Key)
-	}
-
-	return channels
 }
 
 func (s *Session) appendEvent(ctx context.Context, ch domain.ChannelName, event domain.ChannelActivity) {

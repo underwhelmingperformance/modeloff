@@ -6,7 +6,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/laney/modeloff/internal/config"
-	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/components"
 )
@@ -35,11 +34,16 @@ func (s ChatScreen) routeLifecycle(msg tea.Msg) (ChatScreen, tea.Cmd, bool) {
 // indication, and runs the backend quit asynchronously. The result
 // arrives as a QuitCompleteMsg, which the screen turns into
 // tea.Quit.
+//
+// [userclient.UserClient.Quit] is the whole of what ending this
+// connection means: it sends the wire QUIT and clears the
+// session-active marker, which is what makes the next start read
+// this exit as a clean one.
 func (s ChatScreen) handleQuitRequested(msg ui.QuitRequestedMsg) (ChatScreen, tea.Cmd) {
 	if s.quitting {
 		// A second quit request while the first is in flight is an
 		// escape hatch: the user pressed Ctrl+C again because the
-		// disconnect looks stuck. Bypass Session.Quit and exit now.
+		// disconnect looks stuck. Skip the backend quit and exit now.
 		return s, tea.Quit
 	}
 
@@ -54,11 +58,7 @@ func (s ChatScreen) handleQuitRequested(msg ui.QuitRequestedMsg) (ChatScreen, te
 	cmds := []tea.Cmd{
 		msgCmd(components.InputLockedMsg{Locked: true}),
 		func() tea.Msg {
-			resp, err := s.user.Send(s.baseContext(), protocol.Quit{Reason: message})
-			if err == nil {
-				err = resp.Err
-			}
-			return ui.QuitCompleteMsg{Err: err}
+			return ui.QuitCompleteMsg{Err: s.user.Quit(s.baseContext(), message)}
 		},
 	}
 
@@ -158,7 +158,7 @@ func sendLatest[T any](ch chan T, v T) {
 
 // disconnectingStatusItem is the always-visible feedback the chat and
 // connection screens emit while a quit is in flight, so the user
-// sees something happening even if Session.Quit takes a moment.
+// sees something happening even if the backend quit takes a moment.
 var disconnectingStatusItem = ui.StatusItem{
 	ID:       "disconnecting",
 	Side:     ui.StatusSideRight,

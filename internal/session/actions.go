@@ -162,10 +162,6 @@ func (s *Session) joinAs(ctx context.Context, actor *domain.Instance, kind joinK
 			})
 		}
 
-		if isUser {
-			return s.saveAutojoinList(ctx)
-		}
-
 		return nil
 	})
 
@@ -266,29 +262,17 @@ func (s *Session) partAs(ctx context.Context, actor *domain.Instance, ch domain.
 			Instance:   actor,
 		})
 
-		if err := s.removeMember(ctx, window, actor); err != nil {
-			return err
-		}
-
-		if actor.ID() == "" {
-			if err := s.saveAutojoinList(ctx); err != nil {
-				return fmt.Errorf("save autojoin: %w", err)
-			}
-		}
-
-		return nil
+		return s.removeMember(ctx, window, actor)
 	})
 }
 
 // quitAs disconnects the given actor from every joined channel.
-// For the user-client the call saves the autojoin list and clears
-// the session-active marker so the next startup is classified as
-// clean; the QUIT lines are persisted but not broadcast, because
-// the only consumer of broadcast events (the chat-screen) is
-// about to tear down. For a model-client the call broadcasts the
-// `domain.Quit` event to common-channel peers and deletes the
-// instance row — the dispatcher reaps the subscription separately
-// via [Session.reapClient].
+// For the user-client the QUIT lines are persisted but not
+// broadcast, because the only consumer of broadcast events (the
+// chat-screen) is about to tear down. For a model-client the call
+// broadcasts the `domain.Quit` event to common-channel peers and
+// deletes the instance row. The dispatcher reaps the subscription
+// separately, via [Session.reapClient].
 func (s *Session) quitAs(ctx context.Context, actor *domain.Instance, message string) error {
 	if actor.ID() == "" {
 		return s.userQuit(ctx, message)

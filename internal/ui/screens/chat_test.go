@@ -950,15 +950,25 @@ func TestChatScreen_part_command_with_message(t *testing.T) {
 	tm.Submit("/part see you later")
 }
 
+// TestChatScreen_quit_command_with_message covers the whole of what
+// `/quit` does, not only the wire QUIT. The screen routes it through
+// the user-client, which also ends the session-active marker, so a
+// run that quit is classified as a clean one on the next start.
 func TestChatScreen_quit_command_with_message(t *testing.T) {
 	h := newTestSession(t)
 	uitest.SeedChannel(t, h.user, "#general")
+
+	require.NoError(t, h.store.SetSessionActive(t.Context(), "open"))
 
 	tm := newChatApp(t, h)
 	waitForChannelSeedDrain(tm)
 
 	tm.Submit("/quit goodbye world")
 	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
+
+	active, err := h.store.GetSessionActive(t.Context())
+	require.NoError(t, err)
+	require.Empty(t, active)
 }
 
 func TestChatScreen_View_responsive(t *testing.T) {
