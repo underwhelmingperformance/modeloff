@@ -269,6 +269,74 @@ func TestUserClient_RecordReply_persists_to_issuer_reply_log(t *testing.T) {
 	require.Equal(t, []domain.StoredEvent{{ID: 1, Event: reply}}, replies)
 }
 
+// TestUserClient_MarkRead_reads_the_window_it_marks pins where the
+// read cursor comes from. A channel's newest event is under the
+// channel's own key. A DM's is not: the two directions are logged
+// under their recipients, so a cursor taken from the window's key
+// alone stops at the last line the user sent and leaves everything
+// the counterpart has said since counted as unread.
+func TestUserClient_MarkRead_reads_the_window_it_marks(t *testing.T) {
+	const peer = domain.InstanceID("inst-botty")
+
+	tests := []struct {
+		name   string
+		window domain.ChannelName
+		want   int64
+	}{
+		{name: "a channel reads its own log", window: "#general", want: 11},
+		{name: "a DM reads the thread", window: domain.ChannelName(peer), want: 22},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+
+			store := &recordingStore{
+				channelHead: 11,
+				threadHead:  22,
+			}
+			user := userclient.New("testuser", f.sess, store, userclient.NewStoreReplyLog(f.store))
+
+			require.NoError(t, user.MarkRead(t.Context(), tc.window))
+
+			require.Equal(t, []lastRead{{channel: tc.window, eventID: tc.want}}, store.stamped)
+		})
+	}
+}
+
+// lastRead is one [userclient.Store.SetLastRead] call.
+type lastRead struct {
+	channel domain.ChannelName
+	eventID int64
+}
+
+// recordingStore answers each read with a single event carrying a
+// distinct id, so a test can tell which read a cursor came from, and
+// records the cursors written to it.
+type recordingStore struct {
+	channelHead int64
+	threadHead  int64
+	stamped     []lastRead
+}
+
+func (*recordingStore) ListAutojoinChannels(context.Context) ([]domain.ChannelName, error) {
+	return nil, nil
+}
+
+func (s *recordingStore) EventsBefore(_ context.Context, _ domain.ChannelName, _ *int64, _ int) ([]domain.StoredEvent, error) {
+	return []domain.StoredEvent{{ID: s.channelHead, Event: domain.Message{}}}, nil
+}
+
+func (s *recordingStore) DMEventsBefore(_ context.Context, _, _ domain.InstanceID, _ *int64, _ int) ([]domain.StoredEvent, error) {
+	return []domain.StoredEvent{{ID: s.threadHead, Event: domain.Message{}}}, nil
+}
+
+func (s *recordingStore) SetLastRead(_ context.Context, ch domain.ChannelName, eventID int64) error {
+	s.stamped = append(s.stamped, lastRead{channel: ch, eventID: eventID})
+
+	return nil
+}
+
 // noopAPI satisfies [api.Client] with empty responses — enough for
 // the user-client's join / poke / autojoin paths, none of which
 // exercise the model dispatch loop.

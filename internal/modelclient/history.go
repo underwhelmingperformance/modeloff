@@ -348,8 +348,18 @@ func (h *history) snapshotReplies() []domain.StoredEvent {
 // actually spent. The dispatch turn iterates the slice without
 // holding the lock, so the snapshot must not alias the live backing
 // array.
-func (h *history) snapshot(target domain.ChannelName) []domain.StoredEvent {
+//
+// A DM buffer this client has not seen yet is loaded from the store
+// before the copy is taken, under the one lock, so a snapshot never
+// reports a conversation as empty because its load had not run.
+func (h *history) snapshot(
+	ctx context.Context,
+	sess Session,
+	selfID domain.InstanceID,
+	target domain.ChannelName,
+) []domain.StoredEvent {
 	h.mu.Lock()
+	h.seedDM(ctx, sess, selfID, target)
 	src := h.buf[target]
 	h.mu.Unlock()
 
@@ -367,12 +377,9 @@ func (h *history) snapshot(target domain.ChannelName) []domain.StoredEvent {
 // feeder admits only [domain.ChannelActivity], so the buffer holds
 // the conversation a turn assembles its prompt from.
 //
-// On first sight of a DM target — `target` is a counterpart
-// `InstanceID` and the buffer has no entry for it yet — the method
-// lazy-seeds from the store under the same lock the live append
-// takes, so no concurrent appender can interleave between seed and
-// append. Channel targets are loaded at attach time; the lazy-seed
-// branch is DM-only.
+// A DM buffer this client has not seen yet is loaded from the store
+// first, under the same lock the live append takes, so no concurrent
+// appender can interleave between the load and the append.
 //
 // Skips a duplicate if the incoming event matches the buffer's
 // most-recent entry by concrete type and timestamp; protects
@@ -393,20 +400,7 @@ func (h *history) append(
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if _, ok := h.buf[target]; !ok && domain.InferChannelKind(target) == domain.KindDM {
-		seed, err := sess.DMEventsBefore(ctx, selfID, domain.InstanceID(target), nil, modelHistorySize)
-		if err != nil {
-			slog.Default().ErrorContext(ctx, "lazy-seed DM history",
-				"component", "modelclient",
-				"instance_id", selfID,
-				"peer", target,
-				"error", err,
-			)
-			h.buf[target] = nil
-		} else {
-			h.buf[target] = seed
-		}
-	}
+	h.seedDM(ctx, sess, selfID, target)
 
 	if buf := h.buf[target]; len(buf) > 0 && sameStoredEvent(buf[len(buf)-1], ev) {
 		return
@@ -416,6 +410,44 @@ func (h *history) append(
 	if len(h.buf[target]) > modelHistorySize {
 		h.buf[target] = h.buf[target][len(h.buf[target])-modelHistorySize:]
 	}
+}
+
+// seedDM fills the buffer for a DM window this client has not seen
+// yet from the persisted thread between it and `target`, which is the
+// counterpart (see [domain.Message.RoutingKey]). Channel buffers are
+// loaded at attach by [ModelClient.loadHistory], so this covers the
+// DM windows that have no attach-time list to load from.
+//
+// The caller holds `h.mu`, which is what makes a load and the read or
+// append it precedes one step: a concurrent appender cannot land
+// between them, and a turn cannot snapshot a window whose load is
+// half done. A failed load leaves the buffer empty and marked as
+// loaded, so the turn runs on what it has and the store is asked
+// once per window, not once per event.
+func (h *history) seedDM(ctx context.Context, sess Session, selfID domain.InstanceID, target domain.ChannelName) {
+	if _, ok := h.buf[target]; ok {
+		return
+	}
+
+	if domain.InferChannelKind(target) != domain.KindDM {
+		return
+	}
+
+	seed, err := sess.DMEventsBefore(ctx, selfID, domain.InstanceID(target), nil, modelHistorySize)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "load DM history",
+			"component", "modelclient",
+			"instance_id", selfID,
+			"peer", target,
+			"error", err,
+		)
+
+		h.buf[target] = nil
+
+		return
+	}
+
+	h.buf[target] = seed
 }
 
 // sameStoredEvent reports whether `a` and `b` represent the same

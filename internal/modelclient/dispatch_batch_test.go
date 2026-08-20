@@ -237,7 +237,7 @@ func TestFileBatch_snapshot_precedes_the_triggers_it_files(t *testing.T) {
 		{ID: 1, Event: earlier},
 		{Event: first},
 		{Event: second},
-	}, mc.hist.snapshot("#dev"))
+	}, windowHistory(t, mc, "#dev"))
 }
 
 // derefBatches flattens the returned pointers so a whole batch can

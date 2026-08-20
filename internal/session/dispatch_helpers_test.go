@@ -74,14 +74,13 @@ func whoisToolCall(t testing.TB, nick domain.Nick) api.CompletionResult {
 }
 
 // meToolCall builds a [api.CompletionResult] whose PendingToolCalls
-// invoke the `me` tool with the given action body.
-func meToolCall(t testing.TB, target domain.ChannelName, body string) api.CompletionResult {
+// invoke the `me` tool with the given action body. The tool names no
+// target: an action goes to the window the turn is running in, which
+// is what the dispatch loop puts on the tool context.
+func meToolCall(t testing.TB, body string) api.CompletionResult {
 	t.Helper()
 
-	args, err := json.Marshal(map[string]any{
-		"target": string(target),
-		"action": []string{body},
-	})
+	args, err := json.Marshal(map[string]any{"action": []string{body}})
 	require.NoError(t, err)
 
 	return api.CompletionResult{PendingToolCalls: []api.PendingToolCall{

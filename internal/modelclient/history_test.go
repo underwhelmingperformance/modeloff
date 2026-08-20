@@ -84,7 +84,7 @@ func TestHistory_append_dedupes_seed_then_live_emit(t *testing.T) {
 
 	h.append(context.Background(), nil, "self", domain.StoredEvent{Event: msg}, target)
 
-	require.Equal(t, []domain.StoredEvent{{ID: 42, Event: msg}}, h.snapshot(target))
+	require.Equal(t, []domain.StoredEvent{{ID: 42, Event: msg}}, h.snapshot(context.Background(), nil, "self", target))
 }
 
 // TestHistory_append_distinct_events_both_appended guards against
@@ -115,7 +115,7 @@ func TestHistory_append_distinct_events_both_appended(t *testing.T) {
 
 	h.append(context.Background(), nil, "self", domain.StoredEvent{Event: second}, target)
 
-	require.Equal(t, []domain.StoredEvent{{Event: first}, {Event: second}}, h.snapshot(target))
+	require.Equal(t, []domain.StoredEvent{{Event: first}, {Event: second}}, h.snapshot(context.Background(), nil, "self", target))
 }
 
 // TestHistory_replies_load_append_read covers the private-replies
@@ -215,7 +215,7 @@ func TestHistory_snapshot_is_never_token_trimmed(t *testing.T) {
 	h.seedReplies([]domain.StoredEvent{{Event: older}, {Event: newer}})
 	h.setTokenBudget(3) // tight enough that a per-buffer trim would drop `older`
 
-	require.Equal(t, []domain.StoredEvent{{Event: older}, {Event: newer}}, h.snapshot(target))
+	require.Equal(t, []domain.StoredEvent{{Event: older}, {Event: newer}}, h.snapshot(context.Background(), nil, "self", target))
 	require.Equal(t, []domain.StoredEvent{{Event: older}, {Event: newer}}, h.snapshotReplies())
 }
 

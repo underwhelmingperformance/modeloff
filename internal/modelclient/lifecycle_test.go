@@ -2,6 +2,7 @@ package modelclient
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -26,10 +27,28 @@ type fakeSession struct {
 	// while it is in flight.
 	repliesGate chan struct{}
 
+	// dmThreads is the persisted DM history, keyed by the peer the
+	// thread is with. `instances` answers id lookups. Both are set at
+	// construction by the test that needs them and read-only after.
+	dmThreads map[domain.InstanceID][]domain.StoredEvent
+	instances map[domain.InstanceID]*domain.Instance
+
+	// handleFn, when non-nil, answers a dispatched command, so a test
+	// can drive the reply events a real dispatcher would return.
+	handleFn func(protocol.Command) protocol.Response
+
 	mu          sync.Mutex
 	sub         *fakeSubscription
 	subscribes  int
 	disconnects []protocol.ClientID
+	dmReads     []dmRead
+}
+
+// dmRead records one [fakeSession.DMEventsBefore] call, so a test can
+// pin which thread the seed asked for.
+type dmRead struct {
+	self domain.InstanceID
+	peer domain.InstanceID
 }
 
 func newFakeSession() *fakeSession {
@@ -45,8 +64,12 @@ func (f *fakeSession) Subscribe(protocol.Client, protocol.SubscribeOptions) (pro
 	return f.sub, nil
 }
 
-func (f *fakeSession) Handle(context.Context, protocol.Client, protocol.Command) (protocol.Response, error) {
-	return protocol.Response{}, nil
+func (f *fakeSession) Handle(_ context.Context, _ protocol.Client, cmd protocol.Command) (protocol.Response, error) {
+	if f.handleFn == nil {
+		return protocol.Response{}, nil
+	}
+
+	return f.handleFn(cmd), nil
 }
 
 func (f *fakeSession) Disconnect(_ context.Context, id protocol.ClientID, _ string) {
@@ -74,8 +97,20 @@ func (f *fakeSession) EventsBefore(context.Context, domain.ChannelName, *int64, 
 	return nil, nil
 }
 
-func (f *fakeSession) DMEventsBefore(context.Context, domain.InstanceID, domain.InstanceID, *int64, int) ([]domain.StoredEvent, error) {
-	return nil, nil
+func (f *fakeSession) DMEventsBefore(_ context.Context, self, peer domain.InstanceID, _ *int64, _ int) ([]domain.StoredEvent, error) {
+	f.mu.Lock()
+	f.dmReads = append(f.dmReads, dmRead{self: self, peer: peer})
+	f.mu.Unlock()
+
+	return f.dmThreads[peer], nil
+}
+
+// dmReadsSoFar returns the DM thread reads the fake has answered.
+func (f *fakeSession) dmReadsSoFar() []dmRead {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return append([]dmRead(nil), f.dmReads...)
 }
 
 func (f *fakeSession) InstanceRepliesBefore(context.Context, domain.InstanceID, *int64, int) ([]domain.StoredEvent, error) {
@@ -92,8 +127,13 @@ func (f *fakeSession) LoadChannelWindow(_ context.Context, name domain.ChannelNa
 
 func (f *fakeSession) Emit(context.Context, domain.ProtocolEvent) {}
 
-func (f *fakeSession) ResolveInstanceByID(context.Context, domain.InstanceID) (*domain.Instance, error) {
-	return nil, nil
+func (f *fakeSession) ResolveInstanceByID(_ context.Context, id domain.InstanceID) (*domain.Instance, error) {
+	inst, ok := f.instances[id]
+	if !ok {
+		return nil, fmt.Errorf("no such instance %q", id)
+	}
+
+	return inst, nil
 }
 
 func (f *fakeSession) LookupClient(protocol.ClientID) protocol.Client { return nil }

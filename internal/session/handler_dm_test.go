@@ -13,6 +13,47 @@ import (
 	"github.com/laney/modeloff/internal/protocol"
 )
 
+// TestSession_model_action_in_a_DM_reaches_the_counterpart covers a
+// model's `/me` inside a DM. The action goes to the window the turn
+// is running in, and for a DM that window is the conversation with
+// the counterpart, and not the model's own id, which is only how the
+// incoming message was addressed. Addressed at its own id the action
+// would be reported as delivered and filed where the person it
+// answers cannot read it.
+func TestSession_model_action_in_a_DM_reaches_the_counterpart(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		fake := &fakeAPIClient{
+			sendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
+				return meToolCall(t, "waves"), nil
+			},
+		}
+
+		sess, s := newTestSessionWithAPI(t, fake)
+		ctx := t.Context()
+
+		botty := seedInstance(t, sess, s, instanceSpec{Nick: "botty", ModelID: "test/model"})
+
+		dispatchUserMessage(ctx, t, sess, domain.ChannelName(botty.ID()), "you there?")
+
+		require.Equal(t, []domain.Message{
+			{
+				Target: domain.ChannelName(botty.ID()),
+				From:   "testuser",
+				Body:   "you there?",
+				At:     fixedTime,
+			},
+			{
+				Target:     "",
+				From:       "botty",
+				InstanceID: botty.ID(),
+				Body:       "waves",
+				Action:     true,
+				At:         fixedTime,
+			},
+		}, dmThreadMessages(t, s, "", botty.ID()))
+	})
+}
+
 // TestSession_PrivMsg_to_model_routes_DM_to_counterpart_only is the
 // capability-parity test for the protocol redesign. Three model
 // instances exist; A sends a `protocol.PrivMsg` to B's instance id

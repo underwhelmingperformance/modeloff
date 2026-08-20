@@ -585,6 +585,68 @@ func TestSQLiteStore_DMEventsBefore_includes_peer_actor_events(t *testing.T) {
 	require.IsType(t, domain.Quit{}, got[1].Event)
 }
 
+// TestSQLiteStore_CountDMEventsFrom pins the count behind a DM's
+// unread badge. It spans both directions of the thread, which are
+// logged under their recipients, and it leaves out DM traffic
+// between two other parties and the peer's actor-scoped events.
+func TestSQLiteStore_CountDMEventsFrom(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	const userID domain.InstanceID = ""
+	const bottyID domain.InstanceID = "inst-botty"
+	const helperID domain.InstanceID = "inst-helper"
+
+	mustAppend := func(channel domain.ChannelName, evt domain.ChannelActivity) int64 {
+		t.Helper()
+		id, err := s.AppendEvent(ctx, channel, evt)
+		require.NoError(t, err)
+		return id
+	}
+
+	// User → botty.
+	id1 := mustAppend(domain.ChannelName(bottyID), domain.Message{
+		Target: domain.ChannelName(bottyID), From: "iain", Body: "hi", At: testTime,
+	})
+
+	// Botty → user, twice.
+	id2 := mustAppend("", domain.Message{
+		Target: "", From: "botty", InstanceID: bottyID, Body: "hello", At: testTime.Add(time.Second),
+	})
+	id3 := mustAppend("", domain.Message{
+		Target: "", From: "botty", InstanceID: bottyID, Body: "still here", At: testTime.Add(2 * time.Second),
+	})
+
+	// Helper → botty: a DM the user is not party to.
+	mustAppend(domain.ChannelName(bottyID), domain.Message{
+		Target: domain.ChannelName(bottyID), From: "helper", InstanceID: helperID, Body: "side chat", At: testTime.Add(3 * time.Second),
+	})
+
+	// Botty's quit, which belongs to the channel it was in.
+	mustAppend("#general", domain.Quit{
+		Nick: "botty", InstanceID: bottyID, Message: "bye", At: testTime.Add(4 * time.Second),
+	})
+
+	tests := []struct {
+		name string
+		from *int64
+		want int
+	}{
+		{name: "nil counts the whole thread", from: nil, want: 3},
+		{name: "cursor at the first id counts all", from: &id1, want: 3},
+		{name: "cursor mid-thread counts inclusive of the cursor", from: &id2, want: 2},
+		{name: "cursor past the last id counts none", from: new(id3 + 1), want: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := s.CountDMEventsFrom(ctx, userID, bottyID, tt.from)
+			require.NoError(t, err)
+			require.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestSQLiteStore_EventsFrom_nil_returns_earliest(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)

@@ -178,7 +178,12 @@ issuing `serverClient`, not as a branch on which kind of client it is.
   `Events` and `Done` channels and runs an LLM turn when
   `dispatchTrigger` says so (a message or join in a window the
   instance shares, a part by another member, an invite addressed to
-  it, a poke). A burst is taken as a batch: after a delivery arrives
+  it, a poke). The window a turn runs in is the one
+  `domain.Message.RoutingKey` names, so a DM turn runs under the
+  counterpart: that is the window the tools address and the window
+  `dispatchWindowFor` builds for the prompt, which is how a `/me` in
+  a DM reaches the person the model is talking to.
+  A burst is taken as a batch: after a delivery arrives
   the loop drains what is already queued and gives one turn every
   trigger that arrived for the same window, so a model that was busy
   catches up in a single prompt. Each turn
@@ -677,6 +682,27 @@ each dispatch turn; the store is not re-read per turn. The chat-screen
 does not read this log on focus changes — the in-memory scrollback
 buffer captures only events the user has seen this session, mirroring
 IRC's "you don't see what happened before you joined" rule.
+
+A model's DM windows have no attach-time list to load from, so each
+is loaded the first time the client sees it, from
+`store.DMEventsBefore` between the instance and the counterpart. The
+load happens under the history lock as part of taking the turn's
+snapshot, which is what makes it one step with the read it precedes:
+a turn is never prompted from a window whose load has not run. Every
+buffer, DM and channel alike, is keyed by the window
+`domain.Message.RoutingKey` places an event in, so a DM is one buffer
+holding both directions of the conversation and a model reads back
+what it said itself.
+
+The unread badge is answered by `Session.UnreadCount` against the
+user's `last_read` cursor. A DM counts through `store.CountDMEventsFrom`,
+over both directions of the thread, since counting the window's own
+key would count only the lines the user sent. The cursor itself
+cannot be recorded for a DM yet: `last_read.channel` references
+`channels(name)`, and a DM window is never written to that table
+(`store.SaveWindow` refuses one), so `UserClient.MarkRead` on a DM
+fails on the foreign key and the badge counts the whole thread. The
+fix is a schema change to `last_read`.
 
 An issuer's own point-to-point replies (`WHOIS`, `LIST`) are not
 channel activity, so they live in a private per-instance reply log

@@ -192,10 +192,12 @@ func (mc *ModelClient) Identity() protocol.ClientID {
 // client as the issuing actor and files the dispatcher's synchronous
 // reply events into the model's local memory:
 //
-//   - [domain.Message] events go to the channel rolling buffer keyed
-//     by their target; the originator-suppression rule (RFC 2812
-//     §3.3.1) keeps them off the bus, so this is the only path that
-//     feeds the model its own chat traffic.
+//   - [domain.Message] events go to the rolling buffer for the window
+//     [domain.Message.RoutingKey] places them in, which is the same
+//     buffer the incoming half of a DM lands in; the
+//     originator-suppression rule (RFC 2812 §3.3.1) keeps them off
+//     the bus, so this is the only path that feeds the model its own
+//     chat traffic.
 //   - the model's own point-to-point reply numerics ([domain.Whois],
 //     [domain.ListReply]) go to the private replies ring. These are
 //     the events the dispatcher persists to the instance-reply log,
@@ -209,10 +211,17 @@ func (mc *ModelClient) Send(ctx context.Context, cmd protocol.Command) (protocol
 		return resp, err
 	}
 
+	selfID := mc.instance.ID()
+
 	for _, evt := range resp.Events {
 		switch e := evt.(type) {
 		case domain.Message:
-			mc.hist.append(ctx, mc.sess, mc.instance.ID(), domain.StoredEvent{Event: e}, e.Target)
+			key, ok := e.RoutingKey(selfID)
+			if !ok {
+				continue
+			}
+
+			mc.hist.append(ctx, mc.sess, selfID, domain.StoredEvent{Event: e}, key)
 		case domain.Whois, domain.ListReply:
 			mc.hist.appendReply(domain.StoredEvent{Event: e.(domain.PersistableEvent)})
 		}

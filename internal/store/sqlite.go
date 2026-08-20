@@ -860,6 +860,58 @@ func (s *SQLiteStore) CountEventsFrom(ctx context.Context, ch domain.ChannelName
 	return count, err
 }
 
+// CountDMEventsFrom implements Store. Returns the number of messages
+// in the DM thread between `self` and `peer` at or after the given
+// event id (inclusive), or the whole thread when `from` is nil.
+//
+// It counts what the window shows: the messages of both directions,
+// which are logged under different keys. A line to `peer` sits under
+// the peer's id and the peer's answer under `self`'s, so counting one
+// key alone answers for one direction, which for the user's DM with a
+// model is the direction the user sent and never the one it is
+// waiting to read. The `dm_instance_id` generated column carries the
+// sender, so `idx_events_dm_thread` covers both branches of the OR.
+//
+// The peer's actor-scoped events (`quit`, `nick_change`) are part of
+// the thread `DMEventsBefore` reads back, and this leaves them out.
+// The `channel` predicate is what excludes them: those rows are
+// written once per channel the actor was in, so their `channel`
+// column is a channel name and matches neither side of the pair. That
+// is the right answer for a badge, which counts what somebody said in
+// this conversation, and those rows already count towards the channel
+// they were logged under.
+func (s *SQLiteStore) CountDMEventsFrom(ctx context.Context, self, peer domain.InstanceID, from *int64) (int, error) {
+	var count int
+	err := s.inSpan(ctx, "store.sqlite.count_dm_events_from",
+		[]attribute.KeyValue{
+			attribute.String(observability.AttrInstanceID, string(self)),
+			attribute.String("modeloff.dm.peer_id", string(peer)),
+		},
+		func(ctx context.Context, _ trace.Span) error {
+			const thread = `SELECT count(*) FROM events WHERE
+				(
+					(channel = ? AND dm_instance_id = ?)
+					OR
+					(channel = ? AND dm_instance_id = ?)
+				)`
+
+			query, args := thread, []any{string(peer), string(self), string(self), string(peer)}
+			if from != nil {
+				query, args = thread+` AND id >= ?`, append(args, *from)
+			}
+
+			got, err := queryRow(ctx, s.db, query, args, nil, scalarColumn[int]())
+			if err != nil {
+				return err
+			}
+
+			count = got
+			return nil
+		})
+
+	return count, err
+}
+
 // ListInstances implements Store. Returns canonical `*Instance`
 // pointers from the registry; callers that called `GetInstanceByID`
 // previously observe the same pointers.

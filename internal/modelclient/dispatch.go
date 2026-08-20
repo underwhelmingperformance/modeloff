@@ -3,6 +3,7 @@ package modelclient
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -33,9 +34,9 @@ import (
 //
 // The history buffer feeds [ModelClient.dispatchTurn]'s prompt
 // construction. Loaded for known channels at attach (see
-// [ModelClient.loadHistory]) and lazy-seeded for DM targets in
-// [history.append], the buffer is the only path the dispatch hot
-// path reads conversation history from; the events log is
+// [ModelClient.loadHistory]) and for a DM window on first sight of it
+// (see [history.seedDM]), the buffer is the only path the dispatch
+// hot path reads conversation history from; the events log is
 // consulted exclusively at load time.
 //
 // Each turn's span is linked to the originating handlers' spans via
@@ -147,7 +148,7 @@ type turnBatch struct {
 // order, because a model catching up on five messages has to be told
 // what happened between them.
 func (mc *ModelClient) fileBatch(ctx context.Context, deliveries []protocol.Delivery) []*turnBatch {
-	batches, byWindow := mc.openBatches(deliveries)
+	batches, byWindow := mc.openBatches(ctx, deliveries)
 
 	for _, delivery := range deliveries {
 		ch, irc, isTrigger := dispatchTrigger(mc.instance.ID(), delivery.Event)
@@ -165,7 +166,7 @@ func (mc *ModelClient) fileBatch(ctx context.Context, deliveries []protocol.Deli
 
 		stored := domain.StoredEvent{Event: ca}
 
-		for _, target := range historyTargets(delivery) {
+		for _, target := range historyTargets(mc.instance.ID(), delivery) {
 			mc.hist.append(ctx, mc.sess, mc.instance.ID(), stored, target)
 
 			if isTrigger && target == ch {
@@ -189,7 +190,14 @@ func (mc *ModelClient) fileBatch(ctx context.Context, deliveries []protocol.Deli
 // while none of the burst has been filed: a window whose first
 // trigger is the last delivery still needs the transcript from
 // before the first.
-func (mc *ModelClient) openBatches(deliveries []protocol.Delivery) ([]*turnBatch, map[domain.ChannelName]*turnBatch) {
+//
+// A DM window the client has not seen this connection is loaded from
+// the store here, as part of taking its snapshot, so a turn is
+// prompted from the conversation as it already stood. The load has to
+// happen in this pass and not while the burst is filed: the snapshot
+// a turn reads is taken here, so a load running after it leaves the
+// first DM turn of a connection with an empty transcript.
+func (mc *ModelClient) openBatches(ctx context.Context, deliveries []protocol.Delivery) ([]*turnBatch, map[domain.ChannelName]*turnBatch) {
 	var batches []*turnBatch
 
 	byWindow := make(map[domain.ChannelName]*turnBatch)
@@ -204,7 +212,10 @@ func (mc *ModelClient) openBatches(deliveries []protocol.Delivery) ([]*turnBatch
 			continue
 		}
 
-		batch := &turnBatch{channel: ch, history: mc.hist.snapshot(ch)}
+		batch := &turnBatch{
+			channel: ch,
+			history: mc.hist.snapshot(ctx, mc.sess, mc.instance.ID(), ch),
+		}
 		byWindow[ch] = batch
 		batches = append(batches, batch)
 	}
@@ -214,20 +225,26 @@ func (mc *ModelClient) openBatches(deliveries []protocol.Delivery) ([]*turnBatch
 
 // historyTargets returns the buffer slot(s) the delivery's event
 // should be filed under for the receiving model-client's
-// dispatch-turn history. Most events belong to a single target
-// window — the channel they happened in or the DM they addressed.
-// Actor-scoped events ([domain.Quit] and [domain.NickChange])
-// carry no target on the wire (RFC 2812 §3.1.7 and §3.1.2); the
-// per-recipient channel list is on `delivery.Targets`,
-// pre-computed by the session's fan-out as the intersection of
-// the actor's channel set with the recipient's.
+// dispatch-turn history. Most events belong to a single window: the
+// channel they happened in, or for chat traffic the conversation
+// [domain.Message.RoutingKey] places them in, which for a DM is the
+// counterpart either way round. Actor-scoped events ([domain.Quit]
+// and [domain.NickChange]) carry no target on the wire (RFC 2812
+// §3.1.7 and §3.1.2); the per-recipient channel list is on
+// `delivery.Targets`, pre-computed by the session's fan-out as the
+// intersection of the actor's channel set with the recipient's.
 //
 // Events with no target (PokeEvent, NamesReplyEvent, …) return
 // nil and are skipped: they are not LLM-prompt material.
-func historyTargets(delivery protocol.Delivery) []domain.ChannelName {
+func historyTargets(selfID domain.InstanceID, delivery protocol.Delivery) []domain.ChannelName {
 	switch e := delivery.Event.(type) {
 	case domain.Message:
-		return []domain.ChannelName{e.Target}
+		key, ok := e.RoutingKey(selfID)
+		if !ok {
+			return nil
+		}
+
+		return []domain.ChannelName{key}
 	case domain.Join:
 		return []domain.ChannelName{e.Target}
 	case domain.Part:
@@ -249,13 +266,24 @@ func historyTargets(delivery protocol.Delivery) []domain.ChannelName {
 }
 
 // dispatchTrigger reports whether `ev` should make the model-client
-// take a dispatch turn, and if so returns the target channel and
-// the wire-shaped trigger message the LLM call uses as context.
+// take a dispatch turn, and if so returns the window the turn runs in
+// and the wire-shaped trigger message the LLM call uses as context.
+//
+// Chat traffic names its window through [domain.Message.RoutingKey],
+// so a DM raises its turn under the counterpart whichever way the
+// message was going. A DM between two other clients belongs to
+// neither party's window and raises no turn.
 func dispatchTrigger(selfID domain.InstanceID, ev domain.ProtocolEvent) (domain.ChannelName, protocol.IRCMessage, bool) {
 	switch e := ev.(type) {
 	case domain.Message:
+		key, ok := e.RoutingKey(selfID)
+		if !ok {
+			return "", protocol.IRCMessage{}, false
+		}
+
 		msg, _ := protocol.FromChannelEvent(e)
-		return e.Target, msg, true
+
+		return key, msg, true
 
 	case domain.Join:
 		if e.InstanceID == selfID {
@@ -382,16 +410,25 @@ func (mc *ModelClient) reportTurnFailure(ctx context.Context, ch domain.ChannelN
 	return err
 }
 
-// dispatchWindowFor produces the `Window` that the recipient
-// model is "in" for the purposes of system-prompt construction
-// and span tagging. For a `#`-channel target it loads the
-// `*ChannelWindow` from storage. For a bare-nick target it
-// synthesises a `*DMWindow` keyed by the message's addressing
-// (no row is required — DMs are stateless on the server side).
+// dispatchWindowFor produces the `Window` the model is in for the
+// turn, which the system prompt and the span tags are built from. A
+// channel window is loaded from storage. A DM window is built around
+// the counterpart the turn is with. `target` is the conversation
+// key, which is that counterpart's id, so the prompt names the client
+// the model is talking to.
+//
+// A counterpart the store does not hold fails the turn: a DM has
+// nobody at the other end of it, and the prompt has nothing to say
+// the conversation is with.
 func dispatchWindowFor(ctx context.Context, sess Session, target domain.ChannelName, inst *domain.Instance) (domain.Window, error) {
-	if domain.InferChannelKind(target) == domain.KindDM {
-		return domain.NewDMWindow(inst, sess.Now()), nil
+	if domain.InferChannelKind(target) != domain.KindDM {
+		return sess.LoadChannelWindow(ctx, target)
 	}
 
-	return sess.LoadChannelWindow(ctx, target)
+	counterpart, err := sess.ResolveInstanceByID(ctx, domain.InstanceID(target))
+	if err != nil {
+		return nil, fmt.Errorf("resolve DM counterpart %q for %s: %w", target, inst.Nick(), err)
+	}
+
+	return domain.NewDMWindow(counterpart, sess.Now()), nil
 }

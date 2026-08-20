@@ -67,6 +67,11 @@ type Store interface {
 	// rows nobody reads.
 	CountEventsFrom(ctx context.Context, ch domain.ChannelName, from *int64) (int, error)
 
+	// CountDMEventsFrom is [Store.CountEventsFrom] for a DM: it
+	// counts the messages of both directions of the thread between
+	// `self` and `peer`, which are logged under different keys.
+	CountDMEventsFrom(ctx context.Context, self, peer domain.InstanceID, from *int64) (int, error)
+
 	// DMEventsBefore returns up to `n` events from the DM thread
 	// between `self` and `peer` strictly before `before` (or the
 	// most recent if `before` is nil), in chronological order.
@@ -739,9 +744,16 @@ func (s *Session) Emit(ctx context.Context, evt domain.ProtocolEvent) {
 	s.emit(ctx, evt)
 }
 
-// ResolveInstanceByID returns the canonical `*domain.Instance`
-// for the given id.
+// ResolveInstanceByID returns the canonical `*domain.Instance` for
+// the given id. The user's own id resolves to the user's handle,
+// which the store never holds a row for; every other id is looked up
+// there. This is the id-side counterpart of [Session.ResolveNick],
+// and answers for the same set of clients.
 func (s *Session) ResolveInstanceByID(ctx context.Context, id domain.InstanceID) (*domain.Instance, error) {
+	if user := s.userInstance(); user != nil && id == user.ID() {
+		return user, nil
+	}
+
 	return s.store.GetInstanceByID(ctx, id)
 }
 
@@ -973,8 +985,9 @@ func (s *Session) GetWindow(ctx context.Context, name domain.ChannelName) (domai
 	return s.store.GetWindow(ctx, name)
 }
 
-// UnreadCount returns the number of events in a channel that arrived
-// after the last-read position.
+// UnreadCount returns the number of events in a window that arrived
+// after the user's last-read position. The cursor is the user's, so
+// a DM is counted from the user's side of the thread.
 func (s *Session) UnreadCount(ctx context.Context, ch domain.ChannelName) (int, error) {
 	var count int
 
@@ -998,6 +1011,16 @@ func (s *Session) UnreadCount(ctx context.Context, ch domain.ChannelName) (int, 
 		if lastID > 0 {
 			fromID := lastID + 1
 			from = &fromID
+		}
+
+		// A DM's two directions are logged under their recipients, so
+		// the count is over the thread. Counting the window's own key
+		// would count the lines the user sent and none of the ones it
+		// has not read.
+		if domain.InferChannelKind(ch) == domain.KindDM {
+			count, err = s.store.CountDMEventsFrom(ctx, domain.InstanceID(protocol.UserClientID), domain.InstanceID(ch), from)
+
+			return err
 		}
 
 		count, err = s.store.CountEventsFrom(ctx, ch, from)

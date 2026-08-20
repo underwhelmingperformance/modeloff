@@ -3191,6 +3191,44 @@ func markReadViaStore(t *testing.T, s *storemod.SQLiteStore, ch domain.ChannelNa
 	require.NoError(t, s.SetLastRead(t.Context(), ch, events[0].ID))
 }
 
+// TestSession_UnreadCount_counts_both_directions_of_a_DM pins the
+// badge for a DM window. Each direction is logged under its
+// recipient, so counting the window's own key would count the lines
+// the user sent and none of the ones it has not read: a model that
+// answers three times would show nothing new.
+//
+// The cursor half of the badge is not exercised here because a DM
+// cannot carry one yet: `last_read.channel` references
+// `channels(name)`, and a DM window is never written to that table.
+func TestSession_UnreadCount_counts_both_directions_of_a_DM(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := t.Context()
+
+	botty := seedInstance(t, sess, s, instanceSpec{Nick: "botty", ModelID: "test/model"})
+	window := domain.ChannelName(botty.ID())
+
+	appendDM := func(from domain.Nick, id domain.InstanceID, target domain.ChannelName, body string) {
+		t.Helper()
+
+		_, err := s.AppendEvent(ctx, target, domain.Message{
+			Target:     target,
+			From:       from,
+			InstanceID: id,
+			Body:       body,
+			At:         fixedTime,
+		})
+		require.NoError(t, err)
+	}
+
+	appendDM("testuser", "", window, "are you there?")
+	appendDM("botty", botty.ID(), "", "i am")
+	appendDM("botty", botty.ID(), "", "and again")
+
+	count, err := sess.UnreadCount(ctx, window)
+	require.NoError(t, err)
+	require.Equal(t, 3, count)
+}
+
 func TestSession_MarkRead_and_UnreadCount(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
@@ -4140,8 +4178,8 @@ func TestSession_Dispatch_repeated_msg_tool_errors_drop_after_max_turns(t *testi
 func TestSession_Dispatch_me_tool_sends_action(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		fake := &fakeAPIClient{
-			sendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
-				return meToolCall(t, domain.ChannelName(events[0].Target), "waves"), nil
+			sendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
+				return meToolCall(t, "waves"), nil
 			},
 		}
 		sess, s := newTestSessionWithAPI(t, fake)

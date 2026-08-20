@@ -538,12 +538,35 @@ func TestRunTool_me_without_a_window_returns_error(t *testing.T) {
 	tool, ok := v.(ToolCommand)
 	require.True(t, ok, "MeCommand should implement ToolCommand")
 
-	result := tool.RunTool(t.Context(), tc)
-
 	require.Equal(t, modelclient.ToolResultPayload{
 		OK:    false,
 		Error: "no active window",
-	}, result)
+	}, tool.RunTool(t.Context(), tc))
+}
+
+// TestRunTool_me_in_a_dm_addresses_the_counterpart covers `/me`
+// inside a DM. The window a turn runs in is the conversation with the
+// counterpart, so that is where the action goes.
+func TestRunTool_me_in_a_dm_addresses_the_counterpart(t *testing.T) {
+	sess, user := newToolTestSession(t)
+
+	require.NoError(t, user.Join(t.Context(), domain.ChannelName("#lobby")))
+	uitest.AddModel(t, user, "#lobby", "anthropic/haiku", "")
+
+	bot, err := sess.ResolveNick(t.Context(), "testbot")
+	require.NoError(t, err)
+
+	tc := userToolContext(sess, user, protocol.ClientTarget(bot.ID()))
+
+	v := toolValue(t, "me", `{"action": ["waves"]}`)
+
+	tool, ok := v.(ToolCommand)
+	require.True(t, ok, "MeCommand should implement ToolCommand")
+
+	require.Equal(t, modelclient.ToolResultPayload{
+		OK:      true,
+		Summary: "sent action to " + string(bot.ID()),
+	}, tool.RunTool(t.Context(), tc))
 }
 
 func TestRunTool_me_sends_action_to_channel(t *testing.T) {

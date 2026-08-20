@@ -60,6 +60,14 @@ type Session interface {
 type Store interface {
 	ListAutojoinChannels(ctx context.Context) ([]domain.ChannelName, error)
 	EventsBefore(ctx context.Context, ch domain.ChannelName, before *int64, n int) ([]domain.StoredEvent, error)
+
+	// DMEventsBefore reads the DM thread between `self` and `peer`,
+	// both directions together. Marking a DM read needs it: the two
+	// directions are logged under their recipients, so the newest
+	// event in the conversation is not always under the window's own
+	// key.
+	DMEventsBefore(ctx context.Context, self, peer domain.InstanceID, before *int64, n int) ([]domain.StoredEvent, error)
+
 	SetLastRead(ctx context.Context, ch domain.ChannelName, eventID int64) error
 }
 
@@ -429,11 +437,11 @@ func (uc *UserClient) JoinAutojoinChannels(ctx context.Context) (retErr error) {
 	return nil
 }
 
-// MarkRead records the user's last-read position in `ch` at the
-// id of the most recent event in the channel. No-op when the
-// channel has no events.
+// MarkRead records the user's last-read position in `ch` at the id
+// of the most recent event in the window. No-op when the window has
+// no events.
 func (uc *UserClient) MarkRead(ctx context.Context, ch domain.ChannelName) error {
-	events, err := uc.store.EventsBefore(ctx, ch, nil, 1)
+	events, err := uc.latestEvent(ctx, ch)
 	if err != nil {
 		return fmt.Errorf("get latest event: %w", err)
 	}
@@ -443,6 +451,21 @@ func (uc *UserClient) MarkRead(ctx context.Context, ch domain.ChannelName) error
 	}
 
 	return uc.store.SetLastRead(ctx, ch, events[0].ID)
+}
+
+// latestEvent reads the most recent event of a window, as a slice
+// that is empty when the window has none.
+//
+// A DM reads the whole thread. Each direction is logged under its
+// recipient, so a cursor taken from the window's own key would stop
+// at the last line the user sent and leave everything the counterpart
+// said since counted as unread.
+func (uc *UserClient) latestEvent(ctx context.Context, ch domain.ChannelName) ([]domain.StoredEvent, error) {
+	if domain.InferChannelKind(ch) == domain.KindDM {
+		return uc.store.DMEventsBefore(ctx, domain.InstanceID(uc.Identity()), domain.InstanceID(ch), nil, 1)
+	}
+
+	return uc.store.EventsBefore(ctx, ch, nil, 1)
 }
 
 // RecordReply persists one of the user's own point-to-point replies
