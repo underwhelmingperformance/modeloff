@@ -98,7 +98,15 @@ func (w ChatWorkspace[C]) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 			if !w.Open {
 				w.Fullscreen = false
 			}
-			return w.updateChildBounds()
+
+			var shown tea.Cmd
+			if w.Open {
+				w, shown = w.showMetrics()
+			}
+
+			next, cmd := w.updateChildBounds()
+
+			return next, tea.Batch(shown, cmd)
 
 		case w.Open && ui.Matches(msg, w.keyMap.ToggleFullscreen):
 			w.Fullscreen = !w.Fullscreen
@@ -356,6 +364,21 @@ func (w ChatWorkspace[C]) updateChildBounds() (ui.Model, tea.Cmd) {
 	}
 
 	return w, tea.Batch(cmds...)
+}
+
+// showMetrics tells the metrics pane the drawer has opened, which is
+// what starts it collecting. Messages reach the pane only while the
+// drawer is open, so it has no way of hearing about the change on its
+// own.
+func (w ChatWorkspace[C]) showMetrics() (ChatWorkspace[C], tea.Cmd) {
+	if !w.HasMetrics {
+		return w, nil
+	}
+
+	updated, cmd := w.Metrics.Update(metricsPaneShownMsg{})
+	w.Metrics = updated.(MetricsPane)
+
+	return w, cmd
 }
 
 func (w ChatWorkspace[C]) refreshLogs() ChatWorkspace[C] {

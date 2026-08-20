@@ -119,17 +119,19 @@ func TestChatScreen_clear_drops_the_window_history(t *testing.T) {
 	window, ok := screen.windowByName("#general")
 	require.True(t, ok)
 
-	window.Scrollback = []domain.Event{
-		domain.Message{Target: "#general", From: "alice", Body: "hello"},
-	}
+	window.Scrollback.Append(domain.Message{Target: "#general", From: "alice", Body: "hello"})
 
 	screen, cmd := screen.update(chatcmd.ClearResult{})
 
 	require.Equal(t, &Window{
-		Window:   window.Window,
-		Visits:   window.Visits,
-		UserTime: window.UserTime,
-	}, window)
+		Window:     window.Window,
+		Scrollback: window.Scrollback,
+		Visits:     window.Visits,
+		UserTime:   window.UserTime,
+	}, window, "clearing must leave every field but the history alone")
+
+	require.Equal(t, []domain.Event(nil), window.Scrollback.Events(),
+		"the window's history is gone")
 
 	require.Equal(t, []tea.Msg{
 		components.ScrollbackClearedMsg{Channel: "#general"},

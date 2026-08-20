@@ -198,7 +198,7 @@ func (s ChatScreen) appendToScrollback(ch domain.ChannelName, evt domain.Event) 
 		s.channels.Insert(w)
 	}
 
-	w.Scrollback = append(w.Scrollback, evt)
+	w.Scrollback.Append(evt)
 }
 
 // appendStatusNotice records a server-narrated line in the local

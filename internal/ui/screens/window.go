@@ -25,7 +25,15 @@ type Window struct {
 	// renderable base `domain.Event` so it can carry both persisted
 	// channel events and the render-only UI feedback (`Help`,
 	// `UsageHint`) the chat-screen raises locally.
-	Scrollback []domain.Event
+	//
+	// It is bounded at [components.ScrollbackLimit] events: a window
+	// the user leaves open all day would otherwise keep every line
+	// the session ever put in it.
+	//
+	// A scrollback holds its events in a ring it shares with any copy
+	// of itself, so the window holds the handle rather than the value
+	// and [newWindow] is what makes it.
+	Scrollback *components.Scrollback
 
 	// Unread is the count of messages addressed at this window
 	// the user has not yet seen. The sidebar surfaces it as a
@@ -68,7 +76,7 @@ type Window struct {
 // callers store it in `Session.channels` and mutate its fields in
 // place from `Update`.
 func newWindow(w domain.Window) *Window {
-	return &Window{Window: w}
+	return &Window{Window: w, Scrollback: components.NewScrollback()}
 }
 
 // Less implements [set.Lesser] for `*Window`, delegating to the
@@ -100,7 +108,11 @@ func (v *visibleWindow) content() components.WindowContent {
 		return components.WindowContent{Channel: v.name}
 	}
 
-	return components.WindowContent{Channel: v.name, Events: w.Scrollback}
+	return components.WindowContent{
+		Channel:  v.name,
+		Events:   w.Scrollback.Events(),
+		FirstSeq: w.Scrollback.FirstSeq(),
+	}
 }
 
 // windowKey returns a placeholder `*Window` suitable only for

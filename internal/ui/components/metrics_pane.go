@@ -12,8 +12,18 @@ import (
 	"github.com/laney/modeloff/internal/ui"
 )
 
+// metricsPaneShownMsg tells the pane the observability drawer has just
+// opened, which is when it starts collecting.
+type metricsPaneShownMsg struct{}
+
 type metricsPaneRefreshedMsg struct {
 	snapshot observability.MetricsSnapshot
+
+	// series says which chain of refreshes this message belongs to.
+	// The pane answers a refresh with the next tick of the same
+	// chain, so a message from an abandoned chain is what would
+	// otherwise start a second one running alongside the current.
+	series int
 }
 
 // MetricsPane renders a scrollable snapshot of current metrics.
@@ -24,6 +34,20 @@ type MetricsPane struct {
 	snapshot    observability.MetricsSnapshot
 	width       int
 	height      int
+
+	// series identifies the chain of refreshes currently running.
+	//
+	// The workspace forwards messages to this pane only while the
+	// observability drawer is open, so a refresh that ticks while the
+	// drawer is closed is dropped before it reaches here and its chain
+	// ends there. That is what keeps a hidden pane from collecting
+	// metrics once a second for the rest of the session, and
+	// [metricsPaneShownMsg] is what starts it again the next time the
+	// drawer opens. A drawer closed and reopened inside one tick
+	// leaves the earlier chain's refresh still in flight, so starting
+	// a chain counts a new series and the older one is ignored when it
+	// arrives.
+	series int
 }
 
 // NewMetricsPane creates a metrics pane backed by OpenTelemetry
@@ -37,25 +61,38 @@ func NewMetricsPane(baseContext func() context.Context, obs *observability.Runti
 	}
 }
 
-// Init starts periodic metrics collection.
+// Init implements ui.Model. Collection starts when the drawer opens,
+// not here: the drawer is closed when the application starts, and a
+// snapshot taken for a pane nobody can see has no reader.
 func (m MetricsPane) Init() tea.Cmd {
-	return m.refreshCmd()
+	return nil
 }
 
 // Update implements ui.Model.
 func (m MetricsPane) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case metricsPaneShownMsg:
+		m.series++
+
+		return m, m.refreshCmd()
+
 	case ui.BoundsMsg:
 		m.width = msg.Rect.Width
 		m.height = msg.Rect.Height
 		m.feed = m.feed.SetLines(renderMetricsSnapshot(m.snapshot, m.width))
-		updatedFeed, cmd := m.feed.Update(msg)
+		updatedFeed, feedCmd := m.feed.Update(msg)
 		m.feed = updatedFeed
-		return m, cmd
+
+		return m, feedCmd
 
 	case metricsPaneRefreshedMsg:
+		if msg.series != m.series {
+			return m, nil
+		}
+
 		m.snapshot = msg.snapshot
 		m.feed = m.feed.SetLines(renderMetricsSnapshot(m.snapshot, m.width))
+
 		return m, m.refreshCmd()
 	}
 
@@ -82,13 +119,15 @@ func (m MetricsPane) refreshCmd() tea.Cmd {
 		return nil
 	}
 
+	series := m.series
+
 	return tea.Tick(metricsRefreshInterval, func(time.Time) tea.Msg {
 		snapshot, err := m.obs.SnapshotMetrics(m.baseContext())
 		if err != nil {
-			return metricsPaneRefreshedMsg{}
+			return metricsPaneRefreshedMsg{series: series}
 		}
 
-		return metricsPaneRefreshedMsg{snapshot: snapshot}
+		return metricsPaneRefreshedMsg{snapshot: snapshot, series: series}
 	})
 }
 

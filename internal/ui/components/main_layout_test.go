@@ -3,12 +3,14 @@ package components_test
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	bkey "github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/stretchr/testify/require"
 
+	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/components"
 )
@@ -518,4 +520,83 @@ func TestMainLayout_non_window_switch_keys_reach_all_children(t *testing.T) {
 
 	require.Len(t, *sidebarReceived, 1)
 	require.Len(t, *contentReceived, 1)
+}
+
+// probeWidths is the pair of widths a content model is handed: the one
+// MainLayout tells it through [ui.BoundsMsg], and the one MainLayout
+// asks it to render at.
+type probeWidths struct {
+	Bounds int
+	View   int
+}
+
+// widthProbe is a content model that records both widths it is given.
+type widthProbe struct {
+	bounds *int
+	view   *int
+}
+
+func newWidthProbe() widthProbe {
+	return widthProbe{bounds: new(int), view: new(int)}
+}
+
+func (p widthProbe) Init() tea.Cmd { return nil }
+
+func (p widthProbe) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
+	if b, ok := msg.(ui.BoundsMsg); ok {
+		*p.bounds = b.Rect.Width
+	}
+
+	return p, nil
+}
+
+func (p widthProbe) View(width, _ int) string {
+	*p.view = width
+
+	return ""
+}
+
+func (p widthProbe) widths() probeWidths {
+	return probeWidths{Bounds: *p.bounds, View: *p.view}
+}
+
+// TestMainLayout_content_is_told_the_width_it_renders_at pins the two
+// widths together across a sidebar content change. The sidebar sizes
+// itself to what it holds and MainLayout.View works the content area
+// out from the sidebar's freshly rendered width on every frame, so a
+// channel joining under a longer name moves that boundary with no
+// terminal resize. The chat view caches its transcript against the
+// width it rendered at, so a content model still holding the width the
+// last resize gave it renders at one width, is told another, and
+// misses that cache on every frame.
+func TestMainLayout_content_is_told_the_width_it_renders_at(t *testing.T) {
+	const (
+		width  = 200
+		height = 50
+	)
+
+	probe := newWidthProbe()
+
+	var m ui.Model = components.NewMainLayout(components.NewChannelSidebar(), probe)
+
+	m, _ = m.Update(tea.WindowSizeMsg{Width: width, Height: height})
+	m.View(width, height)
+	before := probe.widths()
+
+	m, _ = m.Update(components.SetChannelsMsg{
+		Channels: []domain.Window{
+			domain.NewChannelWindow("#a-channel-with-a-very-long-name", time.Time{}),
+		},
+	})
+	m.View(width, height)
+	after := probe.widths()
+
+	require.Equal(t, probeWidths{Bounds: before.View, View: before.View}, before,
+		"on a fresh resize the content model must be told the width it renders at")
+
+	require.Equal(t, probeWidths{Bounds: after.View, View: after.View}, after,
+		"and again once the sidebar has grown under it")
+
+	require.NotEqual(t, before.View, after.View,
+		"the longer channel name has to move the boundary, or this test proves nothing")
 }

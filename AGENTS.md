@@ -759,8 +759,9 @@ time — a channel with no known join time loads nothing (fail-closed).
 From there the per-channel ring is appended live and read locally
 each dispatch turn; the store is not re-read per turn. The chat-screen
 does not read this log on focus changes — the in-memory scrollback
-buffer captures only events the user has seen this session, mirroring
-IRC's "you don't see what happened before you joined" rule.
+buffer captures only events the user has seen this session, up to
+`components.ScrollbackLimit` per window, mirroring IRC's "you don't
+see what happened before you joined" rule.
 
 A model's DM windows have no attach-time list to load from, so each
 is loaded the first time the client sees it, from

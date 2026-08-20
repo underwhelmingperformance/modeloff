@@ -217,6 +217,12 @@ type ChatScreen struct {
 	summary   components.MetricsSummaryModel
 	checklist WelcomeChecklist
 
+	// logsBehind is true when a log record arrived while the
+	// observability drawer was closed, so the drawer's copy of the
+	// log buffer is older than the buffer itself. The next message
+	// that finds the drawer open hands it the current contents.
+	logsBehind bool
+
 	// quitting is true between QuitRequestedMsg and QuitCompleteMsg
 	// so subsequent quit signals are ignored and input remains
 	// locked.
@@ -663,7 +669,7 @@ func (s ChatScreen) update(msg tea.Msg) (ChatScreen, tea.Cmd) {
 			return s, nil
 		}
 
-		w.Scrollback = nil
+		w.Scrollback.Clear()
 
 		return s, msgCmd(components.ScrollbackClearedMsg{Channel: s.active})
 
@@ -968,6 +974,12 @@ func (s ChatScreen) update(msg tea.Msg) (ChatScreen, tea.Cmd) {
 
 	updated, cmd := s.layout.Update(forwardedMsg)
 	s.layout = updated.(components.MainLayout)
+
+	// The drawer's toggle key arrives here, so this is where a drawer
+	// that was closed while records were arriving is caught up.
+	if s.logsBehind {
+		s = s.updateLogEntries()
+	}
 
 	return s, tea.Batch(summaryCmd, cmd)
 }
@@ -1336,6 +1348,15 @@ func (s ChatScreen) waitForLogUpdateCmd() tea.Cmd {
 	}
 }
 
+// updateLogEntries hands the log buffer's current contents to the
+// observability drawer, which renders every entry it is given.
+//
+// A closed drawer takes nothing and is noted as behind instead. The
+// application logs several records per command and the drawer is
+// closed almost all the time, so rendering every entry into a pane
+// nobody can see would be the largest cost of writing a log line.
+// [ChatScreen.update] catches the drawer up on the message that opens
+// it.
 func (s ChatScreen) updateLogEntries() ChatScreen {
 	if s.obs == nil {
 		return s
@@ -1346,6 +1367,13 @@ func (s ChatScreen) updateLogEntries() ChatScreen {
 		return s
 	}
 
+	if !workspace.Open {
+		s.logsBehind = true
+
+		return s
+	}
+
+	s.logsBehind = false
 	s.layout.Content = workspace.SetLogEntries(s.obs.LogBuffer().Entries())
 
 	return s

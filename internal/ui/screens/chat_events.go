@@ -759,7 +759,7 @@ func (s ChatScreen) handleDMWindowResolved(msg dmWindowResolvedMsg) (ChatScreen,
 	// they were buffered before it existed, and one goroutine drains
 	// the bus. A `/query` for the same counterpart while the lookup
 	// was running is what puts anything there to go in front of.
-	w.Scrollback = append(held, w.Scrollback...)
+	w.Scrollback.Prepend(held)
 
 	return s, tea.Batch(opened, s.unreadCountCmd(msg.window, s.mentionsUser(held), w.Visits))
 }
@@ -1152,7 +1152,7 @@ func (s ChatScreen) scrollbackOf(name domain.ChannelName) []domain.Event {
 		return nil
 	}
 
-	return w.Scrollback
+	return w.Scrollback.Events()
 }
 
 // channelWindowByName looks up the cached entry and asserts its

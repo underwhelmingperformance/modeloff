@@ -7,9 +7,14 @@ type LogBuffer struct {
 	mu       sync.RWMutex
 	capacity int
 	entries  []PanelEntry
-	ingest   chan PanelEntry
-	updates  chan struct{}
-	done     chan struct{}
+
+	// head is where the oldest entry sits once the buffer is full, and
+	// where the next record overwrites.
+	head int
+
+	ingest  chan PanelEntry
+	updates chan struct{}
+	done    chan struct{}
 }
 
 // NewLogBuffer creates a bounded log buffer and starts its drain loop.
@@ -35,11 +40,11 @@ func (b *LogBuffer) run() {
 
 	for entry := range b.ingest {
 		b.mu.Lock()
-		if len(b.entries) >= b.capacity {
-			copy(b.entries, b.entries[1:])
-			b.entries[len(b.entries)-1] = entry
-		} else {
+		if len(b.entries) < b.capacity {
 			b.entries = append(b.entries, entry)
+		} else {
+			b.entries[b.head] = entry
+			b.head = (b.head + 1) % b.capacity
 		}
 		b.mu.Unlock()
 
@@ -60,13 +65,16 @@ func (b *LogBuffer) Updates() <-chan struct{} {
 	return b.updates
 }
 
-// Entries returns a stable snapshot of the buffered entries.
+// Entries returns a stable snapshot of the buffered entries, oldest
+// first.
 func (b *LogBuffer) Entries() []PanelEntry {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
 	entries := make([]PanelEntry, len(b.entries))
-	copy(entries, b.entries)
+
+	n := copy(entries, b.entries[b.head:])
+	copy(entries[n:], b.entries[:b.head])
 
 	return entries
 }

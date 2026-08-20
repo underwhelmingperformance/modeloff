@@ -51,6 +51,7 @@ func TestMetricsPane_view_renders_snapshot(t *testing.T) {
 	model = sized.(MetricsPane)
 
 	updated, cmd := model.Update(metricsPaneRefreshedMsg{
+		series: model.series,
 		snapshot: observability.MetricsSnapshot{
 			Summary: observability.MetricsSummary{
 				Requests:         2,
@@ -121,6 +122,74 @@ func TestMetricsPane_view_renders_snapshot(t *testing.T) {
 		"Operation timings:",
 		"session.send_message  count 2  avg 30.00ms  min 20.00ms  max 40.00ms",
 	}, uitest.NonEmptyLines(view))
+}
+
+// TestMetricsPane_collects_only_while_the_drawer_is_open pins the
+// pane's refresh schedule. The workspace forwards messages to the pane
+// only while the observability drawer is open, so a refresh that ticks
+// while the drawer is closed never reaches the pane and its chain ends
+// there. Opening the drawer is what starts a chain; being resized is
+// not, or a pane that had been resized while hidden would go on
+// collecting snapshots nobody reads.
+func TestMetricsPane_collects_only_while_the_drawer_is_open(t *testing.T) {
+	obs, err := observability.NewRuntime()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = obs.Shutdown(t.Context()) })
+
+	model := NewMetricsPane(t.Context, obs)
+	require.Nil(t, model.Init(), "a pane behind a closed drawer collects nothing")
+
+	sized, sizeCmd := model.Update(ui.BoundsMsg{Rect: ui.Rect{Width: 80, Height: 30}})
+	require.Nil(t, sizeCmd, "being resized does not start a chain")
+	model = sized.(MetricsPane)
+
+	shown, showCmd := model.Update(metricsPaneShownMsg{})
+	require.NotNil(t, showCmd, "the drawer opening starts one")
+	first := shown.(MetricsPane)
+
+	reshown, _ := first.Update(metricsPaneShownMsg{})
+	current := reshown.(MetricsPane)
+
+	stale, staleCmd := current.Update(metricsPaneRefreshedMsg{
+		series:   first.series,
+		snapshot: observability.MetricsSnapshot{Summary: observability.MetricsSummary{Requests: 9}},
+	})
+	require.Nil(t, staleCmd, "a refresh from the abandoned chain must not schedule another")
+	require.Equal(t, observability.MetricsSnapshot{}, stale.(MetricsPane).snapshot,
+		"and must not overwrite the snapshot either")
+
+	_, liveCmd := current.Update(metricsPaneRefreshedMsg{series: current.series})
+	require.NotNil(t, liveCmd, "the chain the second opening started carries on")
+}
+
+// TestChatWorkspace_starts_the_metrics_pane_when_the_drawer_opens pins
+// the other half: the pane cannot see the drawer's state, so the
+// workspace has to tell it.
+func TestChatWorkspace_starts_the_metrics_pane_when_the_drawer_opens(t *testing.T) {
+	obs, err := observability.NewRuntime()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = obs.Shutdown(t.Context()) })
+
+	workspace := NewChatWorkspace(
+		NewChatView[testKind](func() WindowContent { return WindowContent{Channel: "#general"} }, "#general", domain.KindChannel, "testuser", ""),
+	).WithMetrics(NewMetricsPane(t.Context, obs))
+
+	toggle := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}, Alt: true}
+
+	closed := workspace.Metrics.series
+
+	opened, cmd := workspace.Update(toggle)
+	workspace = opened.(ChatWorkspace[testKind])
+
+	require.NotNil(t, cmd, "opening the drawer must carry the pane's first refresh out")
+	require.Equal(t, closed+1, workspace.Metrics.series,
+		"opening the drawer starts a refresh chain")
+
+	shut, _ := workspace.Update(toggle)
+	workspace = shut.(ChatWorkspace[testKind])
+
+	require.Equal(t, closed+1, workspace.Metrics.series,
+		"closing it starts nothing; the running chain ends on its own next tick")
 }
 
 func TestChatWorkspace_statusItems_follow_observability_state(t *testing.T) {

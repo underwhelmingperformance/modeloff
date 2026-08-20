@@ -46,6 +46,28 @@ type MainLayout struct {
 	NickListVisible bool
 
 	windowSwitch WindowSwitchKeyMap
+
+	// size is the terminal size the last [tea.WindowSizeMsg] reported.
+	// The layout is worked out from it again whenever a panel's
+	// content changes, so it has to outlive the message that carried
+	// it.
+	size tea.WindowSizeMsg
+
+	// issued is the last rect each child was given. Both panels size
+	// themselves to their content, so the boundary between them and
+	// the content area moves without any terminal resize; a child is
+	// told its rect again exactly when that boundary has moved.
+	issued issuedBounds
+}
+
+// issuedBounds is the set of rects the children were last told about.
+// `known` separates "no rect issued yet" from "issued a zero rect",
+// which is what a terminal one row tall would produce.
+type issuedBounds struct {
+	sidebar  ui.Rect
+	content  ui.Rect
+	nickList ui.Rect
+	known    bool
 }
 
 // NewMainLayout creates a MainLayout with the given left panel and
@@ -74,7 +96,10 @@ func (m MainLayout) Init() tea.Cmd {
 func (m MainLayout) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	if _, ok := msg.(NickListToggleMsg); ok {
 		m.NickListVisible = !m.NickListVisible
-		return m, nil
+
+		next, cmd := m.applyLayout()
+
+		return next, cmd
 	}
 
 	// Window-switch keys (alt+1..9, alt+a, ctrl+n, ctrl+p) are global:
@@ -93,53 +118,114 @@ func (m MainLayout) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	if size, ok := msg.(tea.WindowSizeMsg); ok {
-		colHeight := m.columnHeight(size.Height)
-		layout := m.computeLayout(size.Width, colHeight)
+		m.size = size
 
-		left, cmd := m.Sidebar.Update(ui.BoundsMsg{
-			Rect: ui.Rect{X: 0, Y: 0, Width: layout.sidebarInner, Height: colHeight},
-		})
-		m.Sidebar = left
+		next, cmd := m.applyLayout()
+		m = next
 		cmds = append(cmds, cmd)
 
-		content, cmd := m.Content.Update(ui.BoundsMsg{
-			Rect: ui.Rect{X: layout.sidebarOuter, Y: 0, Width: layout.content, Height: size.Height},
-		})
-		m.Content = content
-		cmds = append(cmds, cmd)
-
-		if m.NickList != nil && layout.nickListInner > 0 {
-			r, cmd := m.NickList.Update(ui.BoundsMsg{
-				Rect: ui.Rect{
-					X:      layout.sidebarOuter + layout.content,
-					Y:      0,
-					Width:  layout.nickListInner,
-					Height: colHeight,
-				},
-			})
-			m.NickList = r
-			cmds = append(cmds, cmd)
-		}
+		// WindowSizeMsg is fully handled through BoundsMsg; don't
+		// forward it to children where embedded viewports would
+		// misinterpret it as their own dimensions.
+		return m, tea.Batch(cmds...)
 	}
 
-	// WindowSizeMsg is fully handled above via BoundsMsg; don't
-	// forward it to children where embedded viewports would
-	// misinterpret it as their own dimensions.
-	if _, ok := msg.(tea.WindowSizeMsg); !ok {
-		left, cmd := m.Sidebar.Update(msg)
+	left, cmd := m.Sidebar.Update(msg)
+	m.Sidebar = left
+	cmds = append(cmds, cmd)
+
+	content, cmd := m.Content.Update(msg)
+	m.Content = content
+	cmds = append(cmds, cmd)
+
+	if m.NickList != nil {
+		r, cmd := m.NickList.Update(msg)
+		m.NickList = r
+		cmds = append(cmds, cmd)
+	}
+
+	// The panels have taken the message, so this is where their new
+	// widths are readable.
+	if resizesPanels(msg) {
+		next, cmd := m.applyLayout()
+		m = next
+		cmds = append(cmds, cmd)
+	}
+
+	return m, tea.Batch(cmds...)
+}
+
+// resizesPanels reports whether a message can change what the sidebar
+// or the nick list renders, and so where the content area starts and
+// ends. It lists the message arms of [ChannelSidebar.Update] and
+// [NickList.Update]; a new arm in either belongs here too.
+func resizesPanels(msg tea.Msg) bool {
+	switch msg.(type) {
+	case SetChannelsMsg,
+		ChannelAddedMsg,
+		ChannelRemovedMsg,
+		ChannelActiveMsg,
+		ChannelUnreadMsg,
+		ChannelHasLifecycleMsg,
+		NickListUpdatedMsg,
+		NickListThinkingMsg:
+		return true
+	}
+
+	return false
+}
+
+// applyLayout works the three child rects out from the terminal size
+// and hands each child the rect it has not already been given.
+//
+// [MainLayout.View] derives the same three rects from the same child
+// state on every frame, and the content area's width is what the chat
+// view renders its transcript at. A child left holding a stale rect
+// would therefore be told one width and asked to render at another,
+// and a transcript cached against the width it was rendered at would
+// miss on every frame.
+func (m MainLayout) applyLayout() (MainLayout, tea.Cmd) {
+	if m.size.Width <= 0 || m.size.Height <= 0 {
+		return m, nil
+	}
+
+	colHeight := m.columnHeight(m.size.Height)
+	layout := m.computeLayout(m.size.Width, colHeight)
+
+	next := issuedBounds{
+		sidebar: ui.Rect{X: 0, Y: 0, Width: layout.sidebarInner, Height: colHeight},
+		content: ui.Rect{X: layout.sidebarOuter, Y: 0, Width: layout.content, Height: m.size.Height},
+		nickList: ui.Rect{
+			X:      layout.sidebarOuter + layout.content,
+			Y:      0,
+			Width:  layout.nickListInner,
+			Height: colHeight,
+		},
+		known: true,
+	}
+
+	var cmds []tea.Cmd
+
+	if !m.issued.known || m.issued.sidebar != next.sidebar {
+		left, cmd := m.Sidebar.Update(ui.BoundsMsg{Rect: next.sidebar})
 		m.Sidebar = left
 		cmds = append(cmds, cmd)
+	}
 
-		content, cmd := m.Content.Update(msg)
+	if !m.issued.known || m.issued.content != next.content {
+		content, cmd := m.Content.Update(ui.BoundsMsg{Rect: next.content})
 		m.Content = content
 		cmds = append(cmds, cmd)
-
-		if m.NickList != nil {
-			r, cmd := m.NickList.Update(msg)
-			m.NickList = r
-			cmds = append(cmds, cmd)
-		}
 	}
+
+	if m.NickList != nil && layout.nickListInner > 0 &&
+		(!m.issued.known || m.issued.nickList != next.nickList) {
+		r, cmd := m.NickList.Update(ui.BoundsMsg{Rect: next.nickList})
+		m.NickList = r
+		cmds = append(cmds, cmd)
+	}
+
+	m.issued = next
 
 	return m, tea.Batch(cmds...)
 }

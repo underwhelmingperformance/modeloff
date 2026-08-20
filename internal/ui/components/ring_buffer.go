@@ -67,7 +67,12 @@ func (r *RingBuffer[T]) GetAt(index int) (T, bool) {
 }
 
 // Clear removes all items from the buffer without changing capacity.
+// The slots are zeroed as well as forgotten, so whatever the buffer
+// held is released now and not when a later item happens to overwrite
+// the slot it was in.
 func (r *RingBuffer[T]) Clear() {
+	clear(r.items)
+
 	r.head = 0
 	r.count = 0
 }
