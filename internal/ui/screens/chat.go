@@ -258,6 +258,16 @@ type ChatScreen struct {
 	// directly instead of doing a blocking SQLite load on the Tea
 	// goroutine.
 	highlightWords []string
+
+	// configRecoveryBackup is the backup path main.go's loadConfig
+	// moved an unreadable config.json to, set via
+	// WithConfigRecoveryNotice. Empty when config.json loaded
+	// normally. The recovery happens before the session or the chat
+	// screen exists, so there is nothing to emit a protocol event
+	// through it; Init renders it into `&modeloff` directly, once,
+	// the same way Welcome and Reconnected would if they had already
+	// been on the bus by the time this screen started listening.
+	configRecoveryBackup string
 }
 
 // NewChatScreen creates a chat screen reading backend state through
@@ -516,6 +526,17 @@ func (s ChatScreen) WithObservability(obs *observability.Runtime) ChatScreen {
 	return s
 }
 
+// WithConfigRecoveryNotice records that the persisted config.json was
+// unreadable and got moved aside to backupPath before this screen was
+// constructed (see main.go's loadConfig), so Init can surface it as a
+// boot-time `&modeloff` notice. An empty backupPath is a no-op —
+// config.json loaded normally, so there is nothing to report.
+func (s ChatScreen) WithConfigRecoveryNotice(backupPath string) ChatScreen {
+	s.configRecoveryBackup = backupPath
+
+	return s
+}
+
 // Init implements ui.Model.
 //
 // The chat screen does not load channel state from storage.
@@ -528,6 +549,13 @@ func (s ChatScreen) Init() tea.Cmd {
 
 	statusWindow := newWindow(domain.NewStatusWindow(s.sess.ConnectedAt()))
 	s.channels.Insert(statusWindow)
+
+	if s.configRecoveryBackup != "" {
+		s.appendStatusNotice(time.Now(), fmt.Sprintf(
+			"your config file could not be read; it was backed up to %s and defaults were used",
+			s.configRecoveryBackup,
+		))
+	}
 
 	cmds := []tea.Cmd{
 		s.listenForProtocolEvents(),

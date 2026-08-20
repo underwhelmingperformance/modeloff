@@ -211,11 +211,12 @@ func newDefaultFileStoreDir(t *testing.T) string {
 func TestLoadConfig_missingFileReturnsDefaults(t *testing.T) {
 	newDefaultFileStoreDir(t)
 
-	cfg, cfgStore, err := loadConfig(t.Context())
+	cfg, cfgStore, recoveredFrom, err := loadConfig(t.Context())
 	require.NoError(t, err)
 	require.NotNil(t, cfgStore)
 	require.Equal(t, "testuser", cfg.UserNick)
 	require.Equal(t, config.DefaultChannelModesSpec, cfg.DefaultChannelModes)
+	require.Empty(t, recoveredFrom, "no recovery ran, so there is nothing to report")
 }
 
 func TestLoadConfig_recoversFromCorruptFile(t *testing.T) {
@@ -223,7 +224,7 @@ func TestLoadConfig_recoversFromCorruptFile(t *testing.T) {
 	path := filepath.Join(dir, "config.json")
 	require.NoError(t, os.WriteFile(path, []byte("{not json"), 0o600))
 
-	cfg, cfgStore, err := loadConfig(t.Context())
+	cfg, cfgStore, recoveredFrom, err := loadConfig(t.Context())
 	require.NoError(t, err)
 	require.NotNil(t, cfgStore)
 	require.Equal(t, "testuser", cfg.UserNick)
@@ -248,6 +249,8 @@ func TestLoadConfig_recoversFromCorruptFile(t *testing.T) {
 	backup := names[0]
 	require.Equal(t, []string{backup}, names)
 	require.Regexp(t, `^config\.json\.corrupt-\d{8}T\d{6}Z$`, backup)
+	require.Equal(t, filepath.Join(dir, backup), recoveredFrom,
+		"the reported backup path must be the one RecoverCorrupt created")
 
 	backupData, err := os.ReadFile(filepath.Join(dir, backup)) //nolint:gosec // G304: dir is a t.TempDir() path in this test.
 	require.NoError(t, err)
@@ -267,9 +270,10 @@ func TestLoadConfig_nonCorruptFailureIsNotRecovered(t *testing.T) {
 	path := filepath.Join(dir, "config.json")
 	require.NoError(t, os.Mkdir(path, 0o750))
 
-	_, _, err := loadConfig(t.Context())
+	_, _, recoveredFrom, err := loadConfig(t.Context())
 	require.Error(t, err)
 	require.False(t, errors.Is(err, config.ErrCorrupt))
+	require.Empty(t, recoveredFrom, "a failure that was never recovered reports no backup path")
 
 	info, statErr := os.Stat(path)
 	require.NoError(t, statErr)

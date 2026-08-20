@@ -62,7 +62,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	cfg, cfgStore, err := loadConfig(appCtx)
+	cfg, cfgStore, configRecoveredFrom, err := loadConfig(appCtx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error loading config: %v\n", err)
 		os.Exit(1)
@@ -130,6 +130,10 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error building command grammar: %v\n", err)
 		os.Exit(1)
+	}
+
+	if configRecoveredFrom != "" {
+		chatScreen = chatScreen.WithConfigRecoveryNotice(configRecoveredFrom)
 	}
 
 	chatScreen = chatScreen.WithObservability(obs)
@@ -252,16 +256,21 @@ func newAPIClient(cfg config.Config) api.Client {
 // refusing to start, with no way to recover short of deleting the
 // file by hand. loadConfig instead moves it aside to a timestamped
 // backup and retries, so the application starts with defaults and
-// the user keeps the original file to inspect or restore from.
-func loadConfig(ctx context.Context) (config.Config, *config.FileStore, error) {
+// the user keeps the original file to inspect or restore from. The
+// returned backup path is empty on the normal path and non-empty
+// exactly when this recovery ran, so the caller can pass it to
+// [screens.ChatScreen.WithConfigRecoveryNotice] and have the user
+// learn about it once the chat screen exists — this stderr message
+// and the accompanying log line run before it does.
+func loadConfig(ctx context.Context) (config.Config, *config.FileStore, string, error) {
 	cfgStore, err := config.NewDefaultFileStore()
 	if err != nil {
-		return config.Config{}, nil, err
+		return config.Config{}, nil, "", err
 	}
 
 	cfg, err := cfgStore.Load(ctx)
 	if err == nil {
-		return cfg, cfgStore, nil
+		return cfg, cfgStore, "", nil
 	}
 
 	// Only a genuine decode failure (a corrupt config.json) is worth
@@ -270,12 +279,12 @@ func loadConfig(ctx context.Context) (config.Config, *config.FileStore, error) {
 	// still fail identically after a rename, and the rename itself
 	// would discard a config file that was never actually corrupt.
 	if !errors.Is(err, config.ErrCorrupt) {
-		return config.Config{}, nil, err
+		return config.Config{}, nil, "", err
 	}
 
 	backup, recoverErr := cfgStore.RecoverCorrupt()
 	if recoverErr != nil || backup == "" {
-		return config.Config{}, nil, err
+		return config.Config{}, nil, "", err
 	}
 
 	fmt.Fprintf(os.Stderr,
@@ -291,10 +300,10 @@ func loadConfig(ctx context.Context) (config.Config, *config.FileStore, error) {
 
 	cfg, err = cfgStore.Load(ctx)
 	if err != nil {
-		return config.Config{}, nil, err
+		return config.Config{}, nil, "", err
 	}
 
-	return cfg, cfgStore, nil
+	return cfg, cfgStore, backup, nil
 }
 
 // channelModesHolder keeps the parsed default channel modes the
