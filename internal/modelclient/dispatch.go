@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/laney/modeloff/internal/api"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/observability"
 	"github.com/laney/modeloff/internal/protocol"
@@ -39,6 +41,13 @@ import (
 // hot path reads conversation history from; the events log is
 // consulted exclusively at load time.
 //
+// A turn the upstream lost to a transient failure comes back to this
+// same select as a re-dispatch, one delay later (see
+// [ModelClient.scheduleRedispatch]). The loop keeps draining
+// deliveries while that delay runs, so a re-dispatch never holds the
+// queue up, and a turn raised for the same window in the meantime
+// supersedes it: `pending` is what the two arms agree through.
+//
 // Each turn's span is linked to the originating handlers' spans via
 // the [trace.SpanContext] each producer captured at emit time. The
 // turn is not a child of any of them: fan-out is one-to-many
@@ -54,23 +63,33 @@ func (mc *ModelClient) runDispatchLoop(ctx context.Context, sub protocol.Subscri
 
 	defer mc.recoverDispatchPanic(ctx)
 
+	pending := make(redispatchSet)
+
 	for {
-		var delivery protocol.Delivery
+		var batches []*turnBatch
+
 		select {
 		case <-ctx.Done():
 			return
 		case <-done:
 			return
-		case delivery = <-events:
+		case delivery := <-events:
+			// Re-consulted every burst, so a catalogue refresh (a lazy
+			// first load, a `SetAPIKey` invalidation followed by a fresh
+			// `ListModels`) reaches the transcript token budget without
+			// needing a reattach.
+			mc.hist.SetContextLen(mc.contextLenFn(mc.instance.ModelID))
+
+			batches = mc.fileBatch(ctx, append([]protocol.Delivery{delivery}, drain(events)...))
+		case batch := <-mc.redispatch:
+			if !pending.claim(batch) {
+				continue
+			}
+
+			batches = []*turnBatch{batch}
 		}
 
-		// Re-consulted every burst, so a catalogue refresh (a lazy
-		// first load, a `SetAPIKey` invalidation followed by a fresh
-		// `ListModels`) reaches the transcript token budget without
-		// needing a reattach.
-		mc.hist.SetContextLen(mc.contextLenFn(mc.instance.ModelID))
-
-		for _, batch := range mc.fileBatch(ctx, append([]protocol.Delivery{delivery}, drain(events)...)) {
+		for _, batch := range batches {
 			// An earlier turn in this burst may have ended the
 			// connection — a `quit` tool call cancels the loop's
 			// context from inside the turn that made it. The
@@ -81,9 +100,125 @@ func (mc *ModelClient) runDispatchLoop(ctx context.Context, sub protocol.Subscri
 				return
 			}
 
-			mc.dispatchTurn(ctx, batch)
+			mc.runBatch(ctx, batch, pending)
 		}
 	}
+}
+
+// redispatchSet holds the re-dispatch waiting for each window.
+//
+// [ModelClient.runDispatchLoop] creates it and is the only goroutine
+// that reaches it, which is why it carries no lock. A scheduler
+// goroutine waiting out a delay never touches it: it hands its batch
+// back over `mc.redispatch`, and the loop decides there whether the
+// batch is still wanted.
+type redispatchSet map[domain.ChannelName]*turnBatch
+
+// hold records `batch` as the re-dispatch its window is waiting for.
+func (s redispatchSet) hold(batch *turnBatch) {
+	s[batch.channel] = batch
+}
+
+// supersede forgets whatever re-dispatch was waiting for `ch`.
+func (s redispatchSet) supersede(ch domain.ChannelName) {
+	delete(s, ch)
+}
+
+// claim reports whether `batch` is still the re-dispatch its window
+// is waiting for, and forgets it when it is. A batch whose window was
+// superseded while it waited answers false: a later turn has already
+// covered what it was going to ask about.
+func (s redispatchSet) claim(batch *turnBatch) bool {
+	if s[batch.channel] != batch {
+		return false
+	}
+
+	delete(s, batch.channel)
+
+	return true
+}
+
+// runBatch dispatches one batch and schedules the single re-dispatch a
+// transient upstream failure earns it.
+//
+// A turn is the window's answer to everything outstanding in it, so
+// running one drops any re-dispatch still waiting there. That is what
+// keeps a message from reaching the model twice: `fileBatch` files
+// every delivery into the ring as it arrives, so a failed turn's chat
+// traffic is already in this turn's transcript, and handing the
+// failed batch back afterwards would ask the model to answer a line
+// it has just read. A poke is not filed anywhere, so a superseded
+// poke is simply dropped, which is the right end for it: the traffic
+// that superseded it is a better prompt than the nudge that stood in
+// for one.
+//
+// The second attempt is the last: a provider that answered the same
+// way twice is not having a moment, and a model that kept trying
+// would spend the user's credits on a conversation that has already
+// moved on.
+func (mc *ModelClient) runBatch(ctx context.Context, batch *turnBatch, pending redispatchSet) {
+	pending.supersede(batch.channel)
+
+	err := mc.dispatchTurn(ctx, batch)
+	if err == nil || batch.retried || !api.Retryable(err) {
+		return
+	}
+
+	if mc.scheduleRedispatch(ctx, batch) {
+		pending.hold(batch)
+	}
+}
+
+// scheduleRedispatch hands `batch` back to the dispatch loop after a
+// jittered delay so the turn gets one more attempt, and reports
+// whether it scheduled one.
+//
+// The wait runs on a goroutine of its own and never on the dispatch
+// goroutine, which has to stay on its select: deliveries arriving
+// during the delay still have to reach the history ring, and a
+// teardown still has to be answered at once. The goroutine joins the
+// client's wait group, so `Wait` covers it, and so does the shutdown
+// drain behind `Wait`; both of its own waits end on the loop's
+// context, which [ModelClient.Release] cancels.
+func (mc *ModelClient) scheduleRedispatch(ctx context.Context, batch *turnBatch) bool {
+	batch.retried = true
+
+	delay, err := mc.retry.duration()
+	if err != nil {
+		slog.ErrorContext(ctx, "draw re-dispatch jitter, abandoning the retry",
+			"component", "modelclient",
+			"instance_id", mc.instance.ID(),
+			"channel", batch.channel,
+			"error", err,
+		)
+
+		return false
+	}
+
+	slog.InfoContext(ctx, "re-dispatching a turn after a transient upstream failure",
+		"component", "modelclient",
+		"instance_id", mc.instance.ID(),
+		"channel", batch.channel,
+		"delay", delay,
+	)
+
+	mc.wg.Go(func() {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+
+		select {
+		case mc.redispatch <- batch:
+		case <-ctx.Done():
+		}
+	})
+
+	return true
 }
 
 // recoverDispatchPanic ends the client's connection when its
@@ -132,6 +267,11 @@ type turnBatch struct {
 	history  []domain.StoredEvent
 	triggers []protocol.IRCMessage
 	causes   []trace.SpanContext
+
+	// retried records that this batch has already been handed back to
+	// the dispatch loop once, which is what bounds a failing turn to
+	// two attempts.
+	retried bool
 }
 
 // fileBatch files `deliveries` into the per-channel history buffers
@@ -346,7 +486,12 @@ func dispatchTrigger(selfID domain.InstanceID, ev domain.ProtocolEvent) (domain.
 // KILL, a QUIT, or shutdown — so the turn ends without the
 // `ModelUnavailableError` an upstream failure would raise. Nothing
 // was unavailable; the client was closed.
-func (mc *ModelClient) dispatchTurn(ctx context.Context, batch *turnBatch) {
+//
+// The returned error is what [ModelClient.runBatch] classifies to
+// decide whether the turn is worth a second attempt. A turn with no
+// API client behind it returns nil: no key configured is a state the
+// user changes, not a condition that passes.
+func (mc *ModelClient) dispatchTurn(ctx context.Context, batch *turnBatch) error {
 	inst := mc.instance
 	nick := inst.Nick()
 	ch := batch.channel
@@ -358,7 +503,7 @@ func (mc *ModelClient) dispatchTurn(ctx context.Context, batch *turnBatch) {
 		attribute.String(observability.AttrInstanceID, string(inst.ID())),
 	}
 
-	_ = mc.inSpan(ctx, "modelclient.dispatch_turn", attrs, func(ctx context.Context, span trace.Span) error {
+	return mc.inSpan(ctx, "modelclient.dispatch_turn", attrs, func(ctx context.Context, span trace.Span) error {
 		for _, cause := range batch.causes {
 			if cause.IsValid() {
 				span.AddLink(trace.Link{SpanContext: cause})

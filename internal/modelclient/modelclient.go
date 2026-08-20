@@ -114,6 +114,16 @@ type ModelClient struct {
 
 	hist *history
 
+	// retry is how long a turn lost to a transient upstream failure
+	// waits before its single re-dispatch, and redispatch is how that
+	// turn reaches the dispatch loop's select. The channel is
+	// unbuffered: a scheduler that finds the loop mid-turn waits, and
+	// gives up if the client is torn down first. Whether the loop
+	// still wants the batch it hands back is decided there, against
+	// the loop's own [redispatchSet].
+	retry      retryPolicy
+	redispatch chan *turnBatch
+
 	// mu guards the subscription handle and the released flag.
 	mu       sync.Mutex
 	sub      protocol.Subscription
@@ -127,9 +137,10 @@ type ModelClient struct {
 //
 // `apiFn` is consulted once per dispatch turn to obtain the current
 // [api.Client], so a manager-driven `SetAPIKey` rebuild propagates
-// to the next turn without reattach. A nil return from `apiFn` is
-// the same signal as "no API key configured" — the dispatch turn
-// short-circuits to silence.
+// to the next turn without reattach. A nil return from `apiFn` means
+// no API key is configured: the turn ends without calling upstream,
+// raising a [domain.ModelUnavailableError] so the user is told why
+// their models have gone quiet.
 //
 // `baseContext` supplies the long-lived context the dispatch
 // goroutine derives its lifetime from; cancelling it (and calling
@@ -173,6 +184,8 @@ func New(
 		pacer:        pacer,
 		baseContext:  baseContext,
 		hist:         newHistory(),
+		retry:        defaultRetryPolicy(),
+		redispatch:   make(chan *turnBatch),
 	}
 }
 

@@ -132,7 +132,7 @@ func newTestManager(t *testing.T, cfg modelmanager.Config) *managerFixture {
 	}
 
 	mgr := modelmanager.New(cfg)
-	t.Cleanup(mgr.DetachAll)
+	t.Cleanup(func() { _ = mgr.DetachAll(context.Background()) })
 	mgr.SetClock(func() time.Time { return fixedTime })
 
 	fixture := &managerFixture{

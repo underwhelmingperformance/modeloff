@@ -18,7 +18,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/api"
+	"github.com/laney/modeloff/internal/config"
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/memory"
 	"github.com/laney/modeloff/internal/modelclient"
 	"github.com/laney/modeloff/internal/modelmanager"
 	"github.com/laney/modeloff/internal/protocol"
@@ -37,6 +39,10 @@ type managerFakeAPI struct {
 	sendEventsFn       func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error)
 	generateNickFn     func(context.Context, domain.ModelID, string, []domain.Nick) (domain.Nick, error)
 	generatePersonasFn func(context.Context, domain.ModelID) ([]domain.Persona, error)
+
+	// toolResultsFn observes the results the model is handed back
+	// after its tool calls run, so a test can pin what a tool told it.
+	toolResultsFn func([]api.ToolResult)
 }
 
 func (f *managerFakeAPI) ListModels(ctx context.Context) ([]api.ModelInfo, error) {
@@ -64,11 +70,15 @@ func (f *managerFakeAPI) SendEvents(
 }
 
 func (f *managerFakeAPI) ContinueWithToolResults(
-	context.Context,
-	*api.Conversation,
-	[]api.ToolResult,
-	...api.ToolDefinition,
+	_ context.Context,
+	_ *api.Conversation,
+	results []api.ToolResult,
+	_ ...api.ToolDefinition,
 ) (api.CompletionResult, error) {
+	if f.toolResultsFn != nil {
+		f.toolResultsFn(results)
+	}
+
 	return api.CompletionResult{}, nil
 }
 
@@ -151,6 +161,33 @@ func (lb *logBuffer) find(msg string) map[string]any {
 	return nil
 }
 
+// errors returns every captured record logged at error level, as the
+// messages they carry. A test that pins a quiet path asserts this is
+// empty, and names what was logged when it is not.
+func (lb *logBuffer) errors() []string {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+
+	var msgs []string
+
+	for line := range bytes.SplitSeq(lb.buf.Bytes(), []byte("\n")) {
+		if len(line) == 0 {
+			continue
+		}
+
+		var record map[string]any
+		if json.Unmarshal(line, &record) != nil {
+			continue
+		}
+
+		if record["level"] == slog.LevelError.String() {
+			msgs = append(msgs, fmt.Sprint(record["msg"], " ", record["error"]))
+		}
+	}
+
+	return msgs
+}
+
 func installLogCapture(t *testing.T) *logBuffer {
 	t.Helper()
 
@@ -189,7 +226,7 @@ func newTestSessionWithManager(
 		InitialAPIKey: apiKey,
 		BaseContext:   t.Context,
 	})
-	t.Cleanup(mgr.DetachAll)
+	t.Cleanup(func() { _ = mgr.DetachAll(context.Background()) })
 
 	sess := session.New(t.Context, store, mgr, nil)
 	// The manager's cleanup was registered first, so it runs last:
@@ -488,24 +525,23 @@ func TestManager_DetachAll_joins_a_client_released_mid_session(t *testing.T) {
 		require.NoError(t, err)
 		require.NoError(t, resp.Err)
 
-		joined := make(chan struct{})
+		joined := make(chan error, 1)
 		go func() {
-			defer close(joined)
-			mgr.DetachAll()
+			joined <- mgr.DetachAll(t.Context())
 		}()
 
 		synctest.Wait()
 
 		select {
-		case <-joined:
-			t.Fatal("DetachAll returned while a released client's turn was still running")
+		case err := <-joined:
+			t.Fatalf("DetachAll returned (%v) while a released client's turn was still running", err)
 		default:
 		}
 
 		close(upstream)
 		synctest.Wait()
 
-		<-joined
+		require.NoError(t, <-joined)
 
 		// The kill did what a kill does, and the join waited for what
 		// was left of it.
@@ -514,6 +550,182 @@ func TestManager_DetachAll_joins_a_client_released_mid_session(t *testing.T) {
 		_, err = store.GetInstanceByID(ctx, bot.ID())
 		require.Error(t, err)
 	})
+}
+
+// TestManager_DetachAll_abandons_a_turn_past_the_drain_deadline pins
+// the bound the configured drain timeout is supposed to be. The join
+// waits for turns that answer their cancellation, but an upstream
+// call already handed to the network does not, and an unbounded wait
+// there is a shutdown that never finishes: the user's `/quit` leaves
+// the terminal wedged with nothing to say why.
+//
+// Past the deadline the remaining goroutines are left to the exiting
+// process and named in the returned error, which is what `main` logs.
+func TestManager_DetachAll_abandons_a_turn_past_the_drain_deadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		upstream := make(chan struct{})
+		t.Cleanup(func() { close(upstream) })
+
+		fake := &managerFakeAPI{
+			sendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
+				<-upstream
+				return api.CompletionResult{}, nil
+			},
+		}
+
+		_, store, mgr, user := newTestSessionWithManager(t, fake, "")
+		ctx := t.Context()
+
+		seedChannel(t, user, "#general")
+		require.NoError(t, addModelViaWire(ctx, t, user, "#general", "test/model", ""))
+		synctest.Wait()
+
+		_, err := user.SendMessage(ctx, "#general", "anyone about?")
+		require.NoError(t, err)
+		synctest.Wait()
+
+		bot, err := store.ResolveNick(ctx, "fakenick")
+		require.NoError(t, err)
+
+		drainCtx, cancel := context.WithTimeout(ctx, config.DefaultDrainTimeout)
+		defer cancel()
+
+		start := time.Now()
+		err = mgr.DetachAll(drainCtx)
+
+		require.Equal(t, config.DefaultDrainTimeout, time.Since(start),
+			"the drain returns on the deadline, not once the turn finishes")
+
+		var drainErr *modelmanager.DrainTimeoutError
+		require.ErrorAs(t, err, &drainErr)
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		require.Equal(t, []protocol.ClientID{protocol.ClientID(bot.ID())}, drainErr.Abandoned)
+	})
+}
+
+// TestManager_DetachAll_abandoned_turn_is_quiet_when_the_store_closes
+// pins what the abandoned goroutine goes on to do, which is the price
+// the deadline buys and the part that is easy to get wrong. The
+// process runs the whole of `main`'s exit sequence underneath a turn
+// that ignores its cancellation: the drain gives up, the session shuts
+// down, the store closes, and only then does the upstream call return
+// and the turn carry on.
+//
+// What it must not do is spend the rest of the exit reporting the
+// consequences. The session's command loop has stopped by then, so
+// everything the turn tries to say comes back as
+// `session.ErrSessionClosed` without a database round trip, and the
+// one path that would reach the database directly is a memory tool.
+// The model here calls one, so the closed store is genuinely touched;
+// the tool answers the model with the failure and the turn ends. The
+// operator's log stays as it was.
+func TestManager_DetachAll_abandoned_turn_is_quiet_when_the_store_closes(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		logs := installLogCapture(t)
+
+		upstream := make(chan struct{})
+		memStore := storetest.NewMemoryStore(t)
+
+		var toolResults []api.ToolResult
+
+		fake := &managerFakeAPI{
+			sendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
+				// The park ignores cancellation, which is what a real
+				// upstream call already handed to the network does.
+				<-upstream
+
+				return writeMemoryToolCall(t, "still_here", "the drain gave up on me"), nil
+			},
+			toolResultsFn: func(results []api.ToolResult) { toolResults = results },
+		}
+
+		store := storetest.NewMemoryStore(t)
+
+		mgr := modelmanager.New(modelmanager.Config{
+			Store:       store,
+			Memory:      memory.NewStoreAdapter(memStore),
+			APIClient:   fake,
+			BaseContext: t.Context,
+			// The pacer waits on the turn's context before each chat
+			// emit, and this turn's context is cancelled, so a paced
+			// run would end there. A zero-valued pacer disables the
+			// delay, letting the tool call reach the closed store.
+			Pacer: &modelclient.Pacer{},
+		})
+
+		sess := session.New(t.Context, store, mgr, nil)
+		user := userclient.New("testuser", sess, store, userclient.NewStoreReplyLog(store))
+		require.NoError(t, user.Attach(t.Context()))
+
+		ctx := t.Context()
+
+		seedChannel(t, user, "#general")
+		require.NoError(t, addModelViaWire(ctx, t, user, "#general", "test/model", ""))
+		synctest.Wait()
+
+		_, err := user.SendMessage(ctx, "#general", "anyone about?")
+		require.NoError(t, err)
+		synctest.Wait()
+
+		// `main`'s exit sequence, in order, with the turn still parked.
+		drainCtx, cancel := context.WithTimeout(context.Background(), config.DefaultDrainTimeout)
+		defer cancel()
+
+		require.Error(t, mgr.DetachAll(drainCtx))
+
+		// The drain spent the whole deadline, so `Shutdown` has none
+		// left and gives up on joining the delivery pumps. It still
+		// closes the registration gate first, which is what stops the
+		// command loop, and that is what the turn below runs into.
+		require.ErrorIs(t, sess.Shutdown(drainCtx), context.DeadlineExceeded)
+
+		require.NoError(t, memStore.Close())
+		require.NoError(t, store.Close())
+
+		// The upstream answers at last, and the abandoned turn runs on
+		// against a closed database.
+		close(upstream)
+		synctest.Wait()
+
+		// The tool ran and met the closed database, which is what gives
+		// the quiet assertion below something to cover. The
+		// model has `write_memory` because this manager was given a
+		// memory store, so the only failure available to that call is
+		// the store it writes through, and the failure came back to
+		// the model as its tool result.
+		require.Len(t, toolResults, 1)
+
+		var payload struct {
+			OK    bool   `json:"ok"`
+			Error string `json:"error"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(toolResults[0].Content), &payload))
+		require.False(t, payload.OK)
+		require.NotEmpty(t, payload.Error)
+
+		// The turn ran to its end after the close, which is both what
+		// makes the assertion below cover the whole of it and proof
+		// that the capture is live.
+		require.NotNil(t, logs.find("dispatch to instance"))
+
+		require.Empty(t, logs.errors(),
+			"an abandoned turn tells the operator nothing: the stopped command loop refuses its wire commands, and a failing tool answers the model")
+	})
+}
+
+// writeMemoryToolCall builds a completion whose pending tool call
+// writes a memory, which is the one thing a dispatch turn does that
+// reaches the database without going through the session's command
+// loop.
+func writeMemoryToolCall(t *testing.T, key, content string) api.CompletionResult {
+	t.Helper()
+
+	args, err := json.Marshal(map[string]any{"key": key, "content": content})
+	require.NoError(t, err)
+
+	return api.CompletionResult{PendingToolCalls: []api.PendingToolCall{
+		{ID: "call_write_memory", Name: "write_memory", Args: args},
+	}}
 }
 
 func TestSession_Invite_without_persona_assigns_from_pool(t *testing.T) {

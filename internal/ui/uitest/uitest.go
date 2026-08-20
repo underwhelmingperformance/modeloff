@@ -432,7 +432,7 @@ func NewTestSession(
 		InitialAPIKey: apiKey,
 		SmallModel:    smallModel,
 	})
-	t.Cleanup(mgr.DetachAll)
+	t.Cleanup(func() { _ = mgr.DetachAll(context.Background()) })
 	mgr.SetAPIFactory(func(apiKey, baseURL string) (api.Client, error) {
 		_ = baseURL
 		_ = apiKey
@@ -482,7 +482,7 @@ func NewModelManager(
 		InitialAPIKey: apiKey,
 		SmallModel:    smallModel,
 	})
-	t.Cleanup(mgr.DetachAll)
+	t.Cleanup(func() { _ = mgr.DetachAll(context.Background()) })
 	return mgr
 }
 

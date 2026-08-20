@@ -182,9 +182,10 @@ issuing `serverClient`, not as a branch on which kind of client it is.
   KILL, a send-queue disconnect or a failed ADDMODEL — leaves the
   manager's registry at once, since its identity is free from that
   point, and moves to a draining set: its turn may still be inside
-  an upstream call, and `Manager.DetachAll` joins the draining set
-  along with the attached one. That is the only join, and `main.go`
-  runs it on the way out. The
+  an upstream call, and `Manager.DetachAll(ctx)` joins the draining
+  set along with the attached one. That is the only join, and
+  `main.go` runs it on the way out under the configured
+  `DrainTimeout`; see Shutdown below. The
   dispatch goroutine watches the subscription's
   `Events` and `Done` channels and runs an LLM turn when
   `dispatchTrigger` says so (a message or join in a window the
@@ -199,8 +200,24 @@ issuing `serverClient`, not as a branch on which kind of client it is.
   trigger that arrived for the same window, so a model that was busy
   catches up in a single prompt. Each turn
   re-reads the api client through the getter so a manager-driven
-  `SetAPIKey` rebuild propagates without reattach. A panic in the
-  loop ends the connection through `Session.Disconnect`, so a dead
+  `SetAPIKey` rebuild propagates without reattach; a nil client means
+  no API key is configured, and the turn ends with a
+  `ModelUnavailableError` and no upstream call. A turn lost to a
+  transient upstream failure is dispatched once more, after
+  `dispatchRetryDelay` with `dispatchRetryJitter` either side of it.
+  `api.Retryable` is what counts as transient: HTTP 429, any 5xx, or
+  an expired deadline.
+  The wait runs on a goroutine of its own and the turn returns to the
+  loop's select, so the queue keeps draining while it runs; a second
+  failure stays failed. A turn raised for the same window during the
+  delay supersedes the pending one, which is what keeps a message from
+  reaching the model twice: `fileBatch` files every delivery into the
+  ring as it arrives, so the failed turn's traffic is already the
+  superseding turn's transcript, and re-asking about it afterwards
+  would have the model answer a line it had just read. The loop's
+  `redispatchSet` is where the two arms agree, and it is loop-owned,
+  so it needs no lock. A panic in
+  the loop ends the connection through `Session.Disconnect`, so a dead
   dispatch goroutine leaves a QUIT in the channel and no orphaned
   subscription behind it.
 
@@ -318,6 +335,40 @@ The nick space is claimed on the loop for the same reason: `NICK`
 checks and takes a nick as one step, and `ADDMODEL` re-checks the
 nick it was given, because that nick was chosen off the loop and a
 rename may have taken it in the meantime.
+
+### Shutdown
+
+Teardown runs in the order the layers sit in, and one deadline covers
+all of it. `main.go` cancels the application context, which wakes
+every dispatch goroutine and stops the command loop; then
+`Manager.DetachAll(ctx)` releases every model-client and joins its
+dispatch goroutine, the attached ones and the draining ones alike;
+then `Session.Shutdown(ctx)` closes the registration gate and joins
+every subscription's outbound pump. Only then does the deferred
+`Store.Close` run, so on the clean path nothing is still reading or
+writing the database underneath it.
+
+The deadline is the `/config drain-timeout` setting, and it bounds
+the drain end to end. Releasing a client cancels the context its turn
+runs under, but an upstream call already handed to the network
+answers when it answers. `DetachAll` therefore waits
+per client and gives up at the deadline, returning a
+`modelmanager.DrainTimeoutError` naming the clients still dispatching.
+Those goroutines are abandoned to the exiting process, which is the
+price of a shutdown that finishes; the warning is what tells the
+operator it happened. A configured value that is not positive would
+mean no drain at all, so `main` falls back to
+`config.DefaultDrainTimeout` and says so.
+
+Spending the deadline in the drain leaves `Shutdown` none, so on that
+path the outbound pumps are abandoned with the turns. `Shutdown`
+closes the registration gate before it consults the deadline, though,
+and closing that gate is what stops the command loop. An abandoned
+turn waking after `Store.Close` therefore has every wire command it
+issues refused with `session.ErrSessionClosed`, without a database
+round trip; the one thing it can still reach the database through is a
+memory tool, which answers the model with the failure. Nothing on that
+path reaches the operator's log.
 
 ### Message targets
 

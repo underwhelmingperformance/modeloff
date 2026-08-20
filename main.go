@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -80,8 +81,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	apiClient := api.NewOpenRouterClient(cfg.APIKey, cfg.BaseURL, nil)
-
 	baseContext := func() context.Context { return appCtx }
 
 	toolRegistry, err := chatcmd.BuildToolRegistry()
@@ -93,7 +92,7 @@ func main() {
 	mgr := modelmanager.New(modelmanager.Config{
 		Store:     dataStore,
 		Memory:    memStore,
-		APIClient: apiClient,
+		APIClient: newAPIClient(cfg),
 		APIFactory: func(apiKey, baseURL string) (api.Client, error) {
 			return api.NewOpenRouterClient(apiKey, baseURL, nil), nil
 		},
@@ -170,17 +169,32 @@ func main() {
 
 	cancelApp()
 
-	// Cancelling the app context wakes every dispatch goroutine;
-	// DetachAll is what waits for them — the models still attached
-	// and the ones already draining from a QUIT or KILL alike — so no
-	// model turn is still running when the session closes its
-	// subscriptions underneath it.
-	mgr.DetachAll()
+	// Cancelling the app context wakes every dispatch goroutine and
+	// stops the session's command loop. One deadline then covers the
+	// whole way out, in the order the layers sit in: DetachAll waits
+	// for the model turns still unwinding, the models attached and
+	// the ones already draining from a QUIT or KILL alike, and
+	// Shutdown joins the delivery pumps behind them.
+	//
+	// When both return nil, nothing is left reading or writing the
+	// store by the time the deferred Close reaches it. When DetachAll
+	// times out that guarantee is spent: the turns it names are still
+	// running, and Close happens underneath them. That is the price of
+	// a shutdown that finishes at all, and it is bounded, because a
+	// turn woken after the close finds the session's command loop
+	// already stopped, so its work comes back as
+	// session.ErrSessionClosed without reaching the database. The
+	// warning names the clients so the operator can see it happened.
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), drainTimeout(cfg))
 
-	drainCtx, drainCancel := context.WithTimeout(context.Background(), cfg.DrainTimeout)
+	if err := mgr.DetachAll(drainCtx); err != nil {
+		slog.Warn("model dispatch drain timed out", "error", err)
+	}
+
 	if err := sess.Shutdown(drainCtx); err != nil {
 		slog.Warn("session shutdown timed out", "error", err)
 	}
+
 	drainCancel()
 
 	if shutdownErr := obs.Shutdown(context.Background()); shutdownErr != nil {
@@ -191,6 +205,46 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: %v\n", runErr)
 		os.Exit(1)
 	}
+}
+
+// drainTimeout returns the deadline the shutdown drain runs under.
+//
+// A non-positive configured value would expire the deadline before
+// the drain started, abandoning every model turn mid-flight and
+// closing the store underneath it. `/config drain-timeout` parses any
+// duration it is given and config.json is hand-editable, so the
+// built-in default stands in for a value that would mean no drain at
+// all.
+func drainTimeout(cfg config.Config) time.Duration {
+	if cfg.DrainTimeout > 0 {
+		return cfg.DrainTimeout
+	}
+
+	slog.Warn("configured drain timeout is not positive, using the built-in default",
+		"component", "main",
+		"configured", cfg.DrainTimeout,
+		"drain_timeout", config.DefaultDrainTimeout,
+	)
+
+	return config.DefaultDrainTimeout
+}
+
+// newAPIClient builds the OpenRouter client the manager starts with,
+// or returns nil when no API key is configured.
+//
+// This is the same rule [modelmanager.Manager.SetAPIKey] applies when
+// the key is cleared at runtime, and every LLM path already reads a
+// nil client as "no key": nick generation falls back to a
+// deterministic nick, the catalogue checks pass, and a dispatch turn
+// raises the operator diagnostic and stops there. A client built
+// around an empty key looks configured to all three of them, and
+// reaches OpenRouter and is refused, once per turn.
+func newAPIClient(cfg config.Config) api.Client {
+	if strings.TrimSpace(cfg.APIKey) == "" {
+		return nil
+	}
+
+	return api.NewOpenRouterClient(cfg.APIKey, cfg.BaseURL, nil)
 }
 
 // loadConfig loads the persisted configuration. A config.json that

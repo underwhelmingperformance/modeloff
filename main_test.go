@@ -284,3 +284,35 @@ func TestLoadConfig_nonCorruptFailureIsNotRecovered(t *testing.T) {
 	}
 	require.Equal(t, []string{"config.json"}, names, "no backup file must have been created")
 }
+
+// TestNewAPIClient covers the boot-time decision the manager's
+// nil-client handling depends on. A nil client is what every LLM path
+// reads as "no key", and each has a quiet answer ready for it. An
+// empty key must therefore produce no client at all: one built around
+// an empty key looks configured to every caller that checks, and then
+// fails against OpenRouter on every turn, nick generation and
+// catalogue load.
+func TestNewAPIClient(t *testing.T) {
+	cases := []struct {
+		name       string
+		apiKey     string
+		wantClient bool
+	}{
+		{name: "no key configured", apiKey: "", wantClient: false},
+		{name: "whitespace is not a key", apiKey: "   \t\n ", wantClient: false},
+		{name: "a configured key builds a client", apiKey: "sk-test", wantClient: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client := newAPIClient(config.Config{APIKey: tc.apiKey, BaseURL: "https://example.invalid"})
+
+			if !tc.wantClient {
+				require.Nil(t, client)
+				return
+			}
+
+			require.NotNil(t, client)
+		})
+	}
+}

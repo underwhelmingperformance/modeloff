@@ -48,6 +48,7 @@ type fakeSession struct {
 	subscribes  int
 	disconnects []protocol.ClientID
 	dmReads     []dmRead
+	emitted     []domain.ProtocolEvent
 }
 
 // dmRead records one [fakeSession.DMEventsBefore] call, so a test can
@@ -131,7 +132,20 @@ func (f *fakeSession) LoadChannelWindow(_ context.Context, name domain.ChannelNa
 	return domain.NewChannelWindow(name, f.Now()), nil
 }
 
-func (f *fakeSession) Emit(context.Context, domain.ProtocolEvent) {}
+func (f *fakeSession) Emit(_ context.Context, evt domain.ProtocolEvent) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.emitted = append(f.emitted, evt)
+}
+
+// emittedEvents returns what the client has put on the bus so far.
+func (f *fakeSession) emittedEvents() []domain.ProtocolEvent {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return append([]domain.ProtocolEvent(nil), f.emitted...)
+}
 
 func (f *fakeSession) ResolveInstanceByID(_ context.Context, id domain.InstanceID) (*domain.Instance, error) {
 	inst, ok := f.instances[id]

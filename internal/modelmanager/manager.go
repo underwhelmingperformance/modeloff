@@ -17,6 +17,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -677,27 +679,92 @@ func (m *Manager) Detach(id protocol.ClientID) {
 // failed ADDMODEL. It releases them all first, so the turns they are
 // in unwind in parallel, then waits for each.
 //
+// `ctx` bounds that wait, and is what makes the configured drain
+// timeout a real bound on shutdown. Releasing a client cancels the
+// context its turn runs under, which an upstream call answers by
+// returning; a turn that does not answer it would hold the process
+// open for as long as it liked. Past the deadline the remaining
+// goroutines are abandoned to the exiting process and the returned
+// [DrainTimeoutError] names the clients they belong to.
+//
 // It carries [modelclient.ModelClient.Wait]'s restriction: never
 // from a dispatch turn.
-func (m *Manager) DetachAll() {
-	m.clientsMu.Lock()
-	clients := make([]*modelclient.ModelClient, 0, len(m.clients)+len(m.draining))
-	for _, mc := range m.clients {
-		clients = append(clients, mc)
-	}
-	clients = append(clients, m.draining...)
-	m.clients = make(map[protocol.ClientID]*modelclient.ModelClient)
-	m.draining = nil
-	m.clientsMu.Unlock()
+func (m *Manager) DetachAll(ctx context.Context) error {
+	clients := m.takeAllClients()
 
 	for _, mc := range clients {
 		mc.Release()
 	}
 
+	pending := make(map[protocol.ClientID]struct{}, len(clients))
+
+	// Buffered to the full count, so every joiner has a slot waiting
+	// for it. One whose client finishes after the deadline, with this
+	// call already returned and nobody reading, still completes its
+	// send and exits.
+	joined := make(chan protocol.ClientID, len(clients))
+
 	for _, mc := range clients {
-		mc.Wait()
+		pending[mc.Identity()] = struct{}{}
+
+		go func() {
+			mc.Wait()
+			joined <- mc.Identity()
+		}()
 	}
+
+	for range clients {
+		select {
+		case id := <-joined:
+			delete(pending, id)
+		case <-ctx.Done():
+			return &DrainTimeoutError{Abandoned: slices.Sorted(maps.Keys(pending)), Err: ctx.Err()}
+		}
+	}
+
+	return nil
 }
+
+// takeAllClients empties both registries and returns everything that
+// was in them: the attached clients and the ones already draining.
+func (m *Manager) takeAllClients() []*modelclient.ModelClient {
+	m.clientsMu.Lock()
+	defer m.clientsMu.Unlock()
+
+	clients := make([]*modelclient.ModelClient, 0, len(m.clients)+len(m.draining))
+	for _, mc := range m.clients {
+		clients = append(clients, mc)
+	}
+	clients = append(clients, m.draining...)
+
+	m.clients = make(map[protocol.ClientID]*modelclient.ModelClient)
+	m.draining = nil
+
+	return clients
+}
+
+// DrainTimeoutError reports the model clients whose dispatch
+// goroutine was still running when [Manager.DetachAll]'s deadline
+// passed. Each is inside a turn that did not answer its
+// cancellation. The process is on its way out, so the deadline
+// releases the drain and leaves those goroutines running; naming
+// them here is what tells the operator which clients that was.
+type DrainTimeoutError struct {
+	Abandoned []protocol.ClientID
+	Err       error
+}
+
+func (e *DrainTimeoutError) Error() string {
+	ids := make([]string, len(e.Abandoned))
+	for i, id := range e.Abandoned {
+		ids[i] = string(id)
+	}
+
+	return fmt.Sprintf("drain model clients: %v; %d still dispatching: %s",
+		e.Err, len(ids), strings.Join(ids, ", "))
+}
+
+func (e *DrainTimeoutError) Unwrap() error { return e.Err }
 
 // inSpan brackets fn with a span and result-recording on the
 // manager's tracer provider. The fallback error kind is

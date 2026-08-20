@@ -39,7 +39,7 @@ func newFixture(t *testing.T) *fixture {
 		APIClient:   &noopAPI{},
 		BaseContext: t.Context,
 	})
-	t.Cleanup(mgr.DetachAll)
+	t.Cleanup(func() { _ = mgr.DetachAll(context.Background()) })
 
 	sess := session.New(t.Context, s, mgr, nil)
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
@@ -70,7 +70,7 @@ func TestUserClient_capabilities_come_from_the_session(t *testing.T) {
 		APIClient:   &noopAPI{},
 		BaseContext: t.Context,
 	})
-	t.Cleanup(mgr.DetachAll)
+	t.Cleanup(func() { _ = mgr.DetachAll(context.Background()) })
 
 	sess := session.New(t.Context, s, mgr, nil)
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
