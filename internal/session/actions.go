@@ -488,8 +488,17 @@ func (s *Session) sendActionAs(ctx context.Context, actor *domain.Instance, ch d
 	return msg, err
 }
 
-// setTopicAs sets the topic for a channel.
+// setTopicAs sets the topic for a channel. A topic longer than
+// [domain.TopicMaxLen] (this server's TOPICLEN) is refused with
+// [domain.ErroneousTopicError] before anything else runs: the topic
+// is repeated into every dispatch turn's prompt for the channel, so
+// an oversized value never enters channel state; it is refused, not
+// truncated.
 func (s *Session) setTopicAs(ctx context.Context, actor *domain.Instance, ch domain.ChannelName, topic string) error {
+	if reason := domain.ValidateTopic(topic); reason != domain.TopicAccepted {
+		return domain.ErroneousTopicError{Channel: ch, Reason: reason, At: s.now()}
+	}
+
 	actorNick := actor.Nick()
 
 	return s.inSpan(ctx, "session.set_topic", []attribute.KeyValue{

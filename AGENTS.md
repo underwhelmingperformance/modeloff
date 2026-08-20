@@ -491,7 +491,13 @@ that order and is the one path to claiming a nick, for `NICK` and
 for `ADDMODEL`'s registration alike. `domain.ValidatePersona` follows
 the same shape for a persona description, bound by
 `domain.PersonaMaxLen` (400 characters) and refused with
-`domain.ErroneousPersonaError` at `ADDMODEL` time.
+`domain.ErroneousPersonaError` at `ADDMODEL` time. `domain.ValidateTopic`
+bounds a channel topic by `domain.TopicMaxLen` (390 characters) and is
+refused with `domain.ErroneousTopicError` at `TOPIC` time: RFC 1459
+and RFC 2812 place no length limit on a topic, but TOPICLEN is the
+convention modern ircds advertise via ISUPPORT, and this server
+enforces it because a channel's topic is repeated into every dispatch
+turn's prompt for that channel.
 
 ### Flood control
 

@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"slices"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -540,6 +541,30 @@ func TestSetTopicAs_no_op_suppresses_event(t *testing.T) {
 		require.Equal(t, 1, topicChanges,
 			"the no-op second call did not persist a TopicChange")
 	})
+}
+
+// TestSetTopicAs_rejects_a_topic_over_TopicMaxLen pins TOPICLEN
+// enforcement: a topic longer than [domain.TopicMaxLen] is refused
+// before it touches channel state, and the channel's topic is left
+// as it was.
+func TestSetTopicAs_rejects_a_topic_over_TopicMaxLen(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := t.Context()
+
+	seedChannelWithMembers(t, sess, s, "#dev", "testuser")
+
+	tooLong := strings.Repeat("x", domain.TopicMaxLen+1)
+
+	err := sess.setTopicAs(ctx, userInstance(t, sess), "#dev", tooLong)
+	require.Equal(t, domain.ErroneousTopicError{
+		Channel: "#dev",
+		Reason:  domain.TopicTooLong,
+		At:      fixedTime,
+	}, err)
+
+	window, err := sess.loadChannelWindow(ctx, "#dev")
+	require.NoError(t, err)
+	require.Empty(t, window.Topic)
 }
 
 func TestKickAs_model_actor(t *testing.T) {

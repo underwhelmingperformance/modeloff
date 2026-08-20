@@ -74,6 +74,7 @@ func (TooManyJoinTargetsError) isProtocolEvent()   {}
 func (ErroneousChannelNameError) isProtocolEvent() {}
 func (ErroneousNicknameError) isProtocolEvent()    {}
 func (ErroneousPersonaError) isProtocolEvent()     {}
+func (ErroneousTopicError) isProtocolEvent()       {}
 func (CannotSendToChannelError) isProtocolEvent()  {}
 func (UnknownCommandError) isProtocolEvent()       {}
 func (UnknownConfigKeyError) isProtocolEvent()     {}
@@ -98,6 +99,7 @@ func (TooManyJoinTargetsError) domainEvent()   {}
 func (ErroneousChannelNameError) domainEvent() {}
 func (ErroneousNicknameError) domainEvent()    {}
 func (ErroneousPersonaError) domainEvent()     {}
+func (ErroneousTopicError) domainEvent()       {}
 func (CannotSendToChannelError) domainEvent()  {}
 func (UnknownCommandError) domainEvent()       {}
 func (UnknownConfigKeyError) domainEvent()     {}
@@ -274,6 +276,23 @@ type ErroneousNicknameError struct {
 
 func (e ErroneousNicknameError) Error() string {
 	return fmt.Sprintf("nick %q is not allowed: %s", string(e.Nick), e.Reason)
+}
+
+// ErroneousTopicError refuses a topic body that fails
+// [ValidateTopic]. RFC 1459 and RFC 2812 place no bound on a topic;
+// TOPICLEN is the convention modern ircds advertise via ISUPPORT, and
+// this server enforces it because a channel's topic is repeated into
+// every dispatch turn's prompt for that channel. `Reason` carries
+// which bound it failed, so renderers and tool-result formatters can
+// say so without reparsing the message.
+type ErroneousTopicError struct {
+	Channel ChannelName
+	Reason  TopicRejection
+	At      time.Time
+}
+
+func (e ErroneousTopicError) Error() string {
+	return fmt.Sprintf("topic for %s is not allowed: %s", e.Channel, e.Reason)
 }
 
 // CannotSendToChannelError refuses a PRIVMSG / Action against a

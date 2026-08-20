@@ -118,6 +118,34 @@ func TestValidatePersona(t *testing.T) {
 	}
 }
 
+// TestValidateTopic covers TOPICLEN: a topic within the bound is
+// accepted, one over it is refused. Unlike a persona, a topic has no
+// control-character restriction: it is chat content a member wrote,
+// not an instruction channel into the model's system prompt.
+func TestValidateTopic(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		topic string
+		want  domain.TopicRejection
+	}{
+		{name: "an ordinary topic", topic: "ongoing work on the release", want: domain.TopicAccepted},
+		{name: "empty, which clears the topic", topic: "", want: domain.TopicAccepted},
+		{name: "at the length limit", topic: strings.Repeat("t", domain.TopicMaxLen), want: domain.TopicAccepted},
+
+		{name: "over the length limit", topic: strings.Repeat("t", domain.TopicMaxLen+1), want: domain.TopicTooLong},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			require.Equal(t, tt.want, domain.ValidateTopic(tt.topic))
+		})
+	}
+}
+
 // TestNormaliseChannelName_prefixes pins that a name already
 // carrying either channel prefix keeps it, and that a bare name
 // gains the default `#`.

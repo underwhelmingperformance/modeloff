@@ -210,6 +210,47 @@ func ValidatePersona(description string) PersonaRejection {
 	return PersonaAccepted
 }
 
+// TopicMaxLen is this server's TOPICLEN. RFC 1459 and RFC 2812 place
+// no bound on a channel topic, but TOPICLEN is the convention modern
+// ircds advertise via ISUPPORT; 390 is a typical value among them. A
+// channel's topic is repeated into every dispatch turn's prompt for
+// that channel, so leaving it unbounded would let it grow into an
+// open-ended transcript cost.
+const TopicMaxLen = 390
+
+// TopicRejection names why [ValidateTopic] refused a topic. The zero
+// value, [TopicAccepted], means it did not.
+type TopicRejection int
+
+const (
+	// TopicAccepted means the topic is within [TopicMaxLen].
+	TopicAccepted TopicRejection = iota
+	// TopicTooLong means the topic is longer than [TopicMaxLen].
+	TopicTooLong
+)
+
+func (r TopicRejection) String() string {
+	switch r {
+	case TopicAccepted:
+		return "accepted"
+	case TopicTooLong:
+		return "too long"
+	}
+
+	return "rejected"
+}
+
+// ValidateTopic bounds a channel topic to [TopicMaxLen]. An empty
+// topic is accepted: `/topic` with no body clears the channel's
+// topic.
+func ValidateTopic(topic string) TopicRejection {
+	if len(topic) > TopicMaxLen {
+		return TopicTooLong
+	}
+
+	return TopicAccepted
+}
+
 // ValidateChannelName checks a channel name against RFC 2812 §1.3.
 // Callers that mean to accept a bare name and let the server supply
 // the prefix run [NormaliseChannelName] first.
