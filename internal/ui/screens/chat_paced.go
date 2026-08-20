@@ -10,6 +10,14 @@ import (
 
 const pacedInterval = 400 * time.Millisecond
 
+// deliverNextPacedMsg triggers delivery of the next queued paced
+// message for a specific channel. Per-channel scheduling means a
+// burst of incoming messages on one channel cannot block another
+// channel's messages behind its pacing delay.
+type deliverNextPacedMsg struct {
+	Channel domain.ChannelName
+}
+
 func (s ChatScreen) scheduleNextPaced(ch domain.ChannelName) tea.Cmd {
 	return tea.Tick(pacedInterval, func(time.Time) tea.Msg {
 		return deliverNextPacedMsg{Channel: ch}

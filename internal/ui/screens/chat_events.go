@@ -1,24 +1,78 @@
 package screens
 
 import (
-	"context"
-	"errors"
-	"fmt"
 	"iter"
 	"log/slog"
-	"net"
 	"slices"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
-	"github.com/laney/modeloff/internal/modelclient"
 	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/ui/chatcmd"
 	"github.com/laney/modeloff/internal/ui/components"
 )
+
+// protocolEventMsg wraps a [protocol.Event] received from the
+// user-client subscription's `Events()` channel. The protocol bus
+// carries the wire-shaped events the chat-screen renders as IRC
+// scrollback (joins, parts, messages, mode changes, etc.).
+//
+// `targets` carries the per-recipient channel list for
+// actor-scoped events (Quit, NickChange) — the intersection
+// [Session.fanOutProtocol] computed for this delivery, copied
+// off the [protocol.Delivery] envelope so the handler can route
+// the line into the user-client's open windows without consulting
+// the wire payload. Nil for window-scoped events.
+type protocolEventMsg struct {
+	event   protocol.Event
+	targets []domain.ChannelName
+}
+
+// NewProtocolEventForTest builds a [tea.Msg] that injects a
+// protocol-bus delivery into the chat screen's update loop, mimicking
+// the envelope shape the session's fan-out would have produced. The
+// returned message is the only supported way to deliver an event into
+// the chat screen from outside the `screens` package; tests should
+// reach for it via [screenstest.SendProtocolEvent] rather than
+// constructing wire events directly.
+func NewProtocolEventForTest(evt protocol.Event, targets []domain.ChannelName) tea.Msg {
+	return protocolEventMsg{event: evt, targets: targets}
+}
+
+// unreadCountedMsg carries the result of an unread-count query back
+// to the Update goroutine. `visits` is the target window's visit
+// count when the query was made; [ChatScreen.deliverUnreadCount]
+// compares it with the window's current one before the badge is
+// updated.
+type unreadCountedMsg struct {
+	channel domain.ChannelName
+	count   int
+	mention bool
+	visits  int
+}
+
+// routeSessionEvents answers what the server sent: a delivery off the
+// protocol bus, the paced release of a queued model reply, and the
+// unread count a store read came back with.
+func (s ChatScreen) routeSessionEvents(msg tea.Msg) (ChatScreen, tea.Cmd, bool) {
+	switch msg := msg.(type) {
+	case protocolEventMsg:
+		next, cmd := s.handleProtocolEvent(msg)
+		return next, cmd, true
+
+	case deliverNextPacedMsg:
+		next, cmd := s.deliverNextPaced(msg)
+		return next, cmd, true
+
+	case unreadCountedMsg:
+		next, cmd := s.deliverUnreadCount(msg)
+		return next, cmd, true
+	}
+
+	return s, nil, false
+}
 
 // handleProtocolEvent dispatches wire-shaped events plus the
 // session-emitted events whose ordering relative to the wire
@@ -62,6 +116,26 @@ func (s ChatScreen) handleProtocolEvent(msg protocolEventMsg) (ChatScreen, tea.C
 	return s, tea.Batch(buffered, cmd, s.scrollbackUpdatedCmd(), s.listenForProtocolEvents())
 }
 
+// listenForProtocolEvents reads the next delivery from the
+// user-client subscription's protocol channel and wraps its event
+// in a protocolEventMsg. The chat-screen does not consume the
+// span context the delivery carries — that is for model-client
+// dispatch goroutines to link their turn spans to the originating
+// handler. After each delivery, this should be re-invoked so the
+// channel is continuously drained.
+func (s ChatScreen) listenForProtocolEvents() tea.Cmd {
+	ch := s.client.Events()
+
+	return func() tea.Msg {
+		delivery, ok := <-ch
+		if !ok {
+			return nil
+		}
+
+		return protocolEventMsg{event: delivery.Event, targets: delivery.Targets}
+	}
+}
+
 // scrollbackUpdatedCmd nudges the message list to re-evaluate the
 // active window's scrollback after an event was buffered. Without
 // the nudge the new content would still render on the next View
@@ -75,87 +149,6 @@ func (s ChatScreen) scrollbackUpdatedCmd() tea.Cmd {
 	}
 
 	return msgCmd(components.ScrollbackUpdatedMsg{Channel: s.active})
-}
-
-func (s ChatScreen) handleChannelFocus(msg chatcmd.ChannelFocusMsg) (ChatScreen, tea.Cmd) {
-	w, exists := s.windowByName(msg.Channel)
-	if !exists {
-		// A focus event for a window the chat screen doesn't
-		// track is either a startup race (cache not yet populated
-		// by `bootstrapFromSession` or by a JOIN handler) or a
-		// stale event for a channel the user has just parted.
-		// The latter must not resurrect the parted channel as
-		// the new active, so we don't auto-create here — the
-		// JOIN/bootstrap paths own cache population and the
-		// focus path defers to whatever they install.
-		return s, nil
-	}
-
-	if !s.focusWins(msg.At) {
-		// A staler focus event than the user's current
-		// interaction. Flag the target as having activity for
-		// the sidebar to surface; leave the visible area where
-		// the user put it.
-		w.Activity = true
-
-		return s, msgCmd(components.ChannelHasLifecycleMsg{Channel: msg.Channel})
-	}
-
-	s, rebind := s.focus(msg.Channel)
-	w.UserTime = msg.At
-
-	var members domain.MemberList
-	if cw, ok := w.Window.(*domain.ChannelWindow); ok {
-		members = cw.Members
-	}
-
-	cmds := []tea.Cmd{rebind}
-	cmds = append(cmds, msgCmd(components.SetPlaceholderMsg{}))
-	cmds = append(cmds, s.setChannelCmd())
-
-	cmds = append(cmds, msgCmd(components.ChannelActiveMsg{Channel: msg.Channel}))
-	cmds = append(cmds, s.persistLastChannel(msg.Channel))
-	cmds = append(cmds, msgCmd(components.ChannelUnreadMsg{Channel: msg.Channel, Count: 0}))
-	cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: members}))
-
-	return s, tea.Batch(cmds...)
-}
-
-// focusWins decides whether an incoming focus event should take
-// over the visible area. The arbiter compares the event's
-// timestamp against the active window's `UserTime`: a strictly
-// newer event wins, anything stamped at or before the user's last
-// interaction with the current active is treated as background
-// activity and surfaces on the sidebar instead. An empty active —
-// the startup case — accepts any event.
-func (s ChatScreen) focusWins(at time.Time) bool {
-	if s.active == "" {
-		return true
-	}
-
-	active, ok := s.windowByName(s.active)
-	if !ok {
-		return true
-	}
-
-	return at.After(active.UserTime)
-}
-
-// persistLastChannel writes the user's currently-active channel
-// to the store so a subsequent restart restores them to the same
-// view. An empty channel name and a nil store are no-ops.
-func (s ChatScreen) persistLastChannel(ch domain.ChannelName) tea.Cmd {
-	if ch == "" || s.uiState == nil {
-		return nil
-	}
-
-	return func() tea.Msg {
-		if err := s.uiState.SetLastChannel(s.baseContext(), ch); err != nil {
-			slog.Default().ErrorContext(s.baseContext(), "persist last channel", "channel", ch, "error", err)
-		}
-
-		return nil
-	}
 }
 
 // handleNamesReply applies the joiner-targeted member-list snapshot
@@ -318,55 +311,6 @@ func (s ChatScreen) handlePartEvent(msg domain.Part) (ChatScreen, tea.Cmd) {
 	return s, tea.Batch(cmds...)
 }
 
-// closeWindow drops a window the user has left: the sidebar entry,
-// the cached window, the message list's record of how much of it the
-// user had read, and any paced messages still queued for it.
-// Already-scheduled ticks for the queue no-op via deliverNextPaced's
-// empty-queue branch when they fire. When the closed window was the
-// visible one the user lands on the first remaining channel, or on
-// the welcome checklist when none is left. `at` is the moment of the
-// departure, which the new visible window takes as its `UserTime`:
-// the part is the user's freshest deliberate action, so [focusWins]
-// keeps them here against any focus event still in flight from before
-// it, such as a buffered `NamesReply` for the window just closed.
-func (s ChatScreen) closeWindow(ch domain.ChannelName, at time.Time) (ChatScreen, tea.Cmd) {
-	wasVisible := s.active == ch
-
-	s.channels.Remove(windowKey(ch))
-	delete(s.pacedQueue, ch)
-	s.checklist.channelCount = s.realChannelCount()
-
-	cmds := []tea.Cmd{
-		msgCmd(components.ChannelRemovedMsg{Channel: ch}),
-		msgCmd(components.ScrollbackClearedMsg{Channel: ch}),
-	}
-
-	if !wasVisible {
-		return s, tea.Batch(cmds...)
-	}
-
-	var rebind tea.Cmd
-
-	if first, ok := s.firstRealChannel(); ok {
-		s, rebind = s.focus(first.Name())
-		first.UserTime = at
-	} else {
-		s, rebind = s.focus("")
-		cmds = append(cmds, msgCmd(components.SetPlaceholderMsg{
-			Text: s.checklist.Render(),
-		}))
-	}
-
-	cmds = append(cmds,
-		rebind,
-		s.setChannelCmd(),
-		msgCmd(components.ChannelActiveMsg{Channel: s.active}),
-		s.persistLastChannel(s.active),
-	)
-
-	return s, tea.Batch(cmds...)
-}
-
 func (s ChatScreen) handleQuitEvent(msg domain.Quit, targets []domain.ChannelName) (ChatScreen, tea.Cmd) {
 	// `bufferProtocolEvent` has already fanned the line into
 	// every channel in `targets` and any open DM with the actor.
@@ -514,27 +458,6 @@ func (s ChatScreen) handleOwnNickChange(msg domain.NickChange, renderedInActive 
 	return s, tea.Batch(cmds...)
 }
 
-// activeDMWith returns the open DM whose counterpart is `actor`,
-// if any.
-func (s ChatScreen) activeDMWith(actor *domain.Instance) (*domain.DMWindow, bool) {
-	if actor == nil {
-		return nil, false
-	}
-
-	for w := range s.channels.All() {
-		dm, ok := w.Window.(*domain.DMWindow)
-		if !ok {
-			continue
-		}
-
-		if dm.Counterpart == actor {
-			return dm, true
-		}
-	}
-
-	return nil, false
-}
-
 func (s ChatScreen) handleKickedEvent(msg domain.Kicked) (ChatScreen, tea.Cmd) {
 	if cw, ok := s.channelWindowByName(msg.Target); ok {
 		if m, mOK := cw.Members.GetByInstance(msg.Instance); mOK {
@@ -636,404 +559,23 @@ func (s ChatScreen) unreadCountCmd(key domain.ChannelName, mention bool, visits 
 	}
 }
 
-// openDMWindow puts a DM window in the sidebar cache and returns the
-// commands that follow from opening one: the sidebar insert, and the
-// write that records the window as open so the next run reopens it.
-// Both are skipped for a window that is already open, which is the
-// case every caller has: `/query` on a window in view, a second line
-// from a counterpart who already has one.
-//
-// A restore goes through here too, and records what it just read.
-// The write is idempotent, and one path that both opens a window and
-// records it is what keeps the record equal to the set of open
-// windows however the window came to be open.
-func (s ChatScreen) openDMWindow(dm *domain.DMWindow) (*Window, tea.Cmd) {
-	if w, open := s.windowByName(dm.Name()); open {
-		return w, nil
-	}
-
-	w := newWindow(dm)
-	s.channels.Insert(w)
-
-	return w, tea.Batch(
-		msgCmd(components.ChannelAddedMsg{Channel: dm}),
-		s.recordDMWindowCmd(dm.Name()),
-	)
-}
-
-// recordDMWindowCmd records a DM window in the client-owned set the
-// user-client keeps, so a later run reopens it. Best-effort: the
-// window is already open on screen, and a failed write costs a
-// window the next run does not restore, which is worth a log line
-// and nothing more.
-func (s ChatScreen) recordDMWindowCmd(name domain.ChannelName) tea.Cmd {
-	return func() tea.Msg {
-		ctx := s.baseContext()
-
-		if err := s.user.OpenDMWindow(ctx, domain.InstanceID(name)); err != nil {
-			slog.Default().WarnContext(ctx, "record open dm window",
-				"component", "ui",
-				"screen", "chat",
-				"window", name,
-				"error", err,
-			)
-		}
-
-		return nil
-	}
-}
-
-// forgetDMWindowCmd is [ChatScreen.recordDMWindowCmd]'s counterpart,
-// dropping a closed window from the set the next run reopens.
-func (s ChatScreen) forgetDMWindowCmd(name domain.ChannelName) tea.Cmd {
-	return func() tea.Msg {
-		ctx := s.baseContext()
-
-		if err := s.user.CloseDMWindow(ctx, domain.InstanceID(name)); err != nil {
-			slog.Default().WarnContext(ctx, "forget closed dm window",
-				"component", "ui",
-				"screen", "chat",
-				"window", name,
-				"error", err,
-			)
-		}
-
-		return nil
-	}
-}
-
-// resolveDMWindow looks up the counterpart a held-back DM window is
-// waiting on. The window key is the counterpart's instance id and
-// the answer is the canonical handle for it, which is what the
-// window, the nick it renders under, and the actor-scoped event
-// routing all compare against.
-func (s ChatScreen) resolveDMWindow(name domain.ChannelName, at time.Time) tea.Cmd {
-	return func() tea.Msg {
-		ctx := s.baseContext()
-
-		counterpart, err := s.sess.ResolveInstanceByID(ctx, domain.InstanceID(name))
-		if err != nil {
-			slog.Default().WarnContext(ctx, "resolve dm counterpart",
-				"component", "ui",
-				"screen", "chat",
-				"window", name,
-				"error", err,
-			)
-		}
-
-		return dmWindowResolvedMsg{window: name, counterpart: counterpart, at: at}
-	}
-}
-
-// handleDMWindowResolved opens the window the held-back lines were
-// waiting for and files them in it, in the order they arrived. The
-// unread count is re-read here because the lines reached the badge
-// path before the window existed, and [ChatScreen.deliverUnreadCount]
-// drops a count for a window it cannot find.
-//
-// A counterpart the lookup could not answer for leaves the lines
-// nowhere to go. They are discarded along with the queue, which is
-// also what frees the key for a later attempt, and the discard is
-// reported.
-func (s ChatScreen) handleDMWindowResolved(msg dmWindowResolvedMsg) (ChatScreen, tea.Cmd) {
-	held := s.pendingDM[msg.window]
-	delete(s.pendingDM, msg.window)
-
-	if msg.counterpart == nil {
-		// A DM window is built around the counterpart's handle, and
-		// this id names no instance the store still holds, which
-		// happens when a KILL deletes it in the moment between the
-		// message arriving and this lookup. The discard is narrated
-		// in `&modeloff`, the home for the client's own diagnostics,
-		// so no line the server delivered goes missing in silence.
-		return s, s.logAndShowOn(domain.StatusChannelName, domain.SystemNotice{
-			Target: domain.StatusChannelName,
-			Text:   fmt.Sprintf("Dropped %d line(s) from %s: no such instance.", len(held), msg.window),
-			At:     time.Now(),
-		})
-	}
-
-	w, opened := s.openDMWindow(domain.NewDMWindow(msg.counterpart, msg.at))
-
-	// The held lines are older than anything already in the window:
-	// they were buffered before it existed, and one goroutine drains
-	// the bus. A `/query` for the same counterpart while the lookup
-	// was running is what puts anything there to go in front of.
-	w.Scrollback.Prepend(held)
-
-	return s, tea.Batch(opened, s.unreadCountCmd(msg.window, s.mentionsUser(held), w.Visits))
-}
-
-// mentionsUser reports whether any of the given lines carries a
-// highlight word.
-func (s ChatScreen) mentionsUser(events []domain.Event) bool {
-	for _, evt := range events {
-		msg, ok := evt.(domain.Message)
-		if !ok {
-			continue
-		}
-
-		if s.isHighlight(msg) {
-			return true
-		}
-	}
-
-	return false
-}
-
-// restoreDMWindows reads the DM windows the user had open when the
-// process last ran and resolves each counterpart to its instance
-// handle. A channel returns through autojoin, which announces itself
-// with a JOIN; nothing on the wire brings a DM window back, so this
-// is what puts the user's open conversations back in the sidebar.
-//
-// The read runs off the Update goroutine, so a slow store never
-// delays the first frame. A counterpart the store no longer holds is
-// skipped: the instance is gone and there is no window to build.
-func (s ChatScreen) restoreDMWindows() tea.Cmd {
-	return func() tea.Msg {
-		ctx := s.baseContext()
-
-		open, err := s.user.DMWindows(ctx)
-		if err != nil {
-			slog.Default().WarnContext(ctx, "list open dm windows",
-				"component", "ui",
-				"screen", "chat",
-				"error", err,
-			)
-
-			return nil
-		}
-
-		counterparts := make([]*domain.Instance, 0, len(open))
-
-		for _, id := range open {
-			counterpart, err := s.sess.ResolveInstanceByID(ctx, id)
-			if err != nil || counterpart == nil {
-				slog.Default().WarnContext(ctx, "resolve dm counterpart",
-					"component", "ui",
-					"screen", "chat",
-					"window", id,
-					"error", err,
-				)
-
-				continue
-			}
-
-			counterparts = append(counterparts, counterpart)
-		}
-
-		landing, _ := s.restoredChannel()
-
-		return dmWindowsRestoredMsg{counterparts: counterparts, landing: landing}
-	}
-}
-
-// handleDMWindowsRestored reopens the recorded DM windows in the
-// sidebar. Focus stays where the bootstrap put it, except for the
-// window the user left open last time: that is their standing
-// preference, and `bootstrapFromSession` could not land on it
-// because a DM window is not one of the channels it reads.
-//
-// The commands run in sequence, so the sidebar has the entry before
-// the focus event asks it to mark that entry active.
-func (s ChatScreen) handleDMWindowsRestored(msg dmWindowsRestoredMsg) (ChatScreen, tea.Cmd) {
-	var cmds []tea.Cmd
-
-	for _, counterpart := range msg.counterparts {
-		dm := domain.NewDMWindow(counterpart, s.sess.ConnectedAt())
-
-		_, opened := s.openDMWindow(dm)
-		cmds = append(cmds, opened)
-
-		if dm.Name() == msg.landing {
-			cmds = append(cmds, msgCmd(chatcmd.ChannelFocusMsg{Channel: dm.Name(), At: time.Now()}))
-		}
-	}
-
-	return s, tea.Sequence(cmds...)
-}
-
-// handleDMClosedMsg closes a query window on the user's `/close`.
-// The window, its scrollback and its sidebar entry go, and the
-// record of it goes with them. The conversation is untouched: it
-// lives in the event log, and messaging the counterpart again opens
-// a window on it.
-func (s ChatScreen) handleDMClosedMsg(msg chatcmd.DMClosedMsg) (ChatScreen, tea.Cmd) {
-	if _, open := s.windowByName(msg.Window); !open {
+// deliverUnreadCount hands a store-read unread count to the sidebar,
+// unless the user has visited the window since the count was
+// requested. Focusing a window clears its badge and moves the read
+// cursor to the end of the channel, so a count read before that
+// visit describes a state the user has already left behind, and
+// applying it would put the badge back on a window they are reading.
+func (s ChatScreen) deliverUnreadCount(msg unreadCountedMsg) (ChatScreen, tea.Cmd) {
+	w, ok := s.windowByName(msg.channel)
+	if !ok || w.Visits != msg.visits {
 		return s, nil
 	}
 
-	s, closed := s.closeWindow(msg.Window, msg.At)
-
-	return s, tea.Batch(closed, s.forgetDMWindowCmd(msg.Window))
-}
-
-// handleDMOpenedMsg materialises the DM window in the sidebar
-// (insert is idempotent), optionally focus-switches, and
-// optionally sends a trailing body. `/query` sets `Focus`;
-// `/msg` does not.
-func (s ChatScreen) handleDMOpenedMsg(msg chatcmd.DMOpenedMsg) (ChatScreen, tea.Cmd) {
-	dm := domain.NewDMWindow(msg.Counterpart, msg.At)
-	name := dm.Name()
-
-	_, opened := s.openDMWindow(dm)
-
-	cmds := []tea.Cmd{opened}
-
-	if msg.Focus {
-		var rebind tea.Cmd
-		s, rebind = s.focus(name)
-
-		cmds = append(cmds, rebind)
-		cmds = append(cmds, msgCmd(components.SetPlaceholderMsg{}))
-		cmds = append(cmds, s.setChannelCmd())
-		cmds = append(cmds, msgCmd(components.ChannelActiveMsg{Channel: name}))
-		cmds = append(cmds, s.persistLastChannel(name))
-		cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: domain.MemberList{}}))
-	}
-
-	if msg.Body != "" {
-		cmds = append(cmds, s.sendMessageCmd("msg", name, msg.Body))
-	}
-
-	return s, tea.Sequence(cmds...)
-}
-
-// sendMessageCmd fires a user `SendMessage` at `target`. The window
-// is a parameter, so the command carries the window its caller
-// resolved on the Update goroutine and a later focus change cannot
-// move the line. On success the sent line returns over the protocol
-// bus via echo-message and renders through the normal event path;
-// only a failure surfaces here, labelled with the `operation` the
-// user asked for.
-func (s ChatScreen) sendMessageCmd(operation string, target domain.ChannelName, body string) tea.Cmd {
-	return func() tea.Msg {
-		if _, err := s.user.SendMessage(s.baseContext(), target, body); err != nil {
-			return domain.ErrorEvent{Operation: operation, Err: err, Target: target, At: time.Now()}
-		}
-
-		return nil
-	}
-}
-
-// fallbackTarget resolves ch to itself when the chat-screen still has
-// that window open, or to the active window otherwise. An empty ch
-// and one naming a window closed since the event that carried it was
-// raised both fail the same windowByName check, so both fall back to
-// the currently active window.
-// This is what keeps a closed DM from being silently dropped: a DM
-// window needs its counterpart's instance handle to rebuild, which
-// [ChatScreen.appendToScrollback]'s placeholder-creation path cannot
-// synthesise, so routing straight to a closed DM's target would lose
-// the event. The same fallback keeps a parted channel from being
-// resurrected client-side by a stale reply, since
-// appendToScrollback's placeholder path exists for live traffic
-// arriving before a join is seen, not for this.
-//
-// Every reply the chat-screen renders takes this answer.
-// [ChatScreen.logAndShowOn] applies it for the reply arms and for the
-// notices the chat-screen raises itself.
-// [ChatScreen.handleErrorEvent] and [ChatScreen.appendDispatchFailure]
-// read it directly as well, because each stamps the resolved window
-// onto the line it builds.
-//
-// The answer is the empty window when the user is looking at nothing,
-// which is where parting the last channel leaves them: firstRealChannel
-// skips `&modeloff`, so closeWindow has nowhere to move them.
-// logAndShowOn is where that case is answered.
-func (s ChatScreen) fallbackTarget(ch domain.ChannelName) domain.ChannelName {
-	if _, open := s.windowByName(ch); open {
-		return ch
-	}
-
-	// `&modeloff` is the client's own view of the server and lives as
-	// long as the session: no PART reaches it and `/close` refuses in
-	// it, so a line addressed there was never addressed to a window the
-	// user has left. It is also the one kind
-	// [ChatScreen.appendToScrollback] can open from the name alone,
-	// which is what a screen that has not run Init yet needs.
-	if ch == domain.StatusChannelName {
-		return ch
-	}
-
-	return s.active
-}
-
-// handleErrorEvent turns a command failure into the transcript line
-// the user sees. The full Go error chain (`msg.Err`) goes to the
-// observability log unconditionally, since it carries the detail an
-// operator needs to diagnose a transport failure; the transcript
-// itself gets commandErrorText's short, actionable copy so a raw
-// wrapped chain ("send: send message: Post \"https://...\": dial
-// tcp: ...") never lands in front of the user. The error renders at
-// fallbackTarget(msg.Target): the window the failed command was
-// issued from when the chat-screen still has it open, the active
-// window otherwise.
-func (s ChatScreen) handleErrorEvent(msg domain.ErrorEvent) (ChatScreen, tea.Cmd) {
-	var cmds []tea.Cmd
-
-	slog.Default().ErrorContext(s.baseContext(), "command failed",
-		"operation", msg.Operation, "error", msg.Err)
-
-	target := s.fallbackTarget(msg.Target)
-
-	commandError := domain.CommandError{
-		Target: target,
-		Err:    commandErrorText(msg.Operation, msg.Err),
-		At:     msg.At,
-	}
-
-	cmds = append(cmds, s.logAndShowOn(target, commandError))
-	cmds = append(cmds, s.recordReply(commandError))
-	cmds = append(cmds, msgCmd(components.NickListThinkingMsg{}))
-
-	return s, tea.Batch(cmds...)
-}
-
-// commandErrorText renders a command failure for the transcript: the
-// operation plus a short, actionable description. A network or
-// context-cancellation failure carries nothing the user can act on
-// beyond "try again" or "check the connection", and its Go error
-// chain buries that behind dialer and URL detail that belongs in the
-// log, not the transcript; commandErrorText collapses that class to
-// one fixed sentence. Every other error's own Error() text is
-// already short by construction (a domain-typed error such as
-// [domain.PokeIntervalOutOfRangeError], or a store/protocol
-// sentinel), so it passes through unchanged.
-func commandErrorText(operation string, err error) string {
-	return operation + ": " + shortErrorText(err)
-}
-
-// shortErrorText classifies err into the one problematic class this
-// package knows how to shorten (network/transport failures and
-// context cancellation) and falls back to err.Error() for everything
-// else, which is assumed to already be short by construction.
-func shortErrorText(err error) string {
-	switch {
-	case errors.Is(err, context.DeadlineExceeded):
-		return "timed out; try again"
-	case errors.Is(err, context.Canceled):
-		return "cancelled"
-	}
-
-	var netErr net.Error
-	if errors.As(err, &netErr) {
-		return "could not reach the API; check your network connection and base URL"
-	}
-
-	return err.Error()
-}
-
-// recordReply persists one of the user's own point-to-point replies
-// to its reply log through the user-client. It is best-effort and
-// renders nothing: the live view is already served by the
-// accompanying `logAndShow`.
-func (s ChatScreen) recordReply(reply domain.IssuerReply) tea.Cmd {
-	return func() tea.Msg {
-		s.user.RecordReply(s.baseContext(), reply)
-		return nil
-	}
+	return s, msgCmd(components.ChannelUnreadMsg{
+		Channel: msg.channel,
+		Count:   msg.count,
+		Mention: msg.mention,
+	})
 }
 
 // handleModelDispatchStarted marks `msg.Instance` as currently
@@ -1096,73 +638,6 @@ func (s ChatScreen) isHighlight(msg domain.Message) bool {
 	return msg.InstanceID != "" && components.ContainsHighlightWord(msg.Body, s.highlightWords, s.user.Nick())
 }
 
-func (s ChatScreen) handleLiveModelsLoaded(msg liveModelsLoadedMsg) (ChatScreen, tea.Cmd) {
-	s, rebind := s.setLiveModels(msg.models, command.SuggestionStateReady)
-
-	if s.realChannelCount() == 0 {
-		return s, tea.Batch(rebind, msgCmd(components.SetPlaceholderMsg{Text: s.checklist.Render()}))
-	}
-
-	return s, rebind
-}
-
-// handleLiveModelsLoadFailed is the UI-policy home for live-model
-// load failures. When `s.active` is empty — no real channel
-// joined yet — the notice is routed to `&modeloff`, the
-// chat-screen-owned default landing window.
-func (s ChatScreen) handleLiveModelsLoadFailed(msg liveModelsLoadFailedMsg) (ChatScreen, tea.Cmd) {
-	// ErrNoAPIKey here is a TOCTOU between loadLiveModels' HasAPIKey
-	// short-circuit and Session.ListModels' check; treat as silent.
-	if errors.Is(msg.err, modelclient.ErrNoAPIKey) {
-		return s.setLiveModels(nil, command.SuggestionStateReady)
-	}
-
-	s, rebind := s.setLiveModels(nil, command.SuggestionStateError)
-
-	channel := s.active
-	if channel == "" {
-		channel = domain.StatusChannelName
-	}
-
-	slog.Default().WarnContext(s.baseContext(), "live models load failed",
-		"component", "ui",
-		"channel", string(channel),
-		"error", msg.err,
-	)
-
-	return s, tea.Batch(rebind, s.logAndShowOn(channel, domain.SystemNotice{
-		Target: channel,
-		Text:   fmt.Sprintf("Model list unavailable: %s.", msg.err),
-		At:     time.Now(),
-	}))
-}
-
-func (s ChatScreen) activeTopic() string {
-	if s.active == "" {
-		return ""
-	}
-
-	cw, ok := s.channelWindowByName(s.active)
-	if !ok {
-		return ""
-	}
-
-	return cw.Topic
-}
-
-func (s ChatScreen) activeKind() domain.ChannelKind {
-	if s.active == "" {
-		return domain.KindChannel
-	}
-
-	w, ok := s.windowByName(s.active)
-	if !ok {
-		return domain.InferChannelKind(s.active)
-	}
-
-	return w.Kind()
-}
-
 func (s ChatScreen) activeMemberNicks() iter.Seq[domain.Nick] {
 	cw, ok := s.channelWindowByName(s.active)
 	if !ok {
@@ -1189,38 +664,4 @@ func (s ChatScreen) activeChannelInstances() iter.Seq[*domain.Instance] {
 			}
 		}
 	}
-}
-
-// windowByName returns the cached `*Window` for the given name.
-func (s ChatScreen) windowByName(name domain.ChannelName) (*Window, bool) {
-	return s.channels.Get(windowKey(name))
-}
-
-// scrollbackOf returns the in-memory scrollback for the named
-// window, or nil if the chat-screen has no entry for it. Test-only
-// helper; production reads go through the message-list's getter
-// closure.
-func (s ChatScreen) scrollbackOf(name domain.ChannelName) []domain.Event {
-	w, ok := s.windowByName(name)
-	if !ok {
-		return nil
-	}
-
-	return w.Scrollback.Events()
-}
-
-// channelWindowByName looks up the cached entry and asserts its
-// embedded [domain.Window] is a `*ChannelWindow`. Returns false
-// either way for non-channel kinds (status / DM) or absent entries;
-// the channel-only handlers (`handleJoinEvent`,
-// `handleModeChangeEvent`, etc.) use this to read and mutate
-// `Members` / `Topic` off the typed handle.
-func (s ChatScreen) channelWindowByName(name domain.ChannelName) (*domain.ChannelWindow, bool) {
-	w, ok := s.windowByName(name)
-	if !ok {
-		return nil, false
-	}
-
-	cw, ok := w.Window.(*domain.ChannelWindow)
-	return cw, ok
 }
