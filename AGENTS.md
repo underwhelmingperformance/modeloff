@@ -461,7 +461,10 @@ is the separate answer from `domain.NickInUseError` (433): 432 says
 the nick could never be taken by anyone, 433 says it is taken now
 and may be freed. `Session.requireNickAvailable` runs both checks in
 that order and is the one path to claiming a nick, for `NICK` and
-for `ADDMODEL`'s registration alike.
+for `ADDMODEL`'s registration alike. `domain.ValidatePersona` follows
+the same shape for a persona description, bound by
+`domain.PersonaMaxLen` (400 characters) and refused with
+`domain.ErroneousPersonaError` at `ADDMODEL` time.
 
 ### Flood control
 
