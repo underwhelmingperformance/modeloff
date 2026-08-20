@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/x/exp/teatest"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/domain"
@@ -562,4 +563,65 @@ func TestChatScreen_MessageEvent_inactive_channel(t *testing.T) {
 		"<bob> sync marker",
 		"testuser >",
 	}, normaliseContent(uitest.WithoutHeader(uitest.NonEmptyColumn(columns[1]))))
+}
+
+// TestChatScreen_own_kill_ends_the_screen covers the KILL that
+// names this client. The server runs the ordinary QUIT teardown and
+// the client hears about it on the bus like any other; there is
+// nothing left of the connection to go on rendering, so the screen
+// exits exactly as it does for `/quit`, and ends the session-active
+// marker on the way out.
+func TestChatScreen_own_kill_ends_the_screen(t *testing.T) {
+	h := newTestSession(t)
+	uitest.SeedChannel(t, h.user, "#general")
+
+	require.NoError(t, h.store.SetSessionActive(t.Context(), "open"))
+
+	tm := newChatApp(t, h)
+	tm.WaitFor("Created channel #general")
+
+	resp, err := h.user.Send(t.Context(), protocol.Kill{Nick: h.user.Nick(), Reason: "enough"})
+	require.NoError(t, err)
+	require.NoError(t, resp.Err)
+
+	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
+
+	active, err := h.store.GetSessionActive(t.Context())
+	require.NoError(t, err)
+	require.Empty(t, active)
+}
+
+// TestChatScreen_own_kill_on_an_anonymous_channel_ends_the_screen
+// covers the KILL whose QUIT no member may see. RFC 2811 §4.2.1
+// withholds a QUIT from a `+a` channel and puts a masked PART there
+// instead, so a client whose channels all carry `+a` has nothing on
+// the bus to tell it its own connection ended. The server would tear
+// down while the screen went on rendering it.
+func TestChatScreen_own_kill_on_an_anonymous_channel_ends_the_screen(t *testing.T) {
+	h := newTestSession(t)
+	ctx := t.Context()
+
+	uitest.SeedChannel(t, h.user, "#general")
+
+	modeResp, err := h.user.Send(ctx, protocol.ChannelMode{
+		Channel: "#general",
+		Changes: []protocol.ChannelModeChange{{Flag: domain.ModeAnonymous, Add: true}},
+	})
+	require.NoError(t, err)
+	require.NoError(t, modeResp.Err)
+
+	require.NoError(t, h.store.SetSessionActive(ctx, "open"))
+
+	tm := newChatApp(t, h)
+	tm.WaitFor("Created channel #general")
+
+	killResp, err := h.user.Send(ctx, protocol.Kill{Nick: h.user.Nick(), Reason: "enough"})
+	require.NoError(t, err)
+	require.NoError(t, killResp.Err)
+
+	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
+
+	active, err := h.store.GetSessionActive(ctx)
+	require.NoError(t, err)
+	require.Empty(t, active)
 }

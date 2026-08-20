@@ -471,6 +471,15 @@ func (uc *UserClient) Quit(ctx context.Context, reason string) error {
 		return err
 	}
 
+	return uc.Disconnected(ctx)
+}
+
+// Disconnected records that this client's connection has ended. It
+// is the bookkeeping half of [UserClient.Quit], and is called on its
+// own when the server ended the connection without being asked. That
+// is a KILL naming this client, which runs the same teardown a QUIT
+// does and leaves the same nothing behind to reconcile.
+func (uc *UserClient) Disconnected(ctx context.Context) error {
 	if err := uc.store.ClearSessionActive(ctx); err != nil {
 		return fmt.Errorf("clear session active: %w", err)
 	}

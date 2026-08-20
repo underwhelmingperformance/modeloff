@@ -292,17 +292,35 @@ func (s *Session) quitAs(ctx context.Context, actor *domain.Instance, message st
 		now := s.now()
 		channels := s.instanceChannelNames(actor)
 
+		quit := domain.Quit{
+			Nick:       actorNick,
+			InstanceID: actorID,
+			Message:    message,
+			At:         now,
+			Instance:   actor,
+		}
+
 		s.propagateActorEvent(ctx, actor, actorEventConfig{
-			build: func() broadcastEvent {
-				return domain.Quit{
-					Nick:       actorNick,
-					InstanceID: actorID,
-					Message:    message,
-					At:         now,
-					Instance:   actor,
-				}
-			},
+			build: func() broadcastEvent { return quit },
 		})
+
+		// A client is told what happened to its own connection, which
+		// matters for the QUIT it did not ask for: RFC 2812 §3.7.1 has
+		// a killed client told it was killed. The broadcast above is
+		// usually how it hears, because it is still on its channels
+		// and the membership filter carries it its own QUIT.
+		//
+		// Two cases leave it with no channel the QUIT can arrive
+		// through: a client on none at all, and one whose channels all
+		// carry `+a`, where RFC 2811 §4.2.1 withholds the QUIT and
+		// sends a masked PART in its place so no member learns who
+		// left. `namedChannels` is the same question `maskActorEvent`
+		// asks per recipient. Both are answered with a direct
+		// delivery, which is the fallback `changeNickAs` makes for
+		// NICK, for the same reason.
+		if len(namedChannels(channels, s.anonymousChannels(ctx, channels))) == 0 {
+			s.deliverToClient(ctx, actorID, quit)
+		}
 
 		for _, ch := range channels {
 			window, err := s.loadChannelWindow(ctx, ch)
@@ -902,11 +920,14 @@ func (s *Session) admitModelAs(ctx context.Context, actor, inst *domain.Instance
 // operator gate, so this method assumes `oper` has the
 // authority. The reap of the target's subscription happens in
 // the dispatcher too, after this returns.
+//
+// The command names a nick, and no nick is exempt, the operator's
+// own included. The teardown the channels see is the same one for
+// every target. What the server can do about the connection
+// underneath differs: `Session.releaseClient` and
+// `Session.reapClient` refuse for the client whose lifetime is the
+// session's.
 func (s *Session) killAs(ctx context.Context, oper, target *domain.Instance, reason string) error {
-	if target.ID() == "" {
-		return fmt.Errorf("KILL cannot target the user-client")
-	}
-
 	body := fmt.Sprintf("Killed by %s (%s)", oper.Nick(), reason)
 
 	return s.quitAs(ctx, target, body)

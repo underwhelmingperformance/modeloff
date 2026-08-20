@@ -10,6 +10,7 @@ import (
 	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/protocol"
+	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/chatcmd"
 	"github.com/laney/modeloff/internal/ui/components"
 )
@@ -345,7 +346,34 @@ func (s ChatScreen) handleQuitEvent(msg domain.Quit, targets []domain.ChannelNam
 
 	cmds = append(cmds, s.lifecycleBumps(targets, msg.Instance)...)
 
-	return s, tea.Batch(cmds...)
+	next, exitCmd := s.exitOnOwnQuit(msg)
+	cmds = append(cmds, exitCmd)
+
+	return next, tea.Batch(cmds...)
+}
+
+// exitOnOwnQuit takes the screen down when the QUIT it just handled
+// was this client's own. A `/quit` reaches here too, but the quit
+// handler has already set `quitting` and has its own
+// [ui.QuitCompleteMsg] in flight, so the only QUIT that gets this far
+// unannounced is one the server ran without being asked: a KILL
+// naming this client.
+//
+// Ending the session-active marker is the same bookkeeping
+// [userclient.UserClient.Quit] does, and for the same reason: the
+// connection ended through the server's own teardown, so the
+// memberships are already gone and the next start has nothing to
+// reconcile.
+func (s ChatScreen) exitOnOwnQuit(msg domain.Quit) (ChatScreen, tea.Cmd) {
+	if s.quitting || msg.Instance != s.user.Instance() {
+		return s, nil
+	}
+
+	s.quitting = true
+
+	return s, func() tea.Msg {
+		return ui.QuitCompleteMsg{Err: s.user.Disconnected(s.baseContext())}
+	}
 }
 
 func (s ChatScreen) handleTopicChangeEvent(msg domain.TopicChange) (ChatScreen, tea.Cmd) {

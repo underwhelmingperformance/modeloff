@@ -315,3 +315,104 @@ func TestSession_Quit_tears_down_the_same_way_for_every_actor(t *testing.T) {
 		requireChannels(t, user.Channels())
 	})
 }
+
+// TestSession_Kill_can_name_the_issuing_client covers KILL against
+// the client that sent it. RFC 2812 §3.7.1 describes a command that
+// names a nick; nothing in it exempts the operator's own. The
+// teardown is the ordinary one: the QUIT carries the kill reason,
+// membership goes, and a channel the departure empties is destroyed.
+// The only thing the server does not do afterwards is close a
+// connection it does not have.
+func TestSession_Kill_can_name_the_issuing_client(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		sess, _ := newTestSession(t)
+		ctx := t.Context()
+
+		require.NoError(t, userJoin(ctx, t, sess, "#general"))
+		collectEmittedEvents(t, sess)
+
+		user := userInstance(t, sess)
+		resp, err := userClient(t, sess).Send(ctx, protocol.Kill{Nick: "testuser", Reason: "enough"})
+		require.NoError(t, err)
+		require.NoError(t, resp.Err)
+		synctest.Wait()
+
+		require.Equal(t, []domain.Event{
+			domain.Quit{
+				Nick:       "testuser",
+				InstanceID: user.ID(),
+				Message:    "Killed by testuser (enough)",
+				At:         fixedTime,
+				Instance:   user,
+			},
+		}, collectEmittedEvents(t, sess))
+
+		_, err = sess.loadChannelWindow(ctx, "#general")
+		require.ErrorIs(t, err, storemod.ErrNoSuchChannel)
+
+		requireChannels(t, user.Channels())
+	})
+}
+
+// TestSession_Quit_reaches_a_client_the_broadcast_cannot pins the
+// point-to-point fallback. RFC 2812 §3.7.1 has a killed client told
+// it was killed, and the broadcast is usually how it hears; two
+// cases leave it with no channel the QUIT can arrive through, and
+// both fall back to a direct delivery. This is the same fallback
+// `changeNickAs` makes for NICK, and for the same reason.
+func TestSession_Quit_reaches_a_client_the_broadcast_cannot(t *testing.T) {
+	tests := []struct {
+		name  string
+		setUp func(t *testing.T, sess *Session, ctx context.Context)
+	}{
+		{
+			name:  "on no channels at all",
+			setUp: func(*testing.T, *Session, context.Context) {},
+		},
+		{
+			// RFC 2811 §4.2.1 withholds a QUIT from a `+a` channel and
+			// puts a masked PART there instead, so a client whose
+			// channels all carry `+a` is named nowhere the broadcast
+			// reaches.
+			name: "on anonymous channels only",
+			setUp: func(t *testing.T, sess *Session, ctx context.Context) {
+				t.Helper()
+
+				require.NoError(t, userJoin(ctx, t, sess, "#hidden"))
+
+				resp, err := userClient(t, sess).Send(ctx, protocol.ChannelMode{
+					Channel: "#hidden",
+					Changes: []protocol.ChannelModeChange{{Flag: domain.ModeAnonymous, Add: true}},
+				})
+				require.NoError(t, err)
+				require.NoError(t, resp.Err)
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				sess, _ := newTestSession(t)
+				ctx := t.Context()
+
+				tc.setUp(t, sess, ctx)
+				collectEmittedEvents(t, sess)
+
+				user := userInstance(t, sess)
+				resp, err := userClient(t, sess).Send(ctx, protocol.Kill{Nick: "testuser", Reason: "enough"})
+				require.NoError(t, err)
+				require.NoError(t, resp.Err)
+				synctest.Wait()
+
+				require.Contains(t, collectEmittedEvents(t, sess), domain.Quit{
+					Nick:       "testuser",
+					InstanceID: user.ID(),
+					Message:    "Killed by testuser (enough)",
+					At:         fixedTime,
+					Instance:   user,
+				})
+			})
+		})
+	}
+}

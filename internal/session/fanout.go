@@ -153,12 +153,7 @@ func maskActorEvent(pe domain.ProtocolEvent, targets, anonymous []domain.Channel
 		return pe, targets
 	}
 
-	var named []domain.ChannelName
-	for _, ch := range targets {
-		if !slices.Contains(anonymous, ch) {
-			named = append(named, ch)
-		}
-	}
+	named := namedChannels(targets, anonymous)
 
 	switch e := pe.(type) {
 	case domain.Quit:
@@ -184,6 +179,24 @@ func maskActorEvent(pe domain.ProtocolEvent, targets, anonymous []domain.Channel
 	}
 
 	return pe, targets
+}
+
+// namedChannels returns the members of `channels` that do not carry
+// `+a`. An actor-scoped event may name its actor only on these:
+// everywhere else RFC 2811 §4.2.1 has the mask stand in. An empty
+// result means there is nowhere the actor can be named, which is
+// what [Session.quitAs] asks before falling back to a direct
+// delivery.
+func namedChannels(channels, anonymous []domain.ChannelName) []domain.ChannelName {
+	var named []domain.ChannelName
+
+	for _, ch := range channels {
+		if !slices.Contains(anonymous, ch) {
+			named = append(named, ch)
+		}
+	}
+
+	return named
 }
 
 // partAnonymousChannels delivers a `PART` to each anonymous channel

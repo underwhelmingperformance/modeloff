@@ -282,6 +282,23 @@ legacy public `Session.AddModel` / `Session.QuitAs` methods. `AddModel` and
 `Kill` are operator-gated; a non-operator client receives
 `domain.NotOperatorError`.
 
+`KILL` names a nick, and no nick is exempt, the issuing operator's own
+included (RFC 2812 §3.7.1). A client that kills itself gets the
+ordinary teardown: the QUIT carries `"Killed by <oper> (<reason>)"`,
+membership goes, and a channel the departure empties is destroyed. The
+only thing the server leaves undone is closing a connection it does
+not have. The chat-screen recognises its own QUIT on the bus and exits
+on it, which is the same ending `/quit` reaches by a different route.
+
+Two cases leave the killed client with no channel the QUIT can arrive
+through: a client on no channels at all, and one whose channels all
+carry `+a`, where §4.2.1 withholds the QUIT and puts a masked `PART`
+there instead. `quitAs` asks `namedChannels` the question
+`maskActorEvent` asks per recipient, and delivers the QUIT point to
+point when the answer is empty. That is the fallback `changeNickAs`
+makes for NICK, and for the same reason: a client is told what
+happened to its own connection.
+
 ### Command loop and live channel state
 
 The session is a single writer. `Session.Handle` does not run a
