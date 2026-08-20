@@ -488,18 +488,23 @@ func TestRichTextareaKillRing_Empty_CtrlY_noop(t *testing.T) {
 func TestRichTextareaKillRing_RetainsOrderAndCap(t *testing.T) {
 	editor := NewRichTextarea(RichTextareaConfig{SingleLine: true})
 
-	for i := range killRingCap + 4 {
+	const kills = killRingCap + 4
+
+	for i := range kills {
 		editor = editor.SetPlainText("word" + string(rune('A'+i)))
 		editor = editor.SetCursorFromRuneIndex(len([]rune(editor.Value())))
 
-		// Reset the kill ring once on the first iteration; ensure
-		// successive kills append in newest-first order.
 		updated, _ := editor.Update(tea.KeyMsg{Type: tea.KeyCtrlW})
 		editor = updated.(RichTextarea)
 	}
 
-	require.Len(t, editor.kills.entries, killRingCap)
-	require.Equal(t, "word"+string(rune('A'+killRingCap+3)), editor.kills.entries[0])
+	// Newest first, and the four oldest kills dropped off the end.
+	want := make([]string, 0, killRingCap)
+	for i := kills - 1; i >= kills-killRingCap; i-- {
+		want = append(want, "word"+string(rune('A'+i)))
+	}
+
+	require.Equal(t, want, editor.kills.entries)
 }
 
 func TestRichTextareaTransposeChars(t *testing.T) {

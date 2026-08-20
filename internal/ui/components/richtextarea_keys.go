@@ -99,7 +99,7 @@ func (r RichTextarea) toggleFormatting(toggle func(*richtext.Attrs)) RichTextare
 
 // handleEditorKey answers the movement, selection, kill and text-entry
 // keys, following readline's bindings where the terminal has one.
-func (r RichTextarea) handleEditorKey(msg tea.KeyMsg) (RichTextarea, bool, tea.Cmd) {
+func (r RichTextarea) handleEditorKey(msg tea.KeyMsg) (RichTextarea, bool) {
 	extendSelection := false
 	switch msg.Type {
 	case tea.KeyShiftLeft, tea.KeyShiftRight, tea.KeyShiftUp, tea.KeyShiftDown:
@@ -110,106 +110,106 @@ func (r RichTextarea) handleEditorKey(msg tea.KeyMsg) (RichTextarea, bool, tea.C
 	case "alt+d":
 		if !r.selection.Collapsed() {
 			r.killSelection()
-			return r, true, nil
+			return r, true
 		}
 		end := r.document.MoveWordRight(r.position)
 		r.killRange(richtext.Selection{Anchor: r.position, Head: end})
-		return r, true, nil
+		return r, true
 	case "ctrl+left":
 		r.moveCursor(r.document.MoveWordLeft(r.position), extendSelection)
-		return r, true, nil
+		return r, true
 	case "ctrl+right", "alt+f":
 		r.moveCursor(r.document.MoveWordRight(r.position), extendSelection)
-		return r, true, nil
+		return r, true
 	case "ctrl+shift+left":
 		r.moveCursor(r.document.MoveWordLeft(r.position), true)
-		return r, true, nil
+		return r, true
 	case "ctrl+shift+right":
 		r.moveCursor(r.document.MoveWordRight(r.position), true)
-		return r, true, nil
+		return r, true
 	case "left", "shift+left":
 		r.moveCursor(r.document.MoveLeft(r.position), extendSelection)
-		return r, true, nil
+		return r, true
 	case "right", "shift+right":
 		r.moveCursor(r.document.MoveRight(r.position), extendSelection)
-		return r, true, nil
+		return r, true
 	case "home":
 		r.moveCursor(r.document.MoveLineStart(r.position), extendSelection)
-		return r, true, nil
+		return r, true
 	case "shift+home":
 		r.moveCursor(r.document.MoveLineStart(r.position), true)
-		return r, true, nil
+		return r, true
 	case "end":
 		r.moveCursor(r.document.MoveLineEnd(r.position), extendSelection)
-		return r, true, nil
+		return r, true
 	case "shift+end":
 		r.moveCursor(r.document.MoveLineEnd(r.position), true)
-		return r, true, nil
+		return r, true
 	case "up", "shift+up":
 		r.moveCursor(r.moveVertical(-1), extendSelection)
-		return r, true, nil
+		return r, true
 	case "down", "shift+down":
 		r.moveCursor(r.moveVertical(1), extendSelection)
-		return r, true, nil
+		return r, true
 	case "ctrl+a":
 		r.moveCursor(r.document.MoveLineStart(r.position), false)
-		return r, true, nil
+		return r, true
 	case "ctrl+e":
 		r.moveCursor(r.document.MoveLineEnd(r.position), false)
-		return r, true, nil
+		return r, true
 	case "ctrl+k":
 		if !r.selection.Collapsed() {
 			r.killSelection()
-			return r, true, nil
+			return r, true
 		}
 		end := richtext.Position{
 			Line:    r.position.Line,
 			Cluster: r.document.LineClusterCount(r.position.Line),
 		}
 		r.killRange(richtext.Selection{Anchor: r.position, Head: end})
-		return r, true, nil
+		return r, true
 	case "ctrl+t":
-		return r.transposeChars(), true, nil
+		return r.transposeChars(), true
 	case "ctrl+w", "alt+backspace":
 		if !r.selection.Collapsed() {
 			r.killSelection()
-			return r, true, nil
+			return r, true
 		}
 		start := r.document.MoveWordLeft(r.position)
 		r.killRange(richtext.Selection{Anchor: start, Head: r.position})
-		return r, true, nil
+		return r, true
 	case "ctrl+y":
-		return r.yank(), true, nil
+		return r.yank(), true
 	case "backspace":
 		if !r.selection.Collapsed() {
 			r.deleteSelection()
-			return r, true, nil
+			return r, true
 		}
 		start := r.document.MoveLeft(r.position)
 		r.position = r.document.Delete(richtext.Selection{Anchor: start, Head: r.position})
 		r.selection = richtext.Selection{Anchor: r.position, Head: r.position}
-		return r.ensureViewport(), true, nil
+		return r.ensureViewport(), true
 	case "delete":
 		if !r.selection.Collapsed() {
 			r.deleteSelection()
-			return r, true, nil
+			return r, true
 		}
 		end := r.document.MoveRight(r.position)
 		r.position = r.document.Delete(richtext.Selection{Anchor: r.position, Head: end})
 		r.selection = richtext.Selection{Anchor: r.position, Head: r.position}
-		return r.ensureViewport(), true, nil
+		return r.ensureViewport(), true
 	case "enter":
 		if r.config.SingleLine {
-			return r, false, nil
+			return r, false
 		}
 		r.insertText("\n")
-		return r, true, nil
+		return r, true
 	}
 
 	if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
 		r.insertText(string(msg.Runes))
-		return r, true, nil
+		return r, true
 	}
 
-	return r, false, nil
+	return r, false
 }

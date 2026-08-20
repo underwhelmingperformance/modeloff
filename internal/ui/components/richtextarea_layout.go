@@ -9,12 +9,10 @@ import (
 // visualRow is one rendered row: the slice of a document line that
 // fits the available width, with the display width it occupies.
 type visualRow struct {
-	Line      int
-	Start     int
-	End       int
-	Width     int
-	CursorX   int
-	CursorSet bool
+	Line  int
+	Start int
+	End   int
+	Width int
 }
 
 // layoutRows turns the document into the rows the view renders. With

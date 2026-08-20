@@ -683,15 +683,13 @@ func TestInputBar_locked_view_shows_indicator(t *testing.T) {
 
 	m, _ = m.Update(components.InputLockedMsg{Locked: true})
 
-	rendered := uitest.StripANSI(m.View(40, 1))
-	require.Contains(t, rendered, "(locked)")
+	require.Equal(t, []string{"user (locked) > draft"}, renderedLines(m.View(40, 1)))
 }
 
 func TestInputBar_unlocked_view_does_not_show_indicator(t *testing.T) {
 	b := components.NewInputBar("user")
 
-	rendered := uitest.StripANSI(b.View(40, 1))
-	require.NotContains(t, rendered, "(locked)")
+	require.Equal(t, []string{"user >"}, renderedLines(b.View(40, 1)))
 }
 
 func TestInputBar_keybindings_include_palette_when_visible(t *testing.T) {

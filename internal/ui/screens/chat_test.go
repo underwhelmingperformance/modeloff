@@ -685,197 +685,139 @@ func TestChatScreen_config_set_api_key_surfaces_live_model_failure(t *testing.T)
 	tm.WaitFor("Model list unavailable: upstream 503.")
 }
 
-func TestChatScreen_config_set_poke_interval(t *testing.T) {
-	cfgStore := newFakeConfigStore()
-	h := newTestSessionWithConfigStore(t, cfgStore)
-	uitest.SeedChannel(t, h.user, "#general")
-
-	tm := newChatAppWithConfig(t, h, cfgStore)
-	waitForChannelSeedDrain(tm)
-
-	tm.Submit("/config poke-interval 10m")
-	tm.WaitFor("Poke interval set to 10m.")
-
-	require.Equal(t, 10*time.Minute, cfgStore.cfg.PokeInterval)
-}
-
-func TestChatScreen_config_set_drain_timeout(t *testing.T) {
-	cfgStore := newFakeConfigStore()
-	h := newTestSessionWithConfigStore(t, cfgStore)
-	uitest.SeedChannel(t, h.user, "#general")
-
-	tm := newChatAppWithConfig(t, h, cfgStore)
-	waitForChannelSeedDrain(tm)
-
-	tm.Submit("/config drain-timeout 30s")
-	tm.WaitFor("Drain timeout set to 30s.")
-
-	require.Equal(t, 30*time.Second, cfgStore.cfg.DrainTimeout)
-}
-
-func TestChatScreen_config_set_timestamp_format(t *testing.T) {
-	cfgStore := newFakeConfigStore()
-	h := newTestSessionWithConfigStore(t, cfgStore)
-	uitest.SeedChannel(t, h.user, "#general")
-
-	tm := newChatAppWithConfig(t, h, cfgStore)
-	waitForChannelSeedDrain(tm)
-
-	tm.Submit("/config timestamp-format 02/01 15:04:05")
-	tm.WaitFor("Timestamp format set to 02/01 15:04:05.")
-
-	require.NotNil(t, cfgStore.cfg.TimestampFormat)
-	require.Equal(t, "02/01 15:04:05", *cfgStore.cfg.TimestampFormat)
-}
-
-func TestChatScreen_config_bare_timestamp_format_shows_usage(t *testing.T) {
-	cfgStore := newFakeConfigStore()
-	h := newTestSessionWithConfigStore(t, cfgStore)
-	uitest.SeedChannel(t, h.user, "#general")
-
-	tm := newChatAppWithConfig(t, h, cfgStore)
-	waitForChannelSeedDrain(tm)
-
-	tm.Submit("/config timestamp-format")
-	tm.WaitFor("usage: /config timestamp-format <format>")
-
-	require.Nil(t, cfgStore.cfg.TimestampFormat)
-}
-
-func TestChatScreen_config_disable_timestamp_format_with_empty_quotes(t *testing.T) {
-	cfgStore := newFakeConfigStore()
-	h := newTestSessionWithConfigStore(t, cfgStore)
-	uitest.SeedChannel(t, h.user, "#general")
-
-	tm := newChatAppWithConfig(t, h, cfgStore)
-	waitForChannelSeedDrain(tm)
-
-	tm.Submit(`/config timestamp-format ""`)
-	tm.WaitFor("Timestamps disabled.")
-
-	require.NotNil(t, cfgStore.cfg.TimestampFormat)
-	require.Equal(t, "", *cfgStore.cfg.TimestampFormat)
-}
-
-func TestChatScreen_config_reset_poke_interval_from_parent_flag(t *testing.T) {
-	cfgStore := newFakeConfigStore()
-	cfgStore.cfg.PokeInterval = 10 * time.Minute
-	h := newTestSessionWithConfigStore(t, cfgStore)
-	uitest.SeedChannel(t, h.user, "#general")
-
-	tm := newChatAppWithConfig(t, h, cfgStore)
-	waitForChannelSeedDrain(tm)
-
-	tm.Submit("/config --reset poke-interval")
-	tm.WaitFor("Poke interval reset to 5m.")
-
-	require.Equal(t, config.DefaultPokeInterval, cfgStore.cfg.PokeInterval)
-}
-
-func TestChatScreen_config_reset_drain_timeout_from_parent_flag(t *testing.T) {
-	cfgStore := newFakeConfigStore()
-	cfgStore.cfg.DrainTimeout = 30 * time.Second
-	h := newTestSessionWithConfigStore(t, cfgStore)
-	uitest.SeedChannel(t, h.user, "#general")
-
-	tm := newChatAppWithConfig(t, h, cfgStore)
-	waitForChannelSeedDrain(tm)
-
-	tm.Submit("/config --reset drain-timeout")
-	tm.WaitFor("Drain timeout reset to 10s.")
-
-	require.Equal(t, config.DefaultDrainTimeout, cfgStore.cfg.DrainTimeout)
-}
-
-func TestChatScreen_config_reset_api_key_from_child_flag(t *testing.T) {
-	cfgStore := newFakeConfigStore()
-	cfgStore.cfg.APIKey = "test-key"
-	h := newTestSessionWithConfigStore(t, cfgStore)
-	uitest.SeedChannel(t, h.user, "#general")
-
-	tm := newChatAppWithConfig(t, h, cfgStore)
-	waitForChannelSeedDrain(tm)
-
-	tm.Submit("/config api-key --reset")
-	tm.WaitFor("OpenRouter API key cleared.")
-
-	require.Equal(t, "", cfgStore.cfg.APIKey)
-}
-
-func TestChatScreen_config_reset_timestamp_format(t *testing.T) {
+// TestChatScreen_config_settings drives one `/config` change per case
+// end to end: the user types it, the chat screen renders the
+// confirmation, and the config store holds the result.
+//
+// The cases share a shape, so they are one table: seed the store,
+// join a channel, submit, wait for the line, compare the whole config.
+// `seed` prepares the value the command changes, and `want` describes
+// the config the change should leave behind, both applied to the
+// fixture's starting config so each case names only the field it is
+// about while the assertion still covers every field.
+func TestChatScreen_config_settings(t *testing.T) {
 	custom := "%c"
-	cfgStore := newFakeConfigStore()
-	cfgStore.cfg.TimestampFormat = &custom
-	h := newTestSessionWithConfigStore(t, cfgStore)
-	uitest.SeedChannel(t, h.user, "#general")
+	explicit := "02/01 15:04:05"
+	disabled := ""
 
-	tm := newChatAppWithConfig(t, h, cfgStore)
-	waitForChannelSeedDrain(tm)
+	tests := []struct {
+		name    string
+		seed    func(*config.Config)
+		submit  string
+		confirm string
+		want    func(*config.Config)
+	}{
+		{
+			name:    "set poke interval",
+			submit:  "/config poke-interval 10m",
+			confirm: "Poke interval set to 10m.",
+			want:    func(c *config.Config) { c.PokeInterval = 10 * time.Minute },
+		},
+		{
+			name:    "set drain timeout",
+			submit:  "/config drain-timeout 30s",
+			confirm: "Drain timeout set to 30s.",
+			want:    func(c *config.Config) { c.DrainTimeout = 30 * time.Second },
+		},
+		{
+			name:    "set timestamp format",
+			submit:  "/config timestamp-format " + explicit,
+			confirm: "Timestamp format set to " + explicit + ".",
+			want:    func(c *config.Config) { c.TimestampFormat = &explicit },
+		},
+		{
+			name:    "bare timestamp format shows usage",
+			submit:  "/config timestamp-format",
+			confirm: "usage: /config timestamp-format <format>",
+		},
+		{
+			name:    "empty timestamp format disables timestamps",
+			submit:  `/config timestamp-format ""`,
+			confirm: "Timestamps disabled.",
+			want:    func(c *config.Config) { c.TimestampFormat = &disabled },
+		},
+		{
+			name:    "reset poke interval from the parent flag",
+			seed:    func(c *config.Config) { c.PokeInterval = 10 * time.Minute },
+			submit:  "/config --reset poke-interval",
+			confirm: "Poke interval reset to 5m.",
+			want:    func(c *config.Config) { c.PokeInterval = config.DefaultPokeInterval },
+		},
+		{
+			name:    "reset drain timeout from the parent flag",
+			seed:    func(c *config.Config) { c.DrainTimeout = 30 * time.Second },
+			submit:  "/config --reset drain-timeout",
+			confirm: "Drain timeout reset to 10s.",
+			want:    func(c *config.Config) { c.DrainTimeout = config.DefaultDrainTimeout },
+		},
+		{
+			name:    "reset api key from the child flag",
+			seed:    func(c *config.Config) { c.APIKey = "test-key" },
+			submit:  "/config api-key --reset",
+			confirm: "OpenRouter API key cleared.",
+			want:    func(c *config.Config) { c.APIKey = "" },
+		},
+		{
+			name:    "reset timestamp format",
+			seed:    func(c *config.Config) { c.TimestampFormat = &custom },
+			submit:  "/config --reset timestamp-format",
+			confirm: "Timestamp format reset to the default 24-hour clock.",
+			want:    func(c *config.Config) { c.TimestampFormat = nil },
+		},
+		{
+			name:    "reset base url",
+			seed:    func(c *config.Config) { c.BaseURL = "https://custom.example.com/v1" },
+			submit:  "/config --reset base-url",
+			confirm: "Base URL reset to https://openrouter.ai/api/v1.",
+			want:    func(c *config.Config) { c.BaseURL = config.DefaultBaseURL },
+		},
+		{
+			name:    "reset small model",
+			seed:    func(c *config.Config) { c.SmallModel = "custom/small-model" },
+			submit:  "/config --reset small-model",
+			confirm: "Small model reset to " + string(config.DefaultSmallModel) + ".",
+			want:    func(c *config.Config) { c.SmallModel = config.DefaultSmallModel },
+		},
+		{
+			name:    "reset embedding model",
+			seed:    func(c *config.Config) { c.EmbeddingModel = "custom/embedding-model" },
+			submit:  "/config --reset embedding-model",
+			confirm: "Embedding model reset to openai/text-embedding-3-small.",
+			want:    func(c *config.Config) { c.EmbeddingModel = config.DefaultEmbeddingModel },
+		},
+		{
+			name:    "reset highlight words",
+			seed:    func(c *config.Config) { c.HighlightWords = []string{"custom", "words"} },
+			submit:  "/config --reset highlight",
+			confirm: "Highlight words reset to: $nick.",
+			want:    func(c *config.Config) { c.HighlightWords = config.DefaultHighlightWords },
+		},
+	}
 
-	tm.Submit("/config --reset timestamp-format")
-	tm.WaitFor("Timestamp format reset to the default 24-hour clock.")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfgStore := newFakeConfigStore()
+			if tt.seed != nil {
+				tt.seed(&cfgStore.cfg)
+			}
 
-	require.Nil(t, cfgStore.cfg.TimestampFormat)
-}
+			want := newFakeConfigStore().cfg
+			if tt.want != nil {
+				tt.want(&want)
+			}
 
-func TestChatScreen_config_reset_base_url(t *testing.T) {
-	cfgStore := newFakeConfigStore()
-	cfgStore.cfg.BaseURL = "https://custom.example.com/v1"
-	h := newTestSessionWithConfigStore(t, cfgStore)
-	uitest.SeedChannel(t, h.user, "#general")
+			h := newTestSessionWithConfigStore(t, cfgStore)
+			uitest.SeedChannel(t, h.user, "#general")
 
-	tm := newChatAppWithConfig(t, h, cfgStore)
-	waitForChannelSeedDrain(tm)
+			tm := newChatAppWithConfig(t, h, cfgStore)
+			waitForChannelSeedDrain(tm)
 
-	tm.Submit("/config --reset base-url")
-	tm.WaitFor("Base URL reset to https://openrouter.ai/api/v1.")
+			tm.Submit(tt.submit)
+			tm.WaitFor(tt.confirm)
 
-	require.Equal(t, config.DefaultBaseURL, cfgStore.cfg.BaseURL)
-}
-
-func TestChatScreen_config_reset_small_model(t *testing.T) {
-	cfgStore := newFakeConfigStore()
-	cfgStore.cfg.SmallModel = "custom/small-model"
-	h := newTestSessionWithConfigStore(t, cfgStore)
-	uitest.SeedChannel(t, h.user, "#general")
-
-	tm := newChatAppWithConfig(t, h, cfgStore)
-	waitForChannelSeedDrain(tm)
-
-	tm.Submit("/config --reset small-model")
-	tm.WaitFor("Small model reset to " + string(config.DefaultSmallModel) + ".")
-
-	require.Equal(t, config.DefaultSmallModel, cfgStore.cfg.SmallModel)
-}
-
-func TestChatScreen_config_reset_embedding_model(t *testing.T) {
-	cfgStore := newFakeConfigStore()
-	cfgStore.cfg.EmbeddingModel = "custom/embedding-model"
-	h := newTestSessionWithConfigStore(t, cfgStore)
-	uitest.SeedChannel(t, h.user, "#general")
-
-	tm := newChatAppWithConfig(t, h, cfgStore)
-	waitForChannelSeedDrain(tm)
-
-	tm.Submit("/config --reset embedding-model")
-	tm.WaitFor("Embedding model reset to openai/text-embedding-3-small.")
-
-	require.Equal(t, config.DefaultEmbeddingModel, cfgStore.cfg.EmbeddingModel)
-}
-
-func TestChatScreen_config_reset_highlight(t *testing.T) {
-	cfgStore := newFakeConfigStore()
-	cfgStore.cfg.HighlightWords = []string{"custom", "words"}
-	h := newTestSessionWithConfigStore(t, cfgStore)
-	uitest.SeedChannel(t, h.user, "#general")
-
-	tm := newChatAppWithConfig(t, h, cfgStore)
-	waitForChannelSeedDrain(tm)
-
-	tm.Submit("/config --reset highlight")
-	tm.WaitFor("Highlight words reset to: $nick.")
-
-	require.Equal(t, config.DefaultHighlightWords, cfgStore.cfg.HighlightWords)
+			require.Equal(t, want, cfgStore.cfg)
+		})
+	}
 }
 
 func TestChatScreen_config_invalid_subcommand(t *testing.T) {

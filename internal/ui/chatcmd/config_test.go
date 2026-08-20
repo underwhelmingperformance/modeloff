@@ -209,9 +209,7 @@ func TestConfigCommand_Run_bareMasksAPIKeyAndShowsUnsetState(t *testing.T) {
 
 	msg := runConfigCmd(t, rc, "/config")
 
-	notice, ok := msg.(domain.SystemNotice)
-	require.True(t, ok)
-	require.Contains(t, notice.Text, "api-key = not set")
+	requireSystemNotice(t, msg, "#test", loadGolden(t, "config_show_unset.golden.txt"))
 }
 
 func TestAPIKeyConfig_Run(t *testing.T) {

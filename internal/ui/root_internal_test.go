@@ -7,6 +7,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/stretchr/testify/require"
+
+	"github.com/laney/modeloff/internal/ui/uitest"
 )
 
 // fakeClock is a manually-advanced clock for deterministic tests of
@@ -35,6 +37,13 @@ func (s stubScreen) View(width, height int) string {
 	return fmt.Sprintf("%s:%dx%d", s.label, width, height)
 }
 
+// rootFrame is the whole rendered frame as lines, which for a
+// stubScreen is fully determined: the banners Root chose, followed by
+// the size it gave the screen.
+func rootFrame(r Root) []string {
+	return uitest.RenderedLines(r.View())
+}
+
 func updateRoot(t *testing.T, r Root, msg tea.Msg) Root {
 	t.Helper()
 
@@ -61,7 +70,7 @@ func TestRoot_ctrl_c_arms_quit_confirmation_without_quitting(t *testing.T) {
 	r = updated.(Root)
 
 	require.Nil(t, cmd, "the first Ctrl-C must arm the confirmation, not quit")
-	require.Contains(t, r.View(), "Press Ctrl+C again to quit")
+	require.Equal(t, []string{quitConfirmBanner, "test:80x23"}, rootFrame(r))
 }
 
 func TestRoot_second_ctrl_c_within_window_quits(t *testing.T) {
@@ -90,38 +99,29 @@ func TestRoot_second_ctrl_c_after_window_rearms_instead_of_quitting(t *testing.T
 	r = updated.(Root)
 
 	require.Nil(t, cmd, "a Ctrl-C after the confirmation window elapsed must arm a fresh confirmation, not quit")
-	require.Contains(t, r.View(), "Press Ctrl+C again to quit")
+	require.Equal(t, []string{quitConfirmBanner, "test:80x23"}, rootFrame(r))
 }
 
 func TestRoot_ToggleMouse_flips_state_and_returns_the_matching_cmd(t *testing.T) {
 	r := NewRoot(stubScreen{label: "test"})
 	r = updateRoot(t, r, tea.WindowSizeMsg{Width: 80, Height: 24})
 
-	require.NotContains(t, r.View(), "Mouse tracking off")
+	require.Equal(t, []string{"test:80x24"}, rootFrame(r))
 
 	updated, cmd := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}, Alt: true})
 	r = updated.(Root)
 
 	require.NotNil(t, cmd)
 	require.NotNil(t, cmd(), "toggling off must send tea.DisableMouse")
-	require.Contains(t, r.View(), "Mouse tracking off")
+	require.Equal(t, []string{mouseOffBanner, "test:80x23"}, rootFrame(r),
+		"the banner takes a row from the screen while it is shown")
 
 	updated, cmd = r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}, Alt: true})
 	r = updated.(Root)
 
 	require.NotNil(t, cmd)
 	require.NotNil(t, cmd(), "toggling back on must send tea.EnableMouseCellMotion")
-	require.NotContains(t, r.View(), "Mouse tracking off")
-}
-
-func TestRoot_View_shrinks_screen_height_for_the_mouse_off_banner(t *testing.T) {
-	r := NewRoot(stubScreen{label: "test"})
-	r = updateRoot(t, r, tea.WindowSizeMsg{Width: 80, Height: 24})
-
-	updated, _ := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}, Alt: true})
-	r = updated.(Root)
-
-	require.Contains(t, r.View(), "test:80x23", "the screen must be given one fewer row so the banner fits above it")
+	require.Equal(t, []string{"test:80x24"}, rootFrame(r))
 }
 
 func TestRoot_KeyBindings_include_quit_and_toggle_mouse(t *testing.T) {
@@ -132,6 +132,5 @@ func TestRoot_KeyBindings_include_quit_and_toggle_mouse(t *testing.T) {
 		helpKeys = append(helpKeys, b.Help().Key)
 	}
 
-	require.Contains(t, helpKeys, "^C")
-	require.Contains(t, helpKeys, "M-m")
+	require.Equal(t, []string{"^C", "M-m"}, helpKeys)
 }

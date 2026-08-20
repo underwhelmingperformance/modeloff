@@ -65,6 +65,13 @@ var DefaultAppKeyMap = AppKeyMap{
 // once it elapses, Ctrl-C starts over as a fresh first press.
 const quitConfirmWindow = 3 * time.Second
 
+// The banners Root renders above the active screen, each taking a row
+// from it while it is shown.
+const (
+	mouseOffBanner    = "Mouse tracking off (Alt+M re-enables), use the terminal's own selection to copy"
+	quitConfirmBanner = "Press Ctrl+C again to quit"
+)
+
 // Root is the top-level model that acts as a router between screens.
 // It implements tea.Model and bridges to child screens that implement
 // the responsive ui.Model interface.
@@ -153,12 +160,11 @@ func (r Root) View() string {
 	var banners []string
 
 	if !r.mouseEnabled {
-		banners = append(banners, theme.Dim.Render(
-			"Mouse tracking off (Alt+M re-enables), use the terminal's own selection to copy"))
+		banners = append(banners, theme.Dim.Render(mouseOffBanner))
 	}
 
 	if r.quitArmed() {
-		banners = append(banners, theme.Warning.Render("Press Ctrl+C again to quit"))
+		banners = append(banners, theme.Warning.Render(quitConfirmBanner))
 	}
 
 	if len(banners) == 0 {

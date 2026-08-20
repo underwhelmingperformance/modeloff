@@ -84,8 +84,8 @@ func (r RichTextarea) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 			return updated, nil
 		}
 
-		if updated, handled, cmd := r.handleEditorKey(msg); handled {
-			return updated, cmd
+		if updated, handled := r.handleEditorKey(msg); handled {
+			return updated, nil
 		}
 
 	case tea.MouseMsg:
