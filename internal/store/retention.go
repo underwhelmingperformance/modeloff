@@ -85,6 +85,11 @@ func (s *SQLiteStore) pruneEvents(ctx context.Context) error {
 			return fmt.Errorf("prune orphaned channel events: %w", err)
 		}
 
+		dmOrphaned, err := s.pruneOrphanDMEvents(ctx)
+		if err != nil {
+			return fmt.Errorf("prune orphaned dm events: %w", err)
+		}
+
 		channelNames, err := queryRows(ctx, s.db, `SELECT name FROM channels ORDER BY name`, nil,
 			scalarColumn[domain.ChannelName]())
 		if err != nil {
@@ -117,14 +122,16 @@ func (s *SQLiteStore) pruneEvents(ctx context.Context) error {
 
 		span.SetAttributes(
 			attribute.Int64("modeloff.retention.orphaned_removed", orphaned),
+			attribute.Int64("modeloff.retention.dm_orphaned_removed", dmOrphaned),
 			attribute.Int64("modeloff.retention.channel_trimmed", channelTrimmed),
 			attribute.Int64("modeloff.retention.dm_trimmed", dmTrimmed),
 		)
 
-		if orphaned+channelTrimmed+dmTrimmed > 0 {
+		if orphaned+dmOrphaned+channelTrimmed+dmTrimmed > 0 {
 			slog.Default().InfoContext(ctx, "event retention pass",
 				"component", "store.sqlite",
 				"orphaned_removed", orphaned,
+				"dm_orphaned_removed", dmOrphaned,
 				"channel_trimmed", channelTrimmed,
 				"dm_trimmed", dmTrimmed,
 			)
@@ -194,6 +201,60 @@ func (s *SQLiteStore) pruneOrphanChannelEvents(ctx context.Context) (int64, erro
 
 	if removed > 0 {
 		slog.Default().InfoContext(ctx, "pruned orphaned channel event rows",
+			"component", "store.sqlite",
+			"removed", removed,
+		)
+	}
+
+	return removed, nil
+}
+
+// pruneOrphanDMEvents removes DM-shaped event rows whose peer
+// instance no longer has a row in instances. DeleteInstanceByID
+// evicts the peer's own row but has no foreign key to cascade
+// through to these rows (they are keyed by instance id inside the
+// channel column, not a real reference), and instance ids are never
+// reused, so nothing will ever address that thread again.
+//
+// A DM message row carries no channel prefix in its channel column
+// (see domain.InferChannelKind): the direction the user sent has the
+// peer's InstanceID there and an empty dm_instance_id, and the
+// direction the peer sent has an empty channel and the peer's id in
+// the generated dm_instance_id column instead (see DMEventsBefore's
+// doc comment). Exactly one of the two names the peer for a given
+// row, so the CASE picks whichever is non-empty. Every other
+// persisted event type is logged under a real channel the actor was
+// in, which starts with a channel prefix and so never matches this
+// predicate, including the peer's own quit/nick_change rows
+// DMEventsBefore replays into the thread, which pruneChannelEvents
+// already governs (see pruneDMEvents's doc comment).
+func (s *SQLiteStore) pruneOrphanDMEvents(ctx context.Context) (int64, error) {
+	prefixes := []rune(domain.ChannelPrefixes)
+	placeholders := make([]string, len(prefixes))
+	args := make([]any, len(prefixes))
+
+	for i, r := range prefixes {
+		placeholders[i] = "?"
+		args[i] = string(r)
+	}
+
+	const peer = `CASE WHEN channel != '' THEN channel ELSE dm_instance_id END`
+
+	query := `DELETE FROM events WHERE id IN (
+		SELECT id FROM events WHERE substr(channel, 1, 1) NOT IN (` + strings.Join(placeholders, ",") + `)
+			AND ` + peer + ` != ''
+			AND ` + peer + ` NOT IN (SELECT instance_id FROM instances)
+			AND ` + cursorExclusion + `
+		ORDER BY id LIMIT ?
+	)`
+
+	removed, err := deleteEventsBatched(ctx, s.db, query, args)
+	if err != nil {
+		return removed, err
+	}
+
+	if removed > 0 {
+		slog.Default().InfoContext(ctx, "pruned orphaned dm event rows",
 			"component", "store.sqlite",
 			"removed", removed,
 		)

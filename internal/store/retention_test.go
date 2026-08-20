@@ -117,6 +117,41 @@ func TestSQLiteStore_pruneEvents_deletes_orphaned_spelling_of_a_live_channel(t *
 	require.Equal(t, keptIDs, gotIDs, "the canonical spelling's own events are untouched")
 }
 
+// TestSQLiteStore_pruneEvents_deletes_dm_events_for_a_deleted_peer
+// covers the DM counterpart to
+// TestSQLiteStore_pruneEvents_deletes_events_for_a_deleted_channel:
+// DeleteInstanceByID evicts the peer's own row from instances but
+// leaves its DM message rows behind (they are keyed by instance id,
+// not by a foreign key SQLite could cascade through), and instance
+// ids are never reused, so nothing will ever address that thread
+// again. Retention removes them the same way it removes an orphaned
+// channel's events.
+func TestSQLiteStore_pruneEvents_deletes_dm_events_for_a_deleted_peer(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	const bottyID domain.InstanceID = "inst-botty"
+	require.NoError(t, s.SaveInstance(ctx, domain.NewModelInstance(bottyID, "botty", "test/model", "", nil)))
+
+	_, err := s.AppendEvent(ctx, domain.ChannelName(bottyID), domain.Message{
+		Target: domain.ChannelName(bottyID), From: "iain", Body: "hi", At: testTime,
+	})
+	require.NoError(t, err)
+
+	_, err = s.AppendEvent(ctx, "", domain.Message{
+		Target: "", From: "botty", InstanceID: bottyID, Body: "hello", At: testTime.Add(time.Second),
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, s.DeleteInstanceByID(ctx, bottyID))
+
+	require.NoError(t, s.pruneEvents(ctx))
+
+	count, err := s.CountDMEventsFrom(ctx, "", bottyID, nil)
+	require.NoError(t, err)
+	require.Zero(t, count)
+}
+
 // TestSQLiteStore_pruneEvents_leaves_dm_events_alone pins that a DM
 // message's channel value (a bare InstanceID or the empty string,
 // never a "#"/"&" prefix) is never mistaken for an orphaned channel

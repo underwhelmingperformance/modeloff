@@ -333,6 +333,16 @@ func TestNewSQLiteStore_opens_existing_v1_database(t *testing.T) {
 
 	seedV1Database(t, db)
 
+	// The DM message row seedV1Database writes belongs to "inst-botty",
+	// created under the pre-existing `instances` table: retention's
+	// orphaned-DM pass (pruneOrphanDMEvents), which NewSQLiteStore runs
+	// on open, treats a DM row naming no instance row as an orphan left
+	// behind by a deleted peer, and this fixture's peer is very much
+	// still around.
+	_, err = db.ExecContext(ctx,
+		`INSERT INTO instances (instance_id, nick, data) VALUES ('inst-botty', 'botty', '{}')`)
+	require.NoError(t, err)
+
 	s, err := NewSQLiteStore(ctx, db)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = s.Close() })
