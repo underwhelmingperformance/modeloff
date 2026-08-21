@@ -61,6 +61,42 @@ func TestJoinAs_model_actor(t *testing.T) {
 	})
 }
 
+func TestJoinAs_non_oper_creator_receives_channel_op_in_names(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		sess, _ := newTestSession(t)
+		creator, client := seedPassiveInstance(t, sess, "creator", "test/model")
+
+		require.False(t, sess.ClientCaps(client.Identity()).Has(protocol.CapOperator))
+
+		resp, err := sess.Handle(t.Context(), client, protocol.Join{
+			Channels: []domain.ChannelName{"#new"},
+		})
+		require.NoError(t, err)
+		require.Equal(t, protocol.Response{Events: []protocol.Event{
+			domain.JoinedChannel{Channel: "#new"},
+		}}, resp)
+		synctest.Wait()
+
+		members := domain.NewMemberList()
+		members.Add(creator)
+		members.SetModes(creator, domain.MemberModes{Operator: true})
+
+		require.Equal(t, []domain.Event{
+			domain.Join{
+				Target:     "#new",
+				Nick:       "creator",
+				InstanceID: creator.ID(),
+				Created:    true,
+				At:         fixedTime,
+				Instance:   creator,
+			},
+			domain.NamesReplyEvent{Channel: "#new", Members: members, At: fixedTime},
+			domain.NamesEnd{Channel: "#new", At: fixedTime},
+		}, drainDeliveries(client))
+		require.False(t, sess.ClientCaps(client.Identity()).Has(protocol.CapOperator))
+	})
+}
+
 // TestJoinAs_model_joining_existing_channel_gets_RPL_topic_and_names
 // pins that a model joining a populated channel receives the
 // RFC 2812 §3.2.1 / §3.2.4 equivalents of RPL_NAMREPLY and

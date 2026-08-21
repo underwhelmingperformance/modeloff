@@ -186,6 +186,23 @@ func TestChatScreen_Init_empty(t *testing.T) {
 	)
 }
 
+func TestChatScreen_join_empty_channel_shows_creator_as_operator(t *testing.T) {
+	h := newTestSession(t)
+	tm := newChatApp(t, h)
+	tm.WaitFor("Welcome to modeloff")
+
+	tm.Submit("/join #new")
+	view := tm.WaitForView(func(view string) bool {
+		return strings.Contains(view, "Created channel #new") &&
+			strings.Contains(view, "@testuser")
+	})
+
+	body, status := uitest.SplitBodyAndStatus(view)
+	columns := uitest.VisibleColumns(body)
+	require.Equal(t, []string{"Nicks", "@testuser"}, uitest.NonEmptyColumn(columns[2]))
+	require.Contains(t, status, "OPER")
+}
+
 func TestChatScreen_checklist_api_key_set_no_channels(t *testing.T) {
 	h, cfgStore := newValidatedSmallModelHarness(t)
 

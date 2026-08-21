@@ -83,6 +83,34 @@ func TestApp_startup_with_saved_channels(t *testing.T) {
 	require.Equal(t, domain.ChannelName("#random"), last)
 }
 
+func TestApp_autojoin_recreates_empty_channel_with_creator_op(t *testing.T) {
+	sess, mgr, user, store, cfgStore := newIntegrationSession(t, &integrationAPI{})
+
+	uitest.SeedChannel(t, user, "#general")
+	uitest.Quit(t, user, "")
+	uitest.DrainEvents(user)
+
+	chatScreen, err := screens.NewChatScreen(t.Context, sess, mgr, user, cfgStore, store, domain.KindStatus)
+	require.NoError(t, err)
+
+	root := uipkg.NewRoot(screens.NewConnectionScreen(screens.ConnectionConfig{
+		HasAPIKey:    true,
+		ChannelCount: 1,
+		Nick:         string(user.Nick()),
+		Session:      sess,
+		User:         user,
+		BaseContext:  t.Context,
+	}, chatScreen))
+	tm := uitest.New(t, root)
+
+	advanceConnection(tm, 7)
+	view := tm.WaitForViewContains("@testuser")
+
+	body, _ := uitest.SplitBodyAndStatus(view)
+	columns := uitest.VisibleColumns(body)
+	require.Equal(t, []string{"Nicks", "@testuser"}, uitest.NonEmptyColumn(columns[2]))
+}
+
 func TestApp_add_model_and_receive_reply(t *testing.T) {
 	apiClient := &integrationAPI{
 		generateNickFn: func(context.Context, domain.ModelID, string, []domain.Nick) (domain.Nick, error) {

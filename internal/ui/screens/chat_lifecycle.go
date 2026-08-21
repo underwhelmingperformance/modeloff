@@ -167,6 +167,13 @@ var disconnectingStatusItem = ui.StatusItem{
 	Compact:  "off…",
 }
 
+var serverOperatorStatusItem = ui.StatusItem{
+	ID:       "server-operator",
+	Side:     ui.StatusSideRight,
+	Priority: 20,
+	Full:     "OPER",
+}
+
 // noAPIKeyStatusItem prompts the user to run /config while no API
 // key is configured. Spec point 1.1 has the app open and prompt for
 // /config until this is done; the welcome checklist carries the same

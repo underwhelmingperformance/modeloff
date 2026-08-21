@@ -605,6 +605,10 @@ func (s ChatScreen) KeyBindings() []ui.KeyBinding {
 func (s ChatScreen) StatusItems() []ui.StatusItem {
 	items := ui.CollectStatusItems(s.layout, s.summary)
 
+	if s.client != nil && s.client.Caps().Has(protocol.CapOperator) {
+		items = append(items, serverOperatorStatusItem)
+	}
+
 	if s.apiKeyMissing {
 		items = append(items, noAPIKeyStatusItem)
 	}

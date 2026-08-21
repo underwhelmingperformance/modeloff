@@ -194,6 +194,33 @@ func TestChatScreen_StatusItems_disconnecting_lifecycle(t *testing.T) {
 		"quit-in-flight must append the Disconnecting… status item")
 }
 
+func TestChatScreen_StatusItems_reports_server_operator(t *testing.T) {
+	sess, mgr, user := newTestSession(t)
+	screen, err := NewChatScreen(t.Context, sess, mgr, user, nil, nil, domain.KindStatus)
+	require.NoError(t, err)
+
+	oper := uipkg.StatusItem{
+		ID:       "server-operator",
+		Side:     uipkg.StatusSideRight,
+		Priority: 20,
+		Full:     "OPER",
+	}
+	noAPIKey := uipkg.StatusItem{
+		ID:       "no-api-key",
+		Side:     uipkg.StatusSideRight,
+		Priority: 90,
+		Full:     "No API key configured — use /config to set one",
+		Compact:  "no key",
+	}
+	operatorItems := screen.StatusItems()
+
+	screen.client = testclient.New("plain", sess)
+	plainItems := screen.StatusItems()
+
+	require.Equal(t, []uipkg.StatusItem{oper, noAPIKey}, operatorItems)
+	require.Equal(t, []uipkg.StatusItem{noAPIKey}, plainItems)
+}
+
 func TestChatScreen_second_quit_request_escalates_to_tea_quit(t *testing.T) {
 	screen := newScreenFixture(t)
 
