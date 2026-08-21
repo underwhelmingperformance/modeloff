@@ -73,6 +73,36 @@ func TestPopover_Enter_falls_through_when_typed_text_already_matches(t *testing.
 	require.Nil(t, cmd)
 }
 
+func TestPopover_optional_continuation_leaves_Enter_for_submission(t *testing.T) {
+	p := newVisiblePopover(t, command.Completion{
+		Visible:      true,
+		EnterSubmits: true,
+		ReplaceStart: 36,
+		ReplaceEnd:   36,
+		AppendSpace:  true,
+		Suggestions: []command.Suggestion{
+			{Value: "--persona", Label: "--persona"},
+		},
+	})
+
+	updated, cmd := p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next := updated.(components.Popover)
+
+	require.False(t, next.Handled())
+	require.Nil(t, cmd)
+
+	updated, cmd = p.Update(tea.KeyMsg{Type: tea.KeyTab})
+	next = updated.(components.Popover)
+
+	require.True(t, next.Handled())
+	require.NotNil(t, cmd)
+	require.Equal(t, components.PopoverAcceptMsg{
+		ReplaceStart: 36,
+		ReplaceEnd:   36,
+		Replacement:  "--persona ",
+	}, cmd())
+}
+
 func TestPopover_UpDown_cycle_when_multiple_suggestions(t *testing.T) {
 	p := newVisiblePopover(t, command.Completion{
 		Visible: true,

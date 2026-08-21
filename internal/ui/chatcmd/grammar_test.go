@@ -463,6 +463,14 @@ func TestComplete_add_model_persona_suggests_personas(t *testing.T) {
 	require.Equal(t, []string{"bard", "sage"}, suggestionValues(c))
 }
 
+func TestParse_add_model_persona_requires_value(t *testing.T) {
+	_, err := testParser.Parse("/add-model somemodel --persona")
+
+	var missing *command.MissingFlagValueError
+	require.ErrorAs(t, err, &missing)
+	require.Equal(t, "--persona", missing.Flag)
+}
+
 func TestComplete_add_model_hides_completion_when_live_models_failed(t *testing.T) {
 	ctx := testContext(domain.KindChannel)
 	ctx.LiveModelsState = func() command.SuggestionState { return command.SuggestionStateError }

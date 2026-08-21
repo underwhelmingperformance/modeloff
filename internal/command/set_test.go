@@ -656,7 +656,7 @@ func TestComplete_flag_name_after_positionals(t *testing.T) {
 	}
 
 	require.Equal(t, Completion{
-		Visible: true, ReplaceStart: 12, ReplaceEnd: 12, AppendSpace: true,
+		Visible: true, ReplaceStart: 12, ReplaceEnd: 12, AppendSpace: true, EnterSubmits: true,
 		Suggestions: []Suggestion{
 			{Value: "--reason", Label: "--reason", Detail: "Kick reason"},
 		},
@@ -842,14 +842,14 @@ func TestComplete_flag_only_command(t *testing.T) {
 	}{
 		{
 			name: "all flags offered", raw: "/config ",
-			want: Completion{Visible: true, ReplaceStart: 8, ReplaceEnd: 8, AppendSpace: true, Suggestions: []Suggestion{
+			want: Completion{Visible: true, ReplaceStart: 8, ReplaceEnd: 8, AppendSpace: true, EnterSubmits: true, Suggestions: []Suggestion{
 				{Value: "--api-key", Label: "--api-key", Detail: "API key"},
 				{Value: "--theme", Label: "--theme", Detail: "Theme"},
 			}},
 		},
 		{
 			name: "used flag excluded", raw: "/config --api-key secret ",
-			want: Completion{Visible: true, ReplaceStart: 25, ReplaceEnd: 25, AppendSpace: true, Suggestions: []Suggestion{
+			want: Completion{Visible: true, ReplaceStart: 25, ReplaceEnd: 25, AppendSpace: true, EnterSubmits: true, Suggestions: []Suggestion{
 				{Value: "--theme", Label: "--theme", Detail: "Theme"},
 			}},
 		},

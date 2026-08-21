@@ -217,11 +217,10 @@ func (p Popover) handleKey(msg tea.KeyMsg) (Popover, bool, tea.Cmd) {
 		}
 	case tea.KeyEnter:
 		// Accept the highlighted suggestion first when doing so would
-		// change the typed text, matching Tab; a second Enter then
-		// submits. When the typed text already matches the selection
-		// exactly, fall through and let the input bar submit directly,
-		// so a fully-typed command still runs on one Enter.
-		if p.HasSuggestions() {
+		// change the typed text, matching Tab. An optional continuation
+		// leaves Enter to the input bar because the command is already
+		// complete; Tab can still accept the suggestion.
+		if p.HasSuggestions() && !p.completion.EnterSubmits {
 			suggestion := p.completion.Suggestions[p.selected]
 			if acceptedReplacement(p.completion.TypedPrefix, suggestion) != p.completion.TypedPrefix {
 				return p, true, p.acceptCmd(p.selected)

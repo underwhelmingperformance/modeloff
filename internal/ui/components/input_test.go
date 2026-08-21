@@ -1063,6 +1063,82 @@ func TestInputBar_popover_tab_accepts(t *testing.T) {
 	require.Equal(t, "/join #general", sub.Raw)
 }
 
+func TestInputBar_enter_submits_with_optional_continuation_suggested(t *testing.T) {
+	const modelID = "anthropic/claude-3-haiku"
+
+	nodes := []*command.Node[inputBarKind]{
+		{
+			Name: "add-model",
+			Positionals: []command.Positional[inputBarKind]{
+				{
+					Name: "model",
+					Source: command.LiteralSource[inputBarKind](
+						command.Suggestion{Value: modelID, Label: modelID},
+					),
+				},
+			},
+			Flags: []command.Flag[inputBarKind]{
+				{Name: "--persona", Optional: true, Help: "Optional persona"},
+			},
+		},
+	}
+	m := inputBarWithPopover(nodes)
+	m = typeText(t, m, "/add-model anth")
+
+	m, cmd := enter(t, m)
+	require.NotNil(t, cmd)
+	m, _ = m.Update(cmd())
+
+	require.Contains(t, visibleLines(m.View(60, 2)), "--persona  Optional persona")
+
+	_, cmd = enter(t, m)
+	require.NotNil(t, cmd)
+	require.Equal(t, components.CommandSubmitMsg{Raw: "/add-model " + modelID}, cmd())
+}
+
+func TestInputBar_enter_accepts_value_after_tab_accepts_optional_flag(t *testing.T) {
+	const modelID = "anthropic/claude-3-haiku"
+
+	nodes := []*command.Node[inputBarKind]{
+		{
+			Name:        "add-model",
+			Positionals: []command.Positional[inputBarKind]{{Name: "model"}},
+			Flags: []command.Flag[inputBarKind]{
+				{
+					Name:     "--persona",
+					Optional: true,
+					Variadic: true,
+					Source: command.LiteralSource[inputBarKind](
+						command.Suggestion{Value: "bard", Label: "bard"},
+						command.Suggestion{Value: "sage", Label: "sage"},
+					),
+				},
+			},
+		},
+	}
+	m := inputBarWithPopover(nodes)
+	m = typeText(t, m, "/add-model "+modelID+" ")
+
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	require.NotNil(t, cmd)
+	m, _ = m.Update(cmd())
+
+	m, cmd = enter(t, m)
+	require.NotNil(t, cmd)
+	require.Equal(t, components.PopoverAcceptMsg{
+		ReplaceStart: len("/add-model " + modelID + " --persona "),
+		ReplaceEnd:   len("/add-model " + modelID + " --persona "),
+		Replacement:  "bard ",
+	}, cmd())
+
+	m, _ = m.Update(cmd())
+	_, cmd = enter(t, m)
+	require.NotNil(t, cmd)
+	require.Equal(t, components.CommandSubmitMsg{
+		Raw: "/add-model " + modelID + " --persona bard",
+	}, cmd())
+}
+
 func TestInputBar_popover_tab_preserves_typed_alias(t *testing.T) {
 	tests := []struct {
 		name    string

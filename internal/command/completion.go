@@ -24,7 +24,12 @@ type Completion struct {
 	ReplaceStart int
 	ReplaceEnd   int
 	AppendSpace  bool
+	EnterSubmits bool
 
+	// EnterSubmits marks suggestions that continue an already-complete
+	// invocation. The popover leaves Enter to the input bar in this
+	// state, while Tab and mouse selection can still accept a suggestion.
+	//
 	// TypedPrefix is the literal text the user has typed in the
 	// replacement region. The popover's Tab-accept consults it to
 	// decide whether the user is committing an alias they typed
@@ -169,6 +174,7 @@ func complete[C KindProvider](set Set[C], ctx C, raw string, cursor int, kind do
 	flags := flagSuggestions(cctx.node, cctx.usedFlags)
 	if len(flags) > 0 {
 		completion.Suggestions = filterSuggestions(flags, prefix)
+		completion.EnterSubmits = prefix == ""
 		return completion
 	}
 
