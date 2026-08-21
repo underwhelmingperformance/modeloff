@@ -133,14 +133,14 @@ func (f FeedView) KeyBindings() []ui.KeyBinding {
 			ui.Bind(key.NewBinding(
 				key.WithKeys("pgup", "pgdown"),
 				key.WithHelp("PgUp/Dn", "scroll"),
-			)),
+			)).WithHelpMetadata(ui.KeyHelpNavigation, ui.KeyHintLow),
 			len(f.lines) > 0,
 		),
 		ui.WithBindingEnabled(
 			ui.Bind(key.NewBinding(
 				key.WithKeys("ctrl+up", "ctrl+down"),
 				key.WithHelp("^↑/↓", "scroll"),
-			)),
+			)).WithHelpMetadata(ui.KeyHelpNavigation, ui.KeyHintNone),
 			len(f.lines) > 0,
 		),
 	}

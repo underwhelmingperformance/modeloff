@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/exp/teatest"
 	"github.com/stretchr/testify/require"
 
@@ -992,7 +993,7 @@ func TestChatScreen_View_responsive(t *testing.T) {
 	newChatAppInChannel(t, "#general")
 }
 
-func TestChatScreen_KeyBindings_collect_active_bindings(t *testing.T) {
+func TestChatScreen_KeyBindings_show_ranked_complete_hints(t *testing.T) {
 	tm, _ := newChatAppInChannel(t, "#general")
 
 	// `CurrentView` returns the model's settled `View()` rather than
@@ -1001,9 +1002,11 @@ func TestChatScreen_KeyBindings_collect_active_bindings(t *testing.T) {
 	// asynchrony lands a final render after `Quit`.
 	_, status := uitest.SplitBodyAndStatus(tm.CurrentView())
 
-	tokens := strings.Fields(status)
-	require.Subset(t, tokens, []string{"M-↓/M-↑", "^O", "↵", "^W", "^C"},
-		"status bar must surface core navigation, submit and quit bindings")
+	require.Contains(t, status, "↵ send")
+	require.Contains(t, status, "M-a next active")
+	require.Contains(t, status, "^N next window")
+	require.Contains(t, status, "F1 shortcuts")
+	require.NotContains(t, status, "^W")
 }
 
 func TestChatScreen_KeyBindings_switch_to_popover_bindings(t *testing.T) {
@@ -1011,9 +1014,25 @@ func TestChatScreen_KeyBindings_switch_to_popover_bindings(t *testing.T) {
 
 	tm.Type("/")
 
-	// The popover adds Tab, up/down, Esc bindings. At 80 columns the
-	// status bar falls back to key-only mode, so check for keys.
-	tm.WaitFor("Tab", "Esc")
+	view := tm.WaitForView(func(view string) bool {
+		_, status := uitest.SplitBodyAndStatus(view)
+		return strings.Contains(status, "Tab accept") &&
+			strings.Contains(status, "↑↓ navigate") &&
+			strings.Contains(status, "Esc dismiss") &&
+			strings.Contains(status, "F1 shortcuts")
+	})
+	_, status := uitest.SplitBodyAndStatus(view)
+	require.NotContains(t, status, "↵ send")
+}
+
+func TestChatScreen_F1_shows_keyboard_help_from_active_bindings(t *testing.T) {
+	tm, _ := newChatAppInChannel(t, "#general")
+
+	tm.Send(tea.KeyMsg{Type: tea.KeyF1})
+	tm.WaitForViewContains("Keyboard shortcuts", "^B", "bold", "F1", "shortcuts")
+
+	tm.Send(tea.KeyMsg{Type: tea.KeyEsc})
+	tm.WaitForViewContains("#general")
 }
 
 func TestChatScreen_WelcomeState_responsive(t *testing.T) {

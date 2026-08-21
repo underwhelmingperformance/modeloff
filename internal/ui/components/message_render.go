@@ -344,11 +344,6 @@ func renderHelp[C command.KindProvider](commands []*command.Node[C]) string {
 		lines = []string{"/help                            Show available commands."}
 	}
 
-	lines = append(lines,
-		"formatting                      M-b/M-i/M-u/M-r/M-s toggle styles",
-		"formatting                      M-c colours, M-o clears formatting",
-	)
-
 	var parts []string
 	for _, line := range lines {
 		parts = append(parts, theme.SystemEvent.Render("*** "+line))

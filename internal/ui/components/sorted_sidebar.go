@@ -435,7 +435,7 @@ func (s Sidebar[T, K]) KeyBindings() []ui.KeyBinding {
 			ui.Bind(key.NewBinding(
 				key.WithKeys(append(s.keyMap.Up.Keys(), s.keyMap.Down.Keys()...)...),
 				key.WithHelp(combinedKey, combinedDesc),
-			)),
+			)).WithHelpMetadata(s.keyMap.Down.HelpGroup, s.keyMap.Down.HintPriority),
 			hasItems,
 		),
 		ui.WithBindingEnabled(s.keyMap.Select, hasItems),

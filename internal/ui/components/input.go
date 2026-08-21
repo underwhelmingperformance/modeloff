@@ -627,20 +627,20 @@ func (b InputBar) KeyBindings() []ui.KeyBinding {
 				ui.Bind(key.NewBinding(
 					key.WithKeys("tab"),
 					key.WithHelp("Tab", "accept"),
-				)),
+				)).WithHelpMetadata(ui.KeyHelpCompletion, ui.KeyHintHigh),
 				b.popover.HasSuggestions(),
 			),
 			ui.WithBindingEnabled(
 				ui.Bind(key.NewBinding(
 					key.WithKeys("up", "down", "shift+tab"),
 					key.WithHelp("↑↓", "navigate"),
-				)),
+				)).WithHelpMetadata(ui.KeyHelpCompletion, ui.KeyHintHigh),
 				b.popover.HasSuggestions(),
 			),
 			ui.Bind(key.NewBinding(
 				key.WithKeys("esc"),
 				key.WithHelp("Esc", "dismiss"),
-			)),
+			)).WithHelpMetadata(ui.KeyHelpCompletion, ui.KeyHintEssential),
 		}
 	}
 
@@ -649,23 +649,23 @@ func (b InputBar) KeyBindings() []ui.KeyBinding {
 			ui.Bind(key.NewBinding(
 				key.WithKeys("left", "right"),
 				key.WithHelp("←→", "swatch"),
-			)),
+			)).WithHelpMetadata(ui.KeyHelpFormatting, ui.KeyHintHigh),
 			ui.Bind(key.NewBinding(
 				key.WithKeys("0", "1", "2", "3", "4", "5", "6", "7", "8", "9"),
 				key.WithHelp("0-9", "jump"),
-			)),
+			)).WithHelpMetadata(ui.KeyHelpFormatting, ui.KeyHintLow),
 			ui.Bind(key.NewBinding(
 				key.WithKeys("tab"),
 				key.WithHelp("Tab", "fg/bg"),
-			)),
+			)).WithHelpMetadata(ui.KeyHelpFormatting, ui.KeyHintNormal),
 			ui.Bind(key.NewBinding(
 				key.WithKeys("enter"),
 				key.WithHelp("↵", "apply"),
-			)),
+			)).WithHelpMetadata(ui.KeyHelpFormatting, ui.KeyHintHigh),
 			ui.Bind(key.NewBinding(
 				key.WithKeys("esc"),
 				key.WithHelp("Esc", "dismiss"),
-			)),
+			)).WithHelpMetadata(ui.KeyHelpFormatting, ui.KeyHintEssential),
 		}
 	}
 

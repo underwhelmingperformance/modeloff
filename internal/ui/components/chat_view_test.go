@@ -1121,8 +1121,6 @@ func TestRenderLine_application_feedback(t *testing.T) {
 			[]string{
 				"*** /join <channel>                  Join or create a channel",
 				"*** /help                            Show available commands.",
-				"*** formatting                      M-b/M-i/M-u/M-r/M-s toggle styles",
-				"*** formatting                      M-c colours, M-o clears formatting",
 			},
 		},
 		{

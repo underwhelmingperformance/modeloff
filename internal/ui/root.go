@@ -43,6 +43,7 @@ type QuitCompleteMsg struct {
 type AppKeyMap struct {
 	Quit        KeyBinding
 	ToggleMouse KeyBinding
+	ShowHelp    KeyBinding
 }
 
 // DefaultAppKeyMap is the default set of application-level
@@ -51,11 +52,15 @@ var DefaultAppKeyMap = AppKeyMap{
 	Quit: Bind(key.NewBinding(
 		key.WithKeys("ctrl+c"),
 		key.WithHelp("^C", "quit"),
-	)),
+	)).WithHelpMetadata(KeyHelpApplication, KeyHintLow),
 	ToggleMouse: Bind(key.NewBinding(
 		key.WithKeys("alt+m"),
 		key.WithHelp("M-m", "mouse"),
-	)),
+	)).WithHelpMetadata(KeyHelpApplication, KeyHintNone),
+	ShowHelp: Bind(key.NewBinding(
+		key.WithKeys("f1"),
+		key.WithHelp("F1", "shortcuts"),
+	)).WithHelpMetadata(KeyHelpApplication, KeyHintEssential),
 }
 
 // quitConfirmWindow is how long a first Ctrl-C leaves the quit
@@ -84,6 +89,9 @@ type Root struct {
 	mouseEnabled bool
 	quitArmedAt  time.Time
 	now          func() time.Time
+
+	helpVisible bool
+	keyHelp     keyboardHelp
 }
 
 // NewRoot creates the top-level Root model with the given initial
@@ -113,8 +121,30 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		r.width = msg.Width
 		r.height = msg.Height
+		if r.helpVisible {
+			r.keyHelp = r.keyHelp.resize(msg.Width, msg.Height)
+		}
 
 	case tea.KeyMsg:
+		if r.helpVisible {
+			if Matches(msg, r.keyMap.ShowHelp) || msg.Type == tea.KeyEsc {
+				r.helpVisible = false
+				return r, nil
+			}
+
+			var cmd tea.Cmd
+			r.keyHelp, cmd = r.keyHelp.update(msg)
+
+			return r, cmd
+		}
+
+		if Matches(msg, r.keyMap.ShowHelp) {
+			r.keyHelp = newKeyboardHelp(r.width, r.height, r.KeyBindings())
+			r.helpVisible = true
+
+			return r, nil
+		}
+
 		if Matches(msg, r.keyMap.Quit) {
 			if r.quitArmed() {
 				return r, func() tea.Msg {
@@ -136,6 +166,14 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return r, tea.DisableMouse
 		}
 
+	case tea.MouseMsg:
+		if r.helpVisible {
+			var cmd tea.Cmd
+			r.keyHelp, cmd = r.keyHelp.update(msg)
+
+			return r, cmd
+		}
+
 	case ScreenMsg:
 		r.screen = msg.Screen
 		return r, nil
@@ -153,6 +191,10 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // View implements tea.Model.
 func (r Root) View() string {
+	if r.helpVisible {
+		return r.keyHelp.view(r.width, r.height)
+	}
+
 	if r.screen == nil {
 		return ""
 	}
@@ -186,11 +228,11 @@ func (r Root) quitArmed() bool {
 // KeyBindings implements Keybinding.
 func (r Root) KeyBindings() []KeyBinding {
 	if r.screen == nil {
-		return []KeyBinding{r.keyMap.Quit, r.keyMap.ToggleMouse}
+		return []KeyBinding{r.keyMap.Quit, r.keyMap.ToggleMouse, r.keyMap.ShowHelp}
 	}
 
 	bindings := CollectKeyBindings(r.screen)
-	bindings = append(bindings, r.keyMap.Quit, r.keyMap.ToggleMouse)
+	bindings = append(bindings, r.keyMap.Quit, r.keyMap.ToggleMouse, r.keyMap.ShowHelp)
 
 	return bindings
 }

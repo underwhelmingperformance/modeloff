@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/stretchr/testify/require"
 
@@ -26,7 +27,8 @@ func (c *fakeClock) Advance(d time.Duration) {
 // stubScreen is a minimal Model for exercising Root's own routing and
 // rendering in isolation from any real screen.
 type stubScreen struct {
-	label string
+	label    string
+	bindings []KeyBinding
 }
 
 func (s stubScreen) Init() tea.Cmd { return nil }
@@ -36,6 +38,8 @@ func (s stubScreen) Update(tea.Msg) (Model, tea.Cmd) { return s, nil }
 func (s stubScreen) View(width, height int) string {
 	return fmt.Sprintf("%s:%dx%d", s.label, width, height)
 }
+
+func (s stubScreen) KeyBindings() []KeyBinding { return s.bindings }
 
 // rootFrame is the whole rendered frame as lines, which for a
 // stubScreen is fully determined: the banners Root chose, followed by
@@ -124,7 +128,7 @@ func TestRoot_ToggleMouse_flips_state_and_returns_the_matching_cmd(t *testing.T)
 	require.Equal(t, []string{"test:80x24"}, rootFrame(r))
 }
 
-func TestRoot_KeyBindings_include_quit_and_toggle_mouse(t *testing.T) {
+func TestRoot_KeyBindings_include_application_bindings(t *testing.T) {
 	r := NewRoot(stubScreen{label: "test"})
 
 	var helpKeys []string
@@ -132,5 +136,42 @@ func TestRoot_KeyBindings_include_quit_and_toggle_mouse(t *testing.T) {
 		helpKeys = append(helpKeys, b.Help().Key)
 	}
 
-	require.Equal(t, []string{"^C", "M-m"}, helpKeys)
+	require.Equal(t, []string{"^C", "M-m", "F1"}, helpKeys)
+}
+
+func TestRoot_F1_renders_keyboard_help_from_key_bindings(t *testing.T) {
+	r := NewRoot(stubScreen{
+		label: "test",
+		bindings: []KeyBinding{
+			Bind(key.NewBinding(
+				key.WithKeys("ctrl+n"),
+				key.WithHelp("^N", "next window"),
+			)).WithHelpMetadata(KeyHelpNavigation, KeyHintHigh),
+			Bind(key.NewBinding(
+				key.WithKeys("ctrl+w"),
+				key.WithHelp("^W", "delete word"),
+			)).WithHelpMetadata(KeyHelpEditing, KeyHintNone),
+		},
+	})
+	r = updateRoot(t, r, tea.WindowSizeMsg{Width: 60, Height: 12})
+	r = updateRoot(t, r, tea.KeyMsg{Type: tea.KeyF1})
+
+	require.Equal(t, []string{
+		"Keyboard shortcuts                              F1/Esc close",
+		"",
+		"Navigation",
+		"^N    next window",
+		"",
+		"Editing",
+		"^W    delete word",
+		"",
+		"Application",
+		"^C    quit",
+		"M-m   mouse",
+		"F1    shortcuts",
+	}, rootFrame(r))
+
+	r = updateRoot(t, r, tea.KeyMsg{Type: tea.KeyEsc})
+
+	require.Equal(t, []string{"test:60x12"}, rootFrame(r))
 }

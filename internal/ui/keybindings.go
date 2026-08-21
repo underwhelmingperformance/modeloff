@@ -15,11 +15,61 @@ type KeyBinding struct {
 	// Active indicates the bound action is currently engaged. The
 	// status bar renders active bindings in bold.
 	Active bool
+
+	// HelpGroup places the binding in the corresponding section of
+	// the keyboard-help view.
+	HelpGroup KeyHelpGroup
+
+	// HintPriority controls whether and how prominently the status
+	// bar presents the binding. KeyHintNone keeps the binding in the
+	// keyboard-help view without using status-bar space.
+	HintPriority KeyHintPriority
 }
+
+// KeyHelpGroup identifies a section in the keyboard-help view.
+type KeyHelpGroup string
+
+// Keyboard-help sections, in the order the help view renders them.
+const (
+	KeyHelpGeneral     KeyHelpGroup = "General"
+	KeyHelpNavigation  KeyHelpGroup = "Navigation"
+	KeyHelpMessaging   KeyHelpGroup = "Messaging"
+	KeyHelpEditing     KeyHelpGroup = "Editing"
+	KeyHelpFormatting  KeyHelpGroup = "Formatting"
+	KeyHelpCompletion  KeyHelpGroup = "Completion"
+	KeyHelpPanels      KeyHelpGroup = "Panels"
+	KeyHelpApplication KeyHelpGroup = "Application"
+)
+
+// KeyHintPriority controls a binding's status-bar precedence.
+type KeyHintPriority uint8
+
+// Status-bar hint priorities. A larger value takes precedence when
+// the bar cannot show every eligible binding.
+const (
+	KeyHintNone KeyHintPriority = iota
+	KeyHintLow
+	KeyHintNormal
+	KeyHintHigh
+	KeyHintEssential
+)
 
 // Bind wraps a key.Binding in a KeyBinding.
 func Bind(b key.Binding) KeyBinding {
-	return KeyBinding{Binding: b}
+	return KeyBinding{
+		Binding:      b,
+		HelpGroup:    KeyHelpGeneral,
+		HintPriority: KeyHintNormal,
+	}
+}
+
+// WithHelpMetadata returns a copy assigned to a keyboard-help group
+// and a status-bar hint priority.
+func (b KeyBinding) WithHelpMetadata(group KeyHelpGroup, priority KeyHintPriority) KeyBinding {
+	b.HelpGroup = group
+	b.HintPriority = priority
+
+	return b
 }
 
 // Matches reports whether a key message matches any of the given
@@ -33,8 +83,8 @@ func Matches[K fmt.Stringer](k K, bindings ...KeyBinding) bool {
 	return key.Matches(k, inner...)
 }
 
-// Keybinding is implemented by models that want to contribute
-// keybindings to the active help area.
+// Keybinding is implemented by models that contribute keybindings to
+// input handling, the status bar and keyboard help.
 type Keybinding interface {
 	KeyBindings() []KeyBinding
 }

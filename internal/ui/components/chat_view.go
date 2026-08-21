@@ -147,14 +147,14 @@ func (c ChatView[C]) KeyBindings() []ui.KeyBinding {
 			ui.Bind(key.NewBinding(
 				key.WithKeys("pgup", "pgdown"),
 				key.WithHelp("PgUp/Dn", "scroll"),
-			)),
+			)).WithHelpMetadata(ui.KeyHelpNavigation, ui.KeyHintNone),
 			c.messages.Len() > 0,
 		),
 		ui.WithBindingEnabled(
 			ui.Bind(key.NewBinding(
 				key.WithKeys("ctrl+up", "ctrl+down"),
 				key.WithHelp("^↑/↓", "scroll"),
-			)),
+			)).WithHelpMetadata(ui.KeyHelpNavigation, ui.KeyHintNone),
 			c.messages.Len() > 0,
 		),
 	}

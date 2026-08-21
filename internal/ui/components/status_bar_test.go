@@ -10,32 +10,36 @@ import (
 	"github.com/laney/modeloff/internal/ui/uitest"
 )
 
-func TestStatusBar_abbreviates_at_narrow_width(t *testing.T) {
+func TestStatusBar_renders_only_the_highest_priority_complete_hints(t *testing.T) {
 	bindings := []ui.KeyBinding{
-		ui.Bind(key.NewBinding(key.WithKeys("ctrl+d", "ctrl+u"), key.WithHelp("^D/U", "channels"))),
-		ui.Bind(key.NewBinding(key.WithKeys("ctrl+o"), key.WithHelp("^O", "switch channel"))),
-		ui.Bind(key.NewBinding(key.WithKeys("ctrl+n"), key.WithHelp("^N", "nicks"))),
-		ui.Bind(key.NewBinding(key.WithKeys("pgup", "pgdown"), key.WithHelp("PgUp/Dn", "scroll"))),
-		ui.Bind(key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("^C", "quit"))),
+		ui.Bind(key.NewBinding(key.WithKeys("ctrl+d", "ctrl+u"), key.WithHelp("^D/U", "channels"))).
+			WithHelpMetadata(ui.KeyHelpNavigation, ui.KeyHintLow),
+		ui.Bind(key.NewBinding(key.WithKeys("ctrl+o"), key.WithHelp("^O", "select window"))).
+			WithHelpMetadata(ui.KeyHelpNavigation, ui.KeyHintNormal),
+		ui.Bind(key.NewBinding(key.WithKeys("ctrl+n"), key.WithHelp("^N", "next window"))).
+			WithHelpMetadata(ui.KeyHelpNavigation, ui.KeyHintHigh),
+		ui.Bind(key.NewBinding(key.WithKeys("pgup", "pgdown"), key.WithHelp("PgUp/Dn", "scroll"))).
+			WithHelpMetadata(ui.KeyHelpNavigation, ui.KeyHintNone),
+		ui.Bind(key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("^C", "quit"))).
+			WithHelpMetadata(ui.KeyHelpApplication, ui.KeyHintLow),
+		ui.Bind(key.NewBinding(key.WithKeys("f1"), key.WithHelp("F1", "shortcuts"))).
+			WithHelpMetadata(ui.KeyHelpApplication, ui.KeyHintEssential),
 	}
 
 	tests := []struct {
-		name      string
-		width     int
-		wantFull  bool
-		wantShort bool
+		name  string
+		width int
+		want  string
 	}{
 		{
-			name:      "wide enough for full bar",
-			width:     100,
-			wantFull:  true,
-			wantShort: false,
+			name:  "wide enough for four hints",
+			width: 100,
+			want:  "^D/U channels  ^O select window  ^N next window  F1 shortcuts",
 		},
 		{
-			name:      "narrow triggers abbreviation",
-			width:     35,
-			wantFull:  false,
-			wantShort: true,
+			name:  "narrow drops whole low-priority hints",
+			width: 35,
+			want:  "^N next window  F1 shortcuts",
 		},
 	}
 
@@ -43,22 +47,19 @@ func TestStatusBar_abbreviates_at_narrow_width(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got := uitest.NonEmptyLines(RenderStatusBar(tt.width, bindings, nil))
 
-			if tt.wantFull {
-				require.Equal(t, []string{"^D/U channels  ^O switch channel  ^N nicks  PgUp/Dn scroll  ^C quit"}, got)
-			}
-
-			if tt.wantShort {
-				require.Equal(t, []string{"^D/U  ^O  ^N  PgUp/Dn  ^C"}, got)
-			}
+			require.Equal(t, []string{tt.want}, got)
 		})
 	}
 }
 
 func TestStatusBar_shows_context_hint_when_present(t *testing.T) {
 	got := uitest.NonEmptyLines(RenderStatusBar(120, []ui.KeyBinding{
-		ui.Bind(key.NewBinding(key.WithKeys("tab"), key.WithHelp("Tab", "accept"))),
-		ui.Bind(key.NewBinding(key.WithKeys("up", "down"), key.WithHelp("↑↓", "navigate"))),
-		ui.Bind(key.NewBinding(key.WithKeys("esc"), key.WithHelp("Esc", "dismiss"))),
+		ui.Bind(key.NewBinding(key.WithKeys("tab"), key.WithHelp("Tab", "accept"))).
+			WithHelpMetadata(ui.KeyHelpCompletion, ui.KeyHintHigh),
+		ui.Bind(key.NewBinding(key.WithKeys("up", "down"), key.WithHelp("↑↓", "navigate"))).
+			WithHelpMetadata(ui.KeyHelpCompletion, ui.KeyHintHigh),
+		ui.Bind(key.NewBinding(key.WithKeys("esc"), key.WithHelp("Esc", "dismiss"))).
+			WithHelpMetadata(ui.KeyHelpCompletion, ui.KeyHintHigh),
 		ui.Bind(key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("^C", "quit"))),
 	}, nil))
 
@@ -78,7 +79,7 @@ func TestStatusBar_renders_rhs_summary_when_space_allows(t *testing.T) {
 	require.Equal(t, []string{"^C quit                                                                      req 4  in 12  out 8  cache 5/2  cost 0.2500"}, got)
 }
 
-func TestStatusBar_preserves_rhs_by_shortening_key_help(t *testing.T) {
+func TestStatusBar_preserves_rhs_while_dropping_complete_key_hints(t *testing.T) {
 	got := uitest.NonEmptyLines(RenderStatusBar(80, []ui.KeyBinding{
 		ui.Bind(key.NewBinding(key.WithKeys("ctrl+d", "ctrl+u"), key.WithHelp("^D/U", "channels"))),
 		ui.Bind(key.NewBinding(key.WithKeys("ctrl+o"), key.WithHelp("^O", "switch channel"))),
@@ -96,7 +97,7 @@ func TestStatusBar_preserves_rhs_by_shortening_key_help(t *testing.T) {
 		Full:     "responding",
 	}}))
 
-	require.Equal(t, []string{"^D/U  ^O  ^L  PgUp/Dn  ^↑/↓  ↑↓  ↵  ^N  ^C                            responding"}, got)
+	require.Equal(t, []string{"^D/U channels  ^O switch channel  ^L logs  PgUp/Dn scroll             responding"}, got)
 }
 
 func TestStatusBar_compacts_lower_priority_status_first(t *testing.T) {

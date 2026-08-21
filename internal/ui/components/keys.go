@@ -57,15 +57,15 @@ var DefaultSidebarKeyMap = SidebarKeyMap{
 	Down: ui.Bind(key.NewBinding(
 		key.WithKeys("alt+down"),
 		key.WithHelp("M-↓", "↓"),
-	)),
+	)).WithHelpMetadata(ui.KeyHelpNavigation, ui.KeyHintLow),
 	Up: ui.Bind(key.NewBinding(
 		key.WithKeys("alt+up"),
 		key.WithHelp("M-↑", "↑"),
-	)),
+	)).WithHelpMetadata(ui.KeyHelpNavigation, ui.KeyHintLow),
 	Select: ui.Bind(key.NewBinding(
 		key.WithKeys("ctrl+o"),
 		key.WithHelp("^O", "select"),
-	)),
+	)).WithHelpMetadata(ui.KeyHelpNavigation, ui.KeyHintLow),
 }
 
 // EmptySidebarKeyMap carries no key bindings. The nick list has no
@@ -106,59 +106,59 @@ var DefaultInputBarKeyMap = InputBarKeyMap{
 	Submit: ui.Bind(key.NewBinding(
 		key.WithKeys("enter"),
 		key.WithHelp("↵", "send"),
-	)),
+	)).WithHelpMetadata(ui.KeyHelpMessaging, ui.KeyHintNormal),
 	HistoryUp: ui.Bind(key.NewBinding(
 		key.WithKeys("up"),
 		key.WithHelp("↑", "history"),
-	)),
+	)).WithHelpMetadata(ui.KeyHelpEditing, ui.KeyHintNone),
 	HistoryDn: ui.Bind(key.NewBinding(
 		key.WithKeys("down"),
 		key.WithHelp("↓", "history"),
-	)),
+	)).WithHelpMetadata(ui.KeyHelpEditing, ui.KeyHintNone),
 	WordLeft: ui.Bind(key.NewBinding(
 		key.WithKeys("ctrl+left", "alt+b"),
 		key.WithHelp("^←", "word ←"),
-	)),
+	)).WithHelpMetadata(ui.KeyHelpEditing, ui.KeyHintNone),
 	WordRight: ui.Bind(key.NewBinding(
 		key.WithKeys("ctrl+right", "alt+f"),
 		key.WithHelp("^→", "word →"),
-	)),
+	)).WithHelpMetadata(ui.KeyHelpEditing, ui.KeyHintNone),
 	DeleteWordBack: ui.Bind(key.NewBinding(
 		key.WithKeys("ctrl+w", "alt+backspace"),
 		key.WithHelp("^W", "del word"),
-	)),
+	)).WithHelpMetadata(ui.KeyHelpEditing, ui.KeyHintNone),
 	DeleteWordFwd: ui.Bind(key.NewBinding(
 		key.WithKeys("alt+d"),
 		key.WithHelp("M-d", "del next word"),
-	)),
+	)).WithHelpMetadata(ui.KeyHelpEditing, ui.KeyHintNone),
 	DeleteToEnd: ui.Bind(key.NewBinding(
 		key.WithKeys("ctrl+k"),
 		key.WithHelp("^K", "del → end"),
-	)),
+	)).WithHelpMetadata(ui.KeyHelpEditing, ui.KeyHintNone),
 	KillLineStart: ui.Bind(key.NewBinding(
 		key.WithKeys("ctrl+u"),
 		key.WithHelp("^U", "del → start"),
-	)),
+	)).WithHelpMetadata(ui.KeyHelpEditing, ui.KeyHintNone),
 	DeleteChar: ui.Bind(key.NewBinding(
 		key.WithKeys("ctrl+d"),
 		key.WithHelp("^D", "del char"),
-	)),
+	)).WithHelpMetadata(ui.KeyHelpEditing, ui.KeyHintNone),
 	Yank: ui.Bind(key.NewBinding(
 		key.WithKeys("ctrl+y"),
 		key.WithHelp("^Y", "yank"),
-	)),
+	)).WithHelpMetadata(ui.KeyHelpEditing, ui.KeyHintNone),
 	Transpose: ui.Bind(key.NewBinding(
 		key.WithKeys("ctrl+t"),
 		key.WithHelp("^T", "transpose"),
-	)),
+	)).WithHelpMetadata(ui.KeyHelpEditing, ui.KeyHintNone),
 	Home: ui.Bind(key.NewBinding(
 		key.WithKeys("home", "ctrl+a"),
 		key.WithHelp("Home", "line start"),
-	)),
+	)).WithHelpMetadata(ui.KeyHelpEditing, ui.KeyHintNone),
 	End: ui.Bind(key.NewBinding(
 		key.WithKeys("end", "ctrl+e"),
 		key.WithHelp("End", "line end"),
-	)),
+	)).WithHelpMetadata(ui.KeyHelpEditing, ui.KeyHintNone),
 	// ToggleBold uses ctrl+b: alt+b is already WordLeft's Emacs
 	// pairing, and every other letter a formatting toggle could
 	// plausibly use (i, u, r, s, o, c, w, d, f) is already taken by
@@ -176,35 +176,35 @@ var DefaultInputBarKeyMap = InputBarKeyMap{
 	ToggleBold: ui.Bind(key.NewBinding(
 		key.WithKeys("ctrl+b"),
 		key.WithHelp("^B", "bold"),
-	)),
+	)).WithHelpMetadata(ui.KeyHelpFormatting, ui.KeyHintNone),
 	ToggleItalic: ui.Bind(key.NewBinding(
 		key.WithKeys("alt+i"),
 		key.WithHelp("M-i", "italic"),
-	)),
+	)).WithHelpMetadata(ui.KeyHelpFormatting, ui.KeyHintNone),
 	ToggleUnderline: ui.Bind(key.NewBinding(
 		key.WithKeys("alt+u"),
 		key.WithHelp("M-u", "underline"),
-	)),
+	)).WithHelpMetadata(ui.KeyHelpFormatting, ui.KeyHintNone),
 	ToggleReverse: ui.Bind(key.NewBinding(
 		key.WithKeys("alt+r"),
 		key.WithHelp("M-r", "reverse"),
-	)),
+	)).WithHelpMetadata(ui.KeyHelpFormatting, ui.KeyHintNone),
 	ToggleStrike: ui.Bind(key.NewBinding(
 		key.WithKeys("alt+s"),
 		key.WithHelp("M-s", "strike"),
-	)),
+	)).WithHelpMetadata(ui.KeyHelpFormatting, ui.KeyHintNone),
 	OpenPalette: ui.Bind(key.NewBinding(
 		key.WithKeys("alt+c"),
 		key.WithHelp("M-c", "colour"),
-	)),
+	)).WithHelpMetadata(ui.KeyHelpFormatting, ui.KeyHintNone),
 	ResetFormat: ui.Bind(key.NewBinding(
 		key.WithKeys("alt+o"),
 		key.WithHelp("M-o", "reset fmt"),
-	)),
+	)).WithHelpMetadata(ui.KeyHelpFormatting, ui.KeyHintNone),
 	CopySelection: ui.Bind(key.NewBinding(
 		key.WithKeys("alt+w"),
 		key.WithHelp("M-w", "copy sel"),
-	)),
+	)).WithHelpMetadata(ui.KeyHelpEditing, ui.KeyHintNone),
 }
 
 // ChatViewKeyMap defines explicit scroll bindings for the chat
@@ -222,19 +222,19 @@ var DefaultChatViewKeyMap = ChatViewKeyMap{
 	PageUp: ui.Bind(key.NewBinding(
 		key.WithKeys("pgup"),
 		key.WithHelp("PgUp", "page up"),
-	)),
+	)).WithHelpMetadata(ui.KeyHelpNavigation, ui.KeyHintNone),
 	PageDown: ui.Bind(key.NewBinding(
 		key.WithKeys("pgdown"),
 		key.WithHelp("PgDn", "page down"),
-	)),
+	)).WithHelpMetadata(ui.KeyHelpNavigation, ui.KeyHintNone),
 	ScrollUp: ui.Bind(key.NewBinding(
 		key.WithKeys("ctrl+up"),
 		key.WithHelp("^↑", "up"),
-	)),
+	)).WithHelpMetadata(ui.KeyHelpNavigation, ui.KeyHintNone),
 	ScrollDown: ui.Bind(key.NewBinding(
 		key.WithKeys("ctrl+down"),
 		key.WithHelp("^↓", "down"),
-	)),
+	)).WithHelpMetadata(ui.KeyHelpNavigation, ui.KeyHintNone),
 }
 
 // ChatScreenKeyMap defines keybindings the chat screen itself owns,
@@ -252,7 +252,7 @@ var DefaultChatScreenKeyMap = ChatScreenKeyMap{
 	ToggleNickList: ui.Bind(key.NewBinding(
 		key.WithKeys("alt+n"),
 		key.WithHelp("M-n", "nicks"),
-	)),
+	)).WithHelpMetadata(ui.KeyHelpPanels, ui.KeyHintLow),
 }
 
 // WorkspaceKeyMap defines keybindings for the chat workspace and
@@ -273,19 +273,19 @@ var DefaultWorkspaceKeyMap = WorkspaceKeyMap{
 	ToggleObservability: ui.Bind(key.NewBinding(
 		key.WithKeys("alt+l"),
 		key.WithHelp("M-l", "logs"),
-	)),
+	)).WithHelpMetadata(ui.KeyHelpPanels, ui.KeyHintLow),
 	ToggleFullscreen: ui.Bind(key.NewBinding(
 		key.WithKeys("ctrl+f"),
 		key.WithHelp("^F", "fullscreen"),
-	)),
+	)).WithHelpMetadata(ui.KeyHelpPanels, ui.KeyHintLow),
 	NextPane: ui.Bind(key.NewBinding(
 		key.WithKeys("tab"),
 		key.WithHelp("Tab", "next pane"),
-	)),
+	)).WithHelpMetadata(ui.KeyHelpPanels, ui.KeyHintHigh),
 	ExitFullscreen: ui.Bind(key.NewBinding(
 		key.WithKeys("esc"),
 		key.WithHelp("Esc", "exit fullscreen"),
-	)),
+	)).WithHelpMetadata(ui.KeyHelpPanels, ui.KeyHintEssential),
 }
 
 // WindowSwitchKeyMap defines the keybindings for switching between
@@ -311,17 +311,17 @@ var DefaultWindowSwitchKeyMap = WindowSwitchKeyMap{
 	Direct: ui.Bind(key.NewBinding(
 		key.WithKeys("alt+1", "alt+2", "alt+3", "alt+4", "alt+5", "alt+6", "alt+7", "alt+8", "alt+9"),
 		key.WithHelp("M-1..9", "switch window"),
-	)),
+	)).WithHelpMetadata(ui.KeyHelpNavigation, ui.KeyHintLow),
 	NextActivity: ui.Bind(key.NewBinding(
 		key.WithKeys("alt+a"),
 		key.WithHelp("M-a", "next active"),
-	)),
+	)).WithHelpMetadata(ui.KeyHelpNavigation, ui.KeyHintNormal),
 	Next: ui.Bind(key.NewBinding(
 		key.WithKeys("ctrl+n"),
 		key.WithHelp("^N", "next window"),
-	)),
+	)).WithHelpMetadata(ui.KeyHelpNavigation, ui.KeyHintNormal),
 	Previous: ui.Bind(key.NewBinding(
 		key.WithKeys("ctrl+p"),
 		key.WithHelp("^P", "prev window"),
-	)),
+	)).WithHelpMetadata(ui.KeyHelpNavigation, ui.KeyHintLow),
 }

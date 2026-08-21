@@ -1,6 +1,7 @@
 package components
 
 import (
+	"cmp"
 	"slices"
 	"strings"
 
@@ -16,21 +17,16 @@ var (
 	dimSeparator   = dimStyle.Render("  ")
 )
 
+const maxStatusKeyHints = 4
+
 // RenderStatusBar renders the active keybindings and status items.
 func RenderStatusBar(width int, bindings []ui.KeyBinding, items []ui.StatusItem) string {
 	leftItems := filterStatusItems(items, ui.StatusSideLeft)
 	rightItems := filterStatusItems(items, ui.StatusSideRight)
 
-	fullKeys, shortKeys := renderKeyTexts(bindings)
-	leftTexts := []string{fullKeys}
-	if shortKeys != fullKeys {
-		leftTexts = append(leftTexts, shortKeys)
-	}
-	leftTexts = append(leftTexts, "")
-
-	var best string
-
-	for _, keyText := range leftTexts {
+	hints := statusKeyHints(bindings)
+	for {
+		keyText := renderKeyHints(hints)
 		rightBudget := width - lipgloss.Width(keyText)
 		if keyText != "" {
 			rightBudget--
@@ -45,18 +41,21 @@ func RenderStatusBar(width int, bindings []ui.KeyBinding, items []ui.StatusItem)
 		leftBudget = max(leftBudget, 0)
 
 		leftText := assembleLeftText(keyText, leftItems, leftBudget)
+		result := composeStatusLine(leftText, rightText, width)
+		if lipgloss.Width(keyText) <= leftBudget && lipgloss.Width(result) <= width {
+			if result == "" {
+				return ""
+			}
 
-		best = composeStatusLine(leftText, rightText, width)
-		if best != "" && lipgloss.Width(best) <= width {
-			break
+			return lipgloss.PlaceHorizontal(width, lipgloss.Left, result)
 		}
-	}
 
-	if best == "" {
-		return ""
-	}
+		if len(hints) == 0 {
+			return ""
+		}
 
-	return lipgloss.PlaceHorizontal(width, lipgloss.Left, truncateLine(best, width))
+		hints = dropLowestPriorityHint(hints)
+	}
 }
 
 func assembleLeftText(keyText string, leftItems []ui.StatusItem, leftBudget int) string {
@@ -95,16 +94,45 @@ func composeStatusLine(leftText, rightText string, width int) string {
 	return lipgloss.JoinHorizontal(lipgloss.Top, leftText, spacing, rightText)
 }
 
-func renderKeyTexts(bindings []ui.KeyBinding) (string, string) {
+type statusKeyHint struct {
+	binding  ui.KeyBinding
+	order    int
+	priority ui.KeyHintPriority
+}
+
+func statusKeyHints(bindings []ui.KeyBinding) []statusKeyHint {
 	active := ui.ActiveKeyBindings(bindings)
-	if len(active) == 0 {
-		return "", ""
+	hints := make([]statusKeyHint, 0, len(active))
+
+	for i, binding := range active {
+		priority := binding.HintPriority
+		if binding.Active {
+			priority = max(priority, ui.KeyHintHigh)
+		}
+
+		if priority == ui.KeyHintNone {
+			continue
+		}
+
+		hints = append(hints, statusKeyHint{binding: binding, order: i, priority: priority})
 	}
 
-	fullParts := make([]string, 0, len(active))
-	shortParts := make([]string, 0, len(active))
+	slices.SortStableFunc(hints, func(a, b statusKeyHint) int {
+		return cmp.Compare(b.priority, a.priority)
+	})
+	hints = hints[:min(len(hints), maxStatusKeyHints)]
+	slices.SortFunc(hints, func(a, b statusKeyHint) int {
+		return cmp.Compare(a.order, b.order)
+	})
 
-	for _, binding := range active {
+	return hints
+}
+
+func renderKeyHints(hints []statusKeyHint) string {
+	parts := make([]string, 0, len(hints))
+
+	for _, hint := range hints {
+		binding := hint.binding
 		help := binding.Help()
 		style := dimStyle
 		if binding.Active {
@@ -112,17 +140,33 @@ func renderKeyTexts(bindings []ui.KeyBinding) (string, string) {
 		}
 
 		keyLabel := style.Render(help.Key)
-		shortParts = append(shortParts, keyLabel)
-
 		if help.Desc == "" {
-			fullParts = append(fullParts, keyLabel)
+			parts = append(parts, keyLabel)
 			continue
 		}
 
-		fullParts = append(fullParts, lipgloss.JoinHorizontal(lipgloss.Top, keyLabel, " ", style.Render(help.Desc)))
+		parts = append(parts, lipgloss.JoinHorizontal(lipgloss.Top, keyLabel, " ", style.Render(help.Desc)))
 	}
 
-	return joinWithSeparator(fullParts), joinWithSeparator(shortParts)
+	return joinWithSeparator(parts)
+}
+
+func dropLowestPriorityHint(hints []statusKeyHint) []statusKeyHint {
+	lowest := ui.KeyHintEssential
+	index := -1
+
+	for i, hint := range hints {
+		if hint.priority <= lowest {
+			lowest = hint.priority
+			index = i
+		}
+	}
+
+	if index < 0 {
+		return nil
+	}
+
+	return slices.Delete(hints, index, index+1)
 }
 
 func joinWithSeparator(parts []string) string {

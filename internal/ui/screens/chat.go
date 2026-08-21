@@ -596,7 +596,11 @@ func (s ChatScreen) layoutHeight() int {
 // KeyBindings implements ui.Keybinding.
 func (s ChatScreen) KeyBindings() []ui.KeyBinding {
 	bindings := ui.CollectKeyBindings(s.layout)
-	bindings = append(bindings, s.keyMap.ToggleNickList, ui.DefaultAppKeyMap.Quit)
+	bindings = append(bindings,
+		s.keyMap.ToggleNickList,
+		ui.DefaultAppKeyMap.Quit,
+		ui.DefaultAppKeyMap.ShowHelp,
+	)
 
 	return bindings
 }
