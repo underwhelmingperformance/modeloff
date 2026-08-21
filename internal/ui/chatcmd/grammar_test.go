@@ -140,8 +140,11 @@ func TestNewParser_produces_all_commands(t *testing.T) {
 	join := set.Find("join")
 	require.Equal(t, []string{"j"}, join.Aliases)
 
+	query := set.Find("query")
+	require.Equal(t, []string{"q"}, query.Aliases)
+
 	quit := set.Find("quit")
-	require.Equal(t, []string{"q"}, quit.Aliases)
+	require.Empty(t, quit.Aliases)
 
 	help := set.Find("help")
 	require.Equal(t, []string{"?"}, help.Aliases)
@@ -163,6 +166,15 @@ func TestNewParser_parse_returns_typed_command(t *testing.T) {
 			require.Equal(t, HelpCommand{}, cmd)
 		})
 	}
+}
+
+func TestNewParser_q_alias_parses_as_query(t *testing.T) {
+	cmd, err := testParser.Parse("/q fakenick hello there")
+	require.NoError(t, err)
+	require.Equal(t, QueryCommand{
+		Nick: "fakenick",
+		Body: []string{"hello", "there"},
+	}, cmd)
 }
 
 func TestQuitCommand_quitMessage_defaults_to_leaving(t *testing.T) {

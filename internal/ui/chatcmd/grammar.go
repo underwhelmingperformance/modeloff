@@ -16,7 +16,7 @@ type Grammar struct {
 	Kick               KickCommand               `cmd:"" tool:"" kind:"channel" help:"Remove a nick from the current channel."`
 	Kill               KillCommand               `cmd:"" caps:"operator" tool:"Forcibly disconnect a model instance from the server with a reason." help:"Disconnect a model instance from the server."`
 	Msg                MsgCommand                `cmd:"" tool:"Send a message addressed to either a #channel you are in, or a user (by nick). The recipient sees the message and may reply." help:"Send a message to a #channel or to a user by nick."`
-	Query              QueryCommand              `cmd:"" help:"Open (or focus) a direct-message window with a nick. Optional trailing body is sent as the first message."`
+	Query              QueryCommand              `cmd:"" aliases:"q" help:"Open (or focus) a direct-message window with a nick. Optional trailing body is sent as the first message."`
 	Close              CloseCommand              `cmd:"" aliases:"wc,unquery" help:"Close the current window, parting the channel if it is one."`
 	Nick               NickCommand               `cmd:"" tool:"" help:"Change your nickname."`
 	Topic              TopicCommand              `cmd:"" tool:"" kind:"channel" help:"Set or clear the current channel topic."`
@@ -29,7 +29,7 @@ type Grammar struct {
 	Help               HelpCommand               `cmd:"" aliases:"?" tool:"" help:"Show available commands."`
 	Clear              ClearCommand              `cmd:"" help:"Clear the current window."`
 	Poke               PokeCommand               `cmd:"" help:"Poke idle channels now to prompt model activity."`
-	Quit               QuitCommand               `cmd:"" aliases:"q" tool:"Shut down your instance and leave all channels." help:"Exit modeloff."`
+	Quit               QuitCommand               `cmd:"" tool:"Shut down your instance and leave all channels." help:"Exit modeloff."`
 	Pass               PassCommand               `tool:"Explicitly record that you have nothing to say this turn, with a brief reason. Silence is the default — you only need to call this if you want the reason captured for observability. Do not call this in the same turn as a msg or me tool."`
 }
 
