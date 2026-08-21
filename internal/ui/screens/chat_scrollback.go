@@ -27,7 +27,7 @@ func (s ChatScreen) bufferEvent(evt domain.Event) tea.Cmd {
 	switch e := evt.(type) {
 	case domain.Message:
 		key, ok := e.RoutingKey(s.user.Instance().ID())
-		if !ok || key == "" {
+		if !ok {
 			return nil
 		}
 
@@ -143,7 +143,7 @@ func (s ChatScreen) lifecycleBumps(channels []domain.ChannelName, actor *domain.
 	var cmds []tea.Cmd
 
 	for _, ch := range channels {
-		if ch == s.active {
+		if s.active != nil && ch == s.active.Name() {
 			continue
 		}
 
@@ -164,7 +164,7 @@ func (s ChatScreen) lifecycleBumps(channels []domain.ChannelName, actor *domain.
 			continue
 		}
 
-		if dm.Name() == s.active {
+		if s.active != nil && dm.Name() == s.active.Name() {
 			continue
 		}
 
@@ -217,8 +217,8 @@ func (s ChatScreen) appendToScrollback(ch domain.ChannelName, evt domain.Event) 
 // focused, since a running session always lands on one once any
 // channel exists (see bootstrapFromSession).
 func (s ChatScreen) appendDispatchFailure(e domain.ModelUnavailableError) {
-	target := s.fallbackTarget(e.Channel)
-	if target == "" {
+	target, ok := s.fallbackTarget(e.Channel)
+	if !ok {
 		target = domain.StatusChannelName
 	}
 

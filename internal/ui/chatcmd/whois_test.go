@@ -15,7 +15,7 @@ import (
 func TestWhoisCommand_ToCommand_carries_issuing_window(t *testing.T) {
 	cmd := WhoisCommand{Nick: "claud3"}
 
-	got, err := cmd.ToCommand(Context{Active: "#dev"})
+	got, err := cmd.ToCommand(Context{Active: domain.WindowKey("#dev")})
 	require.NoError(t, err)
 	require.Equal(t, protocol.Whois{
 		Nick:    domain.Nick("claud3"),

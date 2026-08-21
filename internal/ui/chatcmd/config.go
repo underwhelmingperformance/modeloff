@@ -815,8 +815,10 @@ func formatWords(words []string) string {
 // invoking window, the shape every `/config` bare-show and full-
 // dump reply uses.
 func configNotice(rc Context, text string) domain.SystemNotice {
+	target, _ := rc.ActiveName()
+
 	return domain.SystemNotice{
-		Target: rc.Active,
+		Target: target,
 		Text:   text,
 		At:     time.Now(),
 	}

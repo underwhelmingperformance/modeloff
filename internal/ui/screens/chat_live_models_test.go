@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"sync"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/stretchr/testify/require"
@@ -130,7 +131,10 @@ func TestChatScreen_handleLiveModelsLoadFailed(t *testing.T) {
 
 			screen, err := NewChatScreen(t.Context, sess, mgr, user, nil, nil, domain.KindStatus)
 			require.NoError(t, err)
-			screen, _ = screen.focus(tc.active)
+			if tc.active != "" {
+				screen.channels.Insert(newWindow(domain.NewChannelWindow(tc.active, time.Time{})))
+				screen, _ = screen.focus(tc.active)
+			}
 			screen, _ = screen.setLiveModels(placeholderModels(), command.SuggestionStateReady)
 
 			screen, cmd := screen.handleLiveModelsLoadFailed(liveModelsLoadFailedMsg{err: upstreamErr})

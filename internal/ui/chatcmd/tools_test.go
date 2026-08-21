@@ -292,7 +292,7 @@ func TestJoinCommand_Run_multi_target_partial_success_shows_a_notice(t *testing.
 	require.NoError(t, s.SaveWindow(t.Context(), locked))
 
 	join := JoinCommand{Channel: "#open,#locked"}
-	rc := Context{Client: user, Active: "#general"}
+	rc := Context{Client: user, Active: domain.WindowKey("#general")}
 
 	msg := join.Run(t.Context(), rc)()
 
@@ -331,7 +331,7 @@ func TestJoinCommand_Run_focuses_the_channel_the_server_joined(t *testing.T) {
 			require.NoError(t, s.SaveWindow(t.Context(), domain.NewChannelWindow("#dev", time.Now())))
 
 			join := JoinCommand{Channel: tt.typed}
-			msg := join.Run(t.Context(), Context{Client: user, Active: "#general"})()
+			msg := join.Run(t.Context(), Context{Client: user, Active: domain.WindowKey("#general")})()
 
 			focus, ok := msg.(ChannelFocusMsg)
 			require.True(t, ok, "expected ChannelFocusMsg, got %T", msg)

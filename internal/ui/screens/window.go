@@ -4,7 +4,6 @@ import (
 	"time"
 
 	"github.com/laney/modeloff/internal/domain"
-	"github.com/laney/modeloff/internal/set"
 	"github.com/laney/modeloff/internal/ui/components"
 )
 
@@ -93,25 +92,23 @@ func (w *Window) Less(other *Window) bool {
 // event-loop goroutine, so one goroutine reads and writes the record
 // and it needs no synchronisation.
 type visibleWindow struct {
-	channels *set.Sorted[*Window]
-	name     domain.ChannelName
+	window *Window
 }
 
 // content returns the visible window and its event history. It is
 // the closure the message list calls on every render, and it answers
 // with both together so the list can tell which window's events it
-// has: [ChatScreen.focus] moves the name during its own Update, and
-// the chat view hears about the switch a message later.
+// has: [ChatScreen.focus] moves the typed handle during its own
+// Update, and the chat view hears about the switch a message later.
 func (v *visibleWindow) content() components.WindowContent {
-	w, ok := v.channels.Get(windowKey(v.name))
-	if !ok {
-		return components.WindowContent{Channel: v.name}
+	if v.window == nil {
+		return components.WindowContent{}
 	}
 
 	return components.WindowContent{
-		Channel:  v.name,
-		Events:   w.Scrollback.Events(),
-		FirstSeq: w.Scrollback.FirstSeq(),
+		Channel:  v.window.Name(),
+		Events:   v.window.Scrollback.Events(),
+		FirstSeq: v.window.Scrollback.FirstSeq(),
 	}
 }
 

@@ -31,8 +31,9 @@ import (
 // embedded harness can pass `nil` to opt out of persistence
 // without faking the whole store interface.
 type UIStateStore interface {
-	GetLastChannel(ctx context.Context) (domain.ChannelName, error)
-	SetLastChannel(ctx context.Context, name domain.ChannelName) error
+	GetLastWindow(ctx context.Context) (domain.Window, error)
+	SetLastWindow(ctx context.Context, window domain.Window) error
+	ClearLastWindow(ctx context.Context) error
 }
 
 // SessionReader is the read-only slice of the session the chat-screen
@@ -119,12 +120,10 @@ type ChatScreen struct {
 	width  int
 	height int
 
-	// active names the window the user is looking at. It is a plain
-	// value: an `Update` arm that needs the window a command was
-	// issued against reads it before building the `tea.Cmd`, so the
-	// command carries the window the user typed in even if the user
-	// switches away before Bubble Tea runs it.
-	active domain.ChannelName
+	// active is the canonical window the user is looking at. Nil
+	// means the welcome state has no window selected. A non-nil DM
+	// may have an empty name when its counterpart is the user.
+	active *Window
 
 	// visible is the render-side handle to the same window. The
 	// message list is built once, in [NewChatScreen], and reads the
@@ -198,7 +197,7 @@ type ChatScreen struct {
 // focus event.
 func NewChatScreen(baseContext func() context.Context, sess SessionReader, mgr *modelmanager.Manager, user *userclient.UserClient, cfgStore config.Store, uiState UIStateStore, initialKind domain.ChannelKind) (ChatScreen, error) {
 	channels := set.NewSorted[*Window]()
-	visible := &visibleWindow{channels: channels}
+	visible := &visibleWindow{}
 
 	sidebar := components.NewChannelSidebar()
 	chatView := components.NewChatView[chatcmd.CompletionContext](visible.content, "", initialKind, user.Nick(), "")
@@ -373,9 +372,9 @@ func (s ChatScreen) bootstrapFromSession() []tea.Cmd {
 	// where the user left off.
 	landing, at := newestName, newestTime
 
-	if last, ok := s.restoredChannel(); ok {
-		if _, open := joined[last]; open {
-			landing, at = last, time.Now()
+	if last, ok := s.restoredWindow(); ok && last.Kind() == domain.KindChannel {
+		if _, open := joined[last.Name()]; open {
+			landing, at = last.Name(), time.Now()
 		}
 	}
 
@@ -386,27 +385,27 @@ func (s ChatScreen) bootstrapFromSession() []tea.Cmd {
 	return cmds
 }
 
-// restoredChannel reads the window the user had open when they last
+// restoredWindow reads the window the user had open when they last
 // quit. A screen built without a [UIStateStore] has no preference to
 // restore, and a read failure is reported and treated the same way:
 // the caller falls back to the freshest join.
-func (s ChatScreen) restoredChannel() (domain.ChannelName, bool) {
+func (s ChatScreen) restoredWindow() (domain.Window, bool) {
 	if s.uiState == nil {
-		return "", false
+		return nil, false
 	}
 
-	last, err := s.uiState.GetLastChannel(s.baseContext())
+	last, err := s.uiState.GetLastWindow(s.baseContext())
 	if err != nil {
-		slog.Default().WarnContext(s.baseContext(), "read last channel",
+		slog.Default().WarnContext(s.baseContext(), "read last window",
 			"component", "ui",
 			"screen", "chat",
 			"error", err,
 		)
 
-		return "", false
+		return nil, false
 	}
 
-	return last, last != ""
+	return last, last != nil
 }
 
 // Update implements ui.Model. It adapts the concrete screen the
@@ -555,7 +554,7 @@ func (s ChatScreen) completionSet() command.CompletionSet[chatcmd.CompletionCont
 			Instances:      s.otherInstances,
 			ChannelMembers: s.activeChannelInstances,
 			ActiveMembers:  func() iter.Seq[domain.Nick] { return s.activeMemberNicks() },
-			ActiveChannel:  func() domain.ChannelName { return s.active },
+			ActiveChannel:  func() domain.ChannelName { return s.activeName() },
 			UserNick:       func() domain.Nick { return s.user.Nick() },
 			LiveModels: func() iter.Seq[chatcmd.ModelOption] {
 				return slices.Values(s.liveModels)

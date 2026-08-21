@@ -72,17 +72,19 @@ func ParseMsgTarget(raw string) MsgTarget {
 	return NickTarget(raw)
 }
 
-// TargetForWindow addresses the conversation a client already has
-// open, given the name it keeps that window under. A channel window
-// addresses its channel; a DM window is keyed by its counterpart's
-// [domain.InstanceID] (see [domain.DMWindow]), so it addresses that
-// client by identity.
-func TargetForWindow(name domain.ChannelName) MsgTarget {
-	if domain.InferChannelKind(name) == domain.KindDM {
-		return ClientTarget(name)
+// TargetForWindow addresses the conversation represented by a typed
+// window. A channel window addresses its channel. A DM window
+// addresses its counterpart by immutable identity, including the
+// user whose identity is the empty [domain.InstanceID].
+//
+// A status window has no server-side message target. Callers must
+// reject it before constructing a PRIVMSG or ACTION.
+func TargetForWindow(window domain.Window) MsgTarget {
+	if window.Kind() == domain.KindDM {
+		return ClientTarget(window.Name())
 	}
 
-	return ChannelTarget(name)
+	return ChannelTarget(window.Name())
 }
 
 // WindowName is [TargetForWindow]'s inverse: the name of the window a

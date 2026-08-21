@@ -578,9 +578,9 @@ func TestSession_Join(t *testing.T) {
 		require.NoError(t, err)
 		requireChannelEqual(t, newTestChannelWindow("#general", fixedTime, testMembers(t, sess, s, "testuser")), ch)
 
-		last, err := s.GetLastChannel(ctx)
+		last, err := s.GetLastWindow(ctx)
 		require.NoError(t, err)
-		require.Equal(t, domain.ChannelName(""), last)
+		require.Nil(t, last)
 	})
 }
 

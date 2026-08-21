@@ -37,10 +37,21 @@ type Context struct {
 	Session    modelclient.SessionAPI
 	Manager    modelclient.ManagerAPI
 	Config     config.Store
-	Active     domain.ChannelName
+	Active     domain.Window
 	Actor      *domain.Instance
 	Client     protocol.Client
 	Invocation command.Invocation[CompletionContext]
+}
+
+// ActiveName returns the active window's addressable name. Its
+// second result distinguishes no active window from the user's
+// self-DM, whose name is the empty string.
+func (rc Context) ActiveName() (domain.ChannelName, bool) {
+	if rc.Active == nil {
+		return "", false
+	}
+
+	return rc.Active.Name(), true
 }
 
 // HelpResult signals that the help screen should be shown.
@@ -154,7 +165,9 @@ type PersonaResetResult struct {
 // (`rc.Active`) so the chat-screen renders it there even if the user
 // has switched windows by the time the event arrives.
 func (rc Context) errorEvent(operation string, err error) domain.ErrorEvent {
-	return domain.ErrorEvent{Operation: operation, Err: err, Target: rc.Active, At: time.Now()}
+	target, _ := rc.ActiveName()
+
+	return domain.ErrorEvent{Operation: operation, Err: err, Target: target, At: time.Now()}
 }
 
 // protocolCommand is implemented by any chatcmd that translates to a
@@ -223,7 +236,11 @@ func sendCommand(ctx context.Context, rc Context, c protocolCommand, operation s
 // empty, and the tools that need one have already refused by the
 // time this runs.
 func toolContext(tc modelclient.ToolContext) Context {
-	window, _ := protocol.WindowName(tc.Target)
+	name, ok := protocol.WindowName(tc.Target)
+	var window domain.Window
+	if ok {
+		window = domain.WindowKey(name)
+	}
 
 	return Context{
 		Session: tc.Session,

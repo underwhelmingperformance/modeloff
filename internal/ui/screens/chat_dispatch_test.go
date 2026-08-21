@@ -56,13 +56,13 @@ func containsMsg[T any](msgs []tea.Msg) (T, bool) {
 
 func TestChatScreen_ModelDispatchStarted_marks_nick_thinking(t *testing.T) {
 	screen := newScreenFixture(t)
-	screen, _ = screen.focus("#general")
 
 	botty := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
 
 	cw := domain.NewChannelWindow("#general", time.Time{})
 	cw.Members.Add(botty)
 	screen.channels.Insert(newWindow(cw))
+	screen, _ = screen.focus("#general")
 
 	_, cmd := screen.handleModelDispatchStarted(domain.ModelDispatchStarted{Instance: botty})
 
@@ -101,7 +101,6 @@ func TestChatScreen_ModelDispatchDone_clears_nick_thinking(t *testing.T) {
 // its turn.
 func TestChatScreen_ModelDispatchDone_keeps_thinking_with_concurrent_dispatch(t *testing.T) {
 	screen := newScreenFixture(t)
-	screen, _ = screen.focus("#general")
 
 	botty := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
 	other := domain.NewModelInstance("inst-other", "other", "test/model", "", nil)
@@ -110,6 +109,7 @@ func TestChatScreen_ModelDispatchDone_keeps_thinking_with_concurrent_dispatch(t 
 	cw.Members.Add(botty)
 	cw.Members.Add(other)
 	screen.channels.Insert(newWindow(cw))
+	screen, _ = screen.focus("#general")
 
 	screen.dispatching[botty] = true
 	screen.dispatching[other] = true
@@ -132,6 +132,7 @@ func TestChatScreen_ModelReply_queues_and_paces(t *testing.T) {
 
 	screen, err := NewChatScreen(t.Context, sess, mgr, user, nil, nil, domain.KindStatus)
 	require.NoError(t, err)
+	screen.channels.Insert(newWindow(domain.NewChannelWindow("#general", time.Time{})))
 	screen, _ = screen.focus("#general")
 
 	// First reply is delivered immediately (via deliverNextPacedMsg).
@@ -196,6 +197,8 @@ func TestChatScreen_ModelReply_paces_per_channel_independently(t *testing.T) {
 
 	screen, err := NewChatScreen(t.Context, sess, mgr, user, nil, nil, domain.KindStatus)
 	require.NoError(t, err)
+	screen.channels.Insert(newWindow(domain.NewChannelWindow("#channel-a", time.Time{})))
+	screen.channels.Insert(newWindow(domain.NewChannelWindow("#channel-b", time.Time{})))
 	screen, _ = screen.focus("#channel-a")
 
 	// Two replies queued for #channel-a: first delivers immediately,
@@ -342,6 +345,7 @@ func TestChatScreen_handleProtocolEvent_routing(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			screen := newScreenFixture(t)
+			screen.channels.Insert(newWindow(domain.NewChannelWindow("#general", time.Time{})))
 			screen, _ = screen.focus("#general")
 
 			// The handler returns tea.Batch(innerCmd, re-arm-listener).
@@ -584,7 +588,7 @@ func TestChatScreen_ErrorEvent_dm_window_closed_before_it_arrives(t *testing.T) 
 	// closeWindow is what /close runs on a query window.
 	screen, closeCmd := screen.closeWindow(dm.Name(), time.Now())
 	collectMsgs(closeCmd)
-	require.Equal(t, domain.ChannelName("#other"), screen.active,
+	require.Equal(t, domain.ChannelName("#other"), screen.active.Name(),
 		"closing the only other window in view must land the user on #other")
 
 	screen, cmd := screen.handleErrorEvent(errEvent)

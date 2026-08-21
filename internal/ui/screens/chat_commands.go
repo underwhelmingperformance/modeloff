@@ -46,11 +46,16 @@ func (s ChatScreen) routeInput(msg tea.Msg) (ChatScreen, tea.Cmd, bool) {
 }
 
 func (s ChatScreen) runContext() chatcmd.Context {
+	var active domain.Window
+	if s.active != nil {
+		active = s.active.Window
+	}
+
 	return chatcmd.Context{
 		Session: s.sess,
 		Manager: s.mgr,
 		Config:  s.cfgStore,
-		Active:  s.active,
+		Active:  active,
 		Actor:   s.user.Instance(),
 		Client:  s.client,
 	}
@@ -79,13 +84,13 @@ func (s ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
 			"error", err,
 		)
 
-		return func() tea.Msg { return errorEvent(s.active, "command", err) }
+		return func() tea.Msg { return errorEvent(s.activeName(), "command", err) }
 	}
 
 	cmd, ok := invocation.Leaf().(chatcmd.Command)
 	if !ok {
 		return func() tea.Msg {
-			return errorEvent(s.active, "command",
+			return errorEvent(s.activeName(), "command",
 				fmt.Errorf("parsed command %T does not implement the expected command interface", invocation.Leaf()))
 		}
 	}
@@ -94,7 +99,7 @@ func (s ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
 		"component", "ui",
 		"command", invocation.Selected().Name,
 		"raw", raw,
-		"channel", string(s.active),
+		"channel", string(s.activeName()),
 	)
 
 	rc := s.runContext()
@@ -106,7 +111,7 @@ func (s ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
 func (s ChatScreen) handlePoke() tea.Cmd {
 	return func() tea.Msg {
 		if err := s.user.Poke(s.baseContext()); err != nil {
-			return errorEvent(s.active, "poke", err)
+			return errorEvent(s.activeName(), "poke", err)
 		}
 
 		return nil
@@ -125,13 +130,13 @@ func (s ChatScreen) handlePoke() tea.Cmd {
 // between the submit and Bubble Tea running the command cannot
 // redirect the line the user typed.
 func (s ChatScreen) handleMessageSubmit(msg components.MessageSubmitMsg) (ChatScreen, tea.Cmd) {
-	if s.active == "" {
+	if s.active == nil {
 		return s, s.logAndShow(domain.UsageHint{
 			Usage: "join a channel first", At: time.Now(),
 		})
 	}
 
-	if s.active == domain.StatusChannelName {
+	if s.active.Kind() == domain.KindStatus {
 		return s, s.logAndShow(domain.UsageHint{
 			Command: "send",
 			Usage:   "the status channel doesn't take messages — try /msg <nick-or-#channel> instead",
@@ -149,10 +154,10 @@ func (s ChatScreen) handleMessageSubmit(msg components.MessageSubmitMsg) (ChatSc
 // bus via echo-message and renders through the normal event path;
 // only a failure surfaces here, labelled with the `operation` the
 // user asked for.
-func (s ChatScreen) sendMessageCmd(operation string, target domain.ChannelName, body string) tea.Cmd {
+func (s ChatScreen) sendMessageCmd(operation string, target *Window, body string) tea.Cmd {
 	return func() tea.Msg {
-		if _, err := s.user.SendMessage(s.baseContext(), target, body); err != nil {
-			return domain.ErrorEvent{Operation: operation, Err: err, Target: target, At: time.Now()}
+		if _, err := s.user.SendMessage(s.baseContext(), target.Window, body); err != nil {
+			return domain.ErrorEvent{Operation: operation, Err: err, Target: target.Name(), At: time.Now()}
 		}
 
 		return nil

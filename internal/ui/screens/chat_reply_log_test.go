@@ -31,6 +31,7 @@ func newReplyLogFixture(t *testing.T) replyLogFixture {
 	screen, err := NewChatScreen(t.Context, sess, mgr, user, nil, nil, domain.KindStatus)
 	require.NoError(t, err)
 
+	screen.channels.Insert(newWindow(domain.NewChannelWindow("#general", time.Time{})))
 	screen, _ = screen.focus("#general")
 
 	return replyLogFixture{screen: screen, sess: sess}

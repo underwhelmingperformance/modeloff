@@ -155,7 +155,7 @@ func TestChatScreen_Init_lands_on_the_dm_window_left_open(t *testing.T) {
 	uitest.SeedChannel(t, h.user, "#general")
 	seedInstance(t, h, "inst-botty", "botty")
 	require.NoError(t, h.store.AddDMWindow(ctx, "inst-botty"))
-	require.NoError(t, h.store.SetLastChannel(ctx, "inst-botty"))
+	require.NoError(t, h.store.SetLastWindow(ctx, domain.WindowKey("inst-botty")))
 
 	chatScreen, err := screens.NewChatScreen(t.Context, h.sess, h.mgr, h.user, newFakeConfigStore(), h.store, domain.KindStatus)
 	require.NoError(t, err)
@@ -163,6 +163,21 @@ func TestChatScreen_Init_lands_on_the_dm_window_left_open(t *testing.T) {
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen), teatest.WithInitialTermSize(termWidth, termHeight))
 
 	tm.WaitForViewContains("▸botty")
+}
+
+func TestChatScreen_Init_lands_on_the_self_DM_window_left_open(t *testing.T) {
+	h := newTestSession(t)
+	ctx := t.Context()
+
+	require.NoError(t, h.store.AddDMWindow(ctx, ""))
+	require.NoError(t, h.store.SetLastWindow(ctx, domain.WindowKey("")))
+
+	chatScreen, err := screens.NewChatScreen(t.Context, h.sess, h.mgr, h.user, newFakeConfigStore(), h.store, domain.KindStatus)
+	require.NoError(t, err)
+
+	tm := uitest.New(t, uipkg.NewRoot(chatScreen), teatest.WithInitialTermSize(termWidth, termHeight))
+
+	tm.WaitForViewContains("▸testuser")
 }
 
 // TestChatScreen_query_records_the_open_dm_window pins the write

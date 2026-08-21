@@ -532,7 +532,7 @@ func (mc *ModelClient) dispatchTurn(ctx context.Context, batch *turnBatch) error
 			// comes from [dispatchTrigger], which names a window only
 			// alongside a turn to run in it, so a tool cannot be handed
 			// a target derived from a window that was never there.
-			target:      protocol.TargetForWindow(ch),
+			target:      protocol.TargetForWindow(window),
 			history:     batch.history,
 			replies:     mc.hist.snapshotReplies(),
 			triggers:    batch.triggers,

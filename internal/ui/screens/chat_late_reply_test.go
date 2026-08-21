@@ -78,7 +78,7 @@ func TestChatScreen_late_reply_to_a_closed_dm(t *testing.T) {
 
 			screen, closeCmd := screen.closeWindow(dm.Name(), time.Now())
 			collectMsgs(closeCmd)
-			require.Equal(t, domain.ChannelName("#other"), screen.active,
+			require.Equal(t, domain.ChannelName("#other"), screen.active.Name(),
 				"closing the window in view must land the user on #other")
 
 			screen, _ = screen.update(reply)
@@ -143,7 +143,7 @@ func TestChatScreen_late_reply_with_no_window_in_view(t *testing.T) {
 
 			screen, closeCmd := screen.closeWindow("#a", time.Now())
 			collectMsgs(closeCmd)
-			require.Equal(t, domain.ChannelName(""), screen.active,
+			require.Nil(t, screen.active,
 				"parting the only real channel leaves the user looking at nothing")
 
 			screen, cmd := screen.update(reply)

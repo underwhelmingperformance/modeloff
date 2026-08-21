@@ -170,7 +170,9 @@ func (c JoinCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 
 		outcome := newJoinOutcome(resp.Events)
 		if len(outcome.Refused) > 0 {
-			return ReplyEvents{domain.SystemNotice{Target: rc.Active, Text: outcome.Text(), At: time.Now()}}
+			target, _ := rc.ActiveName()
+
+			return ReplyEvents{domain.SystemNotice{Target: target, Text: outcome.Text(), At: time.Now()}}
 		}
 
 		focus, ok := outcome.Focus()
@@ -275,15 +277,17 @@ type PartCommand struct {
 
 // ToCommand builds the wire-protocol command for `/part`.
 func (c PartCommand) ToCommand(rc Context) (protocol.Command, error) {
+	channel, _ := rc.ActiveName()
+
 	return protocol.Part{
-		Channel: rc.Active,
+		Channel: channel,
 		Reason:  strings.TrimSpace(strings.Join(c.Message, " ")),
 	}, nil
 }
 
 // Run implements Command.
 func (c PartCommand) Run(ctx context.Context, rc Context) tea.Cmd {
-	if rc.Active == "" {
+	if rc.Active == nil {
 		return noChannelCmd("part")
 	}
 
@@ -388,8 +392,10 @@ func (AddModelCommand) Sources() map[string]command.SuggestionSource[CompletionC
 
 // ToCommand builds the wire-protocol command for `/add-model`.
 func (c AddModelCommand) ToCommand(rc Context) (protocol.Command, error) {
+	channel, _ := rc.ActiveName()
+
 	return protocol.AddModel{
-		Channel: rc.Active,
+		Channel: channel,
 		Model:   domain.ModelID(c.Model),
 		Persona: strings.Join(c.Persona, " "),
 	}, nil
@@ -397,7 +403,7 @@ func (c AddModelCommand) ToCommand(rc Context) (protocol.Command, error) {
 
 // Run implements Command.
 func (c AddModelCommand) Run(ctx context.Context, rc Context) tea.Cmd {
-	if rc.Active == "" {
+	if rc.Active == nil {
 		return noChannelCmd("add-model")
 	}
 
@@ -437,7 +443,7 @@ func (InviteCommand) Sources() map[string]command.SuggestionSource[CompletionCon
 
 // ToCommand builds the wire-protocol command for `/invite`.
 func (c InviteCommand) ToCommand(rc Context) (protocol.Command, error) {
-	ch := rc.Active
+	ch, _ := rc.ActiveName()
 	if c.Channel != "" {
 		ch = domain.ChannelName(c.Channel.String())
 	}
@@ -447,7 +453,7 @@ func (c InviteCommand) ToCommand(rc Context) (protocol.Command, error) {
 
 // Run implements Command.
 func (c InviteCommand) Run(ctx context.Context, rc Context) tea.Cmd {
-	if rc.Active == "" && c.Channel == "" {
+	if rc.Active == nil && c.Channel == "" {
 		return noChannelCmd("invite")
 	}
 
@@ -529,12 +535,14 @@ func (KickCommand) Sources() map[string]command.SuggestionSource[CompletionConte
 
 // ToCommand builds the wire-protocol command for `/kick`.
 func (c KickCommand) ToCommand(rc Context) (protocol.Command, error) {
-	return protocol.Kick{Nick: domain.Nick(c.Nick), Channel: rc.Active}, nil
+	channel, _ := rc.ActiveName()
+
+	return protocol.Kick{Nick: domain.Nick(c.Nick), Channel: channel}, nil
 }
 
 // Run implements Command.
 func (c KickCommand) Run(ctx context.Context, rc Context) tea.Cmd {
-	if rc.Active == "" {
+	if rc.Active == nil {
 		return noChannelCmd("kick")
 	}
 
@@ -733,15 +741,15 @@ type CloseCommand struct{}
 
 // Run implements Command.
 func (c CloseCommand) Run(ctx context.Context, rc Context) tea.Cmd {
-	if rc.Active == "" {
+	if rc.Active == nil {
 		return usageCmd("close", "no window to close")
 	}
 
-	switch domain.InferChannelKind(rc.Active) {
+	switch rc.Active.Kind() {
 	case domain.KindStatus:
 		return usageCmd("close", "&modeloff stays open for the session")
 	case domain.KindDM:
-		window := rc.Active
+		window := rc.Active.Name()
 
 		return func() tea.Msg {
 			return DMClosedMsg{Window: window, At: time.Now()}
@@ -850,12 +858,14 @@ func (c ModeCommand) ToCommand(rc Context) (protocol.Command, error) {
 		return nil, err
 	}
 
-	return protocol.ChannelMode{Channel: rc.Active, Changes: changes}, nil
+	channel, _ := rc.ActiveName()
+
+	return protocol.ChannelMode{Channel: channel, Changes: changes}, nil
 }
 
 // Run implements Command.
 func (c ModeCommand) Run(ctx context.Context, rc Context) tea.Cmd {
-	if rc.Active == "" {
+	if rc.Active == nil {
 		return noChannelCmd("mode")
 	}
 
@@ -970,25 +980,28 @@ type TopicCommand struct {
 // branch in [TopicCommand.Run] reads it locally and returns a
 // [TopicInfoResult].
 func (c TopicCommand) ToCommand(rc Context) (protocol.Command, error) {
-	return protocol.Topic{Channel: rc.Active, Body: strings.Join(c.Topic, " ")}, nil
+	channel, _ := rc.ActiveName()
+
+	return protocol.Topic{Channel: channel, Body: strings.Join(c.Topic, " ")}, nil
 }
 
 // Run implements Command.
 func (c TopicCommand) Run(ctx context.Context, rc Context) tea.Cmd {
-	if rc.Active == "" {
+	if rc.Active == nil {
 		return noChannelCmd("topic")
 	}
 
 	if len(c.Topic) == 0 {
 		return func() tea.Msg {
-			w, err := rc.Session.GetWindow(ctx, rc.Active)
+			channel := rc.Active.Name()
+			w, err := rc.Session.GetWindow(ctx, channel)
 			if err != nil {
 				return rc.errorEvent("topic", err)
 			}
 
 			cw, ok := w.(*domain.ChannelWindow)
 			if !ok {
-				return rc.errorEvent("topic", fmt.Errorf("%s is not a channel", rc.Active))
+				return rc.errorEvent("topic", fmt.Errorf("%s is not a channel", channel))
 			}
 
 			return TopicInfoResult{Window: cw}
@@ -1046,7 +1059,7 @@ func (c MeCommand) ToCommand(rc Context) (protocol.Command, error) {
 
 // Run implements Command.
 func (c MeCommand) Run(ctx context.Context, rc Context) tea.Cmd {
-	if rc.Active == "" {
+	if rc.Active == nil {
 		return noChannelCmd("me")
 	}
 
@@ -1106,7 +1119,9 @@ func (WhoisCommand) Sources() map[string]command.SuggestionSource[CompletionCont
 // the issuing window so the dispatcher can stamp it onto the reply's
 // render target.
 func (c WhoisCommand) ToCommand(ctx Context) (protocol.Command, error) {
-	return protocol.Whois{Nick: domain.Nick(c.Nick), Channel: ctx.Active}, nil
+	channel, _ := ctx.ActiveName()
+
+	return protocol.Whois{Nick: domain.Nick(c.Nick), Channel: channel}, nil
 }
 
 // Run implements Command. The dispatcher returns the canonical

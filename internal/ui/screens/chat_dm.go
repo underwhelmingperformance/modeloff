@@ -33,7 +33,7 @@ type dmWindowResolvedMsg struct {
 // user left off in a channel.
 type dmWindowsRestoredMsg struct {
 	counterparts []*domain.Instance
-	landing      domain.ChannelName
+	landing      domain.Window
 }
 
 // openDMWindow puts a DM window in the sidebar cache and returns the
@@ -223,7 +223,7 @@ func (s ChatScreen) restoreDMWindows() tea.Cmd {
 			counterparts = append(counterparts, counterpart)
 		}
 
-		landing, _ := s.restoredChannel()
+		landing, _ := s.restoredWindow()
 
 		return dmWindowsRestoredMsg{counterparts: counterparts, landing: landing}
 	}
@@ -246,7 +246,7 @@ func (s ChatScreen) handleDMWindowsRestored(msg dmWindowsRestoredMsg) (ChatScree
 		_, opened := s.openDMWindow(dm)
 		cmds = append(cmds, opened)
 
-		if dm.Name() == msg.landing {
+		if msg.landing != nil && msg.landing.Kind() == domain.KindDM && dm.Name() == msg.landing.Name() {
 			cmds = append(cmds, msgCmd(chatcmd.ChannelFocusMsg{Channel: dm.Name(), At: time.Now()}))
 		}
 	}
@@ -277,7 +277,7 @@ func (s ChatScreen) handleDMOpenedMsg(msg chatcmd.DMOpenedMsg) (ChatScreen, tea.
 	dm := domain.NewDMWindow(msg.Counterpart, msg.At)
 	name := dm.Name()
 
-	_, opened := s.openDMWindow(dm)
+	window, opened := s.openDMWindow(dm)
 
 	cmds := []tea.Cmd{opened}
 
@@ -289,12 +289,12 @@ func (s ChatScreen) handleDMOpenedMsg(msg chatcmd.DMOpenedMsg) (ChatScreen, tea.
 		cmds = append(cmds, msgCmd(components.SetPlaceholderMsg{}))
 		cmds = append(cmds, s.setChannelCmd())
 		cmds = append(cmds, msgCmd(components.ChannelActiveMsg{Channel: name}))
-		cmds = append(cmds, s.persistLastChannel(name))
+		cmds = append(cmds, s.persistLastWindow(s.active))
 		cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: domain.MemberList{}}))
 	}
 
 	if msg.Body != "" {
-		cmds = append(cmds, s.sendMessageCmd("msg", name, msg.Body))
+		cmds = append(cmds, s.sendMessageCmd("msg", window, msg.Body))
 	}
 
 	return s, tea.Sequence(cmds...)

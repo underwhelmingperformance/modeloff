@@ -49,9 +49,9 @@ func (s ChatScreen) routeWindows(msg tea.Msg) (ChatScreen, tea.Cmd, bool) {
 // focus moves the user to `ch` and returns the updated screen
 // alongside the completer rebind that keeps tab-completion in step —
 // the completion context resolves the active window and its kind, so
-// suggestions bind to the window in view. An empty `ch` leaves the
-// user with no window, which is the state the welcome checklist
-// renders against.
+// suggestions bind to the window in view. The name may be empty for
+// the user's self-DM; [ChatScreen.clearFocus] enters the welcome
+// state.
 //
 // This is the only writer of the focused window: the `active` value
 // every handler reads and every command closure captures, and the
@@ -62,35 +62,53 @@ func (s ChatScreen) routeWindows(msg tea.Msg) (ChatScreen, tea.Cmd, bool) {
 // the user arrived. Between them, the badge counts what landed in a
 // window while the user was somewhere else.
 func (s ChatScreen) focus(ch domain.ChannelName) (ChatScreen, tea.Cmd) {
-	leaving := s.active
-
-	s.active = ch
-	s.visible.name = ch
-
-	if w, ok := s.windowByName(ch); ok {
-		w.Visits++
+	w, ok := s.windowByName(ch)
+	if !ok {
+		return s, nil
 	}
 
-	cmds := []tea.Cmd{s.rebindCompleter(), s.markReadCmd(ch)}
-	if leaving != ch {
+	leaving := s.active
+
+	s.active = w
+	s.visible.window = w
+	w.Visits++
+
+	cmds := []tea.Cmd{s.rebindCompleter(), s.markReadCmd(w)}
+	if leaving != nil && leaving != w {
 		cmds = append(cmds, s.markReadCmd(leaving))
 	}
 
 	return s, tea.Batch(cmds...)
 }
 
-// markReadCmd persists the user's read position in `ch`. The write
+// clearFocus enters the welcome state. Nil represents absence, so
+// the empty name remains a valid identity for the user's self-DM.
+func (s ChatScreen) clearFocus() (ChatScreen, tea.Cmd) {
+	leaving := s.active
+	s.active = nil
+	s.visible.window = nil
+
+	cmds := []tea.Cmd{s.rebindCompleter()}
+	if leaving != nil {
+		cmds = append(cmds, s.markReadCmd(leaving))
+	}
+
+	return s, tea.Batch(cmds...)
+}
+
+// markReadCmd persists the user's read position in `window`. The write
 // runs off the Update goroutine; the badge the sidebar shows is
 // cleared by the focus change itself, so nothing on screen waits for
 // it. A failure costs a badge that over-counts until the window is
 // next read, which is worth a log line and nothing more.
-func (s ChatScreen) markReadCmd(ch domain.ChannelName) tea.Cmd {
-	if ch == "" {
+func (s ChatScreen) markReadCmd(window *Window) tea.Cmd {
+	if window == nil {
 		return nil
 	}
 
 	return func() tea.Msg {
 		ctx := s.baseContext()
+		ch := window.Name()
 
 		if err := s.user.MarkRead(ctx, ch); err != nil {
 			slog.Default().WarnContext(ctx, "mark channel read",
@@ -110,7 +128,7 @@ func (s ChatScreen) markReadCmd(ch domain.ChannelName) tea.Cmd {
 // after [ChatScreen.focus] has moved the user.
 func (s ChatScreen) setChannelCmd() tea.Cmd {
 	return msgCmd(components.SetChannelMsg{
-		Channel: s.active,
+		Channel: s.activeName(),
 		Topic:   s.activeTopic(),
 		Kind:    s.activeKind(),
 	})
@@ -126,7 +144,7 @@ func (s ChatScreen) switchChannel(ch domain.ChannelName) tea.Cmd {
 		// view is a buffer swap, not a backend round-trip.
 		if !exists {
 			if err := s.user.Join(s.baseContext(), ch); err != nil {
-				return domain.ErrorEvent{Operation: "switch", Err: err, Target: s.active, At: time.Now()}
+				return domain.ErrorEvent{Operation: "switch", Err: err, Target: s.activeName(), At: time.Now()}
 			}
 		}
 
@@ -171,7 +189,7 @@ func (s ChatScreen) handleChannelFocus(msg chatcmd.ChannelFocusMsg) (ChatScreen,
 	cmds = append(cmds, s.setChannelCmd())
 
 	cmds = append(cmds, msgCmd(components.ChannelActiveMsg{Channel: msg.Channel}))
-	cmds = append(cmds, s.persistLastChannel(msg.Channel))
+	cmds = append(cmds, s.persistLastWindow(s.active))
 	cmds = append(cmds, msgCmd(components.ChannelUnreadMsg{Channel: msg.Channel, Count: 0}))
 	cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: members}))
 
@@ -183,32 +201,33 @@ func (s ChatScreen) handleChannelFocus(msg chatcmd.ChannelFocusMsg) (ChatScreen,
 // timestamp against the active window's `UserTime`: a strictly
 // newer event wins, anything stamped at or before the user's last
 // interaction with the current active is treated as background
-// activity and surfaces on the sidebar instead. An empty active —
-// the startup case — accepts any event.
+// activity and surfaces on the sidebar instead. With no active
+// window, the startup case accepts any event.
 func (s ChatScreen) focusWins(at time.Time) bool {
-	if s.active == "" {
+	if s.active == nil {
 		return true
 	}
 
-	active, ok := s.windowByName(s.active)
-	if !ok {
-		return true
-	}
-
-	return at.After(active.UserTime)
+	return at.After(s.active.UserTime)
 }
 
-// persistLastChannel writes the user's currently-active channel
-// to the store so a subsequent restart restores them to the same
-// view. An empty channel name and a nil store are no-ops.
-func (s ChatScreen) persistLastChannel(ch domain.ChannelName) tea.Cmd {
-	if ch == "" || s.uiState == nil {
+// persistLastWindow writes the user's currently-active window to the
+// store so a subsequent restart restores the same view. Nil removes
+// the preference; an empty window name persists the user's self-DM.
+func (s ChatScreen) persistLastWindow(window *Window) tea.Cmd {
+	if s.uiState == nil {
 		return nil
 	}
 
 	return func() tea.Msg {
-		if err := s.uiState.SetLastChannel(s.baseContext(), ch); err != nil {
-			slog.Default().ErrorContext(s.baseContext(), "persist last channel", "channel", ch, "error", err)
+		var err error
+		if window == nil {
+			err = s.uiState.ClearLastWindow(s.baseContext())
+		} else {
+			err = s.uiState.SetLastWindow(s.baseContext(), window.Window)
+		}
+		if err != nil {
+			slog.Default().ErrorContext(s.baseContext(), "persist last window", "window", windowName(window), "error", err)
 		}
 
 		return nil
@@ -227,7 +246,7 @@ func (s ChatScreen) persistLastChannel(ch domain.ChannelName) tea.Cmd {
 // keeps them here against any focus event still in flight from before
 // it, such as a buffered `NamesReply` for the window just closed.
 func (s ChatScreen) closeWindow(ch domain.ChannelName, at time.Time) (ChatScreen, tea.Cmd) {
-	wasVisible := s.active == ch
+	wasVisible := s.active != nil && s.active.Name() == ch
 
 	s.channels.Remove(windowKey(ch))
 	delete(s.pacedQueue, ch)
@@ -248,7 +267,7 @@ func (s ChatScreen) closeWindow(ch domain.ChannelName, at time.Time) (ChatScreen
 		s, rebind = s.focus(first.Name())
 		first.UserTime = at
 	} else {
-		s, rebind = s.focus("")
+		s, rebind = s.clearFocus()
 		cmds = append(cmds, msgCmd(components.SetPlaceholderMsg{
 			Text: s.checklist.Render(),
 		}))
@@ -257,8 +276,8 @@ func (s ChatScreen) closeWindow(ch domain.ChannelName, at time.Time) (ChatScreen
 	cmds = append(cmds,
 		rebind,
 		s.setChannelCmd(),
-		msgCmd(components.ChannelActiveMsg{Channel: s.active}),
-		s.persistLastChannel(s.active),
+		msgCmd(components.ChannelActiveMsg{Channel: s.activeName()}),
+		s.persistLastWindow(s.active),
 	)
 
 	return s, tea.Batch(cmds...)
@@ -334,11 +353,11 @@ func (s ChatScreen) scrollbackOf(name domain.ChannelName) []domain.Event {
 }
 
 func (s ChatScreen) activeTopic() string {
-	if s.active == "" {
+	if s.active == nil {
 		return ""
 	}
 
-	cw, ok := s.channelWindowByName(s.active)
+	cw, ok := s.active.Window.(*domain.ChannelWindow)
 	if !ok {
 		return ""
 	}
@@ -347,14 +366,21 @@ func (s ChatScreen) activeTopic() string {
 }
 
 func (s ChatScreen) activeKind() domain.ChannelKind {
-	if s.active == "" {
+	if s.active == nil {
 		return domain.KindChannel
 	}
 
-	w, ok := s.windowByName(s.active)
-	if !ok {
-		return domain.InferChannelKind(s.active)
+	return s.active.Kind()
+}
+
+func (s ChatScreen) activeName() domain.ChannelName {
+	return windowName(s.active)
+}
+
+func windowName(window *Window) domain.ChannelName {
+	if window == nil {
+		return ""
 	}
 
-	return w.Kind()
+	return window.Name()
 }

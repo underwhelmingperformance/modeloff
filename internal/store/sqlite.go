@@ -1103,24 +1103,38 @@ func (s *SQLiteStore) DeleteInstanceByID(ctx context.Context, id domain.Instance
 		})
 }
 
-// GetLastChannel implements Store.
-func (s *SQLiteStore) GetLastChannel(ctx context.Context) (domain.ChannelName, error) {
-	var value domain.ChannelName
-	err := s.inSpan(ctx, "store.sqlite.get_last_channel", nil, func(ctx context.Context, _ trace.Span) error {
-		var inErr error
-		value, inErr = getState[domain.ChannelName](ctx, s.db, "last_channel")
-		return inErr
+// GetLastWindow implements the chat screen's UI state store. A
+// missing row means no saved landing. A present empty value is the
+// user's self-DM and returns a typed DM window key.
+func (s *SQLiteStore) GetLastWindow(ctx context.Context) (domain.Window, error) {
+	var window domain.Window
+	err := s.inSpan(ctx, "store.sqlite.get_last_window", nil, func(ctx context.Context, _ trace.Span) error {
+		value, present, err := getOptionalState[domain.ChannelName](ctx, s.db, "last_window")
+		if err != nil || !present {
+			return err
+		}
+
+		window = domain.WindowKey(value)
+		return nil
 	})
 
-	return value, err
+	return window, err
 }
 
-// SetLastChannel implements Store.
-func (s *SQLiteStore) SetLastChannel(ctx context.Context, name domain.ChannelName) error {
-	return s.inSpan(ctx, "store.sqlite.set_last_channel",
-		[]attribute.KeyValue{attribute.String(observability.AttrChannel, string(name))},
+// SetLastWindow implements the chat screen's UI state store.
+func (s *SQLiteStore) SetLastWindow(ctx context.Context, window domain.Window) error {
+	return s.inSpan(ctx, "store.sqlite.set_last_window",
+		[]attribute.KeyValue{attribute.String(observability.AttrChannel, string(window.Name()))},
 		func(ctx context.Context, _ trace.Span) error {
-			return setState(ctx, s.db, "last_channel", string(name))
+			return setState(ctx, s.db, "last_window", string(window.Name()))
+		})
+}
+
+// ClearLastWindow implements the chat screen's UI state store.
+func (s *SQLiteStore) ClearLastWindow(ctx context.Context) error {
+	return s.inSpan(ctx, "store.sqlite.clear_last_window", nil,
+		func(ctx context.Context, _ trace.Span) error {
+			return execMutation(ctx, s.db, `DELETE FROM state WHERE key = ?`, "last_window")
 		})
 }
 
@@ -1359,6 +1373,20 @@ func getState[T ~string](ctx context.Context, db *sql.DB, key string) (T, error)
 	}
 
 	return T(value), nil
+}
+
+func getOptionalState[T ~string](ctx context.Context, db *sql.DB, key string) (T, bool, error) {
+	value, err := queryRow(ctx, db,
+		`SELECT value FROM state WHERE key = ?`,
+		[]any{key}, nil, scalarColumn[string]())
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+
+	return T(value), true, nil
 }
 
 func setState(ctx context.Context, db *sql.DB, key, value string) error {

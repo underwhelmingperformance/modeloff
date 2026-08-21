@@ -59,11 +59,11 @@ func TestChatScreen_PartEvent_model_part_keeps_user_in_channel(t *testing.T) {
 		"the user stays in the channel and sees the model leave it")
 }
 
-// TestChatScreen_Init_restores_persisted_last_channel pins the
+// TestChatScreen_Init_restores_persisted_last_window pins the
 // restart contract from the flow document: the window that was open
 // last time is opened again. Without it the freshest join wins, which
 // is whichever autojoin happened to land last.
-func TestChatScreen_Init_restores_persisted_last_channel(t *testing.T) {
+func TestChatScreen_Init_restores_persisted_last_window(t *testing.T) {
 	s := storetest.NewMemoryStore(t)
 	apiClient := &uitest.FakeAPI{}
 	sess, mgr, user := uitest.NewTestSession(t, s, apiClient, nil, nil, "", "", t.Context)
@@ -71,7 +71,7 @@ func TestChatScreen_Init_restores_persisted_last_channel(t *testing.T) {
 	uitest.SeedChannel(t, user, "#general")
 	uitest.SeedChannel(t, user, "#random")
 
-	require.NoError(t, s.SetLastChannel(t.Context(), "#general"))
+	require.NoError(t, s.SetLastWindow(t.Context(), domain.WindowKey("#general")))
 
 	chatScreen, err := screens.NewChatScreen(t.Context, sess, mgr, user, newFakeConfigStore(), s, domain.KindStatus)
 	require.NoError(t, err)

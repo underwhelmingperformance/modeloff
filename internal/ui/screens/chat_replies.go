@@ -26,17 +26,16 @@ func (s ChatScreen) routeReplies(msg tea.Msg) (ChatScreen, tea.Cmd, bool) {
 		return s, s.deliverReplyEvents(msg), true
 
 	case chatcmd.HelpResult:
-		return s, s.logAndShow(domain.Help{Target: s.active, At: time.Now()}), true
+		return s, s.logAndShow(domain.Help{Target: s.activeName(), At: time.Now()}), true
 
 	case chatcmd.ClearResult:
-		w, ok := s.windowByName(s.active)
-		if !ok {
+		if s.active == nil {
 			return s, nil, true
 		}
 
-		w.Scrollback.Clear()
+		s.active.Scrollback.Clear()
 
-		return s, msgCmd(components.ScrollbackClearedMsg{Channel: s.active}), true
+		return s, msgCmd(components.ScrollbackClearedMsg{Channel: s.active.Name()}), true
 
 	case chatcmd.TopicInfoResult:
 		return s, s.logAndShow(domain.TopicInfo{
@@ -49,7 +48,7 @@ func (s ChatScreen) routeReplies(msg tea.Msg) (ChatScreen, tea.Cmd, bool) {
 
 	case chatcmd.UsageError:
 		return s, s.logAndShow(domain.UsageHint{
-			Target: s.active, Command: msg.Command, Usage: msg.Usage, At: time.Now(),
+			Target: s.activeName(), Command: msg.Command, Usage: msg.Usage, At: time.Now(),
 		}), true
 
 	case chatcmd.NoChannelError:
@@ -152,8 +151,8 @@ func (s ChatScreen) deliverReplyEvents(events chatcmd.ReplyEvents) tea.Cmd {
 // the response — the focus handler is the one place that moves the
 // user, so the routing decision here stays a pure read.
 func (s ChatScreen) logAndShow(event domain.Event) tea.Cmd {
-	if s.active != "" {
-		return s.logAndShowOn(s.active, event)
+	if s.active != nil {
+		return s.logAndShowOn(s.active.Name(), event)
 	}
 
 	return tea.Batch(
@@ -176,15 +175,15 @@ func (s ChatScreen) logAndShow(event domain.Event) tea.Cmd {
 // flight. [ChatScreen.fallbackTarget] is the one answer every reply
 // arm takes for that, so the line renders in the window the user is
 // looking at and no closed window comes back to hold it. Parting the
-// last channel leaves the user looking at nothing, and the fallback
-// answers with the empty window; that reply takes
+// last channel leaves the user with no selected window, and the
+// fallback reports that absence; that reply takes
 // [ChatScreen.logAndShow]'s answer, which is `&modeloff` with the
 // focus moved there. The delegation terminates: logAndShow comes back
 // here naming `&modeloff`, which fallbackTarget always resolves to
 // itself.
 func (s ChatScreen) logAndShowOn(ch domain.ChannelName, event domain.Event) tea.Cmd {
-	target := s.fallbackTarget(ch)
-	if target == "" {
+	target, ok := s.fallbackTarget(ch)
+	if !ok {
 		return s.logAndShow(event)
 	}
 
@@ -194,10 +193,10 @@ func (s ChatScreen) logAndShowOn(ch domain.ChannelName, event domain.Event) tea.
 }
 
 // fallbackTarget resolves ch to itself when the chat-screen still has
-// that window open, or to the active window otherwise. An empty ch
-// and one naming a window closed since the event that carried it was
-// raised both fail the same windowByName check, so both fall back to
-// the currently active window.
+// that window open, or to the active window otherwise. A target that
+// names a window closed since its event was raised falls back to the
+// currently active window. The boolean result distinguishes an empty
+// self-DM name from the absence of an active window.
 // This is what keeps a closed DM from being silently dropped: a DM
 // window needs its counterpart's instance handle to rebuild, which
 // [ChatScreen.appendToScrollback]'s placeholder-creation path cannot
@@ -214,13 +213,13 @@ func (s ChatScreen) logAndShowOn(ch domain.ChannelName, event domain.Event) tea.
 // read it directly as well, because each stamps the resolved window
 // onto the line it builds.
 //
-// The answer is the empty window when the user is looking at nothing,
-// which is where parting the last channel leaves them: firstRealChannel
-// skips `&modeloff`, so closeWindow has nowhere to move them.
-// logAndShowOn is where that case is answered.
-func (s ChatScreen) fallbackTarget(ch domain.ChannelName) domain.ChannelName {
+// The boolean result is false when the user has no selected window,
+// which is where parting the last channel can leave them:
+// firstRealChannel skips `&modeloff`, so closeWindow has nowhere to
+// move them. logAndShowOn is where that case is answered.
+func (s ChatScreen) fallbackTarget(ch domain.ChannelName) (domain.ChannelName, bool) {
 	if _, open := s.windowByName(ch); open {
-		return ch
+		return ch, true
 	}
 
 	// `&modeloff` is the client's own view of the server and lives as
@@ -230,10 +229,14 @@ func (s ChatScreen) fallbackTarget(ch domain.ChannelName) domain.ChannelName {
 	// [ChatScreen.appendToScrollback] can open from the name alone,
 	// which is what a screen that has not run Init yet needs.
 	if ch == domain.StatusChannelName {
-		return ch
+		return ch, true
 	}
 
-	return s.active
+	if s.active == nil {
+		return "", false
+	}
+
+	return s.active.Name(), true
 }
 
 // handleErrorEvent turns a command failure into the transcript line
@@ -252,7 +255,7 @@ func (s ChatScreen) handleErrorEvent(msg domain.ErrorEvent) (ChatScreen, tea.Cmd
 	slog.Default().ErrorContext(s.baseContext(), "command failed",
 		"operation", msg.Operation, "error", msg.Err)
 
-	target := s.fallbackTarget(msg.Target)
+	target, _ := s.fallbackTarget(msg.Target)
 
 	commandError := domain.CommandError{
 		Target: target,

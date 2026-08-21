@@ -330,7 +330,7 @@ func TestChatScreen_rejoin_hides_pre_session_history(t *testing.T) {
 	require.NoError(t, s.SaveWindow(ctx, general))
 
 	require.NoError(t, s.SetAutojoinChannels(ctx, []domain.ChannelName{"#general"}))
-	require.NoError(t, s.SetLastChannel(ctx, "#general"))
+	require.NoError(t, s.SetLastWindow(ctx, domain.WindowKey("#general")))
 
 	// Persist a message from a previous session. The user must NOT
 	// see this on rejoin: the stored event log is the models' shared
@@ -407,7 +407,7 @@ func replaceTopicSeparator(lines []string) []string {
 	return out
 }
 
-func TestChatScreen_persists_last_channel_on_focus(t *testing.T) {
+func TestChatScreen_persists_last_window_on_focus(t *testing.T) {
 	s := storetest.NewMemoryStore(t)
 	apiClient := &uitest.FakeAPI{}
 	sess, mgr, user := uitest.NewTestSession(t, s, apiClient, nil, nil, "", "", t.Context)
@@ -420,7 +420,7 @@ func TestChatScreen_persists_last_channel_on_focus(t *testing.T) {
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen), teatest.WithInitialTermSize(termWidth, termHeight))
 	// `SeedChannel`'s last call (#random) ends up active because no
-	// `last_channel` is persisted at the start of the test, so the
+	// last window is persisted at the start of the test, so the
 	// chat screen's "no-preference, first NAMES reply wins" rule
 	// lands on whichever NAMES reply drains first. Wait for either
 	// `Created channel` banner before driving the focus switch.
@@ -430,10 +430,10 @@ func TestChatScreen_persists_last_channel_on_focus(t *testing.T) {
 	tm.WaitFor("Created channel #general")
 
 	require.Eventually(t, func() bool {
-		last, err := s.GetLastChannel(t.Context())
-		return err == nil && last == "#general"
+		last, err := s.GetLastWindow(t.Context())
+		return err == nil && last != nil && last.Name() == "#general"
 	}, time.Second, 10*time.Millisecond,
-		"chat screen should have persisted #general as last_channel after focus")
+		"chat screen should have persisted #general as the last window after focus")
 }
 
 func TestChatScreen_part_command(t *testing.T) {
@@ -895,6 +895,19 @@ func TestChatScreen_query_command_opens_dm_and_sends_message(t *testing.T) {
 
 	tm.Submit("/query fakenick hello there")
 	tm.WaitFor("hello there", "fakenick")
+}
+
+// TestChatScreen_query_self_can_send_from_the_open_window pins IRC's
+// allowance for a PRIVMSG addressed to the sender's own nick. The
+// query must accept input like any other DM window after it opens.
+func TestChatScreen_query_self_can_send_from_the_open_window(t *testing.T) {
+	tm, _ := newChatAppInChannel(t, "#general")
+
+	tm.Submit("/query testuser")
+	tm.WaitForViewContains("▸testuser")
+
+	tm.Submit("note to self")
+	tm.WaitForViewContains("note to self")
 }
 
 func TestChatScreen_msg_command_unknown_nick(t *testing.T) {

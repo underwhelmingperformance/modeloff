@@ -17,23 +17,27 @@ import (
 func TestCloseCommand_Run_answers_per_window_kind(t *testing.T) {
 	tests := []struct {
 		name   string
-		active domain.ChannelName
+		active domain.Window
 		want   tea.Msg
 	}{
 		{
-			name:   "no window in view",
-			active: "",
-			want:   UsageError{Command: "close", Usage: "no window to close"},
+			name: "no window in view",
+			want: UsageError{Command: "close", Usage: "no window to close"},
 		},
 		{
 			name:   "the status window",
-			active: domain.StatusChannelName,
+			active: domain.WindowKey(domain.StatusChannelName),
 			want:   UsageError{Command: "close", Usage: "&modeloff stays open for the session"},
 		},
 		{
 			name:   "a query window",
-			active: "inst-botty",
+			active: domain.WindowKey("inst-botty"),
 			want:   DMClosedMsg{Window: "inst-botty"},
+		},
+		{
+			name:   "the self query window",
+			active: domain.WindowKey(""),
+			want:   DMClosedMsg{Window: ""},
 		},
 	}
 
@@ -61,7 +65,7 @@ func TestCloseCommand_Run_parts_a_channel_window(t *testing.T) {
 
 	rc := Context{
 		Session: sess,
-		Active:  "#general",
+		Active:  domain.WindowKey("#general"),
 		Actor:   user.Instance(),
 		Client:  user,
 	}

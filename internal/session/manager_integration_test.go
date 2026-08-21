@@ -442,7 +442,7 @@ func TestManager_DetachAll_joins_a_client_released_mid_session(t *testing.T) {
 
 		// The model's own JOIN raises no turn; a channel message does,
 		// and this one wakes the turn that parks upstream.
-		_, err := user.SendMessage(ctx, "#general", "anyone about?")
+		_, err := user.SendMessage(ctx, domain.WindowKey("#general"), "anyone about?")
 		require.NoError(t, err)
 		synctest.Wait()
 
@@ -508,7 +508,7 @@ func TestManager_DetachAll_abandons_a_turn_past_the_drain_deadline(t *testing.T)
 		require.NoError(t, addModelViaWire(ctx, t, user, "#general", "test/model", ""))
 		synctest.Wait()
 
-		_, err := user.SendMessage(ctx, "#general", "anyone about?")
+		_, err := user.SendMessage(ctx, domain.WindowKey("#general"), "anyone about?")
 		require.NoError(t, err)
 		synctest.Wait()
 
@@ -595,7 +595,7 @@ func TestManager_DetachAll_abandoned_turn_is_quiet_when_the_store_closes(t *test
 		require.NoError(t, addModelViaWire(ctx, t, user, "#general", "test/model", ""))
 		synctest.Wait()
 
-		_, err := user.SendMessage(ctx, "#general", "anyone about?")
+		_, err := user.SendMessage(ctx, domain.WindowKey("#general"), "anyone about?")
 		require.NoError(t, err)
 		synctest.Wait()
 
@@ -867,7 +867,7 @@ func TestDispatch_transcript_token_budget_from_catalogue_context_len(t *testing.
 				big := strings.Repeat("x", 4000)
 
 				for _, label := range []string{"first", "second", "third"} {
-					_, err := user.SendMessage(ctx, "#dev", label+" "+big)
+					_, err := user.SendMessage(ctx, domain.WindowKey("#dev"), label+" "+big)
 					require.NoError(t, err)
 					synctest.Wait()
 				}

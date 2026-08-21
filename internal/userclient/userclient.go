@@ -428,13 +428,11 @@ func (uc *UserClient) Part(ctx context.Context, ch domain.ChannelName, reason st
 }
 
 // SendMessage issues a wire PRIVMSG as the user-actor and returns
-// the persisted [domain.Message] echoed in `Response.Events`. `ch` is
-// the window the user is typing in, which
-// [protocol.TargetForWindow] turns into the target the server
-// resolves: a channel window addresses its channel, a DM window
-// addresses its counterpart.
-func (uc *UserClient) SendMessage(ctx context.Context, ch domain.ChannelName, body string) (domain.Message, error) {
-	resp, err := uc.Send(ctx, protocol.PrivMsg{Target: protocol.TargetForWindow(ch), Body: body})
+// the persisted [domain.Message] echoed in `Response.Events`.
+// [protocol.TargetForWindow] turns the typed window into the target
+// the server resolves.
+func (uc *UserClient) SendMessage(ctx context.Context, window domain.Window, body string) (domain.Message, error) {
+	resp, err := uc.Send(ctx, protocol.PrivMsg{Target: protocol.TargetForWindow(window), Body: body})
 	if err != nil {
 		return domain.Message{}, err
 	}
@@ -452,9 +450,9 @@ func (uc *UserClient) SendMessage(ctx context.Context, ch domain.ChannelName, bo
 }
 
 // SendAction issues a wire ACTION (`/me`) as the user-actor. It
-// addresses `ch` exactly as [UserClient.SendMessage] does.
-func (uc *UserClient) SendAction(ctx context.Context, ch domain.ChannelName, body string) (domain.Message, error) {
-	resp, err := uc.Send(ctx, protocol.Action{Target: protocol.TargetForWindow(ch), Body: body})
+// addresses `window` exactly as [UserClient.SendMessage] does.
+func (uc *UserClient) SendAction(ctx context.Context, window domain.Window, body string) (domain.Message, error) {
+	resp, err := uc.Send(ctx, protocol.Action{Target: protocol.TargetForWindow(window), Body: body})
 	if err != nil {
 		return domain.Message{}, err
 	}

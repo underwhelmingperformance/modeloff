@@ -70,7 +70,7 @@ func newConfigTestContext(t *testing.T, mgr *fakeManagerAPI) (Context, *config.F
 	return Context{
 		Manager: mgr,
 		Config:  store,
-		Active:  "#test",
+		Active:  domain.WindowKey("#test"),
 	}, store
 }
 

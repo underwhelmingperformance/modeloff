@@ -145,11 +145,11 @@ func (s ChatScreen) listenForProtocolEvents() tea.Cmd {
 // stay behind the divider, and an off-bottom user would never see
 // the "new messages" line at all.
 func (s ChatScreen) scrollbackUpdatedCmd() tea.Cmd {
-	if s.active == "" {
+	if s.active == nil {
 		return nil
 	}
 
-	return msgCmd(components.ScrollbackUpdatedMsg{Channel: s.active})
+	return msgCmd(components.ScrollbackUpdatedMsg{Channel: s.active.Name()})
 }
 
 // handleNamesReply applies the joiner-targeted member-list snapshot
@@ -188,7 +188,7 @@ func (s ChatScreen) handleNamesReply(msg domain.NamesReplyEvent) (ChatScreen, te
 		msgCmd(chatcmd.ChannelFocusMsg{Channel: msg.Channel, At: w.UserTime}),
 	}
 
-	if isChannel && msg.Channel == s.active {
+	if isChannel && s.active != nil && msg.Channel == s.active.Name() {
 		cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: cw.Members}))
 	}
 
@@ -221,7 +221,7 @@ func (s ChatScreen) handleJoinEvent(msg domain.Join) (ChatScreen, tea.Cmd) {
 	}
 
 	if !isUser {
-		if msg.Target == s.active && cw != nil {
+		if s.active != nil && msg.Target == s.active.Name() && cw != nil {
 			return s, msgCmd(components.NickListUpdatedMsg{Members: cw.Members})
 		}
 
@@ -254,7 +254,7 @@ func (s ChatScreen) handleChannelModeChangeEvent(msg domain.ChannelModeChange) (
 
 	cw.Members.ApplyMode(msg.Instance, msg.Flag, msg.Add)
 
-	if msg.Target != s.active {
+	if s.active == nil || msg.Target != s.active.Name() {
 		return s, nil
 	}
 
@@ -301,8 +301,8 @@ func (s ChatScreen) handlePartEvent(msg domain.Part) (ChatScreen, tea.Cmd) {
 
 	var members domain.MemberList
 
-	if s.active != "" {
-		if cw, ok := s.channelWindowByName(s.active); ok {
+	if s.active != nil {
+		if cw, ok := s.active.Window.(*domain.ChannelWindow); ok {
 			members = cw.Members
 		}
 	}
@@ -335,11 +335,11 @@ func (s ChatScreen) handleQuitEvent(msg domain.Quit, targets []domain.ChannelNam
 	var cmds []tea.Cmd
 
 	for _, ch := range targets {
-		if ch != s.active {
+		if s.active == nil || ch != s.active.Name() {
 			continue
 		}
 
-		if cw, ok := s.channelWindowByName(s.active); ok {
+		if cw, ok := s.active.Window.(*domain.ChannelWindow); ok {
 			cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: cw.Members}))
 		}
 	}
@@ -383,7 +383,7 @@ func (s ChatScreen) handleTopicChangeEvent(msg domain.TopicChange) (ChatScreen, 
 		cw.TopicSetAt = msg.At
 	}
 
-	if s.active != msg.Target {
+	if s.active == nil || s.active.Name() != msg.Target {
 		return s, nil
 	}
 
@@ -397,7 +397,7 @@ func (s ChatScreen) handleTopicInfoEvent(msg domain.TopicInfo) (ChatScreen, tea.
 		cw.TopicSetAt = msg.TopicSetAt
 	}
 
-	if s.active != msg.Target {
+	if s.active == nil || s.active.Name() != msg.Target {
 		return s, nil
 	}
 
@@ -424,13 +424,13 @@ func (s ChatScreen) handleNickChangeEvent(msg domain.NickChange, targets []domai
 
 	var cmds []tea.Cmd
 
-	activeIsChannel := slices.Contains(targets, s.active)
+	activeIsChannel := s.active != nil && slices.Contains(targets, s.active.Name())
 
 	activeDM, activeIsDM := s.activeDMWith(msg.Instance)
-	activeDMVisible := activeIsDM && activeDM.Name() == s.active
+	activeDMVisible := activeIsDM && s.active != nil && activeDM.Name() == s.active.Name()
 
 	if activeIsChannel {
-		if cw, ok := s.channelWindowByName(s.active); ok {
+		if cw, ok := s.active.Window.(*domain.ChannelWindow); ok {
 			cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: cw.Members}))
 		}
 	}
@@ -495,8 +495,11 @@ func (s ChatScreen) handleKickedEvent(msg domain.Kicked) (ChatScreen, tea.Cmd) {
 
 	var members domain.MemberList
 
-	if cw, ok := s.channelWindowByName(s.active); ok {
-		members = cw.Members
+	if s.active != nil {
+		cw, ok := s.active.Window.(*domain.ChannelWindow)
+		if ok {
+			members = cw.Members
+		}
 	}
 
 	return s, msgCmd(components.NickListUpdatedMsg{Members: members})
@@ -546,7 +549,7 @@ func (s ChatScreen) handleMessageEvent(msg domain.Message) (ChatScreen, tea.Cmd)
 // arriving in a window the user is not reading must not make the one
 // they are reading wait on a database.
 func (s ChatScreen) renderMessage(msg domain.Message, key domain.ChannelName) tea.Cmd {
-	if key == s.active {
+	if s.active != nil && key == s.active.Name() {
 		return nil
 	}
 
@@ -635,11 +638,11 @@ func (s ChatScreen) handleModelDispatchDone(msg domain.ModelDispatchDone) (ChatS
 // channels the user is not in stay invisible — RFC 2812 §3.3.1's
 // intersection rule applied to the local view.
 func (s ChatScreen) thinkingNicks() map[domain.Nick]bool {
-	if s.active == "" || len(s.dispatching) == 0 {
+	if s.active == nil || len(s.dispatching) == 0 {
 		return nil
 	}
 
-	cw, ok := s.channelWindowByName(s.active)
+	cw, ok := s.active.Window.(*domain.ChannelWindow)
 	if !ok {
 		return nil
 	}
@@ -667,7 +670,11 @@ func (s ChatScreen) isHighlight(msg domain.Message) bool {
 }
 
 func (s ChatScreen) activeMemberNicks() iter.Seq[domain.Nick] {
-	cw, ok := s.channelWindowByName(s.active)
+	if s.active == nil {
+		return func(func(domain.Nick) bool) {}
+	}
+
+	cw, ok := s.active.Window.(*domain.ChannelWindow)
 	if !ok {
 		return func(func(domain.Nick) bool) {}
 	}
@@ -702,7 +709,11 @@ func (s ChatScreen) otherInstances() iter.Seq[*domain.Instance] {
 // see in their nick list, matching IRC semantics.
 func (s ChatScreen) activeChannelInstances() iter.Seq[*domain.Instance] {
 	return func(yield func(*domain.Instance) bool) {
-		cw, ok := s.channelWindowByName(s.active)
+		if s.active == nil {
+			return
+		}
+
+		cw, ok := s.active.Window.(*domain.ChannelWindow)
 		if !ok {
 			return
 		}

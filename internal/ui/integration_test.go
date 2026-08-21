@@ -52,8 +52,8 @@ func TestApp_startup_with_saved_channels(t *testing.T) {
 	uitest.DrainEvents(user)
 
 	// The chat-screen needs a `UIStateStore` to persist its
-	// `last_channel` write; pass the integration store through so
-	// the final assertion on `GetLastChannel` reflects the focus
+	// last-window write; pass the integration store through so
+	// the final assertion on `GetLastWindow` reflects the focus
 	// the screen actually settled on.
 	chatScreen, err := screens.NewChatScreen(t.Context, sess, mgr, user, cfgStore, store, domain.KindStatus)
 	require.NoError(t, err)
@@ -78,9 +78,9 @@ func TestApp_startup_with_saved_channels(t *testing.T) {
 	// purely from live events seen on this connection.
 	require.NotContains(t, tm.CurrentView(), "hello from last time")
 
-	last, err := store.GetLastChannel(t.Context())
+	last, err := store.GetLastWindow(t.Context())
 	require.NoError(t, err)
-	require.Equal(t, domain.ChannelName("#random"), last)
+	require.Equal(t, domain.ChannelName("#random"), last.Name())
 }
 
 func TestApp_autojoin_recreates_empty_channel_with_creator_op(t *testing.T) {

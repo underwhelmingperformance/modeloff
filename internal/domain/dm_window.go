@@ -22,10 +22,10 @@ func NewDMWindow(counterpart *Instance, created time.Time) *DMWindow {
 	}
 }
 
-// Name returns the counterpart's `InstanceID` as a
-// `ChannelName`. Instance IDs are 16-char hex, so they don't
-// collide with `#`-prefixed channels or the `&`-prefixed status
-// name.
+// Name returns the counterpart's `InstanceID` as a `ChannelName`.
+// Model instance IDs are 16-character hexadecimal strings, while the
+// user's sentinel ID is empty. Neither form collides with a
+// `#`-prefixed channel or the `&`-prefixed status name.
 func (w *DMWindow) Name() ChannelName { return w.name }
 
 // Created returns the time the DM was first opened.

@@ -53,11 +53,11 @@ func TestJoinAs_model_actor(t *testing.T) {
 			testMemberID("botty"), "botty", "test/model", "", testChannels("#dev"),
 		), inst)
 
-		// `last_channel` is a UI-owned write — neither user nor model
+		// The last window is a UI-owned write; neither user nor model
 		// joins touch it from the session.
-		last, err := s.GetLastChannel(ctx)
+		last, err := s.GetLastWindow(ctx)
 		require.NoError(t, err)
-		require.Equal(t, domain.ChannelName(""), last)
+		require.Nil(t, last)
 	})
 }
 

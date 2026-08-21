@@ -154,7 +154,7 @@ func TestModeCommand_ToCommand(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cmd := ModeCommand{Flags: tt.flags, Args: tt.args}
-			got, err := cmd.ToCommand(Context{Active: "#chan"})
+			got, err := cmd.ToCommand(Context{Active: domain.WindowKey("#chan")})
 
 			switch want := tt.wantErr.(type) {
 			case nil:

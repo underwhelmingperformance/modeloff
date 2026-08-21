@@ -77,7 +77,7 @@ func (s ChatScreen) routeConfigResults(msg tea.Msg) (ChatScreen, tea.Cmd, bool) 
 // issued from, or in `&modeloff` when the user has no window open.
 func (s ChatScreen) notice(text string) tea.Cmd {
 	return s.logAndShow(domain.SystemNotice{
-		Target: s.active,
+		Target: s.activeName(),
 		Text:   text,
 		At:     time.Now(),
 	})

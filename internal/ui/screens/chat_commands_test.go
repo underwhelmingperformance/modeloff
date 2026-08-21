@@ -3,6 +3,7 @@ package screens
 import (
 	"context"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/stretchr/testify/require"
@@ -70,6 +71,7 @@ func newScreenFixture(t *testing.T) ChatScreen {
 	sess, mgr, user := newTestSession(t)
 	screen, err := NewChatScreen(t.Context, sess, mgr, user, nil, nil, domain.KindStatus)
 	require.NoError(t, err)
+	screen.channels.Insert(newWindow(domain.NewStatusWindow(time.Time{})))
 	return screen
 }
 

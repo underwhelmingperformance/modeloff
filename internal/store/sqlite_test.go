@@ -1085,37 +1085,43 @@ func TestSQLiteStore_ListInstances(t *testing.T) {
 		"ListInstances must return the same canonical pointer for each instance across calls")
 }
 
-// --- Last channel state ---
+// --- Last window state ---
 
-func TestSQLiteStore_GetLastChannelEmpty(t *testing.T) {
+func TestSQLiteStore_GetLastWindowAbsent(t *testing.T) {
 	s := newTestStore(t)
 
-	got, err := s.GetLastChannel(t.Context())
+	got, err := s.GetLastWindow(t.Context())
 	require.NoError(t, err)
-	require.Empty(t, got)
+	require.Nil(t, got)
 }
 
-func TestSQLiteStore_SetAndGetLastChannel(t *testing.T) {
+func TestSQLiteStore_SetAndGetLastWindow(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
 
-	require.NoError(t, s.SetLastChannel(ctx, "#general"))
+	require.NoError(t, s.SetLastWindow(ctx, domain.WindowKey("#general")))
 
-	got, err := s.GetLastChannel(ctx)
+	got, err := s.GetLastWindow(ctx)
 	require.NoError(t, err)
-	require.Equal(t, domain.ChannelName("#general"), got)
+	require.Equal(t, domain.WindowKey("#general"), got)
 }
 
-func TestSQLiteStore_SetLastChannelOverwrites(t *testing.T) {
+func TestSQLiteStore_SetLastWindow_preserves_an_empty_self_DM(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
 
-	require.NoError(t, s.SetLastChannel(ctx, "#first"))
-	require.NoError(t, s.SetLastChannel(ctx, "#second"))
+	require.NoError(t, s.SetLastWindow(ctx, domain.WindowKey("#first")))
+	require.NoError(t, s.SetLastWindow(ctx, domain.WindowKey("")))
 
-	got, err := s.GetLastChannel(ctx)
+	got, err := s.GetLastWindow(ctx)
 	require.NoError(t, err)
-	require.Equal(t, domain.ChannelName("#second"), got)
+	require.Equal(t, domain.WindowKey(""), got)
+
+	require.NoError(t, s.ClearLastWindow(ctx))
+
+	got, err = s.GetLastWindow(ctx)
+	require.NoError(t, err)
+	require.Nil(t, got)
 }
 
 func TestSQLiteStore_GetLastReadEmpty(t *testing.T) {
@@ -1309,7 +1315,7 @@ func TestSQLiteStore_Reset(t *testing.T) {
 	require.NoError(t, s.SaveInstance(ctx,
 		domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil),
 	))
-	require.NoError(t, s.SetLastChannel(ctx, "#general"))
+	require.NoError(t, s.SetLastWindow(ctx, domain.WindowKey("#general")))
 	require.NoError(t, s.SetLastRead(ctx, "#general", eventID))
 	_, err = s.AppendInstanceReply(ctx, "inst-botty", domain.Whois{Target: "#general", At: testTime})
 	require.NoError(t, err)
@@ -1330,9 +1336,9 @@ func TestSQLiteStore_Reset(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, instances)
 
-	lastCh, err := s.GetLastChannel(ctx)
+	lastWindow, err := s.GetLastWindow(ctx)
 	require.NoError(t, err)
-	require.Empty(t, lastCh)
+	require.Nil(t, lastWindow)
 
 	lastRead, err := s.GetLastRead(ctx, "#general")
 	require.NoError(t, err)
@@ -1683,7 +1689,7 @@ func TestSQLiteStore_Reset_rollback_on_partial_failure(t *testing.T) {
 	require.NoError(t, s.SaveInstance(ctx,
 		domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil),
 	))
-	require.NoError(t, s.SetLastChannel(ctx, "#general"))
+	require.NoError(t, s.SetLastWindow(ctx, domain.WindowKey("#general")))
 	require.NoError(t, s.SetLastRead(ctx, "#general", eventID))
 	require.NoError(t, s.SavePersona(ctx, domain.Persona{
 		ID:          "grumpy-sysadmin",

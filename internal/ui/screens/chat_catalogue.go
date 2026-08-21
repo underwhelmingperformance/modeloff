@@ -58,8 +58,8 @@ func (s ChatScreen) handleLiveModelsLoaded(msg liveModelsLoadedMsg) (ChatScreen,
 }
 
 // handleLiveModelsLoadFailed is the UI-policy home for live-model
-// load failures. When `s.active` is empty — no real channel
-// joined yet — the notice is routed to `&modeloff`, the
+// load failures. When `s.active` is nil, no window is selected, so
+// the notice is routed to `&modeloff`, the
 // chat-screen-owned default landing window.
 func (s ChatScreen) handleLiveModelsLoadFailed(msg liveModelsLoadFailedMsg) (ChatScreen, tea.Cmd) {
 	// ErrNoAPIKey here is a TOCTOU between loadLiveModels' HasAPIKey
@@ -70,8 +70,8 @@ func (s ChatScreen) handleLiveModelsLoadFailed(msg liveModelsLoadFailedMsg) (Cha
 
 	s, rebind := s.setLiveModels(nil, command.SuggestionStateError)
 
-	channel := s.active
-	if channel == "" {
+	channel := s.activeName()
+	if s.active == nil {
 		channel = domain.StatusChannelName
 	}
 

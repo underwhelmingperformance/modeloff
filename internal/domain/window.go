@@ -20,8 +20,9 @@ import "time"
 type Window interface {
 	// Name returns the addressable name of the window. For
 	// channels this is the `#`-prefixed name; for DMs it is the
-	// counterpart's nick; for the status window it is the
-	// reserved [StatusChannelName].
+	// counterpart's immutable instance ID, including the user's
+	// empty sentinel ID; for the status window it is the reserved
+	// [StatusChannelName].
 	Name() ChannelName
 
 	// Created returns the time the window was first opened.

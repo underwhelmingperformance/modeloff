@@ -48,13 +48,13 @@ func TestTargetForWindow(t *testing.T) {
 
 	cases := []struct {
 		name   string
-		window domain.ChannelName
+		window domain.Window
 		want   protocol.MsgTarget
 	}{
-		{"channel window", "#dev", protocol.ChannelTarget("#dev")},
-		{"status window", domain.StatusChannelName, protocol.ChannelTarget(domain.StatusChannelName)},
-		{"dm window", "a1b2c3d4e5f60718", protocol.ClientTarget("a1b2c3d4e5f60718")},
-		{"dm window with the user", "", protocol.ClientTarget("")},
+		{"channel window", domain.WindowKey("#dev"), protocol.ChannelTarget("#dev")},
+		{"status window", domain.WindowKey(domain.StatusChannelName), protocol.ChannelTarget(domain.StatusChannelName)},
+		{"dm window", domain.WindowKey("a1b2c3d4e5f60718"), protocol.ClientTarget("a1b2c3d4e5f60718")},
+		{"dm window with the user", domain.WindowKey(""), protocol.ClientTarget("")},
 	}
 
 	for _, tc := range cases {
