@@ -121,8 +121,9 @@ type ToolResult struct {
 // multi-turn tool-calling exchange. It is returned inside
 // CompletionResult when the model calls intermediate tools.
 type Conversation struct {
-	modelID  domain.ModelID
-	messages []openai.ChatCompletionMessageParamUnion
+	modelID        domain.ModelID
+	promptCacheKey domain.InstanceID
+	messages       []openai.ChatCompletionMessageParamUnion
 }
 
 // CompletionResult contains the model's tool calls (if any)

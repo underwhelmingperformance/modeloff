@@ -483,11 +483,14 @@ func TestBuildMessages_instance_id_stripped_from_json(t *testing.T) {
 }
 
 func TestOpenRouterClient_SendEventsWithHistory(t *testing.T) {
+	const selfID domain.InstanceID = "instance-cache-key"
+
 	var receivedBody map[string]any
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, http.MethodPost, r.Method)
 		require.Equal(t, "/chat/completions", r.URL.Path)
+		require.Equal(t, string(selfID), r.Header.Get("x-session-id"))
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&receivedBody))
 
 		w.Header().Set("Content-Type", "application/json")
@@ -506,13 +509,15 @@ func TestOpenRouterClient_SendEventsWithHistory(t *testing.T) {
 
 	_, err := client.SendEvents(
 		t.Context(),
-		"test/model",
-		"",
+		"anthropic/test-model",
+		selfID,
 		"System prompt",
 		history,
 		events,
 	)
 	require.NoError(t, err)
+	require.Equal(t, string(selfID), receivedBody["prompt_cache_key"])
+	require.Equal(t, map[string]any{"type": "ephemeral"}, receivedBody["cache_control"])
 
 	historyJSON, err := json.Marshal(history[0])
 	require.NoError(t, err)
@@ -1177,11 +1182,15 @@ func TestOpenRouterClient_SendEvents_emptyResponse(t *testing.T) {
 }
 
 func TestOpenRouterClient_ContinueWithToolResults(t *testing.T) {
+	const selfID domain.InstanceID = "instance-cache-key"
+
 	firstCall := true
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
+		require.Equal(t, string(selfID), r.Header.Get("x-session-id"))
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		require.Equal(t, string(selfID), body["prompt_cache_key"])
 
 		w.Header().Set("Content-Type", "application/json")
 
@@ -1221,7 +1230,7 @@ func TestOpenRouterClient_ContinueWithToolResults(t *testing.T) {
 	initial, err := client.SendEvents(
 		t.Context(),
 		"test/model",
-		"",
+		selfID,
 		"You are a test bot.",
 		nil,
 		[]protocol.IRCMessage{

@@ -212,11 +212,16 @@ func (c *OpenRouterClient) SendEvents(
 		[]attribute.KeyValue{attribute.String(observability.AttrModelID, string(modelID))},
 		func(ctx context.Context, span trace.Span) error {
 			msgs := buildMessages(systemPrompt, selfInstanceID, history, events)
-			resp, rawResp, err := c.chatCompletion(ctx, modelID, openai.ChatCompletionNewParams{ //nolint:bodyclose // SDK reads and closes the body.
+			params := openai.ChatCompletionNewParams{
 				Model:    shared.ChatModel(string(modelID)),
 				Messages: msgs,
 				Tools:    toolParams(tools),
-			})
+			}
+			if selfInstanceID != "" {
+				params.PromptCacheKey = openai.String(string(selfInstanceID))
+			}
+
+			resp, rawResp, err := c.chatCompletion(ctx, modelID, params) //nolint:bodyclose // SDK reads and closes the body.
 			if err != nil {
 				markSpanError(span, observability.ErrorKindTransport, 0, err)
 				logger.ErrorContext(ctx, "openrouter send events failed", "error", err)
@@ -232,8 +237,9 @@ func (c *OpenRouterClient) SendEvents(
 
 			if len(parsed.PendingToolCalls) > 0 {
 				parsed.Conversation = &Conversation{
-					modelID:  modelID,
-					messages: append(msgs, assistantMsg),
+					modelID:        modelID,
+					promptCacheKey: selfInstanceID,
+					messages:       append(msgs, assistantMsg),
 				}
 			}
 
@@ -281,11 +287,16 @@ func (c *OpenRouterClient) ContinueWithToolResults(
 				msgs = append(msgs, openai.ToolMessage(r.Content, r.ToolCallID))
 			}
 
-			resp, rawResp, err := c.chatCompletion(ctx, conv.modelID, openai.ChatCompletionNewParams{ //nolint:bodyclose // SDK reads and closes the body.
+			params := openai.ChatCompletionNewParams{
 				Model:    shared.ChatModel(string(conv.modelID)),
 				Messages: msgs,
 				Tools:    toolParams(tools),
-			})
+			}
+			if conv.promptCacheKey != "" {
+				params.PromptCacheKey = openai.String(string(conv.promptCacheKey))
+			}
+
+			resp, rawResp, err := c.chatCompletion(ctx, conv.modelID, params) //nolint:bodyclose // SDK reads and closes the body.
 			if err != nil {
 				markSpanError(span, observability.ErrorKindTransport, 0, err)
 				logger.ErrorContext(ctx, "openrouter continue failed", "error", err)
@@ -307,8 +318,9 @@ func (c *OpenRouterClient) ContinueWithToolResults(
 				nextMsgs = append(nextMsgs, assistantMsg)
 
 				parsed.Conversation = &Conversation{
-					modelID:  conv.modelID,
-					messages: nextMsgs,
+					modelID:        conv.modelID,
+					promptCacheKey: conv.promptCacheKey,
+					messages:       nextMsgs,
 				}
 			}
 
@@ -666,6 +678,12 @@ func (c *OpenRouterClient) chatCompletion(
 
 	opts := []option.RequestOption{
 		option.WithResponseInto(&rawResp),
+	}
+	if payload.PromptCacheKey.Valid() {
+		// OpenRouter uses the session ID to select the same provider
+		// endpoint from the first successful request. The prompt cache
+		// key still reaches providers that use it for cache bucketing.
+		opts = append(opts, option.WithHeader("x-session-id", payload.PromptCacheKey.Value))
 	}
 
 	if isAnthropicModel(modelID) {
