@@ -3,10 +3,10 @@ package components
 import (
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/laney/modeloff/internal/set"
@@ -148,7 +148,10 @@ func NewSidebar[T set.Lesser[T], K comparable](
 		items:     items,
 		cfg:       cfg,
 		activeIdx: -1,
-		viewport:  viewport.New(0, 0),
+		viewport: viewport.New(
+			viewport.WithWidth(0),
+			viewport.WithHeight(0),
+		),
 		itemStyle: defaultItemStyle,
 		keyMap:    DefaultSidebarKeyMap,
 	}
@@ -232,7 +235,7 @@ func (s Sidebar[T, K]) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 		return s, nil
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		switch {
 		case ui.Matches(msg, s.keyMap.Down):
 			s.moveCursor(1)
@@ -402,14 +405,14 @@ func (s Sidebar[T, K]) View(width, height int) string {
 		}
 	}
 
-	s.viewport.Width = panelW
-	s.viewport.Height = listHeight
+	s.viewport.SetWidth(panelW)
+	s.viewport.SetHeight(listHeight)
 	s.viewport.SetContent(b.String())
 
 	if cursorRow >= 0 {
-		if cursorRow < s.viewport.YOffset {
+		if cursorRow < s.viewport.YOffset() {
 			s.viewport.SetYOffset(cursorRow)
-		} else if cursorRow >= s.viewport.YOffset+listHeight {
+		} else if cursorRow >= s.viewport.YOffset()+listHeight {
 			s.viewport.SetYOffset(cursorRow - listHeight + 1)
 		}
 	}
@@ -588,33 +591,31 @@ func (s Sidebar[T, K]) findIndex(k K) int {
 }
 
 func (s Sidebar[T, K]) handleMouse(msg tea.MouseMsg) (Sidebar[T, K], tea.Cmd) {
-	switch {
-	case msg.Button == tea.MouseButtonWheelUp:
-		if !s.bounds.Contains(msg.X, msg.Y) {
+	mouse := msg.Mouse()
+
+	switch msg.(type) {
+	case tea.MouseWheelMsg:
+		if !s.bounds.Contains(mouse.X, mouse.Y) {
 			return s, nil
 		}
 
-		s.moveCursor(-1)
+		switch mouse.Button {
+		case tea.MouseWheelUp:
+			s.moveCursor(-1)
+		case tea.MouseWheelDown:
+			s.moveCursor(1)
+		}
 
 		return s, nil
 
-	case msg.Button == tea.MouseButtonWheelDown:
-		if !s.bounds.Contains(msg.X, msg.Y) {
+	case tea.MouseClickMsg:
+		if mouse.Button != tea.MouseLeft || !s.bounds.Contains(mouse.X, mouse.Y) {
 			return s, nil
 		}
 
-		s.moveCursor(1)
-
-		return s, nil
-
-	case msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft:
-		if !s.bounds.Contains(msg.X, msg.Y) {
-			return s, nil
-		}
-
-		_, localY := s.bounds.Local(msg.X, msg.Y)
+		_, localY := s.bounds.Local(mouse.X, mouse.Y)
 		headerHeight := s.renderHeaderHeight()
-		rowIdx := localY - headerHeight + s.viewport.YOffset
+		rowIdx := localY - headerHeight + s.viewport.YOffset()
 
 		rows := s.rowLayout()
 		if rowIdx < 0 || rowIdx >= len(rows) {

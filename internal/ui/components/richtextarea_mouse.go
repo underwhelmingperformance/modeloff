@@ -3,7 +3,7 @@ package components
 import (
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/laney/modeloff/internal/richtext"
 )
@@ -48,28 +48,30 @@ func (r RichTextarea) handleMouse(msg tea.MouseMsg) (RichTextarea, bool) {
 		}
 	}
 
+	mouse := msg.Mouse()
+
 	if !r.config.SingleLine {
-		switch msg.Button {
-		case tea.MouseButtonWheelUp:
-			if msg.Action == tea.MouseActionPress && r.yOffset > 0 {
-				r.yOffset--
-				return r, true
-			}
-		case tea.MouseButtonWheelDown:
-			if msg.Action == tea.MouseActionPress {
+		if _, ok := msg.(tea.MouseWheelMsg); ok {
+			switch mouse.Button {
+			case tea.MouseWheelUp:
+				if r.yOffset > 0 {
+					r.yOffset--
+					return r, true
+				}
+			case tea.MouseWheelDown:
 				r.yOffset++
 				return r.ensureViewport(), true
 			}
 		}
 	}
 
-	if msg.Button != tea.MouseButtonLeft {
+	if mouse.Button != tea.MouseLeft {
 		return r, false
 	}
 
-	switch msg.Action {
-	case tea.MouseActionPress:
-		position := r.positionFromPoint(msg.X, msg.Y)
+	switch msg.(type) {
+	case tea.MouseClickMsg:
+		position := r.positionFromPoint(mouse.X, mouse.Y)
 
 		switch r.clicks.press(position, time.Now()) {
 		case 2:
@@ -86,14 +88,14 @@ func (r RichTextarea) handleMouse(msg tea.MouseMsg) (RichTextarea, bool) {
 		r.position = position
 		r.selection = richtext.Selection{Anchor: r.position, Head: r.position}
 		return r.ensureViewport(), true
-	case tea.MouseActionMotion:
+	case tea.MouseMotionMsg:
 		if !r.mouseSelecting {
 			return r, false
 		}
-		r.position = r.positionFromPoint(msg.X, msg.Y)
+		r.position = r.positionFromPoint(mouse.X, mouse.Y)
 		r.selection.Head = r.position
 		return r.ensureViewport(), true
-	case tea.MouseActionRelease:
+	case tea.MouseReleaseMsg:
 		r.mouseSelecting = false
 		return r, true
 	}

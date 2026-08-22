@@ -7,6 +7,7 @@ package uitest
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -14,8 +15,11 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/x/exp/teatest"
+	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/colorprofile"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/charmbracelet/x/exp/teatest/v2"
+	"github.com/charmbracelet/x/vt"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/api"
@@ -41,21 +45,50 @@ type App struct {
 
 	mu  sync.Mutex
 	buf bytes.Buffer
+
+	width  int
+	height int
+}
+
+// Option configures an App and its underlying teatest model.
+type Option func(*appOptions)
+
+type appOptions struct {
+	width  int
+	height int
+}
+
+// WithInitialTermSize sets the terminal size for the program and the
+// emulator that reconstructs its rendered output.
+func WithInitialTermSize(width, height int) Option {
+	return func(opts *appOptions) {
+		opts.width = width
+		opts.height = height
+	}
 }
 
 // New creates an App from a tea.Model with the given options.
 // If no options are provided, a default 80x24 terminal is used.
-func New(t testing.TB, m tea.Model, opts ...teatest.TestOption) *App {
+func New(t testing.TB, m tea.Model, options ...Option) *App {
 	t.Helper()
 
-	if len(opts) == 0 {
-		opts = []teatest.TestOption{teatest.WithInitialTermSize(80, 24)}
+	opts := appOptions{width: 80, height: 24}
+	for _, option := range options {
+		option(&opts)
 	}
 
-	tm := teatest.NewTestModel(t, m, opts...)
+	tm := teatest.NewTestModel(t, m,
+		teatest.WithInitialTermSize(opts.width, opts.height),
+		teatest.WithProgramOptions(tea.WithColorProfile(colorprofile.ANSI)),
+	)
 	t.Cleanup(func() { _ = tm.Quit() })
 
-	return &App{TestModel: tm, t: t}
+	return &App{
+		TestModel: tm,
+		t:         t,
+		width:     opts.width,
+		height:    opts.height,
+	}
 }
 
 // output returns a reader that tees every byte read from the
@@ -79,22 +112,14 @@ func (w *lockedWriter) Write(p []byte) (int, error) {
 // Submit types text and presses Enter.
 func (a *App) Submit(text string) {
 	a.Type(text)
-	a.Send(tea.KeyMsg{Type: tea.KeyEnter})
+	a.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
 }
 
-// WaitFor blocks until every part appears in the output stream.
+// WaitFor blocks until every part appears in the visible terminal view.
 func (a *App) WaitFor(parts ...string) {
 	a.t.Helper()
 
-	teatest.WaitFor(a.t, a.output(), func(out []byte) bool {
-		for _, part := range parts {
-			if !bytes.Contains(out, []byte(part)) {
-				return false
-			}
-		}
-
-		return true
-	}, teatest.WithDuration(2*time.Second), teatest.WithCheckInterval(10*time.Millisecond))
+	a.WaitForViewContains(parts...)
 }
 
 // WaitForCondition blocks until condition returns true against the
@@ -110,12 +135,9 @@ func (a *App) WaitForCondition(condition func([]byte) bool) {
 		teatest.WithCheckInterval(10*time.Millisecond))
 }
 
-// RenderedView returns the currently visible screen state by
-// replaying the cumulative teatest output through a minimal terminal
-// emulator. Bubble Tea's standard renderer emits diff frames
-// (skipping unchanged lines), so a tail-of-buffer slice is not a
-// true snapshot; virtualScreen reconstructs one by applying cursor
-// and erase sequences into a row buffer.
+// RenderedView returns the currently visible screen state by replaying
+// the cumulative teatest output through a terminal emulator. Bubble Tea
+// emits diff frames, so a tail-of-buffer slice is not a true snapshot.
 //
 // Unlike CurrentView, RenderedView is non-destructive: it does not
 // quit the program, so it can be called during polling. Use it in
@@ -130,20 +152,58 @@ func (a *App) RenderedView() string {
 	}
 
 	a.mu.Lock()
-	defer a.mu.Unlock()
+	output := bytes.Clone(a.buf.Bytes())
+	a.mu.Unlock()
 
-	screen := newVirtualScreen()
-	screen.feed(a.buf.Bytes())
-	return screen.view()
+	view, err := renderTerminal(output, a.width, a.height)
+	require.NoError(a.t, err)
+
+	return view
 }
 
-// WaitForView polls the currently-rendered screen and returns the
-// first view that satisfies predicate. Unlike WaitFor, which matches
-// against the cumulative output stream and is satisfied by any
-// transient frame that ever contained the substring, WaitForView
-// reconstructs the terminal state from the diff frames bubbletea
-// emits and presents the predicate with what the user would see
-// right now.
+func renderTerminal(output []byte, width, height int) (string, error) {
+	emulator := vt.NewEmulator(width, height)
+	input, ok := emulator.InputPipe().(io.Closer)
+	if !ok {
+		return "", errors.New("terminal input pipe cannot be closed")
+	}
+
+	drained := make(chan error, 1)
+	go func() {
+		_, err := io.Copy(io.Discard, emulator)
+		drained <- err
+	}()
+	drain := func() error {
+		if err := input.Close(); err != nil {
+			return fmt.Errorf("close terminal input: %w", err)
+		}
+
+		if err := <-drained; err != nil {
+			return fmt.Errorf("drain terminal replies: %w", err)
+		}
+
+		return nil
+	}
+
+	if _, err := emulator.WriteString(ansi.SetModeLineFeedNewLine); err != nil {
+		return "", errors.Join(fmt.Errorf("set line-feed mode: %w", err), drain())
+	}
+	if _, err := emulator.Write(output); err != nil {
+		return "", errors.Join(fmt.Errorf("replay output: %w", err), drain())
+	}
+
+	view := strings.TrimRight(emulator.String(), "\n")
+	if err := drain(); err != nil {
+		return "", err
+	}
+
+	return view, nil
+}
+
+// WaitForView polls the currently-rendered screen and returns the first
+// view that satisfies predicate. It reconstructs the terminal state
+// from Bubble Tea's diff frames, so the predicate receives what the
+// user would see at that point.
 //
 // The returned view is the exact snapshot that satisfied the
 // predicate, captured atomically with the predicate check; subsequent
@@ -230,13 +290,13 @@ func (a *App) CurrentView() string {
 	fm := a.FinalModel(a.t)
 
 	type viewer interface {
-		View() string
+		View() tea.View
 	}
 
 	m, ok := fm.(viewer)
-	require.True(a.t, ok, "final model does not implement View() string")
+	require.True(a.t, ok, "final model does not implement View() tea.View")
 
-	return m.View()
+	return m.View().Content
 }
 
 // FakeAPI is a configurable test double for api.Client. Each method

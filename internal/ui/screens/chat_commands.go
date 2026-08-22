@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/ui"
@@ -28,7 +28,7 @@ func (s ChatScreen) routeInput(msg tea.Msg) (ChatScreen, tea.Cmd, bool) {
 	case chatcmd.PokeRequested:
 		return s, s.handlePoke(), true
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		if !ui.Matches(msg, s.keyMap.ToggleNickList) {
 			return s, nil, false
 		}

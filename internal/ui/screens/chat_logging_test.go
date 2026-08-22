@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/api"
@@ -220,7 +220,7 @@ func TestChatScreen_keybind_toggle_nick_list_is_logged(t *testing.T) {
 	tm := newChatApp(t, h)
 	tm.WaitFor("#general")
 
-	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}, Alt: true})
+	tm.Send(tea.KeyPressMsg{Code: 'n', Mod: tea.ModAlt})
 
 	tm.Submit("hello after toggle")
 	tm.WaitFor("hello after toggle")

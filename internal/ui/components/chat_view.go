@@ -1,9 +1,9 @@
 package components
 
 import (
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
@@ -242,12 +242,11 @@ func (c ChatView[C]) handleMouse(msg tea.MouseMsg) (ChatView[C], bool, tea.Cmd) 
 	}
 
 	layout := c.layoutRects()
+	mouse := msg.Mouse()
 
-	if layout.PaletteRect.Contains(msg.X, msg.Y) {
-		localX, localY := layout.PaletteRect.Local(msg.X, msg.Y)
-		local := msg
-		local.X = localX
-		local.Y = localY
+	if layout.PaletteRect.Contains(mouse.X, mouse.Y) {
+		localX, localY := layout.PaletteRect.Local(mouse.X, mouse.Y)
+		local := mouseAt(msg, localX, localY)
 
 		updated, handled, cmd := c.input.HandlePaletteMouse(local)
 		if handled {
@@ -256,7 +255,7 @@ func (c ChatView[C]) handleMouse(msg tea.MouseMsg) (ChatView[C], bool, tea.Cmd) 
 		}
 	}
 
-	if layout.InputRect.Contains(msg.X, msg.Y) {
+	if layout.InputRect.Contains(mouse.X, mouse.Y) {
 		updated, cmd := c.input.Update(msg)
 		c.input = updated.(InputBar)
 
@@ -267,9 +266,9 @@ func (c ChatView[C]) handleMouse(msg tea.MouseMsg) (ChatView[C], bool, tea.Cmd) 
 		return c, true, nil
 	}
 
-	if layout.MessageRect.Contains(msg.X, msg.Y) && msg.Action == tea.MouseActionPress {
-		switch msg.Button {
-		case tea.MouseButtonWheelUp, tea.MouseButtonWheelDown:
+	if _, ok := msg.(tea.MouseWheelMsg); ok && layout.MessageRect.Contains(mouse.X, mouse.Y) {
+		switch mouse.Button {
+		case tea.MouseWheelUp, tea.MouseWheelDown:
 			c, mlCmd := c.updateMessages(msg)
 			c, syncCmd := c.syncMessageViewport()
 

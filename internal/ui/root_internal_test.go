@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/ui/uitest"
@@ -45,7 +45,7 @@ func (s stubScreen) KeyBindings() []KeyBinding { return s.bindings }
 // stubScreen is fully determined: the banners Root chose, followed by
 // the size it gave the screen.
 func rootFrame(r Root) []string {
-	return uitest.RenderedLines(r.View())
+	return uitest.RenderedLines(r.View().Content)
 }
 
 func updateRoot(t *testing.T, r Root, msg tea.Msg) Root {
@@ -70,7 +70,7 @@ func TestRoot_ctrl_c_arms_quit_confirmation_without_quitting(t *testing.T) {
 	r := newRootWithClock(stubScreen{label: "test"}, clock)
 	r = updateRoot(t, r, tea.WindowSizeMsg{Width: 80, Height: 24})
 
-	updated, cmd := r.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	updated, cmd := r.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	r = updated.(Root)
 
 	require.Nil(t, cmd, "the first Ctrl-C must arm the confirmation, not quit")
@@ -82,10 +82,10 @@ func TestRoot_second_ctrl_c_within_window_quits(t *testing.T) {
 	r := newRootWithClock(stubScreen{label: "test"}, clock)
 	r = updateRoot(t, r, tea.WindowSizeMsg{Width: 80, Height: 24})
 
-	r = updateRoot(t, r, tea.KeyMsg{Type: tea.KeyCtrlC})
+	r = updateRoot(t, r, tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	clock.Advance(time.Second)
 
-	_, cmd := r.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	_, cmd := r.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 
 	require.NotNil(t, cmd)
 	require.Equal(t, QuitRequestedMsg{Message: "client exited"}, cmd())
@@ -96,35 +96,35 @@ func TestRoot_second_ctrl_c_after_window_rearms_instead_of_quitting(t *testing.T
 	r := newRootWithClock(stubScreen{label: "test"}, clock)
 	r = updateRoot(t, r, tea.WindowSizeMsg{Width: 80, Height: 24})
 
-	r = updateRoot(t, r, tea.KeyMsg{Type: tea.KeyCtrlC})
+	r = updateRoot(t, r, tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	clock.Advance(quitConfirmWindow + time.Second)
 
-	updated, cmd := r.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	updated, cmd := r.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	r = updated.(Root)
 
 	require.Nil(t, cmd, "a Ctrl-C after the confirmation window elapsed must arm a fresh confirmation, not quit")
 	require.Equal(t, []string{quitConfirmBanner, "test:80x23"}, rootFrame(r))
 }
 
-func TestRoot_ToggleMouse_flips_state_and_returns_the_matching_cmd(t *testing.T) {
+func TestRoot_ToggleMouse_changes_the_declared_mouse_mode(t *testing.T) {
 	r := NewRoot(stubScreen{label: "test"})
 	r = updateRoot(t, r, tea.WindowSizeMsg{Width: 80, Height: 24})
 
 	require.Equal(t, []string{"test:80x24"}, rootFrame(r))
 
-	updated, cmd := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}, Alt: true})
+	updated, cmd := r.Update(tea.KeyPressMsg{Code: 'm', Mod: tea.ModAlt})
 	r = updated.(Root)
 
-	require.NotNil(t, cmd)
-	require.NotNil(t, cmd(), "toggling off must send tea.DisableMouse")
+	require.Nil(t, cmd)
+	require.Equal(t, tea.MouseModeNone, r.View().MouseMode)
 	require.Equal(t, []string{mouseOffBanner, "test:80x23"}, rootFrame(r),
 		"the banner takes a row from the screen while it is shown")
 
-	updated, cmd = r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}, Alt: true})
+	updated, cmd = r.Update(tea.KeyPressMsg{Code: 'm', Mod: tea.ModAlt})
 	r = updated.(Root)
 
-	require.NotNil(t, cmd)
-	require.NotNil(t, cmd(), "toggling back on must send tea.EnableMouseCellMotion")
+	require.Nil(t, cmd)
+	require.Equal(t, tea.MouseModeCellMotion, r.View().MouseMode)
 	require.Equal(t, []string{"test:80x24"}, rootFrame(r))
 }
 
@@ -154,7 +154,7 @@ func TestRoot_F1_renders_keyboard_help_from_key_bindings(t *testing.T) {
 		},
 	})
 	r = updateRoot(t, r, tea.WindowSizeMsg{Width: 60, Height: 12})
-	r = updateRoot(t, r, tea.KeyMsg{Type: tea.KeyF1})
+	r = updateRoot(t, r, tea.KeyPressMsg{Code: tea.KeyF1})
 
 	require.Equal(t, []string{
 		"Keyboard shortcuts                              F1/Esc close",
@@ -171,7 +171,7 @@ func TestRoot_F1_renders_keyboard_help_from_key_bindings(t *testing.T) {
 		"F1    shortcuts",
 	}, rootFrame(r))
 
-	r = updateRoot(t, r, tea.KeyMsg{Type: tea.KeyEsc})
+	r = updateRoot(t, r, tea.KeyPressMsg{Code: tea.KeyEsc})
 
 	require.Equal(t, []string{"test:60x12"}, rootFrame(r))
 }

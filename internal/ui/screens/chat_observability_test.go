@@ -4,9 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/x/exp/teatest"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/domain"
@@ -39,14 +38,14 @@ func TestChatScreen_obs_drawer_open_view_fits_terminal(t *testing.T) {
 	require.NoError(t, err)
 	chatScreen = chatScreen.WithObservability(obs)
 
-	tm := uitest.New(t, uipkg.NewRoot(chatScreen), teatest.WithInitialTermSize(width, height))
+	tm := uitest.New(t, uipkg.NewRoot(chatScreen), uitest.WithInitialTermSize(width, height))
 
 	tm.WaitFor("Created channel #general")
 	tm.Submit("/topic anchor topic")
 	tm.Submit("hello from #general")
 	tm.WaitFor("hello from #general")
 
-	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}, Alt: true})
+	tm.Send(tea.KeyPressMsg{Code: 'l', Mod: tea.ModAlt})
 
 	view := tm.WaitForViewContains("Logs", "Metrics", "hello from #general", "testuser >")
 

@@ -3,9 +3,9 @@ package ui
 import (
 	"time"
 
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/laney/modeloff/internal/ui/theme"
 )
@@ -125,9 +125,9 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			r.keyHelp = r.keyHelp.resize(msg.Width, msg.Height)
 		}
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		if r.helpVisible {
-			if Matches(msg, r.keyMap.ShowHelp) || msg.Type == tea.KeyEsc {
+			if Matches(msg, r.keyMap.ShowHelp) || msg.Code == tea.KeyEsc {
 				r.helpVisible = false
 				return r, nil
 			}
@@ -159,11 +159,8 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		if Matches(msg, r.keyMap.ToggleMouse) {
 			r.mouseEnabled = !r.mouseEnabled
-			if r.mouseEnabled {
-				return r, tea.EnableMouseCellMotion
-			}
 
-			return r, tea.DisableMouse
+			return r, nil
 		}
 
 	case tea.MouseMsg:
@@ -190,7 +187,18 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // View implements tea.Model.
-func (r Root) View() string {
+func (r Root) View() tea.View {
+	content := r.viewContent()
+	view := tea.NewView(content)
+	view.AltScreen = true
+	if r.mouseEnabled {
+		view.MouseMode = tea.MouseModeCellMotion
+	}
+
+	return view
+}
+
+func (r Root) viewContent() string {
 	if r.helpVisible {
 		return r.keyHelp.view(r.width, r.height)
 	}

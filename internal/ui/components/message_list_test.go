@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/text/language"
 
@@ -445,7 +445,7 @@ func TestMessageList_renders_the_same_view_for_an_unrelated_message(t *testing.T
 	m := newTestMessageList(content)
 	before := m.View(listWidth, listHeight)
 
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	m, _ = m.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
 
 	require.Equal(t, before, m.View(listWidth, listHeight))
 }

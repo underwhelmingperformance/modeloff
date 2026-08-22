@@ -3,7 +3,7 @@
 // models that each implement the responsive Model interface.
 package ui
 
-import tea "github.com/charmbracelet/bubbletea"
+import tea "charm.land/bubbletea/v2"
 
 // Model is the interface that all UI components in modeloff implement.
 // It mirrors the standard Bubble Tea model interface but adds width

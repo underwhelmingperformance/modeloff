@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/observability"
@@ -61,7 +61,7 @@ func TestChatScreen_the_log_drawer_takes_records_when_it_opens(t *testing.T) {
 	require.Equal(t, drawerState{Behind: true, ShowsLine: false}, state(),
 		"a record arriving while the drawer is closed is not rendered")
 
-	screen, _ = screen.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}, Alt: true})
+	screen, _ = screen.update(tea.KeyPressMsg{Code: 'l', Mod: tea.ModAlt})
 
 	require.Equal(t, drawerState{Behind: false, ShowsLine: true}, state(),
 		"opening the drawer catches it up with the buffer")

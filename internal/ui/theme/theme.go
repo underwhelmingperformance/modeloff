@@ -6,7 +6,7 @@ package theme
 import (
 	"fmt"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 )
 
 // ANSI colour indices used throughout the application.

@@ -3,7 +3,7 @@ package screens
 import (
 	"context"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/laney/modeloff/internal/config"
 	"github.com/laney/modeloff/internal/ui"

@@ -1,7 +1,7 @@
 package screens
 
 import (
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/laney/modeloff/internal/observability"
 	"github.com/laney/modeloff/internal/ui/chatcmd"

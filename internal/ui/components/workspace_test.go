@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/text/language"
@@ -124,8 +124,8 @@ func TestChatWorkspace_ObsView_height_matches_ObsHeight(t *testing.T) {
 
 // toggleObservabilityKey is the alt+l keypress DefaultWorkspaceKeyMap
 // binds to ToggleObservability.
-func toggleObservabilityKey() tea.KeyMsg {
-	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}, Alt: true}
+func toggleObservabilityKey() tea.KeyPressMsg {
+	return tea.KeyPressMsg{Code: 'l', Mod: tea.ModAlt}
 }
 
 func TestIsChatScrollKey(t *testing.T) {
@@ -133,14 +133,14 @@ func TestIsChatScrollKey(t *testing.T) {
 
 	tests := []struct {
 		name string
-		msg  tea.KeyMsg
+		msg  tea.KeyPressMsg
 		want bool
 	}{
-		{name: "pgup", msg: tea.KeyMsg{Type: tea.KeyPgUp}, want: true},
-		{name: "pgdown", msg: tea.KeyMsg{Type: tea.KeyPgDown}, want: true},
-		{name: "ctrl+up", msg: tea.KeyMsg{Type: tea.KeyCtrlUp}, want: true},
-		{name: "ctrl+down", msg: tea.KeyMsg{Type: tea.KeyCtrlDown}, want: true},
-		{name: "plain up is not a chat scroll key", msg: tea.KeyMsg{Type: tea.KeyUp}, want: false},
+		{name: "pgup", msg: tea.KeyPressMsg{Code: tea.KeyPgUp}, want: true},
+		{name: "pgdown", msg: tea.KeyPressMsg{Code: tea.KeyPgDown}, want: true},
+		{name: "ctrl+up", msg: tea.KeyPressMsg{Code: tea.KeyUp, Mod: tea.ModCtrl}, want: true},
+		{name: "ctrl+down", msg: tea.KeyPressMsg{Code: tea.KeyDown, Mod: tea.ModCtrl}, want: true},
+		{name: "plain up is not a chat scroll key", msg: tea.KeyPressMsg{Code: tea.KeyUp}, want: false},
 		{name: "the drawer toggle is not a chat scroll key", msg: toggleObservabilityKey(), want: false},
 	}
 
@@ -171,7 +171,7 @@ func TestChatWorkspace_split_mode_routes_scroll_keys_to_chat_only(t *testing.T) 
 	workspace = workspace.SetLogEntries(entries)
 	require.False(t, workspace.Logs.ScrolledUp(), "the log feed starts pinned to its tail")
 
-	updated, _ := workspace.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	updated, _ := workspace.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
 	workspace = updated.(ChatWorkspace[testKind])
 
 	require.False(t, workspace.Logs.ScrolledUp(),

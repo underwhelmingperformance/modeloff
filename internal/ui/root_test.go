@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/ui"
@@ -38,13 +38,20 @@ func TestRoot_View_delegates_to_screen(t *testing.T) {
 	root := ui.NewRoot(screen)
 	root = update(t, root, tea.WindowSizeMsg{Width: 80, Height: 24})
 
-	require.Equal(t, "test:80x24", root.View())
+	require.Equal(t, tea.View{
+		Content:   "test:80x24",
+		AltScreen: true,
+		MouseMode: tea.MouseModeCellMotion,
+	}, root.View())
 }
 
 func TestRoot_View_nil_screen(t *testing.T) {
 	root := ui.NewRoot(nil)
 
-	require.Equal(t, "", root.View())
+	require.Equal(t, tea.View{
+		AltScreen: true,
+		MouseMode: tea.MouseModeCellMotion,
+	}, root.View())
 }
 
 func TestRoot_ScreenMsg_switches_screen(t *testing.T) {
@@ -55,5 +62,9 @@ func TestRoot_ScreenMsg_switches_screen(t *testing.T) {
 	root = update(t, root, tea.WindowSizeMsg{Width: 40, Height: 10})
 	root = update(t, root, ui.ScreenMsg{Screen: second})
 
-	require.Equal(t, "second:40x10", root.View())
+	require.Equal(t, tea.View{
+		Content:   "second:40x10",
+		AltScreen: true,
+		MouseMode: tea.MouseModeCellMotion,
+	}, root.View())
 }

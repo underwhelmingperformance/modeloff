@@ -10,7 +10,7 @@ import (
 	"os"
 	"sync"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 // writer is the destination for OSC 52 sequences. Production writes

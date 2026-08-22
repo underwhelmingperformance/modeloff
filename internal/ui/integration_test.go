@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/x/exp/teatest"
 	chromem "github.com/philippgille/chromem-go"
 	"github.com/stretchr/testify/require"
 	orderedmap "github.com/wk8/go-ordered-map/v2"
@@ -200,7 +199,7 @@ func TestApp_terminal_output_shows_full_model_nick_in_user_list(t *testing.T) {
 	require.NoError(t, err)
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen),
-		teatest.WithInitialTermSize(365, 90))
+		uitest.WithInitialTermSize(365, 90))
 	tm.WaitFor("#general", "grok420_bot")
 
 	require.Equal(t, []string{"Nicks", "@testuser", "+grok420_bot"}, uitest.NonEmptyColumn(bodyColumns(tm.CurrentView())[2]))
@@ -403,7 +402,7 @@ func TestApp_vector_memory_write_and_search(t *testing.T) {
 	require.NoError(t, err)
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen),
-		teatest.WithInitialTermSize(200, 30))
+		uitest.WithInitialTermSize(200, 30))
 	tm.WaitFor("#lab")
 
 	tm.Submit("/add-model test/model")

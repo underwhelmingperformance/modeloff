@@ -4,9 +4,9 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
@@ -171,7 +171,23 @@ func (b InputBar) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 		return b, nil
 
-	case tea.KeyMsg:
+	case tea.PasteMsg:
+		if b.locked {
+			return b, nil
+		}
+
+		b.pasteFlattened = containsNewline(msg.Content)
+		updated, cmd := b.input.Update(msg)
+		b.input = updated.(RichTextarea)
+
+		b, popCmd := b.refreshPopover(PopoverRefreshMsg{
+			Raw:    b.input.Value(),
+			Cursor: b.input.Cursor(),
+		})
+
+		return b, tea.Batch(cmd, popCmd)
+
+	case tea.KeyPressMsg:
 		if b.locked {
 			return b, nil
 		}
@@ -190,13 +206,10 @@ func (b InputBar) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	return b, cmd
 }
 
-func (b InputBar) handleKey(msg tea.KeyMsg) (ui.Model, tea.Cmd) {
-	// A multi-line paste flattens to one line (the input bar is
-	// always single-line); note it here, before any branch below
-	// consumes the key, so every return path carries the flag. Any
-	// other key clears it, so the note reflects only the most recent
-	// keystroke.
-	b.pasteFlattened = msg.Paste && containsNewline(msg.Runes)
+func (b InputBar) handleKey(msg tea.KeyPressMsg) (ui.Model, tea.Cmd) {
+	// Any ordinary key clears the paste notice, so it describes only
+	// the most recent input event.
+	b.pasteFlattened = false
 
 	// When the popover is visible, give it first shot at keys.
 	if b.popover.IsVisible() {
@@ -257,7 +270,7 @@ func (b InputBar) handleKey(msg tea.KeyMsg) (ui.Model, tea.Cmd) {
 	// text editor, which still treats alt+b as its own hardcoded bold
 	// toggle. ctrl+left keeps working through the normal fallthrough
 	// below, unaffected by this case.
-	case ui.Matches(msg, b.keyMap.WordLeft) && msg.Alt:
+	case ui.Matches(msg, b.keyMap.WordLeft) && msg.Mod.Contains(tea.ModAlt):
 		return b.moveWordLeft(), nil
 
 	case ui.Matches(msg, b.keyMap.ToggleBold):
@@ -265,12 +278,12 @@ func (b InputBar) handleKey(msg tea.KeyMsg) (ui.Model, tea.Cmd) {
 			return b.toggleBold(), nil
 		}
 
-	case msg.Type == tea.KeyTab:
+	case msg.Code == tea.KeyTab && !msg.Mod.Contains(tea.ModShift):
 		if !strings.HasPrefix(b.input.Value(), "/") {
 			return b.completeNick(false), nil
 		}
 
-	case msg.Type == tea.KeyShiftTab:
+	case msg.Code == tea.KeyTab && msg.Mod.Contains(tea.ModShift):
 		if !strings.HasPrefix(b.input.Value(), "/") {
 			return b.completeNick(true), nil
 		}
@@ -341,17 +354,10 @@ func (b InputBar) toggleBold() InputBar {
 	return b
 }
 
-// containsNewline reports whether runes contains a carriage return or
-// line feed, i.e. whether inserting it into the single-line input
-// would flatten it.
-func containsNewline(runes []rune) bool {
-	for _, r := range runes {
-		if r == '\r' || r == '\n' {
-			return true
-		}
-	}
-
-	return false
+// containsNewline reports whether text contains a carriage return or
+// line feed, which the single-line input will flatten.
+func containsNewline(text string) bool {
+	return strings.ContainsAny(text, "\r\n")
 }
 
 func (b InputBar) handleMouse(msg tea.MouseMsg) (InputBar, bool, tea.Cmd) {
@@ -361,8 +367,9 @@ func (b InputBar) handleMouse(msg tea.MouseMsg) (InputBar, bool, tea.Cmd) {
 
 	inputRect := b.inputRect()
 	popoverLayout := b.popover.Layout(b.bounds, inputRect)
+	mouse := msg.Mouse()
 
-	if popoverLayout.Rect.Contains(msg.X, msg.Y) {
+	if popoverLayout.Rect.Contains(mouse.X, mouse.Y) {
 		updated, cmd := b.popover.Update(msg)
 		b.popover = updated.(Popover)
 
@@ -370,15 +377,15 @@ func (b InputBar) handleMouse(msg tea.MouseMsg) (InputBar, bool, tea.Cmd) {
 	}
 
 	var dismissCmd tea.Cmd
-	if b.popover.IsVisible() && msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+	if _, clicked := msg.(tea.MouseClickMsg); b.popover.IsVisible() && clicked && mouse.Button == tea.MouseLeft {
 		b, dismissCmd = b.refreshPopover(PopoverDismissMsg{Raw: b.input.Value()})
 	}
 
-	if inputRect.Contains(msg.X, msg.Y) {
-		switch msg.Action {
-		case tea.MouseActionPress:
-			if msg.Button == tea.MouseButtonLeft {
-				localX, _ := inputRect.Local(msg.X, msg.Y)
+	if inputRect.Contains(mouse.X, mouse.Y) {
+		switch msg.(type) {
+		case tea.MouseClickMsg:
+			if mouse.Button == tea.MouseLeft {
+				localX, _ := inputRect.Local(mouse.X, mouse.Y)
 				b = b.SetCursorFromCell(localX)
 				b, popCmd := b.refreshPopover(PopoverRefreshMsg{
 					Raw:    b.input.Value(),
@@ -387,7 +394,7 @@ func (b InputBar) handleMouse(msg tea.MouseMsg) (InputBar, bool, tea.Cmd) {
 
 				return b, true, tea.Batch(dismissCmd, popCmd)
 			}
-		case tea.MouseActionMotion:
+		case tea.MouseMotionMsg:
 			return b, true, dismissCmd
 		}
 	}

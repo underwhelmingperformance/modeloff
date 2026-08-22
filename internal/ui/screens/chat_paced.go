@@ -3,7 +3,7 @@ package screens
 import (
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/laney/modeloff/internal/domain"
 )

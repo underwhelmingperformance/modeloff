@@ -1,12 +1,12 @@
 package components
 
 import (
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/theme"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 // maxSidebarFraction caps the sidebar at this fraction of terminal
@@ -106,7 +106,7 @@ func (m MainLayout) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	// they target the sidebar directly and are consumed here rather
 	// than reaching Content, so an alt+<digit> chord can never be
 	// mistaken by the input editor for a literal character to insert.
-	if key, ok := msg.(tea.KeyMsg); ok {
+	if key, ok := msg.(tea.KeyPressMsg); ok {
 		if translated, matched := m.translateWindowSwitch(key); matched {
 			sidebar, cmd := m.Sidebar.Update(translated)
 			m.Sidebar = sidebar
@@ -322,7 +322,7 @@ func (m MainLayout) computeLayout(width, height int) layoutResult {
 
 // translateWindowSwitch reports the sidebar message a window-switch
 // keypress produces, if msg is one.
-func (m MainLayout) translateWindowSwitch(msg tea.KeyMsg) (tea.Msg, bool) {
+func (m MainLayout) translateWindowSwitch(msg tea.KeyPressMsg) (tea.Msg, bool) {
 	if ui.Matches(msg, m.windowSwitch.Direct) {
 		if idx, ok := directWindowIndex(msg); ok {
 			return ActivateIndexMsg{Index: idx}, true
@@ -345,17 +345,12 @@ func (m MainLayout) translateWindowSwitch(msg tea.KeyMsg) (tea.Msg, bool) {
 
 // directWindowIndex extracts the zero-based window index from an
 // alt+1..alt+9 keypress.
-func directWindowIndex(msg tea.KeyMsg) (int, bool) {
-	if !msg.Alt || msg.Type != tea.KeyRunes || len(msg.Runes) != 1 {
+func directWindowIndex(msg tea.KeyPressMsg) (int, bool) {
+	if msg.Mod != tea.ModAlt || msg.Code < '1' || msg.Code > '9' {
 		return 0, false
 	}
 
-	r := msg.Runes[0]
-	if r < '1' || r > '9' {
-		return 0, false
-	}
-
-	return int(r - '1'), true
+	return int(msg.Code - '1'), true
 }
 
 func (m MainLayout) wantsNickList() bool {

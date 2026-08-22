@@ -1,14 +1,13 @@
 package components_test
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/muesli/termenv"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/domain"
@@ -21,6 +20,8 @@ var testChannels = []domain.Window{
 	domain.NewChannelWindow("#random", time.Date(2025, 1, 2, 0, 0, 0, 0, time.UTC)),
 	domain.NewChannelWindow("#dev", time.Date(2025, 1, 3, 0, 0, 0, 0, time.UTC)),
 }
+
+var italicSGR = regexp.MustCompile(`\x1b\[(?:[0-9]+;)*3(?:;[0-9]+)*m`)
 
 // dmStub builds a DM window addressed by a synthetic instance id
 // derived from the counterpart nick. Test fixtures need a stable
@@ -37,20 +38,20 @@ func dmStub(nick domain.Nick, created time.Time) *domain.DMWindow {
 	return domain.NewDMWindow(counterpart, created)
 }
 
-func key(k string) tea.KeyMsg {
-	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
+func key(k string) tea.KeyPressMsg {
+	return tea.KeyPressMsg{Code: rune(k[0]), Text: k}
 }
 
-func ctrlKey(k string) tea.KeyMsg {
+func ctrlKey(k string) tea.KeyPressMsg {
 	switch k {
 	case "alt+down":
-		return tea.KeyMsg{Type: tea.KeyDown, Alt: true}
+		return tea.KeyPressMsg{Code: tea.KeyDown, Mod: tea.ModAlt}
 	case "alt+up":
-		return tea.KeyMsg{Type: tea.KeyUp, Alt: true}
+		return tea.KeyPressMsg{Code: tea.KeyUp, Mod: tea.ModAlt}
 	case "ctrl+o":
-		return tea.KeyMsg{Type: tea.KeyCtrlO}
+		return tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl}
 	default:
-		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
+		return tea.KeyPressMsg{Code: rune(k[0]), Text: k}
 	}
 }
 
@@ -190,11 +191,10 @@ func TestChannelSidebar_mouse_click_selects_channel(t *testing.T) {
 	m := newTestChannelSidebar(testChannels, "#dev", nil)
 	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 0, Y: 0, Width: 20, Height: 10}})
 
-	_, ch := activateAndGetChannel(t, m, tea.MouseMsg{
+	_, ch := activateAndGetChannel(t, m, tea.MouseClickMsg{
 		X:      5,
 		Y:      2,
-		Action: tea.MouseActionPress,
-		Button: tea.MouseButtonLeft,
+		Button: tea.MouseLeft,
 	})
 
 	require.Equal(t, domain.ChannelName("#general"), ch)
@@ -204,11 +204,10 @@ func TestChannelSidebar_mouse_click_out_of_range(t *testing.T) {
 	m := newTestChannelSidebar(testChannels, "#general", nil)
 	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 0, Y: 0, Width: 20, Height: 10}})
 
-	_, cmd := m.Update(tea.MouseMsg{
+	_, cmd := m.Update(tea.MouseClickMsg{
 		X:      5,
 		Y:      10,
-		Action: tea.MouseActionPress,
-		Button: tea.MouseButtonLeft,
+		Button: tea.MouseLeft,
 	})
 
 	require.Nil(t, cmd)
@@ -332,11 +331,10 @@ func TestChannelSidebar_mouse_wheel_moves_cursor_without_activating(t *testing.T
 	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 0, Y: 0, Width: 20, Height: 10}})
 
 	// Scroll down — should move cursor but NOT activate (no cmd).
-	m, cmd := m.Update(tea.MouseMsg{
+	m, cmd := m.Update(tea.MouseWheelMsg{
 		X:      5,
 		Y:      2,
-		Action: tea.MouseActionPress,
-		Button: tea.MouseButtonWheelDown,
+		Button: tea.MouseWheelDown,
 	})
 
 	require.Nil(t, cmd, "wheel scroll should not activate a channel")
@@ -348,10 +346,6 @@ func TestChannelSidebar_mouse_wheel_moves_cursor_without_activating(t *testing.T
 
 func TestChannelSidebar_mention_renders_differently_from_normal_unread(t *testing.T) {
 	// Force colour output so style differences are visible in test.
-	prev := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.ANSI)
-	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
-
 	// Set up two sidebars with the same unread count: one with mention,
 	// one without.
 	mNormal := newTestChannelSidebar(testChannels, "#general", nil)
@@ -431,10 +425,6 @@ func TestChannelSidebar_mention_clears_on_zero_count(t *testing.T) {
 }
 
 func TestChannelSidebar_mention_clears_on_activation(t *testing.T) {
-	prev := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.ANSI)
-	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
-
 	m := newTestChannelSidebar(testChannels, "#general", nil)
 
 	// Set a mention on #random.
@@ -477,10 +467,6 @@ func TestChannelSidebar_ignores_other_messages(t *testing.T) {
 // sidebar should not show a count — lifecycle is yes/no, not
 // numeric.
 func TestChannelSidebar_lifecycle_renders_italic(t *testing.T) {
-	prev := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.ANSI)
-	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
-
 	mIdle := newTestChannelSidebar(testChannels, "#general", nil)
 	mLifecycle := newTestChannelSidebar(testChannels, "#general", nil)
 	mLifecycle, _ = mLifecycle.Update(components.ChannelHasLifecycleMsg{Channel: "#random"})
@@ -501,8 +487,8 @@ func TestChannelSidebar_lifecycle_renders_italic(t *testing.T) {
 
 	// SGR code 3 is italic; the lifecycle style applies it and the
 	// inactive default does not.
-	require.Contains(t, lifecycleLine, "\x1b[3", "lifecycle style should set italic")
-	require.NotContains(t, idleLine, "\x1b[3", "inactive style should not set italic")
+	require.True(t, italicSGR.MatchString(lifecycleLine), "lifecycle style should set italic")
+	require.False(t, italicSGR.MatchString(idleLine), "inactive style should not set italic")
 }
 
 // TestChannelSidebar_unread_overrides_lifecycle pins precedence:
@@ -510,10 +496,6 @@ func TestChannelSidebar_lifecycle_renders_italic(t *testing.T) {
 // activity, the bold-with-count unread style wins. Lifecycle is
 // the quietest indicator and never displaces a louder one.
 func TestChannelSidebar_unread_overrides_lifecycle(t *testing.T) {
-	prev := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.ANSI)
-	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
-
 	m := newTestChannelSidebar(testChannels, "#general", nil)
 	m, _ = m.Update(components.ChannelHasLifecycleMsg{Channel: "#random"})
 	m, _ = m.Update(components.ChannelUnreadMsg{Channel: "#random", Count: 2})
@@ -530,10 +512,6 @@ func TestChannelSidebar_unread_overrides_lifecycle(t *testing.T) {
 // alongside mentions. Reactivation of a previously-flagged window
 // should leave it indistinguishable from a never-flagged one.
 func TestChannelSidebar_lifecycle_clears_on_activation(t *testing.T) {
-	prev := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.ANSI)
-	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
-
 	m := newTestChannelSidebar(testChannels, "#general", nil)
 	m, _ = m.Update(components.ChannelHasLifecycleMsg{Channel: "#random"})
 
@@ -548,5 +526,5 @@ func TestChannelSidebar_lifecycle_clears_on_activation(t *testing.T) {
 	cleared := findLineContaining(t, m.View(30, 10), "#random")
 
 	require.NotEqual(t, flagged, cleared, "lifecycle styling should clear after activation")
-	require.NotContains(t, cleared, "\x1b[3", "post-clear style should not be italic")
+	require.False(t, italicSGR.MatchString(cleared), "post-clear style should not be italic")
 }

@@ -4,7 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/set"
@@ -67,10 +68,9 @@ func TestSidebar_mouse_wheel_outside_bounds_is_ignored(t *testing.T) {
 
 	require.Equal(t, "alpha", sb.CursorKey())
 
-	sb, _ = sidebarUpdate(t, sb, tea.MouseMsg{
+	sb, _ = sidebarUpdate(t, sb, tea.MouseWheelMsg{
 		X: 50, Y: 50, // well outside the 20x10 rect at (0, 0)
-		Action: tea.MouseActionPress,
-		Button: tea.MouseButtonWheelDown,
+		Button: tea.MouseWheelDown,
 	})
 
 	require.Equal(t, "alpha", sb.CursorKey(), "a wheel event outside the sidebar's bounds must not move the cursor")
@@ -80,10 +80,9 @@ func TestSidebar_mouse_wheel_inside_bounds_moves_cursor(t *testing.T) {
 	sb, _ := newTestSidebar("alpha", "beta", "gamma")
 	sb, _ = sidebarUpdate(t, sb, ui.BoundsMsg{Rect: ui.Rect{X: 0, Y: 0, Width: 20, Height: 10}})
 
-	sb, cmd := sidebarUpdate(t, sb, tea.MouseMsg{
+	sb, cmd := sidebarUpdate(t, sb, tea.MouseWheelMsg{
 		X: 2, Y: 1,
-		Action: tea.MouseActionPress,
-		Button: tea.MouseButtonWheelDown,
+		Button: tea.MouseWheelDown,
 	})
 
 	require.Equal(t, "beta", sb.CursorKey())
@@ -269,7 +268,7 @@ func trimmedLines(view string) []string {
 	out := make([]string, len(lines))
 
 	for i, l := range lines {
-		out[i] = strings.TrimSpace(l)
+		out[i] = strings.TrimSpace(ansi.Strip(l))
 	}
 
 	return out
@@ -292,10 +291,9 @@ func TestSidebar_click_on_group_label_is_a_no_op(t *testing.T) {
 	sb, _ = sidebarUpdateSectioned(t, sb, ui.BoundsMsg{Rect: ui.Rect{X: 0, Y: 0, Width: 20, Height: 10}})
 
 	// Row 0 is "alpha", row 1 is the "Queries" label, row 2 is "carol".
-	sb, cmd := sidebarUpdateSectioned(t, sb, tea.MouseMsg{
+	sb, cmd := sidebarUpdateSectioned(t, sb, tea.MouseClickMsg{
 		X: 2, Y: 1,
-		Action: tea.MouseActionPress,
-		Button: tea.MouseButtonLeft,
+		Button: tea.MouseLeft,
 	})
 
 	require.Nil(t, cmd, "a click on a group label activates nothing")
@@ -311,10 +309,9 @@ func TestSidebar_click_on_item_after_group_label_activates_it(t *testing.T) {
 	sb, _ = sidebarUpdateSectioned(t, sb, ui.BoundsMsg{Rect: ui.Rect{X: 0, Y: 0, Width: 20, Height: 10}})
 
 	// Row 2 is "carol", past the "Queries" label at row 1.
-	sb, cmd := sidebarUpdateSectioned(t, sb, tea.MouseMsg{
+	sb, cmd := sidebarUpdateSectioned(t, sb, tea.MouseClickMsg{
 		X: 2, Y: 2,
-		Action: tea.MouseActionPress,
-		Button: tea.MouseButtonLeft,
+		Button: tea.MouseLeft,
 	})
 
 	require.NotNil(t, cmd)
@@ -340,10 +337,9 @@ func TestSidebar_click_activates_and_moves_cursor(t *testing.T) {
 	sb, activated := newTestSidebar("alpha", "beta", "gamma")
 	sb, _ = sidebarUpdate(t, sb, ui.BoundsMsg{Rect: ui.Rect{X: 0, Y: 0, Width: 20, Height: 10}})
 
-	sb, cmd := sidebarUpdate(t, sb, tea.MouseMsg{
+	sb, cmd := sidebarUpdate(t, sb, tea.MouseClickMsg{
 		X: 2, Y: 1,
-		Action: tea.MouseActionPress,
-		Button: tea.MouseButtonLeft,
+		Button: tea.MouseLeft,
 	})
 
 	require.NotNil(t, cmd)

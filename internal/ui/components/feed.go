@@ -5,10 +5,10 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/theme"
@@ -29,7 +29,7 @@ type FeedView struct {
 
 // NewFeedView creates a read-only scrolling feed.
 func NewFeedView(placeholder, dividerText string) FeedView {
-	vp := viewport.New(0, 0)
+	vp := viewport.New(viewport.WithWidth(0), viewport.WithHeight(0))
 	vp.MouseWheelEnabled = true
 
 	keyMap := DefaultChatViewKeyMap
@@ -103,20 +103,19 @@ func (f FeedView) Update(msg tea.Msg) (FeedView, tea.Cmd) {
 		f.bounds = msg.Rect
 		return f.SyncViewport(msg.Rect.Width, msg.Rect.Height), nil
 
-	case tea.MouseMsg:
-		if !f.bounds.Contains(msg.X, msg.Y) {
+	case tea.MouseWheelMsg:
+		mouse := msg.Mouse()
+		if !f.bounds.Contains(mouse.X, mouse.Y) {
 			return f, nil
 		}
 
-		if msg.Action == tea.MouseActionPress {
-			switch msg.Button {
-			case tea.MouseButtonWheelUp:
-				f.viewport.ScrollUp(f.viewport.MouseWheelDelta)
-				return f, nil
-			case tea.MouseButtonWheelDown:
-				f.viewport.ScrollDown(f.viewport.MouseWheelDelta)
-				return f, nil
-			}
+		switch mouse.Button {
+		case tea.MouseWheelUp:
+			f.viewport.ScrollUp(f.viewport.MouseWheelDelta)
+			return f, nil
+		case tea.MouseWheelDown:
+			f.viewport.ScrollDown(f.viewport.MouseWheelDelta)
+			return f, nil
 		}
 	}
 
@@ -158,8 +157,8 @@ func (f FeedView) View(width, height int) (view string, scrolled bool, scrollPct
 	}
 
 	vp := f.viewport
-	vp.Width = width
-	vp.Height = height
+	vp.SetWidth(width)
+	vp.SetHeight(height)
 
 	content := f.renderedContent(width)
 	vp.SetContent(content)
@@ -182,8 +181,8 @@ func (f FeedView) SyncViewport(width, height int) FeedView {
 		height = 0
 	}
 
-	f.viewport.Width = width
-	f.viewport.Height = height
+	f.viewport.SetWidth(width)
+	f.viewport.SetHeight(height)
 
 	return f.refreshContent(f.viewport.AtBottom() || f.viewport.TotalLineCount() == 0)
 }
@@ -204,7 +203,7 @@ func (f FeedView) renderedContent(width int) string {
 }
 
 func (f FeedView) refreshContent(wasAtBottom bool) FeedView {
-	f.viewport.SetContent(f.renderedContent(f.viewport.Width))
+	f.viewport.SetContent(f.renderedContent(f.viewport.Width()))
 
 	if wasAtBottom {
 		f.viewport.GotoBottom()

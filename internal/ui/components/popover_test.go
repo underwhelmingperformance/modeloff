@@ -3,7 +3,7 @@ package components_test
 import (
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/command"
@@ -47,7 +47,7 @@ func TestPopover_Enter_accepts_when_it_would_change_the_input(t *testing.T) {
 		},
 	})
 
-	updated, cmd := p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	next := updated.(components.Popover)
 
 	require.True(t, next.Handled(), "Enter must accept the highlighted suggestion when accepting it would change the typed text")
@@ -66,7 +66,7 @@ func TestPopover_Enter_falls_through_when_typed_text_already_matches(t *testing.
 		},
 	})
 
-	updated, cmd := p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	next := updated.(components.Popover)
 
 	require.False(t, next.Handled(), "a fully-typed command must submit on the first Enter, not require a second")
@@ -85,13 +85,13 @@ func TestPopover_optional_continuation_leaves_Enter_for_submission(t *testing.T)
 		},
 	})
 
-	updated, cmd := p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	next := updated.(components.Popover)
 
 	require.False(t, next.Handled())
 	require.Nil(t, cmd)
 
-	updated, cmd = p.Update(tea.KeyMsg{Type: tea.KeyTab})
+	updated, cmd = p.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	next = updated.(components.Popover)
 
 	require.True(t, next.Handled())
@@ -112,7 +112,7 @@ func TestPopover_UpDown_cycle_when_multiple_suggestions(t *testing.T) {
 		},
 	})
 
-	updated, _ := p.Update(tea.KeyMsg{Type: tea.KeyDown})
+	updated, _ := p.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	next := updated.(components.Popover)
 
 	require.True(t, next.Handled())
@@ -132,7 +132,7 @@ func TestPopover_UpDown_fall_through_with_at_most_one_suggestion(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			p := newVisiblePopover(t, command.Completion{Visible: true, Suggestions: tc.suggestions})
 
-			updated, cmd := p.Update(tea.KeyMsg{Type: tea.KeyDown})
+			updated, cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 			next := updated.(components.Popover)
 
 			require.False(t, next.Handled(), "with at most one suggestion, Up/Down must reach input history instead")
@@ -179,7 +179,7 @@ func TestPopover_BlocksHistory(t *testing.T) {
 func TestPopover_Esc_dismisses_with_or_without_suggestions(t *testing.T) {
 	p := newVisiblePopover(t, command.Completion{Visible: true})
 
-	updated, _ := p.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	updated, _ := p.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	next := updated.(components.Popover)
 
 	require.True(t, next.Handled())

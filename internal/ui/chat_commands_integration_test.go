@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/x/exp/teatest"
+	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/exp/teatest/v2"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/config"
@@ -71,7 +71,7 @@ func TestApp_title_list_and_help_commands_with_teatest(t *testing.T) {
 	require.NoError(t, err)
 
 	root := uipkg.NewRoot(chatScreen)
-	tm := uitest.New(t, root, teatest.WithInitialTermSize(256, 256))
+	tm := uitest.New(t, root, uitest.WithInitialTermSize(256, 256))
 
 	tm.WaitFor("#random")
 
@@ -102,7 +102,7 @@ func TestApp_invite_whois_and_kick_commands_with_teatest(t *testing.T) {
 	require.NoError(t, err)
 
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen),
-		teatest.WithInitialTermSize(120, 24))
+		uitest.WithInitialTermSize(120, 24))
 	tm.WaitFor("#random")
 
 	tm.Submit("/add-model")
@@ -312,26 +312,21 @@ func TestApp_unread_counts_clear_when_visiting_channel_with_teatest(t *testing.T
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen))
 	// Wait for the sidebar to settle (both channels rendered and the
 	// initial focus marker on #random) before issuing the Alt+Up +
-	// Ctrl+O navigation. WaitFor on cumulative output can match a
-	// transient frame from before the focus marker is positioned,
-	// causing the navigation keys to be processed against a stale
-	// sidebar selection.
+	// Ctrl+O navigation.
 	tm.WaitForView(func(view string) bool {
 		return strings.Contains(view, "#general") &&
 			strings.Contains(view, "▸#random")
 	})
 
-	tm.Send(tea.KeyMsg{Type: tea.KeyUp, Alt: true})
-	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlO})
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyUp, Mod: tea.ModAlt})
+	tm.Send(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
 
-	// Anchor the assertion to the snapshot returned by WaitForView
-	// (the exact view that satisfied the predicate). Polling the
-	// rendered view rather than the cumulative output stream avoids
-	// matching a transient frame that briefly contained "general
-	// unread" before the focus actually landed.
+	// Anchor the assertion to the exact snapshot in which focus has
+	// landed and its unread count has cleared.
 	view := tm.WaitForView(func(view string) bool {
 		return strings.Contains(view, "general unread") &&
-			strings.Contains(view, "▸#general")
+			strings.Contains(view, "▸#general") &&
+			!strings.Contains(view, "▸#general (")
 	})
 
 	require.Equal(t, []string{"Channels", "&modeloff", "▸#general", "#random"}, sidebarColumn(view))
@@ -356,14 +351,14 @@ func TestApp_input_history_and_sidebar_shortcuts_with_teatest(t *testing.T) {
 	tm.WaitFor("second", "history", "entry")
 
 	tm.Type("draft-only")
-	tm.Send(tea.KeyMsg{Type: tea.KeyUp})
-	tm.Send(tea.KeyMsg{Type: tea.KeyUp})
-	tm.Send(tea.KeyMsg{Type: tea.KeyDown})
-	tm.Send(tea.KeyMsg{Type: tea.KeyDown})
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyUp})
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyUp})
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyDown})
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyDown})
 	tm.WaitFor("draft-only")
 
-	tm.Send(tea.KeyMsg{Type: tea.KeyUp, Alt: true})
-	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlO})
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyUp, Mod: tea.ModAlt})
+	tm.Send(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
 	tm.WaitFor("general msg")
 
 	view := tm.CurrentView()
@@ -402,7 +397,7 @@ func TestApp_ctrl_arrow_scroll_preserves_draft_with_teatest(t *testing.T) {
 	tm.WaitForViewContains("#general", "message 29")
 
 	tm.Type("draft-only")
-	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlUp})
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyUp, Mod: tea.ModCtrl})
 
 	// Both the typed draft and the Ctrl+Up scroll are async. Anchor
 	// the assertion to the snapshot returned by WaitForView (the
@@ -451,7 +446,7 @@ func TestApp_new_messages_divider_with_teatest(t *testing.T) {
 	// is a no-op and leaves us at the bottom.
 	tm.WaitForViewContains("#general", "message 29")
 
-	tm.Send(tea.KeyMsg{Type: tea.KeyPgUp})
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyPgUp})
 	tm.WaitForViewContains("message 0")
 
 	tm.Submit("fresh divider trigger 1")
@@ -471,7 +466,7 @@ func TestApp_new_messages_divider_with_teatest(t *testing.T) {
 		if strings.Contains(view, "new messages") {
 			return true
 		}
-		tm.Send(tea.KeyMsg{Type: tea.KeyCtrlDown})
+		tm.Send(tea.KeyPressMsg{Code: tea.KeyDown, Mod: tea.ModCtrl})
 		return false
 	})
 

@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	bkey "github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	bkey "charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/domain"
@@ -465,27 +465,27 @@ func (s recordingModel) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 func TestMainLayout_window_switch_keys_reach_only_the_sidebar(t *testing.T) {
 	tests := []struct {
 		name string
-		key  tea.KeyMsg
+		key  tea.KeyPressMsg
 		want tea.Msg
 	}{
 		{
 			name: "alt+3 activates index 2",
-			key:  tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'3'}, Alt: true},
+			key:  tea.KeyPressMsg{Code: '3', Mod: tea.ModAlt},
 			want: components.ActivateIndexMsg{Index: 2},
 		},
 		{
 			name: "alt+a activates next activity",
-			key:  tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}, Alt: true},
+			key:  tea.KeyPressMsg{Code: 'a', Mod: tea.ModAlt},
 			want: components.ActivateNextActivityMsg{},
 		},
 		{
 			name: "ctrl+n steps forward",
-			key:  tea.KeyMsg{Type: tea.KeyCtrlN},
+			key:  tea.KeyPressMsg{Code: 'n', Mod: tea.ModCtrl},
 			want: components.ActivateOffsetMsg{Delta: 1},
 		},
 		{
 			name: "ctrl+p steps backward",
-			key:  tea.KeyMsg{Type: tea.KeyCtrlP},
+			key:  tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl},
 			want: components.ActivateOffsetMsg{Delta: -1},
 		},
 	}
@@ -516,7 +516,7 @@ func TestMainLayout_non_window_switch_keys_reach_all_children(t *testing.T) {
 	content := recordingModel{stubModel: stubModel{label: "content"}, received: contentReceived}
 
 	layout := components.NewMainLayout(sidebar, content)
-	layout.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	layout.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
 
 	require.Len(t, *sidebarReceived, 1)
 	require.Len(t, *contentReceived, 1)

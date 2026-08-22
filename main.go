@@ -14,7 +14,7 @@ import (
 	"syscall"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/laney/modeloff/internal/api"
 	"github.com/laney/modeloff/internal/config"
@@ -150,8 +150,6 @@ func main() {
 
 	p := tea.NewProgram(
 		ui.NewRoot(connScreen),
-		tea.WithAltScreen(),
-		tea.WithMouseCellMotion(),
 		tea.WithContext(appCtx),
 	)
 

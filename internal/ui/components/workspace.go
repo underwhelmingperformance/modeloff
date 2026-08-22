@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"golang.org/x/text/language"
 
 	"github.com/laney/modeloff/internal/command"
@@ -91,7 +91,7 @@ func (w ChatWorkspace[C]) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		w = w.refreshLogs()
 		return w, nil
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		switch {
 		case ui.Matches(msg, w.keyMap.ToggleObservability):
 			w.Open = !w.Open
@@ -141,7 +141,7 @@ func (w ChatWorkspace[C]) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 func (w ChatWorkspace[C]) updateFullscreen(msg tea.Msg) (ui.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
-	if _, ok := msg.(tea.KeyMsg); ok {
+	if _, ok := msg.(tea.KeyPressMsg); ok {
 		if w.Focus == workspaceFocusMetrics && w.HasMetrics {
 			updatedMetrics, cmd := w.Metrics.Update(msg)
 			w.Metrics = updatedMetrics.(MetricsPane)
@@ -186,7 +186,7 @@ func (w ChatWorkspace[C]) updateSplit(msg tea.Msg) (ui.Model, tea.Cmd) {
 	// scroll it, not the drawer, which the mouse wheel still reaches
 	// directly. Without this, both panes would scroll on every press
 	// since they share the same scroll keymap.
-	if key, ok := msg.(tea.KeyMsg); ok && isChatScrollKey(w.Chat.keyMap, key) {
+	if key, ok := msg.(tea.KeyPressMsg); ok && isChatScrollKey(w.Chat.keyMap, key) {
 		return w, tea.Batch(cmds...)
 	}
 
@@ -205,7 +205,7 @@ func (w ChatWorkspace[C]) updateSplit(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 // isChatScrollKey reports whether msg is one of the chat transcript's
 // scroll bindings (PgUp/PgDn, ctrl+up/down).
-func isChatScrollKey(km ChatViewKeyMap, msg tea.KeyMsg) bool {
+func isChatScrollKey(km ChatViewKeyMap, msg tea.KeyPressMsg) bool {
 	return ui.Matches(msg, km.PageUp) || ui.Matches(msg, km.PageDown) ||
 		ui.Matches(msg, km.ScrollUp) || ui.Matches(msg, km.ScrollDown)
 }

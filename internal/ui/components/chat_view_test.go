@@ -7,13 +7,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/muesli/termenv"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/text/language"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
@@ -542,14 +541,14 @@ func TestChatView_scroll(t *testing.T) {
 	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{Width: 80, Height: 24}})
 
 	// Scroll up.
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
 
 	v := m.View(80, 24)
 	require.Equal(t, numberedUserMessages("message", 0, 20), visibleEventsWithoutTimestamps(v))
 	require.Equal(t, "(0%)", scrollIndicatorLine(v))
 
 	// Scroll back down.
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
 
 	v = m.View(80, 24)
 	require.Equal(t, numberedUserMessages("message", 9, 21), visibleEventsWithoutTimestamps(v))
@@ -575,7 +574,7 @@ func TestChatView_scroll_indicator(t *testing.T) {
 	require.Equal(t, "", scrollIndicatorLine(v))
 
 	// Scroll up — indicator appears.
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
 
 	v = m.View(80, 24)
 	require.Equal(t, "(0%)", scrollIndicatorLine(v))
@@ -584,7 +583,7 @@ func TestChatView_scroll_indicator(t *testing.T) {
 	require.Equal(t, 24, lipgloss.Height(v))
 
 	// Scroll back to bottom — indicator disappears.
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
 
 	v = m.View(80, 24)
 	require.Equal(t, "", scrollIndicatorLine(v))
@@ -604,13 +603,13 @@ func TestChatView_ctrl_arrow_scroll(t *testing.T) {
 	var m ui.Model = cv
 	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{Width: 80, Height: 24}})
 
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlUp})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyUp, Mod: tea.ModCtrl})
 
 	v := m.View(80, 24)
 	require.Equal(t, numberedUserMessages("message", 8, 20), visibleEventsWithoutTimestamps(v))
 	require.Equal(t, "(88%)", scrollIndicatorLine(v))
 
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlDown})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown, Mod: tea.ModCtrl})
 
 	v = m.View(80, 24)
 	require.Equal(t, numberedUserMessages("message", 9, 21), visibleEventsWithoutTimestamps(v))
@@ -622,8 +621,8 @@ func TestChatView_scroll_does_not_go_negative(t *testing.T) {
 	var m ui.Model = cv
 
 	// Try to scroll down past zero.
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
 
 	v := m.View(80, 24)
 	require.Equal(t, []string{
@@ -653,15 +652,15 @@ func TestChatView_arrow_keys_stay_with_input(t *testing.T) {
 	m, _ = enter(t, m)
 	m = typeText(t, m, "draft")
 
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyUp})
 
 	v := m.View(80, 24)
 	require.Equal(t, []string{"testuser", ">", "second"}, chatInputTokens(v))
 	require.Equal(t, numberedUserMessages("message", 9, 21), visibleEventsWithoutTimestamps(v))
 
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyLeft})
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyLeft})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyLeft})
 	m = typeText(t, m, "X")
 
 	v = m.View(80, 24)
@@ -671,10 +670,6 @@ func TestChatView_arrow_keys_stay_with_input(t *testing.T) {
 
 func TestChatView_nicks_use_hashed_colours(t *testing.T) {
 	// Force the ANSI profile so escape codes are deterministic.
-	prev := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.ANSI)
-	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
-
 	aliceToken := extractStyledNickToken(t, renderNick(t, "alice", "from user"), "alice")
 	botToken := extractStyledNickToken(t, renderNick(t, "bot", "from model"), "bot")
 
@@ -1225,12 +1220,12 @@ func TestNewMessagesDivider_fills_width(t *testing.T) {
 	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{Width: 80, Height: 24}})
 
 	// Scroll up, then grow the events slice to trigger the divider.
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
 	events = append(events, domain.Message{Target: "#test", From: "other", Body: "new arrival", At: time.Now()})
 
 	// Scroll back towards the bottom to bring the divider into view.
 	for range 5 {
-		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+		m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
 	}
 
 	v := m.View(80, 24)
@@ -1270,7 +1265,7 @@ func TestChatView_command_popover_renders_and_completes(t *testing.T) {
 	require.Equal(t, []string{"testuser", ">", "/jo"}, chatInputTokens(v))
 
 	var cmd tea.Cmd
-	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 
 	require.NotNil(t, cmd, "Tab should produce a cmd")
 	m, _ = m.Update(cmd())
@@ -1305,11 +1300,11 @@ func TestChatView_popover_arrow_keys_do_not_fall_through(t *testing.T) {
 
 	// The popover is now visible with suggestions. Down should
 	// navigate the popover, not recall input history.
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 
 	// Type Tab to accept whatever is selected, then complete and submit.
 	var cmd tea.Cmd
-	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 
 	require.NotNil(t, cmd, "Tab should produce a cmd")
 	m, _ = m.Update(cmd())
@@ -1391,16 +1386,15 @@ func TestChatView_mouse_click_positions_input_cursor(t *testing.T) {
 
 	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 20, Y: 0, Width: 60, Height: 24}})
 	m = typeText(t, m, "hello")
-	m, _ = m.Update(tea.MouseMsg{
+	m, _ = m.Update(tea.MouseClickMsg{
 		X:      32,
 		Y:      23,
-		Action: tea.MouseActionPress,
-		Button: tea.MouseButtonLeft,
+		Button: tea.MouseLeft,
 	})
 	m = typeText(t, m, "X")
 
 	var cmd tea.Cmd
-	_, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	require.NotNil(t, cmd)
 
 	sub := cmd().(components.MessageSubmitMsg)
@@ -1433,7 +1427,7 @@ func TestChatView_divider_inserted_when_scrolled_up(t *testing.T) {
 	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{Width: 80, Height: 24}})
 
 	// Scroll up so we're no longer at the bottom.
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
 
 	v := m.View(80, 24)
 	require.Equal(t, numberedUserMessages("message", 0, 20), visibleEventsWithoutTimestamps(v))
@@ -1457,7 +1451,7 @@ func TestChatView_divider_inserted_when_scrolled_up(t *testing.T) {
 
 	// Scroll to bottom to see the divider.
 	for range 5 {
-		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+		m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
 	}
 
 	v = m.View(80, 24)
@@ -1590,7 +1584,7 @@ func TestChatView_stored_events_insert_divider_when_scrolled_up(t *testing.T) {
 	var m ui.Model = updated.(components.ChatView[testKind])
 	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{Width: 80, Height: 24}})
 
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
 
 	for i := 30; i < 33; i++ {
 		events = append(events, domain.Message{
@@ -1602,7 +1596,7 @@ func TestChatView_stored_events_insert_divider_when_scrolled_up(t *testing.T) {
 	}
 
 	for range 5 {
-		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+		m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
 	}
 
 	v := ansi.Strip(m.View(80, 24))
@@ -1656,7 +1650,7 @@ func TestChatView_stored_events_keep_divider_when_more_arrive_during_catch_up(t 
 	var m ui.Model = updated.(components.ChatView[testKind])
 	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{Width: 80, Height: 24}})
 
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
 
 	// First new event while scrolled up — divider is armed.
 	events = append(events, domain.Message{
@@ -1676,7 +1670,7 @@ func TestChatView_stored_events_keep_divider_when_more_arrive_during_catch_up(t 
 
 	// Scroll to bottom to see both new events and the divider.
 	for range 5 {
-		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+		m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
 	}
 
 	v := ansi.Strip(m.View(80, 24))
@@ -1959,11 +1953,10 @@ func TestChatView_mouse_wheel_scrolls_messages(t *testing.T) {
 	var m ui.Model = cv
 	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 20, Y: 0, Width: 60, Height: 24}})
 
-	m, _ = m.Update(tea.MouseMsg{
+	m, _ = m.Update(tea.MouseWheelMsg{
 		X:      25,
 		Y:      10,
-		Action: tea.MouseActionPress,
-		Button: tea.MouseButtonWheelUp,
+		Button: tea.MouseWheelUp,
 	})
 
 	v := m.View(60, 24)
@@ -1994,11 +1987,10 @@ func TestChatView_mouse_click_accepts_popover_suggestion(t *testing.T) {
 	m = typeText(t, m, "/jo")
 
 	var cmd tea.Cmd
-	m, cmd = m.Update(tea.MouseMsg{
+	m, cmd = m.Update(tea.MouseClickMsg{
 		X:      24,
 		Y:      22,
-		Action: tea.MouseActionPress,
-		Button: tea.MouseButtonLeft,
+		Button: tea.MouseLeft,
 	})
 
 	require.NotNil(t, cmd, "mouse click should produce a cmd")

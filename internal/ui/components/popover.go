@@ -5,8 +5,8 @@ import (
 	"slices"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/ui"
@@ -146,7 +146,7 @@ func (p Popover) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		p = p.refresh(msg.Raw, 0)
 		return p, nil
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		if updated, handled, cmd := p.handleKey(msg); handled {
 			updated.handled = true
 			return updated, cmd
@@ -205,17 +205,17 @@ func (p Popover) Render(width int) string {
 	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }
 
-func (p Popover) handleKey(msg tea.KeyMsg) (Popover, bool, tea.Cmd) {
+func (p Popover) handleKey(msg tea.KeyPressMsg) (Popover, bool, tea.Cmd) {
 	if !p.completion.Visible {
 		return p, false, nil
 	}
 
-	switch msg.Type {
-	case tea.KeyTab:
+	switch {
+	case msg.Code == tea.KeyTab && !msg.Mod.Contains(tea.ModShift):
 		if p.HasSuggestions() {
 			return p, true, p.acceptCmd(p.selected)
 		}
-	case tea.KeyEnter:
+	case msg.Code == tea.KeyEnter:
 		// Accept the highlighted suggestion first when doing so would
 		// change the typed text, matching Tab. An optional continuation
 		// leaves Enter to the input bar because the command is already
@@ -226,7 +226,7 @@ func (p Popover) handleKey(msg tea.KeyMsg) (Popover, bool, tea.Cmd) {
 				return p, true, p.acceptCmd(p.selected)
 			}
 		}
-	case tea.KeyShiftTab, tea.KeyUp:
+	case msg.Code == tea.KeyUp || msg.Code == tea.KeyTab && msg.Mod.Contains(tea.ModShift):
 		// Only claim the key when there's more than one suggestion to
 		// cycle between; otherwise let it fall through to input
 		// history, which the caller would otherwise never reach while
@@ -234,11 +234,11 @@ func (p Popover) handleKey(msg tea.KeyMsg) (Popover, bool, tea.Cmd) {
 		if len(p.completion.Suggestions) > 1 {
 			return p.moveSelection(-1), true, nil
 		}
-	case tea.KeyDown:
+	case msg.Code == tea.KeyDown:
 		if len(p.completion.Suggestions) > 1 {
 			return p.moveSelection(1), true, nil
 		}
-	case tea.KeyEsc:
+	case msg.Code == tea.KeyEsc:
 		p.completion = command.Completion{}
 		p.closed = true
 		return p, true, nil
@@ -262,22 +262,26 @@ func (p Popover) handleMouse(msg tea.MouseMsg) (Popover, bool, tea.Cmd) {
 		Height: 1,
 	})
 
-	if !layout.Rect.Contains(msg.X, msg.Y) {
+	mouse := msg.Mouse()
+	if !layout.Rect.Contains(mouse.X, mouse.Y) {
 		return p, false, nil
 	}
 
-	switch msg.Action {
-	case tea.MouseActionMotion:
-		return p.hoverSuggestion(layout, msg.X, msg.Y), true, nil
+	switch msg.(type) {
+	case tea.MouseMotionMsg:
+		return p.hoverSuggestion(layout, mouse.X, mouse.Y), true, nil
 
-	case tea.MouseActionPress:
-		switch msg.Button {
-		case tea.MouseButtonWheelUp:
+	case tea.MouseWheelMsg:
+		switch mouse.Button {
+		case tea.MouseWheelUp:
 			return p.moveSelection(-1), true, nil
-		case tea.MouseButtonWheelDown:
+		case tea.MouseWheelDown:
 			return p.moveSelection(1), true, nil
-		case tea.MouseButtonLeft:
-			if index, ok := p.suggestionIndexAt(layout, msg.X, msg.Y); ok {
+		}
+
+	case tea.MouseClickMsg:
+		if mouse.Button == tea.MouseLeft {
+			if index, ok := p.suggestionIndexAt(layout, mouse.X, mouse.Y); ok {
 				return p, true, p.acceptCmd(index)
 			}
 

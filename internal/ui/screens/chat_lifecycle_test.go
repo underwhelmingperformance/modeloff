@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/x/exp/teatest"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/domain"
@@ -76,7 +75,7 @@ func TestChatScreen_Init_restores_persisted_last_window(t *testing.T) {
 	chatScreen, err := screens.NewChatScreen(t.Context, sess, mgr, user, newFakeConfigStore(), s, domain.KindStatus)
 	require.NoError(t, err)
 
-	tm := uitest.New(t, uipkg.NewRoot(chatScreen), teatest.WithInitialTermSize(termWidth, termHeight))
+	tm := uitest.New(t, uipkg.NewRoot(chatScreen), uitest.WithInitialTermSize(termWidth, termHeight))
 
 	view := tm.WaitForView(func(view string) bool {
 		return strings.Contains(view, "▸#general") &&

@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/x/exp/teatest"
+	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/exp/teatest/v2"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/api"
@@ -83,7 +83,7 @@ func newChatAppWithConfig(t *testing.T, h *testHarness, cfgStore config.Store) *
 	require.NoError(t, err)
 
 	root := uipkg.NewRoot(chatScreen)
-	return uitest.New(t, root, teatest.WithInitialTermSize(termWidth, termHeight))
+	return uitest.New(t, root, uitest.WithInitialTermSize(termWidth, termHeight))
 }
 
 func newChatAppInChannel(t *testing.T, channel domain.ChannelName) (*uitest.App, *testHarness) {
@@ -418,7 +418,7 @@ func TestChatScreen_persists_last_window_on_focus(t *testing.T) {
 	chatScreen, err := screens.NewChatScreen(t.Context, sess, mgr, user, newFakeConfigStore(), s, domain.KindStatus)
 	require.NoError(t, err)
 
-	tm := uitest.New(t, uipkg.NewRoot(chatScreen), teatest.WithInitialTermSize(termWidth, termHeight))
+	tm := uitest.New(t, uipkg.NewRoot(chatScreen), uitest.WithInitialTermSize(termWidth, termHeight))
 	// `SeedChannel`'s last call (#random) ends up active because no
 	// last window is persisted at the start of the test, so the
 	// chat screen's "no-preference, first NAMES reply wins" rule
@@ -1041,10 +1041,10 @@ func TestChatScreen_KeyBindings_switch_to_popover_bindings(t *testing.T) {
 func TestChatScreen_F1_shows_keyboard_help_from_active_bindings(t *testing.T) {
 	tm, _ := newChatAppInChannel(t, "#general")
 
-	tm.Send(tea.KeyMsg{Type: tea.KeyF1})
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyF1})
 	tm.WaitForViewContains("Keyboard shortcuts", "^B", "bold", "F1", "shortcuts")
 
-	tm.Send(tea.KeyMsg{Type: tea.KeyEsc})
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyEsc})
 	tm.WaitForViewContains("#general")
 }
 

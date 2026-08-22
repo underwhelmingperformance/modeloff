@@ -3,7 +3,7 @@ package screens_test
 import (
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/ui"
@@ -175,7 +175,7 @@ func TestConnectionScreen_ignores_other_messages(t *testing.T) {
 	}, nil)
 
 	var m ui.Model = s
-	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	m, cmd := m.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
 
 	require.Nil(t, cmd)
 	require.Equal(t, []string{"… Connecting to modeloff"}, uitest.TrimmedVisibleLines(view(m)))

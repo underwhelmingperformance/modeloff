@@ -3,7 +3,7 @@ package components
 import (
 	"testing"
 
-	"github.com/charmbracelet/bubbles/key"
+	"charm.land/bubbles/v2/key"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/ui"

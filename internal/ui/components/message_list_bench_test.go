@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/ui"
@@ -69,7 +69,7 @@ func benchMessageList(events []domain.Event) ui.Model {
 // message on the bus pays too.
 func BenchmarkMessageListKeystroke(b *testing.B) {
 	m := benchMessageList(benchEvents(benchScrollbackSize))
-	key := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}}
+	key := tea.KeyPressMsg{Code: 'x', Text: "x"}
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -112,7 +112,7 @@ func BenchmarkMessageListKeystrokeAfterSidebarGrowth(b *testing.B) {
 		},
 	})
 
-	key := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}}
+	key := tea.KeyPressMsg{Code: 'x', Text: "x"}
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -128,10 +128,10 @@ func BenchmarkMessageListKeystrokeAfterSidebarGrowth(b *testing.B) {
 // carries a scroll indicator.
 func BenchmarkMessageListKeystrokeScrolledUp(b *testing.B) {
 	m := benchMessageList(benchEvents(benchScrollbackSize))
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
 
-	key := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}}
+	key := tea.KeyPressMsg{Code: 'x', Text: "x"}
 
 	b.ReportAllocs()
 	b.ResetTimer()

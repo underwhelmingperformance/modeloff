@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/laney/modeloff/internal/richtext"
 	"github.com/laney/modeloff/internal/ui/theme"
@@ -76,7 +76,7 @@ func (p colourPalette) colour() *uint8 {
 // handlePaletteKey answers a key while the palette is open. It reports
 // whether the palette took the key; anything it does not take falls
 // through to the editor's own key handling.
-func (r RichTextarea) handlePaletteKey(msg tea.KeyMsg) (RichTextarea, bool) {
+func (r RichTextarea) handlePaletteKey(msg tea.KeyPressMsg) (RichTextarea, bool) {
 	if !r.palette.open {
 		return r, false
 	}
@@ -109,12 +109,12 @@ func (r RichTextarea) handlePaletteKey(msg tea.KeyMsg) (RichTextarea, bool) {
 // digitRune returns the numeric value of a single-digit rune key
 // without any modifier, plus a boolean indicating a match. Used by
 // the colour palette to let the user jump straight to a swatch.
-func digitRune(msg tea.KeyMsg) (int, bool) {
-	if msg.Type != tea.KeyRunes || msg.Alt || len(msg.Runes) != 1 {
+func digitRune(msg tea.KeyPressMsg) (int, bool) {
+	if msg.Mod != 0 || len(msg.Text) != 1 {
 		return 0, false
 	}
 
-	r := msg.Runes[0]
+	r := rune(msg.Text[0])
 	if r < '0' || r > '9' {
 		return 0, false
 	}
@@ -127,36 +127,43 @@ func (r RichTextarea) handlePaletteMouse(msg tea.MouseMsg) (RichTextarea, bool) 
 		return r, false
 	}
 
-	switch msg.Button {
-	case tea.MouseButtonWheelUp:
-		if msg.Action == tea.MouseActionPress && r.palette.index > 0 {
-			r.palette.moveLeft()
-			return r, true
+	mouse := msg.Mouse()
+
+	switch msg.(type) {
+	case tea.MouseWheelMsg:
+		switch mouse.Button {
+		case tea.MouseWheelUp:
+			if r.palette.index > 0 {
+				r.palette.moveLeft()
+				return r, true
+			}
+		case tea.MouseWheelDown:
+			if r.palette.index < maxPaletteIndex {
+				r.palette.moveRight()
+				return r, true
+			}
 		}
-	case tea.MouseButtonWheelDown:
-		if msg.Action == tea.MouseActionPress && r.palette.index < maxPaletteIndex {
-			r.palette.moveRight()
-			return r, true
-		}
-	case tea.MouseButtonLeft:
-		if msg.Action != tea.MouseActionPress && msg.Action != tea.MouseActionMotion {
+
+	case tea.MouseClickMsg, tea.MouseMotionMsg:
+		if mouse.Button != tea.MouseLeft {
 			return r, false
 		}
 
-		if msg.X < 4 {
-			if msg.Action == tea.MouseActionPress {
+		_, clicked := msg.(tea.MouseClickMsg)
+		if mouse.X < 4 {
+			if clicked {
 				r.palette.toggleTarget()
 			}
 			return r, true
 		}
 
-		index := (msg.X - 4) / 3
+		index := (mouse.X - 4) / 3
 		if index < 0 || index > maxPaletteIndex {
 			return r, false
 		}
 
 		r.palette.index = index
-		if msg.Action == tea.MouseActionPress {
+		if clicked {
 			r = r.applyPaletteSelection()
 		}
 		return r, true

@@ -7,8 +7,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/x/exp/teatest"
+	tea "charm.land/bubbletea/v2"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/domain"
@@ -32,8 +31,10 @@ func seedInstance(t *testing.T, h *testHarness, id domain.InstanceID, nick domai
 // altWindow returns the alt+<n> keypress that switches straight to
 // the window at the given one-based sidebar position, which the
 // binding covers up to 9.
-func altWindow(position int) tea.KeyMsg {
-	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(strconv.Itoa(position)), Alt: true}
+func altWindow(position int) tea.KeyPressMsg {
+	digit := strconv.Itoa(position)
+
+	return tea.KeyPressMsg{Code: rune(digit[0]), Mod: tea.ModAlt}
 }
 
 // TestChatScreen_inbound_dm_opens_a_query_window pins first contact.
@@ -160,7 +161,7 @@ func TestChatScreen_Init_lands_on_the_dm_window_left_open(t *testing.T) {
 	chatScreen, err := screens.NewChatScreen(t.Context, h.sess, h.mgr, h.user, newFakeConfigStore(), h.store, domain.KindStatus)
 	require.NoError(t, err)
 
-	tm := uitest.New(t, uipkg.NewRoot(chatScreen), teatest.WithInitialTermSize(termWidth, termHeight))
+	tm := uitest.New(t, uipkg.NewRoot(chatScreen), uitest.WithInitialTermSize(termWidth, termHeight))
 
 	tm.WaitForViewContains("▸botty")
 }
@@ -175,7 +176,7 @@ func TestChatScreen_Init_lands_on_the_self_DM_window_left_open(t *testing.T) {
 	chatScreen, err := screens.NewChatScreen(t.Context, h.sess, h.mgr, h.user, newFakeConfigStore(), h.store, domain.KindStatus)
 	require.NoError(t, err)
 
-	tm := uitest.New(t, uipkg.NewRoot(chatScreen), teatest.WithInitialTermSize(termWidth, termHeight))
+	tm := uitest.New(t, uipkg.NewRoot(chatScreen), uitest.WithInitialTermSize(termWidth, termHeight))
 
 	tm.WaitForViewContains("▸testuser")
 }

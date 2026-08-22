@@ -2,9 +2,10 @@ package components
 
 import (
 	"fmt"
+	"image/color"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 
 	"github.com/laney/modeloff/internal/ircfmt"
 	"github.com/laney/modeloff/internal/richtext"
@@ -233,7 +234,7 @@ func styleForAttrs(attrs richtext.Attrs) lipgloss.Style {
 // RGB value and render through the terminal's own ANSI palette instead,
 // per the design system's rule of using ANSI colours so the user's theme
 // still governs the base palette.
-func ircColour(index uint8) lipgloss.TerminalColor {
+func ircColour(index uint8) color.Color {
 	if hex, ok := ircfmt.ExtendedRGB(index); ok {
 		return lipgloss.Color(hex)
 	}

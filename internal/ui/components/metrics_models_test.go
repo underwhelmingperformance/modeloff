@@ -3,7 +3,7 @@ package components
 import (
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/domain"
@@ -174,7 +174,7 @@ func TestChatWorkspace_starts_the_metrics_pane_when_the_drawer_opens(t *testing.
 		NewChatView[testKind](func() WindowContent { return WindowContent{Channel: "#general"} }, "#general", domain.KindChannel, "testuser", ""),
 	).WithMetrics(NewMetricsPane(t.Context, obs))
 
-	toggle := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}, Alt: true}
+	toggle := tea.KeyPressMsg{Code: 'l', Mod: tea.ModAlt}
 
 	closed := workspace.Metrics.series
 
@@ -211,7 +211,7 @@ func TestChatWorkspace_statusItems_follow_observability_state(t *testing.T) {
 		Compact:  "obs",
 	}}, workspace.StatusItems())
 
-	updated, _ = workspace.Update(tea.KeyMsg{Type: tea.KeyCtrlF})
+	updated, _ = workspace.Update(tea.KeyPressMsg{Code: 'f', Mod: tea.ModCtrl})
 	workspace = updated.(ChatWorkspace[testKind])
 
 	require.True(t, workspace.WantsNickListHidden())
@@ -223,7 +223,7 @@ func TestChatWorkspace_statusItems_follow_observability_state(t *testing.T) {
 		Compact:  "obs",
 	}}, workspace.StatusItems())
 
-	updated, _ = workspace.Update(tea.KeyMsg{Type: tea.KeyTab})
+	updated, _ = workspace.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	workspace = updated.(ChatWorkspace[testKind])
 
 	require.Equal(t, []ui.StatusItem{{
@@ -248,7 +248,7 @@ func TestChatWorkspace_fullscreen_observability_renders_logs_and_metrics(t *test
 	updated, _ = workspace.Update(toggleObservabilityKey())
 	workspace = updated.(ChatWorkspace[testKind])
 
-	updated, _ = workspace.Update(tea.KeyMsg{Type: tea.KeyCtrlF})
+	updated, _ = workspace.Update(tea.KeyPressMsg{Code: 'f', Mod: tea.ModCtrl})
 	workspace = updated.(ChatWorkspace[testKind])
 
 	view := workspace.View(140, 30)

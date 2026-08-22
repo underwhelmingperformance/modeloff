@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/bubbles/cursor"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/cursor"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/richtext"
@@ -22,7 +22,7 @@ func colour(index uint8) *uint8 {
 
 func TestRichTextareaCursorVisibleByDefault(t *testing.T) {
 	editor := NewRichTextarea(RichTextareaConfig{SingleLine: true})
-	require.False(t, editor.cursor.Blink, "cursor must not be in blink-off state")
+	require.False(t, editor.cursor.IsBlinked, "cursor must not be in blink-off state")
 	require.Equal(t, cursor.CursorBlink, editor.cursor.Mode(), "cursor must use blink mode")
 }
 
@@ -40,15 +40,15 @@ func TestRichTextareaCtrlWordMovementUsesBoundaries(t *testing.T) {
 	editor := NewRichTextarea(RichTextareaConfig{})
 	editor = editor.SetPlainText("one two ثلاثة")
 
-	updated, _ := editor.Update(tea.KeyMsg{Type: tea.KeyCtrlRight})
+	updated, _ := editor.Update(tea.KeyPressMsg{Code: tea.KeyRight, Mod: tea.ModCtrl})
 	editor = updated.(RichTextarea)
 	require.Equal(t, 3, editor.Cursor())
 
-	updated, _ = editor.Update(tea.KeyMsg{Type: tea.KeyCtrlRight})
+	updated, _ = editor.Update(tea.KeyPressMsg{Code: tea.KeyRight, Mod: tea.ModCtrl})
 	editor = updated.(RichTextarea)
 	require.Equal(t, 7, editor.Cursor())
 
-	updated, _ = editor.Update(tea.KeyMsg{Type: tea.KeyCtrlLeft})
+	updated, _ = editor.Update(tea.KeyPressMsg{Code: tea.KeyLeft, Mod: tea.ModCtrl})
 	editor = updated.(RichTextarea)
 	require.Equal(t, 4, editor.Cursor())
 }
@@ -59,19 +59,19 @@ func TestRichTextareaLineMovementAndSelection(t *testing.T) {
 	editor.width = 10
 	editor.height = 2
 
-	updated, _ := editor.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	updated, _ := editor.Update(tea.KeyPressMsg{Code: tea.KeyEnd})
 	editor = updated.(RichTextarea)
 	require.Equal(t, richtext.Position{Line: 0, Cluster: 5}, editor.position)
 
-	updated, _ = editor.Update(tea.KeyMsg{Type: tea.KeyDown})
+	updated, _ = editor.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	editor = updated.(RichTextarea)
 	require.Equal(t, richtext.Position{Line: 1, Cluster: 4}, editor.position)
 
-	updated, _ = editor.Update(tea.KeyMsg{Type: tea.KeyHome})
+	updated, _ = editor.Update(tea.KeyPressMsg{Code: tea.KeyHome})
 	editor = updated.(RichTextarea)
 	require.Equal(t, richtext.Position{Line: 1, Cluster: 0}, editor.position)
 
-	updated, _ = editor.Update(tea.KeyMsg{Type: tea.KeyShiftRight})
+	updated, _ = editor.Update(tea.KeyPressMsg{Code: tea.KeyRight, Mod: tea.ModShift})
 	editor = updated.(RichTextarea)
 	require.Equal(t, richtext.Selection{
 		Anchor: richtext.Position{Line: 1, Cluster: 0},
@@ -84,12 +84,12 @@ func TestRichTextareaMultilineViewportTracksCursor(t *testing.T) {
 	editor = editor.SetPlainText("alpha beta gamma delta epsilon zeta")
 
 	for range 6 {
-		updated, _ := editor.Update(tea.KeyMsg{Type: tea.KeyRight})
+		updated, _ := editor.Update(tea.KeyPressMsg{Code: tea.KeyRight})
 		editor = updated.(RichTextarea)
 	}
 
 	editor.View(8, 2)
-	updated, _ := editor.Update(tea.KeyMsg{Type: tea.KeyDown})
+	updated, _ := editor.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	editor = updated.(RichTextarea)
 	editor = editor.ensureViewport()
 
@@ -104,7 +104,7 @@ func TestRichTextareaSingleLineViewportScrollsHorizontally(t *testing.T) {
 	editor.height = 1
 
 	for range 10 {
-		updated, _ := editor.Update(tea.KeyMsg{Type: tea.KeyRight})
+		updated, _ := editor.Update(tea.KeyPressMsg{Code: tea.KeyRight})
 		editor = updated.(RichTextarea)
 	}
 
@@ -118,11 +118,11 @@ func TestRichTextareaBackspaceDeleteAndSelectionDelete(t *testing.T) {
 	editor := NewRichTextarea(RichTextareaConfig{})
 	editor = editor.SetPlainText("abcdef")
 
-	updated, _ := editor.Update(tea.KeyMsg{Type: tea.KeyRight})
+	updated, _ := editor.Update(tea.KeyPressMsg{Code: tea.KeyRight})
 	editor = updated.(RichTextarea)
-	updated, _ = editor.Update(tea.KeyMsg{Type: tea.KeyRight})
+	updated, _ = editor.Update(tea.KeyPressMsg{Code: tea.KeyRight})
 	editor = updated.(RichTextarea)
-	updated, _ = editor.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	updated, _ = editor.Update(tea.KeyPressMsg{Code: tea.KeyBackspace})
 	editor = updated.(RichTextarea)
 	require.Equal(t, "acdef", editor.Value())
 
@@ -132,7 +132,7 @@ func TestRichTextareaBackspaceDeleteAndSelectionDelete(t *testing.T) {
 	}
 	editor.position = editor.selection.Head
 
-	updated, _ = editor.Update(tea.KeyMsg{Type: tea.KeyDelete})
+	updated, _ = editor.Update(tea.KeyPressMsg{Code: tea.KeyDelete})
 	editor = updated.(RichTextarea)
 
 	require.Equal(t, "aef", editor.Value())
@@ -148,20 +148,18 @@ func TestRichTextareaDoubleClickSelectsWord(t *testing.T) {
 	editor.width = 20
 	editor.height = 1
 
-	updated, _ := editor.Update(tea.MouseMsg{
+	updated, _ := editor.Update(tea.MouseClickMsg{
 		X:      7,
 		Y:      0,
-		Action: tea.MouseActionPress,
-		Button: tea.MouseButtonLeft,
+		Button: tea.MouseLeft,
 	})
 	editor = updated.(RichTextarea)
 	editor.clicks.lastAt = time.Now()
 
-	updated, _ = editor.Update(tea.MouseMsg{
+	updated, _ = editor.Update(tea.MouseClickMsg{
 		X:      7,
 		Y:      0,
-		Action: tea.MouseActionPress,
-		Button: tea.MouseButtonLeft,
+		Button: tea.MouseLeft,
 	})
 	editor = updated.(RichTextarea)
 
@@ -177,11 +175,10 @@ func TestRichTextareaTripleClickSelectsLine(t *testing.T) {
 	editor.height = 1
 
 	for range 3 {
-		updated, _ := editor.Update(tea.MouseMsg{
+		updated, _ := editor.Update(tea.MouseClickMsg{
 			X:      7,
 			Y:      0,
-			Action: tea.MouseActionPress,
-			Button: tea.MouseButtonLeft,
+			Button: tea.MouseLeft,
 		})
 		editor = updated.(RichTextarea)
 		editor.clicks.lastAt = time.Now()
@@ -199,11 +196,10 @@ func TestRichTextareaQuadrupleClickResetsToCursor(t *testing.T) {
 	editor.height = 1
 
 	for range 4 {
-		updated, _ := editor.Update(tea.MouseMsg{
+		updated, _ := editor.Update(tea.MouseClickMsg{
 			X:      7,
 			Y:      0,
-			Action: tea.MouseActionPress,
-			Button: tea.MouseButtonLeft,
+			Button: tea.MouseLeft,
 		})
 		editor = updated.(RichTextarea)
 		editor.clicks.lastAt = time.Now()
@@ -218,19 +214,17 @@ func TestRichTextareaMouseDragSelectsRange(t *testing.T) {
 	editor.width = 20
 	editor.height = 1
 
-	updated, _ := editor.Update(tea.MouseMsg{
+	updated, _ := editor.Update(tea.MouseClickMsg{
 		X:      1,
 		Y:      0,
-		Action: tea.MouseActionPress,
-		Button: tea.MouseButtonLeft,
+		Button: tea.MouseLeft,
 	})
 	editor = updated.(RichTextarea)
 
-	updated, _ = editor.Update(tea.MouseMsg{
+	updated, _ = editor.Update(tea.MouseMotionMsg{
 		X:      5,
 		Y:      0,
-		Action: tea.MouseActionMotion,
-		Button: tea.MouseButtonLeft,
+		Button: tea.MouseLeft,
 	})
 	editor = updated.(RichTextarea)
 
@@ -238,21 +232,28 @@ func TestRichTextareaMouseDragSelectsRange(t *testing.T) {
 
 	require.Equal(t, richtext.Position{Line: 0, Cluster: 1}, start)
 	require.Equal(t, richtext.Position{Line: 0, Cluster: 5}, end)
+
+	updated, _ = editor.Update(tea.MouseReleaseMsg{
+		X:      5,
+		Y:      0,
+		Button: tea.MouseLeft,
+	})
+	editor = updated.(RichTextarea)
+	require.False(t, editor.mouseSelecting)
 }
 
 func TestRichTextareaPaletteMouseAppliesForeground(t *testing.T) {
 	editor := NewRichTextarea(RichTextareaConfig{AllowFormatting: true})
 	editor = editor.SetPlainText("hello")
 
-	updated, _ := editor.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}, Alt: true})
+	updated, _ := editor.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModAlt})
 	editor = updated.(RichTextarea)
 	require.True(t, editor.PaletteVisible())
 
-	updated, _ = editor.Update(tea.MouseMsg{
+	updated, _ = editor.Update(tea.MouseClickMsg{
 		X:      10,
 		Y:      0,
-		Action: tea.MouseActionPress,
-		Button: tea.MouseButtonLeft,
+		Button: tea.MouseLeft,
 	})
 	editor = updated.(RichTextarea)
 
@@ -331,11 +332,11 @@ func TestRichTextareaPaletteDigitJump(t *testing.T) {
 			editor := NewRichTextarea(RichTextareaConfig{AllowFormatting: true})
 			editor = editor.SetPlainText("hello")
 
-			updated, _ := editor.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}, Alt: true})
+			updated, _ := editor.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModAlt})
 			editor = updated.(RichTextarea)
 			require.True(t, editor.PaletteVisible())
 
-			updated, _ = editor.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{digit}})
+			updated, _ = editor.Update(tea.KeyPressMsg{Code: digit, Text: string(digit)})
 			editor = updated.(RichTextarea)
 
 			require.Equal(t, index, editor.PaletteIndex())
@@ -352,12 +353,12 @@ func TestRichTextareaPaletteKeyboardTargetsBackgroundForSelection(t *testing.T) 
 	}
 	editor.position = editor.selection.Head
 
-	updated, _ := editor.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}, Alt: true})
+	updated, _ := editor.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModAlt})
 	editor = updated.(RichTextarea)
 	var handled bool
-	editor, handled = editor.handlePaletteKey(tea.KeyMsg{Type: tea.KeyTab})
+	editor, handled = editor.handlePaletteKey(tea.KeyPressMsg{Code: tea.KeyTab})
 	require.True(t, handled)
-	editor, handled = editor.handlePaletteKey(tea.KeyMsg{Type: tea.KeyRight})
+	editor, handled = editor.handlePaletteKey(tea.KeyPressMsg{Code: tea.KeyRight})
 	require.True(t, handled)
 	editor = editor.applyPaletteSelection()
 
@@ -374,7 +375,7 @@ func TestRichTextareaSelectionExtension(t *testing.T) {
 		name       string
 		text       string
 		start      int
-		key        tea.KeyMsg
+		key        tea.KeyPressMsg
 		wantAnchor richtext.Position
 		wantHead   richtext.Position
 	}{
@@ -382,7 +383,7 @@ func TestRichTextareaSelectionExtension(t *testing.T) {
 			name:       "ctrl+shift+right extends by word",
 			text:       "one two three",
 			start:      0,
-			key:        tea.KeyMsg{Type: tea.KeyCtrlShiftRight},
+			key:        tea.KeyPressMsg{Code: tea.KeyRight, Mod: tea.ModCtrl | tea.ModShift},
 			wantAnchor: richtext.Position{Line: 0, Cluster: 0},
 			wantHead:   richtext.Position{Line: 0, Cluster: 3},
 		},
@@ -390,7 +391,7 @@ func TestRichTextareaSelectionExtension(t *testing.T) {
 			name:       "ctrl+shift+left extends backward by word",
 			text:       "one two three",
 			start:      13,
-			key:        tea.KeyMsg{Type: tea.KeyCtrlShiftLeft},
+			key:        tea.KeyPressMsg{Code: tea.KeyLeft, Mod: tea.ModCtrl | tea.ModShift},
 			wantAnchor: richtext.Position{Line: 0, Cluster: 13},
 			wantHead:   richtext.Position{Line: 0, Cluster: 8},
 		},
@@ -398,7 +399,7 @@ func TestRichTextareaSelectionExtension(t *testing.T) {
 			name:       "shift+home extends to line start",
 			text:       "hello",
 			start:      3,
-			key:        tea.KeyMsg{Type: tea.KeyShiftHome},
+			key:        tea.KeyPressMsg{Code: tea.KeyHome, Mod: tea.ModShift},
 			wantAnchor: richtext.Position{Line: 0, Cluster: 3},
 			wantHead:   richtext.Position{Line: 0, Cluster: 0},
 		},
@@ -406,7 +407,7 @@ func TestRichTextareaSelectionExtension(t *testing.T) {
 			name:       "shift+end extends to line end",
 			text:       "hello",
 			start:      2,
-			key:        tea.KeyMsg{Type: tea.KeyShiftEnd},
+			key:        tea.KeyPressMsg{Code: tea.KeyEnd, Mod: tea.ModShift},
 			wantAnchor: richtext.Position{Line: 0, Cluster: 2},
 			wantHead:   richtext.Position{Line: 0, Cluster: 5},
 		},
@@ -433,12 +434,12 @@ func TestRichTextareaKillRing_CtrlW_then_CtrlY_restores_word(t *testing.T) {
 	editor = editor.SetPlainText("hello world")
 	editor = editor.SetCursorFromRuneIndex(11)
 
-	updated, _ := editor.Update(tea.KeyMsg{Type: tea.KeyCtrlW})
+	updated, _ := editor.Update(tea.KeyPressMsg{Code: 'w', Mod: tea.ModCtrl})
 	editor = updated.(RichTextarea)
 	require.Equal(t, "hello ", editor.Value())
 	require.Equal(t, []string{"world"}, editor.kills.entries)
 
-	updated, _ = editor.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	updated, _ = editor.Update(tea.KeyPressMsg{Code: 'y', Mod: tea.ModCtrl})
 	editor = updated.(RichTextarea)
 	require.Equal(t, "hello world", editor.Value())
 }
@@ -448,12 +449,12 @@ func TestRichTextareaKillRing_CtrlK_then_CtrlY_restores_tail(t *testing.T) {
 	editor = editor.SetPlainText("hello world")
 	editor = editor.SetCursorFromRuneIndex(5)
 
-	updated, _ := editor.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
+	updated, _ := editor.Update(tea.KeyPressMsg{Code: 'k', Mod: tea.ModCtrl})
 	editor = updated.(RichTextarea)
 	require.Equal(t, "hello", editor.Value())
 	require.Equal(t, []string{" world"}, editor.kills.entries)
 
-	updated, _ = editor.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	updated, _ = editor.Update(tea.KeyPressMsg{Code: 'y', Mod: tea.ModCtrl})
 	editor = updated.(RichTextarea)
 	require.Equal(t, "hello world", editor.Value())
 }
@@ -463,12 +464,12 @@ func TestRichTextareaKillRing_AltD_then_CtrlY_restores_forward_word(t *testing.T
 	editor = editor.SetPlainText("hello world")
 	editor = editor.SetCursorFromRuneIndex(0)
 
-	updated, _ := editor.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}, Alt: true})
+	updated, _ := editor.Update(tea.KeyPressMsg{Code: 'd', Mod: tea.ModAlt})
 	editor = updated.(RichTextarea)
 	require.Equal(t, " world", editor.Value())
 	require.Equal(t, []string{"hello"}, editor.kills.entries)
 
-	updated, _ = editor.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	updated, _ = editor.Update(tea.KeyPressMsg{Code: 'y', Mod: tea.ModCtrl})
 	editor = updated.(RichTextarea)
 	require.Equal(t, "hello world", editor.Value())
 }
@@ -478,7 +479,7 @@ func TestRichTextareaKillRing_Empty_CtrlY_noop(t *testing.T) {
 	editor = editor.SetPlainText("abc")
 	editor = editor.SetCursorFromRuneIndex(1)
 
-	updated, _ := editor.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	updated, _ := editor.Update(tea.KeyPressMsg{Code: 'y', Mod: tea.ModCtrl})
 	editor = updated.(RichTextarea)
 
 	require.Equal(t, "abc", editor.Value())
@@ -494,7 +495,7 @@ func TestRichTextareaKillRing_RetainsOrderAndCap(t *testing.T) {
 		editor = editor.SetPlainText("word" + string(rune('A'+i)))
 		editor = editor.SetCursorFromRuneIndex(len([]rune(editor.Value())))
 
-		updated, _ := editor.Update(tea.KeyMsg{Type: tea.KeyCtrlW})
+		updated, _ := editor.Update(tea.KeyPressMsg{Code: 'w', Mod: tea.ModCtrl})
 		editor = updated.(RichTextarea)
 	}
 
@@ -530,7 +531,7 @@ func TestRichTextareaTransposeChars(t *testing.T) {
 			editor = editor.SetPlainText(tt.text)
 			editor = editor.SetCursorFromRuneIndex(tt.cursor)
 
-			updated, _ := editor.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+			updated, _ := editor.Update(tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
 			editor = updated.(RichTextarea)
 
 			require.Equal(t, tt.wantValue, editor.Value())
@@ -543,12 +544,12 @@ func TestRichTextareaAltFMovesWordRight(t *testing.T) {
 	editor := NewRichTextarea(RichTextareaConfig{})
 	editor = editor.SetPlainText("one two three")
 
-	updated, _ := editor.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}, Alt: true})
+	updated, _ := editor.Update(tea.KeyPressMsg{Code: 'f', Mod: tea.ModAlt})
 	editor = updated.(RichTextarea)
 
 	require.Equal(t, richtext.Position{Line: 0, Cluster: 3}, editor.position)
 
-	updated, _ = editor.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}, Alt: true})
+	updated, _ = editor.Update(tea.KeyPressMsg{Code: 'f', Mod: tea.ModAlt})
 	editor = updated.(RichTextarea)
 
 	require.Equal(t, richtext.Position{Line: 0, Cluster: 7}, editor.position)
@@ -558,10 +559,10 @@ func TestRichTextareaAltDDeletesNextWord(t *testing.T) {
 	editor := NewRichTextarea(RichTextareaConfig{})
 	editor = editor.SetPlainText("one two three")
 
-	updated, _ := editor.Update(tea.KeyMsg{Type: tea.KeyCtrlRight})
+	updated, _ := editor.Update(tea.KeyPressMsg{Code: tea.KeyRight, Mod: tea.ModCtrl})
 	editor = updated.(RichTextarea)
 
-	updated, _ = editor.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}, Alt: true})
+	updated, _ = editor.Update(tea.KeyPressMsg{Code: 'd', Mod: tea.ModAlt})
 	editor = updated.(RichTextarea)
 
 	require.Equal(t, "one three", editor.Value())
@@ -616,7 +617,7 @@ func TestRichTextareaSingleLinePasteFlattensNewlines(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			editor := NewRichTextarea(RichTextareaConfig{SingleLine: true})
 
-			updated, _ := editor.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(tt.paste)})
+			updated, _ := editor.Update(tea.PasteMsg{Content: tt.paste})
 			editor = updated.(RichTextarea)
 
 			require.Equal(t, tt.want, editor.Value())
@@ -628,7 +629,7 @@ func TestRichTextareaSingleLinePasteFlattensNewlines(t *testing.T) {
 func TestRichTextareaMultilinePastePreservesNewlines(t *testing.T) {
 	editor := NewRichTextarea(RichTextareaConfig{Wrap: true})
 
-	updated, _ := editor.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("abc\ndef")})
+	updated, _ := editor.Update(tea.PasteMsg{Content: "abc\ndef"})
 	editor = updated.(RichTextarea)
 
 	require.Equal(t, "abc\ndef", editor.Value())
@@ -640,9 +641,9 @@ func TestRichTextareaEnterAddsNewLineInMultilineMode(t *testing.T) {
 	editor = editor.SetPlainText("hello")
 	editor = editor.SetCursorFromRuneIndex(5)
 
-	updated, _ := editor.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ := editor.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	editor = updated.(RichTextarea)
-	updated, _ = editor.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	updated, _ = editor.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
 	editor = updated.(RichTextarea)
 
 	require.Equal(t, "hello\nx", editor.Value())

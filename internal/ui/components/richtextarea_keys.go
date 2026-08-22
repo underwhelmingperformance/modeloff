@@ -3,7 +3,7 @@ package components
 import (
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/laney/modeloff/internal/richtext"
 )
@@ -13,16 +13,16 @@ import (
 // there is no selection. With formatting switched off the key is still
 // taken, so an alt combination never falls through and inserts its
 // letter as text.
-func (r RichTextarea) handleFormattingKey(msg tea.KeyMsg) (RichTextarea, bool) {
-	if !msg.Alt {
+func (r RichTextarea) handleFormattingKey(msg tea.KeyPressMsg) (RichTextarea, bool) {
+	if !msg.Mod.Contains(tea.ModAlt) {
 		return r, false
 	}
 
-	if msg.Type != tea.KeyRunes && msg.Type != tea.KeySpace {
+	if msg.Code == 0 {
 		return r, false
 	}
 
-	switch strings.ToLower(string(msg.Runes)) {
+	switch strings.ToLower(string(msg.Code)) {
 	case "b":
 		if !r.config.AllowFormatting {
 			return r, true
@@ -99,12 +99,8 @@ func (r RichTextarea) toggleFormatting(toggle func(*richtext.Attrs)) RichTextare
 
 // handleEditorKey answers the movement, selection, kill and text-entry
 // keys, following readline's bindings where the terminal has one.
-func (r RichTextarea) handleEditorKey(msg tea.KeyMsg) (RichTextarea, bool) {
-	extendSelection := false
-	switch msg.Type {
-	case tea.KeyShiftLeft, tea.KeyShiftRight, tea.KeyShiftUp, tea.KeyShiftDown:
-		extendSelection = true
-	}
+func (r RichTextarea) handleEditorKey(msg tea.KeyPressMsg) (RichTextarea, bool) {
+	extendSelection := msg.Mod.Contains(tea.ModShift)
 
 	switch msg.String() {
 	case "alt+d":
@@ -206,8 +202,8 @@ func (r RichTextarea) handleEditorKey(msg tea.KeyMsg) (RichTextarea, bool) {
 		return r, true
 	}
 
-	if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
-		r.insertText(string(msg.Runes))
+	if msg.Text != "" {
+		r.insertText(msg.Text)
 		return r, true
 	}
 

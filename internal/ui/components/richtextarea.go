@@ -3,9 +3,9 @@ package components
 import (
 	"strings"
 
-	"github.com/charmbracelet/bubbles/cursor"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/cursor"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/laney/modeloff/internal/richtext"
 	"github.com/laney/modeloff/internal/ui"
@@ -75,7 +75,7 @@ func (r RichTextarea) Init() tea.Cmd {
 // blink running.
 func (r RichTextarea) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		if updated, handled := r.handlePaletteKey(msg); handled {
 			return updated, nil
 		}
@@ -87,6 +87,10 @@ func (r RichTextarea) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		if updated, handled := r.handleEditorKey(msg); handled {
 			return updated, nil
 		}
+
+	case tea.PasteMsg:
+		r.insertText(msg.Content)
+		return r, nil
 
 	case tea.MouseMsg:
 		if updated, handled := r.handleMouse(msg); handled {

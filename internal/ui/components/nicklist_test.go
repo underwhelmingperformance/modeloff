@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/domain"
@@ -179,10 +179,10 @@ func TestNickList_ignores_sidebar_cursor_and_activation_keys(t *testing.T) {
 	var m ui.Model = nl
 	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 0, Y: 0, Width: 20, Height: 10}})
 
-	for _, key := range []tea.KeyMsg{
-		{Type: tea.KeyDown, Alt: true}, // channel sidebar's Down
-		{Type: tea.KeyUp, Alt: true},   // channel sidebar's Up
-		{Type: tea.KeyCtrlO},           // channel sidebar's Select
+	for _, key := range []tea.KeyPressMsg{
+		{Code: tea.KeyDown, Mod: tea.ModAlt}, // channel sidebar's Down
+		{Code: tea.KeyUp, Mod: tea.ModAlt},   // channel sidebar's Up
+		{Code: 'o', Mod: tea.ModCtrl},        // channel sidebar's Select
 	} {
 		updated, cmd := m.Update(key)
 		require.Nil(t, cmd, "the nick list has no activation semantics, so %s must be a no-op", key)

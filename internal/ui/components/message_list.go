@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"golang.org/x/text/language"
 
 	"github.com/laney/modeloff/internal/command"
@@ -214,7 +214,7 @@ func NewMessageList[C command.KindProvider](
 	content func() WindowContent,
 	kind domain.ChannelKind,
 ) MessageList[C] {
-	vp := viewport.New(0, 0)
+	vp := viewport.New(viewport.WithWidth(0), viewport.WithHeight(0))
 	vp.MouseWheelEnabled = true
 
 	initial := content()
@@ -320,8 +320,8 @@ func (m MessageList[C]) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		return m, nil
 
 	case ui.BoundsMsg:
-		m.viewport.Width = max(msg.Rect.Width, 0)
-		m.viewport.Height = max(msg.Rect.Height, 0)
+		m.viewport.SetWidth(max(msg.Rect.Width, 0))
+		m.viewport.SetHeight(max(msg.Rect.Height, 0))
 		m = m.syncContent()
 
 		return m, nil
@@ -376,7 +376,7 @@ func (m MessageList[C]) syncContent() MessageList[C] {
 	m.lastNextSeq = next
 	m.unseen = seen < next
 
-	block, _, key := m.renderedContent(content, m.viewport.Width)
+	block, _, key := m.renderedContent(content, m.viewport.Width())
 
 	if !m.vpHasKey || m.vpKey != key {
 		m.viewport.SetContent(block)
@@ -432,8 +432,8 @@ func (m MessageList[C]) renderMessages(content WindowContent, width, height int)
 	block, rows, key := m.renderedContent(content, width)
 
 	vp := m.viewport
-	vp.Width = width
-	vp.Height = height
+	vp.SetWidth(width)
+	vp.SetHeight(height)
 	wasAtBottom := vp.AtBottom() || vp.TotalLineCount() == 0
 
 	if !m.vpHasKey || m.vpKey != key {

@@ -5,9 +5,9 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/laney/modeloff/internal/ui/theme"
 )
@@ -32,7 +32,10 @@ type keyboardHelp struct {
 
 func newKeyboardHelp(width, height int, bindings []KeyBinding) keyboardHelp {
 	content := renderKeyboardHelp(bindings)
-	vp := viewport.New(max(width, 0), keyboardHelpBodyHeight(height))
+	vp := viewport.New(
+		viewport.WithWidth(max(width, 0)),
+		viewport.WithHeight(keyboardHelpBodyHeight(height)),
+	)
 	vp.MouseWheelEnabled = true
 	vp.SetContent(content)
 
@@ -40,8 +43,8 @@ func newKeyboardHelp(width, height int, bindings []KeyBinding) keyboardHelp {
 }
 
 func (h keyboardHelp) resize(width, height int) keyboardHelp {
-	h.viewport.Width = max(width, 0)
-	h.viewport.Height = keyboardHelpBodyHeight(height)
+	h.viewport.SetWidth(max(width, 0))
+	h.viewport.SetHeight(keyboardHelpBodyHeight(height))
 	h.viewport.SetContent(h.content)
 
 	return h
