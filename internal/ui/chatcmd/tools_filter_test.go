@@ -7,7 +7,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/command"
-	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/modelclient"
 )
 
@@ -36,24 +35,18 @@ func removedToolNames(all, subset []string) []string {
 	return removed
 }
 
-// TestBuildToolRegistry_filters_by_caps_and_kind proves a model's
-// per-turn tool set omits operator-gated tools — it holds no
-// capabilities — and additionally omits channel-only tools when the
-// window is a DM.
-func TestBuildToolRegistry_filters_by_caps_and_kind(t *testing.T) {
+// TestBuildToolRegistry_filters_by_caps proves that capabilities
+// determine the advertised tool set, while the current window does
+// not. This keeps the provider prefix stable between channel and DM
+// turns. The executor applies each tool's window requirement.
+func TestBuildToolRegistry_filters_by_caps(t *testing.T) {
 	reg, err := BuildToolRegistry()
 	require.NoError(t, err)
 
 	noCaps := command.NoCapabilities()
 	all := sortedToolNames(reg)
-	channel := sortedToolNames(reg.Filter(noCaps, domain.KindChannel))
-	dm := sortedToolNames(reg.Filter(noCaps, domain.KindDM))
+	filtered := sortedToolNames(reg.Filter(noCaps))
 
 	// Operator-gated tools never reach a no-capability model, in any window.
-	require.Equal(t, []string{"add_model", "kill"}, removedToolNames(all, channel))
-
-	// A DM additionally drops the channel-only tools.
-	require.Equal(t,
-		[]string{"add_model", "invite", "kick", "kill", "mode", "topic"},
-		removedToolNames(all, dm))
+	require.Equal(t, []string{"add_model", "kill"}, removedToolNames(all, filtered))
 }

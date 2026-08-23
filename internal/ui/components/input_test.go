@@ -1112,7 +1112,7 @@ func TestInputBar_enter_submits_with_optional_continuation_suggested(t *testing.
 				},
 			},
 			Flags: []command.Flag[inputBarKind]{
-				{Name: "--persona", Optional: true, Help: "Optional persona"},
+				{Name: "--persona", Optional: true, Help: "Persona ID or literal text"},
 			},
 		},
 	}
@@ -1123,7 +1123,7 @@ func TestInputBar_enter_submits_with_optional_continuation_suggested(t *testing.
 	require.NotNil(t, cmd)
 	m, _ = m.Update(cmd())
 
-	require.Contains(t, visibleLines(renderToBuffer(m, 60, 2)), "--persona  Optional persona")
+	require.Contains(t, visibleLines(renderToBuffer(m, 60, 2)), "--persona  Persona ID or literal text")
 
 	_, cmd = enter(t, m)
 	require.NotNil(t, cmd)

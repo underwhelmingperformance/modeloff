@@ -1159,10 +1159,10 @@ func TestRenderLine_application_feedback(t *testing.T) {
 			domain.UsageHint{
 				Target:  "#test",
 				Command: "add-model",
-				Usage:   "/add-model <model-id> [--persona <text>]",
+				Usage:   "/add-model <model-id> [--persona <id-or-text>]",
 				At:      now,
 			},
-			[]string{"⚠ usage: /add-model <model-id> [--persona <text>]"},
+			[]string{"⚠ usage: /add-model <model-id> [--persona <id-or-text>]"},
 		},
 		{
 			"no_channel",

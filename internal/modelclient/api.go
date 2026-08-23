@@ -107,7 +107,7 @@ func runTurn(
 	caller protocol.Client,
 	inst *domain.Instance,
 	target protocol.MsgTarget,
-	prompt string,
+	prompt api.SystemPrompt,
 	history []protocol.IRCMessage,
 	events []protocol.IRCMessage,
 	registry *ToolRegistry,
@@ -251,7 +251,7 @@ func executeTools(
 			Error: fmt.Sprintf("unknown tool %q", toolName),
 		}
 
-		if spec, ok := registry.Find(toolName); ok {
+		if spec, ok := registry.Find(toolName); ok && toolAvailableInWindow(spec, toolCtx.Target) {
 			outcome.executed = true
 			nextPayload, err := spec.Execute(callCtx, toolCtx, call.Args)
 			if err != nil {
@@ -267,6 +267,8 @@ func executeTools(
 				nextPayload = ToolResultPayload{OK: false, Error: err.Error()}
 			}
 			payload = nextPayload
+		} else if ok {
+			payload.Error = fmt.Sprintf("tool %q is not available in this window", toolName)
 		}
 
 		if payload.OK {
@@ -288,6 +290,24 @@ func executeTools(
 	}
 
 	return outcome, nil
+}
+
+func toolAvailableInWindow(spec ToolSpec, target protocol.MsgTarget) bool {
+	if spec.RequiredKind == nil {
+		return true
+	}
+
+	var kind domain.ChannelKind
+	switch target.(type) {
+	case protocol.ChannelTarget:
+		kind = domain.KindChannel
+	case protocol.ClientTarget, protocol.NickTarget:
+		kind = domain.KindDM
+	default:
+		return false
+	}
+
+	return kind == *spec.RequiredKind
 }
 
 // rejectMixedPass enforces the rule that `pass` is mutually

@@ -183,7 +183,7 @@ func TestManager_DetachAndForget_waits_for_the_dispatch_goroutine(t *testing.T) 
 	started := make(chan struct{})
 	release := make(chan struct{})
 	fake := &apitest.Fake{
-		SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
+		SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, api.SystemPrompt, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
 			close(started)
 			<-release
 

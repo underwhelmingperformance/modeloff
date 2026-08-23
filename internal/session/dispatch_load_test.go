@@ -52,7 +52,7 @@ func TestModelClient_load_is_join_scoped(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var captured capturedHistory
 		fake := &apitest.Fake{
-			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, history []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, history []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
 				captured.record(history)
 				return api.CompletionResult{}, nil
 			},
@@ -99,7 +99,7 @@ func TestModelClient_load_fails_closed_on_zero_join(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var captured capturedHistory
 		fake := &apitest.Fake{
-			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, history []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, history []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
 				captured.record(history)
 				return api.CompletionResult{}, nil
 			},
@@ -147,7 +147,7 @@ func TestModelClient_private_replies_converge_on_local_ring(t *testing.T) {
 		)
 
 		fake := &apitest.Fake{
-			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, history []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, history []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 				captured.record(history)
 
 				turnMu.Lock()

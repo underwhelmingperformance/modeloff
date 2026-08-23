@@ -35,7 +35,7 @@ func TestInviteAs_does_not_auto_attach_existing_model(t *testing.T) {
 		bootAt := time.Now()
 
 		fake := &apitest.Fake{
-			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
 				return api.CompletionResult{}, nil
 			},
 		}

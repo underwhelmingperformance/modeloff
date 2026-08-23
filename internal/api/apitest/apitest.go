@@ -24,7 +24,7 @@ type Fake struct {
 		ctx context.Context,
 		modelID domain.ModelID,
 		selfInstanceID domain.InstanceID,
-		systemPrompt string,
+		systemPrompt api.SystemPrompt,
 		history []protocol.IRCMessage,
 		events []protocol.IRCMessage,
 	) (api.CompletionResult, error)
@@ -57,7 +57,7 @@ func (f *Fake) SendEvents(
 	ctx context.Context,
 	modelID domain.ModelID,
 	selfInstanceID domain.InstanceID,
-	systemPrompt string,
+	systemPrompt api.SystemPrompt,
 	history []protocol.IRCMessage,
 	events []protocol.IRCMessage,
 	_ ...api.ToolDefinition,

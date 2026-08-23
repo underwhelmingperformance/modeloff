@@ -1377,7 +1377,7 @@ func TestSession_Quit_does_not_dispatch_to_models(t *testing.T) {
 	var calls atomic.Int32
 
 	fake := &apitest.Fake{
-		SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+		SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 			calls.Add(1)
 			return msgToolCalls(t, domain.ChannelName(events[0].Target), "bye"), nil
 		},
@@ -1694,7 +1694,7 @@ func TestSession_Dispatch_api_failure_records_dispatch_error_kind(t *testing.T) 
 	synctest.Test(t, func(t *testing.T) {
 		recorder, provider := oteltest.NewSpanRecorder(t)
 		fake := &apitest.Fake{
-			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
 				return api.CompletionResult{}, fmt.Errorf("upstream boom")
 			},
 		}
@@ -1743,7 +1743,7 @@ func TestSession_dispatchToInstance_recordsPassReasonAndToolTurns(t *testing.T) 
 		dataStore := storetest.NewMemoryStore(t)
 		memStore := memory.NewStoreAdapter(storetest.NewMemoryStore(t))
 		fake := &apitest.Fake{
-			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, api.SystemPrompt, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
 				return api.CompletionResult{
 					PendingToolCalls: []api.PendingToolCall{{
 						ID:   "call-1",
@@ -1850,7 +1850,7 @@ func TestSession_SendMessage_emits_dispatch_events(t *testing.T) {
 		bootAt := time.Now()
 
 		fake := &apitest.Fake{
-			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 				return msgToolCalls(t, domain.ChannelName(events[0].Target), "got it"), nil
 			},
 		}
@@ -1899,7 +1899,7 @@ func TestSession_JoinEvent_triggers_dispatch(t *testing.T) {
 		var receivedEvents []protocol.IRCMessage
 
 		fake := &apitest.Fake{
-			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 				receivedEvents = events
 				return msgToolCalls(t, domain.ChannelName(events[0].Target), "welcome"), nil
 			},
@@ -2004,7 +2004,7 @@ func TestSession_model_reply_does_not_retrigger_dispatch(t *testing.T) {
 	var dispatchCount int
 
 	fake := &apitest.Fake{
-		SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+		SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 			dispatchCount++
 			return msgToolCalls(t, domain.ChannelName(events[0].Target), "got it"), nil
 		},
@@ -2048,7 +2048,7 @@ func TestDispatchToInstance_excludes_own_events(t *testing.T) {
 		recorder := newDispatchRecorder()
 
 		fake := &apitest.Fake{
-			SendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 				recorder.record(modelID, events)
 
 				if modelID == "test/model-a" && triggeredBy(events, "testuser") {
@@ -2113,7 +2113,7 @@ func TestDispatchToInstances_model_does_not_reply_to_self(t *testing.T) {
 		recorder := newDispatchRecorder()
 
 		fake := &apitest.Fake{
-			SendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 				recorder.record(modelID, events)
 
 				if modelID == "test/model-a" && triggeredBy(events, "testuser") {
@@ -2174,7 +2174,7 @@ func TestDispatchToInstances_model_does_not_reply_to_self(t *testing.T) {
 func TestSession_Dispatch_broadcasts_to_channel_instances(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		fake := &apitest.Fake{
-			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 				return msgToolCalls(t, domain.ChannelName(events[0].Target), "got it"), nil
 			},
 		}
@@ -2201,7 +2201,7 @@ func TestSession_Dispatch_broadcasts_to_channel_instances(t *testing.T) {
 func TestSession_Dispatch_does_not_broadcast_when_no_model_instances(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		fake := &apitest.Fake{
-			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 				return msgToolCalls(t, domain.ChannelName(events[0].Target), "should not appear"), nil
 			},
 		}
@@ -2222,7 +2222,7 @@ func TestSession_Dispatch_does_not_broadcast_when_no_model_instances(t *testing.
 func TestSession_Dispatch_pass_response_does_not_store_model_message(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		fake := &apitest.Fake{
-			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
 				return api.CompletionResult{}, nil
 			},
 		}
@@ -2248,7 +2248,7 @@ func TestSession_Dispatch_pass_response_does_not_store_model_message(t *testing.
 func TestSession_Dispatch_reply_response_stores_model_message(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		fake := &apitest.Fake{
-			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 				return msgToolCalls(t, domain.ChannelName(events[0].Target), "hello back"), nil
 			},
 		}
@@ -2275,7 +2275,7 @@ func TestSession_Dispatch_reply_response_stores_model_message(t *testing.T) {
 func TestSession_Dispatch_broadcasts_only_to_members_of_that_channel(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		fake := &apitest.Fake{
-			SendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 				return msgToolCalls(t, domain.ChannelName(events[0].Target), fmt.Sprintf("reply from %s", modelID)), nil
 			},
 		}
@@ -2311,7 +2311,7 @@ func TestSession_Dispatch_broadcasts_only_to_members_of_that_channel(t *testing.
 func TestSession_Dispatch_reply_is_not_rebroadcast_to_its_sender(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		fake := &apitest.Fake{
-			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 				return msgToolCalls(t, domain.ChannelName(events[0].Target), "reply once"), nil
 			},
 		}
@@ -2344,7 +2344,7 @@ func TestSession_Dispatch_multiple_instances_each_reply_once(t *testing.T) {
 		// prompt and model judgement; the test pins the one-reply-
 		// per-bot shape directly by stubbing.
 		fake := &apitest.Fake{
-			SendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 				if !triggeredBy(events, "testuser") {
 					return api.CompletionResult{}, nil
 				}
@@ -2391,7 +2391,7 @@ func TestSession_Dispatch_multiple_instances_each_reply_once(t *testing.T) {
 func TestSession_Dispatch_sends_whitespace_reply_body(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		fake := &apitest.Fake{
-			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 				return msgToolCalls(t, domain.ChannelName(events[0].Target), "   "), nil
 			},
 		}
@@ -2423,7 +2423,7 @@ func TestSession_Dispatch_api_error_does_not_stop_the_other_instance(t *testing.
 	synctest.Test(t, func(t *testing.T) {
 		bootAt := time.Now()
 		fake := &apitest.Fake{
-			SendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 				if modelID == "test/model-a" {
 					return api.CompletionResult{}, fmt.Errorf("network timeout")
 				}
@@ -2487,7 +2487,7 @@ func TestSession_Dispatch_api_error_does_not_stop_the_other_instance(t *testing.
 
 func TestSession_Poke_api_error_emits_error_event(t *testing.T) {
 	fake := &apitest.Fake{
-		SendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+		SendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 			if modelID == "test/model-a" {
 				return api.CompletionResult{}, fmt.Errorf("rate limited")
 			}
@@ -2996,7 +2996,7 @@ func TestSession_Dispatch_includes_memory_in_prompt(t *testing.T) {
 		var gotHistory []protocol.IRCMessage
 
 		fake := &apitest.Fake{
-			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, history []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, history []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 				gotHistory = history
 
 				return msgToolCalls(t, domain.ChannelName(events[0].Target), "memory received"), nil
@@ -3037,7 +3037,7 @@ func TestSession_Poke_emits_dispatch_events(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		bootAt := time.Now()
 		fake := &apitest.Fake{
-			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 				return msgToolCalls(t, domain.ChannelName(events[0].Target), "poke received"), nil
 			},
 		}
@@ -3084,7 +3084,7 @@ func TestSession_Poke_emits_dispatch_events(t *testing.T) {
 func TestSession_DM_routing_survives_counterpart_rename(t *testing.T) {
 	delivered := make(chan domain.Nick, 1)
 	fake := &apitest.Fake{
-		SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, trigger []protocol.IRCMessage) (api.CompletionResult, error) {
+		SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, trigger []protocol.IRCMessage) (api.CompletionResult, error) {
 			if len(trigger) == 0 {
 				return api.CompletionResult{}, nil
 			}
@@ -3123,7 +3123,7 @@ func TestSession_DM_routing_survives_counterpart_rename(t *testing.T) {
 func TestSession_Dispatch_dm_only_targets_that_instance(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		fake := &apitest.Fake{
-			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 				return msgToolCalls(t, domain.ChannelName(events[0].From), "dm reply"), nil
 			},
 		}
@@ -3347,7 +3347,7 @@ func TestSession_Dispatch_filters_history_before_join(t *testing.T) {
 		var receivedHistory []protocol.IRCMessage
 
 		fake := &apitest.Fake{
-			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, history []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, history []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
 				receivedHistory = history
 				return api.CompletionResult{}, nil
 			},
@@ -3407,7 +3407,7 @@ func TestSession_Dispatch_forwards_replies_to_subsequent_models(t *testing.T) {
 		recorder := newDispatchRecorder()
 
 		fake := &apitest.Fake{
-			SendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 				recorder.record(modelID, events)
 
 				if modelID == "test/alpha" {
@@ -3556,7 +3556,7 @@ func TestSession_Dispatch_write_memory_then_reply(t *testing.T) {
 		var continueResults []api.ToolResult
 		turn := 0
 		fake := &apitest.Fake{
-			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
 				return api.CompletionResult{
 					Conversation: &api.Conversation{},
 					PendingToolCalls: []api.PendingToolCall{
@@ -3605,7 +3605,7 @@ func TestSession_Dispatch_delete_memory_then_pass(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var continueResults []api.ToolResult
 		fake := &apitest.Fake{
-			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
 				return api.CompletionResult{
 					Conversation: &api.Conversation{},
 					PendingToolCalls: []api.PendingToolCall{
@@ -3651,7 +3651,7 @@ func TestSession_Dispatch_memory_write_failure_aborts_the_tool_loop(t *testing.T
 	synctest.Test(t, func(t *testing.T) {
 		var continueResults []api.ToolResult
 		fake := &apitest.Fake{
-			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
 				return api.CompletionResult{
 					Conversation: &api.Conversation{},
 					PendingToolCalls: []api.PendingToolCall{
@@ -3691,7 +3691,7 @@ func TestSession_Dispatch_multiple_memory_calls_in_one_response(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var continueResults []api.ToolResult
 		fake := &apitest.Fake{
-			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
 				return api.CompletionResult{
 					Conversation: &api.Conversation{},
 					PendingToolCalls: []api.PendingToolCall{
@@ -3738,7 +3738,7 @@ func TestSession_Dispatch_search_memory_then_reply(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var continueResults []api.ToolResult
 		fake := &apitest.Fake{
-			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
 				return api.CompletionResult{
 					Conversation: &api.Conversation{},
 					PendingToolCalls: []api.PendingToolCall{
@@ -3864,7 +3864,7 @@ func TestSession_Dispatch_search_memory_with_vector_store(t *testing.T) {
 
 	var continueResults []api.ToolResult
 	fake := &apitest.Fake{
-		SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
+		SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
 			return api.CompletionResult{
 				Conversation: &api.Conversation{},
 				PendingToolCalls: []api.PendingToolCall{
@@ -3932,7 +3932,7 @@ func TestSession_Dispatch_write_then_search_memory_with_vector_store(t *testing.
 
 	var writeResults, searchResults []api.ToolResult
 	fake := &apitest.Fake{
-		SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
+		SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
 			return api.CompletionResult{
 				Conversation: &api.Conversation{},
 				PendingToolCalls: []api.PendingToolCall{
@@ -4008,7 +4008,7 @@ func TestSession_Dispatch_memory_loop_respects_max_turns(t *testing.T) {
 		// calls and return no replies.
 		var writtenKeys []string
 		fake := &apitest.Fake{
-			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
 				return api.CompletionResult{
 					Conversation: &api.Conversation{},
 					PendingToolCalls: []api.PendingToolCall{
@@ -4059,7 +4059,7 @@ func TestSession_Dispatch_memory_loop_respects_max_turns(t *testing.T) {
 func TestSession_Dispatch_encodes_msg_tool_spans(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		fake := &apitest.Fake{
-			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 				fg := protocol.ReplyPaletteIndex(4)
 				return msgSpansToolCall(t, domain.ChannelName(events[0].Target), []protocol.ReplySpan{
 					{Text: "hello "},
@@ -4090,7 +4090,7 @@ func TestSession_Dispatch_msg_tool_error_lets_model_retry(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var rejected []api.ToolResult
 		fake := &apitest.Fake{
-			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 				return msgSpansToolCall(t, domain.ChannelName(events[0].Target), []protocol.ReplySpan{
 					{Text: "", Style: &protocol.ReplyStyle{Bold: true}},
 				}), nil
@@ -4140,7 +4140,7 @@ func TestSession_Dispatch_repeated_msg_tool_errors_drop_after_max_turns(t *testi
 	synctest.Test(t, func(t *testing.T) {
 		recorder, provider := oteltest.NewSpanRecorder(t)
 		fake := &apitest.Fake{
-			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 				return msgSpansToolCall(t, domain.ChannelName(events[0].Target), []protocol.ReplySpan{
 					{Text: "", Style: &protocol.ReplyStyle{Bold: true}},
 				}), nil
@@ -4176,7 +4176,7 @@ func TestSession_Dispatch_repeated_msg_tool_errors_drop_after_max_turns(t *testi
 func TestSession_Dispatch_me_tool_sends_action(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		fake := &apitest.Fake{
-			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, api.SystemPrompt, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
 				return meToolCall(t, "waves"), nil
 			},
 		}
@@ -4202,7 +4202,7 @@ func TestSession_Dispatch_me_tool_sends_action(t *testing.T) {
 func TestSession_Dispatch_msg_tool_rejects_newline_body(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		fake := &apitest.Fake{
-			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 				return msgToolCalls(t, domain.ChannelName(events[0].Target), "always\nmultiline"), nil
 			},
 		}
@@ -4471,7 +4471,7 @@ func TestSession_Dispatch_upstream_outcome(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				bootAt := time.Now()
 				fake := &apitest.Fake{
-					SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
+					SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, api.SystemPrompt, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
 						return api.CompletionResult{}, tc.upstream
 					},
 				}
@@ -4587,7 +4587,7 @@ func TestDispatchToInstance_logs_dispatch_attributes(t *testing.T) {
 		{
 			name: "model replies via msg tool",
 			fake: &apitest.Fake{
-				SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+				SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 					return msgToolCalls(t, domain.ChannelName(events[0].Target), "I have thoughts"), nil
 				},
 			},
@@ -4607,7 +4607,7 @@ func TestDispatchToInstance_logs_dispatch_attributes(t *testing.T) {
 		{
 			name: "model passes by emitting no tool calls",
 			fake: &apitest.Fake{
-				SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
+				SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, api.SystemPrompt, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
 					return api.CompletionResult{}, nil
 				},
 			},
@@ -4663,7 +4663,7 @@ func TestSendMessageAs_model_triggers_dispatch_to_other_models(t *testing.T) {
 		dispatched := make(map[domain.ModelID][]protocol.IRCMessage)
 
 		fake := &apitest.Fake{
-			SendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 				dispatched[modelID] = append(dispatched[modelID], events...)
 				return api.CompletionResult{}, nil
 			},
@@ -4730,7 +4730,7 @@ func TestAddModel_own_join_is_filed_but_not_dispatched(t *testing.T) {
 		var lastHistory []protocol.IRCMessage
 
 		fake := &apitest.Fake{
-			SendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ string, history []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, history []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 				dispatched[modelID] = append(dispatched[modelID], events...)
 				lastHistory = history
 				return api.CompletionResult{}, nil

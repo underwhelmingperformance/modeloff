@@ -27,7 +27,7 @@ func TestBuildSystemPrompt(t *testing.T) {
 	cw.Members.Add(user)
 	cw.Members.Add(botty)
 
-	prompt := buildSystemPrompt(cw, botty)
+	prompt := buildSystemPrompt(cw, botty).Text()
 
 	require.Equal(t, loadGolden(t, "system_prompt.golden.txt"), prompt)
 }
@@ -36,7 +36,7 @@ func TestBuildSystemPrompt_without_persona(t *testing.T) {
 	cw := domain.NewChannelWindow("#dev", time.Time{})
 	inst := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
 
-	prompt := buildSystemPrompt(cw, inst)
+	prompt := buildSystemPrompt(cw, inst).Text()
 
 	require.Equal(t, loadGolden(t, "system_prompt_without_persona.golden.txt"), prompt)
 }
@@ -50,9 +50,23 @@ func TestBuildSystemPrompt_dm_window(t *testing.T) {
 	inst := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
 	dm := domain.NewDMWindow(domain.NewUserInstance("testuser"), time.Time{})
 
-	prompt := buildSystemPrompt(dm, inst)
+	prompt := buildSystemPrompt(dm, inst).Text()
 
 	require.Equal(t, loadGolden(t, "system_prompt_dm.golden.txt"), prompt)
+}
+
+func TestBuildSystemPrompt_keeps_the_fixed_prefix_stable(t *testing.T) {
+	first := buildSystemPrompt(
+		domain.NewChannelWindow("#dev", time.Time{}),
+		domain.NewModelInstance("inst-a", "alice", "test/model", "careful reader", nil),
+	)
+	second := buildSystemPrompt(
+		domain.NewDMWindow(domain.NewUserInstance("laney"), time.Time{}),
+		domain.NewModelInstance("inst-b", "botty", "test/model", "dry wit", nil),
+	)
+
+	require.Equal(t, first.Fixed, second.Fixed)
+	require.NotEqual(t, first.Dynamic, second.Dynamic)
 }
 
 // TestBuildSystemPrompt_keeps_actor_written_text_out covers the
@@ -66,7 +80,7 @@ func TestBuildSystemPrompt_keeps_actor_written_text_out(t *testing.T) {
 	cw.Topic = hostileTopic
 	inst := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
 
-	prompt := buildSystemPrompt(cw, inst)
+	prompt := buildSystemPrompt(cw, inst).Text()
 
 	require.Equal(t, loadGolden(t, "system_prompt_without_persona.golden.txt"), prompt,
 		"the system prompt is a function of nick, window name and persona alone")

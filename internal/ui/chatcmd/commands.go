@@ -458,10 +458,10 @@ func listEntries(events []protocol.Event) []domain.ChannelDirectoryEntry {
 	return entries
 }
 
-// AddModelCommand represents `/add-model [model] [--persona text]`.
+// AddModelCommand represents `/add-model [model] [--persona value]`.
 type AddModelCommand struct {
 	Model   string   `arg:"" optional:"" help:"Model to invite"`
-	Persona []string `optional:"" help:"Optional persona"`
+	Persona []string `optional:"" help:"Persona ID or literal text"`
 }
 
 // Sources implements command.Completer.
@@ -490,7 +490,7 @@ func (c AddModelCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	}
 
 	if c.Model == "" {
-		return usageCmd("add-model", "/add-model <model-id> [--persona <text>]")
+		return usageCmd("add-model", "/add-model <model-id> [--persona <id-or-text>]")
 	}
 
 	return func() tea.Msg {

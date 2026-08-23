@@ -253,9 +253,9 @@ func (e ErroneousChannelNameError) Error() string {
 }
 
 // ErroneousPersonaError refuses a persona description that fails
-// [ValidatePersona]. A persona is app-supplied instruction, carried
-// in the model's system prompt, so the server checks it where it
-// enters and does not trust the caller to have checked it first.
+// [ValidatePersona]. A persona is lower-authority instance state, so
+// the server applies its structural bounds before the text reaches a
+// model and does not trust the caller to have checked it first.
 // `Reason` carries which bound it failed, so renderers and
 // tool-result formatters can say so without reparsing the message.
 type ErroneousPersonaError struct {

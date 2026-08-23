@@ -189,7 +189,7 @@ func TestSession_dispatch_replays_instance_replies_into_prompt(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var sawWhois bool
 		fake := &apitest.Fake{
-			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, history []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, history []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 				for _, h := range history {
 					if h.Kind == protocol.KindServerReply && h.Body == "whois target: test/model" {
 						sawWhois = true

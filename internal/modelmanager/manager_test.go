@@ -394,6 +394,21 @@ func TestManager_SetPersona(t *testing.T) {
 	}, got)
 }
 
+func TestManager_SetPersona_rejects_an_invalid_description(t *testing.T) {
+	fx := newTestManager(t, modelmanager.Config{
+		APIClient: &apitest.Fake{},
+	})
+
+	err := fx.mgr.SetPersona(t.Context(), "custom-bot", "first line\nsecond line")
+
+	var personaErr domain.ErroneousPersonaError
+	require.ErrorAs(t, err, &personaErr)
+	require.Equal(t, domain.PersonaControlCharacter, personaErr.Reason)
+
+	_, err = fx.store.GetPersona(t.Context(), "custom-bot")
+	require.Error(t, err)
+}
+
 func TestManager_ResetPersonas_removes_user_keeps_generated(t *testing.T) {
 	fx := newTestManager(t, modelmanager.Config{
 		APIClient: &apitest.Fake{},

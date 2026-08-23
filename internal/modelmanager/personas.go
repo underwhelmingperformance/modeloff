@@ -151,6 +151,10 @@ func (m *Manager) RegeneratePersonas(ctx context.Context) ([]domain.Persona, err
 
 // SetPersona saves a user-defined persona to the store.
 func (m *Manager) SetPersona(ctx context.Context, id string, description string) error {
+	if reason := domain.ValidatePersona(description); reason != domain.PersonaAccepted {
+		return domain.ErroneousPersonaError{Reason: reason, At: m.now()}
+	}
+
 	return m.inSpan(ctx, "modelmanager.set_persona", []attribute.KeyValue{
 		attribute.String("persona.id", id),
 	}, func(ctx context.Context, _ trace.Span) error {

@@ -260,6 +260,12 @@ type personaListWrapper struct {
 
 var personaSchemaMap = generateSchema[personaListWrapper]()
 
+const personaGenerationPrompt = `Generate 10 distinct personas for regular participants in an IRC network.
+
+Each persona must have a short kebab-case ID and a one-line description. Describe a plausible person with room for context-dependent behaviour, not a role, mascot, catchphrase, or single exaggerated trait.
+
+Across the batch, vary temperament, interests, social habits, confidence, humour, patience, and reasons for spending time on IRC. Give each person at least two compatible dimensions and, where natural, a mild tension or limitation. Do not prescribe a fixed speaking gimmick, repeated phrase, accent, formatting habit, or response to every situation. Do not mention AI systems or assistants.`
+
 func personaResponseFormat() openai.ChatCompletionNewParamsResponseFormatUnion {
 	return openai.ChatCompletionNewParamsResponseFormatUnion{
 		OfJSONSchema: &shared.ResponseFormatJSONSchemaParam{
@@ -284,13 +290,10 @@ func (c *OpenRouterClient) GeneratePersonas(ctx context.Context, smallModel doma
 	err := c.inSpan(ctx, "api.openrouter.generate_personas",
 		[]attribute.KeyValue{attribute.String(observability.AttrModelID, string(smallModel))},
 		func(ctx context.Context, span trace.Span) error {
-			prompt := "Generate 10 distinct IRC user personas. Each should have a short kebab-case ID " +
-				"and a one-line description. Make them varied. No AI-isms. These are IRC regulars."
-
 			resp, rawResp, err := c.chatCompletion(ctx, smallModel, openai.ChatCompletionNewParams{ //nolint:bodyclose // SDK reads and closes the body.
 				Model: shared.ChatModel(string(smallModel)),
 				Messages: []openai.ChatCompletionMessageParamUnion{
-					openai.UserMessage(prompt),
+					openai.UserMessage(personaGenerationPrompt),
 				},
 				ResponseFormat: personaResponseFormat(),
 			})
@@ -319,11 +322,11 @@ func (c *OpenRouterClient) GeneratePersonas(ctx context.Context, smallModel doma
 				return &completionParseError{target: "persona list", err: err}
 			}
 
-			// A generated persona goes on to become the app's own
-			// instruction in an instance's system prompt, so what
-			// the small model returns is bounded here rather than
-			// taken as written. One unusable persona does not spoil
-			// the batch: the pool is drawn from whatever passed.
+			// A generated persona becomes lower-authority instance
+			// state. Bound it to the single-line description that the
+			// state record expects rather than taking model output as
+			// written. One unusable persona does not spoil the batch:
+			// the pool is drawn from whatever passed.
 			personas = make([]domain.Persona, 0, len(wrapper.Personas))
 			for _, p := range wrapper.Personas {
 				if reason := domain.ValidatePersona(p.Description); reason != domain.PersonaAccepted {

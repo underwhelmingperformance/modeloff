@@ -130,8 +130,9 @@ func (e *ToolExecutionError) Unwrap() error {
 
 // ToolSpec describes a model-callable tool and how to execute it.
 // RequiredCapabilities and RequiredKind mirror the command grammar's
-// `caps:` / `kind:` tags so [ToolRegistry.Filter] can present a model
-// only the tools it can actually use in the current window.
+// `caps:` / `kind:` tags. [ToolRegistry.Filter] keeps the advertised
+// set stable across windows, while the executor applies RequiredKind
+// to each call.
 type ToolSpec struct {
 	Definition           api.ToolDefinition
 	Execute              func(context.Context, ToolContext, json.RawMessage) (ToolResultPayload, error)
@@ -211,21 +212,16 @@ func (r *ToolRegistry) Find(name string) (ToolSpec, bool) {
 }
 
 // Filter returns a registry holding only the tools a holder with
-// `caps` may call in a window of `kind`. A tool is dropped when the
-// holder lacks one of its RequiredCapabilities, or when its
-// RequiredKind names a different window. Tools with neither
-// requirement always pass.
-func (r *ToolRegistry) Filter(caps command.CapabilityHolder, kind domain.ChannelKind) *ToolRegistry {
+// `caps` may call. Window-specific tools remain in the registry so
+// the provider sees the same tool prefix in channel and DM turns;
+// the executor refuses a call made from the wrong window.
+func (r *ToolRegistry) Filter(caps command.CapabilityHolder) *ToolRegistry {
 	if r == nil {
 		return nil
 	}
 
 	specs := make([]ToolSpec, 0, len(r.order))
 	for _, spec := range r.order {
-		if spec.RequiredKind != nil && *spec.RequiredKind != kind {
-			continue
-		}
-
 		if !command.Holds(caps, spec.RequiredCapabilities) {
 			continue
 		}

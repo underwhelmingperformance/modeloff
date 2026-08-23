@@ -1,10 +1,14 @@
 package modelmanager_test
 
 import (
+	"context"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/laney/modeloff/internal/api"
+	"github.com/laney/modeloff/internal/api/apitest"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/modelmanager"
 	"github.com/laney/modeloff/internal/session"
@@ -75,6 +79,118 @@ func TestPrepareInstance_keeps_the_requested_persona_verbatim(t *testing.T) {
 
 	require.Equal(t, session.PreparedInstance{
 		Nick:    "gpt-5-4",
-		Persona: "sceptical about everything",
+		Persona: "  sceptical about everything  ",
 	}, prepared)
+}
+
+func TestPrepareInstance_copies_a_requested_persona_template(t *testing.T) {
+	const modelID = domain.ModelID("openai/gpt-5.4-mini")
+
+	fx := newTestManager(t, modelmanager.Config{APIClient: nil})
+	require.NoError(t, fx.store.SavePersona(t.Context(), domain.Persona{
+		ID:          "careful-reader",
+		Description: "checks the source before reaching a conclusion",
+		Origin:      domain.PersonaUser,
+	}))
+
+	sess := newTestSession(t, fx)
+	prepared, err := fx.mgr.PrepareInstance(t.Context(), sess, modelID, "careful-reader")
+	require.NoError(t, err)
+
+	require.Equal(t, session.PreparedInstance{
+		Nick:    "gpt-5-4",
+		Persona: "checks the source before reaching a conclusion",
+	}, prepared)
+}
+
+func TestPrepareInstance_does_not_trim_a_persona_template_id(t *testing.T) {
+	const modelID = domain.ModelID("openai/gpt-5.4-mini")
+
+	fx := newTestManager(t, modelmanager.Config{APIClient: nil})
+	require.NoError(t, fx.store.SavePersona(t.Context(), domain.Persona{
+		ID:          "careful-reader",
+		Description: "checks the source before reaching a conclusion",
+		Origin:      domain.PersonaUser,
+	}))
+
+	sess := newTestSession(t, fx)
+	prepared, err := fx.mgr.PrepareInstance(t.Context(), sess, modelID, " careful-reader ")
+	require.NoError(t, err)
+
+	require.Equal(t, session.PreparedInstance{
+		Nick:    "gpt-5-4",
+		Persona: " careful-reader ",
+	}, prepared)
+}
+
+func TestPrepareInstance_copies_an_empty_persona_template(t *testing.T) {
+	const modelID = domain.ModelID("openai/gpt-5.4-mini")
+
+	fx := newTestManager(t, modelmanager.Config{APIClient: nil})
+	require.NoError(t, fx.store.SavePersona(t.Context(), domain.Persona{
+		ID:     "blank-slate",
+		Origin: domain.PersonaUser,
+	}))
+
+	sess := newTestSession(t, fx)
+	prepared, err := fx.mgr.PrepareInstance(t.Context(), sess, modelID, "blank-slate")
+	require.NoError(t, err)
+
+	require.Equal(t, session.PreparedInstance{
+		Nick: "gpt-5-4",
+	}, prepared)
+}
+
+func TestPrepareInstance_rejects_control_characters_at_the_persona_boundary(t *testing.T) {
+	const modelID = domain.ModelID("openai/gpt-5.4-mini")
+
+	var effects []string
+	client := &apitest.Fake{
+		ListModelsFn: func(context.Context) ([]api.ModelInfo, error) {
+			effects = append(effects, "list models")
+
+			return toolsCatalogue(modelID), nil
+		},
+	}
+	fx := newTestManager(t, modelmanager.Config{
+		APIClient: client, InitialAPIKey: "test-key",
+	})
+	sess := newTestSession(t, fx)
+	_, err := fx.mgr.PrepareInstance(t.Context(), sess, modelID, "careful-reader\n")
+
+	var personaErr domain.ErroneousPersonaError
+	require.ErrorAs(t, err, &personaErr)
+	require.Equal(t, struct {
+		Error   domain.ErroneousPersonaError
+		Effects []string
+	}{
+		Error: domain.ErroneousPersonaError{
+			Reason: domain.PersonaControlCharacter,
+			At:     fixedTime,
+		},
+	}, struct {
+		Error   domain.ErroneousPersonaError
+		Effects []string
+	}{
+		Error:   personaErr,
+		Effects: effects,
+	})
+}
+
+func TestPrepareInstance_rejects_an_invalid_persona_template(t *testing.T) {
+	const modelID = domain.ModelID("openai/gpt-5.4-mini")
+
+	fx := newTestManager(t, modelmanager.Config{APIClient: nil})
+	require.NoError(t, fx.store.SavePersona(t.Context(), domain.Persona{
+		ID:          "too-much",
+		Description: strings.Repeat("x", domain.PersonaMaxLen+1),
+		Origin:      domain.PersonaUser,
+	}))
+
+	sess := newTestSession(t, fx)
+	_, err := fx.mgr.PrepareInstance(t.Context(), sess, modelID, "too-much")
+
+	var personaErr domain.ErroneousPersonaError
+	require.ErrorAs(t, err, &personaErr)
+	require.Equal(t, domain.PersonaTooLong, personaErr.Reason)
 }

@@ -232,6 +232,26 @@ func addModelViaWire(ctx context.Context, t testing.TB, user *userclient.UserCli
 	return resp.Err
 }
 
+func TestSession_AddModel_resolves_a_long_persona_template_ID_before_validation(t *testing.T) {
+	fake := &apitest.Fake{
+		GenerateNickFn: func(_ context.Context, _ domain.ModelID, _ string, _ []domain.Nick) (domain.Nick, error) {
+			return "careful-reader", nil
+		},
+	}
+
+	sess, _, mgr, user := newTestSessionWithManager(t, fake, "")
+	ctx := t.Context()
+	personaID := strings.Repeat("template-", 51)
+	require.NoError(t, mgr.SetPersona(ctx, personaID, "checks the source before reaching a conclusion"))
+
+	seedChannel(t, user, "#dev")
+	require.NoError(t, addModelViaWire(ctx, t, user, "#dev", "test/model", personaID))
+
+	inst, err := sess.ResolveNick(ctx, "careful-reader")
+	require.NoError(t, err)
+	require.Equal(t, "checks the source before reaching a conclusion", inst.Persona())
+}
+
 // collectUserEvents drains every event currently buffered on the
 // user-client subscription's protocol bus. Callers under
 // `synctest.Test` must `synctest.Wait()` first to make sure all
@@ -499,7 +519,7 @@ func TestManager_DetachAll_joins_a_client_released_mid_session(t *testing.T) {
 		// The park ignores cancellation, which is what a real upstream
 		// call that has already been handed to the network does.
 		fake := &apitest.Fake{
-			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, api.SystemPrompt, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
 				<-upstream
 				return api.CompletionResult{}, nil
 			},
@@ -566,7 +586,7 @@ func TestManager_DetachAll_abandons_a_turn_past_the_drain_deadline(t *testing.T)
 		upstream := make(chan struct{})
 
 		fake := &apitest.Fake{
-			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, api.SystemPrompt, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
 				<-upstream
 				return api.CompletionResult{}, nil
 			},
@@ -629,7 +649,7 @@ func TestManager_DetachAll_abandoned_turn_is_quiet_when_the_store_closes(t *test
 		var continuationCalled bool
 
 		fake := &apitest.Fake{
-			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, api.SystemPrompt, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
 				// The park ignores cancellation, which is what a real
 				// upstream call already handed to the network does.
 				<-upstream
@@ -910,7 +930,7 @@ func TestDispatch_transcript_token_budget_from_catalogue_context_len(t *testing.
 					ListModelsFn: func(context.Context) ([]api.ModelInfo, error) {
 						return []api.ModelInfo{{ID: "test/model", ContextLen: tc.contextLen, SupportedParameters: []string{"tools"}}}, nil
 					},
-					SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, history []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
+					SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, history []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
 						histories = append(histories, history)
 						return api.CompletionResult{}, nil
 					},

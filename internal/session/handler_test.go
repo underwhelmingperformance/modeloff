@@ -169,10 +169,10 @@ func TestSession_operator_gate_rejects_subscribed_non_operator(t *testing.T) {
 }
 
 // TestSession_addmodel_refuses_a_persona_that_is_not_one_line
-// covers the bound on the persona argument. A persona becomes the
-// app's own instruction in the new instance's system prompt, so the
-// dispatcher checks it where it enters, after the operator gate and
-// before anything is prepared or registered.
+// covers the bound on the resolved persona. A persona becomes
+// instance state in the model's prompt, so the dispatcher checks the
+// factory result before registration. This also covers factories
+// other than modelmanager and keeps the session as the final gate.
 func TestSession_addmodel_refuses_a_persona_that_is_not_one_line(t *testing.T) {
 	cases := []struct {
 		name    string

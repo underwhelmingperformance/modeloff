@@ -45,7 +45,7 @@ func (c *countingAPI) SendEvents(
 	_ context.Context,
 	_ domain.ModelID,
 	_ domain.InstanceID,
-	_ string,
+	_ api.SystemPrompt,
 	history []protocol.IRCMessage,
 	events []protocol.IRCMessage,
 	_ ...api.ToolDefinition,
@@ -171,7 +171,7 @@ func TestDispatch_does_not_replay_a_turn_after_a_tool_executed(t *testing.T) {
 			},
 		})
 		upstream := &apitest.Fake{
-			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, api.SystemPrompt, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
 				turns++
 
 				return api.CompletionResult{PendingToolCalls: []api.PendingToolCall{{
@@ -219,7 +219,7 @@ func TestDispatch_retries_a_continuation_failure_when_no_tool_executed(t *testin
 		)
 
 		upstream := &apitest.Fake{
-			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, api.SystemPrompt, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
 				turns++
 
 				return api.CompletionResult{PendingToolCalls: []api.PendingToolCall{{
@@ -280,7 +280,7 @@ func TestDispatch_does_not_replay_a_tool_execution_failure(t *testing.T) {
 			},
 		})
 		upstream := &apitest.Fake{
-			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, api.SystemPrompt, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
 				turns++
 
 				return api.CompletionResult{PendingToolCalls: []api.PendingToolCall{{

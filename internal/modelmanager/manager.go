@@ -649,13 +649,23 @@ func (m *Manager) PrepareInstance(
 ) (session.PreparedInstance, error) {
 	logger := slog.Default().With("component", "modelmanager", "model_id", modelID)
 
+	resolvedPersona, assigned, err := m.resolvePersona(ctx, persona)
+	if err != nil {
+		return session.PreparedInstance{}, err
+	}
+
+	prepared := session.PreparedInstance{Persona: resolvedPersona}
+	if assigned {
+		if reason := domain.ValidatePersona(prepared.Persona); reason != domain.PersonaAccepted {
+			return prepared, domain.ErroneousPersonaError{Reason: reason, At: m.now()}
+		}
+	}
+
 	if err := m.EnsureToolCapableModel(ctx, modelID); err != nil {
 		return session.PreparedInstance{}, err
 	}
 
-	prepared := session.PreparedInstance{Persona: strings.TrimSpace(persona)}
-
-	if prepared.Persona == "" {
+	if !assigned {
 		// A pool that could not be topped up is only a problem if it
 		// is also empty, which the draw below is what discovers.
 		if err := m.EnsurePersonas(ctx); err != nil {
@@ -673,6 +683,10 @@ func (m *Manager) PrepareInstance(
 		}
 	}
 
+	if reason := domain.ValidatePersona(prepared.Persona); reason != domain.PersonaAccepted {
+		return prepared, domain.ErroneousPersonaError{Reason: reason, At: m.now()}
+	}
+
 	nick, err := m.generateUniqueNick(ctx, sess, modelID, prepared.Persona, logger)
 	if err != nil {
 		return prepared, err
@@ -681,6 +695,27 @@ func (m *Manager) PrepareInstance(
 	prepared.Nick = nick
 
 	return prepared, nil
+}
+
+// resolvePersona copies a persona template when requested is its exact ID.
+// Text that does not identify a template remains a literal persona.
+func (m *Manager) resolvePersona(ctx context.Context, requested string) (string, bool, error) {
+	if requested == "" {
+		return "", false, nil
+	}
+
+	personas, err := m.store.ListPersonas(ctx)
+	if err != nil {
+		return "", false, fmt.Errorf("resolve persona %q: %w", requested, err)
+	}
+
+	for _, persona := range personas {
+		if persona.ID == requested {
+			return persona.Description, true, nil
+		}
+	}
+
+	return requested, true, nil
 }
 
 // Start attaches the boot-time model-instance set to sess. Each

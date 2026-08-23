@@ -201,7 +201,7 @@ func (c *OpenRouterClient) SendEvents(
 	ctx context.Context,
 	modelID domain.ModelID,
 	selfInstanceID domain.InstanceID,
-	systemPrompt string,
+	systemPrompt SystemPrompt,
 	history []protocol.IRCMessage,
 	events []protocol.IRCMessage,
 	tools ...ToolDefinition,
@@ -372,18 +372,20 @@ type messageRun struct {
 }
 
 // buildMessages renders a turn's input as openai chat messages: the
-// app-authored system prompt, then the transcript.
+// app-authored fixed system prompt, lower-authority current instance
+// state, then the transcript.
 //
-// Only the system prompt takes the system role. Everything the
-// instance itself said takes the assistant role, and everything else
-// takes the user role as a JSON envelope naming the kind and the
-// sender: a peer's chat traffic, a join or a part, a poke, and a
-// server reply the instance asked for (WHOIS, LIST) or the server
-// pushed at it. A WHOIS answer quotes the target's persona and a
-// LIST answer quotes each channel's topic, both of them free text
-// some other client wrote, so a transcript line reaching the system
-// role would let any client write instructions the model reads as
-// the app's own.
+// Only Fixed takes the system role. Dynamic contains the instance's
+// current nick, window and optional persona; it takes the user role
+// because persona text may be operator-supplied or generated. The
+// fixed instructions define how the model may use that record.
+// Everything the instance itself said takes the assistant role, and
+// everything else takes the user role as a JSON envelope naming the
+// kind and sender: a peer's chat traffic, a join or a part, a poke,
+// and a server reply the instance asked for (WHOIS, LIST) or the
+// server pushed at it. A WHOIS answer quotes the target's persona and
+// a LIST answer quotes each channel's topic. Both contain free text
+// another actor supplied, so neither may reach the system role.
 //
 // The tool role would be the exact fit for the answer to a command
 // the instance itself issued. A tool message has to name the
@@ -393,7 +395,7 @@ type messageRun struct {
 // within a turn do keep the tool role, which
 // [OpenRouterClient.ContinueWithToolResults] gives them.
 func buildMessages(
-	systemPrompt string,
+	systemPrompt SystemPrompt,
 	selfInstanceID domain.InstanceID,
 	history []protocol.IRCMessage,
 	events []protocol.IRCMessage,
@@ -436,8 +438,16 @@ func buildMessages(
 		appendMsg(e)
 	}
 
-	msgs := make([]openai.ChatCompletionMessageParamUnion, 0, len(runs)+1)
-	msgs = append(msgs, openai.SystemMessage(systemPrompt))
+	msgs := make([]openai.ChatCompletionMessageParamUnion, 0, len(runs)+2)
+	fixed := openai.ChatCompletionContentPartTextParam{Text: systemPrompt.Fixed}
+	fixed.SetExtraFields(map[string]any{
+		"cache_control": map[string]any{"type": "ephemeral"},
+	})
+	msgs = append(msgs, openai.SystemMessage([]openai.ChatCompletionContentPartTextParam{fixed}))
+
+	if systemPrompt.Dynamic != "" {
+		msgs = append(msgs, openai.UserMessage(systemPrompt.Dynamic))
+	}
 
 	for _, r := range runs {
 		msgs = append(msgs, runToMessage(r))

@@ -189,13 +189,11 @@ func (r PersonaRejection) String() string {
 // is accepted: a persona is optional, and an instance without one
 // carries no persona line at all.
 //
-// A persona is the one input to a model's system prompt that is not
-// otherwise constrained, so this is what its trust rests on. The
+// A persona reaches the model as lower-authority instance state. The
 // length bound keeps it to the one line it is meant to be, and
-// refusing control characters keeps it to a single line in the
-// literal sense: a description carrying newlines could lay out
-// headings and sections that read as further instructions from the
-// app rather than as the sentence describing who this instance is.
+// refusing control characters prevents it from laying out a document
+// that imitates the surrounding record. This is structural validation;
+// it does not make the persona semantically trusted.
 func ValidatePersona(description string) PersonaRejection {
 	if len(description) > PersonaMaxLen {
 		return PersonaTooLong

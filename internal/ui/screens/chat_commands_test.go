@@ -30,7 +30,7 @@ func (stubAPI) SendEvents(
 	context.Context,
 	domain.ModelID,
 	domain.InstanceID,
-	string,
+	api.SystemPrompt,
 	[]protocol.IRCMessage,
 	[]protocol.IRCMessage,
 	...api.ToolDefinition,

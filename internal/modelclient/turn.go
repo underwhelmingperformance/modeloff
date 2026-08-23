@@ -144,10 +144,12 @@ func (mc *ModelClient) dispatchToInstance(ctx context.Context, turn turnRequest)
 		}
 
 		// The tool set is filtered by what the server says this client
-		// holds, so a tool the dispatcher would refuse is not offered.
+		// holds. Window-specific tools stay present so channel and DM
+		// turns have the same cacheable prefix; execution still refuses
+		// them outside the required window.
 		registry := MergeToolRegistries(
 			memoryToolRegistry(mem, mc.memStore != nil && searchEnabled(mc.memStore)),
-			mc.tools.Filter(mc.Caps(), turn.window.Kind()),
+			mc.tools.Filter(mc.Caps()),
 		)
 
 		outcome, err := runTurn(ctx, turn.api, mc.sess, mc, inst, turn.target, prompt, history, events, registry, mc.pacer)

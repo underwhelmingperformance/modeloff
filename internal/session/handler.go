@@ -637,10 +637,6 @@ func (s *Session) handleAddModel(ctx context.Context, c protocol.Client, cmd pro
 		return protocol.Response{Err: domain.NotOperatorError{Command: "ADDMODEL", At: s.now()}}, nil
 	}
 
-	if reason := domain.ValidatePersona(cmd.Persona); reason != domain.PersonaAccepted {
-		return protocol.Response{Err: domain.ErroneousPersonaError{Reason: reason, At: s.now()}}, nil
-	}
-
 	actor, err := s.resolveClientActor(c)
 	if err != nil {
 		return protocol.Response{}, err
@@ -660,6 +656,10 @@ func (s *Session) handleAddModel(ctx context.Context, c protocol.Client, cmd pro
 	})
 	if prepErr != nil {
 		return commandResult(prepErr)
+	}
+
+	if reason := domain.ValidatePersona(prepared.Persona); reason != domain.PersonaAccepted {
+		return protocol.Response{Err: domain.ErroneousPersonaError{Reason: reason, At: s.now()}}, nil
 	}
 
 	var inst *domain.Instance

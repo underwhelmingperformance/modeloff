@@ -334,7 +334,7 @@ func (f *FakeAPI) SendEvents(
 	ctx context.Context,
 	modelID domain.ModelID,
 	_ domain.InstanceID,
-	system string,
+	system api.SystemPrompt,
 	history []protocol.IRCMessage,
 	events []protocol.IRCMessage,
 	_ ...api.ToolDefinition,
@@ -343,7 +343,7 @@ func (f *FakeAPI) SendEvents(
 	defer f.mu.Unlock()
 
 	if f.SendEventsFn != nil {
-		return f.SendEventsFn(ctx, modelID, system, history, events)
+		return f.SendEventsFn(ctx, modelID, system.Text(), history, events)
 	}
 
 	return api.CompletionResult{}, nil

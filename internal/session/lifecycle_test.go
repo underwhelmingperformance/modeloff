@@ -46,7 +46,7 @@ func TestSession_model_quit_tool_ends_its_own_connection(t *testing.T) {
 		bootAt := time.Now()
 		continues := 0
 		fake := &apitest.Fake{
-			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, api.SystemPrompt, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
 				return quitToolCall(t, "signing off"), nil
 			},
 			ContinueWithToolResultsFn: func(context.Context, *api.Conversation, []api.ToolResult) (api.CompletionResult, error) {
@@ -280,7 +280,7 @@ func TestSession_sendQ_overflow_disconnects_the_client(t *testing.T) {
 		// which is what leaves the subscription with nobody reading
 		// it while the flood arrives.
 		fake := &apitest.Fake{
-			SendEventsFn: func(ctx context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(ctx context.Context, _ domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
 				<-ctx.Done()
 				return api.CompletionResult{}, ctx.Err()
 			},

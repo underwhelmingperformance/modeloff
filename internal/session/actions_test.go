@@ -721,7 +721,7 @@ func TestSendMessageAs_model_to_model_dispatches(t *testing.T) {
 
 		var dispatched []domain.ModelID
 		fake := &apitest.Fake{
-			SendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
 				dispatched = append(dispatched, modelID)
 				return api.CompletionResult{}, nil
 			},

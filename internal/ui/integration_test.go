@@ -427,7 +427,7 @@ func (f *integrationAPI) SendEvents(
 	ctx context.Context,
 	modelID domain.ModelID,
 	_ domain.InstanceID,
-	system string,
+	system api.SystemPrompt,
 	history []protocol.IRCMessage,
 	events []protocol.IRCMessage,
 	_ ...api.ToolDefinition,
@@ -436,7 +436,7 @@ func (f *integrationAPI) SendEvents(
 	defer f.mu.Unlock()
 
 	if f.sendEventsFn != nil {
-		return f.sendEventsFn(ctx, modelID, system, history, events)
+		return f.sendEventsFn(ctx, modelID, system.Text(), history, events)
 	}
 
 	return api.CompletionResult{}, nil

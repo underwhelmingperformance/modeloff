@@ -471,7 +471,7 @@ func TestOpenRouterClient_SendEvents_ignoresContent(t *testing.T) {
 		t.Context(),
 		"test/model",
 		"",
-		"You are a test bot.",
+		testSystemPrompt("You are a test bot."),
 		nil,
 		[]protocol.IRCMessage{
 			{Kind: protocol.KindPrivMsg, From: "alice", Target: "#test", Body: "hi"},
@@ -527,6 +527,9 @@ func messageContents(msgs []openai.ChatCompletionMessageParamUnion) []string {
 		switch {
 		case m.OfSystem != nil:
 			contents[i] = m.OfSystem.Content.OfString.Value
+			for _, part := range m.OfSystem.Content.OfArrayOfContentParts {
+				contents[i] += part.Text
+			}
 		case m.OfAssistant != nil:
 			contents[i] = m.OfAssistant.Content.OfString.Value
 		case m.OfUser != nil:
@@ -541,6 +544,33 @@ func messageContents(msgs []openai.ChatCompletionMessageParamUnion) []string {
 	return contents
 }
 
+func testSystemPrompt(text string) SystemPrompt {
+	return SystemPrompt{Fixed: text}
+}
+
+func testSystemMessage(text string) openai.ChatCompletionMessageParamUnion {
+	part := openai.ChatCompletionContentPartTextParam{Text: text}
+	part.SetExtraFields(map[string]any{
+		"cache_control": map[string]any{"type": "ephemeral"},
+	})
+
+	return openai.SystemMessage([]openai.ChatCompletionContentPartTextParam{part})
+}
+
+func TestBuildMessages_marks_the_fixed_system_prefix(t *testing.T) {
+	prompt := SystemPrompt{
+		Fixed:   "stable instructions",
+		Dynamic: "\ncurrent identity",
+	}
+
+	want := []openai.ChatCompletionMessageParamUnion{
+		testSystemMessage("stable instructions"),
+		openai.UserMessage("\ncurrent identity"),
+	}
+
+	require.Equal(t, want, buildMessages(prompt, "", nil, nil))
+}
+
 func TestBuildMessages_self_messages_are_assistant_role_in_history(t *testing.T) {
 	const selfID = "inst-abc123"
 
@@ -552,7 +582,7 @@ func TestBuildMessages_self_messages_are_assistant_role_in_history(t *testing.T)
 		{Kind: protocol.KindPrivMsg, From: "bob", Target: "#test", Body: "bob said this"},
 	}
 
-	msgs := buildMessages("system prompt", selfID, history, events)
+	msgs := buildMessages(testSystemPrompt("system prompt"), selfID, history, events)
 
 	require.Equal(t, []string{"system", "assistant", "user"}, messageRoles(msgs),
 		"alice + bob share the user role and coalesce")
@@ -567,7 +597,7 @@ func TestBuildMessages_self_events_are_excluded(t *testing.T) {
 		{Kind: protocol.KindPrivMsg, From: "alice", Target: "#test", Body: "alice chiming in"},
 	}
 
-	msgs := buildMessages("system prompt", selfID, nil, events)
+	msgs := buildMessages(testSystemPrompt("system prompt"), selfID, nil, events)
 
 	require.Equal(t, []string{"system", "user"}, messageRoles(msgs),
 		"bob's trigger and alice's trigger surround a filtered self-event; "+
@@ -583,7 +613,7 @@ func TestBuildMessages_survives_nick_rename(t *testing.T) {
 		{Kind: protocol.KindPrivMsg, From: "alice", Target: "#test", Body: "other user"},
 	}
 
-	msgs := buildMessages("system prompt", selfID, history, nil)
+	msgs := buildMessages(testSystemPrompt("system prompt"), selfID, history, nil)
 
 	require.Equal(t, []string{"system", "assistant", "user"}, messageRoles(msgs),
 		"the two self entries coalesce into one assistant message")
@@ -608,7 +638,7 @@ func TestBuildMessages_coalesces_same_role_runs(t *testing.T) {
 	}
 
 	want := []openai.ChatCompletionMessageParamUnion{
-		openai.SystemMessage("system prompt"),
+		testSystemMessage("system prompt"),
 		openai.UserMessage([]openai.ChatCompletionContentPartUnionParam{
 			openai.TextContentPart(ircJSON(t, history[0])),
 			openai.TextContentPart(ircJSON(t, history[1])),
@@ -623,7 +653,7 @@ func TestBuildMessages_coalesces_same_role_runs(t *testing.T) {
 		}),
 	}
 
-	require.Equal(t, want, buildMessages("system prompt", selfID, history, events))
+	require.Equal(t, want, buildMessages(testSystemPrompt("system prompt"), selfID, history, events))
 }
 
 // ircJSON marshals `m` with the `InstanceID` stripped, matching the
@@ -664,7 +694,7 @@ func TestBuildMessages_only_the_system_prompt_takes_the_system_role(t *testing.T
 	}
 
 	want := []openai.ChatCompletionMessageParamUnion{
-		openai.SystemMessage("system prompt"),
+		testSystemMessage("system prompt"),
 		openai.UserMessage([]openai.ChatCompletionContentPartUnionParam{
 			openai.TextContentPart(ircJSON(t, history[0])),
 			openai.TextContentPart(ircJSON(t, history[1])),
@@ -672,7 +702,7 @@ func TestBuildMessages_only_the_system_prompt_takes_the_system_role(t *testing.T
 		}),
 	}
 
-	require.Equal(t, want, buildMessages("system prompt", "", history, events))
+	require.Equal(t, want, buildMessages(testSystemPrompt("system prompt"), "", history, events))
 }
 
 func TestBuildMessages_instance_id_stripped_from_json(t *testing.T) {
@@ -680,7 +710,7 @@ func TestBuildMessages_instance_id_stripped_from_json(t *testing.T) {
 		{Kind: protocol.KindPrivMsg, From: "botty", InstanceID: "inst-xyz", Target: "#test", Body: "hello"},
 	}
 
-	msgs := buildMessages("system prompt", "", events, nil)
+	msgs := buildMessages(testSystemPrompt("system prompt"), "", events, nil)
 
 	expectedEvent := events[0]
 	expectedEvent.InstanceID = ""
@@ -724,7 +754,7 @@ func TestOpenRouterClient_SendEventsWithHistory(t *testing.T) {
 		t.Context(),
 		"anthropic/test-model",
 		selfID,
-		"System prompt",
+		testSystemPrompt("System prompt"),
 		history,
 		events,
 		ToolDefinition{
@@ -762,8 +792,14 @@ func TestOpenRouterClient_SendEventsWithHistory(t *testing.T) {
 
 	wantMsgs := []map[string]any{
 		{
-			"role":    "system",
-			"content": "System prompt",
+			"role": "system",
+			"content": []map[string]any{
+				{
+					"type":          "text",
+					"text":          "System prompt",
+					"cache_control": map[string]any{"type": "ephemeral"},
+				},
+			},
 		},
 		{
 			"role": "user",
@@ -831,7 +867,7 @@ func TestOpenRouterClient_SendEvents_preservesOpenRouterUsageMetadata(t *testing
 		t.Context(),
 		"test/model",
 		"",
-		"You are a test bot.",
+		testSystemPrompt("You are a test bot."),
 		nil,
 		[]protocol.IRCMessage{
 			{Kind: protocol.KindPrivMsg, From: "alice", Target: "#test", Body: "hi"},
@@ -1114,7 +1150,7 @@ func TestOpenRouterClient_SendEvents_write_memory(t *testing.T) {
 		t.Context(),
 		"test/model",
 		"",
-		"You are a test bot.",
+		testSystemPrompt("You are a test bot."),
 		nil,
 		[]protocol.IRCMessage{
 			{Kind: protocol.KindPrivMsg, From: "alice", Target: "#test", Body: "hi"},
@@ -1145,7 +1181,7 @@ func TestOpenRouterClient_SendEvents_delete_memory(t *testing.T) {
 		t.Context(),
 		"test/model",
 		"",
-		"You are a test bot.",
+		testSystemPrompt("You are a test bot."),
 		nil,
 		[]protocol.IRCMessage{
 			{Kind: protocol.KindPrivMsg, From: "alice", Target: "#test", Body: "hi"},
@@ -1176,7 +1212,7 @@ func TestOpenRouterClient_SendEvents_search_memory(t *testing.T) {
 		t.Context(),
 		"test/model",
 		"",
-		"You are a test bot.",
+		testSystemPrompt("You are a test bot."),
 		nil,
 		[]protocol.IRCMessage{
 			{Kind: protocol.KindPrivMsg, From: "alice", Target: "#test", Body: "hi"},
@@ -1214,7 +1250,7 @@ func TestOpenRouterClient_SendEvents_includes_explicit_search_tool(t *testing.T)
 		t.Context(),
 		"test/model",
 		"",
-		"You are a test bot.",
+		testSystemPrompt("You are a test bot."),
 		nil,
 		[]protocol.IRCMessage{
 			{Kind: protocol.KindPrivMsg, From: "alice", Target: "#test", Body: "hi"},
@@ -1255,7 +1291,7 @@ func TestOpenRouterClient_SendEvents_excludes_search_without_explicit_tool(t *te
 		t.Context(),
 		"test/model",
 		"",
-		"You are a test bot.",
+		testSystemPrompt("You are a test bot."),
 		nil,
 		[]protocol.IRCMessage{
 			{Kind: protocol.KindPrivMsg, From: "alice", Target: "#test", Body: "hi"},
@@ -1296,7 +1332,7 @@ func TestOpenRouterClient_SendEvents_contentFiltered(t *testing.T) {
 	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
 
 	_, err := client.SendEvents(
-		t.Context(), "test/model", "", "prompt", nil,
+		t.Context(), "test/model", "", testSystemPrompt("prompt"), nil,
 		[]protocol.IRCMessage{{Kind: protocol.KindPrivMsg, From: "a", Target: "#t", Body: "x"}},
 	)
 	require.ErrorIs(t, err, ErrContentFiltered)
@@ -1321,7 +1357,7 @@ func TestOpenRouterClient_SendEvents_truncated(t *testing.T) {
 	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
 
 	_, err := client.SendEvents(
-		t.Context(), "test/model", "", "prompt", nil,
+		t.Context(), "test/model", "", testSystemPrompt("prompt"), nil,
 		[]protocol.IRCMessage{{Kind: protocol.KindPrivMsg, From: "a", Target: "#t", Body: "x"}},
 	)
 	require.ErrorIs(t, err, ErrResponseTruncated)
@@ -1346,7 +1382,7 @@ func TestOpenRouterClient_SendEvents_refusal(t *testing.T) {
 	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
 
 	_, err := client.SendEvents(
-		t.Context(), "test/model", "", "prompt", nil,
+		t.Context(), "test/model", "", testSystemPrompt("prompt"), nil,
 		[]protocol.IRCMessage{{Kind: protocol.KindPrivMsg, From: "a", Target: "#t", Body: "x"}},
 	)
 
@@ -1375,7 +1411,7 @@ func TestOpenRouterClient_SendEvents_emptyChoices(t *testing.T) {
 	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
 
 	got, err := client.SendEvents(
-		t.Context(), "test/model", "", "prompt", nil,
+		t.Context(), "test/model", "", testSystemPrompt("prompt"), nil,
 		[]protocol.IRCMessage{{Kind: protocol.KindPrivMsg, From: "a", Target: "#t", Body: "x"}},
 	)
 	require.NoError(t, err)
@@ -1408,7 +1444,7 @@ func TestOpenRouterClient_SendEvents_emptyResponse(t *testing.T) {
 	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
 
 	got, err := client.SendEvents(
-		t.Context(), "test/model", "", "prompt", nil,
+		t.Context(), "test/model", "", testSystemPrompt("prompt"), nil,
 		[]protocol.IRCMessage{{Kind: protocol.KindPrivMsg, From: "a", Target: "#t", Body: "x"}},
 	)
 	require.NoError(t, err)
@@ -1483,7 +1519,7 @@ func TestOpenRouterClient_ContinueWithToolResults(t *testing.T) {
 		t.Context(),
 		"test/model",
 		selfID,
-		"You are a test bot.",
+		testSystemPrompt("You are a test bot."),
 		nil,
 		[]protocol.IRCMessage{
 			{Kind: protocol.KindPrivMsg, From: "alice", Target: "#test", Body: "hi"},
@@ -1521,6 +1557,12 @@ func TestOpenRouterClient_GeneratePersonas(t *testing.T) {
 		require.Equal(t, http.MethodPost, r.Method)
 		require.Equal(t, "/chat/completions", r.URL.Path)
 		require.Equal(t, "Bearer test-key", r.Header.Get("Authorization"))
+
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		require.Contains(t, string(body), "plausible person")
+		require.Contains(t, string(body), "at least two compatible dimensions")
+		require.Contains(t, string(body), "not a role, mascot, catchphrase")
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(structuredChatResponse(
@@ -1882,7 +1924,7 @@ func TestSendEvents_logs_event_and_history_counts(t *testing.T) {
 		{Kind: protocol.KindJoin, From: "charlie", Target: "#test"},
 	}
 
-	_, err := client.SendEvents(t.Context(), "test/model", "", "system", history, events)
+	_, err := client.SendEvents(t.Context(), "test/model", "", testSystemPrompt("system"), history, events)
 	require.NoError(t, err)
 
 	record := buf.find("openrouter send events completed")
@@ -1908,7 +1950,7 @@ func TestContinueWithToolResults_logs_token_counts(t *testing.T) {
 	client := NewOpenRouterClient("test-key", toolSrv.URL, toolSrv.Client())
 
 	result, err := client.SendEvents(
-		t.Context(), "test/model", "", "system", nil,
+		t.Context(), "test/model", "", testSystemPrompt("system"), nil,
 		[]protocol.IRCMessage{{Kind: protocol.KindPrivMsg, From: "alice", Target: "#test", Body: "hi"}},
 		testMemoryTools(false)...,
 	)
@@ -1992,7 +2034,7 @@ func TestOpenRouterClient_perCallTimeouts(t *testing.T) {
 					ctx,
 					"test/model",
 					"",
-					"prompt",
+					testSystemPrompt("prompt"),
 					nil,
 					[]protocol.IRCMessage{{Kind: protocol.KindPrivMsg, From: "a", Target: "#t", Body: "x"}},
 				)
@@ -2035,7 +2077,7 @@ func TestOpenRouterClient_callerDeadlineWins(t *testing.T) {
 			ctx,
 			"test/model",
 			"",
-			"prompt",
+			testSystemPrompt("prompt"),
 			nil,
 			[]protocol.IRCMessage{{Kind: protocol.KindPrivMsg, From: "a", Target: "#t", Body: "x"}},
 		)

@@ -599,7 +599,7 @@ func TestChatScreen_add_model_no_args(t *testing.T) {
 	tm, _ := newChatAppInChannel(t, "#general")
 
 	tm.Submit("/add-model")
-	tm.WaitFor("usage: /add-model <model-id> [--persona <text>]")
+	tm.WaitFor("usage: /add-model <model-id> [--persona <id-or-text>]")
 }
 
 func TestChatScreen_invite_existing_instance(t *testing.T) {

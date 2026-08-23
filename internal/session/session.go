@@ -887,8 +887,9 @@ type PreparedInstance struct {
 	// the loop and a rename may have taken it since.
 	Nick domain.Nick
 
-	// Persona is the persona text the instance carries: the
-	// requester's own, verbatim, or one drawn from the pool.
+	// Persona is the copied persona text the instance carries: a
+	// matched template's description, unmatched literal text from the
+	// requester, or one drawn from the pool.
 	Persona string
 
 	// Warnings describes, for the operator, each part of the

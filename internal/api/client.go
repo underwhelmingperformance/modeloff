@@ -102,6 +102,20 @@ type ToolDefinition struct {
 	Parameters  map[string]any
 }
 
+// SystemPrompt separates reusable application instructions from
+// instance-specific state. Providers can cache Fixed at an explicit
+// content-block boundary. Dynamic follows in a later message so providers
+// that normalise system content can still reuse the fixed instructions.
+type SystemPrompt struct {
+	Fixed   string
+	Dynamic string
+}
+
+// Text returns the prompt as providers without content-block caching read it.
+func (p SystemPrompt) Text() string {
+	return p.Fixed + p.Dynamic
+}
+
 // PendingToolCall represents a tool call from the model that requires
 // execution before the conversation can continue.
 type PendingToolCall struct {
@@ -186,7 +200,7 @@ type Client interface {
 		ctx context.Context,
 		modelID domain.ModelID,
 		selfInstanceID domain.InstanceID,
-		systemPrompt string,
+		systemPrompt SystemPrompt,
 		history []protocol.IRCMessage,
 		events []protocol.IRCMessage,
 		tools ...ToolDefinition,

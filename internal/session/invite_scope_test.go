@@ -44,7 +44,7 @@ func TestInviteAs_delivery_is_scoped_to_inviter_and_invitee(t *testing.T) {
 		)
 
 		fake := &apitest.Fake{
-			SendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 				mu.Lock()
 				calls = append(calls, call{
 					modelID:  modelID,

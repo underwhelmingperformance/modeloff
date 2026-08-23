@@ -146,7 +146,7 @@ func TestSession_failed_terminal_tool_lets_the_model_retry(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				var rejected []api.ToolResult
 				fake := &apitest.Fake{
-					SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
+					SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, api.SystemPrompt, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
 						return api.CompletionResult{PendingToolCalls: []api.PendingToolCall{
 							{ID: "terminal", Name: toolName, Args: json.RawMessage(`{}`)},
 						}}, nil
@@ -188,7 +188,7 @@ func TestSession_committed_quit_stops_the_tool_batch_when_teardown_fails(t *test
 		var continuations int
 		message := msgToolCalls(t, "#general", "must not be sent").PendingToolCalls[0]
 		fake := &apitest.Fake{
-			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, api.SystemPrompt, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
 				return api.CompletionResult{PendingToolCalls: []api.PendingToolCall{
 					{ID: "quit", Name: "quit", Args: json.RawMessage(`{"message":null}`)},
 					message,
@@ -255,7 +255,7 @@ func TestSession_failed_instance_deletion_does_not_commit_quit(t *testing.T) {
 		var continuations int
 		message := msgToolCalls(t, "#general", "must not be sent").PendingToolCalls[0]
 		fake := &apitest.Fake{
-			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, api.SystemPrompt, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
 				return api.CompletionResult{PendingToolCalls: []api.PendingToolCall{
 					{ID: "quit", Name: "quit", Args: json.RawMessage(`{"message":null}`)},
 					message,
@@ -635,7 +635,7 @@ func TestSession_Shutdown_waits_for_teardown_cleanup(t *testing.T) {
 func TestSession_forced_disconnect_reaps_client_when_instance_deletion_fails(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		fake := &apitest.Fake{
-			SendEventsFn: func(ctx context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(ctx context.Context, _ domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
 				<-ctx.Done()
 
 				return api.CompletionResult{}, ctx.Err()
@@ -1170,7 +1170,7 @@ func TestSession_mixed_pass_is_rejected_and_continues_the_tool_loop(t *testing.T
 		var rejected []api.ToolResult
 		message := msgToolCalls(t, "#general", "must not be sent").PendingToolCalls[0]
 		fake := &apitest.Fake{
-			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, api.SystemPrompt, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
 				return api.CompletionResult{PendingToolCalls: []api.PendingToolCall{
 					{ID: "pass", Name: "pass", Args: json.RawMessage(`{"reason":"done"}`)},
 					message,

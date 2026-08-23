@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -11,8 +12,40 @@ import (
 	"github.com/laney/modeloff/internal/api"
 	"github.com/laney/modeloff/internal/api/apitest"
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/modelclient"
 	"github.com/laney/modeloff/internal/protocol"
 )
+
+func TestSession_model_channel_tool_is_refused_in_a_DM(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var results []api.ToolResult
+		fake := &apitest.Fake{
+			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, api.SystemPrompt, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
+				return api.CompletionResult{PendingToolCalls: []api.PendingToolCall{
+					{ID: "topic-1", Name: "topic", Args: json.RawMessage(`{}`)},
+				}}, nil
+			},
+			ContinueWithToolResultsFn: func(_ context.Context, _ *api.Conversation, got []api.ToolResult) (api.CompletionResult, error) {
+				results = append(results, got...)
+
+				return api.CompletionResult{}, nil
+			},
+		}
+
+		sess, store := newTestSessionWithAPI(t, fake)
+		botty := seedInstance(t, sess, store, instanceSpec{Nick: "botty", ModelID: "test/model"})
+
+		dispatchUserMessage(t.Context(), t, sess, domain.ChannelName(botty.ID()), "you there?")
+
+		require.Len(t, results, 1)
+		var payload modelclient.ToolResultPayload
+		require.NoError(t, json.Unmarshal([]byte(results[0].Content), &payload))
+		require.Equal(t, modelclient.ToolResultPayload{
+			OK:    false,
+			Error: `tool "topic" is not available in this window`,
+		}, payload)
+	})
+}
 
 // TestSession_model_action_in_a_DM_reaches_the_counterpart covers a
 // model's `/me` inside a DM. The action goes to the window the turn
@@ -24,7 +57,7 @@ import (
 func TestSession_model_action_in_a_DM_reaches_the_counterpart(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		fake := &apitest.Fake{
-			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, api.SystemPrompt, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
 				return meToolCall(t, "waves"), nil
 			},
 		}
@@ -88,7 +121,7 @@ func TestSession_PrivMsg_to_model_routes_DM_to_counterpart_only(t *testing.T) {
 		var calls []call
 
 		fake := &apitest.Fake{
-			SendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+			SendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 				calls = append(calls, call{modelID: modelID, trigger: append([]protocol.IRCMessage(nil), events...)})
 				return api.CompletionResult{}, nil
 			},
