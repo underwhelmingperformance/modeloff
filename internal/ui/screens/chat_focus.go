@@ -269,7 +269,7 @@ func (s ChatScreen) closeWindow(ch domain.ChannelName, at time.Time) (ChatScreen
 	} else {
 		s, rebind = s.clearFocus()
 		cmds = append(cmds, msgCmd(components.SetPlaceholderMsg{
-			Text: s.checklist.Render(),
+			Text: s.checklist.text(),
 		}))
 	}
 

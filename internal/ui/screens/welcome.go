@@ -9,26 +9,21 @@ import (
 	"github.com/laney/modeloff/internal/ui/theme"
 )
 
-// WelcomeChecklist holds state for the reactive onboarding checklist
-// shown in the chat view content area before any channels exist.
-type WelcomeChecklist struct {
+type welcomeChecklist struct {
 	nick         domain.Nick
 	hasAPIKey    bool
 	channelCount int
 	modelCount   int
 }
 
-// NewWelcomeChecklist creates a checklist with the given initial state.
-func NewWelcomeChecklist(nick domain.Nick, hasAPIKey bool) WelcomeChecklist {
-	return WelcomeChecklist{
+func newWelcomeChecklist(nick domain.Nick, hasAPIKey bool) welcomeChecklist {
+	return welcomeChecklist{
 		nick:      nick,
 		hasAPIKey: hasAPIKey,
 	}
 }
 
-// Render produces the styled checklist text used as placeholder
-// content when no channels are open.
-func (w WelcomeChecklist) Render() string {
+func (w welcomeChecklist) text() string {
 	km := components.DefaultSidebarKeyMap
 
 	lines := []string{

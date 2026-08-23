@@ -4,12 +4,20 @@ import (
 	"strings"
 	"testing"
 
+	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/components"
 	"github.com/laney/modeloff/internal/ui/uitest"
 )
+
+func renderToBuffer(component ui.Component, width, height int) string {
+	screen := uv.NewScreenBuffer(width, height)
+	component.Draw(screen, screen.Bounds())
+
+	return screen.Render()
+}
 
 func visibleLines(view string) []string {
 	lines := uitest.NonEmptyLines(view)
@@ -33,7 +41,7 @@ func nonEmptyColumn(lines []string) []string {
 	return uitest.NonEmptyColumn(lines)
 }
 
-func inputBarModel(t *testing.T, m ui.Model) components.InputBar {
+func inputBarModel(t *testing.T, m ui.Component) components.InputBar {
 	t.Helper()
 
 	bar, ok := m.(components.InputBar)
@@ -42,7 +50,7 @@ func inputBarModel(t *testing.T, m ui.Model) components.InputBar {
 	return bar
 }
 
-func inputValue(t *testing.T, m ui.Model) string {
+func inputValue(t *testing.T, m ui.Component) string {
 	t.Helper()
 
 	return inputBarModel(t, m).Value()

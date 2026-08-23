@@ -6,19 +6,20 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	uv "github.com/charmbracelet/ultraviolet"
+	uvscreen "github.com/charmbracelet/ultraviolet/screen"
 
 	"github.com/laney/modeloff/internal/ui/theme"
 )
 
-// ScreenMsg tells Root to switch the active screen. Root only
-// holds the pointer and routes future messages to whoever it
-// points at; whoever sends this is responsible for the screen
-// already being in a usable state. Initialisation is a separate
-// concern handled by the sender (typically because the screen has
-// been forwarded messages throughout its predecessor's lifetime
-// and is already running).
-type ScreenMsg struct {
-	Screen Model
+// ScreenMsg tells Root that the active component is ready to hand
+// control to its next screen.
+type ScreenMsg struct{}
+
+// ScreenTransition is implemented by a component that can hand its
+// current child state to Root when it emits ScreenMsg.
+type ScreenTransition interface {
+	NextScreen() Component
 }
 
 // QuitRequestedMsg signals that a clean client-side quit has been
@@ -37,6 +38,10 @@ type QuitRequestedMsg struct {
 // still exits, since the alternative is to refuse to quit.
 type QuitCompleteMsg struct {
 	Err error
+}
+
+type quitConfirmationExpiredMsg struct {
+	armedAt time.Time
 }
 
 // AppKeyMap defines application-level keybindings handled by Root.
@@ -79,11 +84,11 @@ const (
 
 // Root is the top-level model that acts as a router between screens.
 // It implements tea.Model and bridges to child screens that implement
-// the responsive ui.Model interface.
+// the responsive ui.Component interface.
 type Root struct {
 	width  int
 	height int
-	screen Model
+	screen Component
 	keyMap AppKeyMap
 
 	mouseEnabled bool
@@ -91,13 +96,11 @@ type Root struct {
 	now          func() time.Time
 
 	helpVisible bool
-	keyHelp     keyboardHelp
+	keyHelp     Component
 }
 
-// NewRoot creates the top-level Root model with the given initial
-// screen. If screen is nil, Root renders an empty view until a
-// ScreenMsg arrives.
-func NewRoot(screen Model) Root {
+// NewRoot creates the top-level Root model with the given initial screen.
+func NewRoot(screen Component) Root {
 	return Root{
 		screen:       screen,
 		keyMap:       DefaultAppKeyMap,
@@ -122,27 +125,38 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		r.width = msg.Width
 		r.height = msg.Height
 		if r.helpVisible {
-			r.keyHelp = r.keyHelp.resize(msg.Width, msg.Height)
+			help, cmd := r.keyHelp.Update(BoundsMsg{Rect: r.bounds()})
+			r.keyHelp = help
+
+			r, screenCmd := r.applyScreenBounds()
+			return r, tea.Batch(cmd, screenCmd)
 		}
+
+		return r.applyScreenBounds()
 
 	case tea.KeyPressMsg:
 		if r.helpVisible {
 			if Matches(msg, r.keyMap.ShowHelp) || msg.Code == tea.KeyEsc {
 				r.helpVisible = false
-				return r, nil
+
+				return r.updateScreen(tea.FocusMsg{})
 			}
 
-			var cmd tea.Cmd
-			r.keyHelp, cmd = r.keyHelp.update(msg)
+			help, cmd := r.keyHelp.Update(msg)
+			r.keyHelp = help
 
 			return r, cmd
 		}
 
 		if Matches(msg, r.keyMap.ShowHelp) {
-			r.keyHelp = newKeyboardHelp(r.width, r.height, r.KeyBindings())
+			var screenCmd tea.Cmd
+			r, screenCmd = r.updateScreen(tea.BlurMsg{})
+			r.keyHelp = newKeyboardHelp(r.KeyBindings())
+			help, cmd := r.keyHelp.Update(BoundsMsg{Rect: r.bounds()})
+			r.keyHelp = help
 			r.helpVisible = true
 
-			return r, nil
+			return r, tea.Batch(screenCmd, cmd)
 		}
 
 		if Matches(msg, r.keyMap.Quit) {
@@ -154,28 +168,138 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			r.quitArmedAt = r.now()
 
-			return r, nil
+			r, boundsCmd := r.applyScreenBounds()
+			return r, tea.Batch(boundsCmd, r.quitConfirmationExpiryCmd())
 		}
 
 		if Matches(msg, r.keyMap.ToggleMouse) {
 			r.mouseEnabled = !r.mouseEnabled
 
-			return r, nil
+			return r.applyScreenBounds()
 		}
 
 	case tea.MouseMsg:
 		if r.helpVisible {
-			var cmd tea.Cmd
-			r.keyHelp, cmd = r.keyHelp.update(msg)
+			help, cmd := r.keyHelp.Update(msg)
+			r.keyHelp = help
 
 			return r, cmd
 		}
 
+	case tea.FocusMsg:
+		if r.helpVisible {
+			return r.updateScreen(tea.BlurMsg{})
+		}
+
 	case ScreenMsg:
-		r.screen = msg.Screen
+		transition, ok := r.screen.(ScreenTransition)
+		if !ok {
+			return r, nil
+		}
+
+		next := transition.NextScreen()
+		if next == nil {
+			return r, nil
+		}
+
+		r.screen = next
+		r, boundsCmd := r.applyScreenBounds()
+		if !r.helpVisible {
+			return r, boundsCmd
+		}
+
+		r, focusCmd := r.updateScreen(tea.BlurMsg{})
+
+		return r, tea.Batch(boundsCmd, focusCmd)
+
+	case quitConfirmationExpiredMsg:
+		if r.quitArmedAt != msg.armedAt {
+			return r, nil
+		}
+
+		r.quitArmedAt = time.Time{}
+		return r.applyScreenBounds()
+	}
+
+	return r.updateScreen(msg)
+}
+
+func (r Root) quitConfirmationExpiryCmd() tea.Cmd {
+	armedAt := r.quitArmedAt
+
+	return tea.Tick(quitConfirmWindow, func(time.Time) tea.Msg {
+		return quitConfirmationExpiredMsg{armedAt: armedAt}
+	})
+}
+
+// View implements tea.Model.
+func (r Root) View() tea.View {
+	canvas := lipgloss.NewCanvas(max(r.width, 0), max(r.height, 0))
+	r.draw(canvas, canvas.Bounds())
+	view := tea.NewView(canvas.Render())
+	view.AltScreen = true
+	if r.mouseEnabled {
+		view.MouseMode = tea.MouseModeCellMotion
+	}
+
+	return view
+}
+
+func (r Root) draw(screen uv.Screen, area uv.Rectangle) {
+	uvscreen.ClearArea(screen, area)
+	contentArea := r.contentBounds(area)
+
+	var banners []string
+	if !r.mouseEnabled {
+		banners = append(banners, theme.Dim.Render(mouseOffBanner))
+	}
+	if r.quitConfirmationVisible() {
+		banners = append(banners, theme.Warning.Render(quitConfirmBanner))
+	}
+	if len(banners) > 0 {
+		banner := lipgloss.JoinVertical(lipgloss.Left, banners...)
+		bannerHeight := min(lipgloss.Height(banner), area.Dy())
+		bannerArea := uv.Rect(area.Min.X, area.Min.Y, area.Dx(), bannerHeight)
+		uv.NewStyledString(banner).Draw(screen, bannerArea)
+	}
+
+	if r.screen != nil && !contentArea.Empty() {
+		r.screen.Draw(screen, contentArea)
+	}
+
+	if r.helpVisible {
+		r.keyHelp.Draw(screen, area)
+	}
+}
+
+func (r Root) bounds() uv.Rectangle {
+	return uv.Rect(0, 0, max(r.width, 0), max(r.height, 0))
+}
+
+func (r Root) contentBounds(area uv.Rectangle) uv.Rectangle {
+	if !r.mouseEnabled {
+		area.Min.Y = min(area.Min.Y+1, area.Max.Y)
+	}
+	if r.quitConfirmationVisible() {
+		area.Min.Y = min(area.Min.Y+1, area.Max.Y)
+	}
+
+	return area
+}
+
+func (r Root) applyScreenBounds() (Root, tea.Cmd) {
+	if r.screen == nil {
 		return r, nil
 	}
 
+	bounds := r.contentBounds(r.bounds())
+	screen, cmd := r.screen.Update(BoundsMsg{Rect: bounds})
+	r.screen = screen
+
+	return r, cmd
+}
+
+func (r Root) updateScreen(msg tea.Msg) (Root, tea.Cmd) {
 	if r.screen == nil {
 		return r, nil
 	}
@@ -186,51 +310,14 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return r, cmd
 }
 
-// View implements tea.Model.
-func (r Root) View() tea.View {
-	content := r.viewContent()
-	view := tea.NewView(content)
-	view.AltScreen = true
-	if r.mouseEnabled {
-		view.MouseMode = tea.MouseModeCellMotion
-	}
-
-	return view
-}
-
-func (r Root) viewContent() string {
-	if r.helpVisible {
-		return r.keyHelp.view(r.width, r.height)
-	}
-
-	if r.screen == nil {
-		return ""
-	}
-
-	var banners []string
-
-	if !r.mouseEnabled {
-		banners = append(banners, theme.Dim.Render(mouseOffBanner))
-	}
-
-	if r.quitArmed() {
-		banners = append(banners, theme.Warning.Render(quitConfirmBanner))
-	}
-
-	if len(banners) == 0 {
-		return r.screen.View(r.width, r.height)
-	}
-
-	banner := lipgloss.JoinVertical(lipgloss.Left, banners...)
-	screenHeight := max(r.height-lipgloss.Height(banner), 0)
-
-	return lipgloss.JoinVertical(lipgloss.Left, banner, r.screen.View(r.width, screenHeight))
-}
-
 // quitArmed reports whether a first Ctrl-C is still within its
 // confirmation window, awaiting a second press to actually quit.
 func (r Root) quitArmed() bool {
 	return !r.quitArmedAt.IsZero() && r.now().Sub(r.quitArmedAt) <= quitConfirmWindow
+}
+
+func (r Root) quitConfirmationVisible() bool {
+	return !r.quitArmedAt.IsZero()
 }
 
 // KeyBindings implements Keybinding.

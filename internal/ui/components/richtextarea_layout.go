@@ -133,7 +133,7 @@ func (r RichTextarea) moveVertical(delta int) richtext.Position {
 		return r.position
 	}
 
-	rows := r.layoutRows(max(r.width, 1))
+	rows := r.layoutRows(max(r.bounds.Dx(), 1))
 	if len(rows) == 0 {
 		return r.position
 	}
@@ -173,11 +173,11 @@ func (r RichTextarea) ensureViewport() RichTextarea {
 	}
 
 	if !r.config.SingleLine {
-		if r.width <= 0 {
+		if r.bounds.Dx() <= 0 {
 			return r
 		}
 
-		availableRows := max(r.height, 1)
+		availableRows := max(r.bounds.Dy(), 1)
 		if r.config.ShowFormattingStatus {
 			availableRows--
 		}
@@ -185,7 +185,7 @@ func (r RichTextarea) ensureViewport() RichTextarea {
 			availableRows = 1
 		}
 
-		currentRow := r.currentRowIndex(max(r.width, 1))
+		currentRow := r.currentRowIndex(max(r.bounds.Dx(), 1))
 		if currentRow < r.yOffset {
 			r.yOffset = currentRow
 		}
@@ -199,11 +199,11 @@ func (r RichTextarea) ensureViewport() RichTextarea {
 		return r
 	}
 
-	if r.width <= 0 {
+	if r.bounds.Dx() <= 0 {
 		return r
 	}
 
-	width := r.width
+	width := r.bounds.Dx()
 	cursorCell := r.cursorCellX(r.position)
 	cursorWidth := r.cursorClusterWidth(r.position)
 	if cursorCell < r.xOffset {
@@ -247,7 +247,7 @@ func (r RichTextarea) cursorCellX(position richtext.Position) int {
 // document position, taking the scroll offsets and the status row into
 // account.
 func (r RichTextarea) positionFromPoint(x, y int) richtext.Position {
-	rows := r.layoutRows(max(r.width, 1))
+	rows := r.layoutRows(max(r.bounds.Dx(), 1))
 	if len(rows) == 0 {
 		return richtext.Position{}
 	}

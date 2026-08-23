@@ -6,6 +6,7 @@ import (
 	"charm.land/bubbles/v2/cursor"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	uv "github.com/charmbracelet/ultraviolet"
 
 	"github.com/laney/modeloff/internal/richtext"
 	"github.com/laney/modeloff/internal/ui"
@@ -37,8 +38,7 @@ type RichTextarea struct {
 	xOffset         int
 	yOffset         int
 
-	width  int
-	height int
+	bounds uv.Rectangle
 
 	mouseSelecting bool
 	palette        colourPalette
@@ -64,17 +64,23 @@ func NewRichTextarea(config RichTextareaConfig) RichTextarea {
 	return editor
 }
 
-// Init implements ui.Model.
+// Init implements ui.Component.
 func (r RichTextarea) Init() tea.Cmd {
 	return nil
 }
 
-// Update implements ui.Model. A key is offered to the palette, then
+// Update implements ui.Component. A key is offered to the palette, then
 // to the formatting bindings, then to the editor proper; anything none
 // of them takes goes to the cursor model, which is what keeps the
 // blink running.
-func (r RichTextarea) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
+func (r RichTextarea) Update(msg tea.Msg) (ui.Component, tea.Cmd) {
 	switch msg := msg.(type) {
+	case ui.BoundsMsg:
+		r.bounds = msg.Rect
+		r = r.ensureViewport()
+
+		return r, nil
+
 	case tea.KeyPressMsg:
 		if updated, handled := r.handlePaletteKey(msg); handled {
 			return updated, nil

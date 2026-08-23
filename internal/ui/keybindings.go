@@ -83,20 +83,20 @@ func Matches[K fmt.Stringer](k K, bindings ...KeyBinding) bool {
 	return key.Matches(k, inner...)
 }
 
-// Keybinding is implemented by models that contribute keybindings to
+// Keybinding is implemented by components that contribute keybindings to
 // input handling, the status bar and keyboard help.
 type Keybinding interface {
 	KeyBindings() []KeyBinding
 }
 
-// CollectKeyBindings walks the provided child models in order and
+// CollectKeyBindings walks the provided child components in order and
 // returns the keybindings contributed by those that implement
 // Keybinding.
-func CollectKeyBindings(models ...Model) []KeyBinding {
+func CollectKeyBindings(components ...Component) []KeyBinding {
 	var bindings []KeyBinding
 
-	for _, model := range models {
-		contributor, ok := model.(Keybinding)
+	for _, component := range components {
+		contributor, ok := component.(Keybinding)
 		if !ok {
 			continue
 		}

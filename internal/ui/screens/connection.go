@@ -142,7 +142,7 @@ type ConnectionConfig struct {
 // async signal has arrived.
 type ConnectionScreen struct {
 	cfg        ConnectionConfig
-	chatScreen ui.Model
+	chatScreen ui.Component
 	steps      []connectionStep
 	// stepIndex maps each gated step's gate to its position in
 	// steps, so the handler for that gate's async signal can mark
@@ -175,7 +175,7 @@ type ConnectionScreen struct {
 // chat-screen is initialised alongside the connection screen and
 // receives every message until the animation completes, at which
 // point Root swaps it in as the active screen.
-func NewConnectionScreen(cfg ConnectionConfig, chatScreen ui.Model) ConnectionScreen {
+func NewConnectionScreen(cfg ConnectionConfig, chatScreen ui.Component) ConnectionScreen {
 	steps := []connectionStep{
 		{label: "Connecting to modeloff", gate: gateConnect},
 		{label: "Checking configuration"},
@@ -220,6 +220,11 @@ func NewConnectionScreen(cfg ConnectionConfig, chatScreen ui.Model) ConnectionSc
 	return s
 }
 
+// NextScreen implements ui.ScreenTransition.
+func (s ConnectionScreen) NextScreen() ui.Component {
+	return s.chatScreen
+}
+
 func (s ConnectionScreen) ctx() context.Context {
 	if s.cfg.BaseContext != nil {
 		return s.cfg.BaseContext()
@@ -228,7 +233,7 @@ func (s ConnectionScreen) ctx() context.Context {
 	return context.Background()
 }
 
-// Init implements ui.Model. The connection screen's own async
+// Init implements ui.Component. The connection screen's own async
 // pipeline fires immediately, alongside the chat-screen's `Init`.
 // The chat-screen subscribes to the session and protocol buses
 // here, so the events the handshake produces accumulate into its
@@ -334,7 +339,7 @@ func (s ConnectionScreen) runAutojoin() tea.Cmd {
 	}
 }
 
-// Update implements ui.Model. Every message is forwarded to the
+// Update implements ui.Component. Every message is forwarded to the
 // chat-screen unconditionally — the connection screen has no
 // opinion on what the chat-screen wants to see, and the chat-
 // screen is the one that decides how to react to wire-shape
@@ -342,7 +347,7 @@ func (s ConnectionScreen) runAutojoin() tea.Cmd {
 // else. The connection-screen-internal messages (ticks and the
 // handshake-completion signals) also drive the animation state
 // here, in parallel.
-func (s ConnectionScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
+func (s ConnectionScreen) Update(msg tea.Msg) (ui.Component, tea.Cmd) {
 	var ownCmd tea.Cmd
 
 	switch m := msg.(type) {
@@ -456,7 +461,7 @@ func (s ConnectionScreen) tickCmd() tea.Cmd {
 // transitionCmd hands control to the chat-screen. The chat-screen
 // has been receiving forwarded messages throughout the animation
 // and holds the full handshake state already; Root just swaps
-// which model owns the visible area. The live-model load result
+// which component owns the visible area. The live-model load result
 // is delivered after the transition so the chat screen can
 // populate its tab-completion cache from the welcomed state.
 func (s ConnectionScreen) transitionCmd() tea.Cmd {
@@ -464,8 +469,7 @@ func (s ConnectionScreen) transitionCmd() tea.Cmd {
 		return nil
 	}
 
-	next := s.chatScreen
-	screenCmd := func() tea.Msg { return ui.ScreenMsg{Screen: next} }
+	screenCmd := func() tea.Msg { return ui.ScreenMsg{} }
 
 	if s.cfg.Session == nil {
 		return screenCmd
@@ -507,10 +511,7 @@ func (s ConnectionScreen) failStep(gate stepGate, label string) ConnectionScreen
 	return s
 }
 
-// View implements ui.Model. The animation owns the visible area
-// for the connection screen's whole lifetime; the wrapped chat-
-// screen only becomes visible after [ui.ScreenMsg] swaps it in.
-func (s ConnectionScreen) View(width, height int) string {
+func (s ConnectionScreen) render(width, height int) string {
 	if width < theme.MinTerminalWidth {
 		return theme.NarrowTerminalView(width, height)
 	}

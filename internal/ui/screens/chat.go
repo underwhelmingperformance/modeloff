@@ -9,7 +9,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
+	uv "github.com/charmbracelet/ultraviolet"
 
 	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/config"
@@ -117,9 +117,6 @@ type ChatScreen struct {
 	// reference types.
 	dispatching map[*domain.Instance]bool
 
-	width  int
-	height int
-
 	// active is the canonical window the user is looking at. Nil
 	// means the welcome state has no window selected. A non-nil DM
 	// may have an empty name when its counterpart is the user.
@@ -134,8 +131,8 @@ type ChatScreen struct {
 	visible *visibleWindow
 
 	obs       *observability.Runtime
-	summary   components.MetricsSummaryModel
-	checklist WelcomeChecklist
+	metrics   observability.MetricsSnapshot
+	checklist welcomeChecklist
 
 	// logsBehind is true when a log record arrived while the
 	// observability drawer was closed, so the drawer's copy of the
@@ -219,7 +216,7 @@ func NewChatScreen(baseContext func() context.Context, sess SessionReader, mgr *
 		liveModelsState: command.SuggestionStateReady,
 		layout:          layout,
 		keyMap:          components.DefaultChatScreenKeyMap,
-		checklist:       NewWelcomeChecklist(user.Nick(), mgr.HasAPIKey()),
+		checklist:       newWelcomeChecklist(user.Nick(), mgr.HasAPIKey()),
 		apiKeyMissing:   !mgr.HasAPIKey(),
 		apiKeyChanges:   apiKeyChanges,
 		pacedQueue:      map[domain.ChannelName][]domain.Message{},
@@ -267,7 +264,7 @@ func (s ChatScreen) WithConfigRecoveryNotice(backupPath string) ChatScreen {
 	return s
 }
 
-// Init implements ui.Model.
+// Init implements ui.Component.
 //
 // The chat screen does not load channel state from storage.
 // Sidebar entries, active channel, member lists, topics and
@@ -304,7 +301,7 @@ func (s ChatScreen) Init() tea.Cmd {
 			Format: cfg.TimestampFormat,
 			Locale: uitimestamp.CurrentLocale(),
 		}),
-		msgCmd(components.SetPlaceholderMsg{Text: s.checklist.Render()}),
+		msgCmd(components.SetPlaceholderMsg{Text: s.checklist.text()}),
 	}
 
 	// Bootstrap from session state. Direct constructions
@@ -319,7 +316,7 @@ func (s ChatScreen) Init() tea.Cmd {
 	cmds = append(cmds, s.restoreDMWindows())
 
 	if s.obs != nil {
-		cmds = append(cmds, s.summary.Init(), s.waitForLogUpdateCmd())
+		cmds = append(cmds, s.refreshMetricsSummaryCmd(), s.waitForLogUpdateCmd())
 	}
 
 	return tea.Batch(cmds...)
@@ -408,19 +405,15 @@ func (s ChatScreen) restoredWindow() (domain.Window, bool) {
 	return last, last != nil
 }
 
-// Update implements ui.Model. It adapts the concrete screen the
-// message handling produces to the [ui.Model] the router stores.
-func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
+// Update implements ui.Component. It adapts the concrete screen the
+// message handling produces to the [ui.Component] the router stores.
+func (s ChatScreen) Update(msg tea.Msg) (ui.Component, tea.Cmd) {
 	next, cmd := s.update(msg)
 
 	return next, cmd
 }
 
-// update gives every message to the metrics summary, then to the
-// router, and returns the two commands together. The summary reads
-// every message the screen sees and answers a refresh with the command
-// that schedules the next one, so that command has to survive whatever
-// the router decides to do with the same message.
+// update routes one message through the concrete chat screen.
 //
 // Every arm and every handler returns the concrete `ChatScreen` by
 // value, so a state change reaches the caller as a snapshot taken the
@@ -432,12 +425,7 @@ func (s ChatScreen) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 // they are per-window and per-instance state with a lifetime longer
 // than one message, and only this goroutine touches them.
 func (s ChatScreen) update(msg tea.Msg) (ChatScreen, tea.Cmd) {
-	summary, summaryCmd := s.summary.Update(msg)
-	s.summary = summary
-
-	next, cmd := s.route(msg)
-
-	return next, tea.Batch(summaryCmd, cmd)
+	return s.route(msg)
 }
 
 // route offers a message to each group of handlers in turn and stops
@@ -494,14 +482,11 @@ func (s ChatScreen) route(msg tea.Msg) (ChatScreen, tea.Cmd) {
 }
 
 // forwardToLayout gives a message the chat screen does not answer
-// itself to the layout below it. A resize is recorded on the way
-// through and the layout is given the height left over once the status
-// bar this screen draws has taken its row.
+// itself to the layout below it. The layout receives the rectangle
+// left after the status bar has taken its row.
 func (s ChatScreen) forwardToLayout(msg tea.Msg) (ChatScreen, tea.Cmd) {
-	if size, ok := msg.(tea.WindowSizeMsg); ok {
-		s.width = size.Width
-		s.height = size.Height
-		msg = tea.WindowSizeMsg{Width: size.Width, Height: s.layoutHeight()}
+	if bounds, ok := msg.(ui.BoundsMsg); ok {
+		msg = ui.BoundsMsg{Rect: s.layoutBounds(bounds.Rect)}
 	}
 
 	updated, cmd := s.layout.Update(msg)
@@ -584,12 +569,15 @@ func (s ChatScreen) completionSet() command.CompletionSet[chatcmd.CompletionCont
 	}
 }
 
-func (s ChatScreen) layoutHeight() int {
-	if s.width < theme.MinTerminalWidth {
-		return s.height
+func (s ChatScreen) layoutBounds(bounds uv.Rectangle) uv.Rectangle {
+	if bounds.Dx() < theme.MinTerminalWidth {
+		return bounds
 	}
 
-	return max(s.height-lipgloss.Height(components.RenderStatusBar(s.width, s.KeyBindings(), s.StatusItems())), 0)
+	barHeight := min(chatStatusBarHeight, bounds.Dy())
+	bounds.Max.Y -= barHeight
+
+	return bounds
 }
 
 // KeyBindings implements ui.Keybinding.
@@ -606,7 +594,8 @@ func (s ChatScreen) KeyBindings() []ui.KeyBinding {
 
 // StatusItems implements ui.StatusProvider.
 func (s ChatScreen) StatusItems() []ui.StatusItem {
-	items := ui.CollectStatusItems(s.layout, s.summary)
+	items := ui.CollectStatusItems(s.layout)
+	items = append(items, metricsSummaryStatusItems(s.metrics)...)
 
 	if s.client != nil && s.client.Caps().Has(protocol.CapOperator) {
 		items = append(items, serverOperatorStatusItem)
@@ -621,20 +610,4 @@ func (s ChatScreen) StatusItems() []ui.StatusItem {
 	}
 
 	return items
-}
-
-// View implements ui.Model.
-func (s ChatScreen) View(width, height int) string {
-	if width < theme.MinTerminalWidth {
-		return s.layout.View(width, height)
-	}
-
-	bar := components.RenderStatusBar(width, s.KeyBindings(), s.StatusItems())
-	layoutHeight := height - lipgloss.Height(bar)
-	view := s.layout.View(width, max(layoutHeight, 0))
-	if bar == "" {
-		return view
-	}
-
-	return lipgloss.JoinVertical(lipgloss.Left, view, bar)
 }

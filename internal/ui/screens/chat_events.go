@@ -139,7 +139,7 @@ func (s ChatScreen) listenForProtocolEvents() tea.Cmd {
 
 // scrollbackUpdatedCmd nudges the message list to re-evaluate the
 // active window's scrollback after an event was buffered. Without
-// the nudge the new content would still render on the next View
+// the nudge the new content would still appear on the next draw
 // because the message list reads through a getter, but the seen mark
 // would never move over it: a line the user watched arrive would
 // stay behind the divider, and an off-bottom user would never see
@@ -480,7 +480,7 @@ func (s ChatScreen) handleOwnNickChange(msg domain.NickChange, renderedInActive 
 	}
 
 	if s.realChannelCount() == 0 {
-		cmds = append(cmds, msgCmd(components.SetPlaceholderMsg{Text: s.checklist.Render()}))
+		cmds = append(cmds, msgCmd(components.SetPlaceholderMsg{Text: s.checklist.text()}))
 	}
 
 	return s, tea.Batch(cmds...)

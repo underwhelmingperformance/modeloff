@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
+	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/text/language"
@@ -296,7 +297,7 @@ func popoverLines(view string) []string {
 
 func TestChatView_View_shows_messages(t *testing.T) {
 	cv := newChatViewWithEvents("#general", "testuser", "", testEvents)
-	v := cv.View(80, 24)
+	v := renderToBuffer(cv, 80, 24)
 
 	require.Equal(t, []string{
 		"[10:00:00] <alice> hello",
@@ -326,7 +327,7 @@ func TestChatView_clear_messages_removes_visible_messages(t *testing.T) {
 
 	events = nil
 
-	v := cv.View(80, 24)
+	v := renderToBuffer(cv, 80, 24)
 	require.Equal(t, []string{"No messages yet"}, chatRegionLines(v))
 	require.Equal(t, []string{"testuser", ">"}, chatInputTokens(v))
 }
@@ -336,14 +337,14 @@ func TestChatView_View_fits_available_width_with_input_prefix(t *testing.T) {
 		domain.Join{Target: "#general", Nick: "testuser"},
 	})
 
-	v := cv.View(40, 10)
+	v := renderToBuffer(cv, 40, 10)
 
 	require.LessOrEqual(t, lipgloss.Width(v), 40)
 }
 
 func TestChatView_View_shows_timestamps(t *testing.T) {
 	cv := newChatViewWithEvents("#general", "testuser", "", testEvents)
-	v := cv.View(80, 24)
+	v := renderToBuffer(cv, 80, 24)
 
 	require.Equal(t, []string{
 		"[10:00:00] <alice> hello",
@@ -361,14 +362,14 @@ func TestChatView_View_disables_timestamps(t *testing.T) {
 		"#general", domain.KindChannel, "testuser", "",
 	)
 	disabled := ""
-	var m ui.Model = cv
+	var m ui.Component = cv
 
 	m, _ = m.Update(components.TimestampFormatMsg{
 		Format: &disabled,
 		Locale: language.BritishEnglish,
 	})
 
-	v := m.View(80, 24)
+	v := renderToBuffer(m, 80, 24)
 
 	require.Equal(t, []string{
 		"<alice> hello",
@@ -386,14 +387,14 @@ func TestChatView_View_uses_strftime_timestamp_format(t *testing.T) {
 		"#general", domain.KindChannel, "testuser", "",
 	)
 	format := "%X"
-	var m ui.Model = cv
+	var m ui.Component = cv
 
 	m, _ = m.Update(components.TimestampFormatMsg{
 		Format: &format,
 		Locale: language.BritishEnglish,
 	})
 
-	v := ansi.Strip(m.View(80, 24))
+	v := ansi.Strip(renderToBuffer(m, 80, 24))
 
 	require.Equal(t, []string{"10:00:00 <alice> hello"}, chatRegionLines(v))
 }
@@ -405,7 +406,7 @@ func TestChatView_View_wraps_long_messages(t *testing.T) {
 	}
 
 	cv := newChatViewWithEvents("#general", "testuser", "", events)
-	v := cv.View(40, 24)
+	v := renderToBuffer(cv, 40, 24)
 
 	// The message should wrap, producing more rendered lines than one.
 	require.Greater(t, lipgloss.Height(v), 3,
@@ -422,21 +423,21 @@ func TestChatView_View_wraps_long_messages(t *testing.T) {
 
 func TestChatView_View_empty_messages(t *testing.T) {
 	cv := components.NewChatView[testKind](nilContent("#general"), "#general", domain.KindChannel, "testuser", "")
-	v := cv.View(80, 24)
+	v := renderToBuffer(cv, 80, 24)
 
 	require.Equal(t, []string{"No messages yet"}, chatRegionLines(v))
 }
 
 func TestChatView_View_has_input_prompt(t *testing.T) {
 	cv := newChatViewWithEvents("#general", "testuser", "", testEvents)
-	v := cv.View(80, 24)
+	v := renderToBuffer(cv, 80, 24)
 
 	require.Equal(t, []string{"testuser", ">"}, chatInputTokens(v))
 }
 
 func TestChatView_typing_goes_to_input(t *testing.T) {
 	cv := components.NewChatView[testKind](nilContent("#general"), "#general", domain.KindChannel, "testuser", "")
-	var m ui.Model = cv
+	var m ui.Component = cv
 
 	m = typeText(t, m, "test message")
 	m, cmd := enter(t, m)
@@ -451,7 +452,7 @@ func TestChatView_typing_goes_to_input(t *testing.T) {
 
 func TestChatView_command_from_input(t *testing.T) {
 	cv := components.NewChatView[testKind](nilContent("#general"), "#general", domain.KindChannel, "testuser", "")
-	var m ui.Model = cv
+	var m ui.Component = cv
 
 	m = typeText(t, m, "/join #random")
 	_, cmd := enter(t, m)
@@ -468,7 +469,7 @@ func TestChatView_messages_updated(t *testing.T) {
 		domain.Message{Target: "#general", From: "charlie", Body: "new message", At: updatedAt},
 	})
 
-	v := cv.View(80, 24)
+	v := renderToBuffer(cv, 80, 24)
 	require.Equal(t, []string{"[12:00:00] <charlie> new message"}, chatRegionLines(v))
 }
 
@@ -489,7 +490,7 @@ func TestChatView_original_messages_persist(t *testing.T) {
 	appendAt := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
 	events = append(events, domain.Message{Target: "#general", From: "charlie", Body: "extra", At: appendAt})
 
-	v := updated.View(80, 24)
+	v := renderToBuffer(updated, 80, 24)
 	require.Equal(t, []string{
 		"[10:00:00] <alice> hello",
 		"[10:01:00] <bob> hi there",
@@ -515,7 +516,7 @@ func TestChatView_append_event(t *testing.T) {
 	appendAt := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
 	events = append(events, domain.Message{Target: "#general", From: "dave", Body: "appended message", At: appendAt})
 
-	v := updated.View(80, 24)
+	v := renderToBuffer(updated, 80, 24)
 	require.Equal(t, []string{
 		"[10:00:00] <alice> hello",
 		"[10:01:00] <bob> hi there",
@@ -536,21 +537,21 @@ func TestChatView_scroll(t *testing.T) {
 	}
 
 	cv := newChatViewWithEvents("#general", "testuser", "", messagesToEvents(msgs))
-	var m ui.Model = cv
+	var m ui.Component = cv
 
-	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{Width: 80, Height: 24}})
+	m, _ = m.Update(ui.BoundsMsg{Rect: uv.Rect(0, 0, 80, 24)})
 
 	// Scroll up.
 	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
 
-	v := m.View(80, 24)
+	v := renderToBuffer(m, 80, 24)
 	require.Equal(t, numberedUserMessages("message", 0, 20), visibleEventsWithoutTimestamps(v))
 	require.Equal(t, "(0%)", scrollIndicatorLine(v))
 
 	// Scroll back down.
 	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
 
-	v = m.View(80, 24)
+	v = renderToBuffer(m, 80, 24)
 	require.Equal(t, numberedUserMessages("message", 9, 21), visibleEventsWithoutTimestamps(v))
 	require.Equal(t, "", scrollIndicatorLine(v))
 }
@@ -566,17 +567,17 @@ func TestChatView_scroll_indicator(t *testing.T) {
 	}
 
 	cv := newChatViewWithEvents("#general", "testuser", "", messagesToEvents(msgs))
-	var m ui.Model = cv
-	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{Width: 80, Height: 24}})
+	var m ui.Component = cv
+	m, _ = m.Update(ui.BoundsMsg{Rect: uv.Rect(0, 0, 80, 24)})
 
 	// At the bottom — no indicator.
-	v := m.View(80, 24)
+	v := renderToBuffer(m, 80, 24)
 	require.Equal(t, "", scrollIndicatorLine(v))
 
 	// Scroll up — indicator appears.
 	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
 
-	v = m.View(80, 24)
+	v = renderToBuffer(m, 80, 24)
 	require.Equal(t, "(0%)", scrollIndicatorLine(v))
 
 	// Total height stays the same.
@@ -585,7 +586,7 @@ func TestChatView_scroll_indicator(t *testing.T) {
 	// Scroll back to bottom — indicator disappears.
 	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
 
-	v = m.View(80, 24)
+	v = renderToBuffer(m, 80, 24)
 	require.Equal(t, "", scrollIndicatorLine(v))
 }
 
@@ -600,31 +601,31 @@ func TestChatView_ctrl_arrow_scroll(t *testing.T) {
 	}
 
 	cv := newChatViewWithEvents("#general", "testuser", "", messagesToEvents(msgs))
-	var m ui.Model = cv
-	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{Width: 80, Height: 24}})
+	var m ui.Component = cv
+	m, _ = m.Update(ui.BoundsMsg{Rect: uv.Rect(0, 0, 80, 24)})
 
 	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyUp, Mod: tea.ModCtrl})
 
-	v := m.View(80, 24)
+	v := renderToBuffer(m, 80, 24)
 	require.Equal(t, numberedUserMessages("message", 8, 20), visibleEventsWithoutTimestamps(v))
 	require.Equal(t, "(88%)", scrollIndicatorLine(v))
 
 	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown, Mod: tea.ModCtrl})
 
-	v = m.View(80, 24)
+	v = renderToBuffer(m, 80, 24)
 	require.Equal(t, numberedUserMessages("message", 9, 21), visibleEventsWithoutTimestamps(v))
 	require.Equal(t, "", scrollIndicatorLine(v))
 }
 
 func TestChatView_scroll_does_not_go_negative(t *testing.T) {
 	cv := newChatViewWithEvents("#general", "testuser", "", testEvents)
-	var m ui.Model = cv
+	var m ui.Component = cv
 
 	// Try to scroll down past zero.
 	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
 	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
 
-	v := m.View(80, 24)
+	v := renderToBuffer(m, 80, 24)
 	require.Equal(t, []string{
 		"[10:00:00] <alice> hello",
 		"[10:01:00] <bob> hi there",
@@ -643,8 +644,8 @@ func TestChatView_arrow_keys_stay_with_input(t *testing.T) {
 	}
 
 	cv := newChatViewWithEvents("#general", "testuser", "", messagesToEvents(msgs))
-	var m ui.Model = cv
-	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{Width: 80, Height: 24}})
+	var m ui.Component = cv
+	m, _ = m.Update(ui.BoundsMsg{Rect: uv.Rect(0, 0, 80, 24)})
 
 	m = typeText(t, m, "first")
 	m, _ = enter(t, m)
@@ -654,7 +655,7 @@ func TestChatView_arrow_keys_stay_with_input(t *testing.T) {
 
 	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyUp})
 
-	v := m.View(80, 24)
+	v := renderToBuffer(m, 80, 24)
 	require.Equal(t, []string{"testuser", ">", "second"}, chatInputTokens(v))
 	require.Equal(t, numberedUserMessages("message", 9, 21), visibleEventsWithoutTimestamps(v))
 
@@ -663,7 +664,7 @@ func TestChatView_arrow_keys_stay_with_input(t *testing.T) {
 	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyLeft})
 	m = typeText(t, m, "X")
 
-	v = m.View(80, 24)
+	v = renderToBuffer(m, 80, 24)
 	require.Equal(t, []string{"testuser", ">", "draXft"}, chatInputTokens(v))
 	require.Equal(t, numberedUserMessages("message", 9, 21), visibleEventsWithoutTimestamps(v))
 }
@@ -699,7 +700,7 @@ func renderNick(t *testing.T, nick, body string) string {
 		{Target: "#general", From: domain.Nick(nick), Body: body},
 	}))
 
-	lines := rawRenderedLines(cv.View(80, 24))
+	lines := rawRenderedLines(renderToBuffer(cv, 80, 24))
 	for _, line := range lines {
 		if strings.Contains(line, "<"+nick+">") {
 			return line
@@ -726,7 +727,7 @@ func extractStyledNickToken(t *testing.T, rawLine, nick string) string {
 
 func TestChatView_shows_nick_in_input_area(t *testing.T) {
 	cv := newChatViewWithEvents("#general", "alice", "", testEvents)
-	v := cv.View(80, 24)
+	v := renderToBuffer(cv, 80, 24)
 
 	require.Equal(t, []string{"alice", ">"}, chatInputTokens(v))
 }
@@ -735,8 +736,8 @@ func TestChatView_nick_updates_after_change(t *testing.T) {
 	cv1 := newChatViewWithEvents("#general", "oldnick", "", testEvents)
 	cv2 := newChatViewWithEvents("#general", "newnick", "", testEvents)
 
-	v1 := cv1.View(80, 24)
-	v2 := cv2.View(80, 24)
+	v1 := renderToBuffer(cv1, 80, 24)
+	v2 := renderToBuffer(cv2, 80, 24)
 
 	require.Equal(t, []string{"oldnick", ">"}, chatInputTokens(v1))
 	require.Equal(t, []string{"newnick", ">"}, chatInputTokens(v2))
@@ -752,7 +753,7 @@ func TestChatView_dm_header_shows_counterpart_nick(t *testing.T) {
 	})
 	cv = m.(components.ChatView[testKind])
 
-	v := cv.View(80, 24)
+	v := renderToBuffer(cv, 80, 24)
 	stripped := ansi.Strip(v)
 
 	// A DM window's header names the counterpart, "@nick", never a
@@ -779,7 +780,7 @@ func TestChatView_dm_suppresses_join_part_events(t *testing.T) {
 	})
 	cv = m.(components.ChatView[testKind])
 
-	v := ansi.Strip(cv.View(80, 24))
+	v := ansi.Strip(renderToBuffer(cv, 80, 24))
 
 	require.Equal(t, []string{"10:00 <bot> hello human"}, chatSegments(v))
 }
@@ -810,7 +811,7 @@ func TestChatView_dm_suppressed_event_does_not_seed_the_day_change_divider(t *te
 	})
 	cv = m.(components.ChatView[testKind])
 
-	v := ansi.Strip(cv.View(80, 24))
+	v := ansi.Strip(renderToBuffer(cv, 80, 24))
 
 	require.Equal(t, 1, strings.Count(v, "January 2025"),
 		"exactly one divider covers the transition between the two rendered messages; the suppressed Join's own day draws none")
@@ -840,14 +841,14 @@ func TestChatView_dm_shows_quit_messages(t *testing.T) {
 	})
 	cv = m.(components.ChatView[testKind])
 
-	v := ansi.Strip(cv.View(80, 24))
+	v := ansi.Strip(renderToBuffer(cv, 80, 24))
 
 	require.Equal(t, []string{"*** bot has quit (goodbye)"}, chatSegments(v))
 }
 
 func TestChatView_header_shows_channel_and_topic(t *testing.T) {
 	cv := newChatViewWithEvents("#general", "testuser", "Welcome to general", testEvents)
-	v := cv.View(80, 24)
+	v := renderToBuffer(cv, 80, 24)
 
 	require.Equal(t, "#general: Welcome to general", chatHeaderLine(v))
 	require.Equal(t, []string{
@@ -863,8 +864,8 @@ func TestChatView_header_shows_channel_name_without_topic(t *testing.T) {
 	withTitle := newChatViewWithEvents("#general", "testuser", "some topic", testEvents)
 	without := newChatViewWithEvents("#general", "testuser", "", testEvents)
 
-	vWith := withTitle.View(80, 24)
-	vWithout := without.View(80, 24)
+	vWith := renderToBuffer(withTitle, 80, 24)
+	vWithout := renderToBuffer(without, 80, 24)
 
 	require.Equal(t, "#general: some topic", chatHeaderLine(vWith))
 	require.Equal(t, "#general", chatHeaderLine(vWithout))
@@ -895,8 +896,8 @@ func TestChatView_topic_bar_reduces_message_area(t *testing.T) {
 	withTitle := newChatViewWithEvents("#general", "testuser", "A topic", events)
 	without := newChatViewWithEvents("#general", "testuser", "", events)
 
-	vWith := withTitle.View(80, 24)
-	vWithout := without.View(80, 24)
+	vWith := renderToBuffer(withTitle, 80, 24)
+	vWithout := renderToBuffer(without, 80, 24)
 
 	withLines := lipgloss.Height(vWith)
 	withoutLines := lipgloss.Height(vWithout)
@@ -906,7 +907,7 @@ func TestChatView_topic_bar_reduces_message_area(t *testing.T) {
 }
 
 func TestChatView_TopicUpdatedMsg_updates_topic_bar(t *testing.T) {
-	var m ui.Model = newChatViewWithEvents("#general", "testuser", "", testEvents)
+	var m ui.Component = newChatViewWithEvents("#general", "testuser", "", testEvents)
 
 	wantMessages := []string{
 		"[10:00:00] <alice> hello",
@@ -915,21 +916,21 @@ func TestChatView_TopicUpdatedMsg_updates_topic_bar(t *testing.T) {
 	}
 
 	// No topic initially.
-	v := m.View(80, 24)
+	v := renderToBuffer(m, 80, 24)
 	require.Equal(t, "#general", chatHeaderLine(ansi.Strip(v)))
 	require.Equal(t, wantMessages, chatSegments(ansi.Strip(v)))
 
 	// Send TopicUpdatedMsg.
 	m, _ = m.Update(components.TopicUpdatedMsg{Topic: "new topic"})
 
-	v = m.View(80, 24)
+	v = renderToBuffer(m, 80, 24)
 	require.Equal(t, "#general: new topic", chatHeaderLine(ansi.Strip(v)))
 	require.Equal(t, wantMessages, chatSegments(ansi.Strip(v)))
 
 	// Clear topic.
 	m, _ = m.Update(components.TopicUpdatedMsg{Topic: ""})
 
-	v = m.View(80, 24)
+	v = renderToBuffer(m, 80, 24)
 	require.Equal(t, "#general", chatHeaderLine(ansi.Strip(v)))
 	require.Equal(t, wantMessages, chatSegments(ansi.Strip(v)))
 }
@@ -943,7 +944,7 @@ func renderSingleEventWithHighlight(event domain.Event, words []string, nick dom
 		staticContent("#test", []domain.Event{event}),
 		"#test", domain.KindChannel, nick, "",
 	)
-	var m ui.Model = cv
+	var m ui.Component = cv
 	topicFormat := "2006-01-02 15:04"
 
 	m, _ = m.Update(components.CommandsMsg[testKind]{
@@ -961,7 +962,7 @@ func renderSingleEventWithHighlight(event domain.Event, words []string, nick dom
 		m, _ = m.Update(components.HighlightWordsMsg{Words: words, UserNick: nick})
 	}
 
-	v := m.View(200, 24)
+	v := renderToBuffer(m, 200, 24)
 
 	return ansi.Strip(v)
 }
@@ -1089,7 +1090,7 @@ func TestRenderLine_topic_info_omits_timestamp_when_disabled(t *testing.T) {
 	}
 
 	cv := components.NewChatView[testKind](staticContent("#test", events), "#test", domain.KindChannel, "testuser", "")
-	var m ui.Model = cv
+	var m ui.Component = cv
 	disabled := ""
 
 	m, _ = m.Update(components.TimestampFormatMsg{
@@ -1097,7 +1098,7 @@ func TestRenderLine_topic_info_omits_timestamp_when_disabled(t *testing.T) {
 		Locale: language.BritishEnglish,
 	})
 
-	v := ansi.Strip(m.View(200, 24))
+	v := ansi.Strip(renderToBuffer(m, 200, 24))
 
 	require.Equal(t, []string{"*** topic for #general: cool topic (set by alice)"}, chatSegments(v))
 }
@@ -1216,8 +1217,8 @@ func TestNewMessagesDivider_fills_width(t *testing.T) {
 		},
 		"#test", domain.KindChannel, "testuser", "",
 	)
-	var m ui.Model = cv
-	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{Width: 80, Height: 24}})
+	var m ui.Component = cv
+	m, _ = m.Update(ui.BoundsMsg{Rect: uv.Rect(0, 0, 80, 24)})
 
 	// Scroll up, then grow the events slice to trigger the divider.
 	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
@@ -1228,7 +1229,7 @@ func TestNewMessagesDivider_fills_width(t *testing.T) {
 		m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
 	}
 
-	v := m.View(80, 24)
+	v := renderToBuffer(m, 80, 24)
 	stripped := ansi.Strip(v)
 
 	divider := dividerLine(stripped)
@@ -1239,7 +1240,7 @@ func TestNewMessagesDivider_fills_width(t *testing.T) {
 }
 
 func TestChatView_command_popover_renders_and_completes(t *testing.T) {
-	var m ui.Model = components.NewChatView[testKind](nilContent("#general"), "#general", domain.KindChannel, "testuser", "")
+	var m ui.Component = components.NewChatView[testKind](nilContent("#general"), "#general", domain.KindChannel, "testuser", "")
 	nodes := []*command.Node[testKind]{
 		{
 			Name: "join",
@@ -1257,10 +1258,10 @@ func TestChatView_command_popover_renders_and_completes(t *testing.T) {
 		Completer: command.CompletionSet[testKind]{Set: command.Set[testKind]{Commands: nodes}, Ctx: testKindChannel},
 	})
 
-	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 20, Y: 0, Width: 60, Height: 24}})
+	m, _ = m.Update(ui.BoundsMsg{Rect: uv.Rect(20, 0, 60, 24)})
 	m = typeText(t, m, "/jo")
 
-	v := m.View(60, 24)
+	v := renderToBuffer(m, 60, 24)
 	require.Equal(t, []string{"/join <channel>  Join a channel"}, popoverLines(v))
 	require.Equal(t, []string{"testuser", ">", "/jo"}, chatInputTokens(v))
 
@@ -1279,7 +1280,7 @@ func TestChatView_command_popover_renders_and_completes(t *testing.T) {
 }
 
 func TestChatView_popover_arrow_keys_do_not_fall_through(t *testing.T) {
-	var m ui.Model = components.NewChatView[testKind](nilContent("#general"), "#general", domain.KindChannel, "testuser", "")
+	var m ui.Component = components.NewChatView[testKind](nilContent("#general"), "#general", domain.KindChannel, "testuser", "")
 	nodes := []*command.Node[testKind]{
 		{Name: "join", Help: "Join a channel"},
 		{Name: "part", Help: "Part from the current channel"},
@@ -1290,7 +1291,7 @@ func TestChatView_popover_arrow_keys_do_not_fall_through(t *testing.T) {
 		Completer: command.CompletionSet[testKind]{Set: command.Set[testKind]{Commands: nodes}, Ctx: testKindChannel},
 	})
 
-	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 0, Y: 0, Width: 60, Height: 24}})
+	m, _ = m.Update(ui.BoundsMsg{Rect: uv.Rect(0, 0, 60, 24)})
 
 	// Seed input history so Up would recall it if it fell through.
 	m = typeText(t, m, "previous input")
@@ -1321,7 +1322,7 @@ func TestChatView_popover_arrow_keys_do_not_fall_through(t *testing.T) {
 }
 
 func TestChatView_popover_renders_usage_in_suggestions(t *testing.T) {
-	var m ui.Model = components.NewChatView[testKind](nilContent("#general"), "#general", domain.KindChannel, "testuser", "")
+	var m ui.Component = components.NewChatView[testKind](nilContent("#general"), "#general", domain.KindChannel, "testuser", "")
 	nodes := []*command.Node[testKind]{
 		{Name: "join", Help: "Join a channel", Positionals: []command.Positional[testKind]{{Name: "channel"}}},
 		{Name: "part", Help: "Part from the current channel"},
@@ -1332,10 +1333,10 @@ func TestChatView_popover_renders_usage_in_suggestions(t *testing.T) {
 		Completer: command.CompletionSet[testKind]{Set: command.Set[testKind]{Commands: nodes}, Ctx: testKindChannel},
 	})
 
-	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 0, Y: 0, Width: 60, Height: 24}})
+	m, _ = m.Update(ui.BoundsMsg{Rect: uv.Rect(0, 0, 60, 24)})
 	m = typeText(t, m, "/")
 
-	v := m.View(60, 24)
+	v := renderToBuffer(m, 60, 24)
 	stripped := ansi.Strip(v)
 
 	require.Equal(t, []string{
@@ -1352,7 +1353,7 @@ func TestChatView_popover_collapses_aliases_onto_single_row(t *testing.T) {
 	// with its Label trimmed against the canonical Usage. Aliases
 	// must be collapsed into the single parenthesised group after the
 	// canonical name, followed by positional args and the help text.
-	var m ui.Model = components.NewChatView[testKind](nilContent("#general"), "#general", domain.KindChannel, "testuser", "")
+	var m ui.Component = components.NewChatView[testKind](nilContent("#general"), "#general", domain.KindChannel, "testuser", "")
 	nodes := []*command.Node[testKind]{
 		{
 			Name:        "join",
@@ -1367,10 +1368,10 @@ func TestChatView_popover_collapses_aliases_onto_single_row(t *testing.T) {
 		Completer: command.CompletionSet[testKind]{Set: command.Set[testKind]{Commands: nodes}, Ctx: testKindChannel},
 	})
 
-	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 0, Y: 0, Width: 80, Height: 24}})
+	m, _ = m.Update(ui.BoundsMsg{Rect: uv.Rect(0, 0, 80, 24)})
 	m = typeText(t, m, "/")
 
-	v := m.View(80, 24)
+	v := renderToBuffer(m, 80, 24)
 	stripped := ansi.Strip(v)
 
 	require.Equal(t, []string{
@@ -1382,9 +1383,9 @@ func TestChatView_popover_collapses_aliases_onto_single_row(t *testing.T) {
 
 func TestChatView_mouse_click_positions_input_cursor(t *testing.T) {
 	cv := components.NewChatView[testKind](nilContent("#general"), "#general", domain.KindChannel, "testuser", "")
-	var m ui.Model = cv
+	var m ui.Component = cv
 
-	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 20, Y: 0, Width: 60, Height: 24}})
+	m, _ = m.Update(ui.BoundsMsg{Rect: uv.Rect(20, 0, 60, 24)})
 	m = typeText(t, m, "hello")
 	m, _ = m.Update(tea.MouseClickMsg{
 		X:      32,
@@ -1423,13 +1424,13 @@ func TestChatView_divider_inserted_when_scrolled_up(t *testing.T) {
 		Format: &timestampFmt,
 		Locale: language.BritishEnglish,
 	})
-	var m ui.Model = updated.(components.ChatView[testKind])
-	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{Width: 80, Height: 24}})
+	var m ui.Component = updated.(components.ChatView[testKind])
+	m, _ = m.Update(ui.BoundsMsg{Rect: uv.Rect(0, 0, 80, 24)})
 
 	// Scroll up so we're no longer at the bottom.
 	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
 
-	v := m.View(80, 24)
+	v := renderToBuffer(m, 80, 24)
 	require.Equal(t, numberedUserMessages("message", 0, 20), visibleEventsWithoutTimestamps(v))
 
 	// Append new events to the closure-backed slice while scrolled
@@ -1446,7 +1447,7 @@ func TestChatView_divider_inserted_when_scrolled_up(t *testing.T) {
 		m, _ = m.Update(components.ScrollbackUpdatedMsg{Channel: "#general"})
 	}
 
-	vScrolledUp := ansi.Strip(m.View(80, 24))
+	vScrolledUp := ansi.Strip(renderToBuffer(m, 80, 24))
 	t.Logf("while scrolled up:\n%s", vScrolledUp)
 
 	// Scroll to bottom to see the divider.
@@ -1454,7 +1455,7 @@ func TestChatView_divider_inserted_when_scrolled_up(t *testing.T) {
 		m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
 	}
 
-	v = m.View(80, 24)
+	v = renderToBuffer(m, 80, 24)
 	stripped := ansi.Strip(v)
 
 	require.Equal(t, expectedDivider(80), dividerLine(stripped))
@@ -1472,8 +1473,8 @@ func TestChatView_no_divider_when_at_bottom(t *testing.T) {
 	}
 
 	cv := newChatViewWithEvents("#general", "testuser", "", events)
-	var m ui.Model = cv
-	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{Width: 80, Height: 24}})
+	var m ui.Component = cv
+	m, _ = m.Update(ui.BoundsMsg{Rect: uv.Rect(0, 0, 80, 24)})
 
 	// Add more events while at bottom.
 	for i := 5; i < 8; i++ {
@@ -1485,7 +1486,7 @@ func TestChatView_no_divider_when_at_bottom(t *testing.T) {
 		})
 	}
 
-	v := m.View(80, 24)
+	v := renderToBuffer(m, 80, 24)
 	stripped := ansi.Strip(v)
 
 	require.Equal(t, "", dividerLine(stripped))
@@ -1512,7 +1513,7 @@ func TestChatView_day_changed_divider_marks_a_date_rollover(t *testing.T) {
 	}
 
 	cv := newChatViewWithEvents("#general", "testuser", "", events)
-	v := ansi.Strip(cv.View(80, 24))
+	v := ansi.Strip(renderToBuffer(cv, 80, 24))
 
 	divider := dayChangedDividerLine(v)
 	require.NotEmpty(t, divider, "a day-change divider must mark the rollover between the two messages")
@@ -1534,7 +1535,7 @@ func TestChatView_no_day_changed_divider_within_the_same_day(t *testing.T) {
 	}
 
 	cv := newChatViewWithEvents("#general", "testuser", "", events)
-	v := ansi.Strip(cv.View(80, 24))
+	v := ansi.Strip(renderToBuffer(cv, 80, 24))
 
 	require.Empty(t, dayChangedDividerLine(v))
 }
@@ -1545,7 +1546,7 @@ func TestChatView_no_day_changed_divider_before_the_first_event(t *testing.T) {
 	}
 
 	cv := newChatViewWithEvents("#general", "testuser", "", events)
-	v := ansi.Strip(cv.View(80, 24))
+	v := ansi.Strip(renderToBuffer(cv, 80, 24))
 
 	require.Empty(t, dayChangedDividerLine(v), "there is no prior day for the window's first event to have rolled over from")
 }
@@ -1581,8 +1582,8 @@ func TestChatView_stored_events_insert_divider_when_scrolled_up(t *testing.T) {
 		Format: &timestampFmt,
 		Locale: language.BritishEnglish,
 	})
-	var m ui.Model = updated.(components.ChatView[testKind])
-	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{Width: 80, Height: 24}})
+	var m ui.Component = updated.(components.ChatView[testKind])
+	m, _ = m.Update(ui.BoundsMsg{Rect: uv.Rect(0, 0, 80, 24)})
 
 	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
 
@@ -1599,7 +1600,7 @@ func TestChatView_stored_events_insert_divider_when_scrolled_up(t *testing.T) {
 		m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
 	}
 
-	v := ansi.Strip(m.View(80, 24))
+	v := ansi.Strip(renderToBuffer(m, 80, 24))
 
 	require.Equal(t, expectedDivider(80), dividerLine(v))
 	require.Equal(t, []string{
@@ -1647,8 +1648,8 @@ func TestChatView_stored_events_keep_divider_when_more_arrive_during_catch_up(t 
 		Format: &timestampFmt,
 		Locale: language.BritishEnglish,
 	})
-	var m ui.Model = updated.(components.ChatView[testKind])
-	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{Width: 80, Height: 24}})
+	var m ui.Component = updated.(components.ChatView[testKind])
+	m, _ = m.Update(ui.BoundsMsg{Rect: uv.Rect(0, 0, 80, 24)})
 
 	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
 
@@ -1673,7 +1674,7 @@ func TestChatView_stored_events_keep_divider_when_more_arrive_during_catch_up(t 
 		m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
 	}
 
-	v := ansi.Strip(m.View(80, 24))
+	v := ansi.Strip(renderToBuffer(m, 80, 24))
 
 	require.Equal(t, expectedDivider(80), dividerLine(v))
 	require.Equal(t, []string{
@@ -1706,7 +1707,7 @@ func TestChatView_stored_events_keep_divider_when_more_arrive_during_catch_up(t 
 // view.
 type windowedChatView struct {
 	t       *testing.T
-	model   ui.Model
+	model   ui.Component
 	windows map[domain.ChannelName][]domain.Event
 	active  domain.ChannelName
 }
@@ -1734,7 +1735,7 @@ func newWindowedChatView(t *testing.T, active domain.ChannelName, windows map[do
 	})
 
 	w.model = updated.(components.ChatView[testKind])
-	w.send(ui.BoundsMsg{Rect: ui.Rect{Width: 80, Height: 24}})
+	w.send(ui.BoundsMsg{Rect: uv.Rect(0, 0, 80, 24)})
 
 	return w
 }
@@ -1774,7 +1775,7 @@ func (w *windowedChatView) switchTo(ch domain.ChannelName) {
 func (w *windowedChatView) view() []string {
 	w.t.Helper()
 
-	return contentLines(ansi.Strip(w.model.View(80, 24)))
+	return contentLines(ansi.Strip(renderToBuffer(w.model, 80, 24)))
 }
 
 // contentLines returns the chat region's non-empty rows with the
@@ -1950,8 +1951,8 @@ func TestChatView_mouse_wheel_scrolls_messages(t *testing.T) {
 	}
 
 	cv := newChatViewWithEvents("#general", "testuser", "", messagesToEvents(msgs))
-	var m ui.Model = cv
-	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 20, Y: 0, Width: 60, Height: 24}})
+	var m ui.Component = cv
+	m, _ = m.Update(ui.BoundsMsg{Rect: uv.Rect(20, 0, 60, 24)})
 
 	m, _ = m.Update(tea.MouseWheelMsg{
 		X:      25,
@@ -1959,13 +1960,51 @@ func TestChatView_mouse_wheel_scrolls_messages(t *testing.T) {
 		Button: tea.MouseWheelUp,
 	})
 
-	v := m.View(60, 24)
+	v := renderToBuffer(m, 60, 24)
 	require.Equal(t, numberedUserMessages("message", 6, 20), visibleEventsWithoutTimestamps(v))
 	require.Equal(t, "(66%)", scrollIndicatorLine(v))
 }
 
+func TestChatView_mouse_wheel_outside_bounds_does_not_scroll_messages(t *testing.T) {
+	msgs := make([]domain.Message, 30)
+	for i := range msgs {
+		msgs[i] = domain.Message{
+			Target: "#general",
+			From:   "user",
+			Body:   fmt.Sprintf("message %d", i),
+		}
+	}
+
+	var m ui.Component = newChatViewWithEvents("#general", "testuser", "", messagesToEvents(msgs))
+	m, _ = m.Update(ui.BoundsMsg{Rect: uv.Rect(20, 0, 60, 24)})
+	want := renderToBuffer(m, 60, 24)
+
+	m, _ = m.Update(tea.MouseWheelMsg{
+		X:      10,
+		Y:      10,
+		Button: tea.MouseWheelUp,
+	})
+
+	require.Equal(t, want, renderToBuffer(m, 60, 24))
+}
+
+func TestChatView_mouse_release_outside_input_ends_drag(t *testing.T) {
+	var m ui.Component = newChatViewWithEvents("#general", "testuser", "", nil)
+	m, _ = m.Update(ui.BoundsMsg{Rect: uv.Rect(20, 0, 60, 24)})
+	m = typeText(t, m, "hello world")
+
+	m, _ = m.Update(tea.MouseClickMsg{X: 32, Y: 23, Button: tea.MouseLeft})
+	m, _ = m.Update(tea.MouseMotionMsg{X: 36, Y: 23, Button: tea.MouseLeft})
+	m, _ = m.Update(tea.MouseReleaseMsg{X: 36, Y: 10, Button: tea.MouseLeft})
+	want := renderToBuffer(m, 60, 24)
+
+	m, _ = m.Update(tea.MouseMotionMsg{X: 40, Y: 23, Button: tea.MouseLeft})
+
+	require.Equal(t, want, renderToBuffer(m, 60, 24))
+}
+
 func TestChatView_mouse_click_accepts_popover_suggestion(t *testing.T) {
-	var m ui.Model = components.NewChatView[testKind](nilContent("#general"), "#general", domain.KindChannel, "testuser", "")
+	var m ui.Component = components.NewChatView[testKind](nilContent("#general"), "#general", domain.KindChannel, "testuser", "")
 	nodes := []*command.Node[testKind]{
 		{
 			Name: "join",
@@ -1983,7 +2022,7 @@ func TestChatView_mouse_click_accepts_popover_suggestion(t *testing.T) {
 		Completer: command.CompletionSet[testKind]{Set: command.Set[testKind]{Commands: nodes}, Ctx: testKindChannel},
 	})
 
-	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 20, Y: 0, Width: 60, Height: 24}})
+	m, _ = m.Update(ui.BoundsMsg{Rect: uv.Rect(20, 0, 60, 24)})
 	m = typeText(t, m, "/jo")
 
 	var cmd tea.Cmd
@@ -2002,6 +2041,22 @@ func TestChatView_mouse_click_accepts_popover_suggestion(t *testing.T) {
 	require.NotNil(t, cmd)
 	sub := cmd().(components.CommandSubmitMsg)
 	require.Equal(t, "/join #general", sub.Raw)
+}
+
+func TestChatView_mouse_click_outside_input_dismisses_popover(t *testing.T) {
+	var m ui.Component = components.NewChatView[testKind](nilContent("#general"), "#general", domain.KindChannel, "testuser", "")
+	nodes := []*command.Node[testKind]{{Name: "join", Help: "Join a channel"}}
+	m, _ = m.Update(components.CommandsMsg[testKind]{Commands: nodes})
+	m, _ = m.Update(components.CompleterMsg{
+		Completer: command.CompletionSet[testKind]{Set: command.Set[testKind]{Commands: nodes}, Ctx: testKindChannel},
+	})
+	m, _ = m.Update(ui.BoundsMsg{Rect: uv.Rect(20, 0, 60, 24)})
+	m = typeText(t, m, "/")
+	require.Contains(t, renderToBuffer(m, 60, 24), "/join")
+
+	m, _ = m.Update(tea.MouseClickMsg{X: 25, Y: 10, Button: tea.MouseLeft})
+
+	require.NotContains(t, renderToBuffer(m, 60, 24), "/join")
 }
 
 func TestContainsHighlightWord(t *testing.T) {

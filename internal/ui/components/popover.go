@@ -7,6 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	uv "github.com/charmbracelet/ultraviolet"
 
 	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/ui"
@@ -53,14 +54,13 @@ type Popover struct {
 	closed     bool
 	handled    bool
 
-	bounds ui.Rect
+	bounds      uv.Rectangle
+	boundsKnown bool
 }
 
-// PopoverLayout describes the absolute hit-test rectangles for the
-// popover and each of its visible suggestions.
-type PopoverLayout struct {
-	Rect            ui.Rect
-	SuggestionRects []ui.Rect
+type popoverLayout struct {
+	Rect            uv.Rectangle
+	SuggestionRects []uv.Rectangle
 }
 
 // NewPopover creates an empty popover.
@@ -70,7 +70,7 @@ func NewPopover() Popover {
 
 // IsVisible returns whether the popover is currently showing.
 func (p Popover) IsVisible() bool {
-	return p.completion.Visible
+	return p.completion.Visible && (!p.boundsKnown || p.bounds.Dy() > 0)
 }
 
 // HasSuggestions returns whether there are any suggestions to show.
@@ -78,39 +78,25 @@ func (p Popover) HasSuggestions() bool {
 	return len(p.completion.Suggestions) > 0
 }
 
-// Layout computes absolute hit-test rectangles for the popover
-// given the parent bounds and input bar rectangle.
-func (p Popover) Layout(bounds, inputRect ui.Rect) PopoverLayout {
-	popoverHeight := p.height()
-	if popoverHeight == 0 {
-		return PopoverLayout{}
+func (p Popover) layout() popoverLayout {
+	if p.bounds.Empty() {
+		return popoverLayout{}
 	}
 
-	popoverRect := ui.Rect{
-		X:      bounds.X,
-		Y:      inputRect.Y - popoverHeight,
-		Width:  bounds.Width,
-		Height: popoverHeight,
+	layout := popoverLayout{
+		Rect:            p.bounds,
+		SuggestionRects: make([]uv.Rectangle, 0, min(len(p.visibleSuggestions()), p.bounds.Dy())),
 	}
 
-	layout := PopoverLayout{
-		Rect:            popoverRect,
-		SuggestionRects: make([]ui.Rect, 0, len(p.visibleSuggestions())),
-	}
-
-	for i := range p.visibleSuggestions() {
-		layout.SuggestionRects = append(layout.SuggestionRects, ui.Rect{
-			X:      popoverRect.X,
-			Y:      popoverRect.Y + i,
-			Width:  popoverRect.Width,
-			Height: 1,
-		})
+	for i := range min(len(p.visibleSuggestions()), p.bounds.Dy()) {
+		layout.SuggestionRects = append(layout.SuggestionRects,
+			uv.Rect(p.bounds.Min.X, p.bounds.Min.Y+i, p.bounds.Dx(), 1))
 	}
 
 	return layout
 }
 
-// Init implements ui.Model.
+// Init implements ui.Component.
 func (p Popover) Init() tea.Cmd {
 	return nil
 }
@@ -121,15 +107,17 @@ func (p Popover) Handled() bool {
 	return p.handled
 }
 
-// Update implements ui.Model. It handles keyboard navigation
+// Update implements ui.Component. It handles keyboard navigation
 // (Tab/Up/Down/Esc), mouse interactions, and popover state messages.
-func (p Popover) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
+func (p Popover) Update(msg tea.Msg) (ui.Component, tea.Cmd) {
 	p.handled = false
 
 	switch msg := msg.(type) {
 	case ui.BoundsMsg:
 		p.bounds = msg.Rect
-		return p, nil
+		p.boundsKnown = true
+
+		return p.ensureSelectionVisible(), nil
 
 	case PopoverApplyMsg:
 		p.completer = msg.Completer
@@ -162,14 +150,8 @@ func (p Popover) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	return p, nil
 }
 
-// View implements ui.Model.
-func (p Popover) View(width, _ int) string {
-	return p.Render(width)
-}
-
-// Render returns the rendered popover string for the given width.
-func (p Popover) Render(width int) string {
-	if !p.completion.Visible {
+func (p Popover) render(width int) string {
+	if !p.IsVisible() {
 		return ""
 	}
 
@@ -206,7 +188,7 @@ func (p Popover) Render(width int) string {
 }
 
 func (p Popover) handleKey(msg tea.KeyPressMsg) (Popover, bool, tea.Cmd) {
-	if !p.completion.Visible {
+	if !p.IsVisible() {
 		return p, false, nil
 	}
 
@@ -251,19 +233,14 @@ func (p Popover) handleKey(msg tea.KeyPressMsg) (Popover, bool, tea.Cmd) {
 // for suggestion cycling. The input bar consults this before letting
 // those keys browse input history instead.
 func (p Popover) BlocksHistory() bool {
-	return p.completion.Visible && len(p.completion.Suggestions) > 1
+	return p.IsVisible() && len(p.completion.Suggestions) > 1
 }
 
 func (p Popover) handleMouse(msg tea.MouseMsg) (Popover, bool, tea.Cmd) {
-	layout := p.Layout(p.bounds, ui.Rect{
-		X:      p.bounds.X,
-		Y:      p.bounds.Y + p.bounds.Height - 1,
-		Width:  p.bounds.Width,
-		Height: 1,
-	})
+	layout := p.layout()
 
 	mouse := msg.Mouse()
-	if !layout.Rect.Contains(mouse.X, mouse.Y) {
+	if !contains(layout.Rect, mouse.X, mouse.Y) {
 		return p, false, nil
 	}
 
@@ -342,9 +319,9 @@ func (p Popover) moveSelection(delta int) Popover {
 	return p.ensureSelectionVisible()
 }
 
-func (p Popover) hoverSuggestion(layout PopoverLayout, x, y int) Popover {
+func (p Popover) hoverSuggestion(layout popoverLayout, x, y int) Popover {
 	for i, rect := range layout.SuggestionRects {
-		if rect.Contains(x, y) {
+		if contains(rect, x, y) {
 			p.selected = p.offset + i
 			return p
 		}
@@ -353,9 +330,9 @@ func (p Popover) hoverSuggestion(layout PopoverLayout, x, y int) Popover {
 	return p
 }
 
-func (p Popover) suggestionIndexAt(layout PopoverLayout, x, y int) (int, bool) {
+func (p Popover) suggestionIndexAt(layout popoverLayout, x, y int) (int, bool) {
 	for i, rect := range layout.SuggestionRects {
-		if rect.Contains(x, y) {
+		if contains(rect, x, y) {
 			return p.offset + i, true
 		}
 	}
@@ -368,7 +345,7 @@ func (p Popover) height() int {
 		return 0
 	}
 
-	return len(p.visibleSuggestions())
+	return min(len(p.completion.Suggestions), maxPopoverSuggestions)
 }
 
 func (p Popover) refresh(raw string, cursor int) Popover {
@@ -413,25 +390,38 @@ func (p Popover) visibleSuggestions() []command.Suggestion {
 		start = 0
 	}
 
-	end := min(start+maxPopoverSuggestions, len(p.completion.Suggestions))
+	end := min(start+p.visibleCapacity(), len(p.completion.Suggestions))
 
 	return p.completion.Suggestions[start:end]
 }
 
 func (p Popover) ensureSelectionVisible() Popover {
+	capacity := p.visibleCapacity()
+	if capacity <= 0 {
+		p.offset = p.selected
+
+		return p
+	}
+
 	if p.selected < p.offset {
 		p.offset = p.selected
 	}
 
-	if p.selected >= p.offset+maxPopoverSuggestions {
-		p.offset = p.selected - maxPopoverSuggestions + 1
+	if p.selected >= p.offset+capacity {
+		p.offset = p.selected - capacity + 1
 	}
 
-	if p.offset < 0 {
-		p.offset = 0
-	}
+	p.offset = min(max(p.offset, 0), max(len(p.completion.Suggestions)-capacity, 0))
 
 	return p
+}
+
+func (p Popover) visibleCapacity() int {
+	if !p.boundsKnown {
+		return maxPopoverSuggestions
+	}
+
+	return min(max(p.bounds.Dy(), 0), maxPopoverSuggestions)
 }
 
 func truncateLine(text string, width int) string {

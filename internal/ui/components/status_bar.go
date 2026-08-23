@@ -5,7 +5,9 @@ import (
 	"slices"
 	"strings"
 
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	uv "github.com/charmbracelet/ultraviolet"
 
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/theme"
@@ -19,8 +21,33 @@ var (
 
 const maxStatusKeyHints = 4
 
-// RenderStatusBar renders the active keybindings and status items.
-func RenderStatusBar(width int, bindings []ui.KeyBinding, items []ui.StatusItem) string {
+// StatusBar displays active keybindings and status items.
+type StatusBar struct {
+	bindings []ui.KeyBinding
+	items    []ui.StatusItem
+}
+
+// NewStatusBar creates a status bar for the current UI state.
+func NewStatusBar(bindings []ui.KeyBinding, items []ui.StatusItem) StatusBar {
+	return StatusBar{bindings: bindings, items: items}
+}
+
+// Init implements ui.Component.
+func (s StatusBar) Init() tea.Cmd {
+	return nil
+}
+
+// Update implements ui.Component.
+func (s StatusBar) Update(tea.Msg) (ui.Component, tea.Cmd) {
+	return s, nil
+}
+
+// Draw implements ui.Component.
+func (s StatusBar) Draw(screen uv.Screen, area uv.Rectangle) {
+	drawString(screen, area, renderStatusBar(area.Dx(), s.bindings, s.items))
+}
+
+func renderStatusBar(width int, bindings []ui.KeyBinding, items []ui.StatusItem) string {
 	leftItems := filterStatusItems(items, ui.StatusSideLeft)
 	rightItems := filterStatusItems(items, ui.StatusSideRight)
 

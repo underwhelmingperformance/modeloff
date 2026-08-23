@@ -1042,7 +1042,10 @@ func TestChatScreen_F1_shows_keyboard_help_from_active_bindings(t *testing.T) {
 	tm, _ := newChatAppInChannel(t, "#general")
 
 	tm.Send(tea.KeyPressMsg{Code: tea.KeyF1})
-	tm.WaitForViewContains("Keyboard shortcuts", "^B", "bold", "F1", "shortcuts")
+	tm.WaitForViewContains("Keyboard shortcuts", "F1", "shortcuts")
+
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyPgDown})
+	tm.WaitForViewContains("^B", "bold")
 
 	tm.Send(tea.KeyPressMsg{Code: tea.KeyEsc})
 	tm.WaitForViewContains("#general")

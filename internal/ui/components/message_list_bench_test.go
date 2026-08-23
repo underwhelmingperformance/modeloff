@@ -7,6 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/components"
@@ -50,14 +51,14 @@ func benchEvents(n int) []domain.Event {
 
 // benchMessageList builds a message list holding `events`, sized to a
 // full-screen terminal and settled at the bottom of its scrollback.
-func benchMessageList(events []domain.Event) ui.Model {
+func benchMessageList(events []domain.Event) ui.Component {
 	content := func() components.WindowContent {
 		return components.WindowContent{Channel: "#general", Events: events}
 	}
 
-	var m ui.Model = components.NewMessageList[benchKind](content, domain.KindChannel)
+	var m ui.Component = components.NewMessageList[benchKind](content, domain.KindChannel)
 	m, _ = m.Update(components.HighlightWordsMsg{Words: []string{"$nick"}, UserNick: "laney"})
-	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{Width: benchWidth, Height: benchHeight}})
+	m, _ = m.Update(ui.BoundsMsg{Rect: uv.Rect(0, 0, benchWidth, benchHeight)})
 
 	return m
 }
@@ -76,23 +77,23 @@ func BenchmarkMessageListKeystroke(b *testing.B) {
 
 	for range b.N {
 		m, _ = m.Update(key)
-		_ = m.View(benchWidth, benchHeight)
+		_ = renderToBuffer(m, benchWidth, benchHeight)
 	}
 }
 
 // benchLayout builds the layout the chat screen runs inside: a sidebar
 // that sizes itself to the channels it holds, and the message list as
 // the content area beside it.
-func benchLayout(events []domain.Event) ui.Model {
+func benchLayout(events []domain.Event) ui.Component {
 	content := func() components.WindowContent {
 		return components.WindowContent{Channel: "#general", Events: events}
 	}
 
 	list := components.NewMessageList[benchKind](content, domain.KindChannel)
 
-	var m ui.Model = components.NewMainLayout(components.NewChannelSidebar(), list)
+	var m ui.Component = components.NewMainLayout(components.NewChannelSidebar(), list)
 	m, _ = m.Update(components.HighlightWordsMsg{Words: []string{"$nick"}, UserNick: "laney"})
-	m, _ = m.Update(tea.WindowSizeMsg{Width: benchWidth, Height: benchHeight})
+	m, _ = m.Update(ui.BoundsMsg{Rect: uv.Rect(0, 0, benchWidth, benchHeight)})
 
 	return m
 }
@@ -119,7 +120,7 @@ func BenchmarkMessageListKeystrokeAfterSidebarGrowth(b *testing.B) {
 
 	for range b.N {
 		m, _ = m.Update(key)
-		_ = m.View(benchWidth, benchHeight)
+		_ = renderToBuffer(m, benchWidth, benchHeight)
 	}
 }
 
@@ -138,7 +139,7 @@ func BenchmarkMessageListKeystrokeScrolledUp(b *testing.B) {
 
 	for range b.N {
 		m, _ = m.Update(key)
-		_ = m.View(benchWidth, benchHeight)
+		_ = renderToBuffer(m, benchWidth, benchHeight)
 	}
 }
 
@@ -167,14 +168,14 @@ func BenchmarkMessageListMessageArrival(b *testing.B) {
 			return components.WindowContent{Channel: "#general", Events: *held}
 		}
 
-		var m ui.Model = components.NewMessageList[benchKind](content, domain.KindChannel)
-		m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{Width: benchWidth, Height: benchHeight}})
-		_ = m.View(benchWidth, benchHeight)
+		var m ui.Component = components.NewMessageList[benchKind](content, domain.KindChannel)
+		m, _ = m.Update(ui.BoundsMsg{Rect: uv.Rect(0, 0, benchWidth, benchHeight)})
+		_ = renderToBuffer(m, benchWidth, benchHeight)
 
 		b.StartTimer()
 
 		*held = append(*held, arrival)
 		m, _ = m.Update(components.ScrollbackUpdatedMsg{Channel: "#general"})
-		_ = m.View(benchWidth, benchHeight)
+		_ = renderToBuffer(m, benchWidth, benchHeight)
 	}
 }

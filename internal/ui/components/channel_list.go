@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/set"
@@ -19,7 +20,7 @@ type SetChannelsMsg struct {
 	Unread   map[domain.ChannelName]int
 }
 
-// ChannelSidebar is a ui.Model that wraps Sidebar with
+// ChannelSidebar is a ui.Component that wraps Sidebar with
 // channel-specific keybindings, header, and per-window
 // notification state. It tracks three independent indicators per
 // window:
@@ -48,12 +49,8 @@ func windowView(
 	lifecycle map[domain.ChannelName]bool,
 ) func(domain.Window, ViewState, int) string {
 	return func(w domain.Window, state ViewState, _ int) string {
-		name := w.DisplayName()
-
+		name := windowLabel(w, unread)
 		count := unread[w.Name()]
-		if count > 0 {
-			name += fmt.Sprintf(" (%d)", count)
-		}
 
 		highlighted := count > 0
 		mention := mentions[w.Name()]
@@ -89,6 +86,15 @@ func windowView(
 
 		return style.Render(prefix + name)
 	}
+}
+
+func windowLabel(w domain.Window, unread map[domain.ChannelName]int) string {
+	name := w.DisplayName()
+	if count := unread[w.Name()]; count > 0 {
+		name += fmt.Sprintf(" (%d)", count)
+	}
+
+	return name
 }
 
 // NewChannelSidebar creates an empty channel list sidebar.
@@ -134,13 +140,13 @@ func NewChannelSidebar() ChannelSidebar {
 	}
 }
 
-// Init implements ui.Model.
+// Init implements ui.Component.
 func (cl ChannelSidebar) Init() tea.Cmd {
 	return cl.panel.Init()
 }
 
-// Update implements ui.Model.
-func (cl ChannelSidebar) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
+// Update implements ui.Component.
+func (cl ChannelSidebar) Update(msg tea.Msg) (ui.Component, tea.Cmd) {
 	switch msg := msg.(type) {
 	case SetChannelsMsg:
 		return cl.setChannels(msg), nil
@@ -225,9 +231,11 @@ func (cl ChannelSidebar) setChannels(msg SetChannelsMsg) ChannelSidebar {
 	return cl
 }
 
-// View implements ui.Model.
-func (cl ChannelSidebar) View(width, height int) string {
-	return cl.panel.View(width, height)
+// ContentWidth returns the width needed for the current channel rows.
+func (cl ChannelSidebar) ContentWidth() int {
+	return cl.panel.contentWidth(func(window domain.Window) int {
+		return ansi.StringWidth(" " + windowLabel(window, cl.unread))
+	})
 }
 
 // KeyBindings implements ui.Keybinding.

@@ -19,7 +19,7 @@ func TestConnectionScreen_View_fills_height(t *testing.T) {
 		Nick:      "alice",
 	}, nil)
 
-	idle := s.View(80, 24)
+	idle := renderToBuffer(s, 80, 24)
 
 	require.Equal(t, 24, lipgloss.Height(idle))
 	require.Equal(t, []string{"… Connecting to modeloff"}, trimmedLines(idle),

@@ -6,9 +6,11 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/observability"
+	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/uitest"
 )
 
@@ -37,7 +39,7 @@ func TestChatScreen_the_log_drawer_takes_records_when_it_opens(t *testing.T) {
 	t.Cleanup(func() { _ = obs.Shutdown(t.Context()) })
 
 	screen := newScreenFixture(t).WithObservability(obs)
-	screen, _ = screen.update(tea.WindowSizeMsg{Width: width, Height: height})
+	screen, _ = screen.update(ui.BoundsMsg{Rect: uv.Rect(0, 0, width, height)})
 
 	obs.LogBuffer().Ingest() <- observability.PanelEntry{
 		Level:     "INFO",
@@ -52,7 +54,7 @@ func TestChatScreen_the_log_drawer_takes_records_when_it_opens(t *testing.T) {
 	state := func() drawerState {
 		return drawerState{
 			Behind:    screen.logsBehind,
-			ShowsLine: strings.Contains(uitest.StripANSI(screen.View(width, height)), line),
+			ShowsLine: strings.Contains(uitest.StripANSI(renderToBuffer(screen, width, height)), line),
 		}
 	}
 

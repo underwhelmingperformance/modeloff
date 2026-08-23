@@ -108,7 +108,7 @@ func NonEmptyColumn(lines []string) []string {
 // non-empty run of box-drawing characters and nothing else.
 func isBorderRule(line string) bool {
 	trimmed := strings.TrimSpace(line)
-	return trimmed != "" && strings.Trim(trimmed, "┌┐└┘─│├┤┬┴┼") == ""
+	return trimmed != "" && strings.Trim(trimmed, "┌┐└┘╭╮╰╯─│├┤┬┴┼") == ""
 }
 
 // WithoutHeader returns lines (typically a chat content column from
@@ -138,12 +138,12 @@ func TrimmedVisibleLines(view string) []string {
 }
 
 // SplitBodyAndStatus separates the chat body from the single-line
-// status bar at the bottom of the view. ChatScreen.View only appends
-// a status bar row when RenderStatusBar produced one — with no active
+// status bar at the bottom of the view. ChatScreen.Draw only appends
+// a status bar row when the StatusBar produced one — with no active
 // keybinding and no status item, the workspace's own bordered render
 // is the whole view, and its last line is still body. A genuine
 // status bar row is plain text built from key hints and status item
-// text (see components.RenderStatusBar), so it never carries the `│`
+// text (see components.StatusBar), so it never carries the `│`
 // pane-border character every row of the bordered sidebar/content/
 // nicklist layout does; that is what distinguishes the two cases.
 //
@@ -202,7 +202,7 @@ func NonBorderSegments(view string) []string {
 				continue
 			}
 
-			if strings.Trim(cleaned, "┌┐└┘─│├┤┬┴┼") == "" {
+			if strings.Trim(cleaned, "┌┐└┘╭╮╰╯─│├┤┬┴┼") == "" {
 				continue
 			}
 

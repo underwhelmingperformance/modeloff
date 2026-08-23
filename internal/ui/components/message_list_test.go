@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/text/language"
 
@@ -55,12 +56,12 @@ const listTimestampFormat = "[15:04:05]"
 // newTestMessageList builds a sized message list reading through
 // `content`, with a fixed timestamp format so the rendered lines are
 // deterministic.
-func newTestMessageList(content func() WindowContent) ui.Model {
+func newTestMessageList(content func() WindowContent) ui.Component {
 	format := listTimestampFormat
 
-	var m ui.Model = NewMessageList[listKind](content, domain.KindChannel)
+	var m ui.Component = NewMessageList[listKind](content, domain.KindChannel)
 	m, _ = m.Update(TimestampFormatMsg{Format: &format, Locale: language.BritishEnglish})
-	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{Width: listWidth, Height: listHeight}})
+	m, _ = m.Update(ui.BoundsMsg{Rect: uv.Rect(0, 0, listWidth, listHeight)})
 
 	return m
 }
@@ -158,7 +159,7 @@ func TestMessageList_renders_the_newest_events_of_a_bounded_window(t *testing.T)
 		want = append(want, listLine(i))
 	}
 
-	require.Equal(t, want, uitest.NonEmptyLines(m.View(listWidth, listHeight)))
+	require.Equal(t, want, uitest.NonEmptyLines(renderToBuffer(m, listWidth, listHeight)))
 }
 
 // cacheShape describes the cached lines a message list is holding:
@@ -173,7 +174,7 @@ type cacheShape struct {
 	Base   int64
 }
 
-func cacheShapeOf(t *testing.T, m ui.Model, base int64) cacheShape {
+func cacheShapeOf(t *testing.T, m ui.Component, base int64) cacheShape {
 	t.Helper()
 
 	list, ok := m.(MessageList[listKind])
@@ -259,13 +260,13 @@ func TestMessageList_rerenders_when_the_timestamp_format_changes(t *testing.T) {
 	m := newTestMessageList(content)
 
 	require.Equal(t, []string{listLine(0)},
-		uitest.NonEmptyLines(m.View(listWidth, listHeight)))
+		uitest.NonEmptyLines(renderToBuffer(m, listWidth, listHeight)))
 
 	dayFormat := "[2006-01-02]"
 	m, _ = m.Update(TimestampFormatMsg{Format: &dayFormat, Locale: language.BritishEnglish})
 
 	require.Equal(t, []string{"[2026-01-01] <alice> message 0"},
-		uitest.NonEmptyLines(m.View(listWidth, listHeight)))
+		uitest.NonEmptyLines(renderToBuffer(m, listWidth, listHeight)))
 }
 
 // TestMessageList_rerenders_at_a_new_width pins the other input every
@@ -282,13 +283,13 @@ func TestMessageList_rerenders_at_a_new_width(t *testing.T) {
 	m := newTestMessageList(content)
 
 	require.Equal(t, []string{listLine(0)},
-		uitest.NonEmptyLines(m.View(listWidth, listHeight)))
+		uitest.NonEmptyLines(renderToBuffer(m, listWidth, listHeight)))
 
 	narrow := 20
-	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{Width: narrow, Height: listHeight}})
+	m, _ = m.Update(ui.BoundsMsg{Rect: uv.Rect(0, 0, narrow, listHeight)})
 
 	require.Equal(t, []string{"[09:00:00] <alice>", "message 0"},
-		uitest.NonEmptyLines(m.View(narrow, listHeight)))
+		uitest.NonEmptyLines(renderToBuffer(m, narrow, listHeight)))
 }
 
 // TestMessageList_keeps_one_windows_lines_out_of_another pins the
@@ -309,13 +310,13 @@ func TestMessageList_keeps_one_windows_lines_out_of_another(t *testing.T) {
 	m := newTestMessageList(content)
 
 	require.Equal(t, []string{listLine(1)},
-		uitest.NonEmptyLines(m.View(listWidth, listHeight)))
+		uitest.NonEmptyLines(renderToBuffer(m, listWidth, listHeight)))
 
 	active = "#random"
 	m, _ = m.Update(SetChannelMsg{Channel: active, Kind: domain.KindChannel})
 
 	require.Equal(t, []string{listLine(2)},
-		uitest.NonEmptyLines(m.View(listWidth, listHeight)))
+		uitest.NonEmptyLines(renderToBuffer(m, listWidth, listHeight)))
 }
 
 // TestMessageList_counts_a_settings_change_only_when_one_happened
@@ -410,7 +411,7 @@ func TestMessageList_draws_a_day_divider_when_the_date_rolls_over(t *testing.T) 
 	m := newTestMessageList(content)
 
 	require.Equal(t, []string{listLine(0)},
-		uitest.NonEmptyLines(m.View(listWidth, listHeight)))
+		uitest.NonEmptyLines(renderToBuffer(m, listWidth, listHeight)))
 
 	nextDay := first.(domain.Message)
 	nextDay.At = listTimestamp.AddDate(0, 0, 1)
@@ -422,7 +423,7 @@ func TestMessageList_draws_a_day_divider_when_the_date_rolls_over(t *testing.T) 
 	divider := uitest.StripANSI(renderDayChangedDivider(listWidth, nextDay.At, language.BritishEnglish))
 
 	require.Equal(t, []string{listLine(0), strings.TrimRight(divider, " "), listLine(1)},
-		uitest.NonEmptyLines(m.View(listWidth, listHeight)))
+		uitest.NonEmptyLines(renderToBuffer(m, listWidth, listHeight)))
 }
 
 // TestMessageList_renders_the_same_view_for_an_unrelated_message is
@@ -443,9 +444,9 @@ func TestMessageList_renders_the_same_view_for_an_unrelated_message(t *testing.T
 	}
 
 	m := newTestMessageList(content)
-	before := m.View(listWidth, listHeight)
+	before := renderToBuffer(m, listWidth, listHeight)
 
 	m, _ = m.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
 
-	require.Equal(t, before, m.View(listWidth, listHeight))
+	require.Equal(t, before, renderToBuffer(m, listWidth, listHeight))
 }

@@ -6,23 +6,22 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+	uv "github.com/charmbracelet/ultraviolet"
 
 	"github.com/laney/modeloff/internal/ircfmt"
 	"github.com/laney/modeloff/internal/richtext"
 	"github.com/laney/modeloff/internal/ui/theme"
 )
 
-// View implements ui.Model.
-func (r RichTextarea) View(width, height int) string {
-	r.width = max(width, 0)
-	r.height = max(height, 1)
+func (r RichTextarea) render(width, height int) string {
+	r.bounds = uv.Rect(0, 0, max(width, 0), max(height, 1))
 	r = r.ensureViewport()
 
-	if r.width == 0 {
+	if r.bounds.Dx() == 0 {
 		return ""
 	}
 
-	rows := r.layoutRows(r.width)
+	rows := r.layoutRows(r.bounds.Dx())
 	if r.config.SingleLine && len(rows) == 0 {
 		rows = []visualRow{{Line: 0}}
 	}
@@ -34,7 +33,7 @@ func (r RichTextarea) View(width, height int) string {
 
 	maxRows := max(len(rows)-startRow, 0)
 
-	availableRows := max(r.height, 1)
+	availableRows := max(r.bounds.Dy(), 1)
 	if r.config.ShowFormattingStatus {
 		availableRows--
 	}
@@ -49,15 +48,15 @@ func (r RichTextarea) View(width, height int) string {
 	parts := make([]string, 0, 1+boolToInt(r.config.ShowFormattingStatus))
 
 	if r.config.ShowFormattingStatus {
-		parts = append(parts, r.renderStatus(r.width))
+		parts = append(parts, r.renderStatus(r.bounds.Dx()))
 	}
 
 	renderedRows := make([]string, 0, maxRows)
 	for _, row := range rows[startRow : startRow+maxRows] {
-		renderedRows = append(renderedRows, r.renderRow(row, r.width))
+		renderedRows = append(renderedRows, r.renderRow(row, r.bounds.Dx()))
 	}
 	if len(renderedRows) == 0 {
-		renderedRows = append(renderedRows, lipgloss.NewStyle().Width(r.width).Render(""))
+		renderedRows = append(renderedRows, lipgloss.NewStyle().Width(r.bounds.Dx()).Render(""))
 	}
 
 	parts = append(parts, lipgloss.JoinVertical(lipgloss.Left, renderedRows...))

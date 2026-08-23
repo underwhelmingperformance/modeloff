@@ -6,6 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/domain"
@@ -52,7 +53,7 @@ func TestNickList_View_shows_members(t *testing.T) {
 		member("bob", plain),
 	))
 
-	v := nl.View(20, 10)
+	v := renderToBuffer(nl, 20, 10)
 
 	require.Equal(t, []string{"Nicks", "@alice", "+charlie", "bob"}, visibleLines(v))
 }
@@ -60,9 +61,15 @@ func TestNickList_View_shows_members(t *testing.T) {
 func TestNickList_View_empty(t *testing.T) {
 	nl := components.NewNickList(domain.NewMemberList())
 
-	v := nl.View(20, 10)
+	v := renderToBuffer(nl, 20, 10)
 
 	require.Equal(t, []string{"No members"}, visibleLines(v))
+}
+
+func TestNickList_ContentWidth_uses_the_empty_placeholder(t *testing.T) {
+	nl := components.NewNickList(domain.NewMemberList())
+
+	require.Equal(t, lipgloss.Width("No members")+2, nl.ContentWidth())
 }
 
 func TestNickList_Update_handles_NickListUpdatedMsg(t *testing.T) {
@@ -75,21 +82,21 @@ func TestNickList_Update_handles_NickListUpdatedMsg(t *testing.T) {
 		),
 	})
 
-	v := updated.View(20, 10)
+	v := renderToBuffer(updated, 20, 10)
 	require.Equal(t, []string{"Nicks", "+eve", "dave"}, visibleLines(v))
 }
 
 func TestNickList_Update_clears_on_empty(t *testing.T) {
 	nl := components.NewNickList(members(member("alice", plain)))
 
-	v := nl.View(20, 10)
+	v := renderToBuffer(nl, 20, 10)
 	require.Equal(t, []string{"Nicks", "alice"}, visibleLines(v))
 
 	updated, _ := nl.Update(components.NickListUpdatedMsg{
 		Members: domain.NewMemberList(),
 	})
 
-	v = updated.View(20, 10)
+	v = renderToBuffer(updated, 20, 10)
 	require.Equal(t, []string{"No members"}, visibleLines(v))
 }
 
@@ -102,7 +109,7 @@ func TestNickList_View_overflow_fits_height(t *testing.T) {
 
 	nl := components.NewNickList(ml)
 
-	v := nl.View(20, 5)
+	v := renderToBuffer(nl, 20, 5)
 
 	require.Equal(t, []string{"Nicks", "user00", "user01", "user02", "user03"}, visibleLines(v))
 	require.Equal(t, 5, lipgloss.Height(v), "rendered height must match the available height")
@@ -121,7 +128,7 @@ func TestNickList_View_responsive(t *testing.T) {
 	}
 
 	for _, sz := range sizes {
-		v := nl.View(sz.w, sz.h)
+		v := renderToBuffer(nl, sz.w, sz.h)
 		require.NotEqual(t, []string(nil), renderedLines(v), "View(%d, %d) should not be empty", sz.w, sz.h)
 		require.LessOrEqual(t, lipgloss.Width(v), sz.w+1,
 			"View(%d, %d) should fit width", sz.w, sz.h)
@@ -135,7 +142,7 @@ func TestNickList_View_shows_mode_prefixes(t *testing.T) {
 		member("charlie", plain),
 	))
 
-	v := nl.View(20, 10)
+	v := renderToBuffer(nl, 20, 10)
 
 	require.Equal(t, []string{"Nicks", "@alice", "+botty", "charlie"}, visibleLines(v))
 }
@@ -151,8 +158,23 @@ func TestNickList_View_shows_thinking_indicator(t *testing.T) {
 		Nicks: map[domain.Nick]bool{"botty": true, "claude": true},
 	})
 
-	v := updated.View(30, 10)
+	v := renderToBuffer(updated, 30, 10)
 	require.Equal(t, []string{"Nicks", "@alice", "+botty …", "+claude …"}, visibleLines(v))
+}
+
+func TestNickList_ContentWidth_reserves_the_thinking_indicator(t *testing.T) {
+	nl := components.NewNickList(members(member("longnickname", voiced)))
+	want := lipgloss.Width("+longnickname …") + 2
+
+	require.Equal(t, want, nl.ContentWidth())
+
+	updated, _ := nl.Update(components.NickListThinkingMsg{
+		Nicks: map[domain.Nick]bool{"longnickname": true},
+	})
+	nl = updated.(components.NickList)
+
+	require.Equal(t, want, nl.ContentWidth(),
+		"the panel width must not change when the reserved indicator appears")
 }
 
 func TestNickList_View_clears_thinking_indicator(t *testing.T) {
@@ -166,7 +188,7 @@ func TestNickList_View_clears_thinking_indicator(t *testing.T) {
 	})
 	updated, _ = updated.Update(components.NickListThinkingMsg{})
 
-	v := updated.View(30, 10)
+	v := renderToBuffer(updated, 30, 10)
 	require.Equal(t, []string{"Nicks", "@alice", "+botty"}, visibleLines(v))
 }
 
@@ -176,8 +198,8 @@ func TestNickList_ignores_sidebar_cursor_and_activation_keys(t *testing.T) {
 		member("bob", plain),
 	))
 
-	var m ui.Model = nl
-	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 0, Y: 0, Width: 20, Height: 10}})
+	var m ui.Component = nl
+	m, _ = m.Update(ui.BoundsMsg{Rect: uv.Rect(0, 0, 20, 10)})
 
 	for _, key := range []tea.KeyPressMsg{
 		{Code: tea.KeyDown, Mod: tea.ModAlt}, // channel sidebar's Down
@@ -189,7 +211,7 @@ func TestNickList_ignores_sidebar_cursor_and_activation_keys(t *testing.T) {
 		m = updated
 	}
 
-	require.Equal(t, []string{"Nicks", "@alice", "bob"}, visibleLines(m.View(20, 10)),
+	require.Equal(t, []string{"Nicks", "@alice", "bob"}, visibleLines(renderToBuffer(m, 20, 10)),
 		"rendering must be unaffected by keys the channel sidebar uses for cursor movement")
 }
 
@@ -201,6 +223,6 @@ func TestNickList_View_preserves_display_order(t *testing.T) {
 		member("bob", plain),
 	))
 
-	v := nl.View(30, 10)
+	v := renderToBuffer(nl, 30, 10)
 	require.Equal(t, []string{"Nicks", "@alice", "+dave", "+zara", "bob"}, visibleLines(v))
 }

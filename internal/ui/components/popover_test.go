@@ -4,9 +4,11 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/command"
+	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/components"
 )
 
@@ -117,6 +119,28 @@ func TestPopover_UpDown_cycle_when_multiple_suggestions(t *testing.T) {
 
 	require.True(t, next.Handled())
 	require.True(t, next.BlocksHistory())
+}
+
+func TestPopover_short_bounds_keep_the_selection_visible(t *testing.T) {
+	p := newVisiblePopover(t, command.Completion{
+		Visible: true,
+		Suggestions: []command.Suggestion{
+			{Value: "first", Label: "first"},
+			{Value: "second", Label: "second"},
+			{Value: "third", Label: "third"},
+		},
+	})
+
+	updated, _ := p.Update(ui.BoundsMsg{Rect: uv.Rect(0, 0, 20, 1)})
+	p = updated.(components.Popover)
+	updated, _ = p.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	p = updated.(components.Popover)
+
+	require.Equal(t, []string{"second"}, visibleLines(renderToBuffer(p, 20, 1)))
+
+	_, cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	require.NotNil(t, cmd)
+	require.Equal(t, components.PopoverAcceptMsg{Replacement: "second"}, cmd())
 }
 
 func TestPopover_UpDown_fall_through_with_at_most_one_suggestion(t *testing.T) {

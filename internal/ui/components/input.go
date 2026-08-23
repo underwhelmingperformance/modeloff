@@ -7,6 +7,7 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	uv "github.com/charmbracelet/ultraviolet"
 
 	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
@@ -63,14 +64,13 @@ type nickCompletion struct {
 }
 
 // InputBar wraps the rich composer with command completion, nick
-// completion, and input history. It owns the command popover as a
-// child model.
+// completion, and input history. It owns the command popover.
 type InputBar struct {
 	input    RichTextarea
 	keyMap   InputBarKeyMap
 	userNick domain.Nick
 	popover  Popover
-	bounds   ui.Rect
+	bounds   uv.Rectangle
 
 	history         []string
 	histPos         int // -1 = editing new input, 0..len(history)-1 = browsing
@@ -93,6 +93,14 @@ type InputBar struct {
 	// is cleared by any other key, so the hint reflects only the
 	// paste that just happened.
 	pasteFlattened bool
+}
+
+type inputBarLayout struct {
+	palette uv.Rectangle
+	popover uv.Rectangle
+	note    uv.Rectangle
+	input   uv.Rectangle
+	editor  uv.Rectangle
 }
 
 // NewInputBar creates an input bar with an optional user nick. When
@@ -119,13 +127,13 @@ func NewInputBar(nick ...domain.Nick) InputBar {
 	return b
 }
 
-// Init implements ui.Model.
+// Init implements ui.Component.
 func (b InputBar) Init() tea.Cmd {
 	return b.input.Init()
 }
 
-// Update implements ui.Model.
-func (b InputBar) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
+// Update implements ui.Component.
+func (b InputBar) Update(msg tea.Msg) (ui.Component, tea.Cmd) {
 	switch msg := msg.(type) {
 	case InputLockedMsg:
 		b.locked = msg.Locked
@@ -161,8 +169,7 @@ func (b InputBar) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 
 	case ui.BoundsMsg:
 		b.bounds = msg.Rect
-		b, cmd := b.refreshPopover(msg)
-		return b, cmd
+		return b.updateChildBounds()
 
 	case tea.MouseMsg:
 		if updated, handled, cmd := b.handleMouse(msg); handled {
@@ -206,7 +213,7 @@ func (b InputBar) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	return b, cmd
 }
 
-func (b InputBar) handleKey(msg tea.KeyPressMsg) (ui.Model, tea.Cmd) {
+func (b InputBar) handleKey(msg tea.KeyPressMsg) (ui.Component, tea.Cmd) {
 	// Any ordinary key clears the paste notice, so it describes only
 	// the most recent input event.
 	b.pasteFlattened = false
@@ -361,15 +368,30 @@ func containsNewline(text string) bool {
 }
 
 func (b InputBar) handleMouse(msg tea.MouseMsg) (InputBar, bool, tea.Cmd) {
-	if b.bounds.Width == 0 || b.bounds.Height == 0 {
+	if _, released := msg.(tea.MouseReleaseMsg); released && b.input.mouseSelecting {
+		updated, cmd := b.input.Update(msg)
+		b.input = updated.(RichTextarea)
+
+		return b, true, cmd
+	}
+
+	if b.bounds.Dx() == 0 || b.bounds.Dy() == 0 {
 		return b, false, nil
 	}
 
-	inputRect := b.inputRect()
-	popoverLayout := b.popover.Layout(b.bounds, inputRect)
+	layout := b.layout(b.bounds)
 	mouse := msg.Mouse()
 
-	if popoverLayout.Rect.Contains(mouse.X, mouse.Y) {
+	if contains(layout.palette, mouse.X, mouse.Y) {
+		localX, localY := localPoint(layout.palette, mouse.X, mouse.Y)
+		updated, handled := b.input.handlePaletteMouse(mouseAt(msg, localX, localY))
+		if handled {
+			b.input = updated
+			return b, true, nil
+		}
+	}
+
+	if contains(layout.popover, mouse.X, mouse.Y) {
 		updated, cmd := b.popover.Update(msg)
 		b.popover = updated.(Popover)
 
@@ -377,32 +399,43 @@ func (b InputBar) handleMouse(msg tea.MouseMsg) (InputBar, bool, tea.Cmd) {
 	}
 
 	var dismissCmd tea.Cmd
+	dismissed := false
 	if _, clicked := msg.(tea.MouseClickMsg); b.popover.IsVisible() && clicked && mouse.Button == tea.MouseLeft {
 		b, dismissCmd = b.refreshPopover(PopoverDismissMsg{Raw: b.input.Value()})
+		dismissed = true
 	}
 
-	if inputRect.Contains(mouse.X, mouse.Y) {
+	if contains(layout.input, mouse.X, mouse.Y) {
 		switch msg.(type) {
 		case tea.MouseClickMsg:
 			if mouse.Button == tea.MouseLeft {
-				localX, _ := inputRect.Local(mouse.X, mouse.Y)
-				b = b.SetCursorFromCell(localX)
+				inputMsg := mouseAt(msg, max(mouse.X, layout.editor.Min.X), mouse.Y)
+				updated, inputCmd := b.input.Update(inputMsg)
+				b.input = updated.(RichTextarea)
 				b, popCmd := b.refreshPopover(PopoverRefreshMsg{
 					Raw:    b.input.Value(),
 					Cursor: b.input.Cursor(),
 				})
 
-				return b, true, tea.Batch(dismissCmd, popCmd)
+				return b, true, tea.Batch(dismissCmd, inputCmd, popCmd)
 			}
 		case tea.MouseMotionMsg:
+			if b.input.mouseSelecting {
+				inputMsg := mouseAt(msg, max(mouse.X, layout.editor.Min.X), mouse.Y)
+				updated, cmd := b.input.Update(inputMsg)
+				b.input = updated.(RichTextarea)
+
+				return b, true, tea.Batch(dismissCmd, cmd)
+			}
+
 			return b, true, dismissCmd
 		}
 	}
 
-	return b, false, dismissCmd
+	return b, dismissed, dismissCmd
 }
 
-func (b InputBar) submit() (ui.Model, tea.Cmd) {
+func (b InputBar) submit() (ui.Component, tea.Cmd) {
 	text := strings.TrimSpace(b.input.Value())
 	if text == "" {
 		return b, nil
@@ -720,17 +753,9 @@ func (b InputBar) fmtBinding(binding ui.KeyBinding, active bool) ui.KeyBinding {
 func (b InputBar) refreshPopover(msg tea.Msg) (InputBar, tea.Cmd) {
 	updated, cmd := b.popover.Update(msg)
 	b.popover = updated.(Popover)
+	resized, boundsCmd := b.updateChildBounds()
 
-	return b, cmd
-}
-
-func (b InputBar) inputRect() ui.Rect {
-	return ui.Rect{
-		X:      b.bounds.X,
-		Y:      b.bounds.Y + b.bounds.Height - 1,
-		Width:  b.bounds.Width,
-		Height: 1,
-	}
+	return resized.(InputBar), tea.Batch(cmd, boundsCmd)
 }
 
 func clampInputIndex(index, length int) int {
@@ -745,42 +770,86 @@ func clampInputIndex(index, length int) int {
 	return index
 }
 
-func promptWidth() int {
-	return lipgloss.Width(theme.Prompt.Render("> "))
-}
-
 func (b InputBar) prefixWidth() int {
-	return lipgloss.Width(theme.UserNick.Render(string(b.userNick))) + 1 + promptWidth()
+	nickLabel, lockBadge, prompt := b.inputPrefix()
+
+	return lipgloss.Width(nickLabel) + lipgloss.Width(lockBadge) + lipgloss.Width(prompt)
 }
 
-// View implements ui.Model. It renders the popover (if visible)
-// above the input line.
-func (b InputBar) View(width, _ int) string {
-	nickLabel := theme.UserNick.Render(string(b.userNick)) + " "
-	prompt := theme.Prompt.Render("> ")
+// Height returns the number of rows the input bar currently occupies.
+func (b InputBar) Height() int {
+	height := 1
+	if b.input.PaletteVisible() {
+		height++
+	}
 
-	var lockBadge string
-	editor := b.input
+	if popoverHeight := b.popover.height(); popoverHeight > 0 {
+		return height + popoverHeight
+	}
+
+	if b.pasteFlattened {
+		height++
+	}
+
+	return height
+}
+
+func (b InputBar) inputPrefix() (nickLabel, lockBadge, prompt string) {
+	nickLabel = theme.UserNick.Render(string(b.userNick)) + " "
+	prompt = theme.Prompt.Render("> ")
+
 	if b.locked {
 		lockBadge = theme.Dim.Render("(locked) ")
 		nickLabel = theme.Dim.Render(string(b.userNick)) + " "
 		prompt = theme.Dim.Render("> ")
-		editor.cursor.Blur()
 	}
 
-	editorWidth := max(width-lipgloss.Width(nickLabel)-lipgloss.Width(lockBadge)-lipgloss.Width(prompt), 0)
-	inputLine := nickLabel + lockBadge + prompt + editor.View(editorWidth, 1)
+	return nickLabel, lockBadge, prompt
+}
 
-	if popoverView := b.popover.Render(width); popoverView != "" {
-		return lipgloss.JoinVertical(lipgloss.Left, popoverView, inputLine)
+func (b InputBar) layout(area uv.Rectangle) inputBarLayout {
+	if area.Empty() {
+		return inputBarLayout{}
 	}
 
-	if b.pasteFlattened {
-		note := theme.Dim.Render("Pasted text flattened to one line")
-		return lipgloss.JoinVertical(lipgloss.Left, note, inputLine)
+	input := uv.Rect(area.Min.X, area.Max.Y-1, area.Dx(), 1)
+	nickLabel, lockBadge, prompt := b.inputPrefix()
+	prefixWidth := min(
+		lipgloss.Width(nickLabel)+lipgloss.Width(lockBadge)+lipgloss.Width(prompt),
+		input.Dx(),
+	)
+	editor := uv.Rect(input.Min.X+prefixWidth, input.Min.Y, input.Dx()-prefixWidth, 1)
+
+	layout := inputBarLayout{input: input, editor: editor}
+	availableTop := input.Min.Y
+
+	auxHeight := b.popover.height()
+	if auxHeight > 0 {
+		auxHeight = min(auxHeight, max(availableTop-area.Min.Y, 0))
+		layout.popover = uv.Rect(area.Min.X, availableTop-auxHeight, area.Dx(), auxHeight)
+		availableTop -= auxHeight
+	} else if b.pasteFlattened && availableTop > area.Min.Y {
+		layout.note = uv.Rect(area.Min.X, availableTop-1, area.Dx(), 1)
+		availableTop--
 	}
 
-	return inputLine
+	if b.input.PaletteVisible() && availableTop > area.Min.Y {
+		layout.palette = uv.Rect(area.Min.X, availableTop-1, area.Dx(), 1)
+	}
+
+	return layout
+}
+
+func (b InputBar) updateChildBounds() (ui.Component, tea.Cmd) {
+	layout := b.layout(b.bounds)
+
+	updatedPopover, popoverCmd := b.popover.Update(ui.BoundsMsg{Rect: layout.popover})
+	b.popover = updatedPopover.(Popover)
+
+	updatedInput, inputCmd := b.input.Update(ui.BoundsMsg{Rect: layout.editor})
+	b.input = updatedInput.(RichTextarea)
+
+	return b, tea.Batch(popoverCmd, inputCmd)
 }
 
 // ActiveFormats returns the formatting state at the current cursor
@@ -815,33 +884,6 @@ func (b InputBar) PaletteTarget() PaletteTarget {
 // PaletteIndex returns the active swatch index within the palette.
 func (b InputBar) PaletteIndex() int {
 	return b.input.PaletteIndex()
-}
-
-// PaletteView renders the colour palette picker.
-func (b InputBar) PaletteView(width int) string {
-	return b.input.PaletteView(width)
-}
-
-// PaletteHeight returns the rendered height of the palette, or 0.
-func (b InputBar) PaletteHeight(width int) int {
-	view := b.PaletteView(width)
-	if view == "" {
-		return 0
-	}
-
-	return lipgloss.Height(view)
-}
-
-// HandlePaletteMouse forwards a mouse event to the palette.
-func (b InputBar) HandlePaletteMouse(msg tea.MouseMsg) (InputBar, bool, tea.Cmd) {
-	updated, handled := b.input.handlePaletteMouse(msg)
-	if !handled {
-		return b, false, nil
-	}
-
-	b.input = updated
-
-	return b, true, nil
 }
 
 func (b InputBar) rawValue() string {

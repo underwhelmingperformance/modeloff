@@ -42,13 +42,20 @@ func (c *clickTracker) press(position richtext.Position, now time.Time) int {
 }
 
 func (r RichTextarea) handleMouse(msg tea.MouseMsg) (RichTextarea, bool) {
-	if r.palette.open {
-		if updated, handled := r.handlePaletteMouse(msg); handled {
-			return updated, true
-		}
+	if _, released := msg.(tea.MouseReleaseMsg); released && r.mouseSelecting {
+		r.mouseSelecting = false
+		return r, true
 	}
 
 	mouse := msg.Mouse()
+	if r.bounds.Empty() || !contains(r.bounds, mouse.X, mouse.Y) {
+		return r, false
+	}
+
+	localX, localY := localPoint(r.bounds, mouse.X, mouse.Y)
+	msg = mouseAt(msg, localX, localY)
+
+	mouse = msg.Mouse()
 
 	if !r.config.SingleLine {
 		if _, ok := msg.(tea.MouseWheelMsg); ok {

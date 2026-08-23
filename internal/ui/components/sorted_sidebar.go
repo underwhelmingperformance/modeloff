@@ -7,6 +7,7 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/laney/modeloff/internal/set"
@@ -53,7 +54,7 @@ type SidebarConfig[T any, K comparable] struct {
 	Section func(T) string
 }
 
-// sidebarRow is one line Sidebar.View draws: either a group label
+// sidebarRow is one row in Sidebar's rendered layout: either a group label
 // (ItemIndex -1) or a pointer back to the item at ItemIndex in the
 // sorted set's iteration order. Cursor placement and mouse
 // hit-testing both walk this same row order, computed by rowLayout,
@@ -65,9 +66,9 @@ type sidebarRow struct {
 }
 
 // rowLayout walks the sorted items in order and returns one entry
-// per line View will draw, inserting a label row wherever cfg.Section
+// per line Draw will render, inserting a label row wherever cfg.Section
 // changes to a new non-empty value. It does not depend on width, so
-// both View (which also needs rendered text) and the mouse
+// both rendering (which also needs the row text) and the mouse
 // hit-tester (which needs only the mapping) can call it cheaply.
 func (s Sidebar[T, K]) rowLayout() []sidebarRow {
 	if s.items == nil {
@@ -133,7 +134,7 @@ type Sidebar[T set.Lesser[T], K comparable] struct {
 	viewport  viewport.Model
 	header    string
 	empty     string
-	bounds    ui.Rect
+	bounds    uv.Rectangle
 	minWidth  int
 	itemStyle lipgloss.Style
 	keyMap    SidebarKeyMap
@@ -222,13 +223,13 @@ func (s Sidebar[T, K]) ActiveKey() K {
 	return s.active
 }
 
-// Init implements ui.Model.
+// Init implements ui.Component.
 func (s Sidebar[T, K]) Init() tea.Cmd {
 	return nil
 }
 
-// Update implements ui.Model.
-func (s Sidebar[T, K]) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
+// Update implements ui.Component.
+func (s Sidebar[T, K]) Update(msg tea.Msg) (ui.Component, tea.Cmd) {
 	switch msg := msg.(type) {
 	case ui.BoundsMsg:
 		s.bounds = msg.Rect
@@ -282,7 +283,7 @@ func (s Sidebar[T, K]) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 // renderRows renders every row rowLayout produced, a group label or
 // an item styled by its selection/activation state, and reports the
 // widest rendered row plus the row the cursor item landed on (-1 if
-// the cursor's key matched no row), so View can place the viewport's
+// the cursor's key matched no row), so rendering can place the viewport's
 // scroll offset by row rather than by item index. A row whose item
 // no longer exists in the sorted set is dropped.
 func (s Sidebar[T, K]) renderRows(rows []sidebarRow, width, pad int) (rendered []string, naturalW int, cursorRow int) {
@@ -345,8 +346,7 @@ func (s Sidebar[T, K]) stateFor(k K) ViewState {
 	}
 }
 
-// View implements ui.Model.
-func (s Sidebar[T, K]) View(width, height int) string {
+func (s Sidebar[T, K]) render(width, height int) string {
 	if s.minWidth > 0 && width < s.minWidth {
 		width = s.minWidth
 	}
@@ -422,6 +422,32 @@ func (s Sidebar[T, K]) View(width, height int) string {
 	}
 
 	return s.viewport.View()
+}
+
+func (s Sidebar[T, K]) contentWidth(itemWidth func(T) int) int {
+	width := max(ansi.StringWidth(s.header), s.minWidth)
+	if s.items == nil || s.items.Len() == 0 {
+		empty := s.empty
+		if empty == "" {
+			empty = "Empty"
+		}
+
+		return max(width, ansi.StringWidth(empty)) + s.padding()
+	}
+
+	for _, row := range s.rowLayout() {
+		if row.ItemIndex < 0 {
+			width = max(width, ansi.StringWidth(row.Label))
+			continue
+		}
+
+		item, ok := s.items.GetAt(row.ItemIndex)
+		if ok {
+			width = max(width, itemWidth(item))
+		}
+	}
+
+	return width + s.padding()
 }
 
 // KeyBindings returns the sidebar's key bindings for the status bar.
@@ -595,7 +621,7 @@ func (s Sidebar[T, K]) handleMouse(msg tea.MouseMsg) (Sidebar[T, K], tea.Cmd) {
 
 	switch msg.(type) {
 	case tea.MouseWheelMsg:
-		if !s.bounds.Contains(mouse.X, mouse.Y) {
+		if !contains(s.bounds, mouse.X, mouse.Y) {
 			return s, nil
 		}
 
@@ -609,11 +635,11 @@ func (s Sidebar[T, K]) handleMouse(msg tea.MouseMsg) (Sidebar[T, K], tea.Cmd) {
 		return s, nil
 
 	case tea.MouseClickMsg:
-		if mouse.Button != tea.MouseLeft || !s.bounds.Contains(mouse.X, mouse.Y) {
+		if mouse.Button != tea.MouseLeft || !contains(s.bounds, mouse.X, mouse.Y) {
 			return s, nil
 		}
 
-		_, localY := s.bounds.Local(mouse.X, mouse.Y)
+		_, localY := localPoint(s.bounds, mouse.X, mouse.Y)
 		headerHeight := s.renderHeaderHeight()
 		rowIdx := localY - headerHeight + s.viewport.YOffset()
 
@@ -635,12 +661,12 @@ func (s Sidebar[T, K]) handleMouse(msg tea.MouseMsg) (Sidebar[T, K], tea.Cmd) {
 }
 
 func (s Sidebar[T, K]) renderHeaderHeight() int {
-	if s.header == "" || s.bounds.Width <= 0 {
+	if s.header == "" || s.bounds.Dx() <= 0 {
 		return 0
 	}
 
 	headerStr := s.itemStyle.
-		Width(s.bounds.Width).
+		Width(s.bounds.Dx()).
 		Render(theme.Dim.Render(theme.Bold.Render(s.header)))
 
 	return lipgloss.Height(headerStr)

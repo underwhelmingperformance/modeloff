@@ -2,6 +2,7 @@ package components
 
 import (
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/ui"
@@ -66,13 +67,13 @@ func NewNickList(members domain.MemberList) NickList {
 	return nl
 }
 
-// Init implements ui.Model.
+// Init implements ui.Component.
 func (n NickList) Init() tea.Cmd {
 	return nil
 }
 
-// Update implements ui.Model.
-func (n NickList) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
+// Update implements ui.Component.
+func (n NickList) Update(msg tea.Msg) (ui.Component, tea.Cmd) {
 	switch msg := msg.(type) {
 	case NickListUpdatedMsg:
 		n.panel = n.panel.SetItems(msg.Members.SortedSet())
@@ -93,7 +94,14 @@ func (n NickList) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	}
 }
 
-// View implements ui.Model.
-func (n NickList) View(width, height int) string {
-	return n.panel.View(width, height)
+// ContentWidth returns the width needed for the current nick rows.
+func (n NickList) ContentWidth() int {
+	return n.panel.contentWidth(func(member domain.Member) int {
+		prefix := member.Modes.Rank().String()
+		if prefix == "" {
+			prefix = " "
+		}
+
+		return ansi.StringWidth(prefix + string(member.Nick) + " …")
+	})
 }

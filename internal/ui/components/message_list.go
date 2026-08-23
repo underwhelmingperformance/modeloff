@@ -89,8 +89,8 @@ type blockKey struct {
 // list, so without a cache a keystroke and the once-a-second metrics
 // tick each pay for the window entire.
 //
-// The list holds this by pointer because `View` renders on a copy of
-// the model and Bubble Tea keeps no result from it.
+// The list holds this by pointer because Draw receives the component
+// by value and keeps no state changes made while rendering.
 type listCache struct {
 	key     lineKey
 	channel domain.ChannelName
@@ -129,7 +129,7 @@ func (c *listCache) reset(channel domain.ChannelName, key lineKey, base int64) {
 // The message list does not own the event storage. The owning
 // chat-screen (or test harness) passes a `content` closure that
 // returns the window in view and its events; the message list reads
-// through it on every `View`. A single source of truth removes the
+// through it on every draw. A single source of truth removes the
 // live-append-vs-snapshot race that an internally-owned buffer would
 // introduce.
 type MessageList[C command.KindProvider] struct {
@@ -185,9 +185,9 @@ type MessageList[C command.KindProvider] struct {
 	// says whether it was given one at all. Handing the viewport a
 	// block it already holds costs an ANSI width measurement of every
 	// line in it, so the list hands one over only when it differs.
-	// The model holds both, because `View` renders through a copy of
-	// the viewport and each copy holds whatever the model it came
-	// from was given.
+	// The component holds both because Draw renders through a copy of
+	// the viewport, and that copy starts with the block the component
+	// was last given.
 	vpKey    blockKey
 	vpHasKey bool
 
@@ -262,13 +262,13 @@ func (m MessageList[C]) SetKeyMap(km ChatViewKeyMap) MessageList[C] {
 	return m
 }
 
-// Init implements ui.Model.
+// Init implements ui.Component.
 func (m MessageList[C]) Init() tea.Cmd {
 	return nil
 }
 
-// Update implements ui.Model.
-func (m MessageList[C]) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
+// Update implements ui.Component.
+func (m MessageList[C]) Update(msg tea.Msg) (ui.Component, tea.Cmd) {
 	switch msg := msg.(type) {
 	case SetChannelMsg:
 		m.kind = msg.Kind
@@ -320,8 +320,8 @@ func (m MessageList[C]) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		return m, nil
 
 	case ui.BoundsMsg:
-		m.viewport.SetWidth(max(msg.Rect.Width, 0))
-		m.viewport.SetHeight(max(msg.Rect.Height, 0))
+		m.viewport.SetWidth(max(msg.Rect.Dx(), 0))
+		m.viewport.SetHeight(max(msg.Rect.Dy(), 0))
 		m = m.syncContent()
 
 		return m, nil
@@ -391,8 +391,7 @@ func (m MessageList[C]) syncContent() MessageList[C] {
 	return m
 }
 
-// View implements ui.Model.
-func (m MessageList[C]) View(width, height int) string {
+func (m MessageList[C]) render(width, height int) string {
 	content := m.content()
 
 	messageView, scrolled, scrollPct := m.renderMessages(content, width, height)

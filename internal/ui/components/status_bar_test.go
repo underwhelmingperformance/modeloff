@@ -45,7 +45,7 @@ func TestStatusBar_renders_only_the_highest_priority_complete_hints(t *testing.T
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := uitest.NonEmptyLines(RenderStatusBar(tt.width, bindings, nil))
+			got := uitest.NonEmptyLines(renderStatusBar(tt.width, bindings, nil))
 
 			require.Equal(t, []string{tt.want}, got)
 		})
@@ -53,7 +53,7 @@ func TestStatusBar_renders_only_the_highest_priority_complete_hints(t *testing.T
 }
 
 func TestStatusBar_shows_context_hint_when_present(t *testing.T) {
-	got := uitest.NonEmptyLines(RenderStatusBar(120, []ui.KeyBinding{
+	got := uitest.NonEmptyLines(renderStatusBar(120, []ui.KeyBinding{
 		ui.Bind(key.NewBinding(key.WithKeys("tab"), key.WithHelp("Tab", "accept"))).
 			WithHelpMetadata(ui.KeyHelpCompletion, ui.KeyHintHigh),
 		ui.Bind(key.NewBinding(key.WithKeys("up", "down"), key.WithHelp("↑↓", "navigate"))).
@@ -67,7 +67,7 @@ func TestStatusBar_shows_context_hint_when_present(t *testing.T) {
 }
 
 func TestStatusBar_renders_rhs_summary_when_space_allows(t *testing.T) {
-	got := uitest.NonEmptyLines(RenderStatusBar(120, []ui.KeyBinding{
+	got := uitest.NonEmptyLines(renderStatusBar(120, []ui.KeyBinding{
 		ui.Bind(key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("^C", "quit"))),
 	}, []ui.StatusItem{{
 		ID:       "metrics",
@@ -80,7 +80,7 @@ func TestStatusBar_renders_rhs_summary_when_space_allows(t *testing.T) {
 }
 
 func TestStatusBar_preserves_rhs_while_dropping_complete_key_hints(t *testing.T) {
-	got := uitest.NonEmptyLines(RenderStatusBar(80, []ui.KeyBinding{
+	got := uitest.NonEmptyLines(renderStatusBar(80, []ui.KeyBinding{
 		ui.Bind(key.NewBinding(key.WithKeys("ctrl+d", "ctrl+u"), key.WithHelp("^D/U", "channels"))),
 		ui.Bind(key.NewBinding(key.WithKeys("ctrl+o"), key.WithHelp("^O", "switch channel"))),
 		ui.Bind(key.NewBinding(key.WithKeys("ctrl+l"), key.WithHelp("^L", "logs"))),
@@ -101,7 +101,7 @@ func TestStatusBar_preserves_rhs_while_dropping_complete_key_hints(t *testing.T)
 }
 
 func TestStatusBar_compacts_lower_priority_status_first(t *testing.T) {
-	got := uitest.NonEmptyLines(RenderStatusBar(40, []ui.KeyBinding{
+	got := uitest.NonEmptyLines(renderStatusBar(40, []ui.KeyBinding{
 		ui.Bind(key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("^C", "quit"))),
 	}, []ui.StatusItem{
 		{

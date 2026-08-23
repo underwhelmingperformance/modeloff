@@ -1,6 +1,7 @@
 package components_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -35,7 +36,7 @@ func TestMainLayout_semantic_regions_expose_rendered_sidebar_chat_and_nicklist(t
 	layout := components.NewMainLayout(sidebarModel.(components.ChannelSidebar), chat)
 	layout.NickList = nicklist
 
-	columns := visibleColumns(layout.View(120, 10))
+	columns := visibleColumns(renderToBuffer(layout, 120, 10))
 
 	got := make([][]string, len(columns))
 	for i, col := range columns {
@@ -50,15 +51,11 @@ func TestMainLayout_semantic_regions_expose_rendered_sidebar_chat_and_nicklist(t
 	// rule: a run of box-drawing dashes spanning the column's full
 	// width, which varies with the terminal width MainLayout leaves
 	// the chat pane after the sidebar and nick list.
-	require.Len(t, got, 3)
-	require.Len(t, got[1], 5, "chat column: header, its border rule, two messages, the input prompt")
-	require.Regexp(t, `^─+$`, got[1][1], "second chat line is the header's border rule")
-
 	require.Equal(t, [][]string{
 		{"Channels", "#general (2)", "▸#random"},
 		{
 			"#random",
-			got[1][1],
+			strings.Repeat("─", 93),
 			"[10:00:00] <alice> hello",
 			"[10:01:00] <botty> hi there",
 			"testuser >",

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/domain"
@@ -128,13 +129,13 @@ func TestChatScreen_no_divider_for_a_line_that_lands_during_a_switch(t *testing.
 	screen, err := screens.NewChatScreen(t.Context, h.sess, h.mgr, h.user, nil, nil, domain.KindStatus)
 	require.NoError(t, err)
 
-	var model ui.Model = screen
+	var model ui.Component = screen
 
 	// Init fills the window cache. Its commands include the
 	// protocol-bus listener, which this test drives by hand.
 	_ = model.Init()
 
-	model, _ = model.Update(tea.WindowSizeMsg{Width: termWidth, Height: termHeight})
+	model, _ = model.Update(ui.BoundsMsg{Rect: uv.Rect(0, 0, termWidth, termHeight)})
 
 	model, focusCmd := model.Update(chatcmd.ChannelFocusMsg{
 		Channel: "#general",
@@ -152,7 +153,7 @@ func TestChatScreen_no_divider_for_a_line_that_lands_during_a_switch(t *testing.
 		model, _ = model.Update(msg)
 	}
 
-	body, _ := uitest.SplitBodyAndStatus(model.View(termWidth, termHeight))
+	body, _ := uitest.SplitBodyAndStatus(renderToBuffer(model, termWidth, termHeight))
 	columns := uitest.VisibleColumns(body)
 
 	require.Equal(t, []string{

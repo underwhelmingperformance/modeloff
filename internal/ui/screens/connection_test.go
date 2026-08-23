@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/ui"
@@ -13,18 +14,30 @@ import (
 
 type stubScreen struct{}
 
-func (s *stubScreen) Init() tea.Cmd                      { return nil }
-func (s *stubScreen) Update(tea.Msg) (ui.Model, tea.Cmd) { return s, nil }
-func (s *stubScreen) View(int, int) string               { return "stub" }
+func (s *stubScreen) Init() tea.Cmd                          { return nil }
+func (s *stubScreen) Update(tea.Msg) (ui.Component, tea.Cmd) { return s, nil }
+func (s *stubScreen) Draw(screen uv.Screen, area uv.Rectangle) {
+	uv.NewStyledString("stub").Draw(screen, area)
+}
 
-func tick(t *testing.T, m ui.Model) (ui.Model, tea.Cmd) {
+func tick(t *testing.T, m ui.Component) (ui.Component, tea.Cmd) {
 	t.Helper()
 
 	return m.Update(screens.ConnectionTickMsg{})
 }
 
-func view(m ui.Model) string {
-	return m.View(80, 24)
+func view(m ui.Component) string {
+	screen := uv.NewScreenBuffer(80, 24)
+	m.Draw(screen, screen.Bounds())
+
+	return screen.Render()
+}
+
+func renderToBuffer(m ui.Component, width, height int) string {
+	screen := uv.NewScreenBuffer(width, height)
+	m.Draw(screen, screen.Bounds())
+
+	return screen.Render()
 }
 
 func TestConnectionScreen_with_api_key(t *testing.T) {
@@ -39,7 +52,7 @@ func TestConnectionScreen_with_api_key(t *testing.T) {
 	require.Equal(t, []string{"… Connecting to modeloff"}, uitest.TrimmedVisibleLines(view(s)))
 
 	// Tick 1: "Connecting" completes.
-	var m ui.Model = s
+	var m ui.Component = s
 	m, cmd := tick(t, m)
 
 	v := view(m)
@@ -110,7 +123,7 @@ func TestConnectionScreen_with_api_key(t *testing.T) {
 	// only swaps the active pointer — the wrapped child has been
 	// running throughout the animation, so no Init follows.
 	msg := cmd()
-	require.Equal(t, ui.ScreenMsg{Screen: next}, msg)
+	require.Equal(t, ui.ScreenMsg{}, msg)
 }
 
 func TestConnectionScreen_no_api_key(t *testing.T) {
@@ -120,7 +133,7 @@ func TestConnectionScreen_no_api_key(t *testing.T) {
 	}, nil)
 
 	// Tick 1: "Connecting" completes.
-	var m ui.Model = s
+	var m ui.Component = s
 	m, cmd := tick(t, m)
 	require.NotNil(t, cmd)
 
@@ -156,13 +169,13 @@ func TestConnectionScreen_View_narrow_terminal(t *testing.T) {
 	}, nil)
 
 	t.Run("below threshold shows resize message", func(t *testing.T) {
-		got := s.View(79, 24)
+		got := renderToBuffer(s, 79, 24)
 
 		require.Equal(t, []string{"Resize terminal to 80+ columns"}, uitest.TrimmedVisibleLines(got))
 	})
 
 	t.Run("at threshold renders normally", func(t *testing.T) {
-		got := s.View(80, 24)
+		got := renderToBuffer(s, 80, 24)
 
 		require.Equal(t, []string{"… Connecting to modeloff"}, uitest.TrimmedVisibleLines(got))
 	})
@@ -174,7 +187,7 @@ func TestConnectionScreen_ignores_other_messages(t *testing.T) {
 		Nick:      "user",
 	}, nil)
 
-	var m ui.Model = s
+	var m ui.Component = s
 	m, cmd := m.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
 
 	require.Nil(t, cmd)

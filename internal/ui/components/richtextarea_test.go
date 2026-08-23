@@ -8,9 +8,11 @@ import (
 	"charm.land/bubbles/v2/cursor"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/richtext"
+	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/uitest"
 )
 
@@ -31,7 +33,7 @@ func TestRichTextareaCursorAppearsInView(t *testing.T) {
 	editor = editor.SetPlainText("hello")
 	editor = editor.SetCursorFromRuneIndex(2)
 
-	view := editor.View(20, 1)
+	view := renderToBuffer(editor, 20, 1)
 
 	require.Equal(t, []string{"hello"}, uitest.NonEmptyLines(view))
 }
@@ -56,8 +58,7 @@ func TestRichTextareaCtrlWordMovementUsesBoundaries(t *testing.T) {
 func TestRichTextareaLineMovementAndSelection(t *testing.T) {
 	editor := NewRichTextarea(RichTextareaConfig{Wrap: true})
 	editor = editor.SetPlainText("alpha\nbeta")
-	editor.width = 10
-	editor.height = 2
+	editor.bounds = uv.Rect(0, 0, 10, 2)
 
 	updated, _ := editor.Update(tea.KeyPressMsg{Code: tea.KeyEnd})
 	editor = updated.(RichTextarea)
@@ -88,7 +89,7 @@ func TestRichTextareaMultilineViewportTracksCursor(t *testing.T) {
 		editor = updated.(RichTextarea)
 	}
 
-	editor.View(8, 2)
+	renderToBuffer(editor, 8, 2)
 	updated, _ := editor.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	editor = updated.(RichTextarea)
 	editor = editor.ensureViewport()
@@ -100,8 +101,7 @@ func TestRichTextareaMultilineViewportTracksCursor(t *testing.T) {
 func TestRichTextareaSingleLineViewportScrollsHorizontally(t *testing.T) {
 	editor := NewRichTextarea(RichTextareaConfig{SingleLine: true})
 	editor = editor.SetPlainText("abcdefghij")
-	editor.width = 4
-	editor.height = 1
+	editor.bounds = uv.Rect(0, 0, 4, 1)
 
 	for range 10 {
 		updated, _ := editor.Update(tea.KeyPressMsg{Code: tea.KeyRight})
@@ -145,8 +145,7 @@ func TestRichTextareaBackspaceDeleteAndSelectionDelete(t *testing.T) {
 func TestRichTextareaDoubleClickSelectsWord(t *testing.T) {
 	editor := NewRichTextarea(RichTextareaConfig{})
 	editor = editor.SetPlainText("hello world")
-	editor.width = 20
-	editor.height = 1
+	editor.bounds = uv.Rect(0, 0, 20, 1)
 
 	updated, _ := editor.Update(tea.MouseClickMsg{
 		X:      7,
@@ -168,11 +167,26 @@ func TestRichTextareaDoubleClickSelectsWord(t *testing.T) {
 	require.Equal(t, 11, end.Cluster)
 }
 
+func TestRichTextareaMouseUsesAbsoluteBounds(t *testing.T) {
+	editor := NewRichTextarea(RichTextareaConfig{})
+	editor = editor.SetPlainText("hello world")
+	updated, _ := editor.Update(ui.BoundsMsg{Rect: uv.Rect(10, 5, 20, 1)})
+	editor = updated.(RichTextarea)
+
+	updated, _ = editor.Update(tea.MouseClickMsg{
+		X:      12,
+		Y:      5,
+		Button: tea.MouseLeft,
+	})
+	editor = updated.(RichTextarea)
+
+	require.Equal(t, richtext.Position{Line: 0, Cluster: 2}, editor.position)
+}
+
 func TestRichTextareaTripleClickSelectsLine(t *testing.T) {
 	editor := NewRichTextarea(RichTextareaConfig{})
 	editor = editor.SetPlainText("hello world goodbye")
-	editor.width = 30
-	editor.height = 1
+	editor.bounds = uv.Rect(0, 0, 30, 1)
 
 	for range 3 {
 		updated, _ := editor.Update(tea.MouseClickMsg{
@@ -192,8 +206,7 @@ func TestRichTextareaTripleClickSelectsLine(t *testing.T) {
 func TestRichTextareaQuadrupleClickResetsToCursor(t *testing.T) {
 	editor := NewRichTextarea(RichTextareaConfig{})
 	editor = editor.SetPlainText("hello world")
-	editor.width = 20
-	editor.height = 1
+	editor.bounds = uv.Rect(0, 0, 20, 1)
 
 	for range 4 {
 		updated, _ := editor.Update(tea.MouseClickMsg{
@@ -211,8 +224,7 @@ func TestRichTextareaQuadrupleClickResetsToCursor(t *testing.T) {
 func TestRichTextareaMouseDragSelectsRange(t *testing.T) {
 	editor := NewRichTextarea(RichTextareaConfig{})
 	editor = editor.SetPlainText("hello world")
-	editor.width = 20
-	editor.height = 1
+	editor.bounds = uv.Rect(0, 0, 20, 1)
 
 	updated, _ := editor.Update(tea.MouseClickMsg{
 		X:      1,
@@ -245,18 +257,20 @@ func TestRichTextareaMouseDragSelectsRange(t *testing.T) {
 func TestRichTextareaPaletteMouseAppliesForeground(t *testing.T) {
 	editor := NewRichTextarea(RichTextareaConfig{AllowFormatting: true})
 	editor = editor.SetPlainText("hello")
+	updated, _ := editor.Update(ui.BoundsMsg{Rect: uv.Rect(0, 0, 30, 1)})
+	editor = updated.(RichTextarea)
 
-	updated, _ := editor.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModAlt})
+	updated, _ = editor.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModAlt})
 	editor = updated.(RichTextarea)
 	require.True(t, editor.PaletteVisible())
 
-	updated, _ = editor.Update(tea.MouseClickMsg{
+	editor, handled := editor.handlePaletteMouse(tea.MouseClickMsg{
 		X:      10,
 		Y:      0,
 		Button: tea.MouseLeft,
 	})
-	editor = updated.(RichTextarea)
 
+	require.True(t, handled)
 	require.False(t, editor.PaletteVisible())
 	require.NotNil(t, editor.pending.FG)
 }
@@ -282,7 +296,7 @@ func TestRichTextareaPaletteScrollsToKeepActiveVisible(t *testing.T) {
 			editor.palette.open = true
 			editor.palette.index = tt.index
 
-			view := editor.PaletteView(tt.width)
+			view := editor.paletteView(tt.width)
 			stripped := uitest.StripANSI(view)
 
 			require.Equal(t, tt.width, lipgloss.Width(view), "rendered width must match the budget")
@@ -319,7 +333,7 @@ func TestRichTextareaPaletteLabelsNoColourClearly(t *testing.T) {
 	editor := NewRichTextarea(RichTextareaConfig{AllowFormatting: true})
 	editor.palette.open = true
 
-	view := editor.PaletteView(80)
+	view := editor.paletteView(80)
 	stripped := uitest.StripANSI(view)
 
 	require.Contains(t, strings.TrimRight(stripped, " "), "fg: -- 00 01 02 03 04 05 06 07 08 09 10 11 12 13 14 15")
@@ -589,7 +603,7 @@ func TestRichTextareaSingleLineHorizontalScroll(t *testing.T) {
 			editor = editor.SetPlainText(tt.text)
 			editor = editor.SetCursorFromRuneIndex(tt.cursorIndex)
 
-			view := editor.View(5, 1)
+			view := renderToBuffer(editor, 5, 1)
 			require.Equal(t, 1, lipgloss.Height(view), "view must not wrap")
 			require.Equal(t, 5, lipgloss.Width(view), "view width must match the requested width")
 

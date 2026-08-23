@@ -13,7 +13,7 @@ func TestFeedView_few_lines_bottom_aligned(t *testing.T) {
 	fv := components.NewFeedView("No logs yet", "new logs")
 	fv = fv.SetLines([]string{"log line one", "log line two"})
 
-	view, _, _ := fv.View(80, 24)
+	view := renderToBuffer(fv, 80, 24)
 	lines := uitest.RenderedLines(view)
 
 	// Bottom-aligned: the two log lines occupy the last two rows of the

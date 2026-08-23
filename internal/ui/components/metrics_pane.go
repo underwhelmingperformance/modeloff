@@ -12,6 +12,8 @@ import (
 	"github.com/laney/modeloff/internal/ui"
 )
 
+const metricsRefreshInterval = time.Second
+
 // metricsPaneShownMsg tells the pane the observability drawer has just
 // opened, which is when it starts collecting.
 type metricsPaneShownMsg struct{}
@@ -33,7 +35,6 @@ type MetricsPane struct {
 	feed        FeedView
 	snapshot    observability.MetricsSnapshot
 	width       int
-	height      int
 
 	// series identifies the chain of refreshes currently running.
 	//
@@ -61,15 +62,15 @@ func NewMetricsPane(baseContext func() context.Context, obs *observability.Runti
 	}
 }
 
-// Init implements ui.Model. Collection starts when the drawer opens,
+// Init implements ui.Component. Collection starts when the drawer opens,
 // not here: the drawer is closed when the application starts, and a
 // snapshot taken for a pane nobody can see has no reader.
 func (m MetricsPane) Init() tea.Cmd {
 	return nil
 }
 
-// Update implements ui.Model.
-func (m MetricsPane) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
+// Update implements ui.Component.
+func (m MetricsPane) Update(msg tea.Msg) (ui.Component, tea.Cmd) {
 	switch msg := msg.(type) {
 	case metricsPaneShownMsg:
 		m.series++
@@ -77,11 +78,10 @@ func (m MetricsPane) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		return m, m.refreshCmd()
 
 	case ui.BoundsMsg:
-		m.width = msg.Rect.Width
-		m.height = msg.Rect.Height
+		m.width = msg.Rect.Dx()
 		m.feed = m.feed.SetLines(renderMetricsSnapshot(m.snapshot, m.width))
 		updatedFeed, feedCmd := m.feed.Update(msg)
-		m.feed = updatedFeed
+		m.feed = updatedFeed.(FeedView)
 
 		return m, feedCmd
 
@@ -97,16 +97,9 @@ func (m MetricsPane) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	}
 
 	updatedFeed, cmd := m.feed.Update(msg)
-	m.feed = updatedFeed
+	m.feed = updatedFeed.(FeedView)
 
 	return m, cmd
-}
-
-// View implements ui.Model.
-func (m MetricsPane) View(width, height int) string {
-	view, _, _ := m.feed.View(width, height)
-
-	return view
 }
 
 // KeyBindings implements ui.Keybinding.

@@ -3,14 +3,13 @@ package components_test
 import (
 	"fmt"
 	"testing"
-	"time"
 
 	bkey "charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/stretchr/testify/require"
 
-	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/components"
 )
@@ -20,34 +19,38 @@ import (
 // (e.g. a wider sidebar, different nicklist width) update these
 // constants in one place, and every test that uses them follows.
 const (
-	sidebarWidthAt80           = 16
-	sidebarWidthAt100          = 20
-	sidebarWidthAt120          = 24
-	contentWidthAt80           = 66
-	contentWidthAt80WithNicks  = 54
-	contentWidthAt100          = 86
-	contentWidthAt120TwoPane   = 106
-	contentWidthAt120WithNicks = 94
-	nickListWidthAt80          = 12
-	nickListWidthAt120         = 18
-	obsDrawerHeight            = 8
-	obsDrawerColumnHeight      = 16
+	sidebarWidthAt80           = 15
+	sidebarWidthAt100          = 19
+	sidebarWidthAt120          = 23
+	contentWidthAt80           = 64
+	contentWidthAt80WithNicks  = 52
+	contentWidthAt100          = 80
+	contentWidthAt120TwoPane   = 96
+	contentWidthAt120WithNicks = 78
+	nickListWidthAt80          = 11
+	nickListWidthAt120         = 17
 	defaultTestHeight          = 24
 )
 
-// stubModel is a minimal ui.Model for testing layout behaviour.
+// stubModel is a minimal ui.Component for testing layout behaviour.
 type stubModel struct {
 	label string
 }
 
 func (s stubModel) Init() tea.Cmd { return nil }
 
-func (s stubModel) Update(tea.Msg) (ui.Model, tea.Cmd) {
+func (s stubModel) Update(tea.Msg) (ui.Component, tea.Cmd) {
 	return s, nil
 }
 
-func (s stubModel) View(width, height int) string {
+func (s stubModel) render(width, height int) string {
 	return fmt.Sprintf("%s:%dx%d", s.label, width, height)
+}
+
+func (s stubModel) ContentWidth() int { return 1_000 }
+
+func (s stubModel) Draw(screen uv.Screen, area uv.Rectangle) {
+	uv.NewStyledString(s.render(area.Dx(), area.Dy())).Draw(screen, area)
 }
 
 // boundsRecordingStub is a stubModel that also records the last
@@ -56,14 +59,14 @@ func (s stubModel) View(width, height int) string {
 type boundsRecordingStub struct {
 	stubModel
 
-	bounds *ui.Rect
+	bounds *uv.Rectangle
 }
 
 func newBoundsRecordingStub(label string) boundsRecordingStub {
-	return boundsRecordingStub{stubModel: stubModel{label: label}, bounds: &ui.Rect{}}
+	return boundsRecordingStub{stubModel: stubModel{label: label}, bounds: new(uv.Rectangle)}
 }
 
-func (s boundsRecordingStub) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
+func (s boundsRecordingStub) Update(msg tea.Msg) (ui.Component, tea.Cmd) {
 	if b, ok := msg.(ui.BoundsMsg); ok {
 		*s.bounds = b.Rect
 	}
@@ -71,7 +74,7 @@ func (s boundsRecordingStub) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 	return s, nil
 }
 
-// dims formats a `label:WxH` dimension token matching stubModel.View,
+// dims formats a `label:WxH` dimension token matching stubModel.Draw,
 // so tests can express expectations in terms of the layout constants.
 func dims(label string, width, height int) string {
 	return fmt.Sprintf("%s:%dx%d", label, width, height)
@@ -99,7 +102,7 @@ func (s keybindingStubModel) KeyBindings() []ui.KeyBinding {
 	return s.bindings
 }
 
-func TestMainLayout_View_responsive(t *testing.T) {
+func TestMainLayout_Draw_responsive(t *testing.T) {
 	tests := []struct {
 		name        string
 		width       int
@@ -129,7 +132,7 @@ func TestMainLayout_View_responsive(t *testing.T) {
 			content := stubModel{label: "content"}
 
 			layout := components.NewMainLayout(sidebar, content)
-			got := layout.View(tt.width, tt.height)
+			got := renderToBuffer(layout, tt.width, tt.height)
 			columns := visibleColumns(got)
 
 			require.Equal(t, tt.wantSidebar, nonEmptyColumn(columns[0]))
@@ -138,13 +141,13 @@ func TestMainLayout_View_responsive(t *testing.T) {
 	}
 }
 
-func TestMainLayout_View_narrow_terminal(t *testing.T) {
+func TestMainLayout_Draw_narrow_terminal(t *testing.T) {
 	sidebar := stubModel{label: "sidebar"}
 	content := stubModel{label: "content"}
 	layout := components.NewMainLayout(sidebar, content)
 
 	t.Run("below threshold collapses the sidebar and gives content the full width", func(t *testing.T) {
-		got := layout.View(79, 24)
+		got := renderToBuffer(layout, 79, 24)
 
 		// No sidebar border ("│") appears at all: Content is the only
 		// thing rendered, at the full 79 columns.
@@ -153,13 +156,13 @@ func TestMainLayout_View_narrow_terminal(t *testing.T) {
 	})
 
 	t.Run("collapses at any width, not just above zero", func(t *testing.T) {
-		got := layout.View(20, 10)
+		got := renderToBuffer(layout, 20, 10)
 
 		require.Equal(t, []string{dims("content", 20, 10)}, visibleLines(got))
 	})
 
 	t.Run("at threshold renders normally", func(t *testing.T) {
-		got := layout.View(80, defaultTestHeight)
+		got := renderToBuffer(layout, 80, defaultTestHeight)
 		columns := visibleColumns(got)
 
 		require.Equal(t, []string{dims("sidebar", sidebarWidthAt80, defaultTestHeight)}, nonEmptyColumn(columns[0]))
@@ -167,51 +170,66 @@ func TestMainLayout_View_narrow_terminal(t *testing.T) {
 	})
 }
 
-// TestMainLayout_WindowSizeMsg_narrow_terminal pins the BoundsMsg
+// TestMainLayout_BoundsMsg_narrow_terminal pins the BoundsMsg
 // Content receives below the compact threshold: the full terminal
-// width, matching what View actually renders it at. A Rect that
+// width, matching what Draw actually renders it at. A Rect that
 // disagreed with the rendered width would misplace mouse
 // hit-testing inside Content even though the collapsed columns
 // looked right.
-func TestMainLayout_WindowSizeMsg_narrow_terminal(t *testing.T) {
+func TestMainLayout_BoundsMsg_narrow_terminal(t *testing.T) {
 	sidebar := newBoundsRecordingStub("sidebar")
 	content := newBoundsRecordingStub("content")
 	layout := components.NewMainLayout(sidebar, content)
 
-	updated, _ := layout.Update(tea.WindowSizeMsg{Width: 60, Height: 20})
+	updated, _ := layout.Update(ui.BoundsMsg{Rect: uv.Rect(0, 0, 60, 20)})
 	layout = updated.(components.MainLayout)
 
-	require.Equal(t, ui.Rect{X: 0, Y: 0, Width: 60, Height: 20}, *content.bounds,
+	require.Equal(t, uv.Rect(0, 0, 60, 20), *content.bounds,
 		"Content's bounds must span the full width the collapsed layout renders it at")
-	require.Equal(t, ui.Rect{X: 0, Y: 0, Width: 0, Height: 20}, *sidebar.bounds,
-		"the collapsed sidebar gets a zero-width Rect, matching that View never renders it")
+	require.Equal(t, uv.Rect(0, 0, 0, 20), *sidebar.bounds,
+		"the collapsed sidebar gets a zero-width Rect, matching that Draw never renders it")
 
-	got := layout.View(60, 20)
+	got := renderToBuffer(layout, 60, 20)
 	require.Equal(t, []string{dims("content", 60, 20)}, visibleLines(got))
 }
 
-func TestMainLayout_View_fills_width(t *testing.T) {
+func TestMainLayout_BoundsMsg_uses_absolute_draw_rectangles(t *testing.T) {
+	sidebar := newBoundsRecordingStub("sidebar")
+	content := newBoundsRecordingStub("content")
+	nickList := newBoundsRecordingStub("nicks")
+	layout := components.NewMainLayout(sidebar, content)
+	layout.NickList = nickList
+
+	updated, _ := layout.Update(ui.BoundsMsg{Rect: uv.Rect(5, 3, 120, 20)})
+	_ = updated.(components.MainLayout)
+
+	require.Equal(t, uv.Rect(5, 3, sidebarWidthAt120, 20), *sidebar.bounds)
+	require.Equal(t, uv.Rect(29, 3, contentWidthAt120WithNicks, 20), *content.bounds)
+	require.Equal(t, uv.Rect(108, 3, nickListWidthAt120, 20), *nickList.bounds)
+}
+
+func TestMainLayout_Draw_fills_width(t *testing.T) {
 	sidebar := stubModel{label: "S"}
 	content := stubModel{label: "C"}
 
 	layout := components.NewMainLayout(sidebar, content)
-	got := layout.View(100, 24)
+	got := renderToBuffer(layout, 100, 24)
 
 	renderedWidth := lipgloss.Width(got)
 	require.LessOrEqual(t, renderedWidth, 100)
 }
 
-func TestMainLayout_View_preserves_height(t *testing.T) {
+func TestMainLayout_Draw_preserves_height(t *testing.T) {
 	sidebar := stubModel{label: "sidebar"}
 	content := stubModel{label: "content"}
 	layout := components.NewMainLayout(sidebar, content)
 
-	got := layout.View(80, 24)
+	got := renderToBuffer(layout, 80, 24)
 
 	require.Equal(t, 24, lipgloss.Height(got))
 }
 
-func TestMainLayout_View_three_pane_at_wide_width(t *testing.T) {
+func TestMainLayout_Draw_three_pane_at_wide_width(t *testing.T) {
 	sidebar := stubModel{label: "sidebar"}
 	content := stubModel{label: "content"}
 	nicklist := stubModel{label: "nicks"}
@@ -219,7 +237,7 @@ func TestMainLayout_View_three_pane_at_wide_width(t *testing.T) {
 	layout := components.NewMainLayout(sidebar, content)
 	layout.NickList = nicklist
 
-	got := layout.View(120, defaultTestHeight)
+	got := renderToBuffer(layout, 120, defaultTestHeight)
 	columns := visibleColumns(got)
 
 	require.Equal(t, []string{dims("sidebar", sidebarWidthAt120, defaultTestHeight)}, nonEmptyColumn(columns[0]))
@@ -227,7 +245,7 @@ func TestMainLayout_View_three_pane_at_wide_width(t *testing.T) {
 	require.Equal(t, []string{dims("nicks", nickListWidthAt120, defaultTestHeight)}, nonEmptyColumn(columns[2]))
 }
 
-func TestMainLayout_View_hides_nicklist_when_main_too_narrow(t *testing.T) {
+func TestMainLayout_Draw_hides_nicklist_when_main_too_narrow(t *testing.T) {
 	// Use a wide sidebar stub and nicklist stub that, together with
 	// the nick list, squeeze the main area below minMainWidth.
 	// The layout should hide the nick list to reclaim space.
@@ -239,7 +257,7 @@ func TestMainLayout_View_hides_nicklist_when_main_too_narrow(t *testing.T) {
 	layout.NickList = nicklist
 
 	// At 80 columns with small stubs everything fits.
-	got := layout.View(80, defaultTestHeight)
+	got := renderToBuffer(layout, 80, defaultTestHeight)
 	require.Equal(t, [][]string{
 		{dims("sidebar", sidebarWidthAt80, defaultTestHeight)},
 		{dims("content", contentWidthAt80WithNicks, defaultTestHeight)},
@@ -248,14 +266,14 @@ func TestMainLayout_View_hides_nicklist_when_main_too_narrow(t *testing.T) {
 
 	// Toggle it off — the nick list column must disappear.
 	toggled, _ := layout.Update(components.NickListToggleMsg{})
-	got = toggled.View(80, 24)
+	got = renderToBuffer(toggled, 80, 24)
 	require.Equal(t, [][]string{
 		{dims("sidebar", sidebarWidthAt80, defaultTestHeight)},
 		{dims("content", contentWidthAt80, defaultTestHeight)},
 	}, columnContents(visibleColumns(got)))
 }
 
-func TestMainLayout_View_nicklist_toggle(t *testing.T) {
+func TestMainLayout_Draw_nicklist_toggle(t *testing.T) {
 	sidebar := stubModel{label: "sidebar"}
 	content := stubModel{label: "content"}
 	nicklist := stubModel{label: "nicks"}
@@ -274,35 +292,35 @@ func TestMainLayout_View_nicklist_toggle(t *testing.T) {
 	}
 
 	// Initially visible at wide width.
-	require.Equal(t, withNicks, columnContents(visibleColumns(layout.View(120, defaultTestHeight))))
+	require.Equal(t, withNicks, columnContents(visibleColumns(renderToBuffer(layout, 120, defaultTestHeight))))
 
 	// Toggle off.
 	updated, _ := layout.Update(components.NickListToggleMsg{})
 	layout = updated.(components.MainLayout)
 
-	require.Equal(t, withoutNicks, columnContents(visibleColumns(layout.View(120, defaultTestHeight))))
+	require.Equal(t, withoutNicks, columnContents(visibleColumns(renderToBuffer(layout, 120, defaultTestHeight))))
 
 	// Toggle back on.
 	updated, _ = layout.Update(components.NickListToggleMsg{})
 	layout = updated.(components.MainLayout)
 
-	require.Equal(t, withNicks, columnContents(visibleColumns(layout.View(120, defaultTestHeight))))
+	require.Equal(t, withNicks, columnContents(visibleColumns(renderToBuffer(layout, 120, defaultTestHeight))))
 }
 
-func TestMainLayout_View_no_nicklist_without_set(t *testing.T) {
+func TestMainLayout_Draw_no_nicklist_without_set(t *testing.T) {
 	sidebar := stubModel{label: "sidebar"}
 	content := stubModel{label: "content"}
 
 	layout := components.NewMainLayout(sidebar, content)
 
-	got := layout.View(120, defaultTestHeight)
+	got := renderToBuffer(layout, 120, defaultTestHeight)
 
 	columns := visibleColumns(got)
 	require.Equal(t, []string{dims("sidebar", sidebarWidthAt120, defaultTestHeight)}, nonEmptyColumn(columns[0]))
 	require.Equal(t, []string{dims("content", contentWidthAt120TwoPane, defaultTestHeight)}, nonEmptyColumn(columns[1]))
 }
 
-func TestMainLayout_View_three_pane_fills_width(t *testing.T) {
+func TestMainLayout_Draw_three_pane_fills_width(t *testing.T) {
 	sidebar := stubModel{label: "sidebar"}
 	content := stubModel{label: "content"}
 	nicklist := stubModel{label: "nicks"}
@@ -310,7 +328,7 @@ func TestMainLayout_View_three_pane_fills_width(t *testing.T) {
 	layout := components.NewMainLayout(sidebar, content)
 	layout.NickList = nicklist
 
-	got := layout.View(120, 24)
+	got := renderToBuffer(layout, 120, 24)
 
 	renderedWidth := lipgloss.Width(got)
 	require.LessOrEqual(t, renderedWidth, 120,
@@ -339,89 +357,6 @@ func TestMainLayout_Init_batches_children(t *testing.T) {
 	require.NotNil(t, cmd)
 }
 
-// obsStubModel is a stubModel that also acts as an ObsProvider,
-// simulating the ChatWorkspace's observability drawer.
-type obsStubModel struct {
-	stubModel
-
-	obsOpen   bool
-	obsHeight int
-}
-
-func (o obsStubModel) ObsView(width, height int) string {
-	if !o.obsOpen {
-		return ""
-	}
-
-	return lipgloss.Place(width, height, lipgloss.Left, lipgloss.Top,
-		fmt.Sprintf("obs:%dx%d", width, height))
-}
-
-func (o obsStubModel) ObsHeight(_ int) int {
-	if !o.obsOpen {
-		return 0
-	}
-
-	return o.obsHeight
-}
-
-func TestMainLayout_View_obs_closed_height_matches(t *testing.T) {
-	sidebar := stubModel{label: "sidebar"}
-	content := obsStubModel{
-		stubModel: stubModel{label: "content"},
-		obsOpen:   false,
-	}
-
-	layout := components.NewMainLayout(sidebar, content)
-	got := layout.View(120, defaultTestHeight)
-
-	require.Equal(t, defaultTestHeight, lipgloss.Height(got))
-	require.Equal(t, []string{dims("sidebar", sidebarWidthAt120, defaultTestHeight)}, nonEmptyColumn(visibleColumns(got)[0]))
-	require.Equal(t, []string{dims("content", contentWidthAt120TwoPane, defaultTestHeight)}, nonEmptyColumn(visibleColumns(got)[1]))
-}
-
-func TestMainLayout_View_obs_open_spans_full_width(t *testing.T) {
-	sidebar := stubModel{label: "sidebar"}
-	content := obsStubModel{
-		stubModel: stubModel{label: "content"},
-		obsOpen:   true,
-		obsHeight: obsDrawerHeight,
-	}
-
-	layout := components.NewMainLayout(sidebar, content)
-	got := layout.View(120, defaultTestHeight)
-
-	require.Equal(t, defaultTestHeight, lipgloss.Height(got))
-	require.Equal(t, []string{
-		dims("sidebar", sidebarWidthAt120, obsDrawerColumnHeight),
-		dims("obs", 120, obsDrawerHeight),
-	}, nonEmptyColumn(visibleColumns(got)[0]))
-	require.Equal(t, []string{
-		dims("content", contentWidthAt120TwoPane, obsDrawerColumnHeight),
-	}, nonEmptyColumn(visibleColumns(got)[1]))
-}
-
-func TestMainLayout_View_obs_open_reduces_column_height(t *testing.T) {
-	sidebar := stubModel{label: "sidebar"}
-	content := obsStubModel{
-		stubModel: stubModel{label: "content"},
-		obsOpen:   true,
-		obsHeight: obsDrawerHeight,
-	}
-
-	layout := components.NewMainLayout(sidebar, content)
-	got := layout.View(120, defaultTestHeight)
-
-	columns := visibleColumns(got)
-	require.Equal(t, []string{
-		dims("sidebar", sidebarWidthAt120, obsDrawerColumnHeight),
-		dims("obs", 120, obsDrawerHeight),
-	}, nonEmptyColumn(columns[0]))
-	require.Equal(t, []string{
-		dims("content", contentWidthAt120TwoPane, obsDrawerColumnHeight),
-	}, nonEmptyColumn(columns[1]))
-}
-
 func TestMainLayout_KeyBindings_collects_from_children(t *testing.T) {
 	sidebar := keybindingStubModel{
 		stubModel: stubModel{label: "sidebar"},
@@ -448,7 +383,7 @@ func TestMainLayout_KeyBindings_collects_from_children(t *testing.T) {
 	}, layout.KeyBindings())
 }
 
-// recordingModel is a ui.Model that records every message it
+// recordingModel is a ui.Component that records every message it
 // receives, so a test can assert exactly which child a message
 // reached.
 type recordingModel struct {
@@ -457,7 +392,7 @@ type recordingModel struct {
 	received *[]tea.Msg
 }
 
-func (s recordingModel) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
+func (s recordingModel) Update(msg tea.Msg) (ui.Component, tea.Cmd) {
 	*s.received = append(*s.received, msg)
 	return s, nil
 }
@@ -516,87 +451,84 @@ func TestMainLayout_non_window_switch_keys_reach_all_children(t *testing.T) {
 	content := recordingModel{stubModel: stubModel{label: "content"}, received: contentReceived}
 
 	layout := components.NewMainLayout(sidebar, content)
-	layout.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
+	key := tea.KeyPressMsg{Code: 'x', Text: "x"}
+	layout.Update(key)
 
-	require.Len(t, *sidebarReceived, 1)
-	require.Len(t, *contentReceived, 1)
+	require.Equal(t, []tea.Msg{key}, *sidebarReceived)
+	require.Equal(t, []tea.Msg{key}, *contentReceived)
 }
 
-// probeWidths is the pair of widths a content model is handed: the one
-// MainLayout tells it through [ui.BoundsMsg], and the one MainLayout
-// asks it to render at.
-type probeWidths struct {
-	Bounds int
-	View   int
+func TestMainLayout_fullscreen_observability_keeps_sidebar_and_hides_chat(t *testing.T) {
+	layout := components.NewMainLayout(
+		stubModel{label: "sidebar"},
+		stubModel{label: "content"},
+	).WithObservability(components.NewMetricsPane(t.Context, nil))
+	layout.NickList = stubModel{label: "nicks"}
+
+	updated, _ := layout.Update(tea.KeyPressMsg{Code: 'l', Mod: tea.ModAlt})
+	layout = updated.(components.MainLayout)
+	updated, _ = layout.Update(tea.KeyPressMsg{Code: 'f', Mod: tea.ModCtrl})
+	layout = updated.(components.MainLayout)
+
+	view := renderToBuffer(layout, 120, defaultTestHeight)
+
+	require.Contains(t, view, "sidebar")
+	require.Contains(t, view, "Logs")
+	require.Contains(t, view, "Metrics")
+	require.NotContains(t, view, "content")
+	require.NotContains(t, view, "nicks")
 }
 
-// widthProbe is a content model that records both widths it is given.
-type widthProbe struct {
-	bounds *int
-	view   *int
-}
+func TestMainLayout_fullscreen_observability_updates_hidden_state_without_hidden_input(t *testing.T) {
+	sidebarReceived := &[]tea.Msg{}
+	contentReceived := &[]tea.Msg{}
+	nickListReceived := &[]tea.Msg{}
 
-func newWidthProbe() widthProbe {
-	return widthProbe{bounds: new(int), view: new(int)}
-}
+	layout := components.NewMainLayout(
+		recordingModel{stubModel: stubModel{label: "sidebar"}, received: sidebarReceived},
+		recordingModel{stubModel: stubModel{label: "content"}, received: contentReceived},
+	).WithObservability(components.NewMetricsPane(t.Context, nil))
+	layout.NickList = recordingModel{stubModel: stubModel{label: "nicks"}, received: nickListReceived}
 
-func (p widthProbe) Init() tea.Cmd { return nil }
+	updated, _ := layout.Update(tea.KeyPressMsg{Code: 'l', Mod: tea.ModAlt})
+	layout = updated.(components.MainLayout)
+	updated, _ = layout.Update(tea.KeyPressMsg{Code: 'f', Mod: tea.ModCtrl})
+	layout = updated.(components.MainLayout)
 
-func (p widthProbe) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
-	if b, ok := msg.(ui.BoundsMsg); ok {
-		*p.bounds = b.Rect.Width
-	}
+	*sidebarReceived = nil
+	*contentReceived = nil
+	*nickListReceived = nil
 
-	return p, nil
-}
+	updated, _ = layout.Update("state changed")
+	layout = updated.(components.MainLayout)
 
-func (p widthProbe) View(width, _ int) string {
-	*p.view = width
+	require.Equal(t, []tea.Msg{"state changed"}, *sidebarReceived)
+	require.Equal(t, []tea.Msg{"state changed"}, *contentReceived)
+	require.Equal(t, []tea.Msg{"state changed"}, *nickListReceived)
 
-	return ""
-}
+	*sidebarReceived = nil
+	*contentReceived = nil
+	*nickListReceived = nil
 
-func (p widthProbe) widths() probeWidths {
-	return probeWidths{Bounds: *p.bounds, View: *p.view}
-}
+	layout.Update(tea.PasteMsg{Content: "hidden input"})
 
-// TestMainLayout_content_is_told_the_width_it_renders_at pins the two
-// widths together across a sidebar content change. The sidebar sizes
-// itself to what it holds and MainLayout.View works the content area
-// out from the sidebar's freshly rendered width on every frame, so a
-// channel joining under a longer name moves that boundary with no
-// terminal resize. The chat view caches its transcript against the
-// width it rendered at, so a content model still holding the width the
-// last resize gave it renders at one width, is told another, and
-// misses that cache on every frame.
-func TestMainLayout_content_is_told_the_width_it_renders_at(t *testing.T) {
-	const (
-		width  = 200
-		height = 50
-	)
+	require.Empty(t, *sidebarReceived)
+	require.Empty(t, *contentReceived)
+	require.Empty(t, *nickListReceived)
 
-	probe := newWidthProbe()
+	key := tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl}
+	layout.Update(key)
 
-	var m ui.Model = components.NewMainLayout(components.NewChannelSidebar(), probe)
+	require.Equal(t, []tea.Msg{key}, *sidebarReceived)
+	require.Empty(t, *contentReceived)
+	require.Empty(t, *nickListReceived)
 
-	m, _ = m.Update(tea.WindowSizeMsg{Width: width, Height: height})
-	m.View(width, height)
-	before := probe.widths()
+	*sidebarReceived = nil
 
-	m, _ = m.Update(components.SetChannelsMsg{
-		Channels: []domain.Window{
-			domain.NewChannelWindow("#a-channel-with-a-very-long-name", time.Time{}),
-		},
-	})
-	m.View(width, height)
-	after := probe.widths()
+	wheel := tea.MouseWheelMsg{X: 40, Y: 10, Button: tea.MouseWheelUp}
+	layout.Update(wheel)
 
-	require.Equal(t, probeWidths{Bounds: before.View, View: before.View}, before,
-		"on a fresh resize the content model must be told the width it renders at")
-
-	require.Equal(t, probeWidths{Bounds: after.View, View: after.View}, after,
-		"and again once the sidebar has grown under it")
-
-	require.NotEqual(t, before.View, after.View,
-		"the longer channel name has to move the boundary, or this test proves nothing")
+	require.Equal(t, []tea.Msg{wheel}, *sidebarReceived)
+	require.Empty(t, *contentReceived)
+	require.Empty(t, *nickListReceived)
 }

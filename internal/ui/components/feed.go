@@ -9,6 +9,7 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	uv "github.com/charmbracelet/ultraviolet"
 
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/theme"
@@ -23,8 +24,13 @@ type FeedView struct {
 	keyMap      ChatViewKeyMap
 	placeholder string
 	dividerText string
-	bounds      ui.Rect
+	bounds      uv.Rectangle
 	seenCount   int
+}
+
+// Init implements ui.Component.
+func (f FeedView) Init() tea.Cmd {
+	return nil
 }
 
 // NewFeedView creates a read-only scrolling feed.
@@ -97,15 +103,15 @@ func (f FeedView) ScrolledUp() bool {
 }
 
 // Update handles viewport input and mouse scrolling.
-func (f FeedView) Update(msg tea.Msg) (FeedView, tea.Cmd) {
+func (f FeedView) Update(msg tea.Msg) (ui.Component, tea.Cmd) {
 	switch msg := msg.(type) {
 	case ui.BoundsMsg:
 		f.bounds = msg.Rect
-		return f.SyncViewport(msg.Rect.Width, msg.Rect.Height), nil
+		return f.syncViewport(msg.Rect.Dx(), msg.Rect.Dy()), nil
 
 	case tea.MouseWheelMsg:
 		mouse := msg.Mouse()
-		if !f.bounds.Contains(mouse.X, mouse.Y) {
+		if !contains(f.bounds, mouse.X, mouse.Y) {
 			return f, nil
 		}
 
@@ -145,15 +151,14 @@ func (f FeedView) KeyBindings() []ui.KeyBinding {
 	}
 }
 
-// View renders the feed inside the provided area.
-func (f FeedView) View(width, height int) (view string, scrolled bool, scrollPct float64) {
+func (f FeedView) render(width, height int) string {
 	if len(f.lines) == 0 {
 		text := theme.Dim.Render("No entries yet")
 		if f.placeholder != "" {
 			text = f.placeholder
 		}
 
-		return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, text), false, 0
+		return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, text)
 	}
 
 	vp := f.viewport
@@ -168,11 +173,10 @@ func (f FeedView) View(width, height int) (view string, scrolled bool, scrollPct
 		rendered = lipgloss.Place(width, height, lipgloss.Left, lipgloss.Bottom, content)
 	}
 
-	return rendered, !vp.AtBottom(), vp.ScrollPercent()
+	return rendered
 }
 
-// SyncViewport sets the viewport dimensions and re-renders content.
-func (f FeedView) SyncViewport(width, height int) FeedView {
+func (f FeedView) syncViewport(width, height int) FeedView {
 	if width < 0 {
 		width = 0
 	}

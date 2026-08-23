@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/require"
 
@@ -55,7 +56,7 @@ func ctrlKey(k string) tea.KeyPressMsg {
 	}
 }
 
-func newTestChannelSidebar(channels []domain.Window, active domain.ChannelName, unread map[domain.ChannelName]int) ui.Model {
+func newTestChannelSidebar(channels []domain.Window, active domain.ChannelName, unread map[domain.ChannelName]int) ui.Component {
 	cl := components.NewChannelSidebar()
 	m, _ := cl.Update(components.SetChannelsMsg{
 		Channels: channels,
@@ -68,7 +69,7 @@ func newTestChannelSidebar(channels []domain.Window, active domain.ChannelName, 
 
 // activateAndGetChannel sends a key and extracts the ChannelSelectedMsg
 // from the returned Cmd.
-func activateAndGetChannel(t *testing.T, m ui.Model, msg tea.Msg) (ui.Model, domain.ChannelName) {
+func activateAndGetChannel(t *testing.T, m ui.Component, msg tea.Msg) (ui.Component, domain.ChannelName) {
 	t.Helper()
 
 	m, cmd := m.Update(msg)
@@ -83,21 +84,35 @@ func activateAndGetChannel(t *testing.T, m ui.Model, msg tea.Msg) (ui.Model, dom
 
 func TestChannelSidebar_View_shows_channels(t *testing.T) {
 	m := newTestChannelSidebar(testChannels, "#general", nil)
-	v := m.View(20, 10)
+	v := renderToBuffer(m, 20, 10)
 
 	require.Equal(t, []string{"Channels", "#dev", "▸#general", "#random"}, visibleLines(v))
 }
 
 func TestChannelSidebar_View_empty(t *testing.T) {
 	m := newTestChannelSidebar(nil, "", nil)
-	v := m.View(20, 10)
+	v := renderToBuffer(m, 20, 10)
 
 	require.Equal(t, []string{"No channels"}, visibleLines(v))
 }
 
+func TestChannelSidebar_ContentWidth_tracks_visible_rows(t *testing.T) {
+	sidebar := components.NewChannelSidebar()
+	require.Equal(t, ansi.StringWidth("No channels")+2, sidebar.ContentWidth())
+
+	channel := domain.NewChannelWindow("#a-very-long-channel", time.Time{})
+	updated, _ := sidebar.Update(components.SetChannelsMsg{
+		Channels: []domain.Window{channel},
+		Unread:   map[domain.ChannelName]int{channel.Name(): 12},
+	})
+	sidebar = updated.(components.ChannelSidebar)
+
+	require.Equal(t, ansi.StringWidth(" #a-very-long-channel (12)")+2, sidebar.ContentWidth())
+}
+
 func TestChannelSidebar_View_active_channel_highlighted(t *testing.T) {
 	m := newTestChannelSidebar(testChannels, "#random", nil)
-	v := m.View(30, 10)
+	v := renderToBuffer(m, 30, 10)
 
 	require.Equal(t, []string{"Channels", "#dev", "#general", "▸#random"}, visibleLines(v))
 }
@@ -110,7 +125,7 @@ func TestChannelSidebar_status_channel_stays_pinned_and_unprefixed(t *testing.T)
 	}
 
 	m := newTestChannelSidebar(channels, "#general", nil)
-	v := m.View(30, 10)
+	v := renderToBuffer(m, 30, 10)
 
 	require.Equal(t, []string{"Channels", "&modeloff", "▸#general", "Queries", "botty"}, visibleLines(v))
 	require.NotContains(t, v, "#&modeloff")
@@ -126,7 +141,7 @@ func TestChannelSidebar_ChannelRemovedMsg_drops_dm(t *testing.T) {
 
 	require.Equal(t,
 		[]string{"Channels", "▸#general", "Queries", "botty"},
-		visibleLines(m.View(30, 10)))
+		visibleLines(renderToBuffer(m, 30, 10)))
 
 	// DMs are addressed by the counterpart's InstanceID; the
 	// `dmStub` test helper mints ids as `stub-<nick>`, so
@@ -135,7 +150,7 @@ func TestChannelSidebar_ChannelRemovedMsg_drops_dm(t *testing.T) {
 
 	require.Equal(t,
 		[]string{"Channels", "▸#general"},
-		visibleLines(m.View(30, 10)))
+		visibleLines(renderToBuffer(m, 30, 10)))
 }
 
 func TestChannelSidebar_keyboard_navigation(t *testing.T) {
@@ -189,7 +204,7 @@ func TestChannelSidebar_mouse_click_selects_channel(t *testing.T) {
 	// Sorted order: #dev (row 0+header), #general (row 1+header), #random (row 2+header).
 	// Header takes 1 row, so Y=2 is index 1 = #general.
 	m := newTestChannelSidebar(testChannels, "#dev", nil)
-	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 0, Y: 0, Width: 20, Height: 10}})
+	m, _ = m.Update(ui.BoundsMsg{Rect: uv.Rect(0, 0, 20, 10)})
 
 	_, ch := activateAndGetChannel(t, m, tea.MouseClickMsg{
 		X:      5,
@@ -202,7 +217,7 @@ func TestChannelSidebar_mouse_click_selects_channel(t *testing.T) {
 
 func TestChannelSidebar_mouse_click_out_of_range(t *testing.T) {
 	m := newTestChannelSidebar(testChannels, "#general", nil)
-	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 0, Y: 0, Width: 20, Height: 10}})
+	m, _ = m.Update(ui.BoundsMsg{Rect: uv.Rect(0, 0, 20, 10)})
 
 	_, cmd := m.Update(tea.MouseClickMsg{
 		X:      5,
@@ -232,7 +247,7 @@ func TestChannelSidebar_set_channels_msg(t *testing.T) {
 		Unread: map[domain.ChannelName]int{"#alpha": 5},
 	})
 
-	v := m.View(30, 10)
+	v := renderToBuffer(m, 30, 10)
 	require.Equal(t, []string{"Channels", "#alpha (5)", "▸#beta"}, visibleLines(v))
 }
 
@@ -254,7 +269,7 @@ func TestChannelSidebar_unread_indicator(t *testing.T) {
 			}
 
 			m := newTestChannelSidebar(testChannels, "#general", unread)
-			v := m.View(30, 10)
+			v := renderToBuffer(m, 30, 10)
 
 			require.Equal(t, []string{"Channels", "#dev", "▸#general", tt.wantText}, visibleLines(v))
 		})
@@ -263,7 +278,7 @@ func TestChannelSidebar_unread_indicator(t *testing.T) {
 
 func TestChannelSidebar_no_unread_indicator_when_nil(t *testing.T) {
 	m := newTestChannelSidebar(testChannels, "#general", nil)
-	v := m.View(30, 10)
+	v := renderToBuffer(m, 30, 10)
 
 	require.Equal(t, []string{"Channels", "#dev", "▸#general", "#random"}, visibleLines(v))
 }
@@ -275,7 +290,7 @@ func TestChannelSidebar_dm_shows_at_prefix(t *testing.T) {
 	}
 
 	m := newTestChannelSidebar(channels, "#general", nil)
-	v := m.View(30, 10)
+	v := renderToBuffer(m, 30, 10)
 
 	require.Equal(t, []string{"Channels", "▸#general", "Queries", "botty"}, visibleLines(v))
 }
@@ -289,7 +304,7 @@ func TestChannelSidebar_dm_cursor_uses_dm_style(t *testing.T) {
 	m := newTestChannelSidebar(channels, "#general", nil)
 	m, _ = m.Update(ctrlKey("alt+down"))
 
-	v := m.View(30, 10)
+	v := renderToBuffer(m, 30, 10)
 	require.Equal(t, []string{"Channels", "#general", "Queries", "▸botty"}, visibleLines(v))
 }
 
@@ -328,7 +343,7 @@ func TestChannelSidebar_cursor_clamps_when_active_not_in_list(t *testing.T) {
 func TestChannelSidebar_mouse_wheel_moves_cursor_without_activating(t *testing.T) {
 	// Sorted order: #dev, #general, #random. Active #dev = index 0.
 	m := newTestChannelSidebar(testChannels, "#dev", nil)
-	m, _ = m.Update(ui.BoundsMsg{Rect: ui.Rect{X: 0, Y: 0, Width: 20, Height: 10}})
+	m, _ = m.Update(ui.BoundsMsg{Rect: uv.Rect(0, 0, 20, 10)})
 
 	// Scroll down — should move cursor but NOT activate (no cmd).
 	m, cmd := m.Update(tea.MouseWheelMsg{
@@ -361,8 +376,8 @@ func TestChannelSidebar_mention_renders_differently_from_normal_unread(t *testin
 		Mention: true,
 	})
 
-	vNormal := mNormal.View(30, 10)
-	vMention := mMention.View(30, 10)
+	vNormal := renderToBuffer(mNormal, 30, 10)
+	vMention := renderToBuffer(mMention, 30, 10)
 
 	require.Equal(t, []string{"Channels", "#dev", "▸#general", "#random (3)"}, visibleLines(vNormal))
 	require.Equal(t, []string{"Channels", "#dev", "▸#general", "#random (3)"}, visibleLines(vMention))
@@ -411,7 +426,7 @@ func TestChannelSidebar_mention_clears_on_zero_count(t *testing.T) {
 		Count:   3,
 		Mention: true,
 	})
-	require.Equal(t, []string{"Channels", "#dev", "▸#general", "#random (3)"}, visibleLines(m.View(30, 10)))
+	require.Equal(t, []string{"Channels", "#dev", "▸#general", "#random (3)"}, visibleLines(renderToBuffer(m, 30, 10)))
 
 	// Clear the unread count.
 	m, _ = m.Update(components.ChannelUnreadMsg{
@@ -420,7 +435,7 @@ func TestChannelSidebar_mention_clears_on_zero_count(t *testing.T) {
 	})
 
 	// After clearing, there should be no unread indicator.
-	v := m.View(30, 10)
+	v := renderToBuffer(m, 30, 10)
 	require.Equal(t, []string{"Channels", "#dev", "▸#general", "#random"}, visibleLines(v))
 }
 
@@ -434,7 +449,7 @@ func TestChannelSidebar_mention_clears_on_activation(t *testing.T) {
 		Mention: true,
 	})
 
-	vBefore := m.View(30, 10)
+	vBefore := renderToBuffer(m, 30, 10)
 
 	// Activate #random (simulates switching to that channel).
 	m, _ = m.Update(components.ChannelActiveMsg{Channel: "#random"})
@@ -445,7 +460,7 @@ func TestChannelSidebar_mention_clears_on_activation(t *testing.T) {
 		Count:   3,
 	})
 
-	vAfter := m.View(30, 10)
+	vAfter := renderToBuffer(m, 30, 10)
 	require.NotEqual(t, vBefore, vAfter,
 		"mention style should be cleared after activating channel")
 }
@@ -456,7 +471,7 @@ func TestChannelSidebar_ignores_other_messages(t *testing.T) {
 	m, cmd := m.Update(key("x"))
 	require.Nil(t, cmd)
 
-	v := m.View(20, 10)
+	v := renderToBuffer(m, 20, 10)
 	require.Equal(t, []string{"Channels", "#dev", "▸#general", "#random"}, visibleLines(v))
 }
 
@@ -471,8 +486,8 @@ func TestChannelSidebar_lifecycle_renders_italic(t *testing.T) {
 	mLifecycle := newTestChannelSidebar(testChannels, "#general", nil)
 	mLifecycle, _ = mLifecycle.Update(components.ChannelHasLifecycleMsg{Channel: "#random"})
 
-	vIdle := mIdle.View(30, 10)
-	vLifecycle := mLifecycle.View(30, 10)
+	vIdle := renderToBuffer(mIdle, 30, 10)
+	vLifecycle := renderToBuffer(mLifecycle, 30, 10)
 
 	// No count appears either way — lifecycle is yes/no.
 	require.Equal(t, []string{"Channels", "#dev", "▸#general", "#random"}, visibleLines(vIdle))
@@ -500,11 +515,23 @@ func TestChannelSidebar_unread_overrides_lifecycle(t *testing.T) {
 	m, _ = m.Update(components.ChannelHasLifecycleMsg{Channel: "#random"})
 	m, _ = m.Update(components.ChannelUnreadMsg{Channel: "#random", Count: 2})
 
-	v := m.View(30, 10)
+	screen := uv.NewScreenBuffer(30, 10)
+	m.Draw(screen, screen.Bounds())
+	v := screen.Render()
 	require.Equal(t, []string{"Channels", "#dev", "▸#general", "#random (2)"}, visibleLines(v))
 
-	line := findLineContaining(t, v, "#random")
-	require.Contains(t, line, "\x1b[1", "unread style should set bold even when lifecycle is also flagged")
+	var hash *uv.Cell
+	for x := range screen.Bounds().Dx() {
+		cell := screen.CellAt(x, 3)
+		if cell.Content == "#" {
+			hash = cell
+			break
+		}
+	}
+
+	require.NotNil(t, hash)
+	require.NotZero(t, hash.Style.Attrs&uv.AttrBold,
+		"unread style should set bold even when lifecycle is also flagged")
 }
 
 // TestChannelSidebar_lifecycle_clears_on_activation pins the
@@ -515,7 +542,7 @@ func TestChannelSidebar_lifecycle_clears_on_activation(t *testing.T) {
 	m := newTestChannelSidebar(testChannels, "#general", nil)
 	m, _ = m.Update(components.ChannelHasLifecycleMsg{Channel: "#random"})
 
-	flagged := findLineContaining(t, m.View(30, 10), "#random")
+	flagged := findLineContaining(t, renderToBuffer(m, 30, 10), "#random")
 
 	m, _ = m.Update(components.ChannelActiveMsg{Channel: "#random"})
 	// Re-set active back to #general so #random is rendered as
@@ -523,7 +550,7 @@ func TestChannelSidebar_lifecycle_clears_on_activation(t *testing.T) {
 	// of after the lifecycle clear.
 	m, _ = m.Update(components.ChannelActiveMsg{Channel: "#general"})
 
-	cleared := findLineContaining(t, m.View(30, 10), "#random")
+	cleared := findLineContaining(t, renderToBuffer(m, 30, 10), "#random")
 
 	require.NotEqual(t, flagged, cleared, "lifecycle styling should clear after activation")
 	require.False(t, italicSGR.MatchString(cleared), "post-clear style should not be italic")

@@ -231,8 +231,7 @@ const (
 	PaletteTargetBackground
 )
 
-// PaletteView renders the colour palette as a popover row.
-func (r RichTextarea) PaletteView(width int) string {
+func (r RichTextarea) paletteView(width int) string {
 	if !r.palette.open {
 		return ""
 	}

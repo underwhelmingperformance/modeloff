@@ -20,7 +20,7 @@ type StatusItem struct {
 	Compact  string
 }
 
-// StatusProvider is implemented by models or helpers that expose
+// StatusProvider is implemented by components or helpers that expose
 // status-bar items.
 type StatusProvider interface {
 	StatusItems() []StatusItem

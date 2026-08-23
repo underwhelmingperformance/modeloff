@@ -88,7 +88,7 @@ func (w *Window) Less(other *Window) bool {
 // is constructed once, before any window is focused, and reads its
 // events through a closure bound at that moment; this record is what
 // that closure resolves, and it outlives the chat-screen value the
-// closure captured. `Update` and `View` both run on the Bubble Tea
+// closure captured. `Update` and `Draw` both run on the Bubble Tea
 // event-loop goroutine, so one goroutine reads and writes the record
 // and it needs no synchronisation.
 type visibleWindow struct {

@@ -1,26 +1,8 @@
 package ui
 
-// Rect describes a rectangular area in absolute screen coordinates.
-type Rect struct {
-	X      int
-	Y      int
-	Width  int
-	Height int
-}
+import uv "github.com/charmbracelet/ultraviolet"
 
-// Contains reports whether the given point lies within the rectangle.
-func (r Rect) Contains(x, y int) bool {
-	return x >= r.X && y >= r.Y && x < r.X+r.Width && y < r.Y+r.Height
-}
-
-// Local converts an absolute point into rectangle-local coordinates.
-func (r Rect) Local(x, y int) (int, int) {
-	return x - r.X, y - r.Y
-}
-
-// BoundsMsg tells a child model the absolute bounds it occupies.
-// Layout containers translate WindowSizeMsg into per-child BoundsMsg
-// so that children never see raw terminal dimensions.
+// BoundsMsg tells a component the absolute bounds its parent assigned.
 type BoundsMsg struct {
-	Rect Rect
+	Rect uv.Rectangle
 }

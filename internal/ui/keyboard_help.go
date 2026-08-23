@@ -2,17 +2,25 @@ package ui
 
 import (
 	"fmt"
+	"image"
 	"slices"
 	"strings"
 
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	uv "github.com/charmbracelet/ultraviolet"
 
 	"github.com/laney/modeloff/internal/ui/theme"
 )
 
-const keyboardHelpHeaderHeight = 2
+const (
+	keyboardHelpHeaderHeight = 2
+	keyboardHelpMaxWidth     = 76
+	keyboardHelpMaxHeight    = 30
+	keyboardHelpMarginX      = 4
+	keyboardHelpMarginY      = 2
+)
 
 var keyboardHelpGroupOrder = []KeyHelpGroup{
 	KeyHelpGeneral,
@@ -30,50 +38,109 @@ type keyboardHelp struct {
 	content  string
 }
 
-func newKeyboardHelp(width, height int, bindings []KeyBinding) keyboardHelp {
+func newKeyboardHelp(bindings []KeyBinding) keyboardHelp {
 	content := renderKeyboardHelp(bindings)
-	vp := viewport.New(
-		viewport.WithWidth(max(width, 0)),
-		viewport.WithHeight(keyboardHelpBodyHeight(height)),
-	)
+	vp := viewport.New(viewport.WithWidth(0), viewport.WithHeight(0))
 	vp.MouseWheelEnabled = true
 	vp.SetContent(content)
 
 	return keyboardHelp{viewport: vp, content: content}
 }
 
-func (h keyboardHelp) resize(width, height int) keyboardHelp {
-	h.viewport.SetWidth(max(width, 0))
-	h.viewport.SetHeight(keyboardHelpBodyHeight(height))
-	h.viewport.SetContent(h.content)
-
-	return h
+// Init implements Component.
+func (h keyboardHelp) Init() tea.Cmd {
+	return nil
 }
 
-func (h keyboardHelp) update(msg tea.Msg) (keyboardHelp, tea.Cmd) {
+// Update implements Component.
+func (h keyboardHelp) Update(msg tea.Msg) (Component, tea.Cmd) {
+	if bounds, ok := msg.(BoundsMsg); ok {
+		return h.resize(bounds.Rect), nil
+	}
+
 	var cmd tea.Cmd
 	h.viewport, cmd = h.viewport.Update(msg)
 
 	return h, cmd
 }
 
-func (h keyboardHelp) view(width, height int) string {
-	if width <= 0 || height <= 0 {
-		return ""
-	}
+func (h keyboardHelp) resize(area uv.Rectangle) keyboardHelp {
+	inner := keyboardHelpInnerBounds(keyboardHelpBounds(area))
+	h.viewport.SetWidth(inner.Dx())
+	h.viewport.SetHeight(max(inner.Dy()-keyboardHelpHeaderHeight, 0))
+	h.viewport.SetContent(h.content)
 
-	header := keyboardHelpHeader(width)
-	if height == 1 {
-		return header
-	}
-
-	h = h.resize(width, height)
-
-	return lipgloss.JoinVertical(lipgloss.Left, header, "", h.viewport.View())
+	return h
 }
 
-func keyboardHelpBodyHeight(height int) int {
-	return max(height-keyboardHelpHeaderHeight, 0)
+// Draw implements Component.
+func (h keyboardHelp) Draw(screen uv.Screen, area uv.Rectangle) {
+	bounds := keyboardHelpBounds(area)
+	if bounds.Empty() {
+		return
+	}
+
+	panelStyle := theme.PaneBorder.Border(lipgloss.RoundedBorder())
+	panel := panelStyle.
+		Width(bounds.Dx()).
+		Height(bounds.Dy()).
+		Render(" ")
+	uv.NewStyledString(panel).Draw(screen, bounds)
+
+	inner := keyboardHelpInnerBounds(bounds)
+	if inner.Empty() {
+		return
+	}
+
+	headerArea := uv.Rect(inner.Min.X, inner.Min.Y, inner.Dx(), min(inner.Dy(), 1))
+	uv.NewStyledString(keyboardHelpHeader(inner.Dx())).Draw(screen, headerArea)
+
+	bodyY := min(inner.Min.Y+keyboardHelpHeaderHeight, inner.Max.Y)
+	bodyArea := image.Rect(inner.Min.X, bodyY, inner.Max.X, inner.Max.Y)
+	if bodyArea.Empty() {
+		return
+	}
+
+	viewportView := h.viewport
+	viewportView.SetWidth(bodyArea.Dx())
+	viewportView.SetHeight(bodyArea.Dy())
+	uv.NewStyledString(viewportView.View()).Draw(screen, bodyArea)
+}
+
+func keyboardHelpBounds(area uv.Rectangle) uv.Rectangle {
+	width := min(keyboardHelpMaxWidth, area.Dx())
+	if area.Dx() > 2*keyboardHelpMarginX {
+		width = min(width, area.Dx()-2*keyboardHelpMarginX)
+	}
+
+	height := min(keyboardHelpMaxHeight, area.Dy())
+	if area.Dy() > 2*keyboardHelpMarginY {
+		height = min(height, area.Dy()-2*keyboardHelpMarginY)
+	}
+
+	if width == 0 || height == 0 {
+		return image.Rectangle{}
+	}
+
+	minX := area.Min.X + (area.Dx()-width)/2
+	minY := area.Min.Y + (area.Dy()-height)/2
+
+	return image.Rect(minX, minY, minX+width, minY+height)
+}
+
+func keyboardHelpInnerBounds(bounds uv.Rectangle) uv.Rectangle {
+	style := theme.PaneBorder.Border(lipgloss.RoundedBorder())
+	left := style.GetBorderLeftSize()
+	right := style.GetBorderRightSize()
+	top := style.GetBorderTopSize()
+	bottom := style.GetBorderBottomSize()
+
+	return uv.Rect(
+		min(bounds.Min.X+left, bounds.Max.X),
+		min(bounds.Min.Y+top, bounds.Max.Y),
+		max(bounds.Dx()-left-right, 0),
+		max(bounds.Dy()-top-bottom, 0),
+	)
 }
 
 func keyboardHelpHeader(width int) string {

@@ -1,17 +1,15 @@
 package components
 
 import (
-	"strings"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
+	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/text/language"
 
-	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/observability"
 	"github.com/laney/modeloff/internal/ui"
 )
@@ -60,35 +58,23 @@ func trimLine(line string) string {
 	return line
 }
 
-func TestBorderedPane_renders_exactly_requested_height(t *testing.T) {
-	cases := []struct {
-		width  int
-		height int
-	}{
-		{width: 20, height: 5},
-		{width: 40, height: 10},
-		{width: 80, height: 23},
-		{width: 80, height: 76},
-	}
+func TestDrawBorderedPane_respects_assigned_rectangle(t *testing.T) {
+	screen := uv.NewScreenBuffer(30, 10)
+	area := uv.Rect(3, 2, 20, 5)
 
-	for _, tc := range cases {
-		innerWidth, innerHeight := borderedInnerSize(tc.width, tc.height)
-		content := strings.Repeat("x\n", innerHeight)
-		content = strings.TrimSuffix(content, "\n")
-		content = lipgloss.NewStyle().Width(innerWidth).Render(content)
+	drawBorderedPane(screen, area, "Title", false, func(contentArea uv.Rectangle) {
+		drawString(screen, contentArea, "content")
+	})
 
-		pane := borderedPane("Title", content, false)
-
-		require.Equalf(t,
-			tc.height, lipgloss.Height(pane),
-			"borderedPane(W=%d H=%d) must render exactly H rows", tc.width, tc.height)
-		require.Equalf(t,
-			tc.width, lipgloss.Width(pane),
-			"borderedPane(W=%d H=%d) must render exactly W cols", tc.width, tc.height)
-	}
+	require.Equal(t, "┌", screen.CellAt(3, 2).Content)
+	require.Equal(t, "┐", screen.CellAt(22, 2).Content)
+	require.Equal(t, "T", screen.CellAt(4, 3).Content)
+	require.Equal(t, "c", screen.CellAt(4, 4).Content)
+	require.Equal(t, "└", screen.CellAt(3, 6).Content)
+	require.Equal(t, "┘", screen.CellAt(22, 6).Content)
 }
 
-func TestChatWorkspace_ObsView_height_matches_ObsHeight(t *testing.T) {
+func TestObservabilityDrawer_Draw_fills_assigned_height(t *testing.T) {
 	cases := []struct {
 		name   string
 		width  int
@@ -101,25 +87,46 @@ func TestChatWorkspace_ObsView_height_matches_ObsHeight(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			workspace := NewChatWorkspace(
-				NewChatView[testKind](func() WindowContent { return WindowContent{Channel: "#general"} }, "#general", domain.KindChannel, "testuser", ""),
-			).WithMetrics(NewMetricsPane(t.Context, nil))
+			drawer := newObservabilityDrawer().withMetrics(NewMetricsPane(t.Context, nil))
 
-			sized, _ := workspace.Update(ui.BoundsMsg{
-				Rect: ui.Rect{Width: tc.width, Height: tc.height},
+			sized, _ := drawer.Update(ui.BoundsMsg{
+				Rect: uv.Rect(0, 0, tc.width, tc.height),
 			})
-			workspace = sized.(ChatWorkspace[testKind])
+			drawer = sized.(observabilityDrawer)
 
-			opened, _ := workspace.Update(toggleObservabilityKey())
-			workspace = opened.(ChatWorkspace[testKind])
+			opened, _ := drawer.Update(toggleObservabilityKey())
+			drawer = opened.(observabilityDrawer)
 
-			obsH := workspace.ObsHeight(tc.height)
-			obsView := workspace.ObsView(tc.width, obsH)
+			screen := uv.NewScreenBuffer(tc.width, tc.height)
+			drawer.Draw(screen, screen.Bounds())
+			obsRect := screen.Bounds()
 
-			require.Equal(t, obsH, lipgloss.Height(obsView),
-				"ObsView must render exactly ObsHeight rows so MainLayout's reservation matches the actual drawer")
+			require.Equal(t, "┌", screen.CellAt(obsRect.Min.X, obsRect.Min.Y).Content)
+			require.Equal(t, "┘", screen.CellAt(obsRect.Max.X-1, obsRect.Max.Y-1).Content)
 		})
 	}
+}
+
+func TestObservabilityDrawer_fullscreen_wide_split_stays_at_sixty_five_percent(t *testing.T) {
+	drawer := newObservabilityDrawer().withMetrics(NewMetricsPane(t.Context, nil))
+
+	updated, _ := drawer.Update(toggleObservabilityKey())
+	drawer = updated.(observabilityDrawer)
+	updated, _ = drawer.Update(tea.KeyPressMsg{Code: 'f', Mod: tea.ModCtrl})
+	drawer = updated.(observabilityDrawer)
+	updated, _ = drawer.Update(ui.BoundsMsg{Rect: uv.Rect(0, 0, 140, 30)})
+	drawer = updated.(observabilityDrawer)
+
+	layout := drawer.layout(uv.Rect(0, 0, 140, 30))
+	require.Equal(t, uv.Rect(0, 0, 91, 30), layout.LogsRect)
+	require.Equal(t, uv.Rect(91, 0, 49, 30), layout.MetricsRect)
+	require.Equal(t, borderedContentRect(layout.LogsRect), drawer.Logs.bounds)
+	require.Equal(t, borderedContentRect(layout.MetricsRect), drawer.Metrics.feed.bounds)
+
+	screen := uv.NewScreenBuffer(140, 30)
+	drawer.Draw(screen, screen.Bounds())
+	require.Equal(t, "┐", screen.CellAt(90, 0).Content)
+	require.Equal(t, "┌", screen.CellAt(91, 0).Content)
 }
 
 // toggleObservabilityKey is the alt+l keypress DefaultWorkspaceKeyMap
@@ -151,29 +158,27 @@ func TestIsChatScrollKey(t *testing.T) {
 	}
 }
 
-func TestChatWorkspace_split_mode_routes_scroll_keys_to_chat_only(t *testing.T) {
-	workspace := NewChatWorkspace(
-		NewChatView[testKind](func() WindowContent { return WindowContent{Channel: "#general"} }, "#general", domain.KindChannel, "testuser", ""),
-	)
+func TestObservabilityDrawer_split_mode_ignores_chat_scroll_keys(t *testing.T) {
+	drawer := newObservabilityDrawer()
 
-	sized, _ := workspace.Update(ui.BoundsMsg{Rect: ui.Rect{Width: 80, Height: 30}})
-	workspace = sized.(ChatWorkspace[testKind])
+	sized, _ := drawer.Update(ui.BoundsMsg{Rect: uv.Rect(0, 0, 80, 30)})
+	drawer = sized.(observabilityDrawer)
 
-	opened, _ := workspace.Update(toggleObservabilityKey())
-	workspace = opened.(ChatWorkspace[testKind])
-	require.True(t, workspace.Open)
-	require.False(t, workspace.Fullscreen)
+	opened, _ := drawer.Update(toggleObservabilityKey())
+	drawer = opened.(observabilityDrawer)
+	require.True(t, drawer.Open)
+	require.False(t, drawer.Fullscreen)
 
 	entries := make([]observability.PanelEntry, 0, 50)
 	for range 50 {
 		entries = append(entries, observability.PanelEntry{Level: "INFO", Message: "log line"})
 	}
-	workspace = workspace.SetLogEntries(entries)
-	require.False(t, workspace.Logs.ScrolledUp(), "the log feed starts pinned to its tail")
+	drawer = drawer.SetLogEntries(entries)
+	require.False(t, drawer.Logs.ScrolledUp(), "the log feed starts pinned to its tail")
 
-	updated, _ := workspace.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
-	workspace = updated.(ChatWorkspace[testKind])
+	updated, _ := drawer.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
+	drawer = updated.(observabilityDrawer)
 
-	require.False(t, workspace.Logs.ScrolledUp(),
+	require.False(t, drawer.Logs.ScrolledUp(),
 		"PgUp must scroll the chat transcript, not the drawer, while the drawer is only split open")
 }

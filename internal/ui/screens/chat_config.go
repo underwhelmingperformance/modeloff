@@ -118,7 +118,7 @@ func (s ChatScreen) handleAPIKeySet(msg chatcmd.APIKeySetResult) (ChatScreen, te
 			s.loadLiveModels(),
 			s.ensurePersonas(),
 			msgCmd(components.SetPlaceholderMsg{
-				Text: s.checklist.Render(),
+				Text: s.checklist.text(),
 			}),
 		)
 	}

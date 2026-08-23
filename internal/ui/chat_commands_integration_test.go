@@ -62,32 +62,6 @@ func TestApp_nick_command_reports_persist_error_with_teatest(t *testing.T) {
 	tm.WaitFor("nick: timed out; try again")
 }
 
-func TestApp_title_list_and_help_commands_with_teatest(t *testing.T) {
-	sess, mgr, user, _, cfgStore := newIntegrationSession(t, &integrationAPI{})
-	uitest.SeedChannel(t, user, "#general")
-	uitest.SeedChannel(t, user, "#random")
-
-	chatScreen, err := screens.NewChatScreen(t.Context, sess, mgr, user, cfgStore, nil, domain.KindStatus)
-	require.NoError(t, err)
-
-	root := uipkg.NewRoot(chatScreen)
-	tm := uitest.New(t, root, uitest.WithInitialTermSize(256, 256))
-
-	tm.WaitFor("#random")
-
-	tm.Submit("/topic cool topic")
-	tm.WaitFor("topic for #random set by testuser: cool topic")
-
-	tm.Submit("/list")
-	tm.WaitFor("#general (1)", "#random (1) — cool topic", "End of /list")
-
-	tm.Submit("/topic")
-	tm.WaitFor("topic for #random: cool topic", "set by testuser")
-
-	tm.Submit("/help")
-	tm.WaitFor("/join", "/help")
-}
-
 func TestApp_invite_whois_and_kick_commands_with_teatest(t *testing.T) {
 	apiClient := &integrationAPI{
 		generateNickFn: func(context.Context, domain.ModelID, string, []domain.Nick) (domain.Nick, error) {
@@ -212,11 +186,12 @@ func TestApp_welcome_join_command_with_teatest(t *testing.T) {
 	require.Equal(t, []string{"Channels", "&modeloff", "▸#general"}, sidebarColumn(view))
 
 	content := normaliseContent(contentColumn(view))
-	require.Len(t, content, 4, "window header, its border rule, one message, and the input bar")
-	require.Equal(t, "#general", content[0])
-	require.Regexp(t, `^─+$`, content[1], "second content line is the header's border rule")
-	require.Equal(t, "*** Created channel #general", content[2])
-	require.Equal(t, "testuser >", content[3])
+	require.Equal(t, []string{
+		"#general",
+		strings.Repeat("─", 55),
+		"*** Created channel #general",
+		"testuser >",
+	}, content, "window header, its border rule, one message, and the input bar")
 }
 
 func TestApp_message_on_welcome_screen_rejected_with_teatest(t *testing.T) {

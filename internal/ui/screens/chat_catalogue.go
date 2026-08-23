@@ -51,7 +51,7 @@ func (s ChatScreen) handleLiveModelsLoaded(msg liveModelsLoadedMsg) (ChatScreen,
 	s, rebind := s.setLiveModels(msg.models, command.SuggestionStateReady)
 
 	if s.realChannelCount() == 0 {
-		return s, tea.Batch(rebind, msgCmd(components.SetPlaceholderMsg{Text: s.checklist.Render()}))
+		return s, tea.Batch(rebind, msgCmd(components.SetPlaceholderMsg{Text: s.checklist.text()}))
 	}
 
 	return s, rebind

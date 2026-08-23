@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/require"
 
@@ -64,7 +65,7 @@ func sidebarUpdate(t *testing.T, sb components.Sidebar[sidebarItem, string], msg
 func TestSidebar_mouse_wheel_outside_bounds_is_ignored(t *testing.T) {
 	sb, _ := newTestSidebar("alpha", "beta", "gamma")
 	sb = sb.SetActiveKey("alpha")
-	sb, _ = sidebarUpdate(t, sb, ui.BoundsMsg{Rect: ui.Rect{X: 0, Y: 0, Width: 20, Height: 10}})
+	sb, _ = sidebarUpdate(t, sb, ui.BoundsMsg{Rect: uv.Rect(0, 0, 20, 10)})
 
 	require.Equal(t, "alpha", sb.CursorKey())
 
@@ -78,7 +79,7 @@ func TestSidebar_mouse_wheel_outside_bounds_is_ignored(t *testing.T) {
 
 func TestSidebar_mouse_wheel_inside_bounds_moves_cursor(t *testing.T) {
 	sb, _ := newTestSidebar("alpha", "beta", "gamma")
-	sb, _ = sidebarUpdate(t, sb, ui.BoundsMsg{Rect: ui.Rect{X: 0, Y: 0, Width: 20, Height: 10}})
+	sb, _ = sidebarUpdate(t, sb, ui.BoundsMsg{Rect: uv.Rect(0, 0, 20, 10)})
 
 	sb, cmd := sidebarUpdate(t, sb, tea.MouseWheelMsg{
 		X: 2, Y: 1,
@@ -237,30 +238,17 @@ func TestSidebar_renders_a_group_label_once_per_section_transition(t *testing.T)
 		sectionedItem{name: "dave", section: "Queries"},
 	)
 
-	view := sb.View(20, 10)
+	view := renderToBuffer(sb, 20, 10)
 	lines := trimmedLines(view)
+
+	for len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
 
 	// "alpha" and "beta" carry no section label (empty string means
 	// no label row); "Queries" is drawn once, immediately above the
 	// first item whose section differs from the previous item's.
-	require.Contains(t, lines, "alpha")
-	require.Contains(t, lines, "beta")
-	require.Contains(t, lines, "Queries")
-	require.Contains(t, lines, "carol")
-	require.Contains(t, lines, "dave")
-
-	queriesIdx := indexOfLine(lines, "Queries")
-	carolIdx := indexOfLine(lines, "carol")
-	require.Equal(t, queriesIdx+1, carolIdx, "the label sits immediately above the first item in its section")
-
-	// Exactly one "Queries" label, not one per item in the section.
-	count := 0
-	for _, l := range lines {
-		if l == "Queries" {
-			count++
-		}
-	}
-	require.Equal(t, 1, count)
+	require.Equal(t, []string{"alpha", "beta", "Queries", "carol", "dave"}, lines)
 }
 
 func trimmedLines(view string) []string {
@@ -274,21 +262,12 @@ func trimmedLines(view string) []string {
 	return out
 }
 
-func indexOfLine(lines []string, want string) int {
-	for i, l := range lines {
-		if l == want {
-			return i
-		}
-	}
-	return -1
-}
-
 func TestSidebar_click_on_group_label_is_a_no_op(t *testing.T) {
 	sb, activated := newSectionedTestSidebar(
 		sectionedItem{name: "alpha", section: ""},
 		sectionedItem{name: "carol", section: "Queries"},
 	)
-	sb, _ = sidebarUpdateSectioned(t, sb, ui.BoundsMsg{Rect: ui.Rect{X: 0, Y: 0, Width: 20, Height: 10}})
+	sb, _ = sidebarUpdateSectioned(t, sb, ui.BoundsMsg{Rect: uv.Rect(0, 0, 20, 10)})
 
 	// Row 0 is "alpha", row 1 is the "Queries" label, row 2 is "carol".
 	sb, cmd := sidebarUpdateSectioned(t, sb, tea.MouseClickMsg{
@@ -306,7 +285,7 @@ func TestSidebar_click_on_item_after_group_label_activates_it(t *testing.T) {
 		sectionedItem{name: "alpha", section: ""},
 		sectionedItem{name: "carol", section: "Queries"},
 	)
-	sb, _ = sidebarUpdateSectioned(t, sb, ui.BoundsMsg{Rect: ui.Rect{X: 0, Y: 0, Width: 20, Height: 10}})
+	sb, _ = sidebarUpdateSectioned(t, sb, ui.BoundsMsg{Rect: uv.Rect(0, 0, 20, 10)})
 
 	// Row 2 is "carol", past the "Queries" label at row 1.
 	sb, cmd := sidebarUpdateSectioned(t, sb, tea.MouseClickMsg{
@@ -335,7 +314,7 @@ func sidebarUpdateSectioned(t *testing.T, sb components.Sidebar[sectionedItem, s
 
 func TestSidebar_click_activates_and_moves_cursor(t *testing.T) {
 	sb, activated := newTestSidebar("alpha", "beta", "gamma")
-	sb, _ = sidebarUpdate(t, sb, ui.BoundsMsg{Rect: ui.Rect{X: 0, Y: 0, Width: 20, Height: 10}})
+	sb, _ = sidebarUpdate(t, sb, ui.BoundsMsg{Rect: uv.Rect(0, 0, 20, 10)})
 
 	sb, cmd := sidebarUpdate(t, sb, tea.MouseClickMsg{
 		X: 2, Y: 1,

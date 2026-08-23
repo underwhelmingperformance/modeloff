@@ -4,6 +4,7 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	uv "github.com/charmbracelet/ultraviolet"
 
 	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
@@ -94,13 +95,12 @@ type ChatView[C command.KindProvider] struct {
 	input    InputBar
 	keyMap   ChatViewKeyMap
 
-	bounds ui.Rect
+	bounds uv.Rectangle
 }
 
 type chatViewLayout struct {
-	InputRect   ui.Rect
-	PaletteRect ui.Rect
-	MessageRect ui.Rect
+	InputRect   uv.Rectangle
+	MessageRect uv.Rectangle
 }
 
 // NewChatView creates a chat view for the given channel. The
@@ -111,7 +111,7 @@ type chatViewLayout struct {
 // channels.
 //
 // `content` is the closure the embedded [MessageList] consults on
-// every `View` for the window in view and its scrollback. The chat
+// every draw for the window in view and its scrollback. The chat
 // screen owns the storage; this view is a pure read over it.
 func NewChatView[C command.KindProvider](
 	content func() WindowContent,
@@ -135,7 +135,7 @@ func NewChatView[C command.KindProvider](
 	}
 }
 
-// Init implements ui.Model.
+// Init implements ui.Component.
 func (c ChatView[C]) Init() tea.Cmd {
 	return c.input.Init()
 }
@@ -164,14 +164,13 @@ func (c ChatView[C]) KeyBindings() []ui.KeyBinding {
 	return bindings
 }
 
-// Update implements ui.Model.
-func (c ChatView[C]) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
+// Update implements ui.Component.
+func (c ChatView[C]) Update(msg tea.Msg) (ui.Component, tea.Cmd) {
 	switch msg := msg.(type) {
 	case ui.BoundsMsg:
 		c.bounds = msg.Rect
-		c, inputCmd := c.updateInput(msg)
-		c, syncCmd := c.syncMessageViewport()
-		return c, tea.Batch(inputCmd, syncCmd)
+		c, syncCmd := c.syncChildBounds()
+		return c, syncCmd
 
 	case SetChannelMsg:
 		c.channel = msg.Channel
@@ -179,83 +178,86 @@ func (c ChatView[C]) Update(msg tea.Msg) (ui.Model, tea.Cmd) {
 		c.topic = msg.Topic
 
 		c, msgCmd := c.updateMessages(msg)
-		c, syncCmd := c.syncMessageViewport()
+		c, syncCmd := c.syncChildBounds()
 
 		return c, tea.Batch(msgCmd, syncCmd)
 
 	case TopicUpdatedMsg:
 		c.topic = msg.Topic
-		c, syncCmd := c.syncMessageViewport()
+		c, syncCmd := c.syncChildBounds()
 		return c, syncCmd
 
 	case UserNickMsg:
 		c.userNick = msg.Nick
 		c, inputCmd := c.updateInput(msg)
+		c, syncCmd := c.syncChildBounds()
 
-		return c, inputCmd
+		return c, tea.Batch(inputCmd, syncCmd)
 
 	case NickListUpdatedMsg:
 		c, inputCmd := c.updateInput(msg)
+		c, syncCmd := c.syncChildBounds()
 
-		return c, inputCmd
+		return c, tea.Batch(inputCmd, syncCmd)
 
 	case SetPlaceholderMsg, HighlightWordsMsg, TimestampFormatMsg:
 		c, msgCmd := c.updateMessages(msg)
-		c, syncCmd := c.syncMessageViewport()
+		c, syncCmd := c.syncChildBounds()
 
 		return c, tea.Batch(msgCmd, syncCmd)
 
 	case CommandsMsg[C]:
 		c, msgCmd := c.updateMessages(msg)
-		c, syncCmd := c.syncMessageViewport()
+		c, syncCmd := c.syncChildBounds()
 
 		return c, tea.Batch(msgCmd, syncCmd)
 
 	case CompleterMsg:
 		c, inputCmd := c.updateInput(msg)
+		c, syncCmd := c.syncChildBounds()
 
-		return c, inputCmd
+		return c, tea.Batch(inputCmd, syncCmd)
 
 	case SecretCheckerMsg:
 		c, inputCmd := c.updateInput(msg)
+		c, syncCmd := c.syncChildBounds()
 
-		return c, inputCmd
+		return c, tea.Batch(inputCmd, syncCmd)
 
 	case tea.MouseMsg:
 		if updated, handled, cmd := c.handleMouse(msg); handled {
-			return updated, cmd
+			updated, syncCmd := updated.syncChildBounds()
+			return updated, tea.Batch(cmd, syncCmd)
 		}
+
+		return c, nil
 	}
 
 	// Forward to message list for viewport navigation, then input bar.
 	c, mlCmd := c.updateMessages(msg)
 
 	c, inputCmd := c.updateInput(msg)
-	c, syncCmd := c.syncMessageViewport()
+	c, syncCmd := c.syncChildBounds()
 
 	return c, tea.Batch(mlCmd, inputCmd, syncCmd)
 }
 
 func (c ChatView[C]) handleMouse(msg tea.MouseMsg) (ChatView[C], bool, tea.Cmd) {
-	if c.bounds.Width == 0 || c.bounds.Height == 0 {
+	if _, released := msg.(tea.MouseReleaseMsg); released {
+		updated, cmd := c.input.Update(msg)
+		c.input = updated.(InputBar)
+
+		return c, true, cmd
+	}
+
+	if c.bounds.Dx() == 0 || c.bounds.Dy() == 0 {
 		return c, false, nil
 	}
 
 	layout := c.layoutRects()
 	mouse := msg.Mouse()
 
-	if layout.PaletteRect.Contains(mouse.X, mouse.Y) {
-		localX, localY := layout.PaletteRect.Local(mouse.X, mouse.Y)
-		local := mouseAt(msg, localX, localY)
-
-		updated, handled, cmd := c.input.HandlePaletteMouse(local)
-		if handled {
-			c.input = updated
-			return c, true, cmd
-		}
-	}
-
-	if layout.InputRect.Contains(mouse.X, mouse.Y) {
+	if contains(layout.InputRect, mouse.X, mouse.Y) {
 		updated, cmd := c.input.Update(msg)
 		c.input = updated.(InputBar)
 
@@ -266,103 +268,50 @@ func (c ChatView[C]) handleMouse(msg tea.MouseMsg) (ChatView[C], bool, tea.Cmd) 
 		return c, true, nil
 	}
 
-	if _, ok := msg.(tea.MouseWheelMsg); ok && layout.MessageRect.Contains(mouse.X, mouse.Y) {
+	if _, ok := msg.(tea.MouseWheelMsg); ok && contains(layout.MessageRect, mouse.X, mouse.Y) {
 		switch mouse.Button {
 		case tea.MouseWheelUp, tea.MouseWheelDown:
 			c, mlCmd := c.updateMessages(msg)
-			c, syncCmd := c.syncMessageViewport()
+			c, syncCmd := c.syncChildBounds()
 
 			return c, true, tea.Batch(mlCmd, syncCmd)
 		}
 	}
 
+	if _, clicked := msg.(tea.MouseClickMsg); clicked && mouse.Button == tea.MouseLeft {
+		updated, cmd := c.input.Update(msg)
+		c.input = updated.(InputBar)
+
+		return c, true, cmd
+	}
+
 	return c, false, nil
 }
 
-// View implements ui.Model.
-func (c ChatView[C]) View(width, height int) string {
-	inputView := c.input.View(width, 1)
-	inputHeight := lipgloss.Height(inputView)
-
-	paletteView := c.input.PaletteView(width)
-	paletteHeight := 0
-	if paletteView != "" {
-		paletteHeight = lipgloss.Height(paletteView)
-	}
-
-	headerView := c.renderHeader(width)
-	headerHeight := 0
-	if headerView != "" {
-		headerHeight = lipgloss.Height(headerView)
-	}
-
-	messageListHeight := max(height-inputHeight-headerHeight-paletteHeight, 0)
-
-	messageView := c.messages.View(width, messageListHeight)
-
-	parts := make([]string, 0, 4)
-	if headerView != "" {
-		parts = append(parts, headerView)
-	}
-
-	parts = append(parts, messageView)
-
-	if paletteView != "" {
-		parts = append(parts, paletteView)
-	}
-
-	parts = append(parts, inputView)
-
-	view := lipgloss.JoinVertical(lipgloss.Left, parts...)
-	if lipgloss.Height(view) >= height {
-		return view
-	}
-
-	return lipgloss.Place(width, height, lipgloss.Left, lipgloss.Bottom, view)
+func (c ChatView[C]) layoutRects() chatViewLayout {
+	return c.layoutRectsFor(c.bounds)
 }
 
-func (c ChatView[C]) layoutRects() chatViewLayout {
-	width := c.bounds.Width
+func (c ChatView[C]) layoutRectsFor(bounds uv.Rectangle) chatViewLayout {
+	width := bounds.Dx()
 	if width <= 0 {
 		return chatViewLayout{}
 	}
 
-	inputView := c.input.View(width, 1)
-	inputHeight := lipgloss.Height(inputView)
-	paletteHeight := c.input.PaletteHeight(width)
-
-	inputRect := ui.Rect{
-		X:      c.bounds.X,
-		Y:      c.bounds.Y + c.bounds.Height - inputHeight,
-		Width:  width,
-		Height: inputHeight,
-	}
-
-	paletteRect := ui.Rect{
-		X:      c.bounds.X,
-		Y:      inputRect.Y - paletteHeight,
-		Width:  width,
-		Height: paletteHeight,
-	}
+	inputHeight := min(c.input.Height(), bounds.Dy())
+	inputRect := uv.Rect(bounds.Min.X, bounds.Max.Y-inputHeight, width, inputHeight)
 
 	headerHeight := 0
 	if headerView := c.renderHeader(width); headerView != "" {
 		headerHeight = lipgloss.Height(headerView)
 	}
 
-	messageRect := ui.Rect{
-		X:      c.bounds.X,
-		Y:      c.bounds.Y + headerHeight,
-		Width:  width,
-		Height: c.bounds.Height - headerHeight - paletteHeight - inputHeight,
-	}
-	if messageRect.Height < 0 {
-		messageRect.Height = 0
-	}
+	headerHeight = min(headerHeight, max(bounds.Dy()-inputHeight, 0))
+	messageHeight := max(bounds.Dy()-headerHeight-inputHeight, 0)
+	messageRect := uv.Rect(bounds.Min.X, bounds.Min.Y+headerHeight, width, messageHeight)
 
 	return chatViewLayout{
 		InputRect:   inputRect,
-		PaletteRect: paletteRect,
 		MessageRect: messageRect,
 	}
 }
@@ -374,13 +323,16 @@ func (c ChatView[C]) updateMessages(msg tea.Msg) (ChatView[C], tea.Cmd) {
 	return c, cmd
 }
 
-func (c ChatView[C]) syncMessageViewport() (ChatView[C], tea.Cmd) {
+func (c ChatView[C]) syncChildBounds() (ChatView[C], tea.Cmd) {
 	layout := c.layoutRects()
+
+	updatedInput, inputCmd := c.input.Update(ui.BoundsMsg{Rect: layout.InputRect})
+	c.input = updatedInput.(InputBar)
 
 	updated, cmd := c.messages.Update(ui.BoundsMsg{Rect: layout.MessageRect})
 	c.messages = updated.(MessageList[C])
 
-	return c, cmd
+	return c, tea.Batch(inputCmd, cmd)
 }
 
 func (c ChatView[C]) updateInput(msg tea.Msg) (ChatView[C], tea.Cmd) {

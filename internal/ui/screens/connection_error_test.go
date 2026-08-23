@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/ui"
@@ -18,15 +19,17 @@ type fakeConnector struct{ err error }
 
 func (f fakeConnector) Connect(context.Context) error { return f.err }
 
-// stubChatScreen is a placeholder ui.Model standing in for the real
+// stubChatScreen is a placeholder ui.Component standing in for the real
 // chat screen, distinct from nil so a test can tell "no chat screen
 // configured" apart from "a chat screen exists but the sequence
 // never transitioned to it".
 type stubChatScreen struct{}
 
-func (stubChatScreen) Init() tea.Cmd                      { return nil }
-func (stubChatScreen) Update(tea.Msg) (ui.Model, tea.Cmd) { return stubChatScreen{}, nil }
-func (stubChatScreen) View(int, int) string               { return "stub" }
+func (stubChatScreen) Init() tea.Cmd                          { return nil }
+func (stubChatScreen) Update(tea.Msg) (ui.Component, tea.Cmd) { return stubChatScreen{}, nil }
+func (stubChatScreen) Draw(screen uv.Screen, area uv.Rectangle) {
+	uv.NewStyledString("stub").Draw(screen, area)
+}
 
 // TestConnectionScreen_routes_each_gates_error_to_its_own_step pins
 // that a gate's failure lands on the step waiting on that gate, not
@@ -63,7 +66,7 @@ func TestConnectionScreen_routes_each_gates_error_to_its_own_step(t *testing.T) 
 			// result arrives — exactly the ordering a slow connect
 			// alongside a fast-failing catalogue load or autojoin
 			// produces.
-			var m ui.Model = s
+			var m ui.Component = s
 			m, _ = m.Update(tt.msg)
 			cs := m.(ConnectionScreen)
 
@@ -97,7 +100,7 @@ func TestConnectionScreen_fatal_connect_failure_freezes_the_sequence(t *testing.
 		Session:      fakeConnector{err: errConnect},
 	}, next)
 
-	var m ui.Model = s
+	var m ui.Component = s
 	m, cmd := m.Update(connectionReadyMsg{err: errConnect})
 	cs := m.(ConnectionScreen)
 
@@ -134,7 +137,7 @@ func TestConnectionScreen_non_fatal_failure_completes_the_sequence(t *testing.T)
 		Session:      fakeConnector{},
 	}, next)
 
-	var m ui.Model = s
+	var m ui.Component = s
 	m, _ = m.Update(connectionReadyMsg{})
 	m, _ = m.Update(loadModelsDoneMsg{err: errLoadModels})
 	m, _ = m.Update(joinAutojoinDoneMsg{})
